@@ -1,5 +1,3 @@
-//! Split from src/ir_codegen.rs (fz-ame.7). Mechanical move only.
-
 #![allow(unused_imports)]
 
 use super::*;
@@ -35,7 +33,7 @@ pub(crate) fn synthesize_halt_cont<M: cranelift_module::Module>(
     b.inst_results(inst)[0]
 }
 
-/// fz-ul4.27.22.3 — pick the halt_cont_body FuncId matching `repr`.
+/// Pick the halt_cont_body FuncId matching `repr`.
 pub(crate) fn halt_cont_body_id_for(runtime: &RuntimeRefs, repr: ArgRepr) -> FuncId {
     match repr {
         ArgRepr::ValueRef => runtime.halt_cont_body_strict_id,
@@ -224,6 +222,10 @@ pub(crate) fn emit_struct_set_field_value<M: cranelift_module::Module>(
 /// `cont_param` already is the outer cont.
 /// For uniform fns without cont_param: load frame_ptr+16, brif on null to
 /// allocate a halt-cont fallback closure.
+///
+/// Uniform cont fns (cont fns whose enclosing chain forced a uniform frame
+/// ABI) have no `self` closure ptr; their outer_cont lives in frame slot 0
+/// — fall through to the uniform branch when cont_param is None.
 pub(crate) fn resolve_outer_cont<M: cranelift_module::Module>(
     jmod: &mut M,
     b: &mut FunctionBuilder<'_>,
@@ -234,22 +236,13 @@ pub(crate) fn resolve_outer_cont<M: cranelift_module::Module>(
     frame_ptr: Option<ir::Value>,
     cont_sid: u32,
 ) -> ir::Value {
-    if is_cont_fn {
-        // fz-70q.5.5 — uniform cont fn (cont fn whose enclosing chain
-        // forced a uniform frame ABI): there is no `self` closure ptr
-        // — the caller dispatched through the older trampoline using a
-        // heap frame. The outer_cont in that case lives in frame slot 0
-        // (frame+16), same layout the entry harness already uses for
-        // the uniform path. Fall through to the older frame-slot load
-        // below so the same site can build cont closures whether it
-        // got entered via the scheduler resume seam or via a uniform call.
-        if let Some(self_val) = cont_param {
-            return load_outer_cont_ref(b, jmod, runtime, self_val);
-        }
-        // else fall through to the uniform frame-slot branch below.
+    if is_cont_fn && let Some(self_val) = cont_param {
+        return load_outer_cont_ref(b, jmod, runtime, self_val);
     }
+    // No `self` closure ptr: caller dispatched through the uniform
+    // path; outer_cont lives in frame slot 0. Fall through.
     {
-        let _ = is_cont_fn; // consumed above when cont_param was Some
+        let _ = is_cont_fn;
         match cont_param {
             Some(c) => c,
             None => {
@@ -321,7 +314,7 @@ pub(crate) fn build_cont_closure<M: cranelift_module::Module>(
     );
     let acl_fref = jmod.declare_func_in_func(runtime.alloc_closure_id, b.func);
     let cl_fid_v = b.ins().iconst(types::I32, cont_sid as i64);
-    // +1: closure env field 0 is synthetic outer_cont; user captures follow.
+    // +1 reserves env field 0 for the synthetic outer_cont; user captures follow.
     let n_caps_v = b.ins().iconst(
         types::I32,
         (cap_bindings.len() + extra_ref_captures.len() + 1) as i64,
@@ -342,8 +335,10 @@ pub(crate) fn build_cont_closure<M: cranelift_module::Module>(
         captured_count,
         heap_safe_outer_cont,
     );
-    for (i, &capture) in cap_bindings.iter().enumerate() {
-        match capture {
+    store_user_captures(
+        cap_bindings,
+        extra_ref_captures,
+        |idx, capture| match capture {
             ClosureCapture::RefWord(ref_word) => {
                 let heap_safe_ref = materialize_cont_word(b, jmod, runtime, ref_word);
                 store_closure_capture_ref_word(
@@ -352,31 +347,38 @@ pub(crate) fn build_cont_closure<M: cranelift_module::Module>(
                     runtime,
                     cl_ptr,
                     captured_count,
-                    i + 1,
+                    idx,
                     heap_safe_ref,
                 );
             }
             ClosureCapture::RawInt(raw) => {
-                store_closure_capture_i64(b, jmod, runtime, cl_ptr, i + 1, raw);
+                store_closure_capture_i64(b, jmod, runtime, cl_ptr, idx, raw);
             }
             ClosureCapture::RawF64(raw) => {
-                store_closure_capture_f64(b, jmod, runtime, cl_ptr, i + 1, raw);
+                store_closure_capture_f64(b, jmod, runtime, cl_ptr, idx, raw);
             }
-        }
-    }
-    for (i, extra) in extra_ref_captures.iter().enumerate() {
-        let heap_safe_ref = materialize_cont_word(b, jmod, runtime, *extra);
-        store_closure_capture_ref_word(
-            b,
-            jmod,
-            runtime,
-            cl_ptr,
-            captured_count,
-            cap_bindings.len() + 1 + i,
-            heap_safe_ref,
-        );
-    }
+        },
+    );
     cl_ptr
+}
+
+/// Iterate user captures (typed `cap_bindings` followed by `extra_ref_captures`)
+/// and invoke `store` for each one at its target slot index. Slot 0 is reserved
+/// for the synthetic outer_cont and must be written by the caller before
+/// invoking this helper; user captures begin at index 1.
+fn store_user_captures<F>(
+    cap_bindings: &[ClosureCapture],
+    extra_ref_captures: &[ir::Value],
+    mut store: F,
+) where
+    F: FnMut(usize, ClosureCapture),
+{
+    for (i, &capture) in cap_bindings.iter().enumerate() {
+        store(i + 1, capture);
+    }
+    for (i, &extra) in extra_ref_captures.iter().enumerate() {
+        store(cap_bindings.len() + 1 + i, ClosureCapture::RefWord(extra));
+    }
 }
 
 const LAZY_CONT_HEADER_BYTES: usize = 32;
@@ -432,47 +434,22 @@ pub(crate) fn build_lazy_cont_descriptor<M: cranelift_module::Module>(
         my_outer_cont,
         LAZY_CONT_KIND_REF,
     );
-    for (i, &capture) in cap_bindings.iter().enumerate() {
-        match capture {
+    store_user_captures(
+        cap_bindings,
+        extra_ref_captures,
+        |idx, capture| match capture {
             ClosureCapture::RefWord(value) => {
-                store_lazy_capture(
-                    b,
-                    slot,
-                    raw_base,
-                    kind_base,
-                    i + 1,
-                    value,
-                    LAZY_CONT_KIND_REF,
-                );
+                store_lazy_capture(b, slot, raw_base, kind_base, idx, value, LAZY_CONT_KIND_REF);
             }
             ClosureCapture::RawInt(value) => {
-                store_lazy_capture(
-                    b,
-                    slot,
-                    raw_base,
-                    kind_base,
-                    i + 1,
-                    value,
-                    LAZY_CONT_KIND_I64,
-                );
+                store_lazy_capture(b, slot, raw_base, kind_base, idx, value, LAZY_CONT_KIND_I64);
             }
             ClosureCapture::RawF64(value) => {
                 let raw = b.ins().bitcast(types::I64, MemFlags::new(), value);
-                store_lazy_capture(b, slot, raw_base, kind_base, i + 1, raw, LAZY_CONT_KIND_F64);
+                store_lazy_capture(b, slot, raw_base, kind_base, idx, raw, LAZY_CONT_KIND_F64);
             }
-        }
-    }
-    for (i, &extra) in extra_ref_captures.iter().enumerate() {
-        store_lazy_capture(
-            b,
-            slot,
-            raw_base,
-            kind_base,
-            cap_bindings.len() + 1 + i,
-            extra,
-            LAZY_CONT_KIND_REF,
-        );
-    }
+        },
+    );
     let ptr = b.ins().stack_addr(types::I64, slot, 0);
     let address_mask = fz_runtime::any_value::AnyValueRefPacking::current().address_mask() as i64;
     let ptr_payload = b.ins().band_imm(ptr, address_mask);

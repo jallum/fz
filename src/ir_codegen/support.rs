@@ -31,25 +31,21 @@ pub(crate) fn list_tail_bits_for_var<T: crate::types::Types<Ty = crate::types::T
     }
 }
 
-// fz-yan.1 — nil/true/false are atoms with reserved compile-time IDs.
-// These constants are raw atom payloads used with side-band ATOM kind tags.
+// Raw atom payloads used with side-band ATOM kind tags.
 pub(crate) const TRUE_BITS: i64 = fz_runtime::any_value::TRUE_BITS as i64;
 pub(crate) const FALSE_BITS: i64 = fz_runtime::any_value::FALSE_BITS as i64;
 thread_local! {
-    /// (.11.24.4) Per-fn Cranelift IR display text captured by compile()
-    /// after compile_fn but before define_function consumes the context.
-    /// Test-only; enable by calling `ir_text_record_enable()` before compile.
+    /// Per-fn Cranelift IR display text captured between compile_fn and
+    /// define_function (which consumes the context). Enable via
+    /// `ir_text_record_enable()`.
     pub static IR_TEXT_RECORD: std::cell::RefCell<Option<Vec<(String, String)>>> = const { std::cell::RefCell::new(None) };
-    /// (fz-ul4.23.8) Per-fn machine-code disassembly captured by compile()
-    /// when set_disasm is on. Enable with `asm_record_enable()` before
-    /// compile; drain with `asm_record_take()` after.
+    /// Per-fn machine-code disassembly captured when set_disasm is on.
+    /// Enable with `asm_record_enable()`; drain with `asm_record_take()`.
     pub static ASM_RECORD: std::cell::RefCell<Option<Vec<(String, String)>>> = const { std::cell::RefCell::new(None) };
-    /// fz-ul4.32.1 — per-fn Value → IR Ty map, populated by compile_fn
-    /// at end-of-body. Consumed by the IR_TEXT_RECORD assembly step to
-    /// annotate each `vN` definition with its planner result. Only the
-    /// values bound to fz Vars (block params, Prim results, etc.) are
-    /// recorded; pure Cranelift intermediates (iconst, ishl_imm, ...)
-    /// have no fz-level type and stay unannotated.
+    /// Per-fn Value -> IR Ty map populated at end-of-body and consumed by
+    /// the IR_TEXT_RECORD assembly step to annotate `vN` definitions. Only
+    /// values bound to fz Vars are recorded; pure Cranelift intermediates
+    /// (iconst, ishl_imm, ...) stay unannotated.
     pub static VALUE_DESCR_RECORD: std::cell::RefCell<Option<HashMap<u32, crate::types::Ty>>>
         = const { std::cell::RefCell::new(None) };
 }
@@ -62,25 +58,20 @@ pub fn asm_record_take() -> Vec<(String, String)> {
     ASM_RECORD.with(|c| c.borrow_mut().take().unwrap_or_default())
 }
 
-/// Drain the per-thread print-capture buffer. Tests in this file (and
-/// the fixture_matrix integration tests) call this to read what
-/// fz_print_value emitted during a compile/run. The actual storage lives
-/// in the runtime crate alongside fz_print_value (fz-ul4.23.10).
+/// Drain the per-thread print-capture buffer. Storage lives in the
+/// runtime crate alongside fz_print_value.
 #[cfg(test)]
 pub fn test_capture_take() -> Vec<String> {
     fz_runtime::ir_runtime::test_capture_take()
 }
 
 /// Begin recording per-fn Cranelift IR display text. Subsequent `compile()`
-/// calls on this thread will append `(fn_name, clif_text)` pairs to a TLS
+/// calls on this thread append `(fn_name, clif_text)` pairs to a TLS
 /// buffer; `ir_text_record_take` drains and returns them.
-///
-/// Used by `fz dump --emit clif` (fz-ul4.23.3) and by unit tests that need
-/// to assert on generated IR shape.
 pub fn ir_text_record_enable() {
     IR_TEXT_RECORD.with(|c| *c.borrow_mut() = Some(Vec::new()));
-    // fz-ul4.32.1 — pair the value-type recorder so the assembled
-    // text gets planner annotations alongside the raw CLIF.
+    // Pair the value-type recorder so the assembled text gets typer
+    // annotations alongside the raw CLIF.
     VALUE_DESCR_RECORD.with(|c| *c.borrow_mut() = Some(HashMap::new()));
 }
 
@@ -90,14 +81,11 @@ pub fn ir_text_record_take() -> Vec<(String, String)> {
 }
 
 /// Reset DEFAULT_PROCESS. Call at the start of any test that needs a clean
-/// heap. Tests share threads via the cargo test runner's worker pool, so
-/// leftover state is otherwise sticky.
+/// heap — cargo's worker-pool thread reuse makes leftover state sticky.
 #[cfg(test)]
 pub fn heap_reset_for_test() {
     DEFAULT_PROCESS.with(|c| *c.borrow_mut() = None);
 }
-
-// fz_alloc_struct moved to ir_runtime.rs (.23.4.7).
 
 // ----- Map runtime fns -----
 //
@@ -123,13 +111,6 @@ pub fn heap_reset_for_test() {
 // `[false]` on failure. Tuple schema_ids for arities 1 and 3 are registered
 // at compile() time when any bitstring prim is present.
 
-// BS_BUILDER + BS_TUPLE_ARITY{1,3}_SCHEMA state moved to Process fields
-// (per fz-ul4.11.32). Tuple-arity schema ids are filled in at make_process()
-// time from CompiledModule's compile-time tables.
-
-// Bitstring runtime cluster (fz_bs_*, decode_*) moved to ir_runtime.rs
-// (.23.4.9). The codegen-time helpers below stay here.
-
 pub(crate) fn encode_bit_type(t: crate::ast::BitType) -> u32 {
     use crate::ast::BitType;
     match t {
@@ -152,7 +133,7 @@ pub(crate) fn encode_endian(e: crate::ast::Endian) -> u32 {
     }
 }
 
-/// Default unit per type, mirroring `crate::ir_lower::resolved_unit_for`.
+/// Default unit per type. Mirrors `crate::ir_lower::resolved_unit_for`.
 pub(crate) fn default_unit_for(ty: crate::ast::BitType) -> u32 {
     use crate::ast::BitType;
     match ty {
@@ -169,29 +150,9 @@ pub(crate) fn default_unit_for(ty: crate::ast::BitType) -> u32 {
 // Arithmetic dispatch: codegen emits an inline both-int fast-path test
 // (`((a^1) | (b^1)) & 7 == 0`); when at least one operand is non-Int the
 // slow arm promotes both to f64 via fz_promote_f64 and emits native
-// fadd/fsub/fmul/fdiv when the result can stay RawF64. fz-ul4.27.9 inlined
-// the slow path — previously a call to fz_arith_*. Typed float-float fast paths
-// (.27.3) and typed int-int fast paths (.27.5.3) sit in front of the
-// dispatch entirely. Eq/Neq do NOT promote: `1 == 1.0` is false.
-
-// ----- fz-ul4.19.2: scheduler-bound builtins (spawn / self) -----
-//
-// Both consume a Runtime installed in TLS by Runtime::run_until_idle.
-// Calling either outside the scheduler path panics with a clear message.
-
-// fz_spawn(closure_bits) -> pid_bits. Extracts fn_id from the closure
-// heap object and enqueues a new task at that fn. Returns the pid as a
-// boxed AnyValue Int (Pid-as-struct deferred to a follow-up).
-//
-// Arith / cmp / eq FFI cluster moved to src/ir_runtime.rs (fz-ul4.23.4.1).
-
-// Closure cluster moved to ir_runtime.rs (.23.4.11).
-
-// fz_alloc_frame + fz_alloc_frame_for_test moved to ir_runtime.rs (.23.4.7).
-
-// ---------------------------------------------------------------------------
-// Compiler
-// ---------------------------------------------------------------------------
+// fadd/fsub/fmul/fdiv when the result can stay RawF64. Typed float-float
+// and typed int-int fast paths sit in front of the dispatch entirely.
+// Eq/Neq do NOT promote: `1 == 1.0` is false.
 
 pub(crate) fn fn_may_allocate_heap(f: &crate::fz_ir::FnIr) -> bool {
     f.blocks.iter().any(|block| {
@@ -221,10 +182,9 @@ pub(crate) fn fn_may_allocate_heap(f: &crate::fz_ir::FnIr) -> bool {
 #[cfg(test)]
 thread_local! {
     pub(crate) static INLINE_DISABLED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-    /// fz-jg5.6 — disable the compile-time reducer for tests that
-    /// exercise codegen infrastructure (static_closure_targets,
-    /// indirect closure paths, etc.) whose triggering inputs the reducer would
-    /// dissolve. Parallel to INLINE_DISABLED.
+    /// Disable the compile-time reducer for tests that exercise codegen
+    /// infrastructure (static_closure_targets, indirect closure paths,
+    /// etc.) whose triggering inputs the reducer would dissolve.
     pub(crate) static REDUCER_DISABLED: std::cell::Cell<bool> =
         const { std::cell::Cell::new(false) };
 }

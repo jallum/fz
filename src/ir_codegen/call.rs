@@ -60,11 +60,11 @@ pub(crate) fn emit_halt_from_codegen_value<M: cranelift_module::Module>(
 /// Otherwise write `val` to cont_frame[24] (continuation's "result" slot —
 /// always entry param 0) and return cont_ptr.
 ///
-/// fz-ul4.27.16: `frame_ptr` is `Option` because native fns don't have
-/// a frame; the natively_callable invariant guarantees this helper is
-/// never reached from a native fn body. Unwrapping with `.expect()`
-/// turns any future invariant break into a loud panic at codegen time
-/// rather than a silent load-from-zero.
+/// `frame_ptr` is `Option` because native fns don't have a frame; the
+/// natively_callable invariant guarantees this helper is never reached
+/// from a native fn body. Unwrapping with `.expect()` turns any future
+/// invariant break into a loud panic at codegen time rather than a
+/// silent load-from-zero.
 pub(crate) fn emit_return<M: cranelift_module::Module>(
     b: &mut FunctionBuilder<'_>,
     jmod: &mut M,
@@ -78,10 +78,8 @@ pub(crate) fn emit_return<M: cranelift_module::Module>(
     let cont_ptr = b
         .ins()
         .load(types::I64, MemFlags::trusted(), frame_ptr, HEADER_SIZE);
-    // fz-ul4.27.17: one `iconst.i64 0` materialized in the entry block
-    // serves both the null-compare and the halt-branch return sentinel.
-    // SSA dominance lets the halt block reuse it; previously we emitted
-    // a duplicate iconst inside the halt block.
+    // One `iconst.i64 0` serves both the null-compare and the halt-branch
+    // return sentinel; SSA dominance lets the halt block reuse it.
     let zero = b.ins().iconst(types::I64, 0);
     let is_null = b.ins().icmp(IntCC::Equal, cont_ptr, zero);
 
@@ -104,12 +102,11 @@ pub(crate) fn emit_return<M: cranelift_module::Module>(
     b.ins().return_(&[cont_ptr]);
 }
 
-/// fz-ul4.27.18 — specialized emit_return for fns whose cont_ptr is
-/// statically known to be null at runtime (i.e. fns that are never a
-/// cont target anywhere in the module — they can only be invoked as
-/// the trampoline entry, which writes null into slot 0). Skip the
-/// `load v0+16; icmp eq 0; brif` dispatch and the dead invoke-branch
-/// entirely; just record the strict halt value and return null.
+/// Specialized emit_return for fns whose cont_ptr is statically known
+/// to be null at runtime — fns never used as a cont target anywhere in
+/// the module can only be invoked as the trampoline entry, which writes
+/// null into slot 0. Skips the load/icmp/brif dispatch and the dead
+/// invoke-branch entirely; records the strict halt value and returns null.
 ///
 /// Takes no `frame_ptr` because none is read.
 pub(crate) fn emit_halt_and_return_null<M: cranelift_module::Module>(
@@ -174,9 +171,9 @@ pub(crate) fn emit_call<M: cranelift_module::Module>(
             b.ins().store(MemFlags::trusted(), my_cont, cf, HEADER_SIZE);
             // Slot 1 (offset 24) is the continuation's "result" param —
             // left uninitialized; will be filled by callee's Term::Return.
-            // Slots 2..K+2: captured vars in declaration order. .5.4:
-            // kind-aware store so a typed-int / typed-float captured slot
-            // gets its raw payload, not one-word ValueRef.
+            // Slots 2..K+2: captured vars in declaration order. Kind-aware
+            // store so a typed-int / typed-float captured slot gets its
+            // raw payload, not one-word ValueRef.
             store_bindings_into_callee_frame(b, jmod, runtime, cont_schema, cf, captured, 2, cache);
             cf
         }
@@ -358,9 +355,7 @@ pub(crate) fn emit_tail_call<M: cranelift_module::Module>(
     }
 }
 
-// fz-ul4.29.5: emit_call_closure / emit_tail_call_closure deleted.
-// Term::CallClosure / TailCallClosure lower directly inline: read code_ptr
-// through the runtime ABI, then call_indirect through it with args,
-// self, and cont. Captures stay inside the closure env and are projected
-// by the callee's entry harness.
-// always go through the uniform frame-alloc path.
+// Term::CallClosure / TailCallClosure lower directly inline: read
+// code_ptr through the runtime ABI, then call_indirect through it with
+// args, self, and cont. Captures stay inside the closure env and are
+// projected by the callee's entry harness.

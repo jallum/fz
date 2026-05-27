@@ -8,7 +8,7 @@ use cranelift_codegen::{
 };
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use fz_runtime::heap::Schema;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 pub(crate) fn compile_fn<
     M: cranelift_module::Module,
@@ -33,9 +33,9 @@ pub(crate) fn compile_fn<
     let closure_n_captures = env.closure_n_captures;
     let is_native = natively_callable.contains(&f.id);
     let is_cont_fn = cont_fns.contains(&f.id);
-    // fz-cps.1.2 — closure-target fn shape per §2.1: `(args..., self,
-    // cont) tail`. Only takes effect for native fns; uniform fns still
-    // go through the closure-stub adapter for now.
+    // Closure-target fn shape: `(args..., self, cont) tail`. Only takes
+    // effect for native fns; uniform fns still go through the
+    // closure-stub adapter.
     let closure_target_n_caps: Option<usize> = if is_native && !is_cont_fn {
         closure_n_captures.get(&f.id).copied()
     } else {
@@ -43,52 +43,17 @@ pub(crate) fn compile_fn<
     };
     let demand_abi = DemandAbi::new(&env.spec_keys[this_spec_id as usize]);
     let has_list_tail_dest = demand_abi.has_list_tail_native_param(is_native, is_cont_fn);
-    // fz-ul4.27.18: when this fn is never invoked from any fz IR site
-    // (not a direct callee, not a continuation, not a closure target),
-    // it can only enter via the trampoline entry, which writes null
-    // into the frame's slot 0. cont_ptr is therefore statically null at
-    // runtime; emit_return can elide the load/icmp/brif dispatch and
-    // emit a halt-only path. The `cont_target_fns` parameter is the
-    // upstream set of "ever referenced from fz IR" FnIds.
+    // When this fn is never invoked from any fz IR site (not a direct
+    // callee, not a continuation, not a closure target), it can only
+    // enter via the trampoline entry, which writes null into the frame's
+    // slot 0. cont_ptr is therefore statically null at runtime;
+    // emit_return can elide the load/icmp/brif dispatch and emit a
+    // halt-only path. `cont_target_fns` is the set of FnIds ever
+    // referenced from fz IR.
     let cont_ptr_known_null = !cont_target_fns.contains(&f.id);
     let mut b = FunctionBuilder::new(&mut ctx.func, fbctx);
 
-    // fz-ul4.30 — reachability filter. `ir_lower` emits an unconditional
-    // `fail_block` per fn (Halt with :function_clause atom) for clauses
-    // whose patterns fail at runtime, and similar match-fail blocks for
-    // `cond` / lambda bodies. Single-clause fns with bare-var params
-    // never Goto their fail_block, leaving it as dead CLIF. Worse, the
-    // dead Halt's `return` was previously typed `i64` regardless of the
-    // fn's sig — under .27.13's per-type return typing this trips the
-    // Cranelift verifier (f64 sig vs i64 return). Skip emitting those
-    // blocks entirely.
-    let reachable_fz_blocks: std::collections::HashSet<u32> = {
-        let blk_idx: HashMap<u32, &crate::fz_ir::Block> =
-            f.blocks.iter().map(|b| (b.id.0, b)).collect();
-        let mut reach: std::collections::HashSet<u32> = std::collections::HashSet::new();
-        let mut stack: Vec<u32> = vec![f.entry.0];
-        while let Some(bid) = stack.pop() {
-            if !reach.insert(bid) {
-                continue;
-            }
-            let Some(blk) = blk_idx.get(&bid) else {
-                continue;
-            };
-            match &blk.terminator {
-                Term::Goto(t, _) => stack.push(t.0),
-                Term::If { then_b, else_b, .. } => {
-                    stack.push(then_b.0);
-                    stack.push(else_b.0);
-                }
-                // Return / TailCall / Halt / Call / CallClosure /
-                // TailCallClosure / Receive don't pass control to other
-                // fz_ir blocks within this fn; codegen lowers them into
-                // Cranelift sub-blocks owned by the lowering site itself.
-                _ => {}
-            }
-        }
-        reach
-    };
+    let reachable_fz_blocks = reachable_block_ids(f);
 
     let mut block_map: HashMap<u32, ir::Block> = HashMap::new();
     for blk in &f.blocks {
@@ -100,17 +65,15 @@ pub(crate) fn compile_fn<
     }
     let entry_cl = *block_map.get(&f.entry.0).unwrap();
     if is_native {
-        // fz-ul4.27.6.2.3 / .27.13 — native fn entry: one block_param per
-        // fz arg whose type matches my param_reprs[i] (F64 for raw float,
-        // I64 for raw int or tagged), plus a trailing host_ctx i64. No
-        // frame_ptr; native fns run synchronously inside their caller and
-        // never visit the trampoline.
+        // Native fn entry: one block_param per fz arg whose type matches
+        // param_reprs[i] (F64 for raw float, I64 for raw int or tagged).
+        // No frame_ptr; native fns run synchronously inside their caller
+        // and never visit the trampoline.
         let my_param_reprs = &param_reprs[this_spec_id as usize];
         if is_cont_fn {
-            // fz-ul4.27.22.3 cont fn entry per §2.1: result's Cranelift
-            // type matches my_param_reprs[0].cl_type() (RawInt=i64,
-            // RawF64=f64, ValueRef=i64). Body sees the value in its native
-            // shape — no coerce at entry.
+            // Cont fn entry: result's Cranelift type matches
+            // my_param_reprs[0].cl_type(). Body sees the value in its
+            // native shape — no coerce at entry.
             //
             // Scheduler-resumed receive continuations override the default
             // one-result input shape via `cont_extras_count`: their bound
@@ -124,8 +87,8 @@ pub(crate) fn compile_fn<
             }
             b.append_block_param(entry_cl, types::I64); // self
         } else if let Some(n_caps) = closure_target_n_caps {
-            // fz-cps.1.2 closure-target fn entry per §2.1:
-            // `(args..., self:i64, cont:i64) tail`. n_args = total - n_caps.
+            // Closure-target fn entry: `(args..., self:i64, cont:i64) tail`.
+            // n_args = total - n_caps.
             let n_args = my_param_reprs.len().saturating_sub(n_caps);
             for r in &my_param_reprs[..n_args] {
                 append_block_param_for_repr(&mut b, entry_cl, *r);
@@ -205,8 +168,7 @@ pub(crate) fn compile_fn<
     };
 
     // Walk blocks in declared order with entry first. Unreachable
-    // fz_ir blocks (fz-ul4.30) are filtered out — they have no
-    // Cranelift counterpart.
+    // fz_ir blocks are filtered out — they have no Cranelift counterpart.
     let mut order: Vec<&crate::fz_ir::Block> = Vec::with_capacity(f.blocks.len());
     if let Some(eb) = f.blocks.iter().find(|b| b.id == f.entry) {
         order.push(eb);
@@ -242,7 +204,6 @@ pub(crate) fn compile_fn<
         // Per-stmt source location: ir_lower records spans into
         // SourceInfo.stmt_spans; encode each as a Cranelift SourceLoc so
         // `fz dump --emit clif` can render `; @file:line:col` comments.
-        // fz-ul4.23.7.
         let stmt_spans = source.stmt_spans.get(&(f.id, blk.id));
         let block_env = fn_types.block_envs.get(&blk.id);
         for (idx, stmt) in blk.stmts.iter().enumerate() {
@@ -289,10 +250,10 @@ pub(crate) fn compile_fn<
             .unwrap_or(crate::diag::Span::DUMMY);
         b.set_srcloc(span_to_srcloc(term_span));
 
-        // fz-xs2 fz-ul4.rep.2: repr-aware Goto coercion.  Mirrors
-        // coerce_call_args but for intra-function block edges.  Each arg is
-        // coerced to the repr the target block param actually needs (derived
-        // from fn_types.vars), so RawInt values flow through without a
+        // Repr-aware Goto coercion. Mirrors coerce_call_args but for
+        // intra-function block edges. Each arg is coerced to the repr
+        // the target block param actually needs (derived from
+        // fn_types.vars), so RawInt values flow through without a
         // box/unbox round-trip at inliner seams.
         if let Term::Goto(target, args) = &blk.terminator {
             for (param, arg) in f.block(*target).params.iter().zip(args.iter()) {
@@ -344,10 +305,9 @@ pub(crate) fn compile_fn<
         }
     }
     b.finalize();
-    // fz-ul4.32.1 — publish Value -> Ty for the dump path. Only the
-    // values bound to fz Vars are recorded; pure Cranelift intermediates
-    // (iconst, ishl_imm, ...) stay unannotated. Pure overhead when
-    // IR_TEXT_RECORD is disabled is the `with` + None-check.
+    // Publish Value -> Ty for the dump path. Only values bound to fz
+    // Vars are recorded; pure Cranelift intermediates stay unannotated.
+    // Cost when IR_TEXT_RECORD is disabled: one `with` + None-check.
     VALUE_DESCR_RECORD.with(|c| {
         if let Some(map) = c.borrow_mut().as_mut() {
             map.clear();
@@ -359,6 +319,44 @@ pub(crate) fn compile_fn<
         }
     });
     Ok(())
+}
+
+/// Compute the set of fz_ir block ids reachable from `f.entry` by
+/// following intra-fn control-flow terminators (Goto / If). Return /
+/// TailCall / Halt / Call / CallClosure / TailCallClosure / Receive
+/// don't pass control to other fz_ir blocks within this fn; codegen
+/// lowers them into Cranelift sub-blocks owned by the lowering site
+/// itself.
+///
+/// Why filter at all: `ir_lower` emits an unconditional `fail_block`
+/// per fn (Halt with :function_clause atom) for clauses whose patterns
+/// fail at runtime, and similar match-fail blocks for `cond` / lambda
+/// bodies. Single-clause fns with bare-var params never Goto their
+/// fail_block, leaving it as dead CLIF whose dead Halt's `return` is
+/// typed i64 regardless of the fn's sig — the Cranelift verifier
+/// rejects f64-sig fns with an i64 return. Skip these blocks entirely.
+fn reachable_block_ids(f: &crate::fz_ir::FnIr) -> HashSet<u32> {
+    let blk_idx: HashMap<u32, &crate::fz_ir::Block> =
+        f.blocks.iter().map(|b| (b.id.0, b)).collect();
+    let mut reach: HashSet<u32> = HashSet::new();
+    let mut stack: Vec<u32> = vec![f.entry.0];
+    while let Some(bid) = stack.pop() {
+        if !reach.insert(bid) {
+            continue;
+        }
+        let Some(blk) = blk_idx.get(&bid) else {
+            continue;
+        };
+        match &blk.terminator {
+            Term::Goto(t, _) => stack.push(t.0),
+            Term::If { then_b, else_b, .. } => {
+                stack.push(then_b.0);
+                stack.push(else_b.0);
+            }
+            _ => {}
+        }
+    }
+    reach
 }
 
 fn tuple_return_delivery_plan(

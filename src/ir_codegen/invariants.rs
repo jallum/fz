@@ -1,27 +1,16 @@
-//! fz-uwq.14 — debug-build invariant assertion for the codegen pipeline.
+//! Debug-build invariant: post-typer passes may *consume* call-shape
+//! terminators (folding into Returns / Gotos) but must never *invent*
+//! new ones — the typer's spec set wouldn't cover an invented call,
+//! and codegen would dispatch through `SpecPlan.dispatches`, find no
+//! entry, and either panic or pick the wrong target.
 //!
-//! Premise: once the planner commits to specs in `plan_module`, the
-//! post-planner passes (branch_fold, fold, const_bs::fold, dce_module,
-//! dce_module_level) may *consume* call-shape terminators (fold them
-//! into Returns / Gotos) but must never *invent* new ones. The planner's
-//! spec set wouldn't cover an invented call.
-//!
-//! The check: snapshot per-fn call-shape multisets right after the
-//! planner. After the final post-planner pass, snapshot again and assert
-//! that every (FnId, CallShape) count in the post snapshot is ≤ its
-//! pre snapshot count.
-//!
-//! Catches future contributors who add a post-planner pass that
-//! accidentally introduces a new Term::Call etc — a class of bug
-//! that would silently miscompile (codegen would dispatch through
-//! `SpecPlan.dispatches`, find no entry, and either panic or pick the
-//! wrong target).
+//! Snapshot per-fn call-shape multisets right after the typer, then
+//! again after the final post-typer pass; every (FnId, CallShape) count
+//! in the post snapshot must be ≤ its pre snapshot count.
 
 use crate::fz_ir::{FnId, Module, Term};
 use std::collections::HashMap;
 
-/// Tag identifying the kind of call-shape a terminator has.
-/// `None` (the absence of a tag) is implied for non-call terminators.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CallShape {
     Call,
@@ -42,7 +31,6 @@ fn shape_of(t: &Term) -> Option<CallShape> {
     }
 }
 
-/// Per-fn multiset of call-shape tags across all blocks.
 pub type CallShapeSnapshot = HashMap<FnId, HashMap<CallShape, usize>>;
 
 pub fn snapshot_call_shapes(m: &Module) -> CallShapeSnapshot {
@@ -63,7 +51,7 @@ pub fn snapshot_call_shapes(m: &Module) -> CallShapeSnapshot {
 
 /// Assert that no fn gained new call shapes between the two snapshots.
 /// A fn that was DCE-ed out entirely (no entry in the post snapshot) is
-/// fine — the post-planner pipeline may prune unreachable fns.
+/// fine — the post-typer pipeline may prune unreachable fns.
 pub fn assert_no_new_call_shapes(m: &Module, pre: &CallShapeSnapshot) {
     let post = snapshot_call_shapes(m);
     for (fid, post_counts) in &post {
@@ -73,8 +61,8 @@ pub fn assert_no_new_call_shapes(m: &Module, pre: &CallShapeSnapshot) {
             let pre_n = pre_counts.get(shape).copied().unwrap_or(0);
             assert!(
                 *post_n <= pre_n,
-                "fz-uwq.14: fn {:?} has {} {:?} terminators post-codegen but only {} \
-                 post-planner — a post-planner pass invented call shapes the planner's \
+                "fn {:?} has {} {:?} terminators post-codegen but only {} \
+                 post-typer — a post-typer pass invented call shapes the typer's \
                  specs don't cover",
                 fid,
                 post_n,

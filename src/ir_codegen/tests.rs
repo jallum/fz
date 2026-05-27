@@ -6,9 +6,8 @@ use crate::parser::Parser;
 use crate::types::{ClosureTypes, KeySlot, Types};
 use cranelift_codegen::ir::types;
 
-// fz-yan.1 — after the runtime split, false halts as its reserved
-// atom ID (2). Tests previously asserted 0 from the special-bits
-// derivation; the named constant makes the new semantics explicit.
+// `false` halts as its reserved atom ID; name the constant so test
+// assertions stay readable.
 const FALSE_HALT: i64 = fz_runtime::any_value::FALSE_ATOM_ID as i64;
 
 fn lower_src(src: &str) -> Module {
@@ -43,18 +42,13 @@ fn join_return_ty(
     joined.unwrap_or_else(|| t.any())
 }
 
-/// fz-cps.1.7 — every zero-capture `MakeClosure(f, [])` target gets
-/// one entry in `static_closure_targets`. Multiple `MakeClosure(f, [])`
-/// sites for the same `f` share a single entry (cl_sid keyed). At
-/// runtime `make_process` allocates one Box per entry; two
-/// `fz_get_static_closure(cl_sid)` calls in the same Process return
-/// pointer-identical results. See docs/cps-in-clif.md §8.2.
+/// Every zero-capture `MakeClosure(f, [])` target gets one entry in
+/// `static_closure_targets`; multiple sites for the same `f` share a
+/// single entry (cl_sid keyed). See docs/cps-in-clif.md §8.2.
 #[test]
 fn static_closure_targets_registered_for_zero_cap_make_closure() {
-    // fz-jg5.6: the reducer would dissolve this program to constants
-    // (no MakeClosure survives). Disable it so this test exercises the
-    // codegen infrastructure that handles closures *the reducer can't
-    // dissolve* — opaque/runtime-driven uses.
+    // Reducer disabled: it would otherwise dissolve this program to
+    // constants and leave no MakeClosure for the codegen path to handle.
     let src = "fn f(x), do: x + 1\n\
                fn g(x), do: x * 2\n\
                fn apply(h, x), do: h(x)\n\
@@ -72,7 +66,6 @@ fn static_closure_targets_registered_for_zero_cap_make_closure() {
         .expect("compile")
     });
     let targets = compiled.static_closure_targets();
-    // At minimum, `f` and `g` are registered.
     assert!(
         targets.len() >= 2,
         "expected ≥2 static closure targets (f, g); got {}: {:?}",
@@ -82,7 +75,6 @@ fn static_closure_targets_registered_for_zero_cap_make_closure() {
             .map(|(s, f, _, _)| (s, f))
             .collect::<Vec<_>>(),
     );
-    // Distinct cl_sids and distinct code addresses.
     let mut cl_sids: Vec<u32> = targets.iter().map(|(s, _, _, _)| *s).collect();
     cl_sids.sort();
     cl_sids.dedup();
@@ -99,17 +91,16 @@ fn static_closure_targets_registered_for_zero_cap_make_closure() {
     }
 }
 
-/// fz-cps.1.7 — `make_process` populates `Process.static_closures` from
-/// the compiled module's targets, and `fz_get_static_closure(cl_sid)`
-/// returns the singleton's pointer. Two lookups return the same
-/// pointer (singleton identity).
+/// `make_process` populates `Process.static_closures` from the compiled
+/// module's targets, and `fz_get_static_closure(cl_sid)` returns the
+/// singleton's pointer; two lookups return the same pointer.
 #[test]
 fn static_closure_lookup_returns_singleton_pointer() {
     let src = "fn f(x), do: x + 1\n\
                fn apply(h, x), do: h(x)\n\
                fn main() do print(apply(f, 1)) end";
     let m = lower_src(src);
-    // fz-jg5.6: reducer-disabled — see note on the sibling test above.
+    // Reducer disabled — see sibling test above.
     let compiled = crate::ir_codegen::with_reducer_disabled(|| {
         compile(
             &mut crate::types::ConcreteTypes,
@@ -144,14 +135,12 @@ fn aot_compile_produces_object_with_main_symbol() {
         !artifact.object.is_empty(),
         "AOT object should be non-empty"
     );
-    // Post-.6.3, compile_aot emits a C-callable `main` symbol that
-    // wraps fz_aot_run_main. The artifact's main_symbol surfaces that for
-    // the linker.
+    // compile_aot emits a C-callable `main` symbol that wraps
+    // fz_aot_run_main; the artifact surfaces it for the linker.
     let main_sym = artifact.main_symbol.expect("main_symbol set");
     assert_eq!(main_sym, "main", "expected C-callable main symbol");
-    // Sanity: object-file magic bytes for the host target. ELF starts
-    // with 0x7f 'E' 'L' 'F'; Mach-O starts with 0xfeedface/0xfeedfacf
-    // (or their byte-swapped 64-bit variants).
+    // Host-target object-file magic: ELF starts 0x7f 'E' 'L' 'F';
+    // Mach-O starts 0xfeedface/0xfeedfacf (or byte-swapped 64-bit).
     let magic_ok = matches!(
         &artifact.object[..4],
         [0x7f, b'E', b'L', b'F']
@@ -231,18 +220,13 @@ fn run_main_and_count_live(src: &str) -> usize {
     process.heap.live_count()
 }
 
-// ----- fz-ul4.19.6: atom-table policy (shared, mutex-protected) -----
-
-/// Two Processes built from the SAME CompiledModule observe equal
-/// atom ids for the same atom literal. Atoms are u32s baked into
-/// compiled code; they're the same bytes regardless of which Process
-/// runs the code. Confirms .19.6's "global shared singleton" policy
-/// is the actual semantics today (per ir_lower::AtomTable being
-/// CompiledModule-scoped).
+/// Two Processes built from the same CompiledModule observe equal atom
+/// ids for the same atom literal: atoms are u32s baked into compiled
+/// code, identical regardless of which Process runs it.
 #[test]
 fn atom_identity_preserved_across_processes_from_same_module() {
-    // `:ok` halts as the atom's raw u32 id. Run two Processes; the halt
-    // value must match because the atom id was assigned once at compile time.
+    // `:ok` halts as the atom's raw u32 id; both Processes must agree
+    // because the id was assigned once at compile time.
     let src = "fn main(), do: :ok";
     let m = lower_src(src);
     let compiled = compile(
@@ -263,12 +247,9 @@ fn atom_identity_preserved_across_processes_from_same_module() {
     );
 }
 
-/// fz-yan.4 — `nil`, `true`, and `false` are reserved at atom IDs 0/1/2
-/// in every module. AtomTable::new() pre-interns these so the reserved
-/// IDs are stable and downstream codegen / runtime can rely on them
-/// (see fz_runtime::any_value::{NIL,TRUE,FALSE}_ATOM_ID). Pin the halt
-/// values against the named constants so any future re-shuffling of
-/// the intern order is caught at this layer.
+/// `nil`, `true`, and `false` are reserved at atom IDs 0/1/2 in every
+/// module so downstream codegen / runtime can rely on them. Pin halt
+/// values to the named constants to catch any re-shuffling of intern order.
 #[test]
 fn reserved_atom_ids_are_stable() {
     use fz_runtime::any_value::{FALSE_ATOM_ID, NIL_ATOM_ID, TRUE_ATOM_ID};
@@ -280,19 +261,12 @@ fn reserved_atom_ids_are_stable() {
     assert_eq!(run_main("fn main(), do: false"), FALSE_ATOM_ID as i64);
 }
 
-// ----- fz-ul4.11.32: per-Process state isolation -----
-
 /// Two Processes built from the same CompiledModule run independent
-/// programs that each construct a map. PRE-MIGRATION (when MAP_BUILDER
-/// was a shared TLS slot) the second `run_in` would inherit or corrupt
-/// the first's in-flight builder state. Post-migration, each Process
-/// owns its own builder fields and the two runs are fully independent.
+/// programs that each construct a map; each Process owns its own
+/// builder fields so the runs cannot leak state into each other.
 #[test]
 fn two_processes_run_independent_map_builds() {
-    // Both programs use distinct keys + values so a corruption would
-    // show up as a wrong halt value (halt reads tag bits of the map
-    // pointer; we observe by reading specific entries via fz-level
-    // map syntax).
+    // Distinct keys + values so any state leak surfaces as a wrong halt.
     let src_a = "fn main(), do: %{1 => 10, 2 => 20}[1]";
     let src_b = "fn main(), do: %{3 => 30, 4 => 40}[3]";
 
@@ -307,9 +281,7 @@ fn two_processes_run_independent_map_builds() {
     let mut pa = ca.make_process();
     let mut pb = cb.make_process();
 
-    // Run a, then b, then a again (interleaved) — each should see only
-    // its own state. If MAP_BUILDER were shared TLS, the second run
-    // would either panic on stale state or compute the wrong value.
+    // Interleave runs: each must see only its own state.
     let ra = ca.run_in(entry_a, &mut pa);
     let rb = cb.run_in(entry_b, &mut pb);
     let ra2 = ca.run_in(entry_a, &mut pa);
@@ -321,8 +293,6 @@ fn two_processes_run_independent_map_builds() {
         "process a's second run returns 10 (independent of b)"
     );
 
-    // Each Process accumulated its own heap allocations. The map
-    // alloc lives on the Process's heap.
     assert!(pa.heap.live_count() > 0, "process a has live heap allocs");
     assert!(pb.heap.live_count() > 0, "process b has live heap allocs");
 }
@@ -353,8 +323,6 @@ fn run_in_restores_existing_current_process() {
         "run_in must restore the caller's current process"
     );
 }
-
-// ----- simple scalar / arithmetic tests -----
 
 #[test]
 fn const_int_runs_and_halts_with_value() {
@@ -408,14 +376,10 @@ fn unop_neg_runs() {
 
 #[test]
 fn atom_const_returns_atom_id() {
-    // fz-yan.1 — AtomTable reserves ids 0/1/2 for nil/true/false at
-    // construction. fz-axu.13 — Utf8.from_bytes in the prelude interns
-    // `:ok` first (id=3), so user references to :ok return that id.
-    // `match_error` / `function_clause` intern later in the prelude.
+    // ids 0/1/2 are reserved for nil/true/false; the prelude interns
+    // a handful of atoms before user code, so `:ok` lands at id 4.
     assert_eq!(run_main("fn main(), do: :ok"), 4);
 }
-
-// ----- .11.8 frame-allocation tests -----
 
 #[test]
 fn add1_via_call_returns_42() {
@@ -505,10 +469,8 @@ fn render_any_value_dispatches_per_tag() {
         )),
         "false"
     );
-    // Atom rendering needs a populated Process.atom_names; with an
-    // empty table render falls back to `:atom_N`. The full
-    // source-name path is verified end-to-end by the fixture matrix
-    // (hello.fz post fz-ul4.25 re-bless).
+    // Empty Process.atom_names: render falls back to `:atom_N`. The
+    // source-name path is verified end-to-end by the fixture matrix.
     assert_eq!(
         fz_runtime::any_value::debug::render_value(fz_runtime::any_value::AnyValue::atom(3)),
         ":atom_3"
@@ -522,8 +484,6 @@ fn print_captures_atom_and_specials() {
         vec![":ok", "true", "false"]
     );
 }
-
-// ----- .11.13 map tests -----
 
 #[test]
 fn print_atom_keyed_map_renders_canonically() {
@@ -557,8 +517,6 @@ end
         vec!["%{:a => 1, :b => 2}", "%{:a => 99, :b => 2}",]
     );
 }
-
-// ----- .11.12 bitstring tests -----
 
 #[test]
 fn print_bitstring_literal_via_jit() {
@@ -595,8 +553,6 @@ fn main(), do: print(parse(<<3, 0x01, 0x02, 0x03, 0xff>>))
         vec!["{3, <<1, 2, 3>>, <<255>>}"]
     );
 }
-
-// ----- .11.11 tuple tests -----
 
 #[test]
 fn print_tuple_pair_renders() {
@@ -651,8 +607,6 @@ fn tuple_literal_initializes_scalar_fields_without_boxing() {
     );
 }
 
-// ----- .11.10 list tests -----
-
 #[test]
 fn print_list_literal_renders_via_jit() {
     assert_eq!(
@@ -699,8 +653,6 @@ fn main(), do: even(10)
     );
 }
 
-// ----- .11.19 closure tests -----
-
 #[test]
 fn apply_simple_closure_no_captures() {
     assert_eq!(
@@ -745,8 +697,6 @@ fn main(), do: print(map_l(double, [1, 2, 3]))
         vec!["[2, 4, 6]"]
     );
 }
-
-// ----- .11.21 structural equality tests -----
 
 #[test]
 fn list_structural_eq_same_content_distinct_allocations() {
@@ -801,8 +751,6 @@ fn neq_inverts_structural_eq() {
     assert_eq!(run_main("fn main(), do: [1, 2] != [1, 2]"), FALSE_HALT);
     assert_eq!(run_main("fn main(), do: [1, 2] != [1, 3]"), 1);
 }
-
-// ----- .11.20 float representation tests -----
 
 #[test]
 fn float_const_halt_round_trips_via_bits() {
@@ -932,7 +880,7 @@ fn map_literal_and_update_use_destinations_not_repeated_puts() {
 
 #[test]
 fn tail_call_closure_reuses_frame_via_count_loop() {
-    // Self-applying closure to force TailCallClosure on every iteration.
+    // Self-applying closure forces TailCallClosure on every iteration.
     assert_eq!(
         run_main(
             r#"
@@ -945,13 +893,10 @@ fn main(), do: loop_with(loop_with, 100000, 0)
     );
 }
 
-// ---- fz-ul4.11.24.4: arithmetic dispatch elision ----
-//
-// These two tests synthesize IR directly via FnBuilder rather than
-// going through source: they exercise codegen with an entry-block
-// parameter at Top (impossible from a top-level fn declared in fz
-// source) so the planner is forced to retain dispatch. Keeping them
-// hand-built is the cleanest expression of the assertion.
+// The two arithmetic-dispatch elision tests below synthesize IR via
+// FnBuilder rather than source: this is the only way to get an
+// entry-block parameter typed at Top, which forces the typer to retain
+// dispatch.
 
 #[test]
 fn list_projection_accepts_block_env_nonempty_fact() {
@@ -1023,6 +968,26 @@ fn build_top_param_add_module() -> Module {
     mb.build()
 }
 
+/// Lower `src`, compile with IR text recording enabled, and return the
+/// recorded CLIF body for the fn whose name equals `fn_name`. Returns
+/// an empty string if no such fn was emitted — matches the prior
+/// `unwrap_or("")` pattern at the call sites.
+fn compile_and_grab_ir(src: &str, fn_name: &str) -> String {
+    let m = lower_src(src);
+    ir_text_record_enable();
+    let _ = compile(
+        &mut crate::types::ConcreteTypes,
+        &m,
+        &crate::telemetry::NullTelemetry,
+    )
+    .unwrap();
+    let ir = ir_text_record_take();
+    ir.into_iter()
+        .find(|(n, _)| n == fn_name)
+        .map(|(_, s)| s)
+        .unwrap_or_default()
+}
+
 fn get_main_ir(m: &Module) -> String {
     ir_text_record_enable();
     let _ = compile(
@@ -1060,13 +1025,10 @@ fn arith_top_param_keeps_dispatch() {
     );
 }
 
-// --- fz-ul4.27.6.2.2 — build_fn_signature ---
-
 #[test]
 fn signature_uniform_when_not_native() {
-    // `fn add(a, b) do a + b end` lowered, typed, then asked for a
-    // uniform sig. Should be `(i64, i64) -> i64` regardless of param
-    // types.
+    // Uniform (non-native) sig: `(i64, i64) -> i64` regardless of the
+    // typer's narrower facts on the params.
     let m = lower_src("fn add(a, b) do a + b end\nfn main() do print(add(1, 2)) end");
     let mt = crate::ir_planner::plan_module(
         &mut crate::types::ConcreteTypes,
@@ -1096,10 +1058,8 @@ fn signature_uniform_when_not_native() {
 
 #[test]
 fn signature_native_uses_typed_params_and_cont() {
-    // Same `add` fn, this time the planner has narrowed entry params to
-    // int via call-site narrowing. Native sig should be
-    // `(i64, i64, cont: i64) -> i64`.
-    // fz-cps.1.a (fz-siu.1.1): trailing cont:i64 per §2.1.
+    // Same `add`, but call-site narrowing has typed both params as int.
+    // Native sig is `(i64, i64, cont: i64) -> i64` (cont trailing).
     let m = lower_src("fn add(a, b) do a + b end\nfn main() do print(add(1, 2)) end");
     let mt = crate::ir_planner::plan_module(
         &mut crate::types::ConcreteTypes,
@@ -1120,22 +1080,18 @@ fn signature_native_uses_typed_params_and_cont() {
         false,
         None,
     );
-    // 2 entry params + cont.
     assert_eq!(sig.params.len(), 3);
     assert_eq!(sig.returns.len(), 1);
-    // Trailing cont is i64.
     assert_eq!(sig.params.last().unwrap().value_type, types::I64);
-    // Return is i64 (tagged or raw-int — both ride i64 register).
     assert_eq!(sig.returns[0].value_type, types::I64);
 }
 
 #[test]
 fn signature_native_arity_matches_entry_params_plus_cont() {
-    // .27.13: native sig is per-type typed. For `dist(x, y)` called
-    // with `dist(1.5, 2.5)`, call-site narrowing types `x` and `y` as
-    // float-only → AbiParam(f64). Return joins every Term::Return val
-    // type; here that's float-only → f64.
-    // fz-cps.1.a (fz-siu.1.1): trailing cont:i64 per §2.1.
+    // Native sig is per-type typed: call-site narrowing types `x` and
+    // `y` as float-only, so the sig is `(f64, f64, cont: i64) -> i64`.
+    // (Return is canonicalized to i64 even when the value is a float —
+    // see the i64-return assertion below.)
     let m = lower_src("fn dist(x, y) do x * x + y * y end\nfn main() do print(dist(1.5, 2.5)) end");
     let mt = crate::ir_planner::plan_module(
         &mut crate::types::ConcreteTypes,
@@ -1158,24 +1114,20 @@ fn signature_native_arity_matches_entry_params_plus_cont() {
         false,
         None,
     );
-    // 2 entry params + cont.
     assert_eq!(sig.params.len(), 3);
     assert_eq!(sig.params[0].value_type, types::F64);
     assert_eq!(sig.params[1].value_type, types::F64);
     assert_eq!(sig.params[2].value_type, types::I64); // cont
-    // fz-cps.1.2: native return canonicalized to i64 (cont indirect
-    // sig is `(i64, i64) -> i64 tail`; caller's return type must
-    // match per Cranelift's tail-call verifier).
+    // Native return is canonicalized to i64: the cont indirect sig is
+    // `(i64, i64) -> i64 tail`, and Cranelift's tail-call verifier
+    // requires the caller's return type to match.
     assert_eq!(sig.returns[0].value_type, types::I64);
 }
 
-// ----- fz-ul4.29.2: SpecRegistry infrastructure -----
-
 #[test]
 fn spec_registry_registers_any_key_per_fn_with_spec_id_eq_fn_id() {
-    // Two-fn module. After compile(&mut crate::types::ConcreteTypes, ), spec_registry holds one any-key
-    // spec per fn; the SpecId.0 == FnId.0 invariant is asserted at
-    // build time (debug_assert in compile_with_backend).
+    // Pipeline registry must hold one any-key spec per fn, with
+    // SpecId.0 == FnId.0 (debug_assert in compile_with_backend).
     let m = lower_src("fn add(a, b) do a + b end\nfn main() do print(add(1, 2)) end");
     let compiled = compile(
         &mut crate::types::ConcreteTypes,
@@ -1183,31 +1135,26 @@ fn spec_registry_registers_any_key_per_fn_with_spec_id_eq_fn_id() {
         &crate::telemetry::NullTelemetry,
     )
     .unwrap();
-    // Drive a run to ensure the pipeline ran the registry construction
-    // path; the assertion lives in compile_with_backend.
+    // Driving a run forces the pipeline registry construction path
+    // where the SpecId.0 == FnId.0 invariant is asserted.
     let _ = compiled.run(m.fn_by_name("main").unwrap().id);
 }
 
 #[test]
 fn spec_registry_any_key_lookup() {
-    // Use the registry directly to verify register/resolve/any_key
-    // contracts. Doesn't go through compile(&mut crate::types::ConcreteTypes, ).
+    // Direct register/resolve/any_key contract — does not go through compile().
     let mut reg = SpecRegistry::new();
     let mut t = crate::types::ConcreteTypes;
     let fid = FnId(0);
     let any_key_2 = vec![t.any(); 2];
     let sid = reg.register(&t, fid, any_key_2.clone());
     assert_eq!(sid.0, 0, "first registration gets SpecId(0)");
-    // Re-registering the same key returns the same SpecId.
     let sid2 = reg.register(&t, fid, any_key_2.clone());
     assert_eq!(sid, sid2);
-    // Resolve roundtrips.
     let resolved = reg.resolve(&t, fid, &any_key_2);
     assert_eq!(resolved, Some(sid));
-    // any_key helper.
     let via_any = reg.any_key(fid, 2);
     assert_eq!(via_any, sid);
-    // A different fn gets a different SpecId.
     let other_sid = reg.register(&t, FnId(1), Vec::<KeySlot>::new());
     assert_eq!(other_sid.0, 1);
     assert_eq!(reg.len(), 2);
@@ -1215,8 +1162,8 @@ fn spec_registry_any_key_lookup() {
 
 #[test]
 fn spec_registry_distinct_narrow_keys() {
-    // The registry distinguishes narrow keys via the exact-match
-    // fast path. Subsumption fallback is exercised below.
+    // Narrow keys are distinguished by the exact-match fast path
+    // (subsumption fallback is exercised below).
     let mut reg = SpecRegistry::new();
     let mut t = crate::types::ConcreteTypes;
     let fid = FnId(0);
@@ -1228,15 +1175,11 @@ fn spec_registry_distinct_narrow_keys() {
         sid_int, sid_float,
         "int-key and float-key must be distinct SpecIds"
     );
-    // Exact-match fast path returns identity.
     assert_eq!(reg.resolve(&t, fid, &int1), Some(sid_int));
     assert_eq!(reg.resolve(&t, fid, &float1), Some(sid_float));
-    // No covering spec for atom under the registered set → None.
     let atom1 = vec![t.atom()];
     assert_eq!(reg.resolve(&t, fid, &atom1), None);
 }
-
-// ----- fz-ul4.29.11: subsumption-based callsite dispatch -----
 
 #[test]
 fn resolve_subsumes_narrower_query_to_wider_registered_spec() {
@@ -1290,10 +1233,9 @@ fn resolve_returns_none_when_nothing_covers() {
 
 #[test]
 fn resolve_subtype_incomparable_uses_stable_precedence() {
-    // [int, any] (sid A) and [any, atom] (sid B). Query [int_lit(4), :foo]
-    // is covered by both; neither key is a subtype of the other on every
-    // axis. Stable per-family precedence, not incidental SpecId order,
-    // breaks the tie.
+    // [int, any] and [any, atom] both cover [int_lit(4), :foo] but
+    // neither key is a subtype of the other on every axis. Stable
+    // per-family precedence (not incidental SpecId order) breaks the tie.
     let mut reg = SpecRegistry::new();
     let mut t = crate::types::ConcreteTypes;
     let fid = FnId(0);
@@ -1318,8 +1260,7 @@ fn resolve_subtype_incomparable_uses_stable_precedence() {
 
 #[test]
 fn resolve_exact_match_takes_fast_path() {
-    // Exact-match registration resolves to the same SpecId — verifies
-    // the O(1) fast path still works alongside subsumption fallback.
+    // O(1) exact-match path still works alongside subsumption fallback.
     let mut reg = SpecRegistry::new();
     let mut t = crate::types::ConcreteTypes;
     let fid = FnId(0);
@@ -1335,23 +1276,17 @@ fn resolve_per_fn_isolation() {
     let mut t = crate::types::ConcreteTypes;
     let any = t.any();
     let _sid0 = reg.register(&t, FnId(0), vec![any]);
-    // No spec registered for FnId(1) — even though FnId(0) has an
-    // any-key, it shouldn't cover queries to FnId(1).
     let q = vec![t.int()];
     assert_eq!(reg.resolve(&t, FnId(1), &q), None);
 }
 
-// ----- fz-ul4.11.15.6: hot-loop continuation allocation reduction -----
-
-/// Lazy continuation materialization keeps straight native continuation chains
-/// off the heap even when the inliner is disabled.
-///
-/// Uses 10 nested step calls (step(step(...step(0)...))) so the
-/// continuation chain is clear without triggering the multi-clause dispatch
-/// codegen path that requires the inliner to succeed.
+/// Lazy continuation materialization keeps straight native continuation
+/// chains off the heap even when the inliner is disabled. Uses 10
+/// nested step calls so the continuation chain is clear without
+/// tripping the multi-clause dispatch codegen path (which requires the
+/// inliner to succeed).
 #[test]
 fn hot_loop_native_continuations_allocate_no_heap_closures() {
-    // 10 nested calls to step — each is a Call+Cont site pre-inline.
     let src = "fn step(x), do: x + 1\n\
                fn main(), do: step(step(step(step(step(step(step(step(step(step(0))))))))))";
 
@@ -1368,7 +1303,6 @@ fn hot_loop_native_continuations_allocate_no_heap_closures() {
         fz_runtime::ir_runtime::frame_alloc_count_take()
     });
 
-    // Post-inline run: normal compile (inliner active).
     let m = lower_src(src);
     fz_runtime::ir_runtime::frame_alloc_count_reset();
     let entry = m.fn_by_name("main").unwrap().id;
@@ -1388,36 +1322,24 @@ fn hot_loop_native_continuations_allocate_no_heap_closures() {
     );
 }
 
-/// fz-zj3 — box_int constant fold: Const::Int(n) lowered as RawInt must be
-/// retagged as a single iconst ((n<<3)|TAG_INT), not ishl_imm + bor_imm.
+/// box_int constant fold: Const::Int(n) lowered as RawInt is retagged
+/// as a single iconst ((n<<3)|TAG_INT), not ishl_imm + bor_imm.
 #[test]
 fn box_int_const_fold_eliminates_ishl_bor() {
     // send(2, 41) passes integer constants to an extern taking ValueRef args.
-    // Before the fix: v9=iconst 2; ishl_imm v9,3; bor_imm result,1 (3 insns).
-    // After: v9=iconst 2; v11=iconst 17 — raw_int_consts hit in tagged_get.
+    // Without the fold the pid would be `iconst; ishl_imm; bor_imm`
+    // (3 insns); folded, it's a single iconst of the tagged word.
     let src = "fn relay(), do: send(1, receive() + 1)\n\
                fn main() do\n\
                  spawn(relay)\n\
                  send(2, 41)\n\
                  print(receive())\n\
                end";
-    let m = lower_src(src);
-    ir_text_record_enable();
-    let _ = compile(
-        &mut crate::types::ConcreteTypes,
-        &m,
-        &crate::telemetry::NullTelemetry,
-    )
-    .unwrap();
-    let ir = ir_text_record_take();
-    let main_ir = ir
-        .iter()
-        .find(|(n, _)| n == "main")
-        .map(|(_, s)| s.as_str())
-        .unwrap_or("");
-    // send(2, 41): pid crosses as raw i64 (2), while the message is boxed once
-    // at the any boundary and then rides the mailbox as a single any value ref.
-    // The old split `{value, kind}` side tag must not appear.
+    let main_ir = compile_and_grab_ir(src, "main");
+    let main_ir = main_ir.as_str();
+    // pid crosses as raw i64; message is boxed once at the any boundary
+    // and rides the mailbox as a single any value ref. The old split
+    // `{value, kind}` side tag (iconst.i8 13) must not appear.
     assert!(
         main_ir.contains("iconst.i64 2")
             && main_ir.contains("iconst.i64 41")
@@ -1436,20 +1358,8 @@ fn box_int_const_fold_eliminates_ishl_bor() {
 #[test]
 fn mailbox_with_float_boxes_only_at_send_boundary() {
     let src = "fn main() do\n  send(self(), 3.14)\n  nil\nend";
-    let m = lower_src(src);
-    ir_text_record_enable();
-    let _ = compile(
-        &mut crate::types::ConcreteTypes,
-        &m,
-        &crate::telemetry::NullTelemetry,
-    )
-    .unwrap();
-    let ir = ir_text_record_take();
-    let main_ir = ir
-        .iter()
-        .find(|(n, _)| n == "main")
-        .map(|(_, s)| s.as_str())
-        .unwrap_or("");
+    let main_ir = compile_and_grab_ir(src, "main");
+    let main_ir = main_ir.as_str();
     assert!(
         main_ir.contains("fz_box_float_for_any") && main_ir.contains("fz_send_ref"),
         "expected float send to box explicitly at the one-word send boundary:\n{}",
@@ -1457,11 +1367,10 @@ fn mailbox_with_float_boxes_only_at_send_boundary() {
     );
 }
 
-/// fz-li4 — Term::Receive with a natively-callable continuation must not
-/// emit a box→unbox roundtrip for raw-int captures. Before the fix,
-/// needs_blanket_retag fell through to `_ => true` for Term::Receive,
-/// forcing ishl_imm+bor_imm on every raw var immediately before the
-/// fz_receive_park call — then the cont had to sshr_imm them back out.
+/// Term::Receive with a natively-callable continuation must not emit a
+/// box→unbox roundtrip for raw-int captures: without the fix every raw
+/// var was retagged (ishl_imm+bor_imm) before fz_receive_park and the
+/// cont undid it with sshr_imm.
 #[test]
 fn receive_native_cont_no_box_unbox_roundtrip() {
     let src = "fn relay(), do: send(1, receive() + 1)\n\
@@ -1470,23 +1379,11 @@ fn receive_native_cont_no_box_unbox_roundtrip() {
                  send(2, 41)\n\
                  print(receive())\n\
                end";
-    let m = lower_src(src);
-    ir_text_record_enable();
-    let _ = compile(
-        &mut crate::types::ConcreteTypes,
-        &m,
-        &crate::telemetry::NullTelemetry,
-    )
-    .unwrap();
-    let ir = ir_text_record_take();
-    let relay_ir = ir
-        .iter()
-        .find(|(n, _)| n == "relay")
-        .map(|(_, s)| s.as_str())
-        .unwrap_or("");
-    // The relay fn holds one raw-int capture (1). With the fix it is
-    // stored directly — no ishl_imm or bor_imm should appear in relay's
-    // block. (Arithmetic in the receive continuation is a different fn.)
+    let relay_ir = compile_and_grab_ir(src, "relay");
+    let relay_ir = relay_ir.as_str();
+    // The relay fn holds one raw-int capture; with the fix it is stored
+    // directly, so no ishl_imm appears in relay's block. (Arithmetic in
+    // the receive continuation lives in a different fn.)
     assert!(
         !relay_ir.contains("ishl_imm"),
         "spurious box in relay CLIF — integer capture was re-tagged before Receive:\n{}",
@@ -1494,16 +1391,14 @@ fn receive_native_cont_no_box_unbox_roundtrip() {
     );
 }
 
-/// fz-jiw — TypeTest i1 cached in `condition` map; Term::If consumes it
-/// directly, bypassing bool_to_fz → is_truthy roundtrip.
-/// Before the fix: brif was preceded by `icmp ne v, nil`, `icmp ne v, false`,
-/// `band` (3 extra instructions decoding the tagged bool back to i1).
-/// After: the i1 produced by `icmp_imm eq (v & 7), TAG_INT` is reused
-/// directly — no `icmp ne` appears in the branching block.
+/// TypeTest i1 cached in the `condition` map; Term::If consumes it
+/// directly, bypassing the bool_to_fz → is_truthy roundtrip. Without
+/// the cache, brif would be preceded by an `icmp ne` decoding the
+/// tagged bool back to i1.
 ///
-/// fz-ul4.43.A/B note: literal-only call sites are now fully resolved by
-/// per-spec fold, so the brif is in `check`'s any-key spec rather than in
-/// main. Route via a closure call to force the any-key spec.
+/// Per-spec fold otherwise resolves literal-only call sites entirely,
+/// so this test routes through a closure to force `check`'s any-key
+/// spec where the TypeTest+If actually survives.
 #[test]
 fn condition_cache_bypasses_is_truthy_in_type_dispatch() {
     let src = "fn check(x :: integer) do :is_int end\n\
@@ -1522,10 +1417,9 @@ fn condition_cache_bypasses_is_truthy_in_type_dispatch() {
     )
     .unwrap();
     let ir = ir_text_record_take();
-    // fz-ul4.43.A/B note: per-spec fold may eliminate every brif if it can
-    // statically resolve the dispatch. The codegen fast-path is still
-    // correct; for any spec that DOES retain a brif, verify no spurious
-    // icmp-ne decode appears next to it.
+    // Per-spec fold may eliminate every brif if it can statically
+    // resolve the dispatch — that's fine. For any spec that retains a
+    // brif, verify no spurious icmp-ne decode sits next to it.
     let with_brif: Vec<(&str, &str)> = ir
         .iter()
         .filter(|(_, s)| s.contains("brif"))
@@ -1541,16 +1435,15 @@ fn condition_cache_bypasses_is_truthy_in_type_dispatch() {
     }
 }
 
-/// fz-h4q — ArgRepr::Condition: pure-branch TypeTest does not materialize a
-/// tagged bool. Before the fix: every boolean prim emitted bool_to_fz eagerly
-/// (select + true/false words), then is_truthy decoded it back to i1. After:
-/// the i1 is stored as ArgRepr::Condition and fed directly to brif. Strict
-/// value decoding may use unrelated `select`s, so this test gates the bool
-/// materialization constants instead of banning every select in the function.
+/// ArgRepr::Condition: a pure-branch TypeTest does not materialize a
+/// tagged bool — the i1 is fed straight to brif. Strict value decoding
+/// elsewhere may legitimately use `select`, so this test gates the bool
+/// materialization constants (the true/false atom words) instead of
+/// banning every select in the function.
 #[test]
 fn pure_branch_type_test_does_not_materialize_bool() {
-    // fz-ul4.43.A/B note: route via closure so check's any-key spec retains
-    // the TypeTest+If (per-spec fold otherwise eliminates it).
+    // Route via closure so check's any-key spec retains the TypeTest+If
+    // (per-spec fold otherwise eliminates it).
     let src = "fn check(x :: integer) do :is_int end\n\
                fn check(x) do :other end\n\
                fn main() do\n\
@@ -1582,13 +1475,12 @@ fn pure_branch_type_test_does_not_materialize_bool() {
     }
 }
 
-/// fz-2tc — unit-return extern results whose dest var is unused emit no
-/// iconst at all (DeadUnit path). Live results use cached_iconst so they
-/// share the canonical nil atom payload if the same block already holds one.
-/// hello: print(42), print(:ok), print(true) are all unit-return externs
-/// whose nil results are dead — only print(nil)'s result is live (passed
-/// to the continuation). The old encoded nil scalar (`iconst.i64 2`) must
-/// not appear; canonical nil is raw atom id 0 with kind tag 15.
+/// Unit-return extern results whose dest var is unused emit no iconst
+/// (DeadUnit path). Live results use cached_iconst so they share the
+/// canonical nil atom payload when the same block already holds one.
+/// In this hello case only print(nil)'s result is live; the other three
+/// prints' nil results are dead. The old encoded nil scalar
+/// (`iconst.i64 2`) must not appear.
 #[test]
 fn dead_unit_extern_result_elided() {
     let src = "fn main() do\n\
@@ -1597,21 +1489,8 @@ fn dead_unit_extern_result_elided() {
                  print(true)\n\
                  print(nil)\n\
                end";
-    let m = lower_src(src);
-    ir_text_record_enable();
-    let _ = compile(
-        &mut crate::types::ConcreteTypes,
-        &m,
-        &crate::telemetry::NullTelemetry,
-    )
-    .unwrap();
-    let ir = ir_text_record_take();
-    let main_ir = ir
-        .iter()
-        .find(|(n, _)| n == "main")
-        .map(|(_, s)| s.as_str())
-        .unwrap_or("");
-    // Dead nil results are gone, and live nil is not the old encoded scalar.
+    let main_ir = compile_and_grab_ir(src, "main");
+    let main_ir = main_ir.as_str();
     let nil_count = main_ir.matches("iconst.i64 2").count();
     assert_eq!(
         nil_count, 0,
@@ -1625,27 +1504,15 @@ fn dead_unit_extern_result_elided() {
     );
 }
 
-/// fz-o2g — Const::Nil/Bool/Atom use canonical raw+kind parts. The old
-/// encoded nil scalar (`iconst.i64 2`) should not survive codegen.
+/// Const::Nil/Bool/Atom use canonical raw+kind parts; the old encoded
+/// nil scalar (`iconst.i64 2`) should not survive codegen.
 #[test]
 fn const_nil_bool_atom_deduplicated_within_block() {
     let src = "fn main() do\n\
                  print(nil)\n\
                end";
-    let m = lower_src(src);
-    ir_text_record_enable();
-    let _ = compile(
-        &mut crate::types::ConcreteTypes,
-        &m,
-        &crate::telemetry::NullTelemetry,
-    )
-    .unwrap();
-    let ir = ir_text_record_take();
-    let main_ir = ir
-        .iter()
-        .find(|(n, _)| n == "main")
-        .map(|(_, s)| s.as_str())
-        .unwrap_or("");
+    let main_ir = compile_and_grab_ir(src, "main");
+    let main_ir = main_ir.as_str();
     let nil_count = main_ir.matches("iconst.i64 2").count();
     assert_eq!(
         nil_count, 0,
@@ -1659,10 +1526,10 @@ fn const_nil_bool_atom_deduplicated_within_block() {
     );
 }
 
-/// fz-5j5.2 / fz-za0.2 — plan_module is called exactly 3 times in the
-/// codegen pipeline. The final pass runs after destination lowering so
-/// dispatch metadata covers the optimized IR; codegen then merges narrower
-/// pre-DP facts for vars that destination lowering did not semantically change.
+/// plan_module is called exactly 3 times in the codegen pipeline. The
+/// final pass runs after destination lowering so dispatch metadata
+/// covers the optimized IR; codegen then merges narrower pre-DP facts
+/// for vars that destination lowering did not semantically change.
 #[test]
 fn plan_module_called_exactly_three_times_in_pipeline() {
     let src = "fn main(), do: print(42)";
@@ -1705,6 +1572,68 @@ fn frontend_to_codegen_pretyped_pipeline_types_exactly_three_times() {
     );
 }
 
+/// Register every spec in `mt` against a fresh `SpecRegistry`, sorted for
+/// deterministic sid assignment, and collect the sids whose owning fn name
+/// starts with `k_` (i.e. continuation specs).
+fn build_registry_recording_cont_sids(
+    m: &Module,
+    mt: &crate::ir_planner::ModulePlan,
+) -> (SpecRegistry, Vec<u32>) {
+    let ct = crate::types::ConcreteTypes;
+    let mut reg = SpecRegistry::new();
+    let mut spec_keys: Vec<_> = mt.specs.keys().cloned().collect();
+    spec_keys.sort_by(|a, b| {
+        a.fn_id
+            .0
+            .cmp(&b.fn_id.0)
+            .then_with(|| format!("{:?}", a.input).cmp(&format!("{:?}", b.input)))
+            .then_with(|| format!("{:?}", a.demand).cmp(&format!("{:?}", b.demand)))
+    });
+    let mut cont_sids: Vec<u32> = Vec::new();
+    for key in spec_keys {
+        let sid = reg.register(&ct, key.fn_id, key.input);
+        if m.fn_by_id(key.fn_id).name.starts_with("k_") {
+            cont_sids.push(sid.0);
+        }
+    }
+    (reg, cont_sids)
+}
+
+/// Walk every typed spec's body looking for the first `Term::CallClosure`
+/// whose closure operand types as a singleton closure-lit (i.e. a
+/// resolvable lambda body, not an opaque closure).
+type CallClosureMatch<'mt> = (
+    FnId,
+    Vec<KeySlot>,
+    crate::fz_ir::Var,
+    Vec<crate::fz_ir::Var>,
+    &'mt crate::ir_planner::SpecPlan,
+);
+
+fn find_typed_callclosure_over_closure_lit<'mt>(
+    m: &Module,
+    mt: &'mt crate::ir_planner::ModulePlan,
+    t: &mut crate::types::ConcreteTypes,
+) -> Option<CallClosureMatch<'mt>> {
+    for (key, ft) in &mt.specs {
+        for f in &m.fns {
+            for blk in &f.blocks {
+                if let Term::CallClosure { closure, args, .. } = &blk.terminator
+                    && ft
+                        .vars
+                        .get(closure)
+                        .and_then(|ty| t.closure_lit_parts(ty))
+                        .is_some()
+                    && key.fn_id == f.id
+                {
+                    return Some((f.id, key.input.clone(), *closure, args.clone(), ft));
+                }
+            }
+        }
+    }
+    None
+}
+
 #[test]
 fn resolve_tcc_body_handles_callclosure_with_captures() {
     let src = r#"
@@ -1726,46 +1655,11 @@ end
         &crate::telemetry::NullTelemetry,
     );
     let mut t = crate::types::ConcreteTypes;
-    let mut reg = SpecRegistry::new();
-    let mut spec_keys: Vec<_> = mt.specs.keys().cloned().collect();
-    spec_keys.sort_by(|a, b| {
-        a.fn_id
-            .0
-            .cmp(&b.fn_id.0)
-            .then_with(|| format!("{:?}", a.input).cmp(&format!("{:?}", b.input)))
-            .then_with(|| format!("{:?}", a.demand).cmp(&format!("{:?}", b.demand)))
-    });
-    for key in spec_keys {
-        reg.register(&t, key.fn_id, key.input);
-    }
-
-    let mut found = None;
-    for (key, ft) in &mt.specs {
-        for f in &m.fns {
-            for blk in &f.blocks {
-                if let Term::CallClosure { closure, args, .. } = &blk.terminator
-                    && ft
-                        .vars
-                        .get(closure)
-                        .and_then(|ty| t.closure_lit_parts(ty))
-                        .is_some()
-                    && key.fn_id == f.id
-                {
-                    found = Some((f.id, key.input.clone(), *closure, args.clone(), ft));
-                    break;
-                }
-            }
-            if found.is_some() {
-                break;
-            }
-        }
-        if found.is_some() {
-            break;
-        }
-    }
+    let (reg, _) = build_registry_recording_cont_sids(&m, &mt);
 
     let (caller_fid, caller_key, closure, args, ft) =
-        found.expect("expected a typed CallClosure over a singleton closure-lit");
+        find_typed_callclosure_over_closure_lit(&m, &mt, &mut t)
+            .expect("expected a typed CallClosure over a singleton closure-lit");
     let mut ct = crate::types::ConcreteTypes;
     let (body_fid, body_sid) = resolve_tcc_body(&mut ct, &closure, &args, ft, &m, &reg)
         .expect("closure body should resolve");
@@ -1781,8 +1675,8 @@ end
         .closure_lit_parts(caller_closure_ty)
         .expect("caller key slot 0 should be a singleton closure-lit");
     let closure_fn_id: FnId = closure_target.into();
-    // Recursive entry keys widen numeric call arguments immediately, but
-    // closure captures remain part of the closure value identity.
+    // Recursive entry keys widen numeric call arguments immediately,
+    // but closure captures stay part of the closure value identity.
     assert_eq!(captures, &[t.int_lit(10)]);
     assert_eq!(
         m.fn_by_id(closure_fn_id).name,
@@ -1804,7 +1698,6 @@ end
         .map(|(_, key)| key.input.clone())
         .expect("resolved sid registered");
     assert_eq!(resolved_key.len(), 2, "resolved key shape: [capture, x]");
-    // Capture identity is preserved; the call argument is widened.
     let k_expected = t.int_lit(10);
     assert_eq!(resolved_key[0], Some(k_expected));
     assert_eq!(resolved_key[1], Some(h_expected));
@@ -1870,22 +1763,7 @@ end
     let m = lower_src(src);
     let mut ct = crate::types::ConcreteTypes;
     let mt = crate::ir_planner::plan_module(&mut ct, &m, &crate::telemetry::NullTelemetry);
-    let mut reg = SpecRegistry::new();
-    let mut spec_keys: Vec<_> = mt.specs.keys().cloned().collect();
-    spec_keys.sort_by(|a, b| {
-        a.fn_id
-            .0
-            .cmp(&b.fn_id.0)
-            .then_with(|| format!("{:?}", a.input).cmp(&format!("{:?}", b.input)))
-            .then_with(|| format!("{:?}", a.demand).cmp(&format!("{:?}", b.demand)))
-    });
-    let mut cont_sids: Vec<u32> = Vec::new();
-    for key in spec_keys {
-        let sid = reg.register(&ct, key.fn_id, key.input);
-        if m.fn_by_id(key.fn_id).name.starts_with("k_") {
-            cont_sids.push(sid.0);
-        }
-    }
+    let (reg, cont_sids) = build_registry_recording_cont_sids(&m, &mt);
     let main_fid = m
         .fns
         .iter()
@@ -1905,22 +1783,14 @@ end
     );
 }
 
-// ===== fz-s9y.4 — empty list ≠ nil =====
-
-/// fz-s9y.4 — `fn f([])` does NOT match a `nil` argument. Pre-fz-s9y,
-/// `nil` and `[]` shared a runtime bit pattern, so this call would
-/// have matched the `[]` clause and returned 1. After the split,
-/// `nil` falls through to `:function_clause` halt.
+/// `fn f([])` does NOT match a `nil` argument: `nil` falls through to
+/// the `:function_clause` halt. (Pre-split, `nil` and `[]` shared a
+/// runtime bit pattern and this call returned 1.)
 #[test]
 fn nil_does_not_match_empty_list_pattern() {
-    // function_clause is intern id 1 (see prelude in ir_lower).
     let halt = run_main("fn f([]), do: 1\nfn main(), do: f(nil)");
-    // Halt value of the atom :function_clause is its id (1).
-    // Confirmed by the existing atom_const_returns_atom_id test.
-    // fz-axu.13 — Utf8 module shifted the prelude's atom-intern order;
-    // function_clause now lands at id 3 (nil=0, true=1, false=2 are
-    // reserved; function_clause interns first among the prelude's
-    // multi-clause dispatch atoms).
+    // :function_clause is the first prelude-interned atom after the
+    // reserved nil/true/false (ids 0/1/2), so its id is 3.
     assert_eq!(
         halt, 3,
         "expected :function_clause halt (id=3); got {}",
@@ -1928,16 +1798,10 @@ fn nil_does_not_match_empty_list_pattern() {
     );
 }
 
-/// fz-s9y.4 — `fn f(nil)` does NOT match an `[]` argument. Symmetric
-/// to the above. Pre-fz-s9y the call would have matched the `nil`
-/// clause via conflation.
+/// `fn f(nil)` does NOT match an `[]` argument. Symmetric to the above.
 #[test]
 fn empty_list_does_not_match_nil_pattern() {
     let halt = run_main("fn f(nil), do: 1\nfn main(), do: f([])");
-    // fz-axu.13 — Utf8 module shifted the prelude's atom-intern order;
-    // function_clause now lands at id 3 (nil=0, true=1, false=2 are
-    // reserved; function_clause interns first among the prelude's
-    // multi-clause dispatch atoms).
     assert_eq!(
         halt, 3,
         "expected :function_clause halt (id=3); got {}",
@@ -1945,29 +1809,24 @@ fn empty_list_does_not_match_nil_pattern() {
     );
 }
 
-/// fz-s9y.4 — `print(nil)` and `print([])` render as distinct strings.
-/// The fixtures/empty_list_distinct_from_nil fixture exercises this
-/// end-to-end; this is the focused codegen-level pin.
+/// `print(nil)` and `print([])` render as distinct strings — codegen
+/// pin for the broader fixture-driven check.
 #[test]
 fn print_distinguishes_nil_from_empty_list() {
     let lines = capture_main("fn main() do\n  print(nil)\n  print([])\nend");
     assert_eq!(lines, vec!["nil".to_string(), "[]".to_string()]);
 }
 
-// ===== fz-swt.10 — refcount + dtor on the JIT path =========================
+// Refcount + dtor on the JIT path. Mirrors the interp-leg tests in
+// `ir_interp::resource_bif_tests`, but drives compile(...).run(...). The
+// JIT lowers `make_resource(payload, &dwrap/1)` to an extern call into
+// `fz_make_resource`, which dispatches through the `MakeResourceHook`
+// installed for the duration of the test (the hook takes `&Module` so
+// the thunk can walk the dtor closure's IR body — see src/runtime.rs).
 //
-// Same shape as the interp-leg tests in `ir_interp::resource_bif_tests` but
-// run through the JIT path: `compile(&mut crate::types::ConcreteTypes, &module).run(main_fn)`. The JIT lowers
-// the `make_resource(payload, &dwrap/1)` call to an extern call against the
-// `fz_make_resource` symbol bound in `JitBackend::new()`; that symbol
-// dispatches through the `MakeResourceHook` we install for the duration of
-// the test (the helper takes a `&Module` so the hook thunk can walk the
-// dtor closure's IR body — see `src/runtime.rs`).
-//
-// Dtor firing relies on the per-process MSO sweep running at heap drop. The
-// `heap_reset_for_test` call between tests drops the previous test's
-// DEFAULT_PROCESS heap (and so fires any unrooted Resource dtors from
-// earlier runs into a fresh counter snapshot).
+// Dtor firing depends on the per-process MSO sweep at heap drop;
+// `heap_reset_for_test` between tests drops the prior DEFAULT_PROCESS
+// heap so leftover Resource dtors fire into a fresh counter snapshot.
 
 mod resource_jit_tests {
     use super::*;
@@ -1988,8 +1847,8 @@ mod resource_jit_tests {
             &crate::telemetry::NullTelemetry,
         )
         .expect("compile");
-        // Install the make-resource hook against this module so the JIT-
-        // emitted call into `fz_make_resource` resolves the dtor closure.
+        // Hook lets the JIT-emitted call into `fz_make_resource`
+        // resolve the dtor closure against this module.
         let prev = crate::runtime::install_make_resource_hook_with_module(&module);
         heap_reset_for_test();
         let _ = compiled.run(entry);
@@ -1998,8 +1857,8 @@ mod resource_jit_tests {
         crate::runtime::clear_make_resource_hook_with_module(prev);
     }
 
-    /// fz-swt.10 acceptance — JIT-leg round trip mirroring
-    /// `make_resource_bif_round_trip` from the interp leg.
+    /// JIT-leg round trip mirroring `make_resource_bif_round_trip`
+    /// from the interp leg.
     #[test]
     fn make_resource_round_trip_in_jit() {
         let _g = tests_support_lock()
@@ -2023,13 +1882,13 @@ end
         assert_eq!(
             tests_support_dtor_last_payload(),
             42,
-            "fz-4mk: dtor body runs as fz code; `:: integer` marshal class unboxes \
+            "dtor body runs as fz code; `:: integer` marshal class unboxes \
              before the C extern, so the recorded payload is the raw int 42",
         );
     }
 
-    /// fz-swt.10 acceptance — aliasing inside one JIT-run process still
-    /// produces exactly one dtor invocation. Mirrors the interp leg's
+    /// Aliasing inside one JIT-run process still produces exactly one
+    /// dtor invocation. Mirrors the interp leg's
     /// `aliasing_in_one_process_fires_dtor_once`.
     #[test]
     fn aliasing_in_one_jit_process_fires_dtor_once() {
@@ -2056,9 +1915,8 @@ end
         assert_eq!(tests_support_dtor_last_payload(), 7);
     }
 
-    /// fz-swt.10 acceptance — two distinct `make_resource` calls each
-    /// fire once. Mirrors the interp leg's
-    /// `two_distinct_resources_each_fire_once`.
+    /// Two distinct `make_resource` calls each fire once. Mirrors the
+    /// interp leg's `two_distinct_resources_each_fire_once`.
     #[test]
     fn two_distinct_resources_in_jit_each_fire_once() {
         let _g = tests_support_lock()
