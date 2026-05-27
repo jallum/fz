@@ -157,6 +157,23 @@ Use `fz dump --emit stats` to inspect these event counts. Keep
 `dump --emit interfaces` and `dump --emit specs` as product views: interfaces
 render public contracts, specs render planner state.
 
+## Package Boundary
+
+The module subsystem lives behind `src/modules/mod.rs`. Keep new module-boundary
+work inside this package unless it is a frontend, IR, or runtime concern.
+
+- `modules::identity`: typed module/export names.
+- `modules::interface`: public contracts, strict validation, and interface
+  rendering.
+- `modules::artifact`: `.fzi` / `.fzo` serde envelopes and ABI/fingerprint
+  validation.
+- `modules::artifact_store`: artifact path policy and filesystem IO.
+- `modules::graph`: reachable `.fzi` / `.fzo` graph loading.
+- `modules::pipeline`: provider-aware frontend checking, graph materialization,
+  LTO validation/erasure, and pipeline error ownership.
+- `modules::runtime_library`: built-in runtime-library source, interfaces, and
+  artifacts.
+
 ## Artifact Store Paths
 
 `modules::artifact_store::ArtifactStore` owns the filesystem path policy for
