@@ -1,5 +1,4 @@
 //! Deterministic `.fzi` / `.fzo` artifact envelopes for module-first builds.
-#![allow(dead_code)]
 #![allow(clippy::result_large_err)]
 
 use crate::diag::{Diagnostic, Span, codes};

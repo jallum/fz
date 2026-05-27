@@ -20,9 +20,8 @@ use std::sync::Arc;
 /// One separately compiled source module before link-time/runtime-global
 /// state is assembled.
 ///
-/// Today this is a structural boundary over the existing whole-program IR:
-/// the `code` field carries the module-local IR chunk, while the interface
-/// fields carry the contract facts later tickets will serialize and link.
+/// The `code` field carries module-local IR. Interface fields carry the
+/// contract facts the linker validates before a runnable image exists.
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct CompiledUnit {
@@ -82,9 +81,6 @@ fn module_name_from_ir_path(path: &str) -> Option<crate::module_identity::Module
 }
 
 /// Linked runnable image: runtime-global JIT state plus execution entrypoints.
-///
-/// `CompiledModule` remains as the compatibility surface during the migration.
-/// New linker-shaped code should traffic in `CompiledImage`.
 #[allow(dead_code)]
 pub struct CompiledImage {
     inner: CompiledModule,
@@ -93,17 +89,6 @@ pub struct CompiledImage {
 
 #[allow(dead_code)]
 impl CompiledImage {
-    pub fn from_compat_module(module: CompiledModule) -> Self {
-        Self {
-            inner: module,
-            metadata: None,
-        }
-    }
-
-    pub fn into_compat_module(self) -> CompiledModule {
-        self.inner
-    }
-
     pub fn link_compiled(
         units: &[CompiledUnit],
         runtime_units: &[RuntimeUnitMetadata],
@@ -661,15 +646,6 @@ impl CompiledModule {
         &self.diagnostics
     }
 
-    #[allow(dead_code)]
-    pub fn into_image(self) -> CompiledImage {
-        CompiledImage::from_compat_module(self)
-    }
-
-    #[allow(dead_code)]
-    pub fn from_image(image: CompiledImage) -> Self {
-        image.into_compat_module()
-    }
 }
 
 unsafe impl Send for CompiledModule {}

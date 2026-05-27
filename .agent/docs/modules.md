@@ -322,7 +322,7 @@ interface_fingerprint:      Vec<String>
 Payload fields:
 
 ```text
-format: fz-ir-text-v1 | fz-runtime-module-v1 | future payload format
+format: fz-ir-text-v1 | fz-runtime-module-v1 | another versioned payload format
 body:   escaped payload bytes represented as UTF-8 text
 ```
 
@@ -384,7 +384,8 @@ Use the right term:
   closure facts, halt kinds, and entrypoint requirements.
 - `CompiledImage`: linked runnable image. Owns runtime-global JIT state and
   optional `RuntimeImageMetadata`.
-- `CompiledModule`: compatibility name for the current runnable image surface.
+- `CompiledModule`: machine-code module produced by codegen; `CompiledImage`
+  wraps it only after module/link metadata has been validated.
 
 `CompiledImage::link_compiled(units, runtime_units, linked)` constructs the
 runnable image. It validates unit/interface compatibility, rejects unresolved

@@ -1,9 +1,8 @@
 //! Module interface emission.
 //!
-//! This is intentionally observational for the first separate-compilation
-//! slice: interfaces are generated from the existing frontend AST and carried
-//! alongside the flattened program, but downstream phases still execute through
-//! the current whole-program path until later tickets consume these facts.
+//! Interfaces are generated from the source-level module AST and carried
+//! alongside the flattened program. Resolvers, artifact writers, and LTO
+//! validation consume them as public module contracts.
 
 use crate::ast::{Attribute, FnDef, ModuleDef, Program, SpecDecl, TypeAliasDecl, TypeExprBody};
 use crate::diag::{Diagnostic, Span, codes};

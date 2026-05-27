@@ -9,10 +9,10 @@ dumps, and diagnostics. New module-boundary code should assemble typed names
 from parsed segments or interface data and render dotted text only at the edge.
 
 `ModuleInterface` is emitted by `resolve::flatten_modules` while source-level
-`ModuleDef` nodes still exist, then carried on the flattened `Program`. Until
-the resolver and linker consume interfaces in later tickets, it is an
-observational contract artifact: downstream execution must not inspect
-dependency implementation bodies through it.
+`ModuleDef` nodes still exist, then carried on the flattened `Program`.
+Resolvers, artifact writers, and LTO validation consume it as the public
+contract; downstream execution must not inspect dependency implementation
+bodies through it.
 
 Use `fz dump --emit interfaces <file.fz>` to inspect the current interface
 shape. The dump is deterministic and intentionally contains only contract
@@ -40,9 +40,8 @@ Codegen artifact vocabulary:
   fingerprint inputs.
 - `CompiledImage` is the linked runnable artifact. It owns runtime-global JIT
   state, schema/atom tables, function pointers, and execution entrypoints.
-- `CompiledModule` is the compatibility name for today's runnable image while
-  call sites migrate. New linker/runtime-library code should use
-  `CompiledUnit` for module-local work and `CompiledImage` for runnable state.
+- `CompiledModule` is the machine-code module produced by codegen.
+  `CompiledImage` wraps it after module/link metadata validation.
 - Runtime metadata is split the same way: `RuntimeUnitMetadata` carries
   unit-local atoms, schemas, frame sizes, exported symbols, imported refs,
   static closure facts, halt kinds, and entrypoint requirements.

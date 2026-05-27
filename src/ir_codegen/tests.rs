@@ -152,22 +152,6 @@ end
 }
 
 #[test]
-fn compiled_image_one_unit_compat_path_runs_like_compiled_module() {
-    let m = lower_src("fn main(), do: 42");
-    let entry = m.fn_by_name("main").unwrap().id;
-    let compiled = compile(
-        &mut crate::types::ConcreteTypes,
-        &m,
-        &crate::telemetry::NullTelemetry,
-    )
-    .expect("compile");
-    let image = compiled.into_image();
-    assert_eq!(image.run(entry), 42);
-    let compiled = CompiledModule::from_image(image);
-    assert!(compiled.fn_ptr(entry).is_some());
-}
-
-#[test]
 fn runtime_metadata_link_merges_overlapping_atoms_and_schemas_deterministically() {
     let module_a = crate::module_identity::ModuleName::from_segments(vec!["A".to_string()]);
     let module_b = crate::module_identity::ModuleName::from_segments(vec!["B".to_string()]);
