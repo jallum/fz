@@ -636,7 +636,7 @@ impl Parser {
                 }
             }
         }
-        let module_name = crate::module_identity::ModuleName::from_segments(path);
+        let module_name = crate::modules::identity::ModuleName::from_segments(path);
         let as_name = if matches!(self.peek(), Tok::Comma)
             && matches!(self.peek_at(1), Tok::KwKey(s) if s == "as")
         {
@@ -706,7 +706,7 @@ impl Parser {
             }
         }
         Ok(Item::Import {
-            path: crate::module_identity::ModuleName::from_segments(path),
+            path: crate::modules::identity::ModuleName::from_segments(path),
             only,
             except,
             span: self.finish(start),

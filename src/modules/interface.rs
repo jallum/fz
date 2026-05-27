@@ -7,7 +7,7 @@
 use crate::ast::{Attribute, FnDef, ModuleDef, Program, SpecDecl, TypeAliasDecl, TypeExprBody};
 use crate::diag::{Diagnostic, Span, codes};
 use crate::lexer::Tok;
-use crate::module_identity::ModuleName;
+use crate::modules::identity::ModuleName;
 use std::collections::BTreeMap;
 
 pub const FZ_INTERFACE_ABI_VERSION: u32 = 1;

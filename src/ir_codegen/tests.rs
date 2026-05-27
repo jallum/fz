@@ -129,11 +129,11 @@ defmodule Math do
 end
 "#,
     );
-    let interface = crate::module_interface::ModuleInterface {
-        name: crate::module_identity::ModuleName::from_segments(vec!["Math".to_string()]),
-        abi_version: crate::module_interface::FZ_INTERFACE_ABI_VERSION,
+    let interface = crate::modules::interface::ModuleInterface {
+        name: crate::modules::identity::ModuleName::from_segments(vec!["Math".to_string()]),
+        abi_version: crate::modules::interface::FZ_INTERFACE_ABI_VERSION,
         imports: Vec::new(),
-        exports: vec![crate::module_interface::InterfaceFn {
+        exports: vec![crate::modules::interface::InterfaceFn {
             name: "add".to_string(),
             arity: 2,
             spec: None,
@@ -153,8 +153,8 @@ end
 
 #[test]
 fn runtime_metadata_link_merges_overlapping_atoms_and_schemas_deterministically() {
-    let module_a = crate::module_identity::ModuleName::from_segments(vec!["A".to_string()]);
-    let module_b = crate::module_identity::ModuleName::from_segments(vec!["B".to_string()]);
+    let module_a = crate::modules::identity::ModuleName::from_segments(vec!["A".to_string()]);
+    let module_b = crate::modules::identity::ModuleName::from_segments(vec!["B".to_string()]);
     let mut a_exports = std::collections::BTreeMap::new();
     a_exports.insert("A.f/0".to_string(), 0);
     let unit_a = RuntimeUnitMetadata {
@@ -184,7 +184,7 @@ fn runtime_metadata_link_merges_overlapping_atoms_and_schemas_deterministically(
         ],
         frame_sizes: vec![16, 24],
         exported_symbols: b_exports,
-        imported_refs: vec![crate::module_identity::ExportKey::new(module_a, "f", 0)],
+        imported_refs: vec![crate::modules::identity::ExportKey::new(module_a, "f", 0)],
         static_closures: vec![RuntimeStaticClosure {
             closure_schema_id: 2,
             fn_id: 1,
@@ -242,8 +242,8 @@ fn runtime_metadata_link_rejects_duplicate_exports() {
 #[test]
 fn runtime_unit_metadata_carries_external_import_refs() {
     let mut module = Module::new();
-    let export = crate::module_identity::ExportKey::new(
-        crate::module_identity::ModuleName::from_segments(vec!["Dep".to_string()]),
+    let export = crate::modules::identity::ExportKey::new(
+        crate::modules::identity::ModuleName::from_segments(vec!["Dep".to_string()]),
         "run",
         1,
     );
@@ -264,8 +264,8 @@ fn runtime_unit_metadata_carries_external_import_refs() {
 #[test]
 fn codegen_rejects_unresolved_external_module_calls() {
     let mut m = lower_src("fn main(), do: 0");
-    let export = crate::module_identity::ExportKey::new(
-        crate::module_identity::ModuleName::from_segments(vec!["Dep".to_string()]),
+    let export = crate::modules::identity::ExportKey::new(
+        crate::modules::identity::ModuleName::from_segments(vec!["Dep".to_string()]),
         "run",
         0,
     );
@@ -291,16 +291,16 @@ fn codegen_rejects_unresolved_external_module_calls() {
 fn link_test_unit(
     module: &str,
     exports: &[(&str, usize)],
-    imports: Vec<crate::module_identity::ExportKey>,
+    imports: Vec<crate::modules::identity::ExportKey>,
 ) -> (CompiledUnit, RuntimeUnitMetadata) {
-    let module_name = crate::module_identity::ModuleName::from_segments(vec![module.to_string()]);
-    let interface = crate::module_interface::ModuleInterface {
+    let module_name = crate::modules::identity::ModuleName::from_segments(vec![module.to_string()]);
+    let interface = crate::modules::interface::ModuleInterface {
         name: module_name.clone(),
-        abi_version: crate::module_interface::FZ_INTERFACE_ABI_VERSION,
+        abi_version: crate::modules::interface::FZ_INTERFACE_ABI_VERSION,
         imports: Vec::new(),
         exports: exports
             .iter()
-            .map(|(name, arity)| crate::module_interface::InterfaceFn {
+            .map(|(name, arity)| crate::modules::interface::InterfaceFn {
                 name: (*name).to_string(),
                 arity: *arity,
                 spec: None,
@@ -361,8 +361,8 @@ fn main(), do: User.run()
     let (user, user_rt) = link_test_unit(
         "User",
         &[("run", 0)],
-        vec![crate::module_identity::ExportKey::new(
-            crate::module_identity::ModuleName::from_segments(vec!["Math".to_string()]),
+        vec![crate::modules::identity::ExportKey::new(
+            crate::modules::identity::ModuleName::from_segments(vec!["Math".to_string()]),
             "add",
             2,
         )],
@@ -394,7 +394,7 @@ fn linked_ir_units_rewrite_external_edges_and_run_provider_body() {
         &tel,
     )
     .unwrap_or_else(|err| panic!("math frontend: {:?}", err.diagnostics));
-    let math_name = crate::module_identity::ModuleName::from_segments(vec!["Math".to_string()]);
+    let math_name = crate::modules::identity::ModuleName::from_segments(vec!["Math".to_string()]);
     let math_interface = math
         ._prog
         .module_interfaces
@@ -422,7 +422,7 @@ fn linked_ir_units_rewrite_external_edges_and_run_provider_body() {
     let user_unit =
         CompiledUnit::from_ir_module(user.module, None, crate::diag::Diagnostics::new());
     let linked = link_ir_units(&[math_unit.clone(), user_unit.clone()]).expect("link ir units");
-    assert!(!linked.has_unresolved_external_calls());
+    assert!(linked.external_call_edges.is_empty());
     let entry = linked.fn_by_name("main").expect("main").id;
 
     let linked_plan = crate::ir_planner::plan_module(&mut t, &linked, &tel);
@@ -438,8 +438,8 @@ fn linked_ir_units_rewrite_external_edges_and_run_provider_body() {
 
 #[test]
 fn image_linker_rejects_missing_and_duplicate_providers() {
-    let missing = crate::module_identity::ExportKey::new(
-        crate::module_identity::ModuleName::from_segments(vec!["Missing".to_string()]),
+    let missing = crate::modules::identity::ExportKey::new(
+        crate::modules::identity::ModuleName::from_segments(vec!["Missing".to_string()]),
         "f",
         0,
     );
@@ -457,7 +457,7 @@ fn image_linker_rejects_missing_and_duplicate_providers() {
     assert_eq!(
         err,
         ImageLinkError::MissingImport {
-            requester: Some(crate::module_identity::ModuleName::from_segments(vec![
+            requester: Some(crate::modules::identity::ModuleName::from_segments(vec![
                 "User".to_string()
             ])),
             import: missing,
@@ -481,8 +481,8 @@ fn image_linker_rejects_missing_and_duplicate_providers() {
 
 #[test]
 fn image_linker_rejects_unresolved_external_imports_without_provider() {
-    let target = crate::module_identity::ExportKey::new(
-        crate::module_identity::ModuleName::from_segments(vec!["Provider".to_string()]),
+    let target = crate::modules::identity::ExportKey::new(
+        crate::modules::identity::ModuleName::from_segments(vec!["Provider".to_string()]),
         "run",
         0,
     );
@@ -497,9 +497,9 @@ fn image_linker_rejects_unresolved_external_imports_without_provider() {
             ),
             target,
         });
-    let interface = crate::module_interface::ModuleInterface {
-        name: crate::module_identity::ModuleName::from_segments(vec!["User".to_string()]),
-        abi_version: crate::module_interface::FZ_INTERFACE_ABI_VERSION,
+    let interface = crate::modules::interface::ModuleInterface {
+        name: crate::modules::identity::ModuleName::from_segments(vec!["User".to_string()]),
+        abi_version: crate::modules::interface::FZ_INTERFACE_ABI_VERSION,
         imports: Vec::new(),
         exports: Vec::new(),
         types: Vec::new(),
@@ -526,11 +526,11 @@ fn image_linker_rejects_unresolved_external_imports_without_provider() {
     assert_eq!(
         err,
         ImageLinkError::MissingImport {
-            requester: Some(crate::module_identity::ModuleName::from_segments(vec![
+            requester: Some(crate::modules::identity::ModuleName::from_segments(vec![
                 "User".to_string()
             ])),
-            import: crate::module_identity::ExportKey::new(
-                crate::module_identity::ModuleName::from_segments(vec!["Provider".to_string()]),
+            import: crate::modules::identity::ExportKey::new(
+                crate::modules::identity::ModuleName::from_segments(vec!["Provider".to_string()]),
                 "run",
                 0,
             ),

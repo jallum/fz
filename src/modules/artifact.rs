@@ -3,14 +3,15 @@
 
 use crate::diag::{Diagnostic, Span, codes};
 use crate::ir_codegen::{CompiledUnit, RuntimeUnitMetadata};
-use crate::module_identity::{ExportKey, ModuleName};
-use crate::module_interface::{
+use crate::modules::identity::{ExportKey, ModuleName};
+use crate::modules::interface::{
     FZ_INTERFACE_ABI_VERSION, InterfaceFn, InterfaceImport, InterfaceImportFn, InterfaceSpec,
     InterfaceType, InterfaceTypeKind, ModuleInterface, fingerprint_digest,
 };
 
 pub const FZ_ARTIFACT_ABI_VERSION: u32 = 1;
 pub const FZ_RUNTIME_ARTIFACT_ABI_VERSION: u32 = 1;
+#[cfg(test)]
 pub const FZO_PAYLOAD_IR_TEXT_V1: &str = "fz-ir-text-v1";
 pub const FZO_PAYLOAD_SOURCE_UNIT_V1: &str = "fz-source-unit-v1";
 pub const FZO_PAYLOAD_RUNTIME_MODULE_V1: &str = "fz-runtime-module-v1";
@@ -55,6 +56,7 @@ impl FzoUnitPayload {
         }
     }
 
+    #[cfg(test)]
     pub fn ir_text(body: impl Into<String>) -> Self {
         Self::new(FZO_PAYLOAD_IR_TEXT_V1, body)
     }
@@ -195,6 +197,7 @@ impl FziArtifact {
 }
 
 impl FzoArtifact {
+    #[cfg(test)]
     pub fn from_unit(
         unit: &CompiledUnit,
         runtime: &RuntimeUnitMetadata,

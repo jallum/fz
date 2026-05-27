@@ -4,9 +4,9 @@
 //! `.fzo` live?" It also owns the small `.fzi` read/write helpers that use
 //! that path policy.
 
-use crate::module_artifact::{FziArtifact, FzoArtifact};
-use crate::module_identity::ModuleName;
-use crate::module_interface::ModuleInterface;
+use crate::modules::artifact::{FziArtifact, FzoArtifact};
+use crate::modules::identity::ModuleName;
+use crate::modules::interface::ModuleInterface;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
@@ -44,10 +44,12 @@ impl ArtifactStore {
         Self { root: root.into() }
     }
 
+    #[cfg(test)]
     pub fn default_build() -> Self {
         Self::new(DEFAULT_ARTIFACT_ROOT)
     }
 
+    #[cfg(test)]
     pub fn root(&self) -> &Path {
         &self.root
     }
@@ -212,6 +214,7 @@ impl ArtifactStore {
         })
     }
 
+    #[cfg(test)]
     pub fn load_fzo_artifact_with_telemetry(
         &self,
         tel: &dyn crate::telemetry::Telemetry,
@@ -233,6 +236,7 @@ pub struct ArtifactPathError {
 }
 
 impl ArtifactPathError {
+    #[cfg(test)]
     pub fn segment(&self) -> &str {
         &self.segment
     }
@@ -381,9 +385,9 @@ mod tests {
         let name = module(&["Provider"]);
         let interface = ModuleInterface {
             name: name.clone(),
-            abi_version: crate::module_interface::FZ_INTERFACE_ABI_VERSION,
+            abi_version: crate::modules::interface::FZ_INTERFACE_ABI_VERSION,
             imports: Vec::new(),
-            exports: vec![crate::module_interface::InterfaceFn {
+            exports: vec![crate::modules::interface::InterfaceFn {
                 name: "id".to_string(),
                 arity: 1,
                 spec: None,

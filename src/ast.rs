@@ -1,5 +1,5 @@
 use crate::diag::{Span, SpanOrigin};
-use crate::module_identity::ModuleName;
+use crate::modules::identity::ModuleName;
 use std::rc::Rc;
 
 /// A `Vec<Token>` representing a type expression whose resolution is deferred
@@ -474,15 +474,15 @@ pub struct Program {
     /// while the original module AST is still available. Later
     /// separate-compilation stages consume this instead of dependency bodies.
     pub module_interfaces: std::collections::BTreeMap<
-        crate::module_identity::ModuleName,
-        crate::module_interface::ModuleInterface,
+        crate::modules::identity::ModuleName,
+        crate::modules::interface::ModuleInterface,
     >,
     /// Interfaces loaded from artifacts or built-ins that were used to resolve
     /// imports but are not local source modules. Lowering uses these to keep
     /// imported provider calls as explicit external edges.
     pub external_module_interfaces: std::collections::BTreeMap<
-        crate::module_identity::ModuleName,
-        crate::module_interface::ModuleInterface,
+        crate::modules::identity::ModuleName,
+        crate::modules::interface::ModuleInterface,
     >,
     /// Qualified-module-path → `@moduledoc "..."` text. Populated by
     /// `resolve::flatten_modules` (the only stage that still sees

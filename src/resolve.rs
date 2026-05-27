@@ -23,8 +23,8 @@
 
 use crate::ast::*;
 use crate::diag::{Diagnostic, Span, codes};
-use crate::module_identity::{ExportKey, ModuleName, QualifiedName};
-use crate::module_interface::ModuleInterface;
+use crate::modules::identity::{ExportKey, ModuleName, QualifiedName};
+use crate::modules::interface::ModuleInterface;
 use std::collections::BTreeMap;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
@@ -181,13 +181,13 @@ pub fn flatten_modules_with_interface_table<T: crate::types::Types<Ty = crate::t
     prog: Program,
     mut interface_table: InterfaceTable,
 ) -> Result<Program, ResolveError> {
-    for (name, interface) in crate::runtime_library::interface_table() {
+    for (name, interface) in crate::modules::runtime_library::interface_table() {
         interface_table.entry(name).or_insert(interface);
     }
     let module_paths = collect_module_paths(&prog);
     collect_module_fns(&prog)?;
     let module_macros = collect_module_macros(&prog);
-    let module_interfaces = crate::module_interface::collect_from_program(&prog);
+    let module_interfaces = crate::modules::interface::collect_from_program(&prog);
     let external_module_interfaces = interface_table
         .iter()
         .filter(|(name, _)| !module_interfaces.contains_key(*name))
@@ -1686,9 +1686,9 @@ end
             math.clone(),
             ModuleInterface {
                 name: math,
-                abi_version: crate::module_interface::FZ_INTERFACE_ABI_VERSION,
+                abi_version: crate::modules::interface::FZ_INTERFACE_ABI_VERSION,
                 imports: Vec::new(),
-                exports: vec![crate::module_interface::InterfaceFn {
+                exports: vec![crate::modules::interface::InterfaceFn {
                     name: "add".to_string(),
                     arity: 2,
                     spec: None,

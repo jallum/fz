@@ -3,10 +3,10 @@
 //! The graph loader owns the policy for moving from root interfaces to the
 //! provider `.fzi`/`.fzo` artifacts actually needed to link a runnable image.
 
-use crate::module_artifact::FzoArtifact;
-use crate::module_artifact_store::{ArtifactStore, ArtifactStoreError};
-use crate::module_identity::ModuleName;
-use crate::module_interface::ModuleInterface;
+use crate::modules::artifact::FzoArtifact;
+use crate::modules::artifact_store::{ArtifactStore, ArtifactStoreError};
+use crate::modules::identity::ModuleName;
+use crate::modules::interface::ModuleInterface;
 use crate::resolve::InterfaceTable;
 use std::collections::{BTreeSet, VecDeque};
 
@@ -26,7 +26,7 @@ impl ModuleGraphLoader {
     pub fn new(store: ArtifactStore) -> Self {
         Self {
             store,
-            runtime_interfaces: crate::runtime_library::interface_table(),
+            runtime_interfaces: crate::modules::runtime_library::interface_table(),
         }
     }
 
@@ -88,10 +88,10 @@ fn enqueue_imports(queue: &mut VecDeque<ModuleName>, interface: &ModuleInterface
 mod tests {
     use super::*;
     use crate::diag::Span;
-    use crate::module_artifact::FzoArtifact;
-    use crate::module_artifact_store::ArtifactStore;
-    use crate::module_identity::ModuleName;
-    use crate::module_interface::{
+    use crate::modules::artifact::FzoArtifact;
+    use crate::modules::artifact_store::ArtifactStore;
+    use crate::modules::identity::ModuleName;
+    use crate::modules::interface::{
         FZ_INTERFACE_ABI_VERSION, InterfaceFn, InterfaceImport, ModuleInterface,
     };
 

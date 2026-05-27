@@ -31,11 +31,7 @@ mod ir_reducer;
 mod lexer;
 mod macros;
 mod matcher;
-mod module_artifact;
-pub mod module_artifact_store;
-pub mod module_graph;
-mod module_identity;
-mod module_interface;
+mod modules;
 mod parking;
 mod parser;
 mod pattern_check;
@@ -44,7 +40,6 @@ mod reducer;
 mod repl;
 mod resolve;
 mod runtime;
-mod runtime_library;
 mod spec_check;
 mod spec_registry;
 mod telemetry;
@@ -184,7 +179,7 @@ fn main() {
                     std::process::exit(1);
                 }
                 let providers = ProviderInputs::new(
-                    module_artifact_store::DEFAULT_ARTIFACT_ROOT.to_string(),
+                    modules::artifact_store::DEFAULT_ARTIFACT_ROOT.to_string(),
                     Vec::new(),
                 );
                 run_jit_src(&tel, src, "<stdin>".into(), CompileMode::Normal, &providers);
@@ -252,7 +247,7 @@ fn run_build(tel: &telemetry::ConfiguredTelemetry, args: &[String]) {
     let mut t = types::ConcreteTypes;
     let mut src_path: Option<String> = None;
     let mut out_path: Option<String> = None;
-    let mut artifact_root = module_artifact_store::DEFAULT_ARTIFACT_ROOT.to_string();
+    let mut artifact_root = modules::artifact_store::DEFAULT_ARTIFACT_ROOT.to_string();
     let mut emit_fzi = false;
     let mut emit_fzo = false;
     let mut mode = CompileMode::Normal;
@@ -317,11 +312,11 @@ fn run_build(tel: &telemetry::ConfiguredTelemetry, args: &[String]) {
         compile_source_with_providers("fz build", &mut t, src, src_path.clone(), &providers, tel);
     let prepared = checked_module_for_mode(&mut t, frontend_result, &sm_cell, tel, mode);
     if emit_fzi || emit_fzo {
-        let diags = module_interface::validate_public_export_specs(&prepared.interfaces);
+        let diags = modules::interface::validate_public_export_specs(&prepared.interfaces);
         diag::report_or_exit_through(tel, &diags);
     }
     if emit_fzi {
-        let store = module_artifact_store::ArtifactStore::new(&artifact_root);
+        let store = modules::artifact_store::ArtifactStore::new(&artifact_root);
         store
             .write_fzi_artifacts_with_telemetry(tel, &prepared.interfaces)
             .unwrap_or_else(|e| {
@@ -343,7 +338,7 @@ fn run_build(tel: &telemetry::ConfiguredTelemetry, args: &[String]) {
             .first()
             .expect("execution graph includes root unit");
         let runtime = ir_codegen::RuntimeUnitMetadata::from_compiled_unit_ir(unit);
-        let fzo = module_artifact::FzoArtifact::from_unit_source(
+        let fzo = modules::artifact::FzoArtifact::from_unit_source(
             unit,
             &runtime,
             fzo_source.expect("emit_fzo source"),
@@ -352,7 +347,7 @@ fn run_build(tel: &telemetry::ConfiguredTelemetry, args: &[String]) {
                 format!("source={src_path}"),
             ],
         );
-        let store = module_artifact_store::ArtifactStore::new(&artifact_root);
+        let store = modules::artifact_store::ArtifactStore::new(&artifact_root);
         store
             .write_fzo_artifacts_with_telemetry(tel, [&fzo])
             .unwrap_or_else(|e| {
@@ -498,7 +493,7 @@ fn run_interp(tel: &telemetry::ConfiguredTelemetry, args: &[String]) {
 fn run_jit_from_path(tel: &telemetry::ConfiguredTelemetry, args: &[String]) {
     let mut mode = CompileMode::Normal;
     let mut src_path: Option<String> = None;
-    let mut artifact_root = module_artifact_store::DEFAULT_ARTIFACT_ROOT.to_string();
+    let mut artifact_root = modules::artifact_store::DEFAULT_ARTIFACT_ROOT.to_string();
     let mut provider_modules = Vec::new();
     let mut i = 0;
     while i < args.len() {
@@ -687,7 +682,7 @@ fn run_dump(tel: &telemetry::ConfiguredTelemetry, args: &[String]) {
     let mut emit = "clif".to_string();
     let mut show_all = false;
     let mut strict_interfaces = false;
-    let mut artifact_root = module_artifact_store::DEFAULT_ARTIFACT_ROOT.to_string();
+    let mut artifact_root = modules::artifact_store::DEFAULT_ARTIFACT_ROOT.to_string();
     let mut interface_modules = Vec::new();
     let mut mode = CompileMode::Normal;
     let mut i = 0;
@@ -944,8 +939,10 @@ struct Compiled {
 struct CheckedModule {
     module: fz_ir::Module,
     module_plan: ir_planner::ModulePlan,
-    interfaces:
-        std::collections::BTreeMap<module_identity::ModuleName, module_interface::ModuleInterface>,
+    interfaces: std::collections::BTreeMap<
+        modules::identity::ModuleName,
+        modules::interface::ModuleInterface,
+    >,
     sm: diag::SourceMap,
 }
 
@@ -959,11 +956,11 @@ struct PreparedExecutionGraph {
 #[derive(Clone, Debug)]
 struct ProviderInputs {
     artifact_root: String,
-    modules: Vec<module_identity::ModuleName>,
+    modules: Vec<modules::identity::ModuleName>,
 }
 
 impl ProviderInputs {
-    fn new(artifact_root: String, modules: Vec<module_identity::ModuleName>) -> Self {
+    fn new(artifact_root: String, modules: Vec<modules::identity::ModuleName>) -> Self {
         Self {
             artifact_root,
             modules,
@@ -994,7 +991,7 @@ impl CheckedModule {
     }
 }
 
-fn module_name_from_ir_path(path: &str) -> Option<module_identity::ModuleName> {
+fn module_name_from_ir_path(path: &str) -> Option<modules::identity::ModuleName> {
     let segments = path
         .split('.')
         .filter(|segment| !segment.is_empty())
@@ -1003,14 +1000,16 @@ fn module_name_from_ir_path(path: &str) -> Option<module_identity::ModuleName> {
     if segments.is_empty() {
         None
     } else {
-        Some(module_identity::ModuleName::from_segments(segments))
+        Some(modules::identity::ModuleName::from_segments(segments))
     }
 }
 
 struct LtoLinkedProgram {
     module: fz_ir::Module,
-    interfaces:
-        std::collections::BTreeMap<module_identity::ModuleName, module_interface::ModuleInterface>,
+    interfaces: std::collections::BTreeMap<
+        modules::identity::ModuleName,
+        modules::interface::ModuleInterface,
+    >,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1025,22 +1024,22 @@ impl CompileMode {
     }
 }
 
-fn parse_module_name_arg(context: &str, text: &str) -> module_identity::ModuleName {
+fn parse_module_name_arg(context: &str, text: &str) -> modules::identity::ModuleName {
     let segments = text.split('.').map(str::to_string).collect::<Vec<String>>();
     if segments.is_empty() || segments.iter().any(|segment| segment.is_empty()) {
         eprintln!("{context}: invalid module name `{text}`");
         std::process::exit(2);
     }
-    module_identity::ModuleName::from_segments(segments)
+    modules::identity::ModuleName::from_segments(segments)
 }
 
 fn load_interface_table_or_exit(
     context: &str,
     artifact_root: &str,
-    modules: &[module_identity::ModuleName],
+    modules: &[modules::identity::ModuleName],
     tel: &dyn telemetry::Telemetry,
 ) -> resolve::InterfaceTable {
-    let store = module_artifact_store::ArtifactStore::new(artifact_root);
+    let store = modules::artifact_store::ArtifactStore::new(artifact_root);
     store
         .load_interface_table_with_telemetry(tel, modules)
         .unwrap_or_else(|e| {
@@ -1078,8 +1077,8 @@ fn load_provider_units_or_exit(
     sm_cell: &Rc<RefCell<diag::SourceMap>>,
     tel: &dyn telemetry::Telemetry,
 ) -> Vec<ir_codegen::CompiledUnit> {
-    let store = module_artifact_store::ArtifactStore::new(&providers.artifact_root);
-    let graph = module_graph::ModuleGraphLoader::new(store)
+    let store = modules::artifact_store::ArtifactStore::new(&providers.artifact_root);
+    let graph = modules::graph::ModuleGraphLoader::new(store)
         .load_reachable(&prepared.interfaces, &providers.modules)
         .unwrap_or_else(|e| {
             eprintln!("{context}: {e}");
@@ -1222,12 +1221,12 @@ impl LtoLinkedProgram {
     fn validate(
         module: fz_ir::Module,
         interfaces: std::collections::BTreeMap<
-            module_identity::ModuleName,
-            module_interface::ModuleInterface,
+            modules::identity::ModuleName,
+            modules::interface::ModuleInterface,
         >,
         tel: &dyn telemetry::Telemetry,
     ) -> Self {
-        let diags = module_interface::validate_public_export_specs(&interfaces);
+        let diags = modules::interface::validate_public_export_specs(&interfaces);
         diag::report_or_exit_through(tel, &diags);
         tel.event(
             &["fz", "lto", "interfaces_validated"],
@@ -1241,7 +1240,10 @@ impl LtoLinkedProgram {
         tel: &dyn telemetry::Telemetry,
     ) -> (
         fz_ir::Module,
-        std::collections::BTreeMap<module_identity::ModuleName, module_interface::ModuleInterface>,
+        std::collections::BTreeMap<
+            modules::identity::ModuleName,
+            modules::interface::ModuleInterface,
+        >,
     ) {
         let exports = self.module.interface_export_map(&self.interfaces);
         let rewritten = self
@@ -1315,10 +1317,10 @@ fn dump_interfaces_pipeline(
     );
     if strict {
         let diags =
-            module_interface::validate_public_export_specs(&frontend._prog.module_interfaces);
+            modules::interface::validate_public_export_specs(&frontend._prog.module_interfaces);
         diag::report_or_exit_through(tel, &diags);
     }
-    module_interface::render_interfaces(&frontend._prog.module_interfaces)
+    modules::interface::render_interfaces(&frontend._prog.module_interfaces)
 }
 
 fn render_key_slots(t: &mut types::ConcreteTypes, key: &[types::KeySlot]) -> String {
@@ -1843,7 +1845,7 @@ fn main(), do: User.run()
             "telemetry.fz".to_string(),
             CompileMode::Lto,
             &ProviderInputs::new(
-                module_artifact_store::DEFAULT_ARTIFACT_ROOT.to_string(),
+                modules::artifact_store::DEFAULT_ARTIFACT_ROOT.to_string(),
                 Vec::new(),
             ),
         );

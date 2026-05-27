@@ -84,20 +84,20 @@ Codegen artifact vocabulary:
 
 Runtime library boundary:
 
-- `src/runtime_library/runtime.fz` contains both primitive extern contracts and
+- `src/modules/runtime_library/runtime.fz` contains both primitive extern contracts and
   ordinary FZ standard-library modules. Primitive contracts are the top-level
   `extern "C"` declarations implemented by the Rust runtime; they remain
   runtime imports with explicit type contracts.
-- Module bodies in `src/runtime_library/runtime.fz` (`Utf8`, `Process`, etc.)
-  are treated as ordinary library modules. `runtime_library::interface_table`
-  is derived from `runtime_library::artifacts` and exposes those
+- Module bodies in `src/modules/runtime_library/runtime.fz` (`Utf8`, `Process`, etc.)
+  are treated as ordinary library modules. `modules::runtime_library::interface_table`
+  is derived from `modules::runtime_library::artifacts` and exposes those
   `ModuleInterface` facts to the resolver by default, so user modules can
   import from runtime-library interfaces without defining or source-pasting
   those modules.
 - Interface emission does not export `extern "C"` declarations from modules.
   Those names are implementation contracts used by the module body, not
   public library functions.
-- `runtime_library::artifacts` produces deterministic `.fzi` and `.fzo`
+- `modules::runtime_library::artifacts` produces deterministic `.fzi` and `.fzo`
   envelopes for each built-in library module. The `.fzi` is the public
   contract; the `.fzo` records the runtime-module payload, implemented
   interface fingerprint, and implementation fingerprint for
@@ -105,11 +105,11 @@ Runtime library boundary:
 - `ArtifactStore::write_fzo_artifacts` and `load_fzo_artifact` persist and
   reload those object envelopes under the same `build/fz/objects/...` path
   policy used for user modules.
-- `module_graph::ModuleGraphLoader` traverses reachable imports from root
+- `modules::graph::ModuleGraphLoader` traverses reachable imports from root
   checked interfaces and explicit provider-root modules. It loads provider
   `.fzi` contracts first, queues their imports recursively, and loads `.fzo`
   objects only for reachable user-artifact modules. Runtime-library interfaces
-  are explicit built-ins from `runtime_library::interface_table`; they do not
+  are explicit built-ins from `modules::runtime_library::interface_table`; they do not
   hide missing user `.fzi`/`.fzo` failures.
 - User builds can write object envelopes with
   `fz build --emit-fzo --artifact-root <dir> ...`. The writer consumes the
@@ -121,7 +121,7 @@ Runtime library boundary:
   `fz build --interface <Module> --artifact-root <dir> ...`. `--provider` is
   accepted as an alias for the same provider-root input.
 - Runtime-library modules are currently artifact-shaped resolver/linker facts,
-  while execution still prepends `src/runtime_library/runtime.fz` as the
+  while execution still prepends `src/modules/runtime_library/runtime.fz` as the
   primitive/runtime source prelude during lowering. Moving those modules fully
   onto graph-loaded artifacts is the next architecture step, not something this
   PR silently completes.

@@ -346,7 +346,7 @@ pub(crate) fn cps_split_call(
 pub(crate) fn cps_split_external_call(
     ctx: &mut LowerCtx,
     callee: FnId,
-    target: crate::module_identity::ExportKey,
+    target: crate::modules::identity::ExportKey,
     arg_vars: Vec<Var>,
     call_span: Span,
 ) -> Result<Var, LowerError> {

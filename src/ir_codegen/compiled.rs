@@ -27,20 +27,18 @@ use std::sync::Arc;
 /// contract facts the linker validates before a runnable image exists.
 #[derive(Debug, Clone)]
 pub struct CompiledUnit {
-    pub module: Option<crate::module_identity::ModuleName>,
+    pub module: Option<crate::modules::identity::ModuleName>,
     pub code: Module,
-    pub exports: Vec<crate::module_interface::InterfaceFn>,
-    pub imports: Vec<crate::module_interface::InterfaceImport>,
-    pub diagnostics: crate::diag::Diagnostics,
+    pub exports: Vec<crate::modules::interface::InterfaceFn>,
     pub interface_fingerprint: Vec<String>,
-    pub interface: Option<crate::module_interface::ModuleInterface>,
+    pub interface: Option<crate::modules::interface::ModuleInterface>,
 }
 
 impl CompiledUnit {
     pub fn from_ir_module(
         code: Module,
-        interface: Option<crate::module_interface::ModuleInterface>,
-        diagnostics: crate::diag::Diagnostics,
+        interface: Option<crate::modules::interface::ModuleInterface>,
+        _diagnostics: crate::diag::Diagnostics,
     ) -> Self {
         let module = interface
             .as_ref()
@@ -50,10 +48,6 @@ impl CompiledUnit {
             .as_ref()
             .map(|interface| interface.exports.clone())
             .unwrap_or_default();
-        let imports = interface
-            .as_ref()
-            .map(|interface| interface.imports.clone())
-            .unwrap_or_default();
         let interface_fingerprint = interface
             .as_ref()
             .map(|interface| interface.fingerprint_inputs.clone())
@@ -62,19 +56,17 @@ impl CompiledUnit {
             module,
             code,
             exports,
-            imports,
-            diagnostics,
             interface_fingerprint,
             interface,
         }
     }
 }
 
-fn module_name_from_ir_path(path: &str) -> Option<crate::module_identity::ModuleName> {
+fn module_name_from_ir_path(path: &str) -> Option<crate::modules::identity::ModuleName> {
     if path.is_empty() {
         None
     } else {
-        Some(crate::module_identity::ModuleName::from_segments(
+        Some(crate::modules::identity::ModuleName::from_segments(
             path.split('.').map(str::to_string).collect(),
         ))
     }
@@ -172,17 +164,17 @@ pub enum ImageLinkError {
         runtime_units: usize,
     },
     InterfaceFingerprintMismatch {
-        module: Option<crate::module_identity::ModuleName>,
+        module: Option<crate::modules::identity::ModuleName>,
     },
     UnresolvedExternalCalls {
-        module: Option<crate::module_identity::ModuleName>,
+        module: Option<crate::modules::identity::ModuleName>,
     },
     MissingImport {
-        requester: Option<crate::module_identity::ModuleName>,
-        import: crate::module_identity::ExportKey,
+        requester: Option<crate::modules::identity::ModuleName>,
+        import: crate::modules::identity::ExportKey,
     },
     DuplicateProvider {
-        import: crate::module_identity::ExportKey,
+        import: crate::modules::identity::ExportKey,
     },
     RuntimeMetadata(RuntimeMetadataLinkError),
 }
@@ -251,7 +243,7 @@ fn link_image_metadata(
             runtime_units: runtime_units.len(),
         });
     }
-    let mut providers: BTreeMap<crate::module_identity::ExportKey, usize> = BTreeMap::new();
+    let mut providers: BTreeMap<crate::modules::identity::ExportKey, usize> = BTreeMap::new();
     for (idx, unit) in units.iter().enumerate() {
         if let Some(interface) = &unit.interface
             && interface.fingerprint_inputs != unit.interface_fingerprint
@@ -264,7 +256,7 @@ fn link_image_metadata(
             continue;
         };
         for export in &unit.exports {
-            let key = crate::module_identity::ExportKey::new(
+            let key = crate::modules::identity::ExportKey::new(
                 module.clone(),
                 export.name.clone(),
                 export.arity,
@@ -290,7 +282,7 @@ fn link_image_metadata(
 #[derive(Default)]
 struct IrUnitLinker {
     linked: Module,
-    export_map: BTreeMap<crate::module_identity::ExportKey, FnId>,
+    export_map: BTreeMap<crate::modules::identity::ExportKey, FnId>,
 }
 
 impl IrUnitLinker {
@@ -409,7 +401,7 @@ impl IrUnitLinker {
             return Ok(());
         };
         for export in &unit.exports {
-            let key = crate::module_identity::ExportKey::new(
+            let key = crate::modules::identity::ExportKey::new(
                 module.clone(),
                 export.name.clone(),
                 export.arity,
@@ -450,7 +442,7 @@ impl IrUnitLinker {
 fn module_for_linked_fn(
     module: &Module,
     fn_id: FnId,
-) -> Option<crate::module_identity::ModuleName> {
+) -> Option<crate::modules::identity::ModuleName> {
     module
         .fn_idx
         .get(&fn_id)
@@ -459,7 +451,7 @@ fn module_for_linked_fn(
             if f.owner_module.is_empty() {
                 None
             } else {
-                Some(crate::module_identity::ModuleName::from_segments(
+                Some(crate::modules::identity::ModuleName::from_segments(
                     f.owner_module.split('.').map(str::to_string).collect(),
                 ))
             }
@@ -584,19 +576,22 @@ pub struct RuntimeStaticClosure {
 
 #[derive(Debug, Clone)]
 pub struct RuntimeUnitMetadata {
-    pub module: Option<crate::module_identity::ModuleName>,
+    pub module: Option<crate::modules::identity::ModuleName>,
     pub atoms: Vec<String>,
     pub schemas: Vec<Schema>,
     pub frame_sizes: Vec<u32>,
     pub exported_symbols: BTreeMap<String, u32>,
-    pub imported_refs: Vec<crate::module_identity::ExportKey>,
+    pub imported_refs: Vec<crate::modules::identity::ExportKey>,
     pub static_closures: Vec<RuntimeStaticClosure>,
     pub halt_kinds: BTreeMap<u32, u32>,
     pub entrypoints: RuntimeEntrypoints,
 }
 
 impl RuntimeUnitMetadata {
-    pub fn from_ir_module(module: Option<crate::module_identity::ModuleName>, ir: &Module) -> Self {
+    pub fn from_ir_module(
+        module: Option<crate::modules::identity::ModuleName>,
+        ir: &Module,
+    ) -> Self {
         Self {
             module,
             atoms: ir.atom_names.clone(),
@@ -649,50 +644,8 @@ impl RuntimeUnitMetadata {
         }
     }
 
-    pub fn from_compiled_metadata(
-        module: Option<crate::module_identity::ModuleName>,
-        metadata: &CompiledMetadata,
-    ) -> Self {
-        let schemas = {
-            let registry = metadata.user_schemas.borrow();
-            (0..registry.len())
-                .map(|id| registry.get(id as u32).clone())
-                .collect()
-        };
-        Self {
-            module,
-            atoms: metadata.atom_names.clone(),
-            schemas,
-            frame_sizes: metadata.frame_sizes.clone(),
-            exported_symbols: BTreeMap::new(),
-            imported_refs: Vec::new(),
-            static_closures: metadata
-                .static_closure_targets
-                .iter()
-                .map(
-                    |(closure_schema_id, fn_id, _, halt_kind)| RuntimeStaticClosure {
-                        closure_schema_id: *closure_schema_id,
-                        fn_id: *fn_id,
-                        halt_kind: *halt_kind,
-                    },
-                )
-                .collect(),
-            halt_kinds: metadata
-                .fn_halt_kinds
-                .iter()
-                .map(|(fn_id, halt_kind)| (*fn_id, *halt_kind))
-                .collect(),
-            entrypoints: RuntimeEntrypoints {
-                resume: true,
-                main: true,
-                spawn: true,
-                drain_dtor: true,
-            },
-        }
-    }
-
     pub fn from_compiled_module(
-        module: Option<crate::module_identity::ModuleName>,
+        module: Option<crate::modules::identity::ModuleName>,
         unit: &CompiledUnit,
         compiled: &CompiledModule,
     ) -> Self {
@@ -770,7 +723,7 @@ pub struct RuntimeImageMetadata {
     pub schemas: Vec<Schema>,
     pub frame_sizes: Vec<u32>,
     pub exported_symbols: BTreeMap<String, u32>,
-    pub imported_refs: Vec<crate::module_identity::ExportKey>,
+    pub imported_refs: Vec<crate::modules::identity::ExportKey>,
     pub static_closures: Vec<(usize, RuntimeStaticClosure)>,
     pub halt_kinds: BTreeMap<u32, u32>,
     pub entrypoints: RuntimeEntrypoints,
@@ -779,7 +732,7 @@ pub struct RuntimeImageMetadata {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RuntimeMetadataLinkError {
-    DuplicateModule(crate::module_identity::ModuleName),
+    DuplicateModule(crate::modules::identity::ModuleName),
     DuplicateExport(String),
 }
 

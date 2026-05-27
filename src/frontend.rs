@@ -535,18 +535,18 @@ fn main(), do: classify(7)
     #[test]
     fn compile_source_accepts_loaded_interfaces_without_provider_body() {
         let mut t = crate::types::ConcreteTypes;
-        let math = crate::module_identity::ModuleName::from_segments(vec!["Math".to_string()]);
+        let math = crate::modules::identity::ModuleName::from_segments(vec!["Math".to_string()]);
         let mut interfaces = InterfaceTable::new();
         interfaces.insert(
             math.clone(),
-            crate::module_interface::ModuleInterface {
+            crate::modules::interface::ModuleInterface {
                 name: math,
-                abi_version: crate::module_interface::FZ_INTERFACE_ABI_VERSION,
+                abi_version: crate::modules::interface::FZ_INTERFACE_ABI_VERSION,
                 imports: Vec::new(),
-                exports: vec![crate::module_interface::InterfaceFn {
+                exports: vec![crate::modules::interface::InterfaceFn {
                     name: "add".to_string(),
                     arity: 2,
-                    spec: Some(crate::module_interface::InterfaceSpec {
+                    spec: Some(crate::modules::interface::InterfaceSpec {
                         params: vec!["Ident(\"integer\")".to_string(); 2],
                         result: "Ident(\"integer\")".to_string(),
                     }),
@@ -581,8 +581,8 @@ end
         assert_eq!(out.module.external_call_edges.len(), 1);
         assert_eq!(
             out.module.external_call_edges[0].target,
-            crate::module_identity::ExportKey::new(
-                crate::module_identity::ModuleName::from_segments(vec!["Math".to_string()]),
+            crate::modules::identity::ExportKey::new(
+                crate::modules::identity::ModuleName::from_segments(vec!["Math".to_string()]),
                 "add",
                 2,
             )

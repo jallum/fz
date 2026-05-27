@@ -19,7 +19,7 @@
 
 use crate::ast::{BitType, Endian};
 use crate::diag::Span;
-use crate::module_identity::{ExportKey, ModuleName};
+use crate::modules::identity::{ExportKey, ModuleName};
 use fz_runtime::heap::Schema;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
@@ -1187,10 +1187,6 @@ impl Module {
         self.fns.iter().find(|f| f.name == name)
     }
 
-    pub fn has_unresolved_external_calls(&self) -> bool {
-        !self.external_call_edges.is_empty()
-    }
-
     pub fn rewrite_external_calls_for_lto(
         &mut self,
         exports: &BTreeMap<ExportKey, FnId>,
@@ -1213,7 +1209,7 @@ impl Module {
 
     pub fn interface_export_map(
         &self,
-        interfaces: &BTreeMap<ModuleName, crate::module_interface::ModuleInterface>,
+        interfaces: &BTreeMap<ModuleName, crate::modules::interface::ModuleInterface>,
     ) -> BTreeMap<ExportKey, FnId> {
         let mut out = BTreeMap::new();
         for (module, interface) in interfaces {
@@ -1907,7 +1903,7 @@ mod tests {
         mb.add_fn(target.build());
         let mut module = mb.build();
         let export = ExportKey::new(
-            crate::module_identity::ModuleName::from_segments(vec!["A".to_string()]),
+            crate::modules::identity::ModuleName::from_segments(vec!["A".to_string()]),
             "f",
             0,
         );
@@ -1918,7 +1914,7 @@ mod tests {
         let exports = [(export, FnId(1))].into_iter().collect();
 
         assert_eq!(module.rewrite_external_calls_for_lto(&exports), Ok(1));
-        assert!(!module.has_unresolved_external_calls());
+        assert!(module.external_call_edges.is_empty());
         match &module.fn_by_id(FnId(0)).block(BlockId(0)).terminator {
             Term::TailCall { callee, .. } => assert_eq!(*callee, FnId(1)),
             other => panic!("expected TailCall, got {:?}", other),
@@ -1943,7 +1939,7 @@ mod tests {
         mb.add_fn(caller.build());
         let mut module = mb.build();
         let export = ExportKey::new(
-            crate::module_identity::ModuleName::from_segments(vec!["Missing".to_string()]),
+            crate::modules::identity::ModuleName::from_segments(vec!["Missing".to_string()]),
             "f",
             0,
         );
@@ -1957,7 +1953,7 @@ mod tests {
             module.rewrite_external_calls_for_lto(&exports),
             Err(ExternalLinkError::MissingTarget(export))
         );
-        assert!(module.has_unresolved_external_calls());
+        assert!(!module.external_call_edges.is_empty());
     }
 
     #[test]
@@ -1969,18 +1965,18 @@ mod tests {
         mb.add_fn(target.build());
         let module = mb.build();
 
-        let math = crate::module_identity::ModuleName::from_segments(vec!["Math".to_string()]);
+        let math = crate::modules::identity::ModuleName::from_segments(vec!["Math".to_string()]);
         let mut interfaces = BTreeMap::new();
         interfaces.insert(
             math.clone(),
-            crate::module_interface::ModuleInterface {
+            crate::modules::interface::ModuleInterface {
                 name: math.clone(),
-                abi_version: crate::module_interface::FZ_INTERFACE_ABI_VERSION,
+                abi_version: crate::modules::interface::FZ_INTERFACE_ABI_VERSION,
                 imports: Vec::new(),
-                exports: vec![crate::module_interface::InterfaceFn {
+                exports: vec![crate::modules::interface::InterfaceFn {
                     name: "add".to_string(),
                     arity: 2,
-                    spec: Some(crate::module_interface::InterfaceSpec {
+                    spec: Some(crate::modules::interface::InterfaceSpec {
                         params: vec![
                             "Ident(\"integer\")".to_string(),
                             "Ident(\"integer\")".to_string(),

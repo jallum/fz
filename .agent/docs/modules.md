@@ -41,7 +41,7 @@ truth is `ExportKey { module: Math, name: add, arity: 2 }`.
 
 ## Interface Emission
 
-`module_interface::collect_from_program` runs while source-level `ModuleDef`
+`modules::interface::collect_from_program` runs while source-level `ModuleDef`
 nodes still exist. It produces one `ModuleInterface` per module.
 
 `ModuleInterface` contains:
@@ -89,7 +89,7 @@ should pass typed `ModuleName` / `ExportKey` values wherever possible.
 
 ## Strict Interfaces
 
-`module_interface::validate_public_export_specs` enforces the library-boundary
+`modules::interface::validate_public_export_specs` enforces the library-boundary
 policy: every module export needs an explicit `@spec`.
 
 Use this for public library boundaries and LTO validation:
@@ -159,7 +159,7 @@ render public contracts, specs render planner state.
 
 ## Artifact Store Paths
 
-`module_artifact_store::ArtifactStore` owns the filesystem path policy for
+`modules::artifact_store::ArtifactStore` owns the filesystem path policy for
 module artifacts. It maps typed `ModuleName` values to deterministic locations
 and provides `.fzi` / `.fzo` read/write helpers used by build and
 runtime-library tooling.
@@ -214,13 +214,13 @@ write/load process facts.
 
 Reachable graph loading:
 
-- `module_graph::ModuleGraphLoader` owns import traversal over artifact stores.
+- `modules::graph::ModuleGraphLoader` owns import traversal over artifact stores.
 - Inputs are the root checked `InterfaceTable` plus explicit provider-root
   module names.
 - The loader queues imports from the roots, loads provider `.fzi` contracts,
   recursively queues their imports, and only then loads `.fzo` objects for
   reachable user-artifact modules.
-- Runtime-library interfaces come from `runtime_library::interface_table` and
+- Runtime-library interfaces come from `modules::runtime_library::interface_table` and
   do not require user `.fzi`/`.fzo` files. They are explicit built-ins, not a
   fallback that masks missing user artifacts.
 - Loaded `.fzo` objects are validated against the `.fzi` fingerprint inputs
@@ -551,7 +551,7 @@ correctness interface-based.
 
 ## Runtime Library Modules
 
-`runtime_library` parses `src/runtime_library/runtime.fz` and exposes built-in
+`runtime_library` parses `src/modules/runtime_library/runtime.fz` and exposes built-in
 library module interfaces/artifacts.
 
 Rules:
@@ -559,17 +559,17 @@ Rules:
 - top-level primitive externs remain runtime primitive contracts;
 - module bodies such as `Utf8` and `Process` are ordinary library modules;
 - module-scoped externs are implementation details, not interface exports;
-- `runtime_library::interface_table` is injected into resolver interface
+- `modules::runtime_library::interface_table` is injected into resolver interface
   lookup by default and is derived from the same runtime artifacts rather than
   bypassing the artifact path;
-- `runtime_library::artifacts` creates deterministic `.fzi`/`.fzo` envelopes
+- `modules::runtime_library::artifacts` creates deterministic `.fzi`/`.fzo` envelopes
   for built-in runtime-library modules.
 - Runtime-library modules are exposed as artifact-shaped resolver/linker facts,
   but execution still prepends the primitive/runtime source prelude during
   lowering. Replacing that source-prelude path with graph-loaded runtime
   modules is remaining architecture work.
 
-To add a runtime-library module, edit `src/runtime_library/runtime.fz`, add a
+To add a runtime-library module, edit `src/modules/runtime_library/runtime.fz`, add a
 `defmodule` with public `@spec` declarations for exported functions, and keep
 primitive `extern "C"` declarations module-scoped unless they are deliberately
 part of the primitive prelude. The generated artifacts live in the same store

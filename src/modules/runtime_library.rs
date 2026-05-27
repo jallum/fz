@@ -10,9 +10,9 @@
 //! artifact envelopes so resolver and linker work can depend on the same
 //! facts a user library would provide.
 use crate::ast::{Item, ModuleDef, Program};
-use crate::module_artifact::{FziArtifact, FzoArtifact, FzoUnitPayload};
-use crate::module_identity::{ExportKey, ModuleName};
-use crate::module_interface::ModuleInterface;
+use crate::modules::artifact::{FziArtifact, FzoArtifact, FzoUnitPayload};
+use crate::modules::identity::{ExportKey, ModuleName};
+use crate::modules::interface::ModuleInterface;
 use crate::resolve::InterfaceTable;
 use std::collections::BTreeMap;
 #[cfg(test)]
@@ -55,7 +55,7 @@ pub fn interface_table() -> InterfaceTable {
 
 pub fn artifacts() -> Vec<RuntimeLibraryModuleArtifact> {
     let prog = parsed_program();
-    let interfaces = crate::module_interface::collect_from_program(&prog);
+    let interfaces = crate::modules::interface::collect_from_program(&prog);
     let mut out = Vec::new();
     for item in &prog.items {
         if let Item::Module(module) = &**item {
@@ -100,8 +100,8 @@ fn runtime_module_fzo(
 ) -> FzoArtifact {
     let interface_fingerprint = interface.fingerprint_inputs.clone();
     FzoArtifact {
-        compiler_abi_version: crate::module_artifact::FZ_ARTIFACT_ABI_VERSION,
-        runtime_abi_version: crate::module_artifact::FZ_RUNTIME_ARTIFACT_ABI_VERSION,
+        compiler_abi_version: crate::modules::artifact::FZ_ARTIFACT_ABI_VERSION,
+        runtime_abi_version: crate::modules::artifact::FZ_RUNTIME_ARTIFACT_ABI_VERSION,
         module: Some(name.clone()),
         unit_payload: FzoUnitPayload::runtime_module(runtime_module_payload(name, module)),
         code_fn_count: module_fn_count(module),
@@ -121,7 +121,7 @@ fn runtime_module_fzo(
         schema_count: 0,
         frame_sizes: Vec::new(),
         implementation_fingerprint: runtime_implementation_fingerprint(name, module),
-        interface_fingerprint_digest: crate::module_interface::fingerprint_digest(
+        interface_fingerprint_digest: crate::modules::interface::fingerprint_digest(
             &interface_fingerprint,
         ),
         interface_fingerprint,
@@ -312,7 +312,7 @@ mod tests {
             std::process::id()
         ));
         let _ = std::fs::remove_dir_all(&root);
-        let store = crate::module_artifact_store::ArtifactStore::new(&root);
+        let store = crate::modules::artifact_store::ArtifactStore::new(&root);
         let tel = crate::telemetry::ConfiguredTelemetry::new();
         let capture = crate::telemetry::Capture::new();
         tel.attach(&["fz", "module"], capture.handler());

@@ -82,8 +82,8 @@ pub struct LowerCtx {
     /// inline substitutions; the rest are kept here so the diagnostic
     /// can explain *why* a particular call wasn't inlined.
     pub fn_defs_by_arity: HashMap<(String, usize), FnDef>,
-    pub(super) external_exports: HashMap<(String, usize), crate::module_identity::ExportKey>,
-    pub(super) external_stubs: HashMap<crate::module_identity::ExportKey, FnId>,
+    pub(super) external_exports: HashMap<(String, usize), crate::modules::identity::ExportKey>,
+    pub(super) external_stubs: HashMap<crate::modules::identity::ExportKey, FnId>,
 }
 
 impl LowerCtx {
@@ -122,15 +122,15 @@ impl LowerCtx {
     pub(super) fn register_external_interfaces(
         &mut self,
         interfaces: &std::collections::BTreeMap<
-            crate::module_identity::ModuleName,
-            crate::module_interface::ModuleInterface,
+            crate::modules::identity::ModuleName,
+            crate::modules::interface::ModuleInterface,
         >,
     ) {
         for (module, interface) in interfaces {
             for export in &interface.exports {
                 self.external_exports.insert(
                     (format!("{}.{}", module, export.name), export.arity),
-                    crate::module_identity::ExportKey::new(
+                    crate::modules::identity::ExportKey::new(
                         module.clone(),
                         export.name.clone(),
                         export.arity,
@@ -144,7 +144,7 @@ impl LowerCtx {
         &mut self,
         name: &str,
         arity: usize,
-    ) -> Option<(FnId, crate::module_identity::ExportKey)> {
+    ) -> Option<(FnId, crate::modules::identity::ExportKey)> {
         let target = self
             .external_exports
             .get(&(name.to_string(), arity))?
@@ -343,7 +343,7 @@ impl LowerCtx {
         &mut self,
         mut term: Term,
         span: Span,
-        target: crate::module_identity::ExportKey,
+        target: crate::modules::identity::ExportKey,
     ) {
         term.set_source_span(span);
         let ident = term
