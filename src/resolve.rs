@@ -23,6 +23,7 @@
 
 use crate::ast::*;
 use crate::diag::{Diagnostic, Span, codes};
+use crate::module_identity::{ExportKey, ModuleName, QualifiedName};
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
@@ -36,6 +37,16 @@ pub enum ResolveError {
     },
     ImportOutsideModule {
         span: Span,
+    },
+    DuplicateModule {
+        module: ModuleName,
+        first_span: Span,
+        duplicate_span: Span,
+    },
+    DuplicateExport {
+        export: ExportKey,
+        first_span: Span,
+        duplicate_span: Span,
     },
     /// fz-ul4.31.5 — Failure to build a module's `@type` env (duplicate
     /// alias, cycle, or unknown name in an alias body).
@@ -58,6 +69,26 @@ impl ResolveError {
                 "import is only valid inside a defmodule body",
                 *span,
             ),
+            Self::DuplicateModule {
+                module,
+                first_span,
+                duplicate_span,
+            } => Diagnostic::error(
+                codes::RESOLVE_DUPLICATE_MODULE,
+                format!("module `{}` is defined more than once", module),
+                *duplicate_span,
+            )
+            .with_secondary(*first_span, "first definition here"),
+            Self::DuplicateExport {
+                export,
+                first_span,
+                duplicate_span,
+            } => Diagnostic::error(
+                codes::RESOLVE_DUPLICATE_EXPORT,
+                format!("export `{}` is defined more than once", export),
+                *duplicate_span,
+            )
+            .with_secondary(*first_span, "first definition here"),
             Self::TypeAliasError { msg, span } => {
                 Diagnostic::error(codes::RESOLVE_TYPE_ALIAS, msg.clone(), *span)
             }
@@ -99,7 +130,7 @@ pub fn flatten_modules<T: crate::types::Types<Ty = crate::types::Ty>>(
     prog: Program,
 ) -> Result<Program, ResolveError> {
     let module_paths = collect_module_paths(&prog);
-    let module_fns = collect_module_fns(&prog);
+    let module_fns = collect_module_fns(&prog)?;
     let mut out: Vec<Rc<Item>> = Vec::new();
     let mut module_docs: HashMap<String, String> = HashMap::new();
     collect_module_docs(&prog, &mut module_docs);
@@ -150,7 +181,7 @@ pub fn flatten_modules<T: crate::types::Types<Ty = crate::types::Ty>>(
                 }
                 out.push(Rc::new(Item::Fn(new_def)));
             }
-            Item::Module(m) => flatten_module(m, "", &mut out, &module_paths, &module_fns)?,
+            Item::Module(m) => flatten_module(m, None, &mut out, &module_paths, &module_fns)?,
             Item::Alias { span, .. } => {
                 return Err(ResolveError::AliasOutsideModule { span: *span });
             }
@@ -302,51 +333,82 @@ fn collect_paths_recursive(m: &ModuleDef, parent: &str, out: &mut HashSet<String
     }
 }
 
-type ModuleFns = HashMap<String, HashSet<(String, usize)>>;
+#[derive(Clone)]
+struct ModuleExports {
+    span: Span,
+    fns: HashMap<(String, usize), Span>,
+}
 
-fn collect_module_fns(prog: &Program) -> ModuleFns {
+type ModuleFns = HashMap<ModuleName, ModuleExports>;
+
+fn collect_module_fns(prog: &Program) -> Result<ModuleFns, ResolveError> {
     let mut out: ModuleFns = HashMap::new();
     for item in &prog.items {
         if let Item::Module(m) = &**item {
-            collect_module_fns_recursive(m, "", &mut out);
+            collect_module_fns_recursive(m, None, &mut out)?;
         }
     }
-    out
+    Ok(out)
 }
 
-fn collect_module_fns_recursive(m: &ModuleDef, parent: &str, out: &mut ModuleFns) {
-    let path = if parent.is_empty() {
-        m.name.clone()
+fn collect_module_fns_recursive(
+    m: &ModuleDef,
+    parent: Option<&ModuleName>,
+    out: &mut ModuleFns,
+) -> Result<(), ResolveError> {
+    let path = if let Some(parent) = parent {
+        parent.child(m.name.clone())
     } else {
-        format!("{}.{}", parent, m.name)
+        ModuleName::from_segments(vec![m.name.clone()])
     };
-    out.entry(path.clone()).or_default();
+    if let Some(first) = out.insert(
+        path.clone(),
+        ModuleExports {
+            span: m.name_span,
+            fns: HashMap::new(),
+        },
+    ) {
+        return Err(ResolveError::DuplicateModule {
+            module: path,
+            first_span: first.span,
+            duplicate_span: m.name_span,
+        });
+    }
     for item in &m.items {
         match &**item {
             Item::Fn(def) => {
                 let arity = def.clauses.first().map(|c| c.params.len()).unwrap_or(0);
-                out.get_mut(&path)
-                    .unwrap()
-                    .insert((def.name.clone(), arity));
+                let export = ExportKey::new(path.clone(), def.name.clone(), arity);
+                let fns = &mut out.get_mut(&path).expect("module fn map was inserted").fns;
+                let key = (def.name.clone(), arity);
+                if let Some(first_span) = fns.insert(key, def.name_span) {
+                    return Err(ResolveError::DuplicateExport {
+                        export,
+                        first_span,
+                        duplicate_span: def.name_span,
+                    });
+                }
             }
-            Item::Module(inner) => collect_module_fns_recursive(inner, &path, out),
+            Item::Module(inner) => collect_module_fns_recursive(inner, Some(&path), out)?,
             _ => {}
         }
     }
+    Ok(())
 }
 
 fn flatten_module(
     m: &ModuleDef,
-    parent_path: &str,
+    parent_path: Option<&ModuleName>,
     out: &mut Vec<Rc<Item>>,
     module_paths: &HashSet<String>,
     module_fns: &ModuleFns,
 ) -> Result<(), ResolveError> {
-    let module_path = if parent_path.is_empty() {
-        m.name.clone()
+    let module_name = if let Some(parent) = parent_path {
+        parent.child(m.name.clone())
     } else {
-        format!("{}.{}", parent_path, m.name)
+        ModuleName::from_segments(vec![m.name.clone()])
     };
+    let module_path = module_name.dotted();
     let mut siblings: HashSet<String> = HashSet::new();
     let mut aliases: HashMap<String, String> = HashMap::new();
     let mut imports: HashMap<(String, usize), String> = HashMap::new();
@@ -358,24 +420,27 @@ fn flatten_module(
             Item::Alias {
                 full_path, as_name, ..
             } => {
-                aliases.insert(as_name.clone(), full_path.join("."));
+                aliases.insert(as_name.clone(), full_path.dotted());
             }
             Item::Import {
                 path, only, except, ..
             } => {
-                let path_s = path.join(".");
-                let target_fns = module_fns.get(&path_s).cloned().unwrap_or_default();
+                let path_s = path.dotted();
+                let target_fns = module_fns
+                    .get(path)
+                    .map(|exports| exports.fns.clone())
+                    .unwrap_or_default();
                 let pairs: Vec<(String, usize)> = if let Some(allow) = only {
                     allow.clone()
                 } else if let Some(deny) = except {
                     let deny_set: HashSet<(String, usize)> = deny.iter().cloned().collect();
                     target_fns
-                        .iter()
+                        .keys()
                         .filter(|p| !deny_set.contains(*p))
                         .cloned()
                         .collect()
                 } else {
-                    target_fns.iter().cloned().collect()
+                    target_fns.keys().cloned().collect()
                 };
                 for (name, arity) in pairs {
                     imports.insert((name, arity), path_s.clone());
@@ -388,7 +453,8 @@ fn flatten_module(
     for item in &m.items {
         match &**item {
             Item::Fn(def) => {
-                let qualified_name = format!("{}.{}", module_path, def.name);
+                let qualified_name =
+                    QualifiedName::in_module(module_name.clone(), def.name.clone()).dotted();
                 let mut new_def = def.clone();
                 new_def.name = qualified_name;
                 for clause in &mut new_def.clauses {
@@ -417,7 +483,7 @@ fn flatten_module(
                 out.push(Rc::new(Item::Fn(new_def)));
             }
             Item::Module(inner) => {
-                flatten_module(inner, &module_path, out, module_paths, module_fns)?;
+                flatten_module(inner, Some(&module_name), out, module_paths, module_fns)?;
             }
             Item::Alias { .. } | Item::Import { .. } => {}
             Item::MacroCall {
@@ -1399,6 +1465,70 @@ fn main(), do: nil
         let d = err.to_diagnostic();
         assert_ne!(d.primary.span, Span::DUMMY);
         assert_eq!(d.code, codes::RESOLVE_IMPORT_OUTSIDE_MODULE);
+    }
+
+    #[test]
+    fn duplicate_module_diag_has_primary_and_first_definition_spans() {
+        let mut ct = crate::types::ConcreteTypes;
+        let err = flatten_modules(
+            &mut ct,
+            parse(
+                r#"
+defmodule M do
+  fn one(), do: 1
+end
+defmodule M do
+  fn two(), do: 2
+end
+"#,
+            ),
+        )
+        .unwrap_err();
+        let d = err.to_diagnostic();
+        assert_eq!(d.code, codes::RESOLVE_DUPLICATE_MODULE);
+        assert_ne!(d.primary.span, Span::DUMMY);
+        assert_eq!(d.secondaries.len(), 1);
+        assert_ne!(d.secondaries[0].span, Span::DUMMY);
+    }
+
+    #[test]
+    fn duplicate_export_diag_names_module_function_and_arity() {
+        let parsed = parse(
+            r#"
+fn f(x), do: x
+fn g(y), do: y
+"#,
+        );
+        let mut defs: Vec<FnDef> = parsed
+            .items
+            .iter()
+            .filter_map(|item| match &**item {
+                Item::Fn(def) => Some(def.clone()),
+                _ => None,
+            })
+            .collect();
+        defs[1].name = "f".to_string();
+        let module = ModuleDef {
+            name: "M".to_string(),
+            name_span: Span::DUMMY,
+            items: vec![
+                Rc::new(Item::Fn(defs[0].clone())),
+                Rc::new(Item::Fn(defs[1].clone())),
+            ],
+            attrs: Vec::new(),
+            span: Span::DUMMY,
+        };
+        let prog = Program {
+            items: vec![Rc::new(Item::Module(module))],
+            ..Program::default()
+        };
+        let mut ct = crate::types::ConcreteTypes;
+        let err = flatten_modules(&mut ct, prog).unwrap_err();
+        let d = err.to_diagnostic();
+        assert_eq!(d.code, codes::RESOLVE_DUPLICATE_EXPORT);
+        assert_eq!(d.message, "export `M.f/1` is defined more than once");
+        assert_ne!(d.primary.span, Span::DUMMY);
+        assert_eq!(d.secondaries.len(), 1);
     }
 
     #[test]

@@ -1,4 +1,5 @@
 use crate::diag::{Span, SpanOrigin};
+use crate::module_identity::ModuleName;
 use std::rc::Rc;
 
 /// A `Vec<Token>` representing a type expression whose resolution is deferred
@@ -395,7 +396,7 @@ pub enum Item {
     /// Only valid inside a defmodule body; the resolver consumes these and
     /// they don't survive into the flattened Program.
     Alias {
-        full_path: Vec<String>,
+        full_path: ModuleName,
         as_name: String,
         span: Span,
     },
@@ -403,7 +404,7 @@ pub enum Item {
     /// `import Mod, except: [...]`. Only valid inside a defmodule body;
     /// resolver-consumed.
     Import {
-        path: Vec<String>,
+        path: ModuleName,
         /// Whitelist of (name, arity) pairs. None means "all fns in the
         /// imported module". Mutually exclusive with `except`.
         only: Option<Vec<(String, usize)>>,

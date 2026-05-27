@@ -18,6 +18,8 @@ pub const PARSE_EXPECTED_TOKEN: DiagCode = DiagCode("parse/expected-token");
 
 pub const RESOLVE_ALIAS_OUTSIDE_MODULE: DiagCode = DiagCode("resolve/alias-outside-module");
 pub const RESOLVE_IMPORT_OUTSIDE_MODULE: DiagCode = DiagCode("resolve/import-outside-module");
+pub const RESOLVE_DUPLICATE_MODULE: DiagCode = DiagCode("resolve/duplicate-module");
+pub const RESOLVE_DUPLICATE_EXPORT: DiagCode = DiagCode("resolve/duplicate-export");
 pub const RESOLVE_TYPE_ALIAS: DiagCode = DiagCode("resolve/type-alias");
 pub const SPEC_VIOLATION: DiagCode = DiagCode("spec/violation");
 
@@ -86,6 +88,8 @@ mod tests {
             PARSE_EXPECTED_TOKEN,
             RESOLVE_ALIAS_OUTSIDE_MODULE,
             RESOLVE_IMPORT_OUTSIDE_MODULE,
+            RESOLVE_DUPLICATE_MODULE,
+            RESOLVE_DUPLICATE_EXPORT,
             RESOLVE_TYPE_ALIAS,
             SPEC_VIOLATION,
             MACRO_NOT_A_DEFMACRO,
