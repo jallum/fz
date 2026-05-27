@@ -1,7 +1,7 @@
 use super::closures::resolve_closure_return;
 use super::fn_types::{
-    CallsiteFnConsts, EmitterSite, ReturnContextPlan, ReturnContextPlanKey, ReturnDemand, SpecKey,
-    SpecPlan, WALK_CALLS, padded_direct_input_tys, recursive_direct_spec_key,
+    CallEdgePlan, CallEdgeTarget, CallsiteFnConsts, EmitterSite, ReturnContextPlan, ReturnDemand,
+    SpecKey, SpecPlan, WALK_CALLS, padded_direct_input_tys, recursive_direct_spec_key,
     recursive_direct_spec_key_for_arity, spec_key_for_fn,
 };
 use super::reachable::cont_key_from_slot0;
@@ -24,19 +24,10 @@ pub(crate) struct WalkResult {
     /// Recursive direct calls are normalized before emission, so this key
     /// agrees with the call-edge fact consumed by codegen.
     pub(crate) emits: Vec<(EmitterSite, SpecKey)>,
-    /// Per-callsite dispatch fact: the spec key the planner resolved for this
-    /// site after recursive-key normalization. This is the same key emitted
-    /// above, so `SpecPlan.call_edges` and codegen agree by construction.
-    ///
-    /// Populated for `Direct`, `ClosureCall`, and `Cont` slots. `MakeClosure`
-    /// emits an any-key body spec but does not record a dispatch fact.
-    pub(crate) dispatch_targets: HashMap<crate::fz_ir::CallsiteId, SpecKey>,
-    /// Per-callsite typed return-use facts for this caller spec. These facts
-    /// describe the result hole reached by the call result; they do not imply
-    /// whole-caller demand inheritance.
-    pub(crate) return_uses: HashMap<crate::fz_ir::CallsiteId, ReturnDemand>,
-    /// Typed return-context lowering plans, keyed by caller spec and callsite.
-    pub(crate) return_context_plans: HashMap<ReturnContextPlanKey, ReturnContextPlan>,
+    /// Per-callsite capability selected for this spec. Populated for `Direct`,
+    /// `ClosureCall`, and `Cont` slots. `MakeClosure` emits an any-key body spec
+    /// but does not record a call edge.
+    pub(crate) call_edges: HashMap<crate::fz_ir::CallsiteId, CallEdgePlan>,
     /// `callee_key`s whose `effective_return` was consulted (for
     /// cont slot-0 keying or closure_lit return-join). Driver folds
     /// into the `return_readers` reverse index so changes
@@ -65,32 +56,39 @@ impl WalkResult {
         target: SpecKey,
     ) -> CallsiteId {
         let cid = Self::callsite_id(caller, ident, slot);
-        self.dispatch_targets.insert(cid.clone(), target);
+        self.call_edges.insert(
+            cid.clone(),
+            CallEdgePlan {
+                target: CallEdgeTarget::Local(target),
+                return_use: None,
+                return_context: None,
+            },
+        );
         cid
     }
 
     fn record_return_use(
         &mut self,
-        caller: &SpecKey,
         callsite: &CallsiteId,
         demand: ReturnDemand,
         plan: Option<ReturnContextPlan>,
     ) {
-        self.return_uses.insert(callsite.clone(), demand);
+        let edge = self
+            .call_edges
+            .get_mut(callsite)
+            .expect("return-use facts require an existing call edge");
+        edge.return_use = Some(demand);
         if let Some(plan) = plan {
-            self.return_context_plans
-                .insert(ReturnContextPlanKey::new(caller, callsite), plan);
+            edge.return_context = Some(plan);
         }
     }
 
-    fn record_return_context_plan(
-        &mut self,
-        caller: &SpecKey,
-        callsite: &CallsiteId,
-        plan: ReturnContextPlan,
-    ) {
-        self.return_context_plans
-            .insert(ReturnContextPlanKey::new(caller, callsite), plan);
+    fn record_return_context_plan(&mut self, callsite: &CallsiteId, plan: ReturnContextPlan) {
+        let edge = self
+            .call_edges
+            .get_mut(callsite)
+            .expect("return-context plans require an existing call edge");
+        edge.return_context = Some(plan);
     }
 }
 
@@ -300,24 +298,21 @@ where
                 continuation,
             );
             entry_key.demand = demand;
-            self.out.record_return_use(
-                self.caller_spec_key,
-                &cid,
-                entry_key.demand.clone(),
-                context_plan,
-            );
+            self.out
+                .record_dispatch(self.caller_spec_key, term_ident, slot, entry_key.clone());
+            self.out
+                .record_return_use(&cid, entry_key.demand.clone(), context_plan);
         } else if matches!(term, Term::TailCall { .. }) {
             let (demand, context_plan) = tail_call_return_plan(self.caller_spec_key, callee, args);
             entry_key.demand = demand;
-            self.out.record_return_use(
-                self.caller_spec_key,
-                &cid,
-                entry_key.demand.clone(),
-                context_plan,
-            );
+            self.out
+                .record_dispatch(self.caller_spec_key, term_ident, slot, entry_key.clone());
+            self.out
+                .record_return_use(&cid, entry_key.demand.clone(), context_plan);
+        } else {
+            self.out
+                .record_dispatch(self.caller_spec_key, term_ident, slot, entry_key.clone());
         }
-        self.out
-            .record_dispatch(self.caller_spec_key, term_ident, slot, entry_key.clone());
         let per_arg = self.fn_constant_args(args, n_params);
         merge_callsite_fn_consts(self.callsite_fn_consts, &entry_key, per_arg);
         self.emit(slot, term_ident.clone(), entry_key);
@@ -389,7 +384,7 @@ where
         let demand = continuation_return_demand(self.m, self.caller_spec_key, &cont, &source);
         let mut entry_key = spec_key_for_fn(cont_fn, std::mem::take(&mut key));
         entry_key.demand = demand.clone();
-        if let Some(plan) = continuation_empty_tail_plan(
+        let context_plan = continuation_empty_tail_plan(
             self.t,
             self.m,
             self.caller_spec_key,
@@ -397,14 +392,14 @@ where
             &source,
             &demand,
             &entry_key,
-        ) {
-            let cid = WalkResult::callsite_id(self.caller_spec_key, term_ident, slot);
-            self.out
-                .record_return_context_plan(self.caller_spec_key, &cid, plan);
-        }
+        );
         merge_callsite_fn_consts(self.callsite_fn_consts, &entry_key, per_param);
-        self.out
-            .record_dispatch(self.caller_spec_key, term_ident, slot, entry_key.clone());
+        let cid =
+            self.out
+                .record_dispatch(self.caller_spec_key, term_ident, slot, entry_key.clone());
+        if let Some(plan) = context_plan {
+            self.out.record_return_context_plan(&cid, plan);
+        }
         self.emit(slot, term_ident.clone(), entry_key);
     }
 
@@ -441,8 +436,9 @@ where
         let direct_cid =
             WalkResult::callsite_id(self.caller_spec_key, term_ident, EmitSlot::Direct);
         self.out
-            .dispatch_targets
+            .call_edges
             .get(&direct_cid)
+            .and_then(CallEdgePlan::local_target)
             .cloned()
             .unwrap_or_else(|| {
                 let arg_tys = self.arg_tys(args, env);

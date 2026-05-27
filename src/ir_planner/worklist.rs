@@ -253,7 +253,7 @@ fn local_effect_summary(m: &Module, key: &SpecKey, mt: &ModulePlan) -> EffectSum
 ///   3. Diff `result.emits` against the spec's prior emits
 ///      (`emits_by_caller[spec_key]`). Transition `produces` and
 ///      `holders`. Enqueue new target specs.
-///   4. Install dispatches, return-use facts, and return-context plans.
+///   4. Install call-edge plans.
 ///   5. Fold `result.closure_handles` into the module-level handle set.
 ///   6. Recompute this spec's effective return. If changed, enqueue
 ///      every spec in `return_readers[spec]`.
@@ -297,9 +297,7 @@ pub(crate) fn process_worklist<
         );
         let WalkResult {
             emits,
-            dispatch_targets,
-            return_uses,
-            return_context_plans,
+            call_edges,
             return_reads,
             closure_handles: discovered_handles,
         } = result;
@@ -313,13 +311,7 @@ pub(crate) fn process_worklist<
             holders,
             emits_by_caller,
         );
-        install_walk_result(
-            specs,
-            &spec_key,
-            dispatch_targets,
-            return_uses,
-            return_context_plans,
-        );
+        install_walk_result(specs, &spec_key, call_edges);
         closure_handles.extend(discovered_handles);
         update_effective_return_and_enqueue_readers(
             t,
@@ -471,23 +463,10 @@ fn remove_stale_emit_sites(
 fn install_walk_result(
     specs: &mut HashMap<SpecKey, SpecPlan>,
     spec_key: &SpecKey,
-    dispatch_targets: HashMap<crate::fz_ir::CallsiteId, SpecKey>,
-    return_uses: HashMap<crate::fz_ir::CallsiteId, super::fn_types::ReturnDemand>,
-    return_context_plans: HashMap<
-        super::fn_types::ReturnContextPlanKey,
-        super::fn_types::ReturnContextPlan,
-    >,
+    call_edges: HashMap<crate::fz_ir::CallsiteId, super::fn_types::CallEdgePlan>,
 ) {
     if let Some(ft) = specs.get_mut(spec_key) {
-        ft.install_call_edges(
-            spec_key,
-            &dispatch_targets,
-            &return_uses,
-            &return_context_plans,
-        );
-        ft.dispatches = dispatch_targets;
-        ft.return_uses = return_uses;
-        ft.return_context_plans = return_context_plans;
+        ft.install_call_edges(call_edges);
     }
 }
 
