@@ -5,7 +5,8 @@ use super::fn_types::{
     CallsiteFnConsts, EffectSummary, EmitsByCaller, EmitterSiteSet, HoldersMap, ModulePlan,
     PLAN_MODULE_CALLS, ProducesMap, ReturnReaders, SpecKey, SpecKeySet, SpecPlan, TYPE_FN_CALLS,
     VISIT_HARD_BOUND, WALK_CALLS, WORKLIST_POPS, build_any_key_index, key_precedence_order,
-    recursive_direct_spec_key, spec_key_for_fn_id, spec_key_input_tys,
+    recursive_direct_spec_key, recursive_direct_spec_key_for_arity, spec_key_for_fn_id,
+    spec_key_input_tys,
 };
 use super::reachable::env_at_terminator;
 use super::type_fn::type_fn;
@@ -603,9 +604,17 @@ fn known_tail_closure_return_contribution<T: crate::types::Types<Ty = crate::typ
 ) -> crate::types::Ty {
     let target_fn = module.fn_by_id(target);
     let np = target_fn.block(target_fn.entry).params.len();
-    let ad = padded_arg_tys(t, term_env, args, np);
-    let mut key = recursive_direct_spec_key(t, module, recursive_fns, spec_key.fn_id, target, ad);
-    key.demand = spec_key.demand.clone();
+    let ad = arg_tys(t, term_env, args);
+    let key = recursive_direct_spec_key_for_arity(
+        t,
+        module,
+        recursive_fns,
+        spec_key.fn_id,
+        target,
+        ad,
+        np,
+        Some(spec_key.demand.clone()),
+    );
     lookup_return_read(t, effective_returns, reads, key)
 }
 
@@ -637,16 +646,16 @@ fn literal_tail_closure_return_contribution<
             let np = target_fn.block(target_fn.entry).params.len();
             let mut full_key = captures.clone();
             full_key.extend(arg_tys(t, term_env, args));
-            pad_and_truncate_tys(t, &mut full_key, np);
-            let mut key = recursive_direct_spec_key(
+            let key = recursive_direct_spec_key_for_arity(
                 t,
                 module,
                 recursive_fns,
                 spec_key.fn_id,
                 fn_id,
                 full_key,
+                np,
+                Some(spec_key.demand.clone()),
             );
-            key.demand = spec_key.demand.clone();
             let dy = lookup_return_read(t, effective_returns, reads, key);
             acc = t.union(acc, dy);
         }
@@ -757,28 +766,6 @@ fn arg_tys<T: crate::types::Types<Ty = crate::types::Ty>>(
         .collect()
 }
 
-fn padded_arg_tys<T: crate::types::Types<Ty = crate::types::Ty>>(
-    t: &mut T,
-    term_env: &HashMap<crate::fz_ir::Var, crate::types::Ty>,
-    args: &[crate::fz_ir::Var],
-    n: usize,
-) -> Vec<crate::types::Ty> {
-    let mut tys = arg_tys(t, term_env, args);
-    pad_and_truncate_tys(t, &mut tys, n);
-    tys
-}
-
-fn pad_and_truncate_tys<T: crate::types::Types<Ty = crate::types::Ty>>(
-    t: &mut T,
-    tys: &mut Vec<crate::types::Ty>,
-    n: usize,
-) {
-    while tys.len() < n {
-        tys.push(t.any());
-    }
-    tys.truncate(n);
-}
-
 /// fz-5j5.3 — reconstruct the cont's input-type key at this block's
 /// terminator using current `effective_returns` for slot 0. Mirrors
 /// the walker's cont-key construction so the keys we look up are
@@ -822,16 +809,20 @@ pub(crate) fn cont_key_for_spec<
             if let Some(&target) = ft.fn_constants.get(closure) {
                 let target_fn = module.fn_by_id(target);
                 let np = target_fn.block(target_fn.entry).params.len();
-                let mut ad: Vec<Ty> = args
+                let ad: Vec<Ty> = args
                     .iter()
                     .map(|av| env.get(av).cloned().unwrap_or_else(|| any_t.clone()))
                     .collect();
-                while ad.len() < np {
-                    ad.push(any_t.clone());
-                }
-                ad.truncate(np);
-                let lookup_key =
-                    recursive_direct_spec_key(t, module, recursive_fns, caller, target, ad);
+                let lookup_key = recursive_direct_spec_key_for_arity(
+                    t,
+                    module,
+                    recursive_fns,
+                    caller,
+                    target,
+                    ad,
+                    np,
+                    None,
+                );
                 effective_returns
                     .get(&lookup_key)
                     .cloned()

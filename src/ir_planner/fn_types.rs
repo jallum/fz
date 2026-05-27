@@ -656,3 +656,33 @@ pub(crate) fn recursive_direct_spec_key<T: crate::types::Types<Ty = crate::types
     let key = normalize_recursive_direct_key(t, recursive_fns, key, caller, callee, module);
     spec_key_for_fn_id(module, callee, key)
 }
+
+pub(crate) fn padded_direct_input_tys<T: crate::types::Types<Ty = crate::types::Ty>>(
+    t: &mut T,
+    mut input_tys: Vec<crate::types::Ty>,
+    arity: usize,
+) -> Vec<crate::types::Ty> {
+    while input_tys.len() < arity {
+        input_tys.push(t.any());
+    }
+    input_tys.truncate(arity);
+    input_tys
+}
+
+pub(crate) fn recursive_direct_spec_key_for_arity<T: crate::types::Types<Ty = crate::types::Ty>>(
+    t: &mut T,
+    module: &Module,
+    recursive_fns: &std::collections::HashSet<FnId>,
+    caller: FnId,
+    callee: FnId,
+    input_tys: Vec<crate::types::Ty>,
+    arity: usize,
+    demand: Option<ReturnDemand>,
+) -> SpecKey {
+    let input_tys = padded_direct_input_tys(t, input_tys, arity);
+    let mut key = recursive_direct_spec_key(t, module, recursive_fns, caller, callee, input_tys);
+    if let Some(demand) = demand {
+        key.demand = demand;
+    }
+    key
+}

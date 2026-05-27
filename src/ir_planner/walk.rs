@@ -1,7 +1,8 @@
 use super::closures::resolve_closure_return;
 use super::fn_types::{
     CallsiteFnConsts, EmitterSite, ReturnContextPlan, ReturnContextPlanKey, ReturnDemand, SpecKey,
-    SpecPlan, WALK_CALLS, recursive_direct_spec_key, spec_key_for_fn,
+    SpecPlan, WALK_CALLS, padded_direct_input_tys, recursive_direct_spec_key,
+    recursive_direct_spec_key_for_arity, spec_key_for_fn,
 };
 use super::return_context::{
     continuation_empty_tail_plan, continuation_return_demand, direct_call_return_plan,
@@ -484,14 +485,15 @@ where
     ) -> Option<crate::types::Ty> {
         let target_fn = self.m.fn_by_id(target);
         let n_params = target_fn.block(target_fn.entry).params.len();
-        let arg_tys = self.padded_arg_tys(args, env, n_params);
-        let callee_key = recursive_direct_spec_key(
+        let callee_key = recursive_direct_spec_key_for_arity(
             self.t,
             self.m,
             self.recursive_fns,
             self.caller_spec_key.fn_id,
             target,
-            arg_tys,
+            self.arg_tys(args, env),
+            n_params,
+            None,
         );
         self.out.return_reads.push(callee_key.clone());
         self.effective_returns.get(&callee_key).cloned()
@@ -558,17 +560,19 @@ where
     ) -> Option<(SpecKey, usize)> {
         let callee_fn = self.m.fn_idx.get(&callee).map(|j| &self.m.fns[*j])?;
         let n_params = callee_fn.block(callee_fn.entry).params.len();
-        let dispatch_key = self.padded_arg_tys(args, env, n_params);
+        let dispatch_key = padded_direct_input_tys(self.t, self.arg_tys(args, env), n_params);
         if self.has_bottom_arg(&dispatch_key) {
             return None;
         }
-        let key = recursive_direct_spec_key(
+        let key = recursive_direct_spec_key_for_arity(
             self.t,
             self.m,
             self.recursive_fns,
             self.caller_spec_key.fn_id,
             callee,
             dispatch_key,
+            n_params,
+            None,
         );
         Some((key, n_params))
     }
@@ -584,17 +588,19 @@ where
         let n_params = target_fn.block(target_fn.entry).params.len();
         let mut dispatch_key = captures;
         dispatch_key.extend(self.arg_tys(args, env));
-        pad_and_truncate(&mut dispatch_key, n_params, &self.any_ty);
+        dispatch_key = padded_direct_input_tys(self.t, dispatch_key, n_params);
         if self.has_bottom_arg(&dispatch_key) {
             return None;
         }
-        Some(recursive_direct_spec_key(
+        Some(recursive_direct_spec_key_for_arity(
             self.t,
             self.m,
             self.recursive_fns,
             self.caller_spec_key.fn_id,
             fn_id,
             dispatch_key,
+            n_params,
+            None,
         ))
     }
 
@@ -638,17 +644,6 @@ where
             }
         }
         per_param
-    }
-
-    fn padded_arg_tys(
-        &self,
-        args: &[Var],
-        env: &HashMap<Var, crate::types::Ty>,
-        n_params: usize,
-    ) -> Vec<crate::types::Ty> {
-        let mut tys = self.arg_tys(args, env);
-        pad_and_truncate(&mut tys, n_params, &self.any_ty);
-        tys
     }
 
     fn arg_tys(&self, args: &[Var], env: &HashMap<Var, crate::types::Ty>) -> Vec<crate::types::Ty> {
