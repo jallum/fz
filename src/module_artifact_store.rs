@@ -104,6 +104,19 @@ impl ArtifactStore {
         Ok(written)
     }
 
+    pub fn write_fzi_artifacts_with_telemetry(
+        &self,
+        tel: &dyn crate::telemetry::Telemetry,
+        interfaces: &BTreeMap<ModuleName, ModuleInterface>,
+    ) -> Result<Vec<PathBuf>, ArtifactStoreError> {
+        let written = self.write_fzi_artifacts(interfaces)?;
+        tel.event(
+            &["fz", "module", "fzi_written"],
+            crate::metadata! { modules: written.len() as i64 },
+        );
+        Ok(written)
+    }
+
     pub fn write_fzo_artifacts<'a>(
         &self,
         artifacts: impl IntoIterator<Item = &'a FzoArtifact>,
@@ -119,6 +132,19 @@ impl ArtifactStore {
             write_artifact_text(&path, artifact.serialize())?;
             written.push(path);
         }
+        Ok(written)
+    }
+
+    pub fn write_fzo_artifacts_with_telemetry<'a>(
+        &self,
+        tel: &dyn crate::telemetry::Telemetry,
+        artifacts: impl IntoIterator<Item = &'a FzoArtifact>,
+    ) -> Result<Vec<PathBuf>, ArtifactStoreError> {
+        let written = self.write_fzo_artifacts(artifacts)?;
+        tel.event(
+            &["fz", "module", "fzo_written"],
+            crate::metadata! { modules: written.len() as i64 },
+        );
         Ok(written)
     }
 
@@ -152,6 +178,22 @@ impl ArtifactStore {
         Ok(table)
     }
 
+    pub fn load_interface_table_with_telemetry<'a>(
+        &self,
+        tel: &dyn crate::telemetry::Telemetry,
+        modules: impl IntoIterator<Item = &'a ModuleName>,
+    ) -> Result<BTreeMap<ModuleName, ModuleInterface>, ArtifactStoreError> {
+        let modules = modules.into_iter().collect::<Vec<_>>();
+        let table = self.load_interface_table(modules.iter().copied())?;
+        if !modules.is_empty() {
+            tel.event(
+                &["fz", "module", "fzi_loaded"],
+                crate::metadata! { modules: modules.len() as i64 },
+            );
+        }
+        Ok(table)
+    }
+
     pub fn load_fzo_artifact(
         &self,
         module: &ModuleName,
@@ -168,6 +210,20 @@ impl ArtifactStore {
                 diagnostic: Box::new(diagnostic),
             }
         })
+    }
+
+    pub fn load_fzo_artifact_with_telemetry(
+        &self,
+        tel: &dyn crate::telemetry::Telemetry,
+        module: &ModuleName,
+        expected_interface_fingerprint: Option<&[String]>,
+    ) -> Result<FzoArtifact, ArtifactStoreError> {
+        let artifact = self.load_fzo_artifact(module, expected_interface_fingerprint)?;
+        tel.event(
+            &["fz", "module", "fzo_loaded"],
+            crate::metadata! { modules: 1i64 },
+        );
+        Ok(artifact)
     }
 }
 

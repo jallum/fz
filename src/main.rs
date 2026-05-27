@@ -283,7 +283,7 @@ fn run_build(tel: &telemetry::ConfiguredTelemetry, args: &[String]) {
         diag::report_or_exit_through(tel, &diags);
         let store = module_artifact_store::ArtifactStore::new(&artifact_root);
         store
-            .write_fzi_artifacts(&prepared.interfaces)
+            .write_fzi_artifacts_with_telemetry(tel, &prepared.interfaces)
             .unwrap_or_else(|e| {
                 tel.event(
                     &["fz", "build", "fzi_failed"],
@@ -681,7 +681,7 @@ fn run_dump(tel: &telemetry::ConfiguredTelemetry, args: &[String]) {
         std::process::exit(1);
     });
     let interface_table =
-        load_interface_table_or_exit("fz dump", &artifact_root, &interface_modules);
+        load_interface_table_or_exit("fz dump", &artifact_root, &interface_modules, tel);
 
     if emit_specs {
         if fn_filter.is_some() {
@@ -888,12 +888,15 @@ fn load_interface_table_or_exit(
     context: &str,
     artifact_root: &str,
     modules: &[module_identity::ModuleName],
+    tel: &dyn telemetry::Telemetry,
 ) -> resolve::InterfaceTable {
     let store = module_artifact_store::ArtifactStore::new(artifact_root);
-    store.load_interface_table(modules).unwrap_or_else(|e| {
-        eprintln!("{context}: {e}");
-        std::process::exit(1);
-    })
+    store
+        .load_interface_table_with_telemetry(tel, modules)
+        .unwrap_or_else(|e| {
+            eprintln!("{context}: {e}");
+            std::process::exit(1);
+        })
 }
 
 fn prepare_frontend_for_mode(
@@ -905,6 +908,10 @@ fn prepare_frontend_for_mode(
 ) -> PreparedFrontend {
     let frontend = run_frontend(result, sm_cell, tel);
     let interfaces = frontend._prog.module_interfaces;
+    tel.event(
+        &["fz", "module", "interfaces_collected"],
+        metadata! { interfaces: interfaces.len() as i64 },
+    );
     if mode.is_lto() {
         let linked = LtoLinkedProgram::validate(frontend.module, interfaces, tel);
         let (module, interfaces) = linked.erase_boundaries(tel);
@@ -1469,4 +1476,41 @@ fn run_jit_src(
     let mut rt = runtime::Runtime::new(&compiled.cm, 1).with_module(&compiled.module);
     let _main_pid = rt.spawn(main_fn);
     rt.run_until_idle();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn compile_pipeline_emits_module_and_lto_telemetry() {
+        let src = r#"
+defmodule Math do
+  @spec add(integer, integer) :: integer
+  fn add(x, y), do: x + y
+end
+defmodule User do
+  import Math, only: [add: 2]
+  @spec run() :: integer
+  fn run(), do: add(20, 22)
+end
+fn main(), do: User.run()
+"#;
+        let tel = telemetry::ConfiguredTelemetry::new();
+        let capture = telemetry::Capture::new();
+        tel.attach(&["fz"], capture.handler());
+        let sm_cell = Rc::new(RefCell::new(diag::SourceMap::new()));
+
+        let _compiled = compile_pipeline(
+            &tel,
+            &sm_cell,
+            src.to_string(),
+            "telemetry.fz".to_string(),
+            CompileMode::Lto,
+        );
+
+        assert!(capture.contains(&["fz", "module", "interfaces_collected"]));
+        assert!(capture.contains(&["fz", "lto", "interfaces_validated"]));
+        assert!(capture.contains(&["fz", "lto", "boundaries_erased"]));
+    }
 }

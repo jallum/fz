@@ -384,9 +384,18 @@ fn main(), do: User.run()
         )],
     );
 
-    let image =
-        CompiledImage::link_compiled(&[math, user], &[math_rt, user_rt], compiled).expect("link");
+    let tel = crate::telemetry::ConfiguredTelemetry::new();
+    let capture = crate::telemetry::Capture::new();
+    tel.attach(&["fz", "link"], capture.handler());
+    let image = CompiledImage::link_compiled_with_telemetry(
+        &tel,
+        &[math, user],
+        &[math_rt, user_rt],
+        compiled,
+    )
+    .expect("link");
     assert!(image.metadata().is_some());
+    assert!(capture.contains(&["fz", "link", "succeeded"]));
     assert_eq!(image.run(entry), 42);
 }
 

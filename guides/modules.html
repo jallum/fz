@@ -358,6 +358,11 @@ fz dump --lto --emit bodies path/to/file.fz</pre>
 <p><code>--whole-program</code> is accepted as an alias for
 <code>--lto</code>.</p>
 
+<p><code>dump --emit stats</code> is the process view. It counts events such
+as interface collection, artifact loads/writes, link success/failure, and LTO
+boundary erasure. <code>dump --emit interfaces</code> and
+<code>dump --emit specs</code> remain product views.</p>
+
 <p>LTO does three things in order:</p>
 
 <ol>

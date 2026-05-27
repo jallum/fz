@@ -136,6 +136,22 @@ run infer and plan internally?" Interface dumps include a stable
 fingerprint digest for compatibility checks and the human-readable
 fingerprint inputs for debugging.
 
+Telemetry keeps process facts out of product dumps:
+
+- `fz.module.interfaces_collected`
+- `fz.module.fzi_written`
+- `fz.module.fzi_loaded`
+- `fz.module.fzo_written`
+- `fz.module.fzo_loaded`
+- `fz.link.succeeded`
+- `fz.link.failed`
+- `fz.lto.interfaces_validated`
+- `fz.lto.boundaries_erased`
+
+Use `fz dump --emit stats` to inspect these event counts. Keep
+`dump --emit interfaces` and `dump --emit specs` as product views: interfaces
+render public contracts, specs render planner state.
+
 ## Artifact Store Paths
 
 `module_artifact_store::ArtifactStore` owns the filesystem path policy for
@@ -180,9 +196,12 @@ fz build --emit-fzi --artifact-root build/fz path/to/input.fz -o path/to/app
 `--emit-fzi` writes one `.fzi` per module through `ArtifactStore` and applies
 strict public export-spec validation before writing. Loading uses
 `ArtifactStore::load_fzi_artifact` / `load_interface_table`, which deserialize
-`FziArtifact` without reading the provider source body. Object artifacts use
-`ArtifactStore::write_fzo_artifacts` and `load_fzo_artifact`; the object path
-comes from the same typed `ModuleName` policy.
+`FziArtifact` without reading the provider source body. Telemetry-producing
+variants (`write_fzi_artifacts_with_telemetry`,
+`load_interface_table_with_telemetry`) emit process facts for stats dumps.
+Object artifacts use `ArtifactStore::write_fzo_artifacts` and
+`load_fzo_artifact`; their telemetry variants emit `.fzo` write/load process
+facts. The object path comes from the same typed `ModuleName` policy.
 
 Frontend-only dump commands can load provider interfaces from the same store:
 

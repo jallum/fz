@@ -105,6 +105,11 @@ LTO / whole-program mode:
   run/build/dump paths. LTO mode creates a validated `LtoLinkedProgram`; the
   boundary-erasure pass consumes that validated value, so the CLI cannot erase
   module boundaries before interface validation in normal control flow.
+- Module process facts are telemetry, not dump payloads. Stats should include
+  events such as `fz.module.interfaces_collected`, `.fzi`/`.fzo` write/load,
+  `fz.link.succeeded` / `fz.link.failed`, and the LTO validation/erasure
+  events. Product dumps remain separate: interfaces are public contracts;
+  specs are planner state.
 - `Module::interface_export_map` builds the implementation map from validated
   interface exports to loaded `FnId`s. `Module::rewrite_external_calls_for_lto`
   consumes that map and rewrites `ExternalCallEdge` placeholders to direct

@@ -116,6 +116,30 @@ impl CompiledImage {
         })
     }
 
+    pub fn link_compiled_with_telemetry(
+        tel: &dyn crate::telemetry::Telemetry,
+        units: &[CompiledUnit],
+        runtime_units: &[RuntimeUnitMetadata],
+        linked: CompiledModule,
+    ) -> Result<Self, ImageLinkError> {
+        match Self::link_compiled(units, runtime_units, linked) {
+            Ok(image) => {
+                tel.event(
+                    &["fz", "link", "succeeded"],
+                    crate::metadata! { units: units.len() as i64 },
+                );
+                Ok(image)
+            }
+            Err(err) => {
+                tel.event(
+                    &["fz", "link", "failed"],
+                    crate::metadata! { error: err.to_string() },
+                );
+                Err(err)
+            }
+        }
+    }
+
     pub fn metadata(&self) -> Option<&RuntimeImageMetadata> {
         self.metadata.as_ref()
     }

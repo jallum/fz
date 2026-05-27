@@ -313,26 +313,40 @@ mod tests {
         ));
         let _ = std::fs::remove_dir_all(&root);
         let store = crate::module_artifact_store::ArtifactStore::new(&root);
+        let tel = crate::telemetry::ConfiguredTelemetry::new();
+        let capture = crate::telemetry::Capture::new();
+        tel.attach(&["fz", "module"], capture.handler());
         let artifacts = artifacts();
         let interfaces = artifacts
             .iter()
             .map(|artifact| (artifact.module.clone(), artifact.interface.clone()))
             .collect::<BTreeMap<_, _>>();
 
-        let fzi_paths = store.write_fzi_artifacts(&interfaces).expect("write fzi");
+        let fzi_paths = store
+            .write_fzi_artifacts_with_telemetry(&tel, &interfaces)
+            .expect("write fzi");
         let fzo_paths = store
-            .write_fzo_artifacts(artifacts.iter().map(|artifact| &artifact.fzo))
+            .write_fzo_artifacts_with_telemetry(
+                &tel,
+                artifacts.iter().map(|artifact| &artifact.fzo),
+            )
             .expect("write fzo");
         assert_eq!(fzi_paths.len(), artifacts.len());
         assert_eq!(fzo_paths.len(), artifacts.len());
 
         let utf8 = ModuleName::from_segments(vec!["Utf8".to_string()]);
-        let loaded_interfaces = store.load_interface_table([&utf8]).expect("load fzi");
+        let loaded_interfaces = store
+            .load_interface_table_with_telemetry(&tel, [&utf8])
+            .expect("load fzi");
         assert!(loaded_interfaces[&utf8].exports.iter().any(|export| {
             export.name == "valid?" && export.arity == 1 && export.spec.is_some()
         }));
         let loaded_fzo = store
-            .load_fzo_artifact(&utf8, Some(&loaded_interfaces[&utf8].fingerprint_inputs))
+            .load_fzo_artifact_with_telemetry(
+                &tel,
+                &utf8,
+                Some(&loaded_interfaces[&utf8].fingerprint_inputs),
+            )
             .expect("load fzo");
         assert_eq!(loaded_fzo.module, Some(utf8));
         assert_eq!(loaded_fzo.unit_payload.format, "fz-runtime-module-v1");
@@ -355,6 +369,10 @@ end
             Ok(_) => {}
             Err(_) => panic!("runtime artifact interface resolves like a user artifact"),
         }
+        assert!(capture.contains(&["fz", "module", "fzi_written"]));
+        assert!(capture.contains(&["fz", "module", "fzo_written"]));
+        assert!(capture.contains(&["fz", "module", "fzi_loaded"]));
+        assert!(capture.contains(&["fz", "module", "fzo_loaded"]));
 
         let _ = std::fs::remove_dir_all(&root);
     }
