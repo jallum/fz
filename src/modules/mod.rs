@@ -10,4 +10,5 @@ pub(crate) mod artifact_store;
 pub(crate) mod graph;
 pub(crate) mod identity;
 pub(crate) mod interface;
+pub(crate) mod pipeline;
 pub(crate) mod runtime_library;

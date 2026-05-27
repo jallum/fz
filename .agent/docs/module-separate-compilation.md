@@ -136,10 +136,11 @@ LTO / whole-program mode:
 - `--lto` (alias `--whole-program`) is an explicit optimized build/dump/run
   mode. It validates public module interfaces first, then treats loaded
   compatible implementations as available for whole-program optimization.
-- `prepare_frontend_for_mode` is the shared CLI entry for normal and LTO
-  run/build/dump paths. LTO mode creates a validated `LtoLinkedProgram`; the
-  boundary-erasure pass consumes that validated value, so the CLI cannot erase
-  module boundaries before interface validation in normal control flow.
+- `modules::pipeline::checked_module_for_mode` is the shared entry for normal
+  and LTO run/build/dump paths. LTO mode creates a validated private
+  `LtoLinkedProgram`; the boundary-erasure pass consumes that validated value,
+  so callers cannot erase module boundaries before interface validation in
+  normal control flow.
 - Module process facts are telemetry, not dump payloads. Stats should include
   events such as `fz.module.interfaces_collected`, `.fzi`/`.fzo` write/load,
   `fz.module.graph_loaded`, `fz.link.succeeded` / `fz.link.failed`, and the

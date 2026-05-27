@@ -49,6 +49,7 @@ mod types;
 mod value;
 use crate::telemetry::Telemetry as _;
 use crate::types::Types;
+use modules::pipeline::{CompileMode, ProviderInputs};
 use std::cell::RefCell;
 use std::io::{IsTerminal, Read};
 use std::rc::Rc;
@@ -308,9 +309,15 @@ fn run_build(tel: &telemetry::ConfiguredTelemetry, args: &[String]) {
 
     let fzo_source = emit_fzo.then(|| src.clone());
     let providers = ProviderInputs::new(artifact_root.clone(), provider_modules);
-    let frontend_result =
-        compile_source_with_providers("fz build", &mut t, src, src_path.clone(), &providers, tel);
-    let prepared = checked_module_for_mode(&mut t, frontend_result, &sm_cell, tel, mode);
+    let frontend_result = modules::pipeline::compile_source_with_providers(
+        &mut t,
+        src,
+        src_path.clone(),
+        &providers,
+        tel,
+    )
+    .unwrap_or_else(|err| report_pipeline_error_or_exit("fz build", tel, &sm_cell, err));
+    let prepared = checked_module_or_exit("fz build", &mut t, frontend_result, &sm_cell, tel, mode);
     if emit_fzi || emit_fzo {
         let diags = modules::interface::validate_public_export_specs(&prepared.interfaces);
         diag::report_or_exit_through(tel, &diags);
@@ -328,9 +335,8 @@ fn run_build(tel: &telemetry::ConfiguredTelemetry, args: &[String]) {
             });
     }
 
-    let graph = prepare_execution_graph_or_exit(
-        "fz build", &mut t, prepared, &providers, &sm_cell, tel, mode,
-    );
+    let graph = modules::pipeline::prepare_execution_graph(&mut t, prepared, &providers, tel, mode)
+        .unwrap_or_else(|err| report_pipeline_error_or_exit("fz build", tel, &sm_cell, err));
 
     if emit_fzo {
         let unit = graph
@@ -764,7 +770,8 @@ fn run_dump(tel: &telemetry::ConfiguredTelemetry, args: &[String]) {
         std::process::exit(1);
     });
     let interface_table =
-        load_interface_table_or_exit("fz dump", &artifact_root, &interface_modules, tel);
+        modules::pipeline::load_interface_table(&artifact_root, &interface_modules, tel)
+            .unwrap_or_else(|err| report_pipeline_error_or_exit("fz dump", tel, &sm_cell, err));
 
     if emit_specs {
         if fn_filter.is_some() {
@@ -934,82 +941,6 @@ struct Compiled {
     module: fz_ir::Module,
 }
 
-struct CheckedModule {
-    module: fz_ir::Module,
-    module_plan: ir_planner::ModulePlan,
-    interfaces: std::collections::BTreeMap<
-        modules::identity::ModuleName,
-        modules::interface::ModuleInterface,
-    >,
-    sm: diag::SourceMap,
-}
-
-struct PreparedExecutionGraph {
-    units: Vec<ir_codegen::CompiledUnit>,
-    module: fz_ir::Module,
-    module_plan: ir_planner::ModulePlan,
-    sm: diag::SourceMap,
-}
-
-#[derive(Clone, Debug)]
-struct ProviderInputs {
-    artifact_root: String,
-    modules: Vec<modules::identity::ModuleName>,
-}
-
-impl ProviderInputs {
-    fn new(artifact_root: String, modules: Vec<modules::identity::ModuleName>) -> Self {
-        Self {
-            artifact_root,
-            modules,
-        }
-    }
-
-    fn is_empty(&self) -> bool {
-        self.modules.is_empty()
-    }
-}
-
-impl CheckedModule {
-    fn compiled_unit_input(&self) -> ir_codegen::CompiledUnit {
-        let interface = modules::identity::ModuleName::parse_dotted(self.module.module_path())
-            .ok()
-            .and_then(|module| self.interfaces.get(&module).cloned())
-            .or_else(|| {
-                if self.interfaces.len() == 1 {
-                    self.interfaces.values().next().cloned()
-                } else {
-                    None
-                }
-            });
-        ir_codegen::CompiledUnit::from_ir_module(
-            self.module.clone(),
-            interface,
-            diag::Diagnostics::new(),
-        )
-    }
-}
-
-struct LtoLinkedProgram {
-    module: fz_ir::Module,
-    interfaces: std::collections::BTreeMap<
-        modules::identity::ModuleName,
-        modules::interface::ModuleInterface,
-    >,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum CompileMode {
-    Normal,
-    Lto,
-}
-
-impl CompileMode {
-    fn is_lto(self) -> bool {
-        matches!(self, Self::Lto)
-    }
-}
-
 fn parse_module_name_arg(context: &str, text: &str) -> modules::identity::ModuleName {
     modules::identity::ModuleName::parse_dotted(text).unwrap_or_else(|err| {
         eprintln!("{context}: {err}");
@@ -1017,241 +948,59 @@ fn parse_module_name_arg(context: &str, text: &str) -> modules::identity::Module
     })
 }
 
-fn load_interface_table_or_exit(
+fn report_pipeline_error_or_exit(
     context: &str,
-    artifact_root: &str,
-    modules: &[modules::identity::ModuleName],
     tel: &dyn telemetry::Telemetry,
-) -> resolve::InterfaceTable {
-    let store = modules::artifact_store::ArtifactStore::new(artifact_root);
-    store
-        .load_interface_table_with_telemetry(tel, modules)
-        .unwrap_or_else(|e| {
-            eprintln!("{context}: {e}");
-            std::process::exit(1);
-        })
-}
-
-fn compile_source_with_providers(
-    context: &str,
-    t: &mut types::ConcreteTypes,
-    src: String,
-    source_name: String,
-    providers: &ProviderInputs,
-    tel: &dyn telemetry::Telemetry,
-) -> frontend::FrontendResult {
-    if providers.is_empty() {
-        frontend::compile_source_with_types(t, src, source_name, tel)
-    } else {
-        let interfaces = load_interface_table_or_exit(
-            context,
-            &providers.artifact_root,
-            &providers.modules,
-            tel,
-        );
-        frontend::compile_source_with_interface_table(t, src, source_name, interfaces, tel)
-    }
-}
-
-fn load_provider_units_or_exit(
-    context: &str,
-    t: &mut types::ConcreteTypes,
-    prepared: &CheckedModule,
-    providers: &ProviderInputs,
     sm_cell: &Rc<RefCell<diag::SourceMap>>,
-    tel: &dyn telemetry::Telemetry,
-) -> Vec<ir_codegen::CompiledUnit> {
-    let store = modules::artifact_store::ArtifactStore::new(&providers.artifact_root);
-    let graph = modules::graph::ModuleGraphLoader::new(store)
-        .load_reachable(&prepared.interfaces, &providers.modules)
-        .unwrap_or_else(|e| {
-            eprintln!("{context}: {e}");
-            std::process::exit(1);
-        });
-    tel.event(
-        &["fz", "module", "graph_loaded"],
-        metadata! {
-            interfaces: graph.interfaces.len() as i64,
-            objects: graph.objects.len() as i64,
-        },
-    );
-
-    let mut units = vec![prepared.compiled_unit_input()];
-    for object in graph.objects {
-        let module = object.module.clone().unwrap_or_else(|| {
-            eprintln!("{context}: fzo artifact has no module identity");
-            std::process::exit(1);
-        });
-        let source = object.source_unit_text().unwrap_or_else(|diagnostic| {
+    err: modules::pipeline::PipelineError,
+) -> ! {
+    match err {
+        modules::pipeline::PipelineError::Frontend(err) => {
+            *sm_cell.borrow_mut() = err.sm;
+            diag::report_or_exit_through(tel, err.diagnostics.as_slice());
+        }
+        modules::pipeline::PipelineError::Diagnostics { sm, diagnostics } => {
+            if let Some(sm) = sm {
+                *sm_cell.borrow_mut() = sm;
+            }
+            diag::report_or_exit_through(tel, diagnostics.as_slice());
+        }
+        modules::pipeline::PipelineError::DiagnosticVec { sm, diagnostics } => {
+            if let Some(sm) = sm {
+                *sm_cell.borrow_mut() = sm;
+            }
+            diag::report_or_exit_through(tel, &diagnostics);
+        }
+        modules::pipeline::PipelineError::Diagnostic(diagnostic) => {
             diag::report_or_exit_through(tel, &[diagnostic]);
-            std::process::exit(1);
-        });
-        let frontend = run_frontend(
-            frontend::compile_source_with_interface_table(
-                t,
-                source.to_string(),
-                format!("artifact:{module}"),
-                graph.interfaces.clone(),
-                tel,
-            ),
-            sm_cell,
-            tel,
-        );
-        let interface = graph.interfaces.get(&module).cloned();
-        units.push(ir_codegen::CompiledUnit::from_ir_module(
-            frontend.module,
-            interface,
-            diag::Diagnostics::new(),
-        ));
+        }
+        modules::pipeline::PipelineError::Artifact(err) => {
+            eprintln!("{context}: {err}");
+        }
+        modules::pipeline::PipelineError::Link(err) => {
+            let diagnostic = modules::pipeline::link_error_diagnostic(err);
+            diag::report_or_exit_through(tel, &[diagnostic]);
+        }
+        modules::pipeline::PipelineError::MissingFzoModule => {
+            eprintln!("{context}: fzo artifact has no module identity");
+        }
     }
-    units
-}
-
-fn report_link_error_or_exit(tel: &dyn telemetry::Telemetry, err: ir_codegen::ImageLinkError) -> ! {
-    diag::report_or_exit_through(
-        tel,
-        &[diag::Diagnostic::error(
-            diag::codes::CODEGEN_SCHEMA_MISSING,
-            err.to_string(),
-            diag::Span::DUMMY,
-        )],
-    );
     std::process::exit(1);
 }
 
-fn prepare_execution_graph_or_exit(
+fn checked_module_or_exit(
     context: &str,
-    t: &mut types::ConcreteTypes,
-    prepared: CheckedModule,
-    providers: &ProviderInputs,
-    sm_cell: &Rc<RefCell<diag::SourceMap>>,
-    tel: &dyn telemetry::Telemetry,
-    mode: CompileMode,
-) -> PreparedExecutionGraph {
-    let units = if providers.is_empty() {
-        vec![prepared.compiled_unit_input()]
-    } else {
-        load_provider_units_or_exit(context, t, &prepared, providers, sm_cell, tel)
-    };
-    let module = if providers.is_empty() {
-        units[0].code.clone()
-    } else {
-        ir_codegen::link_ir_units(&units).unwrap_or_else(|e| report_link_error_or_exit(tel, e))
-    };
-    let module_plan = if providers.is_empty() {
-        prepared.module_plan
-    } else if mode.is_lto() {
-        let interfaces = units
-            .iter()
-            .filter_map(|unit| {
-                unit.interface
-                    .clone()
-                    .map(|interface| (interface.name.clone(), interface))
-            })
-            .collect();
-        let linked = LtoLinkedProgram::validate(module.clone(), interfaces, tel);
-        let (module, _) = linked.erase_boundaries(tel);
-        return PreparedExecutionGraph {
-            units,
-            module_plan: ir_planner::plan_module(t, &module, tel),
-            module,
-            sm: prepared.sm,
-        };
-    } else {
-        ir_planner::plan_module(t, &module, tel)
-    };
-    PreparedExecutionGraph {
-        units,
-        module,
-        module_plan,
-        sm: prepared.sm,
-    }
-}
-
-fn checked_module_for_mode(
     t: &mut types::ConcreteTypes,
     result: frontend::FrontendResult,
     sm_cell: &Rc<RefCell<diag::SourceMap>>,
     tel: &dyn telemetry::Telemetry,
     mode: CompileMode,
-) -> CheckedModule {
-    let frontend = run_frontend(result, sm_cell, tel);
-    let interfaces = frontend._prog.module_interfaces;
-    tel.event(
-        &["fz", "module", "interfaces_collected"],
-        metadata! { interfaces: interfaces.len() as i64 },
-    );
-    if mode.is_lto() {
-        let linked = LtoLinkedProgram::validate(frontend.module, interfaces, tel);
-        let (module, interfaces) = linked.erase_boundaries(tel);
-        let module_plan = ir_planner::plan_module(t, &module, tel);
-        CheckedModule {
-            module,
-            module_plan,
-            interfaces,
-            sm: frontend.sm,
-        }
-    } else {
-        CheckedModule {
-            module: frontend.module,
-            module_plan: frontend.module_plan,
-            interfaces,
-            sm: frontend.sm,
-        }
-    }
-}
-
-impl LtoLinkedProgram {
-    fn validate(
-        module: fz_ir::Module,
-        interfaces: std::collections::BTreeMap<
-            modules::identity::ModuleName,
-            modules::interface::ModuleInterface,
-        >,
-        tel: &dyn telemetry::Telemetry,
-    ) -> Self {
-        let diags = modules::interface::validate_public_export_specs(&interfaces);
-        diag::report_or_exit_through(tel, &diags);
-        tel.event(
-            &["fz", "lto", "interfaces_validated"],
-            metadata! { interfaces: interfaces.len() as i64 },
-        );
-        Self { module, interfaces }
-    }
-
-    fn erase_boundaries(
-        mut self,
-        tel: &dyn telemetry::Telemetry,
-    ) -> (
-        fz_ir::Module,
-        std::collections::BTreeMap<
-            modules::identity::ModuleName,
-            modules::interface::ModuleInterface,
-        >,
-    ) {
-        let exports = self.module.interface_export_map(&self.interfaces);
-        let rewritten = self
-            .module
-            .rewrite_external_calls_for_lto(&exports)
-            .unwrap_or_else(|e| {
-                diag::report_or_exit_through(
-                    tel,
-                    &[diag::Diagnostic::error(
-                        diag::codes::LOWER_UNBOUND,
-                        e.to_string(),
-                        diag::Span::DUMMY,
-                    )],
-                );
-                std::process::exit(1);
-            });
-        let erased_boundaries = self.module.boundary_fns.len();
-        self.module.boundary_fns.clear();
-        tel.event(
-            &["fz", "lto", "boundaries_erased"],
-            metadata! { rewritten: rewritten as i64, spec_boundaries: erased_boundaries as i64 },
-        );
-        (self.module, self.interfaces)
-    }
+) -> modules::pipeline::CheckedModule {
+    let checked = modules::pipeline::checked_module_for_mode(t, result, tel, mode)
+        .unwrap_or_else(|err| report_pipeline_error_or_exit(context, tel, sm_cell, err));
+    *sm_cell.borrow_mut() = checked.sm.clone();
+    diag::report_or_exit_through(tel, checked.diagnostics.as_slice());
+    checked
 }
 
 /// fz-73m — drive a source string through lex → parse → resolve → macros
@@ -1353,7 +1102,7 @@ fn dump_bodies_pipeline(
     use crate::ir_planner::ModulePlan;
     let mut t = types::ConcreteTypes;
     let frontend_result = frontend::compile_source_with_types(&mut t, src, source_name, tel);
-    let prepared = checked_module_for_mode(&mut t, frontend_result, sm_cell, tel, mode);
+    let prepared = checked_module_or_exit("fz dump", &mut t, frontend_result, sm_cell, tel, mode);
     let mut module = prepared.module;
     // Run the reducer pass directly so the bodies dump reflects what
     // codegen would see, without going all the way to JIT.
@@ -1444,7 +1193,7 @@ fn dump_outcomes_pipeline(
     let mut t = types::ConcreteTypes;
     let frontend_result =
         frontend::compile_source_with_types(&mut t, src, source_name.clone(), tel);
-    let prepared = checked_module_for_mode(&mut t, frontend_result, sm_cell, tel, mode);
+    let prepared = checked_module_or_exit("fz dump", &mut t, frontend_result, sm_cell, tel, mode);
     let mut module = prepared.module;
     let reducer_log = ir_reducer::reduce_module_with_telemetry(&mut t, &mut module, tel);
     let mt = ir_planner::plan_module(&mut t, &module, tel);
@@ -1697,10 +1446,11 @@ fn compile_pipeline(
 ) -> Compiled {
     let mut t = types::ConcreteTypes;
     let frontend_result =
-        compile_source_with_providers("fz run", &mut t, src, source_name, providers, tel);
-    let prepared = checked_module_for_mode(&mut t, frontend_result, sm_cell, tel, mode);
-    let graph =
-        prepare_execution_graph_or_exit("fz run", &mut t, prepared, providers, sm_cell, tel, mode);
+        modules::pipeline::compile_source_with_providers(&mut t, src, source_name, providers, tel)
+            .unwrap_or_else(|err| report_pipeline_error_or_exit("fz run", tel, sm_cell, err));
+    let prepared = checked_module_or_exit("fz run", &mut t, frontend_result, sm_cell, tel, mode);
+    let graph = modules::pipeline::prepare_execution_graph(&mut t, prepared, providers, tel, mode)
+        .unwrap_or_else(|err| report_pipeline_error_or_exit("fz run", tel, sm_cell, err));
     let main_fn = graph.module.fn_by_name("main").map(|f| f.id);
     let executable = ir_codegen::compile_pretyped(&mut t, &graph.module, &graph.module_plan, tel)
         .unwrap_or_else(|e| {
@@ -1737,7 +1487,14 @@ fn compile_pipeline(
             executable,
         )
     }
-    .unwrap_or_else(|e| report_link_error_or_exit(tel, e));
+    .unwrap_or_else(|err| {
+        report_pipeline_error_or_exit(
+            "fz run",
+            tel,
+            sm_cell,
+            modules::pipeline::PipelineError::Link(err),
+        )
+    });
     if let Some(metadata) = image.metadata() {
         tel.event(
             &["fz", "link", "metadata"],

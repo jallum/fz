@@ -490,19 +490,23 @@ unresolved external module call `Dep.run/0`
 
 CLI LTO path:
 
-1. `prepare_frontend_for_mode` runs the normal frontend once for run/build/dump;
-2. `LtoLinkedProgram::validate` validates public module interfaces and emits
+1. `modules::pipeline::checked_module_for_mode` runs the normal frontend
+   result through module interface collection;
+2. `modules::pipeline::LtoLinkedProgram::validate` validates public module
+   interfaces and emits
    the `fz.lto.interfaces_validated` telemetry event;
-3. `LtoLinkedProgram::erase_boundaries` builds `Module::interface_export_map`
-   from interface exports to loaded implementation `FnId`s;
+3. `modules::pipeline::LtoLinkedProgram::erase_boundaries` builds
+   `Module::interface_export_map` from interface exports to loaded
+   implementation `FnId`s;
 4. `erase_boundaries` calls `Module::rewrite_external_calls_for_lto`;
 5. `erase_boundaries` clears spec-boundary firewalls for loaded
    implementations and emits `fz.lto.boundaries_erased`;
 6. the caller re-plans/reduces/codegens with direct calls.
 
-`LtoLinkedProgram` is intentionally the only input to boundary erasure in the
-CLI pipeline. That keeps boundary erasure behind interface validation in the
-type shape instead of relying on each caller to remember the order.
+`LtoLinkedProgram` is intentionally private to `modules::pipeline` and is the
+only input to boundary erasure there. That keeps boundary erasure behind
+interface validation in the type shape instead of relying on each caller to
+remember the order.
 
 Mechanically, the pass:
 
