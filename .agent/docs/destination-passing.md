@@ -270,8 +270,11 @@ See
 ## Policy
 
 Do not hide destination semantics only in codegen. Construction intent must be
-visible in IR, verified, typed through erased token facts, then lowered by the
-interpreter/JIT/AOT paths.
+visible in IR, verified, and typed through erased token facts. The native
+JIT/AOT paths run `ir_dest::lower_destinations` before codegen. The `fz interp`
+and scripted REPL fixture legs remain direct-IR baselines; they can execute
+destination primitives when given already-lowered IR, but the CLI interpreter
+does not apply the destination-lowering pass itself.
 
 Do not make ReturnDemand a backend-only heuristic. `FnTypes.dispatches`,
 `FnTypes.return_uses`, `FnTypes.return_context_plans`, and `SpecKey.demand` are

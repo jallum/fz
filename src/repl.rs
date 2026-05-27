@@ -263,6 +263,7 @@ impl ReplSession {
             return Ok(());
         }
 
+        crate::notify_fixture_execution_start();
         ReplRuntime::run_script_main(&frontend.module, main.id)
     }
 

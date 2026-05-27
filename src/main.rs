@@ -52,6 +52,22 @@ use std::cell::RefCell;
 use std::io::{IsTerminal, Read};
 use std::rc::Rc;
 
+const FZ_EXEC_READY_FD_ENV: &str = "FZ_EXEC_READY_FD";
+
+pub(crate) fn notify_fixture_execution_start() {
+    let Ok(raw_fd) = std::env::var(FZ_EXEC_READY_FD_ENV) else {
+        return;
+    };
+    let Ok(fd) = raw_fd.parse::<libc::c_int>() else {
+        return;
+    };
+    let byte = [1_u8];
+    unsafe {
+        let _ = libc::write(fd, byte.as_ptr().cast(), byte.len());
+        let _ = libc::close(fd);
+    }
+}
+
 fn main() {
     let raw_args: Vec<String> = std::env::args().skip(1).collect();
 
@@ -384,6 +400,7 @@ fn run_interp(tel: &telemetry::ConfiguredTelemetry, args: &[String]) {
         &sm_cell,
         tel,
     );
+    notify_fixture_execution_start();
     match ir_interp::run_main(tel, &frontend.module) {
         Ok(_halt) => {}
         Err(msg) => {
@@ -1216,5 +1233,6 @@ fn run_jit_src(tel: &telemetry::ConfiguredTelemetry, src: String, source_name: S
     // from JIT'd code) can resolve dtor closures.
     let mut rt = runtime::Runtime::new(&compiled.cm, 1).with_module(&compiled.module);
     let _main_pid = rt.spawn(main_fn);
+    notify_fixture_execution_start();
     rt.run_until_idle();
 }

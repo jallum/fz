@@ -76,17 +76,30 @@ pub(super) fn run_fn<
     t: &mut T,
     module: &Module,
     tel: &dyn crate::telemetry::Telemetry,
+    fn_id: FnId,
+    args: Vec<AnyValue>,
+) -> Result<InterpStep, String> {
+    let mut module_types =
+        crate::ir_typer::type_module(t, module, &crate::telemetry::NullTelemetry);
+    let diagnostics = crate::ir_extern_marshal::resolve_module_types(t, module, &mut module_types);
+    if let Some(diagnostic) = diagnostics.into_iter().next() {
+        return Err(diagnostic.message);
+    }
+    run_fn_typed(runtime, t, module, tel, &module_types, fn_id, args)
+}
+
+fn run_fn_typed<
+    T: Types<Ty = crate::types::Ty> + crate::types::ClosureTypes + crate::types::RenderTypes,
+>(
+    runtime: &mut IrInterpRuntime,
+    t: &mut T,
+    module: &Module,
+    tel: &dyn crate::telemetry::Telemetry,
+    module_types: &crate::ir_typer::ModuleTypes,
     mut fn_id: FnId,
     mut args: Vec<AnyValue>,
 ) -> Result<InterpStep, String> {
     'tail: loop {
-        let mut module_types =
-            crate::ir_typer::type_module(t, module, &crate::telemetry::NullTelemetry);
-        let diagnostics =
-            crate::ir_extern_marshal::resolve_module_types(t, module, &mut module_types);
-        if let Some(diagnostic) = diagnostics.into_iter().next() {
-            return Err(diagnostic.message);
-        }
         let fn_ir = module.fn_by_id(fn_id);
         let mut fallback_fn_types;
         let fn_types = if let Some(fn_types) = module_types.any_spec_for(fn_id) {
@@ -155,7 +168,7 @@ pub(super) fn run_fn<
                 } => {
                     let arg_vals = collect(&env, call_args)?;
                     let outer_cap_vals = collect(&env, &continuation.captured)?;
-                    match run_fn(runtime, t, module, tel, *callee, arg_vals)? {
+                    match run_fn_typed(runtime, t, module, tel, module_types, *callee, arg_vals)? {
                         InterpStep::Done(val) => {
                             let mut cont_args = vec![val];
                             cont_args.extend(outer_cap_vals);
@@ -220,7 +233,7 @@ pub(super) fn run_fn<
                     let (lam_fn, mut clos_args) = unpack_closure(cl.value()?)?;
                     clos_args.extend(collect(&env, call_args)?);
                     let outer_cap_vals = collect(&env, &continuation.captured)?;
-                    match run_fn(runtime, t, module, tel, lam_fn, clos_args)? {
+                    match run_fn_typed(runtime, t, module, tel, module_types, lam_fn, clos_args)? {
                         InterpStep::Done(val) => {
                             let mut cont_args = vec![val];
                             cont_args.extend(outer_cap_vals);
