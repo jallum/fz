@@ -191,11 +191,12 @@ impl<'a, T: crate::types::Types<Ty = crate::types::Ty>> TypeExprParser<'a, T> {
         self.expect(&Tok::RParen, "`)` after type alias arguments")?;
 
         let arity = args.len();
-        let Some(alias) = self.env.get_param_alias(&name, arity).cloned() else {
-            if arity == 0 {
-                return self.lookup_named(&name);
-            }
+        let Some(alias) = self.env.get_alias(&name, arity).cloned() else {
             return Err(self.err(format!("unknown type alias `{}/{}`", name, arity)));
+        };
+        let alias = match alias {
+            TypeAlias::Resolved(ty) => return Ok(ty),
+            TypeAlias::Parameterized(alias) => alias,
         };
         let key = (name, arity);
         if self.alias_stack.contains(&key) {

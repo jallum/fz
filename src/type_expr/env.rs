@@ -126,7 +126,7 @@ where
     for decl in param_aliases {
         env.insert_param_alias(
             decl.name.clone(),
-            ParamTypeAlias {
+            ParameterizedTypeAlias {
                 params: decl.params.clone(),
                 body_tokens: decl.body_tokens.clone(),
                 span: decl.span,

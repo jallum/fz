@@ -37,16 +37,21 @@ use crate::types::Types;
 /// `Ty`; parameterized aliases keep their body tokens until an application
 /// supplies actual type arguments.
 #[derive(Debug, Clone)]
-pub struct ParamTypeAlias {
+pub struct ParameterizedTypeAlias {
     pub params: Vec<String>,
     pub body_tokens: crate::ast::TypeExprBody,
     pub span: crate::diag::Span,
 }
 
+#[derive(Debug, Clone)]
+enum TypeAlias {
+    Resolved(crate::types::Ty),
+    Parameterized(ParameterizedTypeAlias),
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct ModuleTypeEnv {
-    types: HashMap<String, crate::types::Ty>,
-    param_aliases: HashMap<(String, usize), ParamTypeAlias>,
+    aliases: HashMap<(String, usize), TypeAlias>,
 }
 
 impl ModuleTypeEnv {
@@ -55,42 +60,58 @@ impl ModuleTypeEnv {
     }
 
     pub fn get(&self, name: &str) -> Option<&crate::types::Ty> {
-        self.types.get(name)
+        match self.aliases.get(&(name.to_string(), 0)) {
+            Some(TypeAlias::Resolved(ty)) => Some(ty),
+            _ => None,
+        }
     }
 
     pub fn insert(&mut self, name: String, ty: crate::types::Ty) -> Option<crate::types::Ty> {
-        self.types.insert(name, ty)
+        match self.aliases.insert((name, 0), TypeAlias::Resolved(ty)) {
+            Some(TypeAlias::Resolved(prev)) => Some(prev),
+            _ => None,
+        }
     }
 
     #[cfg(test)]
     pub fn len(&self) -> usize {
-        self.types.len() + self.param_aliases.len()
+        self.aliases.len()
     }
 
     #[cfg(test)]
     pub fn is_empty(&self) -> bool {
-        self.types.is_empty() && self.param_aliases.is_empty()
+        self.aliases.is_empty()
     }
 
     pub fn extend_env(&mut self, other: ModuleTypeEnv) {
-        self.types.extend(other.types);
-        self.param_aliases.extend(other.param_aliases);
+        self.aliases.extend(other.aliases);
     }
 
     pub fn insert_param_alias(
         &mut self,
         name: String,
-        alias: ParamTypeAlias,
-    ) -> Option<ParamTypeAlias> {
-        self.param_aliases.insert((name, alias.params.len()), alias)
+        alias: ParameterizedTypeAlias,
+    ) -> Option<ParameterizedTypeAlias> {
+        match self
+            .aliases
+            .insert((name, alias.params.len()), TypeAlias::Parameterized(alias))
+        {
+            Some(TypeAlias::Parameterized(prev)) => Some(prev),
+            _ => None,
+        }
     }
 
-    pub fn get_param_alias(&self, name: &str, arity: usize) -> Option<&ParamTypeAlias> {
-        self.param_aliases.get(&(name.to_string(), arity))
+    fn get_alias(&self, name: &str, arity: usize) -> Option<&TypeAlias> {
+        self.aliases.get(&(name.to_string(), arity))
     }
 
-    pub fn param_aliases(&self) -> impl Iterator<Item = (&(String, usize), &ParamTypeAlias)> {
-        self.param_aliases.iter()
+    pub fn param_aliases(
+        &self,
+    ) -> impl Iterator<Item = (&(String, usize), &ParameterizedTypeAlias)> {
+        self.aliases.iter().filter_map(|(key, alias)| match alias {
+            TypeAlias::Parameterized(alias) => Some((key, alias)),
+            TypeAlias::Resolved(_) => None,
+        })
     }
 }
 
