@@ -333,33 +333,18 @@ fn run_build(tel: &telemetry::ConfiguredTelemetry, args: &[String]) {
             });
     }
 
-    let unit_input = prepared.compiled_unit_input();
-    let graph_units = if providers.is_empty() {
-        Vec::new()
-    } else {
-        load_provider_units_or_exit("fz build", &mut t, &prepared, &providers, &sm_cell, tel)
-    };
-    let module = if graph_units.is_empty() {
-        unit_input.code.clone()
-    } else {
-        ir_codegen::link_ir_units(&graph_units).unwrap_or_else(|e| {
-            diag::report_or_exit_through(
-                tel,
-                &[diag::Diagnostic::error(
-                    diag::codes::CODEGEN_SCHEMA_MISSING,
-                    e.to_string(),
-                    diag::Span::DUMMY,
-                )],
-            );
-            std::process::exit(1);
-        })
-    };
-    let module_plan = prepared.module_plan;
+    let graph = prepare_execution_graph_or_exit(
+        "fz build", &mut t, prepared, &providers, &sm_cell, tel, mode,
+    );
 
     if emit_fzo {
-        let runtime = ir_codegen::RuntimeUnitMetadata::from_compiled_unit_ir(&unit_input);
+        let unit = graph
+            .units
+            .first()
+            .expect("execution graph includes root unit");
+        let runtime = ir_codegen::RuntimeUnitMetadata::from_compiled_unit_ir(unit);
         let fzo = module_artifact::FzoArtifact::from_unit_source(
-            &unit_input,
+            unit,
             &runtime,
             fzo_source.expect("emit_fzo source"),
             vec![
@@ -383,16 +368,12 @@ fn run_build(tel: &telemetry::ConfiguredTelemetry, args: &[String]) {
         .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or("fz_program");
-    let module_plan = if graph_units.is_empty() {
-        module_plan
-    } else {
-        ir_planner::plan_module(&mut t, &module, tel)
-    };
-    let artifact = ir_codegen::compile_aot_pretyped(&mut t, &module, &module_plan, obj_name, tel)
-        .unwrap_or_else(|e| {
-            diag::report_or_exit_through(tel, &[e.to_diagnostic()]);
-            std::process::exit(1);
-        });
+    let artifact =
+        ir_codegen::compile_aot_pretyped(&mut t, &graph.module, &graph.module_plan, obj_name, tel)
+            .unwrap_or_else(|e| {
+                diag::report_or_exit_through(tel, &[e.to_diagnostic()]);
+                std::process::exit(1);
+            });
 
     if artifact.main_symbol.is_none() {
         tel.emit(&["fz", "build", "no_main"]);
@@ -968,6 +949,13 @@ struct CheckedModule {
     sm: diag::SourceMap,
 }
 
+struct PreparedExecutionGraph {
+    units: Vec<ir_codegen::CompiledUnit>,
+    module: fz_ir::Module,
+    module_plan: ir_planner::ModulePlan,
+    sm: diag::SourceMap,
+}
+
 #[derive(Clone, Debug)]
 struct ProviderInputs {
     artifact_root: String,
@@ -1134,6 +1122,67 @@ fn load_provider_units_or_exit(
         ));
     }
     units
+}
+
+fn report_link_error_or_exit(tel: &dyn telemetry::Telemetry, err: ir_codegen::ImageLinkError) -> ! {
+    diag::report_or_exit_through(
+        tel,
+        &[diag::Diagnostic::error(
+            diag::codes::CODEGEN_SCHEMA_MISSING,
+            err.to_string(),
+            diag::Span::DUMMY,
+        )],
+    );
+    std::process::exit(1);
+}
+
+fn prepare_execution_graph_or_exit(
+    context: &str,
+    t: &mut types::ConcreteTypes,
+    prepared: CheckedModule,
+    providers: &ProviderInputs,
+    sm_cell: &Rc<RefCell<diag::SourceMap>>,
+    tel: &dyn telemetry::Telemetry,
+    mode: CompileMode,
+) -> PreparedExecutionGraph {
+    let units = if providers.is_empty() {
+        vec![prepared.compiled_unit_input()]
+    } else {
+        load_provider_units_or_exit(context, t, &prepared, providers, sm_cell, tel)
+    };
+    let module = if providers.is_empty() {
+        units[0].code.clone()
+    } else {
+        ir_codegen::link_ir_units(&units).unwrap_or_else(|e| report_link_error_or_exit(tel, e))
+    };
+    let module_plan = if providers.is_empty() {
+        prepared.module_plan
+    } else if mode.is_lto() {
+        let interfaces = units
+            .iter()
+            .filter_map(|unit| {
+                unit.interface
+                    .clone()
+                    .map(|interface| (interface.name.clone(), interface))
+            })
+            .collect();
+        let linked = LtoLinkedProgram::validate(module.clone(), interfaces, tel);
+        let (module, _) = linked.erase_boundaries(tel);
+        return PreparedExecutionGraph {
+            units,
+            module_plan: ir_planner::plan_module(t, &module, tel),
+            module,
+            sm: prepared.sm,
+        };
+    } else {
+        ir_planner::plan_module(t, &module, tel)
+    };
+    PreparedExecutionGraph {
+        units,
+        module,
+        module_plan,
+        sm: prepared.sm,
+    }
 }
 
 fn checked_module_for_mode(
@@ -1664,47 +1713,10 @@ fn compile_pipeline(
     let frontend_result =
         compile_source_with_providers("fz run", &mut t, src, source_name, providers, tel);
     let prepared = checked_module_for_mode(&mut t, frontend_result, sm_cell, tel, mode);
-    let units = if providers.is_empty() {
-        vec![prepared.compiled_unit_input()]
-    } else {
-        load_provider_units_or_exit("fz run", &mut t, &prepared, providers, sm_cell, tel)
-    };
-    let module = if providers.is_empty() {
-        units[0].code.clone()
-    } else {
-        ir_codegen::link_ir_units(&units).unwrap_or_else(|e| {
-            diag::report_or_exit_through(
-                tel,
-                &[diag::Diagnostic::error(
-                    diag::codes::CODEGEN_SCHEMA_MISSING,
-                    e.to_string(),
-                    diag::Span::DUMMY,
-                )],
-            );
-            std::process::exit(1);
-        })
-    };
-    let (module, module_plan) = if providers.is_empty() {
-        (module, prepared.module_plan)
-    } else if mode.is_lto() {
-        let interfaces = units
-            .iter()
-            .filter_map(|unit| {
-                unit.interface
-                    .clone()
-                    .map(|interface| (interface.name.clone(), interface))
-            })
-            .collect();
-        let linked = LtoLinkedProgram::validate(module, interfaces, tel);
-        let (module, _) = linked.erase_boundaries(tel);
-        let module_plan = ir_planner::plan_module(&mut t, &module, tel);
-        (module, module_plan)
-    } else {
-        let module_plan = ir_planner::plan_module(&mut t, &module, tel);
-        (module, module_plan)
-    };
-    let main_fn = module.fn_by_name("main").map(|f| f.id);
-    let executable = ir_codegen::compile_pretyped(&mut t, &module, &module_plan, tel)
+    let graph =
+        prepare_execution_graph_or_exit("fz run", &mut t, prepared, providers, sm_cell, tel, mode);
+    let main_fn = graph.module.fn_by_name("main").map(|f| f.id);
+    let executable = ir_codegen::compile_pretyped(&mut t, &graph.module, &graph.module_plan, tel)
         .unwrap_or_else(|e| {
             diag::report_or_exit_through(tel, &[e.to_diagnostic()]);
             std::process::exit(1);
@@ -1712,8 +1724,8 @@ fn compile_pipeline(
     tel.event(
         &["fz", "module", "unit_compiled"],
         metadata! {
-            fns: module.fns.len() as i64,
-            atoms: module.atom_names.len() as i64,
+            fns: graph.module.fns.len() as i64,
+            atoms: graph.module.atom_names.len() as i64,
         },
     );
     // fz-d5b — gate on errors from the planner-side diagnostics
@@ -1722,10 +1734,11 @@ fn compile_pipeline(
     // we continue; Severity::Error halts.
     diag::report_or_exit_through(tel, executable.diagnostics().as_slice());
     let image = if providers.is_empty() {
-        ir_codegen::CompiledProgram::new(units[0].clone(), executable)
+        ir_codegen::CompiledProgram::new(graph.units[0].clone(), executable)
             .link_image_with_telemetry(tel)
     } else {
-        let runtime_units = units
+        let runtime_units = graph
+            .units
             .iter()
             .map(|unit| {
                 ir_codegen::RuntimeUnitMetadata::from_ir_module(unit.module.clone(), &unit.code)
@@ -1733,22 +1746,12 @@ fn compile_pipeline(
             .collect::<Vec<_>>();
         ir_codegen::CompiledImage::link_compiled_with_telemetry(
             tel,
-            &units,
+            &graph.units,
             &runtime_units,
             executable,
         )
     }
-    .unwrap_or_else(|e| {
-        diag::report_or_exit_through(
-            tel,
-            &[diag::Diagnostic::error(
-                diag::codes::CODEGEN_SCHEMA_MISSING,
-                e.to_string(),
-                diag::Span::DUMMY,
-            )],
-        );
-        std::process::exit(1);
-    });
+    .unwrap_or_else(|e| report_link_error_or_exit(tel, e));
     if let Some(metadata) = image.metadata() {
         tel.event(
             &["fz", "link", "metadata"],
@@ -1769,8 +1772,8 @@ fn compile_pipeline(
     Compiled {
         image,
         main_fn,
-        sm: prepared.sm,
-        module,
+        sm: graph.sm,
+        module: graph.module,
     }
 }
 
