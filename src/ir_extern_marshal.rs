@@ -25,78 +25,88 @@ where
     });
 
     for spec_key in specs {
-        let Some(fn_idx) = module.fn_idx.get(&spec_key.fn_id).copied() else {
-            continue;
-        };
-        let f = &module.fns[fn_idx];
         let Some(fn_types) = module_types.specs.get_mut(&spec_key) else {
             continue;
         };
-        fn_types.extern_marshals.clear();
+        diagnostics.extend(resolve_fn_types(t, module, spec_key.fn_id, fn_types));
+    }
 
-        for block in &f.blocks {
-            let stmt_spans = module.source.stmt_spans.get(&(f.id, block.id));
-            for (stmt_idx, stmt) in block.stmts.iter().enumerate() {
-                let Stmt::Let(_, Prim::Extern(eid, args)) = stmt else {
-                    continue;
+    diagnostics
+}
+
+pub fn resolve_fn_types<T>(
+    t: &mut T,
+    module: &Module,
+    fn_id: crate::fz_ir::FnId,
+    fn_types: &mut crate::ir_typer::FnTypes,
+) -> Vec<Diagnostic>
+where
+    T: Types<Ty = Ty> + RenderTypes,
+{
+    let mut diagnostics = Vec::new();
+    let Some(fn_idx) = module.fn_idx.get(&fn_id).copied() else {
+        return diagnostics;
+    };
+    let f = &module.fns[fn_idx];
+    fn_types.extern_marshals.clear();
+
+    for block in &f.blocks {
+        let stmt_spans = module.source.stmt_spans.get(&(f.id, block.id));
+        for (stmt_idx, stmt) in block.stmts.iter().enumerate() {
+            let Stmt::Let(_, Prim::Extern(eid, args)) = stmt else {
+                continue;
+            };
+            let decl = module.extern_by_id(*eid);
+            let span = stmt_spans
+                .and_then(|spans| spans.get(stmt_idx))
+                .copied()
+                .unwrap_or(Span::DUMMY);
+            for (arg_idx, arg) in args.iter().enumerate() {
+                let site = ExternMarshalSite {
+                    block: block.id,
+                    stmt_idx,
+                    arg_idx,
                 };
-                let decl = module.extern_by_id(*eid);
-                let span = stmt_spans
-                    .and_then(|spans| spans.get(stmt_idx))
-                    .copied()
-                    .unwrap_or(Span::DUMMY);
-                for (arg_idx, arg) in args.iter().enumerate() {
-                    let site = ExternMarshalSite {
-                        block: block.id,
-                        stmt_idx,
-                        arg_idx,
-                    };
-                    match arg.marshal {
-                        ExternMarshal::Fixed(ty) => {
-                            fn_types.extern_marshals.insert(site, ty);
+                match arg.marshal {
+                    ExternMarshal::Fixed(ty) => {
+                        fn_types.extern_marshals.insert(site, ty);
+                    }
+                    ExternMarshal::Ascribed(ty) => {
+                        fn_types.extern_marshals.insert(site, ty);
+                        if let Some(arg_ty) = fn_types.vars.get(&arg.var)
+                            && let Some(diag) =
+                                check_explicit_ascription(t, decl.symbol.as_str(), ty, arg_ty, span)
+                        {
+                            diagnostics.push(diag);
                         }
-                        ExternMarshal::Ascribed(ty) => {
-                            fn_types.extern_marshals.insert(site, ty);
-                            if let Some(arg_ty) = fn_types.vars.get(&arg.var)
-                                && let Some(diag) = check_explicit_ascription(
-                                    t,
+                    }
+                    ExternMarshal::Auto if decl.variadic => {
+                        let resolved = fn_types
+                            .vars
+                            .get(&arg.var)
+                            .map(|arg_ty| resolve_auto(t, decl.symbol.as_str(), arg_ty, span))
+                            .unwrap_or_else(|| {
+                                Err(Box::new(marshal_diag(
                                     decl.symbol.as_str(),
-                                    ty,
-                                    arg_ty,
                                     span,
-                                )
-                            {
-                                diagnostics.push(diag);
+                                    "cannot infer a C variadic marshal class for this argument",
+                                    "add an explicit call-argument ascription such as `:: integer`, `:: float`, `:: cstring`, or `:: binary`",
+                                )))
+                            });
+                        match resolved {
+                            Ok(ty) => {
+                                fn_types.extern_marshals.insert(site, ty);
                             }
+                            Err(diag) => diagnostics.push(*diag),
                         }
-                        ExternMarshal::Auto if decl.variadic => {
-                            let resolved = fn_types
-                                .vars
-                                .get(&arg.var)
-                                .map(|arg_ty| resolve_auto(t, decl.symbol.as_str(), arg_ty, span))
-                                .unwrap_or_else(|| {
-                                    Err(Box::new(marshal_diag(
-                                        decl.symbol.as_str(),
-                                        span,
-                                        "cannot infer a C variadic marshal class for this argument",
-                                        "add an explicit call-argument ascription such as `:: integer`, `:: float`, `:: cstring`, or `:: binary`",
-                                    )))
-                                });
-                            match resolved {
-                                Ok(ty) => {
-                                    fn_types.extern_marshals.insert(site, ty);
-                                }
-                                Err(diag) => diagnostics.push(*diag),
-                            }
-                        }
-                        ExternMarshal::Auto => {
-                            diagnostics.push(marshal_diag(
-                                decl.symbol.as_str(),
-                                span,
-                                "non-variadic extern call has unresolved marshal metadata",
-                                "this is an internal lowering invariant violation",
-                            ));
-                        }
+                    }
+                    ExternMarshal::Auto => {
+                        diagnostics.push(marshal_diag(
+                            decl.symbol.as_str(),
+                            span,
+                            "non-variadic extern call has unresolved marshal metadata",
+                            "this is an internal lowering invariant violation",
+                        ));
                     }
                 }
             }

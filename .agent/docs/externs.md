@@ -45,3 +45,7 @@ integer lanes to `c_int`/`c_uint` before calling the real variadic function.
 `fz_extern_symbol_addr(name)` resolves `dlsym(RTLD_DEFAULT, name)` and caches
 both hits and misses. It returns `0` for null or unresolved symbols; callers
 must treat zero as lookup failure, not as a callable function pointer.
+
+JIT codegen and `ir_interp` both select dispatchers from the same resolved
+marshal shapes. Unsupported shapes must return a compiler/interpreter error
+that includes the concrete fixed/variadic `ExternTy` list.

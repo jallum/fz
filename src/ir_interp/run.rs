@@ -69,7 +69,9 @@ pub(super) fn try_match_clauses<T: Types<Ty = crate::types::Ty>>(
 /// Run an fz fn. Tail calls reuse this stack frame (O(1) Rust stack).
 /// Returns Done(val) on Halt/Return or Blocked(fn_id, cap_vals) when a
 /// Term::Receive fires on an empty mailbox.
-pub(super) fn run_fn<T: Types<Ty = crate::types::Ty>>(
+pub(super) fn run_fn<
+    T: Types<Ty = crate::types::Ty> + crate::types::ClosureTypes + crate::types::RenderTypes,
+>(
     runtime: &mut IrInterpRuntime,
     t: &mut T,
     module: &Module,
@@ -78,7 +80,30 @@ pub(super) fn run_fn<T: Types<Ty = crate::types::Ty>>(
     mut args: Vec<AnyValue>,
 ) -> Result<InterpStep, String> {
     'tail: loop {
+        let mut module_types =
+            crate::ir_typer::type_module(t, module, &crate::telemetry::NullTelemetry);
+        let diagnostics =
+            crate::ir_extern_marshal::resolve_module_types(t, module, &mut module_types);
+        if let Some(diagnostic) = diagnostics.into_iter().next() {
+            return Err(diagnostic.message);
+        }
         let fn_ir = module.fn_by_id(fn_id);
+        let mut fallback_fn_types;
+        let fn_types = if let Some(fn_types) = module_types.any_spec_for(fn_id) {
+            fn_types
+        } else {
+            fallback_fn_types = crate::ir_typer::type_fn::type_fn(t, fn_ir, module, None);
+            let diagnostics = crate::ir_extern_marshal::resolve_fn_types(
+                t,
+                module,
+                fn_id,
+                &mut fallback_fn_types,
+            );
+            if let Some(diagnostic) = diagnostics.into_iter().next() {
+                return Err(diagnostic.message);
+            }
+            &fallback_fn_types
+        };
         let mut env: HashMap<Var, AnyValue> = HashMap::new();
         let entry = fn_ir.block(fn_ir.entry);
         if entry.params.len() != args.len() {
@@ -95,8 +120,10 @@ pub(super) fn run_fn<T: Types<Ty = crate::types::Ty>>(
         let mut cur = fn_ir.entry;
         loop {
             let blk = fn_ir.block(cur);
-            for Stmt::Let(v, prim) in &blk.stmts {
-                let val = eval_prim(runtime, t, module, tel, prim, &env)?;
+            for (stmt_idx, Stmt::Let(v, prim)) in blk.stmts.iter().enumerate() {
+                let val = eval_prim(
+                    runtime, t, module, tel, fn_types, blk.id, stmt_idx, prim, &env,
+                )?;
                 env.insert(*v, val);
             }
             match &blk.terminator {
@@ -357,7 +384,9 @@ pub(super) fn is_truthy(v: AnyValue) -> bool {
 ///
 /// Pre-conditions: `CURRENT_PROCESS` is set to the heap owning the
 /// queue. Closures in the queue point into that heap.
-pub(super) fn drain_pending_dtors_interp<T: Types<Ty = crate::types::Ty>>(
+pub(super) fn drain_pending_dtors_interp<
+    T: Types<Ty = crate::types::Ty> + crate::types::ClosureTypes + crate::types::RenderTypes,
+>(
     runtime: &mut IrInterpRuntime,
     t: &mut T,
     module: &Module,
