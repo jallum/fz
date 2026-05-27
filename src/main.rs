@@ -311,7 +311,7 @@ fn run_build(tel: &telemetry::ConfiguredTelemetry, args: &[String]) {
     }
 
     let unit_input = prepared.compiled_unit_input();
-    let module = unit_input.code;
+    let module = unit_input.code.clone();
     let module_plan = prepared.module_plan;
 
     let obj_name = std::path::Path::new(&src_path)
@@ -858,7 +858,7 @@ fn run_frontend(
 /// diag::render_to_stderr. Lex / parse errors carry proper spans; later-
 /// stage errors carry the spans threaded in by fz-ul4.20 / .21.
 struct Compiled {
-    cm: ir_codegen::CompiledModule,
+    program: ir_codegen::CompiledProgram,
     main_fn: Option<fz_ir::FnId>,
     /// SourceMap surfaced so `fz dump` can resolve Cranelift's `@<hex>`
     /// srclocs back to `file:line:col`. fz-ul4.23.7.
@@ -1470,20 +1470,28 @@ fn compile_pipeline(
     let frontend_result = frontend::compile_source_with_types(&mut t, src, source_name, tel);
     let prepared = checked_module_for_mode(&mut t, frontend_result, sm_cell, tel, mode);
     let unit_input = prepared.compiled_unit_input();
-    let module = unit_input.code;
+    let module = unit_input.code.clone();
     let module_plan = prepared.module_plan;
     let main_fn = module.fn_by_name("main").map(|f| f.id);
-    let cm = ir_codegen::compile_pretyped(&mut t, &module, &module_plan, tel).unwrap_or_else(|e| {
-        diag::report_or_exit_through(tel, &[e.to_diagnostic()]);
-        std::process::exit(1);
-    });
+    let program = ir_codegen::compile_pretyped_unit(&mut t, unit_input, &module_plan, tel)
+        .unwrap_or_else(|e| {
+            diag::report_or_exit_through(tel, &[e.to_diagnostic()]);
+            std::process::exit(1);
+        });
+    tel.event(
+        &["fz", "module", "unit_compiled"],
+        metadata! {
+            fns: program.unit.code.fns.len() as i64,
+            atoms: program.runtime.atoms.len() as i64,
+        },
+    );
     // fz-d5b — gate on errors from the planner-side diagnostics
     // (TYPE_OPAQUE_VISIBILITY, TYPE_OPAQUE_ARITHMETIC,
     // TYPE_IMPURE_RECEIVE_GUARD). Severity::Warning entries print and
     // we continue; Severity::Error halts.
-    diag::report_or_exit_through(tel, cm.diagnostics().as_slice());
+    diag::report_or_exit_through(tel, program.executable.diagnostics().as_slice());
     Compiled {
-        cm,
+        program,
         main_fn,
         sm: prepared.sm,
         module,
@@ -1518,7 +1526,8 @@ fn run_jit_src(
     };
     // fz-swt.10 — attach the IR Module so `fz_make_resource` (callable
     // from JIT'd code) can resolve dtor closures.
-    let mut rt = runtime::Runtime::new(&compiled.cm, 1).with_module(&compiled.module);
+    let mut rt =
+        runtime::Runtime::new(&compiled.program.executable, 1).with_module(&compiled.module);
     let _main_pid = rt.spawn(main_fn);
     notify_fixture_execution_start();
     rt.run_until_idle();

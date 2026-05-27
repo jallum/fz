@@ -87,6 +87,24 @@ pub struct CompiledImage {
     metadata: Option<RuntimeImageMetadata>,
 }
 
+pub struct CompiledProgram {
+    pub executable: CompiledModule,
+    pub unit: CompiledUnit,
+    pub runtime: RuntimeUnitMetadata,
+}
+
+impl CompiledProgram {
+    pub fn new(unit: CompiledUnit, executable: CompiledModule) -> Self {
+        let runtime =
+            RuntimeUnitMetadata::from_compiled_module(unit.module.clone(), &unit, &executable);
+        Self {
+            executable,
+            unit,
+            runtime,
+        }
+    }
+}
+
 #[allow(dead_code)]
 impl CompiledImage {
     pub fn link_compiled(
@@ -349,6 +367,70 @@ impl RuntimeUnitMetadata {
                 )
                 .collect(),
             halt_kinds: metadata
+                .fn_halt_kinds
+                .iter()
+                .map(|(fn_id, halt_kind)| (*fn_id, *halt_kind))
+                .collect(),
+            entrypoints: RuntimeEntrypoints {
+                resume: true,
+                main: true,
+                spawn: true,
+                drain_dtor: true,
+            },
+        }
+    }
+
+    pub fn from_compiled_module(
+        module: Option<crate::module_identity::ModuleName>,
+        unit: &CompiledUnit,
+        compiled: &CompiledModule,
+    ) -> Self {
+        let schemas = {
+            let registry = compiled.user_schemas.borrow();
+            (0..registry.len())
+                .map(|id| registry.get(id as u32).clone())
+                .collect()
+        };
+        let exported_symbols = unit
+            .module
+            .as_ref()
+            .map(|module| {
+                unit.exports
+                    .iter()
+                    .enumerate()
+                    .map(|(idx, export)| {
+                        (
+                            format!("{}.{}/{}", module, export.name, export.arity),
+                            idx as u32,
+                        )
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        Self {
+            module,
+            atoms: compiled.atom_names.clone(),
+            schemas,
+            frame_sizes: compiled.frame_sizes.clone(),
+            exported_symbols,
+            imported_refs: unit
+                .code
+                .external_call_edges
+                .iter()
+                .map(|edge| edge.target.clone())
+                .collect(),
+            static_closures: compiled
+                .static_closure_targets
+                .iter()
+                .map(
+                    |(closure_schema_id, fn_id, _, halt_kind)| RuntimeStaticClosure {
+                        closure_schema_id: *closure_schema_id,
+                        fn_id: *fn_id,
+                        halt_kind: *halt_kind,
+                    },
+                )
+                .collect(),
+            halt_kinds: compiled
                 .fn_halt_kinds
                 .iter()
                 .map(|(fn_id, halt_kind)| (*fn_id, *halt_kind))
