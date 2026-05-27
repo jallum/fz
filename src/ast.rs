@@ -535,6 +535,11 @@ pub struct Program {
     /// the right env. Top-level fns (outside any defmodule) use the
     /// empty env stored under "".
     pub module_type_envs: std::collections::HashMap<String, crate::type_expr::ModuleTypeEnv>,
+    /// Protocol declarations and implementations collected during module
+    /// resolution while source-level protocol ASTs are still available.
+    #[allow(dead_code)]
+    // Consumed by the protocol dispatch/type tickets after registry resolution.
+    pub protocol_registry: crate::protocols::ProtocolRegistry,
     /// fz-swt.8 — Inner-type map for `opaque` aliases across every
     /// module in the program. Keyed by the qualified opaque tag (as
     /// stored on the qualified opaque type name); value is the parsed body

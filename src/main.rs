@@ -36,6 +36,7 @@ mod parking;
 mod parser;
 mod pattern_check;
 mod pattern_matrix;
+mod protocols;
 mod reducer;
 mod repl;
 mod resolve;
