@@ -181,13 +181,10 @@ pub fn flatten_modules_with_interface_table<T: crate::types::Types<Ty = crate::t
     prog: Program,
     mut interface_table: InterfaceTable,
 ) -> Result<Program, ResolveError> {
-    for (name, interface) in crate::modules::runtime_library::interface_table() {
-        interface_table.entry(name).or_insert(interface);
-    }
-    let module_paths = collect_module_paths(&prog);
     collect_module_fns(&prog)?;
     let module_macros = collect_module_macros(&prog);
     let module_interfaces = crate::modules::interface::collect_from_program(&prog);
+    add_requested_runtime_interfaces(&prog, &module_interfaces, &mut interface_table);
     let external_module_interfaces = interface_table
         .iter()
         .filter(|(name, _)| !module_interfaces.contains_key(*name))
@@ -196,6 +193,7 @@ pub fn flatten_modules_with_interface_table<T: crate::types::Types<Ty = crate::t
     for (name, interface) in &module_interfaces {
         interface_table.insert(name.clone(), interface.clone());
     }
+    let module_paths = collect_visible_module_paths(&prog, &interface_table);
     let mut out: Vec<Rc<Item>> = Vec::new();
     let mut module_docs: HashMap<String, String> = HashMap::new();
     collect_module_docs(&prog, &mut module_docs);
@@ -302,6 +300,42 @@ pub fn flatten_modules_with_interface_table<T: crate::types::Types<Ty = crate::t
     })
 }
 
+fn add_requested_runtime_interfaces(
+    prog: &Program,
+    local_interfaces: &InterfaceTable,
+    interface_table: &mut InterfaceTable,
+) {
+    let mut requested = Vec::new();
+    collect_requested_external_modules(prog, &mut requested);
+    for module in requested {
+        if local_interfaces.contains_key(&module) || interface_table.contains_key(&module) {
+            continue;
+        }
+        if let Some(interface) = crate::modules::runtime_library::interface(&module) {
+            interface_table.insert(module, interface);
+        }
+    }
+}
+
+fn collect_requested_external_modules(prog: &Program, out: &mut Vec<ModuleName>) {
+    for item in &prog.items {
+        if let Item::Module(module) = &**item {
+            collect_requested_external_modules_recursive(module, out);
+        }
+    }
+}
+
+fn collect_requested_external_modules_recursive(module: &ModuleDef, out: &mut Vec<ModuleName>) {
+    for item in &module.items {
+        match &**item {
+            Item::Alias { full_path, .. } => out.push(full_path.clone()),
+            Item::Import { path, .. } => out.push(path.clone()),
+            Item::Module(inner) => collect_requested_external_modules_recursive(inner, out),
+            _ => {}
+        }
+    }
+}
+
 /// fz-ul4.31.5 — Walk every ModuleDef in `prog` (recursively into
 /// nested modules) and build its `@type` env. Errors from
 /// `build_module_type_env` (duplicate alias, cycle, unknown ref)
@@ -383,13 +417,14 @@ fn collect_module_docs_recursive(m: &ModuleDef, parent: &str, out: &mut HashMap<
     }
 }
 
-fn collect_module_paths(prog: &Program) -> HashSet<String> {
+fn collect_visible_module_paths(prog: &Program, interfaces: &InterfaceTable) -> HashSet<String> {
     let mut out = HashSet::new();
     for item in &prog.items {
         if let Item::Module(m) = &**item {
             collect_paths_recursive(m, "", &mut out);
         }
     }
+    out.extend(interfaces.keys().map(ModuleName::dotted));
     out
 }
 
@@ -1282,7 +1317,11 @@ fn qualify_callee(
                         return Some(format!("{}.{}", candidate, rest));
                     }
                 }
-                return Some(path.join("."));
+                let module = path[..path.len() - 1].join(".");
+                if module_paths.contains(&module) {
+                    return Some(path.join("."));
+                }
+                return None;
             }
             _ => return None,
         }
@@ -1752,6 +1791,70 @@ end
             !p.module_interfaces
                 .contains_key(&ModuleName::from_segments(vec!["Utf8".to_string()]))
         );
+    }
+
+    #[test]
+    fn alias_resolves_from_runtime_library_interfaces_on_demand() {
+        let mut ct = crate::types::ConcreteTypes;
+        let p = flatten_modules(
+            &mut ct,
+            parse(
+                r#"
+defmodule User do
+  alias Utf8, as: U
+  fn run(bytes), do: U.valid?(bytes)
+end
+"#,
+            ),
+        )
+        .expect("flatten");
+
+        let run = p
+            .items
+            .iter()
+            .find_map(|it| match &**it {
+                Item::Fn(d) if d.name == "User.run" => Some(d),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(callee_name(&run.clauses[0].body), "Utf8.valid?");
+        assert!(
+            p.external_module_interfaces
+                .contains_key(&ModuleName::from_segments(vec!["Utf8".to_string()]))
+        );
+        assert!(
+            !p.external_module_interfaces
+                .contains_key(&ModuleName::from_segments(vec!["Process".to_string()]))
+        );
+    }
+
+    #[test]
+    fn unrequested_runtime_module_is_not_a_visible_module_path() {
+        let p = flatten(
+            r#"
+defmodule User do
+  fn run(bytes), do: Utf8.valid?(bytes)
+end
+"#,
+        );
+        let run = p
+            .items
+            .iter()
+            .find_map(|it| match &**it {
+                Item::Fn(d) if d.name == "User.run" => Some(d),
+                _ => None,
+            })
+            .unwrap();
+        match &run.clauses[0].body.node {
+            Expr::Call(callee, _) => {
+                assert!(
+                    !matches!(&callee.node, Expr::Var(name) if name == "Utf8.valid?"),
+                    "unimported runtime module call was rewritten as an ambient module call"
+                );
+            }
+            other => panic!("expected call, got {:?}", other),
+        }
+        assert!(p.external_module_interfaces.is_empty());
     }
 
     #[test]
