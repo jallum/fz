@@ -193,27 +193,19 @@ impl Parser {
         loop {
             let (key, value) = self.parse_keyword_pattern_pair()?;
             out.push(Self::keyword_pattern_pair(key, value));
-            self.skip_newlines();
-            if !self.eat(&Tok::Comma) {
+            if !self.continue_keyword_entries(
+                terminator,
+                "positional pattern cannot follow keyword entries",
+            )? {
                 break;
-            }
-            self.skip_newlines();
-            if std::mem::discriminant(self.peek()) == std::mem::discriminant(terminator) {
-                break;
-            }
-            if !matches!(self.peek(), Tok::KwKey(_)) {
-                return self.err("positional pattern cannot follow keyword entries");
             }
         }
         Ok(out)
     }
 
     fn parse_keyword_pattern_pair(&mut self) -> PR<(Spanned<Pattern>, Spanned<Pattern>)> {
-        let key_span = self.cur_span();
-        let key = match self.bump() {
-            Tok::KwKey(key) => Spanned::new(Pattern::Atom(key), key_span),
-            other => return self.err(format!("expected keyword key, got {:?}", other)),
-        };
+        let key = self.bump_keyword_key()?;
+        let key = Spanned::new(Pattern::Atom(key.node), key.span);
         self.skip_newlines();
         let value = self.parse_pattern()?;
         Ok((key, value))
