@@ -91,6 +91,73 @@ impl fmt::Display for ImplTarget {
     }
 }
 
+impl ProtocolRegistry {
+    pub fn extend_interfaces(
+        &mut self,
+        interfaces: &std::collections::BTreeMap<
+            ModuleName,
+            crate::modules::interface::ModuleInterface,
+        >,
+    ) {
+        for interface in interfaces.values() {
+            for protocol in &interface.protocols {
+                self.protocols
+                    .entry(protocol.name.clone())
+                    .or_insert_with(|| ProtocolDecl {
+                        callbacks: protocol
+                            .callbacks
+                            .iter()
+                            .map(|callback| ProtocolCallbackFact {
+                                name: callback.name.clone(),
+                                arity: callback.arity,
+                                spec: None,
+                                span: Span::DUMMY,
+                            })
+                            .collect(),
+                        span: Span::DUMMY,
+                    });
+            }
+            for protocol_impl in &interface.protocol_impls {
+                let callbacks = protocol_impl
+                    .callbacks
+                    .iter()
+                    .map(|callback| ((callback.name.clone(), callback.arity), callback.clone()))
+                    .collect();
+                let key = ProtocolImplKey {
+                    protocol: protocol_impl.protocol.clone(),
+                    target: protocol_impl.target.clone(),
+                };
+                self.impls.entry(key).or_insert_with(|| ProtocolImplFact {
+                    protocol: protocol_impl.protocol.clone(),
+                    target: protocol_impl.target.clone(),
+                    callbacks,
+                    span: Span::DUMMY,
+                });
+            }
+        }
+    }
+}
+
 pub fn protocol_domain_tag(protocol: &ModuleName) -> String {
     format!("protocol::{}.t", protocol)
+}
+
+pub fn impl_target_type<T: crate::types::Types<Ty = crate::types::Ty>>(
+    t: &mut T,
+    target: &ImplTarget,
+) -> crate::types::Ty {
+    match target {
+        ImplTarget::Module(module) => match module.last_segment() {
+            "List" => {
+                let any = t.any();
+                t.list(any)
+            }
+            "Integer" => t.int(),
+            "Float" => t.float(),
+            "Atom" => t.atom(),
+            "Binary" => t.str_t(),
+            "Map" => t.map_top(),
+            other => t.opaque_of(&format!("impl-target::{}", other)),
+        },
+    }
 }

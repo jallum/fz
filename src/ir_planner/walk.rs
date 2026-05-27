@@ -137,6 +137,15 @@ fn merge_callsite_fn_consts(
     }
 }
 
+enum ProtocolDispatch {
+    Local(SpecKey, usize),
+    External {
+        target: crate::modules::identity::ExportKey,
+        input: Vec<crate::types::KeySlot>,
+        demand: ReturnDemand,
+    },
+}
+
 /// Discovery walk for one spec. Walks the spec's body and records every spec it
 /// currently emits into `out.emits`, tagged by `EmitterSite`. The driver diffs
 /// against the spec's previous emits and transitions provenance.
@@ -308,6 +317,61 @@ where
         callee: FnId,
         args: &[Var],
     ) {
+        if let Some(dispatch) = self.protocol_dispatch_key(callee, args, env) {
+            let cid = WalkResult::callsite_id(self.caller_spec_key, term_ident, slot);
+            let ProtocolDispatch::Local(mut entry_key, n_params) = dispatch else {
+                if let ProtocolDispatch::External {
+                    target,
+                    input,
+                    demand,
+                } = dispatch
+                {
+                    self.out.record_external_dispatch(
+                        self.caller_spec_key,
+                        term_ident,
+                        slot,
+                        target,
+                        input,
+                        demand.clone(),
+                    );
+                    self.out.record_return_use(&cid, demand, None);
+                }
+                return;
+            };
+            if let Term::Call { continuation, .. } = term {
+                let target_fn = entry_key.fn_id;
+                let (demand, context_plan) = direct_call_return_plan(
+                    self.t,
+                    self.m,
+                    self.caller_spec_key,
+                    env,
+                    target_fn,
+                    args,
+                    continuation,
+                );
+                entry_key.demand = demand;
+                self.out
+                    .record_dispatch(self.caller_spec_key, term_ident, slot, entry_key.clone());
+                self.out
+                    .record_return_use(&cid, entry_key.demand.clone(), context_plan);
+            } else if matches!(term, Term::TailCall { .. }) {
+                let target_fn = entry_key.fn_id;
+                let (demand, context_plan) =
+                    tail_call_return_plan(self.caller_spec_key, target_fn, args);
+                entry_key.demand = demand;
+                self.out
+                    .record_dispatch(self.caller_spec_key, term_ident, slot, entry_key.clone());
+                self.out
+                    .record_return_use(&cid, entry_key.demand.clone(), context_plan);
+            } else {
+                self.out
+                    .record_dispatch(self.caller_spec_key, term_ident, slot, entry_key.clone());
+            }
+            let per_arg = self.fn_constant_args(args, n_params);
+            merge_callsite_fn_consts(self.callsite_fn_consts, &entry_key, per_arg);
+            self.emit(slot, term_ident.clone(), entry_key);
+            return;
+        }
         let Some((mut entry_key, n_params)) = self.direct_call_key(callee, args, env) else {
             self.record_external_call(term, term_ident, env, slot, args);
             return;
@@ -674,6 +738,55 @@ where
             None,
         );
         Some((key, n_params))
+    }
+
+    fn protocol_dispatch_key(
+        &mut self,
+        callee: FnId,
+        args: &[Var],
+        env: &HashMap<Var, crate::types::Ty>,
+    ) -> Option<ProtocolDispatch> {
+        let target = self.m.protocol_call_targets.get(&callee)?.clone();
+        let receiver_ty = args
+            .first()
+            .and_then(|receiver| env.get(receiver))
+            .cloned()
+            .unwrap_or_else(|| self.any_ty.clone());
+        let mut matches = self
+            .m
+            .protocol_registry
+            .impls
+            .values()
+            .filter(|fact| fact.protocol == target.protocol)
+            .filter(|fact| {
+                let target_ty = crate::protocols::impl_target_type(self.t, &fact.target);
+                self.t.is_subtype(&receiver_ty, &target_ty)
+            })
+            .filter_map(|fact| {
+                fact.callbacks
+                    .get(&(target.callback.clone(), target.arity))
+                    .cloned()
+            })
+            .collect::<Vec<_>>();
+        matches.sort();
+        matches.dedup();
+        let export = matches.into_iter().next()?;
+        let fn_name = format!("{}.{}", export.module, export.name);
+        if let Some(impl_fn) = self.m.fn_by_name(&fn_name).map(|f| f.id) {
+            return self
+                .direct_call_key(impl_fn, args, env)
+                .map(|(key, n_params)| ProtocolDispatch::Local(key, n_params));
+        }
+        let input = crate::types::key_slots_from_tys(padded_direct_input_tys(
+            self.t,
+            self.arg_tys(args, env),
+            export.arity,
+        ));
+        Some(ProtocolDispatch::External {
+            target: export,
+            input,
+            demand: ReturnDemand::value(),
+        })
     }
 
     fn closure_lit_key(

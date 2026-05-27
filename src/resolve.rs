@@ -290,7 +290,15 @@ fn flatten_modules_with_options<T: crate::types::Types<Ty = crate::types::Ty>>(
                     span: *span,
                 }));
             }
-            Item::Protocol(_) | Item::ProtocolImpl(_) => {}
+            Item::Protocol(_) => {}
+            Item::ProtocolImpl(protocol_impl) => flatten_protocol_impl(
+                protocol_impl,
+                None,
+                &mut out,
+                &module_paths,
+                &root_aliases,
+                &root_imports,
+            )?,
         }
     }
     Ok(Program {
@@ -618,30 +626,10 @@ fn protocol_domain_type<T: crate::types::Types<Ty = crate::types::Ty>>(
         .values()
         .filter(|fact| fact.protocol == *protocol)
     {
-        let target_ty = impl_target_type(t, &fact.target);
+        let target_ty = crate::protocols::impl_target_type(t, &fact.target);
         domain = t.union(domain, target_ty);
     }
     domain
-}
-
-fn impl_target_type<T: crate::types::Types<Ty = crate::types::Ty>>(
-    t: &mut T,
-    target: &ImplTarget,
-) -> crate::types::Ty {
-    match target {
-        ImplTarget::Module(module) => match module.last_segment() {
-            "List" => {
-                let any = t.any();
-                t.list(any)
-            }
-            "Integer" => t.int(),
-            "Float" => t.float(),
-            "Atom" => t.atom(),
-            "Binary" => t.str_t(),
-            "Map" => t.map_top(),
-            other => t.opaque_of(&format!("impl-target::{}", other)),
-        },
-    }
 }
 
 fn collect_protocol_registry_items<T: crate::types::Types<Ty = crate::types::Ty>>(
@@ -852,11 +840,23 @@ fn qualify_module_child(parent: Option<&ModuleName>, name: &ModuleName) -> Modul
 fn collect_visible_module_paths(prog: &Program, interfaces: &InterfaceTable) -> HashSet<String> {
     let mut out = HashSet::new();
     for item in &prog.items {
-        if let Item::Module(m) = &**item {
-            collect_paths_recursive(m, "", &mut out);
+        match &**item {
+            Item::Module(m) => collect_paths_recursive(m, "", &mut out),
+            Item::Protocol(protocol) => {
+                out.insert(protocol.name.dotted());
+            }
+            _ => {}
         }
     }
     out.extend(interfaces.keys().map(ModuleName::dotted));
+    for interface in interfaces.values() {
+        out.extend(
+            interface
+                .protocols
+                .iter()
+                .map(|protocol| protocol.name.dotted()),
+        );
+    }
     out
 }
 
@@ -868,9 +868,23 @@ fn collect_paths_recursive(m: &ModuleDef, parent: &str, out: &mut HashSet<String
     };
     out.insert(path.clone());
     for item in &m.items {
-        if let Item::Module(inner) = &**item {
-            collect_paths_recursive(inner, &path, out);
+        match &**item {
+            Item::Module(inner) => collect_paths_recursive(inner, &path, out),
+            Item::Protocol(protocol) => {
+                out.insert(parent_qualified_module_name(&path, &protocol.name).dotted());
+            }
+            _ => {}
         }
+    }
+}
+
+fn parent_qualified_module_name(parent: &str, name: &ModuleName) -> ModuleName {
+    if parent.is_empty() || name.segments().len() != 1 {
+        name.clone()
+    } else {
+        ModuleName::parse_dotted(parent)
+            .expect("resolver parent paths are valid module names")
+            .child(name.last_segment().to_string())
     }
 }
 
@@ -1250,7 +1264,68 @@ fn flatten_module(
                     span: *span,
                 }));
             }
-            Item::Protocol(_) | Item::ProtocolImpl(_) => {}
+            Item::Protocol(_) => {}
+            Item::ProtocolImpl(protocol_impl) => flatten_protocol_impl(
+                protocol_impl,
+                Some(&module_name),
+                out,
+                module_paths,
+                &aliases,
+                &imports,
+            )?,
+        }
+    }
+    Ok(())
+}
+
+fn flatten_protocol_impl(
+    protocol_impl: &ProtocolImplDef,
+    parent_path: Option<&ModuleName>,
+    out: &mut Vec<Rc<Item>>,
+    module_paths: &HashSet<String>,
+    aliases: &HashMap<String, String>,
+    imports: &ImportMap,
+) -> Result<(), ResolveError> {
+    let impl_module = qualify_module_child(parent_path, &protocol_impl.target.path);
+    let module_path = impl_module.dotted();
+    let siblings = protocol_impl
+        .items
+        .iter()
+        .filter_map(|item| match &**item {
+            Item::Fn(def) => Some(def.name.clone()),
+            _ => None,
+        })
+        .collect::<HashSet<_>>();
+    for item in &protocol_impl.items {
+        if let Item::Fn(def) = &**item {
+            let qualified_name =
+                QualifiedName::in_module(impl_module.clone(), def.name.clone()).dotted();
+            let mut new_def = def.clone();
+            new_def.name = qualified_name;
+            for clause in &mut new_def.clauses {
+                let mut intro = pattern_intro(&clause.params);
+                rewrite_expr(
+                    &mut clause.body,
+                    &module_path,
+                    &siblings,
+                    &mut intro,
+                    module_paths,
+                    aliases,
+                    imports,
+                );
+                if let Some(g) = &mut clause.guard {
+                    rewrite_expr(
+                        g,
+                        &module_path,
+                        &siblings,
+                        &mut intro,
+                        module_paths,
+                        aliases,
+                        imports,
+                    );
+                }
+            }
+            out.push(Rc::new(Item::Fn(new_def)));
         }
     }
     Ok(())

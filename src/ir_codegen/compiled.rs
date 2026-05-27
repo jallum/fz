@@ -279,6 +279,7 @@ impl IrUnitLinker {
         let fn_map = self.copy_fns(unit);
         self.copy_externs(unit, &fn_map);
         self.copy_external_edges(unit, &fn_map);
+        self.copy_protocol_facts(unit, &fn_map);
         self.copy_specs(unit, &fn_map);
         self.copy_planner_facts(unit, &fn_map);
         self.copy_type_facts(unit);
@@ -369,6 +370,23 @@ impl IrUnitLinker {
             }));
     }
 
+    fn copy_protocol_facts(&mut self, unit: &CompiledUnit, fn_map: &BTreeMap<FnId, FnId>) {
+        self.linked.protocol_call_targets.extend(
+            unit.code
+                .protocol_call_targets
+                .iter()
+                .filter_map(|(fid, target)| fn_map.get(fid).map(|new| (*new, target.clone()))),
+        );
+        self.linked
+            .protocol_registry
+            .protocols
+            .extend(unit.code.protocol_registry.protocols.clone());
+        self.linked
+            .protocol_registry
+            .impls
+            .extend(unit.code.protocol_registry.impls.clone());
+    }
+
     fn copy_specs(&mut self, unit: &CompiledUnit, fn_map: &BTreeMap<FnId, FnId>) {
         self.linked.declared_specs.extend(
             unit.code
@@ -401,15 +419,12 @@ impl IrUnitLinker {
                 else {
                     continue;
                 };
-                if !self
-                    .linked
-                    .external_call_edges
-                    .iter()
-                    .any(|edge| edge.callsite == *callsite && edge.target == *target)
-                {
-                    continue;
-                }
                 if let Some(fn_id) = self.export_map.get(target).copied() {
+                    let _ = crate::fz_ir::rewrite_external_callsite_for_link(
+                        &mut self.linked,
+                        callsite,
+                        fn_id,
+                    );
                     edge_plan.target = crate::ir_planner::fn_types::CallEdgeTarget::Local(
                         crate::ir_planner::fn_types::SpecKey {
                             fn_id,
@@ -456,6 +471,28 @@ impl IrUnitLinker {
                 && self.export_map.insert(key.clone(), target).is_some()
             {
                 return Err(ImageLinkError::DuplicateProvider { import: key });
+            }
+        }
+        if let Some(interface) = &unit.interface {
+            for protocol_impl in &interface.protocol_impls {
+                for callback in &protocol_impl.callbacks {
+                    let qualified = format!("{}.{}", callback.module, callback.name);
+                    let target = unit
+                        .code
+                        .fns
+                        .iter()
+                        .find(|f| {
+                            f.name == qualified && f.block(f.entry).params.len() == callback.arity
+                        })
+                        .and_then(|f| fn_map.get(&f.id).copied());
+                    if let Some(target) = target
+                        && self.export_map.insert(callback.clone(), target).is_some()
+                    {
+                        return Err(ImageLinkError::DuplicateProvider {
+                            import: callback.clone(),
+                        });
+                    }
+                }
             }
         }
         Ok(())

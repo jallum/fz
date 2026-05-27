@@ -176,6 +176,12 @@ creating a parallel subsystem:
 - `ModuleGraphLoader` treats protocol implementation callback modules as
   reachable provider modules, the same way imports make provider modules
   reachable.
+- `ir_lower` records protocol callback calls as protocol stub callsites with
+  stable `CallsiteId`s; `ir_planner` replaces those stubs with local or
+  provider-boundary `CallEdgePlan` targets from receiver type facts.
+- `link_ir_units_with_plan` remaps protocol call facts and resolves provider
+  protocol implementation callbacks to local call edges without a post-link
+  planning pass.
 - `docs/dispatch-as-planner-output.md` defines planner-owned dispatch facts.
 - `SpecPlan.call_edges` is keyed by `CallsiteId` and stores selected call-edge
   capabilities.
