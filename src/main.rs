@@ -164,7 +164,7 @@ fn main() {
                     eprintln!("reading stdin: {}", e);
                     std::process::exit(1);
                 }
-                run_jit_src(&tel, src, "<stdin>".into());
+                run_jit_src(&tel, src, "<stdin>".into(), CompileMode::Normal);
             }
         }
     }
@@ -226,9 +226,11 @@ fn run_build(tel: &telemetry::ConfiguredTelemetry, args: &[String]) {
     let mut t = types::ConcreteTypes;
     let mut src_path: Option<String> = None;
     let mut out_path: Option<String> = None;
+    let mut mode = CompileMode::Normal;
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
+            "--lto" | "--whole-program" => mode = CompileMode::Lto,
             "-o" => {
                 i += 1;
                 out_path = args.get(i).cloned();
@@ -248,7 +250,7 @@ fn run_build(tel: &telemetry::ConfiguredTelemetry, args: &[String]) {
         i += 1;
     }
     let src_path = src_path.unwrap_or_else(|| {
-        eprintln!("fz build <src.fz> -o <out>");
+        eprintln!("fz build [--lto] <src.fz> -o <out>");
         std::process::exit(2);
     });
     let out_path = out_path.unwrap_or_else(|| {
@@ -260,27 +262,32 @@ fn run_build(tel: &telemetry::ConfiguredTelemetry, args: &[String]) {
         std::process::exit(1);
     });
 
-    let frontend = run_frontend(
+    let frontend = run_frontend_for_mode(
         frontend::compile_source_with_types(&mut t, src, src_path.clone(), tel),
         &sm_cell,
         tel,
+        mode,
     );
+
+    let mut module = frontend.module;
+    if mode.is_lto() {
+        apply_lto_boundary_erasure(tel, &mut module, &frontend._prog.module_interfaces);
+    }
+    let module_plan = if mode.is_lto() {
+        ir_planner::plan_module(&mut t, &module, tel)
+    } else {
+        frontend.module_plan
+    };
 
     let obj_name = std::path::Path::new(&src_path)
         .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or("fz_program");
-    let artifact = ir_codegen::compile_aot_pretyped(
-        &mut t,
-        &frontend.module,
-        &frontend.module_plan,
-        obj_name,
-        tel,
-    )
-    .unwrap_or_else(|e| {
-        diag::report_or_exit_through(tel, &[e.to_diagnostic()]);
-        std::process::exit(1);
-    });
+    let artifact = ir_codegen::compile_aot_pretyped(&mut t, &module, &module_plan, obj_name, tel)
+        .unwrap_or_else(|e| {
+            diag::report_or_exit_through(tel, &[e.to_diagnostic()]);
+            std::process::exit(1);
+        });
 
     if artifact.main_symbol.is_none() {
         tel.emit(&["fz", "build", "no_main"]);
@@ -402,15 +409,27 @@ fn run_interp(tel: &telemetry::ConfiguredTelemetry, args: &[String]) {
 }
 
 fn run_jit_from_path(tel: &telemetry::ConfiguredTelemetry, args: &[String]) {
-    let src_path = args.first().cloned().unwrap_or_else(|| {
-        eprintln!("fz run <src.fz>");
+    let mut mode = CompileMode::Normal;
+    let mut src_path: Option<String> = None;
+    for arg in args {
+        match arg.as_str() {
+            "--lto" | "--whole-program" => mode = CompileMode::Lto,
+            a if !a.starts_with("--") && src_path.is_none() => src_path = Some(a.to_string()),
+            a => {
+                eprintln!("fz run: unknown arg `{}`", a);
+                std::process::exit(2);
+            }
+        }
+    }
+    let src_path = src_path.unwrap_or_else(|| {
+        eprintln!("fz run [--lto] <src.fz>");
         std::process::exit(2);
     });
     let src = std::fs::read_to_string(&src_path).unwrap_or_else(|e| {
         eprintln!("read {}: {}", src_path, e);
         std::process::exit(1);
     });
-    run_jit_src(tel, src, src_path);
+    run_jit_src(tel, src, src_path, mode);
 }
 
 /// `fz dump <src.fz> [--emit clif|asm|both] [--fn <name>]` — drive a
@@ -561,6 +580,7 @@ fn run_dump(tel: &telemetry::ConfiguredTelemetry, args: &[String]) {
     let mut emit = "clif".to_string();
     let mut show_all = false;
     let mut strict_interfaces = false;
+    let mut mode = CompileMode::Normal;
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
@@ -582,6 +602,7 @@ fn run_dump(tel: &telemetry::ConfiguredTelemetry, args: &[String]) {
             // fz-f88.7 — bypass dump_outcomes filtering (prelude + dead bodies).
             "--all" => show_all = true,
             "--strict-interfaces" => strict_interfaces = true,
+            "--lto" | "--whole-program" => mode = CompileMode::Lto,
             a if !a.starts_with("--") && path.is_none() => path = Some(a.to_string()),
             a => {
                 eprintln!("fz dump: unknown arg `{}`", a);
@@ -592,7 +613,7 @@ fn run_dump(tel: &telemetry::ConfiguredTelemetry, args: &[String]) {
     }
     let path = path.unwrap_or_else(|| {
         eprintln!(
-            "fz dump <src.fz> [--emit clif|asm|both|interfaces|specs|bodies|outcomes|stats] [--fn <name>]"
+            "fz dump <src.fz> [--lto] [--emit clif|asm|both|interfaces|specs|bodies|outcomes|stats] [--fn <name>]"
         );
         std::process::exit(2);
     });
@@ -650,7 +671,7 @@ fn run_dump(tel: &telemetry::ConfiguredTelemetry, args: &[String]) {
         }
         tel.event(
             &["fz", "dump", "bodies"],
-            metadata! { text: dump_bodies_pipeline(tel, &sm_cell, src, path.clone()) },
+            metadata! { text: dump_bodies_pipeline(tel, &sm_cell, src, path.clone(), mode) },
         );
         return;
     }
@@ -661,7 +682,7 @@ fn run_dump(tel: &telemetry::ConfiguredTelemetry, args: &[String]) {
         }
         tel.event(
             &["fz", "dump", "outcomes"],
-            metadata! { text: dump_outcomes_pipeline(tel, &sm_cell, src, path.clone(), show_all) },
+            metadata! { text: dump_outcomes_pipeline(tel, &sm_cell, src, path.clone(), show_all, mode) },
         );
         return;
     }
@@ -670,7 +691,7 @@ fn run_dump(tel: &telemetry::ConfiguredTelemetry, args: &[String]) {
         if fn_filter.is_some() {
             eprintln!("fz dump: --fn is ignored with --emit stats");
         }
-        let _ = compile_pipeline(tel, &sm_cell, src, path.clone());
+        let _ = compile_pipeline(tel, &sm_cell, src, path.clone(), mode);
         return;
     }
 
@@ -680,7 +701,7 @@ fn run_dump(tel: &telemetry::ConfiguredTelemetry, args: &[String]) {
     if emit_asm {
         ir_codegen::asm_record_enable();
     }
-    let compiled = compile_pipeline(tel, &sm_cell, src, path.clone());
+    let compiled = compile_pipeline(tel, &sm_cell, src, path.clone(), mode);
     let clif_entries = if emit_clif {
         ir_codegen::ir_text_record_take()
     } else {
@@ -785,6 +806,67 @@ struct Compiled {
     module: fz_ir::Module,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CompileMode {
+    Normal,
+    Lto,
+}
+
+impl CompileMode {
+    fn is_lto(self) -> bool {
+        matches!(self, Self::Lto)
+    }
+}
+
+fn run_frontend_for_mode(
+    result: frontend::FrontendResult,
+    sm_cell: &Rc<RefCell<diag::SourceMap>>,
+    tel: &dyn telemetry::Telemetry,
+    mode: CompileMode,
+) -> frontend::FrontendOk {
+    let frontend = run_frontend(result, sm_cell, tel);
+    if mode.is_lto() {
+        let diags =
+            module_interface::validate_public_export_specs(&frontend._prog.module_interfaces);
+        diag::report_or_exit_through(tel, &diags);
+        tel.event(
+            &["fz", "lto", "interfaces_validated"],
+            metadata! { interfaces: frontend._prog.module_interfaces.len() as i64 },
+        );
+    }
+    frontend
+}
+
+fn apply_lto_boundary_erasure(
+    tel: &dyn telemetry::Telemetry,
+    module: &mut fz_ir::Module,
+    interfaces: &std::collections::BTreeMap<
+        module_identity::ModuleName,
+        module_interface::ModuleInterface,
+    >,
+) {
+    let exports = module.interface_export_map(interfaces);
+    let rewritten = module
+        .rewrite_external_calls_for_lto(&exports)
+        .unwrap_or_else(|e| {
+            diag::report_or_exit_through(
+                tel,
+                &[diag::Diagnostic::error(
+                    diag::codes::LOWER_UNBOUND,
+                    e.to_string(),
+                    diag::Span::DUMMY,
+                )],
+            );
+            std::process::exit(1);
+        });
+    let erased_boundaries = module.boundary_fns.len();
+    module.boundary_fns.clear();
+    tel.event(
+        &["fz", "lto", "boundaries_erased"],
+        metadata! { rewritten: rewritten as i64, spec_boundaries: erased_boundaries as i64 },
+    );
+}
+
 /// fz-73m — drive a source string through lex → parse → resolve → macros
 /// → ir_lower → plan_module, then pretty-print `ModulePlan` for golden
 /// inspection. Skips codegen entirely; the dump is a planner-only view.
@@ -865,15 +947,20 @@ fn dump_bodies_pipeline(
     sm_cell: &Rc<RefCell<diag::SourceMap>>,
     src: String,
     source_name: String,
+    mode: CompileMode,
 ) -> String {
     use crate::ir_planner::ModulePlan;
     let mut t = types::ConcreteTypes;
-    let frontend = run_frontend(
+    let frontend = run_frontend_for_mode(
         frontend::compile_source_with_types(&mut t, src, source_name, tel),
         sm_cell,
         tel,
+        mode,
     );
     let mut module = frontend.module;
+    if mode.is_lto() {
+        apply_lto_boundary_erasure(tel, &mut module, &frontend._prog.module_interfaces);
+    }
     // Run the reducer pass directly so the bodies dump reflects what
     // codegen would see, without going all the way to JIT.
     let _ = ir_reducer::reduce_module_with_telemetry(&mut t, &mut module, tel);
@@ -957,15 +1044,20 @@ fn dump_outcomes_pipeline(
     src: String,
     source_name: String,
     show_all: bool,
+    mode: CompileMode,
 ) -> String {
     use crate::fz_ir::{CallsiteId, EmitSlot, FnId};
     let mut t = types::ConcreteTypes;
-    let frontend = run_frontend(
+    let frontend = run_frontend_for_mode(
         frontend::compile_source_with_types(&mut t, src, source_name.clone(), tel),
         sm_cell,
         tel,
+        mode,
     );
     let mut module = frontend.module;
+    if mode.is_lto() {
+        apply_lto_boundary_erasure(tel, &mut module, &frontend._prog.module_interfaces);
+    }
     let reducer_log = ir_reducer::reduce_module_with_telemetry(&mut t, &mut module, tel);
     let mt = ir_planner::plan_module(&mut t, &module, tel);
 
@@ -1212,19 +1304,29 @@ fn compile_pipeline(
     sm_cell: &Rc<RefCell<diag::SourceMap>>,
     src: String,
     source_name: String,
+    mode: CompileMode,
 ) -> Compiled {
     let mut t = types::ConcreteTypes;
-    let frontend = run_frontend(
+    let frontend = run_frontend_for_mode(
         frontend::compile_source_with_types(&mut t, src, source_name, tel),
         sm_cell,
         tel,
+        mode,
     );
-    let main_fn = frontend.module.fn_by_name("main").map(|f| f.id);
-    let cm = ir_codegen::compile_pretyped(&mut t, &frontend.module, &frontend.module_plan, tel)
-        .unwrap_or_else(|e| {
-            diag::report_or_exit_through(tel, &[e.to_diagnostic()]);
-            std::process::exit(1);
-        });
+    let mut module = frontend.module;
+    if mode.is_lto() {
+        apply_lto_boundary_erasure(tel, &mut module, &frontend._prog.module_interfaces);
+    }
+    let module_plan = if mode.is_lto() {
+        ir_planner::plan_module(&mut t, &module, tel)
+    } else {
+        frontend.module_plan
+    };
+    let main_fn = module.fn_by_name("main").map(|f| f.id);
+    let cm = ir_codegen::compile_pretyped(&mut t, &module, &module_plan, tel).unwrap_or_else(|e| {
+        diag::report_or_exit_through(tel, &[e.to_diagnostic()]);
+        std::process::exit(1);
+    });
     // fz-d5b — gate on errors from the planner-side diagnostics
     // (TYPE_OPAQUE_VISIBILITY, TYPE_OPAQUE_ARITHMETIC,
     // TYPE_IMPURE_RECEIVE_GUARD). Severity::Warning entries print and
@@ -1234,20 +1336,25 @@ fn compile_pipeline(
         cm,
         main_fn,
         sm: frontend.sm,
-        module: frontend.module,
+        module,
     }
 }
 
 /// `fz run <path>` (and the no-argument stdin route) — compile, then drive
 /// the program through the Runtime so concurrency-using fixtures work
 /// end-to-end.
-fn run_jit_src(tel: &telemetry::ConfiguredTelemetry, src: String, source_name: String) {
+fn run_jit_src(
+    tel: &telemetry::ConfiguredTelemetry,
+    src: String,
+    source_name: String,
+    mode: CompileMode,
+) {
     let sm_cell: Rc<RefCell<diag::SourceMap>> = Rc::new(RefCell::new(diag::SourceMap::new()));
     tel.attach(
         &["fz", "diag"],
         Box::new(telemetry::DiagRenderer::new_stderr(sm_cell.clone())),
     );
-    let compiled = compile_pipeline(tel, &sm_cell, src, source_name);
+    let compiled = compile_pipeline(tel, &sm_cell, src, source_name, mode);
     let Some(main_fn) = compiled.main_fn else {
         diag::report_or_exit_through(
             tel,

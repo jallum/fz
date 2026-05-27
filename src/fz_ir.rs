@@ -19,7 +19,7 @@
 
 use crate::ast::{BitType, Endian};
 use crate::diag::Span;
-use crate::module_identity::ExportKey;
+use crate::module_identity::{ExportKey, ModuleName};
 use fz_runtime::heap::Schema;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
@@ -1151,6 +1151,30 @@ impl Module {
         }
         Ok(rewritten)
     }
+
+    #[allow(dead_code)]
+    pub fn interface_export_map(
+        &self,
+        interfaces: &BTreeMap<ModuleName, crate::module_interface::ModuleInterface>,
+    ) -> BTreeMap<ExportKey, FnId> {
+        let mut out = BTreeMap::new();
+        for (module, interface) in interfaces {
+            for export in &interface.exports {
+                let name = format!("{}.{}", module, export.name);
+                if let Some(f) = self
+                    .fns
+                    .iter()
+                    .find(|f| f.name == name && f.block(f.entry).params.len() == export.arity)
+                {
+                    out.insert(
+                        ExportKey::new(module.clone(), export.name.clone(), export.arity),
+                        f.id,
+                    );
+                }
+            }
+        }
+        out
+    }
 }
 
 #[allow(dead_code)]
@@ -1855,6 +1879,48 @@ mod tests {
             Err(ExternalLinkError::MissingTarget(export))
         );
         assert!(module.has_unresolved_external_calls());
+    }
+
+    #[test]
+    fn lto_export_map_comes_from_validated_interfaces() {
+        let mut target = FnBuilder::new(FnId(7), "Math.add");
+        let target_entry = target.block(vec![Var(0), Var(1)]);
+        target.set_terminator(target_entry, Term::Halt(Var(0)));
+        let mut mb = ModuleBuilder::new();
+        mb.add_fn(target.build());
+        let module = mb.build();
+
+        let math = crate::module_identity::ModuleName::from_segments(vec!["Math".to_string()]);
+        let mut interfaces = BTreeMap::new();
+        interfaces.insert(
+            math.clone(),
+            crate::module_interface::ModuleInterface {
+                name: math.clone(),
+                abi_version: crate::module_interface::FZ_INTERFACE_ABI_VERSION,
+                imports: Vec::new(),
+                exports: vec![crate::module_interface::InterfaceFn {
+                    name: "add".to_string(),
+                    arity: 2,
+                    spec: Some(crate::module_interface::InterfaceSpec {
+                        params: vec![
+                            "Ident(\"integer\")".to_string(),
+                            "Ident(\"integer\")".to_string(),
+                        ],
+                        result: "Ident(\"integer\")".to_string(),
+                    }),
+                    name_span: Span::DUMMY,
+                }],
+                types: Vec::new(),
+                docs: None,
+                fingerprint_inputs: Vec::new(),
+            },
+        );
+
+        let key = ExportKey::new(math, "add", 2);
+        assert_eq!(
+            module.interface_export_map(&interfaces).get(&key),
+            Some(&FnId(7))
+        );
     }
 
     #[test]

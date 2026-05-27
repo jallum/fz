@@ -126,6 +126,10 @@ fn static_tests() -> Vec<(&'static str, fn())> {
             fz_dump_strict_interfaces_requires_public_specs,
         ),
         (
+            "fz_dump_lto_erases_cross_module_boundary",
+            fz_dump_lto_erases_cross_module_boundary,
+        ),
+        (
             "add1_main_cont_seam_has_no_box_unbox_roundtrip",
             add1_main_cont_seam_has_no_box_unbox_roundtrip,
         ),
@@ -1033,6 +1037,71 @@ end
         "strict interface dump should allow specified public exports: {}",
         String::from_utf8_lossy(&out.stderr)
     );
+}
+
+fn fz_dump_lto_erases_cross_module_boundary() {
+    let missing_spec = r#"
+defmodule Math do
+  fn add(x, y), do: x + y
+end
+
+fn main(), do: Math.add(20, 22)
+"#;
+    let missing = write_temp_fz("fz-lto-missing-spec", missing_spec);
+    let missing_out = Command::new(FZ_BIN)
+        .args(["dump", "--lto", "--emit", "bodies"])
+        .arg(&missing)
+        .output()
+        .expect("spawn fz dump --lto --emit bodies missing spec");
+    let _ = fs::remove_file(&missing);
+    assert!(
+        !missing_out.status.success(),
+        "LTO should validate public interfaces before optimization"
+    );
+    assert!(
+        String::from_utf8_lossy(&missing_out.stderr).contains("interface/missing-spec"),
+        "{}",
+        String::from_utf8_lossy(&missing_out.stderr)
+    );
+
+    let src = r#"
+defmodule Math do
+  @spec add(integer, integer) :: integer
+  fn add(x, y), do: x + y
+end
+
+fn main(), do: Math.add(20, 22)
+"#;
+    let path = write_temp_fz("fz-lto-dump", src);
+    let out = Command::new(FZ_BIN)
+        .args(["dump", "--lto", "--emit", "bodies"])
+        .arg(&path)
+        .output()
+        .expect("spawn fz dump --lto --emit bodies");
+    let _ = fs::remove_file(&path);
+    assert!(
+        out.status.success(),
+        "fz dump --lto --emit bodies exited {}: {}",
+        out.status,
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("bodies emitted: 0 user functions"),
+        "LTO should let reducer erase the cross-module call:\n{}",
+        stdout
+    );
+}
+
+fn write_temp_fz(prefix: &str, src: &str) -> PathBuf {
+    let path = std::env::temp_dir().join(format!(
+        "{}-{}-{}.fz",
+        prefix,
+        std::process::id(),
+        std::thread::current().name().unwrap_or("test")
+    ));
+    fs::write(&path, src).unwrap_or_else(|e| panic!("write {}: {}", path.display(), e));
+    path
 }
 
 fn dump_interfaces_for_source(src: &str, strict: bool) -> std::process::Output {

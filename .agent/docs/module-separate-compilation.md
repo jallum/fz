@@ -86,3 +86,20 @@ Runtime library boundary:
   envelopes for each built-in library module. The `.fzi` is the public
   contract; the `.fzo` records the implemented interface fingerprint and
   implementation fingerprint for linker/runtime-library staging.
+
+LTO / whole-program mode:
+
+- Normal compilation remains the correctness path. Linked images must resolve
+  imports through interfaces and must not require whole-program analysis.
+- `--lto` (alias `--whole-program`) is an explicit optimized build/dump/run
+  mode. It validates public module interfaces first, then treats loaded
+  compatible implementations as available for whole-program optimization.
+- `Module::interface_export_map` builds the implementation map from validated
+  interface exports to loaded `FnId`s. `Module::rewrite_external_calls_for_lto`
+  consumes that map and rewrites `ExternalCallEdge` placeholders to direct
+  calls before reducer/planner/codegen work that benefits from boundary
+  erasure.
+- After validation, LTO clears spec-boundary firewalls for loaded
+  implementations so reducer/inliner passes can cross public module contracts.
+  This is deliberately restricted to explicit LTO; normal compilation keeps
+  public specs as optimization boundaries.
