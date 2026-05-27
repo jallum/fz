@@ -6,8 +6,9 @@ impl Parser {
         terminators: &[Tok],
     ) -> PR<(Vec<Rc<Item>>, Vec<Attribute>)> {
         let mut items: Vec<Rc<Item>> = Vec::new();
-        let mut order: Vec<String> = Vec::new();
-        let mut groups: std::collections::HashMap<String, FnDef> = std::collections::HashMap::new();
+        let mut order: Vec<(String, usize)> = Vec::new();
+        let mut groups: std::collections::HashMap<(String, usize), FnDef> =
+            std::collections::HashMap::new();
         // fz-ul4.31.2 — `moduledoc_attr` and `pending_fn_attrs` accumulate
         // structured `Attribute`s. The single-string `doc`/`moduledoc`
         // model is gone; .31.3/.31.4 extend the Attribute enum.
@@ -77,13 +78,14 @@ impl Parser {
                     let _attrs = std::mem::take(&mut pending_fn_attrs);
                     self.bump(); // consume `extern`
                     let def = self.parse_extern_item()?;
-                    order.push(def.name.clone());
                     items.push(Rc::new(Item::Fn(def)));
                 }
                 Tok::Fn | Tok::Defmacro => {
                     let start = self.cur_span();
                     let (name, name_span, clause, is_macro) = self.parse_fn_clause()?;
-                    if let Some(def) = groups.get_mut(&name) {
+                    let arity = clause.params.len();
+                    let key = (name.clone(), arity);
+                    if let Some(def) = groups.get_mut(&key) {
                         if def.is_macro != is_macro {
                             return self.err(format!("`{}` declared as both fn and defmacro", name));
                         }
@@ -102,19 +104,19 @@ impl Parser {
                                          following fn `{}`",
                                         s.name, name));
                                 }
-                                if s.param_body_tokens.len() != clause.params.len() {
+                                if s.param_body_tokens.len() != arity {
                                     return self.err(format!(
                                         "@spec arity {} doesn't match fn \
                                          `{}/{}`",
                                         s.param_body_tokens.len(),
                                         name,
-                                        clause.params.len()));
+                                        arity));
                                 }
                             }
                         }
                         let clause_span = clause.span;
-                        order.push(name.clone());
-                        groups.insert(name.clone(), FnDef {
+                        order.push(key.clone());
+                        groups.insert(key, FnDef {
                             name,
                             name_span,
                             clauses: vec![clause],

@@ -1379,32 +1379,43 @@ mod tests {
         assert!(s.contains("extern#0("), "expected extern#0( in:\n{}", s);
     }
 
-    /// fz-ul4.29.9 / fz-ext.7 — a `spawn(x)` call lowers to
-    /// `MakeClosure(fz_spawn_thunk, [x])` followed by `Extern(fz_spawn, [wrapper])`.
-    /// The synthesized thunk fn appears in the module alongside the user fns.
+    /// fz-ext.7 — `spawn(x)` routes through the runtime.fz wrapper fn
+    /// `fn spawn(fun), do: Kernel.fz_spawn(fun)`, just like other prelude
+    /// surface functions.
     #[test]
-    fn spawn_callsite_is_wrapped_in_fz_spawn_thunk() {
+    fn spawn_callsite_routes_through_runtime_fz_wrapper() {
         let m = lower_src("fn child(), do: 0\nfn p() do spawn(child) end");
         assert!(
-            m.fns.iter().any(|f| f.name == "fz_spawn_thunk"),
-            "expected fz_spawn_thunk in module fns; got: {:?}",
+            !m.fns.iter().any(|f| f.name == "fz_spawn_thunk"),
+            "spawn must not synthesize fz_spawn_thunk; fns: {:?}",
             m.fns.iter().map(|f| &f.name).collect::<Vec<_>>()
         );
-        let thunk_id = m
+        let spawn = m
             .fns
             .iter()
-            .find(|f| f.name == "fz_spawn_thunk")
-            .unwrap()
+            .find(|f| f.name == "spawn" && f.block(f.entry).params.len() == 1)
+            .expect("spawn/1 prelude fn missing");
+        let p = m.fn_by_name("p").expect("p fn missing");
+        let entry = p.block(p.entry);
+        let Term::TailCall { callee, .. } = entry.terminator else {
+            panic!(
+                "expected p to tail-call spawn/1, got {:?}",
+                entry.terminator
+            );
+        };
+        assert_eq!(callee, spawn.id);
+        let spawn_extern = m
+            .externs
+            .iter()
+            .find(|e| e.symbol == "fz_spawn")
+            .expect("fz_spawn extern missing")
             .id;
-        // p's body should contain `MakeClosure(thunk_id, [<child-closure>])`
-        // followed by `Extern(fz_spawn=5, [<wrapper>])`. Render and grep.
-        let s = format!("{}", m);
-        let needle = format!("closure(fn{}", thunk_id.0);
         assert!(
-            s.contains(&needle),
-            "expected wrapper `{}` in lowered IR:\n{}",
-            needle,
-            s
+            spawn.blocks.iter().any(|b| b.stmts.iter().any(|stmt| {
+                let crate::fz_ir::Stmt::Let(_, prim) = stmt;
+                matches!(prim, Prim::Extern(eid, _) if *eid == spawn_extern)
+            })),
+            "spawn/1 wrapper must call fz_spawn extern"
         );
     }
 
@@ -1413,63 +1424,73 @@ mod tests {
         let m = lower_src("fn p(parent) do\nspawn(fn () -> send(parent, receive()))\nend");
         let p = m.fn_by_name("p").expect("p fn missing");
         let entry = p.block(p.entry);
-        let returned = match entry.terminator {
-            Term::Return(v) => v,
+        let spawn = m
+            .fns
+            .iter()
+            .find(|f| f.name == "spawn" && f.block(f.entry).params.len() == 1)
+            .expect("spawn/1 prelude fn missing");
+        let callee = match entry.terminator {
+            Term::TailCall { callee, .. } => callee,
             ref other => panic!(
-                "expected enclosing fn to return spawn result, got {:?}",
+                "expected enclosing fn to tail-call spawn/1, got {:?}",
                 other
             ),
         };
-        assert_ne!(
-            returned, entry.params[0],
+        assert_eq!(callee, spawn.id);
+        assert!(
+            !p.blocks
+                .iter()
+                .any(|b| matches!(b.terminator, Term::Receive { .. })),
             "lambda lowering must not leak tail-receive termination into the caller"
         );
     }
 
-    /// fz-siu.12 — spawn/2 wraps the closure arg in fz_spawn_thunk exactly
-    /// like spawn/1; the min_heap_size arg passes through as the second
-    /// Extern operand.
+    /// fz-siu.12 — spawn/2 also lives in runtime.fz. The user call should
+    /// tail-call the prelude wrapper, whose body calls fz_spawn_opt.
     #[test]
-    fn spawn2_wraps_closure_and_threads_opts() {
+    fn spawn2_routes_through_runtime_fz_wrapper() {
         let m = lower_src("fn child(), do: 0\nfn p() do spawn(child, 4096) end");
-        let thunk_id = m
+        assert!(
+            !m.fns.iter().any(|f| f.name == "fz_spawn_thunk"),
+            "spawn/2 must not synthesize fz_spawn_thunk"
+        );
+        let spawn = m
             .fns
             .iter()
-            .find(|f| f.name == "fz_spawn_thunk")
-            .expect("fz_spawn_thunk must be synthesized for spawn/2")
-            .id;
-        let s = format!("{}", m);
-        // Wrapper closure must appear.
-        let needle = format!("closure(fn{}", thunk_id.0);
-        assert!(
-            s.contains(&needle),
-            "expected wrapper `{}` in spawn/2 IR:\n{}",
-            needle,
-            s
-        );
+            .find(|f| f.name == "spawn" && f.block(f.entry).params.len() == 2)
+            .expect("spawn/2 prelude fn missing");
+        let p = m.fn_by_name("p").expect("p fn missing");
+        let entry = p.block(p.entry);
+        let Term::TailCall { callee, .. } = entry.terminator else {
+            panic!(
+                "expected p to tail-call spawn/2, got {:?}",
+                entry.terminator
+            );
+        };
+        assert_eq!(callee, spawn.id);
         let spawn_opt = m
             .externs
             .iter()
             .find(|e| e.symbol == "fz_spawn_opt")
             .expect("fz_spawn_opt extern missing")
             .id;
-        let extern_needle = format!("extern#{}(", spawn_opt.0);
         assert!(
-            s.contains(&extern_needle),
-            "expected Extern(fz_spawn_opt={}, ...) in IR:\n{}",
-            spawn_opt.0,
-            s
+            spawn.blocks.iter().any(|b| b.stmts.iter().any(|stmt| {
+                let crate::fz_ir::Stmt::Let(_, prim) = stmt;
+                matches!(prim, Prim::Extern(eid, _) if *eid == spawn_opt)
+            })),
+            "spawn/2 wrapper must call fz_spawn_opt extern"
         );
     }
 
-    /// fz-ul4.29.9 — a program with no `spawn` should not synthesize
-    /// `fz_spawn_thunk` (lazy synthesis, zero overhead).
+    /// The lowerer no longer synthesizes fz_spawn_thunk for any program;
+    /// spawn is just another runtime.fz prelude wrapper.
     #[test]
-    fn no_spawn_means_no_thunk_fn() {
+    fn spawn_free_program_has_no_compiler_spawn_thunk() {
         let m = lower_src("fn p(), do: 0");
         assert!(
             !m.fns.iter().any(|f| f.name == "fz_spawn_thunk"),
-            "expected no fz_spawn_thunk for spawn-free program"
+            "expected no compiler-synthesized fz_spawn_thunk"
         );
     }
 
@@ -2178,8 +2199,7 @@ end
             {
                 FnCategory::ControlFlowCont
             } else {
-                // Anything else must be prelude (lowered from runtime.fz or
-                // synthesized helpers like fz_spawn_thunk).
+                // Anything else must be prelude lowered from runtime.fz.
                 FnCategory::Prelude
             };
             assert_eq!(

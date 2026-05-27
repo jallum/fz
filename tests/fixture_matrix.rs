@@ -1373,9 +1373,11 @@ fn closure_typed_captures_matches_cps_in_clif_section_8_3() {
 }
 
 /// fz-siu.1.2 acceptance per docs/cps-in-clif.md §8.4.
-/// concurrency_ping_pong.fz's `main` receive site builds a cont closure
-/// (alloc_closure with func_addr + store outer_cont as env field 0 + store
-/// user captures after it) and hands it to the receive park runtime.
+/// concurrency_ping_pong.fz's `main` spawns a child through the runtime
+/// prelude wrapper, then tail-calls the continuation that reaches receive.
+/// The receive site builds a cont closure (alloc_closure with func_addr +
+/// store outer_cont as env field 0 + store user captures after it) and
+/// hands it to the receive park runtime.
 /// The scheduler-visible resume seam is the single `fz_resume` shim; the
 /// closure itself stores the Tail-CC continuation body directly.
 fn concurrency_ping_pong_matches_cps_in_clif_section_8_4() {
@@ -1398,21 +1400,32 @@ fn concurrency_ping_pong_matches_cps_in_clif_section_8_4() {
         stdout
     );
     assert!(
-        stdout.contains("fz_receive_park"),
-        "main must call a receive park runtime entry:\n{}",
+        stdout.contains("fz_spawn_ref"),
+        "main must call the spawn runtime entry through spawn/1:\n{}",
         stdout
+    );
+    assert!(
+        stdout.contains("return_call"),
+        "main must tail-call the post-spawn continuation:\n{}",
+        stdout
+    );
+    let clif = dump_fixture_clif("concurrency_ping_pong");
+    assert!(
+        clif.contains("fz_receive_park"),
+        "fixture must call a receive park runtime entry:\n{}",
+        clif
     );
     // Receive site builds the cont closure through the closure allocation ABI.
     assert!(
-        stdout.contains("func_addr.i64"),
-        "main must materialize cont code_ptr via func_addr:\n{}",
-        stdout
+        clif.contains("func_addr.i64"),
+        "fixture must materialize cont code_ptr via func_addr:\n{}",
+        clif
     );
     // And does NOT reference parking-frame schema/dispatch.
     assert!(
-        !stdout.contains("frame_sizes"),
-        "main must not reference Process::frame_sizes (uniform parking schema):\n{}",
-        stdout
+        !clif.contains("frame_sizes"),
+        "fixture must not reference Process::frame_sizes (uniform parking schema):\n{}",
+        clif
     );
 }
 

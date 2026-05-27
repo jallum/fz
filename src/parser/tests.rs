@@ -139,6 +139,28 @@ end
         assert!(matches!(exprs[1].node, Expr::List(ref items, None) if items.is_empty()));
     }
 
+    #[test]
+    fn same_name_different_arity_forms_distinct_fn_defs() {
+        let toks = Lexer::new(
+            r#"
+fn spawn(fun), do: fun()
+fn spawn(fun, opts), do: fun()
+"#,
+        )
+        .tokenize()
+        .unwrap();
+        let prog = Parser::new(toks).parse_program().unwrap();
+        let arities: Vec<usize> = prog
+            .items
+            .iter()
+            .filter_map(|item| match &**item {
+                Item::Fn(def) if def.name == "spawn" => Some(def.clauses[0].params.len()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(arities, vec![1, 2]);
+    }
+
     /// fz-rcp.1 — call-postfix `do … end` sugar must be suppressed in
     /// cond position; otherwise `if pred(h) do … end` parses the
     /// then-arm as a second arg to `pred`, leaving `else`/`end`
