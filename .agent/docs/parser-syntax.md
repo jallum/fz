@@ -2,6 +2,17 @@
 
 Use this when changing surface syntax in `src/parser`.
 
+## Function Items
+
+`fn` declares a public function when it appears inside a module. Public module
+functions enter the module interface and must carry public specs when strict
+interface validation is enabled.
+
+`fnp` declares a private function. It parses to the same function body shape as
+`fn`, can be called by sibling functions in the same module, and is omitted
+from public module interfaces. Do not mix `fn` and `fnp` clauses for the same
+name/arity.
+
 ## Keyword Lists
 
 `Tok::KwKey(name)` is the lexer token for `name:`. The parser treats it as
@@ -55,5 +66,6 @@ keyword entries, another positional expression is a syntax error.
 Gate changes here with:
 
 - `cargo test parser::tests::do_block_sugar_tests`
+- `cargo test private_fns_are_not_interface_exports`
 - `cargo test --test fixture_matrix keyword_lists`
 - `cargo test test_runner::tests`

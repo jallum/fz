@@ -49,7 +49,8 @@ nodes still exist. It produces one `ModuleInterface` per module.
 - `name`: the `ModuleName`;
 - `abi_version`: currently `FZ_INTERFACE_ABI_VERSION`;
 - `imports`: declared module imports and their `only` / `except` filters;
-- `exports`: non-macro, non-extern public functions by name and arity;
+- `exports`: non-macro, non-extern, non-`fnp` public functions by name and
+  arity;
 - `types`: public module type aliases, opaques, and refines;
 - `protocols`: protocol declarations and callback surfaces owned by the
   module;
@@ -64,9 +65,10 @@ Protocol facts are public contract data. Dependents need those facts to check
 `Protocol.t(...)` domain constraints without loading provider bodies, just as
 they use export facts to resolve imported calls.
 
-Module-scoped `extern "C"` declarations are implementation contracts. They are
-not exported from module interfaces. A wrapper function such as
-`Utf8.valid?/1` is the public export; `fz_bitstring_valid_utf8/1` is not.
+Module-scoped `extern "C"` declarations and `fnp` declarations are
+implementation contracts. They are not exported from module interfaces. A
+wrapper function such as `Utf8.valid?/1` is the public export;
+`fz_bitstring_valid_utf8/1` and private helper functions are not.
 
 ## Import Resolution
 
@@ -107,6 +109,9 @@ fz dump --emit interfaces --strict-interfaces file.fz
 ```
 
 Top-level non-module helpers are not interface exports and remain inferable.
+Inside modules, `fnp name(...)` declares a private helper. It participates in
+normal same-module resolution and lowering, but it is omitted from
+`ModuleInterface` exports and does not require a public `@spec`.
 
 ## Vocabulary
 
@@ -578,8 +583,9 @@ Rules:
 - ordinary module bodies live in individual files such as
   `src/modules/runtime_library/utf8.fz` and
   `src/modules/runtime_library/process.fz`; `Enumerable` and `Enum` also live
-  here and expose list protocol facts plus public enumeration wrappers as
-  ordinary FZ source;
+  here and expose list protocol facts plus public enumeration wrappers,
+  with private `fnp` helpers for implementation details such as `Enum.sort`'s
+  merge sort, as ordinary FZ source;
 - every runtime-library module should carry a crisp `@moduledoc`, and every
   public export should have the narrowest accurate `@spec`;
 - module-scoped externs are implementation details, not interface exports;

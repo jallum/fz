@@ -350,6 +350,11 @@ module graph.</p>
 contracts. They are not exported as public module functions. The public
 surface is the fz wrapper API.</p>
 
+<p>Private module helpers use <code>fnp</code>. They have the same body shape as
+<code>fn</code> and can be called by sibling functions in the same module, but
+they are omitted from public interfaces and do not require public
+<code>@spec</code> declarations.</p>
+
 <p>The runtime source directory has two jobs. <code>runtime.fz</code> is the
 tiny always-loaded prelude root: root runtime types and imports from core
 prelude modules. <code>Kernel</code> lives in its own file and owns the raw
@@ -358,8 +363,9 @@ and <code>assert/1</code>. Ordinary runtime modules live next to it in
 individual files such as <code>src/modules/runtime_library/utf8.fz</code> and
 <code>src/modules/runtime_library/process.fz</code>. <code>Enumerable</code>
 and <code>Enum</code> follow the same rule: protocol facts, list helpers, and
-the public enumeration wrapper API are ordinary runtime-library source, not
-primitive externs.</p>
+the public enumeration wrapper API, including <code>Enum.sort</code>'s merge sort,
+are ordinary runtime-library source, not primitive externs. Implementation
+details such as sort helpers stay private with <code>fnp</code>.</p>
 
 <p>Adding a runtime module means adding a new file under
 <code>src/modules/runtime_library/</code>, putting one ordinary

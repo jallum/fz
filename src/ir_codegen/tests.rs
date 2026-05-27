@@ -643,6 +643,35 @@ end
 }
 
 #[test]
+fn runtime_enum_sort_uses_stable_merge_sort_for_lists() {
+    let got = capture_main_with_runtime_graph(
+        r#"
+fn descending(left, right), do: left >= right
+fn by_key(left, right) do
+  {left_key, _left_tag} = left
+  {right_key, _right_tag} = right
+  left_key <= right_key
+end
+
+fn main() do
+  print(Enum.sort([3, 1, 2, 1, 5, 4]))
+  print(Enum.sort([3, 1, 2, 1, 5, 4], descending))
+  print(Enum.sort([{2, :a}, {1, :a}, {2, :b}, {1, :b}], by_key))
+end
+"#,
+    );
+
+    assert_eq!(
+        got,
+        vec![
+            "[1, 1, 2, 3, 4, 5]",
+            "[5, 4, 3, 2, 1, 1]",
+            "[{1, :a}, {1, :b}, {2, :a}, {2, :b}]"
+        ]
+    );
+}
+
+#[test]
 fn image_linker_rejects_missing_and_duplicate_providers() {
     let missing = crate::modules::identity::ExportKey::new(
         crate::modules::identity::ModuleName::from_segments(vec!["Missing".to_string()]),

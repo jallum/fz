@@ -314,6 +314,7 @@ pub fn value_to_items(v: &Value) -> Result<Vec<Item>, String> {
                             span,
                         }],
                         is_macro: false,
+                        is_private: false,
                         extern_abi: None,
                         extern_params: vec![],
                         extern_ret_tokens: TypeExprBody(vec![]),

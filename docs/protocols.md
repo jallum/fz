@@ -29,6 +29,9 @@ end
 defmodule Enum do
   @spec reduce(Enumerable.t(a), b, (a, b) -> {:cont, b} | {:halt, b}) :: any
   fn reduce(enumerable, acc, reducer), do: ...
+
+  @spec sort(Enumerable.t(a)) :: [a]
+  fn sort(enumerable), do: ...
 end
 ```
 
@@ -41,7 +44,9 @@ target, and the callback bodies that satisfy the protocol.
 
 The runtime library follows Elixir's public naming split: `Enumerable` is the
 protocol identity and implementation-domain type, while `Enum` is the
-convenience module that users call for enumeration operations.
+convenience module that users call for enumeration operations. `Enum.sort/1`
+and `Enum.sort/2` are ordinary runtime-library FZ functions implemented as a
+stable merge sort over the list implementation.
 
 `Protocol.t(...)` is not `any`. It is an implementation-domain constraint:
 a value of type `Enumerable.t(a)` is a value for which an `Enumerable`

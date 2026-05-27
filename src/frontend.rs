@@ -349,6 +349,7 @@ fn repl_entry_fn_def(
             span: crate::diag::Span::DUMMY,
         }],
         is_macro: false,
+        is_private: false,
         variadic: false,
         extern_abi: None,
         extern_params: vec![],

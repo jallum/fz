@@ -124,7 +124,9 @@ fn collect_module(
         .items
         .iter()
         .filter_map(|item| match &**item {
-            crate::ast::Item::Fn(def) if !def.is_macro && def.extern_abi.is_none() => {
+            crate::ast::Item::Fn(def)
+                if !def.is_macro && !def.is_private && def.extern_abi.is_none() =>
+            {
                 Some(interface_fn(def))
             }
             _ => None,
@@ -566,6 +568,26 @@ end
     }
 
     #[test]
+    fn private_fns_are_not_interface_exports() {
+        let interfaces = interfaces(
+            r#"
+defmodule M do
+  fn public(x), do: helper(x)
+  fnp helper(x), do: x + 1
+end
+"#,
+        );
+
+        let m = &interfaces[&module(&["M"])];
+        let exports = m
+            .exports
+            .iter()
+            .map(|export| format!("{}/{}", export.name, export.arity))
+            .collect::<Vec<_>>();
+        assert_eq!(exports, vec!["public/1"]);
+    }
+
+    #[test]
     fn emits_specs_types_opaque_refines_and_docs() {
         let interfaces = interfaces(
             r#"
@@ -732,6 +754,22 @@ end
         assert_eq!(diags[0].code, crate::diag::codes::INTERFACE_MISSING_SPEC);
         assert!(diags[0].message.contains("Public`.`missing/1"));
         assert_ne!(diags[0].primary.span, Span::DUMMY);
+    }
+
+    #[test]
+    fn strict_validation_ignores_private_fns() {
+        let interfaces = interfaces(
+            r#"
+defmodule Public do
+  @spec visible(integer) :: integer
+  fn visible(x), do: helper(x)
+
+  fnp helper(x), do: x
+end
+"#,
+        );
+
+        assert!(validate_public_export_specs(&interfaces).is_empty());
     }
 
     #[test]

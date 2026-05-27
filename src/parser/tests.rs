@@ -336,6 +336,18 @@ fn spawn(fun, opts), do: fun()
         assert_eq!(arities, vec![1, 2]);
     }
 
+    #[test]
+    fn fnp_parses_as_private_function_def() {
+        let toks = Lexer::new("fnp helper(x), do: x\n").tokenize().unwrap();
+        let prog = Parser::new(toks).parse_program().unwrap();
+        let Item::Fn(def) = &*prog.items[0] else {
+            panic!("expected fn");
+        };
+        assert_eq!(def.name, "helper");
+        assert!(def.is_private);
+        assert!(!def.is_macro);
+    }
+
     /// fz-rcp.1 — call-postfix `do … end` sugar must be suppressed in
     /// cond position; otherwise `if pred(h) do … end` parses the
     /// then-arm as a second arg to `pred`, leaving `else`/`end`

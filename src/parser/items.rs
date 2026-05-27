@@ -91,14 +91,18 @@ impl Parser {
                     let def = self.parse_extern_item()?;
                     items.push(Rc::new(Item::Fn(def)));
                 }
-                Tok::Fn | Tok::Defmacro => {
+                Tok::Fn | Tok::Fnp | Tok::Defmacro => {
                     let start = self.cur_span();
-                    let (name, name_span, clause, is_macro) = self.parse_fn_clause()?;
+                    let (name, name_span, clause, is_macro, is_private) =
+                        self.parse_fn_clause()?;
                     let arity = clause.params.len();
                     let key = (name.clone(), arity);
                     if let Some(def) = groups.get_mut(&key) {
                         if def.is_macro != is_macro {
                             return self.err(format!("`{}` declared as both fn and defmacro", name));
+                        }
+                        if def.is_private != is_private {
+                            return self.err(format!("`{}` declared as both fn and fnp", name));
                         }
                         // extend the def's span to cover this clause too
                         def.span = def.span.merge(clause.span);
@@ -132,6 +136,7 @@ impl Parser {
                             name_span,
                             clauses: vec![clause],
                             is_macro,
+                            is_private,
                             extern_abi: None,
                             extern_params: vec![],
                             extern_ret_tokens: TypeExprBody(vec![]),
@@ -164,7 +169,7 @@ impl Parser {
                     }));
                 }
                 _ => return self.err(format!(
-                    "expected `fn`, `defmacro`, `defmodule`, `defprotocol`, `defimpl`, `alias`, `import`, `@`, or a macro call, got {:?}",
+                    "expected `fn`, `fnp`, `defmacro`, `defmodule`, `defprotocol`, `defimpl`, `alias`, `import`, `@`, or a macro call, got {:?}",
                     self.peek()
                 )),
             }
@@ -177,7 +182,7 @@ impl Parser {
                 Attribute::Spec(_) => "@spec",
                 _ => "attribute",
             };
-            return self.incomplete(format!("{} not followed by a fn or defmacro", kind));
+            return self.incomplete(format!("{} not followed by a fn, fnp, or defmacro", kind));
         }
         let mut module_attrs: Vec<Attribute> = moduledoc_attr.into_iter().collect();
         module_attrs.extend(module_aliases);
@@ -430,21 +435,26 @@ impl Parser {
             .any(|t| std::mem::discriminant(self.peek()) == std::mem::discriminant(t))
     }
 
-    /// Parse one fn or defmacro clause. Returns (name, name_span, clause, is_macro).
-    pub(super) fn parse_fn_clause(&mut self) -> PR<(String, Span, FnClause, bool)> {
+    /// Parse one fn, fnp, or defmacro clause.
+    /// Returns (name, name_span, clause, is_macro, is_private).
+    pub(super) fn parse_fn_clause(&mut self) -> PR<(String, Span, FnClause, bool, bool)> {
         let start = self.cur_span();
-        let is_macro = match self.peek() {
+        let (is_macro, is_private) = match self.peek() {
             Tok::Defmacro => {
                 self.bump();
-                true
+                (true, false)
             }
             Tok::Fn => {
                 self.bump();
-                false
+                (false, false)
+            }
+            Tok::Fnp => {
+                self.bump();
+                (false, true)
             }
             _ => {
                 return self.err(format!(
-                    "expected `fn` or `defmacro`, got {:?}",
+                    "expected `fn`, `fnp`, or `defmacro`, got {:?}",
                     self.peek()
                 ));
             }
@@ -495,6 +505,7 @@ impl Parser {
                 span,
             },
             is_macro,
+            is_private,
         ))
     }
 
@@ -634,6 +645,7 @@ impl Parser {
             name_span,
             clauses: vec![],
             is_macro: false,
+            is_private: false,
             extern_abi: Some(abi),
             extern_params,
             extern_ret_tokens: TypeExprBody(extern_ret_tokens),

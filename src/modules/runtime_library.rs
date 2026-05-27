@@ -392,7 +392,14 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(
             enum_exports,
-            vec!["count/1", "member?/2", "reduce/3", "slice/1"]
+            vec![
+                "count/1",
+                "member?/2",
+                "reduce/3",
+                "slice/1",
+                "sort/1",
+                "sort/2"
+            ]
         );
         assert!(
             enum_module

@@ -371,6 +371,9 @@ pub struct FnDef {
     pub name_span: Span,
     pub clauses: Vec<FnClause>,
     pub is_macro: bool,
+    /// `fnp` declarations are module-private: callable from the declaring
+    /// module after flattening, but omitted from public interfaces/artifacts.
+    pub is_private: bool,
     /// `Some("C")` for `extern "C" fn` declarations; `None` for regular fns.
     pub extern_abi: Option<String>,
     /// Per-parameter type name strings for `extern "C" fn` declarations.
