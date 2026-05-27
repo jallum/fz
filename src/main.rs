@@ -31,6 +31,7 @@ mod lexer;
 mod macros;
 mod matcher;
 mod module_artifact;
+pub mod module_artifact_store;
 mod module_identity;
 mod module_interface;
 mod parking;

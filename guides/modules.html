@@ -245,6 +245,18 @@ shows the public contract that other modules may depend on.
 specializations for this run. The interface view replaces using specs as a
 proxy for public module shape; it does not replace the planner dump.</p>
 
+<p>Artifact paths are deterministic. By default, fz uses
+<code>build/fz</code> as the artifact root:</p>
+
+<pre>Utf8        -&gt; build/fz/interfaces/Utf8.fzi
+Utf8        -&gt; build/fz/objects/Utf8.fzo
+Outer.Inner -&gt; build/fz/interfaces/Outer/Inner.fzi
+Outer.Inner -&gt; build/fz/objects/Outer/Inner.fzo</pre>
+
+<p>The path policy is built from parsed module-name segments, not by splitting
+display text. Segments that look like path traversal, separators, spaces, or
+punctuation are rejected before artifact IO can use them.</p>
+
 <p>Normal compilation follows this shape:</p>
 
 <pre>source module

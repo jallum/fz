@@ -132,6 +132,40 @@ Do not treat either dump as a replacement for the other. Interface dumps answer
 "what may other modules depend on?" Spec dumps answer "what did this compiler
 run infer and plan internally?"
 
+## Artifact Store Paths
+
+`module_artifact_store::ArtifactStore` owns the filesystem path policy for
+module artifacts. It does not read or write files; it only maps a typed
+`ModuleName` to deterministic locations.
+
+The default build root is:
+
+```text
+build/fz
+```
+
+Artifact paths are:
+
+```text
+build/fz/interfaces/<module segments>/<last segment>.fzi
+build/fz/objects/<module segments>/<last segment>.fzo
+```
+
+Examples:
+
+```text
+Utf8        -> build/fz/interfaces/Utf8.fzi
+Utf8        -> build/fz/objects/Utf8.fzo
+Outer.Inner -> build/fz/interfaces/Outer/Inner.fzi
+Outer.Inner -> build/fz/objects/Outer/Inner.fzo
+```
+
+Path construction consumes `ModuleName::segments()`. It must not recover
+module identity by splitting dotted display text. Segments must be
+filesystem-safe ASCII identifier fragments: letters, digits, or `_`. The path
+policy rejects `.`, `..`, separators, spaces, punctuation, and other hostile
+segments before any future file IO can touch the filesystem.
+
 ## `.fzi`: Interface Artifact
 
 `FziArtifact` is the public contract artifact. It contains only interface data
