@@ -87,6 +87,11 @@ syntactic callsite can be visited under multiple return contexts, so plan
 operands must come from the current caller specialization rather than from a
 callsite-only table or backend continuation capture order.
 
+Return-context proof helpers live in `ir_planner::return_context`; the discovery
+walker in `ir_planner::walk` should only call those helpers and record the
+resulting facts. Keep new list-tail or tuple-field analyses in that helper
+module unless they truly change traversal or worklist ownership.
+
 Current rendered forms:
 
 - `Value` is the ordinary material return.
