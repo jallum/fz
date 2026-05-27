@@ -27,6 +27,7 @@ pub struct FzoArtifact {
     pub compiler_abi_version: u32,
     pub runtime_abi_version: u32,
     pub module: Option<ModuleName>,
+    pub unit_payload: FzoUnitPayload,
     pub code_fn_count: usize,
     pub required_imports: Vec<ExportKey>,
     pub exported_symbols: Vec<(String, u32)>,
@@ -34,7 +35,31 @@ pub struct FzoArtifact {
     pub schema_count: usize,
     pub frame_sizes: Vec<u32>,
     pub implementation_fingerprint: Vec<String>,
+    pub interface_fingerprint_digest: String,
     pub interface_fingerprint: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FzoUnitPayload {
+    pub format: String,
+    pub body: String,
+}
+
+impl FzoUnitPayload {
+    pub fn new(format: impl Into<String>, body: impl Into<String>) -> Self {
+        Self {
+            format: format.into(),
+            body: body.into(),
+        }
+    }
+
+    pub fn ir_text(body: impl Into<String>) -> Self {
+        Self::new("fz-ir-text-v1", body)
+    }
+
+    pub fn runtime_module(body: impl Into<String>) -> Self {
+        Self::new("fz-runtime-module-v1", body)
+    }
 }
 
 impl FziArtifact {
@@ -169,10 +194,12 @@ impl FzoArtifact {
         runtime: &RuntimeUnitMetadata,
         implementation_fingerprint: Vec<String>,
     ) -> Self {
+        let interface_fingerprint = unit.interface_fingerprint.clone();
         Self {
             compiler_abi_version: FZ_ARTIFACT_ABI_VERSION,
             runtime_abi_version: FZ_RUNTIME_ARTIFACT_ABI_VERSION,
             module: unit.module.clone(),
+            unit_payload: FzoUnitPayload::ir_text(unit.code.to_string()),
             code_fn_count: unit.code.fns.len(),
             required_imports: runtime.imported_refs.clone(),
             exported_symbols: runtime
@@ -184,7 +211,8 @@ impl FzoArtifact {
             schema_count: runtime.schemas.len(),
             frame_sizes: runtime.frame_sizes.clone(),
             implementation_fingerprint,
-            interface_fingerprint: unit.interface_fingerprint.clone(),
+            interface_fingerprint_digest: fingerprint_digest(&interface_fingerprint),
+            interface_fingerprint,
         }
     }
 
@@ -200,12 +228,21 @@ impl FzoArtifact {
                 .map(ToString::to_string)
                 .unwrap_or_default()
         ));
+        lines.push(format!(
+            "unit_payload_format={}",
+            escape(&self.unit_payload.format)
+        ));
+        lines.push(format!("unit_payload={}", escape(&self.unit_payload.body)));
         lines.push(format!("code_fn_count={}", self.code_fn_count));
         push_list(
             &mut lines,
             "implementation_fingerprint",
             &self.implementation_fingerprint,
         );
+        lines.push(format!(
+            "interface_fingerprint_digest={}",
+            self.interface_fingerprint_digest
+        ));
         push_list(
             &mut lines,
             "interface_fingerprint",
@@ -254,7 +291,24 @@ impl FzoArtifact {
         } else {
             Some(module(module_text))
         };
+        let unit_payload = FzoUnitPayload::new(
+            unescape(kv(&lines, "unit_payload_format")?),
+            unescape(kv(&lines, "unit_payload")?),
+        );
+        if unit_payload.format.is_empty() {
+            return Err(invalid("fzo unit payload format is empty"));
+        }
+        if unit_payload.body.is_empty() {
+            return Err(invalid("fzo unit payload is empty"));
+        }
+        let interface_fingerprint_digest = kv(&lines, "interface_fingerprint_digest")?.to_string();
         let interface_fingerprint = parse_list(&lines, "interface_fingerprint")?;
+        let computed_digest = fingerprint_digest(&interface_fingerprint);
+        if interface_fingerprint_digest != computed_digest {
+            return Err(invalid(
+                "fzo implemented interface fingerprint digest mismatch",
+            ));
+        }
         if let Some(expected) = expected_interface_fingerprint
             && interface_fingerprint != expected
         {
@@ -264,6 +318,7 @@ impl FzoArtifact {
             compiler_abi_version: compiler_abi,
             runtime_abi_version: runtime_abi,
             module,
+            unit_payload,
             code_fn_count: parse_usize(kv(&lines, "code_fn_count")?)?,
             required_imports: parse_fzo_imports(&lines)?,
             exported_symbols: parse_fzo_exports(&lines)?,
@@ -271,6 +326,7 @@ impl FzoArtifact {
             schema_count: parse_usize(kv(&lines, "schema_count")?)?,
             frame_sizes: parse_u32_csv(kv(&lines, "frame_sizes")?)?,
             implementation_fingerprint: parse_list(&lines, "implementation_fingerprint")?,
+            interface_fingerprint_digest,
             interface_fingerprint,
         })
     }
@@ -642,12 +698,57 @@ mod tests {
             halt_kinds: BTreeMap::new(),
             entrypoints: RuntimeEntrypoints::default(),
         };
+        let expected_payload = unit.code.to_string();
         let artifact = FzoArtifact::from_unit(&unit, &runtime, vec!["impl:abc".to_string()]);
         let text = artifact.serialize();
+        assert!(text.contains("unit_payload_format=fz-ir-text-v1"), "{text}");
+        assert!(text.contains("unit_payload="), "{text}");
         let decoded = FzoArtifact::deserialize(&text, Some(&["export:Math.add/2".to_string()]))
             .expect("deserialize");
+        assert_eq!(decoded.unit_payload.format, "fz-ir-text-v1");
+        assert_eq!(decoded.unit_payload.body, expected_payload);
         assert_eq!(decoded, artifact);
         assert_eq!(decoded.serialize(), text);
+    }
+
+    #[test]
+    fn fzo_rejects_interface_fingerprint_digest_mismatch() {
+        let interface = math_interface();
+        let unit = CompiledUnit::from_ir_module(
+            crate::fz_ir::Module::new(),
+            Some(interface),
+            crate::diag::Diagnostics::new(),
+        );
+        let runtime = RuntimeUnitMetadata::from_ir_module(None, &unit.code);
+        let text = FzoArtifact::from_unit(&unit, &runtime, Vec::new())
+            .serialize()
+            .replace(
+                "interface_fingerprint_digest=",
+                "interface_fingerprint_digest=bad",
+            );
+        let err = FzoArtifact::deserialize(&text, None).unwrap_err();
+        assert_eq!(err.code, codes::ARTIFACT_INVALID);
+        assert_eq!(
+            err.message,
+            "fzo implemented interface fingerprint digest mismatch"
+        );
+    }
+
+    #[test]
+    fn fzo_rejects_missing_unit_payload() {
+        let interface = math_interface();
+        let unit = CompiledUnit::from_ir_module(
+            crate::fz_ir::Module::new(),
+            Some(interface),
+            crate::diag::Diagnostics::new(),
+        );
+        let runtime = RuntimeUnitMetadata::from_ir_module(None, &unit.code);
+        let text = FzoArtifact::from_unit(&unit, &runtime, Vec::new())
+            .serialize()
+            .replace("unit_payload=", "unit_payload");
+        let err = FzoArtifact::deserialize(&text, None).unwrap_err();
+        assert_eq!(err.code, codes::ARTIFACT_INVALID);
+        assert_eq!(err.message, "missing `unit_payload`");
     }
 
     #[test]

@@ -112,10 +112,12 @@ Use these terms precisely:
   export. `fz dump --emit specs` renders `ModulePlan`; it is not a module ABI.
 - `.fzi`: the serialized interface artifact. Dependents use it to resolve and
   check imports without loading provider implementation bodies.
-- `.fzo`: the serialized compiled-unit artifact. In the current staged
-  implementation it is a metadata envelope derived from `CompiledUnit` and
-  `RuntimeUnitMetadata`; it does not yet carry final object bytes or a
-  self-sufficient relocatable code payload.
+- `.fzo`: the serialized compiled-unit artifact. It carries a typed
+  compiled-unit payload plus the link metadata derived from `CompiledUnit` and
+  `RuntimeUnitMetadata`. The current source-compiled payload format is
+  deterministic IR text (`fz-ir-text-v1`); runtime-library modules use their
+  own `fz-runtime-module-v1` payload until the linker consumes final object
+  bytes or a richer relocatable unit format.
 - `CompiledUnit`: one module before image link. It owns module-local IR plus
   the interface/import/export facts needed to prove link compatibility.
 - `CompiledImage`: one linked runnable image. It owns runtime-global executable
@@ -273,9 +275,9 @@ All artifact load errors are `artifact/invalid` diagnostics.
 `FzoArtifact` is the compiled-unit envelope. It is intentionally not a public
 contract. The linker consumes it after interface compatibility is established.
 Today it records the compiled unit's identity, dependency, export, fingerprint,
-and runtime metadata facts. A later payload ticket must make it carry the
-actual independently linkable code payload before `.fzo` is a complete object
-artifact.
+runtime metadata facts, and payload. The payload is the implementation body;
+the counts are metadata that must agree with the payload producer, not the
+source of truth.
 
 Struct fields:
 
@@ -283,6 +285,7 @@ Struct fields:
 compiler_abi_version:       FZ_ARTIFACT_ABI_VERSION
 runtime_abi_version:        FZ_RUNTIME_ARTIFACT_ABI_VERSION
 module:                     Option<ModuleName>
+unit_payload:               FzoUnitPayload
 code_fn_count:              usize
 required_imports:           Vec<ExportKey>
 exported_symbols:           Vec<(String, u32)>
@@ -290,7 +293,15 @@ atom_count:                 usize
 schema_count:               usize
 frame_sizes:                Vec<u32>
 implementation_fingerprint: Vec<String>
+interface_fingerprint_digest: stable hex digest of interface_fingerprint
 interface_fingerprint:      Vec<String>
+```
+
+Payload fields:
+
+```text
+format: fz-ir-text-v1 | fz-runtime-module-v1 | future payload format
+body:   escaped payload bytes represented as UTF-8 text
 ```
 
 Serialized shape:
@@ -300,10 +311,13 @@ fzo
 compiler_abi=<u32>
 runtime_abi=<u32>
 module=<ModuleName or empty>
+unit_payload_format=<escaped payload format>
+unit_payload=<escaped payload body>
 code_fn_count=<usize>
 implementation_fingerprint=<count>
 implementation_fingerprint\t<escaped input>
 ...
+interface_fingerprint_digest=<hex>
 interface_fingerprint=<count>
 interface_fingerprint\t<escaped input>
 ...
@@ -318,14 +332,18 @@ schema_count=<usize>
 frame_sizes=<comma-separated u32 list>
 ```
 
-Current `.fzo` deliberately stores metadata counts/tables needed by image
-linking work, not final object bytes. `FzoArtifact::from_unit` derives the
-envelope from a `CompiledUnit` plus `RuntimeUnitMetadata`.
+Current `.fzo` deliberately stores the unit payload as deterministic internal
+IR text instead of final object bytes. `FzoArtifact::from_unit` derives the
+payload from `CompiledUnit::code.to_string()` and derives link metadata from
+`RuntimeUnitMetadata`. Deserialization rejects empty payload format/body so a
+loaded `.fzo` cannot silently degrade back into a metadata-only artifact.
 
 Load-time rejection:
 
 - missing or wrong `fzo` header;
 - compiler/runtime ABI mismatch;
+- missing or empty unit payload format/body;
+- implemented-interface fingerprint digest mismatch;
 - implemented-interface fingerprint mismatch;
 - malformed `ExportKey` (`Module.name/arity`);
 - imports/exports count mismatches;

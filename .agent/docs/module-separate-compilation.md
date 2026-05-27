@@ -56,14 +56,14 @@ Codegen artifact vocabulary:
   external edge; linked images must resolve or report the missing target first.
 - Artifact ownership is explicit. `.fzi` stores only the versioned
   `ModuleInterface` contract plus compiler/runtime ABI versions and the
-  interface fingerprint. `.fzo` currently stores the compiled-unit metadata
-  envelope: module identity, implementation fingerprint,
-  implemented-interface fingerprint, required imports, exported runtime
-  symbols, and local runtime metadata counts/tables needed by image-linker
-  staging. It is not yet a self-sufficient object artifact because it does not
-  carry final object bytes or a relocatable code payload. Loading rejects
-  unsupported ABI versions and fingerprint mismatches as `artifact/invalid`
-  diagnostics.
+  interface fingerprint. `.fzo` stores the compiled-unit envelope: module
+  identity, a typed implementation payload, implementation fingerprint,
+  implemented-interface fingerprint plus digest, required imports, exported
+  runtime symbols, and local runtime metadata facts needed by image-linker
+  staging. The current source-compiled payload format is deterministic IR text
+  (`fz-ir-text-v1`), not final object bytes. Loading rejects unsupported ABI
+  versions, empty payloads, digest mismatches, and fingerprint mismatches as
+  `artifact/invalid` diagnostics.
 - `CompiledImage::link_prelinked` is the current image-linker bridge. It
   validates that each unit implements its recorded interface fingerprint,
   resolves every required `ExportKey` to exactly one provider, merges
@@ -87,8 +87,9 @@ Runtime library boundary:
   public library functions.
 - `runtime_library::artifacts` produces deterministic `.fzi` and `.fzo`
   envelopes for each built-in library module. The `.fzi` is the public
-  contract; the `.fzo` records the implemented interface fingerprint and
-  implementation fingerprint for linker/runtime-library staging.
+  contract; the `.fzo` records the runtime-module payload, implemented
+  interface fingerprint, and implementation fingerprint for
+  linker/runtime-library staging.
 
 LTO / whole-program mode:
 

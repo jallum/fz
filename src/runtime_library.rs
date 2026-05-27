@@ -13,7 +13,7 @@
 
 use crate::ast::{Item, ModuleDef, Program};
 use crate::diag::Span;
-use crate::module_artifact::{FziArtifact, FzoArtifact};
+use crate::module_artifact::{FziArtifact, FzoArtifact, FzoUnitPayload};
 use crate::module_identity::{ExportKey, ModuleName};
 use crate::module_interface::ModuleInterface;
 use crate::resolve::InterfaceTable;
@@ -100,10 +100,12 @@ fn runtime_module_fzo(
     name: &ModuleName,
     interface: &ModuleInterface,
 ) -> FzoArtifact {
+    let interface_fingerprint = interface.fingerprint_inputs.clone();
     FzoArtifact {
         compiler_abi_version: crate::module_artifact::FZ_ARTIFACT_ABI_VERSION,
         runtime_abi_version: crate::module_artifact::FZ_RUNTIME_ARTIFACT_ABI_VERSION,
         module: Some(name.clone()),
+        unit_payload: FzoUnitPayload::runtime_module(runtime_module_payload(name, module)),
         code_fn_count: module_fn_count(module),
         required_imports: interface_imports(interface),
         exported_symbols: interface
@@ -121,7 +123,10 @@ fn runtime_module_fzo(
         schema_count: 0,
         frame_sizes: Vec::new(),
         implementation_fingerprint: runtime_implementation_fingerprint(name, module),
-        interface_fingerprint: interface.fingerprint_inputs.clone(),
+        interface_fingerprint_digest: crate::module_interface::fingerprint_digest(
+            &interface_fingerprint,
+        ),
+        interface_fingerprint,
     }
 }
 
@@ -164,6 +169,19 @@ fn runtime_implementation_fingerprint(name: &ModuleName, module: &ModuleDef) -> 
         }
     }
     out
+}
+
+fn runtime_module_payload(name: &ModuleName, module: &ModuleDef) -> String {
+    let mut lines = vec![format!("module={}", name)];
+    for item in &module.items {
+        if let Item::Fn(def) = &**item
+            && def.extern_abi.is_none()
+        {
+            let arity = def.clauses.first().map(|c| c.params.len()).unwrap_or(0);
+            lines.push(format!("fn={}/{}", def.name, arity));
+        }
+    }
+    lines.join("\n")
 }
 
 pub fn primitive_prelude_program() -> Program {

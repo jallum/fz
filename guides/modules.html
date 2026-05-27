@@ -233,10 +233,11 @@ compiled unit.</p>
 
 <div class="box yellow">
 <strong>Current implementation note:</strong> today's <code>.fzo</code> is a
-deterministic metadata envelope for a compiled unit. It records identity,
-imports, exports, fingerprints, and runtime metadata facts. It does not yet
-carry final object bytes or a self-sufficient relocatable code payload; that is
-the next step before <code>.fzo</code> becomes a complete object artifact.
+deterministic compiled-unit envelope. It records identity, imports, exports,
+fingerprints, runtime metadata facts, and a typed implementation payload. For
+normal compiled source that payload is deterministic IR text
+(<code>fz-ir-text-v1</code>); final object bytes or a richer relocatable format
+can replace that payload format later without changing what an interface means.
 </div>
 
 <p>The dump commands are separate on purpose. <code>dump --emit interfaces</code>
