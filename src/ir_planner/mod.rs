@@ -37,6 +37,7 @@ pub mod pretty;
 pub(crate) mod prim;
 pub mod purity;
 pub mod reachable;
+pub(crate) mod return_context;
 pub(crate) mod scc;
 pub mod type_fn;
 pub(crate) mod walk;
