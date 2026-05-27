@@ -193,9 +193,11 @@ fn flatten_modules_with_options<T: crate::types::Types<Ty = crate::types::Ty>>(
     // gets the empty env so top-level fns with @spec resolve against
     // builtins only.
     let mut module_type_envs: HashMap<String, crate::type_expr::ModuleTypeEnv> = HashMap::new();
-    module_type_envs.insert(String::new(), crate::type_expr::ModuleTypeEnv::new());
-    let mut opaque_inners: HashMap<String, crate::types::Ty> = HashMap::new();
-    let mut brand_inners: HashMap<String, crate::types::Ty> = HashMap::new();
+    module_type_envs.insert(String::new(), crate::type_expr::builtin_type_env(t));
+    let mut opaque_inners: HashMap<String, crate::types::Ty> =
+        crate::type_expr::builtin_opaque_inners(t);
+    let mut brand_inners: HashMap<String, crate::types::Ty> =
+        crate::type_expr::builtin_brand_inners(t);
     collect_module_type_envs(
         t,
         &prog,

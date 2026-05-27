@@ -52,6 +52,20 @@ fn scalar_names_parse_to_corresponding_descrs() {
 }
 
 #[test]
+fn runtime_builtin_names_parse_without_env_aliases() {
+    let mut ct = ConcreteTypes;
+
+    let utf8 = parse_one(&mut ct, "utf8").unwrap();
+    assert_eq!(ct.brand_singleton(&utf8).as_deref(), Some("utf8"));
+
+    let pid = parse_one(&mut ct, "pid").unwrap();
+    assert_eq!(ct.opaque_singleton(&pid).as_deref(), Some("pid"));
+
+    let ref_ = parse_one(&mut ct, "ref").unwrap();
+    assert_eq!(ct.opaque_singleton(&ref_).as_deref(), Some("ref"));
+}
+
+#[test]
 fn atom_literal_parses_to_singleton() {
     let mut ct = ConcreteTypes;
     let ok = ct.atom_lit("ok");

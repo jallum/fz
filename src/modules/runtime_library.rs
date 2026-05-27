@@ -316,6 +316,48 @@ mod tests {
         assert!(!exports.iter().any(|name| name.starts_with("fz_")));
 
         assert_eq!(
+            utf8.docs.as_deref(),
+            Some("UTF-8 validation and branding for byte-aligned binaries.")
+        );
+        let specs = utf8
+            .exports
+            .iter()
+            .map(|export| {
+                let spec = export.spec.as_ref().expect("runtime export spec");
+                (
+                    format!("{}/{}", export.name, export.arity),
+                    spec.params.clone(),
+                    spec.result.clone(),
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            specs,
+            vec![
+                (
+                    "from_bytes/1".to_string(),
+                    vec!["Ident(\"binary\")".to_string()],
+                    "LBrace Atom(\"ok\") Comma Ident(\"utf8\") RBrace Bar LBrace Atom(\"error\") Comma Atom(\"invalid_utf8\") RBrace".to_string(),
+                ),
+                (
+                    "from_bytes!/1".to_string(),
+                    vec!["Ident(\"binary\")".to_string()],
+                    "Ident(\"utf8\")".to_string(),
+                ),
+                (
+                    "to_bytes/1".to_string(),
+                    vec!["Ident(\"utf8\")".to_string()],
+                    "Ident(\"binary\")".to_string(),
+                ),
+                (
+                    "valid?/1".to_string(),
+                    vec!["Ident(\"binary\")".to_string()],
+                    "Ident(\"bool\")".to_string(),
+                ),
+            ]
+        );
+
+        assert_eq!(
             primitive_contract_names(),
             vec![
                 "fz_assert/1",

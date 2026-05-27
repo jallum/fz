@@ -15,9 +15,10 @@
 //! list       = '[' type_expr ']'
 //! tuple      = '{' (type_expr (',' type_expr)*)? '}'
 //! paren_or_arrow = '(' (type_expr (',' type_expr)*)? ')' ('->' type_expr)?
-//! atom_form  = SCALAR_NAME | ':' ATOM | INT_LITERAL | FLOAT_LITERAL | '_' | NAMED_REF
+//! atom_form  = SCALAR_NAME | RUNTIME_NAME | ':' ATOM | INT_LITERAL | FLOAT_LITERAL | '_' | NAMED_REF
 //!
 //! SCALAR_NAME ∈ { nil, bool, integer, float, binary, atom, any }
+//! RUNTIME_NAME ∈ { pid, ref, utf8 }
 //! NAMED_REF   = identifier resolved against the module's type env
 //! ```
 //!
@@ -81,6 +82,38 @@ pub type OpaqueInnerTypes = HashMap<String, crate::types::Ty>;
 /// are nominally disjoint from theirs. K2 only collects the map;
 /// downstream tickets (K3 mint, K4 lattice rule, K5 erasure) read it.
 pub type BrandInnerTypes = HashMap<String, crate::types::Ty>;
+
+pub const BUILTIN_UTF8: &str = "utf8";
+pub const BUILTIN_PID: &str = "pid";
+pub const BUILTIN_REF: &str = "ref";
+
+pub fn builtin_type_env<T>(t: &mut T) -> ModuleTypeEnv
+where
+    T: Types<Ty = crate::types::Ty>,
+{
+    HashMap::from([
+        (BUILTIN_UTF8.to_string(), t.brand_of(BUILTIN_UTF8)),
+        (BUILTIN_PID.to_string(), t.opaque_of(BUILTIN_PID)),
+        (BUILTIN_REF.to_string(), t.opaque_of(BUILTIN_REF)),
+    ])
+}
+
+pub fn builtin_opaque_inners<T>(t: &mut T) -> OpaqueInnerTypes
+where
+    T: Types<Ty = crate::types::Ty>,
+{
+    HashMap::from([
+        (BUILTIN_PID.to_string(), t.int()),
+        (BUILTIN_REF.to_string(), t.cpointer()),
+    ])
+}
+
+pub fn builtin_brand_inners<T>(t: &mut T) -> BrandInnerTypes
+where
+    T: Types<Ty = crate::types::Ty>,
+{
+    HashMap::from([(BUILTIN_UTF8.to_string(), t.str_t())])
+}
 
 mod env;
 mod parser;
