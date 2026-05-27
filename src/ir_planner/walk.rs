@@ -4,6 +4,7 @@ use super::fn_types::{
     SpecPlan, WALK_CALLS, padded_direct_input_tys, recursive_direct_spec_key,
     recursive_direct_spec_key_for_arity, spec_key_for_fn,
 };
+use super::reachable::cont_key_from_slot0;
 use super::return_context::{
     continuation_empty_tail_plan, continuation_return_demand, direct_call_return_plan,
     tail_call_return_plan,
@@ -380,7 +381,7 @@ where
         };
         let cont_fn = &self.m.fns[j];
         let n_params = cont_fn.block(cont_fn.entry).params.len();
-        let mut key = self.continuation_key(&cont, env, n_params, slot0);
+        let mut key = cont_key_from_slot0(&self.any_ty, n_params, slot0, &cont.captured, env);
         if self.has_bottom_arg(&key) {
             return;
         }
@@ -594,25 +595,6 @@ where
             n_params,
             None,
         ))
-    }
-
-    fn continuation_key(
-        &self,
-        cont: &crate::fz_ir::Cont,
-        env: &HashMap<Var, crate::types::Ty>,
-        n_params: usize,
-        slot0: crate::types::Ty,
-    ) -> Vec<crate::types::Ty> {
-        let mut key = vec![self.any_ty.clone(); n_params];
-        if let Some(first) = key.first_mut() {
-            *first = slot0;
-        }
-        for (k, cvv) in cont.captured.iter().enumerate() {
-            if let Some(p) = key.get_mut(k + 1) {
-                *p = env.get(cvv).cloned().unwrap_or_else(|| self.any_ty.clone());
-            }
-        }
-        key
     }
 
     fn fn_constant_args(&self, args: &[Var], n_params: usize) -> Vec<Option<FnId>> {

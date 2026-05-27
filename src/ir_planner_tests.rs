@@ -1475,6 +1475,42 @@ end
     );
 }
 
+#[test]
+fn cont_key_from_slot0_places_slot0_captures_and_padding() {
+    let mut t = crate::types::ConcreteTypes;
+    let slot0 = t.int_lit(7);
+    let captured_a = Var(10);
+    let captured_b = Var(11);
+    let mut env = HashMap::new();
+    let float = t.float();
+    let ok = t.atom_lit("ok");
+    env.insert(captured_a, float.clone());
+    env.insert(captured_b, ok.clone());
+    let any = t.any();
+
+    let key = super::reachable::cont_key_from_slot0(
+        &any,
+        4,
+        slot0.clone(),
+        &[captured_a, captured_b],
+        &env,
+    );
+
+    assert!(t.is_equivalent(&key[0], &slot0));
+    assert!(t.is_equivalent(&key[1], &float));
+    assert!(t.is_equivalent(&key[2], &ok));
+    assert!(t.is_equivalent(&key[3], &any));
+}
+
+#[test]
+fn cont_key_from_slot0_handles_zero_arity_continuation() {
+    let mut t = crate::types::ConcreteTypes;
+    let any = t.any();
+    let int = t.int();
+    let key = super::reachable::cont_key_from_slot0(&any, 0, int, &[Var(1)], &HashMap::new());
+    assert!(key.is_empty());
+}
+
 /// Direct-Call slot 0 reflects the callee's narrowed return type,
 /// not `any` — confirms .29.12.1 actually drives narrow Cont SpecId
 /// resolution at call-sites where the planner has specialized the

@@ -366,17 +366,26 @@ pub fn cont_input_key<
     module: &Module,
     module_plan: &ModulePlan,
 ) -> Vec<crate::types::Ty> {
-    use crate::types::Ty;
     let cont_fn = module.fn_by_id(continuation.fn_id);
     let n_params = cont_fn.block(cont_fn.entry).params.len();
     let any_t = t.any();
-    let mut key: Vec<Ty> = vec![any_t.clone(); n_params];
-    if !key.is_empty() {
-        let slot0_ty = cont_slot0_descr(t, block, caller_ft, module, module_plan);
-        key[0] = slot0_ty;
-    }
     let env = env_at_terminator(t, caller_ft, block, module);
-    for (k, cv) in continuation.captured.iter().enumerate() {
+    let slot0_ty = cont_slot0_descr(t, block, caller_ft, module, module_plan);
+    cont_key_from_slot0(&any_t, n_params, slot0_ty, &continuation.captured, &env)
+}
+
+pub(crate) fn cont_key_from_slot0(
+    any_t: &crate::types::Ty,
+    n_params: usize,
+    slot0: crate::types::Ty,
+    captured: &[Var],
+    env: &HashMap<Var, crate::types::Ty>,
+) -> Vec<crate::types::Ty> {
+    let mut key: Vec<crate::types::Ty> = vec![any_t.clone(); n_params];
+    if let Some(first) = key.first_mut() {
+        *first = slot0;
+    }
+    for (k, cv) in captured.iter().enumerate() {
         if let Some(p) = key.get_mut(k + 1) {
             *p = env.get(cv).cloned().unwrap_or_else(|| any_t.clone());
         }

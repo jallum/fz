@@ -8,7 +8,7 @@ use super::fn_types::{
     recursive_direct_spec_key, recursive_direct_spec_key_for_arity, spec_key_for_fn_id,
     spec_key_input_tys,
 };
-use super::reachable::env_at_terminator;
+use super::reachable::{cont_key_from_slot0, env_at_terminator};
 use super::type_fn::type_fn;
 use super::walk::{WalkResult, walk_spec_for_discovery};
 use crate::fz_ir::{Block, FnId, Module, Term};
@@ -891,10 +891,8 @@ fn arg_tys<T: crate::types::Types<Ty = crate::types::Ty>>(
         .collect()
 }
 
-/// fz-5j5.3 — reconstruct the cont's input-type key at this block's
-/// terminator using current `effective_returns` for slot 0. Mirrors
-/// the walker's cont-key construction so the keys we look up are
-/// structurally aligned with the registered specs.
+/// Reconstruct the cont's input-type key at this block's terminator using
+/// current `effective_returns` for slot 0.
 pub(crate) fn cont_key_for_spec<
     T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
 >(
@@ -914,7 +912,6 @@ pub(crate) fn cont_key_for_spec<
     let any_t = t.any();
     let cont_fn = module.fn_by_id(cont.fn_id);
     let n_params = cont_fn.block(cont_fn.entry).params.len();
-    let mut key: Vec<Ty> = vec![any_t.clone(); n_params];
 
     let env = env_at_terminator(t, ft, block, module);
     let slot0: Ty = match &block.terminator {
@@ -953,10 +950,6 @@ pub(crate) fn cont_key_for_spec<
                     .cloned()
                     .unwrap_or_else(|| any_t.clone())
             } else if let Some(cv_descr) = env.get(closure) {
-                // fz-5j5.3 — mirror walker's closure_lit slot-0 path
-                // (resolve_closure_return). Without this, sweep computes
-                // [any] where walker computed the closure's real return,
-                // diverging from registered cont keys.
                 let arg_tys: Vec<Ty> = args
                     .iter()
                     .map(|av| env.get(av).cloned().unwrap_or_else(|| any_t.clone()))
@@ -969,13 +962,5 @@ pub(crate) fn cont_key_for_spec<
         }
         _ => any_t.clone(),
     };
-    if !key.is_empty() {
-        key[0] = slot0;
-    }
-    for (k, cv) in cont.captured.iter().enumerate() {
-        if let Some(p) = key.get_mut(k + 1) {
-            *p = env.get(cv).cloned().unwrap_or_else(|| any_t.clone());
-        }
-    }
-    key
+    cont_key_from_slot0(&any_t, n_params, slot0, &cont.captured, &env)
 }
