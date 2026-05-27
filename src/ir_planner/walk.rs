@@ -8,7 +8,9 @@ use super::return_context::{
     tail_call_return_plan,
 };
 use crate::callsite_walk::{BlockCallsite, CallsiteKind, ContSource, block_callsites};
-use crate::fz_ir::{CallsiteId, EmitSlot, FnId, FnIr, Module, Prim, Stmt, Term, Var};
+use crate::fz_ir::{
+    CallsiteId, CallsiteIdent, EmitSlot, FnId, FnIr, Module, Prim, Stmt, Term, Var,
+};
 use std::collections::{HashMap, HashSet};
 
 /// fz-rh5.6 — output of one discovery walk. The driver folds this
@@ -158,441 +160,529 @@ pub(crate) fn walk_spec_for_discovery<
 ) {
     WALK_CALLS.with(|c| c.set(c.get() + 1));
     let any_ty = t.any();
-    fn has_bottom_arg<T: crate::types::Types<Ty = crate::types::Ty>>(
-        t: &mut T,
-        key: &[crate::types::Ty],
-    ) -> bool {
-        // A call key containing bottom describes an impossible callsite.
-        // If later facts make it inhabited, return-readers requeue the
-        // caller and discovery emits the real key then.
-        let none_ty = t.none();
-        key.iter().any(|ty| t.is_equivalent(ty, &none_ty))
+    DiscoveryWalk {
+        t,
+        caller_ft,
+        m,
+        effective_returns,
+        recursive_fns,
+        caller_spec_key,
+        callsite_fn_consts,
+        out,
+        any_ty,
+    }
+    .walk_fn(f);
+}
+
+struct DiscoveryWalk<'a, T>
+where
+    T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
+{
+    t: &'a mut T,
+    caller_ft: &'a SpecPlan,
+    m: &'a Module,
+    effective_returns: &'a HashMap<SpecKey, crate::types::Ty>,
+    recursive_fns: &'a HashSet<FnId>,
+    caller_spec_key: &'a SpecKey,
+    callsite_fn_consts: &'a mut CallsiteFnConsts,
+    out: &'a mut WalkResult,
+    any_ty: crate::types::Ty,
+}
+
+impl<T> DiscoveryWalk<'_, T>
+where
+    T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
+{
+    fn walk_fn(&mut self, f: &FnIr) {
+        for b in &f.blocks {
+            if !self.caller_ft.reachable_blocks.contains(&b.id) {
+                continue;
+            }
+            let mut env: HashMap<Var, crate::types::Ty> = self
+                .caller_ft
+                .block_envs
+                .get(&b.id)
+                .cloned()
+                .unwrap_or_default();
+            self.walk_statements(&b.stmts, &mut env);
+            self.walk_terminator(&b.terminator, &env);
+        }
     }
 
-    let emit = |slot: EmitSlot,
-                ident: crate::fz_ir::CallsiteIdent,
-                target: SpecKey,
-                out: &mut WalkResult| {
-        out.emits.push((
+    fn walk_statements(&mut self, stmts: &[Stmt], env: &mut HashMap<Var, crate::types::Ty>) {
+        for stmt in stmts {
+            let Stmt::Let(v, prim) = stmt;
+            self.record_make_closure_handle(prim, env);
+            let pt_ty = super::prim::type_prim(self.t, prim, env, self.m, &HashSet::new());
+            env.insert(*v, pt_ty);
+        }
+    }
+
+    fn walk_terminator(&mut self, term: &Term, env: &HashMap<Var, crate::types::Ty>) {
+        let Some(term_ident) = term.ident().cloned() else {
+            return;
+        };
+        for BlockCallsite { slot, kind } in
+            block_callsites(self.t, term, env, &self.caller_ft.fn_constants)
+        {
+            self.record_callsite(term, &term_ident, env, slot, kind);
+        }
+        self.seed_receive_matched_outcomes(term);
+    }
+
+    fn record_make_closure_handle(&mut self, prim: &Prim, env: &HashMap<Var, crate::types::Ty>) {
+        let Prim::MakeClosure(mk_ident, lam_fn_id, captured) = prim else {
+            return;
+        };
+        let Some(&jj) = self.m.fn_idx.get(lam_fn_id) else {
+            return;
+        };
+        let lam = &self.m.fns[jj];
+        let n_params = lam.block(lam.entry).params.len();
+        let captures: Vec<crate::types::Ty> = captured
+            .iter()
+            .map(|cv| {
+                env.get(cv)
+                    .cloned()
+                    .expect("MakeClosure: captured var unbound")
+            })
+            .collect();
+        self.out.closure_handles.insert((*lam_fn_id, captures));
+        let any_key = spec_key_for_fn(lam, vec![self.any_ty.clone(); n_params]);
+        self.emit(EmitSlot::MakeClosure, mk_ident.clone(), any_key);
+    }
+
+    fn record_callsite(
+        &mut self,
+        term: &Term,
+        term_ident: &CallsiteIdent,
+        env: &HashMap<Var, crate::types::Ty>,
+        slot: EmitSlot,
+        kind: CallsiteKind,
+    ) {
+        match kind {
+            CallsiteKind::Direct { callee, args } => {
+                self.record_direct_call(term, term_ident, env, slot, callee, args);
+            }
+            CallsiteKind::CallClosureKnown { target, args } => {
+                self.record_known_closure_call(term, term_ident, env, slot, target, args);
+            }
+            CallsiteKind::ClosureLit {
+                fn_id,
+                captures,
+                args,
+            } => {
+                self.record_closure_literal_call(
+                    term, term_ident, env, slot, fn_id, captures, args,
+                );
+            }
+            CallsiteKind::Cont { cont, source } => {
+                self.record_continuation(term_ident, env, slot, cont.clone(), source);
+            }
+        }
+    }
+
+    fn record_direct_call(
+        &mut self,
+        term: &Term,
+        term_ident: &CallsiteIdent,
+        env: &HashMap<Var, crate::types::Ty>,
+        slot: EmitSlot,
+        callee: FnId,
+        args: &[Var],
+    ) {
+        let Some((mut entry_key, n_params)) = self.direct_call_key(callee, args, env) else {
+            return;
+        };
+        let cid = WalkResult::callsite_id(self.caller_spec_key, term_ident, slot);
+        if let Term::Call { continuation, .. } = term {
+            let (demand, context_plan) = direct_call_return_plan(
+                self.t,
+                self.m,
+                self.caller_spec_key,
+                env,
+                callee,
+                args,
+                continuation,
+            );
+            entry_key.demand = demand;
+            self.out.record_return_use(
+                self.caller_spec_key,
+                &cid,
+                entry_key.demand.clone(),
+                context_plan,
+            );
+        } else if matches!(term, Term::TailCall { .. }) {
+            let (demand, context_plan) = tail_call_return_plan(self.caller_spec_key, callee, args);
+            entry_key.demand = demand;
+            self.out.record_return_use(
+                self.caller_spec_key,
+                &cid,
+                entry_key.demand.clone(),
+                context_plan,
+            );
+        }
+        self.out
+            .record_dispatch(self.caller_spec_key, term_ident, slot, entry_key.clone());
+        let per_arg = self.fn_constant_args(args, n_params);
+        merge_callsite_fn_consts(self.callsite_fn_consts, &entry_key, per_arg);
+        self.emit(slot, term_ident.clone(), entry_key);
+    }
+
+    fn record_known_closure_call(
+        &mut self,
+        term: &Term,
+        term_ident: &CallsiteIdent,
+        env: &HashMap<Var, crate::types::Ty>,
+        slot: EmitSlot,
+        target: FnId,
+        args: &[Var],
+    ) {
+        let Some(mut target_key) = self.direct_call_key(target, args, env).map(|(key, _)| key)
+        else {
+            return;
+        };
+        self.inherit_tail_closure_demand(term, &mut target_key);
+        self.out
+            .record_dispatch(self.caller_spec_key, term_ident, slot, target_key.clone());
+        self.emit(slot, term_ident.clone(), target_key);
+    }
+
+    fn record_closure_literal_call(
+        &mut self,
+        term: &Term,
+        term_ident: &CallsiteIdent,
+        env: &HashMap<Var, crate::types::Ty>,
+        slot: EmitSlot,
+        fn_id: FnId,
+        captures: Vec<crate::types::Ty>,
+        args: &[Var],
+    ) {
+        let Some(mut target_key) = self.closure_lit_key(fn_id, captures, args, env) else {
+            return;
+        };
+        self.inherit_tail_closure_demand(term, &mut target_key);
+        self.out
+            .record_dispatch(self.caller_spec_key, term_ident, slot, target_key.clone());
+        self.emit(slot, term_ident.clone(), target_key);
+    }
+
+    fn record_continuation(
+        &mut self,
+        term_ident: &CallsiteIdent,
+        env: &HashMap<Var, crate::types::Ty>,
+        slot: EmitSlot,
+        cont: crate::fz_ir::Cont,
+        source: ContSource,
+    ) {
+        let Some(slot0) = self.continuation_slot0(term_ident, env, &source) else {
+            return;
+        };
+        let none_ty = self.t.none();
+        if self.t.is_equivalent(&slot0, &none_ty) {
+            return;
+        }
+        let Some(&j) = self.m.fn_idx.get(&cont.fn_id) else {
+            return;
+        };
+        let cont_fn = &self.m.fns[j];
+        let n_params = cont_fn.block(cont_fn.entry).params.len();
+        let mut key = self.continuation_key(&cont, env, n_params, slot0);
+        if self.has_bottom_arg(&key) {
+            return;
+        }
+        let per_param = self.continuation_fn_constants(&cont, n_params);
+        let demand = continuation_return_demand(self.m, self.caller_spec_key, &cont, &source);
+        let mut entry_key = spec_key_for_fn(cont_fn, std::mem::take(&mut key));
+        entry_key.demand = demand.clone();
+        if let Some(plan) = continuation_empty_tail_plan(
+            self.t,
+            self.m,
+            self.caller_spec_key,
+            &cont,
+            &source,
+            &demand,
+            &entry_key,
+        ) {
+            let cid = WalkResult::callsite_id(self.caller_spec_key, term_ident, slot);
+            self.out
+                .record_return_context_plan(self.caller_spec_key, &cid, plan);
+        }
+        merge_callsite_fn_consts(self.callsite_fn_consts, &entry_key, per_param);
+        self.out
+            .record_dispatch(self.caller_spec_key, term_ident, slot, entry_key.clone());
+        self.emit(slot, term_ident.clone(), entry_key);
+    }
+
+    fn continuation_slot0(
+        &mut self,
+        term_ident: &CallsiteIdent,
+        env: &HashMap<Var, crate::types::Ty>,
+        source: &ContSource,
+    ) -> Option<crate::types::Ty> {
+        match *source {
+            ContSource::Call { callee, args } => {
+                let callee_key = self.direct_return_key(term_ident, callee, args, env);
+                self.out.return_reads.push(callee_key.clone());
+                self.effective_returns.get(&callee_key).cloned()
+            }
+            ContSource::CallClosure { closure, args } => {
+                self.closure_return_slot0(closure, args, env)
+            }
+            ContSource::Receive => Some(self.any_ty.clone()),
+        }
+    }
+
+    fn direct_return_key(
+        &mut self,
+        term_ident: &CallsiteIdent,
+        callee: FnId,
+        args: &[Var],
+        env: &HashMap<Var, crate::types::Ty>,
+    ) -> SpecKey {
+        let direct_cid =
+            WalkResult::callsite_id(self.caller_spec_key, term_ident, EmitSlot::Direct);
+        self.out
+            .dispatch_targets
+            .get(&direct_cid)
+            .cloned()
+            .unwrap_or_else(|| {
+                let arg_tys = self.arg_tys(args, env);
+                recursive_direct_spec_key(
+                    self.t,
+                    self.m,
+                    self.recursive_fns,
+                    self.caller_spec_key.fn_id,
+                    callee,
+                    arg_tys,
+                )
+            })
+    }
+
+    fn closure_return_slot0(
+        &mut self,
+        closure: Var,
+        args: &[Var],
+        env: &HashMap<Var, crate::types::Ty>,
+    ) -> Option<crate::types::Ty> {
+        if let Some(&target) = self.caller_ft.fn_constants.get(&closure) {
+            return self.known_closure_return_slot0(target, args, env);
+        }
+        let Some(cv_descr) = env.get(&closure) else {
+            return Some(self.any_ty.clone());
+        };
+        let arg_tys = self.arg_tys(args, env);
+        self.record_closure_literal_return_reads(cv_descr, &arg_tys);
+        resolve_closure_return(self.t, cv_descr, self.effective_returns, &arg_tys)
+    }
+
+    fn known_closure_return_slot0(
+        &mut self,
+        target: FnId,
+        args: &[Var],
+        env: &HashMap<Var, crate::types::Ty>,
+    ) -> Option<crate::types::Ty> {
+        let target_fn = self.m.fn_by_id(target);
+        let n_params = target_fn.block(target_fn.entry).params.len();
+        let arg_tys = self.padded_arg_tys(args, env, n_params);
+        let callee_key = recursive_direct_spec_key(
+            self.t,
+            self.m,
+            self.recursive_fns,
+            self.caller_spec_key.fn_id,
+            target,
+            arg_tys,
+        );
+        self.out.return_reads.push(callee_key.clone());
+        self.effective_returns.get(&callee_key).cloned()
+    }
+
+    fn record_closure_literal_return_reads(
+        &mut self,
+        cv_descr: &crate::types::Ty,
+        arg_tys: &[crate::types::Ty],
+    ) {
+        let Some(clauses) = self.t.callable_clauses(cv_descr) else {
+            return;
+        };
+        for clause in clauses {
+            if let Some(crate::types::ClosureLitInfo { target, captures }) = clause.closure
+                && clause.args.len() == arg_tys.len()
+            {
+                let mut full_key = captures.clone();
+                full_key.extend_from_slice(arg_tys);
+                let callee_key = recursive_direct_spec_key(
+                    self.t,
+                    self.m,
+                    self.recursive_fns,
+                    self.caller_spec_key.fn_id,
+                    target.into(),
+                    full_key,
+                );
+                self.out.return_reads.push(callee_key);
+            }
+        }
+    }
+
+    fn seed_receive_matched_outcomes(&mut self, term: &Term) {
+        let Term::ReceiveMatched { clauses, after, .. } = term else {
+            return;
+        };
+        for c in clauses {
+            let ident = CallsiteIdent::from_source(c.span);
+            self.emit_receive_outcome(c.body, ident.clone());
+            if let Some(guard) = c.guard {
+                self.emit_receive_outcome(guard, ident);
+            }
+        }
+        if let Some(a) = after {
+            self.emit_receive_outcome(a.body, CallsiteIdent::from_source(a.span));
+        }
+    }
+
+    fn emit_receive_outcome(&mut self, fid: FnId, ident: CallsiteIdent) {
+        let Some(&j) = self.m.fn_idx.get(&fid) else {
+            return;
+        };
+        let body = &self.m.fns[j];
+        let np = body.block(body.entry).params.len();
+        let key = crate::fz_ir::receive_outcome_spec_key(&self.any_ty, np);
+        self.emit(EmitSlot::Cont, ident, spec_key_for_fn(body, key));
+    }
+
+    fn direct_call_key(
+        &mut self,
+        callee: FnId,
+        args: &[Var],
+        env: &HashMap<Var, crate::types::Ty>,
+    ) -> Option<(SpecKey, usize)> {
+        let callee_fn = self.m.fn_idx.get(&callee).map(|j| &self.m.fns[*j])?;
+        let n_params = callee_fn.block(callee_fn.entry).params.len();
+        let dispatch_key = self.padded_arg_tys(args, env, n_params);
+        if self.has_bottom_arg(&dispatch_key) {
+            return None;
+        }
+        let key = recursive_direct_spec_key(
+            self.t,
+            self.m,
+            self.recursive_fns,
+            self.caller_spec_key.fn_id,
+            callee,
+            dispatch_key,
+        );
+        Some((key, n_params))
+    }
+
+    fn closure_lit_key(
+        &mut self,
+        fn_id: FnId,
+        captures: Vec<crate::types::Ty>,
+        args: &[Var],
+        env: &HashMap<Var, crate::types::Ty>,
+    ) -> Option<SpecKey> {
+        let target_fn = self.m.fn_idx.get(&fn_id).map(|j| &self.m.fns[*j])?;
+        let n_params = target_fn.block(target_fn.entry).params.len();
+        let mut dispatch_key = captures;
+        dispatch_key.extend(self.arg_tys(args, env));
+        pad_and_truncate(&mut dispatch_key, n_params, &self.any_ty);
+        if self.has_bottom_arg(&dispatch_key) {
+            return None;
+        }
+        Some(recursive_direct_spec_key(
+            self.t,
+            self.m,
+            self.recursive_fns,
+            self.caller_spec_key.fn_id,
+            fn_id,
+            dispatch_key,
+        ))
+    }
+
+    fn continuation_key(
+        &self,
+        cont: &crate::fz_ir::Cont,
+        env: &HashMap<Var, crate::types::Ty>,
+        n_params: usize,
+        slot0: crate::types::Ty,
+    ) -> Vec<crate::types::Ty> {
+        let mut key = vec![self.any_ty.clone(); n_params];
+        if let Some(first) = key.first_mut() {
+            *first = slot0;
+        }
+        for (k, cvv) in cont.captured.iter().enumerate() {
+            if let Some(p) = key.get_mut(k + 1) {
+                *p = env.get(cvv).cloned().unwrap_or_else(|| self.any_ty.clone());
+            }
+        }
+        key
+    }
+
+    fn fn_constant_args(&self, args: &[Var], n_params: usize) -> Vec<Option<FnId>> {
+        let mut per_arg: Vec<Option<FnId>> = args
+            .iter()
+            .map(|av| self.caller_ft.fn_constants.get(av).copied())
+            .collect();
+        pad_and_truncate(&mut per_arg, n_params, &None);
+        per_arg
+    }
+
+    fn continuation_fn_constants(
+        &self,
+        cont: &crate::fz_ir::Cont,
+        n_params: usize,
+    ) -> Vec<Option<FnId>> {
+        let mut per_param = vec![None; n_params];
+        for (k, cvv) in cont.captured.iter().enumerate() {
+            if let Some(p) = per_param.get_mut(k + 1) {
+                *p = self.caller_ft.fn_constants.get(cvv).copied();
+            }
+        }
+        per_param
+    }
+
+    fn padded_arg_tys(
+        &self,
+        args: &[Var],
+        env: &HashMap<Var, crate::types::Ty>,
+        n_params: usize,
+    ) -> Vec<crate::types::Ty> {
+        let mut tys = self.arg_tys(args, env);
+        pad_and_truncate(&mut tys, n_params, &self.any_ty);
+        tys
+    }
+
+    fn arg_tys(&self, args: &[Var], env: &HashMap<Var, crate::types::Ty>) -> Vec<crate::types::Ty> {
+        args.iter()
+            .map(|av| env.get(av).cloned().unwrap_or_else(|| self.any_ty.clone()))
+            .collect()
+    }
+
+    fn inherit_tail_closure_demand(&self, term: &Term, key: &mut SpecKey) {
+        if matches!(term, Term::TailCallClosure { .. }) {
+            key.demand = self.caller_spec_key.demand.clone();
+        }
+    }
+
+    fn has_bottom_arg(&mut self, key: &[crate::types::Ty]) -> bool {
+        let none_ty = self.t.none();
+        key.iter().any(|ty| self.t.is_equivalent(ty, &none_ty))
+    }
+
+    fn emit(&mut self, slot: EmitSlot, ident: CallsiteIdent, target: SpecKey) {
+        self.out.emits.push((
             EmitterSite {
-                caller: caller_spec_key.clone(),
+                caller: self.caller_spec_key.clone(),
                 ident,
                 slot,
             },
             target,
         ));
-    };
-
-    for b in &f.blocks {
-        if !caller_ft.reachable_blocks.contains(&b.id) {
-            continue;
-        }
-        let mut env: HashMap<Var, crate::types::Ty> =
-            caller_ft.block_envs.get(&b.id).cloned().unwrap_or_default();
-
-        // Stmt-level work: MakeClosure handle registration (fz-try
-        // B1+B2). No stmt-level emits — closure construction is a
-        // value event, not a body-spec dispatch.
-        for stmt in b.stmts.iter() {
-            let Stmt::Let(v, prim) = stmt;
-            // fz-try B1+B2 — MakeClosure is closure-value construction. Two
-            // effects:
-            //   (a) Register a handle `(lam_fn_id, captures)` — closure-value
-            //       identity, disjoint from body specs.
-            //   (b) Emit the lambda's any-key body spec onto the worklist —
-            //       uniform across every MakeClosure site of the same lambda,
-            //       no captures-padding. The emit drives the planner to type
-            //       the body; codegen registers one compiled body per
-            //       closure-target at SpecId.0 == FnId.0. The closure-target
-            //       ABI seam speaks ValueRef (fz-try.15), so no per-capture
-            //       body specialization is needed for wire-format
-            //       synchronization.
-            if let Prim::MakeClosure(mk_ident, lam_fn_id, captured) = prim
-                && let Some(&jj) = m.fn_idx.get(lam_fn_id)
-            {
-                let lam = &m.fns[jj];
-                let n_params = lam.block(lam.entry).params.len();
-                let captures: Vec<crate::types::Ty> = captured
-                    .iter()
-                    .map(|cv| {
-                        env.get(cv)
-                            .cloned()
-                            .expect("MakeClosure: captured var unbound")
-                    })
-                    .collect();
-                out.closure_handles.insert((*lam_fn_id, captures));
-                let any_key = spec_key_for_fn(lam, vec![any_ty.clone(); n_params]);
-                let site = EmitterSite {
-                    caller: caller_spec_key.clone(),
-                    ident: mk_ident.clone(),
-                    slot: EmitSlot::MakeClosure,
-                };
-                out.emits.push((site, any_key));
-            }
-            {
-                let pt_ty = super::prim::type_prim(t, prim, &env, m, &HashSet::new());
-                env.insert(*v, pt_ty);
-            }
-        }
-
-        // fz-9pr.17 — opaque-arity detection for unresolved closure
-        // fz-9pr.17 — terminator-derived callsites. One match site
-        // (callsite_walk::block_callsites) replaces the four arms that
-        // used to live here (Direct, CallClosureKnown, ClosureLit,
-        // Cont). Per-spec key building and callsite_fn_consts tracking
-        // stay planner-side because they depend on caller_ft.block_envs
-        // and caller_ft.fn_constants.
-        // fz-kgk — every slot in `block_callsites` shares the
-        // terminator's intrinsic ident; non-call terminators have no
-        // callsites and don't reach here.
-        let term_ident = match b.terminator.ident() {
-            Some(i) => i.clone(),
-            None => continue,
-        };
-        let cs_list = block_callsites(t, &b.terminator, &env, &caller_ft.fn_constants);
-        for BlockCallsite { slot, kind } in cs_list {
-            match kind {
-                CallsiteKind::Direct { callee, args } => {
-                    let Some(&j) = m.fn_idx.get(&callee) else {
-                        continue;
-                    };
-                    let callee_fn = &m.fns[j];
-                    let n_params = callee_fn.block(callee_fn.entry).params.len();
-                    let mut dispatch_key: Vec<crate::types::Ty> = args
-                        .iter()
-                        .map(|av| env.get(av).cloned().unwrap_or_else(|| any_ty.clone()))
-                        .collect();
-                    while dispatch_key.len() < n_params {
-                        dispatch_key.push(any_ty.clone());
-                    }
-                    dispatch_key.truncate(n_params);
-                    if has_bottom_arg(t, &dispatch_key) {
-                        continue;
-                    }
-                    let mut entry_key = recursive_direct_spec_key(
-                        t,
-                        m,
-                        recursive_fns,
-                        caller_spec_key.fn_id,
-                        callee,
-                        dispatch_key,
-                    );
-                    let cid = WalkResult::callsite_id(caller_spec_key, &term_ident, slot);
-                    if let Term::Call { continuation, .. } = &b.terminator {
-                        let (demand, context_plan) = direct_call_return_plan(
-                            t,
-                            m,
-                            caller_spec_key,
-                            &env,
-                            callee,
-                            args,
-                            continuation,
-                        );
-                        entry_key.demand = demand;
-                        out.record_return_use(
-                            caller_spec_key,
-                            &cid,
-                            entry_key.demand.clone(),
-                            context_plan,
-                        );
-                    } else if matches!(&b.terminator, Term::TailCall { .. }) {
-                        let (demand, context_plan) =
-                            tail_call_return_plan(caller_spec_key, callee, args);
-                        entry_key.demand = demand;
-                        out.record_return_use(
-                            caller_spec_key,
-                            &cid,
-                            entry_key.demand.clone(),
-                            context_plan,
-                        );
-                    }
-                    out.record_dispatch(caller_spec_key, &term_ident, slot, entry_key.clone());
-                    let mut per_arg: Vec<Option<FnId>> = args
-                        .iter()
-                        .map(|av| caller_ft.fn_constants.get(av).copied())
-                        .collect();
-                    while per_arg.len() < n_params {
-                        per_arg.push(None);
-                    }
-                    per_arg.truncate(n_params);
-                    merge_callsite_fn_consts(callsite_fn_consts, &entry_key, per_arg);
-                    emit(slot, term_ident.clone(), entry_key, out);
-                }
-                CallsiteKind::CallClosureKnown { target, args } => {
-                    let Some(&j) = m.fn_idx.get(&target) else {
-                        continue;
-                    };
-                    let target_fn = &m.fns[j];
-                    let n_params = target_fn.block(target_fn.entry).params.len();
-                    let mut dispatch_key: Vec<crate::types::Ty> = args
-                        .iter()
-                        .map(|av| env.get(av).cloned().unwrap_or_else(|| any_ty.clone()))
-                        .collect();
-                    while dispatch_key.len() < n_params {
-                        dispatch_key.push(any_ty.clone());
-                    }
-                    dispatch_key.truncate(n_params);
-                    if has_bottom_arg(t, &dispatch_key) {
-                        continue;
-                    }
-                    let mut target_key = recursive_direct_spec_key(
-                        t,
-                        m,
-                        recursive_fns,
-                        caller_spec_key.fn_id,
-                        target,
-                        dispatch_key,
-                    );
-                    if matches!(&b.terminator, Term::TailCallClosure { .. }) {
-                        target_key.demand = caller_spec_key.demand.clone();
-                    }
-                    out.record_dispatch(caller_spec_key, &term_ident, slot, target_key.clone());
-                    emit(slot, term_ident.clone(), target_key, out);
-                }
-                CallsiteKind::ClosureLit {
-                    fn_id,
-                    captures,
-                    args,
-                } => {
-                    let Some(&j) = m.fn_idx.get(&fn_id) else {
-                        continue;
-                    };
-                    let target_fn = &m.fns[j];
-                    let n_params = target_fn.block(target_fn.entry).params.len();
-                    let mut dispatch_key: Vec<crate::types::Ty> = captures.clone();
-                    let arg_tys = args
-                        .iter()
-                        .map(|av| env.get(av).cloned().unwrap_or_else(|| any_ty.clone()));
-                    dispatch_key.extend(arg_tys);
-                    while dispatch_key.len() < n_params {
-                        dispatch_key.push(any_ty.clone());
-                    }
-                    dispatch_key.truncate(n_params);
-                    if has_bottom_arg(t, &dispatch_key) {
-                        continue;
-                    }
-                    let mut target_key = recursive_direct_spec_key(
-                        t,
-                        m,
-                        recursive_fns,
-                        caller_spec_key.fn_id,
-                        fn_id,
-                        dispatch_key,
-                    );
-                    if matches!(&b.terminator, Term::TailCallClosure { .. }) {
-                        target_key.demand = caller_spec_key.demand.clone();
-                    }
-                    out.record_dispatch(caller_spec_key, &term_ident, slot, target_key.clone());
-                    emit(slot, term_ident.clone(), target_key, out);
-                }
-                CallsiteKind::Cont { cont, source } => {
-                    // slot 0 derivation by Cont source. Receive is
-                    // opaque (`any`); Call reads effective_returns;
-                    // CallClosure either reads effective_returns of
-                    // the fn_constants-resolved target or resolves
-                    // via the closure-lit lattice.
-                    let slot0_ty: Option<crate::types::Ty> = match source {
-                        ContSource::Call { callee, args } => {
-                            let direct_cid = WalkResult::callsite_id(
-                                caller_spec_key,
-                                &term_ident,
-                                crate::fz_ir::EmitSlot::Direct,
-                            );
-                            let callee_key = out
-                                .dispatch_targets
-                                .get(&direct_cid)
-                                .cloned()
-                                .unwrap_or_else(|| {
-                                    let arg_tys: Vec<crate::types::Ty> = args
-                                        .iter()
-                                        .map(|av| {
-                                            env.get(av).cloned().unwrap_or_else(|| any_ty.clone())
-                                        })
-                                        .collect();
-                                    recursive_direct_spec_key(
-                                        t,
-                                        m,
-                                        recursive_fns,
-                                        caller_spec_key.fn_id,
-                                        callee,
-                                        arg_tys,
-                                    )
-                                });
-                            out.return_reads.push(callee_key.clone());
-                            effective_returns.get(&callee_key).cloned()
-                        }
-                        ContSource::CallClosure { closure, args } => {
-                            if let Some(&target) = caller_ft.fn_constants.get(&closure) {
-                                let target_fn = m.fn_by_id(target);
-                                let n_params = target_fn.block(target_fn.entry).params.len();
-                                let mut arg_tys: Vec<crate::types::Ty> = args
-                                    .iter()
-                                    .map(|av| {
-                                        env.get(av).cloned().unwrap_or_else(|| any_ty.clone())
-                                    })
-                                    .collect();
-                                while arg_tys.len() < n_params {
-                                    arg_tys.push(any_ty.clone());
-                                }
-                                arg_tys.truncate(n_params);
-                                let callee_key = recursive_direct_spec_key(
-                                    t,
-                                    m,
-                                    recursive_fns,
-                                    caller_spec_key.fn_id,
-                                    target,
-                                    arg_tys,
-                                );
-                                out.return_reads.push(callee_key.clone());
-                                effective_returns.get(&callee_key).cloned()
-                            } else if let Some(cv_descr) = env.get(&closure) {
-                                let arg_tys: Vec<crate::types::Ty> = args
-                                    .iter()
-                                    .map(|av| {
-                                        env.get(av).cloned().unwrap_or_else(|| any_ty.clone())
-                                    })
-                                    .collect();
-                                if let Some(clauses) = t.callable_clauses(cv_descr) {
-                                    for clause in clauses {
-                                        if let Some(crate::types::ClosureLitInfo {
-                                            target,
-                                            captures,
-                                        }) = clause.closure
-                                            && clause.args.len() == arg_tys.len()
-                                        {
-                                            let mut full_key: Vec<crate::types::Ty> =
-                                                captures.clone();
-                                            full_key.extend_from_slice(&arg_tys);
-                                            let callee_key = recursive_direct_spec_key(
-                                                t,
-                                                m,
-                                                recursive_fns,
-                                                caller_spec_key.fn_id,
-                                                target.into(),
-                                                full_key,
-                                            );
-                                            out.return_reads.push(callee_key);
-                                        }
-                                    }
-                                }
-                                resolve_closure_return(t, cv_descr, effective_returns, &arg_tys)
-                            } else {
-                                Some(any_ty.clone())
-                            }
-                        }
-                        ContSource::Receive => Some(any_ty.clone()),
-                    };
-                    let Some(slot0) = slot0_ty else {
-                        // Deferred: return_readers will re-enqueue
-                        // this caller when the callee return arrives.
-                        continue;
-                    };
-                    let none_ty = t.none();
-                    if t.is_equivalent(&slot0, &none_ty) {
-                        // Bottom means the continuation is unreachable
-                        // unless the callee return grows later; the
-                        // return_readers edge above will requeue us then.
-                        continue;
-                    }
-                    let Some(&j) = m.fn_idx.get(&cont.fn_id) else {
-                        continue;
-                    };
-                    let cont_fn = &m.fns[j];
-                    let n_params = cont_fn.block(cont_fn.entry).params.len();
-                    let mut key: Vec<crate::types::Ty> = vec![any_ty.clone(); n_params];
-                    if !key.is_empty() {
-                        key[0] = slot0;
-                    }
-                    for (k, cvv) in cont.captured.iter().enumerate() {
-                        if let Some(p) = key.get_mut(k + 1) {
-                            *p = env.get(cvv).cloned().unwrap_or_else(|| any_ty.clone());
-                        }
-                    }
-                    if has_bottom_arg(t, &key) {
-                        continue;
-                    }
-                    // fz-rh5.6 — do NOT widen cont keys. See pre-refactor
-                    // commentary preserved in callsite_walk docs.
-                    let mut per_param: Vec<Option<FnId>> = vec![None; n_params];
-                    for (k, cvv) in cont.captured.iter().enumerate() {
-                        if let Some(p) = per_param.get_mut(k + 1) {
-                            *p = caller_ft.fn_constants.get(cvv).copied();
-                        }
-                    }
-                    let demand = continuation_return_demand(m, caller_spec_key, cont, &source);
-                    let mut entry_key = spec_key_for_fn(cont_fn, key.clone());
-                    entry_key.demand = demand.clone();
-                    if let Some(plan) = continuation_empty_tail_plan(
-                        t,
-                        m,
-                        caller_spec_key,
-                        cont,
-                        &source,
-                        &demand,
-                        &entry_key,
-                    ) {
-                        let cid = WalkResult::callsite_id(caller_spec_key, &term_ident, slot);
-                        out.record_return_context_plan(caller_spec_key, &cid, plan);
-                    }
-                    merge_callsite_fn_consts(callsite_fn_consts, &entry_key, per_param);
-                    // fz-uwq.5+ — Cont keys aren't widened, so the
-                    // dispatch fact equals the emit key. Record it for
-                    // codegen's `resolve_cont_sid` to read.
-                    out.record_dispatch(caller_spec_key, &term_ident, slot, entry_key.clone());
-                    emit(slot, term_ident.clone(), entry_key, out);
-                }
-            }
-        }
-
-        // fz-70q.3 — selective-receive bodies aren't expressed in
-        // `block_callsites` (they're FnId fields on the terminator,
-        // not Cont structs). Walk them inline so the planner's spec
-        // worklist seeds (FnId, key) for each clause body / guard /
-        // after; without this codegen never sees their FuncIds and
-        // the park-site fn_addr lookup faults.
-        //
-        // Key shape mirrors `compute_return_for_spec`'s lookup:
-        // receive outcomes resume from an opaque closure env, so the
-        // body key is all-`any` at the body's entry-block arity.
-        if let Term::ReceiveMatched {
-            clauses,
-            after,
-            captures: _,
-            ..
-        } = &b.terminator
-        {
-            let mut enq = |fid: FnId, _bound_arity: usize, ident: crate::fz_ir::CallsiteIdent| {
-                let Some(&j) = m.fn_idx.get(&fid) else {
-                    return;
-                };
-                let body = &m.fns[j];
-                let np = body.block(body.entry).params.len();
-                let key = crate::fz_ir::receive_outcome_spec_key(&any_ty, np);
-                emit(EmitSlot::Cont, ident, spec_key_for_fn(body, key), out);
-            };
-            // EmitterSite is keyed (caller, ident, slot); a single
-            // ReceiveMatched term has N clause/after sub-targets but
-            // shares one term_ident, so we synthesize per-target
-            // idents from each body fn's span. Without this the
-            // `produces` HashMap collapses to the last emit and
-            // earlier targets fall out of reachability.
-            for c in clauses {
-                enq(
-                    c.body,
-                    c.bound_names.len(),
-                    crate::fz_ir::CallsiteIdent::from_source(c.span),
-                );
-                if let Some(g) = c.guard {
-                    enq(
-                        g,
-                        c.bound_names.len(),
-                        crate::fz_ir::CallsiteIdent::from_source(c.span),
-                    );
-                }
-            }
-            if let Some(a) = after {
-                enq(a.body, 0, crate::fz_ir::CallsiteIdent::from_source(a.span));
-            }
-        }
     }
+}
+
+fn pad_and_truncate<T: Clone>(items: &mut Vec<T>, n: usize, pad: &T) {
+    while items.len() < n {
+        items.push(pad.clone());
+    }
+    items.truncate(n);
 }
