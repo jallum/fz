@@ -1,7 +1,5 @@
 //! Module-aware frontend and execution-graph preparation.
 
-#![allow(clippy::result_large_err)]
-
 use crate::diag::{self, Diagnostic};
 use crate::frontend;
 use crate::fz_ir;
@@ -80,20 +78,47 @@ pub(crate) struct PreparedExecutionGraph {
     pub(crate) sm: diag::SourceMap,
 }
 
+#[derive(Debug)]
 pub(crate) enum PipelineError {
-    Frontend(frontend::FrontendErr),
-    Diagnostics {
-        sm: Option<diag::SourceMap>,
-        diagnostics: diag::Diagnostics,
-    },
-    DiagnosticVec {
-        sm: Option<diag::SourceMap>,
-        diagnostics: Vec<Diagnostic>,
-    },
-    Diagnostic(Diagnostic),
+    FrontendFailed,
+    FrontendDiagnostics,
+    LtoInterfaceSpecs,
+    LtoRewriteFailed,
+    ArtifactPayload,
     Artifact(ArtifactStoreError),
     Link(ImageLinkError),
     MissingFzoModule,
+}
+
+impl std::fmt::Display for PipelineError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::FrontendFailed => f.write_str("frontend failed"),
+            Self::FrontendDiagnostics => f.write_str("frontend reported errors"),
+            Self::LtoInterfaceSpecs => f.write_str("LTO interface validation failed"),
+            Self::LtoRewriteFailed => f.write_str("LTO rewrite failed"),
+            Self::ArtifactPayload => f.write_str("artifact payload is not materializable"),
+            Self::Artifact(err) => write!(f, "{err}"),
+            Self::Link(err) => write!(f, "{err}"),
+            Self::MissingFzoModule => f.write_str("fzo artifact has no module identity"),
+        }
+    }
+}
+
+impl std::error::Error for PipelineError {}
+
+impl PipelineError {
+    pub(crate) fn diagnostics_emitted(&self) -> bool {
+        match self {
+            Self::FrontendFailed
+            | Self::FrontendDiagnostics
+            | Self::LtoInterfaceSpecs
+            | Self::LtoRewriteFailed
+            | Self::ArtifactPayload => true,
+            Self::Artifact(err) => err.diagnostics_emitted(),
+            Self::Link(_) | Self::MissingFzoModule => false,
+        }
+    }
 }
 
 pub(crate) fn load_interface_table(
@@ -103,7 +128,7 @@ pub(crate) fn load_interface_table(
 ) -> Result<InterfaceTable, PipelineError> {
     let store = ArtifactStore::new(artifact_root);
     store
-        .load_interface_table_with_telemetry(tel, modules)
+        .load_interface_table(tel, modules)
         .map_err(PipelineError::Artifact)
 }
 
@@ -139,7 +164,7 @@ pub(crate) fn checked_module_for_mode(
     tel: &dyn telemetry::Telemetry,
     mode: CompileMode,
 ) -> Result<CheckedModule, PipelineError> {
-    let frontend = run_frontend(result)?;
+    let frontend = run_frontend(result, tel)?;
     let interfaces = frontend._prog.module_interfaces;
     let external_interfaces = frontend._prog.external_module_interfaces;
     tel.event(
@@ -224,13 +249,20 @@ pub(crate) fn link_error_diagnostic(err: ImageLinkError) -> Diagnostic {
     )
 }
 
-fn run_frontend(result: frontend::FrontendResult) -> Result<frontend::FrontendOk, PipelineError> {
-    let ok = result.map_err(PipelineError::Frontend)?;
+fn run_frontend(
+    result: frontend::FrontendResult,
+    tel: &dyn telemetry::Telemetry,
+) -> Result<frontend::FrontendOk, PipelineError> {
+    let ok = match result {
+        Ok(ok) => ok,
+        Err(err) => {
+            diag::emit_through(tel, Some(&err.sm), err.diagnostics.as_slice());
+            return Err(PipelineError::FrontendFailed);
+        }
+    };
     if has_errors(&ok.diagnostics) {
-        return Err(PipelineError::Diagnostics {
-            sm: Some(ok.sm.clone()),
-            diagnostics: ok.diagnostics,
-        });
+        diag::emit_through(tel, Some(&ok.sm), ok.diagnostics.as_slice());
+        return Err(PipelineError::FrontendDiagnostics);
     }
     Ok(ok)
 }
@@ -265,7 +297,7 @@ fn load_provider_units(
         .chain(runtime_roots)
         .collect::<Vec<_>>();
     let graph = ModuleGraphLoader::new(store)
-        .load_reachable(&prepared.interfaces, &provider_roots)
+        .load_reachable(tel, &prepared.interfaces, &provider_roots)
         .map_err(PipelineError::Artifact)?;
     tel.event(
         &["fz", "module", "graph_loaded"],
@@ -282,15 +314,18 @@ fn load_provider_units(
             .clone()
             .ok_or(PipelineError::MissingFzoModule)?;
         let source = object
-            .source_unit_text()
-            .map_err(PipelineError::Diagnostic)?;
-        let frontend = run_frontend(frontend::compile_source_with_interface_table(
-            t,
-            source.to_string(),
-            format!("artifact:{module}"),
-            graph.interfaces.clone(),
+            .source_unit_text(tel)
+            .map_err(|_err| PipelineError::ArtifactPayload)?;
+        let frontend = run_frontend(
+            frontend::compile_source_with_interface_table(
+                t,
+                source.to_string(),
+                format!("artifact:{module}"),
+                graph.interfaces.clone(),
+                tel,
+            ),
             tel,
-        ))?;
+        )?;
         let interface = graph.interfaces.get(&module).cloned();
         units.push(CompiledUnit::from_ir_module(
             frontend.module,
@@ -315,10 +350,8 @@ impl LtoLinkedProgram {
     ) -> Result<Self, PipelineError> {
         let diags = validate_public_export_specs(&interfaces);
         if !diags.is_empty() {
-            return Err(PipelineError::DiagnosticVec {
-                sm: sm.cloned(),
-                diagnostics: diags,
-            });
+            diag::emit_through(tel, sm, &diags);
+            return Err(PipelineError::LtoInterfaceSpecs);
         }
         tel.event(
             &["fz", "lto", "interfaces_validated"],
@@ -336,11 +369,13 @@ impl LtoLinkedProgram {
             .module
             .rewrite_external_calls_for_lto(&exports)
             .map_err(|err| {
-                PipelineError::Diagnostic(Diagnostic::error(
+                let diagnostic = Diagnostic::error(
                     diag::codes::LOWER_UNBOUND,
                     err.to_string(),
                     diag::Span::DUMMY,
-                ))
+                );
+                diag::emit_through(tel, None, &[diagnostic]);
+                PipelineError::LtoRewriteFailed
             })?;
         let erased_boundaries = self.module.boundary_fns.len();
         self.module.boundary_fns.clear();

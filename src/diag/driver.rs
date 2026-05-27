@@ -7,6 +7,7 @@ use super::diagnostic::{Diagnostic, Severity};
 use super::render::Renderer;
 use super::source_map::SourceMap;
 use crate::telemetry::Telemetry;
+use crate::telemetry::{Metadata, Value};
 
 /// Render one diagnostic into a deterministic, color-free string.
 pub fn render_one_to_string(sm: &SourceMap, d: &Diagnostic) -> String {
@@ -21,21 +22,22 @@ pub fn render_one_to_string(sm: &SourceMap, d: &Diagnostic) -> String {
 /// has attached (typically `DiagRenderer`). No exit decision — callers
 /// inspect the slice themselves or use `report_or_exit_through` which
 /// combines emission with exit-on-error.
-fn report_through(tel: &dyn Telemetry, diags: &[Diagnostic]) {
+pub fn emit_through(tel: &dyn Telemetry, sm: Option<&SourceMap>, diags: &[Diagnostic]) {
     for d in diags {
         let (name, severity): (&'static [&'static str], &'static str) = match d.severity {
             Severity::Error => (&["fz", "diag", "error"], "error"),
             Severity::Warning => (&["fz", "diag", "warning"], "warning"),
         };
-        tel.event(
-            name,
-            crate::metadata! {
-                severity: severity,
-                code: d.code.0,
-                message: &d.message,
-                diagnostic: crate::telemetry::value::opaque(d),
-            },
-        );
+        let mut metadata = vec![
+            ("severity", Value::from(severity)),
+            ("code", Value::from(d.code.0)),
+            ("message", Value::from(d.message.as_str())),
+            ("diagnostic", crate::telemetry::value::opaque(d)),
+        ];
+        if let Some(sm) = sm {
+            metadata.push(("source_map", crate::telemetry::value::opaque(sm)));
+        }
+        tel.event(name, Metadata::from_pairs(metadata));
     }
 }
 
@@ -47,7 +49,7 @@ pub fn report_or_exit_through(tel: &dyn Telemetry, diags: &[Diagnostic]) {
     if diags.is_empty() {
         return;
     }
-    report_through(tel, diags);
+    emit_through(tel, None, diags);
     if diags.iter().any(|d| d.severity == Severity::Error) {
         std::process::exit(1);
     }
@@ -84,7 +86,7 @@ mod tests {
         let warn = Diagnostic::warning(DiagCode("a/w"), "warned", Span::new(fid, 0, 1));
         let err = Diagnostic::error(DiagCode("a/e"), "broken", Span::new(fid, 2, 3));
 
-        report_through(&tel, &[warn.clone(), err.clone()]);
+        emit_through(&tel, None, &[warn.clone(), err.clone()]);
 
         assert_eq!(cap.count(&["fz", "diag", "warning"]), 1);
         assert_eq!(cap.count(&["fz", "diag", "error"]), 1);
@@ -124,7 +126,7 @@ mod tests {
             &["fz", "diag"],
             Box::new(DiagRenderer::new_to_writer(sm_shared, w, ColorMode::Never)),
         );
-        report_through(&tel, ds.as_slice());
+        emit_through(&tel, None, ds.as_slice());
         let actual = String::from_utf8(buf.borrow().clone()).unwrap();
         assert_eq!(actual, expected);
     }

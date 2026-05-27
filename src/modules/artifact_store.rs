@@ -4,7 +4,7 @@
 //! `.fzo` live?" It also owns the small `.fzi` read/write helpers that use
 //! that path policy.
 
-use crate::modules::artifact::{FziArtifact, FzoArtifact};
+use crate::modules::artifact::{ArtifactFormatError, FziArtifact, FzoArtifact};
 use crate::modules::identity::ModuleName;
 use crate::modules::interface::ModuleInterface;
 use std::collections::BTreeMap;
@@ -83,6 +83,7 @@ impl ArtifactStore {
 
     pub fn write_fzi_artifacts(
         &self,
+        tel: &dyn crate::telemetry::Telemetry,
         interfaces: &BTreeMap<ModuleName, ModuleInterface>,
     ) -> Result<Vec<PathBuf>, ArtifactStoreError> {
         let mut written = Vec::new();
@@ -103,15 +104,6 @@ impl ArtifactStore {
             })?;
             written.push(path);
         }
-        Ok(written)
-    }
-
-    pub fn write_fzi_artifacts_with_telemetry(
-        &self,
-        tel: &dyn crate::telemetry::Telemetry,
-        interfaces: &BTreeMap<ModuleName, ModuleInterface>,
-    ) -> Result<Vec<PathBuf>, ArtifactStoreError> {
-        let written = self.write_fzi_artifacts(interfaces)?;
         tel.event(
             &["fz", "module", "fzi_written"],
             crate::metadata! { modules: written.len() as i64 },
@@ -121,6 +113,7 @@ impl ArtifactStore {
 
     pub fn write_fzo_artifacts<'a>(
         &self,
+        tel: &dyn crate::telemetry::Telemetry,
         artifacts: impl IntoIterator<Item = &'a FzoArtifact>,
     ) -> Result<Vec<PathBuf>, ArtifactStoreError> {
         let mut written = Vec::new();
@@ -134,15 +127,6 @@ impl ArtifactStore {
             write_artifact_text(&path, artifact.serialize())?;
             written.push(path);
         }
-        Ok(written)
-    }
-
-    pub fn write_fzo_artifacts_with_telemetry<'a>(
-        &self,
-        tel: &dyn crate::telemetry::Telemetry,
-        artifacts: impl IntoIterator<Item = &'a FzoArtifact>,
-    ) -> Result<Vec<PathBuf>, ArtifactStoreError> {
-        let written = self.write_fzo_artifacts(artifacts)?;
         tel.event(
             &["fz", "module", "fzo_written"],
             crate::metadata! { modules: written.len() as i64 },
@@ -152,6 +136,7 @@ impl ArtifactStore {
 
     pub fn load_fzi_artifact(
         &self,
+        tel: &dyn crate::telemetry::Telemetry,
         module: &ModuleName,
         expected_fingerprint: Option<&[String]>,
     ) -> Result<FziArtifact, ArtifactStoreError> {
@@ -160,33 +145,21 @@ impl ArtifactStore {
             path: path.clone(),
             source: source.to_string(),
         })?;
-        FziArtifact::deserialize(&text, expected_fingerprint).map_err(|diagnostic| {
-            ArtifactStoreError::InvalidArtifact {
-                path,
-                diagnostic: Box::new(diagnostic),
-            }
-        })
+        FziArtifact::deserialize(tel, Some(&path), &text, expected_fingerprint)
+            .map_err(|error| ArtifactStoreError::InvalidArtifact { path, error })
     }
 
     pub fn load_interface_table<'a>(
-        &self,
-        modules: impl IntoIterator<Item = &'a ModuleName>,
-    ) -> Result<BTreeMap<ModuleName, ModuleInterface>, ArtifactStoreError> {
-        let mut table = BTreeMap::new();
-        for module in modules {
-            let artifact = self.load_fzi_artifact(module, None)?;
-            table.insert(artifact.interface.name.clone(), artifact.interface);
-        }
-        Ok(table)
-    }
-
-    pub fn load_interface_table_with_telemetry<'a>(
         &self,
         tel: &dyn crate::telemetry::Telemetry,
         modules: impl IntoIterator<Item = &'a ModuleName>,
     ) -> Result<BTreeMap<ModuleName, ModuleInterface>, ArtifactStoreError> {
         let modules = modules.into_iter().collect::<Vec<_>>();
-        let table = self.load_interface_table(modules.iter().copied())?;
+        let mut table = BTreeMap::new();
+        for module in &modules {
+            let artifact = self.load_fzi_artifact(tel, module, None)?;
+            table.insert(artifact.interface.name.clone(), artifact.interface);
+        }
         if !modules.is_empty() {
             tel.event(
                 &["fz", "module", "fzi_loaded"],
@@ -198,6 +171,7 @@ impl ArtifactStore {
 
     pub fn load_fzo_artifact(
         &self,
+        tel: &dyn crate::telemetry::Telemetry,
         module: &ModuleName,
         expected_interface_fingerprint: Option<&[String]>,
     ) -> Result<FzoArtifact, ArtifactStoreError> {
@@ -206,22 +180,9 @@ impl ArtifactStore {
             path: path.clone(),
             source: source.to_string(),
         })?;
-        FzoArtifact::deserialize(&text, expected_interface_fingerprint).map_err(|diagnostic| {
-            ArtifactStoreError::InvalidArtifact {
-                path,
-                diagnostic: Box::new(diagnostic),
-            }
-        })
-    }
-
-    #[cfg(test)]
-    pub fn load_fzo_artifact_with_telemetry(
-        &self,
-        tel: &dyn crate::telemetry::Telemetry,
-        module: &ModuleName,
-        expected_interface_fingerprint: Option<&[String]>,
-    ) -> Result<FzoArtifact, ArtifactStoreError> {
-        let artifact = self.load_fzo_artifact(module, expected_interface_fingerprint)?;
+        let artifact =
+            FzoArtifact::deserialize(tel, Some(&path), &text, expected_interface_fingerprint)
+                .map_err(|error| ArtifactStoreError::InvalidArtifact { path, error })?;
         tel.event(
             &["fz", "module", "fzo_loaded"],
             crate::metadata! { modules: 1i64 },
@@ -266,7 +227,7 @@ pub enum ArtifactStoreError {
     },
     InvalidArtifact {
         path: PathBuf,
-        diagnostic: Box<crate::diag::Diagnostic>,
+        error: ArtifactFormatError,
     },
 }
 
@@ -278,14 +239,20 @@ impl std::fmt::Display for ArtifactStoreError {
                 write!(f, "{} artifact has no module identity", kind.extension())
             }
             Self::Io { path, source } => write!(f, "{}: {}", path.display(), source),
-            Self::InvalidArtifact { path, diagnostic } => {
-                write!(f, "{}: {}", path.display(), diagnostic.message)
+            Self::InvalidArtifact { path, error } => {
+                write!(f, "{}: {}", path.display(), error)
             }
         }
     }
 }
 
 impl std::error::Error for ArtifactStoreError {}
+
+impl ArtifactStoreError {
+    pub fn diagnostics_emitted(&self) -> bool {
+        matches!(self, Self::InvalidArtifact { .. })
+    }
+}
 
 impl From<ArtifactPathError> for ArtifactStoreError {
     fn from(value: ArtifactPathError) -> Self {
@@ -404,10 +371,14 @@ mod tests {
         let mut interfaces = BTreeMap::new();
         interfaces.insert(name.clone(), interface.clone());
 
-        let written = store.write_fzi_artifacts(&interfaces).unwrap();
+        let written = store
+            .write_fzi_artifacts(&crate::telemetry::NullTelemetry, &interfaces)
+            .unwrap();
         assert_eq!(written, vec![root.join("interfaces/Provider.fzi")]);
 
-        let loaded = store.load_interface_table([&name]).unwrap();
+        let loaded = store
+            .load_interface_table(&crate::telemetry::NullTelemetry, [&name])
+            .unwrap();
         assert_eq!(loaded.get(&name), Some(&interface));
 
         let _ = std::fs::remove_dir_all(&root);

@@ -1,5 +1,4 @@
 //! Deterministic `.fzi` / `.fzo` artifact envelopes for module-first builds.
-#![allow(clippy::result_large_err)]
 
 use crate::diag::{Diagnostic, Span, codes};
 use crate::ir_codegen::CompiledUnit;
@@ -11,6 +10,7 @@ use crate::modules::interface::{
     InterfaceTypeKind,
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use std::path::Path;
 
 pub const FZ_ARTIFACT_ABI_VERSION: u32 = 1;
 pub const FZ_RUNTIME_ARTIFACT_ABI_VERSION: u32 = 1;
@@ -48,6 +48,39 @@ pub struct FzoUnitPayload {
     pub format: String,
     pub body: String,
 }
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArtifactFormatError {
+    message: String,
+}
+
+impl ArtifactFormatError {
+    fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+        }
+    }
+
+    pub fn to_diagnostic(&self) -> Diagnostic {
+        Diagnostic::error(codes::ARTIFACT_INVALID, self.message.clone(), Span::DUMMY)
+    }
+
+    pub fn emit(&self, tel: &dyn crate::telemetry::Telemetry, path: Option<&Path>) {
+        let mut diagnostic = self.to_diagnostic();
+        if let Some(path) = path {
+            diagnostic = diagnostic.with_note(format!("artifact path: {}", path.display()));
+        }
+        crate::diag::emit_through(tel, None, &[diagnostic]);
+    }
+}
+
+impl std::fmt::Display for ArtifactFormatError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for ArtifactFormatError {}
 
 impl FzoUnitPayload {
     pub fn new(format: impl Into<String>, body: impl Into<String>) -> Self {
@@ -88,39 +121,55 @@ impl FziArtifact {
     }
 
     pub fn deserialize(
+        tel: &dyn crate::telemetry::Telemetry,
+        path: Option<&Path>,
         text: &str,
         expected_fingerprint: Option<&[String]>,
-    ) -> Result<Self, Diagnostic> {
-        let artifact: Self = decode(FZI_MAGIC, text)?;
+    ) -> Result<Self, ArtifactFormatError> {
+        let artifact: Self = decode(FZI_MAGIC, text).inspect_err(|err| {
+            err.emit(tel, path);
+        })?;
         if artifact.compiler_abi_version != FZ_ARTIFACT_ABI_VERSION {
-            return Err(invalid(format!(
-                "fzi compiler ABI {} is not supported by ABI {}",
-                artifact.compiler_abi_version, FZ_ARTIFACT_ABI_VERSION
-            )));
+            return emit_invalid(
+                tel,
+                path,
+                format!(
+                    "fzi compiler ABI {} is not supported by ABI {}",
+                    artifact.compiler_abi_version, FZ_ARTIFACT_ABI_VERSION
+                ),
+            );
         }
         if artifact.runtime_abi_version != FZ_RUNTIME_ARTIFACT_ABI_VERSION {
-            return Err(invalid(format!(
-                "fzi runtime ABI {} is not supported by ABI {}",
-                artifact.runtime_abi_version, FZ_RUNTIME_ARTIFACT_ABI_VERSION
-            )));
+            return emit_invalid(
+                tel,
+                path,
+                format!(
+                    "fzi runtime ABI {} is not supported by ABI {}",
+                    artifact.runtime_abi_version, FZ_RUNTIME_ARTIFACT_ABI_VERSION
+                ),
+            );
         }
         if artifact.interface.abi_version != FZ_INTERFACE_ABI_VERSION {
-            return Err(invalid(format!(
-                "interface ABI {} is not supported by ABI {}",
-                artifact.interface.abi_version, FZ_INTERFACE_ABI_VERSION
-            )));
+            return emit_invalid(
+                tel,
+                path,
+                format!(
+                    "interface ABI {} is not supported by ABI {}",
+                    artifact.interface.abi_version, FZ_INTERFACE_ABI_VERSION
+                ),
+            );
         }
         let computed_digest = fingerprint_digest(&artifact.interface_fingerprint);
         if artifact.interface_fingerprint_digest != computed_digest {
-            return Err(invalid("fzi interface fingerprint digest mismatch"));
+            return emit_invalid(tel, path, "fzi interface fingerprint digest mismatch");
         }
         if artifact.interface.fingerprint_inputs != artifact.interface_fingerprint {
-            return Err(invalid("fzi interface fingerprint inputs mismatch"));
+            return emit_invalid(tel, path, "fzi interface fingerprint inputs mismatch");
         }
         if let Some(expected) = expected_fingerprint
             && artifact.interface_fingerprint != expected
         {
-            return Err(invalid("fzi interface fingerprint mismatch"));
+            return emit_invalid(tel, path, "fzi interface fingerprint mismatch");
         }
         Ok(artifact)
     }
@@ -171,16 +220,23 @@ impl FzoArtifact {
         }
     }
 
-    pub fn source_unit_text(&self) -> Result<&str, Diagnostic> {
+    pub fn source_unit_text(
+        &self,
+        tel: &dyn crate::telemetry::Telemetry,
+    ) -> Result<&str, ArtifactFormatError> {
         if self.unit_payload.format == FZO_PAYLOAD_SOURCE_UNIT_V1
             || self.unit_payload.format == FZO_PAYLOAD_RUNTIME_MODULE_V1
         {
             Ok(&self.unit_payload.body)
         } else {
-            Err(invalid(format!(
-                "fzo payload `{}` is not a materializable source unit",
-                self.unit_payload.format
-            )))
+            emit_invalid(
+                tel,
+                None,
+                format!(
+                    "fzo payload `{}` is not a materializable source unit",
+                    self.unit_payload.format
+                ),
+            )
         }
     }
 
@@ -189,32 +245,38 @@ impl FzoArtifact {
     }
 
     pub fn deserialize(
+        tel: &dyn crate::telemetry::Telemetry,
+        path: Option<&Path>,
         text: &str,
         expected_interface_fingerprint: Option<&[String]>,
-    ) -> Result<Self, Diagnostic> {
-        let artifact: Self = decode(FZO_MAGIC, text)?;
+    ) -> Result<Self, ArtifactFormatError> {
+        let artifact: Self = decode(FZO_MAGIC, text).inspect_err(|err| {
+            err.emit(tel, path);
+        })?;
         if artifact.compiler_abi_version != FZ_ARTIFACT_ABI_VERSION {
-            return Err(invalid("fzo compiler ABI mismatch"));
+            return emit_invalid(tel, path, "fzo compiler ABI mismatch");
         }
         if artifact.runtime_abi_version != FZ_RUNTIME_ARTIFACT_ABI_VERSION {
-            return Err(invalid("fzo runtime ABI mismatch"));
+            return emit_invalid(tel, path, "fzo runtime ABI mismatch");
         }
         if artifact.unit_payload.format.is_empty() {
-            return Err(invalid("fzo unit payload format is empty"));
+            return emit_invalid(tel, path, "fzo unit payload format is empty");
         }
         if artifact.unit_payload.body.is_empty() {
-            return Err(invalid("fzo unit payload is empty"));
+            return emit_invalid(tel, path, "fzo unit payload is empty");
         }
         let computed_digest = fingerprint_digest(&artifact.interface_fingerprint);
         if artifact.interface_fingerprint_digest != computed_digest {
-            return Err(invalid(
+            return emit_invalid(
+                tel,
+                path,
                 "fzo implemented interface fingerprint digest mismatch",
-            ));
+            );
         }
         if let Some(expected) = expected_interface_fingerprint
             && artifact.interface_fingerprint != expected
         {
-            return Err(invalid("fzo implemented interface fingerprint mismatch"));
+            return emit_invalid(tel, path, "fzo implemented interface fingerprint mismatch");
         }
         Ok(artifact)
     }
@@ -225,7 +287,7 @@ fn encode<T: Serialize>(magic: &str, value: &T) -> String {
     format!("{}\n{}\n", magic, body)
 }
 
-fn decode<T: DeserializeOwned>(magic: &str, text: &str) -> Result<T, Diagnostic> {
+fn decode<T: DeserializeOwned>(magic: &str, text: &str) -> Result<T, ArtifactFormatError> {
     let Some((header, body)) = text.split_once('\n') else {
         return Err(invalid(format!("expected {} artifact header", magic)));
     };
@@ -236,8 +298,18 @@ fn decode<T: DeserializeOwned>(magic: &str, text: &str) -> Result<T, Diagnostic>
         .map_err(|err| invalid(format!("malformed {} artifact: {}", magic, err)))
 }
 
-fn invalid(message: impl Into<String>) -> Diagnostic {
-    Diagnostic::error(codes::ARTIFACT_INVALID, message.into(), Span::DUMMY)
+fn invalid(message: impl Into<String>) -> ArtifactFormatError {
+    ArtifactFormatError::new(message)
+}
+
+fn emit_invalid<T>(
+    tel: &dyn crate::telemetry::Telemetry,
+    path: Option<&Path>,
+    message: impl Into<String>,
+) -> Result<T, ArtifactFormatError> {
+    let err = invalid(message);
+    err.emit(tel, path);
+    Err(err)
 }
 
 #[cfg(test)]
@@ -284,8 +356,13 @@ mod tests {
     fn fzi_roundtrip_is_deterministic() {
         let artifact = FziArtifact::new(math_interface());
         let text = artifact.serialize();
-        let decoded = FziArtifact::deserialize(&text, Some(&["export:Math.add/2".to_string()]))
-            .expect("deserialize");
+        let decoded = FziArtifact::deserialize(
+            &crate::telemetry::NullTelemetry,
+            None,
+            &text,
+            Some(&["export:Math.add/2".to_string()]),
+        )
+        .expect("deserialize");
         assert_eq!(decoded, artifact);
         assert_eq!(decoded.serialize(), text);
     }
@@ -293,9 +370,15 @@ mod tests {
     #[test]
     fn fzi_rejects_fingerprint_mismatch() {
         let text = FziArtifact::new(math_interface()).serialize();
-        let err = FziArtifact::deserialize(&text, Some(&["different".to_string()])).unwrap_err();
-        assert_eq!(err.code, codes::ARTIFACT_INVALID);
-        assert_eq!(err.message, "fzi interface fingerprint mismatch");
+        let err = FziArtifact::deserialize(
+            &crate::telemetry::NullTelemetry,
+            None,
+            &text,
+            Some(&["different".to_string()]),
+        )
+        .unwrap_err();
+        assert_eq!(err.to_diagnostic().code, codes::ARTIFACT_INVALID);
+        assert_eq!(err.to_string(), "fzi interface fingerprint mismatch");
     }
 
     #[test]
@@ -304,9 +387,31 @@ mod tests {
         let text = artifact
             .serialize()
             .replace(&artifact.interface_fingerprint_digest, "bad");
-        let err = FziArtifact::deserialize(&text, None).unwrap_err();
-        assert_eq!(err.code, codes::ARTIFACT_INVALID);
-        assert_eq!(err.message, "fzi interface fingerprint digest mismatch");
+        let err = FziArtifact::deserialize(&crate::telemetry::NullTelemetry, None, &text, None)
+            .unwrap_err();
+        assert_eq!(err.to_diagnostic().code, codes::ARTIFACT_INVALID);
+        assert_eq!(err.to_string(), "fzi interface fingerprint digest mismatch");
+    }
+
+    #[test]
+    fn fzi_decode_error_emits_diagnostic_telemetry() {
+        let tel = crate::telemetry::ConfiguredTelemetry::new();
+        let capture = crate::telemetry::Capture::new();
+        tel.attach(&["fz", "diag"], capture.handler());
+
+        let err = FziArtifact::deserialize(&tel, None, "not-an-artifact", None).unwrap_err();
+
+        assert_eq!(err.to_string(), "expected fzi artifact header");
+        assert_eq!(capture.count(&["fz", "diag", "error"]), 1);
+        let event = capture.last(&["fz", "diag", "error"]).expect("diag event");
+        assert!(matches!(
+            event.metadata.get("code"),
+            Some(crate::telemetry::Value::Str(code)) if code == "artifact/invalid"
+        ));
+        assert!(matches!(
+            event.metadata.get("message"),
+            Some(crate::telemetry::Value::Str(message)) if message == "expected fzi artifact header"
+        ));
     }
 
     #[test]
@@ -337,8 +442,13 @@ mod tests {
         let text = artifact.serialize();
         assert!(text.contains(r#""format": "fz-ir-text-v1""#), "{text}");
         assert!(text.contains(r#""body": "#), "{text}");
-        let decoded = FzoArtifact::deserialize(&text, Some(&["export:Math.add/2".to_string()]))
-            .expect("deserialize");
+        let decoded = FzoArtifact::deserialize(
+            &crate::telemetry::NullTelemetry,
+            None,
+            &text,
+            Some(&["export:Math.add/2".to_string()]),
+        )
+        .expect("deserialize");
         assert_eq!(decoded.unit_payload.format, "fz-ir-text-v1");
         assert_eq!(decoded.unit_payload.body, expected_payload);
         assert_eq!(decoded, artifact);
@@ -359,14 +469,18 @@ mod tests {
             vec!["impl:source".to_string()],
         );
 
-        let decoded =
-            FzoArtifact::deserialize(&artifact.serialize(), Some(&interface.fingerprint_inputs))
-                .expect("deserialize");
+        let decoded = FzoArtifact::deserialize(
+            &crate::telemetry::NullTelemetry,
+            None,
+            &artifact.serialize(),
+            Some(&interface.fingerprint_inputs),
+        )
+        .expect("deserialize");
 
         assert_eq!(decoded.unit_payload.format, FZO_PAYLOAD_SOURCE_UNIT_V1);
         assert!(
             decoded
-                .source_unit_text()
+                .source_unit_text(&crate::telemetry::NullTelemetry)
                 .unwrap()
                 .contains("defmodule Math")
         );
@@ -382,10 +496,12 @@ mod tests {
         );
         let artifact = FzoArtifact::from_unit(&unit, Vec::new());
 
-        let err = artifact.source_unit_text().unwrap_err();
+        let err = artifact
+            .source_unit_text(&crate::telemetry::NullTelemetry)
+            .unwrap_err();
 
         assert_eq!(
-            err.message,
+            err.to_string(),
             "fzo payload `fz-ir-text-v1` is not a materializable source unit"
         );
     }
@@ -402,10 +518,11 @@ mod tests {
         let text = artifact
             .serialize()
             .replace(&artifact.interface_fingerprint_digest, "bad");
-        let err = FzoArtifact::deserialize(&text, None).unwrap_err();
-        assert_eq!(err.code, codes::ARTIFACT_INVALID);
+        let err = FzoArtifact::deserialize(&crate::telemetry::NullTelemetry, None, &text, None)
+            .unwrap_err();
+        assert_eq!(err.to_diagnostic().code, codes::ARTIFACT_INVALID);
         assert_eq!(
-            err.message,
+            err.to_string(),
             "fzo implemented interface fingerprint digest mismatch"
         );
     }
@@ -421,9 +538,10 @@ mod tests {
         let mut artifact = FzoArtifact::from_unit(&unit, Vec::new());
         artifact.unit_payload.body.clear();
         let text = artifact.serialize();
-        let err = FzoArtifact::deserialize(&text, None).unwrap_err();
-        assert_eq!(err.code, codes::ARTIFACT_INVALID);
-        assert_eq!(err.message, "fzo unit payload is empty");
+        let err = FzoArtifact::deserialize(&crate::telemetry::NullTelemetry, None, &text, None)
+            .unwrap_err();
+        assert_eq!(err.to_diagnostic().code, codes::ARTIFACT_INVALID);
+        assert_eq!(err.to_string(), "fzo unit payload is empty");
     }
 
     #[test]
@@ -435,10 +553,16 @@ mod tests {
             crate::diag::Diagnostics::new(),
         );
         let text = FzoArtifact::from_unit(&unit, Vec::new()).serialize();
-        let err = FzoArtifact::deserialize(&text, Some(&["wrong".to_string()])).unwrap_err();
-        assert_eq!(err.code, codes::ARTIFACT_INVALID);
+        let err = FzoArtifact::deserialize(
+            &crate::telemetry::NullTelemetry,
+            None,
+            &text,
+            Some(&["wrong".to_string()]),
+        )
+        .unwrap_err();
+        assert_eq!(err.to_diagnostic().code, codes::ARTIFACT_INVALID);
         assert_eq!(
-            err.message,
+            err.to_string(),
             "fzo implemented interface fingerprint mismatch"
         );
     }

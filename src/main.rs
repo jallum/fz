@@ -325,7 +325,7 @@ fn run_build(tel: &telemetry::ConfiguredTelemetry, args: &[String]) {
     if emit_fzi {
         let store = modules::artifact_store::ArtifactStore::new(&artifact_root);
         store
-            .write_fzi_artifacts_with_telemetry(tel, &prepared.interfaces)
+            .write_fzi_artifacts(tel, &prepared.interfaces)
             .unwrap_or_else(|e| {
                 tel.event(
                     &["fz", "build", "fzi_failed"],
@@ -352,15 +352,13 @@ fn run_build(tel: &telemetry::ConfiguredTelemetry, args: &[String]) {
             ],
         );
         let store = modules::artifact_store::ArtifactStore::new(&artifact_root);
-        store
-            .write_fzo_artifacts_with_telemetry(tel, [&fzo])
-            .unwrap_or_else(|e| {
-                tel.event(
-                    &["fz", "build", "fzo_failed"],
-                    metadata! { error: e.to_string() },
-                );
-                std::process::exit(1);
-            });
+        store.write_fzo_artifacts(tel, [&fzo]).unwrap_or_else(|e| {
+            tel.event(
+                &["fz", "build", "fzo_failed"],
+                metadata! { error: e.to_string() },
+            );
+            std::process::exit(1);
+        });
     }
 
     let obj_name = std::path::Path::new(&src_path)
@@ -972,35 +970,21 @@ fn report_pipeline_error_or_exit(
     sm_cell: &Rc<RefCell<diag::SourceMap>>,
     err: modules::pipeline::PipelineError,
 ) -> ! {
+    let _ = sm_cell;
     match err {
-        modules::pipeline::PipelineError::Frontend(err) => {
-            *sm_cell.borrow_mut() = err.sm;
-            diag::report_or_exit_through(tel, err.diagnostics.as_slice());
-        }
-        modules::pipeline::PipelineError::Diagnostics { sm, diagnostics } => {
-            if let Some(sm) = sm {
-                *sm_cell.borrow_mut() = sm;
-            }
-            diag::report_or_exit_through(tel, diagnostics.as_slice());
-        }
-        modules::pipeline::PipelineError::DiagnosticVec { sm, diagnostics } => {
-            if let Some(sm) = sm {
-                *sm_cell.borrow_mut() = sm;
-            }
-            diag::report_or_exit_through(tel, &diagnostics);
-        }
-        modules::pipeline::PipelineError::Diagnostic(diagnostic) => {
-            diag::report_or_exit_through(tel, &[diagnostic]);
-        }
         modules::pipeline::PipelineError::Artifact(err) => {
-            eprintln!("{context}: {err}");
+            if !err.diagnostics_emitted() {
+                eprintln!("{context}: {err}");
+            }
         }
         modules::pipeline::PipelineError::Link(err) => {
             let diagnostic = modules::pipeline::link_error_diagnostic(err);
             diag::report_or_exit_through(tel, &[diagnostic]);
         }
-        modules::pipeline::PipelineError::MissingFzoModule => {
-            eprintln!("{context}: fzo artifact has no module identity");
+        err => {
+            if !err.diagnostics_emitted() {
+                eprintln!("{context}: {err}");
+            }
         }
     }
     std::process::exit(1);

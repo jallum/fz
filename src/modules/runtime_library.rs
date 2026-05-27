@@ -343,9 +343,13 @@ mod tests {
 
         for artifact in artifacts {
             let fzi_text = artifact.fzi.serialize();
-            let fzi =
-                FziArtifact::deserialize(&fzi_text, Some(&artifact.interface.fingerprint_inputs))
-                    .expect("fzi roundtrip");
+            let fzi = FziArtifact::deserialize(
+                &crate::telemetry::NullTelemetry,
+                None,
+                &fzi_text,
+                Some(&artifact.interface.fingerprint_inputs),
+            )
+            .expect("fzi roundtrip");
             assert_eq!(fzi.interface.name, artifact.interface.name);
             assert_eq!(fzi.interface.imports, artifact.interface.imports);
             assert_eq!(fzi.interface.types, artifact.interface.types);
@@ -364,9 +368,13 @@ mod tests {
             );
 
             let fzo_text = artifact.fzo.serialize();
-            let fzo =
-                FzoArtifact::deserialize(&fzo_text, Some(&artifact.fzo.interface_fingerprint))
-                    .expect("fzo roundtrip");
+            let fzo = FzoArtifact::deserialize(
+                &crate::telemetry::NullTelemetry,
+                None,
+                &fzo_text,
+                Some(&artifact.fzo.interface_fingerprint),
+            )
+            .expect("fzo roundtrip");
             assert_eq!(fzo.module, Some(artifact.module));
             assert_eq!(
                 fzo.interface_fingerprint,
@@ -393,26 +401,21 @@ mod tests {
             .collect::<BTreeMap<_, _>>();
 
         let fzi_paths = store
-            .write_fzi_artifacts_with_telemetry(&tel, &interfaces)
+            .write_fzi_artifacts(&tel, &interfaces)
             .expect("write fzi");
         let fzo_paths = store
-            .write_fzo_artifacts_with_telemetry(
-                &tel,
-                artifacts.iter().map(|artifact| &artifact.fzo),
-            )
+            .write_fzo_artifacts(&tel, artifacts.iter().map(|artifact| &artifact.fzo))
             .expect("write fzo");
         assert_eq!(fzi_paths.len(), artifacts.len());
         assert_eq!(fzo_paths.len(), artifacts.len());
 
         let utf8 = ModuleName::from_segments(vec!["Utf8".to_string()]);
-        let loaded_interfaces = store
-            .load_interface_table_with_telemetry(&tel, [&utf8])
-            .expect("load fzi");
+        let loaded_interfaces = store.load_interface_table(&tel, [&utf8]).expect("load fzi");
         assert!(loaded_interfaces[&utf8].exports.iter().any(|export| {
             export.name == "valid?" && export.arity == 1 && export.spec.is_some()
         }));
         let loaded_fzo = store
-            .load_fzo_artifact_with_telemetry(
+            .load_fzo_artifact(
                 &tel,
                 &utf8,
                 Some(&loaded_interfaces[&utf8].fingerprint_inputs),

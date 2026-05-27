@@ -22,9 +22,11 @@ use crate::eval::CompileTimeEvaluator;
 use crate::lexer::Lexer;
 use crate::parser::Parser;
 use crate::value::Value;
+use std::cell::RefCell;
 use std::collections::BTreeMap;
-use std::io;
+use std::io::{self, Write};
 use std::path::Path;
+use std::rc::Rc;
 
 pub fn run() -> io::Result<()> {
     let mut session = ReplSession::new();
@@ -233,6 +235,7 @@ impl ReplSession {
 
     pub(crate) fn run_script_str(&mut self, src: &str, source_name: String) -> io::Result<()> {
         let mut t = crate::types::ConcreteTypes;
+        let (tel, diagnostics) = repl_diagnostic_telemetry();
         let providers = crate::modules::pipeline::ProviderInputs::new(
             crate::modules::artifact_store::DEFAULT_ARTIFACT_ROOT.to_string(),
             Vec::new(),
@@ -242,26 +245,26 @@ impl ReplSession {
             src.to_string(),
             source_name,
             &providers,
-            &crate::telemetry::NullTelemetry,
+            &tel,
         ) {
             Ok(ok) => ok,
-            Err(err) => return Err(pipeline_error_to_io_error(err)),
+            Err(err) => return Err(pipeline_error_to_io_error(err, &diagnostics)),
         };
         let checked = crate::modules::pipeline::checked_module_for_mode(
             &mut t,
             frontend,
-            &crate::telemetry::NullTelemetry,
+            &tel,
             crate::modules::pipeline::CompileMode::Normal,
         )
-        .map_err(pipeline_error_to_io_error)?;
+        .map_err(|err| pipeline_error_to_io_error(err, &diagnostics))?;
         let prepared = crate::modules::pipeline::prepare_execution_graph(
             &mut t,
             checked,
             &providers,
-            &crate::telemetry::NullTelemetry,
+            &tel,
             crate::modules::pipeline::CompileMode::Normal,
         )
-        .map_err(pipeline_error_to_io_error)?;
+        .map_err(|err| pipeline_error_to_io_error(err, &diagnostics))?;
 
         let Some(main) = prepared.module.fn_by_name("main") else {
             return Ok(());
@@ -704,6 +707,7 @@ fn prepare_repl_frontend(
     t: &mut crate::types::ConcreteTypes,
     frontend: crate::frontend::FrontendOk,
 ) -> io::Result<crate::modules::pipeline::PreparedExecutionGraph> {
+    let (tel, diagnostics) = repl_diagnostic_telemetry();
     let providers = crate::modules::pipeline::ProviderInputs::new(
         crate::modules::artifact_store::DEFAULT_ARTIFACT_ROOT.to_string(),
         Vec::new(),
@@ -711,18 +715,45 @@ fn prepare_repl_frontend(
     let checked = crate::modules::pipeline::checked_module_for_mode(
         t,
         Ok(frontend),
-        &crate::telemetry::NullTelemetry,
+        &tel,
         crate::modules::pipeline::CompileMode::Normal,
     )
-    .map_err(pipeline_error_to_io_error)?;
+    .map_err(|err| pipeline_error_to_io_error(err, &diagnostics))?;
     crate::modules::pipeline::prepare_execution_graph(
         t,
         checked,
         &providers,
-        &crate::telemetry::NullTelemetry,
+        &tel,
         crate::modules::pipeline::CompileMode::Normal,
     )
-    .map_err(pipeline_error_to_io_error)
+    .map_err(|err| pipeline_error_to_io_error(err, &diagnostics))
+}
+
+fn repl_diagnostic_telemetry() -> (crate::telemetry::ConfiguredTelemetry, Rc<RefCell<Vec<u8>>>) {
+    let tel = crate::telemetry::ConfiguredTelemetry::new();
+    let diagnostics = Rc::new(RefCell::new(Vec::new()));
+    tel.attach(
+        &["fz", "diag"],
+        Box::new(crate::telemetry::DiagRenderer::new_to_writer(
+            Rc::new(RefCell::new(crate::diag::SourceMap::new())),
+            ReplDiagnosticWriter(diagnostics.clone()),
+            crate::diag::style::ColorMode::Never,
+        )),
+    );
+    (tel, diagnostics)
+}
+
+struct ReplDiagnosticWriter(Rc<RefCell<Vec<u8>>>);
+
+impl Write for ReplDiagnosticWriter {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.0.borrow_mut().extend_from_slice(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
 }
 
 fn item_fn_shapes(prog: &Program) -> Vec<(String, usize)> {
@@ -797,48 +828,19 @@ fn diagnostics_to_io_error(
     io::Error::other(rendered)
 }
 
-fn pipeline_error_to_io_error(err: crate::modules::pipeline::PipelineError) -> io::Error {
+fn pipeline_error_to_io_error(
+    err: crate::modules::pipeline::PipelineError,
+    diagnostics: &Rc<RefCell<Vec<u8>>>,
+) -> io::Error {
+    let rendered = diagnostics.borrow();
+    if !rendered.is_empty() {
+        return io::Error::other(String::from_utf8_lossy(&rendered).into_owned());
+    }
+    drop(rendered);
     match err {
-        crate::modules::pipeline::PipelineError::Frontend(err) => {
-            diagnostics_to_io_error(&err.sm, err.diagnostics.as_slice())
-        }
-        crate::modules::pipeline::PipelineError::Diagnostics {
-            sm: Some(sm),
-            diagnostics,
-        } => diagnostics_to_io_error(&sm, diagnostics.as_slice()),
-        crate::modules::pipeline::PipelineError::Diagnostics {
-            sm: None,
-            diagnostics,
-        } => io::Error::other(
-            diagnostics
-                .as_slice()
-                .iter()
-                .map(|diagnostic| diagnostic.message.clone())
-                .collect::<Vec<_>>()
-                .join("\n"),
-        ),
-        crate::modules::pipeline::PipelineError::DiagnosticVec {
-            sm: Some(sm),
-            diagnostics,
-        } => diagnostics_to_io_error(&sm, &diagnostics),
-        crate::modules::pipeline::PipelineError::DiagnosticVec {
-            sm: None,
-            diagnostics,
-        } => io::Error::other(
-            diagnostics
-                .iter()
-                .map(|diagnostic| diagnostic.message.clone())
-                .collect::<Vec<_>>()
-                .join("\n"),
-        ),
-        crate::modules::pipeline::PipelineError::Diagnostic(diagnostic) => {
-            io::Error::other(diagnostic.message)
-        }
         crate::modules::pipeline::PipelineError::Artifact(err) => io::Error::other(err.to_string()),
         crate::modules::pipeline::PipelineError::Link(err) => io::Error::other(err.to_string()),
-        crate::modules::pipeline::PipelineError::MissingFzoModule => {
-            io::Error::other("fzo artifact has no module identity")
-        }
+        err => io::Error::other(err.to_string()),
     }
 }
 

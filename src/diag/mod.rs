@@ -16,7 +16,7 @@ pub mod span;
 pub mod style;
 
 pub use diagnostic::{Diagnostic, Diagnostics};
-pub use driver::{render_one_to_string, report_or_exit_through};
+pub use driver::{emit_through, render_one_to_string, report_or_exit_through};
 pub use source_map::SourceMap;
 pub use span::{FileId, Span, SpanOrigin};
 

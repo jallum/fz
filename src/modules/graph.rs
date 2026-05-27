@@ -28,6 +28,7 @@ impl ModuleGraphLoader {
 
     pub fn load_reachable<'a>(
         &self,
+        tel: &dyn crate::telemetry::Telemetry,
         root_interfaces: &InterfaceTable,
         provider_roots: impl IntoIterator<Item = &'a ModuleName>,
     ) -> Result<ModuleGraph, ArtifactStoreError> {
@@ -54,7 +55,7 @@ impl ModuleGraphLoader {
                 continue;
             }
 
-            let artifact = self.store.load_fzi_artifact(&module, None)?;
+            let artifact = self.store.load_fzi_artifact(tel, &module, None)?;
             let interface = artifact.interface;
             enqueue_imports(&mut queue, &interface);
             user_modules.insert(interface.name.clone());
@@ -72,7 +73,7 @@ impl ModuleGraphLoader {
             let expected = interfaces
                 .get(&module)
                 .map(|interface| interface.fingerprint_inputs.as_slice());
-            objects.push(self.store.load_fzo_artifact(&module, expected)?);
+            objects.push(self.store.load_fzo_artifact(tel, &module, expected)?);
         }
 
         Ok(ModuleGraph {
@@ -159,12 +160,17 @@ mod tests {
         let mut artifacts = InterfaceTable::new();
         artifacts.insert(math.name.clone(), math.clone());
         artifacts.insert(extra.name.clone(), extra.clone());
-        store.write_fzi_artifacts(&artifacts).unwrap();
         store
-            .write_fzo_artifacts([&fzo(
-                &math,
-                "defmodule Math do\n  fn add(x, y), do: x + y\nend\n",
-            )])
+            .write_fzi_artifacts(&crate::telemetry::NullTelemetry, &artifacts)
+            .unwrap();
+        store
+            .write_fzo_artifacts(
+                &crate::telemetry::NullTelemetry,
+                [&fzo(
+                    &math,
+                    "defmodule Math do\n  fn add(x, y), do: x + y\nend\n",
+                )],
+            )
             .unwrap();
         let extra_path = store.object_path(&extra.name).unwrap();
         if let Some(parent) = extra_path.parent() {
@@ -175,7 +181,7 @@ mod tests {
         let mut roots = InterfaceTable::new();
         roots.insert(app.name.clone(), app);
         let graph = ModuleGraphLoader::new(store)
-            .load_reachable(&roots, [])
+            .load_reachable(&crate::telemetry::NullTelemetry, &roots, [])
             .expect("load graph");
 
         assert!(graph.interfaces.contains_key(&module("App")));
@@ -201,18 +207,23 @@ mod tests {
         let math_fzo = interface("Math", Vec::new(), vec![("sub", 2)]);
         let mut artifacts = InterfaceTable::new();
         artifacts.insert(math_fzi.name.clone(), math_fzi.clone());
-        store.write_fzi_artifacts(&artifacts).unwrap();
         store
-            .write_fzo_artifacts([&fzo(
-                &math_fzo,
-                "defmodule Math do\n  fn sub(x, y), do: x - y\nend\n",
-            )])
+            .write_fzi_artifacts(&crate::telemetry::NullTelemetry, &artifacts)
+            .unwrap();
+        store
+            .write_fzo_artifacts(
+                &crate::telemetry::NullTelemetry,
+                [&fzo(
+                    &math_fzo,
+                    "defmodule Math do\n  fn sub(x, y), do: x - y\nend\n",
+                )],
+            )
             .unwrap();
 
         let mut roots = InterfaceTable::new();
         roots.insert(app.name.clone(), app);
         let err = ModuleGraphLoader::new(store)
-            .load_reachable(&roots, [])
+            .load_reachable(&crate::telemetry::NullTelemetry, &roots, [])
             .unwrap_err();
 
         assert!(err.to_string().contains("fingerprint"));
@@ -230,7 +241,7 @@ mod tests {
         roots.insert(app.name.clone(), app);
 
         let graph = ModuleGraphLoader::new(store)
-            .load_reachable(&roots, [])
+            .load_reachable(&crate::telemetry::NullTelemetry, &roots, [])
             .expect("load graph");
 
         assert!(graph.interfaces.contains_key(&module("Utf8")));
@@ -239,7 +250,7 @@ mod tests {
         assert_eq!(graph.objects[0].unit_payload.format, "fz-runtime-module-v1");
         assert!(
             graph.objects[0]
-                .source_unit_text()
+                .source_unit_text(&crate::telemetry::NullTelemetry)
                 .expect("runtime fzo source")
                 .contains("defmodule Utf8")
         );

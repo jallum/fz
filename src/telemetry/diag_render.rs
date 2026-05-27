@@ -36,7 +36,6 @@ impl DiagRenderer {
 
     /// Render to an arbitrary writer with the given color mode.
     /// Tests usually pass a `Vec<u8>` and `ColorMode::Never`.
-    #[cfg(test)]
     pub fn new_to_writer<W: Write + 'static>(
         sm: Rc<RefCell<SourceMap>>,
         w: W,
@@ -59,10 +58,19 @@ impl Handler for DiagRenderer {
         else {
             return;
         };
-        let sm = self.sm.borrow();
-        let renderer = DiagRenderImpl::new(&sm).with_color(self.color);
         let mut w = self.writer.borrow_mut();
-        let _ = renderer.emit(d, &mut **w);
+        if let Some(sm) = ev
+            .metadata
+            .get("source_map")
+            .and_then(|v| v.downcast_ref::<SourceMap>())
+        {
+            let renderer = DiagRenderImpl::new(sm).with_color(self.color);
+            let _ = renderer.emit(d, &mut **w);
+        } else {
+            let sm = self.sm.borrow();
+            let renderer = DiagRenderImpl::new(&sm).with_color(self.color);
+            let _ = renderer.emit(d, &mut **w);
+        }
     }
 }
 
