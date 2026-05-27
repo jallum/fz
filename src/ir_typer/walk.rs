@@ -1047,9 +1047,8 @@ fn prim_uses_var(prim: &Prim, needle: Var) -> bool {
         | Prim::BitReaderInit(a)
         | Prim::BitReaderDone(a)
         | Prim::Brand(a, _) => *a == needle,
-        Prim::Extern(_, args) | Prim::MakeTuple(args) | Prim::MakeList(args, None) => {
-            args.contains(&needle)
-        }
+        Prim::Extern(_, args) => args.iter().any(|arg| arg.var == needle),
+        Prim::MakeTuple(args) | Prim::MakeList(args, None) => args.contains(&needle),
         Prim::MakeList(args, Some(tail)) => args.contains(&needle) || *tail == needle,
         Prim::MakeClosure(_, _, caps) => caps.contains(&needle),
         Prim::DestTupleSet { dest, value, .. } => *dest == needle || *value == needle,

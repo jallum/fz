@@ -5,7 +5,8 @@ use crate::ast::{
 };
 use crate::diag::Span;
 use crate::fz_ir::{
-    BinOp, BitFieldIr, BitSizeIr, BlockId, Const, FnBuilder, Prim, Term, UnOp, Var,
+    BinOp, BitFieldIr, BitSizeIr, BlockId, Const, ExternArg, ExternDecl, ExternTy, FnBuilder, Prim,
+    Term, UnOp, Var,
 };
 
 use crate::pattern_matrix::{BodyId, PatternMatrix, Row};
@@ -283,11 +284,8 @@ pub(crate) fn lower_expr(
 
         Expr::Call(target, args) => {
             // Lower arg exprs first; park each so they survive subsequent splits.
-            let parks = lower_seq(ctx, args)?;
-            let arg_vars: Vec<Var> = parks.iter().map(|n| ctx.unpark(n)).collect();
-            for n in &parks {
-                ctx.unbind(n);
-            }
+            let lowered_args = lower_call_args(ctx, args)?;
+            let arg_vars: Vec<Var> = lowered_args.iter().map(|a| a.var).collect();
             // Resolve callee.
             let callee_name = match &target.node {
                 Expr::Var(n) => n.clone(),
@@ -353,33 +351,30 @@ pub(crate) fn lower_expr(
                     .externs
                     .lookup(sym)
                     .expect("fz_spawn/fz_spawn_opt must be in runtime.fz");
-                return Ok(ctx.let_at(Prim::Extern(eid, new_args), sp));
-            }
-            // Extern (runtime.fz / user-declared `extern "C" fn`)?
-            if let Some(eid) = ctx.externs.lookup(&callee_name) {
-                // fz-jex — extern arity check. User fns are arity-resolved by
-                // (name, arity) lookup; externs only resolve by name, so the
-                // arity check must be explicit here. Without it, a mismatched
-                // call (e.g. pipe-induced duplicate arg) flows uncaught into
-                // codegen, where `.zip(param_kinds)` silently truncates and
-                // the runtime later panics in fz_unbox_int with a tag error.
                 let decl = ctx
                     .extern_decls
                     .iter()
                     .find(|d| d.id == eid)
                     .expect("ExternTable entry must have matching ExternDecl");
-                if arg_vars.len() != decl.params.len() {
-                    return Err(LowerError::Unsupported {
-                        span: sp,
-                        what: format!(
-                            "extern \"C\" fn {}/{} called with {} arg(s)",
-                            callee_name,
-                            decl.params.len(),
-                            arg_vars.len()
-                        ),
-                    });
-                }
-                return Ok(ctx.let_at(Prim::Extern(eid, arg_vars), sp));
+                let extern_args =
+                    extern_args_for_call(decl, sym, new_args, vec![None; decl.params.len()], sp)?;
+                return Ok(ctx.let_at(Prim::Extern(eid, extern_args), sp));
+            }
+            // Extern (runtime.fz / user-declared `extern "C" fn`)?
+            if let Some(eid) = ctx.externs.lookup(&callee_name) {
+                let decl = ctx
+                    .extern_decls
+                    .iter()
+                    .find(|d| d.id == eid)
+                    .expect("ExternTable entry must have matching ExternDecl");
+                let extern_args = extern_args_for_call(
+                    decl,
+                    &callee_name,
+                    arg_vars,
+                    lowered_args.into_iter().map(|a| a.ascription).collect(),
+                    sp,
+                )?;
+                return Ok(ctx.let_at(Prim::Extern(eid, extern_args), sp));
             }
             let arity = arg_vars.len();
             let callee =
@@ -452,6 +447,124 @@ pub(crate) fn lower_seq(
         parks.push(ctx.park(v));
     }
     Ok(parks)
+}
+
+struct LoweredCallArg {
+    var: Var,
+    ascription: Option<crate::ast::TypeExprBody>,
+}
+
+fn lower_call_args(
+    ctx: &mut LowerCtx,
+    args: &[Spanned<Expr>],
+) -> Result<Vec<LoweredCallArg>, LowerError> {
+    let mut parks = Vec::with_capacity(args.len());
+    let mut ascriptions = Vec::with_capacity(args.len());
+    for arg in args {
+        let (expr, ascription) = match &arg.node {
+            Expr::Ascribe(inner, ty) => (inner.as_ref(), Some(ty.clone())),
+            _ => (arg, None),
+        };
+        let v = lower_expr(ctx, expr, false)?;
+        parks.push(ctx.park(v));
+        ascriptions.push(ascription);
+    }
+    let mut out = Vec::with_capacity(parks.len());
+    for (park, ascription) in parks.iter().zip(ascriptions) {
+        out.push(LoweredCallArg {
+            var: ctx.unpark(park),
+            ascription,
+        });
+    }
+    for park in &parks {
+        ctx.unbind(park);
+    }
+    Ok(out)
+}
+
+fn extern_args_for_call(
+    decl: &ExternDecl,
+    callee_name: &str,
+    arg_vars: Vec<Var>,
+    ascriptions: Vec<Option<crate::ast::TypeExprBody>>,
+    span: Span,
+) -> Result<Vec<ExternArg>, LowerError> {
+    let fixed = decl.params.len();
+    let actual = arg_vars.len();
+    if (!decl.variadic && actual != fixed) || (decl.variadic && actual < fixed) {
+        let expected = if decl.variadic {
+            format!("at least {}", fixed)
+        } else {
+            fixed.to_string()
+        };
+        return Err(LowerError::Unsupported {
+            span,
+            what: format!(
+                "extern \"C\" fn {}/{} called with {} arg(s)",
+                callee_name, expected, actual
+            ),
+        });
+    }
+
+    arg_vars
+        .into_iter()
+        .zip(ascriptions)
+        .enumerate()
+        .map(|(i, (var, ascription))| {
+            if i < fixed {
+                let fixed_ty = decl.params[i];
+                if let Some(body) = ascription {
+                    let ascribed = extern_ty_from_ascription(&body, span)?;
+                    if ascribed != fixed_ty {
+                        return Err(LowerError::Unsupported {
+                            span,
+                            what: format!(
+                                "extern \"C\" fn {} arg {} ascribed as {:?}, declared as {:?}",
+                                callee_name,
+                                i + 1,
+                                ascribed,
+                                fixed_ty
+                            ),
+                        });
+                    }
+                }
+                Ok(ExternArg::fixed(var, fixed_ty))
+            } else if let Some(body) = ascription {
+                Ok(ExternArg::ascribed(
+                    var,
+                    extern_ty_from_ascription(&body, span)?,
+                ))
+            } else {
+                Ok(ExternArg::auto(var))
+            }
+        })
+        .collect()
+}
+
+fn extern_ty_from_ascription(
+    body: &crate::ast::TypeExprBody,
+    span: Span,
+) -> Result<ExternTy, LowerError> {
+    let Some(tok) = body.0.first().map(|t| &t.tok) else {
+        return Err(LowerError::Unsupported {
+            span,
+            what: "empty extern call-arg ascription".into(),
+        });
+    };
+    let name = match tok {
+        crate::lexer::Tok::Ident(name) | crate::lexer::Tok::Upper(name) => name.as_str(),
+        crate::lexer::Tok::Nil => "nil",
+        _ => {
+            return Err(LowerError::Unsupported {
+                span,
+                what: format!("unsupported extern call-arg ascription token {:?}", tok),
+            });
+        }
+    };
+    super::extern_table::extern_ty_from_name(name).ok_or_else(|| LowerError::Unsupported {
+        span,
+        what: format!("unknown extern call-arg ascription `{}`", name),
+    })
 }
 
 pub(super) fn lower_binop(op: AstBinOp, span: Span) -> Result<BinOp, LowerError> {

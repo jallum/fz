@@ -272,6 +272,47 @@ pub enum ExternTy {
     CString,
 }
 
+/// Per-call-site marshal decision for an extern argument.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExternMarshal {
+    /// Fixed argument governed by `ExternDecl.params`.
+    Fixed(ExternTy),
+    /// Explicit call-site ascription, e.g. `arg :: cstring`.
+    Ascribed(ExternTy),
+    /// Variadic argument whose concrete class needs post-typer resolution.
+    Auto,
+}
+
+/// One argument to `Prim::Extern`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ExternArg {
+    pub var: Var,
+    pub marshal: ExternMarshal,
+}
+
+impl ExternArg {
+    pub fn fixed(var: Var, ty: ExternTy) -> Self {
+        Self {
+            var,
+            marshal: ExternMarshal::Fixed(ty),
+        }
+    }
+
+    pub fn ascribed(var: Var, ty: ExternTy) -> Self {
+        Self {
+            var,
+            marshal: ExternMarshal::Ascribed(ty),
+        }
+    }
+
+    pub fn auto(var: Var) -> Self {
+        Self {
+            var,
+            marshal: ExternMarshal::Auto,
+        }
+    }
+}
+
 /// One resolved `extern "C" fn` declaration stored in `Module.externs`.
 #[derive(Debug, Clone)]
 pub struct ExternDecl {
@@ -280,6 +321,7 @@ pub struct ExternDecl {
     /// C symbol name (same as fz_name for v1; override possible later).
     pub symbol: String,
     pub params: Vec<ExternTy>,
+    pub variadic: bool,
     pub ret: ExternTy,
     /// Semantic return type for the type system. Used by ir_typer to give
     /// `Prim::Extern` calls their declared return type instead of `any`.
@@ -325,7 +367,7 @@ pub enum Prim {
     Const(Const),
     BinOp(BinOp, Var, Var),
     UnOp(UnOp, Var),
-    Extern(ExternId, Vec<Var>),
+    Extern(ExternId, Vec<ExternArg>),
     ListHead(Var),
     ListTail(Var),
     IsEmptyList(Var),
@@ -1185,6 +1227,17 @@ fn fmt_var_list(vars: &[Var]) -> String {
         .join(", ")
 }
 
+fn fmt_extern_arg_list(args: &[ExternArg]) -> String {
+    args.iter()
+        .map(|arg| match arg.marshal {
+            ExternMarshal::Fixed(_) => arg.var.to_string(),
+            ExternMarshal::Ascribed(ty) => format!("{}::{:?}", arg.var, ty),
+            ExternMarshal::Auto => format!("{}::auto", arg.var),
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 impl fmt::Display for Prim {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -1192,7 +1245,7 @@ impl fmt::Display for Prim {
             Prim::BinOp(op, a, b) => write!(f, "{} {} {}", a, op, b),
             Prim::UnOp(op, a) => write!(f, "{} {}", op, a),
             Prim::Extern(e, args) => {
-                write!(f, "extern#{}([{}])", e.0, fmt_var_list(args))
+                write!(f, "extern#{}([{}])", e.0, fmt_extern_arg_list(args))
             }
             Prim::ListHead(l) => write!(f, "head({})", l),
             Prim::ListTail(l) => write!(f, "tail({})", l),

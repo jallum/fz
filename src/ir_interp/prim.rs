@@ -116,7 +116,8 @@ pub(super) fn eval_prim<T: Types<Ty = crate::types::Ty>>(
             eval_unop(*op, av)?
         }
         Prim::Extern(eid, args) => {
-            let arg_vals = collect(env, args)?;
+            let vars: Vec<_> = args.iter().map(|arg| arg.var).collect();
+            let arg_vals = collect(env, &vars)?;
             call_extern(runtime, t, module, tel, *eid, &arg_vals)?
         }
         Prim::MakeBitstring(fields) => {

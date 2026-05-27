@@ -2,7 +2,8 @@ use super::*;
 use crate::ast::FnDef;
 use crate::diag::Span;
 use crate::fz_ir::{
-    BlockId, Const, ExternDecl, ExternId, FnBuilder, FnId, ModuleBuilder, Prim, Term, Var,
+    BlockId, Const, ExternArg, ExternDecl, ExternId, FnBuilder, FnId, ModuleBuilder, Prim, Term,
+    Var,
 };
 use std::collections::{HashMap, HashSet};
 
@@ -196,15 +197,21 @@ impl LowerCtx {
         let name = format!("__extern_wrap__{}", decl.fz_name);
         let mut tb = FnBuilder::new(id, name).with_category(crate::fz_ir::FnCategory::Prelude);
         let params: Vec<Var> = (0..decl.params.len()).map(|_| tb.fresh_var()).collect();
-        let entry = tb.block(params.clone());
+        let extern_args: Vec<ExternArg> = params
+            .iter()
+            .copied()
+            .zip(decl.params.iter().copied())
+            .map(|(var, ty)| ExternArg::fixed(var, ty))
+            .collect();
+        let entry = tb.block(params);
         let returns_value = !matches!(
             decl.ret,
             crate::fz_ir::ExternTy::Unit | crate::fz_ir::ExternTy::Never
         );
         let ret_var = if returns_value {
-            tb.let_(entry, Prim::Extern(eid, params))
+            tb.let_(entry, Prim::Extern(eid, extern_args.clone()))
         } else {
-            let _ = tb.let_(entry, Prim::Extern(eid, params));
+            let _ = tb.let_(entry, Prim::Extern(eid, extern_args));
             tb.let_(entry, Prim::Const(Const::Nil))
         };
         tb.set_terminator(entry, Term::Return(ret_var));

@@ -643,7 +643,12 @@ fn visit_prim_vars(prim: &Prim, mut visit: impl FnMut(Var)) {
         | Prim::BitReaderInit(v)
         | Prim::BitReaderDone(v)
         | Prim::Brand(v, _) => visit(*v),
-        Prim::Extern(_, args) | Prim::MakeTuple(args) => {
+        Prim::Extern(_, args) => {
+            for arg in args {
+                visit(arg.var);
+            }
+        }
+        Prim::MakeTuple(args) => {
             for v in args {
                 visit(*v);
             }

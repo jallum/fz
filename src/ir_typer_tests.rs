@@ -40,6 +40,7 @@ fn extern_decl(
         fz_name: symbol.to_string(),
         symbol: symbol.to_string(),
         params: Vec::new(),
+        variadic: false,
         ret,
         ret_descr: match ret {
             ExternTy::Unit => t.nil(),

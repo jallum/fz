@@ -1237,7 +1237,7 @@ pub(crate) fn lower_prim<
             use crate::fz_ir::ExternTy;
             let decl = env.module.extern_by_id(*eid);
             if decl.symbol == "fz_assert" && args.len() == 1 {
-                let value = *var_env.get(&args[0].0).expect("assert operand");
+                let value = *var_env.get(&args[0].var.0).expect("assert operand");
                 let truthy = codegen_value_truthy(b, jmod, runtime, value);
                 let truthy64 = b.ins().uextend(types::I64, truthy);
                 let sig = sig1(&[types::I64], &[]);
@@ -1250,8 +1250,8 @@ pub(crate) fn lower_prim<
             }
             if (decl.symbol == "fz_assert_eq" || decl.symbol == "fz_assert_neq") && args.len() == 2
             {
-                let left = tagged_get(var_env, b, jmod, runtime, args[0].0, cache);
-                let right = tagged_get(var_env, b, jmod, runtime, args[1].0, cache);
+                let left = tagged_get(var_env, b, jmod, runtime, args[0].var.0, cache);
+                let right = tagged_get(var_env, b, jmod, runtime, args[1].var.0, cache);
                 let eq_fref = jmod.declare_func_in_func(runtime.value_eq_ref_id, b.func);
                 let eq_inst = b.ins().call(eq_fref, &[left, right]);
                 let mut cond = b.inst_results(eq_inst)[0];
@@ -1268,8 +1268,8 @@ pub(crate) fn lower_prim<
                 return Ok(unit_extern_result(b, cache, dest_var));
             }
             if decl.symbol == "fz_send" && args.len() == 2 {
-                let receiver = as_raw_i64(var_env, b, jmod, runtime, args[0].0);
-                let msg_binding = *var_env.get(&args[1].0).expect("fz_send msg var");
+                let receiver = as_raw_i64(var_env, b, jmod, runtime, args[0].var.0);
+                let msg_binding = *var_env.get(&args[1].var.0).expect("fz_send msg var");
                 let mut msg_args = Vec::with_capacity(1);
                 push_binding_as_abi_args(
                     &mut msg_args,
@@ -1314,7 +1314,7 @@ pub(crate) fn lower_prim<
                 return Ok(LowerOut::RawI64(b.inst_results(inst)[0]));
             }
             if decl.symbol == "fz_spawn" && args.len() == 1 {
-                let closure_ref = tagged_get(var_env, b, jmod, runtime, args[0].0, cache);
+                let closure_ref = tagged_get(var_env, b, jmod, runtime, args[0].var.0, cache);
                 let sig = sig1(&[types::I64], &[types::I64]);
                 let func_id = jmod
                     .declare_function("fz_spawn_ref", Linkage::Import, &sig)
@@ -1324,8 +1324,8 @@ pub(crate) fn lower_prim<
                 return Ok(LowerOut::RawI64(b.inst_results(inst)[0]));
             }
             if decl.symbol == "fz_spawn_opt" && args.len() == 2 {
-                let closure_ref = tagged_get(var_env, b, jmod, runtime, args[0].0, cache);
-                let min_heap_size = as_raw_i64(var_env, b, jmod, runtime, args[1].0);
+                let closure_ref = tagged_get(var_env, b, jmod, runtime, args[0].var.0, cache);
+                let min_heap_size = as_raw_i64(var_env, b, jmod, runtime, args[1].var.0);
                 let sig = sig1(&[types::I64, types::I64], &[types::I64]);
                 let func_id = jmod
                     .declare_function("fz_spawn_opt_ref", Linkage::Import, &sig)
@@ -1335,7 +1335,7 @@ pub(crate) fn lower_prim<
                 return Ok(LowerOut::RawI64(b.inst_results(inst)[0]));
             }
             if decl.symbol == "fz_print_value" && args.len() == 1 {
-                let arg = var_env.get(&args[0].0).expect("fz_print_value arg var");
+                let arg = var_env.get(&args[0].var.0).expect("fz_print_value arg var");
                 match arg.repr() {
                     ArgRepr::RawInt => {
                         let sig = sig1(&[types::I64], &[]);
@@ -1358,7 +1358,7 @@ pub(crate) fn lower_prim<
                         b.ins().call(fref, &[arg.value()]);
                     }
                     ArgRepr::ValueRef | ArgRepr::Condition => {
-                        let value_ref = tagged_get(var_env, b, jmod, runtime, args[0].0, cache);
+                        let value_ref = tagged_get(var_env, b, jmod, runtime, args[0].var.0, cache);
                         let sig = sig1(&[types::I64], &[]);
                         let func_id = jmod
                             .declare_function("fz_print_value_ref", Linkage::Import, &sig)
@@ -1383,10 +1383,10 @@ pub(crate) fn lower_prim<
                     jmod,
                     runtime,
                     *var_env
-                        .get(&args[0].0)
+                        .get(&args[0].var.0)
                         .expect("unbound make_resource payload"),
                 );
-                let dtor_ref = tagged_get(var_env, b, jmod, runtime, args[1].0, cache);
+                let dtor_ref = tagged_get(var_env, b, jmod, runtime, args[1].var.0, cache);
                 let sig = sig1(&[types::I64, types::I64], &[types::I64]);
                 let func_id = jmod
                     .declare_function("fz_make_resource_ref", Linkage::Import, &sig)
@@ -1443,8 +1443,8 @@ pub(crate) fn lower_prim<
                 .iter()
                 .zip(param_kinds.iter())
                 .map(|(v, ty)| match ty {
-                    ExternTy::I64 => as_raw_i64(var_env, b, jmod, runtime, v.0),
-                    ExternTy::F64 => as_raw_f64(var_env, b, jmod, runtime, v.0),
+                    ExternTy::I64 => as_raw_i64(var_env, b, jmod, runtime, v.var.0),
+                    ExternTy::F64 => as_raw_f64(var_env, b, jmod, runtime, v.var.0),
                     // fz-2yf — Binary/CString: call the runtime helper from
                     // [[fz-9ss]] with tagged heap bits and use its returned
                     // `*const u8` as the C arg. Helper aborts on non-binary
@@ -1455,11 +1455,11 @@ pub(crate) fn lower_prim<
                             _ => runtime.binary_as_ptr_id,
                         };
                         let helper_fref = jmod.declare_func_in_func(helper_id, b.func);
-                        let bits = tagged_get(var_env, b, jmod, runtime, v.0, cache);
+                        let bits = tagged_get(var_env, b, jmod, runtime, v.var.0, cache);
                         let call = b.ins().call(helper_fref, &[bits]);
                         b.inst_results(call)[0]
                     }
-                    _ => tagged_get(var_env, b, jmod, runtime, v.0, cache),
+                    _ => tagged_get(var_env, b, jmod, runtime, v.var.0, cache),
                 })
                 .collect();
             let inst = b.ins().call(fref, &arg_vals);
