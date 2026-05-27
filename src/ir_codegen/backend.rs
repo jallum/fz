@@ -84,14 +84,14 @@ fn register_runtime_symbols(builder: &mut JITBuilder) {
         fz_runtime::ir_runtime::fz_dbg_value_ref as *const u8,
     );
     builder.symbol(
+        "fz_dbg_value",
+        fz_runtime::ir_runtime::fz_dbg_value as *const u8,
+    );
+    builder.symbol(
         "fz_process_heap_alloc_stats",
         fz_runtime::ir_runtime::fz_process_heap_alloc_stats as *const u8,
     );
-    // Typed print helpers — JIT routes here when the arg type is
-    // monomorphic, passing the raw payload directly.
-    builder.symbol("fz_print_i64", fz_runtime::fz_print_i64 as *const u8);
     builder.symbol("fz_panic", fz_runtime::fz_panic as *const u8);
-    builder.symbol("fz_print_f64", fz_runtime::fz_print_f64 as *const u8);
     builder.symbol(
         "fz_dynamic_float_arith_unsupported",
         fz_runtime::ir_runtime::fz_dynamic_float_arith_unsupported as *const u8,

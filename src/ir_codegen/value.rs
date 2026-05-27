@@ -775,18 +775,6 @@ pub(crate) fn coerce_binding_to<M: cranelift_module::Module>(
     }
 }
 
-pub(crate) fn push_repr_arg<M: cranelift_module::Module>(
-    out: &mut Vec<ir::Value>,
-    b: &mut FunctionBuilder<'_>,
-    jmod: &mut M,
-    runtime: &RuntimeRefs,
-    value: ir::Value,
-    from: ArgRepr,
-    to: ArgRepr,
-) {
-    out.push(coerce_to(b, jmod, runtime, value, from, to));
-}
-
 pub(crate) fn coerce_to<M: cranelift_module::Module>(
     b: &mut FunctionBuilder<'_>,
     jmod: &mut M,

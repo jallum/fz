@@ -1090,11 +1090,6 @@ pub(crate) fn lower_prim<
             if decl.symbol == "fz_spawn_opt" && args.len() == 2 {
                 return lower_extern_fz_spawn_opt(b, jmod, runtime, var_env, cache, &arg_vars);
             }
-            if decl.symbol == "fz_dbg_value" && args.len() == 1 {
-                return lower_extern_fz_dbg_value(
-                    b, jmod, runtime, var_env, cache, &arg_vars, dest_var,
-                );
-            }
             if decl.symbol == "fz_make_resource" && args.len() == 2 {
                 return lower_extern_fz_make_resource(b, jmod, runtime, var_env, cache, &arg_vars);
             }
@@ -1842,9 +1837,8 @@ fn lower_extern_fz_panic<M: cranelift_module::Module>(
 }
 
 /// `fz_send(receiver, msg)`: marshals `msg` as a single ABI ValueRef
-/// arg and forwards to `fz_send_ref`. The returned binding's repr
-/// determines whether the message bits flow through (raw int/float
-/// retained) or whether we surface the runtime's tagged result.
+/// arg and forwards to `fz_send_ref`. The wrapper's declared return type
+/// drives normal return coercion from this boxed ABI result.
 fn lower_extern_fz_send<M: cranelift_module::Module>(
     b: &mut FunctionBuilder<'_>,
     jmod: &mut M,
@@ -1872,11 +1866,7 @@ fn lower_extern_fz_send<M: cranelift_module::Module>(
         .map_err(|e| CodegenError::new(format!("declare fz_send_ref: {}", e)))?;
     let fref = jmod.declare_func_in_func(func_id, b.func);
     let inst = b.ins().call(fref, &[receiver, msg_ref]);
-    Ok(match msg_binding.repr() {
-        ArgRepr::RawInt => LowerOut::RawI64(msg_binding.value()),
-        ArgRepr::RawF64 => LowerOut::RawF64(msg_binding.value()),
-        ArgRepr::ValueRef | ArgRepr::Condition => LowerOut::ValueRefWord(b.inst_results(inst)[0]),
-    })
+    Ok(LowerOut::ValueRefWord(b.inst_results(inst)[0]))
 }
 
 /// `fz_self()`: returns the current process id from `fz_self_raw`.
@@ -1945,57 +1935,6 @@ fn lower_extern_fz_spawn_opt<M: cranelift_module::Module>(
     let fref = jmod.declare_func_in_func(func_id, b.func);
     let inst = b.ins().call(fref, &[closure_ref, min_heap_size]);
     Ok(LowerOut::RawI64(b.inst_results(inst)[0]))
-}
-
-/// `fz_dbg_value(arg)`: dispatches on the binding repr to call
-/// `fz_print_i64`, `fz_print_f64`, or `fz_dbg_value_ref`. Returns
-/// the original value unchanged.
-fn lower_extern_fz_dbg_value<M: cranelift_module::Module>(
-    b: &mut FunctionBuilder<'_>,
-    jmod: &mut M,
-    runtime: &RuntimeRefs,
-    var_env: &HashMap<u32, CodegenValue>,
-    cache: &mut CodegenCache,
-    args: &[crate::fz_ir::Var],
-    dest_var: crate::fz_ir::Var,
-) -> Result<LowerOut, CodegenError> {
-    let arg = *var_env.get(&args[0].0).expect("fz_dbg_value arg var");
-    match arg.repr() {
-        ArgRepr::RawInt => {
-            let sig = sig1(&[types::I64], &[]);
-            let func_id = jmod
-                .declare_function("fz_print_i64", Linkage::Import, &sig)
-                .map_err(|e| CodegenError::new(format!("declare fz_print_i64: {}", e)))?;
-            let fref = jmod.declare_func_in_func(func_id, b.func);
-            b.ins().call(fref, &[arg.value()]);
-        }
-        ArgRepr::RawF64 => {
-            let sig = sig1(&[types::F64], &[]);
-            let func_id = jmod
-                .declare_function("fz_print_f64", Linkage::Import, &sig)
-                .map_err(|e| CodegenError::new(format!("declare fz_print_f64: {}", e)))?;
-            let fref = jmod.declare_func_in_func(func_id, b.func);
-            b.ins().call(fref, &[arg.value()]);
-        }
-        ArgRepr::ValueRef | ArgRepr::Condition => {
-            let value_ref = tagged_get(var_env, b, jmod, runtime, args[0].0, cache);
-            let sig = sig1(&[types::I64], &[]);
-            let func_id = jmod
-                .declare_function("fz_dbg_value_ref", Linkage::Import, &sig)
-                .map_err(|e| CodegenError::new(format!("declare fz_dbg_value_ref: {}", e)))?;
-            let fref = jmod.declare_func_in_func(func_id, b.func);
-            b.ins().call(fref, &[value_ref]);
-        }
-    }
-    if !cache.used_vars.contains(&dest_var.0) {
-        return Ok(LowerOut::DeadUnit);
-    }
-    Ok(match arg {
-        CodegenValue::RawInt(value) => LowerOut::RawI64(value),
-        CodegenValue::RawF64(value) => LowerOut::RawF64(value),
-        CodegenValue::AnyRef(value) => LowerOut::ValueRef(value),
-        CodegenValue::Known { .. } | CodegenValue::Condition(_) => LowerOut::Strict(arg),
-    })
 }
 
 /// `fz_make_resource(payload, dtor)`: builds a runtime resource with

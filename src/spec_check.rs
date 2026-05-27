@@ -310,7 +310,7 @@ defmodule M do
   @spec use(Enumerable.t(integer)) :: integer
   fn use(xs), do: 1
 end
-fn main(), do: print(M.use([1]))
+fn main(), do: dbg(M.use([1]))
 "#,
         );
         let diags = validate_specs(&mut ct, &prog, &ir, &mt);
@@ -339,7 +339,7 @@ defmodule M do
   @spec use(Enumerable.t(integer)) :: integer
   fn use(xs), do: 1
 end
-fn main(), do: print(M.use(1))
+fn main(), do: dbg(M.use(1))
 "#,
         );
         let diags = validate_specs(&mut ct, &prog, &ir, &mt);

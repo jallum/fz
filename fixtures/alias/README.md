@@ -2,7 +2,7 @@
 purpose: "nested-module path aliasing — `alias Long.Path` and `alias Long.Path, as: LP`"
 paths: [jit, interp, aot, repl]
 budget.codegen.functions: 1
-budget.codegen.instructions: 7
+budget.codegen.instructions: 10
 budget.specs.count: 1
 budget.planner.worklist_pops: 1
 budget.planner.walk_calls: 1

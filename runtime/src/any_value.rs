@@ -1782,12 +1782,20 @@ pub mod debug {
     pub fn render_value(value: super::AnyValue) -> String {
         match value.kind() {
             ValueKind::INT => (value.raw() as i64).to_string(),
-            ValueKind::FLOAT => f64::from_bits(value.raw()).to_string(),
+            ValueKind::FLOAT => render_float(f64::from_bits(value.raw())),
             ValueKind::ATOM => render_atom(value.raw() as u32),
             ValueKind::LIST if value.raw() == 0 => "[]".to_string(),
             kind if kind.is_heap() => render(value.heap_object_word().expect("heap object")),
             ValueKind::NULL => "null".to_string(),
             _ => format!("#value<{:#x}:{}>", value.raw(), value.kind().tag()),
+        }
+    }
+
+    pub fn render_float(x: f64) -> String {
+        if x.is_finite() && x.fract() == 0.0 {
+            format!("{:.1}", x)
+        } else {
+            format!("{}", x)
         }
     }
 

@@ -2,7 +2,7 @@
 purpose: "cross-module qualified calls — `M.double`, `M.quad`, `N.helper`"
 paths: [jit, interp, aot, repl]
 budget.codegen.functions: 1
-budget.codegen.instructions: 9
+budget.codegen.instructions: 14
 budget.specs.count: 1
 budget.planner.worklist_pops: 1
 budget.planner.walk_calls: 1

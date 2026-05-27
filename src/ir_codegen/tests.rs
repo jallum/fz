@@ -605,7 +605,7 @@ fn runtime_enumerable_list_count_member_and_reduce() {
     let got = capture_main_with_runtime_graph(
         r#"
 fn main() do
-  print({
+  dbg({
     Enum.count([1, 2, 3]),
     Enum.member?([1, 2, 3], 2),
     Enum.reduce([1, 2, 3], {:cont, 0}, fn (x, acc) -> {:cont, acc + x})
@@ -632,7 +632,7 @@ fn main() do
   case Enum.reduce([1, 2], {:cont, 0}, reducer) do
     {:suspended, first, resume} ->
       case resume() do
-        {:done, total} -> print(first + total)
+        {:done, total} -> dbg(first + total)
       end
   end
 end
@@ -654,9 +654,9 @@ fn by_key(left, right) do
 end
 
 fn main() do
-  print(Enum.sort([3, 1, 2, 1, 5, 4]))
-  print(Enum.sort([3, 1, 2, 1, 5, 4], descending))
-  print(Enum.sort([{2, :a}, {1, :a}, {2, :b}, {1, :b}], by_key))
+  dbg(Enum.sort([3, 1, 2, 1, 5, 4]))
+  dbg(Enum.sort([3, 1, 2, 1, 5, 4], descending))
+  dbg(Enum.sort([{2, :a}, {1, :a}, {2, :b}, {1, :b}], by_key))
 end
 "#,
     );
@@ -1565,9 +1565,8 @@ fn map_with_float_key_no_box() {
 
 #[test]
 fn map_literal_and_update_use_destinations_not_repeated_puts() {
-    let m = lower_src(
-        "fn main() do\n  m = %{a: 1, b: 2}\n  n = %{m | a: 3, c: 4}\n  dbg(n[:a])\nend",
-    );
+    let m =
+        lower_src("fn main() do\n  m = %{a: 1, b: 2}\n  n = %{m | a: 3, c: 4}\n  dbg(n[:a])\nend");
     let ir = get_main_ir(&m);
     assert!(
         ir.contains("@fz_map_dest_begin")
@@ -2195,6 +2194,31 @@ fn dbg_returns_the_value_it_prints() {
          end",
     );
     assert_eq!(lines, vec!["41".to_string(), "42".to_string()]);
+}
+
+#[test]
+fn dbg_uses_any_extern_abi_and_spec_return_coercion() {
+    let main_ir = compile_and_grab_ir("fn main(), do: dbg(40) + 2", "main");
+    assert!(
+        main_ir.contains("@fz_box_int_for_any"),
+        "dbg should box the typed arg for the extern any ABI:\n{}",
+        main_ir
+    );
+    assert!(
+        main_ir.contains("@fz_dbg_value"),
+        "dbg should call the generic any extern:\n{}",
+        main_ir
+    );
+    assert!(
+        main_ir.contains("@fz_unbox_int"),
+        "dbg(t) :: t should unbox the any extern result when t is integer:\n{}",
+        main_ir
+    );
+    assert!(
+        !main_ir.contains("fz_print_"),
+        "dbg should not use typed print helper ABI:\n{}",
+        main_ir
+    );
 }
 
 /// Const::Nil/Bool/Atom use canonical raw+kind parts; the old encoded

@@ -2,7 +2,7 @@
 purpose: "same call repeated — historical JIT tier-up trigger; today every call is JIT"
 paths: [jit, interp, aot, repl]
 budget.codegen.functions: 1
-budget.codegen.instructions: 23
+budget.codegen.instructions: 33
 budget.specs.count: 1
 budget.planner.worklist_pops: 1
 budget.planner.walk_calls: 1

@@ -101,27 +101,6 @@ impl AnyValue {
         matches!(self, AnyValue::Atom(value) if value == atom_id)
     }
 
-    pub(super) fn dbg(self) -> Result<(), String> {
-        match self {
-            AnyValue::Null => {
-                fz_runtime::ir_runtime::fz_dbg_value_ref(AnyValueRef::null().raw_word());
-                Ok(())
-            }
-            AnyValue::Int(value) => {
-                fz_runtime::fz_print_i64(value);
-                Ok(())
-            }
-            AnyValue::Atom(_) | AnyValue::EmptyList | AnyValue::Ref(_) => {
-                fz_runtime::ir_runtime::fz_dbg_value_ref(self.as_ref_word()?);
-                Ok(())
-            }
-            AnyValue::Float(value) => {
-                fz_runtime::fz_print_f64(value);
-                Ok(())
-            }
-        }
-    }
-
     pub(crate) fn render(self) -> String {
         match self {
             AnyValue::Null => "null".to_string(),

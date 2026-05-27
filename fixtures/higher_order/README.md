@@ -2,7 +2,7 @@
 purpose: "higher-order patterns — apply2, compose"
 paths: [jit, interp, aot, repl]
 budget.codegen.functions: 1
-budget.codegen.instructions: 9
+budget.codegen.instructions: 14
 budget.specs.count: 3
 budget.planner.worklist_pops: 3
 budget.planner.walk_calls: 3

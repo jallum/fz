@@ -442,7 +442,7 @@ fn emit_return_term<
             } else {
                 return_reprs[this_spec_id as usize]
             };
-            let from = var_env.get(&v.0).map_or(ArgRepr::ValueRef, |vb| vb.repr());
+            let binding = *var_env.get(&v.0).expect("unbound return val");
             let cont_val = if is_cont_fn {
                 let self_val = cont_param.expect("cont fn binds self via cont_param");
                 load_outer_cont_ref(b, jmod, runtime, self_val)
@@ -456,21 +456,15 @@ fn emit_return_term<
             sig.returns.push(AbiParam::new(types::I64));
             let sigref = b.import_signature(sig);
             let mut cont_args = Vec::with_capacity(2);
-            if my_return_repr == ArgRepr::ValueRef {
-                let binding = *var_env.get(&v.0).expect("unbound return val");
-                push_binding_as_abi_args(
-                    &mut cont_args,
-                    b,
-                    jmod,
-                    runtime,
-                    cache,
-                    binding,
-                    ArgRepr::ValueRef,
-                );
-            } else {
-                let val = var_env.get(&v.0).expect("unbound return val").value();
-                push_repr_arg(&mut cont_args, b, jmod, runtime, val, from, my_return_repr);
-            }
+            push_binding_as_abi_args(
+                &mut cont_args,
+                b,
+                jmod,
+                runtime,
+                cache,
+                binding,
+                my_return_repr,
+            );
             cont_args.push(cont_val);
             b.ins().return_call_indirect(sigref, code, &cont_args);
         } else if cont_ptr_known_null {

@@ -131,31 +131,6 @@ pub(super) fn call_extern<T: Types<Ty = crate::types::Ty>>(
             }
             return Err(format!("fz panic: {}", args[0].render()));
         }
-        "fz_dbg_value" => {
-            if args.len() != 1 {
-                return Err(format!("fz_dbg_value/1 got {} args", args.len()));
-            }
-            args[0].dbg()?;
-            return Ok(args[0]);
-        }
-        "fz_print_i64" => {
-            if args.len() != 1 {
-                return Err(format!("fz_print_i64/1 got {} args", args.len()));
-            }
-            if let Some(n) = args[0].as_i64() {
-                fz_runtime::fz_print_i64(n);
-            } else {
-                args[0].dbg()?;
-            }
-            return Ok(interp_nil_value());
-        }
-        "fz_print_f64" => {
-            if args.len() != 1 {
-                return Err(format!("fz_print_f64/1 got {} args", args.len()));
-            }
-            args[0].dbg()?;
-            return Ok(interp_nil_value());
-        }
         "fz_process_heap_alloc_stats" => {
             if !args.is_empty() {
                 return Err(format!(
@@ -281,7 +256,7 @@ pub(super) fn resolve_symbol(name: &str) -> Result<*const (), String> {
         return Ok(fp);
     }
     let native: Option<*const ()> = match name {
-        "fz_print_i64" => Some(fz_runtime::fz_print_i64 as *const ()),
+        "fz_dbg_value" => Some(fz_runtime::ir_runtime::fz_dbg_value as *const ()),
         "fz_panic" => Some(fz_runtime::fz_panic as *const ()),
         "fz_process_heap_alloc_stats" => {
             Some(fz_runtime::ir_runtime::fz_process_heap_alloc_stats as *const ())

@@ -2,7 +2,7 @@
 purpose: "fibonacci via two-accumulator tail recursion — three-clause dispatch + tail-call forwarding under load"
 paths: [jit, interp, aot, repl]
 budget.codegen.functions: 1
-budget.codegen.instructions: 11
+budget.codegen.instructions: 18
 budget.specs.count: 1
 budget.planner.worklist_pops: 1
 budget.planner.walk_calls: 1

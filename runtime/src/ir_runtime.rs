@@ -286,6 +286,12 @@ pub extern "C" fn fz_dbg_value_ref(ref_word: u64) {
     crate::emit_print_line(crate::any_value::debug::render_value(value));
 }
 
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_dbg_value(ref_word: u64) -> u64 {
+    fz_dbg_value_ref(ref_word);
+    ref_word
+}
+
 thread_local! {
     /// Test-only capture of every fz_dbg_value rendering. Tests in the
     /// fz binary (ir_codegen::tests) read it via `test_capture_take()`.
