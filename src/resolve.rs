@@ -319,8 +319,17 @@ fn add_requested_runtime_interfaces(
 
 fn collect_requested_external_modules(prog: &Program, out: &mut Vec<ModuleName>) {
     for item in &prog.items {
-        if let Item::Module(module) = &**item {
-            collect_requested_external_modules_recursive(module, out);
+        match &**item {
+            Item::Module(module) => collect_requested_external_modules_recursive(module, out),
+            Item::Fn(def) => {
+                for clause in &def.clauses {
+                    collect_top_level_qualified_calls(&clause.body, out);
+                    if let Some(guard) = &clause.guard {
+                        collect_top_level_qualified_calls(guard, out);
+                    }
+                }
+            }
+            _ => {}
         }
     }
 }
@@ -332,6 +341,159 @@ fn collect_requested_external_modules_recursive(module: &ModuleDef, out: &mut Ve
             Item::Import { path, .. } => out.push(path.clone()),
             Item::Module(inner) => collect_requested_external_modules_recursive(inner, out),
             _ => {}
+        }
+    }
+}
+
+fn collect_top_level_qualified_calls(expr: &Spanned<Expr>, out: &mut Vec<ModuleName>) {
+    match &expr.node {
+        Expr::Call(callee, args) => {
+            if let Some(module) = qualified_callee_module(callee) {
+                out.push(module);
+            }
+            collect_top_level_qualified_calls(callee, out);
+            for arg in args {
+                collect_top_level_qualified_calls(arg, out);
+            }
+        }
+        Expr::FnRef { name, .. } => {
+            if let Some((module, _fun)) = name.rsplit_once('.')
+                && let Ok(module) = ModuleName::parse_dotted(module)
+            {
+                out.push(module);
+            }
+        }
+        Expr::List(xs, tail) => {
+            for x in xs {
+                collect_top_level_qualified_calls(x, out);
+            }
+            if let Some(tail) = tail {
+                collect_top_level_qualified_calls(tail, out);
+            }
+        }
+        Expr::Tuple(xs) | Expr::Block(xs) => {
+            for x in xs {
+                collect_top_level_qualified_calls(x, out);
+            }
+        }
+        Expr::Bitstring(fields) => {
+            for field in fields {
+                collect_top_level_qualified_calls(&field.value, out);
+            }
+        }
+        Expr::Map(pairs) => {
+            for (key, value) in pairs {
+                collect_top_level_qualified_calls(key, out);
+                collect_top_level_qualified_calls(value, out);
+            }
+        }
+        Expr::MapUpdate(map, pairs) => {
+            collect_top_level_qualified_calls(map, out);
+            for (key, value) in pairs {
+                collect_top_level_qualified_calls(key, out);
+                collect_top_level_qualified_calls(value, out);
+            }
+        }
+        Expr::Index(target, key) => {
+            collect_top_level_qualified_calls(target, out);
+            collect_top_level_qualified_calls(key, out);
+        }
+        Expr::BinOp(_, left, right) => {
+            collect_top_level_qualified_calls(left, out);
+            collect_top_level_qualified_calls(right, out);
+        }
+        Expr::UnOp(_, inner)
+        | Expr::Ascribe(inner, _)
+        | Expr::Quote(inner)
+        | Expr::Unquote(inner) => {
+            collect_top_level_qualified_calls(inner, out);
+        }
+        Expr::If(cond, then_expr, else_expr) => {
+            collect_top_level_qualified_calls(cond, out);
+            collect_top_level_qualified_calls(then_expr, out);
+            if let Some(else_expr) = else_expr {
+                collect_top_level_qualified_calls(else_expr, out);
+            }
+        }
+        Expr::Case(scrutinee, arms) => {
+            if let Some(scrutinee) = scrutinee {
+                collect_top_level_qualified_calls(scrutinee, out);
+            }
+            for arm in arms {
+                if let Some(guard) = &arm.guard {
+                    collect_top_level_qualified_calls(guard, out);
+                }
+                collect_top_level_qualified_calls(&arm.body, out);
+            }
+        }
+        Expr::Cond(pairs) => {
+            for (cond, body) in pairs {
+                collect_top_level_qualified_calls(cond, out);
+                collect_top_level_qualified_calls(body, out);
+            }
+        }
+        Expr::With(bindings, body, else_clauses) => {
+            for binding in bindings {
+                match binding {
+                    WithBinding::Match(_, expr) | WithBinding::Bare(expr) => {
+                        collect_top_level_qualified_calls(expr, out);
+                    }
+                }
+            }
+            collect_top_level_qualified_calls(body, out);
+            for arm in else_clauses {
+                if let Some(guard) = &arm.guard {
+                    collect_top_level_qualified_calls(guard, out);
+                }
+                collect_top_level_qualified_calls(&arm.body, out);
+            }
+        }
+        Expr::Match(_, rhs) => collect_top_level_qualified_calls(rhs, out),
+        Expr::Lambda(_, body) => collect_top_level_qualified_calls(body, out),
+        Expr::Receive { clauses, after } => {
+            for clause in clauses {
+                if let Some(guard) = &clause.guard {
+                    collect_top_level_qualified_calls(guard, out);
+                }
+                collect_top_level_qualified_calls(&clause.body, out);
+            }
+            if let Some(after) = after {
+                collect_top_level_qualified_calls(&after.timeout, out);
+                collect_top_level_qualified_calls(&after.body, out);
+            }
+        }
+        Expr::Var(_)
+        | Expr::Int(_)
+        | Expr::Float(_)
+        | Expr::Binary(_)
+        | Expr::Atom(_)
+        | Expr::Bool(_)
+        | Expr::Nil => {}
+    }
+}
+
+fn qualified_callee_module(callee: &Spanned<Expr>) -> Option<ModuleName> {
+    let mut path = Vec::new();
+    let mut cur = &callee.node;
+    loop {
+        match cur {
+            Expr::Index(target, key) => {
+                let Expr::Atom(member) = &key.node else {
+                    return None;
+                };
+                path.push(member.clone());
+                cur = &target.node;
+            }
+            Expr::Var(name) if is_upper(name) => {
+                if path.is_empty() {
+                    return None;
+                }
+                path.push(name.clone());
+                path.reverse();
+                path.pop();
+                return Some(ModuleName::from_segments(path));
+            }
+            _ => return None,
         }
     }
 }

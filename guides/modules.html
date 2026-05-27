@@ -285,11 +285,12 @@ fz build --interface Math --artifact-root build/fz consumer.fz -o consumer</pre>
 also load reachable <code>.fzo</code> providers, materialize their source-unit
 payloads, and link every imported export exactly once.</p>
 
-<p>The REPL is different. <code>fz repl</code> and
-<code>fz repl --script</code> use definitions from the current session or
-script plus built-in runtime-library interfaces. They do not load provider
+<p>The REPL is different. Interactive <code>fz repl</code> uses definitions
+from the current session plus built-in runtime-library interfaces.
+<code>fz repl --script</code> has one whole-file root source, so it can
+materialize reachable built-in runtime modules. Neither mode accepts provider
 artifacts from <code>--interface</code> / <code>--artifact-root</code>. Use
-<code>fz run</code> or <code>fz build</code> for artifact-backed module
+<code>fz run</code> or <code>fz build</code> for user artifact-backed module
 programs.</p>
 
 <p>Normal compilation follows this shape:</p>

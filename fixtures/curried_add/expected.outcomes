@@ -1,43 +1,43 @@
 outcomes for fixtures/curried_add/input.fz
 
-apply[&fn25[10]:(α1600) -> α1663, int] demand=value:
-  @0:64-68 ClosureCall -> Indirect(lambda_25#25 [10, int] demand=value)
+apply[&fn15[10]:(α960) -> α1023, int] demand=value:
+  @0:64-68 ClosureCall -> Indirect(lambda_15#15 [10, int] demand=value)
 
-apply[&fn25[1]:(α1600) -> α1663, int] demand=value:
-  @0:64-68 ClosureCall -> Indirect(lambda_25#25 [1, int] demand=value)
+apply[&fn15[1]:(α960) -> α1023, int] demand=value:
+  @0:64-68 ClosureCall -> Indirect(lambda_15#15 [1, int] demand=value)
 
-apply[&fn26[1, int]:(α1664) -> α1727, int] demand=value:
-  @0:64-68 ClosureCall -> Indirect(lambda_26#26 [1, int, int] demand=value)
+apply[&fn16[1, int]:(α1024) -> α1087, int] demand=value:
+  @0:64-68 ClosureCall -> Indirect(lambda_16#16 [1, int, int] demand=value)
 
-apply[&fn26[10, int]:(α1664) -> α1727, int] demand=value:
-  @0:64-68 ClosureCall -> Indirect(lambda_26#26 [10, int, int] demand=value)
+apply[&fn16[10, int]:(α1024) -> α1087, int] demand=value:
+  @0:64-68 ClosureCall -> Indirect(lambda_16#16 [10, int, int] demand=value)
 
 main[] demand=value:
-  @0:103-111 Direct -> Folded(&fn25[10]:() -> α1663)
-  @0:103-111 Direct -> Static(k_27#27 [&fn25[10]:(α1600) -> α1663] demand=value)
+  @0:103-111 Direct -> Folded(&fn15[10]:() -> α1023)
+  @0:103-111 Direct -> Static(k_17#17 [&fn15[10]:(α960) -> α1023] demand=value)
 
-k_27[&fn25[10]:(α1600) -> α1663] demand=value:
-  @0:97-116 Cont -> Static(k_28#28 [&fn26[10, int]:(α1664) -> α1727] demand=value)
-  @0:97-116 Direct -> Static(apply#23 [&fn25[10]:(α1600) -> α1663, int] demand=value)
+k_17[&fn15[10]:(α960) -> α1023] demand=value:
+  @0:97-116 Cont -> Static(k_18#18 [&fn16[10, int]:(α1024) -> α1087] demand=value)
+  @0:97-116 Direct -> Static(apply#13 [&fn15[10]:(α960) -> α1023, int] demand=value)
 
-k_28[&fn26[10, int]:(α1664) -> α1727] demand=value:
-  @0:91-121 Cont -> Static(k_29#29 [int] demand=value)
-  @0:91-121 Direct -> Static(apply#23 [&fn26[10, int]:(α1664) -> α1727, int] demand=value)
+k_18[&fn16[10, int]:(α1024) -> α1087] demand=value:
+  @0:91-121 Cont -> Static(k_19#19 [int] demand=value)
+  @0:91-121 Direct -> Static(apply#13 [&fn16[10, int]:(α1024) -> α1087, int] demand=value)
 
-k_29[int] demand=value:
-  @0:85-122 Cont -> Static(k_30#30 [nil] demand=value)
-  @0:85-122 Direct -> Static(print#5 [int] demand=value)
+k_19[int] demand=value:
+  @0:85-122 Cont -> Static(k_20#20 [nil] demand=value)
+  @0:85-122 Direct -> Static(print#0 [int] demand=value)
 
-k_30[nil] demand=value:
-  @0:143-150 Direct -> Static(k_31#31 [&fn25[1]:(α1600) -> α1663] demand=value)
+k_20[nil] demand=value:
+  @0:143-150 Direct -> Static(k_21#21 [&fn15[1]:(α960) -> α1023] demand=value)
 
-k_31[&fn25[1]:(α1600) -> α1663] demand=value:
-  @0:137-154 Cont -> Static(k_32#32 [&fn26[1, int]:(α1664) -> α1727] demand=value)
-  @0:137-154 Direct -> Static(apply#23 [&fn25[1]:(α1600) -> α1663, int] demand=value)
+k_21[&fn15[1]:(α960) -> α1023] demand=value:
+  @0:137-154 Cont -> Static(k_22#22 [&fn16[1, int]:(α1024) -> α1087] demand=value)
+  @0:137-154 Direct -> Static(apply#13 [&fn15[1]:(α960) -> α1023, int] demand=value)
 
-k_32[&fn26[1, int]:(α1664) -> α1727] demand=value:
-  @0:131-158 Cont -> Static(k_33#33 [int] demand=value)
-  @0:131-158 Direct -> Static(apply#23 [&fn26[1, int]:(α1664) -> α1727, int] demand=value)
+k_22[&fn16[1, int]:(α1024) -> α1087] demand=value:
+  @0:131-158 Cont -> Static(k_23#23 [int] demand=value)
+  @0:131-158 Direct -> Static(apply#13 [&fn16[1, int]:(α1024) -> α1087, int] demand=value)
 
-k_33[int] demand=value:
-  @0:125-159 Direct -> Static(print#5 [int] demand=value)
+k_23[int] demand=value:
+  @0:125-159 Direct -> Static(print#0 [int] demand=value)

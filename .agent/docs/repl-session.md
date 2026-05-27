@@ -141,11 +141,15 @@ already provides the complete source boundary.
 
 ## Module Artifact Policy
 
-The REPL is session-eager. Interactive chunks and `repl --script` compile
-against the source world already accumulated in `ReplWorld`, plus the built-in
+The interactive REPL is session-eager. Interactive chunks compile against the
+source world already accumulated in `ReplWorld`, plus the built-in
 runtime-library interfaces that normal frontend compilation sees. They do not
-accept `--interface`, `--provider`, or `--artifact-root`, and they do not invoke
-`ModuleGraphLoader` to load `.fzi`/`.fzo` provider artifacts.
+accept `--interface`, `--provider`, or `--artifact-root`, and they do not load
+user provider artifacts.
+
+`repl --script` has one whole-file root source, so it uses the provider-free
+execution graph path and can materialize reachable built-in runtime modules.
+It still does not accept user provider roots.
 
 That boundary keeps the persistent session simple: the REPL has one mutable
 source world and one persistent evaluator image. Artifact-backed imports belong

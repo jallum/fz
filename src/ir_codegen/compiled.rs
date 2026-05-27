@@ -205,7 +205,7 @@ impl std::fmt::Display for ImageLinkError {
 impl std::error::Error for ImageLinkError {}
 
 pub fn link_ir_units(units: &[CompiledUnit]) -> Result<Module, ImageLinkError> {
-    let mut linker = IrUnitLinker::default();
+    let mut linker = IrUnitLinker::new();
     for unit in units {
         linker.add_unit(unit)?;
     }
@@ -219,6 +219,16 @@ struct IrUnitLinker {
 }
 
 impl IrUnitLinker {
+    fn new() -> Self {
+        let mut linker = Self::default();
+        linker.linked.atom_names.extend([
+            "nil".to_string(),
+            "true".to_string(),
+            "false".to_string(),
+        ]);
+        linker
+    }
+
     fn add_unit(&mut self, unit: &CompiledUnit) -> Result<(), ImageLinkError> {
         if let Some(interface) = &unit.interface
             && interface.fingerprint_inputs != unit.interface_fingerprint

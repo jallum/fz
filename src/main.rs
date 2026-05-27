@@ -474,13 +474,31 @@ fn run_interp(tel: &telemetry::ConfiguredTelemetry, args: &[String]) {
         eprintln!("read {}: {}", path, e);
         std::process::exit(1);
     });
-    let frontend = run_frontend(
-        frontend::compile_source_with_types(&mut t, src, path, tel),
+    let providers = ProviderInputs::new(
+        modules::artifact_store::DEFAULT_ARTIFACT_ROOT.to_string(),
+        Vec::new(),
+    );
+    let frontend_result =
+        modules::pipeline::compile_source_with_providers(&mut t, src, path, &providers, tel)
+            .unwrap_or_else(|err| report_pipeline_error_or_exit("fz interp", tel, &sm_cell, err));
+    let checked = checked_module_or_exit(
+        "fz interp",
+        &mut t,
+        frontend_result,
         &sm_cell,
         tel,
+        CompileMode::Normal,
     );
+    let graph = modules::pipeline::prepare_execution_graph(
+        &mut t,
+        checked,
+        &providers,
+        tel,
+        CompileMode::Normal,
+    )
+    .unwrap_or_else(|err| report_pipeline_error_or_exit("fz interp", tel, &sm_cell, err));
     notify_fixture_execution_start();
-    match ir_interp::run_main(tel, &frontend.module) {
+    match ir_interp::run_main(tel, &graph.module) {
         Ok(_halt) => {}
         Err(msg) => {
             eprintln!("fz interp: {}", msg);
@@ -1469,7 +1487,7 @@ fn compile_pipeline(
     // TYPE_IMPURE_RECEIVE_GUARD). Severity::Warning entries print and
     // we continue; Severity::Error halts.
     diag::report_or_exit_through(tel, executable.diagnostics().as_slice());
-    let image = if providers.is_empty() {
+    let image = if graph.units.len() == 1 {
         ir_codegen::CompiledProgram::new(graph.units[0].clone(), executable)
             .link_image_with_telemetry(tel)
     } else {

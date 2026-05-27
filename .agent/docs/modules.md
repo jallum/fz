@@ -266,11 +266,13 @@ and reject missing or duplicate providers before execution/codegen.
 
 REPL policy:
 
-- `fz repl` and `fz repl --script` are session-eager. They compile against
-  source already entered into the REPL world plus built-in runtime-library
-  interfaces.
+- Interactive `fz repl` is session-eager. It compiles against source already
+  entered into the REPL world plus built-in runtime-library interfaces.
+- `fz repl --script` has one whole-file root source, so script execution uses
+  the provider-free execution graph path and can materialize reachable built-in
+  runtime modules.
 - REPL commands do not accept `--interface`, `--provider`, or
-  `--artifact-root`, and they do not invoke `ModuleGraphLoader`.
+  `--artifact-root`, and they do not load user provider artifacts.
 - Artifact-backed imports belong to whole-file `fz run` / `fz build` commands,
   where the root source and provider roots are explicit.
 

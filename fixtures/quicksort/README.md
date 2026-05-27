@@ -4,8 +4,8 @@ paths: [jit, interp, aot, repl]
 budget.codegen.functions: 19
 budget.codegen.instructions: 560
 budget.specs.count: 19
-budget.planner.worklist_pops: 101
-budget.planner.walk_calls: 101
+budget.planner.worklist_pops: 113
+budget.planner.walk_calls: 113
 budget.planner.type_fn_calls: 30
 budget.planner.matcher_specs: 0
 budget.planner.vars: 92

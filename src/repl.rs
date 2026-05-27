@@ -233,30 +233,37 @@ impl ReplSession {
 
     pub(crate) fn run_script_str(&mut self, src: &str, source_name: String) -> io::Result<()> {
         let mut t = crate::types::ConcreteTypes;
-        let frontend = match crate::frontend::compile_source_with_types(
+        let providers = crate::modules::pipeline::ProviderInputs::new(
+            crate::modules::artifact_store::DEFAULT_ARTIFACT_ROOT.to_string(),
+            Vec::new(),
+        );
+        let frontend = match crate::modules::pipeline::compile_source_with_providers(
             &mut t,
             src.to_string(),
             source_name,
+            &providers,
             &crate::telemetry::NullTelemetry,
         ) {
             Ok(ok) => ok,
-            Err(err) => {
-                return Err(diagnostics_to_io_error(&err.sm, err.diagnostics.as_slice()));
-            }
+            Err(err) => return Err(pipeline_error_to_io_error(err)),
         };
-        if frontend
-            .diagnostics
-            .as_slice()
-            .iter()
-            .any(|d| d.severity == crate::diag::diagnostic::Severity::Error)
-        {
-            return Err(diagnostics_to_io_error(
-                &frontend.sm,
-                frontend.diagnostics.as_slice(),
-            ));
-        }
+        let checked = crate::modules::pipeline::checked_module_for_mode(
+            &mut t,
+            frontend,
+            &crate::telemetry::NullTelemetry,
+            crate::modules::pipeline::CompileMode::Normal,
+        )
+        .map_err(pipeline_error_to_io_error)?;
+        let prepared = crate::modules::pipeline::prepare_execution_graph(
+            &mut t,
+            checked,
+            &providers,
+            &crate::telemetry::NullTelemetry,
+            crate::modules::pipeline::CompileMode::Normal,
+        )
+        .map_err(pipeline_error_to_io_error)?;
 
-        let Some(main) = frontend.module.fn_by_name("main") else {
+        let Some(main) = prepared.module.fn_by_name("main") else {
             return Ok(());
         };
         if !main.block(main.entry).params.is_empty() {
@@ -264,7 +271,7 @@ impl ReplSession {
         }
 
         crate::notify_fixture_execution_start();
-        ReplRuntime::run_script_main(&frontend.module, main.id)
+        ReplRuntime::run_script_main(&prepared.module, main.id)
     }
 
     pub(crate) fn eval_chunk(&mut self, src: &str) -> ReplChunkOutcome {
@@ -754,6 +761,51 @@ fn diagnostics_to_io_error(
         .collect::<Vec<_>>()
         .join("");
     io::Error::other(rendered)
+}
+
+fn pipeline_error_to_io_error(err: crate::modules::pipeline::PipelineError) -> io::Error {
+    match err {
+        crate::modules::pipeline::PipelineError::Frontend(err) => {
+            diagnostics_to_io_error(&err.sm, err.diagnostics.as_slice())
+        }
+        crate::modules::pipeline::PipelineError::Diagnostics {
+            sm: Some(sm),
+            diagnostics,
+        } => diagnostics_to_io_error(&sm, diagnostics.as_slice()),
+        crate::modules::pipeline::PipelineError::Diagnostics {
+            sm: None,
+            diagnostics,
+        } => io::Error::other(
+            diagnostics
+                .as_slice()
+                .iter()
+                .map(|diagnostic| diagnostic.message.clone())
+                .collect::<Vec<_>>()
+                .join("\n"),
+        ),
+        crate::modules::pipeline::PipelineError::DiagnosticVec {
+            sm: Some(sm),
+            diagnostics,
+        } => diagnostics_to_io_error(&sm, &diagnostics),
+        crate::modules::pipeline::PipelineError::DiagnosticVec {
+            sm: None,
+            diagnostics,
+        } => io::Error::other(
+            diagnostics
+                .iter()
+                .map(|diagnostic| diagnostic.message.clone())
+                .collect::<Vec<_>>()
+                .join("\n"),
+        ),
+        crate::modules::pipeline::PipelineError::Diagnostic(diagnostic) => {
+            io::Error::other(diagnostic.message)
+        }
+        crate::modules::pipeline::PipelineError::Artifact(err) => io::Error::other(err.to_string()),
+        crate::modules::pipeline::PipelineError::Link(err) => io::Error::other(err.to_string()),
+        crate::modules::pipeline::PipelineError::MissingFzoModule => {
+            io::Error::other("fzo artifact has no module identity")
+        }
+    }
 }
 
 /// `which == true` loads only macros; `which == false` loads only non-macros.

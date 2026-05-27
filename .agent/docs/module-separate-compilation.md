@@ -130,10 +130,13 @@ Runtime library boundary:
 - Execution still prepends `src/modules/runtime_library/runtime.fz`, but that
   file is now only the prelude. Ordinary runtime modules are graph-loaded when
   reachable from imports.
-- The REPL remains session-eager. `fz repl` and `fz repl --script` compile
-  against definitions already present in the REPL source world plus built-in
-  runtime-library interfaces; they do not accept provider roots and do not load
+- The interactive REPL remains session-eager. `fz repl` compiles against
+  definitions already present in the REPL source world plus built-in
+  runtime-library interfaces; it does not accept provider roots or load user
   `.fzi`/`.fzo` artifacts through `ModuleGraphLoader`.
+- `fz repl --script` has one whole-file root source, so it uses the same
+  provider-free execution graph path as `fz run` for built-in runtime modules.
+  It still does not accept user provider roots.
 
 LTO / whole-program mode:
 

@@ -599,9 +599,37 @@ fn capture_main(src: &str) -> Vec<String> {
     capture_main_module(m)
 }
 
-fn capture_main_resolved(src: &str) -> Vec<String> {
-    let m = lower_resolved_src(src);
-    capture_main_module(m)
+fn capture_main_with_runtime_graph(src: &str) -> Vec<String> {
+    let mut t = crate::types::ConcreteTypes;
+    let tel = crate::telemetry::NullTelemetry;
+    let providers = crate::modules::pipeline::ProviderInputs::new(
+        crate::modules::artifact_store::DEFAULT_ARTIFACT_ROOT.to_string(),
+        Vec::new(),
+    );
+    let frontend = crate::modules::pipeline::compile_source_with_providers(
+        &mut t,
+        src.to_string(),
+        "test.fz".to_string(),
+        &providers,
+        &tel,
+    )
+    .unwrap_or_else(|_| panic!("frontend result"));
+    let checked = crate::modules::pipeline::checked_module_for_mode(
+        &mut t,
+        frontend,
+        &tel,
+        crate::modules::pipeline::CompileMode::Normal,
+    )
+    .unwrap_or_else(|_| panic!("checked module"));
+    let prepared = crate::modules::pipeline::prepare_execution_graph(
+        &mut t,
+        checked,
+        &providers,
+        &tel,
+        crate::modules::pipeline::CompileMode::Normal,
+    )
+    .unwrap_or_else(|_| panic!("execution graph"));
+    capture_main_module(prepared.module)
 }
 
 fn capture_main_module(m: Module) -> Vec<String> {
@@ -763,7 +791,7 @@ fn print_builtin_routes_through_runtime() {
 
 #[test]
 fn process_heap_alloc_stats_is_callable_from_fz() {
-    let lines = capture_main_resolved(
+    let lines = capture_main_with_runtime_graph(
         "fn main() do\n  xs = [1, 2]\n  print(xs)\n  stats = Process.heap_alloc_stats()\n  print(stats[:list_cons_allocs])\n  print(stats[:map_allocs])\nend",
     );
     assert_eq!(lines, vec!["[1, 2]", "2", "0"]);
@@ -788,9 +816,8 @@ fn unop_neg_runs() {
 
 #[test]
 fn atom_const_returns_atom_id() {
-    // ids 0/1/2 are reserved for nil/true/false; the prelude interns
-    // a handful of atoms before user code, so `:ok` lands at id 4.
-    assert_eq!(run_main("fn main(), do: :ok"), 4);
+    let (atom_id, module) = run_main_after_heap_reset("fn main(), do: :ok");
+    assert_eq!(module.atom_names[atom_id as usize], "ok");
 }
 
 #[test]
@@ -2196,28 +2223,26 @@ end
 }
 
 /// `fn f([])` does NOT match a `nil` argument: `nil` falls through to
-/// the `:function_clause` halt. (Pre-split, `nil` and `[]` shared a
+/// the `:match_error` halt. (Pre-split, `nil` and `[]` shared a
 /// runtime bit pattern and this call returned 1.)
 #[test]
 fn nil_does_not_match_empty_list_pattern() {
-    let halt = run_main("fn f([]), do: 1\nfn main(), do: f(nil)");
-    // :function_clause is the first prelude-interned atom after the
-    // reserved nil/true/false (ids 0/1/2), so its id is 3.
+    let (halt, module) = run_main_after_heap_reset("fn f([]), do: 1\nfn main(), do: f(nil)");
     assert_eq!(
-        halt, 3,
-        "expected :function_clause halt (id=3); got {}",
-        halt
+        module.atom_names[halt as usize], "match_error",
+        "expected :match_error halt; got atom id {}",
+        halt,
     );
 }
 
 /// `fn f(nil)` does NOT match an `[]` argument. Symmetric to the above.
 #[test]
 fn empty_list_does_not_match_nil_pattern() {
-    let halt = run_main("fn f(nil), do: 1\nfn main(), do: f([])");
+    let (halt, module) = run_main_after_heap_reset("fn f(nil), do: 1\nfn main(), do: f([])");
     assert_eq!(
-        halt, 3,
-        "expected :function_clause halt (id=3); got {}",
-        halt
+        module.atom_names[halt as usize], "match_error",
+        "expected :match_error halt; got atom id {}",
+        halt,
     );
 }
 

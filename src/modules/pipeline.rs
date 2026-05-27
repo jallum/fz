@@ -52,6 +52,7 @@ pub(crate) struct CheckedModule {
     pub(crate) module: fz_ir::Module,
     pub(crate) module_plan: ir_planner::ModulePlan,
     pub(crate) interfaces: BTreeMap<ModuleName, ModuleInterface>,
+    pub(crate) external_interfaces: BTreeMap<ModuleName, ModuleInterface>,
     pub(crate) sm: diag::SourceMap,
     pub(crate) diagnostics: diag::Diagnostics,
 }
@@ -140,6 +141,7 @@ pub(crate) fn checked_module_for_mode(
 ) -> Result<CheckedModule, PipelineError> {
     let frontend = run_frontend(result)?;
     let interfaces = frontend._prog.module_interfaces;
+    let external_interfaces = frontend._prog.external_module_interfaces;
     tel.event(
         &["fz", "module", "interfaces_collected"],
         metadata! { interfaces: interfaces.len() as i64 },
@@ -153,6 +155,7 @@ pub(crate) fn checked_module_for_mode(
             module,
             module_plan,
             interfaces,
+            external_interfaces,
             sm: frontend.sm,
             diagnostics: frontend.diagnostics,
         })
@@ -161,6 +164,7 @@ pub(crate) fn checked_module_for_mode(
             module: frontend.module,
             module_plan: frontend.module_plan,
             interfaces,
+            external_interfaces,
             sm: frontend.sm,
             diagnostics: frontend.diagnostics,
         })
@@ -245,8 +249,19 @@ fn load_provider_units(
     tel: &dyn telemetry::Telemetry,
 ) -> Result<Vec<CompiledUnit>, PipelineError> {
     let store = ArtifactStore::new(&providers.artifact_root);
+    let runtime_roots = prepared
+        .external_interfaces
+        .keys()
+        .filter(|module| crate::modules::runtime_library::interface(module).is_some())
+        .cloned();
+    let provider_roots = providers
+        .modules
+        .iter()
+        .cloned()
+        .chain(runtime_roots)
+        .collect::<Vec<_>>();
     let graph = ModuleGraphLoader::new(store)
-        .load_reachable(&prepared.interfaces, &providers.modules)
+        .load_reachable(&prepared.interfaces, &provider_roots)
         .map_err(PipelineError::Artifact)?;
     tel.event(
         &["fz", "module", "graph_loaded"],
