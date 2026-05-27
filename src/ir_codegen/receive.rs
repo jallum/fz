@@ -53,11 +53,68 @@ pub(crate) fn declare_matcher<M: cranelift_module::Module>(
         .map_err(|e| CodegenError::new(format!("declare {}: {}", name, e)))
 }
 
+/// Optional runtime helper `FuncId`s required to emit the receive ABI
+/// matcher body. Each field corresponds to a `fz_runtime` helper that the
+/// matcher may call depending on the patterns it encounters; missing helpers
+/// turn into specific `CodegenError`s if the matcher tries to use them.
+#[derive(Clone, Copy)]
+pub(crate) struct MatcherRuntimeHelpers {
+    pub value_eq_typed_id: Option<FuncId>,
+    pub matcher_eq_bytes_id: Option<FuncId>,
+    pub matcher_map_get_id: Option<FuncId>,
+    pub matcher_map_get_ref_id: Option<FuncId>,
+    pub type_of_id: Option<FuncId>,
+    pub unbox_int_id: Option<FuncId>,
+    pub unbox_float_id: Option<FuncId>,
+    pub unbox_atom_id: Option<FuncId>,
+    pub struct_schema_id_ref_id: Option<FuncId>,
+    pub truthy_ref_id: Option<FuncId>,
+    pub box_int_for_any_id: Option<FuncId>,
+    pub box_float_for_any_id: Option<FuncId>,
+    pub box_atom_for_any_id: Option<FuncId>,
+    pub map_is_map_id: Option<FuncId>,
+    pub bs_reader_init_id: Option<FuncId>,
+    pub bs_read_field_id: Option<FuncId>,
+    pub struct_get_field_id: Option<FuncId>,
+    pub list_is_cons_id: Option<FuncId>,
+    pub list_head_id: Option<FuncId>,
+    pub list_tail_id: Option<FuncId>,
+}
+
+/// Per-function-body `FuncRef`s for the runtime helpers in
+/// [`MatcherRuntimeHelpers`], obtained by `declare_func_in_func` on the
+/// matcher function builder.
+#[derive(Clone, Copy)]
+struct MatcherRuntimeRefs {
+    value_eq_typed_fref: Option<ir::FuncRef>,
+    matcher_eq_bytes_fref: Option<ir::FuncRef>,
+    // Carried for API parity with `MatcherRuntimeHelpers::matcher_map_get_id`;
+    // current emit paths use the `_ref` variant instead.
+    #[allow(dead_code)]
+    matcher_map_get_fref: Option<ir::FuncRef>,
+    matcher_map_get_ref_fref: Option<ir::FuncRef>,
+    type_of_fref: Option<ir::FuncRef>,
+    unbox_int_fref: Option<ir::FuncRef>,
+    unbox_float_fref: Option<ir::FuncRef>,
+    unbox_atom_fref: Option<ir::FuncRef>,
+    struct_schema_id_ref_fref: Option<ir::FuncRef>,
+    truthy_ref_fref: Option<ir::FuncRef>,
+    box_int_for_any_fref: Option<ir::FuncRef>,
+    box_float_for_any_fref: Option<ir::FuncRef>,
+    box_atom_for_any_fref: Option<ir::FuncRef>,
+    map_is_map_fref: Option<ir::FuncRef>,
+    bs_reader_init_fref: Option<ir::FuncRef>,
+    bs_read_field_fref: Option<ir::FuncRef>,
+    struct_get_field_fref: Option<ir::FuncRef>,
+    list_is_cons_fref: Option<ir::FuncRef>,
+    list_head_fref: Option<ir::FuncRef>,
+    list_tail_fref: Option<ir::FuncRef>,
+}
+
 /// Emit the receive ABI matcher directly from the cached AST-free
 /// [`Matcher`]. The clause slice is still used for ABI metadata
 /// (`bound_names` and guard rejection), but matching control flow comes from
 /// `matcher` instead of rebuilding PatternMatrix/Matcher from receive patterns.
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn emit_matcher_body_from_matcher<M: cranelift_module::Module>(
     module: &mut M,
     fbctx: &mut FunctionBuilderContext,
@@ -67,27 +124,30 @@ pub(crate) fn emit_matcher_body_from_matcher<M: cranelift_module::Module>(
     pinned: &[(String, Var)],
     clauses: &[ReceiveClause],
     matcher: &Matcher,
-    value_eq_typed_id: Option<FuncId>,
-    matcher_eq_bytes_id: Option<FuncId>,
-    matcher_map_get_id: Option<FuncId>,
-    matcher_map_get_ref_id: Option<FuncId>,
-    type_of_id: Option<FuncId>,
-    unbox_int_id: Option<FuncId>,
-    unbox_float_id: Option<FuncId>,
-    unbox_atom_id: Option<FuncId>,
-    struct_schema_id_ref_id: Option<FuncId>,
-    truthy_ref_id: Option<FuncId>,
-    box_int_for_any_id: Option<FuncId>,
-    box_float_for_any_id: Option<FuncId>,
-    box_atom_for_any_id: Option<FuncId>,
-    map_is_map_id: Option<FuncId>,
-    bs_reader_init_id: Option<FuncId>,
-    bs_read_field_id: Option<FuncId>,
-    struct_get_field_id: Option<FuncId>,
-    list_is_cons_id: Option<FuncId>,
-    list_head_id: Option<FuncId>,
-    list_tail_id: Option<FuncId>,
+    helpers: &MatcherRuntimeHelpers,
 ) -> Result<(usize, usize), CodegenError> {
+    let MatcherRuntimeHelpers {
+        value_eq_typed_id,
+        matcher_eq_bytes_id,
+        matcher_map_get_id,
+        matcher_map_get_ref_id,
+        type_of_id,
+        unbox_int_id,
+        unbox_float_id,
+        unbox_atom_id,
+        struct_schema_id_ref_id,
+        truthy_ref_id,
+        box_int_for_any_id,
+        box_float_for_any_id,
+        box_atom_for_any_id,
+        map_is_map_id,
+        bs_reader_init_id,
+        bs_read_field_id,
+        struct_get_field_id,
+        list_is_cons_id,
+        list_head_id,
+        list_tail_id,
+    } = *helpers;
     let pinned_indices: HashMap<String, usize> = pinned
         .iter()
         .enumerate()
@@ -140,34 +200,37 @@ pub(crate) fn emit_matcher_body_from_matcher<M: cranelift_module::Module>(
             .iter()
             .map(|(bytes, did)| (bytes.clone(), m.declare_data_in_func(*did, b.func)))
             .collect();
-        let value_eq_typed_fref = value_eq_typed_id.map(|fid| m.declare_func_in_func(fid, b.func));
-        let matcher_eq_bytes_fref =
-            matcher_eq_bytes_id.map(|fid| m.declare_func_in_func(fid, b.func));
-        let matcher_map_get_fref =
-            matcher_map_get_id.map(|fid| m.declare_func_in_func(fid, b.func));
-        let matcher_map_get_ref_fref =
-            matcher_map_get_ref_id.map(|fid| m.declare_func_in_func(fid, b.func));
-        let type_of_fref = type_of_id.map(|fid| m.declare_func_in_func(fid, b.func));
-        let unbox_int_fref = unbox_int_id.map(|fid| m.declare_func_in_func(fid, b.func));
-        let unbox_float_fref = unbox_float_id.map(|fid| m.declare_func_in_func(fid, b.func));
-        let unbox_atom_fref = unbox_atom_id.map(|fid| m.declare_func_in_func(fid, b.func));
-        let struct_schema_id_ref_fref =
-            struct_schema_id_ref_id.map(|fid| m.declare_func_in_func(fid, b.func));
-        let truthy_ref_fref = truthy_ref_id.map(|fid| m.declare_func_in_func(fid, b.func));
-        let box_int_for_any_fref =
-            box_int_for_any_id.map(|fid| m.declare_func_in_func(fid, b.func));
-        let box_float_for_any_fref =
-            box_float_for_any_id.map(|fid| m.declare_func_in_func(fid, b.func));
-        let box_atom_for_any_fref =
-            box_atom_for_any_id.map(|fid| m.declare_func_in_func(fid, b.func));
-        let map_is_map_fref = map_is_map_id.map(|fid| m.declare_func_in_func(fid, b.func));
-        let bs_reader_init_fref = bs_reader_init_id.map(|fid| m.declare_func_in_func(fid, b.func));
-        let bs_read_field_fref = bs_read_field_id.map(|fid| m.declare_func_in_func(fid, b.func));
-        let struct_get_field_fref =
-            struct_get_field_id.map(|fid| m.declare_func_in_func(fid, b.func));
-        let list_is_cons_fref = list_is_cons_id.map(|fid| m.declare_func_in_func(fid, b.func));
-        let list_head_fref = list_head_id.map(|fid| m.declare_func_in_func(fid, b.func));
-        let list_tail_fref = list_tail_id.map(|fid| m.declare_func_in_func(fid, b.func));
+        let runtime = MatcherRuntimeRefs {
+            value_eq_typed_fref: value_eq_typed_id.map(|fid| m.declare_func_in_func(fid, b.func)),
+            matcher_eq_bytes_fref: matcher_eq_bytes_id
+                .map(|fid| m.declare_func_in_func(fid, b.func)),
+            matcher_map_get_fref: matcher_map_get_id
+                .map(|fid| m.declare_func_in_func(fid, b.func)),
+            matcher_map_get_ref_fref: matcher_map_get_ref_id
+                .map(|fid| m.declare_func_in_func(fid, b.func)),
+            type_of_fref: type_of_id.map(|fid| m.declare_func_in_func(fid, b.func)),
+            unbox_int_fref: unbox_int_id.map(|fid| m.declare_func_in_func(fid, b.func)),
+            unbox_float_fref: unbox_float_id.map(|fid| m.declare_func_in_func(fid, b.func)),
+            unbox_atom_fref: unbox_atom_id.map(|fid| m.declare_func_in_func(fid, b.func)),
+            struct_schema_id_ref_fref: struct_schema_id_ref_id
+                .map(|fid| m.declare_func_in_func(fid, b.func)),
+            truthy_ref_fref: truthy_ref_id.map(|fid| m.declare_func_in_func(fid, b.func)),
+            box_int_for_any_fref: box_int_for_any_id
+                .map(|fid| m.declare_func_in_func(fid, b.func)),
+            box_float_for_any_fref: box_float_for_any_id
+                .map(|fid| m.declare_func_in_func(fid, b.func)),
+            box_atom_for_any_fref: box_atom_for_any_id
+                .map(|fid| m.declare_func_in_func(fid, b.func)),
+            map_is_map_fref: map_is_map_id.map(|fid| m.declare_func_in_func(fid, b.func)),
+            bs_reader_init_fref: bs_reader_init_id
+                .map(|fid| m.declare_func_in_func(fid, b.func)),
+            bs_read_field_fref: bs_read_field_id.map(|fid| m.declare_func_in_func(fid, b.func)),
+            struct_get_field_fref: struct_get_field_id
+                .map(|fid| m.declare_func_in_func(fid, b.func)),
+            list_is_cons_fref: list_is_cons_id.map(|fid| m.declare_func_in_func(fid, b.func)),
+            list_head_fref: list_head_id.map(|fid| m.declare_func_in_func(fid, b.func)),
+            list_tail_fref: list_tail_id.map(|fid| m.declare_func_in_func(fid, b.func)),
+        };
 
         let ctx = MatcherCtx {
             fz_module,
@@ -179,26 +242,7 @@ pub(crate) fn emit_matcher_body_from_matcher<M: cranelift_module::Module>(
             matcher,
             inputs: vec![msg],
             binary_data_gvs: &binary_data_gvs,
-            value_eq_typed_fref,
-            matcher_eq_bytes_fref,
-            matcher_map_get_fref,
-            matcher_map_get_ref_fref,
-            type_of_fref,
-            unbox_int_fref,
-            unbox_float_fref,
-            unbox_atom_fref,
-            struct_schema_id_ref_fref,
-            truthy_ref_fref,
-            box_int_for_any_fref,
-            box_float_for_any_fref,
-            box_atom_for_any_fref,
-            map_is_map_fref,
-            bs_reader_init_fref,
-            bs_read_field_fref,
-            struct_get_field_fref,
-            list_is_cons_fref,
-            list_head_fref,
-            list_tail_fref,
+            runtime,
         };
 
         let mut state = MatcherEmitState::default();
@@ -241,26 +285,7 @@ struct MatcherCtx<'a> {
     matcher: &'a Matcher,
     inputs: Vec<ReceiveValue>,
     binary_data_gvs: &'a HashMap<Vec<u8>, ir::GlobalValue>,
-    value_eq_typed_fref: Option<ir::FuncRef>,
-    matcher_eq_bytes_fref: Option<ir::FuncRef>,
-    matcher_map_get_fref: Option<ir::FuncRef>,
-    matcher_map_get_ref_fref: Option<ir::FuncRef>,
-    type_of_fref: Option<ir::FuncRef>,
-    unbox_int_fref: Option<ir::FuncRef>,
-    unbox_float_fref: Option<ir::FuncRef>,
-    unbox_atom_fref: Option<ir::FuncRef>,
-    struct_schema_id_ref_fref: Option<ir::FuncRef>,
-    truthy_ref_fref: Option<ir::FuncRef>,
-    box_int_for_any_fref: Option<ir::FuncRef>,
-    box_float_for_any_fref: Option<ir::FuncRef>,
-    box_atom_for_any_fref: Option<ir::FuncRef>,
-    map_is_map_fref: Option<ir::FuncRef>,
-    bs_reader_init_fref: Option<ir::FuncRef>,
-    bs_read_field_fref: Option<ir::FuncRef>,
-    struct_get_field_fref: Option<ir::FuncRef>,
-    list_is_cons_fref: Option<ir::FuncRef>,
-    list_head_fref: Option<ir::FuncRef>,
-    list_tail_fref: Option<ir::FuncRef>,
+    runtime: MatcherRuntimeRefs,
 }
 
 #[derive(Default, Clone)]
@@ -278,7 +303,7 @@ fn emit_receive_value_ref(
     match value {
         ReceiveValue::AnyRef(value_ref) => Ok(value_ref),
         ReceiveValue::Int(raw) => {
-            let Some(fref) = ctx.box_int_for_any_fref else {
+            let Some(fref) = ctx.runtime.box_int_for_any_fref else {
                 return Err(CodegenError::new(
                     "int any-boundary requires fz_box_int_for_any",
                 ));
@@ -287,7 +312,7 @@ fn emit_receive_value_ref(
             Ok(b.inst_results(inst)[0])
         }
         ReceiveValue::Float(raw) => {
-            let Some(fref) = ctx.box_float_for_any_fref else {
+            let Some(fref) = ctx.runtime.box_float_for_any_fref else {
                 return Err(CodegenError::new(
                     "float any-boundary requires fz_box_float_for_any",
                 ));
@@ -296,7 +321,7 @@ fn emit_receive_value_ref(
             Ok(b.inst_results(inst)[0])
         }
         ReceiveValue::Atom(raw) => {
-            let Some(fref) = ctx.box_atom_for_any_fref else {
+            let Some(fref) = ctx.runtime.box_atom_for_any_fref else {
                 return Err(CodegenError::new(
                     "atom any-boundary requires fz_box_atom_for_any",
                 ));
@@ -323,7 +348,7 @@ fn receive_value_tag(
 ) -> Result<ir::Value, CodegenError> {
     match value {
         ReceiveValue::AnyRef(value_ref) => {
-            let Some(fref) = ctx.type_of_fref else {
+            let Some(fref) = ctx.runtime.type_of_fref else {
                 return Err(CodegenError::new("any type test requires fz_type_of"));
             };
             let inst = b.ins().call(fref, &[value_ref]);
@@ -360,7 +385,7 @@ fn receive_value_int(
     match value {
         ReceiveValue::Int(raw) => Ok(raw),
         ReceiveValue::AnyRef(value_ref) => {
-            let Some(fref) = ctx.unbox_int_fref else {
+            let Some(fref) = ctx.runtime.unbox_int_fref else {
                 return Err(CodegenError::new("int unbox requires fz_unbox_int"));
             };
             let inst = b.ins().call(fref, &[value_ref]);
@@ -378,7 +403,7 @@ fn receive_value_float(
     match value {
         ReceiveValue::Float(raw) => Ok(raw),
         ReceiveValue::AnyRef(value_ref) => {
-            let Some(fref) = ctx.unbox_float_fref else {
+            let Some(fref) = ctx.runtime.unbox_float_fref else {
                 return Err(CodegenError::new("float unbox requires fz_unbox_float"));
             };
             let inst = b.ins().call(fref, &[value_ref]);
@@ -396,7 +421,7 @@ fn receive_value_atom(
     match value {
         ReceiveValue::Atom(raw) => Ok(raw),
         ReceiveValue::AnyRef(value_ref) => {
-            let Some(fref) = ctx.unbox_atom_fref else {
+            let Some(fref) = ctx.runtime.unbox_atom_fref else {
                 return Err(CodegenError::new("atom unbox requires fz_unbox_atom"));
             };
             let inst = b.ins().call(fref, &[value_ref]);
@@ -563,7 +588,7 @@ fn resolve_matcher_subject(
         }
         crate::matcher::SubjectRef::ListHead(list) => {
             let parent = resolve_matcher_subject(b, ctx, list, state)?;
-            let Some(fref) = ctx.list_head_fref else {
+            let Some(fref) = ctx.runtime.list_head_fref else {
                 return Err(CodegenError::new(
                     "ListHead matcher projection requires fz_list_head",
                 ));
@@ -575,7 +600,7 @@ fn resolve_matcher_subject(
         }
         crate::matcher::SubjectRef::ListTail(list) => {
             let parent = resolve_matcher_subject(b, ctx, list, state)?;
-            let Some(fref) = ctx.list_tail_fref else {
+            let Some(fref) = ctx.runtime.list_tail_fref else {
                 return Err(CodegenError::new(
                     "ListTail matcher projection requires fz_list_tail",
                 ));
@@ -913,7 +938,7 @@ fn emit_matcher_switch_key_test(
             emit_binary_literal_test(
                 b,
                 ctx.binary_data_gvs,
-                ctx.matcher_eq_bytes_fref,
+                ctx.runtime.matcher_eq_bytes_fref,
                 bits,
                 bytes,
                 match_b,
@@ -953,7 +978,7 @@ fn emit_matcher_const_test(
             emit_binary_literal_test(
                 b,
                 ctx.binary_data_gvs,
-                ctx.matcher_eq_bytes_fref,
+                ctx.runtime.matcher_eq_bytes_fref,
                 bits,
                 bytes,
                 match_b,
@@ -973,7 +998,7 @@ fn emit_matcher_map_get_value(
     key: &MatcherConst,
 ) -> Result<ReceiveValue, CodegenError> {
     if let MatcherConst::PreparedKey(index) = key {
-        let Some(map_get_ref_fref) = ctx.matcher_map_get_ref_fref else {
+        let Some(map_get_ref_fref) = ctx.runtime.matcher_map_get_ref_fref else {
             return Err(CodegenError::new(
                 "Prepared map matcher key requires fz_matcher_map_get_ref",
             ));
@@ -992,7 +1017,7 @@ fn emit_matcher_map_get_value(
         let out_ref = b.inst_results(inst)[0];
         return Ok(receive_value_from_ref_word(b, out_ref));
     }
-    let Some(map_get_ref_fref) = ctx.matcher_map_get_ref_fref else {
+    let Some(map_get_ref_fref) = ctx.runtime.matcher_map_get_ref_fref else {
         return Err(CodegenError::new(
             "Map matcher test requires fz_matcher_map_get_ref; runtime not linked in this context",
         ));
@@ -1020,12 +1045,12 @@ fn emit_bitstring_test(
     false_b: ir::Block,
     state: &mut MatcherEmitState,
 ) -> Result<(), CodegenError> {
-    let Some(init_fref) = ctx.bs_reader_init_fref else {
+    let Some(init_fref) = ctx.runtime.bs_reader_init_fref else {
         return Err(CodegenError::new(
             "Bitstring matcher test requires fz_bs_reader_init",
         ));
     };
-    let Some(read_fref) = ctx.bs_read_field_fref else {
+    let Some(read_fref) = ctx.runtime.bs_read_field_fref else {
         return Err(CodegenError::new(
             "Bitstring matcher test requires fz_bs_read_field",
         ));
@@ -1092,7 +1117,7 @@ fn emit_struct_get_field_value(
     struct_value: ReceiveValue,
     field_index: u32,
 ) -> Result<ReceiveValue, CodegenError> {
-    let Some(fref) = ctx.struct_get_field_fref else {
+    let Some(fref) = ctx.runtime.struct_get_field_fref else {
         return Err(CodegenError::new(
             "struct field projection requires fz_struct_get_field",
         ));
@@ -1319,26 +1344,7 @@ fn emit_guard_dispatch(
         matcher: &dispatch.matcher,
         inputs,
         binary_data_gvs: parent.binary_data_gvs,
-        value_eq_typed_fref: parent.value_eq_typed_fref,
-        matcher_eq_bytes_fref: parent.matcher_eq_bytes_fref,
-        matcher_map_get_fref: parent.matcher_map_get_fref,
-        matcher_map_get_ref_fref: parent.matcher_map_get_ref_fref,
-        type_of_fref: parent.type_of_fref,
-        unbox_int_fref: parent.unbox_int_fref,
-        unbox_float_fref: parent.unbox_float_fref,
-        unbox_atom_fref: parent.unbox_atom_fref,
-        struct_schema_id_ref_fref: parent.struct_schema_id_ref_fref,
-        truthy_ref_fref: parent.truthy_ref_fref,
-        box_int_for_any_fref: parent.box_int_for_any_fref,
-        box_float_for_any_fref: parent.box_float_for_any_fref,
-        box_atom_for_any_fref: parent.box_atom_for_any_fref,
-        map_is_map_fref: parent.map_is_map_fref,
-        bs_reader_init_fref: parent.bs_reader_init_fref,
-        bs_read_field_fref: parent.bs_read_field_fref,
-        struct_get_field_fref: parent.struct_get_field_fref,
-        list_is_cons_fref: parent.list_is_cons_fref,
-        list_head_fref: parent.list_head_fref,
-        list_tail_fref: parent.list_tail_fref,
+        runtime: parent.runtime,
     };
     let mut state = MatcherEmitState::default();
     emit_guard_dispatch_node(
@@ -1557,7 +1563,7 @@ fn emit_truthy_cmp(
 ) -> Result<ir::Value, CodegenError> {
     match v {
         ReceiveValue::AnyRef(value_ref) => {
-            let Some(fref) = ctx.truthy_ref_fref else {
+            let Some(fref) = ctx.runtime.truthy_ref_fref else {
                 return Err(CodegenError::new("any truthiness requires fz_truthy_ref"));
             };
             let inst = b.ins().call(fref, &[value_ref]);
@@ -1608,7 +1614,7 @@ fn emit_typed_eq_cmp(
         }
         _ => {}
     }
-    let Some(fref) = ctx.value_eq_typed_fref else {
+    let Some(fref) = ctx.runtime.value_eq_typed_fref else {
         return Err(CodegenError::new(
             "mixed/ref equality requires fz_value_eq_ref",
         ));
@@ -1660,7 +1666,7 @@ fn emit_map_kind_test(
     match_b: ir::Block,
     next_b: ir::Block,
 ) -> Result<(), CodegenError> {
-    let Some(fref) = ctx.map_is_map_fref else {
+    let Some(fref) = ctx.runtime.map_is_map_fref else {
         return Err(CodegenError::new(
             "MapKind matcher test requires fz_map_is_map",
         ));
@@ -1706,7 +1712,7 @@ fn emit_tuple_arity_test(
     b.switch_to_block(c0);
     b.seal_block(c0);
 
-    let Some(fref) = ctx.struct_schema_id_ref_fref else {
+    let Some(fref) = ctx.runtime.struct_schema_id_ref_fref else {
         return Err(CodegenError::new(
             "tuple arity matcher test requires fz_struct_schema_id_ref",
         ));
@@ -1834,7 +1840,7 @@ fn emit_list_cons_test(
     match_b: ir::Block,
     next_b: ir::Block,
 ) -> Result<(), CodegenError> {
-    let Some(fref) = ctx.list_is_cons_fref else {
+    let Some(fref) = ctx.runtime.list_is_cons_fref else {
         return Err(CodegenError::new(
             "ListCons matcher test requires fz_list_is_cons",
         ));
@@ -2079,26 +2085,28 @@ mod tests {
             pinned,
             clauses,
             matcher,
-            Some(value_eq_id),
-            None,
-            None,
-            None,
-            Some(type_of_id),
-            Some(unbox_int_id),
-            Some(unbox_float_id),
-            Some(unbox_atom_id),
-            Some(struct_schema_id),
-            Some(truthy_id),
-            Some(box_int_for_any_id),
-            Some(box_float_for_any_id),
-            Some(box_atom_for_any_id),
-            None,
-            None,
-            None,
-            Some(struct_get_field_id),
-            None,
-            None,
-            None,
+            &MatcherRuntimeHelpers {
+                value_eq_typed_id: Some(value_eq_id),
+                matcher_eq_bytes_id: None,
+                matcher_map_get_id: None,
+                matcher_map_get_ref_id: None,
+                type_of_id: Some(type_of_id),
+                unbox_int_id: Some(unbox_int_id),
+                unbox_float_id: Some(unbox_float_id),
+                unbox_atom_id: Some(unbox_atom_id),
+                struct_schema_id_ref_id: Some(struct_schema_id),
+                truthy_ref_id: Some(truthy_id),
+                box_int_for_any_id: Some(box_int_for_any_id),
+                box_float_for_any_id: Some(box_float_for_any_id),
+                box_atom_for_any_id: Some(box_atom_for_any_id),
+                map_is_map_id: None,
+                bs_reader_init_id: None,
+                bs_read_field_id: None,
+                struct_get_field_id: Some(struct_get_field_id),
+                list_is_cons_id: None,
+                list_head_id: None,
+                list_tail_id: None,
+            },
         )
         .expect("emit cached matcher");
         finalize_and_get(std::mem::replace(jmod, make_jit().0), fid)
