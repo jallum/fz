@@ -120,6 +120,7 @@ fn static_tests() -> Vec<(&'static str, fn())> {
     vec![
         ("fixture_index_up_to_date", fixture_index_up_to_date),
         ("fz_dump_emits_clif", fz_dump_emits_clif),
+        ("fz_dump_emits_interfaces", fz_dump_emits_interfaces),
         (
             "add1_main_cont_seam_has_no_box_unbox_roundtrip",
             add1_main_cont_seam_has_no_box_unbox_roundtrip,
@@ -928,6 +929,72 @@ fn fz_dump_emits_clif() {
         asm_out.contains("block0"),
         "expected block0 label in asm:\n{}",
         asm_out
+    );
+}
+
+fn fz_dump_emits_interfaces() {
+    let src = r#"
+defmodule Math do
+  @type Id :: opaque integer
+  @spec add(Id, Id) :: Id
+  fn add(x, y), do: x + y
+end
+
+defmodule User do
+  @moduledoc "Uses math."
+  import Math, only: [add: 2]
+  fn calc(x, y), do: add(x, y)
+end
+"#;
+    let path = std::env::temp_dir().join(format!(
+        "fz-interface-dump-{}-{}.fz",
+        std::process::id(),
+        std::thread::current().name().unwrap_or("test")
+    ));
+    fs::write(&path, src).unwrap_or_else(|e| panic!("write {}: {}", path.display(), e));
+    let out = Command::new(FZ_BIN)
+        .args(["dump", "--emit", "interfaces"])
+        .arg(&path)
+        .output()
+        .expect("spawn fz dump --emit interfaces");
+    let _ = fs::remove_file(&path);
+    assert!(
+        out.status.success(),
+        "fz dump --emit interfaces exited {}: {}",
+        out.status,
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let expected = r#"interface Math abi=1
+  types
+    Id Opaque = Ident("opaque") Ident("integer")
+  exports
+    add/2 :: (Upper("Id"), Upper("Id")) -> Upper("Id")
+  fingerprint-inputs
+    abi=1
+    module=Math
+    type=Id:Opaque:Ident("opaque") Ident("integer")
+    fn=add/2:(Upper("Id"),Upper("Id"))->Upper("Id")
+
+interface User abi=1
+  moduledoc "Uses math."
+  imports
+    Math only [add/2]
+  exports
+    calc/2
+  fingerprint-inputs
+    abi=1
+    module=User
+    moduledoc=Uses math.
+    import=Math:only=[add/2]:except=[]
+    fn=calc/2:<unspecified>
+
+"#;
+    assert_eq!(stdout, expected);
+    assert!(
+        !stdout.contains("x + y"),
+        "interface dump leaked implementation body:\n{}",
+        stdout
     );
 }
 

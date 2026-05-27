@@ -14,6 +14,11 @@ the resolver and linker consume interfaces in later tickets, it is an
 observational contract artifact: downstream execution must not inspect
 dependency implementation bodies through it.
 
+Use `fz dump --emit interfaces <file.fz>` to inspect the current interface
+shape. The dump is deterministic and intentionally contains only contract
+facts: module docs, imports, public types, exported function names/arities,
+specs, ABI version, and fingerprint inputs. Function bodies must not appear.
+
 The invariant for the separate-compilation arc is:
 
 - private code is inferred inside a module;

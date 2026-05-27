@@ -16,6 +16,7 @@ pub const FZ_INTERFACE_ABI_VERSION: u32 = 1;
 pub struct ModuleInterface {
     pub name: ModuleName,
     pub abi_version: u32,
+    pub imports: Vec<InterfaceImport>,
     pub exports: Vec<InterfaceFn>,
     pub types: Vec<InterfaceType>,
     pub docs: Option<String>,
@@ -23,6 +24,19 @@ pub struct ModuleInterface {
     /// This is not a digest yet; keeping the inputs visible makes the first
     /// interface tests easier to audit.
     pub fingerprint_inputs: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct InterfaceImport {
+    pub module: ModuleName,
+    pub only: Vec<InterfaceImportFn>,
+    pub except: Vec<InterfaceImportFn>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct InterfaceImportFn {
+    pub name: String,
+    pub arity: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -73,6 +87,22 @@ fn collect_module(
         ModuleName::from_segments(vec![module.name.clone()])
     };
 
+    let mut imports = module
+        .items
+        .iter()
+        .filter_map(|item| match &**item {
+            crate::ast::Item::Import {
+                path, only, except, ..
+            } => Some(InterfaceImport {
+                module: path.clone(),
+                only: import_filter(only.as_deref()),
+                except: import_filter(except.as_deref()),
+            }),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    imports.sort();
+
     let mut exports = module
         .items
         .iter()
@@ -94,12 +124,13 @@ fn collect_module(
     types.sort();
 
     let docs = module.moduledoc().map(ToOwned::to_owned);
-    let fingerprint_inputs = fingerprint_inputs(&name, &exports, &types, docs.as_deref());
+    let fingerprint_inputs = fingerprint_inputs(&name, &imports, &exports, &types, docs.as_deref());
     out.insert(
         name.clone(),
         ModuleInterface {
             name: name.clone(),
             abi_version: FZ_INTERFACE_ABI_VERSION,
+            imports,
             exports,
             types,
             docs,
@@ -112,6 +143,19 @@ fn collect_module(
             collect_module(inner, Some(&name), out);
         }
     }
+}
+
+fn import_filter(filter: Option<&[(String, usize)]>) -> Vec<InterfaceImportFn> {
+    let mut out = filter
+        .unwrap_or(&[])
+        .iter()
+        .map(|(name, arity)| InterfaceImportFn {
+            name: name.clone(),
+            arity: *arity,
+        })
+        .collect::<Vec<_>>();
+    out.sort();
+    out
 }
 
 fn interface_fn(def: &FnDef) -> InterfaceFn {
@@ -164,6 +208,7 @@ fn render_type_body(body: &TypeExprBody) -> String {
 
 fn fingerprint_inputs(
     name: &ModuleName,
+    imports: &[InterfaceImport],
     exports: &[InterfaceFn],
     types: &[InterfaceType],
     docs: Option<&str>,
@@ -174,6 +219,14 @@ fn fingerprint_inputs(
     ];
     if let Some(docs) = docs {
         inputs.push(format!("moduledoc={}", docs));
+    }
+    for import in imports {
+        inputs.push(format!(
+            "import={}:only=[{}]:except=[{}]",
+            import.module,
+            render_import_filter(&import.only),
+            render_import_filter(&import.except)
+        ));
     }
     for ty in types {
         inputs.push(format!("type={}:{:?}:{}", ty.name, ty.kind, ty.body));
@@ -187,6 +240,66 @@ fn fingerprint_inputs(
         inputs.push(format!("fn={}/{}:{}", export.name, export.arity, spec));
     }
     inputs
+}
+
+fn render_import_filter(fns: &[InterfaceImportFn]) -> String {
+    fns.iter()
+        .map(|f| format!("{}/{}", f.name, f.arity))
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+pub fn render_interfaces(interfaces: &BTreeMap<ModuleName, ModuleInterface>) -> String {
+    let mut out = String::new();
+    for interface in interfaces.values() {
+        out.push_str(&format!(
+            "interface {} abi={}\n",
+            interface.name, interface.abi_version
+        ));
+        if let Some(docs) = &interface.docs {
+            out.push_str(&format!("  moduledoc {:?}\n", docs));
+        }
+        if !interface.imports.is_empty() {
+            out.push_str("  imports\n");
+            for import in &interface.imports {
+                let only = render_import_filter(&import.only);
+                let except = render_import_filter(&import.except);
+                if !only.is_empty() {
+                    out.push_str(&format!("    {} only [{}]\n", import.module, only));
+                } else if !except.is_empty() {
+                    out.push_str(&format!("    {} except [{}]\n", import.module, except));
+                } else {
+                    out.push_str(&format!("    {} all\n", import.module));
+                }
+            }
+        }
+        if !interface.types.is_empty() {
+            out.push_str("  types\n");
+            for ty in &interface.types {
+                out.push_str(&format!("    {} {:?} = {}\n", ty.name, ty.kind, ty.body));
+            }
+        }
+        if !interface.exports.is_empty() {
+            out.push_str("  exports\n");
+            for export in &interface.exports {
+                out.push_str(&format!("    {}/{}", export.name, export.arity));
+                if let Some(spec) = &export.spec {
+                    out.push_str(&format!(
+                        " :: ({}) -> {}",
+                        spec.params.join(", "),
+                        spec.result
+                    ));
+                }
+                out.push('\n');
+            }
+        }
+        out.push_str("  fingerprint-inputs\n");
+        for input in &interface.fingerprint_inputs {
+            out.push_str(&format!("    {}\n", input));
+        }
+        out.push('\n');
+    }
+    out
 }
 
 #[cfg(test)]
@@ -282,11 +395,38 @@ end
         );
         assert_eq!(
             interfaces[&module(&["User"])]
+                .imports
+                .iter()
+                .map(|import| format!("{}:{}", import.module, render_import_filter(&import.only)))
+                .collect::<Vec<_>>(),
+            vec!["Math:add/2"]
+        );
+        assert_eq!(
+            interfaces[&module(&["User"])]
                 .exports
                 .iter()
                 .map(|f| f.name.as_str())
                 .collect::<Vec<_>>(),
             vec!["calc"]
+        );
+    }
+
+    #[test]
+    fn render_interfaces_excludes_function_bodies() {
+        let interfaces = interfaces(
+            r#"
+defmodule M do
+  @spec f(integer) :: integer
+  fn f(x), do: x + 100
+end
+"#,
+        );
+        let rendered = render_interfaces(&interfaces);
+        assert!(rendered.contains("interface M abi=1"));
+        assert!(rendered.contains("f/1 :: (Ident(\"integer\")) -> Ident(\"integer\")"));
+        assert!(
+            !rendered.contains("100"),
+            "body leaked into interface:\n{rendered}"
         );
     }
 

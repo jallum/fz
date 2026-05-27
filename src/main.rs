@@ -528,6 +528,7 @@ impl telemetry::Handler for ConsoleDumpHandler {
                 }
             }
             n if n == ["fz", "dump", "specs"]
+                || n == ["fz", "dump", "interfaces"]
                 || n == ["fz", "dump", "bodies"]
                 || n == ["fz", "dump", "outcomes"] =>
             {
@@ -587,13 +588,14 @@ fn run_dump(tel: &telemetry::ConfiguredTelemetry, args: &[String]) {
     }
     let path = path.unwrap_or_else(|| {
         eprintln!(
-            "fz dump <src.fz> [--emit clif|asm|both|specs|bodies|outcomes|stats] [--fn <name>]"
+            "fz dump <src.fz> [--emit clif|asm|both|interfaces|specs|bodies|outcomes|stats] [--fn <name>]"
         );
         std::process::exit(2);
     });
     let emit_clif = matches!(emit.as_str(), "clif" | "both");
     let emit_asm = matches!(emit.as_str(), "asm" | "both");
     let emit_specs = emit.as_str() == "specs";
+    let emit_interfaces = matches!(emit.as_str(), "interface" | "interfaces");
     let emit_stats = emit.as_str() == "stats";
     // fz-jg5.8 (RED.7) — user-facing diagnostic: list every emitted body
     // and (in v1) its source spec key. Boundary attribution per-call is a
@@ -602,9 +604,16 @@ fn run_dump(tel: &telemetry::ConfiguredTelemetry, args: &[String]) {
     let emit_bodies = emit.as_str() == "bodies";
     // fz-9pr.16 — `outcomes`: per-callsite reducer/planner verdict diary.
     let emit_outcomes = emit.as_str() == "outcomes";
-    if !emit_clif && !emit_asm && !emit_specs && !emit_bodies && !emit_outcomes && !emit_stats {
+    if !emit_clif
+        && !emit_asm
+        && !emit_specs
+        && !emit_interfaces
+        && !emit_bodies
+        && !emit_outcomes
+        && !emit_stats
+    {
         eprintln!(
-            "fz dump: --emit must be one of `clif`, `asm`, `both`, `specs`, `bodies`, `outcomes`, `stats`"
+            "fz dump: --emit must be one of `clif`, `asm`, `both`, `interfaces`, `specs`, `bodies`, `outcomes`, `stats`"
         );
         std::process::exit(2);
     }
@@ -619,6 +628,15 @@ fn run_dump(tel: &telemetry::ConfiguredTelemetry, args: &[String]) {
         }
         let dump = dump_specs_pipeline(tel, &sm_cell, src, path.clone());
         tel.event(&["fz", "dump", "specs"], metadata! { text: dump });
+        return;
+    }
+
+    if emit_interfaces {
+        if fn_filter.is_some() {
+            eprintln!("fz dump: --fn is ignored with --emit interfaces");
+        }
+        let dump = dump_interfaces_pipeline(tel, &sm_cell, src, path.clone());
+        tel.event(&["fz", "dump", "interfaces"], metadata! { text: dump });
         return;
     }
 
@@ -779,6 +797,21 @@ fn dump_specs_pipeline(
         tel,
     );
     ir_planner::pretty_module_plan(&mut t, &frontend.module, &frontend.module_plan)
+}
+
+fn dump_interfaces_pipeline(
+    tel: &dyn telemetry::Telemetry,
+    sm_cell: &Rc<RefCell<diag::SourceMap>>,
+    src: String,
+    source_name: String,
+) -> String {
+    let mut t = types::ConcreteTypes;
+    let frontend = run_frontend(
+        frontend::compile_source_with_types(&mut t, src, source_name, tel),
+        sm_cell,
+        tel,
+    );
+    module_interface::render_interfaces(&frontend._prog.module_interfaces)
 }
 
 fn render_key_slots(t: &mut types::ConcreteTypes, key: &[types::KeySlot]) -> String {
