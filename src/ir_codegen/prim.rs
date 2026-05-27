@@ -393,9 +393,8 @@ pub(crate) fn lower_collection_prim<
             LowerOut::ValueRefWord(b.inst_results(inst)[0])
         }
         Prim::MakeList(elems, tail) => {
-            // fz-s9y.2 — the default tail of a list-literal is the empty
-            // list (`[]`), NOT the nil atom value. They have distinct
-            // runtime bit patterns now.
+            // Default tail of a list-literal is the empty list (`[]`),
+            // NOT the nil atom value — distinct runtime bit patterns.
             let mut acc = match tail {
                 Some(tail_var) => {
                     let tail_bits = any_ref_for_var(var_env, b, jmod, runtime, tail_var.0, cache);
@@ -504,15 +503,11 @@ pub(crate) fn lower_collection_prim<
             if let Some(binding) = cache.tuple_field_params.get(&(c.0, *idx)).copied() {
                 return Ok(lower_out_for_codegen_value(binding));
             }
-            // fz-ul4.44 — `aligned` without `notrap`. Pre-fz-ben the load
-            // was unconditional; `notrap` silently masked SIGSEGV-via-
-            // garbage-read when the subject wasn't a tuple. Post-fz-ben
-            // every TupleField is gated by a `Prim::TypeTest` (lowered at
-            // `ir_lower.rs:1949`) that runtime-checks subject is a
-            // matching-arity Struct heap value (fz-ul4.36 made the
-            // TypeTest actually consult `descr.tuples`). The load is now
-            // provably safe; SIGSEGV on a bad load would be an IR
-            // integrity bug worth surfacing immediately.
+            // Every TupleField is gated by a preceding `Prim::TypeTest`
+            // that runtime-checks the subject is a matching-arity Struct
+            // heap value, so the load is provably safe. A SIGSEGV here
+            // would be an IR integrity bug worth surfacing loudly — do
+            // NOT add `notrap`, which would silently mask it.
             let fref = jmod.declare_func_in_func(runtime.struct_get_field_id, b.func);
             let field_offset = b
                 .ins()
@@ -563,15 +558,14 @@ pub(crate) fn lower_collection_prim<
             LowerOut::ValueRef(b.inst_results(inst)[0])
         }
         Prim::ConstBitstring(bytes, bit_len) => {
-            // fz-q8d.2 — split paths by payload size:
-            //   * Below threshold: intern bytes, call
-            //     `fz_alloc_bitstring_const(ptr, byte_len, bit_len)`. The
+            // Split paths by payload size:
+            //   * Below threshold: intern bytes and call
+            //     `fz_alloc_bitstring_const(ptr, byte_len, bit_len)` —
             //     runtime allocates an inline strict bitstring.
-            //   * Above threshold: emit both a bytes-payload symbol and a
+            //   * Above threshold: emit a bytes-payload symbol and a
             //     40-byte static SharedBin symbol in `.data` (refcount=1
-            //     anchor, relocs for bytes_ptr and the noop destructor),
-            //     call `fz_alloc_procbin_from_static(static_ptr)`. The
-            //     runtime retains the anchor and wraps a ProcBin around it.
+            //     anchor, relocs for bytes_ptr + noop destructor) and
+            //     call `fz_alloc_procbin_from_static(static_ptr)`.
             let above_threshold = bytes.len() > fz_runtime::heap::SHARED_BIN_THRESHOLD_BYTES;
             let syms = {
                 let mut cache = env.bs_const_data.borrow_mut();
@@ -598,8 +592,8 @@ pub(crate) fn lower_collection_prim<
                         .declare_data(&bytes_name, Linkage::Local, false, false)
                         .map_err(|e| CodegenError::new(format!("declare {}: {}", bytes_name, e)))?;
                     let mut desc = DataDescription::new();
-                    // fz-wu9 — append invisible trailing NUL; not counted in
-                    // the static SharedBin's bytes_len field. Underwrites the
+                    // Append invisible trailing NUL; not counted in the
+                    // static SharedBin's bytes_len field. Underwrites the
                     // cstring extern marshal contract for literal binaries.
                     let mut payload: Vec<u8> = bytes.clone();
                     payload.push(0);
@@ -780,10 +774,9 @@ pub(crate) fn lower_prim<
     prim: &Prim,
     dest_var: crate::fz_ir::Var,
     cache: &mut CodegenCache,
-    // fz-try B1+B2 — kept for call-site signature stability while we
-    // route through the simplified MakeClosure lowering. The picker no
-    // longer needs (caller, block, stmt) since the lambda body is
-    // resolved directly by FnId.0 alignment.
+    // Kept for call-site signature stability. The MakeClosure picker
+    // resolves the lambda body directly by FnId.0 alignment and no
+    // longer needs (caller, block, stmt).
     _caller_fn_id: crate::fz_ir::FnId,
     block_id: crate::fz_ir::BlockId,
     stmt_idx: usize,
@@ -813,11 +806,10 @@ pub(crate) fn lower_prim<
     // bottom of the function.
     let v: ir::Value = match prim {
         Prim::Const(c) => match c {
-            // fz-ul4.27.15.1: emit the raw payload when the consumer's
-            // type is int-monomorphic. ValueRef consumers retag via
-            // `tagged_get` at their use site. The wrapper at the bottom of
-            // the match would otherwise materialize a generic value and
-            // every int-arithmetic / RawInt-slot consumer would decode via
+            // Emit the raw payload when the consumer's type is
+            // int-monomorphic; ValueRef consumers retag via `tagged_get`
+            // at their use site. Without this fast path every
+            // int-arithmetic / RawInt-slot consumer would decode via
             // `as_raw_i64`.
             Const::Int(n) => {
                 if ty_is_int(t, fn_types, dest_var) {
@@ -858,11 +850,10 @@ pub(crate) fn lower_prim<
             }
         },
         Prim::BinOp(op, a, bv) => {
-            // .5.2: tagged operands are materialised lazily by `tag_a` /
-            // `tag_b` below. The typed-float fast paths read raw via
-            // `as_raw_f64` and never trigger the box round-trip; only the
-            // tagged-path branches (int fast path, scalar Eq/Neq, dispatch
-            // fallback) call `tag_a` / `tag_b` and pay the conversion.
+            // Tagged operands are materialised lazily by `tag_a` / `tag_b`
+            // below. Typed-float fast paths read raw via `as_raw_f64` and
+            // never trigger the box round-trip; only tagged-path branches
+            // (int fast path, scalar Eq/Neq, dispatch fallback) pay it.
             macro_rules! tag_a {
                 () => {
                     tagged_get(var_env, b, jmod, runtime, a.0, cache)
@@ -989,7 +980,6 @@ pub(crate) fn lower_prim<
                     return Ok(LowerOut::RawI64(b.block_params(join_blk)[0]));
                 }
                 BinOp::Eq | BinOp::Neq => {
-                    // VR.5a + .5.2.
                     let is_eq = matches!(op, BinOp::Eq);
                     let int_cc = if is_eq { IntCC::Equal } else { IntCC::NotEqual };
                     let f_cc = if is_eq {
@@ -1027,8 +1017,8 @@ pub(crate) fn lower_prim<
                         }
                         return Ok(LowerOut::Strict(strict_bool(b, cmp)));
                     }
-                    // Same-kind int: native icmp on raw i64. .5.3: must
-                    // not mix raw and tagged operands — bit-eq is only
+                    // Same-kind int: native icmp on raw i64. Must not
+                    // mix raw and tagged operands — bit-eq is only
                     // correct when both are in the same encoding.
                     if ty_is_int(t, fn_types, *a) && ty_is_int(t, fn_types, *bv) {
                         let ai = as_raw_i64(var_env, b, jmod, runtime, a.0);
@@ -1163,8 +1153,8 @@ pub(crate) fn lower_prim<
 
                     b.switch_to_block(slow_blk);
                     b.seal_block(slow_blk);
-                    // fz-ul4.27.9: inlined float-cmp slow path. Promote both
-                    // operands to f64 and emit native fcmp.
+                    // Inlined float-cmp slow path: promote both operands
+                    // to f64 and emit native fcmp.
                     let pfref = jmod.declare_func_in_func(runtime.promote_f64_id, b.func);
                     let fcc = match op {
                         BinOp::Lt => FloatCC::LessThan,
@@ -1216,8 +1206,6 @@ pub(crate) fn lower_prim<
         Prim::UnOp(op, x) => {
             match op {
                 UnOp::Neg => {
-                    // .5.3: read raw i64, native ineg, return raw — same
-                    // shape as the BinOp int fast paths.
                     let xi = as_raw_i64(var_env, b, jmod, runtime, x.0);
                     return Ok(LowerOut::RawI64(b.ins().ineg(xi)));
                 }
@@ -1428,7 +1416,7 @@ pub(crate) fn lower_prim<
                 fref
             };
             let param_kinds: Vec<ExternTy> = decl.params.clone();
-            // fz-jex — arity is enforced in ir_lower; this assert is
+            // Arity is enforced in ir_lower; this assert is
             // defense-in-depth so a future caller that bypasses lowering
             // can't silently truncate args via `.zip()`.
             assert_eq!(
@@ -1445,10 +1433,10 @@ pub(crate) fn lower_prim<
                 .map(|(v, ty)| match ty {
                     ExternTy::I64 => as_raw_i64(var_env, b, jmod, runtime, v.0),
                     ExternTy::F64 => as_raw_f64(var_env, b, jmod, runtime, v.0),
-                    // fz-2yf — Binary/CString: call the runtime helper from
-                    // [[fz-9ss]] with tagged heap bits and use its returned
-                    // `*const u8` as the C arg. Helper aborts on non-binary
-                    // or non-byte-aligned bitstring.
+                    // Binary/CString: call the marshal helper with
+                    // tagged heap bits; its returned `*const u8` is the
+                    // C arg. Helper aborts on non-binary or non-byte-
+                    // aligned bitstring.
                     ExternTy::Binary | ExternTy::CString => {
                         let helper_id = match ty {
                             ExternTy::CString => runtime.binary_as_cstring_id,
@@ -1479,7 +1467,7 @@ pub(crate) fn lower_prim<
             return Ok(LowerOut::DeadUnit);
         }
         Prim::IsEmptyList(c) => {
-            // fz-s9y.2 — empty list is the null-address List ref.
+            // Empty list is the null-address List ref.
             let cmp = if let Some(CodegenValue::AnyRef(value)) = var_env.get(&c.0).copied() {
                 let tag = emit_ref_tag(b, jmod, runtime, value);
                 let is_list = b.ins().icmp_imm(
@@ -1585,18 +1573,16 @@ pub(crate) fn lower_prim<
         Prim::MakeClosure(mk_ident, fn_id, captured) => {
             // Allocate a closure env, store the body code pointer, then
             // write captures through the runtime's schema-backed accessor.
-            // fz-ul4.29.12.2: resolve this MakeClosure's narrow
-            // SpecId via the lambda's full input-type key (captures
-            // from caller's `fn_types`, args = `any`); pick the typed
-            // stub keyed by that SpecId.
+            // Resolve the narrow SpecId via the lambda's full input-type
+            // key (captures from caller's `fn_types`, args = `any`) and
+            // pick the typed stub keyed by that SpecId.
             let n_caps = captured.len();
-            // fz-try B1+B2 — the lambda body is the any-key body spec
-            // (SpecId.0 == FnId.0). Look up directly; fall back to any
-            // registered narrow spec for this FnId when the any-key
-            // was dropped; emit a null-stub closure when neither
-            // exists (value is constructable but unreachable as a call
-            // target).
-            let _ = (block_id, stmt_idx, mk_ident); // fz-kgk: ident now intrinsic to the Prim.
+            // The lambda body is the any-key body spec (SpecId.0 ==
+            // FnId.0). Look up directly; fall back to any registered
+            // narrow spec for this FnId when the any-key was dropped;
+            // emit a null-stub closure when neither exists (value is
+            // constructable but unreachable as a call target).
+            let _ = (block_id, stmt_idx, mk_ident);
             let cl_sid_opt = if fn_ids.contains_key(&fn_id.0) {
                 Some(fn_id.0)
             } else {
@@ -1619,22 +1605,22 @@ pub(crate) fn lower_prim<
                 let cl_ptr = b.inst_results(inst)[0];
                 return Ok(LowerOut::ValueRef(cl_ptr));
             };
-            // fz-cps.1.7 — zero-capture MakeClosure: look up the
-            // per-Process static singleton instead of allocating per call
-            // site. The singleton's code pointer holds the closure-target
-            // body address. docs/cps-in-clif.md §8.2.
+            // Zero-capture MakeClosure: look up the per-Process static
+            // singleton instead of allocating per call site. The
+            // singleton's code pointer holds the closure-target body
+            // address. See docs/cps-in-clif.md §8.2.
             if captured.is_empty() {
                 return Ok(LowerOut::ValueRef(fetch_static_closure(
                     jmod, b, runtime, cl_sid,
                 )));
             }
-            // fz-cps.1.8 — non-zero captures: alloc closure heap object,
-            // write body's func_addr, and store captures as env fields.
-            // The body has closure-target sig `(args..., self, cont) tail`
-            // and projects captures from `self` in its entry harness.
+            // Non-zero captures: alloc closure heap object, write body's
+            // func_addr, and store captures as env fields. The body has
+            // closure-target sig `(args..., self, cont) tail` and
+            // projects captures from `self` in its entry harness.
             let body_func_id = *fn_ids.get(&cl_sid).ok_or_else(|| {
                 CodegenError::new(format!(
-                    "fz-cps.1.8: no body FuncId for closure SpecId({}) \
+                    "no body FuncId for closure SpecId({}) \
                      (FnId({}), {} captures)",
                     cl_sid, fn_id.0, n_caps
                 ))
@@ -1642,8 +1628,8 @@ pub(crate) fn lower_prim<
             let alloc_fref = jmod.declare_func_in_func(runtime.alloc_closure_id, b.func);
             let fid_v = b.ins().iconst(types::I32, fn_id.0 as i64);
             let nc_v = b.ins().iconst(types::I32, n_caps as i64);
-            // fz-ul4.27.22.6: halt_kind from body's return repr so
-            // fz_spawn_entry can pick the matching halt-cont singleton.
+            // halt_kind from body's return repr so fz_spawn_entry can
+            // pick the matching halt-cont singleton.
             let body_return_repr = return_reprs[cl_sid as usize];
             let hk_v = b
                 .ins()
@@ -1677,10 +1663,10 @@ pub(crate) fn lower_prim<
             }
             cl_ptr
         }
-        // fz-axu.23 (M2) — lower_program_full erases all Prim::Brand
-        // before returning. If codegen sees one, ir_brand_erase didn't
-        // run (or a caller injected Brand after lowering); surface it
-        // loudly rather than silently lowering as identity.
+        // lower_program_full erases all Prim::Brand before returning.
+        // Reaching codegen with one means ir_brand_erase didn't run (or
+        // a caller injected Brand after lowering); surface loudly rather
+        // than silently lowering as identity.
         Prim::Brand(_, _) => unreachable!(
             "Prim::Brand reached codegen — erasure should run inside lower_program_full"
         ),
@@ -1705,10 +1691,8 @@ pub(crate) fn lower_prim<
                 };
             }
             // Pass 1 — scalar kind checks. Emits icmps that or-into
-            // `scalar` and ignores heap-bearing axes.
-            // fz-yan.2 — atoms axis covers what BasicBits::NIL and ::BOOL used
-            // to cover (Descr::nil() and Descr::bool_t() are now atom literal
-            // sets). For finite literal sets we compare the raw atom id.
+            // `scalar` and ignores heap-bearing axes. For finite atom
+            // literal sets we compare the raw atom id.
             if ints {
                 let c = codegen_value_is_tag(
                     b,

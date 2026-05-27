@@ -1,4 +1,4 @@
-//! Split from src/ir_codegen.rs (fz-ame.7). Mechanical move only.
+//! Runtime FFI symbol declarations shared by JIT and AOT backends.
 
 #![allow(unused_imports)]
 
@@ -33,19 +33,18 @@ pub(crate) fn sig1(params: &[ir::Type], rets: &[ir::Type]) -> Signature {
 /// Declare every fz runtime FFI fn as an Import in the given Cranelift
 /// Module and return the resulting FuncIds packed into a RuntimeRefs.
 ///
-/// Generic on `M: cranelift_module::Module` so the JIT (JITModule) and a
-/// future AOT driver (ObjectModule, fz-ul4.23.6) call the same fn — the
-/// declarations don't care whether the underlying symbol resolves via
-/// JIT-installed Rust fn pointers or via a linker-resolved staticlib.
+/// Generic on `M: cranelift_module::Module` so JIT and AOT share one
+/// declaration site — the declarations don't care whether the underlying
+/// symbol resolves via JIT-installed Rust fn pointers or via a linker.
 ///
-/// This is the only place that knows the wire ABI of each runtime fn;
-/// changing one signature requires updating both the FFI body in
-/// ir_runtime.rs AND the matching entry here.
+/// Sole owner of each runtime fn's wire ABI; changing one signature
+/// requires updating the FFI body in ir_runtime.rs AND the matching
+/// entry here.
 pub(crate) fn declare_runtime_symbols<M: cranelift_module::Module>(
     jmod: &mut M,
 ) -> Result<RuntimeRefs, CodegenError> {
-    // fz-02r.5 — import FZ_SHOULD_YIELD as a 1-byte external data object.
-    // Must be declared before the `decl` closure borrows `jmod`.
+    // FZ_SHOULD_YIELD is a 1-byte external data object. Declared before
+    // the `decl` closure borrows `jmod`.
     let should_yield_data_id = jmod
         .declare_data("FZ_SHOULD_YIELD", Linkage::Import, false, false)
         .map_err(|e| CodegenError::new(format!("declare FZ_SHOULD_YIELD: {}", e)))?;
@@ -56,7 +55,7 @@ pub(crate) fn declare_runtime_symbols<M: cranelift_module::Module>(
     };
 
     let halt_implicit_ref_id = decl("fz_halt_implicit_ref", &[types::I64], &[])?;
-    // fz-ul4.27.22.3 — typed halt-implicit variants.
+    // Typed halt-implicit variants.
     let halt_implicit_i64_id = decl("fz_halt_implicit_i64", &[types::I64], &[])?;
     let halt_implicit_f64_id = decl("fz_halt_implicit_f64", &[types::F64], &[])?;
     let alloc_id = decl("fz_alloc_frame", &[types::I32, types::I32], &[types::I64])?;
@@ -118,23 +117,20 @@ pub(crate) fn declare_runtime_symbols<M: cranelift_module::Module>(
         &[],
     )?;
     let bs_finalize_id = decl("fz_bs_finalize", &[], &[types::I64])?;
-    // fz-cty.8 — `(payload_ptr: i64, byte_len: i64, bit_len: i64) -> i64`.
     let alloc_bitstring_const_id = decl(
         "fz_alloc_bitstring_const",
         &[types::I64, types::I64, types::I64],
         &[types::I64],
     )?;
-    // fz-q8d.2 — `(static_sharedbin: i64) -> i64`. Retains the anchor on
-    // the supplied static SharedBin and allocates a ProcBin on the
-    // current process heap that owns the new refcount edge.
+    // Retains the anchor on a static SharedBin and allocates a ProcBin on
+    // the current process heap that owns the new refcount edge.
     let alloc_procbin_from_static_id =
         decl("fz_alloc_procbin_from_static", &[types::I64], &[types::I64])?;
-    // fz-q8d.2 — noop destructor symbol. Imported so its address can be
-    // baked into each static SharedBin's `destructor` slot via a
-    // function-address relocation. Matches the runtime's `extern "C" fn
-    // (*mut SharedBin)` signature exactly.
+    // Noop destructor symbol. Imported so its address can be baked into
+    // each static SharedBin's `destructor` slot via a function-address
+    // relocation. Matches the runtime's `extern "C" fn (*mut SharedBin)`
+    // signature exactly.
     let shared_bin_destructor_noop_id = decl("shared_bin_destructor_noop", &[types::I64], &[])?;
-    // fz-9ss — extern binary marshal helpers.
     let binary_as_ptr_id = decl("fz_binary_as_ptr", &[types::I64], &[types::I64])?;
     let binary_as_cstring_id = decl("fz_binary_as_cstring", &[types::I64], &[types::I64])?;
     let bs_reader_init_ref_id = decl("fz_bs_reader_init_ref", &[types::I64], &[types::I64])?;
@@ -261,22 +257,19 @@ pub(crate) fn declare_runtime_symbols<M: cranelift_module::Module>(
     let box_atom_for_any_id = decl("fz_box_atom_for_any", &[types::I64], &[types::I64])?;
     let map_is_map_id = decl("fz_map_is_map", &[types::I64], &[types::I8])?;
     let arith_ret: &[ir::Type] = &[types::I64];
-    // fz-ul4.27.9: mixed-type arith/cmp slow paths are now inlined in JIT.
-    // `fz_promote_f64` does the tag-aware Int|Float→f64 conversion (with the
-    // same panic-on-non-numeric semantics the old fz_arith_* helpers had);
+    // Mixed-type arith/cmp slow paths are inlined in JIT. `fz_promote_f64`
+    // does the tag-aware Int|Float -> f64 conversion (panics on non-numeric).
     let promote_f64_id = decl("fz_promote_f64", &[types::I64], &[types::F64])?;
     let dynamic_float_arith_unsupported_id =
         decl("fz_dynamic_float_arith_unsupported", &[], &[types::I64])?;
     let value_eq_ref_id = decl("fz_value_eq_ref", &[types::I64, types::I64], arith_ret)?;
-    // fz-puj.45 (X4) — receive matcher binary-literal comparison.
-    // `(val_bits: i64, bytes_ptr: i64, byte_len: i64) -> i32`.
+    // Receive matcher binary-literal comparison.
     let matcher_eq_bytes_id = decl(
         "fz_matcher_eq_bytes",
         &[types::I64, types::I64, types::I64],
         &[types::I32],
     )?;
-    // fz-puj.47 (X6) — receive matcher map-key lookup.
-    // `(map_bits: i64, key_bits: i64) -> i64` (returns matcher miss sentinel on miss).
+    // Receive matcher map-key lookup. Returns matcher miss sentinel on miss.
     let matcher_map_get_id = decl(
         "fz_matcher_map_get",
         &[types::I64, types::I64],
@@ -326,10 +319,10 @@ pub(crate) fn declare_runtime_symbols<M: cranelift_module::Module>(
         &[types::I64, types::I64, types::F64],
         &[],
     )?;
-    // fz-cps.1.2 — receive cutover. Takes a cont closure ptr (i64),
-    // parks an accept-any matcher record, returns YIELD sentinel.
+    // Receive: parks an accept-any matcher record on the cont closure;
+    // returns YIELD sentinel.
     let receive_park_id = decl("fz_receive_park", &[types::I64], &[types::I64])?;
-    // fz-yxs/fz-st5/fz-70q.3 — selective-receive park entry. Args:
+    // Selective-receive park entry. Args:
     //   matcher_fn_bits (i64), pinned_ptr (i64), n_pinned (i64),
     //   clause_bodies_ptr (i64), n_clauses (i64),
     //   clause_bound_counts_ptr (i64), bound_arity (i32),
@@ -351,18 +344,16 @@ pub(crate) fn declare_runtime_symbols<M: cranelift_module::Module>(
         &[types::I64],
     )?;
     let yield_mid_flight_id = decl("fz_yield_mid_flight", &[types::I64], &[types::I64])?;
-    // fz-cps.1.7 — static zero-capture closure singleton lookup.
-    // Returns the per-Process singleton pointer for the given cl_sid.
+    // Static zero-capture closure singleton lookup. Returns the per-Process
+    // singleton pointer for the given cl_sid.
     let get_static_closure_id = decl("fz_get_static_closure", &[types::I32], &[types::I64])?;
-    // fz-cps.1.11 — halt-cont singleton lookup. Returns the per-Process
-    // halt-cont closure ptr; lazily initialized using the supplied
-    // halt_cont_body addr (JIT pre-populates at make_process time;
-    // AOT path relies on lazy init at first call).
-    // fz-ul4.27.22.3 — `(addr, kind)` sig: kind selects among 3 Process
-    // singletons (0=ValueRef, 1=RawInt, 2=RawF64).
+    // Halt-cont singleton lookup. `(addr, kind)`: kind selects among 3
+    // Process singletons (0=ValueRef, 1=RawInt, 2=RawF64). Lazily
+    // initialized using the supplied halt_cont_body addr (JIT pre-populates
+    // at make_process time; AOT relies on lazy init at first call).
     let get_halt_cont_id = decl("fz_get_halt_cont", &[types::I64, types::I32], &[types::I64])?;
-    // fz-ul4.27.22.3 — three fz_halt_cont_body variants, declared LOCAL
-    // (bodies emitted below). Strict: `(raw i64, kind i8, self i64) -> i64 tail`;
+    // Three fz_halt_cont_body variants, declared LOCAL (bodies emitted
+    // elsewhere). Strict: `(raw i64, kind i8, self i64) -> i64 tail`;
     // RawInt: `(i64, self i64) -> i64 tail`; RawF64: `(f64, self i64) -> i64 tail`.
     let halt_cont_body_strict_id = {
         let mut sig = Signature::new(CallConv::Tail);
@@ -383,18 +374,18 @@ pub(crate) fn declare_runtime_symbols<M: cranelift_module::Module>(
     };
     let halt_cont_body_i64_id = declare_narrow_hcb("fz_halt_cont_body_i64", types::I64)?;
     let halt_cont_body_f64_id = declare_narrow_hcb("fz_halt_cont_body_f64", types::F64)?;
-    // fz-cps.1.11 — fz_spawn_entry: SystemV entry the scheduler calls to
-    // launch a new task's zero-arg closure. Sig: `(closure:i64) -> i64`.
+    // fz_spawn_entry: SystemV entry the scheduler calls to launch a new
+    // task's zero-arg closure. Sig: `(closure:i64) -> i64`.
     let mut se_sig = Signature::new(CallConv::SystemV);
     se_sig.params.push(AbiParam::new(types::I64));
     se_sig.returns.push(AbiParam::new(types::I64));
     let spawn_entry_id = jmod
         .declare_function("fz_spawn_entry", Linkage::Local, &se_sig)
         .map_err(|e| CodegenError::new(format!("declare fz_spawn_entry: {}", e)))?;
-    // fz-ul4.27.22.3 — fz_main_entry: SystemV entry the scheduler calls
-    // to launch at a known main fn. Sig: `(main_fp:i64, halt_cl:i64)
-    // -> i64`. Rust caller picks halt_cl from process.halt_cont_singletons
-    // by the entry fn's return_repr kind.
+    // fz_main_entry: SystemV entry the scheduler calls to launch at a
+    // known main fn. Sig: `(main_fp:i64, halt_cl:i64) -> i64`. Rust caller
+    // picks halt_cl from process.halt_cont_singletons by the entry fn's
+    // return_repr kind.
     let mut me_sig = Signature::new(CallConv::SystemV);
     me_sig.params.push(AbiParam::new(types::I64));
     me_sig.params.push(AbiParam::new(types::I64));
@@ -402,11 +393,10 @@ pub(crate) fn declare_runtime_symbols<M: cranelift_module::Module>(
     let main_entry_id = jmod
         .declare_function("fz_main_entry", Linkage::Local, &me_sig)
         .map_err(|e| CodegenError::new(format!("declare fz_main_entry: {}", e)))?;
-    // fz-4mk.3a — fz_drain_dtor_entry: SystemV entry the scheduler calls
-    // per pending dtor at task-exit. Sig: `(closure:i64, payload_ref:i64)
-    // -> i64 system_v`. Body reads the closure body addr through the runtime
-    // ABI, allocates a
-    // Strict halt-cont via fz_get_halt_cont, and Tail-CC indirect-calls
+    // fz_drain_dtor_entry: SystemV entry the scheduler calls per pending
+    // dtor at task-exit. Sig: `(closure:i64, payload_ref:i64) -> i64`.
+    // Body reads the closure body addr through the runtime ABI, allocates
+    // a Strict halt-cont via fz_get_halt_cont, and Tail-CC indirect-calls
     // the closure body with `(self, payload, halt_cl)`.
     let mut dd_sig = Signature::new(CallConv::SystemV);
     dd_sig.params.push(AbiParam::new(types::I64));
@@ -541,13 +531,13 @@ pub(crate) struct RuntimeRefs {
     pub(super) bs_begin_id: FuncId,
     pub(super) bs_write_ref_id: FuncId,
     pub(super) bs_finalize_id: FuncId,
-    // fz-cty.8 — single-shot allocation from a module-baked byte payload.
+    /// Single-shot allocation from a module-baked byte payload.
     pub(super) alloc_bitstring_const_id: FuncId,
-    // fz-q8d.2 — alloc a ProcBin referencing a static SharedBin in .data.
+    /// Alloc a ProcBin referencing a static SharedBin in .data.
     pub(super) alloc_procbin_from_static_id: FuncId,
-    // fz-q8d.2 — noop destructor address relocated into static SharedBins.
+    /// Noop destructor address relocated into static SharedBins.
     pub(super) shared_bin_destructor_noop_id: FuncId,
-    // fz-9ss — binary/cstring extern marshal helpers. Both have signature
+    // Binary/cstring extern marshal helpers. Both have signature
     // `(i64 tagged_heap_bits) -> i64 *const u8` from Cranelift's perspective.
     pub(super) binary_as_ptr_id: FuncId,
     pub(super) binary_as_cstring_id: FuncId,
@@ -593,9 +583,9 @@ pub(crate) struct RuntimeRefs {
     pub(super) promote_f64_id: FuncId,
     pub(super) dynamic_float_arith_unsupported_id: FuncId,
     pub(super) value_eq_ref_id: FuncId,
-    // fz-puj.45 (X4) — selective-receive matcher binary-literal helper.
+    /// Selective-receive matcher binary-literal helper.
     pub matcher_eq_bytes_id: FuncId,
-    // fz-puj.47 (X6) — selective-receive matcher map-key lookup helper.
+    /// Selective-receive matcher map-key lookup helper.
     pub matcher_map_get_id: FuncId,
     pub matcher_map_get_ref_id: FuncId,
     pub(super) alloc_closure_id: FuncId,
@@ -609,20 +599,18 @@ pub(crate) struct RuntimeRefs {
     pub(super) closure_set_capture_i64_id: FuncId,
     pub(super) closure_set_capture_f64_id: FuncId,
     pub(super) receive_park_id: FuncId,
-    /// fz-70q.3 — fz_receive_park_matched FFI entry. Called from the
+    /// fz_receive_park_matched FFI entry. Called from the
     /// Term::ReceiveMatched arm in compile_block_terminator.
     pub(super) receive_park_matched_id: FuncId,
     pub(super) get_static_closure_id: FuncId,
     pub(super) get_halt_cont_id: FuncId,
     pub(super) spawn_entry_id: FuncId,
     pub(super) main_entry_id: FuncId,
-    /// fz-4mk.3a — fz_drain_dtor_entry: SystemV→Tail-CC shim for invoking
-    /// a resource dtor closure with its payload. Sig: `(closure:i64,
-    /// payload_ref:i64) -> i64 system_v`. Reads body addr through the
-    /// closure ABI and indirect-calls (closure, payload, halt_cl) via Tail-CC; result
-    /// discarded. Scheduler drains `pending_dtors` through this shim at
-    /// task-exit, replacing the older `resolve_dtor_from_closure` C
-    /// extraction path.
+    /// fz_drain_dtor_entry: SystemV->Tail-CC shim for invoking a resource
+    /// dtor closure with its payload. Sig: `(closure:i64, payload_ref:i64)
+    /// -> i64`. Reads body addr through the closure ABI and indirect-calls
+    /// (closure, payload, halt_cl) via Tail-CC; result discarded. Scheduler
+    /// drains `pending_dtors` through this shim at task-exit.
     pub(super) drain_dtor_entry_id: FuncId,
     pub(super) yield_mid_flight_id: FuncId,
     pub(super) should_yield_data_id: DataId,

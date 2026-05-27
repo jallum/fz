@@ -46,15 +46,11 @@ pub(crate) fn emit_terminator<
     let module = env.module;
 
     let callee_is_native = |id: u32| natively_callable.contains(&crate::fz_ir::FnId(id));
-    // fz-uwq.5 — Cont dispatch reads from `fn_types.dispatches[cid]`.
-    // The typer has already normalized recursive direct-call keys and
-    // used those same keys for dispatch and return propagation, so the
+    // Dispatch source: `fn_types.dispatches` keyed by the term's intrinsic
+    // `CallsiteIdent` — positional-rewrite invariant (fuse moves the Term,
+    // ident comes along). The typer normalized recursive direct-call keys
+    // and used them for both dispatch and return propagation, so the
     // SpecId resolved here is the one the worklist proved reachable.
-    // fz-kgk + fz-uwq.12 — `fn_types.dispatches` keyed by the term's
-    // intrinsic `CallsiteIdent` is the authoritative dispatch source.
-    // The ident is positional-rewrite invariant (fuse moves the Term,
-    // ident comes along); the older block_env recompute fallback is
-    // gone.
     let resolve_cont_sid = |blk: &crate::fz_ir::Block, _continuation: &crate::fz_ir::Cont| -> u32 {
         let term_ident = blk
             .terminator
@@ -73,7 +69,7 @@ pub(crate) fn emit_terminator<
                 .collect();
             available.sort();
             panic!(
-                "fz-kgk: no dispatches entry for Cont at {:?} — typer-authoritative \
+                "no dispatches entry for Cont at {:?} — typer-authoritative \
                  invariant violated; available dispatches: [{}]",
                 cid,
                 available.join(", ")
@@ -84,27 +80,16 @@ pub(crate) fn emit_terminator<
             .map(|s| s.0)
             .unwrap_or_else(|| {
                 panic!(
-                    "fz-kgk: dispatches[{:?}] = {:?} but no SpecId registered",
+                    "dispatches[{:?}] = {:?} but no SpecId registered",
                     cid, target
                 )
             })
     };
-    // fz-qbg.2 — Resolve callee spec by querying with FLOW-NARROWED arg
-    // types from the current block's typer env (`fn_types.block_envs`),
-    // not the def-site types (`fn_types.vars`). The dispatcher in
-    // multi-clause (and any `if`/`case` pattern-bind narrowing) refines
-    // an entry-block Var's type via per-block narrowing; the typer
-    // registers callee specs keyed against that narrowing, so the
-    // codegen lookup must use the same. Falls back to def-site when a
-    // block env entry is absent (e.g. for Vars defined later in the
-    // block — though calls in fz CPS-form only see args bound at or
-    // before the terminator, so this is rare).
     let resolve_callee_sid_in = |_callee: crate::fz_ir::FnId,
                                  _args: &[crate::fz_ir::Var],
                                  _block_id: crate::fz_ir::BlockId,
                                  term_ident: &crate::fz_ir::CallsiteIdent|
      -> u32 {
-        // fz-kgk + fz-uwq.12 — see resolve_cont_sid.
         let cid = crate::fz_ir::CallsiteId {
             caller: caller_fn_id,
             ident: term_ident.clone(),
@@ -112,7 +97,7 @@ pub(crate) fn emit_terminator<
         };
         let target = fn_types.dispatches.get(&cid).unwrap_or_else(|| {
             panic!(
-                "fz-kgk: no dispatches entry for Direct at {:?} — typer-authoritative \
+                "no dispatches entry for Direct at {:?} — typer-authoritative \
                  invariant violated",
                 cid
             )
@@ -122,7 +107,7 @@ pub(crate) fn emit_terminator<
             .map(|s| s.0)
             .unwrap_or_else(|| {
                 panic!(
-                    "fz-kgk: dispatches[{:?}] = {:?} but no SpecId registered",
+                    "dispatches[{:?}] = {:?} but no SpecId registered",
                     cid, target
                 )
             })
@@ -166,13 +151,10 @@ pub(crate) fn emit_terminator<
             let _ = host_ctx;
             emit_halt_for_binding(b, jmod, runtime, var_env, cache, v.0, binding);
             if is_native {
-                // fz-ul4.27.6.4 — native fn: propagate halt via the
-                // native return register. fz_halt already recorded
-                // process.halt_value; the actual bits are unobservable
-                // but the Cranelift sig requires a typed return.
-                // fz-ul4.27.13: dead-code halt blocks (match_error etc.)
-                // still need a well-typed return — iconst(0) satisfies
-                // the i64 sig without depending on val's repr.
+                // fz_halt already recorded process.halt_value; the
+                // returned bits are unobservable but the sig requires
+                // a typed return. iconst(0) also covers dead-code halt
+                // blocks (match_error etc.) without depending on val's repr.
                 let zero = b.ins().iconst(types::I64, 0);
                 b.ins().return_(&[zero]);
             } else {
@@ -241,20 +223,15 @@ pub(crate) fn emit_terminator<
                     b.ins().return_call_indirect(sigref, code, &cont_args);
                     return Ok(());
                 }
-                // fz-ul4.27.22.3 — native Term::Return per docs/cps-in-clif.md
-                // §2.1: read cont code_ptr; return_call_indirect sig(val, cont).
-                // Cont fns fetch outer_cont from `self`; non-cont fns
-                // use their cont_param SSA. Sig and val coerce match this
-                // fn's narrow return_repr — the cont body was chosen at
-                // construction time to match (per fz-ul4.27.22.3
-                // halt-cont typing + cont-seam narrowing in
-                // build_fn_signature).
+                // Native Term::Return (see docs/cps-in-clif.md §2.1): read
+                // cont code_ptr; return_call_indirect sig(val, cont). Cont
+                // fns fetch outer_cont from `self`; non-cont fns use their
+                // cont_param SSA. Sig and val coerce match this fn's
+                // narrow return_repr — chosen at construction to match.
                 //
-                // fz-try.15 — closure-target bodies coerce to ValueRef
-                // unconditionally to match the seam ABI (matches
-                // build_fn_signature's closure-target return = i64).
-                // Cont fns retain narrow return_repr — they're not at
-                // the indirect seam.
+                // Closure-target bodies coerce to ValueRef unconditionally
+                // to match the seam ABI (i64). Cont fns retain narrow
+                // return_repr — they're not at the indirect seam.
                 let is_closure_target_body =
                     closure_n_captures.contains_key(&caller_fn_id) && !is_cont_fn;
                 let my_return_repr = if is_closure_target_body {
@@ -295,8 +272,8 @@ pub(crate) fn emit_terminator<
                 b.ins().return_call_indirect(sigref, code, &cont_args);
             } else if cont_ptr_known_null {
                 let value = *var_env.get(&v.0).expect("unbound return val");
-                // fz-ul4.27.18: this fn is never a cont target; cont_ptr
-                // is statically null. Skip the load/icmp/brif dispatch.
+                // This fn is never a cont target; cont_ptr is statically
+                // null. Skip the load/icmp/brif dispatch.
                 emit_halt_and_return_null(b, jmod, runtime, cache, value);
             } else {
                 let value = *var_env.get(&v.0).expect("unbound return val");
@@ -314,11 +291,6 @@ pub(crate) fn emit_terminator<
                 .iter()
                 .map(|v| var_env.get(&v.0).expect("unbound captured val").value())
                 .collect();
-            // fz-ul4.29.7: resolve callee → narrow SpecId.0 (falls
-            // back to any-key == callee.0 via subsumption).
-            // fz-ul4.29.12.1: resolve the Cont to its narrow
-            // SpecId.0 too (typer registers one per Cont site;
-            // any-key is the subsumption backstop).
             let callee_sid = resolve_callee_sid(*callee, args);
             let mut cont_sid = resolve_cont_sid(blk, continuation);
             let this_demand = DemandAbi::new(&env.spec_keys[this_spec_id as usize]);
@@ -465,41 +437,33 @@ pub(crate) fn emit_terminator<
                 }
             }
             if callee_is_native(callee.0) {
-                // fz-ul4.27.13 — coerce each arg from its current var
-                // repr to the callee's param_repr. Result rides back
-                // in the callee's return_repr; we then coerce it to
-                // ValueRef for the cont (cont is the any-key spec by
-                // invariant — all-ValueRef param_reprs, AnyValue cont
-                // frame slot 1).
+                // Coerce each arg from its current var repr to the
+                // callee's param_repr. Result rides back in the callee's
+                // return_repr; the cont is the any-key spec by invariant
+                // (all-ValueRef param_reprs, AnyValue cont frame slot 1).
                 let callee_param_reprs = &param_reprs[callee_sid as usize];
                 let callee_ret_repr = return_reprs[callee_sid as usize];
                 let callee_fid = *fn_ids.get(&callee_sid).expect("callee fn_id missing");
                 let callee_fref = jmod.declare_func_in_func(callee_fid, b.func);
                 let mut native_args =
                     coerce_call_args(args, callee_param_reprs, var_env, b, jmod, runtime, cache);
-                // fz-cps.1.8 — if the callee is a closure-target fn,
-                // its sig is `(args..., self, cont) tail`. Direct
-                // callers load the per-Process static singleton and
-                // pass it as `self`. The zero-cap invariant (asserted
-                // at closure_target_fns build) means the body ignores
-                // self at runtime, so a singleton with no captures is
-                // valid for any direct-call site.
+                // Closure-target sig is `(args..., self, cont) tail`. Direct
+                // callers pass the per-Process static singleton as `self`.
+                // The zero-cap invariant (asserted at closure_target_fns
+                // build) means the body ignores self at runtime, so a
+                // singleton with no captures is valid for any direct-call site.
                 if closure_n_captures.contains_key(callee) {
                     native_args.push(fetch_static_closure(jmod, b, runtime, callee.0));
                 }
                 if DemandAbi::new(&env.spec_keys[callee_sid as usize]).has_list_tail_context() {
                     native_args.push(list_tail_destination_arg(b, cache));
                 }
-                // fz-cps.1.a: trailing cont arg per §2.1. Native
-                // caller forwards its cont SSA; uniform caller passes
-                // fz-cps.1.2 — chained-native cutover. Build the cont
-                // closure BEFORE the callee call so the callee's
-                // Term::Return can indirect-call through it (§2.1).
-                // The closure's user captures must be stored before
-                // the call too, since the cont body loads them on
-                // entry. After the callee call, the chain unwinds
-                // via halt-cont's regular return; the caller body
-                // just returns whatever propagated.
+                // Build the cont closure BEFORE the callee call so the
+                // callee's Term::Return can indirect-call through it
+                // (docs/cps-in-clif.md §2.1). User captures must be
+                // stored before the call too, since the cont body loads
+                // them on entry. After the callee call, the chain
+                // unwinds via halt-cont's regular return.
                 let cont_is_native = callee_is_native(continuation.fn_id.0);
                 let cont_captures_callable = continuation.captured.iter().any(|cv| {
                     let ty = block_env
@@ -577,15 +541,15 @@ pub(crate) fn emit_terminator<
                     None
                 };
                 // cont arg passed to the callee: cl_ptr for native cont,
-                // else cont_param fallback (uniform-cont path). fz-cps.1.11:
-                // when the cont-fn is uniform (rare; really only main's
-                // halt-style cont after the parking-reachable lift) and
-                // we have no cont_param, build a halt-cont closure inline
-                // so the callee's Term::Return doesn't load through null+16.
-                // synth_halt_cont tracks the latter: the callee chains
-                // all the way into the halt-cont body, so the caller
-                // must NOT execute its uniform-cont write-back after
-                // the call (that would double-halt with the wrong value).
+                // else cont_param fallback. When the cont-fn is uniform
+                // (rare; only main's halt-style cont after the
+                // parking-reachable lift) and there is no cont_param,
+                // build a halt-cont closure inline so the callee's
+                // Term::Return doesn't load through null+16.
+                // synth_halt_cont marks that path: the callee chains all
+                // the way into halt-cont body, so the caller must NOT
+                // execute its uniform-cont write-back after the call
+                // (would double-halt with the wrong value).
                 let mut synth_halt_cont = false;
                 let cont_arg = if let Some(lazy_cont) = lazy_cont_opt {
                     lazy_cont
@@ -638,10 +602,9 @@ pub(crate) fn emit_terminator<
                         HEADER_SIZE,
                     );
                     b.ins().store(MemFlags::trusted(), my_cont, cf, HEADER_SIZE);
-                    // fz-ul4.29.12.1: result + captures are written
-                    // into the cont's typed entry slots. The native
-                    // result already has an ABI repr; captured vars
-                    // still come from the local binding table.
+                    // Result + captures are written into the cont's
+                    // typed entry slots. Native result already has an
+                    // ABI repr; captured vars come from var_env.
                     let mut payload: Vec<(ir::Value, ArgRepr)> =
                         Vec::with_capacity(continuation.captured.len() + 1);
                     payload.push((result, callee_ret_repr));
@@ -692,11 +655,10 @@ pub(crate) fn emit_terminator<
         } => {
             let callee_sid = resolve_callee_sid(*callee, args);
             if callee_is_native(callee.0) {
-                // fz-ul4.27.6.2.3 / .27.13 — TailCall to a native callee.
                 // Coerce each arg from its current var repr to the
-                // callee's param_repr. The natively_callable fixed point
-                // guarantees callee's return_repr matches mine, so
-                // return_call is ABI-compatible without further coerce.
+                // callee's param_repr. The natively_callable fixed
+                // point guarantees callee's return_repr matches mine,
+                // so return_call is ABI-compatible.
                 let callee_param_reprs = &param_reprs[callee_sid as usize];
                 let callee_ret_repr = return_reprs[callee_sid as usize];
                 let callee_fid = *fn_ids.get(&callee_sid).expect("callee fn_id missing");
@@ -724,10 +686,9 @@ pub(crate) fn emit_terminator<
                     }
                     mid_flight_arg_shapes.push(MidFlightArgShape::Value(to));
                 }
-                // fz-cps.1.8 — TailCall to a closure-target fn: insert
-                // static singleton as `self` before cont. Mirror of
-                // the Term::Call path; same zero-cap invariant lets
-                // any singleton serve as self (body ignores it).
+                // TailCall to a closure-target fn: insert static
+                // singleton as `self` before cont (mirror of Term::Call;
+                // zero-cap invariant lets any singleton serve as self).
                 if closure_n_captures.contains_key(callee) {
                     let static_closure = fetch_static_closure(jmod, b, runtime, callee.0);
                     native_args.push(static_closure);
@@ -737,12 +698,12 @@ pub(crate) fn emit_terminator<
                     native_args.push(list_tail_destination_arg(b, cache));
                     mid_flight_arg_shapes.push(MidFlightArgShape::HeapRef);
                 }
-                // fz-cps.1.a: trailing cont arg per §2.1. fz-cps.1.11:
-                // build halt-cont closure inline when uniform-tier
-                // caller (cont_param=None) tail-calls native callee,
-                // so the callee's Term::Return doesn't deref null.
-                // fz-cps.1.12: cont fns forward outer_cont from their
-                // closure env; cont_param for cont fns is self.
+                // Trailing cont arg (docs/cps-in-clif.md §2.1). Build a
+                // halt-cont closure inline when a uniform-tier caller
+                // (cont_param=None) tail-calls a native callee, so the
+                // callee's Term::Return doesn't deref null. Cont fns
+                // forward outer_cont from their closure env; cont_param
+                // for cont fns is self.
                 let mut synth_halt_cont = false;
                 let tail_cont_arg = if is_cont_fn {
                     let self_val = cont_param.expect("cont fn binds self via cont_param");
@@ -763,10 +724,10 @@ pub(crate) fn emit_terminator<
                     // recursive tail calls reuse the same stack frame
                     // (TCO). Without this, count_100k blows the stack.
                     //
-                    // fz-02r.5 — back-edge cooperative yield check. Only
+                    // Back-edge cooperative yield check: only
                     // allocation-capable native loop bodies can set the
-                    // heap-pressure flag that this path services. Pure
-                    // scalar loops stay a plain return_call and keep their
+                    // heap-pressure flag this path services. Pure scalar
+                    // loops stay a plain return_call and keep their
                     // zero-allocation CLIF contract.
                     if *is_back_edge && env.spec_heap_allocates[this_spec_id as usize] {
                         let yield_gv =
@@ -852,11 +813,10 @@ pub(crate) fn emit_terminator<
                     }
                     b.ins().return_call(callee_fref, &native_args);
                 } else if synth_halt_cont {
-                    // fz-cps.1.11 — uniform caller + native callee
-                    // with synthesized halt-cont: callee's chain runs
-                    // all the way through halt_cont_body. Caller must
-                    // NOT do post-call uniform write-back (would
-                    // double-halt with the wrong value).
+                    // Uniform caller + native callee with synthesized
+                    // halt-cont: callee's chain runs all the way through
+                    // halt_cont_body. Caller must NOT do post-call uniform
+                    // write-back (would double-halt with the wrong value).
                     let _ = b.ins().call(callee_fref, &native_args);
                     let zero = b.ins().iconst(types::I64, 0);
                     b.ins().return_(&[zero]);
@@ -960,13 +920,11 @@ pub(crate) fn emit_terminator<
                 &cap_bindings,
                 &extra_ref_captures,
             );
-            // fz-t45 — singleton closure-lit fast path for non-tail
-            // closure calls. If this spec types `closure` as a single
-            // closure_lit(F, K), resolve F's narrow body spec at
-            // [K..., arg_descrs...] and call it directly with the
-            // body's narrow ABI, threading the synthesized cont closure
-            // as the callee's `cont` argument. Opaque / polymorphic
-            // closures still fall back to the all-ValueRef indirect seam.
+            // Singleton closure-lit fast path: if this spec types `closure`
+            // as a single closure_lit(F, K), resolve F's narrow body spec
+            // at [K..., arg_descrs...] and call it directly with the body's
+            // narrow ABI. Opaque / polymorphic closures fall through to the
+            // all-ValueRef indirect seam below.
             let lit_resolved: Option<(u32, FuncId, usize)> = (|| {
                 let (body_fn_id, body_sid) =
                     resolve_tcc_body(t, closure, args, fn_types, module, spec_registry)?;
@@ -1006,11 +964,11 @@ pub(crate) fn emit_terminator<
                 }
                 return Ok(());
             }
-            // fz-cps.1.8 — ask runtime for the closure body address and
-            // Tail-CC indirect-call with closure-target sig `(args..., self,
-            // cont) -> i64 tail`. All-ValueRef params. Native callers
-            // use return_call_indirect (TCO); uniform callers use
-            // call_indirect Tail (cross-CC) and return result.
+            // Indirect path: load body address from the closure and
+            // Tail-CC indirect-call with closure-target sig
+            // `(args..., self, cont) -> i64 tail` (all-ValueRef params).
+            // Native callers use return_call_indirect (TCO); uniform
+            // callers use call_indirect Tail (cross-CC) and return result.
             let body_fp = load_closure_code_ref(b, jmod, runtime, cl_val);
             let mut sig = Signature::new(CallConv::Tail);
             for _ in &arg_vals {
@@ -1050,20 +1008,17 @@ pub(crate) fn emit_terminator<
             args,
             ident: _,
         } => {
-            // fz-cps.1.8 — Tail-CC indirect-call through the closure code ptr with
-            // the caller's own cont (TCO via return_call_indirect).
-            // Closure-target sig `(args..., self, cont) -> i64 tail`.
-            // For cont fns, the forwarded cont is the env's outer_cont.
-            // For non-cont native fns, cont_param is the cont SSA.
-            // Uniform callers load from frame_ptr+16.
+            // Tail-CC indirect-call through the closure code ptr with the
+            // caller's own cont (TCO via return_call_indirect). Closure-
+            // target sig `(args..., self, cont) -> i64 tail`. For cont fns
+            // the forwarded cont is the env's outer_cont; non-cont native
+            // forwards cont_param; uniform loads from frame_ptr+16.
             //
-            // fz-ul4.27.22.11 — closure_lit fast path. When the closure
-            // Var's per-spec type is a single closure_lit(F, K), resolve
-            // F's narrow body spec at key [K..., arg_descrs...] and emit
-            // a direct return_call. Bypasses the runtime code-pointer read and
-            // uses the body's narrow ABI directly. Falls back to the
-            // indirect path on union-of-lits, plain arrows, and
-            // unresolved keys.
+            // Closure-lit fast path: when the closure Var's per-spec type
+            // is a single closure_lit(F, K), resolve F's narrow body spec
+            // at [K..., arg_descrs...] and emit a direct return_call,
+            // bypassing the runtime code-pointer read. Falls back to the
+            // indirect path on union-of-lits, plain arrows, unresolved keys.
             let cl_val = var_env
                 .get(&closure.0)
                 .expect("unbound tailcallclosure closure")
@@ -1092,7 +1047,6 @@ pub(crate) fn emit_terminator<
                 }
             };
 
-            // fz-ul4.27.22.11 — try singleton resolution.
             let lit_resolved: Option<(u32, FuncId, usize)> = (|| {
                 let (body_fn_id, body_sid) =
                     resolve_tcc_body(t, closure, args, fn_types, module, spec_registry)?;
@@ -1102,9 +1056,6 @@ pub(crate) fn emit_terminator<
             })();
 
             if let Some((body_sid, body_fid, n_caps)) = lit_resolved {
-                // Direct dispatch: build sig from body's narrow
-                // param_reprs; emit return_call passing cl_val as self
-                // and my_cont as cont.
                 let body_param_reprs = &param_reprs[body_sid as usize];
                 let mut sig = Signature::new(CallConv::Tail);
                 // Closure-target sig: only arg slots [n_caps..] go on
@@ -1148,8 +1099,6 @@ pub(crate) fn emit_terminator<
                     b.ins().return_(&[result]);
                 }
             } else {
-                // Indirect path for unresolved / union-of-lits /
-                // plain-arrow closures.
                 let body_fp = load_closure_code_ref(b, jmod, runtime, cl_val);
                 let mut sig = Signature::new(CallConv::Tail);
                 for _ in &arg_vals {
@@ -1191,10 +1140,9 @@ pub(crate) fn emit_terminator<
             continuation,
             ident: _,
         } => {
-            // fz-cps.1.2 Receive cutover per docs/cps-in-clif.md §4.
-            // Build the cont closure, with outer_cont as env field 0,
-            // hand it to fz_receive_park which parks an accept-any
-            // matcher record and returns YIELD sentinel.
+            // See docs/cps-in-clif.md §4: build the cont closure (outer_cont
+            // in env field 0), hand it to fz_receive_park which parks an
+            // accept-any matcher record and returns the YIELD sentinel.
             let cont_sid = resolve_cont_sid(blk, continuation);
             let cap_bindings: Vec<ClosureCapture> = continuation
                 .captured
@@ -1220,17 +1168,12 @@ pub(crate) fn emit_terminator<
             let park_fref = jmod.declare_func_in_func(runtime.receive_park_id, b.func);
             let park_inst = b.ins().call(park_fref, &[cl_ptr]);
             let yield_sentinel = b.inst_results(park_inst)[0];
-            if is_native {
-                // Native body returns i64 (canonical); the yield
-                // sentinel propagates back to the scheduler.
-                b.ins().return_(&[yield_sentinel]);
-            } else {
-                // Uniform body returns next_frame ptr (here, YIELD
-                // sentinel — trampoline parks the task).
-                b.ins().return_(&[yield_sentinel]);
-            }
+            // Both native and uniform paths return the YIELD sentinel;
+            // native returns i64, uniform returns next_frame ptr (which
+            // the trampoline interprets as park).
+            b.ins().return_(&[yield_sentinel]);
         }
-        // fz-70q.3 — selective-receive park-site CLIF.
+        // Selective-receive park-site CLIF.
         //
         // Layout, mirroring fz_runtime::park::ParkRecord:
         //   - matcher fn addr (declared/emitted by the pre-pass in

@@ -1,5 +1,3 @@
-//! Split from src/ir_codegen.rs (fz-ame.7). Mechanical move only.
-
 #![allow(unused_imports)]
 
 use super::*;
@@ -265,10 +263,10 @@ pub(crate) fn compile_with_backend_impl<
 
     let mut fbctx = FunctionBuilderContext::new();
 
-    // fz-ul4.27.22.3 — emit fz_main_entry. Generic shim: takes the
-    // entry fn ptr + a halt-cont singleton ptr supplied by the Rust
-    // caller (caller picks the singleton matching the entry fn's
-    // return_repr kind). Body just `call_indirect Tail main_fp(halt_cl)`.
+    // Emit fz_main_entry. Generic shim: takes the entry fn ptr + a
+    // halt-cont singleton ptr supplied by the Rust caller (caller picks
+    // the singleton matching the entry fn's return_repr kind). Body is
+    // just `call_indirect Tail main_fp(halt_cl)`.
     {
         let mut sig = Signature::new(CallConv::SystemV);
         sig.params.push(AbiParam::new(types::I64));
@@ -298,10 +296,10 @@ pub(crate) fn compile_with_backend_impl<
         .map_err(|e| CodegenError::new(format!("define fz_main_entry: {}", e)))?;
     }
 
-    // fz-4mk.3a — emit fz_drain_dtor_entry. SystemV scheduler-callable
-    // shim that invokes a 1-arg resource dtor closure with its payload.
-    // Body: pick a Strict halt-cont via fz_get_halt_cont, read the body
-    // addr through the closure ABI, and Tail-CC indirect-call
+    // Emit fz_drain_dtor_entry. SystemV scheduler-callable shim that
+    // invokes a 1-arg resource dtor closure with its payload. Picks a
+    // Strict halt-cont via fz_get_halt_cont, reads the body addr through
+    // the closure ABI, and Tail-CC indirect-calls
     // `(payload_ref, closure, halt_cl)`. Result is discarded by the caller.
     // Sig: `(closure:i64, payload_ref:i64) -> i64 system_v`.
     {
@@ -322,16 +320,15 @@ pub(crate) fn compile_with_backend_impl<
                 let closure = b.block_params(entry)[0];
                 let payload_ref = b.block_params(entry)[1];
                 // Strict halt-cont (kind=0). Dtor return is discarded;
-                // ValueRef is harmless and avoids RawInt/F64 unboxing.
+                // ValueRef avoids RawInt/F64 unboxing.
                 let strict_addr = fn_addr(m, runtime.halt_cont_body_strict_id, b);
                 let zero = b.ins().iconst(types::I32, 0);
                 let ghc_fref = m.declare_func_in_func(runtime.get_halt_cont_id, b.func);
                 let halt_inst = b.ins().call(ghc_fref, &[strict_addr, zero]);
                 let halt_cl = b.inst_results(halt_inst)[0];
                 let code = load_closure_code_ref(b, m, &runtime, closure);
-                // fz-cps.1.2 §2.1 closure-target body sig:
-                // `(args..., self, cont) tail -> i64`. Generic args are
-                // one-word ValueRefs.
+                // Closure-target body sig: `(args..., self, cont) tail -> i64`.
+                // Generic args are one-word ValueRefs.
                 let mut closure_sig = Signature::new(CallConv::Tail);
                 closure_sig.params.push(AbiParam::new(types::I64)); // x ValueRef
                 closure_sig.params.push(AbiParam::new(types::I64)); // self
@@ -348,8 +345,8 @@ pub(crate) fn compile_with_backend_impl<
         .map_err(|e| CodegenError::new(format!("define fz_drain_dtor_entry: {}", e)))?;
     }
 
-    // fz-cps.1.11 — emit fz_spawn_entry. SystemV scheduler-callable shim
-    // that invokes a zero-arg closure with a fresh halt-cont. Used by
+    // Emit fz_spawn_entry. SystemV scheduler-callable shim that invokes
+    // a zero-arg closure with a fresh halt-cont. Used by
     // `Runtime::spawn_closure` to launch the new task's first fn via
     // the closure-target sig `(self, cont) tail`. The closure body
     // tail-chains into a halt-cont; halt sets process.halt_value.
@@ -369,11 +366,11 @@ pub(crate) fn compile_with_backend_impl<
                 b.switch_to_block(entry);
                 b.seal_block(entry);
                 let closure = b.block_params(entry)[0];
-                // fz-ul4.27.22.6 — pick the matching halt-cont based on the
-                // spawned closure's halt_kind (packed into the high 2 bits of
+                // Pick the matching halt-cont based on the spawned
+                // closure's halt_kind (packed into the high 2 bits of the
                 // object-local closure `flags` at MakeClosure time). For
-                // RawInt-returning bodies, this routes the i64 raw payload
-                // into halt_cont_body_i64. Pre-22.6 this was hardcoded ValueRef.
+                // RawInt-returning bodies this routes the i64 raw payload
+                // into halt_cont_body_i64.
                 //
                 // Closure metadata layout:
                 //   off 0  : kind (u16)         off 4  : size_bytes (u32)
@@ -411,9 +408,9 @@ pub(crate) fn compile_with_backend_impl<
         .map_err(|e| CodegenError::new(format!("define fz_spawn_entry: {}", e)))?;
     }
 
-    // fz-ul4.27.22.3 — emit three fz_halt_cont_body fns, one per repr.
-    // Generic ValueRef bodies receive `(value_ref, self)`; RawInt / RawF64
-    // variants stay narrow as `(value, self)`.
+    // Emit three fz_halt_cont_body fns, one per repr. Generic ValueRef
+    // bodies receive `(value_ref, self)`; RawInt / RawF64 variants stay
+    // narrow as `(value, self)`.
     {
         let mut sig = Signature::new(CallConv::Tail);
         push_repr_param(&mut sig, ArgRepr::ValueRef);
@@ -473,9 +470,10 @@ pub(crate) fn compile_with_backend_impl<
     // Also detect any bitstring prim so we can pre-register arity-1 / arity-3
     // schemas used by the reader / result tuples even if no MakeTuple uses
     // those arities directly.
-    // fz-ul4.38 — BTreeSet so iteration order is deterministic. Schema ids
-    // are assigned by registration order; the AOT runtime registers in the
-    // same sorted order so its ids match what codegen baked into the CLIF.
+    //
+    // BTreeSet so iteration order is deterministic. Schema ids are assigned
+    // by registration order; the AOT runtime registers in the same sorted
+    // order so its ids match what codegen baked into the CLIF.
     let mut tuple_arities: std::collections::BTreeSet<usize> = std::collections::BTreeSet::new();
     let mut has_bs_prim = false;
     for f in &module.fns {
@@ -495,10 +493,10 @@ pub(crate) fn compile_with_backend_impl<
                     | Prim::BitReaderDone(_) => {
                         has_bs_prim = true;
                     }
-                    // fz-ul4.36 — also register schemas for arities that
-                    // appear in TypeTest tuple descriptors. The runtime
-                    // check compares schema_id; without pre-registration
-                    // we'd have no id to compare against.
+                    // Also register schemas for arities that appear in
+                    // TypeTest tuple descriptors. The runtime check
+                    // compares schema_id; without pre-registration we'd
+                    // have no id to compare against.
                     Prim::TypeTest(_, descr) => {
                         for arity in
                             crate::concrete_types::ty_descr(descr).type_test_tuple_arities()
@@ -548,15 +546,14 @@ pub(crate) fn compile_with_backend_impl<
             &owned_pre_types
         }
     };
-    // fz-ul4.29.10.3 — lower known-target CallClosure / TailCallClosure
-    // to direct Call / TailCall. After this, the final type_module sees
-    // direct dispatch where the closure-stub used to live, and
-    // .29.12.6's any-key drop logic can remove the now-dead any-key.
+    // Lower known-target CallClosure / TailCallClosure to direct
+    // Call / TailCall. After this, the final type_module sees direct
+    // dispatch where the closure-stub used to live, allowing the
+    // any-key drop logic to remove the now-dead any-key.
     //
-    // Uses the same `pre_types`: `fn_constants` tracks Vars bound to
+    // Reuses `pre_types`: `fn_constants` tracks Vars bound to
     // `Prim::Const(Value::Fn)` / `Prim::MakeClosure`, neither of which
-    // is touched. So `pre_types.fn_constants` is identical to whatever
-    // a re-type would produce. No separate `mid_types` call needed.
+    // is touched, so a re-type would produce the same `fn_constants`.
     crate::ir_typer::rewrite_known_target_closures(t, &mut working, pre_types);
     #[cfg(not(test))]
     crate::ir_inline::inline_module(&mut working);
@@ -565,47 +562,45 @@ pub(crate) fn compile_with_backend_impl<
         crate::ir_inline::inline_module(&mut working);
     }
     crate::ir_fuse::fuse_blocks_with_telemetry(&mut working, tel);
-    // fz-jg5.4 (RED.3) — compile-time reducer pass. Folds calls whose
-    // return is statically known; reduces If-on-bool-literal to Goto.
-    // Plugs in after ir_inline + ir_fuse so it sees a cleaner call graph.
+    // Compile-time reducer pass. Folds calls whose return is statically
+    // known; reduces If-on-bool-literal to Goto. Runs after
+    // ir_inline + ir_fuse so it sees a cleaner call graph.
     // See docs/bodies-are-boundaries.md.
-    // fz-uwq.9 — reducer returns a ReducerLog (Consumed / Stalled
-    // facts). Codegen doesn't consume it directly; the dump pipeline
-    // does. Codegen drives reduction only for its IR-rewriting effect.
+    //
+    // Reducer returns a ReducerLog consumed by the dump pipeline, not
+    // by codegen; codegen drives reduction only for its rewriting effect.
     #[cfg(not(test))]
     let _ = crate::ir_reducer::reduce_module_with_telemetry(t, &mut working, tel);
     #[cfg(test)]
     if !REDUCER_DISABLED.with(|d| d.get()) {
         let _ = crate::ir_reducer::reduce_module_with_telemetry(t, &mut working, tel);
     }
-    // fz-uwq.2 — single-use cont collapse runs pre-typer, alongside the
-    // other call-shape mutations (`fuse_blocks`, `reduce_module`). The
-    // `debug_assert_unique_conts` check at the end of `ir_lower` (fz-uwq.1)
+    // Single-use cont collapse runs pre-typer, alongside the other
+    // call-shape mutations (`fuse_blocks`, `reduce_module`). The
+    // `debug_assert_unique_conts` check at the end of `ir_lower`
     // guarantees this pass sees each continuation fn exactly once, so it
     // can be applied before the typer commits to specs. See
     // `docs/dispatch-as-typer-output.md` (Worry 1).
     crate::ir_inline::inline_single_use_conts(&mut working);
     let module_types = crate::ir_typer::type_module(t, &working, tel);
-    // fz-uwq.14 — snapshot per-fn call-shape multisets right after the
-    // typer commits to specs. The post-typer passes (branch_fold, fold,
-    // const_bs::fold, dce_module, dce_module_level) may FOLD calls away
-    // (Direct → Return when the reducer would have done it; If → Goto
-    // when a branch collapses) but must never INVENT new ones — the
-    // typer's spec set wouldn't cover invented calls. The assertion at
-    // the end of this pipeline pins the invariant: every fn's
+    // Snapshot per-fn call-shape multisets right after the typer commits
+    // to specs. The post-typer passes (branch_fold, fold, const_bs::fold,
+    // dce_module, dce_module_level) may FOLD calls away but must never
+    // INVENT new ones — the typer's spec set wouldn't cover invented
+    // calls. The assertion below pins the invariant: every fn's
     // call-shape multiset post-codegen is a subset (per-kind) of the
     // post-typer multiset.
     #[cfg(debug_assertions)]
     let call_shapes_pre = super::invariants::snapshot_call_shapes(&working);
-    // fz-fyq.4 — fold one-sided-dead Ifs to Gotos; DCE below removes
-    // the orphaned blocks and the now-unused TypeTest stmts.
+    // Fold one-sided-dead Ifs to Gotos; DCE below removes the orphaned
+    // blocks and the now-unused TypeTest stmts.
     crate::ir_branch_fold::fold_module_with_telemetry(&mut working, &module_types, tel);
     crate::ir_fold::fold_module(&mut working, &module_types);
-    // fz-cty.8 — fold byte-literal MakeBitstring into ConstBitstring before
-    // DCE so the per-byte Const(Int) operand stmts go dead in the same pass.
+    // Fold byte-literal MakeBitstring into ConstBitstring before DCE so
+    // the per-byte Const(Int) operand stmts go dead in the same pass.
     crate::ir_const_bs::fold_module(&mut working);
     crate::ir_dce::dce_module_with_telemetry(&mut working, tel);
-    // fz-ul4.11.29: sweep IR fns unreachable from main after inlining.
+    // Sweep IR fns unreachable from main after inlining.
     crate::ir_dce::dce_module_level(&mut working);
     #[cfg(debug_assertions)]
     super::invariants::assert_no_new_call_shapes(&working, &call_shapes_pre);
@@ -679,7 +674,7 @@ pub(crate) fn compile_with_backend_impl<
     }
     let module = &working;
 
-    // fz-ul4.29.2.1 — Build the SpecRegistry.
+    // Build the SpecRegistry.
     //
     // Register any-keys first, in FnId.0 order — this preserves the
     // invariant `any-key SpecId.0 == FnId.0` so closure / Spawn / Receive
@@ -693,11 +688,11 @@ pub(crate) fn compile_with_backend_impl<
         let n_params = f.block(f.entry).params.len();
         let any_ty = t.any();
         let any_key = f.semantic_key(vec![any_ty; n_params]);
-        // fz-ul4.29.12.6 — skip registering F's any-key when the typer
-        // dropped it (every callsite of F has typed coverage). The next
-        // registration via `register_any_key_at` pads slot F.0 with a
-        // sentinel automatically, preserving the `SpecId.0 == FnId.0`
-        // invariant for the surviving any-keys.
+        // Skip registering F's any-key when the typer dropped it (every
+        // callsite of F has typed coverage). The next registration via
+        // `register_any_key_at` pads slot F.0 with a sentinel
+        // automatically, preserving the `SpecId.0 == FnId.0` invariant
+        // for the surviving any-keys.
         let spec_key = crate::ir_typer::fn_types::SpecKey::value(f.id, any_key.clone());
         if !module_types.specs.contains_key(&spec_key) {
             continue;
@@ -744,16 +739,14 @@ pub(crate) fn compile_with_backend_impl<
     for (i, f) in module.fns.iter().enumerate() {
         idx_of.insert(f.id, i);
     }
-    // fz-ul4.29.12.6 — treat slots whose typer FnTypes is absent as
-    // sentinels too. Three cases collapse here:
+    // Treat slots whose typer FnTypes is absent as sentinels. Three cases:
     //   * cps_split sparsity: FnId not in module → `idx_of.get` = None.
-    //   * Pre-existing sentinel slot (empty-key padding) for a missing
-    //     FnId.0 → no entry in `module_types.specs` either.
-    //   * Dropped any-key (.29.12.6): FnId exists in module but its
-    //     any-key body was pruned by the typer → no entry in
-    //     `module_types.specs`. Codegen must skip compilation for the
-    //     slot; no consumer can index into it because `resolve` only
-    //     returns SpecIds with a real registration.
+    //   * Pre-existing sentinel slot (empty-key padding) for a missing FnId.0.
+    //   * Dropped any-key: FnId exists in module but its any-key body
+    //     was pruned by the typer.
+    // Codegen must skip compilation for the slot; no consumer can index
+    // into it because `resolve` only returns SpecIds with a real
+    // registration.
     let spec_fnidx: Vec<Option<usize>> = spec_keys
         .iter()
         .map(|key| {
@@ -772,19 +765,17 @@ pub(crate) fn compile_with_backend_impl<
         })
         .collect();
 
-    // fz-ul4.29.12.2 — collect typed closure shapes keyed by the
-    // lambda's resolved narrow SpecId. Each `Prim::MakeClosure` site
-    // is inspected per *caller* spec (so closures built in different
-    // caller specializations with different capture types produce
-    // distinct lambda SpecIds → distinct stubs). The key fed to
-    // `spec_registry.resolve` is `[capture_descrs..., any, ...]` —
-    // padded to the lambda's full arity. The .29.12.2 typer change
-    // (in `ir_typer::type_module`'s worklist) registers a narrow
-    // spec for every MakeClosure's capture-type tuple, so
-    // exact-match resolve succeeds; the any-key remains a subsumption
-    // backstop. Value = capture count (== `captured.len()`); needed
-    // to split entry params into `[captures..., args...]` at stub
-    // declaration / invocation.
+    // Collect typed closure shapes keyed by the lambda's resolved narrow
+    // SpecId. Each `Prim::MakeClosure` site is inspected per *caller*
+    // spec (so closures built in different caller specializations with
+    // different capture types produce distinct lambda SpecIds → distinct
+    // stubs). The key fed to `spec_registry.resolve` is
+    // `[capture_descrs..., any, ...]` — padded to the lambda's full
+    // arity. The typer registers a narrow spec for every MakeClosure's
+    // capture-type tuple, so exact-match resolve succeeds; the any-key
+    // remains a subsumption backstop. Value = capture count
+    // (== `captured.len()`); needed to split entry params into
+    // `[captures..., args...]` at stub declaration / invocation.
     let mut closure_shapes: std::collections::BTreeMap<u32, usize> =
         std::collections::BTreeMap::new();
     for sid in 0..spec_count {
@@ -799,16 +790,15 @@ pub(crate) fn compile_with_backend_impl<
             for stmt in blk.stmts.iter() {
                 let Stmt::Let(_, prim) = stmt;
                 if let Prim::MakeClosure(_ident, lam_fn_id, captured) = prim {
-                    // fz-try B1+B2 — the lambda body is the any-key
-                    // body spec (SpecId.0 == FnId.0 via
-                    // register_any_key_at). MakeClosure is construction,
-                    // not dispatch — look up the body directly.
-                    // When the any-key was dropped (.29.12.6), fall back
-                    // to any registered narrow spec for this FnId; if
-                    // none, the closure value has no live call target
-                    // (every invocation got inlined to direct Call) —
-                    // skip; the null-stub path in MakeClosure prim
-                    // codegen handles allocation.
+                    // The lambda body is the any-key body spec
+                    // (SpecId.0 == FnId.0 via register_any_key_at).
+                    // MakeClosure is construction, not dispatch — look
+                    // up the body directly. When the any-key was
+                    // dropped, fall back to any registered narrow spec
+                    // for this FnId; if none, the closure value has no
+                    // live call target (every invocation got inlined to
+                    // direct Call) — skip; the null-stub path in
+                    // MakeClosure prim codegen handles allocation.
                     let cl_sid = if spec_fnidx
                         .get(lam_fn_id.0 as usize)
                         .copied()
@@ -833,20 +823,16 @@ pub(crate) fn compile_with_backend_impl<
         }
     }
 
-    // fz-ul4.27.6.2.1 — Parking + native-callability analyses. Stored in
-    // metadata; consumed at declare-time below (.6.2.2) for per-fn sigs
-    // and at compile_fn / emit_call (.6.2.3-4) for ABI bifurcation.
-    // fz-ul4.27.14.1: this block moved up to feed the new
-    // `uniform_cont_reachable_specs` analysis that gates the schema /
-    // ABI slot-0 force-ValueRef decision below.
+    // Parking + native-callability analyses. Consumed at declare-time
+    // below for per-fn sigs and at compile_fn / emit_call for ABI
+    // bifurcation.
     let parking_reachable = crate::parking::parking_reachable(module);
     let mut natively_callable = crate::parking::natively_callable(module, &parking_reachable);
 
-    // fz-cps.1.2 (fz-siu.1.2): the set of fns used as continuations.
-    // A cont fn has sig `(result:i64, self:i64) tail` per
-    // docs/cps-in-clif.md §2.1 — no host_ctx, no trailing cont param.
-    // Its body projects captures from `self`, and its "next k" is one
-    // of those captures.
+    // The set of fns used as continuations. A cont fn has sig
+    // `(result:i64, self:i64) tail` per docs/cps-in-clif.md §2.1 —
+    // no host_ctx, no trailing cont param. Its body projects captures
+    // from `self`, and its "next k" is one of those captures.
     let cont_fns: std::collections::HashSet<crate::fz_ir::FnId> = {
         use crate::fz_ir::Term;
         let mut s = std::collections::HashSet::new();
@@ -861,12 +847,12 @@ pub(crate) fn compile_with_backend_impl<
                     } => {
                         s.insert(continuation.fn_id);
                     }
-                    // fz-70q.5.5 — clause body / guard / after fns are
-                    // dispatched (via cont stub) into their Tail-CC entry,
-                    // so they must wear the cont-fn sig shape. The
-                    // companion `cont_extras_count` map sets receive
-                    // outcome bodies to `(self) tail`; bound values and
-                    // captures live inside the outcome closure env.
+                    // Clause body / guard / after fns are dispatched
+                    // (via cont stub) into their Tail-CC entry, so they
+                    // must wear the cont-fn sig shape. The companion
+                    // `cont_extras_count` map sets receive outcome
+                    // bodies to `(self) tail`; bound values and captures
+                    // live inside the outcome closure env.
                     Term::ReceiveMatched { clauses, after, .. } => {
                         for c in clauses {
                             s.insert(c.body);
@@ -884,9 +870,9 @@ pub(crate) fn compile_with_backend_impl<
         }
         s
     };
-    let _ = &cont_fns; // fz-cps.1.2: consumed by sig builder + entry harness in next step.
+    let _ = &cont_fns; // consumed by sig builder + entry harness below.
 
-    // fz-cps.1.2 — set of fns appearing as a MakeClosure target. Per
+    // Set of fns appearing as a MakeClosure target. Per
     // docs/cps-in-clif.md §2.1 these get sig `(args..., self:i64, cont:i64)
     // tail` and their body projects captures from `self`. Disjoint
     // from cont_fns by construction (conts are anonymous continuations
@@ -929,22 +915,20 @@ pub(crate) fn compile_with_backend_impl<
                 }
             }
         }
-        // fz-cps.1.8: closure-target sig is universal. Every MakeClosure
-        // target gets `(args..., self, cont) tail` regardless of whether
-        // it is also direct-called. Direct callers load the
-        // per-Process static singleton (registered in fz-siu.1.7) and
-        // pass it as `self`. See docs/cps-in-clif.md §8.2 acceptance:
+        // Closure-target sig is universal. Every MakeClosure target gets
+        // `(args..., self, cont) tail` regardless of whether it is also
+        // direct-called. Direct callers load a per-Process static
+        // singleton and pass it as `self`. See docs/cps-in-clif.md §8.2:
         // both indirect calls lower to `return_call_indirect` against
         // this sig.
         //
         // Invariant: a closure-target fn that is ALSO direct-called must
         // have zero captures — direct callers have no captures to bind.
-        // Asserted below.
         for fid in &targets {
             if direct_called.contains(fid) {
                 debug_assert_eq!(
                     counts[fid], 0,
-                    "fz-siu.1.8: fn {} is both direct-called and a non-zero-cap \
+                    "fn {} is both direct-called and a non-zero-cap \
                      closure target — direct callers can't supply captures",
                     fid.0,
                 );
@@ -954,33 +938,14 @@ pub(crate) fn compile_with_backend_impl<
         (targets, counts)
     };
     let _ = (&closure_target_fns, &closure_n_captures);
-    // fz-ul4.27.6.4 follow-up: heap-safe captures.
-    //
-    // A native cont chain routes the caller's captured vars through
-    // Cranelift virtual stack slots / registers as it crosses the
-    // synchronous call to the (native) callee. Those slots are
-    // invisible to the GC's heap-frame tracer — safe for non-heap
-    // payloads (tagged int / atom / nil / bool, which are just bits),
-    // unsafe for heap pointers (list cons, struct,
-    // closure, etc.) because a GC firing inside the callee would
-    // reclaim the unreachable objects.
-    //
-    // Stack-map emission + a stack-walking tracer would lift this
-    // restriction (filed as a follow-up). Until then we shrink
-    // `natively_callable` so it only admits conts whose every use
-    // site has heap-safe captures. A cont removed by this pass cascades
-    // through the fixed point — its callers may no longer satisfy the
-    // chain's "every Term::Call cont is native" invariant.
-    // fz-cps.1.2: `non_heap` / `is_non_heap_descr` removed with the
-    // type-aware shrink — see (a) below. The descriptor types stay in
-    // crate::types for other callers.
-    // Single combined fixed point. Each iter re-enforces every invariant
-    // so cascading removals don't leave an inconsistent set:
-    //   (a) Term::Call's callee + cont both native, captures non-heap.
-    //   (b) Term::TailCall's callee native, args non-heap.
+    // Single combined fixed point over `natively_callable`. Each iter
+    // re-enforces every invariant so cascading removals don't leave an
+    // inconsistent set:
+    //   (a) Term::Call's callee + cont both native.
+    //   (b) Term::TailCall's callee native.
     //   (c) Cont validity: if f is used as cont in some Term::Call, the
     //       caller's callee at that site must be native (so the site
-    //       picks the native-chain branch) and captures non-heap.
+    //       picks the native-chain branch).
     loop {
         let mut to_remove: Vec<crate::fz_ir::FnId> = Vec::new();
         // (a) and (b): body invariants.
@@ -996,20 +961,13 @@ pub(crate) fn compile_with_backend_impl<
                     continuation,
                     ..
                 } => {
-                    // fz-cps.1.2: non-heap-args restriction lifted. The
-                    // cont chain no longer routes args through Cranelift
-                    // register slots invisible to the GC tracer — every
-                    // cont is now a heap-allocated closure (§2.2), and
-                    // the GC roots come from scheduler-owned closure roots,
-                    // not from a stack walk.
                     natively_callable.contains(callee)
                         && natively_callable.contains(&continuation.fn_id)
                 }
                 Term::TailCall { callee, .. } => natively_callable.contains(callee),
-                // fz-cps.1.8 — closure-call terminators admitted; bodies
-                // are Tail-CC with closure-target sig. Cont (if
-                // any) must also be native so the cont-return chain is
-                // unbroken.
+                // Closure-call terminators admitted; bodies are Tail-CC
+                // with closure-target sig. Cont (if any) must also be
+                // native so the cont-return chain is unbroken.
                 Term::CallClosure { continuation, .. } => {
                     natively_callable.contains(&continuation.fn_id)
                 }
@@ -1018,11 +976,10 @@ pub(crate) fn compile_with_backend_impl<
                     continuation,
                     ident: _,
                 } => natively_callable.contains(&continuation.fn_id),
-                // fz-70q.5.5 — admit ReceiveMatched on the same terms
-                // as parking.rs's natively_callable: native iff every
-                // body / guard / after fn is native. Cont-stub seam
-                // bridges the Tail-CC body into the SystemV scheduler
-                // resume path so the enclosing fn's ABI is unconstrained.
+                // ReceiveMatched is native iff every body / guard / after
+                // fn is native. Cont-stub seam bridges the Tail-CC body
+                // into the SystemV scheduler resume path so the
+                // enclosing fn's ABI is unconstrained.
                 Term::ReceiveMatched { clauses, after, .. } => {
                     let body_ok = clauses.iter().all(|c| {
                         natively_callable.contains(&c.body)
@@ -1038,10 +995,8 @@ pub(crate) fn compile_with_backend_impl<
                 to_remove.push(f.id);
             }
         }
-        // (c) Cont validity: cont must reach via a native Term::Call site.
-        // fz-cps.1.2: capture heap-safety is no longer required (see
-        // explanation in (a) above). The structural check remains: the
-        // caller's callee at every cont reach site must still be native.
+        // (c) Cont validity: the caller's callee at every cont reach
+        // site must be native.
         for f in &module.fns {
             if !natively_callable.contains(&f.id) {
                 continue;
@@ -1082,26 +1037,12 @@ pub(crate) fn compile_with_backend_impl<
         }
     }
 
-    // fz-ul4.27.22.16 — `uniform_cont_reachable_specs` deleted. The
-    // analysis flagged conts reachable from uniform callees / ValueRef-
-    // unconditional writers so their entry slot 0 + schema kind would
-    // be forced to ValueRef/AnyValue. Post-22.12, every callsite that
-    // would have flagged a cont either:
-    //   - resolves via closure_lit to a narrow body spec whose ABI
-    //     already matches the cont's narrow slot 0 (direct dispatch);
-    //   - flows through the unresolved indirect ValueRef seam, which
-    //     `tagged_slot0_cont_specs` (CallClosure / Receive branches)
-    //     already covers.
-    // Disabling the force changed only line numbers in
-    // closure_typed_captures.clif (verified by experiment) — no
-    // codegen content shifted. The analysis is dead.
-
-    // fz-ul4.27.18 — per-FnId set: fns invoked from any fz IR site
-    // (as a direct callee, a continuation, or a closure target).
-    // A fn NOT in this set has no fz IR caller and can only enter via
-    // the trampoline entry (which writes null into the frame's slot 0).
-    // For such a fn, cont_ptr is statically null at runtime; emit_return
-    // can specialize to a halt-only path, skipping the runtime
+    // Per-FnId set: fns invoked from any fz IR site (as a direct callee,
+    // a continuation, or a closure target). A fn NOT in this set has no
+    // fz IR caller and can only enter via the trampoline entry (which
+    // writes null into the frame's slot 0). For such a fn, cont_ptr is
+    // statically null at runtime; emit_return can specialize to a
+    // halt-only path, skipping the runtime
     // `load v0+16; icmp eq 0; brif` dispatch entirely.
     let mut ir_referenced_fns: std::collections::HashSet<crate::fz_ir::FnId> =
         std::collections::HashSet::new();
@@ -1133,8 +1074,8 @@ pub(crate) fn compile_with_backend_impl<
             }
         }
     }
-    // Rebind for the existing parameter name threading. The contained
-    // fns are exactly the "never specializable as halt-only" set.
+    // The contained fns are exactly the "never specializable as
+    // halt-only" set.
     let cont_target_fns = ir_referenced_fns;
 
     // Rebuild schemas: one entry per SpecId, refined entry-param kinds
@@ -1165,8 +1106,6 @@ pub(crate) fn compile_with_backend_impl<
                 _ => {}
             }
         }
-        // fz-ul4.27.22.16 — uniform_cont_reachable slot-0 AnyValue force
-        // retired; tagged_slot0_cont_specs covers every case post-22.12.
         schemas.push(build_frame_schema(&f.name, &kinds));
     }
 
@@ -1177,19 +1116,18 @@ pub(crate) fn compile_with_backend_impl<
         .map(|s| s.allocation_payload_size() as u32)
         .collect();
 
-    // fz-i82.2 — per-spec return type comes from the typer's LFP
+    // Per-spec return type comes from the typer's LFP
     // (`module_types.effective_returns`). That walk filters by
     // `reachable_blocks` AND propagates through every exit terminator
     // including `Term::Call` / `Term::CallClosure` / `Term::Receive`
     // with a continuation; the cont side (`cont_slot0_descr`) already
     // reads from the same map. Reading it here too means the producer
-    // abi and the cont's slot-0 abi agree by construction — the
-    // mismatch that fz-i82 manifested cannot recur.
+    // ABI and the cont's slot-0 ABI agree by construction.
     //
     // Halt-only specs converge to `none()` in the LFP; substitute
     // `any` so `ArgRepr::from_descr` doesn't pick RawF64 (none is a
     // subtype of every set, including float). The value never reaches
-    // anyone for a halt-only spec, but the abi must still be valid.
+    // anyone for a halt-only spec, but the ABI must still be valid.
     let any = t.any();
     let none = t.none();
     let return_tys: Vec<crate::types::Ty> = spec_keys
@@ -1212,10 +1150,10 @@ pub(crate) fn compile_with_backend_impl<
         })
         .collect();
 
-    // fz-ul4.27.13 — Per-spec entry-param ArgReprs + return ArgRepr.
-    // Drives both `build_fn_signature` (AbiParam types) and call-site
-    // coerce (raw int / raw f64 vs one-word ValueRef). Sentinel slots get
-    // empty params + ValueRef return; they're never declared.
+    // Per-spec entry-param ArgReprs + return ArgRepr. Drives both
+    // `build_fn_signature` (AbiParam types) and call-site coerce (raw
+    // int / raw f64 vs one-word ValueRef). Sentinel slots get empty
+    // params + ValueRef return; they're never declared.
     let param_reprs: Vec<Vec<ArgRepr>> = (0..spec_count)
         .map(|sid| match spec_fnidx[sid] {
             Some(idx) => {
@@ -1226,17 +1164,11 @@ pub(crate) fn compile_with_backend_impl<
                 } else {
                     build_param_reprs(t, f, ft)
                 };
-                // fz-ul4.27.22.16 — uniform_cont_reachable slot-0 ValueRef
-                // force retired; tagged_slot0_cont_specs is sufficient.
-                // fz-ul4.27.22.12 — arg-slot force at closure body retired.
-                // The 22.5 capture-slot wins are preserved (CAPTURE slots
-                // [0..n_caps) keep their per-spec narrow reprs). ARG slots
-                // now also honor build_param_reprs' typed output: with
-                // 22.10's closure_lit-typed MakeClosure and 22.11's direct
-                // return_call dispatch, every closure-call site resolves
-                // to a single body spec whose ABI the caller targets
-                // exactly — no need to flatten arg slots to ValueRef for
-                // indirect-sig matching.
+                // CAPTURE slots [0..n_caps) keep their per-spec narrow
+                // reprs. ARG slots honor build_param_reprs' typed output:
+                // closure_lit-typed MakeClosure + direct return_call
+                // dispatch means every closure-call site resolves to a
+                // single body spec whose ABI the caller targets exactly.
                 //
                 // The indirect fallback path in TailCallClosure still
                 // assumes all-ValueRef at the seam, so closures used
@@ -1250,25 +1182,17 @@ pub(crate) fn compile_with_backend_impl<
             None => Vec::new(),
         })
         .collect();
-    // fz-ntz (fz-3zx.2) — transitive closure of fns whose return is
-    // ValueRef-by-construction. Seeded with closure-target fns (forced
-    // all-ValueRef sig by fz-cps.1.8) and fns whose terminator on any
-    // block is Term::TailCallClosure (return_call_indirect against the
-    // closure-target sig forwards ValueRef bits). Propagated through
-    // Term::TailCall: if F tail-calls into a ValueRef-returning callee,
-    // F itself returns ValueRef. The result drives BOTH the return_reprs
-    // force (below) AND the tagged_slot0_cont_specs check (next block):
-    // producer-side ABI and consumer-side schema stay aligned.
-    // fz-ul4.27.22.12 — per-spec tagged-return tracking. Pre-22.12 the
-    // set was keyed by FnId, conflating all specs of the same fn. With
-    // closure_lit-driven per-spec resolution (22.10-22.11), one spec of
-    // a fn can have a fully-resolved TailCallClosure (returning the
-    // body's narrow repr) while a sibling spec's TailCallClosure stays
-    // opaque (returning ValueRef through the indirect seam). Per-spec is
-    // the precise grain.
+    // Per-spec tagged-return tracking: transitive closure of specs
+    // whose return is ValueRef-by-construction. Drives BOTH the
+    // return_reprs force (below) AND the tagged_slot0_cont_specs check
+    // (next block) so producer-side ABI and consumer-side schema stay
+    // aligned. One spec of a fn can have a fully-resolved TailCallClosure
+    // (returning the body's narrow repr) while a sibling spec's
+    // TailCallClosure stays opaque (returning ValueRef through the
+    // indirect seam) — per-spec is the precise grain.
     //
-    // Seed: spec has an UNRESOLVED TailCallClosure (or returns through
-    // the all-ValueRef indirect ABI). Resolved-via-closure_lit
+    // Seed: spec has an UNRESOLVED TailCallClosure (returns through the
+    // all-ValueRef indirect ABI). Resolved-via-closure_lit
     // TailCallClosure does not seed — it's structurally a typed
     // tail-call to the resolved body, equivalent to Term::TailCall.
     //
@@ -1304,14 +1228,13 @@ pub(crate) fn compile_with_backend_impl<
                 }
             }
         }
-        // fz-try.15 — also seed: spec's body is a closure-target body.
-        // Closure-target ABI is structurally uniform ValueRef (the seam
-        // can't carry typed returns); the body coerces at Term::Return,
-        // and every spec of a closure-target fn that's reachable via
-        // the closure-target sig returns ValueRef on the wire. Direct
-        // callers of zero-cap closure-targets (.siu.1.8 invariant) go
-        // through the same body and receive ValueRef too — they unbox
-        // locally if they want narrow.
+        // Also seed: spec's body is a closure-target body. Closure-target
+        // ABI is structurally uniform ValueRef (the seam can't carry
+        // typed returns); the body coerces at Term::Return, and every
+        // spec of a closure-target fn reachable via the closure-target
+        // sig returns ValueRef on the wire. Direct callers of zero-cap
+        // closure-targets go through the same body and receive ValueRef
+        // too — they unbox locally if they want narrow.
         for (sid, &entry) in spec_fnidx.iter().enumerate() {
             let Some(idx) = entry else {
                 continue;
@@ -1400,22 +1323,17 @@ pub(crate) fn compile_with_backend_impl<
         s
     };
 
-    // fz-ul4.27.22.3 — cont specs whose producer is a closure-target
-    // (or whose producer is a Receive / CallClosure with unknown
-    // target) must accept ValueRef at slot 0. The producer returns
-    // ValueRef (forced for closure-target; opaque for unknown closure /
-    // mailbox), and the cont's wire sig at the seam must agree.
-    // fz-ntz extends "closure-target" to "ValueRef-returning"
-    // (`tagged_return_fns`) so direct-Calls into a ValueRef-returning
-    // fn also force the cont's slot 0 to AnyValue.
+    // Cont specs whose producer is ValueRef-returning (closure-target,
+    // or Receive / CallClosure with unknown target, or any fn in
+    // `tagged_return_fns`) must accept ValueRef at slot 0. The producer
+    // returns ValueRef and the cont's wire sig at the seam must agree.
     let mut tagged_slot0_cont_specs: std::collections::HashSet<u32> =
         std::collections::HashSet::new();
-    // fz-uwq.8 — read the producer→cont dispatch facts from
+    // Read the producer→cont dispatch facts from
     // `FnTypes.dispatches[Cont]` instead of re-walking terminators and
     // calling `cont_input_key` + `spec_registry.resolve`. The typer
     // already named which `(cont_fn, cont_key)` each Cont site
-    // dispatches to (per spec); we just need to know which of those
-    // producers are ValueRef-returning, then look up the cont's SpecId.
+    // dispatches to (per spec).
     for sid_caller in 0..spec_count {
         let Some(caller_idx) = spec_fnidx[sid_caller] else {
             continue;
@@ -1430,7 +1348,7 @@ pub(crate) fn compile_with_backend_impl<
             // Which terminators produce a ValueRef value into their cont's
             // slot 0? CallClosure / Receive always (opaque closure /
             // mailbox produce ValueRef); Call only when the callee is in
-            // `tagged_return_fns` (fz-ntz).
+            // `tagged_return_fns`.
             let Some(term_ident) = blk.terminator.ident() else {
                 continue;
             };
@@ -1468,21 +1386,21 @@ pub(crate) fn compile_with_backend_impl<
         .iter()
         .map(|ty| ArgRepr::from_ty(t, ty))
         .collect();
-    // fz-cps.1.8 — closure-target spec bodies return ValueRef i64, matching
-    // the closure-target sig in §8.2's target clif. fz-ntz extends this
-    // to every fn in `tagged_return_fns`: a fn whose only exit is
+    // Closure-target spec bodies return ValueRef i64, matching the
+    // closure-target sig (cps-in-clif.md §8.2). This extends to every
+    // fn in `tagged_return_fns`: a fn whose only exit is
     // Term::TailCallClosure (or which TailCalls into one) forwards the
     // closure-target's ValueRef return bits through its own outer sig.
-    // Declaring that outer return as RawInt/RawF64 would let the
-    // caller read tag-shifted bits as a raw number (e.g. 42 → 337).
+    // Declaring that outer return as RawInt/RawF64 would let the caller
+    // read tag-shifted bits as a raw number (e.g. 42 → 337).
+    //
+    // tagged_return_specs is the precise grain; specs whose
+    // TailCallClosure resolves via closure_lit keep their narrow return
+    // repr.
     let return_reprs: Vec<ArgRepr> = return_reprs
         .into_iter()
         .enumerate()
         .map(|(sid, r)| {
-            // fz-ul4.27.22.12 — per-spec override (was per-fn pre-22.12).
-            // tagged_return_specs is the precise grain; specs whose
-            // TailCallClosure resolves via closure_lit keep their narrow
-            // return repr.
             if tagged_return_specs.contains(&(sid as u32)) {
                 ArgRepr::ValueRef
             } else {
@@ -1517,9 +1435,9 @@ pub(crate) fn compile_with_backend_impl<
         }
     }
 
-    // fz-ul4.27.6.2.2/.3 — Per-spec Cranelift Signature. Native fns get
-    // typed-arity i64s + host_ctx; uniform fns get (i64, i64) -> i64.
-    // Sentinel slots get the uniform sig — they're never declared.
+    // Per-spec Cranelift Signature. Native fns get typed-arity i64s +
+    // host_ctx; uniform fns get (i64, i64) -> i64. Sentinel slots get
+    // the uniform sig — they're never declared.
     let fn_sigs: Vec<Signature> = (0..spec_count)
         .map(|sid| match spec_fnidx[sid] {
             Some(idx) => {
@@ -1531,9 +1449,9 @@ pub(crate) fn compile_with_backend_impl<
                     return_reprs[sid],
                     is_native,
                     cont_fns.contains(&f.id),
-                    // fz-cps.1.2: closure-target fn shape gated on
-                    // native (uniform closure targets still go through
-                    // the existing stub adapter).
+                    // Closure-target fn shape gated on native (uniform
+                    // closure targets still go through the existing stub
+                    // adapter).
                     if is_native {
                         closure_n_captures.get(&f.id).copied()
                     } else {
@@ -1659,8 +1577,8 @@ pub(crate) fn compile_with_backend_impl<
         }
     }
 
-    // fz-q8d.2 — per-module ConstBitstring symbol cache. Same byte payload
-    // across the whole module shares one set of symbols:
+    // Per-module ConstBitstring symbol cache. Same byte payload across
+    // the whole module shares one set of symbols:
     //   * `bytes_id`: the raw payload (Local, read-only).
     //   * `sharedbin_id`: present only for above-threshold payloads — a
     //     40-byte static SharedBin in `.data` with refcount=1 anchor, plus
@@ -1680,8 +1598,8 @@ pub(crate) fn compile_with_backend_impl<
         }
     }
 
-    // fz-ul4.42 — set of SpecIds reachable from main + closure-dispatched
-    // fns. Specs not in this set get a trap-stub body instead of full
+    // Set of SpecIds reachable from main + closure-dispatched fns.
+    // Specs not in this set get a trap-stub body instead of full
     // codegen. Closure-target specs (those in `closure_shapes`) are seeded
     // explicitly because runtime closure dispatch through code pointers isn't
     // visible to the IR-body BFS. See ir_typer::reachable_specs.
@@ -1705,17 +1623,11 @@ pub(crate) fn compile_with_backend_impl<
         &mut reachable,
     );
 
-    // fz-70q.3 — pre-pass over Term::ReceiveMatched sites.
-    //
-    //   * `matcher_fn_ids`: one matcher FuncId per site, keyed by
-    //     `(fn_id.0, block_id.0)`. Declared up front so the park-site
-    //     terminator arm can take a `func_addr` of an as-yet-unemitted
-    //     symbol; the body is emitted in a post-fn-loop pass below.
-    //   * `cont_extras_count`: per-clause-body / guard / after-body fn
-    //     extras count consumed by build_entry_harness today (Tail-CC
-    //     inputs ahead of `self`).
-    //
-    // (`cont_extras_count` is now built up-front above, before fn_sigs.)
+    // Pre-pass over Term::ReceiveMatched sites: one matcher FuncId per
+    // site, keyed by `(fn_id.0, block_id.0)`. Declared up front so the
+    // park-site terminator arm can take a `func_addr` of an
+    // as-yet-unemitted symbol; the body is emitted in a post-fn-loop
+    // pass below.
     let mut matcher_fn_ids: HashMap<(u32, u32), FuncId> = HashMap::new();
     let mut receive_matched_sites: Vec<(crate::fz_ir::FnId, crate::fz_ir::BlockId)> = Vec::new();
     for f in &module.fns {
@@ -1765,9 +1677,9 @@ pub(crate) fn compile_with_backend_impl<
         let mut ctx = backend.module_mut().make_context();
         ctx.func.signature = fn_sigs[sid].clone();
 
-        // fz-ul4.42 — unreached spec: emit a trap stub so the symbol exists
-        // (other emitted code may name it via fz_fn_{sid}) but the body is
-        // a single unreachable trap. Skip the @spec header annotation,
+        // Unreached spec: emit a trap stub so the symbol exists (other
+        // emitted code may name it via fz_fn_{sid}) but the body is a
+        // single unreachable trap. Skip the @spec header annotation,
         // verifier, and any further per-spec analysis.
         if !reachable.contains(&(sid as u32)) {
             use cranelift_codegen::ir::TrapCode;
@@ -1789,14 +1701,13 @@ pub(crate) fn compile_with_backend_impl<
             continue;
         }
         let ft = spec_fn_types[sid].expect("non-sentinel spec must have FnTypes");
-        // fz-ul4.43.B — per-spec fold. Clone the FnIr and fold against this
-        // spec's FnTypes so dead arms (TypeTests whose subject is provably
-        // inside/outside the test descr in THIS spec's env) collapse before
-        // codegen. The pre-codegen `fold_module` already folds the any-key
-        // case; this is the multi-spec case it bails on.
-        // fz-ul4.43.D.1 — per-spec DCE + fuse after per-spec fold. Reuse the
-        // precomputed body used by codegen reachability so the emitted body
-        // and trap-stub pruning are derived from the same call graph.
+        // Per-spec fold + DCE + fuse: dead arms (TypeTests whose subject
+        // is provably inside/outside the test descr in THIS spec's env)
+        // collapse before codegen. The pre-codegen `fold_module` already
+        // folds the any-key case; this is the multi-spec case it bails on.
+        // Reuses the precomputed body used by codegen reachability so the
+        // emitted body and trap-stub pruning derive from the same call
+        // graph.
         let f = codegen_bodies[sid]
             .as_ref()
             .expect("reachable real spec must have a prepared body");
@@ -1874,15 +1785,15 @@ pub(crate) fn compile_with_backend_impl<
                 },
             );
         }
-        // fz-ul4.32.1 — annotate raw CLIF with IR types + ArgReprs so
-        // `fz dump --emit clif` shows what the typer
-        // decided, not just what was lowered.
+        // Annotate raw CLIF with IR types + ArgReprs so
+        // `fz dump --emit clif` shows what the typer decided, not just
+        // what was lowered.
         IR_TEXT_RECORD.with(|c| {
             if let Some(v) = c.borrow_mut().as_mut() {
-                // fz-323 — pin func.name to the real FuncId so the banner
-                // `function u0:N(...)` carries the same id space as body
-                // refs; cranelift_module's define_function does this
-                // assignment anyway, we just need it before display().
+                // Pin func.name to the real FuncId so the banner
+                // `function u0:N(...)` carries the same id space as
+                // body refs; cranelift_module's define_function does
+                // this assignment anyway, we just need it before display().
                 ctx.func.name = ir::UserFuncName::user(0, func_id.as_u32());
                 let raw = ctx.func.display().to_string();
                 let key_tys = codegen_key_to_tys(t, &spec_keys[sid].input);
@@ -1940,17 +1851,12 @@ pub(crate) fn compile_with_backend_impl<
         backend.module_mut().clear_context(&mut ctx);
     }
 
-    // fz-cps.1.8 — stub compilation loop deleted alongside stub
-    // registration. compile_closure_stub itself is dead code until
-    // fz-siu.1.13 cleanup; left in place to avoid a noisy delete in this
-    // commit.
-
-    // fz-70q.3 — emit matcher fn bodies for every Term::ReceiveMatched
-    // site discovered in the pre-pass above. Matchers were declared
-    // before the fn-compilation loop so the park-site terminator arm
-    // could take `func_addr` of the still-undefined symbols. Bodies are
-    // pure leaf fns (no allocation, no extern) per F3; the emitter
-    // refuses any clause with a guard.is_some() and points at fz-70q.2.2.
+    // Emit matcher fn bodies for every Term::ReceiveMatched site
+    // discovered in the pre-pass above. Matchers were declared before
+    // the fn-compilation loop so the park-site terminator arm could take
+    // `func_addr` of the still-undefined symbols. Bodies are pure leaf
+    // fns (no allocation, no extern); the emitter refuses any clause
+    // with a guard.
     for (fn_id, blk_id) in &receive_matched_sites {
         let f = module.fn_by_id(*fn_id);
         let blk = f.blocks.iter().find(|b| b.id == *blk_id).unwrap();
@@ -2033,12 +1939,12 @@ pub(crate) fn compile_with_backend_impl<
 
     let main_fn_id = module.fn_by_name("main").map(|f| f.id);
 
-    // fz-cps.1.7 — collect zero-capture closure-target specs for static
-    // singletons. fz-cps.1.8 — code_ptr is the body's func_addr directly
-    // (closure-target sig `(args, self, cont) tail`), not a SystemV stub.
-    // The singleton acts both as `self` for direct callers (zero-cap
-    // bodies ignore self) and as the closure handed to MakeClosure(fid,
-    // []) sites. See docs/cps-in-clif.md §8.2.
+    // Collect zero-capture closure-target specs for static singletons.
+    // code_ptr is the body's func_addr directly (closure-target sig
+    // `(args, self, cont) tail`), not a SystemV stub. The singleton
+    // acts both as `self` for direct callers (zero-cap bodies ignore
+    // self) and as the closure handed to MakeClosure(fid, []) sites.
+    // See docs/cps-in-clif.md §8.2.
     let static_closure_targets: Vec<(u32, u32, FuncId, u32)> = closure_shapes
         .iter()
         .filter(|(_, n_caps)| **n_caps == 0)
@@ -2047,18 +1953,18 @@ pub(crate) fn compile_with_backend_impl<
             let body_fid = *fn_ids
                 .get(cl_sid)
                 .expect("zero-cap closure spec must have a body FuncId");
-            // fz-ul4.27.22.6: pack halt_kind so fz_spawn_entry can pick
-            // the matching halt-cont singleton at task launch.
+            // Pack halt_kind so fz_spawn_entry can pick the matching
+            // halt-cont singleton at task launch.
             let halt_kind = return_reprs[*cl_sid as usize].halt_kind();
             (*cl_sid, fn_id.0, body_fid, halt_kind)
         })
         .collect();
 
     let diagnostics = crate::ir_typer::collect_diagnostics(t, module, &module_types);
-    // fz-ul4.27.22.3 — per-spec chain analysis: for each registered
-    // spec, walk its exit terminators and follow callee resolutions
-    // transitively. The chain's halt-seam kind = JOIN of every Return
-    // contributing along reachable paths.
+    // Per-spec chain analysis: for each registered spec, walk its exit
+    // terminators and follow callee resolutions transitively. The
+    // chain's halt-seam kind = JOIN of every Return contributing along
+    // reachable paths.
     let chain_repr: Vec<ArgRepr> = {
         let join =
             |a: ArgRepr, b: ArgRepr| -> ArgRepr { if a == b { a } else { ArgRepr::ValueRef } };
@@ -2118,14 +2024,12 @@ pub(crate) fn compile_with_backend_impl<
                             args,
                             ident: _,
                         } => {
-                            // fz-ul4.27.22.12 — closure_lit-driven chain
-                            // resolution. When this spec's env types the
-                            // closure as `closure_lit(F, K)`, the resolved
-                            // body's chain feeds ours. Mirrors 22.11's
-                            // direct-dispatch resolution but at the
-                            // pre-codegen analysis stage so halt_kind
-                            // selection (fz_spawn_entry, halt-cont
-                            // singletons) picks the right kind.
+                            // Closure_lit-driven chain resolution. When
+                            // this spec's env types the closure as
+                            // `closure_lit(F, K)`, the resolved body's
+                            // chain feeds ours, so halt_kind selection
+                            // (fz_spawn_entry, halt-cont singletons)
+                            // picks the right kind.
                             let resolved_body =
                                 spec_fn_types.get(sid).and_then(|o| *o).and_then(|ft| {
                                     resolve_tcc_body(t, closure, args, ft, module, &spec_registry)
@@ -2252,9 +2156,9 @@ pub(crate) fn compile_with_backend_impl<
         )
         .map_err(|e| CodegenError::new(format!("define {}: {}", tail_name, e)))?;
     }
-    // fz-70q.5.5 — single SystemV `fz_resume(cont) -> i64` shim. Bound
-    // args live in the outcome closure env, so the shim sig is fixed
-    // regardless of clause arity. Body:
+    // Single SystemV `fz_resume(cont) -> i64` shim. Bound args live in
+    // the outcome closure env, so the shim sig is fixed regardless of
+    // clause arity. Body:
     //     code = call fz_closure_code_ref(cont)
     //     call_indirect Tail(cont) -> i64
     //     return result

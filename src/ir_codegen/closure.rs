@@ -1,5 +1,3 @@
-//! Split from src/ir_codegen.rs (fz-ame.7). Mechanical move only.
-
 #![allow(unused_imports)]
 
 use super::*;
@@ -35,7 +33,7 @@ pub(crate) fn synthesize_halt_cont<M: cranelift_module::Module>(
     b.inst_results(inst)[0]
 }
 
-/// fz-ul4.27.22.3 — pick the halt_cont_body FuncId matching `repr`.
+/// Pick the halt_cont_body FuncId matching `repr`.
 pub(crate) fn halt_cont_body_id_for(runtime: &RuntimeRefs, repr: ArgRepr) -> FuncId {
     match repr {
         ArgRepr::ValueRef => runtime.halt_cont_body_strict_id,
@@ -224,6 +222,10 @@ pub(crate) fn emit_struct_set_field_value<M: cranelift_module::Module>(
 /// `cont_param` already is the outer cont.
 /// For uniform fns without cont_param: load frame_ptr+16, brif on null to
 /// allocate a halt-cont fallback closure.
+///
+/// Uniform cont fns (cont fns whose enclosing chain forced a uniform frame
+/// ABI) have no `self` closure ptr; their outer_cont lives in frame slot 0
+/// — fall through to the uniform branch when cont_param is None.
 pub(crate) fn resolve_outer_cont<M: cranelift_module::Module>(
     jmod: &mut M,
     b: &mut FunctionBuilder<'_>,
@@ -235,21 +237,14 @@ pub(crate) fn resolve_outer_cont<M: cranelift_module::Module>(
     cont_sid: u32,
 ) -> ir::Value {
     if is_cont_fn {
-        // fz-70q.5.5 — uniform cont fn (cont fn whose enclosing chain
-        // forced a uniform frame ABI): there is no `self` closure ptr
-        // — the caller dispatched through the older trampoline using a
-        // heap frame. The outer_cont in that case lives in frame slot 0
-        // (frame+16), same layout the entry harness already uses for
-        // the uniform path. Fall through to the older frame-slot load
-        // below so the same site can build cont closures whether it
-        // got entered via the scheduler resume seam or via a uniform call.
         if let Some(self_val) = cont_param {
             return load_outer_cont_ref(b, jmod, runtime, self_val);
         }
-        // else fall through to the uniform frame-slot branch below.
+        // No `self` closure ptr: caller dispatched through the uniform
+        // path; outer_cont lives in frame slot 0. Fall through.
     }
     {
-        let _ = is_cont_fn; // consumed above when cont_param was Some
+        let _ = is_cont_fn;
         match cont_param {
             Some(c) => c,
             None => {
@@ -321,7 +316,7 @@ pub(crate) fn build_cont_closure<M: cranelift_module::Module>(
     );
     let acl_fref = jmod.declare_func_in_func(runtime.alloc_closure_id, b.func);
     let cl_fid_v = b.ins().iconst(types::I32, cont_sid as i64);
-    // +1: closure env field 0 is synthetic outer_cont; user captures follow.
+    // +1 reserves env field 0 for the synthetic outer_cont; user captures follow.
     let n_caps_v = b.ins().iconst(
         types::I32,
         (cap_bindings.len() + extra_ref_captures.len() + 1) as i64,

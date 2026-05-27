@@ -1,4 +1,4 @@
-//! fz-70q (B3) — selective-receive matcher fn codegen.
+//! Selective-receive matcher fn codegen.
 //!
 //! Emits the leaf matcher fn for a `Term::ReceiveMatched`. The matcher
 //! ABI matches `fz_runtime::park::MatcherFn` (see runtime/src/park.rs):
@@ -961,7 +961,7 @@ fn emit_matcher_const_test(
             )
         }
         MatcherConst::PreparedKey(_) => Err(CodegenError::new(
-            "prepared heap map keys are not supported in receive ABI matcher yet (fz-puj.54.6)",
+            "prepared heap map keys are not supported in receive ABI matcher yet",
         )),
     }
 }
@@ -1789,10 +1789,10 @@ fn collect_binary_literals_in_test(test: &MatcherTest, out: &mut Vec<Vec<u8>>) {
     }
 }
 
-/// fz-puj.45 (X4) — emit the call sequence that compares `val` against a
-/// constant byte literal via `fz_matcher_eq_bytes`. Branches to
-/// `match_b` when the helper returns 1, `next_b` when it returns 0.
-/// Errors when the runtime helper isn't linked (unit-test mode).
+/// Emit the call sequence that compares `val` against a constant byte
+/// literal via `fz_matcher_eq_bytes`. Branches to `match_b` when the
+/// helper returns 1, `next_b` when it returns 0. Errors when the runtime
+/// helper isn't linked (unit-test mode).
 fn emit_binary_literal_test(
     b: &mut FunctionBuilder<'_>,
     binary_data_gvs: &HashMap<Vec<u8>, ir::GlobalValue>,
@@ -1805,12 +1805,12 @@ fn emit_binary_literal_test(
     let Some(fref) = matcher_eq_bytes_fref else {
         return Err(CodegenError::new(
             "Pattern::Binary in receive matcher requires fz_matcher_eq_bytes; \
-             runtime not linked in this context (fz-puj.45)",
+             runtime not linked in this context",
         ));
     };
     let gv = binary_data_gvs.get(bytes).ok_or_else(|| {
         CodegenError::new(format!(
-            "Binary literal of {} bytes missing pre-declared .data symbol (fz-puj.45)",
+            "Binary literal of {} bytes missing pre-declared .data symbol",
             bytes.len()
         ))
     })?;
@@ -1824,9 +1824,9 @@ fn emit_binary_literal_test(
     Ok(())
 }
 
-/// fz-puj.44 (X3) — verify `val` is a List cons cell. New strict list
-/// cells are headerless and carried by the `TAG_LIST` low nibble, so this
-/// routes through the runtime predicate instead of reading a prefix kind.
+/// Verify `val` is a List cons cell. Strict list cells are headerless
+/// and carried by the `TAG_LIST` low nibble, so this routes through the
+/// runtime predicate instead of reading a prefix kind.
 fn emit_list_cons_test(
     b: &mut FunctionBuilder<'_>,
     ctx: &MatcherCtx<'_>,

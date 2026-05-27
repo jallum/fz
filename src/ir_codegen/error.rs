@@ -1,5 +1,3 @@
-//! Split from src/ir_codegen.rs (fz-ame.7). Mechanical move only.
-
 #![allow(unused_imports)]
 
 use super::*;
@@ -19,12 +17,10 @@ use fz_runtime::heap::{FieldDescriptor, FieldKind, Schema};
 use std::collections::HashMap;
 use std::sync::Arc;
 
-/// Errors from `compile()`. Backend-plumbing failures (cranelift
-/// `declare_function` / `define_function` / `finalize_definitions`) carry
-/// `Span::DUMMY` because they're internal — no fz source position maps to
-/// "cranelift refused to declare a host function". The verify/define
-/// per-fn paths populate `span` from `module.source.fn_span_of(f.id)` so
-/// the diagnostic underlines the offending fn declaration.
+/// Errors from `compile()`. Backend-plumbing failures carry `Span::DUMMY`
+/// because they're internal — no fz source position maps to "cranelift
+/// refused to declare a host function". Per-fn verify/define paths
+/// populate `span` so the diagnostic underlines the offending fn.
 #[derive(Debug, Clone)]
 pub struct CodegenError {
     pub message: String,

@@ -1,5 +1,3 @@
-//! Split from src/ir_codegen.rs (fz-ame.7). Mechanical move only.
-
 #![allow(unused_imports)]
 
 use super::*;
@@ -19,9 +17,9 @@ use fz_runtime::heap::{FieldDescriptor, FieldKind, Schema};
 use std::collections::HashMap;
 use std::sync::Arc;
 
-/// shared and the trait owns every legitimate point of variation —
-/// fn linkage, per-program metadata emission, and the finalize step
-/// that materializes the backend's Output.
+/// Abstracts the JIT/AOT split. The codegen pipeline is shared; the trait
+/// owns every legitimate point of variation — fn linkage, per-program
+/// metadata emission, and the finalize step that materializes Output.
 pub trait Backend {
     type Module: cranelift_module::Module;
     /// Whatever the backend hands the user after compilation finishes.
@@ -52,13 +50,6 @@ pub trait Backend {
     fn finalize(self, meta: CompiledMetadata) -> Result<Self::Output, CodegenError>;
 }
 
-/// fz-ul4.29.2 — Two-way mapping between (FnId, input-type-tuple) and
-/// SpecId. Each compiled body has one entry; SpecIds are dense from 0.
-///
-/// In .29.2 every FnIr has exactly one SpecId (its any-key spec), so
-/// `SpecId.0 == FnId.0` is an invariant — preserves bit-identical CLIF
-/// vs. the pre-atom baseline. fz-ul4.29.2.1 admits multiple SpecIds per
-/// FnId for narrow specs, at which point the invariant relaxes.
 use crate::spec_registry::SpecRegistry;
 
 /// JIT backend: wraps a JITModule pre-finalize. compile() constructs one,
@@ -84,8 +75,8 @@ impl JitBackend {
             "fz_process_heap_alloc_stats",
             fz_runtime::ir_runtime::fz_process_heap_alloc_stats as *const u8,
         );
-        // fz-ul4.27.7 (VR.5b): typed print helpers — JIT routes here when
-        // the arg type is monomorphic, passing the raw payload directly.
+        // Typed print helpers — JIT routes here when the arg type is
+        // monomorphic, passing the raw payload directly.
         builder.symbol("fz_print_i64", fz_runtime::fz_print_i64 as *const u8);
         // Linux JIT needs explicit symbol bindings; macOS happens to
         // resolve runtime crate exports via dlsym on the executable
@@ -212,22 +203,21 @@ impl JitBackend {
             "fz_bs_reader_done_ref",
             fz_runtime::ir_runtime::fz_bs_reader_done_ref as *const u8,
         );
-        // fz-q8d.2 — static SharedBin path: codegen emits a 40-byte data
-        // symbol in `.data`, then a call to this helper to wrap it in a
-        // per-process ProcBin / MSO entry.
+        // Static SharedBin path: codegen emits a 40-byte data symbol in
+        // `.data`, then calls this helper to wrap it in a per-process
+        // ProcBin / MSO entry.
         builder.symbol(
             "fz_alloc_procbin_from_static",
             fz_runtime::ir_runtime::fz_alloc_procbin_from_static as *const u8,
         );
-        // fz-q8d.2 — noop destructor address baked into each static
-        // SharedBin's `destructor` field via a function-address
-        // relocation. Never invoked in practice (anchor refcount stays
-        // ≥ 1) but must resolve at link time.
+        // Noop destructor address baked into each static SharedBin's
+        // `destructor` field via a function-address relocation. Never
+        // invoked in practice (anchor refcount stays >= 1) but must
+        // resolve at link time.
         builder.symbol(
             "shared_bin_destructor_noop",
             fz_runtime::procbin::shared_bin_destructor_noop as *const u8,
         );
-        // fz-9ss — extern binary marshal helpers.
         builder.symbol(
             "fz_binary_as_ptr",
             fz_runtime::extern_binary::fz_binary_as_ptr as *const u8,
@@ -384,12 +374,12 @@ impl JitBackend {
             "fz_value_eq_ref",
             fz_runtime::ir_runtime::fz_value_eq_ref as *const u8,
         );
-        // fz-puj.45 (X4) — receive matcher's binary-literal helper.
+        // Receive matcher's binary-literal helper.
         builder.symbol(
             "fz_matcher_eq_bytes",
             fz_runtime::ir_runtime::fz_matcher_eq_bytes as *const u8,
         );
-        // fz-puj.47 (X6) — receive matcher's map-key lookup helper.
+        // Receive matcher's map-key lookup helper.
         builder.symbol(
             "fz_matcher_map_get_ref",
             fz_runtime::ir_runtime::fz_matcher_map_get_ref as *const u8,
@@ -458,7 +448,7 @@ impl JitBackend {
             "fz_send_ref",
             fz_runtime::ir_runtime::fz_send_ref as *const u8,
         );
-        // fz-axu.14 (R1) / .13 (S2) — utf8 brand support.
+        // utf8 brand support.
         builder.symbol(
             "fz_bitstring_valid_utf8",
             fz_runtime::ir_runtime::fz_bitstring_valid_utf8 as *const u8,
@@ -467,10 +457,10 @@ impl JitBackend {
             "fz_brand_bitstring_as_utf8",
             fz_runtime::ir_runtime::fz_brand_bitstring_as_utf8 as *const u8,
         );
-        // fz-swt.11 — runtime-exported fixture/test dtor. Always bound to
-        // the JIT (not gated on cfg(test)) so any `fz dump --emit clif`
-        // or `fz run` over a fixture that uses it resolves cleanly — the
-        // golden-CLIF harness compiles every non-deferred fixture.
+        // Runtime-exported fixture/test dtor. Bound unconditionally (not
+        // cfg(test)-gated) so any `fz dump --emit clif` or `fz run` over
+        // a fixture using it resolves cleanly — the golden-CLIF harness
+        // compiles every non-deferred fixture.
         builder.symbol(
             "fz_resource_test_print_dtor",
             fz_runtime::resource::fz_resource_test_print_dtor as *const u8,
@@ -483,8 +473,8 @@ impl JitBackend {
             "fz_receive_park",
             fz_runtime::ir_runtime::fz_receive_park as *const u8,
         );
-        // fz-yxs/fz-st5 — selective receive park entry. Used by B3's
-        // JIT codegen at the Term::ReceiveMatched seam.
+        // Selective-receive park entry. Used by JIT codegen at the
+        // Term::ReceiveMatched seam.
         builder.symbol(
             "fz_receive_park_matched",
             fz_runtime::ir_runtime::fz_receive_park_matched as *const u8,
@@ -501,11 +491,11 @@ impl JitBackend {
             "fz_get_halt_cont",
             fz_runtime::ir_runtime::fz_get_halt_cont as *const u8,
         );
-        // fz-02r.5 — bind the cooperative yield helpers and the yield-flag data.
+        // Cooperative yield-flag data.
         builder.symbol("FZ_SHOULD_YIELD", fz_runtime::yield_flag::jit_flag_ptr());
-        // fz-swt.10 (test only) — register test externs (e.g. the
-        // `_resource_test_dtor` counter used by the JIT-leg resource
-        // lifecycle tests). Production paths see no extra symbols.
+        // Test externs (e.g. the `_resource_test_dtor` counter used by
+        // JIT-leg resource lifecycle tests). Production paths see no
+        // extra symbols.
         #[cfg(test)]
         builder.symbol(
             "_resource_test_dtor",
@@ -548,9 +538,9 @@ impl Backend for JitBackend {
         for (fz_fn_id, func_id) in &meta.fn_ids {
             fn_ptrs.insert(*fz_fn_id, jmod.get_finalized_function(*func_id));
         }
-        // fz-cps.1.7 — resolve each zero-cap closure-target stub_func_id
-        // to its finalized code address. `make_process` writes these into
-        // the off-heap singleton's `code_ptr` slot at +8.
+        // Resolve each zero-cap closure-target stub_func_id to its
+        // finalized code address. `make_process` writes these into the
+        // off-heap singleton's `code_ptr` slot at +8.
         let static_closure_targets: Vec<(u32, u32, *const u8, u32)> = meta
             .static_closure_targets
             .iter()
@@ -591,16 +581,15 @@ impl Backend for JitBackend {
 /// AOT backend: wraps a cranelift_object ObjectModule. Drives the same
 /// codegen as the JIT (through the Backend trait + declare_runtime_symbols)
 /// but finalizes by emitting object-file bytes for a linker rather than
-/// resolving fn pointers in memory. fz-ul4.23.6.1.
+/// resolving fn pointers in memory.
 pub struct AotBackend {
     omod: cranelift_object::ObjectModule,
 }
 
 impl AotBackend {
     pub fn new(name: &str) -> Self {
-        // AOT needs PIC for macOS — the linker rejects text relocations
-        // in regular executables. PIC on x86_64-linux / aarch64-linux is
-        // also conventional for distributable binaries.
+        // PIC is required on macOS (linker rejects text relocations in
+        // regular executables) and conventional for Linux distributables.
         let isa = host_isa_with(true);
         let builder = cranelift_object::ObjectBuilder::new(
             isa,
@@ -637,12 +626,12 @@ impl Backend for AotBackend {
             return Ok(());
         };
 
-        // fz-siu.6.1: AOT C-main is a thin driver around the cps-in-clif
-        // SystemV→Tail-CC shims (fz_main_entry / fz_halt_cont_body) emitted
-        // in compile_with_backend. Three FFI fns from fz-runtime do the
-        // Process setup, static-closure registration, and run-main+teardown.
-        // fz-ul4.27.22.3 — setup takes 3 halt_cont_body addrs (ValueRef,
-        // RawInt, RawF64) in slots 2-4.
+        // AOT C-main is a thin driver around the SystemV→Tail-CC shims
+        // (fz_main_entry / fz_halt_cont_body) emitted in
+        // compile_with_backend. Three fz-runtime FFI fns handle Process
+        // setup, static-closure registration, and run-main+teardown.
+        // Setup takes the three halt_cont_body addrs (ValueRef, RawInt,
+        // RawF64) in slots 2-4.
         let setup_sig = sig1(
             &[
                 types::I64,
@@ -659,7 +648,7 @@ impl Backend for AotBackend {
             .declare_function("fz_aot_setup", Linkage::Import, &setup_sig)
             .map_err(|e| CodegenError::new(format!("declare fz_aot_setup: {}", e)))?;
 
-        // fz-ul4.27.22.6: trailing i32 carries halt_kind.
+        // Trailing i32 carries halt_kind.
         let reg_sig = sig1(
             &[types::I64, types::I32, types::I32, types::I64, types::I32],
             &[],
@@ -677,9 +666,9 @@ impl Backend for AotBackend {
             .declare_function("fz_aot_run_main", Linkage::Import, &run_sig)
             .map_err(|e| CodegenError::new(format!("declare fz_aot_run_main: {}", e)))?;
 
-        // fz-4mk.3b — fz_aot_set_drain_dtor_entry(addr). Registers the
-        // SystemV→Tail-CC `fz_drain_dtor_entry` shim so the AOT run-queue
-        // loop can dispatch pending dtor closures at task-exit.
+        // Registers the SystemV→Tail-CC `fz_drain_dtor_entry` shim so
+        // the AOT run-queue loop can dispatch pending dtor closures at
+        // task-exit.
         let set_drain_sig = sig1(&[types::I64], &[]);
         let set_drain_id = self
             .omod
@@ -692,21 +681,20 @@ impl Backend for AotBackend {
                 CodegenError::new(format!("declare fz_aot_set_drain_dtor_entry: {}", e))
             })?;
 
-        // fz-xx8.1 — fz_aot_set_resume_addr(addr). Registers the SystemV
-        // `fz_resume(cont)` shim so the AOT run-queue loop can dispatch
-        // `runnable_closure` (selective-receive wakeup) on parity
-        // with the JIT path (src/ir_codegen.rs:335).
+        // Registers the SystemV `fz_resume(cont)` shim so the AOT
+        // run-queue loop can dispatch `runnable_closure`
+        // (selective-receive wakeup) on parity with the JIT path.
         let set_resume_sig = sig1(&[types::I64], &[]);
         let set_resume_id = self
             .omod
             .declare_function("fz_aot_set_resume_addr", Linkage::Import, &set_resume_sig)
             .map_err(|e| CodegenError::new(format!("declare fz_aot_set_resume_addr: {}", e)))?;
 
-        // fz-ul4.38 — fz_aot_register_tuple_schemas(proc, arities_ptr, len)
-        // populates the AOT process's SchemaRegistry with one Tuple{N} entry
-        // per arity, in the order the array was emitted. That order matches
-        // the sorted iteration in compile_with_backend, so the schema ids
-        // baked into the CLIF (via tuple_schema_ids) resolve correctly.
+        // `fz_aot_register_tuple_schemas(proc, arities_ptr, len)` populates
+        // the AOT process's SchemaRegistry with one Tuple{N} entry per
+        // arity in array order. That order matches the sorted iteration
+        // in compile_with_backend, so the schema ids baked into the CLIF
+        // (via tuple_schema_ids) resolve correctly.
         let reg_tuples_sig = sig1(&[types::I64, types::I64, types::I32], &[]);
         let reg_tuples_id = self
             .omod
@@ -800,7 +788,7 @@ impl Backend for AotBackend {
         let AotBackend { omod } = self;
         // Emit the macOS platform load command (LC_BUILD_VERSION) so ld
         // doesn't warn "no platform load command found". Cranelift's
-        // ObjectBuilder doesn't inject this automatically (fz-ul4.33).
+        // ObjectBuilder doesn't inject this automatically.
         #[cfg(target_os = "macos")]
         let product = {
             let mut p = omod.finish();
@@ -834,7 +822,7 @@ impl Backend for AotBackend {
 }
 
 /// AOT artifact: per-module emitted object bytes plus enough metadata to
-/// drive linking. fz-ul4.23.6.3 (`fz build`) consumes this.
+/// drive linking. Consumed by `fz build`.
 pub struct AotArtifact {
     /// Object-file bytes (ELF on Linux, Mach-O on macOS, COFF on Windows)
     /// suitable for `cc` to link against fz_runtime + libc.

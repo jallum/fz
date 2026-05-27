@@ -1,4 +1,4 @@
-//! Split from src/ir_codegen.rs (fz-ame.7). Mechanical move only.
+//! Entry-block harness: bind entry params and load closure captures.
 
 #![allow(unused_imports)]
 
@@ -49,16 +49,13 @@ pub(crate) fn build_entry_harness<M: cranelift_module::Module>(
     let mut tuple_field_params: HashMap<(u32, u32), CodegenValue> = HashMap::new();
     let my_schema = &schemas[this_spec_id as usize];
 
-    // (frame_ptr, host_ctx) — uniform fns get both from entry block_params;
-    // native fns have no frame and no frame_ptr (None). fz-ul4.27.16: the
-    // 9 downstream consumer sites are each gated on `is_native` or on a
-    // terminator type that natively_callable excludes from native fns,
-    // so unwrapping the Option below is invariant-safe. Any future code
-    // path that violates this surfaces immediately as a panic at codegen.
-    // host_ctx is Some only for uniform fns (always the second block param).
-    // Native fns always have host_ctx = None; they use fz_halt_implicit (TLS).
-    // fz-cps.1.a (fz-siu.1.1): `cont_param` is the trailing i64 in the
-    // native-tier signature. Threaded but unused in .1.1; .1.2+ consume it.
+    // (frame_ptr, host_ctx) are Some only for uniform fns (both from
+    // entry block_params). Native fns have no frame; they reach halt via
+    // fz_halt_implicit (TLS). Downstream consumers gate on `is_native`
+    // (or on a terminator type natively_callable excludes), so unwrapping
+    // the Option panics loudly at codegen if any future path violates
+    // the invariant. `cont_param` is the trailing i64 in the native-tier
+    // signature.
     let demand_abi = DemandAbi::new(&env.spec_keys[this_spec_id as usize]);
     let has_list_tail_dest = demand_abi.has_list_tail_native_param(is_native, is_cont_fn);
     let (frame_ptr, host_ctx, cont_param, list_tail_param): (
@@ -70,9 +67,9 @@ pub(crate) fn build_entry_harness<M: cranelift_module::Module>(
         let params: Vec<ir::Value> = b.block_params(entry_cl).to_vec();
         let my_param_reprs = &param_reprs[this_spec_id as usize];
         if is_cont_fn {
-            // fz-cps.1.2 cont fn entry harness per §2.1:
-            //   params[0..N] = extras     → fz_param[0..N]
-            //   params[N]    = self       → closure ptr
+            // Cont fn entry harness:
+            //   params[0..N] = extras     -> fz_param[0..N]
+            //   params[N]    = self       -> closure ptr
             // Closure env layout:
             //   self+8  : code_ptr
             //   self+16 : outer_cont       (synthetic; not in fz_param)
@@ -80,18 +77,15 @@ pub(crate) fn build_entry_harness<M: cranelift_module::Module>(
             //   self+32 : user_cap[1]      -> fz_param[N+1]
             //   ...
             //
-            // fz-70q.3 — extras_count defaults to 1 (single-input
-            // Receive cont) but ReceiveMatched lowering overrides via
-            // `cont_extras_count`: body / guard fns set it to
-            // bound_arity; after-body sets 0.
+            // extras_count defaults to 1 (single-input Receive cont) but
+            // ReceiveMatched lowering overrides via `cont_extras_count`:
+            // body/guard fns set it to bound_arity; after-body sets 0.
+            // Cont sig matches my_param_reprs[i]'s Cranelift type directly;
+            // producer's Term::Return uses the same sig, so no coerce at
+            // entry.
             let tuple_fields = demand_abi.tuple_field_arity();
             let extras_count = tuple_fields
                 .unwrap_or_else(|| env.cont_extras_count.get(&f.id).copied().unwrap_or(1));
-            // fz-ul4.27.22.3: cont sig matches my_param_reprs[i]'s
-            // Cranelift type directly. Producer's Term::Return uses the
-            // same sig (return_reprs[producer_sid] = my_param_reprs[0]
-            // via the typer's cont_input_key seam agreement). No coerce
-            // at entry — value already in body's expected repr.
             let mut param_cursor = 0;
             if let Some(field_count) = tuple_fields {
                 let tuple_param = entry_blk
@@ -153,7 +147,7 @@ pub(crate) fn build_entry_harness<M: cranelift_module::Module>(
             let host_ctx = None;
             (None, host_ctx, Some(self_val), list_tail_val)
         } else if let Some(n_caps) = closure_target_n_caps {
-            // fz-cps.1.2 closure-target fn entry harness per §2.1.
+            // Closure-target fn entry harness.
             // fz_params order:
             //   fz_params[0..n_caps]             = captures
             //   fz_params[n_caps..n_caps+n_args] = args
@@ -218,9 +212,8 @@ pub(crate) fn build_entry_harness<M: cranelift_module::Module>(
         let host_ctx = b.block_params(entry_cl)[1];
 
         // Load entry params from frame slots [1..N+1] (offsets 24, 32, ...).
-        // fz-ul4.27.5.2/3: RawF64 slots load as raw f64 (ArgRepr::RawF64);
-        // RawI64 slots load as raw i64 (ArgRepr::RawInt — unshifted payload).
-        // Everything else loads as one-word ValueRef (ArgRepr::ValueRef).
+        // RawF64 slots load as raw f64; RawI64 slots load as raw i64
+        // (unshifted payload); everything else loads as one-word ValueRef.
         for (i, p) in entry_blk.params.iter().enumerate() {
             let off = HEADER_SIZE + ((i as i32 + 1) * SLOT_BYTES);
             let slot_kind = &my_schema.fields[i + 1].kind;
@@ -246,8 +239,8 @@ pub(crate) fn build_entry_harness<M: cranelift_module::Module>(
             };
             var_env.insert(p.0, binding);
         }
-        // fz-cps.1.a: uniform fns do not yet have a cont SSA value; the
-        // cont still lives in slot 0 of `frame_ptr` until fz-siu.1.5.
+        // Uniform fns do not have a cont SSA value; the cont lives in
+        // slot 0 of `frame_ptr`.
         (Some(frame_ptr), Some(host_ctx), None, None)
     };
     EntryHarnessOut {
