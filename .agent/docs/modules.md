@@ -100,6 +100,38 @@ fz dump --emit interfaces --strict-interfaces file.fz
 
 Top-level non-module helpers are not interface exports and remain inferable.
 
+## Vocabulary
+
+Use these terms precisely:
+
+- Interface: the public module contract represented by `ModuleInterface`.
+  Interfaces contain module identity, imports, exported functions, public
+  specs, public type aliases, docs, ABI version, and fingerprint inputs. They
+  never contain function bodies.
+- Spec: an internal planner/type fact unless it is attached to a public module
+  export. `fz dump --emit specs` renders `ModulePlan`; it is not a module ABI.
+- `.fzi`: the serialized interface artifact. Dependents use it to resolve and
+  check imports without loading provider implementation bodies.
+- `.fzo`: the serialized compiled-unit artifact. In the current staged
+  implementation it is a metadata envelope derived from `CompiledUnit` and
+  `RuntimeUnitMetadata`; it does not yet carry final object bytes or a
+  self-sufficient relocatable code payload.
+- `CompiledUnit`: one module before image link. It owns module-local IR plus
+  the interface/import/export facts needed to prove link compatibility.
+- `CompiledImage`: one linked runnable image. It owns runtime-global executable
+  state and optional linked runtime metadata.
+- LTO: validated boundary erasure. LTO may load compatible implementations and
+  rewrite cross-module calls only after public interfaces have been validated.
+
+Dump commands follow the same split:
+
+- `fz dump --emit interfaces` renders public module contracts.
+- `fz dump --emit specs` renders internal inferred planner specializations.
+
+Do not treat either dump as a replacement for the other. Interface dumps answer
+"what may other modules depend on?" Spec dumps answer "what did this compiler
+run infer and plan internally?"
+
 ## `.fzi`: Interface Artifact
 
 `FziArtifact` is the public contract artifact. It contains only interface data
@@ -178,6 +210,10 @@ All artifact load errors are `artifact/invalid` diagnostics.
 
 `FzoArtifact` is the compiled-unit envelope. It is intentionally not a public
 contract. The linker consumes it after interface compatibility is established.
+Today it records the compiled unit's identity, dependency, export, fingerprint,
+and runtime metadata facts. A later payload ticket must make it carry the
+actual independently linkable code payload before `.fzo` is a complete object
+artifact.
 
 Struct fields:
 

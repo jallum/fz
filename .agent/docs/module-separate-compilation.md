@@ -56,11 +56,14 @@ Codegen artifact vocabulary:
   external edge; linked images must resolve or report the missing target first.
 - Artifact ownership is explicit. `.fzi` stores only the versioned
   `ModuleInterface` contract plus compiler/runtime ABI versions and the
-  interface fingerprint. `.fzo` stores the compiled-unit envelope: module
-  identity, implementation fingerprint, implemented-interface fingerprint,
-  required imports, exported runtime symbols, and local runtime metadata
-  counts/tables needed by image linking. Loading rejects unsupported ABI
-  versions and fingerprint mismatches as `artifact/invalid` diagnostics.
+  interface fingerprint. `.fzo` currently stores the compiled-unit metadata
+  envelope: module identity, implementation fingerprint,
+  implemented-interface fingerprint, required imports, exported runtime
+  symbols, and local runtime metadata counts/tables needed by image-linker
+  staging. It is not yet a self-sufficient object artifact because it does not
+  carry final object bytes or a relocatable code payload. Loading rejects
+  unsupported ABI versions and fingerprint mismatches as `artifact/invalid`
+  diagnostics.
 - `CompiledImage::link_prelinked` is the current image-linker bridge. It
   validates that each unit implements its recorded interface fingerprint,
   resolves every required `ExportKey` to exactly one provider, merges
