@@ -110,9 +110,12 @@ fn main(), do: Math.id(1)
     let fzi = fs::read_to_string(&fzi_path)
         .unwrap_or_else(|e| panic!("read {}: {}", fzi_path.display(), e));
     assert!(fzi.starts_with("fzi\n"), "{fzi}");
-    assert!(fzi.contains("module=Math\n"), "{fzi}");
-    assert!(fzi.contains("fingerprint_digest="), "{fzi}");
-    assert!(fzi.contains("export\tid\t1\t"), "{fzi}");
+    assert!(fzi.contains("\"Math\""), "{fzi}");
+    assert!(fzi.contains("\"interface_fingerprint_digest\""), "{fzi}");
+    assert!(
+        fzi.contains("\"id\"") && fzi.contains("\"arity\": 1"),
+        "{fzi}"
+    );
 
     let _ = fs::remove_dir_all(&root);
 }
@@ -154,13 +157,10 @@ fn main(), do: Math.id(1)
     let fzo = fs::read_to_string(&fzo_path)
         .unwrap_or_else(|e| panic!("read {}: {}", fzo_path.display(), e));
     assert!(fzo.starts_with("fzo\n"), "{fzo}");
-    assert!(fzo.contains("module=Math\n"), "{fzo}");
-    assert!(
-        fzo.contains("unit_payload_format=fz-source-unit-v1\n"),
-        "{fzo}"
-    );
+    assert!(fzo.contains("\"Math\""), "{fzo}");
+    assert!(fzo.contains("\"format\": \"fz-source-unit-v1\""), "{fzo}");
     assert!(fzo.contains("defmodule Math"), "{fzo}");
-    assert!(fzo.contains("interface_fingerprint_digest="), "{fzo}");
+    assert!(fzo.contains("\"interface_fingerprint_digest\""), "{fzo}");
 
     let _ = fs::remove_dir_all(&root);
 }
@@ -348,12 +348,12 @@ fn main(), do: print(User.run())
     let fzo_path = artifact_root.join("objects/User.fzo");
     let fzo = fs::read_to_string(&fzo_path)
         .unwrap_or_else(|e| panic!("read {}: {}", fzo_path.display(), e));
-    assert!(fzo.contains("module=User\n"), "{fzo}");
+    assert!(fzo.contains("\"User\""), "{fzo}");
+    assert!(fzo.contains("\"format\": \"fz-source-unit-v1\""), "{fzo}");
     assert!(
-        fzo.contains("unit_payload_format=fz-source-unit-v1\n"),
+        fzo.contains("\"add\"") && fzo.contains("\"arity\": 2"),
         "{fzo}"
     );
-    assert!(fzo.contains("import\tMath.add/2\n"), "{fzo}");
 
     let _ = fs::remove_dir_all(&root);
 }

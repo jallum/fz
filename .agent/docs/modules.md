@@ -284,59 +284,36 @@ Serialized shape:
 
 ```text
 fzi
-compiler_abi=<u32>
-runtime_abi=<u32>
-module=<ModuleName>
-interface_abi=<u32>
-fingerprint_digest=<hex>
-docs=<escaped docs or empty>
-fingerprint=<count>
-fingerprint\t<escaped input>
-...
-imports=<count>
-import\t<ModuleName>\t<only list>\t<except list>
-...
-types=<count>
-type\t<name>\t<alias|opaque|refines>\t<body>
-...
-exports=<count>
-export\t<name>\t<arity>\t<spec>
-...
+{
+  "compiler_abi_version": 1,
+  "runtime_abi_version": 1,
+  "interface_fingerprint_digest": "<hex>",
+  "interface_fingerprint": ["..."],
+  "interface": {
+    "name": {"segments": ["Module"]},
+    "abi_version": 1,
+    "imports": [],
+    "exports": [],
+    "types": [],
+    "docs": null,
+    "fingerprint_inputs": ["..."]
+  }
+}
 ```
 
-List encoding:
-
-- A counted list starts with `name=<count>`.
-- Each value line is `name\t<escaped value>`.
-- Counts are checked on load.
-
-Import filter encoding:
-
-```text
-name/arity,name/arity
-```
-
-Spec encoding:
-
-```text
-param,param=>result
-```
-
-An empty spec field means the export is unspecified. Strict-interface
-validation is separate from deserialization.
-
-Escaping:
-
-- `\` becomes `\\`
-- tab becomes `\t`
-- newline becomes `\n`
+The first line is the artifact magic. The body is pretty JSON serialized from
+`FziArtifact` through serde. Strict-interface validation is separate from
+deserialization: an export can deserialize without a spec, but
+`--emit-fzi`/`--strict-interfaces` reject unspecified public exports before
+writing or dumping strict contracts.
 
 Load-time rejection:
 
 - missing or wrong `fzi` header;
 - unsupported compiler/runtime/interface ABI;
-- count mismatches;
-- malformed imports/types/exports/specs;
+- malformed JSON or typed fields;
+- interface fingerprint digest mismatch;
+- interface fingerprint inputs mismatch;
 - expected fingerprint mismatch.
 
 All artifact load errors are `artifact/invalid` diagnostics.
@@ -373,36 +350,37 @@ Payload fields:
 
 ```text
 format: fz-source-unit-v1 | fz-ir-text-v1 | fz-runtime-module-v1 | another versioned payload format
-body:   escaped payload bytes represented as UTF-8 text
+body:   payload bytes represented as a JSON string
 ```
 
 Serialized shape:
 
 ```text
 fzo
-compiler_abi=<u32>
-runtime_abi=<u32>
-module=<ModuleName or empty>
-unit_payload_format=<escaped payload format>
-unit_payload=<escaped payload body>
-code_fn_count=<usize>
-implementation_fingerprint=<count>
-implementation_fingerprint\t<escaped input>
-...
-interface_fingerprint_digest=<hex>
-interface_fingerprint=<count>
-interface_fingerprint\t<escaped input>
-...
-imports=<count>
-import\t<ExportKey>
-...
-exports=<count>
-export\t<escaped symbol>\t<local fn id>
-...
-atom_count=<usize>
-schema_count=<usize>
-frame_sizes=<comma-separated u32 list>
+{
+  "compiler_abi_version": 1,
+  "runtime_abi_version": 1,
+  "module": {"segments": ["Module"]},
+  "unit_payload": {
+    "format": "fz-source-unit-v1",
+    "body": "defmodule Module ..."
+  },
+  "code_fn_count": 0,
+  "required_imports": [],
+  "exported_symbols": [],
+  "atom_count": 0,
+  "schema_count": 0,
+  "frame_sizes": [],
+  "implementation_fingerprint": ["..."],
+  "interface_fingerprint_digest": "<hex>",
+  "interface_fingerprint": ["..."]
+}
 ```
+
+The first line is the artifact magic. The body is pretty JSON serialized from
+`FzoArtifact` through serde. Artifact compatibility remains enforced by the
+typed deserializer and explicit ABI/fingerprint checks, not by ad hoc
+line-count parsing.
 
 Current `.fzo` deliberately stores a typed implementation payload instead of
 final object bytes. `fz build --emit-fzo` stores the checked source text as
@@ -424,9 +402,7 @@ Load-time rejection:
 - missing or empty unit payload format/body;
 - implemented-interface fingerprint digest mismatch;
 - implemented-interface fingerprint mismatch;
-- malformed `ExportKey` (`Module.name/arity`);
-- imports/exports count mismatches;
-- malformed frame-size CSV.
+- malformed JSON or typed fields.
 
 All errors are `artifact/invalid` diagnostics.
 

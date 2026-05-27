@@ -8,11 +8,12 @@ use crate::ast::{Attribute, FnDef, ModuleDef, Program, SpecDecl, TypeAliasDecl, 
 use crate::diag::{Diagnostic, Span, codes};
 use crate::lexer::Tok;
 use crate::modules::identity::ModuleName;
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 pub const FZ_INTERFACE_ABI_VERSION: u32 = 1;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ModuleInterface {
     pub name: ModuleName,
     pub abi_version: u32,
@@ -26,45 +27,50 @@ pub struct ModuleInterface {
     pub fingerprint_inputs: Vec<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct InterfaceImport {
     pub module: ModuleName,
     pub only: Vec<InterfaceImportFn>,
     pub except: Vec<InterfaceImportFn>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct InterfaceImportFn {
     pub name: String,
     pub arity: usize,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InterfaceFn {
     pub name: String,
     pub arity: usize,
     pub spec: Option<InterfaceSpec>,
+    #[serde(skip, default = "dummy_span")]
     pub name_span: Span,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct InterfaceSpec {
     pub params: Vec<String>,
     pub result: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum InterfaceTypeKind {
     Alias,
     Opaque,
     Refines,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct InterfaceType {
     pub name: String,
     pub kind: InterfaceTypeKind,
     pub body: String,
+}
+
+fn dummy_span() -> Span {
+    Span::DUMMY
 }
 
 pub fn collect_from_program(prog: &Program) -> BTreeMap<ModuleName, ModuleInterface> {

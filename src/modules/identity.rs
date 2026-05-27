@@ -7,7 +7,9 @@
 
 use std::fmt;
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct ModuleName {
     segments: Vec<String>,
 }
@@ -80,7 +82,7 @@ impl fmt::Display for ModuleNameParseError {
 
 impl std::error::Error for ModuleNameParseError {}
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct QualifiedName {
     pub module: Option<ModuleName>,
     pub name: String,
@@ -109,7 +111,7 @@ impl fmt::Display for QualifiedName {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct ExportKey {
     pub module: ModuleName,
     pub name: String,
