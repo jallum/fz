@@ -2,8 +2,8 @@ use super::*;
 use crate::ast::FnDef;
 use crate::diag::Span;
 use crate::fz_ir::{
-    BlockId, Const, ExternArg, ExternDecl, ExternId, FnBuilder, FnId, ModuleBuilder, Prim, Term,
-    Var,
+    BlockId, CallsiteId, Const, EmitSlot, ExternArg, ExternDecl, ExternId, FnBuilder, FnId,
+    ModuleBuilder, Prim, Term, Var,
 };
 use std::collections::{HashMap, HashSet};
 
@@ -82,6 +82,8 @@ pub struct LowerCtx {
     /// inline substitutions; the rest are kept here so the diagnostic
     /// can explain *why* a particular call wasn't inlined.
     pub fn_defs_by_arity: HashMap<(String, usize), FnDef>,
+    pub(super) external_exports: HashMap<(String, usize), crate::module_identity::ExportKey>,
+    pub(super) external_stubs: HashMap<crate::module_identity::ExportKey, FnId>,
 }
 
 impl LowerCtx {
@@ -112,7 +114,57 @@ impl LowerCtx {
             boundary_fns: HashSet::new(),
             branch_origin: crate::fz_ir::BranchOrigin::User,
             fn_defs_by_arity: HashMap::new(),
+            external_exports: HashMap::new(),
+            external_stubs: HashMap::new(),
         }
+    }
+
+    pub(super) fn register_external_interfaces(
+        &mut self,
+        interfaces: &std::collections::BTreeMap<
+            crate::module_identity::ModuleName,
+            crate::module_interface::ModuleInterface,
+        >,
+    ) {
+        for (module, interface) in interfaces {
+            for export in &interface.exports {
+                self.external_exports.insert(
+                    (format!("{}.{}", module, export.name), export.arity),
+                    crate::module_identity::ExportKey::new(
+                        module.clone(),
+                        export.name.clone(),
+                        export.arity,
+                    ),
+                );
+            }
+        }
+    }
+
+    pub(super) fn external_callee(
+        &mut self,
+        name: &str,
+        arity: usize,
+    ) -> Option<(FnId, crate::module_identity::ExportKey)> {
+        let target = self
+            .external_exports
+            .get(&(name.to_string(), arity))?
+            .clone();
+        let fn_id = if let Some(fn_id) = self.external_stubs.get(&target) {
+            *fn_id
+        } else {
+            let fn_id = self.mb.fresh_fn_id();
+            let mut stub = FnBuilder::new(fn_id, format!("__external__.{}", target))
+                .with_category(crate::fz_ir::FnCategory::User);
+            let params = (0..arity).map(|_| stub.fresh_var()).collect::<Vec<_>>();
+            let entry = stub.block(params);
+            let atom = self.atoms.intern("external_module_unlinked");
+            let reason = stub.let_(entry, Prim::Const(Const::Atom(atom)));
+            stub.set_terminator(entry, Term::Halt(reason));
+            self.mb.add_fn(stub.build());
+            self.external_stubs.insert(target.clone(), fn_id);
+            fn_id
+        };
+        Some((fn_id, target))
     }
 
     /// Helper: emit an If terminator on the current block using the active
@@ -285,6 +337,30 @@ impl LowerCtx {
         if !span.is_dummy() {
             self.term_spans.insert((fn_id, blk), span);
         }
+    }
+
+    pub(super) fn set_external_direct_term_at(
+        &mut self,
+        mut term: Term,
+        span: Span,
+        target: crate::module_identity::ExportKey,
+    ) {
+        term.set_source_span(span);
+        let ident = term
+            .ident()
+            .expect("external direct call term must carry a callsite ident")
+            .clone();
+        let caller = self.cur_fn_id.expect("no current fn");
+        self.set_term_at(term, Span::DUMMY);
+        if !span.is_dummy() {
+            self.term_spans.insert((caller, self.cur_block()), span);
+        }
+        self.mb
+            .external_call_edges
+            .push(crate::fz_ir::ExternalCallEdge {
+                callsite: CallsiteId::new(caller, &ident, EmitSlot::Direct),
+                target,
+            });
     }
 }
 

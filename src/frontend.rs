@@ -561,7 +561,7 @@ fn main(), do: classify(7)
 defmodule User do
   import Math, only: [add: 2]
   @spec run(integer, integer) :: integer
-  fn run(x, y), do: x + y
+  fn run(x, y), do: add(x, y)
 end
 "#;
 
@@ -578,6 +578,15 @@ end
 
         assert!(out.module.fn_by_name("User.run").is_some());
         assert!(out.module.fn_by_name("Math.add").is_none());
+        assert_eq!(out.module.external_call_edges.len(), 1);
+        assert_eq!(
+            out.module.external_call_edges[0].target,
+            crate::module_identity::ExportKey::new(
+                crate::module_identity::ModuleName::from_segments(vec!["Math".to_string()]),
+                "add",
+                2,
+            )
+        );
     }
 
     #[test]

@@ -188,6 +188,11 @@ pub fn flatten_modules_with_interface_table<T: crate::types::Types<Ty = crate::t
     collect_module_fns(&prog)?;
     let module_macros = collect_module_macros(&prog);
     let module_interfaces = crate::module_interface::collect_from_program(&prog);
+    let external_module_interfaces = interface_table
+        .iter()
+        .filter(|(name, _)| !module_interfaces.contains_key(*name))
+        .map(|(name, interface)| (name.clone(), interface.clone()))
+        .collect::<BTreeMap<_, _>>();
     for (name, interface) in &module_interfaces {
         interface_table.insert(name.clone(), interface.clone());
     }
@@ -289,6 +294,7 @@ pub fn flatten_modules_with_interface_table<T: crate::types::Types<Ty = crate::t
     Ok(Program {
         items: out,
         module_interfaces,
+        external_module_interfaces,
         module_docs,
         module_type_envs,
         opaque_inners,

@@ -477,6 +477,13 @@ pub struct Program {
         crate::module_identity::ModuleName,
         crate::module_interface::ModuleInterface,
     >,
+    /// Interfaces loaded from artifacts or built-ins that were used to resolve
+    /// imports but are not local source modules. Lowering uses these to keep
+    /// imported provider calls as explicit external edges.
+    pub external_module_interfaces: std::collections::BTreeMap<
+        crate::module_identity::ModuleName,
+        crate::module_interface::ModuleInterface,
+    >,
     /// Qualified-module-path → `@moduledoc "..."` text. Populated by
     /// `resolve::flatten_modules` (the only stage that still sees
     /// `ModuleDef`s). Used by the REPL's `?M` query.

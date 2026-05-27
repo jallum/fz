@@ -53,8 +53,8 @@ pub use extern_table::ExternTable;
 
 pub(crate) use cond::{lower_if, lower_multi_clause};
 pub(crate) use cps::{
-    ContFn, cps_split_call, cps_split_call_closure, cps_split_receive, finalize_arm, mint_cont_fn,
-    switch_to_cont_fn,
+    ContFn, cps_split_call, cps_split_call_closure, cps_split_external_call, cps_split_receive,
+    finalize_arm, mint_cont_fn, switch_to_cont_fn,
 };
 pub(crate) use expr::{bind_param_topname, lower_expr, lower_fn, lower_pattern_bind};
 pub(crate) use extern_table::{extern_symbol_from_name, extern_ty_from_name};
@@ -91,6 +91,7 @@ fn parse_runtime_prelude<T: crate::types::Types<Ty = crate::types::Ty>>(t: &mut 
     let staged = crate::ast::Program {
         items,
         module_interfaces: Default::default(),
+        external_module_interfaces: Default::default(),
         module_docs: Default::default(),
         module_type_envs: Default::default(),
         opaque_inners: Default::default(),
@@ -138,6 +139,7 @@ pub fn lower_program_full_with_telemetry<T: crate::types::Types<Ty = crate::type
     tel: &dyn crate::telemetry::Telemetry,
 ) -> Result<(Module, AtomTable), LowerError> {
     let mut ctx = LowerCtx::new();
+    ctx.register_external_interfaces(&prog.external_module_interfaces);
 
     // Prepend the built-in runtime.fz prelude so its externs and wrapper fns
     // are visible to every user program without an explicit import.

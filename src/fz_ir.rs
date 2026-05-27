@@ -1379,6 +1379,7 @@ pub struct ModuleBuilder {
     fns: Vec<FnIr>,
     fn_idx: HashMap<FnId, usize>,
     schemas: Vec<Schema>,
+    pub external_call_edges: Vec<ExternalCallEdge>,
 }
 
 impl ModuleBuilder {
@@ -1389,6 +1390,7 @@ impl ModuleBuilder {
             fns: Vec::new(),
             fn_idx: HashMap::new(),
             schemas: Vec::new(),
+            external_call_edges: Vec::new(),
         }
     }
 
@@ -1432,7 +1434,7 @@ impl ModuleBuilder {
             atom_names: Vec::new(),
             externs: Vec::new(),
             extern_idx: HashMap::new(),
-            external_call_edges: Vec::new(),
+            external_call_edges: self.external_call_edges,
             boundary_fns: HashSet::new(),
             opaque_inners: HashMap::new(),
             brand_inners: HashMap::new(),
