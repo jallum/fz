@@ -3,6 +3,6 @@ fn neg(x), do: 0 - x
 fn apply2(f, x), do: f(x)
 
 fn main() do
-  print(apply2(double, 21))
-  print(apply2(neg, 7))
+  dbg(apply2(double, 21))
+  dbg(apply2(neg, 7))
 end

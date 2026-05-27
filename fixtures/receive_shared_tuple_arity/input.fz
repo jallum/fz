@@ -14,5 +14,5 @@ fn main() do
     {:c, v} -> v + 3
   end
 
-  print({x, y})
+  dbg({x, y})
 end

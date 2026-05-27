@@ -1,16 +1,16 @@
 ---
 purpose: "N-hop actor ring with self()-capture + spawn-with-captures + multi-clause CPS-split-in-body; closes fz-g8v by exercising the fz-qbg.2 multi-clause body cont-fn path end-to-end"
 paths: [jit, interp, aot, repl]
-budget.codegen.functions: 14
-budget.codegen.instructions: 206
-budget.specs.count: 14
-budget.planner.worklist_pops: 28
-budget.planner.walk_calls: 28
-budget.planner.type_fn_calls: 14
+budget.codegen.functions: 11
+budget.codegen.instructions: 164
+budget.specs.count: 11
+budget.planner.worklist_pops: 23
+budget.planner.walk_calls: 23
+budget.planner.type_fn_calls: 11
 budget.planner.matcher_specs: 0
-budget.planner.vars: 61
-budget.planner.blocks: 19
-budget.planner.stmts: 31
+budget.planner.vars: 54
+budget.planner.blocks: 15
+budget.planner.stmts: 23
 budget.planner.dispatches: 10
 ---
 

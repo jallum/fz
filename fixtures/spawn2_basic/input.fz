@@ -4,5 +4,5 @@ end
 
 fn main() do
   spawn(fn () -> child(42), 4096)
-  print(receive do x -> x end)
+  dbg(receive do x -> x end)
 end

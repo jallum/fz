@@ -3,5 +3,5 @@ fn square(x) do
 end
 
 fn main() do
-  print(square(7))
+  dbg(square(7))
 end

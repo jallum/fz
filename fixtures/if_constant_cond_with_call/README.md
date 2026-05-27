@@ -2,15 +2,15 @@
 purpose: "fz-84m repro A — constant cond + non-tail call in if-arm; formerly panicked at fz_ir.rs:453 ('unknown block') because then-arm's CPS-split finalized the outer fn while else_b was still empty"
 paths: [jit, interp, aot, repl]
 budget.codegen.functions: 1
-budget.codegen.instructions: 8
+budget.codegen.instructions: 5
 budget.specs.count: 1
 budget.planner.worklist_pops: 1
 budget.planner.walk_calls: 1
 budget.planner.type_fn_calls: 1
 budget.planner.matcher_specs: 0
-budget.planner.vars: 15
-budget.planner.blocks: 3
-budget.planner.stmts: 6
+budget.planner.vars: 11
+budget.planner.blocks: 2
+budget.planner.stmts: 5
 budget.planner.dispatches: 0
 ---
 
@@ -22,7 +22,7 @@ fz-84m repro A — constant cond + non-tail call in if-arm.
 
 Before **fz-duq.2**, this program panicked during IR construction at
 `block_mut` (src/fz_ir.rs:453, "unknown block"). The then-arm's
-`print(helper())` lowered as a non-tail Call inside print's args,
+`dbg(helper())` lowered as a non-tail Call inside print's args,
 triggering `cps_split_call` which finalized the outer fn. The
 subsequent switch to else_b (a BlockId in the now-built fn) corrupted
 the lowering.

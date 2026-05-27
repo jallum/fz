@@ -2,15 +2,15 @@
 purpose: "refutable list-cons destructure on a statically-non-empty list — success-path parity for `[h | t] = xs`"
 paths: [jit, interp, aot, repl]
 budget.codegen.functions: 1
-budget.codegen.instructions: 15
+budget.codegen.instructions: 13
 budget.specs.count: 1
 budget.planner.worklist_pops: 1
 budget.planner.walk_calls: 1
 budget.planner.type_fn_calls: 1
 budget.planner.matcher_specs: 0
-budget.planner.vars: 21
-budget.planner.blocks: 5
-budget.planner.stmts: 12
+budget.planner.vars: 13
+budget.planner.blocks: 2
+budget.planner.stmts: 9
 budget.planner.dispatches: 0
 ---
 

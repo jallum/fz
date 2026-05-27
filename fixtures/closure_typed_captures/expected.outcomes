@@ -1,15 +1,15 @@
 outcomes for fixtures/closure_typed_captures/input.fz
 
-apply1[&fn15[10, 20]:(α960) -> α1023, 12] demand=value:
-  @0:62-66 ClosureCall -> Indirect(lambda_15#15 [10, 20, 12] demand=value)
+apply1[&fn17[10, 20]:(α1088) -> α1151, 12] demand=value:
+  @0:62-66 ClosureCall -> Indirect(lambda_17#17 [10, 20, 12] demand=value)
 
 main[] demand=value:
-  @0:96-110 Direct -> Folded(&fn15[10, 20]:() -> α1023)
-  @0:96-110 Direct -> Static(k_16#16 [&fn15[10, 20]:(α960) -> α1023] demand=value)
+  @0:94-108 Direct -> Folded(&fn17[10, 20]:() -> α1151)
+  @0:94-108 Direct -> Static(k_18#18 [&fn17[10, 20]:(α1088) -> α1151] demand=value)
 
-k_16[&fn15[10, 20]:(α960) -> α1023] demand=value:
-  @0:89-115 Cont -> Static(k_17#17 [int] demand=value)
-  @0:89-115 Direct -> Static(apply1#13 [&fn15[10, 20]:(α960) -> α1023, 12] demand=value)
+k_18[&fn17[10, 20]:(α1088) -> α1151] demand=value:
+  @0:87-113 Cont -> Static(k_19#19 [int] demand=value)
+  @0:87-113 Direct -> Static(apply1#15 [&fn17[10, 20]:(α1088) -> α1151, 12] demand=value)
 
-k_17[int] demand=value:
-  @0:83-116 Direct -> Static(Kernel.print#0 [int] demand=value)
+k_19[int] demand=value:
+  @0:83-114 Direct -> Static(Kernel.dbg#1 [int] demand=value)

@@ -3,11 +3,11 @@
 
 import Kernel, only: [
   assert: 1,
-  assert_eq: 2,
-  assert_neq: 2,
+  dbg: 1,
   make_ref: 0,
   make_resource: 2,
-  print: 1,
+  panic: 1,
+  refute: 1,
   self: 0,
   send: 2,
   spawn: 1,

@@ -1,2 +1,2 @@
 fn inc(n) do n + 1 end
-fn main(), do: print(inc(41))
+fn main(), do: dbg(inc(41))

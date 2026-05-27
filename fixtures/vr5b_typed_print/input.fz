@@ -1,9 +1,9 @@
 fn int_main() do
-  print(42)
+  dbg(42)
 end
 
 fn float_main() do
-  print(1.5 + 2.5)
+  dbg(1.5 + 2.5)
 end
 
 fn main() do

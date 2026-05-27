@@ -1,7 +1,7 @@
 fn id(x), do: x
 
 fn main() do
-  print(id(42))
-  print(id(:hello))
-  print(id(true))
+  dbg(id(42))
+  dbg(id(:hello))
+  dbg(id(true))
 end

@@ -1,17 +1,17 @@
 ---
 purpose: "list primitives from scratch — length / reverse / map / foldl exercising cons-pattern dispatch and first-class fns"
 paths: [jit, interp, aot, repl]
-budget.codegen.functions: 25
-budget.codegen.instructions: 392
-budget.specs.count: 25
-budget.planner.worklist_pops: 79
-budget.planner.walk_calls: 79
-budget.planner.type_fn_calls: 27
+budget.codegen.functions: 22
+budget.codegen.instructions: 382
+budget.specs.count: 22
+budget.planner.worklist_pops: 71
+budget.planner.walk_calls: 71
+budget.planner.type_fn_calls: 24
 budget.planner.matcher_specs: 0
-budget.planner.vars: 142
-budget.planner.blocks: 49
-budget.planner.stmts: 62
-budget.planner.dispatches: 29
+budget.planner.vars: 119
+budget.planner.blocks: 42
+budget.planner.stmts: 58
+budget.planner.dispatches: 26
 ---
 
 # list_primitives

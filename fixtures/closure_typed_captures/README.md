@@ -2,15 +2,15 @@
 purpose: "fz-ul4.29.5 — closure dispatched via call_indirect through code pointer"
 paths: [jit, interp, aot, repl]
 budget.codegen.functions: 5
-budget.codegen.instructions: 74
+budget.codegen.instructions: 73
 budget.specs.count: 5
 budget.planner.worklist_pops: 9
 budget.planner.walk_calls: 9
 budget.planner.type_fn_calls: 5
 budget.planner.matcher_specs: 0
-budget.planner.vars: 26
-budget.planner.blocks: 6
-budget.planner.stmts: 10
+budget.planner.vars: 24
+budget.planner.blocks: 5
+budget.planner.stmts: 9
 budget.planner.dispatches: 3
 ---
 

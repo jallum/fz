@@ -4,10 +4,10 @@ fn inc_tree({:node, left, value, right}), do: {:node, inc_tree(left), value + 1,
 fn main() do
   tree = {:node, {:node, :empty, 1, :empty}, 2, {:node, :empty, 3, :empty}}
   out = inc_tree(tree)
-  print(out)
+  dbg(out)
 
   stats = Process.heap_alloc_stats()
-  print(stats)
+  dbg(stats)
   heap_bytes = stats[:list_cons_bytes] + stats[:struct_bytes] + stats[:map_bytes]
-  print(heap_bytes)
+  dbg(heap_bytes)
 end

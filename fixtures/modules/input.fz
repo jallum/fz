@@ -8,7 +8,7 @@ defmodule N do
 end
 
 fn main() do
-  print(M.double(21))
-  print(M.quad(5))
-  print(N.helper(7))
+  dbg(M.double(21))
+  dbg(M.quad(5))
+  dbg(N.helper(7))
 end

@@ -2,15 +2,15 @@
 purpose: "receive with side-tagged float literals — locks SwitchKind::Float three-path parity"
 paths: [jit, interp, aot, repl]
 budget.codegen.functions: 20
-budget.codegen.instructions: 534
+budget.codegen.instructions: 504
 budget.specs.count: 17
 budget.planner.worklist_pops: 42
 budget.planner.walk_calls: 42
 budget.planner.type_fn_calls: 17
 budget.planner.matcher_specs: 0
-budget.planner.vars: 68
-budget.planner.blocks: 20
-budget.planner.stmts: 27
+budget.planner.vars: 62
+budget.planner.blocks: 17
+budget.planner.stmts: 24
 budget.planner.dispatches: 7
 ---
 

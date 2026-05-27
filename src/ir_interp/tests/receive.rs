@@ -35,7 +35,7 @@ fn initial_scan_pinned_match() {
           v = receive do
             {:reply, ^ref, val} -> val
           end
-          print(v)
+          dbg(v)
         end
     "#;
     let out = run_and_capture(src).expect("interp run");
@@ -57,7 +57,7 @@ fn sender_side_probe_match() {
           v = receive do
             {:reply, :tag, val} -> val
           end
-          print(v)
+          dbg(v)
         end
     "#;
     let out = run_and_capture(src).expect("interp run");
@@ -210,7 +210,7 @@ fn after_zero_fires_immediately_on_empty_mailbox() {
             {:never, _} -> 11
           after 0 -> 12
           end
-          print(v)
+          dbg(v)
         end
     "#;
     let out = run_and_capture(src).expect("interp run");
@@ -232,7 +232,7 @@ fn receiver_scan_finds_earlier_skipped_message() {
           va = receive do
             {:a, x} -> x
           end
-          print(va + vb)
+          dbg(va + vb)
         end
     "#;
     let out = run_and_capture(src).expect("interp run");
@@ -252,7 +252,7 @@ fn receive_reuses_lowered_matcher_during_interp_probes() {
           v = receive do
             {:hit, x} -> x
           end
-          print(v)
+          dbg(v)
         end
     "#;
     let m = lower_src(src);
@@ -297,7 +297,7 @@ fn receive_map_probe_uses_matcher_without_ast_pattern_walk() {
           v = receive do
             %{name: n} -> n
           end
-          print(v)
+          dbg(v)
         end
     "#;
     let m = lower_src(src);
@@ -318,7 +318,7 @@ fn receive_map_pattern_matches_present_nil_value() {
           v = receive do
             %{name: n} -> n
           end
-          print(v)
+          dbg(v)
         end
     "#;
     let m = lower_src(src);

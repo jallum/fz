@@ -1,7 +1,6 @@
 error[lex/unexpected-char]: unexpected character '`'
-  --> fixtures/errors/lex-bad-char/input.fz:2:9
+  --> fixtures/errors/lex-bad-char/input.fz:2:7
    |
- 2 |   print(`hello)
-   |         ^
+ 2 |   dbg(`hello)
+   |       ^
    |
-

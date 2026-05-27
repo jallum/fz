@@ -2,7 +2,7 @@ fn make(), do: {[1, 2, 3], 99}
 
 fn main() do
   {[h | t], y} = make()
-  print(h)
-  print(t)
-  print(y)
+  dbg(h)
+  dbg(t)
+  dbg(y)
 end

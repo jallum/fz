@@ -9,6 +9,6 @@ defmodule Greeter do
 end
 
 fn main() do
-  print(Greeter.hi(:alice))
-  print(Greeter.echo(42))
+  dbg(Greeter.hi(:alice))
+  dbg(Greeter.echo(42))
 end

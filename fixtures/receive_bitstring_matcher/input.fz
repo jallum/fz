@@ -6,5 +6,5 @@ fn main() do
     <<len, payload::binary-size(len), rest::binary>> -> len
   end
 
-  print(result)
+  dbg(result)
 end

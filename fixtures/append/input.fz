@@ -3,10 +3,10 @@ fn append([h | t], ys), do: [h | append(t, ys)]
 
 fn main() do
   out = append([1, 2, 3], [4, 5])
-  print(out)
+  dbg(out)
 
   stats = Process.heap_alloc_stats()
-  print(stats)
+  dbg(stats)
   heap_bytes = stats[:list_cons_bytes] + stats[:struct_bytes] + stats[:map_bytes]
-  print(heap_bytes)
+  dbg(heap_bytes)
 end

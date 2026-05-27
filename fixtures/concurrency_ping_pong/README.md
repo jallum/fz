@@ -1,16 +1,16 @@
 ---
 purpose: "spawn + send + receive — parent blocks on receive, prints the message"
 paths: [jit, interp, aot, repl]
-budget.codegen.functions: 6
-budget.codegen.instructions: 67
+budget.codegen.functions: 5
+budget.codegen.instructions: 44
 budget.specs.count: 4
 budget.planner.worklist_pops: 7
 budget.planner.walk_calls: 7
 budget.planner.type_fn_calls: 4
 budget.planner.matcher_specs: 0
-budget.planner.vars: 15
-budget.planner.blocks: 6
-budget.planner.stmts: 9
+budget.planner.vars: 13
+budget.planner.blocks: 4
+budget.planner.stmts: 6
 budget.planner.dispatches: 1
 ---
 

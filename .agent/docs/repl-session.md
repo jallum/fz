@@ -133,7 +133,7 @@ blocked evaluator process does not prevent help from answering.
 `repl --script` shares the same frontend/runtime model but not the terminal
 presentation model. It drives whole-file source through
 `ReplSession::run_script_str`, emits no prompts, echoes no expression display
-values, and invokes `main/0` at EOF when present. Program-side `print()` remains
+values, and invokes `main/0` at EOF when present. Program-side `dbg()` remains
 the only script-mode stdout.
 
 Script mode bypasses `rustyline` and `ReplComposer` because whole-file parsing

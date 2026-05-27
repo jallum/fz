@@ -7,7 +7,7 @@ defmacro double(x) do
 end
 
 fn main() do
-  print(inc(41))
-  print(double(21))
-  print(inc(double(20)))
+  dbg(inc(41))
+  dbg(double(21))
+  dbg(inc(double(20)))
 end

@@ -6,8 +6,8 @@ fn fact(0), do: 1
 fn fact(n), do: n * fact(n - 1)
 
 fn main() do
-  print(classify(0))
-  print(classify(7))
-  print(classify(-3))
-  print(fact(5))
+  dbg(classify(0))
+  dbg(classify(7))
+  dbg(classify(-3))
+  dbg(fact(5))
 end

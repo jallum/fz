@@ -41,6 +41,6 @@ fn main() do
     {:reply, ^ref_a, v} -> v
   end
 
-  print(val_a + val_b)
+  dbg(val_a + val_b)
   send(s, {:stop})
 end

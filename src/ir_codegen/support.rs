@@ -59,7 +59,7 @@ pub fn asm_record_take() -> Vec<(String, String)> {
 }
 
 /// Drain the per-thread print-capture buffer. Storage lives in the
-/// runtime crate alongside fz_print_value.
+/// runtime crate alongside fz_dbg_value.
 #[cfg(test)]
 pub fn test_capture_take() -> Vec<String> {
     fz_runtime::ir_runtime::test_capture_take()

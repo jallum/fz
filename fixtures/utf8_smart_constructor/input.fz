@@ -4,8 +4,8 @@ alias Utf8, as: U
 fn main() do
   good = <<104, 105>>           # "hi" as raw bytes
   bad  = <<0xff, 0xff>>         # invalid UTF-8 sequence
-  print(valid?(good))
-  print(valid?(bad))
-  print(U.from_bytes(good))
-  print(U.from_bytes(bad))
+  dbg(valid?(good))
+  dbg(valid?(bad))
+  dbg(U.from_bytes(good))
+  dbg(U.from_bytes(bad))
 end

@@ -1,3 +1,3 @@
 fn main() do
-  print(1 == :ok)
+  dbg(1 == :ok)
 end

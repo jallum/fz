@@ -1,6 +1,6 @@
 fn main() do
-  print(1 == 2)
-  print(1 == 1)
-  print(:ok == :err)
-  print(:ok == :ok)
+  dbg(1 == 2)
+  dbg(1 == 1)
+  dbg(:ok == :err)
+  dbg(:ok == :ok)
 end

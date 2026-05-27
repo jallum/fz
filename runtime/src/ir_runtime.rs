@@ -11,7 +11,7 @@
 //!   .9  bitstring (fz_bs_*, decode_*/encode_* bit helpers)
 //!   .11 closure (fz_closure_*, fz_tail_closure)
 //!   .12 concurrency (fz_spawn, fz_self, fz_send, fz_receive_attempt)
-//!   .13 halt/print (fz_halt, fz_print_value)
+//!   .13 halt/print (fz_halt, fz_dbg_value)
 //!
 //! All fns here have unstable `extern "C"` ABI — they're called by
 //! Cranelift-emitted code via the symbol-binding list in
@@ -281,13 +281,13 @@ pub extern "C" fn fz_box_atom_for_any(raw: u64) -> u64 {
 // ===== Halt + print cluster (fz-ul4.23.4.13) =====
 
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_print_value_ref(ref_word: u64) {
-    let value = any_value_from_ref_word(ref_word, "fz_print_value_ref");
+pub extern "C" fn fz_dbg_value_ref(ref_word: u64) {
+    let value = any_value_from_ref_word(ref_word, "fz_dbg_value_ref");
     crate::emit_print_line(crate::any_value::debug::render_value(value));
 }
 
 thread_local! {
-    /// Test-only capture of every fz_print_value rendering. Tests in the
+    /// Test-only capture of every fz_dbg_value rendering. Tests in the
     /// fz binary (ir_codegen::tests) read it via `test_capture_take()`.
     /// Lifted from ir_codegen.rs alongside the FFI body in fz-ul4.23.10.
     pub static TEST_CAPTURE: std::cell::RefCell<Vec<String>> =

@@ -2,16 +2,16 @@
 purpose: "nested destructure mixing tuple arity and list cons — `{[h | t], y} = make()` across all four legs"
 paths: [jit, interp, aot, repl]
 budget.codegen.functions: 1
-budget.codegen.instructions: 31
-budget.specs.count: 2
-budget.planner.worklist_pops: 3
-budget.planner.walk_calls: 3
-budget.planner.type_fn_calls: 2
+budget.codegen.instructions: 25
+budget.specs.count: 1
+budget.planner.worklist_pops: 1
+budget.planner.walk_calls: 1
+budget.planner.type_fn_calls: 1
 budget.planner.matcher_specs: 0
-budget.planner.vars: 34
-budget.planner.blocks: 7
-budget.planner.stmts: 18
-budget.planner.dispatches: 1
+budget.planner.vars: 21
+budget.planner.blocks: 3
+budget.planner.stmts: 15
+budget.planner.dispatches: 0
 ---
 
 # destructure_mixed

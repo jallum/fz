@@ -15,5 +15,5 @@ defmodule App do
 end
 
 fn main() do
-  print(App.run(21))
+  dbg(App.run(21))
 end

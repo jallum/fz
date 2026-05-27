@@ -64,7 +64,7 @@ fn interp_typed_float_raw() {
 
 #[test]
 fn interp_render_raw_float_in_container() {
-    assert_eq!(capture("fn main(), do: print([1.5])"), "[1.5]");
+    assert_eq!(capture("fn main(), do: dbg([1.5])"), "[1.5]");
 }
 
 #[test]
@@ -197,7 +197,7 @@ fn interp_ref_bifs_read_scalars_from_list_map_and_tuple() {
             fn tuple_second({_, x}), do: x
             fn list_head([h | _]), do: h
             fn main() do
-              print({list_head([7]), %{answer: 42}.answer, tuple_second({:ok, 1.5})})
+              dbg({list_head([7]), %{answer: 42}.answer, tuple_second({:ok, 1.5})})
             end
         "#
         ),
@@ -213,7 +213,7 @@ fn interp_ref_bifs_read_heap_values_from_list_map_and_tuple() {
             fn tuple_second({_, x}), do: x
             fn list_head([h | _]), do: h
             fn main() do
-              print({list_head([[1]]), %{child: [2]}.child, tuple_second({:ok, [3]})})
+              dbg({list_head([[1]]), %{child: [2]}.child, tuple_second({:ok, [3]})})
             end
         "#
         ),

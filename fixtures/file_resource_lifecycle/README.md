@@ -1,17 +1,17 @@
 ---
 purpose: "fz-swt.13 / fz-4mk — File module wraps an fd in a resource; the dtor closes the fd at task-exit drain (interp/JIT/AOT parity)."
 paths: [interp, jit, aot, repl]
-budget.codegen.functions: 3
-budget.codegen.instructions: 35
-budget.specs.count: 3
-budget.planner.worklist_pops: 4
-budget.planner.walk_calls: 4
-budget.planner.type_fn_calls: 3
+budget.codegen.functions: 2
+budget.codegen.instructions: 29
+budget.specs.count: 2
+budget.planner.worklist_pops: 2
+budget.planner.walk_calls: 2
+budget.planner.type_fn_calls: 2
 budget.planner.matcher_specs: 0
-budget.planner.vars: 37
-budget.planner.blocks: 7
-budget.planner.stmts: 17
-budget.planner.dispatches: 2
+budget.planner.vars: 24
+budget.planner.blocks: 2
+budget.planner.stmts: 13
+budget.planner.dispatches: 0
 ---
 
 # file_resource_lifecycle
@@ -64,11 +64,11 @@ The dtor body is just:
 ```fz
 fn dtor(fd) do
   libc::close(fd)
-  print(:dtor_closed)
+  dbg(:dtor_closed)
 end
 ```
 
 `libc::creat`, `libc::unlink`, and `libc::close` are ordinary externs.
-The `print(:dtor_closed)` is the witness that the dtor body fully
+The `dbg(:dtor_closed)` is the witness that the dtor body fully
 executed — under the old extracted-Prim::Extern path it would have
 been silently dead code.

@@ -9,8 +9,8 @@ fn cmatch(v) do
 end
 
 fn main() do
-  print(catch(0))
-  print(catch(7))
-  print(cmatch(0))
-  print(cmatch(99))
+  dbg(catch(0))
+  dbg(catch(7))
+  dbg(cmatch(0))
+  dbg(cmatch(99))
 end

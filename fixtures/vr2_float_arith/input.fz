@@ -1,6 +1,6 @@
 fn main() do
-  print(1.5 + 2.5)
-  print(10.0 - 3.0)
-  print(2.5 * 4.0)
-  print(1.0 < 2.0)
+  dbg(1.5 + 2.5)
+  dbg(10.0 - 3.0)
+  dbg(2.5 * 4.0)
+  dbg(1.0 < 2.0)
 end

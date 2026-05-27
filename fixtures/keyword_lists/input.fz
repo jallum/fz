@@ -1,9 +1,9 @@
 fn echo(opts), do: opts
 
 fn main() do
-  print([a: 1, b: 2])
-  print(echo(timeout: 10, retry: true))
-  print(echo(label: :work) do
+  dbg([a: 1, b: 2])
+  dbg(echo(timeout: 10, retry: true))
+  dbg(echo(label: :work) do
     42
   end)
 end

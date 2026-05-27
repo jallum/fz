@@ -2,8 +2,8 @@ fn helper(), do: 7
 
 fn main() do
   if 1 == 0 do
-    print(helper())
+    dbg(helper())
   else
-    print(99)
+    dbg(99)
   end
 end

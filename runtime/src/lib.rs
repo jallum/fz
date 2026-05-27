@@ -28,9 +28,9 @@ pub mod yield_flag;
 // C-ABI builtins called from compiled fz code
 // ---------------------------------------------------------------------------
 
-// fz-ul4.27.7 (VR.5b): typed print helpers. The JIT routes Prim::Builtin::Print
+// fz-ul4.27.7 (VR.5b): typed print helpers. The JIT routes Kernel.dbg
 // to fz_print_i64 / fz_print_f64 when ir_planner narrows the arg, skipping the
-// boxing round-trip through `fz_print_value`. Each helper also pushes to
+// boxing round-trip through `fz_dbg_value`. Each helper also pushes to
 // `TEST_CAPTURE` so cargo-test assertions work the same way regardless of
 // which entry point the JIT picked.
 
@@ -57,40 +57,13 @@ pub extern "C" fn fz_print_f64(x: f64) {
     emit_print_line(format_f64_for_print(x));
 }
 
-/// Aborts with `msg` printed to stderr. `msg_ptr`/`msg_len` describe a UTF-8
-/// byte slice; the compiler emits these from a string literal embedded in
-/// the binary. Used for case no-match, integer overflow guards (.12.5), etc.
-///
-/// # Safety
-/// `msg_ptr` must point to `msg_len` valid UTF-8 bytes.
+/// Aborts with the fz value rendered to stderr.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn fz_panic(msg_ptr: *const u8, msg_len: usize) -> ! {
-    let bytes = unsafe { std::slice::from_raw_parts(msg_ptr, msg_len) };
-    let s = std::str::from_utf8(bytes).unwrap_or("<panic message: invalid utf-8>");
-    eprintln!("fz panic: {}", s);
+pub extern "C" fn fz_panic(msg_ref: u64) -> ! {
+    let value = any_value::AnyValueRef::from_raw_word(msg_ref)
+        .ok()
+        .and_then(|value| any_value::AnyValue::from_ref(value).ok())
+        .unwrap_or(any_value::AnyValue::null());
+    eprintln!("fz panic: {}", any_value::debug::render_value(value));
     std::process::abort();
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn fz_assert(cond: u64) {
-    if cond == crate::any_value::NIL_BITS || cond == crate::any_value::FALSE_BITS {
-        eprintln!("fz assert failed");
-        std::process::abort();
-    }
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn fz_assert_eq(a: u64, b: u64) {
-    if a != b {
-        eprintln!("fz assert_eq failed: values are not equal");
-        std::process::abort();
-    }
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn fz_assert_neq(a: u64, b: u64) {
-    if a == b {
-        eprintln!("fz assert_neq failed: values are equal");
-        std::process::abort();
-    }
 }

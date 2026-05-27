@@ -2,6 +2,6 @@ fn check(x :: integer) do :is_int end
 fn check(x) do :other end
 
 fn main() do
-  print(check(42))
-  print(check(:foo))
+  dbg(check(42))
+  dbg(check(:foo))
 end

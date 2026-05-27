@@ -842,15 +842,11 @@ mod tests {
         );
         rt.run_until_idle();
 
-        // Parent received 42, printed it, and halts on print's return
-        // value (nil — represented as 0 in halt_value per fz_halt's
-        // per-tag decoding). fz-ul4.26 changed main to `print(receive())`;
-        // the receive-and-halt-with-42 path is verified by capture below
-        // (TEST_CAPTURE has "42") and by the matrix's .expected file.
+        // Parent received 42, printed it, and halts on dbg's return value.
         let main_task = rt.task(main_pid).expect("main task in registry");
         assert_eq!(
-            main_task.halt_value, 0,
-            "parent halts with print(receive())'s nil return"
+            main_task.halt_value, 42,
+            "parent halts with dbg(receive())'s returned value"
         );
         assert_eq!(main_task.state, ProcessState::Exited);
 
@@ -968,7 +964,7 @@ mod tests {
               v = receive do
                 %{name: n} -> n
               end
-              print(v)
+              dbg(v)
             end
         "#;
         let m = lower_src(src);
@@ -1026,7 +1022,7 @@ mod tests {
               v = receive do
                 %{name: n} -> n
               end
-              print(v)
+              dbg(v)
             end
         "#;
         let m = lower_src(src);

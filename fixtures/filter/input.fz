@@ -4,10 +4,10 @@ fn filter_lt([_ | t], limit), do: filter_lt(t, limit)
 
 fn main() do
   out = filter_lt([1, 5, 2, 8, 3], 4)
-  print(out)
+  dbg(out)
 
   stats = Process.heap_alloc_stats()
-  print(stats)
+  dbg(stats)
   heap_bytes = stats[:list_cons_bytes] + stats[:struct_bytes] + stats[:map_bytes]
-  print(heap_bytes)
+  dbg(heap_bytes)
 end

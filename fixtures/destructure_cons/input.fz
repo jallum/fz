@@ -1,5 +1,5 @@
 fn main() do
   [h | t] = [10, 20, 30]
-  print(h)
-  print(t)
+  dbg(h)
+  dbg(t)
 end

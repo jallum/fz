@@ -2,15 +2,15 @@
 purpose: VR.3.3 / VR.4.2.3 — typed int args flow through native ABI
 paths: [jit, interp, aot, repl]
 budget.codegen.functions: 1
-budget.codegen.instructions: 8
+budget.codegen.instructions: 5
 budget.specs.count: 1
 budget.planner.worklist_pops: 1
 budget.planner.walk_calls: 1
 budget.planner.type_fn_calls: 1
 budget.planner.matcher_specs: 0
-budget.planner.vars: 11
-budget.planner.blocks: 2
-budget.planner.stmts: 7
+budget.planner.vars: 9
+budget.planner.blocks: 1
+budget.planner.stmts: 6
 budget.planner.dispatches: 0
 ---
 

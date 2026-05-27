@@ -124,56 +124,19 @@ pub(super) fn call_extern<T: Types<Ty = crate::types::Ty>>(
     args: &[AnyValue],
 ) -> Result<AnyValue, String> {
     let decl = module.extern_by_id(eid);
-    // Assert fns use std::process::abort on failure — fatal for the JIT/AOT
-    // path, but unusable in the interpreter where failures must return Err.
-    // Handle them inline with the same logic as run_builtin::Assert*.
     match decl.symbol.as_str() {
-        "fz_assert" => {
+        "fz_panic" => {
             if args.len() != 1 {
-                return Err(format!("fz_assert/1 got {} args", args.len()));
+                return Err(format!("fz_panic/1 got {} args", args.len()));
             }
-            return if is_truthy(args[0]) {
-                Ok(interp_nil_value())
-            } else {
-                Err("assertion failed".into())
-            };
+            return Err(format!("fz panic: {}", args[0].render()));
         }
-        "fz_assert_eq" => {
-            if args.len() != 2 {
-                return Err(format!("fz_assert_eq/2 got {} args", args.len()));
-            }
-            let eq = interp_value_eq(args[0], args[1])?;
-            return if eq {
-                Ok(interp_nil_value())
-            } else {
-                Err(format!(
-                    "assertion failed: assert_eq({}, {})",
-                    args[0].render(),
-                    args[1].render(),
-                ))
-            };
-        }
-        "fz_assert_neq" => {
-            if args.len() != 2 {
-                return Err(format!("fz_assert_neq/2 got {} args", args.len()));
-            }
-            let eq = interp_value_eq(args[0], args[1])?;
-            return if !eq {
-                Ok(interp_nil_value())
-            } else {
-                Err(format!(
-                    "assertion failed: assert_neq({}, {})",
-                    args[0].render(),
-                    args[1].render(),
-                ))
-            };
-        }
-        "fz_print_value" => {
+        "fz_dbg_value" => {
             if args.len() != 1 {
-                return Err(format!("fz_print_value/1 got {} args", args.len()));
+                return Err(format!("fz_dbg_value/1 got {} args", args.len()));
             }
-            args[0].print()?;
-            return Ok(interp_nil_value());
+            args[0].dbg()?;
+            return Ok(args[0]);
         }
         "fz_print_i64" => {
             if args.len() != 1 {
@@ -182,7 +145,7 @@ pub(super) fn call_extern<T: Types<Ty = crate::types::Ty>>(
             if let Some(n) = args[0].as_i64() {
                 fz_runtime::fz_print_i64(n);
             } else {
-                args[0].print()?;
+                args[0].dbg()?;
             }
             return Ok(interp_nil_value());
         }
@@ -190,7 +153,7 @@ pub(super) fn call_extern<T: Types<Ty = crate::types::Ty>>(
             if args.len() != 1 {
                 return Err(format!("fz_print_f64/1 got {} args", args.len()));
             }
-            args[0].print()?;
+            args[0].dbg()?;
             return Ok(interp_nil_value());
         }
         "fz_process_heap_alloc_stats" => {
@@ -319,9 +282,7 @@ pub(super) fn resolve_symbol(name: &str) -> Result<*const (), String> {
     }
     let native: Option<*const ()> = match name {
         "fz_print_i64" => Some(fz_runtime::fz_print_i64 as *const ()),
-        "fz_assert" => Some(fz_runtime::fz_assert as *const ()),
-        "fz_assert_eq" => Some(fz_runtime::fz_assert_eq as *const ()),
-        "fz_assert_neq" => Some(fz_runtime::fz_assert_neq as *const ()),
+        "fz_panic" => Some(fz_runtime::fz_panic as *const ()),
         "fz_process_heap_alloc_stats" => {
             Some(fz_runtime::ir_runtime::fz_process_heap_alloc_stats as *const ())
         }

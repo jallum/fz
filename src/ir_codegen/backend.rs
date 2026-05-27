@@ -76,12 +76,12 @@ impl JitBackend {
 
 /// Bind every fz runtime FFI fn pointer into the JIT linker. Split out
 /// of `JitBackend::new` purely for readability — the list is long and
-/// flat. Grouped by subsystem (print/assert, list, struct, bitstring,
+/// flat. Grouped by subsystem (debug print/panic, list, struct, bitstring,
 /// map, closure, scheduler, receive, etc.).
 fn register_runtime_symbols(builder: &mut JITBuilder) {
     builder.symbol(
-        "fz_print_value_ref",
-        fz_runtime::ir_runtime::fz_print_value_ref as *const u8,
+        "fz_dbg_value_ref",
+        fz_runtime::ir_runtime::fz_dbg_value_ref as *const u8,
     );
     builder.symbol(
         "fz_process_heap_alloc_stats",
@@ -90,14 +90,7 @@ fn register_runtime_symbols(builder: &mut JITBuilder) {
     // Typed print helpers — JIT routes here when the arg type is
     // monomorphic, passing the raw payload directly.
     builder.symbol("fz_print_i64", fz_runtime::fz_print_i64 as *const u8);
-    // Linux JIT needs explicit symbol bindings; macOS happens to
-    // resolve runtime crate exports via dlsym on the executable
-    // image, but Linux's stricter visibility under cargo llvm-cov
-    // drops them. Bind the assert family here so JIT-emitted code
-    // can call them on every platform.
-    builder.symbol("fz_assert", fz_runtime::fz_assert as *const u8);
-    builder.symbol("fz_assert_eq", fz_runtime::fz_assert_eq as *const u8);
-    builder.symbol("fz_assert_neq", fz_runtime::fz_assert_neq as *const u8);
+    builder.symbol("fz_panic", fz_runtime::fz_panic as *const u8);
     builder.symbol("fz_print_f64", fz_runtime::fz_print_f64 as *const u8);
     builder.symbol(
         "fz_dynamic_float_arith_unsupported",

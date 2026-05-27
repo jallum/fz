@@ -2,21 +2,21 @@ defmodule MathTest do
   fn helper(x), do: x * 2
 
   test(:test_helper) do
-    assert_eq(helper(21), 42)
+    assert(helper(21) == 42)
   end
 
   test(:test_arithmetic) do
-    assert_eq(1 + 1, 2)
-    assert_eq(40 + 2, 42)
+    assert(1 + 1 == 2)
+    assert(40 + 2 == 42)
   end
 end
 
 defmodule AtomTest do
   test(:test_eq) do
-    assert_eq(:ok, :ok)
+    assert(:ok == :ok)
   end
 
   test(:test_neq) do
-    assert_neq(:ok, :error)
+    refute(:ok == :error)
   end
 end

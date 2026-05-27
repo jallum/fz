@@ -10,5 +10,5 @@ defmodule User do
 end
 
 fn main() do
-  print(User.calc(10, 32))
+  dbg(User.calc(10, 32))
 end

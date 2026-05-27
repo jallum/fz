@@ -29,7 +29,7 @@ Run with `BLESS=1` to rewrite after editing fixtures.
 | `filter/` | source-level filter allocation baseline for guarded recursive list traversal | jit, interp, aot, repl |
 | `fn_ref_ampersand/` | &name/arity parses as an explicit function reference, disambiguating overloaded names by arity | jit, interp, aot, repl |
 | `guard_calls_pure_user_fn/` | case guards call pure user fns — locks X1A β-reduction three-path parity | jit, interp, aot, repl |
-| `hello/` | print each scalar shape — int, atom, bool, nil | jit, interp, aot, repl |
+| `hello/` | dbg each scalar shape — int, atom, bool, nil | jit, interp, aot, repl |
 | `higher_order/` | higher-order patterns — apply2, compose | jit, interp, aot, repl |
 | `hot_fn/` | same call repeated — historical JIT tier-up trigger; today every call is JIT | jit, interp, aot, repl |
 | `if_constant_cond_with_call/` | fz-84m repro A — constant cond + non-tail call in if-arm; formerly panicked at fz_ir.rs:453 ('unknown block') because then-arm's CPS-split finalized the outer fn while else_b was still empty | jit, interp, aot, repl |
@@ -68,7 +68,7 @@ Run with `BLESS=1` to rewrite after editing fixtures.
 | `resource_aot_dtor/` | AOT-compiled binary fires user-supplied resource dtors at heap drop | aot, repl |
 | `resource_lifecycle/` | fz-swt.12 — resource lifecycle (make_resource + .value + dtor) is observably identical across interp, JIT, AOT | interp, jit, aot, repl |
 | `reverse/` | source-level reverse allocation baseline for accumulator-style list traversal | jit, interp, aot, repl |
-| `sample_tests/` | `test()` macro from the prelude — assert_eq / assert_neq / assert | jit |
+| `sample_tests/` | `test()` macro from the prelude — assert / refute | jit |
 | `sample_tests_module/` | `test()` inside a defmodule body | jit |
 | `shared_heap_send_large_bitstring/` | fz-cty.6 — sending a >64-byte bitstring via spawn-and-send rounds through ProcBin/SharedBin under JIT and AOT | jit, interp, aot, repl |
 | `spawn2_basic/` | fz-siu.12 — spawn/2 with min_heap_size hint behaves identically to spawn/1 | jit, interp, aot, repl |
@@ -92,5 +92,5 @@ Run with `BLESS=1` to rewrite after editing fixtures.
 | `vr4_2_native_call/` | VR.4.2 — leaf-bodied helper goes through the native ABI | jit, interp, aot, repl |
 | `vr5a_cross_kind_eq/` | VR.5a — cross-kind `==` folds to constant + emits type/dead-binop lint | jit, interp, aot, repl |
 | `vr5a_typed_eq/` | VR.5a — int-int / atom-atom equality lowers to a single icmp, no fz_value_eq dispatch | jit, interp, aot, repl |
-| `vr5b_typed_print/` | VR.5b — print dispatches to typed FFI when the arg Descr narrows | jit, interp, aot, repl |
+| `vr5b_typed_print/` | VR.5b — dbg dispatches to typed FFI when the arg Descr narrows | jit, interp, aot, repl |
 | `wildcard_then_specific/` | first-match-wins for wildcard-then-specific patterns (multi-clause fn and case) | jit, interp, aot, repl |

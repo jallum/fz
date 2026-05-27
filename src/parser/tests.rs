@@ -627,7 +627,7 @@ mod extern_parse_tests {
 
     #[test]
     fn extern_fn_two_params() {
-        let d = parse_extern("extern \"C\" fn fz_assert_eq(any, any) :: unit\n");
+        let d = parse_extern("extern \"C\" fn fz_pair(any, any) :: unit\n");
         assert_eq!(d.extern_params.len(), 2);
         assert!(!d.variadic);
         assert!(!d.extern_ret_tokens.0.is_empty());

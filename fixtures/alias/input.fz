@@ -13,6 +13,6 @@ defmodule User do
 end
 
 fn main() do
-  print(User.nick_name(40))
-  print(User.renamed(41))
+  dbg(User.nick_name(40))
+  dbg(User.renamed(41))
 end

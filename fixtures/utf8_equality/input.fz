@@ -1,5 +1,5 @@
 fn main() do
-  print("hi" == "hi")
-  print("hi" == "bye")
-  print("héllo" == "héllo")
+  dbg("hi" == "hi")
+  dbg("hi" == "bye")
+  dbg("héllo" == "héllo")
 end

@@ -10,5 +10,5 @@ fn main() do
   spawn(first_relay)
   spawn(second_relay)
   send(2, 40)
-  print(receive do x -> x end)
+  dbg(receive do x -> x end)
 end

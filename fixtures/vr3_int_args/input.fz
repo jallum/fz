@@ -3,5 +3,5 @@ fn sum3(a, b, c) do
 end
 
 fn main() do
-  print(sum3(40, 1, 1))
+  dbg(sum3(40, 1, 1))
 end

@@ -10,7 +10,7 @@ fn classify(n) do
 end
 
 fn main() do
-  print(classify(5))
-  print(classify(0))
-  print(classify(-3))
+  dbg(classify(5))
+  dbg(classify(0))
+  dbg(classify(-3))
 end

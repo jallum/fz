@@ -312,7 +312,7 @@ It can be any fz function of the right shape:</p>
 handle = <span class="fn">make_resource</span>(fd, &amp;<span class="fn">close_and_log</span>/<span class="num">1</span>)</pre>
 
 <p>When the resource gets cleaned up, the body of <code>close_and_log</code>
-runs as ordinary fz code. The <code>print(:closed)</code> actually fires.
+runs as ordinary fz code. The <code>dbg(:closed)</code> actually fires.
 You can branch, allocate, even call other externs — the dtor is just a
 function call.</p>
 
@@ -409,7 +409,7 @@ module that declared it.</p>
   <li><code>main</code> returns. The scheduler notices the task has
       halted, walks any surviving resources, and drains their dtors.
       <code>close_observable</code> runs as fz code: it calls
-      <code>libc::close(fd)</code>, then <code>print(:dtor_closed)</code>.</li>
+      <code>libc::close(fd)</code>, then <code>dbg(:dtor_closed)</code>.</li>
 </ul>
 
 <!-- ─────────────────────────────── 9. FOOTGUNS ─────────────────────────────── -->

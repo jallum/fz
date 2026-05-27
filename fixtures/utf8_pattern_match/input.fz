@@ -3,7 +3,7 @@ fn greet("bye"), do: :goodbye
 fn greet(_), do: :unknown
 
 fn main() do
-  print(greet("hi"))
-  print(greet("bye"))
-  print(greet("other"))
+  dbg(greet("hi"))
+  dbg(greet("bye"))
+  dbg(greet("other"))
 end

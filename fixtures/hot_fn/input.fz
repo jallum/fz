@@ -1,14 +1,14 @@
 fn hot(n), do: n + 1
 
 fn main() do
-  print(hot(0))
-  print(hot(0))
-  print(hot(0))
-  print(hot(0))
-  print(hot(0))
-  print(hot(0))
-  print(hot(0))
-  print(hot(0))
-  print(hot(0))
-  print(hot(0))
+  dbg(hot(0))
+  dbg(hot(0))
+  dbg(hot(0))
+  dbg(hot(0))
+  dbg(hot(0))
+  dbg(hot(0))
+  dbg(hot(0))
+  dbg(hot(0))
+  dbg(hot(0))
+  dbg(hot(0))
 end
