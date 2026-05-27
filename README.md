@@ -502,6 +502,7 @@ compiler dump budgets are explained in
 - `fixtures/` — small programs that document and test the language
 - `guides/` — long-form explainers
   ([processes](guides/processes.html),
+  [modules](guides/modules.html),
   [pattern matching](guides/pattern-matching.html),
   [memory and destination planning](guides/memory.html#destination-planning),
   [externs](guides/externs.html))

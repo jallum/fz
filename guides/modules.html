@@ -1,0 +1,351 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>fz modules guide</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<h1>fz modules guide</h1>
+<p class="subtitle">How fz names code, imports public functions, records interfaces, and keeps whole-program optimization optional.</p>
+
+<div class="toc">
+<ul>
+  <li><a href="#why">1. Why modules exist</a></li>
+  <li><a href="#define">2. Defining a module</a></li>
+  <li><a href="#call">3. Calling across modules</a></li>
+  <li><a href="#import">4. Importing names</a></li>
+  <li><a href="#interface">5. Interfaces - the public contract</a></li>
+  <li><a href="#strict">6. Strict interfaces - public functions need specs</a></li>
+  <li><a href="#artifacts">7. Compiled artifacts - <code>.fzi</code> and <code>.fzo</code></a></li>
+  <li><a href="#runtime">8. Runtime library modules</a></li>
+  <li><a href="#lto">9. LTO - whole-program mode when you ask for it</a></li>
+  <li><a href="#contract">10. The contract</a></li>
+</ul>
+</div>
+
+<!-- ─────────────────────────────── 1. WHY ─────────────────────────────── -->
+<h2 id="why">1. Why modules exist</h2>
+
+<p>A small program can live in one file with a handful of top-level
+functions. Larger programs need namespacing. If every helper is just
+<code>parse</code>, <code>run</code>, or <code>format</code>, the program
+eventually runs out of obvious names.</p>
+
+<p>A <strong>module</strong> gives a group of functions and types a public
+name. <code>Math.add</code> and <code>List.add</code> are different
+functions because <code>Math</code> and <code>List</code> are different
+modules.</p>
+
+<div class="aside">
+<strong>Mental model:</strong> a module is a named room. Functions inside
+the room can call each other by first name. Code outside the room uses the
+room name, or imports selected names through the room's public contract.
+</div>
+
+<p>Modules are also the boundary that makes bigger builds scale. fz can
+record "what this module promises" separately from "how this module does
+the work." Dependents need the promise. They do not need to re-plan the
+implementation body just to know which calls are legal.</p>
+
+<!-- ─────────────────────────────── 2. DEFINE ─────────────────────────────── -->
+<h2 id="define">2. Defining a module</h2>
+
+<p>Use <code>defmodule</code>:</p>
+
+<pre><span class="kw">defmodule</span> <span class="ty">Math</span> <span class="kw">do</span>
+  <span class="kw">fn</span> <span class="fn">add</span>(x, y), <span class="kw">do:</span> x + y
+  <span class="kw">fn</span> <span class="fn">double</span>(x), <span class="kw">do:</span> <span class="fn">add</span>(x, x)
+<span class="kw">end</span>
+
+<span class="kw">fn</span> <span class="fn">main</span>(), <span class="kw">do:</span> <span class="ty">Math</span>.<span class="fn">double</span>(<span class="num">21</span>)</pre>
+
+<p>Inside <code>Math</code>, <code>double</code> can call
+<code>add</code> directly. Outside <code>Math</code>, the call is
+qualified as <code>Math.double(21)</code>.</p>
+
+<p>Nested modules use dotted names:</p>
+
+<pre><span class="kw">defmodule</span> <span class="ty">App</span> <span class="kw">do</span>
+  <span class="kw">defmodule</span> <span class="ty">Clock</span> <span class="kw">do</span>
+    <span class="kw">fn</span> <span class="fn">tick</span>(), <span class="kw">do:</span> <span class="atm">:tick</span>
+  <span class="kw">end</span>
+<span class="kw">end</span>
+
+<span class="kw">fn</span> <span class="fn">main</span>(), <span class="kw">do:</span> <span class="ty">App</span>.<span class="ty">Clock</span>.<span class="fn">tick</span>()</pre>
+
+<p>The full name of that function is <code>App.Clock.tick/0</code>.</p>
+
+<!-- ─────────────────────────────── 3. CALL ─────────────────────────────── -->
+<h2 id="call">3. Calling across modules</h2>
+
+<p>A qualified call names both the module and the function:</p>
+
+<pre><span class="ty">Math</span>.<span class="fn">add</span>(<span class="num">20</span>, <span class="num">22</span>)</pre>
+
+<p>At the source level, that reads as "call <code>add/2</code> from
+module <code>Math</code>." Internally, fz records the target as a typed
+module export: module <code>Math</code>, function <code>add</code>, arity
+<code>2</code>. The dotted text is just how humans see it.</p>
+
+<p>Arity matters. <code>Math.add/1</code> and <code>Math.add/2</code> are
+different exports, just like <code>add(x)</code> and <code>add(x, y)</code>
+are different call shapes.</p>
+
+<div class="aside">
+Function identity is not "some string that happens to contain dots." The
+compiler keeps the module name, function name, and arity as separate facts.
+That is what lets interfaces and link-time checks stay precise.
+</div>
+
+<!-- ─────────────────────────────── 4. IMPORT ─────────────────────────────── -->
+<h2 id="import">4. Importing names</h2>
+
+<p>If a module uses another module a lot, import the names you want:</p>
+
+<pre><span class="kw">defmodule</span> <span class="ty">Math</span> <span class="kw">do</span>
+  <span class="kw">fn</span> <span class="fn">add</span>(x, y), <span class="kw">do:</span> x + y
+  <span class="kw">fn</span> <span class="fn">mul</span>(x, y), <span class="kw">do:</span> x * y
+<span class="kw">end</span>
+
+<span class="kw">defmodule</span> <span class="ty">User</span> <span class="kw">do</span>
+  <span class="kw">import</span> <span class="ty">Math</span>, <span class="kw">only:</span> [add: <span class="num">2</span>]
+
+  <span class="kw">fn</span> <span class="fn">run</span>(), <span class="kw">do:</span> <span class="fn">add</span>(<span class="num">20</span>, <span class="num">22</span>)
+<span class="kw">end</span></pre>
+
+<p>Inside <code>User</code>, <code>add(20, 22)</code> resolves to
+<code>Math.add/2</code>. <code>mul</code> was not imported, so
+<code>mul(2, 3)</code> would not resolve there.</p>
+
+<p>You can also import everything public from a module:</p>
+
+<pre><span class="kw">import</span> <span class="ty">Math</span></pre>
+
+<p>or import all except a few names:</p>
+
+<pre><span class="kw">import</span> <span class="ty">Math</span>, <span class="kw">except:</span> [mul: <span class="num">2</span>]</pre>
+
+<p>A local function wins over an imported function with the same name and
+arity. This keeps module internals predictable: if a module defines its own
+<code>add/2</code>, a bare call to <code>add(x, y)</code> means the local
+function.</p>
+
+<!-- ─────────────────────────────── 5. INTERFACE ─────────────────────────────── -->
+<h2 id="interface">5. Interfaces - the public contract</h2>
+
+<p>Every source module has a public <strong>interface</strong>. The
+interface contains facts that other modules are allowed to depend on:</p>
+
+<ul>
+  <li>the module name;</li>
+  <li>imports declared by the module;</li>
+  <li>public type aliases, opaque types, and refinements;</li>
+  <li>exported function names and arities;</li>
+  <li>public specs when present;</li>
+  <li>a deterministic fingerprint input list.</li>
+</ul>
+
+<p>It does <em>not</em> contain function bodies. That is the whole point.
+An interface says what can be called, not how the answer is computed.</p>
+
+<p>Inspect interfaces with:</p>
+
+<pre>fz dump --emit interfaces path/to/file.fz</pre>
+
+<p>Example:</p>
+
+<pre><span class="kw">defmodule</span> <span class="ty">Math</span> <span class="kw">do</span>
+  <span class="kw">@spec</span> add(integer, integer) :: integer
+  <span class="kw">fn</span> <span class="fn">add</span>(x, y), <span class="kw">do:</span> x + y
+<span class="kw">end</span></pre>
+
+<p>The interface dump records the public shape:</p>
+
+<pre>interface Math abi=1
+  exports
+    add/2 :: (Ident("integer"), Ident("integer")) -&gt; Ident("integer")
+  fingerprint-inputs
+    abi=1
+    module=Math
+    fn=add/2:(Ident("integer"),Ident("integer"))-&gt;Ident("integer")</pre>
+
+<p>Notice what is missing: <code>x + y</code>. Private implementation
+details do not belong in the contract.</p>
+
+<div class="box green">
+<strong>The useful property:</strong> if a dependency changes only private
+implementation code and keeps the same interface fingerprint, dependents do
+not need a new public contract. That is the basis for separate compilation.
+</div>
+
+<!-- ─────────────────────────────── 6. STRICT ─────────────────────────────── -->
+<h2 id="strict">6. Strict interfaces - public functions need specs</h2>
+
+<p>For library boundaries, public exports should have explicit specs. A
+spec is the promise downstream modules can type-check against without
+looking at the function body.</p>
+
+<p>Check that policy with:</p>
+
+<pre>fz dump --emit interfaces --strict-interfaces path/to/file.fz</pre>
+
+<p>This is accepted:</p>
+
+<pre><span class="kw">defmodule</span> <span class="ty">Public</span> <span class="kw">do</span>
+  <span class="kw">@spec</span> id(integer) :: integer
+  <span class="kw">fn</span> <span class="fn">id</span>(x), <span class="kw">do:</span> x
+<span class="kw">end</span></pre>
+
+<p>This is rejected in strict mode:</p>
+
+<pre><span class="kw">defmodule</span> <span class="ty">Public</span> <span class="kw">do</span>
+  <span class="kw">fn</span> <span class="fn">id</span>(x), <span class="kw">do:</span> x
+<span class="kw">end</span></pre>
+
+<p>Top-level helpers are different. They are not module interface exports,
+so they can remain inferable implementation details.</p>
+
+<div class="box yellow">
+<strong>Footgun:</strong> a module export without a spec is easy during
+early development, but it is weak as a library boundary. Strict interfaces
+exist to catch that before code starts depending on an inferred body.
+</div>
+
+<!-- ─────────────────────────────── 7. ARTIFACTS ─────────────────────────────── -->
+<h2 id="artifacts">7. Compiled artifacts - <code>.fzi</code> and <code>.fzo</code></h2>
+
+<p>Separate compilation needs two files with different jobs:</p>
+
+<table class="data">
+<thead><tr><th>Artifact</th><th>What it stores</th><th>Who needs it</th></tr></thead>
+<tbody>
+<tr><td class="cls"><code>.fzi</code></td><td class="shape">the public module interface and its fingerprint</td><td>dependent modules resolving imports</td></tr>
+<tr><td class="cls"><code>.fzo</code></td><td class="shape">the compiled unit envelope and runtime metadata counts</td><td>the linker building a runnable image</td></tr>
+</tbody>
+</table>
+
+<p>The names are intentionally close to familiar compiler terms:
+<code>.fzi</code> is the interface, <code>.fzo</code> is the object-like
+compiled unit.</p>
+
+<p>Normal compilation follows this shape:</p>
+
+<pre>source module
+  -&gt; interface facts
+  -&gt; .fzi contract
+  -&gt; compiled unit
+  -&gt; .fzo unit envelope
+
+dependent module
+  -&gt; resolve imports from .fzi
+  -&gt; compile without reading dependency bodies
+
+link
+  -&gt; load compatible .fzo providers
+  -&gt; resolve every imported export exactly once
+  -&gt; merge runtime metadata
+  -&gt; produce one runnable image</pre>
+
+<p>The linker checks the boring but important things:</p>
+
+<ul>
+  <li>every required import has a provider;</li>
+  <li>no export has two providers;</li>
+  <li>the compiled unit still matches the interface fingerprint it claims;</li>
+  <li>runtime-global tables such as atoms, schemas, static closures, and entrypoints can be merged deterministically.</li>
+</ul>
+
+<p>If any of that fails, the build should report a compiler error with the
+module/import context. It should not quietly fall back to source-loading the
+world.</p>
+
+<!-- ─────────────────────────────── 8. RUNTIME ─────────────────────────────── -->
+<h2 id="runtime">8. Runtime library modules</h2>
+
+<p>fz has runtime primitives implemented below the language, such as
+printing, sending messages, allocating refs, and checking UTF-8 bytes.
+Those remain <code>extern "C"</code> contracts.</p>
+
+<p>But higher-level library functions can be ordinary fz modules. For
+example, <code>Utf8.valid?</code> is library code over primitive runtime
+helpers. User code imports it as a module function:</p>
+
+<pre><span class="kw">defmodule</span> <span class="ty">User</span> <span class="kw">do</span>
+  <span class="kw">import</span> <span class="ty">Utf8</span>, <span class="kw">only:</span> [valid?: <span class="num">1</span>]
+
+  <span class="kw">fn</span> <span class="fn">run</span>(bytes), <span class="kw">do:</span> <span class="fn">valid?</span>(bytes)
+<span class="kw">end</span></pre>
+
+<p>The resolver sees the built-in runtime-library interfaces by default, so
+<code>Utf8</code> can behave like a normal library module instead of being
+pasted into every user program.</p>
+
+<p>Extern declarations inside a runtime-library module are implementation
+contracts. They are not exported as public module functions. The public
+surface is the fz wrapper API.</p>
+
+<div class="aside">
+This distinction is what lets the runtime library grow. Primitive runtime
+APIs stay small and explicit; the larger standard library can be ordinary
+fz code compiled and imported through the same module path as user code.
+</div>
+
+<!-- ─────────────────────────────── 9. LTO ─────────────────────────────── -->
+<h2 id="lto">9. LTO - whole-program mode when you ask for it</h2>
+
+<p>Separate compilation is the correctness path: compile against
+interfaces, link compatible units, run the program. Whole-program analysis
+is allowed to be faster code, not a secret requirement.</p>
+
+<p>When you want whole-program optimization, ask for it explicitly:</p>
+
+<pre>fz run --lto path/to/file.fz
+fz build --lto path/to/file.fz -o /tmp/app
+fz dump --lto --emit bodies path/to/file.fz</pre>
+
+<p><code>--whole-program</code> is accepted as an alias for
+<code>--lto</code>.</p>
+
+<p>LTO does three things in order:</p>
+
+<ol>
+  <li>Validate public interfaces first.</li>
+  <li>Load compatible implementations.</li>
+  <li>Erase allowed module boundaries before reducer/planner/codegen optimization.</li>
+</ol>
+
+<p>That last step means an imported module call can become a direct local
+call for optimization. Specs normally act as public boundary firewalls; in
+explicit LTO mode, after validation, those firewalls can be cleared for
+loaded implementations so reducer and inliner passes may cross the module
+edge.</p>
+
+<div class="box blue">
+<strong>Important:</strong> LTO must not change what the program means. It
+only changes how much implementation code the optimizer is allowed to see
+at once.
+</div>
+
+<!-- ─────────────────────────────── 10. CONTRACT ─────────────────────────────── -->
+<h2 id="contract">10. The contract</h2>
+
+<p>The short version:</p>
+
+<ul>
+  <li>Use modules to name public code.</li>
+  <li>Use imports to bring selected public functions into a module.</li>
+  <li>Use specs on module exports that other code should depend on.</li>
+  <li>Use interface dumps to see the public contract.</li>
+  <li>Normal builds should depend on interfaces and linked units, not dependency source bodies.</li>
+  <li>Use <code>--lto</code> only when you want the optimizer to erase validated boundaries.</li>
+</ul>
+
+<p>After you forget the details, remember this: <strong>private code is
+inferred inside the module; public code is described by the interface; LTO
+may erase boundaries for speed, but correctness does not depend on it.</strong></p>
+
+</body>
+</html>

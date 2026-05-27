@@ -15,6 +15,7 @@ that keep future work aligned.
 | [docs/ir-planner-rename.md](docs/ir-planner-rename.md) | Renaming legacy phase/product/telemetry vocabulary to planner vocabulary. |
 | [docs/ir-interp-runtime.md](docs/ir-interp-runtime.md) | IR interpreter runtime ownership, persistent drives, or REPL session execution. |
 | [docs/lazy-continuation-materialization.md](docs/lazy-continuation-materialization.md) | Compiler-known native continuations, stack-backed continuation descriptors, closure materialization, or scheduler-boundary continuation roots. |
+| [docs/modules.md](docs/modules.md) | Technical module interfaces, `.fzi` / `.fzo` artifacts, compiled units/images, link checks, or LTO boundary erasure. |
 | [docs/module-separate-compilation.md](docs/module-separate-compilation.md) | Module identity, imports/interfaces, compiled units/images, runtime library modules, or LTO boundary erasure. |
 | [docs/repl-session.md](docs/repl-session.md) | REPL world/bindings/runtime layering, chunk synthesis, docs/help, or macro/runtime boundaries. |
 | [docs/scheduler-zero-arg-closures.md](docs/scheduler-zero-arg-closures.md) | Scheduler, receive, yield, spawn, timeout, or continuation re-entry. |
