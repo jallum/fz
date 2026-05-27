@@ -379,8 +379,14 @@ pub(crate) fn lower_expr(
             } else {
                 None
             };
+            let protocol_callee = if local_callee.is_none() && external_callee.is_none() {
+                ctx.protocol_callee(&callee_name, arity)
+            } else {
+                None
+            };
             let callee = local_callee
                 .or_else(|| external_callee.as_ref().map(|(callee, _)| *callee))
+                .or(protocol_callee)
                 .ok_or_else(|| LowerError::Unbound {
                     span: target.span,
                     name: format!("fn {}/{}", callee_name, arity),

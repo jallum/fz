@@ -450,9 +450,120 @@ fn linked_ir_units_rewrite_external_edges_and_run_provider_body() {
         .as_ref()
         .expect("linked planner facts must be preserved");
     let linked = linked.module;
+    assert!(
+        !linked_plan.specs.values().any(|spec| {
+            spec.call_edges.values().any(|edge| {
+                matches!(
+                    edge.target,
+                    crate::ir_planner::fn_types::CallEdgeTarget::External { .. }
+                )
+            })
+        }),
+        "linked protocol edge should resolve to a local impl"
+    );
+    assert!(
+        !linked_plan.specs.values().any(|spec| {
+            spec.call_edges.values().any(|edge| {
+                edge.local_target()
+                    .map(|target| {
+                        linked
+                            .fn_by_id(target.fn_id)
+                            .name
+                            .starts_with("__protocol__")
+                    })
+                    .unwrap_or(false)
+            })
+        }),
+        "linked protocol edge must not target the protocol stub"
+    );
     assert!(linked.external_call_edges.is_empty());
     let entry = linked.fn_by_name("main").expect("main").id;
 
+    let compiled = compile_pretyped(&mut t, &linked, linked_plan, &tel).expect("compile linked");
+    let image = CompiledImage::from_linked(compiled);
+
+    assert_eq!(image.run(entry), 42);
+}
+
+#[test]
+fn linked_ir_units_preserve_provider_protocol_dispatch_plan() {
+    let mut t = crate::types::ConcreteTypes;
+    let tel = crate::telemetry::NullTelemetry;
+    let provider = crate::frontend::compile_source_with_types(
+        &mut t,
+        r#"
+defmodule Contracts do
+  defprotocol Collectable do
+    fn id(value)
+  end
+
+  defimpl Collectable, for: List do
+    fn id(value), do: 42
+  end
+end
+"#
+        .to_string(),
+        "contracts.fz".to_string(),
+        &tel,
+    )
+    .unwrap_or_else(|err| panic!("provider frontend: {:?}", err.diagnostics));
+    let contracts =
+        crate::modules::identity::ModuleName::from_segments(vec!["Contracts".to_string()]);
+    let contracts_interface = provider._prog.module_interfaces[&contracts].clone();
+
+    let mut interfaces = crate::resolve::InterfaceTable::new();
+    interfaces.insert(contracts, contracts_interface.clone());
+    let user = crate::frontend::compile_source_with_interface_table(
+        &mut t,
+        r#"
+defmodule User do
+  fn run(), do: Contracts.Collectable.id([1])
+end
+fn main(), do: User.run()
+"#
+        .to_string(),
+        "user.fz".to_string(),
+        interfaces,
+        &tel,
+    )
+    .unwrap_or_else(|err| panic!("user frontend: {:?}", err.diagnostics));
+    assert!(
+        user.module
+            .protocol_call_targets
+            .values()
+            .any(|target| target.callback == "id")
+    );
+    assert!(
+        user.module_plan.specs.values().any(|spec| {
+            spec.call_edges.values().any(|edge| {
+                matches!(
+                    edge.target,
+                    crate::ir_planner::fn_types::CallEdgeTarget::External { .. }
+                )
+            })
+        }),
+        "user protocol call should be a provider-boundary call edge"
+    );
+
+    let provider_unit = CompiledUnit::from_ir_module_with_plan(
+        provider.module,
+        Some(provider.module_plan),
+        Some(contracts_interface),
+        crate::diag::Diagnostics::new(),
+    );
+    let user_unit = CompiledUnit::from_ir_module_with_plan(
+        user.module,
+        Some(user.module_plan),
+        None,
+        crate::diag::Diagnostics::new(),
+    );
+    let linked = link_ir_units_with_plan(&[provider_unit, user_unit]).expect("link ir units");
+    let linked_plan = linked
+        .module_plan
+        .as_ref()
+        .expect("linked planner facts must be preserved");
+    let linked = linked.module;
+    let entry = linked.fn_by_name("main").expect("main").id;
     let compiled = compile_pretyped(&mut t, &linked, linked_plan, &tel).expect("compile linked");
     let image = CompiledImage::from_linked(compiled);
 

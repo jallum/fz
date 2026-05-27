@@ -3,7 +3,7 @@ use crate::ast::FnDef;
 use crate::diag::Span;
 use crate::fz_ir::{
     BlockId, CallsiteId, Const, EmitSlot, ExternArg, ExternDecl, ExternId, FnBuilder, FnId,
-    ModuleBuilder, Prim, Term, Var,
+    ModuleBuilder, Prim, ProtocolCallTarget, Term, Var,
 };
 use std::collections::{HashMap, HashSet};
 
@@ -85,6 +85,8 @@ pub struct LowerCtx {
     pub(super) prelude_imports: HashMap<(String, usize), String>,
     pub(super) external_exports: HashMap<(String, usize), crate::modules::identity::ExportKey>,
     pub(super) external_stubs: HashMap<crate::modules::identity::ExportKey, FnId>,
+    pub(super) protocol_callbacks: HashMap<(String, usize), ProtocolCallTarget>,
+    pub(super) protocol_stubs: HashMap<(String, usize), FnId>,
 }
 
 impl LowerCtx {
@@ -118,6 +120,8 @@ impl LowerCtx {
             prelude_imports: HashMap::new(),
             external_exports: HashMap::new(),
             external_stubs: HashMap::new(),
+            protocol_callbacks: HashMap::new(),
+            protocol_stubs: HashMap::new(),
         }
     }
 
@@ -160,6 +164,69 @@ impl LowerCtx {
                 );
             }
         }
+    }
+
+    pub(super) fn register_protocol_registry(
+        &mut self,
+        registry: &crate::protocols::ProtocolRegistry,
+    ) {
+        for (protocol, decl) in &registry.protocols {
+            for callback in &decl.callbacks {
+                self.protocol_callbacks.insert(
+                    (format!("{}.{}", protocol, callback.name), callback.arity),
+                    ProtocolCallTarget {
+                        protocol: protocol.clone(),
+                        callback: callback.name.clone(),
+                        arity: callback.arity,
+                    },
+                );
+            }
+        }
+    }
+
+    pub(super) fn register_interface_protocols(
+        &mut self,
+        interfaces: &std::collections::BTreeMap<
+            crate::modules::identity::ModuleName,
+            crate::modules::interface::ModuleInterface,
+        >,
+    ) {
+        for interface in interfaces.values() {
+            for protocol in &interface.protocols {
+                for callback in &protocol.callbacks {
+                    self.protocol_callbacks.insert(
+                        (
+                            format!("{}.{}", protocol.name, callback.name),
+                            callback.arity,
+                        ),
+                        ProtocolCallTarget {
+                            protocol: protocol.name.clone(),
+                            callback: callback.name.clone(),
+                            arity: callback.arity,
+                        },
+                    );
+                }
+            }
+        }
+    }
+
+    pub(super) fn protocol_callee(&mut self, name: &str, arity: usize) -> Option<FnId> {
+        let key = (name.to_string(), arity);
+        let target = self.protocol_callbacks.get(&key)?.clone();
+        if let Some(fn_id) = self.protocol_stubs.get(&key).copied() {
+            return Some(fn_id);
+        }
+        let fn_id = self.mb.fresh_fn_id();
+        let mut stub = FnBuilder::new(fn_id, format!("__protocol__.{}", name));
+        let params = (0..arity).map(|_| stub.fresh_var()).collect::<Vec<_>>();
+        let entry = stub.block(params);
+        let atom = self.atoms.intern("protocol_dispatch_unplanned");
+        let result = stub.let_(entry, Prim::Const(Const::Atom(atom)));
+        stub.set_terminator(entry, Term::Halt(result));
+        self.mb.add_fn(stub.build());
+        self.mb.protocol_call_targets.insert(fn_id, target);
+        self.protocol_stubs.insert(key, fn_id);
+        Some(fn_id)
     }
 
     pub(super) fn external_callee(

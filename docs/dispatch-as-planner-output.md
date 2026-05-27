@@ -84,6 +84,12 @@ Protocol implementation selection is the same kind of decision: the planner
 selects a direct, provider-boundary, closed-switch, runtime, or diagnostic edge
 from receiver type facts and visible implementation-domain facts.
 
+Protocol callback callsites lower to ordinary call-shaped IR with a protocol
+stub callee. The stub is not the semantic target. It is a stable callsite
+anchor that lets the planner publish a `CallEdgePlan` to the selected local
+implementation or to a provider-boundary `ExportKey`; linking then remaps that
+edge and rewrites the callsite when the provider body becomes available.
+
 The crucial invariant: demand follows a specific return edge/result hole, not
 the whole caller spec. A caller spec may contain multiple calls, and each call
 can feed a different use. Codegen must therefore consume the `CallsiteId` facts
