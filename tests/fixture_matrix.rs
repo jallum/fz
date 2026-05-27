@@ -123,6 +123,10 @@ fn static_tests() -> Vec<(&'static str, fn())> {
         ("fz_dump_emits_interfaces", fz_dump_emits_interfaces),
         ("fz_build_emits_fzi", fz_build_emits_fzi),
         (
+            "fz_dump_loads_fzi_for_imports",
+            fz_dump_loads_fzi_for_imports,
+        ),
+        (
             "fz_build_emit_fzi_requires_public_specs",
             fz_build_emit_fzi_requires_public_specs,
         ),
@@ -1087,6 +1091,81 @@ fn main(), do: Public.missing(1)
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(stderr.contains("interface/missing-spec"), "{stderr}");
     assert!(!artifact_root.join("interfaces/Public.fzi").exists());
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+fn fz_dump_loads_fzi_for_imports() {
+    let provider = r#"
+defmodule Math do
+  @spec add(integer, integer) :: integer
+  fn add(x, y), do: x + y
+end
+
+fn main(), do: Math.add(1, 2)
+"#;
+    let consumer = r#"
+defmodule User do
+  import Math, only: [add: 2]
+  @spec run(integer, integer) :: integer
+  fn run(x, y), do: x + y
+end
+"#;
+    let root = std::env::temp_dir().join(format!("fz-dump-load-fzi-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).unwrap_or_else(|e| panic!("mkdir {}: {}", root.display(), e));
+    let provider_path = root.join("provider.fz");
+    let consumer_path = root.join("consumer.fz");
+    let out_path = root.join("provider-app");
+    let artifact_root = root.join("artifacts");
+    fs::write(&provider_path, provider)
+        .unwrap_or_else(|e| panic!("write {}: {}", provider_path.display(), e));
+    fs::write(&consumer_path, consumer)
+        .unwrap_or_else(|e| panic!("write {}: {}", consumer_path.display(), e));
+
+    let build = Command::new(FZ_BIN)
+        .args(["build", "--emit-fzi", "--artifact-root"])
+        .arg(&artifact_root)
+        .arg(&provider_path)
+        .arg("-o")
+        .arg(&out_path)
+        .output()
+        .expect("spawn provider fzi build");
+    assert!(
+        build.status.success(),
+        "provider fzi build exited {}: {}",
+        build.status,
+        String::from_utf8_lossy(&build.stderr)
+    );
+    fs::remove_file(&provider_path)
+        .unwrap_or_else(|e| panic!("remove {}: {}", provider_path.display(), e));
+
+    let dump = Command::new(FZ_BIN)
+        .args([
+            "dump",
+            "--emit",
+            "interfaces",
+            "--interface",
+            "Math",
+            "--artifact-root",
+        ])
+        .arg(&artifact_root)
+        .arg(&consumer_path)
+        .output()
+        .expect("spawn consumer interface dump");
+    assert!(
+        dump.status.success(),
+        "consumer interface dump exited {}: {}",
+        dump.status,
+        String::from_utf8_lossy(&dump.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&dump.stdout);
+    assert!(stdout.contains("interface User abi=1"), "{stdout}");
+    assert!(stdout.contains("Math only [add/2]"), "{stdout}");
+    assert!(
+        !stdout.contains("interface Math abi=1"),
+        "consumer dump should not need provider source/interface as local output:\n{stdout}"
+    );
 
     let _ = fs::remove_dir_all(&root);
 }

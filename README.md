@@ -419,6 +419,12 @@ fz build --emit-fzi --artifact-root build/fz path/to/input.fz -o path/to/app
 This writes `.fzi` files under `build/fz/interfaces/...` and requires public
 module exports to have explicit specs.
 
+Frontend-only dump commands can load those interfaces without provider source:
+
+```sh
+fz dump --emit interfaces --interface Math --artifact-root build/fz consumer.fz
+```
+
 These answer the questions you actually have while changing things:
 *Did this call get folded? Did this function get specialized? Did
 the compiler skip something — and why?* Many fixtures pin budget

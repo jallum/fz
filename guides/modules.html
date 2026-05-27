@@ -264,6 +264,15 @@ punctuation are rejected before artifact IO can use them.</p>
 <p>Writing <code>.fzi</code> artifacts uses strict public interface validation:
 public module exports need explicit specs before the contract is stored.</p>
 
+<p>Frontend-only dumps can load those interfaces without the provider source
+file:</p>
+
+<pre>fz dump --emit interfaces --interface Math --artifact-root build/fz consumer.fz</pre>
+
+<p>That validates imports from the stored contract. Actually compiling calls
+to absent provider bodies into runnable code needs the later <code>.fzo</code>
+and linker steps.</p>
+
 <p>Normal compilation follows this shape:</p>
 
 <pre>source module

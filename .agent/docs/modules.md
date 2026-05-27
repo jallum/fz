@@ -179,6 +179,19 @@ strict public export-spec validation before writing. Loading uses
 `ArtifactStore::load_fzi_artifact` / `load_interface_table`, which deserialize
 `FziArtifact` without reading the provider source body.
 
+Frontend-only dump commands can load provider interfaces from the same store:
+
+```sh
+fz dump --emit interfaces --interface Math --artifact-root build/fz consumer.fz
+```
+
+`--interface` takes a module name and loads its `.fzi` into the resolver's
+external `InterfaceTable`. The current source file's own module interfaces are
+still collected locally and override external entries for the same module.
+This proves provider-source-free import validation. Calling an imported
+provider body from normal code still requires the later `.fzo` payload/linker
+tickets so codegen has an implementation target.
+
 ## `.fzi`: Interface Artifact
 
 `FziArtifact` is the public contract artifact. It contains only interface data

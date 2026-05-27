@@ -609,6 +609,8 @@ fn run_dump(tel: &telemetry::ConfiguredTelemetry, args: &[String]) {
     let mut emit = "clif".to_string();
     let mut show_all = false;
     let mut strict_interfaces = false;
+    let mut artifact_root = module_artifact_store::DEFAULT_ARTIFACT_ROOT.to_string();
+    let mut interface_modules = Vec::new();
     let mut mode = CompileMode::Normal;
     let mut i = 0;
     while i < args.len() {
@@ -631,6 +633,21 @@ fn run_dump(tel: &telemetry::ConfiguredTelemetry, args: &[String]) {
             // fz-f88.7 — bypass dump_outcomes filtering (prelude + dead bodies).
             "--all" => show_all = true,
             "--strict-interfaces" => strict_interfaces = true,
+            "--artifact-root" => {
+                i += 1;
+                artifact_root = args.get(i).cloned().unwrap_or_else(|| {
+                    eprintln!("fz dump: --artifact-root expects a path");
+                    std::process::exit(2);
+                });
+            }
+            "--interface" => {
+                i += 1;
+                let module = args.get(i).cloned().unwrap_or_else(|| {
+                    eprintln!("fz dump: --interface expects a module name");
+                    std::process::exit(2);
+                });
+                interface_modules.push(parse_module_name_arg("fz dump", &module));
+            }
             "--lto" | "--whole-program" => mode = CompileMode::Lto,
             a if !a.starts_with("--") && path.is_none() => path = Some(a.to_string()),
             a => {
@@ -642,7 +659,7 @@ fn run_dump(tel: &telemetry::ConfiguredTelemetry, args: &[String]) {
     }
     let path = path.unwrap_or_else(|| {
         eprintln!(
-            "fz dump <src.fz> [--lto] [--emit clif|asm|both|interfaces|specs|bodies|outcomes|stats] [--fn <name>]"
+            "fz dump <src.fz> [--lto] [--interface <Module>] [--artifact-root <dir>] [--emit clif|asm|both|interfaces|specs|bodies|outcomes|stats] [--fn <name>]"
         );
         std::process::exit(2);
     });
@@ -675,12 +692,14 @@ fn run_dump(tel: &telemetry::ConfiguredTelemetry, args: &[String]) {
         eprintln!("read {}: {}", path, e);
         std::process::exit(1);
     });
+    let interface_table =
+        load_interface_table_or_exit("fz dump", &artifact_root, &interface_modules);
 
     if emit_specs {
         if fn_filter.is_some() {
             eprintln!("fz dump: --fn is ignored with --emit specs (spec dump is per-module)");
         }
-        let dump = dump_specs_pipeline(tel, &sm_cell, src, path.clone());
+        let dump = dump_specs_pipeline(tel, &sm_cell, src, path.clone(), interface_table);
         tel.event(&["fz", "dump", "specs"], metadata! { text: dump });
         return;
     }
@@ -689,7 +708,14 @@ fn run_dump(tel: &telemetry::ConfiguredTelemetry, args: &[String]) {
         if fn_filter.is_some() {
             eprintln!("fz dump: --fn is ignored with --emit interfaces");
         }
-        let dump = dump_interfaces_pipeline(tel, &sm_cell, src, path.clone(), strict_interfaces);
+        let dump = dump_interfaces_pipeline(
+            tel,
+            &sm_cell,
+            src,
+            path.clone(),
+            strict_interfaces,
+            interface_table,
+        );
         tel.event(&["fz", "dump", "interfaces"], metadata! { text: dump });
         return;
     }
@@ -847,6 +873,27 @@ impl CompileMode {
     }
 }
 
+fn parse_module_name_arg(context: &str, text: &str) -> module_identity::ModuleName {
+    let segments = text.split('.').map(str::to_string).collect::<Vec<String>>();
+    if segments.is_empty() || segments.iter().any(|segment| segment.is_empty()) {
+        eprintln!("{context}: invalid module name `{text}`");
+        std::process::exit(2);
+    }
+    module_identity::ModuleName::from_segments(segments)
+}
+
+fn load_interface_table_or_exit(
+    context: &str,
+    artifact_root: &str,
+    modules: &[module_identity::ModuleName],
+) -> resolve::InterfaceTable {
+    let store = module_artifact_store::ArtifactStore::new(artifact_root);
+    store.load_interface_table(modules).unwrap_or_else(|e| {
+        eprintln!("{context}: {e}");
+        std::process::exit(1);
+    })
+}
+
 fn run_frontend_for_mode(
     result: frontend::FrontendResult,
     sm_cell: &Rc<RefCell<diag::SourceMap>>,
@@ -904,10 +951,17 @@ fn dump_specs_pipeline(
     sm_cell: &Rc<RefCell<diag::SourceMap>>,
     src: String,
     source_name: String,
+    interface_table: resolve::InterfaceTable,
 ) -> String {
     let mut t = types::ConcreteTypes;
     let frontend = run_frontend(
-        frontend::compile_source_with_types(&mut t, src, source_name, tel),
+        frontend::compile_source_with_interface_table(
+            &mut t,
+            src,
+            source_name,
+            interface_table,
+            tel,
+        ),
         sm_cell,
         tel,
     );
@@ -920,10 +974,17 @@ fn dump_interfaces_pipeline(
     src: String,
     source_name: String,
     strict: bool,
+    interface_table: resolve::InterfaceTable,
 ) -> String {
     let mut t = types::ConcreteTypes;
     let frontend = run_frontend(
-        frontend::compile_source_with_types(&mut t, src, source_name, tel),
+        frontend::compile_source_with_interface_table(
+            &mut t,
+            src,
+            source_name,
+            interface_table,
+            tel,
+        ),
         sm_cell,
         tel,
     );
