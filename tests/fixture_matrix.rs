@@ -36,11 +36,15 @@
 
 use libtest_mimic::{Arguments, Failed, Trial};
 use std::fs;
+use std::os::fd::RawFd;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Output, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant};
 
 const FZ_BIN: &str = env!("CARGO_BIN_EXE_fz");
+const FZ_EXEC_READY_FD_ENV: &str = "FZ_EXEC_READY_FD";
+const FIXTURE_COMMAND_TIMEOUT: Duration = Duration::from_secs(3);
 static AOT_TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 // fz-fkv — custom main: each (fixture, path) pair becomes its own
@@ -49,7 +53,12 @@ static AOT_TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 // invariant tests (CLIF shape, golden dumps, etc.) become trials too so
 // the harness is uniform.
 fn main() {
-    let args = Arguments::from_args();
+    let mut args = Arguments::from_args();
+    if args.test_threads.is_none() {
+        args.test_threads = std::env::var("RUST_TEST_THREADS")
+            .ok()
+            .and_then(|raw| raw.parse::<usize>().ok());
+    }
     let mut trials: Vec<Trial> = Vec::new();
 
     // Static invariant trials. Bodies are unchanged from their previous
@@ -584,6 +593,146 @@ enum RunOutcome {
     Failed(String),
 }
 
+#[derive(Clone, Copy)]
+enum TimeoutStart {
+    OnSpawn,
+    OnExecutionReady,
+}
+
+fn close_fd(fd: RawFd) {
+    unsafe {
+        let _ = libc::close(fd);
+    }
+}
+
+fn execution_ready_pipe() -> Result<(RawFd, RawFd), String> {
+    let mut fds = [0; 2];
+    let rc = unsafe { libc::pipe(fds.as_mut_ptr()) };
+    if rc != 0 {
+        return Err(format!(
+            "pipe {}: {}",
+            FZ_EXEC_READY_FD_ENV,
+            std::io::Error::last_os_error()
+        ));
+    }
+    let flags = unsafe { libc::fcntl(fds[0], libc::F_GETFL) };
+    if flags < 0 {
+        close_fd(fds[0]);
+        close_fd(fds[1]);
+        return Err(format!(
+            "fcntl {}: {}",
+            FZ_EXEC_READY_FD_ENV,
+            std::io::Error::last_os_error()
+        ));
+    }
+    let rc = unsafe { libc::fcntl(fds[0], libc::F_SETFL, flags | libc::O_NONBLOCK) };
+    if rc != 0 {
+        close_fd(fds[0]);
+        close_fd(fds[1]);
+        return Err(format!(
+            "fcntl nonblock {}: {}",
+            FZ_EXEC_READY_FD_ENV,
+            std::io::Error::last_os_error()
+        ));
+    }
+    Ok((fds[0], fds[1]))
+}
+
+fn read_execution_ready(fd: RawFd) -> Result<bool, String> {
+    let mut byte = [0_u8];
+    let n = unsafe { libc::read(fd, byte.as_mut_ptr().cast(), byte.len()) };
+    if n > 0 {
+        return Ok(true);
+    }
+    if n == 0 {
+        return Ok(false);
+    }
+    let err = std::io::Error::last_os_error();
+    match err.raw_os_error() {
+        Some(code) if code == libc::EAGAIN || code == libc::EINTR => Ok(false),
+        _ => Err(format!("read {}: {}", FZ_EXEC_READY_FD_ENV, err)),
+    }
+}
+
+fn fixture_command_output(
+    cmd: &mut Command,
+    label: &str,
+    timeout_start: TimeoutStart,
+) -> Result<Output, String> {
+    let ready_pipe = match timeout_start {
+        TimeoutStart::OnSpawn => None,
+        TimeoutStart::OnExecutionReady => Some(execution_ready_pipe()?),
+    };
+    if let Some((_read_fd, write_fd)) = ready_pipe {
+        cmd.env(FZ_EXEC_READY_FD_ENV, write_fd.to_string());
+    }
+    let spawned = cmd.stdout(Stdio::piped()).stderr(Stdio::piped()).spawn();
+    let mut ready_read_fd = ready_pipe.map(|(read_fd, write_fd)| {
+        close_fd(write_fd);
+        read_fd
+    });
+    let mut child = match spawned {
+        Ok(child) => child,
+        Err(e) => {
+            if let Some(read_fd) = ready_read_fd.take() {
+                close_fd(read_fd);
+            }
+            return Err(format!("spawn {}: {}", label, e));
+        }
+    };
+    let mut start = matches!(timeout_start, TimeoutStart::OnSpawn).then(Instant::now);
+    loop {
+        if let Some(read_fd) = ready_read_fd
+            && start.is_none()
+            && read_execution_ready(read_fd)?
+        {
+            if let Some(read_fd) = ready_read_fd.take() {
+                close_fd(read_fd);
+            }
+            start = Some(Instant::now());
+        }
+        match child.try_wait() {
+            Ok(Some(_)) => {
+                if let Some(read_fd) = ready_read_fd.take()
+                    && start.is_none()
+                {
+                    close_fd(read_fd);
+                }
+                return child
+                    .wait_with_output()
+                    .map_err(|e| format!("wait {}: {}", label, e));
+            }
+            Ok(None)
+                if start
+                    .map(|started| started.elapsed() >= FIXTURE_COMMAND_TIMEOUT)
+                    .unwrap_or(false) =>
+            {
+                let _ = child.kill();
+                let out = child
+                    .wait_with_output()
+                    .map_err(|e| format!("wait timed-out {}: {}", label, e))?;
+                if let Some(read_fd) = ready_read_fd.take() {
+                    close_fd(read_fd);
+                }
+                let stderr = String::from_utf8_lossy(&out.stderr);
+                return Err(format!(
+                    "{} exceeded {:?}; stderr: {}",
+                    label,
+                    FIXTURE_COMMAND_TIMEOUT,
+                    stderr.trim_end()
+                ));
+            }
+            Ok(None) => std::thread::sleep(Duration::from_millis(10)),
+            Err(e) => {
+                if let Some(read_fd) = ready_read_fd.take() {
+                    close_fd(read_fd);
+                }
+                return Err(format!("wait {}: {}", label, e));
+            }
+        }
+    }
+}
+
 fn run_path(fixture: &Path, header: &Header, path: &str) -> RunOutcome {
     if path == "aot" {
         return run_aot_path(fixture, header);
@@ -600,9 +749,13 @@ fn run_path(fixture: &Path, header: &Header, path: &str) -> RunOutcome {
         }
     };
     let input = fixture.join("input.fz");
-    let out = match Command::new(FZ_BIN).arg(subcmd).arg(&input).output() {
+    let out = match fixture_command_output(
+        Command::new(FZ_BIN).arg(subcmd).arg(&input),
+        "fz",
+        TimeoutStart::OnExecutionReady,
+    ) {
         Ok(o) => o,
-        Err(e) => return RunOutcome::Failed(format!("spawn fz: {}", e)),
+        Err(e) => return RunOutcome::Failed(e),
     };
     let stderr = String::from_utf8_lossy(&out.stderr).to_string();
     if let Some(75) = out.status.code() {
@@ -641,7 +794,8 @@ fn run_aot_path(fixture: &Path, header: &Header) -> RunOutcome {
         nonce
     ));
     let input = fixture.join("input.fz");
-    // Build.
+    // Build. Compilation time is not fixture execution time, so the
+    // per-fixture execution timeout starts when the compiled artifact runs.
     let build = match Command::new(FZ_BIN)
         .args(["build"])
         .arg(&input)
@@ -667,9 +821,13 @@ fn run_aot_path(fixture: &Path, header: &Header) -> RunOutcome {
         ));
     }
     // Run.
-    let run = match Command::new(&out_path).output() {
+    let run = match fixture_command_output(
+        &mut Command::new(&out_path),
+        "aot binary",
+        TimeoutStart::OnSpawn,
+    ) {
         Ok(o) => o,
-        Err(e) => return RunOutcome::Failed(format!("spawn aot binary: {}", e)),
+        Err(e) => return RunOutcome::Failed(e),
     };
     let _ = std::fs::remove_file(&out_path);
     let _ = std::fs::remove_file(out_path.with_extension("o"));
@@ -704,13 +862,13 @@ fn run_repl_path(fixture: &Path, header: &Header) -> RunOutcome {
         );
     }
     let input = fixture.join("input.fz");
-    let out = match Command::new(FZ_BIN)
-        .args(["repl", "--script"])
-        .arg(&input)
-        .output()
-    {
+    let out = match fixture_command_output(
+        Command::new(FZ_BIN).args(["repl", "--script"]).arg(&input),
+        "fz repl",
+        TimeoutStart::OnExecutionReady,
+    ) {
         Ok(o) => o,
-        Err(e) => return RunOutcome::Failed(format!("spawn fz repl: {}", e)),
+        Err(e) => return RunOutcome::Failed(e),
     };
     let stderr = String::from_utf8_lossy(&out.stderr).to_string();
     if !out.status.success() {

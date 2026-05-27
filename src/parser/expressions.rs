@@ -50,7 +50,7 @@ impl Parser {
             match self.peek() {
                 Tok::LParen => {
                     self.bump();
-                    let mut args = self.parse_expr_list(&Tok::RParen)?;
+                    let mut args = self.parse_call_args()?;
                     self.expect(&Tok::RParen, "`)`")?;
                     if !self.suppress_trailing_do && matches!(self.peek(), Tok::Do) {
                         self.bump();
@@ -170,8 +170,11 @@ impl Parser {
                 self.bump();
                 // fz-y3k — `libc::open` in expression position resolves to
                 // a Var whose name matches the extern's fz_name in the
-                // module's externs table.
-                if matches!(self.peek(), Tok::ColonColon) {
+                // module's externs table. Require token adjacency so
+                // `arg :: type` remains available for call-arg ascription.
+                if matches!(self.peek(), Tok::ColonColon)
+                    && self.prev_span().end == self.cur_span().start
+                {
                     self.bump();
                     match self.bump() {
                         Tok::Ident(s) => Expr::Var(format!("{}::{}", n, s)),
@@ -329,6 +332,58 @@ impl Parser {
         }
         loop {
             out.push(self.parse_expr()?);
+            self.skip_newlines();
+            if !self.eat(&Tok::Comma) {
+                break;
+            }
+            self.skip_newlines();
+        }
+        Ok(out)
+    }
+
+    fn parse_call_args(&mut self) -> PR<Vec<Spanned<Expr>>> {
+        let mut out = Vec::new();
+        self.skip_newlines();
+        if matches!(self.peek(), Tok::RParen) {
+            return Ok(out);
+        }
+        loop {
+            let expr = self.parse_expr()?;
+            let arg = if self.eat(&Tok::ColonColon) {
+                let mut ty_tokens = Vec::new();
+                let mut depth = 0usize;
+                loop {
+                    match self.peek() {
+                        Tok::LParen | Tok::LBrace | Tok::LBrack => {
+                            depth += 1;
+                            ty_tokens.push(self.toks[self.pos].clone());
+                            self.bump();
+                        }
+                        Tok::RParen | Tok::RBrace | Tok::RBrack if depth > 0 => {
+                            depth -= 1;
+                            ty_tokens.push(self.toks[self.pos].clone());
+                            self.bump();
+                        }
+                        Tok::Comma | Tok::RParen if depth == 0 => break,
+                        Tok::Newline | Tok::Eof => break,
+                        _ => {
+                            ty_tokens.push(self.toks[self.pos].clone());
+                            self.bump();
+                        }
+                    }
+                }
+                if ty_tokens.is_empty() {
+                    return self.err("expected type expression after call argument `::`");
+                }
+                let span = expr.span.merge(self.prev_span());
+                Spanned::new(
+                    Expr::Ascribe(Box::new(expr), crate::ast::TypeExprBody(ty_tokens)),
+                    span,
+                )
+            } else {
+                expr
+            };
+            out.push(arg);
             self.skip_newlines();
             if !self.eat(&Tok::Comma) {
                 break;

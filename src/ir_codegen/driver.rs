@@ -2060,16 +2060,16 @@ pub(crate) fn compile_with_backend_impl<
     if !REDUCER_DISABLED.with(|d| d.get()) {
         let _ = crate::ir_reducer::reduce_module_with_telemetry(t, &mut working, tel);
     }
-    // Single-use cont collapse runs pre-typer, alongside the other
+    // Single-use cont collapse runs pre-planner, alongside the other
     // call-shape mutations (`fuse_blocks`, `reduce_module`). The
     // `debug_assert_unique_conts` check at the end of `ir_lower`
     // guarantees this pass sees each continuation fn exactly once, so it
-    // can be applied before the typer commits to specs. See
-    // `docs/dispatch-as-typer-output.md` (Worry 1).
+    // can be applied before the planner commits to specs. See
+    // `docs/dispatch-as-planner-output.md` (Worry 1).
     crate::ir_inline::inline_single_use_conts(&mut working);
     let module_plan = crate::ir_planner::plan_module(t, &working, tel);
-    // Snapshot per-fn call-shape multisets right after the typer commits
-    // to specs. The post-typer passes (branch_fold, fold, const_bs::fold,
+    // Snapshot per-fn call-shape multisets right after the planner commits
+    // to specs. The post-planner passes (branch_fold, fold, const_bs::fold,
     // dce_module, dce_module_level) may FOLD calls away but must never
     // INVENT new ones — the typer's spec set wouldn't cover invented
     // calls. The assertion below pins the invariant: every fn's
@@ -2156,6 +2156,10 @@ pub(crate) fn compile_with_backend_impl<
             }
             _ => {}
         }
+    }
+    let diagnostics = crate::ir_extern_marshal::resolve_module_types(t, &working, &mut module_plan);
+    if let Some(diagnostic) = diagnostics.into_iter().next() {
+        return Err(CodegenError::new(diagnostic.message).with_span(diagnostic.primary.span));
     }
     let module = &working;
 

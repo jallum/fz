@@ -196,6 +196,7 @@ pub fn lower_program_full_with_telemetry<T: crate::types::Types<Ty = crate::type
                     fz_name: fn_def.name.clone(),
                     symbol: extern_symbol_from_name(&fn_def.name).to_string(),
                     params,
+                    variadic: fn_def.variadic,
                     ret,
                     ret_descr,
                 });
@@ -240,6 +241,7 @@ pub fn lower_program_full_with_telemetry<T: crate::types::Types<Ty = crate::type
                         fz_name: fn_def.name.clone(),
                         symbol: extern_symbol_from_name(&fn_def.name).to_string(),
                         params,
+                        variadic: fn_def.variadic,
                         ret,
                         ret_descr,
                     });
@@ -302,6 +304,37 @@ pub fn lower_program_full_with_telemetry<T: crate::types::Types<Ty = crate::type
         module.extern_idx.insert(e.id, i);
     }
     module.boundary_fns = std::mem::take(&mut ctx.boundary_fns);
+    let empty_env = crate::type_expr::ModuleTypeEnv::new();
+    for item in &all_items {
+        let Item::Fn(fn_def) = item.as_ref() else {
+            continue;
+        };
+        let Some(spec) = fn_def.attrs.iter().find_map(|a| match a {
+            crate::ast::Attribute::Spec(spec) => Some(spec),
+            _ => None,
+        }) else {
+            continue;
+        };
+        let arity = fn_def.clauses.first().map(|c| c.params.len()).unwrap_or(0);
+        let Some(&fid) = ctx.fns.get(&(fn_def.name.clone(), arity)) else {
+            continue;
+        };
+        let module_path = fn_def
+            .name
+            .rfind('.')
+            .map(|i| fn_def.name[..i].to_string())
+            .unwrap_or_default();
+        let env = if fid.0 < ctx.prelude_fn_id_cutoff {
+            prelude.module_type_envs.get("").unwrap_or(&empty_env)
+        } else {
+            prog.module_type_envs
+                .get(&module_path)
+                .unwrap_or(&ctx.combined_type_env)
+        };
+        if let Ok(resolved) = crate::type_expr::resolve_spec_decl(t, spec, env) {
+            module.declared_specs.insert(fid, resolved);
+        }
+    }
     // fz-swt.8 — carry the resolver's opaque-inner-type map onto the
     // Module so the planner can resolve `handle.value` accesses to T.
     // fz-axu.27 (M6) — prelude inners (utf8 brand, pid opaque, ...) live
@@ -717,7 +750,7 @@ fn build_source_info(module: &Module, ctx: &LowerCtx) -> SourceInfo {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fz_ir::{Const, FnId, Prim, Var};
+    use crate::fz_ir::{Const, ExternMarshal, FnId, Prim, Var};
     use crate::lexer::Lexer;
     use crate::parser::Parser;
 
@@ -1981,6 +2014,82 @@ fn main() do libc::open(\"x\", \"x\", 0, 0) end
                 assert!(
                     what.contains("open") && what.contains("3") && what.contains("4"),
                     "expected arity-mismatch message naming open/3 vs 4 args, got: {}",
+                    what
+                );
+            }
+            other => panic!("expected Unsupported arity error, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn variadic_extern_records_decl_and_call_marshal_specs() {
+        let src = "\
+extern \"C\" fn libc::open(path :: cstring, flags :: integer, ...) :: integer
+fn main() do libc::open(\"x\", 0, 0o644 :: integer) end
+";
+        let m = lower_src(src);
+        let open = m
+            .externs
+            .iter()
+            .find(|e| e.fz_name == "libc::open")
+            .expect("libc::open missing");
+        assert!(open.variadic);
+        assert_eq!(open.params, vec![ExternTy::CString, ExternTy::I64]);
+
+        let main = m.fn_by_name("main").expect("main missing");
+        let extern_args = main
+            .blocks
+            .iter()
+            .flat_map(|b| b.stmts.iter())
+            .find_map(|s| match s {
+                crate::fz_ir::Stmt::Let(_, Prim::Extern(_, args)) => Some(args),
+                _ => None,
+            })
+            .expect("extern call missing");
+        assert_eq!(extern_args.len(), 3);
+        assert_eq!(
+            extern_args[0].marshal,
+            ExternMarshal::Fixed(ExternTy::CString)
+        );
+        assert_eq!(extern_args[1].marshal, ExternMarshal::Fixed(ExternTy::I64));
+        assert_eq!(
+            extern_args[2].marshal,
+            ExternMarshal::Ascribed(ExternTy::I64)
+        );
+    }
+
+    #[test]
+    fn variadic_extern_unascribed_extra_arg_stays_auto() {
+        let src = "\
+extern \"C\" fn libc::printf(fmt :: cstring, ...) :: integer
+fn main() do libc::printf(\"%d\", 7) end
+";
+        let m = lower_src(src);
+        let main = m.fn_by_name("main").expect("main missing");
+        let extern_args = main
+            .blocks
+            .iter()
+            .flat_map(|b| b.stmts.iter())
+            .find_map(|s| match s {
+                crate::fz_ir::Stmt::Let(_, Prim::Extern(_, args)) => Some(args),
+                _ => None,
+            })
+            .expect("extern call missing");
+        assert_eq!(extern_args[1].marshal, ExternMarshal::Auto);
+    }
+
+    #[test]
+    fn variadic_extern_too_few_args_is_lower_error() {
+        let src = "\
+extern \"C\" fn libc::open(path :: cstring, flags :: integer, ...) :: integer
+fn main() do libc::open(\"x\") end
+";
+        let err = lower_src_err(src);
+        match err {
+            LowerError::Unsupported { what, .. } => {
+                assert!(
+                    what.contains("open") && what.contains("at least 2") && what.contains("1"),
+                    "expected variadic arity message, got: {}",
                     what
                 );
             }

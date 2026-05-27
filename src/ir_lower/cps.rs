@@ -49,6 +49,7 @@ pub(crate) struct ContFn {
     pub(super) span: Span,
     /// fz-f88.5 — origin tag baked in at mint time.
     pub(super) category: crate::fz_ir::FnCategory,
+    pub(super) owner_module: String,
 }
 
 /// Mint a fresh continuation FnId, snapshot the outer env at this point,
@@ -68,6 +69,7 @@ pub(crate) fn mint_cont_fn(
         outer_captured: ctx.visible_locals(),
         span,
         category,
+        owner_module: ctx.current_owner_module.clone(),
     }
 }
 
@@ -92,7 +94,9 @@ pub(crate) fn switch_to_cont_fn(
     ctx.mb.add_fn(done);
 
     // Build new fn.
-    let mut kbuilder = FnBuilder::new(cont.id, cont.name.clone()).with_category(cont.category);
+    let mut kbuilder = FnBuilder::new(cont.id, cont.name.clone())
+        .with_category(cont.category)
+        .with_owner_module(cont.owner_module.clone());
 
     // Entry params: extras (e.g. join_param) first, then captured renames.
     let extras: Vec<Var> = (0..extra_param_count)
@@ -198,7 +202,8 @@ pub(crate) fn cps_split_call_closure(
     ctx.mb.add_fn(done);
 
     let mut kbuilder = FnBuilder::new(cont_id, format!("k_{}", cont_id.0))
-        .with_category(crate::fz_ir::FnCategory::CpsCont);
+        .with_category(crate::fz_ir::FnCategory::CpsCont)
+        .with_owner_module(ctx.current_owner_module.clone());
     let result_param = kbuilder.fresh_var();
     let cap_params: Vec<Var> = captured.iter().map(|_| kbuilder.fresh_var()).collect();
     let mut params = vec![result_param];
@@ -256,7 +261,8 @@ pub(crate) fn cps_split_receive(
     // Build the continuation fn. Same shape as cps_split_call's cont:
     // entry params = [result_param, captured...].
     let mut kbuilder = FnBuilder::new(cont_id, format!("k_receive_{}", cont_id.0))
-        .with_category(crate::fz_ir::FnCategory::CpsCont);
+        .with_category(crate::fz_ir::FnCategory::CpsCont)
+        .with_owner_module(ctx.current_owner_module.clone());
     let result_param = kbuilder.fresh_var();
     let cap_params: Vec<Var> = captured.iter().map(|_| kbuilder.fresh_var()).collect();
     let mut params = vec![result_param];
@@ -314,7 +320,8 @@ pub(crate) fn cps_split_call(
 
     // Start the continuation fn.
     let mut kbuilder = FnBuilder::new(cont_id, format!("k_{}", cont_id.0))
-        .with_category(crate::fz_ir::FnCategory::CpsCont);
+        .with_category(crate::fz_ir::FnCategory::CpsCont)
+        .with_owner_module(ctx.current_owner_module.clone());
     let result_param = kbuilder.fresh_var();
     let cap_params: Vec<Var> = captured.iter().map(|_| kbuilder.fresh_var()).collect();
     let mut params = vec![result_param];

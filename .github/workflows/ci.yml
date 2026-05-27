@@ -39,6 +39,10 @@ jobs:
       - run: |
           cargo llvm-cov \
             --all-features \
+            --workspace \
+            --lib \
+            --bin fz \
+            --test spec_parity \
             --fail-under-lines "$(cat .coverage-threshold)" \
             --json --summary-only \
             --output-path coverage.json

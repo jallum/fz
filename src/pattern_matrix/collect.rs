@@ -91,7 +91,7 @@ pub(crate) fn collect_guard_capture_names(
             collect_guard_capture_names(&a.node, bound, out);
             collect_guard_capture_names(&b.node, bound, out);
         }
-        Expr::UnOp(_, a) => collect_guard_capture_names(&a.node, bound, out),
+        Expr::UnOp(_, a) | Expr::Ascribe(a, _) => collect_guard_capture_names(&a.node, bound, out),
         Expr::Call(target, args) => {
             if !matches!(&target.node, Expr::Var(_) | Expr::FnRef { .. }) {
                 collect_guard_capture_names(&target.node, bound, out);

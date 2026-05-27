@@ -28,19 +28,6 @@ impl AnyValue {
         })
     }
 
-    pub(super) fn extern_arg_bits(self) -> Result<u64, String> {
-        match self {
-            AnyValue::Null => Ok(0),
-            AnyValue::Int(value) => Ok(value as u64),
-            AnyValue::Float(_) => {
-                Err("raw interpreter float cannot be materialized as extern arg bits".into())
-            }
-            AnyValue::Atom(value) => Ok(value as u64),
-            AnyValue::EmptyList => Ok(0),
-            AnyValue::Ref(value) => Ok(value.raw_word()),
-        }
-    }
-
     pub(super) fn extern_arg_ref_word(self) -> Result<u64, String> {
         self.as_ref_word()
     }

@@ -86,6 +86,10 @@ pub enum Expr {
     // call: target(args...)  — target is an expr (usually Var; module
     // qualification is desugared to Index by the parser)
     Call(Box<Spanned<Expr>>, Vec<Spanned<Expr>>),
+    /// Call-argument type ascription: `expr :: TypeExpr`. Produced by the
+    /// call parser and consumed by extern lowering.
+    #[allow(dead_code)] // Read by fz-zar.B; fz-zar.A only preserves syntax.
+    Ascribe(Box<Spanned<Expr>>, TypeExprBody),
 
     // operators
     BinOp(BinOp, Box<Spanned<Expr>>, Box<Spanned<Expr>>),
@@ -341,6 +345,8 @@ pub struct SpecDecl {
     pub param_body_tokens: Vec<TypeExprBody>,
     /// Result type-expression body tokens.
     pub result_body_tokens: TypeExprBody,
+    /// Optional constrained type variables from `when t: Bound`.
+    pub constraints: Vec<(String, TypeExprBody)>,
 }
 
 #[derive(Debug, Clone)]
@@ -369,6 +375,9 @@ pub struct FnDef {
     /// Raw return-type tokens from `:: RetType`. Empty for regular fns.
     /// Kept as tokens because lowering consults the type_env alias table.
     pub extern_ret_tokens: TypeExprBody,
+    /// True for `extern "C" fn name(fixed, ...)` declarations.
+    #[allow(dead_code)] // Read by fz-zar.B; fz-zar.A only records it.
+    pub variadic: bool,
     /// Attributes attached above the first clause of this fn. The REPL
     /// surfaces `Attribute::Doc` via `?<name>`. Empty when no `@…`
     /// preceded the fn.

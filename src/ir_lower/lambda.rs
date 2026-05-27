@@ -31,7 +31,8 @@ pub(crate) fn lower_lambda(
     let saved_branch_origin = ctx.branch_origin;
 
     let mut lam_builder = FnBuilder::new(lam_id, format!("lambda_{}", lam_id.0))
-        .with_category(crate::fz_ir::FnCategory::LambdaLift);
+        .with_category(crate::fz_ir::FnCategory::LambdaLift)
+        .with_owner_module(ctx.current_owner_module.clone());
     // Entry params = captured + lambda params.
     let cap_params: Vec<Var> = captured.iter().map(|_| lam_builder.fresh_var()).collect();
     let lam_param_vars: Vec<Var> = params.iter().map(|_| lam_builder.fresh_var()).collect();
@@ -155,7 +156,9 @@ pub(super) fn collect_expr_free_names(
             collect_expr_free_names(&lhs.node, bound, free);
             collect_expr_free_names(&rhs.node, bound, free);
         }
-        Expr::UnOp(_, value) => collect_expr_free_names(&value.node, bound, free),
+        Expr::UnOp(_, value) | Expr::Ascribe(value, _) => {
+            collect_expr_free_names(&value.node, bound, free)
+        }
         Expr::If(cond, then_e, else_e) => {
             collect_expr_free_names(&cond.node, bound, free);
             collect_expr_free_names_in_nested_scope(&then_e.node, bound, free);

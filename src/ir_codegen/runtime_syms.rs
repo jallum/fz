@@ -110,6 +110,9 @@ pub(crate) fn declare_runtime_symbols<M: cranelift_module::Module>(
         shared_bin_destructor_noop_id: bs.shared_bin_destructor_noop_id,
         binary_as_ptr_id: bs.binary_as_ptr_id,
         binary_as_cstring_id: bs.binary_as_cstring_id,
+        extern_symbol_addr_id: bs.extern_symbol_addr_id,
+        extern_var_i64_cstring_i64_i64_to_i64_id: bs.extern_var_i64_cstring_i64_i64_to_i64_id,
+        extern_var_i64_cstring_i64_to_i64_id: bs.extern_var_i64_cstring_i64_to_i64_id,
         bs_reader_init_ref_id: bs.bs_reader_init_ref_id,
         bs_read_field_ref_id: bs.bs_read_field_ref_id,
         bs_reader_done_ref_id: bs.bs_reader_done_ref_id,
@@ -310,6 +313,9 @@ struct BitstringRefs {
     shared_bin_destructor_noop_id: FuncId,
     binary_as_ptr_id: FuncId,
     binary_as_cstring_id: FuncId,
+    extern_symbol_addr_id: FuncId,
+    extern_var_i64_cstring_i64_i64_to_i64_id: FuncId,
+    extern_var_i64_cstring_i64_to_i64_id: FuncId,
     bs_reader_init_ref_id: FuncId,
     bs_read_field_ref_id: FuncId,
     bs_reader_done_ref_id: FuncId,
@@ -358,6 +364,20 @@ fn declare_bitstring_runtime<M: cranelift_module::Module>(
     let binary_as_ptr_id = decl_import(jmod, "fz_binary_as_ptr", &[types::I64], &[types::I64])?;
     let binary_as_cstring_id =
         decl_import(jmod, "fz_binary_as_cstring", &[types::I64], &[types::I64])?;
+    let extern_symbol_addr_id =
+        decl_import(jmod, "fz_extern_symbol_addr", &[types::I64], &[types::I64])?;
+    let extern_var_i64_cstring_i64_i64_to_i64_id = decl_import(
+        jmod,
+        "fz_call_var_i64_cstring_i64_i64_to_i64",
+        &[types::I64, types::I64, types::I64, types::I64],
+        &[types::I64],
+    )?;
+    let extern_var_i64_cstring_i64_to_i64_id = decl_import(
+        jmod,
+        "fz_call_var_i64_cstring_i64_to_i64",
+        &[types::I64, types::I64, types::I64],
+        &[types::I64],
+    )?;
     let bs_reader_init_ref_id =
         decl_import(jmod, "fz_bs_reader_init_ref", &[types::I64], &[types::I64])?;
     let bs_read_field_ref_id = decl_import(
@@ -381,6 +401,9 @@ fn declare_bitstring_runtime<M: cranelift_module::Module>(
         shared_bin_destructor_noop_id,
         binary_as_ptr_id,
         binary_as_cstring_id,
+        extern_symbol_addr_id,
+        extern_var_i64_cstring_i64_i64_to_i64_id,
+        extern_var_i64_cstring_i64_to_i64_id,
         bs_reader_init_ref_id,
         bs_read_field_ref_id,
         bs_reader_done_ref_id,
@@ -930,6 +953,9 @@ pub(crate) struct RuntimeRefs {
     // `(i64 tagged_heap_bits) -> i64 *const u8` from Cranelift's perspective.
     pub(super) binary_as_ptr_id: FuncId,
     pub(super) binary_as_cstring_id: FuncId,
+    pub(super) extern_symbol_addr_id: FuncId,
+    pub(super) extern_var_i64_cstring_i64_i64_to_i64_id: FuncId,
+    pub(super) extern_var_i64_cstring_i64_to_i64_id: FuncId,
     pub(super) bs_reader_init_ref_id: FuncId,
     pub(super) bs_read_field_ref_id: FuncId,
     pub(super) bs_reader_done_ref_id: FuncId,

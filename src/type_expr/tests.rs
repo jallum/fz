@@ -524,13 +524,15 @@ fn build_env_opaque_alias_is_disjoint_from_underlying() {
 
 #[test]
 fn resource_integer_parses_to_builtin_opaque_tag() {
-    // `resource(T)` is a parametric opaque ctor. The result has the
-    // unqualified built-in tag `"resource"`; visibility for user
-    // aliases (`@type t :: opaque resource(integer)`) comes from
-    // the *outer* opaque alias, not from this tag.
+    // `resource(T)` preserves the payload type now that constrained
+    // polymorphic specs can return `resource(t)`.
     let mut ct = ConcreteTypes;
     let d = parse_one(&mut ct, "resource(integer)").unwrap();
-    assert_eq!(ct.opaque_singleton(&d).as_deref(), Some("resource"));
+    let payload = ct
+        .resource_payload_type(&d)
+        .expect("resource payload should be present");
+    let int = ct.int();
+    assert!(ct.is_equivalent(&payload, &int));
 }
 
 #[test]
@@ -538,6 +540,28 @@ fn resource_inner_type_is_validated() {
     let mut ct = ConcreteTypes;
     let r = parse_one(&mut ct, "resource(nonesuch)");
     assert!(r.is_err(), "unknown inner type must error");
+}
+
+#[test]
+fn constrained_polymorphic_spec_resolves_vars_and_bounds() {
+    let toks = |src: &str| Lexer::new(src).tokenize().expect("lex");
+    let mut ct = ConcreteTypes;
+    let spec = crate::ast::SpecDecl {
+        name: "make_resource".to_string(),
+        param_body_tokens: vec![
+            crate::ast::TypeExprBody(toks("t")),
+            crate::ast::TypeExprBody(toks("(t) -> nil")),
+        ],
+        result_body_tokens: crate::ast::TypeExprBody(toks("resource(t)")),
+        constraints: vec![(
+            "t".to_string(),
+            crate::ast::TypeExprBody(toks("integer | cpointer")),
+        )],
+    };
+    let resolved = resolve_spec_decl(&mut ct, &spec, &ModuleTypeEnv::new()).unwrap();
+    assert_eq!(resolved.constraints.len(), 1);
+    assert!(ct.has_vars(&resolved.params[0]));
+    assert!(ct.has_vars(&resolved.result));
 }
 
 #[test]

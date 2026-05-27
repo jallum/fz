@@ -16,6 +16,24 @@ pub fn parse_type_expr<T: crate::types::Types<Ty = crate::types::Ty>>(
         tokens,
         pos: 0,
         env,
+        vars: None,
+    };
+    let ty = p.parse_union()?;
+    Ok((ty, p.pos))
+}
+
+pub fn parse_type_expr_with_vars<T: crate::types::Types<Ty = crate::types::Ty>>(
+    t: &mut T,
+    tokens: &[Token],
+    env: &ModuleTypeEnv,
+    vars: &mut std::collections::HashMap<String, crate::types::TypeVarId>,
+) -> Result<(T::Ty, usize), TypeExprError> {
+    let mut p = TypeExprParser {
+        t,
+        tokens,
+        pos: 0,
+        env,
+        vars: Some(vars),
     };
     let ty = p.parse_union()?;
     Ok((ty, p.pos))
@@ -26,6 +44,7 @@ struct TypeExprParser<'a, T: crate::types::Types<Ty = crate::types::Ty>> {
     tokens: &'a [Token],
     pos: usize,
     env: &'a ModuleTypeEnv,
+    vars: Option<&'a mut std::collections::HashMap<String, crate::types::TypeVarId>>,
 }
 
 impl<'a, T: crate::types::Types<Ty = crate::types::Ty>> TypeExprParser<'a, T> {
@@ -142,9 +161,9 @@ impl<'a, T: crate::types::Types<Ty = crate::types::Ty>> TypeExprParser<'a, T> {
     fn parse_resource(&mut self) -> Result<T::Ty, TypeExprError> {
         // `resource` already consumed. Parse `(T)`.
         self.expect(&Tok::LParen, "`(` after `resource`")?;
-        let _inner = self.parse_union()?;
+        let inner = self.parse_union()?;
         self.expect(&Tok::RParen, "`)` after resource element type")?;
-        Ok(self.t.opaque_of("resource"))
+        Ok(self.t.resource(inner))
     }
 
     fn parse_list(&mut self) -> Result<T::Ty, TypeExprError> {
@@ -210,16 +229,27 @@ impl<'a, T: crate::types::Types<Ty = crate::types::Ty>> TypeExprParser<'a, T> {
             "bool" => Ok(self.t.bool()),
             "integer" => Ok(self.t.int()),
             "float" => Ok(self.t.float()),
+            "cpointer" => Ok(self.t.cpointer()),
             "binary" => Ok(self.t.str_t()),
             "atom" => Ok(self.t.atom()),
             "any" => Ok(self.t.any()),
             "never" => Ok(self.t.none()),
             _ => match self.env.get(name) {
                 Some(ty) => Ok(ty.clone()),
-                None => Err(TypeExprError {
-                    msg: format!("unknown type name `{}`", name),
-                    span: self.peek_span(),
-                }),
+                None => {
+                    if let Some(vars) = self.vars.as_deref_mut()
+                        && name.len() == 1
+                    {
+                        let next = crate::types::TypeVarId(vars.len() as u32);
+                        let id = *vars.entry(name.to_string()).or_insert(next);
+                        Ok(self.t.type_var(id))
+                    } else {
+                        Err(TypeExprError {
+                            msg: format!("unknown type name `{}`", name),
+                            span: self.peek_span(),
+                        })
+                    }
+                }
             },
         }
     }

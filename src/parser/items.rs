@@ -122,6 +122,7 @@ impl Parser {
                             extern_abi: None,
                             extern_params: vec![],
                             extern_ret_tokens: TypeExprBody(vec![]),
+                            variadic: false,
                             attrs,
                             span: start.merge(clause_span),
                         });
@@ -244,10 +245,39 @@ impl Parser {
                     return self
                         .err("expected result type expression after `::` in @spec".to_string());
                 }
+                let mut constraints = Vec::new();
+                if self.eat(&Tok::When) {
+                    loop {
+                        let var = match self.bump() {
+                            Tok::Ident(n) | Tok::KwKey(n) => n,
+                            other => {
+                                return self.err(format!(
+                                    "expected type variable after `when`, got {:?}",
+                                    other
+                                ));
+                            }
+                        };
+                        if !matches!(self.toks[self.pos - 1].tok, Tok::KwKey(_)) {
+                            self.expect(&Tok::Colon, "`:`")?;
+                        }
+                        let toks = self.collect_spec_param_type_tokens();
+                        if toks.is_empty() {
+                            return self.err(format!(
+                                "expected constraint type expression after `{}:`",
+                                var
+                            ));
+                        }
+                        constraints.push((var, TypeExprBody(toks)));
+                        if !self.eat(&Tok::Comma) {
+                            break;
+                        }
+                    }
+                }
                 Ok(Attribute::Spec(SpecDecl {
                     name: spec_name,
                     param_body_tokens,
                     result_body_tokens: TypeExprBody(result_body_tokens),
+                    constraints,
                 }))
             }
             "type" => {
@@ -485,6 +515,7 @@ impl Parser {
         // Type expressions that themselves contain brackets
         // still capture the first ident as the type — the depth counter avoids
         // bracketed inner idents overriding the outer type.
+        let mut variadic = false;
         let extern_params: Vec<String> = if matches!(self.peek(), Tok::RParen) {
             vec![]
         } else {
@@ -494,6 +525,18 @@ impl Parser {
             let mut after_dbl_colon = false;
             loop {
                 match self.peek() {
+                    Tok::Ellipsis if depth == 0 => {
+                        if current_name.is_some() {
+                            return self.err("expected `,` before extern variadic `...`");
+                        }
+                        variadic = true;
+                        self.bump();
+                        self.skip_newlines();
+                        if !matches!(self.peek(), Tok::RParen) {
+                            return self.err("extern variadic `...` must be the final parameter");
+                        }
+                        break;
+                    }
                     Tok::LParen | Tok::LBrace | Tok::LBrack => {
                         depth += 1;
                         self.bump();
@@ -559,6 +602,7 @@ impl Parser {
             extern_abi: Some(abi),
             extern_params,
             extern_ret_tokens: TypeExprBody(extern_ret_tokens),
+            variadic,
             attrs: vec![],
             span,
         })
@@ -748,7 +792,8 @@ impl TypeTokenBoundary {
                     || (depth == 0 && matches!(tok, Tok::Comma | Tok::RParen))
             }
             Self::TypeBody => {
-                matches!(tok, Tok::Eof | Tok::End) || (depth == 0 && matches!(tok, Tok::Newline))
+                matches!(tok, Tok::Eof | Tok::End)
+                    || (depth == 0 && matches!(tok, Tok::Newline | Tok::When))
             }
         }
     }

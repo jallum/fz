@@ -78,7 +78,7 @@ fn send(pid, msg), do: fz_send(pid, msg)
 fn make_ref(), do: fz_make_ref()
 
 @doc "Wraps a raw integer handle in an opaque resource; `dtor` is invoked exactly once with that handle when the last reference becomes unreachable."
-@spec make_resource(integer, (integer) -> nil) :: resource(integer)
+@spec make_resource(t, (t) -> nil) :: resource(t) when t: integer | cpointer
 fn make_resource(value, dtor), do: fz_make_resource(value, dtor)
 
 extern "C" fn fz_print_i64(integer) :: nil

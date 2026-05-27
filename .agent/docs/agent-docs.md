@@ -146,6 +146,14 @@ Weak:
 Make sure it works.
 ```
 
+## CI Coverage
+
+CI runs `cargo test --workspace` as the correctness gate; that run includes the
+`fixture_matrix` integration-test target and all fixture paths. The following
+`cargo llvm-cov` step is a Rust coverage measurement pass, not another fixture
+correctness pass. Keep its target list explicit (`--workspace --lib --bin fz
+--test spec_parity`) so it does not run `fixture_matrix` by Cargo default.
+
 ## Final Check
 
 Before saving, ask:

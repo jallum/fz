@@ -1,13 +1,126 @@
 use super::*;
-use crate::fz_ir::{ExternId, ExternTy, Module};
+use crate::fz_ir::{ExternArg, ExternId, ExternMarshalSite, ExternTy, Module};
 use crate::types::Types;
 
+fn format_extern_shape(ret: ExternTy, fixed: &[ExternTy], variadic: &[ExternTy]) -> String {
+    let fixed = fixed
+        .iter()
+        .map(|ty| format!("{:?}", ty))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let variadic = variadic
+        .iter()
+        .map(|ty| format!("{:?}", ty))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("ret={:?} fixed=[{}] variadic=[{}]", ret, fixed, variadic)
+}
+
+fn marshal_arg(value: AnyValue, ty: ExternTy) -> Result<u64, String> {
+    Ok(match ty {
+        ExternTy::I64 => value
+            .as_i64()
+            .ok_or_else(|| "extern integer arg must be Int".to_string())?
+            as u64,
+        ExternTy::F64 => value
+            .as_float()
+            .ok_or_else(|| "extern float arg must be Float".to_string())?
+            .to_bits(),
+        ExternTy::Binary => {
+            (unsafe { fz_runtime::extern_binary::fz_binary_as_ptr(value.extern_arg_ref_word()?) })
+                as u64
+        }
+        ExternTy::CString => {
+            (unsafe {
+                fz_runtime::extern_binary::fz_binary_as_cstring(value.extern_arg_ref_word()?)
+            }) as u64
+        }
+        ExternTy::Any => value.extern_arg_ref_word()?,
+        ExternTy::Unit | ExternTy::Never => {
+            return Err(format!(
+                "{:?} is not a valid extern argument marshal class",
+                ty
+            ));
+        }
+    })
+}
+
+fn call_variadic_extern(
+    module: &Module,
+    fn_types: &crate::ir_planner::SpecPlan,
+    block_id: crate::fz_ir::BlockId,
+    stmt_idx: usize,
+    eid: ExternId,
+    extern_args: &[ExternArg],
+    values: &[AnyValue],
+) -> Result<u64, String> {
+    let decl = module.extern_by_id(eid);
+    let mut arg_tys = Vec::with_capacity(extern_args.len());
+    for arg_idx in 0..extern_args.len() {
+        let site = ExternMarshalSite {
+            block: block_id,
+            stmt_idx,
+            arg_idx,
+        };
+        let Some(&ty) = fn_types.extern_marshals.get(&site) else {
+            return Err(format!(
+                "variadic extern `{}` has unresolved marshal metadata at {:?}",
+                decl.symbol, site
+            ));
+        };
+        arg_tys.push(ty);
+    }
+    let fixed_count = decl.params.len();
+    let fixed = &arg_tys[..fixed_count];
+    let variadic = &arg_tys[fixed_count..];
+
+    let cname = std::ffi::CString::new(decl.symbol.as_str())
+        .map_err(|e| format!("bad symbol name: {e}"))?;
+    let fp = unsafe { fz_runtime::extern_variadic::fz_extern_symbol_addr(cname.as_ptr()) };
+    if fp == 0 {
+        return Err(format!("dlsym: symbol `{}` not found", decl.symbol));
+    }
+
+    let raw_args: Vec<u64> = values
+        .iter()
+        .zip(arg_tys.iter().copied())
+        .map(|(value, ty)| marshal_arg(*value, ty))
+        .collect::<Result<_, _>>()?;
+
+    match (decl.ret, fixed, variadic) {
+        (ExternTy::I64, [ExternTy::CString, ExternTy::I64], [ExternTy::I64]) => Ok(unsafe {
+            fz_runtime::extern_variadic::fz_call_var_i64_cstring_i64_i64_to_i64(
+                fp,
+                raw_args[0] as *const std::ffi::c_char,
+                raw_args[1] as i64,
+                raw_args[2] as i64,
+            ) as u64
+        }),
+        (ExternTy::I64, [ExternTy::CString], [ExternTy::I64]) => Ok(unsafe {
+            fz_runtime::extern_variadic::fz_call_var_i64_cstring_i64_to_i64(
+                fp,
+                raw_args[0] as *const std::ffi::c_char,
+                raw_args[1] as i64,
+            ) as u64
+        }),
+        _ => Err(format!(
+            "unsupported variadic extern shape: {}",
+            format_extern_shape(decl.ret, fixed, variadic)
+        )),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 pub(super) fn call_extern<T: Types<Ty = crate::types::Ty>>(
     runtime: &mut IrInterpRuntime,
     t: &mut T,
     module: &Module,
     tel: &dyn crate::telemetry::Telemetry,
+    fn_types: &crate::ir_planner::SpecPlan,
+    block_id: crate::fz_ir::BlockId,
+    stmt_idx: usize,
     eid: ExternId,
+    extern_args: &[ExternArg],
     args: &[AnyValue],
 ) -> Result<AnyValue, String> {
     let decl = module.extern_by_id(eid);
@@ -152,32 +265,24 @@ pub(super) fn call_extern<T: Types<Ty = crate::types::Ty>>(
         }
         _ => {}
     }
+    if decl.variadic {
+        let ret =
+            call_variadic_extern(module, fn_types, block_id, stmt_idx, eid, extern_args, args)?;
+        return match decl.ret {
+            ExternTy::I64 => Ok(AnyValue::Int(ret as i64)),
+            ExternTy::F64 => Ok(AnyValue::Float(f64::from_bits(ret))),
+            ExternTy::Any | ExternTy::Binary | ExternTy::CString => {
+                interp_value_from_extern_ref_word(ret)
+            }
+            ExternTy::Unit | ExternTy::Never => Ok(interp_nil_value()),
+        };
+    }
     let fp = resolve_symbol(&decl.symbol)?;
     let raw_args: Vec<u64> = args
         .iter()
         .zip(decl.params.iter())
-        .map(|(v, ty)| match ty {
-            ExternTy::I64 => v.as_i64().unwrap_or(0) as u64,
-            // fz-8up — Binary/CString call into the runtime helpers from
-            // [[fz-9ss]] and pass the returned pointer as the C arg.
-            ExternTy::Binary => {
-                (unsafe {
-                    fz_runtime::extern_binary::fz_binary_as_ptr(
-                        v.extern_arg_ref_word().unwrap_or(0),
-                    )
-                }) as u64
-            }
-            ExternTy::CString => {
-                (unsafe {
-                    fz_runtime::extern_binary::fz_binary_as_cstring(
-                        v.extern_arg_ref_word().unwrap_or(0),
-                    )
-                }) as u64
-            }
-            ExternTy::Any => v.extern_arg_ref_word().unwrap_or(0),
-            _ => v.extern_arg_bits().unwrap_or(0),
-        })
-        .collect();
+        .map(|(v, ty)| marshal_arg(*v, *ty))
+        .collect::<Result<_, _>>()?;
     let returns_value = !matches!(decl.ret, ExternTy::Unit | ExternTy::Never);
     let ret = if returns_value {
         unsafe { dispatch_fn_returning(fp, &raw_args) }

@@ -154,7 +154,7 @@ fn max_var_in_prim(p: &Prim) -> u32 {
             v(*b);
         }
         Prim::UnOp(_, a) => v(*a),
-        Prim::Extern(_, args) => args.iter().for_each(|x| v(*x)),
+        Prim::Extern(_, args) => args.iter().for_each(|x| v(x.var)),
         Prim::ListHead(a) | Prim::ListTail(a) | Prim::IsEmptyList(a) => v(*a),
         Prim::MakeTuple(args) => args.iter().for_each(|x| v(*x)),
         Prim::DestTupleBegin { .. } => {}
@@ -308,7 +308,15 @@ pub fn alpha_rename(callee: &FnIr, caller: &FnIr) -> FnIr {
             Prim::Const(c) => Prim::Const(c.clone()),
             Prim::BinOp(op, a, b) => Prim::BinOp(*op, sv(*a), sv(*b)),
             Prim::UnOp(op, a) => Prim::UnOp(*op, sv(*a)),
-            Prim::Extern(eid, args) => Prim::Extern(*eid, args.iter().map(|x| sv(*x)).collect()),
+            Prim::Extern(eid, args) => Prim::Extern(
+                *eid,
+                args.iter()
+                    .map(|x| crate::fz_ir::ExternArg {
+                        var: sv(x.var),
+                        ..*x
+                    })
+                    .collect(),
+            ),
             Prim::ListHead(a) => Prim::ListHead(sv(*a)),
             Prim::ListTail(a) => Prim::ListTail(sv(*a)),
             Prim::IsEmptyList(a) => Prim::IsEmptyList(sv(*a)),
@@ -559,6 +567,7 @@ pub fn alpha_rename(callee: &FnIr, caller: &FnIr) -> FnIr {
         blocks,
         entry: shift_b(callee.entry),
         category: callee.category,
+        owner_module: callee.owner_module.clone(),
         ignored_entry_params: callee.ignored_entry_params.clone(),
     }
 }

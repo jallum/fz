@@ -17,6 +17,11 @@ pub(crate) struct ListSig {
     pub elem: Option<Box<Descr>>,
 }
 
+#[derive(Clone, PartialEq, Eq, Hash)]
+pub(crate) struct ResourceSig {
+    pub payload: Box<Descr>,
+}
+
 impl ListSig {
     pub(super) fn empty() -> Self {
         Self {
@@ -133,6 +138,19 @@ impl MergeSig for ListSig {
             empty: a.empty && b.empty,
             elem,
         })
+    }
+}
+
+impl MergeSig for ResourceSig {
+    fn intersect_pos(a: &Self, b: &Self) -> Option<Self> {
+        let payload = a.payload.intersect(&b.payload);
+        if payload.is_empty() {
+            None
+        } else {
+            Some(ResourceSig {
+                payload: Box::new(payload),
+            })
+        }
     }
 }
 impl MergeSig for TupleSig {

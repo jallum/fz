@@ -124,11 +124,18 @@ fn validate_one_fn<T: crate::types::Types<Ty = crate::types::Ty> + crate::types:
             continue;
         } // skip any-key per design
         // Element-wise inferred ⊆ declared on each input.
+        let mut sigma = std::collections::HashMap::new();
+        for (declared, inferred) in declared_param_tys.iter().zip(key.input.iter()) {
+            if let Some(inferred) = inferred {
+                t.collect_instantiation_subst(declared, inferred, &mut sigma);
+            }
+        }
         for (i, inferred) in key.input.iter().enumerate() {
             let Some(inferred) = inferred else {
                 continue;
             };
-            if !t.is_subtype(inferred, &declared_param_tys[i]) {
+            let declared_param_ty = t.instantiate(&declared_param_tys[i], &sigma);
+            if !t.is_subtype(inferred, &declared_param_ty) {
                 let inferred_display = t.display(inferred);
                 diags.push(Diagnostic::error(
                     codes::SPEC_VIOLATION,
@@ -158,8 +165,11 @@ fn validate_one_fn<T: crate::types::Types<Ty = crate::types::Ty> + crate::types:
                 });
             }
         }
-        let inferred_ty = inferred_result.unwrap_or_else(|| t.any());
-        if !t.is_subtype(&inferred_ty, declared_result_ty) {
+        let inferred_ty = inferred_result
+            .or_else(|| module_plan.effective_returns.get(key).cloned())
+            .unwrap_or_else(|| t.any());
+        let declared_result_ty = t.instantiate(declared_result_ty, &sigma);
+        if !t.is_subtype(&inferred_ty, &declared_result_ty) {
             let inferred_display = t.display(&inferred_ty);
             diags.push(Diagnostic::error(
                 codes::SPEC_VIOLATION,
