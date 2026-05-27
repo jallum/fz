@@ -5,11 +5,11 @@
 - A _good_ plan contains all of the necessary references, details, strategies and tactics -- it is grounded in fact because it is the fruit of research and due-diligence. 
 - A _good_ plan cares as much about what we _remove_ as what we add or change. What goes away? What _could_ go away?
 - A _good_ plan leaves guideposts for the future -- what documentation needs to be updated? What topics help us in the future?
-- A _good_ plan considers judicious measurements/metrics -- signal.
+- A _good_ plan considers judicious measurements/metrics/telemetry -- signal.
 
 ## Work Rules
-- Don't commit work you're not proud of.
-- Understand each task thoroughly before undertaking it. Do not guess. No hidden surprises.
+- Don't commit until you're proud of the work.
+- Understand each task thoroughly before undertaking it. Do not guess; research and verify No hidden surprises.
 - Elegance, simplicity and "correct by construction" are what we push for.
 - Research material can be found in the .agent/docs.md (agent facing) and in the guides (user facing).
 - TDD is the law. Prove things work the way you say they do. Tests must pass.
@@ -23,3 +23,11 @@
 - One ticket == one commit, one close.
 - Ready tickets are surfaced as their dependencies are closed.
 - Tickets are persistent memory beyond context and free you from having to worry about context usage.
+
+## Best Practices
+- Prefer short functions with crisp names over comments.
+- Modules should have a coherent focus.
+- Deeply nested code is a smell.
+- Data should be immutable where possible (esp. after construction).
+- Code should live in the right modules, modules should live in the right places.
+- Tests should observe telemetry wherever possible. Not available? Consider judiciously adding (or extending) events.
