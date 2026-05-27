@@ -30,6 +30,7 @@ mod ir_reducer;
 mod lexer;
 mod macros;
 mod matcher;
+mod module_artifact;
 mod module_identity;
 mod module_interface;
 mod parking;

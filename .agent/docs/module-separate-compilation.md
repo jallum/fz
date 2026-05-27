@@ -54,3 +54,10 @@ Codegen artifact vocabulary:
   `Module::rewrite_external_calls_for_lto` is given an export map and rewrites
   the callsite to a direct local `FnId`. Codegen rejects any unresolved
   external edge; linked images must resolve or report the missing target first.
+- Artifact ownership is explicit. `.fzi` stores only the versioned
+  `ModuleInterface` contract plus compiler/runtime ABI versions and the
+  interface fingerprint. `.fzo` stores the compiled-unit envelope: module
+  identity, implementation fingerprint, implemented-interface fingerprint,
+  required imports, exported runtime symbols, and local runtime metadata
+  counts/tables needed by image linking. Loading rejects unsupported ABI
+  versions and fingerprint mismatches as `artifact/invalid` diagnostics.

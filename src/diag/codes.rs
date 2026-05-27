@@ -73,6 +73,8 @@ pub const TYPE_IMPURE_MATCHER: DiagCode = DiagCode("type/impure-matcher");
 // ----- codegen -----
 
 pub const CODEGEN_SCHEMA_MISSING: DiagCode = DiagCode("codegen/schema-missing");
+#[allow(dead_code)]
+pub const ARTIFACT_INVALID: DiagCode = DiagCode("artifact/invalid");
 
 // ----- internal (compiler invariants) -----
 
@@ -107,6 +109,7 @@ mod tests {
             TYPE_UNREACHABLE_ARM,
             TYPE_OPAQUE_VISIBILITY,
             CODEGEN_SCHEMA_MISSING,
+            ARTIFACT_INVALID,
             INTERNAL_POST_RESOLUTION_LEFTOVER,
         ];
         for c in codes {
