@@ -4,7 +4,7 @@
 //! `.fzo` live?" It also owns the small `.fzi` read/write helpers that use
 //! that path policy.
 
-use crate::module_artifact::FziArtifact;
+use crate::module_artifact::{FziArtifact, FzoArtifact};
 use crate::module_identity::ModuleName;
 use crate::module_interface::ModuleInterface;
 use std::collections::BTreeMap;
@@ -104,6 +104,24 @@ impl ArtifactStore {
         Ok(written)
     }
 
+    pub fn write_fzo_artifacts<'a>(
+        &self,
+        artifacts: impl IntoIterator<Item = &'a FzoArtifact>,
+    ) -> Result<Vec<PathBuf>, ArtifactStoreError> {
+        let mut written = Vec::new();
+        for artifact in artifacts {
+            let module = artifact.module.as_ref().ok_or({
+                ArtifactStoreError::MissingModuleIdentity {
+                    kind: ArtifactKind::Object,
+                }
+            })?;
+            let path = self.object_path(module)?;
+            write_artifact_text(&path, artifact.serialize())?;
+            written.push(path);
+        }
+        Ok(written)
+    }
+
     pub fn load_fzi_artifact(
         &self,
         module: &ModuleName,
@@ -133,6 +151,24 @@ impl ArtifactStore {
         }
         Ok(table)
     }
+
+    pub fn load_fzo_artifact(
+        &self,
+        module: &ModuleName,
+        expected_interface_fingerprint: Option<&[String]>,
+    ) -> Result<FzoArtifact, ArtifactStoreError> {
+        let path = self.object_path(module)?;
+        let text = std::fs::read_to_string(&path).map_err(|source| ArtifactStoreError::Io {
+            path: path.clone(),
+            source: source.to_string(),
+        })?;
+        FzoArtifact::deserialize(&text, expected_interface_fingerprint).map_err(|diagnostic| {
+            ArtifactStoreError::InvalidArtifact {
+                path,
+                diagnostic: Box::new(diagnostic),
+            }
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -161,6 +197,9 @@ impl std::error::Error for ArtifactPathError {}
 #[derive(Debug, Clone)]
 pub enum ArtifactStoreError {
     Path(ArtifactPathError),
+    MissingModuleIdentity {
+        kind: ArtifactKind,
+    },
     Io {
         path: PathBuf,
         source: String,
@@ -175,6 +214,9 @@ impl std::fmt::Display for ArtifactStoreError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Path(err) => write!(f, "{err}"),
+            Self::MissingModuleIdentity { kind } => {
+                write!(f, "{} artifact has no module identity", kind.extension())
+            }
             Self::Io { path, source } => write!(f, "{}: {}", path.display(), source),
             Self::InvalidArtifact { path, diagnostic } => {
                 write!(f, "{}: {}", path.display(), diagnostic.message)
@@ -189,6 +231,19 @@ impl From<ArtifactPathError> for ArtifactStoreError {
     fn from(value: ArtifactPathError) -> Self {
         Self::Path(value)
     }
+}
+
+fn write_artifact_text(path: &Path, text: String) -> Result<(), ArtifactStoreError> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|source| ArtifactStoreError::Io {
+            path: parent.to_path_buf(),
+            source: source.to_string(),
+        })?;
+    }
+    std::fs::write(path, text).map_err(|source| ArtifactStoreError::Io {
+        path: path.to_path_buf(),
+        source: source.to_string(),
+    })
 }
 
 fn validate_path_segment(segment: &str) -> Result<(), ArtifactPathError> {

@@ -73,15 +73,15 @@ Codegen artifact vocabulary:
 
 Runtime library boundary:
 
-- `src/runtime.fz` contains both primitive extern contracts and ordinary FZ
-  standard-library modules. Primitive contracts are the top-level
+- `src/runtime_library/runtime.fz` contains both primitive extern contracts and
+  ordinary FZ standard-library modules. Primitive contracts are the top-level
   `extern "C"` declarations implemented by the Rust runtime; they remain
   runtime imports with explicit type contracts.
-- Module bodies in `runtime.fz` (`Utf8`, `Process`, etc.) are treated as
-  ordinary library modules. `runtime_library::interface_table` exposes their
-  `ModuleInterface` facts to the resolver by default, so user modules can
-  import from runtime-library interfaces without defining or source-pasting
-  those modules.
+- Module bodies in `src/runtime_library/runtime.fz` (`Utf8`, `Process`, etc.)
+  are treated as ordinary library modules. `runtime_library::interface_table`
+  exposes their `ModuleInterface` facts to the resolver by default, so user
+  modules can import from runtime-library interfaces without defining or
+  source-pasting those modules.
 - Interface emission does not export `extern "C"` declarations from modules.
   Those names are implementation contracts used by the module body, not
   public library functions.
@@ -90,6 +90,9 @@ Runtime library boundary:
   contract; the `.fzo` records the runtime-module payload, implemented
   interface fingerprint, and implementation fingerprint for
   linker/runtime-library staging.
+- `ArtifactStore::write_fzo_artifacts` and `load_fzo_artifact` persist and
+  reload those object envelopes under the same `build/fz/objects/...` path
+  policy used for user modules.
 
 LTO / whole-program mode:
 

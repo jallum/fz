@@ -330,6 +330,12 @@ pasted into every user program.</p>
 contracts. They are not exported as public module functions. The public
 surface is the fz wrapper API.</p>
 
+<p>Runtime-library source lives in <code>src/runtime_library/runtime.fz</code>.
+Adding a runtime module means adding an ordinary <code>defmodule</code> there
+with public specs on exported functions. Its artifacts use the same locations
+as user modules: <code>build/fz/interfaces/Name.fzi</code> and
+<code>build/fz/objects/Name.fzo</code>.</p>
+
 <div class="aside">
 This distinction is what lets the runtime library grow. Primitive runtime
 APIs stay small and explicit; the larger standard library can be ordinary

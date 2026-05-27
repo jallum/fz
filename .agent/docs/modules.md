@@ -140,7 +140,8 @@ fingerprint inputs for debugging.
 
 `module_artifact_store::ArtifactStore` owns the filesystem path policy for
 module artifacts. It maps typed `ModuleName` values to deterministic locations
-and provides the `.fzi` read/write helpers used by build tooling.
+and provides `.fzi` / `.fzo` read/write helpers used by build and
+runtime-library tooling.
 
 The default build root is:
 
@@ -179,7 +180,9 @@ fz build --emit-fzi --artifact-root build/fz path/to/input.fz -o path/to/app
 `--emit-fzi` writes one `.fzi` per module through `ArtifactStore` and applies
 strict public export-spec validation before writing. Loading uses
 `ArtifactStore::load_fzi_artifact` / `load_interface_table`, which deserialize
-`FziArtifact` without reading the provider source body.
+`FziArtifact` without reading the provider source body. Object artifacts use
+`ArtifactStore::write_fzo_artifacts` and `load_fzo_artifact`; the object path
+comes from the same typed `ModuleName` policy.
 
 Frontend-only dump commands can load provider interfaces from the same store:
 
@@ -443,8 +446,8 @@ correctness interface-based.
 
 ## Runtime Library Modules
 
-`runtime_library` parses `src/runtime.fz` and exposes built-in library module
-interfaces/artifacts.
+`runtime_library` parses `src/runtime_library/runtime.fz` and exposes built-in
+library module interfaces/artifacts.
 
 Rules:
 
@@ -455,6 +458,19 @@ Rules:
   lookup by default;
 - `runtime_library::artifacts` creates deterministic `.fzi`/`.fzo` envelopes
   for built-in runtime-library modules.
+
+To add a runtime-library module, edit `src/runtime_library/runtime.fz`, add a
+`defmodule` with public `@spec` declarations for exported functions, and keep
+primitive `extern "C"` declarations module-scoped unless they are deliberately
+part of the primitive prelude. The generated artifacts live in the same store
+as user artifacts: `.fzi` under `build/fz/interfaces/...` and `.fzo` under
+`build/fz/objects/...`.
+
+Built-in runtime-library interfaces are resolver defaults. A source module with
+the same name as a built-in module is collected from the current program and
+overrides the injected built-in interface for that compile; artifact paths stay
+module-name based, so distributors should avoid shipping user and built-in
+artifacts with the same module identity in one root.
 
 Use this split when adding standard-library code: prefer ordinary FZ modules
 over growing the primitive runtime surface.

@@ -20,7 +20,7 @@ use crate::resolve::InterfaceTable;
 use std::collections::BTreeMap;
 use std::rc::Rc;
 
-const RUNTIME_FZ: &str = include_str!("runtime.fz");
+const RUNTIME_FZ: &str = include_str!("runtime_library/runtime.fz");
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuntimeLibraryModuleArtifact {
@@ -303,6 +303,60 @@ mod tests {
                 artifact.interface.fingerprint_inputs
             );
         }
+    }
+
+    #[test]
+    fn runtime_library_artifacts_write_load_and_import_like_user_artifacts() {
+        let root = std::env::temp_dir().join(format!(
+            "fz-runtime-artifacts-{}-write-load",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let store = crate::module_artifact_store::ArtifactStore::new(&root);
+        let artifacts = artifacts();
+        let interfaces = artifacts
+            .iter()
+            .map(|artifact| (artifact.module.clone(), artifact.interface.clone()))
+            .collect::<BTreeMap<_, _>>();
+
+        let fzi_paths = store.write_fzi_artifacts(&interfaces).expect("write fzi");
+        let fzo_paths = store
+            .write_fzo_artifacts(artifacts.iter().map(|artifact| &artifact.fzo))
+            .expect("write fzo");
+        assert_eq!(fzi_paths.len(), artifacts.len());
+        assert_eq!(fzo_paths.len(), artifacts.len());
+
+        let utf8 = ModuleName::from_segments(vec!["Utf8".to_string()]);
+        let loaded_interfaces = store.load_interface_table([&utf8]).expect("load fzi");
+        assert!(loaded_interfaces[&utf8].exports.iter().any(|export| {
+            export.name == "valid?" && export.arity == 1 && export.spec.is_some()
+        }));
+        let loaded_fzo = store
+            .load_fzo_artifact(&utf8, Some(&loaded_interfaces[&utf8].fingerprint_inputs))
+            .expect("load fzo");
+        assert_eq!(loaded_fzo.module, Some(utf8));
+        assert_eq!(loaded_fzo.unit_payload.format, "fz-runtime-module-v1");
+
+        let mut t = crate::types::ConcreteTypes;
+        let consumer = r#"
+defmodule User do
+  import Utf8, only: [valid?: 1]
+  @spec accepts(any) :: bool
+  fn accepts(bytes), do: valid?(bytes)
+end
+"#;
+        match crate::frontend::compile_source_with_interface_table(
+            &mut t,
+            consumer.to_string(),
+            "consumer.fz".to_string(),
+            loaded_interfaces,
+            &crate::telemetry::NullTelemetry,
+        ) {
+            Ok(_) => {}
+            Err(_) => panic!("runtime artifact interface resolves like a user artifact"),
+        }
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

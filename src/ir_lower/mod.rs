@@ -70,7 +70,7 @@ pub(crate) use receive::lower_receive;
 
 pub(crate) const REPL_ENTRY_PREFIX: &str = "__repl_eval_";
 
-const RUNTIME_FZ: &str = include_str!("../runtime.fz");
+const RUNTIME_FZ: &str = include_str!("../runtime_library/runtime.fz");
 
 /// fz-axu.27 (M6) — return the prelude as a flat `Program` whose
 /// `module_type_envs[""]`, `opaque_inners`, and `brand_inners` are all
