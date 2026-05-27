@@ -67,444 +67,452 @@ impl JitBackend {
         // is in-process and resolves symbols by name → Rust fn pointer.
         // AOT will skip this entire block (linker resolves against the
         // fz_runtime staticlib instead).
-        builder.symbol(
-            "fz_print_value_ref",
-            fz_runtime::ir_runtime::fz_print_value_ref as *const u8,
-        );
-        builder.symbol(
-            "fz_process_heap_alloc_stats",
-            fz_runtime::ir_runtime::fz_process_heap_alloc_stats as *const u8,
-        );
-        // Typed print helpers — JIT routes here when the arg type is
-        // monomorphic, passing the raw payload directly.
-        builder.symbol("fz_print_i64", fz_runtime::fz_print_i64 as *const u8);
-        // Linux JIT needs explicit symbol bindings; macOS happens to
-        // resolve runtime crate exports via dlsym on the executable
-        // image, but Linux's stricter visibility under cargo llvm-cov
-        // drops them. Bind the assert family here so JIT-emitted code
-        // can call them on every platform.
-        builder.symbol("fz_assert", fz_runtime::fz_assert as *const u8);
-        builder.symbol("fz_assert_eq", fz_runtime::fz_assert_eq as *const u8);
-        builder.symbol("fz_assert_neq", fz_runtime::fz_assert_neq as *const u8);
-        builder.symbol("fz_print_f64", fz_runtime::fz_print_f64 as *const u8);
-        builder.symbol(
-            "fz_dynamic_float_arith_unsupported",
-            fz_runtime::ir_runtime::fz_dynamic_float_arith_unsupported as *const u8,
-        );
-        builder.symbol(
-            "fz_halt_implicit_ref",
-            fz_runtime::ir_runtime::fz_halt_implicit_ref as *const u8,
-        );
-        builder.symbol(
-            "fz_halt_implicit_i64",
-            fz_runtime::ir_runtime::fz_halt_implicit_i64 as *const u8,
-        );
-        builder.symbol(
-            "fz_halt_implicit_f64",
-            fz_runtime::ir_runtime::fz_halt_implicit_f64 as *const u8,
-        );
-        builder.symbol(
-            "fz_alloc_frame",
-            fz_runtime::ir_runtime::fz_alloc_frame as *const u8,
-        );
-        builder.symbol(
-            "fz_list_cons_ref",
-            fz_runtime::ir_runtime::fz_list_cons_ref as *const u8,
-        );
-        builder.symbol(
-            "fz_list_cons_any",
-            fz_runtime::ir_runtime::fz_list_cons_any as *const u8,
-        );
-        builder.symbol(
-            "fz_list_cons_int",
-            fz_runtime::ir_runtime::fz_list_cons_int as *const u8,
-        );
-        builder.symbol(
-            "fz_list_cons_float",
-            fz_runtime::ir_runtime::fz_list_cons_float as *const u8,
-        );
-        builder.symbol(
-            "fz_list_cons_atom",
-            fz_runtime::ir_runtime::fz_list_cons_atom as *const u8,
-        );
-        builder.symbol(
-            "fz_list_is_cons",
-            fz_runtime::ir_runtime::fz_list_is_cons as *const u8,
-        );
-        builder.symbol(
-            "fz_list_head_ref",
-            fz_runtime::ir_runtime::fz_list_head_ref as *const u8,
-        );
-        builder.symbol(
-            "fz_list_head_int_ref",
-            fz_runtime::ir_runtime::fz_list_head_int_ref as *const u8,
-        );
-        builder.symbol(
-            "fz_list_head_float_ref",
-            fz_runtime::ir_runtime::fz_list_head_float_ref as *const u8,
-        );
-        builder.symbol(
-            "fz_list_tail",
-            fz_runtime::ir_runtime::fz_list_tail as *const u8,
-        );
-        builder.symbol(
-            "fz_list_tail_ref",
-            fz_runtime::ir_runtime::fz_list_tail_ref as *const u8,
-        );
-        builder.symbol(
-            "fz_alloc_struct",
-            fz_runtime::ir_runtime::fz_alloc_struct as *const u8,
-        );
-        builder.symbol(
-            "fz_struct_get_field_ref",
-            fz_runtime::ir_runtime::fz_struct_get_field_ref as *const u8,
-        );
-        builder.symbol(
-            "fz_struct_set_field_ref",
-            fz_runtime::ir_runtime::fz_struct_set_field_ref as *const u8,
-        );
-        builder.symbol(
-            "fz_struct_set_field_int",
-            fz_runtime::ir_runtime::fz_struct_set_field_int as *const u8,
-        );
-        builder.symbol(
-            "fz_struct_set_field_float",
-            fz_runtime::ir_runtime::fz_struct_set_field_float as *const u8,
-        );
-        builder.symbol(
-            "fz_struct_set_field_atom",
-            fz_runtime::ir_runtime::fz_struct_set_field_atom as *const u8,
-        );
-        builder.symbol(
-            "fz_bs_begin",
-            fz_runtime::ir_runtime::fz_bs_begin as *const u8,
-        );
-        builder.symbol(
-            "fz_bs_write_field_ref",
-            fz_runtime::ir_runtime::fz_bs_write_field_ref as *const u8,
-        );
-        builder.symbol(
-            "fz_bs_finalize",
-            fz_runtime::ir_runtime::fz_bs_finalize as *const u8,
-        );
-        builder.symbol(
-            "fz_alloc_bitstring_const",
-            fz_runtime::ir_runtime::fz_alloc_bitstring_const as *const u8,
-        );
-        builder.symbol(
-            "fz_bs_reader_init_ref",
-            fz_runtime::ir_runtime::fz_bs_reader_init_ref as *const u8,
-        );
-        builder.symbol(
-            "fz_bs_read_field_ref",
-            fz_runtime::ir_runtime::fz_bs_read_field_ref as *const u8,
-        );
-        builder.symbol(
-            "fz_bs_reader_done_ref",
-            fz_runtime::ir_runtime::fz_bs_reader_done_ref as *const u8,
-        );
-        // Static SharedBin path: codegen emits a 40-byte data symbol in
-        // `.data`, then calls this helper to wrap it in a per-process
-        // ProcBin / MSO entry.
-        builder.symbol(
-            "fz_alloc_procbin_from_static",
-            fz_runtime::ir_runtime::fz_alloc_procbin_from_static as *const u8,
-        );
-        // Noop destructor address baked into each static SharedBin's
-        // `destructor` field via a function-address relocation. Never
-        // invoked in practice (anchor refcount stays >= 1) but must
-        // resolve at link time.
-        builder.symbol(
-            "shared_bin_destructor_noop",
-            fz_runtime::procbin::shared_bin_destructor_noop as *const u8,
-        );
-        builder.symbol(
-            "fz_binary_as_ptr",
-            fz_runtime::extern_binary::fz_binary_as_ptr as *const u8,
-        );
-        builder.symbol(
-            "fz_binary_as_cstring",
-            fz_runtime::extern_binary::fz_binary_as_cstring as *const u8,
-        );
-        builder.symbol(
-            "fz_map_empty",
-            fz_runtime::ir_runtime::fz_map_empty as *const u8,
-        );
-        builder.symbol(
-            "fz_map_dest_begin",
-            fz_runtime::ir_runtime::fz_map_dest_begin as *const u8,
-        );
-        builder.symbol(
-            "fz_map_dest_begin_update",
-            fz_runtime::ir_runtime::fz_map_dest_begin_update as *const u8,
-        );
-        builder.symbol(
-            "fz_map_dest_put_parts",
-            fz_runtime::ir_runtime::fz_map_dest_put_parts as *const u8,
-        );
-        builder.symbol(
-            "fz_map_dest_put_ref",
-            fz_runtime::ir_runtime::fz_map_dest_put_ref as *const u8,
-        );
-        builder.symbol(
-            "fz_map_dest_freeze",
-            fz_runtime::ir_runtime::fz_map_dest_freeze as *const u8,
-        );
-        builder.symbol(
-            "fz_map_put_ref",
-            fz_runtime::ir_runtime::fz_map_put_ref as *const u8,
-        );
-        builder.symbol(
-            "fz_map_put_int",
-            fz_runtime::ir_runtime::fz_map_put_int as *const u8,
-        );
-        builder.symbol(
-            "fz_map_put_float",
-            fz_runtime::ir_runtime::fz_map_put_float as *const u8,
-        );
-        builder.symbol(
-            "fz_map_put_atom",
-            fz_runtime::ir_runtime::fz_map_put_atom as *const u8,
-        );
-        builder.symbol(
-            "fz_map_put_atom_key_int",
-            fz_runtime::ir_runtime::fz_map_put_atom_key_int as *const u8,
-        );
-        builder.symbol(
-            "fz_map_put_atom_key_float",
-            fz_runtime::ir_runtime::fz_map_put_atom_key_float as *const u8,
-        );
-        builder.symbol(
-            "fz_map_put_atom_key_atom",
-            fz_runtime::ir_runtime::fz_map_put_atom_key_atom as *const u8,
-        );
-        builder.symbol(
-            "fz_map_put_int_key_int",
-            fz_runtime::ir_runtime::fz_map_put_int_key_int as *const u8,
-        );
-        builder.symbol(
-            "fz_map_put_int_key_float",
-            fz_runtime::ir_runtime::fz_map_put_int_key_float as *const u8,
-        );
-        builder.symbol(
-            "fz_map_put_int_key_atom",
-            fz_runtime::ir_runtime::fz_map_put_int_key_atom as *const u8,
-        );
-        builder.symbol(
-            "fz_map_put_float_key_int",
-            fz_runtime::ir_runtime::fz_map_put_float_key_int as *const u8,
-        );
-        builder.symbol(
-            "fz_map_put_float_key_float",
-            fz_runtime::ir_runtime::fz_map_put_float_key_float as *const u8,
-        );
-        builder.symbol(
-            "fz_map_put_float_key_atom",
-            fz_runtime::ir_runtime::fz_map_put_float_key_atom as *const u8,
-        );
-        builder.symbol(
-            "fz_map_get_ref",
-            fz_runtime::ir_runtime::fz_map_get_ref as *const u8,
-        );
-        builder.symbol(
-            "fz_map_get_atom_key_ref",
-            fz_runtime::ir_runtime::fz_map_get_atom_key_ref as *const u8,
-        );
-        builder.symbol(
-            "fz_map_get_int_key_ref",
-            fz_runtime::ir_runtime::fz_map_get_int_key_ref as *const u8,
-        );
-        builder.symbol(
-            "fz_map_get_float_key_ref",
-            fz_runtime::ir_runtime::fz_map_get_float_key_ref as *const u8,
-        );
-        builder.symbol(
-            "fz_ref_load_float",
-            fz_runtime::ir_runtime::fz_ref_load_float as *const u8,
-        );
-        builder.symbol(
-            "fz_ref_load_int",
-            fz_runtime::ir_runtime::fz_ref_load_int as *const u8,
-        );
-        builder.symbol(
-            "fz_type_of",
-            fz_runtime::ir_runtime::fz_type_of as *const u8,
-        );
-        builder.symbol(
-            "fz_unbox_int",
-            fz_runtime::ir_runtime::fz_unbox_int as *const u8,
-        );
-        builder.symbol(
-            "fz_unbox_float",
-            fz_runtime::ir_runtime::fz_unbox_float as *const u8,
-        );
-        builder.symbol(
-            "fz_unbox_atom",
-            fz_runtime::ir_runtime::fz_unbox_atom as *const u8,
-        );
-        builder.symbol(
-            "fz_struct_schema_id_ref",
-            fz_runtime::ir_runtime::fz_struct_schema_id_ref as *const u8,
-        );
-        builder.symbol(
-            "fz_truthy_ref",
-            fz_runtime::ir_runtime::fz_truthy_ref as *const u8,
-        );
-        builder.symbol(
-            "fz_box_int_for_any",
-            fz_runtime::ir_runtime::fz_box_int_for_any as *const u8,
-        );
-        builder.symbol(
-            "fz_box_float_for_any",
-            fz_runtime::ir_runtime::fz_box_float_for_any as *const u8,
-        );
-        builder.symbol(
-            "fz_box_atom_for_any",
-            fz_runtime::ir_runtime::fz_box_atom_for_any as *const u8,
-        );
-        builder.symbol(
-            "fz_map_is_map",
-            fz_runtime::ir_runtime::fz_map_is_map as *const u8,
-        );
-        builder.symbol(
-            "fz_promote_f64",
-            fz_runtime::ir_runtime::fz_promote_f64 as *const u8,
-        );
-        builder.symbol(
-            "fz_value_eq_ref",
-            fz_runtime::ir_runtime::fz_value_eq_ref as *const u8,
-        );
-        // Receive matcher's binary-literal helper.
-        builder.symbol(
-            "fz_matcher_eq_bytes",
-            fz_runtime::ir_runtime::fz_matcher_eq_bytes as *const u8,
-        );
-        // Receive matcher's map-key lookup helper.
-        builder.symbol(
-            "fz_matcher_map_get_ref",
-            fz_runtime::ir_runtime::fz_matcher_map_get_ref as *const u8,
-        );
-        builder.symbol(
-            "fz_alloc_closure",
-            fz_runtime::ir_runtime::fz_alloc_closure as *const u8,
-        );
-        builder.symbol(
-            "fz_closure_code_ref",
-            fz_runtime::ir_runtime::fz_closure_code_ref as *const u8,
-        );
-        builder.symbol(
-            "fz_materialize_cont",
-            fz_runtime::ir_runtime::fz_materialize_cont as *const u8,
-        );
-        builder.symbol(
-            "fz_closure_halt_kind_ref",
-            fz_runtime::ir_runtime::fz_closure_halt_kind_ref as *const u8,
-        );
-        builder.symbol(
-            "fz_closure_get_capture_ref",
-            fz_runtime::ir_runtime::fz_closure_get_capture_ref as *const u8,
-        );
-        builder.symbol(
-            "fz_closure_get_capture_i64",
-            fz_runtime::ir_runtime::fz_closure_get_capture_i64 as *const u8,
-        );
-        builder.symbol(
-            "fz_closure_get_capture_f64",
-            fz_runtime::ir_runtime::fz_closure_get_capture_f64 as *const u8,
-        );
-        builder.symbol(
-            "fz_closure_set_capture_ref",
-            fz_runtime::ir_runtime::fz_closure_set_capture_ref as *const u8,
-        );
-        builder.symbol(
-            "fz_closure_set_capture_i64",
-            fz_runtime::ir_runtime::fz_closure_set_capture_i64 as *const u8,
-        );
-        builder.symbol(
-            "fz_closure_set_capture_f64",
-            fz_runtime::ir_runtime::fz_closure_set_capture_f64 as *const u8,
-        );
-        builder.symbol(
-            "fz_spawn_ref",
-            fz_runtime::ir_runtime::fz_spawn_ref as *const u8,
-        );
-        builder.symbol(
-            "fz_spawn_opt_ref",
-            fz_runtime::ir_runtime::fz_spawn_opt_ref as *const u8,
-        );
-        builder.symbol(
-            "fz_self_raw",
-            fz_runtime::ir_runtime::fz_self_raw as *const u8,
-        );
-        builder.symbol(
-            "fz_make_ref_raw",
-            fz_runtime::ir_runtime::fz_make_ref_raw as *const u8,
-        );
-        builder.symbol(
-            "fz_make_resource_ref",
-            fz_runtime::ir_runtime::fz_make_resource_ref as *const u8,
-        );
-        builder.symbol(
-            "fz_send_ref",
-            fz_runtime::ir_runtime::fz_send_ref as *const u8,
-        );
-        // utf8 brand support.
-        builder.symbol(
-            "fz_bitstring_valid_utf8",
-            fz_runtime::ir_runtime::fz_bitstring_valid_utf8 as *const u8,
-        );
-        builder.symbol(
-            "fz_brand_bitstring_as_utf8",
-            fz_runtime::ir_runtime::fz_brand_bitstring_as_utf8 as *const u8,
-        );
-        // Runtime-exported fixture/test dtor. Bound unconditionally (not
-        // cfg(test)-gated) so any `fz dump --emit clif` or `fz run` over
-        // a fixture using it resolves cleanly — the golden-CLIF harness
-        // compiles every non-deferred fixture.
-        builder.symbol(
-            "fz_resource_test_print_dtor",
-            fz_runtime::resource::fz_resource_test_print_dtor as *const u8,
-        );
-        builder.symbol(
-            "fz_receive_attempt",
-            fz_runtime::ir_runtime::fz_receive_attempt as *const u8,
-        );
-        builder.symbol(
-            "fz_receive_park",
-            fz_runtime::ir_runtime::fz_receive_park as *const u8,
-        );
-        // Selective-receive park entry. Used by JIT codegen at the
-        // Term::ReceiveMatched seam.
-        builder.symbol(
-            "fz_receive_park_matched",
-            fz_runtime::ir_runtime::fz_receive_park_matched as *const u8,
-        );
-        builder.symbol(
-            "fz_yield_mid_flight",
-            fz_runtime::ir_runtime::fz_yield_mid_flight as *const u8,
-        );
-        builder.symbol(
-            "fz_get_static_closure",
-            fz_runtime::ir_runtime::fz_get_static_closure as *const u8,
-        );
-        builder.symbol(
-            "fz_get_halt_cont",
-            fz_runtime::ir_runtime::fz_get_halt_cont as *const u8,
-        );
-        // Cooperative yield-flag data.
-        builder.symbol("FZ_SHOULD_YIELD", fz_runtime::yield_flag::jit_flag_ptr());
-        // Test externs (e.g. the `_resource_test_dtor` counter used by
-        // JIT-leg resource lifecycle tests). Production paths see no
-        // extra symbols.
-        #[cfg(test)]
-        builder.symbol(
-            "_resource_test_dtor",
-            crate::ir_interp::tests_support_test_dtor_addr(),
-        );
+        register_runtime_symbols(&mut builder);
         Self {
             jmod: JITModule::new(builder),
         }
     }
+}
+
+/// Bind every fz runtime FFI fn pointer into the JIT linker. Split out
+/// of `JitBackend::new` purely for readability — the list is long and
+/// flat. Grouped by subsystem (print/assert, list, struct, bitstring,
+/// map, closure, scheduler, receive, etc.).
+fn register_runtime_symbols(builder: &mut JITBuilder) {
+    builder.symbol(
+        "fz_print_value_ref",
+        fz_runtime::ir_runtime::fz_print_value_ref as *const u8,
+    );
+    builder.symbol(
+        "fz_process_heap_alloc_stats",
+        fz_runtime::ir_runtime::fz_process_heap_alloc_stats as *const u8,
+    );
+    // Typed print helpers — JIT routes here when the arg type is
+    // monomorphic, passing the raw payload directly.
+    builder.symbol("fz_print_i64", fz_runtime::fz_print_i64 as *const u8);
+    // Linux JIT needs explicit symbol bindings; macOS happens to
+    // resolve runtime crate exports via dlsym on the executable
+    // image, but Linux's stricter visibility under cargo llvm-cov
+    // drops them. Bind the assert family here so JIT-emitted code
+    // can call them on every platform.
+    builder.symbol("fz_assert", fz_runtime::fz_assert as *const u8);
+    builder.symbol("fz_assert_eq", fz_runtime::fz_assert_eq as *const u8);
+    builder.symbol("fz_assert_neq", fz_runtime::fz_assert_neq as *const u8);
+    builder.symbol("fz_print_f64", fz_runtime::fz_print_f64 as *const u8);
+    builder.symbol(
+        "fz_dynamic_float_arith_unsupported",
+        fz_runtime::ir_runtime::fz_dynamic_float_arith_unsupported as *const u8,
+    );
+    builder.symbol(
+        "fz_halt_implicit_ref",
+        fz_runtime::ir_runtime::fz_halt_implicit_ref as *const u8,
+    );
+    builder.symbol(
+        "fz_halt_implicit_i64",
+        fz_runtime::ir_runtime::fz_halt_implicit_i64 as *const u8,
+    );
+    builder.symbol(
+        "fz_halt_implicit_f64",
+        fz_runtime::ir_runtime::fz_halt_implicit_f64 as *const u8,
+    );
+    builder.symbol(
+        "fz_alloc_frame",
+        fz_runtime::ir_runtime::fz_alloc_frame as *const u8,
+    );
+    builder.symbol(
+        "fz_list_cons_ref",
+        fz_runtime::ir_runtime::fz_list_cons_ref as *const u8,
+    );
+    builder.symbol(
+        "fz_list_cons_any",
+        fz_runtime::ir_runtime::fz_list_cons_any as *const u8,
+    );
+    builder.symbol(
+        "fz_list_cons_int",
+        fz_runtime::ir_runtime::fz_list_cons_int as *const u8,
+    );
+    builder.symbol(
+        "fz_list_cons_float",
+        fz_runtime::ir_runtime::fz_list_cons_float as *const u8,
+    );
+    builder.symbol(
+        "fz_list_cons_atom",
+        fz_runtime::ir_runtime::fz_list_cons_atom as *const u8,
+    );
+    builder.symbol(
+        "fz_list_is_cons",
+        fz_runtime::ir_runtime::fz_list_is_cons as *const u8,
+    );
+    builder.symbol(
+        "fz_list_head_ref",
+        fz_runtime::ir_runtime::fz_list_head_ref as *const u8,
+    );
+    builder.symbol(
+        "fz_list_head_int_ref",
+        fz_runtime::ir_runtime::fz_list_head_int_ref as *const u8,
+    );
+    builder.symbol(
+        "fz_list_head_float_ref",
+        fz_runtime::ir_runtime::fz_list_head_float_ref as *const u8,
+    );
+    builder.symbol(
+        "fz_list_tail",
+        fz_runtime::ir_runtime::fz_list_tail as *const u8,
+    );
+    builder.symbol(
+        "fz_list_tail_ref",
+        fz_runtime::ir_runtime::fz_list_tail_ref as *const u8,
+    );
+    builder.symbol(
+        "fz_alloc_struct",
+        fz_runtime::ir_runtime::fz_alloc_struct as *const u8,
+    );
+    builder.symbol(
+        "fz_struct_get_field_ref",
+        fz_runtime::ir_runtime::fz_struct_get_field_ref as *const u8,
+    );
+    builder.symbol(
+        "fz_struct_set_field_ref",
+        fz_runtime::ir_runtime::fz_struct_set_field_ref as *const u8,
+    );
+    builder.symbol(
+        "fz_struct_set_field_int",
+        fz_runtime::ir_runtime::fz_struct_set_field_int as *const u8,
+    );
+    builder.symbol(
+        "fz_struct_set_field_float",
+        fz_runtime::ir_runtime::fz_struct_set_field_float as *const u8,
+    );
+    builder.symbol(
+        "fz_struct_set_field_atom",
+        fz_runtime::ir_runtime::fz_struct_set_field_atom as *const u8,
+    );
+    builder.symbol(
+        "fz_bs_begin",
+        fz_runtime::ir_runtime::fz_bs_begin as *const u8,
+    );
+    builder.symbol(
+        "fz_bs_write_field_ref",
+        fz_runtime::ir_runtime::fz_bs_write_field_ref as *const u8,
+    );
+    builder.symbol(
+        "fz_bs_finalize",
+        fz_runtime::ir_runtime::fz_bs_finalize as *const u8,
+    );
+    builder.symbol(
+        "fz_alloc_bitstring_const",
+        fz_runtime::ir_runtime::fz_alloc_bitstring_const as *const u8,
+    );
+    builder.symbol(
+        "fz_bs_reader_init_ref",
+        fz_runtime::ir_runtime::fz_bs_reader_init_ref as *const u8,
+    );
+    builder.symbol(
+        "fz_bs_read_field_ref",
+        fz_runtime::ir_runtime::fz_bs_read_field_ref as *const u8,
+    );
+    builder.symbol(
+        "fz_bs_reader_done_ref",
+        fz_runtime::ir_runtime::fz_bs_reader_done_ref as *const u8,
+    );
+    // Static SharedBin path: codegen emits a 40-byte data symbol in
+    // `.data`, then calls this helper to wrap it in a per-process
+    // ProcBin / MSO entry.
+    builder.symbol(
+        "fz_alloc_procbin_from_static",
+        fz_runtime::ir_runtime::fz_alloc_procbin_from_static as *const u8,
+    );
+    // Noop destructor address baked into each static SharedBin's
+    // `destructor` field via a function-address relocation. Never
+    // invoked in practice (anchor refcount stays >= 1) but must
+    // resolve at link time.
+    builder.symbol(
+        "shared_bin_destructor_noop",
+        fz_runtime::procbin::shared_bin_destructor_noop as *const u8,
+    );
+    builder.symbol(
+        "fz_binary_as_ptr",
+        fz_runtime::extern_binary::fz_binary_as_ptr as *const u8,
+    );
+    builder.symbol(
+        "fz_binary_as_cstring",
+        fz_runtime::extern_binary::fz_binary_as_cstring as *const u8,
+    );
+    builder.symbol(
+        "fz_map_empty",
+        fz_runtime::ir_runtime::fz_map_empty as *const u8,
+    );
+    builder.symbol(
+        "fz_map_dest_begin",
+        fz_runtime::ir_runtime::fz_map_dest_begin as *const u8,
+    );
+    builder.symbol(
+        "fz_map_dest_begin_update",
+        fz_runtime::ir_runtime::fz_map_dest_begin_update as *const u8,
+    );
+    builder.symbol(
+        "fz_map_dest_put_parts",
+        fz_runtime::ir_runtime::fz_map_dest_put_parts as *const u8,
+    );
+    builder.symbol(
+        "fz_map_dest_put_ref",
+        fz_runtime::ir_runtime::fz_map_dest_put_ref as *const u8,
+    );
+    builder.symbol(
+        "fz_map_dest_freeze",
+        fz_runtime::ir_runtime::fz_map_dest_freeze as *const u8,
+    );
+    builder.symbol(
+        "fz_map_put_ref",
+        fz_runtime::ir_runtime::fz_map_put_ref as *const u8,
+    );
+    builder.symbol(
+        "fz_map_put_int",
+        fz_runtime::ir_runtime::fz_map_put_int as *const u8,
+    );
+    builder.symbol(
+        "fz_map_put_float",
+        fz_runtime::ir_runtime::fz_map_put_float as *const u8,
+    );
+    builder.symbol(
+        "fz_map_put_atom",
+        fz_runtime::ir_runtime::fz_map_put_atom as *const u8,
+    );
+    builder.symbol(
+        "fz_map_put_atom_key_int",
+        fz_runtime::ir_runtime::fz_map_put_atom_key_int as *const u8,
+    );
+    builder.symbol(
+        "fz_map_put_atom_key_float",
+        fz_runtime::ir_runtime::fz_map_put_atom_key_float as *const u8,
+    );
+    builder.symbol(
+        "fz_map_put_atom_key_atom",
+        fz_runtime::ir_runtime::fz_map_put_atom_key_atom as *const u8,
+    );
+    builder.symbol(
+        "fz_map_put_int_key_int",
+        fz_runtime::ir_runtime::fz_map_put_int_key_int as *const u8,
+    );
+    builder.symbol(
+        "fz_map_put_int_key_float",
+        fz_runtime::ir_runtime::fz_map_put_int_key_float as *const u8,
+    );
+    builder.symbol(
+        "fz_map_put_int_key_atom",
+        fz_runtime::ir_runtime::fz_map_put_int_key_atom as *const u8,
+    );
+    builder.symbol(
+        "fz_map_put_float_key_int",
+        fz_runtime::ir_runtime::fz_map_put_float_key_int as *const u8,
+    );
+    builder.symbol(
+        "fz_map_put_float_key_float",
+        fz_runtime::ir_runtime::fz_map_put_float_key_float as *const u8,
+    );
+    builder.symbol(
+        "fz_map_put_float_key_atom",
+        fz_runtime::ir_runtime::fz_map_put_float_key_atom as *const u8,
+    );
+    builder.symbol(
+        "fz_map_get_ref",
+        fz_runtime::ir_runtime::fz_map_get_ref as *const u8,
+    );
+    builder.symbol(
+        "fz_map_get_atom_key_ref",
+        fz_runtime::ir_runtime::fz_map_get_atom_key_ref as *const u8,
+    );
+    builder.symbol(
+        "fz_map_get_int_key_ref",
+        fz_runtime::ir_runtime::fz_map_get_int_key_ref as *const u8,
+    );
+    builder.symbol(
+        "fz_map_get_float_key_ref",
+        fz_runtime::ir_runtime::fz_map_get_float_key_ref as *const u8,
+    );
+    builder.symbol(
+        "fz_ref_load_float",
+        fz_runtime::ir_runtime::fz_ref_load_float as *const u8,
+    );
+    builder.symbol(
+        "fz_ref_load_int",
+        fz_runtime::ir_runtime::fz_ref_load_int as *const u8,
+    );
+    builder.symbol(
+        "fz_type_of",
+        fz_runtime::ir_runtime::fz_type_of as *const u8,
+    );
+    builder.symbol(
+        "fz_unbox_int",
+        fz_runtime::ir_runtime::fz_unbox_int as *const u8,
+    );
+    builder.symbol(
+        "fz_unbox_float",
+        fz_runtime::ir_runtime::fz_unbox_float as *const u8,
+    );
+    builder.symbol(
+        "fz_unbox_atom",
+        fz_runtime::ir_runtime::fz_unbox_atom as *const u8,
+    );
+    builder.symbol(
+        "fz_struct_schema_id_ref",
+        fz_runtime::ir_runtime::fz_struct_schema_id_ref as *const u8,
+    );
+    builder.symbol(
+        "fz_truthy_ref",
+        fz_runtime::ir_runtime::fz_truthy_ref as *const u8,
+    );
+    builder.symbol(
+        "fz_box_int_for_any",
+        fz_runtime::ir_runtime::fz_box_int_for_any as *const u8,
+    );
+    builder.symbol(
+        "fz_box_float_for_any",
+        fz_runtime::ir_runtime::fz_box_float_for_any as *const u8,
+    );
+    builder.symbol(
+        "fz_box_atom_for_any",
+        fz_runtime::ir_runtime::fz_box_atom_for_any as *const u8,
+    );
+    builder.symbol(
+        "fz_map_is_map",
+        fz_runtime::ir_runtime::fz_map_is_map as *const u8,
+    );
+    builder.symbol(
+        "fz_promote_f64",
+        fz_runtime::ir_runtime::fz_promote_f64 as *const u8,
+    );
+    builder.symbol(
+        "fz_value_eq_ref",
+        fz_runtime::ir_runtime::fz_value_eq_ref as *const u8,
+    );
+    // Receive matcher's binary-literal helper.
+    builder.symbol(
+        "fz_matcher_eq_bytes",
+        fz_runtime::ir_runtime::fz_matcher_eq_bytes as *const u8,
+    );
+    // Receive matcher's map-key lookup helper.
+    builder.symbol(
+        "fz_matcher_map_get_ref",
+        fz_runtime::ir_runtime::fz_matcher_map_get_ref as *const u8,
+    );
+    builder.symbol(
+        "fz_alloc_closure",
+        fz_runtime::ir_runtime::fz_alloc_closure as *const u8,
+    );
+    builder.symbol(
+        "fz_closure_code_ref",
+        fz_runtime::ir_runtime::fz_closure_code_ref as *const u8,
+    );
+    builder.symbol(
+        "fz_materialize_cont",
+        fz_runtime::ir_runtime::fz_materialize_cont as *const u8,
+    );
+    builder.symbol(
+        "fz_closure_halt_kind_ref",
+        fz_runtime::ir_runtime::fz_closure_halt_kind_ref as *const u8,
+    );
+    builder.symbol(
+        "fz_closure_get_capture_ref",
+        fz_runtime::ir_runtime::fz_closure_get_capture_ref as *const u8,
+    );
+    builder.symbol(
+        "fz_closure_get_capture_i64",
+        fz_runtime::ir_runtime::fz_closure_get_capture_i64 as *const u8,
+    );
+    builder.symbol(
+        "fz_closure_get_capture_f64",
+        fz_runtime::ir_runtime::fz_closure_get_capture_f64 as *const u8,
+    );
+    builder.symbol(
+        "fz_closure_set_capture_ref",
+        fz_runtime::ir_runtime::fz_closure_set_capture_ref as *const u8,
+    );
+    builder.symbol(
+        "fz_closure_set_capture_i64",
+        fz_runtime::ir_runtime::fz_closure_set_capture_i64 as *const u8,
+    );
+    builder.symbol(
+        "fz_closure_set_capture_f64",
+        fz_runtime::ir_runtime::fz_closure_set_capture_f64 as *const u8,
+    );
+    builder.symbol(
+        "fz_spawn_ref",
+        fz_runtime::ir_runtime::fz_spawn_ref as *const u8,
+    );
+    builder.symbol(
+        "fz_spawn_opt_ref",
+        fz_runtime::ir_runtime::fz_spawn_opt_ref as *const u8,
+    );
+    builder.symbol(
+        "fz_self_raw",
+        fz_runtime::ir_runtime::fz_self_raw as *const u8,
+    );
+    builder.symbol(
+        "fz_make_ref_raw",
+        fz_runtime::ir_runtime::fz_make_ref_raw as *const u8,
+    );
+    builder.symbol(
+        "fz_make_resource_ref",
+        fz_runtime::ir_runtime::fz_make_resource_ref as *const u8,
+    );
+    builder.symbol(
+        "fz_send_ref",
+        fz_runtime::ir_runtime::fz_send_ref as *const u8,
+    );
+    // utf8 brand support.
+    builder.symbol(
+        "fz_bitstring_valid_utf8",
+        fz_runtime::ir_runtime::fz_bitstring_valid_utf8 as *const u8,
+    );
+    builder.symbol(
+        "fz_brand_bitstring_as_utf8",
+        fz_runtime::ir_runtime::fz_brand_bitstring_as_utf8 as *const u8,
+    );
+    // Runtime-exported fixture/test dtor. Bound unconditionally (not
+    // cfg(test)-gated) so any `fz dump --emit clif` or `fz run` over
+    // a fixture using it resolves cleanly — the golden-CLIF harness
+    // compiles every non-deferred fixture.
+    builder.symbol(
+        "fz_resource_test_print_dtor",
+        fz_runtime::resource::fz_resource_test_print_dtor as *const u8,
+    );
+    builder.symbol(
+        "fz_receive_attempt",
+        fz_runtime::ir_runtime::fz_receive_attempt as *const u8,
+    );
+    builder.symbol(
+        "fz_receive_park",
+        fz_runtime::ir_runtime::fz_receive_park as *const u8,
+    );
+    // Selective-receive park entry. Used by JIT codegen at the
+    // Term::ReceiveMatched seam.
+    builder.symbol(
+        "fz_receive_park_matched",
+        fz_runtime::ir_runtime::fz_receive_park_matched as *const u8,
+    );
+    builder.symbol(
+        "fz_yield_mid_flight",
+        fz_runtime::ir_runtime::fz_yield_mid_flight as *const u8,
+    );
+    builder.symbol(
+        "fz_get_static_closure",
+        fz_runtime::ir_runtime::fz_get_static_closure as *const u8,
+    );
+    builder.symbol(
+        "fz_get_halt_cont",
+        fz_runtime::ir_runtime::fz_get_halt_cont as *const u8,
+    );
+    // Cooperative yield-flag data.
+    builder.symbol("FZ_SHOULD_YIELD", fz_runtime::yield_flag::jit_flag_ptr());
+    // Test externs (e.g. the `_resource_test_dtor` counter used by
+    // JIT-leg resource lifecycle tests). Production paths see no
+    // extra symbols.
+    #[cfg(test)]
+    builder.symbol(
+        "_resource_test_dtor",
+        crate::ir_interp::tests_support_test_dtor_addr(),
+    );
 }
 
 impl Backend for JitBackend {
