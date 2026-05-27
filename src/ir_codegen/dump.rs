@@ -37,9 +37,9 @@ pub(crate) fn build_typer_header<
 >(
     t: &mut T,
     f: &crate::fz_ir::FnIr,
-    ft: &crate::ir_typer::FnTypes,
+    ft: &crate::ir_planner::SpecPlan,
     spec_key: &[crate::types::Ty],
-    demand: &crate::ir_typer::fn_types::ReturnDemand,
+    demand: &crate::ir_planner::fn_types::ReturnDemand,
     effective_return: &crate::types::Ty,
     param_reprs: &[ArgRepr],
     return_repr: ArgRepr,
@@ -55,7 +55,7 @@ pub(crate) fn build_typer_header<
         })
         .collect();
     // `@spec` reports the same effective return that drives `@abi` and
-    // the cont's slot-0 keying (`module_types.effective_returns`).
+    // the cont's slot-0 keying (`module_plan.effective_returns`).
     // Halt-only specs converge to `none` in the LFP; render those as `_`.
     let none = t.none();
     let return_str = if t.is_subtype(effective_return, &none) {
@@ -88,7 +88,7 @@ pub(crate) fn build_typer_header<
     let _ = writeln!(
         out,
         ";   @demand {}",
-        crate::ir_typer::fn_types::display_return_demand(&*t, demand)
+        crate::ir_planner::fn_types::display_return_demand(&*t, demand)
     );
     let _ = writeln!(
         out,

@@ -116,7 +116,7 @@ pub(crate) type FloatSet = LiteralSet<F64Bits>;
 ///
 /// Fresh ids are allocated by `TypeVarId::fresh()` from a process-global atomic
 /// counter. This is intentionally simple — per-function scoping is handled by
-/// the typer (which renames at function-typing entry to ensure α-equivalence
+/// the planner (which renames at function-typing entry to ensure α-equivalence
 /// across signatures); the id itself carries no scope.
 pub(crate) type VarSet = LiteralSet<TypeVarId>;
 
@@ -125,7 +125,7 @@ pub(crate) type VarSet = LiteralSet<TypeVarId>;
 /// position)`. Arg positions occupy `0..MAX_CLOSURE_ARG_VAR`; ret occupies
 /// the dedicated slot at `MAX_CLOSURE_ARG_VAR`.
 ///
-/// Determinism is required for typer fixpoint convergence: re-typing the
+/// Determinism is required for planner fixpoint convergence: re-typing the
 /// same MakeClosure during iteration must produce the same Descr. Distinct
 /// closure-handles of the same lambda share their vars by construction —
 /// they are parametric over the same body.

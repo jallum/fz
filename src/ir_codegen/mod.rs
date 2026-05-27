@@ -112,7 +112,7 @@ pub fn compile_with_backend_pretyped<
     t: &mut T,
     module: &Module,
     backend: B,
-    pre_types: &crate::ir_typer::ModuleTypes,
+    pre_types: &crate::ir_planner::ModulePlan,
     tel: &dyn crate::telemetry::Telemetry,
 ) -> Result<B::Output, CodegenError> {
     compile_with_backend_impl(t, module, backend, Some(pre_types), tel)
@@ -142,7 +142,7 @@ pub fn compile_pretyped<
 >(
     t: &mut T,
     module: &Module,
-    pre_types: &crate::ir_typer::ModuleTypes,
+    pre_types: &crate::ir_planner::ModulePlan,
     tel: &dyn crate::telemetry::Telemetry,
 ) -> Result<CompiledModule, CodegenError> {
     compile_with_backend_pretyped(t, module, JitBackend::new(), pre_types, tel)
@@ -173,7 +173,7 @@ pub fn compile_aot_pretyped<
 >(
     t: &mut T,
     module: &Module,
-    pre_types: &crate::ir_typer::ModuleTypes,
+    pre_types: &crate::ir_planner::ModulePlan,
     obj_name: &str,
     tel: &dyn crate::telemetry::Telemetry,
 ) -> Result<AotArtifact, CodegenError> {

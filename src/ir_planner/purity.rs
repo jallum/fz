@@ -1,20 +1,15 @@
-// ----------------------------------------------------------------------
-// fz-e4u — pure-codegen subset check
-// ----------------------------------------------------------------------
+// Pure-codegen subset check.
 //
-// Used by fz-recv to enforce that pattern arms and guard expressions in
-// `receive do … end` lower only to read-only / non-allocating primitives.
+// Used to enforce that receive guard expressions and matcher functions lower
+// only to read-only / non-allocating primitives.
 // When this property holds for an expression, its compiled matcher can be
 // invoked from the sender thread (per docs/receive-matched.md §2.3,
 // §3.4) with no allocator interaction, no FFI re-entry, and no GC race.
 //
 // The check is a pure structural walk over `&[Stmt]` and an optional
-// terminator. It does **not** consult the typer's worklist results; it
-// runs strictly on the IR produced by lowering. fz-yxs (E2) wires the
-// check into the `Term::ReceiveMatched` typer rule.
-//
-// The API below is consumed by `collect_diagnostics`' Term::ReceiveMatched
-// guard scan (fz-yxs).
+// terminator. It does **not** consult the planner's worklist results; it
+// runs strictly on the IR produced by lowering. Diagnostics use it for
+// receive-guard validation and module-level matcher purity checks.
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ImpureKind {
@@ -29,7 +24,7 @@ pub enum ImpureKind {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ImpureTerm {
-    /// `Call` / `TailCall` / `CallClosure` / `TailCallClosure` — invoke
+    /// Receive guards reject direct and closure calls because they may invoke
     /// arbitrary user code with arbitrary effects.
     Call,
     /// `Receive` — a matcher invoking receive would deadlock the scheduler.
@@ -263,8 +258,6 @@ mod purity_tests {
         ));
     }
 
-    // fz-puj.30 (G1) — module-level matcher purity check.
-
     fn build_module_with_matcher(extra_let: Option<Prim>, term: Term) -> crate::fz_ir::Module {
         use crate::fz_ir::{FnBuilder, FnCategory, FnId, Module};
         let mut m = Module::default();
@@ -286,7 +279,7 @@ mod purity_tests {
     fn matcher_purity_accepts_pure_router() {
         let module =
             build_module_with_matcher(Some(Prim::Const(Const::Int(0))), Term::Return(v(0)));
-        let diags = crate::ir_typer::check_matcher_purity(&module);
+        let diags = crate::ir_planner::check_matcher_purity(&module);
         assert!(
             diags.is_empty(),
             "pure matcher should produce no diags: {:?}",
@@ -298,7 +291,7 @@ mod purity_tests {
     fn matcher_purity_rejects_extern_stmt() {
         let module =
             build_module_with_matcher(Some(Prim::Extern(ExternId(0), vec![])), Term::Return(v(0)));
-        let diags = crate::ir_typer::check_matcher_purity(&module);
+        let diags = crate::ir_planner::check_matcher_purity(&module);
         assert_eq!(diags.len(), 1);
         assert_eq!(diags[0].code, crate::diag::codes::TYPE_IMPURE_MATCHER);
         assert!(diags[0].message.contains("extern"));
@@ -319,7 +312,7 @@ mod purity_tests {
                 },
             },
         );
-        let diags = crate::ir_typer::check_matcher_purity(&module);
+        let diags = crate::ir_planner::check_matcher_purity(&module);
         assert_eq!(diags.len(), 1);
         assert!(diags[0].message.contains("Call"));
     }
@@ -336,7 +329,7 @@ mod purity_tests {
                 is_back_edge: false,
             },
         );
-        let diags = crate::ir_typer::check_matcher_purity(&module);
+        let diags = crate::ir_planner::check_matcher_purity(&module);
         assert!(
             diags.is_empty(),
             "matcher with TailCall terminator should be pure: {:?}",

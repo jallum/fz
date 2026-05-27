@@ -27,7 +27,7 @@ fn lower_resolved_src(src: &str) -> Module {
 fn join_return_ty(
     t: &mut crate::types::ConcreteTypes,
     f: &crate::fz_ir::FnIr,
-    ft: &crate::ir_typer::FnTypes,
+    ft: &crate::ir_planner::SpecPlan,
 ) -> crate::types::Ty {
     let mut joined: Option<crate::types::Ty> = None;
     for b in &f.blocks {
@@ -902,7 +902,7 @@ fn main(), do: loop_with(loop_with, 100000, 0)
 fn list_projection_accepts_block_env_nonempty_fact() {
     let mut t = crate::types::ConcreteTypes;
     let xs = crate::fz_ir::Var(1);
-    let mut fn_types = crate::ir_typer::FnTypes::default();
+    let mut fn_types = crate::ir_planner::SpecPlan::default();
     let list_ty = {
         let elem = t.any();
         t.list(elem)
@@ -926,7 +926,7 @@ fn list_projection_accepts_block_env_nonempty_fact() {
 fn list_projection_rejects_unnarrowed_block_env() {
     let mut t = crate::types::ConcreteTypes;
     let xs = crate::fz_ir::Var(1);
-    let mut fn_types = crate::ir_typer::FnTypes::default();
+    let mut fn_types = crate::ir_planner::SpecPlan::default();
     let list_ty = {
         let elem = t.any();
         t.list(elem)
@@ -1030,7 +1030,7 @@ fn signature_uniform_when_not_native() {
     // Uniform (non-native) sig: `(i64, i64) -> i64` regardless of the
     // typer's narrower facts on the params.
     let m = lower_src("fn add(a, b) do a + b end\nfn main() do print(add(1, 2)) end");
-    let mt = crate::ir_typer::type_module(
+    let mt = crate::ir_planner::plan_module(
         &mut crate::types::ConcreteTypes,
         &m,
         &crate::telemetry::NullTelemetry,
@@ -1061,7 +1061,7 @@ fn signature_native_uses_typed_params_and_cont() {
     // Same `add`, but call-site narrowing has typed both params as int.
     // Native sig is `(i64, i64, cont: i64) -> i64` (cont trailing).
     let m = lower_src("fn add(a, b) do a + b end\nfn main() do print(add(1, 2)) end");
-    let mt = crate::ir_typer::type_module(
+    let mt = crate::ir_planner::plan_module(
         &mut crate::types::ConcreteTypes,
         &m,
         &crate::telemetry::NullTelemetry,
@@ -1093,7 +1093,7 @@ fn signature_native_arity_matches_entry_params_plus_cont() {
     // (Return is canonicalized to i64 even when the value is a float —
     // see the i64-return assertion below.)
     let m = lower_src("fn dist(x, y) do x * x + y * y end\nfn main() do print(dist(1.5, 2.5)) end");
-    let mt = crate::ir_typer::type_module(
+    let mt = crate::ir_planner::plan_module(
         &mut crate::types::ConcreteTypes,
         &m,
         &crate::telemetry::NullTelemetry,
@@ -1526,23 +1526,23 @@ fn const_nil_bool_atom_deduplicated_within_block() {
     );
 }
 
-/// type_module is called exactly 3 times in the codegen pipeline. The
+/// plan_module is called exactly 3 times in the codegen pipeline. The
 /// final pass runs after destination lowering so dispatch metadata
 /// covers the optimized IR; codegen then merges narrower pre-DP facts
 /// for vars that destination lowering did not semantically change.
 #[test]
-fn type_module_called_exactly_three_times_in_pipeline() {
+fn plan_module_called_exactly_three_times_in_pipeline() {
     let src = "fn main(), do: print(42)";
     let m = lower_src(src);
-    crate::ir_typer::TYPE_MODULE_CALLS.with(|c| c.set(0));
+    crate::ir_planner::PLAN_MODULE_CALLS.with(|c| c.set(0));
     compile(
         &mut crate::types::ConcreteTypes,
         &m,
         &crate::telemetry::NullTelemetry,
     )
     .expect("compile");
-    let count = crate::ir_typer::TYPE_MODULE_CALLS.with(|c| c.get());
-    assert_eq!(count, 3, "type_module called {} times, expected 3", count);
+    let count = crate::ir_planner::PLAN_MODULE_CALLS.with(|c| c.get());
+    assert_eq!(count, 3, "plan_module called {} times, expected 3", count);
 }
 
 #[test]
@@ -1563,12 +1563,12 @@ fn frontend_to_codegen_pretyped_pipeline_types_exactly_three_times() {
         Err(_) => panic!("frontend"),
     };
 
-    compile_pretyped(&mut t, &frontend.module, &frontend.module_types, &tel).expect("compile");
+    compile_pretyped(&mut t, &frontend.module, &frontend.module_plan, &tel).expect("compile");
 
     assert_eq!(
-        cap.count(&["fz", "typer", "typed"]),
+        cap.count(&["fz", "planner", "planned"]),
         2,
-        "frontend-to-codegen pretyped path should reuse frontend ModuleTypes while the internal destination retype stays telemetry-silent"
+        "frontend-to-codegen pretyped path should reuse frontend ModulePlan while the internal destination retype stays telemetry-silent"
     );
 }
 
@@ -1577,7 +1577,7 @@ fn frontend_to_codegen_pretyped_pipeline_types_exactly_three_times() {
 /// starts with `k_` (i.e. continuation specs).
 fn build_registry_recording_cont_sids(
     m: &Module,
-    mt: &crate::ir_typer::ModuleTypes,
+    mt: &crate::ir_planner::ModulePlan,
 ) -> (SpecRegistry, Vec<u32>) {
     let ct = crate::types::ConcreteTypes;
     let mut reg = SpecRegistry::new();
@@ -1607,12 +1607,12 @@ type CallClosureMatch<'mt> = (
     Vec<KeySlot>,
     crate::fz_ir::Var,
     Vec<crate::fz_ir::Var>,
-    &'mt crate::ir_typer::FnTypes,
+    &'mt crate::ir_planner::SpecPlan,
 );
 
 fn find_typed_callclosure_over_closure_lit<'mt>(
     m: &Module,
-    mt: &'mt crate::ir_typer::ModuleTypes,
+    mt: &'mt crate::ir_planner::ModulePlan,
     t: &mut crate::types::ConcreteTypes,
 ) -> Option<CallClosureMatch<'mt>> {
     for (key, ft) in &mt.specs {
@@ -1649,7 +1649,7 @@ fn main() do
 end
 "#;
     let m = lower_src(src);
-    let mt = crate::ir_typer::type_module(
+    let mt = crate::ir_planner::plan_module(
         &mut crate::types::ConcreteTypes,
         &m,
         &crate::telemetry::NullTelemetry,
@@ -1762,7 +1762,7 @@ end
 "#;
     let m = lower_src(src);
     let mut ct = crate::types::ConcreteTypes;
-    let mt = crate::ir_typer::type_module(&mut ct, &m, &crate::telemetry::NullTelemetry);
+    let mt = crate::ir_planner::plan_module(&mut ct, &m, &crate::telemetry::NullTelemetry);
     let (reg, cont_sids) = build_registry_recording_cont_sids(&m, &mt);
     let main_fid = m
         .fns
@@ -1770,7 +1770,7 @@ end
         .find(|f| f.name == "main")
         .map(|f| f.id.0)
         .expect("expected main fn");
-    let reachable = crate::ir_typer::reachable_specs(&mut ct, &m, &reg, &mt, [main_fid]);
+    let reachable = crate::ir_planner::reachable_specs(&mut ct, &m, &reg, &mt, [main_fid]);
     assert!(!cont_sids.is_empty(), "expected at least one k_* spec");
     // Closure captures stay part of the closure identity, so the k_* cont
     // spec remains reachable from main and must not be emitted as a trap.

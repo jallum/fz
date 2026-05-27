@@ -853,7 +853,7 @@ pub(crate) fn resolve_tcc_body<
     t: &mut T,
     closure: &crate::fz_ir::Var,
     args: &[crate::fz_ir::Var],
-    ft: &crate::ir_typer::FnTypes,
+    ft: &crate::ir_planner::SpecPlan,
     module: &crate::fz_ir::Module,
     spec_registry: &SpecRegistry,
 ) -> Option<(crate::fz_ir::FnId, u32)> {
@@ -872,6 +872,6 @@ pub(crate) fn resolve_tcc_body<
     }
     key.truncate(np);
     let key =
-        crate::ir_typer::fn_types::SpecKey::value(fn_id, crate::types::key_slots_from_tys(key));
+        crate::ir_planner::fn_types::SpecKey::value(fn_id, crate::types::key_slots_from_tys(key));
     Some((fn_id, spec_registry.resolve_spec_key(t, &key)?.0))
 }

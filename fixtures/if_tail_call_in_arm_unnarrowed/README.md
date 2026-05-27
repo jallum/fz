@@ -4,14 +4,14 @@ paths: [jit, interp, aot, repl]
 budget.codegen.functions: 3
 budget.codegen.instructions: 14
 budget.specs.count: 3
-budget.typer.worklist_pops: 6
-budget.typer.walk_calls: 6
-budget.typer.type_fn_calls: 3
-budget.typer.matcher_specs: 0
-budget.typer.vars: 29
-budget.typer.blocks: 7
-budget.typer.stmts: 12
-budget.typer.dispatches: 2
+budget.planner.worklist_pops: 6
+budget.planner.walk_calls: 6
+budget.planner.type_fn_calls: 3
+budget.planner.matcher_specs: 0
+budget.planner.vars: 29
+budget.planner.blocks: 7
+budget.planner.stmts: 12
+budget.planner.dispatches: 2
 ---
 
 # if_tail_call_in_arm_unnarrowed
@@ -20,10 +20,10 @@ fz-84m repro C — repro B's structure without the type narrowing.
 
 ## History
 
-While diagnosing fz-84m we initially attributed the bug to typer
+While diagnosing fz-84m we initially attributed the bug to planner
 narrowing (per-callsite specialization producing `none`-typed arms).
 This repro proves otherwise: with `n > 0` (a relational predicate,
-not an equality on a singleton), the typer doesn't narrow `pick`'s
+not an equality on a singleton), the planner doesn't narrow `pick`'s
 arms — yet pre-fz-duq.2 the bug fires identically.
 
 The root was `lower_if` unconditionally overwriting tail-terminated

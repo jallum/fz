@@ -22,7 +22,7 @@
 //! `Term::Receive` must be unique across the whole module — no two
 //! call-shaped terminators may share a continuation fn. The post-type
 //! `inline_single_use_conts` pass relies on this to safely inline `K`
-//! into its single caller; the fz-uwq epic moves that pass pre-typer,
+//! into its single caller; the fz-uwq epic moves that pass pre-planner,
 //! which keeps the same dependency. `debug_assert_unique_conts` at the
 //! end of `lower_program_full` pins the invariant down so a regression
 //! in this file (or a future corner case) panics in debug rather than
@@ -303,7 +303,7 @@ pub fn lower_program_full_with_telemetry<T: crate::types::Types<Ty = crate::type
     }
     module.boundary_fns = std::mem::take(&mut ctx.boundary_fns);
     // fz-swt.8 — carry the resolver's opaque-inner-type map onto the
-    // Module so the typer can resolve `handle.value` accesses to T.
+    // Module so the planner can resolve `handle.value` accesses to T.
     // fz-axu.27 (M6) — prelude inners (utf8 brand, pid opaque, ...) live
     // in the flat-prelude Program, merged here alongside user inners.
     module.opaque_inners = prog.opaque_inners.clone();
@@ -320,7 +320,7 @@ pub fn lower_program_full_with_telemetry<T: crate::types::Types<Ty = crate::type
     check_brand_visibility(t, &module, &ctx.stmt_spans, &ctx.fn_spans)?;
     // fz-axu.23 (M2) — brand erasure is the final lowering phase. The
     // Module returned from lower_program_full has the invariant: no
-    // Prim::Brand survives in any FnIr. Downstream passes (typer,
+    // Prim::Brand survives in any FnIr. Downstream passes (planner,
     // reducer, codegen, interp, DCE) can treat that as a precondition,
     // and their Brand match arms become `unreachable!()` rather than
     // silent identity-fallbacks.
@@ -367,7 +367,7 @@ fn user_fn_category(fn_def: &crate::ast::FnDef) -> crate::fz_ir::FnCategory {
 /// ## Why this is load-bearing
 ///
 /// `ir_codegen::compile` runs `inline_single_use_conts` before codegen,
-/// and the fz-uwq epic moves that pass to run **pre-typer**. The pass
+/// and the fz-uwq epic moves that pass to run **pre-planner**. The pass
 /// is safe to inline a continuation fn `K` into its caller only when `K`
 /// is referenced exactly once as a continuation — otherwise inlining
 /// would either duplicate `K`'s body across two call sites (losing
@@ -380,7 +380,7 @@ fn user_fn_category(fn_def: &crate::ast::FnDef) -> crate::fz_ir::FnCategory {
 /// guarantee down so a future change to the lowerer (or a corner case
 /// not yet exercised) cannot silently break the downstream pipeline.
 ///
-/// See `docs/dispatch-as-typer-output.md` (Worry 1) for the stress-test
+/// See `docs/dispatch-as-planner-output.md` (Worry 1) for the stress-test
 /// that named this invariant.
 ///
 /// Debug-build only — the check is O(blocks) but redundant in release
@@ -1052,7 +1052,7 @@ mod tests {
     #[test]
     fn fz_84m_repro_c_prints_7_then_99_no_narrowing() {
         // fz-84m repro C — same bug shape as B but with `n > 0` rather
-        // than `n == 0`, so the typer doesn't narrow either arm. Proves
+        // than `n == 0`, so the planner doesn't narrow either arm. Proves
         // the bug was structural in lowering, not type-narrowing driven.
         let out = run_and_capture(
             "fn helper(), do: 7\n\
@@ -1136,8 +1136,8 @@ mod tests {
 
     /// fz-fyq.3 — `collect_diagnostics` filters `unreachable-arm` to
     /// `BranchOrigin::User`. A destructure (`{a,b} = ...`) and a fn-clause
-    /// dispatch both synthesize Ifs the typer can prove dead-edged; neither
-    /// should warn. User-authored Ifs whose dead branch the typer can
+    /// dispatch both synthesize Ifs the planner can prove dead-edged; neither
+    /// should warn. User-authored Ifs whose dead branch the planner can
     /// prove (here: `if true do A else B` where the else is structurally
     /// unreachable) still do.
     #[test]
@@ -1151,8 +1151,8 @@ mod tests {
             "end\n",
         ));
         let mut ct = crate::types::ConcreteTypes;
-        let mt = crate::ir_typer::type_module(&mut ct, &m, &crate::telemetry::NullTelemetry);
-        let diags = crate::ir_typer::collect_diagnostics(&mut ct, &m, &mt);
+        let mt = crate::ir_planner::plan_module(&mut ct, &m, &crate::telemetry::NullTelemetry);
+        let diags = crate::ir_planner::collect_diagnostics(&mut ct, &m, &mt);
         let unreachable: Vec<_> = diags
             .as_slice()
             .iter()
@@ -1165,18 +1165,18 @@ mod tests {
         );
     }
 
-    /// fz-fyq.2 — `ModuleTypes::dead_branches` publishes one entry per
+    /// fz-fyq.2 — `ModulePlan::dead_branches` publishes one entry per
     /// provably-dead branch under cross-spec consensus. Recursive list
     /// dispatch can publish dead branches too, because `[]` and `[_ | _]`
     /// are now disjoint list shapes.
     #[test]
     fn dead_branches_published_for_destructure_and_recursive_list_dispatch() {
         use crate::fz_ir::DeadBranch;
-        // Irrefutable destructure on a known-2-tuple — the typer proves
+        // Irrefutable destructure on a known-2-tuple — the planner proves
         // the synthesized fail edge dead under the one live spec.
         let m = lower_src("fn main() do\n  {a, b} = {1, 2}\n  a + b\nend\n");
         let mut ct = crate::types::ConcreteTypes;
-        let mt = crate::ir_typer::type_module(&mut ct, &m, &crate::telemetry::NullTelemetry);
+        let mt = crate::ir_planner::plan_module(&mut ct, &m, &crate::telemetry::NullTelemetry);
         assert!(
             mt.dead_branches
                 .values()
@@ -1193,7 +1193,7 @@ mod tests {
             "fn sum([h | t]), do: h + sum(t)\n",
             "fn main(), do: sum([1, 2, 3])\n",
         ));
-        let mt2 = crate::ir_typer::type_module(&mut ct, &m2, &crate::telemetry::NullTelemetry);
+        let mt2 = crate::ir_planner::plan_module(&mut ct, &m2, &crate::telemetry::NullTelemetry);
         let sum_fid = m2.fn_by_name("sum").expect("sum exists").id;
         assert!(
             mt2.dead_branches.keys().any(|(fid, _bid)| *fid == sum_fid),
@@ -1503,7 +1503,7 @@ mod tests {
     #[test]
     fn case_lowers_matcher_inline() {
         // fz-puj.52.7 — case sites lower the Matcher inline so the
-        // typer does not see a case_matcher_N function boundary.
+        // planner does not see a case_matcher_N function boundary.
         let m = lower_src(
             r#"
 fn c(x) do
@@ -2271,8 +2271,8 @@ end
     }
 
     #[test]
-    fn lower_receive_typer_accepts_well_formed() {
-        // Acceptance bullet: typer accepts well-formed selective receive.
+    fn lower_receive_planner_accepts_well_formed() {
+        // Acceptance bullet: planner accepts well-formed selective receive.
         let src = "fn rx() do
               receive do
                 {:ping, _} -> 1
@@ -2280,13 +2280,13 @@ end
               end
             end";
         let m = lower_src(src);
-        // Typing must not panic and must produce a ModuleTypes for the
+        // Typing must not panic and must produce a ModulePlan for the
         // module. We don't pin the return type — that depends on the
         // body return type which the bodies set to const ints.
         let mut ct = crate::types::ConcreteTypes;
-        let mt = crate::ir_typer::type_module(&mut ct, &m, &crate::telemetry::NullTelemetry);
+        let mt = crate::ir_planner::plan_module(&mut ct, &m, &crate::telemetry::NullTelemetry);
         // No diagnostics from the pure-guard / pure-pattern pass either.
-        let diags = crate::ir_typer::collect_diagnostics(&mut ct, &m, &mt);
+        let diags = crate::ir_planner::collect_diagnostics(&mut ct, &m, &mt);
         let impure: Vec<_> = diags
             .as_slice()
             .iter()

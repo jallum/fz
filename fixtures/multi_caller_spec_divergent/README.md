@@ -4,21 +4,21 @@ paths: [jit, interp, aot, repl]
 budget.codegen.functions: 2
 budget.codegen.instructions: 13
 budget.specs.count: 4
-budget.typer.worklist_pops: 5
-budget.typer.walk_calls: 5
-budget.typer.type_fn_calls: 4
-budget.typer.matcher_specs: 0
-budget.typer.vars: 22
-budget.typer.blocks: 6
-budget.typer.stmts: 12
-budget.typer.dispatches: 1
+budget.planner.worklist_pops: 5
+budget.planner.walk_calls: 5
+budget.planner.type_fn_calls: 4
+budget.planner.matcher_specs: 0
+budget.planner.vars: 22
+budget.planner.blocks: 6
+budget.planner.stmts: 12
+budget.planner.dispatches: 1
 ---
 
 # multi_caller_spec_divergent
 
 `route(f, n)` is invoked at two source sites with two distinct
 closure literals: the named fn `id` and the inline lambda
-`fn(x) -> x * 2`. The typer mints two specs of `route` — one per
+`fn(x) -> x * 2`. The planner mints two specs of `route` — one per
 `f` — whose single inner `f(n)` callsite dispatches to two
 different targets.
 
@@ -28,8 +28,8 @@ last-write-wins across specs). Today's pipeline gets the right
 answer because per-spec fold + per-spec body codegen each resolve
 their own dispatch independently — `module.callsite_outcomes` isn't
 on the path that decides this specific call. fz-uwq.5+ migrates
-those reads through `FnTypes.dispatches`, which is *per-spec* by
+those reads through `SpecPlan.dispatches`, which is *per-spec* by
 construction. This fixture pins down the correct behavior so a
 future migration regression can't slip through silently.
 
-Worked through in `docs/dispatch-as-typer-output.md` (Worry 2).
+Worked through in `docs/dispatch-as-planner-output.md` (Worry 2).

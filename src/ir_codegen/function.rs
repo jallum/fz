@@ -361,7 +361,7 @@ fn reachable_block_ids(f: &crate::fz_ir::FnIr) -> HashSet<u32> {
 
 fn tuple_return_delivery_plan(
     f: &crate::fz_ir::FnIr,
-    spec_key: &crate::ir_typer::fn_types::SpecKey,
+    spec_key: &crate::ir_planner::fn_types::SpecKey,
 ) -> (
     HashMap<u32, Vec<crate::fz_ir::Var>>,
     std::collections::HashSet<u32>,
@@ -390,7 +390,7 @@ fn tuple_return_delivery_plan(
 
 fn list_tail_delivery_plan(
     f: &crate::fz_ir::FnIr,
-    spec_key: &crate::ir_typer::fn_types::SpecKey,
+    spec_key: &crate::ir_planner::fn_types::SpecKey,
 ) -> (
     HashMap<u32, Vec<crate::fz_ir::Var>>,
     std::collections::HashSet<u32>,

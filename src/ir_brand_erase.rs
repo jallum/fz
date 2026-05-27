@@ -1,6 +1,6 @@
 //! fz-axu.6 (K5) — brand erasure pass.
 //!
-//! Runs between the typer (which produced and consulted Brand-tagged
+//! Runs between the planner (which produced and consulted Brand-tagged
 //! types) and codegen (which has no concept of brands). The pass walks
 //! every `FnIr` in a `Module` and rewrites every
 //! `Stmt::Let(dest, Prim::Brand(src, _))` into a substitution
@@ -8,7 +8,7 @@
 //! `dest` in subsequent statements and block terminators are rewritten
 //! to `src`.
 //!
-//! Why a separate pass: the lattice carries brands so the typer can
+//! Why a separate pass: the lattice carries brands so the planner can
 //! enforce K4's subtype rule. Codegen treats `Prim::Brand` as
 //! pass-through, but the value-numbering / DCE / register-allocation
 //! downstream is cleaner when the IR contains no zero-cost wrappers.

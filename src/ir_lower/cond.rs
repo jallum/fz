@@ -21,7 +21,7 @@ pub(crate) fn lower_multi_clause<T: crate::types::Types<Ty = crate::types::Ty>>(
     // clause's lineage; the source-level fn's outer FnIr is fully
     // populated (try cascade + arm TailCalls) before any body lowers.
     //
-    // Why the typer cooperates now: fz-qbg.1 made the typer's call graph
+    // Why the planner cooperates now: fz-qbg.1 made the planner's call graph
     // structural rather than any-key-spec-gated. With that, outer ↔
     // fn_clause_N edges show up in the SCC, widening fires at the
     // per-SCC fixpoint, and the recursive callsite's broadened key

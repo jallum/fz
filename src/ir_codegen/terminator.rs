@@ -542,16 +542,16 @@ fn emit_call_term<
             slot: crate::fz_ir::EmitSlot::Cont,
         };
         let this_spec_key = env.spec_keys[this_spec_id as usize].clone();
-        let direct_plan_key = crate::ir_typer::fn_types::ReturnContextPlanKey {
+        let direct_plan_key = crate::ir_planner::fn_types::ReturnContextPlanKey {
             caller: this_spec_key.clone(),
             callsite: direct_cid,
         };
-        let cont_plan_key = crate::ir_typer::fn_types::ReturnContextPlanKey {
+        let cont_plan_key = crate::ir_planner::fn_types::ReturnContextPlanKey {
             caller: this_spec_key.clone(),
             callsite: cont_cid,
         };
         let cons_then_direct = match fn_types.return_context_plans.get(&direct_plan_key) {
-            Some(crate::ir_typer::fn_types::ReturnContextPlan::ConsThenDirect {
+            Some(crate::ir_planner::fn_types::ReturnContextPlan::ConsThenDirect {
                 pivot,
                 tail,
                 ..
@@ -559,7 +559,7 @@ fn emit_call_term<
             _ => None,
         };
         let cont_list_tail_bridge = match fn_types.return_context_plans.get(&direct_plan_key) {
-            Some(crate::ir_typer::fn_types::ReturnContextPlan::ContinuationListTailBridge {
+            Some(crate::ir_planner::fn_types::ReturnContextPlan::ContinuationListTailBridge {
                 pivot,
                 tail,
                 ..
@@ -567,7 +567,7 @@ fn emit_call_term<
             _ => None,
         };
         if env.spec_keys[this_spec_id as usize].demand.is_value()
-            && let Some(crate::ir_typer::fn_types::ReturnContextPlan::ContinuationEmptyTail {
+            && let Some(crate::ir_planner::fn_types::ReturnContextPlan::ContinuationEmptyTail {
                 target,
                 ..
             }) = fn_types.return_context_plans.get(&cont_plan_key)
@@ -1721,8 +1721,10 @@ fn build_park_record<
         let body_fn = env.module.fn_by_id(body);
         let np = body_fn.block(body_fn.entry).params.len();
         let key = crate::fz_ir::receive_outcome_spec_key(&any, np);
-        let key =
-            crate::ir_typer::fn_types::SpecKey::value(body, crate::types::key_slots_from_tys(key));
+        let key = crate::ir_planner::fn_types::SpecKey::value(
+            body,
+            crate::types::key_slots_from_tys(key),
+        );
         env.spec_registry
             .resolve_spec_key(t, &key)
             .unwrap_or_else(|| {
@@ -1825,7 +1827,7 @@ fn list_tail_destination_arg(b: &mut FunctionBuilder<'_>, cache: &mut CodegenCac
 fn cont_extra_ref_captures(
     b: &mut FunctionBuilder<'_>,
     cache: &mut CodegenCache,
-    cont_key: &crate::ir_typer::fn_types::SpecKey,
+    cont_key: &crate::ir_planner::fn_types::SpecKey,
 ) -> Vec<ir::Value> {
     if DemandAbi::new(cont_key).carries_list_tail_capture() {
         vec![list_tail_destination_arg(b, cache)]

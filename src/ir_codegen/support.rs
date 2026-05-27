@@ -17,7 +17,7 @@ pub(crate) enum ListTailBits {
 
 pub(crate) fn list_tail_bits_for_var<T: crate::types::Types<Ty = crate::types::Ty>>(
     t: &mut T,
-    fn_types: &crate::ir_typer::FnTypes,
+    fn_types: &crate::ir_planner::SpecPlan,
     block_env: Option<&HashMap<crate::fz_ir::Var, crate::types::Ty>>,
     tail_var: crate::fz_ir::Var,
     tail_bits: ir::Value,

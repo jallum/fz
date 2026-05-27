@@ -1,7 +1,7 @@
 //! Component view API (fz-68x).
 //!
 //! The consumer-facing surface for code that needs to *destructure* a
-//! `Descr` axis-by-axis (interp TypeTest, codegen repr selection, typer
+//! `Descr` axis-by-axis (interp TypeTest, codegen repr selection, planner
 //! projections, reducer literal extraction). Today the consumers reach
 //! into the public axis fields directly; this is the API they migrate
 //! to in fz-68x.{3..7}, after which the axis fields seal (fz-68x.8).
@@ -291,13 +291,13 @@ pub(crate) struct FuncView<'a> {
 impl<'a> FuncView<'a> {
     /// True iff any clause carries negations. Consumers that don't yet
     /// support DNF with negations check this to preserve invariants
-    /// (ir_typer closure dispatch falls back to `any` when this is true).
+    /// (ir_planner closure dispatch falls back to `any` when this is true).
     pub(crate) fn has_negations(&self) -> bool {
         self.inner.iter().any(|c| !c.neg.is_empty())
     }
     /// True iff every clause has at least one positive arrow signature.
     /// When false, some clause is purely negative (e.g. `not arrow(...)`),
-    /// which ir_typer treats as "give up; fall through to `any`."
+    /// which ir_planner treats as "give up; fall through to `any`."
     pub(crate) fn all_clauses_have_pos(&self) -> bool {
         self.inner.iter().all(|c| !c.pos.is_empty())
     }

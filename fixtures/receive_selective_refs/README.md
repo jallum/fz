@@ -4,14 +4,14 @@ paths: [interp, jit, aot, repl]
 budget.codegen.functions: 14
 budget.codegen.instructions: 459
 budget.specs.count: 11
-budget.typer.worklist_pops: 24
-budget.typer.walk_calls: 24
-budget.typer.type_fn_calls: 11
-budget.typer.matcher_specs: 0
-budget.typer.vars: 83
-budget.typer.blocks: 13
-budget.typer.stmts: 30
-budget.typer.dispatches: 4
+budget.planner.worklist_pops: 24
+budget.planner.walk_calls: 24
+budget.planner.type_fn_calls: 11
+budget.planner.matcher_specs: 0
+budget.planner.vars: 83
+budget.planner.blocks: 13
+budget.planner.stmts: 30
+budget.planner.dispatches: 4
 ---
 
 # receive_selective_refs

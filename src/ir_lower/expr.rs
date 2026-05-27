@@ -504,7 +504,7 @@ pub(crate) fn lower_pattern_bind(
             Ok(())
         }
         // fz-5vj — `^name` pinned pattern. Lowering lands in fz-yxs (E2)
-        // alongside Term::ReceiveMatched. Outside `receive` the typer
+        // alongside Term::ReceiveMatched. Outside `receive` the planner
         // should already have rejected `^name` per the receive-only
         // syntactic role; reaching here is a planning bug.
         Pattern::Pinned(name) => Err(LowerError::Unsupported {

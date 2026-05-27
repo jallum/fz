@@ -22,7 +22,7 @@ use std::sync::Arc;
 pub(crate) struct CodegenEnv<'a> {
     pub(super) runtime: &'a RuntimeRefs,
     pub(super) module: &'a crate::fz_ir::Module,
-    pub(super) fn_types: &'a crate::ir_typer::FnTypes,
+    pub(super) fn_types: &'a crate::ir_planner::SpecPlan,
     pub(super) spec_registry: &'a SpecRegistry,
     pub(super) fn_ids: &'a HashMap<u32, FuncId>,
     pub(super) mid_flight_cont_tail_fn_ids: &'a HashMap<(u32, Vec<MidFlightArgShape>), FuncId>,
@@ -34,7 +34,7 @@ pub(crate) struct CodegenEnv<'a> {
     pub(super) bs_const_data: &'a std::cell::RefCell<HashMap<Vec<u8>, BsConstSyms>>,
     pub(super) param_reprs: &'a [Vec<ArgRepr>],
     pub(super) return_reprs: &'a [ArgRepr],
-    pub(super) spec_keys: &'a [crate::ir_typer::fn_types::SpecKey],
+    pub(super) spec_keys: &'a [crate::ir_planner::fn_types::SpecKey],
     pub(super) natively_callable: &'a std::collections::HashSet<crate::fz_ir::FnId>,
     pub(super) cont_target_fns: &'a std::collections::HashSet<crate::fz_ir::FnId>,
     pub(super) cont_fns: &'a std::collections::HashSet<crate::fz_ir::FnId>,

@@ -139,7 +139,7 @@ fn value_accessor_round_trip_in_interp() {
     // visibility gate trivially passes (no owner module). This
     // exercises the runtime read path (`fz_map_get` recognising
     // `TAG_RESOURCE`) end-to-end; the visibility gate is
-    // covered by the typer-side unit tests above.
+    // covered by the planner-side unit tests above.
     // Declaring module `R` wraps the opaque alias + accessor; the
     // dtor wrapper and the `test_*` entry stay at top level (the
     // test_runner only discovers `test_*` fns by their FINAL

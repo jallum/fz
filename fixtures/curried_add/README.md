@@ -4,14 +4,14 @@ paths: [jit, interp, aot, repl]
 budget.codegen.functions: 16
 budget.codegen.instructions: 183
 budget.specs.count: 16
-budget.typer.worklist_pops: 37
-budget.typer.walk_calls: 37
-budget.typer.type_fn_calls: 16
-budget.typer.matcher_specs: 0
-budget.typer.vars: 66
-budget.typer.blocks: 18
-budget.typer.stmts: 21
-budget.typer.dispatches: 13
+budget.planner.worklist_pops: 37
+budget.planner.walk_calls: 37
+budget.planner.type_fn_calls: 16
+budget.planner.matcher_specs: 0
+budget.planner.vars: 66
+budget.planner.blocks: 18
+budget.planner.stmts: 21
+budget.planner.dispatches: 13
 ---
 
 # curried_add

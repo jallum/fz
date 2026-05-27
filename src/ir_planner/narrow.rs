@@ -21,8 +21,7 @@ pub(crate) fn merge_into<T: crate::types::Types<Ty = crate::types::Ty>>(
     changed
 }
 
-/// Find the stmt that bound `cond` (if any) and split the env into
-/// (then_env, else_env) narrowing the predicate's operands accordingly.
+/// Union two env maps, joining overlapping var types.
 pub(crate) fn union_envs<T: crate::types::Types<Ty = crate::types::Ty>>(
     t: &mut T,
     a: HashMap<Var, crate::types::Ty>,
@@ -99,8 +98,7 @@ pub(crate) fn narrow_for_cond<T: crate::types::Types<Ty = crate::types::Ty>>(
             let at = lookup_ty(t, env, a);
             let bt = lookup_ty(t, env, b);
             // Truthy: intersect the non-singleton operand with the singleton.
-            // Falsy: subtract the singleton from the non-singleton operand
-            // (.24.6 brought this in; .24.3 had it scoped out).
+            // Falsy: subtract the singleton from the non-singleton operand.
             if t.is_singleton_lit(&at) {
                 let then_b = t.intersect(bt.clone(), at.clone());
                 let else_b = t.difference(bt.clone(), at.clone());
@@ -115,8 +113,8 @@ pub(crate) fn narrow_for_cond<T: crate::types::Types<Ty = crate::types::Ty>>(
             }
         }
         Prim::BinOp(BinOp::Neq, a, b) => {
-            // Mirror of Eq: narrow on the else branch (truthy) and diff on
-            // then.
+            // Mirror of Eq for `!=`: truthy subtracts the singleton, while
+            // falsy intersects with it.
             let at = lookup_ty(t, env, a);
             let bt = lookup_ty(t, env, b);
             if t.is_singleton_lit(&at) {
@@ -157,9 +155,9 @@ pub(crate) fn narrow_for_if<T: crate::types::Types<Ty = crate::types::Ty>>(
     narrow_for_cond(t, cond, env, stmts)
 }
 
-/// fz-pky.1 — within ONE spec's narrowed env, find the first Var
-/// whose type became empty post-narrowing. Returns (Var, old_t, new_t)
-/// if found; None if narrowing kept every var inhabited.
+/// Within one spec's narrowed env, find the first Var whose type became empty
+/// post-narrowing. Returns (Var, old_t, new_t) if found; None if narrowing kept
+/// every var inhabited.
 pub(crate) fn find_emptied_var<T: crate::types::Types<Ty = crate::types::Ty>>(
     t: &mut T,
     pre_env: &HashMap<crate::fz_ir::Var, crate::types::Ty>,

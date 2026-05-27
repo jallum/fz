@@ -4,14 +4,14 @@ paths: [jit, interp, aot, repl]
 budget.codegen.functions: 14
 budget.codegen.instructions: 185
 budget.specs.count: 8
-budget.typer.worklist_pops: 13
-budget.typer.walk_calls: 13
-budget.typer.type_fn_calls: 8
-budget.typer.matcher_specs: 0
-budget.typer.vars: 34
-budget.typer.blocks: 10
-budget.typer.stmts: 20
-budget.typer.dispatches: 1
+budget.planner.worklist_pops: 13
+budget.planner.walk_calls: 13
+budget.planner.type_fn_calls: 8
+budget.planner.matcher_specs: 0
+budget.planner.vars: 34
+budget.planner.blocks: 10
+budget.planner.stmts: 20
+budget.planner.dispatches: 1
 ---
 
 # three_process_chain

@@ -2188,12 +2188,12 @@ pub extern "C" fn fz_matcher_eq_bytes(val_bits: u64, bytes_ptr: u64, byte_len: u
 }
 
 /// Identity at the bits level — the brand is a type-system label, not
-/// a runtime tag. The typer must have already certified that `b`
+/// a runtime tag. The planner must have already certified that `b`
 /// names a bitstring (typically a fresh `ConstBitstring` or the
 /// output of `fz_bitstring_valid_utf8` after a positive check).
 /// Returned bits are the input bits.
 ///
-/// Exists as a named seam so the typer can attach the `utf8` brand to
+/// Exists as a named seam so the planner can attach the `utf8` brand to
 /// the value's Descr at this call site (the type rule for the L3
 /// desugaring pass references this extern by name).
 #[unsafe(no_mangle)]

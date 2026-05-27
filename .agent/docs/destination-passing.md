@@ -23,7 +23,7 @@ without changing language semantics:
 - a map literal or update can collect writes in unpublished storage and freeze
   once.
 
-The simplifying rule is ownership of proof: the typer plans destinations and
+The simplifying rule is ownership of proof: the planner plans destinations and
 dispatch choices, the IR carries explicit construction intent, and codegen
 lowers those facts mechanically. Backend shape recognition is not proof.
 
@@ -31,8 +31,8 @@ There are two destination-planning families:
 
 - init-token destinations in `fz_ir::Prim`, used for local tuple/list/map
   construction;
-- return-demand destinations in `ir_typer::fn_types::ReturnDemand`, used when
-  the typer proves that a call result can be delivered into a typed context
+- return-demand destinations in `ir_planner::fn_types::ReturnDemand`, used when
+  the planner proves that a call result can be delivered into a typed context
   without first materializing the ordinary return value.
 
 Both families keep the same ownership rule: the compiler proves a private,
@@ -42,22 +42,22 @@ published result remains immutable.
 Init tokens are not runtime values. They are compile-time facts attached to
 `InitTokenId`, in the same broad family as:
 
-- `Var -> Ty` facts in `FnTypes.vars` and block environments.
-- `CallsiteId -> SpecKey` dispatch facts in `FnTypes.dispatches`.
-- `BlockId -> reachable/dead-branch` facts in `FnTypes.reachable_blocks` and
-  `FnTypes.dead_branches`.
+- `Var -> Ty` facts in `SpecPlan.vars` and block environments.
+- `CallsiteId -> SpecKey` dispatch facts in `SpecPlan.dispatches`.
+- `BlockId -> reachable/dead-branch` facts in `SpecPlan.reachable_blocks` and
+  `SpecPlan.dead_branches`.
 - `SpecKey.demand` facts such as tuple-field delivery and list-tail context.
 
-The token fact is local to `ir_typer::type_fn`; it is not persisted in
-`FnTypes` because codegen needs only the final value type of ordinary vars.
+The token fact is local to `ir_planner::type_fn`; it is not persisted in
+`SpecPlan` because codegen needs only the final value type of ordinary vars.
 
 For the broader dispatch rule that made this cleanup possible, see
-[`docs/dispatch-as-typer-output.md`](../../docs/dispatch-as-typer-output.md).
+[`docs/dispatch-as-planner-output.md`](../../docs/dispatch-as-planner-output.md).
 
 ## Return Demand
 
 `SpecKey` includes a `ReturnDemand`. This is a typed compile-time capability,
-not a runtime side channel. The typer chooses demanded variants while walking
+not a runtime side channel. The planner chooses demanded variants while walking
 specific callsites; codegen must implement the selected capability and must not
 invent a different variant by guessing from function names.
 
@@ -73,9 +73,9 @@ hole, not the whole caller spec. A caller spec can contain more than one call,
 and different calls in that spec can have different return uses. The durable
 facts are:
 
-- `FnTypes.return_uses`, keyed by `CallsiteId`, records the typed return-use
+- `SpecPlan.return_uses`, keyed by `CallsiteId`, records the typed return-use
   fact for each call edge;
-- `FnTypes.return_context_plans`, keyed by caller `SpecKey` plus `CallsiteId`,
+- `SpecPlan.return_context_plans`, keyed by caller `SpecKey` plus `CallsiteId`,
   records executable return-context plans when a return-use fact needs lowering.
   The current concrete plans are ListTail plans: direct continuation delivery,
   nested cons-then-direct ListTail calls, tuple-field/list-tail continuation
@@ -86,6 +86,11 @@ The caller `SpecKey` on a return-context plan is part of the proof. The same
 syntactic callsite can be visited under multiple return contexts, so plan
 operands must come from the current caller specialization rather than from a
 callsite-only table or backend continuation capture order.
+
+Return-context proof helpers live in `ir_planner::return_context`; the discovery
+walker in `ir_planner::walk` should only call those helpers and record the
+resulting facts. Keep new list-tail or tuple-field analyses in that helper
+module unless they truly change traversal or worklist ownership.
 
 Current rendered forms:
 
@@ -135,11 +140,11 @@ copied prefix. That fixture is an allocation baseline for library algorithms;
 `fixtures/quicksort` is the return-context baseline that proves ListTail
 context planning removes append-shaped rebuilding around recursive calls.
 
-Return-context motion is legal only when the typer can prove that moving work
+Return-context motion is legal only when the planner can prove that moving work
 does not cross an observable barrier. The current gates reject contexts that
-contain observable externs, scheduler-visible operations, receives, closure
-calls, allocation-stats readers such as `Process.heap_alloc_stats()`, and
-print-like operations. Allocation by itself is not source-observable, but
+contain extern calls, scheduler-visible operations, receives, closure calls,
+allocation-stats readers such as `Process.heap_alloc_stats()`, or halt.
+Allocation by itself is not source-observable, but
 allocation becomes observable in the presence of allocation-stat reads.
 
 The pinned evidence is `fixtures/quicksort`: native JIT/AOT output now
@@ -219,12 +224,12 @@ the published map canonical.
 - tuple destinations are not written after freeze.
 
 Tuple verifier transitions are factored through shared helpers in
-`src/ir_dest.rs`; the typer uses those same transition helpers with `Ty`
-payloads so verifier and typer do not drift.
+`src/ir_dest.rs`; the planner uses those same transition helpers with `Ty`
+payloads so verifier and planner do not drift.
 
 ## Typing
 
-`ir_typer::type_fn` folds destination statements with erased token facts before
+`ir_planner::type_fn` folds destination statements with erased token facts before
 falling back to ordinary `type_prim` handling.
 
 Tuple token facts carry initialized field slots. `DestFreeze` publishes
@@ -241,8 +246,8 @@ from `base` or `Types::map(&[])`; `DestMapPut` refines static keys with
 `var_as_map_key` and `Types::refine_map_field`; dynamic keys widen to
 `map_top()`. `DestMapFreeze` publishes the token fact.
 
-Malformed destination IR should not panic the typer. Verified codegen should
-not see malformed IR, but the typer falls back conservatively (`any`, `nil`, or
+Malformed destination IR should not panic the planner. Verified codegen should
+not see malformed IR, but the planner falls back conservatively (`any`, `nil`, or
 the visible value type) and leaves diagnostics to the verifier.
 
 ## Runtime And GC
@@ -262,7 +267,7 @@ heap words.
 
 Native continuations may be represented by stack-backed lazy descriptors while
 execution stays synchronous. That does not change destination ownership:
-destination facts still come from the typer, and a descriptor is materialized
+destination facts still come from the planner, and a descriptor is materialized
 into a normal closure before it can become scheduler-visible or heap-captured.
 See
 [`lazy-continuation-materialization.md`](lazy-continuation-materialization.md).
@@ -273,9 +278,9 @@ Do not hide destination semantics only in codegen. Construction intent must be
 visible in IR, verified, typed through erased token facts, then lowered by the
 interpreter/JIT/AOT paths.
 
-Do not make ReturnDemand a backend-only heuristic. `FnTypes.dispatches`,
-`FnTypes.return_uses`, `FnTypes.return_context_plans`, and `SpecKey.demand` are
-the authoritative typer output. Codegen may lower only those typer-authored ABI
+Do not make ReturnDemand a backend-only heuristic. `SpecPlan.dispatches`,
+`SpecPlan.return_uses`, `SpecPlan.return_context_plans`, and `SpecKey.demand` are
+the authoritative planner output. Codegen may lower only those planner-authored ABI
 and context facts. It must not create a new demand variant, probe demanded
 sibling specs, or infer demand from backend closure/capture shapes.
 
@@ -304,7 +309,7 @@ lowered IR with token facts.
 Use these gates when touching destination planning:
 
 - `cargo test ir_dest`
-- `cargo test ir_typer`
+- `cargo test ir_planner`
 - `cargo test tuple`
 - `cargo test list`
 - `cargo test map`

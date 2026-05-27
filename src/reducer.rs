@@ -787,7 +787,7 @@ mod tests {
 
     #[test]
     fn fold_mixed_int_float_returns_none() {
-        // No coercion; the typer's policy is no auto-promotion.
+        // No coercion; the planner's policy is no auto-promotion.
         let mut t = ct();
         let env = env(&[(0, t.int_lit(1)), (1, t.float_lit(2.0))]);
         assert!(fold_prim(&mut t, &Prim::BinOp(BinOp::Add, v(0), v(1)), &env, &[]).is_none());

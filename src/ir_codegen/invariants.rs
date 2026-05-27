@@ -1,7 +1,7 @@
 //! Debug-build invariant: post-typer passes may *consume* call-shape
 //! terminators (folding into Returns / Gotos) but must never *invent*
 //! new ones — the typer's spec set wouldn't cover an invented call,
-//! and codegen would dispatch through `FnTypes.dispatches`, find no
+//! and codegen would dispatch through `SpecPlan.dispatches`, find no
 //! entry, and either panic or pick the wrong target.
 //!
 //! Snapshot per-fn call-shape multisets right after the typer, then
