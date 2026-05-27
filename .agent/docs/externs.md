@@ -27,3 +27,21 @@ Automatic variadic defaults are intentionally narrow:
 
 Later codegen/interpreter work should consume the per-spec side table rather
 than guessing from `ExternMarshal::Auto` at the boundary.
+
+## Runtime Variadic Dispatchers
+
+Runtime C-variadic calls go through `runtime/src/extern_variadic.rs` instead of
+being emitted directly at each backend call site. The exported helper names are
+mechanical:
+
+```text
+fz_call_var_<ret>_<fixed...>_<var...>_to_<ret>
+```
+
+The tokens are fz marshal classes at the boundary. The helper body owns the
+target C ABI cast, such as the `open(path, flags, mode)` dispatcher casting fz
+integer lanes to `c_int`/`c_uint` before calling the real variadic function.
+
+`fz_extern_symbol_addr(name)` resolves `dlsym(RTLD_DEFAULT, name)` and caches
+both hits and misses. It returns `0` for null or unresolved symbols; callers
+must treat zero as lookup failure, not as a callable function pointer.
