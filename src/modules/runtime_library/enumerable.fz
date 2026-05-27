@@ -21,18 +21,6 @@ defmodule Enumerable do
     fn slice(_list), do: {:error, :unsupported}
   end
 
-  @spec reduce(Enumerable.Enumerable.t(a), b, (a, b) -> {:cont, b} | {:halt, b} | {:suspend, b}) :: any
-  fn reduce(enumerable, acc, reducer), do: reduce_list(enumerable, acc, reducer)
-
-  @spec count(Enumerable.Enumerable.t(a)) :: {:ok, integer} | {:error, any}
-  fn count(enumerable), do: {:ok, count_list(enumerable, 0)}
-
-  @spec member?(Enumerable.Enumerable.t(a), a) :: {:ok, bool} | {:error, any}
-  fn member?(enumerable, value), do: {:ok, member_list?(enumerable, value)}
-
-  @spec slice(Enumerable.Enumerable.t(a)) :: {:ok, integer, any} | {:error, any}
-  fn slice(_enumerable), do: {:error, :unsupported}
-
   fn reduce_list([], {:cont, acc}, _reducer), do: {:done, acc}
   fn reduce_list(_list, {:halt, acc}, _reducer), do: {:halted, acc}
   fn reduce_list(list, {:suspend, acc}, reducer) do

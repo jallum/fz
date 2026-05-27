@@ -25,6 +25,11 @@ end
 defimpl Enumerable, for: List do
   fn reduce(list, acc, reducer), do: Enumerable.reduce_list(list, acc, reducer)
 end
+
+defmodule Enum do
+  @spec reduce(Enumerable.t(a), b, (a, b) -> {:cont, b} | {:halt, b}) :: any
+  fn reduce(enumerable, acc, reducer), do: ...
+end
 ```
 
 `defprotocol` declares the protocol name, required callback names and arities,
@@ -33,6 +38,10 @@ public callback specs, and the protocol-domain type constructor
 
 `defimpl` declares the protocol it implements, the semantic implementation
 target, and the callback bodies that satisfy the protocol.
+
+The runtime library follows Elixir's public naming split: `Enumerable` is the
+protocol identity and implementation-domain type, while `Enum` is the
+convenience module that users call for enumeration operations.
 
 `Protocol.t(...)` is not `any`. It is an implementation-domain constraint:
 a value of type `Enumerable.t(a)` is a value for which an `Enumerable`

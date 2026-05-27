@@ -243,9 +243,9 @@ pub(crate) fn prepare_execution_graph(
     } else {
         linked
             .and_then(|linked| linked.module_plan)
-            .ok_or_else(|| {
-                PipelineError::Link(ImageLinkError::MissingPlannerFacts { module: None })
-            })?
+            .ok_or(PipelineError::Link(ImageLinkError::MissingPlannerFacts {
+                module: None,
+            }))?
     };
     Ok(PreparedExecutionGraph {
         units,

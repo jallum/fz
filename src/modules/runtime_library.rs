@@ -45,6 +45,11 @@ const RUNTIME_MODULE_SOURCES: &[RuntimeModuleSource] = &[
         role: RuntimeModuleRole::Library,
     },
     RuntimeModuleSource {
+        name: "Enum",
+        source: include_str!("runtime_library/enum.fz"),
+        role: RuntimeModuleRole::Library,
+    },
+    RuntimeModuleSource {
         name: "Enumerable",
         source: include_str!("runtime_library/enumerable.fz"),
         role: RuntimeModuleRole::Library,
@@ -356,6 +361,45 @@ mod tests {
             vec!["from_bytes/1", "from_bytes!/1", "to_bytes/1", "valid?/1"]
         );
         assert!(!exports.iter().any(|name| name.starts_with("fz_")));
+
+        let enumerable = interfaces
+            .get(&ModuleName::from_segments(vec!["Enumerable".to_string()]))
+            .expect("Enumerable interface");
+        assert!(
+            enumerable
+                .protocols
+                .iter()
+                .any(|protocol| protocol.name.dotted() == "Enumerable")
+        );
+        assert!(enumerable.protocol_impls.iter().any(
+            |protocol_impl| protocol_impl.protocol.dotted() == "Enumerable"
+                && protocol_impl.target.display_name() == "Enumerable.List"
+        ));
+        assert!(
+            !enumerable
+                .protocols
+                .iter()
+                .any(|protocol| protocol.name.dotted() == "Enumerable.Enumerable")
+        );
+
+        let enum_module = interfaces
+            .get(&ModuleName::from_segments(vec!["Enum".to_string()]))
+            .expect("Enum interface");
+        let enum_exports = enum_module
+            .exports
+            .iter()
+            .map(|f| format!("{}/{}", f.name, f.arity))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            enum_exports,
+            vec!["count/1", "member?/2", "reduce/3", "slice/1"]
+        );
+        assert!(
+            enum_module
+                .imports
+                .iter()
+                .any(|import| import.module.dotted() == "Enumerable")
+        );
 
         assert_eq!(
             utf8.docs.as_deref(),

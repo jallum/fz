@@ -606,9 +606,9 @@ fn runtime_enumerable_list_count_member_and_reduce() {
         r#"
 fn main() do
   print({
-    Enumerable.count([1, 2, 3]),
-    Enumerable.member?([1, 2, 3], 2),
-    Enumerable.reduce([1, 2, 3], {:cont, 0}, fn (x, acc) -> {:cont, acc + x})
+    Enum.count([1, 2, 3]),
+    Enum.member?([1, 2, 3], 2),
+    Enum.reduce([1, 2, 3], {:cont, 0}, fn (x, acc) -> {:cont, acc + x})
   })
 end
 "#,
@@ -629,7 +629,7 @@ fn reducer(x, acc) do
 end
 
 fn main() do
-  case Enumerable.reduce([1, 2], {:cont, 0}, reducer) do
+  case Enum.reduce([1, 2], {:cont, 0}, reducer) do
     {:suspended, first, resume} ->
       case resume() do
         {:done, total} -> print(first + total)

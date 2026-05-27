@@ -71,19 +71,16 @@ protocol and target are errors.</p>
 
 <pre><span class="kw">@spec</span> <span class="fn">total</span>(<span class="ty">Enumerable</span>.<span class="fn">t</span>(integer)) :: integer
 <span class="kw">fn</span> <span class="fn">total</span>(values), <span class="kw">do:</span>
-  <span class="ty">Enumerable</span>.<span class="fn">reduce</span>(values, {:cont, <span class="num">0</span>}, <span class="kw">fn</span> (x, acc) -> {:cont, acc + x})</pre>
+  <span class="ty">Enum</span>.<span class="fn">reduce</span>(values, {:cont, <span class="num">0</span>}, <span class="kw">fn</span> (x, acc) -> {:cont, acc + x})</pre>
 
 <p>The compiler checks that the value can belong to the protocol's implemented
 domain. For example, a list can satisfy <code>Enumerable.t(integer)</code>
 because the runtime library provides an <code>Enumerable</code> implementation
 for lists.</p>
 
-<div class="box yellow">
-<strong>Current spelling note:</strong> protocols declared inside a module are
-qualified by that module in specs. The built-in runtime module exposes
-<code>Enumerable.Enumerable.t(a)</code> internally while user code normally
-calls the public <code>Enumerable.count</code>, <code>Enumerable.member?</code>,
-and <code>Enumerable.reduce</code> functions.
+<div class="box blue">
+<strong>Naming:</strong> <code>Enumerable</code> is the protocol. The public
+convenience functions live on <code>Enum</code>, matching Elixir's split.
 </div>
 
 <h2 id="enumerable">5. Built-in <code>Enumerable</code> for lists</h2>
@@ -92,9 +89,9 @@ and <code>Enumerable.reduce</code> functions.
 
 <pre><span class="kw">fn</span> <span class="fn">main</span>() <span class="kw">do</span>
   <span class="fn">print</span>({
-    <span class="ty">Enumerable</span>.<span class="fn">count</span>([<span class="num">1</span>, <span class="num">2</span>, <span class="num">3</span>]),
-    <span class="ty">Enumerable</span>.<span class="fn">member?</span>([<span class="num">1</span>, <span class="num">2</span>, <span class="num">3</span>], <span class="num">2</span>),
-    <span class="ty">Enumerable</span>.<span class="fn">reduce</span>([<span class="num">1</span>, <span class="num">2</span>, <span class="num">3</span>], {:cont, <span class="num">0</span>},
+    <span class="ty">Enum</span>.<span class="fn">count</span>([<span class="num">1</span>, <span class="num">2</span>, <span class="num">3</span>]),
+    <span class="ty">Enum</span>.<span class="fn">member?</span>([<span class="num">1</span>, <span class="num">2</span>, <span class="num">3</span>], <span class="num">2</span>),
+    <span class="ty">Enum</span>.<span class="fn">reduce</span>([<span class="num">1</span>, <span class="num">2</span>, <span class="num">3</span>], {:cont, <span class="num">0</span>},
       <span class="kw">fn</span> (x, acc) -> {:cont, acc + x})
   })
 <span class="kw">end</span></pre>
@@ -140,7 +137,7 @@ supported public wrapper or become a diagnostic.</p>
   <li><code>defprotocol</code> declares required callbacks and a domain type.</li>
   <li><code>defimpl</code> must provide every required callback for one target.</li>
   <li><code>Protocol.t(...)</code> constrains values to the implementation domain.</li>
-  <li>Known list <code>Enumerable</code> calls execute through ordinary planned calls.</li>
+  <li>Known list <code>Enum</code> calls execute through ordinary planned calls over the <code>Enumerable</code> domain.</li>
   <li>Unsupported dynamic protocol features should fail clearly instead of guessing.</li>
 </ul>
 </div>

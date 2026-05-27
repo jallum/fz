@@ -263,7 +263,7 @@ fn interface_protocol_impl(
         .iter()
         .filter_map(|item| match &**item {
             crate::ast::Item::Fn(def) => Some(crate::modules::identity::ExportKey::new(
-                qualify_protocol_name(parent, &protocol_impl.target.path),
+                qualify_module_child(parent, &protocol_impl.target.path),
                 def.name.clone(),
                 def.clauses.first().map(|c| c.params.len()).unwrap_or(0),
             )),
@@ -272,12 +272,26 @@ fn interface_protocol_impl(
         .collect::<Vec<_>>();
     InterfaceProtocolImpl {
         protocol: qualify_protocol_name(parent, &protocol_impl.protocol),
-        target: ImplTarget::module(qualify_protocol_name(parent, &protocol_impl.target.path)),
+        target: ImplTarget::module(qualify_module_child(parent, &protocol_impl.target.path)),
         callbacks,
     }
 }
 
 fn qualify_protocol_name(parent: Option<&ModuleName>, name: &ModuleName) -> ModuleName {
+    if name.segments().len() == 1
+        && let Some(parent) = parent
+    {
+        if name.last_segment() == parent.last_segment() {
+            parent.clone()
+        } else {
+            parent.child(name.last_segment().to_string())
+        }
+    } else {
+        name.clone()
+    }
+}
+
+fn qualify_module_child(parent: Option<&ModuleName>, name: &ModuleName) -> ModuleName {
     if name.segments().len() == 1
         && let Some(parent) = parent
     {
