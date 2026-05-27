@@ -54,9 +54,10 @@ Codegen artifact vocabulary:
   exported runtime symbols are controlled compiler errors, not warnings.
 - Imported module calls are represented in IR as `ExternalCallEdge` metadata.
   The terminator keeps a temporary `FnId` placeholder until
-  `Module::rewrite_external_calls_for_lto` is given an export map and rewrites
-  the callsite to a direct local `FnId`. Codegen rejects any unresolved
-  external edge; linked images must resolve or report the missing target first.
+  the image linker gives `Module::rewrite_external_calls_for_lto` an export map
+  and rewrites the callsite to a direct local `FnId`. Codegen rejects any
+  unresolved external edge; linked images must resolve or report the missing
+  target first.
 - Artifact ownership is explicit. `.fzi` stores only the versioned
   `ModuleInterface` contract plus compiler/runtime ABI versions and the
   interface fingerprint. `.fzo` stores the compiled-unit envelope: module
@@ -69,11 +70,15 @@ Codegen artifact vocabulary:
   the original provider source path. Loading rejects unsupported ABI versions,
   empty payloads, unsupported materialization formats, digest mismatches, and
   fingerprint mismatches as `artifact/invalid` diagnostics.
+- `link_ir_units` is the normal boundary-resolution step for executable module
+  graphs. It copies all reachable `CompiledUnit` IR bodies into one dense linked
+  `Module`, remaps `FnId`, `ExternId`, and atom ids, builds the provider export
+  map from implemented interfaces, and rewrites `ExternalCallEdge` placeholders
+  to direct local calls before JIT codegen sees the module.
 - `CompiledProgram::link_image_with_telemetry` is the normal JIT run path into
   the image linker. `CompiledImage::link_compiled` validates that each unit
-  implements its recorded interface fingerprint, rejects unresolved external
-  module calls in runnable units, resolves every required `ExportKey` to
-  exactly one provider, merges `RuntimeUnitMetadata` through
+  implements its recorded interface fingerprint, resolves every required
+  `ExportKey` to exactly one provider, merges `RuntimeUnitMetadata` through
   `RuntimeImageMetadata::link_units`, and only then wraps the compiled
   machine-code module.
 

@@ -384,6 +384,59 @@ fn main(), do: User.run()
 }
 
 #[test]
+fn linked_ir_units_rewrite_external_edges_and_run_provider_body() {
+    let mut t = crate::types::ConcreteTypes;
+    let tel = crate::telemetry::NullTelemetry;
+    let math = crate::frontend::compile_source_with_types(
+        &mut t,
+        "defmodule Math do\n  fn add(x, y), do: x + y\nend\n".to_string(),
+        "math.fz".to_string(),
+        &tel,
+    )
+    .unwrap_or_else(|err| panic!("math frontend: {:?}", err.diagnostics));
+    let math_name = crate::module_identity::ModuleName::from_segments(vec!["Math".to_string()]);
+    let math_interface = math
+        ._prog
+        .module_interfaces
+        .get(&math_name)
+        .cloned()
+        .expect("math interface");
+
+    let mut interfaces = crate::resolve::InterfaceTable::new();
+    interfaces.insert(math_name, math_interface.clone());
+    let user = crate::frontend::compile_source_with_interface_table(
+        &mut t,
+        "defmodule User do\n  import Math, only: [add: 2]\n  fn run(), do: add(20, 22)\nend\nfn main(), do: User.run()\n".to_string(),
+        "user.fz".to_string(),
+        interfaces,
+        &tel,
+    )
+    .unwrap_or_else(|err| panic!("user frontend: {:?}", err.diagnostics));
+    assert_eq!(user.module.external_call_edges.len(), 1);
+
+    let math_unit = CompiledUnit::from_ir_module(
+        math.module,
+        Some(math_interface),
+        crate::diag::Diagnostics::new(),
+    );
+    let user_unit =
+        CompiledUnit::from_ir_module(user.module, None, crate::diag::Diagnostics::new());
+    let linked = link_ir_units(&[math_unit.clone(), user_unit.clone()]).expect("link ir units");
+    assert!(!linked.has_unresolved_external_calls());
+    let entry = linked.fn_by_name("main").expect("main").id;
+
+    let linked_plan = crate::ir_planner::plan_module(&mut t, &linked, &tel);
+    let compiled = compile_pretyped(&mut t, &linked, &linked_plan, &tel).expect("compile linked");
+    let math_rt = RuntimeUnitMetadata::from_ir_module(math_unit.module.clone(), &math_unit.code);
+    let user_rt = RuntimeUnitMetadata::from_ir_module(user_unit.module.clone(), &user_unit.code);
+    let image =
+        CompiledImage::link_compiled(&[math_unit, user_unit], &[math_rt, user_rt], compiled)
+            .expect("link image");
+
+    assert_eq!(image.run(entry), 42);
+}
+
+#[test]
 fn image_linker_rejects_missing_and_duplicate_providers() {
     let missing = crate::module_identity::ExportKey::new(
         crate::module_identity::ModuleName::from_segments(vec!["Missing".to_string()]),
@@ -427,7 +480,7 @@ fn image_linker_rejects_missing_and_duplicate_providers() {
 }
 
 #[test]
-fn image_linker_rejects_unresolved_external_calls_in_units() {
+fn image_linker_rejects_unresolved_external_imports_without_provider() {
     let target = crate::module_identity::ExportKey::new(
         crate::module_identity::ModuleName::from_segments(vec!["Provider".to_string()]),
         "run",
@@ -472,10 +525,15 @@ fn image_linker_rejects_unresolved_external_calls_in_units() {
     };
     assert_eq!(
         err,
-        ImageLinkError::UnresolvedExternalCalls {
-            module: Some(crate::module_identity::ModuleName::from_segments(vec![
+        ImageLinkError::MissingImport {
+            requester: Some(crate::module_identity::ModuleName::from_segments(vec![
                 "User".to_string()
             ])),
+            import: crate::module_identity::ExportKey::new(
+                crate::module_identity::ModuleName::from_segments(vec!["Provider".to_string()]),
+                "run",
+                0,
+            ),
         }
     );
 }

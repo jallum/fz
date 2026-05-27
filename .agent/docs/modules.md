@@ -404,11 +404,17 @@ Use the right term:
 - `CompiledModule`: machine-code module produced by codegen; `CompiledImage`
   wraps it only after module/link metadata has been validated.
 
+`link_ir_units` is the boundary-resolution step for module graphs. It copies all
+reachable `CompiledUnit` IR bodies into one dense linked `Module`, remaps
+`FnId`, `ExternId`, and atom ids, builds provider keys from implemented
+interfaces, and rewrites `ExternalCallEdge` placeholders to direct local calls
+before JIT codegen sees the module.
+
 `CompiledProgram::link_image_with_telemetry` is the normal JIT run path. It
 calls `CompiledImage::link_compiled(units, runtime_units, linked)` to construct
-the runnable image. The linker validates unit/interface compatibility, rejects
-unresolved external module calls, links runtime metadata, and only then wraps
-the compiled machine-code module. `CompiledModule` remains the executable
+the runnable image. The linker validates unit/interface compatibility, resolves
+imports against exactly one provider, links runtime metadata, and only then
+wraps the compiled machine-code module. `CompiledModule` remains the executable
 payload inside the validated image, not the driver-facing product.
 
 ## Image Link Checks
@@ -420,8 +426,7 @@ Checks:
 1. `units.len() == runtime_units.len()`.
 2. Each `CompiledUnit` with an interface still matches its recorded
    `interface_fingerprint`.
-3. No `CompiledUnit` still has unresolved `external_call_edges`.
-4. Every exported interface function contributes one provider key:
+3. Every exported interface function contributes one provider key:
 
 ```text
 ExportKey(module, export.name, export.arity)
@@ -465,6 +470,10 @@ Rules:
 Imported module calls are represented by `ExternalCallEdge` in `fz_ir::Module`.
 The terminator still carries a placeholder `FnId` until link/LTO resolves the
 edge.
+
+Normal module-graph linking resolves those edges through `link_ir_units` before
+codegen. LTO may then consume the same validated graph facts to erase optimizer
+boundaries, but LTO is not the correctness path.
 
 Normal codegen rejects unresolved external calls:
 

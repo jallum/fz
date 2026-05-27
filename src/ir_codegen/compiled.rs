@@ -1,7 +1,10 @@
 #![allow(unused_imports)]
 
 use super::*;
-use crate::fz_ir::{BinOp, Const, FnId, Module, Prim, Stmt, Term, UnOp};
+use crate::fz_ir::{
+    BinOp, Const, Cont, ExternId, FnId, FnIr, Module, Prim, ReceiveAfter, ReceiveClause, Stmt,
+    Term, UnOp,
+};
 use cranelift_codegen::Context;
 use cranelift_codegen::ir::{
     self, AbiParam, BlockArg, InstBuilder, MemFlags, Signature,
@@ -104,6 +107,7 @@ impl CompiledProgram {
         self,
         tel: &dyn crate::telemetry::Telemetry,
     ) -> Result<CompiledImage, ImageLinkError> {
+        let _linked_ir = link_ir_units(std::slice::from_ref(&self.unit))?;
         CompiledImage::link_compiled_with_telemetry(
             tel,
             std::slice::from_ref(&self.unit),
@@ -229,6 +233,14 @@ impl std::fmt::Display for ImageLinkError {
 
 impl std::error::Error for ImageLinkError {}
 
+pub fn link_ir_units(units: &[CompiledUnit]) -> Result<Module, ImageLinkError> {
+    let mut linker = IrUnitLinker::default();
+    for unit in units {
+        linker.add_unit(unit)?;
+    }
+    linker.finish()
+}
+
 fn link_image_metadata(
     units: &[CompiledUnit],
     runtime_units: &[RuntimeUnitMetadata],
@@ -245,11 +257,6 @@ fn link_image_metadata(
             && interface.fingerprint_inputs != unit.interface_fingerprint
         {
             return Err(ImageLinkError::InterfaceFingerprintMismatch {
-                module: unit.module.clone(),
-            });
-        }
-        if unit.code.has_unresolved_external_calls() {
-            return Err(ImageLinkError::UnresolvedExternalCalls {
                 module: unit.module.clone(),
             });
         }
@@ -278,6 +285,286 @@ fn link_image_metadata(
         }
     }
     RuntimeImageMetadata::link_units(runtime_units).map_err(ImageLinkError::RuntimeMetadata)
+}
+
+#[derive(Default)]
+struct IrUnitLinker {
+    linked: Module,
+    export_map: BTreeMap<crate::module_identity::ExportKey, FnId>,
+}
+
+impl IrUnitLinker {
+    fn add_unit(&mut self, unit: &CompiledUnit) -> Result<(), ImageLinkError> {
+        if let Some(interface) = &unit.interface
+            && interface.fingerprint_inputs != unit.interface_fingerprint
+        {
+            return Err(ImageLinkError::InterfaceFingerprintMismatch {
+                module: unit.module.clone(),
+            });
+        }
+
+        let fn_map = self.copy_fns(unit);
+        self.copy_externs(unit, &fn_map);
+        self.copy_external_edges(unit, &fn_map);
+        self.copy_specs(unit, &fn_map);
+        self.copy_type_facts(unit);
+        self.copy_exports(unit, &fn_map)?;
+        Ok(())
+    }
+
+    fn finish(mut self) -> Result<Module, ImageLinkError> {
+        match self.linked.rewrite_external_calls_for_lto(&self.export_map) {
+            Ok(_) => Ok(self.linked),
+            Err(crate::fz_ir::ExternalLinkError::MissingTarget(import)) => {
+                let requester = self
+                    .linked
+                    .external_call_edges
+                    .iter()
+                    .find(|edge| edge.target == import)
+                    .and_then(|edge| module_for_linked_fn(&self.linked, edge.callsite.caller));
+                Err(ImageLinkError::MissingImport { requester, import })
+            }
+            Err(crate::fz_ir::ExternalLinkError::MissingCallsite(callsite)) => {
+                let module = module_for_linked_fn(&self.linked, callsite.caller);
+                Err(ImageLinkError::UnresolvedExternalCalls { module })
+            }
+        }
+    }
+
+    fn copy_fns(&mut self, unit: &CompiledUnit) -> BTreeMap<FnId, FnId> {
+        let mut map = BTreeMap::new();
+        let base = self.linked.fns.len() as u32;
+        for (offset, f) in unit.code.fns.iter().enumerate() {
+            let new_id = FnId(base + offset as u32);
+            map.insert(f.id, new_id);
+        }
+        for f in &unit.code.fns {
+            let copied = self.remap_fn(f.clone(), &map, &unit.code.atom_names);
+            self.linked.fn_idx.insert(copied.id, self.linked.fns.len());
+            self.linked.fns.push(copied);
+        }
+        for old in &unit.code.boundary_fns {
+            if let Some(new) = map.get(old) {
+                self.linked.boundary_fns.insert(*new);
+            }
+        }
+        map
+    }
+
+    fn copy_externs(&mut self, unit: &CompiledUnit, fn_map: &BTreeMap<FnId, FnId>) {
+        let mut extern_map = HashMap::new();
+        for ext in &unit.code.externs {
+            let new_id = ExternId(self.linked.externs.len() as u32);
+            extern_map.insert(ext.id, new_id);
+            let mut copied = ext.clone();
+            copied.id = new_id;
+            self.linked
+                .extern_idx
+                .insert(copied.id, self.linked.externs.len());
+            self.linked.externs.push(copied);
+        }
+        if !extern_map.is_empty() {
+            for f in self.linked.fns.iter_mut().rev().take(fn_map.len()) {
+                remap_fn_externs(f, &extern_map);
+            }
+        }
+    }
+
+    fn copy_external_edges(&mut self, unit: &CompiledUnit, fn_map: &BTreeMap<FnId, FnId>) {
+        self.linked
+            .external_call_edges
+            .extend(unit.code.external_call_edges.iter().map(|edge| {
+                let mut edge = edge.clone();
+                if let Some(caller) = fn_map.get(&edge.callsite.caller) {
+                    edge.callsite.caller = *caller;
+                }
+                edge
+            }));
+    }
+
+    fn copy_specs(&mut self, unit: &CompiledUnit, fn_map: &BTreeMap<FnId, FnId>) {
+        self.linked.declared_specs.extend(
+            unit.code
+                .declared_specs
+                .iter()
+                .filter_map(|(fid, spec)| fn_map.get(fid).map(|new| (*new, spec.clone()))),
+        );
+    }
+
+    fn copy_type_facts(&mut self, unit: &CompiledUnit) {
+        self.linked
+            .opaque_inners
+            .extend(unit.code.opaque_inners.clone());
+        self.linked
+            .brand_inners
+            .extend(unit.code.brand_inners.clone());
+    }
+
+    fn copy_exports(
+        &mut self,
+        unit: &CompiledUnit,
+        fn_map: &BTreeMap<FnId, FnId>,
+    ) -> Result<(), ImageLinkError> {
+        let Some(module) = &unit.module else {
+            return Ok(());
+        };
+        for export in &unit.exports {
+            let key = crate::module_identity::ExportKey::new(
+                module.clone(),
+                export.name.clone(),
+                export.arity,
+            );
+            let qualified = format!("{}.{}", module, export.name);
+            let target = unit
+                .code
+                .fns
+                .iter()
+                .find(|f| f.name == qualified && f.block(f.entry).params.len() == export.arity)
+                .and_then(|f| fn_map.get(&f.id).copied());
+            if let Some(target) = target
+                && self.export_map.insert(key.clone(), target).is_some()
+            {
+                return Err(ImageLinkError::DuplicateProvider { import: key });
+            }
+        }
+        Ok(())
+    }
+
+    fn remap_fn(
+        &mut self,
+        mut f: FnIr,
+        fn_map: &BTreeMap<FnId, FnId>,
+        atom_names: &[String],
+    ) -> FnIr {
+        f.id = fn_map[&f.id];
+        for block in &mut f.blocks {
+            for stmt in &mut block.stmts {
+                remap_stmt(stmt, fn_map, &mut self.linked.atom_names, atom_names);
+            }
+            remap_term(&mut block.terminator, fn_map);
+        }
+        f
+    }
+}
+
+fn module_for_linked_fn(
+    module: &Module,
+    fn_id: FnId,
+) -> Option<crate::module_identity::ModuleName> {
+    module
+        .fn_idx
+        .get(&fn_id)
+        .and_then(|idx| module.fns.get(*idx))
+        .and_then(|f| {
+            if f.owner_module.is_empty() {
+                None
+            } else {
+                Some(crate::module_identity::ModuleName::from_segments(
+                    f.owner_module.split('.').map(str::to_string).collect(),
+                ))
+            }
+        })
+}
+
+fn remap_stmt(
+    stmt: &mut Stmt,
+    fn_map: &BTreeMap<FnId, FnId>,
+    linked_atoms: &mut Vec<String>,
+    unit_atoms: &[String],
+) {
+    let Stmt::Let(_, prim) = stmt;
+    remap_prim(prim, fn_map, linked_atoms, unit_atoms);
+}
+
+fn remap_prim(
+    prim: &mut Prim,
+    fn_map: &BTreeMap<FnId, FnId>,
+    linked_atoms: &mut Vec<String>,
+    unit_atoms: &[String],
+) {
+    match prim {
+        Prim::Const(Const::Atom(id)) => {
+            if let Some(name) = unit_atoms.get(*id as usize) {
+                let new_id = intern_linked_atom(linked_atoms, name);
+                *id = new_id;
+            }
+        }
+        Prim::MakeClosure(_, fid, _) => remap_fn_id(fid, fn_map),
+        _ => {}
+    }
+}
+
+fn remap_fn_externs(f: &mut FnIr, extern_map: &HashMap<ExternId, ExternId>) {
+    for block in &mut f.blocks {
+        for Stmt::Let(_, prim) in &mut block.stmts {
+            if let Prim::Extern(id, _) = prim
+                && let Some(new_id) = extern_map.get(id)
+            {
+                *id = *new_id;
+            }
+        }
+    }
+}
+
+fn remap_term(term: &mut Term, fn_map: &BTreeMap<FnId, FnId>) {
+    match term {
+        Term::Call {
+            callee,
+            continuation,
+            ..
+        } => {
+            remap_fn_id(callee, fn_map);
+            remap_cont(continuation, fn_map);
+        }
+        Term::TailCall { callee, .. } => remap_fn_id(callee, fn_map),
+        Term::CallClosure { continuation, .. } | Term::Receive { continuation, .. } => {
+            remap_cont(continuation, fn_map);
+        }
+        Term::ReceiveMatched { clauses, after, .. } => {
+            for clause in clauses {
+                remap_receive_clause(clause, fn_map);
+            }
+            if let Some(after) = after {
+                remap_receive_after(after, fn_map);
+            }
+        }
+        Term::Goto(_, _)
+        | Term::If { .. }
+        | Term::TailCallClosure { .. }
+        | Term::Return(_)
+        | Term::Halt(_) => {}
+    }
+}
+
+fn remap_cont(cont: &mut Cont, fn_map: &BTreeMap<FnId, FnId>) {
+    remap_fn_id(&mut cont.fn_id, fn_map);
+}
+
+fn remap_receive_clause(clause: &mut ReceiveClause, fn_map: &BTreeMap<FnId, FnId>) {
+    if let Some(guard) = &mut clause.guard {
+        remap_fn_id(guard, fn_map);
+    }
+    remap_fn_id(&mut clause.body, fn_map);
+}
+
+fn remap_receive_after(after: &mut ReceiveAfter, fn_map: &BTreeMap<FnId, FnId>) {
+    remap_fn_id(&mut after.body, fn_map);
+}
+
+fn remap_fn_id(fid: &mut FnId, fn_map: &BTreeMap<FnId, FnId>) {
+    if let Some(new) = fn_map.get(fid) {
+        *fid = *new;
+    }
+}
+
+fn intern_linked_atom(atoms: &mut Vec<String>, name: &str) -> u32 {
+    if let Some(idx) = atoms.iter().position(|existing| existing == name) {
+        idx as u32
+    } else {
+        let idx = atoms.len() as u32;
+        atoms.push(name.to_string());
+        idx
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
