@@ -19,11 +19,11 @@ The v1 source forms are:
 ```fz
 defprotocol Enumerable do
   @spec reduce(t(a), acc, fn(a, acc) -> acc) -> acc
-  def reduce(enumerable, acc, reducer)
+  fn reduce(enumerable, acc, reducer)
 end
 
 defimpl Enumerable, for: List do
-  def reduce(list, acc, reducer) do
+  fn reduce(list, acc, reducer) do
     ...
   end
 end

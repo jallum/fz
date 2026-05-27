@@ -278,6 +278,7 @@ fn flatten_modules_with_options<T: crate::types::Types<Ty = crate::types::Ty>>(
                     span: *span,
                 }));
             }
+            Item::Protocol(_) | Item::ProtocolImpl(_) => {}
         }
     }
     Ok(Program {
@@ -896,7 +897,10 @@ fn flatten_module(
                     );
                 }
             }
-            Item::Module(_) | Item::MacroCall { .. } => {}
+            Item::Module(_)
+            | Item::Protocol(_)
+            | Item::ProtocolImpl(_)
+            | Item::MacroCall { .. } => {}
         }
     }
 
@@ -971,6 +975,7 @@ fn flatten_module(
                     span: *span,
                 }));
             }
+            Item::Protocol(_) | Item::ProtocolImpl(_) => {}
         }
     }
     Ok(())

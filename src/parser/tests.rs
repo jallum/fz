@@ -197,6 +197,90 @@ end
     }
 
     #[test]
+    fn parses_protocol_callbacks_with_specs() {
+        let toks = Lexer::new(
+            r#"
+defprotocol Enumerable do
+  @doc "Reduce values"
+  @spec reduce(t, acc, reducer) :: acc
+  fn reduce(enumerable, acc, reducer)
+end
+"#,
+        )
+        .tokenize()
+        .unwrap();
+        let prog = Parser::new(toks).parse_program().unwrap();
+        let Item::Protocol(protocol) = &*prog.items[0] else {
+            panic!("expected protocol");
+        };
+        assert_eq!(protocol.name.dotted(), "Enumerable");
+        assert_eq!(protocol.callbacks.len(), 1);
+        assert_eq!(protocol.callbacks[0].name, "reduce");
+        assert_eq!(protocol.callbacks[0].arity, 3);
+        assert!(
+            protocol.callbacks[0]
+                .attrs
+                .iter()
+                .any(|attr| matches!(attr, Attribute::Doc(_)))
+        );
+        assert!(
+            protocol.callbacks[0]
+                .attrs
+                .iter()
+                .any(|attr| matches!(attr, Attribute::Spec(_)))
+        );
+    }
+
+    #[test]
+    fn parses_protocol_impl_with_function_body() {
+        let toks = Lexer::new(
+            r#"
+defimpl Enumerable, for: List do
+  fn reduce(xs, acc, reducer), do: acc
+end
+"#,
+        )
+        .tokenize()
+        .unwrap();
+        let prog = Parser::new(toks).parse_program().unwrap();
+        let Item::ProtocolImpl(protocol_impl) = &*prog.items[0] else {
+            panic!("expected protocol impl");
+        };
+        assert_eq!(protocol_impl.protocol.dotted(), "Enumerable");
+        assert_eq!(protocol_impl.target.path.dotted(), "List");
+        assert_eq!(protocol_impl.items.len(), 1);
+        assert!(matches!(&*protocol_impl.items[0], Item::Fn(def) if def.name == "reduce"));
+    }
+
+    #[test]
+    fn protocol_callback_rejects_body() {
+        let toks = Lexer::new(
+            r#"
+defprotocol Bad do
+  fn reduce(xs), do: xs
+end
+"#,
+        )
+        .tokenize()
+        .unwrap();
+        let err = Parser::new(toks).parse_program().unwrap_err();
+        assert!(
+            err.msg.contains("cannot have bodies"),
+            "unexpected error: {:?}",
+            err
+        );
+    }
+
+    #[test]
+    fn protocol_impl_requires_for_target() {
+        let toks = Lexer::new("defimpl Enumerable, target: List do\nend\n")
+            .tokenize()
+            .unwrap();
+        let err = Parser::new(toks).parse_program().unwrap_err();
+        assert!(err.msg.contains("for:"), "unexpected error: {:?}", err);
+    }
+
+    #[test]
     fn plain_call_no_extra_arg() {
         let e = parse_fn_body("f(1, 2)");
         let Expr::Call(_, args) = e else { panic!() };

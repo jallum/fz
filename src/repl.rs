@@ -855,7 +855,12 @@ fn load_items_filtered(
     use std::rc::Rc;
     for item in &prog.items {
         match &**item {
-            Item::Module(_) | Item::Alias { .. } | Item::Import { .. } | Item::MacroCall { .. } => {
+            Item::Module(_)
+            | Item::Protocol(_)
+            | Item::ProtocolImpl(_)
+            | Item::Alias { .. }
+            | Item::Import { .. }
+            | Item::MacroCall { .. } => {
                 continue;
             } // flattened away upstream
             Item::Fn(def) => {

@@ -367,6 +367,16 @@ pub fn expand_with(
                     span: m.span,
                 }));
             }
+            Item::Protocol(p) => {
+                return Err(Box::new(MacroError::PostResolutionLeftover {
+                    span: p.span,
+                }));
+            }
+            Item::ProtocolImpl(i) => {
+                return Err(Box::new(MacroError::PostResolutionLeftover {
+                    span: i.span,
+                }));
+            }
             Item::Alias { span, .. } | Item::Import { span, .. } | Item::MacroCall { span, .. } => {
                 return Err(Box::new(MacroError::PostResolutionLeftover { span: *span }));
             }
@@ -387,7 +397,12 @@ pub fn collect_macros(prog: &Program) -> std::collections::HashSet<String> {
                     out.insert(def.name.clone());
                 }
             }
-            Item::Module(_) | Item::Alias { .. } | Item::Import { .. } | Item::MacroCall { .. } => {
+            Item::Module(_)
+            | Item::Protocol(_)
+            | Item::ProtocolImpl(_)
+            | Item::Alias { .. }
+            | Item::Import { .. }
+            | Item::MacroCall { .. } => {
                 // Pre-flatten programs may still hit this path in tests;
                 // be tolerant since post-flatten there are none.
             }
