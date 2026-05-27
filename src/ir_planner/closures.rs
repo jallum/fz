@@ -2,26 +2,10 @@ use super::fn_types::{ModulePlan, SpecKey};
 use crate::fz_ir::{FnId, Module, Term, Var};
 use std::collections::HashMap;
 
-/// fz-ul4.27.22.9 — closure-aware return resolution. Given a closure
-/// Var's type and the actual `arg_tys` at a call site, compute the
-/// joined return type.
+/// Resolve a closure call's return type for this call site's argument types.
 ///
-/// For each positive arrow clause in `closure_descr.funcs`:
-///   - If the clause carries a `ClosureLit { fn_id, captures }`, build the
-///     full body key `[captures..., arg_tys...]` and look up
-///     `effective_returns[(fn_id, full_key)]`. JOIN into the accumulator.
-///   - Otherwise, JOIN `sig.ret` (the existing `arrow_join_return` path).
-///
-/// Returns `None` when a lit-tagged clause's spec has not yet been
-/// registered — caller treats this as a fixpoint deferral (same convention
-/// as `cont_slot0_descr` today). Returns `Some(any())` for
-/// pathological inputs (empty funcs, negated arrows, saturated `Conj::top`
-/// pos clauses) — those convey no narrowing information so the broadest
-/// result is sound.
-///
-/// `arg_tys` length must match the closure's apparent arity for lit
-/// clauses; mismatch falls back to `any()` for that clause.
-#[allow(dead_code)] // Wired into cont_slot0_descr / codegen in fz-ul4.27.22.10/11.
+/// Translates value-demand `effective_returns` into the closure-target return
+/// table expected by `Types::resolve_closure_return`, then delegates.
 pub fn resolve_closure_return<
     T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
 >(
@@ -51,23 +35,16 @@ pub fn resolve_closure_return<
     t.resolve_closure_return(closure_ty, &translated, arg_tys)
 }
 
-/// fz-ul4.29.10.3 — rewrite `Term::CallClosure(v, args, cont)` →
-/// `Term::Call(F, args, cont)` (and `TailCallClosure` → `TailCall`)
-/// when `types.specs[..].fn_constants[v] = F` agrees across every spec
-/// of the enclosing FnIr that has an opinion on `v`. Disagreement
-/// (different specs of the same fn body see different FnIds for the
-/// same Var) leaves the terminator untouched — safe fallback.
+/// Rewrite `Term::CallClosure(v, args, cont)` to `Term::Call(F, args, cont)`
+/// (and `TailCallClosure` to `TailCall`) when every spec of the enclosing FnIr
+/// that has an opinion on `v` agrees that `v` holds `F`. Disagreement leaves
+/// the terminator untouched.
 ///
 /// Module mutation only; callers re-run `plan_module` afterwards to
-/// refresh `ModulePlan` against the rewritten IR (so the typed-spec
-/// landscape reflects direct dispatch and `.29.12.6` can drop dead
-/// any-keys).
+/// refresh `ModulePlan` against the rewritten IR.
 pub fn rewrite_known_target_closures<
     T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
 >(
-    // fz-mm2.6 — verified: body has no concrete representation operations. The seam handle
-    // is preserved on the signature so the function stays uniform with
-    // its siblings; if a future concrete op lands here, it routes through t.
     _t: &mut T,
     module: &mut Module,
     types: &ModulePlan,

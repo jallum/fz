@@ -4,9 +4,7 @@ use super::fn_types::{
 use super::reachable::cont_input_key;
 use crate::fz_ir::{Block, CallsiteId, CallsiteIdent, EmitSlot, FnId, Module, Term};
 
-// ----------------------------------------------------------------------
-// fz-73m — pretty-printer for ModulePlan (golden spec dump).
-// ----------------------------------------------------------------------
+// Pretty-printer for ModulePlan golden spec dumps.
 
 /// Deterministic text dump of `ModulePlan`. One stanza per (FnId, key)
 /// spec; specs are sorted by FnId, then by lexicographic display-string of

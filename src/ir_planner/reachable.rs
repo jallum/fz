@@ -4,16 +4,12 @@ use super::type_fn::type_stmts_into_env;
 use crate::fz_ir::{Block, Cont, FnId, Module, Prim, Stmt, Term, Var};
 use std::collections::{HashMap, HashSet};
 
-// ----------------------------------------------------------------------
-// fz-ul4.29.12.1 — Cont input-type key helpers
-// ----------------------------------------------------------------------
+// Continuation input-type key helpers.
 
 /// Reconstruct the per-Var env at the *terminator* of `block` under
 /// `caller_ft`. Starts from `caller_ft.block_envs[block.id]` (which
-/// already incorporates if-narrowing from predecessor blocks) and
-/// folds in each Let by re-applying `type_prim`. This mirrors the
-/// planner's own propagation pass at `plan_module`'s `callsite_keys`
-/// site (`ir_planner.rs:142-145`).
+/// already incorporates if-narrowing from predecessor blocks) and folds in
+/// each Let by re-applying `type_prim`.
 pub(crate) fn env_at_terminator<
     T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
 >(
@@ -31,15 +27,15 @@ pub(crate) fn env_at_terminator<
     env
 }
 
-/// fz-ul4.29.12.1 — slot-0 type for a Cont's input-type key at the
-/// call-site whose terminator is `block.terminator`. Mirrors the
-/// planner's logic at `ir_planner.rs:190-215`:
+/// Slot-0 type for a Cont's input-type key at the call-site whose terminator is
+/// `block.terminator`:
 ///
-///   * `Term::Call`: callee's specialized return type under this
-///     call-site's arg types (joined over the callee's `Return`
-///     terminators using `module_plan.specs[(callee, arg_tys)]`).
-///   * `Term::CallClosure` / `Term::Receive`: callee/sender is
-///     opaque, so slot 0 stays `any()`.
+///   * `Term::Call`: callee's effective return under a registered spec that
+///     covers this call-site's arg types.
+///   * `Term::CallClosure`: closure return resolved from the closure type and
+///     registered effective returns, falling back to the structural arrow
+///     return.
+///   * `Term::Receive`: `any()`.
 ///   * Anything else: not a Cont-producing terminator, returns `any`.
 pub fn cont_slot0_descr<
     T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
@@ -57,27 +53,17 @@ pub fn cont_slot0_descr<
                 .iter()
                 .map(|av| env.get(av).cloned().unwrap_or_else(|| t.any()))
                 .collect();
-            // fz-rh5.6 — subsumption-aware lookup. "What does `callee`
-            // return for these args?" is a subsumption query: any
-            // registered spec whose key covers arg_tys is a sound
-            // answer. Exact-match HashMap lookup (the old code here)
-            // fell back to `any` whenever the planner's registered key
-            // didn't match exactly — even when a wider covering spec
-            // existed — producing too-wide cont keys that no
-            // registered spec could cover. See
-            // `ModulePlan::effective_return_for_call`.
+            // Direct call returns are resolved by the best registered
+            // effective-return spec that covers this call's argument types.
             module_plan
                 .effective_return_for_call_ty(t, *callee, &arg_tys)
                 .as_ref()
                 .cloned()
                 .unwrap_or_else(|| t.any())
         }
-        // fz-ul4.27.22.6 — at a CallClosure seam, the closure's static
-        // The type names the body's possible return shapes. For singleton
-        // closure-lits, resolve against the registered body spec using
-        // [captures..., arg_tys...]; otherwise fall back to the
-        // structural arrow-return join. This is the value the body's
-        // Term::Return passes to the cont's slot 0.
+        // The closure type names the body's possible return shapes. For
+        // singleton closure-lits, resolve against the registered body spec;
+        // otherwise fall back to the structural arrow-return join.
         Term::CallClosure { closure, args, .. } => {
             let env = env_at_terminator(t, caller_ft, block, module);
             let closure_d = env.get(closure).cloned().unwrap_or_else(|| t.any());
@@ -105,8 +91,8 @@ pub fn cont_slot0_descr<
     }
 }
 
-/// fz-ul4.42 — compute the set of SpecIds reachable at runtime from
-/// `main` (plus registered closure-target specs as a conservative catch).
+/// Compute the set of SpecIds reachable at runtime from `main` (plus registered
+/// closure-target specs as a conservative catch).
 ///
 /// Codegen consults this to skip body emission for unreached specs: a
 /// trap stub goes out instead of the full body, dramatically shrinking
@@ -367,10 +353,9 @@ where
     }
 }
 
-/// fz-ul4.29.12.1 — build the full Cont input-type key at a call-site:
-/// `[slot0, ...captured_tys]`, padded with `any` to the cont fn's
-/// entry-block arity. Mirrors the planner's key construction at
-/// `ir_planner.rs:233-240` exactly.
+/// Build the full Cont input-type key at a call-site:
+/// `[slot0, ...captured_tys]`, padded with `any` to the cont fn's entry-block
+/// arity.
 pub fn cont_input_key<
     T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
 >(
