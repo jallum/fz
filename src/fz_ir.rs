@@ -187,7 +187,6 @@ pub struct ExternalCallEdge {
     pub target: ExportKey,
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ExternalLinkError {
     MissingTarget(ExportKey),
@@ -1188,12 +1187,10 @@ impl Module {
         self.fns.iter().find(|f| f.name == name)
     }
 
-    #[allow(dead_code)]
     pub fn has_unresolved_external_calls(&self) -> bool {
         !self.external_call_edges.is_empty()
     }
 
-    #[allow(dead_code)]
     pub fn rewrite_external_calls_for_lto(
         &mut self,
         exports: &BTreeMap<ExportKey, FnId>,
@@ -1214,7 +1211,6 @@ impl Module {
         Ok(rewritten)
     }
 
-    #[allow(dead_code)]
     pub fn interface_export_map(
         &self,
         interfaces: &BTreeMap<ModuleName, crate::module_interface::ModuleInterface>,
@@ -1239,7 +1235,6 @@ impl Module {
     }
 }
 
-#[allow(dead_code)]
 fn rewrite_external_callsite(m: &mut Module, callsite: &CallsiteId, target: FnId) -> bool {
     let Some(fn_idx) = m.fn_idx.get(&callsite.caller).copied() else {
         return false;

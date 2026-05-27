@@ -74,7 +74,6 @@ pub const TYPE_EXTERN_MARSHAL: DiagCode = DiagCode("type/extern-marshal");
 // ----- codegen -----
 
 pub const CODEGEN_SCHEMA_MISSING: DiagCode = DiagCode("codegen/schema-missing");
-#[allow(dead_code)]
 pub const ARTIFACT_INVALID: DiagCode = DiagCode("artifact/invalid");
 
 // ----- internal (compiler invariants) -----

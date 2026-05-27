@@ -965,18 +965,9 @@ impl CompiledModule {
 }
 
 #[cfg(test)]
-#[allow(dead_code)]
 impl CompiledImage {
-    pub fn static_closure_targets(&self) -> &[(u32, u32, *const u8, u32)] {
-        self.inner.static_closure_targets()
-    }
-
     pub fn run(&self, fn_id: FnId) -> i64 {
         self.inner.run(fn_id)
-    }
-
-    pub fn run_in(&self, fn_id: FnId, process: &mut Process) -> i64 {
-        self.inner.run_in(fn_id, process)
     }
 }
 
