@@ -571,6 +571,36 @@ fn main(), do: User.run()
 }
 
 #[test]
+fn native_static_protocol_dispatch_preserves_integer_abi() {
+    let mut t = crate::types::ConcreteTypes;
+    let tel = crate::telemetry::NullTelemetry;
+    let frontend = crate::frontend::compile_source_with_types(
+        &mut t,
+        r#"
+defprotocol Integerish do
+  fn id(value)
+end
+
+defimpl Integerish, for: Integer do
+  fn id(value), do: value + 1
+end
+
+fn main(), do: Integerish.id(41)
+"#
+        .to_string(),
+        "integerish.fz".to_string(),
+        &tel,
+    )
+    .unwrap_or_else(|err| panic!("frontend: {:?}", err.diagnostics));
+    let entry = frontend.module.fn_by_name("main").expect("main").id;
+    let compiled =
+        compile_pretyped(&mut t, &frontend.module, &frontend.module_plan, &tel).expect("compile");
+    let image = CompiledImage::from_linked(compiled);
+
+    assert_eq!(image.run(entry), 42);
+}
+
+#[test]
 fn image_linker_rejects_missing_and_duplicate_providers() {
     let missing = crate::modules::identity::ExportKey::new(
         crate::modules::identity::ModuleName::from_segments(vec!["Missing".to_string()]),
