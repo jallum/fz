@@ -968,6 +968,26 @@ fn build_top_param_add_module() -> Module {
     mb.build()
 }
 
+/// Lower `src`, compile with IR text recording enabled, and return the
+/// recorded CLIF body for the fn whose name equals `fn_name`. Returns
+/// an empty string if no such fn was emitted — matches the prior
+/// `unwrap_or("")` pattern at the call sites.
+fn compile_and_grab_ir(src: &str, fn_name: &str) -> String {
+    let m = lower_src(src);
+    ir_text_record_enable();
+    let _ = compile(
+        &mut crate::types::ConcreteTypes,
+        &m,
+        &crate::telemetry::NullTelemetry,
+    )
+    .unwrap();
+    let ir = ir_text_record_take();
+    ir.into_iter()
+        .find(|(n, _)| n == fn_name)
+        .map(|(_, s)| s)
+        .unwrap_or_default()
+}
+
 fn get_main_ir(m: &Module) -> String {
     ir_text_record_enable();
     let _ = compile(
@@ -1315,20 +1335,8 @@ fn box_int_const_fold_eliminates_ishl_bor() {
                  send(2, 41)\n\
                  print(receive())\n\
                end";
-    let m = lower_src(src);
-    ir_text_record_enable();
-    let _ = compile(
-        &mut crate::types::ConcreteTypes,
-        &m,
-        &crate::telemetry::NullTelemetry,
-    )
-    .unwrap();
-    let ir = ir_text_record_take();
-    let main_ir = ir
-        .iter()
-        .find(|(n, _)| n == "main")
-        .map(|(_, s)| s.as_str())
-        .unwrap_or("");
+    let main_ir = compile_and_grab_ir(src, "main");
+    let main_ir = main_ir.as_str();
     // pid crosses as raw i64; message is boxed once at the any boundary
     // and rides the mailbox as a single any value ref. The old split
     // `{value, kind}` side tag (iconst.i8 13) must not appear.
@@ -1350,20 +1358,8 @@ fn box_int_const_fold_eliminates_ishl_bor() {
 #[test]
 fn mailbox_with_float_boxes_only_at_send_boundary() {
     let src = "fn main() do\n  send(self(), 3.14)\n  nil\nend";
-    let m = lower_src(src);
-    ir_text_record_enable();
-    let _ = compile(
-        &mut crate::types::ConcreteTypes,
-        &m,
-        &crate::telemetry::NullTelemetry,
-    )
-    .unwrap();
-    let ir = ir_text_record_take();
-    let main_ir = ir
-        .iter()
-        .find(|(n, _)| n == "main")
-        .map(|(_, s)| s.as_str())
-        .unwrap_or("");
+    let main_ir = compile_and_grab_ir(src, "main");
+    let main_ir = main_ir.as_str();
     assert!(
         main_ir.contains("fz_box_float_for_any") && main_ir.contains("fz_send_ref"),
         "expected float send to box explicitly at the one-word send boundary:\n{}",
@@ -1383,20 +1379,8 @@ fn receive_native_cont_no_box_unbox_roundtrip() {
                  send(2, 41)\n\
                  print(receive())\n\
                end";
-    let m = lower_src(src);
-    ir_text_record_enable();
-    let _ = compile(
-        &mut crate::types::ConcreteTypes,
-        &m,
-        &crate::telemetry::NullTelemetry,
-    )
-    .unwrap();
-    let ir = ir_text_record_take();
-    let relay_ir = ir
-        .iter()
-        .find(|(n, _)| n == "relay")
-        .map(|(_, s)| s.as_str())
-        .unwrap_or("");
+    let relay_ir = compile_and_grab_ir(src, "relay");
+    let relay_ir = relay_ir.as_str();
     // The relay fn holds one raw-int capture; with the fix it is stored
     // directly, so no ishl_imm appears in relay's block. (Arithmetic in
     // the receive continuation lives in a different fn.)
@@ -1505,20 +1489,8 @@ fn dead_unit_extern_result_elided() {
                  print(true)\n\
                  print(nil)\n\
                end";
-    let m = lower_src(src);
-    ir_text_record_enable();
-    let _ = compile(
-        &mut crate::types::ConcreteTypes,
-        &m,
-        &crate::telemetry::NullTelemetry,
-    )
-    .unwrap();
-    let ir = ir_text_record_take();
-    let main_ir = ir
-        .iter()
-        .find(|(n, _)| n == "main")
-        .map(|(_, s)| s.as_str())
-        .unwrap_or("");
+    let main_ir = compile_and_grab_ir(src, "main");
+    let main_ir = main_ir.as_str();
     let nil_count = main_ir.matches("iconst.i64 2").count();
     assert_eq!(
         nil_count, 0,
@@ -1539,20 +1511,8 @@ fn const_nil_bool_atom_deduplicated_within_block() {
     let src = "fn main() do\n\
                  print(nil)\n\
                end";
-    let m = lower_src(src);
-    ir_text_record_enable();
-    let _ = compile(
-        &mut crate::types::ConcreteTypes,
-        &m,
-        &crate::telemetry::NullTelemetry,
-    )
-    .unwrap();
-    let ir = ir_text_record_take();
-    let main_ir = ir
-        .iter()
-        .find(|(n, _)| n == "main")
-        .map(|(_, s)| s.as_str())
-        .unwrap_or("");
+    let main_ir = compile_and_grab_ir(src, "main");
+    let main_ir = main_ir.as_str();
     let nil_count = main_ir.matches("iconst.i64 2").count();
     assert_eq!(
         nil_count, 0,
@@ -1612,6 +1572,66 @@ fn frontend_to_codegen_pretyped_pipeline_types_exactly_three_times() {
     );
 }
 
+/// Register every spec in `mt` against a fresh `SpecRegistry`, sorted for
+/// deterministic sid assignment, and collect the sids whose owning fn name
+/// starts with `k_` (i.e. continuation specs).
+fn build_registry_recording_cont_sids(
+    m: &Module,
+    mt: &crate::ir_typer::ModuleTypes,
+) -> (SpecRegistry, Vec<u32>) {
+    let ct = crate::types::ConcreteTypes;
+    let mut reg = SpecRegistry::new();
+    let mut spec_keys: Vec<_> = mt.specs.keys().cloned().collect();
+    spec_keys.sort_by(|a, b| {
+        a.fn_id
+            .0
+            .cmp(&b.fn_id.0)
+            .then_with(|| format!("{:?}", a.input).cmp(&format!("{:?}", b.input)))
+            .then_with(|| format!("{:?}", a.demand).cmp(&format!("{:?}", b.demand)))
+    });
+    let mut cont_sids: Vec<u32> = Vec::new();
+    for key in spec_keys {
+        let sid = reg.register(&ct, key.fn_id, key.input);
+        if m.fn_by_id(key.fn_id).name.starts_with("k_") {
+            cont_sids.push(sid.0);
+        }
+    }
+    (reg, cont_sids)
+}
+
+/// Walk every typed spec's body looking for the first `Term::CallClosure`
+/// whose closure operand types as a singleton closure-lit (i.e. a
+/// resolvable lambda body, not an opaque closure).
+fn find_typed_callclosure_over_closure_lit<'mt>(
+    m: &Module,
+    mt: &'mt crate::ir_typer::ModuleTypes,
+    t: &mut crate::types::ConcreteTypes,
+) -> Option<(
+    FnId,
+    Vec<KeySlot>,
+    crate::fz_ir::Var,
+    Vec<crate::fz_ir::Var>,
+    &'mt crate::ir_typer::FnTypes,
+)> {
+    for (key, ft) in &mt.specs {
+        for f in &m.fns {
+            for blk in &f.blocks {
+                if let Term::CallClosure { closure, args, .. } = &blk.terminator
+                    && ft
+                        .vars
+                        .get(closure)
+                        .and_then(|ty| t.closure_lit_parts(ty))
+                        .is_some()
+                    && key.fn_id == f.id
+                {
+                    return Some((f.id, key.input.clone(), *closure, args.clone(), ft));
+                }
+            }
+        }
+    }
+    None
+}
+
 #[test]
 fn resolve_tcc_body_handles_callclosure_with_captures() {
     let src = r#"
@@ -1633,46 +1653,11 @@ end
         &crate::telemetry::NullTelemetry,
     );
     let mut t = crate::types::ConcreteTypes;
-    let mut reg = SpecRegistry::new();
-    let mut spec_keys: Vec<_> = mt.specs.keys().cloned().collect();
-    spec_keys.sort_by(|a, b| {
-        a.fn_id
-            .0
-            .cmp(&b.fn_id.0)
-            .then_with(|| format!("{:?}", a.input).cmp(&format!("{:?}", b.input)))
-            .then_with(|| format!("{:?}", a.demand).cmp(&format!("{:?}", b.demand)))
-    });
-    for key in spec_keys {
-        reg.register(&t, key.fn_id, key.input);
-    }
-
-    let mut found = None;
-    for (key, ft) in &mt.specs {
-        for f in &m.fns {
-            for blk in &f.blocks {
-                if let Term::CallClosure { closure, args, .. } = &blk.terminator
-                    && ft
-                        .vars
-                        .get(closure)
-                        .and_then(|ty| t.closure_lit_parts(ty))
-                        .is_some()
-                    && key.fn_id == f.id
-                {
-                    found = Some((f.id, key.input.clone(), *closure, args.clone(), ft));
-                    break;
-                }
-            }
-            if found.is_some() {
-                break;
-            }
-        }
-        if found.is_some() {
-            break;
-        }
-    }
+    let (reg, _) = build_registry_recording_cont_sids(&m, &mt);
 
     let (caller_fid, caller_key, closure, args, ft) =
-        found.expect("expected a typed CallClosure over a singleton closure-lit");
+        find_typed_callclosure_over_closure_lit(&m, &mt, &mut t)
+            .expect("expected a typed CallClosure over a singleton closure-lit");
     let mut ct = crate::types::ConcreteTypes;
     let (body_fid, body_sid) = resolve_tcc_body(&mut ct, &closure, &args, ft, &m, &reg)
         .expect("closure body should resolve");
@@ -1776,22 +1761,7 @@ end
     let m = lower_src(src);
     let mut ct = crate::types::ConcreteTypes;
     let mt = crate::ir_typer::type_module(&mut ct, &m, &crate::telemetry::NullTelemetry);
-    let mut reg = SpecRegistry::new();
-    let mut spec_keys: Vec<_> = mt.specs.keys().cloned().collect();
-    spec_keys.sort_by(|a, b| {
-        a.fn_id
-            .0
-            .cmp(&b.fn_id.0)
-            .then_with(|| format!("{:?}", a.input).cmp(&format!("{:?}", b.input)))
-            .then_with(|| format!("{:?}", a.demand).cmp(&format!("{:?}", b.demand)))
-    });
-    let mut cont_sids: Vec<u32> = Vec::new();
-    for key in spec_keys {
-        let sid = reg.register(&ct, key.fn_id, key.input);
-        if m.fn_by_id(key.fn_id).name.starts_with("k_") {
-            cont_sids.push(sid.0);
-        }
-    }
+    let (reg, cont_sids) = build_registry_recording_cont_sids(&m, &mt);
     let main_fid = m
         .fns
         .iter()
