@@ -269,14 +269,16 @@ public module exports need explicit specs before the contract is stored.
 Writing <code>.fzo</code> artifacts uses the same checked module and codegen
 facts that the run path uses: a compiled unit plus runtime metadata.</p>
 
-<p>Frontend-only dumps can load those interfaces without the provider source
-file:</p>
+<p>Run, build, and frontend-only dump commands can load provider artifacts
+without the provider source file:</p>
 
-<pre>fz dump --emit interfaces --interface Math --artifact-root build/fz consumer.fz</pre>
+<pre>fz dump --emit interfaces --interface Math --artifact-root build/fz consumer.fz
+fz run --interface Math --artifact-root build/fz consumer.fz
+fz build --interface Math --artifact-root build/fz consumer.fz -o consumer</pre>
 
-<p>That validates imports from the stored contract. Runnable images are built
-later by loading compatible <code>.fzo</code> providers and linking every
-imported export exactly once.</p>
+<p>The interface validates imports from the stored contract. Runnable images
+also load reachable <code>.fzo</code> providers, materialize their source-unit
+payloads, and link every imported export exactly once.</p>
 
 <p>Normal compilation follows this shape:</p>
 

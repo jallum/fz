@@ -114,6 +114,10 @@ Runtime library boundary:
 - User builds can write object envelopes with
   `fz build --emit-fzo --artifact-root <dir> ...`. The writer consumes the
   production `CompiledProgram` facts, not a separate test-only artifact path.
+- User run/build commands consume provider graphs with
+  `fz run --interface <Module> --artifact-root <dir> ...` and
+  `fz build --interface <Module> --artifact-root <dir> ...`. `--provider` is
+  accepted as an alias for the same provider-root input.
 
 LTO / whole-program mode:
 

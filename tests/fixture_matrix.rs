@@ -133,6 +133,14 @@ fn static_tests() -> Vec<(&'static str, fn())> {
         ("fz_build_emits_fzi", fz_build_emits_fzi),
         ("fz_build_emits_fzo", fz_build_emits_fzo),
         (
+            "fz_run_loads_reachable_fzo_after_provider_source_removed",
+            fz_run_loads_reachable_fzo_after_provider_source_removed,
+        ),
+        (
+            "fz_build_loads_reachable_fzo_after_provider_source_removed",
+            fz_build_loads_reachable_fzo_after_provider_source_removed,
+        ),
+        (
             "fz_dump_loads_fzi_for_imports",
             fz_dump_loads_fzi_for_imports,
         ),
@@ -1262,6 +1270,130 @@ fn main(), do: Math.id(1)
     );
     assert!(fzo.contains("defmodule Math"), "{fzo}");
     assert!(fzo.contains("interface_fingerprint_digest="), "{fzo}");
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+fn write_provider_consumer(root: &Path) -> (PathBuf, PathBuf, PathBuf) {
+    let provider = r#"
+defmodule Math do
+  @spec add(integer, integer) :: integer
+  fn add(x, y), do: x + y
+end
+
+fn main(), do: Math.add(1, 2)
+"#;
+    let consumer = r#"
+defmodule User do
+  import Math, only: [add: 2]
+  fn run(), do: add(20, 22)
+end
+
+fn main(), do: print(User.run())
+"#;
+    let provider_path = root.join("provider.fz");
+    let consumer_path = root.join("consumer.fz");
+    let artifact_root = root.join("artifacts");
+    fs::write(&provider_path, provider)
+        .unwrap_or_else(|e| panic!("write {}: {}", provider_path.display(), e));
+    fs::write(&consumer_path, consumer)
+        .unwrap_or_else(|e| panic!("write {}: {}", consumer_path.display(), e));
+    (provider_path, consumer_path, artifact_root)
+}
+
+fn build_provider_artifacts(provider_path: &Path, artifact_root: &Path, out_path: &Path) {
+    let out = Command::new(FZ_BIN)
+        .args(["build", "--emit-fzi", "--emit-fzo", "--artifact-root"])
+        .arg(artifact_root)
+        .arg(provider_path)
+        .arg("-o")
+        .arg(out_path)
+        .output()
+        .expect("spawn provider artifact build");
+    assert!(
+        out.status.success(),
+        "provider artifact build exited {}: {}",
+        out.status,
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+fn fz_run_loads_reachable_fzo_after_provider_source_removed() {
+    let root = std::env::temp_dir().join(format!("fz-run-load-fzo-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).unwrap_or_else(|e| panic!("mkdir {}: {}", root.display(), e));
+    let (provider_path, consumer_path, artifact_root) = write_provider_consumer(&root);
+    build_provider_artifacts(&provider_path, &artifact_root, &root.join("provider-app"));
+    fs::remove_file(&provider_path)
+        .unwrap_or_else(|e| panic!("remove {}: {}", provider_path.display(), e));
+
+    let out = Command::new(FZ_BIN)
+        .args(["run", "--interface", "Math", "--artifact-root"])
+        .arg(&artifact_root)
+        .arg(&consumer_path)
+        .output()
+        .expect("spawn consumer run");
+    assert!(
+        out.status.success(),
+        "consumer run exited {}: {}",
+        out.status,
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "42");
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+fn fz_build_loads_reachable_fzo_after_provider_source_removed() {
+    let root = std::env::temp_dir().join(format!("fz-build-load-fzo-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).unwrap_or_else(|e| panic!("mkdir {}: {}", root.display(), e));
+    let (provider_path, consumer_path, artifact_root) = write_provider_consumer(&root);
+    build_provider_artifacts(&provider_path, &artifact_root, &root.join("provider-app"));
+    fs::remove_file(&provider_path)
+        .unwrap_or_else(|e| panic!("remove {}: {}", provider_path.display(), e));
+
+    let app = root.join("consumer-app");
+    let build = Command::new(FZ_BIN)
+        .args(["build", "--interface", "Math", "--artifact-root"])
+        .arg(&artifact_root)
+        .arg(&consumer_path)
+        .arg("-o")
+        .arg(&app)
+        .output()
+        .expect("spawn consumer build");
+    assert!(
+        build.status.success(),
+        "consumer build exited {}: {}",
+        build.status,
+        String::from_utf8_lossy(&build.stderr)
+    );
+    let run = Command::new(&app).output().expect("run built consumer");
+    assert!(
+        run.status.success(),
+        "built consumer exited {}: {}",
+        run.status,
+        String::from_utf8_lossy(&run.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&run.stdout).trim(), "42");
+
+    let fzo = artifact_root.join("objects/Math.fzo");
+    fs::remove_file(&fzo).unwrap_or_else(|e| panic!("remove {}: {}", fzo.display(), e));
+    let missing = Command::new(FZ_BIN)
+        .args(["run", "--interface", "Math", "--artifact-root"])
+        .arg(&artifact_root)
+        .arg(&consumer_path)
+        .output()
+        .expect("spawn missing-fzo consumer run");
+    assert!(
+        !missing.status.success(),
+        "missing fzo run unexpectedly succeeded"
+    );
+    assert!(
+        String::from_utf8_lossy(&missing.stderr).contains("Math.fzo"),
+        "{}",
+        String::from_utf8_lossy(&missing.stderr)
+    );
 
     let _ = fs::remove_dir_all(&root);
 }

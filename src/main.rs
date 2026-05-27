@@ -183,7 +183,11 @@ fn main() {
                     eprintln!("reading stdin: {}", e);
                     std::process::exit(1);
                 }
-                run_jit_src(&tel, src, "<stdin>".into(), CompileMode::Normal);
+                let providers = ProviderInputs::new(
+                    module_artifact_store::DEFAULT_ARTIFACT_ROOT.to_string(),
+                    Vec::new(),
+                );
+                run_jit_src(&tel, src, "<stdin>".into(), CompileMode::Normal, &providers);
             }
         }
     }
@@ -252,6 +256,7 @@ fn run_build(tel: &telemetry::ConfiguredTelemetry, args: &[String]) {
     let mut emit_fzi = false;
     let mut emit_fzo = false;
     let mut mode = CompileMode::Normal;
+    let mut provider_modules = Vec::new();
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
@@ -264,6 +269,14 @@ fn run_build(tel: &telemetry::ConfiguredTelemetry, args: &[String]) {
                     eprintln!("fz build: --artifact-root expects a path");
                     std::process::exit(2);
                 });
+            }
+            "--interface" | "--provider" => {
+                i += 1;
+                let module = args.get(i).cloned().unwrap_or_else(|| {
+                    eprintln!("fz build: --interface expects a module name");
+                    std::process::exit(2);
+                });
+                provider_modules.push(parse_module_name_arg("fz build", &module));
             }
             "-o" => {
                 i += 1;
@@ -285,7 +298,7 @@ fn run_build(tel: &telemetry::ConfiguredTelemetry, args: &[String]) {
     }
     let src_path = src_path.unwrap_or_else(|| {
         eprintln!(
-            "fz build [--lto] [--emit-fzi] [--emit-fzo] [--artifact-root <dir>] <src.fz> -o <out>"
+            "fz build [--lto] [--emit-fzi] [--emit-fzo] [--interface <Module>] [--artifact-root <dir>] <src.fz> -o <out>"
         );
         std::process::exit(2);
     });
@@ -299,7 +312,9 @@ fn run_build(tel: &telemetry::ConfiguredTelemetry, args: &[String]) {
     });
 
     let fzo_source = emit_fzo.then(|| src.clone());
-    let frontend_result = frontend::compile_source_with_types(&mut t, src, src_path.clone(), tel);
+    let providers = ProviderInputs::new(artifact_root.clone(), provider_modules);
+    let frontend_result =
+        compile_source_with_providers("fz build", &mut t, src, src_path.clone(), &providers, tel);
     let prepared = checked_module_for_mode(&mut t, frontend_result, &sm_cell, tel, mode);
     if emit_fzi || emit_fzo {
         let diags = module_interface::validate_public_export_specs(&prepared.interfaces);
@@ -319,7 +334,26 @@ fn run_build(tel: &telemetry::ConfiguredTelemetry, args: &[String]) {
     }
 
     let unit_input = prepared.compiled_unit_input();
-    let module = unit_input.code.clone();
+    let graph_units = if providers.is_empty() {
+        Vec::new()
+    } else {
+        load_provider_units_or_exit("fz build", &mut t, &prepared, &providers, &sm_cell, tel)
+    };
+    let module = if graph_units.is_empty() {
+        unit_input.code.clone()
+    } else {
+        ir_codegen::link_ir_units(&graph_units).unwrap_or_else(|e| {
+            diag::report_or_exit_through(
+                tel,
+                &[diag::Diagnostic::error(
+                    diag::codes::CODEGEN_SCHEMA_MISSING,
+                    e.to_string(),
+                    diag::Span::DUMMY,
+                )],
+            );
+            std::process::exit(1);
+        })
+    };
     let module_plan = prepared.module_plan;
 
     if emit_fzo {
@@ -355,6 +389,11 @@ fn run_build(tel: &telemetry::ConfiguredTelemetry, args: &[String]) {
         .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or("fz_program");
+    let module_plan = if graph_units.is_empty() {
+        module_plan
+    } else {
+        ir_planner::plan_module(&mut t, &module, tel)
+    };
     let artifact = ir_codegen::compile_aot_pretyped(&mut t, &module, &module_plan, obj_name, tel)
         .unwrap_or_else(|e| {
             diag::report_or_exit_through(tel, &[e.to_diagnostic()]);
@@ -484,25 +523,45 @@ fn run_interp(tel: &telemetry::ConfiguredTelemetry, args: &[String]) {
 fn run_jit_from_path(tel: &telemetry::ConfiguredTelemetry, args: &[String]) {
     let mut mode = CompileMode::Normal;
     let mut src_path: Option<String> = None;
-    for arg in args {
-        match arg.as_str() {
+    let mut artifact_root = module_artifact_store::DEFAULT_ARTIFACT_ROOT.to_string();
+    let mut provider_modules = Vec::new();
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
             "--lto" | "--whole-program" => mode = CompileMode::Lto,
+            "--artifact-root" => {
+                i += 1;
+                artifact_root = args.get(i).cloned().unwrap_or_else(|| {
+                    eprintln!("fz run: --artifact-root expects a path");
+                    std::process::exit(2);
+                });
+            }
+            "--interface" | "--provider" => {
+                i += 1;
+                let module = args.get(i).cloned().unwrap_or_else(|| {
+                    eprintln!("fz run: --interface expects a module name");
+                    std::process::exit(2);
+                });
+                provider_modules.push(parse_module_name_arg("fz run", &module));
+            }
             a if !a.starts_with("--") && src_path.is_none() => src_path = Some(a.to_string()),
             a => {
                 eprintln!("fz run: unknown arg `{}`", a);
                 std::process::exit(2);
             }
         }
+        i += 1;
     }
     let src_path = src_path.unwrap_or_else(|| {
-        eprintln!("fz run [--lto] <src.fz>");
+        eprintln!("fz run [--lto] [--interface <Module>] [--artifact-root <dir>] <src.fz>");
         std::process::exit(2);
     });
     let src = std::fs::read_to_string(&src_path).unwrap_or_else(|e| {
         eprintln!("read {}: {}", src_path, e);
         std::process::exit(1);
     });
-    run_jit_src(tel, src, src_path, mode);
+    let providers = ProviderInputs::new(artifact_root, provider_modules);
+    run_jit_src(tel, src, src_path, mode, &providers);
 }
 
 /// `fz dump <src.fz> [--emit clif|asm|both] [--fn <name>]` — drive a
@@ -790,7 +849,8 @@ fn run_dump(tel: &telemetry::ConfiguredTelemetry, args: &[String]) {
         if fn_filter.is_some() {
             eprintln!("fz dump: --fn is ignored with --emit stats");
         }
-        let _ = compile_pipeline(tel, &sm_cell, src, path.clone(), mode);
+        let providers = ProviderInputs::new(artifact_root.clone(), Vec::new());
+        let _ = compile_pipeline(tel, &sm_cell, src, path.clone(), mode, &providers);
         return;
     }
 
@@ -800,7 +860,8 @@ fn run_dump(tel: &telemetry::ConfiguredTelemetry, args: &[String]) {
     if emit_asm {
         ir_codegen::asm_record_enable();
     }
-    let compiled = compile_pipeline(tel, &sm_cell, src, path.clone(), mode);
+    let providers = ProviderInputs::new(artifact_root.clone(), Vec::new());
+    let compiled = compile_pipeline(tel, &sm_cell, src, path.clone(), mode, &providers);
     let clif_entries = if emit_clif {
         ir_codegen::ir_text_record_take()
     } else {
@@ -913,6 +974,25 @@ struct CheckedModule {
     sm: diag::SourceMap,
 }
 
+#[derive(Clone, Debug)]
+struct ProviderInputs {
+    artifact_root: String,
+    modules: Vec<module_identity::ModuleName>,
+}
+
+impl ProviderInputs {
+    fn new(artifact_root: String, modules: Vec<module_identity::ModuleName>) -> Self {
+        Self {
+            artifact_root,
+            modules,
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.modules.is_empty()
+    }
+}
+
 impl CheckedModule {
     fn compiled_unit_input(&self) -> ir_codegen::CompiledUnit {
         let interface = module_name_from_ir_path(self.module.module_path())
@@ -985,6 +1065,81 @@ fn load_interface_table_or_exit(
             eprintln!("{context}: {e}");
             std::process::exit(1);
         })
+}
+
+fn compile_source_with_providers(
+    context: &str,
+    t: &mut types::ConcreteTypes,
+    src: String,
+    source_name: String,
+    providers: &ProviderInputs,
+    tel: &dyn telemetry::Telemetry,
+) -> frontend::FrontendResult {
+    if providers.is_empty() {
+        frontend::compile_source_with_types(t, src, source_name, tel)
+    } else {
+        let interfaces = load_interface_table_or_exit(
+            context,
+            &providers.artifact_root,
+            &providers.modules,
+            tel,
+        );
+        frontend::compile_source_with_interface_table(t, src, source_name, interfaces, tel)
+    }
+}
+
+fn load_provider_units_or_exit(
+    context: &str,
+    t: &mut types::ConcreteTypes,
+    prepared: &CheckedModule,
+    providers: &ProviderInputs,
+    sm_cell: &Rc<RefCell<diag::SourceMap>>,
+    tel: &dyn telemetry::Telemetry,
+) -> Vec<ir_codegen::CompiledUnit> {
+    let store = module_artifact_store::ArtifactStore::new(&providers.artifact_root);
+    let graph = module_graph::ModuleGraphLoader::new(store)
+        .load_reachable(&prepared.interfaces, &providers.modules)
+        .unwrap_or_else(|e| {
+            eprintln!("{context}: {e}");
+            std::process::exit(1);
+        });
+    tel.event(
+        &["fz", "module", "graph_loaded"],
+        metadata! {
+            interfaces: graph.interfaces.len() as i64,
+            objects: graph.objects.len() as i64,
+        },
+    );
+
+    let mut units = vec![prepared.compiled_unit_input()];
+    for object in graph.objects {
+        let module = object.module.clone().unwrap_or_else(|| {
+            eprintln!("{context}: fzo artifact has no module identity");
+            std::process::exit(1);
+        });
+        let source = object.source_unit_text().unwrap_or_else(|diagnostic| {
+            diag::report_or_exit_through(tel, &[diagnostic]);
+            std::process::exit(1);
+        });
+        let frontend = run_frontend(
+            frontend::compile_source_with_interface_table(
+                t,
+                source.to_string(),
+                format!("artifact:{module}"),
+                graph.interfaces.clone(),
+                tel,
+            ),
+            sm_cell,
+            tel,
+        );
+        let interface = graph.interfaces.get(&module).cloned();
+        units.push(ir_codegen::CompiledUnit::from_ir_module(
+            frontend.module,
+            interface,
+            diag::Diagnostics::new(),
+        ));
+    }
+    units
 }
 
 fn checked_module_for_mode(
@@ -1509,15 +1664,53 @@ fn compile_pipeline(
     src: String,
     source_name: String,
     mode: CompileMode,
+    providers: &ProviderInputs,
 ) -> Compiled {
     let mut t = types::ConcreteTypes;
-    let frontend_result = frontend::compile_source_with_types(&mut t, src, source_name, tel);
+    let frontend_result =
+        compile_source_with_providers("fz run", &mut t, src, source_name, providers, tel);
     let prepared = checked_module_for_mode(&mut t, frontend_result, sm_cell, tel, mode);
-    let unit_input = prepared.compiled_unit_input();
-    let module = unit_input.code.clone();
-    let module_plan = prepared.module_plan;
+    let units = if providers.is_empty() {
+        vec![prepared.compiled_unit_input()]
+    } else {
+        load_provider_units_or_exit("fz run", &mut t, &prepared, providers, sm_cell, tel)
+    };
+    let module = if providers.is_empty() {
+        units[0].code.clone()
+    } else {
+        ir_codegen::link_ir_units(&units).unwrap_or_else(|e| {
+            diag::report_or_exit_through(
+                tel,
+                &[diag::Diagnostic::error(
+                    diag::codes::CODEGEN_SCHEMA_MISSING,
+                    e.to_string(),
+                    diag::Span::DUMMY,
+                )],
+            );
+            std::process::exit(1);
+        })
+    };
+    let (module, module_plan) = if providers.is_empty() {
+        (module, prepared.module_plan)
+    } else if mode.is_lto() {
+        let interfaces = units
+            .iter()
+            .filter_map(|unit| {
+                unit.interface
+                    .clone()
+                    .map(|interface| (interface.name.clone(), interface))
+            })
+            .collect();
+        let linked = LtoLinkedProgram::validate(module, interfaces, tel);
+        let (module, _) = linked.erase_boundaries(tel);
+        let module_plan = ir_planner::plan_module(&mut t, &module, tel);
+        (module, module_plan)
+    } else {
+        let module_plan = ir_planner::plan_module(&mut t, &module, tel);
+        (module, module_plan)
+    };
     let main_fn = module.fn_by_name("main").map(|f| f.id);
-    let program = ir_codegen::compile_pretyped_unit(&mut t, unit_input, &module_plan, tel)
+    let executable = ir_codegen::compile_pretyped(&mut t, &module, &module_plan, tel)
         .unwrap_or_else(|e| {
             diag::report_or_exit_through(tel, &[e.to_diagnostic()]);
             std::process::exit(1);
@@ -1525,16 +1718,33 @@ fn compile_pipeline(
     tel.event(
         &["fz", "module", "unit_compiled"],
         metadata! {
-            fns: program.unit.code.fns.len() as i64,
-            atoms: program.runtime.atoms.len() as i64,
+            fns: module.fns.len() as i64,
+            atoms: module.atom_names.len() as i64,
         },
     );
     // fz-d5b — gate on errors from the planner-side diagnostics
     // (TYPE_OPAQUE_VISIBILITY, TYPE_OPAQUE_ARITHMETIC,
     // TYPE_IMPURE_RECEIVE_GUARD). Severity::Warning entries print and
     // we continue; Severity::Error halts.
-    diag::report_or_exit_through(tel, program.executable.diagnostics().as_slice());
-    let image = program.link_image_with_telemetry(tel).unwrap_or_else(|e| {
+    diag::report_or_exit_through(tel, executable.diagnostics().as_slice());
+    let image = if providers.is_empty() {
+        ir_codegen::CompiledProgram::new(units[0].clone(), executable)
+            .link_image_with_telemetry(tel)
+    } else {
+        let runtime_units = units
+            .iter()
+            .map(|unit| {
+                ir_codegen::RuntimeUnitMetadata::from_ir_module(unit.module.clone(), &unit.code)
+            })
+            .collect::<Vec<_>>();
+        ir_codegen::CompiledImage::link_compiled_with_telemetry(
+            tel,
+            &units,
+            &runtime_units,
+            executable,
+        )
+    }
+    .unwrap_or_else(|e| {
         diag::report_or_exit_through(
             tel,
             &[diag::Diagnostic::error(
@@ -1578,13 +1788,14 @@ fn run_jit_src(
     src: String,
     source_name: String,
     mode: CompileMode,
+    providers: &ProviderInputs,
 ) {
     let sm_cell: Rc<RefCell<diag::SourceMap>> = Rc::new(RefCell::new(diag::SourceMap::new()));
     tel.attach(
         &["fz", "diag"],
         Box::new(telemetry::DiagRenderer::new_stderr(sm_cell.clone())),
     );
-    let compiled = compile_pipeline(tel, &sm_cell, src, source_name, mode);
+    let compiled = compile_pipeline(tel, &sm_cell, src, source_name, mode, providers);
     let Some(main_fn) = compiled.main_fn else {
         diag::report_or_exit_through(
             tel,
@@ -1634,6 +1845,10 @@ fn main(), do: User.run()
             src.to_string(),
             "telemetry.fz".to_string(),
             CompileMode::Lto,
+            &ProviderInputs::new(
+                module_artifact_store::DEFAULT_ARTIFACT_ROOT.to_string(),
+                Vec::new(),
+            ),
         );
 
         assert!(capture.contains(&["fz", "module", "interfaces_collected"]));

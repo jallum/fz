@@ -225,19 +225,23 @@ Reachable graph loading:
   that made the module reachable. Unused artifacts under the artifact root are
   never read.
 
-Frontend-only dump commands can load provider interfaces from the same store:
+Run, build, and frontend-only dump commands can load provider artifacts from
+the same store:
 
 ```sh
 fz dump --emit interfaces --interface Math --artifact-root build/fz consumer.fz
+fz run --interface Math --artifact-root build/fz consumer.fz
+fz build --interface Math --artifact-root build/fz consumer.fz -o consumer
 ```
 
 `--interface` takes a module name and loads its `.fzi` into the resolver's
 external `InterfaceTable`. The current source file's own module interfaces are
 still collected locally and override external entries for the same module.
 This proves provider-source-free import validation. Calling an imported
-provider body in a runnable image is the linker stage's job: it consumes the
-compatible `.fzo`/runtime metadata facts and rejects missing or duplicate
-providers before execution.
+provider body in a runnable image is the graph/linker stage's job: `fz run` and
+`fz build` load reachable `.fzo` source-unit payloads through
+`ModuleGraphLoader`, materialize provider `CompiledUnit` inputs, link IR units,
+and reject missing or duplicate providers before execution/codegen.
 
 ## `.fzi`: Interface Artifact
 
