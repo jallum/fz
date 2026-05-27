@@ -105,6 +105,7 @@ expects</em> (and vice versa for returns).</p>
 <thead><tr><th>Class</th><th>What C sees</th><th>What fz sees</th><th>Notes</th></tr></thead>
 <tbody>
 <tr><td class="cls">integer</td><td class="shape">raw <code>i64</code></td><td>integer</td><td class="note">Use the integer payload directly.</td></tr>
+<tr><td class="cls">float</td><td class="shape">raw <code>f64</code></td><td>float</td><td class="note">Use the float payload directly.</td></tr>
 <tr><td class="cls">any</td><td class="shape">raw <code>u64</code></td><td>any value ref</td><td class="note">For one-word C boundaries that intentionally operate on opaque fz values.</td></tr>
 <tr><td class="cls">binary</td><td class="shape"><code>*const u8</code></td><td>fz binary <code>&lt;&lt;...&gt;&gt;</code></td><td class="note">Pointer to the binary's bytes. No NUL guarantee.</td></tr>
 <tr><td class="cls">cstring</td><td class="shape"><code>*const u8</code></td><td>fz binary <code>&lt;&lt;...&gt;&gt;</code></td><td class="note">Same pointer, but with a guaranteed trailing zero byte.</td></tr>
@@ -148,6 +149,20 @@ branch. The <code>binary</code> class makes no NUL promise; the call site
 picks which contract it wants. Calling <code>write(fd, buf, len)</code>?
 Use <code>binary</code>. Calling <code>open(path, flags)</code>? Use
 <code>cstring</code>.</p>
+
+<h3>Variadic externs</h3>
+
+<p>A C variadic function uses <code>...</code> after its fixed arguments:</p>
+
+<pre><span class="kw">extern</span> <span class="str">"C"</span> <span class="kw">fn</span> <span class="fn">libc::printf</span>(fmt <span class="kw">::</span> <span class="ty">cstring</span>, ...) <span class="kw">::</span> <span class="ty">integer</span></pre>
+
+<p>Fixed arguments use the declaration's marshal classes. Extra arguments
+are resolved at the call site after type inference: integers default to
+<code>integer</code>, floats default to <code>float</code>, and binaries must
+be written explicitly because C cannot infer whether the pointer should be
+<code>binary</code> or <code>cstring</code>.</p>
+
+<pre><span class="fn">libc::printf</span>(<span class="str">"%s %d"</span>, name <span class="kw">::</span> <span class="ty">cstring</span>, <span class="num">42</span>)</pre>
 
 <!-- ─────────────────────────────── 4. LIBRARY ─────────────────────────────── -->
 <h2 id="library">4. Library-prefix names — <code>libc::open</code></h2>

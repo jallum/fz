@@ -121,9 +121,12 @@ pub fn check_frontend<T>(
 where
     T: Types<Ty = crate::types::Ty> + ClosureTypes + LiteralTypes + RenderTypes,
 {
-    let mt = crate::ir_typer::type_module(t, module, tel);
+    let mut mt = crate::ir_typer::type_module(t, module, tel);
     let mut diags = Diagnostics::from_vec(crate::spec_check::validate_specs(t, prog, module, &mt));
     diags.extend(check_patterns(t, prog, module, &mt));
+    diags.extend(Diagnostics::from_vec(
+        crate::ir_extern_marshal::resolve_module_types(t, module, &mut mt),
+    ));
     tel.execute(
         &["fz", "frontend", "checked"],
         &crate::measurements! { diagnostics: diags.len() },

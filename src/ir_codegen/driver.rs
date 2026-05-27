@@ -540,11 +540,18 @@ pub(crate) fn compile_with_backend_impl<
     // Run the typer ahead of codegen so per-fn Var->type info is
     // available during lowering.
     let mut working = module.clone();
-    let owned_pre_types;
+    let mut owned_pre_types;
     let pre_types = match pre_types {
         Some(pre_types) => pre_types,
         None => {
             owned_pre_types = crate::ir_typer::type_module(t, &working, tel);
+            let diagnostics =
+                crate::ir_extern_marshal::resolve_module_types(t, &working, &mut owned_pre_types);
+            if let Some(diagnostic) = diagnostics.into_iter().next() {
+                return Err(
+                    CodegenError::new(diagnostic.message).with_span(diagnostic.primary.span)
+                );
+            }
             &owned_pre_types
         }
     };
@@ -585,7 +592,12 @@ pub(crate) fn compile_with_backend_impl<
     // can be applied before the typer commits to specs. See
     // `docs/dispatch-as-typer-output.md` (Worry 1).
     crate::ir_inline::inline_single_use_conts(&mut working);
-    let module_types = crate::ir_typer::type_module(t, &working, tel);
+    let mut module_types = crate::ir_typer::type_module(t, &working, tel);
+    let diagnostics =
+        crate::ir_extern_marshal::resolve_module_types(t, &working, &mut module_types);
+    if let Some(diagnostic) = diagnostics.into_iter().next() {
+        return Err(CodegenError::new(diagnostic.message).with_span(diagnostic.primary.span));
+    }
     // fz-uwq.14 — snapshot per-fn call-shape multisets right after the
     // typer commits to specs. The post-typer passes (branch_fold, fold,
     // const_bs::fold, dce_module, dce_module_level) may FOLD calls away
@@ -623,6 +635,11 @@ pub(crate) fn compile_with_backend_impl<
     })?;
     let mut module_types =
         crate::ir_typer::type_module(t, &working, &crate::telemetry::NullTelemetry);
+    let diagnostics =
+        crate::ir_extern_marshal::resolve_module_types(t, &working, &mut module_types);
+    if let Some(diagnostic) = diagnostics.into_iter().next() {
+        return Err(CodegenError::new(diagnostic.message).with_span(diagnostic.primary.span));
+    }
     for (key, before_types) in &pre_dest_module_types.specs {
         if let Some(after_types) = module_types.specs.get_mut(key) {
             for (var, before_ty) in &before_types.vars {

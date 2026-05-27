@@ -254,6 +254,16 @@ pub struct InitTokenId(pub u32);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ExternId(pub u32);
 
+/// Per-call-site key for concrete extern argument marshal decisions.
+/// `stmt_idx` indexes the `Stmt::Let` in `(fn_id, block_id)`;
+/// `arg_idx` indexes the `Prim::Extern` argument list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ExternMarshalSite {
+    pub block: BlockId,
+    pub stmt_idx: usize,
+    pub arg_idx: usize,
+}
+
 /// C ABI wire type for `extern "C" fn` declarations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExternTy {
