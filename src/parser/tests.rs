@@ -420,7 +420,49 @@ mod extern_parse_tests {
     fn extern_fn_two_params() {
         let d = parse_extern("extern \"C\" fn fz_assert_eq(any, any) :: unit\n");
         assert_eq!(d.extern_params.len(), 2);
+        assert!(!d.variadic);
         assert!(!d.extern_ret_tokens.0.is_empty());
+    }
+
+    #[test]
+    fn extern_fn_variadic_marker() {
+        let d = parse_extern(
+            "extern \"C\" fn libc::open(path :: cstring, flags :: integer, ...) :: integer\n",
+        );
+        assert_eq!(d.name, "libc::open");
+        assert_eq!(d.extern_params, vec!["cstring", "integer"]);
+        assert!(d.variadic);
+    }
+
+    #[test]
+    fn extern_fn_variadic_marker_must_be_final() {
+        let toks = Lexer::new("extern \"C\" fn bad(integer, ..., integer) :: integer\n")
+            .tokenize()
+            .unwrap();
+        let err = Parser::new(toks).parse_program().unwrap_err();
+        assert!(err.msg.contains("must be the final parameter"), "{err:?}");
+    }
+
+    #[test]
+    fn call_arg_ascription_is_preserved() {
+        let toks = Lexer::new("fn main(), do: libc::open(path, flags, mode :: integer)\n")
+            .tokenize()
+            .unwrap();
+        let prog = Parser::new(toks).parse_program().unwrap();
+        let Item::Fn(d) = &*prog.items[0] else {
+            panic!("expected fn");
+        };
+        let Expr::Call(_, args) = &d.clauses[0].body.node else {
+            panic!("expected call");
+        };
+        assert_eq!(args.len(), 3);
+        let Expr::Ascribe(inner, ty) = &args[2].node else {
+            panic!("expected ascribed call arg");
+        };
+        assert!(matches!(inner.node, Expr::Var(ref name) if name == "mode"));
+        assert!(
+            matches!(ty.0.first().map(|t| &t.tok), Some(Tok::Ident(name)) if name == "integer")
+        );
     }
 }
 

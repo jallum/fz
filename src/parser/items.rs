@@ -122,6 +122,7 @@ impl Parser {
                             extern_abi: None,
                             extern_params: vec![],
                             extern_ret_tokens: TypeExprBody(vec![]),
+                            variadic: false,
                             attrs,
                             span: start.merge(clause_span),
                         });
@@ -485,6 +486,7 @@ impl Parser {
         // Type expressions that themselves contain brackets
         // still capture the first ident as the type — the depth counter avoids
         // bracketed inner idents overriding the outer type.
+        let mut variadic = false;
         let extern_params: Vec<String> = if matches!(self.peek(), Tok::RParen) {
             vec![]
         } else {
@@ -494,6 +496,18 @@ impl Parser {
             let mut after_dbl_colon = false;
             loop {
                 match self.peek() {
+                    Tok::Ellipsis if depth == 0 => {
+                        if current_name.is_some() {
+                            return self.err("expected `,` before extern variadic `...`");
+                        }
+                        variadic = true;
+                        self.bump();
+                        self.skip_newlines();
+                        if !matches!(self.peek(), Tok::RParen) {
+                            return self.err("extern variadic `...` must be the final parameter");
+                        }
+                        break;
+                    }
                     Tok::LParen | Tok::LBrace | Tok::LBrack => {
                         depth += 1;
                         self.bump();
@@ -559,6 +573,7 @@ impl Parser {
             extern_abi: Some(abi),
             extern_params,
             extern_ret_tokens: TypeExprBody(extern_ret_tokens),
+            variadic,
             attrs: vec![],
             span,
         })

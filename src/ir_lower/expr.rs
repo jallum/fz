@@ -208,6 +208,7 @@ pub(crate) fn lower_expr(
             };
             Ok(ctx.let_at(Prim::UnOp(irop, v), sp))
         }
+        Expr::Ascribe(inner, _) => lower_expr(ctx, inner, is_tail),
 
         Expr::Block(exprs) => {
             if exprs.is_empty() {

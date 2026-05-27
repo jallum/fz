@@ -56,6 +56,7 @@ pub enum Tok {
 
     Comma,
     Dot,
+    Ellipsis,
     Semi,
     Colon,
     ColonColon,
@@ -423,6 +424,12 @@ impl<'a> Lexer<'a> {
             b',' => {
                 self.bump();
                 Tok::Comma
+            }
+            b'.' if self.peek(1) == Some(b'.') && self.peek(2) == Some(b'.') => {
+                self.bump();
+                self.bump();
+                self.bump();
+                Tok::Ellipsis
             }
             b'.' => {
                 self.bump();

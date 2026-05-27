@@ -317,6 +317,7 @@ pub fn value_to_items(v: &Value) -> Result<Vec<Item>, String> {
                         extern_abi: None,
                         extern_params: vec![],
                         extern_ret_tokens: TypeExprBody(vec![]),
+                        variadic: false,
                         attrs: Vec::new(),
                         span,
                     })])
@@ -535,7 +536,7 @@ pub fn expand_expr(
                 }
             }
         }
-        Expr::UnOp(_, x) => expand_expr(x, interp, macros, depth)?,
+        Expr::UnOp(_, x) | Expr::Ascribe(x, _) => expand_expr(x, interp, macros, depth)?,
         Expr::If(c, t, els) => {
             expand_expr(c, interp, macros, depth)?;
             expand_expr(t, interp, macros, depth)?;
@@ -667,7 +668,7 @@ fn stamp_expanded(e: &mut Spanned<Expr>, macro_call: Span, definition: Option<Sp
             stamp_expanded(l, macro_call, definition);
             stamp_expanded(r, macro_call, definition);
         }
-        Expr::UnOp(_, x) => stamp_expanded(x, macro_call, definition),
+        Expr::UnOp(_, x) | Expr::Ascribe(x, _) => stamp_expanded(x, macro_call, definition),
         Expr::If(c, t, els) => {
             stamp_expanded(c, macro_call, definition);
             stamp_expanded(t, macro_call, definition);

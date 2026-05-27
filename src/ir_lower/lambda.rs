@@ -155,7 +155,9 @@ pub(super) fn collect_expr_free_names(
             collect_expr_free_names(&lhs.node, bound, free);
             collect_expr_free_names(&rhs.node, bound, free);
         }
-        Expr::UnOp(_, value) => collect_expr_free_names(&value.node, bound, free),
+        Expr::UnOp(_, value) | Expr::Ascribe(value, _) => {
+            collect_expr_free_names(&value.node, bound, free)
+        }
         Expr::If(cond, then_e, else_e) => {
             collect_expr_free_names(&cond.node, bound, free);
             collect_expr_free_names_in_nested_scope(&then_e.node, bound, free);

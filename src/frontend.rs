@@ -307,6 +307,7 @@ fn repl_entry_fn_def(
         extern_abi: None,
         extern_params: vec![],
         extern_ret_tokens: crate::ast::TypeExprBody(vec![]),
+        variadic: false,
         attrs: vec![],
         span: crate::diag::Span::DUMMY,
     }

@@ -102,6 +102,8 @@ pub fn expr_to_value(e: &Spanned<Expr>) -> Result<Value, String> {
             ast_node(unop_atom(*op), &[], Some(Value::List(Rc::new(vec![xv]))))
         }
 
+        Expr::Ascribe(inner, _) => expr_to_value(inner)?,
+
         Expr::Block(xs) => {
             let reified = reify_each(xs)?;
             ast_node("__block__", &[], Some(Value::List(Rc::new(reified))))

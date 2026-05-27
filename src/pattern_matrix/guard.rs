@@ -124,6 +124,9 @@ pub(crate) fn guard_expr_to_matcher(
                 return Err(PatternMatrixCompileError::UnknownGuardVar(name.clone()));
             }
         }
+        Expr::Ascribe(inner, _) => {
+            guard_expr_to_matcher(&inner.node, bindings, pinned_by_name, guard_call_resolver)?
+        }
         Expr::UnOp(UnOp::Not, a) => crate::matcher::GuardExpr::Unary {
             op: crate::matcher::GuardUnaryOp::Not,
             expr: Box::new(guard_expr_to_matcher(
