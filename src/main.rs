@@ -858,7 +858,7 @@ fn run_frontend(
 /// diag::render_to_stderr. Lex / parse errors carry proper spans; later-
 /// stage errors carry the spans threaded in by fz-ul4.20 / .21.
 struct Compiled {
-    program: ir_codegen::CompiledProgram,
+    image: ir_codegen::CompiledImage,
     main_fn: Option<fz_ir::FnId>,
     /// SourceMap surfaced so `fz dump` can resolve Cranelift's `@<hex>`
     /// srclocs back to `file:line:col`. fz-ul4.23.7.
@@ -1490,8 +1490,19 @@ fn compile_pipeline(
     // TYPE_IMPURE_RECEIVE_GUARD). Severity::Warning entries print and
     // we continue; Severity::Error halts.
     diag::report_or_exit_through(tel, program.executable.diagnostics().as_slice());
+    let image = program.link_image_with_telemetry(tel).unwrap_or_else(|e| {
+        diag::report_or_exit_through(
+            tel,
+            &[diag::Diagnostic::error(
+                diag::codes::CODEGEN_SCHEMA_MISSING,
+                e.to_string(),
+                diag::Span::DUMMY,
+            )],
+        );
+        std::process::exit(1);
+    });
     Compiled {
-        program,
+        image,
         main_fn,
         sm: prepared.sm,
         module,
@@ -1527,7 +1538,7 @@ fn run_jit_src(
     // fz-swt.10 — attach the IR Module so `fz_make_resource` (callable
     // from JIT'd code) can resolve dtor closures.
     let mut rt =
-        runtime::Runtime::new(&compiled.program.executable, 1).with_module(&compiled.module);
+        runtime::Runtime::new(compiled.image.compiled_module(), 1).with_module(&compiled.module);
     let _main_pid = rt.spawn(main_fn);
     notify_fixture_execution_start();
     rt.run_until_idle();

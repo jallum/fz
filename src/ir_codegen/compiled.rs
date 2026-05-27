@@ -103,6 +103,18 @@ impl CompiledProgram {
             runtime,
         }
     }
+
+    pub fn link_image_with_telemetry(
+        self,
+        tel: &dyn crate::telemetry::Telemetry,
+    ) -> Result<CompiledImage, ImageLinkError> {
+        CompiledImage::link_compiled_with_telemetry(
+            tel,
+            std::slice::from_ref(&self.unit),
+            std::slice::from_ref(&self.runtime),
+            self.executable,
+        )
+    }
 }
 
 #[allow(dead_code)]
@@ -149,6 +161,10 @@ impl CompiledImage {
 
     pub fn diagnostics(&self) -> &crate::diag::Diagnostics {
         self.inner.diagnostics()
+    }
+
+    pub fn compiled_module(&self) -> &CompiledModule {
+        &self.inner
     }
 
     pub fn fn_ptr(&self, fn_id: FnId) -> Option<*const u8> {
