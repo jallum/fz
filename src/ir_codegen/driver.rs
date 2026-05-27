@@ -997,7 +997,9 @@ fn compute_tagged_slot0_cont_specs<T: crate::types::Types<Ty = crate::types::Ty>
 /// so halt_kind selection (fz_spawn_entry, halt-cont singletons) picks
 /// the right kind. Indirect closure dispatch uses the all-ValueRef seam
 /// ABI, so anything returning through it is ValueRef.
-fn compute_chain_repr<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes>(
+fn compute_chain_repr<
+    T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
+>(
     t: &mut T,
     module: &Module,
     spec_count: usize,
@@ -1006,8 +1008,7 @@ fn compute_chain_repr<T: crate::types::Types<Ty = crate::types::Ty> + crate::typ
     spec_registry: &SpecRegistry,
     return_reprs: &[ArgRepr],
 ) -> Vec<ArgRepr> {
-    let join =
-        |a: ArgRepr, b: ArgRepr| -> ArgRepr { if a == b { a } else { ArgRepr::ValueRef } };
+    let join = |a: ArgRepr, b: ArgRepr| -> ArgRepr { if a == b { a } else { ArgRepr::ValueRef } };
     let mut chain: Vec<Option<ArgRepr>> = vec![None; spec_count];
     let any_ty = t.any();
     for _ in 0..(spec_count * 4 + 16) {
@@ -1852,8 +1853,7 @@ fn emit_mid_flight_cont_bodies<M: cranelift_module::Module>(
             let self_bits = b.block_params(entry)[0];
             let mut args =
                 Vec::with_capacity(arg_shapes.iter().map(MidFlightArgShape::abi_arity).sum());
-            let get_capture =
-                m.declare_func_in_func(runtime.closure_get_capture_ref_id, b.func);
+            let get_capture = m.declare_func_in_func(runtime.closure_get_capture_ref_id, b.func);
             for (i, arg_shape) in arg_shapes.iter().enumerate() {
                 let index = b.ins().iconst(types::I64, i as i64);
                 let inst = b.ins().call(get_capture, &[self_bits, index]);
@@ -2170,8 +2170,13 @@ pub(crate) fn compile_with_backend_impl<
     let (spec_keys, spec_fnidx, spec_fn_types) =
         build_spec_index_tables(module, &spec_registry, &module_types);
 
-    let closure_shapes =
-        build_closure_shapes(module, spec_count, &spec_fnidx, &spec_fn_types, &spec_registry);
+    let closure_shapes = build_closure_shapes(
+        module,
+        spec_count,
+        &spec_fnidx,
+        &spec_fn_types,
+        &spec_registry,
+    );
 
     // Parking + native-callability analyses. Consumed at declare-time
     // below for per-fn sigs and at compile_fn / emit_call for ABI
@@ -2254,7 +2259,13 @@ pub(crate) fn compile_with_backend_impl<
     );
 
     let linkage = backend.fn_linkage();
-    let fn_ids = declare_spec_fns(backend.module_mut(), linkage, spec_count, &spec_fnidx, &fn_sigs)?;
+    let fn_ids = declare_spec_fns(
+        backend.module_mut(),
+        linkage,
+        spec_count,
+        &spec_fnidx,
+        &fn_sigs,
+    )?;
 
     let spec_heap_allocates = compute_spec_heap_allocates(module, spec_count, &spec_fnidx);
     let (mid_flight_cont_fn_ids, mid_flight_cont_tail_fn_ids) = declare_mid_flight_conts(

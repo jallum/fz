@@ -934,7 +934,9 @@ pub(crate) fn lower_prim<
             if decl.symbol == "fz_make_resource" && args.len() == 2 {
                 return lower_extern_fz_make_resource(b, jmod, runtime, var_env, cache, args);
             }
-            return lower_extern_generic(b, jmod, runtime, var_env, cache, decl, eid, args, dest_var);
+            return lower_extern_generic(
+                b, jmod, runtime, var_env, cache, decl, eid, args, dest_var,
+            );
         }
         Prim::IsEmptyList(c) => {
             // Empty list is the null-address List ref.
@@ -1339,13 +1341,8 @@ where
     }
     let av = *var_env.get(&a.0).expect("arith lhs");
     let bv_value = *var_env.get(&bv.0).expect("arith rhs");
-    let a_is_int = codegen_value_is_tag(
-        b,
-        jmod,
-        runtime,
-        av,
-        fz_runtime::any_value::ValueKind::INT,
-    );
+    let a_is_int =
+        codegen_value_is_tag(b, jmod, runtime, av, fz_runtime::any_value::ValueKind::INT);
     let b_is_int = codegen_value_is_tag(
         b,
         jmod,
@@ -1464,20 +1461,8 @@ where
     if (ty_is_atom(t, fn_types, a) && ty_is_atom(t, fn_types, bv))
         || (descr_is_nil_or_bool(t, fn_types, a) && descr_is_nil_or_bool(t, fn_types, bv))
     {
-        let avp = codegen_value_raw_atom(
-            b,
-            jmod,
-            runtime,
-            cache,
-            binding_for_var(var_env, a.0),
-        );
-        let bvp = codegen_value_raw_atom(
-            b,
-            jmod,
-            runtime,
-            cache,
-            binding_for_var(var_env, bv.0),
-        );
+        let avp = codegen_value_raw_atom(b, jmod, runtime, cache, binding_for_var(var_env, a.0));
+        let bvp = codegen_value_raw_atom(b, jmod, runtime, cache, binding_for_var(var_env, bv.0));
         let same_raw = b.ins().icmp(int_cc, avp, bvp);
         if cache.if_only_conds.contains(&dest_var.0) {
             return Ok(LowerOut::Condition(same_raw));
@@ -1573,13 +1558,8 @@ where
     }
     let av = *var_env.get(&a.0).expect("cmp lhs");
     let bv_value = *var_env.get(&bv.0).expect("cmp rhs");
-    let a_is_int = codegen_value_is_tag(
-        b,
-        jmod,
-        runtime,
-        av,
-        fz_runtime::any_value::ValueKind::INT,
-    );
+    let a_is_int =
+        codegen_value_is_tag(b, jmod, runtime, av, fz_runtime::any_value::ValueKind::INT);
     let b_is_int = codegen_value_is_tag(
         b,
         jmod,
@@ -1750,9 +1730,7 @@ fn lower_extern_fz_send<M: cranelift_module::Module>(
     Ok(match msg_binding.repr() {
         ArgRepr::RawInt => LowerOut::RawI64(msg_binding.value()),
         ArgRepr::RawF64 => LowerOut::RawF64(msg_binding.value()),
-        ArgRepr::ValueRef | ArgRepr::Condition => {
-            LowerOut::ValueRefWord(b.inst_results(inst)[0])
-        }
+        ArgRepr::ValueRef | ArgRepr::Condition => LowerOut::ValueRefWord(b.inst_results(inst)[0]),
     })
 }
 

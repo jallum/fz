@@ -59,7 +59,9 @@ fn resolve_cont_sid<T: crate::types::Types<Ty = crate::types::Ty> + crate::types
         })
 }
 
-fn resolve_callee_sid<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes>(
+fn resolve_callee_sid<
+    T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
+>(
     t: &mut T,
     env: &CodegenEnv<'_>,
     caller_fn_id: crate::fz_ir::FnId,
@@ -123,11 +125,12 @@ pub(crate) fn emit_terminator<
     match &blk.terminator {
         Term::Goto(target, args) => emit_goto(b, var_env, block_map, target, args),
         Term::If {
-            cond, then_b, else_b, ..
+            cond,
+            then_b,
+            else_b,
+            ..
         } => emit_if(b, jmod, env, var_env, block_map, cond, then_b, else_b),
-        Term::Halt(v) => emit_halt(
-            b, jmod, env, var_env, cache, is_native, host_ctx, v,
-        ),
+        Term::Halt(v) => emit_halt(b, jmod, env, var_env, cache, is_native, host_ctx, v),
         Term::Return(v) => emit_return_term(
             b,
             jmod,
@@ -223,19 +226,8 @@ pub(crate) fn emit_terminator<
             args,
             ident: _,
         } => emit_tail_call_closure(
-            b,
-            jmod,
-            t,
-            env,
-            var_env,
-            is_native,
-            is_cont_fn,
-            frame_ptr,
-            host_ctx,
-            cont_param,
-            cache,
-            closure,
-            args,
+            b, jmod, t, env, var_env, is_native, is_cont_fn, frame_ptr, host_ctx, cont_param,
+            cache, closure, args,
         ),
         Term::Receive {
             continuation,
@@ -376,82 +368,13 @@ fn emit_return_term<
     let return_reprs = env.return_reprs;
     let closure_n_captures = env.closure_n_captures;
     {
-            if is_native {
-                let this_demand = DemandAbi::new(&env.spec_keys[this_spec_id as usize]);
-                if this_demand.delivers_list_tail_return()
-                    && let Some(elems) = cache.list_tail_return_elems.get(&v.0).cloned()
-                {
-                    let delivered = emit_list_tail_return_value(
-                        b, jmod, t, env, var_env, cache, block_env, &elems,
-                    );
-                    let cont_val = if is_cont_fn {
-                        let self_val = cont_param.expect("cont fn binds self via cont_param");
-                        load_outer_cont_ref(b, jmod, runtime, self_val)
-                    } else {
-                        cont_param.expect("non-cont native fn has cont_param")
-                    };
-                    let code = load_closure_code_ref(b, jmod, runtime, cont_val);
-                    let mut sig = Signature::new(CallConv::Tail);
-                    sig.params.push(AbiParam::new(types::I64));
-                    sig.params.push(AbiParam::new(types::I64));
-                    sig.returns.push(AbiParam::new(types::I64));
-                    let sigref = b.import_signature(sig);
-                    b.ins()
-                        .return_call_indirect(sigref, code, &[delivered, cont_val]);
-                    return Ok(());
-                }
-                if let Some(arity) = this_demand.tuple_field_arity()
-                    && let Some(fields) = cache.tuple_return_fields.get(&v.0)
-                {
-                    let fields = fields.clone();
-                    debug_assert_eq!(fields.len(), arity);
-                    let cont_val = if is_cont_fn {
-                        let self_val = cont_param.expect("cont fn binds self via cont_param");
-                        load_outer_cont_ref(b, jmod, runtime, self_val)
-                    } else {
-                        cont_param.expect("non-cont native fn has cont_param")
-                    };
-                    let code = load_closure_code_ref(b, jmod, runtime, cont_val);
-                    let mut sig = Signature::new(CallConv::Tail);
-                    let mut cont_args = Vec::with_capacity(fields.len() + 1);
-                    for field in fields {
-                        let binding = *var_env.get(&field.0).expect("unbound tuple return field");
-                        let repr = binding.repr();
-                        push_repr_param(&mut sig, repr);
-                        push_binding_as_abi_args(
-                            &mut cont_args,
-                            b,
-                            jmod,
-                            runtime,
-                            cache,
-                            binding,
-                            repr,
-                        );
-                    }
-                    sig.params.push(AbiParam::new(types::I64));
-                    sig.returns.push(AbiParam::new(types::I64));
-                    let sigref = b.import_signature(sig);
-                    cont_args.push(cont_val);
-                    b.ins().return_call_indirect(sigref, code, &cont_args);
-                    return Ok(());
-                }
-                // Native Term::Return (see docs/cps-in-clif.md §2.1): read
-                // cont code_ptr; return_call_indirect sig(val, cont). Cont
-                // fns fetch outer_cont from `self`; non-cont fns use their
-                // cont_param SSA. Sig and val coerce match this fn's
-                // narrow return_repr — chosen at construction to match.
-                //
-                // Closure-target bodies coerce to ValueRef unconditionally
-                // to match the seam ABI (i64). Cont fns retain narrow
-                // return_repr — they're not at the indirect seam.
-                let is_closure_target_body =
-                    closure_n_captures.contains_key(&caller_fn_id) && !is_cont_fn;
-                let my_return_repr = if is_closure_target_body {
-                    ArgRepr::ValueRef
-                } else {
-                    return_reprs[this_spec_id as usize]
-                };
-                let from = var_env.get(&v.0).map_or(ArgRepr::ValueRef, |vb| vb.repr());
+        if is_native {
+            let this_demand = DemandAbi::new(&env.spec_keys[this_spec_id as usize]);
+            if this_demand.delivers_list_tail_return()
+                && let Some(elems) = cache.list_tail_return_elems.get(&v.0).cloned()
+            {
+                let delivered =
+                    emit_list_tail_return_value(b, jmod, t, env, var_env, cache, block_env, &elems);
                 let cont_val = if is_cont_fn {
                     let self_val = cont_param.expect("cont fn binds self via cont_param");
                     load_outer_cont_ref(b, jmod, runtime, self_val)
@@ -460,13 +383,32 @@ fn emit_return_term<
                 };
                 let code = load_closure_code_ref(b, jmod, runtime, cont_val);
                 let mut sig = Signature::new(CallConv::Tail);
-                push_repr_param(&mut sig, my_return_repr);
+                sig.params.push(AbiParam::new(types::I64));
                 sig.params.push(AbiParam::new(types::I64));
                 sig.returns.push(AbiParam::new(types::I64));
                 let sigref = b.import_signature(sig);
-                let mut cont_args = Vec::with_capacity(2);
-                if my_return_repr == ArgRepr::ValueRef {
-                    let binding = *var_env.get(&v.0).expect("unbound return val");
+                b.ins()
+                    .return_call_indirect(sigref, code, &[delivered, cont_val]);
+                return Ok(());
+            }
+            if let Some(arity) = this_demand.tuple_field_arity()
+                && let Some(fields) = cache.tuple_return_fields.get(&v.0)
+            {
+                let fields = fields.clone();
+                debug_assert_eq!(fields.len(), arity);
+                let cont_val = if is_cont_fn {
+                    let self_val = cont_param.expect("cont fn binds self via cont_param");
+                    load_outer_cont_ref(b, jmod, runtime, self_val)
+                } else {
+                    cont_param.expect("non-cont native fn has cont_param")
+                };
+                let code = load_closure_code_ref(b, jmod, runtime, cont_val);
+                let mut sig = Signature::new(CallConv::Tail);
+                let mut cont_args = Vec::with_capacity(fields.len() + 1);
+                for field in fields {
+                    let binding = *var_env.get(&field.0).expect("unbound tuple return field");
+                    let repr = binding.repr();
+                    push_repr_param(&mut sig, repr);
                     push_binding_as_abi_args(
                         &mut cont_args,
                         b,
@@ -474,23 +416,72 @@ fn emit_return_term<
                         runtime,
                         cache,
                         binding,
-                        ArgRepr::ValueRef,
+                        repr,
                     );
-                } else {
-                    let val = var_env.get(&v.0).expect("unbound return val").value();
-                    push_repr_arg(&mut cont_args, b, jmod, runtime, val, from, my_return_repr);
                 }
+                sig.params.push(AbiParam::new(types::I64));
+                sig.returns.push(AbiParam::new(types::I64));
+                let sigref = b.import_signature(sig);
                 cont_args.push(cont_val);
                 b.ins().return_call_indirect(sigref, code, &cont_args);
-            } else if cont_ptr_known_null {
-                let value = *var_env.get(&v.0).expect("unbound return val");
-                // This fn is never a cont target; cont_ptr is statically
-                // null. Skip the load/icmp/brif dispatch.
-                emit_halt_and_return_null(b, jmod, runtime, cache, value);
-            } else {
-                let value = *var_env.get(&v.0).expect("unbound return val");
-                emit_return(b, jmod, runtime, cache, frame_ptr, value);
+                return Ok(());
             }
+            // Native Term::Return (see docs/cps-in-clif.md §2.1): read
+            // cont code_ptr; return_call_indirect sig(val, cont). Cont
+            // fns fetch outer_cont from `self`; non-cont fns use their
+            // cont_param SSA. Sig and val coerce match this fn's
+            // narrow return_repr — chosen at construction to match.
+            //
+            // Closure-target bodies coerce to ValueRef unconditionally
+            // to match the seam ABI (i64). Cont fns retain narrow
+            // return_repr — they're not at the indirect seam.
+            let is_closure_target_body =
+                closure_n_captures.contains_key(&caller_fn_id) && !is_cont_fn;
+            let my_return_repr = if is_closure_target_body {
+                ArgRepr::ValueRef
+            } else {
+                return_reprs[this_spec_id as usize]
+            };
+            let from = var_env.get(&v.0).map_or(ArgRepr::ValueRef, |vb| vb.repr());
+            let cont_val = if is_cont_fn {
+                let self_val = cont_param.expect("cont fn binds self via cont_param");
+                load_outer_cont_ref(b, jmod, runtime, self_val)
+            } else {
+                cont_param.expect("non-cont native fn has cont_param")
+            };
+            let code = load_closure_code_ref(b, jmod, runtime, cont_val);
+            let mut sig = Signature::new(CallConv::Tail);
+            push_repr_param(&mut sig, my_return_repr);
+            sig.params.push(AbiParam::new(types::I64));
+            sig.returns.push(AbiParam::new(types::I64));
+            let sigref = b.import_signature(sig);
+            let mut cont_args = Vec::with_capacity(2);
+            if my_return_repr == ArgRepr::ValueRef {
+                let binding = *var_env.get(&v.0).expect("unbound return val");
+                push_binding_as_abi_args(
+                    &mut cont_args,
+                    b,
+                    jmod,
+                    runtime,
+                    cache,
+                    binding,
+                    ArgRepr::ValueRef,
+                );
+            } else {
+                let val = var_env.get(&v.0).expect("unbound return val").value();
+                push_repr_arg(&mut cont_args, b, jmod, runtime, val, from, my_return_repr);
+            }
+            cont_args.push(cont_val);
+            b.ins().return_call_indirect(sigref, code, &cont_args);
+        } else if cont_ptr_known_null {
+            let value = *var_env.get(&v.0).expect("unbound return val");
+            // This fn is never a cont target; cont_ptr is statically
+            // null. Skip the load/icmp/brif dispatch.
+            emit_halt_and_return_null(b, jmod, runtime, cache, value);
+        } else {
+            let value = *var_env.get(&v.0).expect("unbound return val");
+            emit_return(b, jmod, runtime, cache, frame_ptr, value);
+        }
     }
     Ok(())
 }
@@ -527,184 +518,190 @@ fn emit_call_term<
     let return_reprs = env.return_reprs;
     let module = env.module;
     {
-            let cap_vals: Vec<ir::Value> = continuation
-                .captured
-                .iter()
-                .map(|v| var_env.get(&v.0).expect("unbound captured val").value())
-                .collect();
-            let callee_sid = resolve_callee_sid(t, env, caller_fn_id, blk);
-            let mut cont_sid = resolve_cont_sid(t, env, caller_fn_id, blk);
-            let this_demand = DemandAbi::new(&env.spec_keys[this_spec_id as usize]);
-            let term_ident = blk
-                .terminator
-                .ident()
-                .expect("Term::Call must carry callsite ident")
-                .clone();
-            let direct_cid = crate::fz_ir::CallsiteId {
-                caller: caller_fn_id,
-                ident: term_ident.clone(),
-                slot: crate::fz_ir::EmitSlot::Direct,
-            };
-            let cont_cid = crate::fz_ir::CallsiteId {
-                caller: caller_fn_id,
-                ident: term_ident,
-                slot: crate::fz_ir::EmitSlot::Cont,
-            };
-            let this_spec_key = env.spec_keys[this_spec_id as usize].clone();
-            let direct_plan_key = crate::ir_typer::fn_types::ReturnContextPlanKey {
-                caller: this_spec_key.clone(),
-                callsite: direct_cid,
-            };
-            let cont_plan_key = crate::ir_typer::fn_types::ReturnContextPlanKey {
-                caller: this_spec_key.clone(),
-                callsite: cont_cid,
-            };
-            let cons_then_direct = match fn_types.return_context_plans.get(&direct_plan_key) {
-                Some(crate::ir_typer::fn_types::ReturnContextPlan::ConsThenDirect {
-                    pivot,
-                    tail,
-                    ..
-                }) => Some((*pivot, *tail)),
-                _ => None,
-            };
-            let cont_list_tail_bridge = match fn_types.return_context_plans.get(&direct_plan_key) {
-                Some(
-                    crate::ir_typer::fn_types::ReturnContextPlan::ContinuationListTailBridge {
-                        pivot,
-                        tail,
-                        ..
-                    },
-                ) => Some((*pivot, *tail)),
-                _ => None,
-            };
-            if env.spec_keys[this_spec_id as usize].demand.is_value()
-                && let Some(crate::ir_typer::fn_types::ReturnContextPlan::ContinuationEmptyTail {
-                    target,
-                    ..
-                }) = fn_types.return_context_plans.get(&cont_plan_key)
-                && let Some(sid) = spec_registry.resolve_spec_key(t, target)
-            {
-                cont_sid = sid.0;
-            }
-            let cont_demand = DemandAbi::new(&env.spec_keys[cont_sid as usize]);
-            if this_demand.carries_list_tail_capture()
-                && args.len() == 1
-                && let Some((pivot_capture, tail_capture)) = cont_list_tail_bridge
-                && callee_is_native(env, callee.0)
-                && callee_is_native(env, continuation.fn_id.0)
-                && DemandAbi::new(&env.spec_keys[callee_sid as usize]).has_list_tail_context()
-                && cont_demand.has_list_tail_context()
-            {
-                let hi_arg = [tail_capture];
+        let cap_vals: Vec<ir::Value> = continuation
+            .captured
+            .iter()
+            .map(|v| var_env.get(&v.0).expect("unbound captured val").value())
+            .collect();
+        let callee_sid = resolve_callee_sid(t, env, caller_fn_id, blk);
+        let mut cont_sid = resolve_cont_sid(t, env, caller_fn_id, blk);
+        let this_demand = DemandAbi::new(&env.spec_keys[this_spec_id as usize]);
+        let term_ident = blk
+            .terminator
+            .ident()
+            .expect("Term::Call must carry callsite ident")
+            .clone();
+        let direct_cid = crate::fz_ir::CallsiteId {
+            caller: caller_fn_id,
+            ident: term_ident.clone(),
+            slot: crate::fz_ir::EmitSlot::Direct,
+        };
+        let cont_cid = crate::fz_ir::CallsiteId {
+            caller: caller_fn_id,
+            ident: term_ident,
+            slot: crate::fz_ir::EmitSlot::Cont,
+        };
+        let this_spec_key = env.spec_keys[this_spec_id as usize].clone();
+        let direct_plan_key = crate::ir_typer::fn_types::ReturnContextPlanKey {
+            caller: this_spec_key.clone(),
+            callsite: direct_cid,
+        };
+        let cont_plan_key = crate::ir_typer::fn_types::ReturnContextPlanKey {
+            caller: this_spec_key.clone(),
+            callsite: cont_cid,
+        };
+        let cons_then_direct = match fn_types.return_context_plans.get(&direct_plan_key) {
+            Some(crate::ir_typer::fn_types::ReturnContextPlan::ConsThenDirect {
+                pivot,
+                tail,
+                ..
+            }) => Some((*pivot, *tail)),
+            _ => None,
+        };
+        let cont_list_tail_bridge = match fn_types.return_context_plans.get(&direct_plan_key) {
+            Some(crate::ir_typer::fn_types::ReturnContextPlan::ContinuationListTailBridge {
+                pivot,
+                tail,
+                ..
+            }) => Some((*pivot, *tail)),
+            _ => None,
+        };
+        if env.spec_keys[this_spec_id as usize].demand.is_value()
+            && let Some(crate::ir_typer::fn_types::ReturnContextPlan::ContinuationEmptyTail {
+                target,
+                ..
+            }) = fn_types.return_context_plans.get(&cont_plan_key)
+            && let Some(sid) = spec_registry.resolve_spec_key(t, target)
+        {
+            cont_sid = sid.0;
+        }
+        let cont_demand = DemandAbi::new(&env.spec_keys[cont_sid as usize]);
+        if this_demand.carries_list_tail_capture()
+            && args.len() == 1
+            && let Some((pivot_capture, tail_capture)) = cont_list_tail_bridge
+            && callee_is_native(env, callee.0)
+            && callee_is_native(env, continuation.fn_id.0)
+            && DemandAbi::new(&env.spec_keys[callee_sid as usize]).has_list_tail_context()
+            && cont_demand.has_list_tail_context()
+        {
+            let hi_arg = [tail_capture];
+            let callee_param_reprs = &param_reprs[callee_sid as usize];
+            let callee_fid = *fn_ids.get(&callee_sid).expect("callee fn_id missing");
+            let callee_fref = jmod.declare_func_in_func(callee_fid, b.func);
+            let mut native_args = coerce_call_args(
+                &hi_arg,
+                callee_param_reprs,
+                var_env,
+                b,
+                jmod,
+                runtime,
+                cache,
+            );
+            native_args.push(list_tail_destination_arg(b, cache));
+            let cont_fid = *fn_ids.get(&cont_sid).expect("cont fn_id missing");
+            let cap_bindings = [
+                closure_capture_for_var(var_env, b, jmod, runtime, pivot_capture.0, cache),
+                closure_capture_for_var(var_env, b, jmod, runtime, args[0].0, cache),
+            ];
+            let cont_arg = build_lazy_cont_descriptor(
+                jmod,
+                b,
+                runtime,
+                return_reprs,
+                is_cont_fn,
+                cont_param,
+                frame_ptr,
+                cont_sid,
+                cont_fid,
+                &cap_bindings,
+                &[],
+            );
+            native_args.push(cont_arg);
+            let inst = b.ins().call(callee_fref, &native_args);
+            let result = b.inst_results(inst)[0];
+            b.ins().return_(&[result]);
+            return Ok(());
+        }
+        if this_demand.delivers_list_tail_return()
+            && args.len() == 1
+            && let Some((pivot_capture, tail_capture)) = cons_then_direct
+            && callee_is_native(env, callee.0)
+        {
+            let caller_fn = module.fn_by_id(caller_fn_id);
+            let entry = caller_fn.block(caller_fn.entry);
+            if entry.params.first().copied() == Some(tail_capture) {
+                let tail_bits = any_ref_for_var(var_env, b, jmod, runtime, tail_capture.0, cache);
+                let pivot_tail = emit_list_cons_bif(
+                    b,
+                    jmod,
+                    runtime,
+                    var_env,
+                    pivot_capture,
+                    expected_runtime_value_kind(t, fn_types, block_env, pivot_capture),
+                    ListTailBits::ValueRef(tail_bits),
+                    cache,
+                );
                 let callee_param_reprs = &param_reprs[callee_sid as usize];
                 let callee_fid = *fn_ids.get(&callee_sid).expect("callee fn_id missing");
                 let callee_fref = jmod.declare_func_in_func(callee_fid, b.func);
-                let mut native_args = coerce_call_args(
-                    &hi_arg,
-                    callee_param_reprs,
-                    var_env,
-                    b,
-                    jmod,
-                    runtime,
-                    cache,
-                );
-                native_args.push(list_tail_destination_arg(b, cache));
-                let cont_fid = *fn_ids.get(&cont_sid).expect("cont fn_id missing");
-                let cap_bindings = [
-                    closure_capture_for_var(var_env, b, jmod, runtime, pivot_capture.0, cache),
-                    closure_capture_for_var(var_env, b, jmod, runtime, args[0].0, cache),
-                ];
-                let cont_arg = build_lazy_cont_descriptor(
-                    jmod,
-                    b,
-                    runtime,
-                    return_reprs,
-                    is_cont_fn,
-                    cont_param,
-                    frame_ptr,
-                    cont_sid,
-                    cont_fid,
-                    &cap_bindings,
-                    &[],
-                );
-                native_args.push(cont_arg);
-                let inst = b.ins().call(callee_fref, &native_args);
-                let result = b.inst_results(inst)[0];
-                b.ins().return_(&[result]);
+                let mut native_args =
+                    coerce_call_args(args, callee_param_reprs, var_env, b, jmod, runtime, cache);
+                native_args.push(pivot_tail);
+                let tail_cont_arg = if is_cont_fn {
+                    let self_val = cont_param.expect("cont fn binds self via cont_param");
+                    load_outer_cont_ref(b, jmod, runtime, self_val)
+                } else {
+                    cont_param.expect("non-cont native fn has cont_param")
+                };
+                native_args.push(tail_cont_arg);
+                b.ins().return_call(callee_fref, &native_args);
                 return Ok(());
             }
-            if this_demand.delivers_list_tail_return()
-                && args.len() == 1
-                && let Some((pivot_capture, tail_capture)) = cons_then_direct
-                && callee_is_native(env, callee.0)
-            {
-                let caller_fn = module.fn_by_id(caller_fn_id);
-                let entry = caller_fn.block(caller_fn.entry);
-                if entry.params.first().copied() == Some(tail_capture) {
-                    let tail_bits =
-                        any_ref_for_var(var_env, b, jmod, runtime, tail_capture.0, cache);
-                    let pivot_tail = emit_list_cons_bif(
-                        b,
-                        jmod,
-                        runtime,
-                        var_env,
-                        pivot_capture,
-                        expected_runtime_value_kind(t, fn_types, block_env, pivot_capture),
-                        ListTailBits::ValueRef(tail_bits),
-                        cache,
-                    );
-                    let callee_param_reprs = &param_reprs[callee_sid as usize];
-                    let callee_fid = *fn_ids.get(&callee_sid).expect("callee fn_id missing");
-                    let callee_fref = jmod.declare_func_in_func(callee_fid, b.func);
-                    let mut native_args = coerce_call_args(
-                        args,
-                        callee_param_reprs,
-                        var_env,
-                        b,
-                        jmod,
-                        runtime,
-                        cache,
-                    );
-                    native_args.push(pivot_tail);
-                    let tail_cont_arg = if is_cont_fn {
-                        let self_val = cont_param.expect("cont fn binds self via cont_param");
-                        load_outer_cont_ref(b, jmod, runtime, self_val)
-                    } else {
-                        cont_param.expect("non-cont native fn has cont_param")
-                    };
-                    native_args.push(tail_cont_arg);
-                    b.ins().return_call(callee_fref, &native_args);
-                    return Ok(());
-                }
-            }
-            if callee_is_native(env, callee.0) {
-                emit_native_call_with_cont(
-                    b, jmod, t, env, schemas, var_env, block_env, is_native, is_cont_fn,
-                    caller_fn_id, frame_ptr, cont_param, cache, callee, args, continuation,
-                    callee_sid, cont_sid, &cap_vals,
-                );
-            } else {
-                let arg_bindings: Vec<CodegenValue> = args
-                    .iter()
-                    .map(|v| *var_env.get(&v.0).expect("unbound call arg"))
-                    .collect();
-                let cap_bindings: Vec<CodegenValue> = continuation
-                    .captured
-                    .iter()
-                    .map(|v| *var_env.get(&v.0).expect("unbound captured val"))
-                    .collect();
-                emit_call(
-                    b,
-                    jmod,
-                    runtime,
-                    schemas,
-                    frame_ptr,
-                    callee_sid,
-                    &arg_bindings,
-                    Some((cont_sid, &cap_bindings)),
-                    cache,
-                );
-            }
+        }
+        if callee_is_native(env, callee.0) {
+            emit_native_call_with_cont(
+                b,
+                jmod,
+                t,
+                env,
+                schemas,
+                var_env,
+                block_env,
+                is_native,
+                is_cont_fn,
+                caller_fn_id,
+                frame_ptr,
+                cont_param,
+                cache,
+                callee,
+                args,
+                continuation,
+                callee_sid,
+                cont_sid,
+                &cap_vals,
+            );
+        } else {
+            let arg_bindings: Vec<CodegenValue> = args
+                .iter()
+                .map(|v| *var_env.get(&v.0).expect("unbound call arg"))
+                .collect();
+            let cap_bindings: Vec<CodegenValue> = continuation
+                .captured
+                .iter()
+                .map(|v| *var_env.get(&v.0).expect("unbound captured val"))
+                .collect();
+            emit_call(
+                b,
+                jmod,
+                runtime,
+                schemas,
+                frame_ptr,
+                callee_sid,
+                &arg_bindings,
+                Some((cont_sid, &cap_bindings)),
+                cache,
+            );
+        }
     }
     Ok(())
 }
@@ -786,61 +783,58 @@ fn emit_native_call_with_cont<
     let cont_can_use_lazy_descriptor = !closure_n_captures.contains_key(callee)
         && !cont_captures_callable
         && !caller_has_callable_state;
-    let lazy_cont_opt: Option<ir::Value> = if cont_is_native
-        && is_native
-        && cont_can_use_lazy_descriptor
-    {
-        let cont_fid = *fn_ids.get(&cont_sid).expect("cont fn_id missing");
-        let cap_bindings: Vec<ClosureCapture> = continuation
-            .captured
-            .iter()
-            .map(|cv| closure_capture_for_var(var_env, b, jmod, runtime, cv.0, cache))
-            .collect();
-        let extra_ref_captures =
-            cont_extra_ref_captures(b, cache, &env.spec_keys[cont_sid as usize]);
-        Some(build_lazy_cont_descriptor(
-            jmod,
-            b,
-            runtime,
-            return_reprs,
-            is_cont_fn,
-            cont_param,
-            frame_ptr,
-            cont_sid,
-            cont_fid,
-            &cap_bindings,
-            &extra_ref_captures,
-        ))
-    } else {
-        None
-    };
-    let cl_ptr_opt: Option<ir::Value> = if cont_is_native
-        && (!is_native || !cont_can_use_lazy_descriptor)
-    {
-        let cont_fid = *fn_ids.get(&cont_sid).expect("cont fn_id missing");
-        let cap_bindings: Vec<ClosureCapture> = continuation
-            .captured
-            .iter()
-            .map(|cv| closure_capture_for_var(var_env, b, jmod, runtime, cv.0, cache))
-            .collect();
-        let extra_ref_captures =
-            cont_extra_ref_captures(b, cache, &env.spec_keys[cont_sid as usize]);
-        Some(build_cont_closure(
-            jmod,
-            b,
-            runtime,
-            return_reprs,
-            is_cont_fn,
-            cont_param,
-            frame_ptr,
-            cont_sid,
-            cont_fid,
-            &cap_bindings,
-            &extra_ref_captures,
-        ))
-    } else {
-        None
-    };
+    let lazy_cont_opt: Option<ir::Value> =
+        if cont_is_native && is_native && cont_can_use_lazy_descriptor {
+            let cont_fid = *fn_ids.get(&cont_sid).expect("cont fn_id missing");
+            let cap_bindings: Vec<ClosureCapture> = continuation
+                .captured
+                .iter()
+                .map(|cv| closure_capture_for_var(var_env, b, jmod, runtime, cv.0, cache))
+                .collect();
+            let extra_ref_captures =
+                cont_extra_ref_captures(b, cache, &env.spec_keys[cont_sid as usize]);
+            Some(build_lazy_cont_descriptor(
+                jmod,
+                b,
+                runtime,
+                return_reprs,
+                is_cont_fn,
+                cont_param,
+                frame_ptr,
+                cont_sid,
+                cont_fid,
+                &cap_bindings,
+                &extra_ref_captures,
+            ))
+        } else {
+            None
+        };
+    let cl_ptr_opt: Option<ir::Value> =
+        if cont_is_native && (!is_native || !cont_can_use_lazy_descriptor) {
+            let cont_fid = *fn_ids.get(&cont_sid).expect("cont fn_id missing");
+            let cap_bindings: Vec<ClosureCapture> = continuation
+                .captured
+                .iter()
+                .map(|cv| closure_capture_for_var(var_env, b, jmod, runtime, cv.0, cache))
+                .collect();
+            let extra_ref_captures =
+                cont_extra_ref_captures(b, cache, &env.spec_keys[cont_sid as usize]);
+            Some(build_cont_closure(
+                jmod,
+                b,
+                runtime,
+                return_reprs,
+                is_cont_fn,
+                cont_param,
+                frame_ptr,
+                cont_sid,
+                cont_fid,
+                &cap_bindings,
+                &extra_ref_captures,
+            ))
+        } else {
+            None
+        };
     // cont arg passed to the callee: cl_ptr for native cont,
     // else cont_param fallback. When the cont-fn is uniform
     // (rare; only main's halt-style cont after the
@@ -913,16 +907,7 @@ fn emit_native_call_with_cont<
             let from = var_env.get(&cv.0).map_or(ArgRepr::ValueRef, |vb| vb.repr());
             payload.push((*val, from));
         }
-        store_typed_args_into_callee_frame(
-            b,
-            jmod,
-            runtime,
-            cache,
-            cont_schema,
-            cf,
-            &payload,
-            1,
-        );
+        store_typed_args_into_callee_frame(b, jmod, runtime, cache, cont_schema, cf, &payload, 1);
         b.ins().return_(&[cf]);
     }
 }
@@ -954,29 +939,42 @@ fn emit_tail_call_term<
     let runtime = env.runtime;
     let _ = schemas;
     {
-            let callee_sid = resolve_callee_sid(t, env, caller_fn_id, blk);
-            if callee_is_native(env, callee.0) {
-                emit_native_tail_call(
-                    b, jmod, env, var_env, is_native, is_cont_fn, this_spec_id, frame_ptr,
-                    host_ctx, cont_param, cache, callee, args, is_back_edge, callee_sid,
-                );
-            } else {
-                let arg_bindings: Vec<CodegenValue> = args
-                    .iter()
-                    .map(|v| *var_env.get(&v.0).expect("unbound tailcall arg"))
-                    .collect();
-                emit_tail_call(
-                    b,
-                    jmod,
-                    runtime,
-                    schemas,
-                    this_spec_id,
-                    frame_ptr,
-                    callee_sid,
-                    &arg_bindings,
-                    cache,
-                );
-            }
+        let callee_sid = resolve_callee_sid(t, env, caller_fn_id, blk);
+        if callee_is_native(env, callee.0) {
+            emit_native_tail_call(
+                b,
+                jmod,
+                env,
+                var_env,
+                is_native,
+                is_cont_fn,
+                this_spec_id,
+                frame_ptr,
+                host_ctx,
+                cont_param,
+                cache,
+                callee,
+                args,
+                is_back_edge,
+                callee_sid,
+            );
+        } else {
+            let arg_bindings: Vec<CodegenValue> = args
+                .iter()
+                .map(|v| *var_env.get(&v.0).expect("unbound tailcall arg"))
+                .collect();
+            emit_tail_call(
+                b,
+                jmod,
+                runtime,
+                schemas,
+                this_spec_id,
+                frame_ptr,
+                callee_sid,
+                &arg_bindings,
+                cache,
+            );
+        }
     }
     Ok(())
 }
@@ -1019,15 +1017,7 @@ fn emit_native_tail_call<M: cranelift_module::Module>(
         let binding = *var_env.get(&av.0).expect("unbound call arg");
         let to = callee_param_reprs[i];
         if to == ArgRepr::ValueRef {
-            push_binding_as_abi_args(
-                &mut native_args,
-                b,
-                jmod,
-                runtime,
-                cache,
-                binding,
-                to,
-            );
+            push_binding_as_abi_args(&mut native_args, b, jmod, runtime, cache, binding, to);
         } else {
             let value = coerce_binding_to(b, jmod, runtime, binding, to);
             native_args.push(value);
@@ -1155,8 +1145,7 @@ fn emit_back_edge_yield_check<M: cranelift_module::Module>(
     native_args: &[ir::Value],
 ) {
     let runtime = env.runtime;
-    let yield_gv =
-        jmod.declare_data_in_func(runtime.should_yield_data_id, b.func);
+    let yield_gv = jmod.declare_data_in_func(runtime.should_yield_data_id, b.func);
     let flag_ptr = b.ins().global_value(types::I64, yield_gv);
     let flag = b.ins().load(types::I8, MemFlags::trusted(), flag_ptr, 0);
     let flag64 = b.ins().uextend(types::I64, flag);
@@ -1191,8 +1180,7 @@ fn emit_back_edge_yield_check<M: cranelift_module::Module>(
         })
         .collect();
     debug_assert_eq!(abi_cursor, native_args.len());
-    let alloc_fref =
-        jmod.declare_func_in_func(runtime.alloc_closure_id, b.func);
+    let alloc_fref = jmod.declare_func_in_func(runtime.alloc_closure_id, b.func);
     let fid_v = b.ins().iconst(types::I32, callee_sid as i64);
     let n_caps_v = b.ins().iconst(types::I32, native_root_values.len() as i64);
     let stub_fref = jmod.declare_func_in_func(cont_id, b.func);
@@ -1203,28 +1191,17 @@ fn emit_back_edge_yield_check<M: cranelift_module::Module>(
         .call(alloc_fref, &[fid_v, n_caps_v, zero_hk, stub_addr]);
     let cont_closure = b.inst_results(alloc_inst)[0];
     let captured_count = native_root_values.len();
-    let materialize_cont_fref =
-        jmod.declare_func_in_func(runtime.materialize_cont_id, b.func);
+    let materialize_cont_fref = jmod.declare_func_in_func(runtime.materialize_cont_id, b.func);
     let last_root = native_root_values.len().saturating_sub(1);
     for (i, root) in native_root_values.iter().copied().enumerate() {
-        let mut root_ref =
-            codegen_value_as_any_ref(b, jmod, runtime, cache, root);
+        let mut root_ref = codegen_value_as_any_ref(b, jmod, runtime, cache, root);
         if i == last_root {
             let inst = b.ins().call(materialize_cont_fref, &[root_ref]);
             root_ref = b.inst_results(inst)[0];
         }
-        store_closure_capture_ref_word(
-            b,
-            jmod,
-            runtime,
-            cont_closure,
-            captured_count,
-            i,
-            root_ref,
-        );
+        store_closure_capture_ref_word(b, jmod, runtime, cont_closure, captured_count, i, root_ref);
     }
-    let yield_fref =
-        jmod.declare_func_in_func(runtime.yield_mid_flight_id, b.func);
+    let yield_fref = jmod.declare_func_in_func(runtime.yield_mid_flight_id, b.func);
     let yield_inst = b.ins().call(yield_fref, &[cont_closure]);
     let yield_ret = b.inst_results(yield_inst)[0];
     b.ins().return_(&[yield_ret]);
@@ -1264,122 +1241,114 @@ fn emit_call_closure<
     let closure_n_captures = env.closure_n_captures;
     let module = env.module;
     {
-            // Closure invocation is opaque to the caller: read code_ptr
-            // through the runtime ABI and call it with args, self, and cont.
-            let cl_val = var_env
-                .get(&closure.0)
-                .expect("unbound callclosure closure")
-                .value();
-            let arg_vals: Vec<ir::Value> = args
-                .iter()
-                .map(|v| var_env.get(&v.0).expect("unbound callclosure arg").value())
-                .collect();
-            // Build the continuation as a closure env. The body will
-            // project any captures it needs from `self`.
-            let cont_sid = resolve_cont_sid(t, env, caller_fn_id, blk);
-            let cont_fid = *fn_ids.get(&cont_sid).expect("cont fn_id missing");
-            let cap_bindings: Vec<ClosureCapture> = continuation
-                .captured
-                .iter()
-                .map(|cv| closure_capture_for_var(var_env, b, jmod, runtime, cv.0, cache))
-                .collect();
-            let extra_ref_captures =
-                cont_extra_ref_captures(b, cache, &env.spec_keys[cont_sid as usize]);
-            let cf = build_cont_closure(
-                jmod,
-                b,
-                runtime,
-                return_reprs,
-                is_cont_fn,
-                cont_param,
-                frame_ptr,
-                cont_sid,
-                cont_fid,
-                &cap_bindings,
-                &extra_ref_captures,
-            );
-            // Singleton closure-lit fast path: if this spec types `closure`
-            // as a single closure_lit(F, K), resolve F's narrow body spec
-            // at [K..., arg_descrs...] and call it directly with the body's
-            // narrow ABI. Opaque / polymorphic closures fall through to the
-            // all-ValueRef indirect seam below.
-            let lit_resolved: Option<(u32, FuncId, usize)> = (|| {
-                let (body_fn_id, body_sid) =
-                    resolve_tcc_body(t, closure, args, fn_types, module, spec_registry)?;
-                let body_fid = *fn_ids.get(&body_sid)?;
-                let n_caps = closure_n_captures.get(&body_fn_id).copied().unwrap_or(0);
-                Some((body_sid, body_fid, n_caps))
-            })();
-            if let Some((body_sid, body_fid, n_caps)) = lit_resolved {
-                let body_param_reprs = &param_reprs[body_sid as usize];
-                let body_fref = jmod.declare_func_in_func(body_fid, b.func);
-                let mut direct_args: Vec<ir::Value> = Vec::with_capacity(arg_vals.len() + 2);
-                for (i, _v) in arg_vals.iter().enumerate() {
-                    let binding = *var_env.get(&args[i].0).expect("unbound callclosure arg");
-                    let to = body_param_reprs
-                        .get(n_caps + i)
-                        .copied()
-                        .unwrap_or(ArgRepr::ValueRef);
-                    push_binding_as_abi_args(
-                        &mut direct_args,
-                        b,
-                        jmod,
-                        runtime,
-                        cache,
-                        binding,
-                        to,
-                    );
-                }
-                direct_args.push(cl_val);
-                direct_args.push(cf);
-                let _ = host_ctx;
-                if is_native {
-                    b.ins().return_call(body_fref, &direct_args);
-                } else {
-                    let call_inst = b.ins().call(body_fref, &direct_args);
-                    let result = b.inst_results(call_inst)[0];
-                    b.ins().return_(&[result]);
-                }
-                return Ok(());
-            }
-            // Indirect path: load body address from the closure and
-            // Tail-CC indirect-call with closure-target sig
-            // `(args..., self, cont) -> i64 tail` (all-ValueRef params).
-            // Native callers use return_call_indirect (TCO); uniform
-            // callers use call_indirect Tail (cross-CC) and return result.
-            let body_fp = load_closure_code_ref(b, jmod, runtime, cl_val);
-            let mut sig = Signature::new(CallConv::Tail);
-            for _ in &arg_vals {
-                push_repr_param(&mut sig, ArgRepr::ValueRef);
-            }
-            sig.params.push(AbiParam::new(types::I64)); // self
-            sig.params.push(AbiParam::new(types::I64)); // cont
-            sig.returns.push(AbiParam::new(types::I64));
-            let sig_ref = b.func.import_signature(sig);
-            let mut indirect_args: Vec<ir::Value> = Vec::with_capacity(arg_vals.len() + 2);
+        // Closure invocation is opaque to the caller: read code_ptr
+        // through the runtime ABI and call it with args, self, and cont.
+        let cl_val = var_env
+            .get(&closure.0)
+            .expect("unbound callclosure closure")
+            .value();
+        let arg_vals: Vec<ir::Value> = args
+            .iter()
+            .map(|v| var_env.get(&v.0).expect("unbound callclosure arg").value())
+            .collect();
+        // Build the continuation as a closure env. The body will
+        // project any captures it needs from `self`.
+        let cont_sid = resolve_cont_sid(t, env, caller_fn_id, blk);
+        let cont_fid = *fn_ids.get(&cont_sid).expect("cont fn_id missing");
+        let cap_bindings: Vec<ClosureCapture> = continuation
+            .captured
+            .iter()
+            .map(|cv| closure_capture_for_var(var_env, b, jmod, runtime, cv.0, cache))
+            .collect();
+        let extra_ref_captures =
+            cont_extra_ref_captures(b, cache, &env.spec_keys[cont_sid as usize]);
+        let cf = build_cont_closure(
+            jmod,
+            b,
+            runtime,
+            return_reprs,
+            is_cont_fn,
+            cont_param,
+            frame_ptr,
+            cont_sid,
+            cont_fid,
+            &cap_bindings,
+            &extra_ref_captures,
+        );
+        // Singleton closure-lit fast path: if this spec types `closure`
+        // as a single closure_lit(F, K), resolve F's narrow body spec
+        // at [K..., arg_descrs...] and call it directly with the body's
+        // narrow ABI. Opaque / polymorphic closures fall through to the
+        // all-ValueRef indirect seam below.
+        let lit_resolved: Option<(u32, FuncId, usize)> = (|| {
+            let (body_fn_id, body_sid) =
+                resolve_tcc_body(t, closure, args, fn_types, module, spec_registry)?;
+            let body_fid = *fn_ids.get(&body_sid)?;
+            let n_caps = closure_n_captures.get(&body_fn_id).copied().unwrap_or(0);
+            Some((body_sid, body_fid, n_caps))
+        })();
+        if let Some((body_sid, body_fid, n_caps)) = lit_resolved {
+            let body_param_reprs = &param_reprs[body_sid as usize];
+            let body_fref = jmod.declare_func_in_func(body_fid, b.func);
+            let mut direct_args: Vec<ir::Value> = Vec::with_capacity(arg_vals.len() + 2);
             for (i, _v) in arg_vals.iter().enumerate() {
                 let binding = *var_env.get(&args[i].0).expect("unbound callclosure arg");
-                push_binding_as_abi_args(
-                    &mut indirect_args,
-                    b,
-                    jmod,
-                    runtime,
-                    cache,
-                    binding,
-                    ArgRepr::ValueRef,
-                );
+                let to = body_param_reprs
+                    .get(n_caps + i)
+                    .copied()
+                    .unwrap_or(ArgRepr::ValueRef);
+                push_binding_as_abi_args(&mut direct_args, b, jmod, runtime, cache, binding, to);
             }
-            indirect_args.push(cl_val);
-            indirect_args.push(cf);
-            let _ = host_ctx; // no host_ctx in closure-target sig
+            direct_args.push(cl_val);
+            direct_args.push(cf);
+            let _ = host_ctx;
             if is_native {
-                b.ins()
-                    .return_call_indirect(sig_ref, body_fp, &indirect_args);
+                b.ins().return_call(body_fref, &direct_args);
             } else {
-                let call_inst = b.ins().call_indirect(sig_ref, body_fp, &indirect_args);
+                let call_inst = b.ins().call(body_fref, &direct_args);
                 let result = b.inst_results(call_inst)[0];
                 b.ins().return_(&[result]);
             }
+            return Ok(());
+        }
+        // Indirect path: load body address from the closure and
+        // Tail-CC indirect-call with closure-target sig
+        // `(args..., self, cont) -> i64 tail` (all-ValueRef params).
+        // Native callers use return_call_indirect (TCO); uniform
+        // callers use call_indirect Tail (cross-CC) and return result.
+        let body_fp = load_closure_code_ref(b, jmod, runtime, cl_val);
+        let mut sig = Signature::new(CallConv::Tail);
+        for _ in &arg_vals {
+            push_repr_param(&mut sig, ArgRepr::ValueRef);
+        }
+        sig.params.push(AbiParam::new(types::I64)); // self
+        sig.params.push(AbiParam::new(types::I64)); // cont
+        sig.returns.push(AbiParam::new(types::I64));
+        let sig_ref = b.func.import_signature(sig);
+        let mut indirect_args: Vec<ir::Value> = Vec::with_capacity(arg_vals.len() + 2);
+        for (i, _v) in arg_vals.iter().enumerate() {
+            let binding = *var_env.get(&args[i].0).expect("unbound callclosure arg");
+            push_binding_as_abi_args(
+                &mut indirect_args,
+                b,
+                jmod,
+                runtime,
+                cache,
+                binding,
+                ArgRepr::ValueRef,
+            );
+        }
+        indirect_args.push(cl_val);
+        indirect_args.push(cf);
+        let _ = host_ctx; // no host_ctx in closure-target sig
+        if is_native {
+            b.ins()
+                .return_call_indirect(sig_ref, body_fp, &indirect_args);
+        } else {
+            let call_inst = b.ins().call_indirect(sig_ref, body_fp, &indirect_args);
+            let result = b.inst_results(call_inst)[0];
+            b.ins().return_(&[result]);
+        }
     }
     Ok(())
 }
@@ -1411,133 +1380,125 @@ fn emit_tail_call_closure<
     let closure_n_captures = env.closure_n_captures;
     let module = env.module;
     {
-            // Tail-CC indirect-call through the closure code ptr with the
-            // caller's own cont (TCO via return_call_indirect). Closure-
-            // target sig `(args..., self, cont) -> i64 tail`. For cont fns
-            // the forwarded cont is the env's outer_cont; non-cont native
-            // forwards cont_param; uniform loads from frame_ptr+16.
-            //
-            // Closure-lit fast path: when the closure Var's per-spec type
-            // is a single closure_lit(F, K), resolve F's narrow body spec
-            // at [K..., arg_descrs...] and emit a direct return_call,
-            // bypassing the runtime code-pointer read. Falls back to the
-            // indirect path on union-of-lits, plain arrows, unresolved keys.
-            let cl_val = var_env
-                .get(&closure.0)
-                .expect("unbound tailcallclosure closure")
-                .value();
-            let arg_vals: Vec<ir::Value> = args
-                .iter()
-                .map(|v| {
-                    var_env
-                        .get(&v.0)
-                        .expect("unbound tailcallclosure arg")
-                        .value()
-                })
-                .collect();
-            let my_cont = if is_cont_fn {
-                let self_val = cont_param.expect("cont fn binds self via cont_param");
-                load_outer_cont_ref(b, jmod, runtime, self_val)
-            } else {
-                match cont_param {
-                    Some(c) => c,
-                    None => b.ins().load(
-                        types::I64,
-                        MemFlags::trusted(),
-                        frame_ptr.expect("uniform TailCallClosure must have frame_ptr"),
-                        HEADER_SIZE,
-                    ),
-                }
-            };
-
-            let lit_resolved: Option<(u32, FuncId, usize)> = (|| {
-                let (body_fn_id, body_sid) =
-                    resolve_tcc_body(t, closure, args, fn_types, module, spec_registry)?;
-                let body_fid = *fn_ids.get(&body_sid)?;
-                let n_caps = closure_n_captures.get(&body_fn_id).copied().unwrap_or(0);
-                Some((body_sid, body_fid, n_caps))
-            })();
-
-            if let Some((body_sid, body_fid, n_caps)) = lit_resolved {
-                let body_param_reprs = &param_reprs[body_sid as usize];
-                let mut sig = Signature::new(CallConv::Tail);
-                // Closure-target sig: only arg slots [n_caps..] go on
-                // the wire; capture slots live inside the closure heap
-                // object and the body's entry harness loads them.
-                for r in &body_param_reprs[n_caps..] {
-                    push_repr_param(&mut sig, *r);
-                }
-                sig.params.push(AbiParam::new(types::I64)); // self
-                sig.params.push(AbiParam::new(types::I64)); // cont
-                sig.returns.push(AbiParam::new(types::I64));
-                let body_fref = jmod.declare_func_in_func(body_fid, b.func);
-                let mut direct_args: Vec<ir::Value> = Vec::with_capacity(arg_vals.len() + 2);
-                for (i, _v) in arg_vals.iter().enumerate() {
-                    let binding = *var_env
-                        .get(&args[i].0)
-                        .expect("unbound tailcallclosure arg");
-                    let to = body_param_reprs
-                        .get(n_caps + i)
-                        .copied()
-                        .unwrap_or(ArgRepr::ValueRef);
-                    push_binding_as_abi_args(
-                        &mut direct_args,
-                        b,
-                        jmod,
-                        runtime,
-                        cache,
-                        binding,
-                        to,
-                    );
-                }
-                direct_args.push(cl_val);
-                direct_args.push(my_cont);
-                let _ = host_ctx;
-                let _ = sig; // body_fref carries the signature implicitly.
-                if is_native {
-                    b.ins().return_call(body_fref, &direct_args);
-                } else {
-                    let call_inst = b.ins().call(body_fref, &direct_args);
-                    let result = b.inst_results(call_inst)[0];
-                    b.ins().return_(&[result]);
-                }
-            } else {
-                let body_fp = load_closure_code_ref(b, jmod, runtime, cl_val);
-                let mut sig = Signature::new(CallConv::Tail);
-                for _ in &arg_vals {
-                    push_repr_param(&mut sig, ArgRepr::ValueRef);
-                }
-                sig.params.push(AbiParam::new(types::I64)); // self
-                sig.params.push(AbiParam::new(types::I64)); // cont
-                sig.returns.push(AbiParam::new(types::I64));
-                let sig_ref = b.func.import_signature(sig);
-                let mut indirect_args: Vec<ir::Value> = Vec::with_capacity(arg_vals.len() + 2);
-                for (i, _v) in arg_vals.iter().enumerate() {
-                    let binding = *var_env
-                        .get(&args[i].0)
-                        .expect("unbound tailcallclosure arg");
-                    push_binding_as_abi_args(
-                        &mut indirect_args,
-                        b,
-                        jmod,
-                        runtime,
-                        cache,
-                        binding,
-                        ArgRepr::ValueRef,
-                    );
-                }
-                indirect_args.push(cl_val);
-                indirect_args.push(my_cont);
-                let _ = host_ctx;
-                if is_native {
-                    b.ins()
-                        .return_call_indirect(sig_ref, body_fp, &indirect_args);
-                } else {
-                    let call_inst = b.ins().call_indirect(sig_ref, body_fp, &indirect_args);
-                    let result = b.inst_results(call_inst)[0];
-                    b.ins().return_(&[result]);
-                }
+        // Tail-CC indirect-call through the closure code ptr with the
+        // caller's own cont (TCO via return_call_indirect). Closure-
+        // target sig `(args..., self, cont) -> i64 tail`. For cont fns
+        // the forwarded cont is the env's outer_cont; non-cont native
+        // forwards cont_param; uniform loads from frame_ptr+16.
+        //
+        // Closure-lit fast path: when the closure Var's per-spec type
+        // is a single closure_lit(F, K), resolve F's narrow body spec
+        // at [K..., arg_descrs...] and emit a direct return_call,
+        // bypassing the runtime code-pointer read. Falls back to the
+        // indirect path on union-of-lits, plain arrows, unresolved keys.
+        let cl_val = var_env
+            .get(&closure.0)
+            .expect("unbound tailcallclosure closure")
+            .value();
+        let arg_vals: Vec<ir::Value> = args
+            .iter()
+            .map(|v| {
+                var_env
+                    .get(&v.0)
+                    .expect("unbound tailcallclosure arg")
+                    .value()
+            })
+            .collect();
+        let my_cont = if is_cont_fn {
+            let self_val = cont_param.expect("cont fn binds self via cont_param");
+            load_outer_cont_ref(b, jmod, runtime, self_val)
+        } else {
+            match cont_param {
+                Some(c) => c,
+                None => b.ins().load(
+                    types::I64,
+                    MemFlags::trusted(),
+                    frame_ptr.expect("uniform TailCallClosure must have frame_ptr"),
+                    HEADER_SIZE,
+                ),
             }
+        };
+
+        let lit_resolved: Option<(u32, FuncId, usize)> = (|| {
+            let (body_fn_id, body_sid) =
+                resolve_tcc_body(t, closure, args, fn_types, module, spec_registry)?;
+            let body_fid = *fn_ids.get(&body_sid)?;
+            let n_caps = closure_n_captures.get(&body_fn_id).copied().unwrap_or(0);
+            Some((body_sid, body_fid, n_caps))
+        })();
+
+        if let Some((body_sid, body_fid, n_caps)) = lit_resolved {
+            let body_param_reprs = &param_reprs[body_sid as usize];
+            let mut sig = Signature::new(CallConv::Tail);
+            // Closure-target sig: only arg slots [n_caps..] go on
+            // the wire; capture slots live inside the closure heap
+            // object and the body's entry harness loads them.
+            for r in &body_param_reprs[n_caps..] {
+                push_repr_param(&mut sig, *r);
+            }
+            sig.params.push(AbiParam::new(types::I64)); // self
+            sig.params.push(AbiParam::new(types::I64)); // cont
+            sig.returns.push(AbiParam::new(types::I64));
+            let body_fref = jmod.declare_func_in_func(body_fid, b.func);
+            let mut direct_args: Vec<ir::Value> = Vec::with_capacity(arg_vals.len() + 2);
+            for (i, _v) in arg_vals.iter().enumerate() {
+                let binding = *var_env
+                    .get(&args[i].0)
+                    .expect("unbound tailcallclosure arg");
+                let to = body_param_reprs
+                    .get(n_caps + i)
+                    .copied()
+                    .unwrap_or(ArgRepr::ValueRef);
+                push_binding_as_abi_args(&mut direct_args, b, jmod, runtime, cache, binding, to);
+            }
+            direct_args.push(cl_val);
+            direct_args.push(my_cont);
+            let _ = host_ctx;
+            let _ = sig; // body_fref carries the signature implicitly.
+            if is_native {
+                b.ins().return_call(body_fref, &direct_args);
+            } else {
+                let call_inst = b.ins().call(body_fref, &direct_args);
+                let result = b.inst_results(call_inst)[0];
+                b.ins().return_(&[result]);
+            }
+        } else {
+            let body_fp = load_closure_code_ref(b, jmod, runtime, cl_val);
+            let mut sig = Signature::new(CallConv::Tail);
+            for _ in &arg_vals {
+                push_repr_param(&mut sig, ArgRepr::ValueRef);
+            }
+            sig.params.push(AbiParam::new(types::I64)); // self
+            sig.params.push(AbiParam::new(types::I64)); // cont
+            sig.returns.push(AbiParam::new(types::I64));
+            let sig_ref = b.func.import_signature(sig);
+            let mut indirect_args: Vec<ir::Value> = Vec::with_capacity(arg_vals.len() + 2);
+            for (i, _v) in arg_vals.iter().enumerate() {
+                let binding = *var_env
+                    .get(&args[i].0)
+                    .expect("unbound tailcallclosure arg");
+                push_binding_as_abi_args(
+                    &mut indirect_args,
+                    b,
+                    jmod,
+                    runtime,
+                    cache,
+                    binding,
+                    ArgRepr::ValueRef,
+                );
+            }
+            indirect_args.push(cl_val);
+            indirect_args.push(my_cont);
+            let _ = host_ctx;
+            if is_native {
+                b.ins()
+                    .return_call_indirect(sig_ref, body_fp, &indirect_args);
+            } else {
+                let call_inst = b.ins().call_indirect(sig_ref, body_fp, &indirect_args);
+                let result = b.inst_results(call_inst)[0];
+                b.ins().return_(&[result]);
+            }
+        }
     }
     Ok(())
 }
@@ -1564,38 +1525,38 @@ fn emit_receive<
     let fn_ids = env.fn_ids;
     let return_reprs = env.return_reprs;
     {
-            // See docs/cps-in-clif.md §4: build the cont closure (outer_cont
-            // in env field 0), hand it to fz_receive_park which parks an
-            // accept-any matcher record and returns the YIELD sentinel.
-            let cont_sid = resolve_cont_sid(t, env, caller_fn_id, blk);
-            let cap_bindings: Vec<ClosureCapture> = continuation
-                .captured
-                .iter()
-                .map(|cv| closure_capture_for_var(var_env, b, jmod, runtime, cv.0, cache))
-                .collect();
-            let cont_fid = *fn_ids.get(&cont_sid).expect("cont fn_id missing");
-            let cl_ptr = build_cont_closure(
-                jmod,
-                b,
-                runtime,
-                return_reprs,
-                is_cont_fn,
-                cont_param,
-                frame_ptr,
-                cont_sid,
-                cont_fid,
-                &cap_bindings,
-                &[],
-            );
+        // See docs/cps-in-clif.md §4: build the cont closure (outer_cont
+        // in env field 0), hand it to fz_receive_park which parks an
+        // accept-any matcher record and returns the YIELD sentinel.
+        let cont_sid = resolve_cont_sid(t, env, caller_fn_id, blk);
+        let cap_bindings: Vec<ClosureCapture> = continuation
+            .captured
+            .iter()
+            .map(|cv| closure_capture_for_var(var_env, b, jmod, runtime, cv.0, cache))
+            .collect();
+        let cont_fid = *fn_ids.get(&cont_sid).expect("cont fn_id missing");
+        let cl_ptr = build_cont_closure(
+            jmod,
+            b,
+            runtime,
+            return_reprs,
+            is_cont_fn,
+            cont_param,
+            frame_ptr,
+            cont_sid,
+            cont_fid,
+            &cap_bindings,
+            &[],
+        );
 
-            // fz_receive_park(cl_ptr) — stash + yield.
-            let park_fref = jmod.declare_func_in_func(runtime.receive_park_id, b.func);
-            let park_inst = b.ins().call(park_fref, &[cl_ptr]);
-            let yield_sentinel = b.inst_results(park_inst)[0];
-            // Both native and uniform paths return the YIELD sentinel;
-            // native returns i64, uniform returns next_frame ptr (which
-            // the trampoline interprets as park).
-            b.ins().return_(&[yield_sentinel]);
+        // fz_receive_park(cl_ptr) — stash + yield.
+        let park_fref = jmod.declare_func_in_func(runtime.receive_park_id, b.func);
+        let park_inst = b.ins().call(park_fref, &[cl_ptr]);
+        let yield_sentinel = b.inst_results(park_inst)[0];
+        // Both native and uniform paths return the YIELD sentinel;
+        // native returns i64, uniform returns next_frame ptr (which
+        // the trampoline interprets as park).
+        b.ins().return_(&[yield_sentinel]);
     }
     Ok(())
 }
@@ -1650,8 +1611,20 @@ fn emit_receive_matched<
         .expect("matcher fn pre-declared by compile_with_backend pre-pass");
     let matcher_addr = fn_addr(jmod, matcher_fid, b);
     let yield_sentinel = build_park_record(
-        b, jmod, t, env, var_env, is_cont_fn, frame_ptr, cont_param, cache, clauses, after,
-        pinned, captures, matcher_addr,
+        b,
+        jmod,
+        t,
+        env,
+        var_env,
+        is_cont_fn,
+        frame_ptr,
+        cont_param,
+        cache,
+        clauses,
+        after,
+        pinned,
+        captures,
+        matcher_addr,
     );
     // Both native and uniform bodies return the YIELD
     // sentinel so the trampoline parks (same as Term::Receive).
@@ -1748,10 +1721,8 @@ fn build_park_record<
         let body_fn = env.module.fn_by_id(body);
         let np = body_fn.block(body_fn.entry).params.len();
         let key = crate::fz_ir::receive_outcome_spec_key(&any, np);
-        let key = crate::ir_typer::fn_types::SpecKey::value(
-            body,
-            crate::types::key_slots_from_tys(key),
-        );
+        let key =
+            crate::ir_typer::fn_types::SpecKey::value(body, crate::types::key_slots_from_tys(key));
         env.spec_registry
             .resolve_spec_key(t, &key)
             .unwrap_or_else(|| {
