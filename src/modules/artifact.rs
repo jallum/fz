@@ -154,7 +154,7 @@ impl FziArtifact {
                 runtime_abi, FZ_RUNTIME_ARTIFACT_ABI_VERSION
             )));
         }
-        let name = module(kv(&lines, "module")?);
+        let name = parse_module(kv(&lines, "module")?)?;
         let interface_abi = parse_u32(kv(&lines, "interface_abi")?)?;
         if interface_abi != FZ_INTERFACE_ABI_VERSION {
             return Err(invalid(format!(
@@ -337,7 +337,7 @@ impl FzoArtifact {
         let module = if module_text.is_empty() {
             None
         } else {
-            Some(module(module_text))
+            Some(parse_module(module_text)?)
         };
         let unit_payload = FzoUnitPayload::new(
             unescape(kv(&lines, "unit_payload_format")?),
@@ -424,7 +424,7 @@ fn parse_imports(lines: &[&str]) -> Result<Vec<InterfaceImport>, Diagnostic> {
                 return Err(invalid("malformed import"));
             }
             Ok(InterfaceImport {
-                module: module(parts[0]),
+                module: parse_module(parts[0])?,
                 only: parse_import_fns(parts[1])?,
                 except: parse_import_fns(parts[2])?,
             })
@@ -596,14 +596,14 @@ fn parse_export_key(text: &str) -> Result<ExportKey, Diagnostic> {
         return Err(invalid("malformed export key"));
     };
     Ok(ExportKey::new(
-        module(module_name),
+        parse_module(module_name)?,
         name,
         parse_usize(arity)?,
     ))
 }
 
-fn module(text: &str) -> ModuleName {
-    ModuleName::from_segments(text.split('.').map(str::to_string).collect())
+fn parse_module(text: &str) -> Result<ModuleName, Diagnostic> {
+    ModuleName::parse_dotted(text).map_err(|err| invalid(err.to_string()))
 }
 
 fn parse_usize(text: &str) -> Result<usize, Diagnostic> {
@@ -661,6 +661,10 @@ mod tests {
     use crate::ir_codegen::{CompiledUnit, RuntimeEntrypoints, RuntimeUnitMetadata};
     use fz_runtime::heap::Schema;
     use std::collections::BTreeMap;
+
+    fn module(text: &str) -> ModuleName {
+        ModuleName::parse_dotted(text).expect("test module name")
+    }
 
     fn math_interface() -> ModuleInterface {
         ModuleInterface {

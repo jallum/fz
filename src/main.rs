@@ -974,7 +974,8 @@ impl ProviderInputs {
 
 impl CheckedModule {
     fn compiled_unit_input(&self) -> ir_codegen::CompiledUnit {
-        let interface = module_name_from_ir_path(self.module.module_path())
+        let interface = modules::identity::ModuleName::parse_dotted(self.module.module_path())
+            .ok()
             .and_then(|module| self.interfaces.get(&module).cloned())
             .or_else(|| {
                 if self.interfaces.len() == 1 {
@@ -988,19 +989,6 @@ impl CheckedModule {
             interface,
             diag::Diagnostics::new(),
         )
-    }
-}
-
-fn module_name_from_ir_path(path: &str) -> Option<modules::identity::ModuleName> {
-    let segments = path
-        .split('.')
-        .filter(|segment| !segment.is_empty())
-        .map(str::to_string)
-        .collect::<Vec<_>>();
-    if segments.is_empty() {
-        None
-    } else {
-        Some(modules::identity::ModuleName::from_segments(segments))
     }
 }
 
@@ -1025,12 +1013,10 @@ impl CompileMode {
 }
 
 fn parse_module_name_arg(context: &str, text: &str) -> modules::identity::ModuleName {
-    let segments = text.split('.').map(str::to_string).collect::<Vec<String>>();
-    if segments.is_empty() || segments.iter().any(|segment| segment.is_empty()) {
-        eprintln!("{context}: invalid module name `{text}`");
+    modules::identity::ModuleName::parse_dotted(text).unwrap_or_else(|err| {
+        eprintln!("{context}: {err}");
         std::process::exit(2);
-    }
-    modules::identity::ModuleName::from_segments(segments)
+    })
 }
 
 fn load_interface_table_or_exit(

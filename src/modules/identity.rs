@@ -12,6 +12,11 @@ pub struct ModuleName {
     segments: Vec<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModuleNameParseError {
+    text: String,
+}
+
 impl ModuleName {
     pub fn from_segments(segments: Vec<String>) -> Self {
         assert!(
@@ -23,6 +28,17 @@ impl ModuleName {
             "ModuleName segments must be non-empty"
         );
         Self { segments }
+    }
+
+    pub fn parse_dotted(text: &str) -> Result<Self, ModuleNameParseError> {
+        let segments = text.split('.').map(str::to_string).collect::<Vec<_>>();
+        if segments.is_empty() || segments.iter().any(|segment| segment.is_empty()) {
+            Err(ModuleNameParseError {
+                text: text.to_string(),
+            })
+        } else {
+            Ok(Self { segments })
+        }
     }
 
     pub fn child(&self, segment: impl Into<String>) -> Self {
@@ -55,6 +71,14 @@ impl fmt::Display for ModuleName {
         f.write_str(&self.dotted())
     }
 }
+
+impl fmt::Display for ModuleNameParseError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "invalid module name `{}`", self.text)
+    }
+}
+
+impl std::error::Error for ModuleNameParseError {}
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct QualifiedName {
@@ -118,6 +142,14 @@ mod tests {
         assert_eq!(name.segments(), &["Outer".to_string(), "Inner".to_string()]);
         assert_eq!(name.dotted(), "Outer.Inner");
         assert_eq!(name.child("Leaf").dotted(), "Outer.Inner.Leaf");
+    }
+
+    #[test]
+    fn module_name_parses_dotted_display_spelling_at_edges() {
+        let name = ModuleName::parse_dotted("Outer.Inner").expect("parse module name");
+        assert_eq!(name.segments(), &["Outer".to_string(), "Inner".to_string()]);
+        assert!(ModuleName::parse_dotted("").is_err());
+        assert!(ModuleName::parse_dotted("Outer..Inner").is_err());
     }
 
     #[test]

@@ -43,7 +43,9 @@ impl CompiledUnit {
         let module = interface
             .as_ref()
             .map(|interface| interface.name.clone())
-            .or_else(|| module_name_from_ir_path(code.module_path()));
+            .or_else(|| {
+                crate::modules::identity::ModuleName::parse_dotted(code.module_path()).ok()
+            });
         let exports = interface
             .as_ref()
             .map(|interface| interface.exports.clone())
@@ -59,16 +61,6 @@ impl CompiledUnit {
             interface_fingerprint,
             interface,
         }
-    }
-}
-
-fn module_name_from_ir_path(path: &str) -> Option<crate::modules::identity::ModuleName> {
-    if path.is_empty() {
-        None
-    } else {
-        Some(crate::modules::identity::ModuleName::from_segments(
-            path.split('.').map(str::to_string).collect(),
-        ))
     }
 }
 
@@ -451,9 +443,7 @@ fn module_for_linked_fn(
             if f.owner_module.is_empty() {
                 None
             } else {
-                Some(crate::modules::identity::ModuleName::from_segments(
-                    f.owner_module.split('.').map(str::to_string).collect(),
-                ))
+                crate::modules::identity::ModuleName::parse_dotted(&f.owner_module).ok()
             }
         })
 }
