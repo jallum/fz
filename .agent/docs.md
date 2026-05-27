@@ -10,7 +10,7 @@ that keep future work aligned.
 | [docs/agent-docs.md](docs/agent-docs.md) | Writing or revising `.agent/docs` guidance. |
 | [docs/continuation-captures.md](docs/continuation-captures.md) | Continuation ABI, closure captures, lambda captures, or capture pruning. |
 | [docs/destination-passing.md](docs/destination-passing.md) | Destination planning/passing IR, erased init-token facts, tuple/list/map construction lowering, or typed container field initialization. |
-| [../docs/dispatch-as-planner-output.md](../docs/dispatch-as-planner-output.md) | Planner-owned dispatch facts, `SpecPlan.dispatches`, `SpecKey` variants, or ReturnDemand capability selection. |
+| [../docs/dispatch-as-planner-output.md](../docs/dispatch-as-planner-output.md) | Planner-owned call-edge facts, `SpecPlan.call_edges`, `SpecKey` variants, or ReturnDemand capability selection. |
 | [docs/externs.md](docs/externs.md) | `extern "C"` declarations, marshal classes, variadic calls, or extern codegen/interpreter behavior. |
 | [docs/guides.md](docs/guides.md) | Writing or updating user-facing `guides/*.html`. |
 | [docs/ir-planner-rename.md](docs/ir-planner-rename.md) | Renaming legacy phase/product/telemetry vocabulary to planner vocabulary. |

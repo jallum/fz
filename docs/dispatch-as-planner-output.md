@@ -16,16 +16,21 @@ instead of reconstructing them with a second planning pass.
 
 ## Authoritative Facts
 
-`SpecPlan.dispatches` is keyed by `CallsiteId`: `(caller FnId, intrinsic
-CallsiteIdent, EmitSlot)`. The value is a `SpecKey`, which names the callee
-function, its semantic input key, and its `ReturnDemand`.
+`SpecPlan.call_edges` is keyed by `CallsiteId`: `(caller FnId, intrinsic
+CallsiteIdent, EmitSlot)`. The value is a `CallEdgePlan`, which names the
+selected target capability plus the return-use and return-context facts for that
+edge.
 
-`SpecPlan.return_uses` is keyed by the same callsite identity. It records the
-typed return-use fact for that edge. `SpecPlan.return_context_plans` is keyed by
-the caller `SpecKey` plus `CallsiteId`; it records executable plans for
-return-use facts that need lowering. The current concrete plans lower ListTail
-contexts. They can also name the already-proved empty-tail continuation target
-used to preserve material value semantics without a backend sibling probe.
+Local direct, closure, and continuation call edges currently target a
+`SpecKey`, which names the callee function, its semantic input key, and its
+`ReturnDemand`. The same `CallEdgePlan` shape is the home for future
+provider-boundary and protocol targets.
+
+Each call edge may also record the typed return-use fact for its result hole and
+the executable plan for return-use facts that need lowering. The current
+concrete plans lower ListTail contexts. They can also name the already-proved
+empty-tail continuation target used to preserve material value semantics without
+a backend sibling probe.
 
 This is per caller spec. The same syntactic callsite can dispatch to different
 targets in different caller specializations, so a module-global callsite table
@@ -82,8 +87,8 @@ property.
 
 Post-planner passes may move, fold, or delete blocks. They must not invent new
 call shapes after the planner commits to specs. `CallsiteIdent` survives legal
-moves, and `SpecPlan.dispatches` remains the precise mapping from each surviving
-call shape to its selected `SpecKey`.
+moves, and `SpecPlan.call_edges` remains the precise mapping from each
+surviving call shape to its selected capability.
 
 Re-walking in codegen is wrong for three reasons:
 
@@ -94,10 +99,10 @@ Re-walking in codegen is wrong for three reasons:
   ABI selection.
 
 The invariant is simple: if codegen sees a direct or continuation callsite, the
-current caller's `SpecPlan.dispatches` must contain the selected `SpecKey`.
-Missing entries are compiler bugs. If codegen lowers return-demand behavior,
-the corresponding return-use or return-context plan must also come from
-`SpecPlan`. Backend closure captures and CLIF parameter shapes are
+current caller's `SpecPlan.call_edges` must contain the selected local
+`SpecKey`. Missing entries are compiler bugs. If codegen lowers return-demand
+behavior, the corresponding return-use or return-context plan must also come
+from that call edge. Backend closure captures and CLIF parameter shapes are
 implementation details, not proof sources, and codegen must not construct
 alternate demanded `SpecKey`s.
 

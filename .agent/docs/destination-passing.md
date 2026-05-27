@@ -43,7 +43,7 @@ Init tokens are not runtime values. They are compile-time facts attached to
 `InitTokenId`, in the same broad family as:
 
 - `Var -> Ty` facts in `SpecPlan.vars` and block environments.
-- `CallsiteId -> SpecKey` dispatch facts in `SpecPlan.dispatches`.
+- `CallsiteId -> CallEdgePlan` facts in `SpecPlan.call_edges`.
 - `BlockId -> reachable/dead-branch` facts in `SpecPlan.reachable_blocks` and
   `SpecPlan.dead_branches`.
 - `SpecKey.demand` facts such as tuple-field delivery and list-tail context.
@@ -73,10 +73,9 @@ hole, not the whole caller spec. A caller spec can contain more than one call,
 and different calls in that spec can have different return uses. The durable
 facts are:
 
-- `SpecPlan.return_uses`, keyed by `CallsiteId`, records the typed return-use
-  fact for each call edge;
-- `SpecPlan.return_context_plans`, keyed by caller `SpecKey` plus `CallsiteId`,
-  records executable return-context plans when a return-use fact needs lowering.
+- `SpecPlan.call_edges`, keyed by `CallsiteId`, records the typed return-use
+  fact and any executable return-context plan for each call edge.
+  The return-context plans are present when a return-use fact needs lowering.
   The current concrete plans are ListTail plans: direct continuation delivery,
   nested cons-then-direct ListTail calls, tuple-field/list-tail continuation
   bridges, tail calls that forward a destination, and value-context
@@ -281,11 +280,11 @@ and scripted REPL fixture legs remain direct-IR baselines; they can execute
 destination primitives when given already-lowered IR, but the CLI interpreter
 does not apply the destination-lowering pass itself.
 
-Do not make ReturnDemand a backend-only heuristic. `SpecPlan.dispatches`,
-`SpecPlan.return_uses`, `SpecPlan.return_context_plans`, and `SpecKey.demand` are
-the authoritative planner output. Codegen may lower only those planner-authored ABI
-and context facts. It must not create a new demand variant, probe demanded
-sibling specs, or infer demand from backend closure/capture shapes.
+Do not make ReturnDemand a backend-only heuristic. `SpecPlan.call_edges` and
+`SpecKey.demand` are the authoritative planner output. Codegen may lower only
+those planner-authored ABI and context facts. It must not create a new demand
+variant, probe demanded sibling specs, or infer demand from backend
+closure/capture shapes.
 
 Current deletion audit:
 

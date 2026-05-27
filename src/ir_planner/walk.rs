@@ -22,11 +22,11 @@ pub(crate) struct WalkResult {
     /// diffs against `produces[site]` to detect transitions.
     ///
     /// Recursive direct calls are normalized before emission, so this key
-    /// agrees with the dispatch fact consumed by codegen.
+    /// agrees with the call-edge fact consumed by codegen.
     pub(crate) emits: Vec<(EmitterSite, SpecKey)>,
     /// Per-callsite dispatch fact: the spec key the planner resolved for this
     /// site after recursive-key normalization. This is the same key emitted
-    /// above, so `SpecPlan.dispatches` and codegen agree by construction.
+    /// above, so `SpecPlan.call_edges` and codegen agree by construction.
     ///
     /// Populated for `Direct`, `ClosureCall`, and `Cont` slots. `MakeClosure`
     /// emits an any-key body spec but does not record a dispatch fact.

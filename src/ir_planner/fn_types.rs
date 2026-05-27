@@ -22,6 +22,13 @@ pub struct SpecPlan {
     /// stricter than `ModulePlan::dead_branches`: a branch can be dead for
     /// one specialization even when another specialization keeps it live.
     pub dead_branches: HashMap<crate::fz_ir::BlockId, crate::fz_ir::DeadBranch>,
+    /// Per-callsite call-edge capability selected for this spec.
+    ///
+    /// This is the typed handoff codegen should consume. It keeps the selected
+    /// target, result-hole demand, and executable return-context plan on one
+    /// edge, so future provider-boundary and protocol dispatch facts can extend
+    /// the same shape instead of adding side tables.
+    pub call_edges: HashMap<crate::fz_ir::CallsiteId, CallEdgePlan>,
     /// Per-callsite dispatch table for this spec.
     ///
     /// For every `Direct`, `ClosureCall`, and `Cont` callsite in this spec's
@@ -53,6 +60,73 @@ pub struct SpecPlan {
     /// Var types. The map is per spec because the same syntactic call can be
     /// reached under different argument types in different specializations.
     pub extern_marshals: HashMap<crate::fz_ir::ExternMarshalSite, crate::fz_ir::ExternTy>,
+}
+
+impl SpecPlan {
+    pub fn local_call_target(&self, callsite: &crate::fz_ir::CallsiteId) -> Option<&SpecKey> {
+        self.call_edges
+            .get(callsite)
+            .and_then(CallEdgePlan::local_target)
+    }
+
+    pub fn return_use(&self, callsite: &crate::fz_ir::CallsiteId) -> Option<&ReturnDemand> {
+        self.call_edges
+            .get(callsite)
+            .and_then(|edge| edge.return_use.as_ref())
+    }
+
+    pub fn return_context_plan(
+        &self,
+        callsite: &crate::fz_ir::CallsiteId,
+    ) -> Option<&ReturnContextPlan> {
+        self.call_edges
+            .get(callsite)
+            .and_then(|edge| edge.return_context.as_ref())
+    }
+
+    pub(crate) fn install_call_edges(
+        &mut self,
+        caller: &SpecKey,
+        dispatches: &HashMap<crate::fz_ir::CallsiteId, SpecKey>,
+        return_uses: &HashMap<crate::fz_ir::CallsiteId, ReturnDemand>,
+        return_context_plans: &HashMap<ReturnContextPlanKey, ReturnContextPlan>,
+    ) {
+        let mut call_edges = HashMap::new();
+        for (callsite, target) in dispatches {
+            let return_context = return_context_plans
+                .get(&ReturnContextPlanKey::new(caller, callsite))
+                .cloned();
+            call_edges.insert(
+                callsite.clone(),
+                CallEdgePlan {
+                    target: CallEdgeTarget::Local(target.clone()),
+                    return_use: return_uses.get(callsite).cloned(),
+                    return_context,
+                },
+            );
+        }
+        self.call_edges = call_edges;
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CallEdgePlan {
+    pub target: CallEdgeTarget,
+    pub return_use: Option<ReturnDemand>,
+    pub return_context: Option<ReturnContextPlan>,
+}
+
+impl CallEdgePlan {
+    pub fn local_target(&self) -> Option<&SpecKey> {
+        match &self.target {
+            CallEdgeTarget::Local(target) => Some(target),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CallEdgeTarget {
+    Local(SpecKey),
 }
 
 /// Per-module type information.

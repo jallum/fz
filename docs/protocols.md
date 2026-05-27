@@ -163,8 +163,8 @@ The implementation should extend existing compiler ownership instead of
 creating a parallel subsystem:
 
 - `docs/dispatch-as-planner-output.md` defines planner-owned dispatch facts.
-- `SpecPlan.dispatches` is keyed by `CallsiteId` and currently stores direct
-  target `SpecKey` values.
+- `SpecPlan.call_edges` is keyed by `CallsiteId` and stores selected call-edge
+  capabilities.
 - `ReturnDemand` is already a call-edge capability selected before codegen.
 - `ExternalCallEdge` represents known provider-boundary calls before link.
 - `ModuleInterface` and `.fzi` artifacts carry public contract facts without

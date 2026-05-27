@@ -2412,7 +2412,7 @@ fn callsite_id_round_trip() {
     assert_eq!(round, site);
 }
 
-/// fz-uwq.3/.11 — `plan_module` populates `SpecPlan.dispatches` with
+/// fz-uwq.3/.11 — `plan_module` populates `SpecPlan.call_edges` with
 /// the per-spec dispatch target for each Direct callsite. Build a
 /// trivial 2-fn module (main → id), assert the dispatch entry exists
 /// at main's spec keyed by `id` plus the literal arg type.
@@ -2457,9 +2457,8 @@ fn planner_publishes_dispatches_for_direct_call() {
         .get(&value_spec_key(FnId(1), vec![]))
         .expect("main's empty-key spec must exist");
     let target = main_spec
-        .dispatches
-        .get(&cid)
-        .expect("dispatches should record main's Direct call to id");
+        .local_call_target(&cid)
+        .expect("call_edges should record main's Direct call to id");
     assert_eq!(target.fn_id, FnId(0));
     assert_eq!(target.input.len(), 1);
     let Some(ty) = &target.input[0] else {
