@@ -1055,6 +1055,66 @@ fn closure_target_with_direct_caller_narrows_spec_and_keeps_any_key_body() {
     );
 }
 
+#[test]
+fn reachable_specs_seeds_all_registered_specs_for_closure_targets() {
+    let mut wb = FnBuilder::new(FnId(0), "worker");
+    let n = wb.fresh_var();
+    let wentry = wb.block(vec![n]);
+    wb.set_terminator(wentry, Term::Return(n));
+
+    let mut mb = FnBuilder::new(FnId(1), "main");
+    let mentry = mb.block(vec![]);
+    let cl = mb.let_(
+        mentry,
+        Prim::MakeClosure(
+            crate::fz_ir::CallsiteIdent::from_source(crate::diag::Span::DUMMY),
+            FnId(0),
+            vec![],
+        ),
+    );
+    mb.set_terminator(mentry, Term::Halt(cl));
+
+    let m = build_module(vec![wb.build(), mb.build()]);
+    let mut t = crate::types::ConcreteTypes;
+    let any_key = key_tys(vec![t.any()]);
+    let int_key = key_tys(vec![t.int()]);
+    let main_key = key_tys(vec![]);
+
+    let mut reg = crate::spec_registry::SpecRegistry::new();
+    let worker_any_sid = reg.register(&t, FnId(0), any_key.clone());
+    let main_sid = reg.register(&t, FnId(1), main_key.clone());
+    let worker_int_sid = reg.register(&t, FnId(0), int_key.clone());
+
+    let mut specs = HashMap::new();
+    specs.insert(value_spec_key(FnId(0), any_key), SpecPlan::default());
+    specs.insert(value_spec_key(FnId(0), int_key), SpecPlan::default());
+    specs.insert(value_spec_key(FnId(1), main_key), SpecPlan::default());
+    let mt = ModulePlan {
+        specs,
+        effective_returns: HashMap::new(),
+        any_key_specs: HashMap::new(),
+        spec_precedence: HashMap::new(),
+        effect_summaries: HashMap::new(),
+        scc_of: HashMap::new(),
+        dead_branches: HashMap::new(),
+        closure_handles: std::collections::HashSet::new(),
+    };
+
+    let reachable = reachable_specs(&mut t, &m, &reg, &mt, []);
+    assert!(
+        reachable.contains(&worker_any_sid.0),
+        "closure target any-key spec should be reachable; main_sid={:?}, reached={:?}",
+        main_sid,
+        reachable
+    );
+    assert!(
+        reachable.contains(&worker_int_sid.0),
+        "closure target narrow spec should be reachable; main_sid={:?}, reached={:?}",
+        main_sid,
+        reachable
+    );
+}
+
 // ----- fz-ul4.29.1: per-callsite specialization map -----
 
 #[test]

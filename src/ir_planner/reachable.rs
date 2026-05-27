@@ -106,7 +106,7 @@ pub fn cont_slot0_descr<
 }
 
 /// fz-ul4.42 — compute the set of SpecIds reachable at runtime from
-/// `main` (plus closure-dispatched any-key specs as a conservative catch).
+/// `main` (plus registered closure-target specs as a conservative catch).
 ///
 /// Codegen consults this to skip body emission for unreached specs: a
 /// trap stub goes out instead of the full body, dramatically shrinking
@@ -118,7 +118,7 @@ pub fn cont_slot0_descr<
 ///
 /// Algorithm:
 ///   - Seed with main's spec id, every test/exported entry, and every
-///     any-key spec whose fn appears in a `MakeClosure` (conservatively
+///     registered spec whose fn appears in a `MakeClosure` (conservatively
 ///     covers opaque closure dispatch without needing per-site
 ///     closure_lit resolution).
 ///   - BFS: for each reached spec, walk its reachable blocks, find
