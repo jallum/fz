@@ -71,20 +71,15 @@ pub(crate) use receive::lower_receive;
 
 pub(crate) const REPL_ENTRY_PREFIX: &str = "__repl_eval_";
 
-/// fz-axu.27 (M6) — return the prelude as a flat `Program` whose
-/// `module_type_envs[""]`, `opaque_inners`, and `brand_inners` are all
-/// populated. `flatten_modules` only walks `defmodule`-nested
-/// declarations, so root-scope `@type` aliases (like `@type utf8 ::
-/// refines binary` at the top of runtime.fz) are harvested separately
-/// from attrs and merged into the flat program.
+/// Return the prelude as a flat `Program` whose `module_type_envs[""]`,
+/// `opaque_inners`, and `brand_inners` include compiler-known runtime
+/// types plus any root declarations still present in `runtime.fz`.
 fn parse_runtime_prelude<T: crate::types::Types<Ty = crate::types::Ty>>(
     t: &mut T,
 ) -> (Program, HashMap<(String, usize), String>) {
     let runtime_fz = crate::modules::runtime_library::prelude_source();
     let (items, attrs) = parse_runtime_source_items(runtime_fz, "runtime.fz");
-    let (root_env, root_o_inners, root_b_inners) =
-        crate::type_expr::build_module_type_env_for(t, &attrs, "")
-            .expect("runtime.fz @type error (bug in built-in prelude)");
+    let root_types = crate::modules::runtime_library::root_type_env_from_attrs(t, &attrs);
     let prelude_imports = collect_runtime_prelude_imports(&items);
     let mut items = items;
     for (name, source) in crate::modules::runtime_library::core_prelude_module_sources() {
@@ -102,13 +97,14 @@ fn parse_runtime_prelude<T: crate::types::Types<Ty = crate::types::Ty>>(
     };
     let mut flat = crate::resolve::flatten_modules(t, staged)
         .expect("runtime.fz module flatten error (bug in built-in prelude)");
-    // Merge root-scope aliases into the flattened program.
+    // Merge compiler-known runtime types and any root declarations into the
+    // flattened prelude program.
     flat.module_type_envs
         .entry(String::new())
         .or_default()
-        .extend(root_env);
-    flat.opaque_inners.extend(root_o_inners);
-    flat.brand_inners.extend(root_b_inners);
+        .extend_env(root_types.env);
+    flat.opaque_inners.extend(root_types.opaque_inners);
+    flat.brand_inners.extend(root_types.brand_inners);
     (flat, prelude_imports)
 }
 
@@ -241,7 +237,7 @@ pub fn lower_program_full_with_telemetry<T: crate::types::Types<Ty = crate::type
     // Build the combined type env: prelude aliases + all user-module aliases.
     let mut combined = prelude_type_env;
     for module_env in prog.module_type_envs.values() {
-        combined.extend(module_env.iter().map(|(k, v)| (k.clone(), v.clone())));
+        combined.extend_env(module_env.clone());
     }
     ctx.combined_type_env = combined;
     let runtime_item_count = prelude.items.len();
@@ -428,8 +424,8 @@ pub fn lower_program_full_with_telemetry<T: crate::types::Types<Ty = crate::type
     }
     // fz-swt.8 — carry the resolver's opaque-inner-type map onto the
     // Module so the planner can resolve `handle.value` accesses to T.
-    // fz-axu.27 (M6) — prelude inners (utf8 brand, pid opaque, ...) live
-    // in the flat-prelude Program, merged here alongside user inners.
+    // Runtime built-in inners (utf8 brand, pid/ref opaques, ...) live in the
+    // flat-prelude Program, merged here alongside user inners.
     module.opaque_inners = prog.opaque_inners.clone();
     module.opaque_inners.extend(prelude.opaque_inners.clone());
     module.brand_inners = prog.brand_inners.clone();

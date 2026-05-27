@@ -551,13 +551,17 @@ library module interfaces/artifacts.
 Rules:
 
 - `src/modules/runtime_library/runtime.fz` is the always-loaded prelude root:
-  root runtime type aliases and root imports from core prelude modules;
+  root imports from core prelude modules plus ordinary global type aliases such
+  as `keyword/0` and `keyword/1`. Runtime primitive types such as `pid`, `ref`,
+  and `utf8` are compiler-known built-ins, not source aliases in this file;
 - core prelude modules such as `Kernel` live in separate source files but are
   flattened into the built-in prelude, keeping raw extern declarations
   module-scoped while exposing imported names like `print/1`;
 - ordinary module bodies live in individual files such as
   `src/modules/runtime_library/utf8.fz` and
   `src/modules/runtime_library/process.fz`;
+- every runtime-library module should carry a crisp `@moduledoc`, and every
+  public export should have the narrowest accurate `@spec`;
 - module-scoped externs are implementation details, not interface exports;
 - import and alias declarations request runtime interfaces on demand through
   `modules::runtime_library::interface`;
@@ -573,7 +577,8 @@ To add a runtime-library module:
 2. put exactly one ordinary `defmodule Name do ... end` in that file;
 3. add that file to `RUNTIME_MODULE_SOURCES` in
    `src/modules/runtime_library.rs`;
-4. add public `@spec` declarations for exported functions;
+4. add a module `@moduledoc` plus public `@spec` declarations for exported
+   functions;
 5. keep primitive `extern "C"` declarations module-scoped. If the module is a
    core prelude module, expose selected functions through `runtime.fz` imports.
 

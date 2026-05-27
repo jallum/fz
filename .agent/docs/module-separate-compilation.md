@@ -86,16 +86,22 @@ Codegen artifact vocabulary:
 Runtime library boundary:
 
 - `src/modules/runtime_library/runtime.fz` is the tiny always-loaded prelude.
-  It contains root-scope runtime type aliases such as `pid`, `ref`, and
-  `utf8`, plus root imports from core prelude modules. It must not grow
-  primitive extern declarations or ordinary `defmodule` bodies.
+  It contains root imports from core prelude modules plus ordinary global type
+  aliases such as `keyword/0` and `keyword/1`. Runtime primitive types such as
+  `pid`, `ref`, and `utf8` are compiler-known built-ins, not source aliases in
+  this file. It must not grow primitive extern declarations or ordinary
+  `defmodule` bodies.
 - Core prelude modules, currently `Kernel`, live in their own source files but
   are flattened into the built-in prelude during lowering. `runtime.fz` imports
   the selected public functions from those modules, so source can call
   `print/1` while raw extern contracts remain inside `Kernel`.
 - Runtime-library modules live in individual files under
   `src/modules/runtime_library/`, such as `utf8.fz` and `process.fz`. Each file
-  contains the ordinary `defmodule` for that module.
+  contains the ordinary `defmodule` for that module. Runtime modules should
+  publish a crisp `@moduledoc` and narrow public specs; broad `any` is for
+  genuinely shape-polymorphic values or areas without a richer type form.
+  Public specs may name compiler-known runtime types such as `utf8`, `pid`,
+  and `ref` directly.
 - `modules::runtime_library` is the manifest and loader for those built-in
   module files. `interface(&ModuleName)` and `artifact(&ModuleName)` provide
   demand-loaded runtime facts keyed by the same `ModuleName` used for user

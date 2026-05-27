@@ -54,9 +54,9 @@ pub struct LowerCtx {
     /// prelude spans (relative to runtime.fz bytes) don't overwrite
     /// user-program spans (which share the same per-fn Var numbering).
     pub prelude_fn_id_cutoff: u32,
-    /// fz-ty1.3 — Type env built from runtime.fz @type declarations.
-    /// Available to downstream passes (e.g. lower_extern_ret_ty) for
-    /// resolving opaque type names declared in the prelude.
+    /// Type env for compiler-known runtime types plus any root aliases still
+    /// declared by the prelude. Downstream passes use it to resolve runtime
+    /// names such as `pid`, `ref`, and `utf8`.
     pub prelude_type_env: crate::type_expr::ModuleTypeEnv,
     /// fz-ty1.9 — Merged type env: prelude + all user-module @type aliases.
     /// Used by `emit_param_type_guards` to resolve annotation tokens in

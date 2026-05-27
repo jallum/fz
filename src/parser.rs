@@ -148,12 +148,36 @@ impl Parser {
         t
     }
     fn eat(&mut self, t: &Tok) -> bool {
-        if std::mem::discriminant(self.peek()) == std::mem::discriminant(t) {
+        if self.at(t) {
             self.bump();
             true
         } else {
             false
         }
+    }
+    fn at(&self, t: &Tok) -> bool {
+        std::mem::discriminant(self.peek()) == std::mem::discriminant(t)
+    }
+    fn bump_keyword_key(&mut self) -> PR<Spanned<String>> {
+        let span = self.cur_span();
+        match self.bump() {
+            Tok::KwKey(key) => Ok(Spanned::new(key, span)),
+            other => self.err(format!("expected keyword key, got {:?}", other)),
+        }
+    }
+    fn continue_keyword_entries(&mut self, terminator: &Tok, positional_msg: &str) -> PR<bool> {
+        self.skip_newlines();
+        if !self.eat(&Tok::Comma) {
+            return Ok(false);
+        }
+        self.skip_newlines();
+        if self.at(terminator) {
+            return Ok(false);
+        }
+        if !matches!(self.peek(), Tok::KwKey(_)) {
+            return self.err(positional_msg);
+        }
+        Ok(true)
     }
     fn expect(&mut self, t: &Tok, what: &str) -> PR<()> {
         if self.eat(t) {

@@ -297,6 +297,27 @@ impl Parser {
                         ));
                     }
                 };
+                let mut params = Vec::new();
+                if self.eat(&Tok::LParen) {
+                    if !matches!(self.peek(), Tok::RParen) {
+                        loop {
+                            let param = match self.bump() {
+                                Tok::Ident(n) => n,
+                                other => {
+                                    return self.err(format!(
+                                        "expected type parameter name in @type head, got {:?}",
+                                        other
+                                    ));
+                                }
+                            };
+                            params.push(param);
+                            if !self.eat(&Tok::Comma) {
+                                break;
+                            }
+                        }
+                    }
+                    self.expect(&Tok::RParen, "`)` after @type parameters")?;
+                }
                 self.expect(&Tok::ColonColon, "`::`")?;
                 // Collect tokens until a top-level newline / eof / end.
                 let body_tokens = self.collect_type_body_tokens();
@@ -304,6 +325,7 @@ impl Parser {
                 Ok(Attribute::TypeAlias(TypeAliasDecl {
                     name: alias_name,
                     name_span: alias_name_span,
+                    params,
                     body_tokens: TypeExprBody(body_tokens),
                     span: start.merge(end_span),
                 }))

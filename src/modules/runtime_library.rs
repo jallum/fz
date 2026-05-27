@@ -9,7 +9,7 @@
 //! This module exposes the second layer as deterministic `.fzi`/`.fzo`
 //! artifact envelopes so resolver and linker work can depend on the same
 //! facts a user library would provide.
-use crate::ast::{Item, ModuleDef, Program};
+use crate::ast::{Attribute, Item, ModuleDef, Program};
 use crate::modules::artifact::{FziArtifact, FzoArtifact, FzoUnitPayload};
 use crate::modules::identity::{ExportKey, ModuleName};
 use crate::modules::interface::ModuleInterface;
@@ -59,8 +59,43 @@ pub struct RuntimeLibraryModuleArtifact {
     pub fzo: FzoArtifact,
 }
 
+pub struct RuntimeRootTypes {
+    pub env: crate::type_expr::ModuleTypeEnv,
+    pub opaque_inners: crate::type_expr::OpaqueInnerTypes,
+    pub brand_inners: crate::type_expr::BrandInnerTypes,
+}
+
 pub fn prelude_source() -> &'static str {
     RUNTIME_PRELUDE_FZ
+}
+
+pub fn root_type_env<T: crate::types::Types<Ty = crate::types::Ty>>(t: &mut T) -> RuntimeRootTypes {
+    let toks = crate::lexer::Lexer::new(prelude_source())
+        .tokenize()
+        .expect("runtime.fz lex error (bug in built-in prelude)");
+    let (_items, attrs) = crate::parser::Parser::new(toks)
+        .parse_prelude()
+        .expect("runtime.fz parse error (bug in built-in prelude)");
+    root_type_env_from_attrs(t, &attrs)
+}
+
+pub fn root_type_env_from_attrs<T: crate::types::Types<Ty = crate::types::Ty>>(
+    t: &mut T,
+    attrs: &[Attribute],
+) -> RuntimeRootTypes {
+    let builtin_env = crate::type_expr::builtin_type_env(t);
+    let (env, declared_opaque_inners, declared_brand_inners) =
+        crate::type_expr::build_module_type_env_for_with_base(t, attrs, "", &builtin_env)
+            .expect("runtime.fz @type error (bug in built-in prelude)");
+    let mut opaque_inners = crate::type_expr::builtin_opaque_inners(t);
+    opaque_inners.extend(declared_opaque_inners);
+    let mut brand_inners = crate::type_expr::builtin_brand_inners(t);
+    brand_inners.extend(declared_brand_inners);
+    RuntimeRootTypes {
+        env,
+        opaque_inners,
+        brand_inners,
+    }
 }
 
 pub fn core_prelude_module_sources() -> impl Iterator<Item = (&'static str, &'static str)> {
@@ -314,6 +349,48 @@ mod tests {
             vec!["from_bytes/1", "from_bytes!/1", "to_bytes/1", "valid?/1"]
         );
         assert!(!exports.iter().any(|name| name.starts_with("fz_")));
+
+        assert_eq!(
+            utf8.docs.as_deref(),
+            Some("UTF-8 validation and branding for byte-aligned binaries.")
+        );
+        let specs = utf8
+            .exports
+            .iter()
+            .map(|export| {
+                let spec = export.spec.as_ref().expect("runtime export spec");
+                (
+                    format!("{}/{}", export.name, export.arity),
+                    spec.params.clone(),
+                    spec.result.clone(),
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            specs,
+            vec![
+                (
+                    "from_bytes/1".to_string(),
+                    vec!["Ident(\"binary\")".to_string()],
+                    "LBrace Atom(\"ok\") Comma Ident(\"utf8\") RBrace Bar LBrace Atom(\"error\") Comma Atom(\"invalid_utf8\") RBrace".to_string(),
+                ),
+                (
+                    "from_bytes!/1".to_string(),
+                    vec!["Ident(\"binary\")".to_string()],
+                    "Ident(\"utf8\")".to_string(),
+                ),
+                (
+                    "to_bytes/1".to_string(),
+                    vec!["Ident(\"utf8\")".to_string()],
+                    "Ident(\"binary\")".to_string(),
+                ),
+                (
+                    "valid?/1".to_string(),
+                    vec!["Ident(\"binary\")".to_string()],
+                    "Ident(\"bool\")".to_string(),
+                ),
+            ]
+        );
 
         assert_eq!(
             primitive_contract_names(),

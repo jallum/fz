@@ -11,12 +11,23 @@ pub fn parse_type_expr<T: crate::types::Types<Ty = crate::types::Ty>>(
     tokens: &[Token],
     env: &ModuleTypeEnv,
 ) -> Result<(T::Ty, usize), TypeExprError> {
+    parse_type_expr_with_stack(t, tokens, env, None, Vec::new())
+}
+
+pub(super) fn parse_type_expr_with_stack<T: crate::types::Types<Ty = crate::types::Ty>>(
+    t: &mut T,
+    tokens: &[Token],
+    env: &ModuleTypeEnv,
+    vars: Option<&mut std::collections::HashMap<String, crate::types::TypeVarId>>,
+    alias_stack: Vec<(String, usize)>,
+) -> Result<(T::Ty, usize), TypeExprError> {
     let mut p = TypeExprParser {
         t,
         tokens,
         pos: 0,
         env,
-        vars: None,
+        vars,
+        alias_stack,
     };
     let ty = p.parse_union()?;
     Ok((ty, p.pos))
@@ -28,15 +39,7 @@ pub fn parse_type_expr_with_vars<T: crate::types::Types<Ty = crate::types::Ty>>(
     env: &ModuleTypeEnv,
     vars: &mut std::collections::HashMap<String, crate::types::TypeVarId>,
 ) -> Result<(T::Ty, usize), TypeExprError> {
-    let mut p = TypeExprParser {
-        t,
-        tokens,
-        pos: 0,
-        env,
-        vars: Some(vars),
-    };
-    let ty = p.parse_union()?;
-    Ok((ty, p.pos))
+    parse_type_expr_with_stack(t, tokens, env, Some(vars), Vec::new())
 }
 
 struct TypeExprParser<'a, T: crate::types::Types<Ty = crate::types::Ty>> {
@@ -45,6 +48,7 @@ struct TypeExprParser<'a, T: crate::types::Types<Ty = crate::types::Ty>> {
     pos: usize,
     env: &'a ModuleTypeEnv,
     vars: Option<&'a mut std::collections::HashMap<String, crate::types::TypeVarId>>,
+    alias_stack: Vec<(String, usize)>,
 }
 
 impl<'a, T: crate::types::Types<Ty = crate::types::Ty>> TypeExprParser<'a, T> {
@@ -133,13 +137,19 @@ impl<'a, T: crate::types::Types<Ty = crate::types::Ty>> TypeExprParser<'a, T> {
                 self.bump();
                 if name == "resource" {
                     self.parse_resource()
+                } else if matches!(self.peek(), Tok::LParen) {
+                    self.parse_alias_application(name)
                 } else {
                     self.lookup_named(&name)
                 }
             }
             Tok::Upper(name) => {
                 self.bump();
-                self.lookup_named(&name)
+                if matches!(self.peek(), Tok::LParen) {
+                    self.parse_alias_application(name)
+                } else {
+                    self.lookup_named(&name)
+                }
             }
             other => Err(self.err(format!("expected a type expression, got {}", other))),
         }
@@ -164,6 +174,58 @@ impl<'a, T: crate::types::Types<Ty = crate::types::Ty>> TypeExprParser<'a, T> {
         let inner = self.parse_union()?;
         self.expect(&Tok::RParen, "`)` after resource element type")?;
         Ok(self.t.resource(inner))
+    }
+
+    fn parse_alias_application(&mut self, name: String) -> Result<T::Ty, TypeExprError> {
+        self.expect(&Tok::LParen, "`(` after type alias name")?;
+        let mut args = Vec::new();
+        if !matches!(self.peek(), Tok::RParen) {
+            loop {
+                args.push(self.parse_union()?);
+                if !matches!(self.peek(), Tok::Comma) {
+                    break;
+                }
+                self.bump();
+            }
+        }
+        self.expect(&Tok::RParen, "`)` after type alias arguments")?;
+
+        let arity = args.len();
+        let Some(alias) = self.env.get_alias(&name, arity).cloned() else {
+            return Err(self.err(format!("unknown type alias `{}/{}`", name, arity)));
+        };
+        let alias = match alias {
+            TypeAlias::Resolved(ty) => return Ok(ty),
+            TypeAlias::Parameterized(alias) => alias,
+        };
+        let key = (name, arity);
+        if self.alias_stack.contains(&key) {
+            return Err(TypeExprError {
+                msg: format!("type-alias cycle involving `{}/{}`", key.0, key.1),
+                span: alias.span,
+            });
+        }
+
+        let mut env = self.env.clone();
+        for (param, arg) in alias.params.iter().zip(args) {
+            env.insert(param.clone(), arg);
+        }
+        let mut stack = self.alias_stack.clone();
+        stack.push(key);
+        let (ty, consumed) =
+            parse_type_expr_with_stack(self.t, &alias.body_tokens.0, &env, None, stack)?;
+        if consumed != alias.body_tokens.0.len() {
+            return Err(TypeExprError {
+                msg: "unexpected trailing tokens in type alias body".to_string(),
+                span: alias
+                    .body_tokens
+                    .0
+                    .get(consumed)
+                    .map(|tok| tok.span)
+                    .unwrap_or(alias.span),
+            });
+        }
+        Ok(ty)
     }
 
     fn parse_list(&mut self) -> Result<T::Ty, TypeExprError> {
@@ -234,6 +296,9 @@ impl<'a, T: crate::types::Types<Ty = crate::types::Ty>> TypeExprParser<'a, T> {
             "atom" => Ok(self.t.atom()),
             "any" => Ok(self.t.any()),
             "never" => Ok(self.t.none()),
+            super::BUILTIN_UTF8 => Ok(self.t.brand_of(super::BUILTIN_UTF8)),
+            super::BUILTIN_PID => Ok(self.t.opaque_of(super::BUILTIN_PID)),
+            super::BUILTIN_REF => Ok(self.t.opaque_of(super::BUILTIN_REF)),
             _ => match self.env.get(name) {
                 Some(ty) => Ok(ty.clone()),
                 None => {

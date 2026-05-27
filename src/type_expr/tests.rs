@@ -52,6 +52,20 @@ fn scalar_names_parse_to_corresponding_descrs() {
 }
 
 #[test]
+fn runtime_builtin_names_parse_without_env_aliases() {
+    let mut ct = ConcreteTypes;
+
+    let utf8 = parse_one(&mut ct, "utf8").unwrap();
+    assert_eq!(ct.brand_singleton(&utf8).as_deref(), Some("utf8"));
+
+    let pid = parse_one(&mut ct, "pid").unwrap();
+    assert_eq!(ct.opaque_singleton(&pid).as_deref(), Some("pid"));
+
+    let ref_ = parse_one(&mut ct, "ref").unwrap();
+    assert_eq!(ct.opaque_singleton(&ref_).as_deref(), Some("ref"));
+}
+
+#[test]
 fn atom_literal_parses_to_singleton() {
     let mut ct = ConcreteTypes;
     let ok = ct.atom_lit("ok");
@@ -331,6 +345,14 @@ fn primary_position_rejects_bar() {
 // ----- fz-ul4.31.3: build_module_type_env -----
 
 fn type_alias_attr(name: &str, body_src: &str) -> crate::ast::Attribute {
+    type_alias_attr_with_params(name, &[], body_src)
+}
+
+fn type_alias_attr_with_params(
+    name: &str,
+    params: &[&str],
+    body_src: &str,
+) -> crate::ast::Attribute {
     use crate::ast::{Attribute, TypeAliasDecl};
     use crate::diag::Span;
     let toks = Lexer::new(body_src).tokenize().expect("lex body");
@@ -342,9 +364,18 @@ fn type_alias_attr(name: &str, body_src: &str) -> crate::ast::Attribute {
     Attribute::TypeAlias(TypeAliasDecl {
         name: name.to_string(),
         name_span: Span::DUMMY,
+        params: params.iter().map(|param| param.to_string()).collect(),
         body_tokens: crate::ast::TypeExprBody(body_tokens),
         span: Span::DUMMY,
     })
+}
+
+fn build_module_type_env_for_test(
+    t: &mut crate::types::ConcreteTypes,
+    attrs: &[crate::ast::Attribute],
+    module_path: &str,
+) -> Result<(ModuleTypeEnv, OpaqueInnerTypes, BrandInnerTypes), TypeExprError> {
+    build_module_type_env_for_with_base(t, attrs, module_path, &ModuleTypeEnv::new())
 }
 
 #[test]
@@ -474,6 +505,87 @@ fn build_env_resolves_arrow_using_alias() {
 }
 
 #[test]
+fn build_env_parameterized_alias_substitutes_args() {
+    let attrs = vec![type_alias_attr_with_params("pair", &["a", "b"], "{a, b}")];
+    let mut ct = crate::types::ConcreteTypes;
+    let env = build_module_type_env(&mut ct, &attrs).unwrap();
+    let actual = parse_one_with(&mut ct, "pair(integer, atom)", &env).unwrap();
+    let int = ct.int();
+    let atom = ct.atom();
+    let expected = ct.tuple(&[int, atom]);
+    assert!(ct.is_equivalent(&actual, &expected));
+}
+
+#[test]
+fn build_env_allows_same_alias_name_with_different_arities() {
+    let attrs = vec![
+        type_alias_attr("keyword", "[{atom, any}]"),
+        type_alias_attr_with_params("keyword", &["t"], "[{atom, t}]"),
+    ];
+    let mut ct = crate::types::ConcreteTypes;
+    let env = build_module_type_env(&mut ct, &attrs).unwrap();
+
+    let mono = env.get("keyword").expect("keyword/0");
+    let atom = ct.atom();
+    let any = ct.any();
+    let any_pair = ct.tuple(&[atom.clone(), any]);
+    let expected_mono = ct.list(any_pair);
+    assert!(ct.is_equivalent(mono, &expected_mono));
+    let mono_call = parse_one_with(&mut ct, "keyword()", &env).unwrap();
+    assert!(ct.is_equivalent(&mono_call, &expected_mono));
+
+    let applied = parse_one_with(&mut ct, "keyword(integer)", &env).unwrap();
+    let int = ct.int();
+    let int_pair = ct.tuple(&[atom, int]);
+    let expected_applied = ct.list(int_pair);
+    assert!(ct.is_equivalent(&applied, &expected_applied));
+}
+
+#[test]
+fn build_env_parameterized_aliases_compose() {
+    let attrs = vec![
+        type_alias_attr_with_params("result", &["ok", "err"], "{:ok, ok} | {:error, err}"),
+        type_alias_attr_with_params("api_result", &["t"], "result(t, utf8)"),
+    ];
+    let mut ct = crate::types::ConcreteTypes;
+    let env = build_module_type_env(&mut ct, &attrs).unwrap();
+    let actual = parse_one_with(&mut ct, "api_result(integer)", &env).unwrap();
+    let ok = ct.atom_lit("ok");
+    let int = ct.int();
+    let ok_tuple = ct.tuple(&[ok, int]);
+    let error = ct.atom_lit("error");
+    let utf8 = ct.brand_of("utf8");
+    let error_tuple = ct.tuple(&[error, utf8]);
+    let expected = ct.union(ok_tuple, error_tuple);
+    assert!(ct.is_equivalent(&actual, &expected));
+}
+
+#[test]
+fn parameterized_alias_application_checks_arity() {
+    let attrs = vec![type_alias_attr_with_params("pair", &["a", "b"], "{a, b}")];
+    let mut ct = crate::types::ConcreteTypes;
+    let env = build_module_type_env(&mut ct, &attrs).unwrap();
+    let err = parse_one_with(&mut ct, "pair(integer)", &env).unwrap_err();
+    assert!(
+        err.msg.contains("unknown type alias `pair/1`"),
+        "expected arity error, got: {}",
+        err.msg
+    );
+}
+
+#[test]
+fn parameterized_alias_cycle_is_rejected() {
+    let attrs = vec![type_alias_attr_with_params("loop", &["t"], "loop(t)")];
+    let mut ct = crate::types::ConcreteTypes;
+    let err = build_module_type_env(&mut ct, &attrs).unwrap_err();
+    assert!(
+        err.msg.contains("cycle"),
+        "expected cycle error, got: {}",
+        err.msg
+    );
+}
+
+#[test]
 fn consumed_count_reports_correct_position() {
     // Parser returns how many tokens it consumed, so callers can
     // continue parsing whatever follows (e.g., the `::` separator
@@ -571,7 +683,7 @@ fn build_env_opaque_resource_alias_qualifies_with_module() {
     // qualified tag `"File::t"`.
     let attrs = vec![type_alias_attr("t", "opaque resource(integer)")];
     let mut ct = crate::types::ConcreteTypes;
-    let (env, _o, _b) = build_module_type_env_for(&mut ct, &attrs, "File").unwrap();
+    let (env, _o, _b) = build_module_type_env_for_test(&mut ct, &attrs, "File").unwrap();
     let ct = crate::types::ConcreteTypes;
     let t = env.get("t").expect("alias resolved");
     assert_eq!(ct.opaque_singleton(t).as_deref(), Some("File::t"));
@@ -594,7 +706,7 @@ fn build_env_opaque_alias_rejects_bad_body() {
     // `opaque <body>` parses the body; an unknown name surfaces.
     let attrs = vec![type_alias_attr("t", "opaque nonesuch")];
     let mut ct = crate::types::ConcreteTypes;
-    let err = build_module_type_env_for(&mut ct, &attrs, "M").unwrap_err();
+    let err = build_module_type_env_for_test(&mut ct, &attrs, "M").unwrap_err();
     assert!(
         err.msg.contains("unknown type name"),
         "expected unknown-name diag from opaque body, got: {}",
@@ -626,7 +738,7 @@ fn build_env_two_opaque_aliases_are_distinct() {
 fn build_env_refines_alias_creates_brand_descr() {
     let attrs = vec![type_alias_attr("utf8", "refines binary")];
     let mut ct = crate::types::ConcreteTypes;
-    let (env, _o, brand_inners) = build_module_type_env_for(&mut ct, &attrs, "").unwrap();
+    let (env, _o, brand_inners) = build_module_type_env_for_test(&mut ct, &attrs, "").unwrap();
     let utf8 = env.get("utf8").unwrap();
     assert_eq!(
         ct.brand_singleton(utf8).as_deref(),
@@ -649,7 +761,7 @@ fn build_env_refines_alias_creates_brand_descr() {
 fn build_env_refines_alias_qualifies_with_module() {
     let attrs = vec![type_alias_attr("email", "refines binary")];
     let mut ct = crate::types::ConcreteTypes;
-    let (env, _o, brand_inners) = build_module_type_env_for(&mut ct, &attrs, "Email").unwrap();
+    let (env, _o, brand_inners) = build_module_type_env_for_test(&mut ct, &attrs, "Email").unwrap();
     let ct = crate::types::ConcreteTypes;
     let email = env.get("email").unwrap();
     assert_eq!(ct.brand_singleton(email).as_deref(), Some("Email::email"));
@@ -660,7 +772,7 @@ fn build_env_refines_alias_qualifies_with_module() {
 fn build_env_refines_alias_rejects_empty_body() {
     let attrs = vec![type_alias_attr("bad", "refines")];
     let mut ct = crate::types::ConcreteTypes;
-    let err = build_module_type_env_for(&mut ct, &attrs, "M").unwrap_err();
+    let err = build_module_type_env_for_test(&mut ct, &attrs, "M").unwrap_err();
     assert!(
         err.msg.contains("requires an inner type"),
         "expected diag about missing inner; got: {}",
@@ -672,7 +784,7 @@ fn build_env_refines_alias_rejects_empty_body() {
 fn build_env_refines_alias_rejects_bad_inner() {
     let attrs = vec![type_alias_attr("bad", "refines nonesuch")];
     let mut ct = crate::types::ConcreteTypes;
-    let err = build_module_type_env_for(&mut ct, &attrs, "M").unwrap_err();
+    let err = build_module_type_env_for_test(&mut ct, &attrs, "M").unwrap_err();
     assert!(
         err.msg.contains("unknown type name"),
         "expected unknown-name diag from refines body; got: {}",
@@ -688,8 +800,8 @@ fn refines_distinct_from_opaque_with_same_name() {
     let m_attrs = vec![type_alias_attr("B", "refines integer")];
     let n_attrs = vec![type_alias_attr("B", "opaque integer")];
     let mut ct = crate::types::ConcreteTypes;
-    let (m_env, _, _) = build_module_type_env_for(&mut ct, &m_attrs, "M").unwrap();
-    let (n_env, _, _) = build_module_type_env_for(&mut ct, &n_attrs, "N").unwrap();
+    let (m_env, _, _) = build_module_type_env_for_test(&mut ct, &m_attrs, "M").unwrap();
+    let (n_env, _, _) = build_module_type_env_for_test(&mut ct, &n_attrs, "N").unwrap();
     let b_brand = m_env.get("B").unwrap();
     let b_opaque = n_env.get("B").unwrap();
     let inter = ct.intersect(b_brand.clone(), b_opaque.clone());

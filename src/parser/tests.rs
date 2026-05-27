@@ -35,19 +35,75 @@ mod do_block_sugar_tests {
             panic!("not a call")
         };
         assert!(matches!(callee.node, Expr::Var(ref n) if n == "f"));
-        assert_eq!(args.len(), 2, "name + body block");
+        assert_eq!(args.len(), 2, "name + keyword list");
         assert!(matches!(args[0].node, Expr::Binary(_)));
-        assert!(matches!(args[1].node, Expr::Block(_)));
+        assert_keyword_list(&args[1], &[("do", "block")]);
     }
 
     #[test]
-    fn comma_do_kw_appended_as_arg() {
+    fn comma_do_kw_appended_as_keyword_arg() {
         let e = parse_fn_body(r#"f("x"), do: 42"#);
         let Expr::Call(_, args) = e else {
             panic!("not a call")
         };
         assert_eq!(args.len(), 2);
-        assert!(matches!(args[1].node, Expr::Int(42)));
+        assert_keyword_list(&args[1], &[("do", "int")]);
+    }
+
+    #[test]
+    fn list_keyword_sugar_is_list_of_atom_pairs() {
+        let e = parse_expr("[a: 1, b: 2]");
+        assert_keyword_list(&Spanned::dummy(e), &[("a", "int"), ("b", "int")]);
+    }
+
+    #[test]
+    fn call_keywords_are_single_trailing_list_arg() {
+        let e = parse_expr("f(1, a: 2, b: 3)");
+        let Expr::Call(_, args) = e else {
+            panic!("not a call")
+        };
+        assert_eq!(args.len(), 2);
+        assert!(matches!(args[0].node, Expr::Int(1)));
+        assert_keyword_list(&args[1], &[("a", "int"), ("b", "int")]);
+    }
+
+    #[test]
+    fn trailing_do_merges_with_existing_keyword_arg() {
+        let e = parse_expr("f(1, timeout: 10) do 42 end");
+        let Expr::Call(_, args) = e else {
+            panic!("not a call")
+        };
+        assert_eq!(args.len(), 2);
+        assert_keyword_list(&args[1], &[("timeout", "int"), ("do", "int")]);
+    }
+
+    #[test]
+    fn trailing_do_does_not_merge_with_explicit_atom_pair_list() {
+        let e = parse_expr("f([{:timeout, 10}]) do 42 end");
+        let Expr::Call(_, args) = e else {
+            panic!("not a call")
+        };
+        assert_eq!(args.len(), 2);
+        let Expr::List(items, None) = &args[0].node else {
+            panic!("expected explicit list arg")
+        };
+        assert_eq!(items.len(), 1);
+        assert_keyword_list(&args[1], &[("do", "int")]);
+    }
+
+    #[test]
+    fn list_keyword_sugar_works_in_patterns() {
+        let toks = Lexer::new("fn opts([do: body, else: fallback]), do: body")
+            .tokenize()
+            .unwrap();
+        let prog = Parser::new(toks).parse_program().unwrap();
+        let Item::Fn(def) = &*prog.items[0] else {
+            panic!("expected fn")
+        };
+        assert_keyword_pattern(
+            &def.clauses[0].params[0],
+            &[("do", "body"), ("else", "fallback")],
+        );
     }
 
     #[test]
@@ -68,11 +124,46 @@ end
         });
         let (name, args) = mc.expect("expected an Item::MacroCall");
         assert_eq!(name, "test");
-        assert_eq!(args.len(), 2, "name + body");
+        assert_eq!(args.len(), 2, "name + keyword list");
         assert!(matches!(args[0].node, Expr::Binary(ref s) if s == b"addition"));
         match &args[1].node {
-            Expr::Block(_) | Expr::BinOp(_, _, _) => {}
+            Expr::List(_, None) => assert_keyword_list(&args[1], &[("do", "binop")]),
             other => panic!("unexpected body shape: {:?}", other),
+        }
+    }
+
+    fn assert_keyword_list(arg: &Spanned<Expr>, expected: &[(&str, &str)]) {
+        let Expr::List(items, None) = &arg.node else {
+            panic!("expected keyword list, got {:?}", arg.node);
+        };
+        assert_eq!(items.len(), expected.len());
+        for (item, (expected_key, expected_kind)) in items.iter().zip(expected.iter()) {
+            let Expr::Tuple(pair) = &item.node else {
+                panic!("expected keyword tuple, got {:?}", item.node);
+            };
+            assert_eq!(pair.len(), 2);
+            assert!(matches!(&pair[0].node, Expr::Atom(key) if key == expected_key));
+            match *expected_kind {
+                "block" => assert!(matches!(pair[1].node, Expr::Block(_))),
+                "binop" => assert!(matches!(pair[1].node, Expr::BinOp(_, _, _))),
+                "int" => assert!(matches!(pair[1].node, Expr::Int(_))),
+                other => panic!("unknown expected kind {}", other),
+            }
+        }
+    }
+
+    fn assert_keyword_pattern(arg: &Spanned<Pattern>, expected: &[(&str, &str)]) {
+        let Pattern::List(items, None) = &arg.node else {
+            panic!("expected keyword pattern list, got {:?}", arg.node);
+        };
+        assert_eq!(items.len(), expected.len());
+        for (item, (expected_key, expected_var)) in items.iter().zip(expected.iter()) {
+            let Pattern::Tuple(pair) = &item.node else {
+                panic!("expected keyword pattern tuple, got {:?}", item.node);
+            };
+            assert_eq!(pair.len(), 2);
+            assert!(matches!(&pair[0].node, Pattern::Atom(key) if key == expected_key));
+            assert!(matches!(&pair[1].node, Pattern::Var(name) if name == expected_var));
         }
     }
 
