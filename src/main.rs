@@ -294,7 +294,7 @@ fn run_build(tel: &telemetry::ConfiguredTelemetry, args: &[String]) {
     });
 
     let frontend_result = frontend::compile_source_with_types(&mut t, src, src_path.clone(), tel);
-    let prepared = prepare_frontend_for_mode(&mut t, frontend_result, &sm_cell, tel, mode);
+    let prepared = checked_module_for_mode(&mut t, frontend_result, &sm_cell, tel, mode);
     if emit_fzi {
         let diags = module_interface::validate_public_export_specs(&prepared.interfaces);
         diag::report_or_exit_through(tel, &diags);
@@ -310,7 +310,8 @@ fn run_build(tel: &telemetry::ConfiguredTelemetry, args: &[String]) {
             });
     }
 
-    let module = prepared.module;
+    let unit_input = prepared.compiled_unit_input();
+    let module = unit_input.code;
     let module_plan = prepared.module_plan;
 
     let obj_name = std::path::Path::new(&src_path)
@@ -867,12 +868,37 @@ struct Compiled {
     module: fz_ir::Module,
 }
 
-struct PreparedFrontend {
+struct CheckedModule {
     module: fz_ir::Module,
     module_plan: ir_planner::ModulePlan,
     interfaces:
         std::collections::BTreeMap<module_identity::ModuleName, module_interface::ModuleInterface>,
     sm: diag::SourceMap,
+}
+
+impl CheckedModule {
+    fn compiled_unit_input(&self) -> ir_codegen::CompiledUnit {
+        let interface = module_name_from_ir_path(self.module.module_path())
+            .and_then(|module| self.interfaces.get(&module).cloned());
+        ir_codegen::CompiledUnit::from_ir_module(
+            self.module.clone(),
+            interface,
+            diag::Diagnostics::new(),
+        )
+    }
+}
+
+fn module_name_from_ir_path(path: &str) -> Option<module_identity::ModuleName> {
+    let segments = path
+        .split('.')
+        .filter(|segment| !segment.is_empty())
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    if segments.is_empty() {
+        None
+    } else {
+        Some(module_identity::ModuleName::from_segments(segments))
+    }
 }
 
 struct LtoLinkedProgram {
@@ -917,13 +943,13 @@ fn load_interface_table_or_exit(
         })
 }
 
-fn prepare_frontend_for_mode(
+fn checked_module_for_mode(
     t: &mut types::ConcreteTypes,
     result: frontend::FrontendResult,
     sm_cell: &Rc<RefCell<diag::SourceMap>>,
     tel: &dyn telemetry::Telemetry,
     mode: CompileMode,
-) -> PreparedFrontend {
+) -> CheckedModule {
     let frontend = run_frontend(result, sm_cell, tel);
     let interfaces = frontend._prog.module_interfaces;
     tel.event(
@@ -934,14 +960,14 @@ fn prepare_frontend_for_mode(
         let linked = LtoLinkedProgram::validate(frontend.module, interfaces, tel);
         let (module, interfaces) = linked.erase_boundaries(tel);
         let module_plan = ir_planner::plan_module(t, &module, tel);
-        PreparedFrontend {
+        CheckedModule {
             module,
             module_plan,
             interfaces,
             sm: frontend.sm,
         }
     } else {
-        PreparedFrontend {
+        CheckedModule {
             module: frontend.module,
             module_plan: frontend.module_plan,
             interfaces,
@@ -1099,7 +1125,7 @@ fn dump_bodies_pipeline(
     use crate::ir_planner::ModulePlan;
     let mut t = types::ConcreteTypes;
     let frontend_result = frontend::compile_source_with_types(&mut t, src, source_name, tel);
-    let prepared = prepare_frontend_for_mode(&mut t, frontend_result, sm_cell, tel, mode);
+    let prepared = checked_module_for_mode(&mut t, frontend_result, sm_cell, tel, mode);
     let mut module = prepared.module;
     // Run the reducer pass directly so the bodies dump reflects what
     // codegen would see, without going all the way to JIT.
@@ -1190,7 +1216,7 @@ fn dump_outcomes_pipeline(
     let mut t = types::ConcreteTypes;
     let frontend_result =
         frontend::compile_source_with_types(&mut t, src, source_name.clone(), tel);
-    let prepared = prepare_frontend_for_mode(&mut t, frontend_result, sm_cell, tel, mode);
+    let prepared = checked_module_for_mode(&mut t, frontend_result, sm_cell, tel, mode);
     let mut module = prepared.module;
     let reducer_log = ir_reducer::reduce_module_with_telemetry(&mut t, &mut module, tel);
     let mt = ir_planner::plan_module(&mut t, &module, tel);
@@ -1442,8 +1468,9 @@ fn compile_pipeline(
 ) -> Compiled {
     let mut t = types::ConcreteTypes;
     let frontend_result = frontend::compile_source_with_types(&mut t, src, source_name, tel);
-    let prepared = prepare_frontend_for_mode(&mut t, frontend_result, sm_cell, tel, mode);
-    let module = prepared.module;
+    let prepared = checked_module_for_mode(&mut t, frontend_result, sm_cell, tel, mode);
+    let unit_input = prepared.compiled_unit_input();
+    let module = unit_input.code;
     let module_plan = prepared.module_plan;
     let main_fn = module.fn_by_name("main").map(|f| f.id);
     let cm = ir_codegen::compile_pretyped(&mut t, &module, &module_plan, tel).unwrap_or_else(|e| {
