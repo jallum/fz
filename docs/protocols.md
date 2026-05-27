@@ -18,14 +18,12 @@ The v1 source forms are:
 
 ```fz
 defprotocol Enumerable do
-  @spec reduce(t(a), acc, fn(a, acc) -> acc) -> acc
+  @spec reduce(t(a), b, (a, b) -> {:cont, b} | {:halt, b}) :: any
   fn reduce(enumerable, acc, reducer)
 end
 
 defimpl Enumerable, for: List do
-  fn reduce(list, acc, reducer) do
-    ...
-  end
+  fn reduce(list, acc, reducer), do: Enumerable.reduce_list(list, acc, reducer)
 end
 ```
 
@@ -52,8 +50,9 @@ define every required callback with the required arity and compatible specs.
 The domain type is checked at use sites and function boundaries. A spec that
 requires `P.t(...)` requires proof that the argument type is inside the
 implementation domain of `P`. That proof may come from a concrete impl target,
-a closed union whose arms all implement `P`, or an explicitly open boundary
-that remains a runtime lookup.
+a closed union whose arms all implement `P`, or an explicitly open boundary.
+The current executable path requires a statically selected implementation;
+runtime lookup for open boundaries is future work.
 
 This lets the compiler produce diagnostics such as "List implements
 Enumerable, Integer does not" instead of treating a protocol annotation as
@@ -63,11 +62,13 @@ plain `any`.
 
 Implementation targets are typed identities. They are never display strings.
 
-The v1 target space is built-in targets, module or struct targets keyed by typed
-module identity, and `Any` only if the protocol explicitly permits an `Any`
-fallback. Display spellings are diagnostics and source syntax. Compiler facts
-use a semantic `ImplTarget` identity, just as module linking uses `ModuleName`
-and `ExportKey` instead of dotted strings.
+The implemented v1 target space is module-shaped implementation targets keyed
+by typed module identity. Built-in scalar/list names map to known type shapes
+when the planner checks dispatch. `Any` fallback, deriving, optional callbacks,
+and struct-specific target sugar are reserved future features. Display
+spellings are diagnostics and source syntax. Compiler facts use a semantic
+`ImplTarget` identity, just as module linking uses `ModuleName` and `ExportKey`
+instead of dotted strings.
 
 Duplicate `(protocol, target)` implementations are errors. Missing required
 callbacks and callback arity mismatches are errors. The diagnostics should name
@@ -87,10 +88,11 @@ Compilation can see two useful domain shapes:
 - a closed executable or link domain, where the linked implementation set is
   known.
 
-Open domains can still type-check calls and specs, but dispatch may remain a
-runtime lookup when the receiver type does not identify one implementation.
-Closed domains allow the planner to choose direct calls or finite switches
-without a fallback path.
+Open domains can still type-check calls and specs. Today, executable dispatch is
+only emitted when the planner can select a static implementation callback.
+Runtime lookup for erased or genuinely open receiver domains is a future
+feature, not a hidden fallback. Closed domains allow the planner to choose
+direct calls or finite switches without a fallback path.
 
 ## Dispatch Outcomes
 
@@ -106,7 +108,7 @@ For a protocol call, the compiler must select one of these outcomes:
   the selected implementation callbacks;
 - provider-boundary external edge: the implementation callback is known by
   `ExportKey`, but its body lives in another unit until module graph linking;
-- runtime lookup: the receiver domain is genuinely open or erased;
+- runtime lookup: future feature for genuinely open or erased receiver domains;
 - diagnostic: no implementation can satisfy the protocol-domain constraint.
 
 Static direct and closed-domain switch dispatch must not require heap boxing of

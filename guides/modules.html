@@ -356,7 +356,10 @@ prelude modules. <code>Kernel</code> lives in its own file and owns the raw
 primitive extern contracts plus public helpers such as <code>print/1</code>
 and <code>assert/1</code>. Ordinary runtime modules live next to it in
 individual files such as <code>src/modules/runtime_library/utf8.fz</code> and
-<code>src/modules/runtime_library/process.fz</code>.</p>
+<code>src/modules/runtime_library/process.fz</code>. The
+<code>Enumerable</code> runtime module follows the same rule: its list
+helpers and protocol facts are ordinary runtime-library source, not primitive
+externs.</p>
 
 <p>Adding a runtime module means adding a new file under
 <code>src/modules/runtime_library/</code>, putting one ordinary

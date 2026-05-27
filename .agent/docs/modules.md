@@ -577,7 +577,8 @@ Rules:
   module-scoped while exposing imported names like `print/1`;
 - ordinary module bodies live in individual files such as
   `src/modules/runtime_library/utf8.fz` and
-  `src/modules/runtime_library/process.fz`;
+  `src/modules/runtime_library/process.fz`; `Enum` and `Enumerable` also live
+  here, with `Enumerable` exposing list protocol facts as ordinary FZ source;
 - every runtime-library module should carry a crisp `@moduledoc`, and every
   public export should have the narrowest accurate `@spec`;
 - module-scoped externs are implementation details, not interface exports;
