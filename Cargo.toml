@@ -25,6 +25,7 @@ rustyline = { version = "18.0.0", default-features = false }
 # is its own trial in `cargo test` output (filterable, parallelizable,
 # named individually instead of collapsing into one `fixture_matrix ... ok`).
 libtest-mimic = "0.8"
+serial_test = "3"
 
 [[test]]
 name = "fixture_matrix"

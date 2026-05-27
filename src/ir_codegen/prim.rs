@@ -768,6 +768,197 @@ fn lower_out_for_codegen_value(value: CodegenValue) -> LowerOut {
 }
 
 #[allow(clippy::too_many_arguments)]
+fn marshal_extern_arg<M: cranelift_module::Module>(
+    b: &mut FunctionBuilder<'_>,
+    jmod: &mut M,
+    runtime: &RuntimeRefs,
+    var_env: &HashMap<u32, CodegenValue>,
+    cache: &mut CodegenCache,
+    var: crate::fz_ir::Var,
+    ty: crate::fz_ir::ExternTy,
+) -> Result<ir::Value, CodegenError> {
+    use crate::fz_ir::ExternTy;
+    Ok(match ty {
+        ExternTy::I64 => as_raw_i64(var_env, b, jmod, runtime, var.0),
+        ExternTy::F64 => as_raw_f64(var_env, b, jmod, runtime, var.0),
+        ExternTy::Binary | ExternTy::CString => {
+            let helper_id = match ty {
+                ExternTy::CString => runtime.binary_as_cstring_id,
+                _ => runtime.binary_as_ptr_id,
+            };
+            let helper_fref = jmod.declare_func_in_func(helper_id, b.func);
+            let bits = tagged_get(var_env, b, jmod, runtime, var.0, cache);
+            let call = b.ins().call(helper_fref, &[bits]);
+            b.inst_results(call)[0]
+        }
+        ExternTy::Any => tagged_get(var_env, b, jmod, runtime, var.0, cache),
+        ExternTy::Unit | ExternTy::Never => {
+            return Err(CodegenError::new(format!(
+                "{:?} is not a valid extern argument marshal class",
+                ty
+            )));
+        }
+    })
+}
+
+fn format_extern_shape(
+    ret: crate::fz_ir::ExternTy,
+    fixed: &[crate::fz_ir::ExternTy],
+    variadic: &[crate::fz_ir::ExternTy],
+) -> String {
+    let fixed = fixed
+        .iter()
+        .map(|ty| format!("{:?}", ty))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let variadic = variadic
+        .iter()
+        .map(|ty| format!("{:?}", ty))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("ret={:?} fixed=[{}] variadic=[{}]", ret, fixed, variadic)
+}
+
+fn variadic_dispatcher(
+    runtime: &RuntimeRefs,
+    ret: crate::fz_ir::ExternTy,
+    fixed: &[crate::fz_ir::ExternTy],
+    variadic: &[crate::fz_ir::ExternTy],
+) -> Result<FuncId, CodegenError> {
+    use crate::fz_ir::ExternTy;
+    match (ret, fixed, variadic) {
+        (ExternTy::I64, [ExternTy::CString, ExternTy::I64], [ExternTy::I64]) => {
+            Ok(runtime.extern_var_i64_cstring_i64_i64_to_i64_id)
+        }
+        (ExternTy::I64, [ExternTy::CString], [ExternTy::I64]) => {
+            Ok(runtime.extern_var_i64_cstring_i64_to_i64_id)
+        }
+        _ => Err(CodegenError::new(format!(
+            "unsupported variadic extern shape: {}",
+            format_extern_shape(ret, fixed, variadic)
+        ))),
+    }
+}
+
+fn emit_extern_symbol_name<M: cranelift_module::Module>(
+    b: &mut FunctionBuilder<'_>,
+    jmod: &mut M,
+    caller_fn_id: crate::fz_ir::FnId,
+    block_id: crate::fz_ir::BlockId,
+    stmt_idx: usize,
+    symbol: &str,
+) -> Result<ir::Value, CodegenError> {
+    if symbol.as_bytes().contains(&0) {
+        return Err(CodegenError::new(format!(
+            "extern symbol `{}` contains a NUL byte",
+            symbol
+        )));
+    }
+    let name = format!(
+        ".fz_extern_symbol_{}_{}_{}",
+        caller_fn_id.0, block_id.0, stmt_idx
+    );
+    let data_id = jmod
+        .declare_data(&name, Linkage::Local, false, false)
+        .map_err(|e| CodegenError::new(format!("declare {}: {}", name, e)))?;
+    let mut payload = symbol.as_bytes().to_vec();
+    payload.push(0);
+    let mut desc = DataDescription::new();
+    desc.define(payload.into_boxed_slice());
+    desc.set_align(1);
+    jmod.define_data(data_id, &desc)
+        .map_err(|e| CodegenError::new(format!("define {}: {}", name, e)))?;
+    let gv = jmod.declare_data_in_func(data_id, b.func);
+    Ok(b.ins().symbol_value(types::I64, gv))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn emit_variadic_extern_call<M: cranelift_module::Module>(
+    b: &mut FunctionBuilder<'_>,
+    jmod: &mut M,
+    env: &CodegenEnv<'_>,
+    var_env: &HashMap<u32, CodegenValue>,
+    cache: &mut CodegenCache,
+    eid: crate::fz_ir::ExternId,
+    args: &[crate::fz_ir::ExternArg],
+    dest_var: crate::fz_ir::Var,
+    caller_fn_id: crate::fz_ir::FnId,
+    block_id: crate::fz_ir::BlockId,
+    stmt_idx: usize,
+) -> Result<LowerOut, CodegenError> {
+    let decl = env.module.extern_by_id(eid);
+    let mut arg_tys = Vec::with_capacity(args.len());
+    for arg_idx in 0..args.len() {
+        let site = crate::fz_ir::ExternMarshalSite {
+            block: block_id,
+            stmt_idx,
+            arg_idx,
+        };
+        let Some(&ty) = env.fn_types.extern_marshals.get(&site) else {
+            return Err(CodegenError::new(format!(
+                "variadic extern `{}` has unresolved marshal metadata at {:?}",
+                decl.symbol, site
+            )));
+        };
+        arg_tys.push(ty);
+    }
+
+    let fixed_count = decl.params.len();
+    let fixed = &arg_tys[..fixed_count];
+    let variadic = &arg_tys[fixed_count..];
+    let dispatcher = variadic_dispatcher(env.runtime, decl.ret, fixed, variadic)?;
+    let symbol_ptr = emit_extern_symbol_name(
+        b,
+        jmod,
+        caller_fn_id,
+        block_id,
+        stmt_idx,
+        decl.symbol.as_str(),
+    )?;
+    let lookup_fref = jmod.declare_func_in_func(env.runtime.extern_symbol_addr_id, b.func);
+    let lookup = b.ins().call(lookup_fref, &[symbol_ptr]);
+    let fn_ptr = b.inst_results(lookup)[0];
+
+    let mut call_args = Vec::with_capacity(args.len() + 1);
+    call_args.push(fn_ptr);
+    for (arg, ty) in args.iter().zip(arg_tys.iter().copied()) {
+        call_args.push(marshal_extern_arg(
+            b,
+            jmod,
+            env.runtime,
+            var_env,
+            cache,
+            arg.var,
+            ty,
+        )?);
+    }
+
+    let dispatcher_fref = jmod.declare_func_in_func(dispatcher, b.func);
+    let inst = b.ins().call(dispatcher_fref, &call_args);
+    if matches!(
+        decl.ret,
+        crate::fz_ir::ExternTy::Unit | crate::fz_ir::ExternTy::Never
+    ) {
+        if cache.used_vars.contains(&dest_var.0) {
+            return Ok(LowerOut::Strict(strict_const_value(
+                b,
+                fz_runtime::any_value::AnyValue::nil_atom(),
+            )));
+        }
+        return Ok(LowerOut::DeadUnit);
+    }
+    let raw = b.inst_results(inst)[0];
+    match decl.ret {
+        crate::fz_ir::ExternTy::I64 => Ok(LowerOut::RawI64(raw)),
+        crate::fz_ir::ExternTy::F64 => Ok(LowerOut::RawF64(raw)),
+        crate::fz_ir::ExternTy::Any
+        | crate::fz_ir::ExternTy::Binary
+        | crate::fz_ir::ExternTy::CString => Ok(LowerOut::ValueRef(raw)),
+        crate::fz_ir::ExternTy::Unit | crate::fz_ir::ExternTy::Never => unreachable!(),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn lower_prim<
     M: cranelift_module::Module,
     T: crate::types::Types<Ty = crate::types::Ty>,
@@ -780,11 +971,9 @@ pub(crate) fn lower_prim<
     prim: &Prim,
     dest_var: crate::fz_ir::Var,
     cache: &mut CodegenCache,
-    // fz-try B1+B2 — kept for call-site signature stability while we
-    // route through the simplified MakeClosure lowering. The picker no
-    // longer needs (caller, block, stmt) since the lambda body is
-    // resolved directly by FnId.0 alignment.
-    _caller_fn_id: crate::fz_ir::FnId,
+    // `caller_fn_id`/`block_id`/`stmt_idx` identify per-stmt side tables such
+    // as variadic extern marshal plans and generated static data symbols.
+    caller_fn_id: crate::fz_ir::FnId,
     block_id: crate::fz_ir::BlockId,
     stmt_idx: usize,
     block_env: Option<&HashMap<crate::fz_ir::Var, crate::types::Ty>>,
@@ -1397,6 +1586,21 @@ pub(crate) fn lower_prim<
                 let inst = b.ins().call(fref, &[payload_raw, dtor_ref]);
                 return Ok(LowerOut::ValueRef(b.inst_results(inst)[0]));
             }
+            if decl.variadic {
+                return emit_variadic_extern_call(
+                    b,
+                    jmod,
+                    env,
+                    var_env,
+                    cache,
+                    *eid,
+                    args,
+                    dest_var,
+                    caller_fn_id,
+                    block_id,
+                    stmt_idx,
+                );
+            }
             let param_tys: Vec<ir::Type> = decl
                 .params
                 .iter()
@@ -1442,26 +1646,8 @@ pub(crate) fn lower_prim<
             let arg_vals: Vec<ir::Value> = args
                 .iter()
                 .zip(param_kinds.iter())
-                .map(|(v, ty)| match ty {
-                    ExternTy::I64 => as_raw_i64(var_env, b, jmod, runtime, v.var.0),
-                    ExternTy::F64 => as_raw_f64(var_env, b, jmod, runtime, v.var.0),
-                    // fz-2yf — Binary/CString: call the runtime helper from
-                    // [[fz-9ss]] with tagged heap bits and use its returned
-                    // `*const u8` as the C arg. Helper aborts on non-binary
-                    // or non-byte-aligned bitstring.
-                    ExternTy::Binary | ExternTy::CString => {
-                        let helper_id = match ty {
-                            ExternTy::CString => runtime.binary_as_cstring_id,
-                            _ => runtime.binary_as_ptr_id,
-                        };
-                        let helper_fref = jmod.declare_func_in_func(helper_id, b.func);
-                        let bits = tagged_get(var_env, b, jmod, runtime, v.var.0, cache);
-                        let call = b.ins().call(helper_fref, &[bits]);
-                        b.inst_results(call)[0]
-                    }
-                    _ => tagged_get(var_env, b, jmod, runtime, v.var.0, cache),
-                })
-                .collect();
+                .map(|(v, ty)| marshal_extern_arg(b, jmod, runtime, var_env, cache, v.var, *ty))
+                .collect::<Result<_, _>>()?;
             let inst = b.ins().call(fref, &arg_vals);
             if returns_value {
                 let raw = b.inst_results(inst)[0];

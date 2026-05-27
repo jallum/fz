@@ -53,6 +53,11 @@ fn resolve_symbol_addr(_name: *const c_char) -> usize {
     0
 }
 
+fn abort_null_fn_ptr(dispatcher: &str) -> ! {
+    eprintln!("fz panic: {} received null C function pointer", dispatcher);
+    std::process::abort();
+}
+
 /// Call a C function shaped like `int f(const char*, int, ...)` with one
 /// integer variadic argument. This covers libc `open(path, flags, mode)`.
 ///
@@ -66,6 +71,9 @@ pub unsafe extern "C" fn fz_call_var_i64_cstring_i64_i64_to_i64(
     fixed0: i64,
     var0: i64,
 ) -> i64 {
+    if fn_ptr == 0 {
+        abort_null_fn_ptr("fz_call_var_i64_cstring_i64_i64_to_i64");
+    }
     type FnPtr = unsafe extern "C" fn(*const c_char, libc::c_int, ...) -> libc::c_int;
     let f: FnPtr = unsafe { std::mem::transmute(fn_ptr) };
     unsafe { f(path, fixed0 as libc::c_int, var0 as libc::c_uint) as i64 }
@@ -83,6 +91,9 @@ pub unsafe extern "C" fn fz_call_var_i64_cstring_i64_to_i64(
     fmt: *const c_char,
     var0: i64,
 ) -> i64 {
+    if fn_ptr == 0 {
+        abort_null_fn_ptr("fz_call_var_i64_cstring_i64_to_i64");
+    }
     type FnPtr = unsafe extern "C" fn(*const c_char, ...) -> libc::c_int;
     let f: FnPtr = unsafe { std::mem::transmute(fn_ptr) };
     unsafe { f(fmt, var0 as libc::c_longlong) as i64 }

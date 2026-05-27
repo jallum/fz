@@ -492,6 +492,7 @@ dependencies = [
  "libtest-mimic",
  "object",
  "rustyline",
+ "serial_test",
  "smallvec",
  "target-lexicon",
 ]
