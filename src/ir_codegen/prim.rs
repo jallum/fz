@@ -804,7 +804,7 @@ pub(crate) fn lower_prim<
     // `LowerOut::RawF64(_)` inside their arm. Everything else falls
     // through the match and is wrapped in `LowerOut::ValueRef(_)` at the
     // bottom of the function.
-    let v: ir::Value = match prim {
+    match prim {
         Prim::Const(c) => match c {
             // Emit the raw payload when the consumer's type is
             // int-monomorphic; ValueRef consumers retag via `tagged_get`
@@ -1569,97 +1569,22 @@ pub(crate) fn lower_prim<
             );
         }
         Prim::MakeClosure(mk_ident, fn_id, captured) => {
-            // Allocate a closure env, store the body code pointer, then
-            // write captures through the runtime's schema-backed accessor.
-            // Resolve the narrow SpecId via the lambda's full input-type
-            // key (captures from caller's `fn_types`, args = `any`) and
-            // pick the typed stub keyed by that SpecId.
-            let n_caps = captured.len();
-            // The lambda body is the any-key body spec (SpecId.0 ==
-            // FnId.0). Look up directly; fall back to any registered
-            // narrow spec for this FnId when the any-key was dropped;
-            // emit a null-stub closure when neither exists (value is
-            // constructable but unreachable as a call target).
-            let _ = (block_id, stmt_idx, mk_ident);
-            let cl_sid_opt = if fn_ids.contains_key(&fn_id.0) {
-                Some(fn_id.0)
-            } else {
-                spec_registry
-                    .iter()
-                    .find(|(s, key)| key.fn_id == *fn_id && fn_ids.contains_key(&s.0))
-                    .map(|(s, _)| s.0)
-            };
-            let Some(cl_sid) = cl_sid_opt else {
-                // Null-code closure: alloc, write null code pointer, leave
-                // capture slots uninitialized (the body that would read
-                // them doesn't exist). halt_kind is irrelevant for an
-                // un-invoked closure; pick 0.
-                let alloc_fref = jmod.declare_func_in_func(runtime.alloc_closure_id, b.func);
-                let fid_v = b.ins().iconst(types::I32, fn_id.0 as i64);
-                let nc_v = b.ins().iconst(types::I32, n_caps as i64);
-                let hk_v = b.ins().iconst(types::I32, 0);
-                let null = b.ins().iconst(types::I64, 0);
-                let inst = b.ins().call(alloc_fref, &[fid_v, nc_v, hk_v, null]);
-                let cl_ptr = b.inst_results(inst)[0];
-                return Ok(LowerOut::ValueRef(cl_ptr));
-            };
-            // Zero-capture MakeClosure: look up the per-Process static
-            // singleton instead of allocating per call site. The
-            // singleton's code pointer holds the closure-target body
-            // address. See docs/cps-in-clif.md §8.2.
-            if captured.is_empty() {
-                return Ok(LowerOut::ValueRef(fetch_static_closure(
-                    jmod, b, runtime, cl_sid,
-                )));
-            }
-            // Non-zero captures: alloc closure heap object, write body's
-            // func_addr, and store captures as env fields. The body has
-            // closure-target sig `(args..., self, cont) tail` and
-            // projects captures from `self` in its entry harness.
-            let body_func_id = *fn_ids.get(&cl_sid).ok_or_else(|| {
-                CodegenError::new(format!(
-                    "no body FuncId for closure SpecId({}) \
-                     (FnId({}), {} captures)",
-                    cl_sid, fn_id.0, n_caps
-                ))
-            })?;
-            let alloc_fref = jmod.declare_func_in_func(runtime.alloc_closure_id, b.func);
-            let fid_v = b.ins().iconst(types::I32, fn_id.0 as i64);
-            let nc_v = b.ins().iconst(types::I32, n_caps as i64);
-            // halt_kind from body's return repr so fz_spawn_entry can
-            // pick the matching halt-cont singleton.
-            let body_return_repr = return_reprs[cl_sid as usize];
-            let hk_v = b
-                .ins()
-                .iconst(types::I32, body_return_repr.halt_kind() as i64);
-            let body_addr = fn_addr(jmod, body_func_id, b);
-            let inst = b.ins().call(alloc_fref, &[fid_v, nc_v, hk_v, body_addr]);
-            let cl_ptr = b.inst_results(inst)[0];
-            // The closure env stores captures as opaque refs. The body's
-            // entry harness coerces each capture to its narrow repr.
-            for (i, cv) in captured.iter().enumerate() {
-                let vb = var_env
-                    .get(&cv.0)
-                    .expect("MakeClosure: captured var unbound");
-                let to = param_reprs[cl_sid as usize][i];
-                if to == ArgRepr::ValueRef {
-                    let capture = codegen_value_as_any_ref(b, jmod, runtime, cache, *vb);
-                    store_closure_capture_ref_word(b, jmod, runtime, cl_ptr, n_caps, i, capture);
-                } else {
-                    let mut capture = Vec::with_capacity(1);
-                    push_binding_as_abi_args(
-                        &mut capture,
-                        b,
-                        jmod,
-                        runtime,
-                        cache,
-                        *vb,
-                        ArgRepr::ValueRef,
-                    );
-                    store_closure_capture_ref_word(b, jmod, runtime, cl_ptr, n_caps, i, capture[0]);
-                }
-            }
-            cl_ptr
+            return lower_make_closure(
+                b,
+                jmod,
+                runtime,
+                cache,
+                var_env,
+                fn_ids,
+                spec_registry,
+                param_reprs,
+                return_reprs,
+                mk_ident,
+                *fn_id,
+                captured,
+                block_id,
+                stmt_idx,
+            );
         }
         // lower_program_full erases all Prim::Brand before returning.
         // Reaching codegen with one means ir_brand_erase didn't run (or
@@ -1809,6 +1734,157 @@ pub(crate) fn lower_prim<
             }
             return Ok(LowerOut::Strict(strict_bool(b, flag)));
         }
+    }
+}
+
+/// Lower a `Prim::MakeClosure`. Three code paths: null-stub (no body
+/// spec registered), zero-capture singleton, and non-zero capture
+/// alloc+populate. Resolves the narrow SpecId via the lambda's full
+/// input-type key (captures from caller's `fn_types`, args = `any`).
+pub(crate) fn lower_make_closure<M: cranelift_module::Module>(
+    b: &mut FunctionBuilder<'_>,
+    jmod: &mut M,
+    runtime: &RuntimeRefs,
+    cache: &mut CodegenCache,
+    var_env: &HashMap<u32, CodegenValue>,
+    fn_ids: &HashMap<u32, FuncId>,
+    spec_registry: &SpecRegistry,
+    param_reprs: &[Vec<ArgRepr>],
+    return_reprs: &[ArgRepr],
+    mk_ident: &crate::fz_ir::CallsiteIdent,
+    fn_id: crate::fz_ir::FnId,
+    captured: &[crate::fz_ir::Var],
+    block_id: crate::fz_ir::BlockId,
+    stmt_idx: usize,
+) -> Result<LowerOut, CodegenError> {
+    // Allocate a closure env, store the body code pointer, then
+    // write captures through the runtime's schema-backed accessor.
+    // Resolve the narrow SpecId via the lambda's full input-type
+    // key (captures from caller's `fn_types`, args = `any`) and
+    // pick the typed stub keyed by that SpecId.
+    let n_caps = captured.len();
+    // The lambda body is the any-key body spec (SpecId.0 ==
+    // FnId.0). Look up directly; fall back to any registered
+    // narrow spec for this FnId when the any-key was dropped;
+    // emit a null-stub closure when neither exists (value is
+    // constructable but unreachable as a call target).
+    let _ = (block_id, stmt_idx, mk_ident);
+    let cl_sid_opt = if fn_ids.contains_key(&fn_id.0) {
+        Some(fn_id.0)
+    } else {
+        spec_registry
+            .iter()
+            .find(|(s, key)| key.fn_id == fn_id && fn_ids.contains_key(&s.0))
+            .map(|(s, _)| s.0)
     };
-    Ok(LowerOut::ValueRef(v))
+    let Some(cl_sid) = cl_sid_opt else {
+        return Ok(LowerOut::ValueRef(emit_null_stub_closure(
+            b, jmod, runtime, fn_id, n_caps,
+        )));
+    };
+    // Zero-capture MakeClosure: look up the per-Process static
+    // singleton instead of allocating per call site. The
+    // singleton's code pointer holds the closure-target body
+    // address. See docs/cps-in-clif.md §8.2.
+    if captured.is_empty() {
+        return Ok(LowerOut::ValueRef(fetch_static_closure(
+            jmod, b, runtime, cl_sid,
+        )));
+    }
+    Ok(LowerOut::ValueRef(emit_capturing_closure(
+        b,
+        jmod,
+        runtime,
+        cache,
+        var_env,
+        fn_ids,
+        param_reprs,
+        return_reprs,
+        fn_id,
+        cl_sid,
+        captured,
+    )?))
+}
+
+/// Null-code closure: alloc, write null code pointer, leave capture
+/// slots uninitialized (the body that would read them doesn't exist).
+/// halt_kind is irrelevant for an un-invoked closure; pick 0.
+fn emit_null_stub_closure<M: cranelift_module::Module>(
+    b: &mut FunctionBuilder<'_>,
+    jmod: &mut M,
+    runtime: &RuntimeRefs,
+    fn_id: crate::fz_ir::FnId,
+    n_caps: usize,
+) -> ir::Value {
+    let alloc_fref = jmod.declare_func_in_func(runtime.alloc_closure_id, b.func);
+    let fid_v = b.ins().iconst(types::I32, fn_id.0 as i64);
+    let nc_v = b.ins().iconst(types::I32, n_caps as i64);
+    let hk_v = b.ins().iconst(types::I32, 0);
+    let null = b.ins().iconst(types::I64, 0);
+    let inst = b.ins().call(alloc_fref, &[fid_v, nc_v, hk_v, null]);
+    b.inst_results(inst)[0]
+}
+
+/// Non-zero captures: alloc closure heap object, write body's
+/// func_addr, and store captures as env fields. The body has
+/// closure-target sig `(args..., self, cont) tail` and projects
+/// captures from `self` in its entry harness.
+fn emit_capturing_closure<M: cranelift_module::Module>(
+    b: &mut FunctionBuilder<'_>,
+    jmod: &mut M,
+    runtime: &RuntimeRefs,
+    cache: &mut CodegenCache,
+    var_env: &HashMap<u32, CodegenValue>,
+    fn_ids: &HashMap<u32, FuncId>,
+    param_reprs: &[Vec<ArgRepr>],
+    return_reprs: &[ArgRepr],
+    fn_id: crate::fz_ir::FnId,
+    cl_sid: u32,
+    captured: &[crate::fz_ir::Var],
+) -> Result<ir::Value, CodegenError> {
+    let n_caps = captured.len();
+    let body_func_id = *fn_ids.get(&cl_sid).ok_or_else(|| {
+        CodegenError::new(format!(
+            "no body FuncId for closure SpecId({}) \
+             (FnId({}), {} captures)",
+            cl_sid, fn_id.0, n_caps
+        ))
+    })?;
+    let alloc_fref = jmod.declare_func_in_func(runtime.alloc_closure_id, b.func);
+    let fid_v = b.ins().iconst(types::I32, fn_id.0 as i64);
+    let nc_v = b.ins().iconst(types::I32, n_caps as i64);
+    // halt_kind from body's return repr so fz_spawn_entry can
+    // pick the matching halt-cont singleton.
+    let body_return_repr = return_reprs[cl_sid as usize];
+    let hk_v = b
+        .ins()
+        .iconst(types::I32, body_return_repr.halt_kind() as i64);
+    let body_addr = fn_addr(jmod, body_func_id, b);
+    let inst = b.ins().call(alloc_fref, &[fid_v, nc_v, hk_v, body_addr]);
+    let cl_ptr = b.inst_results(inst)[0];
+    // The closure env stores captures as opaque refs. The body's
+    // entry harness coerces each capture to its narrow repr.
+    for (i, cv) in captured.iter().enumerate() {
+        let vb = var_env
+            .get(&cv.0)
+            .expect("MakeClosure: captured var unbound");
+        let to = param_reprs[cl_sid as usize][i];
+        if to == ArgRepr::ValueRef {
+            let capture = codegen_value_as_any_ref(b, jmod, runtime, cache, *vb);
+            store_closure_capture_ref_word(b, jmod, runtime, cl_ptr, n_caps, i, capture);
+        } else {
+            let mut capture = Vec::with_capacity(1);
+            push_binding_as_abi_args(
+                &mut capture,
+                b,
+                jmod,
+                runtime,
+                cache,
+                *vb,
+                ArgRepr::ValueRef,
+            );
+            store_closure_capture_ref_word(b, jmod, runtime, cl_ptr, n_caps, i, capture[0]);
+        }
+    }
+    Ok(cl_ptr)
 }
