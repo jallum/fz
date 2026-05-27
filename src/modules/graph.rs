@@ -133,6 +133,8 @@ mod tests {
             imports: import_facts,
             exports: export_facts,
             types: Vec::new(),
+            protocols: Vec::new(),
+            protocol_impls: Vec::new(),
             docs: None,
             fingerprint_inputs,
         }
@@ -189,6 +191,38 @@ mod tests {
         assert!(!graph.interfaces.contains_key(&module("Extra")));
         assert_eq!(graph.objects.len(), 1);
         assert_eq!(graph.objects[0].module, Some(module("Math")));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn graph_loader_keeps_protocol_impl_callback_namespaces_inside_owner_artifact() {
+        let root = std::env::temp_dir().join(format!(
+            "fz-module-graph-{}-protocol-impl",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let store = ArtifactStore::new(&root);
+
+        let mut app = interface("App", Vec::new(), vec![("main", 0)]);
+        app.protocol_impls
+            .push(crate::protocols::InterfaceProtocolImpl {
+                protocol: module("Enumerable"),
+                target: crate::protocols::ImplTarget::module(module("List")),
+                callbacks: vec![crate::modules::identity::ExportKey::new(
+                    module("EnumerableList"),
+                    "reduce",
+                    3,
+                )],
+            });
+        let mut roots = InterfaceTable::new();
+        roots.insert(app.name.clone(), app);
+        let graph = ModuleGraphLoader::new(store)
+            .load_reachable(&crate::telemetry::NullTelemetry, &roots, [])
+            .expect("load graph");
+
+        assert!(!graph.interfaces.contains_key(&module("EnumerableList")));
+        assert!(graph.objects.is_empty());
 
         let _ = std::fs::remove_dir_all(&root);
     }

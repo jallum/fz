@@ -2412,7 +2412,7 @@ fn callsite_id_round_trip() {
     assert_eq!(round, site);
 }
 
-/// fz-uwq.3/.11 — `plan_module` populates `SpecPlan.dispatches` with
+/// fz-uwq.3/.11 — `plan_module` populates `SpecPlan.call_edges` with
 /// the per-spec dispatch target for each Direct callsite. Build a
 /// trivial 2-fn module (main → id), assert the dispatch entry exists
 /// at main's spec keyed by `id` plus the literal arg type.
@@ -2457,9 +2457,8 @@ fn planner_publishes_dispatches_for_direct_call() {
         .get(&value_spec_key(FnId(1), vec![]))
         .expect("main's empty-key spec must exist");
     let target = main_spec
-        .dispatches
-        .get(&cid)
-        .expect("dispatches should record main's Direct call to id");
+        .local_call_target(&cid)
+        .expect("call_edges should record main's Direct call to id");
     assert_eq!(target.fn_id, FnId(0));
     assert_eq!(target.input.len(), 1);
     let Some(ty) = &target.input[0] else {
@@ -2469,6 +2468,50 @@ fn planner_publishes_dispatches_for_direct_call() {
         );
     };
     assert_eq!(t.as_int_singleton(ty), Some(42));
+}
+
+#[test]
+fn planner_selects_static_protocol_impl_as_call_edge() {
+    use crate::fz_ir::{CallsiteId, EmitSlot};
+
+    let src = r#"
+defprotocol Collectable do
+  fn id(value)
+end
+
+defimpl Collectable, for: List do
+  fn id(value), do: value
+end
+
+fn main(), do: Collectable.id([1])
+"#;
+    let toks = crate::lexer::Lexer::new(src).tokenize().expect("lex");
+    let parsed = crate::parser::Parser::new(toks)
+        .parse_program()
+        .expect("parse");
+    let mut t = crate::types::ConcreteTypes;
+    let resolved = crate::resolve::flatten_modules(&mut t, parsed).expect("resolve");
+    let ir = crate::ir_lower::lower_program(&mut t, &resolved).expect("lower");
+    let mt = plan_module(&mut t, &ir, &crate::telemetry::NullTelemetry);
+
+    let main = ir.fn_by_name("main").expect("main");
+    let Term::TailCall { ident, .. } = &main.block(main.entry).terminator else {
+        panic!("expected protocol call in tail position");
+    };
+    let cid = CallsiteId {
+        caller: main.id,
+        ident: ident.clone(),
+        slot: EmitSlot::Direct,
+    };
+    let main_spec = mt
+        .specs
+        .get(&value_spec_key(main.id, vec![]))
+        .expect("main spec");
+    let target = main_spec
+        .local_call_target(&cid)
+        .expect("protocol dispatch should publish a direct impl call edge");
+    let target_fn = ir.fn_by_id(target.fn_id);
+    assert_eq!(target_fn.name, "List.id");
 }
 
 // ---- fz-swt.8 — `.value` accessor: typing + visibility gating ----

@@ -1,7 +1,7 @@
 use super::closures::resolve_closure_return;
 use super::fn_types::{
-    CallsiteFnConsts, EmitterSite, ReturnContextPlan, ReturnContextPlanKey, ReturnDemand, SpecKey,
-    SpecPlan, WALK_CALLS, padded_direct_input_tys, recursive_direct_spec_key,
+    CallEdgePlan, CallEdgeTarget, CallsiteFnConsts, EmitterSite, ReturnContextPlan, ReturnDemand,
+    SpecKey, SpecPlan, WALK_CALLS, padded_direct_input_tys, recursive_direct_spec_key,
     recursive_direct_spec_key_for_arity, spec_key_for_fn,
 };
 use super::reachable::cont_key_from_slot0;
@@ -22,21 +22,12 @@ pub(crate) struct WalkResult {
     /// diffs against `produces[site]` to detect transitions.
     ///
     /// Recursive direct calls are normalized before emission, so this key
-    /// agrees with the dispatch fact consumed by codegen.
+    /// agrees with the call-edge fact consumed by codegen.
     pub(crate) emits: Vec<(EmitterSite, SpecKey)>,
-    /// Per-callsite dispatch fact: the spec key the planner resolved for this
-    /// site after recursive-key normalization. This is the same key emitted
-    /// above, so `SpecPlan.dispatches` and codegen agree by construction.
-    ///
-    /// Populated for `Direct`, `ClosureCall`, and `Cont` slots. `MakeClosure`
-    /// emits an any-key body spec but does not record a dispatch fact.
-    pub(crate) dispatch_targets: HashMap<crate::fz_ir::CallsiteId, SpecKey>,
-    /// Per-callsite typed return-use facts for this caller spec. These facts
-    /// describe the result hole reached by the call result; they do not imply
-    /// whole-caller demand inheritance.
-    pub(crate) return_uses: HashMap<crate::fz_ir::CallsiteId, ReturnDemand>,
-    /// Typed return-context lowering plans, keyed by caller spec and callsite.
-    pub(crate) return_context_plans: HashMap<ReturnContextPlanKey, ReturnContextPlan>,
+    /// Per-callsite capability selected for this spec. Populated for `Direct`,
+    /// `ClosureCall`, and `Cont` slots. `MakeClosure` emits an any-key body spec
+    /// but does not record a call edge.
+    pub(crate) call_edges: HashMap<crate::fz_ir::CallsiteId, CallEdgePlan>,
     /// `callee_key`s whose `effective_return` was consulted (for
     /// cont slot-0 keying or closure_lit return-join). Driver folds
     /// into the `return_readers` reverse index so changes
@@ -65,32 +56,64 @@ impl WalkResult {
         target: SpecKey,
     ) -> CallsiteId {
         let cid = Self::callsite_id(caller, ident, slot);
-        self.dispatch_targets.insert(cid.clone(), target);
+        self.call_edges.insert(
+            cid.clone(),
+            CallEdgePlan {
+                target: CallEdgeTarget::Local(target),
+                return_use: None,
+                return_context: None,
+            },
+        );
+        cid
+    }
+
+    fn record_external_dispatch(
+        &mut self,
+        caller: &SpecKey,
+        ident: &crate::fz_ir::CallsiteIdent,
+        slot: EmitSlot,
+        target: crate::modules::identity::ExportKey,
+        input: Vec<crate::types::KeySlot>,
+        demand: ReturnDemand,
+    ) -> CallsiteId {
+        let cid = Self::callsite_id(caller, ident, slot);
+        self.call_edges.insert(
+            cid.clone(),
+            CallEdgePlan {
+                target: CallEdgeTarget::External {
+                    target,
+                    input,
+                    demand,
+                },
+                return_use: None,
+                return_context: None,
+            },
+        );
         cid
     }
 
     fn record_return_use(
         &mut self,
-        caller: &SpecKey,
         callsite: &CallsiteId,
         demand: ReturnDemand,
         plan: Option<ReturnContextPlan>,
     ) {
-        self.return_uses.insert(callsite.clone(), demand);
+        let edge = self
+            .call_edges
+            .get_mut(callsite)
+            .expect("return-use facts require an existing call edge");
+        edge.return_use = Some(demand);
         if let Some(plan) = plan {
-            self.return_context_plans
-                .insert(ReturnContextPlanKey::new(caller, callsite), plan);
+            edge.return_context = Some(plan);
         }
     }
 
-    fn record_return_context_plan(
-        &mut self,
-        caller: &SpecKey,
-        callsite: &CallsiteId,
-        plan: ReturnContextPlan,
-    ) {
-        self.return_context_plans
-            .insert(ReturnContextPlanKey::new(caller, callsite), plan);
+    fn record_return_context_plan(&mut self, callsite: &CallsiteId, plan: ReturnContextPlan) {
+        let edge = self
+            .call_edges
+            .get_mut(callsite)
+            .expect("return-context plans require an existing call edge");
+        edge.return_context = Some(plan);
     }
 }
 
@@ -112,6 +135,15 @@ fn merge_callsite_fn_consts(
             callsite_fn_consts.insert(key.clone(), merged);
         }
     }
+}
+
+enum ProtocolDispatch {
+    Local(SpecKey, usize),
+    External {
+        target: crate::modules::identity::ExportKey,
+        input: Vec<crate::types::KeySlot>,
+        demand: ReturnDemand,
+    },
 }
 
 /// Discovery walk for one spec. Walks the spec's body and records every spec it
@@ -285,7 +317,63 @@ where
         callee: FnId,
         args: &[Var],
     ) {
+        if let Some(dispatch) = self.protocol_dispatch_key(callee, args, env) {
+            let cid = WalkResult::callsite_id(self.caller_spec_key, term_ident, slot);
+            let ProtocolDispatch::Local(mut entry_key, n_params) = dispatch else {
+                if let ProtocolDispatch::External {
+                    target,
+                    input,
+                    demand,
+                } = dispatch
+                {
+                    self.out.record_external_dispatch(
+                        self.caller_spec_key,
+                        term_ident,
+                        slot,
+                        target,
+                        input,
+                        demand.clone(),
+                    );
+                    self.out.record_return_use(&cid, demand, None);
+                }
+                return;
+            };
+            if let Term::Call { continuation, .. } = term {
+                let target_fn = entry_key.fn_id;
+                let (demand, context_plan) = direct_call_return_plan(
+                    self.t,
+                    self.m,
+                    self.caller_spec_key,
+                    env,
+                    target_fn,
+                    args,
+                    continuation,
+                );
+                entry_key.demand = demand;
+                self.out
+                    .record_dispatch(self.caller_spec_key, term_ident, slot, entry_key.clone());
+                self.out
+                    .record_return_use(&cid, entry_key.demand.clone(), context_plan);
+            } else if matches!(term, Term::TailCall { .. }) {
+                let target_fn = entry_key.fn_id;
+                let (demand, context_plan) =
+                    tail_call_return_plan(self.caller_spec_key, target_fn, args);
+                entry_key.demand = demand;
+                self.out
+                    .record_dispatch(self.caller_spec_key, term_ident, slot, entry_key.clone());
+                self.out
+                    .record_return_use(&cid, entry_key.demand.clone(), context_plan);
+            } else {
+                self.out
+                    .record_dispatch(self.caller_spec_key, term_ident, slot, entry_key.clone());
+            }
+            let per_arg = self.fn_constant_args(args, n_params);
+            merge_callsite_fn_consts(self.callsite_fn_consts, &entry_key, per_arg);
+            self.emit(slot, term_ident.clone(), entry_key);
+            return;
+        }
         let Some((mut entry_key, n_params)) = self.direct_call_key(callee, args, env) else {
+            self.record_external_call(term, term_ident, env, slot, args);
             return;
         };
         let cid = WalkResult::callsite_id(self.caller_spec_key, term_ident, slot);
@@ -300,27 +388,53 @@ where
                 continuation,
             );
             entry_key.demand = demand;
-            self.out.record_return_use(
-                self.caller_spec_key,
-                &cid,
-                entry_key.demand.clone(),
-                context_plan,
-            );
+            self.out
+                .record_dispatch(self.caller_spec_key, term_ident, slot, entry_key.clone());
+            self.out
+                .record_return_use(&cid, entry_key.demand.clone(), context_plan);
         } else if matches!(term, Term::TailCall { .. }) {
             let (demand, context_plan) = tail_call_return_plan(self.caller_spec_key, callee, args);
             entry_key.demand = demand;
-            self.out.record_return_use(
-                self.caller_spec_key,
-                &cid,
-                entry_key.demand.clone(),
-                context_plan,
-            );
+            self.out
+                .record_dispatch(self.caller_spec_key, term_ident, slot, entry_key.clone());
+            self.out
+                .record_return_use(&cid, entry_key.demand.clone(), context_plan);
+        } else {
+            self.out
+                .record_dispatch(self.caller_spec_key, term_ident, slot, entry_key.clone());
         }
-        self.out
-            .record_dispatch(self.caller_spec_key, term_ident, slot, entry_key.clone());
         let per_arg = self.fn_constant_args(args, n_params);
         merge_callsite_fn_consts(self.callsite_fn_consts, &entry_key, per_arg);
         self.emit(slot, term_ident.clone(), entry_key);
+    }
+
+    fn record_external_call(
+        &mut self,
+        term: &Term,
+        term_ident: &CallsiteIdent,
+        env: &HashMap<Var, crate::types::Ty>,
+        slot: EmitSlot,
+        args: &[Var],
+    ) {
+        let Some(target) = self.external_target(term_ident, slot) else {
+            return;
+        };
+        let input = self.external_call_input(callee_from_term(term), args, env, target.arity);
+        let demand = match term {
+            Term::TailCall { .. } => self.caller_spec_key.demand.clone(),
+            _ => ReturnDemand::value(),
+        };
+        let cid = self.out.record_external_dispatch(
+            self.caller_spec_key,
+            term_ident,
+            slot,
+            target,
+            input,
+            demand.clone(),
+        );
+        if matches!(term, Term::Call { .. } | Term::TailCall { .. }) {
+            self.out.record_return_use(&cid, demand, None);
+        }
     }
 
     fn record_known_closure_call(
@@ -389,7 +503,7 @@ where
         let demand = continuation_return_demand(self.m, self.caller_spec_key, &cont, &source);
         let mut entry_key = spec_key_for_fn(cont_fn, std::mem::take(&mut key));
         entry_key.demand = demand.clone();
-        if let Some(plan) = continuation_empty_tail_plan(
+        let context_plan = continuation_empty_tail_plan(
             self.t,
             self.m,
             self.caller_spec_key,
@@ -397,14 +511,14 @@ where
             &source,
             &demand,
             &entry_key,
-        ) {
-            let cid = WalkResult::callsite_id(self.caller_spec_key, term_ident, slot);
-            self.out
-                .record_return_context_plan(self.caller_spec_key, &cid, plan);
-        }
+        );
         merge_callsite_fn_consts(self.callsite_fn_consts, &entry_key, per_param);
-        self.out
-            .record_dispatch(self.caller_spec_key, term_ident, slot, entry_key.clone());
+        let cid =
+            self.out
+                .record_dispatch(self.caller_spec_key, term_ident, slot, entry_key.clone());
+        if let Some(plan) = context_plan {
+            self.out.record_return_context_plan(&cid, plan);
+        }
         self.emit(slot, term_ident.clone(), entry_key);
     }
 
@@ -416,6 +530,9 @@ where
     ) -> Option<crate::types::Ty> {
         match *source {
             ContSource::Call { callee, args } => {
+                if self.external_target(term_ident, EmitSlot::Direct).is_some() {
+                    return self.external_call_return_slot0(callee, args, env);
+                }
                 let callee_key = self.direct_return_key(term_ident, callee, args, env);
                 let callee_arg_tys = crate::types::key_slots_to_tys(self.t, &callee_key.input);
                 let declared = self.declared_call_return(callee, &callee_arg_tys);
@@ -431,6 +548,50 @@ where
         }
     }
 
+    fn external_call_return_slot0(
+        &mut self,
+        callee: FnId,
+        args: &[Var],
+        env: &HashMap<Var, crate::types::Ty>,
+    ) -> Option<crate::types::Ty> {
+        let arg_tys = self.arg_tys(args, env);
+        self.declared_call_return(callee, &arg_tys)
+            .or_else(|| Some(self.any_ty.clone()))
+    }
+
+    fn external_call_input(
+        &mut self,
+        callee: Option<FnId>,
+        args: &[Var],
+        env: &HashMap<Var, crate::types::Ty>,
+        arity: usize,
+    ) -> Vec<crate::types::KeySlot> {
+        if let Some(callee) = callee
+            && let Some(spec) = self.m.declared_specs.get(&callee)
+            && spec.params.len() == arity
+        {
+            return crate::types::key_slots_from_tys(spec.params.clone());
+        }
+        crate::types::key_slots_from_tys(padded_direct_input_tys(
+            self.t,
+            self.arg_tys(args, env),
+            arity,
+        ))
+    }
+
+    fn external_target(
+        &self,
+        term_ident: &CallsiteIdent,
+        slot: EmitSlot,
+    ) -> Option<crate::modules::identity::ExportKey> {
+        let cid = WalkResult::callsite_id(self.caller_spec_key, term_ident, slot);
+        self.m
+            .external_call_edges
+            .iter()
+            .find(|edge| edge.callsite == cid)
+            .map(|edge| edge.target.clone())
+    }
+
     fn direct_return_key(
         &mut self,
         term_ident: &CallsiteIdent,
@@ -441,8 +602,9 @@ where
         let direct_cid =
             WalkResult::callsite_id(self.caller_spec_key, term_ident, EmitSlot::Direct);
         self.out
-            .dispatch_targets
+            .call_edges
             .get(&direct_cid)
+            .and_then(CallEdgePlan::local_target)
             .cloned()
             .unwrap_or_else(|| {
                 let arg_tys = self.arg_tys(args, env);
@@ -578,6 +740,55 @@ where
         Some((key, n_params))
     }
 
+    fn protocol_dispatch_key(
+        &mut self,
+        callee: FnId,
+        args: &[Var],
+        env: &HashMap<Var, crate::types::Ty>,
+    ) -> Option<ProtocolDispatch> {
+        let target = self.m.protocol_call_targets.get(&callee)?.clone();
+        let receiver_ty = args
+            .first()
+            .and_then(|receiver| env.get(receiver))
+            .cloned()
+            .unwrap_or_else(|| self.any_ty.clone());
+        let mut matches = self
+            .m
+            .protocol_registry
+            .impls
+            .values()
+            .filter(|fact| fact.protocol == target.protocol)
+            .filter(|fact| {
+                let target_ty = crate::protocols::impl_target_type(self.t, &fact.target);
+                self.t.is_subtype(&receiver_ty, &target_ty)
+            })
+            .filter_map(|fact| {
+                fact.callbacks
+                    .get(&(target.callback.clone(), target.arity))
+                    .cloned()
+            })
+            .collect::<Vec<_>>();
+        matches.sort();
+        matches.dedup();
+        let export = matches.into_iter().next()?;
+        let fn_name = format!("{}.{}", export.module, export.name);
+        if let Some(impl_fn) = self.m.fn_by_name(&fn_name).map(|f| f.id) {
+            return self
+                .direct_call_key(impl_fn, args, env)
+                .map(|(key, n_params)| ProtocolDispatch::Local(key, n_params));
+        }
+        let input = crate::types::key_slots_from_tys(padded_direct_input_tys(
+            self.t,
+            self.arg_tys(args, env),
+            export.arity,
+        ));
+        Some(ProtocolDispatch::External {
+            target: export,
+            input,
+            demand: ReturnDemand::value(),
+        })
+    }
+
     fn closure_lit_key(
         &mut self,
         fn_id: FnId,
@@ -696,4 +907,11 @@ fn pad_and_truncate<T: Clone>(items: &mut Vec<T>, n: usize, pad: &T) {
         items.push(pad.clone());
     }
     items.truncate(n);
+}
+
+fn callee_from_term(term: &Term) -> Option<FnId> {
+    match term {
+        Term::Call { callee, .. } | Term::TailCall { callee, .. } => Some(*callee),
+        _ => None,
+    }
 }

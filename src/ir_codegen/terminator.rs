@@ -13,7 +13,7 @@ use std::collections::HashMap;
 
 // Resolve the Cont-slot SpecId for the call-shape terminator in `blk`.
 //
-// Dispatch source: `fn_types.dispatches` keyed by the term's intrinsic
+// Dispatch source: `fn_types.call_edges` keyed by the term's intrinsic
 // `CallsiteIdent` — positional-rewrite invariant (fuse moves the Term,
 // ident comes along). The typer normalized recursive direct-call keys
 // and used them for both dispatch and return propagation, so the
@@ -33,10 +33,10 @@ fn resolve_cont_sid<T: crate::types::Types<Ty = crate::types::Ty> + crate::types
         ident: term_ident.clone(),
         slot: crate::fz_ir::EmitSlot::Cont,
     };
-    let target = env.fn_types.dispatches.get(&cid).unwrap_or_else(|| {
+    let target = env.fn_types.local_call_target(&cid).unwrap_or_else(|| {
         let mut available: Vec<String> = env
             .fn_types
-            .dispatches
+            .call_edges
             .keys()
             .map(|k| format!("{:?}", k))
             .collect();
@@ -76,7 +76,7 @@ fn resolve_callee_sid<
         ident: term_ident.clone(),
         slot: crate::fz_ir::EmitSlot::Direct,
     };
-    let target = env.fn_types.dispatches.get(&cid).unwrap_or_else(|| {
+    let target = env.fn_types.local_call_target(&cid).unwrap_or_else(|| {
         panic!(
             "no dispatches entry for Direct at {:?} — typer-authoritative \
              invariant violated",
@@ -541,16 +541,7 @@ fn emit_call_term<
             ident: term_ident,
             slot: crate::fz_ir::EmitSlot::Cont,
         };
-        let this_spec_key = env.spec_keys[this_spec_id as usize].clone();
-        let direct_plan_key = crate::ir_planner::fn_types::ReturnContextPlanKey {
-            caller: this_spec_key.clone(),
-            callsite: direct_cid,
-        };
-        let cont_plan_key = crate::ir_planner::fn_types::ReturnContextPlanKey {
-            caller: this_spec_key.clone(),
-            callsite: cont_cid,
-        };
-        let cons_then_direct = match fn_types.return_context_plans.get(&direct_plan_key) {
+        let cons_then_direct = match fn_types.return_context_plan(&direct_cid) {
             Some(crate::ir_planner::fn_types::ReturnContextPlan::ConsThenDirect {
                 pivot,
                 tail,
@@ -558,7 +549,7 @@ fn emit_call_term<
             }) => Some((*pivot, *tail)),
             _ => None,
         };
-        let cont_list_tail_bridge = match fn_types.return_context_plans.get(&direct_plan_key) {
+        let cont_list_tail_bridge = match fn_types.return_context_plan(&direct_cid) {
             Some(crate::ir_planner::fn_types::ReturnContextPlan::ContinuationListTailBridge {
                 pivot,
                 tail,
@@ -570,7 +561,7 @@ fn emit_call_term<
             && let Some(crate::ir_planner::fn_types::ReturnContextPlan::ContinuationEmptyTail {
                 target,
                 ..
-            }) = fn_types.return_context_plans.get(&cont_plan_key)
+            }) = fn_types.return_context_plan(&cont_cid)
             && let Some(sid) = spec_registry.resolve_spec_key(t, target)
         {
             cont_sid = sid.0;

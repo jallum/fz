@@ -293,6 +293,61 @@ fn main(), do: print(M.lookup(7))
     }
 
     #[test]
+    fn protocol_domain_spec_accepts_known_impl_target() {
+        let mut ct = crate::types::ConcreteTypes;
+        let (prog, ir, mt) = pipeline(
+            &mut ct,
+            r#"
+defprotocol Enumerable do
+  fn reduce(enumerable, acc, reducer)
+end
+
+defimpl Enumerable, for: List do
+  fn reduce(list, acc, reducer), do: acc
+end
+
+defmodule M do
+  @spec use(Enumerable.t(integer)) :: integer
+  fn use(xs), do: 1
+end
+fn main(), do: print(M.use([1]))
+"#,
+        );
+        let diags = validate_specs(&mut ct, &prog, &ir, &mt);
+        assert!(
+            diags.is_empty(),
+            "known protocol impl target should satisfy protocol domain; got: {:?}",
+            diags
+        );
+    }
+
+    #[test]
+    fn protocol_domain_spec_rejects_disjoint_target_without_impl() {
+        let mut ct = crate::types::ConcreteTypes;
+        let (prog, ir, mt) = pipeline(
+            &mut ct,
+            r#"
+defprotocol Enumerable do
+  fn reduce(enumerable, acc, reducer)
+end
+
+defimpl Enumerable, for: List do
+  fn reduce(list, acc, reducer), do: acc
+end
+
+defmodule M do
+  @spec use(Enumerable.t(integer)) :: integer
+  fn use(xs), do: 1
+end
+fn main(), do: print(M.use(1))
+"#,
+        );
+        let diags = validate_specs(&mut ct, &prog, &ir, &mt);
+        assert!(!diags.is_empty(), "integer has no Enumerable impl");
+        assert!(diags[0].message.contains("not a subtype"));
+    }
+
+    #[test]
     fn spec_with_unknown_alias_fails_at_validation() {
         let mut ct = crate::types::ConcreteTypes;
         let (prog, ir, mt) = pipeline(

@@ -1,4 +1,5 @@
 use super::*;
+use crate::modules::identity::ModuleName;
 
 impl Parser {
     pub(super) fn parse_items_until(
@@ -63,6 +64,16 @@ impl Parser {
                     let m = self.parse_module()?;
                     items.push(Rc::new(Item::Module(m)));
                 }
+                Tok::Defprotocol => {
+                    flush_fn_groups(&mut items, &mut order, &mut groups);
+                    let protocol = self.parse_protocol()?;
+                    items.push(Rc::new(Item::Protocol(protocol)));
+                }
+                Tok::Defimpl => {
+                    flush_fn_groups(&mut items, &mut order, &mut groups);
+                    let protocol_impl = self.parse_protocol_impl()?;
+                    items.push(Rc::new(Item::ProtocolImpl(protocol_impl)));
+                }
                 Tok::Alias => {
                     flush_fn_groups(&mut items, &mut order, &mut groups);
                     let a = self.parse_alias()?;
@@ -80,14 +91,18 @@ impl Parser {
                     let def = self.parse_extern_item()?;
                     items.push(Rc::new(Item::Fn(def)));
                 }
-                Tok::Fn | Tok::Defmacro => {
+                Tok::Fn | Tok::Fnp | Tok::Defmacro => {
                     let start = self.cur_span();
-                    let (name, name_span, clause, is_macro) = self.parse_fn_clause()?;
+                    let (name, name_span, clause, is_macro, is_private) =
+                        self.parse_fn_clause()?;
                     let arity = clause.params.len();
                     let key = (name.clone(), arity);
                     if let Some(def) = groups.get_mut(&key) {
                         if def.is_macro != is_macro {
                             return self.err(format!("`{}` declared as both fn and defmacro", name));
+                        }
+                        if def.is_private != is_private {
+                            return self.err(format!("`{}` declared as both fn and fnp", name));
                         }
                         // extend the def's span to cover this clause too
                         def.span = def.span.merge(clause.span);
@@ -121,6 +136,7 @@ impl Parser {
                             name_span,
                             clauses: vec![clause],
                             is_macro,
+                            is_private,
                             extern_abi: None,
                             extern_params: vec![],
                             extern_ret_tokens: TypeExprBody(vec![]),
@@ -153,7 +169,7 @@ impl Parser {
                     }));
                 }
                 _ => return self.err(format!(
-                    "expected `fn`, `defmacro`, `defmodule`, `alias`, `import`, `@`, or a macro call, got {:?}",
+                    "expected `fn`, `fnp`, `defmacro`, `defmodule`, `defprotocol`, `defimpl`, `alias`, `import`, `@`, or a macro call, got {:?}",
                     self.peek()
                 )),
             }
@@ -166,7 +182,7 @@ impl Parser {
                 Attribute::Spec(_) => "@spec",
                 _ => "attribute",
             };
-            return self.incomplete(format!("{} not followed by a fn or defmacro", kind));
+            return self.incomplete(format!("{} not followed by a fn, fnp, or defmacro", kind));
         }
         let mut module_attrs: Vec<Attribute> = moduledoc_attr.into_iter().collect();
         module_attrs.extend(module_aliases);
@@ -419,21 +435,26 @@ impl Parser {
             .any(|t| std::mem::discriminant(self.peek()) == std::mem::discriminant(t))
     }
 
-    /// Parse one fn or defmacro clause. Returns (name, name_span, clause, is_macro).
-    pub(super) fn parse_fn_clause(&mut self) -> PR<(String, Span, FnClause, bool)> {
+    /// Parse one fn, fnp, or defmacro clause.
+    /// Returns (name, name_span, clause, is_macro, is_private).
+    pub(super) fn parse_fn_clause(&mut self) -> PR<(String, Span, FnClause, bool, bool)> {
         let start = self.cur_span();
-        let is_macro = match self.peek() {
+        let (is_macro, is_private) = match self.peek() {
             Tok::Defmacro => {
                 self.bump();
-                true
+                (true, false)
             }
             Tok::Fn => {
                 self.bump();
-                false
+                (false, false)
+            }
+            Tok::Fnp => {
+                self.bump();
+                (false, true)
             }
             _ => {
                 return self.err(format!(
-                    "expected `fn` or `defmacro`, got {:?}",
+                    "expected `fn`, `fnp`, or `defmacro`, got {:?}",
                     self.peek()
                 ));
             }
@@ -484,6 +505,7 @@ impl Parser {
                 span,
             },
             is_macro,
+            is_private,
         ))
     }
 
@@ -623,6 +645,7 @@ impl Parser {
             name_span,
             clauses: vec![],
             is_macro: false,
+            is_private: false,
             extern_abi: Some(abi),
             extern_params,
             extern_ret_tokens: TypeExprBody(extern_ret_tokens),
@@ -771,19 +794,163 @@ impl Parser {
         Ok(out)
     }
 
-    pub(super) fn parse_module(&mut self) -> PR<ModuleDef> {
-        let start = self.cur_span();
-        self.expect(&Tok::Defmodule, "`defmodule`")?;
-        let name_span = self.cur_span();
-        let name = match self.bump() {
-            Tok::Upper(n) => n,
+    fn parse_upper_path(&mut self, context: &str) -> PR<(ModuleName, Span)> {
+        let span = self.cur_span();
+        let mut path: Vec<String> = Vec::new();
+        match self.bump() {
+            Tok::Upper(n) => path.push(n),
             other => {
                 return self.err(format!(
-                    "expected capitalized module name after `defmodule`, got {:?}",
+                    "expected uppercase {} path, got {:?}",
+                    context, other
+                ));
+            }
+        }
+        while matches!(self.peek(), Tok::Dot) {
+            self.bump();
+            match self.bump() {
+                Tok::Upper(n) => path.push(n),
+                other => {
+                    return self.err(format!(
+                        "expected uppercase segment after `.` in {} path, got {:?}",
+                        context, other
+                    ));
+                }
+            }
+        }
+        Ok((ModuleName::from_segments(path), span))
+    }
+
+    pub(super) fn parse_protocol(&mut self) -> PR<ProtocolDef> {
+        let start = self.cur_span();
+        self.expect(&Tok::Defprotocol, "`defprotocol`")?;
+        let (name, name_span) = self.parse_upper_path("protocol")?;
+        self.expect(&Tok::Do, "`do`")?;
+        self.skip_newlines();
+
+        let mut callbacks = Vec::new();
+        let mut attrs = Vec::new();
+        let mut pending_attrs = Vec::new();
+        while !matches!(self.peek(), Tok::End | Tok::Eof) {
+            match self.peek() {
+                Tok::At => {
+                    let attr = self.parse_attribute()?;
+                    match attr {
+                        Attribute::ModuleDoc(_) | Attribute::TypeAlias(_) => attrs.push(attr),
+                        Attribute::Doc(_) | Attribute::Spec(_) => pending_attrs.push(attr),
+                    }
+                }
+                Tok::Fn => {
+                    let callback =
+                        self.parse_protocol_callback(std::mem::take(&mut pending_attrs))?;
+                    callbacks.push(callback);
+                }
+                other => {
+                    return self.err(format!(
+                        "expected `fn`, `@`, or `end` in protocol body, got {:?}",
+                        other
+                    ));
+                }
+            }
+            self.skip_newlines();
+        }
+        if !pending_attrs.is_empty() {
+            return self.incomplete("protocol callback attribute not followed by `fn`");
+        }
+        self.expect(&Tok::End, "`end`")?;
+        Ok(ProtocolDef {
+            name,
+            name_span,
+            callbacks,
+            attrs,
+            span: self.finish(start),
+        })
+    }
+
+    fn parse_protocol_callback(&mut self, attrs: Vec<Attribute>) -> PR<ProtocolCallback> {
+        let start = self.cur_span();
+        self.expect(&Tok::Fn, "`fn`")?;
+        let name_span = self.cur_span();
+        let name = match self.bump() {
+            Tok::Ident(n) => n,
+            other => return self.err(format!("expected protocol callback name, got {:?}", other)),
+        };
+        self.expect(&Tok::LParen, "`(`")?;
+        let (params, _) = self.parse_fn_params()?;
+        self.expect(&Tok::RParen, "`)`")?;
+        if matches!(self.peek(), Tok::When) {
+            return self.err("protocol callback declarations cannot have guards");
+        }
+        if matches!(self.peek(), Tok::Do)
+            || (matches!(self.peek(), Tok::Comma)
+                && matches!(self.peek_at(1), Tok::KwKey(s) if s == "do"))
+        {
+            return self.err("protocol callback declarations cannot have bodies");
+        }
+        for attr in &attrs {
+            if let Attribute::Spec(spec) = attr {
+                if spec.name != name {
+                    return self.err(format!(
+                        "@spec name `{}` doesn't match protocol callback `{}`",
+                        spec.name, name
+                    ));
+                }
+                if spec.param_body_tokens.len() != params.len() {
+                    return self.err(format!(
+                        "@spec arity {} doesn't match protocol callback `{}/{}`",
+                        spec.param_body_tokens.len(),
+                        name,
+                        params.len()
+                    ));
+                }
+            }
+        }
+        Ok(ProtocolCallback {
+            name,
+            name_span,
+            arity: params.len(),
+            attrs,
+            span: self.finish(start),
+        })
+    }
+
+    pub(super) fn parse_protocol_impl(&mut self) -> PR<ProtocolImplDef> {
+        let start = self.cur_span();
+        self.expect(&Tok::Defimpl, "`defimpl`")?;
+        let (protocol, protocol_span) = self.parse_upper_path("protocol")?;
+        self.expect(&Tok::Comma, "`,`")?;
+        match self.bump() {
+            Tok::KwKey(k) if k == "for" => {}
+            other => {
+                return self.err(format!(
+                    "expected `for:` after protocol name in defimpl, got {:?}",
                     other
                 ));
             }
-        };
+        }
+        let (target_path, target_span) = self.parse_upper_path("implementation target")?;
+        self.expect(&Tok::Do, "`do`")?;
+        self.skip_newlines();
+        let (items, attrs) = self.parse_items_until(&[Tok::End])?;
+        self.expect(&Tok::End, "`end`")?;
+        Ok(ProtocolImplDef {
+            protocol,
+            protocol_span,
+            target: ProtocolImplTarget {
+                path: target_path,
+                span: target_span,
+            },
+            items,
+            attrs,
+            span: self.finish(start),
+        })
+    }
+
+    pub(super) fn parse_module(&mut self) -> PR<ModuleDef> {
+        let start = self.cur_span();
+        self.expect(&Tok::Defmodule, "`defmodule`")?;
+        let (name_path, name_span) = self.parse_upper_path("module")?;
+        let name = name_path.dotted();
         self.expect(&Tok::Do, "`do`")?;
         self.skip_newlines();
         let (items, attrs) = self.parse_items_until(&[Tok::End])?;

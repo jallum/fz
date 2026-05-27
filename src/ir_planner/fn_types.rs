@@ -22,31 +22,13 @@ pub struct SpecPlan {
     /// stricter than `ModulePlan::dead_branches`: a branch can be dead for
     /// one specialization even when another specialization keeps it live.
     pub dead_branches: HashMap<crate::fz_ir::BlockId, crate::fz_ir::DeadBranch>,
-    /// Per-callsite dispatch table for this spec.
+    /// Per-callsite call-edge capability selected for this spec.
     ///
-    /// For every `Direct`, `ClosureCall`, and `Cont` callsite in this spec's
-    /// reachable IR, records the spec key the planner elected to dispatch to.
-    /// `MakeClosure` emits an any-key body spec but is not a dispatch site.
-    ///
-    /// Authoritative source for codegen's dispatch decisions. Two
-    /// caller specs can dispatch the *same* `CallsiteId` to *different*
-    /// targets — this table keeps both views distinct.
-    ///
-    /// Populated by the worklist and read by codegen. See
-    /// `docs/planner-authoritative-dispatch.md` for the broader rationale.
-    pub dispatches: HashMap<crate::fz_ir::CallsiteId, SpecKey>,
-    /// Per-spec facts about how a call result is consumed by its return
-    /// edge. This is intentionally parallel to `dispatches`: two caller
-    /// specs can visit the same source callsite with different result-hole
-    /// capabilities, and demand selection must follow this edge fact rather
-    /// than blindly inheriting the caller spec's demand.
-    pub return_uses: HashMap<crate::fz_ir::CallsiteId, ReturnDemand>,
-    /// Typed executable plan for ListTail return-use edges. Kept separate
-    /// from `return_uses` because not every return-use fact needs lowering
-    /// help; plans name the concrete source operands the eventual backend
-    /// lowering must consume. Plans are caller-spec keyed because one
-    /// syntactic callsite can be visited under multiple return demands.
-    pub return_context_plans: HashMap<ReturnContextPlanKey, ReturnContextPlan>,
+    /// This is the typed handoff codegen should consume. It keeps the selected
+    /// target, result-hole demand, and executable return-context plan on one
+    /// edge, so future provider-boundary and protocol dispatch facts can extend
+    /// the same shape instead of adding side tables.
+    pub call_edges: HashMap<crate::fz_ir::CallsiteId, CallEdgePlan>,
     /// Per-spec concrete C marshal classes for extern call arguments.
     ///
     /// Variadic `Auto` args are resolved after this `FnTypes` has inferred
@@ -55,12 +37,69 @@ pub struct SpecPlan {
     pub extern_marshals: HashMap<crate::fz_ir::ExternMarshalSite, crate::fz_ir::ExternTy>,
 }
 
+impl SpecPlan {
+    pub fn local_call_target(&self, callsite: &crate::fz_ir::CallsiteId) -> Option<&SpecKey> {
+        self.call_edges
+            .get(callsite)
+            .and_then(CallEdgePlan::local_target)
+    }
+
+    pub fn return_use(&self, callsite: &crate::fz_ir::CallsiteId) -> Option<&ReturnDemand> {
+        self.call_edges
+            .get(callsite)
+            .and_then(|edge| edge.return_use.as_ref())
+    }
+
+    pub fn return_context_plan(
+        &self,
+        callsite: &crate::fz_ir::CallsiteId,
+    ) -> Option<&ReturnContextPlan> {
+        self.call_edges
+            .get(callsite)
+            .and_then(|edge| edge.return_context.as_ref())
+    }
+
+    pub(crate) fn install_call_edges(
+        &mut self,
+        call_edges: HashMap<crate::fz_ir::CallsiteId, CallEdgePlan>,
+    ) {
+        self.call_edges = call_edges;
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CallEdgePlan {
+    pub target: CallEdgeTarget,
+    pub return_use: Option<ReturnDemand>,
+    pub return_context: Option<ReturnContextPlan>,
+}
+
+impl CallEdgePlan {
+    pub fn local_target(&self) -> Option<&SpecKey> {
+        match &self.target {
+            CallEdgeTarget::Local(target) => Some(target),
+            CallEdgeTarget::External { .. } => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CallEdgeTarget {
+    Local(SpecKey),
+    External {
+        target: crate::modules::identity::ExportKey,
+        input: Vec<crate::types::KeySlot>,
+        demand: ReturnDemand,
+    },
+}
+
 /// Per-module type information.
 ///
 /// `specs` is the registered specialization map, keyed by `SpecKey`
 /// (`FnId`, input-type tuple, and return demand). Specs are produced by direct
 /// calls, closure calls, continuations, receive outcomes, entry seeds, and
 /// `MakeClosure` reachability.
+#[derive(Debug, Clone)]
 pub struct ModulePlan {
     pub specs: HashMap<SpecKey, SpecPlan>,
     /// Kleene LFP of every spec's effective return type. Maintained
@@ -366,21 +405,6 @@ pub enum ReturnContext {
 pub struct ReturnDemand {
     pub delivery: ReturnDelivery,
     pub context: ReturnContext,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct ReturnContextPlanKey {
-    pub caller: SpecKey,
-    pub callsite: crate::fz_ir::CallsiteId,
-}
-
-impl ReturnContextPlanKey {
-    pub(crate) fn new(caller: &SpecKey, callsite: &crate::fz_ir::CallsiteId) -> Self {
-        Self {
-            caller: caller.clone(),
-            callsite: callsite.clone(),
-        }
-    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]

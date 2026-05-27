@@ -36,8 +36,8 @@ The invariant for the separate-compilation arc is:
 Codegen artifact vocabulary:
 
 - `CompiledUnit` is the pre-link artifact for one source module. It owns that
-  module's IR code, imports, exports, diagnostics, and visible interface
-  fingerprint inputs.
+  module's IR code, planner facts, imports, exports, diagnostics, and visible
+  interface fingerprint inputs.
 - `CompiledProgram` is the immediate codegen product for the JIT path. It owns
   the executable `CompiledModule`, the `CompiledUnit`, and the matching
   `RuntimeUnitMetadata` derived from codegen/runtime facts.
@@ -57,7 +57,11 @@ Codegen artifact vocabulary:
   the image linker gives `Module::rewrite_external_calls_for_lto` an export map
   and rewrites the callsite to a direct local `FnId`. Codegen rejects any
   unresolved external edge; linked images must resolve or report the missing
-  target first.
+  target first. `SpecPlan.call_edges` carries the matching provider-boundary
+  target before link; `link_ir_units_with_plan` resolves it to the linked local
+  `SpecKey` while rewriting the IR edge. A rewrite candidate must match the
+  callsite identity and the target entry arity; matching only a source identity
+  is insufficient because matcher-generated branches can share source spans.
 - Artifact ownership is explicit. `.fzi` stores only the versioned
   `ModuleInterface` contract plus compiler/runtime ABI versions and the
   interface fingerprint. `.fzo` stores the implementation-unit envelope:
@@ -71,14 +75,17 @@ Codegen artifact vocabulary:
   fingerprint mismatches as `artifact/invalid` diagnostics.
 - `link_ir_units` is the normal boundary-resolution step for executable module
   graphs. It copies all reachable `CompiledUnit` IR bodies into one dense linked
-  `Module`, remaps `FnId`, `ExternId`, and atom ids, builds the provider export
-  map from implemented interfaces, and rewrites `ExternalCallEdge` placeholders
-  to direct local calls before JIT codegen sees the module.
+  `Module`, remaps `FnId`, `ExternId`, atom ids, and planner facts, builds the
+  provider export map from implemented interfaces, and rewrites
+  `ExternalCallEdge` placeholders to direct local calls before JIT codegen sees
+  the module. Provider-backed codegen uses `link_ir_units_with_plan`; missing
+  planner facts are a link error, not an invitation to replan the linked graph.
 - `modules::pipeline::prepare_execution_graph` is the module graph correctness
   path for provider-backed run/build. It materializes provider units, calls
-  `link_ir_units`, and hands codegen one linked IR module with no unresolved
-  external edges. `CompiledImage::from_linked_with_telemetry` then only wraps
-  that already-linked machine-code module and emits link telemetry.
+  `link_ir_units_with_plan`, and hands codegen one linked IR module and one
+  remapped `ModulePlan` with no unresolved external edges. It does not run a
+  normal post-link `plan_module` cleanup pass. `CompiledImage::from_linked_with_telemetry`
+  then only wraps that already-linked machine-code module and emits link telemetry.
 - `CompiledProgram::link_image_with_telemetry` remains the single-unit JIT run
   path. It validates that one unit through `link_ir_units`, links that unit's
   runtime metadata for runtime/debug facts, and wraps the compiled module.
@@ -124,10 +131,12 @@ Runtime library boundary:
 - `modules::graph::ModuleGraphLoader` traverses reachable imports from root
   checked interfaces and explicit provider-root modules. It loads provider
   `.fzi` contracts first, queues their imports recursively, and loads `.fzo`
-  objects only for reachable modules. Runtime-library modules are checked
-  first through `modules::runtime_library::interface`; reachable runtime modules
-  contribute built-in `.fzo` objects through `modules::runtime_library::artifact`
-  and do not require user `.fzi`/`.fzo` files.
+  objects only for reachable modules. Protocol implementation callback names do
+  not add graph roots; they are functions packaged in the defining module's
+  object. Runtime-library modules are checked first through
+  `modules::runtime_library::interface`; reachable runtime modules contribute
+  built-in `.fzo` objects through `modules::runtime_library::artifact` and do
+  not require user `.fzi`/`.fzo` files.
 - User builds can write object envelopes with
   `fz build --emit-fzo --artifact-root <dir> ...`. The writer consumes the
   checked `CompiledUnit` facts directly, so a module with artifact-backed

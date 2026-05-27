@@ -62,7 +62,7 @@ fn push_dispatch_target<T: crate::types::Types<Ty = crate::types::Ty>>(
         ident: ident.clone(),
         slot,
     };
-    let Some(target) = ft.dispatches.get(&cid) else {
+    let Some(target) = ft.local_call_target(&cid) else {
         return;
     };
     if let Some(next) = spec_registry.resolve_spec_key(t, target)
@@ -938,8 +938,8 @@ fn derive_tagged_return_fns(
 /// `tagged_return_fns`) must accept ValueRef at slot 0. The producer
 /// returns ValueRef and the cont's wire sig at the seam must agree.
 ///
-/// Reads the producer→cont dispatch facts from
-/// `SpecPlan.dispatches[Cont]` instead of re-walking terminators and
+/// Reads the producer→cont call-edge facts from
+/// `SpecPlan.call_edges[Cont]` instead of re-walking terminators and
 /// calling `cont_input_key` + `spec_registry.resolve`. The typer already
 /// named which `(cont_fn, cont_key)` each Cont site dispatches to
 /// (per spec).
@@ -979,7 +979,7 @@ fn compute_tagged_slot0_cont_specs<T: crate::types::Types<Ty = crate::types::Ty>
                 ident: term_ident.clone(),
                 slot: crate::fz_ir::EmitSlot::Cont,
             };
-            if let Some(cont_key) = caller_ft.dispatches.get(&cid)
+            if let Some(cont_key) = caller_ft.local_call_target(&cid)
                 && let Some(sid) = spec_registry.resolve_spec_key(t, cont_key)
             {
                 tagged_slot0_cont_specs.insert(sid.0);
@@ -1933,7 +1933,7 @@ fn declare_mid_flight_conts<
                     ident: ident.clone(),
                     slot: crate::fz_ir::EmitSlot::Direct,
                 };
-                let Some(target) = fn_types.dispatches.get(&cid) else {
+                let Some(target) = fn_types.local_call_target(&cid) else {
                     continue;
                 };
                 let Some(callee_sid) = spec_registry.resolve_spec_key(t, target) else {

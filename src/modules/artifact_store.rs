@@ -361,6 +361,8 @@ mod tests {
                 name_span: crate::diag::Span::DUMMY,
             }],
             types: Vec::new(),
+            protocols: Vec::new(),
+            protocol_impls: Vec::new(),
             docs: None,
             fingerprint_inputs: vec![
                 "abi=1".to_string(),

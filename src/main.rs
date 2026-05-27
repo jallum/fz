@@ -36,6 +36,7 @@ mod parking;
 mod parser;
 mod pattern_check;
 mod pattern_matrix;
+mod protocols;
 mod reducer;
 mod repl;
 mod resolve;
@@ -1159,8 +1160,8 @@ fn dump_bodies_pipeline(
 /// fz-9pr.16 — `fz dump --emit outcomes`: per-callsite verdict diary.
 ///
 /// Runs the codegen front half (lex → parse → resolve → macros →
-/// ir_lower → reduce_module → plan_module) and prints every dispatch
-/// entry in `mt.specs[*].dispatches` plus the reducer's
+/// ir_lower → reduce_module → plan_module) and prints every call-edge
+/// entry in `mt.specs[*].call_edges` plus the reducer's
 /// Consumed / Stalled log entries, grouped by caller fn. Output shape:
 ///
 /// ```text
@@ -1265,7 +1266,7 @@ fn dump_outcomes_pipeline(
     // a spec-side decision — no point double-reporting).
     let mut spec_cids: std::collections::HashSet<CallsiteId> = std::collections::HashSet::new();
     for ft in mt.specs.values() {
-        for cid in ft.dispatches.keys() {
+        for cid in ft.call_edges.keys() {
             spec_cids.insert(cid.clone());
         }
     }
@@ -1285,7 +1286,10 @@ fn dump_outcomes_pipeline(
     // Per-caller-spec dispatch rows (Static for Direct/Cont; Indirect for
     // ClosureCall).
     for (caller_key, ft) in &mt.specs {
-        for (cid, target) in ft.dispatches.iter() {
+        for (cid, edge) in ft.call_edges.iter() {
+            let Some(target) = edge.local_target() else {
+                continue;
+            };
             let dispatch = match cid.slot {
                 EmitSlot::ClosureCall => Outcome::Indirect(target.clone()),
                 _ => Outcome::Static(target.clone()),

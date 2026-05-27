@@ -347,6 +347,8 @@ mod tests {
                 kind: InterfaceTypeKind::Alias,
                 body: "int".to_string(),
             }],
+            protocols: Vec::new(),
+            protocol_impls: Vec::new(),
             docs: Some("math docs".to_string()),
             fingerprint_inputs: vec!["export:Math.add/2".to_string()],
         }

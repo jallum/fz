@@ -1,0 +1,52 @@
+defmodule Enum do
+  import Enumerable, only: [reduce_list: 3, count_list: 2, member_list?: 2]
+
+  @spec reduce(Enumerable.t(a), b, (a, b) -> {:cont, b} | {:halt, b} | {:suspend, b}) :: any
+  fn reduce(enumerable, acc, reducer), do: reduce_list(enumerable, acc, reducer)
+
+  @spec count(Enumerable.t(a)) :: {:ok, integer} | {:error, any}
+  fn count(enumerable), do: {:ok, count_list(enumerable, 0)}
+
+  @spec member?(Enumerable.t(a), a) :: {:ok, bool} | {:error, any}
+  fn member?(enumerable, value), do: {:ok, member_list?(enumerable, value)}
+
+  @spec sort(Enumerable.t(a)) :: [a]
+  fn sort(enumerable), do: sort(enumerable, fn (left, right) -> left <= right)
+
+  @spec sort(Enumerable.t(a), (a, a) -> bool) :: [a]
+  fn sort(enumerable, sorter), do: sort_list(enumerable, sorter)
+
+  @spec slice(Enumerable.t(a)) :: {:ok, integer, any} | {:error, any}
+  fn slice(_enumerable), do: {:error, :unsupported}
+
+  fnp sort_list([], _sorter), do: []
+  fnp sort_list([single], _sorter), do: [single]
+  fnp sort_list(list, sorter) do
+    {left, right} = split_sort_list(list, [], [])
+    merge_sort_lists(
+      sort_list(reverse_sort_list(left), sorter),
+      sort_list(reverse_sort_list(right), sorter),
+      sorter
+    )
+  end
+
+  fnp split_sort_list([], left, right), do: {left, right}
+  fnp split_sort_list([single], left, right), do: {[single | left], right}
+  fnp split_sort_list([left_head, right_head | tail], left, right) do
+    split_sort_list(tail, [left_head | left], [right_head | right])
+  end
+
+  fnp reverse_sort_list(list), do: reverse_sort_list(list, [])
+  fnp reverse_sort_list([], acc), do: acc
+  fnp reverse_sort_list([head | tail], acc), do: reverse_sort_list(tail, [head | acc])
+
+  fnp merge_sort_lists([], right, _sorter), do: right
+  fnp merge_sort_lists(left, [], _sorter), do: left
+  fnp merge_sort_lists([left_head | left_tail], [right_head | right_tail], sorter) do
+    if sorter(left_head, right_head) do
+      [left_head | merge_sort_lists(left_tail, [right_head | right_tail], sorter)]
+    else
+      [right_head | merge_sort_lists([left_head | left_tail], right_tail, sorter)]
+    end
+  end
+end

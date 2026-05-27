@@ -49,16 +49,26 @@ nodes still exist. It produces one `ModuleInterface` per module.
 - `name`: the `ModuleName`;
 - `abi_version`: currently `FZ_INTERFACE_ABI_VERSION`;
 - `imports`: declared module imports and their `only` / `except` filters;
-- `exports`: non-macro, non-extern public functions by name and arity;
+- `exports`: non-macro, non-extern, non-`fnp` public functions by name and
+  arity;
 - `types`: public module type aliases, opaques, and refines;
+- `protocols`: protocol declarations and callback surfaces owned by the
+  module;
+- `protocol_impls`: `(protocol, ImplTarget)` implementation facts and callback
+  exports;
 - `docs`: optional module docs;
 - `fingerprint_inputs`: deterministic semantic inputs for compatibility checks.
 
 Function bodies must never enter a `ModuleInterface`.
 
-Module-scoped `extern "C"` declarations are implementation contracts. They are
-not exported from module interfaces. A wrapper function such as
-`Utf8.valid?/1` is the public export; `fz_bitstring_valid_utf8/1` is not.
+Protocol facts are public contract data. Dependents need those facts to check
+`Protocol.t(...)` domain constraints without loading provider bodies, just as
+they use export facts to resolve imported calls.
+
+Module-scoped `extern "C"` declarations and `fnp` declarations are
+implementation contracts. They are not exported from module interfaces. A
+wrapper function such as `Utf8.valid?/1` is the public export;
+`fz_bitstring_valid_utf8/1` and private helper functions are not.
 
 ## Import Resolution
 
@@ -99,6 +109,9 @@ fz dump --emit interfaces --strict-interfaces file.fz
 ```
 
 Top-level non-module helpers are not interface exports and remain inferable.
+Inside modules, `fnp name(...)` declares a private helper. It participates in
+normal same-module resolution and lowering, but it is omitted from
+`ModuleInterface` exports and does not require a public `@spec`.
 
 ## Vocabulary
 
@@ -236,7 +249,8 @@ Reachable graph loading:
   module names.
 - The loader queues imports from the roots, loads provider `.fzi` contracts,
   recursively queues their imports, and only then loads `.fzo` objects for
-  reachable modules.
+  reachable modules. Protocol implementation callback paths are export
+  namespaces inside the defining module's object, not separate artifact roots.
 - Runtime-library modules are checked through `modules::runtime_library::interface`
   before the filesystem artifact store. If a runtime module is reachable, the
   loader adds its built-in `.fzo` through `modules::runtime_library::artifact`.
@@ -436,17 +450,26 @@ Use the right term:
 
 `link_ir_units` is the boundary-resolution step for module graphs. It copies all
 reachable `CompiledUnit` IR bodies into one dense linked `Module`, remaps
-`FnId`, `ExternId`, and atom ids, builds provider keys from implemented
-interfaces, and rewrites `ExternalCallEdge` placeholders to direct local calls
-before JIT codegen sees the module.
+`FnId`, `ExternId`, atom ids, and planner facts, builds provider keys from
+implemented interfaces, and rewrites `ExternalCallEdge` placeholders to direct
+local calls before JIT codegen sees the module.
+
+Linking must also preserve planner facts that codegen consumes. A provider graph
+must not depend on a normal post-link `plan_module` pass to recover dispatch,
+return-demand, return-context, extern-marshal, or protocol call-edge facts that
+were known upstream. Link/load may validate, remap, resolve, and strengthen
+facts; ordinary provider linking is a fact-preserving transformation.
+Provider-backed codegen uses `link_ir_units_with_plan`; missing planner facts
+are a link error.
 
 `CompiledProgram::link_image_with_telemetry` is the single-unit JIT run path. It
 validates the unit through `link_ir_units`, links that unit's runtime metadata,
 and wraps the compiled machine-code module. Provider-backed run/build paths
 first call `modules::pipeline::prepare_execution_graph`, which materializes
-provider units and calls `link_ir_units`; codegen then sees one linked IR module
-with no unresolved external edges. `CompiledImage::from_linked_with_telemetry`
-only wraps that already-linked machine-code module and emits link telemetry.
+provider units and calls `link_ir_units_with_plan`; codegen then sees one
+linked IR module and one remapped `ModulePlan` with no unresolved external
+edges. `CompiledImage::from_linked_with_telemetry` only wraps that
+already-linked machine-code module and emits link telemetry.
 `CompiledModule` remains the executable payload inside the image, not the
 driver-facing product.
 
@@ -559,7 +582,10 @@ Rules:
   module-scoped while exposing imported names like `print/1`;
 - ordinary module bodies live in individual files such as
   `src/modules/runtime_library/utf8.fz` and
-  `src/modules/runtime_library/process.fz`;
+  `src/modules/runtime_library/process.fz`; `Enumerable` and `Enum` also live
+  here and expose list protocol facts plus public enumeration wrappers,
+  with private `fnp` helpers for implementation details such as `Enum.sort`'s
+  merge sort, as ordinary FZ source;
 - every runtime-library module should carry a crisp `@moduledoc`, and every
   public export should have the narrowest accurate `@spec`;
 - module-scoped externs are implementation details, not interface exports;

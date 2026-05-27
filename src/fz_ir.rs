@@ -188,6 +188,13 @@ pub struct ExternalCallEdge {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProtocolCallTarget {
+    pub protocol: ModuleName,
+    pub callback: String,
+    pub arity: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ExternalLinkError {
     MissingTarget(ExportKey),
     MissingCallsite(CallsiteId),
@@ -1138,6 +1145,8 @@ pub struct Module {
     /// placeholder `FnId` until link/LTO resolution loads the provider
     /// implementation and rewrites the edge to a direct local call.
     pub external_call_edges: Vec<ExternalCallEdge>,
+    pub protocol_call_targets: HashMap<FnId, ProtocolCallTarget>,
+    pub protocol_registry: crate::protocols::ProtocolRegistry,
     /// fz-jg5.12 (RED.9) — Fns marked as reduction boundaries. Populated
     /// by ir_lower from `@spec` declarations. The reducer treats these as
     /// firewalls: a declared spec is the user's signed contract that the
@@ -1226,6 +1235,18 @@ impl Module {
                     );
                 }
             }
+            for protocol_impl in &interface.protocol_impls {
+                for callback in &protocol_impl.callbacks {
+                    let name = format!("{}.{}", callback.module, callback.name);
+                    if let Some(f) = self
+                        .fns
+                        .iter()
+                        .find(|f| f.name == name && f.block(f.entry).params.len() == callback.arity)
+                    {
+                        out.insert(callback.clone(), f.id);
+                    }
+                }
+            }
         }
         out
     }
@@ -1235,16 +1256,35 @@ fn rewrite_external_callsite(m: &mut Module, callsite: &CallsiteId, target: FnId
     let Some(fn_idx) = m.fn_idx.get(&callsite.caller).copied() else {
         return false;
     };
+    let Some(target_idx) = m.fn_idx.get(&target).copied() else {
+        return false;
+    };
+    let target_arity = m.fns[target_idx]
+        .block(m.fns[target_idx].entry)
+        .params
+        .len();
     for block in &mut m.fns[fn_idx].blocks {
         match &mut block.terminator {
-            Term::Call { ident, callee, .. }
-                if callsite.slot == EmitSlot::Direct && *ident == callsite.ident =>
+            Term::Call {
+                ident,
+                callee,
+                args,
+                ..
+            } if callsite.slot == EmitSlot::Direct
+                && *ident == callsite.ident
+                && args.len() == target_arity =>
             {
                 *callee = target;
                 return true;
             }
-            Term::TailCall { ident, callee, .. }
-                if callsite.slot == EmitSlot::Direct && *ident == callsite.ident =>
+            Term::TailCall {
+                ident,
+                callee,
+                args,
+                ..
+            } if callsite.slot == EmitSlot::Direct
+                && *ident == callsite.ident
+                && args.len() == target_arity =>
             {
                 *callee = target;
                 return true;
@@ -1253,6 +1293,14 @@ fn rewrite_external_callsite(m: &mut Module, callsite: &CallsiteId, target: FnId
         }
     }
     false
+}
+
+pub(crate) fn rewrite_external_callsite_for_link(
+    m: &mut Module,
+    callsite: &CallsiteId,
+    target: FnId,
+) -> bool {
+    rewrite_external_callsite(m, callsite, target)
 }
 
 // ---------- builder ----------
@@ -1376,6 +1424,7 @@ pub struct ModuleBuilder {
     fn_idx: HashMap<FnId, usize>,
     schemas: Vec<Schema>,
     pub external_call_edges: Vec<ExternalCallEdge>,
+    pub protocol_call_targets: HashMap<FnId, ProtocolCallTarget>,
 }
 
 impl ModuleBuilder {
@@ -1387,6 +1436,7 @@ impl ModuleBuilder {
             fn_idx: HashMap::new(),
             schemas: Vec::new(),
             external_call_edges: Vec::new(),
+            protocol_call_targets: HashMap::new(),
         }
     }
 
@@ -1431,6 +1481,8 @@ impl ModuleBuilder {
             externs: Vec::new(),
             extern_idx: HashMap::new(),
             external_call_edges: self.external_call_edges,
+            protocol_call_targets: self.protocol_call_targets,
+            protocol_registry: crate::protocols::ProtocolRegistry::default(),
             boundary_fns: HashSet::new(),
             opaque_inners: HashMap::new(),
             brand_inners: HashMap::new(),
@@ -1986,6 +2038,8 @@ mod tests {
                     name_span: Span::DUMMY,
                 }],
                 types: Vec::new(),
+                protocols: Vec::new(),
+                protocol_impls: Vec::new(),
                 docs: None,
                 fingerprint_inputs: Vec::new(),
             },

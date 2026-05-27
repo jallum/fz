@@ -54,8 +54,8 @@ pub use extern_table::ExternTable;
 
 pub(crate) use cond::{lower_if, lower_multi_clause};
 pub(crate) use cps::{
-    ContFn, cps_split_call, cps_split_call_closure, cps_split_external_call, cps_split_receive,
-    finalize_arm, mint_cont_fn, switch_to_cont_fn,
+    ContFn, cont_call_args, cps_split_call, cps_split_call_closure, cps_split_external_call,
+    cps_split_receive, finalize_arm, mint_cont_fn, switch_to_cont_fn,
 };
 pub(crate) use expr::{bind_param_topname, lower_expr, lower_fn, lower_pattern_bind};
 pub(crate) use extern_table::{extern_symbol_from_name, extern_ty_from_name};
@@ -92,6 +92,7 @@ fn parse_runtime_prelude<T: crate::types::Types<Ty = crate::types::Ty>>(
         external_module_interfaces: Default::default(),
         module_docs: Default::default(),
         module_type_envs: Default::default(),
+        protocol_registry: Default::default(),
         opaque_inners: Default::default(),
         brand_inners: Default::default(),
     };
@@ -221,6 +222,8 @@ pub fn lower_program_full_with_telemetry<T: crate::types::Types<Ty = crate::type
 ) -> Result<(Module, AtomTable), LowerError> {
     let mut ctx = LowerCtx::new();
     ctx.register_external_interfaces(&prog.external_module_interfaces);
+    ctx.register_protocol_registry(&prog.protocol_registry);
+    ctx.register_interface_protocols(&prog.external_module_interfaces);
 
     // Prepend the built-in runtime prelude. `runtime.fz` contributes root
     // type aliases and imports; core prelude module sources (currently
@@ -354,6 +357,19 @@ pub fn lower_program_full_with_telemetry<T: crate::types::Types<Ty = crate::type
                     what: "Item::Module should be flattened by resolve before lowering".into(),
                 });
             }
+            Item::Protocol(p) => {
+                return Err(LowerError::Unsupported {
+                    span: p.span,
+                    what: "protocol declarations are not lowered before protocol resolution".into(),
+                });
+            }
+            Item::ProtocolImpl(i) => {
+                return Err(LowerError::Unsupported {
+                    span: i.span,
+                    what: "protocol implementations are not lowered before protocol resolution"
+                        .into(),
+                });
+            }
             Item::Alias { span, .. } | Item::Import { span, .. } => {
                 return Err(LowerError::Unsupported {
                     span: *span,
@@ -384,6 +400,10 @@ pub fn lower_program_full_with_telemetry<T: crate::types::Types<Ty = crate::type
     // still usable for source-info collection.
     let mb = std::mem::take(&mut ctx.mb);
     let mut module = mb.build();
+    module.protocol_registry = prog.protocol_registry.clone();
+    module
+        .protocol_registry
+        .extend_interfaces(&prog.external_module_interfaces);
     module.source = build_source_info(&module, &ctx);
     module.atom_names = ctx.atoms.names();
     module.externs = std::mem::take(&mut ctx.extern_decls);

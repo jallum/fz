@@ -239,7 +239,11 @@ impl CompileTimeEvaluator {
                 // Modules should have been flattened by `resolve::flatten_modules`
                 // before reaching this point. If one slips through (e.g. a
                 // direct test caller), error loudly.
-                Item::Module(_) | Item::Alias { .. } | Item::Import { .. } => {
+                Item::Module(_)
+                | Item::Protocol(_)
+                | Item::ProtocolImpl(_)
+                | Item::Alias { .. }
+                | Item::Import { .. } => {
                     return Err("load_program: pre-resolution Item reached interp; \
                      resolve::flatten_modules must run after parse"
                         .into());

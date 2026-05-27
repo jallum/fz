@@ -94,8 +94,7 @@ return result
 
 Lazy continuation materialization is not destination planning. The planner still
 owns destination semantics through `SpecKey.demand`,
-`SpecPlan.return_uses`, `SpecPlan.return_context_plans`, and
-`SpecPlan.dispatches`.
+`SpecPlan.call_edges`.
 
 The lazy descriptor is a representation choice after those facts are known:
 for a compiler-known native continuation, codegen can carry the same typed

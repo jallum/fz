@@ -105,14 +105,20 @@ pub(crate) fn lower_multi_clause<T: crate::types::Types<Ty = crate::types::Ty>>(
                 ctx.cur_block = Some(body_b);
                 ctx.terminated = false;
             }
-            let cont = mint_cont_fn(
-                ctx,
-                format!("fn_clause_{}", i),
-                clause.span,
-                crate::fz_ir::FnCategory::MultiClauseCont,
-            );
-            let captures = ctx.visible_locals();
-            let capture_vars: Vec<Var> = captures.iter().map(|(_, v)| *v).collect();
+            let cont = match &clause_conts_ref[i] {
+                Some(cont) => cont.clone(),
+                None => {
+                    let cont = mint_cont_fn(
+                        ctx,
+                        format!("fn_clause_{}", i),
+                        clause.span,
+                        crate::fz_ir::FnCategory::MultiClauseCont,
+                    );
+                    clause_conts_ref[i] = Some(cont.clone());
+                    cont
+                }
+            };
+            let capture_vars = cont_call_args(ctx, &cont);
             ctx.set_term(Term::TailCall {
                 ident: crate::fz_ir::CallsiteIdent::from_source(clause.span),
                 callee: cont.id,
@@ -120,7 +126,6 @@ pub(crate) fn lower_multi_clause<T: crate::types::Types<Ty = crate::types::Ty>>(
                 is_back_edge: false,
             });
             ctx.terminated = true;
-            clause_conts_ref[i] = Some(cont);
             Ok(())
         };
         let result = lower_pattern_matrix_to_current_fn(ctx, pattern_matrix, fail_block, &mut cb);

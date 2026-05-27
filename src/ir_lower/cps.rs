@@ -73,6 +73,13 @@ pub(crate) fn mint_cont_fn(
     }
 }
 
+pub(crate) fn cont_call_args(ctx: &LowerCtx, cont: &ContFn) -> Vec<Var> {
+    cont.outer_captured
+        .iter()
+        .map(|(name, original)| ctx.lookup(name).unwrap_or(*original))
+        .collect()
+}
+
 /// Finalize ctx.cur (adding it to the module) and switch into a fresh
 /// builder for `cont`. Allocates an entry block with params:
 /// `[extras..., captured...]`. Returns the Vars for the extras (for a

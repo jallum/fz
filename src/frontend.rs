@@ -231,7 +231,7 @@ where
             program: crate::telemetry::value::opaque(&prog),
         },
     );
-    let module = match crate::ir_lower::lower_program_with_telemetry(t, &prog, tel) {
+    let mut module = match crate::ir_lower::lower_program_with_telemetry(t, &prog, tel) {
         Ok(module) => module,
         Err(e) => return Err(fail(sm, e.to_diagnostic())),
     };
@@ -244,6 +244,7 @@ where
         },
     );
     let (diagnostics, module_plan) = check_frontend(t, &prog, &module, tel);
+    apply_planned_direct_call_targets(&mut module, &module_plan);
     Ok(FrontendOk {
         sm,
         _prog: prog,
@@ -251,6 +252,22 @@ where
         module_plan,
         diagnostics,
     })
+}
+
+fn apply_planned_direct_call_targets(
+    module: &mut Module,
+    module_plan: &crate::ir_planner::ModulePlan,
+) {
+    for spec in module_plan.specs.values() {
+        for (callsite, edge) in &spec.call_edges {
+            if callsite.slot != crate::fz_ir::EmitSlot::Direct {
+                continue;
+            }
+            if let crate::ir_planner::fn_types::CallEdgeTarget::Local(target) = &edge.target {
+                crate::fz_ir::rewrite_external_callsite_for_link(module, callsite, target.fn_id);
+            }
+        }
+    }
 }
 
 pub(crate) fn compile_repl_expr_with_types<T>(
@@ -332,6 +349,7 @@ fn repl_entry_fn_def(
             span: crate::diag::Span::DUMMY,
         }],
         is_macro: false,
+        is_private: false,
         variadic: false,
         extern_abi: None,
         extern_params: vec![],
@@ -551,6 +569,8 @@ fn main(), do: classify(7)
                     name_span: crate::diag::Span::DUMMY,
                 }],
                 types: Vec::new(),
+                protocols: Vec::new(),
+                protocol_impls: Vec::new(),
                 docs: None,
                 fingerprint_inputs: Vec::new(),
             },

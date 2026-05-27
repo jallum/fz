@@ -16,6 +16,12 @@ fn run(src: &str) -> i64 {
     run_main(&crate::telemetry::NullTelemetry, &m).expect("interp run")
 }
 
+fn run_checked(src: &str) -> i64 {
+    let frontend = crate::frontend::compile_source(src.to_string(), "interp-test.fz".to_string())
+        .unwrap_or_else(|err| panic!("frontend: {:?}", err.diagnostics));
+    run_main(&crate::telemetry::NullTelemetry, &frontend.module).expect("interp run")
+}
+
 fn capture(src: &str) -> String {
     let m = lower_src(src);
     let _ = fz_runtime::ir_runtime::test_capture_take();
@@ -28,6 +34,26 @@ fn interp_typed_int_arithmetic_full_i64() {
     assert_eq!(
         run("fn main(), do: 4611686018427387904 + 7"),
         4611686018427387911
+    );
+}
+
+#[test]
+fn interp_static_protocol_dispatch_uses_planned_impl() {
+    assert_eq!(
+        run_checked(
+            r#"
+defprotocol Integerish do
+  fn id(value)
+end
+
+defimpl Integerish, for: Integer do
+  fn id(value), do: value + 1
+end
+
+fn main(), do: Integerish.id(41)
+"#,
+        ),
+        42
     );
 }
 

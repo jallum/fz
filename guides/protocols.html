@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>fz protocols guide</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<h1>fz protocols guide</h1>
+<p class="subtitle">How to declare a callback contract, implement it for lists, and use protocol-domain specs.</p>
+
+<div class="toc">
+<ul>
+  <li><a href="#why">1. Why protocols exist</a></li>
+  <li><a href="#declare">2. Declaring a protocol</a></li>
+  <li><a href="#impl">3. Implementing a protocol</a></li>
+  <li><a href="#domain">4. <code>Protocol.t(...)</code> specs</a></li>
+  <li><a href="#enumerable">5. Built-in <code>Enumerable</code> for lists</a></li>
+  <li><a href="#dispatch">6. Dispatch behavior</a></li>
+  <li><a href="#limits">7. Current limits</a></li>
+  <li><a href="#contract">8. The contract</a></li>
+</ul>
+</div>
+
+<h2 id="why">1. Why protocols exist</h2>
+
+<p>A protocol is a promise about behavior. It says: any type in this domain
+must provide these callback functions.</p>
+
+<p>That is useful when code wants to talk about a capability instead of one
+concrete shape. A list can be enumerable because it can be reduced, counted,
+and checked for membership. Other shapes may become enumerable later if they
+provide the same callbacks.</p>
+
+<div class="aside">
+<strong>Mental model:</strong> a protocol is both a checklist and a type fact.
+The checklist is the callback set. The type fact is the domain of values known
+to have an implementation.
+</div>
+
+<h2 id="declare">2. Declaring a protocol</h2>
+
+<p>Use <code>defprotocol</code> with callback declarations:</p>
+
+<pre><span class="kw">defprotocol</span> <span class="ty">Sized</span> <span class="kw">do</span>
+  <span class="kw">@spec</span> <span class="fn">count</span>(<span class="fn">t</span>(a)) :: {:ok, integer} | {:error, any}
+  <span class="kw">fn</span> <span class="fn">count</span>(value)
+<span class="kw">end</span></pre>
+
+<p>The callback name and arity are required. Specs are part of the public
+contract and are checked through module interfaces.</p>
+
+<h2 id="impl">3. Implementing a protocol</h2>
+
+<p>Use <code>defimpl</code> for a target:</p>
+
+<pre><span class="kw">defimpl</span> <span class="ty">Sized</span>, <span class="kw">for:</span> <span class="ty">List</span> <span class="kw">do</span>
+  <span class="kw">fn</span> <span class="fn">count</span>(list), <span class="kw">do:</span> {:ok, <span class="fn">count_list</span>(list, <span class="num">0</span>)}
+<span class="kw">end</span></pre>
+
+<p>Every callback declared by the protocol must be present in the
+implementation with the required arity. Duplicate implementations for the same
+protocol and target are errors.</p>
+
+<h2 id="domain">4. <code>Protocol.t(...)</code> specs</h2>
+
+<p><code>Protocol.t(...)</code> is not a prettier spelling for
+<code>any</code>. It is a protocol-domain constraint.</p>
+
+<pre><span class="kw">@spec</span> <span class="fn">total</span>(<span class="ty">Enumerable</span>.<span class="fn">t</span>(integer)) :: integer
+<span class="kw">fn</span> <span class="fn">total</span>(values), <span class="kw">do:</span>
+  <span class="ty">Enum</span>.<span class="fn">reduce</span>(values, {:cont, <span class="num">0</span>}, <span class="kw">fn</span> (x, acc) -> {:cont, acc + x})</pre>
+
+<p>The compiler checks that the value can belong to the protocol's implemented
+domain. For example, a list can satisfy <code>Enumerable.t(integer)</code>
+because the runtime library provides an <code>Enumerable</code> implementation
+for lists.</p>
+
+<div class="box blue">
+<strong>Naming:</strong> <code>Enumerable</code> is the protocol. The public
+convenience functions live on <code>Enum</code>, matching Elixir's split.
+</div>
+
+<h2 id="enumerable">5. Built-in <code>Enumerable</code> for lists</h2>
+
+<p>The runtime library includes the basic list implementation:</p>
+
+<pre><span class="kw">fn</span> <span class="fn">main</span>() <span class="kw">do</span>
+  <span class="fn">print</span>({
+    <span class="ty">Enum</span>.<span class="fn">count</span>([<span class="num">1</span>, <span class="num">2</span>, <span class="num">3</span>]),
+    <span class="ty">Enum</span>.<span class="fn">member?</span>([<span class="num">1</span>, <span class="num">2</span>, <span class="num">3</span>], <span class="num">2</span>),
+    <span class="ty">Enum</span>.<span class="fn">reduce</span>([<span class="num">1</span>, <span class="num">2</span>, <span class="num">3</span>], {:cont, <span class="num">0</span>},
+      <span class="kw">fn</span> (x, acc) -> {:cont, acc + x}),
+    <span class="ty">Enum</span>.<span class="fn">sort</span>([<span class="num">3</span>, <span class="num">1</span>, <span class="num">2</span>])
+  })
+<span class="kw">end</span></pre>
+
+<p>This prints:</p>
+
+<pre>{{:ok, 3}, {:ok, true}, {:done, 6}, [1, 2, 3]}</pre>
+
+<p><code>reduce/3</code> follows the tagged accumulator shape:
+<code>{:cont, acc}</code> continues, <code>{:halt, acc}</code> stops, and
+<code>{:suspend, acc}</code> returns a resumable function.</p>
+
+<p><code>sort/1</code> and <code>sort/2</code> are implemented in ordinary FZ as a
+stable merge sort. The merge step builds the output list directly from the
+selected head and recursive tail, so return-context planning can reason about
+the list shape without a separate append cleanup phase.</p>
+
+<h2 id="dispatch">6. Dispatch behavior</h2>
+
+<p>Protocol dispatch is planned before code runs. When the receiver type is
+known to be a list, the compiler can call the list implementation directly.
+That matters for scalars and tight loops: static protocol dispatch does not
+need a generic heap-boxed lookup just to find the callback.</p>
+
+<p>If the compiler cannot prove one implementation, today's compiler does not
+secretly fall back to a broad dynamic lookup. The call must remain behind a
+supported public wrapper or become a diagnostic.</p>
+
+<h2 id="limits">7. Current limits</h2>
+
+<p>The implemented protocol model is intentionally small:</p>
+
+<ul>
+  <li>No deriving.</li>
+  <li>No <code>fallback_to_any</code>.</li>
+  <li>No optional callbacks.</li>
+  <li>No broad built-in implementations beyond the proven list
+  <code>Enumerable</code> surface.</li>
+  <li>No open runtime protocol lookup for erased receiver types yet.</li>
+</ul>
+
+<p>Those are future features, not hidden behavior.</p>
+
+<h2 id="contract">8. The contract</h2>
+
+<div class="box green">
+<ul>
+  <li><code>defprotocol</code> declares required callbacks and a domain type.</li>
+  <li><code>defimpl</code> must provide every required callback for one target.</li>
+  <li><code>Protocol.t(...)</code> constrains values to the implementation domain.</li>
+  <li>Known list <code>Enum</code> calls execute through ordinary planned calls over the <code>Enumerable</code> domain.</li>
+  <li>Unsupported dynamic protocol features should fail clearly instead of guessing.</li>
+</ul>
+</div>
+
+</body>
+</html>

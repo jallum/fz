@@ -1,0 +1,37 @@
+defmodule Enumerable do
+  defprotocol Enumerable do
+    @spec reduce(t(a), b, (a, b) -> {:cont, b} | {:halt, b} | {:suspend, b}) :: any
+    fn reduce(enumerable, acc, reducer)
+
+    @spec count(t(a)) :: {:ok, integer} | {:error, any}
+    fn count(enumerable)
+
+    @spec member?(t(a), a) :: {:ok, bool} | {:error, any}
+    fn member?(enumerable, value)
+
+    @spec slice(t(a)) :: {:ok, integer, any} | {:error, any}
+    fn slice(enumerable)
+  end
+
+  defimpl Enumerable, for: List do
+    fn reduce(list, acc, reducer), do: Enumerable.reduce_list(list, acc, reducer)
+
+    fn count(list), do: {:ok, Enumerable.count_list(list, 0)}
+    fn member?(list, value), do: {:ok, Enumerable.member_list?(list, value)}
+    fn slice(_list), do: {:error, :unsupported}
+  end
+
+  fn reduce_list([], {:cont, acc}, _reducer), do: {:done, acc}
+  fn reduce_list(_list, {:halt, acc}, _reducer), do: {:halted, acc}
+  fn reduce_list(list, {:suspend, acc}, reducer) do
+    {:suspended, acc, (fn () -> reduce_list(list, {:cont, acc}, reducer))}
+  end
+  fn reduce_list([h | t], {:cont, acc}, reducer), do: reduce_list(t, reducer(h, acc), reducer)
+
+  fn count_list([], acc), do: acc
+  fn count_list([_ | t], acc), do: count_list(t, acc + 1)
+
+  fn member_list?([], _value), do: false
+  fn member_list?([h | _], value) when h == value, do: true
+  fn member_list?([_ | t], value), do: member_list?(t, value)
+end

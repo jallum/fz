@@ -20,9 +20,12 @@ pub enum Tok {
 
     // keywords
     Fn,
+    Fnp,
     Extern,
     Defmacro,
     Defmodule,
+    Defprotocol,
+    Defimpl,
     Alias,
     Import,
     Do,
@@ -349,9 +352,12 @@ impl<'a> Lexer<'a> {
     fn keyword_or_ident(name: String) -> Tok {
         match name.as_str() {
             "fn" => Tok::Fn,
+            "fnp" => Tok::Fnp,
             "extern" => Tok::Extern,
             "defmacro" => Tok::Defmacro,
             "defmodule" => Tok::Defmodule,
+            "defprotocol" => Tok::Defprotocol,
+            "defimpl" => Tok::Defimpl,
             "alias" => Tok::Alias,
             "import" => Tok::Import,
             "do" => Tok::Do,

@@ -219,9 +219,7 @@ pub fn type_fn<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::Clo
         fn_constants,
         reachable_blocks,
         dead_branches,
-        dispatches: HashMap::new(),
-        return_uses: HashMap::new(),
-        return_context_plans: HashMap::new(),
+        call_edges: HashMap::new(),
         extern_marshals: HashMap::new(),
     }
 }

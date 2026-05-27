@@ -371,6 +371,9 @@ pub struct FnDef {
     pub name_span: Span,
     pub clauses: Vec<FnClause>,
     pub is_macro: bool,
+    /// `fnp` declarations are module-private: callable from the declaring
+    /// module after flattening, but omitted from public interfaces/artifacts.
+    pub is_private: bool,
     /// `Some("C")` for `extern "C" fn` declarations; `None` for regular fns.
     pub extern_abi: Option<String>,
     /// Per-parameter type name strings for `extern "C" fn` declarations.
@@ -404,6 +407,8 @@ impl FnDef {
 pub enum Item {
     Fn(FnDef),
     Module(ModuleDef),
+    Protocol(ProtocolDef),
+    ProtocolImpl(ProtocolImplDef),
     /// `alias A.B.C` (as_name = "C") or `alias A.B.C, as: D` (as_name = "D").
     /// Valid at root scope or inside a defmodule body. The resolver consumes
     /// aliases, so they don't survive into the flattened Program.
@@ -443,6 +448,44 @@ pub enum Item {
         parent_module: Option<String>,
         span: Span,
     },
+}
+
+#[derive(Debug, Clone)]
+#[allow(dead_code)] // fz-31q.4 consumes protocol facts during registry resolution.
+pub struct ProtocolCallback {
+    pub name: String,
+    pub name_span: Span,
+    pub arity: usize,
+    pub attrs: Vec<Attribute>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone)]
+#[allow(dead_code)] // fz-31q.4 consumes protocol facts during registry resolution.
+pub struct ProtocolDef {
+    pub name: ModuleName,
+    pub name_span: Span,
+    pub callbacks: Vec<ProtocolCallback>,
+    pub attrs: Vec<Attribute>,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone)]
+#[allow(dead_code)] // fz-31q.4 consumes protocol facts during registry resolution.
+pub struct ProtocolImplTarget {
+    pub path: ModuleName,
+    pub span: Span,
+}
+
+#[derive(Debug, Clone)]
+#[allow(dead_code)] // fz-31q.4 consumes protocol facts during registry resolution.
+pub struct ProtocolImplDef {
+    pub protocol: ModuleName,
+    pub protocol_span: Span,
+    pub target: ProtocolImplTarget,
+    pub items: Vec<Rc<Item>>,
+    pub attrs: Vec<Attribute>,
+    pub span: Span,
 }
 
 #[derive(Debug, Clone)]
@@ -498,6 +541,11 @@ pub struct Program {
     /// the right env. Top-level fns (outside any defmodule) use the
     /// empty env stored under "".
     pub module_type_envs: std::collections::HashMap<String, crate::type_expr::ModuleTypeEnv>,
+    /// Protocol declarations and implementations collected during module
+    /// resolution while source-level protocol ASTs are still available.
+    #[allow(dead_code)]
+    // Consumed by the protocol dispatch/type tickets after registry resolution.
+    pub protocol_registry: crate::protocols::ProtocolRegistry,
     /// fz-swt.8 — Inner-type map for `opaque` aliases across every
     /// module in the program. Keyed by the qualified opaque tag (as
     /// stored on the qualified opaque type name); value is the parsed body

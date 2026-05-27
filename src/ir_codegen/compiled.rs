@@ -29,14 +29,25 @@ use std::sync::Arc;
 pub struct CompiledUnit {
     pub module: Option<crate::modules::identity::ModuleName>,
     pub code: Module,
+    pub module_plan: Option<crate::ir_planner::ModulePlan>,
     pub exports: Vec<crate::modules::interface::InterfaceFn>,
     pub interface_fingerprint: Vec<String>,
     pub interface: Option<crate::modules::interface::ModuleInterface>,
 }
 
 impl CompiledUnit {
+    #[cfg(test)]
     pub fn from_ir_module(
         code: Module,
+        interface: Option<crate::modules::interface::ModuleInterface>,
+        _diagnostics: crate::diag::Diagnostics,
+    ) -> Self {
+        Self::from_ir_module_with_plan(code, None, interface, _diagnostics)
+    }
+
+    pub fn from_ir_module_with_plan(
+        code: Module,
+        module_plan: Option<crate::ir_planner::ModulePlan>,
         interface: Option<crate::modules::interface::ModuleInterface>,
         _diagnostics: crate::diag::Diagnostics,
     ) -> Self {
@@ -57,6 +68,7 @@ impl CompiledUnit {
         Self {
             module,
             code,
+            module_plan,
             exports,
             interface_fingerprint,
             interface,
@@ -164,6 +176,9 @@ pub enum ImageLinkError {
         import: crate::modules::identity::ExportKey,
     },
     RuntimeMetadata(RuntimeMetadataLinkError),
+    MissingPlannerFacts {
+        module: Option<crate::modules::identity::ModuleName>,
+    },
 }
 
 impl std::fmt::Display for ImageLinkError {
@@ -198,23 +213,46 @@ impl std::fmt::Display for ImageLinkError {
                 write!(f, "export `{}` has more than one provider", import)
             }
             Self::RuntimeMetadata(err) => write!(f, "{}", err),
+            Self::MissingPlannerFacts { module } => write!(
+                f,
+                "compiled unit `{}` is missing planner facts required for linked codegen",
+                module
+                    .as_ref()
+                    .map(ToString::to_string)
+                    .unwrap_or_else(|| "<root>".to_string())
+            ),
         }
     }
 }
 
 impl std::error::Error for ImageLinkError {}
 
+pub struct LinkedIr {
+    pub module: Module,
+    pub module_plan: Option<crate::ir_planner::ModulePlan>,
+}
+
 pub fn link_ir_units(units: &[CompiledUnit]) -> Result<Module, ImageLinkError> {
     let mut linker = IrUnitLinker::new();
     for unit in units {
         linker.add_unit(unit)?;
     }
-    linker.finish()
+    linker.finish().map(|linked| linked.module)
+}
+
+pub fn link_ir_units_with_plan(units: &[CompiledUnit]) -> Result<LinkedIr, ImageLinkError> {
+    let mut linker = IrUnitLinker::new();
+    for unit in units {
+        linker.add_unit(unit)?;
+    }
+    linker.finish_with_plan()
 }
 
 #[derive(Default)]
 struct IrUnitLinker {
     linked: Module,
+    linked_plan: Option<crate::ir_planner::ModulePlan>,
+    missing_planner_facts: Option<Option<crate::modules::identity::ModuleName>>,
     export_map: BTreeMap<crate::modules::identity::ExportKey, FnId>,
 }
 
@@ -241,15 +279,21 @@ impl IrUnitLinker {
         let fn_map = self.copy_fns(unit);
         self.copy_externs(unit, &fn_map);
         self.copy_external_edges(unit, &fn_map);
+        self.copy_protocol_facts(unit, &fn_map);
         self.copy_specs(unit, &fn_map);
+        self.copy_planner_facts(unit, &fn_map);
         self.copy_type_facts(unit);
         self.copy_exports(unit, &fn_map)?;
         Ok(())
     }
 
-    fn finish(mut self) -> Result<Module, ImageLinkError> {
+    fn finish(mut self) -> Result<LinkedIr, ImageLinkError> {
+        self.resolve_external_call_edges_in_plan();
         match self.linked.rewrite_external_calls_for_lto(&self.export_map) {
-            Ok(_) => Ok(self.linked),
+            Ok(_) => Ok(LinkedIr {
+                module: self.linked,
+                module_plan: self.linked_plan,
+            }),
             Err(crate::fz_ir::ExternalLinkError::MissingTarget(import)) => {
                 let requester = self
                     .linked
@@ -264,6 +308,15 @@ impl IrUnitLinker {
                 Err(ImageLinkError::UnresolvedExternalCalls { module })
             }
         }
+    }
+
+    fn finish_with_plan(self) -> Result<LinkedIr, ImageLinkError> {
+        if self.missing_planner_facts.is_some() {
+            return Err(ImageLinkError::MissingPlannerFacts {
+                module: self.missing_planner_facts.flatten(),
+            });
+        }
+        self.finish()
     }
 
     fn copy_fns(&mut self, unit: &CompiledUnit) -> BTreeMap<FnId, FnId> {
@@ -317,6 +370,23 @@ impl IrUnitLinker {
             }));
     }
 
+    fn copy_protocol_facts(&mut self, unit: &CompiledUnit, fn_map: &BTreeMap<FnId, FnId>) {
+        self.linked.protocol_call_targets.extend(
+            unit.code
+                .protocol_call_targets
+                .iter()
+                .filter_map(|(fid, target)| fn_map.get(fid).map(|new| (*new, target.clone()))),
+        );
+        self.linked
+            .protocol_registry
+            .protocols
+            .extend(unit.code.protocol_registry.protocols.clone());
+        self.linked
+            .protocol_registry
+            .impls
+            .extend(unit.code.protocol_registry.impls.clone());
+    }
+
     fn copy_specs(&mut self, unit: &CompiledUnit, fn_map: &BTreeMap<FnId, FnId>) {
         self.linked.declared_specs.extend(
             unit.code
@@ -324,6 +394,47 @@ impl IrUnitLinker {
                 .iter()
                 .filter_map(|(fid, spec)| fn_map.get(fid).map(|new| (*new, spec.clone()))),
         );
+    }
+
+    fn copy_planner_facts(&mut self, unit: &CompiledUnit, fn_map: &BTreeMap<FnId, FnId>) {
+        let Some(plan) = &unit.module_plan else {
+            self.missing_planner_facts
+                .get_or_insert_with(|| unit.module.clone());
+            return;
+        };
+        merge_module_plan(&mut self.linked_plan, remap_module_plan(plan, fn_map));
+    }
+
+    fn resolve_external_call_edges_in_plan(&mut self) {
+        let Some(plan) = &mut self.linked_plan else {
+            return;
+        };
+        for spec in plan.specs.values_mut() {
+            for (callsite, edge_plan) in &mut spec.call_edges {
+                let crate::ir_planner::fn_types::CallEdgeTarget::External {
+                    target,
+                    input,
+                    demand,
+                } = &edge_plan.target
+                else {
+                    continue;
+                };
+                if let Some(fn_id) = self.export_map.get(target).copied() {
+                    let _ = crate::fz_ir::rewrite_external_callsite_for_link(
+                        &mut self.linked,
+                        callsite,
+                        fn_id,
+                    );
+                    edge_plan.target = crate::ir_planner::fn_types::CallEdgeTarget::Local(
+                        crate::ir_planner::fn_types::SpecKey {
+                            fn_id,
+                            input: input.clone(),
+                            demand: demand.clone(),
+                        },
+                    );
+                }
+            }
+        }
     }
 
     fn copy_type_facts(&mut self, unit: &CompiledUnit) {
@@ -362,6 +473,28 @@ impl IrUnitLinker {
                 return Err(ImageLinkError::DuplicateProvider { import: key });
             }
         }
+        if let Some(interface) = &unit.interface {
+            for protocol_impl in &interface.protocol_impls {
+                for callback in &protocol_impl.callbacks {
+                    let qualified = format!("{}.{}", callback.module, callback.name);
+                    let target = unit
+                        .code
+                        .fns
+                        .iter()
+                        .find(|f| {
+                            f.name == qualified && f.block(f.entry).params.len() == callback.arity
+                        })
+                        .and_then(|f| fn_map.get(&f.id).copied());
+                    if let Some(target) = target
+                        && self.export_map.insert(callback.clone(), target).is_some()
+                    {
+                        return Err(ImageLinkError::DuplicateProvider {
+                            import: callback.clone(),
+                        });
+                    }
+                }
+            }
+        }
         Ok(())
     }
 
@@ -380,6 +513,210 @@ impl IrUnitLinker {
         }
         f
     }
+}
+
+fn merge_module_plan(
+    out: &mut Option<crate::ir_planner::ModulePlan>,
+    incoming: crate::ir_planner::ModulePlan,
+) {
+    match out {
+        Some(existing) => {
+            existing.specs.extend(incoming.specs);
+            existing
+                .effective_returns
+                .extend(incoming.effective_returns);
+            existing.any_key_specs.extend(incoming.any_key_specs);
+            existing.spec_precedence.extend(incoming.spec_precedence);
+            existing.effect_summaries.extend(incoming.effect_summaries);
+            existing.dead_branches.extend(incoming.dead_branches);
+            #[cfg(test)]
+            existing.closure_handles.extend(incoming.closure_handles);
+        }
+        None => *out = Some(incoming),
+    }
+}
+
+fn remap_module_plan(
+    plan: &crate::ir_planner::ModulePlan,
+    fn_map: &BTreeMap<FnId, FnId>,
+) -> crate::ir_planner::ModulePlan {
+    crate::ir_planner::ModulePlan {
+        specs: plan
+            .specs
+            .iter()
+            .map(|(key, spec)| (remap_spec_key(key, fn_map), remap_spec_plan(spec, fn_map)))
+            .collect(),
+        effective_returns: plan
+            .effective_returns
+            .iter()
+            .map(|(key, ty)| (remap_spec_key(key, fn_map), ty.clone()))
+            .collect(),
+        any_key_specs: plan
+            .any_key_specs
+            .iter()
+            .filter_map(|(fid, key)| fn_map.get(fid).map(|new| (*new, key.clone())))
+            .collect(),
+        spec_precedence: plan
+            .spec_precedence
+            .iter()
+            .map(|(key, value)| (remap_spec_key(key, fn_map), *value))
+            .collect(),
+        effect_summaries: plan
+            .effect_summaries
+            .iter()
+            .map(|(key, value)| (remap_spec_key(key, fn_map), *value))
+            .collect(),
+        dead_branches: plan
+            .dead_branches
+            .iter()
+            .filter_map(|((fid, block), dead)| fn_map.get(fid).map(|new| ((*new, *block), *dead)))
+            .collect(),
+        #[cfg(test)]
+        closure_handles: plan
+            .closure_handles
+            .iter()
+            .filter_map(|(fid, captures)| fn_map.get(fid).map(|new| (*new, captures.clone())))
+            .collect(),
+    }
+}
+
+fn remap_spec_plan(
+    spec: &crate::ir_planner::SpecPlan,
+    fn_map: &BTreeMap<FnId, FnId>,
+) -> crate::ir_planner::SpecPlan {
+    crate::ir_planner::SpecPlan {
+        vars: spec.vars.clone(),
+        block_envs: spec.block_envs.clone(),
+        fn_constants: spec
+            .fn_constants
+            .iter()
+            .filter_map(|(var, fid)| fn_map.get(fid).map(|new| (*var, *new)))
+            .collect(),
+        reachable_blocks: spec.reachable_blocks.clone(),
+        dead_branches: spec.dead_branches.clone(),
+        call_edges: spec
+            .call_edges
+            .iter()
+            .map(|(callsite, edge)| {
+                (
+                    remap_callsite(callsite, fn_map),
+                    remap_call_edge_plan(edge, fn_map),
+                )
+            })
+            .collect(),
+        extern_marshals: spec.extern_marshals.clone(),
+    }
+}
+
+fn remap_callsite(
+    callsite: &crate::fz_ir::CallsiteId,
+    fn_map: &BTreeMap<FnId, FnId>,
+) -> crate::fz_ir::CallsiteId {
+    let mut out = callsite.clone();
+    if let Some(caller) = fn_map.get(&out.caller) {
+        out.caller = *caller;
+    }
+    out
+}
+
+fn remap_call_edge_plan(
+    edge: &crate::ir_planner::fn_types::CallEdgePlan,
+    fn_map: &BTreeMap<FnId, FnId>,
+) -> crate::ir_planner::fn_types::CallEdgePlan {
+    crate::ir_planner::fn_types::CallEdgePlan {
+        target: match &edge.target {
+            crate::ir_planner::fn_types::CallEdgeTarget::Local(key) => {
+                crate::ir_planner::fn_types::CallEdgeTarget::Local(remap_spec_key(key, fn_map))
+            }
+            crate::ir_planner::fn_types::CallEdgeTarget::External {
+                target,
+                input,
+                demand,
+            } => crate::ir_planner::fn_types::CallEdgeTarget::External {
+                target: target.clone(),
+                input: input.clone(),
+                demand: demand.clone(),
+            },
+        },
+        return_use: edge.return_use.clone(),
+        return_context: edge
+            .return_context
+            .as_ref()
+            .map(|plan| remap_return_context_plan(plan, fn_map)),
+    }
+}
+
+fn remap_return_context_plan(
+    plan: &crate::ir_planner::fn_types::ReturnContextPlan,
+    fn_map: &BTreeMap<FnId, FnId>,
+) -> crate::ir_planner::fn_types::ReturnContextPlan {
+    use crate::ir_planner::fn_types::ReturnContextPlan;
+    match plan {
+        ReturnContextPlan::DirectContinuation {
+            continuation,
+            result_param,
+            tail_ty,
+        } => ReturnContextPlan::DirectContinuation {
+            continuation: remapped_fn_id(*continuation, fn_map),
+            result_param: *result_param,
+            tail_ty: tail_ty.clone(),
+        },
+        ReturnContextPlan::ConsThenDirect {
+            continuation,
+            pivot,
+            tail,
+            tail_ty,
+        } => ReturnContextPlan::ConsThenDirect {
+            continuation: remapped_fn_id(*continuation, fn_map),
+            pivot: *pivot,
+            tail: *tail,
+            tail_ty: tail_ty.clone(),
+        },
+        ReturnContextPlan::ContinuationListTailBridge {
+            continuation,
+            pivot,
+            tail,
+            tail_ty,
+        } => ReturnContextPlan::ContinuationListTailBridge {
+            continuation: remapped_fn_id(*continuation, fn_map),
+            pivot: *pivot,
+            tail: *tail,
+            tail_ty: tail_ty.clone(),
+        },
+        ReturnContextPlan::ContinuationEmptyTail {
+            continuation,
+            target,
+            tail_ty,
+        } => ReturnContextPlan::ContinuationEmptyTail {
+            continuation: remapped_fn_id(*continuation, fn_map),
+            target: remap_spec_key(target, fn_map),
+            tail_ty: tail_ty.clone(),
+        },
+        ReturnContextPlan::TailCallDestination {
+            callee,
+            source,
+            tail,
+            tail_ty,
+        } => ReturnContextPlan::TailCallDestination {
+            callee: remapped_fn_id(*callee, fn_map),
+            source: *source,
+            tail: *tail,
+            tail_ty: tail_ty.clone(),
+        },
+    }
+}
+
+fn remap_spec_key(
+    key: &crate::ir_planner::fn_types::SpecKey,
+    fn_map: &BTreeMap<FnId, FnId>,
+) -> crate::ir_planner::fn_types::SpecKey {
+    let mut out = key.clone();
+    out.fn_id = remapped_fn_id(out.fn_id, fn_map);
+    out
+}
+
+fn remapped_fn_id(fid: FnId, fn_map: &BTreeMap<FnId, FnId>) -> FnId {
+    fn_map.get(&fid).copied().unwrap_or(fid)
 }
 
 fn module_for_linked_fn(

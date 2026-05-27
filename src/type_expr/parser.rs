@@ -140,7 +140,7 @@ impl<'a, T: crate::types::Types<Ty = crate::types::Ty>> TypeExprParser<'a, T> {
                 } else if matches!(self.peek(), Tok::LParen) {
                     self.parse_alias_application(name)
                 } else {
-                    self.lookup_named(&name)
+                    self.parse_named_type(name)
                 }
             }
             Tok::Upper(name) => {
@@ -148,11 +148,43 @@ impl<'a, T: crate::types::Types<Ty = crate::types::Ty>> TypeExprParser<'a, T> {
                 if matches!(self.peek(), Tok::LParen) {
                     self.parse_alias_application(name)
                 } else {
-                    self.lookup_named(&name)
+                    self.parse_named_type(name)
                 }
             }
             other => Err(self.err(format!("expected a type expression, got {}", other))),
         }
+    }
+
+    fn parse_named_type(&mut self, mut name: String) -> Result<T::Ty, TypeExprError> {
+        while matches!(self.peek(), Tok::Dot) {
+            self.bump();
+            match self.peek().clone() {
+                Tok::Ident(segment) | Tok::Upper(segment) => {
+                    self.bump();
+                    name.push('.');
+                    name.push_str(&segment);
+                }
+                other => {
+                    return Err(self.err(format!(
+                        "expected type-name segment after `.`, got {}",
+                        other
+                    )));
+                }
+            }
+        }
+        let ty = self.lookup_named(&name)?;
+        if matches!(self.peek(), Tok::LParen) {
+            self.bump();
+            if !matches!(self.peek(), Tok::RParen) {
+                let _ = self.parse_union()?;
+                while matches!(self.peek(), Tok::Comma) {
+                    self.bump();
+                    let _ = self.parse_union()?;
+                }
+            }
+            self.expect(&Tok::RParen, "`)` after type arguments")?;
+        }
+        Ok(ty)
     }
 
     /// fz-swt.6 — `resource(T)` is a parametric opaque ctor: the

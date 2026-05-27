@@ -140,6 +140,8 @@ end
             name_span: crate::diag::Span::DUMMY,
         }],
         types: Vec::new(),
+        protocols: Vec::new(),
+        protocol_impls: Vec::new(),
         docs: None,
         fingerprint_inputs: vec!["export:Math.add/2".to_string()],
     };
@@ -308,6 +310,8 @@ fn link_test_unit(
             })
             .collect(),
         types: Vec::new(),
+        protocols: Vec::new(),
+        protocol_impls: Vec::new(),
         docs: None,
         fingerprint_inputs: exports
             .iter()
@@ -427,22 +431,244 @@ fn linked_ir_units_rewrite_external_edges_and_run_provider_body() {
     .unwrap_or_else(|err| panic!("user frontend: {:?}", err.diagnostics));
     assert_eq!(user.module.external_call_edges.len(), 1);
 
-    let math_unit = CompiledUnit::from_ir_module(
+    let math_unit = CompiledUnit::from_ir_module_with_plan(
         math.module,
+        Some(math.module_plan),
         Some(math_interface),
         crate::diag::Diagnostics::new(),
     );
-    let user_unit =
-        CompiledUnit::from_ir_module(user.module, None, crate::diag::Diagnostics::new());
-    let linked = link_ir_units(&[math_unit.clone(), user_unit.clone()]).expect("link ir units");
+    let user_unit = CompiledUnit::from_ir_module_with_plan(
+        user.module,
+        Some(user.module_plan),
+        None,
+        crate::diag::Diagnostics::new(),
+    );
+    let linked =
+        link_ir_units_with_plan(&[math_unit.clone(), user_unit.clone()]).expect("link ir units");
+    let linked_plan = linked
+        .module_plan
+        .as_ref()
+        .expect("linked planner facts must be preserved");
+    let linked = linked.module;
+    assert!(
+        !linked_plan.specs.values().any(|spec| {
+            spec.call_edges.values().any(|edge| {
+                matches!(
+                    edge.target,
+                    crate::ir_planner::fn_types::CallEdgeTarget::External { .. }
+                )
+            })
+        }),
+        "linked protocol edge should resolve to a local impl"
+    );
+    assert!(
+        !linked_plan.specs.values().any(|spec| {
+            spec.call_edges.values().any(|edge| {
+                edge.local_target()
+                    .map(|target| {
+                        linked
+                            .fn_by_id(target.fn_id)
+                            .name
+                            .starts_with("__protocol__")
+                    })
+                    .unwrap_or(false)
+            })
+        }),
+        "linked protocol edge must not target the protocol stub"
+    );
     assert!(linked.external_call_edges.is_empty());
     let entry = linked.fn_by_name("main").expect("main").id;
 
-    let linked_plan = crate::ir_planner::plan_module(&mut t, &linked, &tel);
-    let compiled = compile_pretyped(&mut t, &linked, &linked_plan, &tel).expect("compile linked");
+    let compiled = compile_pretyped(&mut t, &linked, linked_plan, &tel).expect("compile linked");
     let image = CompiledImage::from_linked(compiled);
 
     assert_eq!(image.run(entry), 42);
+}
+
+#[test]
+fn linked_ir_units_preserve_provider_protocol_dispatch_plan() {
+    let mut t = crate::types::ConcreteTypes;
+    let tel = crate::telemetry::NullTelemetry;
+    let provider = crate::frontend::compile_source_with_types(
+        &mut t,
+        r#"
+defmodule Contracts do
+  defprotocol Collectable do
+    fn id(value)
+  end
+
+  defimpl Collectable, for: List do
+    fn id(value), do: 42
+  end
+end
+"#
+        .to_string(),
+        "contracts.fz".to_string(),
+        &tel,
+    )
+    .unwrap_or_else(|err| panic!("provider frontend: {:?}", err.diagnostics));
+    let contracts =
+        crate::modules::identity::ModuleName::from_segments(vec!["Contracts".to_string()]);
+    let contracts_interface = provider._prog.module_interfaces[&contracts].clone();
+
+    let mut interfaces = crate::resolve::InterfaceTable::new();
+    interfaces.insert(contracts, contracts_interface.clone());
+    let user = crate::frontend::compile_source_with_interface_table(
+        &mut t,
+        r#"
+defmodule User do
+  fn run(), do: Contracts.Collectable.id([1])
+end
+fn main(), do: User.run()
+"#
+        .to_string(),
+        "user.fz".to_string(),
+        interfaces,
+        &tel,
+    )
+    .unwrap_or_else(|err| panic!("user frontend: {:?}", err.diagnostics));
+    assert!(
+        user.module
+            .protocol_call_targets
+            .values()
+            .any(|target| target.callback == "id")
+    );
+    assert!(
+        user.module_plan.specs.values().any(|spec| {
+            spec.call_edges.values().any(|edge| {
+                matches!(
+                    edge.target,
+                    crate::ir_planner::fn_types::CallEdgeTarget::External { .. }
+                )
+            })
+        }),
+        "user protocol call should be a provider-boundary call edge"
+    );
+
+    let provider_unit = CompiledUnit::from_ir_module_with_plan(
+        provider.module,
+        Some(provider.module_plan),
+        Some(contracts_interface),
+        crate::diag::Diagnostics::new(),
+    );
+    let user_unit = CompiledUnit::from_ir_module_with_plan(
+        user.module,
+        Some(user.module_plan),
+        None,
+        crate::diag::Diagnostics::new(),
+    );
+    let linked = link_ir_units_with_plan(&[provider_unit, user_unit]).expect("link ir units");
+    let linked_plan = linked
+        .module_plan
+        .as_ref()
+        .expect("linked planner facts must be preserved");
+    let linked = linked.module;
+    let entry = linked.fn_by_name("main").expect("main").id;
+    let compiled = compile_pretyped(&mut t, &linked, linked_plan, &tel).expect("compile linked");
+    let image = CompiledImage::from_linked(compiled);
+
+    assert_eq!(image.run(entry), 42);
+}
+
+#[test]
+fn native_static_protocol_dispatch_preserves_integer_abi() {
+    let mut t = crate::types::ConcreteTypes;
+    let tel = crate::telemetry::NullTelemetry;
+    let frontend = crate::frontend::compile_source_with_types(
+        &mut t,
+        r#"
+defprotocol Integerish do
+  fn id(value)
+end
+
+defimpl Integerish, for: Integer do
+  fn id(value), do: value + 1
+end
+
+fn main(), do: Integerish.id(41)
+"#
+        .to_string(),
+        "integerish.fz".to_string(),
+        &tel,
+    )
+    .unwrap_or_else(|err| panic!("frontend: {:?}", err.diagnostics));
+    let entry = frontend.module.fn_by_name("main").expect("main").id;
+    let compiled =
+        compile_pretyped(&mut t, &frontend.module, &frontend.module_plan, &tel).expect("compile");
+    let image = CompiledImage::from_linked(compiled);
+
+    assert_eq!(image.run(entry), 42);
+}
+
+#[test]
+fn runtime_enumerable_list_count_member_and_reduce() {
+    let got = capture_main_with_runtime_graph(
+        r#"
+fn main() do
+  print({
+    Enum.count([1, 2, 3]),
+    Enum.member?([1, 2, 3], 2),
+    Enum.reduce([1, 2, 3], {:cont, 0}, fn (x, acc) -> {:cont, acc + x})
+  })
+end
+"#,
+    );
+
+    assert_eq!(got, vec!["{{:ok, 3}, {:ok, true}, {:done, 6}}"]);
+}
+
+#[test]
+fn runtime_enumerable_list_reduce_can_suspend_and_resume() {
+    let got = capture_main_with_runtime_graph(
+        r#"
+fn reducer(x, acc) do
+  case x do
+    1 -> {:suspend, acc + x}
+    _ -> {:cont, acc + x}
+  end
+end
+
+fn main() do
+  case Enum.reduce([1, 2], {:cont, 0}, reducer) do
+    {:suspended, first, resume} ->
+      case resume() do
+        {:done, total} -> print(first + total)
+      end
+  end
+end
+"#,
+    );
+
+    assert_eq!(got, vec!["4"]);
+}
+
+#[test]
+fn runtime_enum_sort_uses_stable_merge_sort_for_lists() {
+    let got = capture_main_with_runtime_graph(
+        r#"
+fn descending(left, right), do: left >= right
+fn by_key(left, right) do
+  {left_key, _left_tag} = left
+  {right_key, _right_tag} = right
+  left_key <= right_key
+end
+
+fn main() do
+  print(Enum.sort([3, 1, 2, 1, 5, 4]))
+  print(Enum.sort([3, 1, 2, 1, 5, 4], descending))
+  print(Enum.sort([{2, :a}, {1, :a}, {2, :b}, {1, :b}], by_key))
+end
+"#,
+    );
+
+    assert_eq!(
+        got,
+        vec![
+            "[1, 1, 2, 3, 4, 5]",
+            "[5, 4, 3, 2, 1, 1]",
+            "[{1, :a}, {1, :b}, {2, :a}, {2, :b}]"
+        ]
+    );
 }
 
 #[test]
@@ -477,6 +703,23 @@ fn image_linker_rejects_missing_and_duplicate_providers() {
 }
 
 #[test]
+fn planned_image_link_rejects_units_without_planner_facts() {
+    let (unit, _) = link_test_unit("User", &[("run", 0)], Vec::new());
+    let err = match link_ir_units_with_plan(&[unit]) {
+        Ok(_) => panic!("expected missing planner facts"),
+        Err(err) => err,
+    };
+    assert_eq!(
+        err,
+        ImageLinkError::MissingPlannerFacts {
+            module: Some(crate::modules::identity::ModuleName::from_segments(vec![
+                "User".to_string()
+            ])),
+        }
+    );
+}
+
+#[test]
 fn image_linker_rejects_unresolved_external_imports_without_provider() {
     let target = crate::modules::identity::ExportKey::new(
         crate::modules::identity::ModuleName::from_segments(vec!["Provider".to_string()]),
@@ -505,6 +748,8 @@ fn image_linker_rejects_unresolved_external_imports_without_provider() {
         imports: Vec::new(),
         exports: Vec::new(),
         types: Vec::new(),
+        protocols: Vec::new(),
+        protocol_impls: Vec::new(),
         docs: None,
         fingerprint_inputs: Vec::new(),
     };
@@ -613,14 +858,14 @@ fn capture_main_with_runtime_graph(src: &str) -> Vec<String> {
         &providers,
         &tel,
     )
-    .unwrap_or_else(|_| panic!("frontend result"));
+    .unwrap_or_else(|err| panic!("frontend result: {err}"));
     let checked = crate::modules::pipeline::checked_module_for_mode(
         &mut t,
         frontend,
         &tel,
         crate::modules::pipeline::CompileMode::Normal,
     )
-    .unwrap_or_else(|_| panic!("checked module"));
+    .unwrap_or_else(|err| panic!("checked module: {err}"));
     let prepared = crate::modules::pipeline::prepare_execution_graph(
         &mut t,
         checked,
@@ -628,12 +873,13 @@ fn capture_main_with_runtime_graph(src: &str) -> Vec<String> {
         &tel,
         crate::modules::pipeline::CompileMode::Normal,
     )
-    .unwrap_or_else(|_| panic!("execution graph"));
+    .unwrap_or_else(|err| panic!("execution graph: {err}"));
     capture_main_module(prepared.module)
 }
 
 fn capture_main_module(m: Module) -> Vec<String> {
     let entry = m.fn_by_name("main").unwrap().id;
+    assert_direct_call_arities(&m);
     heap_reset_for_test();
     let _ = test_capture_take();
     let _ = compile(
@@ -644,6 +890,32 @@ fn capture_main_module(m: Module) -> Vec<String> {
     .unwrap()
     .run(entry);
     test_capture_take()
+}
+
+fn assert_direct_call_arities(m: &Module) {
+    for f in &m.fns {
+        for block in &f.blocks {
+            match &block.terminator {
+                crate::fz_ir::Term::Call { callee, args, .. }
+                | crate::fz_ir::Term::TailCall { callee, args, .. } => {
+                    let target = m.fn_by_id(*callee);
+                    let params = target.block(target.entry).params.len();
+                    assert_eq!(
+                        params,
+                        args.len(),
+                        "{} calls {}#{:?} with {} args but target has {} params\ncaller:\n{}",
+                        f.name,
+                        target.name,
+                        target.id,
+                        args.len(),
+                        params,
+                        f
+                    );
+                }
+                _ => {}
+            }
+        }
+    }
 }
 
 fn run_main_and_count_live(src: &str) -> usize {

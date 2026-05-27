@@ -4,10 +4,16 @@
 //! alongside the flattened program. Resolvers, artifact writers, and LTO
 //! validation consume them as public module contracts.
 
-use crate::ast::{Attribute, FnDef, ModuleDef, Program, SpecDecl, TypeAliasDecl, TypeExprBody};
+use crate::ast::{
+    Attribute, FnDef, ModuleDef, Program, ProtocolDef, ProtocolImplDef, SpecDecl, TypeAliasDecl,
+    TypeExprBody,
+};
 use crate::diag::{Diagnostic, Span, codes};
 use crate::lexer::Tok;
 use crate::modules::identity::ModuleName;
+use crate::protocols::{
+    ImplTarget, InterfaceProtocol, InterfaceProtocolCallback, InterfaceProtocolImpl,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -20,6 +26,10 @@ pub struct ModuleInterface {
     pub imports: Vec<InterfaceImport>,
     pub exports: Vec<InterfaceFn>,
     pub types: Vec<InterfaceType>,
+    #[serde(default)]
+    pub protocols: Vec<InterfaceProtocol>,
+    #[serde(default)]
+    pub protocol_impls: Vec<InterfaceProtocolImpl>,
     pub docs: Option<String>,
     /// Deterministic semantic inputs used by future artifact fingerprinting.
     /// This is not a digest yet; keeping the inputs visible makes the first
@@ -114,7 +124,9 @@ fn collect_module(
         .items
         .iter()
         .filter_map(|item| match &**item {
-            crate::ast::Item::Fn(def) if !def.is_macro && def.extern_abi.is_none() => {
+            crate::ast::Item::Fn(def)
+                if !def.is_macro && !def.is_private && def.extern_abi.is_none() =>
+            {
                 Some(interface_fn(def))
             }
             _ => None,
@@ -132,8 +144,40 @@ fn collect_module(
         .collect::<Vec<_>>();
     types.sort();
 
+    let mut protocols = module
+        .items
+        .iter()
+        .filter_map(|item| match &**item {
+            crate::ast::Item::Protocol(protocol) => Some(interface_protocol(protocol, Some(&name))),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    protocols.sort_by(|a, b| a.name.cmp(&b.name));
+
+    let mut protocol_impls = module
+        .items
+        .iter()
+        .filter_map(|item| match &**item {
+            crate::ast::Item::ProtocolImpl(protocol_impl) => {
+                Some(interface_protocol_impl(protocol_impl, Some(&name)))
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    protocol_impls.sort_by(|a, b| {
+        (&a.protocol, &a.target, &a.callbacks).cmp(&(&b.protocol, &b.target, &b.callbacks))
+    });
+
     let docs = module.moduledoc().map(ToOwned::to_owned);
-    let fingerprint_inputs = fingerprint_inputs(&name, &imports, &exports, &types, docs.as_deref());
+    let fingerprint_inputs = fingerprint_inputs(
+        &name,
+        &imports,
+        &exports,
+        &types,
+        &protocols,
+        &protocol_impls,
+        docs.as_deref(),
+    );
     out.insert(
         name.clone(),
         ModuleInterface {
@@ -142,6 +186,8 @@ fn collect_module(
             imports,
             exports,
             types,
+            protocols,
+            protocol_impls,
             docs,
             fingerprint_inputs,
         },
@@ -192,6 +238,71 @@ fn interface_spec(spec: &SpecDecl) -> InterfaceSpec {
     }
 }
 
+fn interface_protocol(protocol: &ProtocolDef, parent: Option<&ModuleName>) -> InterfaceProtocol {
+    let name = qualify_protocol_name(parent, &protocol.name);
+    let mut callbacks = protocol
+        .callbacks
+        .iter()
+        .map(|callback| InterfaceProtocolCallback {
+            name: callback.name.clone(),
+            arity: callback.arity,
+            spec: callback.attrs.iter().find_map(|attr| match attr {
+                Attribute::Spec(spec) => Some(interface_spec(spec)),
+                _ => None,
+            }),
+        })
+        .collect::<Vec<_>>();
+    callbacks.sort();
+    InterfaceProtocol { name, callbacks }
+}
+
+fn interface_protocol_impl(
+    protocol_impl: &ProtocolImplDef,
+    parent: Option<&ModuleName>,
+) -> InterfaceProtocolImpl {
+    let callbacks = protocol_impl
+        .items
+        .iter()
+        .filter_map(|item| match &**item {
+            crate::ast::Item::Fn(def) => Some(crate::modules::identity::ExportKey::new(
+                qualify_module_child(parent, &protocol_impl.target.path),
+                def.name.clone(),
+                def.clauses.first().map(|c| c.params.len()).unwrap_or(0),
+            )),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    InterfaceProtocolImpl {
+        protocol: qualify_protocol_name(parent, &protocol_impl.protocol),
+        target: ImplTarget::module(qualify_module_child(parent, &protocol_impl.target.path)),
+        callbacks,
+    }
+}
+
+fn qualify_protocol_name(parent: Option<&ModuleName>, name: &ModuleName) -> ModuleName {
+    if name.segments().len() == 1
+        && let Some(parent) = parent
+    {
+        if name.last_segment() == parent.last_segment() {
+            parent.clone()
+        } else {
+            parent.child(name.last_segment().to_string())
+        }
+    } else {
+        name.clone()
+    }
+}
+
+fn qualify_module_child(parent: Option<&ModuleName>, name: &ModuleName) -> ModuleName {
+    if name.segments().len() == 1
+        && let Some(parent) = parent
+    {
+        parent.child(name.last_segment().to_string())
+    } else {
+        name.clone()
+    }
+}
+
 fn interface_type(decl: &TypeAliasDecl) -> InterfaceType {
     InterfaceType {
         name: decl.name.clone(),
@@ -221,6 +332,8 @@ fn fingerprint_inputs(
     imports: &[InterfaceImport],
     exports: &[InterfaceFn],
     types: &[InterfaceType],
+    protocols: &[InterfaceProtocol],
+    protocol_impls: &[InterfaceProtocolImpl],
     docs: Option<&str>,
 ) -> Vec<String> {
     let mut inputs = vec![
@@ -248,6 +361,37 @@ fn fingerprint_inputs(
             .map(|spec| format!("({})->{}", spec.params.join(","), spec.result))
             .unwrap_or_else(|| "<unspecified>".to_string());
         inputs.push(format!("fn={}/{}:{}", export.name, export.arity, spec));
+    }
+    for protocol in protocols {
+        let callbacks = protocol
+            .callbacks
+            .iter()
+            .map(|callback| {
+                let spec = callback
+                    .spec
+                    .as_ref()
+                    .map(|spec| format!("({})->{}", spec.params.join(","), spec.result))
+                    .unwrap_or_else(|| "<unspecified>".to_string());
+                format!("{}/{}:{}", callback.name, callback.arity, spec)
+            })
+            .collect::<Vec<_>>()
+            .join(",");
+        inputs.push(format!(
+            "protocol={}:callbacks=[{}]",
+            protocol.name, callbacks
+        ));
+    }
+    for protocol_impl in protocol_impls {
+        let callbacks = protocol_impl
+            .callbacks
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(",");
+        inputs.push(format!(
+            "protocol-impl={}:target={}:callbacks=[{}]",
+            protocol_impl.protocol, protocol_impl.target, callbacks
+        ));
     }
     inputs
 }
@@ -317,6 +461,35 @@ pub fn render_interfaces(interfaces: &BTreeMap<ModuleName, ModuleInterface>) -> 
                     ));
                 }
                 out.push('\n');
+            }
+        }
+        if !interface.protocols.is_empty() {
+            out.push_str("  protocols\n");
+            for protocol in &interface.protocols {
+                out.push_str(&format!("    {}\n", protocol.name));
+                for callback in &protocol.callbacks {
+                    out.push_str(&format!("      {}/{}", callback.name, callback.arity));
+                    if let Some(spec) = &callback.spec {
+                        out.push_str(&format!(
+                            " :: ({}) -> {}",
+                            spec.params.join(", "),
+                            spec.result
+                        ));
+                    }
+                    out.push('\n');
+                }
+            }
+        }
+        if !interface.protocol_impls.is_empty() {
+            out.push_str("  protocol-impls\n");
+            for protocol_impl in &interface.protocol_impls {
+                out.push_str(&format!(
+                    "    {} for {}\n",
+                    protocol_impl.protocol, protocol_impl.target
+                ));
+                for callback in &protocol_impl.callbacks {
+                    out.push_str(&format!("      {}\n", callback));
+                }
             }
         }
         out.push_str(&format!(
@@ -395,6 +568,26 @@ end
     }
 
     #[test]
+    fn private_fns_are_not_interface_exports() {
+        let interfaces = interfaces(
+            r#"
+defmodule M do
+  fn public(x), do: helper(x)
+  fnp helper(x), do: x + 1
+end
+"#,
+        );
+
+        let m = &interfaces[&module(&["M"])];
+        let exports = m
+            .exports
+            .iter()
+            .map(|export| format!("{}/{}", export.name, export.arity))
+            .collect::<Vec<_>>();
+        assert_eq!(exports, vec!["public/1"]);
+    }
+
+    #[test]
     fn emits_specs_types_opaque_refines_and_docs() {
         let interfaces = interfaces(
             r#"
@@ -431,6 +624,44 @@ end
                 result: "Upper(\"Pair\")".to_string(),
             })
         );
+    }
+
+    #[test]
+    fn emits_protocol_contract_facts() {
+        let interfaces = interfaces(
+            r#"
+defmodule Contracts do
+  defprotocol Enumerable do
+    @spec reduce(t(a), acc, (a, acc) -> acc) :: acc
+    fn reduce(enumerable, acc, reducer)
+  end
+
+  defimpl Enumerable, for: List do
+    fn reduce(list, acc, reducer), do: acc
+  end
+end
+"#,
+        );
+
+        let contracts = &interfaces[&module(&["Contracts"])];
+        assert_eq!(
+            contracts.protocols[0].name,
+            module(&["Contracts", "Enumerable"])
+        );
+        assert_eq!(contracts.protocols[0].callbacks[0].name, "reduce");
+        assert_eq!(
+            contracts.protocol_impls[0].protocol,
+            module(&["Contracts", "Enumerable"])
+        );
+        assert!(
+            contracts
+                .fingerprint_inputs
+                .iter()
+                .any(|input| input.starts_with("protocol=Contracts.Enumerable"))
+        );
+        let rendered = render_interfaces(&interfaces);
+        assert!(rendered.contains("protocols"));
+        assert!(rendered.contains("Contracts.Enumerable for Contracts.List"));
     }
 
     #[test]
@@ -526,6 +757,22 @@ end
     }
 
     #[test]
+    fn strict_validation_ignores_private_fns() {
+        let interfaces = interfaces(
+            r#"
+defmodule Public do
+  @spec visible(integer) :: integer
+  fn visible(x), do: helper(x)
+
+  fnp helper(x), do: x
+end
+"#,
+        );
+
+        assert!(validate_public_export_specs(&interfaces).is_empty());
+    }
+
+    #[test]
     fn strict_validation_accepts_matching_specs_and_overloads() {
         let name = module(&["Public"]);
         let mut interfaces = BTreeMap::new();
@@ -556,6 +803,8 @@ end
                     },
                 ],
                 types: Vec::new(),
+                protocols: Vec::new(),
+                protocol_impls: Vec::new(),
                 docs: None,
                 fingerprint_inputs: Vec::new(),
             },
