@@ -1256,16 +1256,35 @@ fn rewrite_external_callsite(m: &mut Module, callsite: &CallsiteId, target: FnId
     let Some(fn_idx) = m.fn_idx.get(&callsite.caller).copied() else {
         return false;
     };
+    let Some(target_idx) = m.fn_idx.get(&target).copied() else {
+        return false;
+    };
+    let target_arity = m.fns[target_idx]
+        .block(m.fns[target_idx].entry)
+        .params
+        .len();
     for block in &mut m.fns[fn_idx].blocks {
         match &mut block.terminator {
-            Term::Call { ident, callee, .. }
-                if callsite.slot == EmitSlot::Direct && *ident == callsite.ident =>
+            Term::Call {
+                ident,
+                callee,
+                args,
+                ..
+            } if callsite.slot == EmitSlot::Direct
+                && *ident == callsite.ident
+                && args.len() == target_arity =>
             {
                 *callee = target;
                 return true;
             }
-            Term::TailCall { ident, callee, .. }
-                if callsite.slot == EmitSlot::Direct && *ident == callsite.ident =>
+            Term::TailCall {
+                ident,
+                callee,
+                args,
+                ..
+            } if callsite.slot == EmitSlot::Direct
+                && *ident == callsite.ident
+                && args.len() == target_arity =>
             {
                 *callee = target;
                 return true;

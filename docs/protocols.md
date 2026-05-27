@@ -173,15 +173,18 @@ creating a parallel subsystem:
 - `ModuleInterface` carries protocol declaration and implementation facts in
   interface fingerprints so artifacts can expose protocol contracts without
   provider bodies.
-- `ModuleGraphLoader` treats protocol implementation callback modules as
-  reachable provider modules, the same way imports make provider modules
-  reachable.
+- `ModuleGraphLoader` traverses module imports, not protocol callback
+  namespaces. A `defimpl` callback path is an export namespace inside the
+  defining artifact; treating it as an artifact root creates false
+  `Protocol/Target.fzi` dependencies.
 - `ir_lower` records protocol callback calls as protocol stub callsites with
   stable `CallsiteId`s; `ir_planner` replaces those stubs with local or
   provider-boundary `CallEdgePlan` targets from receiver type facts.
 - `link_ir_units_with_plan` remaps protocol call facts and resolves provider
   protocol implementation callbacks to local call edges without a post-link
-  planning pass.
+  planning pass. Link-time callsite rewrites must preserve the caller/identity
+  match and target arity; arity mismatch means the candidate is not the same
+  callsite.
 - Frontend checking applies planned direct call targets back onto protocol
   stub callsites before interpretation or native emission. The interpreter and
   codegen therefore execute ordinary typed impl calls, preserving scalar

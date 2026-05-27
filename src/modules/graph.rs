@@ -87,11 +87,6 @@ fn enqueue_imports(queue: &mut VecDeque<ModuleName>, interface: &ModuleInterface
     for import in &interface.imports {
         queue.push_back(import.module.clone());
     }
-    for protocol_impl in &interface.protocol_impls {
-        for callback in &protocol_impl.callbacks {
-            queue.push_back(callback.module.clone());
-        }
-    }
 }
 
 #[cfg(test)]
@@ -201,7 +196,7 @@ mod tests {
     }
 
     #[test]
-    fn graph_loader_follows_protocol_impl_callback_modules() {
+    fn graph_loader_keeps_protocol_impl_callback_namespaces_inside_owner_artifact() {
         let root = std::env::temp_dir().join(format!(
             "fz-module-graph-{}-protocol-impl",
             std::process::id()
@@ -220,31 +215,14 @@ mod tests {
                     3,
                 )],
             });
-        let enumerable_list = interface("EnumerableList", Vec::new(), vec![("reduce", 3)]);
-        let mut artifacts = InterfaceTable::new();
-        artifacts.insert(enumerable_list.name.clone(), enumerable_list.clone());
-        store
-            .write_fzi_artifacts(&crate::telemetry::NullTelemetry, &artifacts)
-            .unwrap();
-        store
-            .write_fzo_artifacts(
-                &crate::telemetry::NullTelemetry,
-                [&fzo(
-                    &enumerable_list,
-                    "defmodule EnumerableList do\n  fn reduce(list, acc, reducer), do: acc\nend\n",
-                )],
-            )
-            .unwrap();
-
         let mut roots = InterfaceTable::new();
         roots.insert(app.name.clone(), app);
         let graph = ModuleGraphLoader::new(store)
             .load_reachable(&crate::telemetry::NullTelemetry, &roots, [])
             .expect("load graph");
 
-        assert!(graph.interfaces.contains_key(&module("EnumerableList")));
-        assert_eq!(graph.objects.len(), 1);
-        assert_eq!(graph.objects[0].module, Some(module("EnumerableList")));
+        assert!(!graph.interfaces.contains_key(&module("EnumerableList")));
+        assert!(graph.objects.is_empty());
 
         let _ = std::fs::remove_dir_all(&root);
     }

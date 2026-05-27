@@ -242,10 +242,10 @@ Reachable graph loading:
 - `modules::graph::ModuleGraphLoader` owns import traversal over artifact stores.
 - Inputs are the root checked `InterfaceTable` plus explicit provider-root
   module names.
-- The loader queues imports and protocol implementation callback modules from
-  the roots, loads provider `.fzi` contracts, recursively queues their imports
-  and protocol callback modules, and only then loads `.fzo` objects for
-  reachable modules.
+- The loader queues imports from the roots, loads provider `.fzi` contracts,
+  recursively queues their imports, and only then loads `.fzo` objects for
+  reachable modules. Protocol implementation callback paths are export
+  namespaces inside the defining module's object, not separate artifact roots.
 - Runtime-library modules are checked through `modules::runtime_library::interface`
   before the filesystem artifact store. If a runtime module is reachable, the
   loader adds its built-in `.fzo` through `modules::runtime_library::artifact`.

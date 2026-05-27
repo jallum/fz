@@ -393,7 +393,7 @@ pub(crate) fn lower_expr(
                 })?;
             if is_tail {
                 let term = Term::TailCall {
-                    ident: crate::fz_ir::CallsiteIdent::from_source(Span::DUMMY),
+                    ident: crate::fz_ir::CallsiteIdent::from_source(sp),
                     callee,
                     args: arg_vars,
                     is_back_edge: false, // annotate_back_edges fills this in post-lowering
@@ -1067,22 +1067,27 @@ pub(super) fn lower_case(
                 ctx.cur_block = Some(body_b);
                 ctx.terminated = false;
             }
-            let clause_cont = mint_cont_fn(
-                ctx,
-                format!("case_clause_{}", i),
-                clause.span,
-                crate::fz_ir::FnCategory::ControlFlowCont,
-            );
-            let captures = ctx.visible_locals();
-            let capture_vars: Vec<Var> = captures.iter().map(|(_, v)| *v).collect();
+            let clause_cont = match &clause_conts_ref[i] {
+                Some(cont) => cont.clone(),
+                None => {
+                    let cont = mint_cont_fn(
+                        ctx,
+                        format!("case_clause_{}", i),
+                        clause.span,
+                        crate::fz_ir::FnCategory::ControlFlowCont,
+                    );
+                    clause_conts_ref[i] = Some(cont.clone());
+                    cont
+                }
+            };
+            let capture_vars = cont_call_args(ctx, &clause_cont);
             ctx.set_term(Term::TailCall {
-                ident: crate::fz_ir::CallsiteIdent::from_source(Span::DUMMY),
+                ident: crate::fz_ir::CallsiteIdent::from_source(clause.span),
                 callee: clause_cont.id,
                 args: capture_vars,
                 is_back_edge: false,
             });
             ctx.terminated = true;
-            clause_conts_ref[i] = Some(clause_cont);
             Ok(())
         };
         let result = lower_pattern_matrix_to_current_fn(ctx, pattern_matrix, fail_block, &mut cb);
@@ -1386,22 +1391,27 @@ pub(super) fn lower_with(
                     ctx.cur_block = Some(body_b);
                     ctx.terminated = false;
                 }
-                let cont = mint_cont_fn(
-                    ctx,
-                    format!("with_else_{}", i),
-                    clause.span,
-                    crate::fz_ir::FnCategory::ControlFlowCont,
-                );
-                let captures = ctx.visible_locals();
-                let capture_vars: Vec<Var> = captures.iter().map(|(_, v)| *v).collect();
+                let cont = match &else_conts_ref[i] {
+                    Some(cont) => cont.clone(),
+                    None => {
+                        let cont = mint_cont_fn(
+                            ctx,
+                            format!("with_else_{}", i),
+                            clause.span,
+                            crate::fz_ir::FnCategory::ControlFlowCont,
+                        );
+                        else_conts_ref[i] = Some(cont.clone());
+                        cont
+                    }
+                };
+                let capture_vars = cont_call_args(ctx, &cont);
                 ctx.set_term(Term::TailCall {
-                    ident: crate::fz_ir::CallsiteIdent::from_source(Span::DUMMY),
+                    ident: crate::fz_ir::CallsiteIdent::from_source(clause.span),
                     callee: cont.id,
                     args: capture_vars,
                     is_back_edge: false,
                 });
                 ctx.terminated = true;
-                else_conts_ref[i] = Some(cont);
                 Ok(())
             };
             let result =

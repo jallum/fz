@@ -45,6 +45,11 @@ const RUNTIME_MODULE_SOURCES: &[RuntimeModuleSource] = &[
         role: RuntimeModuleRole::Library,
     },
     RuntimeModuleSource {
+        name: "Enumerable",
+        source: include_str!("runtime_library/enumerable.fz"),
+        role: RuntimeModuleRole::Library,
+    },
+    RuntimeModuleSource {
         name: "Utf8",
         source: include_str!("runtime_library/utf8.fz"),
         role: RuntimeModuleRole::Library,

@@ -59,7 +59,9 @@ Codegen artifact vocabulary:
   unresolved external edge; linked images must resolve or report the missing
   target first. `SpecPlan.call_edges` carries the matching provider-boundary
   target before link; `link_ir_units_with_plan` resolves it to the linked local
-  `SpecKey` while rewriting the IR edge.
+  `SpecKey` while rewriting the IR edge. A rewrite candidate must match the
+  callsite identity and the target entry arity; matching only a source identity
+  is insufficient because matcher-generated branches can share source spans.
 - Artifact ownership is explicit. `.fzi` stores only the versioned
   `ModuleInterface` contract plus compiler/runtime ABI versions and the
   interface fingerprint. `.fzo` stores the implementation-unit envelope:
@@ -129,10 +131,12 @@ Runtime library boundary:
 - `modules::graph::ModuleGraphLoader` traverses reachable imports from root
   checked interfaces and explicit provider-root modules. It loads provider
   `.fzi` contracts first, queues their imports recursively, and loads `.fzo`
-  objects only for reachable modules. Runtime-library modules are checked
-  first through `modules::runtime_library::interface`; reachable runtime modules
-  contribute built-in `.fzo` objects through `modules::runtime_library::artifact`
-  and do not require user `.fzi`/`.fzo` files.
+  objects only for reachable modules. Protocol implementation callback names do
+  not add graph roots; they are functions packaged in the defining module's
+  object. Runtime-library modules are checked first through
+  `modules::runtime_library::interface`; reachable runtime modules contribute
+  built-in `.fzo` objects through `modules::runtime_library::artifact` and do
+  not require user `.fzi`/`.fzo` files.
 - User builds can write object envelopes with
   `fz build --emit-fzo --artifact-root <dir> ...`. The writer consumes the
   checked `CompiledUnit` facts directly, so a module with artifact-backed

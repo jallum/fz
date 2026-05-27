@@ -601,6 +601,48 @@ fn main(), do: Integerish.id(41)
 }
 
 #[test]
+fn runtime_enumerable_list_count_member_and_reduce() {
+    let got = capture_main_with_runtime_graph(
+        r#"
+fn main() do
+  print({
+    Enumerable.count([1, 2, 3]),
+    Enumerable.member?([1, 2, 3], 2),
+    Enumerable.reduce([1, 2, 3], {:cont, 0}, fn (x, acc) -> {:cont, acc + x})
+  })
+end
+"#,
+    );
+
+    assert_eq!(got, vec!["{{:ok, 3}, {:ok, true}, {:done, 6}}"]);
+}
+
+#[test]
+fn runtime_enumerable_list_reduce_can_suspend_and_resume() {
+    let got = capture_main_with_runtime_graph(
+        r#"
+fn reducer(x, acc) do
+  case x do
+    1 -> {:suspend, acc + x}
+    _ -> {:cont, acc + x}
+  end
+end
+
+fn main() do
+  case Enumerable.reduce([1, 2], {:cont, 0}, reducer) do
+    {:suspended, first, resume} ->
+      case resume() do
+        {:done, total} -> print(first + total)
+      end
+  end
+end
+"#,
+    );
+
+    assert_eq!(got, vec!["4"]);
+}
+
+#[test]
 fn image_linker_rejects_missing_and_duplicate_providers() {
     let missing = crate::modules::identity::ExportKey::new(
         crate::modules::identity::ModuleName::from_segments(vec!["Missing".to_string()]),
@@ -787,14 +829,14 @@ fn capture_main_with_runtime_graph(src: &str) -> Vec<String> {
         &providers,
         &tel,
     )
-    .unwrap_or_else(|_| panic!("frontend result"));
+    .unwrap_or_else(|err| panic!("frontend result: {err}"));
     let checked = crate::modules::pipeline::checked_module_for_mode(
         &mut t,
         frontend,
         &tel,
         crate::modules::pipeline::CompileMode::Normal,
     )
-    .unwrap_or_else(|_| panic!("checked module"));
+    .unwrap_or_else(|err| panic!("checked module: {err}"));
     let prepared = crate::modules::pipeline::prepare_execution_graph(
         &mut t,
         checked,
@@ -802,12 +844,13 @@ fn capture_main_with_runtime_graph(src: &str) -> Vec<String> {
         &tel,
         crate::modules::pipeline::CompileMode::Normal,
     )
-    .unwrap_or_else(|_| panic!("execution graph"));
+    .unwrap_or_else(|err| panic!("execution graph: {err}"));
     capture_main_module(prepared.module)
 }
 
 fn capture_main_module(m: Module) -> Vec<String> {
     let entry = m.fn_by_name("main").unwrap().id;
+    assert_direct_call_arities(&m);
     heap_reset_for_test();
     let _ = test_capture_take();
     let _ = compile(
@@ -818,6 +861,32 @@ fn capture_main_module(m: Module) -> Vec<String> {
     .unwrap()
     .run(entry);
     test_capture_take()
+}
+
+fn assert_direct_call_arities(m: &Module) {
+    for f in &m.fns {
+        for block in &f.blocks {
+            match &block.terminator {
+                crate::fz_ir::Term::Call { callee, args, .. }
+                | crate::fz_ir::Term::TailCall { callee, args, .. } => {
+                    let target = m.fn_by_id(*callee);
+                    let params = target.block(target.entry).params.len();
+                    assert_eq!(
+                        params,
+                        args.len(),
+                        "{} calls {}#{:?} with {} args but target has {} params\ncaller:\n{}",
+                        f.name,
+                        target.name,
+                        target.id,
+                        args.len(),
+                        params,
+                        f
+                    );
+                }
+                _ => {}
+            }
+        }
+    }
 }
 
 fn run_main_and_count_live(src: &str) -> usize {

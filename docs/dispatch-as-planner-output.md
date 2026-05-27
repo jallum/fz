@@ -122,6 +122,11 @@ from that call edge. Backend closure captures and CLIF parameter shapes are
 implementation details, not proof sources, and codegen must not construct
 alternate demanded `SpecKey`s.
 
+For provider-boundary rewrites, the linked callsite must still be the same
+call: same caller, same callsite identity, and same target arity. The arity
+check keeps source-span collisions from rewriting a matcher branch or recursive
+tail call to an unrelated imported function.
+
 ## Return-Demand Boundaries
 
 ReturnDemand capabilities are semantics-preserving only under the proof that
