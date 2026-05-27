@@ -462,181 +462,321 @@ pub(crate) fn compute_return_for_spec<
             continue;
         }
         let term_env = env_at_terminator(t, ft, b, module);
-        match &b.terminator {
-            Term::Return(rv) => {
-                let dy = term_env.get(rv).cloned().unwrap_or_else(|| t.any());
-                joined = t.union(joined, dy);
-            }
-            Term::TailCall { callee, args, .. } => {
-                let arg_tys: Vec<crate::types::Ty> = args
-                    .iter()
-                    .map(|av| term_env.get(av).cloned().unwrap_or_else(|| t.any()))
-                    .collect();
-                let mut key = recursive_direct_spec_key(
-                    t,
-                    module,
-                    recursive_fns,
-                    spec_key.fn_id,
-                    *callee,
-                    arg_tys,
-                );
-                key.demand = spec_key.demand.clone();
-                let d = effective_returns.get(&key);
-                reads.push(key);
-                let dy = d.cloned().unwrap_or_else(|| t.none());
-                joined = t.union(joined, dy);
-            }
+        let contribution = match &b.terminator {
+            Term::Return(rv) => Some(term_env.get(rv).cloned().unwrap_or_else(|| t.any())),
+            Term::TailCall { callee, args, .. } => Some(direct_tail_return_contribution(
+                t,
+                module,
+                recursive_fns,
+                spec_key,
+                effective_returns,
+                reads,
+                &term_env,
+                *callee,
+                args,
+            )),
             Term::TailCallClosure {
                 closure,
                 args,
                 ident: _,
-            } => {
-                if let Some(&target) = ft.fn_constants.get(closure) {
-                    let target_fn = module.fn_by_id(target);
-                    let np = target_fn.block(target_fn.entry).params.len();
-                    let mut ad: Vec<crate::types::Ty> = args
-                        .iter()
-                        .map(|av| term_env.get(av).cloned().unwrap_or_else(|| t.any()))
-                        .collect();
-                    while ad.len() < np {
-                        ad.push(t.any());
-                    }
-                    ad.truncate(np);
-                    let mut key = recursive_direct_spec_key(
-                        t,
-                        module,
-                        recursive_fns,
-                        spec_key.fn_id,
-                        target,
-                        ad,
-                    );
-                    key.demand = spec_key.demand.clone();
-                    let d = effective_returns.get(&key);
-                    reads.push(key);
-                    let dy = d.cloned().unwrap_or_else(|| t.none());
-                    joined = t.union(joined, dy);
-                } else if let Some(cv_ty) = term_env.get(closure) {
-                    let clauses = t.callable_clauses(cv_ty);
-                    let mut all_lit = clauses.is_some();
-                    let mut acc = t.none();
-                    if let Some(clauses) = clauses {
-                        for clause in clauses {
-                            let Some(crate::types::ClosureLitInfo { target, captures }) =
-                                clause.closure
-                            else {
-                                all_lit = false;
-                                break;
-                            };
-                            let fn_id: FnId = target.into();
-                            let target_fn = module.fn_by_id(fn_id);
-                            let np = target_fn.block(target_fn.entry).params.len();
-                            let mut full_key: Vec<crate::types::Ty> = captures.clone();
-                            for av in args.iter() {
-                                full_key.push(term_env.get(av).cloned().unwrap_or_else(|| t.any()));
-                            }
-                            while full_key.len() < np {
-                                full_key.push(t.any());
-                            }
-                            full_key.truncate(np);
-                            let mut key = recursive_direct_spec_key(
-                                t,
-                                module,
-                                recursive_fns,
-                                spec_key.fn_id,
-                                fn_id,
-                                full_key,
-                            );
-                            key.demand = spec_key.demand.clone();
-                            let d = effective_returns.get(&key);
-                            reads.push(key);
-                            let dy = d.cloned().unwrap_or_else(|| t.none());
-                            acc = t.union(acc, dy);
-                        }
-                    }
-                    if all_lit {
-                        joined = t.union(joined, acc);
-                    } else {
-                        let any_ty = t.any();
-                        joined = t.union(joined, any_ty);
-                    }
-                } else {
-                    let any_ty = t.any();
-                    joined = t.union(joined, any_ty);
-                }
-            }
+            } => Some(tail_closure_return_contribution(
+                t,
+                module,
+                recursive_fns,
+                spec_key,
+                ft,
+                effective_returns,
+                reads,
+                &term_env,
+                *closure,
+                args,
+            )),
             Term::Call { continuation, .. }
             | Term::CallClosure { continuation, .. }
             | Term::Receive {
                 continuation,
                 ident: _,
-            } => {
-                let key = b
-                    .terminator
-                    .ident()
-                    .and_then(|ident| {
-                        ft.dispatches
-                            .get(&crate::fz_ir::CallsiteId::new(
-                                spec_key.fn_id,
-                                ident,
-                                crate::fz_ir::EmitSlot::Cont,
-                            ))
-                            .cloned()
-                    })
-                    .unwrap_or_else(|| {
-                        let cont_k = cont_key_for_spec(
-                            t,
-                            b,
-                            continuation,
-                            ft,
-                            module,
-                            recursive_fns,
-                            spec_key.fn_id,
-                            effective_returns,
-                        );
-                        spec_key_for_fn_id(module, continuation.fn_id, cont_k)
-                    });
-                let d = effective_returns.get(&key);
-                reads.push(key);
-                let dy = d.cloned().unwrap_or_else(|| t.none());
-                joined = t.union(joined, dy);
+            } => Some(continuation_return_contribution(
+                t,
+                module,
+                recursive_fns,
+                spec_key,
+                ft,
+                effective_returns,
+                reads,
+                b,
+                continuation,
+            )),
+            Term::ReceiveMatched { clauses, after, .. } => {
+                Some(receive_matched_return_contribution(
+                    t,
+                    module,
+                    effective_returns,
+                    reads,
+                    clauses,
+                    after,
+                ))
             }
-            // fz-yxs — selective receive: union over each outcome body's
-            // return type. Receive outcomes resume from an opaque closure
-            // env, so their callable key is the all-`any` shape pinned by
-            // `receive_outcome_spec_key` rather than the caller's current
-            // capture types.
-            Term::ReceiveMatched {
-                clauses,
-                after,
-                captures: _,
-                ..
-            } => {
-                let any = t.any();
-                for c in clauses {
-                    let body_fn = module.fn_by_id(c.body);
-                    let np = body_fn.block(body_fn.entry).params.len();
-                    let key = crate::fz_ir::receive_outcome_spec_key(&any, np);
-                    let lookup_key = spec_key_for_fn_id(module, c.body, key);
-                    let d = effective_returns.get(&lookup_key);
-                    reads.push(lookup_key);
-                    let dy = d.cloned().unwrap_or_else(|| t.none());
-                    joined = t.union(joined, dy);
-                }
-                if let Some(a) = after {
-                    let body_fn = module.fn_by_id(a.body);
-                    let np = body_fn.block(body_fn.entry).params.len();
-                    let key = crate::fz_ir::receive_outcome_spec_key(&any, np);
-                    let lookup_key = spec_key_for_fn_id(module, a.body, key);
-                    let d = effective_returns.get(&lookup_key);
-                    reads.push(lookup_key);
-                    let dy = d.cloned().unwrap_or_else(|| t.none());
-                    joined = t.union(joined, dy);
-                }
-            }
-            Term::Halt(_) | Term::Goto(_, _) | Term::If { .. } => {}
+            Term::Halt(_) | Term::Goto(_, _) | Term::If { .. } => None,
+        };
+        if let Some(dy) = contribution {
+            joined = t.union(joined, dy);
         }
     }
     joined
+}
+
+#[allow(clippy::too_many_arguments)]
+fn direct_tail_return_contribution<T: crate::types::Types<Ty = crate::types::Ty>>(
+    t: &mut T,
+    module: &Module,
+    recursive_fns: &std::collections::HashSet<FnId>,
+    spec_key: &SpecKey,
+    effective_returns: &HashMap<SpecKey, crate::types::Ty>,
+    reads: &mut Vec<SpecKey>,
+    term_env: &HashMap<crate::fz_ir::Var, crate::types::Ty>,
+    callee: FnId,
+    args: &[crate::fz_ir::Var],
+) -> crate::types::Ty {
+    let arg_tys = arg_tys(t, term_env, args);
+    let mut key =
+        recursive_direct_spec_key(t, module, recursive_fns, spec_key.fn_id, callee, arg_tys);
+    key.demand = spec_key.demand.clone();
+    lookup_return_read(t, effective_returns, reads, key)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn tail_closure_return_contribution<
+    T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
+>(
+    t: &mut T,
+    module: &Module,
+    recursive_fns: &std::collections::HashSet<FnId>,
+    spec_key: &SpecKey,
+    ft: &SpecPlan,
+    effective_returns: &HashMap<SpecKey, crate::types::Ty>,
+    reads: &mut Vec<SpecKey>,
+    term_env: &HashMap<crate::fz_ir::Var, crate::types::Ty>,
+    closure: crate::fz_ir::Var,
+    args: &[crate::fz_ir::Var],
+) -> crate::types::Ty {
+    if let Some(&target) = ft.fn_constants.get(&closure) {
+        return known_tail_closure_return_contribution(
+            t,
+            module,
+            recursive_fns,
+            spec_key,
+            effective_returns,
+            reads,
+            term_env,
+            target,
+            args,
+        );
+    }
+    let Some(cv_ty) = term_env.get(&closure) else {
+        return t.any();
+    };
+    literal_tail_closure_return_contribution(
+        t,
+        module,
+        recursive_fns,
+        spec_key,
+        effective_returns,
+        reads,
+        term_env,
+        cv_ty,
+        args,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn known_tail_closure_return_contribution<T: crate::types::Types<Ty = crate::types::Ty>>(
+    t: &mut T,
+    module: &Module,
+    recursive_fns: &std::collections::HashSet<FnId>,
+    spec_key: &SpecKey,
+    effective_returns: &HashMap<SpecKey, crate::types::Ty>,
+    reads: &mut Vec<SpecKey>,
+    term_env: &HashMap<crate::fz_ir::Var, crate::types::Ty>,
+    target: FnId,
+    args: &[crate::fz_ir::Var],
+) -> crate::types::Ty {
+    let target_fn = module.fn_by_id(target);
+    let np = target_fn.block(target_fn.entry).params.len();
+    let ad = padded_arg_tys(t, term_env, args, np);
+    let mut key = recursive_direct_spec_key(t, module, recursive_fns, spec_key.fn_id, target, ad);
+    key.demand = spec_key.demand.clone();
+    lookup_return_read(t, effective_returns, reads, key)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn literal_tail_closure_return_contribution<
+    T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
+>(
+    t: &mut T,
+    module: &Module,
+    recursive_fns: &std::collections::HashSet<FnId>,
+    spec_key: &SpecKey,
+    effective_returns: &HashMap<SpecKey, crate::types::Ty>,
+    reads: &mut Vec<SpecKey>,
+    term_env: &HashMap<crate::fz_ir::Var, crate::types::Ty>,
+    cv_ty: &crate::types::Ty,
+    args: &[crate::fz_ir::Var],
+) -> crate::types::Ty {
+    let clauses = t.callable_clauses(cv_ty);
+    let mut all_lit = clauses.is_some();
+    let mut acc = t.none();
+    if let Some(clauses) = clauses {
+        for clause in clauses {
+            let Some(crate::types::ClosureLitInfo { target, captures }) = clause.closure else {
+                all_lit = false;
+                break;
+            };
+            let fn_id: FnId = target.into();
+            let target_fn = module.fn_by_id(fn_id);
+            let np = target_fn.block(target_fn.entry).params.len();
+            let mut full_key = captures.clone();
+            full_key.extend(arg_tys(t, term_env, args));
+            pad_and_truncate_tys(t, &mut full_key, np);
+            let mut key = recursive_direct_spec_key(
+                t,
+                module,
+                recursive_fns,
+                spec_key.fn_id,
+                fn_id,
+                full_key,
+            );
+            key.demand = spec_key.demand.clone();
+            let dy = lookup_return_read(t, effective_returns, reads, key);
+            acc = t.union(acc, dy);
+        }
+    }
+    if all_lit { acc } else { t.any() }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn continuation_return_contribution<
+    T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
+>(
+    t: &mut T,
+    module: &Module,
+    recursive_fns: &std::collections::HashSet<FnId>,
+    spec_key: &SpecKey,
+    ft: &SpecPlan,
+    effective_returns: &HashMap<SpecKey, crate::types::Ty>,
+    reads: &mut Vec<SpecKey>,
+    block: &Block,
+    continuation: &crate::fz_ir::Cont,
+) -> crate::types::Ty {
+    let key = block
+        .terminator
+        .ident()
+        .and_then(|ident| {
+            ft.dispatches
+                .get(&crate::fz_ir::CallsiteId::new(
+                    spec_key.fn_id,
+                    ident,
+                    crate::fz_ir::EmitSlot::Cont,
+                ))
+                .cloned()
+        })
+        .unwrap_or_else(|| {
+            let cont_k = cont_key_for_spec(
+                t,
+                block,
+                continuation,
+                ft,
+                module,
+                recursive_fns,
+                spec_key.fn_id,
+                effective_returns,
+            );
+            spec_key_for_fn_id(module, continuation.fn_id, cont_k)
+        });
+    lookup_return_read(t, effective_returns, reads, key)
+}
+
+fn receive_matched_return_contribution<T: crate::types::Types<Ty = crate::types::Ty>>(
+    t: &mut T,
+    module: &Module,
+    effective_returns: &HashMap<SpecKey, crate::types::Ty>,
+    reads: &mut Vec<SpecKey>,
+    clauses: &[crate::fz_ir::ReceiveClause],
+    after: &Option<crate::fz_ir::ReceiveAfter>,
+) -> crate::types::Ty {
+    let any = t.any();
+    let mut joined = t.none();
+    for fid in clauses
+        .iter()
+        .map(|c| c.body)
+        .chain(after.iter().map(|a| a.body))
+    {
+        let dy =
+            receive_outcome_return_contribution(t, module, effective_returns, reads, fid, &any);
+        joined = t.union(joined, dy);
+    }
+    joined
+}
+
+fn receive_outcome_return_contribution<T: crate::types::Types<Ty = crate::types::Ty>>(
+    t: &mut T,
+    module: &Module,
+    effective_returns: &HashMap<SpecKey, crate::types::Ty>,
+    reads: &mut Vec<SpecKey>,
+    fid: FnId,
+    any: &crate::types::Ty,
+) -> crate::types::Ty {
+    let body_fn = module.fn_by_id(fid);
+    let np = body_fn.block(body_fn.entry).params.len();
+    let key = crate::fz_ir::receive_outcome_spec_key(any, np);
+    let lookup_key = spec_key_for_fn_id(module, fid, key);
+    lookup_return_read(t, effective_returns, reads, lookup_key)
+}
+
+fn lookup_return_read<T: crate::types::Types<Ty = crate::types::Ty>>(
+    t: &mut T,
+    effective_returns: &HashMap<SpecKey, crate::types::Ty>,
+    reads: &mut Vec<SpecKey>,
+    key: SpecKey,
+) -> crate::types::Ty {
+    let dy = effective_returns
+        .get(&key)
+        .cloned()
+        .unwrap_or_else(|| t.none());
+    reads.push(key);
+    dy
+}
+
+fn arg_tys<T: crate::types::Types<Ty = crate::types::Ty>>(
+    t: &mut T,
+    term_env: &HashMap<crate::fz_ir::Var, crate::types::Ty>,
+    args: &[crate::fz_ir::Var],
+) -> Vec<crate::types::Ty> {
+    args.iter()
+        .map(|av| term_env.get(av).cloned().unwrap_or_else(|| t.any()))
+        .collect()
+}
+
+fn padded_arg_tys<T: crate::types::Types<Ty = crate::types::Ty>>(
+    t: &mut T,
+    term_env: &HashMap<crate::fz_ir::Var, crate::types::Ty>,
+    args: &[crate::fz_ir::Var],
+    n: usize,
+) -> Vec<crate::types::Ty> {
+    let mut tys = arg_tys(t, term_env, args);
+    pad_and_truncate_tys(t, &mut tys, n);
+    tys
+}
+
+fn pad_and_truncate_tys<T: crate::types::Types<Ty = crate::types::Ty>>(
+    t: &mut T,
+    tys: &mut Vec<crate::types::Ty>,
+    n: usize,
+) {
+    while tys.len() < n {
+        tys.push(t.any());
+    }
+    tys.truncate(n);
 }
 
 /// fz-5j5.3 — reconstruct the cont's input-type key at this block's
