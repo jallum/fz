@@ -6,6 +6,7 @@
 //! the current whole-program path until later tickets consume these facts.
 
 use crate::ast::{Attribute, FnDef, ModuleDef, Program, SpecDecl, TypeAliasDecl, TypeExprBody};
+use crate::diag::{Diagnostic, Span, codes};
 use crate::lexer::Tok;
 use crate::module_identity::ModuleName;
 use std::collections::BTreeMap;
@@ -39,11 +40,12 @@ pub struct InterfaceImportFn {
     pub arity: usize,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InterfaceFn {
     pub name: String,
     pub arity: usize,
     pub spec: Option<InterfaceSpec>,
+    pub name_span: Span,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -111,7 +113,7 @@ fn collect_module(
             _ => None,
         })
         .collect::<Vec<_>>();
-    exports.sort();
+    exports.sort_by(|a, b| (&a.name, a.arity).cmp(&(&b.name, b.arity)));
 
     let mut types = module
         .attrs
@@ -168,6 +170,7 @@ fn interface_fn(def: &FnDef) -> InterfaceFn {
         name: def.name.clone(),
         arity,
         spec,
+        name_span: def.name_span,
     }
 }
 
@@ -302,6 +305,30 @@ pub fn render_interfaces(interfaces: &BTreeMap<ModuleName, ModuleInterface>) -> 
     out
 }
 
+pub fn validate_public_export_specs(
+    interfaces: &BTreeMap<ModuleName, ModuleInterface>,
+) -> Vec<Diagnostic> {
+    let mut out = Vec::new();
+    for interface in interfaces.values() {
+        for export in &interface.exports {
+            if export.spec.is_none() {
+                out.push(
+                    Diagnostic::error(
+                        codes::INTERFACE_MISSING_SPEC,
+                        format!(
+                            "public export `{}`.`{}/{}` requires an explicit @spec",
+                            interface.name, export.name, export.arity
+                        ),
+                        export.name_span,
+                    )
+                    .with_help("add an @spec immediately before the exported function"),
+                );
+            }
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -428,6 +455,62 @@ end
             !rendered.contains("100"),
             "body leaked into interface:\n{rendered}"
         );
+    }
+
+    #[test]
+    fn strict_validation_requires_specs_for_module_exports() {
+        let interfaces = interfaces(
+            r#"
+fn helper(x), do: x
+
+defmodule Public do
+  fn missing(x), do: helper(x)
+end
+"#,
+        );
+        let diags = validate_public_export_specs(&interfaces);
+        assert_eq!(diags.len(), 1);
+        assert_eq!(diags[0].code, crate::diag::codes::INTERFACE_MISSING_SPEC);
+        assert!(diags[0].message.contains("Public`.`missing/1"));
+        assert_ne!(diags[0].primary.span, Span::DUMMY);
+    }
+
+    #[test]
+    fn strict_validation_accepts_matching_specs_and_overloads() {
+        let name = module(&["Public"]);
+        let mut interfaces = BTreeMap::new();
+        interfaces.insert(
+            name.clone(),
+            ModuleInterface {
+                name,
+                abi_version: FZ_INTERFACE_ABI_VERSION,
+                imports: Vec::new(),
+                exports: vec![
+                    InterfaceFn {
+                        name: "f".to_string(),
+                        arity: 0,
+                        spec: Some(InterfaceSpec {
+                            params: Vec::new(),
+                            result: "Ident(\"integer\")".to_string(),
+                        }),
+                        name_span: Span::DUMMY,
+                    },
+                    InterfaceFn {
+                        name: "f".to_string(),
+                        arity: 1,
+                        spec: Some(InterfaceSpec {
+                            params: vec!["Ident(\"integer\")".to_string()],
+                            result: "Ident(\"integer\")".to_string(),
+                        }),
+                        name_span: Span::DUMMY,
+                    },
+                ],
+                types: Vec::new(),
+                docs: None,
+                fingerprint_inputs: Vec::new(),
+            },
+        );
+        assert!(validate_public_export_specs(&interfaces).is_empty());
     }
 
     #[test]

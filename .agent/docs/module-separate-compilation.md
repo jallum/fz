@@ -19,6 +19,12 @@ shape. The dump is deterministic and intentionally contains only contract
 facts: module docs, imports, public types, exported function names/arities,
 specs, ABI version, and fingerprint inputs. Function bodies must not appear.
 
+Use `fz dump --emit interfaces --strict-interfaces <file.fz>` for the current
+library-boundary policy check. In compatibility/dev mode (the default),
+interfaces may contain unspecified exports while this migration proceeds. In
+strict mode, every module export must have an explicit `@spec`; top-level
+non-interface helpers remain inferable.
+
 The invariant for the separate-compilation arc is:
 
 - private code is inferred inside a module;

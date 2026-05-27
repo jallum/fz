@@ -404,6 +404,7 @@ breadcrumbs.
 ```sh
 fz dump fixtures/quicksort/input.fz --emit clif       # Cranelift IR
 fz dump fixtures/quicksort/input.fz --emit interfaces # module interface facts
+fz dump fixtures/quicksort/input.fz --emit interfaces --strict-interfaces # require public @specs
 fz dump fixtures/quicksort/input.fz --emit specs      # inferred specs
 fz dump fixtures/quicksort/input.fz --emit outcomes   # what happened at each call site
 fz dump fixtures/quicksort/input.fz --emit stats      # compiler counters

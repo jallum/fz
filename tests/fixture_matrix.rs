@@ -122,6 +122,10 @@ fn static_tests() -> Vec<(&'static str, fn())> {
         ("fz_dump_emits_clif", fz_dump_emits_clif),
         ("fz_dump_emits_interfaces", fz_dump_emits_interfaces),
         (
+            "fz_dump_strict_interfaces_requires_public_specs",
+            fz_dump_strict_interfaces_requires_public_specs,
+        ),
+        (
             "add1_main_cont_seam_has_no_box_unbox_roundtrip",
             add1_main_cont_seam_has_no_box_unbox_roundtrip,
         ),
@@ -996,6 +1000,56 @@ interface User abi=1
         "interface dump leaked implementation body:\n{}",
         stdout
     );
+}
+
+fn fz_dump_strict_interfaces_requires_public_specs() {
+    let missing = r#"
+fn helper(x), do: x
+
+defmodule Public do
+  fn missing(x), do: helper(x)
+end
+"#;
+    let out = dump_interfaces_for_source(missing, true);
+    assert!(
+        !out.status.success(),
+        "strict interface dump should reject missing public @spec"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("interface/missing-spec"), "{stderr}");
+    assert!(stderr.contains("Public`.`missing/1"), "{stderr}");
+
+    let specified = r#"
+fn helper(x), do: x
+
+defmodule Public do
+  @spec f(integer) :: integer
+  fn f(x), do: helper(x)
+end
+"#;
+    let out = dump_interfaces_for_source(specified, true);
+    assert!(
+        out.status.success(),
+        "strict interface dump should allow specified public exports: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+fn dump_interfaces_for_source(src: &str, strict: bool) -> std::process::Output {
+    let path = std::env::temp_dir().join(format!(
+        "fz-interface-dump-{}-{}.fz",
+        std::process::id(),
+        strict
+    ));
+    fs::write(&path, src).unwrap_or_else(|e| panic!("write {}: {}", path.display(), e));
+    let mut cmd = Command::new(FZ_BIN);
+    cmd.args(["dump", "--emit", "interfaces"]);
+    if strict {
+        cmd.arg("--strict-interfaces");
+    }
+    let out = cmd.arg(&path).output().expect("spawn fz dump interfaces");
+    let _ = fs::remove_file(&path);
+    out
 }
 
 /// fz-ul4.27.14.2 — for `fixtures/add1/input.fz`, the seam between the

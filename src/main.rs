@@ -558,6 +558,7 @@ fn run_dump(tel: &telemetry::ConfiguredTelemetry, args: &[String]) {
     let mut fn_filter: Option<String> = None;
     let mut emit = "clif".to_string();
     let mut show_all = false;
+    let mut strict_interfaces = false;
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
@@ -578,6 +579,7 @@ fn run_dump(tel: &telemetry::ConfiguredTelemetry, args: &[String]) {
             }
             // fz-f88.7 — bypass dump_outcomes filtering (prelude + dead bodies).
             "--all" => show_all = true,
+            "--strict-interfaces" => strict_interfaces = true,
             a if !a.starts_with("--") && path.is_none() => path = Some(a.to_string()),
             a => {
                 eprintln!("fz dump: unknown arg `{}`", a);
@@ -635,7 +637,7 @@ fn run_dump(tel: &telemetry::ConfiguredTelemetry, args: &[String]) {
         if fn_filter.is_some() {
             eprintln!("fz dump: --fn is ignored with --emit interfaces");
         }
-        let dump = dump_interfaces_pipeline(tel, &sm_cell, src, path.clone());
+        let dump = dump_interfaces_pipeline(tel, &sm_cell, src, path.clone(), strict_interfaces);
         tel.event(&["fz", "dump", "interfaces"], metadata! { text: dump });
         return;
     }
@@ -804,6 +806,7 @@ fn dump_interfaces_pipeline(
     sm_cell: &Rc<RefCell<diag::SourceMap>>,
     src: String,
     source_name: String,
+    strict: bool,
 ) -> String {
     let mut t = types::ConcreteTypes;
     let frontend = run_frontend(
@@ -811,6 +814,11 @@ fn dump_interfaces_pipeline(
         sm_cell,
         tel,
     );
+    if strict {
+        let diags =
+            module_interface::validate_public_export_specs(&frontend._prog.module_interfaces);
+        diag::report_or_exit_through(tel, &diags);
+    }
     module_interface::render_interfaces(&frontend._prog.module_interfaces)
 }
 

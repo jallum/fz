@@ -21,6 +21,7 @@ pub const RESOLVE_IMPORT_OUTSIDE_MODULE: DiagCode = DiagCode("resolve/import-out
 pub const RESOLVE_DUPLICATE_MODULE: DiagCode = DiagCode("resolve/duplicate-module");
 pub const RESOLVE_DUPLICATE_EXPORT: DiagCode = DiagCode("resolve/duplicate-export");
 pub const RESOLVE_TYPE_ALIAS: DiagCode = DiagCode("resolve/type-alias");
+pub const INTERFACE_MISSING_SPEC: DiagCode = DiagCode("interface/missing-spec");
 pub const SPEC_VIOLATION: DiagCode = DiagCode("spec/violation");
 
 // ----- macro expansion -----
@@ -91,6 +92,7 @@ mod tests {
             RESOLVE_DUPLICATE_MODULE,
             RESOLVE_DUPLICATE_EXPORT,
             RESOLVE_TYPE_ALIAS,
+            INTERFACE_MISSING_SPEC,
             SPEC_VIOLATION,
             MACRO_NOT_A_DEFMACRO,
             MACRO_EXPANSION_LOOP,
