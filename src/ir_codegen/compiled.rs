@@ -253,20 +253,37 @@ impl CompiledModule {
             let _ = f(closure);
         }
 
-        // Receive wakeup: a matcher hit (from sender-probe, after-timer
-        // fire, or the initial-scan branch above) picked the winning
-        // clause and bound values into the outcome closure env. Dispatch
-        // through the single SystemV `fz_resume(cont)` shim.
-        if let Some(closure) = process.take_runnable_closure() {
-            run_scheduler_closure(self.resume_addr, closure);
-            process.next_frame = std::ptr::null_mut();
-            park_time_gc(process);
-            return;
+        // One dispatch decision per quantum. Variants are listed in
+        // scheduling-priority order; the classifier returns the first
+        // match. Receive wakeup beats fresh main-entry beats fresh
+        // closure-entry; Idle is the no-work fallthrough.
+        enum Dispatch {
+            // Receive wakeup: a matcher hit (from sender-probe,
+            // after-timer fire, or the initial-scan above) picked the
+            // winning clause and bound values into the outcome closure
+            // env. Dispatch through the single SystemV `fz_resume(cont)`
+            // shim.
+            RunnableClosure(*mut u8),
+            // Fresh main-style task entry: fn ptr queued by
+            // `Runtime::spawn` or `run_internal`. Dispatch via
+            // `fz_main_entry`; the body runs synchronously to halt or
+            // Receive.
+            MainEntry { fp: *mut u8, kind: usize },
+            // Fresh task entry: closure queued by
+            // `Runtime::spawn_closure`. Dispatch via `fz_spawn_entry`;
+            // the body runs synchronously to halt or Receive. On Receive
+            // it parks a matcher record and the next wakeup
+            // materializes runnable_closure.
+            ClosureEntry(*mut u8),
+            // All fz fns are Tail-CC; dispatch flows through the three
+            // SystemV shims above. No uniform fns exist, so no
+            // frame-by-frame trampoline loop is needed.
+            Idle,
         }
-        // Fresh main-style task entry: fn ptr queued by `Runtime::spawn`
-        // or `run_internal`. Dispatch via `fz_main_entry`; the body runs
-        // synchronously to halt or Receive.
-        if !process.pending_main_entry.is_null() {
+
+        let dispatch = if let Some(closure) = process.take_runnable_closure() {
+            Dispatch::RunnableClosure(closure)
+        } else if !process.pending_main_entry.is_null() {
             let fp = process.pending_main_entry;
             process.pending_main_entry = std::ptr::null_mut();
             // Pick the halt-cont singleton matching the entry fn's
@@ -276,43 +293,51 @@ impl CompiledModule {
                 .get(&process.pending_main_entry_fn_id)
                 .copied()
                 .unwrap_or(0) as usize;
-            let halt_cl = fz_runtime::any_value::AnyValueRef::from_heap_object(
-                fz_runtime::any_value::ValueKind::CLOSURE,
-                process.halt_cont_singletons[kind] as *const u8,
-            )
-            .expect("halt continuation ref")
-            .raw_word();
-            type MainEntry = extern "C" fn(u64, u64) -> i64;
-            let f: MainEntry = unsafe { std::mem::transmute(self.main_entry_addr) };
-            let _ = f(fp as u64, halt_cl);
-            process.next_frame = std::ptr::null_mut();
-            park_time_gc(process);
-            return;
-        }
-        // Fresh task entry: closure queued by `Runtime::spawn_closure`.
-        // Dispatch via `fz_spawn_entry`; the body runs synchronously to
-        // halt or Receive. On Receive it parks a matcher record and the
-        // next wakeup materializes runnable_closure.
-        if !process.pending_closure_entry.is_null() {
+            Dispatch::MainEntry { fp, kind }
+        } else if !process.pending_closure_entry.is_null() {
             let cl_ptr = process.pending_closure_entry;
             process.pending_closure_entry = std::ptr::null_mut();
-            let cl_ref = fz_runtime::any_value::AnyValueRef::from_heap_object(
-                fz_runtime::any_value::ValueKind::CLOSURE,
-                cl_ptr as *const u8,
-            )
-            .expect("pending closure ref")
-            .raw_word();
-            type SpawnEntry = extern "C" fn(u64) -> i64;
-            let f: SpawnEntry = unsafe { std::mem::transmute(self.spawn_entry_addr) };
-            let _ = f(cl_ref);
-            process.next_frame = std::ptr::null_mut();
-            park_time_gc(process);
-            return;
+            Dispatch::ClosureEntry(cl_ptr)
+        } else {
+            Dispatch::Idle
+        };
+
+        match dispatch {
+            Dispatch::RunnableClosure(closure) => {
+                run_scheduler_closure(self.resume_addr, closure);
+                process.next_frame = std::ptr::null_mut();
+                park_time_gc(process);
+            }
+            Dispatch::MainEntry { fp, kind } => {
+                let halt_cl = fz_runtime::any_value::AnyValueRef::from_heap_object(
+                    fz_runtime::any_value::ValueKind::CLOSURE,
+                    process.halt_cont_singletons[kind] as *const u8,
+                )
+                .expect("halt continuation ref")
+                .raw_word();
+                type MainEntry = extern "C" fn(u64, u64) -> i64;
+                let f: MainEntry = unsafe { std::mem::transmute(self.main_entry_addr) };
+                let _ = f(fp as u64, halt_cl);
+                process.next_frame = std::ptr::null_mut();
+                park_time_gc(process);
+            }
+            Dispatch::ClosureEntry(cl_ptr) => {
+                let cl_ref = fz_runtime::any_value::AnyValueRef::from_heap_object(
+                    fz_runtime::any_value::ValueKind::CLOSURE,
+                    cl_ptr as *const u8,
+                )
+                .expect("pending closure ref")
+                .raw_word();
+                type SpawnEntry = extern "C" fn(u64) -> i64;
+                let f: SpawnEntry = unsafe { std::mem::transmute(self.spawn_entry_addr) };
+                let _ = f(cl_ref);
+                process.next_frame = std::ptr::null_mut();
+                park_time_gc(process);
+            }
+            Dispatch::Idle => {
+                process.next_frame = std::ptr::null_mut();
+            }
         }
-        // All fz fns are Tail-CC; dispatch flows through the three
-        // SystemV shims above. No uniform fns exist, so no frame-by-frame
-        // trampoline loop is needed.
-        process.next_frame = std::ptr::null_mut();
     }
 }
 
