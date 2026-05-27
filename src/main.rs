@@ -249,12 +249,14 @@ fn run_build(tel: &telemetry::ConfiguredTelemetry, args: &[String]) {
     let mut out_path: Option<String> = None;
     let mut artifact_root = module_artifact_store::DEFAULT_ARTIFACT_ROOT.to_string();
     let mut emit_fzi = false;
+    let mut emit_fzo = false;
     let mut mode = CompileMode::Normal;
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
             "--lto" | "--whole-program" => mode = CompileMode::Lto,
             "--emit-fzi" => emit_fzi = true,
+            "--emit-fzo" => emit_fzo = true,
             "--artifact-root" => {
                 i += 1;
                 artifact_root = args.get(i).cloned().unwrap_or_else(|| {
@@ -281,7 +283,9 @@ fn run_build(tel: &telemetry::ConfiguredTelemetry, args: &[String]) {
         i += 1;
     }
     let src_path = src_path.unwrap_or_else(|| {
-        eprintln!("fz build [--lto] [--emit-fzi] [--artifact-root <dir>] <src.fz> -o <out>");
+        eprintln!(
+            "fz build [--lto] [--emit-fzi] [--emit-fzo] [--artifact-root <dir>] <src.fz> -o <out>"
+        );
         std::process::exit(2);
     });
     let out_path = out_path.unwrap_or_else(|| {
@@ -295,9 +299,11 @@ fn run_build(tel: &telemetry::ConfiguredTelemetry, args: &[String]) {
 
     let frontend_result = frontend::compile_source_with_types(&mut t, src, src_path.clone(), tel);
     let prepared = checked_module_for_mode(&mut t, frontend_result, &sm_cell, tel, mode);
-    if emit_fzi {
+    if emit_fzi || emit_fzo {
         let diags = module_interface::validate_public_export_specs(&prepared.interfaces);
         diag::report_or_exit_through(tel, &diags);
+    }
+    if emit_fzi {
         let store = module_artifact_store::ArtifactStore::new(&artifact_root);
         store
             .write_fzi_artifacts_with_telemetry(tel, &prepared.interfaces)
@@ -313,6 +319,34 @@ fn run_build(tel: &telemetry::ConfiguredTelemetry, args: &[String]) {
     let unit_input = prepared.compiled_unit_input();
     let module = unit_input.code.clone();
     let module_plan = prepared.module_plan;
+
+    if emit_fzo {
+        let program =
+            ir_codegen::compile_pretyped_unit(&mut t, unit_input.clone(), &module_plan, tel)
+                .unwrap_or_else(|e| {
+                    diag::report_or_exit_through(tel, &[e.to_diagnostic()]);
+                    std::process::exit(1);
+                });
+        diag::report_or_exit_through(tel, program.executable.diagnostics().as_slice());
+        let fzo = module_artifact::FzoArtifact::from_unit(
+            &program.unit,
+            &program.runtime,
+            vec![
+                "kind=source-compiled-module".to_string(),
+                format!("source={src_path}"),
+            ],
+        );
+        let store = module_artifact_store::ArtifactStore::new(&artifact_root);
+        store
+            .write_fzo_artifacts_with_telemetry(tel, [&fzo])
+            .unwrap_or_else(|e| {
+                tel.event(
+                    &["fz", "build", "fzo_failed"],
+                    metadata! { error: e.to_string() },
+                );
+                std::process::exit(1);
+            });
+    }
 
     let obj_name = std::path::Path::new(&src_path)
         .file_stem()
@@ -879,7 +913,14 @@ struct CheckedModule {
 impl CheckedModule {
     fn compiled_unit_input(&self) -> ir_codegen::CompiledUnit {
         let interface = module_name_from_ir_path(self.module.module_path())
-            .and_then(|module| self.interfaces.get(&module).cloned());
+            .and_then(|module| self.interfaces.get(&module).cloned())
+            .or_else(|| {
+                if self.interfaces.len() == 1 {
+                    self.interfaces.values().next().cloned()
+                } else {
+                    None
+                }
+            });
         ir_codegen::CompiledUnit::from_ir_module(
             self.module.clone(),
             interface,

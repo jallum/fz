@@ -131,6 +131,7 @@ fn static_tests() -> Vec<(&'static str, fn())> {
         ("fz_dump_emits_clif", fz_dump_emits_clif),
         ("fz_dump_emits_interfaces", fz_dump_emits_interfaces),
         ("fz_build_emits_fzi", fz_build_emits_fzi),
+        ("fz_build_emits_fzo", fz_build_emits_fzo),
         (
             "fz_dump_loads_fzi_for_imports",
             fz_dump_loads_fzi_for_imports,
@@ -1214,6 +1215,49 @@ fn main(), do: Math.id(1)
     assert!(fzi.contains("module=Math\n"), "{fzi}");
     assert!(fzi.contains("fingerprint_digest="), "{fzi}");
     assert!(fzi.contains("export\tid\t1\t"), "{fzi}");
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+fn fz_build_emits_fzo() {
+    let src = r#"
+defmodule Math do
+  @spec id(integer) :: integer
+  fn id(x), do: x
+end
+
+fn main(), do: Math.id(1)
+"#;
+    let root = std::env::temp_dir().join(format!("fz-build-fzo-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).unwrap_or_else(|e| panic!("mkdir {}: {}", root.display(), e));
+    let input = root.join("input.fz");
+    let out_path = root.join("app");
+    let artifact_root = root.join("artifacts");
+    fs::write(&input, src).unwrap_or_else(|e| panic!("write {}: {}", input.display(), e));
+
+    let out = Command::new(FZ_BIN)
+        .args(["build", "--emit-fzi", "--emit-fzo", "--artifact-root"])
+        .arg(&artifact_root)
+        .arg(&input)
+        .arg("-o")
+        .arg(&out_path)
+        .output()
+        .expect("spawn fz build --emit-fzo");
+    assert!(
+        out.status.success(),
+        "fz build --emit-fzo exited {}: {}",
+        out.status,
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let fzo_path = artifact_root.join("objects/Math.fzo");
+    let fzo = fs::read_to_string(&fzo_path)
+        .unwrap_or_else(|e| panic!("read {}: {}", fzo_path.display(), e));
+    assert!(fzo.starts_with("fzo\n"), "{fzo}");
+    assert!(fzo.contains("module=Math\n"), "{fzo}");
+    assert!(fzo.contains("unit_payload_format=fz-ir-text-v1\n"), "{fzo}");
+    assert!(fzo.contains("interface_fingerprint_digest="), "{fzo}");
 
     let _ = fs::remove_dir_all(&root);
 }
