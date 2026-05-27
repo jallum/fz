@@ -18,12 +18,10 @@ defmodule FileHandle do
 end
 
 fn main() do
-  # created with mode 0o644 = 420
   path = "/tmp/fz-x5m"
-  fd = libc::creat(path, 420)
+  fd = libc::creat(path, 0o644)
   print(:opened)
-  # "hi\n" — exercises the `binary` marshal class
-  n = libc::write(fd, <<104, 105, 10>>, 3)
+  n = libc::write(fd, "hi\n", 3)
   print(n)
   _h = FileHandle.from_fd(fd)
   libc::unlink(path)

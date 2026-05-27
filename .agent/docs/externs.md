@@ -42,10 +42,18 @@ The tokens are fz marshal classes at the boundary. The helper body owns the
 target C ABI cast, such as the `open(path, flags, mode)` dispatcher casting fz
 integer lanes to `c_int`/`c_uint` before calling the real variadic function.
 
+This indirection is intentional. Cranelift 0.131 exposes a fixed `Signature`
+made of `AbiParam`s; it does not expose the target ABI's variadic fixed-count
+marker for a call. Emitting a direct call to `open(path, flags, mode)` as a
+normal fixed-arity C call is not ABI-correct on platforms where variadic calls
+change register classification. Keep backend code selecting concrete runtime
+dispatchers until Cranelift has a first-class variadic call API.
+
 `fz_extern_symbol_addr(name)` resolves `dlsym(RTLD_DEFAULT, name)` and caches
 both hits and misses. It returns `0` for null or unresolved symbols; callers
 must treat zero as lookup failure, not as a callable function pointer.
 
-JIT codegen and `ir_interp` both select dispatchers from the same resolved
-marshal shapes. Unsupported shapes must return a compiler/interpreter error
-that includes the concrete fixed/variadic `ExternTy` list.
+JIT, AOT, and `ir_interp` all select dispatchers from the same resolved marshal
+shapes. AOT reaches the same exported runtime symbols through the staticlib link
+path. Unsupported shapes must return a compiler/interpreter error that includes
+the concrete fixed/variadic `ExternTy` list.

@@ -139,7 +139,9 @@ to fz code, and costs one byte per binary. So if you write</p>
 
 <p>the actual bytes in memory look like:</p>
 
-<pre><span class="note">bytes_len = 2</span>
+<pre>path = <span class="str">"hi"</span>
+
+<span class="note">bytes_len = 2</span>
 [ <span class="num">104</span> | <span class="num">105</span> | <span class="num">0</span> ]
   'h'   'i'   <span class="note">invisible NUL — not part of the binary</span></pre>
 
@@ -162,7 +164,37 @@ are resolved at the call site after type inference: integers default to
 be written explicitly because C cannot infer whether the pointer should be
 <code>binary</code> or <code>cstring</code>.</p>
 
-<pre><span class="fn">libc::printf</span>(<span class="str">"%s %d"</span>, name <span class="kw">::</span> <span class="ty">cstring</span>, <span class="num">42</span>)</pre>
+<pre><span class="fn">libc::printf</span>(<span class="str">"answer=%lld\n"</span> <span class="kw">::</span> <span class="ty">cstring</span>, <span class="num">42</span>)</pre>
+
+<p>The currently implemented variadic dispatcher set is deliberately small:
+<code>open(path, flags, mode)</code> and simple printf-style calls with one
+integer argument. If a call's fixed and variadic marshal classes do not match
+one of the supported shapes, fz reports an unsupported variadic extern shape
+instead of guessing.</p>
+
+<h3>Opening a file with mode bits</h3>
+
+<p><code>open(2)</code> is variadic: the <code>mode</code> argument is only
+present when the flags include <code>O_CREAT</code>. Declare the fixed
+arguments first, then <code>...</code>:</p>
+
+<pre><span class="kw">extern</span> <span class="str">"C"</span> <span class="kw">fn</span> <span class="fn">libc::open</span>(path <span class="kw">::</span> <span class="ty">cstring</span>, flags <span class="kw">::</span> <span class="ty">integer</span>, ...) <span class="kw">::</span> <span class="ty">integer</span>
+<span class="kw">extern</span> <span class="str">"C"</span> <span class="kw">fn</span> <span class="fn">libc::close</span>(fd <span class="kw">::</span> <span class="ty">integer</span>) <span class="kw">::</span> <span class="ty">integer</span>
+<span class="kw">extern</span> <span class="str">"C"</span> <span class="kw">fn</span> <span class="fn">libc::unlink</span>(path <span class="kw">::</span> <span class="ty">cstring</span>) <span class="kw">::</span> <span class="ty">integer</span>
+
+<span class="kw">fn</span> <span class="fn">main</span>() <span class="kw">do</span>
+  path = <span class="str">"/tmp/fz-open-example"</span>
+  <span class="fn">libc::unlink</span>(path)
+  <span class="com"># O_CREAT | O_RDWR. 0x0202 is the macOS/BSD libc value; use your platform's value.</span>
+  fd = <span class="fn">libc::open</span>(path, <span class="num">0x0202</span>, <span class="num">0o644</span> <span class="kw">::</span> <span class="ty">integer</span>)
+  <span class="fn">libc::close</span>(fd)
+  <span class="fn">libc::unlink</span>(path)
+<span class="kw">end</span></pre>
+
+<p>The explicit <code>:: integer</code> on <code>0o644</code> documents the
+variadic marshal class. The actual file mode is still controlled by the
+process umask: a requested mode of <code>0o644</code> is created as
+<code>0o644 &amp; ~umask</code>.</p>
 
 <!-- ─────────────────────────────── 4. LIBRARY ─────────────────────────────── -->
 <h2 id="library">4. Library-prefix names — <code>libc::open</code></h2>
@@ -198,11 +230,16 @@ back; skip them when the C symbol is already distinctive.</p>
 <p>C returns a raw machine word; fz code needs to know what kind that word
 represents. The return-side marshal class fills the gap.</p>
 
-<pre><span class="kw">extern</span> <span class="str">"C"</span> <span class="kw">fn</span> <span class="fn">libc::close</span>(<span class="ty">integer</span>) <span class="kw">::</span> <span class="ty">integer</span>
+<pre><span class="kw">extern</span> <span class="str">"C"</span> <span class="kw">fn</span> <span class="fn">libc::creat</span>(<span class="ty">cstring</span>, <span class="ty">integer</span>) <span class="kw">::</span> <span class="ty">integer</span>
+<span class="kw">extern</span> <span class="str">"C"</span> <span class="kw">fn</span> <span class="fn">libc::close</span>(<span class="ty">integer</span>) <span class="kw">::</span> <span class="ty">integer</span>
+<span class="kw">extern</span> <span class="str">"C"</span> <span class="kw">fn</span> <span class="fn">libc::unlink</span>(<span class="ty">cstring</span>) <span class="kw">::</span> <span class="ty">integer</span>
 
 <span class="kw">fn</span> <span class="fn">main</span>() <span class="kw">do</span>
-  rc = <span class="fn">libc::close</span>(<span class="num">3</span>)
-  <span class="fn">print</span>(rc)         <span class="com"># prints 0, or -1 if close failed</span>
+  path = <span class="str">"/tmp/fz-close-example"</span>
+  fd = <span class="fn">libc::creat</span>(path, <span class="num">0o600</span>)
+  rc = <span class="fn">libc::close</span>(fd)
+  <span class="fn">libc::unlink</span>(path)
+  <span class="fn">print</span>(rc)         <span class="com"># prints 0 if close succeeded</span>
 <span class="kw">end</span></pre>
 
 <p>The C-ABI return value comes back in <code>rax</code> as a raw 64-bit
@@ -246,7 +283,7 @@ a file descriptor from <code>open</code>, an allocated buffer from
 <code>malloc</code>, a handle from a library. If you forget, you leak.
 fz has a primitive for this: <code>make_resource(payload, dtor)</code>.</p>
 
-<pre>fd = <span class="fn">libc::open</span>(path, <span class="num">0</span>)
+<pre>fd = <span class="fn">libc::creat</span>(path, <span class="num">0o600</span>)
 handle = <span class="fn">make_resource</span>(fd, &amp;<span class="fn">libc::close</span>/<span class="num">1</span>)</pre>
 
 <p>Now <code>handle</code> is an fz value carrying the fd. When the last
@@ -291,7 +328,7 @@ opaque type:</p>
   @<span class="kw">type</span> t <span class="kw">::</span> opaque <span class="kw">resource</span>(<span class="ty">integer</span>)
 
   <span class="kw">fn</span> <span class="fn">open</span>(path) <span class="kw">do</span>
-    fd = <span class="fn">libc::open</span>(path, <span class="num">0</span>)
+    fd = <span class="fn">libc::creat</span>(path, <span class="num">0o600</span>)
     <span class="fn">make_resource</span>(fd, &amp;<span class="fn">libc::close</span>/<span class="num">1</span>)
   <span class="kw">end</span>
 
@@ -326,12 +363,10 @@ can't be bypassed.</p>
 <span class="kw">end</span>
 
 <span class="kw">fn</span> <span class="fn">main</span>() <span class="kw">do</span>
-  <span class="com"># "/tmp/fz-x5m" — created with mode 0o644 = 420</span>
-  path = &lt;&lt;<span class="num">47</span>, <span class="num">116</span>, <span class="num">109</span>, <span class="num">112</span>, <span class="num">47</span>, <span class="num">102</span>, <span class="num">122</span>, <span class="num">45</span>, <span class="num">120</span>, <span class="num">53</span>, <span class="num">109</span>&gt;&gt;
-  fd = <span class="fn">libc::creat</span>(path, <span class="num">420</span>)
+  path = <span class="str">"/tmp/fz-x5m"</span>
+  fd = <span class="fn">libc::creat</span>(path, <span class="num">0o644</span>)
   <span class="fn">print</span>(<span class="atm">:opened</span>)
-  <span class="com"># "hi\n" — exercises the `binary` marshal class</span>
-  n = <span class="fn">libc::write</span>(fd, &lt;&lt;<span class="num">104</span>, <span class="num">105</span>, <span class="num">10</span>&gt;&gt;, <span class="num">3</span>)
+  n = <span class="fn">libc::write</span>(fd, <span class="str">"hi\n"</span>, <span class="num">3</span>)
   <span class="fn">print</span>(n)
   _h = <span class="ty">FileHandle</span>.<span class="fn">from_fd</span>(fd)
   <span class="fn">libc::unlink</span>(path)
