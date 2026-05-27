@@ -208,18 +208,34 @@ pub fn type_fn<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::Clo
     m: &Module,
     entry_param_types: Option<&[crate::types::Ty]>,
 ) -> SpecPlan {
-    // Pre-materialized fallbacks for the many `unwrap_or_else(any/none)`
-    // sites. Re-cloned per fallback hit; future passes (when locals become Ty)
-    // will let these flow as values instead of clone-on-fallback.
-    let mut vars: HashMap<Var, crate::types::Ty> = HashMap::new();
-    let mut block_envs: HashMap<BlockId, HashMap<Var, crate::types::Ty>> = HashMap::new();
+    let (mut vars, mut block_envs) = initialize_block_envs(t, f, entry_param_types);
+    let topo = topo_order(f);
+    run_type_fixed_point(t, f, m, &topo, &mut vars, &mut block_envs);
+    let fn_constants = collect_fn_constants(f);
+    let (reachable_blocks, dead_branches) =
+        compute_reachable_blocks_and_dead_branches(t, f, m, &block_envs);
+    SpecPlan {
+        vars,
+        block_envs,
+        fn_constants,
+        reachable_blocks,
+        dead_branches,
+        dispatches: HashMap::new(),
+        return_uses: HashMap::new(),
+        return_context_plans: HashMap::new(),
+    }
+}
 
-    // Entry block: params come from the caller-narrowed `entry_param_types`
-    // when provided (fz-ul4.27.10 module-level fixed point), or default to
-    // `any` for the initial pass, fns with no direct caller (main,
-    // closure-only targets), and fns that are closure-reachable (whose
-    // caller set isn't bounded by the direct-call sites we can see).
-    // Non-entry blocks: empty env, populated by goto/if predecessors.
+fn initialize_block_envs<T: crate::types::Types<Ty = crate::types::Ty>>(
+    t: &mut T,
+    f: &FnIr,
+    entry_param_types: Option<&[crate::types::Ty]>,
+) -> (
+    HashMap<Var, crate::types::Ty>,
+    HashMap<BlockId, HashMap<Var, crate::types::Ty>>,
+) {
+    let mut vars = HashMap::new();
+    let mut block_envs = HashMap::new();
     for b in &f.blocks {
         let mut env = HashMap::new();
         if b.id == f.entry {
@@ -234,134 +250,181 @@ pub fn type_fn<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::Clo
         }
         block_envs.insert(b.id, env);
     }
+    (vars, block_envs)
+}
 
-    let topo = topo_order(f);
+fn run_type_fixed_point<
+    T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
+>(
+    t: &mut T,
+    f: &FnIr,
+    m: &Module,
+    topo: &[BlockId],
+    vars: &mut HashMap<Var, crate::types::Ty>,
+    block_envs: &mut HashMap<BlockId, HashMap<Var, crate::types::Ty>>,
+) {
     loop {
         let mut changed = false;
-
-        for &bid in &topo {
-            let b = f.block(bid);
-            // Re-derive env at each stmt position.
-            let mut env = block_envs[&b.id].clone();
-            // Track vars provably derived from IR-level Prim::Const stmts
-            // within this block. Used to enable literal folding in
-            // numeric_result_fold without cascading spec keys (fz-1pq.6).
-            let mut const_vars: HashSet<Var> = HashSet::new();
-            let mut init_tokens: HashMap<InitTokenId, TokenState> = HashMap::new();
-            let mut tuple_dests: HashMap<Var, TupleDestState<crate::types::Ty>> = HashMap::new();
-            let mut list_builders: HashMap<InitTokenId, crate::types::Ty> = HashMap::new();
-            let mut map_dests: HashMap<InitTokenId, crate::types::Ty> = HashMap::new();
-            for stmt in &b.stmts {
-                let Stmt::Let(v, prim) = stmt;
-                let pt_ty = type_let_with_init_facts(
-                    t,
-                    *v,
-                    prim,
-                    &env,
-                    m,
-                    &const_vars,
-                    &mut init_tokens,
-                    &mut tuple_dests,
-                    &mut list_builders,
-                    &mut map_dests,
-                );
-                // Propagate const-derivation: a Const is trivially const; a
-                // BinOp/UnOp on const vars is also const.
-                match prim {
-                    Prim::Const(_) => {
-                        const_vars.insert(*v);
-                    }
-                    Prim::BinOp(_, a, b) if const_vars.contains(a) && const_vars.contains(b) => {
-                        const_vars.insert(*v);
-                    }
-                    Prim::UnOp(_, a) if const_vars.contains(a) => {
-                        const_vars.insert(*v);
-                    }
-                    _ => {}
-                }
-                let pt = pt_ty.clone();
-                env.insert(*v, pt.clone());
-                // vars is the definition-site type; single assignment so
-                // we just overwrite each iteration (will converge).
-                let prev_ty = vars.get(v).cloned().unwrap_or_else(|| t.none());
-                if !t.is_equivalent(&pt_ty, &prev_ty) {
-                    vars.insert(*v, pt);
-                    changed = true;
-                }
-            }
-
-            // Propagate to successors.
-            match &b.terminator {
-                Term::Goto(target, args) => {
-                    let target_b = f.block(*target);
-                    let mut delta = env.clone();
-                    // Substitute target's params with the supplied arg types.
-                    let arg_ts: Vec<crate::types::Ty> = args
-                        .iter()
-                        .map(|a| env.get(a).cloned().unwrap_or_else(|| t.any()))
-                        .collect();
-                    // Remove anything keyed by the source-block's view of
-                    // the args (they're not the same Vars as target params).
-                    for (i, &p) in target_b.params.iter().enumerate() {
-                        if let Some(at) = arg_ts.get(i) {
-                            delta.insert(p, at.clone());
-                        }
-                    }
-                    if merge_into(t, &mut block_envs, *target, &delta) {
-                        changed = true;
-                    }
-                    // Update vars for target's params via union across all
-                    // predecessors (handled via merge_into's union, but we
-                    // also need to mirror in vars).
-                    for &p in target_b.params.iter() {
-                        let from_env = block_envs[target]
-                            .get(&p)
-                            .cloned()
-                            .unwrap_or_else(|| t.none());
-                        let prev_ty = vars.get(&p).cloned().unwrap_or_else(|| t.none());
-                        if !t.is_equivalent(&from_env, &prev_ty) {
-                            vars.insert(p, from_env);
-                            changed = true;
-                        }
-                    }
-                }
-                Term::If {
-                    cond,
-                    then_b,
-                    else_b,
-                    ..
-                } => {
-                    let (then_env, else_env) = narrow_for_if(t, &env, *cond, &b.stmts);
-                    if merge_into(t, &mut block_envs, *then_b, &then_env) {
-                        changed = true;
-                    }
-                    if merge_into(t, &mut block_envs, *else_b, &else_env) {
-                        changed = true;
-                    }
-                }
-                Term::Call { .. }
-                | Term::TailCall { .. }
-                | Term::CallClosure { .. }
-                | Term::TailCallClosure { .. }
-                | Term::Return(_)
-                | Term::Halt(_)
-                | Term::Receive { .. }
-                | Term::ReceiveMatched { .. } => {
-                    // Inter-fn flow goes through separate FnIr continuations;
-                    // intra-fn flow stops here.
-                }
-            }
+        for &bid in topo {
+            changed |= type_block_iteration(t, f, m, bid, vars, block_envs);
         }
-
         if !changed {
             break;
         }
     }
+}
 
-    // fz-ul4.29.10.1 — populate fn_constants from zero-capture
-    // `MakeClosure(F, [])` Let-bindings. Single forward pass; SSA
-    // means each Var is bound at one site.
-    let mut fn_constants: HashMap<Var, FnId> = HashMap::new();
+fn type_block_iteration<
+    T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
+>(
+    t: &mut T,
+    f: &FnIr,
+    m: &Module,
+    bid: BlockId,
+    vars: &mut HashMap<Var, crate::types::Ty>,
+    block_envs: &mut HashMap<BlockId, HashMap<Var, crate::types::Ty>>,
+) -> bool {
+    let b = f.block(bid);
+    let mut env = block_envs[&b.id].clone();
+    let mut changed = type_stmts_for_fixed_point(t, m, &mut env, &b.stmts, vars);
+    changed |= propagate_successors(t, f, b, &env, vars, block_envs);
+    changed
+}
+
+fn type_stmts_for_fixed_point<
+    T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
+>(
+    t: &mut T,
+    m: &Module,
+    env: &mut HashMap<Var, crate::types::Ty>,
+    stmts: &[Stmt],
+    vars: &mut HashMap<Var, crate::types::Ty>,
+) -> bool {
+    let mut changed = false;
+    let mut const_vars: HashSet<Var> = HashSet::new();
+    let mut init_tokens: HashMap<InitTokenId, TokenState> = HashMap::new();
+    let mut tuple_dests: HashMap<Var, TupleDestState<crate::types::Ty>> = HashMap::new();
+    let mut list_builders: HashMap<InitTokenId, crate::types::Ty> = HashMap::new();
+    let mut map_dests: HashMap<InitTokenId, crate::types::Ty> = HashMap::new();
+    for stmt in stmts {
+        let Stmt::Let(v, prim) = stmt;
+        let pt_ty = type_let_with_init_facts(
+            t,
+            *v,
+            prim,
+            env,
+            m,
+            &const_vars,
+            &mut init_tokens,
+            &mut tuple_dests,
+            &mut list_builders,
+            &mut map_dests,
+        );
+        record_const_derivation(*v, prim, &mut const_vars);
+        env.insert(*v, pt_ty.clone());
+        let prev_ty = vars.get(v).cloned().unwrap_or_else(|| t.none());
+        if !t.is_equivalent(&pt_ty, &prev_ty) {
+            vars.insert(*v, pt_ty);
+            changed = true;
+        }
+    }
+    changed
+}
+
+fn record_const_derivation(v: Var, prim: &Prim, const_vars: &mut HashSet<Var>) {
+    match prim {
+        Prim::Const(_) => {
+            const_vars.insert(v);
+        }
+        Prim::BinOp(_, a, b) if const_vars.contains(a) && const_vars.contains(b) => {
+            const_vars.insert(v);
+        }
+        Prim::UnOp(_, a) if const_vars.contains(a) => {
+            const_vars.insert(v);
+        }
+        _ => {}
+    }
+}
+
+fn propagate_successors<T: crate::types::Types<Ty = crate::types::Ty>>(
+    t: &mut T,
+    f: &FnIr,
+    b: &crate::fz_ir::Block,
+    env: &HashMap<Var, crate::types::Ty>,
+    vars: &mut HashMap<Var, crate::types::Ty>,
+    block_envs: &mut HashMap<BlockId, HashMap<Var, crate::types::Ty>>,
+) -> bool {
+    match &b.terminator {
+        Term::Goto(target, args) => propagate_goto(t, f, env, vars, block_envs, *target, args),
+        Term::If {
+            cond,
+            then_b,
+            else_b,
+            ..
+        } => propagate_if(t, b, env, block_envs, *cond, *then_b, *else_b),
+        Term::Call { .. }
+        | Term::TailCall { .. }
+        | Term::CallClosure { .. }
+        | Term::TailCallClosure { .. }
+        | Term::Return(_)
+        | Term::Halt(_)
+        | Term::Receive { .. }
+        | Term::ReceiveMatched { .. } => false,
+    }
+}
+
+fn propagate_goto<T: crate::types::Types<Ty = crate::types::Ty>>(
+    t: &mut T,
+    f: &FnIr,
+    env: &HashMap<Var, crate::types::Ty>,
+    vars: &mut HashMap<Var, crate::types::Ty>,
+    block_envs: &mut HashMap<BlockId, HashMap<Var, crate::types::Ty>>,
+    target: BlockId,
+    args: &[Var],
+) -> bool {
+    let target_b = f.block(target);
+    let mut delta = env.clone();
+    let arg_ts: Vec<crate::types::Ty> = args
+        .iter()
+        .map(|a| env.get(a).cloned().unwrap_or_else(|| t.any()))
+        .collect();
+    for (i, &p) in target_b.params.iter().enumerate() {
+        if let Some(at) = arg_ts.get(i) {
+            delta.insert(p, at.clone());
+        }
+    }
+    let mut changed = merge_into(t, block_envs, target, &delta);
+    for &p in target_b.params.iter() {
+        let from_env = block_envs[&target]
+            .get(&p)
+            .cloned()
+            .unwrap_or_else(|| t.none());
+        let prev_ty = vars.get(&p).cloned().unwrap_or_else(|| t.none());
+        if !t.is_equivalent(&from_env, &prev_ty) {
+            vars.insert(p, from_env);
+            changed = true;
+        }
+    }
+    changed
+}
+
+fn propagate_if<T: crate::types::Types<Ty = crate::types::Ty>>(
+    t: &mut T,
+    b: &crate::fz_ir::Block,
+    env: &HashMap<Var, crate::types::Ty>,
+    block_envs: &mut HashMap<BlockId, HashMap<Var, crate::types::Ty>>,
+    cond: Var,
+    then_b: BlockId,
+    else_b: BlockId,
+) -> bool {
+    let (then_env, else_env) = narrow_for_if(t, env, cond, &b.stmts);
+    let then_changed = merge_into(t, block_envs, then_b, &then_env);
+    let else_changed = merge_into(t, block_envs, else_b, &else_env);
+    then_changed || else_changed
+}
+
+fn collect_fn_constants(f: &FnIr) -> HashMap<Var, FnId> {
+    let mut fn_constants = HashMap::new();
     for b in &f.blocks {
         for stmt in &b.stmts {
             let Stmt::Let(v, prim) = stmt;
@@ -372,14 +435,20 @@ pub fn type_fn<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::Clo
             }
         }
     }
+    fn_constants
+}
 
-    // fz-1pq.3 — post-convergence reachability pass. Worklist from
-    // entry; at If terminators, use the post-stmt env (stmts may define
-    // the condition var) to prune branches whose condition is a singleton
-    // boolean (folded by compare_result).
-    let mut reachable_blocks: HashSet<BlockId> = HashSet::new();
-    let mut dead_branches: HashMap<BlockId, crate::fz_ir::DeadBranch> = HashMap::new();
-    let mut worklist: Vec<BlockId> = vec![f.entry];
+fn compute_reachable_blocks_and_dead_branches<
+    T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
+>(
+    t: &mut T,
+    f: &FnIr,
+    m: &Module,
+    block_envs: &HashMap<BlockId, HashMap<Var, crate::types::Ty>>,
+) -> (HashSet<BlockId>, HashMap<BlockId, crate::fz_ir::DeadBranch>) {
+    let mut reachable_blocks = HashSet::new();
+    let mut dead_branches = HashMap::new();
+    let mut worklist = vec![f.entry];
     while let Some(bid) = worklist.pop() {
         if !reachable_blocks.insert(bid) {
             continue;
@@ -393,25 +462,7 @@ pub fn type_fn<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::Clo
                 else_b,
                 ..
             } => {
-                // Re-evaluate stmts to get the env at the terminator.
-                let mut env = block_envs[&bid].clone();
-                type_stmts_into_env(t, &mut env, &b.stmts, m);
-                let (then_env, else_env) = narrow_for_if(t, &env, *cond, &b.stmts);
-                let mut then_dead = find_emptied_var(t, &env, &then_env).is_some();
-                let mut else_dead = find_emptied_var(t, &env, &else_env).is_some();
-                // Use both narrowing facts and singleton condition facts to
-                // check provable branch deadness. `ct ⊆ true` means the else
-                // branch is dead; `ct ⊆ false` means the then branch is dead.
-                let ct_ty = env.get(cond).cloned().unwrap_or_else(|| t.none());
-                let false_ty = t.atom_lit("false");
-                let nil_ty = t.nil();
-                if t.is_subtype(&ct_ty, &false_ty) || t.is_subtype(&ct_ty, &nil_ty) {
-                    then_dead = true;
-                }
-                let true_ty = t.atom_lit("true");
-                if t.is_subtype(&ct_ty, &true_ty) {
-                    else_dead = true;
-                }
+                let (then_dead, else_dead) = branch_deadness(t, m, block_envs, b, bid, *cond);
                 if then_dead && !else_dead {
                     dead_branches.insert(bid, crate::fz_ir::DeadBranch::Then);
                 } else if else_dead && !then_dead {
@@ -427,15 +478,31 @@ pub fn type_fn<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::Clo
             _ => {}
         }
     }
+    (reachable_blocks, dead_branches)
+}
 
-    SpecPlan {
-        vars,
-        block_envs,
-        fn_constants,
-        reachable_blocks,
-        dead_branches,
-        dispatches: HashMap::new(),
-        return_uses: HashMap::new(),
-        return_context_plans: HashMap::new(),
+fn branch_deadness<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes>(
+    t: &mut T,
+    m: &Module,
+    block_envs: &HashMap<BlockId, HashMap<Var, crate::types::Ty>>,
+    b: &crate::fz_ir::Block,
+    bid: BlockId,
+    cond: Var,
+) -> (bool, bool) {
+    let mut env = block_envs[&bid].clone();
+    type_stmts_into_env(t, &mut env, &b.stmts, m);
+    let (then_env, else_env) = narrow_for_if(t, &env, cond, &b.stmts);
+    let mut then_dead = find_emptied_var(t, &env, &then_env).is_some();
+    let mut else_dead = find_emptied_var(t, &env, &else_env).is_some();
+    let ct_ty = env.get(&cond).cloned().unwrap_or_else(|| t.none());
+    let false_ty = t.atom_lit("false");
+    let nil_ty = t.nil();
+    if t.is_subtype(&ct_ty, &false_ty) || t.is_subtype(&ct_ty, &nil_ty) {
+        then_dead = true;
     }
+    let true_ty = t.atom_lit("true");
+    if t.is_subtype(&ct_ty, &true_ty) {
+        else_dead = true;
+    }
+    (then_dead, else_dead)
 }
