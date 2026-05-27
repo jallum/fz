@@ -366,6 +366,10 @@ fz dump --lto --emit bodies path/to/file.fz</pre>
   <li>Erase allowed module boundaries before reducer/planner/codegen optimization.</li>
 </ol>
 
+<p>The CLI uses one shared preparation path for normal and LTO run/build/dump
+commands. Boundary erasure is only available after the LTO path has built a
+validated linked-program state.</p>
+
 <p>That last step means an imported module call can become a direct local
 call for optimization. Specs normally act as public boundary firewalls; in
 explicit LTO mode, after validation, those firewalls can be cleared for

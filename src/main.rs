@@ -276,19 +276,14 @@ fn run_build(tel: &telemetry::ConfiguredTelemetry, args: &[String]) {
         std::process::exit(1);
     });
 
-    let frontend = run_frontend_for_mode(
-        frontend::compile_source_with_types(&mut t, src, src_path.clone(), tel),
-        &sm_cell,
-        tel,
-        mode,
-    );
+    let frontend_result = frontend::compile_source_with_types(&mut t, src, src_path.clone(), tel);
+    let prepared = prepare_frontend_for_mode(&mut t, frontend_result, &sm_cell, tel, mode);
     if emit_fzi {
-        let diags =
-            module_interface::validate_public_export_specs(&frontend._prog.module_interfaces);
+        let diags = module_interface::validate_public_export_specs(&prepared.interfaces);
         diag::report_or_exit_through(tel, &diags);
         let store = module_artifact_store::ArtifactStore::new(&artifact_root);
         store
-            .write_fzi_artifacts(&frontend._prog.module_interfaces)
+            .write_fzi_artifacts(&prepared.interfaces)
             .unwrap_or_else(|e| {
                 tel.event(
                     &["fz", "build", "fzi_failed"],
@@ -298,15 +293,8 @@ fn run_build(tel: &telemetry::ConfiguredTelemetry, args: &[String]) {
             });
     }
 
-    let mut module = frontend.module;
-    if mode.is_lto() {
-        apply_lto_boundary_erasure(tel, &mut module, &frontend._prog.module_interfaces);
-    }
-    let module_plan = if mode.is_lto() {
-        ir_planner::plan_module(&mut t, &module, tel)
-    } else {
-        frontend.module_plan
-    };
+    let module = prepared.module;
+    let module_plan = prepared.module_plan;
 
     let obj_name = std::path::Path::new(&src_path)
         .file_stem()
@@ -861,6 +849,20 @@ struct Compiled {
     module: fz_ir::Module,
 }
 
+struct PreparedFrontend {
+    module: fz_ir::Module,
+    module_plan: ir_planner::ModulePlan,
+    interfaces:
+        std::collections::BTreeMap<module_identity::ModuleName, module_interface::ModuleInterface>,
+    sm: diag::SourceMap,
+}
+
+struct LtoLinkedProgram {
+    module: fz_ir::Module,
+    interfaces:
+        std::collections::BTreeMap<module_identity::ModuleName, module_interface::ModuleInterface>,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum CompileMode {
     Normal,
@@ -894,53 +896,83 @@ fn load_interface_table_or_exit(
     })
 }
 
-fn run_frontend_for_mode(
+fn prepare_frontend_for_mode(
+    t: &mut types::ConcreteTypes,
     result: frontend::FrontendResult,
     sm_cell: &Rc<RefCell<diag::SourceMap>>,
     tel: &dyn telemetry::Telemetry,
     mode: CompileMode,
-) -> frontend::FrontendOk {
+) -> PreparedFrontend {
     let frontend = run_frontend(result, sm_cell, tel);
+    let interfaces = frontend._prog.module_interfaces;
     if mode.is_lto() {
-        let diags =
-            module_interface::validate_public_export_specs(&frontend._prog.module_interfaces);
+        let linked = LtoLinkedProgram::validate(frontend.module, interfaces, tel);
+        let (module, interfaces) = linked.erase_boundaries(tel);
+        let module_plan = ir_planner::plan_module(t, &module, tel);
+        PreparedFrontend {
+            module,
+            module_plan,
+            interfaces,
+            sm: frontend.sm,
+        }
+    } else {
+        PreparedFrontend {
+            module: frontend.module,
+            module_plan: frontend.module_plan,
+            interfaces,
+            sm: frontend.sm,
+        }
+    }
+}
+
+impl LtoLinkedProgram {
+    fn validate(
+        module: fz_ir::Module,
+        interfaces: std::collections::BTreeMap<
+            module_identity::ModuleName,
+            module_interface::ModuleInterface,
+        >,
+        tel: &dyn telemetry::Telemetry,
+    ) -> Self {
+        let diags = module_interface::validate_public_export_specs(&interfaces);
         diag::report_or_exit_through(tel, &diags);
         tel.event(
             &["fz", "lto", "interfaces_validated"],
-            metadata! { interfaces: frontend._prog.module_interfaces.len() as i64 },
+            metadata! { interfaces: interfaces.len() as i64 },
         );
+        Self { module, interfaces }
     }
-    frontend
-}
 
-fn apply_lto_boundary_erasure(
-    tel: &dyn telemetry::Telemetry,
-    module: &mut fz_ir::Module,
-    interfaces: &std::collections::BTreeMap<
-        module_identity::ModuleName,
-        module_interface::ModuleInterface,
-    >,
-) {
-    let exports = module.interface_export_map(interfaces);
-    let rewritten = module
-        .rewrite_external_calls_for_lto(&exports)
-        .unwrap_or_else(|e| {
-            diag::report_or_exit_through(
-                tel,
-                &[diag::Diagnostic::error(
-                    diag::codes::LOWER_UNBOUND,
-                    e.to_string(),
-                    diag::Span::DUMMY,
-                )],
-            );
-            std::process::exit(1);
-        });
-    let erased_boundaries = module.boundary_fns.len();
-    module.boundary_fns.clear();
-    tel.event(
-        &["fz", "lto", "boundaries_erased"],
-        metadata! { rewritten: rewritten as i64, spec_boundaries: erased_boundaries as i64 },
-    );
+    fn erase_boundaries(
+        mut self,
+        tel: &dyn telemetry::Telemetry,
+    ) -> (
+        fz_ir::Module,
+        std::collections::BTreeMap<module_identity::ModuleName, module_interface::ModuleInterface>,
+    ) {
+        let exports = self.module.interface_export_map(&self.interfaces);
+        let rewritten = self
+            .module
+            .rewrite_external_calls_for_lto(&exports)
+            .unwrap_or_else(|e| {
+                diag::report_or_exit_through(
+                    tel,
+                    &[diag::Diagnostic::error(
+                        diag::codes::LOWER_UNBOUND,
+                        e.to_string(),
+                        diag::Span::DUMMY,
+                    )],
+                );
+                std::process::exit(1);
+            });
+        let erased_boundaries = self.module.boundary_fns.len();
+        self.module.boundary_fns.clear();
+        tel.event(
+            &["fz", "lto", "boundaries_erased"],
+            metadata! { rewritten: rewritten as i64, spec_boundaries: erased_boundaries as i64 },
+        );
+        (self.module, self.interfaces)
+    }
 }
 
 /// fz-73m — drive a source string through lex → parse → resolve → macros
@@ -1041,16 +1073,9 @@ fn dump_bodies_pipeline(
 ) -> String {
     use crate::ir_planner::ModulePlan;
     let mut t = types::ConcreteTypes;
-    let frontend = run_frontend_for_mode(
-        frontend::compile_source_with_types(&mut t, src, source_name, tel),
-        sm_cell,
-        tel,
-        mode,
-    );
-    let mut module = frontend.module;
-    if mode.is_lto() {
-        apply_lto_boundary_erasure(tel, &mut module, &frontend._prog.module_interfaces);
-    }
+    let frontend_result = frontend::compile_source_with_types(&mut t, src, source_name, tel);
+    let prepared = prepare_frontend_for_mode(&mut t, frontend_result, sm_cell, tel, mode);
+    let mut module = prepared.module;
     // Run the reducer pass directly so the bodies dump reflects what
     // codegen would see, without going all the way to JIT.
     let _ = ir_reducer::reduce_module_with_telemetry(&mut t, &mut module, tel);
@@ -1138,16 +1163,10 @@ fn dump_outcomes_pipeline(
 ) -> String {
     use crate::fz_ir::{CallsiteId, EmitSlot, FnId};
     let mut t = types::ConcreteTypes;
-    let frontend = run_frontend_for_mode(
-        frontend::compile_source_with_types(&mut t, src, source_name.clone(), tel),
-        sm_cell,
-        tel,
-        mode,
-    );
-    let mut module = frontend.module;
-    if mode.is_lto() {
-        apply_lto_boundary_erasure(tel, &mut module, &frontend._prog.module_interfaces);
-    }
+    let frontend_result =
+        frontend::compile_source_with_types(&mut t, src, source_name.clone(), tel);
+    let prepared = prepare_frontend_for_mode(&mut t, frontend_result, sm_cell, tel, mode);
+    let mut module = prepared.module;
     let reducer_log = ir_reducer::reduce_module_with_telemetry(&mut t, &mut module, tel);
     let mt = ir_planner::plan_module(&mut t, &module, tel);
 
@@ -1397,21 +1416,10 @@ fn compile_pipeline(
     mode: CompileMode,
 ) -> Compiled {
     let mut t = types::ConcreteTypes;
-    let frontend = run_frontend_for_mode(
-        frontend::compile_source_with_types(&mut t, src, source_name, tel),
-        sm_cell,
-        tel,
-        mode,
-    );
-    let mut module = frontend.module;
-    if mode.is_lto() {
-        apply_lto_boundary_erasure(tel, &mut module, &frontend._prog.module_interfaces);
-    }
-    let module_plan = if mode.is_lto() {
-        ir_planner::plan_module(&mut t, &module, tel)
-    } else {
-        frontend.module_plan
-    };
+    let frontend_result = frontend::compile_source_with_types(&mut t, src, source_name, tel);
+    let prepared = prepare_frontend_for_mode(&mut t, frontend_result, sm_cell, tel, mode);
+    let module = prepared.module;
+    let module_plan = prepared.module_plan;
     let main_fn = module.fn_by_name("main").map(|f| f.id);
     let cm = ir_codegen::compile_pretyped(&mut t, &module, &module_plan, tel).unwrap_or_else(|e| {
         diag::report_or_exit_through(tel, &[e.to_diagnostic()]);
@@ -1425,7 +1433,7 @@ fn compile_pipeline(
     Compiled {
         cm,
         main_fn,
-        sm: frontend.sm,
+        sm: prepared.sm,
         module,
     }
 }

@@ -396,6 +396,7 @@ Errors include:
 
 - `UnitRuntimeCountMismatch`
 - `InterfaceFingerprintMismatch`
+- `UnresolvedExternalCalls`
 - `MissingImport`
 - `DuplicateProvider`
 - `RuntimeMetadata`
@@ -432,14 +433,28 @@ Normal codegen rejects unresolved external calls:
 unresolved external module call `Dep.run/0`
 ```
 
-LTO path:
+CLI LTO path:
 
-1. validate public module interfaces;
-2. build `Module::interface_export_map` from interface exports to loaded
+1. `prepare_frontend_for_mode` runs the normal frontend once for run/build/dump;
+2. `LtoLinkedProgram::validate` validates public module interfaces and emits
+   the `fz.lto.interfaces_validated` telemetry event;
+3. `LtoLinkedProgram::erase_boundaries` builds `Module::interface_export_map`
+   from interface exports to loaded implementation `FnId`s;
+4. `erase_boundaries` calls `Module::rewrite_external_calls_for_lto`;
+5. `erase_boundaries` clears spec-boundary firewalls for loaded
+   implementations and emits `fz.lto.boundaries_erased`;
+6. the caller re-plans/reduces/codegens with direct calls.
+
+`LtoLinkedProgram` is intentionally the only input to boundary erasure in the
+CLI pipeline. That keeps boundary erasure behind interface validation in the
+type shape instead of relying on each caller to remember the order.
+
+Mechanically, the pass:
+
+1. builds `Module::interface_export_map` from interface exports to loaded
    implementation `FnId`s;
-3. call `Module::rewrite_external_calls_for_lto`;
-4. clear spec-boundary firewalls for loaded implementations;
-5. re-plan/reduce/codegen with direct calls.
+2. calls `Module::rewrite_external_calls_for_lto`;
+3. clears spec-boundary firewalls for loaded implementations.
 
 This makes whole-program optimization explicit while keeping normal-mode
 correctness interface-based.

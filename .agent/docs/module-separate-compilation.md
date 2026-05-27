@@ -101,6 +101,10 @@ LTO / whole-program mode:
 - `--lto` (alias `--whole-program`) is an explicit optimized build/dump/run
   mode. It validates public module interfaces first, then treats loaded
   compatible implementations as available for whole-program optimization.
+- `prepare_frontend_for_mode` is the shared CLI entry for normal and LTO
+  run/build/dump paths. LTO mode creates a validated `LtoLinkedProgram`; the
+  boundary-erasure pass consumes that validated value, so the CLI cannot erase
+  module boundaries before interface validation in normal control flow.
 - `Module::interface_export_map` builds the implementation map from validated
   interface exports to loaded `FnId`s. `Module::rewrite_external_calls_for_lto`
   consumes that map and rewrites `ExternalCallEdge` placeholders to direct
