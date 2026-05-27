@@ -78,6 +78,20 @@ mod do_block_sugar_tests {
     }
 
     #[test]
+    fn trailing_do_does_not_merge_with_explicit_atom_pair_list() {
+        let e = parse_expr("f([{:timeout, 10}]) do 42 end");
+        let Expr::Call(_, args) = e else {
+            panic!("not a call")
+        };
+        assert_eq!(args.len(), 2);
+        let Expr::List(items, None) = &args[0].node else {
+            panic!("expected explicit list arg")
+        };
+        assert_eq!(items.len(), 1);
+        assert_keyword_list(&args[1], &[("do", "int")]);
+    }
+
+    #[test]
     fn list_keyword_sugar_works_in_patterns() {
         let toks = Lexer::new("fn opts([do: body, else: fallback]), do: body")
             .tokenize()

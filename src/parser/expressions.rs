@@ -1,5 +1,10 @@
 use super::*;
 
+struct CallArgs {
+    args: Vec<Spanned<Expr>>,
+    keyword_arg_index: Option<usize>,
+}
+
 impl Parser {
     pub fn parse_expr(&mut self) -> PR<Spanned<Expr>> {
         self.parse_bp(0)
@@ -50,24 +55,24 @@ impl Parser {
             match self.peek() {
                 Tok::LParen => {
                     self.bump();
-                    let mut args = self.parse_call_args()?;
+                    let mut call_args = self.parse_call_args()?;
                     self.expect(&Tok::RParen, "`)`")?;
                     if !self.suppress_trailing_do && matches!(self.peek(), Tok::Do) {
                         self.bump();
                         self.skip_newlines();
                         let body = self.parse_block_until(&[Tok::End])?;
                         self.expect(&Tok::End, "`end`")?;
-                        Self::append_keyword_arg(&mut args, "do".to_string(), body);
+                        Self::append_keyword_arg(&mut call_args, "do".to_string(), body);
                     } else if !self.suppress_trailing_do
                         && matches!(self.peek(), Tok::Comma)
                         && matches!(self.peek_at(1), Tok::KwKey(s) if s == "do")
                     {
                         self.bump();
                         let body = self.parse_keyword_pair()?.1;
-                        Self::append_keyword_arg(&mut args, "do".to_string(), body);
+                        Self::append_keyword_arg(&mut call_args, "do".to_string(), body);
                     }
                     let span = start.merge(self.prev_span());
-                    lhs = Spanned::new(Expr::Call(Box::new(lhs), args), span);
+                    lhs = Spanned::new(Expr::Call(Box::new(lhs), call_args.args), span);
                     continue;
                 }
                 Tok::Dot => {
@@ -344,14 +349,19 @@ impl Parser {
         Ok(out)
     }
 
-    fn parse_call_args(&mut self) -> PR<Vec<Spanned<Expr>>> {
+    fn parse_call_args(&mut self) -> PR<CallArgs> {
         let mut out = Vec::new();
+        let mut keyword_arg_index = None;
         self.skip_newlines();
         if matches!(self.peek(), Tok::RParen) {
-            return Ok(out);
+            return Ok(CallArgs {
+                args: out,
+                keyword_arg_index,
+            });
         }
         loop {
             if matches!(self.peek(), Tok::KwKey(_)) {
+                keyword_arg_index = Some(out.len());
                 out.push(self.parse_keyword_list_arg(&Tok::RParen)?);
                 self.skip_newlines();
                 if self.eat(&Tok::Comma) {
@@ -401,6 +411,7 @@ impl Parser {
             }
             self.skip_newlines();
             if matches!(self.peek(), Tok::KwKey(_)) {
+                keyword_arg_index = Some(out.len());
                 out.push(self.parse_keyword_list_arg(&Tok::RParen)?);
                 self.skip_newlines();
                 if self.eat(&Tok::Comma) {
@@ -409,7 +420,10 @@ impl Parser {
                 break;
             }
         }
-        Ok(out)
+        Ok(CallArgs {
+            args: out,
+            keyword_arg_index,
+        })
     }
 
     fn parse_keyword_list_arg(&mut self, terminator: &Tok) -> PR<Spanned<Expr>> {
@@ -449,35 +463,26 @@ impl Parser {
         Ok((key, value))
     }
 
-    fn append_keyword_arg(args: &mut Vec<Spanned<Expr>>, key: String, value: Spanned<Expr>) {
+    fn append_keyword_arg(call_args: &mut CallArgs, key: String, value: Spanned<Expr>) {
         let key_expr = Spanned::new(Expr::Atom(key), value.span);
         let entry = Self::keyword_pair_expr(key_expr, value);
-        if let Some(last) = args.last_mut()
-            && Self::is_keyword_list(last)
-            && let Expr::List(entries, None) = &mut last.node
+        if let Some(idx) = call_args.keyword_arg_index
+            && let Some(arg) = call_args.args.get_mut(idx)
+            && let Expr::List(entries, None) = &mut arg.node
         {
             entries.push(entry);
             return;
         }
         let span = entry.span;
-        args.push(Spanned::new(Expr::List(vec![entry], None), span));
+        call_args.keyword_arg_index = Some(call_args.args.len());
+        call_args
+            .args
+            .push(Spanned::new(Expr::List(vec![entry], None), span));
     }
 
     fn keyword_pair_expr(key: Spanned<Expr>, value: Spanned<Expr>) -> Spanned<Expr> {
         let span = key.span.merge(value.span);
         Spanned::new(Expr::Tuple(vec![key, value]), span)
-    }
-
-    fn is_keyword_list(expr: &Spanned<Expr>) -> bool {
-        let Expr::List(entries, None) = &expr.node else {
-            return false;
-        };
-        entries.iter().all(|entry| {
-            let Expr::Tuple(pair) = &entry.node else {
-                return false;
-            };
-            pair.len() == 2 && matches!(pair[0].node, Expr::Atom(_))
-        })
     }
 
     pub(super) fn parse_block_until(&mut self, stops: &[Tok]) -> PR<Spanned<Expr>> {
