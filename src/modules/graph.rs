@@ -19,15 +19,11 @@ pub struct ModuleGraph {
 #[derive(Debug, Clone)]
 pub struct ModuleGraphLoader {
     store: ArtifactStore,
-    runtime_interfaces: InterfaceTable,
 }
 
 impl ModuleGraphLoader {
     pub fn new(store: ArtifactStore) -> Self {
-        Self {
-            store,
-            runtime_interfaces: crate::modules::runtime_library::interface_table(),
-        }
+        Self { store }
     }
 
     pub fn load_reachable<'a>(
@@ -37,6 +33,7 @@ impl ModuleGraphLoader {
     ) -> Result<ModuleGraph, ArtifactStoreError> {
         let mut queue = VecDeque::new();
         let mut user_modules = BTreeSet::new();
+        let mut runtime_modules = BTreeSet::new();
         let mut interfaces = root_interfaces.clone();
 
         for interface in root_interfaces.values() {
@@ -50,9 +47,10 @@ impl ModuleGraphLoader {
             if interfaces.contains_key(&module) {
                 continue;
             }
-            if let Some(interface) = self.runtime_interfaces.get(&module) {
+            if let Some(interface) = crate::modules::runtime_library::interface(&module) {
                 interfaces.insert(module, interface.clone());
-                enqueue_imports(&mut queue, interface);
+                enqueue_imports(&mut queue, &interface);
+                runtime_modules.insert(interface.name.clone());
                 continue;
             }
 
@@ -64,6 +62,12 @@ impl ModuleGraphLoader {
         }
 
         let mut objects = Vec::new();
+        for module in runtime_modules {
+            let Some(artifact) = crate::modules::runtime_library::artifact(&module) else {
+                continue;
+            };
+            objects.push(artifact.fzo);
+        }
         for module in user_modules {
             let expected = interfaces
                 .get(&module)
@@ -230,6 +234,14 @@ mod tests {
             .expect("load graph");
 
         assert!(graph.interfaces.contains_key(&module("Utf8")));
-        assert!(graph.objects.is_empty());
+        assert_eq!(graph.objects.len(), 1);
+        assert_eq!(graph.objects[0].module, Some(module("Utf8")));
+        assert_eq!(graph.objects[0].unit_payload.format, "fz-runtime-module-v1");
+        assert!(
+            graph.objects[0]
+                .source_unit_text()
+                .expect("runtime fzo source")
+                .contains("defmodule Utf8")
+        );
     }
 }

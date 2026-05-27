@@ -174,17 +174,14 @@ pub(crate) fn prepare_execution_graph(
     tel: &dyn telemetry::Telemetry,
     mode: CompileMode,
 ) -> Result<PreparedExecutionGraph, PipelineError> {
-    let units = if providers.is_empty() {
-        vec![prepared.compiled_unit_input()]
-    } else {
-        load_provider_units(t, &prepared, providers, tel)?
-    };
-    let module = if providers.is_empty() {
+    let units = load_provider_units(t, &prepared, providers, tel)?;
+    let linked_units = units.len() > 1;
+    let module = if !linked_units {
         units[0].code.clone()
     } else {
         ir_codegen::link_ir_units(&units).map_err(PipelineError::Link)?
     };
-    let module_plan = if providers.is_empty() {
+    let module_plan = if !linked_units {
         prepared.module_plan
     } else if mode.is_lto() {
         let interfaces = units
@@ -333,5 +330,58 @@ impl LtoLinkedProgram {
             metadata! { rewritten: rewritten as i64, spec_boundaries: erased_boundaries as i64 },
         );
         Ok((self.module, self.interfaces))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn execution_graph_loads_runtime_import_without_user_providers() {
+        let mut concrete_types = types::ConcreteTypes;
+        let tel = telemetry::NullTelemetry;
+        let providers = ProviderInputs::new(
+            std::env::temp_dir()
+                .join(format!("fz-runtime-graph-{}", std::process::id()))
+                .display()
+                .to_string(),
+            Vec::new(),
+        );
+        let source = r#"
+defmodule User do
+  import Utf8, only: [valid?: 1]
+  fn run(bytes), do: valid?(bytes)
+end
+"#;
+
+        let frontend = compile_source_with_providers(
+            &mut concrete_types,
+            source.to_string(),
+            "user.fz".to_string(),
+            &providers,
+            &tel,
+        )
+        .unwrap_or_else(|_| panic!("frontend result"));
+        let checked =
+            checked_module_for_mode(&mut concrete_types, frontend, &tel, CompileMode::Normal)
+                .unwrap_or_else(|_| panic!("checked module"));
+        let graph = prepare_execution_graph(
+            &mut concrete_types,
+            checked,
+            &providers,
+            &tel,
+            CompileMode::Normal,
+        )
+        .unwrap_or_else(|_| panic!("execution graph"));
+
+        let modules = graph
+            .units
+            .iter()
+            .filter_map(|unit| unit.module.as_ref().map(ModuleName::dotted))
+            .collect::<Vec<_>>();
+        assert!(modules.contains(&"User".to_string()));
+        assert!(modules.contains(&"Utf8".to_string()));
+        assert!(!modules.contains(&"Process".to_string()));
     }
 }

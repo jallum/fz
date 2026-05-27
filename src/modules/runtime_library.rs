@@ -13,6 +13,7 @@ use crate::ast::{Item, ModuleDef, Program};
 use crate::modules::artifact::{FziArtifact, FzoArtifact, FzoUnitPayload};
 use crate::modules::identity::{ExportKey, ModuleName};
 use crate::modules::interface::ModuleInterface;
+#[cfg(test)]
 use crate::resolve::InterfaceTable;
 use std::collections::BTreeMap;
 #[cfg(test)]
@@ -80,6 +81,7 @@ pub fn parsed_program() -> Program {
     }
 }
 
+#[cfg(test)]
 pub fn interface_table() -> InterfaceTable {
     RUNTIME_MODULE_SOURCES
         .iter()
@@ -150,7 +152,9 @@ fn runtime_module_fzo(
         compiler_abi_version: crate::modules::artifact::FZ_ARTIFACT_ABI_VERSION,
         runtime_abi_version: crate::modules::artifact::FZ_RUNTIME_ARTIFACT_ABI_VERSION,
         module: Some(name.clone()),
-        unit_payload: FzoUnitPayload::runtime_module(runtime_module_payload(name, module)),
+        unit_payload: FzoUnitPayload::runtime_module(
+            runtime_module_source(name).expect("runtime module source is registered"),
+        ),
         required_imports: interface_imports(interface),
         implementation_fingerprint: runtime_implementation_fingerprint(name, module),
         interface_fingerprint_digest: crate::modules::interface::fingerprint_digest(
@@ -193,17 +197,11 @@ fn runtime_implementation_fingerprint(name: &ModuleName, module: &ModuleDef) -> 
     out
 }
 
-fn runtime_module_payload(name: &ModuleName, module: &ModuleDef) -> String {
-    let mut lines = vec![format!("module={}", name)];
-    for item in &module.items {
-        if let Item::Fn(def) = &**item
-            && def.extern_abi.is_none()
-        {
-            let arity = def.clauses.first().map(|c| c.params.len()).unwrap_or(0);
-            lines.push(format!("fn={}/{}", def.name, arity));
-        }
-    }
-    lines.join("\n")
+fn runtime_module_source(name: &ModuleName) -> Option<&'static str> {
+    RUNTIME_MODULE_SOURCES
+        .iter()
+        .find(|source| source.name == name.dotted())
+        .map(|source| source.source)
 }
 
 #[cfg(test)]

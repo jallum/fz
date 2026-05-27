@@ -172,7 +172,9 @@ impl FzoArtifact {
     }
 
     pub fn source_unit_text(&self) -> Result<&str, Diagnostic> {
-        if self.unit_payload.format == FZO_PAYLOAD_SOURCE_UNIT_V1 {
+        if self.unit_payload.format == FZO_PAYLOAD_SOURCE_UNIT_V1
+            || self.unit_payload.format == FZO_PAYLOAD_RUNTIME_MODULE_V1
+        {
             Ok(&self.unit_payload.body)
         } else {
             Err(invalid(format!(
