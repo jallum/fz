@@ -1,6 +1,4 @@
-use super::fn_types::{
-    ModulePlan, ReturnContextPlanKey, SpecKey, display_return_context_plan, display_return_demand,
-};
+use super::fn_types::{ModulePlan, SpecKey, display_return_context_plan, display_return_demand};
 use super::reachable::cont_input_key;
 use crate::fz_ir::{Block, CallsiteId, CallsiteIdent, EmitSlot, FnId, Module, Term};
 
@@ -480,7 +478,7 @@ fn render_return_use<T: crate::types::Types<Ty = crate::types::Ty> + crate::type
     out: &mut String,
 ) {
     let cid = CallsiteId::new(spec_key.fn_id, ident, slot);
-    if let Some(return_use) = ft.return_uses.get(&cid) {
+    if let Some(return_use) = ft.return_use(&cid) {
         out.push_str(&format!(
             ";              return_use={}\n",
             display_return_demand(t, return_use)
@@ -499,10 +497,7 @@ fn render_list_tail_plan<
     out: &mut String,
 ) {
     let cid = CallsiteId::new(spec_key.fn_id, ident, slot);
-    if let Some(plan) = ft
-        .return_context_plans
-        .get(&ReturnContextPlanKey::new(spec_key, &cid))
-    {
+    if let Some(plan) = ft.return_context_plan(&cid) {
         out.push_str(&format!(
             ";              list_tail_plan={}\n",
             display_return_context_plan(t, plan)

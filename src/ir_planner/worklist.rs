@@ -203,7 +203,11 @@ fn compute_effect_summaries(m: &Module, mt: &ModulePlan) -> HashMap<SpecKey, Eff
         let mut changed = false;
         for (key, ft) in &mt.specs {
             let mut summary = *summaries.get(key).unwrap_or(&EffectSummary::default());
-            for target in ft.dispatches.values() {
+            for target in ft
+                .call_edges
+                .values()
+                .filter_map(|edge| edge.local_target())
+            {
                 if let Some(target_summary) = summaries.get(target).copied() {
                     changed |= summary.union_with(target_summary);
                 }
@@ -475,6 +479,12 @@ fn install_walk_result(
     >,
 ) {
     if let Some(ft) = specs.get_mut(spec_key) {
+        ft.install_call_edges(
+            spec_key,
+            &dispatch_targets,
+            &return_uses,
+            &return_context_plans,
+        );
         ft.dispatches = dispatch_targets;
         ft.return_uses = return_uses;
         ft.return_context_plans = return_context_plans;
@@ -797,13 +807,12 @@ fn continuation_return_contribution<
         .terminator
         .ident()
         .and_then(|ident| {
-            ft.dispatches
-                .get(&crate::fz_ir::CallsiteId::new(
-                    spec_key.fn_id,
-                    ident,
-                    crate::fz_ir::EmitSlot::Cont,
-                ))
-                .cloned()
+            ft.local_call_target(&crate::fz_ir::CallsiteId::new(
+                spec_key.fn_id,
+                ident,
+                crate::fz_ir::EmitSlot::Cont,
+            ))
+            .cloned()
         })
         .unwrap_or_else(|| {
             let cont_k = cont_key_for_spec(

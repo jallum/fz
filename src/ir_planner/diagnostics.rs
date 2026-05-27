@@ -33,7 +33,7 @@ pub(crate) fn module_plan_stats(m: &Module, mt: &ModulePlan) -> ModulePlanStats 
             stats.matcher_spec_count += 1;
         }
         stats.spec_var_count += ft.vars.len();
-        stats.dispatch_count += ft.dispatches.len();
+        stats.dispatch_count += ft.call_edges.len();
         for block in &f.blocks {
             if !ft.reachable_blocks.contains(&block.id) {
                 continue;
