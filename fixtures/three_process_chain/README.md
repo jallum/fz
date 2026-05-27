@@ -1,7 +1,7 @@
 ---
 purpose: "two-hop process relay — main → first_relay → second_relay → main; exercises multi-process message chaining"
 paths: [jit, interp, aot, repl]
-budget.codegen.functions: 14
+budget.codegen.functions: 10
 budget.codegen.instructions: 185
 budget.specs.count: 8
 budget.planner.worklist_pops: 13

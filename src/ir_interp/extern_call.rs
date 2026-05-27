@@ -211,7 +211,7 @@ pub(super) fn call_extern<T: Types<Ty = crate::types::Ty>>(
             if args.is_empty() {
                 return Err(format!("{}/1+ got 0 args", &decl.symbol));
             }
-            // args[0] is the thunk closure (wrapping the user's closure);
+            // args[0] is the zero-arg closure to run in the child task;
             // args[1] (fz_spawn_opt) is a min_heap_size hint — ignored here.
             let (fn_id, captured) = unpack_closure(args[0].value()?)?;
             let pid = runtime.spawn(module, fn_id, captured)?;

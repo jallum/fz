@@ -5,11 +5,11 @@ use std::rc::Rc;
 
 fn flush_fn_groups(
     items: &mut Vec<Rc<Item>>,
-    order: &mut Vec<String>,
-    groups: &mut std::collections::HashMap<String, FnDef>,
+    order: &mut Vec<(String, usize)>,
+    groups: &mut std::collections::HashMap<(String, usize), FnDef>,
 ) {
-    for name in order.drain(..) {
-        if let Some(def) = groups.remove(&name) {
+    for key in order.drain(..) {
+        if let Some(def) = groups.remove(&key) {
             items.push(Rc::new(Item::Fn(def)));
         }
     }

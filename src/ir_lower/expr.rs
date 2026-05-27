@@ -340,34 +340,6 @@ pub(crate) fn lower_expr(
                 }
                 return cps_split_receive(ctx, sp, /* tail */ false);
             }
-            // fz-ul4.29.9 / fz-ext.7 — spawn is special: wrap the closure arg
-            // in fz_spawn_thunk before dispatching to fz_spawn / fz_spawn_opt.
-            // This must be checked before the generic ExternTable lookup so that
-            // `spawn` (user-facing name) resolves to the thunk-wrapped fz_spawn
-            // extern, not a non-existent user fn.
-            if callee_name == "spawn" && (arg_vars.len() == 1 || arg_vars.len() == 2) {
-                let thunk_id = ctx.ensure_spawn_thunk();
-                let wrapper = ctx.let_at(Prim::make_closure(sp, thunk_id, vec![arg_vars[0]]), sp);
-                let mut new_args = vec![wrapper];
-                new_args.extend_from_slice(&arg_vars[1..]);
-                let sym = if arg_vars.len() == 1 {
-                    "fz_spawn"
-                } else {
-                    "fz_spawn_opt"
-                };
-                let eid = ctx
-                    .externs
-                    .lookup(sym)
-                    .expect("fz_spawn/fz_spawn_opt must be in runtime.fz");
-                let decl = ctx
-                    .extern_decls
-                    .iter()
-                    .find(|d| d.id == eid)
-                    .expect("ExternTable entry must have matching ExternDecl");
-                let extern_args =
-                    extern_args_for_call(decl, sym, new_args, vec![None; decl.params.len()], sp)?;
-                return Ok(ctx.let_at(Prim::Extern(eid, extern_args), sp));
-            }
             // Extern (runtime.fz / user-declared `extern "C" fn`)?
             if let Some(eid) = ctx.externs.lookup(&callee_name) {
                 let decl = ctx

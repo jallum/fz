@@ -1745,13 +1745,12 @@ end
     );
 }
 
-/// fz-ul4.29.12.4 — spawn-with-captures registers a narrow spec for
-/// `fz_spawn_thunk` keyed by the spawned closure's type. .29.12.2's
-/// typed-stub keying then routes spawn dispatch through that narrow
-/// stub (verified by the spawn_with_captures fixture across jit /
-/// interp / aot). This test asserts the planner prerequisite.
+/// fz-ul4.29.12.4 — spawn-with-captures registers a typed closure handle
+/// for the spawned user lambda. spawn/1 now lives in runtime.fz, so there
+/// is no compiler-synthesized fz_spawn_thunk between the wrapper and the
+/// user closure.
 #[test]
-fn spawn_with_captures_registers_narrow_fz_spawn_thunk_spec() {
+fn spawn_with_captures_registers_narrow_user_lambda_handle() {
     let (t, m, mt) = pipeline(
         r#"
 fn parent(tag) do
@@ -1764,20 +1763,28 @@ end
 "#,
         &crate::telemetry::NullTelemetry,
     );
-    let thunk = m.fns.iter().find(|f| f.name == "fz_spawn_thunk").unwrap();
+    assert!(
+        !m.fns.iter().any(|f| f.name == "fz_spawn_thunk"),
+        "spawn lowering must not synthesize fz_spawn_thunk"
+    );
+    let lambda = m
+        .fns
+        .iter()
+        .find(|f| f.name.starts_with("lambda_"))
+        .expect("expected spawned lambda fn");
     // fz-try B1+B2 — MakeClosure now registers in ModulePlan.closure_handles,
     // not as a padded body spec. A handle entry with non-any captures
-    // proves the spawn thunk's captures were typed.
-    let handles_for_thunk: Vec<&Vec<crate::types::Ty>> = mt
+    // proves the spawned lambda's captures were typed.
+    let handles_for_lambda: Vec<&Vec<crate::types::Ty>> = mt
         .closure_handles
         .iter()
-        .filter(|(fid, _)| *fid == thunk.id)
+        .filter(|(fid, _)| *fid == lambda.id)
         .map(|(_, caps)| caps)
         .filter(|caps| !caps.is_empty() && !caps.iter().all(|d| t.is_top(d)))
         .collect();
     assert!(
-        !handles_for_thunk.is_empty(),
-        "expected ≥1 fz_spawn_thunk handle with typed captures, got 0"
+        !handles_for_lambda.is_empty(),
+        "expected at least one spawned-lambda handle with typed captures, got 0"
     );
 }
 
