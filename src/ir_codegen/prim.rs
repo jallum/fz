@@ -815,37 +815,29 @@ pub(crate) fn lower_prim<
                     cache.raw_int_consts.insert(dest_var.0, *n);
                     return Ok(LowerOut::RawI64(b.ins().iconst(types::I64, *n)));
                 }
-                return Ok(LowerOut::StrictConst(fz_runtime::any_value::AnyValue::int(
+                Ok(LowerOut::StrictConst(fz_runtime::any_value::AnyValue::int(
                     *n,
-                )));
+                )))
             }
-            Const::True => {
-                return Ok(LowerOut::StrictConst(
-                    fz_runtime::any_value::AnyValue::bool_atom(true),
-                ));
-            }
-            Const::False => {
-                return Ok(LowerOut::StrictConst(
-                    fz_runtime::any_value::AnyValue::bool_atom(false),
-                ));
-            }
-            Const::Nil => {
-                return Ok(LowerOut::StrictConst(
-                    fz_runtime::any_value::AnyValue::nil_atom(),
-                ));
-            }
-            Const::Atom(id) => {
-                return Ok(LowerOut::StrictConst(
-                    fz_runtime::any_value::AnyValue::atom(*id),
-                ));
-            }
+            Const::True => Ok(LowerOut::StrictConst(
+                fz_runtime::any_value::AnyValue::bool_atom(true),
+            )),
+            Const::False => Ok(LowerOut::StrictConst(
+                fz_runtime::any_value::AnyValue::bool_atom(false),
+            )),
+            Const::Nil => Ok(LowerOut::StrictConst(
+                fz_runtime::any_value::AnyValue::nil_atom(),
+            )),
+            Const::Atom(id) => Ok(LowerOut::StrictConst(
+                fz_runtime::any_value::AnyValue::atom(*id),
+            )),
             Const::Float(f) => {
                 if ty_is_float(t, fn_types, dest_var) {
                     return Ok(LowerOut::RawF64(b.ins().f64const(*f)));
                 }
-                return Err(CodegenError::new(
+                Err(CodegenError::new(
                     "Float literal inferred outside float representation",
-                ));
+                ))
             }
         },
         Prim::BinOp(op, a, bv) => {
@@ -856,31 +848,23 @@ pub(crate) fn lower_prim<
             // dispatch fallback) pay it.
             match op {
                 BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod => {
-                    return lower_arith_binop(
-                        b, jmod, t, fn_types, var_env, cache, runtime, *op, *a, *bv,
-                    );
+                    lower_arith_binop(b, jmod, t, fn_types, var_env, cache, runtime, *op, *a, *bv)
                 }
-                BinOp::Eq | BinOp::Neq => {
-                    return lower_eq_binop(
-                        b, jmod, t, fn_types, var_env, cache, runtime, *op, *a, *bv, dest_var,
-                    );
-                }
-                BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => {
-                    return lower_cmp_binop(
-                        b, jmod, t, fn_types, var_env, cache, runtime, *op, *a, *bv, dest_var,
-                    );
-                }
+                BinOp::Eq | BinOp::Neq => lower_eq_binop(
+                    b, jmod, t, fn_types, var_env, cache, runtime, *op, *a, *bv, dest_var,
+                ),
+                BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => lower_cmp_binop(
+                    b, jmod, t, fn_types, var_env, cache, runtime, *op, *a, *bv, dest_var,
+                ),
                 BinOp::And | BinOp::Or => {
-                    return lower_bool_binop(
-                        b, jmod, runtime, var_env, cache, *op, *a, *bv, dest_var,
-                    );
+                    lower_bool_binop(b, jmod, runtime, var_env, cache, *op, *a, *bv, dest_var)
                 }
             }
         }
         Prim::UnOp(op, x) => match op {
             UnOp::Neg => {
                 let xi = as_raw_i64(var_env, b, jmod, runtime, x.0);
-                return Ok(LowerOut::RawI64(b.ins().ineg(xi)));
+                Ok(LowerOut::RawI64(b.ins().ineg(xi)))
             }
             UnOp::Not => {
                 let xv = *var_env.get(&x.0).expect("not operand");
@@ -890,7 +874,7 @@ pub(crate) fn lower_prim<
                 if cache.if_only_conds.contains(&dest_var.0) {
                     return Ok(LowerOut::Condition(inv));
                 }
-                return Ok(LowerOut::Strict(strict_bool(b, inv)));
+                Ok(LowerOut::Strict(strict_bool(b, inv)))
             }
         },
         Prim::Extern(eid, args) => {
@@ -934,9 +918,7 @@ pub(crate) fn lower_prim<
             if decl.symbol == "fz_make_resource" && args.len() == 2 {
                 return lower_extern_fz_make_resource(b, jmod, runtime, var_env, cache, args);
             }
-            return lower_extern_generic(
-                b, jmod, runtime, var_env, cache, decl, eid, args, dest_var,
-            );
+            lower_extern_generic(b, jmod, runtime, var_env, cache, decl, eid, args, dest_var)
         }
         Prim::IsEmptyList(c) => {
             // Empty list is the null-address List ref.
@@ -958,7 +940,7 @@ pub(crate) fn lower_prim<
             if cache.if_only_conds.contains(&dest_var.0) {
                 return Ok(LowerOut::Condition(cmp));
             }
-            return Ok(LowerOut::Strict(strict_bool(b, cmp)));
+            Ok(LowerOut::Strict(strict_bool(b, cmp)))
         }
         Prim::BitReaderDone(r) => {
             let rv = tagged_get(var_env, b, jmod, runtime, r.0, cache);
@@ -968,28 +950,28 @@ pub(crate) fn lower_prim<
             if cache.if_only_conds.contains(&dest_var.0) {
                 return Ok(LowerOut::Condition(cmp));
             }
-            return Ok(LowerOut::Strict(strict_bool(b, cmp)));
+            Ok(LowerOut::Strict(strict_bool(b, cmp)))
         }
         Prim::MapGet(m, k) if ty_is_float(t, fn_types, dest_var) => {
             let value_ref =
                 emit_map_get_value_ref_for_key(b, jmod, t, env, var_env, *m, *k, cache, block_env);
             let load_float = jmod.declare_func_in_func(runtime.ref_load_float_id, b.func);
             let load_inst = b.ins().call(load_float, &[value_ref]);
-            return Ok(LowerOut::RawF64(b.inst_results(load_inst)[0]));
+            Ok(LowerOut::RawF64(b.inst_results(load_inst)[0]))
         }
         Prim::MapGet(m, k) if ty_is_int(t, fn_types, dest_var) => {
             let value_ref =
                 emit_map_get_value_ref_for_key(b, jmod, t, env, var_env, *m, *k, cache, block_env);
             let load_int = jmod.declare_func_in_func(runtime.ref_load_int_id, b.func);
             let load_inst = b.ins().call(load_int, &[value_ref]);
-            return Ok(LowerOut::RawI64(b.inst_results(load_inst)[0]));
+            Ok(LowerOut::RawI64(b.inst_results(load_inst)[0]))
         }
         Prim::MapGet(m, k) if ty_is_atom(t, fn_types, dest_var) => {
             let value_ref =
                 emit_map_get_value_ref_for_key(b, jmod, t, env, var_env, *m, *k, cache, block_env);
             let load_atom = jmod.declare_func_in_func(runtime.ref_load_atom_id, b.func);
             let load_inst = b.ins().call(load_atom, &[value_ref]);
-            return Ok(LowerOut::RawI64(b.inst_results(load_inst)[0]));
+            Ok(LowerOut::RawI64(b.inst_results(load_inst)[0]))
         }
         Prim::ListHead(c)
             if list_projection_is_safe(t, fn_types, *c, block_env)
@@ -998,7 +980,7 @@ pub(crate) fn lower_prim<
             let list_head = jmod.declare_func_in_func(runtime.list_head_int_ref_id, b.func);
             let list_ref = known_list_ref_for_var(var_env, b, jmod, runtime, cache, block_id, c.0);
             let inst = b.ins().call(list_head, &[list_ref]);
-            return Ok(LowerOut::RawI64(b.inst_results(inst)[0]));
+            Ok(LowerOut::RawI64(b.inst_results(inst)[0]))
         }
         Prim::ListHead(c)
             if list_projection_is_safe(t, fn_types, *c, block_env)
@@ -1007,13 +989,13 @@ pub(crate) fn lower_prim<
             let list_head = jmod.declare_func_in_func(runtime.list_head_float_ref_id, b.func);
             let list_ref = known_list_ref_for_var(var_env, b, jmod, runtime, cache, block_id, c.0);
             let inst = b.ins().call(list_head, &[list_ref]);
-            return Ok(LowerOut::RawF64(b.inst_results(inst)[0]));
+            Ok(LowerOut::RawF64(b.inst_results(inst)[0]))
         }
         Prim::ListTail(c) if list_projection_is_safe(t, fn_types, *c, block_env) => {
             let list_tail = jmod.declare_func_in_func(runtime.list_tail_fallback_id, b.func);
             let list_ref = known_list_ref_for_var(var_env, b, jmod, runtime, cache, block_id, c.0);
             let inst = b.ins().call(list_tail, &[list_ref]);
-            return Ok(LowerOut::ValueRefWord(b.inst_results(inst)[0]));
+            Ok(LowerOut::ValueRefWord(b.inst_results(inst)[0]))
         }
         Prim::ListHead(..)
         | Prim::ListTail(..)
@@ -1038,28 +1020,24 @@ pub(crate) fn lower_prim<
         | Prim::MapGet(..)
         | Prim::MatcherMapGet(..)
         | Prim::IsMatcherMapMiss(..) => {
-            return lower_collection_prim(
-                b, jmod, t, env, var_env, prim, cache, block_id, block_env,
-            );
+            lower_collection_prim(b, jmod, t, env, var_env, prim, cache, block_id, block_env)
         }
-        Prim::MakeClosure(mk_ident, fn_id, captured) => {
-            return lower_make_closure(
-                b,
-                jmod,
-                runtime,
-                cache,
-                var_env,
-                fn_ids,
-                spec_registry,
-                param_reprs,
-                return_reprs,
-                mk_ident,
-                *fn_id,
-                captured,
-                block_id,
-                stmt_idx,
-            );
-        }
+        Prim::MakeClosure(mk_ident, fn_id, captured) => lower_make_closure(
+            b,
+            jmod,
+            runtime,
+            cache,
+            var_env,
+            fn_ids,
+            spec_registry,
+            param_reprs,
+            return_reprs,
+            mk_ident,
+            *fn_id,
+            captured,
+            block_id,
+            stmt_idx,
+        ),
         // lower_program_full erases all Prim::Brand before returning.
         // Reaching codegen with one means ir_brand_erase didn't run (or
         // a caller injected Brand after lowering); surface loudly rather
@@ -1069,7 +1047,7 @@ pub(crate) fn lower_prim<
         ),
 
         Prim::TypeTest(v, descr) => {
-            return lower_type_test(b, jmod, env, var_env, cache, runtime, *v, descr, dest_var);
+            lower_type_test(b, jmod, env, var_env, cache, runtime, *v, descr, dest_var)
         }
     }
 }
@@ -1095,7 +1073,7 @@ fn lower_type_test<M: cranelift_module::Module>(
 
     let value = *var_env.get(&v.0).expect("type-test subject");
 
-    let scalar = emit_scalar_kind_checks(b, jmod, runtime, env.module, &descr, value)?;
+    let scalar = emit_scalar_kind_checks(b, jmod, runtime, env.module, descr, value)?;
 
     let tuple_flag = if !tuple_arities.is_empty() {
         if tuple_has_negations {

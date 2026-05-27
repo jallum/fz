@@ -236,13 +236,11 @@ pub(crate) fn resolve_outer_cont<M: cranelift_module::Module>(
     frame_ptr: Option<ir::Value>,
     cont_sid: u32,
 ) -> ir::Value {
-    if is_cont_fn {
-        if let Some(self_val) = cont_param {
-            return load_outer_cont_ref(b, jmod, runtime, self_val);
-        }
-        // No `self` closure ptr: caller dispatched through the uniform
-        // path; outer_cont lives in frame slot 0. Fall through.
+    if is_cont_fn && let Some(self_val) = cont_param {
+        return load_outer_cont_ref(b, jmod, runtime, self_val);
     }
+    // No `self` closure ptr: caller dispatched through the uniform
+    // path; outer_cont lives in frame slot 0. Fall through.
     {
         let _ = is_cont_fn;
         match cont_param {

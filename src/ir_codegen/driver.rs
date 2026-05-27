@@ -756,8 +756,9 @@ fn derive_return_tys<T: crate::types::Types<Ty = crate::types::Ty>>(
 ///
 /// CAPTURE slots [0..n_caps) keep their per-spec narrow reprs. ARG slots
 /// honor build_param_reprs' typed output: closure_lit-typed MakeClosure
-/// + direct return_call dispatch means every closure-call site resolves
-/// to a single body spec whose ABI the caller targets exactly.
+/// combined with direct return_call dispatch means every closure-call
+/// site resolves to a single body spec whose ABI the caller targets
+/// exactly.
 ///
 /// The indirect fallback path in TailCallClosure still assumes
 /// all-ValueRef at the seam, so closures used polymorphically (union of
@@ -1298,9 +1299,9 @@ fn build_spec_index_tables<'a>(
     (spec_keys, spec_fnidx, spec_fn_types)
 }
 
-/// Build the per-SpecId codegen bodies. Non-sentinel specs get a folded
-/// + DCEd + fused body via `prepare_codegen_body`; sentinel slots get
-/// `None`.
+/// Build the per-SpecId codegen bodies. Non-sentinel specs get a body
+/// passed through fold, DCE, and fuse via `prepare_codegen_body`;
+/// sentinel slots get `None`.
 fn prepare_codegen_bodies<T: crate::types::Types<Ty = crate::types::Ty>>(
     t: &mut T,
     module: &Module,
@@ -1649,17 +1650,15 @@ fn compute_spec_heap_allocates(
 /// site, keyed by `(fn_id.0, block_id.0)`. Declared up front so the
 /// park-site terminator arm can take a `func_addr` of an as-yet-unemitted
 /// symbol; the body is emitted in a post-fn-loop pass.
+type MatcherFnIds = HashMap<(u32, u32), FuncId>;
+type ReceiveMatchedSites = Vec<(crate::fz_ir::FnId, crate::fz_ir::BlockId)>;
+type MidFlightContFnIds = HashMap<(u32, Vec<MidFlightArgShape>), FuncId>;
+
 fn declare_matcher_fns<M: cranelift_module::Module>(
     m: &mut M,
     module: &Module,
     tel: &dyn crate::telemetry::Telemetry,
-) -> Result<
-    (
-        HashMap<(u32, u32), FuncId>,
-        Vec<(crate::fz_ir::FnId, crate::fz_ir::BlockId)>,
-    ),
-    CodegenError,
-> {
+) -> Result<(MatcherFnIds, ReceiveMatchedSites), CodegenError> {
     let mut matcher_fn_ids: HashMap<(u32, u32), FuncId> = HashMap::new();
     let mut receive_matched_sites: Vec<(crate::fz_ir::FnId, crate::fz_ir::BlockId)> = Vec::new();
     for f in &module.fns {
@@ -1901,13 +1900,7 @@ fn declare_mid_flight_conts<
     param_reprs: &[Vec<ArgRepr>],
     natively_callable: &std::collections::HashSet<crate::fz_ir::FnId>,
     closure_n_captures: &std::collections::HashMap<crate::fz_ir::FnId, usize>,
-) -> Result<
-    (
-        HashMap<(u32, Vec<MidFlightArgShape>), FuncId>,
-        HashMap<(u32, Vec<MidFlightArgShape>), FuncId>,
-    ),
-    CodegenError,
-> {
+) -> Result<(MidFlightContFnIds, MidFlightContFnIds), CodegenError> {
     let mut mid_flight_cont_fn_ids: HashMap<(u32, Vec<MidFlightArgShape>), FuncId> = HashMap::new();
     let mut mid_flight_cont_tail_fn_ids: HashMap<(u32, Vec<MidFlightArgShape>), FuncId> =
         HashMap::new();

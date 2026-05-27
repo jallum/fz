@@ -1602,17 +1602,19 @@ fn build_registry_recording_cont_sids(
 /// Walk every typed spec's body looking for the first `Term::CallClosure`
 /// whose closure operand types as a singleton closure-lit (i.e. a
 /// resolvable lambda body, not an opaque closure).
-fn find_typed_callclosure_over_closure_lit<'mt>(
-    m: &Module,
-    mt: &'mt crate::ir_typer::ModuleTypes,
-    t: &mut crate::types::ConcreteTypes,
-) -> Option<(
+type CallClosureMatch<'mt> = (
     FnId,
     Vec<KeySlot>,
     crate::fz_ir::Var,
     Vec<crate::fz_ir::Var>,
     &'mt crate::ir_typer::FnTypes,
-)> {
+);
+
+fn find_typed_callclosure_over_closure_lit<'mt>(
+    m: &Module,
+    mt: &'mt crate::ir_typer::ModuleTypes,
+    t: &mut crate::types::ConcreteTypes,
+) -> Option<CallClosureMatch<'mt>> {
     for (key, ft) in &mt.specs {
         for f in &m.fns {
             for blk in &f.blocks {
