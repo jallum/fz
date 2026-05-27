@@ -337,10 +337,8 @@ fn run_build(tel: &telemetry::ConfiguredTelemetry, args: &[String]) {
             .units
             .first()
             .expect("execution graph includes root unit");
-        let runtime = ir_codegen::RuntimeUnitMetadata::from_compiled_unit_ir(unit);
         let fzo = modules::artifact::FzoArtifact::from_unit_source(
             unit,
-            &runtime,
             fzo_source.expect("emit_fzo source"),
             vec![
                 "kind=source-compiled-module".to_string(),

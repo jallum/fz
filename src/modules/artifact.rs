@@ -2,7 +2,7 @@
 #![allow(clippy::result_large_err)]
 
 use crate::diag::{Diagnostic, Span, codes};
-use crate::ir_codegen::{CompiledUnit, RuntimeUnitMetadata};
+use crate::ir_codegen::CompiledUnit;
 use crate::modules::identity::{ExportKey, ModuleName};
 use crate::modules::interface::{FZ_INTERFACE_ABI_VERSION, ModuleInterface, fingerprint_digest};
 #[cfg(test)]
@@ -37,12 +37,7 @@ pub struct FzoArtifact {
     pub runtime_abi_version: u32,
     pub module: Option<ModuleName>,
     pub unit_payload: FzoUnitPayload,
-    pub code_fn_count: usize,
     pub required_imports: Vec<ExportKey>,
-    pub exported_symbols: Vec<(String, u32)>,
-    pub atom_count: usize,
-    pub schema_count: usize,
-    pub frame_sizes: Vec<u32>,
     pub implementation_fingerprint: Vec<String>,
     pub interface_fingerprint_digest: String,
     pub interface_fingerprint: Vec<String>,
@@ -133,14 +128,9 @@ impl FziArtifact {
 
 impl FzoArtifact {
     #[cfg(test)]
-    pub fn from_unit(
-        unit: &CompiledUnit,
-        runtime: &RuntimeUnitMetadata,
-        implementation_fingerprint: Vec<String>,
-    ) -> Self {
+    pub fn from_unit(unit: &CompiledUnit, implementation_fingerprint: Vec<String>) -> Self {
         Self::from_unit_payload(
             unit,
-            runtime,
             FzoUnitPayload::ir_text(unit.code.to_string()),
             implementation_fingerprint,
         )
@@ -148,13 +138,11 @@ impl FzoArtifact {
 
     pub fn from_unit_source(
         unit: &CompiledUnit,
-        runtime: &RuntimeUnitMetadata,
         source: impl Into<String>,
         implementation_fingerprint: Vec<String>,
     ) -> Self {
         Self::from_unit_payload(
             unit,
-            runtime,
             FzoUnitPayload::source_unit(source),
             implementation_fingerprint,
         )
@@ -162,7 +150,6 @@ impl FzoArtifact {
 
     fn from_unit_payload(
         unit: &CompiledUnit,
-        runtime: &RuntimeUnitMetadata,
         unit_payload: FzoUnitPayload,
         implementation_fingerprint: Vec<String>,
     ) -> Self {
@@ -172,16 +159,12 @@ impl FzoArtifact {
             runtime_abi_version: FZ_RUNTIME_ARTIFACT_ABI_VERSION,
             module: unit.module.clone(),
             unit_payload,
-            code_fn_count: unit.code.fns.len(),
-            required_imports: runtime.imported_refs.clone(),
-            exported_symbols: runtime
-                .exported_symbols
+            required_imports: unit
+                .code
+                .external_call_edges
                 .iter()
-                .map(|(name, id)| (name.clone(), *id))
+                .map(|edge| edge.target.clone())
                 .collect(),
-            atom_count: runtime.atoms.len(),
-            schema_count: runtime.schemas.len(),
-            frame_sizes: runtime.frame_sizes.clone(),
             implementation_fingerprint,
             interface_fingerprint_digest: fingerprint_digest(&interface_fingerprint),
             interface_fingerprint,
@@ -258,9 +241,7 @@ fn invalid(message: impl Into<String>) -> Diagnostic {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ir_codegen::{CompiledUnit, RuntimeEntrypoints, RuntimeUnitMetadata};
-    use fz_runtime::heap::Schema;
-    use std::collections::BTreeMap;
+    use crate::ir_codegen::CompiledUnit;
 
     fn module(text: &str) -> ModuleName {
         ModuleName::parse_dotted(text).expect("test module name")
@@ -335,24 +316,22 @@ mod tests {
         let mut code = crate::fz_ir::Module::new();
         code.fn_idx.insert(crate::fz_ir::FnId(0), 0);
         code.fns.push(builder.build());
+        code.external_call_edges
+            .push(crate::fz_ir::ExternalCallEdge {
+                callsite: crate::fz_ir::CallsiteId {
+                    caller: crate::fz_ir::FnId(0),
+                    ident: crate::fz_ir::CallsiteIdent::synthetic(),
+                    slot: crate::fz_ir::EmitSlot::Direct,
+                },
+                target: ExportKey::new(module("Dep"), "seed", 0),
+            });
         let unit = CompiledUnit::from_ir_module(
             code,
             Some(interface.clone()),
             crate::diag::Diagnostics::new(),
         );
-        let runtime = RuntimeUnitMetadata {
-            module: Some(interface.name.clone()),
-            atoms: vec!["ok".to_string()],
-            schemas: vec![Schema::tuple_of_arity(2)],
-            frame_sizes: vec![16],
-            exported_symbols: BTreeMap::from([("Math.add/2".to_string(), 0)]),
-            imported_refs: vec![ExportKey::new(module("Dep"), "seed", 0)],
-            static_closures: Vec::new(),
-            halt_kinds: BTreeMap::new(),
-            entrypoints: RuntimeEntrypoints::default(),
-        };
         let expected_payload = unit.code.to_string();
-        let artifact = FzoArtifact::from_unit(&unit, &runtime, vec!["impl:abc".to_string()]);
+        let artifact = FzoArtifact::from_unit(&unit, vec!["impl:abc".to_string()]);
         let text = artifact.serialize();
         assert!(text.contains(r#""format": "fz-ir-text-v1""#), "{text}");
         assert!(text.contains(r#""body": "#), "{text}");
@@ -372,10 +351,8 @@ mod tests {
             Some(interface.clone()),
             crate::diag::Diagnostics::new(),
         );
-        let runtime = RuntimeUnitMetadata::from_ir_module(None, &unit.code);
         let artifact = FzoArtifact::from_unit_source(
             &unit,
-            &runtime,
             "defmodule Math do\n  fn add(x, y), do: x + y\nend\n",
             vec!["impl:source".to_string()],
         );
@@ -401,8 +378,7 @@ mod tests {
             Some(interface),
             crate::diag::Diagnostics::new(),
         );
-        let runtime = RuntimeUnitMetadata::from_ir_module(None, &unit.code);
-        let artifact = FzoArtifact::from_unit(&unit, &runtime, Vec::new());
+        let artifact = FzoArtifact::from_unit(&unit, Vec::new());
 
         let err = artifact.source_unit_text().unwrap_err();
 
@@ -420,8 +396,7 @@ mod tests {
             Some(interface),
             crate::diag::Diagnostics::new(),
         );
-        let runtime = RuntimeUnitMetadata::from_ir_module(None, &unit.code);
-        let artifact = FzoArtifact::from_unit(&unit, &runtime, Vec::new());
+        let artifact = FzoArtifact::from_unit(&unit, Vec::new());
         let text = artifact
             .serialize()
             .replace(&artifact.interface_fingerprint_digest, "bad");
@@ -441,8 +416,7 @@ mod tests {
             Some(interface),
             crate::diag::Diagnostics::new(),
         );
-        let runtime = RuntimeUnitMetadata::from_ir_module(None, &unit.code);
-        let mut artifact = FzoArtifact::from_unit(&unit, &runtime, Vec::new());
+        let mut artifact = FzoArtifact::from_unit(&unit, Vec::new());
         artifact.unit_payload.body.clear();
         let text = artifact.serialize();
         let err = FzoArtifact::deserialize(&text, None).unwrap_err();
@@ -458,8 +432,7 @@ mod tests {
             Some(interface),
             crate::diag::Diagnostics::new(),
         );
-        let runtime = RuntimeUnitMetadata::from_ir_module(None, &unit.code);
-        let text = FzoArtifact::from_unit(&unit, &runtime, Vec::new()).serialize();
+        let text = FzoArtifact::from_unit(&unit, Vec::new()).serialize();
         let err = FzoArtifact::deserialize(&text, Some(&["wrong".to_string()])).unwrap_err();
         assert_eq!(err.code, codes::ARTIFACT_INVALID);
         assert_eq!(

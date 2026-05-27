@@ -323,10 +323,8 @@ All artifact load errors are `artifact/invalid` diagnostics.
 `FzoArtifact` is the implementation-unit envelope. It is intentionally not a
 public contract. The graph loader consumes it after interface compatibility is
 established. Today normal user `.fzo` files are source-unit envelopes: they
-record the compiled unit's identity, dependency, export, fingerprint, IR-level
-metadata facts, and a typed payload whose body is checked source text. The
-counts are metadata that must agree with the payload producer, not the source of
-truth.
+record the compiled unit's identity, required imports, fingerprints, and a
+typed payload whose body is checked source text.
 
 Struct fields:
 
@@ -335,12 +333,7 @@ compiler_abi_version:       FZ_ARTIFACT_ABI_VERSION
 runtime_abi_version:        FZ_RUNTIME_ARTIFACT_ABI_VERSION
 module:                     Option<ModuleName>
 unit_payload:               FzoUnitPayload
-code_fn_count:              usize
 required_imports:           Vec<ExportKey>
-exported_symbols:           Vec<(String, u32)>
-atom_count:                 usize
-schema_count:               usize
-frame_sizes:                Vec<u32>
 implementation_fingerprint: Vec<String>
 interface_fingerprint_digest: stable hex digest of interface_fingerprint
 interface_fingerprint:      Vec<String>
@@ -365,12 +358,7 @@ fzo
     "format": "fz-source-unit-v1",
     "body": "defmodule Module ..."
   },
-  "code_fn_count": 0,
   "required_imports": [],
-  "exported_symbols": [],
-  "atom_count": 0,
-  "schema_count": 0,
-  "frame_sizes": [],
   "implementation_fingerprint": ["..."],
   "interface_fingerprint_digest": "<hex>",
   "interface_fingerprint": ["..."]
@@ -384,14 +372,15 @@ line-count parsing.
 
 Current `.fzo` deliberately stores a typed implementation payload instead of
 final object bytes. `fz build --emit-fzo` stores the checked source text as
-`fz-source-unit-v1` and derives link metadata from the pre-link `CompiledUnit`;
-that lets imported modules emit their own `.fzo` without compiling unresolved
-external call edges through machine codegen. `FzoArtifact::source_unit_text` is
-the materialization gate: it accepts only `fz-source-unit-v1` and rejects
-inspection/runtime payloads before graph loading can treat them as source
-units. `FzoArtifact::from_unit` still derives an internal `fz-ir-text-v1`
-payload from `CompiledUnit::code.to_string()` for tests and inspection paths
-that need a deterministic unit dump, not a reloadable implementation source.
+`fz-source-unit-v1` and derives required imports from the pre-link
+`CompiledUnit` external-call edges; that lets imported modules emit their own
+`.fzo` without compiling unresolved external calls through machine codegen.
+`FzoArtifact::source_unit_text` is the materialization gate: it accepts only
+`fz-source-unit-v1` and rejects inspection/runtime payloads before graph
+loading can treat them as source units. `FzoArtifact::from_unit` still derives
+an internal `fz-ir-text-v1` payload from `CompiledUnit::code.to_string()` for
+tests and inspection paths that need a deterministic unit dump, not a
+reloadable implementation source.
 Deserialization rejects empty payload format/body so a loaded `.fzo` cannot
 silently degrade back into a metadata-only artifact.
 

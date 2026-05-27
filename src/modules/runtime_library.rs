@@ -104,36 +104,13 @@ fn runtime_module_fzo(
         runtime_abi_version: crate::modules::artifact::FZ_RUNTIME_ARTIFACT_ABI_VERSION,
         module: Some(name.clone()),
         unit_payload: FzoUnitPayload::runtime_module(runtime_module_payload(name, module)),
-        code_fn_count: module_fn_count(module),
         required_imports: interface_imports(interface),
-        exported_symbols: interface
-            .exports
-            .iter()
-            .enumerate()
-            .map(|(idx, export)| {
-                (
-                    format!("{}.{}/{}", name, export.name, export.arity),
-                    idx as u32,
-                )
-            })
-            .collect(),
-        atom_count: 0,
-        schema_count: 0,
-        frame_sizes: Vec::new(),
         implementation_fingerprint: runtime_implementation_fingerprint(name, module),
         interface_fingerprint_digest: crate::modules::interface::fingerprint_digest(
             &interface_fingerprint,
         ),
         interface_fingerprint,
     }
-}
-
-fn module_fn_count(module: &ModuleDef) -> usize {
-    module
-        .items
-        .iter()
-        .filter(|item| matches!(&***item, Item::Fn(def) if def.extern_abi.is_none()))
-        .count()
 }
 
 fn interface_imports(interface: &ModuleInterface) -> Vec<ExportKey> {

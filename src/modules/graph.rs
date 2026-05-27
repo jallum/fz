@@ -139,11 +139,7 @@ mod tests {
             Some(interface.clone()),
             crate::diag::Diagnostics::new(),
         );
-        let runtime = crate::ir_codegen::RuntimeUnitMetadata::from_ir_module(
-            Some(interface.name.clone()),
-            &unit.code,
-        );
-        FzoArtifact::from_unit_source(&unit, &runtime, source, Vec::new())
+        FzoArtifact::from_unit_source(&unit, source, Vec::new())
     }
 
     #[test]

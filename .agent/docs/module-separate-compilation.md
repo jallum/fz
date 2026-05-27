@@ -62,8 +62,7 @@ Codegen artifact vocabulary:
   `ModuleInterface` contract plus compiler/runtime ABI versions and the
   interface fingerprint. `.fzo` stores the implementation-unit envelope:
   module identity, a typed implementation payload, implementation fingerprint,
-  implemented-interface fingerprint plus digest, required imports, exported
-  symbols, and IR-level metadata facts needed by graph loading. Normal
+  implemented-interface fingerprint plus digest, and required imports. Normal
   `fz build --emit-fzo` artifacts use a materializable source payload
   (`fz-source-unit-v1`), not final object bytes; graph loading can recover the
   provider implementation input from the artifact without reading the original
