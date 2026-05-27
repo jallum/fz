@@ -373,8 +373,8 @@ artifact path; <code>src/modules/runtime_library/utf8.fz</code> still maps the
 module <code>Utf8</code> to <code>build/fz/interfaces/Utf8.fzi</code> and
 <code>build/fz/objects/Utf8.fzo</code>.</p>
 
-<p>Execution prepends the core prelude: <code>runtime.fz</code> imports plus
-core prelude module sources. Runtime primitive types such as <code>pid</code>,
+<p>Execution prepends the core prelude: <code>runtime.fz</code> root type
+aliases and imports plus core prelude module sources. Runtime primitive types such as <code>pid</code>,
 <code>ref</code>, and <code>utf8</code> are compiler-known. Imported non-core runtime modules
 are materialized from reachable runtime <code>.fzo</code> payloads during graph
 loading.</p>

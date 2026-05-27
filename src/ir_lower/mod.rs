@@ -79,11 +79,10 @@ fn parse_runtime_prelude<T: crate::types::Types<Ty = crate::types::Ty>>(
 ) -> (Program, HashMap<(String, usize), String>) {
     let runtime_fz = crate::modules::runtime_library::prelude_source();
     let (items, attrs) = parse_runtime_source_items(runtime_fz, "runtime.fz");
-    let (declared_root_env, declared_root_o_inners, declared_root_b_inners) =
-        crate::type_expr::build_module_type_env_for(t, &attrs, "")
+    let builtin_root_env = crate::type_expr::builtin_type_env(t);
+    let (root_env, declared_root_o_inners, declared_root_b_inners) =
+        crate::type_expr::build_module_type_env_for_with_base(t, &attrs, "", &builtin_root_env)
             .expect("runtime.fz @type error (bug in built-in prelude)");
-    let mut root_env = crate::type_expr::builtin_type_env(t);
-    root_env.extend(declared_root_env);
     let mut root_o_inners = crate::type_expr::builtin_opaque_inners(t);
     root_o_inners.extend(declared_root_o_inners);
     let mut root_b_inners = crate::type_expr::builtin_brand_inners(t);
@@ -110,7 +109,7 @@ fn parse_runtime_prelude<T: crate::types::Types<Ty = crate::types::Ty>>(
     flat.module_type_envs
         .entry(String::new())
         .or_default()
-        .extend(root_env);
+        .extend_env(root_env);
     flat.opaque_inners.extend(root_o_inners);
     flat.brand_inners.extend(root_b_inners);
     (flat, prelude_imports)
@@ -245,7 +244,7 @@ pub fn lower_program_full_with_telemetry<T: crate::types::Types<Ty = crate::type
     // Build the combined type env: prelude aliases + all user-module aliases.
     let mut combined = prelude_type_env;
     for module_env in prog.module_type_envs.values() {
-        combined.extend(module_env.iter().map(|(k, v)| (k.clone(), v.clone())));
+        combined.extend_env(module_env.clone());
     }
     ctx.combined_type_env = combined;
     let runtime_item_count = prelude.items.len();

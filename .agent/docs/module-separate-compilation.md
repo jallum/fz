@@ -86,10 +86,11 @@ Codegen artifact vocabulary:
 Runtime library boundary:
 
 - `src/modules/runtime_library/runtime.fz` is the tiny always-loaded prelude.
-  It contains root imports from core prelude modules. Runtime primitive types
-  such as `pid`, `ref`, and `utf8` are compiler-known built-ins, not source
-  aliases in this file. It must not grow primitive extern declarations or
-  ordinary `defmodule` bodies.
+  It contains root imports from core prelude modules plus ordinary global type
+  aliases such as `keyword/0` and `keyword/1`. Runtime primitive types such as
+  `pid`, `ref`, and `utf8` are compiler-known built-ins, not source aliases in
+  this file. It must not grow primitive extern declarations or ordinary
+  `defmodule` bodies.
 - Core prelude modules, currently `Kernel`, live in their own source files but
   are flattened into the built-in prelude during lowering. `runtime.fz` imports
   the selected public functions from those modules, so source can call
@@ -136,9 +137,9 @@ Runtime library boundary:
   `fz run --interface <Module> --artifact-root <dir> ...` and
   `fz build --interface <Module> --artifact-root <dir> ...`. `--provider` is
   accepted as an alias for the same provider-root input.
-- Execution still prepends the runtime prelude: `runtime.fz` imports plus core
-  prelude module sources. Ordinary non-core runtime modules are graph-loaded
-  when reachable from imports.
+- Execution still prepends the runtime prelude: `runtime.fz` root aliases and
+  imports plus core prelude module sources. Ordinary non-core runtime modules
+  are graph-loaded when reachable from imports.
 - The interactive REPL remains session-eager. `fz repl` compiles against
   definitions already present in the REPL source world plus built-in
   runtime-library interfaces; it does not accept provider roots or load user

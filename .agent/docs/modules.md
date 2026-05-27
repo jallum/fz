@@ -551,9 +551,9 @@ library module interfaces/artifacts.
 Rules:
 
 - `src/modules/runtime_library/runtime.fz` is the always-loaded prelude root:
-  root imports from core prelude modules. Runtime primitive types such as
-  `pid`, `ref`, and `utf8` are compiler-known built-ins, not source aliases
-  in this file;
+  root imports from core prelude modules plus ordinary global type aliases such
+  as `keyword/0` and `keyword/1`. Runtime primitive types such as `pid`, `ref`,
+  and `utf8` are compiler-known built-ins, not source aliases in this file;
 - core prelude modules such as `Kernel` live in separate source files but are
   flattened into the built-in prelude, keeping raw extern declarations
   module-scoped while exposing imported names like `print/1`;

@@ -1,3 +1,6 @@
+@type keyword() :: [{atom, any}]
+@type keyword(t) :: [{atom, t}]
+
 import Kernel, only: [
   assert: 1,
   assert_eq: 2,

@@ -35,7 +35,7 @@ defmodule Kernel do
   fn spawn(fun), do: fz_spawn(fun)
 
   @doc "Starts a process with runtime options."
-  @spec spawn(() -> any, any) :: pid
+  @spec spawn(() -> any, keyword()) :: pid
   fn spawn(fun, opts), do: fz_spawn_opt(fun, opts)
 
   @doc "Returns the current process identifier."

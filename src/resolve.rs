@@ -189,11 +189,13 @@ fn flatten_modules_with_options<T: crate::types::Types<Ty = crate::types::Ty>>(
     let mut out: Vec<Rc<Item>> = Vec::new();
     let mut module_docs: HashMap<String, String> = HashMap::new();
     collect_module_docs(&prog, &mut module_docs);
-    // fz-ul4.31.5 — build per-module `@type` envs. Top-level (key "")
-    // gets the empty env so top-level fns with @spec resolve against
-    // builtins only.
+    // Build per-module `@type` envs. The root env includes compiler-known
+    // runtime primitive types plus root aliases from the always-loaded
+    // prelude, so module specs and aliases can name standard aliases such as
+    // keyword/0 and keyword/1.
     let mut module_type_envs: HashMap<String, crate::type_expr::ModuleTypeEnv> = HashMap::new();
-    module_type_envs.insert(String::new(), crate::type_expr::builtin_type_env(t));
+    let root_type_env = runtime_root_type_env(t);
+    module_type_envs.insert(String::new(), root_type_env.clone());
     let mut opaque_inners: HashMap<String, crate::types::Ty> =
         crate::type_expr::builtin_opaque_inners(t);
     let mut brand_inners: HashMap<String, crate::types::Ty> =
@@ -202,6 +204,7 @@ fn flatten_modules_with_options<T: crate::types::Types<Ty = crate::types::Ty>>(
         t,
         &prog,
         "",
+        &root_type_env,
         &mut module_type_envs,
         &mut opaque_inners,
         &mut brand_inners,
@@ -503,22 +506,40 @@ fn collect_module_type_envs<T: crate::types::Types<Ty = crate::types::Ty>>(
     t: &mut T,
     prog: &Program,
     parent: &str,
+    base_env: &crate::type_expr::ModuleTypeEnv,
     out: &mut HashMap<String, crate::type_expr::ModuleTypeEnv>,
     o_inners: &mut HashMap<String, crate::types::Ty>,
     b_inners: &mut HashMap<String, crate::types::Ty>,
 ) -> Result<(), ResolveError> {
     for item in &prog.items {
         if let Item::Module(m) = &**item {
-            collect_module_type_envs_recursive(t, m, parent, out, o_inners, b_inners)?;
+            collect_module_type_envs_recursive(t, m, parent, base_env, out, o_inners, b_inners)?;
         }
     }
     Ok(())
+}
+
+fn runtime_root_type_env<T: crate::types::Types<Ty = crate::types::Ty>>(
+    t: &mut T,
+) -> crate::type_expr::ModuleTypeEnv {
+    let base = crate::type_expr::builtin_type_env(t);
+    let toks = crate::lexer::Lexer::new(crate::modules::runtime_library::prelude_source())
+        .tokenize()
+        .expect("runtime.fz lex error (bug in built-in prelude)");
+    let (_items, attrs) = crate::parser::Parser::new(toks)
+        .parse_prelude()
+        .expect("runtime.fz parse error (bug in built-in prelude)");
+    let (declared, _opaque_inners, _brand_inners) =
+        crate::type_expr::build_module_type_env_for_with_base(t, &attrs, "", &base)
+            .expect("runtime.fz @type error (bug in built-in prelude)");
+    declared
 }
 
 fn collect_module_type_envs_recursive<T: crate::types::Types<Ty = crate::types::Ty>>(
     t: &mut T,
     m: &ModuleDef,
     parent: &str,
+    base_env: &crate::type_expr::ModuleTypeEnv,
     out: &mut HashMap<String, crate::type_expr::ModuleTypeEnv>,
     o_inners: &mut HashMap<String, crate::types::Ty>,
     b_inners: &mut HashMap<String, crate::types::Ty>,
@@ -529,18 +550,17 @@ fn collect_module_type_envs_recursive<T: crate::types::Types<Ty = crate::types::
         format!("{}.{}", parent, m.name)
     };
     let (env, opaque_inners, brand_inners) =
-        crate::type_expr::build_module_type_env_for(t, &m.attrs, &path).map_err(|e| {
-            ResolveError::TypeAliasError {
+        crate::type_expr::build_module_type_env_for_with_base(t, &m.attrs, &path, base_env)
+            .map_err(|e| ResolveError::TypeAliasError {
                 msg: format!("module `{}`: {}", path, e.msg),
                 span: e.span,
-            }
-        })?;
+            })?;
     out.insert(path.clone(), env);
     o_inners.extend(opaque_inners);
     b_inners.extend(brand_inners);
     for item in &m.items {
         if let Item::Module(inner) = &**item {
-            collect_module_type_envs_recursive(t, inner, &path, out, o_inners, b_inners)?;
+            collect_module_type_envs_recursive(t, inner, &path, base_env, out, o_inners, b_inners)?;
         }
     }
     Ok(())
@@ -2345,6 +2365,7 @@ end
 defmodule M do
   @type id :: integer
   @type pair :: {id, id}
+  @type keyword(t) :: [{atom, t}]
   fn one(), do: 1
 end
 "#,
@@ -2365,7 +2386,16 @@ end
                 _ => None,
             })
             .collect();
-        assert_eq!(aliases, vec!["id", "pair"]);
+        assert_eq!(aliases, vec!["id", "pair", "keyword"]);
+        let keyword = m
+            .attrs
+            .iter()
+            .find_map(|a| match a {
+                Attribute::TypeAlias(d) if d.name == "keyword" => Some(d),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(keyword.params, vec!["t"]);
         // Build env and verify resolution end-to-end.
         let mut ct = crate::types::ConcreteTypes;
         let env = crate::type_expr::build_module_type_env(&mut ct, &m.attrs).unwrap();
@@ -2373,6 +2403,80 @@ end
         assert!(ct.is_equivalent(env.get("id").unwrap(), &int));
         let expected = ct.tuple(&[int.clone(), int]);
         assert!(ct.is_equivalent(env.get("pair").unwrap(), &expected));
+        let keyword_int = crate::type_expr::parse_type_expr(
+            &mut ct,
+            &crate::lexer::Lexer::new("keyword(integer)")
+                .tokenize()
+                .unwrap(),
+            &env,
+        )
+        .unwrap()
+        .0;
+        let atom = ct.atom();
+        let int = ct.int();
+        let pair = ct.tuple(&[atom, int]);
+        let expected_keyword = ct.list(pair);
+        assert!(ct.is_equivalent(&keyword_int, &expected_keyword));
+    }
+
+    #[test]
+    fn module_type_aliases_can_use_runtime_root_aliases() {
+        let prog = parse(
+            r#"
+defmodule M do
+  @type opts :: keyword(integer)
+  @spec run(opts) :: nil
+  fn run(_), do: nil
+end
+"#,
+        );
+        let mut ct = crate::types::ConcreteTypes;
+        let flat = flatten_modules(&mut ct, prog).expect("flatten");
+        let env = flat.module_type_envs.get("M").expect("module env");
+        let opts = env.get("opts").expect("opts alias");
+        let atom = ct.atom();
+        let int = ct.int();
+        let pair = ct.tuple(&[atom, int]);
+        let expected = ct.list(pair);
+        assert!(ct.is_equivalent(opts, &expected));
+    }
+
+    #[test]
+    fn module_specs_can_use_runtime_root_aliases_without_local_types() {
+        let prog = parse(
+            r#"
+defmodule M do
+  @spec run(keyword(integer)) :: nil
+  fn run(_), do: nil
+end
+"#,
+        );
+        let mut ct = crate::types::ConcreteTypes;
+        let flat = flatten_modules(&mut ct, prog).expect("flatten");
+        let def = flat
+            .items
+            .iter()
+            .find_map(|item| match &**item {
+                Item::Fn(def) if def.name == "M.run" => Some(def),
+                _ => None,
+            })
+            .expect("M.run");
+        let spec = def
+            .attrs
+            .iter()
+            .find_map(|attr| match attr {
+                Attribute::Spec(spec) => Some(spec),
+                _ => None,
+            })
+            .expect("spec");
+        let env = flat.module_type_envs.get("M").expect("module env");
+        let resolved =
+            crate::type_expr::resolve_spec_decl(&mut ct, spec, env).expect("resolve spec");
+        let atom = ct.atom();
+        let int = ct.int();
+        let pair = ct.tuple(&[atom, int]);
+        let expected = ct.list(pair);
+        assert!(ct.is_equivalent(&resolved.params[0], &expected));
     }
 
     // ----- fz-ul4.31.4: @spec parser + AST attachment -----

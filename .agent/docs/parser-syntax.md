@@ -10,6 +10,7 @@ syntax only in positions that can consume keyword entries:
 - list literals: `[a: 1, b: 2]`
 - call arguments: `f(x, a: 1, b: 2)`
 - call-postfix block sugar: `f(x) do ... end`
+- list patterns: `[do: body]`
 
 The AST representation is deliberately ordinary data:
 
@@ -31,6 +32,14 @@ f(x, [timeout: 10, do: 42])
 
 This matches Elixir's user-facing model without adding a keyword-list AST node
 or runtime type.
+
+The type surface follows the same rule. The runtime prelude defines ordinary
+aliases:
+
+```text
+@type keyword() :: [{atom, any}]
+@type keyword(t) :: [{atom, t}]
+```
 
 ## Boundaries
 

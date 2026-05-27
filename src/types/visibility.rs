@@ -52,7 +52,8 @@ pub trait VisibilityTypes: Types {
 mod tests {
     use super::*;
     use crate::type_expr::{
-        ModuleTypeEnv, build_module_type_env_for, opaque_owner_module, qualify_opaque_name,
+        ModuleTypeEnv, build_module_type_env_for_with_base, opaque_owner_module,
+        qualify_opaque_name,
     };
     use crate::types::{ConcreteTypes, Types};
 
@@ -68,6 +69,7 @@ mod tests {
         Attribute::TypeAlias(TypeAliasDecl {
             name: name.to_string(),
             name_span: Span::DUMMY,
+            params: vec![],
             body_tokens: TypeExprBody(body_tokens),
             span: Span::DUMMY,
         })
@@ -75,7 +77,7 @@ mod tests {
 
     fn env_for(module: &str, attrs: &[crate::ast::Attribute]) -> ModuleTypeEnv {
         let mut ct = ConcreteTypes;
-        build_module_type_env_for(&mut ct, attrs, module)
+        build_module_type_env_for_with_base(&mut ct, attrs, module, &ModuleTypeEnv::new())
             .expect("build env")
             .0
     }

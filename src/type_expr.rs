@@ -2,9 +2,8 @@
 //!
 //! Parses a fragment of fz type syntax into a seam `Ty`. Used (in later .31
 //! children) by `@spec` and `@type` attribute bodies. Standalone and
-//! pure: takes a token slice + a `ModuleTypeEnv` (name → Ty) for
-//! named-reference resolution; produces a `Ty` and the count of
-//! tokens consumed.
+//! pure: takes a token slice + a `ModuleTypeEnv` for named-reference
+//! resolution; produces a `Ty` and the count of tokens consumed.
 //!
 //! ## Grammar
 //!
@@ -15,11 +14,12 @@
 //! list       = '[' type_expr ']'
 //! tuple      = '{' (type_expr (',' type_expr)*)? '}'
 //! paren_or_arrow = '(' (type_expr (',' type_expr)*)? ')' ('->' type_expr)?
-//! atom_form  = SCALAR_NAME | RUNTIME_NAME | ':' ATOM | INT_LITERAL | FLOAT_LITERAL | '_' | NAMED_REF
+//! atom_form  = SCALAR_NAME | RUNTIME_NAME | ':' ATOM | INT_LITERAL | FLOAT_LITERAL | '_' | NAMED_REF | NAMED_REF '(' type_expr* ')'
 //!
 //! SCALAR_NAME ∈ { nil, bool, integer, float, binary, atom, any }
 //! RUNTIME_NAME ∈ { pid, ref, utf8 }
-//! NAMED_REF   = identifier resolved against the module's type env
+//! NAMED_REF   = identifier resolved against the module's type env;
+//!               `name(args...)` applies a parameterized alias
 //! ```
 //!
 //! `'|'` binds looser than primary forms; `'(A, B) -> R'` is one
@@ -33,9 +33,66 @@ use crate::diag::Span;
 use crate::lexer::{Tok, Token};
 use crate::types::Types;
 
-/// Module-level type environment: name → declared type. Populated by
-/// `@type name :: <expr>` declarations in .31.3.
-pub type ModuleTypeEnv = HashMap<String, crate::types::Ty>;
+/// Module-level type environment. Monomorphic aliases resolve directly to
+/// `Ty`; parameterized aliases keep their body tokens until an application
+/// supplies actual type arguments.
+#[derive(Debug, Clone)]
+pub struct ParamTypeAlias {
+    pub params: Vec<String>,
+    pub body_tokens: crate::ast::TypeExprBody,
+    pub span: crate::diag::Span,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ModuleTypeEnv {
+    types: HashMap<String, crate::types::Ty>,
+    param_aliases: HashMap<(String, usize), ParamTypeAlias>,
+}
+
+impl ModuleTypeEnv {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn get(&self, name: &str) -> Option<&crate::types::Ty> {
+        self.types.get(name)
+    }
+
+    pub fn insert(&mut self, name: String, ty: crate::types::Ty) -> Option<crate::types::Ty> {
+        self.types.insert(name, ty)
+    }
+
+    #[cfg(test)]
+    pub fn len(&self) -> usize {
+        self.types.len() + self.param_aliases.len()
+    }
+
+    #[cfg(test)]
+    pub fn is_empty(&self) -> bool {
+        self.types.is_empty() && self.param_aliases.is_empty()
+    }
+
+    pub fn extend_env(&mut self, other: ModuleTypeEnv) {
+        self.types.extend(other.types);
+        self.param_aliases.extend(other.param_aliases);
+    }
+
+    pub fn insert_param_alias(
+        &mut self,
+        name: String,
+        alias: ParamTypeAlias,
+    ) -> Option<ParamTypeAlias> {
+        self.param_aliases.insert((name, alias.params.len()), alias)
+    }
+
+    pub fn get_param_alias(&self, name: &str, arity: usize) -> Option<&ParamTypeAlias> {
+        self.param_aliases.get(&(name.to_string(), arity))
+    }
+
+    pub fn param_aliases(&self) -> impl Iterator<Item = (&(String, usize), &ParamTypeAlias)> {
+        self.param_aliases.iter()
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct TypeExprError {
@@ -91,11 +148,11 @@ pub fn builtin_type_env<T>(t: &mut T) -> ModuleTypeEnv
 where
     T: Types<Ty = crate::types::Ty>,
 {
-    HashMap::from([
-        (BUILTIN_UTF8.to_string(), t.brand_of(BUILTIN_UTF8)),
-        (BUILTIN_PID.to_string(), t.opaque_of(BUILTIN_PID)),
-        (BUILTIN_REF.to_string(), t.opaque_of(BUILTIN_REF)),
-    ])
+    let mut env = ModuleTypeEnv::new();
+    env.insert(BUILTIN_UTF8.to_string(), t.brand_of(BUILTIN_UTF8));
+    env.insert(BUILTIN_PID.to_string(), t.opaque_of(BUILTIN_PID));
+    env.insert(BUILTIN_REF.to_string(), t.opaque_of(BUILTIN_REF));
+    env
 }
 
 pub fn builtin_opaque_inners<T>(t: &mut T) -> OpaqueInnerTypes
@@ -142,15 +199,16 @@ where
     self::env::build_module_type_env(t, attrs)
 }
 
-pub fn build_module_type_env_for<T>(
+pub fn build_module_type_env_for_with_base<T>(
     t: &mut T,
     attrs: &[crate::ast::Attribute],
     module_path: &str,
+    base_env: &ModuleTypeEnv,
 ) -> Result<(ModuleTypeEnv, OpaqueInnerTypes, BrandInnerTypes), TypeExprError>
 where
     T: Types<Ty = crate::types::Ty>,
 {
-    self::env::build_module_type_env_for(t, attrs, module_path)
+    self::env::build_module_type_env_for_with_base(t, attrs, module_path, base_env)
 }
 
 #[cfg(test)]

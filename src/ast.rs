@@ -354,6 +354,9 @@ pub struct SpecDecl {
 pub struct TypeAliasDecl {
     pub name: String,
     pub name_span: Span,
+    /// Formal type parameters from `@type name(t, u) :: ...`.
+    /// Empty for monomorphic aliases.
+    pub params: Vec<String>,
     /// Raw type-expression tokens for the body, terminated by but not
     /// including the trailing newline / eof / end.
     pub body_tokens: TypeExprBody,

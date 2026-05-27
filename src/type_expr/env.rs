@@ -53,8 +53,8 @@ where
 /// equivalent). Non-TypeAlias attributes are ignored. Duplicate alias
 /// names within `attrs` are an error.
 ///
-/// Equivalent to `build_module_type_env_for(attrs, "")` — used when the
-/// module path is not available (top-level, runtime prelude, unit tests).
+/// Equivalent to `build_module_type_env_for_with_base(attrs, "", empty)` —
+/// used when the module path is not available (top-level, unit tests).
 /// Opaque names declared via the empty path are unqualified, which means
 /// they have no module owner for visibility purposes (see fz-swt.6).
 #[cfg(test)]
@@ -65,7 +65,8 @@ pub fn build_module_type_env<T>(
 where
     T: Types<Ty = crate::types::Ty>,
 {
-    build_module_type_env_for(t, attrs, "").map(|(env, _o, _b)| env)
+    build_module_type_env_for_with_base(t, attrs, "", &ModuleTypeEnv::new())
+        .map(|(env, _o, _b)| env)
 }
 
 /// fz-swt.6 — like `build_module_type_env`, but threads the enclosing
@@ -77,38 +78,61 @@ where
 /// Visibility gating consults the opaque singleton query /
 /// `crate::ir_planner::check_opaque_visibility` to compare the declaring
 /// module against the using module.
-pub fn build_module_type_env_for<T>(
+pub fn build_module_type_env_for_with_base<T>(
     t: &mut T,
     attrs: &[crate::ast::Attribute],
     module_path: &str,
+    base_env: &ModuleTypeEnv,
 ) -> Result<(ModuleTypeEnv, OpaqueInnerTypes, BrandInnerTypes), TypeExprError>
 where
     T: Types<Ty = crate::types::Ty>,
 {
     use crate::ast::Attribute;
-    // Collect aliases keyed by name; reject duplicates.
     let mut pending: HashMap<String, &crate::ast::TypeAliasDecl> = HashMap::new();
     let mut order: Vec<String> = Vec::new();
+    let mut seen: HashMap<(String, usize), crate::diag::Span> = HashMap::new();
+    let mut param_aliases = Vec::new();
     for a in attrs {
         if let Attribute::TypeAlias(decl) = a {
-            if pending.contains_key(&decl.name) {
+            let key = (decl.name.clone(), decl.params.len());
+            if seen.insert(key.clone(), decl.name_span).is_some() {
                 return Err(TypeExprError {
-                    msg: format!("duplicate @type alias `{}`", decl.name),
+                    msg: format!(
+                        "duplicate @type alias `{}/{}`",
+                        decl.name,
+                        decl.params.len()
+                    ),
                     span: decl.name_span,
                 });
             }
-            order.push(decl.name.clone());
-            pending.insert(decl.name.clone(), decl);
+            validate_type_alias_params(decl)?;
+            if decl.params.is_empty() {
+                order.push(decl.name.clone());
+                pending.insert(decl.name.clone(), decl);
+            } else {
+                param_aliases.push(decl);
+            }
         }
     }
-    if pending.is_empty() {
+    if pending.is_empty() && param_aliases.is_empty() {
         return Ok((
-            ModuleTypeEnv::new(),
+            base_env.clone(),
             OpaqueInnerTypes::new(),
             BrandInnerTypes::new(),
         ));
     }
-    let mut env: ModuleTypeEnv = ModuleTypeEnv::new();
+    let mut env: ModuleTypeEnv = base_env.clone();
+    let mut resolved: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for decl in param_aliases {
+        env.insert_param_alias(
+            decl.name.clone(),
+            ParamTypeAlias {
+                params: decl.params.clone(),
+                body_tokens: decl.body_tokens.clone(),
+                span: decl.span,
+            },
+        );
+    }
     // fz-swt.8 — Side map: qualified opaque tag → inner T parsed from
     // the body following `opaque`. Populated alongside `env` so the
     // planner's `.value` lowering can look up T without re-parsing.
@@ -121,7 +145,7 @@ where
     loop {
         let mut progressed = false;
         for name in &order {
-            if env.contains_key(name) {
+            if resolved.contains(name) {
                 continue;
             }
             let decl = pending[name];
@@ -163,6 +187,7 @@ where
                 let qualified = qualify_opaque_name(module_path, name);
                 let brand_ty = t.brand_of(&qualified);
                 env.insert(name.clone(), brand_ty);
+                resolved.insert(name.clone());
                 brand_inners.insert(qualified, inner);
                 progressed = true;
                 continue;
@@ -208,6 +233,7 @@ where
                 let qualified = qualify_opaque_name(module_path, name);
                 let opaque_ty = t.opaque_of(&qualified);
                 env.insert(name.clone(), opaque_ty);
+                resolved.insert(name.clone());
                 if let Some(ty) = inner {
                     opaque_inners.insert(qualified, ty);
                 }
@@ -217,6 +243,7 @@ where
             match parse_type_expr(t, &decl.body_tokens.0, &env) {
                 Ok((ty, _consumed)) => {
                     env.insert(name.clone(), ty);
+                    resolved.insert(name.clone());
                     progressed = true;
                 }
                 Err(_) => {
@@ -231,9 +258,9 @@ where
     }
     // Anything still pending is a cycle or references an unknown name.
     // Re-parse one unresolved body to surface the underlying error.
-    if env.len() < pending.len() {
+    if resolved.len() < pending.len() {
         for name in &order {
-            if env.contains_key(name) {
+            if resolved.contains(name) {
                 continue;
             }
             let decl = pending[name];
@@ -242,7 +269,7 @@ where
             let body_refs = referenced_user_type_names(&decl.body_tokens.0);
             let mut cycle_partner: Option<&str> = None;
             for r in &body_refs {
-                if pending.contains_key(r) && !env.contains_key(r) {
+                if pending.contains_key(r) && !resolved.contains(r) {
                     cycle_partner = Some(r.as_str());
                     break;
                 }
@@ -263,7 +290,62 @@ where
             }
         }
     }
+    validate_param_aliases(t, &env)?;
     Ok((env, opaque_inners, brand_inners))
+}
+
+fn validate_type_alias_params(decl: &crate::ast::TypeAliasDecl) -> Result<(), TypeExprError> {
+    let mut seen = std::collections::HashSet::new();
+    for param in &decl.params {
+        if is_reserved_type_name(param) {
+            return Err(TypeExprError {
+                msg: format!("type parameter `{}` uses a reserved type name", param),
+                span: decl.span,
+            });
+        }
+        if !seen.insert(param) {
+            return Err(TypeExprError {
+                msg: format!("duplicate type parameter `{}`", param),
+                span: decl.span,
+            });
+        }
+    }
+    Ok(())
+}
+
+fn validate_param_aliases<T: crate::types::Types<Ty = crate::types::Ty>>(
+    t: &mut T,
+    env: &ModuleTypeEnv,
+) -> Result<(), TypeExprError> {
+    for ((name, arity), alias) in env.param_aliases() {
+        let mut local = env.clone();
+        for (idx, param) in alias.params.iter().enumerate() {
+            local.insert(
+                param.clone(),
+                t.type_var(crate::types::TypeVarId(idx as u32)),
+            );
+        }
+        let stack = vec![(name.clone(), *arity)];
+        let (.., consumed) = super::parser::parse_type_expr_with_stack(
+            t,
+            &alias.body_tokens.0,
+            &local,
+            None,
+            stack,
+        )?;
+        if consumed != alias.body_tokens.0.len() {
+            return Err(TypeExprError {
+                msg: "unexpected trailing tokens in parameterized type alias body".to_string(),
+                span: alias
+                    .body_tokens
+                    .0
+                    .get(consumed)
+                    .map(|tok| tok.span)
+                    .unwrap_or(alias.span),
+            });
+        }
+    }
+    Ok(())
 }
 
 /// fz-swt.6 — build the module-qualified opaque tag stored on a
@@ -338,12 +420,29 @@ fn referenced_user_type_names(tokens: &[crate::lexer::Token]) -> Vec<String> {
     tokens
         .iter()
         .filter_map(|t| match &t.tok {
-            Tok::Ident(n) | Tok::Upper(n) => match n.as_str() {
-                "nil" | "bool" | "integer" | "float" | "binary" | "cpointer" | "atom" | "any"
-                | "never" | "opaque" | "refines" | "resource" => None,
-                _ => Some(n.clone()),
-            },
+            Tok::Ident(n) | Tok::Upper(n) if !is_reserved_type_name(n) => Some(n.clone()),
             _ => None,
         })
         .collect()
+}
+
+fn is_reserved_type_name(name: &str) -> bool {
+    matches!(
+        name,
+        "nil"
+            | "bool"
+            | "integer"
+            | "float"
+            | "binary"
+            | "cpointer"
+            | "atom"
+            | "any"
+            | "never"
+            | "opaque"
+            | "refines"
+            | "resource"
+            | super::BUILTIN_UTF8
+            | super::BUILTIN_PID
+            | super::BUILTIN_REF
+    )
 }
