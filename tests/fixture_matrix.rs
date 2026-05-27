@@ -141,6 +141,10 @@ fn static_tests() -> Vec<(&'static str, fn())> {
             fz_build_loads_reachable_fzo_after_provider_source_removed,
         ),
         (
+            "fz_repl_script_keeps_module_artifacts_out_of_session",
+            fz_repl_script_keeps_module_artifacts_out_of_session,
+        ),
+        (
             "fz_dump_loads_fzi_for_imports",
             fz_dump_loads_fzi_for_imports,
         ),
@@ -1393,6 +1397,34 @@ fn fz_build_loads_reachable_fzo_after_provider_source_removed() {
         String::from_utf8_lossy(&missing.stderr).contains("Math.fzo"),
         "{}",
         String::from_utf8_lossy(&missing.stderr)
+    );
+
+    let _ = fs::remove_dir_all(&root);
+}
+
+fn fz_repl_script_keeps_module_artifacts_out_of_session() {
+    let root = std::env::temp_dir().join(format!("fz-repl-no-artifacts-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).unwrap_or_else(|e| panic!("mkdir {}: {}", root.display(), e));
+    let (provider_path, consumer_path, artifact_root) = write_provider_consumer(&root);
+    build_provider_artifacts(&provider_path, &artifact_root, &root.join("provider-app"));
+    fs::remove_file(&provider_path)
+        .unwrap_or_else(|e| panic!("remove {}: {}", provider_path.display(), e));
+
+    let out = Command::new(FZ_BIN)
+        .args(["repl", "--script"])
+        .arg(&consumer_path)
+        .output()
+        .expect("spawn repl script");
+    assert!(
+        !out.status.success(),
+        "repl script unexpectedly loaded module artifacts"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("resolve/unknown-module")
+            && stderr.contains("module `Math` is not defined"),
+        "unexpected repl script stderr: {stderr}"
     );
 
     let _ = fs::remove_dir_all(&root);

@@ -146,6 +146,7 @@ Telemetry keeps process facts out of product dumps:
 - `fz.module.fzi_loaded`
 - `fz.module.fzo_written`
 - `fz.module.fzo_loaded`
+- `fz.module.graph_loaded`
 - `fz.link.succeeded`
 - `fz.link.failed`
 - `fz.lto.interfaces_validated`
@@ -242,6 +243,26 @@ provider body in a runnable image is the graph/linker stage's job: `fz run` and
 `fz build` load reachable `.fzo` source-unit payloads through
 `ModuleGraphLoader`, materialize provider `CompiledUnit` inputs, link IR units,
 and reject missing or duplicate providers before execution/codegen.
+
+REPL policy:
+
+- `fz repl` and `fz repl --script` are session-eager. They compile against
+  source already entered into the REPL world plus built-in runtime-library
+  interfaces.
+- REPL commands do not accept `--interface`, `--provider`, or
+  `--artifact-root`, and they do not invoke `ModuleGraphLoader`.
+- Artifact-backed imports belong to whole-file `fz run` / `fz build` commands,
+  where the root source and provider roots are explicit.
+
+Testing policy:
+
+- Use `.fzi` artifacts or `fz dump --emit interfaces` for public contract
+  assertions: imports, exports, specs, ABI versions, and fingerprint inputs.
+- Use `.fzo` round-trips and provider-source-free `run`/`build` fixtures for
+  implementation-unit and graph-loading behavior.
+- Keep raw IR dumps (`clif`, `bodies`, `outcomes`, and `specs`) for
+  compiler-internal debugging and planner assertions. They are not the module
+  ABI and should not be the oracle for separate-compilation compatibility.
 
 ## `.fzi`: Interface Artifact
 

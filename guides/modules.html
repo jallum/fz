@@ -246,7 +246,10 @@ payload format later without changing what an interface means.
 shows the public contract that other modules may depend on.
 <code>dump --emit specs</code> shows the compiler's internal planner
 specializations for this run. The interface view replaces using specs as a
-proxy for public module shape; it does not replace the planner dump.</p>
+proxy for public module shape; it does not replace the planner dump. Contract
+tests should prefer interface output or <code>.fzi</code> artifacts. Tests for
+provider loading should exercise <code>.fzo</code> artifacts. Raw IR and specs
+remain useful for compiler-internal behavior.</p>
 
 <p>Artifact paths are deterministic. By default, fz uses
 <code>build/fz</code> as the artifact root:</p>
@@ -280,6 +283,13 @@ fz build --interface Math --artifact-root build/fz consumer.fz -o consumer</pre>
 also load reachable <code>.fzo</code> providers, materialize their source-unit
 payloads, and link every imported export exactly once.</p>
 
+<p>The REPL is different. <code>fz repl</code> and
+<code>fz repl --script</code> use definitions from the current session or
+script plus built-in runtime-library interfaces. They do not load provider
+artifacts from <code>--interface</code> / <code>--artifact-root</code>. Use
+<code>fz run</code> or <code>fz build</code> for artifact-backed module
+programs.</p>
+
 <p>Normal compilation follows this shape:</p>
 
 <pre>source module
@@ -296,7 +306,6 @@ link
   -&gt; load compatible .fzo providers
   -&gt; resolve every imported export exactly once
   -&gt; merge runtime metadata
-  -&gt; run a validated compiled image</pre>
   -&gt; produce one runnable image</pre>
 
 <p>The linker checks the boring but important things:</p>

@@ -118,6 +118,10 @@ Runtime library boundary:
   `fz run --interface <Module> --artifact-root <dir> ...` and
   `fz build --interface <Module> --artifact-root <dir> ...`. `--provider` is
   accepted as an alias for the same provider-root input.
+- The REPL remains session-eager. `fz repl` and `fz repl --script` compile
+  against definitions already present in the REPL source world plus built-in
+  runtime-library interfaces; they do not accept provider roots and do not load
+  `.fzi`/`.fzo` artifacts through `ModuleGraphLoader`.
 
 LTO / whole-program mode:
 
@@ -132,9 +136,9 @@ LTO / whole-program mode:
   module boundaries before interface validation in normal control flow.
 - Module process facts are telemetry, not dump payloads. Stats should include
   events such as `fz.module.interfaces_collected`, `.fzi`/`.fzo` write/load,
-  `fz.link.succeeded` / `fz.link.failed`, and the LTO validation/erasure
-  events. Product dumps remain separate: interfaces are public contracts;
-  specs are planner state.
+  `fz.module.graph_loaded`, `fz.link.succeeded` / `fz.link.failed`, and the
+  LTO validation/erasure events. Product dumps remain separate: interfaces are
+  public contracts; specs are planner state.
 - `Module::interface_export_map` builds the implementation map from validated
   interface exports to loaded `FnId`s. `Module::rewrite_external_calls_for_lto`
   consumes that map and rewrites `ExternalCallEdge` placeholders to direct
@@ -144,3 +148,12 @@ LTO / whole-program mode:
   implementations so reducer/inliner passes can cross public module contracts.
   This is deliberately restricted to explicit LTO; normal compilation keeps
   public specs as optimization boundaries.
+
+Testing strategy:
+
+- Assert public module contracts with `.fzi` artifacts and
+  `fz dump --emit interfaces`.
+- Assert implementation-unit and graph-loader behavior with `.fzo`
+  source-unit round-trips and provider-source-free `run`/`build` fixtures.
+- Use raw IR and spec dumps for compiler-internal planner behavior. They are
+  useful diagnostics, but they are not the separate-compilation contract.
