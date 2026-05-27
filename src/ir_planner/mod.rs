@@ -30,6 +30,7 @@
 
 pub mod closures;
 pub mod diagnostics;
+pub(crate) mod effects;
 pub(crate) mod expr_types;
 pub mod fn_types;
 pub(crate) mod narrow;

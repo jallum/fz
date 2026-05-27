@@ -1,5 +1,6 @@
 use super::closures::resolve_closure_return;
 use super::diagnostics::{compute_dead_branches, module_plan_stats};
+use super::effects::{prim_effect_summary, term_local_effect_summary};
 use super::fn_types::{
     CallsiteFnConsts, EffectSummary, EmitsByCaller, EmitterSiteSet, HoldersMap, ModulePlan,
     PLAN_MODULE_CALLS, ProducesMap, ReturnReaders, SpecKey, SpecKeySet, SpecPlan, TYPE_FN_CALLS,
@@ -9,7 +10,7 @@ use super::fn_types::{
 use super::reachable::env_at_terminator;
 use super::type_fn::type_fn;
 use super::walk::{WalkResult, walk_spec_for_discovery};
-use crate::fz_ir::{Block, FnId, Module, Prim, Term};
+use crate::fz_ir::{Block, FnId, Module, Term};
 use crate::ir_callgraph::{build_call_graph, entry_seeds};
 use std::collections::HashMap;
 
@@ -249,63 +250,6 @@ fn local_effect_summary(m: &Module, key: &SpecKey, mt: &ModulePlan) -> EffectSum
         summary.union_with(term_local_effect_summary(&b.terminator));
     }
     summary
-}
-
-fn prim_effect_summary(m: &Module, prim: &Prim) -> EffectSummary {
-    match prim {
-        Prim::MakeTuple(_)
-        | Prim::DestTupleBegin { .. }
-        | Prim::DestTupleSet { .. }
-        | Prim::DestFreeze { .. }
-        | Prim::MakeList(_, _)
-        | Prim::DestListBegin { .. }
-        | Prim::DestListCons { .. }
-        | Prim::DestListFreeze { .. }
-        | Prim::MakeClosure(_, _, _)
-        | Prim::MakeMap(_)
-        | Prim::MapUpdate(_, _)
-        | Prim::DestMapBegin { .. }
-        | Prim::DestMapPut { .. }
-        | Prim::DestMapFreeze { .. }
-        | Prim::MakeBitstring(_)
-        | Prim::ConstBitstring(_, _)
-        | Prim::BitReaderInit(_) => EffectSummary {
-            allocates: true,
-            ..EffectSummary::default()
-        },
-        Prim::Extern(eid, _) => {
-            let decl = m.extern_by_id(*eid);
-            let reads_allocation_stats = decl.symbol == "fz_process_heap_alloc_stats";
-            let scheduler_visible = matches!(
-                decl.symbol.as_str(),
-                "fz_send" | "fz_spawn" | "fz_spawn_opt" | "fz_self"
-            );
-            EffectSummary {
-                observable: true,
-                reads_allocation_stats,
-                scheduler_visible,
-                halts: decl.ret == crate::fz_ir::ExternTy::Never,
-                ..EffectSummary::default()
-            }
-        }
-        _ => EffectSummary::default(),
-    }
-}
-
-fn term_local_effect_summary(term: &Term) -> EffectSummary {
-    match term {
-        Term::Receive { .. } | Term::ReceiveMatched { .. } => EffectSummary {
-            observable: true,
-            scheduler_visible: true,
-            ..EffectSummary::default()
-        },
-        Term::Halt(_) => EffectSummary {
-            observable: true,
-            halts: true,
-            ..EffectSummary::default()
-        },
-        _ => EffectSummary::default(),
-    }
 }
 
 /// fz-rh5.6 — worklist driver with provenance.
