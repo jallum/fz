@@ -17,6 +17,108 @@ use fz_runtime::heap::{FieldDescriptor, FieldKind, Schema};
 use std::collections::HashMap;
 use std::sync::Arc;
 
+/// One separately compiled source module before link-time/runtime-global
+/// state is assembled.
+///
+/// Today this is a structural boundary over the existing whole-program IR:
+/// the `code` field carries the module-local IR chunk, while the interface
+/// fields carry the contract facts later tickets will serialize and link.
+#[allow(dead_code)]
+#[derive(Debug, Clone)]
+pub struct CompiledUnit {
+    pub module: Option<crate::module_identity::ModuleName>,
+    pub code: Module,
+    pub exports: Vec<crate::module_interface::InterfaceFn>,
+    pub imports: Vec<crate::module_interface::InterfaceImport>,
+    pub diagnostics: crate::diag::Diagnostics,
+    pub interface_fingerprint: Vec<String>,
+    pub interface: Option<crate::module_interface::ModuleInterface>,
+}
+
+#[allow(dead_code)]
+impl CompiledUnit {
+    pub fn from_ir_module(
+        code: Module,
+        interface: Option<crate::module_interface::ModuleInterface>,
+        diagnostics: crate::diag::Diagnostics,
+    ) -> Self {
+        let module = interface
+            .as_ref()
+            .map(|interface| interface.name.clone())
+            .or_else(|| module_name_from_ir_path(code.module_path()));
+        let exports = interface
+            .as_ref()
+            .map(|interface| interface.exports.clone())
+            .unwrap_or_default();
+        let imports = interface
+            .as_ref()
+            .map(|interface| interface.imports.clone())
+            .unwrap_or_default();
+        let interface_fingerprint = interface
+            .as_ref()
+            .map(|interface| interface.fingerprint_inputs.clone())
+            .unwrap_or_default();
+        Self {
+            module,
+            code,
+            exports,
+            imports,
+            diagnostics,
+            interface_fingerprint,
+            interface,
+        }
+    }
+}
+
+#[allow(dead_code)]
+fn module_name_from_ir_path(path: &str) -> Option<crate::module_identity::ModuleName> {
+    if path.is_empty() {
+        None
+    } else {
+        Some(crate::module_identity::ModuleName::from_segments(
+            path.split('.').map(str::to_string).collect(),
+        ))
+    }
+}
+
+/// Linked runnable image: runtime-global JIT state plus execution entrypoints.
+///
+/// `CompiledModule` remains as the compatibility surface during the migration.
+/// New linker-shaped code should traffic in `CompiledImage`.
+#[allow(dead_code)]
+pub struct CompiledImage {
+    inner: CompiledModule,
+}
+
+#[allow(dead_code)]
+impl CompiledImage {
+    pub fn from_compat_module(module: CompiledModule) -> Self {
+        Self { inner: module }
+    }
+
+    pub fn into_compat_module(self) -> CompiledModule {
+        self.inner
+    }
+
+    pub fn diagnostics(&self) -> &crate::diag::Diagnostics {
+        self.inner.diagnostics()
+    }
+
+    pub fn fn_ptr(&self, fn_id: FnId) -> Option<*const u8> {
+        self.inner.fn_ptr(fn_id)
+    }
+
+    pub fn make_process(&self) -> Process {
+        self.inner.make_process()
+    }
+
+    pub(crate) fn run_quantum(&self, process: &mut Process) {
+        self.inner.run_quantum(process)
+    }
+}
+
+unsafe impl Send for CompiledImage {}
+
 /// Compiled module: persistent JITModule + per-fn ptr table + schemas. The
 /// host runs a fn via `compiled.run(fn_id)` (constructs an internal default
 /// Process) or `compiled.run_in(fn_id, &mut Process)` (caller-owned Process).
@@ -80,6 +182,16 @@ impl CompiledModule {
     /// `diag::report_or_exit` so error-severity entries actually halt.
     pub fn diagnostics(&self) -> &crate::diag::Diagnostics {
         &self.diagnostics
+    }
+
+    #[allow(dead_code)]
+    pub fn into_image(self) -> CompiledImage {
+        CompiledImage::from_compat_module(self)
+    }
+
+    #[allow(dead_code)]
+    pub fn from_image(image: CompiledImage) -> Self {
+        image.into_compat_module()
     }
 }
 
@@ -397,6 +509,22 @@ impl CompiledModule {
             }
         }
         current_process().halt_value
+    }
+}
+
+#[cfg(test)]
+#[allow(dead_code)]
+impl CompiledImage {
+    pub fn static_closure_targets(&self) -> &[(u32, u32, *const u8, u32)] {
+        self.inner.static_closure_targets()
+    }
+
+    pub fn run(&self, fn_id: FnId) -> i64 {
+        self.inner.run(fn_id)
+    }
+
+    pub fn run_in(&self, fn_id: FnId, process: &mut Process) -> i64 {
+        self.inner.run_in(fn_id, process)
     }
 }
 

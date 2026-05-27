@@ -32,3 +32,14 @@ The invariant for the separate-compilation arc is:
 - normal import resolution consumes interface facts, not dependency bodies;
 - whole-program analysis may erase boundaries in LTO, but correctness cannot
   depend on doing so.
+
+Codegen artifact vocabulary:
+
+- `CompiledUnit` is the pre-link artifact for one source module. It owns that
+  module's IR code, imports, exports, diagnostics, and visible interface
+  fingerprint inputs.
+- `CompiledImage` is the linked runnable artifact. It owns runtime-global JIT
+  state, schema/atom tables, function pointers, and execution entrypoints.
+- `CompiledModule` is the compatibility name for today's runnable image while
+  call sites migrate. New linker/runtime-library code should use
+  `CompiledUnit` for module-local work and `CompiledImage` for runnable state.

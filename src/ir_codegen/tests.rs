@@ -121,6 +121,53 @@ fn static_closure_lookup_returns_singleton_pointer() {
 }
 
 #[test]
+fn compiled_unit_carries_interface_contract_and_ir_code() {
+    let m = lower_resolved_src(
+        r#"
+defmodule Math do
+  fn add(x, y), do: x + y
+end
+"#,
+    );
+    let interface = crate::module_interface::ModuleInterface {
+        name: crate::module_identity::ModuleName::from_segments(vec!["Math".to_string()]),
+        abi_version: crate::module_interface::FZ_INTERFACE_ABI_VERSION,
+        imports: Vec::new(),
+        exports: vec![crate::module_interface::InterfaceFn {
+            name: "add".to_string(),
+            arity: 2,
+            spec: None,
+            name_span: crate::diag::Span::DUMMY,
+        }],
+        types: Vec::new(),
+        docs: None,
+        fingerprint_inputs: vec!["export:Math.add/2".to_string()],
+    };
+    let unit =
+        CompiledUnit::from_ir_module(m.clone(), Some(interface), crate::diag::Diagnostics::new());
+    assert_eq!(unit.module.as_ref().unwrap().dotted(), "Math");
+    assert_eq!(unit.code.fns.len(), m.fns.len());
+    assert_eq!(unit.exports[0].name, "add");
+    assert_eq!(unit.interface_fingerprint, ["export:Math.add/2"]);
+}
+
+#[test]
+fn compiled_image_one_unit_compat_path_runs_like_compiled_module() {
+    let m = lower_src("fn main(), do: 42");
+    let entry = m.fn_by_name("main").unwrap().id;
+    let compiled = compile(
+        &mut crate::types::ConcreteTypes,
+        &m,
+        &crate::telemetry::NullTelemetry,
+    )
+    .expect("compile");
+    let image = compiled.into_image();
+    assert_eq!(image.run(entry), 42);
+    let compiled = CompiledModule::from_image(image);
+    assert!(compiled.fn_ptr(entry).is_some());
+}
+
+#[test]
 fn aot_compile_produces_object_with_main_symbol() {
     let src = "fn add1(n) do n + 1 end\nfn main() do print(add1(41)) end";
     let m = lower_src(src);
