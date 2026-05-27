@@ -9,6 +9,11 @@ Destination planning is the main current application of this rule. See
 container construction model, `ReturnDemand` composition, and return-context
 plans.
 
+Protocol dispatch uses the same rule. See [`protocols.md`](protocols.md) for
+the protocol-domain type contract, implementation target identity, dispatch
+outcomes, and the requirement that link/load stages preserve planner facts
+instead of reconstructing them with a second planning pass.
+
 ## Authoritative Facts
 
 `SpecPlan.dispatches` is keyed by `CallsiteId`: `(caller FnId, intrinsic
@@ -63,6 +68,9 @@ Current rendered capabilities are:
 This shape leaves room for future dispatch work. Choosing a function variant,
 choosing a tuple-return ABI, and choosing a return-context body are all the same
 kind of decision: a typed callsite capability selected before codegen.
+Protocol implementation selection is the same kind of decision: the planner
+selects a direct, provider-boundary, closed-switch, runtime, or diagnostic edge
+from receiver type facts and visible implementation-domain facts.
 
 The crucial invariant: demand follows a specific return edge/result hole, not
 the whole caller spec. A caller spec may contain multiple calls, and each call
