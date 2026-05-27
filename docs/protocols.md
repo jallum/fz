@@ -182,6 +182,10 @@ creating a parallel subsystem:
 - `link_ir_units_with_plan` remaps protocol call facts and resolves provider
   protocol implementation callbacks to local call edges without a post-link
   planning pass.
+- Frontend checking applies planned direct call targets back onto protocol
+  stub callsites before interpretation or native emission. The interpreter and
+  codegen therefore execute ordinary typed impl calls, preserving scalar
+  argument representations such as raw integers.
 - `docs/dispatch-as-planner-output.md` defines planner-owned dispatch facts.
 - `SpecPlan.call_edges` is keyed by `CallsiteId` and stores selected call-edge
   capabilities.

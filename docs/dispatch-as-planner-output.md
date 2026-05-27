@@ -89,6 +89,9 @@ stub callee. The stub is not the semantic target. It is a stable callsite
 anchor that lets the planner publish a `CallEdgePlan` to the selected local
 implementation or to a provider-boundary `ExportKey`; linking then remaps that
 edge and rewrites the callsite when the provider body becomes available.
+Single-unit frontend checking performs the same rewrite for local planned
+targets before interpreter or native execution, using the planner fact rather
+than rediscovering the protocol target in a backend.
 
 The crucial invariant: demand follows a specific return edge/result hole, not
 the whole caller spec. A caller spec may contain multiple calls, and each call
