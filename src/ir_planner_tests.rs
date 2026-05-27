@@ -1095,7 +1095,6 @@ fn reachable_specs_seeds_all_registered_specs_for_closure_targets() {
         any_key_specs: HashMap::new(),
         spec_precedence: HashMap::new(),
         effect_summaries: HashMap::new(),
-        scc_of: HashMap::new(),
         dead_branches: HashMap::new(),
         closure_handles: std::collections::HashSet::new(),
     };

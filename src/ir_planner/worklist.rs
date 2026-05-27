@@ -76,12 +76,6 @@ pub fn plan_module<T: crate::types::Types<Ty = crate::types::Ty> + crate::types:
     let call_graph = build_call_graph(m);
     let mut sccs = super::scc::tarjan_scc(&call_graph);
     sccs.reverse();
-    let mut scc_of: HashMap<FnId, usize> = HashMap::new();
-    for (i, scc) in sccs.iter().enumerate() {
-        for fid in scc {
-            scc_of.insert(*fid, i);
-        }
-    }
     let mut recursive_fns: std::collections::HashSet<FnId> = std::collections::HashSet::new();
     for scc in &sccs {
         if scc.len() > 1 {
@@ -99,7 +93,6 @@ pub fn plan_module<T: crate::types::Types<Ty = crate::types::Ty> + crate::types:
     let mut return_readers: ReturnReaders = HashMap::new();
     let mut visit_count: HashMap<SpecKey, usize> = HashMap::new();
 
-    // fz-rh5.6 — provenance state.
     let mut produces: ProducesMap = HashMap::new();
     let mut holders: HoldersMap = HashMap::new();
     let mut emits_by_caller: EmitsByCaller = HashMap::new();
@@ -161,8 +154,8 @@ pub fn plan_module<T: crate::types::Types<Ty = crate::types::Ty> + crate::types:
         any_key_specs,
         spec_precedence,
         effect_summaries: HashMap::new(),
-        scc_of,
         dead_branches: HashMap::new(),
+        #[cfg(test)]
         closure_handles,
     };
     mt.dead_branches = compute_dead_branches(t, m, &mt);
@@ -554,15 +547,13 @@ fn enqueue_return_readers(
     }
 }
 
-/// fz-5j5.3 — single-spec effective-return computation. Joins every
-/// reachable Return / TailCall / TailCallClosure / cont-bearing
-/// terminator into a type using `effective_returns` for downstream
-/// reads. Missing entries contribute `none()` (Kleene bottom)
-/// so partial state doesn't spuriously widen.
+/// Compute one spec's effective return by joining every reachable
+/// return-producing terminator. Missing downstream returns contribute
+/// `none()` so partial worklist state does not spuriously widen.
 ///
-/// Every (callee_key) whose return is consulted is pushed into
-/// `reads`. The worklist driver folds these into `return_readers`
-/// so callee-return changes re-enqueue this spec.
+/// Every callee key whose return is consulted is pushed into `reads`; the
+/// worklist folds those into `return_readers` so callee-return changes
+/// re-enqueue this spec.
 pub(crate) fn compute_return_for_spec<
     T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
 >(

@@ -9,11 +9,9 @@ pub struct SpecPlan {
     pub vars: HashMap<crate::fz_ir::Var, crate::types::Ty>,
     /// Entry env per block, with branch narrowing applied at If terminators.
     pub block_envs: HashMap<crate::fz_ir::BlockId, HashMap<crate::fz_ir::Var, crate::types::Ty>>,
-    /// fz-ul4.29.10.1 — side-channel: vars known to hold a specific
-    /// top-level fn identity (zero-capture `MakeClosure(F, [])` only).
-    /// Used by `.29.10.2`/`.3` to register narrow specs and rewrite
-    /// known-target `CallClosure → Call`. The type token deliberately carries
-    /// no FnId identity; this map lives alongside it.
+    /// Vars known to hold a specific top-level fn identity from
+    /// zero-capture `MakeClosure(F, [])`. The type token carries no FnId
+    /// identity, so direct-call specialization keeps this side-channel.
     pub fn_constants: HashMap<crate::fz_ir::Var, FnId>,
     /// Blocks provably reachable from the entry under the inferred types.
     /// If terminators whose condition is a singleton bool prune the dead
@@ -59,46 +57,34 @@ pub struct SpecPlan {
 /// `MakeClosure` reachability.
 pub struct ModulePlan {
     pub specs: HashMap<SpecKey, SpecPlan>,
-    /// fz-2yw.2 — Kleene LFP of every spec's effective return type.
-    /// Maintained incrementally by the worklist (fz-5j5.3): each spec's
-    /// return is recomputed (via `compute_return_for_spec`) after every
-    /// visit, and changes re-enqueue the spec's `return_readers`.
-    /// Consumers (cont_slot0_descr, pretty_module_plan, walker
-    /// slot0_descr) read here instead of recursing on demand.
+    /// Kleene LFP of every spec's effective return type. Maintained
+    /// incrementally by the worklist: each spec's return is recomputed
+    /// after every visit, and changes re-enqueue its `return_readers`.
+    /// Continuation slot-0 typing and plan rendering read here instead of
+    /// recursing on demand.
     pub effective_returns: HashMap<SpecKey, crate::types::Ty>,
-    /// fz-afs.12 — secondary index: FnId → all-any key for that fn.
-    /// Populated in `plan_module` from the final specs map. Enables O(1)
-    /// any-key lookup without the per-element is_equiv scan.
+    /// Secondary index from FnId to its all-any key. Populated in
+    /// `plan_module` from the final specs map so callers can find any-key
+    /// specs without scanning the whole spec map.
     pub any_key_specs: HashMap<FnId, Vec<crate::types::KeySlot>>,
     /// Stable per-family precedence for specialization selection.
     pub spec_precedence: HashMap<SpecKey, u32>,
     /// Per-spec summary of effects that are relevant to return-demand
     /// scheduling. Allocation is tracked separately from externally
-    /// observable barriers so future demand selection can move allocation
-    /// only when no runtime-visible operation can observe the move.
+    /// observable barriers so demand selection can move allocation only when
+    /// no runtime-visible operation can observe the move.
     pub effect_summaries: HashMap<SpecKey, EffectSummary>,
-    /// fz-02r.4 — SCC index for back-edge detection. Two FnIds share a
-    /// back-edge (i.e., the call is on a loop) iff `scc_of[a] == scc_of[b]`.
-    /// Self-recursion maps a fn to its own SCC (singleton). Populated at the
-    /// start of `plan_module` from the initial Tarjan run; stable thereafter.
-    #[allow(dead_code)] // consumed by ir_codegen back-edge check (fz-02r.5)
-    pub scc_of: HashMap<FnId, usize>,
-    /// fz-fyq.2 — per-If dead-branch facts under cross-spec consensus.
+    /// Per-If dead-branch facts under cross-spec consensus.
     /// Populated at the end of `plan_module` by `compute_dead_branches`.
     /// Keyed by `(FnId, BlockId)` where the block ends in a `Term::If`;
     /// value names which branch is provably never taken. Read by the
-    /// dead-branch fold (fz-fyq.4) and by `collect_diagnostics` (fz-fyq.3).
-    /// Only covers registered-spec fns — the diagnostic re-runs analysis
-    /// on its own ad-hoc spec typing for fns with no registered spec.
+    /// dead-branch fold and by `collect_diagnostics`. Only covers
+    /// registered-spec fns; diagnostics re-run ad-hoc analysis for fns with
+    /// no registered spec.
     pub dead_branches: HashMap<(FnId, crate::fz_ir::BlockId), crate::fz_ir::DeadBranch>,
-    /// Closure-handle registry. Records every distinct `(lambda FnId,
-    /// captures)` shape that any reachable `MakeClosure` can produce. Separate
-    /// from `specs` (which is body specs only); handles describe closure
-    /// values, not compiled bodies.
-    ///
-    /// Codegen does *not* read this — it resolves the lambda body via
-    /// `SpecId.0 == FnId.0` alignment for the any-key body spec.
-    #[allow(dead_code)]
+    /// Closure-handle registry used by planner tests. Runtime codegen
+    /// resolves closure bodies through the emitted any-key body specs.
+    #[cfg(test)]
     pub closure_handles: std::collections::HashSet<(FnId, Vec<crate::types::Ty>)>,
 }
 
@@ -174,7 +160,7 @@ mod tests {
 }
 
 impl ModulePlan {
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub fn spec_ty(&self, fn_id: FnId, input_tys: &[crate::types::Ty]) -> Option<&SpecPlan> {
         let key = self.specs.keys().find(|spec_key| {
             spec_key.fn_id == fn_id
@@ -192,22 +178,16 @@ impl ModulePlan {
         self.specs.get(key)
     }
 
-    /// fz-pky.2 — return the any-key spec for `fn_id` if registered.
-    /// Under the reachability-driven model (fz-vw4), the any-key only
-    /// exists when the fn is closure-reachable, entry-seeded, or
-    /// genuinely needs the opaque-dispatch fallback. Direct-call-only
+    /// Return the any-key spec for `fn_id` if registered. Direct-call-only
     /// fns have no any-key.
-    #[allow(dead_code)]
     pub fn any_key_spec(&self, fn_id: FnId) -> Option<&SpecPlan> {
         let key = self.any_key_specs.get(&fn_id)?;
         self.specs.get(&SpecKey::value(fn_id, key.clone()))
     }
 
-    /// fz-pky.2 — return any registered spec for `fn_id` (for callers
-    /// that just need "the planner's view of this fn under some
-    /// reachable callsite"). Prefers the any-key spec when available;
-    /// falls back to a deterministic linear scan over remaining specs.
-    #[allow(dead_code)]
+    /// Return any registered value spec for `fn_id`. Prefers the any-key
+    /// spec when available; otherwise uses spec precedence for deterministic
+    /// selection.
     pub fn any_spec_for(&self, fn_id: FnId) -> Option<&SpecPlan> {
         if let Some(ft) = self.any_key_spec(fn_id) {
             return Some(ft);
@@ -342,22 +322,18 @@ pub struct EmitterSite {
 }
 
 impl EmitterSite {
-    /// fz-9pr.1 — project out the spec-aware `EmitterSite` to a
-    /// spec-agnostic `CallsiteId`. The caller's spec-key is dropped;
-    /// the `(FnId, CallsiteIdent, EmitSlot)` triple survives. Round-trips
-    /// with `CallsiteId::with_spec_key`.
-    #[allow(dead_code)]
+    #[cfg(test)]
+    /// Project out the spec-aware `EmitterSite` to a spec-agnostic
+    /// `CallsiteId` by dropping the caller's input key.
     pub fn callsite_id(&self) -> CallsiteId {
         CallsiteId::new(self.caller.fn_id, &self.ident, self.slot)
     }
 }
 
 impl CallsiteId {
-    /// fz-9pr.1 — re-attach a spec-key to recover the full
-    /// `EmitterSite`. The new site's FnId is asserted to match the
-    /// CallsiteId's caller; only the input-type tuple is supplied
-    /// fresh. Pre-wire users are tests only; see `EmitterSite::callsite_id`.
-    #[allow(dead_code)]
+    #[cfg(test)]
+    /// Re-attach a spec key to recover the full `EmitterSite`. The new
+    /// site's FnId must match the `CallsiteId` caller.
     pub fn with_spec_key(self, spec_key: SpecKey) -> EmitterSite {
         debug_assert_eq!(self.caller, spec_key.fn_id);
         EmitterSite {
@@ -582,10 +558,7 @@ pub(crate) fn display_return_context_plan<
     }
 }
 
-/// fz-rh5.6 — worklist-internal type aliases. Spec keys, the reverse
-/// `return_readers` index, the `holders`/`emits_by_caller` indices,
-/// and the `callsite_fn_consts` map all share these shapes; aliasing
-/// satisfies clippy::type_complexity without sacrificing readability.
+/// Worklist-internal aliases for repeated index shapes.
 pub(crate) type SpecKeySet = std::collections::HashSet<SpecKey>;
 pub(crate) type ReturnReaders = HashMap<SpecKey, SpecKeySet>;
 pub(crate) type CallsiteFnConsts = HashMap<SpecKey, Vec<Option<FnId>>>;
@@ -594,12 +567,10 @@ pub(crate) type HoldersMap = HashMap<SpecKey, EmitterSiteSet>;
 pub(crate) type EmitsByCaller = HashMap<SpecKey, EmitterSiteSet>;
 pub(crate) type ProducesMap = HashMap<EmitterSite, SpecKey>;
 
-/// fz-rh5.7 termination tripwire. The proof above (see `plan_module`'s
-/// doc) shows the worklist terminates in O(|specs| · H · |edges|) pops.
-/// This bound is comfortably above any realistic program — a hit indicates
-/// a violated invariant (non-monotone concrete op, an `is_equiv` slow-path
-/// returning false on inputs that should be equiv, or a missing recursive-key
-/// normalization), not a too-tight margin.
+/// Termination tripwire. The proof above (see `plan_module`'s doc) shows the
+/// worklist terminates in O(|specs| · H · |edges|) pops. This bound is
+/// intentionally loose; a hit indicates a violated monotonicity, equivalence,
+/// or recursive-key normalization invariant.
 pub(crate) const VISIT_HARD_BOUND: usize = 4096;
 
 pub(crate) fn normalize_recursive_direct_key<T: crate::types::Types<Ty = crate::types::Ty>>(

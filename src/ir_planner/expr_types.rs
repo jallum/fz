@@ -1,4 +1,4 @@
-use crate::fz_ir::{BinOp, Block, Const, Var};
+use crate::fz_ir::{BinOp, Const, Var};
 use crate::types::MapKey;
 use std::collections::HashMap;
 
@@ -170,7 +170,3 @@ pub(crate) fn var_as_map_key<T: crate::types::Types<Ty = crate::types::Ty>>(
 ) -> Option<MapKey> {
     env.get(&v).and_then(|ty| t.as_map_key(ty))
 }
-
-// Suppress unused imports under cfg(not(test)).
-#[allow(dead_code)]
-pub(crate) fn _suppress_block(_: &Block) {}
