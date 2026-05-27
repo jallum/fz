@@ -199,6 +199,7 @@ impl Parser {
         }
         Ok(Program {
             items,
+            module_interfaces: Default::default(),
             module_docs: Default::default(),
             module_type_envs: Default::default(),
             opaque_inners: Default::default(),

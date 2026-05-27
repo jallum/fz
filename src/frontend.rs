@@ -189,6 +189,7 @@ where
         &["fz", "frontend", "resolved"],
         crate::metadata! {
             items: prog.items.len(),
+            module_interfaces: prog.module_interfaces.len(),
             program: crate::telemetry::value::opaque(&prog),
         },
     );

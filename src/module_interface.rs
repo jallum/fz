@@ -1,0 +1,314 @@
+//! Module interface emission.
+//!
+//! This is intentionally observational for the first separate-compilation
+//! slice: interfaces are generated from the existing frontend AST and carried
+//! alongside the flattened program, but downstream phases still execute through
+//! the current whole-program path until later tickets consume these facts.
+
+use crate::ast::{Attribute, FnDef, ModuleDef, Program, SpecDecl, TypeAliasDecl, TypeExprBody};
+use crate::lexer::Tok;
+use crate::module_identity::ModuleName;
+use std::collections::BTreeMap;
+
+pub const FZ_INTERFACE_ABI_VERSION: u32 = 1;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModuleInterface {
+    pub name: ModuleName,
+    pub abi_version: u32,
+    pub exports: Vec<InterfaceFn>,
+    pub types: Vec<InterfaceType>,
+    pub docs: Option<String>,
+    /// Deterministic semantic inputs used by future artifact fingerprinting.
+    /// This is not a digest yet; keeping the inputs visible makes the first
+    /// interface tests easier to audit.
+    pub fingerprint_inputs: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct InterfaceFn {
+    pub name: String,
+    pub arity: usize,
+    pub spec: Option<InterfaceSpec>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct InterfaceSpec {
+    pub params: Vec<String>,
+    pub result: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum InterfaceTypeKind {
+    Alias,
+    Opaque,
+    Refines,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct InterfaceType {
+    pub name: String,
+    pub kind: InterfaceTypeKind,
+    pub body: String,
+}
+
+pub fn collect_from_program(prog: &Program) -> BTreeMap<ModuleName, ModuleInterface> {
+    let mut out = BTreeMap::new();
+    for item in &prog.items {
+        if let crate::ast::Item::Module(m) = &**item {
+            collect_module(m, None, &mut out);
+        }
+    }
+    out
+}
+
+fn collect_module(
+    module: &ModuleDef,
+    parent: Option<&ModuleName>,
+    out: &mut BTreeMap<ModuleName, ModuleInterface>,
+) {
+    let name = if let Some(parent) = parent {
+        parent.child(module.name.clone())
+    } else {
+        ModuleName::from_segments(vec![module.name.clone()])
+    };
+
+    let mut exports = module
+        .items
+        .iter()
+        .filter_map(|item| match &**item {
+            crate::ast::Item::Fn(def) if !def.is_macro => Some(interface_fn(def)),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    exports.sort();
+
+    let mut types = module
+        .attrs
+        .iter()
+        .filter_map(|attr| match attr {
+            Attribute::TypeAlias(decl) => Some(interface_type(decl)),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    types.sort();
+
+    let docs = module.moduledoc().map(ToOwned::to_owned);
+    let fingerprint_inputs = fingerprint_inputs(&name, &exports, &types, docs.as_deref());
+    out.insert(
+        name.clone(),
+        ModuleInterface {
+            name: name.clone(),
+            abi_version: FZ_INTERFACE_ABI_VERSION,
+            exports,
+            types,
+            docs,
+            fingerprint_inputs,
+        },
+    );
+
+    for item in &module.items {
+        if let crate::ast::Item::Module(inner) = &**item {
+            collect_module(inner, Some(&name), out);
+        }
+    }
+}
+
+fn interface_fn(def: &FnDef) -> InterfaceFn {
+    let arity = def.clauses.first().map(|c| c.params.len()).unwrap_or(0);
+    let spec = def.attrs.iter().find_map(|attr| match attr {
+        Attribute::Spec(spec) => Some(interface_spec(spec)),
+        _ => None,
+    });
+    InterfaceFn {
+        name: def.name.clone(),
+        arity,
+        spec,
+    }
+}
+
+fn interface_spec(spec: &SpecDecl) -> InterfaceSpec {
+    InterfaceSpec {
+        params: spec
+            .param_body_tokens
+            .iter()
+            .map(render_type_body)
+            .collect(),
+        result: render_type_body(&spec.result_body_tokens),
+    }
+}
+
+fn interface_type(decl: &TypeAliasDecl) -> InterfaceType {
+    InterfaceType {
+        name: decl.name.clone(),
+        kind: type_kind(&decl.body_tokens),
+        body: render_type_body(&decl.body_tokens),
+    }
+}
+
+fn type_kind(body: &TypeExprBody) -> InterfaceTypeKind {
+    match body.0.first().map(|t| &t.tok) {
+        Some(Tok::Ident(name)) if name == "opaque" => InterfaceTypeKind::Opaque,
+        Some(Tok::Ident(name)) if name == "refines" => InterfaceTypeKind::Refines,
+        _ => InterfaceTypeKind::Alias,
+    }
+}
+
+fn render_type_body(body: &TypeExprBody) -> String {
+    body.0
+        .iter()
+        .map(|token| token.tok.to_string())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn fingerprint_inputs(
+    name: &ModuleName,
+    exports: &[InterfaceFn],
+    types: &[InterfaceType],
+    docs: Option<&str>,
+) -> Vec<String> {
+    let mut inputs = vec![
+        format!("abi={}", FZ_INTERFACE_ABI_VERSION),
+        format!("module={}", name),
+    ];
+    if let Some(docs) = docs {
+        inputs.push(format!("moduledoc={}", docs));
+    }
+    for ty in types {
+        inputs.push(format!("type={}:{:?}:{}", ty.name, ty.kind, ty.body));
+    }
+    for export in exports {
+        let spec = export
+            .spec
+            .as_ref()
+            .map(|spec| format!("({})->{}", spec.params.join(","), spec.result))
+            .unwrap_or_else(|| "<unspecified>".to_string());
+        inputs.push(format!("fn={}/{}:{}", export.name, export.arity, spec));
+    }
+    inputs
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::lexer::Lexer;
+    use crate::parser::Parser;
+
+    fn interfaces(src: &str) -> BTreeMap<ModuleName, ModuleInterface> {
+        let toks = Lexer::new(src).tokenize().expect("lex");
+        let prog = Parser::new(toks).parse_program().expect("parse");
+        collect_from_program(&prog)
+    }
+
+    fn module(name: &[&str]) -> ModuleName {
+        ModuleName::from_segments(name.iter().map(|s| (*s).to_string()).collect())
+    }
+
+    #[test]
+    fn emits_exports_for_modules_and_nested_modules() {
+        let interfaces = interfaces(
+            r#"
+defmodule Outer do
+  fn f(x), do: x
+  defmodule Inner do
+    fn g(), do: 1
+  end
+end
+"#,
+        );
+
+        let outer = &interfaces[&module(&["Outer"])];
+        assert_eq!(outer.exports[0].name, "f");
+        assert_eq!(outer.exports[0].arity, 1);
+
+        let inner = &interfaces[&module(&["Outer", "Inner"])];
+        assert_eq!(inner.exports[0].name, "g");
+        assert_eq!(inner.exports[0].arity, 0);
+    }
+
+    #[test]
+    fn emits_specs_types_opaque_refines_and_docs() {
+        let interfaces = interfaces(
+            r#"
+defmodule Account do
+  @moduledoc "Accounts."
+  @type Id :: opaque int
+  @type Positive :: refines int
+  @type Pair :: {int, int}
+  @spec get(Id) :: Pair
+  fn get(id), do: {id, id}
+end
+"#,
+        );
+
+        let account = &interfaces[&module(&["Account"])];
+        assert_eq!(account.docs.as_deref(), Some("Accounts."));
+        assert_eq!(
+            account
+                .types
+                .iter()
+                .map(|ty| (&ty.name, ty.kind))
+                .collect::<Vec<_>>(),
+            vec![
+                (&"Id".to_string(), InterfaceTypeKind::Opaque),
+                (&"Pair".to_string(), InterfaceTypeKind::Alias),
+                (&"Positive".to_string(), InterfaceTypeKind::Refines),
+            ]
+        );
+        assert_eq!(account.exports[0].name, "get");
+        assert_eq!(
+            account.exports[0].spec,
+            Some(InterfaceSpec {
+                params: vec!["Upper(\"Id\")".to_string()],
+                result: "Upper(\"Pair\")".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn aliases_and_imports_do_not_add_exports() {
+        let interfaces = interfaces(
+            r#"
+defmodule Math do
+  fn add(x, y), do: x + y
+end
+defmodule User do
+  alias Math, as: M
+  import Math, only: [add: 2]
+  fn calc(x, y), do: M.add(x, y)
+end
+"#,
+        );
+        assert_eq!(
+            interfaces[&module(&["User"])]
+                .exports
+                .iter()
+                .map(|f| f.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["calc"]
+        );
+    }
+
+    #[test]
+    fn fingerprint_inputs_are_deterministic() {
+        let interfaces = interfaces(
+            r#"
+defmodule M do
+  @type T :: int
+  @spec b(T) :: T
+  fn b(x), do: x
+  fn a(), do: 1
+end
+"#,
+        );
+        let first = interfaces[&module(&["M"])].fingerprint_inputs.clone();
+        let second = interfaces[&module(&["M"])].fingerprint_inputs.clone();
+        assert_eq!(first, second);
+        assert_eq!(first[0], "abi=1");
+        assert_eq!(first[1], "module=M");
+        assert!(first[2].starts_with("type=T:Alias:"));
+        assert!(first[3].starts_with("fn=a/0:"));
+        assert!(first[4].starts_with("fn=b/1:"));
+    }
+}

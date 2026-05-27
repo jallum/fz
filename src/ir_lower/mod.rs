@@ -90,6 +90,7 @@ fn parse_runtime_prelude<T: crate::types::Types<Ty = crate::types::Ty>>(t: &mut 
             .expect("runtime.fz @type error (bug in built-in prelude)");
     let staged = crate::ast::Program {
         items,
+        module_interfaces: Default::default(),
         module_docs: Default::default(),
         module_type_envs: Default::default(),
         opaque_inners: Default::default(),

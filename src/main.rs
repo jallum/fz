@@ -31,6 +31,7 @@ mod lexer;
 mod macros;
 mod matcher;
 mod module_identity;
+mod module_interface;
 mod parking;
 mod parser;
 mod pattern_check;

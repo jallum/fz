@@ -131,6 +131,7 @@ pub fn flatten_modules<T: crate::types::Types<Ty = crate::types::Ty>>(
 ) -> Result<Program, ResolveError> {
     let module_paths = collect_module_paths(&prog);
     let module_fns = collect_module_fns(&prog)?;
+    let module_interfaces = crate::module_interface::collect_from_program(&prog);
     let mut out: Vec<Rc<Item>> = Vec::new();
     let mut module_docs: HashMap<String, String> = HashMap::new();
     collect_module_docs(&prog, &mut module_docs);
@@ -221,6 +222,7 @@ pub fn flatten_modules<T: crate::types::Types<Ty = crate::types::Ty>>(
     }
     Ok(Program {
         items: out,
+        module_interfaces,
         module_docs,
         module_type_envs,
         opaque_inners,
@@ -1520,6 +1522,7 @@ fn g(y), do: y
         };
         let prog = Program {
             items: vec![Rc::new(Item::Module(module))],
+            module_interfaces: Default::default(),
             ..Program::default()
         };
         let mut ct = crate::types::ConcreteTypes;

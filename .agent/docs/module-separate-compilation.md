@@ -8,6 +8,12 @@ Dotted strings remain compatibility/display spellings for current flattened IR,
 dumps, and diagnostics. New module-boundary code should assemble typed names
 from parsed segments or interface data and render dotted text only at the edge.
 
+`ModuleInterface` is emitted by `resolve::flatten_modules` while source-level
+`ModuleDef` nodes still exist, then carried on the flattened `Program`. Until
+the resolver and linker consume interfaces in later tickets, it is an
+observational contract artifact: downstream execution must not inspect
+dependency implementation bodies through it.
+
 The invariant for the separate-compilation arc is:
 
 - private code is inferred inside a module;
