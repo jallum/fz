@@ -12,4 +12,4 @@ k_16[&fn15[10, 20]:(α960) -> α1023] demand=value:
   @0:89-115 Direct -> Static(apply1#13 [&fn15[10, 20]:(α960) -> α1023, 12] demand=value)
 
 k_17[int] demand=value:
-  @0:83-116 Direct -> Static(print#0 [int] demand=value)
+  @0:83-116 Direct -> Static(Kernel.print#0 [int] demand=value)

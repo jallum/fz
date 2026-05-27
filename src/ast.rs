@@ -402,16 +402,16 @@ pub enum Item {
     Fn(FnDef),
     Module(ModuleDef),
     /// `alias A.B.C` (as_name = "C") or `alias A.B.C, as: D` (as_name = "D").
-    /// Only valid inside a defmodule body; the resolver consumes these and
-    /// they don't survive into the flattened Program.
+    /// Valid at root scope or inside a defmodule body. The resolver consumes
+    /// aliases, so they don't survive into the flattened Program.
     Alias {
         full_path: ModuleName,
         as_name: String,
         span: Span,
     },
     /// `import Mod` / `import Mod, only: [f: 1, g: 2]` /
-    /// `import Mod, except: [...]`. Only valid inside a defmodule body;
-    /// resolver-consumed.
+    /// `import Mod, except: [...]`. Valid at root scope or inside a defmodule
+    /// body; resolver-consumed.
     Import {
         path: ModuleName,
         /// Whitelist of (name, arity) pairs. None means "all fns in the

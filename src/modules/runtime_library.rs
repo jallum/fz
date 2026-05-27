@@ -24,16 +24,30 @@ const RUNTIME_PRELUDE_FZ: &str = include_str!("runtime_library/runtime.fz");
 struct RuntimeModuleSource {
     name: &'static str,
     source: &'static str,
+    role: RuntimeModuleRole,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RuntimeModuleRole {
+    CorePrelude,
+    Library,
 }
 
 const RUNTIME_MODULE_SOURCES: &[RuntimeModuleSource] = &[
     RuntimeModuleSource {
+        name: "Kernel",
+        source: include_str!("runtime_library/kernel.fz"),
+        role: RuntimeModuleRole::CorePrelude,
+    },
+    RuntimeModuleSource {
         name: "Process",
         source: include_str!("runtime_library/process.fz"),
+        role: RuntimeModuleRole::Library,
     },
     RuntimeModuleSource {
         name: "Utf8",
         source: include_str!("runtime_library/utf8.fz"),
+        role: RuntimeModuleRole::Library,
     },
 ];
 
@@ -47,6 +61,35 @@ pub struct RuntimeLibraryModuleArtifact {
 
 pub fn prelude_source() -> &'static str {
     RUNTIME_PRELUDE_FZ
+}
+
+pub fn core_prelude_module_sources() -> impl Iterator<Item = (&'static str, &'static str)> {
+    RUNTIME_MODULE_SOURCES
+        .iter()
+        .filter(|source| source.role == RuntimeModuleRole::CorePrelude)
+        .map(|source| (source.name, source.source))
+}
+
+pub fn is_core_prelude_module(module: &ModuleName) -> bool {
+    RUNTIME_MODULE_SOURCES.iter().any(|source| {
+        source.role == RuntimeModuleRole::CorePrelude && source.name == module.dotted()
+    })
+}
+
+pub fn prelude_required_modules() -> Vec<ModuleName> {
+    let core_modules = RUNTIME_MODULE_SOURCES
+        .iter()
+        .filter(|source| source.role == RuntimeModuleRole::CorePrelude)
+        .map(|source| ModuleName::from_segments(vec![source.name.to_string()]))
+        .collect::<std::collections::BTreeSet<_>>();
+    primitive_prelude_program()
+        .items
+        .iter()
+        .filter_map(|item| match &**item {
+            Item::Import { path, .. } if !core_modules.contains(path) => Some(path.clone()),
+            _ => None,
+        })
+        .collect()
 }
 
 pub fn parsed_program() -> Program {
@@ -204,7 +247,6 @@ fn runtime_module_source(name: &ModuleName) -> Option<&'static str> {
         .map(|source| source.source)
 }
 
-#[cfg(test)]
 pub fn primitive_prelude_program() -> Program {
     let toks = crate::lexer::Lexer::new(RUNTIME_PRELUDE_FZ)
         .tokenize()
@@ -406,7 +448,7 @@ end
     }
 
     #[test]
-    fn primitive_prelude_keeps_top_level_contracts_out_of_stdlib_modules() {
+    fn primitive_prelude_imports_kernel_without_defmodule_body() {
         let prelude = primitive_prelude_program();
         assert!(
             prelude
@@ -415,10 +457,9 @@ end
                 .all(|item| !matches!(&**item, Item::Module(_)))
         );
         assert!(
-            prelude
-                .items
-                .iter()
-                .any(|item| matches!(&**item, Item::Fn(def) if def.name == "print"))
+            prelude.items.iter().any(
+                |item| matches!(&**item, Item::Import { path, .. } if path.dotted() == "Kernel")
+            )
         );
     }
 }

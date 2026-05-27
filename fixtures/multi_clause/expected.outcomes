@@ -6,24 +6,24 @@ main[] demand=value:
 
 k_21[:zero] demand=value:
   @0:164-182 Cont -> Static(k_22#22 [nil] demand=value)
-  @0:164-182 Direct -> Static(print#0 [:zero] demand=value)
+  @0:164-182 Direct -> Static(Kernel.print#0 [:zero] demand=value)
 
 k_22[nil] demand=value:
   @0:191-202 Direct -> Static(k_23#23 [:positive] demand=value)
 
 k_23[:positive] demand=value:
   @0:185-203 Cont -> Static(k_24#24 [nil] demand=value)
-  @0:185-203 Direct -> Static(print#0 [:positive] demand=value)
+  @0:185-203 Direct -> Static(Kernel.print#0 [:positive] demand=value)
 
 k_24[nil] demand=value:
   @0:212-224 Direct -> Static(k_25#25 [:negative] demand=value)
 
 k_25[:negative] demand=value:
   @0:206-225 Cont -> Static(k_26#26 [nil] demand=value)
-  @0:206-225 Direct -> Static(print#0 [:negative] demand=value)
+  @0:206-225 Direct -> Static(Kernel.print#0 [:negative] demand=value)
 
 k_26[nil] demand=value:
   @0:234-241 Direct -> Static(k_27#27 [int] demand=value)
 
 k_27[int] demand=value:
-  @0:228-242 Direct -> Static(print#0 [int] demand=value)
+  @0:228-242 Direct -> Static(Kernel.print#0 [int] demand=value)

@@ -1,8 +1,11 @@
+import Utf8, only: [valid?: 1]
+alias Utf8, as: U
+
 fn main() do
   good = <<104, 105>>           # "hi" as raw bytes
   bad  = <<0xff, 0xff>>         # invalid UTF-8 sequence
-  print(Utf8.valid?(good))
-  print(Utf8.valid?(bad))
-  print(Utf8.from_bytes(good))
-  print(Utf8.from_bytes(bad))
+  print(valid?(good))
+  print(valid?(bad))
+  print(U.from_bytes(good))
+  print(U.from_bytes(bad))
 end

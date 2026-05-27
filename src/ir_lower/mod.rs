@@ -31,6 +31,7 @@
 use crate::ast::{FnDef, Item, Program};
 use crate::diag::Span;
 use crate::fz_ir::{BlockId, ExternDecl, ExternId, ExternTy, FnId, Module, SourceInfo, Term};
+use crate::modules::identity::ModuleName;
 use std::collections::HashMap;
 use std::rc::Rc;
 
@@ -76,17 +77,20 @@ pub(crate) const REPL_ENTRY_PREFIX: &str = "__repl_eval_";
 /// declarations, so root-scope `@type` aliases (like `@type utf8 ::
 /// refines binary` at the top of runtime.fz) are harvested separately
 /// from attrs and merged into the flat program.
-fn parse_runtime_prelude<T: crate::types::Types<Ty = crate::types::Ty>>(t: &mut T) -> Program {
+fn parse_runtime_prelude<T: crate::types::Types<Ty = crate::types::Ty>>(
+    t: &mut T,
+) -> (Program, HashMap<(String, usize), String>) {
     let runtime_fz = crate::modules::runtime_library::prelude_source();
-    let toks = crate::lexer::Lexer::new(runtime_fz)
-        .tokenize()
-        .expect("runtime.fz lex error (bug in built-in prelude)");
-    let (items, attrs) = crate::parser::Parser::new(toks)
-        .parse_prelude()
-        .expect("runtime.fz parse error (bug in built-in prelude)");
+    let (items, attrs) = parse_runtime_source_items(runtime_fz, "runtime.fz");
     let (root_env, root_o_inners, root_b_inners) =
         crate::type_expr::build_module_type_env_for(t, &attrs, "")
             .expect("runtime.fz @type error (bug in built-in prelude)");
+    let prelude_imports = collect_runtime_prelude_imports(&items);
+    let mut items = items;
+    for (name, source) in crate::modules::runtime_library::core_prelude_module_sources() {
+        let (mut module_items, _module_attrs) = parse_runtime_source_items(source, name);
+        items.append(&mut module_items);
+    }
     let staged = crate::ast::Program {
         items,
         module_interfaces: Default::default(),
@@ -105,7 +109,89 @@ fn parse_runtime_prelude<T: crate::types::Types<Ty = crate::types::Ty>>(t: &mut 
         .extend(root_env);
     flat.opaque_inners.extend(root_o_inners);
     flat.brand_inners.extend(root_b_inners);
-    flat
+    (flat, prelude_imports)
+}
+
+fn parse_runtime_source_items(
+    src: &str,
+    label: &str,
+) -> (Vec<Rc<Item>>, Vec<crate::ast::Attribute>) {
+    let toks = crate::lexer::Lexer::new(src)
+        .tokenize()
+        .unwrap_or_else(|_| panic!("{label} lex error (bug in built-in prelude)"));
+    crate::parser::Parser::new(toks)
+        .parse_prelude()
+        .unwrap_or_else(|_| panic!("{label} parse error (bug in built-in prelude)"))
+}
+
+fn collect_runtime_prelude_imports(items: &[Rc<Item>]) -> HashMap<(String, usize), String> {
+    let mut out = HashMap::new();
+    for item in items {
+        match item.as_ref() {
+            Item::Import {
+                path,
+                only,
+                except,
+                span,
+            } => collect_runtime_prelude_import(
+                &mut out,
+                path,
+                only.as_deref(),
+                except.as_deref(),
+                *span,
+            ),
+            Item::Alias { .. } => {
+                panic!("runtime.fz prelude aliases are not supported; use import")
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+fn collect_runtime_prelude_import(
+    out: &mut HashMap<(String, usize), String>,
+    module: &ModuleName,
+    only: Option<&[(String, usize)]>,
+    except: Option<&[(String, usize)]>,
+    span: Span,
+) {
+    let interface = crate::modules::runtime_library::interface(module).unwrap_or_else(|| {
+        panic!(
+            "runtime.fz imports unknown built-in runtime module `{}`",
+            module
+        )
+    });
+    let mut exports = interface
+        .exports
+        .iter()
+        .map(|export| (export.name.clone(), export.arity))
+        .collect::<Vec<_>>();
+    if let Some(only) = only {
+        for requested in only {
+            assert!(
+                exports.contains(requested),
+                "runtime.fz imports missing `{}/{}` from `{}`",
+                requested.0,
+                requested.1,
+                module
+            );
+        }
+        exports = only.to_vec();
+    }
+    if let Some(except) = except {
+        exports.retain(|export| !except.contains(export));
+    }
+    for (name, arity) in exports {
+        let previous = out.insert((name.clone(), arity), format!("{}.{}", module, name));
+        assert!(
+            previous.is_none(),
+            "runtime.fz import for `{}/{}` conflicts at {:?}",
+            name,
+            arity,
+            span
+        );
+    }
 }
 
 pub fn lower_program<T: crate::types::Types<Ty = crate::types::Ty>>(
@@ -140,9 +226,12 @@ pub fn lower_program_full_with_telemetry<T: crate::types::Types<Ty = crate::type
     let mut ctx = LowerCtx::new();
     ctx.register_external_interfaces(&prog.external_module_interfaces);
 
-    // Prepend the built-in runtime.fz prelude so its externs and wrapper fns
-    // are visible to every user program without an explicit import.
-    let prelude = parse_runtime_prelude(t);
+    // Prepend the built-in runtime prelude. `runtime.fz` contributes root
+    // type aliases and imports; core prelude module sources (currently
+    // Kernel) contribute the implementations those imports expose.
+    let (prelude, prelude_imports) = parse_runtime_prelude(t);
+    ctx.prelude_imports = prelude_imports;
+    ctx.register_external_interfaces(&prelude.external_module_interfaces);
     let prelude_type_env = prelude
         .module_type_envs
         .get("")
@@ -1318,7 +1407,6 @@ mod tests {
             s
         );
         assert!(s.contains("lambda_"), "expected lambda fn name: {}", s);
-        // Module has 7 runtime.fz wrapper fns + mk + lambda = 9.
         assert!(
             m.fns.len() >= 2,
             "expected ≥2 fns (mk + lambda + prelude), got {}",
@@ -1370,20 +1458,26 @@ mod tests {
         );
     }
 
-    /// fz-ext.7 — `print(x)` now routes through the runtime.fz wrapper fn
-    /// `fn print(x) do fz_print_value(x) end`. The wrapper's body contains
-    /// `extern#0(` (fz_print_value = ExternId 0 in runtime.fz).
+    /// `print(x)` routes through the runtime.fz prelude import to the
+    /// core-prelude `Kernel.print/1` implementation instead of exposing raw
+    /// externs from the root prelude.
     #[test]
     fn print_call_routes_through_runtime_fz_wrapper() {
         let m = lower_src("fn p(), do: print(1)");
-        let s = format!("{}", m);
-        // The fz_print_value extern dispatch lives inside the print wrapper.
-        assert!(s.contains("extern#0("), "expected extern#0( in:\n{}", s);
+        let print = m
+            .fns
+            .iter()
+            .find(|f| f.name == "Kernel.print" && f.block(f.entry).params.len() == 1)
+            .expect("Kernel.print/1 prelude fn missing");
+        let p = m.fn_by_name("p").expect("p fn missing");
+        let Term::TailCall { callee, .. } = p.block(p.entry).terminator else {
+            panic!("expected p to tail-call print/1");
+        };
+        assert_eq!(callee, print.id);
     }
 
-    /// fz-ext.7 — `spawn(x)` routes through the runtime.fz wrapper fn
-    /// `fn spawn(fun), do: Kernel.fz_spawn(fun)`, just like other prelude
-    /// surface functions.
+    /// `spawn(x)` routes through the runtime.fz prelude import to
+    /// `Kernel.spawn/1`, whose implementation owns the raw extern.
     #[test]
     fn spawn_callsite_routes_through_runtime_fz_wrapper() {
         let m = lower_src("fn child(), do: 0\nfn p() do spawn(child) end");
@@ -1395,8 +1489,8 @@ mod tests {
         let spawn = m
             .fns
             .iter()
-            .find(|f| f.name == "spawn" && f.block(f.entry).params.len() == 1)
-            .expect("spawn/1 prelude fn missing");
+            .find(|f| f.name == "Kernel.spawn" && f.block(f.entry).params.len() == 1)
+            .expect("Kernel.spawn/1 prelude fn missing");
         let p = m.fn_by_name("p").expect("p fn missing");
         let entry = p.block(p.entry);
         let Term::TailCall { callee, .. } = entry.terminator else {
@@ -1406,18 +1500,12 @@ mod tests {
             );
         };
         assert_eq!(callee, spawn.id);
-        let spawn_extern = m
-            .externs
-            .iter()
-            .find(|e| e.symbol == "fz_spawn")
-            .expect("fz_spawn extern missing")
-            .id;
         assert!(
             spawn.blocks.iter().any(|b| b.stmts.iter().any(|stmt| {
                 let crate::fz_ir::Stmt::Let(_, prim) = stmt;
-                matches!(prim, Prim::Extern(eid, _) if *eid == spawn_extern)
+                matches!(prim, Prim::Extern(_, _))
             })),
-            "spawn/1 wrapper must call fz_spawn extern"
+            "Kernel.spawn/1 must call its runtime extern"
         );
     }
 
@@ -1429,8 +1517,8 @@ mod tests {
         let spawn = m
             .fns
             .iter()
-            .find(|f| f.name == "spawn" && f.block(f.entry).params.len() == 1)
-            .expect("spawn/1 prelude fn missing");
+            .find(|f| f.name == "Kernel.spawn" && f.block(f.entry).params.len() == 1)
+            .expect("Kernel.spawn/1 prelude fn missing");
         let callee = match entry.terminator {
             Term::TailCall { callee, .. } => callee,
             ref other => panic!(
@@ -1447,8 +1535,7 @@ mod tests {
         );
     }
 
-    /// fz-siu.12 — spawn/2 also lives in runtime.fz. The user call should
-    /// tail-call the prelude wrapper, whose body calls fz_spawn_opt.
+    /// `spawn/2` follows the same prelude-import path as `spawn/1`.
     #[test]
     fn spawn2_routes_through_runtime_fz_wrapper() {
         let m = lower_src("fn child(), do: 0\nfn p() do spawn(child, 4096) end");
@@ -1459,8 +1546,8 @@ mod tests {
         let spawn = m
             .fns
             .iter()
-            .find(|f| f.name == "spawn" && f.block(f.entry).params.len() == 2)
-            .expect("spawn/2 prelude fn missing");
+            .find(|f| f.name == "Kernel.spawn" && f.block(f.entry).params.len() == 2)
+            .expect("Kernel.spawn/2 prelude fn missing");
         let p = m.fn_by_name("p").expect("p fn missing");
         let entry = p.block(p.entry);
         let Term::TailCall { callee, .. } = entry.terminator else {
@@ -1470,23 +1557,16 @@ mod tests {
             );
         };
         assert_eq!(callee, spawn.id);
-        let spawn_opt = m
-            .externs
-            .iter()
-            .find(|e| e.symbol == "fz_spawn_opt")
-            .expect("fz_spawn_opt extern missing")
-            .id;
         assert!(
             spawn.blocks.iter().any(|b| b.stmts.iter().any(|stmt| {
                 let crate::fz_ir::Stmt::Let(_, prim) = stmt;
-                matches!(prim, Prim::Extern(eid, _) if *eid == spawn_opt)
+                matches!(prim, Prim::Extern(_, _))
             })),
-            "spawn/2 wrapper must call fz_spawn_opt extern"
+            "Kernel.spawn/2 must call its runtime extern"
         );
     }
 
-    /// The lowerer no longer synthesizes fz_spawn_thunk for any program;
-    /// spawn is just another runtime.fz prelude wrapper.
+    /// The lowerer no longer synthesizes fz_spawn_thunk for any program.
     #[test]
     fn spawn_free_program_has_no_compiler_spawn_thunk() {
         let m = lower_src("fn p(), do: 0");

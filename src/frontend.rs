@@ -1,6 +1,6 @@
 use crate::ast::{Expr, FnClause, FnDef, Pattern, Program, Spanned};
 use crate::diag::{Diagnostic, Diagnostics, SourceMap};
-use crate::fz_ir::{FnId, Module};
+use crate::fz_ir::Module;
 use crate::ir_planner::ModulePlan;
 use crate::lexer::Lexer;
 use crate::macros;
@@ -27,7 +27,6 @@ pub type FrontendResult = Result<FrontendOk, FrontendErr>;
 
 pub(crate) struct ReplEntryOk {
     pub frontend: FrontendOk,
-    pub entry_fn: FnId,
     pub input_frame: Vec<String>,
     pub output_frame: Vec<String>,
     pub entry_item: std::rc::Rc<crate::ast::Item>,
@@ -275,7 +274,7 @@ where
     )));
     prog.items.push(entry_item.clone());
     let frontend = compile_program_with_types(t, prog, sm, tel)?;
-    let Some(entry_fn) = frontend.module.fn_by_name(&entry_name).map(|f| f.id) else {
+    if frontend.module.fn_by_name(&entry_name).is_none() {
         return Err(fail(
             frontend.sm,
             Diagnostic::error(
@@ -284,10 +283,9 @@ where
                 crate::diag::Span::DUMMY,
             ),
         ));
-    };
+    }
     Ok(ReplEntryOk {
         frontend,
-        entry_fn,
         input_frame,
         output_frame,
         entry_item,
@@ -634,7 +632,6 @@ fn main(), do: inc(41)
             .module
             .fn_by_name("__repl_eval_0")
             .expect("repl entry");
-        assert_eq!(out.entry_fn, entry.id);
         assert_eq!(out.input_frame, vec!["x"]);
         assert_eq!(out.output_frame, vec!["x"]);
         assert_eq!(entry.category, crate::fz_ir::FnCategory::ReplEntry);

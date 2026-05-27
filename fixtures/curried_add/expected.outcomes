@@ -26,7 +26,7 @@ k_18[&fn16[10, int]:(α1024) -> α1087] demand=value:
 
 k_19[int] demand=value:
   @0:85-122 Cont -> Static(k_20#20 [nil] demand=value)
-  @0:85-122 Direct -> Static(print#0 [int] demand=value)
+  @0:85-122 Direct -> Static(Kernel.print#0 [int] demand=value)
 
 k_20[nil] demand=value:
   @0:143-150 Direct -> Static(k_21#21 [&fn15[1]:(α960) -> α1023] demand=value)
@@ -40,4 +40,4 @@ k_22[&fn16[1, int]:(α1024) -> α1087] demand=value:
   @0:131-158 Direct -> Static(apply#13 [&fn16[1, int]:(α1024) -> α1087, int] demand=value)
 
 k_23[int] demand=value:
-  @0:125-159 Direct -> Static(print#0 [int] demand=value)
+  @0:125-159 Direct -> Static(Kernel.print#0 [int] demand=value)

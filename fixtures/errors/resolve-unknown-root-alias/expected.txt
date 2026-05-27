@@ -1,0 +1,6 @@
+error[resolve/unknown-module]: module `Some.Mod` is not defined
+  --> fixtures/errors/resolve-unknown-root-alias/input.fz:1:1
+   |
+ 1 | alias Some.Mod
+   | ^^^^^^^^^^^^^^
+   |

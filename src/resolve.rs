@@ -34,12 +34,6 @@ use std::rc::Rc;
 /// diagnostic instead of a DUMMY-span headline. See fz-ul4.21.
 #[derive(Debug, Clone)]
 pub enum ResolveError {
-    AliasOutsideModule {
-        span: Span,
-    },
-    ImportOutsideModule {
-        span: Span,
-    },
     DuplicateModule {
         module: ModuleName,
         first_span: Span,
@@ -77,16 +71,6 @@ pub enum ResolveError {
 impl ResolveError {
     pub fn to_diagnostic(&self) -> Diagnostic {
         match self {
-            Self::AliasOutsideModule { span } => Diagnostic::error(
-                codes::RESOLVE_ALIAS_OUTSIDE_MODULE,
-                "alias is only valid inside a defmodule body",
-                *span,
-            ),
-            Self::ImportOutsideModule { span } => Diagnostic::error(
-                codes::RESOLVE_IMPORT_OUTSIDE_MODULE,
-                "import is only valid inside a defmodule body",
-                *span,
-            ),
             Self::DuplicateModule {
                 module,
                 first_span,
@@ -173,10 +157,18 @@ pub fn flatten_modules<T: crate::types::Types<Ty = crate::types::Ty>>(
     t: &mut T,
     prog: Program,
 ) -> Result<Program, ResolveError> {
-    flatten_modules_with_interface_table(t, prog, BTreeMap::new())
+    flatten_modules_with_options(t, prog, BTreeMap::new())
 }
 
 pub fn flatten_modules_with_interface_table<T: crate::types::Types<Ty = crate::types::Ty>>(
+    t: &mut T,
+    prog: Program,
+    interface_table: InterfaceTable,
+) -> Result<Program, ResolveError> {
+    flatten_modules_with_options(t, prog, interface_table)
+}
+
+fn flatten_modules_with_options<T: crate::types::Types<Ty = crate::types::Ty>>(
     t: &mut T,
     prog: Program,
     mut interface_table: InterfaceTable,
@@ -212,8 +204,8 @@ pub fn flatten_modules_with_interface_table<T: crate::types::Types<Ty = crate::t
         &mut opaque_inners,
         &mut brand_inners,
     )?;
-    let no_aliases: HashMap<String, String> = HashMap::new();
-    let no_imports: ImportMap = HashMap::new();
+    let (root_aliases, root_imports) =
+        collect_import_scope(&prog.items, &interface_table, &module_macros)?;
     for item in &prog.items {
         match &**item {
             Item::Fn(def) => {
@@ -227,8 +219,8 @@ pub fn flatten_modules_with_interface_table<T: crate::types::Types<Ty = crate::t
                         &no_siblings,
                         &mut intro,
                         &module_paths,
-                        &no_aliases,
-                        &no_imports,
+                        &root_aliases,
+                        &root_imports,
                     );
                     if let Some(g) = &mut clause.guard {
                         rewrite_expr(
@@ -237,8 +229,8 @@ pub fn flatten_modules_with_interface_table<T: crate::types::Types<Ty = crate::t
                             &no_siblings,
                             &mut intro,
                             &module_paths,
-                            &no_aliases,
-                            &no_imports,
+                            &root_aliases,
+                            &root_imports,
                         );
                     }
                 }
@@ -252,12 +244,7 @@ pub fn flatten_modules_with_interface_table<T: crate::types::Types<Ty = crate::t
                 &interface_table,
                 &module_macros,
             )?,
-            Item::Alias { span, .. } => {
-                return Err(ResolveError::AliasOutsideModule { span: *span });
-            }
-            Item::Import { span, .. } => {
-                return Err(ResolveError::ImportOutsideModule { span: *span });
-            }
+            Item::Alias { .. } | Item::Import { .. } => {}
             Item::MacroCall {
                 name,
                 name_span,
@@ -275,8 +262,8 @@ pub fn flatten_modules_with_interface_table<T: crate::types::Types<Ty = crate::t
                         &no_siblings,
                         &mut intro,
                         &module_paths,
-                        &no_aliases,
-                        &no_imports,
+                        &root_aliases,
+                        &root_imports,
                     );
                 }
                 out.push(Rc::new(Item::MacroCall {
@@ -321,6 +308,8 @@ fn collect_requested_external_modules(prog: &Program, out: &mut Vec<ModuleName>)
     for item in &prog.items {
         match &**item {
             Item::Module(module) => collect_requested_external_modules_recursive(module, out),
+            Item::Alias { full_path, .. } => out.push(full_path.clone()),
+            Item::Import { path, .. } => out.push(path.clone()),
             Item::Fn(def) => {
                 for clause in &def.clauses {
                     collect_top_level_qualified_calls(&clause.body, out);
@@ -619,6 +608,109 @@ type ImportMap = HashMap<(String, usize), ImportBinding>;
 struct ImportBinding {
     module: ModuleName,
     span: Span,
+}
+
+fn collect_import_scope(
+    items: &[Rc<Item>],
+    module_interfaces: &InterfaceTable,
+    module_macros: &ModuleMacroExports,
+) -> Result<(HashMap<String, String>, ImportMap), ResolveError> {
+    let mut aliases = HashMap::new();
+    let mut imports = HashMap::new();
+    for item in items {
+        match &**item {
+            Item::Alias {
+                full_path,
+                as_name,
+                span,
+            } => {
+                if !module_interfaces.contains_key(full_path) {
+                    return Err(ResolveError::UnknownModule {
+                        module: full_path.clone(),
+                        span: *span,
+                    });
+                }
+                aliases.insert(as_name.clone(), full_path.dotted());
+            }
+            Item::Import {
+                path,
+                only,
+                except,
+                span,
+            } => {
+                collect_imports_for_item(
+                    path,
+                    only.as_deref(),
+                    except.as_deref(),
+                    *span,
+                    module_interfaces,
+                    module_macros,
+                    &mut imports,
+                )?;
+            }
+            _ => {}
+        }
+    }
+    Ok((aliases, imports))
+}
+
+fn collect_imports_for_item(
+    path: &ModuleName,
+    only: Option<&[(String, usize)]>,
+    except: Option<&[(String, usize)]>,
+    span: Span,
+    module_interfaces: &InterfaceTable,
+    module_macros: &ModuleMacroExports,
+    imports: &mut ImportMap,
+) -> Result<(), ResolveError> {
+    let Some(interface) = module_interfaces.get(path) else {
+        return Err(ResolveError::UnknownModule {
+            module: path.clone(),
+            span,
+        });
+    };
+    let target_exports = importable_exports(interface, module_macros.get(path));
+    if let Some(allow) = only {
+        validate_import_filter(path, allow, &target_exports, span)?;
+    }
+    if let Some(deny) = except {
+        validate_import_filter(path, deny, &target_exports, span)?;
+    }
+    let pairs: Vec<(String, usize)> = if let Some(allow) = only {
+        allow.to_vec()
+    } else if let Some(deny) = except {
+        let deny_set: HashSet<(String, usize)> = deny.iter().cloned().collect();
+        target_exports
+            .iter()
+            .filter(|p| !deny_set.contains(*p))
+            .cloned()
+            .collect()
+    } else {
+        target_exports.iter().cloned().collect()
+    };
+    for (name, arity) in pairs {
+        let key = (name, arity);
+        if let Some(existing) = imports.get(&key)
+            && existing.module != *path
+        {
+            return Err(ResolveError::ConflictingImport {
+                name: key.0,
+                arity: key.1,
+                first_module: existing.module.clone(),
+                second_module: path.clone(),
+                first_span: existing.span,
+                second_span: span,
+            });
+        }
+        imports.insert(
+            key,
+            ImportBinding {
+                module: path.clone(),
+                span,
+            },
+        );
+    }
+    Ok(())
 }
 
 fn collect_module_fns(prog: &Program) -> Result<ModuleFns, ResolveError> {
@@ -2099,76 +2191,49 @@ end
     }
 
     #[test]
-    fn import_outside_module_errors() {
-        let mut ct = crate::types::ConcreteTypes;
-        let r = flatten_modules(
-            &mut ct,
-            parse(
-                r#"
-import Some.Mod
-fn main(), do: nil
+    fn top_level_import_rewrites_top_level_functions() {
+        let p = flatten(
+            r#"
+defmodule Math do
+  fn add(x, y), do: x + y
+end
+import Math, only: [add: 2]
+fn main(), do: add(20, 22)
 "#,
-            ),
         );
-        assert!(r.is_err());
+        let main = p
+            .items
+            .iter()
+            .find_map(|it| match &**it {
+                Item::Fn(d) if d.name == "main" => Some(d),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(callee_name(&main.clauses[0].body), "Math.add");
     }
 
     #[test]
-    fn alias_outside_module_errors() {
-        let mut ct = crate::types::ConcreteTypes;
-        let r = flatten_modules(
-            &mut ct,
-            parse(
-                r#"
-alias Some.Mod
-fn main(), do: nil
+    fn top_level_alias_rewrites_top_level_functions() {
+        let p = flatten(
+            r#"
+defmodule Outer do
+  defmodule Inner do
+    fn value(), do: 42
+  end
+end
+alias Outer.Inner, as: I
+fn main(), do: I.value()
 "#,
-            ),
         );
-        assert!(r.is_err());
-    }
-
-    /// .21 step 1: resolve errors now carry a real Span pointing at the
-    /// offending item, not `Span::DUMMY`. The renderer relies on this to
-    /// underline the source location.
-    #[test]
-    fn alias_outside_module_diag_has_real_span() {
-        let mut ct = crate::types::ConcreteTypes;
-        let err = flatten_modules(
-            &mut ct,
-            parse(
-                r#"
-alias Some.Mod
-fn main(), do: nil
-"#,
-            ),
-        )
-        .unwrap_err();
-        let d = err.to_diagnostic();
-        assert_ne!(
-            d.primary.span,
-            Span::DUMMY,
-            "resolve diagnostic should carry the offending item's span"
-        );
-        assert_eq!(d.code, codes::RESOLVE_ALIAS_OUTSIDE_MODULE);
-    }
-
-    #[test]
-    fn import_outside_module_diag_has_real_span() {
-        let mut ct = crate::types::ConcreteTypes;
-        let err = flatten_modules(
-            &mut ct,
-            parse(
-                r#"
-import Some.Mod
-fn main(), do: nil
-"#,
-            ),
-        )
-        .unwrap_err();
-        let d = err.to_diagnostic();
-        assert_ne!(d.primary.span, Span::DUMMY);
-        assert_eq!(d.code, codes::RESOLVE_IMPORT_OUTSIDE_MODULE);
+        let main = p
+            .items
+            .iter()
+            .find_map(|it| match &**it {
+                Item::Fn(d) if d.name == "main" => Some(d),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(callee_name(&main.clauses[0].body), "Outer.Inner.value");
     }
 
     #[test]

@@ -82,6 +82,7 @@ pub struct LowerCtx {
     /// inline substitutions; the rest are kept here so the diagnostic
     /// can explain *why* a particular call wasn't inlined.
     pub fn_defs_by_arity: HashMap<(String, usize), FnDef>,
+    pub(super) prelude_imports: HashMap<(String, usize), String>,
     pub(super) external_exports: HashMap<(String, usize), crate::modules::identity::ExportKey>,
     pub(super) external_stubs: HashMap<crate::modules::identity::ExportKey, FnId>,
 }
@@ -114,9 +115,30 @@ impl LowerCtx {
             boundary_fns: HashSet::new(),
             branch_origin: crate::fz_ir::BranchOrigin::User,
             fn_defs_by_arity: HashMap::new(),
+            prelude_imports: HashMap::new(),
             external_exports: HashMap::new(),
             external_stubs: HashMap::new(),
         }
+    }
+
+    pub(super) fn resolve_prelude_import(&self, name: &str, arity: usize) -> Option<String> {
+        self.prelude_imports
+            .get(&(name.to_string(), arity))
+            .cloned()
+    }
+
+    pub(super) fn unique_imported_fn_value_target(&self, name: &str) -> Option<(String, FnId)> {
+        let mut matches = self
+            .prelude_imports
+            .iter()
+            .filter(|((imported, _arity), _qualified)| imported == name)
+            .map(|((_imported, arity), qualified)| (qualified.clone(), *arity));
+        let (qualified, arity) = matches.next()?;
+        if matches.next().is_some() {
+            return None;
+        }
+        let fn_id = *self.fns.get(&(qualified.clone(), arity))?;
+        Some((qualified, fn_id))
     }
 
     pub(super) fn register_external_interfaces(

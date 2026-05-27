@@ -530,6 +530,8 @@ impl ReplWorld {
                         | crate::lexer::Tok::Extern
                         | crate::lexer::Tok::Defmacro
                         | crate::lexer::Tok::Defmodule
+                        | crate::lexer::Tok::Alias
+                        | crate::lexer::Tok::Import
                 )
             })
             .unwrap_or(false);
@@ -580,7 +582,7 @@ impl ReplWorld {
             self.session_program(),
             expr,
             input_frame,
-            entry_name,
+            entry_name.clone(),
             sm,
             &crate::telemetry::NullTelemetry,
         ) {
@@ -601,11 +603,18 @@ impl ReplWorld {
                 out.frontend.diagnostics.as_slice(),
             ));
         }
+        let graph = prepare_repl_frontend(&mut t, out.frontend)?;
+        let Some(entry_fn) = graph.module.fn_by_name(&entry_name).map(|f| f.id) else {
+            return Err(io::Error::other(format!(
+                "repl entry `{}` not lowered",
+                entry_name
+            )));
+        };
         let mut entry_program = Program::default();
         entry_program.items.push(out.entry_item);
         Ok(ReplCompiledEntry {
-            module: out.frontend.module,
-            fn_id: out.entry_fn,
+            module: graph.module,
+            fn_id: entry_fn,
             input_frame: out.input_frame,
             output_frame: out.output_frame,
             entry_program,
@@ -688,7 +697,32 @@ fn compile_parsed_program_module(prog: Program) -> io::Result<crate::fz_ir::Modu
             frontend.diagnostics.as_slice(),
         ));
     }
-    Ok(frontend.module)
+    Ok(prepare_repl_frontend(&mut t, frontend)?.module)
+}
+
+fn prepare_repl_frontend(
+    t: &mut crate::types::ConcreteTypes,
+    frontend: crate::frontend::FrontendOk,
+) -> io::Result<crate::modules::pipeline::PreparedExecutionGraph> {
+    let providers = crate::modules::pipeline::ProviderInputs::new(
+        crate::modules::artifact_store::DEFAULT_ARTIFACT_ROOT.to_string(),
+        Vec::new(),
+    );
+    let checked = crate::modules::pipeline::checked_module_for_mode(
+        t,
+        Ok(frontend),
+        &crate::telemetry::NullTelemetry,
+        crate::modules::pipeline::CompileMode::Normal,
+    )
+    .map_err(pipeline_error_to_io_error)?;
+    crate::modules::pipeline::prepare_execution_graph(
+        t,
+        checked,
+        &providers,
+        &crate::telemetry::NullTelemetry,
+        crate::modules::pipeline::CompileMode::Normal,
+    )
+    .map_err(pipeline_error_to_io_error)
 }
 
 fn item_fn_shapes(prog: &Program) -> Vec<(String, usize)> {
@@ -1010,6 +1044,32 @@ fn main() do
 end
 "#;
         run_script_str(src).expect("Utf8 helpers should run through script REPL");
+    }
+
+    #[test]
+    fn repl_session_accepts_top_level_runtime_import() {
+        let mut session = ReplSession::new();
+        assert!(matches!(
+            session.eval_chunk("import Utf8, only: [valid?: 1]"),
+            ReplChunkOutcome::Ok(None)
+        ));
+        assert_eq!(
+            eval_session_render(&mut session, "valid?(<<104, 105>>)"),
+            "true"
+        );
+    }
+
+    #[test]
+    fn repl_session_accepts_top_level_runtime_alias() {
+        let mut session = ReplSession::new();
+        assert!(matches!(
+            session.eval_chunk("alias Utf8, as: U"),
+            ReplChunkOutcome::Ok(None)
+        ));
+        assert_eq!(
+            eval_session_render(&mut session, "U.valid?(<<0xff, 0xff>>)"),
+            "false"
+        );
     }
 
     fn eval_session_i64(session: &mut ReplSession, src: &str) -> Option<i64> {

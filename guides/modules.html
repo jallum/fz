@@ -351,10 +351,11 @@ contracts. They are not exported as public module functions. The public
 surface is the fz wrapper API.</p>
 
 <p>The runtime source directory has two jobs. <code>runtime.fz</code> is the
-tiny always-loaded prelude: root runtime types, root primitive extern
-contracts, and root helpers such as <code>print/1</code> and
-<code>assert/1</code>. Ordinary runtime modules live next to it in individual
-files such as <code>src/modules/runtime_library/utf8.fz</code> and
+tiny always-loaded prelude root: root runtime types and imports from core
+prelude modules. <code>Kernel</code> lives in its own file and owns the raw
+primitive extern contracts plus public helpers such as <code>print/1</code>
+and <code>assert/1</code>. Ordinary runtime modules live next to it in
+individual files such as <code>src/modules/runtime_library/utf8.fz</code> and
 <code>src/modules/runtime_library/process.fz</code>.</p>
 
 <p>Adding a runtime module means adding a new file under
@@ -362,8 +363,8 @@ files such as <code>src/modules/runtime_library/utf8.fz</code> and
 <code>defmodule</code> in it, and registering that file in the runtime-library
 source manifest in <code>src/modules/runtime_library.rs</code>. Public
 functions should have specs. Primitive <code>extern "C"</code> declarations
-should stay inside the module unless they are intentionally part of the root
-prelude.</p>
+stay inside modules; core prelude modules expose selected functions through
+imports in <code>runtime.fz</code>.</p>
 
 <p>Runtime artifacts use the same module-name paths as user modules:
 <code>build/fz/interfaces/Name.fzi</code> and
@@ -372,9 +373,10 @@ artifact path; <code>src/modules/runtime_library/utf8.fz</code> still maps the
 module <code>Utf8</code> to <code>build/fz/interfaces/Utf8.fzi</code> and
 <code>build/fz/objects/Utf8.fzo</code>.</p>
 
-<p>Execution still prepends <code>runtime.fz</code>, but that file is now only
-the prelude. Imported runtime modules are materialized from reachable runtime
-<code>.fzo</code> payloads during graph loading.</p>
+<p>Execution prepends the core prelude: <code>runtime.fz</code> root aliases
+and imports plus core prelude module sources. Imported non-core runtime modules
+are materialized from reachable runtime <code>.fzo</code> payloads during graph
+loading.</p>
 
 <div class="aside">
 This distinction is what lets the runtime library grow. Primitive runtime

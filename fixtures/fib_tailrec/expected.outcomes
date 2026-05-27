@@ -14,25 +14,25 @@ main[] demand=value:
 
 k_17[0] demand=value:
   @0:104-123 Cont -> Static(k_18#18 [nil] demand=value)
-  @0:104-123 Direct -> Static(print#0 [int] demand=value)
+  @0:104-123 Direct -> Static(Kernel.print#0 [int] demand=value)
 
 k_18[nil] demand=value:
   @0:132-144 Direct -> Static(k_19#19 [int] demand=value)
 
 k_19[int] demand=value:
   @0:126-145 Cont -> Static(k_20#20 [nil] demand=value)
-  @0:126-145 Direct -> Static(print#0 [int] demand=value)
+  @0:126-145 Direct -> Static(Kernel.print#0 [int] demand=value)
 
 k_20[nil] demand=value:
   @0:154-167 Direct -> Static(k_21#21 [int] demand=value)
 
 k_21[int] demand=value:
   @0:148-168 Cont -> Static(k_22#22 [nil] demand=value)
-  @0:148-168 Direct -> Static(print#0 [int] demand=value)
+  @0:148-168 Direct -> Static(Kernel.print#0 [int] demand=value)
 
 k_22[nil] demand=value:
   @0:177-190 Cont -> Static(k_23#23 [int] demand=value)
   @0:177-190 Direct -> Static(fib#12 [int, int, int] demand=value)
 
 k_23[int] demand=value:
-  @0:171-191 Direct -> Static(print#0 [int] demand=value)
+  @0:171-191 Direct -> Static(Kernel.print#0 [int] demand=value)

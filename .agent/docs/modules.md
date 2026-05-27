@@ -550,9 +550,11 @@ library module interfaces/artifacts.
 
 Rules:
 
-- `src/modules/runtime_library/runtime.fz` is the always-loaded prelude only:
-  root primitive extern contracts, root runtime type aliases, and root
-  convenience wrappers;
+- `src/modules/runtime_library/runtime.fz` is the always-loaded prelude root:
+  root runtime type aliases and root imports from core prelude modules;
+- core prelude modules such as `Kernel` live in separate source files but are
+  flattened into the built-in prelude, keeping raw extern declarations
+  module-scoped while exposing imported names like `print/1`;
 - ordinary module bodies live in individual files such as
   `src/modules/runtime_library/utf8.fz` and
   `src/modules/runtime_library/process.fz`;
@@ -561,9 +563,9 @@ Rules:
   `modules::runtime_library::interface`;
 - `modules::runtime_library::artifacts` creates deterministic `.fzi`/`.fzo` envelopes
   for built-in runtime-library modules;
-- reachable runtime modules contribute `fz-runtime-module-v1` `.fzo` objects to
-  `ModuleGraphLoader`, while `runtime.fz` remains the tiny source prelude
-  prepended during lowering.
+- reachable non-core runtime modules contribute `fz-runtime-module-v1` `.fzo`
+  objects to `ModuleGraphLoader`, while the core prelude is prepended during
+  lowering.
 
 To add a runtime-library module:
 
@@ -572,8 +574,8 @@ To add a runtime-library module:
 3. add that file to `RUNTIME_MODULE_SOURCES` in
    `src/modules/runtime_library.rs`;
 4. add public `@spec` declarations for exported functions;
-5. keep primitive `extern "C"` declarations module-scoped unless they are
-   deliberately part of the root prelude.
+5. keep primitive `extern "C"` declarations module-scoped. If the module is a
+   core prelude module, expose selected functions through `runtime.fz` imports.
 
 Generated artifacts still use the same module-name store as user artifacts:
 `.fzi` under `build/fz/interfaces/...` and `.fzo` under

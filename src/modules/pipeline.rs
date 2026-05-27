@@ -252,12 +252,16 @@ fn load_provider_units(
     let runtime_roots = prepared
         .external_interfaces
         .keys()
-        .filter(|module| crate::modules::runtime_library::interface(module).is_some())
+        .filter(|module| {
+            crate::modules::runtime_library::interface(module).is_some()
+                && !crate::modules::runtime_library::is_core_prelude_module(module)
+        })
         .cloned();
     let provider_roots = providers
         .modules
         .iter()
         .cloned()
+        .chain(crate::modules::runtime_library::prelude_required_modules())
         .chain(runtime_roots)
         .collect::<Vec<_>>();
     let graph = ModuleGraphLoader::new(store)

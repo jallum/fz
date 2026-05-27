@@ -1,0 +1,53 @@
+defmodule Kernel do
+  @type pid :: opaque integer
+  @type ref :: opaque cpointer
+
+  extern "C" fn fz_print_i64(integer) :: nil
+  extern "C" fn fz_print_value(any) :: nil
+  extern "C" fn fz_assert(any) :: nil
+  extern "C" fn fz_assert_eq(any, any) :: nil
+  extern "C" fn fz_assert_neq(any, any) :: nil
+  extern "C" fn fz_spawn(() -> any) :: pid
+  extern "C" fn fz_spawn_opt(() -> any, any) :: pid
+  extern "C" fn fz_self() :: pid
+  extern "C" fn fz_send(pid, t) :: t when t: any
+  extern "C" fn fz_make_ref() :: ref
+  extern "C" fn fz_make_resource(t, (t) -> nil) :: resource(t) when t: integer | cpointer
+
+  @doc "Prints x to standard output."
+  @spec print(any) :: nil
+  fn print(x :: integer), do: fz_print_i64(x)
+  fn print(x), do: fz_print_value(x)
+
+  @doc "Aborts the process if x is falsy (nil or false)."
+  @spec assert(any) :: nil
+  fn assert(x), do: fz_assert(x)
+
+  @doc "Aborts the process if a and b are not equal."
+  @spec assert_eq(any, any) :: nil
+  fn assert_eq(a, b), do: fz_assert_eq(a, b)
+
+  @doc "Aborts the process if a and b are equal."
+  @spec assert_neq(any, any) :: nil
+  fn assert_neq(a, b), do: fz_assert_neq(a, b)
+
+  @doc "Returns the process identifier of a new process started by the application of fun"
+  fn spawn(fun), do: fz_spawn(fun)
+  fn spawn(fun, opts), do: fz_spawn_opt(fun, opts)
+
+  @doc "Returns the PID of the calling process."
+  @spec self() :: pid
+  fn self(), do: fz_self()
+
+  @doc "Sends msg to the process identified by pid; returns msg."
+  @spec send(pid, t) :: t when t: any
+  fn send(pid, msg), do: fz_send(pid, msg)
+
+  @doc "Mints a fresh opaque reference unique within this runtime process."
+  @spec make_ref() :: ref
+  fn make_ref(), do: fz_make_ref()
+
+  @doc "Wraps a raw integer handle in an opaque resource; `dtor` is invoked exactly once with that handle when the last reference becomes unreachable."
+  @spec make_resource(t, (t) -> nil) :: resource(t) when t: integer | cpointer
+  fn make_resource(value, dtor), do: fz_make_resource(value, dtor)
+end

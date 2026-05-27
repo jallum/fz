@@ -1,6 +1,0 @@
-error[resolve/alias-outside-module]: alias is only valid inside a defmodule body
-  --> fixtures/errors/resolve-alias-outside-module/input.fz:1:1
-   |
- 1 | alias Some.Mod
-   | ^^^^^^^^^^^^^^
-   |

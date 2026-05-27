@@ -167,6 +167,9 @@ pub(crate) fn lower_expr(
             {
                 return Ok(ctx.let_at(Prim::make_closure(sp, fn_id, vec![]), sp));
             }
+            if let Some((_qualified, fn_id)) = ctx.unique_imported_fn_value_target(name) {
+                return Ok(ctx.let_at(Prim::make_closure(sp, fn_id, vec![]), sp));
+            }
             Err(LowerError::Unbound {
                 span: sp,
                 name: name.clone(),
@@ -178,6 +181,11 @@ pub(crate) fn lower_expr(
         // overloaded name resolves unambiguously to the requested clause.
         Expr::FnRef { name, arity } => {
             if let Some(&fn_id) = ctx.fns.get(&(name.clone(), *arity)) {
+                return Ok(ctx.let_at(Prim::make_closure(sp, fn_id, vec![]), sp));
+            }
+            if let Some(imported) = ctx.resolve_prelude_import(name, *arity)
+                && let Some(&fn_id) = ctx.fns.get(&(imported, *arity))
+            {
                 return Ok(ctx.let_at(Prim::make_closure(sp, fn_id, vec![]), sp));
             }
             // fz-eol — `&libc::close/1`: synthesize (and cache) a top-level
@@ -340,6 +348,14 @@ pub(crate) fn lower_expr(
                 }
                 return cps_split_receive(ctx, sp, /* tail */ false);
             }
+            let arity = arg_vars.len();
+            let local_callee = ctx.fns.get(&(callee_name.clone(), arity)).copied();
+            let callee_name = if local_callee.is_none() {
+                ctx.resolve_prelude_import(&callee_name, arity)
+                    .unwrap_or(callee_name)
+            } else {
+                callee_name
+            };
             // Extern (runtime.fz / user-declared `extern "C" fn`)?
             if let Some(eid) = ctx.externs.lookup(&callee_name) {
                 let decl = ctx
@@ -356,8 +372,8 @@ pub(crate) fn lower_expr(
                 )?;
                 return Ok(ctx.let_at(Prim::Extern(eid, extern_args), sp));
             }
-            let arity = arg_vars.len();
-            let local_callee = ctx.fns.get(&(callee_name.clone(), arity)).copied();
+            let local_callee =
+                local_callee.or_else(|| ctx.fns.get(&(callee_name.clone(), arity)).copied());
             let external_callee = if local_callee.is_none() {
                 ctx.external_callee(&callee_name, arity)
             } else {
