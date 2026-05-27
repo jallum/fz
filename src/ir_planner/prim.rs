@@ -45,50 +45,11 @@ pub(crate) fn type_prim<
         Prim::DestTupleBegin { .. } => t.any(),
         Prim::DestTupleSet { .. } => t.nil(),
         Prim::DestFreeze { dest, .. } => lookup(t, env, *dest),
-        Prim::TupleField(v, i) => {
-            let vt = lookup(t, env, *v);
-            // Find the widest arity in v's tuple clauses that covers index i;
-            // project that component. Falls back to any when there's no
-            // matching tuple shape.
-            let max_arity = t.max_tuple_arity(&vt);
-            if (*i as usize) < max_arity {
-                let comps = t.tuple_projections(&vt, max_arity);
-                comps
-                    .into_iter()
-                    .nth(*i as usize)
-                    .unwrap_or_else(|| t.any())
-            } else {
-                t.any()
-            }
-        }
+        Prim::TupleField(v, i) => type_tuple_field(t, env, *v, *i),
 
-        Prim::MakeList(els, tail) => {
-            let mut elem = t.none();
-            for v in els {
-                let vy = lookup(t, env, *v);
-                elem = t.union(elem, vy);
-            }
-            if let Some(tl) = tail {
-                let tt = lookup(t, env, *tl);
-                let tail_elem_ty = t.list_element_type(&tt);
-                elem = t.union(elem, tail_elem_ty);
-            }
-            if els.is_empty() {
-                t.list(elem)
-            } else {
-                t.non_empty_list(elem)
-            }
-        }
+        Prim::MakeList(els, tail) => type_make_list(t, env, els, *tail),
         Prim::DestListBegin { .. } => t.nil(),
-        Prim::DestListCons { head, tail, .. } => {
-            let mut elem = lookup(t, env, *head);
-            if let Some(tl) = tail {
-                let tt = lookup(t, env, *tl);
-                let tail_elem = t.list_element_type(&tt);
-                elem = t.union(elem, tail_elem);
-            }
-            t.non_empty_list(elem)
-        }
+        Prim::DestListCons { head, tail, .. } => type_dest_list_cons(t, env, *head, *tail),
         Prim::DestListFreeze { list, .. } => lookup(t, env, *list),
         Prim::ListHead(l) => {
             let dy = lookup(t, env, *l);
@@ -103,29 +64,7 @@ pub(crate) fn type_prim<
         }
         Prim::IsEmptyList(_) => t.bool(),
 
-        Prim::MakeMap(entries) => {
-            let mut fields: Vec<(MapKey, T::Ty)> = Vec::new();
-            let mut all_static = true;
-            for (k, v) in entries {
-                let vy = lookup(t, env, *v);
-                match var_as_map_key(t, *k, env) {
-                    Some(mk) => {
-                        fields.push((mk, vy));
-                    }
-                    None => {
-                        all_static = false;
-                        break;
-                    }
-                }
-            }
-            if all_static && !entries.is_empty() {
-                t.map(&fields)
-            } else if entries.is_empty() {
-                t.map(&[])
-            } else {
-                t.map_top()
-            }
-        }
+        Prim::MakeMap(entries) => type_make_map(t, env, entries),
         Prim::DestMapBegin { base, .. } => {
             if let Some(base) = base {
                 lookup(t, env, *base)
@@ -135,54 +74,9 @@ pub(crate) fn type_prim<
         }
         Prim::DestMapPut { .. } => t.nil(),
         Prim::DestMapFreeze { map, .. } => lookup(t, env, *map),
-        Prim::MapUpdate(base, entries) => {
-            let mut dy = lookup(t, env, *base);
-            for (k, v) in entries {
-                let vt_ty = lookup(t, env, *v);
-                if let Some(mk) = var_as_map_key(t, *k, env) {
-                    dy = t.refine_map_field(&dy, &mk, &vt_ty);
-                }
-            }
-            dy
-        }
-        Prim::MapGet(map, k) => {
-            let mt = lookup(t, env, *map);
-            // fz-swt.8 — `handle.value` on an opaque-typed handle.
-            // When the subject is a singleton opaque and the key is
-            // the atom `:value`, the planner answers with the inner
-            // type T recorded for that opaque tag at alias
-            // resolution. Visibility gating (declaring module vs
-            // using module) is a *separate* concern surfaced in
-            // `collect_diagnostics`; the lookup itself is unconditional
-            // so out-of-module access reads its true T in the dead
-            // path before the diagnostic fires.
-            if let (Some(tag), Some(MapKey::Atom(key))) =
-                (t.opaque_singleton(&mt), var_as_map_key(t, *k, env).as_ref())
-                && key == "value"
-                && let Some(inner) = m.opaque_inners.get(&tag)
-            {
-                return inner.clone();
-            }
-            let a = t.any();
-            let n = t.nil();
-            let fallback = t.union(a, n);
-            if let Some(mk) = var_as_map_key(t, *k, env) {
-                t.map_field_lookup(&mt, &mk).unwrap_or(fallback)
-            } else {
-                fallback
-            }
-        }
-        Prim::MatcherMapGet(map, k) => {
-            let mt = lookup(t, env, *map);
-            let a = t.any();
-            let n = t.nil();
-            let fallback = t.union(a, n);
-            if let Some(mk) = var_as_map_key(t, *k, env) {
-                t.map_field_lookup(&mt, &mk).unwrap_or(fallback)
-            } else {
-                fallback
-            }
-        }
+        Prim::MapUpdate(base, entries) => type_map_update(t, env, *base, entries),
+        Prim::MapGet(map, k) => type_map_get(t, env, m, *map, *k, true),
+        Prim::MatcherMapGet(map, k) => type_map_get(t, env, m, *map, *k, false),
         Prim::IsMatcherMapMiss(_) => t.bool(),
 
         // fz-axu.1 (K0) — bitstring construction types as the binary/bitstring
@@ -191,24 +85,7 @@ pub(crate) fn type_prim<
         Prim::MakeBitstring(_) => t.str_t(),
         Prim::ConstBitstring(_, _) => t.str_t(),
 
-        Prim::MakeClosure(_, fn_id, captured) => {
-            // fz-ul4.27.22.10 — type MakeClosure's result as a closure
-            // literal: a singleton-typed arrow tagged with (fn_id,
-            // capture_descrs). Downstream consumers (cont_slot0_descr,
-            // codegen chain_repr / TailCallClosure lowering) read the lit
-            // to resolve the body spec by exact-key lookup instead of
-            // joining over the saturated arrow's return.
-            let callee = m.fn_by_id(*fn_id);
-            let entry = callee.block(callee.entry);
-            let arity = entry.params.len();
-            let n_caps = captured.len();
-            let n_args = arity.saturating_sub(n_caps);
-            let captures: Vec<T::Ty> = captured
-                .iter()
-                .map(|cv| env.get(cv).cloned().unwrap_or_else(|| t.any()))
-                .collect();
-            t.closure_lit((*fn_id).into(), captures, n_args)
-        }
+        Prim::MakeClosure(_, fn_id, captured) => type_make_closure(t, env, m, *fn_id, captured),
 
         Prim::Extern(eid, _) => {
             let ret_ty = m
@@ -218,22 +95,7 @@ pub(crate) fn type_prim<
             ret_ty.unwrap_or_else(|| t.any())
         }
 
-        Prim::TypeTest(v, descr) => {
-            let vy = lookup(t, env, *v);
-            // If vt ⊆ descr → always true; if vt ∩ descr = ∅ → always false;
-            // otherwise unknown bool. Branch pruning in the planner's If-rewriting
-            // pass then eliminates dead branches when the result is a singleton.
-            if t.is_subtype(&vy, descr) {
-                t.atom_lit("true")
-            } else {
-                let inter = t.intersect(vy, (**descr).clone());
-                if t.is_empty(&inter) {
-                    t.atom_lit("false")
-                } else {
-                    t.bool()
-                }
-            }
-        }
+        Prim::TypeTest(v, descr) => type_type_test(t, env, *v, descr),
 
         // fz-axu.4 (K3) — brand-mint. Take the source's structural type
         // and overlay `brands = {name}`. The result is a *minted brand
@@ -249,24 +111,184 @@ pub(crate) fn type_prim<
 
         // Reader ops: conservative Top until later tickets refine.
         Prim::BitReaderInit(_) => t.any(),
-        Prim::BitReadField { ty, .. } => {
-            use crate::ast::BitType;
-            // Returns Tuple([ok, value, new_reader]) on success, Tuple([false])
-            // on failure. We over-approximate to a generic tuple shape; pattern
-            // narrowing on TupleField then projects per-position. Field value
-            // depends on the BitType.
-            let value_t = match ty {
-                BitType::Integer | BitType::Utf8 | BitType::Utf16 | BitType::Utf32 => t.int(),
-                BitType::Float => t.float(),
-                BitType::Binary | BitType::Bits => t.str_t(),
-            };
-            let bool1 = t.bool();
-            let any_ty = t.any();
-            let success = t.tuple(&[bool1, value_t, any_ty]);
-            let bool2 = t.bool();
-            let failure = t.tuple(&[bool2]);
-            t.union(success, failure)
-        }
+        Prim::BitReadField { ty, .. } => type_bit_read_field(t, ty),
         Prim::BitReaderDone(_) => t.bool(),
     }
+}
+
+fn type_tuple_field<T: crate::types::Types<Ty = crate::types::Ty>>(
+    t: &mut T,
+    env: &HashMap<Var, crate::types::Ty>,
+    v: Var,
+    i: u32,
+) -> crate::types::Ty {
+    let vt = lookup(t, env, v);
+    let max_arity = t.max_tuple_arity(&vt);
+    if (i as usize) < max_arity {
+        let comps = t.tuple_projections(&vt, max_arity);
+        comps.into_iter().nth(i as usize).unwrap_or_else(|| t.any())
+    } else {
+        t.any()
+    }
+}
+
+fn type_make_list<T: crate::types::Types<Ty = crate::types::Ty>>(
+    t: &mut T,
+    env: &HashMap<Var, crate::types::Ty>,
+    els: &[Var],
+    tail: Option<Var>,
+) -> crate::types::Ty {
+    let mut elem = t.none();
+    for v in els {
+        let vy = lookup(t, env, *v);
+        elem = t.union(elem, vy);
+    }
+    if let Some(tl) = tail {
+        let tt = lookup(t, env, tl);
+        let tail_elem_ty = t.list_element_type(&tt);
+        elem = t.union(elem, tail_elem_ty);
+    }
+    if els.is_empty() {
+        t.list(elem)
+    } else {
+        t.non_empty_list(elem)
+    }
+}
+
+fn type_dest_list_cons<T: crate::types::Types<Ty = crate::types::Ty>>(
+    t: &mut T,
+    env: &HashMap<Var, crate::types::Ty>,
+    head: Var,
+    tail: Option<Var>,
+) -> crate::types::Ty {
+    let mut elem = lookup(t, env, head);
+    if let Some(tl) = tail {
+        let tt = lookup(t, env, tl);
+        let tail_elem = t.list_element_type(&tt);
+        elem = t.union(elem, tail_elem);
+    }
+    t.non_empty_list(elem)
+}
+
+fn type_make_map<T: crate::types::Types<Ty = crate::types::Ty>>(
+    t: &mut T,
+    env: &HashMap<Var, crate::types::Ty>,
+    entries: &[(Var, Var)],
+) -> crate::types::Ty {
+    let mut fields: Vec<(MapKey, T::Ty)> = Vec::new();
+    for (k, v) in entries {
+        let Some(mk) = var_as_map_key(t, *k, env) else {
+            return t.map_top();
+        };
+        let vy = lookup(t, env, *v);
+        fields.push((mk, vy));
+    }
+    t.map(&fields)
+}
+
+fn type_map_update<T: crate::types::Types<Ty = crate::types::Ty>>(
+    t: &mut T,
+    env: &HashMap<Var, crate::types::Ty>,
+    base: Var,
+    entries: &[(Var, Var)],
+) -> crate::types::Ty {
+    let mut dy = lookup(t, env, base);
+    for (k, v) in entries {
+        let vt_ty = lookup(t, env, *v);
+        if let Some(mk) = var_as_map_key(t, *k, env) {
+            dy = t.refine_map_field(&dy, &mk, &vt_ty);
+        }
+    }
+    dy
+}
+
+fn type_map_get<T: crate::types::Types<Ty = crate::types::Ty>>(
+    t: &mut T,
+    env: &HashMap<Var, crate::types::Ty>,
+    m: &Module,
+    map: Var,
+    key_v: Var,
+    allow_opaque_value: bool,
+) -> crate::types::Ty {
+    let mt = lookup(t, env, map);
+    if allow_opaque_value && let Some(inner) = opaque_value_inner(t, env, m, &mt, key_v) {
+        return inner;
+    }
+    let a = t.any();
+    let n = t.nil();
+    let fallback = t.union(a, n);
+    if let Some(mk) = var_as_map_key(t, key_v, env) {
+        t.map_field_lookup(&mt, &mk).unwrap_or(fallback)
+    } else {
+        fallback
+    }
+}
+
+fn opaque_value_inner<T: crate::types::Types<Ty = crate::types::Ty>>(
+    t: &mut T,
+    env: &HashMap<Var, crate::types::Ty>,
+    m: &Module,
+    mt: &crate::types::Ty,
+    key_v: Var,
+) -> Option<crate::types::Ty> {
+    let tag = t.opaque_singleton(mt)?;
+    let Some(MapKey::Atom(key)) = var_as_map_key(t, key_v, env) else {
+        return None;
+    };
+    (key == "value")
+        .then(|| m.opaque_inners.get(&tag).cloned())
+        .flatten()
+}
+
+fn type_make_closure<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes>(
+    t: &mut T,
+    env: &HashMap<Var, crate::types::Ty>,
+    m: &Module,
+    fn_id: crate::fz_ir::FnId,
+    captured: &[Var],
+) -> crate::types::Ty {
+    let callee = m.fn_by_id(fn_id);
+    let entry = callee.block(callee.entry);
+    let n_args = entry.params.len().saturating_sub(captured.len());
+    let captures: Vec<T::Ty> = captured
+        .iter()
+        .map(|cv| env.get(cv).cloned().unwrap_or_else(|| t.any()))
+        .collect();
+    t.closure_lit(fn_id.into(), captures, n_args)
+}
+
+fn type_type_test<T: crate::types::Types<Ty = crate::types::Ty>>(
+    t: &mut T,
+    env: &HashMap<Var, crate::types::Ty>,
+    v: Var,
+    descr: &crate::types::Ty,
+) -> crate::types::Ty {
+    let vy = lookup(t, env, v);
+    if t.is_subtype(&vy, descr) {
+        return t.atom_lit("true");
+    }
+    let inter = t.intersect(vy, descr.clone());
+    if t.is_empty(&inter) {
+        t.atom_lit("false")
+    } else {
+        t.bool()
+    }
+}
+
+fn type_bit_read_field<T: crate::types::Types<Ty = crate::types::Ty>>(
+    t: &mut T,
+    ty: &crate::ast::BitType,
+) -> crate::types::Ty {
+    use crate::ast::BitType;
+    let value_t = match ty {
+        BitType::Integer | BitType::Utf8 | BitType::Utf16 | BitType::Utf32 => t.int(),
+        BitType::Float => t.float(),
+        BitType::Binary | BitType::Bits => t.str_t(),
+    };
+    let bool1 = t.bool();
+    let any_ty = t.any();
+    let success = t.tuple(&[bool1, value_t, any_ty]);
+    let bool2 = t.bool();
+    let failure = t.tuple(&[bool2]);
+    t.union(success, failure)
 }
