@@ -56,6 +56,11 @@ nodes still exist. It produces one `ModuleInterface` per module.
 
 Function bodies must never enter a `ModuleInterface`.
 
+Future protocol work should carry protocol declarations and implementation
+facts here as public contract data. Dependents need those facts to check
+`Protocol.t(...)` domain constraints without loading provider bodies, just as
+they use export facts to resolve imported calls.
+
 Module-scoped `extern "C"` declarations are implementation contracts. They are
 not exported from module interfaces. A wrapper function such as
 `Utf8.valid?/1` is the public export; `fz_bitstring_valid_utf8/1` is not.
@@ -439,6 +444,13 @@ reachable `CompiledUnit` IR bodies into one dense linked `Module`, remaps
 `FnId`, `ExternId`, and atom ids, builds provider keys from implemented
 interfaces, and rewrites `ExternalCallEdge` placeholders to direct local calls
 before JIT codegen sees the module.
+
+Linking must also preserve planner facts that codegen consumes. A provider graph
+must not depend on a normal post-link `plan_module` pass to recover dispatch,
+return-demand, return-context, extern-marshal, or future protocol call-edge
+facts that were known upstream. Link/load may validate, remap, resolve, and
+strengthen facts; ordinary provider linking is a fact-preserving
+transformation.
 
 `CompiledProgram::link_image_with_telemetry` is the single-unit JIT run path. It
 validates the unit through `link_ir_units`, links that unit's runtime metadata,
