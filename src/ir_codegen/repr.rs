@@ -164,10 +164,6 @@ pub(crate) fn push_repr_param(sig: &mut Signature, repr: ArgRepr) {
     sig.params.push(AbiParam::new(repr.cl_type()));
 }
 
-pub(crate) fn push_repr_return(sig: &mut Signature, repr: ArgRepr) {
-    sig.returns.push(AbiParam::new(repr.cl_type()));
-}
-
 pub(crate) fn append_block_param_for_repr(
     b: &mut FunctionBuilder<'_>,
     block: ir::Block,
