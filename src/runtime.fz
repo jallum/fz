@@ -1,15 +1,10 @@
 @type pid :: opaque integer
-@type ref :: opaque integer
-# fz-axu.12 (S1) — utf8 is a brand on binary. The L3 desugaring pass
-# mints values of this brand for every `"…"` literal that's valid
-# UTF-8. As an unqualified runtime-prelude brand it has no module
-# owner, so any user code can mint and use it without import.
+@type ref :: opaque cpointer
+# fz-axu.12 (S1) -- utf8 is a brand on binary. String literal
+# lowering mints this unqualified runtime-prelude brand directly, so it
+# must stay root-scoped even as the Utf8 helpers live in a module.
 @type utf8 :: refines binary
 
-# fz-axu.12 (S1) / .13 (S2) — Utf8: convenience surface around the
-# `utf8` brand. The runtime externs (R1, fz-axu.14) do the actual
-# validation and brand-mint; these functions wire them into the user
-# language.
 defmodule Utf8 do
   extern "C" fn fz_bitstring_valid_utf8(any) :: integer
   extern "C" fn fz_brand_bitstring_as_utf8(any) :: any
@@ -48,47 +43,53 @@ defmodule Process do
   fn heap_alloc_stats(), do: fz_process_heap_alloc_stats()
 end
 
+defmodule Kernel do
+  extern "C" fn fz_print_i64(integer) :: nil
+  extern "C" fn fz_print_value(any) :: nil
+  extern "C" fn fz_assert(any) :: nil
+  extern "C" fn fz_assert_eq(any, any) :: nil
+  extern "C" fn fz_assert_neq(any, any) :: nil
+  extern "C" fn fz_spawn(() -> any) :: pid
+  extern "C" fn fz_spawn_opt(() -> any, any) :: pid
+  extern "C" fn fz_self() :: pid
+  extern "C" fn fz_send(pid, t) :: t when t: any
+  extern "C" fn fz_make_ref() :: ref
+  extern "C" fn fz_make_resource(t, (t) -> nil) :: resource(t) when t: integer | cpointer
+end
+
 @doc "Prints x to standard output."
 @spec print(any) :: nil
-fn print(x :: integer), do: fz_print_i64(x)
-fn print(x), do: fz_print_value(x)
+fn print(x :: integer), do: Kernel.fz_print_i64(x)
+fn print(x), do: Kernel.fz_print_value(x)
 
 @doc "Aborts the process if x is falsy (nil or false)."
 @spec assert(any) :: nil
-fn assert(x), do: fz_assert(x)
+fn assert(x), do: Kernel.fz_assert(x)
 
 @doc "Aborts the process if a and b are not equal."
 @spec assert_eq(any, any) :: nil
-fn assert_eq(a, b), do: fz_assert_eq(a, b)
+fn assert_eq(a, b), do: Kernel.fz_assert_eq(a, b)
 
 @doc "Aborts the process if a and b are equal."
 @spec assert_neq(any, any) :: nil
-fn assert_neq(a, b), do: fz_assert_neq(a, b)
+fn assert_neq(a, b), do: Kernel.fz_assert_neq(a, b)
+
+@doc "Returns the process identifier of a new process started by the application of fun"
+fn spawn(fun), do: Kernel.fz_spawn(fun)
+fn spawn(fun, opts), do: Kernel.fz_spawn_opt(fun, opts)
 
 @doc "Returns the PID of the calling process."
 @spec self() :: pid
-fn self(), do: fz_self()
+fn self(), do: Kernel.fz_self()
 
 @doc "Sends msg to the process identified by pid; returns msg."
-@spec send(pid, any) :: any
-fn send(pid, msg), do: fz_send(pid, msg)
+@spec send(pid, t) :: t when t: any
+fn send(pid, msg), do: Kernel.fz_send(pid, msg)
 
 @doc "Mints a fresh opaque reference unique within this runtime process."
 @spec make_ref() :: ref
-fn make_ref(), do: fz_make_ref()
+fn make_ref(), do: Kernel.fz_make_ref()
 
 @doc "Wraps a raw integer handle in an opaque resource; `dtor` is invoked exactly once with that handle when the last reference becomes unreachable."
 @spec make_resource(t, (t) -> nil) :: resource(t) when t: integer | cpointer
-fn make_resource(value, dtor), do: fz_make_resource(value, dtor)
-
-extern "C" fn fz_print_i64(integer) :: nil
-extern "C" fn fz_print_value(any) :: nil
-extern "C" fn fz_assert(any) :: nil
-extern "C" fn fz_assert_eq(any, any) :: nil
-extern "C" fn fz_assert_neq(any, any) :: nil
-extern "C" fn fz_spawn(any) :: any
-extern "C" fn fz_spawn_opt(any, any) :: any
-extern "C" fn fz_self() :: pid
-extern "C" fn fz_send(pid, any) :: any
-extern "C" fn fz_make_ref() :: ref
-extern "C" fn fz_make_resource(integer, any) :: any
+fn make_resource(value, dtor), do: Kernel.fz_make_resource(value, dtor)
