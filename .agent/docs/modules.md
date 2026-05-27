@@ -236,10 +236,12 @@ Reachable graph loading:
   module names.
 - The loader queues imports from the roots, loads provider `.fzi` contracts,
   recursively queues their imports, and only then loads `.fzo` objects for
-  reachable user-artifact modules.
-- Runtime-library interfaces come from `modules::runtime_library::interface_table` and
-  do not require user `.fzi`/`.fzo` files. They are explicit built-ins, not a
-  fallback that masks missing user artifacts.
+  reachable modules.
+- Runtime-library modules are checked through `modules::runtime_library::interface`
+  before the filesystem artifact store. If a runtime module is reachable, the
+  loader adds its built-in `.fzo` through `modules::runtime_library::artifact`.
+  Runtime modules do not require user `.fzi`/`.fzo` files and do not mask
+  missing user artifacts with unrelated names.
 - Loaded `.fzo` objects are validated against the `.fzi` fingerprint inputs
   that made the module reachable. Unused artifacts under the artifact root are
   never read.
@@ -392,10 +394,11 @@ final object bytes. `fz build --emit-fzo` stores the checked source text as
 `fz-source-unit-v1` and derives required imports from the pre-link
 `CompiledUnit` external-call edges; that lets imported modules emit their own
 `.fzo` without compiling unresolved external calls through machine codegen.
-`FzoArtifact::source_unit_text` is the materialization gate: it accepts only
-`fz-source-unit-v1` and rejects inspection/runtime payloads before graph
-loading can treat them as source units. `FzoArtifact::from_unit` still derives
-an internal `fz-ir-text-v1` payload from `CompiledUnit::code.to_string()` for
+`FzoArtifact::source_unit_text` is the materialization gate: it accepts
+`fz-source-unit-v1` user artifacts and `fz-runtime-module-v1` built-in runtime
+module artifacts. It rejects inspection-only payloads before graph loading can
+treat them as source units. `FzoArtifact::from_unit` still derives an internal
+`fz-ir-text-v1` payload from `CompiledUnit::code.to_string()` for
 tests and inspection paths that need a deterministic unit dump, not a
 reloadable implementation source.
 Deserialization rejects empty payload format/body so a loaded `.fzo` cannot
@@ -540,36 +543,47 @@ correctness interface-based.
 
 ## Runtime Library Modules
 
-`runtime_library` parses `src/modules/runtime_library/runtime.fz` and exposes built-in
+`runtime_library` owns the built-in runtime source set and exposes built-in
 library module interfaces/artifacts.
 
 Rules:
 
-- top-level primitive externs remain runtime primitive contracts;
-- module bodies such as `Utf8` and `Process` are ordinary library modules;
+- `src/modules/runtime_library/runtime.fz` is the always-loaded prelude only:
+  root primitive extern contracts, root runtime type aliases, and root
+  convenience wrappers;
+- ordinary module bodies live in individual files such as
+  `src/modules/runtime_library/utf8.fz` and
+  `src/modules/runtime_library/process.fz`;
 - module-scoped externs are implementation details, not interface exports;
-- `modules::runtime_library::interface_table` is injected into resolver interface
-  lookup by default and is derived from the same runtime artifacts rather than
-  bypassing the artifact path;
+- import and alias declarations request runtime interfaces on demand through
+  `modules::runtime_library::interface`;
 - `modules::runtime_library::artifacts` creates deterministic `.fzi`/`.fzo` envelopes
-  for built-in runtime-library modules.
-- Runtime-library modules are exposed as artifact-shaped resolver/linker facts,
-  but execution still prepends the primitive/runtime source prelude during
-  lowering. Replacing that source-prelude path with graph-loaded runtime
-  modules is remaining architecture work.
+  for built-in runtime-library modules;
+- reachable runtime modules contribute `fz-runtime-module-v1` `.fzo` objects to
+  `ModuleGraphLoader`, while `runtime.fz` remains the tiny source prelude
+  prepended during lowering.
 
-To add a runtime-library module, edit `src/modules/runtime_library/runtime.fz`, add a
-`defmodule` with public `@spec` declarations for exported functions, and keep
-primitive `extern "C"` declarations module-scoped unless they are deliberately
-part of the primitive prelude. The generated artifacts live in the same store
-as user artifacts: `.fzi` under `build/fz/interfaces/...` and `.fzo` under
-`build/fz/objects/...`.
+To add a runtime-library module:
 
-Built-in runtime-library interfaces are resolver defaults. A source module with
-the same name as a built-in module is collected from the current program and
-overrides the injected built-in interface for that compile; artifact paths stay
-module-name based, so distributors should avoid shipping user and built-in
-artifacts with the same module identity in one root.
+1. add `src/modules/runtime_library/<name>.fz`;
+2. put exactly one ordinary `defmodule Name do ... end` in that file;
+3. add that file to `RUNTIME_MODULE_SOURCES` in
+   `src/modules/runtime_library.rs`;
+4. add public `@spec` declarations for exported functions;
+5. keep primitive `extern "C"` declarations module-scoped unless they are
+   deliberately part of the root prelude.
+
+Generated artifacts still use the same module-name store as user artifacts:
+`.fzi` under `build/fz/interfaces/...` and `.fzo` under
+`build/fz/objects/...`. For example, `Utf8` maps to
+`build/fz/interfaces/Utf8.fzi` and `build/fz/objects/Utf8.fzo` regardless of
+the source file being `src/modules/runtime_library/utf8.fz`.
+
+Built-in runtime-library interfaces are requested defaults. A source module
+with the same name as a built-in module is collected from the current program
+and wins for that compile; artifact paths stay module-name based, so
+distributors should avoid shipping user and built-in artifacts with the same
+module identity in one root.
 
 Use this split when adding standard-library code: prefer ordinary FZ modules
 over growing the primitive runtime surface.

@@ -85,33 +85,39 @@ Codegen artifact vocabulary:
 
 Runtime library boundary:
 
-- `src/modules/runtime_library/runtime.fz` contains both primitive extern contracts and
-  ordinary FZ standard-library modules. Primitive contracts are the top-level
-  `extern "C"` declarations implemented by the Rust runtime; they remain
-  runtime imports with explicit type contracts.
-- Module bodies in `src/modules/runtime_library/runtime.fz` (`Utf8`, `Process`, etc.)
-  are treated as ordinary library modules. `modules::runtime_library::interface_table`
-  is derived from `modules::runtime_library::artifacts` and exposes those
-  `ModuleInterface` facts to the resolver by default, so user modules can
-  import from runtime-library interfaces without defining or source-pasting
-  those modules.
+- `src/modules/runtime_library/runtime.fz` is the tiny always-loaded prelude.
+  It contains root-scope primitive extern contracts, root type aliases such as
+  `pid`, `ref`, and `utf8`, and root convenience wrappers such as `print/1` and
+  `assert/1`. It must not grow ordinary `defmodule` bodies.
+- Runtime-library modules live in individual files under
+  `src/modules/runtime_library/`, such as `utf8.fz` and `process.fz`. Each file
+  contains the ordinary `defmodule` for that module.
+- `modules::runtime_library` is the manifest and loader for those built-in
+  module files. `interface(&ModuleName)` and `artifact(&ModuleName)` provide
+  demand-loaded runtime facts keyed by the same `ModuleName` used for user
+  artifacts.
+- Import or alias declarations are the source-level request for a runtime
+  module. `resolve::flatten_modules_with_interface_table` adds a built-in
+  runtime interface only for requested runtime modules that are not defined
+  locally and were not already provided by an external `.fzi`.
 - Interface emission does not export `extern "C"` declarations from modules.
   Those names are implementation contracts used by the module body, not
   public library functions.
 - `modules::runtime_library::artifacts` produces deterministic `.fzi` and `.fzo`
   envelopes for each built-in library module. The `.fzi` is the public
-  contract; the `.fzo` records the runtime-module payload, implemented
-  interface fingerprint, and implementation fingerprint for
-  linker/runtime-library staging.
+  contract; the `.fzo` uses the `fz-runtime-module-v1` payload and stores the
+  module source text so graph loading can materialize the runtime module just
+  like a user source-unit object.
 - `ArtifactStore::write_fzo_artifacts` and `load_fzo_artifact` persist and
   reload those object envelopes under the same `build/fz/objects/...` path
   policy used for user modules.
 - `modules::graph::ModuleGraphLoader` traverses reachable imports from root
   checked interfaces and explicit provider-root modules. It loads provider
   `.fzi` contracts first, queues their imports recursively, and loads `.fzo`
-  objects only for reachable user-artifact modules. Runtime-library interfaces
-  are explicit built-ins from `modules::runtime_library::interface_table`; they do not
-  hide missing user `.fzi`/`.fzo` failures.
+  objects only for reachable modules. Runtime-library modules are checked
+  first through `modules::runtime_library::interface`; reachable runtime modules
+  contribute built-in `.fzo` objects through `modules::runtime_library::artifact`
+  and do not require user `.fzi`/`.fzo` files.
 - User builds can write object envelopes with
   `fz build --emit-fzo --artifact-root <dir> ...`. The writer consumes the
   checked `CompiledUnit` facts directly, so a module with artifact-backed
@@ -121,11 +127,9 @@ Runtime library boundary:
   `fz run --interface <Module> --artifact-root <dir> ...` and
   `fz build --interface <Module> --artifact-root <dir> ...`. `--provider` is
   accepted as an alias for the same provider-root input.
-- Runtime-library modules are currently artifact-shaped resolver/linker facts,
-  while execution still prepends `src/modules/runtime_library/runtime.fz` as the
-  primitive/runtime source prelude during lowering. Moving those modules fully
-  onto graph-loaded artifacts is the next architecture step, not something this
-  PR silently completes.
+- Execution still prepends `src/modules/runtime_library/runtime.fz`, but that
+  file is now only the prelude. Ordinary runtime modules are graph-loaded when
+  reachable from imports.
 - The REPL remains session-eager. `fz repl` and `fz repl --script` compile
   against definitions already present in the REPL source world plus built-in
   runtime-library interfaces; they do not accept provider roots and do not load

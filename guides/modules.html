@@ -237,8 +237,10 @@ deterministic source-unit envelope for normal user code. It records identity,
 required imports, fingerprints, and a typed implementation payload. For normal compiled source that payload is a materializable source
 unit (<code>fz-source-unit-v1</code>), so graph loading can recover the provider
 implementation input from the artifact without reading the original provider
-source path. Final object bytes or a richer relocatable format can replace that
-payload format later without changing what an interface means.
+source path. Built-in runtime modules use <code>fz-runtime-module-v1</code>
+with the same materializable-source role. Final object bytes or a richer
+relocatable format can replace those payload formats later without changing
+what an interface means.
 </div>
 
 <p>The dump commands are separate on purpose. <code>dump --emit interfaces</code>
@@ -338,26 +340,40 @@ helpers. User code imports it as a module function:</p>
   <span class="kw">fn</span> <span class="fn">run</span>(bytes), <span class="kw">do:</span> <span class="fn">valid?</span>(bytes)
 <span class="kw">end</span></pre>
 
-<p>The resolver sees the built-in runtime-library interfaces by default, so
-<code>Utf8</code> can behave like a normal library module instead of being
-pasted into every user program.</p>
+<p>The <code>import</code> asks for the built-in <code>Utf8</code> interface.
+That keeps runtime modules ordinary: they are not pasted into every user
+program, and modules that are not imported are not part of the program's
+module graph.</p>
 
 <p>Extern declarations inside a runtime-library module are implementation
 contracts. They are not exported as public module functions. The public
 surface is the fz wrapper API.</p>
 
-<p>Runtime-library source lives in <code>src/modules/runtime_library/runtime.fz</code>.
-Adding a runtime module means adding an ordinary <code>defmodule</code> there
-with public specs on exported functions. Its artifacts use the same locations
-as user modules: <code>build/fz/interfaces/Name.fzi</code> and
-<code>build/fz/objects/Name.fzo</code>. Resolver defaults are derived from
-those runtime artifacts, so runtime modules follow the same contract/object
-shape as user modules.</p>
+<p>The runtime source directory has two jobs. <code>runtime.fz</code> is the
+tiny always-loaded prelude: root runtime types, root primitive extern
+contracts, and root helpers such as <code>print/1</code> and
+<code>assert/1</code>. Ordinary runtime modules live next to it in individual
+files such as <code>src/modules/runtime_library/utf8.fz</code> and
+<code>src/modules/runtime_library/process.fz</code>.</p>
 
-<p>Execution still prepends the runtime source prelude during lowering. The
-runtime modules now have artifact-shaped contracts and envelopes, but moving
-their execution fully onto graph-loaded artifacts is the next architecture
-step.</p>
+<p>Adding a runtime module means adding a new file under
+<code>src/modules/runtime_library/</code>, putting one ordinary
+<code>defmodule</code> in it, and registering that file in the runtime-library
+source manifest in <code>src/modules/runtime_library.rs</code>. Public
+functions should have specs. Primitive <code>extern "C"</code> declarations
+should stay inside the module unless they are intentionally part of the root
+prelude.</p>
+
+<p>Runtime artifacts use the same module-name paths as user modules:
+<code>build/fz/interfaces/Name.fzi</code> and
+<code>build/fz/objects/Name.fzo</code>. The source filename does not affect the
+artifact path; <code>src/modules/runtime_library/utf8.fz</code> still maps the
+module <code>Utf8</code> to <code>build/fz/interfaces/Utf8.fzi</code> and
+<code>build/fz/objects/Utf8.fzo</code>.</p>
+
+<p>Execution still prepends <code>runtime.fz</code>, but that file is now only
+the prelude. Imported runtime modules are materialized from reachable runtime
+<code>.fzo</code> payloads during graph loading.</p>
 
 <div class="aside">
 This distinction is what lets the runtime library grow. Primitive runtime
