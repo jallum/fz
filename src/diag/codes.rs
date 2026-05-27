@@ -20,6 +20,9 @@ pub const RESOLVE_ALIAS_OUTSIDE_MODULE: DiagCode = DiagCode("resolve/alias-outsi
 pub const RESOLVE_IMPORT_OUTSIDE_MODULE: DiagCode = DiagCode("resolve/import-outside-module");
 pub const RESOLVE_DUPLICATE_MODULE: DiagCode = DiagCode("resolve/duplicate-module");
 pub const RESOLVE_DUPLICATE_EXPORT: DiagCode = DiagCode("resolve/duplicate-export");
+pub const RESOLVE_UNKNOWN_MODULE: DiagCode = DiagCode("resolve/unknown-module");
+pub const RESOLVE_UNKNOWN_IMPORT: DiagCode = DiagCode("resolve/unknown-import");
+pub const RESOLVE_CONFLICTING_IMPORT: DiagCode = DiagCode("resolve/conflicting-import");
 pub const RESOLVE_TYPE_ALIAS: DiagCode = DiagCode("resolve/type-alias");
 pub const INTERFACE_MISSING_SPEC: DiagCode = DiagCode("interface/missing-spec");
 pub const SPEC_VIOLATION: DiagCode = DiagCode("spec/violation");
@@ -91,6 +94,9 @@ mod tests {
             RESOLVE_IMPORT_OUTSIDE_MODULE,
             RESOLVE_DUPLICATE_MODULE,
             RESOLVE_DUPLICATE_EXPORT,
+            RESOLVE_UNKNOWN_MODULE,
+            RESOLVE_UNKNOWN_IMPORT,
+            RESOLVE_CONFLICTING_IMPORT,
             RESOLVE_TYPE_ALIAS,
             INTERFACE_MISSING_SPEC,
             SPEC_VIOLATION,
