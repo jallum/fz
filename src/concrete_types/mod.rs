@@ -40,8 +40,10 @@ use crate::types::{
     RenderTypes, Sigma, Ty, TypeVarId, Types, VisibilityTypes,
 };
 
+use conj::Conj;
 pub(crate) use descr::Descr;
 pub(crate) use lit_set::LiteralSet;
+use sigs::{ArrowSig, ListSig, MapSig, ResourceSig, TupleSig};
 pub(crate) use views::Component;
 
 pub(crate) fn ty_from_descr(d: Descr) -> Ty {
@@ -164,6 +166,25 @@ impl Types for ConcreteTypes {
             }
         }
         None
+    }
+    fn mint_owned_resource_aliases(
+        &mut self,
+        a: Ty,
+        owner: &str,
+        opaque_inners: &HashMap<String, Ty>,
+    ) -> Ty {
+        let _top_level_resource = self.resource_payload_type(&a);
+        let candidates = opaque_inners
+            .iter()
+            .filter_map(|(tag, inner)| {
+                let tag_owner = crate::type_expr::opaque_owner_module(tag)?;
+                (tag_owner == owner).then(|| (tag.clone(), ty_descr(inner).clone()))
+            })
+            .collect::<Vec<_>>();
+        if candidates.is_empty() {
+            return a;
+        }
+        ty_from_descr(mint_owned_resource_aliases_descr(ty_descr(&a), &candidates))
     }
     fn tuple_projections(&mut self, a: &Ty, arity: usize) -> Vec<Ty> {
         concrete_tuple_projections(a, arity)
@@ -344,6 +365,213 @@ impl Types for ConcreteTypes {
             .into_iter()
             .map(|(id, d)| (id, ty_from_descr(d)))
             .collect();
+    }
+}
+
+fn mint_owned_resource_aliases_descr(d: &Descr, candidates: &[(String, Descr)]) -> Descr {
+    for (tag, inner) in candidates {
+        if resource_payload_matches(d, inner) {
+            return Descr::opaque_of(tag);
+        }
+    }
+
+    let mut out = d.clone();
+    out.tuples = out
+        .tuples
+        .into_iter()
+        .map(|c| mint_tuple_conj(c, candidates))
+        .collect();
+    out.lists = out
+        .lists
+        .into_iter()
+        .map(|c| mint_list_conj(c, candidates))
+        .collect();
+    out.resources = out
+        .resources
+        .into_iter()
+        .map(|c| mint_resource_conj(c, candidates))
+        .collect();
+    out.funcs = out
+        .funcs
+        .into_iter()
+        .map(|c| mint_arrow_conj(c, candidates))
+        .collect();
+    out.maps = out
+        .maps
+        .into_iter()
+        .map(|c| mint_map_conj(c, candidates))
+        .collect();
+    out
+}
+
+fn descr_equivalent(a: &Descr, b: &Descr) -> bool {
+    a.diff(b).is_empty() && b.diff(a).is_empty()
+}
+
+fn resource_payload_matches(d: &Descr, inner: &Descr) -> bool {
+    d.components().any(|component| {
+        if let Component::Resources(view) = component {
+            descr_equivalent(&view.payload_type(), inner)
+        } else {
+            false
+        }
+    })
+}
+
+fn mint_tuple_conj(c: Conj<TupleSig>, candidates: &[(String, Descr)]) -> Conj<TupleSig> {
+    Conj {
+        pos: c
+            .pos
+            .into_iter()
+            .map(|sig| TupleSig {
+                elems: sig
+                    .elems
+                    .iter()
+                    .map(|elem| mint_owned_resource_aliases_descr(elem, candidates))
+                    .collect(),
+            })
+            .collect(),
+        neg: c
+            .neg
+            .into_iter()
+            .map(|sig| TupleSig {
+                elems: sig
+                    .elems
+                    .iter()
+                    .map(|elem| mint_owned_resource_aliases_descr(elem, candidates))
+                    .collect(),
+            })
+            .collect(),
+    }
+}
+
+fn mint_list_conj(c: Conj<ListSig>, candidates: &[(String, Descr)]) -> Conj<ListSig> {
+    Conj {
+        pos: c
+            .pos
+            .into_iter()
+            .map(|sig| ListSig {
+                empty: sig.empty,
+                elem: sig
+                    .elem
+                    .map(|elem| Box::new(mint_owned_resource_aliases_descr(&elem, candidates))),
+            })
+            .collect(),
+        neg: c
+            .neg
+            .into_iter()
+            .map(|sig| ListSig {
+                empty: sig.empty,
+                elem: sig
+                    .elem
+                    .map(|elem| Box::new(mint_owned_resource_aliases_descr(&elem, candidates))),
+            })
+            .collect(),
+    }
+}
+
+fn mint_resource_conj(c: Conj<ResourceSig>, candidates: &[(String, Descr)]) -> Conj<ResourceSig> {
+    Conj {
+        pos: c
+            .pos
+            .into_iter()
+            .map(|sig| ResourceSig {
+                payload: Box::new(mint_owned_resource_aliases_descr(&sig.payload, candidates)),
+            })
+            .collect(),
+        neg: c
+            .neg
+            .into_iter()
+            .map(|sig| ResourceSig {
+                payload: Box::new(mint_owned_resource_aliases_descr(&sig.payload, candidates)),
+            })
+            .collect(),
+    }
+}
+
+fn mint_arrow_conj(c: Conj<ArrowSig>, candidates: &[(String, Descr)]) -> Conj<ArrowSig> {
+    Conj {
+        pos: c
+            .pos
+            .into_iter()
+            .map(|sig| ArrowSig {
+                args: sig
+                    .args
+                    .iter()
+                    .map(|arg| mint_owned_resource_aliases_descr(arg, candidates))
+                    .collect(),
+                ret: Box::new(mint_owned_resource_aliases_descr(&sig.ret, candidates)),
+                lit: sig.lit.map(|lit| sigs::ClosureLit {
+                    fn_id: lit.fn_id,
+                    captures: lit
+                        .captures
+                        .into_iter()
+                        .map(|capture| {
+                            ty_from_descr(mint_owned_resource_aliases_descr(
+                                ty_descr(&capture),
+                                candidates,
+                            ))
+                        })
+                        .collect(),
+                }),
+            })
+            .collect(),
+        neg: c
+            .neg
+            .into_iter()
+            .map(|sig| ArrowSig {
+                args: sig
+                    .args
+                    .iter()
+                    .map(|arg| mint_owned_resource_aliases_descr(arg, candidates))
+                    .collect(),
+                ret: Box::new(mint_owned_resource_aliases_descr(&sig.ret, candidates)),
+                lit: sig.lit.map(|lit| sigs::ClosureLit {
+                    fn_id: lit.fn_id,
+                    captures: lit
+                        .captures
+                        .into_iter()
+                        .map(|capture| {
+                            ty_from_descr(mint_owned_resource_aliases_descr(
+                                ty_descr(&capture),
+                                candidates,
+                            ))
+                        })
+                        .collect(),
+                }),
+            })
+            .collect(),
+    }
+}
+
+fn mint_map_conj(c: Conj<MapSig>, candidates: &[(String, Descr)]) -> Conj<MapSig> {
+    Conj {
+        pos: c
+            .pos
+            .into_iter()
+            .map(|sig| MapSig {
+                fields: sig
+                    .fields
+                    .into_iter()
+                    .map(|(key, value)| {
+                        (key, mint_owned_resource_aliases_descr(&value, candidates))
+                    })
+                    .collect(),
+            })
+            .collect(),
+        neg: c
+            .neg
+            .into_iter()
+            .map(|sig| MapSig {
+                fields: sig
+                    .fields
+                    .into_iter()
+                    .map(|(key, value)| {
+                        (key, mint_owned_resource_aliases_descr(&value, candidates))
+                    })
+                    .collect(),
+            })
+            .collect(),
     }
 }
 

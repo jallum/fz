@@ -672,30 +672,11 @@ where
             }
         }
         let ret = self.t.instantiate(&spec.result, &sigma);
-        Some(self.mint_owned_resource_alias(ret))
-    }
-
-    fn mint_owned_resource_alias(&mut self, ty: crate::types::Ty) -> crate::types::Ty {
-        let Some(payload) = self.t.resource_payload_type(&ty) else {
-            return ty;
-        };
         let owner = &self.m.fn_by_id(self.caller_spec_key.fn_id).owner_module;
-        let mut candidates = self
-            .m
-            .opaque_inners
-            .iter()
-            .filter_map(|(tag, inner)| {
-                (crate::type_expr::opaque_owner_module(tag).unwrap_or("") == owner
-                    && self.t.is_equivalent(&payload, inner))
-                .then(|| tag.clone())
-            })
-            .collect::<Vec<_>>();
-        candidates.sort();
-        if candidates.len() == 1 {
-            self.t.opaque_of(&candidates[0])
-        } else {
-            ty
-        }
+        Some(
+            self.t
+                .mint_owned_resource_aliases(ret, owner, &self.m.opaque_inners),
+        )
     }
 
     fn emit(&mut self, slot: EmitSlot, ident: CallsiteIdent, target: SpecKey) {

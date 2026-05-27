@@ -1109,9 +1109,7 @@ pub(crate) fn lower_prim<
                 );
             }
             if decl.symbol == "fz_make_resource" && args.len() == 2 {
-                return lower_extern_fz_make_resource(
-                    b, jmod, runtime, var_env, cache, &arg_vars,
-                );
+                return lower_extern_fz_make_resource(b, jmod, runtime, var_env, cache, &arg_vars);
             }
             if decl.variadic {
                 return emit_variadic_extern_call(

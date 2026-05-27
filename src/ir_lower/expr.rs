@@ -29,7 +29,15 @@ pub(crate) fn lower_fn<T: crate::types::Types<Ty = crate::types::Ty>>(
             name: format!("fn {}/{}", fn_def.name, arity),
         })?;
 
-    let mut builder = FnBuilder::new(fn_id, fn_def.name.clone()).with_category(category);
+    let owner_module = fn_def
+        .name
+        .rfind('.')
+        .map(|i| fn_def.name[..i].to_string())
+        .unwrap_or_default();
+    ctx.current_owner_module = owner_module.clone();
+    let mut builder = FnBuilder::new(fn_id, fn_def.name.clone())
+        .with_category(category)
+        .with_owner_module(owner_module);
     // Mint param vars for the entry block.
     let param_vars: Vec<Var> = (0..arity).map(|_| builder.fresh_var()).collect();
     let entry = builder.block(param_vars.clone());

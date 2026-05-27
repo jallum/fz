@@ -137,6 +137,18 @@ pub trait Types {
     fn list_element_type(&mut self, a: &Self::Ty) -> Self::Ty;
     fn resource_payload_type(&mut self, a: &Self::Ty) -> Option<Self::Ty>;
 
+    /// Replace resource-shaped values with an opaque alias owned by `owner`
+    /// when one exact alias body exists. Implementations may recurse through
+    /// structural containers; the default is conservative.
+    fn mint_owned_resource_aliases(
+        &mut self,
+        a: Self::Ty,
+        _owner: &str,
+        _opaque_inners: &HashMap<String, Self::Ty>,
+    ) -> Self::Ty {
+        a
+    }
+
     /// Project `a`'s tuple-axis components at `arity`. Returns a vector
     /// of length `arity`; positions with no matching shape default to
     /// `any`.
