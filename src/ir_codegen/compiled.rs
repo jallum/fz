@@ -645,7 +645,6 @@ impl CompiledModule {
     pub fn diagnostics(&self) -> &crate::diag::Diagnostics {
         &self.diagnostics
     }
-
 }
 
 unsafe impl Send for CompiledModule {}
