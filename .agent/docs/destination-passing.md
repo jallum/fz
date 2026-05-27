@@ -142,9 +142,9 @@ context planning removes append-shaped rebuilding around recursive calls.
 
 Return-context motion is legal only when the planner can prove that moving work
 does not cross an observable barrier. The current gates reject contexts that
-contain observable externs, scheduler-visible operations, receives, closure
-calls, allocation-stats readers such as `Process.heap_alloc_stats()`, and
-print-like operations. Allocation by itself is not source-observable, but
+contain extern calls, scheduler-visible operations, receives, closure calls,
+allocation-stats readers such as `Process.heap_alloc_stats()`, or halt.
+Allocation by itself is not source-observable, but
 allocation becomes observable in the presence of allocation-stat reads.
 
 The pinned evidence is `fixtures/quicksort`: native JIT/AOT output now

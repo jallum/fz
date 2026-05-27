@@ -816,8 +816,8 @@ ordinary immutable data constructions: no published tuple, list, or map is
 mutated after publication.</p>
 
 <p>The important boundary is observability. Return-context motion may not cross
-a print, a receive, scheduler-visible process operation, halt, unknown closure
-call, or <code>Process.heap_alloc_stats()</code>. Allocation alone is not
+an extern call, a receive, scheduler-visible process operation, halt, unknown
+closure call, or <code>Process.heap_alloc_stats()</code>. Allocation alone is not
 source-visible, but allocation timing becomes visible when a program reads the
 current process allocation counters.</p>
 

@@ -104,8 +104,8 @@ same order.
 
 `ListTail` is typed context passing. It can reorder pure recursive list work
 only when the context proof does not cross observable operations. The effect
-legality gates reject scheduler-visible operations, receives, closure calls,
-observable externs, and allocation-stat readers such as
+legality gates reject extern calls, scheduler-visible operations, receives,
+closure calls, and allocation-stat readers such as
 `Process.heap_alloc_stats()`.
 
 Value-context ListTail lowering uses the same rule. When a material value can
