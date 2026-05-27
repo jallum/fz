@@ -48,6 +48,72 @@ pub(crate) struct WalkResult {
     pub(crate) closure_handles: HashSet<(FnId, Vec<crate::types::Ty>)>,
 }
 
+impl WalkResult {
+    fn callsite_id(
+        caller: &SpecKey,
+        ident: &crate::fz_ir::CallsiteIdent,
+        slot: EmitSlot,
+    ) -> CallsiteId {
+        CallsiteId::new(caller.fn_id, ident, slot)
+    }
+
+    fn record_dispatch(
+        &mut self,
+        caller: &SpecKey,
+        ident: &crate::fz_ir::CallsiteIdent,
+        slot: EmitSlot,
+        target: SpecKey,
+    ) -> CallsiteId {
+        let cid = Self::callsite_id(caller, ident, slot);
+        self.dispatch_targets.insert(cid.clone(), target);
+        cid
+    }
+
+    fn record_return_use(
+        &mut self,
+        caller: &SpecKey,
+        callsite: &CallsiteId,
+        demand: ReturnDemand,
+        plan: Option<ReturnContextPlan>,
+    ) {
+        self.return_uses.insert(callsite.clone(), demand);
+        if let Some(plan) = plan {
+            self.return_context_plans
+                .insert(ReturnContextPlanKey::new(caller, callsite), plan);
+        }
+    }
+
+    fn record_return_context_plan(
+        &mut self,
+        caller: &SpecKey,
+        callsite: &CallsiteId,
+        plan: ReturnContextPlan,
+    ) {
+        self.return_context_plans
+            .insert(ReturnContextPlanKey::new(caller, callsite), plan);
+    }
+}
+
+fn merge_callsite_fn_consts(
+    callsite_fn_consts: &mut CallsiteFnConsts,
+    key: &SpecKey,
+    incoming: Vec<Option<FnId>>,
+) {
+    match callsite_fn_consts.get(key) {
+        None => {
+            callsite_fn_consts.insert(key.clone(), incoming);
+        }
+        Some(prev) => {
+            let merged: Vec<Option<FnId>> = prev
+                .iter()
+                .zip(incoming.iter())
+                .map(|(a, b)| if a == b { *a } else { None })
+                .collect();
+            callsite_fn_consts.insert(key.clone(), merged);
+        }
+    }
+}
+
 /// fz-rh5.6 — discovery walk for one spec. Walks the spec's body and
 /// records every spec it currently emits into `out.emits`, tagged by
 /// `EmitterSite`. The driver diffs against the spec's previous emits
@@ -211,7 +277,7 @@ pub(crate) fn walk_spec_for_discovery<
                         callee,
                         dispatch_key,
                     );
-                    let cid = CallsiteId::new(caller_spec_key.fn_id, &term_ident, slot);
+                    let cid = WalkResult::callsite_id(caller_spec_key, &term_ident, slot);
                     if let Term::Call { continuation, .. } = &b.terminator {
                         let (demand, context_plan) = direct_call_return_plan(
                             t,
@@ -223,24 +289,24 @@ pub(crate) fn walk_spec_for_discovery<
                             continuation,
                         );
                         entry_key.demand = demand;
-                        out.return_uses
-                            .insert(cid.clone(), entry_key.demand.clone());
-                        if let Some(plan) = context_plan {
-                            out.return_context_plans
-                                .insert(ReturnContextPlanKey::new(caller_spec_key, &cid), plan);
-                        }
+                        out.record_return_use(
+                            caller_spec_key,
+                            &cid,
+                            entry_key.demand.clone(),
+                            context_plan,
+                        );
                     } else if matches!(&b.terminator, Term::TailCall { .. }) {
                         let (demand, context_plan) =
                             tail_call_return_plan(caller_spec_key, callee, args);
                         entry_key.demand = demand;
-                        out.return_uses
-                            .insert(cid.clone(), entry_key.demand.clone());
-                        if let Some(plan) = context_plan {
-                            out.return_context_plans
-                                .insert(ReturnContextPlanKey::new(caller_spec_key, &cid), plan);
-                        }
+                        out.record_return_use(
+                            caller_spec_key,
+                            &cid,
+                            entry_key.demand.clone(),
+                            context_plan,
+                        );
                     }
-                    out.dispatch_targets.insert(cid, entry_key.clone());
+                    out.record_dispatch(caller_spec_key, &term_ident, slot, entry_key.clone());
                     let mut per_arg: Vec<Option<FnId>> = args
                         .iter()
                         .map(|av| caller_ft.fn_constants.get(av).copied())
@@ -249,19 +315,7 @@ pub(crate) fn walk_spec_for_discovery<
                         per_arg.push(None);
                     }
                     per_arg.truncate(n_params);
-                    match callsite_fn_consts.get(&entry_key) {
-                        None => {
-                            callsite_fn_consts.insert(entry_key.clone(), per_arg);
-                        }
-                        Some(prev) => {
-                            let merged: Vec<Option<FnId>> = prev
-                                .iter()
-                                .zip(per_arg.iter())
-                                .map(|(a, b)| if a == b { *a } else { None })
-                                .collect();
-                            callsite_fn_consts.insert(entry_key.clone(), merged);
-                        }
-                    }
+                    merge_callsite_fn_consts(callsite_fn_consts, &entry_key, per_arg);
                     emit(slot, term_ident.clone(), entry_key, out);
                 }
                 CallsiteKind::CallClosureKnown { target, args } => {
@@ -292,10 +346,7 @@ pub(crate) fn walk_spec_for_discovery<
                     if matches!(&b.terminator, Term::TailCallClosure { .. }) {
                         target_key.demand = caller_spec_key.demand.clone();
                     }
-                    out.dispatch_targets.insert(
-                        CallsiteId::new(caller_spec_key.fn_id, &term_ident, slot),
-                        target_key.clone(),
-                    );
+                    out.record_dispatch(caller_spec_key, &term_ident, slot, target_key.clone());
                     emit(slot, term_ident.clone(), target_key, out);
                 }
                 CallsiteKind::ClosureLit {
@@ -331,10 +382,7 @@ pub(crate) fn walk_spec_for_discovery<
                     if matches!(&b.terminator, Term::TailCallClosure { .. }) {
                         target_key.demand = caller_spec_key.demand.clone();
                     }
-                    out.dispatch_targets.insert(
-                        CallsiteId::new(caller_spec_key.fn_id, &term_ident, slot),
-                        target_key.clone(),
-                    );
+                    out.record_dispatch(caller_spec_key, &term_ident, slot, target_key.clone());
                     emit(slot, term_ident.clone(), target_key, out);
                 }
                 CallsiteKind::Cont { cont, source } => {
@@ -345,8 +393,8 @@ pub(crate) fn walk_spec_for_discovery<
                     // via the closure-lit lattice.
                     let slot0_ty: Option<crate::types::Ty> = match source {
                         ContSource::Call { callee, args } => {
-                            let direct_cid = CallsiteId::new(
-                                caller_spec_key.fn_id,
+                            let direct_cid = WalkResult::callsite_id(
+                                caller_spec_key,
                                 &term_ident,
                                 crate::fz_ir::EmitSlot::Direct,
                             );
@@ -483,30 +531,14 @@ pub(crate) fn walk_spec_for_discovery<
                         &demand,
                         &entry_key,
                     ) {
-                        let cid = CallsiteId::new(caller_spec_key.fn_id, &term_ident, slot);
-                        out.return_context_plans
-                            .insert(ReturnContextPlanKey::new(caller_spec_key, &cid), plan);
+                        let cid = WalkResult::callsite_id(caller_spec_key, &term_ident, slot);
+                        out.record_return_context_plan(caller_spec_key, &cid, plan);
                     }
-                    match callsite_fn_consts.get(&entry_key) {
-                        None => {
-                            callsite_fn_consts.insert(entry_key.clone(), per_param);
-                        }
-                        Some(prev) => {
-                            let merged: Vec<Option<FnId>> = prev
-                                .iter()
-                                .zip(per_param.iter())
-                                .map(|(a, b)| if a == b { *a } else { None })
-                                .collect();
-                            callsite_fn_consts.insert(entry_key.clone(), merged);
-                        }
-                    }
+                    merge_callsite_fn_consts(callsite_fn_consts, &entry_key, per_param);
                     // fz-uwq.5+ — Cont keys aren't widened, so the
                     // dispatch fact equals the emit key. Record it for
                     // codegen's `resolve_cont_sid` to read.
-                    out.dispatch_targets.insert(
-                        CallsiteId::new(caller_spec_key.fn_id, &term_ident, slot),
-                        entry_key.clone(),
-                    );
+                    out.record_dispatch(caller_spec_key, &term_ident, slot, entry_key.clone());
                     emit(slot, term_ident.clone(), entry_key, out);
                 }
             }
