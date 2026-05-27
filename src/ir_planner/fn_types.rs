@@ -24,20 +24,18 @@ pub struct SpecPlan {
     /// stricter than `ModulePlan::dead_branches`: a branch can be dead for
     /// one specialization even when another specialization keeps it live.
     pub dead_branches: HashMap<crate::fz_ir::BlockId, crate::fz_ir::DeadBranch>,
-    /// fz-uwq.3 — per-callsite dispatch table for this spec.
+    /// Per-callsite dispatch table for this spec.
     ///
-    /// For every `Direct` / `ClosureLit` / `CallClosureKnown` callsite
-    /// in this spec's reachable IR, records the `(callee_fn, callee_key)`
-    /// the planner elected to dispatch to. Empty for `Cont` and
-    /// `MakeClosure` slots — those aren't dispatch sites.
+    /// For every `Direct`, `ClosureCall`, and `Cont` callsite in this spec's
+    /// reachable IR, records the spec key the planner elected to dispatch to.
+    /// `MakeClosure` emits an any-key body spec but is not a dispatch site.
     ///
     /// Authoritative source for codegen's dispatch decisions. Two
     /// caller specs can dispatch the *same* `CallsiteId` to *different*
     /// targets — this table keeps both views distinct.
     ///
-    /// Populated during the worklist diff in `plan_module`. Read by the
-    /// fz-uwq.5+ codegen migration. See `docs/planner-authoritative-
-    /// dispatch.md` for the broader rationale.
+    /// Populated by the worklist and read by codegen. See
+    /// `docs/planner-authoritative-dispatch.md` for the broader rationale.
     pub dispatches: HashMap<crate::fz_ir::CallsiteId, SpecKey>,
     /// Per-spec facts about how a call result is consumed by its return
     /// edge. This is intentionally parallel to `dispatches`: two caller
@@ -55,13 +53,10 @@ pub struct SpecPlan {
 
 /// Per-module type information.
 ///
-/// `specs` is the per-callsite specialization map, keyed by
-/// `(FnId, input-type-tuple)`. Each distinct argument-type signature
-/// seen at any direct-call site produces a fresh SpecPlan via
-/// `type_fn(f, m, Some(&input_descrs))`. An any-key specialization
-/// (`vec![any(); n_params]`) is registered for fns that are
-/// closure-reachable, entry-seeded, or otherwise need the opaque-dispatch
-/// fallback; direct-call-only fns have no any-key (see fz-ul4.29.12.6).
+/// `specs` is the registered specialization map, keyed by `SpecKey`
+/// (`FnId`, input-type tuple, and return demand). Specs are produced by direct
+/// calls, closure calls, continuations, receive outcomes, entry seeds, and
+/// `MakeClosure` reachability.
 pub struct ModulePlan {
     pub specs: HashMap<SpecKey, SpecPlan>,
     /// fz-2yw.2 — Kleene LFP of every spec's effective return type.
@@ -96,19 +91,14 @@ pub struct ModulePlan {
     /// Only covers registered-spec fns — the diagnostic re-runs analysis
     /// on its own ad-hoc spec typing for fns with no registered spec.
     pub dead_branches: HashMap<(FnId, crate::fz_ir::BlockId), crate::fz_ir::DeadBranch>,
-    /// fz-try B1+B2 — closure-handle registry. Records every distinct
-    /// `(lambda FnId, captures)` shape that any reachable MakeClosure
-    /// can produce. Separate from `specs` (which is body specs only);
-    /// handles describe closure *values*, not compiled bodies.
-    ///
-    /// Consumers: the outcomes formatter renders handle identity for
-    /// MakeClosure callsites; C3 will hang a polymorphic arrow
-    /// signature off each entry.
+    /// Closure-handle registry. Records every distinct `(lambda FnId,
+    /// captures)` shape that any reachable `MakeClosure` can produce. Separate
+    /// from `specs` (which is body specs only); handles describe closure
+    /// values, not compiled bodies.
     ///
     /// Codegen does *not* read this — it resolves the lambda body via
     /// `SpecId.0 == FnId.0` alignment for the any-key body spec.
     #[allow(dead_code)]
-    // consumed by tests + future formatter (E-arc); unused in release codegen
     pub closure_handles: std::collections::HashSet<(FnId, Vec<crate::types::Ty>)>,
 }
 
@@ -328,28 +318,22 @@ pub(crate) fn build_any_key_index<T: crate::types::Types<Ty = crate::types::Ty>>
 
 thread_local! {
     pub static PLAN_MODULE_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
-    /// fz-rh5.4 — worklist pops in `process_worklist`. Each pop = one
-    /// walk + one return-recompute. The single best proxy for "how
-    /// much the planner churned" on a given program.
+    /// Worklist pops in `process_worklist`. Each pop performs one discovery
+    /// walk and one return recompute.
     pub static WORKLIST_POPS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
-    /// fz-rh5.4 — calls to `type_fn` from the worklist (= unique specs
-    /// registered, since type_fn results are cached one-per-spec).
+    /// Calls to `type_fn` from the worklist. Since type_fn results are cached
+    /// one-per-spec, this equals the number of unique typed specs.
     pub static TYPE_FN_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
-    /// fz-rh5.4 — invocations of `walk_spec_for_discovery`.
+    /// Invocations of `walk_spec_for_discovery`.
     pub static WALK_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
-/// fz-rh5.6 — the unique identity of a place that emits a spec.
+/// Unique identity of a place that emits a spec.
 ///
-/// Provenance is the invariant that fz-5j5 lacked: every spec in
-/// `specs` exists because ≥1 `EmitterSite` (in some caller's body)
-/// currently produces it. When a caller spec re-walks with different
-/// state, its emitters may produce different targets; the driver
-/// diffs against `produces[E]` and transitions `holders` accordingly.
-/// Orphan cycles are pruned at end-of-typing by a forward BFS from
-/// `entry_seeds` through the emits graph — no key recomputation,
-/// so walker/sweep divergence (the closure_lit bug from fz-5j5.3)
-/// is impossible by construction.
+/// Every spec in `specs` exists because at least one `EmitterSite` currently
+/// produces it. When a caller spec re-walks with different state, the driver
+/// diffs against `produces[E]`, transitions `holders`, and prunes orphan cycles
+/// with a forward BFS from `entry_seeds` through the emits graph.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct EmitterSite {
     pub caller: SpecKey,

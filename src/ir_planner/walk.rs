@@ -14,25 +14,21 @@ use crate::fz_ir::{
 };
 use std::collections::{HashMap, HashSet};
 
-/// fz-rh5.6 — output of one discovery walk. The driver folds this
-/// into worklist state.
+/// Output of one discovery walk. The driver folds this into worklist state.
 #[derive(Default)]
 pub(crate) struct WalkResult {
     /// Every `(site, target_spec_key)` this walk emits. The driver
     /// diffs against `produces[site]` to detect transitions.
     ///
-    /// fz-uwq.3+ note: `target` here is the worklist key. Recursive
-    /// direct calls are normalized before emission, so this key agrees
-    /// with the dispatch fact consumed by codegen.
+    /// Recursive direct calls are normalized before emission, so this key
+    /// agrees with the dispatch fact consumed by codegen.
     pub(crate) emits: Vec<(EmitterSite, SpecKey)>,
-    /// fz-uwq.3+ — per-callsite **dispatch fact**: the
-    /// `(callee_fn, callee_key)` the planner resolved at this site after
-    /// recursive-key normalization. This is the same key emitted above,
-    /// so `SpecPlan.dispatches` and the codegen path agree by construction.
+    /// Per-callsite dispatch fact: the spec key the planner resolved for this
+    /// site after recursive-key normalization. This is the same key emitted
+    /// above, so `SpecPlan.dispatches` and codegen agree by construction.
     ///
-    /// Only populated for dispatch-shaped slots
-    /// (`Direct` / `ClosureLit` / `CallClosureKnown`). `Cont` slot
-    /// inputs are tracked through `cont_input_key` and aren't widened.
+    /// Populated for `Direct`, `ClosureCall`, and `Cont` slots. `MakeClosure`
+    /// emits an any-key body spec but does not record a dispatch fact.
     pub(crate) dispatch_targets: HashMap<crate::fz_ir::CallsiteId, SpecKey>,
     /// Per-callsite typed return-use facts for this caller spec. These facts
     /// describe the result hole reached by the call result; they do not imply
@@ -45,8 +41,8 @@ pub(crate) struct WalkResult {
     /// into the `return_readers` reverse index so changes
     /// re-enqueue this caller.
     pub(crate) return_reads: Vec<SpecKey>,
-    /// fz-try B1+B2 — closure handles produced by MakeClosure in this
-    /// walk, as `(lambda FnId, capture-types)`. Driver folds into
+    /// Closure handles produced by `MakeClosure` in this walk, as
+    /// `(lambda FnId, capture-types)`. Driver folds into
     /// `ModulePlan.closure_handles`.
     pub(crate) closure_handles: HashSet<(FnId, Vec<crate::types::Ty>)>,
 }
@@ -117,26 +113,22 @@ fn merge_callsite_fn_consts(
     }
 }
 
-/// fz-rh5.6 — discovery walk for one spec. Walks the spec's body and
-/// records every spec it currently emits into `out.emits`, tagged by
-/// `EmitterSite`. The driver diffs against the spec's previous emits
-/// (via `produces`/`holders`/`emits_by_caller`) and transitions
-/// provenance.
+/// Discovery walk for one spec. Walks the spec's body and records every spec it
+/// currently emits into `out.emits`, tagged by `EmitterSite`. The driver diffs
+/// against the spec's previous emits and transitions provenance.
 ///
 /// Emit kinds:
 ///   - `EmitSlot::Direct` for `Term::Call` / `Term::TailCall`.
 ///   - `EmitSlot::ClosureCall` for `Term::CallClosure` / `Term::TailCallClosure`
-///     callsites. Pre-fz-try.11 this was split into `CallClosureKnown`
-///     (fn_constants resolved) and `ClosureLit(c, s)` (per closure-lit
-///     clause); now both paths share the uniform structural slot and
-///     dispatch variation lives on the Dispatch enum at row time.
+///     callsites, whether the target comes from `fn_constants` or a closure
+///     literal clause.
 ///   - `EmitSlot::Cont` for the continuation of Call/CallClosure/Receive.
+///   - `EmitSlot::MakeClosure` for the any-key body spec reachable through a
+///     closure value.
 ///
-/// `Prim::MakeClosure` is *not* an emit kind — it constructs a closure
-/// value (a *handle*), recorded in `out.closure_handles`. The lambda's
-/// compiled body is the any-key body spec (SpecId.0 == FnId.0); codegen
-/// resolves it directly without indirection through a MakeClosure-side
-/// padded spec.
+/// `Prim::MakeClosure` also records a closure value handle in
+/// `out.closure_handles`. Codegen resolves the lambda body directly through the
+/// any-key body spec.
 ///
 /// `recursive_fns`: calls into recursive functions are normalized
 /// immediately with `widen_for_recursive_spec_key`, including the first

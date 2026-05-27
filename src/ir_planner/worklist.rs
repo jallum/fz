@@ -15,9 +15,9 @@ use crate::fz_ir::{Block, FnId, Module, Term};
 use crate::ir_callgraph::{build_call_graph, entry_seeds};
 use std::collections::HashMap;
 
-/// fz-5j5.3 — type a module via one worklist over `(FnId, Vec<crate::types::Ty>)`
-/// specs. The worklist drives spec registration, body typing, and
-/// effective-return propagation as a single unified data-flow LFP.
+/// Type a module via one worklist over `SpecKey`s. The worklist drives spec
+/// registration, body typing, and effective-return propagation as a single
+/// unified data-flow LFP.
 ///
 /// Two triggers add a spec back to the worklist:
 ///   1. The spec is freshly discovered (newly-emitted pending key).
@@ -29,14 +29,12 @@ use std::collections::HashMap;
 /// is computed, it's cached and reused across worklist visits — only
 /// the walk + return-recompute re-run when triggered.
 ///
-/// MakeClosure-side any-key registration is folded in as a separate
-/// post-drain sweep (it depends on the converged `opaque_consumer_arities`,
-/// a global computation). After the sweep enqueues any-keys for
-/// opaque-consumed lambdas, the worklist re-drains; over-specialized
-/// stale specs that the walks accumulate are pruned by a final
-/// reachability sweep keyed off the converged effective_returns.
+/// Discovery walks emit direct calls, closure calls, continuations, receive
+/// outcomes, and any-key body specs reachable through `MakeClosure`. After the
+/// worklist drains, a forward reachability sweep prunes specs no longer rooted
+/// at an entry seed.
 ///
-/// ## Termination (fz-rh5.7)
+/// ## Termination
 ///
 /// The worklist terminates because:
 ///
@@ -70,9 +68,6 @@ pub fn plan_module<T: crate::types::Types<Ty = crate::types::Ty> + crate::types:
     m: &Module,
     tel: &dyn crate::telemetry::Telemetry,
 ) -> ModulePlan {
-    // fz-mm2.7 — verified: body has no direct concrete operations. The seam
-    // handle is threaded into the worklist driver (process_worklist),
-    // which fans it out to type_fn and the per-call typing work.
     PLAN_MODULE_CALLS.with(|c| c.set(c.get() + 1));
     WORKLIST_POPS.with(|c| c.set(0));
     TYPE_FN_CALLS.with(|c| c.set(0));
@@ -253,7 +248,7 @@ fn local_effect_summary(m: &Module, key: &SpecKey, mt: &ModulePlan) -> EffectSum
     summary
 }
 
-/// fz-rh5.6 — worklist driver with provenance.
+/// Worklist driver with provenance.
 ///
 /// Each pop:
 ///   1. type_fn the spec if new (cached by spec_key).
@@ -261,9 +256,9 @@ fn local_effect_summary(m: &Module, key: &SpecKey, mt: &ModulePlan) -> EffectSum
 ///   3. Diff `result.emits` against the spec's prior emits
 ///      (`emits_by_caller[spec_key]`). Transition `produces` and
 ///      `holders`. Enqueue new target specs.
-///   4. Fold `result.closure_handles` into the module-level handle
-///      set (fz-try B1+B2).
-///   5. Recompute this spec's effective return. If changed, enqueue
+///   4. Install dispatches, return-use facts, and return-context plans.
+///   5. Fold `result.closure_handles` into the module-level handle set.
+///   6. Recompute this spec's effective return. If changed, enqueue
 ///      every spec in `return_readers[spec]`.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn process_worklist<
