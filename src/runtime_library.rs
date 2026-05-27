@@ -9,15 +9,13 @@
 //! This module exposes the second layer as deterministic `.fzi`/`.fzo`
 //! artifact envelopes so resolver and linker work can depend on the same
 //! facts a user library would provide.
-#![allow(dead_code)]
-
 use crate::ast::{Item, ModuleDef, Program};
-use crate::diag::Span;
 use crate::module_artifact::{FziArtifact, FzoArtifact, FzoUnitPayload};
 use crate::module_identity::{ExportKey, ModuleName};
 use crate::module_interface::ModuleInterface;
 use crate::resolve::InterfaceTable;
 use std::collections::BTreeMap;
+#[cfg(test)]
 use std::rc::Rc;
 
 const RUNTIME_FZ: &str = include_str!("runtime_library/runtime.fz");
@@ -28,10 +26,6 @@ pub struct RuntimeLibraryModuleArtifact {
     pub interface: ModuleInterface,
     pub fzi: FziArtifact,
     pub fzo: FzoArtifact,
-}
-
-pub fn source() -> &'static str {
-    RUNTIME_FZ
 }
 
 pub fn parsed_program() -> Program {
@@ -52,7 +46,10 @@ pub fn parsed_program() -> Program {
 }
 
 pub fn interface_table() -> InterfaceTable {
-    crate::module_interface::collect_from_program(&parsed_program())
+    artifacts()
+        .into_iter()
+        .map(|artifact| (artifact.module, artifact.interface))
+        .collect()
 }
 
 pub fn artifacts() -> Vec<RuntimeLibraryModuleArtifact> {
@@ -184,6 +181,7 @@ fn runtime_module_payload(name: &ModuleName, module: &ModuleDef) -> String {
     lines.join("\n")
 }
 
+#[cfg(test)]
 pub fn primitive_prelude_program() -> Program {
     let items = parsed_program()
         .items
@@ -200,6 +198,7 @@ pub fn primitive_prelude_program() -> Program {
     }
 }
 
+#[cfg(test)]
 pub fn primitive_contract_names() -> Vec<String> {
     let mut names = Vec::new();
     collect_primitive_contract_names(&parsed_program().items, &mut names);
@@ -207,6 +206,7 @@ pub fn primitive_contract_names() -> Vec<String> {
     names
 }
 
+#[cfg(test)]
 fn collect_primitive_contract_names(items: &[Rc<Item>], names: &mut Vec<String>) {
     for item in items {
         if let Item::Fn(def) = &**item
@@ -219,18 +219,6 @@ fn collect_primitive_contract_names(items: &[Rc<Item>], names: &mut Vec<String>)
             collect_primitive_contract_names(&module.items, names);
         }
     }
-}
-
-pub fn module_span_for(name: &ModuleName) -> Span {
-    for item in parsed_program().items {
-        if let Item::Module(module) = &*item {
-            let module_name = ModuleName::from_segments(vec![module.name.clone()]);
-            if &module_name == name {
-                return module.name_span;
-            }
-        }
-    }
-    Span::DUMMY
 }
 
 #[cfg(test)]
