@@ -78,6 +78,7 @@ impl CallEdgePlan {
     pub fn local_target(&self) -> Option<&SpecKey> {
         match &self.target {
             CallEdgeTarget::Local(target) => Some(target),
+            CallEdgeTarget::External { .. } => None,
         }
     }
 }
@@ -85,6 +86,11 @@ impl CallEdgePlan {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CallEdgeTarget {
     Local(SpecKey),
+    External {
+        target: crate::modules::identity::ExportKey,
+        input: Vec<crate::types::KeySlot>,
+        demand: ReturnDemand,
+    },
 }
 
 /// Per-module type information.
@@ -93,6 +99,7 @@ pub enum CallEdgeTarget {
 /// (`FnId`, input-type tuple, and return demand). Specs are produced by direct
 /// calls, closure calls, continuations, receive outcomes, entry seeds, and
 /// `MakeClosure` reachability.
+#[derive(Debug, Clone)]
 pub struct ModulePlan {
     pub specs: HashMap<SpecKey, SpecPlan>,
     /// Kleene LFP of every spec's effective return type. Maintained

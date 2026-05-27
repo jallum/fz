@@ -26,6 +26,13 @@ Local direct, closure, and continuation call edges currently target a
 `ReturnDemand`. The same `CallEdgePlan` shape is the home for future
 provider-boundary and protocol targets.
 
+Imported module calls use that provider-boundary shape today. Before link, the
+IR carries an `ExternalCallEdge` and the call edge names the target `ExportKey`
+plus the public input and demand selected upstream. `link_ir_units_with_plan`
+remaps unit-local facts into linked ids and resolves the provider-boundary
+target to the local `SpecKey` while `Module::rewrite_external_calls_for_lto`
+rewrites the terminator.
+
 Each call edge may also record the typed return-use fact for its result hole and
 the executable plan for return-use facts that need lowering. The current
 concrete plans lower ListTail contexts. They can also name the already-proved

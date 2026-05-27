@@ -427,19 +427,29 @@ fn linked_ir_units_rewrite_external_edges_and_run_provider_body() {
     .unwrap_or_else(|err| panic!("user frontend: {:?}", err.diagnostics));
     assert_eq!(user.module.external_call_edges.len(), 1);
 
-    let math_unit = CompiledUnit::from_ir_module(
+    let math_unit = CompiledUnit::from_ir_module_with_plan(
         math.module,
+        Some(math.module_plan),
         Some(math_interface),
         crate::diag::Diagnostics::new(),
     );
-    let user_unit =
-        CompiledUnit::from_ir_module(user.module, None, crate::diag::Diagnostics::new());
-    let linked = link_ir_units(&[math_unit.clone(), user_unit.clone()]).expect("link ir units");
+    let user_unit = CompiledUnit::from_ir_module_with_plan(
+        user.module,
+        Some(user.module_plan),
+        None,
+        crate::diag::Diagnostics::new(),
+    );
+    let linked =
+        link_ir_units_with_plan(&[math_unit.clone(), user_unit.clone()]).expect("link ir units");
+    let linked_plan = linked
+        .module_plan
+        .as_ref()
+        .expect("linked planner facts must be preserved");
+    let linked = linked.module;
     assert!(linked.external_call_edges.is_empty());
     let entry = linked.fn_by_name("main").expect("main").id;
 
-    let linked_plan = crate::ir_planner::plan_module(&mut t, &linked, &tel);
-    let compiled = compile_pretyped(&mut t, &linked, &linked_plan, &tel).expect("compile linked");
+    let compiled = compile_pretyped(&mut t, &linked, linked_plan, &tel).expect("compile linked");
     let image = CompiledImage::from_linked(compiled);
 
     assert_eq!(image.run(entry), 42);
@@ -474,6 +484,23 @@ fn image_linker_rejects_missing_and_duplicate_providers() {
         Err(err) => err,
     };
     assert!(matches!(err, ImageLinkError::DuplicateProvider { .. }));
+}
+
+#[test]
+fn planned_image_link_rejects_units_without_planner_facts() {
+    let (unit, _) = link_test_unit("User", &[("run", 0)], Vec::new());
+    let err = match link_ir_units_with_plan(&[unit]) {
+        Ok(_) => panic!("expected missing planner facts"),
+        Err(err) => err,
+    };
+    assert_eq!(
+        err,
+        ImageLinkError::MissingPlannerFacts {
+            module: Some(crate::modules::identity::ModuleName::from_segments(vec![
+                "User".to_string()
+            ])),
+        }
+    );
 }
 
 #[test]
