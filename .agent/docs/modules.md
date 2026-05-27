@@ -441,24 +441,26 @@ Use the right term:
 
 `link_ir_units` is the boundary-resolution step for module graphs. It copies all
 reachable `CompiledUnit` IR bodies into one dense linked `Module`, remaps
-`FnId`, `ExternId`, and atom ids, builds provider keys from implemented
-interfaces, and rewrites `ExternalCallEdge` placeholders to direct local calls
-before JIT codegen sees the module.
+`FnId`, `ExternId`, atom ids, and planner facts, builds provider keys from
+implemented interfaces, and rewrites `ExternalCallEdge` placeholders to direct
+local calls before JIT codegen sees the module.
 
 Linking must also preserve planner facts that codegen consumes. A provider graph
 must not depend on a normal post-link `plan_module` pass to recover dispatch,
 return-demand, return-context, extern-marshal, or future protocol call-edge
 facts that were known upstream. Link/load may validate, remap, resolve, and
 strengthen facts; ordinary provider linking is a fact-preserving
-transformation.
+transformation. Provider-backed codegen uses `link_ir_units_with_plan`; missing
+planner facts are a link error.
 
 `CompiledProgram::link_image_with_telemetry` is the single-unit JIT run path. It
 validates the unit through `link_ir_units`, links that unit's runtime metadata,
 and wraps the compiled machine-code module. Provider-backed run/build paths
 first call `modules::pipeline::prepare_execution_graph`, which materializes
-provider units and calls `link_ir_units`; codegen then sees one linked IR module
-with no unresolved external edges. `CompiledImage::from_linked_with_telemetry`
-only wraps that already-linked machine-code module and emits link telemetry.
+provider units and calls `link_ir_units_with_plan`; codegen then sees one
+linked IR module and one remapped `ModulePlan` with no unresolved external
+edges. `CompiledImage::from_linked_with_telemetry` only wraps that
+already-linked machine-code module and emits link telemetry.
 `CompiledModule` remains the executable payload inside the image, not the
 driver-facing product.
 

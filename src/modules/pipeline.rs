@@ -67,7 +67,12 @@ impl CheckedModule {
                     None
                 }
             });
-        CompiledUnit::from_ir_module(self.module.clone(), interface, diag::Diagnostics::new())
+        CompiledUnit::from_ir_module_with_plan(
+            self.module.clone(),
+            Some(self.module_plan.clone()),
+            interface,
+            diag::Diagnostics::new(),
+        )
     }
 }
 
@@ -205,10 +210,15 @@ pub(crate) fn prepare_execution_graph(
 ) -> Result<PreparedExecutionGraph, PipelineError> {
     let units = load_provider_units(t, &prepared, providers, tel)?;
     let linked_units = units.len() > 1;
-    let module = if !linked_units {
-        units[0].code.clone()
+    let linked = if !linked_units {
+        None
     } else {
-        ir_codegen::link_ir_units(&units).map_err(PipelineError::Link)?
+        Some(ir_codegen::link_ir_units_with_plan(&units).map_err(PipelineError::Link)?)
+    };
+    let module = if let Some(linked) = &linked {
+        linked.module.clone()
+    } else {
+        units[0].code.clone()
     };
     let module_plan = if !linked_units {
         prepared.module_plan
@@ -231,7 +241,11 @@ pub(crate) fn prepare_execution_graph(
             sm: prepared.sm,
         });
     } else {
-        ir_planner::plan_module(t, &module, tel)
+        linked
+            .and_then(|linked| linked.module_plan)
+            .ok_or_else(|| {
+                PipelineError::Link(ImageLinkError::MissingPlannerFacts { module: None })
+            })?
     };
     Ok(PreparedExecutionGraph {
         units,
@@ -327,8 +341,9 @@ fn load_provider_units(
             tel,
         )?;
         let interface = graph.interfaces.get(&module).cloned();
-        units.push(CompiledUnit::from_ir_module(
+        units.push(CompiledUnit::from_ir_module_with_plan(
             frontend.module,
+            Some(frontend.module_plan),
             interface,
             diag::Diagnostics::new(),
         ));
@@ -420,6 +435,7 @@ end
         let checked =
             checked_module_for_mode(&mut concrete_types, frontend, &tel, CompileMode::Normal)
                 .unwrap_or_else(|_| panic!("checked module"));
+        ir_planner::PLAN_MODULE_CALLS.with(|count| count.set(0));
         let graph = prepare_execution_graph(
             &mut concrete_types,
             checked,
@@ -437,5 +453,11 @@ end
         assert!(modules.contains(&"User".to_string()));
         assert!(modules.contains(&"Utf8".to_string()));
         assert!(!modules.contains(&"Process".to_string()));
+        let plan_calls = ir_planner::PLAN_MODULE_CALLS.with(|count| count.get());
+        assert_eq!(
+            plan_calls, 1,
+            "provider graph preparation should plan the loaded runtime module once, \
+             not replan the linked graph"
+        );
     }
 }
