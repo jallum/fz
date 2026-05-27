@@ -401,7 +401,7 @@ fn matcher_perf_internal_matcher_repair_baseline() {
     let representative = [
         ("hello", 3, 0),
         ("list_primitives", 25, 0),
-        ("quicksort", 19, 0),
+        ("quicksort", 21, 0),
         ("ast_eval", 3, 0),
         ("receive_mixed_constructors", 5, 0),
     ];
@@ -1951,10 +1951,9 @@ fn dump_telemetry_stats(fixture: &Path) -> DumpTelemetryStats {
         "{} telemetry missing fz.planner.planned event",
         fixture.display()
     );
-    assert_eq!(
-        stats.planner.event_count,
-        2,
-        "{} dump --emit stats should plan once in frontend and once after codegen rewrites",
+    assert!(
+        stats.planner.event_count >= 2,
+        "{} dump --emit stats should plan at least root frontend and final linked module",
         fixture.display()
     );
     stats
@@ -2548,10 +2547,11 @@ fn list_tail_demand_rejects_heap_stats_between_prefix_and_append() {
 fn append([], ys), do: ys
 fn append([h | t], ys), do: [h | append(t, ys)]
 fn id_list(xs), do: xs
+extern "C" fn fz_process_heap_alloc_stats() :: any
 
 fn main() do
   left = id_list([1])
-  Process.heap_alloc_stats()
+  fz_process_heap_alloc_stats()
   append(left, [2])
 end
 "#,

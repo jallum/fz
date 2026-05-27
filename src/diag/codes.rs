@@ -16,9 +16,13 @@ pub const PARSE_EXPECTED_TOKEN: DiagCode = DiagCode("parse/expected-token");
 
 // ----- resolver -----
 
-pub const RESOLVE_ALIAS_OUTSIDE_MODULE: DiagCode = DiagCode("resolve/alias-outside-module");
-pub const RESOLVE_IMPORT_OUTSIDE_MODULE: DiagCode = DiagCode("resolve/import-outside-module");
+pub const RESOLVE_DUPLICATE_MODULE: DiagCode = DiagCode("resolve/duplicate-module");
+pub const RESOLVE_DUPLICATE_EXPORT: DiagCode = DiagCode("resolve/duplicate-export");
+pub const RESOLVE_UNKNOWN_MODULE: DiagCode = DiagCode("resolve/unknown-module");
+pub const RESOLVE_UNKNOWN_IMPORT: DiagCode = DiagCode("resolve/unknown-import");
+pub const RESOLVE_CONFLICTING_IMPORT: DiagCode = DiagCode("resolve/conflicting-import");
 pub const RESOLVE_TYPE_ALIAS: DiagCode = DiagCode("resolve/type-alias");
+pub const INTERFACE_MISSING_SPEC: DiagCode = DiagCode("interface/missing-spec");
 pub const SPEC_VIOLATION: DiagCode = DiagCode("spec/violation");
 
 // ----- macro expansion -----
@@ -68,6 +72,7 @@ pub const TYPE_EXTERN_MARSHAL: DiagCode = DiagCode("type/extern-marshal");
 // ----- codegen -----
 
 pub const CODEGEN_SCHEMA_MISSING: DiagCode = DiagCode("codegen/schema-missing");
+pub const ARTIFACT_INVALID: DiagCode = DiagCode("artifact/invalid");
 
 // ----- internal (compiler invariants) -----
 
@@ -85,9 +90,13 @@ mod tests {
         let codes: &[DiagCode] = &[
             LEX_UNEXPECTED_CHAR,
             PARSE_EXPECTED_TOKEN,
-            RESOLVE_ALIAS_OUTSIDE_MODULE,
-            RESOLVE_IMPORT_OUTSIDE_MODULE,
+            RESOLVE_DUPLICATE_MODULE,
+            RESOLVE_DUPLICATE_EXPORT,
+            RESOLVE_UNKNOWN_MODULE,
+            RESOLVE_UNKNOWN_IMPORT,
+            RESOLVE_CONFLICTING_IMPORT,
             RESOLVE_TYPE_ALIAS,
+            INTERFACE_MISSING_SPEC,
             SPEC_VIOLATION,
             MACRO_NOT_A_DEFMACRO,
             MACRO_EXPANSION_LOOP,
@@ -97,6 +106,7 @@ mod tests {
             TYPE_OPAQUE_VISIBILITY,
             TYPE_EXTERN_MARSHAL,
             CODEGEN_SCHEMA_MISSING,
+            ARTIFACT_INVALID,
             INTERNAL_POST_RESOLUTION_LEFTOVER,
         ];
         for c in codes {

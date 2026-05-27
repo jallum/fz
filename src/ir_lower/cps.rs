@@ -342,3 +342,51 @@ pub(crate) fn cps_split_call(
     }
     Ok(result_param)
 }
+
+pub(crate) fn cps_split_external_call(
+    ctx: &mut LowerCtx,
+    callee: FnId,
+    target: crate::modules::identity::ExportKey,
+    arg_vars: Vec<Var>,
+    call_span: Span,
+) -> Result<Var, LowerError> {
+    let captured = ctx.visible_locals();
+    let captured_vars: Vec<Var> = captured.iter().map(|(_, v)| *v).collect();
+    let cont_id = ctx.mb.fresh_fn_id();
+
+    ctx.set_external_direct_term_at(
+        Term::Call {
+            ident: crate::fz_ir::CallsiteIdent::from_source(call_span),
+            callee,
+            args: arg_vars,
+            continuation: Cont {
+                fn_id: cont_id,
+                captured: captured_vars.clone(),
+            },
+        },
+        call_span,
+        target,
+    );
+
+    let done = ctx.cur.take().unwrap().build();
+    ctx.mb.add_fn(done);
+
+    let mut kbuilder = FnBuilder::new(cont_id, format!("k_{}", cont_id.0))
+        .with_category(crate::fz_ir::FnCategory::CpsCont)
+        .with_owner_module(ctx.current_owner_module.clone());
+    let result_param = kbuilder.fresh_var();
+    let cap_params: Vec<Var> = captured.iter().map(|_| kbuilder.fresh_var()).collect();
+    let mut params = vec![result_param];
+    params.extend(cap_params.clone());
+    let entry = kbuilder.block(params);
+    ctx.cur = Some(kbuilder);
+    ctx.cur_fn_id = Some(cont_id);
+    ctx.cur_block = Some(entry);
+    ctx.terminated = false;
+    ctx.env.clear();
+    ctx.env_order.clear();
+    for ((name, _), nv) in captured.iter().zip(&cap_params) {
+        ctx.bind(name, *nv);
+    }
+    Ok(result_param)
+}

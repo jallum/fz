@@ -23,6 +23,9 @@
 
 use crate::ast::*;
 use crate::diag::{Diagnostic, Span, codes};
+use crate::modules::identity::{ExportKey, ModuleName, QualifiedName};
+use crate::modules::interface::ModuleInterface;
+use std::collections::BTreeMap;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
@@ -31,11 +34,31 @@ use std::rc::Rc;
 /// diagnostic instead of a DUMMY-span headline. See fz-ul4.21.
 #[derive(Debug, Clone)]
 pub enum ResolveError {
-    AliasOutsideModule {
+    DuplicateModule {
+        module: ModuleName,
+        first_span: Span,
+        duplicate_span: Span,
+    },
+    DuplicateExport {
+        export: ExportKey,
+        first_span: Span,
+        duplicate_span: Span,
+    },
+    UnknownModule {
+        module: ModuleName,
         span: Span,
     },
-    ImportOutsideModule {
+    UnknownImport {
+        export: ExportKey,
         span: Span,
+    },
+    ConflictingImport {
+        name: String,
+        arity: usize,
+        first_module: ModuleName,
+        second_module: ModuleName,
+        first_span: Span,
+        second_span: Span,
     },
     /// fz-ul4.31.5 — Failure to build a module's `@type` env (duplicate
     /// alias, cycle, or unknown name in an alias body).
@@ -48,16 +71,52 @@ pub enum ResolveError {
 impl ResolveError {
     pub fn to_diagnostic(&self) -> Diagnostic {
         match self {
-            Self::AliasOutsideModule { span } => Diagnostic::error(
-                codes::RESOLVE_ALIAS_OUTSIDE_MODULE,
-                "alias is only valid inside a defmodule body",
+            Self::DuplicateModule {
+                module,
+                first_span,
+                duplicate_span,
+            } => Diagnostic::error(
+                codes::RESOLVE_DUPLICATE_MODULE,
+                format!("module `{}` is defined more than once", module),
+                *duplicate_span,
+            )
+            .with_secondary(*first_span, "first definition here"),
+            Self::DuplicateExport {
+                export,
+                first_span,
+                duplicate_span,
+            } => Diagnostic::error(
+                codes::RESOLVE_DUPLICATE_EXPORT,
+                format!("export `{}` is defined more than once", export),
+                *duplicate_span,
+            )
+            .with_secondary(*first_span, "first definition here"),
+            Self::UnknownModule { module, span } => Diagnostic::error(
+                codes::RESOLVE_UNKNOWN_MODULE,
+                format!("module `{}` is not defined", module),
                 *span,
             ),
-            Self::ImportOutsideModule { span } => Diagnostic::error(
-                codes::RESOLVE_IMPORT_OUTSIDE_MODULE,
-                "import is only valid inside a defmodule body",
+            Self::UnknownImport { export, span } => Diagnostic::error(
+                codes::RESOLVE_UNKNOWN_IMPORT,
+                format!("module `{}` does not export `{}/{}`", export.module, export.name, export.arity),
                 *span,
             ),
+            Self::ConflictingImport {
+                name,
+                arity,
+                first_module,
+                second_module,
+                first_span,
+                second_span,
+            } => Diagnostic::error(
+                codes::RESOLVE_CONFLICTING_IMPORT,
+                format!(
+                    "import `{}/{}` from module `{}` conflicts with existing import from module `{}`",
+                    name, arity, second_module, first_module
+                ),
+                *second_span,
+            )
+            .with_secondary(*first_span, "first import here"),
             Self::TypeAliasError { msg, span } => {
                 Diagnostic::error(codes::RESOLVE_TYPE_ALIAS, msg.clone(), *span)
             }
@@ -82,7 +141,7 @@ pub fn rewrite_expr_top_level(e: &mut Spanned<Expr>) {
     let mut intro: HashSet<String> = HashSet::new();
     let no_paths: HashSet<String> = HashSet::new();
     let no_aliases: HashMap<String, String> = HashMap::new();
-    let no_imports: HashMap<(String, usize), String> = HashMap::new();
+    let no_imports: ImportMap = HashMap::new();
     rewrite_expr(
         e,
         "",
@@ -98,8 +157,35 @@ pub fn flatten_modules<T: crate::types::Types<Ty = crate::types::Ty>>(
     t: &mut T,
     prog: Program,
 ) -> Result<Program, ResolveError> {
-    let module_paths = collect_module_paths(&prog);
-    let module_fns = collect_module_fns(&prog);
+    flatten_modules_with_options(t, prog, BTreeMap::new())
+}
+
+pub fn flatten_modules_with_interface_table<T: crate::types::Types<Ty = crate::types::Ty>>(
+    t: &mut T,
+    prog: Program,
+    interface_table: InterfaceTable,
+) -> Result<Program, ResolveError> {
+    flatten_modules_with_options(t, prog, interface_table)
+}
+
+fn flatten_modules_with_options<T: crate::types::Types<Ty = crate::types::Ty>>(
+    t: &mut T,
+    prog: Program,
+    mut interface_table: InterfaceTable,
+) -> Result<Program, ResolveError> {
+    collect_module_fns(&prog)?;
+    let module_macros = collect_module_macros(&prog);
+    let module_interfaces = crate::modules::interface::collect_from_program(&prog);
+    add_requested_runtime_interfaces(&prog, &module_interfaces, &mut interface_table);
+    let external_module_interfaces = interface_table
+        .iter()
+        .filter(|(name, _)| !module_interfaces.contains_key(*name))
+        .map(|(name, interface)| (name.clone(), interface.clone()))
+        .collect::<BTreeMap<_, _>>();
+    for (name, interface) in &module_interfaces {
+        interface_table.insert(name.clone(), interface.clone());
+    }
+    let module_paths = collect_visible_module_paths(&prog, &interface_table);
     let mut out: Vec<Rc<Item>> = Vec::new();
     let mut module_docs: HashMap<String, String> = HashMap::new();
     collect_module_docs(&prog, &mut module_docs);
@@ -118,8 +204,8 @@ pub fn flatten_modules<T: crate::types::Types<Ty = crate::types::Ty>>(
         &mut opaque_inners,
         &mut brand_inners,
     )?;
-    let no_aliases: HashMap<String, String> = HashMap::new();
-    let no_imports: HashMap<(String, usize), String> = HashMap::new();
+    let (root_aliases, root_imports) =
+        collect_import_scope(&prog.items, &interface_table, &module_macros)?;
     for item in &prog.items {
         match &**item {
             Item::Fn(def) => {
@@ -133,8 +219,8 @@ pub fn flatten_modules<T: crate::types::Types<Ty = crate::types::Ty>>(
                         &no_siblings,
                         &mut intro,
                         &module_paths,
-                        &no_aliases,
-                        &no_imports,
+                        &root_aliases,
+                        &root_imports,
                     );
                     if let Some(g) = &mut clause.guard {
                         rewrite_expr(
@@ -143,20 +229,22 @@ pub fn flatten_modules<T: crate::types::Types<Ty = crate::types::Ty>>(
                             &no_siblings,
                             &mut intro,
                             &module_paths,
-                            &no_aliases,
-                            &no_imports,
+                            &root_aliases,
+                            &root_imports,
                         );
                     }
                 }
                 out.push(Rc::new(Item::Fn(new_def)));
             }
-            Item::Module(m) => flatten_module(m, "", &mut out, &module_paths, &module_fns)?,
-            Item::Alias { span, .. } => {
-                return Err(ResolveError::AliasOutsideModule { span: *span });
-            }
-            Item::Import { span, .. } => {
-                return Err(ResolveError::ImportOutsideModule { span: *span });
-            }
+            Item::Module(m) => flatten_module(
+                m,
+                None,
+                &mut out,
+                &module_paths,
+                &interface_table,
+                &module_macros,
+            )?,
+            Item::Alias { .. } | Item::Import { .. } => {}
             Item::MacroCall {
                 name,
                 name_span,
@@ -174,8 +262,8 @@ pub fn flatten_modules<T: crate::types::Types<Ty = crate::types::Ty>>(
                         &no_siblings,
                         &mut intro,
                         &module_paths,
-                        &no_aliases,
-                        &no_imports,
+                        &root_aliases,
+                        &root_imports,
                     );
                 }
                 out.push(Rc::new(Item::MacroCall {
@@ -190,11 +278,213 @@ pub fn flatten_modules<T: crate::types::Types<Ty = crate::types::Ty>>(
     }
     Ok(Program {
         items: out,
+        module_interfaces,
+        external_module_interfaces,
         module_docs,
         module_type_envs,
         opaque_inners,
         brand_inners,
     })
+}
+
+fn add_requested_runtime_interfaces(
+    prog: &Program,
+    local_interfaces: &InterfaceTable,
+    interface_table: &mut InterfaceTable,
+) {
+    let mut requested = Vec::new();
+    collect_requested_external_modules(prog, &mut requested);
+    for module in requested {
+        if local_interfaces.contains_key(&module) || interface_table.contains_key(&module) {
+            continue;
+        }
+        if let Some(interface) = crate::modules::runtime_library::interface(&module) {
+            interface_table.insert(module, interface);
+        }
+    }
+}
+
+fn collect_requested_external_modules(prog: &Program, out: &mut Vec<ModuleName>) {
+    for item in &prog.items {
+        match &**item {
+            Item::Module(module) => collect_requested_external_modules_recursive(module, out),
+            Item::Alias { full_path, .. } => out.push(full_path.clone()),
+            Item::Import { path, .. } => out.push(path.clone()),
+            Item::Fn(def) => {
+                for clause in &def.clauses {
+                    collect_top_level_qualified_calls(&clause.body, out);
+                    if let Some(guard) = &clause.guard {
+                        collect_top_level_qualified_calls(guard, out);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn collect_requested_external_modules_recursive(module: &ModuleDef, out: &mut Vec<ModuleName>) {
+    for item in &module.items {
+        match &**item {
+            Item::Alias { full_path, .. } => out.push(full_path.clone()),
+            Item::Import { path, .. } => out.push(path.clone()),
+            Item::Module(inner) => collect_requested_external_modules_recursive(inner, out),
+            _ => {}
+        }
+    }
+}
+
+fn collect_top_level_qualified_calls(expr: &Spanned<Expr>, out: &mut Vec<ModuleName>) {
+    match &expr.node {
+        Expr::Call(callee, args) => {
+            if let Some(module) = qualified_callee_module(callee) {
+                out.push(module);
+            }
+            collect_top_level_qualified_calls(callee, out);
+            for arg in args {
+                collect_top_level_qualified_calls(arg, out);
+            }
+        }
+        Expr::FnRef { name, .. } => {
+            if let Some((module, _fun)) = name.rsplit_once('.')
+                && let Ok(module) = ModuleName::parse_dotted(module)
+            {
+                out.push(module);
+            }
+        }
+        Expr::List(xs, tail) => {
+            for x in xs {
+                collect_top_level_qualified_calls(x, out);
+            }
+            if let Some(tail) = tail {
+                collect_top_level_qualified_calls(tail, out);
+            }
+        }
+        Expr::Tuple(xs) | Expr::Block(xs) => {
+            for x in xs {
+                collect_top_level_qualified_calls(x, out);
+            }
+        }
+        Expr::Bitstring(fields) => {
+            for field in fields {
+                collect_top_level_qualified_calls(&field.value, out);
+            }
+        }
+        Expr::Map(pairs) => {
+            for (key, value) in pairs {
+                collect_top_level_qualified_calls(key, out);
+                collect_top_level_qualified_calls(value, out);
+            }
+        }
+        Expr::MapUpdate(map, pairs) => {
+            collect_top_level_qualified_calls(map, out);
+            for (key, value) in pairs {
+                collect_top_level_qualified_calls(key, out);
+                collect_top_level_qualified_calls(value, out);
+            }
+        }
+        Expr::Index(target, key) => {
+            collect_top_level_qualified_calls(target, out);
+            collect_top_level_qualified_calls(key, out);
+        }
+        Expr::BinOp(_, left, right) => {
+            collect_top_level_qualified_calls(left, out);
+            collect_top_level_qualified_calls(right, out);
+        }
+        Expr::UnOp(_, inner)
+        | Expr::Ascribe(inner, _)
+        | Expr::Quote(inner)
+        | Expr::Unquote(inner) => {
+            collect_top_level_qualified_calls(inner, out);
+        }
+        Expr::If(cond, then_expr, else_expr) => {
+            collect_top_level_qualified_calls(cond, out);
+            collect_top_level_qualified_calls(then_expr, out);
+            if let Some(else_expr) = else_expr {
+                collect_top_level_qualified_calls(else_expr, out);
+            }
+        }
+        Expr::Case(scrutinee, arms) => {
+            if let Some(scrutinee) = scrutinee {
+                collect_top_level_qualified_calls(scrutinee, out);
+            }
+            for arm in arms {
+                if let Some(guard) = &arm.guard {
+                    collect_top_level_qualified_calls(guard, out);
+                }
+                collect_top_level_qualified_calls(&arm.body, out);
+            }
+        }
+        Expr::Cond(pairs) => {
+            for (cond, body) in pairs {
+                collect_top_level_qualified_calls(cond, out);
+                collect_top_level_qualified_calls(body, out);
+            }
+        }
+        Expr::With(bindings, body, else_clauses) => {
+            for binding in bindings {
+                match binding {
+                    WithBinding::Match(_, expr) | WithBinding::Bare(expr) => {
+                        collect_top_level_qualified_calls(expr, out);
+                    }
+                }
+            }
+            collect_top_level_qualified_calls(body, out);
+            for arm in else_clauses {
+                if let Some(guard) = &arm.guard {
+                    collect_top_level_qualified_calls(guard, out);
+                }
+                collect_top_level_qualified_calls(&arm.body, out);
+            }
+        }
+        Expr::Match(_, rhs) => collect_top_level_qualified_calls(rhs, out),
+        Expr::Lambda(_, body) => collect_top_level_qualified_calls(body, out),
+        Expr::Receive { clauses, after } => {
+            for clause in clauses {
+                if let Some(guard) = &clause.guard {
+                    collect_top_level_qualified_calls(guard, out);
+                }
+                collect_top_level_qualified_calls(&clause.body, out);
+            }
+            if let Some(after) = after {
+                collect_top_level_qualified_calls(&after.timeout, out);
+                collect_top_level_qualified_calls(&after.body, out);
+            }
+        }
+        Expr::Var(_)
+        | Expr::Int(_)
+        | Expr::Float(_)
+        | Expr::Binary(_)
+        | Expr::Atom(_)
+        | Expr::Bool(_)
+        | Expr::Nil => {}
+    }
+}
+
+fn qualified_callee_module(callee: &Spanned<Expr>) -> Option<ModuleName> {
+    let mut path = Vec::new();
+    let mut cur = &callee.node;
+    loop {
+        match cur {
+            Expr::Index(target, key) => {
+                let Expr::Atom(member) = &key.node else {
+                    return None;
+                };
+                path.push(member.clone());
+                cur = &target.node;
+            }
+            Expr::Var(name) if is_upper(name) => {
+                if path.is_empty() {
+                    return None;
+                }
+                path.push(name.clone());
+                path.reverse();
+                path.pop();
+                return Some(ModuleName::from_segments(path));
+            }
+            _ => return None,
+        }
+    }
 }
 
 /// fz-ul4.31.5 — Walk every ModuleDef in `prog` (recursively into
@@ -278,13 +568,14 @@ fn collect_module_docs_recursive(m: &ModuleDef, parent: &str, out: &mut HashMap<
     }
 }
 
-fn collect_module_paths(prog: &Program) -> HashSet<String> {
+fn collect_visible_module_paths(prog: &Program, interfaces: &InterfaceTable) -> HashSet<String> {
     let mut out = HashSet::new();
     for item in &prog.items {
         if let Item::Module(m) = &**item {
             collect_paths_recursive(m, "", &mut out);
         }
     }
+    out.extend(interfaces.keys().map(ModuleName::dotted));
     out
 }
 
@@ -302,83 +593,302 @@ fn collect_paths_recursive(m: &ModuleDef, parent: &str, out: &mut HashSet<String
     }
 }
 
-type ModuleFns = HashMap<String, HashSet<(String, usize)>>;
+#[derive(Clone)]
+struct ModuleExports {
+    span: Span,
+    fns: HashMap<(String, usize), Span>,
+}
 
-fn collect_module_fns(prog: &Program) -> ModuleFns {
+type ModuleFns = HashMap<ModuleName, ModuleExports>;
+type ModuleMacroExports = HashMap<ModuleName, HashSet<(String, usize)>>;
+pub type InterfaceTable = BTreeMap<ModuleName, ModuleInterface>;
+type ImportMap = HashMap<(String, usize), ImportBinding>;
+
+#[derive(Clone)]
+struct ImportBinding {
+    module: ModuleName,
+    span: Span,
+}
+
+fn collect_import_scope(
+    items: &[Rc<Item>],
+    module_interfaces: &InterfaceTable,
+    module_macros: &ModuleMacroExports,
+) -> Result<(HashMap<String, String>, ImportMap), ResolveError> {
+    let mut aliases = HashMap::new();
+    let mut imports = HashMap::new();
+    for item in items {
+        match &**item {
+            Item::Alias {
+                full_path,
+                as_name,
+                span,
+            } => {
+                if !module_interfaces.contains_key(full_path) {
+                    return Err(ResolveError::UnknownModule {
+                        module: full_path.clone(),
+                        span: *span,
+                    });
+                }
+                aliases.insert(as_name.clone(), full_path.dotted());
+            }
+            Item::Import {
+                path,
+                only,
+                except,
+                span,
+            } => {
+                collect_imports_for_item(
+                    path,
+                    only.as_deref(),
+                    except.as_deref(),
+                    *span,
+                    module_interfaces,
+                    module_macros,
+                    &mut imports,
+                )?;
+            }
+            _ => {}
+        }
+    }
+    Ok((aliases, imports))
+}
+
+fn collect_imports_for_item(
+    path: &ModuleName,
+    only: Option<&[(String, usize)]>,
+    except: Option<&[(String, usize)]>,
+    span: Span,
+    module_interfaces: &InterfaceTable,
+    module_macros: &ModuleMacroExports,
+    imports: &mut ImportMap,
+) -> Result<(), ResolveError> {
+    let Some(interface) = module_interfaces.get(path) else {
+        return Err(ResolveError::UnknownModule {
+            module: path.clone(),
+            span,
+        });
+    };
+    let target_exports = importable_exports(interface, module_macros.get(path));
+    if let Some(allow) = only {
+        validate_import_filter(path, allow, &target_exports, span)?;
+    }
+    if let Some(deny) = except {
+        validate_import_filter(path, deny, &target_exports, span)?;
+    }
+    let pairs: Vec<(String, usize)> = if let Some(allow) = only {
+        allow.to_vec()
+    } else if let Some(deny) = except {
+        let deny_set: HashSet<(String, usize)> = deny.iter().cloned().collect();
+        target_exports
+            .iter()
+            .filter(|p| !deny_set.contains(*p))
+            .cloned()
+            .collect()
+    } else {
+        target_exports.iter().cloned().collect()
+    };
+    for (name, arity) in pairs {
+        let key = (name, arity);
+        if let Some(existing) = imports.get(&key)
+            && existing.module != *path
+        {
+            return Err(ResolveError::ConflictingImport {
+                name: key.0,
+                arity: key.1,
+                first_module: existing.module.clone(),
+                second_module: path.clone(),
+                first_span: existing.span,
+                second_span: span,
+            });
+        }
+        imports.insert(
+            key,
+            ImportBinding {
+                module: path.clone(),
+                span,
+            },
+        );
+    }
+    Ok(())
+}
+
+fn collect_module_fns(prog: &Program) -> Result<ModuleFns, ResolveError> {
     let mut out: ModuleFns = HashMap::new();
     for item in &prog.items {
         if let Item::Module(m) = &**item {
-            collect_module_fns_recursive(m, "", &mut out);
+            collect_module_fns_recursive(m, None, &mut out)?;
+        }
+    }
+    Ok(out)
+}
+
+fn collect_module_fns_recursive(
+    m: &ModuleDef,
+    parent: Option<&ModuleName>,
+    out: &mut ModuleFns,
+) -> Result<(), ResolveError> {
+    let path = if let Some(parent) = parent {
+        parent.child(m.name.clone())
+    } else {
+        ModuleName::from_segments(vec![m.name.clone()])
+    };
+    if let Some(first) = out.insert(
+        path.clone(),
+        ModuleExports {
+            span: m.name_span,
+            fns: HashMap::new(),
+        },
+    ) {
+        return Err(ResolveError::DuplicateModule {
+            module: path,
+            first_span: first.span,
+            duplicate_span: m.name_span,
+        });
+    }
+    for item in &m.items {
+        match &**item {
+            Item::Fn(def) => {
+                let arity = def.clauses.first().map(|c| c.params.len()).unwrap_or(0);
+                let export = ExportKey::new(path.clone(), def.name.clone(), arity);
+                let fns = &mut out.get_mut(&path).expect("module fn map was inserted").fns;
+                let key = (def.name.clone(), arity);
+                if let Some(first_span) = fns.insert(key, def.name_span) {
+                    return Err(ResolveError::DuplicateExport {
+                        export,
+                        first_span,
+                        duplicate_span: def.name_span,
+                    });
+                }
+            }
+            Item::Module(inner) => collect_module_fns_recursive(inner, Some(&path), out)?,
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+fn collect_module_macros(prog: &Program) -> ModuleMacroExports {
+    let mut out: ModuleMacroExports = HashMap::new();
+    for item in &prog.items {
+        if let Item::Module(m) = &**item {
+            collect_module_macros_recursive(m, None, &mut out);
         }
     }
     out
 }
 
-fn collect_module_fns_recursive(m: &ModuleDef, parent: &str, out: &mut ModuleFns) {
-    let path = if parent.is_empty() {
-        m.name.clone()
+fn collect_module_macros_recursive(
+    m: &ModuleDef,
+    parent: Option<&ModuleName>,
+    out: &mut ModuleMacroExports,
+) {
+    let path = if let Some(parent) = parent {
+        parent.child(m.name.clone())
     } else {
-        format!("{}.{}", parent, m.name)
+        ModuleName::from_segments(vec![m.name.clone()])
     };
-    out.entry(path.clone()).or_default();
+    let mut macros = HashSet::new();
     for item in &m.items {
         match &**item {
-            Item::Fn(def) => {
+            Item::Fn(def) if def.is_macro => {
                 let arity = def.clauses.first().map(|c| c.params.len()).unwrap_or(0);
-                out.get_mut(&path)
-                    .unwrap()
-                    .insert((def.name.clone(), arity));
+                macros.insert((def.name.clone(), arity));
             }
-            Item::Module(inner) => collect_module_fns_recursive(inner, &path, out),
+            Item::Module(inner) => collect_module_macros_recursive(inner, Some(&path), out),
             _ => {}
         }
     }
+    out.insert(path, macros);
 }
 
 fn flatten_module(
     m: &ModuleDef,
-    parent_path: &str,
+    parent_path: Option<&ModuleName>,
     out: &mut Vec<Rc<Item>>,
     module_paths: &HashSet<String>,
-    module_fns: &ModuleFns,
+    module_interfaces: &InterfaceTable,
+    module_macros: &ModuleMacroExports,
 ) -> Result<(), ResolveError> {
-    let module_path = if parent_path.is_empty() {
-        m.name.clone()
+    let module_name = if let Some(parent) = parent_path {
+        parent.child(m.name.clone())
     } else {
-        format!("{}.{}", parent_path, m.name)
+        ModuleName::from_segments(vec![m.name.clone()])
     };
+    let module_path = module_name.dotted();
     let mut siblings: HashSet<String> = HashSet::new();
     let mut aliases: HashMap<String, String> = HashMap::new();
-    let mut imports: HashMap<(String, usize), String> = HashMap::new();
+    let mut imports: ImportMap = HashMap::new();
     for item in &m.items {
         match &**item {
             Item::Fn(def) => {
                 siblings.insert(def.name.clone());
             }
             Item::Alias {
-                full_path, as_name, ..
+                full_path,
+                as_name,
+                span,
             } => {
-                aliases.insert(as_name.clone(), full_path.join("."));
+                if !module_interfaces.contains_key(full_path) {
+                    return Err(ResolveError::UnknownModule {
+                        module: full_path.clone(),
+                        span: *span,
+                    });
+                }
+                aliases.insert(as_name.clone(), full_path.dotted());
             }
             Item::Import {
-                path, only, except, ..
+                path,
+                only,
+                except,
+                span,
             } => {
-                let path_s = path.join(".");
-                let target_fns = module_fns.get(&path_s).cloned().unwrap_or_default();
+                let Some(interface) = module_interfaces.get(path) else {
+                    return Err(ResolveError::UnknownModule {
+                        module: path.clone(),
+                        span: *span,
+                    });
+                };
+                let target_exports = importable_exports(interface, module_macros.get(path));
+                if let Some(allow) = only {
+                    validate_import_filter(path, allow, &target_exports, *span)?;
+                }
+                if let Some(deny) = except {
+                    validate_import_filter(path, deny, &target_exports, *span)?;
+                }
                 let pairs: Vec<(String, usize)> = if let Some(allow) = only {
                     allow.clone()
                 } else if let Some(deny) = except {
                     let deny_set: HashSet<(String, usize)> = deny.iter().cloned().collect();
-                    target_fns
+                    target_exports
                         .iter()
                         .filter(|p| !deny_set.contains(*p))
                         .cloned()
                         .collect()
                 } else {
-                    target_fns.iter().cloned().collect()
+                    target_exports.iter().cloned().collect()
                 };
                 for (name, arity) in pairs {
-                    imports.insert((name, arity), path_s.clone());
+                    let key = (name, arity);
+                    if let Some(existing) = imports.get(&key)
+                        && existing.module != *path
+                    {
+                        return Err(ResolveError::ConflictingImport {
+                            name: key.0,
+                            arity: key.1,
+                            first_module: existing.module.clone(),
+                            second_module: path.clone(),
+                            first_span: existing.span,
+                            second_span: *span,
+                        });
+                    }
+                    imports.insert(
+                        key,
+                        ImportBinding {
+                            module: path.clone(),
+                            span: *span,
+                        },
+                    );
                 }
             }
             Item::Module(_) | Item::MacroCall { .. } => {}
@@ -388,7 +898,8 @@ fn flatten_module(
     for item in &m.items {
         match &**item {
             Item::Fn(def) => {
-                let qualified_name = format!("{}.{}", module_path, def.name);
+                let qualified_name =
+                    QualifiedName::in_module(module_name.clone(), def.name.clone()).dotted();
                 let mut new_def = def.clone();
                 new_def.name = qualified_name;
                 for clause in &mut new_def.clauses {
@@ -417,7 +928,14 @@ fn flatten_module(
                 out.push(Rc::new(Item::Fn(new_def)));
             }
             Item::Module(inner) => {
-                flatten_module(inner, &module_path, out, module_paths, module_fns)?;
+                flatten_module(
+                    inner,
+                    Some(&module_name),
+                    out,
+                    module_paths,
+                    module_interfaces,
+                    module_macros,
+                )?;
             }
             Item::Alias { .. } | Item::Import { .. } => {}
             Item::MacroCall {
@@ -448,6 +966,39 @@ fn flatten_module(
                     span: *span,
                 }));
             }
+        }
+    }
+    Ok(())
+}
+
+fn importable_exports(
+    interface: &ModuleInterface,
+    local_macros: Option<&HashSet<(String, usize)>>,
+) -> HashSet<(String, usize)> {
+    let mut out: HashSet<(String, usize)> = interface
+        .exports
+        .iter()
+        .map(|export| ((export.name.clone(), export.arity), export))
+        .map(|(key, _)| key)
+        .collect();
+    if let Some(macros) = local_macros {
+        out.extend(macros.iter().cloned());
+    }
+    out
+}
+
+fn validate_import_filter(
+    module: &ModuleName,
+    filter: &[(String, usize)],
+    target_exports: &HashSet<(String, usize)>,
+    span: Span,
+) -> Result<(), ResolveError> {
+    for (name, arity) in filter {
+        if !target_exports.contains(&(name.clone(), *arity)) {
+            return Err(ResolveError::UnknownImport {
+                export: ExportKey::new(module.clone(), name.clone(), *arity),
+                span,
+            });
         }
     }
     Ok(())
@@ -504,7 +1055,7 @@ fn rewrite_expr(
     intro: &mut HashSet<String>,
     module_paths: &HashSet<String>,
     aliases: &HashMap<String, String>,
-    imports: &HashMap<(String, usize), String>,
+    imports: &ImportMap,
 ) {
     match &mut e.node {
         Expr::Var(n) => {
@@ -525,7 +1076,7 @@ fn rewrite_expr(
                 if siblings.contains(name) {
                     *name = format!("{}.{}", module_path, name);
                 } else if let Some(target) = imports.get(&(name.clone(), *arity)) {
-                    *name = format!("{}.{}", target, name);
+                    *name = format!("{}.{}", target.module, name);
                 }
             } else if name.contains('.') {
                 // Dotted: split, expand leading alias if present.
@@ -548,7 +1099,7 @@ fn rewrite_expr(
                 && !siblings.contains(n)
                 && let Some(target) = imports.get(&(n.clone(), args.len()))
             {
-                callee.node = Expr::Var(format!("{}.{}", target, n));
+                callee.node = Expr::Var(format!("{}.{}", target.module, n));
             }
             rewrite_expr(
                 callee,
@@ -1020,7 +1571,11 @@ fn qualify_callee(
                         return Some(format!("{}.{}", candidate, rest));
                     }
                 }
-                return Some(path.join("."));
+                let module = path[..path.len() - 1].join(".");
+                if module_paths.contains(&module) {
+                    return Some(path.join("."));
+                }
+                return None;
             }
             _ => return None,
         }
@@ -1329,76 +1884,421 @@ end
     }
 
     #[test]
-    fn import_outside_module_errors() {
-        let mut ct = crate::types::ConcreteTypes;
-        let r = flatten_modules(
-            &mut ct,
-            parse(
-                r#"
-import Some.Mod
-fn main(), do: nil
-"#,
-            ),
-        );
-        assert!(r.is_err());
-    }
-
-    #[test]
-    fn alias_outside_module_errors() {
-        let mut ct = crate::types::ConcreteTypes;
-        let r = flatten_modules(
-            &mut ct,
-            parse(
-                r#"
-alias Some.Mod
-fn main(), do: nil
-"#,
-            ),
-        );
-        assert!(r.is_err());
-    }
-
-    /// .21 step 1: resolve errors now carry a real Span pointing at the
-    /// offending item, not `Span::DUMMY`. The renderer relies on this to
-    /// underline the source location.
-    #[test]
-    fn alias_outside_module_diag_has_real_span() {
+    fn import_unknown_module_errors() {
         let mut ct = crate::types::ConcreteTypes;
         let err = flatten_modules(
             &mut ct,
             parse(
                 r#"
-alias Some.Mod
-fn main(), do: nil
+defmodule User do
+  import Missing
+  fn run(), do: nil
+end
 "#,
             ),
         )
         .unwrap_err();
         let d = err.to_diagnostic();
-        assert_ne!(
-            d.primary.span,
-            Span::DUMMY,
-            "resolve diagnostic should carry the offending item's span"
-        );
-        assert_eq!(d.code, codes::RESOLVE_ALIAS_OUTSIDE_MODULE);
-    }
-
-    #[test]
-    fn import_outside_module_diag_has_real_span() {
-        let mut ct = crate::types::ConcreteTypes;
-        let err = flatten_modules(
-            &mut ct,
-            parse(
-                r#"
-import Some.Mod
-fn main(), do: nil
-"#,
-            ),
-        )
-        .unwrap_err();
-        let d = err.to_diagnostic();
+        assert_eq!(d.code, codes::RESOLVE_UNKNOWN_MODULE);
+        assert_eq!(d.message, "module `Missing` is not defined");
         assert_ne!(d.primary.span, Span::DUMMY);
-        assert_eq!(d.code, codes::RESOLVE_IMPORT_OUTSIDE_MODULE);
+    }
+
+    #[test]
+    fn alias_unknown_module_errors() {
+        let mut ct = crate::types::ConcreteTypes;
+        let err = flatten_modules(
+            &mut ct,
+            parse(
+                r#"
+defmodule User do
+  alias Missing.Path
+  fn run(), do: nil
+end
+"#,
+            ),
+        )
+        .unwrap_err();
+        let d = err.to_diagnostic();
+        assert_eq!(d.code, codes::RESOLVE_UNKNOWN_MODULE);
+        assert_eq!(d.message, "module `Missing.Path` is not defined");
+    }
+
+    #[test]
+    fn import_unknown_arity_errors() {
+        let mut ct = crate::types::ConcreteTypes;
+        let err = flatten_modules(
+            &mut ct,
+            parse(
+                r#"
+defmodule Math do
+  fn add(x, y), do: x + y
+end
+defmodule User do
+  import Math, only: [add: 1]
+  fn run(x), do: add(x)
+end
+"#,
+            ),
+        )
+        .unwrap_err();
+        let d = err.to_diagnostic();
+        assert_eq!(d.code, codes::RESOLVE_UNKNOWN_IMPORT);
+        assert_eq!(d.message, "module `Math` does not export `add/1`");
+    }
+
+    #[test]
+    fn import_except_unknown_arity_errors() {
+        let mut ct = crate::types::ConcreteTypes;
+        let err = flatten_modules(
+            &mut ct,
+            parse(
+                r#"
+defmodule Math do
+  fn add(x, y), do: x + y
+end
+defmodule User do
+  import Math, except: [add: 1]
+  fn run(x, y), do: add(x, y)
+end
+"#,
+            ),
+        )
+        .unwrap_err();
+        let d = err.to_diagnostic();
+        assert_eq!(d.code, codes::RESOLVE_UNKNOWN_IMPORT);
+        assert_eq!(d.message, "module `Math` does not export `add/1`");
+    }
+
+    #[test]
+    fn import_resolves_from_external_interface_table() {
+        let mut ct = crate::types::ConcreteTypes;
+        let math = ModuleName::from_segments(vec!["Math".to_string()]);
+        let mut interfaces = InterfaceTable::new();
+        interfaces.insert(
+            math.clone(),
+            ModuleInterface {
+                name: math,
+                abi_version: crate::modules::interface::FZ_INTERFACE_ABI_VERSION,
+                imports: Vec::new(),
+                exports: vec![crate::modules::interface::InterfaceFn {
+                    name: "add".to_string(),
+                    arity: 2,
+                    spec: None,
+                    name_span: Span::DUMMY,
+                }],
+                types: Vec::new(),
+                docs: None,
+                fingerprint_inputs: Vec::new(),
+            },
+        );
+        let p = flatten_modules_with_interface_table(
+            &mut ct,
+            parse(
+                r#"
+defmodule User do
+  import Math, only: [add: 2]
+  fn run(x, y), do: add(x, y)
+end
+"#,
+            ),
+            interfaces,
+        )
+        .expect("flatten");
+        let run = p
+            .items
+            .iter()
+            .find_map(|it| match &**it {
+                Item::Fn(d) if d.name == "User.run" => Some(d),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(callee_name(&run.clauses[0].body), "Math.add");
+    }
+
+    #[test]
+    fn import_resolves_from_runtime_library_interfaces_by_default() {
+        let mut ct = crate::types::ConcreteTypes;
+        let p = flatten_modules(
+            &mut ct,
+            parse(
+                r#"
+defmodule User do
+  import Utf8, only: [valid?: 1]
+  fn run(bytes), do: valid?(bytes)
+end
+"#,
+            ),
+        )
+        .expect("flatten");
+
+        let run = p
+            .items
+            .iter()
+            .find_map(|it| match &**it {
+                Item::Fn(d) if d.name == "User.run" => Some(d),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(callee_name(&run.clauses[0].body), "Utf8.valid?");
+        assert!(
+            !p.module_interfaces
+                .contains_key(&ModuleName::from_segments(vec!["Utf8".to_string()]))
+        );
+    }
+
+    #[test]
+    fn alias_resolves_from_runtime_library_interfaces_on_demand() {
+        let mut ct = crate::types::ConcreteTypes;
+        let p = flatten_modules(
+            &mut ct,
+            parse(
+                r#"
+defmodule User do
+  alias Utf8, as: U
+  fn run(bytes), do: U.valid?(bytes)
+end
+"#,
+            ),
+        )
+        .expect("flatten");
+
+        let run = p
+            .items
+            .iter()
+            .find_map(|it| match &**it {
+                Item::Fn(d) if d.name == "User.run" => Some(d),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(callee_name(&run.clauses[0].body), "Utf8.valid?");
+        assert!(
+            p.external_module_interfaces
+                .contains_key(&ModuleName::from_segments(vec!["Utf8".to_string()]))
+        );
+        assert!(
+            !p.external_module_interfaces
+                .contains_key(&ModuleName::from_segments(vec!["Process".to_string()]))
+        );
+    }
+
+    #[test]
+    fn unrequested_runtime_module_is_not_a_visible_module_path() {
+        let p = flatten(
+            r#"
+defmodule User do
+  fn run(bytes), do: Utf8.valid?(bytes)
+end
+"#,
+        );
+        let run = p
+            .items
+            .iter()
+            .find_map(|it| match &**it {
+                Item::Fn(d) if d.name == "User.run" => Some(d),
+                _ => None,
+            })
+            .unwrap();
+        match &run.clauses[0].body.node {
+            Expr::Call(callee, _) => {
+                assert!(
+                    !matches!(&callee.node, Expr::Var(name) if name == "Utf8.valid?"),
+                    "unimported runtime module call was rewritten as an ambient module call"
+                );
+            }
+            other => panic!("expected call, got {:?}", other),
+        }
+        assert!(p.external_module_interfaces.is_empty());
+    }
+
+    #[test]
+    fn import_non_exported_name_errors() {
+        let mut ct = crate::types::ConcreteTypes;
+        let err = flatten_modules(
+            &mut ct,
+            parse(
+                r#"
+defmodule Math do
+  fn visible(), do: 1
+end
+defmodule User do
+  import Math, only: [hidden: 0]
+  fn run(), do: hidden()
+end
+"#,
+            ),
+        )
+        .unwrap_err();
+        let d = err.to_diagnostic();
+        assert_eq!(d.code, codes::RESOLVE_UNKNOWN_IMPORT);
+        assert_eq!(d.message, "module `Math` does not export `hidden/0`");
+    }
+
+    #[test]
+    fn conflicting_imports_error() {
+        let mut ct = crate::types::ConcreteTypes;
+        let err = flatten_modules(
+            &mut ct,
+            parse(
+                r#"
+defmodule A do
+  fn f(), do: 1
+end
+defmodule B do
+  fn f(), do: 2
+end
+defmodule User do
+  import A
+  import B
+  fn run(), do: f()
+end
+"#,
+            ),
+        )
+        .unwrap_err();
+        let d = err.to_diagnostic();
+        assert_eq!(d.code, codes::RESOLVE_CONFLICTING_IMPORT);
+        assert_eq!(
+            d.message,
+            "import `f/0` from module `B` conflicts with existing import from module `A`"
+        );
+        assert_eq!(d.secondaries.len(), 1);
+    }
+
+    #[test]
+    fn duplicate_same_module_import_is_idempotent() {
+        let p = flatten(
+            r#"
+defmodule Math do
+  fn add(x, y), do: x + y
+end
+defmodule User do
+  import Math, only: [add: 2]
+  import Math, only: [add: 2]
+  fn run(x, y), do: add(x, y)
+end
+"#,
+        );
+        let run = p
+            .items
+            .iter()
+            .find_map(|it| match &**it {
+                Item::Fn(d) if d.name == "User.run" => Some(d),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(callee_name(&run.clauses[0].body), "Math.add");
+    }
+
+    #[test]
+    fn top_level_import_rewrites_top_level_functions() {
+        let p = flatten(
+            r#"
+defmodule Math do
+  fn add(x, y), do: x + y
+end
+import Math, only: [add: 2]
+fn main(), do: add(20, 22)
+"#,
+        );
+        let main = p
+            .items
+            .iter()
+            .find_map(|it| match &**it {
+                Item::Fn(d) if d.name == "main" => Some(d),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(callee_name(&main.clauses[0].body), "Math.add");
+    }
+
+    #[test]
+    fn top_level_alias_rewrites_top_level_functions() {
+        let p = flatten(
+            r#"
+defmodule Outer do
+  defmodule Inner do
+    fn value(), do: 42
+  end
+end
+alias Outer.Inner, as: I
+fn main(), do: I.value()
+"#,
+        );
+        let main = p
+            .items
+            .iter()
+            .find_map(|it| match &**it {
+                Item::Fn(d) if d.name == "main" => Some(d),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(callee_name(&main.clauses[0].body), "Outer.Inner.value");
+    }
+
+    #[test]
+    fn duplicate_module_diag_has_primary_and_first_definition_spans() {
+        let mut ct = crate::types::ConcreteTypes;
+        let err = flatten_modules(
+            &mut ct,
+            parse(
+                r#"
+defmodule M do
+  fn one(), do: 1
+end
+defmodule M do
+  fn two(), do: 2
+end
+"#,
+            ),
+        )
+        .unwrap_err();
+        let d = err.to_diagnostic();
+        assert_eq!(d.code, codes::RESOLVE_DUPLICATE_MODULE);
+        assert_ne!(d.primary.span, Span::DUMMY);
+        assert_eq!(d.secondaries.len(), 1);
+        assert_ne!(d.secondaries[0].span, Span::DUMMY);
+    }
+
+    #[test]
+    fn duplicate_export_diag_names_module_function_and_arity() {
+        let parsed = parse(
+            r#"
+fn f(x), do: x
+fn g(y), do: y
+"#,
+        );
+        let mut defs: Vec<FnDef> = parsed
+            .items
+            .iter()
+            .filter_map(|item| match &**item {
+                Item::Fn(def) => Some(def.clone()),
+                _ => None,
+            })
+            .collect();
+        defs[1].name = "f".to_string();
+        let module = ModuleDef {
+            name: "M".to_string(),
+            name_span: Span::DUMMY,
+            items: vec![
+                Rc::new(Item::Fn(defs[0].clone())),
+                Rc::new(Item::Fn(defs[1].clone())),
+            ],
+            attrs: Vec::new(),
+            span: Span::DUMMY,
+        };
+        let prog = Program {
+            items: vec![Rc::new(Item::Module(module))],
+            module_interfaces: Default::default(),
+            ..Program::default()
+        };
+        let mut ct = crate::types::ConcreteTypes;
+        let err = flatten_modules(&mut ct, prog).unwrap_err();
+        let d = err.to_diagnostic();
+        assert_eq!(d.code, codes::RESOLVE_DUPLICATE_EXPORT);
+        assert_eq!(d.message, "export `M.f/1` is defined more than once");
+        assert_ne!(d.primary.span, Span::DUMMY);
+        assert_eq!(d.secondaries.len(), 1);
     }
 
     #[test]

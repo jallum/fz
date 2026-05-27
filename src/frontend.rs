@@ -1,12 +1,12 @@
 use crate::ast::{Expr, FnClause, FnDef, Pattern, Program, Spanned};
 use crate::diag::{Diagnostic, Diagnostics, SourceMap};
-use crate::fz_ir::{FnId, Module};
+use crate::fz_ir::Module;
 use crate::ir_planner::ModulePlan;
 use crate::lexer::Lexer;
 use crate::macros;
 use crate::parser::Parser;
 use crate::pattern_matrix::SubjectDomain;
-use crate::resolve;
+use crate::resolve::{self, InterfaceTable};
 use crate::types::{ClosureTypes, LiteralTypes, RenderTypes, Types};
 use std::collections::HashSet;
 
@@ -27,7 +27,6 @@ pub type FrontendResult = Result<FrontendOk, FrontendErr>;
 
 pub(crate) struct ReplEntryOk {
     pub frontend: FrontendOk,
-    pub entry_fn: FnId,
     pub input_frame: Vec<String>,
     pub output_frame: Vec<String>,
     pub entry_item: std::rc::Rc<crate::ast::Item>,
@@ -155,6 +154,19 @@ pub fn compile_source_with_types<T>(
 where
     T: Types<Ty = crate::types::Ty> + ClosureTypes + LiteralTypes + RenderTypes,
 {
+    compile_source_with_interface_table(t, src, source_name, InterfaceTable::new(), tel)
+}
+
+pub fn compile_source_with_interface_table<T>(
+    t: &mut T,
+    src: String,
+    source_name: String,
+    interface_table: InterfaceTable,
+    tel: &dyn crate::telemetry::Telemetry,
+) -> FrontendResult
+where
+    T: Types<Ty = crate::types::Ty> + ClosureTypes + LiteralTypes + RenderTypes,
+{
     let mut sm = SourceMap::new();
     let file_id = sm.add_file(source_name, src.clone());
     let toks = match Lexer::with_file(&src, file_id).tokenize_with_telemetry(tel) {
@@ -172,7 +184,7 @@ where
             program: crate::telemetry::value::opaque(&prog),
         },
     );
-    compile_program_with_types(t, prog, sm, tel)
+    compile_program_with_interface_table(t, prog, sm, interface_table, tel)
 }
 
 pub(crate) fn compile_program_with_types<T>(
@@ -184,7 +196,20 @@ pub(crate) fn compile_program_with_types<T>(
 where
     T: Types<Ty = crate::types::Ty> + ClosureTypes + LiteralTypes + RenderTypes,
 {
-    let mut prog = match resolve::flatten_modules(t, prog) {
+    compile_program_with_interface_table(t, prog, sm, InterfaceTable::new(), tel)
+}
+
+pub(crate) fn compile_program_with_interface_table<T>(
+    t: &mut T,
+    prog: Program,
+    sm: SourceMap,
+    interface_table: InterfaceTable,
+    tel: &dyn crate::telemetry::Telemetry,
+) -> FrontendResult
+where
+    T: Types<Ty = crate::types::Ty> + ClosureTypes + LiteralTypes + RenderTypes,
+{
+    let mut prog = match resolve::flatten_modules_with_interface_table(t, prog, interface_table) {
         Ok(prog) => prog,
         Err(e) => return Err(fail(sm, e.to_diagnostic())),
     };
@@ -192,6 +217,7 @@ where
         &["fz", "frontend", "resolved"],
         crate::metadata! {
             items: prog.items.len(),
+            module_interfaces: prog.module_interfaces.len(),
             program: crate::telemetry::value::opaque(&prog),
         },
     );
@@ -248,7 +274,7 @@ where
     )));
     prog.items.push(entry_item.clone());
     let frontend = compile_program_with_types(t, prog, sm, tel)?;
-    let Some(entry_fn) = frontend.module.fn_by_name(&entry_name).map(|f| f.id) else {
+    if frontend.module.fn_by_name(&entry_name).is_none() {
         return Err(fail(
             frontend.sm,
             Diagnostic::error(
@@ -257,10 +283,9 @@ where
                 crate::diag::Span::DUMMY,
             ),
         ));
-    };
+    }
     Ok(ReplEntryOk {
         frontend,
-        entry_fn,
         input_frame,
         output_frame,
         entry_item,
@@ -506,6 +531,63 @@ fn main(), do: classify(7)
     }
 
     #[test]
+    fn compile_source_accepts_loaded_interfaces_without_provider_body() {
+        let mut t = crate::types::ConcreteTypes;
+        let math = crate::modules::identity::ModuleName::from_segments(vec!["Math".to_string()]);
+        let mut interfaces = InterfaceTable::new();
+        interfaces.insert(
+            math.clone(),
+            crate::modules::interface::ModuleInterface {
+                name: math,
+                abi_version: crate::modules::interface::FZ_INTERFACE_ABI_VERSION,
+                imports: Vec::new(),
+                exports: vec![crate::modules::interface::InterfaceFn {
+                    name: "add".to_string(),
+                    arity: 2,
+                    spec: Some(crate::modules::interface::InterfaceSpec {
+                        params: vec!["Ident(\"integer\")".to_string(); 2],
+                        result: "Ident(\"integer\")".to_string(),
+                    }),
+                    name_span: crate::diag::Span::DUMMY,
+                }],
+                types: Vec::new(),
+                docs: None,
+                fingerprint_inputs: Vec::new(),
+            },
+        );
+        let src = r#"
+defmodule User do
+  import Math, only: [add: 2]
+  @spec run(integer, integer) :: integer
+  fn run(x, y), do: add(x, y)
+end
+"#;
+
+        let out = match compile_source_with_interface_table(
+            &mut t,
+            src.to_string(),
+            "consumer.fz".to_string(),
+            interfaces,
+            &crate::telemetry::NullTelemetry,
+        ) {
+            Ok(out) => out,
+            Err(_) => panic!("frontend ok"),
+        };
+
+        assert!(out.module.fn_by_name("User.run").is_some());
+        assert!(out.module.fn_by_name("Math.add").is_none());
+        assert_eq!(out.module.external_call_edges.len(), 1);
+        assert_eq!(
+            out.module.external_call_edges[0].target,
+            crate::modules::identity::ExportKey::new(
+                crate::modules::identity::ModuleName::from_segments(vec!["Math".to_string()]),
+                "add",
+                2,
+            )
+        );
+    }
+
+    #[test]
     fn compile_program_with_types_preserves_macro_expansion() {
         let src = r#"
 defmacro inc(x) do
@@ -550,7 +632,6 @@ fn main(), do: inc(41)
             .module
             .fn_by_name("__repl_eval_0")
             .expect("repl entry");
-        assert_eq!(out.entry_fn, entry.id);
         assert_eq!(out.input_frame, vec!["x"]);
         assert_eq!(out.output_frame, vec!["x"]);
         assert_eq!(entry.category, crate::fz_ir::FnCategory::ReplEntry);

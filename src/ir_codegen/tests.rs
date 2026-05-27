@@ -121,6 +121,418 @@ fn static_closure_lookup_returns_singleton_pointer() {
 }
 
 #[test]
+fn compiled_unit_carries_interface_contract_and_ir_code() {
+    let m = lower_resolved_src(
+        r#"
+defmodule Math do
+  fn add(x, y), do: x + y
+end
+"#,
+    );
+    let interface = crate::modules::interface::ModuleInterface {
+        name: crate::modules::identity::ModuleName::from_segments(vec!["Math".to_string()]),
+        abi_version: crate::modules::interface::FZ_INTERFACE_ABI_VERSION,
+        imports: Vec::new(),
+        exports: vec![crate::modules::interface::InterfaceFn {
+            name: "add".to_string(),
+            arity: 2,
+            spec: None,
+            name_span: crate::diag::Span::DUMMY,
+        }],
+        types: Vec::new(),
+        docs: None,
+        fingerprint_inputs: vec!["export:Math.add/2".to_string()],
+    };
+    let unit =
+        CompiledUnit::from_ir_module(m.clone(), Some(interface), crate::diag::Diagnostics::new());
+    assert_eq!(unit.module.as_ref().unwrap().dotted(), "Math");
+    assert_eq!(unit.code.fns.len(), m.fns.len());
+    assert_eq!(unit.exports[0].name, "add");
+    assert_eq!(unit.interface_fingerprint, ["export:Math.add/2"]);
+}
+
+#[test]
+fn runtime_metadata_link_merges_overlapping_atoms_and_schemas_deterministically() {
+    let module_a = crate::modules::identity::ModuleName::from_segments(vec!["A".to_string()]);
+    let module_b = crate::modules::identity::ModuleName::from_segments(vec!["B".to_string()]);
+    let mut a_exports = std::collections::BTreeMap::new();
+    a_exports.insert("A.f/0".to_string(), 0);
+    let unit_a = RuntimeUnitMetadata {
+        module: Some(module_a.clone()),
+        atoms: vec!["ok".to_string(), "shared".to_string()],
+        schemas: vec![fz_runtime::heap::Schema::tuple_of_arity(2)],
+        frame_sizes: vec![16],
+        exported_symbols: a_exports,
+        imported_refs: Vec::new(),
+        static_closures: Vec::new(),
+        halt_kinds: [(0, 1)].into_iter().collect(),
+        entrypoints: RuntimeEntrypoints {
+            resume: true,
+            main: true,
+            spawn: true,
+            drain_dtor: true,
+        },
+    };
+    let mut b_exports = std::collections::BTreeMap::new();
+    b_exports.insert("B.g/1".to_string(), 1);
+    let unit_b = RuntimeUnitMetadata {
+        module: Some(module_b),
+        atoms: vec!["shared".to_string(), "error".to_string()],
+        schemas: vec![
+            fz_runtime::heap::Schema::tuple_of_arity(2),
+            fz_runtime::heap::Schema::tuple_of_arity(3),
+        ],
+        frame_sizes: vec![16, 24],
+        exported_symbols: b_exports,
+        imported_refs: vec![crate::modules::identity::ExportKey::new(module_a, "f", 0)],
+        static_closures: vec![RuntimeStaticClosure {
+            closure_schema_id: 2,
+            fn_id: 1,
+            halt_kind: 0,
+        }],
+        halt_kinds: [(1, 0)].into_iter().collect(),
+        entrypoints: RuntimeEntrypoints {
+            resume: true,
+            main: false,
+            spawn: true,
+            drain_dtor: true,
+        },
+    };
+
+    let image_ab =
+        RuntimeImageMetadata::link_units(&[unit_a.clone(), unit_b.clone()]).expect("link");
+    let image_ba = RuntimeImageMetadata::link_units(&[unit_b, unit_a]).expect("link");
+    assert_eq!(image_ab.render_stable(), image_ba.render_stable());
+    assert_eq!(
+        image_ab.render_stable(),
+        "atoms=error,ok,shared\n\
+schemas=Tuple2:16:[0:AnyValue|8:AnyValue],Tuple3:24:[0:AnyValue|8:AnyValue|16:AnyValue]\n\
+frames=16,16,24\n\
+exports=A.f/0:0,B.g/1:2\n\
+imports=A.f/0"
+    );
+    assert_eq!(image_ab.relocations[0].atom_ids, vec![1, 2]);
+    assert_eq!(image_ab.relocations[1].atom_ids, vec![2, 0]);
+    assert_eq!(image_ab.halt_kinds.get(&0), Some(&1));
+    assert_eq!(image_ab.halt_kinds.get(&2), Some(&0));
+}
+
+#[test]
+fn runtime_metadata_link_rejects_duplicate_exports() {
+    let mut exports = std::collections::BTreeMap::new();
+    exports.insert("A.f/0".to_string(), 0);
+    let unit = RuntimeUnitMetadata {
+        module: None,
+        atoms: Vec::new(),
+        schemas: Vec::new(),
+        frame_sizes: vec![8],
+        exported_symbols: exports,
+        imported_refs: Vec::new(),
+        static_closures: Vec::new(),
+        halt_kinds: std::collections::BTreeMap::new(),
+        entrypoints: RuntimeEntrypoints::default(),
+    };
+    let err = RuntimeImageMetadata::link_units(&[unit.clone(), unit]).unwrap_err();
+    assert_eq!(
+        err,
+        RuntimeMetadataLinkError::DuplicateExport("A.f/0".to_string())
+    );
+}
+
+#[test]
+fn runtime_unit_metadata_carries_external_import_refs() {
+    let mut module = Module::new();
+    let export = crate::modules::identity::ExportKey::new(
+        crate::modules::identity::ModuleName::from_segments(vec!["Dep".to_string()]),
+        "run",
+        1,
+    );
+    module
+        .external_call_edges
+        .push(crate::fz_ir::ExternalCallEdge {
+            callsite: crate::fz_ir::CallsiteId::new(
+                FnId(0),
+                &crate::fz_ir::CallsiteIdent::synthetic(),
+                crate::fz_ir::EmitSlot::Direct,
+            ),
+            target: export.clone(),
+        });
+    let meta = RuntimeUnitMetadata::from_ir_module(None, &module);
+    assert_eq!(meta.imported_refs, vec![export]);
+}
+
+#[test]
+fn codegen_rejects_unresolved_external_module_calls() {
+    let mut m = lower_src("fn main(), do: 0");
+    let export = crate::modules::identity::ExportKey::new(
+        crate::modules::identity::ModuleName::from_segments(vec!["Dep".to_string()]),
+        "run",
+        0,
+    );
+    m.external_call_edges.push(crate::fz_ir::ExternalCallEdge {
+        callsite: crate::fz_ir::CallsiteId::new(
+            m.fn_by_name("main").unwrap().id,
+            &crate::fz_ir::CallsiteIdent::synthetic(),
+            crate::fz_ir::EmitSlot::Direct,
+        ),
+        target: export,
+    });
+    let err = match compile(
+        &mut crate::types::ConcreteTypes,
+        &m,
+        &crate::telemetry::NullTelemetry,
+    ) {
+        Ok(_) => panic!("expected unresolved external call error"),
+        Err(err) => err,
+    };
+    assert_eq!(err.message, "unresolved external module call `Dep.run/0`");
+}
+
+fn link_test_unit(
+    module: &str,
+    exports: &[(&str, usize)],
+    imports: Vec<crate::modules::identity::ExportKey>,
+) -> (CompiledUnit, RuntimeUnitMetadata) {
+    let module_name = crate::modules::identity::ModuleName::from_segments(vec![module.to_string()]);
+    let interface = crate::modules::interface::ModuleInterface {
+        name: module_name.clone(),
+        abi_version: crate::modules::interface::FZ_INTERFACE_ABI_VERSION,
+        imports: Vec::new(),
+        exports: exports
+            .iter()
+            .map(|(name, arity)| crate::modules::interface::InterfaceFn {
+                name: (*name).to_string(),
+                arity: *arity,
+                spec: None,
+                name_span: crate::diag::Span::DUMMY,
+            })
+            .collect(),
+        types: Vec::new(),
+        docs: None,
+        fingerprint_inputs: exports
+            .iter()
+            .map(|(name, arity)| format!("export:{module}.{name}/{arity}"))
+            .collect(),
+    };
+    let mut code = Module::new();
+    for (idx, (name, arity)) in exports.iter().enumerate() {
+        let fn_id = FnId(idx as u32);
+        let mut builder = crate::fz_ir::FnBuilder::new(fn_id, format!("{module}.{name}"))
+            .with_owner_module(module);
+        let params = (0..*arity).map(|_| builder.fresh_var()).collect::<Vec<_>>();
+        let entry = builder.block(params);
+        builder.set_terminator(entry, crate::fz_ir::Term::Halt(crate::fz_ir::Var(0)));
+        code.fn_idx.insert(fn_id, code.fns.len());
+        code.fns.push(builder.build());
+    }
+    for import in &imports {
+        code.external_call_edges
+            .push(crate::fz_ir::ExternalCallEdge {
+                callsite: crate::fz_ir::CallsiteId::new(
+                    FnId(0),
+                    &crate::fz_ir::CallsiteIdent::synthetic(),
+                    crate::fz_ir::EmitSlot::Direct,
+                ),
+                target: import.clone(),
+            });
+    }
+    let unit = CompiledUnit::from_ir_module(code, Some(interface), crate::diag::Diagnostics::new());
+    let runtime = RuntimeUnitMetadata {
+        module: Some(module_name),
+        atoms: Vec::new(),
+        schemas: Vec::new(),
+        frame_sizes: vec![16],
+        exported_symbols: exports
+            .iter()
+            .enumerate()
+            .map(|(idx, (name, arity))| (format!("{module}.{name}/{arity}"), idx as u32))
+            .collect(),
+        imported_refs: imports,
+        static_closures: Vec::new(),
+        halt_kinds: std::collections::BTreeMap::new(),
+        entrypoints: RuntimeEntrypoints::default(),
+    };
+    (unit, runtime)
+}
+
+#[test]
+fn linked_image_validates_two_module_program_and_runs() {
+    let src = r#"
+defmodule Math do
+  fn add(x, y), do: x + y
+end
+defmodule User do
+  import Math, only: [add: 2]
+  fn run(), do: add(20, 22)
+end
+fn main(), do: User.run()
+"#;
+    let m = lower_resolved_src(src);
+    let entry = m.fn_by_name("main").unwrap().id;
+    let compiled = compile(
+        &mut crate::types::ConcreteTypes,
+        &m,
+        &crate::telemetry::NullTelemetry,
+    )
+    .expect("compile");
+    let (math, _) = link_test_unit("Math", &[("add", 2)], Vec::new());
+    let (user, _) = link_test_unit(
+        "User",
+        &[("run", 0)],
+        vec![crate::modules::identity::ExportKey::new(
+            crate::modules::identity::ModuleName::from_segments(vec!["Math".to_string()]),
+            "add",
+            2,
+        )],
+    );
+
+    let tel = crate::telemetry::ConfiguredTelemetry::new();
+    let capture = crate::telemetry::Capture::new();
+    tel.attach(&["fz", "link"], capture.handler());
+    let _ = (math, user);
+    let image = CompiledImage::from_linked_with_telemetry(&tel, 2, compiled);
+    assert!(image.metadata().is_none());
+    assert!(capture.contains(&["fz", "link", "succeeded"]));
+    assert_eq!(image.run(entry), 42);
+}
+
+#[test]
+fn linked_ir_units_rewrite_external_edges_and_run_provider_body() {
+    let mut t = crate::types::ConcreteTypes;
+    let tel = crate::telemetry::NullTelemetry;
+    let math = crate::frontend::compile_source_with_types(
+        &mut t,
+        "defmodule Math do\n  fn add(x, y), do: x + y\nend\n".to_string(),
+        "math.fz".to_string(),
+        &tel,
+    )
+    .unwrap_or_else(|err| panic!("math frontend: {:?}", err.diagnostics));
+    let math_name = crate::modules::identity::ModuleName::from_segments(vec!["Math".to_string()]);
+    let math_interface = math
+        ._prog
+        .module_interfaces
+        .get(&math_name)
+        .cloned()
+        .expect("math interface");
+
+    let mut interfaces = crate::resolve::InterfaceTable::new();
+    interfaces.insert(math_name, math_interface.clone());
+    let user = crate::frontend::compile_source_with_interface_table(
+        &mut t,
+        "defmodule User do\n  import Math, only: [add: 2]\n  fn run(), do: add(20, 22)\nend\nfn main(), do: User.run()\n".to_string(),
+        "user.fz".to_string(),
+        interfaces,
+        &tel,
+    )
+    .unwrap_or_else(|err| panic!("user frontend: {:?}", err.diagnostics));
+    assert_eq!(user.module.external_call_edges.len(), 1);
+
+    let math_unit = CompiledUnit::from_ir_module(
+        math.module,
+        Some(math_interface),
+        crate::diag::Diagnostics::new(),
+    );
+    let user_unit =
+        CompiledUnit::from_ir_module(user.module, None, crate::diag::Diagnostics::new());
+    let linked = link_ir_units(&[math_unit.clone(), user_unit.clone()]).expect("link ir units");
+    assert!(linked.external_call_edges.is_empty());
+    let entry = linked.fn_by_name("main").expect("main").id;
+
+    let linked_plan = crate::ir_planner::plan_module(&mut t, &linked, &tel);
+    let compiled = compile_pretyped(&mut t, &linked, &linked_plan, &tel).expect("compile linked");
+    let image = CompiledImage::from_linked(compiled);
+
+    assert_eq!(image.run(entry), 42);
+}
+
+#[test]
+fn image_linker_rejects_missing_and_duplicate_providers() {
+    let missing = crate::modules::identity::ExportKey::new(
+        crate::modules::identity::ModuleName::from_segments(vec!["Missing".to_string()]),
+        "f",
+        0,
+    );
+    let (user, _) = link_test_unit("User", &[("run", 0)], vec![missing.clone()]);
+    let err = match link_ir_units(&[user]) {
+        Ok(_) => panic!("expected missing import"),
+        Err(err) => err,
+    };
+    assert_eq!(
+        err,
+        ImageLinkError::MissingImport {
+            requester: Some(crate::modules::identity::ModuleName::from_segments(vec![
+                "User".to_string()
+            ])),
+            import: missing,
+        }
+    );
+
+    let (a, _) = link_test_unit("A", &[("f", 0)], Vec::new());
+    let (dup, _) = link_test_unit("A", &[("f", 0)], Vec::new());
+    let err = match link_ir_units(&[a, dup]) {
+        Ok(_) => panic!("expected duplicate provider"),
+        Err(err) => err,
+    };
+    assert!(matches!(err, ImageLinkError::DuplicateProvider { .. }));
+}
+
+#[test]
+fn image_linker_rejects_unresolved_external_imports_without_provider() {
+    let target = crate::modules::identity::ExportKey::new(
+        crate::modules::identity::ModuleName::from_segments(vec!["Provider".to_string()]),
+        "run",
+        0,
+    );
+    let mut unit_code = Module::new();
+    let mut builder = crate::fz_ir::FnBuilder::new(FnId(0), "User.run").with_owner_module("User");
+    let entry = builder.block(Vec::new());
+    builder.set_terminator(entry, crate::fz_ir::Term::Halt(crate::fz_ir::Var(0)));
+    unit_code.fn_idx.insert(FnId(0), unit_code.fns.len());
+    unit_code.fns.push(builder.build());
+    unit_code
+        .external_call_edges
+        .push(crate::fz_ir::ExternalCallEdge {
+            callsite: crate::fz_ir::CallsiteId::new(
+                FnId(0),
+                &crate::fz_ir::CallsiteIdent::synthetic(),
+                crate::fz_ir::EmitSlot::Direct,
+            ),
+            target,
+        });
+    let interface = crate::modules::interface::ModuleInterface {
+        name: crate::modules::identity::ModuleName::from_segments(vec!["User".to_string()]),
+        abi_version: crate::modules::interface::FZ_INTERFACE_ABI_VERSION,
+        imports: Vec::new(),
+        exports: Vec::new(),
+        types: Vec::new(),
+        docs: None,
+        fingerprint_inputs: Vec::new(),
+    };
+    let unit = CompiledUnit::from_ir_module(
+        unit_code.clone(),
+        Some(interface),
+        crate::diag::Diagnostics::new(),
+    );
+    let err = match link_ir_units(&[unit]) {
+        Ok(_) => panic!("expected unresolved external calls"),
+        Err(err) => err,
+    };
+    assert_eq!(
+        err,
+        ImageLinkError::MissingImport {
+            requester: Some(crate::modules::identity::ModuleName::from_segments(vec![
+                "User".to_string()
+            ])),
+            import: crate::modules::identity::ExportKey::new(
+                crate::modules::identity::ModuleName::from_segments(vec!["Provider".to_string()]),
+                "run",
+                0,
+            ),
+        }
+    );
+}
+
+#[test]
 fn aot_compile_produces_object_with_main_symbol() {
     let src = "fn add1(n) do n + 1 end\nfn main() do print(add1(41)) end";
     let m = lower_src(src);
@@ -187,9 +599,37 @@ fn capture_main(src: &str) -> Vec<String> {
     capture_main_module(m)
 }
 
-fn capture_main_resolved(src: &str) -> Vec<String> {
-    let m = lower_resolved_src(src);
-    capture_main_module(m)
+fn capture_main_with_runtime_graph(src: &str) -> Vec<String> {
+    let mut t = crate::types::ConcreteTypes;
+    let tel = crate::telemetry::NullTelemetry;
+    let providers = crate::modules::pipeline::ProviderInputs::new(
+        crate::modules::artifact_store::DEFAULT_ARTIFACT_ROOT.to_string(),
+        Vec::new(),
+    );
+    let frontend = crate::modules::pipeline::compile_source_with_providers(
+        &mut t,
+        src.to_string(),
+        "test.fz".to_string(),
+        &providers,
+        &tel,
+    )
+    .unwrap_or_else(|_| panic!("frontend result"));
+    let checked = crate::modules::pipeline::checked_module_for_mode(
+        &mut t,
+        frontend,
+        &tel,
+        crate::modules::pipeline::CompileMode::Normal,
+    )
+    .unwrap_or_else(|_| panic!("checked module"));
+    let prepared = crate::modules::pipeline::prepare_execution_graph(
+        &mut t,
+        checked,
+        &providers,
+        &tel,
+        crate::modules::pipeline::CompileMode::Normal,
+    )
+    .unwrap_or_else(|_| panic!("execution graph"));
+    capture_main_module(prepared.module)
 }
 
 fn capture_main_module(m: Module) -> Vec<String> {
@@ -351,7 +791,7 @@ fn print_builtin_routes_through_runtime() {
 
 #[test]
 fn process_heap_alloc_stats_is_callable_from_fz() {
-    let lines = capture_main_resolved(
+    let lines = capture_main_with_runtime_graph(
         "fn main() do\n  xs = [1, 2]\n  print(xs)\n  stats = Process.heap_alloc_stats()\n  print(stats[:list_cons_allocs])\n  print(stats[:map_allocs])\nend",
     );
     assert_eq!(lines, vec!["[1, 2]", "2", "0"]);
@@ -376,9 +816,8 @@ fn unop_neg_runs() {
 
 #[test]
 fn atom_const_returns_atom_id() {
-    // ids 0/1/2 are reserved for nil/true/false; the prelude interns
-    // a handful of atoms before user code, so `:ok` lands at id 4.
-    assert_eq!(run_main("fn main(), do: :ok"), 4);
+    let (atom_id, module) = run_main_after_heap_reset("fn main(), do: :ok");
+    assert_eq!(module.atom_names[atom_id as usize], "ok");
 }
 
 #[test]
@@ -1784,28 +2223,26 @@ end
 }
 
 /// `fn f([])` does NOT match a `nil` argument: `nil` falls through to
-/// the `:function_clause` halt. (Pre-split, `nil` and `[]` shared a
+/// the `:match_error` halt. (Pre-split, `nil` and `[]` shared a
 /// runtime bit pattern and this call returned 1.)
 #[test]
 fn nil_does_not_match_empty_list_pattern() {
-    let halt = run_main("fn f([]), do: 1\nfn main(), do: f(nil)");
-    // :function_clause is the first prelude-interned atom after the
-    // reserved nil/true/false (ids 0/1/2), so its id is 3.
+    let (halt, module) = run_main_after_heap_reset("fn f([]), do: 1\nfn main(), do: f(nil)");
     assert_eq!(
-        halt, 3,
-        "expected :function_clause halt (id=3); got {}",
-        halt
+        module.atom_names[halt as usize], "match_error",
+        "expected :match_error halt; got atom id {}",
+        halt,
     );
 }
 
 /// `fn f(nil)` does NOT match an `[]` argument. Symmetric to the above.
 #[test]
 fn empty_list_does_not_match_nil_pattern() {
-    let halt = run_main("fn f(nil), do: 1\nfn main(), do: f([])");
+    let (halt, module) = run_main_after_heap_reset("fn f(nil), do: 1\nfn main(), do: f([])");
     assert_eq!(
-        halt, 3,
-        "expected :function_clause halt (id=3); got {}",
-        halt
+        module.atom_names[halt as usize], "match_error",
+        "expected :match_error halt; got atom id {}",
+        halt,
     );
 }
 

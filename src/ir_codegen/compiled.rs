@@ -1,7 +1,10 @@
 #![allow(unused_imports)]
 
 use super::*;
-use crate::fz_ir::{BinOp, Const, FnId, Module, Prim, Stmt, Term, UnOp};
+use crate::fz_ir::{
+    BinOp, Const, Cont, ExternId, FnId, FnIr, Module, Prim, ReceiveAfter, ReceiveClause, Stmt,
+    Term, UnOp,
+};
 use cranelift_codegen::Context;
 use cranelift_codegen::ir::{
     self, AbiParam, BlockArg, InstBuilder, MemFlags, Signature,
@@ -14,8 +17,817 @@ use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{DataDescription, DataId, FuncId, Linkage, Module as ClModule};
 use fz_runtime::heap::{FieldDescriptor, FieldKind, Schema};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
+
+/// One separately compiled source module before link-time/runtime-global
+/// state is assembled.
+///
+/// The `code` field carries module-local IR. Interface fields carry the
+/// contract facts the linker validates before a runnable image exists.
+#[derive(Debug, Clone)]
+pub struct CompiledUnit {
+    pub module: Option<crate::modules::identity::ModuleName>,
+    pub code: Module,
+    pub exports: Vec<crate::modules::interface::InterfaceFn>,
+    pub interface_fingerprint: Vec<String>,
+    pub interface: Option<crate::modules::interface::ModuleInterface>,
+}
+
+impl CompiledUnit {
+    pub fn from_ir_module(
+        code: Module,
+        interface: Option<crate::modules::interface::ModuleInterface>,
+        _diagnostics: crate::diag::Diagnostics,
+    ) -> Self {
+        let module = interface
+            .as_ref()
+            .map(|interface| interface.name.clone())
+            .or_else(|| {
+                crate::modules::identity::ModuleName::parse_dotted(code.module_path()).ok()
+            });
+        let exports = interface
+            .as_ref()
+            .map(|interface| interface.exports.clone())
+            .unwrap_or_default();
+        let interface_fingerprint = interface
+            .as_ref()
+            .map(|interface| interface.fingerprint_inputs.clone())
+            .unwrap_or_default();
+        Self {
+            module,
+            code,
+            exports,
+            interface_fingerprint,
+            interface,
+        }
+    }
+}
+
+/// Linked runnable image: runtime-global JIT state plus execution entrypoints.
+pub struct CompiledImage {
+    inner: CompiledModule,
+    metadata: Option<RuntimeImageMetadata>,
+}
+
+pub struct CompiledProgram {
+    pub executable: CompiledModule,
+    pub unit: CompiledUnit,
+    pub runtime: RuntimeUnitMetadata,
+}
+
+impl CompiledProgram {
+    pub fn new(unit: CompiledUnit, executable: CompiledModule) -> Self {
+        let runtime =
+            RuntimeUnitMetadata::from_compiled_module(unit.module.clone(), &unit, &executable);
+        Self {
+            executable,
+            unit,
+            runtime,
+        }
+    }
+
+    pub fn link_image_with_telemetry(
+        self,
+        tel: &dyn crate::telemetry::Telemetry,
+    ) -> Result<CompiledImage, ImageLinkError> {
+        match self.link_image() {
+            Ok(image) => {
+                tel.event(&["fz", "link", "succeeded"], crate::metadata! { units: 1 });
+                Ok(image)
+            }
+            Err(err) => {
+                tel.event(
+                    &["fz", "link", "failed"],
+                    crate::metadata! { error: err.to_string() },
+                );
+                Err(err)
+            }
+        }
+    }
+
+    fn link_image(self) -> Result<CompiledImage, ImageLinkError> {
+        let _linked_ir = link_ir_units(std::slice::from_ref(&self.unit))?;
+        let metadata = RuntimeImageMetadata::link_units(std::slice::from_ref(&self.runtime))
+            .map_err(ImageLinkError::RuntimeMetadata)?;
+        Ok(CompiledImage {
+            inner: self.executable,
+            metadata: Some(metadata),
+        })
+    }
+}
+
+impl CompiledImage {
+    pub fn from_linked(linked: CompiledModule) -> Self {
+        Self {
+            inner: linked,
+            metadata: None,
+        }
+    }
+
+    pub fn from_linked_with_telemetry(
+        tel: &dyn crate::telemetry::Telemetry,
+        units: usize,
+        linked: CompiledModule,
+    ) -> Self {
+        tel.event(
+            &["fz", "link", "succeeded"],
+            crate::metadata! { units: units as i64 },
+        );
+        Self::from_linked(linked)
+    }
+
+    pub fn metadata(&self) -> Option<&RuntimeImageMetadata> {
+        self.metadata.as_ref()
+    }
+
+    pub fn compiled_module(&self) -> &CompiledModule {
+        &self.inner
+    }
+}
+
+unsafe impl Send for CompiledImage {}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ImageLinkError {
+    InterfaceFingerprintMismatch {
+        module: Option<crate::modules::identity::ModuleName>,
+    },
+    UnresolvedExternalCalls {
+        module: Option<crate::modules::identity::ModuleName>,
+    },
+    MissingImport {
+        requester: Option<crate::modules::identity::ModuleName>,
+        import: crate::modules::identity::ExportKey,
+    },
+    DuplicateProvider {
+        import: crate::modules::identity::ExportKey,
+    },
+    RuntimeMetadata(RuntimeMetadataLinkError),
+}
+
+impl std::fmt::Display for ImageLinkError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InterfaceFingerprintMismatch { module } => write!(
+                f,
+                "compiled unit `{}` does not implement its recorded interface fingerprint",
+                module
+                    .as_ref()
+                    .map(ToString::to_string)
+                    .unwrap_or_else(|| "<root>".to_string())
+            ),
+            Self::UnresolvedExternalCalls { module } => write!(
+                f,
+                "compiled unit `{}` still has unresolved external module calls",
+                module
+                    .as_ref()
+                    .map(ToString::to_string)
+                    .unwrap_or_else(|| "<root>".to_string())
+            ),
+            Self::MissingImport { requester, import } => write!(
+                f,
+                "module `{}` imports missing export `{}`",
+                requester
+                    .as_ref()
+                    .map(ToString::to_string)
+                    .unwrap_or_else(|| "<root>".to_string()),
+                import
+            ),
+            Self::DuplicateProvider { import } => {
+                write!(f, "export `{}` has more than one provider", import)
+            }
+            Self::RuntimeMetadata(err) => write!(f, "{}", err),
+        }
+    }
+}
+
+impl std::error::Error for ImageLinkError {}
+
+pub fn link_ir_units(units: &[CompiledUnit]) -> Result<Module, ImageLinkError> {
+    let mut linker = IrUnitLinker::new();
+    for unit in units {
+        linker.add_unit(unit)?;
+    }
+    linker.finish()
+}
+
+#[derive(Default)]
+struct IrUnitLinker {
+    linked: Module,
+    export_map: BTreeMap<crate::modules::identity::ExportKey, FnId>,
+}
+
+impl IrUnitLinker {
+    fn new() -> Self {
+        let mut linker = Self::default();
+        linker.linked.atom_names.extend([
+            "nil".to_string(),
+            "true".to_string(),
+            "false".to_string(),
+        ]);
+        linker
+    }
+
+    fn add_unit(&mut self, unit: &CompiledUnit) -> Result<(), ImageLinkError> {
+        if let Some(interface) = &unit.interface
+            && interface.fingerprint_inputs != unit.interface_fingerprint
+        {
+            return Err(ImageLinkError::InterfaceFingerprintMismatch {
+                module: unit.module.clone(),
+            });
+        }
+
+        let fn_map = self.copy_fns(unit);
+        self.copy_externs(unit, &fn_map);
+        self.copy_external_edges(unit, &fn_map);
+        self.copy_specs(unit, &fn_map);
+        self.copy_type_facts(unit);
+        self.copy_exports(unit, &fn_map)?;
+        Ok(())
+    }
+
+    fn finish(mut self) -> Result<Module, ImageLinkError> {
+        match self.linked.rewrite_external_calls_for_lto(&self.export_map) {
+            Ok(_) => Ok(self.linked),
+            Err(crate::fz_ir::ExternalLinkError::MissingTarget(import)) => {
+                let requester = self
+                    .linked
+                    .external_call_edges
+                    .iter()
+                    .find(|edge| edge.target == import)
+                    .and_then(|edge| module_for_linked_fn(&self.linked, edge.callsite.caller));
+                Err(ImageLinkError::MissingImport { requester, import })
+            }
+            Err(crate::fz_ir::ExternalLinkError::MissingCallsite(callsite)) => {
+                let module = module_for_linked_fn(&self.linked, callsite.caller);
+                Err(ImageLinkError::UnresolvedExternalCalls { module })
+            }
+        }
+    }
+
+    fn copy_fns(&mut self, unit: &CompiledUnit) -> BTreeMap<FnId, FnId> {
+        let mut map = BTreeMap::new();
+        let base = self.linked.fns.len() as u32;
+        for (offset, f) in unit.code.fns.iter().enumerate() {
+            let new_id = FnId(base + offset as u32);
+            map.insert(f.id, new_id);
+        }
+        for f in &unit.code.fns {
+            let copied = self.remap_fn(f.clone(), &map, &unit.code.atom_names);
+            self.linked.fn_idx.insert(copied.id, self.linked.fns.len());
+            self.linked.fns.push(copied);
+        }
+        for old in &unit.code.boundary_fns {
+            if let Some(new) = map.get(old) {
+                self.linked.boundary_fns.insert(*new);
+            }
+        }
+        map
+    }
+
+    fn copy_externs(&mut self, unit: &CompiledUnit, fn_map: &BTreeMap<FnId, FnId>) {
+        let mut extern_map = HashMap::new();
+        for ext in &unit.code.externs {
+            let new_id = ExternId(self.linked.externs.len() as u32);
+            extern_map.insert(ext.id, new_id);
+            let mut copied = ext.clone();
+            copied.id = new_id;
+            self.linked
+                .extern_idx
+                .insert(copied.id, self.linked.externs.len());
+            self.linked.externs.push(copied);
+        }
+        if !extern_map.is_empty() {
+            for f in self.linked.fns.iter_mut().rev().take(fn_map.len()) {
+                remap_fn_externs(f, &extern_map);
+            }
+        }
+    }
+
+    fn copy_external_edges(&mut self, unit: &CompiledUnit, fn_map: &BTreeMap<FnId, FnId>) {
+        self.linked
+            .external_call_edges
+            .extend(unit.code.external_call_edges.iter().map(|edge| {
+                let mut edge = edge.clone();
+                if let Some(caller) = fn_map.get(&edge.callsite.caller) {
+                    edge.callsite.caller = *caller;
+                }
+                edge
+            }));
+    }
+
+    fn copy_specs(&mut self, unit: &CompiledUnit, fn_map: &BTreeMap<FnId, FnId>) {
+        self.linked.declared_specs.extend(
+            unit.code
+                .declared_specs
+                .iter()
+                .filter_map(|(fid, spec)| fn_map.get(fid).map(|new| (*new, spec.clone()))),
+        );
+    }
+
+    fn copy_type_facts(&mut self, unit: &CompiledUnit) {
+        self.linked
+            .opaque_inners
+            .extend(unit.code.opaque_inners.clone());
+        self.linked
+            .brand_inners
+            .extend(unit.code.brand_inners.clone());
+    }
+
+    fn copy_exports(
+        &mut self,
+        unit: &CompiledUnit,
+        fn_map: &BTreeMap<FnId, FnId>,
+    ) -> Result<(), ImageLinkError> {
+        let Some(module) = &unit.module else {
+            return Ok(());
+        };
+        for export in &unit.exports {
+            let key = crate::modules::identity::ExportKey::new(
+                module.clone(),
+                export.name.clone(),
+                export.arity,
+            );
+            let qualified = format!("{}.{}", module, export.name);
+            let target = unit
+                .code
+                .fns
+                .iter()
+                .find(|f| f.name == qualified && f.block(f.entry).params.len() == export.arity)
+                .and_then(|f| fn_map.get(&f.id).copied());
+            if let Some(target) = target
+                && self.export_map.insert(key.clone(), target).is_some()
+            {
+                return Err(ImageLinkError::DuplicateProvider { import: key });
+            }
+        }
+        Ok(())
+    }
+
+    fn remap_fn(
+        &mut self,
+        mut f: FnIr,
+        fn_map: &BTreeMap<FnId, FnId>,
+        atom_names: &[String],
+    ) -> FnIr {
+        f.id = fn_map[&f.id];
+        for block in &mut f.blocks {
+            for stmt in &mut block.stmts {
+                remap_stmt(stmt, fn_map, &mut self.linked.atom_names, atom_names);
+            }
+            remap_term(&mut block.terminator, fn_map);
+        }
+        f
+    }
+}
+
+fn module_for_linked_fn(
+    module: &Module,
+    fn_id: FnId,
+) -> Option<crate::modules::identity::ModuleName> {
+    module
+        .fn_idx
+        .get(&fn_id)
+        .and_then(|idx| module.fns.get(*idx))
+        .and_then(|f| {
+            if f.owner_module.is_empty() {
+                None
+            } else {
+                crate::modules::identity::ModuleName::parse_dotted(&f.owner_module).ok()
+            }
+        })
+}
+
+fn remap_stmt(
+    stmt: &mut Stmt,
+    fn_map: &BTreeMap<FnId, FnId>,
+    linked_atoms: &mut Vec<String>,
+    unit_atoms: &[String],
+) {
+    let Stmt::Let(_, prim) = stmt;
+    remap_prim(prim, fn_map, linked_atoms, unit_atoms);
+}
+
+fn remap_prim(
+    prim: &mut Prim,
+    fn_map: &BTreeMap<FnId, FnId>,
+    linked_atoms: &mut Vec<String>,
+    unit_atoms: &[String],
+) {
+    match prim {
+        Prim::Const(Const::Atom(id)) => {
+            if let Some(name) = unit_atoms.get(*id as usize) {
+                let new_id = intern_linked_atom(linked_atoms, name);
+                *id = new_id;
+            }
+        }
+        Prim::MakeClosure(_, fid, _) => remap_fn_id(fid, fn_map),
+        _ => {}
+    }
+}
+
+fn remap_fn_externs(f: &mut FnIr, extern_map: &HashMap<ExternId, ExternId>) {
+    for block in &mut f.blocks {
+        for Stmt::Let(_, prim) in &mut block.stmts {
+            if let Prim::Extern(id, _) = prim
+                && let Some(new_id) = extern_map.get(id)
+            {
+                *id = *new_id;
+            }
+        }
+    }
+}
+
+fn remap_term(term: &mut Term, fn_map: &BTreeMap<FnId, FnId>) {
+    match term {
+        Term::Call {
+            callee,
+            continuation,
+            ..
+        } => {
+            remap_fn_id(callee, fn_map);
+            remap_cont(continuation, fn_map);
+        }
+        Term::TailCall { callee, .. } => remap_fn_id(callee, fn_map),
+        Term::CallClosure { continuation, .. } | Term::Receive { continuation, .. } => {
+            remap_cont(continuation, fn_map);
+        }
+        Term::ReceiveMatched { clauses, after, .. } => {
+            for clause in clauses {
+                remap_receive_clause(clause, fn_map);
+            }
+            if let Some(after) = after {
+                remap_receive_after(after, fn_map);
+            }
+        }
+        Term::Goto(_, _)
+        | Term::If { .. }
+        | Term::TailCallClosure { .. }
+        | Term::Return(_)
+        | Term::Halt(_) => {}
+    }
+}
+
+fn remap_cont(cont: &mut Cont, fn_map: &BTreeMap<FnId, FnId>) {
+    remap_fn_id(&mut cont.fn_id, fn_map);
+}
+
+fn remap_receive_clause(clause: &mut ReceiveClause, fn_map: &BTreeMap<FnId, FnId>) {
+    if let Some(guard) = &mut clause.guard {
+        remap_fn_id(guard, fn_map);
+    }
+    remap_fn_id(&mut clause.body, fn_map);
+}
+
+fn remap_receive_after(after: &mut ReceiveAfter, fn_map: &BTreeMap<FnId, FnId>) {
+    remap_fn_id(&mut after.body, fn_map);
+}
+
+fn remap_fn_id(fid: &mut FnId, fn_map: &BTreeMap<FnId, FnId>) {
+    if let Some(new) = fn_map.get(fid) {
+        *fid = *new;
+    }
+}
+
+fn intern_linked_atom(atoms: &mut Vec<String>, name: &str) -> u32 {
+    if let Some(idx) = atoms.iter().position(|existing| existing == name) {
+        idx as u32
+    } else {
+        let idx = atoms.len() as u32;
+        atoms.push(name.to_string());
+        idx
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RuntimeEntrypoints {
+    pub resume: bool,
+    pub main: bool,
+    pub spawn: bool,
+    pub drain_dtor: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct RuntimeStaticClosure {
+    pub closure_schema_id: u32,
+    pub fn_id: u32,
+    pub halt_kind: u32,
+}
+
+#[derive(Debug, Clone)]
+pub struct RuntimeUnitMetadata {
+    pub module: Option<crate::modules::identity::ModuleName>,
+    pub atoms: Vec<String>,
+    pub schemas: Vec<Schema>,
+    pub frame_sizes: Vec<u32>,
+    pub exported_symbols: BTreeMap<String, u32>,
+    pub imported_refs: Vec<crate::modules::identity::ExportKey>,
+    pub static_closures: Vec<RuntimeStaticClosure>,
+    pub halt_kinds: BTreeMap<u32, u32>,
+    pub entrypoints: RuntimeEntrypoints,
+}
+
+impl RuntimeUnitMetadata {
+    #[cfg(test)]
+    pub fn from_ir_module(
+        module: Option<crate::modules::identity::ModuleName>,
+        ir: &Module,
+    ) -> Self {
+        Self {
+            module,
+            atoms: ir.atom_names.clone(),
+            schemas: ir.schemas.clone(),
+            frame_sizes: Vec::new(),
+            exported_symbols: BTreeMap::new(),
+            imported_refs: ir
+                .external_call_edges
+                .iter()
+                .map(|edge| edge.target.clone())
+                .collect(),
+            static_closures: Vec::new(),
+            halt_kinds: BTreeMap::new(),
+            entrypoints: RuntimeEntrypoints::default(),
+        }
+    }
+
+    pub fn from_compiled_module(
+        module: Option<crate::modules::identity::ModuleName>,
+        unit: &CompiledUnit,
+        compiled: &CompiledModule,
+    ) -> Self {
+        let schemas = {
+            let registry = compiled.user_schemas.borrow();
+            (0..registry.len())
+                .map(|id| registry.get(id as u32).clone())
+                .collect()
+        };
+        let exported_symbols = unit
+            .module
+            .as_ref()
+            .map(|module| {
+                unit.exports
+                    .iter()
+                    .enumerate()
+                    .map(|(idx, export)| {
+                        (
+                            format!("{}.{}/{}", module, export.name, export.arity),
+                            idx as u32,
+                        )
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        Self {
+            module,
+            atoms: compiled.atom_names.clone(),
+            schemas,
+            frame_sizes: compiled.frame_sizes.clone(),
+            exported_symbols,
+            imported_refs: unit
+                .code
+                .external_call_edges
+                .iter()
+                .map(|edge| edge.target.clone())
+                .collect(),
+            static_closures: compiled
+                .static_closure_targets
+                .iter()
+                .map(
+                    |(closure_schema_id, fn_id, _, halt_kind)| RuntimeStaticClosure {
+                        closure_schema_id: *closure_schema_id,
+                        fn_id: *fn_id,
+                        halt_kind: *halt_kind,
+                    },
+                )
+                .collect(),
+            halt_kinds: compiled
+                .fn_halt_kinds
+                .iter()
+                .map(|(fn_id, halt_kind)| (*fn_id, *halt_kind))
+                .collect(),
+            entrypoints: RuntimeEntrypoints {
+                resume: true,
+                main: true,
+                spawn: true,
+                drain_dtor: true,
+            },
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuntimeUnitRelocations {
+    pub input_index: usize,
+    pub atom_ids: Vec<u32>,
+    pub schema_ids: Vec<u32>,
+    pub frame_ids: Vec<u32>,
+}
+
+#[derive(Debug, Clone)]
+pub struct RuntimeImageMetadata {
+    pub atoms: Vec<String>,
+    pub schemas: Vec<Schema>,
+    pub frame_sizes: Vec<u32>,
+    pub exported_symbols: BTreeMap<String, u32>,
+    pub imported_refs: Vec<crate::modules::identity::ExportKey>,
+    pub static_closures: Vec<(usize, RuntimeStaticClosure)>,
+    pub halt_kinds: BTreeMap<u32, u32>,
+    pub entrypoints: RuntimeEntrypoints,
+    pub relocations: Vec<RuntimeUnitRelocations>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RuntimeMetadataLinkError {
+    DuplicateModule(crate::modules::identity::ModuleName),
+    DuplicateExport(String),
+}
+
+impl std::fmt::Display for RuntimeMetadataLinkError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::DuplicateModule(module) => {
+                write!(f, "runtime metadata for module `{}` appears twice", module)
+            }
+            Self::DuplicateExport(symbol) => {
+                write!(f, "runtime export `{}` appears twice", symbol)
+            }
+        }
+    }
+}
+
+impl std::error::Error for RuntimeMetadataLinkError {}
+
+impl RuntimeImageMetadata {
+    pub fn link_units(units: &[RuntimeUnitMetadata]) -> Result<Self, RuntimeMetadataLinkError> {
+        let mut seen_modules = BTreeSet::new();
+        for unit in units {
+            if let Some(module) = &unit.module
+                && !seen_modules.insert(module.clone())
+            {
+                return Err(RuntimeMetadataLinkError::DuplicateModule(module.clone()));
+            }
+        }
+
+        let atom_keys: BTreeSet<String> = units
+            .iter()
+            .flat_map(|unit| unit.atoms.iter().cloned())
+            .collect();
+        let atoms: Vec<String> = atom_keys.into_iter().collect();
+        let atom_ids: BTreeMap<String, u32> = atoms
+            .iter()
+            .enumerate()
+            .map(|(id, atom)| (atom.clone(), id as u32))
+            .collect();
+
+        let mut schema_by_key = BTreeMap::new();
+        for unit in units {
+            for schema in &unit.schemas {
+                schema_by_key
+                    .entry(schema_key(schema))
+                    .or_insert_with(|| schema.clone());
+            }
+        }
+        let schemas: Vec<Schema> = schema_by_key.values().cloned().collect();
+        let schema_ids: BTreeMap<String, u32> = schema_by_key
+            .keys()
+            .enumerate()
+            .map(|(id, key)| (key.clone(), id as u32))
+            .collect();
+
+        let mut unit_order: Vec<usize> = (0..units.len()).collect();
+        unit_order.sort_by_key(|idx| unit_sort_key(&units[*idx], *idx));
+
+        let mut relocations_by_input: Vec<Option<RuntimeUnitRelocations>> = vec![None; units.len()];
+        let mut frame_sizes = Vec::new();
+        let mut halt_kinds = BTreeMap::new();
+        let mut static_closures = Vec::new();
+        let mut exported_symbols = BTreeMap::new();
+        let mut imported_refs = BTreeSet::new();
+        let mut entrypoints = RuntimeEntrypoints::default();
+
+        for input_index in unit_order {
+            let unit = &units[input_index];
+            let atom_relocs = unit
+                .atoms
+                .iter()
+                .map(|atom| atom_ids[atom])
+                .collect::<Vec<_>>();
+            let schema_relocs = unit
+                .schemas
+                .iter()
+                .map(|schema| schema_ids[&schema_key(schema)])
+                .collect::<Vec<_>>();
+            let frame_base = frame_sizes.len() as u32;
+            let frame_relocs = (0..unit.frame_sizes.len())
+                .map(|local| frame_base + local as u32)
+                .collect::<Vec<_>>();
+            frame_sizes.extend(unit.frame_sizes.iter().copied());
+            for (local_fn_id, halt_kind) in &unit.halt_kinds {
+                if let Some(global_fn_id) = frame_relocs.get(*local_fn_id as usize) {
+                    halt_kinds.insert(*global_fn_id, *halt_kind);
+                }
+            }
+            for (symbol, fn_id) in &unit.exported_symbols {
+                if exported_symbols
+                    .insert(symbol.clone(), frame_base + *fn_id)
+                    .is_some()
+                {
+                    return Err(RuntimeMetadataLinkError::DuplicateExport(symbol.clone()));
+                }
+            }
+            imported_refs.extend(unit.imported_refs.iter().cloned());
+            static_closures.extend(
+                unit.static_closures
+                    .iter()
+                    .cloned()
+                    .map(|closure| (input_index, closure)),
+            );
+            entrypoints.resume |= unit.entrypoints.resume;
+            entrypoints.main |= unit.entrypoints.main;
+            entrypoints.spawn |= unit.entrypoints.spawn;
+            entrypoints.drain_dtor |= unit.entrypoints.drain_dtor;
+            relocations_by_input[input_index] = Some(RuntimeUnitRelocations {
+                input_index,
+                atom_ids: atom_relocs,
+                schema_ids: schema_relocs,
+                frame_ids: frame_relocs,
+            });
+        }
+
+        static_closures.sort();
+        Ok(Self {
+            atoms,
+            schemas,
+            frame_sizes,
+            exported_symbols,
+            imported_refs: imported_refs.into_iter().collect(),
+            static_closures,
+            halt_kinds,
+            entrypoints,
+            relocations: relocations_by_input
+                .into_iter()
+                .map(|r| r.expect("relocation slot filled for every input unit"))
+                .collect(),
+        })
+    }
+
+    #[cfg(test)]
+    pub fn render_stable(&self) -> String {
+        let mut lines = Vec::new();
+        lines.push(format!("atoms={}", self.atoms.join(",")));
+        lines.push(format!(
+            "schemas={}",
+            self.schemas
+                .iter()
+                .map(schema_key)
+                .collect::<Vec<_>>()
+                .join(",")
+        ));
+        lines.push(format!(
+            "frames={}",
+            self.frame_sizes
+                .iter()
+                .map(u32::to_string)
+                .collect::<Vec<_>>()
+                .join(",")
+        ));
+        lines.push(format!(
+            "exports={}",
+            self.exported_symbols
+                .iter()
+                .map(|(symbol, id)| format!("{}:{}", symbol, id))
+                .collect::<Vec<_>>()
+                .join(",")
+        ));
+        lines.push(format!(
+            "imports={}",
+            self.imported_refs
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(",")
+        ));
+        lines.join("\n")
+    }
+}
+
+fn unit_sort_key(unit: &RuntimeUnitMetadata, input_index: usize) -> String {
+    unit.module
+        .as_ref()
+        .map(ToString::to_string)
+        .unwrap_or_else(|| format!("~{}", input_index))
+}
+
+fn schema_key(schema: &Schema) -> String {
+    let fields = schema
+        .fields
+        .iter()
+        .map(|field| format!("{}:{:?}", field.offset, field.kind))
+        .collect::<Vec<_>>()
+        .join("|");
+    format!("{}:{}:[{}]", schema.name, schema.size, fields)
+}
 
 /// Compiled module: persistent JITModule + per-fn ptr table + schemas. The
 /// host runs a fn via `compiled.run(fn_id)` (constructs an internal default
@@ -397,6 +1209,13 @@ impl CompiledModule {
             }
         }
         current_process().halt_value
+    }
+}
+
+#[cfg(test)]
+impl CompiledImage {
+    pub fn run(&self, fn_id: FnId) -> i64 {
+        self.inner.run(fn_id)
     }
 }
 

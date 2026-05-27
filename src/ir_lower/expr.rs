@@ -167,6 +167,9 @@ pub(crate) fn lower_expr(
             {
                 return Ok(ctx.let_at(Prim::make_closure(sp, fn_id, vec![]), sp));
             }
+            if let Some((_qualified, fn_id)) = ctx.unique_imported_fn_value_target(name) {
+                return Ok(ctx.let_at(Prim::make_closure(sp, fn_id, vec![]), sp));
+            }
             Err(LowerError::Unbound {
                 span: sp,
                 name: name.clone(),
@@ -178,6 +181,11 @@ pub(crate) fn lower_expr(
         // overloaded name resolves unambiguously to the requested clause.
         Expr::FnRef { name, arity } => {
             if let Some(&fn_id) = ctx.fns.get(&(name.clone(), *arity)) {
+                return Ok(ctx.let_at(Prim::make_closure(sp, fn_id, vec![]), sp));
+            }
+            if let Some(imported) = ctx.resolve_prelude_import(name, *arity)
+                && let Some(&fn_id) = ctx.fns.get(&(imported, *arity))
+            {
                 return Ok(ctx.let_at(Prim::make_closure(sp, fn_id, vec![]), sp));
             }
             // fz-eol — `&libc::close/1`: synthesize (and cache) a top-level
@@ -340,6 +348,14 @@ pub(crate) fn lower_expr(
                 }
                 return cps_split_receive(ctx, sp, /* tail */ false);
             }
+            let arity = arg_vars.len();
+            let local_callee = ctx.fns.get(&(callee_name.clone(), arity)).copied();
+            let callee_name = if local_callee.is_none() {
+                ctx.resolve_prelude_import(&callee_name, arity)
+                    .unwrap_or(callee_name)
+            } else {
+                callee_name
+            };
             // Extern (runtime.fz / user-declared `extern "C" fn`)?
             if let Some(eid) = ctx.externs.lookup(&callee_name) {
                 let decl = ctx
@@ -356,26 +372,35 @@ pub(crate) fn lower_expr(
                 )?;
                 return Ok(ctx.let_at(Prim::Extern(eid, extern_args), sp));
             }
-            let arity = arg_vars.len();
-            let callee =
-                *ctx.fns
-                    .get(&(callee_name.clone(), arity))
-                    .ok_or_else(|| LowerError::Unbound {
-                        span: target.span,
-                        name: format!("fn {}/{}", callee_name, arity),
-                    })?;
+            let local_callee =
+                local_callee.or_else(|| ctx.fns.get(&(callee_name.clone(), arity)).copied());
+            let external_callee = if local_callee.is_none() {
+                ctx.external_callee(&callee_name, arity)
+            } else {
+                None
+            };
+            let callee = local_callee
+                .or_else(|| external_callee.as_ref().map(|(callee, _)| *callee))
+                .ok_or_else(|| LowerError::Unbound {
+                    span: target.span,
+                    name: format!("fn {}/{}", callee_name, arity),
+                })?;
             if is_tail {
-                ctx.set_term_at(
-                    Term::TailCall {
-                        ident: crate::fz_ir::CallsiteIdent::from_source(Span::DUMMY),
-                        callee,
-                        args: arg_vars,
-                        is_back_edge: false, // annotate_back_edges fills this in post-lowering
-                    },
-                    sp,
-                );
+                let term = Term::TailCall {
+                    ident: crate::fz_ir::CallsiteIdent::from_source(Span::DUMMY),
+                    callee,
+                    args: arg_vars,
+                    is_back_edge: false, // annotate_back_edges fills this in post-lowering
+                };
+                if let Some((_, target)) = external_callee {
+                    ctx.set_external_direct_term_at(term, sp, target);
+                } else {
+                    ctx.set_term_at(term, sp);
+                }
                 ctx.terminated = true;
                 Ok(Var(0))
+            } else if let Some((_, target)) = external_callee {
+                cps_split_external_call(ctx, callee, target, arg_vars, sp)
             } else {
                 cps_split_call(ctx, callee, arg_vars, sp)
             }

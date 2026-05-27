@@ -636,6 +636,7 @@ impl Parser {
                 }
             }
         }
+        let module_name = crate::modules::identity::ModuleName::from_segments(path);
         let as_name = if matches!(self.peek(), Tok::Comma)
             && matches!(self.peek_at(1), Tok::KwKey(s) if s == "as")
         {
@@ -651,10 +652,10 @@ impl Parser {
                 }
             }
         } else {
-            path.last().cloned().expect("path is non-empty")
+            module_name.last_segment().to_string()
         };
         Ok(Item::Alias {
-            full_path: path,
+            full_path: module_name,
             as_name,
             span: self.finish(start),
         })
@@ -705,7 +706,7 @@ impl Parser {
             }
         }
         Ok(Item::Import {
-            path,
+            path: crate::modules::identity::ModuleName::from_segments(path),
             only,
             except,
             span: self.finish(start),

@@ -403,9 +403,26 @@ breadcrumbs.
 
 ```sh
 fz dump fixtures/quicksort/input.fz --emit clif       # Cranelift IR
-fz dump fixtures/quicksort/input.fz --emit specs      # inferred specs
+fz dump fixtures/quicksort/input.fz --emit interfaces # public module contracts
+fz dump fixtures/quicksort/input.fz --emit interfaces --strict-interfaces # require public @specs
+fz dump fixtures/quicksort/input.fz --emit specs      # internal inferred planner specs
 fz dump fixtures/quicksort/input.fz --emit outcomes   # what happened at each call site
 fz dump fixtures/quicksort/input.fz --emit stats      # compiler counters
+```
+
+Module interface artifacts can be written during a build:
+
+```sh
+fz build --emit-fzi --artifact-root build/fz path/to/input.fz -o path/to/app
+```
+
+This writes `.fzi` files under `build/fz/interfaces/...` and requires public
+module exports to have explicit specs.
+
+Frontend-only dump commands can load those interfaces without provider source:
+
+```sh
+fz dump --emit interfaces --interface Math --artifact-root build/fz consumer.fz
 ```
 
 These answer the questions you actually have while changing things:
@@ -495,11 +512,12 @@ compiler dump budgets are explained in
   simplify fz IR
 - `src/ir_codegen*.rs` — Cranelift codegen for JIT and AOT
 - `src/ir_interp/` — run fz IR without native codegen
-- `src/runtime.fz` — the fz prelude (written in fz)
+- `src/modules/runtime_library/runtime.fz` — the fz runtime prelude and runtime-library modules
 - `runtime/` — the native runtime crate
 - `fixtures/` — small programs that document and test the language
 - `guides/` — long-form explainers
   ([processes](guides/processes.html),
+  [modules](guides/modules.html),
   [pattern matching](guides/pattern-matching.html),
   [memory and destination planning](guides/memory.html#destination-planning),
   [externs](guides/externs.html))

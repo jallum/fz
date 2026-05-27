@@ -22,9 +22,11 @@ use crate::eval::CompileTimeEvaluator;
 use crate::lexer::Lexer;
 use crate::parser::Parser;
 use crate::value::Value;
+use std::cell::RefCell;
 use std::collections::BTreeMap;
-use std::io;
+use std::io::{self, Write};
 use std::path::Path;
+use std::rc::Rc;
 
 pub fn run() -> io::Result<()> {
     let mut session = ReplSession::new();
@@ -233,30 +235,38 @@ impl ReplSession {
 
     pub(crate) fn run_script_str(&mut self, src: &str, source_name: String) -> io::Result<()> {
         let mut t = crate::types::ConcreteTypes;
-        let frontend = match crate::frontend::compile_source_with_types(
+        let (tel, diagnostics) = repl_diagnostic_telemetry();
+        let providers = crate::modules::pipeline::ProviderInputs::new(
+            crate::modules::artifact_store::DEFAULT_ARTIFACT_ROOT.to_string(),
+            Vec::new(),
+        );
+        let frontend = match crate::modules::pipeline::compile_source_with_providers(
             &mut t,
             src.to_string(),
             source_name,
-            &crate::telemetry::NullTelemetry,
+            &providers,
+            &tel,
         ) {
             Ok(ok) => ok,
-            Err(err) => {
-                return Err(diagnostics_to_io_error(&err.sm, err.diagnostics.as_slice()));
-            }
+            Err(err) => return Err(pipeline_error_to_io_error(err, &diagnostics)),
         };
-        if frontend
-            .diagnostics
-            .as_slice()
-            .iter()
-            .any(|d| d.severity == crate::diag::diagnostic::Severity::Error)
-        {
-            return Err(diagnostics_to_io_error(
-                &frontend.sm,
-                frontend.diagnostics.as_slice(),
-            ));
-        }
+        let checked = crate::modules::pipeline::checked_module_for_mode(
+            &mut t,
+            frontend,
+            &tel,
+            crate::modules::pipeline::CompileMode::Normal,
+        )
+        .map_err(|err| pipeline_error_to_io_error(err, &diagnostics))?;
+        let prepared = crate::modules::pipeline::prepare_execution_graph(
+            &mut t,
+            checked,
+            &providers,
+            &tel,
+            crate::modules::pipeline::CompileMode::Normal,
+        )
+        .map_err(|err| pipeline_error_to_io_error(err, &diagnostics))?;
 
-        let Some(main) = frontend.module.fn_by_name("main") else {
+        let Some(main) = prepared.module.fn_by_name("main") else {
             return Ok(());
         };
         if !main.block(main.entry).params.is_empty() {
@@ -264,7 +274,7 @@ impl ReplSession {
         }
 
         crate::notify_fixture_execution_start();
-        ReplRuntime::run_script_main(&frontend.module, main.id)
+        ReplRuntime::run_script_main(&prepared.module, main.id)
     }
 
     pub(crate) fn eval_chunk(&mut self, src: &str) -> ReplChunkOutcome {
@@ -523,6 +533,8 @@ impl ReplWorld {
                         | crate::lexer::Tok::Extern
                         | crate::lexer::Tok::Defmacro
                         | crate::lexer::Tok::Defmodule
+                        | crate::lexer::Tok::Alias
+                        | crate::lexer::Tok::Import
                 )
             })
             .unwrap_or(false);
@@ -573,7 +585,7 @@ impl ReplWorld {
             self.session_program(),
             expr,
             input_frame,
-            entry_name,
+            entry_name.clone(),
             sm,
             &crate::telemetry::NullTelemetry,
         ) {
@@ -594,11 +606,18 @@ impl ReplWorld {
                 out.frontend.diagnostics.as_slice(),
             ));
         }
+        let graph = prepare_repl_frontend(&mut t, out.frontend)?;
+        let Some(entry_fn) = graph.module.fn_by_name(&entry_name).map(|f| f.id) else {
+            return Err(io::Error::other(format!(
+                "repl entry `{}` not lowered",
+                entry_name
+            )));
+        };
         let mut entry_program = Program::default();
         entry_program.items.push(out.entry_item);
         Ok(ReplCompiledEntry {
-            module: out.frontend.module,
-            fn_id: out.entry_fn,
+            module: graph.module,
+            fn_id: entry_fn,
             input_frame: out.input_frame,
             output_frame: out.output_frame,
             entry_program,
@@ -681,7 +700,60 @@ fn compile_parsed_program_module(prog: Program) -> io::Result<crate::fz_ir::Modu
             frontend.diagnostics.as_slice(),
         ));
     }
-    Ok(frontend.module)
+    Ok(prepare_repl_frontend(&mut t, frontend)?.module)
+}
+
+fn prepare_repl_frontend(
+    t: &mut crate::types::ConcreteTypes,
+    frontend: crate::frontend::FrontendOk,
+) -> io::Result<crate::modules::pipeline::PreparedExecutionGraph> {
+    let (tel, diagnostics) = repl_diagnostic_telemetry();
+    let providers = crate::modules::pipeline::ProviderInputs::new(
+        crate::modules::artifact_store::DEFAULT_ARTIFACT_ROOT.to_string(),
+        Vec::new(),
+    );
+    let checked = crate::modules::pipeline::checked_module_for_mode(
+        t,
+        Ok(frontend),
+        &tel,
+        crate::modules::pipeline::CompileMode::Normal,
+    )
+    .map_err(|err| pipeline_error_to_io_error(err, &diagnostics))?;
+    crate::modules::pipeline::prepare_execution_graph(
+        t,
+        checked,
+        &providers,
+        &tel,
+        crate::modules::pipeline::CompileMode::Normal,
+    )
+    .map_err(|err| pipeline_error_to_io_error(err, &diagnostics))
+}
+
+fn repl_diagnostic_telemetry() -> (crate::telemetry::ConfiguredTelemetry, Rc<RefCell<Vec<u8>>>) {
+    let tel = crate::telemetry::ConfiguredTelemetry::new();
+    let diagnostics = Rc::new(RefCell::new(Vec::new()));
+    tel.attach(
+        &["fz", "diag"],
+        Box::new(crate::telemetry::DiagRenderer::new_to_writer(
+            Rc::new(RefCell::new(crate::diag::SourceMap::new())),
+            ReplDiagnosticWriter(diagnostics.clone()),
+            crate::diag::style::ColorMode::Never,
+        )),
+    );
+    (tel, diagnostics)
+}
+
+struct ReplDiagnosticWriter(Rc<RefCell<Vec<u8>>>);
+
+impl Write for ReplDiagnosticWriter {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.0.borrow_mut().extend_from_slice(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
 }
 
 fn item_fn_shapes(prog: &Program) -> Vec<(String, usize)> {
@@ -754,6 +826,22 @@ fn diagnostics_to_io_error(
         .collect::<Vec<_>>()
         .join("");
     io::Error::other(rendered)
+}
+
+fn pipeline_error_to_io_error(
+    err: crate::modules::pipeline::PipelineError,
+    diagnostics: &Rc<RefCell<Vec<u8>>>,
+) -> io::Error {
+    let rendered = diagnostics.borrow();
+    if !rendered.is_empty() {
+        return io::Error::other(String::from_utf8_lossy(&rendered).into_owned());
+    }
+    drop(rendered);
+    match err {
+        crate::modules::pipeline::PipelineError::Artifact(err) => io::Error::other(err.to_string()),
+        crate::modules::pipeline::PipelineError::Link(err) => io::Error::other(err.to_string()),
+        err => io::Error::other(err.to_string()),
+    }
 }
 
 /// `which == true` loads only macros; `which == false` loads only non-macros.
@@ -958,6 +1046,32 @@ fn main() do
 end
 "#;
         run_script_str(src).expect("Utf8 helpers should run through script REPL");
+    }
+
+    #[test]
+    fn repl_session_accepts_top_level_runtime_import() {
+        let mut session = ReplSession::new();
+        assert!(matches!(
+            session.eval_chunk("import Utf8, only: [valid?: 1]"),
+            ReplChunkOutcome::Ok(None)
+        ));
+        assert_eq!(
+            eval_session_render(&mut session, "valid?(<<104, 105>>)"),
+            "true"
+        );
+    }
+
+    #[test]
+    fn repl_session_accepts_top_level_runtime_alias() {
+        let mut session = ReplSession::new();
+        assert!(matches!(
+            session.eval_chunk("alias Utf8, as: U"),
+            ReplChunkOutcome::Ok(None)
+        ));
+        assert_eq!(
+            eval_session_render(&mut session, "U.valid?(<<0xff, 0xff>>)"),
+            "false"
+        );
     }
 
     fn eval_session_i64(session: &mut ReplSession, src: &str) -> Option<i64> {

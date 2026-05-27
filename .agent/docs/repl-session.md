@@ -139,6 +139,31 @@ the only script-mode stdout.
 Script mode bypasses `rustyline` and `ReplComposer` because whole-file parsing
 already provides the complete source boundary.
 
+## Module Artifact Policy
+
+The interactive REPL is session-eager. Interactive chunks compile against the
+source world already accumulated in `ReplWorld`, plus the built-in
+runtime-library interfaces that normal frontend compilation sees. They do not
+accept `--interface`, `--provider`, or `--artifact-root`, and they do not load
+user provider artifacts.
+
+`repl --script` has one whole-file root source, so it uses the provider-free
+execution graph path and can materialize reachable built-in runtime modules.
+It still does not accept user provider roots.
+
+That boundary keeps the persistent session simple: the REPL has one mutable
+source world and one persistent evaluator image. Artifact-backed imports belong
+to whole-file commands with an explicit root source and explicit provider roots:
+
+```sh
+fz run --interface Math --artifact-root build/fz consumer.fz
+fz build --interface Math --artifact-root build/fz consumer.fz -o consumer
+```
+
+Use the REPL for definitions entered in the current session or script. Use
+`run`/`build` when a program depends on provider artifacts emitted by another
+module build.
+
 ## Error And Blocking Policy
 
 Parse, type, and lowering errors leave `ReplRuntime` untouched.

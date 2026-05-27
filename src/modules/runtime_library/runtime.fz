@@ -1,0 +1,19 @@
+@type pid :: opaque integer
+@type ref :: opaque cpointer
+# fz-axu.12 (S1) -- utf8 is a brand on binary. String literal
+# lowering mints this unqualified runtime-prelude brand directly, so it
+# must stay root-scoped even as the Utf8 helpers live in a module.
+@type utf8 :: refines binary
+
+import Kernel, only: [
+  assert: 1,
+  assert_eq: 2,
+  assert_neq: 2,
+  make_ref: 0,
+  make_resource: 2,
+  print: 1,
+  self: 0,
+  send: 2,
+  spawn: 1,
+  spawn: 2
+]
