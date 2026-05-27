@@ -1,4 +1,4 @@
-use super::fn_types::{EffectSummary, ReturnContextPlan, ReturnDemand, SpecKey};
+use super::fn_types::{ReturnContextPlan, ReturnDemand, SpecKey};
 use crate::callsite_walk::ContSource;
 use crate::fz_ir::{FnId, FnIr, Module, Prim, Stmt, Term, Var};
 use std::collections::{HashMap, HashSet};
@@ -330,7 +330,7 @@ fn fn_blocks_return_context_motion(m: &Module, fn_id: FnId, visiting: &mut HashS
     let f = m.fn_by_id(fn_id);
     for b in &f.blocks {
         for Stmt::Let(_, prim) in &b.stmts {
-            if prim_blocks_return_context_motion(m, prim) {
+            if super::effects::prim_effect_summary(m, prim).blocks_return_context_motion() {
                 visiting.remove(&fn_id);
                 return true;
             }
@@ -366,27 +366,6 @@ fn fn_blocks_return_context_motion(m: &Module, fn_id: FnId, visiting: &mut HashS
     }
     visiting.remove(&fn_id);
     false
-}
-
-fn prim_blocks_return_context_motion(m: &Module, prim: &Prim) -> bool {
-    prim_return_context_motion_effect(m, prim).blocks_return_context_motion()
-}
-
-fn prim_return_context_motion_effect(m: &Module, prim: &Prim) -> EffectSummary {
-    let Prim::Extern(eid, _) = prim else {
-        return EffectSummary::default();
-    };
-    let decl = m.extern_by_id(*eid);
-    EffectSummary {
-        observable: decl.symbol.contains("print"),
-        reads_allocation_stats: decl.symbol == "fz_process_heap_alloc_stats",
-        scheduler_visible: matches!(
-            decl.symbol.as_str(),
-            "fz_send" | "fz_spawn" | "fz_spawn_opt" | "fz_self"
-        ),
-        halts: decl.ret == crate::fz_ir::ExternTy::Never,
-        ..EffectSummary::default()
-    }
 }
 
 fn cons_then_direct_list_tail_plan(

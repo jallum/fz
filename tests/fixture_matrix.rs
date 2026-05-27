@@ -228,6 +228,10 @@ fn static_tests() -> Vec<(&'static str, fn())> {
             list_tail_demand_rejects_heap_stats_between_prefix_and_append,
         ),
         (
+            "list_tail_demand_rejects_extern_between_prefix_and_append",
+            list_tail_demand_rejects_extern_between_prefix_and_append,
+        ),
+        (
             "resource_lifecycle_uses_typed_scalar_map_key_lookup",
             resource_lifecycle_uses_typed_scalar_map_key_lookup,
         ),
@@ -2384,6 +2388,30 @@ end
     assert!(
         !specs.contains("demand: list_tail"),
         "heap allocation stats read between prefix production and append must block ListTail demand:\n{}",
+        specs
+    );
+}
+
+fn list_tail_demand_rejects_extern_between_prefix_and_append() {
+    let specs = dump_specs_for_source(
+        "list_tail_reject_extern",
+        r#"
+extern "C" fn getpid() :: integer
+
+fn append([], ys), do: ys
+fn append([h | t], ys), do: [h | append(t, ys)]
+fn id_list(xs), do: xs
+
+fn main() do
+  left = id_list([1])
+  getpid()
+  append(left, [2])
+end
+"#,
+    );
+    assert!(
+        !specs.contains("demand: list_tail"),
+        "extern call between prefix production and append must block ListTail demand:\n{}",
         specs
     );
 }
