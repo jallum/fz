@@ -436,7 +436,7 @@ fn collect_closure_targets(
 /// The contained fns are exactly the "never specializable as halt-only"
 /// set.
 fn collect_cont_target_fns(module: &Module) -> std::collections::HashSet<crate::fz_ir::FnId> {
-    let mut ir_referenced_fns: std::collections::HashSet<crate::fz_ir::FnId> =
+    let mut cont_target_fns: std::collections::HashSet<crate::fz_ir::FnId> =
         std::collections::HashSet::new();
     for f in &module.fns {
         for blk in &f.blocks {
@@ -447,26 +447,26 @@ fn collect_cont_target_fns(module: &Module) -> std::collections::HashSet<crate::
                     continuation,
                     ..
                 } => {
-                    ir_referenced_fns.insert(*callee);
-                    ir_referenced_fns.insert(continuation.fn_id);
+                    cont_target_fns.insert(*callee);
+                    cont_target_fns.insert(continuation.fn_id);
                 }
                 Term::TailCall { callee, .. } => {
-                    ir_referenced_fns.insert(*callee);
+                    cont_target_fns.insert(*callee);
                 }
                 Term::CallClosure { continuation, .. } | Term::Receive { continuation, .. } => {
-                    ir_referenced_fns.insert(continuation.fn_id);
+                    cont_target_fns.insert(continuation.fn_id);
                 }
                 _ => {}
             }
             for stmt in &blk.stmts {
                 let Stmt::Let(_, prim) = stmt;
                 if let Prim::MakeClosure(_, fid, _) = prim {
-                    ir_referenced_fns.insert(*fid);
+                    cont_target_fns.insert(*fid);
                 }
             }
         }
     }
-    ir_referenced_fns
+    cont_target_fns
 }
 
 /// Scheduler-resumed continuations receive only their closure `self`.
