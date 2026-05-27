@@ -1,6 +1,6 @@
 use super::fn_types::{ReturnContextPlan, ReturnDemand, SpecKey};
 use crate::callsite_walk::ContSource;
-use crate::fz_ir::{FnId, FnIr, Module, Prim, Stmt, Term, Var};
+use crate::fz_ir::{FnId, FnIr, Module, Prim, Stmt, Term, Var, prim_uses_var, term_uses_var};
 use std::collections::{HashMap, HashSet};
 
 pub(crate) fn direct_call_return_plan<T: crate::types::Types<Ty = crate::types::Ty>>(
@@ -472,69 +472,4 @@ fn return_var_is_tuple_arity(b: &crate::fz_ir::Block, ret: Var, arity: usize) ->
         };
     }
     false
-}
-
-fn prim_uses_var(prim: &Prim, needle: Var) -> bool {
-    match prim {
-        Prim::Const(_) | Prim::DestTupleBegin { .. } | Prim::DestListBegin { .. } => false,
-        Prim::BinOp(_, a, b) => *a == needle || *b == needle,
-        Prim::UnOp(_, a)
-        | Prim::ListHead(a)
-        | Prim::ListTail(a)
-        | Prim::IsEmptyList(a)
-        | Prim::DestFreeze { dest: a, .. }
-        | Prim::DestListFreeze { list: a, .. }
-        | Prim::TupleField(a, _)
-        | Prim::TypeTest(a, _)
-        | Prim::IsMatcherMapMiss(a)
-        | Prim::BitReaderInit(a)
-        | Prim::BitReaderDone(a)
-        | Prim::Brand(a, _) => *a == needle,
-        Prim::Extern(_, args) | Prim::MakeTuple(args) | Prim::MakeList(args, None) => {
-            args.contains(&needle)
-        }
-        Prim::MakeList(args, Some(tail)) => args.contains(&needle) || *tail == needle,
-        Prim::MakeClosure(_, _, caps) => caps.contains(&needle),
-        Prim::DestTupleSet { dest, value, .. } => *dest == needle || *value == needle,
-        Prim::DestListCons { head, tail, .. } => {
-            *head == needle || tail.is_some_and(|tail| tail == needle)
-        }
-        Prim::MakeMap(entries) => entries.iter().any(|(k, v)| *k == needle || *v == needle),
-        Prim::MapUpdate(base, entries) => {
-            *base == needle || entries.iter().any(|(k, v)| *k == needle || *v == needle)
-        }
-        Prim::DestMapBegin { base, .. } => base.is_some_and(|base| base == needle),
-        Prim::DestMapPut {
-            map, key, value, ..
-        } => *map == needle || *key == needle || *value == needle,
-        Prim::DestMapFreeze { map, .. } => *map == needle,
-        Prim::MapGet(map, key) | Prim::MatcherMapGet(map, key) => *map == needle || *key == needle,
-        Prim::MakeBitstring(fields) => fields.iter().any(|f| {
-            f.value == needle
-                || matches!(&f.size, Some(crate::fz_ir::BitSizeIr::Var(v)) if *v == needle)
-        }),
-        Prim::BitReadField { reader, size, .. } => {
-            *reader == needle
-                || matches!(size, Some(crate::fz_ir::BitSizeIr::Var(v)) if *v == needle)
-        }
-        Prim::ConstBitstring(_, _) => false,
-    }
-}
-
-fn term_uses_var(term: &Term, needle: Var) -> bool {
-    match term {
-        Term::Return(v) | Term::Halt(v) => *v == needle,
-        Term::Goto(_, args) | Term::TailCall { args, .. } | Term::TailCallClosure { args, .. } => {
-            args.contains(&needle)
-        }
-        Term::If { cond, .. } => *cond == needle,
-        Term::Call {
-            args, continuation, ..
-        }
-        | Term::CallClosure {
-            args, continuation, ..
-        } => args.contains(&needle) || continuation.captured.contains(&needle),
-        Term::Receive { continuation, .. } => continuation.captured.contains(&needle),
-        Term::ReceiveMatched { captures, .. } => captures.contains(&needle),
-    }
 }
