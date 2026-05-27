@@ -291,140 +291,270 @@ pub(crate) fn process_worklist<
         let Some(&j) = m.fn_idx.get(&spec_key.fn_id) else {
             continue;
         };
-
-        // type_fn is pure in (FnIr, entry_key) — cache by spec_key.
-        if !specs.contains_key(&spec_key) {
-            TYPE_FN_CALLS.with(|c| c.set(c.get() + 1));
-            let input_tys = spec_key_input_tys(t, &spec_key);
-            let mut ft = type_fn(t, &m.fns[j], m, Some(&input_tys));
-            if let Some(arg_consts) = callsite_fn_consts.get(&spec_key) {
-                let entry = m.fns[j].entry;
-                let entry_params = &m.fns[j].block(entry).params;
-                for (slot, p) in entry_params.iter().enumerate() {
-                    if let Some(Some(fid_const)) = arg_consts.get(slot) {
-                        ft.fn_constants.insert(*p, *fid_const);
-                    }
-                }
-            }
-            specs.insert(spec_key.clone(), ft);
-        }
-
-        let count = visit_count.entry(spec_key.clone()).or_insert(0);
-        *count += 1;
-        // fz-rh5.7 — termination invariant tripwire. See proof in
-        // `plan_module`'s doc comment.
-        assert!(
-            *count < VISIT_HARD_BOUND,
-            "spec {:?} visited {} times — termination invariant violated",
-            spec_key,
-            *count
-        );
-        // Walk → emits + return_reads + closure_handles.
-        let caller_ft = specs.get(&spec_key).unwrap();
-        let mut result = WalkResult::default();
-        walk_spec_for_discovery(
+        ensure_spec_typed(t, m, j, &spec_key, callsite_fn_consts, specs);
+        check_visit_bound(&spec_key, visit_count);
+        let result = discover_spec_outputs(
             t,
-            &m.fns[j],
-            caller_ft,
             m,
+            j,
+            &spec_key,
+            specs,
             effective_returns,
             recursive_fns,
-            &spec_key,
             callsite_fn_consts,
-            &mut result,
         );
-
-        // Diff emits against this caller's prior emit set. Transitions
-        // update produces + holders + emits_by_caller.
-        //
-        // fz-uwq.3 — install this spec's `SpecPlan.dispatches` from
-        // `result.dispatch_targets`, which uses the same
-        // recursively-normalized key as `result.emits`.
-        let prev_sites = emits_by_caller.remove(&spec_key).unwrap_or_default();
-        let mut new_sites: EmitterSiteSet = std::collections::HashSet::new();
-        for (site, target) in result.emits {
-            new_sites.insert(site.clone());
-            match produces.get(&site).cloned() {
-                Some(prev_target) if prev_target == target => {
-                    // Stable — no transition.
-                }
-                Some(prev_target) => {
-                    // Retarget: detach from old, attach to new.
-                    if let Some(h) = holders.get_mut(&prev_target) {
-                        h.remove(&site);
-                    }
-                    holders
-                        .entry(target.clone())
-                        .or_default()
-                        .insert(site.clone());
-                    produces.insert(site, target.clone());
-                }
-                None => {
-                    holders
-                        .entry(target.clone())
-                        .or_default()
-                        .insert(site.clone());
-                    produces.insert(site, target.clone());
-                }
-            }
-            if !specs.contains_key(&target) && in_work.insert(target.clone()) {
-                work.push_back(target);
-            }
-        }
-        if let Some(ft) = specs.get_mut(&spec_key) {
-            ft.dispatches = result.dispatch_targets;
-            ft.return_uses = result.return_uses;
-            ft.return_context_plans = result.return_context_plans;
-        }
-        // Sites present in prev but absent in new: this walk no longer
-        // emits them. Detach from holders; clear produces.
-        for site in prev_sites.difference(&new_sites) {
-            if let Some(prev_target) = produces.remove(site)
-                && let Some(h) = holders.get_mut(&prev_target)
-            {
-                h.remove(site);
-            }
-        }
-        emits_by_caller.insert(spec_key.clone(), new_sites);
-
-        // fz-try B1+B2 — accumulate handle registrations from this walk.
-        for handle in result.closure_handles {
-            closure_handles.insert(handle);
-        }
-
-        // Recompute effective return. compute_return_for_spec records
-        // every callee return it consults; together with the walk's
-        // return_reads, that's the full set of edges whose change
-        // affects this spec.
-        let mut compute_reads: Vec<SpecKey> = Vec::new();
-        let new_ret = compute_return_for_spec(
+        let WalkResult {
+            emits,
+            dispatch_targets,
+            return_uses,
+            return_context_plans,
+            return_reads,
+            closure_handles: discovered_handles,
+        } = result;
+        apply_emit_diff(
+            &spec_key,
+            emits,
+            specs,
+            work,
+            in_work,
+            produces,
+            holders,
+            emits_by_caller,
+        );
+        install_walk_result(
+            specs,
+            &spec_key,
+            dispatch_targets,
+            return_uses,
+            return_context_plans,
+        );
+        closure_handles.extend(discovered_handles);
+        update_effective_return_and_enqueue_readers(
             t,
             m,
             &spec_key,
             recursive_fns,
             specs,
             effective_returns,
-            &mut compute_reads,
+            return_readers,
+            work,
+            in_work,
+            return_reads,
         );
-        for callee_key in result.return_reads.into_iter().chain(compute_reads) {
-            return_readers
-                .entry(callee_key)
-                .or_default()
-                .insert(spec_key.clone());
-        }
-        let changed = match effective_returns.get(&spec_key) {
-            Some(prev) => !t.is_equivalent(&new_ret, prev),
-            None => true,
-        };
-        if changed {
-            effective_returns.insert(spec_key.clone(), new_ret);
-            if let Some(readers) = return_readers.get(&spec_key).cloned() {
-                for reader in readers {
-                    if specs.contains_key(&reader) && in_work.insert(reader.clone()) {
-                        work.push_back(reader);
-                    }
-                }
+    }
+}
+
+fn ensure_spec_typed<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes>(
+    t: &mut T,
+    m: &Module,
+    fn_idx: usize,
+    spec_key: &SpecKey,
+    callsite_fn_consts: &CallsiteFnConsts,
+    specs: &mut HashMap<SpecKey, SpecPlan>,
+) {
+    if specs.contains_key(spec_key) {
+        return;
+    }
+    TYPE_FN_CALLS.with(|c| c.set(c.get() + 1));
+    let input_tys = spec_key_input_tys(t, spec_key);
+    let mut ft = type_fn(t, &m.fns[fn_idx], m, Some(&input_tys));
+    if let Some(arg_consts) = callsite_fn_consts.get(spec_key) {
+        let entry = m.fns[fn_idx].entry;
+        let entry_params = &m.fns[fn_idx].block(entry).params;
+        for (slot, p) in entry_params.iter().enumerate() {
+            if let Some(Some(fid_const)) = arg_consts.get(slot) {
+                ft.fn_constants.insert(*p, *fid_const);
             }
+        }
+    }
+    specs.insert(spec_key.clone(), ft);
+}
+
+fn check_visit_bound(spec_key: &SpecKey, visit_count: &mut HashMap<SpecKey, usize>) {
+    let count = visit_count.entry(spec_key.clone()).or_insert(0);
+    *count += 1;
+    assert!(
+        *count < VISIT_HARD_BOUND,
+        "spec {:?} visited {} times — termination invariant violated",
+        spec_key,
+        *count
+    );
+}
+
+fn discover_spec_outputs<
+    T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
+>(
+    t: &mut T,
+    m: &Module,
+    fn_idx: usize,
+    spec_key: &SpecKey,
+    specs: &HashMap<SpecKey, SpecPlan>,
+    effective_returns: &HashMap<SpecKey, crate::types::Ty>,
+    recursive_fns: &std::collections::HashSet<FnId>,
+    callsite_fn_consts: &mut CallsiteFnConsts,
+) -> WalkResult {
+    let caller_ft = specs.get(spec_key).unwrap();
+    let mut result = WalkResult::default();
+    walk_spec_for_discovery(
+        t,
+        &m.fns[fn_idx],
+        caller_ft,
+        m,
+        effective_returns,
+        recursive_fns,
+        spec_key,
+        callsite_fn_consts,
+        &mut result,
+    );
+    result
+}
+
+#[allow(clippy::too_many_arguments)]
+fn apply_emit_diff(
+    spec_key: &SpecKey,
+    emits: Vec<(super::fn_types::EmitterSite, SpecKey)>,
+    specs: &HashMap<SpecKey, SpecPlan>,
+    work: &mut std::collections::VecDeque<SpecKey>,
+    in_work: &mut SpecKeySet,
+    produces: &mut ProducesMap,
+    holders: &mut HoldersMap,
+    emits_by_caller: &mut EmitsByCaller,
+) {
+    let prev_sites = emits_by_caller.remove(spec_key).unwrap_or_default();
+    let mut new_sites: EmitterSiteSet = std::collections::HashSet::new();
+    for (site, target) in emits {
+        new_sites.insert(site.clone());
+        transition_emit_site(produces, holders, site, target.clone());
+        if !specs.contains_key(&target) && in_work.insert(target.clone()) {
+            work.push_back(target);
+        }
+    }
+    remove_stale_emit_sites(produces, holders, &prev_sites, &new_sites);
+    emits_by_caller.insert(spec_key.clone(), new_sites);
+}
+
+fn transition_emit_site(
+    produces: &mut ProducesMap,
+    holders: &mut HoldersMap,
+    site: super::fn_types::EmitterSite,
+    target: SpecKey,
+) {
+    match produces.get(&site).cloned() {
+        Some(prev_target) if prev_target == target => {}
+        Some(prev_target) => {
+            if let Some(h) = holders.get_mut(&prev_target) {
+                h.remove(&site);
+            }
+            holders
+                .entry(target.clone())
+                .or_default()
+                .insert(site.clone());
+            produces.insert(site, target);
+        }
+        None => {
+            holders
+                .entry(target.clone())
+                .or_default()
+                .insert(site.clone());
+            produces.insert(site, target);
+        }
+    }
+}
+
+fn remove_stale_emit_sites(
+    produces: &mut ProducesMap,
+    holders: &mut HoldersMap,
+    prev_sites: &EmitterSiteSet,
+    new_sites: &EmitterSiteSet,
+) {
+    for site in prev_sites.difference(new_sites) {
+        if let Some(prev_target) = produces.remove(site)
+            && let Some(h) = holders.get_mut(&prev_target)
+        {
+            h.remove(site);
+        }
+    }
+}
+
+fn install_walk_result(
+    specs: &mut HashMap<SpecKey, SpecPlan>,
+    spec_key: &SpecKey,
+    dispatch_targets: HashMap<crate::fz_ir::CallsiteId, SpecKey>,
+    return_uses: HashMap<crate::fz_ir::CallsiteId, super::fn_types::ReturnDemand>,
+    return_context_plans: HashMap<
+        super::fn_types::ReturnContextPlanKey,
+        super::fn_types::ReturnContextPlan,
+    >,
+) {
+    if let Some(ft) = specs.get_mut(spec_key) {
+        ft.dispatches = dispatch_targets;
+        ft.return_uses = return_uses;
+        ft.return_context_plans = return_context_plans;
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn update_effective_return_and_enqueue_readers<
+    T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
+>(
+    t: &mut T,
+    m: &Module,
+    spec_key: &SpecKey,
+    recursive_fns: &std::collections::HashSet<FnId>,
+    specs: &HashMap<SpecKey, SpecPlan>,
+    effective_returns: &mut HashMap<SpecKey, crate::types::Ty>,
+    return_readers: &mut ReturnReaders,
+    work: &mut std::collections::VecDeque<SpecKey>,
+    in_work: &mut SpecKeySet,
+    walk_return_reads: Vec<SpecKey>,
+) {
+    let mut compute_reads = Vec::new();
+    let new_ret = compute_return_for_spec(
+        t,
+        m,
+        spec_key,
+        recursive_fns,
+        specs,
+        effective_returns,
+        &mut compute_reads,
+    );
+    record_return_reads(return_readers, spec_key, walk_return_reads, compute_reads);
+    let changed = effective_returns
+        .get(spec_key)
+        .is_none_or(|prev| !t.is_equivalent(&new_ret, prev));
+    if changed {
+        effective_returns.insert(spec_key.clone(), new_ret);
+        enqueue_return_readers(spec_key, specs, return_readers, work, in_work);
+    }
+}
+
+fn record_return_reads(
+    return_readers: &mut ReturnReaders,
+    spec_key: &SpecKey,
+    walk_return_reads: Vec<SpecKey>,
+    compute_reads: Vec<SpecKey>,
+) {
+    for callee_key in walk_return_reads.into_iter().chain(compute_reads) {
+        return_readers
+            .entry(callee_key)
+            .or_default()
+            .insert(spec_key.clone());
+    }
+}
+
+fn enqueue_return_readers(
+    spec_key: &SpecKey,
+    specs: &HashMap<SpecKey, SpecPlan>,
+    return_readers: &ReturnReaders,
+    work: &mut std::collections::VecDeque<SpecKey>,
+    in_work: &mut SpecKeySet,
+) {
+    let Some(readers) = return_readers.get(spec_key).cloned() else {
+        return;
+    };
+    for reader in readers {
+        if specs.contains_key(&reader) && in_work.insert(reader.clone()) {
+            work.push_back(reader);
         }
     }
 }
