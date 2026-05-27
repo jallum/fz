@@ -88,16 +88,36 @@ fn module_name_from_ir_path(path: &str) -> Option<crate::module_identity::Module
 #[allow(dead_code)]
 pub struct CompiledImage {
     inner: CompiledModule,
+    metadata: Option<RuntimeImageMetadata>,
 }
 
 #[allow(dead_code)]
 impl CompiledImage {
     pub fn from_compat_module(module: CompiledModule) -> Self {
-        Self { inner: module }
+        Self {
+            inner: module,
+            metadata: None,
+        }
     }
 
     pub fn into_compat_module(self) -> CompiledModule {
         self.inner
+    }
+
+    pub fn link_prelinked(
+        units: &[CompiledUnit],
+        runtime_units: &[RuntimeUnitMetadata],
+        prelinked: CompiledModule,
+    ) -> Result<Self, ImageLinkError> {
+        let metadata = link_image_metadata(units, runtime_units)?;
+        Ok(Self {
+            inner: prelinked,
+            metadata: Some(metadata),
+        })
+    }
+
+    pub fn metadata(&self) -> Option<&RuntimeImageMetadata> {
+        self.metadata.as_ref()
     }
 
     pub fn diagnostics(&self) -> &crate::diag::Diagnostics {
@@ -118,6 +138,111 @@ impl CompiledImage {
 }
 
 unsafe impl Send for CompiledImage {}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ImageLinkError {
+    UnitRuntimeCountMismatch {
+        units: usize,
+        runtime_units: usize,
+    },
+    InterfaceFingerprintMismatch {
+        module: Option<crate::module_identity::ModuleName>,
+    },
+    MissingImport {
+        requester: Option<crate::module_identity::ModuleName>,
+        import: crate::module_identity::ExportKey,
+    },
+    DuplicateProvider {
+        import: crate::module_identity::ExportKey,
+    },
+    RuntimeMetadata(RuntimeMetadataLinkError),
+}
+
+impl std::fmt::Display for ImageLinkError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::UnitRuntimeCountMismatch {
+                units,
+                runtime_units,
+            } => write!(
+                f,
+                "image link got {} compiled units but {} runtime metadata units",
+                units, runtime_units
+            ),
+            Self::InterfaceFingerprintMismatch { module } => write!(
+                f,
+                "compiled unit `{}` does not implement its recorded interface fingerprint",
+                module
+                    .as_ref()
+                    .map(ToString::to_string)
+                    .unwrap_or_else(|| "<root>".to_string())
+            ),
+            Self::MissingImport { requester, import } => write!(
+                f,
+                "module `{}` imports missing export `{}`",
+                requester
+                    .as_ref()
+                    .map(ToString::to_string)
+                    .unwrap_or_else(|| "<root>".to_string()),
+                import
+            ),
+            Self::DuplicateProvider { import } => {
+                write!(f, "export `{}` has more than one provider", import)
+            }
+            Self::RuntimeMetadata(err) => write!(f, "{}", err),
+        }
+    }
+}
+
+impl std::error::Error for ImageLinkError {}
+
+#[allow(dead_code)]
+fn link_image_metadata(
+    units: &[CompiledUnit],
+    runtime_units: &[RuntimeUnitMetadata],
+) -> Result<RuntimeImageMetadata, ImageLinkError> {
+    if units.len() != runtime_units.len() {
+        return Err(ImageLinkError::UnitRuntimeCountMismatch {
+            units: units.len(),
+            runtime_units: runtime_units.len(),
+        });
+    }
+    let mut providers: BTreeMap<crate::module_identity::ExportKey, usize> = BTreeMap::new();
+    for (idx, unit) in units.iter().enumerate() {
+        if let Some(interface) = &unit.interface
+            && interface.fingerprint_inputs != unit.interface_fingerprint
+        {
+            return Err(ImageLinkError::InterfaceFingerprintMismatch {
+                module: unit.module.clone(),
+            });
+        }
+        let Some(module) = &unit.module else {
+            continue;
+        };
+        for export in &unit.exports {
+            let key = crate::module_identity::ExportKey::new(
+                module.clone(),
+                export.name.clone(),
+                export.arity,
+            );
+            if providers.insert(key.clone(), idx).is_some() {
+                return Err(ImageLinkError::DuplicateProvider { import: key });
+            }
+        }
+    }
+    for (idx, runtime) in runtime_units.iter().enumerate() {
+        for import in &runtime.imported_refs {
+            if !providers.contains_key(import) {
+                return Err(ImageLinkError::MissingImport {
+                    requester: units.get(idx).and_then(|unit| unit.module.clone()),
+                    import: import.clone(),
+                });
+            }
+        }
+    }
+    RuntimeImageMetadata::link_units(runtime_units).map_err(ImageLinkError::RuntimeMetadata)
+}
 
 #[allow(dead_code)]
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

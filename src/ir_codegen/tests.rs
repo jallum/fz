@@ -304,6 +304,135 @@ fn codegen_rejects_unresolved_external_module_calls() {
     assert_eq!(err.message, "unresolved external module call `Dep.run/0`");
 }
 
+fn link_test_unit(
+    module: &str,
+    exports: &[(&str, usize)],
+    imports: Vec<crate::module_identity::ExportKey>,
+) -> (CompiledUnit, RuntimeUnitMetadata) {
+    let module_name = crate::module_identity::ModuleName::from_segments(vec![module.to_string()]);
+    let interface = crate::module_interface::ModuleInterface {
+        name: module_name.clone(),
+        abi_version: crate::module_interface::FZ_INTERFACE_ABI_VERSION,
+        imports: Vec::new(),
+        exports: exports
+            .iter()
+            .map(|(name, arity)| crate::module_interface::InterfaceFn {
+                name: (*name).to_string(),
+                arity: *arity,
+                spec: None,
+                name_span: crate::diag::Span::DUMMY,
+            })
+            .collect(),
+        types: Vec::new(),
+        docs: None,
+        fingerprint_inputs: exports
+            .iter()
+            .map(|(name, arity)| format!("export:{module}.{name}/{arity}"))
+            .collect(),
+    };
+    let unit = CompiledUnit::from_ir_module(
+        Module::new(),
+        Some(interface),
+        crate::diag::Diagnostics::new(),
+    );
+    let runtime = RuntimeUnitMetadata {
+        module: Some(module_name),
+        atoms: Vec::new(),
+        schemas: Vec::new(),
+        frame_sizes: vec![16],
+        exported_symbols: exports
+            .iter()
+            .enumerate()
+            .map(|(idx, (name, arity))| (format!("{module}.{name}/{arity}"), idx as u32))
+            .collect(),
+        imported_refs: imports,
+        static_closures: Vec::new(),
+        halt_kinds: std::collections::BTreeMap::new(),
+        entrypoints: RuntimeEntrypoints::default(),
+    };
+    (unit, runtime)
+}
+
+#[test]
+fn linked_image_wraps_prelinked_two_module_program_and_runs() {
+    let src = r#"
+defmodule Math do
+  fn add(x, y), do: x + y
+end
+defmodule User do
+  import Math, only: [add: 2]
+  fn run(), do: add(20, 22)
+end
+fn main(), do: User.run()
+"#;
+    let m = lower_resolved_src(src);
+    let entry = m.fn_by_name("main").unwrap().id;
+    let compiled = compile(
+        &mut crate::types::ConcreteTypes,
+        &m,
+        &crate::telemetry::NullTelemetry,
+    )
+    .expect("compile");
+    let (math, math_rt) = link_test_unit("Math", &[("add", 2)], Vec::new());
+    let (user, user_rt) = link_test_unit(
+        "User",
+        &[("run", 0)],
+        vec![crate::module_identity::ExportKey::new(
+            crate::module_identity::ModuleName::from_segments(vec!["Math".to_string()]),
+            "add",
+            2,
+        )],
+    );
+
+    let image =
+        CompiledImage::link_prelinked(&[math, user], &[math_rt, user_rt], compiled).expect("link");
+    assert!(image.metadata().is_some());
+    assert_eq!(image.run(entry), 42);
+}
+
+#[test]
+fn image_linker_rejects_missing_and_duplicate_providers() {
+    let missing = crate::module_identity::ExportKey::new(
+        crate::module_identity::ModuleName::from_segments(vec!["Missing".to_string()]),
+        "f",
+        0,
+    );
+    let (user, user_rt) = link_test_unit("User", &[("run", 0)], vec![missing.clone()]);
+    let compiled = compile(
+        &mut crate::types::ConcreteTypes,
+        &lower_src("fn main(), do: 0"),
+        &crate::telemetry::NullTelemetry,
+    )
+    .expect("compile");
+    let err = match CompiledImage::link_prelinked(&[user], &[user_rt], compiled) {
+        Ok(_) => panic!("expected missing import"),
+        Err(err) => err,
+    };
+    assert_eq!(
+        err,
+        ImageLinkError::MissingImport {
+            requester: Some(crate::module_identity::ModuleName::from_segments(vec![
+                "User".to_string()
+            ])),
+            import: missing,
+        }
+    );
+
+    let (a, a_rt) = link_test_unit("A", &[("f", 0)], Vec::new());
+    let (dup, dup_rt) = link_test_unit("A", &[("f", 0)], Vec::new());
+    let compiled = compile(
+        &mut crate::types::ConcreteTypes,
+        &lower_src("fn main(), do: 0"),
+        &crate::telemetry::NullTelemetry,
+    )
+    .expect("compile");
+    let err = match CompiledImage::link_prelinked(&[a, dup], &[a_rt, dup_rt], compiled) {
+        Ok(_) => panic!("expected duplicate provider"),
+        Err(err) => err,
+    };
+    assert!(matches!(err, ImageLinkError::DuplicateProvider { .. }));
+}
+
 #[test]
 fn aot_compile_produces_object_with_main_symbol() {
     let src = "fn add1(n) do n + 1 end\nfn main() do print(add1(41)) end";

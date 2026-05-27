@@ -61,3 +61,9 @@ Codegen artifact vocabulary:
   required imports, exported runtime symbols, and local runtime metadata
   counts/tables needed by image linking. Loading rejects unsupported ABI
   versions and fingerprint mismatches as `artifact/invalid` diagnostics.
+- `CompiledImage::link_prelinked` is the current image-linker bridge. It
+  validates that each unit implements its recorded interface fingerprint,
+  resolves every required `ExportKey` to exactly one provider, merges
+  `RuntimeUnitMetadata` through `RuntimeImageMetadata::link_units`, and then
+  wraps an already-linked runnable module. Later tickets replace that
+  prelinked input with real per-unit codegen/link relocation.

@@ -72,9 +72,9 @@ pub(crate) use value::*;
 
 // Public surface preserved for `crate::ir_codegen::*` callers.
 pub use compiled::{
-    CompiledImage, CompiledMetadata, CompiledModule, CompiledUnit, RuntimeEntrypoints,
-    RuntimeImageMetadata, RuntimeMetadataLinkError, RuntimeStaticClosure, RuntimeUnitMetadata,
-    RuntimeUnitRelocations,
+    CompiledImage, CompiledMetadata, CompiledModule, CompiledUnit, ImageLinkError,
+    RuntimeEntrypoints, RuntimeImageMetadata, RuntimeMetadataLinkError, RuntimeStaticClosure,
+    RuntimeUnitMetadata, RuntimeUnitRelocations,
 };
 pub use error::CodegenError;
 pub use support::{asm_record_enable, asm_record_take, ir_text_record_enable, ir_text_record_take};
