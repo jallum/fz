@@ -1,0 +1,7 @@
+defmodule Process do
+  extern "C" fn fz_process_heap_alloc_stats() :: any
+
+  @doc "Returns current-process allocation counters collected since the process statistics reset point."
+  @spec heap_alloc_stats() :: any
+  fn heap_alloc_stats(), do: fz_process_heap_alloc_stats()
+end

@@ -70,8 +70,6 @@ pub(crate) use receive::lower_receive;
 
 pub(crate) const REPL_ENTRY_PREFIX: &str = "__repl_eval_";
 
-const RUNTIME_FZ: &str = include_str!("../modules/runtime_library/runtime.fz");
-
 /// fz-axu.27 (M6) — return the prelude as a flat `Program` whose
 /// `module_type_envs[""]`, `opaque_inners`, and `brand_inners` are all
 /// populated. `flatten_modules` only walks `defmodule`-nested
@@ -79,7 +77,8 @@ const RUNTIME_FZ: &str = include_str!("../modules/runtime_library/runtime.fz");
 /// refines binary` at the top of runtime.fz) are harvested separately
 /// from attrs and merged into the flat program.
 fn parse_runtime_prelude<T: crate::types::Types<Ty = crate::types::Ty>>(t: &mut T) -> Program {
-    let toks = crate::lexer::Lexer::new(RUNTIME_FZ)
+    let runtime_fz = crate::modules::runtime_library::prelude_source();
+    let toks = crate::lexer::Lexer::new(runtime_fz)
         .tokenize()
         .expect("runtime.fz lex error (bug in built-in prelude)");
     let (items, attrs) = crate::parser::Parser::new(toks)

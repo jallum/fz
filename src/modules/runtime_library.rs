@@ -4,7 +4,7 @@
 //!
 //! - primitive extern contracts implemented by Rust/C runtime symbols;
 //! - ordinary FZ modules, such as `Utf8` and `Process`, implemented in
-//!   `runtime.fz` and consumed through module interfaces.
+//!   per-module source files and consumed through module interfaces.
 //!
 //! This module exposes the second layer as deterministic `.fzi`/`.fzo`
 //! artifact envelopes so resolver and linker work can depend on the same
@@ -18,7 +18,23 @@ use std::collections::BTreeMap;
 #[cfg(test)]
 use std::rc::Rc;
 
-const RUNTIME_FZ: &str = include_str!("runtime_library/runtime.fz");
+const RUNTIME_PRELUDE_FZ: &str = include_str!("runtime_library/runtime.fz");
+
+struct RuntimeModuleSource {
+    name: &'static str,
+    source: &'static str,
+}
+
+const RUNTIME_MODULE_SOURCES: &[RuntimeModuleSource] = &[
+    RuntimeModuleSource {
+        name: "Process",
+        source: include_str!("runtime_library/process.fz"),
+    },
+    RuntimeModuleSource {
+        name: "Utf8",
+        source: include_str!("runtime_library/utf8.fz"),
+    },
+];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuntimeLibraryModuleArtifact {
@@ -28,13 +44,31 @@ pub struct RuntimeLibraryModuleArtifact {
     pub fzo: FzoArtifact,
 }
 
+pub fn prelude_source() -> &'static str {
+    RUNTIME_PRELUDE_FZ
+}
+
 pub fn parsed_program() -> Program {
-    let toks = crate::lexer::Lexer::new(RUNTIME_FZ)
-        .tokenize()
-        .expect("runtime.fz lex error (bug in built-in runtime library)");
-    let (items, _attrs) = crate::parser::Parser::new(toks)
-        .parse_prelude()
-        .expect("runtime.fz parse error (bug in built-in runtime library)");
+    let mut items = Vec::new();
+    for module_source in RUNTIME_MODULE_SOURCES {
+        let toks = crate::lexer::Lexer::new(module_source.source)
+            .tokenize()
+            .unwrap_or_else(|_| {
+                panic!(
+                    "{}.fz lex error (bug in built-in runtime library)",
+                    module_source.name
+                )
+            });
+        let (mut parsed_items, _attrs) = crate::parser::Parser::new(toks)
+            .parse_prelude()
+            .unwrap_or_else(|_| {
+                panic!(
+                    "{}.fz parse error (bug in built-in runtime library)",
+                    module_source.name
+                )
+            });
+        items.append(&mut parsed_items);
+    }
     Program {
         items,
         module_interfaces: BTreeMap::new(),
@@ -47,10 +81,23 @@ pub fn parsed_program() -> Program {
 }
 
 pub fn interface_table() -> InterfaceTable {
+    RUNTIME_MODULE_SOURCES
+        .iter()
+        .filter_map(|source| {
+            let module = ModuleName::from_segments(vec![source.name.to_string()]);
+            interface(&module).map(|interface| (module, interface))
+        })
+        .collect()
+}
+
+pub fn interface(module: &ModuleName) -> Option<ModuleInterface> {
+    artifact(module).map(|artifact| artifact.interface)
+}
+
+pub fn artifact(module: &ModuleName) -> Option<RuntimeLibraryModuleArtifact> {
     artifacts()
         .into_iter()
-        .map(|artifact| (artifact.module, artifact.interface))
-        .collect()
+        .find(|artifact| artifact.module == *module)
 }
 
 pub fn artifacts() -> Vec<RuntimeLibraryModuleArtifact> {
@@ -161,11 +208,12 @@ fn runtime_module_payload(name: &ModuleName, module: &ModuleDef) -> String {
 
 #[cfg(test)]
 pub fn primitive_prelude_program() -> Program {
-    let items = parsed_program()
-        .items
-        .into_iter()
-        .filter(|item| !matches!(&**item, Item::Module(_)))
-        .collect::<Vec<Rc<Item>>>();
+    let toks = crate::lexer::Lexer::new(RUNTIME_PRELUDE_FZ)
+        .tokenize()
+        .expect("runtime.fz lex error (bug in built-in prelude)");
+    let (items, _attrs) = crate::parser::Parser::new(toks)
+        .parse_prelude()
+        .expect("runtime.fz parse error (bug in built-in prelude)");
     Program {
         items,
         module_interfaces: BTreeMap::new(),
@@ -180,7 +228,12 @@ pub fn primitive_prelude_program() -> Program {
 #[cfg(test)]
 pub fn primitive_contract_names() -> Vec<String> {
     let mut names = Vec::new();
-    collect_primitive_contract_names(&parsed_program().items, &mut names);
+    collect_primitive_contract_names(&primitive_prelude_program().items, &mut names);
+    for module in parsed_program().items {
+        if let Item::Module(module) = &*module {
+            collect_primitive_contract_names(&module.items, &mut names);
+        }
+    }
     names.sort();
     names
 }
