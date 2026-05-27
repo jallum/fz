@@ -1256,7 +1256,11 @@ fn main(), do: Math.id(1)
         .unwrap_or_else(|e| panic!("read {}: {}", fzo_path.display(), e));
     assert!(fzo.starts_with("fzo\n"), "{fzo}");
     assert!(fzo.contains("module=Math\n"), "{fzo}");
-    assert!(fzo.contains("unit_payload_format=fz-ir-text-v1\n"), "{fzo}");
+    assert!(
+        fzo.contains("unit_payload_format=fz-source-unit-v1\n"),
+        "{fzo}"
+    );
+    assert!(fzo.contains("defmodule Math"), "{fzo}");
     assert!(fzo.contains("interface_fingerprint_digest="), "{fzo}");
 
     let _ = fs::remove_dir_all(&root);

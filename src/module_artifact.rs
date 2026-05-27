@@ -11,6 +11,9 @@ use crate::module_interface::{
 
 pub const FZ_ARTIFACT_ABI_VERSION: u32 = 1;
 pub const FZ_RUNTIME_ARTIFACT_ABI_VERSION: u32 = 1;
+pub const FZO_PAYLOAD_IR_TEXT_V1: &str = "fz-ir-text-v1";
+pub const FZO_PAYLOAD_SOURCE_UNIT_V1: &str = "fz-source-unit-v1";
+pub const FZO_PAYLOAD_RUNTIME_MODULE_V1: &str = "fz-runtime-module-v1";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FziArtifact {
@@ -53,11 +56,15 @@ impl FzoUnitPayload {
     }
 
     pub fn ir_text(body: impl Into<String>) -> Self {
-        Self::new("fz-ir-text-v1", body)
+        Self::new(FZO_PAYLOAD_IR_TEXT_V1, body)
+    }
+
+    pub fn source_unit(body: impl Into<String>) -> Self {
+        Self::new(FZO_PAYLOAD_SOURCE_UNIT_V1, body)
     }
 
     pub fn runtime_module(body: impl Into<String>) -> Self {
-        Self::new("fz-runtime-module-v1", body)
+        Self::new(FZO_PAYLOAD_RUNTIME_MODULE_V1, body)
     }
 }
 
@@ -193,12 +200,40 @@ impl FzoArtifact {
         runtime: &RuntimeUnitMetadata,
         implementation_fingerprint: Vec<String>,
     ) -> Self {
+        Self::from_unit_payload(
+            unit,
+            runtime,
+            FzoUnitPayload::ir_text(unit.code.to_string()),
+            implementation_fingerprint,
+        )
+    }
+
+    pub fn from_unit_source(
+        unit: &CompiledUnit,
+        runtime: &RuntimeUnitMetadata,
+        source: impl Into<String>,
+        implementation_fingerprint: Vec<String>,
+    ) -> Self {
+        Self::from_unit_payload(
+            unit,
+            runtime,
+            FzoUnitPayload::source_unit(source),
+            implementation_fingerprint,
+        )
+    }
+
+    fn from_unit_payload(
+        unit: &CompiledUnit,
+        runtime: &RuntimeUnitMetadata,
+        unit_payload: FzoUnitPayload,
+        implementation_fingerprint: Vec<String>,
+    ) -> Self {
         let interface_fingerprint = unit.interface_fingerprint.clone();
         Self {
             compiler_abi_version: FZ_ARTIFACT_ABI_VERSION,
             runtime_abi_version: FZ_RUNTIME_ARTIFACT_ABI_VERSION,
             module: unit.module.clone(),
-            unit_payload: FzoUnitPayload::ir_text(unit.code.to_string()),
+            unit_payload,
             code_fn_count: unit.code.fns.len(),
             required_imports: runtime.imported_refs.clone(),
             exported_symbols: runtime
@@ -212,6 +247,17 @@ impl FzoArtifact {
             implementation_fingerprint,
             interface_fingerprint_digest: fingerprint_digest(&interface_fingerprint),
             interface_fingerprint,
+        }
+    }
+
+    pub fn source_unit_text(&self) -> Result<&str, Diagnostic> {
+        if self.unit_payload.format == FZO_PAYLOAD_SOURCE_UNIT_V1 {
+            Ok(&self.unit_payload.body)
+        } else {
+            Err(invalid(format!(
+                "fzo payload `{}` is not a materializable source unit",
+                self.unit_payload.format
+            )))
         }
     }
 
@@ -708,6 +754,54 @@ mod tests {
         assert_eq!(decoded.unit_payload.body, expected_payload);
         assert_eq!(decoded, artifact);
         assert_eq!(decoded.serialize(), text);
+    }
+
+    #[test]
+    fn fzo_source_unit_payload_is_materializable() {
+        let interface = math_interface();
+        let unit = CompiledUnit::from_ir_module(
+            crate::fz_ir::Module::new(),
+            Some(interface.clone()),
+            crate::diag::Diagnostics::new(),
+        );
+        let runtime = RuntimeUnitMetadata::from_ir_module(None, &unit.code);
+        let artifact = FzoArtifact::from_unit_source(
+            &unit,
+            &runtime,
+            "defmodule Math do\n  fn add(x, y), do: x + y\nend\n",
+            vec!["impl:source".to_string()],
+        );
+
+        let decoded =
+            FzoArtifact::deserialize(&artifact.serialize(), Some(&interface.fingerprint_inputs))
+                .expect("deserialize");
+
+        assert_eq!(decoded.unit_payload.format, FZO_PAYLOAD_SOURCE_UNIT_V1);
+        assert!(
+            decoded
+                .source_unit_text()
+                .unwrap()
+                .contains("defmodule Math")
+        );
+    }
+
+    #[test]
+    fn fzo_rejects_non_source_payload_as_materializable_source() {
+        let interface = math_interface();
+        let unit = CompiledUnit::from_ir_module(
+            crate::fz_ir::Module::new(),
+            Some(interface),
+            crate::diag::Diagnostics::new(),
+        );
+        let runtime = RuntimeUnitMetadata::from_ir_module(None, &unit.code);
+        let artifact = FzoArtifact::from_unit(&unit, &runtime, Vec::new());
+
+        let err = artifact.source_unit_text().unwrap_err();
+
+        assert_eq!(
+            err.message,
+            "fzo payload `fz-ir-text-v1` is not a materializable source unit"
+        );
     }
 
     #[test]

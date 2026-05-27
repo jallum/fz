@@ -235,9 +235,11 @@ compiled unit.</p>
 <strong>Current implementation note:</strong> today's <code>.fzo</code> is a
 deterministic compiled-unit envelope. It records identity, imports, exports,
 fingerprints, runtime metadata facts, and a typed implementation payload. For
-normal compiled source that payload is deterministic IR text
-(<code>fz-ir-text-v1</code>); final object bytes or a richer relocatable format
-can replace that payload format later without changing what an interface means.
+normal compiled source that payload is a materializable source unit
+(<code>fz-source-unit-v1</code>), so graph loading can recover the provider
+implementation input from the artifact without reading the original provider
+source path. Final object bytes or a richer relocatable format can replace that
+payload format later without changing what an interface means.
 </div>
 
 <p>The dump commands are separate on purpose. <code>dump --emit interfaces</code>

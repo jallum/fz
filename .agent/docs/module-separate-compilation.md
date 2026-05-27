@@ -63,10 +63,12 @@ Codegen artifact vocabulary:
   identity, a typed implementation payload, implementation fingerprint,
   implemented-interface fingerprint plus digest, required imports, exported
   runtime symbols, and local runtime metadata facts needed by image-linker
-  staging. The current source-compiled payload format is deterministic IR text
-  (`fz-ir-text-v1`), not final object bytes. Loading rejects unsupported ABI
-  versions, empty payloads, digest mismatches, and fingerprint mismatches as
-  `artifact/invalid` diagnostics.
+  staging. Normal `fz build --emit-fzo` artifacts use a materializable source
+  payload (`fz-source-unit-v1`), not final object bytes; graph loading can
+  recover the provider implementation input from the artifact without reading
+  the original provider source path. Loading rejects unsupported ABI versions,
+  empty payloads, unsupported materialization formats, digest mismatches, and
+  fingerprint mismatches as `artifact/invalid` diagnostics.
 - `CompiledProgram::link_image_with_telemetry` is the normal JIT run path into
   the image linker. `CompiledImage::link_compiled` validates that each unit
   implements its recorded interface fingerprint, rejects unresolved external

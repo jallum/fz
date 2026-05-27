@@ -114,10 +114,13 @@ Use these terms precisely:
   check imports without loading provider implementation bodies.
 - `.fzo`: the serialized compiled-unit artifact. It carries a typed
   compiled-unit payload plus the link metadata derived from `CompiledUnit` and
-  `RuntimeUnitMetadata`. The current source-compiled payload format is
-  deterministic IR text (`fz-ir-text-v1`); runtime-library modules use their
-  own `fz-runtime-module-v1` payload until the linker consumes final object
-  bytes or a richer relocatable unit format.
+  `RuntimeUnitMetadata`. Normal `fz build --emit-fzo` output uses a
+  materializable source-unit payload (`fz-source-unit-v1`): graph loading can
+  recover the provider implementation input from the artifact without reading
+  the original provider source path. Runtime-library modules use their own
+  `fz-runtime-module-v1` payload, and internal inspection artifacts may still
+  use `fz-ir-text-v1` until the linker consumes final object bytes or a richer
+  relocatable unit format.
 - `CompiledUnit`: one module before image link. It owns module-local IR plus
   the interface/import/export facts needed to prove link compatibility.
 - `CompiledImage`: one linked runnable image. It owns runtime-global executable
@@ -200,8 +203,9 @@ strict public export-spec validation before writing. Loading uses
 variants (`write_fzi_artifacts_with_telemetry`,
 `load_interface_table_with_telemetry`) emit process facts for stats dumps.
 `--emit-fzo` compiles the checked module product into a production
-`CompiledProgram`, derives `FzoArtifact` from its `CompiledUnit` and
-`RuntimeUnitMetadata`, and writes it through
+`CompiledProgram`, stores the checked source text as a materializable
+`fz-source-unit-v1` implementation payload, derives link metadata from its
+`CompiledUnit` and `RuntimeUnitMetadata`, and writes it through
 `ArtifactStore::write_fzo_artifacts`. The object path comes from the same typed
 `ModuleName` policy. The `.fzo` telemetry variants emit `.fzo` write/load
 process facts.
@@ -326,7 +330,7 @@ interface_fingerprint:      Vec<String>
 Payload fields:
 
 ```text
-format: fz-ir-text-v1 | fz-runtime-module-v1 | another versioned payload format
+format: fz-source-unit-v1 | fz-ir-text-v1 | fz-runtime-module-v1 | another versioned payload format
 body:   escaped payload bytes represented as UTF-8 text
 ```
 
@@ -358,12 +362,18 @@ schema_count=<usize>
 frame_sizes=<comma-separated u32 list>
 ```
 
-Current `.fzo` deliberately stores the unit payload as deterministic internal
-IR text instead of final object bytes. `fz build --emit-fzo` constructs a
-production `CompiledProgram`; `FzoArtifact::from_unit` derives the payload from
-`CompiledUnit::code.to_string()` and derives link metadata from that program's
-`RuntimeUnitMetadata`. Deserialization rejects empty payload format/body so a
-loaded `.fzo` cannot silently degrade back into a metadata-only artifact.
+Current `.fzo` deliberately stores a typed implementation payload instead of
+final object bytes. `fz build --emit-fzo` constructs a production
+`CompiledProgram`, stores the checked source text as `fz-source-unit-v1`, and
+derives link metadata from that program's `CompiledUnit` and
+`RuntimeUnitMetadata`. `FzoArtifact::source_unit_text` is the materialization
+gate: it accepts only `fz-source-unit-v1` and rejects inspection/runtime payloads
+before graph loading can treat them as source units. `FzoArtifact::from_unit`
+still derives an internal `fz-ir-text-v1` payload from
+`CompiledUnit::code.to_string()` for tests and inspection paths that need a
+deterministic unit dump, not a reloadable implementation source. Deserialization
+rejects empty payload format/body so a loaded `.fzo` cannot silently degrade
+back into a metadata-only artifact.
 
 Load-time rejection:
 

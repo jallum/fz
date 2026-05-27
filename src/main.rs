@@ -297,6 +297,7 @@ fn run_build(tel: &telemetry::ConfiguredTelemetry, args: &[String]) {
         std::process::exit(1);
     });
 
+    let fzo_source = emit_fzo.then(|| src.clone());
     let frontend_result = frontend::compile_source_with_types(&mut t, src, src_path.clone(), tel);
     let prepared = checked_module_for_mode(&mut t, frontend_result, &sm_cell, tel, mode);
     if emit_fzi || emit_fzo {
@@ -328,9 +329,10 @@ fn run_build(tel: &telemetry::ConfiguredTelemetry, args: &[String]) {
                     std::process::exit(1);
                 });
         diag::report_or_exit_through(tel, program.executable.diagnostics().as_slice());
-        let fzo = module_artifact::FzoArtifact::from_unit(
+        let fzo = module_artifact::FzoArtifact::from_unit_source(
             &program.unit,
             &program.runtime,
+            fzo_source.expect("emit_fzo source"),
             vec![
                 "kind=source-compiled-module".to_string(),
                 format!("source={src_path}"),
