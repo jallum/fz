@@ -194,12 +194,11 @@ fn flatten_modules_with_options<T: crate::types::Types<Ty = crate::types::Ty>>(
     // prelude, so module specs and aliases can name standard aliases such as
     // keyword/0 and keyword/1.
     let mut module_type_envs: HashMap<String, crate::type_expr::ModuleTypeEnv> = HashMap::new();
-    let root_type_env = runtime_root_type_env(t);
+    let root_types = crate::modules::runtime_library::root_type_env(t);
+    let root_type_env = root_types.env.clone();
     module_type_envs.insert(String::new(), root_type_env.clone());
-    let mut opaque_inners: HashMap<String, crate::types::Ty> =
-        crate::type_expr::builtin_opaque_inners(t);
-    let mut brand_inners: HashMap<String, crate::types::Ty> =
-        crate::type_expr::builtin_brand_inners(t);
+    let mut opaque_inners: HashMap<String, crate::types::Ty> = root_types.opaque_inners;
+    let mut brand_inners: HashMap<String, crate::types::Ty> = root_types.brand_inners;
     collect_module_type_envs(
         t,
         &prog,
@@ -517,22 +516,6 @@ fn collect_module_type_envs<T: crate::types::Types<Ty = crate::types::Ty>>(
         }
     }
     Ok(())
-}
-
-fn runtime_root_type_env<T: crate::types::Types<Ty = crate::types::Ty>>(
-    t: &mut T,
-) -> crate::type_expr::ModuleTypeEnv {
-    let base = crate::type_expr::builtin_type_env(t);
-    let toks = crate::lexer::Lexer::new(crate::modules::runtime_library::prelude_source())
-        .tokenize()
-        .expect("runtime.fz lex error (bug in built-in prelude)");
-    let (_items, attrs) = crate::parser::Parser::new(toks)
-        .parse_prelude()
-        .expect("runtime.fz parse error (bug in built-in prelude)");
-    let (declared, _opaque_inners, _brand_inners) =
-        crate::type_expr::build_module_type_env_for_with_base(t, &attrs, "", &base)
-            .expect("runtime.fz @type error (bug in built-in prelude)");
-    declared
 }
 
 fn collect_module_type_envs_recursive<T: crate::types::Types<Ty = crate::types::Ty>>(
