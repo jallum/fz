@@ -190,7 +190,7 @@ segments before artifact IO can touch the filesystem.
 Build emission:
 
 ```sh
-fz build --emit-fzi --artifact-root build/fz path/to/input.fz -o path/to/app
+fz build --emit-fzi --emit-fzo --artifact-root build/fz path/to/input.fz -o path/to/app
 ```
 
 `--emit-fzi` writes one `.fzi` per module through `ArtifactStore` and applies
@@ -199,9 +199,12 @@ strict public export-spec validation before writing. Loading uses
 `FziArtifact` without reading the provider source body. Telemetry-producing
 variants (`write_fzi_artifacts_with_telemetry`,
 `load_interface_table_with_telemetry`) emit process facts for stats dumps.
-Object artifacts use `ArtifactStore::write_fzo_artifacts` and
-`load_fzo_artifact`; their telemetry variants emit `.fzo` write/load process
-facts. The object path comes from the same typed `ModuleName` policy.
+`--emit-fzo` compiles the checked module product into a production
+`CompiledProgram`, derives `FzoArtifact` from its `CompiledUnit` and
+`RuntimeUnitMetadata`, and writes it through
+`ArtifactStore::write_fzo_artifacts`. The object path comes from the same typed
+`ModuleName` policy. The `.fzo` telemetry variants emit `.fzo` write/load
+process facts.
 
 Frontend-only dump commands can load provider interfaces from the same store:
 
@@ -213,8 +216,9 @@ fz dump --emit interfaces --interface Math --artifact-root build/fz consumer.fz
 external `InterfaceTable`. The current source file's own module interfaces are
 still collected locally and override external entries for the same module.
 This proves provider-source-free import validation. Calling an imported
-provider body from normal code still requires the later `.fzo` payload/linker
-tickets so codegen has an implementation target.
+provider body in a runnable image is the linker stage's job: it consumes the
+compatible `.fzo`/runtime metadata facts and rejects missing or duplicate
+providers before execution.
 
 ## `.fzi`: Interface Artifact
 
@@ -355,8 +359,9 @@ frame_sizes=<comma-separated u32 list>
 ```
 
 Current `.fzo` deliberately stores the unit payload as deterministic internal
-IR text instead of final object bytes. `FzoArtifact::from_unit` derives the
-payload from `CompiledUnit::code.to_string()` and derives link metadata from
+IR text instead of final object bytes. `fz build --emit-fzo` constructs a
+production `CompiledProgram`; `FzoArtifact::from_unit` derives the payload from
+`CompiledUnit::code.to_string()` and derives link metadata from that program's
 `RuntimeUnitMetadata`. Deserialization rejects empty payload format/body so a
 loaded `.fzo` cannot silently degrade back into a metadata-only artifact.
 
@@ -379,6 +384,8 @@ Use the right term:
 
 - `CompiledUnit`: one pre-link module. Owns module-local IR, interface facts,
   import/export facts, diagnostics, and interface fingerprint.
+- `CompiledProgram`: one codegen result before image link. Owns the executable
+  `CompiledModule`, the `CompiledUnit`, and the matching `RuntimeUnitMetadata`.
 - `RuntimeUnitMetadata`: one unit's runtime-global contributions: atoms,
   schemas, frame sizes, exported runtime symbols, imported refs, static
   closure facts, halt kinds, and entrypoint requirements.
@@ -387,10 +394,12 @@ Use the right term:
 - `CompiledModule`: machine-code module produced by codegen; `CompiledImage`
   wraps it only after module/link metadata has been validated.
 
-`CompiledImage::link_compiled(units, runtime_units, linked)` constructs the
-runnable image. It validates unit/interface compatibility, rejects unresolved
-external module calls, links runtime metadata, and only then wraps the compiled
-machine-code module.
+`CompiledProgram::link_image_with_telemetry` is the normal JIT run path. It
+calls `CompiledImage::link_compiled(units, runtime_units, linked)` to construct
+the runnable image. The linker validates unit/interface compatibility, rejects
+unresolved external module calls, links runtime metadata, and only then wraps
+the compiled machine-code module. `CompiledModule` remains the executable
+payload inside the validated image, not the driver-facing product.
 
 ## Image Link Checks
 
@@ -490,7 +499,8 @@ Rules:
 - module bodies such as `Utf8` and `Process` are ordinary library modules;
 - module-scoped externs are implementation details, not interface exports;
 - `runtime_library::interface_table` is injected into resolver interface
-  lookup by default;
+  lookup by default and is derived from the same runtime artifacts rather than
+  bypassing the artifact path;
 - `runtime_library::artifacts` creates deterministic `.fzi`/`.fzo` envelopes
   for built-in runtime-library modules.
 

@@ -38,10 +38,14 @@ Codegen artifact vocabulary:
 - `CompiledUnit` is the pre-link artifact for one source module. It owns that
   module's IR code, imports, exports, diagnostics, and visible interface
   fingerprint inputs.
+- `CompiledProgram` is the immediate codegen product for the JIT path. It owns
+  the executable `CompiledModule`, the `CompiledUnit`, and the matching
+  `RuntimeUnitMetadata` derived from codegen/runtime facts.
 - `CompiledImage` is the linked runnable artifact. It owns runtime-global JIT
   state, schema/atom tables, function pointers, and execution entrypoints.
 - `CompiledModule` is the machine-code module produced by codegen.
-  `CompiledImage` wraps it after module/link metadata validation.
+  Driver code should treat it as the executable payload inside
+  `CompiledProgram`/`CompiledImage`, not as the final product.
 - Runtime metadata is split the same way: `RuntimeUnitMetadata` carries
   unit-local atoms, schemas, frame sizes, exported symbols, imported refs,
   static closure facts, halt kinds, and entrypoint requirements.
@@ -63,10 +67,11 @@ Codegen artifact vocabulary:
   (`fz-ir-text-v1`), not final object bytes. Loading rejects unsupported ABI
   versions, empty payloads, digest mismatches, and fingerprint mismatches as
   `artifact/invalid` diagnostics.
-- `CompiledImage::link_compiled` is the image-linker constructor. It validates
-  that each unit implements its recorded interface fingerprint, rejects
-  unresolved external module calls in runnable units, resolves every required
-  `ExportKey` to exactly one provider, merges `RuntimeUnitMetadata` through
+- `CompiledProgram::link_image_with_telemetry` is the normal JIT run path into
+  the image linker. `CompiledImage::link_compiled` validates that each unit
+  implements its recorded interface fingerprint, rejects unresolved external
+  module calls in runnable units, resolves every required `ExportKey` to
+  exactly one provider, merges `RuntimeUnitMetadata` through
   `RuntimeImageMetadata::link_units`, and only then wraps the compiled
   machine-code module.
 
@@ -78,9 +83,10 @@ Runtime library boundary:
   runtime imports with explicit type contracts.
 - Module bodies in `src/runtime_library/runtime.fz` (`Utf8`, `Process`, etc.)
   are treated as ordinary library modules. `runtime_library::interface_table`
-  exposes their `ModuleInterface` facts to the resolver by default, so user
-  modules can import from runtime-library interfaces without defining or
-  source-pasting those modules.
+  is derived from `runtime_library::artifacts` and exposes those
+  `ModuleInterface` facts to the resolver by default, so user modules can
+  import from runtime-library interfaces without defining or source-pasting
+  those modules.
 - Interface emission does not export `extern "C"` declarations from modules.
   Those names are implementation contracts used by the module body, not
   public library functions.
@@ -92,6 +98,9 @@ Runtime library boundary:
 - `ArtifactStore::write_fzo_artifacts` and `load_fzo_artifact` persist and
   reload those object envelopes under the same `build/fz/objects/...` path
   policy used for user modules.
+- User builds can write object envelopes with
+  `fz build --emit-fzo --artifact-root <dir> ...`. The writer consumes the
+  production `CompiledProgram` facts, not a separate test-only artifact path.
 
 LTO / whole-program mode:
 

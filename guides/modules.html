@@ -258,21 +258,23 @@ Outer.Inner -&gt; build/fz/objects/Outer/Inner.fzo</pre>
 display text. Segments that look like path traversal, separators, spaces, or
 punctuation are rejected before artifact IO can use them.</p>
 
-<p>A build can write interface artifacts:</p>
+<p>A build can write interface and object artifacts:</p>
 
-<pre>fz build --emit-fzi --artifact-root build/fz path/to/input.fz -o path/to/app</pre>
+<pre>fz build --emit-fzi --emit-fzo --artifact-root build/fz path/to/input.fz -o path/to/app</pre>
 
 <p>Writing <code>.fzi</code> artifacts uses strict public interface validation:
-public module exports need explicit specs before the contract is stored.</p>
+public module exports need explicit specs before the contract is stored.
+Writing <code>.fzo</code> artifacts uses the same checked module and codegen
+facts that the run path uses: a compiled unit plus runtime metadata.</p>
 
 <p>Frontend-only dumps can load those interfaces without the provider source
 file:</p>
 
 <pre>fz dump --emit interfaces --interface Math --artifact-root build/fz consumer.fz</pre>
 
-<p>That validates imports from the stored contract. Actually compiling calls
-to absent provider bodies into runnable code needs the later <code>.fzo</code>
-and linker steps.</p>
+<p>That validates imports from the stored contract. Runnable images are built
+later by loading compatible <code>.fzo</code> providers and linking every
+imported export exactly once.</p>
 
 <p>Normal compilation follows this shape:</p>
 
@@ -290,6 +292,7 @@ link
   -&gt; load compatible .fzo providers
   -&gt; resolve every imported export exactly once
   -&gt; merge runtime metadata
+  -&gt; run a validated compiled image</pre>
   -&gt; produce one runnable image</pre>
 
 <p>The linker checks the boring but important things:</p>
@@ -334,7 +337,9 @@ surface is the fz wrapper API.</p>
 Adding a runtime module means adding an ordinary <code>defmodule</code> there
 with public specs on exported functions. Its artifacts use the same locations
 as user modules: <code>build/fz/interfaces/Name.fzi</code> and
-<code>build/fz/objects/Name.fzo</code>.</p>
+<code>build/fz/objects/Name.fzo</code>. Resolver defaults are derived from
+those runtime artifacts, so runtime modules follow the same contract/object
+shape as user modules.</p>
 
 <div class="aside">
 This distinction is what lets the runtime library grow. Primitive runtime
