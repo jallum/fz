@@ -5,6 +5,7 @@
 - A _good_ plan contains all of the necessary references, details, strategies and tactics -- it is grounded in fact because it is the fruit of research and due-diligence. 
 - A _good_ plan cares as much about what we _remove_ as what we add or change. What goes away? What _could_ go away?
 - A _good_ plan leaves guideposts for the future -- what documentation needs to be updated? What topics help us in the future?
+- A _good_ plan considers judicious measurements/metrics -- signal.
 
 ## Work Rules
 - Don't commit work you're not proud of.
