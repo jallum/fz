@@ -304,6 +304,37 @@ pub fn lower_program_full_with_telemetry<T: crate::types::Types<Ty = crate::type
         module.extern_idx.insert(e.id, i);
     }
     module.boundary_fns = std::mem::take(&mut ctx.boundary_fns);
+    let empty_env = crate::type_expr::ModuleTypeEnv::new();
+    for item in &all_items {
+        let Item::Fn(fn_def) = item.as_ref() else {
+            continue;
+        };
+        let Some(spec) = fn_def.attrs.iter().find_map(|a| match a {
+            crate::ast::Attribute::Spec(spec) => Some(spec),
+            _ => None,
+        }) else {
+            continue;
+        };
+        let arity = fn_def.clauses.first().map(|c| c.params.len()).unwrap_or(0);
+        let Some(&fid) = ctx.fns.get(&(fn_def.name.clone(), arity)) else {
+            continue;
+        };
+        let module_path = fn_def
+            .name
+            .rfind('.')
+            .map(|i| fn_def.name[..i].to_string())
+            .unwrap_or_default();
+        let env = if fid.0 < ctx.prelude_fn_id_cutoff {
+            prelude.module_type_envs.get("").unwrap_or(&empty_env)
+        } else {
+            prog.module_type_envs
+                .get(&module_path)
+                .unwrap_or(&ctx.combined_type_env)
+        };
+        if let Ok(resolved) = crate::type_expr::resolve_spec_decl(t, spec, env) {
+            module.declared_specs.insert(fid, resolved);
+        }
+    }
     // fz-swt.8 — carry the resolver's opaque-inner-type map onto the
     // Module so the typer can resolve `handle.value` accesses to T.
     // fz-axu.27 (M6) — prelude inners (utf8 brand, pid opaque, ...) live

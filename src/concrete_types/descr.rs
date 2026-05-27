@@ -9,15 +9,16 @@ use super::dnf::{
     subsumption_dedup,
 };
 use super::emptiness::{
-    Memo, func_clause_empty, list_clause_empty, map_clause_empty, tuple_clause_empty,
+    Memo, func_clause_empty, list_clause_empty, map_clause_empty, resource_clause_empty,
+    tuple_clause_empty,
 };
 use super::lit_set::{
     AtomSet, FloatSet, IntSet, LiteralSet, VarSet, closure_ret_var_id, closure_var_id,
 };
-use super::sigs::{ArrowSig, ClosureLit, ListSig, MapSig, TupleSig};
+use super::sigs::{ArrowSig, ClosureLit, ListSig, MapSig, ResourceSig, TupleSig};
 use super::views::{
     AtomTypeTest, AtomView, BrandView, Component, FloatView, FuncView, IntView, ListView, MapView,
-    OpaqueView, TupleView, VarView,
+    OpaqueView, ResourceView, TupleView, VarView,
 };
 use super::{ty_descr, ty_from_descr};
 
@@ -59,6 +60,7 @@ pub(crate) struct Descr {
     /// `Conj::top()` clause = every tuple ("true").
     pub(crate) tuples: Vec<Conj<TupleSig>>,
     pub(crate) lists: Vec<Conj<ListSig>>,
+    pub(crate) resources: Vec<Conj<ResourceSig>>,
     pub(crate) funcs: Vec<Conj<ArrowSig>>,
     pub(crate) maps: Vec<Conj<MapSig>>,
 }
@@ -77,6 +79,7 @@ impl Descr {
             vars: VarSet::any(),
             tuples: vec![Conj::top()],
             lists: vec![Conj::top()],
+            resources: vec![Conj::top()],
             funcs: vec![Conj::top()],
             maps: vec![Conj::top()],
         }
@@ -93,6 +96,7 @@ impl Descr {
             vars: VarSet::none(),
             tuples: Vec::new(),
             lists: Vec::new(),
+            resources: Vec::new(),
             funcs: Vec::new(),
             maps: Vec::new(),
         }
@@ -169,13 +173,19 @@ impl Descr {
                 .chain(c.neg.iter())
                 .any(|sig| sig.elem.as_ref().is_some_and(|elem| elem.has_vars()))
         });
+        let resource_any = self.resources.iter().any(|c| {
+            c.pos
+                .iter()
+                .chain(c.neg.iter())
+                .any(|sig| sig.payload.has_vars())
+        });
         let map_any = self.maps.iter().any(|c| {
             c.pos
                 .iter()
                 .chain(c.neg.iter())
                 .any(|sig| sig.fields.values().any(|d| d.has_vars()))
         });
-        tuple_any || list_any || dnf_any(&self.funcs) || map_any
+        tuple_any || list_any || resource_any || dnf_any(&self.funcs) || map_any
     }
 
     /// fz-try.6 — call-site substitution. Walks the descriptor and replaces
@@ -289,6 +299,26 @@ impl Descr {
                     .collect(),
             })
             .collect();
+        let walked_resources: Vec<Conj<ResourceSig>> = self
+            .resources
+            .iter()
+            .map(|c| Conj {
+                pos: c
+                    .pos
+                    .iter()
+                    .map(|sig| ResourceSig {
+                        payload: Box::new(sig.payload.instantiate(sigma)),
+                    })
+                    .collect(),
+                neg: c
+                    .neg
+                    .iter()
+                    .map(|sig| ResourceSig {
+                        payload: Box::new(sig.payload.instantiate(sigma)),
+                    })
+                    .collect(),
+            })
+            .collect();
         let walked_maps: Vec<Conj<MapSig>> = self
             .maps
             .iter()
@@ -327,6 +357,7 @@ impl Descr {
             vars: passthrough_vars,
             tuples: walked_tuples,
             lists: walked_lists,
+            resources: walked_resources,
             funcs: walked_funcs,
             maps: walked_maps,
         };
@@ -530,6 +561,13 @@ impl Descr {
                         }
                     }
                 }
+                Component::Resources(view) => {
+                    for conj in view.inner {
+                        for sig in &conj.pos {
+                            max_d = max_d.max(1 + sig.payload.recursive_spec_depth());
+                        }
+                    }
+                }
                 Component::Funcs(view) => {
                     for conj in view.inner {
                         for sig in &conj.pos {
@@ -575,6 +613,9 @@ impl Descr {
                     .components()
                     .any(|d| matches!(d, Component::Tuples(_))),
                 Component::Lists(_) => other.components().any(|d| matches!(d, Component::Lists(_))),
+                Component::Resources(_) => other
+                    .components()
+                    .any(|d| matches!(d, Component::Resources(_))),
                 Component::Funcs(_) => other.components().any(|d| matches!(d, Component::Funcs(_))),
                 Component::Maps(_) => other.components().any(|d| matches!(d, Component::Maps(_))),
             };
@@ -679,6 +720,9 @@ impl Descr {
             empty: s.empty,
             elem: s.elem.as_ref().map(|elem| Box::new(f(elem))),
         };
+        let map_resource_sig = |s: ResourceSig| ResourceSig {
+            payload: Box::new(f(&s.payload)),
+        };
         let map_arrow_sig = |s: ArrowSig| ArrowSig {
             args: s.args.iter().map(f).collect(),
             ret: Box::new(f(&s.ret)),
@@ -706,6 +750,14 @@ impl Descr {
                 neg: c.neg.into_iter().map(map_list_sig).collect(),
             })
             .collect();
+        self.resources = self
+            .resources
+            .into_iter()
+            .map(|c| Conj {
+                pos: c.pos.into_iter().map(map_resource_sig).collect(),
+                neg: c.neg.into_iter().map(map_resource_sig).collect(),
+            })
+            .collect();
         self.funcs = self
             .funcs
             .into_iter()
@@ -727,6 +779,17 @@ impl Descr {
 
     pub(crate) fn str_t() -> Self {
         Self::from_basic(BasicBits::BINARY)
+    }
+
+    pub(crate) fn resource_of(payload: Descr) -> Self {
+        if payload.is_empty() {
+            return Self::none();
+        }
+        let mut d = Self::none();
+        d.resources = vec![Conj::pos_of(ResourceSig {
+            payload: Box::new(payload),
+        })];
+        d
     }
 
     pub(crate) fn float() -> Self {
@@ -869,6 +932,7 @@ impl Descr {
             && self.vars.is_none()
             && self.tuples.is_empty()
             && self.lists.is_empty()
+            && self.resources.is_empty()
             && self.funcs.is_empty()
             && self.maps.is_empty()
     }
@@ -908,6 +972,7 @@ impl Descr {
             && self.vars.is_any()
             && is_dnf_top(&self.tuples)
             && is_dnf_top(&self.lists)
+            && is_dnf_top(&self.resources)
             && is_dnf_top(&self.funcs)
             && is_dnf_top(&self.maps)
     }
@@ -917,6 +982,7 @@ impl Descr {
     pub(crate) fn union(&self, other: &Descr) -> Descr {
         let tuples = dnf_union(&self.tuples, &other.tuples);
         let lists = normalize_empty_nonempty_list_unions(dnf_union(&self.lists, &other.lists));
+        let resources = dnf_union(&self.resources, &other.resources);
         let funcs = dnf_union(&self.funcs, &other.funcs);
         let maps = dnf_union(&self.maps, &other.maps);
         // fz-et8 — drop semantically-subsumed clauses. Sound by absorption
@@ -928,6 +994,10 @@ impl Descr {
         });
         let lists = subsumption_dedup(lists, |c| Descr {
             lists: vec![c.clone()],
+            ..Descr::none()
+        });
+        let resources = subsumption_dedup(resources, |c| Descr {
+            resources: vec![c.clone()],
             ..Descr::none()
         });
         let funcs = subsumption_dedup(funcs, |c| Descr {
@@ -948,6 +1018,7 @@ impl Descr {
             vars: self.vars.union(&other.vars),
             tuples,
             lists,
+            resources,
             funcs,
             maps,
         }
@@ -964,6 +1035,7 @@ impl Descr {
             vars: self.vars.intersect(&other.vars),
             tuples: dnf_intersect(&self.tuples, &other.tuples),
             lists: dnf_intersect(&self.lists, &other.lists),
+            resources: dnf_intersect(&self.resources, &other.resources),
             funcs: dnf_intersect(&self.funcs, &other.funcs),
             maps: dnf_intersect(&self.maps, &other.maps),
         }
@@ -980,6 +1052,7 @@ impl Descr {
             vars: self.vars.neg(),
             tuples: dnf_neg(&self.tuples),
             lists: dnf_neg(&self.lists),
+            resources: dnf_neg(&self.resources),
             funcs: dnf_neg(&self.funcs),
             maps: dnf_neg(&self.maps),
         }
@@ -1098,6 +1171,10 @@ impl Descr {
             && self.vars.is_none()
             && self.tuples.iter().all(|c| tuple_clause_empty(c, memo))
             && self.lists.iter().all(|c| list_clause_empty(c, memo))
+            && self
+                .resources
+                .iter()
+                .all(|c| resource_clause_empty(c, memo))
             && self.funcs.iter().all(|c| func_clause_empty(c, memo))
             && self.maps.iter().all(|c| map_clause_empty(c, memo));
 
@@ -1159,6 +1236,9 @@ impl Descr {
         for c in &self.lists {
             parts.push(super::format::format_list_clause(c));
         }
+        for c in &self.resources {
+            parts.push(super::format::format_resource_clause(c));
+        }
         for c in &self.funcs {
             parts.push(super::format::format_arrow_clause(c));
         }
@@ -1180,7 +1260,7 @@ impl Descr {
     /// `Descr::none()` yields none.
     ///
     /// The order is canonical (basic, atoms, ints, floats, strs,
-    /// opaques, vars, tuples, lists, funcs, maps) but consumers should
+    /// opaques, vars, tuples, lists, resources, funcs, maps) but consumers should
     /// `match` rather than rely on order.
     pub(crate) fn components(&self) -> impl Iterator<Item = Component<'_>> + '_ {
         let basic = (!self.basic.is_empty()).then_some(Component::Basic(self.basic));
@@ -1202,12 +1282,17 @@ impl Descr {
         }));
         let lists =
             (!self.lists.is_empty()).then_some(Component::Lists(ListView { inner: &self.lists }));
+        let resources =
+            (!self.resources.is_empty()).then_some(Component::Resources(ResourceView {
+                inner: &self.resources,
+            }));
         let funcs =
             (!self.funcs.is_empty()).then_some(Component::Funcs(FuncView { inner: &self.funcs }));
         let maps =
             (!self.maps.is_empty()).then_some(Component::Maps(MapView { inner: &self.maps }));
         [
-            basic, atoms, ints, floats, opaques, brands, vars, tuples, lists, funcs, maps,
+            basic, atoms, ints, floats, opaques, brands, vars, tuples, lists, resources, funcs,
+            maps,
         ]
         .into_iter()
         .flatten()

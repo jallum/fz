@@ -345,6 +345,8 @@ pub struct SpecDecl {
     pub param_body_tokens: Vec<TypeExprBody>,
     /// Result type-expression body tokens.
     pub result_body_tokens: TypeExprBody,
+    /// Optional constrained type variables from `when t: Bound`.
+    pub constraints: Vec<(String, TypeExprBody)>,
 }
 
 #[derive(Debug, Clone)]

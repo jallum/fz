@@ -26,7 +26,7 @@ use super::bits::{BasicBits, F64Bits};
 use super::conj::Conj;
 use super::descr::Descr;
 use super::lit_set::{AtomSet, FloatSet, IntSet, LiteralSet, VarSet};
-use super::sigs::{ArrowSig, ClosureLit, ListSig, MapSig, TupleSig};
+use super::sigs::{ArrowSig, ClosureLit, ListSig, MapSig, ResourceSig, TupleSig};
 
 /// The kinds of value-sets a `Descr` admits, one per axis. Yielded by
 /// `Descr::components()`. Only present (non-empty) axes appear.
@@ -42,6 +42,7 @@ pub(crate) enum Component<'a> {
     Vars(VarView<'a>),
     Tuples(TupleView<'a>),
     Lists(ListView<'a>),
+    Resources(ResourceView<'a>),
     Funcs(FuncView<'a>),
     Maps(MapView<'a>),
 }
@@ -183,6 +184,34 @@ impl<'a> VarView<'a> {
         } else {
             Some(self.inner.set.len())
         }
+    }
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct ResourceView<'a> {
+    pub(super) inner: &'a [Conj<ResourceSig>],
+}
+
+impl<'a> ResourceView<'a> {
+    pub(crate) fn payload_type(&self) -> Descr {
+        let mut acc = Descr::none();
+        for conj in self.inner {
+            if !conj.neg.is_empty() {
+                return Descr::any();
+            }
+            if conj.pos.is_empty() {
+                return Descr::any();
+            }
+            let mut payload: Option<Descr> = None;
+            for sig in &conj.pos {
+                payload = Some(match payload {
+                    Some(prev) => prev.intersect(&sig.payload),
+                    None => (*sig.payload).clone(),
+                });
+            }
+            acc = acc.union(&payload.unwrap_or_else(Descr::any));
+        }
+        acc
     }
 }
 

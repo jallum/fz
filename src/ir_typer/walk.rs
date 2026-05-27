@@ -113,6 +113,68 @@ pub(crate) fn walk_spec_for_discovery<
         ));
     };
 
+    fn module_path_for_fn(m: &Module, fid: FnId) -> String {
+        m.fn_by_id(fid).owner_module.clone()
+    }
+
+    fn mint_owned_resource_alias<T: crate::types::Types<Ty = crate::types::Ty>>(
+        t: &mut T,
+        m: &Module,
+        owner: &str,
+        ty: crate::types::Ty,
+    ) -> crate::types::Ty {
+        let Some(payload) = t.resource_payload_type(&ty) else {
+            return ty;
+        };
+        let mut candidates = m
+            .opaque_inners
+            .iter()
+            .filter_map(|(tag, inner)| {
+                (crate::type_expr::opaque_owner_module(tag).unwrap_or("") == owner
+                    && t.is_equivalent(&payload, inner))
+                .then(|| tag.clone())
+            })
+            .collect::<Vec<_>>();
+        candidates.sort();
+        if candidates.len() == 1 {
+            t.opaque_of(&candidates[0])
+        } else {
+            ty
+        }
+    }
+
+    fn declared_call_return<T: crate::types::Types<Ty = crate::types::Ty>>(
+        t: &mut T,
+        m: &Module,
+        caller: FnId,
+        callee: FnId,
+        arg_tys: &[crate::types::Ty],
+    ) -> Option<crate::types::Ty> {
+        let spec = m.declared_specs.get(&callee)?;
+        if spec.params.len() != arg_tys.len() {
+            return None;
+        }
+        let mut sigma = std::collections::HashMap::new();
+        for (pattern, witness) in spec.params.iter().zip(arg_tys.iter()) {
+            t.collect_instantiation_subst(pattern, witness, &mut sigma);
+        }
+        for (var, bound) in &spec.constraints {
+            let actual = sigma.get(var)?;
+            if !t.is_subtype(actual, bound) {
+                return None;
+            }
+        }
+        for (pattern, witness) in spec.params.iter().zip(arg_tys.iter()) {
+            let expected = t.instantiate(pattern, &sigma);
+            if !t.has_vars(witness) && !t.is_subtype(witness, &expected) {
+                return None;
+            }
+        }
+        let ret = t.instantiate(&spec.result, &sigma);
+        let owner = module_path_for_fn(m, caller);
+        Some(mint_owned_resource_alias(t, m, &owner, ret))
+    }
+
     let tuple_return_demand_for_call = |callee: FnId, cont: &crate::fz_ir::Cont| -> ReturnDemand {
         let Some(arity) = continuation_tuple_field_arity(m, cont) else {
             return ReturnDemand::value();
@@ -474,8 +536,19 @@ pub(crate) fn walk_spec_for_discovery<
                                         arg_tys,
                                     )
                                 });
-                            out.return_reads.push(callee_key.clone());
-                            effective_returns.get(&callee_key).cloned()
+                            let callee_arg_tys =
+                                crate::types::key_slots_to_tys(t, &callee_key.input);
+                            let declared = declared_call_return(
+                                t,
+                                m,
+                                caller_spec_key.fn_id,
+                                callee,
+                                &callee_arg_tys,
+                            );
+                            if declared.is_none() {
+                                out.return_reads.push(callee_key.clone());
+                            }
+                            declared.or_else(|| effective_returns.get(&callee_key).cloned())
                         }
                         ContSource::CallClosure { closure, args } => {
                             if let Some(&target) = caller_ft.fn_constants.get(&closure) {
@@ -499,8 +572,19 @@ pub(crate) fn walk_spec_for_discovery<
                                     target,
                                     arg_tys,
                                 );
-                                out.return_reads.push(callee_key.clone());
-                                effective_returns.get(&callee_key).cloned()
+                                let callee_arg_tys =
+                                    crate::types::key_slots_to_tys(t, &callee_key.input);
+                                let declared = declared_call_return(
+                                    t,
+                                    m,
+                                    caller_spec_key.fn_id,
+                                    target,
+                                    &callee_arg_tys,
+                                );
+                                if declared.is_none() {
+                                    out.return_reads.push(callee_key.clone());
+                                }
+                                declared.or_else(|| effective_returns.get(&callee_key).cloned())
                             } else if let Some(cv_descr) = env.get(&closure) {
                                 let arg_tys: Vec<crate::types::Ty> = args
                                     .iter()

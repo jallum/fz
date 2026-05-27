@@ -292,6 +292,13 @@ process exits), fz calls <code>libc::close(fd)</code> automatically.
 You can <em>never</em> leak this fd by forgetting to close it — there's
 no path through fz code that holds a handle but skips its dtor.</p>
 
+<p>The type of the handle follows the payload. An integer fd produces
+<code>resource(integer)</code>; a future raw C pointer payload will produce
+<code>resource(cpointer)</code>. In spec form, the primitive behaves like:</p>
+
+<pre>@<span class="kw">spec</span> <span class="fn">make_resource</span>(t, (t) -&gt; <span class="ty">nil</span>) <span class="kw">::</span> <span class="kw">resource</span>(t)
+  <span class="kw">when</span> t: <span class="ty">integer</span> | <span class="ty">cpointer</span></pre>
+
 <h3>The dtor is real fz code</h3>
 
 <p>The destructor isn't required to be a bare <code>&amp;libc::close/1</code>.
@@ -340,6 +347,12 @@ handle — only <code>File.fd/1</code> (defined inside the module) can.
 That means a fd from <code>File.open</code> can't be passed to a wrong
 function that expects a different kind of fd, and the dtor contract
 can't be bypassed.</p>
+
+<p>Inside <code>File</code>, <code>make_resource(fd, &amp;libc::close/1)</code>
+can satisfy the module's opaque <code>t</code> type. Outside
+<code>File</code>, a plain <code>resource(integer)</code> is not the same
+thing as <code>File.t</code>; the opaque handle is still owned by the
+module that declared it.</p>
 
 <!-- ─────────────────────────────── 8. EXAMPLE ─────────────────────────────── -->
 <h2 id="example">8. A complete example: <code>FileHandle</code></h2>

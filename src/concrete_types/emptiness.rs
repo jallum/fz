@@ -6,7 +6,7 @@ use crate::types::MapKey;
 
 use super::conj::Conj;
 use super::descr::Descr;
-use super::sigs::{ArrowSig, ClosureLit, ListSig, MapSig, TupleSig};
+use super::sigs::{ArrowSig, ClosureLit, ListSig, MapSig, ResourceSig, TupleSig};
 use super::ty_descr;
 
 #[derive(Default)]
@@ -145,6 +145,27 @@ pub(crate) fn list_clause_empty(c: &Conj<ListSig>, memo: &mut Memo) -> bool {
         Some(ref t) => c.neg.iter().any(|n| neg_covers_non_empty(n, t, memo)),
     };
     empty_covered && non_empty_covered
+}
+
+pub(crate) fn resource_clause_empty(c: &Conj<ResourceSig>, memo: &mut Memo) -> bool {
+    let payload = if c.pos.is_empty() {
+        Descr::any()
+    } else {
+        let mut payload = (*c.pos[0].payload).clone();
+        for p in &c.pos[1..] {
+            payload = payload.intersect(&p.payload);
+        }
+        if payload.is_empty_memo(memo) {
+            return true;
+        }
+        payload
+    };
+    if c.neg.is_empty() {
+        return false;
+    }
+    c.neg
+        .iter()
+        .any(|n| payload.diff(&n.payload).is_empty_memo(memo))
 }
 
 // ----------------------------------------------------------------------

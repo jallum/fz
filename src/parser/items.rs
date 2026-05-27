@@ -245,10 +245,39 @@ impl Parser {
                     return self
                         .err("expected result type expression after `::` in @spec".to_string());
                 }
+                let mut constraints = Vec::new();
+                if self.eat(&Tok::When) {
+                    loop {
+                        let var = match self.bump() {
+                            Tok::Ident(n) | Tok::KwKey(n) => n,
+                            other => {
+                                return self.err(format!(
+                                    "expected type variable after `when`, got {:?}",
+                                    other
+                                ));
+                            }
+                        };
+                        if !matches!(self.toks[self.pos - 1].tok, Tok::KwKey(_)) {
+                            self.expect(&Tok::Colon, "`:`")?;
+                        }
+                        let toks = self.collect_spec_param_type_tokens();
+                        if toks.is_empty() {
+                            return self.err(format!(
+                                "expected constraint type expression after `{}:`",
+                                var
+                            ));
+                        }
+                        constraints.push((var, TypeExprBody(toks)));
+                        if !self.eat(&Tok::Comma) {
+                            break;
+                        }
+                    }
+                }
                 Ok(Attribute::Spec(SpecDecl {
                     name: spec_name,
                     param_body_tokens,
                     result_body_tokens: TypeExprBody(result_body_tokens),
+                    constraints,
                 }))
             }
             "type" => {
@@ -763,7 +792,8 @@ impl TypeTokenBoundary {
                     || (depth == 0 && matches!(tok, Tok::Comma | Tok::RParen))
             }
             Self::TypeBody => {
-                matches!(tok, Tok::Eof | Tok::End) || (depth == 0 && matches!(tok, Tok::Newline))
+                matches!(tok, Tok::Eof | Tok::End)
+                    || (depth == 0 && matches!(tok, Tok::Newline | Tok::When))
             }
         }
     }

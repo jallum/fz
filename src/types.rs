@@ -104,8 +104,9 @@ pub trait Types {
     fn float_lit(&mut self, f: f64) -> Self::Ty;
     fn atom(&mut self) -> Self::Ty;
     fn atom_lit(&mut self, name: &str) -> Self::Ty;
-    #[cfg(test)]
     fn type_var(&mut self, id: TypeVarId) -> Self::Ty;
+    fn cpointer(&mut self) -> Self::Ty;
+    fn resource(&mut self, payload: Self::Ty) -> Self::Ty;
     fn arrow(&mut self, args: &[Self::Ty], ret: Self::Ty) -> Self::Ty;
     fn tuple(&mut self, elems: &[Self::Ty]) -> Self::Ty;
     fn empty_list(&mut self) -> Self::Ty;
@@ -134,6 +135,7 @@ pub trait Types {
     /// Project `a`'s list-axis element type. Returns `any` if `a` has
     /// no list axis or the list axis is unconstrained.
     fn list_element_type(&mut self, a: &Self::Ty) -> Self::Ty;
+    fn resource_payload_type(&mut self, a: &Self::Ty) -> Option<Self::Ty>;
 
     /// Project `a`'s tuple-axis components at `arity`. Returns a vector
     /// of length `arity`; positions with no matching shape default to

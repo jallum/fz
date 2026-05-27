@@ -830,6 +830,8 @@ pub struct FnIr {
     /// fz-f88.5 — origin tag set at lowering. Default `User` so
     /// hand-built `FnBuilder` callers (tests) don't have to thread it.
     pub category: FnCategory,
+    /// Source module path whose lexical scope owns this lowered fn.
+    pub owner_module: String,
     /// Entry parameter positions that are arity-bearing holes (`_`).
     /// The slot exists physically, but semantic specialization must not
     /// inspect its type.
@@ -957,6 +959,9 @@ pub struct Module {
     /// `ir_lower::lower_program_full` from the resolved
     /// `Program.brand_inners`.
     pub brand_inners: HashMap<String, crate::types::Ty>,
+    /// Resolved declared `@spec`s keyed by IR function id. Used by call
+    /// typing for source-level polymorphic contracts.
+    pub declared_specs: HashMap<FnId, crate::type_expr::ResolvedSpec>,
 }
 
 impl Module {
@@ -995,6 +1000,7 @@ pub struct FnBuilder {
     blocks: Vec<Block>,
     entry: Option<BlockId>,
     category: FnCategory,
+    owner_module: String,
     ignored_params: std::collections::HashSet<Var>,
 }
 
@@ -1008,6 +1014,7 @@ impl FnBuilder {
             blocks: Vec::new(),
             entry: None,
             category: FnCategory::User,
+            owner_module: String::new(),
             ignored_params: std::collections::HashSet::new(),
         }
     }
@@ -1015,6 +1022,11 @@ impl FnBuilder {
     /// fz-f88.5 — set the origin category. Default is `User`.
     pub fn with_category(mut self, category: FnCategory) -> Self {
         self.category = category;
+        self
+    }
+
+    pub fn with_owner_module(mut self, owner_module: impl Into<String>) -> Self {
+        self.owner_module = owner_module.into();
         self
     }
 
@@ -1083,6 +1095,7 @@ impl FnBuilder {
             blocks: self.blocks,
             entry,
             category: self.category,
+            owner_module: self.owner_module,
             ignored_entry_params,
         }
     }
@@ -1150,6 +1163,7 @@ impl ModuleBuilder {
             boundary_fns: HashSet::new(),
             opaque_inners: HashMap::new(),
             brand_inners: HashMap::new(),
+            declared_specs: HashMap::new(),
         }
     }
 }

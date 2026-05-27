@@ -1529,9 +1529,9 @@ fn components_none_yields_nothing() {
 
 #[test]
 fn components_any_yields_one_per_axis() {
-    // 11 axes (fz-axu.22 deleted `strs`): basic, atoms, ints,
-    // floats, opaques, brands, vars, tuples, lists, funcs, maps.
-    assert_eq!(count_components(&Descr::any()), 11);
+    // 12 axes (fz-axu.22 deleted `strs`): basic, atoms, ints,
+    // floats, opaques, brands, vars, tuples, lists, resources, funcs, maps.
+    assert_eq!(count_components(&Descr::any()), 12);
 }
 
 #[test]

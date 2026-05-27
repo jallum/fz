@@ -2390,11 +2390,12 @@ fn value_accessor_inside_declaring_module_types_as_inner() {
 defmodule A do
   @type t :: opaque resource(integer)
 
+  fn make(), do: make_resource(7, &print/1)
   fn get(h :: t), do: h.value
 end
 
 fn main() do
-  h = make_resource(7, &print/1)
+  h = A.make()
   A.get(h)
 end
 "#;
@@ -2426,6 +2427,52 @@ end
         }
     }
     assert!(found, "expected at least one MapGet stmt in A.get");
+}
+
+#[test]
+fn make_resource_mints_declaring_modules_opaque_resource_type() {
+    let src = r#"
+defmodule FileHandle do
+  @type t :: opaque resource(integer)
+
+  extern "C" fn libc::open(path :: cstring, flags :: integer, ...) :: integer
+  extern "C" fn libc::close(integer) :: nil
+  extern "C" fn libc::errno() :: integer
+
+  @spec open(binary, integer, integer) :: {:ok, t} | {:error, integer}
+  fn open(path, flags, mode) do
+    case libc::open(path, flags, mode) do
+      raw_fd when raw_fd >= 0 -> {:ok, make_resource(raw_fd, &libc::close/1)}
+      _error -> {:error, libc::errno()}
+    end
+  end
+end
+
+fn main() do
+  FileHandle.open("f", 0o1000, 0o644)
+end
+"#;
+    let toks = crate::lexer::Lexer::new(src).tokenize().expect("lex");
+    let prog = crate::parser::Parser::new(toks)
+        .parse_program()
+        .expect("parse");
+    let mut t = crate::types::ConcreteTypes;
+    let prog = crate::resolve::flatten_modules(&mut t, prog).expect("flatten");
+    let ir = crate::ir_lower::lower_program(&mut t, &prog).expect("lower");
+    let mt = type_module(&mut t, &ir, &crate::telemetry::NullTelemetry);
+    let open = ir.fn_by_name("FileHandle.open").expect("open");
+    let open_ret = mt
+        .effective_returns
+        .iter()
+        .find_map(|(key, ret)| (key.fn_id == open.id).then_some(ret.clone()))
+        .expect("open should have an effective return");
+    assert!(
+        t.display(&open_ret).contains("FileHandle::t"),
+        "open should return the owning opaque resource alias, got {}",
+        t.display(&open_ret)
+    );
+    let diags = crate::spec_check::validate_specs(&mut t, &prog, &ir, &mt);
+    assert!(diags.is_empty(), "unexpected spec diagnostics: {diags:?}");
 }
 
 /// Outside the declaring module, `handle.value` is rejected with a

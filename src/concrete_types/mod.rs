@@ -104,9 +104,14 @@ impl Types for ConcreteTypes {
     fn atom_lit(&mut self, name: &str) -> Ty {
         ty_from_descr(Descr::atom_lit(name))
     }
-    #[cfg(test)]
     fn type_var(&mut self, id: TypeVarId) -> Ty {
         ty_from_descr(Descr::var(id))
+    }
+    fn cpointer(&mut self) -> Ty {
+        ty_from_descr(Descr::opaque_of("cpointer"))
+    }
+    fn resource(&mut self, payload: Ty) -> Ty {
+        ty_from_descr(Descr::resource_of(ty_descr(&payload).clone()))
     }
     fn arrow(&mut self, args: &[Ty], ret: Ty) -> Ty {
         let args: Vec<Descr> = args.iter().map(|t| ty_descr(t).clone()).collect();
@@ -151,6 +156,14 @@ impl Types for ConcreteTypes {
     }
     fn list_element_type(&mut self, a: &Ty) -> Ty {
         concrete_list_element_type(a)
+    }
+    fn resource_payload_type(&mut self, a: &Ty) -> Option<Ty> {
+        for component in ty_descr(a).components() {
+            if let Component::Resources(view) = component {
+                return Some(ty_from_descr(view.payload_type()));
+            }
+        }
+        None
     }
     fn tuple_projections(&mut self, a: &Ty, arity: usize) -> Vec<Ty> {
         concrete_tuple_projections(a, arity)

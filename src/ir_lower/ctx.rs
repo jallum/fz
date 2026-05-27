@@ -25,6 +25,7 @@ pub struct LowerCtx {
     /// record into `source` can key on `(FnId, …)` without unwrapping the
     /// builder.
     pub(super) cur_fn_id: Option<FnId>,
+    pub(super) current_owner_module: String,
     /// Currently-active block within `cur`.
     pub(super) cur_block: Option<BlockId>,
     /// Locals env: source name -> IR Var.
@@ -99,6 +100,7 @@ impl LowerCtx {
             fns: HashMap::new(),
             cur: None,
             cur_fn_id: None,
+            current_owner_module: String::new(),
             cur_block: None,
             env: HashMap::new(),
             env_order: Vec::new(),
@@ -156,7 +158,8 @@ impl LowerCtx {
         // conceptually part of the prelude, just constructed in Rust rather
         // than parsed from runtime.fz.
         let mut tb = FnBuilder::new(id, "fz_spawn_thunk".to_string())
-            .with_category(crate::fz_ir::FnCategory::Prelude);
+            .with_category(crate::fz_ir::FnCategory::Prelude)
+            .with_owner_module(self.current_owner_module.clone());
         let c = tb.fresh_var();
         let entry = tb.block(vec![c]);
         tb.set_terminator(
@@ -195,7 +198,9 @@ impl LowerCtx {
         // Name carries the fz-visible name verbatim (with `::` if any) so
         // dumps render `&libc::close/1` recognisably.
         let name = format!("__extern_wrap__{}", decl.fz_name);
-        let mut tb = FnBuilder::new(id, name).with_category(crate::fz_ir::FnCategory::Prelude);
+        let mut tb = FnBuilder::new(id, name)
+            .with_category(crate::fz_ir::FnCategory::Prelude)
+            .with_owner_module(self.current_owner_module.clone());
         let params: Vec<Var> = (0..decl.params.len()).map(|_| tb.fresh_var()).collect();
         let extern_args: Vec<ExternArg> = params
             .iter()
