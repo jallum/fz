@@ -33,6 +33,7 @@ mod macros;
 mod matcher;
 mod module_artifact;
 pub mod module_artifact_store;
+pub mod module_graph;
 mod module_identity;
 mod module_interface;
 mod parking;

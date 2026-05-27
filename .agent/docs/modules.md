@@ -210,6 +210,21 @@ variants (`write_fzi_artifacts_with_telemetry`,
 `ModuleName` policy. The `.fzo` telemetry variants emit `.fzo` write/load
 process facts.
 
+Reachable graph loading:
+
+- `module_graph::ModuleGraphLoader` owns import traversal over artifact stores.
+- Inputs are the root checked `InterfaceTable` plus explicit provider-root
+  module names.
+- The loader queues imports from the roots, loads provider `.fzi` contracts,
+  recursively queues their imports, and only then loads `.fzo` objects for
+  reachable user-artifact modules.
+- Runtime-library interfaces come from `runtime_library::interface_table` and
+  do not require user `.fzi`/`.fzo` files. They are explicit built-ins, not a
+  fallback that masks missing user artifacts.
+- Loaded `.fzo` objects are validated against the `.fzi` fingerprint inputs
+  that made the module reachable. Unused artifacts under the artifact root are
+  never read.
+
 Frontend-only dump commands can load provider interfaces from the same store:
 
 ```sh

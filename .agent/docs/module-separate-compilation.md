@@ -105,6 +105,12 @@ Runtime library boundary:
 - `ArtifactStore::write_fzo_artifacts` and `load_fzo_artifact` persist and
   reload those object envelopes under the same `build/fz/objects/...` path
   policy used for user modules.
+- `module_graph::ModuleGraphLoader` traverses reachable imports from root
+  checked interfaces and explicit provider-root modules. It loads provider
+  `.fzi` contracts first, queues their imports recursively, and loads `.fzo`
+  objects only for reachable user-artifact modules. Runtime-library interfaces
+  are explicit built-ins from `runtime_library::interface_table`; they do not
+  hide missing user `.fzi`/`.fzo` failures.
 - User builds can write object envelopes with
   `fz build --emit-fzo --artifact-root <dir> ...`. The writer consumes the
   production `CompiledProgram` facts, not a separate test-only artifact path.
