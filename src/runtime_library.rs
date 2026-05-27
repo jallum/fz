@@ -202,16 +202,23 @@ pub fn primitive_prelude_program() -> Program {
 
 pub fn primitive_contract_names() -> Vec<String> {
     let mut names = Vec::new();
-    for item in parsed_program().items {
-        if let Item::Fn(def) = &*item
+    collect_primitive_contract_names(&parsed_program().items, &mut names);
+    names.sort();
+    names
+}
+
+fn collect_primitive_contract_names(items: &[Rc<Item>], names: &mut Vec<String>) {
+    for item in items {
+        if let Item::Fn(def) = &**item
             && def.extern_abi.is_some()
         {
             let arity = def.extern_params.len();
             names.push(format!("{}/{}", def.name, arity));
         }
+        if let Item::Module(module) = &**item {
+            collect_primitive_contract_names(&module.items, names);
+        }
     }
-    names.sort();
-    names
 }
 
 pub fn module_span_for(name: &ModuleName) -> Span {
@@ -254,10 +261,13 @@ mod tests {
                 "fz_assert/1",
                 "fz_assert_eq/2",
                 "fz_assert_neq/2",
+                "fz_bitstring_valid_utf8/1",
+                "fz_brand_bitstring_as_utf8/1",
                 "fz_make_ref/0",
                 "fz_make_resource/2",
                 "fz_print_i64/1",
                 "fz_print_value/1",
+                "fz_process_heap_alloc_stats/0",
                 "fz_self/0",
                 "fz_send/2",
                 "fz_spawn/1",
