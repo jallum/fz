@@ -154,6 +154,7 @@ pub fn parsed_program() -> Program {
         external_module_interfaces: BTreeMap::new(),
         module_docs: Default::default(),
         module_type_envs: Default::default(),
+        protocol_registry: Default::default(),
         opaque_inners: Default::default(),
         brand_inners: Default::default(),
     }
@@ -295,6 +296,7 @@ pub fn primitive_prelude_program() -> Program {
         external_module_interfaces: BTreeMap::new(),
         module_docs: Default::default(),
         module_type_envs: Default::default(),
+        protocol_registry: Default::default(),
         opaque_inners: Default::default(),
         brand_inners: Default::default(),
     }

@@ -22,6 +22,7 @@ pub const RESOLVE_UNKNOWN_MODULE: DiagCode = DiagCode("resolve/unknown-module");
 pub const RESOLVE_UNKNOWN_IMPORT: DiagCode = DiagCode("resolve/unknown-import");
 pub const RESOLVE_CONFLICTING_IMPORT: DiagCode = DiagCode("resolve/conflicting-import");
 pub const RESOLVE_TYPE_ALIAS: DiagCode = DiagCode("resolve/type-alias");
+pub const RESOLVE_PROTOCOL: DiagCode = DiagCode("resolve/protocol");
 pub const INTERFACE_MISSING_SPEC: DiagCode = DiagCode("interface/missing-spec");
 pub const SPEC_VIOLATION: DiagCode = DiagCode("spec/violation");
 
@@ -96,6 +97,7 @@ mod tests {
             RESOLVE_UNKNOWN_IMPORT,
             RESOLVE_CONFLICTING_IMPORT,
             RESOLVE_TYPE_ALIAS,
+            RESOLVE_PROTOCOL,
             INTERFACE_MISSING_SPEC,
             SPEC_VIOLATION,
             MACRO_NOT_A_DEFMACRO,

@@ -51,13 +51,16 @@ nodes still exist. It produces one `ModuleInterface` per module.
 - `imports`: declared module imports and their `only` / `except` filters;
 - `exports`: non-macro, non-extern public functions by name and arity;
 - `types`: public module type aliases, opaques, and refines;
+- `protocols`: protocol declarations and callback surfaces owned by the
+  module;
+- `protocol_impls`: `(protocol, ImplTarget)` implementation facts and callback
+  exports;
 - `docs`: optional module docs;
 - `fingerprint_inputs`: deterministic semantic inputs for compatibility checks.
 
 Function bodies must never enter a `ModuleInterface`.
 
-Future protocol work should carry protocol declarations and implementation
-facts here as public contract data. Dependents need those facts to check
+Protocol facts are public contract data. Dependents need those facts to check
 `Protocol.t(...)` domain constraints without loading provider bodies, just as
 they use export facts to resolve imported calls.
 
@@ -239,8 +242,9 @@ Reachable graph loading:
 - `modules::graph::ModuleGraphLoader` owns import traversal over artifact stores.
 - Inputs are the root checked `InterfaceTable` plus explicit provider-root
   module names.
-- The loader queues imports from the roots, loads provider `.fzi` contracts,
-  recursively queues their imports, and only then loads `.fzo` objects for
+- The loader queues imports and protocol implementation callback modules from
+  the roots, loads provider `.fzi` contracts, recursively queues their imports
+  and protocol callback modules, and only then loads `.fzo` objects for
   reachable modules.
 - Runtime-library modules are checked through `modules::runtime_library::interface`
   before the filesystem artifact store. If a runtime module is reachable, the

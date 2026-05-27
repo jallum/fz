@@ -551,6 +551,8 @@ fn main(), do: classify(7)
                     name_span: crate::diag::Span::DUMMY,
                 }],
                 types: Vec::new(),
+                protocols: Vec::new(),
+                protocol_impls: Vec::new(),
                 docs: None,
                 fingerprint_inputs: Vec::new(),
             },

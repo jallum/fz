@@ -92,6 +92,7 @@ fn parse_runtime_prelude<T: crate::types::Types<Ty = crate::types::Ty>>(
         external_module_interfaces: Default::default(),
         module_docs: Default::default(),
         module_type_envs: Default::default(),
+        protocol_registry: Default::default(),
         opaque_inners: Default::default(),
         brand_inners: Default::default(),
     };

@@ -162,6 +162,20 @@ type is statically known enough to prove failure.
 The implementation should extend existing compiler ownership instead of
 creating a parallel subsystem:
 
+- `protocols::ProtocolRegistry` stores resolver-owned declarations and
+  `(protocol, ImplTarget)` implementation facts.
+- `resolve::flatten_modules` collects protocol facts while source-level
+  protocol AST is still available, validates duplicate impls and callback
+  coverage, and installs `Protocol.t` domain aliases in module type envs.
+- `type_expr` accepts dotted parametric protocol-domain spellings such as
+  `Enumerable.t(integer)` and resolves them to an open nominal marker unioned
+  with obvious known implementation target shapes, never to `any`.
+- `ModuleInterface` carries protocol declaration and implementation facts in
+  interface fingerprints so artifacts can expose protocol contracts without
+  provider bodies.
+- `ModuleGraphLoader` treats protocol implementation callback modules as
+  reachable provider modules, the same way imports make provider modules
+  reachable.
 - `docs/dispatch-as-planner-output.md` defines planner-owned dispatch facts.
 - `SpecPlan.call_edges` is keyed by `CallsiteId` and stores selected call-edge
   capabilities.

@@ -140,6 +140,8 @@ end
             name_span: crate::diag::Span::DUMMY,
         }],
         types: Vec::new(),
+        protocols: Vec::new(),
+        protocol_impls: Vec::new(),
         docs: None,
         fingerprint_inputs: vec!["export:Math.add/2".to_string()],
     };
@@ -308,6 +310,8 @@ fn link_test_unit(
             })
             .collect(),
         types: Vec::new(),
+        protocols: Vec::new(),
+        protocol_impls: Vec::new(),
         docs: None,
         fingerprint_inputs: exports
             .iter()
@@ -532,6 +536,8 @@ fn image_linker_rejects_unresolved_external_imports_without_provider() {
         imports: Vec::new(),
         exports: Vec::new(),
         types: Vec::new(),
+        protocols: Vec::new(),
+        protocol_impls: Vec::new(),
         docs: None,
         fingerprint_inputs: Vec::new(),
     };

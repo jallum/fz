@@ -87,6 +87,11 @@ fn enqueue_imports(queue: &mut VecDeque<ModuleName>, interface: &ModuleInterface
     for import in &interface.imports {
         queue.push_back(import.module.clone());
     }
+    for protocol_impl in &interface.protocol_impls {
+        for callback in &protocol_impl.callbacks {
+            queue.push_back(callback.module.clone());
+        }
+    }
 }
 
 #[cfg(test)]
@@ -133,6 +138,8 @@ mod tests {
             imports: import_facts,
             exports: export_facts,
             types: Vec::new(),
+            protocols: Vec::new(),
+            protocol_impls: Vec::new(),
             docs: None,
             fingerprint_inputs,
         }
@@ -189,6 +196,55 @@ mod tests {
         assert!(!graph.interfaces.contains_key(&module("Extra")));
         assert_eq!(graph.objects.len(), 1);
         assert_eq!(graph.objects[0].module, Some(module("Math")));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn graph_loader_follows_protocol_impl_callback_modules() {
+        let root = std::env::temp_dir().join(format!(
+            "fz-module-graph-{}-protocol-impl",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let store = ArtifactStore::new(&root);
+
+        let mut app = interface("App", Vec::new(), vec![("main", 0)]);
+        app.protocol_impls
+            .push(crate::protocols::InterfaceProtocolImpl {
+                protocol: module("Enumerable"),
+                target: crate::protocols::ImplTarget::module(module("List")),
+                callbacks: vec![crate::modules::identity::ExportKey::new(
+                    module("EnumerableList"),
+                    "reduce",
+                    3,
+                )],
+            });
+        let enumerable_list = interface("EnumerableList", Vec::new(), vec![("reduce", 3)]);
+        let mut artifacts = InterfaceTable::new();
+        artifacts.insert(enumerable_list.name.clone(), enumerable_list.clone());
+        store
+            .write_fzi_artifacts(&crate::telemetry::NullTelemetry, &artifacts)
+            .unwrap();
+        store
+            .write_fzo_artifacts(
+                &crate::telemetry::NullTelemetry,
+                [&fzo(
+                    &enumerable_list,
+                    "defmodule EnumerableList do\n  fn reduce(list, acc, reducer), do: acc\nend\n",
+                )],
+            )
+            .unwrap();
+
+        let mut roots = InterfaceTable::new();
+        roots.insert(app.name.clone(), app);
+        let graph = ModuleGraphLoader::new(store)
+            .load_reachable(&crate::telemetry::NullTelemetry, &roots, [])
+            .expect("load graph");
+
+        assert!(graph.interfaces.contains_key(&module("EnumerableList")));
+        assert_eq!(graph.objects.len(), 1);
+        assert_eq!(graph.objects[0].module, Some(module("EnumerableList")));
 
         let _ = std::fs::remove_dir_all(&root);
     }

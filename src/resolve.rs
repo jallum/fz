@@ -25,6 +25,10 @@ use crate::ast::*;
 use crate::diag::{Diagnostic, Span, codes};
 use crate::modules::identity::{ExportKey, ModuleName, QualifiedName};
 use crate::modules::interface::ModuleInterface;
+use crate::protocols::{
+    ImplTarget, ProtocolCallbackFact, ProtocolDecl, ProtocolImplFact, ProtocolImplKey,
+    ProtocolRegistry,
+};
 use std::collections::BTreeMap;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
@@ -63,6 +67,10 @@ pub enum ResolveError {
     /// fz-ul4.31.5 — Failure to build a module's `@type` env (duplicate
     /// alias, cycle, or unknown name in an alias body).
     TypeAliasError {
+        msg: String,
+        span: Span,
+    },
+    ProtocolError {
         msg: String,
         span: Span,
     },
@@ -119,6 +127,9 @@ impl ResolveError {
             .with_secondary(*first_span, "first import here"),
             Self::TypeAliasError { msg, span } => {
                 Diagnostic::error(codes::RESOLVE_TYPE_ALIAS, msg.clone(), *span)
+            }
+            Self::ProtocolError { msg, span } => {
+                Diagnostic::error(codes::RESOLVE_PROTOCOL, msg.clone(), *span)
             }
         }
     }
@@ -208,6 +219,7 @@ fn flatten_modules_with_options<T: crate::types::Types<Ty = crate::types::Ty>>(
         &mut opaque_inners,
         &mut brand_inners,
     )?;
+    let protocol_registry = collect_protocol_registry(t, &prog, &mut module_type_envs)?;
     let (root_aliases, root_imports) =
         collect_import_scope(&prog.items, &interface_table, &module_macros)?;
     for item in &prog.items {
@@ -287,6 +299,7 @@ fn flatten_modules_with_options<T: crate::types::Types<Ty = crate::types::Ty>>(
         external_module_interfaces,
         module_docs,
         module_type_envs,
+        protocol_registry,
         opaque_inners,
         brand_inners,
     })
@@ -571,6 +584,268 @@ fn collect_module_docs_recursive(m: &ModuleDef, parent: &str, out: &mut HashMap<
         if let Item::Module(inner) = &**item {
             collect_module_docs_recursive(inner, &path, out);
         }
+    }
+}
+
+fn collect_protocol_registry<T: crate::types::Types<Ty = crate::types::Ty>>(
+    t: &mut T,
+    prog: &Program,
+    module_type_envs: &mut HashMap<String, crate::type_expr::ModuleTypeEnv>,
+) -> Result<ProtocolRegistry, ResolveError> {
+    let mut registry = ProtocolRegistry::default();
+    collect_protocol_registry_items(t, &prog.items, None, module_type_envs, &mut registry)?;
+    validate_protocol_impls(&registry)?;
+    for protocol in registry.protocols.keys() {
+        let ty = protocol_domain_type(t, protocol, &registry);
+        for env in module_type_envs.values_mut() {
+            env.insert(format!("{}.t", protocol), ty.clone());
+        }
+        if let Some(env) = module_type_envs.get_mut(&protocol.dotted()) {
+            env.insert("t".to_string(), ty);
+        }
+    }
+    Ok(registry)
+}
+
+fn protocol_domain_type<T: crate::types::Types<Ty = crate::types::Ty>>(
+    t: &mut T,
+    protocol: &ModuleName,
+    registry: &ProtocolRegistry,
+) -> crate::types::Ty {
+    let mut domain = t.opaque_of(&crate::protocols::protocol_domain_tag(protocol));
+    for fact in registry
+        .impls
+        .values()
+        .filter(|fact| fact.protocol == *protocol)
+    {
+        let target_ty = impl_target_type(t, &fact.target);
+        domain = t.union(domain, target_ty);
+    }
+    domain
+}
+
+fn impl_target_type<T: crate::types::Types<Ty = crate::types::Ty>>(
+    t: &mut T,
+    target: &ImplTarget,
+) -> crate::types::Ty {
+    match target {
+        ImplTarget::Module(module) => match module.last_segment() {
+            "List" => {
+                let any = t.any();
+                t.list(any)
+            }
+            "Integer" => t.int(),
+            "Float" => t.float(),
+            "Atom" => t.atom(),
+            "Binary" => t.str_t(),
+            "Map" => t.map_top(),
+            other => t.opaque_of(&format!("impl-target::{}", other)),
+        },
+    }
+}
+
+fn collect_protocol_registry_items<T: crate::types::Types<Ty = crate::types::Ty>>(
+    t: &mut T,
+    items: &[Rc<Item>],
+    parent: Option<&ModuleName>,
+    module_type_envs: &mut HashMap<String, crate::type_expr::ModuleTypeEnv>,
+    registry: &mut ProtocolRegistry,
+) -> Result<(), ResolveError> {
+    for item in items {
+        match &**item {
+            Item::Protocol(protocol) => {
+                let name = qualify_module_child(parent, &protocol.name);
+                let decl = protocol_decl(t, &name, protocol, module_type_envs)?;
+                if registry
+                    .protocols
+                    .insert(name.clone(), decl.clone())
+                    .is_some()
+                {
+                    return Err(ResolveError::ProtocolError {
+                        msg: format!("protocol `{}` is defined more than once", name),
+                        span: decl.span,
+                    });
+                }
+            }
+            Item::ProtocolImpl(protocol_impl) => {
+                let protocol = qualify_module_child(parent, &protocol_impl.protocol);
+                let target =
+                    ImplTarget::module(qualify_module_child(parent, &protocol_impl.target.path));
+                let callbacks = protocol_impl_callbacks(parent, protocol_impl)?;
+                let fact = ProtocolImplFact {
+                    protocol: protocol.clone(),
+                    target: target.clone(),
+                    callbacks,
+                    span: protocol_impl.span,
+                };
+                let key = ProtocolImplKey { protocol, target };
+                if registry.impls.insert(key.clone(), fact).is_some() {
+                    return Err(ResolveError::ProtocolError {
+                        msg: format!(
+                            "protocol `{}` already has an implementation for `{}`",
+                            key.protocol, key.target
+                        ),
+                        span: protocol_impl.span,
+                    });
+                }
+            }
+            Item::Module(module) => {
+                let name = if let Some(parent) = parent {
+                    parent.child(module.name.clone())
+                } else {
+                    ModuleName::from_segments(vec![module.name.clone()])
+                };
+                collect_protocol_registry_items(
+                    t,
+                    &module.items,
+                    Some(&name),
+                    module_type_envs,
+                    registry,
+                )?;
+            }
+            _ => {}
+        }
+    }
+
+    Ok(())
+}
+
+fn protocol_decl<T: crate::types::Types<Ty = crate::types::Ty>>(
+    t: &mut T,
+    name: &ModuleName,
+    protocol: &ProtocolDef,
+    module_type_envs: &mut HashMap<String, crate::type_expr::ModuleTypeEnv>,
+) -> Result<ProtocolDecl, ResolveError> {
+    let mut env = crate::type_expr::ModuleTypeEnv::new();
+    env.insert(
+        "t".to_string(),
+        t.opaque_of(&crate::protocols::protocol_domain_tag(name)),
+    );
+    env.insert(
+        format!("{}.t", name),
+        t.opaque_of(&crate::protocols::protocol_domain_tag(name)),
+    );
+    module_type_envs.insert(name.dotted(), env);
+
+    let mut seen = HashMap::new();
+    let mut callbacks = Vec::new();
+    for callback in &protocol.callbacks {
+        let key = (callback.name.clone(), callback.arity);
+        if seen.insert(key.clone(), callback.span).is_some() {
+            return Err(ResolveError::ProtocolError {
+                msg: format!(
+                    "protocol `{}` declares callback `{}/{}` more than once",
+                    name, key.0, key.1
+                ),
+                span: callback.span,
+            });
+        }
+        callbacks.push(ProtocolCallbackFact {
+            name: callback.name.clone(),
+            arity: callback.arity,
+            spec: callback.attrs.iter().find_map(|attr| match attr {
+                Attribute::Spec(spec) => Some(spec.clone()),
+                _ => None,
+            }),
+            span: callback.span,
+        });
+    }
+    callbacks.sort_by(|a, b| (&a.name, a.arity).cmp(&(&b.name, b.arity)));
+    Ok(ProtocolDecl {
+        callbacks,
+        span: protocol.span,
+    })
+}
+
+fn protocol_impl_callbacks(
+    parent: Option<&ModuleName>,
+    protocol_impl: &ProtocolImplDef,
+) -> Result<BTreeMap<(String, usize), ExportKey>, ResolveError> {
+    let mut callbacks = BTreeMap::new();
+    let impl_module = qualify_module_child(parent, &protocol_impl.target.path);
+    for item in &protocol_impl.items {
+        match &**item {
+            Item::Fn(def) => {
+                let arity = def.clauses.first().map(|c| c.params.len()).unwrap_or(0);
+                let key = (def.name.clone(), arity);
+                if callbacks
+                    .insert(
+                        key.clone(),
+                        ExportKey::new(impl_module.clone(), def.name.clone(), arity),
+                    )
+                    .is_some()
+                {
+                    return Err(ResolveError::ProtocolError {
+                        msg: format!(
+                            "protocol implementation for `{}` defines `{}/{}` more than once",
+                            protocol_impl.target.path, key.0, key.1
+                        ),
+                        span: def.name_span,
+                    });
+                }
+            }
+            _ => {
+                return Err(ResolveError::ProtocolError {
+                    msg: "protocol implementation bodies may only contain functions".to_string(),
+                    span: protocol_impl.span,
+                });
+            }
+        }
+    }
+    Ok(callbacks)
+}
+
+fn validate_protocol_impls(registry: &ProtocolRegistry) -> Result<(), ResolveError> {
+    for fact in registry.impls.values() {
+        let Some(protocol) = registry.protocols.get(&fact.protocol) else {
+            return Err(ResolveError::ProtocolError {
+                msg: format!(
+                    "protocol implementation references unknown protocol `{}`",
+                    fact.protocol
+                ),
+                span: fact.span,
+            });
+        };
+        for callback in &protocol.callbacks {
+            if !fact
+                .callbacks
+                .contains_key(&(callback.name.clone(), callback.arity))
+            {
+                return Err(ResolveError::ProtocolError {
+                    msg: format!(
+                        "implementation for protocol `{}` on `{}` is missing callback `{}/{}`",
+                        fact.protocol, fact.target, callback.name, callback.arity
+                    ),
+                    span: fact.span,
+                });
+            }
+        }
+        for (name, arity) in fact.callbacks.keys() {
+            if !protocol
+                .callbacks
+                .iter()
+                .any(|callback| callback.name == *name && callback.arity == *arity)
+            {
+                return Err(ResolveError::ProtocolError {
+                    msg: format!(
+                        "implementation for protocol `{}` on `{}` provides unknown callback `{}/{}`",
+                        fact.protocol, fact.target, name, arity
+                    ),
+                    span: fact.span,
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
+fn qualify_module_child(parent: Option<&ModuleName>, name: &ModuleName) -> ModuleName {
+    if name.segments().len() == 1
+        && let Some(parent) = parent
+    {
+        parent.child(name.last_segment().to_string())
+    } else {
+        name.clone()
     }
 }
 
@@ -1998,6 +2273,8 @@ end
                     name_span: Span::DUMMY,
                 }],
                 types: Vec::new(),
+                protocols: Vec::new(),
+                protocol_impls: Vec::new(),
                 docs: None,
                 fingerprint_inputs: Vec::new(),
             },
@@ -2908,5 +3185,111 @@ end
             callee.span, pre_call_span,
             "callee span should be preserved through cross-module rewrite"
         );
+    }
+
+    #[test]
+    fn protocol_registry_records_declarations_impls_and_domain_types() {
+        let mut ct = crate::types::ConcreteTypes;
+        let p = flatten_modules(
+            &mut ct,
+            parse(
+                r#"
+defprotocol Enumerable do
+  @spec reduce(t(a), acc, (a, acc) -> acc) :: acc
+  fn reduce(enumerable, acc, reducer)
+end
+
+defimpl Enumerable, for: List do
+  fn reduce(list, acc, reducer), do: acc
+end
+
+defmodule Consumer do
+  @spec use(Enumerable.t(integer)) :: integer
+  fn use(xs), do: 1
+end
+"#,
+            ),
+        )
+        .expect("flatten");
+
+        let enumerable = ModuleName::from_segments(vec!["Enumerable".to_string()]);
+        let list = ModuleName::from_segments(vec!["List".to_string()]);
+        let registry = &p.protocol_registry;
+        assert!(registry.protocols.contains_key(&enumerable));
+        let implementation = registry
+            .impls
+            .get(&ProtocolImplKey {
+                protocol: enumerable.clone(),
+                target: ImplTarget::module(list.clone()),
+            })
+            .expect("impl fact");
+        assert_eq!(
+            implementation.callbacks[&("reduce".to_string(), 3)],
+            ExportKey::new(list, "reduce", 3)
+        );
+        let protocol_ty = p.module_type_envs["Consumer"]
+            .get("Enumerable.t")
+            .expect("protocol domain type");
+        let any = ct.any();
+        assert!(
+            !ct.is_equivalent(protocol_ty, &any),
+            "Protocol.t must not resolve as any"
+        );
+        let list_any = ct.list(any.clone());
+        let int = ct.int();
+        assert!(ct.is_subtype(&list_any, protocol_ty));
+        assert!(ct.is_disjoint(&int, protocol_ty));
+    }
+
+    #[test]
+    fn protocol_impl_must_cover_declared_callbacks() {
+        let mut ct = crate::types::ConcreteTypes;
+        let err = flatten_modules(
+            &mut ct,
+            parse(
+                r#"
+defprotocol P do
+  fn each(x)
+end
+
+defimpl P, for: List do
+  fn other(x), do: x
+end
+"#,
+            ),
+        )
+        .expect_err("missing callback must fail");
+
+        let d = err.to_diagnostic();
+        assert_eq!(d.code, codes::RESOLVE_PROTOCOL);
+        assert!(d.message.contains("missing callback `each/1`"));
+    }
+
+    #[test]
+    fn duplicate_protocol_impls_are_rejected() {
+        let mut ct = crate::types::ConcreteTypes;
+        let err = flatten_modules(
+            &mut ct,
+            parse(
+                r#"
+defprotocol P do
+  fn each(x)
+end
+
+defimpl P, for: List do
+  fn each(x), do: x
+end
+
+defimpl P, for: List do
+  fn each(x), do: x
+end
+"#,
+            ),
+        )
+        .expect_err("duplicate impl must fail");
+
+        let d = err.to_diagnostic();
+        assert_eq!(d.code, codes::RESOLVE_PROTOCOL);
+        assert!(d.message.contains("already has an implementation"));
     }
 }
