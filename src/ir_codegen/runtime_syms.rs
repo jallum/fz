@@ -72,7 +72,12 @@ pub(crate) fn declare_runtime_symbols<M: cranelift_module::Module>(
     let receive = declare_receive_runtime(jmod)?;
     let halt_cont = declare_halt_cont_runtime(jmod)?;
     let scheduler = declare_scheduler_runtime(jmod)?;
-    let alloc_id = decl_import(jmod, "fz_alloc_frame", &[types::I32, types::I32], &[types::I64])?;
+    let alloc_id = decl_import(
+        jmod,
+        "fz_alloc_frame",
+        &[types::I32, types::I32],
+        &[types::I64],
+    )?;
 
     Ok(RuntimeRefs {
         halt_implicit_ref_id: halt.halt_implicit_ref_id,
@@ -409,17 +414,10 @@ struct MapRefs {
 }
 
 /// Map construction, mutation and lookup FFI entries.
-fn declare_map_runtime<M: cranelift_module::Module>(
-    jmod: &mut M,
-) -> Result<MapRefs, CodegenError> {
+fn declare_map_runtime<M: cranelift_module::Module>(jmod: &mut M) -> Result<MapRefs, CodegenError> {
     Ok(MapRefs {
         map_empty_id: decl_import(jmod, "fz_map_empty", &[], &[types::I64])?,
-        map_dest_begin_id: decl_import(
-            jmod,
-            "fz_map_dest_begin",
-            &[types::I32],
-            &[types::I64],
-        )?,
+        map_dest_begin_id: decl_import(jmod, "fz_map_dest_begin", &[types::I32], &[types::I64])?,
         map_dest_begin_update_id: decl_import(
             jmod,
             "fz_map_dest_begin_update",

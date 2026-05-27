@@ -204,8 +204,7 @@ pub(crate) fn emit_matcher_body_from_matcher<M: cranelift_module::Module>(
             value_eq_typed_fref: value_eq_typed_id.map(|fid| m.declare_func_in_func(fid, b.func)),
             matcher_eq_bytes_fref: matcher_eq_bytes_id
                 .map(|fid| m.declare_func_in_func(fid, b.func)),
-            matcher_map_get_fref: matcher_map_get_id
-                .map(|fid| m.declare_func_in_func(fid, b.func)),
+            matcher_map_get_fref: matcher_map_get_id.map(|fid| m.declare_func_in_func(fid, b.func)),
             matcher_map_get_ref_fref: matcher_map_get_ref_id
                 .map(|fid| m.declare_func_in_func(fid, b.func)),
             type_of_fref: type_of_id.map(|fid| m.declare_func_in_func(fid, b.func)),
@@ -215,15 +214,13 @@ pub(crate) fn emit_matcher_body_from_matcher<M: cranelift_module::Module>(
             struct_schema_id_ref_fref: struct_schema_id_ref_id
                 .map(|fid| m.declare_func_in_func(fid, b.func)),
             truthy_ref_fref: truthy_ref_id.map(|fid| m.declare_func_in_func(fid, b.func)),
-            box_int_for_any_fref: box_int_for_any_id
-                .map(|fid| m.declare_func_in_func(fid, b.func)),
+            box_int_for_any_fref: box_int_for_any_id.map(|fid| m.declare_func_in_func(fid, b.func)),
             box_float_for_any_fref: box_float_for_any_id
                 .map(|fid| m.declare_func_in_func(fid, b.func)),
             box_atom_for_any_fref: box_atom_for_any_id
                 .map(|fid| m.declare_func_in_func(fid, b.func)),
             map_is_map_fref: map_is_map_id.map(|fid| m.declare_func_in_func(fid, b.func)),
-            bs_reader_init_fref: bs_reader_init_id
-                .map(|fid| m.declare_func_in_func(fid, b.func)),
+            bs_reader_init_fref: bs_reader_init_id.map(|fid| m.declare_func_in_func(fid, b.func)),
             bs_read_field_fref: bs_read_field_id.map(|fid| m.declare_func_in_func(fid, b.func)),
             struct_get_field_fref: struct_get_field_id
                 .map(|fid| m.declare_func_in_func(fid, b.func)),

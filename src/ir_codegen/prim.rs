@@ -1203,24 +1203,22 @@ pub(crate) fn lower_prim<
                 }
             }
         }
-        Prim::UnOp(op, x) => {
-            match op {
-                UnOp::Neg => {
-                    let xi = as_raw_i64(var_env, b, jmod, runtime, x.0);
-                    return Ok(LowerOut::RawI64(b.ins().ineg(xi)));
-                }
-                UnOp::Not => {
-                    let xv = *var_env.get(&x.0).expect("not operand");
-                    let truthy = codegen_value_truthy(b, jmod, runtime, xv);
-                    let zero = b.ins().iconst(types::I8, 0);
-                    let inv = b.ins().icmp(IntCC::Equal, truthy, zero);
-                    if cache.if_only_conds.contains(&dest_var.0) {
-                        return Ok(LowerOut::Condition(inv));
-                    }
-                    return Ok(LowerOut::Strict(strict_bool(b, inv)));
-                }
+        Prim::UnOp(op, x) => match op {
+            UnOp::Neg => {
+                let xi = as_raw_i64(var_env, b, jmod, runtime, x.0);
+                return Ok(LowerOut::RawI64(b.ins().ineg(xi)));
             }
-        }
+            UnOp::Not => {
+                let xv = *var_env.get(&x.0).expect("not operand");
+                let truthy = codegen_value_truthy(b, jmod, runtime, xv);
+                let zero = b.ins().iconst(types::I8, 0);
+                let inv = b.ins().icmp(IntCC::Equal, truthy, zero);
+                if cache.if_only_conds.contains(&dest_var.0) {
+                    return Ok(LowerOut::Condition(inv));
+                }
+                return Ok(LowerOut::Strict(strict_bool(b, inv)));
+            }
+        },
         Prim::Extern(eid, args) => {
             use crate::fz_ir::ExternTy;
             let decl = env.module.extern_by_id(*eid);

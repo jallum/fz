@@ -246,4 +246,3 @@ pub(crate) fn annotate_block_header(
         format!("{}    ;; {}", line.trim_end(), notes.join(", "))
     }
 }
-

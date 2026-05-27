@@ -183,8 +183,8 @@ fn harness_cont_fn<M: cranelift_module::Module>(
     Option<ir::Value>,
 ) {
     let tuple_fields = demand_abi.tuple_field_arity();
-    let extras_count = tuple_fields
-        .unwrap_or_else(|| env.cont_extras_count.get(&f.id).copied().unwrap_or(1));
+    let extras_count =
+        tuple_fields.unwrap_or_else(|| env.cont_extras_count.get(&f.id).copied().unwrap_or(1));
     let mut param_cursor = 0;
     if let Some(field_count) = tuple_fields {
         let tuple_param = entry_blk
