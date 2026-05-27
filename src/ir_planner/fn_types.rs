@@ -29,31 +29,6 @@ pub struct SpecPlan {
     /// edge, so future provider-boundary and protocol dispatch facts can extend
     /// the same shape instead of adding side tables.
     pub call_edges: HashMap<crate::fz_ir::CallsiteId, CallEdgePlan>,
-    /// Per-callsite dispatch table for this spec.
-    ///
-    /// For every `Direct`, `ClosureCall`, and `Cont` callsite in this spec's
-    /// reachable IR, records the spec key the planner elected to dispatch to.
-    /// `MakeClosure` emits an any-key body spec but is not a dispatch site.
-    ///
-    /// Authoritative source for codegen's dispatch decisions. Two
-    /// caller specs can dispatch the *same* `CallsiteId` to *different*
-    /// targets — this table keeps both views distinct.
-    ///
-    /// Populated by the worklist and read by codegen. See
-    /// `docs/planner-authoritative-dispatch.md` for the broader rationale.
-    pub dispatches: HashMap<crate::fz_ir::CallsiteId, SpecKey>,
-    /// Per-spec facts about how a call result is consumed by its return
-    /// edge. This is intentionally parallel to `dispatches`: two caller
-    /// specs can visit the same source callsite with different result-hole
-    /// capabilities, and demand selection must follow this edge fact rather
-    /// than blindly inheriting the caller spec's demand.
-    pub return_uses: HashMap<crate::fz_ir::CallsiteId, ReturnDemand>,
-    /// Typed executable plan for ListTail return-use edges. Kept separate
-    /// from `return_uses` because not every return-use fact needs lowering
-    /// help; plans name the concrete source operands the eventual backend
-    /// lowering must consume. Plans are caller-spec keyed because one
-    /// syntactic callsite can be visited under multiple return demands.
-    pub return_context_plans: HashMap<ReturnContextPlanKey, ReturnContextPlan>,
     /// Per-spec concrete C marshal classes for extern call arguments.
     ///
     /// Variadic `Auto` args are resolved after this `FnTypes` has inferred
@@ -86,25 +61,8 @@ impl SpecPlan {
 
     pub(crate) fn install_call_edges(
         &mut self,
-        caller: &SpecKey,
-        dispatches: &HashMap<crate::fz_ir::CallsiteId, SpecKey>,
-        return_uses: &HashMap<crate::fz_ir::CallsiteId, ReturnDemand>,
-        return_context_plans: &HashMap<ReturnContextPlanKey, ReturnContextPlan>,
+        call_edges: HashMap<crate::fz_ir::CallsiteId, CallEdgePlan>,
     ) {
-        let mut call_edges = HashMap::new();
-        for (callsite, target) in dispatches {
-            let return_context = return_context_plans
-                .get(&ReturnContextPlanKey::new(caller, callsite))
-                .cloned();
-            call_edges.insert(
-                callsite.clone(),
-                CallEdgePlan {
-                    target: CallEdgeTarget::Local(target.clone()),
-                    return_use: return_uses.get(callsite).cloned(),
-                    return_context,
-                },
-            );
-        }
         self.call_edges = call_edges;
     }
 }
@@ -440,21 +398,6 @@ pub enum ReturnContext {
 pub struct ReturnDemand {
     pub delivery: ReturnDelivery,
     pub context: ReturnContext,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct ReturnContextPlanKey {
-    pub caller: SpecKey,
-    pub callsite: crate::fz_ir::CallsiteId,
-}
-
-impl ReturnContextPlanKey {
-    pub(crate) fn new(caller: &SpecKey, callsite: &crate::fz_ir::CallsiteId) -> Self {
-        Self {
-            caller: caller.clone(),
-            callsite: callsite.clone(),
-        }
-    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
