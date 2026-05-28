@@ -434,7 +434,8 @@ pub(crate) fn lower_collection_prim<
             let p = b.inst_results(inst)[0];
             for (i, e) in elems.iter().enumerate() {
                 let value = binding_for_var(var_env, e.0);
-                emit_struct_set_field_value(cx, b, jmod, cache, p, i, value);
+                let mut body = cx.body(b, jmod, cache);
+                body.struct_set_field(p, i, value);
             }
             LowerOut::ValueRef(p)
         }
@@ -458,15 +459,8 @@ pub(crate) fn lower_collection_prim<
                 body.any_ref_for_var(var_env, dest.0)
             };
             let field_value = binding_for_var(var_env, value.0);
-            emit_struct_set_field_value(
-                cx,
-                b,
-                jmod,
-                cache,
-                dest_bits,
-                *index as usize,
-                field_value,
-            );
+            let mut body = cx.body(b, jmod, cache);
+            body.struct_set_field(dest_bits, *index as usize, field_value);
             LowerOut::DeadUnit
         }
         Prim::DestFreeze { dest, .. } => {

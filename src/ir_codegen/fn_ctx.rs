@@ -460,7 +460,7 @@ impl<'env> CodegenFn<'env> {
         self.call_func1(b, jmod, self.runtime.materialize_cont_id, &[value])
     }
 
-    pub(crate) fn struct_set_field_int<M: cranelift_module::Module>(
+    fn struct_set_field_int<M: cranelift_module::Module>(
         &mut self,
         b: &mut FunctionBuilder<'_>,
         jmod: &mut M,
@@ -476,7 +476,7 @@ impl<'env> CodegenFn<'env> {
         );
     }
 
-    pub(crate) fn struct_set_field_float<M: cranelift_module::Module>(
+    fn struct_set_field_float<M: cranelift_module::Module>(
         &mut self,
         b: &mut FunctionBuilder<'_>,
         jmod: &mut M,
@@ -492,7 +492,7 @@ impl<'env> CodegenFn<'env> {
         );
     }
 
-    pub(crate) fn struct_set_field_atom<M: cranelift_module::Module>(
+    fn struct_set_field_atom<M: cranelift_module::Module>(
         &mut self,
         b: &mut FunctionBuilder<'_>,
         jmod: &mut M,
@@ -508,7 +508,7 @@ impl<'env> CodegenFn<'env> {
         );
     }
 
-    pub(crate) fn struct_set_field_ref<M: cranelift_module::Module>(
+    fn struct_set_field_ref<M: cranelift_module::Module>(
         &mut self,
         b: &mut FunctionBuilder<'_>,
         jmod: &mut M,
@@ -928,6 +928,56 @@ where
 
     pub(crate) fn coerce_binding_to(&mut self, binding: CodegenValue, to: ArgRepr) -> ir::Value {
         coerce_binding_to(self.cx, self.b, self.jmod, binding, to)
+    }
+
+    /// Write `value` into field `field_idx` of the struct/tuple at
+    /// `struct_bits`, picking the typed setter for the value's
+    /// representation. Heap refs are published before the store.
+    pub(crate) fn struct_set_field(
+        &mut self,
+        struct_bits: ir::Value,
+        field_idx: usize,
+        value: CodegenValue,
+    ) {
+        let offset = self
+            .b
+            .ins()
+            .iconst(types::I32, (field_idx as i64) * SLOT_BYTES as i64);
+        match value {
+            CodegenValue::RawInt(raw)
+            | CodegenValue::Known {
+                payload: raw,
+                kind: fz_runtime::any_value::ValueKind::INT,
+            } => {
+                self.cx
+                    .struct_set_field_int(self.b, self.jmod, struct_bits, offset, raw);
+            }
+            CodegenValue::RawF64(raw) => {
+                self.cx
+                    .struct_set_field_float(self.b, self.jmod, struct_bits, offset, raw);
+            }
+            CodegenValue::Known {
+                payload,
+                kind: fz_runtime::any_value::ValueKind::FLOAT,
+            } => {
+                let raw = self.b.ins().bitcast(types::F64, MemFlags::new(), payload);
+                self.cx
+                    .struct_set_field_float(self.b, self.jmod, struct_bits, offset, raw);
+            }
+            CodegenValue::Known {
+                payload,
+                kind: fz_runtime::any_value::ValueKind::ATOM,
+            } => {
+                self.cx
+                    .struct_set_field_atom(self.b, self.jmod, struct_bits, offset, payload);
+            }
+            other => {
+                let value_ref = self.value_as_any_ref(other);
+                let value_ref = self.mark_published_ref_aliased(value_ref);
+                self.cx
+                    .struct_set_field_ref(self.b, self.jmod, struct_bits, offset, value_ref);
+            }
+        }
     }
 }
 

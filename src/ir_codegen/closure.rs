@@ -40,53 +40,6 @@ pub(crate) fn halt_cont_body_id_for(runtime: &RuntimeRefs, repr: ArgRepr) -> Fun
     }
 }
 
-pub(crate) fn emit_struct_set_field_value<M: cranelift_module::Module>(
-    cx: &mut CodegenFn<'_>,
-    b: &mut FunctionBuilder<'_>,
-    jmod: &mut M,
-    cache: &mut CodegenCache,
-    struct_bits: ir::Value,
-    field_idx: usize,
-    value: CodegenValue,
-) {
-    let offset = b
-        .ins()
-        .iconst(types::I32, (field_idx as i64) * SLOT_BYTES as i64);
-    match value {
-        CodegenValue::RawInt(raw)
-        | CodegenValue::Known {
-            payload: raw,
-            kind: fz_runtime::any_value::ValueKind::INT,
-        } => {
-            cx.struct_set_field_int(b, jmod, struct_bits, offset, raw);
-        }
-        CodegenValue::RawF64(raw) => {
-            cx.struct_set_field_float(b, jmod, struct_bits, offset, raw);
-        }
-        CodegenValue::Known {
-            payload,
-            kind: fz_runtime::any_value::ValueKind::FLOAT,
-        } => {
-            let raw = b.ins().bitcast(types::F64, MemFlags::new(), payload);
-            cx.struct_set_field_float(b, jmod, struct_bits, offset, raw);
-        }
-        CodegenValue::Known {
-            payload,
-            kind: fz_runtime::any_value::ValueKind::ATOM,
-        } => {
-            cx.struct_set_field_atom(b, jmod, struct_bits, offset, payload);
-        }
-        other => {
-            let value_ref = {
-                let mut body = cx.body(b, jmod, cache);
-                let value_ref = body.value_as_any_ref(other);
-                body.mark_published_ref_aliased(value_ref)
-            };
-            cx.struct_set_field_ref(b, jmod, struct_bits, offset, value_ref);
-        }
-    }
-}
-
 /// Resolve the outer-cont ref to forward into a new cont closure.
 /// For cont fns: loaded from closure env field 0. For non-cont native:
 /// `cont_param` already is the outer cont.
