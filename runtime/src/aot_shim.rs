@@ -537,7 +537,10 @@ fn dispatch_quantum(pid: u32, addrs: &ShimAddrs) {
 
     // Mark Running so a clean halt (no fz_receive_park call) is
     // distinguishable from Blocked/Ready after dispatch.
-    unsafe { (*proc_ptr).state = ProcessState::Running };
+    unsafe {
+        (*proc_ptr).state = ProcessState::Running;
+        (*proc_ptr).reset_reduction_budget();
+    };
 
     // fz-qw6 — selective-receive initial scan lifted to runtime::sched.
     let process = unsafe { &mut *proc_ptr };
@@ -577,6 +580,7 @@ fn dispatch_quantum(pid: u32, addrs: &ShimAddrs) {
             run_scheduler_closure(addrs.resume, closure);
         }
     }
+    unsafe { (*proc_ptr).sync_reduction_budget_from_runtime() };
 
     // Post-quantum state check.
     let state = unsafe { (*proc_ptr).state };

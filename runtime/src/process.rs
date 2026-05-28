@@ -283,6 +283,19 @@ impl Process {
 
     pub fn reset_reduction_budget(&mut self) {
         self.reductions_remaining = self.reductions_per_quantum;
+        crate::reductions::install_budget(self.reductions_remaining);
+    }
+
+    pub fn install_unbounded_reduction_budget(&mut self) {
+        self.reductions_remaining = i32::MAX;
+        crate::reductions::install_budget(i32::MAX);
+    }
+
+    pub fn sync_reduction_budget_from_runtime(&mut self) {
+        let remaining = crate::reductions::load().max(0);
+        let spent = self.reductions_remaining.saturating_sub(remaining).max(0);
+        self.reductions_remaining = remaining;
+        self.reductions_executed = self.reductions_executed.saturating_add(spent as u64);
     }
 
     pub fn spend_reductions(&mut self, amount: i32) -> bool {

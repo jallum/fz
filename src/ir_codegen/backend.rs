@@ -518,6 +518,10 @@ fn register_runtime_symbols(builder: &mut JITBuilder) {
     );
     // Cooperative yield-flag data.
     builder.symbol("FZ_SHOULD_YIELD", fz_runtime::yield_flag::jit_flag_ptr());
+    builder.symbol(
+        "FZ_REDUCTIONS_REMAINING",
+        fz_runtime::reductions::jit_remaining_ptr() as *const u8,
+    );
     // Test externs (e.g. the `_resource_test_dtor` counter used by
     // JIT-leg resource lifecycle tests). Production paths see no
     // extra symbols.

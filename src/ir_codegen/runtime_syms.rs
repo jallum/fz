@@ -55,10 +55,9 @@ fn decl_import<M: cranelift_module::Module>(
 pub(crate) fn declare_runtime_symbols<M: cranelift_module::Module>(
     jmod: &mut M,
 ) -> Result<RuntimeRefs, CodegenError> {
-    // FZ_SHOULD_YIELD is a 1-byte external data object.
-    let should_yield_data_id = jmod
-        .declare_data("FZ_SHOULD_YIELD", Linkage::Import, false, false)
-        .map_err(|e| CodegenError::new(format!("declare FZ_SHOULD_YIELD: {}", e)))?;
+    let reductions_remaining_data_id = jmod
+        .declare_data("FZ_REDUCTIONS_REMAINING", Linkage::Import, false, false)
+        .map_err(|e| CodegenError::new(format!("declare FZ_REDUCTIONS_REMAINING: {}", e)))?;
 
     let halt = declare_halt_runtime(jmod)?;
     let list = declare_list_runtime(jmod)?;
@@ -178,7 +177,7 @@ pub(crate) fn declare_runtime_symbols<M: cranelift_module::Module>(
         main_entry_id: scheduler.main_entry_id,
         drain_dtor_entry_id: scheduler.drain_dtor_entry_id,
         yield_mid_flight_id: scheduler.yield_mid_flight_id,
-        should_yield_data_id,
+        reductions_remaining_data_id,
     })
 }
 
@@ -1046,5 +1045,5 @@ pub(crate) struct RuntimeRefs {
     /// drains `pending_dtors` through this shim at task-exit.
     pub(super) drain_dtor_entry_id: FuncId,
     pub(super) yield_mid_flight_id: FuncId,
-    pub(super) should_yield_data_id: DataId,
+    pub(super) reductions_remaining_data_id: DataId,
 }

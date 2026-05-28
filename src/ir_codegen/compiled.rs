@@ -1511,6 +1511,7 @@ impl CompiledModule {
             b.as_mut().unwrap() as *mut Process
         });
         let _current_process = fz_runtime::process::CurrentProcessGuard::install(ptr);
+        current_process().install_unbounded_reduction_budget();
         self.run_internal(fn_id)
     }
 
@@ -1518,6 +1519,7 @@ impl CompiledModule {
     pub fn run_in(&self, fn_id: FnId, process: &mut Process) -> i64 {
         let ptr = process as *mut Process;
         let _current_process = fz_runtime::process::CurrentProcessGuard::install(ptr);
+        current_process().install_unbounded_reduction_budget();
         self.run_internal(fn_id)
     }
 

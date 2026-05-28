@@ -600,6 +600,7 @@ pub extern "C" fn fz_yield_mid_flight(cont_closure_bits: u64) -> *mut u8 {
     use crate::scheduler_hooks::YIELD_PTR;
     let p = current_process();
     p.scheduler_yields = p.scheduler_yields.saturating_add(1);
+    p.note_reduction_yield();
     p.set_runnable_closure(closure_addr_from_ref_word(
         cont_closure_bits,
         "fz_yield_mid_flight cont",

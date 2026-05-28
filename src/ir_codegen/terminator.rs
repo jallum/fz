@@ -1071,7 +1071,6 @@ fn emit_tail_call_term<
                 var_env,
                 is_native,
                 is_cont_fn,
-                this_spec_id,
                 frame_ptr,
                 host_ctx,
                 cont_param,
@@ -1113,7 +1112,6 @@ fn emit_native_tail_call<M: cranelift_module::Module>(
     var_env: &HashMap<u32, CodegenValue>,
     is_native: bool,
     is_cont_fn: bool,
-    this_spec_id: u32,
     frame_ptr: Option<ir::Value>,
     host_ctx: Option<ir::Value>,
     cont_param: Option<ir::Value>,
@@ -1185,12 +1183,9 @@ fn emit_native_tail_call<M: cranelift_module::Module>(
         // recursive tail calls reuse the same stack frame
         // (TCO). Without this, count_100k blows the stack.
         //
-        // Back-edge cooperative yield check: only
-        // allocation-capable native loop bodies can set the
-        // heap-pressure flag this path services. Pure scalar
-        // loops stay a plain return_call and keep their
-        // zero-allocation CLIF contract.
-        if is_back_edge && env.spec_heap_allocates[this_spec_id as usize] {
+        // Back-edge cooperative yield check: every native loop spends
+        // reductions, including pure scalar loops that do not allocate.
+        if is_back_edge {
             emit_back_edge_yield_check(
                 b,
                 jmod,
@@ -1254,10 +1249,10 @@ fn emit_native_tail_call<M: cranelift_module::Module>(
     }
 }
 
-// Cooperative back-edge yield check: read the heap-pressure flag;
-// if set, capture next-iteration args into a scheduler-runnable
-// closure and yield it as the primary mid-flight GC root. Otherwise
-// fall through to the caller's normal TCO path.
+// Cooperative back-edge yield check: spend one reduction from the
+// scheduler-installed budget; if exhausted, capture next-iteration args into a
+// scheduler-runnable closure and yield it as the primary mid-flight root.
+// Otherwise fall through to the caller's normal TCO path.
 fn emit_back_edge_yield_check<M: cranelift_module::Module>(
     b: &mut FunctionBuilder<'_>,
     jmod: &mut M,
@@ -1268,17 +1263,23 @@ fn emit_back_edge_yield_check<M: cranelift_module::Module>(
     native_args: &[ir::Value],
 ) {
     let runtime = env.runtime;
-    let yield_gv = jmod.declare_data_in_func(runtime.should_yield_data_id, b.func);
-    let flag_ptr = b.ins().global_value(types::I64, yield_gv);
-    let flag = b.ins().load(types::I8, MemFlags::trusted(), flag_ptr, 0);
-    let flag64 = b.ins().uextend(types::I64, flag);
-    let zero64 = b.ins().iconst(types::I64, 0);
-    let is_set = b.ins().icmp(IntCC::NotEqual, flag64, zero64);
+    let reductions_gv = jmod.declare_data_in_func(runtime.reductions_remaining_data_id, b.func);
+    let reductions_ptr = b.ins().global_value(types::I64, reductions_gv);
+    let remaining = b
+        .ins()
+        .load(types::I32, MemFlags::trusted(), reductions_ptr, 0);
+    let one = b.ins().iconst(types::I32, 1);
+    let new_remaining = b.ins().isub(remaining, one);
+    b.ins()
+        .store(MemFlags::trusted(), new_remaining, reductions_ptr, 0);
+    let exhausted = b
+        .ins()
+        .icmp_imm(IntCC::SignedLessThanOrEqual, new_remaining, 0);
     let yield_blk = b.create_block();
     let proceed_blk = b.create_block();
     let no_args: Vec<BlockArg> = Vec::new();
     b.ins()
-        .brif(is_set, yield_blk, &no_args, proceed_blk, &no_args);
+        .brif(exhausted, yield_blk, &no_args, proceed_blk, &no_args);
 
     b.switch_to_block(yield_blk);
     b.seal_block(yield_blk);

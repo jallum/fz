@@ -1,7 +1,6 @@
 //! Shared codegen support constants, recording controls, and small scans.
 
 use super::*;
-use crate::fz_ir::{Prim, Stmt};
 use cranelift_codegen::ir::{self, InstBuilder};
 use cranelift_frontend::FunctionBuilder;
 use std::collections::HashMap;
@@ -212,31 +211,6 @@ pub(crate) fn default_unit_for(ty: crate::ast::BitType) -> u32 {
 // fadd/fsub/fmul/fdiv when the result can stay RawF64. Typed float-float
 // and typed int-int fast paths sit in front of the dispatch entirely.
 // Eq/Neq do NOT promote: `1 == 1.0` is false.
-
-pub(crate) fn fn_may_allocate_heap(f: &crate::fz_ir::FnIr) -> bool {
-    f.blocks.iter().any(|block| {
-        block.stmts.iter().any(|stmt| {
-            let Stmt::Let(_, prim) = stmt;
-            matches!(
-                prim,
-                Prim::MakeTuple(..)
-                    | Prim::DestTupleBegin { .. }
-                    | Prim::DestTupleSet { .. }
-                    | Prim::DestListCons { .. }
-                    | Prim::MakeList(..)
-                    | Prim::MakeClosure(..)
-                    | Prim::MakeMap(..)
-                    | Prim::MapUpdate(..)
-                    | Prim::DestMapBegin { .. }
-                    | Prim::DestMapFreeze { .. }
-                    | Prim::MakeBitstring(..)
-                    | Prim::ConstBitstring(..)
-                    | Prim::BitReaderInit(..)
-                    | Prim::BitReadField { .. }
-            )
-        })
-    })
-}
 
 #[cfg(test)]
 thread_local! {

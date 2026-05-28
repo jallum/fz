@@ -455,6 +455,7 @@ impl<'a> Runtime<'a> {
             fz_runtime::yield_flag::clear();
             let prev = CURRENT_PROCESS.with(|c| c.replace(ptr));
             self.compiled.run_quantum(&mut task);
+            task.sync_reduction_budget_from_runtime();
             CURRENT_PROCESS.with(|c| c.set(prev));
             // Possible post-quantum states (fz-ul4.19.3):
             //
@@ -589,6 +590,10 @@ mod tests {
         let toks = Lexer::new(src).tokenize().expect("lex");
         let prog = Parser::new(toks).parse_program().expect("parse");
         lower_program(&mut crate::types::ConcreteTypes, &prog).expect("lower")
+    }
+
+    fn force_reduction_yield(task: &mut Process) {
+        task.reductions_per_quantum = 1;
     }
 
     fn test_int_ref(value: i64) -> AnyValueRef {
@@ -1099,10 +1104,7 @@ fn main(), do: sum(10, 0, nil)";
         .unwrap();
         let mut rt = Runtime::new(&compiled, 1);
         let pid = rt.spawn(entry);
-        // Force the GC watermark to null so any allocation immediately sets
-        // FZ_SHOULD_YIELD=1, triggering the back-edge yield on the first
-        // recursive call.
-        rt.tasks.get_mut(&pid).unwrap().heap.gc_watermark = std::ptr::null_mut();
+        force_reduction_yield(rt.tasks.get_mut(&pid).unwrap());
         rt.run_until_idle();
         let task = rt.task(pid).unwrap();
         assert_eq!(task.state, ProcessState::Exited);
@@ -1125,7 +1127,7 @@ fn main(), do: sumf(4, 0.0, nil)";
         .unwrap();
         let mut rt = Runtime::new(&compiled, 1);
         let pid = rt.spawn(entry);
-        rt.tasks.get_mut(&pid).unwrap().heap.gc_watermark = std::ptr::null_mut();
+        force_reduction_yield(rt.tasks.get_mut(&pid).unwrap());
         rt.run_until_idle();
         let task = rt.task(pid).unwrap();
         assert_eq!(task.state, ProcessState::Exited);
@@ -1149,7 +1151,7 @@ fn main(), do: sumf(4, 0.0, nil)";
         .unwrap();
         let mut rt = Runtime::new(&compiled, 1);
         let pid = rt.spawn(entry);
-        rt.tasks.get_mut(&pid).unwrap().heap.gc_watermark = std::ptr::null_mut();
+        force_reduction_yield(rt.tasks.get_mut(&pid).unwrap());
         rt.run_until_idle();
         let task = rt.task(pid).unwrap();
         assert_eq!(task.state, ProcessState::Exited);
@@ -1177,7 +1179,7 @@ fn main(), do: sumf(4, 0.0, nil)";
         .unwrap();
         let mut rt = Runtime::new(&compiled, 1);
         let pid = rt.spawn(entry);
-        rt.tasks.get_mut(&pid).unwrap().heap.gc_watermark = std::ptr::null_mut();
+        force_reduction_yield(rt.tasks.get_mut(&pid).unwrap());
         rt.run_until_idle();
         let task = rt.task(pid).unwrap();
         assert_eq!(task.state, ProcessState::Exited);
@@ -1205,7 +1207,7 @@ fn main(), do: sumf(4, 0.0, nil)";
         .unwrap();
         let mut rt = Runtime::new(&compiled, 1);
         let pid = rt.spawn(entry);
-        rt.tasks.get_mut(&pid).unwrap().heap.gc_watermark = std::ptr::null_mut();
+        force_reduction_yield(rt.tasks.get_mut(&pid).unwrap());
         rt.run_until_idle();
         let task = rt.task(pid).unwrap();
         assert_eq!(task.state, ProcessState::Exited);
@@ -1234,7 +1236,7 @@ fn main(), do: sum(10, 0, nil)";
         .unwrap();
         let mut rt = Runtime::new(&compiled, 1);
         let pid = rt.spawn(entry);
-        rt.tasks.get_mut(&pid).unwrap().heap.gc_watermark = std::ptr::null_mut();
+        force_reduction_yield(rt.tasks.get_mut(&pid).unwrap());
         rt.run_until_idle();
         let task = rt.task(pid).unwrap();
         assert!(
@@ -1262,15 +1264,43 @@ fn main(), do: sum(8, 0, nil)";
         let mut rt = Runtime::new(&compiled, 1);
         let pa = rt.spawn(entry);
         let pb = rt.spawn(entry);
-        // Force watermark on both processes.
-        rt.tasks.get_mut(&pa).unwrap().heap.gc_watermark = std::ptr::null_mut();
-        rt.tasks.get_mut(&pb).unwrap().heap.gc_watermark = std::ptr::null_mut();
+        force_reduction_yield(rt.tasks.get_mut(&pa).unwrap());
+        force_reduction_yield(rt.tasks.get_mut(&pb).unwrap());
         rt.run_until_idle();
         // sum(8,0,nil) = 8+7+...+1 = 36
         assert_eq!(rt.task(pa).unwrap().halt_value, 36);
         assert_eq!(rt.task(pb).unwrap().halt_value, 36);
         assert_eq!(rt.task(pa).unwrap().state, ProcessState::Exited);
         assert_eq!(rt.task(pb).unwrap().state, ProcessState::Exited);
+    }
+
+    #[test]
+    fn compiled_reductions_yield_allocation_light_loops() {
+        let src = "fn count(0, acc), do: acc\nfn count(n, acc), do: count(n - 1, acc + 1)\nfn main(), do: count(5000, 0)";
+        let m = lower_src(src);
+        let entry = m.fn_by_name("main").unwrap().id;
+        let compiled = compile(
+            &mut crate::types::ConcreteTypes,
+            &m,
+            &crate::telemetry::NullTelemetry,
+        )
+        .unwrap();
+        let mut rt = Runtime::new(&compiled, 1);
+        let pa = rt.spawn(entry);
+        let pb = rt.spawn(entry);
+        force_reduction_yield(rt.tasks.get_mut(&pa).unwrap());
+        force_reduction_yield(rt.tasks.get_mut(&pb).unwrap());
+
+        rt.run_until_idle();
+
+        let a = rt.task(pa).unwrap();
+        let b = rt.task(pb).unwrap();
+        assert_eq!(a.halt_value, 5000);
+        assert_eq!(b.halt_value, 5000);
+        assert!(a.reduction_yields > 0);
+        assert!(b.reduction_yields > 0);
+        assert_eq!(a.interpreter_yields, 0);
+        assert_eq!(b.interpreter_yields, 0);
     }
 
     /// quiet_quanta increments each quantum that completes without a
@@ -1317,7 +1347,7 @@ fn main(), do: sum(10, 0, nil)";
         .unwrap();
         let mut rt = Runtime::new(&compiled, 1);
         let pid = rt.spawn(entry);
-        rt.tasks.get_mut(&pid).unwrap().heap.gc_watermark = std::ptr::null_mut();
+        force_reduction_yield(rt.tasks.get_mut(&pid).unwrap());
         rt.run_until_idle();
         // After mid-flight GC fires, quiet_quanta is reset to 0 by the
         // scheduler, then incremented by 1 in the final (halting) quantum.
