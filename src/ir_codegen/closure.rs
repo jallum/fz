@@ -53,22 +53,17 @@ pub(crate) fn load_closure_capture_as_binding(
     repr: ArgRepr,
 ) -> CodegenValue {
     let index = b.ins().iconst(types::I64, idx as i64);
+    let mut cx = CodegenFn::new_runtime(b, jmod, runtime);
     match repr {
-        ArgRepr::RawInt => {
-            let fref = jmod.declare_func_in_func(runtime.closure_get_capture_i64_id, b.func);
-            let inst = b.ins().call(fref, &[closure_ref, index]);
-            CodegenValue::from_abi_value(b.inst_results(inst)[0], ArgRepr::RawInt)
-        }
-        ArgRepr::RawF64 => {
-            let fref = jmod.declare_func_in_func(runtime.closure_get_capture_f64_id, b.func);
-            let inst = b.ins().call(fref, &[closure_ref, index]);
-            CodegenValue::from_abi_value(b.inst_results(inst)[0], ArgRepr::RawF64)
-        }
-        ArgRepr::ValueRef => {
-            let fref = jmod.declare_func_in_func(runtime.closure_get_capture_ref_id, b.func);
-            let inst = b.ins().call(fref, &[closure_ref, index]);
-            CodegenValue::any_ref(b.inst_results(inst)[0])
-        }
+        ArgRepr::RawInt => CodegenValue::from_abi_value(
+            cx.closure_capture_i64(closure_ref, index),
+            ArgRepr::RawInt,
+        ),
+        ArgRepr::RawF64 => CodegenValue::from_abi_value(
+            cx.closure_capture_f64(closure_ref, index),
+            ArgRepr::RawF64,
+        ),
+        ArgRepr::ValueRef => CodegenValue::any_ref(cx.closure_capture_ref(closure_ref, index)),
         ArgRepr::Condition => unreachable!("closure captures are never condition-only"),
     }
 }
@@ -79,10 +74,9 @@ pub(crate) fn load_outer_cont_ref<M: cranelift_module::Module>(
     runtime: &RuntimeRefs,
     closure_ref: ir::Value,
 ) -> ir::Value {
-    let fref = jmod.declare_func_in_func(runtime.closure_get_capture_ref_id, b.func);
     let index = b.ins().iconst(types::I64, 0);
-    let inst = b.ins().call(fref, &[closure_ref, index]);
-    b.inst_results(inst)[0]
+    let mut cx = CodegenFn::new_runtime(b, jmod, runtime);
+    cx.closure_capture_ref(closure_ref, index)
 }
 
 pub(crate) fn load_closure_code_ref<M: cranelift_module::Module>(
@@ -91,9 +85,8 @@ pub(crate) fn load_closure_code_ref<M: cranelift_module::Module>(
     runtime: &RuntimeRefs,
     closure_ref: ir::Value,
 ) -> ir::Value {
-    let fref = jmod.declare_func_in_func(runtime.closure_code_ref_id, b.func);
-    let inst = b.ins().call(fref, &[closure_ref]);
-    b.inst_results(inst)[0]
+    let mut cx = CodegenFn::new_runtime(b, jmod, runtime);
+    cx.closure_code_ref(closure_ref)
 }
 
 pub(crate) fn load_closure_halt_kind_ref<M: cranelift_module::Module>(
@@ -102,9 +95,8 @@ pub(crate) fn load_closure_halt_kind_ref<M: cranelift_module::Module>(
     runtime: &RuntimeRefs,
     closure_ref: ir::Value,
 ) -> ir::Value {
-    let fref = jmod.declare_func_in_func(runtime.closure_halt_kind_ref_id, b.func);
-    let inst = b.ins().call(fref, &[closure_ref]);
-    b.inst_results(inst)[0]
+    let mut cx = CodegenFn::new_runtime(b, jmod, runtime);
+    cx.closure_halt_kind_ref(closure_ref)
 }
 
 pub(crate) fn store_closure_capture_ref_word<M: cranelift_module::Module>(
@@ -117,9 +109,9 @@ pub(crate) fn store_closure_capture_ref_word<M: cranelift_module::Module>(
     value: ir::Value,
 ) {
     let value = mark_published_ref_aliased(b, jmod, runtime, value);
-    let fref = jmod.declare_func_in_func(runtime.closure_set_capture_ref_id, b.func);
     let index = b.ins().iconst(types::I64, idx as i64);
-    b.ins().call(fref, &[closure_ref, index, value]);
+    let mut cx = CodegenFn::new_runtime(b, jmod, runtime);
+    cx.set_closure_capture_ref(closure_ref, index, value);
 }
 
 fn materialize_cont_word<M: cranelift_module::Module>(
@@ -128,9 +120,8 @@ fn materialize_cont_word<M: cranelift_module::Module>(
     runtime: &RuntimeRefs,
     value: ir::Value,
 ) -> ir::Value {
-    let fref = jmod.declare_func_in_func(runtime.materialize_cont_id, b.func);
-    let inst = b.ins().call(fref, &[value]);
-    b.inst_results(inst)[0]
+    let mut cx = CodegenFn::new_runtime(b, jmod, runtime);
+    cx.materialize_cont(value)
 }
 
 pub(crate) fn store_closure_capture_i64<M: cranelift_module::Module>(
@@ -141,9 +132,9 @@ pub(crate) fn store_closure_capture_i64<M: cranelift_module::Module>(
     idx: usize,
     value: ir::Value,
 ) {
-    let fref = jmod.declare_func_in_func(runtime.closure_set_capture_i64_id, b.func);
     let index = b.ins().iconst(types::I64, idx as i64);
-    b.ins().call(fref, &[closure_ref, index, value]);
+    let mut cx = CodegenFn::new_runtime(b, jmod, runtime);
+    cx.set_closure_capture_i64(closure_ref, index, value);
 }
 
 pub(crate) fn store_closure_capture_f64<M: cranelift_module::Module>(
@@ -154,9 +145,9 @@ pub(crate) fn store_closure_capture_f64<M: cranelift_module::Module>(
     idx: usize,
     value: ir::Value,
 ) {
-    let fref = jmod.declare_func_in_func(runtime.closure_set_capture_f64_id, b.func);
     let index = b.ins().iconst(types::I64, idx as i64);
-    b.ins().call(fref, &[closure_ref, index, value]);
+    let mut cx = CodegenFn::new_runtime(b, jmod, runtime);
+    cx.set_closure_capture_f64(closure_ref, index, value);
 }
 
 pub(crate) fn store_outer_cont_capture(

@@ -31,26 +31,40 @@ impl FunctionImports {
     }
 }
 
-pub(crate) struct CodegenFn<'builder, 'ctx, 'env, M: cranelift_module::Module> {
+pub(crate) struct CodegenFn<'builder, 'ctx, M: cranelift_module::Module> {
     pub(crate) b: &'ctx mut FunctionBuilder<'builder>,
     pub(crate) jmod: &'ctx mut M,
-    pub(crate) env: &'ctx CodegenEnv<'env>,
-    pub(crate) cache: &'ctx mut CodegenCache,
+    runtime: &'ctx RuntimeRefs,
+    cache: Option<&'ctx mut CodegenCache>,
     imports: FunctionImports,
 }
 
-impl<'builder, 'ctx, 'env, M: cranelift_module::Module> CodegenFn<'builder, 'ctx, 'env, M> {
+impl<'builder, 'ctx, M: cranelift_module::Module> CodegenFn<'builder, 'ctx, M> {
     pub(crate) fn new(
         b: &'ctx mut FunctionBuilder<'builder>,
         jmod: &'ctx mut M,
-        env: &'ctx CodegenEnv<'env>,
+        env: &'ctx CodegenEnv<'_>,
         cache: &'ctx mut CodegenCache,
     ) -> Self {
         Self {
             b,
             jmod,
-            env,
-            cache,
+            runtime: env.runtime,
+            cache: Some(cache),
+            imports: FunctionImports::default(),
+        }
+    }
+
+    pub(crate) fn new_runtime(
+        b: &'ctx mut FunctionBuilder<'builder>,
+        jmod: &'ctx mut M,
+        runtime: &'ctx RuntimeRefs,
+    ) -> Self {
+        Self {
+            b,
+            jmod,
+            runtime,
+            cache: None,
             imports: FunctionImports::default(),
         }
     }
@@ -70,11 +84,15 @@ impl<'builder, 'ctx, 'env, M: cranelift_module::Module> CodegenFn<'builder, 'ctx
     }
 
     pub(crate) fn ref_tag(&mut self, value_ref: ir::Value) -> ir::Value {
-        self.call_func1(self.env.runtime.type_of_id, &[value_ref])
+        self.call_func1(self.runtime.type_of_id, &[value_ref])
     }
 
     pub(crate) fn empty_list_ref(&mut self) -> ir::Value {
-        emit_empty_list_value_ref_word(self.b, self.cache)
+        let cache = self
+            .cache
+            .as_deref_mut()
+            .expect("empty list refs require a CodegenCache");
+        emit_empty_list_value_ref_word(self.b, cache)
     }
 
     pub(crate) fn list_tail_ref_word(&mut self, tail: ListTailBits) -> ir::Value {
@@ -89,19 +107,100 @@ impl<'builder, 'ctx, 'env, M: cranelift_module::Module> CodegenFn<'builder, 'ctx
     }
 
     pub(crate) fn list_head(&mut self, list_ref: ir::Value) -> ir::Value {
-        self.call_func1(self.env.runtime.list_head_fallback_id, &[list_ref])
+        self.call_func1(self.runtime.list_head_fallback_id, &[list_ref])
     }
 
     pub(crate) fn list_head_int(&mut self, list_ref: ir::Value) -> ir::Value {
-        self.call_func1(self.env.runtime.list_head_int_ref_id, &[list_ref])
+        self.call_func1(self.runtime.list_head_int_ref_id, &[list_ref])
     }
 
     pub(crate) fn list_head_float(&mut self, list_ref: ir::Value) -> ir::Value {
-        self.call_func1(self.env.runtime.list_head_float_ref_id, &[list_ref])
+        self.call_func1(self.runtime.list_head_float_ref_id, &[list_ref])
     }
 
     pub(crate) fn list_tail(&mut self, list_ref: ir::Value) -> ir::Value {
-        self.call_func1(self.env.runtime.list_tail_fallback_id, &[list_ref])
+        self.call_func1(self.runtime.list_tail_fallback_id, &[list_ref])
+    }
+
+    pub(crate) fn closure_capture_i64(
+        &mut self,
+        closure_ref: ir::Value,
+        index: ir::Value,
+    ) -> ir::Value {
+        self.call_func1(
+            self.runtime.closure_get_capture_i64_id,
+            &[closure_ref, index],
+        )
+    }
+
+    pub(crate) fn closure_capture_f64(
+        &mut self,
+        closure_ref: ir::Value,
+        index: ir::Value,
+    ) -> ir::Value {
+        self.call_func1(
+            self.runtime.closure_get_capture_f64_id,
+            &[closure_ref, index],
+        )
+    }
+
+    pub(crate) fn closure_capture_ref(
+        &mut self,
+        closure_ref: ir::Value,
+        index: ir::Value,
+    ) -> ir::Value {
+        self.call_func1(
+            self.runtime.closure_get_capture_ref_id,
+            &[closure_ref, index],
+        )
+    }
+
+    pub(crate) fn closure_code_ref(&mut self, closure_ref: ir::Value) -> ir::Value {
+        self.call_func1(self.runtime.closure_code_ref_id, &[closure_ref])
+    }
+
+    pub(crate) fn closure_halt_kind_ref(&mut self, closure_ref: ir::Value) -> ir::Value {
+        self.call_func1(self.runtime.closure_halt_kind_ref_id, &[closure_ref])
+    }
+
+    pub(crate) fn set_closure_capture_ref(
+        &mut self,
+        closure_ref: ir::Value,
+        index: ir::Value,
+        value: ir::Value,
+    ) {
+        self.call_func(
+            self.runtime.closure_set_capture_ref_id,
+            &[closure_ref, index, value],
+        );
+    }
+
+    pub(crate) fn set_closure_capture_i64(
+        &mut self,
+        closure_ref: ir::Value,
+        index: ir::Value,
+        value: ir::Value,
+    ) {
+        self.call_func(
+            self.runtime.closure_set_capture_i64_id,
+            &[closure_ref, index, value],
+        );
+    }
+
+    pub(crate) fn set_closure_capture_f64(
+        &mut self,
+        closure_ref: ir::Value,
+        index: ir::Value,
+        value: ir::Value,
+    ) {
+        self.call_func(
+            self.runtime.closure_set_capture_f64_id,
+            &[closure_ref, index, value],
+        );
+    }
+
+    pub(crate) fn materialize_cont(&mut self, value: ir::Value) -> ir::Value {
+        self.call_func1(self.runtime.materialize_cont_id, &[value])
     }
 }
 
