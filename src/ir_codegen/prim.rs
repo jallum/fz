@@ -352,11 +352,11 @@ pub(crate) fn lower_collection_prim<
     let tuple_schema_ids = env.tuple_schema_ids;
     let v: LowerOut = match prim {
         Prim::ListHead(c) => {
-            let list_ref = known_list_ref_for_var(var_env, b, jmod, cache, block_id, c.0);
+            let list_ref = known_list_ref_for_var(var_env, b, cache, block_id, c.0);
             LowerOut::ValueRefWord(cx.list_head(b, jmod, list_ref))
         }
         Prim::ListTail(c) => {
-            let list_ref = known_list_ref_for_var(var_env, b, jmod, cache, block_id, c.0);
+            let list_ref = known_list_ref_for_var(var_env, b, cache, block_id, c.0);
             LowerOut::ValueRefWord(cx.list_tail(b, jmod, list_ref))
         }
         Prim::MakeList(elems, tail) => {
@@ -1036,9 +1036,7 @@ pub(crate) fn lower_prim<
             // dispatch fallback) pay it.
             match op {
                 BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod => {
-                    lower_arith_binop(
-                        cx, b, jmod, t, fn_types, var_env, cache, runtime, *op, *a, *bv,
-                    )
+                    lower_arith_binop(cx, b, jmod, t, fn_types, var_env, runtime, *op, *a, *bv)
                 }
                 BinOp::Eq | BinOp::Neq => lower_eq_binop(
                     cx, b, jmod, t, fn_types, var_env, cache, runtime, *op, *a, *bv, dest_var,
@@ -1171,18 +1169,18 @@ pub(crate) fn lower_prim<
             if list_projection_is_safe(t, fn_types, *c, block_env)
                 && ty_is_int(t, fn_types, dest_var) =>
         {
-            let list_ref = known_list_ref_for_var(var_env, b, jmod, cache, block_id, c.0);
+            let list_ref = known_list_ref_for_var(var_env, b, cache, block_id, c.0);
             Ok(LowerOut::RawI64(cx.list_head_int(b, jmod, list_ref)))
         }
         Prim::ListHead(c)
             if list_projection_is_safe(t, fn_types, *c, block_env)
                 && ty_is_float(t, fn_types, dest_var) =>
         {
-            let list_ref = known_list_ref_for_var(var_env, b, jmod, cache, block_id, c.0);
+            let list_ref = known_list_ref_for_var(var_env, b, cache, block_id, c.0);
             Ok(LowerOut::RawF64(cx.list_head_float(b, jmod, list_ref)))
         }
         Prim::ListTail(c) if list_projection_is_safe(t, fn_types, *c, block_env) => {
-            let list_ref = known_list_ref_for_var(var_env, b, jmod, cache, block_id, c.0);
+            let list_ref = known_list_ref_for_var(var_env, b, cache, block_id, c.0);
             Ok(LowerOut::ValueRefWord(cx.list_tail(b, jmod, list_ref)))
         }
         Prim::ListHead(..)
@@ -1417,7 +1415,6 @@ fn lower_arith_binop<M, T>(
     t: &mut T,
     fn_types: &crate::ir_planner::SpecPlan,
     var_env: &HashMap<u32, CodegenValue>,
-    _cache: &mut CodegenCache,
     runtime: &RuntimeRefs,
     op: BinOp,
     a: crate::fz_ir::Var,
@@ -1817,15 +1814,8 @@ fn lower_extern_fz_send<M: cranelift_module::Module>(
     let receiver = as_raw_i64(cx, var_env, b, jmod, args[0].0);
     let msg_binding = *var_env.get(&args[1].0).expect("fz_send msg var");
     let mut msg_args = Vec::with_capacity(1);
-    push_binding_as_abi_args(
-        cx,
-        &mut msg_args,
-        b,
-        jmod,
-        cache,
-        msg_binding,
-        ArgRepr::ValueRef,
-    );
+    cx.body(b, jmod, cache)
+        .push_binding_as_abi_arg(&mut msg_args, msg_binding, ArgRepr::ValueRef);
     let msg_ref = msg_args[0];
     let sig = sig1(&[types::I64, types::I64], &[types::I64]);
     let func_id = jmod
@@ -2149,7 +2139,8 @@ fn emit_capturing_closure<M: cranelift_module::Module>(
             store_closure_capture_ref_word(cx, b, jmod, cl_ptr, n_caps, i, capture);
         } else {
             let mut capture = Vec::with_capacity(1);
-            push_binding_as_abi_args(cx, &mut capture, b, jmod, cache, *vb, ArgRepr::ValueRef);
+            cx.body(b, jmod, cache)
+                .push_binding_as_abi_arg(&mut capture, *vb, ArgRepr::ValueRef);
             store_closure_capture_ref_word(cx, b, jmod, cl_ptr, n_caps, i, capture[0]);
         }
     }

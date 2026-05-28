@@ -643,6 +643,100 @@ where
         }
     }
 
+    pub(crate) fn store_typed_args_into_callee_frame(
+        &mut self,
+        callee_schema: &Schema,
+        callee_frame: ir::Value,
+        args: &[(ir::Value, ArgRepr)],
+        slot_base: usize,
+    ) {
+        for (i, &(value, from)) in args.iter().enumerate() {
+            let slot_idx = slot_base + i;
+            let off = HEADER_SIZE + SLOT_BYTES * (slot_idx as i32);
+            match callee_schema.fields[slot_idx].kind {
+                FieldKind::RawF64 => {
+                    let f = match from {
+                        ArgRepr::RawF64 => value,
+                        _ => tagged_to_raw_f64_unsupported(self.b, value),
+                    };
+                    self.b
+                        .ins()
+                        .store(MemFlags::trusted(), f, callee_frame, off);
+                }
+                FieldKind::RawI64 => {
+                    let n = match from {
+                        ArgRepr::RawInt => value,
+                        _ => panic!("RawI64 frame slot requires raw int ABI value"),
+                    };
+                    self.b
+                        .ins()
+                        .store(MemFlags::trusted(), n, callee_frame, off);
+                }
+                FieldKind::AnyValue => {
+                    let value_ref = match from {
+                        ArgRepr::ValueRef => value,
+                        ArgRepr::RawInt => self.cx.box_int_for_any(self.b, self.jmod, value),
+                        ArgRepr::RawF64 => self.cx.box_float_for_any(self.b, self.jmod, value),
+                        ArgRepr::Condition => {
+                            let atom = bool_to_fz(self.b, self.cache, value);
+                            self.cx.box_atom_for_any(self.b, self.jmod, atom)
+                        }
+                    };
+                    self.b
+                        .ins()
+                        .store(MemFlags::trusted(), value_ref, callee_frame, off);
+                }
+                FieldKind::RawBytes(_) => {
+                    self.b
+                        .ins()
+                        .store(MemFlags::trusted(), value, callee_frame, off);
+                }
+            }
+        }
+    }
+
+    pub(crate) fn coerce_call_args(
+        &mut self,
+        args: &[crate::fz_ir::Var],
+        callee_param_reprs: &[ArgRepr],
+        var_env: &HashMap<u32, CodegenValue>,
+    ) -> Vec<ir::Value> {
+        let mut out = Vec::with_capacity(args.len() + 1);
+        for (i, av) in args.iter().enumerate() {
+            let binding = *var_env.get(&av.0).expect("unbound call arg");
+            self.push_binding_as_abi_arg(&mut out, binding, callee_param_reprs[i]);
+        }
+        out
+    }
+
+    pub(crate) fn push_binding_as_abi_arg(
+        &mut self,
+        out: &mut Vec<ir::Value>,
+        binding: CodegenValue,
+        to: ArgRepr,
+    ) {
+        if to == ArgRepr::ValueRef {
+            out.push(match binding {
+                CodegenValue::RawInt(value) => {
+                    emit_raw_int_as_abi_value_ref(self.cx, self.b, self.jmod, value)
+                }
+                CodegenValue::RawF64(value) => {
+                    emit_raw_float_as_abi_value_ref(self.cx, self.b, self.jmod, value)
+                }
+                CodegenValue::Condition(value) => {
+                    let atom = bool_to_fz(self.b, self.cache, value);
+                    emit_raw_atom_as_abi_value_ref(self.cx, self.b, self.jmod, atom)
+                }
+                CodegenValue::AnyRef(value) => value,
+                CodegenValue::Known { payload, kind } => {
+                    box_known_non_heap_as_any_ref(self.cx, self.b, self.jmod, payload, kind)
+                }
+            });
+        } else {
+            out.push(self.coerce_binding_to(binding, to));
+        }
+    }
+
     pub(crate) fn coerce_binding_to(&mut self, binding: CodegenValue, to: ArgRepr) -> ir::Value {
         coerce_binding_to(self.cx, self.b, self.jmod, binding, to)
     }
@@ -807,6 +901,16 @@ mod tests {
             !include_str!("call.rs").contains("pub(crate) fn store_bindings_into_callee_frame"),
             "callee-frame binding stores should be CodegenFn body operations, not free helpers"
         );
+        let value_source = include_str!("value.rs");
+        assert!(
+            !value_source.contains("pub(crate) fn coerce_call_args")
+                && !value_source.contains("pub(crate) fn push_binding_as_abi_args"),
+            "call argument ABI coercion should live on CodegenFnBody"
+        );
+        assert!(
+            !include_str!("call.rs").contains("pub(crate) fn store_typed_args_into_callee_frame"),
+            "typed callee-frame stores should be CodegenFn body operations, not free helpers"
+        );
         for (name, source) in [
             ("call.rs", include_str!("call.rs")),
             ("closure.rs", include_str!("closure.rs")),
@@ -824,6 +928,9 @@ mod tests {
                 && context_source.contains("fn list_tail_ref_word(")
                 && context_source.contains("fn store_frame_value_dynamic(")
                 && context_source.contains("fn store_bindings_into_callee_frame(")
+                && context_source.contains("fn store_typed_args_into_callee_frame(")
+                && context_source.contains("fn coerce_call_args(")
+                && context_source.contains("fn push_binding_as_abi_arg(")
                 && context_source.contains("fn halt_implicit(")
                 && context_source.contains("fn alloc_frame(")
                 && context_source.contains("fn coerce_binding_to("),

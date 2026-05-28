@@ -3,7 +3,7 @@
 use super::*;
 use cranelift_codegen::ir::{self, BlockArg, InstBuilder, MemFlags, condcodes::IntCC, types};
 use cranelift_frontend::FunctionBuilder;
-use fz_runtime::heap::{FieldKind, Schema};
+use fz_runtime::heap::Schema;
 use std::collections::HashMap;
 
 pub(crate) fn emit_halt_for_binding<M: cranelift_module::Module>(
@@ -183,54 +183,6 @@ pub(crate) fn emit_call<M: cranelift_module::Module>(
         .store_bindings_into_callee_frame(callee_schema, callee_frame, args, 1);
 
     b.ins().return_(&[callee_frame]);
-}
-
-pub(crate) fn store_typed_args_into_callee_frame<M: cranelift_module::Module>(
-    cx: &mut CodegenFn<'_>,
-    b: &mut FunctionBuilder<'_>,
-    jmod: &mut M,
-    cache: &mut CodegenCache,
-    callee_schema: &Schema,
-    callee_frame: ir::Value,
-    args: &[(ir::Value, ArgRepr)],
-    slot_base: usize,
-) {
-    for (i, &(value, from)) in args.iter().enumerate() {
-        let slot_idx = slot_base + i;
-        let off = HEADER_SIZE + SLOT_BYTES * (slot_idx as i32);
-        match callee_schema.fields[slot_idx].kind {
-            FieldKind::RawF64 => {
-                let f = match from {
-                    ArgRepr::RawF64 => value,
-                    _ => tagged_to_raw_f64_unsupported(b, value),
-                };
-                b.ins().store(MemFlags::trusted(), f, callee_frame, off);
-            }
-            FieldKind::RawI64 => {
-                let n = match from {
-                    ArgRepr::RawInt => value,
-                    _ => panic!("RawI64 frame slot requires raw int ABI value"),
-                };
-                b.ins().store(MemFlags::trusted(), n, callee_frame, off);
-            }
-            FieldKind::AnyValue => {
-                let value_ref = match from {
-                    ArgRepr::ValueRef => value,
-                    ArgRepr::RawInt => cx.box_int_for_any(b, jmod, value),
-                    ArgRepr::RawF64 => cx.box_float_for_any(b, jmod, value),
-                    ArgRepr::Condition => {
-                        let atom = bool_to_fz(b, cache, value);
-                        cx.box_atom_for_any(b, jmod, atom)
-                    }
-                };
-                b.ins()
-                    .store(MemFlags::trusted(), value_ref, callee_frame, off);
-            }
-            FieldKind::RawBytes(_) => {
-                b.ins().store(MemFlags::trusted(), value, callee_frame, off);
-            }
-        }
-    }
 }
 
 /// Term::TailCall: if callee shares schema with caller, overwrite caller's

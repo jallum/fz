@@ -7,11 +7,12 @@ mutable per-function `CodegenCache`, and function-local imports.
 `CodegenFn` is the fz-owned semantic boundary for that unit of work. Ordinary
 lowering constructs one `CodegenFn<BodyContext>` per lowered fz function body;
 it owns the runtime refs and the function-local `FuncId -> FuncRef` import
-table. Helpers still receive the Cranelift builder, module, and cache
-explicitly because those borrows are short-lived, but semantic operations such
-as list access, closure capture access, value boxing/unboxing, struct field
-writes, owned-cons reuse, and alias publication should flow through
-`CodegenFn`.
+table. The short-lived `CodegenFnBody` view carries the active
+`FunctionBuilder`, module, and per-function cache while a body operation is
+being emitted. Semantic operations such as list access, closure capture
+access, value boxing/unboxing, struct field writes, owned-cons reuse, argument
+coercion, typed frame stores, and alias publication should flow through these
+contexts instead of threading raw lowering plumbing through helper signatures.
 
 Value coercion is part of that semantic surface. Lowering code should call
 methods such as `cx.value_as_any_ref`, `cx.value_raw_int`, `cx.value_truthy`,
@@ -34,9 +35,10 @@ When a lowering site needs the current `FunctionBuilder`, module, and
 and call intent methods on that body surface. This keeps Rust's explicit
 mutable borrows while giving call sites one semantic receiver to migrate
 toward; do not hide these borrows behind raw pointers or parallel local caches.
-The body surface should grow only with semantic operation names that have
-active migrated callers, rather than by exposing generic builder or cache
-accessors.
+Prefer `body.operation(domain_inputs...)` over helpers shaped like
+`helper(cx, b, jmod, cache, ...)`. The body surface should grow only with
+semantic operation names that have active migrated callers, rather than by
+exposing generic builder or cache accessors.
 
 Direct `declare_func_in_func` use belongs at module-construction boundaries,
 dynamic user-function calls, or inside `CodegenFn`/semantic operation
@@ -59,9 +61,9 @@ exception.
 
 Current signal: `call.rs`, `closure.rs`, `entry.rs`, and `support.rs` have zero
 direct `declare_func_in_func` imports; `call.rs`, `closure.rs`, and
-`support.rs` use `CodegenFn::body(...)` for migrated value/list operations; and
-the retired `support::list_tail_ref_word` and `call::store_frame_value_dynamic`
-free helpers are pinned out by source tests. Larger `prim.rs` and
+`support.rs` use `CodegenFn::body(...)` for migrated value/list operations;
+call-argument coercion and typed callee-frame stores live on `CodegenFnBody`;
+and retired free helpers are pinned out by source tests. Larger `prim.rs` and
 `terminator.rs` still contain documented boundary imports for dynamic calls,
 externs, data imports, and broad lowering flows; reduce those only by moving a
 complete semantic operation behind `CodegenFn` or `CodegenFnBody`.

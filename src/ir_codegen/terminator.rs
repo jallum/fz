@@ -554,7 +554,8 @@ fn emit_return_term<
                     let binding = *var_env.get(&field.0).expect("unbound tuple return field");
                     let repr = binding.repr();
                     push_repr_param(&mut sig, repr);
-                    push_binding_as_abi_args(cx, &mut cont_args, b, jmod, cache, binding, repr);
+                    cx.body(b, jmod, cache)
+                        .push_binding_as_abi_arg(&mut cont_args, binding, repr);
                 }
                 sig.params.push(AbiParam::new(types::I64));
                 sig.returns.push(AbiParam::new(types::I64));
@@ -593,7 +594,11 @@ fn emit_return_term<
             sig.returns.push(AbiParam::new(types::I64));
             let sigref = b.import_signature(sig);
             let mut cont_args = Vec::with_capacity(2);
-            push_binding_as_abi_args(cx, &mut cont_args, b, jmod, cache, binding, my_return_repr);
+            cx.body(b, jmod, cache).push_binding_as_abi_arg(
+                &mut cont_args,
+                binding,
+                my_return_repr,
+            );
             cont_args.push(cont_val);
             b.ins().return_call_indirect(sigref, code, &cont_args);
         } else if cont_ptr_known_null {
@@ -705,7 +710,8 @@ fn emit_call_term<
             let callee_fid = *fn_ids.get(&callee_sid).expect("callee fn_id missing");
             let callee_fref = jmod.declare_func_in_func(callee_fid, b.func);
             let mut native_args =
-                coerce_call_args(cx, &hi_arg, callee_param_reprs, var_env, b, jmod, cache);
+                cx.body(b, jmod, cache)
+                    .coerce_call_args(&hi_arg, callee_param_reprs, var_env);
             native_args.push(list_tail_destination_arg(b, cache));
             let cap_bindings = vec![
                 closure_capture_for_var(cx, var_env, b, jmod, pivot_capture.0, cache),
@@ -773,7 +779,8 @@ fn emit_call_term<
                 let callee_fid = *fn_ids.get(&callee_sid).expect("callee fn_id missing");
                 let callee_fref = jmod.declare_func_in_func(callee_fid, b.func);
                 let mut native_args =
-                    coerce_call_args(cx, args, callee_param_reprs, var_env, b, jmod, cache);
+                    cx.body(b, jmod, cache)
+                        .coerce_call_args(args, callee_param_reprs, var_env);
                 native_args.push(pivot_tail);
                 let tail_cont_arg = if is_cont_fn {
                     let self_val = cont_param.expect("cont fn binds self via cont_param");
@@ -879,7 +886,9 @@ fn emit_native_call_with_cont<
     let callee_ret_repr = return_reprs[callee_sid as usize];
     let callee_fid = *fn_ids.get(&callee_sid).expect("callee fn_id missing");
     let callee_fref = jmod.declare_func_in_func(callee_fid, b.func);
-    let mut native_args = coerce_call_args(cx, args, callee_param_reprs, var_env, b, jmod, cache);
+    let mut native_args =
+        cx.body(b, jmod, cache)
+            .coerce_call_args(args, callee_param_reprs, var_env);
     // Closure-target sig is `(args..., self, cont) tail`. Direct
     // callers pass the per-Process static singleton as `self`.
     // The zero-cap invariant (asserted at closure_target_fns
@@ -1018,7 +1027,8 @@ fn emit_native_call_with_cont<
             let from = var_env.get(&cv.0).map_or(ArgRepr::ValueRef, |vb| vb.repr());
             payload.push((*val, from));
         }
-        store_typed_args_into_callee_frame(cx, b, jmod, cache, cont_schema, cf, &payload, 1);
+        cx.body(b, jmod, cache)
+            .store_typed_args_into_callee_frame(cont_schema, cf, &payload, 1);
         b.ins().return_(&[cf]);
     }
 }
@@ -1129,12 +1139,8 @@ fn emit_native_tail_call<M: cranelift_module::Module>(
     for (i, av) in args.iter().enumerate() {
         let binding = *var_env.get(&av.0).expect("unbound call arg");
         let to = callee_param_reprs[i];
-        if to == ArgRepr::ValueRef {
-            push_binding_as_abi_args(cx, &mut native_args, b, jmod, cache, binding, to);
-        } else {
-            let value = coerce_binding_to(cx, b, jmod, binding, to);
-            native_args.push(value);
-        }
+        cx.body(b, jmod, cache)
+            .push_binding_as_abi_arg(&mut native_args, binding, to);
         mid_flight_arg_shapes.push(MidFlightArgShape::Value(to));
     }
     // TailCall to a closure-target fn: insert static
@@ -1410,7 +1416,8 @@ fn emit_call_closure<
                     .get(n_caps + i)
                     .copied()
                     .unwrap_or(ArgRepr::ValueRef);
-                push_binding_as_abi_args(cx, &mut direct_args, b, jmod, cache, binding, to);
+                cx.body(b, jmod, cache)
+                    .push_binding_as_abi_arg(&mut direct_args, binding, to);
             }
             direct_args.push(cl_val);
             direct_args.push(cf);
@@ -1445,12 +1452,8 @@ fn emit_call_closure<
         let mut indirect_args: Vec<ir::Value> = Vec::with_capacity(arg_vals.len() + 2);
         for (i, _v) in arg_vals.iter().enumerate() {
             let binding = *var_env.get(&args[i].0).expect("unbound callclosure arg");
-            push_binding_as_abi_args(
-                cx,
+            cx.body(b, jmod, cache).push_binding_as_abi_arg(
                 &mut indirect_args,
-                b,
-                jmod,
-                cache,
                 binding,
                 ArgRepr::ValueRef,
             );
@@ -1566,7 +1569,8 @@ fn emit_tail_call_closure<
                     .get(n_caps + i)
                     .copied()
                     .unwrap_or(ArgRepr::ValueRef);
-                push_binding_as_abi_args(cx, &mut direct_args, b, jmod, cache, binding, to);
+                cx.body(b, jmod, cache)
+                    .push_binding_as_abi_arg(&mut direct_args, binding, to);
             }
             direct_args.push(cl_val);
             direct_args.push(my_cont);
@@ -1594,12 +1598,8 @@ fn emit_tail_call_closure<
                 let binding = *var_env
                     .get(&args[i].0)
                     .expect("unbound tailcallclosure arg");
-                push_binding_as_abi_args(
-                    cx,
+                cx.body(b, jmod, cache).push_binding_as_abi_arg(
                     &mut indirect_args,
-                    b,
-                    jmod,
-                    cache,
                     binding,
                     ArgRepr::ValueRef,
                 );
