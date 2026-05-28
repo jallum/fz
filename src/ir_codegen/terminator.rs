@@ -1953,7 +1953,7 @@ fn build_park_record<
                 cont_param,
                 frame_ptr,
             );
-            let unboxed = as_raw_i64(cx, var_env, b, jmod, a.timeout.0);
+            let unboxed = cx.site(b, jmod).as_raw_i64(var_env, a.timeout.0);
             (unboxed, cl_ptr)
         }
         None => {

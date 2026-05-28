@@ -87,7 +87,6 @@ impl<'env> CodegenFn<'env> {
             .entry(id)
             .or_insert_with(|| jmod.declare_func_in_func(id, b.func))
     }
-
 }
 
 /// One fz function body's call sites share a `CodegenFn` (runtime refs +
@@ -279,7 +278,12 @@ pub(crate) trait CallSite<'env, 'fb, M: cranelift_module::Module> {
         self.call1(id, &[value])
     }
 
-    fn struct_set_field_int(&mut self, struct_bits: ir::Value, offset: ir::Value, value: ir::Value) {
+    fn struct_set_field_int(
+        &mut self,
+        struct_bits: ir::Value,
+        offset: ir::Value,
+        value: ir::Value,
+    ) {
         let id = self.parts().0.runtime.struct_set_field_int_id;
         self.call(id, &[struct_bits, offset, value]);
     }
@@ -304,7 +308,12 @@ pub(crate) trait CallSite<'env, 'fb, M: cranelift_module::Module> {
         self.call(id, &[struct_bits, offset, value]);
     }
 
-    fn struct_set_field_ref(&mut self, struct_bits: ir::Value, offset: ir::Value, value: ir::Value) {
+    fn struct_set_field_ref(
+        &mut self,
+        struct_bits: ir::Value,
+        offset: ir::Value,
+        value: ir::Value,
+    ) {
         let id = self.parts().0.runtime.struct_set_field_ref_id;
         self.call(id, &[struct_bits, offset, value]);
     }
@@ -361,7 +370,11 @@ pub(crate) trait CallSite<'env, 'fb, M: cranelift_module::Module> {
         }
     }
 
-    fn value_is_tag(&mut self, value: CodegenValue, tag: fz_runtime::any_value::ValueKind) -> ir::Value {
+    fn value_is_tag(
+        &mut self,
+        value: CodegenValue,
+        tag: fz_runtime::any_value::ValueKind,
+    ) -> ir::Value {
         let actual = self.value_type_tag(value);
         let (_, b, _) = self.parts();
         b.ins().icmp_imm(IntCC::Equal, actual, tag.tag() as i64)
@@ -381,8 +394,13 @@ pub(crate) trait CallSite<'env, 'fb, M: cranelift_module::Module> {
                 b.append_block_param(join_blk, types::I8);
                 let false8 = b.ins().iconst(types::I8, 0);
                 let no_args: Vec<BlockArg> = Vec::new();
-                b.ins()
-                    .brif(is_atom, atom_blk, &no_args, join_blk, &[BlockArg::Value(false8)]);
+                b.ins().brif(
+                    is_atom,
+                    atom_blk,
+                    &no_args,
+                    join_blk,
+                    &[BlockArg::Value(false8)],
+                );
                 b.switch_to_block(atom_blk);
                 b.seal_block(atom_blk);
                 join_blk
@@ -550,6 +568,32 @@ pub(crate) trait CallSite<'env, 'fb, M: cranelift_module::Module> {
             }
         }
     }
+
+    // -- var-keyed raw extraction (cache-free) --
+
+    fn as_raw_i64(&mut self, var_env: &HashMap<u32, CodegenValue>, v: u32) -> ir::Value {
+        match *var_env.get(&v).expect("unbound var") {
+            CodegenValue::RawInt(value) => value,
+            CodegenValue::Known { payload, .. } => payload,
+            CodegenValue::AnyRef(value_ref) => self.unbox_int(value_ref),
+            _ => panic!("cannot read raw i64 from non-integer value"),
+        }
+    }
+
+    fn as_raw_f64(&mut self, var_env: &HashMap<u32, CodegenValue>, v: u32) -> ir::Value {
+        match *var_env.get(&v).expect("unbound var") {
+            CodegenValue::RawF64(value) => value,
+            CodegenValue::Known { payload, .. } => {
+                let (_, b, _) = self.parts();
+                b.ins().bitcast(types::F64, MemFlags::new(), payload)
+            }
+            CodegenValue::AnyRef(value_ref) => self.unbox_float(value_ref),
+            other => {
+                let (_, b, _) = self.parts();
+                tagged_to_raw_f64_unsupported(b, other.value())
+            }
+        }
+    }
 }
 
 impl<'a, 'env, 'fb, M: cranelift_module::Module> CallSite<'env, 'fb, M>
@@ -622,7 +666,6 @@ where
     pub(crate) fn outer_cont_ref(&mut self, closure_ref: ir::Value) -> ir::Value {
         self.closure_capture_ref_at(closure_ref, 0)
     }
-
 
     pub(crate) fn store_closure_capture_ref_word(
         &mut self,

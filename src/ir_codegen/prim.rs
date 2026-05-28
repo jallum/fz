@@ -558,7 +558,7 @@ pub(crate) fn lower_collection_prim<
                         b.ins().iconst(types::I32, *n as i64),
                     ),
                     Some(crate::fz_ir::BitSizeIr::Var(v)) => {
-                        let unb = as_raw_i64(cx, var_env, b, jmod, v.0);
+                        let unb = cx.site(b, jmod).as_raw_i64(var_env, v.0);
                         let truncated = b.ins().ireduce(types::I32, unb);
                         (b.ins().iconst(types::I32, 1), truncated)
                     }
@@ -683,7 +683,7 @@ pub(crate) fn lower_collection_prim<
                     (1, b.ins().iconst(types::I32, *n as i64))
                 }
                 Some(crate::fz_ir::BitSizeIr::Var(v)) => {
-                    let unb = as_raw_i64(cx, var_env, b, jmod, v.0);
+                    let unb = cx.site(b, jmod).as_raw_i64(var_env, v.0);
                     let truncated = b.ins().ireduce(types::I32, unb);
                     (1, truncated)
                 }
@@ -824,8 +824,8 @@ fn marshal_extern_arg<M: cranelift_module::Module>(
 ) -> Result<ir::Value, CodegenError> {
     use crate::fz_ir::ExternTy;
     Ok(match ty {
-        ExternTy::I64 => as_raw_i64(cx, var_env, b, jmod, var.0),
-        ExternTy::F64 => as_raw_f64(cx, var_env, b, jmod, var.0),
+        ExternTy::I64 => cx.site(b, jmod).as_raw_i64(var_env, var.0),
+        ExternTy::F64 => cx.site(b, jmod).as_raw_f64(var_env, var.0),
         ExternTy::Binary | ExternTy::CString => {
             let helper_id = match ty {
                 ExternTy::CString => runtime.binary_as_cstring_id,
@@ -1113,7 +1113,7 @@ pub(crate) fn lower_prim<
         }
         Prim::UnOp(op, x) => match op {
             UnOp::Neg => {
-                let xi = as_raw_i64(cx, var_env, b, jmod, x.0);
+                let xi = cx.site(b, jmod).as_raw_i64(var_env, x.0);
                 Ok(LowerOut::RawI64(b.ins().ineg(xi)))
             }
             UnOp::Not => {
@@ -1508,6 +1508,45 @@ fn emit_tuple_arity_check<M: cranelift_module::Module>(
     b.block_params(tuple_join)[0]
 }
 
+/// Same-kind typed fast path for a binop: when the typer proves both
+/// operands share the int or float lane, extract their raw values and
+/// run the matching op closure, bypassing tagged dispatch. Returns None
+/// when neither lane applies (caller falls back to runtime tag tests).
+fn try_typed_binop_fast_path<T, F, I, M>(
+    cx: &mut CodegenFn<'_>,
+    t: &mut T,
+    fn_types: &crate::ir_planner::SpecPlan,
+    a: crate::fz_ir::Var,
+    bv: crate::fz_ir::Var,
+    b: &mut FunctionBuilder<'_>,
+    jmod: &mut M,
+    var_env: &HashMap<u32, CodegenValue>,
+    float_op: F,
+    int_op: I,
+) -> Option<LowerOut>
+where
+    T: crate::types::Types<Ty = crate::types::Ty>,
+    M: cranelift_module::Module,
+    F: FnOnce(&mut FunctionBuilder<'_>, ir::Value, ir::Value) -> Option<LowerOut>,
+    I: FnOnce(&mut FunctionBuilder<'_>, ir::Value, ir::Value) -> Option<LowerOut>,
+{
+    if ty_is_float(t, fn_types, a) && ty_is_float(t, fn_types, bv) {
+        let af = cx.site(b, jmod).as_raw_f64(var_env, a.0);
+        let bf = cx.site(b, jmod).as_raw_f64(var_env, bv.0);
+        if let Some(out) = float_op(b, af, bf) {
+            return Some(out);
+        }
+    }
+    if ty_is_int(t, fn_types, a) && ty_is_int(t, fn_types, bv) {
+        let ai = cx.site(b, jmod).as_raw_i64(var_env, a.0);
+        let bi = cx.site(b, jmod).as_raw_i64(var_env, bv.0);
+        if let Some(out) = int_op(b, ai, bi) {
+            return Some(out);
+        }
+    }
+    None
+}
+
 /// Lower a `Prim::BinOp` arithmetic op (Add/Sub/Mul/Div/Mod).
 /// Three code paths: float coercion (int+float mix), typed fast path
 /// (same-kind int or float), and tagged dispatch fallback that splits
@@ -1687,8 +1726,8 @@ where
     if (ty_is_float(t, fn_types, a) && ty_is_float(t, fn_types, bv))
         || matches!((a_repr, b_repr), (ArgRepr::RawF64, ArgRepr::RawF64))
     {
-        let af = as_raw_f64(cx, var_env, b, jmod, a.0);
-        let bf = as_raw_f64(cx, var_env, b, jmod, bv.0);
+        let af = cx.site(b, jmod).as_raw_f64(var_env, a.0);
+        let bf = cx.site(b, jmod).as_raw_f64(var_env, bv.0);
         let cmp = b.ins().fcmp(f_cc, af, bf);
         if cache.if_only_conds.contains(&dest_var.0) {
             return Ok(LowerOut::Condition(cmp));
@@ -1699,8 +1738,8 @@ where
     // mix raw and tagged operands — bit-eq is only
     // correct when both are in the same encoding.
     if ty_is_int(t, fn_types, a) && ty_is_int(t, fn_types, bv) {
-        let ai = as_raw_i64(cx, var_env, b, jmod, a.0);
-        let bi = as_raw_i64(cx, var_env, b, jmod, bv.0);
+        let ai = cx.site(b, jmod).as_raw_i64(var_env, a.0);
+        let bi = cx.site(b, jmod).as_raw_i64(var_env, bv.0);
         let cmp = b.ins().icmp(int_cc, ai, bi);
         if cache.if_only_conds.contains(&dest_var.0) {
             return Ok(LowerOut::Condition(cmp));
@@ -1949,7 +1988,7 @@ fn lower_extern_fz_send<M: cranelift_module::Module>(
     cache: &mut CodegenCache,
     args: &[crate::fz_ir::Var],
 ) -> Result<LowerOut, CodegenError> {
-    let receiver = as_raw_i64(cx, var_env, b, jmod, args[0].0);
+    let receiver = cx.site(b, jmod).as_raw_i64(var_env, args[0].0);
     let msg_binding = *var_env.get(&args[1].0).expect("fz_send msg var");
     let mut msg_args = Vec::with_capacity(1);
     {
@@ -2030,7 +2069,7 @@ fn lower_extern_fz_spawn_opt<M: cranelift_module::Module>(
         let mut body = cx.body(b, jmod, cache);
         body.tagged_var(var_env, args[0].0)
     };
-    let min_heap_size = as_raw_i64(cx, var_env, b, jmod, args[1].0);
+    let min_heap_size = cx.site(b, jmod).as_raw_i64(var_env, args[1].0);
     let sig = sig1(&[types::I64, types::I64], &[types::I64]);
     let func_id = jmod
         .declare_function("fz_spawn_opt_ref", Linkage::Import, &sig)
@@ -2231,8 +2270,7 @@ fn emit_null_stub_closure<M: cranelift_module::Module>(
     let nc_v = b.ins().iconst(types::I32, n_caps as i64);
     let hk_v = b.ins().iconst(types::I32, 0);
     let null = b.ins().iconst(types::I64, 0);
-    cx.site(b, jmod)
-        .alloc_closure(fid_v, nc_v, hk_v, null)
+    cx.site(b, jmod).alloc_closure(fid_v, nc_v, hk_v, null)
 }
 
 /// Non-zero captures: alloc closure heap object, write body's

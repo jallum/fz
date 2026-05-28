@@ -243,59 +243,6 @@ pub(crate) fn known_kind_ref_tag(
 ///
 /// float_op / int_op each return Option<LowerOut> so callers can opt out
 /// of a specific fast path (e.g. Mod has no float fast path → return None).
-pub(crate) fn try_typed_binop_fast_path<T, F, I, M>(
-    cx: &mut CodegenFn<'_>,
-    t: &mut T,
-    fn_types: &crate::ir_planner::SpecPlan,
-    a: crate::fz_ir::Var,
-    bv: crate::fz_ir::Var,
-    b: &mut FunctionBuilder<'_>,
-    jmod: &mut M,
-    var_env: &HashMap<u32, CodegenValue>,
-    float_op: F,
-    int_op: I,
-) -> Option<LowerOut>
-where
-    T: crate::types::Types<Ty = crate::types::Ty>,
-    M: cranelift_module::Module,
-    F: FnOnce(&mut FunctionBuilder<'_>, ir::Value, ir::Value) -> Option<LowerOut>,
-    I: FnOnce(&mut FunctionBuilder<'_>, ir::Value, ir::Value) -> Option<LowerOut>,
-{
-    if ty_is_float(t, fn_types, a) && ty_is_float(t, fn_types, bv) {
-        let af = as_raw_f64(cx, var_env, b, jmod, a.0);
-        let bf = as_raw_f64(cx, var_env, b, jmod, bv.0);
-        if let Some(out) = float_op(b, af, bf) {
-            return Some(out);
-        }
-    }
-    if ty_is_int(t, fn_types, a) && ty_is_int(t, fn_types, bv) {
-        let ai = as_raw_i64(cx, var_env, b, jmod, a.0);
-        let bi = as_raw_i64(cx, var_env, b, jmod, bv.0);
-        if let Some(out) = int_op(b, ai, bi) {
-            return Some(out);
-        }
-    }
-    None
-}
-
-pub(crate) fn as_raw_f64(
-    cx: &mut CodegenFn<'_>,
-    var_env: &HashMap<u32, CodegenValue>,
-    b: &mut FunctionBuilder<'_>,
-    jmod: &mut impl cranelift_module::Module,
-    v: u32,
-) -> ir::Value {
-    let vb = var_env.get(&v).expect("unbound var");
-    match *vb {
-        CodegenValue::RawF64(value) => value,
-        CodegenValue::Known { payload, .. } => {
-            b.ins().bitcast(types::F64, MemFlags::new(), payload)
-        }
-        CodegenValue::AnyRef(value_ref) => cx.site(b, jmod).unbox_float(value_ref),
-        _ => tagged_to_raw_f64_unsupported(b, vb.value()),
-    }
-}
-
 pub(crate) fn as_known_numeric_f64(
     var_env: &HashMap<u32, CodegenValue>,
     b: &mut FunctionBuilder<'_>,
@@ -307,22 +254,6 @@ pub(crate) fn as_known_numeric_f64(
         ArgRepr::RawInt => b.ins().fcvt_from_sint(types::F64, vb.value()),
         ArgRepr::ValueRef => panic!("tagged numeric-to-f64 conversion has been retired"),
         ArgRepr::Condition => unreachable!("condition is not numeric"),
-    }
-}
-
-pub(crate) fn as_raw_i64(
-    cx: &mut CodegenFn<'_>,
-    var_env: &HashMap<u32, CodegenValue>,
-    b: &mut FunctionBuilder<'_>,
-    jmod: &mut impl cranelift_module::Module,
-    v: u32,
-) -> ir::Value {
-    let vb = var_env.get(&v).expect("unbound var");
-    match *vb {
-        CodegenValue::RawInt(value) => value,
-        CodegenValue::Known { payload, .. } => payload,
-        CodegenValue::AnyRef(value_ref) => cx.site(b, jmod).unbox_int(value_ref),
-        _ => panic!("cannot read raw i64 from non-integer value"),
     }
 }
 
