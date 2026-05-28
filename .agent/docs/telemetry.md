@@ -112,6 +112,28 @@ That proves the pass intentionally pruned two items. A separate structural
 assertion should still prove the rewritten continuation has the one correct
 item.
 
+## Runtime Telemetry
+
+Telemetry is also how the running scheduler reports what a task did, and how
+tests observe a run without reaching into a `Process`.
+
+`Runtime::with_telemetry` attaches a sink; the scheduler emits at each task
+exit:
+
+```text
+event:        fz.runtime.task_exited
+metadata:     pid
+measurements: halt_value, live_count, live_bytes
+```
+
+Tests run a program by spawning it on a `Runtime` and reading this event from a
+`Capture`, rather than constructing a caller-owned `Process` and inspecting its
+heap. The single-task test convenience `CompiledModule::run(fn_id)` is a thin
+wrapper over `spawn` + `run_until_idle`; there is one run path, and it is the
+production scheduler. When a test needs the live-object count or the result as
+an observed fact, attach a `Capture` and read `fz.runtime.task_exited` (see
+`run_capturing` in the codegen tests).
+
 ## What To Put In Events
 
 Put in values that are natural byproducts of the current work:
