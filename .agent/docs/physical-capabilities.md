@@ -36,7 +36,8 @@ but it still uses transitional plumbing:
 - `src/ir_reuse.rs` performs a standalone publication-pruning cleanup pass
   driven by `src/ir_effects.rs`.
 - `src/ir_codegen/support.rs` consumes the remaining credits with
-  `emit_owned_cons_reuse_or_alloc`.
+  `emit_owned_cons_reuse_or_alloc`; its source cache is physical-first while
+  non-entry transitional credits remain.
 
 These are removal targets. They are acceptable only while the IR lacks a
 separate physical capability lane and structured effect facts.

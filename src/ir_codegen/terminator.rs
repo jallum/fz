@@ -106,23 +106,26 @@ enum ContinuationPlan {
 struct ContinuationPayload {
     cont_sid: u32,
     cont_fid: FuncId,
-    cap_bindings: Vec<ClosureCapture>,
-    extra_ref_captures: Vec<ir::Value>,
+    semantic_cap_bindings: Vec<ClosureCapture>,
+    physical_ref_captures: Vec<ir::Value>,
+    materialization_ref_captures: Vec<ir::Value>,
 }
 
 impl ContinuationPayload {
-    fn from_bindings(
+    fn from_parts(
         env: &CodegenEnv<'_>,
         cont_sid: u32,
-        cap_bindings: Vec<ClosureCapture>,
-        extra_ref_captures: Vec<ir::Value>,
+        semantic_cap_bindings: Vec<ClosureCapture>,
+        physical_ref_captures: Vec<ir::Value>,
+        materialization_ref_captures: Vec<ir::Value>,
     ) -> Self {
         let cont_fid = *env.fn_ids.get(&cont_sid).expect("cont fn_id missing");
         Self {
             cont_sid,
             cont_fid,
-            cap_bindings,
-            extra_ref_captures,
+            semantic_cap_bindings,
+            physical_ref_captures,
+            materialization_ref_captures,
         }
     }
 
@@ -141,7 +144,15 @@ impl ContinuationPayload {
             .collect();
         let extra_ref_captures =
             cont_extra_ref_captures(b, cache, &env.spec_keys[cont_sid as usize]);
-        Self::from_bindings(env, cont_sid, cap_bindings, extra_ref_captures)
+        Self::from_parts(env, cont_sid, cap_bindings, vec![], extra_ref_captures)
+    }
+
+    fn ref_captures(&self) -> Vec<ir::Value> {
+        self.physical_ref_captures
+            .iter()
+            .chain(&self.materialization_ref_captures)
+            .copied()
+            .collect()
     }
 }
 
@@ -174,32 +185,38 @@ impl ContinuationPlan {
         frame_ptr: Option<ir::Value>,
     ) -> ir::Value {
         match self {
-            ContinuationPlan::LazyNativeDescriptor(payload) => build_lazy_cont_descriptor(
-                jmod,
-                b,
-                runtime,
-                return_reprs,
-                is_cont_fn,
-                cont_param,
-                frame_ptr,
-                payload.cont_sid,
-                payload.cont_fid,
-                &payload.cap_bindings,
-                &payload.extra_ref_captures,
-            ),
-            ContinuationPlan::HeapClosure(payload) => build_cont_closure(
-                jmod,
-                b,
-                runtime,
-                return_reprs,
-                is_cont_fn,
-                cont_param,
-                frame_ptr,
-                payload.cont_sid,
-                payload.cont_fid,
-                &payload.cap_bindings,
-                &payload.extra_ref_captures,
-            ),
+            ContinuationPlan::LazyNativeDescriptor(payload) => {
+                let ref_captures = payload.ref_captures();
+                build_lazy_cont_descriptor(
+                    jmod,
+                    b,
+                    runtime,
+                    return_reprs,
+                    is_cont_fn,
+                    cont_param,
+                    frame_ptr,
+                    payload.cont_sid,
+                    payload.cont_fid,
+                    &payload.semantic_cap_bindings,
+                    &ref_captures,
+                )
+            }
+            ContinuationPlan::HeapClosure(payload) => {
+                let ref_captures = payload.ref_captures();
+                build_cont_closure(
+                    jmod,
+                    b,
+                    runtime,
+                    return_reprs,
+                    is_cont_fn,
+                    cont_param,
+                    frame_ptr,
+                    payload.cont_sid,
+                    payload.cont_fid,
+                    &payload.semantic_cap_bindings,
+                    &ref_captures,
+                )
+            }
         }
     }
 }
@@ -708,21 +725,19 @@ fn emit_call_term<
                 cache,
             );
             native_args.push(list_tail_destination_arg(b, cache));
-            let mut cap_bindings = vec![
+            let cap_bindings = vec![
                 closure_capture_for_var(var_env, b, jmod, runtime, pivot_capture.0, cache),
                 closure_capture_for_var(var_env, b, jmod, runtime, args[0].0, cache),
             ];
-            if let Some(source_cons) = cache.owned_cons_reuse_sources.get(&pivot_capture.0) {
-                cap_bindings.push(closure_capture_for_var(
-                    var_env,
-                    b,
-                    jmod,
-                    runtime,
-                    source_cons.0,
-                    cache,
-                ));
-            }
-            let payload = ContinuationPayload::from_bindings(env, cont_sid, cap_bindings, vec![]);
+            let physical_ref_captures =
+                owned_cons_physical_ref_captures(b, jmod, runtime, var_env, cache, pivot_capture);
+            let payload = ContinuationPayload::from_parts(
+                env,
+                cont_sid,
+                cap_bindings,
+                physical_ref_captures,
+                vec![],
+            );
             let cont_arg = ContinuationPlan::lazy_native_descriptor(payload).emit_value(
                 jmod,
                 b,
@@ -1854,7 +1869,7 @@ fn build_park_record<
     for (i, c) in clauses.iter().enumerate() {
         let cont_sid = resolve_body_sid(t, c.body);
         let payload =
-            ContinuationPayload::from_bindings(env, cont_sid, cap_bindings.clone(), vec![]);
+            ContinuationPayload::from_parts(env, cont_sid, cap_bindings.clone(), vec![], vec![]);
         let cl_ptr = ContinuationPlan::heap_closure(payload).emit_value(
             jmod,
             b,
@@ -1882,8 +1897,13 @@ fn build_park_record<
     let (after_deadline_v, after_cont_v) = match after {
         Some(a) => {
             let cont_sid = resolve_body_sid(t, a.body);
-            let payload =
-                ContinuationPayload::from_bindings(env, cont_sid, cap_bindings.clone(), vec![]);
+            let payload = ContinuationPayload::from_parts(
+                env,
+                cont_sid,
+                cap_bindings.clone(),
+                vec![],
+                vec![],
+            );
             let cl_ptr = ContinuationPlan::heap_closure(payload).emit_value(
                 jmod,
                 b,
@@ -1941,6 +1961,27 @@ fn cont_extra_ref_captures(
     } else {
         Vec::new()
     }
+}
+
+fn owned_cons_physical_ref_captures<M: cranelift_module::Module>(
+    b: &mut FunctionBuilder<'_>,
+    jmod: &mut M,
+    runtime: &RuntimeRefs,
+    var_env: &HashMap<u32, CodegenValue>,
+    cache: &mut CodegenCache,
+    head: crate::fz_ir::Var,
+) -> Vec<ir::Value> {
+    let Some(source_cons) = cache.owned_cons_reuse_sources.get(&head.0).copied() else {
+        return Vec::new();
+    };
+    vec![any_ref_for_var(
+        var_env,
+        b,
+        jmod,
+        runtime,
+        source_cons.0,
+        cache,
+    )]
 }
 
 fn emit_list_tail_return_value<

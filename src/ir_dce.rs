@@ -11,7 +11,7 @@
 //! single-predecessor target. Runs after dead block elimination so that only
 //! reachable blocks remain. Fixed-point loop handles chains.
 
-use crate::fz_ir::{BlockId, FnId, FnIr, Module, Prim, Stmt, Term, Var};
+use crate::fz_ir::{BlockId, FnId, FnIr, Module, PhysicalCapability, Prim, Stmt, Term, Var};
 use std::collections::HashMap;
 use std::collections::HashSet;
 
@@ -232,7 +232,7 @@ fn prune_dead_owned_cons_capabilities(f: &mut FnIr) {
     f.physical_entry_params.retain(|physical| {
         entry_params.contains(&physical.param)
             && match physical.capability {
-                crate::fz_ir::PhysicalCapability::OwnedConsReuse { head } => {
+                PhysicalCapability::OwnedConsReuse { head } => {
                     live_owned_cons.contains(&(physical.param, head))
                 }
             }

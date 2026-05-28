@@ -2354,6 +2354,7 @@ fn physical_capability_scaffold_and_signals_are_pinned() {
         "src/ir_capture_norm.rs",
         "src/ir_reuse.rs",
         "emit_owned_cons_reuse_or_alloc",
+        "physical-first",
         "list_cons_allocs = 11",
         "list_cons_allocs = 5",
         "closure_allocs = 1",
