@@ -128,6 +128,11 @@ pub(crate) fn compile_fn<
     b.seal_block(entry_cl);
 
     let mut cx = CodegenFn::new(env);
+    // The cache's contents depend on the entry-harness output (tuple-field
+    // params, list-tail param), so the harness runs first through a body
+    // bound over an empty cache; the real cache is then built and a single
+    // body is bound over it for the block walk.
+    let mut cache = CodegenCache::default();
     let EntryHarnessOut {
         mut var_env,
         frame_ptr,
@@ -136,9 +141,7 @@ pub(crate) fn compile_fn<
         tuple_field_params,
         list_tail_param,
     } = build_entry_harness(
-        &mut cx,
-        &mut b,
-        jmod,
+        &mut cx.body(&mut b, jmod, &mut cache),
         env,
         schemas,
         f,
@@ -149,7 +152,7 @@ pub(crate) fn compile_fn<
         entry_cl,
     );
 
-    let mut cache = {
+    cache = {
         let (if_only, all_used) = crate::ir_dce::classify_var_uses(f);
         let (tuple_return_fields, skipped_tuple_return_vars) =
             tuple_return_delivery_plan(f, &env.spec_keys[this_spec_id as usize]);
@@ -183,11 +186,14 @@ pub(crate) fn compile_fn<
         }
     }
 
+    // One body view for the whole walk: the builder, module, per-fn cache,
+    // and import table are bound once here rather than reassembled per call.
+    let mut body = cx.body(&mut b, jmod, &mut cache);
     for blk in &order {
         let cl_blk = *block_map.get(&blk.id.0).unwrap();
         if blk.id != f.entry {
-            b.switch_to_block(cl_blk);
-            let params: Vec<ir::Value> = b.block_params(cl_blk).to_vec();
+            body.b.switch_to_block(cl_blk);
+            let params: Vec<ir::Value> = body.b.block_params(cl_blk).to_vec();
             let mut param_cursor = 0;
             for p in &blk.params {
                 let fallback = t.any();
@@ -197,7 +203,7 @@ pub(crate) fn compile_fn<
                 );
                 var_env.insert(
                     p.0,
-                    take_param_binding(&mut b, &params, &mut param_cursor, repr),
+                    take_param_binding(body.b, &params, &mut param_cursor, repr),
                 );
             }
         }
@@ -212,24 +218,15 @@ pub(crate) fn compile_fn<
                 .and_then(|v| v.get(idx))
                 .copied()
                 .unwrap_or(crate::diag::Span::DUMMY);
-            b.set_srcloc(span_to_srcloc(span));
+            body.b.set_srcloc(span_to_srcloc(span));
             let Stmt::Let(v, prim) = stmt;
             let out = lower_prim(
-                &mut cx.body(&mut b, jmod, &mut cache),
-                t,
-                env,
-                &var_env,
-                prim,
-                *v,
-                f.id,
-                blk.id,
-                idx,
-                block_env,
+                &mut body, t, env, &var_env, prim, *v, f.id, blk.id, idx, block_env,
             )?;
             if !matches!(out, LowerOut::DeadUnit) {
                 let binding = match out {
                     LowerOut::StrictConst(value) => {
-                        let raw = b.ins().iconst(types::I64, value.raw() as i64);
+                        let raw = body.b.ins().iconst(types::I64, value.raw() as i64);
                         CodegenValue::known(raw, value.kind())
                     }
                     LowerOut::Strict(value) => value,
@@ -258,7 +255,7 @@ pub(crate) fn compile_fn<
             .get(&(f.id, blk.id))
             .copied()
             .unwrap_or(crate::diag::Span::DUMMY);
-        b.set_srcloc(span_to_srcloc(term_span));
+        body.b.set_srcloc(span_to_srcloc(term_span));
 
         // Repr-aware Goto coercion. Mirrors coerce_call_args but for
         // intra-function block edges. Each arg is coerced to the repr
@@ -266,7 +263,6 @@ pub(crate) fn compile_fn<
         // fn_types.vars), so RawInt values flow through without a
         // box/unbox round-trip at inliner seams.
         if let Term::Goto(target, args) = &blk.terminator {
-            let mut body = cx.body(&mut b, jmod, &mut cache);
             for (param, arg) in f.block(*target).params.iter().zip(args.iter()) {
                 let fallback = t.any();
                 let want = ArgRepr::for_block_param_ty(
@@ -281,7 +277,7 @@ pub(crate) fn compile_fn<
         }
 
         emit_terminator(
-            &mut cx.body(&mut b, jmod, &mut cache),
+            &mut body,
             t,
             env,
             schemas,
@@ -306,9 +302,10 @@ pub(crate) fn compile_fn<
         }
         let cl_blk = *block_map.get(&blk.id.0).unwrap();
         if blk.id != f.entry {
-            b.seal_block(cl_blk);
+            body.b.seal_block(cl_blk);
         }
     }
+    drop(body);
     b.finalize();
     // Publish Value -> Ty for the dump path. Only values bound to fz
     // Vars are recorded; pure Cranelift intermediates stay unannotated.
