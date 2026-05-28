@@ -70,7 +70,7 @@ pub struct Process {
     pub bs_tuple_arity1_schema: Option<u32>,
     pub bs_tuple_arity3_schema: Option<u32>,
     // fz-ul4.19.1 scheduler-level fields. Populated when a Process is
-    // owned by a Runtime; the standalone `make_process()` / `run_in` path
+    // owned by a Runtime; the standalone `make_process()` path
     // leaves these at defaults.
     pub pid: PidId,
     pub state: ProcessState,
@@ -407,19 +407,11 @@ fn min_nonzero(current: u64, candidate: u64) -> u64 {
 
 thread_local! {
     /// Raw pointer to the Process currently being run by this worker (this
-    /// thread). Set by `run_in` for the duration of the run; cleared
-    /// afterwards. FFI fns called from JIT'd code read it via
+    /// thread). Set by the scheduler for the duration of each quantum;
+    /// cleared afterwards. FFI fns called from JIT'd code read it via
     /// `current_process()`.
     pub static CURRENT_PROCESS: std::cell::Cell<*mut Process> =
         const { std::cell::Cell::new(std::ptr::null_mut()) };
-    /// Backing storage for the convenience `compiled.run(fn_id)` path: a
-    /// Process is constructed, stashed here, and CURRENT_PROCESS points at
-    /// it. After the run, CURRENT_PROCESS is cleared but the Process remains
-    /// here so test helpers (heap_live_count, heap_gc, ...) can inspect.
-    /// Tests using the explicit `run_in(fn_id, &mut Process)` path own
-    /// their Process directly and don't use this slot.
-    pub static DEFAULT_PROCESS: std::cell::RefCell<Option<Process>> =
-        const { std::cell::RefCell::new(None) };
 }
 
 pub struct CurrentProcessGuard {
@@ -440,14 +432,14 @@ impl Drop for CurrentProcessGuard {
 }
 
 /// Access the currently-installed Process via the raw TLS pointer. Must only
-/// be called from FFI fns invoked synchronously inside `run_in`. The Process
-/// is owned by either the caller (run_in path) or by DEFAULT_PROCESS (run
-/// path); the pointer is valid for the duration of the run.
+/// be called from FFI fns invoked synchronously inside a scheduler quantum.
+/// The Process is owned by the scheduler's task registry; the pointer is
+/// valid for the duration of the quantum.
 pub fn current_process() -> &'static mut Process {
     let p = CURRENT_PROCESS.with(|c| c.get());
     assert!(
         !p.is_null(),
-        "current_process(): no Process installed (running outside run_in?)"
+        "current_process(): no Process installed (running outside a scheduler quantum?)"
     );
     unsafe { &mut *p }
 }

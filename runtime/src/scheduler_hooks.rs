@@ -26,8 +26,8 @@ use std::cell::Cell;
 /// the mailbox is empty so the JIT trampoline parks the task instead of
 /// dispatching the returned ptr. 0x1 is never 16-aligned so it cannot
 /// collide with a real heap pointer. (Originally lived in the binary's
-/// ir_codegen.rs; lifted here for fz-ul4.23.10 since both the trampoline
-/// — in the binary's CompiledModule::run_internal — and fz_receive_attempt
+/// ir_codegen.rs; lifted here for fz-ul4.23.10 since both the scheduler
+/// — in the binary's Runtime — and fz_receive_attempt
 /// — in this crate — need it.)
 pub const YIELD_PTR: u64 = 0x1;
 

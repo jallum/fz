@@ -138,13 +138,6 @@ pub fn ir_text_record_take() -> Vec<(String, String)> {
     IR_TEXT_RECORD.with(|c| c.borrow_mut().take().unwrap_or_default())
 }
 
-/// Reset DEFAULT_PROCESS. Call at the start of any test that needs a clean
-/// heap — cargo's worker-pool thread reuse makes leftover state sticky.
-#[cfg(test)]
-pub fn heap_reset_for_test() {
-    DEFAULT_PROCESS.with(|c| *c.borrow_mut() = None);
-}
-
 // ----- Map runtime fns -----
 //
 // Maps use a heap-backed sorted-array layout. Codegen constructs maps by

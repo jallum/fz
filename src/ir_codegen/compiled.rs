@@ -1167,8 +1167,9 @@ fn schema_key(schema: &Schema) -> String {
 }
 
 /// Compiled module: persistent JITModule + per-fn ptr table + schemas. The
-/// host runs a fn via `compiled.run(fn_id)` (constructs an internal default
-/// Process) or `compiled.run_in(fn_id, &mut Process)` (caller-owned Process).
+/// host runs a program by spawning it on a `Runtime` (`Runtime::new(module)`
+/// then `spawn` + `run_until_idle`); the test-only `run(fn_id)` is a thin
+/// one-task wrapper over exactly that.
 pub struct CompiledModule {
     pub(super) _module: JITModule,
     /// fz_fn_id -> compiled fn ptr.
@@ -1199,7 +1200,7 @@ pub struct CompiledModule {
     pub(crate) spawn_entry_addr: *const u8,
     /// SystemV→Tail-CC shim `fz_main_entry(main_fp) -> i64`. Allocates a
     /// halt-cont and indirect-calls main with `(halt_cont)`. Used by
-    /// `Runtime::spawn(fn_id)` / `CompiledModule::run_internal`.
+    /// `Runtime`'s main-entry dispatch.
     pub(crate) main_entry_addr: *const u8,
     /// SystemV→Tail-CC shim `fz_drain_dtor_entry(closure, payload_ref) -> i64`.
     /// The scheduler calls this once per entry on
@@ -1421,7 +1422,7 @@ impl CompiledModule {
             // shim.
             RunnableClosure(*mut u8),
             // Fresh main-style task entry: fn ptr queued by
-            // `Runtime::spawn` or `run_internal`. Dispatch via
+            // `Runtime::spawn`. Dispatch via
             // `fz_main_entry`; the body runs synchronously to halt or
             // Receive.
             MainEntry { fp: *mut u8, kind: usize },
@@ -1511,86 +1512,18 @@ impl CompiledModule {
         &self.static_closure_targets
     }
 
-    /// Run the trampoline with `fn_id` as the entry fn, using a fresh Process
-    /// stashed in DEFAULT_PROCESS for post-run inspection.
+    /// Run `fn_id` to completion on a single-task Runtime and return its
+    /// halt value. The production scheduler is the only run path; this is
+    /// the test-ergonomic spelling of "spawn one task and drain it." Tests
+    /// that need to observe heap stats attach a telemetry `Capture` to their
+    /// own `Runtime` and read the `fz.runtime.task_exited` event instead.
     pub fn run(&self, fn_id: FnId) -> i64 {
-        DEFAULT_PROCESS.with(|c| *c.borrow_mut() = Some(self.make_process()));
-        let ptr = DEFAULT_PROCESS.with(|c| {
-            let mut b = c.borrow_mut();
-            b.as_mut().unwrap() as *mut Process
-        });
-        let _current_process = fz_runtime::process::CurrentProcessGuard::install(ptr);
-        self.run_internal(fn_id)
-    }
-
-    /// Run with a caller-owned Process.
-    pub fn run_in(&self, fn_id: FnId, process: &mut Process) -> i64 {
-        let ptr = process as *mut Process;
-        let _current_process = fz_runtime::process::CurrentProcessGuard::install(ptr);
-        self.run_internal(fn_id)
-    }
-
-    pub(crate) fn run_internal(&self, fn_id: FnId) -> i64 {
-        let fp = self
-            .fn_ptrs
-            .get(&fn_id.0)
-            .copied()
-            .unwrap_or_else(|| panic!("no fn ptr for entry {}", fn_id.0));
-        // Drive the process through ordinary bounded-quantum scheduling until
-        // it halts. There is no unbounded special case: every quantum spends
-        // the normal reduction budget and yields at its boundary. With a
-        // single process the yielded continuation is simply the next thing
-        // dispatched, so the loop reschedules it — exactly mirroring
-        // `Runtime::run`'s per-process handling, minus the registry.
-        {
-            let process = current_process();
-            process.pending_main_entry = fp as *mut u8;
-            process.pending_main_entry_fn_id = fn_id.0;
-            loop {
-                // Running before the quantum is what distinguishes a
-                // mid-flight yield (still Running, continuation produced)
-                // from a receive-park (state flipped to Blocked) afterward.
-                process.state = ProcessState::Running;
-                process.reset_reduction_budget();
-                self.run_quantum(process);
-                let mid_flight =
-                    process.state == ProcessState::Running && !process.runnable_closure.is_null();
-                if !mid_flight {
-                    // Halted, parked, or idle: a single-process run is done.
-                    break;
-                }
-                // Mid-flight yield: do scheduler-boundary maintenance and let
-                // the next quantum resume through the runnable continuation.
-                process
-                    .boundary_maintenance::<()>(|p| {
-                        p.heap
-                            .gc_process_roots(&mut p.runnable_closure, &mut p.mailbox);
-                        Ok(())
-                    })
-                    .expect("single-process boundary maintenance is infallible");
-                process.state = ProcessState::Ready;
-            }
-        }
-        // Single-shot entry path: flush surviving MSO resources and run
-        // their dtor closures as fz code before returning. Mirrors the
-        // task-exit drain in `Runtime::run_until_idle` and
-        // `aot_run_queue_loop`.
-        {
-            let proc_mut = current_process();
-            fz_runtime::procbin::mso_drop_all_deferred(&mut proc_mut.heap);
-            while let Some((closure, payload_ref)) = proc_mut.heap.pending_dtors.pop_front() {
-                let process_ptr = proc_mut as *mut Process;
-                let _ = unsafe {
-                    fz_runtime::pinned_abi::call2(
-                        self.drain_dtor_entry_addr,
-                        process_ptr,
-                        closure,
-                        payload_ref,
-                    )
-                };
-            }
-        }
-        current_process().halt_value
+        let mut rt = crate::runtime::Runtime::new(self, 1);
+        let pid = rt.spawn(fn_id);
+        rt.run_until_idle();
+        rt.task(pid)
+            .expect("spawned task present after run")
+            .halt_value
     }
 }
 

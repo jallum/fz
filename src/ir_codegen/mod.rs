@@ -79,11 +79,11 @@ pub use compiled::{
 pub use error::CodegenError;
 pub use support::{asm_record_enable, asm_record_take, ir_text_record_enable, ir_text_record_take};
 #[cfg(test)]
-pub use support::{heap_reset_for_test, test_capture_take};
+pub use support::test_capture_take;
 
 pub use fz_runtime::process::{CURRENT_PROCESS, PidId, Process, ProcessState};
 #[cfg(test)]
-pub(crate) use fz_runtime::process::{DEFAULT_PROCESS, current_process};
+pub(crate) use fz_runtime::process::current_process;
 
 /// Drive the shared compile pipeline through any Backend impl. JIT and
 /// AOT both route through here; the backend's hooks pick the legit
