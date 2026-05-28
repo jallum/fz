@@ -130,21 +130,18 @@ impl ContinuationPayload {
     }
 
     fn from_capture_vars<M: cranelift_module::Module>(
-        cx: &mut CodegenFn<'_>,
-        b: &mut FunctionBuilder<'_>,
-        jmod: &mut M,
+        body: &mut CodegenFnBody<'_, '_, '_, M>,
         env: &CodegenEnv<'_>,
         var_env: &HashMap<u32, CodegenValue>,
-        cache: &mut CodegenCache,
         cont_sid: u32,
         captures: &[crate::fz_ir::Var],
     ) -> Self {
         let cap_bindings = captures
             .iter()
-            .map(|cv| closure_capture_for_var(cx, var_env, b, jmod, cv.0, cache))
+            .map(|cv| closure_capture_for_var(body, var_env, cv.0))
             .collect();
         let extra_ref_captures =
-            cont_extra_ref_captures(b, cache, &env.spec_keys[cont_sid as usize]);
+            cont_extra_ref_captures(body.b, body.cache, &env.spec_keys[cont_sid as usize]);
         Self::from_parts(env, cont_sid, cap_bindings, vec![], extra_ref_captures)
     }
 
@@ -733,10 +730,13 @@ fn emit_call_term<
                 body.coerce_call_args(&hi_arg, callee_param_reprs, var_env)
             };
             native_args.push(list_tail_destination_arg(b, cache));
-            let cap_bindings = vec![
-                closure_capture_for_var(cx, var_env, b, jmod, pivot_capture.0, cache),
-                closure_capture_for_var(cx, var_env, b, jmod, args[0].0, cache),
-            ];
+            let cap_bindings = {
+                let mut body = cx.body(b, jmod, cache);
+                vec![
+                    closure_capture_for_var(&mut body, var_env, pivot_capture.0),
+                    closure_capture_for_var(&mut body, var_env, args[0].0),
+                ]
+            };
             let physical_ref_captures =
                 owned_cons_physical_ref_captures(cx, b, jmod, var_env, cache, pivot_capture);
             let payload = ContinuationPayload::from_parts(
@@ -946,16 +946,16 @@ fn emit_native_call_with_cont<
         && !cont_captures_callable
         && !caller_has_callable_state;
     let continuation_plan = if cont_is_native {
-        let payload = ContinuationPayload::from_capture_vars(
-            cx,
-            b,
-            jmod,
-            env,
-            var_env,
-            cache,
-            cont_sid,
-            &continuation.captured,
-        );
+        let payload = {
+            let mut body = cx.body(b, jmod, cache);
+            ContinuationPayload::from_capture_vars(
+                &mut body,
+                env,
+                var_env,
+                cont_sid,
+                &continuation.captured,
+            )
+        };
         Some(plan_closure_shaped_continuation(
             payload,
             is_native && cont_can_use_lazy_descriptor,
@@ -1414,16 +1414,16 @@ fn emit_call_closure<
             let n_caps = closure_n_captures.get(&body_fn_id).copied().unwrap_or(0);
             Some((body_sid, body_fid, n_caps))
         })();
-        let cont_payload = ContinuationPayload::from_capture_vars(
-            cx,
-            b,
-            jmod,
-            env,
-            var_env,
-            cache,
-            cont_sid,
-            &continuation.captured,
-        );
+        let cont_payload = {
+            let mut body = cx.body(b, jmod, cache);
+            ContinuationPayload::from_capture_vars(
+                &mut body,
+                env,
+                var_env,
+                cont_sid,
+                &continuation.captured,
+            )
+        };
         let cont_is_native = callee_is_native(env, continuation.fn_id.0);
         let can_use_lazy_cont = is_native && cont_is_native && lit_resolved.is_some();
         let continuation_plan = plan_closure_shaped_continuation(cont_payload, can_use_lazy_cont);
@@ -1686,16 +1686,16 @@ fn emit_receive<
         // in env field 0), hand it to fz_receive_park which parks an
         // accept-any matcher record and returns the YIELD sentinel.
         let cont_sid = resolve_cont_sid(t, env, caller_fn_id, blk);
-        let payload = ContinuationPayload::from_capture_vars(
-            cx,
-            b,
-            jmod,
-            env,
-            var_env,
-            cache,
-            cont_sid,
-            &continuation.captured,
-        );
+        let payload = {
+            let mut body = cx.body(b, jmod, cache);
+            ContinuationPayload::from_capture_vars(
+                &mut body,
+                env,
+                var_env,
+                cont_sid,
+                &continuation.captured,
+            )
+        };
         let cl_ptr = ContinuationPlan::heap_closure(payload).emit_value(
             cx,
             jmod,
@@ -1848,7 +1848,10 @@ fn build_park_record<
     // capture-param slots line up with this order.
     let cap_bindings: Vec<ClosureCapture> = captures
         .iter()
-        .map(|cv| closure_capture_for_var(cx, var_env, b, jmod, cv.0, cache))
+        .map(|cv| {
+            let mut body = cx.body(b, jmod, cache);
+            closure_capture_for_var(&mut body, var_env, cv.0)
+        })
         .collect();
 
     // bound_arity: max bound-var count across clauses (matcher

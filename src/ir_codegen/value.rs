@@ -63,17 +63,14 @@ pub(crate) enum ClosureCapture {
 }
 
 pub(crate) fn closure_capture_for_var<M: cranelift_module::Module>(
-    cx: &mut CodegenFn<'_>,
+    body: &mut CodegenFnBody<'_, '_, '_, M>,
     var_env: &HashMap<u32, CodegenValue>,
-    b: &mut FunctionBuilder<'_>,
-    jmod: &mut M,
     v: u32,
-    cache: &mut CodegenCache,
 ) -> ClosureCapture {
     match *var_env.get(&v).expect("unbound closure capture var") {
         CodegenValue::RawInt(value) => {
-            let raw = if let Some(&n) = cache.raw_int_consts.get(&v) {
-                cached_iconst(b, cache, n)
+            let raw = if let Some(&n) = body.cache.raw_int_consts.get(&v) {
+                cached_iconst(body.b, body.cache, n)
             } else {
                 value
             };
@@ -86,11 +83,11 @@ pub(crate) fn closure_capture_for_var<M: cranelift_module::Module>(
         CodegenValue::Known { payload, kind }
             if kind == fz_runtime::any_value::ValueKind::FLOAT =>
         {
-            let raw = b.ins().bitcast(types::F64, MemFlags::new(), payload);
+            let raw = body.b.ins().bitcast(types::F64, MemFlags::new(), payload);
             ClosureCapture::RawF64(raw)
         }
         _ => {
-            let value_ref = cx.tagged_var(var_env, b, jmod, v, cache);
+            let value_ref = body.tagged_var(var_env, v);
             ClosureCapture::RefWord(value_ref)
         }
     }
