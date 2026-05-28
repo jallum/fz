@@ -1150,6 +1150,14 @@ impl ListCons {
         self.link = self.link().with_tail(tail_bits).raw();
     }
 
+    pub fn relink_tail_if_unaliased(&mut self, tail_bits: u64) -> bool {
+        if self.aliased() {
+            return false;
+        }
+        self.set_tail_bits(tail_bits);
+        true
+    }
+
     pub fn link(&self) -> ListLink {
         ListLink::from_raw(self.link)
     }

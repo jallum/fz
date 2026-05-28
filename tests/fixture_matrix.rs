@@ -201,6 +201,18 @@ fn static_tests() -> Vec<(&'static str, fn())> {
             production_and_guides_have_no_old_value_format_gate_names,
         ),
         (
+            "owned_cons_reuse_docs_pin_alias_fallback_contract",
+            owned_cons_reuse_docs_pin_alias_fallback_contract,
+        ),
+        (
+            "physical_capability_model_and_signals_are_pinned",
+            physical_capability_model_and_signals_are_pinned,
+        ),
+        (
+            "owned_cons_reuse_negative_barriers_do_not_advertise_capabilities",
+            owned_cons_reuse_negative_barriers_do_not_advertise_capabilities,
+        ),
+        (
             "quicksort_clif_inlines_nonempty_list_projection",
             quicksort_clif_inlines_nonempty_list_projection,
         ),
@@ -259,6 +271,14 @@ fn static_tests() -> Vec<(&'static str, fn())> {
         (
             "append_pins_source_append_target",
             append_pins_source_append_target,
+        ),
+        (
+            "enum_list_allocations_pin_minimum_list_cons",
+            enum_list_allocations_pin_minimum_list_cons,
+        ),
+        (
+            "continuation_materialization_boundaries_stay_explicit",
+            continuation_materialization_boundaries_stay_explicit,
         ),
         (
             "reverse_filter_tree_pin_current_shape",
@@ -2269,6 +2289,196 @@ fn collect_source_files(dir: &Path, files: &mut Vec<PathBuf>) {
     }
 }
 
+fn owned_cons_reuse_docs_pin_alias_fallback_contract() {
+    let docs = [
+        (
+            ".agent/docs/any-value.md",
+            fs::read_to_string(".agent/docs/any-value.md").expect("read any-value docs"),
+        ),
+        (
+            ".agent/docs/destination-passing.md",
+            fs::read_to_string(".agent/docs/destination-passing.md")
+                .expect("read destination-passing docs"),
+        ),
+        (
+            "guides/memory.html",
+            fs::read_to_string("guides/memory.html").expect("read memory guide"),
+        ),
+    ];
+    for (path, text) in docs {
+        for needle in [
+            "aliased",
+            "fallback",
+            "fresh cons",
+            "publication",
+            "closure",
+            "send",
+            "extern",
+            "allocation",
+        ] {
+            assert!(
+                text.contains(needle),
+                "{} must document owned-cons reuse contract term `{}`",
+                path,
+                needle
+            );
+        }
+    }
+}
+
+fn physical_capability_model_and_signals_are_pinned() {
+    let index = fs::read_to_string(".agent/docs.md").expect("read agent docs index");
+    assert!(
+        index.contains("docs/physical-capabilities.md"),
+        "agent docs index must point at physical capability guidance"
+    );
+
+    let docs = fs::read_to_string(".agent/docs/physical-capabilities.md")
+        .expect("read physical capability docs");
+    for needle in [
+        "semantic values",
+        "physical capabilities",
+        "effect facts",
+        "src/ir_effects.rs",
+        "operation effect classification",
+        "codegen consumes validated facts",
+        "src/fz_ir.rs",
+        "physical_entry_params",
+        "ignored_entry_params",
+        "src/ir_lower/cps.rs",
+        "owned_cons_captures",
+        "physical\n  params",
+        "src/ir_dce.rs",
+        "live heads keep their source-cons",
+        "src/ir_capture_norm.rs",
+        "standalone reuse-pruning pass and duplicate owned-cons capability lane",
+        "physical_capabilities",
+        "emit_owned_cons_reuse_or_alloc",
+        "list_cons_allocs = 11",
+        "list_cons_allocs = 5",
+        "closure_allocs = 1",
+    ] {
+        assert!(
+            docs.contains(needle),
+            "physical capability docs must pin `{}`",
+            needle
+        );
+    }
+
+    let fz_ir = fs::read_to_string("src/fz_ir.rs").expect("read fz_ir");
+    assert!(
+        fz_ir.contains("ignored_entry_params")
+            && fz_ir.contains("physical_entry_params")
+            && fz_ir.contains("physical_capabilities")
+            && fz_ir.contains("PhysicalCapability")
+            && fz_ir.contains("record_owned_cons_reuse_capability"),
+        "FnIr should carry owned-cons reuse through physical capability facts"
+    );
+
+    let cps = fs::read_to_string("src/ir_lower/cps.rs").expect("read cps lowering");
+    assert!(
+        cps.contains("owned_cons_captures")
+            && cps.contains("hidden_owned_cons")
+            && !cps.contains("mark_param_ignored"),
+        "CPS owned-cons transport should use physical params, not ignored semantic params"
+    );
+
+    let capture_norm =
+        fs::read_to_string("src/ir_capture_norm.rs").expect("read capture normalization");
+    assert!(
+        capture_norm.contains("live_vars_after_local_dce")
+            && !capture_norm.contains("dce_after_capture_prune"),
+        "capture normalization should rely on ordinary DCE for capability liveness"
+    );
+
+    let dce = fs::read_to_string("src/ir_dce.rs").expect("read dce");
+    assert!(
+        dce.contains("prune_dead_owned_cons_capabilities") && dce.contains("physical_entry_params"),
+        "ordinary DCE should preserve or drop physical capabilities"
+    );
+
+    assert!(
+        !std::path::Path::new("src/ir_reuse.rs").exists(),
+        "standalone reuse pruning should be deleted"
+    );
+
+    assert_fixture_output_contains(
+        "quicksort",
+        "expected.jit.txt",
+        &[":list_cons_allocs => 11", ":closure_allocs => 0", "\n176\n"],
+    );
+    assert_fixture_output_contains(
+        "enum_list_allocations",
+        "expected.txt",
+        &[":list_cons_allocs => 5", ":closure_allocs => 0"],
+    );
+    assert_fixture_output_contains(
+        "enum_reduce_suspend",
+        "expected.txt",
+        &[":closure_allocs => 1", ":closure_bytes => 48"],
+    );
+}
+
+fn owned_cons_reuse_negative_barriers_do_not_advertise_capabilities() {
+    let cases = [
+        (
+            "double_use",
+            r#"
+fn shared(xs) do
+  [h | t] = xs
+  pair = {[h | t], xs}
+  pair
+end
+
+fn main(), do: shared([1, 2])
+"#,
+        ),
+        (
+            "closure_capture",
+            r#"
+fn keep(x), do: fn(y) -> x
+
+fn publish([h | t]) do
+  f = keep([h | t])
+  f(0)
+end
+
+fn main(), do: publish([1, 2])
+"#,
+        ),
+        (
+            "heap_stats",
+            r#"
+extern "C" fn fz_process_heap_alloc_stats() :: any
+fn id(x), do: x
+
+fn publish([h | t]) do
+  fz_process_heap_alloc_stats()
+  id([h | t])
+end
+
+fn main(), do: publish([1, 2])
+"#,
+        ),
+    ];
+
+    for (name, source) in cases {
+        let specs = dump_specs_for_source(&format!("owned_cons_negative_{}", name), source);
+        assert!(
+            !specs.contains("owned_cons_source") && !specs.contains("physical_capabilities"),
+            "{} must not advertise owned-cons reuse capabilities across a publication or observer barrier:\n{}",
+            name,
+            specs
+        );
+        assert!(
+            !specs.contains("demand: list_tail"),
+            "{} must not select ListTail demand across a publication or observer barrier:\n{}",
+            name,
+            specs
+        );
+    }
+}
+
 fn quicksort_clif_inlines_nonempty_list_projection() {
     let clif = dump_quicksort_clif();
     let qsort =
@@ -2339,8 +2549,8 @@ fn quicksort_has_no_tuple_dp_any_fanout() {
     );
     assert!(
         stanzas.iter().any(|s| s.key
-            == "[{[], []} | {[], nonempty_list(int)} | {nonempty_list(int), nonempty_list(int)} | {nonempty_list(int), []}, int]"),
-        "k_31 should receive the typed partition tuple union plus the integer pivot:\n{}",
+            == "[{[], []} | {[], nonempty_list(int)} | {nonempty_list(int), nonempty_list(int)} | {nonempty_list(int), []}, int, _]"),
+        "the qsort tuple continuation should receive the typed partition tuple union, integer pivot, and physical source-cons hole:\n{}",
         specs
     );
 }
@@ -2480,6 +2690,18 @@ fn quicksort_structured_return_demand_facts() {
         "spec dump should expose typed ListTail plans with explicit operands:\n{}",
         specs
     );
+    assert!(
+        stanzas.iter().any(|s| {
+            (s.name == "fn_clause_1" || s.name == "fn_clause_2")
+                && s.arity == 6
+                && s.key.contains("_")
+                && s.body.contains("physical_capabilities")
+                && s.body
+                    .contains("owned_cons_source param=Var(5) head=Var(3)")
+        }),
+        "partition clause helpers must dump a physical source-cons capability for owned cons reuse:\n{}",
+        specs
+    );
 }
 
 fn quicksort_list_tail_abi_carries_destination_param() {
@@ -2610,7 +2832,12 @@ fn list_cell_uninit_is_immediately_initialized_in_clif() {
     );
     assert!(
         clif.contains("@fz_list_cons_int"),
-        "quicksort should construct integer lists through the typed list-cons BIF:\n{}",
+        "quicksort should still build the input literal through the typed list-cons BIF:\n{}",
+        clif
+    );
+    assert!(
+        clif.contains("@fz_list_reuse_or_cons_tail_ref"),
+        "quicksort should reuse owned cons cells through the total reuse-or-cons helper:\n{}",
         clif
     );
 }
@@ -2639,13 +2866,13 @@ fn quicksort_list_literal_uses_static_tail_links() {
 fn quicksort_pins_return_demand_target() {
     let readme = fs::read_to_string("fixtures/quicksort/README.md").expect("read quicksort README");
     for expected in [
-        "`list_cons_allocs = 48`",
-        "`list_cons_bytes = 768`",
+        "`list_cons_allocs = 11`",
+        "`list_cons_bytes = 176`",
         "`struct_allocs = 0`",
         "`struct_bytes = 0`",
         "`map_allocs = 0`",
         "`map_bytes = 0`",
-        "`heap_bytes = 768`",
+        "`heap_bytes = 176`",
     ] {
         assert!(
             readme.contains(expected),
@@ -2659,8 +2886,8 @@ fn append_pins_source_append_target() {
     let readme = fs::read_to_string("fixtures/append/README.md").expect("read append README");
     for needle in [
         "the two list literals allocate five cons cells",
-        "the append prefix copy allocates three cons cells",
-        "`heap_bytes = 128`",
+        "owned-cons reuse removes the append prefix copy",
+        "`heap_bytes = 80`",
     ] {
         assert!(
             readme.contains(needle),
@@ -2671,11 +2898,11 @@ fn append_pins_source_append_target() {
 
     let expected = fs::read_to_string("fixtures/append/expected.txt").expect("read append golden");
     for needle in [
-        ":list_cons_allocs => 8",
-        ":list_cons_bytes => 128",
+        ":list_cons_allocs => 5",
+        ":list_cons_bytes => 80",
         ":struct_allocs => 0",
         ":map_allocs => 0",
-        "\n128\n",
+        "\n80\n",
     ] {
         assert!(
             expected.contains(needle),
@@ -2714,27 +2941,147 @@ fn append_pins_source_append_target() {
     );
 }
 
+fn enum_list_allocations_pin_minimum_list_cons() {
+    let readme = fs::read_to_string("fixtures/enum_list_allocations/README.md")
+        .expect("read enum_list_allocations README");
+    for needle in [
+        "the input list literal allocates five cons cells",
+        "`Enum.count/1`, `Enum.member?/2`, and `Enum.reduce/3` allocate no additional",
+        "native `Enum.reduce/3` allocates no heap closures",
+        "stack-backed lazy descriptors",
+        "`list_cons_allocs = 5`",
+        "`list_cons_bytes = 80`",
+        "`closure_allocs = 0`",
+        "`closure_bytes = 0`",
+    ] {
+        assert!(
+            readme.contains(needle),
+            "enum_list_allocations README must pin allocation contract `{}`",
+            needle
+        );
+    }
+
+    assert_fixture_output_contains(
+        "enum_list_allocations",
+        "expected.txt",
+        &[
+            "{:ok, 5}",
+            "{:ok, true}",
+            "{:done, 15}",
+            ":list_cons_allocs => 5",
+            ":list_cons_bytes => 80",
+            ":closure_allocs => 0",
+            ":closure_bytes => 0",
+            ":map_allocs => 0",
+            "\n368\n",
+        ],
+    );
+
+    let clif = dump_fixture_clif("enum_list_allocations");
+    let reduce_list = clif_function_with_banner_prefix(&clif, "; fn Enumerable.reduce_list_s")
+        .expect("enum_list_allocations native dump must include reduce_list");
+    assert!(
+        !reduce_list.contains("@fz_alloc_closure"),
+        "known native Enum.reduce must not heap-allocate reducer-return continuations:\n{}",
+        reduce_list
+    );
+    assert!(
+        reduce_list.contains("stack_store")
+            && reduce_list.contains(&clif_hex_word(lazy_continuation_marker_word())),
+        "known native Enum.reduce should pass a stack-backed lazy continuation descriptor:\n{}",
+        reduce_list
+    );
+}
+
+fn lazy_continuation_marker_word() -> u64 {
+    fz_runtime::any_value::TAG_FWD
+        << fz_runtime::any_value::AnyValueRefPacking::current().tag_shift()
+}
+
+fn clif_hex_word(word: u64) -> String {
+    let raw = format!("{word:016x}");
+    format!(
+        "0x{}_{}_{}_{}",
+        &raw[0..4],
+        &raw[4..8],
+        &raw[8..12],
+        &raw[12..16]
+    )
+}
+
+fn continuation_materialization_boundaries_stay_explicit() {
+    let readme =
+        fs::read_to_string("fixtures/enum_reduce_suspend/README.md").expect("read suspend README");
+    for needle in [
+        "suspend clause returns `{:suspended, acc, fn () -> ... end}`",
+        "real heap closure",
+        "`closure_allocs = 1`",
+        "`closure_bytes = 48`",
+    ] {
+        assert!(
+            readme.contains(needle),
+            "enum_reduce_suspend README must pin materialization boundary `{}`",
+            needle
+        );
+    }
+
+    assert_fixture_output_contains(
+        "enum_reduce_suspend",
+        "expected.txt",
+        &[
+            "{:suspended, 0, #fn<3/3>}",
+            ":list_cons_allocs => 3",
+            ":closure_allocs => 1",
+            ":closure_bytes => 48",
+        ],
+    );
+
+    let receive_clif = dump_fixture_clif("receive_map_pattern");
+    assert!(
+        receive_clif.contains("@fz_receive_park_matched")
+            && receive_clif.contains("@fz_alloc_closure")
+            && receive_clif.contains("@fz_materialize_cont"),
+        "selective receive must still materialize scheduler-visible clause continuations:\n{}",
+        receive_clif
+    );
+
+    let source = fs::read_to_string("src/ir_codegen/terminator.rs").expect("read terminator");
+    for needle in [
+        "fn emit_back_edge_yield_check",
+        "runtime.yield_mid_flight_id",
+        "runtime.materialize_cont_id",
+        "fn emit_receive",
+        "runtime.receive_park_id",
+    ] {
+        assert!(
+            source.contains(needle),
+            "terminator lowering must keep explicit materialization boundary `{}`",
+            needle
+        );
+    }
+}
+
 fn reverse_filter_tree_pin_current_shape() {
     assert_fixture_output_contains(
         "reverse",
         "expected.txt",
         &[
-            ":list_cons_allocs => 10",
-            ":list_cons_bytes => 160",
+            ":list_cons_allocs => 5",
+            ":list_cons_bytes => 80",
             ":struct_allocs => 0",
             ":map_allocs => 0",
-            "\n160\n",
+            "\n80\n",
         ],
     );
     assert_fixture_output_contains(
         "filter",
         "expected.txt",
         &[
-            ":list_cons_allocs => 8",
-            ":list_cons_bytes => 128",
+            ":list_cons_allocs => 5",
+            ":list_cons_bytes => 80",
             ":struct_allocs => 0",
             ":map_allocs => 0",
-            "\n128\n",
+            "\n80\n",
         ],
     );
     assert_fixture_output_contains(
@@ -2831,8 +3178,8 @@ fn quicksort_continuations_capture_only_live_values() {
     let specs = dump_specs_for_fixture("quicksort");
     let capture_lengths = spec_continuation_capture_lengths(&specs);
     assert!(
-        capture_lengths.contains(&2) && capture_lengths.iter().all(|len| *len <= 2),
-        "quicksort continuation should capture only p and sorted_lo once, not rest/lo/hi or duplicate p:\n{}",
+        capture_lengths.contains(&3) && capture_lengths.iter().all(|len| *len <= 3),
+        "quicksort continuations should capture only live values plus a hidden source-cons capability, not rest/lo/hi or duplicate p:\n{}",
         specs
     );
 
@@ -2845,9 +3192,10 @@ fn quicksort_continuations_capture_only_live_values() {
     assert!(
         !tuple_list_tail_cont.contains("@fz_alloc_closure")
             && tuple_list_tail_cont.contains("iconst.i64 3")
+            && tuple_list_tail_cont.contains("iconst.i64 4")
             && tuple_list_tail_cont.contains("stack_addr")
             && tuple_list_tail_cont.contains("bor_imm"),
-        "quicksort should plan its sorting continuation as a three-field lazy descriptor: outer_cont, p, sorted_lo:\n{}",
+        "quicksort should plan its sorting continuation as a four-field lazy descriptor: outer_cont, p, sorted_lo, source_cons:\n{}",
         tuple_list_tail_cont
     );
     assert_eq!(

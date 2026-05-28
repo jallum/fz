@@ -163,6 +163,7 @@ pub(crate) fn compile_fn<
             list_tail_param,
             list_tail_return_elems,
             skipped_list_tail_return_vars,
+            owned_cons_reuse_sources: owned_cons_reuse_sources(f),
             ..CodegenCache::default()
         }
     };
@@ -319,6 +320,15 @@ pub(crate) fn compile_fn<
         }
     });
     Ok(())
+}
+
+fn owned_cons_reuse_sources(f: &crate::fz_ir::FnIr) -> HashMap<u32, crate::fz_ir::Var> {
+    f.physical_capabilities
+        .iter()
+        .map(|fact| match fact.capability {
+            crate::fz_ir::PhysicalCapability::OwnedConsReuse { head } => (head.0, fact.source),
+        })
+        .collect()
 }
 
 /// Compute the set of fz_ir block ids reachable from `f.entry` by

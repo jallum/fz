@@ -7,7 +7,7 @@
 //! entry param.
 
 use crate::fz_ir::{Cont, FnId, Module, Stmt, Term, Var};
-use crate::ir_dce::collect_used;
+use crate::ir_dce::dce_fn_with_telemetry;
 use crate::ir_fuse::{subst_stmt, subst_term};
 use std::collections::{HashMap, HashSet};
 
@@ -32,6 +32,21 @@ pub fn normalize_continuation_captures_with_telemetry(
             }
             emit_call_pruned_event(module, &site, &plan, tel);
             apply_plan(module, site, plan);
+            changed = true;
+            break;
+        }
+        if changed {
+            continue;
+        }
+        for site in shared_continuation_sites(module) {
+            let Some(plan) = plan_shared_continuation_site(module, &site) else {
+                continue;
+            };
+            if !plan.changed {
+                continue;
+            }
+            emit_shared_call_pruned_event(module, &site, &plan, tel);
+            apply_shared_continuation_plan(module, site, plan);
             changed = true;
             break;
         }
@@ -94,6 +109,36 @@ fn emit_call_pruned_event(
             module_path: module.module_path().to_owned(),
             fn_name: cont.name.clone(),
             producer: site.producer,
+        },
+    );
+}
+
+fn emit_shared_call_pruned_event(
+    module: &Module,
+    site: &SharedContinuationSite,
+    plan: &SharedContinuationPlan,
+    tel: &dyn crate::telemetry::Telemetry,
+) {
+    let cont = module.fn_by_id(site.cont_fn_id);
+    let before = site
+        .sites
+        .first()
+        .map(|site| site.cont.captured.len())
+        .unwrap_or(0);
+    let after = plan.live_indices.len();
+    tel.execute(
+        &["fz", "ir", "capture_norm", "captures_pruned"],
+        &crate::measurements! {
+            fn_id: site.cont_fn_id.0 as u64,
+            before_captures: before as u64,
+            after_captures: after as u64,
+            pruned_captures: before.saturating_sub(after) as u64,
+            caller_count: site.sites.len() as u64,
+        },
+        &crate::metadata! {
+            module_path: module.module_path().to_owned(),
+            fn_name: cont.name.clone(),
+            producer: "shared_call_continuation",
         },
     );
 }
@@ -172,6 +217,19 @@ struct NormalizePlan {
     new_captured: Vec<Var>,
     entry_params: Vec<Var>,
     subst: HashMap<Var, Var>,
+    changed: bool,
+}
+
+#[derive(Debug, Clone)]
+struct SharedContinuationSite {
+    cont_fn_id: FnId,
+    sites: Vec<ContinuationSite>,
+}
+
+#[derive(Debug, Clone)]
+struct SharedContinuationPlan {
+    live_indices: Vec<usize>,
+    entry_params: Vec<Var>,
     changed: bool,
 }
 
@@ -273,6 +331,19 @@ fn continuation_sites(module: &Module) -> Vec<ContinuationSite> {
                 producer,
             },
         )
+        .collect()
+}
+
+fn shared_continuation_sites(module: &Module) -> Vec<SharedContinuationSite> {
+    let mut by_cont: HashMap<FnId, Vec<ContinuationSite>> = HashMap::new();
+    for site in continuation_sites(module) {
+        if site.site_count > 1 {
+            by_cont.entry(site.cont.fn_id).or_default().push(site);
+        }
+    }
+    by_cont
+        .into_iter()
+        .map(|(cont_fn_id, sites)| SharedContinuationSite { cont_fn_id, sites })
         .collect()
 }
 
@@ -380,7 +451,7 @@ fn plan_site(module: &Module, site: &ContinuationSite) -> Option<NormalizePlan> 
         return None;
     }
 
-    let used = collect_used(cont_fn);
+    let used = live_vars_after_local_dce(cont_fn);
     let captured_params = &entry.params[1..];
     let mut groups: Vec<CaptureGroup> = Vec::new();
     let mut group_by_outer: HashMap<Var, usize> = HashMap::new();
@@ -444,6 +515,46 @@ fn plan_site(module: &Module, site: &ContinuationSite) -> Option<NormalizePlan> 
     })
 }
 
+fn plan_shared_continuation_site(
+    module: &Module,
+    site: &SharedContinuationSite,
+) -> Option<SharedContinuationPlan> {
+    let cont_idx = *module.fn_idx.get(&site.cont_fn_id)?;
+    let cont_fn = &module.fns[cont_idx];
+    let entry = cont_fn.blocks.iter().find(|b| b.id == cont_fn.entry)?;
+    let first = site.sites.first()?;
+    let captured_len = first.cont.captured.len();
+    if captured_len == 0 || entry.params.len() != captured_len + 1 {
+        return None;
+    }
+    if site
+        .sites
+        .iter()
+        .any(|site| site.cont.captured.len() != captured_len)
+    {
+        return None;
+    }
+
+    let used = live_vars_after_local_dce(cont_fn);
+    let live_indices: Vec<usize> = entry.params[1..]
+        .iter()
+        .enumerate()
+        .filter_map(|(i, param)| used.contains(param).then_some(i))
+        .collect();
+    if live_indices.len() == captured_len {
+        return None;
+    }
+
+    let mut entry_params = Vec::with_capacity(1 + live_indices.len());
+    entry_params.push(entry.params[0]);
+    entry_params.extend(live_indices.iter().map(|&i| entry.params[i + 1]));
+    Some(SharedContinuationPlan {
+        live_indices,
+        entry_params,
+        changed: true,
+    })
+}
+
 fn plan_tail_call_continuation_site(
     module: &Module,
     site: &TailCallContinuationSite,
@@ -462,7 +573,7 @@ fn plan_tail_call_continuation_site(
         return None;
     }
 
-    let used = collect_used(callee);
+    let used = live_vars_after_local_dce(callee);
     let live_indices: Vec<usize> = entry
         .params
         .iter()
@@ -514,7 +625,7 @@ fn plan_receive_matched_site(
             return None;
         }
         outcome_entries.push((outcome.fn_id, outcome.bound_count, entry.params.clone()));
-        used_by_outcome.push(collect_used(f));
+        used_by_outcome.push(live_vars_after_local_dce(f));
     }
 
     let mut groups: Vec<ReceiveCaptureGroup> = Vec::new();
@@ -589,6 +700,26 @@ fn plan_receive_matched_site(
     })
 }
 
+fn live_vars_after_local_dce(f: &crate::fz_ir::FnIr) -> HashSet<Var> {
+    let mut pruned = f.clone();
+    dce_fn_with_telemetry("", &mut pruned, &crate::telemetry::NullTelemetry);
+    crate::ir_dce::collect_used(&pruned)
+}
+
+fn subst_physical_entry_params(f: &mut crate::fz_ir::FnIr, subst: &HashMap<Var, Var>) {
+    f.physical_entry_params = f
+        .physical_entry_params
+        .iter()
+        .map(|param| subst.get(param).copied().unwrap_or(*param))
+        .collect();
+    f.physical_capabilities = f
+        .physical_capabilities
+        .iter()
+        .map(|fact| fact.map_vars(|var| subst.get(&var).copied().unwrap_or(var)))
+        .collect();
+    f.dedup_physical_facts();
+}
+
 #[derive(Debug, Clone)]
 struct CaptureGroup {
     outer: Var,
@@ -619,6 +750,7 @@ fn apply_plan(module: &mut Module, site: ContinuationSite, plan: NormalizePlan) 
             block.stmts = stmts;
             block.terminator = subst_term(&block.terminator, &plan.subst);
         }
+        subst_physical_entry_params(cont_fn, &plan.subst);
     }
     let entry = cont_fn
         .blocks
@@ -627,6 +759,7 @@ fn apply_plan(module: &mut Module, site: ContinuationSite, plan: NormalizePlan) 
         .expect("continuation entry block exists");
     entry.params = plan.entry_params;
     cont_fn.ignored_entry_params = vec![false; entry.params.len()];
+    dce_fn_with_telemetry("", cont_fn, &crate::telemetry::NullTelemetry);
 
     let term = &mut module.fns[site.caller_fn_idx].blocks[site.caller_block_idx].terminator;
     match term {
@@ -636,6 +769,44 @@ fn apply_plan(module: &mut Module, site: ContinuationSite, plan: NormalizePlan) 
             continuation.captured = plan.new_captured;
         }
         _ => unreachable!("captured site no longer points at a continuation term"),
+    }
+}
+
+fn apply_shared_continuation_plan(
+    module: &mut Module,
+    site: SharedContinuationSite,
+    plan: SharedContinuationPlan,
+) {
+    let cont_idx = *module
+        .fn_idx
+        .get(&site.cont_fn_id)
+        .expect("shared continuation fn exists");
+    let cont_fn = &mut module.fns[cont_idx];
+    let entry = cont_fn
+        .blocks
+        .iter_mut()
+        .find(|block| block.id == cont_fn.entry)
+        .expect("shared continuation entry block exists");
+    entry.params = plan.entry_params;
+    cont_fn.ignored_entry_params = vec![false; entry.params.len()];
+    dce_fn_with_telemetry("", cont_fn, &crate::telemetry::NullTelemetry);
+
+    for call_site in site.sites {
+        let term =
+            &mut module.fns[call_site.caller_fn_idx].blocks[call_site.caller_block_idx].terminator;
+        let new_captured: Vec<Var> = plan
+            .live_indices
+            .iter()
+            .map(|&i| call_site.cont.captured[i])
+            .collect();
+        match term {
+            Term::Call { continuation, .. }
+            | Term::CallClosure { continuation, .. }
+            | Term::Receive { continuation, .. } => {
+                continuation.captured = new_captured;
+            }
+            _ => unreachable!("shared captured site no longer points at a continuation term"),
+        }
     }
 }
 
@@ -656,6 +827,7 @@ fn apply_tail_call_continuation_plan(
         .expect("tail-call continuation entry block exists");
     entry.params = plan.entry_params;
     callee.ignored_entry_params = plan.ignored_entry_params;
+    dce_fn_with_telemetry("", callee, &crate::telemetry::NullTelemetry);
 
     for caller in plan.callers {
         let term = &mut module.fns[caller.caller_fn_idx].blocks[caller.caller_block_idx].terminator;
@@ -687,6 +859,7 @@ fn apply_receive_matched_plan(
                 block.stmts = stmts;
                 block.terminator = subst_term(&block.terminator, &outcome.subst);
             }
+            subst_physical_entry_params(f, &outcome.subst);
         }
         let entry = f
             .blocks
@@ -695,6 +868,7 @@ fn apply_receive_matched_plan(
             .expect("receive outcome entry block exists");
         entry.params = outcome.entry_params;
         f.ignored_entry_params = vec![false; entry.params.len()];
+        dce_fn_with_telemetry("", f, &crate::telemetry::NullTelemetry);
     }
 
     let term = &mut module.fns[site.caller_fn_idx].blocks[site.caller_block_idx].terminator;
@@ -708,7 +882,7 @@ fn apply_receive_matched_plan(
 mod tests {
     use super::*;
     use crate::fz_ir::{
-        BlockId, Const, FnBuilder, FnId, ModuleBuilder, Prim, ReceiveAfter, ReceiveClause,
+        BinOp, BlockId, Const, FnBuilder, FnId, ModuleBuilder, Prim, ReceiveAfter, ReceiveClause,
     };
     use crate::matcher::{Matcher, MatcherLeaf, MatcherNode};
     use crate::telemetry::Value;
@@ -780,6 +954,42 @@ mod tests {
         params.extend(captured_params);
         let entry = cont.block(params);
         cont.set_terminator(entry, Term::Return(used));
+
+        let mut mb = ModuleBuilder::new();
+        mb.add_fn(caller.build());
+        mb.add_fn(cont.build());
+        mb.build()
+    }
+
+    fn build_module_with_callclosure_dead_transitive_capture() -> Module {
+        let caller_id = FnId(0);
+        let cont_id = FnId(1);
+
+        let mut caller = FnBuilder::new(caller_id, "caller");
+        let entry = caller.block(vec![]);
+        let closure = caller.let_(entry, Prim::Const(Const::Atom(1)));
+        let arg = caller.let_(entry, Prim::Const(Const::Int(0)));
+        caller.set_terminator(
+            entry,
+            Term::CallClosure {
+                ident: crate::fz_ir::CallsiteIdent::from_source(crate::diag::Span::DUMMY),
+                closure,
+                args: vec![arg],
+                continuation: Cont {
+                    fn_id: cont_id,
+                    captured: vec![Var(10), Var(11)],
+                },
+            },
+        );
+
+        let mut cont =
+            FnBuilder::new(cont_id, "k_resume").with_category(crate::fz_ir::FnCategory::CpsCont);
+        let result = cont.fresh_var();
+        let live = cont.fresh_var();
+        let dead = cont.fresh_var();
+        let entry = cont.block(vec![result, live, dead]);
+        let _unused = cont.let_(entry, Prim::BinOp(BinOp::Add, dead, result));
+        cont.set_terminator(entry, Term::Return(live));
 
         let mut mb = ModuleBuilder::new();
         mb.add_fn(caller.build());
@@ -1001,8 +1211,44 @@ mod tests {
     }
 
     #[test]
-    fn leaves_non_unique_continuation_sites_unchanged() {
+    fn prunes_dead_positions_from_shared_continuation_sites() {
         let mut module = build_module_with_shared_cont_site();
+
+        let cap = normalize_with_capture(&mut module);
+        let ev = assert_pruned_event(&cap, "shared_call_continuation", 2, 1, 1);
+        assert!(matches!(
+            ev.measurements.get("caller_count"),
+            Some(Value::U64(2))
+        ));
+
+        for caller_id in [FnId(0), FnId(1)] {
+            let caller = module.fn_by_id(caller_id);
+            let Term::Call { continuation, .. } = &caller.block(BlockId(0)).terminator else {
+                panic!("expected call terminator");
+            };
+            assert_eq!(continuation.captured, vec![Var(11)]);
+        }
+
+        let cont = module.fn_by_id(FnId(2));
+        assert_eq!(cont.block(BlockId(0)).params, vec![Var(0), Var(2)]);
+    }
+
+    #[test]
+    fn leaves_shared_continuation_sites_unchanged_when_all_positions_live() {
+        let mut module = build_module_with_shared_cont_site();
+        {
+            let cont_idx = *module.fn_idx.get(&FnId(2)).expect("cont exists");
+            let cont = &mut module.fns[cont_idx];
+            let block = cont
+                .blocks
+                .iter_mut()
+                .find(|block| block.id == BlockId(0))
+                .expect("entry block exists");
+            block
+                .stmts
+                .push(Stmt::Let(Var(3), Prim::BinOp(BinOp::Add, Var(1), Var(2))));
+            block.terminator = Term::Return(Var(3));
+        }
 
         let cap = normalize_with_capture(&mut module);
         assert_eq!(
@@ -1020,6 +1266,27 @@ mod tests {
 
         let cont = module.fn_by_id(FnId(2));
         assert_eq!(cont.block(BlockId(0)).params, vec![Var(0), Var(1), Var(2)]);
+    }
+
+    #[test]
+    fn prunes_callclosure_capture_used_only_by_dead_pure_stmt() {
+        let mut module = build_module_with_callclosure_dead_transitive_capture();
+
+        let cap = normalize_with_capture(&mut module);
+        let ev = assert_pruned_event(&cap, "call_continuation", 2, 1, 1);
+        assert!(matches!(
+            ev.measurements.get("deduplicated_captures"),
+            Some(Value::U64(0))
+        ));
+
+        let caller = module.fn_by_id(FnId(0));
+        let Term::CallClosure { continuation, .. } = &caller.block(BlockId(0)).terminator else {
+            panic!("expected call-closure terminator");
+        };
+        assert_eq!(continuation.captured, vec![Var(10)]);
+
+        let cont = module.fn_by_id(FnId(1));
+        assert_eq!(cont.block(BlockId(0)).params, vec![Var(0), Var(1)]);
     }
 
     #[test]

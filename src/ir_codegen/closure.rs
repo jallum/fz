@@ -116,6 +116,7 @@ pub(crate) fn store_closure_capture_ref_word<M: cranelift_module::Module>(
     idx: usize,
     value: ir::Value,
 ) {
+    let value = mark_published_ref_aliased(b, jmod, runtime, value);
     let fref = jmod.declare_func_in_func(runtime.closure_set_capture_ref_id, b.func);
     let index = b.ins().iconst(types::I64, idx as i64);
     b.ins().call(fref, &[closure_ref, index, value]);
@@ -211,6 +212,7 @@ pub(crate) fn emit_struct_set_field_value<M: cranelift_module::Module>(
         }
         other => {
             let value_ref = codegen_value_as_any_ref(b, jmod, runtime, cache, other);
+            let value_ref = mark_published_ref_aliased(b, jmod, runtime, value_ref);
             let fref = jmod.declare_func_in_func(runtime.struct_set_field_ref_id, b.func);
             b.ins().call(fref, &[struct_bits, offset, value_ref]);
         }

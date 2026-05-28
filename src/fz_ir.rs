@@ -1040,15 +1040,24 @@ pub struct FnIr {
     /// The slot exists physically, but semantic specialization must not
     /// inspect its type.
     pub ignored_entry_params: Vec<bool>,
+    /// Entry parameters that transport physical capabilities, not source
+    /// values. They are ignored by semantic specialization by construction.
+    pub physical_entry_params: Vec<Var>,
+    /// Object-local capabilities available inside this function body.
+    pub physical_capabilities: Vec<PhysicalCapabilityFact>,
 }
 
 impl FnIr {
     pub fn semantic_key(&self, input_tys: Vec<crate::types::Ty>) -> Vec<crate::types::KeySlot> {
+        let entry_params = &self.block(self.entry).params;
         input_tys
             .into_iter()
             .enumerate()
             .map(|(i, ty)| {
-                if self.ignored_entry_params.get(i).copied().unwrap_or(false) {
+                let is_physical = entry_params
+                    .get(i)
+                    .is_some_and(|param| self.is_physical_entry_param(*param));
+                if is_physical || self.ignored_entry_params.get(i).copied().unwrap_or(false) {
                     None
                 } else {
                     Some(ty)
@@ -1057,11 +1066,66 @@ impl FnIr {
             .collect()
     }
 
+    pub fn semantic_entry_params(&self) -> Vec<Var> {
+        self.block(self.entry)
+            .params
+            .iter()
+            .enumerate()
+            .filter_map(|(i, param)| {
+                let ignored = self.ignored_entry_params.get(i).copied().unwrap_or(false);
+                (!ignored && !self.is_physical_entry_param(*param)).then_some(*param)
+            })
+            .collect()
+    }
+
+    pub fn is_physical_entry_param(&self, param: Var) -> bool {
+        self.physical_entry_params.contains(&param)
+    }
+
+    pub fn dedup_physical_facts(&mut self) {
+        let mut entry_seen = HashSet::new();
+        self.physical_entry_params
+            .retain(|param| entry_seen.insert(*param));
+        let mut capability_seen = HashSet::new();
+        self.physical_capabilities
+            .retain(|fact| capability_seen.insert(*fact));
+    }
+
     pub fn block(&self, id: BlockId) -> &Block {
         self.blocks
             .iter()
             .find(|b| b.id == id)
             .expect("unknown block")
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct PhysicalCapabilityFact {
+    pub source: Var,
+    pub capability: PhysicalCapability,
+}
+
+impl PhysicalCapabilityFact {
+    pub fn map_vars(self, mut map: impl FnMut(Var) -> Var) -> Self {
+        Self {
+            source: map(self.source),
+            capability: self.capability.map_vars(map),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum PhysicalCapability {
+    OwnedConsReuse { head: Var },
+}
+
+impl PhysicalCapability {
+    pub fn map_vars(self, mut map: impl FnMut(Var) -> Var) -> Self {
+        match self {
+            PhysicalCapability::OwnedConsReuse { head } => {
+                PhysicalCapability::OwnedConsReuse { head: map(head) }
+            }
+        }
     }
 }
 
@@ -1318,6 +1382,8 @@ pub struct FnBuilder {
     category: FnCategory,
     owner_module: String,
     ignored_params: std::collections::HashSet<Var>,
+    physical_entry_params: Vec<Var>,
+    physical_capabilities: Vec<PhysicalCapabilityFact>,
 }
 
 impl FnBuilder {
@@ -1332,6 +1398,8 @@ impl FnBuilder {
             category: FnCategory::User,
             owner_module: String::new(),
             ignored_params: std::collections::HashSet::new(),
+            physical_entry_params: Vec::new(),
+            physical_capabilities: Vec::new(),
         }
     }
 
@@ -1354,6 +1422,56 @@ impl FnBuilder {
 
     pub fn mark_param_ignored(&mut self, v: Var) {
         self.ignored_params.insert(v);
+    }
+
+    fn is_entry_param(&self, param: Var) -> bool {
+        self.entry
+            .and_then(|entry| self.blocks.iter().find(|block| block.id == entry))
+            .is_some_and(|entry| entry.params.contains(&param))
+    }
+
+    pub fn record_physical_entry_param(&mut self, param: Var) {
+        if !self.physical_entry_params.contains(&param) {
+            self.physical_entry_params.push(param);
+        }
+    }
+
+    pub fn record_owned_cons_reuse_capability(&mut self, head: Var, source_cons: Var) {
+        debug_assert!(
+            self.is_entry_param(source_cons),
+            "owned-cons reuse sources must be physical entry params"
+        );
+        if self.is_entry_param(source_cons) {
+            self.record_physical_entry_param(source_cons);
+        }
+        if let Some(fact) = self.physical_capabilities.iter_mut().find(|fact| {
+            matches!(fact.capability, PhysicalCapability::OwnedConsReuse { head: h } if h == head)
+        }) {
+            fact.source = source_cons;
+            return;
+        }
+        self.physical_capabilities.push(PhysicalCapabilityFact {
+            source: source_cons,
+            capability: PhysicalCapability::OwnedConsReuse { head },
+        });
+    }
+
+    pub fn owned_cons_reuse_source_for_head(&self, head: Var) -> Option<Var> {
+        self.physical_capabilities
+            .iter()
+            .find_map(|fact| match fact.capability {
+                PhysicalCapability::OwnedConsReuse { head: h } if h == head => Some(fact.source),
+                _ => None,
+            })
+    }
+
+    pub fn prim_for_var(&self, var: Var) -> Option<&Prim> {
+        self.blocks.iter().find_map(|block| {
+            block
+                .stmts
+                .iter()
+                .find_map(|Stmt::Let(v, prim)| (*v == var).then_some(prim))
+        })
     }
 
     /// Create a new block with the given parameters; first call's block becomes
@@ -1404,7 +1522,7 @@ impl FnBuilder {
                     .collect()
             })
             .unwrap_or_default();
-        FnIr {
+        let mut f = FnIr {
             id: self.id,
             name: self.name,
             frame_schema_id: 0,
@@ -1413,7 +1531,11 @@ impl FnBuilder {
             category: self.category,
             owner_module: self.owner_module,
             ignored_entry_params,
-        }
+            physical_entry_params: self.physical_entry_params,
+            physical_capabilities: self.physical_capabilities,
+        };
+        f.dedup_physical_facts();
+        f
     }
 }
 
@@ -1808,10 +1930,45 @@ impl fmt::Display for FnIr {
             "{} {} (entry={}, frame_schema={}) {{",
             self.id, self.name, self.entry, self.frame_schema_id
         )?;
+        if !self.physical_entry_params.is_empty() {
+            let mut params = self.physical_entry_params.clone();
+            params.sort_by_key(|param| param.0);
+            writeln!(
+                f,
+                "  semantic_params=[{}]",
+                fmt_var_list(&self.semantic_entry_params())
+            )?;
+            for param in params {
+                writeln!(f, "  physical_param {}", param)?;
+            }
+        }
+        if !self.physical_capabilities.is_empty() {
+            let mut facts = self.physical_capabilities.clone();
+            facts.sort_by_key(|fact| fact.source.0);
+            for fact in facts {
+                writeln!(f, "  physical {}", fact)?;
+            }
+        }
         for b in &self.blocks {
             write!(f, "{}", b)?;
         }
         writeln!(f, "}}")
+    }
+}
+
+impl fmt::Display for PhysicalCapabilityFact {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}: {}", self.source, self.capability)
+    }
+}
+
+impl fmt::Display for PhysicalCapability {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            PhysicalCapability::OwnedConsReuse { head } => {
+                write!(f, "owned_cons_reuse(head={})", head)
+            }
+        }
     }
 }
 
@@ -1887,6 +2044,35 @@ mod tests {
         let a = b.fresh_var();
         let c = b.fresh_var();
         assert_ne!(a, c);
+    }
+
+    #[test]
+    fn physical_entry_params_are_not_semantic_key_inputs() {
+        use crate::types::Types;
+
+        let mut b = FnBuilder::new(FnId(0), "with_physical");
+        let head = b.fresh_var();
+        let source = b.fresh_var();
+        let value = b.fresh_var();
+        let entry = b.block(vec![source, value]);
+        b.record_owned_cons_reuse_capability(head, source);
+        b.set_terminator(entry, Term::Return(value));
+        let fn_ir = b.build();
+
+        assert_eq!(fn_ir.physical_entry_params, vec![source]);
+        assert_eq!(
+            fn_ir.physical_capabilities,
+            vec![PhysicalCapabilityFact {
+                source,
+                capability: PhysicalCapability::OwnedConsReuse { head },
+            }]
+        );
+        assert_eq!(fn_ir.semantic_entry_params(), vec![value]);
+
+        let mut t = crate::types::ConcreteTypes;
+        let key = fn_ir.semantic_key(vec![t.any(), t.int()]);
+        assert!(key[0].is_none());
+        assert!(key[1].is_some());
     }
 
     #[test]

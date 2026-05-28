@@ -569,6 +569,16 @@ pub fn alpha_rename(callee: &FnIr, caller: &FnIr) -> FnIr {
         category: callee.category,
         owner_module: callee.owner_module.clone(),
         ignored_entry_params: callee.ignored_entry_params.clone(),
+        physical_entry_params: callee
+            .physical_entry_params
+            .iter()
+            .map(|param| shift_v(*param))
+            .collect(),
+        physical_capabilities: callee
+            .physical_capabilities
+            .iter()
+            .map(|fact| fact.map_vars(shift_v))
+            .collect(),
     }
 }
 
@@ -605,6 +615,16 @@ pub fn absorb_callee(caller: &mut FnIr, bi: usize, mut callee: FnIr, args: &[Var
             b.stmts = b.stmts.iter().map(|s| subst_stmt(s, &subst)).collect();
             b.terminator = subst_term(&b.terminator, &subst);
         }
+        callee.physical_entry_params = callee
+            .physical_entry_params
+            .iter()
+            .map(|param| subst.get(param).copied().unwrap_or(*param))
+            .collect();
+        callee.physical_capabilities = callee
+            .physical_capabilities
+            .iter()
+            .map(|fact| fact.map_vars(|var| subst.get(&var).copied().unwrap_or(var)))
+            .collect();
     }
 
     let entry_block = callee.blocks.remove(entry_idx);
@@ -613,6 +633,10 @@ pub fn absorb_callee(caller: &mut FnIr, bi: usize, mut callee: FnIr, args: &[Var
     caller.blocks[bi].stmts.extend(entry_block.stmts);
     caller.blocks[bi].terminator = entry_block.terminator;
     caller.blocks.extend(callee.blocks);
+    caller
+        .physical_capabilities
+        .extend(callee.physical_capabilities);
+    caller.dedup_physical_facts();
 }
 
 // ---------- pass: inline_tail_calls_once ----------

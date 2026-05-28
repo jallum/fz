@@ -108,12 +108,14 @@ pub(crate) fn lower_multi_clause<T: crate::types::Types<Ty = crate::types::Ty>>(
             let cont = match &clause_conts_ref[i] {
                 Some(cont) => cont.clone(),
                 None => {
-                    let cont = mint_cont_fn(
+                    let mut cont = mint_cont_fn(
                         ctx,
                         format!("fn_clause_{}", i),
                         clause.span,
                         crate::fz_ir::FnCategory::MultiClauseCont,
                     );
+                    cont.owned_cons_captures
+                        .extend(owned_cons_captures_for_bindings(ctx, &bindings));
                     clause_conts_ref[i] = Some(cont.clone());
                     cont
                 }
@@ -147,6 +149,26 @@ pub(crate) fn lower_multi_clause<T: crate::types::Types<Ty = crate::types::Ty>>(
 
     Ok(())
 }
+
+fn owned_cons_captures_for_bindings(
+    ctx: &LowerCtx,
+    bindings: &[(String, Var)],
+) -> Vec<OwnedConsCapture> {
+    let Some(cur) = ctx.cur.as_ref() else {
+        return Vec::new();
+    };
+    bindings
+        .iter()
+        .filter_map(|(name, head)| match cur.prim_for_var(*head) {
+            Some(Prim::ListHead(source_cons)) => Some(OwnedConsCapture {
+                head_name: name.clone(),
+                source_cons: *source_cons,
+            }),
+            _ => None,
+        })
+        .collect()
+}
+
 pub(crate) fn lower_if(
     ctx: &mut LowerCtx,
     cond: &Spanned<Expr>,
@@ -216,21 +238,21 @@ pub(crate) fn lower_if(
     // Captures are snapshotted from the outer env *now*; they're the
     // same set we passed to `mint_cont_fn` for then_cont/else_cont/join_opt
     // (which all snapshot identical envs at this moment).
-    let captures = ctx.visible_locals();
-    let capture_vars: Vec<Var> = captures.iter().map(|(_, v)| *v).collect();
+    let then_capture_vars = cont_call_args(ctx, &then_cont);
+    let else_capture_vars = cont_call_args(ctx, &else_cont);
 
     ctx.cur_block = Some(then_b);
     ctx.set_term(Term::TailCall {
         ident: crate::fz_ir::CallsiteIdent::from_source(Span::DUMMY),
         callee: then_cont.id,
-        args: capture_vars.clone(),
+        args: then_capture_vars,
         is_back_edge: false,
     });
     ctx.cur_block = Some(else_b);
     ctx.set_term(Term::TailCall {
         ident: crate::fz_ir::CallsiteIdent::from_source(Span::DUMMY),
         callee: else_cont.id,
-        args: capture_vars,
+        args: else_capture_vars,
         is_back_edge: false,
     });
 

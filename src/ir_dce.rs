@@ -11,7 +11,7 @@
 //! single-predecessor target. Runs after dead block elimination so that only
 //! reachable blocks remain. Fixed-point loop handles chains.
 
-use crate::fz_ir::{BlockId, FnId, FnIr, Module, Prim, Stmt, Term, Var};
+use crate::fz_ir::{BlockId, FnId, FnIr, Module, PhysicalCapability, Prim, Stmt, Term, Var};
 use std::collections::HashMap;
 use std::collections::HashSet;
 
@@ -132,6 +132,7 @@ pub fn dce_fn_with_telemetry(
             break;
         }
     }
+    prune_dead_owned_cons_capabilities(f);
 
     // Dead block elimination: compute reachable set BEFORE retaining so that
     // f.block(id) — which panics on unknown id — is still safe to call.
@@ -153,6 +154,7 @@ pub fn dce_fn_with_telemetry(
         }
     }
     f.blocks.retain(|b| reachable.contains(&b.id));
+    prune_dead_owned_cons_capabilities(f);
 }
 
 fn reachable_from_entry(f: &FnIr) -> HashSet<BlockId> {
@@ -207,7 +209,34 @@ pub fn classify_var_uses(f: &FnIr) -> (HashSet<Var>, HashSet<Var>) {
 }
 
 pub fn collect_used(f: &FnIr) -> HashSet<Var> {
-    classify_var_uses(f).1
+    let semantic_used = classify_var_uses(f).1;
+    let mut used = semantic_used.clone();
+    for fact in &f.physical_capabilities {
+        match fact.capability {
+            PhysicalCapability::OwnedConsReuse { head } if semantic_used.contains(&head) => {
+                used.insert(fact.source);
+            }
+            _ => {}
+        }
+    }
+    used
+}
+
+fn prune_dead_owned_cons_capabilities(f: &mut FnIr) {
+    let semantic_used = classify_var_uses(f).1;
+    f.physical_capabilities
+        .retain(|fact| match fact.capability {
+            PhysicalCapability::OwnedConsReuse { head } => semantic_used.contains(&head),
+        });
+    let live_sources: HashSet<Var> = f
+        .physical_capabilities
+        .iter()
+        .map(|fact| fact.source)
+        .collect();
+    let entry_params: HashSet<Var> = f.block(f.entry).params.iter().copied().collect();
+    f.physical_entry_params
+        .retain(|param| entry_params.contains(param) && live_sources.contains(param));
+    f.dedup_physical_facts();
 }
 
 fn collect_prim_vars(p: &Prim, used: &mut HashSet<Var>) {
@@ -790,6 +819,33 @@ mod tests {
     }
 
     #[test]
+    fn unreachable_capability_use_does_not_keep_physical_facts() {
+        let mut b = FnBuilder::new(FnId(0), "main");
+        let source = b.fresh_var();
+        let entry = b.block(vec![source]);
+        let orphan = b.block(vec![]);
+
+        let nil = b.let_(entry, Prim::MakeList(vec![], None));
+        b.set_terminator(entry, Term::Return(nil));
+
+        let head = b.let_(orphan, Prim::ListHead(source));
+        b.record_owned_cons_reuse_capability(head, source);
+        let tail = b.let_(orphan, Prim::MakeList(vec![], None));
+        let result = b.let_(orphan, Prim::MakeList(vec![head], Some(tail)));
+        b.set_terminator(orphan, Term::Return(result));
+
+        let mut f = b.build();
+        assert_eq!(f.physical_entry_params, vec![source]);
+        assert_eq!(f.physical_capabilities.len(), 1);
+
+        dce_fn_with_telemetry("", &mut f, &crate::telemetry::NullTelemetry);
+
+        assert_eq!(f.blocks.len(), 1, "orphan block should be removed");
+        assert!(f.physical_entry_params.is_empty());
+        assert!(f.physical_capabilities.is_empty());
+    }
+
+    #[test]
     fn telemetry_reports_pruned_block_identity() {
         let tel = crate::telemetry::ConfiguredTelemetry::new();
         let cap = crate::telemetry::Capture::new();
@@ -956,6 +1012,52 @@ mod tests {
         assert!(
             !if_only2.contains(&c2),
             "dual-use condition must NOT be in if_only_conds"
+        );
+    }
+
+    #[test]
+    fn owned_cons_source_is_live_only_when_capability_head_is_used() {
+        let mut b = FnBuilder::new(FnId(0), "live_capability");
+        let source = b.fresh_var();
+        let entry = b.block(vec![source]);
+        let head = b.let_(entry, Prim::ListHead(source));
+        b.record_owned_cons_reuse_capability(head, source);
+        let tail = b.let_(entry, Prim::MakeList(vec![], None));
+        let result = b.let_(entry, Prim::MakeList(vec![head], Some(tail)));
+        b.set_terminator(entry, Term::Return(result));
+        let mut f = b.build();
+
+        dce_fn_with_telemetry("", &mut f, &crate::telemetry::NullTelemetry);
+
+        assert_eq!(f.physical_entry_params.len(), 1);
+        assert_eq!(f.physical_capabilities.len(), 1);
+        assert!(
+            f.block(f.entry)
+                .stmts
+                .iter()
+                .any(|Stmt::Let(_, prim)| matches!(prim, Prim::ListHead(v) if *v == source)),
+            "live capability head should keep its source projection alive"
+        );
+
+        let mut b = FnBuilder::new(FnId(1), "dead_capability");
+        let source = b.fresh_var();
+        let entry = b.block(vec![source]);
+        let head = b.let_(entry, Prim::ListHead(source));
+        b.record_owned_cons_reuse_capability(head, source);
+        let nil = b.let_(entry, Prim::MakeList(vec![], None));
+        b.set_terminator(entry, Term::Return(nil));
+        let mut f = b.build();
+
+        dce_fn_with_telemetry("", &mut f, &crate::telemetry::NullTelemetry);
+
+        assert!(f.physical_entry_params.is_empty());
+        assert!(f.physical_capabilities.is_empty());
+        assert!(
+            f.block(f.entry)
+                .stmts
+                .iter()
+                .all(|Stmt::Let(_, prim)| !matches!(prim, Prim::ListHead(_))),
+            "dead capability head should not keep source projection alive"
         );
     }
 }

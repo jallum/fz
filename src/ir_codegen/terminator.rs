@@ -98,6 +98,140 @@ fn callee_is_native(env: &CodegenEnv<'_>, id: u32) -> bool {
     env.natively_callable.contains(&crate::fz_ir::FnId(id))
 }
 
+enum ContinuationPlan {
+    LazyNativeDescriptor(ContinuationPayload),
+    HeapClosure(ContinuationPayload),
+}
+
+struct ContinuationPayload {
+    cont_sid: u32,
+    cont_fid: FuncId,
+    semantic_cap_bindings: Vec<ClosureCapture>,
+    physical_ref_captures: Vec<ir::Value>,
+    materialization_ref_captures: Vec<ir::Value>,
+}
+
+impl ContinuationPayload {
+    fn from_parts(
+        env: &CodegenEnv<'_>,
+        cont_sid: u32,
+        semantic_cap_bindings: Vec<ClosureCapture>,
+        physical_ref_captures: Vec<ir::Value>,
+        materialization_ref_captures: Vec<ir::Value>,
+    ) -> Self {
+        let cont_fid = *env.fn_ids.get(&cont_sid).expect("cont fn_id missing");
+        Self {
+            cont_sid,
+            cont_fid,
+            semantic_cap_bindings,
+            physical_ref_captures,
+            materialization_ref_captures,
+        }
+    }
+
+    fn from_capture_vars<M: cranelift_module::Module>(
+        b: &mut FunctionBuilder<'_>,
+        jmod: &mut M,
+        env: &CodegenEnv<'_>,
+        var_env: &HashMap<u32, CodegenValue>,
+        cache: &mut CodegenCache,
+        cont_sid: u32,
+        captures: &[crate::fz_ir::Var],
+    ) -> Self {
+        let cap_bindings = captures
+            .iter()
+            .map(|cv| closure_capture_for_var(var_env, b, jmod, env.runtime, cv.0, cache))
+            .collect();
+        let extra_ref_captures =
+            cont_extra_ref_captures(b, cache, &env.spec_keys[cont_sid as usize]);
+        Self::from_parts(env, cont_sid, cap_bindings, vec![], extra_ref_captures)
+    }
+
+    fn ref_captures(&self) -> Vec<ir::Value> {
+        self.physical_ref_captures
+            .iter()
+            .chain(&self.materialization_ref_captures)
+            .copied()
+            .collect()
+    }
+}
+
+impl ContinuationPlan {
+    fn lazy_native_descriptor(payload: ContinuationPayload) -> Self {
+        Self::LazyNativeDescriptor(payload)
+    }
+
+    fn heap_closure(payload: ContinuationPayload) -> Self {
+        Self::HeapClosure(payload)
+    }
+
+    fn uses_lazy_descriptor(&self) -> bool {
+        matches!(self, Self::LazyNativeDescriptor(_))
+    }
+
+    fn uses_heap_closure(&self) -> bool {
+        matches!(self, Self::HeapClosure(_))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn emit_value<M: cranelift_module::Module>(
+        &self,
+        jmod: &mut M,
+        b: &mut FunctionBuilder<'_>,
+        runtime: &RuntimeRefs,
+        return_reprs: &[ArgRepr],
+        is_cont_fn: bool,
+        cont_param: Option<ir::Value>,
+        frame_ptr: Option<ir::Value>,
+    ) -> ir::Value {
+        match self {
+            ContinuationPlan::LazyNativeDescriptor(payload) => {
+                let ref_captures = payload.ref_captures();
+                build_lazy_cont_descriptor(
+                    jmod,
+                    b,
+                    runtime,
+                    return_reprs,
+                    is_cont_fn,
+                    cont_param,
+                    frame_ptr,
+                    payload.cont_sid,
+                    payload.cont_fid,
+                    &payload.semantic_cap_bindings,
+                    &ref_captures,
+                )
+            }
+            ContinuationPlan::HeapClosure(payload) => {
+                let ref_captures = payload.ref_captures();
+                build_cont_closure(
+                    jmod,
+                    b,
+                    runtime,
+                    return_reprs,
+                    is_cont_fn,
+                    cont_param,
+                    frame_ptr,
+                    payload.cont_sid,
+                    payload.cont_fid,
+                    &payload.semantic_cap_bindings,
+                    &ref_captures,
+                )
+            }
+        }
+    }
+}
+
+fn plan_closure_shaped_continuation(
+    payload: ContinuationPayload,
+    use_lazy: bool,
+) -> ContinuationPlan {
+    if use_lazy {
+        ContinuationPlan::lazy_native_descriptor(payload)
+    } else {
+        ContinuationPlan::heap_closure(payload)
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn emit_terminator<
     M: cranelift_module::Module,
@@ -517,6 +651,14 @@ fn emit_call_term<
             .iter()
             .map(|v| var_env.get(&v.0).expect("unbound captured val").value())
             .collect();
+        mark_retained_call_args_as_published(
+            b,
+            jmod,
+            runtime,
+            var_env,
+            args,
+            &continuation.captured,
+        );
         let callee_sid = resolve_callee_sid(t, env, caller_fn_id, blk);
         let mut cont_sid = resolve_cont_sid(t, env, caller_fn_id, blk);
         let this_demand = DemandAbi::new(&env.spec_keys[this_spec_id as usize]);
@@ -583,12 +725,20 @@ fn emit_call_term<
                 cache,
             );
             native_args.push(list_tail_destination_arg(b, cache));
-            let cont_fid = *fn_ids.get(&cont_sid).expect("cont fn_id missing");
-            let cap_bindings = [
+            let cap_bindings = vec![
                 closure_capture_for_var(var_env, b, jmod, runtime, pivot_capture.0, cache),
                 closure_capture_for_var(var_env, b, jmod, runtime, args[0].0, cache),
             ];
-            let cont_arg = build_lazy_cont_descriptor(
+            let physical_ref_captures =
+                owned_cons_physical_ref_captures(b, jmod, runtime, var_env, cache, pivot_capture);
+            let payload = ContinuationPayload::from_parts(
+                env,
+                cont_sid,
+                cap_bindings,
+                physical_ref_captures,
+                vec![],
+            );
+            let cont_arg = ContinuationPlan::lazy_native_descriptor(payload).emit_value(
                 jmod,
                 b,
                 runtime,
@@ -596,10 +746,6 @@ fn emit_call_term<
                 is_cont_fn,
                 cont_param,
                 frame_ptr,
-                cont_sid,
-                cont_fid,
-                &cap_bindings,
-                &[],
             );
             native_args.push(cont_arg);
             let inst = b.ins().call(callee_fref, &native_args);
@@ -616,16 +762,28 @@ fn emit_call_term<
             let entry = caller_fn.block(caller_fn.entry);
             if entry.params.first().copied() == Some(tail_capture) {
                 let tail_bits = any_ref_for_var(var_env, b, jmod, runtime, tail_capture.0, cache);
-                let pivot_tail = emit_list_cons_bif(
+                let pivot_tail = if let Some(reused) = emit_owned_cons_reuse_or_alloc(
                     b,
                     jmod,
                     runtime,
                     var_env,
-                    pivot_capture,
-                    expected_runtime_value_kind(t, fn_types, block_env, pivot_capture),
-                    ListTailBits::ValueRef(tail_bits),
                     cache,
-                );
+                    pivot_capture,
+                    ListTailBits::ValueRef(tail_bits),
+                ) {
+                    reused
+                } else {
+                    emit_list_cons_bif(
+                        b,
+                        jmod,
+                        runtime,
+                        var_env,
+                        pivot_capture,
+                        expected_runtime_value_kind(t, fn_types, block_env, pivot_capture),
+                        ListTailBits::ValueRef(tail_bits),
+                        cache,
+                    )
+                };
                 let callee_param_reprs = &param_reprs[callee_sid as usize];
                 let callee_fid = *fn_ids.get(&callee_sid).expect("callee fn_id missing");
                 let callee_fref = jmod.declare_func_in_func(callee_fid, b.func);
@@ -768,58 +926,34 @@ fn emit_native_call_with_cont<
     let cont_can_use_lazy_descriptor = !closure_n_captures.contains_key(callee)
         && !cont_captures_callable
         && !caller_has_callable_state;
-    let lazy_cont_opt: Option<ir::Value> =
-        if cont_is_native && is_native && cont_can_use_lazy_descriptor {
-            let cont_fid = *fn_ids.get(&cont_sid).expect("cont fn_id missing");
-            let cap_bindings: Vec<ClosureCapture> = continuation
-                .captured
-                .iter()
-                .map(|cv| closure_capture_for_var(var_env, b, jmod, runtime, cv.0, cache))
-                .collect();
-            let extra_ref_captures =
-                cont_extra_ref_captures(b, cache, &env.spec_keys[cont_sid as usize]);
-            Some(build_lazy_cont_descriptor(
-                jmod,
-                b,
-                runtime,
-                return_reprs,
-                is_cont_fn,
-                cont_param,
-                frame_ptr,
-                cont_sid,
-                cont_fid,
-                &cap_bindings,
-                &extra_ref_captures,
-            ))
-        } else {
-            None
-        };
-    let cl_ptr_opt: Option<ir::Value> =
-        if cont_is_native && (!is_native || !cont_can_use_lazy_descriptor) {
-            let cont_fid = *fn_ids.get(&cont_sid).expect("cont fn_id missing");
-            let cap_bindings: Vec<ClosureCapture> = continuation
-                .captured
-                .iter()
-                .map(|cv| closure_capture_for_var(var_env, b, jmod, runtime, cv.0, cache))
-                .collect();
-            let extra_ref_captures =
-                cont_extra_ref_captures(b, cache, &env.spec_keys[cont_sid as usize]);
-            Some(build_cont_closure(
-                jmod,
-                b,
-                runtime,
-                return_reprs,
-                is_cont_fn,
-                cont_param,
-                frame_ptr,
-                cont_sid,
-                cont_fid,
-                &cap_bindings,
-                &extra_ref_captures,
-            ))
-        } else {
-            None
-        };
+    let continuation_plan = if cont_is_native {
+        let payload = ContinuationPayload::from_capture_vars(
+            b,
+            jmod,
+            env,
+            var_env,
+            cache,
+            cont_sid,
+            &continuation.captured,
+        );
+        Some(plan_closure_shaped_continuation(
+            payload,
+            is_native && cont_can_use_lazy_descriptor,
+        ))
+    } else {
+        None
+    };
+    let cont_value_opt = continuation_plan.as_ref().map(|plan| {
+        plan.emit_value(
+            jmod,
+            b,
+            runtime,
+            return_reprs,
+            is_cont_fn,
+            cont_param,
+            frame_ptr,
+        )
+    });
     // cont arg passed to the callee: cl_ptr for native cont,
     // else cont_param fallback. When the cont-fn is uniform
     // (rare; only main's halt-style cont after the
@@ -831,10 +965,8 @@ fn emit_native_call_with_cont<
     // execute its uniform-cont write-back after the call
     // (would double-halt with the wrong value).
     let mut synth_halt_cont = false;
-    let cont_arg = if let Some(lazy_cont) = lazy_cont_opt {
-        lazy_cont
-    } else if let Some(cl_ptr) = cl_ptr_opt {
-        cl_ptr
+    let cont_arg = if let Some(cont_value) = cont_value_opt {
+        cont_value
     } else {
         match cont_param {
             Some(c) => c,
@@ -846,13 +978,19 @@ fn emit_native_call_with_cont<
     };
     native_args.push(cont_arg);
 
-    if lazy_cont_opt.is_some() && is_native {
+    let uses_lazy_cont = continuation_plan
+        .as_ref()
+        .is_some_and(ContinuationPlan::uses_lazy_descriptor);
+    let uses_heap_cont = continuation_plan
+        .as_ref()
+        .is_some_and(ContinuationPlan::uses_heap_closure);
+    if uses_lazy_cont && is_native {
         let inst = b.ins().call(callee_fref, &native_args);
         let result = b.inst_results(inst)[0];
         b.ins().return_(&[result]);
-    } else if (cl_ptr_opt.is_some() || synth_halt_cont) && is_native {
+    } else if (uses_heap_cont || synth_halt_cont) && is_native {
         b.ins().return_call(callee_fref, &native_args);
-    } else if cl_ptr_opt.is_some() || synth_halt_cont {
+    } else if uses_heap_cont || synth_halt_cont {
         // Uniform caller → native callee (chained). Can't
         // return_call across CC; synchronous call then
         // return the chain-final value (halt_value already
@@ -1236,30 +1374,15 @@ fn emit_call_closure<
             .iter()
             .map(|v| var_env.get(&v.0).expect("unbound callclosure arg").value())
             .collect();
-        // Build the continuation as a closure env. The body will
-        // project any captures it needs from `self`.
-        let cont_sid = resolve_cont_sid(t, env, caller_fn_id, blk);
-        let cont_fid = *fn_ids.get(&cont_sid).expect("cont fn_id missing");
-        let cap_bindings: Vec<ClosureCapture> = continuation
-            .captured
-            .iter()
-            .map(|cv| closure_capture_for_var(var_env, b, jmod, runtime, cv.0, cache))
-            .collect();
-        let extra_ref_captures =
-            cont_extra_ref_captures(b, cache, &env.spec_keys[cont_sid as usize]);
-        let cf = build_cont_closure(
-            jmod,
+        mark_retained_call_args_as_published(
             b,
+            jmod,
             runtime,
-            return_reprs,
-            is_cont_fn,
-            cont_param,
-            frame_ptr,
-            cont_sid,
-            cont_fid,
-            &cap_bindings,
-            &extra_ref_captures,
+            var_env,
+            args,
+            &continuation.captured,
         );
+        let cont_sid = resolve_cont_sid(t, env, caller_fn_id, blk);
         // Singleton closure-lit fast path: if this spec types `closure`
         // as a single closure_lit(F, K), resolve F's narrow body spec
         // at [K..., arg_descrs...] and call it directly with the body's
@@ -1272,6 +1395,27 @@ fn emit_call_closure<
             let n_caps = closure_n_captures.get(&body_fn_id).copied().unwrap_or(0);
             Some((body_sid, body_fid, n_caps))
         })();
+        let cont_payload = ContinuationPayload::from_capture_vars(
+            b,
+            jmod,
+            env,
+            var_env,
+            cache,
+            cont_sid,
+            &continuation.captured,
+        );
+        let cont_is_native = callee_is_native(env, continuation.fn_id.0);
+        let can_use_lazy_cont = is_native && cont_is_native && lit_resolved.is_some();
+        let continuation_plan = plan_closure_shaped_continuation(cont_payload, can_use_lazy_cont);
+        let cf = continuation_plan.emit_value(
+            jmod,
+            b,
+            runtime,
+            return_reprs,
+            is_cont_fn,
+            cont_param,
+            frame_ptr,
+        );
         if let Some((body_sid, body_fid, n_caps)) = lit_resolved {
             let body_param_reprs = &param_reprs[body_sid as usize];
             let body_fref = jmod.declare_func_in_func(body_fid, b.func);
@@ -1287,7 +1431,11 @@ fn emit_call_closure<
             direct_args.push(cl_val);
             direct_args.push(cf);
             let _ = host_ctx;
-            if is_native {
+            if can_use_lazy_cont {
+                let call_inst = b.ins().call(body_fref, &direct_args);
+                let result = b.inst_results(call_inst)[0];
+                b.ins().return_(&[result]);
+            } else if is_native {
                 b.ins().return_call(body_fref, &direct_args);
             } else {
                 let call_inst = b.ins().call(body_fref, &direct_args);
@@ -1507,20 +1655,22 @@ fn emit_receive<
     continuation: &crate::fz_ir::Cont,
 ) -> Result<(), CodegenError> {
     let runtime = env.runtime;
-    let fn_ids = env.fn_ids;
     let return_reprs = env.return_reprs;
     {
         // See docs/cps-in-clif.md §4: build the cont closure (outer_cont
         // in env field 0), hand it to fz_receive_park which parks an
         // accept-any matcher record and returns the YIELD sentinel.
         let cont_sid = resolve_cont_sid(t, env, caller_fn_id, blk);
-        let cap_bindings: Vec<ClosureCapture> = continuation
-            .captured
-            .iter()
-            .map(|cv| closure_capture_for_var(var_env, b, jmod, runtime, cv.0, cache))
-            .collect();
-        let cont_fid = *fn_ids.get(&cont_sid).expect("cont fn_id missing");
-        let cl_ptr = build_cont_closure(
+        let payload = ContinuationPayload::from_capture_vars(
+            b,
+            jmod,
+            env,
+            var_env,
+            cache,
+            cont_sid,
+            &continuation.captured,
+        );
+        let cl_ptr = ContinuationPlan::heap_closure(payload).emit_value(
             jmod,
             b,
             runtime,
@@ -1528,10 +1678,6 @@ fn emit_receive<
             is_cont_fn,
             cont_param,
             frame_ptr,
-            cont_sid,
-            cont_fid,
-            &cap_bindings,
-            &[],
         );
 
         // fz_receive_park(cl_ptr) — stash + yield.
@@ -1556,7 +1702,7 @@ fn emit_receive<
 //   - clause_bodies[]: i64 array of cont-closure refs,
 //     one per source clause; each closure carries the clause-body
 //     fn entry, while captures are populated through closure
-//     accessors in source order (build_cont_closure handles all
+//     accessors in source order (ContinuationPlan handles all
 //     bookkeeping).
 //   - clause_bound_counts[]: i64 array, one per source clause.
 //     The matcher scratch uses max bound_arity; the resumed
@@ -1643,7 +1789,6 @@ fn build_park_record<
 ) -> ir::Value {
     use cranelift_codegen::ir::{StackSlotData, StackSlotKind};
     let runtime = env.runtime;
-    let fn_ids = env.fn_ids;
     let return_reprs = env.return_reprs;
 
     // Pinned snapshot: alloca [AnyValueRef; n_pinned], take base addr.
@@ -1723,10 +1868,9 @@ fn build_park_record<
     };
     for (i, c) in clauses.iter().enumerate() {
         let cont_sid = resolve_body_sid(t, c.body);
-        let cont_fid = *fn_ids
-            .get(&cont_sid)
-            .expect("clause body sid has no FuncId");
-        let cl_ptr = build_cont_closure(
+        let payload =
+            ContinuationPayload::from_parts(env, cont_sid, cap_bindings.clone(), vec![], vec![]);
+        let cl_ptr = ContinuationPlan::heap_closure(payload).emit_value(
             jmod,
             b,
             runtime,
@@ -1734,10 +1878,6 @@ fn build_park_record<
             is_cont_fn,
             cont_param,
             frame_ptr,
-            cont_sid,
-            cont_fid,
-            &cap_bindings,
-            &[],
         );
         b.ins().stack_store(cl_ptr, bodies_slot, (i * 8) as i32);
         if let Some(slot) = bound_counts_slot {
@@ -1757,8 +1897,14 @@ fn build_park_record<
     let (after_deadline_v, after_cont_v) = match after {
         Some(a) => {
             let cont_sid = resolve_body_sid(t, a.body);
-            let cont_fid = *fn_ids.get(&cont_sid).expect("after body sid has no FuncId");
-            let cl_ptr = build_cont_closure(
+            let payload = ContinuationPayload::from_parts(
+                env,
+                cont_sid,
+                cap_bindings.clone(),
+                vec![],
+                vec![],
+            );
+            let cl_ptr = ContinuationPlan::heap_closure(payload).emit_value(
                 jmod,
                 b,
                 runtime,
@@ -1766,10 +1912,6 @@ fn build_park_record<
                 is_cont_fn,
                 cont_param,
                 frame_ptr,
-                cont_sid,
-                cont_fid,
-                &cap_bindings,
-                &[],
             );
             let unboxed = as_raw_i64(var_env, b, jmod, runtime, a.timeout.0);
             (unboxed, cl_ptr)
@@ -1819,6 +1961,27 @@ fn cont_extra_ref_captures(
     } else {
         Vec::new()
     }
+}
+
+fn owned_cons_physical_ref_captures<M: cranelift_module::Module>(
+    b: &mut FunctionBuilder<'_>,
+    jmod: &mut M,
+    runtime: &RuntimeRefs,
+    var_env: &HashMap<u32, CodegenValue>,
+    cache: &mut CodegenCache,
+    head: crate::fz_ir::Var,
+) -> Vec<ir::Value> {
+    let Some(source_cons) = cache.owned_cons_reuse_sources.get(&head.0).copied() else {
+        return Vec::new();
+    };
+    vec![any_ref_for_var(
+        var_env,
+        b,
+        jmod,
+        runtime,
+        source_cons.0,
+        cache,
+    )]
 }
 
 fn emit_list_tail_return_value<

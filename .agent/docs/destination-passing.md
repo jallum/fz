@@ -134,8 +134,9 @@ append([1, 2, 3], [4, 5])
 ```
 
 as a source `append/2` function, not an append BIF. Its native value path
-allocates eight cons cells: five for the two list literals and three for the
-copied prefix. That fixture is an allocation baseline for library algorithms;
+allocates five cons cells: exactly the two input list literals. The copied
+prefix is removed by owned-cons reuse rather than by a special append helper.
+That fixture is an allocation baseline for library algorithms;
 `fixtures/quicksort` is the return-context baseline that proves ListTail
 context planning removes append-shaped rebuilding around recursive calls.
 
@@ -147,8 +148,47 @@ Allocation by itself is not source-observable, but
 allocation becomes observable in the presence of allocation-stat reads.
 
 The pinned evidence is `fixtures/quicksort`: native JIT/AOT output now
-keeps `list_cons_allocs = 48`, `list_cons_bytes = 768`,
-`struct_allocs = 0`, and headline `heap_bytes = 768`.
+keeps `list_cons_allocs = 11`, `list_cons_bytes = 176`,
+`struct_allocs = 0`, and headline `heap_bytes = 176`.
+
+Owned-cons reuse is the next reduction layer. Multi-clause list destructuring
+records a physical capability from a projected head back to the original source
+cons cell. The source slot is not a source value and is not modeled as an
+ignored semantic parameter. The spec dump exposes the capability:
+
+```text
+physical_capabilities:
+  owned_cons_source param=Var(C) head=Var(H)
+```
+
+The physical parameter is not part of semantic specialization (`_` in the spec
+key), but it gives native codegen the object-local capability needed to turn
+`[h | new_tail]` into a reuse attempt for `C`. Native lowering consumes the
+fact through one helper for `MakeList`, `DestListCons`, and `cons_then_direct`
+ListTail return plans. That helper emits `fz_list_reuse_or_cons_tail_ref`.
+The runtime alias bit remains the cell-local guard: if `C` is still unaliased,
+the helper relinks it in place; if `C` was marked aliased, the helper allocates
+a fresh cons with the same head and the requested tail. An aliased reuse
+attempt is therefore an allocation miss, not a user-visible panic.
+
+A source cons becomes ineligible for an owned reuse capability, or has its alias
+bit set before reuse, when it is published outside the single owned rewrite path.
+The publication barriers include closure and lazy-continuation capture that can
+escape the current native activation, insertion into another heap container,
+receive/scheduler-visible same-heap handoff, a non-tail call whose continuation
+retains the same argument, halt, and allocation-stat reads that make allocation
+timing observable.
+Allocation alone is still not source-observable; crossing an observer is the
+barrier.
+
+Extern calls are not alias-publication boundaries for their arguments. An
+extern that wants to retain a value after returning must copy it.
+
+Send is different from same-heap publication. The runtime deep-copies messages
+for cross-process send and self-send, so the sender's current-process cons
+cells do not become aliased merely because they were sent. The destination
+message graph is fresh in its heap; copied list cells must have clear alias
+bits even if the source cells were already marked aliased.
 
 ## IR Vocabulary
 

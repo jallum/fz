@@ -180,6 +180,31 @@ Closure:
   local capture kind metadata
 ```
 
+The list link alias bit is a conservative cell-local reuse guard. Runtime
+helpers may mark a cons aliased. Internal primitive checks may reject an
+aliased cell, but codegen-facing reuse helpers must be total for valid inputs:
+if the source cons is still unaliased they may relink it in place; if it is
+aliased they must use fallback allocation for a fresh cons with the same head
+and the requested tail. GC preserves the bit inside a process heap. Deep copy
+creates fresh cells in the destination heap, so copied list cells start
+unaliased even when the source cell was marked aliased.
+
+The alias bit is set, or a physical reuse capability is not recorded, when a cons cell is
+published outside the single owned rewrite path. A publication includes storing
+the cell in another heap object, capturing it in a closure or scheduler-visible
+continuation, or crossing a barrier where allocation timing becomes observable.
+Native call lowering also marks an argument when the caller passes it to a
+callee and keeps the same value in the continuation; that protects examples
+like `xs |> reverse(); xs |> map()` from letting the first call rewrite the
+list that the continuation will later traverse.
+Passing a value to an extern does not publish it: an extern that wants to retain
+a value beyond the call must copy it. Cross-process
+send and self-send are copy boundaries, not alias boundaries: the sender's
+current-process cells need not be marked, and the receiver/mailbox copy is a
+fresh unaliased graph. The bit is intentionally one-way inside a heap: once a
+cell has been published there, later local code may still read it, but
+destructive reuse must fall back to allocation.
+
 Public refs are public refs. Object-local metadata is object-local metadata.
 
 ## GC Rule
