@@ -205,6 +205,10 @@ fn static_tests() -> Vec<(&'static str, fn())> {
             owned_cons_reuse_docs_pin_alias_fallback_contract,
         ),
         (
+            "owned_cons_reuse_negative_barriers_do_not_advertise_credits",
+            owned_cons_reuse_negative_barriers_do_not_advertise_credits,
+        ),
+        (
             "quicksort_clif_inlines_nonempty_list_projection",
             quicksort_clif_inlines_nonempty_list_projection,
         ),
@@ -2307,6 +2311,80 @@ fn owned_cons_reuse_docs_pin_alias_fallback_contract() {
                 needle
             );
         }
+    }
+}
+
+fn owned_cons_reuse_negative_barriers_do_not_advertise_credits() {
+    let cases = [
+        (
+            "double_use",
+            r#"
+fn shared(xs) do
+  [h | t] = xs
+  pair = {[h | t], xs}
+  pair
+end
+
+fn main(), do: shared([1, 2])
+"#,
+        ),
+        (
+            "closure_capture",
+            r#"
+fn keep(x), do: fn(y) -> x
+
+fn publish([h | t]) do
+  f = keep([h | t])
+  f(0)
+end
+
+fn main(), do: publish([1, 2])
+"#,
+        ),
+        (
+            "heap_stats",
+            r#"
+extern "C" fn fz_process_heap_alloc_stats() :: any
+fn id(x), do: x
+
+fn publish([h | t]) do
+  fz_process_heap_alloc_stats()
+  id([h | t])
+end
+
+fn main(), do: publish([1, 2])
+"#,
+        ),
+        (
+            "extern",
+            r#"
+extern "C" fn getpid() :: integer
+fn id(x), do: x
+
+fn publish([h | t]) do
+  getpid()
+  id([h | t])
+end
+
+fn main(), do: publish([1, 2])
+"#,
+        ),
+    ];
+
+    for (name, source) in cases {
+        let specs = dump_specs_for_source(&format!("owned_cons_negative_{}", name), source);
+        assert!(
+            !specs.contains("owned_cons_reuse"),
+            "{} must not advertise owned-cons reuse across a publication or observer barrier:\n{}",
+            name,
+            specs
+        );
+        assert!(
+            !specs.contains("demand: list_tail"),
+            "{} must not select ListTail demand across a publication or observer barrier:\n{}",
+            name,
+            specs
+        );
     }
 }
 
