@@ -518,6 +518,27 @@ mod tests {
                 runtime_contexts <= max_runtime_contexts,
                 "{name} has {runtime_contexts} helper-local CodegenFn contexts; budget is {max_runtime_contexts}"
             );
+            assert!(
+                !source.contains("CodegenFn::new_runtime")
+                    && !source.contains("CodegenFn::new_runtime_with_cache"),
+                "{name} uses retired helper-local CodegenFn constructors"
+            );
         }
+    }
+
+    #[test]
+    fn function_context_construction_stays_at_the_boundaries() {
+        let ordinary_function_contexts =
+            count_matches(include_str!("function.rs"), "CodegenFn::new(");
+        assert_eq!(
+            ordinary_function_contexts, 1,
+            "ordinary fz function lowering should build exactly one CodegenFn"
+        );
+
+        let shim_contexts = count_matches(include_str!("driver.rs"), "CodegenFn::for_runtime_shim");
+        assert_eq!(
+            shim_contexts, 4,
+            "runtime shim bodies should make their CodegenFn boundary explicit"
+        );
     }
 }
