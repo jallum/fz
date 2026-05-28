@@ -51,12 +51,15 @@ brgt remaining, 0, fast
 
 The scheduler still installs Rust TLS before entering generated code, because
 runtime helper calls still use `current_process()`. The new invariant is that
-every generated-code entry also sets the pinned register to the same `Process*`.
+every Rust-owned generated-code call boundary also sets the pinned register to
+the same `Process*` and restores Rust's host register before returning.
 
 ```text
 CURRENT_PROCESS = process_ptr
-set_pinned_reg process_ptr
-tail_call fz_entry(...)
+save host_pinned_reg
+host_pinned_reg = process_ptr
+call fz_entry(...)
+restore host_pinned_reg
 ```
 
 This makes process switching cheaper and cleaner for compiled code: switching
@@ -121,17 +124,20 @@ Acceptance:
   `PROCESS_YIELD_REASONS_OFFSET` with the same coverage.
 - No codegen module hand-computes `Process` offsets.
 
-### pinned-process.3: set pinned Process in scheduler entry shims
+### pinned-process.3: set pinned Process at scheduler entry boundaries
 
 Goal: every generated-code entry sees the correct `Process*` in the pinned
 register.
 
 Acceptance:
 
-- Main, spawn, resume, AOT, and destructor-drain entry paths set pinned reg from
-  the scheduler-supplied/current process pointer before entering fz code.
-- A test crosses at least one runtime helper call and then uses a compiled
-  back edge, proving the pinned register survives ordinary helper calls.
+- Main, spawn, resume, AOT, and destructor-drain entry paths enter generated
+  code through Rust-owned call wrappers that save the host pinned register, set
+  it to the scheduler-supplied/current `Process*`, call generated code, and
+  restore the host register before returning to Rust.
+- A native JIT test crosses at least one runtime helper call and then reads
+  `get_pinned_reg`, proving the pinned register survives ordinary helper calls
+  while the wrapper preserves Rust's ABI at the scheduler boundary.
 - Existing scheduler, receive, spawn, and AOT fixture tests pass.
 
 ### pinned-process.4: spend compiled reductions through pinned Process

@@ -15,6 +15,7 @@ pub mod extern_variadic;
 pub mod heap;
 pub mod ir_runtime;
 pub mod park;
+pub mod pinned_abi;
 pub mod procbin;
 pub mod process;
 pub mod process_abi;

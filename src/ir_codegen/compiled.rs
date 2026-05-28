@@ -1398,16 +1398,15 @@ impl CompiledModule {
             }
             fz_runtime::sched::ScanOutcome::NotApplicable => {}
         }
-        fn run_scheduler_closure(resume_addr: *const u8, closure: *mut u8) {
+        fn run_scheduler_closure(resume_addr: *const u8, process: &mut Process, closure: *mut u8) {
             let closure = fz_runtime::any_value::AnyValueRef::from_heap_object(
                 fz_runtime::any_value::ValueKind::CLOSURE,
                 closure as *const u8,
             )
             .expect("scheduler closure ref")
             .raw_word();
-            type Resume = extern "C" fn(u64) -> i64;
-            let f: Resume = unsafe { std::mem::transmute(resume_addr) };
-            let _ = f(closure);
+            let process_ptr = process as *mut Process;
+            let _ = unsafe { fz_runtime::pinned_abi::call1(resume_addr, process_ptr, closure) };
         }
 
         // One dispatch decision per quantum. Variants are listed in
@@ -1461,7 +1460,7 @@ impl CompiledModule {
 
         match dispatch {
             Dispatch::RunnableClosure(closure) => {
-                run_scheduler_closure(self.resume_addr, closure);
+                run_scheduler_closure(self.resume_addr, process, closure);
                 process.next_frame = std::ptr::null_mut();
                 park_time_gc(process);
             }
@@ -1472,9 +1471,15 @@ impl CompiledModule {
                 )
                 .expect("halt continuation ref")
                 .raw_word();
-                type MainEntry = extern "C" fn(u64, u64) -> i64;
-                let f: MainEntry = unsafe { std::mem::transmute(self.main_entry_addr) };
-                let _ = f(fp as u64, halt_cl);
+                let process_ptr = process as *mut Process;
+                let _ = unsafe {
+                    fz_runtime::pinned_abi::call2(
+                        self.main_entry_addr,
+                        process_ptr,
+                        fp as u64,
+                        halt_cl,
+                    )
+                };
                 process.next_frame = std::ptr::null_mut();
                 park_time_gc(process);
             }
@@ -1485,9 +1490,10 @@ impl CompiledModule {
                 )
                 .expect("pending closure ref")
                 .raw_word();
-                type SpawnEntry = extern "C" fn(u64) -> i64;
-                let f: SpawnEntry = unsafe { std::mem::transmute(self.spawn_entry_addr) };
-                let _ = f(cl_ref);
+                let process_ptr = process as *mut Process;
+                let _ = unsafe {
+                    fz_runtime::pinned_abi::call1(self.spawn_entry_addr, process_ptr, cl_ref)
+                };
                 process.next_frame = std::ptr::null_mut();
                 park_time_gc(process);
             }
@@ -1539,9 +1545,10 @@ impl CompiledModule {
         )
         .expect("halt continuation ref")
         .raw_word();
-        type MainEntry = extern "C" fn(u64, u64) -> i64;
-        let f: MainEntry = unsafe { std::mem::transmute(self.main_entry_addr) };
-        let _ = f(fp as u64, halt_cl);
+        let process_ptr = current_process() as *mut Process;
+        let _ = unsafe {
+            fz_runtime::pinned_abi::call2(self.main_entry_addr, process_ptr, fp as u64, halt_cl)
+        };
         // Single-shot entry path: flush surviving MSO resources and run
         // their dtor closures as fz code before returning. Mirrors the
         // task-exit drain in `Runtime::run_until_idle` and
@@ -1549,10 +1556,16 @@ impl CompiledModule {
         {
             let proc_mut = current_process();
             fz_runtime::procbin::mso_drop_all_deferred(&mut proc_mut.heap);
-            type DrainDtor = extern "C" fn(u64, u64) -> i64;
-            let drain: DrainDtor = unsafe { std::mem::transmute(self.drain_dtor_entry_addr) };
             while let Some((closure, payload_ref)) = proc_mut.heap.pending_dtors.pop_front() {
-                let _ = drain(closure, payload_ref);
+                let process_ptr = proc_mut as *mut Process;
+                let _ = unsafe {
+                    fz_runtime::pinned_abi::call2(
+                        self.drain_dtor_entry_addr,
+                        process_ptr,
+                        closure,
+                        payload_ref,
+                    )
+                };
             }
         }
         current_process().halt_value
