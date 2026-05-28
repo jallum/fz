@@ -22,6 +22,7 @@ that keep future work aligned.
 | [docs/physical-capabilities.md](docs/physical-capabilities.md) | Physical runtime-object capabilities, owned cons reuse, publication effects, or semantic/physical entry-param boundaries. |
 | [docs/repl-session.md](docs/repl-session.md) | REPL world/bindings/runtime layering, chunk synthesis, docs/help, or macro/runtime boundaries. |
 | [docs/reduction-yielding-plan.md](docs/reduction-yielding-plan.md) | Reduction-driven scheduler yielding, allocation-pressure budget expiration, continuation reserve policy, or removing GC-specific yield triggers. |
+| [docs/reduction-yielding-review-gate.md](docs/reduction-yielding-review-gate.md) | Review gate and acceptance plans for reduction-yielding correctness gaps before building further on the reductions scheduler work. |
 | [docs/scheduler-zero-arg-closures.md](docs/scheduler-zero-arg-closures.md) | Scheduler, receive, yield, spawn, timeout, or continuation re-entry. |
 | [docs/any-value.md](docs/any-value.md) | `AnyValueRef`, `ValueRef`, raw scalar lanes, boxed scalars, pointer format, or GC-visible values. |
 | [docs/telemetry.md](docs/telemetry.md) | Adding telemetry, testing compiler decisions, or measuring performance work. |
