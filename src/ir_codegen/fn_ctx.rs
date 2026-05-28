@@ -12,66 +12,54 @@ use cranelift_frontend::FunctionBuilder;
 use cranelift_module::FuncId;
 use fz_runtime::heap::{FieldKind, Schema};
 use std::collections::HashMap;
-use std::marker::PhantomData;
 
-pub(crate) enum BodyContext {}
-
-pub(crate) enum RuntimeShimContext {}
-
-pub(crate) struct CodegenFn<'env, K = BodyContext> {
+pub(crate) struct CodegenFn<'env> {
     runtime: &'env RuntimeRefs,
     imports: HashMap<FuncId, ir::FuncRef>,
-    _kind: PhantomData<K>,
 }
 
-pub(crate) struct CodegenFnBody<'a, 'env, 'fb, M, K = BodyContext>
+pub(crate) struct CodegenFnBody<'a, 'env, 'fb, M>
 where
     M: cranelift_module::Module,
 {
-    pub(super) cx: &'a mut CodegenFn<'env, K>,
+    pub(super) cx: &'a mut CodegenFn<'env>,
     pub(super) b: &'a mut FunctionBuilder<'fb>,
     pub(super) jmod: &'a mut M,
     pub(super) cache: &'a mut CodegenCache,
 }
 
-pub(crate) struct CodegenFnSite<'a, 'env, 'fb, M, K = BodyContext>
+pub(crate) struct CodegenFnSite<'a, 'env, 'fb, M>
 where
     M: cranelift_module::Module,
 {
-    cx: &'a mut CodegenFn<'env, K>,
+    cx: &'a mut CodegenFn<'env>,
     b: &'a mut FunctionBuilder<'fb>,
     jmod: &'a mut M,
 }
 
-impl<'env> CodegenFn<'env, BodyContext> {
+impl<'env> CodegenFn<'env> {
     pub(crate) fn new(env: &'env CodegenEnv<'_>) -> Self {
         Self {
             runtime: env.runtime,
             imports: HashMap::new(),
-            _kind: PhantomData,
         }
     }
-}
 
-impl<'env> CodegenFn<'env, RuntimeShimContext> {
     /// Build a semantic context for generated runtime shim bodies, which
     /// have runtime refs but no fz `CodegenEnv`.
     pub(crate) fn for_runtime_shim(runtime: &'env RuntimeRefs) -> Self {
         Self {
             runtime,
             imports: HashMap::new(),
-            _kind: PhantomData,
         }
     }
-}
 
-impl<'env, K> CodegenFn<'env, K> {
     pub(crate) fn body<'a, 'fb, M: cranelift_module::Module>(
         &'a mut self,
         b: &'a mut FunctionBuilder<'fb>,
         jmod: &'a mut M,
         cache: &'a mut CodegenCache,
-    ) -> CodegenFnBody<'a, 'env, 'fb, M, K> {
+    ) -> CodegenFnBody<'a, 'env, 'fb, M> {
         CodegenFnBody {
             cx: self,
             b,
@@ -84,7 +72,7 @@ impl<'env, K> CodegenFn<'env, K> {
         &'a mut self,
         b: &'a mut FunctionBuilder<'fb>,
         jmod: &'a mut M,
-    ) -> CodegenFnSite<'a, 'env, 'fb, M, K> {
+    ) -> CodegenFnSite<'a, 'env, 'fb, M> {
         CodegenFnSite { cx: self, b, jmod }
     }
 
@@ -537,7 +525,7 @@ impl<'env, K> CodegenFn<'env, K> {
     }
 }
 
-impl<M, K> CodegenFnSite<'_, '_, '_, M, K>
+impl<M> CodegenFnSite<'_, '_, '_, M>
 where
     M: cranelift_module::Module,
 {
@@ -672,7 +660,7 @@ where
     }
 }
 
-impl<M> CodegenFnBody<'_, '_, '_, M, BodyContext>
+impl<M> CodegenFnBody<'_, '_, '_, M>
 where
     M: cranelift_module::Module,
 {

@@ -27,12 +27,13 @@ module-internal visibility and should only be reached from `CodegenFnBody`,
 `CodegenFnSite`, or closely-related value helpers; ordinary lowering should not
 call them directly.
 
-Generated runtime shim bodies do not have a `CodegenEnv`, so they use
-`CodegenFn<RuntimeShimContext>` through `CodegenFn::for_runtime_shim`. That
+Generated runtime shim bodies do not have a `CodegenEnv`, so they are built
+through `CodegenFn::for_runtime_shim`, which takes runtime refs directly. That
 constructor is a boundary marker, not a shortcut for ordinary lowering helpers.
-Shared semantic operations may be implemented for both context markers, but
-new ordinary-function-only state should live on `BodyContext` rather than being
-made available to shims by accident.
+Shims operate only through the cache-free `CodegenFnSite` view; the cache-bearing
+`CodegenFnBody` value operations structurally require a `CodegenCache` and a
+`var_env` that the shim path never supplies, so ordinary-function-only state
+stays out of shims by construction rather than by a type-level marker.
 
 `CodegenFn` methods may currently call runtime BIFs, but the call is an
 implementation detail. A later inline CLIF implementation should be local to

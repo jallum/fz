@@ -93,8 +93,8 @@ pub(crate) fn closure_capture_for_var<M: cranelift_module::Module>(
     }
 }
 
-pub(super) fn box_known_non_heap_as_any_ref<M: cranelift_module::Module, K>(
-    cx: &mut CodegenFn<'_, K>,
+pub(super) fn box_known_non_heap_as_any_ref<M: cranelift_module::Module>(
+    cx: &mut CodegenFn<'_>,
     b: &mut FunctionBuilder<'_>,
     jmod: &mut M,
     raw: ir::Value,
@@ -121,8 +121,8 @@ pub(super) fn box_known_non_heap_as_any_ref<M: cranelift_module::Module, K>(
     unreachable!("heap refs must stay as CodegenValue::AnyRef")
 }
 
-pub(super) fn emit_raw_int_as_abi_value_ref<M: cranelift_module::Module, K>(
-    cx: &mut CodegenFn<'_, K>,
+pub(super) fn emit_raw_int_as_abi_value_ref<M: cranelift_module::Module>(
+    cx: &mut CodegenFn<'_>,
     b: &mut FunctionBuilder<'_>,
     jmod: &mut M,
     raw: ir::Value,
@@ -130,8 +130,8 @@ pub(super) fn emit_raw_int_as_abi_value_ref<M: cranelift_module::Module, K>(
     cx.box_int_for_any(b, jmod, raw)
 }
 
-pub(super) fn emit_raw_float_as_abi_value_ref<M: cranelift_module::Module, K>(
-    cx: &mut CodegenFn<'_, K>,
+pub(super) fn emit_raw_float_as_abi_value_ref<M: cranelift_module::Module>(
+    cx: &mut CodegenFn<'_>,
     b: &mut FunctionBuilder<'_>,
     jmod: &mut M,
     raw: ir::Value,
@@ -139,8 +139,8 @@ pub(super) fn emit_raw_float_as_abi_value_ref<M: cranelift_module::Module, K>(
     cx.box_float_for_any(b, jmod, raw)
 }
 
-pub(super) fn emit_raw_atom_as_abi_value_ref<M: cranelift_module::Module, K>(
-    cx: &mut CodegenFn<'_, K>,
+pub(super) fn emit_raw_atom_as_abi_value_ref<M: cranelift_module::Module>(
+    cx: &mut CodegenFn<'_>,
     b: &mut FunctionBuilder<'_>,
     jmod: &mut M,
     raw: ir::Value,
@@ -284,7 +284,7 @@ impl CodegenValue {
     }
 }
 
-impl<K> CodegenFn<'_, K> {
+impl CodegenFn<'_> {
     pub(super) fn tagged_var<M: cranelift_module::Module>(
         &mut self,
         var_env: &HashMap<u32, CodegenValue>,
@@ -377,8 +377,8 @@ impl<K> CodegenFn<'_, K> {
 }
 
 /// Materialize a local value as an ABI `AnyValueRef` word.
-fn tagged_get<M: cranelift_module::Module, K>(
-    cx: &mut CodegenFn<'_, K>,
+fn tagged_get<M: cranelift_module::Module>(
+    cx: &mut CodegenFn<'_>,
     var_env: &HashMap<u32, CodegenValue>,
     b: &mut FunctionBuilder<'_>,
     jmod: &mut M,
@@ -407,8 +407,8 @@ fn tagged_get<M: cranelift_module::Module, K>(
     }
 }
 
-fn codegen_value_as_any_ref<M: cranelift_module::Module, K>(
-    cx: &mut CodegenFn<'_, K>,
+fn codegen_value_as_any_ref<M: cranelift_module::Module>(
+    cx: &mut CodegenFn<'_>,
     b: &mut FunctionBuilder<'_>,
     jmod: &mut M,
     cache: &mut CodegenCache,
@@ -428,8 +428,8 @@ fn codegen_value_as_any_ref<M: cranelift_module::Module, K>(
     }
 }
 
-fn emit_ref_tag<M: cranelift_module::Module, K>(
-    cx: &mut CodegenFn<'_, K>,
+fn emit_ref_tag<M: cranelift_module::Module>(
+    cx: &mut CodegenFn<'_>,
     b: &mut FunctionBuilder<'_>,
     jmod: &mut M,
     value_ref: ir::Value,
@@ -437,8 +437,8 @@ fn emit_ref_tag<M: cranelift_module::Module, K>(
     cx.ref_tag(b, jmod, value_ref)
 }
 
-fn codegen_value_truthy<M: cranelift_module::Module, K>(
-    cx: &mut CodegenFn<'_, K>,
+fn codegen_value_truthy<M: cranelift_module::Module>(
+    cx: &mut CodegenFn<'_>,
     b: &mut FunctionBuilder<'_>,
     jmod: &mut M,
     value: CodegenValue,
@@ -480,8 +480,8 @@ pub(crate) fn known_kind_ref_tag(
     b.ins().iconst(types::I8, kind.tag() as i64)
 }
 
-fn codegen_value_type_tag<M: cranelift_module::Module, K>(
-    cx: &mut CodegenFn<'_, K>,
+fn codegen_value_type_tag<M: cranelift_module::Module>(
+    cx: &mut CodegenFn<'_>,
     b: &mut FunctionBuilder<'_>,
     jmod: &mut M,
     value: CodegenValue,
@@ -496,8 +496,8 @@ fn codegen_value_type_tag<M: cranelift_module::Module, K>(
     }
 }
 
-fn codegen_value_is_tag<M: cranelift_module::Module, K>(
-    cx: &mut CodegenFn<'_, K>,
+fn codegen_value_is_tag<M: cranelift_module::Module>(
+    cx: &mut CodegenFn<'_>,
     b: &mut FunctionBuilder<'_>,
     jmod: &mut M,
     value: CodegenValue,
@@ -507,8 +507,8 @@ fn codegen_value_is_tag<M: cranelift_module::Module, K>(
     b.ins().icmp_imm(IntCC::Equal, actual, tag.tag() as i64)
 }
 
-fn codegen_value_atom_id_is<M: cranelift_module::Module, K>(
-    cx: &mut CodegenFn<'_, K>,
+fn codegen_value_atom_id_is<M: cranelift_module::Module>(
+    cx: &mut CodegenFn<'_>,
     b: &mut FunctionBuilder<'_>,
     jmod: &mut M,
     value: CodegenValue,
@@ -560,8 +560,8 @@ fn codegen_value_atom_id_is<M: cranelift_module::Module, K>(
     }
 }
 
-fn codegen_value_raw_int<M: cranelift_module::Module, K>(
-    cx: &mut CodegenFn<'_, K>,
+fn codegen_value_raw_int<M: cranelift_module::Module>(
+    cx: &mut CodegenFn<'_>,
     b: &mut FunctionBuilder<'_>,
     jmod: &mut M,
     value: CodegenValue,
@@ -577,8 +577,8 @@ fn codegen_value_raw_int<M: cranelift_module::Module, K>(
     }
 }
 
-fn codegen_value_raw_float<M: cranelift_module::Module, K>(
-    cx: &mut CodegenFn<'_, K>,
+fn codegen_value_raw_float<M: cranelift_module::Module>(
+    cx: &mut CodegenFn<'_>,
     b: &mut FunctionBuilder<'_>,
     jmod: &mut M,
     value: CodegenValue,
@@ -594,8 +594,8 @@ fn codegen_value_raw_float<M: cranelift_module::Module, K>(
     }
 }
 
-fn codegen_value_raw_atom<M: cranelift_module::Module, K>(
-    cx: &mut CodegenFn<'_, K>,
+fn codegen_value_raw_atom<M: cranelift_module::Module>(
+    cx: &mut CodegenFn<'_>,
     b: &mut FunctionBuilder<'_>,
     jmod: &mut M,
     cache: &mut CodegenCache,
