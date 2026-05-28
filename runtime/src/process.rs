@@ -304,7 +304,10 @@ impl Process {
     }
 
     pub fn reset_reduction_budget(&mut self) {
+        // Dispatch resets budget and reasons together: each quantum starts with
+        // a clean slate so a reason bit cannot outlive the quantum that set it.
         self.reductions_remaining = self.reductions_per_quantum;
+        self.yield_reasons = 0;
         crate::reductions::install_budget(self.reductions_remaining);
     }
 
@@ -457,6 +460,20 @@ mod tests {
             process.yield_reasons & YIELD_REASON_REDUCTIONS,
             YIELD_REASON_REDUCTIONS
         );
+    }
+
+    #[test]
+    fn reset_reduction_budget_clears_yield_reasons() {
+        let schemas = Rc::new(RefCell::new(crate::heap::SchemaRegistry::new()));
+        let mut process = Process::new(schemas);
+        process.reductions_per_quantum = 5;
+        process.reductions_remaining = 0;
+        process.yield_reasons = YIELD_REASON_ALLOCATION_PRESSURE | YIELD_REASON_REDUCTIONS;
+
+        process.reset_reduction_budget();
+
+        assert_eq!(process.reductions_remaining, 5);
+        assert_eq!(process.yield_reasons, 0);
     }
 
     #[test]
