@@ -1,17 +1,17 @@
 ---
 purpose: "case guards call pure user fns — locks X1A β-reduction three-path parity"
 paths: [jit, interp, aot, repl]
-budget.codegen.functions: 3
-budget.codegen.instructions: 24
-budget.specs.count: 3
-budget.planner.worklist_pops: 6
-budget.planner.walk_calls: 6
-budget.planner.type_fn_calls: 3
+budget.codegen.functions: 1
+budget.codegen.instructions: 12
+budget.specs.count: 1
+budget.planner.worklist_pops: 1
+budget.planner.walk_calls: 1
+budget.planner.type_fn_calls: 1
 budget.planner.matcher_specs: 0
-budget.planner.vars: 22
-budget.planner.blocks: 6
-budget.planner.stmts: 13
-budget.planner.dispatches: 2
+budget.planner.vars: 14
+budget.planner.blocks: 1
+budget.planner.stmts: 10
+budget.planner.dispatches: 0
 ---
 
 # guard_calls_pure_user_fn

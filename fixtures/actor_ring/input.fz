@@ -11,5 +11,5 @@ fn main() do
   home = self()
   head = spawn(fn() -> relay(4, home))
   send(head, 0)
-  print(receive())
+  dbg(receive())
 end

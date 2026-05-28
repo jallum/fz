@@ -8,7 +8,7 @@ extern "C" fn libc::unlink(cstring) :: integer
 # — the closure body is no longer extracted-then-discarded.
 fn close_observable(fd) do
   libc::close(fd)
-  print(:dtor_closed)
+  dbg(:dtor_closed)
 end
 
 defmodule FileHandle do
@@ -20,10 +20,10 @@ end
 fn main() do
   path = "/tmp/fz-x5m"
   fd = libc::creat(path, 0o644)
-  print(:opened)
+  dbg(:opened)
   n = libc::write(fd, "hi\n", 3)
-  print(n)
+  dbg(n)
   _h = FileHandle.from_fd(fd)
   libc::unlink(path)
-  print(:done)
+  dbg(:done)
 end

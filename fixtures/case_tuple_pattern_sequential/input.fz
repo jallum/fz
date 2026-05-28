@@ -10,10 +10,10 @@ fn g(v) do
 end
 
 fn main() do
-  print(f({:ok, 7}))
-  print(f(:err))
-  print(f(:err))
-  print(f({:ok, 7}))
-  print(g({:ok, 7}))
-  print(g(:err))
+  dbg(f({:ok, 7}))
+  dbg(f(:err))
+  dbg(f(:err))
+  dbg(f({:ok, 7}))
+  dbg(g({:ok, 7}))
+  dbg(g(:err))
 end

@@ -710,13 +710,15 @@ fn build_per_spec_schemas<T: crate::types::Types<Ty = crate::types::Ty>>(
     schemas
 }
 
-/// Per-spec return type comes from the typer's LFP
-/// (`module_plan.effective_returns`). That walk filters by
+/// Per-spec return ABI type comes first from an instantiated declared spec
+/// when the function has one, then from the typer's LFP
+/// (`module_plan.effective_returns`). The LFP walk filters by
 /// `reachable_blocks` AND propagates through every exit terminator
 /// including `Term::Call` / `Term::CallClosure` / `Term::Receive`
 /// with a continuation; the cont side (`cont_slot0_descr`) already
-/// reads from the same map. Reading it here too means the producer
-/// ABI and the cont's slot-0 ABI agree by construction.
+/// reads declared returns before consulting the same map. Mirroring that
+/// precedence here means the producer ABI and the cont's slot-0 ABI agree
+/// by construction.
 ///
 /// Halt-only specs converge to `none()` in the LFP; substitute
 /// `any` so `ArgRepr::from_descr` doesn't pick RawF64 (none is a
@@ -724,6 +726,7 @@ fn build_per_spec_schemas<T: crate::types::Types<Ty = crate::types::Ty>>(
 /// anyone for a halt-only spec, but the ABI must still be valid.
 fn derive_return_tys<T: crate::types::Types<Ty = crate::types::Ty>>(
     t: &mut T,
+    module: &crate::fz_ir::Module,
     spec_keys: &[crate::ir_planner::fn_types::SpecKey],
     spec_fnidx: &[Option<usize>],
     module_plan: &crate::ir_planner::ModulePlan,
@@ -737,6 +740,9 @@ fn derive_return_tys<T: crate::types::Types<Ty = crate::types::Ty>>(
             if spec_fnidx[sid].is_none() {
                 return any.clone();
             }
+            if let Some(ret) = declared_return_for_spec_key(t, module, key) {
+                return ret;
+            }
             let ret = module_plan
                 .effective_returns
                 .get(key)
@@ -749,6 +755,37 @@ fn derive_return_tys<T: crate::types::Types<Ty = crate::types::Ty>>(
             }
         })
         .collect()
+}
+
+fn declared_return_for_spec_key<T: crate::types::Types<Ty = crate::types::Ty>>(
+    t: &mut T,
+    module: &crate::fz_ir::Module,
+    key: &crate::ir_planner::fn_types::SpecKey,
+) -> Option<crate::types::Ty> {
+    let spec = module.declared_specs.get(&key.fn_id)?;
+    let arg_tys = crate::types::key_slots_to_tys(t, &key.input);
+    if spec.params.len() != arg_tys.len() {
+        return None;
+    }
+    let mut sigma = std::collections::HashMap::new();
+    for (pattern, witness) in spec.params.iter().zip(arg_tys.iter()) {
+        t.collect_instantiation_subst(pattern, witness, &mut sigma);
+    }
+    for (var, bound) in &spec.constraints {
+        let actual = sigma.get(var)?;
+        if !t.is_subtype(actual, bound) {
+            return None;
+        }
+    }
+    for (pattern, witness) in spec.params.iter().zip(arg_tys.iter()) {
+        let expected = t.instantiate(pattern, &sigma);
+        if !t.has_vars(witness) && !t.is_subtype(witness, &expected) {
+            return None;
+        }
+    }
+    let owner = &module.fn_by_id(key.fn_id).owner_module;
+    let result = t.instantiate(&spec.result, &sigma);
+    Some(t.mint_owned_resource_aliases(result, owner, &module.opaque_inners))
 }
 
 /// Per-spec entry-param ArgReprs. Drives `build_fn_signature`
@@ -2215,7 +2252,7 @@ pub(crate) fn compile_with_backend_impl<
         .map(|s| s.allocation_payload_size() as u32)
         .collect();
 
-    let return_tys = derive_return_tys(t, &spec_keys, &spec_fnidx, &module_plan);
+    let return_tys = derive_return_tys(t, module, &spec_keys, &spec_fnidx, &module_plan);
 
     let param_reprs = derive_param_reprs(
         t,

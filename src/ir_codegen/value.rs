@@ -55,21 +55,6 @@ pub(crate) fn strict_const_value(
     CodegenValue::known(b.ins().iconst(types::I64, value.raw() as i64), value.kind())
 }
 
-pub(crate) fn unit_extern_result(
-    b: &mut FunctionBuilder<'_>,
-    cache: &CodegenCache,
-    dest_var: crate::fz_ir::Var,
-) -> LowerOut {
-    if cache.used_vars.contains(&dest_var.0) {
-        LowerOut::Strict(strict_const_value(
-            b,
-            fz_runtime::any_value::AnyValue::nil_atom(),
-        ))
-    } else {
-        LowerOut::DeadUnit
-    }
-}
-
 #[derive(Clone, Copy)]
 pub(crate) enum ClosureCapture {
     RefWord(ir::Value),
@@ -788,18 +773,6 @@ pub(crate) fn coerce_binding_to<M: cranelift_module::Module>(
             }
         }
     }
-}
-
-pub(crate) fn push_repr_arg<M: cranelift_module::Module>(
-    out: &mut Vec<ir::Value>,
-    b: &mut FunctionBuilder<'_>,
-    jmod: &mut M,
-    runtime: &RuntimeRefs,
-    value: ir::Value,
-    from: ArgRepr,
-    to: ArgRepr,
-) {
-    out.push(coerce_to(b, jmod, runtime, value, from, to));
 }
 
 pub(crate) fn coerce_to<M: cranelift_module::Module>(

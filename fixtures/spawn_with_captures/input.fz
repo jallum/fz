@@ -4,5 +4,5 @@ fn parent(tag) do
 end
 
 fn main() do
-  print(parent(99))
+  dbg(parent(99))
 end

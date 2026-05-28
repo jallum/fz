@@ -6,4 +6,4 @@ fn pair(x) do
   {x, y}
 end
 
-fn main(), do: print({1, pair(2)})
+fn main(), do: dbg({1, pair(2)})

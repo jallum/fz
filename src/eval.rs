@@ -832,9 +832,9 @@ mod quote_tests {
 
     #[test]
     fn unquote_in_call_args() {
-        let v = eval_in_main("y = :hello\nquote do: print(unquote(y), 1)");
+        let v = eval_in_main("y = :hello\nquote do: dbg(unquote(y), 1)");
         let Value::Tuple(t) = &v else { panic!() };
-        assert!(matches!(&t[0], Value::Atom(s) if &**s == "print"));
+        assert!(matches!(&t[0], Value::Atom(s) if &**s == "dbg"));
         let Value::List(args) = &t[2] else { panic!() };
         assert!(matches!(&args[0], Value::Atom(s) if &**s == "hello"));
         assert!(matches!(&args[1], Value::Int(1)));

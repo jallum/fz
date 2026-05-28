@@ -3,9 +3,9 @@ fn main() do
   m = %{b: 2, a: 1, pi: 1.5, xs: xs}
   n = %{m | b: 20, c: 3}
 
-  print(m[:a])
-  print(m[:pi])
-  print(n[:b])
-  print(n[:missing])
-  print(n[:xs])
+  dbg(m[:a])
+  dbg(m[:pi])
+  dbg(n[:b])
+  dbg(n[:missing])
+  dbg(n[:xs])
 end

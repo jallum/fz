@@ -2,15 +2,15 @@
 purpose: "AOT-compiled binary fires user-supplied resource dtors at heap drop"
 paths: [aot, repl]
 budget.codegen.functions: 2
-budget.codegen.instructions: 25
+budget.codegen.instructions: 24
 budget.specs.count: 2
 budget.planner.worklist_pops: 2
 budget.planner.walk_calls: 2
 budget.planner.type_fn_calls: 2
 budget.planner.matcher_specs: 0
-budget.planner.vars: 25
-budget.planner.blocks: 3
-budget.planner.stmts: 13
+budget.planner.vars: 23
+budget.planner.blocks: 2
+budget.planner.stmts: 12
 budget.planner.dispatches: 0
 ---
 

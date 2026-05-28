@@ -1,7 +1,7 @@
 fn main() do
   xs = [1, 2]
-  print(xs)
+  dbg(xs)
 
   stats = Process.heap_alloc_stats()
-  print(stats)
+  dbg(stats)
 end

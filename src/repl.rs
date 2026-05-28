@@ -14,7 +14,7 @@
 //! fz-i67.1 / fz-elu.9 — `run_script` drives whole-file scripts through
 //! `ReplSession`, lowering to IR and executing `main/0` on `IrInterpRuntime`.
 //! No banner/prompts are emitted and expression results are not echoed. Only
-//! program-side `print()` reaches stdout, so a fixture's REPL-leg output is
+//! program-side `dbg()` reaches stdout, so a fixture's REPL-leg output is
 //! exact-comparable to the other legs' golden.
 
 use crate::ast::{Item, Program};
@@ -152,7 +152,7 @@ impl rustyline::validate::Validator for ReplEditorHelper {
 impl rustyline::Helper for ReplEditorHelper {}
 
 /// fz-i67.1 — non-interactive driver: compile a file's contents, then call
-/// `main/0` through `ReplRuntime` if defined. Only program-side `print()`
+/// `main/0` through `ReplRuntime` if defined. Only program-side `dbg()`
 /// writes to stdout.
 pub fn run_script(path: &Path) -> io::Result<()> {
     let src = std::fs::read_to_string(path)?;
@@ -162,7 +162,7 @@ pub fn run_script(path: &Path) -> io::Result<()> {
 
 /// Underlying driver shared by `run_script` and tests. Returns Err on
 /// parse/eval errors so callers can decide the exit code; on success the
-/// only output is whatever the program's own `print()` calls produced.
+/// only output is whatever the program's own `dbg()` calls produced.
 #[cfg(test)]
 pub fn run_script_str(src: &str) -> io::Result<()> {
     ReplSession::new().run_script_str(src, "<repl-script>".to_string())
@@ -1045,9 +1045,9 @@ fn main() do
   good = <<104, 105>>
   bad = <<0xff, 0xff>>
   assert(Utf8.valid?(good))
-  assert_neq(Utf8.valid?(bad), true)
-  assert_eq(Utf8.from_bytes(good), {:ok, "hi"})
-  assert_eq(Utf8.from_bytes(bad), {:error, :invalid_utf8})
+  refute(Utf8.valid?(bad) == true)
+  assert(Utf8.from_bytes(good) == {:ok, "hi"})
+  assert(Utf8.from_bytes(bad) == {:error, :invalid_utf8})
 end
 "#;
         run_script_str(src).expect("Utf8 helpers should run through script REPL");
@@ -1674,7 +1674,7 @@ end
         // stdout from a unit test without subprocessing; the matrix leg in
         // fz-i67.2 covers the stdout side. Here we just verify the driver
         // completes without error.)
-        let src = "fn add1(n) do n + 1 end\nfn main() do print(add1(41)) end\n";
+        let src = "fn add1(n) do n + 1 end\nfn main() do dbg(add1(41)) end\n";
         run_script_str(src).expect("script with main should succeed");
     }
 
@@ -1693,13 +1693,13 @@ end
 
     #[test]
     fn run_script_str_accepts_multi_line_forms() {
-        let src = "fn double(x) do\n  x * 2\nend\nfn main() do print(double(21)) end\n";
+        let src = "fn double(x) do\n  x * 2\nend\nfn main() do dbg(double(21)) end\n";
         run_script_str(src).expect("multi-line fn body should parse and run");
     }
 
     #[test]
     fn run_script_str_accepts_top_level_spec_with_fn() {
-        let src = "@spec add1(integer) :: integer\nfn add1(n), do: n + 1\nfn main() do print(add1(41)) end\n";
+        let src = "@spec add1(integer) :: integer\nfn add1(n), do: n + 1\nfn main() do dbg(add1(41)) end\n";
         run_script_str(src).expect("top-level @spec should attach to following fn");
     }
 
@@ -1707,7 +1707,7 @@ end
     fn run_script_str_reports_parse_error() {
         // A syntactically broken input should surface as Err — the matrix
         // leg will translate that into a nonzero exit code.
-        let src = "fn main() do print(\n"; // unterminated
+        let src = "fn main() do dbg(\n"; // unterminated
         let err = run_script_str(src).expect_err("unterminated input should fail");
         let msg = err.to_string();
         assert!(

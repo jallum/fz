@@ -453,15 +453,12 @@ mod tests {
         assert_eq!(
             primitive_contract_names(),
             vec![
-                "fz_assert/1",
-                "fz_assert_eq/2",
-                "fz_assert_neq/2",
                 "fz_bitstring_valid_utf8/1",
                 "fz_brand_bitstring_as_utf8/1",
+                "fz_dbg_value/1",
                 "fz_make_ref/0",
                 "fz_make_resource/2",
-                "fz_print_i64/1",
-                "fz_print_value/1",
+                "fz_panic/1",
                 "fz_process_heap_alloc_stats/0",
                 "fz_self/0",
                 "fz_send/2",

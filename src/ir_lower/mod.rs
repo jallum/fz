@@ -1066,7 +1066,7 @@ mod tests {
         let out = run_and_capture(
             "fn helper(), do: 7\n\
              fn main() do\n\
-               if 1 == 0 do print(helper()) else print(99) end\n\
+               if 1 == 0 do dbg(helper()) else dbg(99) end\n\
              end",
         );
         assert_eq!(out, "99");
@@ -1081,7 +1081,7 @@ mod tests {
         let out = run_and_capture(
             "fn helper(), do: 7\n\
              fn pick(n) do if n == 0 do helper() else 99 end end\n\
-             fn main() do print(pick(0)); print(pick(1)) end",
+             fn main() do dbg(pick(0)); dbg(pick(1)) end",
         );
         assert_eq!(out, "7\n99");
     }
@@ -1164,8 +1164,8 @@ mod tests {
                end\n\
              end\n\
              fn main() do\n\
-               print(classify(0))\n\
-               print(classify(5))\n\
+               dbg(classify(0))\n\
+               dbg(classify(5))\n\
              end",
         );
     }
@@ -1184,7 +1184,7 @@ mod tests {
             "fn f(v) do\n\
                with {:ok, x} <- v do x else :err -> 0 end\n\
              end\n\
-             fn main() do print(f(:err)) end",
+             fn main() do dbg(f(:err)) end",
         );
         assert_eq!(out, "0");
     }
@@ -1197,7 +1197,7 @@ mod tests {
         let out = run_and_capture(
             "fn helper(), do: 7\n\
              fn pick(n) do if n > 0 do helper() else 99 end end\n\
-             fn main() do print(pick(5)); print(pick(0)) end",
+             fn main() do dbg(pick(5)); dbg(pick(0)) end",
         );
         assert_eq!(out, "7\n99");
     }
@@ -1474,17 +1474,17 @@ mod tests {
         );
     }
 
-    /// `print(x)` routes through the runtime.fz prelude import to the
-    /// core-prelude `Kernel.print/1` implementation instead of exposing raw
+    /// `dbg(x)` routes through the runtime.fz prelude import to the
+    /// core-prelude `Kernel.dbg/1` implementation instead of exposing raw
     /// externs from the root prelude.
     #[test]
     fn print_call_routes_through_runtime_fz_wrapper() {
-        let m = lower_src("fn p(), do: print(1)");
+        let m = lower_src("fn p(), do: dbg(1)");
         let print = m
             .fns
             .iter()
-            .find(|f| f.name == "Kernel.print" && f.block(f.entry).params.len() == 1)
-            .expect("Kernel.print/1 prelude fn missing");
+            .find(|f| f.name == "Kernel.dbg" && f.block(f.entry).params.len() == 1)
+            .expect("Kernel.dbg/1 prelude fn missing");
         let p = m.fn_by_name("p").expect("p fn missing");
         let Term::TailCall { callee, .. } = p.block(p.entry).terminator else {
             panic!("expected p to tail-call print/1");
@@ -2404,8 +2404,8 @@ end
                    fn is_pos(n) do n > 0 end
                    fn main() do
                      case 5 do
-                       n when is_pos(n) -> print(1)
-                       _ -> print(0)
+                       n when is_pos(n) -> dbg(1)
+                       _ -> dbg(0)
                      end
                    end";
         assert_eq!(run_and_capture(src).trim(), "1");
@@ -2416,7 +2416,7 @@ end
         let src = "fn partition(_, [], lo, hi), do: {lo, hi}
                    fn partition(p, [h | t], lo, hi) when h < p, do: partition(p, t, [h | lo], hi)
                    fn partition(p, [h | t], lo, hi), do: partition(p, t, lo, [h | hi])
-                   fn main() do print(partition(3, [1, 4, 2], [], [])) end";
+                   fn main() do dbg(partition(3, [1, 4, 2], [], [])) end";
         assert_eq!(run_and_capture(src).trim(), "{[2, 1], [4]}");
     }
 

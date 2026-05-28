@@ -4,6 +4,6 @@ fn classify(0), do: helper()
 fn classify(_), do: 99
 
 fn main() do
-  print(classify(0))
-  print(classify(5))
+  dbg(classify(0))
+  dbg(classify(5))
 end

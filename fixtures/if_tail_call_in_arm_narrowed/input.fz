@@ -5,6 +5,6 @@ fn pick(n) do
 end
 
 fn main() do
-  print(pick(0))
-  print(pick(1))
+  dbg(pick(0))
+  dbg(pick(1))
 end

@@ -19,7 +19,7 @@ fn main() do
     _ -> 0
   end
 
-  print(a)
-  print(b)
-  print(c)
+  dbg(a)
+  dbg(b)
+  dbg(c)
 end

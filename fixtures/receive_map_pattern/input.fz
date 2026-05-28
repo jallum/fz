@@ -18,5 +18,5 @@ fn main() do
     _ -> :unknown
   end
 
-  print({a, b, c})
+  dbg({a, b, c})
 end

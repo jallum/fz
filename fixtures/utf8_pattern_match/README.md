@@ -1,16 +1,16 @@
 ---
 purpose: "fz-axu.17 (P2) — pattern matching on utf8 string literals"
 paths: [jit, interp, aot, repl]
-budget.codegen.functions: 9
-budget.codegen.instructions: 129
-budget.specs.count: 9
-budget.planner.worklist_pops: 22
-budget.planner.walk_calls: 22
-budget.planner.type_fn_calls: 9
+budget.codegen.functions: 7
+budget.codegen.instructions: 222
+budget.specs.count: 7
+budget.planner.worklist_pops: 12
+budget.planner.walk_calls: 12
+budget.planner.type_fn_calls: 7
 budget.planner.matcher_specs: 0
-budget.planner.vars: 72
-budget.planner.blocks: 30
-budget.planner.stmts: 42
+budget.planner.vars: 100
+budget.planner.blocks: 35
+budget.planner.stmts: 71
 budget.planner.dispatches: 12
 ---
 

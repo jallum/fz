@@ -170,7 +170,7 @@ fn effect_summary_propagates_observable_tail_calls() {
     m.externs.push(extern_decl(
         &mut t,
         ExternId(0),
-        "fz_print_value",
+        "fz_dbg_value",
         ExternTy::Unit,
     ));
     m.extern_idx.insert(ExternId(0), 0);
@@ -1270,7 +1270,7 @@ fn classify([]), do: :empty
 fn classify([_ | _]), do: :cons
 
 fn main() do
-  print(classify([]))
+  dbg(classify([]))
 end
 "#,
         &crate::telemetry::NullTelemetry,
@@ -1295,8 +1295,8 @@ fn ignore(_, x), do: x
 fn main() do
   a = ignore(1, 2)
   b = ignore(:ok, 2)
-  print(a)
-  print(b)
+  dbg(a)
+  dbg(b)
 end
 "#,
         &crate::telemetry::NullTelemetry,
@@ -1393,7 +1393,7 @@ fn effective_return_lfp_for_recursive_sum() {
         r#"
 fn sum([]), do: 0
 fn sum([h | t]), do: h + sum(t)
-fn main(), do: print(sum([1, 2, 3, 4, 5]))
+fn main(), do: dbg(sum([1, 2, 3, 4, 5]))
 "#,
         &crate::telemetry::NullTelemetry,
     );
@@ -1439,7 +1439,7 @@ fn cont_input_key_matches_a_registered_spec_for_call() {
 fn id(x), do: x
 fn main() do
   y = id(7)
-  print(y)
+  dbg(y)
 end
 "#,
         &crate::telemetry::NullTelemetry,
@@ -1520,7 +1520,7 @@ fn cont_slot0_narrows_to_callee_return_for_direct_call() {
     let (mut t, m, mt) = pipeline(
         r#"
 fn add1(n), do: n + 1
-fn main(), do: print(add1(40) + 2)
+fn main(), do: dbg(add1(40) + 2)
 "#,
         &crate::telemetry::NullTelemetry,
     );
@@ -1570,7 +1570,7 @@ fn higher_order_callee_registers_any_key_body_and_narrow_spec() {
 fn double(x), do: x * 2
 fn apply2(f, x), do: f(x)
 fn main() do
-  print(apply2(double, 21))
+  dbg(apply2(double, 21))
 end
 "#,
         &crate::telemetry::NullTelemetry,
@@ -1626,7 +1626,7 @@ fn fn_with_only_typed_callsites_drops_any_key() {
     let (mut t, m, mt) = pipeline(
         r#"
 fn add(a, b), do: a + b
-fn main(), do: print(add(1, 2))
+fn main(), do: dbg(add(1, 2))
 "#,
         &crate::telemetry::NullTelemetry,
     );
@@ -1656,7 +1656,7 @@ fn main(), do: print(add(1, 2))
 fn entry_point_fn_keeps_any_key() {
     let (_t, m, mt) = pipeline(
         r#"
-fn main(), do: print(42)
+fn main(), do: dbg(42)
 "#,
         &crate::telemetry::NullTelemetry,
     );
@@ -1680,7 +1680,7 @@ fn receive_cont_with_typed_capture_gets_narrow_spec() {
         r#"
 fn waiter(tag) do
   m = receive()
-  print(m)
+  dbg(m)
   tag
 end
 fn main() do
@@ -1758,7 +1758,7 @@ fn parent(tag) do
   receive()
 end
 fn main() do
-  print(parent(99))
+  dbg(parent(99))
 end
 "#,
         &crate::telemetry::NullTelemetry,
@@ -1805,8 +1805,8 @@ fn add_to(x), do: fn (y) -> x + y
 fn main() do
   f = add_to(7)
   g = add_to(3.5)
-  print(f(1))
-  print(g(2.0))
+  dbg(f(1))
+  dbg(g(2.0))
 end
 "#,
         &crate::telemetry::NullTelemetry,
@@ -1858,7 +1858,7 @@ fn add_to(x), do: fn (y) -> x + y
 fn main() do
   f = add_to(7)
   r = f(1)
-  print(r + 100)
+  dbg(r + 100)
 end
 "#,
         &crate::telemetry::NullTelemetry,
@@ -1914,7 +1914,7 @@ end
 fn main() do
   inc = fn (n) -> n + 1
   z = apply(inc, 3)
-  print(z)
+  dbg(z)
 end
 "#,
         &crate::telemetry::NullTelemetry,
@@ -1963,7 +1963,7 @@ fn fn_constant_from_makeclosure_zero_captures() {
 fn double(x), do: x * 2
 fn apply2(f, x), do: f(x)
 fn main() do
-  print(apply2(double, 21))
+  dbg(apply2(double, 21))
 end
 "#,
         &crate::telemetry::NullTelemetry,
@@ -2006,7 +2006,7 @@ fn fn_constant_not_set_for_captures() {
 fn main() do
   k = 7
   f = fn (n) -> n + k
-  print(f(3))
+  dbg(f(3))
 end
 "#,
         &crate::telemetry::NullTelemetry,
@@ -2048,7 +2048,7 @@ fn fn_constant_propagates_via_direct_call() {
 fn double(x), do: x * 2
 fn apply2(f, x), do: f(x)
 fn main() do
-  print(apply2(double, 21))
+  dbg(apply2(double, 21))
 end
 "#,
         &crate::telemetry::NullTelemetry,
@@ -2097,7 +2097,7 @@ fn apply_plus1(f, x) do
   r + 1
 end
 fn main() do
-  print(apply_plus1(double, 21))
+  dbg(apply_plus1(double, 21))
 end
 "#,
         &crate::telemetry::NullTelemetry,
@@ -2173,7 +2173,7 @@ fn callclosure_with_fn_constant_registers_narrow_spec() {
 fn double(x), do: x * 2
 fn apply2(f, x), do: f(x)
 fn main() do
-  print(apply2(double, 21))
+  dbg(apply2(double, 21))
 end
 "#,
         &crate::telemetry::NullTelemetry,
@@ -2535,7 +2535,7 @@ fn value_accessor_inside_declaring_module_types_as_inner() {
 defmodule A do
   @type t :: opaque resource(integer)
 
-  fn make(), do: make_resource(7, &print/1)
+  fn make(), do: make_resource(7, &dbg/1)
   fn get(h :: t), do: h.value
 end
 

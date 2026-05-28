@@ -1,17 +1,17 @@
 ---
 purpose: multi-clause fn dispatches on parameter type at runtime (fz-ty1.8/1.9)
 paths: [interp, jit, aot, repl]
-budget.codegen.functions: 3
-budget.codegen.instructions: 17
-budget.specs.count: 3
-budget.planner.worklist_pops: 6
-budget.planner.walk_calls: 6
-budget.planner.type_fn_calls: 3
+budget.codegen.functions: 2
+budget.codegen.instructions: 10
+budget.specs.count: 2
+budget.planner.worklist_pops: 3
+budget.planner.walk_calls: 3
+budget.planner.type_fn_calls: 2
 budget.planner.matcher_specs: 0
-budget.planner.vars: 25
-budget.planner.blocks: 7
-budget.planner.stmts: 10
-budget.planner.dispatches: 2
+budget.planner.vars: 18
+budget.planner.blocks: 4
+budget.planner.stmts: 8
+budget.planner.dispatches: 1
 ---
 
 `fn check(x :: integer)` emits a `TypeTest` guard that dispatches to the

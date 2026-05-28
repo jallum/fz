@@ -28,6 +28,32 @@ Automatic variadic defaults are intentionally narrow:
 Later codegen/interpreter work should consume the per-spec side table rather
 than guessing from `ExternMarshal::Auto` at the boundary.
 
+## Spec-Guided Return ABI
+
+Extern ABI types and Fz-visible specs are separate facts. `ExternDecl::params`
+and `ExternDecl::ret` describe the C boundary: `ExternTy::Any` means a scalar
+is boxed into an `AnyValueRef` before the call, while integer and float lanes
+use raw scalar ABI values.
+
+Declared Fz specs describe what a wrapper promises to its callers. Codegen uses
+the declared spec result, instantiated for each registered specialization, when
+choosing that function's return ABI. This keeps wrappers like:
+
+```fz
+@spec dbg(t) :: t when t: any
+fn dbg(x), do: fz_dbg_value(x)
+```
+
+correct without a dbg-specific fast path. The body calls
+`fz_dbg_value(any) :: any`, so the argument is boxed and the extern result is a
+boxed `AnyValueRef`. At the wrapper's `Term::Return`, the instantiated
+`dbg(integer) :: integer` ABI makes the normal `CodegenValue` coercion unbox
+the `AnyRef` result with `fz_unbox_int`.
+
+Do not infer value identity from a repeated type variable. `fn f(t) :: t` means
+"same type", not "same value". Boundary correctness should come from marshal
+types plus spec-guided coercion.
+
 ## Runtime Variadic Dispatchers
 
 Runtime C-variadic calls go through `runtime/src/extern_variadic.rs` instead of

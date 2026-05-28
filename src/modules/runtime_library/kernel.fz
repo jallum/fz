@@ -1,11 +1,8 @@
 defmodule Kernel do
   @moduledoc "Core prelude functions available without an explicit import."
 
-  extern "C" fn fz_print_i64(integer) :: nil
-  extern "C" fn fz_print_value(any) :: nil
-  extern "C" fn fz_assert(any) :: nil
-  extern "C" fn fz_assert_eq(any, any) :: nil
-  extern "C" fn fz_assert_neq(any, any) :: nil
+  extern "C" fn fz_dbg_value(any) :: any
+  extern "C" fn fz_panic(any) :: never
   extern "C" fn fz_spawn(() -> any) :: pid
   extern "C" fn fz_spawn_opt(() -> any, any) :: pid
   extern "C" fn fz_self() :: pid
@@ -13,22 +10,21 @@ defmodule Kernel do
   extern "C" fn fz_make_ref() :: ref
   extern "C" fn fz_make_resource(t, (t) -> nil) :: resource(t) when t: integer | cpointer
 
-  @doc "Prints a value to standard output."
-  @spec print(any) :: nil
-  fn print(x :: integer), do: fz_print_i64(x)
-  fn print(x), do: fz_print_value(x)
+  @doc "Aborts the current process."
+  @spec panic(any) :: never
+  fn panic(msg), do: fz_panic(msg)
+
+  @doc "Prints a value to standard output and returns it unchanged."
+  @spec dbg(t) :: t when t: any
+  fn dbg(x), do: fz_dbg_value(x)
 
   @doc "Aborts if the value is nil or false."
   @spec assert(any) :: nil
-  fn assert(x), do: fz_assert(x)
+  fn assert(x), do: if x, do: nil, else: panic("assertion failed")
 
-  @doc "Aborts if the values are not equal."
-  @spec assert_eq(any, any) :: nil
-  fn assert_eq(a, b), do: fz_assert_eq(a, b)
-
-  @doc "Aborts if the values are equal."
-  @spec assert_neq(any, any) :: nil
-  fn assert_neq(a, b), do: fz_assert_neq(a, b)
+  @doc "Aborts if the value is truthy."
+  @spec refute(any) :: nil
+  fn refute(x), do: if x, do: panic("refutation failed"), else: nil
 
   @doc "Starts a process by applying a zero-argument function."
   @spec spawn(() -> any) :: pid

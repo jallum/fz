@@ -180,7 +180,7 @@ defmodule User do
   fn run(), do: add(20, 22)
 end
 
-fn main(), do: print(User.run())
+fn main(), do: dbg(User.run())
 "#;
     let provider_path = root.join("provider.fz");
     let consumer_path = root.join("consumer.fz");
@@ -309,7 +309,7 @@ defmodule User do
   fn run(), do: add(20, 22)
 end
 
-fn main(), do: print(User.run())
+fn main(), do: dbg(User.run())
 "#;
     let root = std::env::temp_dir().join(format!("fz-build-imported-fzo-{}", std::process::id()));
     let _ = fs::remove_dir_all(&root);

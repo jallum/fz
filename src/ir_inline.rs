@@ -1946,7 +1946,7 @@ mod tests {
         // inline them back into pos and DCE should remove the now-dead
         // fns.
         let src = "fn pos(x), do: if x > 0, do: 1, else: -1\n\
-                   fn main(), do: print(pos(5))";
+                   fn main(), do: dbg(pos(5))";
         let mut m = lower_src(src);
         crate::ir_inline::inline_module(&mut m);
         crate::ir_dce::dce_module_level(&mut m);

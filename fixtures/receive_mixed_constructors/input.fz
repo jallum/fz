@@ -7,5 +7,5 @@ fn main() do
     _ -> 0
   end
 
-  print(v)
+  dbg(v)
 end

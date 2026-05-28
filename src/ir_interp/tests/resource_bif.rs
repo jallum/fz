@@ -161,7 +161,7 @@ fn dwrap(x), do: _resource_test_dtor(x)
 
 fn test_value_round_trip() do
   r = make_resource(99, &dwrap/1)
-  assert_eq(R.get_value(r), 99)
+  assert(R.get_value(r) == 99)
 end
 "#;
     crate::test_runner::run_str(src).expect("test_runner run_str succeeded");

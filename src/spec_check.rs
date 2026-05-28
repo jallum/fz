@@ -215,7 +215,7 @@ defmodule M do
   @spec add1(integer) :: integer
   fn add1(n), do: n + 1
 end
-fn main(), do: print(M.add1(41))
+fn main(), do: dbg(M.add1(41))
 "#,
         );
         let diags = validate_specs(&mut ct, &prog, &ir, &mt);
@@ -234,7 +234,7 @@ defmodule M do
   @spec add1(integer) :: integer
   fn add1(n), do: n + 1
 end
-fn main(), do: print(M.add1(41))
+fn main(), do: dbg(M.add1(41))
 "#,
         );
         let diags = validate_specs(&mut ct, &prog, &ir, &mt);
@@ -257,7 +257,7 @@ defmodule M do
   @spec add1(float) :: float
   fn add1(n), do: n + 1
 end
-fn main(), do: print(M.add1(41))
+fn main(), do: dbg(M.add1(41))
 "#,
         );
         let diags = validate_specs(&mut ct, &prog, &ir, &mt);
@@ -281,7 +281,7 @@ defmodule M do
   @spec lookup(id) :: id
   fn lookup(x), do: x
 end
-fn main(), do: print(M.lookup(7))
+fn main(), do: dbg(M.lookup(7))
 "#,
         );
         let diags = validate_specs(&mut ct, &prog, &ir, &mt);
@@ -310,7 +310,7 @@ defmodule M do
   @spec use(Enumerable.t(integer)) :: integer
   fn use(xs), do: 1
 end
-fn main(), do: print(M.use([1]))
+fn main(), do: dbg(M.use([1]))
 "#,
         );
         let diags = validate_specs(&mut ct, &prog, &ir, &mt);
@@ -339,7 +339,7 @@ defmodule M do
   @spec use(Enumerable.t(integer)) :: integer
   fn use(xs), do: 1
 end
-fn main(), do: print(M.use(1))
+fn main(), do: dbg(M.use(1))
 "#,
         );
         let diags = validate_specs(&mut ct, &prog, &ir, &mt);
@@ -357,7 +357,7 @@ defmodule M do
   @spec one(unknown_thing) :: integer
   fn one(_), do: 1
 end
-fn main(), do: print(M.one(0))
+fn main(), do: dbg(M.one(0))
 "#,
         );
         let diags = validate_specs(&mut ct, &prog, &ir, &mt);
@@ -387,7 +387,7 @@ defmodule M do
   @spec add1(integer) :: integer
   fn add1(n), do: n + 1
 end
-fn main(), do: print(M.add1(41))
+fn main(), do: dbg(M.add1(41))
 "#,
         );
         // Validation passes — either the any-key was dropped (.29.12.6)
@@ -409,7 +409,7 @@ fn main(), do: print(M.add1(41))
 defmodule M do
   fn double(x), do: x * 2
 end
-fn main(), do: print(M.double(7))
+fn main(), do: dbg(M.double(7))
 "#,
         );
         let diags = validate_specs(&mut ct, &prog, &ir, &mt);
@@ -428,7 +428,7 @@ fn main(), do: print(M.double(7))
             r#"
 @spec one() :: integer
 fn one(), do: 1
-fn main(), do: print(one())
+fn main(), do: dbg(one())
 "#,
         );
         let diags = validate_specs(&mut ct, &prog, &ir, &mt);

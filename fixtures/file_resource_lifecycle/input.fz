@@ -10,7 +10,7 @@ defmodule File do
   # can see the dtor fired.
   fn dtor(fd) do
     libc::close(fd)
-    print(:dtor_closed)
+    dbg(:dtor_closed)
   end
 
   fn wrap_fd(fd), do: make_resource(fd, &dtor/1)
@@ -20,8 +20,8 @@ end
 fn main() do
   path = "/tmp/fz-file-resource-lifecycle"
   fd = libc::creat(path, 0o644)
-  print(:opened)
+  dbg(:opened)
   _h = File.wrap_fd(fd)
   libc::unlink(path)
-  print(:before)
+  dbg(:before)
 end

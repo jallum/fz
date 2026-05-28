@@ -1,5 +1,5 @@
 fn main() do
-  print(nil)
-  print([])
-  print([1, 2, 3])
+  dbg(nil)
+  dbg([])
+  dbg([1, 2, 3])
 end

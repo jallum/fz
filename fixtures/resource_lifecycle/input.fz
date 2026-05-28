@@ -19,8 +19,8 @@ fn main() do
   # `.value` is gated to the declaring module (`R`); call it via the
   # in-module accessor. Proves the read path resolves through the
   # opaque-visibility check on all three paths.
-  print(R.unwrap(a))
-  print(R.unwrap(b))
-  print(R.unwrap(c))
-  print(:before)
+  dbg(R.unwrap(a))
+  dbg(R.unwrap(b))
+  dbg(R.unwrap(c))
+  dbg(:before)
 end

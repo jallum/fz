@@ -4,7 +4,7 @@ fn apply2(f, x), do: f(x)
 fn compose(f, g, x), do: f(g(x))
 
 fn main() do
-  print(apply2(double, 21))
-  print(apply2(neg, 7))
-  print(compose(double, neg, 5))
+  dbg(apply2(double, 21))
+  dbg(apply2(neg, 7))
+  dbg(compose(double, neg, 5))
 end

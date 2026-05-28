@@ -7,5 +7,5 @@ fn main() do
   _b = make_resource(20, &dwrap/1)
   _c = make_resource(30, &dwrap/1)
   _alias = _c
-  print(:before)
+  dbg(:before)
 end

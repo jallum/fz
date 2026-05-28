@@ -1,17 +1,17 @@
 ---
 purpose: "sequential calls returning tuple-pattern results (fz-i82 regression)"
 paths: [interp, jit, aot, repl]
-budget.codegen.functions: 6
-budget.codegen.instructions: 33
-budget.specs.count: 6
-budget.planner.worklist_pops: 15
-budget.planner.walk_calls: 15
-budget.planner.type_fn_calls: 6
+budget.codegen.functions: 1
+budget.codegen.instructions: 22
+budget.specs.count: 1
+budget.planner.worklist_pops: 1
+budget.planner.walk_calls: 1
+budget.planner.type_fn_calls: 1
 budget.planner.matcher_specs: 0
-budget.planner.vars: 48
-budget.planner.blocks: 12
-budget.planner.stmts: 30
-budget.planner.dispatches: 5
+budget.planner.vars: 31
+budget.planner.blocks: 1
+budget.planner.stmts: 24
+budget.planner.dispatches: 0
 ---
 
 # case_tuple_pattern_sequential

@@ -53,8 +53,8 @@ fn static_closure_targets_registered_for_zero_cap_make_closure() {
                fn g(x), do: x * 2\n\
                fn apply(h, x), do: h(x)\n\
                fn main() do\n\
-                 print(apply(f, 1))\n\
-                 print(apply(g, 2))\n\
+                 dbg(apply(f, 1))\n\
+                 dbg(apply(g, 2))\n\
                end";
     let m = lower_src(src);
     let compiled = crate::ir_codegen::with_reducer_disabled(|| {
@@ -98,7 +98,7 @@ fn static_closure_targets_registered_for_zero_cap_make_closure() {
 fn static_closure_lookup_returns_singleton_pointer() {
     let src = "fn f(x), do: x + 1\n\
                fn apply(h, x), do: h(x)\n\
-               fn main() do print(apply(f, 1)) end";
+               fn main() do dbg(apply(f, 1)) end";
     let m = lower_src(src);
     // Reducer disabled — see sibling test above.
     let compiled = crate::ir_codegen::with_reducer_disabled(|| {
@@ -605,7 +605,7 @@ fn runtime_enumerable_list_count_member_and_reduce() {
     let got = capture_main_with_runtime_graph(
         r#"
 fn main() do
-  print({
+  dbg({
     Enum.count([1, 2, 3]),
     Enum.member?([1, 2, 3], 2),
     Enum.reduce([1, 2, 3], {:cont, 0}, fn (x, acc) -> {:cont, acc + x})
@@ -632,7 +632,7 @@ fn main() do
   case Enum.reduce([1, 2], {:cont, 0}, reducer) do
     {:suspended, first, resume} ->
       case resume() do
-        {:done, total} -> print(first + total)
+        {:done, total} -> dbg(first + total)
       end
   end
 end
@@ -654,9 +654,9 @@ fn by_key(left, right) do
 end
 
 fn main() do
-  print(Enum.sort([3, 1, 2, 1, 5, 4]))
-  print(Enum.sort([3, 1, 2, 1, 5, 4], descending))
-  print(Enum.sort([{2, :a}, {1, :a}, {2, :b}, {1, :b}], by_key))
+  dbg(Enum.sort([3, 1, 2, 1, 5, 4]))
+  dbg(Enum.sort([3, 1, 2, 1, 5, 4], descending))
+  dbg(Enum.sort([{2, :a}, {1, :a}, {2, :b}, {1, :b}], by_key))
 end
 "#,
     );
@@ -779,7 +779,7 @@ fn image_linker_rejects_unresolved_external_imports_without_provider() {
 
 #[test]
 fn aot_compile_produces_object_with_main_symbol() {
-    let src = "fn add1(n) do n + 1 end\nfn main() do print(add1(41)) end";
+    let src = "fn add1(n) do n + 1 end\nfn main() do dbg(add1(41)) end";
     let m = lower_src(src);
     let artifact = compile_aot(
         &mut crate::types::ConcreteTypes,
@@ -1058,13 +1058,13 @@ fn if_then_else_runs() {
 
 #[test]
 fn print_builtin_routes_through_runtime() {
-    assert_eq!(capture_main("fn main(), do: print(40 + 2)"), vec!["42"]);
+    assert_eq!(capture_main("fn main(), do: dbg(40 + 2)"), vec!["42"]);
 }
 
 #[test]
 fn process_heap_alloc_stats_is_callable_from_fz() {
     let lines = capture_main_with_runtime_graph(
-        "fn main() do\n  xs = [1, 2]\n  print(xs)\n  stats = Process.heap_alloc_stats()\n  print(stats[:list_cons_allocs])\n  print(stats[:map_allocs])\nend",
+        "fn main() do\n  xs = [1, 2]\n  dbg(xs)\n  stats = Process.heap_alloc_stats()\n  dbg(stats[:list_cons_allocs])\n  dbg(stats[:map_allocs])\nend",
     );
     assert_eq!(lines, vec!["[1, 2]", "2", "0"]);
 }
@@ -1076,7 +1076,7 @@ fn assert_builtin_keeps_scalar_kind_separate_from_raw_payload() {
         fz_runtime::any_value::NIL_ATOM_ID as i64
     );
     assert_eq!(
-        run_main("fn main(), do: assert_neq(true, 1)"),
+        run_main("fn main(), do: refute(true == 1)"),
         fz_runtime::any_value::NIL_ATOM_ID as i64
     );
 }
@@ -1191,7 +1191,7 @@ fn render_any_value_dispatches_per_tag() {
 #[test]
 fn print_captures_atom_and_specials() {
     assert_eq!(
-        capture_main("fn main() do\n  print(:ok)\n  print(true)\n  print(false)\nend"),
+        capture_main("fn main() do\n  dbg(:ok)\n  dbg(true)\n  dbg(false)\nend"),
         vec![":ok", "true", "false"]
     );
 }
@@ -1199,7 +1199,7 @@ fn print_captures_atom_and_specials() {
 #[test]
 fn print_atom_keyed_map_renders_canonically() {
     assert_eq!(
-        capture_main("fn main(), do: print(%{a: 1, b: 2})"),
+        capture_main("fn main(), do: dbg(%{a: 1, b: 2})"),
         vec!["%{:a => 1, :b => 2}"]
     );
 }
@@ -1220,8 +1220,8 @@ fn map_update_returns_new_map_originals_unchanged() {
 fn main() do
   m = %{a: 1, b: 2}
   m2 = %{m | a: 99}
-  print(m)
-  print(m2)
+  dbg(m)
+  dbg(m2)
 end
 "#
         ),
@@ -1232,7 +1232,7 @@ end
 #[test]
 fn print_bitstring_literal_via_jit() {
     assert_eq!(
-        capture_main("fn main(), do: print(<<0xff, 0xab>>)"),
+        capture_main("fn main(), do: dbg(<<0xff, 0xab>>)"),
         vec!["<<255, 171>>"]
     );
 }
@@ -1243,7 +1243,7 @@ fn match_simple_header_and_rest() {
         capture_main(
             r#"
 fn parse(<<n, rest::binary>>), do: {n, rest}
-fn main(), do: print(parse(<<0xa5, 0x01, 0x02>>))
+fn main(), do: dbg(parse(<<0xa5, 0x01, 0x02>>))
 "#
         ),
         vec!["{165, <<1, 2>>}"]
@@ -1258,7 +1258,7 @@ fn match_variable_size_payload_via_size_var() {
 fn parse(<<len, payload::binary-size(len), rest::binary>>) do
   {len, payload, rest}
 end
-fn main(), do: print(parse(<<3, 0x01, 0x02, 0x03, 0xff>>))
+fn main(), do: dbg(parse(<<3, 0x01, 0x02, 0x03, 0xff>>))
 "#
         ),
         vec!["{3, <<1, 2, 3>>, <<255>>}"]
@@ -1267,7 +1267,7 @@ fn main(), do: print(parse(<<3, 0x01, 0x02, 0x03, 0xff>>))
 
 #[test]
 fn print_tuple_pair_renders() {
-    assert_eq!(capture_main("fn main(), do: print({1, 2})"), vec!["{1, 2}"]);
+    assert_eq!(capture_main("fn main(), do: dbg({1, 2})"), vec!["{1, 2}"]);
 }
 
 #[test]
@@ -1287,14 +1287,14 @@ fn main(), do: fst({10, 20}) + snd({30, 40})
 #[test]
 fn print_mixed_type_tuple() {
     assert_eq!(
-        capture_main("fn main(), do: print({1, :ok, true})"),
+        capture_main("fn main(), do: dbg({1, :ok, true})"),
         vec!["{1, :ok, true}"]
     );
 }
 
 #[test]
 fn tuple_literal_initializes_scalar_fields_without_boxing() {
-    let m = lower_src("fn main(), do: print({1, 2.5, :ok})");
+    let m = lower_src("fn main(), do: dbg({1, 2.5, :ok})");
     let ir = get_main_ir(&m);
     assert!(
         ir.contains("@fz_struct_set_field_int"),
@@ -1321,7 +1321,7 @@ fn tuple_literal_initializes_scalar_fields_without_boxing() {
 #[test]
 fn print_list_literal_renders_via_jit() {
     assert_eq!(
-        capture_main("fn main(), do: print([1, 2, 3])"),
+        capture_main("fn main(), do: dbg([1, 2, 3])"),
         vec!["[1, 2, 3]"]
     );
 }
@@ -1402,7 +1402,7 @@ fn map_higher_order_renders_doubled_list() {
 fn double(x), do: x * 2
 fn map_l(_, []), do: []
 fn map_l(f, [h | t]), do: [f(h) | map_l(f, t)]
-fn main(), do: print(map_l(double, [1, 2, 3]))
+fn main(), do: dbg(map_l(double, [1, 2, 3]))
 "#
         ),
         vec!["[2, 4, 6]"]
@@ -1472,7 +1472,7 @@ fn float_const_halt_round_trips_via_bits() {
 #[test]
 fn print_float_renders_with_explicit_dot_zero() {
     assert_eq!(
-        capture_main("fn main() do\n  print(4.0)\n  print(2.5)\nend"),
+        capture_main("fn main() do\n  dbg(4.0)\n  dbg(2.5)\nend"),
         vec!["4.0", "2.5"]
     );
 }
@@ -1530,7 +1530,7 @@ fn cons_with_float_head_no_box() {
 
 #[test]
 fn render_raw_float_in_container() {
-    assert_eq!(capture_main("fn main(), do: print([1.5])"), vec!["[1.5]"]);
+    assert_eq!(capture_main("fn main(), do: dbg([1.5])"), vec!["[1.5]"]);
 }
 
 #[test]
@@ -1565,9 +1565,8 @@ fn map_with_float_key_no_box() {
 
 #[test]
 fn map_literal_and_update_use_destinations_not_repeated_puts() {
-    let m = lower_src(
-        "fn main() do\n  m = %{a: 1, b: 2}\n  n = %{m | a: 3, c: 4}\n  print(n[:a])\nend",
-    );
+    let m =
+        lower_src("fn main() do\n  m = %{a: 1, b: 2}\n  n = %{m | a: 3, c: 4}\n  dbg(n[:a])\nend");
     let ir = get_main_ir(&m);
     assert!(
         ir.contains("@fz_map_dest_begin")
@@ -1740,7 +1739,7 @@ fn arith_top_param_keeps_dispatch() {
 fn signature_uniform_when_not_native() {
     // Uniform (non-native) sig: `(i64, i64) -> i64` regardless of the
     // typer's narrower facts on the params.
-    let m = lower_src("fn add(a, b) do a + b end\nfn main() do print(add(1, 2)) end");
+    let m = lower_src("fn add(a, b) do a + b end\nfn main() do dbg(add(1, 2)) end");
     let mt = crate::ir_planner::plan_module(
         &mut crate::types::ConcreteTypes,
         &m,
@@ -1771,7 +1770,7 @@ fn signature_uniform_when_not_native() {
 fn signature_native_uses_typed_params_and_cont() {
     // Same `add`, but call-site narrowing has typed both params as int.
     // Native sig is `(i64, i64, cont: i64) -> i64` (cont trailing).
-    let m = lower_src("fn add(a, b) do a + b end\nfn main() do print(add(1, 2)) end");
+    let m = lower_src("fn add(a, b) do a + b end\nfn main() do dbg(add(1, 2)) end");
     let mt = crate::ir_planner::plan_module(
         &mut crate::types::ConcreteTypes,
         &m,
@@ -1803,7 +1802,7 @@ fn signature_native_arity_matches_entry_params_plus_cont() {
     // `y` as float-only, so the sig is `(f64, f64, cont: i64) -> i64`.
     // (Return is canonicalized to i64 even when the value is a float —
     // see the i64-return assertion below.)
-    let m = lower_src("fn dist(x, y) do x * x + y * y end\nfn main() do print(dist(1.5, 2.5)) end");
+    let m = lower_src("fn dist(x, y) do x * x + y * y end\nfn main() do dbg(dist(1.5, 2.5)) end");
     let mt = crate::ir_planner::plan_module(
         &mut crate::types::ConcreteTypes,
         &m,
@@ -1839,7 +1838,7 @@ fn signature_native_arity_matches_entry_params_plus_cont() {
 fn spec_registry_registers_any_key_per_fn_with_spec_id_eq_fn_id() {
     // Pipeline registry must hold one any-key spec per fn, with
     // SpecId.0 == FnId.0 (debug_assert in compile_with_backend).
-    let m = lower_src("fn add(a, b) do a + b end\nfn main() do print(add(1, 2)) end");
+    let m = lower_src("fn add(a, b) do a + b end\nfn main() do dbg(add(1, 2)) end");
     let compiled = compile(
         &mut crate::types::ConcreteTypes,
         &m,
@@ -2044,7 +2043,7 @@ fn box_int_const_fold_eliminates_ishl_bor() {
                fn main() do\n\
                  spawn(relay)\n\
                  send(2, 41)\n\
-                 print(receive())\n\
+                 dbg(receive())\n\
                end";
     let main_ir = compile_and_grab_ir(src, "main");
     let main_ir = main_ir.as_str();
@@ -2088,7 +2087,7 @@ fn receive_native_cont_no_box_unbox_roundtrip() {
                fn main() do\n\
                  spawn(relay)\n\
                  send(2, 41)\n\
-                 print(receive())\n\
+                 dbg(receive())\n\
                end";
     let relay_ir = compile_and_grab_ir(src, "relay");
     let relay_ir = relay_ir.as_str();
@@ -2116,8 +2115,8 @@ fn condition_cache_bypasses_is_truthy_in_type_dispatch() {
                fn check(x) do :other end\n\
                fn main() do\n\
                  c = fn(x) -> check(x)\n\
-                 print(c(42))\n\
-                 print(c(:foo))\n\
+                 dbg(c(42))\n\
+                 dbg(c(:foo))\n\
                end";
     let m = lower_src(src);
     ir_text_record_enable();
@@ -2159,8 +2158,8 @@ fn pure_branch_type_test_does_not_materialize_bool() {
                fn check(x) do :other end\n\
                fn main() do\n\
                  c = fn(x) -> check(x)\n\
-                 print(c(42))\n\
-                 print(c(:foo))\n\
+                 dbg(c(42))\n\
+                 dbg(c(:foo))\n\
                end";
     let m = lower_src(src);
     ir_text_record_enable();
@@ -2186,31 +2185,38 @@ fn pure_branch_type_test_does_not_materialize_bool() {
     }
 }
 
-/// Unit-return extern results whose dest var is unused emit no iconst
-/// (DeadUnit path). Live results use cached_iconst so they share the
-/// canonical nil atom payload when the same block already holds one.
-/// In this hello case only print(nil)'s result is live; the other three
-/// prints' nil results are dead. The old encoded nil scalar
-/// (`iconst.i64 2`) must not appear.
 #[test]
-fn dead_unit_extern_result_elided() {
-    let src = "fn main() do\n\
-                 print(40 + 2)\n\
-                 print(:ok)\n\
-                 print(true)\n\
-                 print(nil)\n\
-               end";
-    let main_ir = compile_and_grab_ir(src, "main");
-    let main_ir = main_ir.as_str();
-    let nil_count = main_ir.matches("iconst.i64 2").count();
-    assert_eq!(
-        nil_count, 0,
-        "expected no encoded nil iconsts in main CLIF (got {}):\n{}",
-        nil_count, main_ir
+fn dbg_returns_the_value_it_prints() {
+    let lines = capture_main(
+        "fn main() do\n\
+           x = dbg(41)\n\
+           dbg(x + 1)\n\
+         end",
+    );
+    assert_eq!(lines, vec!["41".to_string(), "42".to_string()]);
+}
+
+#[test]
+fn dbg_uses_any_extern_abi_and_spec_return_coercion() {
+    let main_ir = compile_and_grab_ir("fn main(), do: dbg(40) + 2", "main");
+    assert!(
+        main_ir.contains("@fz_box_int_for_any"),
+        "dbg should box the typed arg for the extern any ABI:\n{}",
+        main_ir
     );
     assert!(
-        main_ir.contains("@fz_box_atom_for_any"),
-        "expected live nil to cross the ValueRef ABI by boxing the atom payload:\n{}",
+        main_ir.contains("@fz_dbg_value"),
+        "dbg should call the generic any extern:\n{}",
+        main_ir
+    );
+    assert!(
+        main_ir.contains("@fz_unbox_int"),
+        "dbg(t) :: t should unbox the any extern result when t is integer:\n{}",
+        main_ir
+    );
+    assert!(
+        !main_ir.contains("fz_print_"),
+        "dbg should not use typed print helper ABI:\n{}",
         main_ir
     );
 }
@@ -2220,7 +2226,7 @@ fn dead_unit_extern_result_elided() {
 #[test]
 fn const_nil_bool_atom_deduplicated_within_block() {
     let src = "fn main() do\n\
-                 print(nil)\n\
+                 dbg(nil)\n\
                end";
     let main_ir = compile_and_grab_ir(src, "main");
     let main_ir = main_ir.as_str();
@@ -2243,7 +2249,7 @@ fn const_nil_bool_atom_deduplicated_within_block() {
 /// for vars that destination lowering did not semantically change.
 #[test]
 fn plan_module_called_exactly_three_times_in_pipeline() {
-    let src = "fn main(), do: print(42)";
+    let src = "fn main(), do: dbg(42)";
     let m = lower_src(src);
     crate::ir_planner::PLAN_MODULE_CALLS.with(|c| c.set(0));
     compile(
@@ -2262,7 +2268,7 @@ fn frontend_to_codegen_pretyped_pipeline_types_exactly_three_times() {
     let cap = crate::telemetry::Capture::new();
     tel.attach(&[], cap.handler());
 
-    let src = "fn id(x), do: x\nfn main(), do: print(id(42))\n";
+    let src = "fn id(x), do: x\nfn main(), do: dbg(id(42))\n";
     let mut t = crate::types::ConcreteTypes;
     let frontend = match crate::frontend::compile_source_with_types(
         &mut t,
@@ -2356,7 +2362,7 @@ end
 
 fn main() do
   k = 10
-  each(fn(x) -> print(x + k), [1, 2, 3])
+  each(fn(x) -> dbg(x + k), [1, 2, 3])
 end
 "#;
     let m = lower_src(src);
@@ -2425,7 +2431,7 @@ end
 
 fn main() do
   k = 10
-  each(fn(x) -> print(x + k), [1, 2, 3])
+  each(fn(x) -> dbg(x + k), [1, 2, 3])
 end
 "#;
     let m = lower_src(src);
@@ -2468,7 +2474,7 @@ end
 
 fn main() do
   k = 10
-  each(fn(x) -> print(x + k), [1, 2, 3])
+  each(fn(x) -> dbg(x + k), [1, 2, 3])
 end
 "#;
     let m = lower_src(src);
@@ -2518,11 +2524,11 @@ fn empty_list_does_not_match_nil_pattern() {
     );
 }
 
-/// `print(nil)` and `print([])` render as distinct strings — codegen
+/// `dbg(nil)` and `dbg([])` render as distinct strings — codegen
 /// pin for the broader fixture-driven check.
 #[test]
 fn print_distinguishes_nil_from_empty_list() {
-    let lines = capture_main("fn main() do\n  print(nil)\n  print([])\nend");
+    let lines = capture_main("fn main() do\n  dbg(nil)\n  dbg([])\nend");
     assert_eq!(lines, vec!["nil".to_string(), "[]".to_string()]);
 }
 

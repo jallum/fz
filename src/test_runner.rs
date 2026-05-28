@@ -9,7 +9,7 @@
 //! …so user-side test files can write
 //!
 //!   test(:test_addition) do
-//!     assert_eq(1 + 1, 2)
+//!     assert(1 + 1 == 2)
 //!   end
 //!
 //! After parse → resolve → expand, the `test(:test_addition) do ... end`
@@ -21,7 +21,7 @@
 //! produce fns under bare names. So tests inside `defmodule MyTest do ...`
 //! end up at top-level. Tests at top-level work fine.
 //!
-//! Asserts: `assert(cond)`, `assert_eq(a, b)`, `assert_neq(a, b)` are runtime
+//! Asserts: `assert(cond)`, `assert(a == b)`, `refute(a == b)` are runtime
 //! builtins surfaced through the IR interpreter. Each returns an assertion
 //! error on failure; the runner catches the error.
 
@@ -269,7 +269,7 @@ mod tests {
     fn passing_test_runs_clean() {
         let src = r#"
 test(:test_one) do
-  assert_eq(1 + 1, 2)
+  assert(1 + 1 == 2)
 end
 "#;
         run_str(src).expect("test should pass");
@@ -279,7 +279,7 @@ end
     fn failing_test_returns_err() {
         let src = r#"
 test(:test_bad) do
-  assert_eq(1 + 1, 3)
+  assert(1 + 1 == 3)
 end
 "#;
         let r = run_str(src);
@@ -293,10 +293,10 @@ test(:test_a) do
   assert(true)
 end
 test(:test_b) do
-  assert_eq(:x, :x)
+  assert(:x == :x)
 end
 test(:test_c) do
-  assert_eq(1, 2)
+  assert(1 == 2)
 end
 "#;
         let r = run_str(src);
@@ -333,10 +333,10 @@ end
 
         let src = r#"
 test(:test_one) do
-  assert_eq(1 + 1, 2)
+  assert(1 + 1 == 2)
 end
 test(:test_two) do
-  assert_eq(:x, :x)
+  assert(:x == :x)
 end
 "#;
         run_through(&tel, src).expect("tests should pass");
@@ -368,7 +368,7 @@ test(:test_ok) do
   assert(true)
 end
 test(:test_bad) do
-  assert_eq(1, 2)
+  assert(1 == 2)
 end
 "#;
         let _ = run_through(&tel, src);

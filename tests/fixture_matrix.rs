@@ -393,16 +393,16 @@ fn pattern_matrix_oracle_goldens() {
 /// fz-puj.52.6 / .52.7 — matcher performance baseline.
 ///
 /// These assertions pin the repaired internal-dispatch shape: case,
-/// multi-clause, with-else, and prelude print dispatch must not create
+/// multi-clause, with-else, and prelude dbg dispatch must not create
 /// `_matcher_` specs. T4 may still update receive-specific totals when it
 /// caches receive Matchers. Exact counts are deliberate: any matcher-shape
 /// change should force a conscious baseline update in the same commit.
 fn matcher_perf_internal_matcher_repair_baseline() {
     let representative = [
-        ("hello", 3, 0),
-        ("list_primitives", 25, 0),
-        ("quicksort", 21, 0),
-        ("ast_eval", 3, 0),
+        ("hello", 1, 0),
+        ("list_primitives", 22, 0),
+        ("quicksort", 18, 0),
+        ("ast_eval", 1, 0),
         ("receive_mixed_constructors", 5, 0),
     ];
     for (fixture, expected_specs, expected_matchers) in representative {
@@ -2528,7 +2528,7 @@ fn id_list(xs), do: xs
 
 fn main() do
   left = id_list([1])
-  print(:barrier)
+  dbg(:barrier)
   append(left, [2])
 end
 "#,

@@ -1,17 +1,17 @@
 ---
 purpose: "same call repeated — historical JIT tier-up trigger; today every call is JIT"
 paths: [jit, interp, aot, repl]
-budget.codegen.functions: 9
-budget.codegen.instructions: 50
-budget.specs.count: 9
-budget.planner.worklist_pops: 24
-budget.planner.walk_calls: 24
-budget.planner.type_fn_calls: 9
+budget.codegen.functions: 1
+budget.codegen.instructions: 33
+budget.specs.count: 1
+budget.planner.worklist_pops: 1
+budget.planner.walk_calls: 1
+budget.planner.type_fn_calls: 1
 budget.planner.matcher_specs: 0
-budget.planner.vars: 97
-budget.planner.blocks: 19
-budget.planner.stmts: 50
-budget.planner.dispatches: 8
+budget.planner.vars: 61
+budget.planner.blocks: 1
+budget.planner.stmts: 40
+budget.planner.dispatches: 0
 ---
 
 # hot_fn

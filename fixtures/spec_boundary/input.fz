@@ -5,6 +5,6 @@ fn twice(n) do
 end
 
 fn main() do
-  print(twice(10))
-  print(twice(21))
+  dbg(twice(10))
+  dbg(twice(21))
 end

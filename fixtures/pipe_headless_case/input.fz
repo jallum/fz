@@ -6,5 +6,5 @@ fn main() do
     3 -> :ok
     _ -> :bad
   end
-  print(result)
+  dbg(result)
 end

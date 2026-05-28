@@ -1070,22 +1070,9 @@ pub(crate) fn lower_prim<
         Prim::Extern(eid, args) => {
             let decl = env.module.extern_by_id(*eid);
             let arg_vars: Vec<crate::fz_ir::Var> = args.iter().map(|arg| arg.var).collect();
-            if decl.symbol == "fz_assert" && args.len() == 1 {
-                return lower_extern_fz_assert(
+            if decl.symbol == "fz_panic" && args.len() == 1 {
+                return lower_extern_fz_panic(
                     b, jmod, runtime, var_env, cache, &arg_vars, dest_var,
-                );
-            }
-            if (decl.symbol == "fz_assert_eq" || decl.symbol == "fz_assert_neq") && args.len() == 2
-            {
-                return lower_extern_fz_assert_eq_or_neq(
-                    b,
-                    jmod,
-                    runtime,
-                    var_env,
-                    cache,
-                    &decl.symbol,
-                    &arg_vars,
-                    dest_var,
                 );
             }
             if decl.symbol == "fz_send" && args.len() == 2 {
@@ -1102,11 +1089,6 @@ pub(crate) fn lower_prim<
             }
             if decl.symbol == "fz_spawn_opt" && args.len() == 2 {
                 return lower_extern_fz_spawn_opt(b, jmod, runtime, var_env, cache, &arg_vars);
-            }
-            if decl.symbol == "fz_print_value" && args.len() == 1 {
-                return lower_extern_fz_print_value(
-                    b, jmod, runtime, var_env, cache, &arg_vars, dest_var,
-                );
             }
             if decl.symbol == "fz_make_resource" && args.len() == 2 {
                 return lower_extern_fz_make_resource(b, jmod, runtime, var_env, cache, &arg_vars);
@@ -1828,9 +1810,8 @@ fn lower_bool_binop<M: cranelift_module::Module>(
     Ok(LowerOut::Strict(strict_bool(b, combined)))
 }
 
-/// `fz_assert(value)`: coerces `value` to an i8 truthy flag, widens
-/// to i64, and tail-calls the runtime `fz_assert` import.
-fn lower_extern_fz_assert<M: cranelift_module::Module>(
+/// `fz_panic(value)`: forwards one ValueRef to the runtime fatal path.
+fn lower_extern_fz_panic<M: cranelift_module::Module>(
     b: &mut FunctionBuilder<'_>,
     jmod: &mut M,
     runtime: &RuntimeRefs,
@@ -1839,53 +1820,25 @@ fn lower_extern_fz_assert<M: cranelift_module::Module>(
     args: &[crate::fz_ir::Var],
     dest_var: crate::fz_ir::Var,
 ) -> Result<LowerOut, CodegenError> {
-    let value = *var_env.get(&args[0].0).expect("assert operand");
-    let truthy = codegen_value_truthy(b, jmod, runtime, value);
-    let truthy64 = b.ins().uextend(types::I64, truthy);
+    let value_ref = tagged_get(var_env, b, jmod, runtime, args[0].0, cache);
     let sig = sig1(&[types::I64], &[]);
     let func_id = jmod
-        .declare_function("fz_assert", Linkage::Import, &sig)
-        .map_err(|e| CodegenError::new(format!("declare fz_assert: {}", e)))?;
+        .declare_function("fz_panic", Linkage::Import, &sig)
+        .map_err(|e| CodegenError::new(format!("declare fz_panic: {}", e)))?;
     let fref = jmod.declare_func_in_func(func_id, b.func);
-    b.ins().call(fref, &[truthy64]);
-    Ok(unit_extern_result(b, cache, dest_var))
-}
-
-/// `fz_assert_eq(left, right)` / `fz_assert_neq(left, right)`: calls
-/// `value_eq_ref`, inverts the result for the neq form, and forwards
-/// to the runtime `fz_assert`.
-fn lower_extern_fz_assert_eq_or_neq<M: cranelift_module::Module>(
-    b: &mut FunctionBuilder<'_>,
-    jmod: &mut M,
-    runtime: &RuntimeRefs,
-    var_env: &HashMap<u32, CodegenValue>,
-    cache: &mut CodegenCache,
-    symbol: &str,
-    args: &[crate::fz_ir::Var],
-    dest_var: crate::fz_ir::Var,
-) -> Result<LowerOut, CodegenError> {
-    let left = tagged_get(var_env, b, jmod, runtime, args[0].0, cache);
-    let right = tagged_get(var_env, b, jmod, runtime, args[1].0, cache);
-    let eq_fref = jmod.declare_func_in_func(runtime.value_eq_ref_id, b.func);
-    let eq_inst = b.ins().call(eq_fref, &[left, right]);
-    let mut cond = b.inst_results(eq_inst)[0];
-    if symbol == "fz_assert_neq" {
-        let is_neq = b.ins().icmp_imm(IntCC::Equal, cond, 0);
-        cond = b.ins().uextend(types::I64, is_neq);
+    b.ins().call(fref, &[value_ref]);
+    if cache.used_vars.contains(&dest_var.0) {
+        return Ok(LowerOut::Strict(strict_const_value(
+            b,
+            fz_runtime::any_value::AnyValue::nil_atom(),
+        )));
     }
-    let sig = sig1(&[types::I64], &[]);
-    let func_id = jmod
-        .declare_function("fz_assert", Linkage::Import, &sig)
-        .map_err(|e| CodegenError::new(format!("declare fz_assert: {}", e)))?;
-    let fref = jmod.declare_func_in_func(func_id, b.func);
-    b.ins().call(fref, &[cond]);
-    Ok(unit_extern_result(b, cache, dest_var))
+    Ok(LowerOut::DeadUnit)
 }
 
 /// `fz_send(receiver, msg)`: marshals `msg` as a single ABI ValueRef
-/// arg and forwards to `fz_send_ref`. The returned binding's repr
-/// determines whether the message bits flow through (raw int/float
-/// retained) or whether we surface the runtime's tagged result.
+/// arg and forwards to `fz_send_ref`. The wrapper's declared return type
+/// drives normal return coercion from this boxed ABI result.
 fn lower_extern_fz_send<M: cranelift_module::Module>(
     b: &mut FunctionBuilder<'_>,
     jmod: &mut M,
@@ -1913,11 +1866,7 @@ fn lower_extern_fz_send<M: cranelift_module::Module>(
         .map_err(|e| CodegenError::new(format!("declare fz_send_ref: {}", e)))?;
     let fref = jmod.declare_func_in_func(func_id, b.func);
     let inst = b.ins().call(fref, &[receiver, msg_ref]);
-    Ok(match msg_binding.repr() {
-        ArgRepr::RawInt => LowerOut::RawI64(msg_binding.value()),
-        ArgRepr::RawF64 => LowerOut::RawF64(msg_binding.value()),
-        ArgRepr::ValueRef | ArgRepr::Condition => LowerOut::ValueRefWord(b.inst_results(inst)[0]),
-    })
+    Ok(LowerOut::ValueRefWord(b.inst_results(inst)[0]))
 }
 
 /// `fz_self()`: returns the current process id from `fz_self_raw`.
@@ -1986,55 +1935,6 @@ fn lower_extern_fz_spawn_opt<M: cranelift_module::Module>(
     let fref = jmod.declare_func_in_func(func_id, b.func);
     let inst = b.ins().call(fref, &[closure_ref, min_heap_size]);
     Ok(LowerOut::RawI64(b.inst_results(inst)[0]))
-}
-
-/// `fz_print_value(arg)`: dispatches on the binding repr to call
-/// `fz_print_i64`, `fz_print_f64`, or `fz_print_value_ref`. Returns
-/// nil if the dest var is observed, else `DeadUnit`.
-fn lower_extern_fz_print_value<M: cranelift_module::Module>(
-    b: &mut FunctionBuilder<'_>,
-    jmod: &mut M,
-    runtime: &RuntimeRefs,
-    var_env: &HashMap<u32, CodegenValue>,
-    cache: &mut CodegenCache,
-    args: &[crate::fz_ir::Var],
-    dest_var: crate::fz_ir::Var,
-) -> Result<LowerOut, CodegenError> {
-    let arg = var_env.get(&args[0].0).expect("fz_print_value arg var");
-    match arg.repr() {
-        ArgRepr::RawInt => {
-            let sig = sig1(&[types::I64], &[]);
-            let func_id = jmod
-                .declare_function("fz_print_i64", Linkage::Import, &sig)
-                .map_err(|e| CodegenError::new(format!("declare fz_print_i64: {}", e)))?;
-            let fref = jmod.declare_func_in_func(func_id, b.func);
-            b.ins().call(fref, &[arg.value()]);
-        }
-        ArgRepr::RawF64 => {
-            let sig = sig1(&[types::F64], &[]);
-            let func_id = jmod
-                .declare_function("fz_print_f64", Linkage::Import, &sig)
-                .map_err(|e| CodegenError::new(format!("declare fz_print_f64: {}", e)))?;
-            let fref = jmod.declare_func_in_func(func_id, b.func);
-            b.ins().call(fref, &[arg.value()]);
-        }
-        ArgRepr::ValueRef | ArgRepr::Condition => {
-            let value_ref = tagged_get(var_env, b, jmod, runtime, args[0].0, cache);
-            let sig = sig1(&[types::I64], &[]);
-            let func_id = jmod
-                .declare_function("fz_print_value_ref", Linkage::Import, &sig)
-                .map_err(|e| CodegenError::new(format!("declare fz_print_value_ref: {}", e)))?;
-            let fref = jmod.declare_func_in_func(func_id, b.func);
-            b.ins().call(fref, &[value_ref]);
-        }
-    }
-    if cache.used_vars.contains(&dest_var.0) {
-        return Ok(LowerOut::Strict(strict_const_value(
-            b,
-            fz_runtime::any_value::AnyValue::nil_atom(),
-        )));
-    }
-    Ok(LowerOut::DeadUnit)
 }
 
 /// `fz_make_resource(payload, dtor)`: builds a runtime resource with

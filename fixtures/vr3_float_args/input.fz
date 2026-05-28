@@ -3,5 +3,5 @@ fn dist(x, y) do
 end
 
 fn main() do
-  print(dist(1.5, 2.5))
+  dbg(dist(1.5, 2.5))
 end

@@ -1,17 +1,17 @@
 ---
 purpose: "fz-84m repro C — same shape as repro B but with `n > 0` instead of `n == 0`, proving the bug was structural in lowering and NOT driven by per-callsite type narrowing"
 paths: [jit, interp, aot, repl]
-budget.codegen.functions: 3
-budget.codegen.instructions: 14
-budget.specs.count: 3
-budget.planner.worklist_pops: 6
-budget.planner.walk_calls: 6
-budget.planner.type_fn_calls: 3
+budget.codegen.functions: 2
+budget.codegen.instructions: 8
+budget.specs.count: 2
+budget.planner.worklist_pops: 3
+budget.planner.walk_calls: 3
+budget.planner.type_fn_calls: 2
 budget.planner.matcher_specs: 0
-budget.planner.vars: 29
-budget.planner.blocks: 7
-budget.planner.stmts: 12
-budget.planner.dispatches: 2
+budget.planner.vars: 22
+budget.planner.blocks: 4
+budget.planner.stmts: 10
+budget.planner.dispatches: 1
 ---
 
 # if_tail_call_in_arm_unnarrowed

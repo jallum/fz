@@ -1,1 +1,1 @@
-fn main(), do: print("hello")
+fn main(), do: dbg("hello")
