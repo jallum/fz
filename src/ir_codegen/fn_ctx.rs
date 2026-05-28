@@ -53,6 +53,15 @@ where
     cache: &'a mut CodegenCache,
 }
 
+pub(crate) struct CodegenFnSite<'a, 'env, 'fb, M, K = BodyContext>
+where
+    M: cranelift_module::Module,
+{
+    cx: &'a mut CodegenFn<'env, K>,
+    b: &'a mut FunctionBuilder<'fb>,
+    jmod: &'a mut M,
+}
+
 impl<'env> CodegenFn<'env, BodyContext> {
     pub(crate) fn new(env: &'env CodegenEnv<'_>) -> Self {
         Self {
@@ -88,6 +97,14 @@ impl<'env, K> CodegenFn<'env, K> {
             jmod,
             cache,
         }
+    }
+
+    pub(crate) fn site<'a, 'fb, M: cranelift_module::Module>(
+        &'a mut self,
+        b: &'a mut FunctionBuilder<'fb>,
+        jmod: &'a mut M,
+    ) -> CodegenFnSite<'a, 'env, 'fb, M, K> {
+        CodegenFnSite { cx: self, b, jmod }
     }
 
     pub(crate) fn func_ref<M: cranelift_module::Module>(
@@ -536,6 +553,112 @@ impl<'env, K> CodegenFn<'env, K> {
     }
 }
 
+impl<M, K> CodegenFnSite<'_, '_, '_, M, K>
+where
+    M: cranelift_module::Module,
+{
+    pub(crate) fn closure_capture_i64_at(
+        &mut self,
+        closure_ref: ir::Value,
+        idx: usize,
+    ) -> ir::Value {
+        let index = self.b.ins().iconst(types::I64, idx as i64);
+        self.cx
+            .closure_capture_i64(self.b, self.jmod, closure_ref, index)
+    }
+
+    pub(crate) fn closure_capture_f64_at(
+        &mut self,
+        closure_ref: ir::Value,
+        idx: usize,
+    ) -> ir::Value {
+        let index = self.b.ins().iconst(types::I64, idx as i64);
+        self.cx
+            .closure_capture_f64(self.b, self.jmod, closure_ref, index)
+    }
+
+    pub(crate) fn closure_capture_ref_at(
+        &mut self,
+        closure_ref: ir::Value,
+        idx: usize,
+    ) -> ir::Value {
+        let index = self.b.ins().iconst(types::I64, idx as i64);
+        self.cx
+            .closure_capture_ref(self.b, self.jmod, closure_ref, index)
+    }
+
+    pub(crate) fn closure_capture_as_binding(
+        &mut self,
+        closure_ref: ir::Value,
+        idx: usize,
+        repr: ArgRepr,
+    ) -> CodegenValue {
+        match repr {
+            ArgRepr::RawInt => {
+                CodegenValue::from_abi_value(self.closure_capture_i64_at(closure_ref, idx), repr)
+            }
+            ArgRepr::RawF64 => {
+                CodegenValue::from_abi_value(self.closure_capture_f64_at(closure_ref, idx), repr)
+            }
+            ArgRepr::ValueRef => {
+                CodegenValue::any_ref(self.closure_capture_ref_at(closure_ref, idx))
+            }
+            ArgRepr::Condition => unreachable!("closure captures are never condition-only"),
+        }
+    }
+
+    pub(crate) fn outer_cont_ref(&mut self, closure_ref: ir::Value) -> ir::Value {
+        self.closure_capture_ref_at(closure_ref, 0)
+    }
+
+    pub(crate) fn closure_code_ref(&mut self, closure_ref: ir::Value) -> ir::Value {
+        self.cx.closure_code_ref(self.b, self.jmod, closure_ref)
+    }
+
+    pub(crate) fn closure_halt_kind_ref(&mut self, closure_ref: ir::Value) -> ir::Value {
+        self.cx
+            .closure_halt_kind_ref(self.b, self.jmod, closure_ref)
+    }
+
+    pub(crate) fn store_closure_capture_ref_word(
+        &mut self,
+        closure_ref: ir::Value,
+        idx: usize,
+        value: ir::Value,
+    ) {
+        let value = self.cx.mark_published_ref_aliased(self.b, self.jmod, value);
+        let index = self.b.ins().iconst(types::I64, idx as i64);
+        self.cx
+            .set_closure_capture_ref(self.b, self.jmod, closure_ref, index, value);
+    }
+
+    pub(crate) fn store_closure_capture_i64(
+        &mut self,
+        closure_ref: ir::Value,
+        idx: usize,
+        value: ir::Value,
+    ) {
+        let index = self.b.ins().iconst(types::I64, idx as i64);
+        self.cx
+            .set_closure_capture_i64(self.b, self.jmod, closure_ref, index, value);
+    }
+
+    pub(crate) fn store_closure_capture_f64(
+        &mut self,
+        closure_ref: ir::Value,
+        idx: usize,
+        value: ir::Value,
+    ) {
+        let index = self.b.ins().iconst(types::I64, idx as i64);
+        self.cx
+            .set_closure_capture_f64(self.b, self.jmod, closure_ref, index, value);
+    }
+
+    pub(crate) fn materialize_cont_word(&mut self, value: ir::Value) -> ir::Value {
+        self.cx.materialize_cont(self.b, self.jmod, value)
+    }
+}
+
 impl<M> CodegenFnBody<'_, '_, '_, M, BodyContext>
 where
     M: cranelift_module::Module,
@@ -857,6 +980,10 @@ mod tests {
             context_source.contains("RuntimeShimContext"),
             "runtime shim lowering should have an explicit CodegenFn context marker"
         );
+        assert!(
+            context_source.contains("struct CodegenFnSite"),
+            "cache-free builder/module operations should use an explicit semantic site"
+        );
 
         let ordinary_function_contexts =
             count_matches(include_str!("function.rs"), "CodegenFn::new(");
@@ -922,6 +1049,31 @@ mod tests {
             !include_str!("call.rs").contains("pub(crate) fn store_typed_args_into_callee_frame"),
             "typed callee-frame stores should be CodegenFn body operations, not free helpers"
         );
+        let closure_source = include_str!("closure.rs");
+        assert!(
+            !closure_source.contains("cx.closure_capture_")
+                && !closure_source.contains("cx.set_closure_capture_")
+                && !closure_source.contains("pub(crate) fn load_closure_capture_as_binding")
+                && !closure_source.contains("pub(crate) fn load_outer_cont_ref")
+                && !closure_source.contains("pub(crate) fn load_closure_code_ref")
+                && !closure_source.contains("pub(crate) fn store_closure_capture_ref_word"),
+            "closure capture operations should live on CodegenFnSite"
+        );
+        for (name, source) in [
+            ("entry.rs", include_str!("entry.rs")),
+            ("driver.rs", include_str!("driver.rs")),
+            ("prim.rs", include_str!("prim.rs")),
+            ("terminator.rs", include_str!("terminator.rs")),
+        ] {
+            assert!(
+                !source.contains("cx.closure_capture_")
+                    && !source.contains("cx.set_closure_capture_")
+                    && !source.contains("store_closure_capture_ref_word(cx,")
+                    && !source.contains("load_closure_code_ref(cx,")
+                    && !source.contains("load_outer_cont_ref(cx,"),
+                "{name} should use CodegenFnSite for closure capture operations"
+            );
+        }
         for (name, source) in [
             ("call.rs", include_str!("call.rs")),
             ("closure.rs", include_str!("closure.rs")),
@@ -955,6 +1107,9 @@ mod tests {
                 && context_source.contains("fn store_typed_args_into_callee_frame(")
                 && context_source.contains("fn coerce_call_args(")
                 && context_source.contains("fn push_binding_as_abi_arg(")
+                && context_source.contains("fn closure_capture_as_binding(")
+                && context_source.contains("fn store_closure_capture_ref_word(")
+                && context_source.contains("fn closure_code_ref(")
                 && context_source.contains("fn halt_implicit(")
                 && context_source.contains("fn alloc_frame(")
                 && context_source.contains("fn coerce_binding_to("),

@@ -212,7 +212,6 @@ fn harness_cont_fn<M: cranelift_module::Module>(
     };
     let has_appended_list_tail = demand_abi.carries_list_tail_capture();
     let user_captures = entry_blk.params.len().saturating_sub(first_capture_param);
-    let captured_count = 1 + user_captures + usize::from(has_appended_list_tail);
     for (i, p) in entry_blk
         .params
         .iter()
@@ -225,21 +224,16 @@ fn harness_cont_fn<M: cranelift_module::Module>(
         } else {
             i
         };
-        let binding = load_closure_capture_as_binding(
-            cx,
-            b,
-            jmod,
-            self_val,
-            captured_count,
-            capture_idx,
-            my_param_reprs[repr_idx],
-        );
+        let binding = {
+            let mut site = cx.site(b, jmod);
+            site.closure_capture_as_binding(self_val, capture_idx, my_param_reprs[repr_idx])
+        };
         var_env.insert(p.0, binding);
     }
     let list_tail_val = if has_appended_list_tail {
         let idx = 1 + user_captures;
-        let index = b.ins().iconst(types::I64, idx as i64);
-        Some(cx.closure_capture_ref(b, jmod, self_val, index))
+        let mut site = cx.site(b, jmod);
+        Some(site.closure_capture_ref_at(self_val, idx))
     } else {
         None
     };
@@ -290,8 +284,10 @@ fn harness_closure_target<M: cranelift_module::Module>(
     };
     let cont_val = params[param_cursor + 1 + usize::from(has_list_tail_dest)];
     for (k, p) in entry_blk.params.iter().enumerate().take(n_caps) {
-        let binding =
-            load_closure_capture_as_binding(cx, b, jmod, self_val, n_caps, k, my_param_reprs[k]);
+        let binding = {
+            let mut site = cx.site(b, jmod);
+            site.closure_capture_as_binding(self_val, k, my_param_reprs[k])
+        };
         var_env.insert(p.0, binding);
     }
     debug_assert_eq!(

@@ -9,10 +9,13 @@ lowering constructs one `CodegenFn<BodyContext>` per lowered fz function body;
 it owns the runtime refs and the function-local `FuncId -> FuncRef` import
 table. The short-lived `CodegenFnBody` view carries the active
 `FunctionBuilder`, module, and per-function cache while a body operation is
-being emitted. Semantic operations such as list access, closure capture
-access, value boxing/unboxing, struct field writes, owned-cons reuse, argument
-coercion, typed frame stores, and alias publication should flow through these
-contexts instead of threading raw lowering plumbing through helper signatures.
+being emitted. `CodegenFnSite` is the smaller view for semantic operations
+that need the active builder and module but not the cache, such as closure
+capture loads/stores and closure code/halt-kind reads. Semantic operations such
+as list access, closure capture access, value boxing/unboxing, struct field
+writes, owned-cons reuse, argument coercion, typed frame stores, and alias
+publication should flow through these contexts instead of threading raw
+lowering plumbing through helper signatures.
 
 Value coercion is part of that semantic surface. Lowering code should call
 methods such as `cx.value_as_any_ref`, `cx.value_raw_int`, `cx.value_truthy`,
@@ -40,6 +43,8 @@ Prefer `body.operation(domain_inputs...)` over helpers shaped like
 of chaining `cx.body(...).operation(...)` at call sites. The body surface
 should grow only with semantic operation names that have active migrated
 callers, rather than by exposing generic builder or cache accessors.
+If an operation does not need the per-function cache, use `CodegenFn::site(...)`
+instead of forcing a cache dependency into the call path.
 
 Direct `declare_func_in_func` use belongs at module-construction boundaries,
 dynamic user-function calls, or inside `CodegenFn`/semantic operation

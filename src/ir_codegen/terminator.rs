@@ -522,11 +522,15 @@ fn emit_return_term<
                 );
                 let cont_val = if is_cont_fn {
                     let self_val = cont_param.expect("cont fn binds self via cont_param");
-                    load_outer_cont_ref(cx, b, jmod, self_val)
+                    let mut site = cx.site(b, jmod);
+                    site.outer_cont_ref(self_val)
                 } else {
                     cont_param.expect("non-cont native fn has cont_param")
                 };
-                let code = load_closure_code_ref(cx, b, jmod, cont_val);
+                let code = {
+                    let mut site = cx.site(b, jmod);
+                    site.closure_code_ref(cont_val)
+                };
                 let mut sig = Signature::new(CallConv::Tail);
                 sig.params.push(AbiParam::new(types::I64));
                 sig.params.push(AbiParam::new(types::I64));
@@ -543,11 +547,15 @@ fn emit_return_term<
                 debug_assert_eq!(fields.len(), arity);
                 let cont_val = if is_cont_fn {
                     let self_val = cont_param.expect("cont fn binds self via cont_param");
-                    load_outer_cont_ref(cx, b, jmod, self_val)
+                    let mut site = cx.site(b, jmod);
+                    site.outer_cont_ref(self_val)
                 } else {
                     cont_param.expect("non-cont native fn has cont_param")
                 };
-                let code = load_closure_code_ref(cx, b, jmod, cont_val);
+                let code = {
+                    let mut site = cx.site(b, jmod);
+                    site.closure_code_ref(cont_val)
+                };
                 let mut sig = Signature::new(CallConv::Tail);
                 let mut cont_args = Vec::with_capacity(fields.len() + 1);
                 {
@@ -585,11 +593,15 @@ fn emit_return_term<
             let binding = *var_env.get(&v.0).expect("unbound return val");
             let cont_val = if is_cont_fn {
                 let self_val = cont_param.expect("cont fn binds self via cont_param");
-                load_outer_cont_ref(cx, b, jmod, self_val)
+                let mut site = cx.site(b, jmod);
+                site.outer_cont_ref(self_val)
             } else {
                 cont_param.expect("non-cont native fn has cont_param")
             };
-            let code = load_closure_code_ref(cx, b, jmod, cont_val);
+            let code = {
+                let mut site = cx.site(b, jmod);
+                site.closure_code_ref(cont_val)
+            };
             let mut sig = Signature::new(CallConv::Tail);
             push_repr_param(&mut sig, my_return_repr);
             sig.params.push(AbiParam::new(types::I64));
@@ -787,7 +799,8 @@ fn emit_call_term<
                 native_args.push(pivot_tail);
                 let tail_cont_arg = if is_cont_fn {
                     let self_val = cont_param.expect("cont fn binds self via cont_param");
-                    load_outer_cont_ref(cx, b, jmod, self_val)
+                    let mut site = cx.site(b, jmod);
+                    site.outer_cont_ref(self_val)
                 } else {
                     cont_param.expect("non-cont native fn has cont_param")
                 };
@@ -1172,7 +1185,8 @@ fn emit_native_tail_call<M: cranelift_module::Module>(
     let mut synth_halt_cont = false;
     let tail_cont_arg = if is_cont_fn {
         let self_val = cont_param.expect("cont fn binds self via cont_param");
-        load_outer_cont_ref(cx, b, jmod, self_val)
+        let mut site = cx.site(b, jmod);
+        site.outer_cont_ref(self_val)
     } else {
         match cont_param {
             Some(c) => c,
@@ -1317,7 +1331,6 @@ fn emit_back_edge_yield_check<M: cranelift_module::Module>(
         .ins()
         .call(alloc_fref, &[fid_v, n_caps_v, zero_hk, stub_addr]);
     let cont_closure = b.inst_results(alloc_inst)[0];
-    let captured_count = native_root_values.len();
     let materialize_cont_fref = jmod.declare_func_in_func(runtime.materialize_cont_id, b.func);
     let last_root = native_root_values.len().saturating_sub(1);
     for (i, root) in native_root_values.iter().copied().enumerate() {
@@ -1326,7 +1339,10 @@ fn emit_back_edge_yield_check<M: cranelift_module::Module>(
             let inst = b.ins().call(materialize_cont_fref, &[root_ref]);
             root_ref = b.inst_results(inst)[0];
         }
-        store_closure_capture_ref_word(cx, b, jmod, cont_closure, captured_count, i, root_ref);
+        {
+            let mut site = cx.site(b, jmod);
+            site.store_closure_capture_ref_word(cont_closure, i, root_ref);
+        }
     }
     let yield_fref = jmod.declare_func_in_func(runtime.yield_mid_flight_id, b.func);
     let yield_inst = b.ins().call(yield_fref, &[cont_closure]);
@@ -1452,7 +1468,10 @@ fn emit_call_closure<
         // `(args..., self, cont) -> i64 tail` (all-ValueRef params).
         // Native callers use return_call_indirect (TCO); uniform
         // callers use call_indirect Tail (cross-CC) and return result.
-        let body_fp = load_closure_code_ref(cx, b, jmod, cl_val);
+        let body_fp = {
+            let mut site = cx.site(b, jmod);
+            site.closure_code_ref(cl_val)
+        };
         let mut sig = Signature::new(CallConv::Tail);
         for _ in &arg_vals {
             push_repr_param(&mut sig, ArgRepr::ValueRef);
@@ -1537,7 +1556,8 @@ fn emit_tail_call_closure<
             .collect();
         let my_cont = if is_cont_fn {
             let self_val = cont_param.expect("cont fn binds self via cont_param");
-            load_outer_cont_ref(cx, b, jmod, self_val)
+            let mut site = cx.site(b, jmod);
+            site.outer_cont_ref(self_val)
         } else {
             match cont_param {
                 Some(c) => c,
@@ -1597,7 +1617,10 @@ fn emit_tail_call_closure<
                 b.ins().return_(&[result]);
             }
         } else {
-            let body_fp = load_closure_code_ref(cx, b, jmod, cl_val);
+            let body_fp = {
+                let mut site = cx.site(b, jmod);
+                site.closure_code_ref(cl_val)
+            };
             let mut sig = Signature::new(CallConv::Tail);
             for _ in &arg_vals {
                 push_repr_param(&mut sig, ArgRepr::ValueRef);
