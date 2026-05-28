@@ -342,14 +342,11 @@ pub(crate) fn lower_collection_prim<
     M: cranelift_module::Module,
     T: crate::types::Types<Ty = crate::types::Ty>,
 >(
-    cx: &mut CodegenFn<'_>,
-    b: &mut FunctionBuilder<'_>,
-    jmod: &mut M,
+    body: &mut CodegenFnBody<'_, '_, '_, M>,
     t: &mut T,
     env: &CodegenEnv<'_>,
     var_env: &HashMap<u32, CodegenValue>,
     prim: &Prim,
-    cache: &mut CodegenCache,
     block_id: crate::fz_ir::BlockId,
     block_env: Option<&HashMap<crate::fz_ir::Var, crate::types::Ty>>,
 ) -> Result<LowerOut, CodegenError> {
@@ -358,28 +355,20 @@ pub(crate) fn lower_collection_prim<
     let tuple_schema_ids = env.tuple_schema_ids;
     let v: LowerOut = match prim {
         Prim::ListHead(c) => {
-            let list_ref = known_list_ref_for_var(var_env, b, cache, block_id, c.0);
-            let mut body = cx.body(b, jmod, cache);
+            let list_ref = known_list_ref_for_var(var_env, body.b, body.cache, block_id, c.0);
             LowerOut::ValueRefWord(body.list_head(list_ref))
         }
         Prim::ListTail(c) => {
-            let list_ref = known_list_ref_for_var(var_env, b, cache, block_id, c.0);
-            let mut body = cx.body(b, jmod, cache);
+            let list_ref = known_list_ref_for_var(var_env, body.b, body.cache, block_id, c.0);
             LowerOut::ValueRefWord(body.list_tail(list_ref))
         }
         Prim::MakeList(elems, tail) => {
             if elems.len() == 1
                 && let Some(tail_var) = tail
             {
-                let tail_bits = {
-                    let mut body = cx.body(b, jmod, cache);
-                    body.any_ref_for_var(var_env, tail_var.0)
-                };
+                let tail_bits = body.any_ref_for_var(var_env, tail_var.0);
                 let tail = list_tail_bits_for_var(t, fn_types, block_env, *tail_var, tail_bits);
-                let reused = {
-                    let mut body = cx.body(b, jmod, cache);
-                    emit_owned_cons_reuse_or_alloc(&mut body, var_env, elems[0], tail)
-                };
+                let reused = emit_owned_cons_reuse_or_alloc(body, var_env, elems[0], tail);
                 if let Some(reused) = reused {
                     return Ok(LowerOut::ValueRef(reused));
                 }
@@ -388,36 +377,27 @@ pub(crate) fn lower_collection_prim<
             // NOT the nil atom value — distinct runtime bit patterns.
             let mut acc = match tail {
                 Some(tail_var) => {
-                    let tail_bits = {
-                        let mut body = cx.body(b, jmod, cache);
-                        body.any_ref_for_var(var_env, tail_var.0)
-                    };
+                    let tail_bits = body.any_ref_for_var(var_env, tail_var.0);
                     list_tail_bits_for_var(t, fn_types, block_env, *tail_var, tail_bits)
                 }
                 None => ListTailBits::Empty,
             };
             for e in elems.iter().rev() {
-                let cons = {
-                    let mut body = cx.body(b, jmod, cache);
-                    emit_list_cons_bif(
-                        &mut body,
-                        env,
-                        var_env,
-                        *e,
-                        expected_runtime_value_kind(t, fn_types, block_env, *e),
-                        acc,
-                    )
-                };
+                let cons = emit_list_cons_bif(
+                    body,
+                    env,
+                    var_env,
+                    *e,
+                    expected_runtime_value_kind(t, fn_types, block_env, *e),
+                    acc,
+                );
                 acc = ListTailBits::NonEmptyValueRef(cons);
             }
             match acc {
                 ListTailBits::NonEmptyValueRef(bits) | ListTailBits::ValueRef(bits) => {
                     LowerOut::ValueRef(bits)
                 }
-                ListTailBits::Empty => {
-                    let mut body = cx.body(b, jmod, cache);
-                    LowerOut::ValueRefWord(body.empty_list_ref())
-                }
+                ListTailBits::Empty => LowerOut::ValueRefWord(body.empty_list_ref()),
             }
         }
         Prim::MakeTuple(elems) => {
@@ -428,13 +408,14 @@ pub(crate) fn lower_collection_prim<
                     arity
                 ))
             })?;
-            let fref = jmod.declare_func_in_func(runtime.alloc_struct_id, b.func);
-            let sid = b.ins().iconst(types::I32, schema_id as i64);
-            let inst = b.ins().call(fref, &[sid]);
-            let p = b.inst_results(inst)[0];
+            let fref = body
+                .jmod
+                .declare_func_in_func(runtime.alloc_struct_id, body.b.func);
+            let sid = body.b.ins().iconst(types::I32, schema_id as i64);
+            let inst = body.b.ins().call(fref, &[sid]);
+            let p = body.b.inst_results(inst)[0];
             for (i, e) in elems.iter().enumerate() {
                 let value = binding_for_var(var_env, e.0);
-                let mut body = cx.body(b, jmod, cache);
                 body.struct_set_field(p, i, value);
             }
             LowerOut::ValueRef(p)
@@ -446,78 +427,58 @@ pub(crate) fn lower_collection_prim<
                     arity
                 ))
             })?;
-            let fref = jmod.declare_func_in_func(runtime.alloc_struct_id, b.func);
-            let sid = b.ins().iconst(types::I32, schema_id as i64);
-            let inst = b.ins().call(fref, &[sid]);
-            LowerOut::ValueRef(b.inst_results(inst)[0])
+            let fref = body
+                .jmod
+                .declare_func_in_func(runtime.alloc_struct_id, body.b.func);
+            let sid = body.b.ins().iconst(types::I32, schema_id as i64);
+            let inst = body.b.ins().call(fref, &[sid]);
+            LowerOut::ValueRef(body.b.inst_results(inst)[0])
         }
         Prim::DestTupleSet {
             dest, index, value, ..
         } => {
-            let dest_bits = {
-                let mut body = cx.body(b, jmod, cache);
-                body.any_ref_for_var(var_env, dest.0)
-            };
+            let dest_bits = body.any_ref_for_var(var_env, dest.0);
             let field_value = binding_for_var(var_env, value.0);
-            let mut body = cx.body(b, jmod, cache);
             body.struct_set_field(dest_bits, *index as usize, field_value);
             LowerOut::DeadUnit
         }
         Prim::DestFreeze { dest, .. } => {
-            let dest_bits = {
-                let mut body = cx.body(b, jmod, cache);
-                body.any_ref_for_var(var_env, dest.0)
-            };
+            let dest_bits = body.any_ref_for_var(var_env, dest.0);
             LowerOut::ValueRef(dest_bits)
         }
         Prim::DestListBegin { .. } => LowerOut::DeadUnit,
         Prim::DestListCons { head, tail, .. } => {
             if let Some(tail_var) = tail {
-                let tail_bits = {
-                    let mut body = cx.body(b, jmod, cache);
-                    body.any_ref_for_var(var_env, tail_var.0)
-                };
+                let tail_bits = body.any_ref_for_var(var_env, tail_var.0);
                 let tail = list_tail_bits_for_var(t, fn_types, block_env, *tail_var, tail_bits);
-                let reused = {
-                    let mut body = cx.body(b, jmod, cache);
-                    emit_owned_cons_reuse_or_alloc(&mut body, var_env, *head, tail)
-                };
+                let reused = emit_owned_cons_reuse_or_alloc(body, var_env, *head, tail);
                 if let Some(reused) = reused {
                     return Ok(LowerOut::ValueRef(reused));
                 }
             }
             let acc = match tail {
                 Some(tail_var) => {
-                    let tail_bits = {
-                        let mut body = cx.body(b, jmod, cache);
-                        body.any_ref_for_var(var_env, tail_var.0)
-                    };
+                    let tail_bits = body.any_ref_for_var(var_env, tail_var.0);
                     list_tail_bits_for_var(t, fn_types, block_env, *tail_var, tail_bits)
                 }
                 None => ListTailBits::Empty,
             };
-            let cons = {
-                let mut body = cx.body(b, jmod, cache);
-                emit_list_cons_bif(
-                    &mut body,
-                    env,
-                    var_env,
-                    *head,
-                    expected_runtime_value_kind(t, fn_types, block_env, *head),
-                    acc,
-                )
-            };
+            let cons = emit_list_cons_bif(
+                body,
+                env,
+                var_env,
+                *head,
+                expected_runtime_value_kind(t, fn_types, block_env, *head),
+                acc,
+            );
             LowerOut::ValueRef(cons)
         }
         Prim::DestListFreeze { list, .. } => {
-            let list_bits = {
-                let mut body = cx.body(b, jmod, cache);
-                body.any_ref_for_var(var_env, list.0)
-            };
+            let list_bits = body.any_ref_for_var(var_env, list.0);
             LowerOut::ValueRef(list_bits)
         }
         Prim::TupleField(c, idx) => {
-            if let Some(binding) = cache.tuple_field_params.get(&(c.0, *idx)).copied() {
+            if let Some(binding) = body.cache.tuple_field_params.get(&(c.0, *idx)).copied() {
                 return Ok(lower_out_for_codegen_value(binding));
             }
             // Every TupleField is gated by a preceding `Prim::TypeTest`
@@ -525,45 +486,56 @@ pub(crate) fn lower_collection_prim<
             // heap value, so the load is provably safe. A SIGSEGV here
             // would be an IR integrity bug worth surfacing loudly — do
             // NOT add `notrap`, which would silently mask it.
-            let fref = jmod.declare_func_in_func(runtime.struct_get_field_id, b.func);
-            let field_offset = b
+            let fref = body
+                .jmod
+                .declare_func_in_func(runtime.struct_get_field_id, body.b.func);
+            let field_offset = body
+                .b
                 .ins()
                 .iconst(types::I32, (*idx as i64) * SLOT_BYTES as i64);
-            let struct_ref = {
-                let mut body = cx.body(b, jmod, cache);
-                body.tagged_var(var_env, c.0)
-            };
-            let inst = b.ins().call(fref, &[struct_ref, field_offset]);
-            LowerOut::ValueRefWord(b.inst_results(inst)[0])
+            let struct_ref = body.tagged_var(var_env, c.0);
+            let inst = body.b.ins().call(fref, &[struct_ref, field_offset]);
+            LowerOut::ValueRefWord(body.b.inst_results(inst)[0])
         }
         Prim::MakeBitstring(fields) => {
-            let begin = jmod.declare_func_in_func(runtime.bs_begin_id, b.func);
-            b.ins().call(begin, &[]);
-            let write = jmod.declare_func_in_func(runtime.bs_write_ref_id, b.func);
+            let begin = body
+                .jmod
+                .declare_func_in_func(runtime.bs_begin_id, body.b.func);
+            body.b.ins().call(begin, &[]);
+            let write = body
+                .jmod
+                .declare_func_in_func(runtime.bs_write_ref_id, body.b.func);
             for f in fields {
-                let value_ref = {
-                    let mut body = cx.body(b, jmod, cache);
-                    body.tagged_var(var_env, f.value.0)
-                };
-                let ty_tag = b.ins().iconst(types::I32, encode_bit_type(f.ty) as i64);
-                let unit = b
+                let value_ref = body.tagged_var(var_env, f.value.0);
+                let ty_tag = body
+                    .b
+                    .ins()
+                    .iconst(types::I32, encode_bit_type(f.ty) as i64);
+                let unit = body
+                    .b
                     .ins()
                     .iconst(types::I32, f.unit.unwrap_or(default_unit_for(f.ty)) as i64);
-                let endian = b.ins().iconst(types::I32, encode_endian(f.endian) as i64);
-                let signed = b.ins().iconst(types::I32, f.signed as i64);
+                let endian = body
+                    .b
+                    .ins()
+                    .iconst(types::I32, encode_endian(f.endian) as i64);
+                let signed = body.b.ins().iconst(types::I32, f.signed as i64);
                 let (size_present, size_value) = match &f.size {
-                    None => (b.ins().iconst(types::I32, 0), b.ins().iconst(types::I32, 0)),
+                    None => (
+                        body.b.ins().iconst(types::I32, 0),
+                        body.b.ins().iconst(types::I32, 0),
+                    ),
                     Some(crate::fz_ir::BitSizeIr::Literal(n)) => (
-                        b.ins().iconst(types::I32, 1),
-                        b.ins().iconst(types::I32, *n as i64),
+                        body.b.ins().iconst(types::I32, 1),
+                        body.b.ins().iconst(types::I32, *n as i64),
                     ),
                     Some(crate::fz_ir::BitSizeIr::Var(v)) => {
-                        let unb = cx.site(b, jmod).as_raw_i64(var_env, v.0);
-                        let truncated = b.ins().ireduce(types::I32, unb);
-                        (b.ins().iconst(types::I32, 1), truncated)
+                        let unb = body.as_raw_i64(var_env, v.0);
+                        let truncated = body.b.ins().ireduce(types::I32, unb);
+                        (body.b.ins().iconst(types::I32, 1), truncated)
                     }
                 };
-                b.ins().call(
+                body.b.ins().call(
                     write,
                     &[
                         value_ref,
@@ -576,9 +548,11 @@ pub(crate) fn lower_collection_prim<
                     ],
                 );
             }
-            let fin = jmod.declare_func_in_func(runtime.bs_finalize_id, b.func);
-            let inst = b.ins().call(fin, &[]);
-            LowerOut::ValueRef(b.inst_results(inst)[0])
+            let fin = body
+                .jmod
+                .declare_func_in_func(runtime.bs_finalize_id, body.b.func);
+            let inst = body.b.ins().call(fin, &[]);
+            LowerOut::ValueRef(body.b.inst_results(inst)[0])
         }
         Prim::ConstBitstring(bytes, bit_len) => {
             // Split paths by payload size:
@@ -591,27 +565,28 @@ pub(crate) fn lower_collection_prim<
             //     call `fz_alloc_procbin_from_static(static_ptr)`.
             let above_threshold = bytes.len() > fz_runtime::heap::SHARED_BIN_THRESHOLD_BYTES;
             let syms = {
-                let mut cache = env.bs_const_data.borrow_mut();
-                if let Some(syms) = cache.get(bytes) {
+                let mut bs_cache = env.bs_const_data.borrow_mut();
+                if let Some(syms) = bs_cache.get(bytes) {
                     // Cached. If the existing entry lacks the SharedBin
                     // symbol but this call site needs it, populate now.
                     let mut syms = *syms;
                     if above_threshold && syms.sharedbin_id.is_none() {
                         syms.sharedbin_id = Some(define_static_sharedbin(
-                            jmod,
+                            body.jmod,
                             runtime,
                             syms.bytes_id,
                             bytes,
                             *bit_len,
-                            cache.len(),
+                            bs_cache.len(),
                         )?);
-                        cache.insert(bytes.clone(), syms);
+                        bs_cache.insert(bytes.clone(), syms);
                     }
                     syms
                 } else {
-                    let idx = cache.len();
+                    let idx = bs_cache.len();
                     let bytes_name = format!(".fz_bs_const_{}", idx);
-                    let bytes_id = jmod
+                    let bytes_id = body
+                        .jmod
                         .declare_data(&bytes_name, Linkage::Local, false, false)
                         .map_err(|e| CodegenError::new(format!("declare {}: {}", bytes_name, e)))?;
                     let mut desc = DataDescription::new();
@@ -622,11 +597,12 @@ pub(crate) fn lower_collection_prim<
                     payload.push(0);
                     desc.define(payload.into_boxed_slice());
                     desc.set_align(1);
-                    jmod.define_data(bytes_id, &desc)
+                    body.jmod
+                        .define_data(bytes_id, &desc)
                         .map_err(|e| CodegenError::new(format!("define {}: {}", bytes_name, e)))?;
                     let sharedbin_id = if above_threshold {
                         Some(define_static_sharedbin(
-                            jmod, runtime, bytes_id, bytes, *bit_len, idx,
+                            body.jmod, runtime, bytes_id, bytes, *bit_len, idx,
                         )?)
                     } else {
                         None
@@ -635,34 +611,37 @@ pub(crate) fn lower_collection_prim<
                         bytes_id,
                         sharedbin_id,
                     };
-                    cache.insert(bytes.clone(), syms);
+                    bs_cache.insert(bytes.clone(), syms);
                     syms
                 }
             };
             if let Some(sb_id) = syms.sharedbin_id {
-                let gv = jmod.declare_data_in_func(sb_id, b.func);
-                let sb_ptr = b.ins().symbol_value(types::I64, gv);
-                let fref = jmod.declare_func_in_func(runtime.alloc_procbin_from_static_id, b.func);
-                let inst = b.ins().call(fref, &[sb_ptr]);
-                LowerOut::ValueRef(b.inst_results(inst)[0])
+                let gv = body.jmod.declare_data_in_func(sb_id, body.b.func);
+                let sb_ptr = body.b.ins().symbol_value(types::I64, gv);
+                let fref = body
+                    .jmod
+                    .declare_func_in_func(runtime.alloc_procbin_from_static_id, body.b.func);
+                let inst = body.b.ins().call(fref, &[sb_ptr]);
+                LowerOut::ValueRef(body.b.inst_results(inst)[0])
             } else {
-                let gv = jmod.declare_data_in_func(syms.bytes_id, b.func);
-                let ptr_v = b.ins().symbol_value(types::I64, gv);
-                let byte_len_v = b.ins().iconst(types::I64, bytes.len() as i64);
-                let bit_len_v = b.ins().iconst(types::I64, *bit_len as i64);
-                let fref = jmod.declare_func_in_func(runtime.alloc_bitstring_const_id, b.func);
-                let inst = b.ins().call(fref, &[ptr_v, byte_len_v, bit_len_v]);
-                LowerOut::ValueRef(b.inst_results(inst)[0])
+                let gv = body.jmod.declare_data_in_func(syms.bytes_id, body.b.func);
+                let ptr_v = body.b.ins().symbol_value(types::I64, gv);
+                let byte_len_v = body.b.ins().iconst(types::I64, bytes.len() as i64);
+                let bit_len_v = body.b.ins().iconst(types::I64, *bit_len as i64);
+                let fref = body
+                    .jmod
+                    .declare_func_in_func(runtime.alloc_bitstring_const_id, body.b.func);
+                let inst = body.b.ins().call(fref, &[ptr_v, byte_len_v, bit_len_v]);
+                LowerOut::ValueRef(body.b.inst_results(inst)[0])
             }
         }
         Prim::BitReaderInit(v) => {
-            let value_ref = {
-                let mut body = cx.body(b, jmod, cache);
-                body.tagged_var(var_env, v.0)
-            };
-            let fref = jmod.declare_func_in_func(runtime.bs_reader_init_ref_id, b.func);
-            let inst = b.ins().call(fref, &[value_ref]);
-            LowerOut::ValueRef(b.inst_results(inst)[0])
+            let value_ref = body.tagged_var(var_env, v.0);
+            let fref = body
+                .jmod
+                .declare_func_in_func(runtime.bs_reader_init_ref_id, body.b.func);
+            let inst = body.b.ins().call(fref, &[value_ref]);
+            LowerOut::ValueRef(body.b.inst_results(inst)[0])
         }
         Prim::BitReadField {
             reader,
@@ -673,18 +652,15 @@ pub(crate) fn lower_collection_prim<
             unit,
             is_last,
         } => {
-            let reader_ref = {
-                let mut body = cx.body(b, jmod, cache);
-                body.tagged_var(var_env, reader.0)
-            };
+            let reader_ref = body.tagged_var(var_env, reader.0);
             let (size_present, size_value) = match size {
-                None => (0, b.ins().iconst(types::I32, 0)),
+                None => (0, body.b.ins().iconst(types::I32, 0)),
                 Some(crate::fz_ir::BitSizeIr::Literal(n)) => {
-                    (1, b.ins().iconst(types::I32, *n as i64))
+                    (1, body.b.ins().iconst(types::I32, *n as i64))
                 }
                 Some(crate::fz_ir::BitSizeIr::Var(v)) => {
-                    let unb = cx.site(b, jmod).as_raw_i64(var_env, v.0);
-                    let truncated = b.ins().ireduce(types::I32, unb);
+                    let unb = body.as_raw_i64(var_env, v.0);
+                    let truncated = body.b.ins().ireduce(types::I32, unb);
                     (1, truncated)
                 }
             };
@@ -696,105 +672,99 @@ pub(crate) fn lower_collection_prim<
                 *signed as u32,
                 *is_last as u32,
             );
-            let field_spec = b.ins().iconst(types::I64, field_spec as i64);
-            let fref = jmod.declare_func_in_func(runtime.bs_read_field_ref_id, b.func);
-            let inst = b.ins().call(fref, &[reader_ref, field_spec, size_value]);
-            LowerOut::ValueRef(b.inst_results(inst)[0])
+            let field_spec = body.b.ins().iconst(types::I64, field_spec as i64);
+            let fref = body
+                .jmod
+                .declare_func_in_func(runtime.bs_read_field_ref_id, body.b.func);
+            let inst = body
+                .b
+                .ins()
+                .call(fref, &[reader_ref, field_spec, size_value]);
+            LowerOut::ValueRef(body.b.inst_results(inst)[0])
         }
         Prim::MakeMap(entries) => {
             let mut map_bits = if entries.is_empty() {
-                let empty = jmod.declare_func_in_func(runtime.map_empty_id, b.func);
-                let inst = b.ins().call(empty, &[]);
-                b.inst_results(inst)[0]
+                let empty = body
+                    .jmod
+                    .declare_func_in_func(runtime.map_empty_id, body.b.func);
+                let inst = body.b.ins().call(empty, &[]);
+                body.b.inst_results(inst)[0]
             } else {
-                b.ins().iconst(types::I64, 0)
+                body.b.ins().iconst(types::I64, 0)
             };
             for (k, v) in entries {
-                let mut body = cx.body(b, jmod, cache);
                 map_bits = emit_map_put_for_key_and_value(
-                    &mut body, t, env, var_env, map_bits, *k, *v, block_env,
+                    body, t, env, var_env, map_bits, *k, *v, block_env,
                 );
             }
             LowerOut::ValueRef(map_bits)
         }
         Prim::MapUpdate(base, entries) => {
-            let mut map_bits = {
-                let mut body = cx.body(b, jmod, cache);
-                body.any_ref_for_var(var_env, base.0)
-            };
+            let mut map_bits = body.any_ref_for_var(var_env, base.0);
             for (k, v) in entries {
-                let mut body = cx.body(b, jmod, cache);
                 map_bits = emit_map_put_for_key_and_value(
-                    &mut body, t, env, var_env, map_bits, *k, *v, block_env,
+                    body, t, env, var_env, map_bits, *k, *v, block_env,
                 );
             }
             LowerOut::ValueRef(map_bits)
         }
         Prim::DestMapBegin { base, extra, .. } => {
-            let extra = b.ins().iconst(types::I32, *extra as i64);
+            let extra = body.b.ins().iconst(types::I32, *extra as i64);
             if let Some(base) = base {
-                let base_bits = {
-                    let mut body = cx.body(b, jmod, cache);
-                    body.any_ref_for_var(var_env, base.0)
-                };
-                let fref = jmod.declare_func_in_func(runtime.map_dest_begin_update_id, b.func);
-                let inst = b.ins().call(fref, &[base_bits, extra]);
-                LowerOut::ValueRef(b.inst_results(inst)[0])
+                let base_bits = body.any_ref_for_var(var_env, base.0);
+                let fref = body
+                    .jmod
+                    .declare_func_in_func(runtime.map_dest_begin_update_id, body.b.func);
+                let inst = body.b.ins().call(fref, &[base_bits, extra]);
+                LowerOut::ValueRef(body.b.inst_results(inst)[0])
             } else {
-                let fref = jmod.declare_func_in_func(runtime.map_dest_begin_id, b.func);
-                let inst = b.ins().call(fref, &[extra]);
-                LowerOut::ValueRef(b.inst_results(inst)[0])
+                let fref = body
+                    .jmod
+                    .declare_func_in_func(runtime.map_dest_begin_id, body.b.func);
+                let inst = body.b.ins().call(fref, &[extra]);
+                LowerOut::ValueRef(body.b.inst_results(inst)[0])
             }
         }
         Prim::DestMapPut {
             map, key, value, ..
         } => {
-            let map_bits = {
-                let mut body = cx.body(b, jmod, cache);
-                body.any_ref_for_var(var_env, map.0)
-            };
+            let map_bits = body.any_ref_for_var(var_env, map.0);
             let key = binding_for_var(var_env, key.0);
             let value = binding_for_var(var_env, value.0);
-            let mut body = cx.body(b, jmod, cache);
-            emit_map_destination_put(&mut body, runtime, map_bits, key, value);
+            emit_map_destination_put(body, runtime, map_bits, key, value);
             LowerOut::DeadUnit
         }
         Prim::DestMapFreeze { map, .. } => {
-            let map_bits = {
-                let mut body = cx.body(b, jmod, cache);
-                body.any_ref_for_var(var_env, map.0)
-            };
-            let fref = jmod.declare_func_in_func(runtime.map_dest_freeze_id, b.func);
-            let inst = b.ins().call(fref, &[map_bits]);
-            LowerOut::ValueRef(b.inst_results(inst)[0])
+            let map_bits = body.any_ref_for_var(var_env, map.0);
+            let fref = body
+                .jmod
+                .declare_func_in_func(runtime.map_dest_freeze_id, body.b.func);
+            let inst = body.b.ins().call(fref, &[map_bits]);
+            LowerOut::ValueRef(body.b.inst_results(inst)[0])
         }
         Prim::MapGet(m, k) => {
-            let mut body = cx.body(b, jmod, cache);
             let value_ref =
-                emit_map_get_value_ref_for_key(&mut body, t, env, var_env, *m, *k, block_env);
+                emit_map_get_value_ref_for_key(body, t, env, var_env, *m, *k, block_env);
             LowerOut::ValueRefWord(value_ref)
         }
         Prim::MatcherMapGet(m, k) => {
-            let fref = jmod.declare_func_in_func(runtime.matcher_map_get_ref_id, b.func);
-            let (map_ref, key_ref) = {
-                let mut body = cx.body(b, jmod, cache);
-                (body.tagged_var(var_env, m.0), body.tagged_var(var_env, k.0))
-            };
-            let inst = b.ins().call(fref, &[map_ref, key_ref]);
-            LowerOut::ValueRefWord(b.inst_results(inst)[0])
+            let fref = body
+                .jmod
+                .declare_func_in_func(runtime.matcher_map_get_ref_id, body.b.func);
+            let map_ref = body.tagged_var(var_env, m.0);
+            let key_ref = body.tagged_var(var_env, k.0);
+            let inst = body.b.ins().call(fref, &[map_ref, key_ref]);
+            LowerOut::ValueRefWord(body.b.inst_results(inst)[0])
         }
         Prim::IsMatcherMapMiss(v) => {
-            let tag = {
-                let mut body = cx.body(b, jmod, cache);
-                let value_ref = body.tagged_var(var_env, v.0);
-                body.ref_tag(value_ref)
-            };
-            let is_miss = b.ins().icmp_imm(
+            let value_ref = body.tagged_var(var_env, v.0);
+            let tag = body.ref_tag(value_ref);
+            let is_miss = body.b.ins().icmp_imm(
                 IntCC::Equal,
                 tag,
                 fz_runtime::any_value::ValueKind::NULL.tag() as i64,
             );
-            LowerOut::Strict(strict_bool(b, is_miss))
+            LowerOut::Strict(strict_bool(body.b, is_miss))
         }
         _ => unreachable!("lower_collection_prim: not a collection prim"),
     };
@@ -813,36 +783,27 @@ fn lower_out_for_codegen_value(value: CodegenValue) -> LowerOut {
 
 #[allow(clippy::too_many_arguments)]
 fn marshal_extern_arg<M: cranelift_module::Module>(
-    cx: &mut CodegenFn<'_>,
-    b: &mut FunctionBuilder<'_>,
-    jmod: &mut M,
+    body: &mut CodegenFnBody<'_, '_, '_, M>,
     runtime: &RuntimeRefs,
     var_env: &HashMap<u32, CodegenValue>,
-    cache: &mut CodegenCache,
     var: crate::fz_ir::Var,
     ty: crate::fz_ir::ExternTy,
 ) -> Result<ir::Value, CodegenError> {
     use crate::fz_ir::ExternTy;
     Ok(match ty {
-        ExternTy::I64 => cx.site(b, jmod).as_raw_i64(var_env, var.0),
-        ExternTy::F64 => cx.site(b, jmod).as_raw_f64(var_env, var.0),
+        ExternTy::I64 => body.as_raw_i64(var_env, var.0),
+        ExternTy::F64 => body.as_raw_f64(var_env, var.0),
         ExternTy::Binary | ExternTy::CString => {
             let helper_id = match ty {
                 ExternTy::CString => runtime.binary_as_cstring_id,
                 _ => runtime.binary_as_ptr_id,
             };
-            let helper_fref = jmod.declare_func_in_func(helper_id, b.func);
-            let bits = {
-                let mut body = cx.body(b, jmod, cache);
-                body.tagged_var(var_env, var.0)
-            };
-            let call = b.ins().call(helper_fref, &[bits]);
-            b.inst_results(call)[0]
+            let helper_fref = body.jmod.declare_func_in_func(helper_id, body.b.func);
+            let bits = body.tagged_var(var_env, var.0);
+            let call = body.b.ins().call(helper_fref, &[bits]);
+            body.b.inst_results(call)[0]
         }
-        ExternTy::Any => {
-            let mut body = cx.body(b, jmod, cache);
-            body.tagged_var(var_env, var.0)
-        }
+        ExternTy::Any => body.tagged_var(var_env, var.0),
         ExternTy::Unit | ExternTy::Never => {
             return Err(CodegenError::new(format!(
                 "{:?} is not a valid extern argument marshal class",
@@ -925,12 +886,9 @@ fn emit_extern_symbol_name<M: cranelift_module::Module>(
 
 #[allow(clippy::too_many_arguments)]
 fn emit_variadic_extern_call<M: cranelift_module::Module>(
-    cx: &mut CodegenFn<'_>,
-    b: &mut FunctionBuilder<'_>,
-    jmod: &mut M,
+    body: &mut CodegenFnBody<'_, '_, '_, M>,
     env: &CodegenEnv<'_>,
     var_env: &HashMap<u32, CodegenValue>,
-    cache: &mut CodegenCache,
     eid: crate::fz_ir::ExternId,
     args: &[crate::fz_ir::ExternArg],
     dest_var: crate::fz_ir::Var,
@@ -960,47 +918,40 @@ fn emit_variadic_extern_call<M: cranelift_module::Module>(
     let variadic = &arg_tys[fixed_count..];
     let dispatcher = variadic_dispatcher(env.runtime, decl.ret, fixed, variadic)?;
     let symbol_ptr = emit_extern_symbol_name(
-        b,
-        jmod,
+        body.b,
+        body.jmod,
         caller_fn_id,
         block_id,
         stmt_idx,
         decl.symbol.as_str(),
     )?;
-    let lookup_fref = jmod.declare_func_in_func(env.runtime.extern_symbol_addr_id, b.func);
-    let lookup = b.ins().call(lookup_fref, &[symbol_ptr]);
-    let fn_ptr = b.inst_results(lookup)[0];
+    let lookup_fref = body
+        .jmod
+        .declare_func_in_func(env.runtime.extern_symbol_addr_id, body.b.func);
+    let lookup = body.b.ins().call(lookup_fref, &[symbol_ptr]);
+    let fn_ptr = body.b.inst_results(lookup)[0];
 
     let mut call_args = Vec::with_capacity(args.len() + 1);
     call_args.push(fn_ptr);
     for (arg, ty) in args.iter().zip(arg_tys.iter().copied()) {
-        call_args.push(marshal_extern_arg(
-            cx,
-            b,
-            jmod,
-            env.runtime,
-            var_env,
-            cache,
-            arg.var,
-            ty,
-        )?);
+        call_args.push(marshal_extern_arg(body, env.runtime, var_env, arg.var, ty)?);
     }
 
-    let dispatcher_fref = jmod.declare_func_in_func(dispatcher, b.func);
-    let inst = b.ins().call(dispatcher_fref, &call_args);
+    let dispatcher_fref = body.jmod.declare_func_in_func(dispatcher, body.b.func);
+    let inst = body.b.ins().call(dispatcher_fref, &call_args);
     if matches!(
         decl.ret,
         crate::fz_ir::ExternTy::Unit | crate::fz_ir::ExternTy::Never
     ) {
-        if cache.used_vars.contains(&dest_var.0) {
+        if body.cache.used_vars.contains(&dest_var.0) {
             return Ok(LowerOut::Strict(strict_const_value(
-                b,
+                body.b,
                 fz_runtime::any_value::AnyValue::nil_atom(),
             )));
         }
         return Ok(LowerOut::DeadUnit);
     }
-    let raw = b.inst_results(inst)[0];
+    let raw = body.b.inst_results(inst)[0];
     match decl.ret {
         crate::fz_ir::ExternTy::I64 => Ok(LowerOut::RawI64(raw)),
         crate::fz_ir::ExternTy::F64 => Ok(LowerOut::RawF64(raw)),
@@ -1016,15 +967,12 @@ pub(crate) fn lower_prim<
     M: cranelift_module::Module,
     T: crate::types::Types<Ty = crate::types::Ty>,
 >(
-    cx: &mut CodegenFn<'_>,
-    b: &mut FunctionBuilder<'_>,
-    jmod: &mut M,
+    body: &mut CodegenFnBody<'_, '_, '_, M>,
     t: &mut T,
     env: &CodegenEnv<'_>,
     var_env: &HashMap<u32, CodegenValue>,
     prim: &Prim,
     dest_var: crate::fz_ir::Var,
-    cache: &mut CodegenCache,
     // `caller_fn_id`/`block_id`/`stmt_idx` identify per-stmt side tables such
     // as variadic extern marshal plans and generated static data symbols.
     caller_fn_id: crate::fz_ir::FnId,
@@ -1032,8 +980,11 @@ pub(crate) fn lower_prim<
     stmt_idx: usize,
     block_env: Option<&HashMap<crate::fz_ir::Var, crate::types::Ty>>,
 ) -> Result<LowerOut, CodegenError> {
-    if cache.skipped_tuple_return_vars.contains(&dest_var.0)
-        || cache.skipped_list_tail_return_vars.contains(&dest_var.0)
+    if body.cache.skipped_tuple_return_vars.contains(&dest_var.0)
+        || body
+            .cache
+            .skipped_list_tail_return_vars
+            .contains(&dest_var.0)
     {
         return Ok(LowerOut::DeadUnit);
     }
@@ -1062,8 +1013,8 @@ pub(crate) fn lower_prim<
             // `as_raw_i64`.
             Const::Int(n) => {
                 if ty_is_int(t, fn_types, dest_var) {
-                    cache.raw_int_consts.insert(dest_var.0, *n);
-                    return Ok(LowerOut::RawI64(b.ins().iconst(types::I64, *n)));
+                    body.cache.raw_int_consts.insert(dest_var.0, *n);
+                    return Ok(LowerOut::RawI64(body.b.ins().iconst(types::I64, *n)));
                 }
                 Ok(LowerOut::StrictConst(fz_runtime::any_value::AnyValue::int(
                     *n,
@@ -1083,7 +1034,7 @@ pub(crate) fn lower_prim<
             )),
             Const::Float(f) => {
                 if ty_is_float(t, fn_types, dest_var) {
-                    return Ok(LowerOut::RawF64(b.ins().f64const(*f)));
+                    return Ok(LowerOut::RawF64(body.b.ins().f64const(*f)));
                 }
                 Err(CodegenError::new(
                     "Float literal inferred outside float representation",
@@ -1098,70 +1049,62 @@ pub(crate) fn lower_prim<
             // dispatch fallback) pay it.
             match op {
                 BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod => {
-                    lower_arith_binop(cx, b, jmod, t, fn_types, var_env, runtime, *op, *a, *bv)
+                    lower_arith_binop(body, t, fn_types, var_env, runtime, *op, *a, *bv)
                 }
-                BinOp::Eq | BinOp::Neq => lower_eq_binop(
-                    cx, b, jmod, t, fn_types, var_env, cache, runtime, *op, *a, *bv, dest_var,
-                ),
-                BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => lower_cmp_binop(
-                    cx, b, jmod, t, fn_types, var_env, cache, runtime, *op, *a, *bv, dest_var,
-                ),
-                BinOp::And | BinOp::Or => {
-                    lower_bool_binop(cx, b, jmod, var_env, cache, *op, *a, *bv, dest_var)
+                BinOp::Eq | BinOp::Neq => {
+                    lower_eq_binop(body, t, fn_types, var_env, runtime, *op, *a, *bv, dest_var)
                 }
+                BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => {
+                    lower_cmp_binop(body, t, fn_types, var_env, runtime, *op, *a, *bv, dest_var)
+                }
+                BinOp::And | BinOp::Or => lower_bool_binop(body, var_env, *op, *a, *bv, dest_var),
             }
         }
         Prim::UnOp(op, x) => match op {
             UnOp::Neg => {
-                let xi = cx.site(b, jmod).as_raw_i64(var_env, x.0);
-                Ok(LowerOut::RawI64(b.ins().ineg(xi)))
+                let xi = body.as_raw_i64(var_env, x.0);
+                Ok(LowerOut::RawI64(body.b.ins().ineg(xi)))
             }
             UnOp::Not => {
                 let xv = *var_env.get(&x.0).expect("not operand");
-                let truthy = {
-                    let mut site = cx.site(b, jmod);
-                    site.value_truthy(xv)
-                };
-                let zero = b.ins().iconst(types::I8, 0);
-                let inv = b.ins().icmp(IntCC::Equal, truthy, zero);
-                if cache.if_only_conds.contains(&dest_var.0) {
+                let truthy = body.value_truthy(xv);
+                let zero = body.b.ins().iconst(types::I8, 0);
+                let inv = body.b.ins().icmp(IntCC::Equal, truthy, zero);
+                if body.cache.if_only_conds.contains(&dest_var.0) {
                     return Ok(LowerOut::Condition(inv));
                 }
-                Ok(LowerOut::Strict(strict_bool(b, inv)))
+                Ok(LowerOut::Strict(strict_bool(body.b, inv)))
             }
         },
         Prim::Extern(eid, args) => {
             let decl = env.module.extern_by_id(*eid);
             let arg_vars: Vec<crate::fz_ir::Var> = args.iter().map(|arg| arg.var).collect();
             if decl.symbol == "fz_panic" && args.len() == 1 {
-                return lower_extern_fz_panic(cx, b, jmod, var_env, cache, &arg_vars, dest_var);
+                return lower_extern_fz_panic(body, var_env, &arg_vars, dest_var);
             }
             if decl.symbol == "fz_send" && args.len() == 2 {
-                return lower_extern_fz_send(cx, b, jmod, var_env, cache, &arg_vars);
+                return lower_extern_fz_send(body, var_env, &arg_vars);
             }
             if decl.symbol == "fz_self" && args.is_empty() {
-                return lower_extern_fz_self(b, jmod);
+                return lower_extern_fz_self(body.b, body.jmod);
             }
             if decl.symbol == "fz_make_ref" && args.is_empty() {
-                return lower_extern_fz_make_ref(b, jmod);
+                return lower_extern_fz_make_ref(body.b, body.jmod);
             }
             if decl.symbol == "fz_spawn" && args.len() == 1 {
-                return lower_extern_fz_spawn(cx, b, jmod, var_env, cache, &arg_vars);
+                return lower_extern_fz_spawn(body, var_env, &arg_vars);
             }
             if decl.symbol == "fz_spawn_opt" && args.len() == 2 {
-                return lower_extern_fz_spawn_opt(cx, b, jmod, var_env, cache, &arg_vars);
+                return lower_extern_fz_spawn_opt(body, var_env, &arg_vars);
             }
             if decl.symbol == "fz_make_resource" && args.len() == 2 {
-                return lower_extern_fz_make_resource(cx, b, jmod, var_env, cache, &arg_vars);
+                return lower_extern_fz_make_resource(body, var_env, &arg_vars);
             }
             if decl.variadic {
                 return emit_variadic_extern_call(
-                    cx,
-                    b,
-                    jmod,
+                    body,
                     env,
                     var_env,
-                    cache,
                     *eid,
                     args,
                     dest_var,
@@ -1170,103 +1113,85 @@ pub(crate) fn lower_prim<
                     stmt_idx,
                 );
             }
-            lower_extern_generic(
-                cx, b, jmod, runtime, var_env, cache, decl, eid, args, dest_var,
-            )
+            lower_extern_generic(body, runtime, var_env, decl, eid, args, dest_var)
         }
         Prim::IsEmptyList(c) => {
             // Empty list is the null-address List ref.
             let cmp = if let Some(CodegenValue::AnyRef(value)) = var_env.get(&c.0).copied() {
-                let tag = {
-                    let mut body = cx.body(b, jmod, cache);
-                    body.ref_tag(value)
-                };
-                let empty_list_v = {
-                    let mut body = cx.body(b, jmod, cache);
-                    body.empty_list_ref()
-                };
-                let is_list = b.ins().icmp_imm(
+                let tag = body.ref_tag(value);
+                let empty_list_v = body.empty_list_ref();
+                let is_list = body.b.ins().icmp_imm(
                     IntCC::Equal,
                     tag,
                     fz_runtime::any_value::ValueKind::LIST.tag() as i64,
                 );
-                let is_empty_word = b.ins().icmp(IntCC::Equal, value, empty_list_v);
-                b.ins().band(is_list, is_empty_word)
+                let is_empty_word = body.b.ins().icmp(IntCC::Equal, value, empty_list_v);
+                body.b.ins().band(is_list, is_empty_word)
             } else {
-                let cv = {
-                    let mut body = cx.body(b, jmod, cache);
-                    body.tagged_var(var_env, c.0)
-                };
-                let empty_list_v = {
-                    let mut body = cx.body(b, jmod, cache);
-                    body.empty_list_ref()
-                };
-                b.ins().icmp(IntCC::Equal, cv, empty_list_v)
+                let cv = body.tagged_var(var_env, c.0);
+                let empty_list_v = body.empty_list_ref();
+                body.b.ins().icmp(IntCC::Equal, cv, empty_list_v)
             };
-            if cache.if_only_conds.contains(&dest_var.0) {
+            if body.cache.if_only_conds.contains(&dest_var.0) {
                 return Ok(LowerOut::Condition(cmp));
             }
-            Ok(LowerOut::Strict(strict_bool(b, cmp)))
+            Ok(LowerOut::Strict(strict_bool(body.b, cmp)))
         }
         Prim::BitReaderDone(r) => {
-            let rv = {
-                let mut body = cx.body(b, jmod, cache);
-                body.tagged_var(var_env, r.0)
-            };
-            let fref = jmod.declare_func_in_func(runtime.bs_reader_done_ref_id, b.func);
-            let inst = b.ins().call(fref, &[rv]);
-            let cmp = b.inst_results(inst)[0];
-            if cache.if_only_conds.contains(&dest_var.0) {
+            let rv = body.tagged_var(var_env, r.0);
+            let fref = body
+                .jmod
+                .declare_func_in_func(runtime.bs_reader_done_ref_id, body.b.func);
+            let inst = body.b.ins().call(fref, &[rv]);
+            let cmp = body.b.inst_results(inst)[0];
+            if body.cache.if_only_conds.contains(&dest_var.0) {
                 return Ok(LowerOut::Condition(cmp));
             }
-            Ok(LowerOut::Strict(strict_bool(b, cmp)))
+            Ok(LowerOut::Strict(strict_bool(body.b, cmp)))
         }
         Prim::MapGet(m, k) if ty_is_float(t, fn_types, dest_var) => {
-            let value_ref = {
-                let mut body = cx.body(b, jmod, cache);
-                emit_map_get_value_ref_for_key(&mut body, t, env, var_env, *m, *k, block_env)
-            };
-            let load_float = jmod.declare_func_in_func(runtime.ref_load_float_id, b.func);
-            let load_inst = b.ins().call(load_float, &[value_ref]);
-            Ok(LowerOut::RawF64(b.inst_results(load_inst)[0]))
+            let value_ref =
+                emit_map_get_value_ref_for_key(body, t, env, var_env, *m, *k, block_env);
+            let load_float = body
+                .jmod
+                .declare_func_in_func(runtime.ref_load_float_id, body.b.func);
+            let load_inst = body.b.ins().call(load_float, &[value_ref]);
+            Ok(LowerOut::RawF64(body.b.inst_results(load_inst)[0]))
         }
         Prim::MapGet(m, k) if ty_is_int(t, fn_types, dest_var) => {
-            let value_ref = {
-                let mut body = cx.body(b, jmod, cache);
-                emit_map_get_value_ref_for_key(&mut body, t, env, var_env, *m, *k, block_env)
-            };
-            let load_int = jmod.declare_func_in_func(runtime.ref_load_int_id, b.func);
-            let load_inst = b.ins().call(load_int, &[value_ref]);
-            Ok(LowerOut::RawI64(b.inst_results(load_inst)[0]))
+            let value_ref =
+                emit_map_get_value_ref_for_key(body, t, env, var_env, *m, *k, block_env);
+            let load_int = body
+                .jmod
+                .declare_func_in_func(runtime.ref_load_int_id, body.b.func);
+            let load_inst = body.b.ins().call(load_int, &[value_ref]);
+            Ok(LowerOut::RawI64(body.b.inst_results(load_inst)[0]))
         }
         Prim::MapGet(m, k) if ty_is_atom(t, fn_types, dest_var) => {
-            let value_ref = {
-                let mut body = cx.body(b, jmod, cache);
-                emit_map_get_value_ref_for_key(&mut body, t, env, var_env, *m, *k, block_env)
-            };
-            let load_atom = jmod.declare_func_in_func(runtime.ref_load_atom_id, b.func);
-            let load_inst = b.ins().call(load_atom, &[value_ref]);
-            Ok(LowerOut::RawI64(b.inst_results(load_inst)[0]))
+            let value_ref =
+                emit_map_get_value_ref_for_key(body, t, env, var_env, *m, *k, block_env);
+            let load_atom = body
+                .jmod
+                .declare_func_in_func(runtime.ref_load_atom_id, body.b.func);
+            let load_inst = body.b.ins().call(load_atom, &[value_ref]);
+            Ok(LowerOut::RawI64(body.b.inst_results(load_inst)[0]))
         }
         Prim::ListHead(c)
             if list_projection_is_safe(t, fn_types, *c, block_env)
                 && ty_is_int(t, fn_types, dest_var) =>
         {
-            let list_ref = known_list_ref_for_var(var_env, b, cache, block_id, c.0);
-            let mut body = cx.body(b, jmod, cache);
+            let list_ref = known_list_ref_for_var(var_env, body.b, body.cache, block_id, c.0);
             Ok(LowerOut::RawI64(body.list_head_int(list_ref)))
         }
         Prim::ListHead(c)
             if list_projection_is_safe(t, fn_types, *c, block_env)
                 && ty_is_float(t, fn_types, dest_var) =>
         {
-            let list_ref = known_list_ref_for_var(var_env, b, cache, block_id, c.0);
-            let mut body = cx.body(b, jmod, cache);
+            let list_ref = known_list_ref_for_var(var_env, body.b, body.cache, block_id, c.0);
             Ok(LowerOut::RawF64(body.list_head_float(list_ref)))
         }
         Prim::ListTail(c) if list_projection_is_safe(t, fn_types, *c, block_env) => {
-            let list_ref = known_list_ref_for_var(var_env, b, cache, block_id, c.0);
-            let mut body = cx.body(b, jmod, cache);
+            let list_ref = known_list_ref_for_var(var_env, body.b, body.cache, block_id, c.0);
             Ok(LowerOut::ValueRefWord(body.list_tail(list_ref)))
         }
         Prim::ListHead(..)
@@ -1291,15 +1216,12 @@ pub(crate) fn lower_prim<
         | Prim::DestMapFreeze { .. }
         | Prim::MapGet(..)
         | Prim::MatcherMapGet(..)
-        | Prim::IsMatcherMapMiss(..) => lower_collection_prim(
-            cx, b, jmod, t, env, var_env, prim, cache, block_id, block_env,
-        ),
+        | Prim::IsMatcherMapMiss(..) => {
+            lower_collection_prim(body, t, env, var_env, prim, block_id, block_env)
+        }
         Prim::MakeClosure(mk_ident, fn_id, captured) => lower_make_closure(
-            cx,
-            b,
-            jmod,
+            body,
             runtime,
-            cache,
             var_env,
             fn_ids,
             spec_registry,
@@ -1319,9 +1241,9 @@ pub(crate) fn lower_prim<
             "Prim::Brand reached codegen — erasure should run inside lower_program_full"
         ),
 
-        Prim::TypeTest(v, descr) => lower_type_test(
-            cx, b, jmod, env, var_env, cache, runtime, *v, descr, dest_var,
-        ),
+        Prim::TypeTest(v, descr) => {
+            lower_type_test(body, env, var_env, runtime, *v, descr, dest_var)
+        }
     }
 }
 
@@ -1330,12 +1252,9 @@ pub(crate) fn lower_prim<
 /// values; final result is `Condition` if the test feeds an `if`,
 /// otherwise a strict bool.
 fn lower_type_test<M: cranelift_module::Module>(
-    cx: &mut CodegenFn<'_>,
-    b: &mut FunctionBuilder<'_>,
-    jmod: &mut M,
+    body: &mut CodegenFnBody<'_, '_, '_, M>,
     env: &CodegenEnv<'_>,
     var_env: &HashMap<u32, CodegenValue>,
-    cache: &mut CodegenCache,
     runtime: &RuntimeRefs,
     v: crate::fz_ir::Var,
     descr_ty: &crate::types::Ty,
@@ -1347,19 +1266,16 @@ fn lower_type_test<M: cranelift_module::Module>(
 
     let value = *var_env.get(&v.0).expect("type-test subject");
 
-    let scalar = emit_scalar_kind_checks(cx, b, jmod, env.module, descr, value)?;
+    let scalar = emit_scalar_kind_checks(body, env.module, descr, value)?;
 
     let tuple_flag = if !tuple_arities.is_empty() {
         if tuple_has_negations {
             panic!("TypeTest: negated tuple clauses not yet supported");
         }
         Some(emit_tuple_arity_check(
-            cx,
-            b,
-            jmod,
+            body,
             runtime,
             env.tuple_schema_ids,
-            cache,
             value,
             &tuple_arities,
         ))
@@ -1368,24 +1284,22 @@ fn lower_type_test<M: cranelift_module::Module>(
     };
 
     let flag = match (scalar, tuple_flag) {
-        (None, None) => b.ins().iconst(types::I8, 0),
+        (None, None) => body.b.ins().iconst(types::I8, 0),
         (Some(s), None) => s,
         (None, Some(t)) => t,
-        (Some(s), Some(t)) => b.ins().bor(s, t),
+        (Some(s), Some(t)) => body.b.ins().bor(s, t),
     };
-    if cache.if_only_conds.contains(&dest_var.0) {
+    if body.cache.if_only_conds.contains(&dest_var.0) {
         return Ok(LowerOut::Condition(flag));
     }
-    Ok(LowerOut::Strict(strict_bool(b, flag)))
+    Ok(LowerOut::Strict(strict_bool(body.b, flag)))
 }
 
 /// Scalar kind checks: emits icmps that or-into the returned flag
 /// and ignores heap-bearing axes. For finite atom literal sets we
 /// compare the raw atom id.
 fn emit_scalar_kind_checks<M: cranelift_module::Module>(
-    cx: &mut CodegenFn<'_>,
-    b: &mut FunctionBuilder<'_>,
-    jmod: &mut M,
+    body: &mut CodegenFnBody<'_, '_, '_, M>,
     module: &crate::fz_ir::Module,
     descr: &crate::concrete_types::Descr,
     value: CodegenValue,
@@ -1400,25 +1314,16 @@ fn emit_scalar_kind_checks<M: cranelift_module::Module>(
         });
     };
     if ints {
-        let c = {
-            let mut site = cx.site(b, jmod);
-            site.value_is_tag(value, fz_runtime::any_value::ValueKind::INT)
-        };
-        or_in(b, c, &mut scalar);
+        let c = body.value_is_tag(value, fz_runtime::any_value::ValueKind::INT);
+        or_in(body.b, c, &mut scalar);
     }
     if floats {
-        let c = {
-            let mut site = cx.site(b, jmod);
-            site.value_is_tag(value, fz_runtime::any_value::ValueKind::FLOAT)
-        };
-        or_in(b, c, &mut scalar);
+        let c = body.value_is_tag(value, fz_runtime::any_value::ValueKind::FLOAT);
+        or_in(body.b, c, &mut scalar);
     }
     if descr.type_test_atom_is_any() {
-        let c = {
-            let mut site = cx.site(b, jmod);
-            site.value_is_tag(value, fz_runtime::any_value::ValueKind::ATOM)
-        };
-        or_in(b, c, &mut scalar);
+        let c = body.value_is_tag(value, fz_runtime::any_value::ValueKind::ATOM);
+        or_in(body.b, c, &mut scalar);
     } else if descr.type_test_atom_is_cofinite() {
         return Err(CodegenError::new(
             "TypeTest: cofinite atom literal sets not yet implemented",
@@ -1438,11 +1343,8 @@ fn emit_scalar_kind_checks<M: cranelift_module::Module>(
                     // -> no value can match; skip.
                     continue;
                 };
-                let atom_id_match = {
-                    let mut site = cx.site(b, jmod);
-                    site.value_atom_id_is(value, id)
-                };
-                or_in(b, atom_id_match, &mut scalar);
+                let atom_id_match = body.value_atom_id_is(value, id);
+                or_in(body.b, atom_id_match, &mut scalar);
             }
         }
     }
@@ -1452,25 +1354,19 @@ fn emit_scalar_kind_checks<M: cranelift_module::Module>(
 /// Tuple arity check: gates on the STRUCT tag, then compares the
 /// struct's schema id against the per-arity tuple-schema ids.
 fn emit_tuple_arity_check<M: cranelift_module::Module>(
-    cx: &mut CodegenFn<'_>,
-    b: &mut FunctionBuilder<'_>,
-    jmod: &mut M,
+    body: &mut CodegenFnBody<'_, '_, '_, M>,
     runtime: &RuntimeRefs,
     tuple_schema_ids: &HashMap<usize, u32>,
-    cache: &mut CodegenCache,
     value: CodegenValue,
     tuple_arities: &[usize],
 ) -> ir::Value {
-    let is_struct = {
-        let mut site = cx.site(b, jmod);
-        site.value_is_tag(value, fz_runtime::any_value::ValueKind::STRUCT)
-    };
-    let struct_blk = b.create_block();
-    let tuple_join = b.create_block();
-    b.append_block_param(tuple_join, types::I8);
-    let false8 = b.ins().iconst(types::I8, 0);
+    let is_struct = body.value_is_tag(value, fz_runtime::any_value::ValueKind::STRUCT);
+    let struct_blk = body.b.create_block();
+    let tuple_join = body.b.create_block();
+    body.b.append_block_param(tuple_join, types::I8);
+    let false8 = body.b.ins().iconst(types::I8, 0);
     let no_args: Vec<BlockArg> = Vec::new();
-    b.ins().brif(
+    body.b.ins().brif(
         is_struct,
         struct_blk,
         &no_args,
@@ -1478,34 +1374,33 @@ fn emit_tuple_arity_check<M: cranelift_module::Module>(
         &[BlockArg::Value(false8)],
     );
 
-    b.switch_to_block(struct_blk);
-    b.seal_block(struct_blk);
-    let struct_ref = {
-        let mut body = cx.body(b, jmod, cache);
-        body.value_as_any_ref(value)
-    };
-    let fref = jmod.declare_func_in_func(runtime.struct_schema_id_ref_id, b.func);
-    let inst = b.ins().call(fref, &[struct_ref]);
-    let schema_raw = b.inst_results(inst)[0];
-    let schema64 = b.ins().uextend(types::I64, schema_raw);
+    body.b.switch_to_block(struct_blk);
+    body.b.seal_block(struct_blk);
+    let struct_ref = body.value_as_any_ref(value);
+    let fref = body
+        .jmod
+        .declare_func_in_func(runtime.struct_schema_id_ref_id, body.b.func);
+    let inst = body.b.ins().call(fref, &[struct_ref]);
+    let schema_raw = body.b.inst_results(inst)[0];
+    let schema64 = body.b.ins().uextend(types::I64, schema_raw);
     let mut tf: Option<ir::Value> = None;
     for arity in tuple_arities {
         if let Some(&sid) = tuple_schema_ids.get(arity) {
-            let want = b.ins().iconst(types::I64, sid as i64);
-            let schema_match = b.ins().icmp(IntCC::Equal, schema64, want);
-            let combined = b.ins().band(is_struct, schema_match);
+            let want = body.b.ins().iconst(types::I64, sid as i64);
+            let schema_match = body.b.ins().icmp(IntCC::Equal, schema64, want);
+            let combined = body.b.ins().band(is_struct, schema_match);
             tf = Some(match tf.take() {
                 None => combined,
-                Some(prev) => b.ins().bor(prev, combined),
+                Some(prev) => body.b.ins().bor(prev, combined),
             });
         }
     }
-    let tr = tf.unwrap_or_else(|| b.ins().iconst(types::I8, 0));
-    b.ins().jump(tuple_join, &[BlockArg::Value(tr)]);
+    let tr = tf.unwrap_or_else(|| body.b.ins().iconst(types::I8, 0));
+    body.b.ins().jump(tuple_join, &[BlockArg::Value(tr)]);
 
-    b.switch_to_block(tuple_join);
-    b.seal_block(tuple_join);
-    b.block_params(tuple_join)[0]
+    body.b.switch_to_block(tuple_join);
+    body.b.seal_block(tuple_join);
+    body.b.block_params(tuple_join)[0]
 }
 
 /// Same-kind typed fast path for a binop: when the typer proves both
@@ -1513,13 +1408,11 @@ fn emit_tuple_arity_check<M: cranelift_module::Module>(
 /// run the matching op closure, bypassing tagged dispatch. Returns None
 /// when neither lane applies (caller falls back to runtime tag tests).
 fn try_typed_binop_fast_path<T, F, I, M>(
-    cx: &mut CodegenFn<'_>,
+    body: &mut CodegenFnBody<'_, '_, '_, M>,
     t: &mut T,
     fn_types: &crate::ir_planner::SpecPlan,
     a: crate::fz_ir::Var,
     bv: crate::fz_ir::Var,
-    b: &mut FunctionBuilder<'_>,
-    jmod: &mut M,
     var_env: &HashMap<u32, CodegenValue>,
     float_op: F,
     int_op: I,
@@ -1531,16 +1424,16 @@ where
     I: FnOnce(&mut FunctionBuilder<'_>, ir::Value, ir::Value) -> Option<LowerOut>,
 {
     if ty_is_float(t, fn_types, a) && ty_is_float(t, fn_types, bv) {
-        let af = cx.site(b, jmod).as_raw_f64(var_env, a.0);
-        let bf = cx.site(b, jmod).as_raw_f64(var_env, bv.0);
-        if let Some(out) = float_op(b, af, bf) {
+        let af = body.as_raw_f64(var_env, a.0);
+        let bf = body.as_raw_f64(var_env, bv.0);
+        if let Some(out) = float_op(body.b, af, bf) {
             return Some(out);
         }
     }
     if ty_is_int(t, fn_types, a) && ty_is_int(t, fn_types, bv) {
-        let ai = cx.site(b, jmod).as_raw_i64(var_env, a.0);
-        let bi = cx.site(b, jmod).as_raw_i64(var_env, bv.0);
-        if let Some(out) = int_op(b, ai, bi) {
+        let ai = body.as_raw_i64(var_env, a.0);
+        let bi = body.as_raw_i64(var_env, bv.0);
+        if let Some(out) = int_op(body.b, ai, bi) {
             return Some(out);
         }
     }
@@ -1552,9 +1445,7 @@ where
 /// (same-kind int or float), and tagged dispatch fallback that splits
 /// on runtime tag tests.
 fn lower_arith_binop<M, T>(
-    cx: &mut CodegenFn<'_>,
-    b: &mut FunctionBuilder<'_>,
-    jmod: &mut M,
+    body: &mut CodegenFnBody<'_, '_, '_, M>,
     t: &mut T,
     fn_types: &crate::ir_planner::SpecPlan,
     var_env: &HashMap<u32, CodegenValue>,
@@ -1581,25 +1472,23 @@ where
                 (ArgRepr::RawF64, ArgRepr::RawInt) | (ArgRepr::RawInt, ArgRepr::RawF64)
             ))
     {
-        let af = as_known_numeric_f64(var_env, b, a.0);
-        let bf = as_known_numeric_f64(var_env, b, bv.0);
+        let af = as_known_numeric_f64(var_env, body.b, a.0);
+        let bf = as_known_numeric_f64(var_env, body.b, bv.0);
         return Ok(LowerOut::RawF64(match mop {
-            BinOp::Add => b.ins().fadd(af, bf),
-            BinOp::Sub => b.ins().fsub(af, bf),
-            BinOp::Mul => b.ins().fmul(af, bf),
-            BinOp::Div => b.ins().fdiv(af, bf),
+            BinOp::Add => body.b.ins().fadd(af, bf),
+            BinOp::Sub => body.b.ins().fsub(af, bf),
+            BinOp::Mul => body.b.ins().fmul(af, bf),
+            BinOp::Div => body.b.ins().fdiv(af, bf),
             _ => unreachable!(),
         }));
     }
     // Typed fast paths: float (skipped for Mod) and int.
     if let Some(out) = try_typed_binop_fast_path(
-        cx,
+        body,
         t,
         fn_types,
         a,
         bv,
-        b,
-        jmod,
         var_env,
         |b, af, bf| {
             if matches!(mop, BinOp::Mod) {
@@ -1628,51 +1517,46 @@ where
     }
     let av = *var_env.get(&a.0).expect("arith lhs");
     let bv_value = *var_env.get(&bv.0).expect("arith rhs");
-    let (a_is_int, b_is_int) = {
-        let mut site = cx.site(b, jmod);
-        (
-            site.value_is_tag(av, fz_runtime::any_value::ValueKind::INT),
-            site.value_is_tag(bv_value, fz_runtime::any_value::ValueKind::INT),
-        )
-    };
-    let both_int = b.ins().band(a_is_int, b_is_int);
-    let fast_blk = b.create_block();
-    let slow_blk = b.create_block();
-    let join_blk = b.create_block();
-    b.append_block_param(join_blk, types::I64);
+    let a_is_int = body.value_is_tag(av, fz_runtime::any_value::ValueKind::INT);
+    let b_is_int = body.value_is_tag(bv_value, fz_runtime::any_value::ValueKind::INT);
+    let both_int = body.b.ins().band(a_is_int, b_is_int);
+    let fast_blk = body.b.create_block();
+    let slow_blk = body.b.create_block();
+    let join_blk = body.b.create_block();
+    body.b.append_block_param(join_blk, types::I64);
     let no_args: Vec<BlockArg> = Vec::new();
-    b.ins()
+    body.b
+        .ins()
         .brif(both_int, fast_blk, &no_args, slow_blk, &no_args);
 
-    b.switch_to_block(fast_blk);
-    b.seal_block(fast_blk);
-    let (ai, bi) = {
-        let mut site = cx.site(b, jmod);
-        (site.value_raw_int(av), site.value_raw_int(bv_value))
-    };
+    body.b.switch_to_block(fast_blk);
+    body.b.seal_block(fast_blk);
+    let ai = body.value_raw_int(av);
+    let bi = body.value_raw_int(bv_value);
     {
         let raw = match mop {
-            BinOp::Add => b.ins().iadd(ai, bi),
-            BinOp::Sub => b.ins().isub(ai, bi),
-            BinOp::Mul => b.ins().imul(ai, bi),
-            BinOp::Div => b.ins().sdiv(ai, bi),
-            BinOp::Mod => b.ins().srem(ai, bi),
+            BinOp::Add => body.b.ins().iadd(ai, bi),
+            BinOp::Sub => body.b.ins().isub(ai, bi),
+            BinOp::Mul => body.b.ins().imul(ai, bi),
+            BinOp::Div => body.b.ins().sdiv(ai, bi),
+            BinOp::Mod => body.b.ins().srem(ai, bi),
             _ => unreachable!(),
         };
-        b.ins().jump(join_blk, &[BlockArg::Value(raw)]);
+        body.b.ins().jump(join_blk, &[BlockArg::Value(raw)]);
     }
 
-    b.switch_to_block(slow_blk);
-    b.seal_block(slow_blk);
-    let unsupported_ref =
-        jmod.declare_func_in_func(runtime.dynamic_float_arith_unsupported_id, b.func);
-    let inst = b.ins().call(unsupported_ref, &[]);
-    let slow_raw = b.inst_results(inst)[0];
-    b.ins().jump(join_blk, &[BlockArg::Value(slow_raw)]);
+    body.b.switch_to_block(slow_blk);
+    body.b.seal_block(slow_blk);
+    let unsupported_ref = body
+        .jmod
+        .declare_func_in_func(runtime.dynamic_float_arith_unsupported_id, body.b.func);
+    let inst = body.b.ins().call(unsupported_ref, &[]);
+    let slow_raw = body.b.inst_results(inst)[0];
+    body.b.ins().jump(join_blk, &[BlockArg::Value(slow_raw)]);
 
-    b.switch_to_block(join_blk);
-    b.seal_block(join_blk);
-    Ok(LowerOut::RawI64(b.block_params(join_blk)[0]))
+    body.b.switch_to_block(join_blk);
+    body.b.seal_block(join_blk);
+    Ok(LowerOut::RawI64(body.b.block_params(join_blk)[0]))
 }
 
 /// Lower a `Prim::BinOp` Eq/Neq. Folds kind-disjoint operands to a
@@ -1680,13 +1564,10 @@ where
 /// raw atom compare for atom/nil/bool pairs, or calls the runtime
 /// value_eq_ref for the heterogeneous fallback.
 fn lower_eq_binop<M, T>(
-    cx: &mut CodegenFn<'_>,
-    b: &mut FunctionBuilder<'_>,
-    jmod: &mut M,
+    body: &mut CodegenFnBody<'_, '_, '_, M>,
     t: &mut T,
     fn_types: &crate::ir_planner::SpecPlan,
     var_env: &HashMap<u32, CodegenValue>,
-    cache: &mut CodegenCache,
     runtime: &RuntimeRefs,
     op: BinOp,
     a: crate::fz_ir::Var,
@@ -1707,7 +1588,7 @@ where
 
     // Kind-disjoint fold doesn't need either operand.
     if descrs_disjoint(t, fn_types, a, bv) {
-        let raw = b.ins().iconst(
+        let raw = body.b.ins().iconst(
             types::I64,
             if is_eq {
                 fz_runtime::any_value::FALSE_ATOM_ID as i64
@@ -1726,62 +1607,54 @@ where
     if (ty_is_float(t, fn_types, a) && ty_is_float(t, fn_types, bv))
         || matches!((a_repr, b_repr), (ArgRepr::RawF64, ArgRepr::RawF64))
     {
-        let af = cx.site(b, jmod).as_raw_f64(var_env, a.0);
-        let bf = cx.site(b, jmod).as_raw_f64(var_env, bv.0);
-        let cmp = b.ins().fcmp(f_cc, af, bf);
-        if cache.if_only_conds.contains(&dest_var.0) {
+        let af = body.as_raw_f64(var_env, a.0);
+        let bf = body.as_raw_f64(var_env, bv.0);
+        let cmp = body.b.ins().fcmp(f_cc, af, bf);
+        if body.cache.if_only_conds.contains(&dest_var.0) {
             return Ok(LowerOut::Condition(cmp));
         }
-        return Ok(LowerOut::Strict(strict_bool(b, cmp)));
+        return Ok(LowerOut::Strict(strict_bool(body.b, cmp)));
     }
     // Same-kind int: native icmp on raw i64. Must not
     // mix raw and tagged operands — bit-eq is only
     // correct when both are in the same encoding.
     if ty_is_int(t, fn_types, a) && ty_is_int(t, fn_types, bv) {
-        let ai = cx.site(b, jmod).as_raw_i64(var_env, a.0);
-        let bi = cx.site(b, jmod).as_raw_i64(var_env, bv.0);
-        let cmp = b.ins().icmp(int_cc, ai, bi);
-        if cache.if_only_conds.contains(&dest_var.0) {
+        let ai = body.as_raw_i64(var_env, a.0);
+        let bi = body.as_raw_i64(var_env, bv.0);
+        let cmp = body.b.ins().icmp(int_cc, ai, bi);
+        if body.cache.if_only_conds.contains(&dest_var.0) {
             return Ok(LowerOut::Condition(cmp));
         }
-        return Ok(LowerOut::Strict(strict_bool(b, cmp)));
+        return Ok(LowerOut::Strict(strict_bool(body.b, cmp)));
     }
     if (ty_is_atom(t, fn_types, a) && ty_is_atom(t, fn_types, bv))
         || (descr_is_nil_or_bool(t, fn_types, a) && descr_is_nil_or_bool(t, fn_types, bv))
     {
-        let (avp, bvp) = {
-            let mut body = cx.body(b, jmod, cache);
-            (
-                body.value_raw_atom(binding_for_var(var_env, a.0)),
-                body.value_raw_atom(binding_for_var(var_env, bv.0)),
-            )
-        };
-        let same_raw = b.ins().icmp(int_cc, avp, bvp);
-        if cache.if_only_conds.contains(&dest_var.0) {
+        let avp = body.value_raw_atom(binding_for_var(var_env, a.0));
+        let bvp = body.value_raw_atom(binding_for_var(var_env, bv.0));
+        let same_raw = body.b.ins().icmp(int_cc, avp, bvp);
+        if body.cache.if_only_conds.contains(&dest_var.0) {
             return Ok(LowerOut::Condition(same_raw));
         }
-        Ok(LowerOut::Strict(strict_bool(b, same_raw)))
+        Ok(LowerOut::Strict(strict_bool(body.b, same_raw)))
     } else {
-        let (a_ref, b_ref) = {
-            let mut body = cx.body(b, jmod, cache);
-            (
-                body.tagged_var(var_env, a.0),
-                body.tagged_var(var_env, bv.0),
-            )
-        };
-        let fref = jmod.declare_func_in_func(runtime.value_eq_ref_id, b.func);
-        let inst = b.ins().call(fref, &[a_ref, b_ref]);
-        let eq = b.inst_results(inst)[0];
-        let eq_bool = b.ins().icmp_imm(IntCC::NotEqual, eq, 0);
+        let a_ref = body.tagged_var(var_env, a.0);
+        let b_ref = body.tagged_var(var_env, bv.0);
+        let fref = body
+            .jmod
+            .declare_func_in_func(runtime.value_eq_ref_id, body.b.func);
+        let inst = body.b.ins().call(fref, &[a_ref, b_ref]);
+        let eq = body.b.inst_results(inst)[0];
+        let eq_bool = body.b.ins().icmp_imm(IntCC::NotEqual, eq, 0);
         let cmp = if is_eq {
             eq_bool
         } else {
-            b.ins().bxor_imm(eq_bool, 1)
+            body.b.ins().bxor_imm(eq_bool, 1)
         };
-        if cache.if_only_conds.contains(&dest_var.0) {
+        if body.cache.if_only_conds.contains(&dest_var.0) {
             return Ok(LowerOut::Condition(cmp));
         }
-        Ok(LowerOut::Strict(strict_bool(b, cmp)))
+        Ok(LowerOut::Strict(strict_bool(body.b, cmp)))
     }
 }
 
@@ -1790,13 +1663,10 @@ where
 /// int-tag test and falls back to an inlined float promote+fcmp slow
 /// path for any non-int-int operand mix.
 fn lower_cmp_binop<M, T>(
-    cx: &mut CodegenFn<'_>,
-    b: &mut FunctionBuilder<'_>,
-    jmod: &mut M,
+    body: &mut CodegenFnBody<'_, '_, '_, M>,
     t: &mut T,
     fn_types: &crate::ir_planner::SpecPlan,
     var_env: &HashMap<u32, CodegenValue>,
-    cache: &mut CodegenCache,
     runtime: &RuntimeRefs,
     op: BinOp,
     a: crate::fz_ir::Var,
@@ -1825,29 +1695,24 @@ where
     // Safety: the two closures are mutually exclusive — only the
     // float arm fires for float operands and only the int arm fires
     // for int operands, so the two reborrow sites never alias.
-    let dest_id = dest_var.0;
-    let cache_ptr = cache as *mut CodegenCache;
+    let if_only = body.cache.if_only_conds.contains(&dest_var.0);
     if let Some(out) = try_typed_binop_fast_path(
-        cx,
+        body,
         t,
         fn_types,
         a,
         bv,
-        b,
-        jmod,
         var_env,
         |b, af, bf| {
             let cmp = b.ins().fcmp(fcc, af, bf);
-            let cache_ref = unsafe { &mut *cache_ptr };
-            if cache_ref.if_only_conds.contains(&dest_id) {
+            if if_only {
                 return Some(LowerOut::Condition(cmp));
             }
             Some(LowerOut::Strict(strict_bool(b, cmp)))
         },
         |b, ai, bi| {
             let cmp = b.ins().icmp(icc, ai, bi);
-            let cache_ref = unsafe { &mut *cache_ptr };
-            if cache_ref.if_only_conds.contains(&dest_id) {
+            if if_only {
                 return Some(LowerOut::Condition(cmp));
             }
             Some(LowerOut::Strict(strict_bool(b, cmp)))
@@ -1857,36 +1722,32 @@ where
     }
     let av = *var_env.get(&a.0).expect("cmp lhs");
     let bv_value = *var_env.get(&bv.0).expect("cmp rhs");
-    let (a_is_int, b_is_int) = {
-        let mut site = cx.site(b, jmod);
-        (
-            site.value_is_tag(av, fz_runtime::any_value::ValueKind::INT),
-            site.value_is_tag(bv_value, fz_runtime::any_value::ValueKind::INT),
-        )
-    };
-    let both_int = b.ins().band(a_is_int, b_is_int);
-    let fast_blk = b.create_block();
-    let slow_blk = b.create_block();
-    let join_blk = b.create_block();
-    b.append_block_param(join_blk, types::I8);
+    let a_is_int = body.value_is_tag(av, fz_runtime::any_value::ValueKind::INT);
+    let b_is_int = body.value_is_tag(bv_value, fz_runtime::any_value::ValueKind::INT);
+    let both_int = body.b.ins().band(a_is_int, b_is_int);
+    let fast_blk = body.b.create_block();
+    let slow_blk = body.b.create_block();
+    let join_blk = body.b.create_block();
+    body.b.append_block_param(join_blk, types::I8);
     let no_args: Vec<BlockArg> = Vec::new();
-    b.ins()
+    body.b
+        .ins()
         .brif(both_int, fast_blk, &no_args, slow_blk, &no_args);
 
-    b.switch_to_block(fast_blk);
-    b.seal_block(fast_blk);
-    let (ai, bi) = {
-        let mut site = cx.site(b, jmod);
-        (site.value_raw_int(av), site.value_raw_int(bv_value))
-    };
-    let cmp = b.ins().icmp(icc, ai, bi);
-    b.ins().jump(join_blk, &[BlockArg::Value(cmp)]);
+    body.b.switch_to_block(fast_blk);
+    body.b.seal_block(fast_blk);
+    let ai = body.value_raw_int(av);
+    let bi = body.value_raw_int(bv_value);
+    let cmp = body.b.ins().icmp(icc, ai, bi);
+    body.b.ins().jump(join_blk, &[BlockArg::Value(cmp)]);
 
-    b.switch_to_block(slow_blk);
-    b.seal_block(slow_blk);
+    body.b.switch_to_block(slow_blk);
+    body.b.seal_block(slow_blk);
     // Inlined float-cmp slow path: promote both operands
     // to f64 and emit native fcmp.
-    let pfref = jmod.declare_func_in_func(runtime.promote_f64_id, b.func);
+    let pfref = body
+        .jmod
+        .declare_func_in_func(runtime.promote_f64_id, body.b.func);
     let fcc = match op {
         BinOp::Lt => FloatCC::LessThan,
         BinOp::Le => FloatCC::LessThanOrEqual,
@@ -1894,37 +1755,27 @@ where
         BinOp::Ge => FloatCC::GreaterThanOrEqual,
         _ => unreachable!(),
     };
-    let (av, bvv) = {
-        let mut body = cx.body(b, jmod, cache);
-        (
-            body.tagged_var(var_env, a.0),
-            body.tagged_var(var_env, bv.0),
-        )
-    };
-    let i0 = b.ins().call(pfref, &[av]);
-    let af = b.inst_results(i0)[0];
-    let i1 = b.ins().call(pfref, &[bvv]);
-    let bf = b.inst_results(i1)[0];
-    let cmp = b.ins().fcmp(fcc, af, bf);
-    b.ins().jump(join_blk, &[BlockArg::Value(cmp)]);
+    let av = body.tagged_var(var_env, a.0);
+    let bvv = body.tagged_var(var_env, bv.0);
+    let i0 = body.b.ins().call(pfref, &[av]);
+    let af = body.b.inst_results(i0)[0];
+    let i1 = body.b.ins().call(pfref, &[bvv]);
+    let bf = body.b.inst_results(i1)[0];
+    let cmp = body.b.ins().fcmp(fcc, af, bf);
+    body.b.ins().jump(join_blk, &[BlockArg::Value(cmp)]);
 
-    b.switch_to_block(join_blk);
-    b.seal_block(join_blk);
-    Ok(LowerOut::Strict(strict_bool(
-        b,
-        b.block_params(join_blk)[0],
-    )))
+    body.b.switch_to_block(join_blk);
+    body.b.seal_block(join_blk);
+    let result = body.b.block_params(join_blk)[0];
+    Ok(LowerOut::Strict(strict_bool(body.b, result)))
 }
 
 /// Lower a `Prim::BinOp` short-circuit-free boolean op (And/Or).
 /// Both operands are coerced to truthy i8s and combined with
 /// `band`/`bor`.
 fn lower_bool_binop<M: cranelift_module::Module>(
-    cx: &mut CodegenFn<'_>,
-    b: &mut FunctionBuilder<'_>,
-    jmod: &mut M,
+    body: &mut CodegenFnBody<'_, '_, '_, M>,
     var_env: &HashMap<u32, CodegenValue>,
-    cache: &mut CodegenCache,
     op: BinOp,
     a: crate::fz_ir::Var,
     bv: crate::fz_ir::Var,
@@ -1932,45 +1783,37 @@ fn lower_bool_binop<M: cranelift_module::Module>(
 ) -> Result<LowerOut, CodegenError> {
     let av = *var_env.get(&a.0).expect("bool lhs");
     let bvv = *var_env.get(&bv.0).expect("bool rhs");
-    let (at, bt) = {
-        let mut site = cx.site(b, jmod);
-        (site.value_truthy(av), site.value_truthy(bvv))
-    };
+    let at = body.value_truthy(av);
+    let bt = body.value_truthy(bvv);
     let combined = match op {
-        BinOp::And => b.ins().band(at, bt),
-        BinOp::Or => b.ins().bor(at, bt),
+        BinOp::And => body.b.ins().band(at, bt),
+        BinOp::Or => body.b.ins().bor(at, bt),
         _ => unreachable!(),
     };
-    if cache.if_only_conds.contains(&dest_var.0) {
+    if body.cache.if_only_conds.contains(&dest_var.0) {
         return Ok(LowerOut::Condition(combined));
     }
-    let _ = cache;
-    Ok(LowerOut::Strict(strict_bool(b, combined)))
+    Ok(LowerOut::Strict(strict_bool(body.b, combined)))
 }
 
 /// `fz_panic(value)`: forwards one ValueRef to the runtime fatal path.
 fn lower_extern_fz_panic<M: cranelift_module::Module>(
-    cx: &mut CodegenFn<'_>,
-    b: &mut FunctionBuilder<'_>,
-    jmod: &mut M,
+    body: &mut CodegenFnBody<'_, '_, '_, M>,
     var_env: &HashMap<u32, CodegenValue>,
-    cache: &mut CodegenCache,
     args: &[crate::fz_ir::Var],
     dest_var: crate::fz_ir::Var,
 ) -> Result<LowerOut, CodegenError> {
-    let value_ref = {
-        let mut body = cx.body(b, jmod, cache);
-        body.tagged_var(var_env, args[0].0)
-    };
+    let value_ref = body.tagged_var(var_env, args[0].0);
     let sig = sig1(&[types::I64], &[]);
-    let func_id = jmod
+    let func_id = body
+        .jmod
         .declare_function("fz_panic", Linkage::Import, &sig)
         .map_err(|e| CodegenError::new(format!("declare fz_panic: {}", e)))?;
-    let fref = jmod.declare_func_in_func(func_id, b.func);
-    b.ins().call(fref, &[value_ref]);
-    if cache.used_vars.contains(&dest_var.0) {
+    let fref = body.jmod.declare_func_in_func(func_id, body.b.func);
+    body.b.ins().call(fref, &[value_ref]);
+    if body.cache.used_vars.contains(&dest_var.0) {
         return Ok(LowerOut::Strict(strict_const_value(
-            b,
+            body.b,
             fz_runtime::any_value::AnyValue::nil_atom(),
         )));
     }
@@ -1981,28 +1824,23 @@ fn lower_extern_fz_panic<M: cranelift_module::Module>(
 /// arg and forwards to `fz_send_ref`. The wrapper's declared return type
 /// drives normal return coercion from this boxed ABI result.
 fn lower_extern_fz_send<M: cranelift_module::Module>(
-    cx: &mut CodegenFn<'_>,
-    b: &mut FunctionBuilder<'_>,
-    jmod: &mut M,
+    body: &mut CodegenFnBody<'_, '_, '_, M>,
     var_env: &HashMap<u32, CodegenValue>,
-    cache: &mut CodegenCache,
     args: &[crate::fz_ir::Var],
 ) -> Result<LowerOut, CodegenError> {
-    let receiver = cx.site(b, jmod).as_raw_i64(var_env, args[0].0);
+    let receiver = body.as_raw_i64(var_env, args[0].0);
     let msg_binding = *var_env.get(&args[1].0).expect("fz_send msg var");
     let mut msg_args = Vec::with_capacity(1);
-    {
-        let mut body = cx.body(b, jmod, cache);
-        body.push_binding_as_abi_arg(&mut msg_args, msg_binding, ArgRepr::ValueRef);
-    }
+    body.push_binding_as_abi_arg(&mut msg_args, msg_binding, ArgRepr::ValueRef);
     let msg_ref = msg_args[0];
     let sig = sig1(&[types::I64, types::I64], &[types::I64]);
-    let func_id = jmod
+    let func_id = body
+        .jmod
         .declare_function("fz_send_ref", Linkage::Import, &sig)
         .map_err(|e| CodegenError::new(format!("declare fz_send_ref: {}", e)))?;
-    let fref = jmod.declare_func_in_func(func_id, b.func);
-    let inst = b.ins().call(fref, &[receiver, msg_ref]);
-    Ok(LowerOut::ValueRefWord(b.inst_results(inst)[0]))
+    let fref = body.jmod.declare_func_in_func(func_id, body.b.func);
+    let inst = body.b.ins().call(fref, &[receiver, msg_ref]);
+    Ok(LowerOut::ValueRefWord(body.b.inst_results(inst)[0]))
 }
 
 /// `fz_self()`: returns the current process id from `fz_self_raw`.
@@ -2035,89 +1873,69 @@ fn lower_extern_fz_make_ref<M: cranelift_module::Module>(
 
 /// `fz_spawn(closure)`: forwards the closure ref to `fz_spawn_ref`.
 fn lower_extern_fz_spawn<M: cranelift_module::Module>(
-    cx: &mut CodegenFn<'_>,
-    b: &mut FunctionBuilder<'_>,
-    jmod: &mut M,
+    body: &mut CodegenFnBody<'_, '_, '_, M>,
     var_env: &HashMap<u32, CodegenValue>,
-    cache: &mut CodegenCache,
     args: &[crate::fz_ir::Var],
 ) -> Result<LowerOut, CodegenError> {
-    let closure_ref = {
-        let mut body = cx.body(b, jmod, cache);
-        body.tagged_var(var_env, args[0].0)
-    };
+    let closure_ref = body.tagged_var(var_env, args[0].0);
     let sig = sig1(&[types::I64], &[types::I64]);
-    let func_id = jmod
+    let func_id = body
+        .jmod
         .declare_function("fz_spawn_ref", Linkage::Import, &sig)
         .map_err(|e| CodegenError::new(format!("declare fz_spawn_ref: {}", e)))?;
-    let fref = jmod.declare_func_in_func(func_id, b.func);
-    let inst = b.ins().call(fref, &[closure_ref]);
-    Ok(LowerOut::RawI64(b.inst_results(inst)[0]))
+    let fref = body.jmod.declare_func_in_func(func_id, body.b.func);
+    let inst = body.b.ins().call(fref, &[closure_ref]);
+    Ok(LowerOut::RawI64(body.b.inst_results(inst)[0]))
 }
 
 /// `fz_spawn_opt(closure, min_heap_size)`: variant of `fz_spawn` that
 /// also passes a heap-size hint through to `fz_spawn_opt_ref`.
 fn lower_extern_fz_spawn_opt<M: cranelift_module::Module>(
-    cx: &mut CodegenFn<'_>,
-    b: &mut FunctionBuilder<'_>,
-    jmod: &mut M,
+    body: &mut CodegenFnBody<'_, '_, '_, M>,
     var_env: &HashMap<u32, CodegenValue>,
-    cache: &mut CodegenCache,
     args: &[crate::fz_ir::Var],
 ) -> Result<LowerOut, CodegenError> {
-    let closure_ref = {
-        let mut body = cx.body(b, jmod, cache);
-        body.tagged_var(var_env, args[0].0)
-    };
-    let min_heap_size = cx.site(b, jmod).as_raw_i64(var_env, args[1].0);
+    let closure_ref = body.tagged_var(var_env, args[0].0);
+    let min_heap_size = body.as_raw_i64(var_env, args[1].0);
     let sig = sig1(&[types::I64, types::I64], &[types::I64]);
-    let func_id = jmod
+    let func_id = body
+        .jmod
         .declare_function("fz_spawn_opt_ref", Linkage::Import, &sig)
         .map_err(|e| CodegenError::new(format!("declare fz_spawn_opt_typed: {}", e)))?;
-    let fref = jmod.declare_func_in_func(func_id, b.func);
-    let inst = b.ins().call(fref, &[closure_ref, min_heap_size]);
-    Ok(LowerOut::RawI64(b.inst_results(inst)[0]))
+    let fref = body.jmod.declare_func_in_func(func_id, body.b.func);
+    let inst = body.b.ins().call(fref, &[closure_ref, min_heap_size]);
+    Ok(LowerOut::RawI64(body.b.inst_results(inst)[0]))
 }
 
 /// `fz_make_resource(payload, dtor)`: builds a runtime resource with
 /// the raw payload bits and the destructor closure ref.
 fn lower_extern_fz_make_resource<M: cranelift_module::Module>(
-    cx: &mut CodegenFn<'_>,
-    b: &mut FunctionBuilder<'_>,
-    jmod: &mut M,
+    body: &mut CodegenFnBody<'_, '_, '_, M>,
     var_env: &HashMap<u32, CodegenValue>,
-    cache: &mut CodegenCache,
     args: &[crate::fz_ir::Var],
 ) -> Result<LowerOut, CodegenError> {
     let payload = *var_env
         .get(&args[0].0)
         .expect("unbound make_resource payload");
-    let (payload_raw, dtor_ref) = {
-        let mut body = cx.body(b, jmod, cache);
-        (
-            body.value_raw_int(payload),
-            body.tagged_var(var_env, args[1].0),
-        )
-    };
+    let payload_raw = body.value_raw_int(payload);
+    let dtor_ref = body.tagged_var(var_env, args[1].0);
     let sig = sig1(&[types::I64, types::I64], &[types::I64]);
-    let func_id = jmod
+    let func_id = body
+        .jmod
         .declare_function("fz_make_resource_ref", Linkage::Import, &sig)
         .map_err(|e| CodegenError::new(format!("declare fz_make_resource_ref: {}", e)))?;
-    let fref = jmod.declare_func_in_func(func_id, b.func);
-    let inst = b.ins().call(fref, &[payload_raw, dtor_ref]);
-    Ok(LowerOut::ValueRef(b.inst_results(inst)[0]))
+    let fref = body.jmod.declare_func_in_func(func_id, body.b.func);
+    let inst = body.b.ins().call(fref, &[payload_raw, dtor_ref]);
+    Ok(LowerOut::ValueRef(body.b.inst_results(inst)[0]))
 }
 
 /// Generic extern fallback: marshals each arg per its declared
 /// `ExternTy`, looks up (or caches) the FuncRef, and packages the
 /// return as RawI64 / ValueRef / nil / DeadUnit per the decl shape.
 fn lower_extern_generic<M: cranelift_module::Module>(
-    cx: &mut CodegenFn<'_>,
-    b: &mut FunctionBuilder<'_>,
-    jmod: &mut M,
+    body: &mut CodegenFnBody<'_, '_, '_, M>,
     runtime: &RuntimeRefs,
     var_env: &HashMap<u32, CodegenValue>,
-    cache: &mut CodegenCache,
     decl: &crate::fz_ir::ExternDecl,
     eid: &crate::fz_ir::ExternId,
     args: &[crate::fz_ir::ExternArg],
@@ -2142,14 +1960,15 @@ fn lower_extern_generic<M: cranelift_module::Module>(
         &[]
     };
     let sig = sig1(&param_tys, ret_tys);
-    let fref = if let Some(&cached) = cache.extern_funcs.get(eid) {
+    let fref = if let Some(&cached) = body.cache.extern_funcs.get(eid) {
         cached
     } else {
-        let func_id = jmod
+        let func_id = body
+            .jmod
             .declare_function(&decl.symbol, Linkage::Import, &sig)
             .map_err(|e| CodegenError::new(format!("declare extern `{}`: {}", decl.symbol, e)))?;
-        let fref = jmod.declare_func_in_func(func_id, b.func);
-        cache.extern_funcs.insert(*eid, fref);
+        let fref = body.jmod.declare_func_in_func(func_id, body.b.func);
+        body.cache.extern_funcs.insert(*eid, fref);
         fref
     };
     let param_kinds: Vec<ExternTy> = decl.params.clone();
@@ -2167,19 +1986,19 @@ fn lower_extern_generic<M: cranelift_module::Module>(
     let arg_vals: Vec<ir::Value> = args
         .iter()
         .zip(param_kinds.iter())
-        .map(|(v, ty)| marshal_extern_arg(cx, b, jmod, runtime, var_env, cache, v.var, *ty))
+        .map(|(v, ty)| marshal_extern_arg(body, runtime, var_env, v.var, *ty))
         .collect::<Result<_, _>>()?;
-    let inst = b.ins().call(fref, &arg_vals);
+    let inst = body.b.ins().call(fref, &arg_vals);
     if returns_value {
-        let raw = b.inst_results(inst)[0];
+        let raw = body.b.inst_results(inst)[0];
         if matches!(decl.ret, ExternTy::I64) {
             return Ok(LowerOut::RawI64(raw));
         }
         return Ok(LowerOut::ValueRef(raw));
     }
-    if cache.used_vars.contains(&dest_var.0) {
+    if body.cache.used_vars.contains(&dest_var.0) {
         return Ok(LowerOut::Strict(strict_const_value(
-            b,
+            body.b,
             fz_runtime::any_value::AnyValue::nil_atom(),
         )));
     }
@@ -2191,11 +2010,8 @@ fn lower_extern_generic<M: cranelift_module::Module>(
 /// alloc+populate. Resolves the narrow SpecId via the lambda's full
 /// input-type key (captures from caller's `fn_types`, args = `any`).
 pub(crate) fn lower_make_closure<M: cranelift_module::Module>(
-    cx: &mut CodegenFn<'_>,
-    b: &mut FunctionBuilder<'_>,
-    jmod: &mut M,
+    body: &mut CodegenFnBody<'_, '_, '_, M>,
     runtime: &RuntimeRefs,
-    cache: &mut CodegenCache,
     var_env: &HashMap<u32, CodegenValue>,
     fn_ids: &HashMap<u32, FuncId>,
     spec_registry: &SpecRegistry,
@@ -2229,7 +2045,7 @@ pub(crate) fn lower_make_closure<M: cranelift_module::Module>(
     };
     let Some(cl_sid) = cl_sid_opt else {
         return Ok(LowerOut::ValueRef(emit_null_stub_closure(
-            cx, b, jmod, fn_id, n_caps,
+            body, fn_id, n_caps,
         )));
     };
     // Zero-capture MakeClosure: look up the per-Process static
@@ -2238,14 +2054,11 @@ pub(crate) fn lower_make_closure<M: cranelift_module::Module>(
     // address. See docs/cps-in-clif.md §8.2.
     if captured.is_empty() {
         return Ok(LowerOut::ValueRef(fetch_static_closure(
-            jmod, b, runtime, cl_sid,
+            body.jmod, body.b, runtime, cl_sid,
         )));
     }
     Ok(LowerOut::ValueRef(emit_capturing_closure(
-        cx,
-        b,
-        jmod,
-        cache,
+        body,
         var_env,
         fn_ids,
         param_reprs,
@@ -2260,17 +2073,15 @@ pub(crate) fn lower_make_closure<M: cranelift_module::Module>(
 /// slots uninitialized (the body that would read them doesn't exist).
 /// halt_kind is irrelevant for an un-invoked closure; pick 0.
 fn emit_null_stub_closure<M: cranelift_module::Module>(
-    cx: &mut CodegenFn<'_>,
-    b: &mut FunctionBuilder<'_>,
-    jmod: &mut M,
+    body: &mut CodegenFnBody<'_, '_, '_, M>,
     fn_id: crate::fz_ir::FnId,
     n_caps: usize,
 ) -> ir::Value {
-    let fid_v = b.ins().iconst(types::I32, fn_id.0 as i64);
-    let nc_v = b.ins().iconst(types::I32, n_caps as i64);
-    let hk_v = b.ins().iconst(types::I32, 0);
-    let null = b.ins().iconst(types::I64, 0);
-    cx.site(b, jmod).alloc_closure(fid_v, nc_v, hk_v, null)
+    let fid_v = body.b.ins().iconst(types::I32, fn_id.0 as i64);
+    let nc_v = body.b.ins().iconst(types::I32, n_caps as i64);
+    let hk_v = body.b.ins().iconst(types::I32, 0);
+    let null = body.b.ins().iconst(types::I64, 0);
+    body.alloc_closure(fid_v, nc_v, hk_v, null)
 }
 
 /// Non-zero captures: alloc closure heap object, write body's
@@ -2278,10 +2089,7 @@ fn emit_null_stub_closure<M: cranelift_module::Module>(
 /// closure-target sig `(args..., self, cont) tail` and projects
 /// captures from `self` in its entry harness.
 fn emit_capturing_closure<M: cranelift_module::Module>(
-    cx: &mut CodegenFn<'_>,
-    b: &mut FunctionBuilder<'_>,
-    jmod: &mut M,
-    cache: &mut CodegenCache,
+    body: &mut CodegenFnBody<'_, '_, '_, M>,
     var_env: &HashMap<u32, CodegenValue>,
     fn_ids: &HashMap<u32, FuncId>,
     param_reprs: &[Vec<ArgRepr>],
@@ -2298,38 +2106,30 @@ fn emit_capturing_closure<M: cranelift_module::Module>(
             cl_sid, fn_id.0, n_caps
         ))
     })?;
-    let fid_v = b.ins().iconst(types::I32, fn_id.0 as i64);
-    let nc_v = b.ins().iconst(types::I32, n_caps as i64);
+    let fid_v = body.b.ins().iconst(types::I32, fn_id.0 as i64);
+    let nc_v = body.b.ins().iconst(types::I32, n_caps as i64);
     // halt_kind from body's return repr so fz_spawn_entry can
     // pick the matching halt-cont singleton.
     let body_return_repr = return_reprs[cl_sid as usize];
-    let hk_v = b
+    let hk_v = body
+        .b
         .ins()
         .iconst(types::I32, body_return_repr.halt_kind() as i64);
-    let body_addr = fn_addr(jmod, body_func_id, b);
-    let cl_ptr = cx.site(b, jmod).alloc_closure(fid_v, nc_v, hk_v, body_addr);
+    let body_addr = fn_addr(body.jmod, body_func_id, body.b);
+    let cl_ptr = body.alloc_closure(fid_v, nc_v, hk_v, body_addr);
     // The closure env stores captures as opaque refs. The body's
     // entry harness coerces each capture to its narrow repr.
     for (i, cv) in captured.iter().enumerate() {
         let vb = var_env
             .get(&cv.0)
             .expect("MakeClosure: captured var unbound");
-        let to = param_reprs[cl_sid as usize][i];
-        if to == ArgRepr::ValueRef {
-            let capture = {
-                let mut body = cx.body(b, jmod, cache);
-                body.value_as_any_ref(*vb)
-            };
-            let mut site = cx.site(b, jmod);
-            site.store_closure_capture_ref_word(cl_ptr, i, capture);
+        if param_reprs[cl_sid as usize][i] == ArgRepr::ValueRef {
+            let capture = body.value_as_any_ref(*vb);
+            body.store_closure_capture_ref_word(cl_ptr, i, capture);
         } else {
             let mut capture = Vec::with_capacity(1);
-            {
-                let mut body = cx.body(b, jmod, cache);
-                body.push_binding_as_abi_arg(&mut capture, *vb, ArgRepr::ValueRef);
-            }
-            let mut site = cx.site(b, jmod);
-            site.store_closure_capture_ref_word(cl_ptr, i, capture[0]);
+            body.push_binding_as_abi_arg(&mut capture, *vb, ArgRepr::ValueRef);
+            body.store_closure_capture_ref_word(cl_ptr, i, capture[0]);
         }
     }
     Ok(cl_ptr)

@@ -215,7 +215,15 @@ pub(crate) fn compile_fn<
             b.set_srcloc(span_to_srcloc(span));
             let Stmt::Let(v, prim) = stmt;
             let out = lower_prim(
-                &mut cx, &mut b, jmod, t, env, &var_env, prim, *v, &mut cache, f.id, blk.id, idx,
+                &mut cx.body(&mut b, jmod, &mut cache),
+                t,
+                env,
+                &var_env,
+                prim,
+                *v,
+                f.id,
+                blk.id,
+                idx,
                 block_env,
             )?;
             if !matches!(out, LowerOut::DeadUnit) {
