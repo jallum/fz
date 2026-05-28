@@ -17,6 +17,7 @@ pub mod ir_runtime;
 pub mod park;
 pub mod procbin;
 pub mod process;
+pub mod process_abi;
 pub mod reductions;
 pub mod resource;
 pub mod sched;
