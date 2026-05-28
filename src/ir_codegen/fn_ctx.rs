@@ -660,22 +660,57 @@ impl<M> CodegenFnBody<'_, '_, '_, M>
 where
     M: cranelift_module::Module,
 {
+    /// Materialize a value as an ABI `AnyValueRef` word. Cache-bearing:
+    /// the `Condition` lane interns its `bool_to_fz` atom.
     pub(crate) fn value_as_any_ref(&mut self, value: CodegenValue) -> ir::Value {
-        self.cx
-            .value_as_any_ref(self.b, self.jmod, self.cache, value)
+        match value {
+            CodegenValue::AnyRef(value) => value,
+            CodegenValue::RawInt(value) => self.box_int_for_any(value),
+            CodegenValue::RawF64(value) => self.box_float_for_any(value),
+            CodegenValue::Condition(value) => {
+                let atom = bool_to_fz(self.b, self.cache, value);
+                self.box_atom_for_any(atom)
+            }
+            CodegenValue::Known { payload, kind } => self.box_known_non_heap(payload, kind),
+        }
     }
 
+    /// Materialize the var's binding as an ABI `AnyValueRef`, reusing a
+    /// cached `iconst` for known raw-int constants.
     pub(crate) fn tagged_var(
         &mut self,
         var_env: &HashMap<u32, CodegenValue>,
         var: u32,
     ) -> ir::Value {
-        self.cx
-            .tagged_var(var_env, self.b, self.jmod, var, self.cache)
+        match *var_env.get(&var).expect("unbound var") {
+            CodegenValue::RawF64(value) => self.box_float_for_any(value),
+            CodegenValue::RawInt(value) => {
+                let raw = if let Some(&n) = self.cache.raw_int_consts.get(&var) {
+                    cached_iconst(self.b, self.cache, n)
+                } else {
+                    value
+                };
+                self.box_int_for_any(raw)
+            }
+            CodegenValue::Known { payload, kind } => self.box_known_non_heap(payload, kind),
+            CodegenValue::AnyRef(value) => value,
+            CodegenValue::Condition(value) => {
+                let atom = bool_to_fz(self.b, self.cache, value);
+                self.box_atom_for_any(atom)
+            }
+        }
     }
 
     pub(crate) fn value_raw_atom(&mut self, value: CodegenValue) -> ir::Value {
-        self.cx.value_raw_atom(self.b, self.jmod, self.cache, value)
+        match value {
+            CodegenValue::Condition(flag) => bool_to_fz(self.b, self.cache, flag),
+            CodegenValue::Known {
+                payload,
+                kind: fz_runtime::any_value::ValueKind::ATOM,
+            } => payload,
+            CodegenValue::AnyRef(value_ref) => self.unbox_atom(value_ref),
+            _ => panic!("CodegenValue is not an atom"),
+        }
     }
 
     pub(crate) fn any_ref_for_var(
@@ -683,8 +718,8 @@ where
         var_env: &HashMap<u32, CodegenValue>,
         var: u32,
     ) -> ir::Value {
-        self.cx
-            .any_ref_for_var(var_env, self.b, self.jmod, var, self.cache)
+        let binding = *var_env.get(&var).expect("unbound var");
+        self.value_as_any_ref(binding)
     }
 
     /// Empty-list ABI word, cached per function body.

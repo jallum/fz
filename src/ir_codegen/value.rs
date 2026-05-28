@@ -229,127 +229,12 @@ impl CodegenValue {
     }
 }
 
-impl CodegenFn<'_> {
-    pub(super) fn tagged_var<M: cranelift_module::Module>(
-        &mut self,
-        var_env: &HashMap<u32, CodegenValue>,
-        b: &mut FunctionBuilder<'_>,
-        jmod: &mut M,
-        v: u32,
-        cache: &mut CodegenCache,
-    ) -> ir::Value {
-        tagged_get(self, var_env, b, jmod, v, cache)
-    }
-
-    pub(super) fn value_as_any_ref<M: cranelift_module::Module>(
-        &mut self,
-        b: &mut FunctionBuilder<'_>,
-        jmod: &mut M,
-        cache: &mut CodegenCache,
-        value: CodegenValue,
-    ) -> ir::Value {
-        codegen_value_as_any_ref(self, b, jmod, cache, value)
-    }
-
-    pub(super) fn value_raw_atom<M: cranelift_module::Module>(
-        &mut self,
-        b: &mut FunctionBuilder<'_>,
-        jmod: &mut M,
-        cache: &mut CodegenCache,
-        value: CodegenValue,
-    ) -> ir::Value {
-        codegen_value_raw_atom(self, b, jmod, cache, value)
-    }
-
-    pub(super) fn any_ref_for_var<M: cranelift_module::Module>(
-        &mut self,
-        var_env: &HashMap<u32, CodegenValue>,
-        b: &mut FunctionBuilder<'_>,
-        jmod: &mut M,
-        v: u32,
-        cache: &mut CodegenCache,
-    ) -> ir::Value {
-        let binding = *var_env.get(&v).expect("unbound var");
-        self.value_as_any_ref(b, jmod, cache, binding)
-    }
-}
-
-/// Materialize a local value as an ABI `AnyValueRef` word.
-fn tagged_get<M: cranelift_module::Module>(
-    cx: &mut CodegenFn<'_>,
-    var_env: &HashMap<u32, CodegenValue>,
-    b: &mut FunctionBuilder<'_>,
-    jmod: &mut M,
-    v: u32,
-    cache: &mut CodegenCache,
-) -> ir::Value {
-    let vb = var_env.get(&v).expect("unbound var");
-    match *vb {
-        CodegenValue::RawF64(value) => cx.site(b, jmod).box_float_for_any(value),
-        CodegenValue::RawInt(value) => {
-            let raw = if let Some(&n) = cache.raw_int_consts.get(&v) {
-                cached_iconst(b, cache, n)
-            } else {
-                value
-            };
-            cx.site(b, jmod).box_int_for_any(raw)
-        }
-        CodegenValue::Known { payload, kind } => {
-            cx.site(b, jmod).box_known_non_heap(payload, kind)
-        }
-        CodegenValue::AnyRef(value) => value,
-        CodegenValue::Condition(value) => {
-            let atom = bool_to_fz(b, cache, value);
-            cx.site(b, jmod).box_atom_for_any(atom)
-        }
-    }
-}
-
-fn codegen_value_as_any_ref<M: cranelift_module::Module>(
-    cx: &mut CodegenFn<'_>,
-    b: &mut FunctionBuilder<'_>,
-    jmod: &mut M,
-    cache: &mut CodegenCache,
-    value: CodegenValue,
-) -> ir::Value {
-    match value {
-        CodegenValue::AnyRef(value) => value,
-        CodegenValue::RawInt(value) => cx.site(b, jmod).box_int_for_any(value),
-        CodegenValue::RawF64(value) => cx.site(b, jmod).box_float_for_any(value),
-        CodegenValue::Condition(value) => {
-            let atom = bool_to_fz(b, cache, value);
-            cx.site(b, jmod).box_atom_for_any(atom)
-        }
-        CodegenValue::Known { payload, kind } => {
-            cx.site(b, jmod).box_known_non_heap(payload, kind)
-        }
-    }
-}
-
 pub(crate) fn known_kind_ref_tag(
     b: &mut FunctionBuilder<'_>,
     _payload: ir::Value,
     kind: fz_runtime::any_value::ValueKind,
 ) -> ir::Value {
     b.ins().iconst(types::I8, kind.tag() as i64)
-}
-
-fn codegen_value_raw_atom<M: cranelift_module::Module>(
-    cx: &mut CodegenFn<'_>,
-    b: &mut FunctionBuilder<'_>,
-    jmod: &mut M,
-    cache: &mut CodegenCache,
-    value: CodegenValue,
-) -> ir::Value {
-    match value {
-        CodegenValue::Condition(flag) => bool_to_fz(b, cache, flag),
-        CodegenValue::Known {
-            payload,
-            kind: fz_runtime::any_value::ValueKind::ATOM,
-        } => payload,
-        CodegenValue::AnyRef(value_ref) => cx.site(b, jmod).unbox_atom(value_ref),
-        _ => panic!("CodegenValue is not an atom"),
-    }
 }
 
 /// Check if both BinOp args have narrow typed types and, if so, apply
