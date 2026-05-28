@@ -1520,7 +1520,6 @@ impl CompiledModule {
             b.as_mut().unwrap() as *mut Process
         });
         let _current_process = fz_runtime::process::CurrentProcessGuard::install(ptr);
-        current_process().install_unbounded_reduction_budget();
         self.run_internal(fn_id)
     }
 
@@ -1528,7 +1527,6 @@ impl CompiledModule {
     pub fn run_in(&self, fn_id: FnId, process: &mut Process) -> i64 {
         let ptr = process as *mut Process;
         let _current_process = fz_runtime::process::CurrentProcessGuard::install(ptr);
-        current_process().install_unbounded_reduction_budget();
         self.run_internal(fn_id)
     }
 
@@ -1538,17 +1536,41 @@ impl CompiledModule {
             .get(&fn_id.0)
             .copied()
             .unwrap_or_else(|| panic!("no fn ptr for entry {}", fn_id.0));
-        let kind = self.fn_halt_kinds.get(&fn_id.0).copied().unwrap_or(0) as usize;
-        let halt_cl = fz_runtime::any_value::AnyValueRef::from_heap_object(
-            fz_runtime::any_value::ValueKind::CLOSURE,
-            current_process().halt_cont_singletons[kind] as *const u8,
-        )
-        .expect("halt continuation ref")
-        .raw_word();
-        let process_ptr = current_process() as *mut Process;
-        let _ = unsafe {
-            fz_runtime::pinned_abi::call2(self.main_entry_addr, process_ptr, fp as u64, halt_cl)
-        };
+        // Drive the process through ordinary bounded-quantum scheduling until
+        // it halts. There is no unbounded special case: every quantum spends
+        // the normal reduction budget and yields at its boundary. With a
+        // single process the yielded continuation is simply the next thing
+        // dispatched, so the loop reschedules it — exactly mirroring
+        // `Runtime::run`'s per-process handling, minus the registry.
+        {
+            let process = current_process();
+            process.pending_main_entry = fp as *mut u8;
+            process.pending_main_entry_fn_id = fn_id.0;
+            loop {
+                // Running before the quantum is what distinguishes a
+                // mid-flight yield (still Running, continuation produced)
+                // from a receive-park (state flipped to Blocked) afterward.
+                process.state = ProcessState::Running;
+                process.reset_reduction_budget();
+                self.run_quantum(process);
+                let mid_flight =
+                    process.state == ProcessState::Running && !process.runnable_closure.is_null();
+                if !mid_flight {
+                    // Halted, parked, or idle: a single-process run is done.
+                    break;
+                }
+                // Mid-flight yield: do scheduler-boundary maintenance and let
+                // the next quantum resume through the runnable continuation.
+                process
+                    .boundary_maintenance::<()>(|p| {
+                        p.heap
+                            .gc_process_roots(&mut p.runnable_closure, &mut p.mailbox);
+                        Ok(())
+                    })
+                    .expect("single-process boundary maintenance is infallible");
+                process.state = ProcessState::Ready;
+            }
+        }
         // Single-shot entry path: flush surviving MSO resources and run
         // their dtor closures as fz code before returning. Mirrors the
         // task-exit drain in `Runtime::run_until_idle` and

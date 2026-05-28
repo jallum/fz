@@ -318,10 +318,6 @@ impl Process {
         self.yield_reasons = 0;
     }
 
-    pub fn install_unbounded_reduction_budget(&mut self) {
-        self.reductions_remaining = i32::MAX;
-    }
-
     pub fn finish_yield_report(&mut self, remaining_reductions: i32, reason: u8) {
         self.reductions_remaining = remaining_reductions;
         let burned = i64::from(self.reductions_per_quantum) - i64::from(remaining_reductions);
