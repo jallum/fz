@@ -1273,6 +1273,37 @@ fn main(), do: sum(8, 0, nil)";
         assert_eq!(b.interpreter_yields, 0);
     }
 
+    #[test]
+    fn compiled_yield_measures_full_continuation_allocation_window() {
+        let src = "fn count(0, acc), do: acc\nfn count(n, acc), do: count(n - 1, acc + 1)\nfn main(), do: count(5000, 0)";
+        let m = lower_src(src);
+        let entry = m.fn_by_name("main").unwrap().id;
+        let compiled = compile(
+            &mut crate::types::ConcreteTypes,
+            &m,
+            &crate::telemetry::NullTelemetry,
+        )
+        .unwrap();
+        let mut rt = Runtime::new(&compiled, 1);
+        let pid = rt.spawn(entry);
+        force_reduction_yield(rt.tasks.get_mut(&pid).unwrap());
+
+        rt.run_until_idle();
+
+        let task = rt.task(pid).unwrap();
+        assert_eq!(task.halt_value, 5000);
+        assert!(task.reduction_yields > 0);
+        assert_eq!(task.pending_yield_continuation_margin_before_bytes, 0);
+        assert!(
+            task.max_yield_continuation_bytes
+                > fz_runtime::any_value::closure_size_for_count(3) as u64,
+            "yield telemetry should include scalar boxes as well as the continuation closure; got {} bytes",
+            task.max_yield_continuation_bytes
+        );
+        assert!(task.min_yield_continuation_margin_before_bytes > 0);
+        assert!(task.min_yield_continuation_margin_after_bytes > 0);
+    }
+
     /// quiet_quanta increments each quantum that completes without a
     /// mid-flight yield. A non-allocating recursive function should complete
     /// in one quantum and quiet_quanta should be 1.

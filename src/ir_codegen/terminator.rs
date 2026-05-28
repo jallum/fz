@@ -1304,6 +1304,8 @@ fn emit_back_edge_yield_check<M: cranelift_module::Module>(
         })
         .collect();
     debug_assert_eq!(abi_cursor, native_args.len());
+    let slow_path_begin_fref = jmod.declare_func_in_func(runtime.yield_slow_path_begin_id, b.func);
+    b.ins().call(slow_path_begin_fref, &[]);
     let alloc_fref = jmod.declare_func_in_func(runtime.alloc_closure_id, b.func);
     let fid_v = b.ins().iconst(types::I32, callee_sid as i64);
     let n_caps_v = b.ins().iconst(types::I32, native_root_values.len() as i64);

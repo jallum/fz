@@ -1331,8 +1331,13 @@ fn tail_recursion_count_matches_cps_in_clif_section_8_1() {
         body,
     );
     assert!(
+        body.contains("@fz_yield_slow_path_begin"),
+        "count_s2 must sample the full yield slow-path allocation window:\n{}",
+        body,
+    );
+    assert!(
         !body.contains("fz_alloc_frame") && !body.contains("fz_alloc_struct"),
-        "count_s2 reduction slow path should only allocate the yield continuation closure:\n{}",
+        "count_s2 reduction slow path should avoid frame/struct allocation while building the yield continuation:\n{}",
         body,
     );
 
@@ -3053,6 +3058,7 @@ fn continuation_materialization_boundaries_stay_explicit() {
     let source = fs::read_to_string("src/ir_codegen/terminator.rs").expect("read terminator");
     for needle in [
         "fn emit_back_edge_yield_check",
+        "runtime.yield_slow_path_begin_id",
         "runtime.yield_mid_flight_report_id",
         "runtime.materialize_cont_id",
         "fn emit_receive",

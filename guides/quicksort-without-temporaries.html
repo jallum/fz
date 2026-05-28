@@ -317,6 +317,7 @@ scheduler:</p>
 
 <pre>
 if reductions_remaining <= 0:
+  fz_yield_slow_path_begin()
   k = closure(next_loop_fn, next_args, current_cont)
   return fz_yield_mid_flight_report(k, reductions_remaining, YIELD_REASON_REDUCTIONS)
 </pre>

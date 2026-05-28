@@ -92,8 +92,9 @@ The mechanism is one thing: budget exhaustion. The cause remains observable:
 
 ## Heap Reserve Invariant
 
-Allocation pressure can only force a yield if the process can still allocate the
-yield continuation needed to hand control back to the scheduler.
+Allocation pressure should force a yield while the process still has enough
+headroom to allocate the yield continuation needed to hand control back to the
+scheduler.
 
 The invariant is:
 
@@ -101,9 +102,9 @@ The invariant is:
 allocation_watermark <= heap_end - yield_continuation_reserve
 ```
 
-The first implementation should use bounded pessimism, not exact accounting.
-Make the reserve explicit and conservative enough that continuation
-materialization cannot fail.
+The implementation uses bounded pessimism, not exact accounting. The reserve is
+an explicit soft watermark, and compiled yield telemetry measures the full slow
+path allocation window so the bound can be tightened or raised from evidence.
 
 Recommended initial heap layout:
 
@@ -151,7 +152,9 @@ second allocation check.
 ## Continuation Allocation
 
 Yield-continuation materialization is allowed to spend from the reserved band.
-Ordinary allocation is not.
+Ordinary allocation is not. Compiled code samples heap margin at slow-path entry
+and records the delta when `fz_yield_mid_flight_report(...)` hands the
+continuation to the scheduler.
 
 If the continuation cannot be materialized within the reserve, that is a
 runtime/compiler invariant failure. It should not fall back to "try GC now",

@@ -177,6 +177,7 @@ pub(crate) fn declare_runtime_symbols<M: cranelift_module::Module>(
         main_entry_id: scheduler.main_entry_id,
         drain_dtor_entry_id: scheduler.drain_dtor_entry_id,
         yield_mid_flight_report_id: scheduler.yield_mid_flight_report_id,
+        yield_slow_path_begin_id: scheduler.yield_slow_path_begin_id,
         reductions_remaining_data_id,
     })
 }
@@ -884,6 +885,7 @@ struct SchedulerRefs {
     main_entry_id: FuncId,
     drain_dtor_entry_id: FuncId,
     yield_mid_flight_report_id: FuncId,
+    yield_slow_path_begin_id: FuncId,
 }
 
 /// Scheduler-facing LOCAL entry shims and the mid-flight yield helper.
@@ -896,6 +898,7 @@ fn declare_scheduler_runtime<M: cranelift_module::Module>(
         &[types::I64, types::I32, types::I32],
         &[types::I64],
     )?;
+    let yield_slow_path_begin_id = decl_import(jmod, "fz_yield_slow_path_begin", &[], &[])?;
     // fz_spawn_entry: SystemV entry the scheduler calls to launch a new
     // task's zero-arg closure. Sig: `(closure:i64) -> i64`.
     let mut se_sig = Signature::new(CallConv::SystemV);
@@ -932,6 +935,7 @@ fn declare_scheduler_runtime<M: cranelift_module::Module>(
         main_entry_id,
         drain_dtor_entry_id,
         yield_mid_flight_report_id,
+        yield_slow_path_begin_id,
     })
 }
 
@@ -1049,5 +1053,6 @@ pub(crate) struct RuntimeRefs {
     /// drains `pending_dtors` through this shim at task-exit.
     pub(super) drain_dtor_entry_id: FuncId,
     pub(super) yield_mid_flight_report_id: FuncId,
+    pub(super) yield_slow_path_begin_id: FuncId,
     pub(super) reductions_remaining_data_id: DataId,
 }

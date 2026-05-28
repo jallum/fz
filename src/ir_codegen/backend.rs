@@ -509,6 +509,10 @@ fn register_runtime_symbols(builder: &mut JITBuilder) {
         fz_runtime::ir_runtime::fz_yield_mid_flight_report as *const u8,
     );
     builder.symbol(
+        "fz_yield_slow_path_begin",
+        fz_runtime::ir_runtime::fz_yield_slow_path_begin as *const u8,
+    );
+    builder.symbol(
         "fz_get_static_closure",
         fz_runtime::ir_runtime::fz_get_static_closure as *const u8,
     );

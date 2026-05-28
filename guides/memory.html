@@ -385,8 +385,11 @@ to a bump and one precomputed watermark compare:</p>
   }
 </pre>
 
-<p>The reserved band exists so the process can still allocate the continuation
-closure it must hand to the scheduler.</p>
+<p>The reserved band is a soft emergency margin so the process can still build
+the scheduler continuation it must hand back. Compiled yield telemetry samples
+the margin before and after the slow path, so
+<code>max_yield_continuation_bytes</code> includes the continuation closure,
+scalar boxes, and materialized continuation state observed while yielding.</p>
 
 <h3>The back-edge check</h3>
 
@@ -406,6 +409,7 @@ mutual recursion (<code>f → g → f</code>) is covered automatically.</p>
   brgt remaining, 0, $fast
 
   <span class="note">; slow path (budget exhausted):</span>
+  call fz_yield_slow_path_begin()
   cont = call fz_alloc_closure(next_loop_fn, argc, halt_kind, code_ptr)
   store arg0, cont.capture[0]
   store arg1, cont.capture[1]

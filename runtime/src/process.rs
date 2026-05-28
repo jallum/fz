@@ -147,7 +147,13 @@ pub struct Process {
     /// Compact reason bits describing why the current/last quantum yielded.
     /// See `YIELD_REASON_*`.
     pub yield_reasons: u8,
-    /// Largest scheduler continuation closure observed at a mid-flight yield.
+    /// Heap margin sampled before the compiled yield slow path starts building
+    /// its scheduler continuation. Zero means no active sample.
+    pub pending_yield_continuation_margin_before_bytes: u64,
+    /// Largest scheduler continuation allocation window observed at a
+    /// mid-flight yield. This includes the closure, scalar capture boxes, and
+    /// materialized continuation state when the compiled slow path provides a
+    /// begin sample.
     pub max_yield_continuation_bytes: u64,
     /// Lowest remaining in-block heap margin immediately before observed
     /// continuation materialization. Zero means no sample yet.
@@ -210,6 +216,7 @@ impl Process {
             reductions_executed: 0,
             reduction_yields: 0,
             yield_reasons: 0,
+            pending_yield_continuation_margin_before_bytes: 0,
             max_yield_continuation_bytes: 0,
             min_yield_continuation_margin_before_bytes: 0,
             min_yield_continuation_margin_after_bytes: 0,
@@ -324,10 +331,23 @@ impl Process {
                 == YIELD_REASON_ALLOCATION_PRESSURE
     }
 
+    pub fn begin_yield_continuation_allocation(&mut self, margin_before: usize) {
+        self.pending_yield_continuation_margin_before_bytes = margin_before as u64;
+    }
+
     pub fn note_yield_continuation_allocation(&mut self, bytes: usize, margin_after: usize) {
-        let bytes = bytes as u64;
+        let observed_bytes = bytes as u64;
         let margin_after = margin_after as u64;
-        let margin_before = margin_after.saturating_add(bytes);
+        let sampled_margin_before = self.pending_yield_continuation_margin_before_bytes;
+        self.pending_yield_continuation_margin_before_bytes = 0;
+        let margin_before = if sampled_margin_before == 0 {
+            margin_after.saturating_add(observed_bytes)
+        } else {
+            sampled_margin_before
+        };
+        let bytes = margin_before
+            .saturating_sub(margin_after)
+            .max(observed_bytes);
         self.max_yield_continuation_bytes = self.max_yield_continuation_bytes.max(bytes);
         self.min_yield_continuation_margin_before_bytes = min_nonzero(
             self.min_yield_continuation_margin_before_bytes,

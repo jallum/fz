@@ -1272,6 +1272,7 @@ impl CompiledModule {
             reductions_executed: 0,
             reduction_yields: 0,
             yield_reasons: 0,
+            pending_yield_continuation_margin_before_bytes: 0,
             max_yield_continuation_bytes: 0,
             min_yield_continuation_margin_before_bytes: 0,
             min_yield_continuation_margin_after_bytes: 0,

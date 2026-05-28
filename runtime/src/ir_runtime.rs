@@ -640,6 +640,12 @@ pub extern "C" fn fz_yield_mid_flight_report(
     YIELD_PTR as *mut u8
 }
 
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_yield_slow_path_begin() {
+    let p = current_process();
+    p.begin_yield_continuation_allocation(p.heap.bytes_remaining_in_block());
+}
+
 // ===== Closure cluster (fz-ul4.23.4.11) =====
 //
 // Closures are schema-backed environments with a raw code pointer at +8.
