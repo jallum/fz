@@ -47,10 +47,10 @@ pub(crate) struct CodegenFnBody<'a, 'env, 'fb, M, K = BodyContext>
 where
     M: cranelift_module::Module,
 {
-    cx: &'a mut CodegenFn<'env, K>,
-    b: &'a mut FunctionBuilder<'fb>,
-    jmod: &'a mut M,
-    cache: &'a mut CodegenCache,
+    pub(super) cx: &'a mut CodegenFn<'env, K>,
+    pub(super) b: &'a mut FunctionBuilder<'fb>,
+    pub(super) jmod: &'a mut M,
+    pub(super) cache: &'a mut CodegenCache,
 }
 
 pub(crate) struct CodegenFnSite<'a, 'env, 'fb, M, K = BodyContext>

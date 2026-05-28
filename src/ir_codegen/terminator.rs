@@ -472,7 +472,10 @@ fn emit_halt<M: cranelift_module::Module>(
 ) -> Result<(), CodegenError> {
     let _ = host_ctx;
     let binding = *var_env.get(&v.0).expect("unbound halt val");
-    emit_halt_for_binding(cx, b, jmod, var_env, cache, v.0, binding);
+    {
+        let mut body = cx.body(b, jmod, cache);
+        emit_halt_for_binding(&mut body, var_env, v.0, binding);
+    }
     if is_native {
         // fz_halt already recorded process.halt_value; the
         // returned bits are unobservable but the sig requires
@@ -619,10 +622,12 @@ fn emit_return_term<
             let value = *var_env.get(&v.0).expect("unbound return val");
             // This fn is never a cont target; cont_ptr is statically
             // null. Skip the load/icmp/brif dispatch.
-            emit_halt_and_return_null(cx, b, jmod, cache, value);
+            let mut body = cx.body(b, jmod, cache);
+            emit_halt_and_return_null(&mut body, value);
         } else {
             let value = *var_env.get(&v.0).expect("unbound return val");
-            emit_return(cx, b, jmod, cache, frame_ptr, value);
+            let mut body = cx.body(b, jmod, cache);
+            emit_return(&mut body, frame_ptr, value);
         }
     }
     Ok(())
@@ -846,17 +851,17 @@ fn emit_call_term<
                 .iter()
                 .map(|v| *var_env.get(&v.0).expect("unbound captured val"))
                 .collect();
-            emit_call(
-                cx,
-                b,
-                jmod,
-                schemas,
-                frame_ptr,
-                callee_sid,
-                &arg_bindings,
-                Some((cont_sid, &cap_bindings)),
-                cache,
-            );
+            {
+                let mut body = cx.body(b, jmod, cache);
+                emit_call(
+                    &mut body,
+                    schemas,
+                    frame_ptr,
+                    callee_sid,
+                    &arg_bindings,
+                    Some((cont_sid, &cap_bindings)),
+                );
+            }
         }
     }
     Ok(())
@@ -1108,17 +1113,17 @@ fn emit_tail_call_term<
                 .iter()
                 .map(|v| *var_env.get(&v.0).expect("unbound tailcall arg"))
                 .collect();
-            emit_tail_call(
-                cx,
-                b,
-                jmod,
-                schemas,
-                this_spec_id,
-                frame_ptr,
-                callee_sid,
-                &arg_bindings,
-                cache,
-            );
+            {
+                let mut body = cx.body(b, jmod, cache);
+                emit_tail_call(
+                    &mut body,
+                    schemas,
+                    this_spec_id,
+                    frame_ptr,
+                    callee_sid,
+                    &arg_bindings,
+                );
+            }
         }
     }
     Ok(())
