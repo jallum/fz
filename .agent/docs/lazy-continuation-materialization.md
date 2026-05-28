@@ -115,6 +115,6 @@ Quicksort's native JIT/AOT fixture pins the core signal:
 ```text
 closure_allocs = 0
 closure_bytes = 0
-list_cons_bytes = 768
-heap_bytes = 768
+list_cons_bytes = 176
+heap_bytes = 176
 ```

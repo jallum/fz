@@ -134,8 +134,9 @@ append([1, 2, 3], [4, 5])
 ```
 
 as a source `append/2` function, not an append BIF. Its native value path
-allocates eight cons cells: five for the two list literals and three for the
-copied prefix. That fixture is an allocation baseline for library algorithms;
+allocates five cons cells: exactly the two input list literals. The copied
+prefix is removed by owned-cons reuse rather than by a special append helper.
+That fixture is an allocation baseline for library algorithms;
 `fixtures/quicksort` is the return-context baseline that proves ListTail
 context planning removes append-shaped rebuilding around recursive calls.
 
@@ -163,19 +164,20 @@ owned_cons_reuse:
 The hidden parameter is not part of semantic specialization (`_` in the spec
 key), but it gives native codegen the object-local capability needed to turn
 `[h | new_tail]` into a reuse attempt for `C`. Native lowering consumes the
-fact in list construction and in `cons_then_direct` ListTail return plans. The
-runtime alias bit remains the cell-local guard: if `C` is still unaliased, the
-runtime may relink it in place; if `C` was marked aliased, the codegen-facing
-operation must allocate a fresh cons with the same head and the requested tail.
-An aliased reuse attempt is therefore an allocation miss, not a user-visible
-panic.
+fact through one helper for `MakeList`, `DestListCons`, and `cons_then_direct`
+ListTail return plans. That helper emits `fz_list_reuse_or_cons_tail_ref`.
+The runtime alias bit remains the cell-local guard: if `C` is still unaliased,
+the helper relinks it in place; if `C` was marked aliased, the helper allocates
+a fresh cons with the same head and the requested tail. An aliased reuse
+attempt is therefore an allocation miss, not a user-visible panic.
 
 A source cons becomes ineligible for an owned reuse credit, or has its alias bit
 set before reuse, when it is published outside the single owned rewrite path.
 The publication barriers include closure and lazy-continuation capture that can
 escape the current native activation, insertion into another heap container,
-receive/scheduler-visible same-heap handoff, halt, and allocation-stat reads
-that make allocation timing observable.
+receive/scheduler-visible same-heap handoff, a non-tail call whose continuation
+retains the same argument, halt, and allocation-stat reads that make allocation
+timing observable.
 Allocation alone is still not source-observable; crossing an observer is the
 barrier.
 

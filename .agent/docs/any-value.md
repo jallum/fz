@@ -193,6 +193,10 @@ The alias bit is set, or reuse-credit creation is refused, when a cons cell is
 published outside the single owned rewrite path. A publication includes storing
 the cell in another heap object, capturing it in a closure or scheduler-visible
 continuation, or crossing a barrier where allocation timing becomes observable.
+Native call lowering also marks an argument when the caller passes it to a
+callee and keeps the same value in the continuation; that protects examples
+like `xs |> reverse(); xs |> map()` from letting the first call rewrite the
+list that the continuation will later traverse.
 Passing a value to an extern does not publish it: an extern that wants to retain
 a value beyond the call must copy it. Cross-process
 send and self-send are copy boundaries, not alias boundaries: the sender's

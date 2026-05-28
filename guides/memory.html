@@ -228,8 +228,9 @@ predictable. A plain recursive append:</p>
 
 <p>still compiles as source code. In the <code>append</code> fixture,
 <code>append([1, 2, 3], [4, 5])</code> allocates the five list-literal cons cells
-and the three prefix-copy cons cells, with no tuple/struct or map allocation in
-the value path.</p>
+and no prefix-copy cons cells, with no tuple/struct or map allocation in the
+value path. The recursive append clauses get ordinary owned-cons reuse credits;
+there is no append BIF.</p>
 
 <p><strong>Map construction:</strong></p>
 
@@ -263,9 +264,9 @@ capability; it does not guess from source names.</p>
 <p>For recursive list code this is tail recursion modulo cons: the compiler
 passes the tail context explicitly, then allocates immutable cons cells in front
 of that tail. In <code>fixtures/quicksort</code>, the native paths pin
-<code>list_cons_allocs = 48</code>, <code>list_cons_bytes = 768</code>,
+<code>list_cons_allocs = 11</code>, <code>list_cons_bytes = 176</code>,
 <code>struct_allocs = 0</code>, and headline heap bytes
-<code>768</code>.</p>
+<code>176</code>.</p>
 
 <p><strong>Other heap layouts:</strong></p>
 
@@ -829,7 +830,8 @@ current process allocation counters.</p>
 
 <p>Owned list-cell reuse has one more boundary: publication. A cons cell that is
 stored into another heap object, captured by an escaping closure or lazy
-continuation, or carried across a scheduler-visible same-heap handoff is no longer privately owned by the
+continuation, carried across a scheduler-visible same-heap handoff, or passed to
+a non-tail call while the caller's continuation retains the same value is no longer privately owned by the
 rewrite that destructured it. The compiler either refuses to create a reuse
 credit for that cell or marks the cell aliased before a later reuse attempt.</p>
 

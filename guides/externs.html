@@ -460,6 +460,9 @@ prototype in the C header.
       doesn't paper over that.</li>
   <li>They're not free. Each extern call crosses an ABI boundary and may
       block the calling fz process. For hot inner loops, prefer pure fz.</li>
+  <li>They're not owners of fz heap values passed as arguments. If an extern
+      wants to retain a value after returning, it must copy it into storage it
+      owns.</li>
 </ul>
 
 <div class="box green">
