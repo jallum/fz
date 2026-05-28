@@ -175,5 +175,10 @@ After phase one lands, the next natural plans are:
   when allocations are codegen'd;
 - reduce or remove Rust TLS `CURRENT_PROCESS` only where helper boundaries can
   read process state without target-specific fragility;
-- collapse any remaining temporary thread-local reductions scaffolding with
-  removal tickets.
+- ~~collapse any remaining temporary thread-local reductions scaffolding with
+  removal tickets.~~ Done (`fz-j96`, reductions-collapse): the thread-local
+  `reductions` module is deleted. `Process.reductions_remaining` and
+  `Process.yield_reasons` are the sole authority — compiled code reaches them
+  through the pinned register, interpreter and runtime helpers through the
+  `CURRENT_PROCESS` TLS pointer. Allocation pressure writes the budget and
+  reason directly on the `Process` via `process::expire_current_budget`.

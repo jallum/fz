@@ -147,7 +147,15 @@ pub struct Process {
     /// Cumulative yields caused by allocation pressure expiring the current
     /// reduction budget.
     pub allocation_pressure_yields: u64,
-    /// Compact reason bits describing why the current/last quantum yielded.
+    /// Compact reason bits pending for the next scheduler boundary. Allocation
+    /// pressure (`expire_current_budget`) and the yielding back edge both set
+    /// bits here; the boundary consumes them via `finish_yield_report` (which
+    /// attributes the cumulative cause counters) and `boundary_maintenance`
+    /// (which clears them). A bit can therefore be observed standing on a
+    /// running process — e.g. a tail allocation trips the watermark after the
+    /// final back edge and the process exits before yielding. The cumulative
+    /// `reduction_yields` / `allocation_pressure_yields` counters, not this
+    /// transient bitfield, are the authoritative yield-cause telemetry.
     /// See `YIELD_REASON_*`.
     pub yield_reasons: u8,
     /// Heap margin sampled before the compiled yield slow path starts building
