@@ -2348,6 +2348,7 @@ fn physical_capability_scaffold_and_signals_are_pinned() {
         "owned_cons_reuse_credits",
         "src/ir_lower/cps.rs",
         "owned_cons_captures",
+        "physical\n  params",
         "src/ir_capture_norm.rs",
         "src/ir_reuse.rs",
         "emit_owned_cons_reuse_or_alloc",
@@ -2376,8 +2377,8 @@ fn physical_capability_scaffold_and_signals_are_pinned() {
     assert!(
         cps.contains("owned_cons_captures")
             && cps.contains("hidden_owned_cons")
-            && cps.contains("mark_param_ignored"),
-        "current CPS transport scaffold should stay visible until replaced"
+            && !cps.contains("mark_param_ignored"),
+        "CPS owned-cons transport should use physical params, not ignored semantic params"
     );
 
     let capture_norm =

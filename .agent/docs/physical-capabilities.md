@@ -27,7 +27,8 @@ but it still uses transitional plumbing:
 - `src/fz_ir.rs` stores `ignored_entry_params` beside semantic params.
 - `src/fz_ir.rs` stores `owned_cons_reuse_credits` as the reusable-cons seed.
 - `src/ir_lower/cps.rs` transports `owned_cons_captures` through ordinary
-  continuation capture machinery.
+  continuation capture machinery, but owned-cons source slots are physical
+  params rather than ignored semantic params.
 - `src/ir_capture_norm.rs` runs local DCE to repair capability liveness after
   capture pruning.
 - `src/ir_reuse.rs` performs a standalone publication-pruning cleanup pass

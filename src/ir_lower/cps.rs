@@ -144,9 +144,6 @@ fn install_capture_metadata(
     owned_cons: &[OwnedConsCapture],
     params: &CaptureParams,
 ) {
-    for hidden in &params.hidden_owned_cons {
-        builder.mark_param_ignored(*hidden);
-    }
     for (capture, source_param) in owned_cons.iter().zip(&params.hidden_owned_cons) {
         if let Some((_, head_param)) = captured
             .iter()
