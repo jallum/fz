@@ -24,7 +24,8 @@ pub(crate) fn mark_retained_call_args_as_published<M: cranelift_module::Module>(
         let Some(CodegenValue::AnyRef(value_ref)) = var_env.get(&arg.0).copied() else {
             continue;
         };
-        let _ = cx.mark_published_ref_aliased(b, jmod, value_ref);
+        let mut site = cx.site(b, jmod);
+        let _ = site.mark_published_ref_aliased(value_ref);
     }
 }
 

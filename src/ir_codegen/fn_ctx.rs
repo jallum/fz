@@ -20,7 +20,7 @@ pub(crate) struct FunctionImports {
 }
 
 impl FunctionImports {
-    pub(crate) fn func_ref<M: cranelift_module::Module>(
+    fn func_ref<M: cranelift_module::Module>(
         &mut self,
         jmod: &mut M,
         func: &mut ir::Function,
@@ -116,7 +116,7 @@ impl<'env, K> CodegenFn<'env, K> {
         self.imports.func_ref(jmod, b.func, id)
     }
 
-    pub(crate) fn call_func<M: cranelift_module::Module>(
+    fn call_func<M: cranelift_module::Module>(
         &mut self,
         b: &mut FunctionBuilder<'_>,
         jmod: &mut M,
@@ -127,7 +127,7 @@ impl<'env, K> CodegenFn<'env, K> {
         b.ins().call(fref, args)
     }
 
-    pub(crate) fn call_func1<M: cranelift_module::Module>(
+    fn call_func1<M: cranelift_module::Module>(
         &mut self,
         b: &mut FunctionBuilder<'_>,
         jmod: &mut M,
@@ -138,7 +138,7 @@ impl<'env, K> CodegenFn<'env, K> {
         b.inst_results(inst)[0]
     }
 
-    pub(crate) fn ref_tag<M: cranelift_module::Module>(
+    pub(super) fn ref_tag<M: cranelift_module::Module>(
         &mut self,
         b: &mut FunctionBuilder<'_>,
         jmod: &mut M,
@@ -147,7 +147,7 @@ impl<'env, K> CodegenFn<'env, K> {
         self.call_func1(b, jmod, self.runtime.type_of_id, &[value_ref])
     }
 
-    pub(crate) fn truthy_ref<M: cranelift_module::Module>(
+    pub(super) fn truthy_ref<M: cranelift_module::Module>(
         &mut self,
         b: &mut FunctionBuilder<'_>,
         jmod: &mut M,
@@ -156,7 +156,7 @@ impl<'env, K> CodegenFn<'env, K> {
         self.call_func1(b, jmod, self.runtime.truthy_ref_id, &[value_ref])
     }
 
-    pub(crate) fn mark_published_ref_aliased<M: cranelift_module::Module>(
+    pub(super) fn mark_published_ref_aliased<M: cranelift_module::Module>(
         &mut self,
         b: &mut FunctionBuilder<'_>,
         jmod: &mut M,
@@ -170,7 +170,7 @@ impl<'env, K> CodegenFn<'env, K> {
         )
     }
 
-    pub(crate) fn box_int_for_any<M: cranelift_module::Module>(
+    pub(super) fn box_int_for_any<M: cranelift_module::Module>(
         &mut self,
         b: &mut FunctionBuilder<'_>,
         jmod: &mut M,
@@ -179,7 +179,7 @@ impl<'env, K> CodegenFn<'env, K> {
         self.call_func1(b, jmod, self.runtime.box_int_for_any_id, &[raw])
     }
 
-    pub(crate) fn box_float_for_any<M: cranelift_module::Module>(
+    pub(super) fn box_float_for_any<M: cranelift_module::Module>(
         &mut self,
         b: &mut FunctionBuilder<'_>,
         jmod: &mut M,
@@ -638,6 +638,15 @@ where
 
     pub(crate) fn value_raw_int(&mut self, value: CodegenValue) -> ir::Value {
         self.cx.value_raw_int(self.b, self.jmod, value)
+    }
+
+    pub(crate) fn value_raw_float(&mut self, value: CodegenValue) -> ir::Value {
+        self.cx.value_raw_float(self.b, self.jmod, value)
+    }
+
+    pub(crate) fn mark_published_ref_aliased(&mut self, value_ref: ir::Value) -> ir::Value {
+        self.cx
+            .mark_published_ref_aliased(self.b, self.jmod, value_ref)
     }
 
     pub(crate) fn store_closure_capture_ref_word(

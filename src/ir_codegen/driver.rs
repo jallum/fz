@@ -1911,10 +1911,9 @@ fn emit_mid_flight_cont_bodies<M: cranelift_module::Module>(
                     let mut site = cx.site(b, m);
                     site.closure_capture_ref_at(self_bits, i)
                 };
+                let mut site = cx.site(b, m);
                 arg_shape.replay_from_capture(
-                    &mut cx,
-                    b,
-                    m,
+                    &mut site,
                     CodegenValue::AnyRef(value_ref),
                     &mut args,
                 );

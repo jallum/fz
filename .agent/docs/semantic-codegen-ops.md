@@ -22,8 +22,10 @@ prefer `CodegenFnBody` for cache-bearing operations such as `value_as_any_ref`,
 `tagged_var`, `any_ref_for_var`, `value_raw_atom`, and publication. Cache-free
 operations such as truthiness checks, type-tag tests, and raw int extraction may
 use `CodegenFnSite`. The broad `CodegenFn` value methods are implementation
-plumbing for those semantic views and for small cache-free replay shims; new
-ordinary lowering should not call them directly.
+plumbing for those semantic views. They are intentionally kept at
+module-internal visibility and should only be reached from `CodegenFnBody`,
+`CodegenFnSite`, or closely-related value helpers; ordinary lowering should not
+call them directly.
 
 Generated runtime shim bodies do not have a `CodegenEnv`, so they use
 `CodegenFn<RuntimeShimContext>` through `CodegenFn::for_runtime_shim`. That
@@ -65,8 +67,10 @@ direct `declare_func_in_func` imports; `call.rs`, `closure.rs`, and
 `support.rs` use `CodegenFn::body(...)` for migrated value/list operations;
 call-argument coercion and typed callee-frame stores live on `CodegenFnBody`;
 ordinary `prim.rs`/`terminator.rs` value coercions flow through `CodegenFnBody`
-or `CodegenFnSite`; and retired free helpers have been deleted rather than kept
-as compatibility shims. Larger `prim.rs` and `terminator.rs` still contain
-documented boundary imports for dynamic calls, externs, and data imports; reduce
-those only by moving a complete semantic operation behind `CodegenFn`,
-`CodegenFnBody`, or `CodegenFnSite`.
+or `CodegenFnSite`; direct `cx.value_*`, `cx.tagged_var`, `cx.any_ref_for_var`,
+`cx.list_*`, `cx.ref_tag`, and `cx.mark_published_ref_aliased` calls are absent
+outside the semantic context/value implementation modules; and retired free
+helpers have been deleted rather than kept as compatibility shims. Larger
+`prim.rs` and `terminator.rs` still contain documented boundary imports for
+dynamic calls, externs, and data imports; reduce those only by moving a complete
+semantic operation behind `CodegenFn`, `CodegenFnBody`, or `CodegenFnSite`.

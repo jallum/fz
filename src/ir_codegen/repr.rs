@@ -129,18 +129,16 @@ impl MidFlightArgShape {
 
     pub(crate) fn replay_from_capture<M: cranelift_module::Module, K>(
         &self,
-        cx: &mut CodegenFn<'_, K>,
-        b: &mut FunctionBuilder<'_>,
-        jmod: &mut M,
+        site: &mut CodegenFnSite<'_, '_, '_, M, K>,
         value: CodegenValue,
         out: &mut Vec<ir::Value>,
     ) {
         match self {
             MidFlightArgShape::Value(ArgRepr::RawF64) => {
-                out.push(cx.value_raw_float(b, jmod, value));
+                out.push(site.value_raw_float(value));
             }
             MidFlightArgShape::Value(ArgRepr::RawInt) => {
-                out.push(cx.value_raw_int(b, jmod, value));
+                out.push(site.value_raw_int(value));
             }
             MidFlightArgShape::Value(ArgRepr::ValueRef) => out.push(value.value()),
             MidFlightArgShape::Value(ArgRepr::Condition) => {

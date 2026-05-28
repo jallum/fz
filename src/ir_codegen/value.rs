@@ -285,7 +285,7 @@ impl CodegenValue {
 }
 
 impl<K> CodegenFn<'_, K> {
-    pub(crate) fn tagged_var<M: cranelift_module::Module>(
+    pub(super) fn tagged_var<M: cranelift_module::Module>(
         &mut self,
         var_env: &HashMap<u32, CodegenValue>,
         b: &mut FunctionBuilder<'_>,
@@ -296,7 +296,7 @@ impl<K> CodegenFn<'_, K> {
         tagged_get(self, var_env, b, jmod, v, cache)
     }
 
-    pub(crate) fn value_as_any_ref<M: cranelift_module::Module>(
+    pub(super) fn value_as_any_ref<M: cranelift_module::Module>(
         &mut self,
         b: &mut FunctionBuilder<'_>,
         jmod: &mut M,
@@ -306,7 +306,7 @@ impl<K> CodegenFn<'_, K> {
         codegen_value_as_any_ref(self, b, jmod, cache, value)
     }
 
-    pub(crate) fn value_truthy<M: cranelift_module::Module>(
+    pub(super) fn value_truthy<M: cranelift_module::Module>(
         &mut self,
         b: &mut FunctionBuilder<'_>,
         jmod: &mut M,
@@ -315,7 +315,7 @@ impl<K> CodegenFn<'_, K> {
         codegen_value_truthy(self, b, jmod, value)
     }
 
-    pub(crate) fn value_is_tag<M: cranelift_module::Module>(
+    pub(super) fn value_is_tag<M: cranelift_module::Module>(
         &mut self,
         b: &mut FunctionBuilder<'_>,
         jmod: &mut M,
@@ -325,7 +325,7 @@ impl<K> CodegenFn<'_, K> {
         codegen_value_is_tag(self, b, jmod, value, tag)
     }
 
-    pub(crate) fn value_atom_id_is<M: cranelift_module::Module>(
+    pub(super) fn value_atom_id_is<M: cranelift_module::Module>(
         &mut self,
         b: &mut FunctionBuilder<'_>,
         jmod: &mut M,
@@ -335,7 +335,7 @@ impl<K> CodegenFn<'_, K> {
         codegen_value_atom_id_is(self, b, jmod, value, atom_id)
     }
 
-    pub(crate) fn value_raw_int<M: cranelift_module::Module>(
+    pub(super) fn value_raw_int<M: cranelift_module::Module>(
         &mut self,
         b: &mut FunctionBuilder<'_>,
         jmod: &mut M,
@@ -344,7 +344,7 @@ impl<K> CodegenFn<'_, K> {
         codegen_value_raw_int(self, b, jmod, value)
     }
 
-    pub(crate) fn value_raw_float<M: cranelift_module::Module>(
+    pub(super) fn value_raw_float<M: cranelift_module::Module>(
         &mut self,
         b: &mut FunctionBuilder<'_>,
         jmod: &mut M,
@@ -353,7 +353,7 @@ impl<K> CodegenFn<'_, K> {
         codegen_value_raw_float(self, b, jmod, value)
     }
 
-    pub(crate) fn value_raw_atom<M: cranelift_module::Module>(
+    pub(super) fn value_raw_atom<M: cranelift_module::Module>(
         &mut self,
         b: &mut FunctionBuilder<'_>,
         jmod: &mut M,
@@ -363,7 +363,7 @@ impl<K> CodegenFn<'_, K> {
         codegen_value_raw_atom(self, b, jmod, cache, value)
     }
 
-    pub(crate) fn any_ref_for_var<M: cranelift_module::Module>(
+    pub(super) fn any_ref_for_var<M: cranelift_module::Module>(
         &mut self,
         var_env: &HashMap<u32, CodegenValue>,
         b: &mut FunctionBuilder<'_>,
