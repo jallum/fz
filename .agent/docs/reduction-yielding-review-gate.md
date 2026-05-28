@@ -9,10 +9,11 @@ test suite.
 
 ## Signal
 
-- Allocation pressure must expire the same budget cell that the active execution
-  mode spends.
-- JIT and AOT must report process reduction telemetry from the budget cell their
-  generated code actually decrements.
+- Allocation pressure must force the active execution mode to yield through the
+  same scheduler boundary as ordinary reduction exhaustion.
+- Every yield boundary must report only the continuation, signed remaining
+  reductions, and yield reason. The scheduler already knows the turn budget it
+  issued and derives reductions burned from that.
 - The continuation reserve must be either proven conservative for the emitted
   yield slow path or honestly exposed as a soft watermark with telemetry that
   measures the full slow-path allocation cost.
@@ -23,11 +24,13 @@ test suite.
 
 ## Strategy
 
-The gate is intentionally split by contract boundary, not by file. Each child
-ticket gets one failing acceptance check first, then the smallest runtime or
-codegen change that makes the check pass. Do not merge these fixes into a broad
-cleanup commit: each ticket should leave one crisp commit and close one review
-finding.
+The gate is intentionally split by contract boundary, not by file. The central
+contract is `scheduler_yield(continuation, remaining_reductions, reason)`.
+Negative `remaining_reductions` is meaningful: it records how far over budget
+the process ran before reaching a yield boundary. Each child ticket gets one
+failing acceptance check first, then the smallest runtime or codegen change that
+makes the check pass. Do not merge these fixes into a broad cleanup commit: each
+ticket should leave one crisp commit and close one review finding.
 
 ## Gate Acceptance
 
@@ -40,24 +43,24 @@ The parent gate closes when all child tickets are closed and these checks pass:
 
 ## Plans
 
-### 1. Interpreter allocation pressure spends the process budget
+### 1. Interpreter allocation pressure reaches the yield boundary
 
 Goal: allocation pressure must make an interpreted process yield at the next
 back edge without waiting for its normal budget to run out.
 
 Current state: `Heap::alloc()` expires `fz_runtime::reductions`, but the
-interpreter spends `Process.reductions_remaining` directly. The interpreter
-scheduler only consumes runtime yield reasons after `InterpStep::Yielded`, so
-allocation pressure can be latent until ordinary budget exhaustion.
+interpreter spends `Process.reductions_remaining` directly and returns
+`InterpStep::Yielded` without a boundary report. The interpreter scheduler only
+consumes runtime yield reasons after `InterpStep::Yielded`, so allocation
+pressure can be latent until ordinary budget exhaustion.
 
 Plan:
 
 1. Add a test that sets a large interpreter quantum, forces the heap allocation
    watermark to trip, and proves the process yields/GCs before the large quantum
    would naturally expire.
-2. Route interpreter back-edge spending through the same process/runtime sync
-   boundary used by allocation pressure, or make `Process::spend_reductions`
-   observe pending runtime expiration before decrementing.
+2. Make the interpreter produce the same yield report as compiled code:
+   continuation/resume state, signed remaining reductions, and reason bits.
 3. Keep the interpreter hot path to one cheap branch and avoid adding allocation
    checks outside back edges.
 4. Verify that allocation pressure sets the GC reason and that the scheduler
@@ -68,31 +71,38 @@ Acceptance check:
 - A new interpreter test fails on the current branch because allocation pressure
   does not cause an early yield, and passes after the fix.
 
-### 2. AOT reads the budget cell AOT decrements
+### 2. Yield accounting is boundary-driven
 
-Goal: AOT ordinary reduction yields must leave correct process telemetry.
+Goal: JIT, AOT, and interpreter yields must all account reductions from the same
+minimal boundary report: continuation, signed remaining reductions, and reason.
 
-Current state: AOT links generated code to exported
-`FZ_REDUCTIONS_REMAINING`, but `Process::sync_reduction_budget_from_runtime()`
-reads the JIT thread-local cell. The AOT code can still yield, but telemetry can
-misreport `reductions_remaining` and `reductions_executed`.
+Current state: compiled code decrements a mutable budget cell, then the
+scheduler tries to reconstruct process telemetry by syncing against storage that
+differs between JIT and AOT. This makes AOT telemetry a symptom of a larger
+problem: accounting depends on reading the right implementation cell instead of
+using the yield boundary as the source of truth.
 
 Plan:
 
 1. Add an AOT acceptance test that runs an allocation-light loop under a tiny
-   quantum and asserts nonzero `reduction_yields` and nonzero
-   `reductions_executed`.
-2. Split the runtime budget API so sync can read the cell selected by the
-   execution mode, or make AOT bind the same thread-local cell that sync reads.
-3. Keep JIT's direct pointer binding intact; do not introduce an indirect call
-   on compiled back edges.
-4. Add a small unit test for the budget API so future JIT/AOT storage changes
-   cannot drift silently.
+   quantum and asserts the scheduler receives signed remaining reductions at the
+   yield boundary.
+2. Change the compiled yield ABI to pass `remaining_reductions` and `reason`
+   beside the continuation. The scheduler already knows the budget it gave this
+   turn, so it computes `burned = turn_budget - remaining_reductions`.
+3. Make JIT and AOT use that ABI. The mutable budget cell remains hot-path
+   scratch space only; it is not the post-yield accounting authority.
+4. Mirror the same report shape in the interpreter `InterpStep::Yielded` path.
+5. Move cumulative process accounting into one scheduler-boundary helper that
+   consumes the report and updates `reductions_executed`,
+   `reductions_remaining`, yield cause counters, and yield reasons.
 
 Acceptance check:
 
-- AOT heap/process stats for a tiny-quantum allocation-light loop show
-  `reductions_executed > 0` and `reduction_yields > 0`.
+- JIT, AOT, and interpreter tiny-quantum allocation-light loops all report
+  `reductions_executed > 0`, `reduction_yields > 0`, and a signed
+  `reductions_remaining` derived from the yielded boundary report, not from
+  post-hoc budget-cell sync.
 
 ### 3. Continuation reserve is measured against full slow-path cost
 
