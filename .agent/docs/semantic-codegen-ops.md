@@ -17,10 +17,13 @@ writes, owned-cons reuse, argument coercion, typed frame stores, and alias
 publication should flow through these contexts instead of threading raw
 lowering plumbing through helper signatures.
 
-Value coercion is part of that semantic surface. Lowering code should call
-methods such as `cx.value_as_any_ref`, `cx.value_raw_int`, `cx.value_truthy`,
-and `cx.tagged_var`; the private `codegen_value_*` and `tagged_get` helpers are
-implementation details inside `value.rs`.
+Value coercion is part of that semantic surface. Ordinary body lowering should
+prefer `CodegenFnBody` for cache-bearing operations such as `value_as_any_ref`,
+`tagged_var`, `any_ref_for_var`, `value_raw_atom`, and publication. Cache-free
+operations such as truthiness checks, type-tag tests, and raw int extraction may
+use `CodegenFnSite`. The broad `CodegenFn` value methods are implementation
+plumbing for those semantic views and for small cache-free replay shims; new
+ordinary lowering should not call them directly.
 
 Generated runtime shim bodies do not have a `CodegenEnv`, so they use
 `CodegenFn<RuntimeShimContext>` through `CodegenFn::for_runtime_shim`. That
@@ -57,19 +60,13 @@ Small runtime helper calls in ordinary body lowering should be named
 should move behind `CodegenFn` unless they are truly dynamic user-function
 boundaries.
 
-The cleanup has source-level budget tests for ordinary lowering modules. They
-pin direct imports, `runtime.*` helper reach-ins, retired helper-local
-constructors, the single ordinary function context, and explicit runtime-shim
-contexts. When work removes more runtime-call plumbing, lower the budget in
-that test. A new direct import or `runtime.*` helper reference should either
-move behind a semantic `CodegenFn` method or be documented as a boundary
-exception.
-
 Current signal: `call.rs`, `closure.rs`, `entry.rs`, and `support.rs` have zero
 direct `declare_func_in_func` imports; `call.rs`, `closure.rs`, and
 `support.rs` use `CodegenFn::body(...)` for migrated value/list operations;
 call-argument coercion and typed callee-frame stores live on `CodegenFnBody`;
-and retired free helpers are pinned out by source tests. Larger `prim.rs` and
-`terminator.rs` still contain documented boundary imports for dynamic calls,
-externs, data imports, and broad lowering flows; reduce those only by moving a
-complete semantic operation behind `CodegenFn` or `CodegenFnBody`.
+ordinary `prim.rs`/`terminator.rs` value coercions flow through `CodegenFnBody`
+or `CodegenFnSite`; and retired free helpers have been deleted rather than kept
+as compatibility shims. Larger `prim.rs` and `terminator.rs` still contain
+documented boundary imports for dynamic calls, externs, and data imports; reduce
+those only by moving a complete semantic operation behind `CodegenFn`,
+`CodegenFnBody`, or `CodegenFnSite`.

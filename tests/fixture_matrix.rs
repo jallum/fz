@@ -3054,7 +3054,7 @@ fn continuation_materialization_boundaries_stay_explicit() {
     for needle in [
         "fn emit_back_edge_yield_check",
         "runtime.yield_mid_flight_id",
-        "runtime.materialize_cont_id",
+        "materialize_cont_word",
         "fn emit_receive",
         "runtime.receive_park_id",
     ] {

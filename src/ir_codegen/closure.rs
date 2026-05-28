@@ -1,5 +1,3 @@
-#![allow(unused_imports)]
-
 use super::*;
 use crate::fz_ir::{BinOp, Const, FnId, Module, Prim, Stmt, Term, UnOp};
 use cranelift_codegen::Context;

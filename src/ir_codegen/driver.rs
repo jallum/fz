@@ -1906,11 +1906,11 @@ fn emit_mid_flight_cont_bodies<M: cranelift_module::Module>(
             let mut args =
                 Vec::with_capacity(arg_shapes.iter().map(MidFlightArgShape::abi_arity).sum());
             let mut cx = CodegenFn::for_runtime_shim(runtime);
-            let get_capture = m.declare_func_in_func(runtime.closure_get_capture_ref_id, b.func);
             for (i, arg_shape) in arg_shapes.iter().enumerate() {
-                let index = b.ins().iconst(types::I64, i as i64);
-                let inst = b.ins().call(get_capture, &[self_bits, index]);
-                let value_ref = b.inst_results(inst)[0];
+                let value_ref = {
+                    let mut site = cx.site(b, m);
+                    site.closure_capture_ref_at(self_bits, i)
+                };
                 arg_shape.replay_from_capture(
                     &mut cx,
                     b,

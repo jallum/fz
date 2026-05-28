@@ -452,7 +452,8 @@ fn emit_if<M: cranelift_module::Module>(
     let truthy = if matches!(vb.repr(), ArgRepr::Condition) {
         vb.value()
     } else {
-        cx.value_truthy(b, jmod, *vb)
+        let mut site = cx.site(b, jmod);
+        site.value_truthy(*vb)
     };
     b.ins().brif(truthy, t_b, &no_args, e_b, &no_args);
     Ok(())
@@ -764,7 +765,10 @@ fn emit_call_term<
             let caller_fn = module.fn_by_id(caller_fn_id);
             let entry = caller_fn.block(caller_fn.entry);
             if entry.params.first().copied() == Some(tail_capture) {
-                let tail_bits = cx.any_ref_for_var(var_env, b, jmod, tail_capture.0, cache);
+                let tail_bits = {
+                    let mut body = cx.body(b, jmod, cache);
+                    body.any_ref_for_var(var_env, tail_capture.0)
+                };
                 let reused = {
                     let mut body = cx.body(b, jmod, cache);
                     emit_owned_cons_reuse_or_alloc(
@@ -1321,23 +1325,21 @@ fn emit_back_edge_yield_check<M: cranelift_module::Module>(
         })
         .collect();
     debug_assert_eq!(abi_cursor, native_args.len());
-    let alloc_fref = jmod.declare_func_in_func(runtime.alloc_closure_id, b.func);
     let fid_v = b.ins().iconst(types::I32, callee_sid as i64);
     let n_caps_v = b.ins().iconst(types::I32, native_root_values.len() as i64);
     let stub_fref = jmod.declare_func_in_func(cont_id, b.func);
     let stub_addr = b.ins().func_addr(types::I64, stub_fref);
     let zero_hk = b.ins().iconst(types::I32, 0);
-    let alloc_inst = b
-        .ins()
-        .call(alloc_fref, &[fid_v, n_caps_v, zero_hk, stub_addr]);
-    let cont_closure = b.inst_results(alloc_inst)[0];
-    let materialize_cont_fref = jmod.declare_func_in_func(runtime.materialize_cont_id, b.func);
+    let cont_closure = cx.alloc_closure(b, jmod, fid_v, n_caps_v, zero_hk, stub_addr);
     let last_root = native_root_values.len().saturating_sub(1);
     for (i, root) in native_root_values.iter().copied().enumerate() {
-        let mut root_ref = cx.value_as_any_ref(b, jmod, cache, root);
+        let mut root_ref = {
+            let mut body = cx.body(b, jmod, cache);
+            body.value_as_any_ref(root)
+        };
         if i == last_root {
-            let inst = b.ins().call(materialize_cont_fref, &[root_ref]);
-            root_ref = b.inst_results(inst)[0];
+            let mut site = cx.site(b, jmod);
+            root_ref = site.materialize_cont_word(root_ref);
         }
         {
             let mut site = cx.site(b, jmod);
@@ -1827,7 +1829,10 @@ fn build_park_record<
             3,
         ));
         for (i, (_name, v)) in pinned.iter().enumerate() {
-            let value_ref = cx.tagged_var(var_env, b, jmod, v.0, cache);
+            let value_ref = {
+                let mut body = cx.body(b, jmod, cache);
+                body.tagged_var(var_env, v.0)
+            };
             b.ins()
                 .stack_store(value_ref, slot, (i * SLOT_BYTES as usize) as i32);
         }
@@ -2001,7 +2006,8 @@ fn owned_cons_physical_ref_captures<M: cranelift_module::Module>(
     let Some(source_cons) = cache.owned_cons_reuse_sources.get(&head.0).copied() else {
         return Vec::new();
     };
-    vec![cx.any_ref_for_var(var_env, b, jmod, source_cons.0, cache)]
+    let mut body = cx.body(b, jmod, cache);
+    vec![body.any_ref_for_var(var_env, source_cons.0)]
 }
 
 fn emit_list_tail_return_value<

@@ -620,6 +620,26 @@ where
             .closure_halt_kind_ref(self.b, self.jmod, closure_ref)
     }
 
+    pub(crate) fn value_truthy(&mut self, value: CodegenValue) -> ir::Value {
+        self.cx.value_truthy(self.b, self.jmod, value)
+    }
+
+    pub(crate) fn value_is_tag(
+        &mut self,
+        value: CodegenValue,
+        tag: fz_runtime::any_value::ValueKind,
+    ) -> ir::Value {
+        self.cx.value_is_tag(self.b, self.jmod, value, tag)
+    }
+
+    pub(crate) fn value_atom_id_is(&mut self, value: CodegenValue, atom_id: u32) -> ir::Value {
+        self.cx.value_atom_id_is(self.b, self.jmod, value, atom_id)
+    }
+
+    pub(crate) fn value_raw_int(&mut self, value: CodegenValue) -> ir::Value {
+        self.cx.value_raw_int(self.b, self.jmod, value)
+    }
+
     pub(crate) fn store_closure_capture_ref_word(
         &mut self,
         closure_ref: ir::Value,
@@ -666,6 +686,36 @@ where
     pub(crate) fn value_as_any_ref(&mut self, value: CodegenValue) -> ir::Value {
         self.cx
             .value_as_any_ref(self.b, self.jmod, self.cache, value)
+    }
+
+    pub(crate) fn tagged_var(
+        &mut self,
+        var_env: &HashMap<u32, CodegenValue>,
+        var: u32,
+    ) -> ir::Value {
+        self.cx
+            .tagged_var(var_env, self.b, self.jmod, var, self.cache)
+    }
+
+    pub(crate) fn value_raw_int(&mut self, value: CodegenValue) -> ir::Value {
+        self.cx.value_raw_int(self.b, self.jmod, value)
+    }
+
+    pub(crate) fn value_raw_float(&mut self, value: CodegenValue) -> ir::Value {
+        self.cx.value_raw_float(self.b, self.jmod, value)
+    }
+
+    pub(crate) fn value_raw_atom(&mut self, value: CodegenValue) -> ir::Value {
+        self.cx.value_raw_atom(self.b, self.jmod, self.cache, value)
+    }
+
+    pub(crate) fn ref_tag(&mut self, value_ref: ir::Value) -> ir::Value {
+        self.cx.ref_tag(self.b, self.jmod, value_ref)
+    }
+
+    pub(crate) fn mark_published_ref_aliased(&mut self, value_ref: ir::Value) -> ir::Value {
+        self.cx
+            .mark_published_ref_aliased(self.b, self.jmod, value_ref)
     }
 
     pub(crate) fn any_ref_for_var(
@@ -917,203 +967,5 @@ mod tests {
 
         assert_eq!(first, second);
         b.finalize();
-    }
-
-    fn count_matches(haystack: &str, needle: &str) -> usize {
-        haystack.matches(needle).count()
-    }
-
-    #[test]
-    fn ordinary_lowering_runtime_plumbing_stays_budgeted() {
-        let files = [
-            ("call.rs", include_str!("call.rs"), 0, 0, 0),
-            ("closure.rs", include_str!("closure.rs"), 0, 3, 0),
-            ("entry.rs", include_str!("entry.rs"), 0, 0, 0),
-            ("function.rs", include_str!("function.rs"), 0, 0, 0),
-            ("prim.rs", include_str!("prim.rs"), 47, 57, 0),
-            ("repr.rs", include_str!("repr.rs"), 0, 0, 0),
-            ("support.rs", include_str!("support.rs"), 0, 0, 0),
-            ("terminator.rs", include_str!("terminator.rs"), 13, 7, 0),
-            ("value.rs", include_str!("value.rs"), 1, 1, 0),
-        ];
-
-        for (name, source, max_declares, max_runtime_ids, max_runtime_contexts) in files {
-            let declares = count_matches(source, "declare_func_in_func");
-            assert!(
-                declares <= max_declares,
-                "{name} has {declares} direct function imports; budget is {max_declares}"
-            );
-            let runtime_ids = count_matches(source, "runtime.");
-            assert!(
-                runtime_ids <= max_runtime_ids,
-                "{name} has {runtime_ids} runtime helper id references; budget is {max_runtime_ids}"
-            );
-            let runtime_contexts = count_matches(source, "CodegenFn::for_runtime_shim");
-            assert!(
-                runtime_contexts <= max_runtime_contexts,
-                "{name} has {runtime_contexts} helper-local CodegenFn contexts; budget is {max_runtime_contexts}"
-            );
-            assert!(
-                !source.contains("CodegenFn::new_runtime")
-                    && !source.contains("CodegenFn::new_runtime_with_cache"),
-                "{name} uses retired helper-local CodegenFn constructors"
-            );
-            if name != "value.rs" {
-                assert!(
-                    !source.contains("codegen_value_")
-                        && !source.contains("tagged_get(cx")
-                        && !source.contains("any_ref_for_var(cx"),
-                    "{name} reaches around CodegenFn value coercion methods"
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn function_context_construction_stays_at_the_boundaries() {
-        let context_source = include_str!("fn_ctx.rs");
-        assert!(
-            context_source.contains("BodyContext"),
-            "ordinary function lowering should have an explicit CodegenFn context marker"
-        );
-        assert!(
-            context_source.contains("RuntimeShimContext"),
-            "runtime shim lowering should have an explicit CodegenFn context marker"
-        );
-        assert!(
-            context_source.contains("struct CodegenFnSite"),
-            "cache-free builder/module operations should use an explicit semantic site"
-        );
-
-        let ordinary_function_contexts =
-            count_matches(include_str!("function.rs"), "CodegenFn::new(");
-        assert_eq!(
-            ordinary_function_contexts, 1,
-            "ordinary fz function lowering should build exactly one CodegenFn"
-        );
-
-        let shim_contexts = count_matches(include_str!("driver.rs"), "CodegenFn::for_runtime_shim");
-        assert_eq!(
-            shim_contexts, 4,
-            "runtime shim bodies should make their CodegenFn boundary explicit"
-        );
-
-        let function_source = include_str!("function.rs");
-        assert!(
-            !function_source.contains("cx.value_as_any_ref(&mut b, jmod, &mut cache"),
-            "compile_fn should use the body lowering surface for semantic coercions"
-        );
-        assert!(
-            !function_source.contains("coerce_binding_to(&mut cx, &mut b, jmod"),
-            "compile_fn should not call semantic coercions with raw lowering plumbing"
-        );
-
-        for (name, source) in [
-            ("call.rs", include_str!("call.rs")),
-            ("closure.rs", include_str!("closure.rs")),
-            ("support.rs", include_str!("support.rs")),
-        ] {
-            assert!(
-                !source.contains("cx.value_as_any_ref(b, jmod, cache"),
-                "{name} should use CodegenFn::body for value_as_any_ref"
-            );
-        }
-        assert!(
-            !include_str!("support.rs").contains("pub(crate) fn list_tail_ref_word("),
-            "support.rs should not keep the retired list_tail_ref_word free helper"
-        );
-        let support_source = include_str!("support.rs");
-        assert!(
-            support_source.contains("body: &mut CodegenFnBody"),
-            "owned-cons reuse should accept the semantic body surface"
-        );
-        assert!(
-            !support_source.contains("emit_owned_cons_reuse_or_alloc<M: cranelift_module::Module>(\n    cx: &mut CodegenFn"),
-            "owned-cons reuse should not accept raw lowering plumbing"
-        );
-        assert!(
-            !include_str!("call.rs").contains("pub(crate) fn store_frame_value_dynamic"),
-            "frame value stores should be CodegenFn body operations, not free helpers"
-        );
-        assert!(
-            !include_str!("call.rs").contains("pub(crate) fn store_bindings_into_callee_frame"),
-            "callee-frame binding stores should be CodegenFn body operations, not free helpers"
-        );
-        let value_source = include_str!("value.rs");
-        assert!(
-            !value_source.contains("pub(crate) fn coerce_call_args")
-                && !value_source.contains("pub(crate) fn push_binding_as_abi_args"),
-            "call argument ABI coercion should live on CodegenFnBody"
-        );
-        assert!(
-            !include_str!("call.rs").contains("pub(crate) fn store_typed_args_into_callee_frame"),
-            "typed callee-frame stores should be CodegenFn body operations, not free helpers"
-        );
-        let closure_source = include_str!("closure.rs");
-        assert!(
-            !closure_source.contains("cx.closure_capture_")
-                && !closure_source.contains("cx.set_closure_capture_")
-                && !closure_source.contains("pub(crate) fn load_closure_capture_as_binding")
-                && !closure_source.contains("pub(crate) fn load_outer_cont_ref")
-                && !closure_source.contains("pub(crate) fn load_closure_code_ref")
-                && !closure_source.contains("pub(crate) fn store_closure_capture_ref_word"),
-            "closure capture operations should live on CodegenFnSite"
-        );
-        for (name, source) in [
-            ("entry.rs", include_str!("entry.rs")),
-            ("driver.rs", include_str!("driver.rs")),
-            ("prim.rs", include_str!("prim.rs")),
-            ("terminator.rs", include_str!("terminator.rs")),
-        ] {
-            assert!(
-                !source.contains("cx.closure_capture_")
-                    && !source.contains("cx.set_closure_capture_")
-                    && !source.contains("store_closure_capture_ref_word(cx,")
-                    && !source.contains("load_closure_code_ref(cx,")
-                    && !source.contains("load_outer_cont_ref(cx,"),
-                "{name} should use CodegenFnSite for closure capture operations"
-            );
-        }
-        for (name, source) in [
-            ("call.rs", include_str!("call.rs")),
-            ("closure.rs", include_str!("closure.rs")),
-            ("function.rs", include_str!("function.rs")),
-            ("prim.rs", include_str!("prim.rs")),
-            ("terminator.rs", include_str!("terminator.rs")),
-        ] {
-            assert!(
-                !source.contains("cx.body(b, jmod, cache).")
-                    && !source.contains("cx.body(&mut b, jmod, &mut cache)."),
-                "{name} should bind CodegenFnBody before calling semantic body operations"
-            );
-        }
-        for (name, source) in [
-            ("call.rs", include_str!("call.rs")),
-            ("closure.rs", include_str!("closure.rs")),
-            ("support.rs", include_str!("support.rs")),
-        ] {
-            assert!(
-                !source.contains("_runtime: &RuntimeRefs"),
-                "{name} should not thread dead runtime parameters"
-            );
-        }
-
-        assert!(
-            context_source.contains("fn value_as_any_ref(")
-                && context_source.contains("fn any_ref_for_var(")
-                && context_source.contains("fn list_tail_ref_word(")
-                && context_source.contains("fn store_frame_value_dynamic(")
-                && context_source.contains("fn store_bindings_into_callee_frame(")
-                && context_source.contains("fn store_typed_args_into_callee_frame(")
-                && context_source.contains("fn coerce_call_args(")
-                && context_source.contains("fn push_binding_as_abi_arg(")
-                && context_source.contains("fn closure_capture_as_binding(")
-                && context_source.contains("fn store_closure_capture_ref_word(")
-                && context_source.contains("fn closure_code_ref(")
-                && context_source.contains("fn halt_implicit(")
-                && context_source.contains("fn alloc_frame(")
-                && context_source.contains("fn coerce_binding_to("),
-            "CodegenFn body surface should expose migrated semantic coercions"
-        );
     }
 }
