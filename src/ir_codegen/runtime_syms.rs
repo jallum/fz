@@ -55,10 +55,6 @@ fn decl_import<M: cranelift_module::Module>(
 pub(crate) fn declare_runtime_symbols<M: cranelift_module::Module>(
     jmod: &mut M,
 ) -> Result<RuntimeRefs, CodegenError> {
-    let reductions_remaining_data_id = jmod
-        .declare_data("FZ_REDUCTIONS_REMAINING", Linkage::Import, false, false)
-        .map_err(|e| CodegenError::new(format!("declare FZ_REDUCTIONS_REMAINING: {}", e)))?;
-
     let halt = declare_halt_runtime(jmod)?;
     let list = declare_list_runtime(jmod)?;
     let strct = declare_struct_runtime(jmod)?;
@@ -178,7 +174,6 @@ pub(crate) fn declare_runtime_symbols<M: cranelift_module::Module>(
         drain_dtor_entry_id: scheduler.drain_dtor_entry_id,
         yield_mid_flight_report_id: scheduler.yield_mid_flight_report_id,
         yield_slow_path_begin_id: scheduler.yield_slow_path_begin_id,
-        reductions_remaining_data_id,
     })
 }
 
@@ -1054,8 +1049,4 @@ pub(crate) struct RuntimeRefs {
     pub(super) drain_dtor_entry_id: FuncId,
     pub(super) yield_mid_flight_report_id: FuncId,
     pub(super) yield_slow_path_begin_id: FuncId,
-    // Removed in fz-aoi.5 after pinned Process reductions replace the
-    // compiled-code mirror cell completely.
-    #[allow(dead_code)]
-    pub(super) reductions_remaining_data_id: DataId,
 }

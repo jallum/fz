@@ -1,16 +1,13 @@
-//! Thread-local reduction budget cell for generated code.
+//! Thread-local reduction budget and yield-reason cells.
 //!
-//! JIT code reads and writes the thread-local cell directly. AOT code can link
-//! against the exported symbol; the runtime keeps both in sync when a scheduler
-//! quantum starts.
+//! The interpreter spends the thread-local budget directly. Runtime allocation
+//! pressure expires it and records reason bits that are merged into the next
+//! scheduler yield report.
 
 use std::sync::atomic::AtomicU8;
 use std::sync::atomic::{AtomicI32, Ordering};
 
 use crate::process::DEFAULT_REDUCTIONS_PER_QUANTUM;
-
-#[unsafe(no_mangle)]
-pub static FZ_REDUCTIONS_REMAINING: AtomicI32 = AtomicI32::new(DEFAULT_REDUCTIONS_PER_QUANTUM);
 
 thread_local! {
     static THREAD_REDUCTIONS_REMAINING: AtomicI32 =
@@ -19,7 +16,6 @@ thread_local! {
 }
 
 pub fn install_budget(value: i32) {
-    FZ_REDUCTIONS_REMAINING.store(value, Ordering::Relaxed);
     THREAD_REDUCTIONS_REMAINING.with(|cell| cell.store(value, Ordering::Relaxed));
     clear_yield_reasons();
 }
@@ -29,7 +25,9 @@ pub fn load() -> i32 {
 }
 
 pub fn expire_for(reason: u8) {
-    FZ_REDUCTIONS_REMAINING.store(0, Ordering::Relaxed);
+    if let Some(process) = crate::process::try_current_process() {
+        process.reductions_remaining = 0;
+    }
     THREAD_REDUCTIONS_REMAINING.with(|cell| cell.store(0, Ordering::Relaxed));
     THREAD_YIELD_REASONS.with(|cell| {
         cell.fetch_or(reason, Ordering::Relaxed);
@@ -42,10 +40,6 @@ pub fn take_yield_reasons() -> u8 {
 
 pub fn clear_yield_reasons() {
     THREAD_YIELD_REASONS.with(|cell| cell.store(0, Ordering::Relaxed));
-}
-
-pub fn jit_remaining_ptr() -> *mut i32 {
-    THREAD_REDUCTIONS_REMAINING.with(|cell| cell as *const AtomicI32 as *mut i32)
 }
 
 #[cfg(test)]
@@ -79,5 +73,17 @@ mod tests {
             crate::process::YIELD_REASON_ALLOCATION_PRESSURE
         );
         assert_eq!(take_yield_reasons(), 0);
+    }
+
+    #[test]
+    fn expire_for_zeros_installed_process_budget() {
+        let schemas = std::rc::Rc::new(std::cell::RefCell::new(crate::heap::SchemaRegistry::new()));
+        let mut process = crate::process::Process::new(schemas);
+        process.reductions_remaining = 7;
+        let _guard = crate::process::CurrentProcessGuard::install(&mut process);
+
+        expire_for(crate::process::YIELD_REASON_ALLOCATION_PRESSURE);
+
+        assert_eq!(process.reductions_remaining, 0);
     }
 }

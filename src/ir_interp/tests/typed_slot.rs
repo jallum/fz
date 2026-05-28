@@ -286,8 +286,8 @@ fn interp_allocation_pressure_yields_before_budget_exhaustion() {
         "allocation pressure should have its own cause-specific counter"
     );
     assert!(
-        task.reductions_executed < task.reductions_per_quantum as u64,
-        "yield report should preserve positive remaining reductions on early allocation pressure"
+        task.reductions_executed >= task.reductions_per_quantum as u64,
+        "allocation pressure should expire the same reductions budget that back edges spend"
     );
 }
 
