@@ -210,9 +210,12 @@ pub fn classify_var_uses(f: &FnIr) -> (HashSet<Var>, HashSet<Var>) {
 pub fn collect_used(f: &FnIr) -> HashSet<Var> {
     let semantic_used = classify_var_uses(f).1;
     let mut used = semantic_used.clone();
-    for credit in &f.owned_cons_reuse_credits {
-        if semantic_used.contains(&credit.head) {
-            used.insert(credit.source_cons);
+    for fact in &f.physical_capabilities {
+        match fact.capability {
+            PhysicalCapability::OwnedConsReuse { head } if semantic_used.contains(&head) => {
+                used.insert(fact.source);
+            }
+            _ => {}
         }
     }
     used
@@ -220,23 +223,19 @@ pub fn collect_used(f: &FnIr) -> HashSet<Var> {
 
 fn prune_dead_owned_cons_capabilities(f: &mut FnIr) {
     let semantic_used = classify_var_uses(f).1;
-    f.owned_cons_reuse_credits
-        .retain(|credit| semantic_used.contains(&credit.head));
-
-    let live_owned_cons: HashSet<(Var, Var)> = f
-        .owned_cons_reuse_credits
+    f.physical_capabilities
+        .retain(|fact| match fact.capability {
+            PhysicalCapability::OwnedConsReuse { head } => semantic_used.contains(&head),
+        });
+    let live_sources: HashSet<Var> = f
+        .physical_capabilities
         .iter()
-        .map(|credit| (credit.source_cons, credit.head))
+        .map(|fact| fact.source)
         .collect();
     let entry_params: HashSet<Var> = f.block(f.entry).params.iter().copied().collect();
-    f.physical_entry_params.retain(|physical| {
-        entry_params.contains(&physical.param)
-            && match physical.capability {
-                PhysicalCapability::OwnedConsReuse { head } => {
-                    live_owned_cons.contains(&(physical.param, head))
-                }
-            }
-    });
+    f.physical_entry_params
+        .retain(|param| entry_params.contains(param) && live_sources.contains(param));
+    f.dedup_physical_facts();
 }
 
 fn collect_prim_vars(p: &Prim, used: &mut HashSet<Var>) {
@@ -994,7 +993,7 @@ mod tests {
         let source = b.fresh_var();
         let entry = b.block(vec![source]);
         let head = b.let_(entry, Prim::ListHead(source));
-        b.record_owned_cons_reuse_credit(head, source);
+        b.record_owned_cons_reuse_capability(head, source);
         let tail = b.let_(entry, Prim::MakeList(vec![], None));
         let result = b.let_(entry, Prim::MakeList(vec![head], Some(tail)));
         b.set_terminator(entry, Term::Return(result));
@@ -1002,8 +1001,8 @@ mod tests {
 
         dce_fn_with_telemetry("", &mut f, &crate::telemetry::NullTelemetry);
 
-        assert_eq!(f.owned_cons_reuse_credits.len(), 1);
         assert_eq!(f.physical_entry_params.len(), 1);
+        assert_eq!(f.physical_capabilities.len(), 1);
         assert!(
             f.block(f.entry)
                 .stmts
@@ -1016,15 +1015,15 @@ mod tests {
         let source = b.fresh_var();
         let entry = b.block(vec![source]);
         let head = b.let_(entry, Prim::ListHead(source));
-        b.record_owned_cons_reuse_credit(head, source);
+        b.record_owned_cons_reuse_capability(head, source);
         let nil = b.let_(entry, Prim::MakeList(vec![], None));
         b.set_terminator(entry, Term::Return(nil));
         let mut f = b.build();
 
         dce_fn_with_telemetry("", &mut f, &crate::telemetry::NullTelemetry);
 
-        assert!(f.owned_cons_reuse_credits.is_empty());
         assert!(f.physical_entry_params.is_empty());
+        assert!(f.physical_capabilities.is_empty());
         assert!(
             f.block(f.entry)
                 .stmts

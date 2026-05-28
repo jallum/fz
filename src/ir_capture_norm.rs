@@ -710,8 +710,14 @@ fn subst_physical_entry_params(f: &mut crate::fz_ir::FnIr, subst: &HashMap<Var, 
     f.physical_entry_params = f
         .physical_entry_params
         .iter()
-        .map(|physical| physical.map_vars(|var| subst.get(&var).copied().unwrap_or(var)))
+        .map(|param| subst.get(param).copied().unwrap_or(*param))
         .collect();
+    f.physical_capabilities = f
+        .physical_capabilities
+        .iter()
+        .map(|fact| fact.map_vars(|var| subst.get(&var).copied().unwrap_or(var)))
+        .collect();
+    f.dedup_physical_facts();
 }
 
 #[derive(Debug, Clone)]

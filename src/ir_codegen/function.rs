@@ -323,17 +323,12 @@ pub(crate) fn compile_fn<
 }
 
 fn owned_cons_reuse_sources(f: &crate::fz_ir::FnIr) -> HashMap<u32, crate::fz_ir::Var> {
-    let mut sources: HashMap<u32, crate::fz_ir::Var> = f
-        .physical_entry_params
+    f.physical_capabilities
         .iter()
-        .map(|physical| match physical.capability {
-            crate::fz_ir::PhysicalCapability::OwnedConsReuse { head } => (head.0, physical.param),
+        .map(|fact| match fact.capability {
+            crate::fz_ir::PhysicalCapability::OwnedConsReuse { head } => (head.0, fact.source),
         })
-        .collect();
-    for credit in &f.owned_cons_reuse_credits {
-        sources.entry(credit.head.0).or_insert(credit.source_cons);
-    }
-    sources
+        .collect()
 }
 
 /// Compute the set of fz_ir block ids reachable from `f.entry` by

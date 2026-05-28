@@ -154,14 +154,11 @@ keeps `list_cons_allocs = 11`, `list_cons_bytes = 176`,
 Owned-cons reuse is the next reduction layer. Multi-clause list destructuring
 records a physical capability from a projected head back to the original source
 cons cell. The source slot is not a source value and is not modeled as an
-ignored semantic parameter. The spec dump exposes the capability and the
-remaining reuse credit:
+ignored semantic parameter. The spec dump exposes the capability:
 
 ```text
 physical_capabilities:
   owned_cons_source param=Var(C) head=Var(H)
-owned_cons_reuse:
-  reuse_credit head=Var(H) source_cons=Var(C)
 ```
 
 The physical parameter is not part of semantic specialization (`_` in the spec

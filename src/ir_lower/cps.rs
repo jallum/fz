@@ -150,7 +150,7 @@ fn install_capture_metadata(
             .zip(&params.semantic)
             .find(|((name, _), _)| name == &capture.head_name)
         {
-            builder.record_owned_cons_reuse_credit(*head_param, *source_param);
+            builder.record_owned_cons_reuse_capability(*head_param, *source_param);
         }
     }
 }

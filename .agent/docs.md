@@ -19,7 +19,7 @@ that keep future work aligned.
 | [docs/modules.md](docs/modules.md) | Technical module interfaces, `.fzi` / `.fzo` artifacts, compiled units/images, link checks, or LTO boundary erasure. |
 | [docs/module-separate-compilation.md](docs/module-separate-compilation.md) | Module identity, imports/interfaces, compiled units/images, runtime library modules, or LTO boundary erasure. |
 | [../docs/protocols.md](../docs/protocols.md) | `defprotocol` / `defimpl`, protocol-domain types, implementation target identity, protocol dispatch, or no-replanning protocol/link rules. |
-| [docs/physical-capabilities.md](docs/physical-capabilities.md) | Physical runtime-object capabilities, owned cons reuse credits, publication effects, or removing ignored-param/capture scaffolding. |
+| [docs/physical-capabilities.md](docs/physical-capabilities.md) | Physical runtime-object capabilities, owned cons reuse, publication effects, or semantic/physical entry-param boundaries. |
 | [docs/repl-session.md](docs/repl-session.md) | REPL world/bindings/runtime layering, chunk synthesis, docs/help, or macro/runtime boundaries. |
 | [docs/scheduler-zero-arg-closures.md](docs/scheduler-zero-arg-closures.md) | Scheduler, receive, yield, spawn, timeout, or continuation re-entry. |
 | [docs/any-value.md](docs/any-value.md) | `AnyValueRef`, `ValueRef`, raw scalar lanes, boxed scalars, pointer format, or GC-visible values. |

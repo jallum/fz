@@ -68,7 +68,6 @@ fn render_spec<
     render_spec_header(t, m, mt, spec_key, any_ty, out);
     render_fn_constants(m, ft, out);
     render_physical_capabilities(f, out);
-    render_owned_cons_reuse(f, out);
     render_vars(t, ft, out);
     render_exits(t, m, mt, spec_key, ft, f, any_ty, out);
     out.push('\n');
@@ -121,34 +120,19 @@ fn render_fn_constants(m: &Module, ft: &super::fn_types::SpecPlan, out: &mut Str
     }
 }
 
-fn render_owned_cons_reuse(f: &crate::fz_ir::FnIr, out: &mut String) {
-    if f.owned_cons_reuse_credits.is_empty() {
-        return;
-    }
-    let mut credits = f.owned_cons_reuse_credits.clone();
-    credits.sort_by_key(|credit| credit.head.0);
-    out.push_str(";   owned_cons_reuse:\n");
-    for credit in credits {
-        out.push_str(&format!(
-            ";     reuse_credit head=Var({}) source_cons=Var({})\n",
-            credit.head.0, credit.source_cons.0
-        ));
-    }
-}
-
 fn render_physical_capabilities(f: &crate::fz_ir::FnIr, out: &mut String) {
-    if f.physical_entry_params.is_empty() {
+    if f.physical_capabilities.is_empty() {
         return;
     }
-    let mut physical = f.physical_entry_params.clone();
-    physical.sort_by_key(|cap| cap.param.0);
+    let mut physical = f.physical_capabilities.clone();
+    physical.sort_by_key(|cap| cap.source.0);
     out.push_str(";   physical_capabilities:\n");
     for cap in physical {
         match cap.capability {
             crate::fz_ir::PhysicalCapability::OwnedConsReuse { head } => {
                 out.push_str(&format!(
                     ";     owned_cons_source param=Var({}) head=Var({})\n",
-                    cap.param.0, head.0
+                    cap.source.0, head.0
                 ));
             }
         }

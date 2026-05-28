@@ -22,31 +22,32 @@ of carrying local publication rules.
 The current owned-cons reuse implementation reaches the right allocation floor,
 with these compiler facts:
 
-- `src/fz_ir.rs` exposes `physical_entry_params` as the destination for
+- `src/fz_ir.rs` exposes `physical_capabilities` as the destination for
   object-local capabilities.
+- `src/fz_ir.rs` exposes `physical_entry_params` only for entry slots that
+  carry physical facts and are not semantic source values.
 - `src/fz_ir.rs` keeps `ignored_entry_params` only for source wildcard holes.
-- `src/fz_ir.rs` stores `owned_cons_reuse_credits` as the reusable-cons seed.
 - `src/ir_lower/cps.rs` transports `owned_cons_captures` through ordinary
   continuation capture machinery, but owned-cons source slots are physical
   params rather than ignored semantic params.
 - `src/ir_dce.rs` owns capability liveness: live heads keep their source-cons
-  params, dead heads drop their credits.
+  params, dead heads drop their capabilities.
 - `src/ir_capture_norm.rs` rewrites capture shapes and relies on DCE to preserve
   or drop capability payloads.
-- `src/ir_codegen/support.rs` consumes the remaining credits with
-  `emit_owned_cons_reuse_or_alloc`; its source cache is physical-first while
-  non-entry transitional credits remain.
+- `src/ir_codegen/support.rs` consumes physical capability facts with
+  `emit_owned_cons_reuse_or_alloc`.
 
-The standalone reuse-pruning pass has been removed. The remaining compatibility
-path is codegen's non-entry reuse-credit fallback; entry-source capabilities are
-read from `physical_entry_params`.
+The standalone reuse-pruning pass and duplicate owned-cons reuse-credit lane
+have been removed. Codegen reads reusable source objects from
+`physical_capabilities`; semantic specialization ignores only the entry params
+listed in `physical_entry_params`.
 
 Spec dumps render `physical_capabilities` records so tests can assert the IR
 facts directly instead of inferring them from backend text.
 
 ## Pinned Signal
 
-Keep these floors green while removing the scaffold:
+Keep these floors green:
 
 ```text
 quicksort native:

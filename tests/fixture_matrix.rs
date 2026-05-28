@@ -205,8 +205,8 @@ fn static_tests() -> Vec<(&'static str, fn())> {
             owned_cons_reuse_docs_pin_alias_fallback_contract,
         ),
         (
-            "physical_capability_scaffold_and_signals_are_pinned",
-            physical_capability_scaffold_and_signals_are_pinned,
+            "physical_capability_model_and_signals_are_pinned",
+            physical_capability_model_and_signals_are_pinned,
         ),
         (
             "owned_cons_reuse_negative_barriers_do_not_advertise_credits",
@@ -2326,7 +2326,7 @@ fn owned_cons_reuse_docs_pin_alias_fallback_contract() {
     }
 }
 
-fn physical_capability_scaffold_and_signals_are_pinned() {
+fn physical_capability_model_and_signals_are_pinned() {
     let index = fs::read_to_string(".agent/docs.md").expect("read agent docs index");
     assert!(
         index.contains("docs/physical-capabilities.md"),
@@ -2345,17 +2345,15 @@ fn physical_capability_scaffold_and_signals_are_pinned() {
         "src/fz_ir.rs",
         "physical_entry_params",
         "ignored_entry_params",
-        "owned_cons_reuse_credits",
         "src/ir_lower/cps.rs",
         "owned_cons_captures",
         "physical\n  params",
         "src/ir_dce.rs",
         "live heads keep their source-cons",
         "src/ir_capture_norm.rs",
-        "standalone reuse-pruning pass has been removed",
+        "standalone reuse-pruning pass and duplicate owned-cons reuse-credit lane",
         "physical_capabilities",
         "emit_owned_cons_reuse_or_alloc",
-        "physical-first",
         "list_cons_allocs = 11",
         "list_cons_allocs = 5",
         "closure_allocs = 1",
@@ -2371,10 +2369,10 @@ fn physical_capability_scaffold_and_signals_are_pinned() {
     assert!(
         fz_ir.contains("ignored_entry_params")
             && fz_ir.contains("physical_entry_params")
+            && fz_ir.contains("physical_capabilities")
             && fz_ir.contains("PhysicalCapability")
-            && fz_ir.contains("owned_cons_reuse_credits")
-            && fz_ir.contains("record_owned_cons_reuse_credit"),
-        "current FnIr scaffold should stay explicit until the physical capability lane replaces it"
+            && fz_ir.contains("record_owned_cons_reuse_capability"),
+        "FnIr should carry owned-cons reuse through physical capability facts"
     );
 
     let cps = fs::read_to_string("src/ir_lower/cps.rs").expect("read cps lowering");
@@ -2700,8 +2698,6 @@ fn quicksort_structured_return_demand_facts() {
                 && s.body.contains("physical_capabilities")
                 && s.body
                     .contains("owned_cons_source param=Var(5) head=Var(3)")
-                && s.body.contains("owned_cons_reuse")
-                && s.body.contains("head=Var(3) source_cons=Var(5)")
         }),
         "partition clause helpers must dump a physical source-cons capability for owned cons reuse:\n{}",
         specs
