@@ -102,6 +102,20 @@ impl<'env> CodegenFn<'env> {
         self.call_func1(b, jmod, self.runtime.truthy_ref_id, &[value_ref])
     }
 
+    pub(crate) fn mark_published_ref_aliased<M: cranelift_module::Module>(
+        &mut self,
+        b: &mut FunctionBuilder<'_>,
+        jmod: &mut M,
+        value_ref: ir::Value,
+    ) -> ir::Value {
+        self.call_func1(
+            b,
+            jmod,
+            self.runtime.mark_published_ref_aliased_id,
+            &[value_ref],
+        )
+    }
+
     pub(crate) fn box_int_for_any<M: cranelift_module::Module>(
         &mut self,
         b: &mut FunctionBuilder<'_>,
@@ -468,7 +482,7 @@ mod tests {
             ("function.rs", include_str!("function.rs"), 0, 0, 0),
             ("prim.rs", include_str!("prim.rs"), 47, 57, 0),
             ("repr.rs", include_str!("repr.rs"), 1, 1, 0),
-            ("support.rs", include_str!("support.rs"), 2, 2, 0),
+            ("support.rs", include_str!("support.rs"), 1, 1, 0),
             ("terminator.rs", include_str!("terminator.rs"), 13, 7, 0),
             ("value.rs", include_str!("value.rs"), 1, 1, 0),
         ];

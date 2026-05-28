@@ -670,6 +670,7 @@ fn emit_call_term<
             .map(|v| var_env.get(&v.0).expect("unbound captured val").value())
             .collect();
         mark_retained_call_args_as_published(
+            cx,
             b,
             jmod,
             runtime,
@@ -1453,6 +1454,7 @@ fn emit_call_closure<
             .map(|v| var_env.get(&v.0).expect("unbound callclosure arg").value())
             .collect();
         mark_retained_call_args_as_published(
+            cx,
             b,
             jmod,
             runtime,

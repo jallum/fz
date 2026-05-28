@@ -9,21 +9,11 @@ use std::collections::HashMap;
 pub(crate) const HEADER_SIZE: i32 = 16;
 pub(crate) const SLOT_BYTES: i32 = 8;
 
-pub(crate) fn mark_published_ref_aliased<M: cranelift_module::Module>(
-    b: &mut FunctionBuilder<'_>,
-    jmod: &mut M,
-    runtime: &RuntimeRefs,
-    value_ref: ir::Value,
-) -> ir::Value {
-    let fref = jmod.declare_func_in_func(runtime.mark_published_ref_aliased_id, b.func);
-    let inst = b.ins().call(fref, &[value_ref]);
-    b.inst_results(inst)[0]
-}
-
 pub(crate) fn mark_retained_call_args_as_published<M: cranelift_module::Module>(
+    cx: &mut CodegenFn<'_>,
     b: &mut FunctionBuilder<'_>,
     jmod: &mut M,
-    runtime: &RuntimeRefs,
+    _runtime: &RuntimeRefs,
     var_env: &HashMap<u32, CodegenValue>,
     args: &[crate::fz_ir::Var],
     captured: &[crate::fz_ir::Var],
@@ -35,7 +25,7 @@ pub(crate) fn mark_retained_call_args_as_published<M: cranelift_module::Module>(
         let Some(CodegenValue::AnyRef(value_ref)) = var_env.get(&arg.0).copied() else {
             continue;
         };
-        let _ = mark_published_ref_aliased(b, jmod, runtime, value_ref);
+        let _ = cx.mark_published_ref_aliased(b, jmod, value_ref);
     }
 }
 

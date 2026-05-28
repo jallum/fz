@@ -164,7 +164,7 @@ pub(crate) fn emit_map_put_for_key_and_value<
     }
 
     let key_ref = tagged_get(cx, var_env, b, jmod, runtime, key.0, cache);
-    let key_ref = mark_published_ref_aliased(b, jmod, runtime, key_ref);
+    let key_ref = cx.mark_published_ref_aliased(b, jmod, key_ref);
     let (fref, args): (ir::FuncRef, Vec<ir::Value>) = match value_kind {
         Some(fz_runtime::any_value::ValueKind::INT) => (
             jmod.declare_func_in_func(runtime.map_put_int_id, b.func),
@@ -199,7 +199,7 @@ pub(crate) fn emit_map_put_for_key_and_value<
         ),
         _ => {
             let value_ref = tagged_get(cx, var_env, b, jmod, runtime, value.0, cache);
-            let value_ref = mark_published_ref_aliased(b, jmod, runtime, value_ref);
+            let value_ref = cx.mark_published_ref_aliased(b, jmod, value_ref);
             (
                 jmod.declare_func_in_func(runtime.map_put_ref_id, b.func),
                 vec![map_bits, key_ref, value_ref],
@@ -265,8 +265,8 @@ fn emit_map_destination_put<M: cranelift_module::Module>(
     } else {
         let key_ref = codegen_value_as_any_ref(cx, b, jmod, runtime, cache, key);
         let value_ref = codegen_value_as_any_ref(cx, b, jmod, runtime, cache, value);
-        let key_ref = mark_published_ref_aliased(b, jmod, runtime, key_ref);
-        let value_ref = mark_published_ref_aliased(b, jmod, runtime, value_ref);
+        let key_ref = cx.mark_published_ref_aliased(b, jmod, key_ref);
+        let value_ref = cx.mark_published_ref_aliased(b, jmod, value_ref);
         let fref = jmod.declare_func_in_func(runtime.map_dest_put_ref_id, b.func);
         b.ins().call(fref, &[map_bits, key_ref, value_ref]);
     }
