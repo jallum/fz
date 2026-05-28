@@ -765,6 +765,26 @@ where
         self.value_as_any_ref(binding)
     }
 
+    /// Coerce a goto block argument to the repr its target param needs,
+    /// returning the rebound value when it changes and `None` when the
+    /// binding already matches.
+    pub(crate) fn coerce_goto_arg(
+        &mut self,
+        vb: CodegenValue,
+        want: ArgRepr,
+    ) -> Option<CodegenValue> {
+        if want == ArgRepr::ValueRef {
+            Some(CodegenValue::any_ref(self.value_as_any_ref(vb)))
+        } else if vb.repr() != want {
+            Some(CodegenValue::from_abi_value(
+                self.coerce_binding_to(vb, want),
+                want,
+            ))
+        } else {
+            None
+        }
+    }
+
     /// Empty-list ABI word, cached per function body.
     pub(crate) fn empty_list_ref(&mut self) -> ir::Value {
         emit_empty_list_value_ref_word(self.b, self.cache)

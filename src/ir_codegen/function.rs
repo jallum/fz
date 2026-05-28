@@ -258,6 +258,7 @@ pub(crate) fn compile_fn<
         // fn_types.vars), so RawInt values flow through without a
         // box/unbox round-trip at inliner seams.
         if let Term::Goto(target, args) = &blk.terminator {
+            let mut body = cx.body(&mut b, jmod, &mut cache);
             for (param, arg) in f.block(*target).params.iter().zip(args.iter()) {
                 let fallback = t.any();
                 let want = ArgRepr::for_block_param_ty(
@@ -265,18 +266,8 @@ pub(crate) fn compile_fn<
                     &fn_types.vars.get(param).cloned().unwrap_or(fallback),
                 );
                 let vb = *var_env.get(&arg.0).expect("unbound goto arg");
-                if want == ArgRepr::ValueRef {
-                    let value_ref = {
-                        let mut body = cx.body(&mut b, jmod, &mut cache);
-                        body.value_as_any_ref(vb)
-                    };
-                    var_env.insert(arg.0, CodegenValue::any_ref(value_ref));
-                } else if vb.repr() != want {
-                    let coerced = {
-                        let mut body = cx.body(&mut b, jmod, &mut cache);
-                        body.coerce_binding_to(vb, want)
-                    };
-                    var_env.insert(arg.0, CodegenValue::from_abi_value(coerced, want));
+                if let Some(coerced) = body.coerce_goto_arg(vb, want) {
+                    var_env.insert(arg.0, coerced);
                 }
             }
         }
