@@ -189,11 +189,20 @@ impl Heap {
     }
 
     pub fn alloc_list_cons_slot(&mut self, head: AnyValue, tail_bits: u64) -> u64 {
+        self.alloc_list_cons_raw_kind(head.raw(), head.kind(), tail_bits)
+    }
+
+    fn alloc_list_cons_raw_kind(
+        &mut self,
+        head_raw: u64,
+        head_kind: ValueKind,
+        tail_bits: u64,
+    ) -> u64 {
         let p = self.alloc_kind(HeapAllocKind::ListCons, 16);
         unsafe {
             std::ptr::write(
                 p as *mut ListCons,
-                ListCons::new(head.raw(), head.kind(), tail_bits),
+                ListCons::new(head_raw, head_kind, tail_bits),
             );
         }
         crate::any_value::heap_object_word(p, crate::any_value::ValueKind::LIST)
@@ -784,6 +793,23 @@ impl Heap {
             "cannot destructively relink aliased list cons"
         );
         Ok(list)
+    }
+
+    pub fn reuse_or_alloc_list_cons_tail(
+        &mut self,
+        list: AnyValueRef,
+        tail: AnyValueRef,
+    ) -> Result<AnyValueRef, AnyValueRefError> {
+        let addr = nonempty_list_addr(list)?;
+        let tail_bits = list_tail_bits_from_ref(tail)?;
+        let cons = unsafe { &mut *(addr as *mut ListCons) };
+        if cons.relink_tail_if_unaliased(tail_bits) {
+            return Ok(list);
+        }
+        let (head_raw, head_kind) = cons.head_raw_kind();
+        let fresh = self.alloc_list_cons_raw_kind(head_raw, head_kind, tail_bits);
+        let addr = crate::any_value::list_addr_from_tagged(fresh).expect("fresh list cons");
+        AnyValueRef::from_heap_object(ValueKind::LIST, addr)
     }
 
     pub fn read_map_value_ref(

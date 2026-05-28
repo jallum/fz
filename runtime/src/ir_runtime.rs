@@ -1641,6 +1641,17 @@ pub extern "C" fn fz_list_relink_unaliased_tail_ref(list_ref_word: u64, tail_ref
         .raw_word()
 }
 
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_list_reuse_or_cons_tail_ref(list_ref_word: u64, tail_ref_word: u64) -> u64 {
+    let list = any_value_ref_from_word(list_ref_word, "fz_list_reuse_or_cons_tail_ref list");
+    let tail = any_value_ref_from_word(tail_ref_word, "fz_list_reuse_or_cons_tail_ref tail");
+    current_process()
+        .heap
+        .reuse_or_alloc_list_cons_tail(list, tail)
+        .expect("fz_list_reuse_or_cons_tail_ref")
+        .raw_word()
+}
+
 /// Allocate a heap-typed Struct. `schema_id` must already be registered in
 /// the current Process's heap SchemaRegistry (shared with CompiledModule).
 /// Returns a TAG_STRUCT-tagged heap pointer. Caller is
