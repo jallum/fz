@@ -273,6 +273,10 @@ fn static_tests() -> Vec<(&'static str, fn())> {
             enum_list_allocations_pin_minimum_list_cons,
         ),
         (
+            "continuation_materialization_boundaries_stay_explicit",
+            continuation_materialization_boundaries_stay_explicit,
+        ),
+        (
             "reverse_filter_tree_pin_current_shape",
             reverse_filter_tree_pin_current_shape,
         ),
@@ -2883,6 +2887,58 @@ fn enum_list_allocations_pin_minimum_list_cons() {
         "current Enum.reduce baseline must show reducer-return continuation allocation:\n{}",
         reduce_list
     );
+}
+
+fn continuation_materialization_boundaries_stay_explicit() {
+    let readme =
+        fs::read_to_string("fixtures/enum_reduce_suspend/README.md").expect("read suspend README");
+    for needle in [
+        "suspend clause returns `{:suspended, acc, fn () -> ... end}`",
+        "real heap closure",
+        "`closure_allocs = 1`",
+        "`closure_bytes = 48`",
+    ] {
+        assert!(
+            readme.contains(needle),
+            "enum_reduce_suspend README must pin materialization boundary `{}`",
+            needle
+        );
+    }
+
+    assert_fixture_output_contains(
+        "enum_reduce_suspend",
+        "expected.txt",
+        &[
+            "{:suspended, 0, #fn<3/3>}",
+            ":list_cons_allocs => 3",
+            ":closure_allocs => 1",
+            ":closure_bytes => 48",
+        ],
+    );
+
+    let receive_clif = dump_fixture_clif("receive_map_pattern");
+    assert!(
+        receive_clif.contains("@fz_receive_park_matched")
+            && receive_clif.contains("@fz_alloc_closure")
+            && receive_clif.contains("@fz_materialize_cont"),
+        "selective receive must still materialize scheduler-visible clause continuations:\n{}",
+        receive_clif
+    );
+
+    let source = fs::read_to_string("src/ir_codegen/terminator.rs").expect("read terminator");
+    for needle in [
+        "fn emit_back_edge_yield_check",
+        "runtime.yield_mid_flight_id",
+        "runtime.materialize_cont_id",
+        "fn emit_receive",
+        "runtime.receive_park_id",
+    ] {
+        assert!(
+            source.contains(needle),
+            "terminator lowering must keep explicit materialization boundary `{}`",
+            needle
+        );
+    }
 }
 
 fn reverse_filter_tree_pin_current_shape() {

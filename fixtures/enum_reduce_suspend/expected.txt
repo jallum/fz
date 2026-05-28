@@ -1,0 +1,2 @@
+{:suspended, 0, #fn<3/3>}
+%{:allocs => 10, :bytes => 240, :list_cons_allocs => 3, :list_cons_bytes => 48, :struct_allocs => 2, :struct_bytes => 80, :closure_allocs => 1, :closure_bytes => 48, :map_allocs => 0, :map_bytes => 0, :bitstring_allocs => 0, :bitstring_bytes => 0, :procbin_allocs => 0, :procbin_bytes => 0, :scalar_box_allocs => 4, :scalar_box_bytes => 64, :frame_allocs => 0, :frame_bytes => 0, :resource_allocs => 0, :resource_bytes => 0, :other_allocs => 0, :other_bytes => 0, :scheduler_yields => 0, :interpreter_yields => 0}
