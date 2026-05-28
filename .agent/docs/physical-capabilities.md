@@ -13,6 +13,10 @@ Final form:
   or crosses a scheduler/materialization boundary;
 - codegen consumes validated facts mechanically.
 
+`src/ir_effects.rs` owns operation effect classification. Reuse pruning,
+planner return-context barriers, and future capability validation should read
+that classifier instead of carrying local publication rules.
+
 ## Current Scaffold
 
 The current owned-cons reuse implementation reaches the right allocation floor,
@@ -24,7 +28,8 @@ but it still uses transitional plumbing:
   continuation capture machinery.
 - `src/ir_capture_norm.rs` runs local DCE to repair capability liveness after
   capture pruning.
-- `src/ir_reuse.rs` performs a standalone publication-pruning cleanup pass.
+- `src/ir_reuse.rs` performs a standalone publication-pruning cleanup pass
+  driven by `src/ir_effects.rs`.
 - `src/ir_codegen/support.rs` consumes the remaining credits with
   `emit_owned_cons_reuse_or_alloc`.
 

@@ -2339,6 +2339,8 @@ fn physical_capability_scaffold_and_signals_are_pinned() {
         "semantic values",
         "physical capabilities",
         "effect facts",
+        "src/ir_effects.rs",
+        "operation effect classification",
         "codegen consumes validated facts",
         "src/fz_ir.rs",
         "ignored_entry_params",
@@ -2386,9 +2388,9 @@ fn physical_capability_scaffold_and_signals_are_pinned() {
     let reuse = fs::read_to_string("src/ir_reuse.rs").expect("read ir_reuse");
     assert!(
         reuse.contains("prune_borrowed_owned_cons_reuse_credits")
-            && reuse.contains("prim_publishes_credit_source")
-            && reuse.contains("term_publishes_credit_source"),
-        "current standalone reuse pruning pass should stay visible until effect facts replace it"
+            && reuse.contains("prim_publishes_var")
+            && reuse.contains("term_publishes_var"),
+        "current standalone reuse pruning pass should delegate publication facts to ir_effects"
     );
 
     assert_fixture_output_contains(
