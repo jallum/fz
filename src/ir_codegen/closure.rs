@@ -81,8 +81,8 @@ pub(crate) fn load_outer_cont_ref<M: cranelift_module::Module>(
     cx.closure_capture_ref(b, jmod, closure_ref, index)
 }
 
-pub(crate) fn load_closure_code_ref<M: cranelift_module::Module>(
-    cx: &mut CodegenFn<'_>,
+pub(crate) fn load_closure_code_ref<M: cranelift_module::Module, K>(
+    cx: &mut CodegenFn<'_, K>,
     b: &mut FunctionBuilder<'_>,
     jmod: &mut M,
     _runtime: &RuntimeRefs,
@@ -91,8 +91,8 @@ pub(crate) fn load_closure_code_ref<M: cranelift_module::Module>(
     cx.closure_code_ref(b, jmod, closure_ref)
 }
 
-pub(crate) fn load_closure_halt_kind_ref<M: cranelift_module::Module>(
-    cx: &mut CodegenFn<'_>,
+pub(crate) fn load_closure_halt_kind_ref<M: cranelift_module::Module, K>(
+    cx: &mut CodegenFn<'_, K>,
     b: &mut FunctionBuilder<'_>,
     jmod: &mut M,
     _runtime: &RuntimeRefs,

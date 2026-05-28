@@ -11,6 +11,7 @@ use cranelift_codegen::ir::{self, InstBuilder, types};
 use cranelift_frontend::FunctionBuilder;
 use cranelift_module::FuncId;
 use std::collections::HashMap;
+use std::marker::PhantomData;
 
 #[derive(Default)]
 pub(crate) struct FunctionImports {
@@ -31,28 +32,39 @@ impl FunctionImports {
     }
 }
 
-pub(crate) struct CodegenFn<'env> {
+pub(crate) enum BodyContext {}
+
+pub(crate) enum RuntimeShimContext {}
+
+pub(crate) struct CodegenFn<'env, K = BodyContext> {
     runtime: &'env RuntimeRefs,
     imports: FunctionImports,
+    _kind: PhantomData<K>,
 }
 
-impl<'env> CodegenFn<'env> {
+impl<'env> CodegenFn<'env, BodyContext> {
     pub(crate) fn new(env: &'env CodegenEnv<'_>) -> Self {
         Self {
             runtime: env.runtime,
             imports: FunctionImports::default(),
+            _kind: PhantomData,
         }
     }
+}
 
+impl<'env> CodegenFn<'env, RuntimeShimContext> {
     /// Build a semantic context for generated runtime shim bodies, which
     /// have runtime refs but no fz `CodegenEnv`.
     pub(crate) fn for_runtime_shim(runtime: &'env RuntimeRefs) -> Self {
         Self {
             runtime,
             imports: FunctionImports::default(),
+            _kind: PhantomData,
         }
     }
+}
 
+impl<'env, K> CodegenFn<'env, K> {
     pub(crate) fn func_ref<M: cranelift_module::Module>(
         &mut self,
         b: &mut FunctionBuilder<'_>,
@@ -536,6 +548,16 @@ mod tests {
 
     #[test]
     fn function_context_construction_stays_at_the_boundaries() {
+        let context_source = include_str!("fn_ctx.rs");
+        assert!(
+            context_source.contains("BodyContext"),
+            "ordinary function lowering should have an explicit CodegenFn context marker"
+        );
+        assert!(
+            context_source.contains("RuntimeShimContext"),
+            "runtime shim lowering should have an explicit CodegenFn context marker"
+        );
+
         let ordinary_function_contexts =
             count_matches(include_str!("function.rs"), "CodegenFn::new(");
         assert_eq!(
