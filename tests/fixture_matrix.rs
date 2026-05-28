@@ -2845,8 +2845,11 @@ fn enum_list_allocations_pin_minimum_list_cons() {
     for needle in [
         "the input list literal allocates five cons cells",
         "`Enum.count/1`, `Enum.member?/2`, and `Enum.reduce/3` allocate no additional",
+        "native `Enum.reduce/3` currently allocates six closures",
         "`list_cons_allocs = 5`",
         "`list_cons_bytes = 80`",
+        "`closure_allocs = 6`",
+        "`closure_bytes = 352`",
     ] {
         assert!(
             readme.contains(needle),
@@ -2864,9 +2867,20 @@ fn enum_list_allocations_pin_minimum_list_cons() {
             "{:done, 15}",
             ":list_cons_allocs => 5",
             ":list_cons_bytes => 80",
+            ":closure_allocs => 6",
+            ":closure_bytes => 352",
             ":map_allocs => 0",
             "\n368\n",
         ],
+    );
+
+    let clif = dump_fixture_clif("enum_list_allocations");
+    let reduce_list = clif_function_with_banner_prefix(&clif, "; fn Enumerable.reduce_list_s")
+        .expect("enum_list_allocations native dump must include reduce_list");
+    assert!(
+        reduce_list.contains("@fz_alloc_closure"),
+        "current Enum.reduce baseline must show reducer-return continuation allocation:\n{}",
+        reduce_list
     );
 }
 
