@@ -2497,8 +2497,8 @@ end
     );
     assert!(
         cont_body.contains("@fz_closure_get_capture_ref")
-            && cont_body.contains("call fn0")
-            && cont_body.contains("call fn3"),
+            && cont_body.matches("call fn0").count() >= 3
+            && cont_body.contains("return_call"),
         "k_* continuation should project captures through the closure env accessors:\n{}",
         cont_body
     );
