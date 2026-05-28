@@ -98,6 +98,66 @@ fn callee_is_native(env: &CodegenEnv<'_>, id: u32) -> bool {
     env.natively_callable.contains(&crate::fz_ir::FnId(id))
 }
 
+enum ContinuationPlan {
+    /// No closure-shaped value is needed. The callee/resume edge can be emitted
+    /// as a direct native edge. Later tickets route known closure calls here.
+    #[allow(dead_code)]
+    DirectNative,
+    LazyNativeDescriptor(ContinuationPayload),
+    HeapClosure(ContinuationPayload),
+}
+
+struct ContinuationPayload {
+    cont_sid: u32,
+    cont_fid: FuncId,
+    cap_bindings: Vec<ClosureCapture>,
+    extra_ref_captures: Vec<ir::Value>,
+}
+
+impl ContinuationPlan {
+    #[allow(clippy::too_many_arguments)]
+    fn emit_value<M: cranelift_module::Module>(
+        &self,
+        jmod: &mut M,
+        b: &mut FunctionBuilder<'_>,
+        runtime: &RuntimeRefs,
+        return_reprs: &[ArgRepr],
+        is_cont_fn: bool,
+        cont_param: Option<ir::Value>,
+        frame_ptr: Option<ir::Value>,
+    ) -> Option<ir::Value> {
+        match self {
+            ContinuationPlan::DirectNative => None,
+            ContinuationPlan::LazyNativeDescriptor(payload) => Some(build_lazy_cont_descriptor(
+                jmod,
+                b,
+                runtime,
+                return_reprs,
+                is_cont_fn,
+                cont_param,
+                frame_ptr,
+                payload.cont_sid,
+                payload.cont_fid,
+                &payload.cap_bindings,
+                &payload.extra_ref_captures,
+            )),
+            ContinuationPlan::HeapClosure(payload) => Some(build_cont_closure(
+                jmod,
+                b,
+                runtime,
+                return_reprs,
+                is_cont_fn,
+                cont_param,
+                frame_ptr,
+                payload.cont_sid,
+                payload.cont_fid,
+                &payload.cap_bindings,
+                &payload.extra_ref_captures,
+            )),
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn emit_terminator<
     M: cranelift_module::Module,
@@ -798,58 +858,40 @@ fn emit_native_call_with_cont<
     let cont_can_use_lazy_descriptor = !closure_n_captures.contains_key(callee)
         && !cont_captures_callable
         && !caller_has_callable_state;
-    let lazy_cont_opt: Option<ir::Value> =
-        if cont_is_native && is_native && cont_can_use_lazy_descriptor {
-            let cont_fid = *fn_ids.get(&cont_sid).expect("cont fn_id missing");
-            let cap_bindings: Vec<ClosureCapture> = continuation
-                .captured
-                .iter()
-                .map(|cv| closure_capture_for_var(var_env, b, jmod, runtime, cv.0, cache))
-                .collect();
-            let extra_ref_captures =
-                cont_extra_ref_captures(b, cache, &env.spec_keys[cont_sid as usize]);
-            Some(build_lazy_cont_descriptor(
-                jmod,
-                b,
-                runtime,
-                return_reprs,
-                is_cont_fn,
-                cont_param,
-                frame_ptr,
-                cont_sid,
-                cont_fid,
-                &cap_bindings,
-                &extra_ref_captures,
-            ))
-        } else {
-            None
+    let continuation_plan = if cont_is_native {
+        let cont_fid = *fn_ids.get(&cont_sid).expect("cont fn_id missing");
+        let cap_bindings: Vec<ClosureCapture> = continuation
+            .captured
+            .iter()
+            .map(|cv| closure_capture_for_var(var_env, b, jmod, runtime, cv.0, cache))
+            .collect();
+        let extra_ref_captures =
+            cont_extra_ref_captures(b, cache, &env.spec_keys[cont_sid as usize]);
+        let payload = ContinuationPayload {
+            cont_sid,
+            cont_fid,
+            cap_bindings,
+            extra_ref_captures,
         };
-    let cl_ptr_opt: Option<ir::Value> =
-        if cont_is_native && (!is_native || !cont_can_use_lazy_descriptor) {
-            let cont_fid = *fn_ids.get(&cont_sid).expect("cont fn_id missing");
-            let cap_bindings: Vec<ClosureCapture> = continuation
-                .captured
-                .iter()
-                .map(|cv| closure_capture_for_var(var_env, b, jmod, runtime, cv.0, cache))
-                .collect();
-            let extra_ref_captures =
-                cont_extra_ref_captures(b, cache, &env.spec_keys[cont_sid as usize]);
-            Some(build_cont_closure(
-                jmod,
-                b,
-                runtime,
-                return_reprs,
-                is_cont_fn,
-                cont_param,
-                frame_ptr,
-                cont_sid,
-                cont_fid,
-                &cap_bindings,
-                &extra_ref_captures,
-            ))
+        if is_native && cont_can_use_lazy_descriptor {
+            Some(ContinuationPlan::LazyNativeDescriptor(payload))
         } else {
-            None
-        };
+            Some(ContinuationPlan::HeapClosure(payload))
+        }
+    } else {
+        None
+    };
+    let cont_value_opt = continuation_plan.as_ref().and_then(|plan| {
+        plan.emit_value(
+            jmod,
+            b,
+            runtime,
+            return_reprs,
+            is_cont_fn,
+            cont_param,
+            frame_ptr,
+        )
+    });
     // cont arg passed to the callee: cl_ptr for native cont,
     // else cont_param fallback. When the cont-fn is uniform
     // (rare; only main's halt-style cont after the
@@ -861,10 +903,8 @@ fn emit_native_call_with_cont<
     // execute its uniform-cont write-back after the call
     // (would double-halt with the wrong value).
     let mut synth_halt_cont = false;
-    let cont_arg = if let Some(lazy_cont) = lazy_cont_opt {
-        lazy_cont
-    } else if let Some(cl_ptr) = cl_ptr_opt {
-        cl_ptr
+    let cont_arg = if let Some(cont_value) = cont_value_opt {
+        cont_value
     } else {
         match cont_param {
             Some(c) => c,
@@ -876,13 +916,18 @@ fn emit_native_call_with_cont<
     };
     native_args.push(cont_arg);
 
-    if lazy_cont_opt.is_some() && is_native {
+    let uses_lazy_cont = matches!(
+        continuation_plan,
+        Some(ContinuationPlan::LazyNativeDescriptor(_))
+    );
+    let uses_heap_cont = matches!(continuation_plan, Some(ContinuationPlan::HeapClosure(_)));
+    if uses_lazy_cont && is_native {
         let inst = b.ins().call(callee_fref, &native_args);
         let result = b.inst_results(inst)[0];
         b.ins().return_(&[result]);
-    } else if (cl_ptr_opt.is_some() || synth_halt_cont) && is_native {
+    } else if (uses_heap_cont || synth_halt_cont) && is_native {
         b.ins().return_call(callee_fref, &native_args);
-    } else if cl_ptr_opt.is_some() || synth_halt_cont {
+    } else if uses_heap_cont || synth_halt_cont {
         // Uniform caller → native callee (chained). Can't
         // return_call across CC; synchronous call then
         // return the chain-final value (halt_value already
