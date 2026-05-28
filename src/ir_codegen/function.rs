@@ -42,8 +42,6 @@ pub(crate) fn compile_fn<
         None
     };
     let demand_abi = DemandAbi::new(&env.spec_keys[this_spec_id as usize]);
-    let owned_cons_reuse_enabled =
-        demand_abi.has_list_tail_context() || demand_abi.tuple_field_arity().is_some();
     let has_list_tail_dest = demand_abi.has_list_tail_native_param(is_native, is_cont_fn);
     // When this fn is never invoked from any fz IR site (not a direct
     // callee, not a continuation, not a closure target), it can only
@@ -165,12 +163,11 @@ pub(crate) fn compile_fn<
             list_tail_param,
             list_tail_return_elems,
             skipped_list_tail_return_vars,
-            owned_cons_head_origins: f
+            owned_cons_reuse_sources: f
                 .owned_cons_reuse_credits
                 .iter()
                 .map(|credit| (credit.head.0, credit.source_cons))
                 .collect(),
-            owned_cons_reuse_enabled,
             ..CodegenCache::default()
         }
     };

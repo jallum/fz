@@ -2730,8 +2730,8 @@ fn list_cell_uninit_is_immediately_initialized_in_clif() {
         clif
     );
     assert!(
-        clif.contains("@fz_list_relink_unaliased_tail_ref"),
-        "quicksort should reuse owned cons cells through the checked relink helper:\n{}",
+        clif.contains("@fz_list_reuse_or_cons_tail_ref"),
+        "quicksort should reuse owned cons cells through the total reuse-or-cons helper:\n{}",
         clif
     );
 }
@@ -2792,11 +2792,11 @@ fn append_pins_source_append_target() {
 
     let expected = fs::read_to_string("fixtures/append/expected.txt").expect("read append golden");
     for needle in [
-        ":list_cons_allocs => 8",
-        ":list_cons_bytes => 128",
+        ":list_cons_allocs => 5",
+        ":list_cons_bytes => 80",
         ":struct_allocs => 0",
         ":map_allocs => 0",
-        "\n128\n",
+        "\n80\n",
     ] {
         assert!(
             expected.contains(needle),
@@ -2840,22 +2840,22 @@ fn reverse_filter_tree_pin_current_shape() {
         "reverse",
         "expected.txt",
         &[
-            ":list_cons_allocs => 10",
-            ":list_cons_bytes => 160",
+            ":list_cons_allocs => 5",
+            ":list_cons_bytes => 80",
             ":struct_allocs => 0",
             ":map_allocs => 0",
-            "\n160\n",
+            "\n80\n",
         ],
     );
     assert_fixture_output_contains(
         "filter",
         "expected.txt",
         &[
-            ":list_cons_allocs => 8",
-            ":list_cons_bytes => 128",
+            ":list_cons_allocs => 5",
+            ":list_cons_bytes => 80",
             ":struct_allocs => 0",
             ":map_allocs => 0",
-            "\n128\n",
+            "\n80\n",
         ],
     );
     assert_fixture_output_contains(

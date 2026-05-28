@@ -517,6 +517,14 @@ fn emit_call_term<
             .iter()
             .map(|v| var_env.get(&v.0).expect("unbound captured val").value())
             .collect();
+        mark_retained_call_args_as_published(
+            b,
+            jmod,
+            runtime,
+            var_env,
+            args,
+            &continuation.captured,
+        );
         let callee_sid = resolve_callee_sid(t, env, caller_fn_id, blk);
         let mut cont_sid = resolve_cont_sid(t, env, caller_fn_id, blk);
         let this_demand = DemandAbi::new(&env.spec_keys[this_spec_id as usize]);
@@ -588,7 +596,7 @@ fn emit_call_term<
                 closure_capture_for_var(var_env, b, jmod, runtime, pivot_capture.0, cache),
                 closure_capture_for_var(var_env, b, jmod, runtime, args[0].0, cache),
             ];
-            if let Some(source_cons) = cache.owned_cons_head_origins.get(&pivot_capture.0) {
+            if let Some(source_cons) = cache.owned_cons_reuse_sources.get(&pivot_capture.0) {
                 cap_bindings.push(closure_capture_for_var(
                     var_env,
                     b,
@@ -626,16 +634,16 @@ fn emit_call_term<
             let entry = caller_fn.block(caller_fn.entry);
             if entry.params.first().copied() == Some(tail_capture) {
                 let tail_bits = any_ref_for_var(var_env, b, jmod, runtime, tail_capture.0, cache);
-                let pivot_tail = if cache.owned_cons_reuse_enabled
-                    && let Some(source_cons) = cache.owned_cons_head_origins.get(&pivot_capture.0)
-                {
-                    let source_ref =
-                        any_ref_for_var(var_env, b, jmod, runtime, source_cons.0, cache);
-                    let tail_ref = list_tail_ref_word(b, cache, ListTailBits::ValueRef(tail_bits));
-                    let relink = jmod
-                        .declare_func_in_func(runtime.list_relink_unaliased_tail_ref_id, b.func);
-                    let inst = b.ins().call(relink, &[source_ref, tail_ref]);
-                    b.inst_results(inst)[0]
+                let pivot_tail = if let Some(reused) = emit_owned_cons_reuse_or_alloc(
+                    b,
+                    jmod,
+                    runtime,
+                    var_env,
+                    cache,
+                    pivot_capture,
+                    ListTailBits::ValueRef(tail_bits),
+                ) {
+                    reused
                 } else {
                     emit_list_cons_bif(
                         b,
@@ -1258,6 +1266,14 @@ fn emit_call_closure<
             .iter()
             .map(|v| var_env.get(&v.0).expect("unbound callclosure arg").value())
             .collect();
+        mark_retained_call_args_as_published(
+            b,
+            jmod,
+            runtime,
+            var_env,
+            args,
+            &continuation.captured,
+        );
         // Build the continuation as a closure env. The body will
         // project any captures it needs from `self`.
         let cont_sid = resolve_cont_sid(t, env, caller_fn_id, blk);

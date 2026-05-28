@@ -190,17 +190,6 @@ pub(crate) fn emit_map_put_for_key_and_value<
     b.inst_results(inst)[0]
 }
 
-pub(crate) fn list_tail_ref_word(
-    b: &mut FunctionBuilder<'_>,
-    cache: &mut CodegenCache,
-    tail: ListTailBits,
-) -> ir::Value {
-    match tail {
-        ListTailBits::Empty => emit_empty_list_value_ref_word(b, cache),
-        ListTailBits::ValueRef(value) | ListTailBits::NonEmptyValueRef(value) => value,
-    }
-}
-
 fn codegen_value_raw_kind_parts(
     b: &mut FunctionBuilder<'_>,
     value: CodegenValue,
@@ -399,19 +388,16 @@ pub(crate) fn lower_collection_prim<
             LowerOut::ValueRefWord(b.inst_results(inst)[0])
         }
         Prim::MakeList(elems, tail) => {
-            if cache.owned_cons_reuse_enabled
-                && elems.len() == 1
+            if elems.len() == 1
                 && let Some(tail_var) = tail
-                && let Some(source_cons) = cache.owned_cons_head_origins.get(&elems[0].0)
             {
-                let source_ref = any_ref_for_var(var_env, b, jmod, runtime, source_cons.0, cache);
                 let tail_bits = any_ref_for_var(var_env, b, jmod, runtime, tail_var.0, cache);
                 let tail = list_tail_bits_for_var(t, fn_types, block_env, *tail_var, tail_bits);
-                let tail_ref = list_tail_ref_word(b, cache, tail);
-                let relink =
-                    jmod.declare_func_in_func(runtime.list_relink_unaliased_tail_ref_id, b.func);
-                let inst = b.ins().call(relink, &[source_ref, tail_ref]);
-                return Ok(LowerOut::ValueRef(b.inst_results(inst)[0]));
+                if let Some(reused) =
+                    emit_owned_cons_reuse_or_alloc(b, jmod, runtime, var_env, cache, elems[0], tail)
+                {
+                    return Ok(LowerOut::ValueRef(reused));
+                }
             }
             // Default tail of a list-literal is the empty list (`[]`),
             // NOT the nil atom value — distinct runtime bit patterns.
@@ -496,18 +482,14 @@ pub(crate) fn lower_collection_prim<
         }
         Prim::DestListBegin { .. } => LowerOut::DeadUnit,
         Prim::DestListCons { head, tail, .. } => {
-            if cache.owned_cons_reuse_enabled
-                && let Some(tail_var) = tail
-                && let Some(source_cons) = cache.owned_cons_head_origins.get(&head.0)
-            {
-                let source_ref = any_ref_for_var(var_env, b, jmod, runtime, source_cons.0, cache);
+            if let Some(tail_var) = tail {
                 let tail_bits = any_ref_for_var(var_env, b, jmod, runtime, tail_var.0, cache);
                 let tail = list_tail_bits_for_var(t, fn_types, block_env, *tail_var, tail_bits);
-                let tail_ref = list_tail_ref_word(b, cache, tail);
-                let relink =
-                    jmod.declare_func_in_func(runtime.list_relink_unaliased_tail_ref_id, b.func);
-                let inst = b.ins().call(relink, &[source_ref, tail_ref]);
-                return Ok(LowerOut::ValueRef(b.inst_results(inst)[0]));
+                if let Some(reused) =
+                    emit_owned_cons_reuse_or_alloc(b, jmod, runtime, var_env, cache, *head, tail)
+                {
+                    return Ok(LowerOut::ValueRef(reused));
+                }
             }
             let acc = match tail {
                 Some(tail_var) => {

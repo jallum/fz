@@ -96,7 +96,7 @@ pub(crate) fn declare_runtime_symbols<M: cranelift_module::Module>(
         list_head_int_ref_id: list.list_head_int_ref_id,
         list_head_float_ref_id: list.list_head_float_ref_id,
         list_tail_fallback_id: list.list_tail_fallback_id,
-        list_relink_unaliased_tail_ref_id: list.list_relink_unaliased_tail_ref_id,
+        list_reuse_or_cons_tail_ref_id: list.list_reuse_or_cons_tail_ref_id,
         mark_published_ref_aliased_id: list.mark_published_ref_aliased_id,
         alloc_struct_id: strct.alloc_struct_id,
         struct_get_field_id: strct.struct_get_field_id,
@@ -209,7 +209,7 @@ struct ListRefs {
     list_head_int_ref_id: FuncId,
     list_head_float_ref_id: FuncId,
     list_tail_fallback_id: FuncId,
-    list_relink_unaliased_tail_ref_id: FuncId,
+    list_reuse_or_cons_tail_ref_id: FuncId,
     mark_published_ref_aliased_id: FuncId,
 }
 
@@ -257,9 +257,9 @@ fn declare_list_runtime<M: cranelift_module::Module>(
             &[types::F64],
         )?,
         list_tail_fallback_id: decl_import(jmod, "fz_list_tail_ref", &[types::I64], &[types::I64])?,
-        list_relink_unaliased_tail_ref_id: decl_import(
+        list_reuse_or_cons_tail_ref_id: decl_import(
             jmod,
-            "fz_list_relink_unaliased_tail_ref",
+            "fz_list_reuse_or_cons_tail_ref",
             &[types::I64, types::I64],
             &[types::I64],
         )?,
@@ -950,7 +950,7 @@ pub(crate) struct RuntimeRefs {
     pub(super) list_head_int_ref_id: FuncId,
     pub(super) list_head_float_ref_id: FuncId,
     pub(super) list_tail_fallback_id: FuncId,
-    pub(super) list_relink_unaliased_tail_ref_id: FuncId,
+    pub(super) list_reuse_or_cons_tail_ref_id: FuncId,
     pub(super) mark_published_ref_aliased_id: FuncId,
     pub(super) alloc_struct_id: FuncId,
     pub(super) struct_get_field_id: FuncId,

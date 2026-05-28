@@ -20,6 +20,25 @@ pub(crate) fn mark_published_ref_aliased<M: cranelift_module::Module>(
     b.inst_results(inst)[0]
 }
 
+pub(crate) fn mark_retained_call_args_as_published<M: cranelift_module::Module>(
+    b: &mut FunctionBuilder<'_>,
+    jmod: &mut M,
+    runtime: &RuntimeRefs,
+    var_env: &HashMap<u32, CodegenValue>,
+    args: &[crate::fz_ir::Var],
+    captured: &[crate::fz_ir::Var],
+) {
+    for arg in args {
+        if !captured.contains(arg) {
+            continue;
+        }
+        let Some(CodegenValue::AnyRef(value_ref)) = var_env.get(&arg.0).copied() else {
+            continue;
+        };
+        let _ = mark_published_ref_aliased(b, jmod, runtime, value_ref);
+    }
+}
+
 #[derive(Clone, Copy)]
 pub(crate) enum ListTailBits {
     Empty,
@@ -40,6 +59,34 @@ pub(crate) fn list_tail_bits_for_var<T: crate::types::Types<Ty = crate::types::T
         ListTailBits::NonEmptyValueRef(tail_bits)
     } else {
         ListTailBits::ValueRef(tail_bits)
+    }
+}
+
+pub(crate) fn emit_owned_cons_reuse_or_alloc<M: cranelift_module::Module>(
+    b: &mut FunctionBuilder<'_>,
+    jmod: &mut M,
+    runtime: &RuntimeRefs,
+    var_env: &HashMap<u32, CodegenValue>,
+    cache: &mut CodegenCache,
+    head: crate::fz_ir::Var,
+    tail: ListTailBits,
+) -> Option<ir::Value> {
+    let source_cons = *cache.owned_cons_reuse_sources.get(&head.0)?;
+    let source_ref = any_ref_for_var(var_env, b, jmod, runtime, source_cons.0, cache);
+    let tail_ref = list_tail_ref_word(b, cache, tail);
+    let fref = jmod.declare_func_in_func(runtime.list_reuse_or_cons_tail_ref_id, b.func);
+    let inst = b.ins().call(fref, &[source_ref, tail_ref]);
+    Some(b.inst_results(inst)[0])
+}
+
+pub(crate) fn list_tail_ref_word(
+    b: &mut FunctionBuilder<'_>,
+    cache: &mut CodegenCache,
+    tail: ListTailBits,
+) -> ir::Value {
+    match tail {
+        ListTailBits::Empty => emit_empty_list_value_ref_word(b, cache),
+        ListTailBits::ValueRef(value) | ListTailBits::NonEmptyValueRef(value) => value,
     }
 }
 
