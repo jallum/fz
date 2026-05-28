@@ -203,6 +203,51 @@ fn interp_reductions_yield_allocation_light_loops() {
 }
 
 #[test]
+fn interp_allocation_pressure_yields_before_budget_exhaustion() {
+    let m = lower_src(
+        r#"
+        fn sum(0, acc, _), do: acc
+        fn sum(n, acc, _), do: sum(n - 1, acc + n, [n])
+        fn main(), do: sum(10, 0, nil)
+    "#,
+    );
+    let main = m.fn_by_name("main").expect("main").id;
+    let mut runtime = IrInterpRuntime::fresh_with_root(&m);
+    runtime
+        .enqueue_entry(&m, 1, main, vec![])
+        .expect("enqueue main");
+    {
+        let task = runtime.task_mut(1).expect("main task");
+        task.reductions_per_quantum = 1000;
+        task.heap.allocation_watermark = std::ptr::null_mut();
+    }
+
+    let completions = runtime
+        .drive_until_idle(&crate::telemetry::NullTelemetry, None)
+        .expect("drive interp");
+    let halt = completions
+        .iter()
+        .rev()
+        .find_map(|(pid, value)| (*pid == 1).then_some(value.as_i64().expect("int halt")))
+        .expect("main completion");
+
+    let task = runtime.task(1).expect("main task remains registered");
+    assert_eq!(halt, 55);
+    assert!(
+        task.heap.gc_run_count > 0,
+        "allocation pressure should force scheduler-boundary GC"
+    );
+    assert_eq!(
+        task.reduction_yields, 0,
+        "allocation pressure should not be counted as ordinary reduction exhaustion"
+    );
+    assert!(
+        task.reductions_executed < task.reductions_per_quantum as u64,
+        "yield report should preserve positive remaining reductions on early allocation pressure"
+    );
+}
+
+#[test]
 fn interp_typed_int_send_receive_boundary() {
     assert_eq!(
         run(r#"

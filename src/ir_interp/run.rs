@@ -216,20 +216,22 @@ fn run_fn_typed<
                     // back-edge forwards its live RuntimeAnyValue args in place
                     // instead of yielding a scheduler continuation closure.
                     if *is_back_edge {
-                        let budget_exhausted = {
+                        let (budget_exhausted, remaining_reductions) = {
                             let p = fz_runtime::process::current_process();
                             p.reductions_remaining -= 1;
-                            p.reductions_remaining <= 0
+                            (p.reductions_remaining <= 0, p.reductions_remaining)
                         };
-                        if budget_exhausted {
-                            let p = fz_runtime::process::current_process();
-                            let reason = fz_runtime::process::YIELD_REASON_REDUCTIONS
-                                | fz_runtime::reductions::take_yield_reasons();
+                        let pending_reason = fz_runtime::reductions::take_yield_reasons();
+                        if budget_exhausted || pending_reason != 0 {
+                            let mut reason = pending_reason;
+                            if budget_exhausted {
+                                reason |= fz_runtime::process::YIELD_REASON_REDUCTIONS;
+                            }
                             return Ok(InterpStep::Yielded {
                                 resume_fn: *callee,
                                 resume_args: arg_vals,
                                 after: vec![],
-                                remaining_reductions: p.reductions_remaining,
+                                remaining_reductions,
                                 reason,
                             });
                         }

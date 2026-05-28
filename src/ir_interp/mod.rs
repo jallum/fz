@@ -333,6 +333,11 @@ impl IrInterpRuntime {
         self.tasks.get(&pid).map(Box::as_ref)
     }
 
+    #[cfg(test)]
+    pub(crate) fn task_mut(&mut self, pid: u32) -> Option<&mut Process> {
+        self.tasks.get_mut(&pid).map(Box::as_mut)
+    }
+
     pub(crate) fn read_tuple_fields(
         &self,
         pid: u32,
