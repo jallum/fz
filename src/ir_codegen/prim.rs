@@ -753,7 +753,10 @@ pub(crate) fn lower_collection_prim<
         }
         Prim::IsMatcherMapMiss(v) => {
             let value_ref = tagged_get(var_env, b, jmod, runtime, v.0, cache);
-            let tag = emit_ref_tag(b, jmod, runtime, value_ref);
+            let tag = {
+                let mut cx = CodegenFn::new(b, jmod, env, cache);
+                cx.ref_tag(value_ref)
+            };
             let is_miss = b.ins().icmp_imm(
                 IntCC::Equal,
                 tag,
@@ -1128,13 +1131,15 @@ pub(crate) fn lower_prim<
         Prim::IsEmptyList(c) => {
             // Empty list is the null-address List ref.
             let cmp = if let Some(CodegenValue::AnyRef(value)) = var_env.get(&c.0).copied() {
-                let tag = emit_ref_tag(b, jmod, runtime, value);
+                let (tag, empty_list_v) = {
+                    let mut cx = CodegenFn::new(b, jmod, env, cache);
+                    (cx.ref_tag(value), cx.empty_list_ref())
+                };
                 let is_list = b.ins().icmp_imm(
                     IntCC::Equal,
                     tag,
                     fz_runtime::any_value::ValueKind::LIST.tag() as i64,
                 );
-                let empty_list_v = emit_empty_list_value_ref_word(b, cache);
                 let is_empty_word = b.ins().icmp(IntCC::Equal, value, empty_list_v);
                 b.ins().band(is_list, is_empty_word)
             } else {

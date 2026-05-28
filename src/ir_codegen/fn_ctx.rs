@@ -13,13 +13,11 @@ use cranelift_module::FuncId;
 use std::collections::HashMap;
 
 #[derive(Default)]
-#[allow(dead_code)]
 pub(crate) struct FunctionImports {
     refs: HashMap<FuncId, ir::FuncRef>,
 }
 
 impl FunctionImports {
-    #[allow(dead_code)]
     pub(crate) fn func_ref<M: cranelift_module::Module>(
         &mut self,
         jmod: &mut M,
@@ -33,7 +31,6 @@ impl FunctionImports {
     }
 }
 
-#[allow(dead_code)]
 pub(crate) struct CodegenFn<'builder, 'ctx, 'env, M: cranelift_module::Module> {
     pub(crate) b: &'ctx mut FunctionBuilder<'builder>,
     pub(crate) jmod: &'ctx mut M,
@@ -43,7 +40,6 @@ pub(crate) struct CodegenFn<'builder, 'ctx, 'env, M: cranelift_module::Module> {
 }
 
 impl<'builder, 'ctx, 'env, M: cranelift_module::Module> CodegenFn<'builder, 'ctx, 'env, M> {
-    #[allow(dead_code)]
     pub(crate) fn new(
         b: &'ctx mut FunctionBuilder<'builder>,
         jmod: &'ctx mut M,
@@ -59,27 +55,26 @@ impl<'builder, 'ctx, 'env, M: cranelift_module::Module> CodegenFn<'builder, 'ctx
         }
     }
 
-    #[allow(dead_code)]
     pub(crate) fn func_ref(&mut self, id: FuncId) -> ir::FuncRef {
         self.imports.func_ref(self.jmod, self.b.func, id)
     }
 
-    #[allow(dead_code)]
-    pub(crate) fn func_addr(&mut self, id: FuncId) -> ir::Value {
-        let fref = self.func_ref(id);
-        self.b.ins().func_addr(types::I64, fref)
-    }
-
-    #[allow(dead_code)]
     pub(crate) fn call_func(&mut self, id: FuncId, args: &[ir::Value]) -> ir::Inst {
         let fref = self.func_ref(id);
         self.b.ins().call(fref, args)
     }
 
-    #[allow(dead_code)]
     pub(crate) fn call_func1(&mut self, id: FuncId, args: &[ir::Value]) -> ir::Value {
         let inst = self.call_func(id, args);
         self.b.inst_results(inst)[0]
+    }
+
+    pub(crate) fn ref_tag(&mut self, value_ref: ir::Value) -> ir::Value {
+        self.call_func1(self.env.runtime.type_of_id, &[value_ref])
+    }
+
+    pub(crate) fn empty_list_ref(&mut self) -> ir::Value {
+        emit_empty_list_value_ref_word(self.b, self.cache)
     }
 }
 
