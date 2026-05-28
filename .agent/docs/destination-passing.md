@@ -152,16 +152,19 @@ keeps `list_cons_allocs = 11`, `list_cons_bytes = 176`,
 `struct_allocs = 0`, and headline `heap_bytes = 176`.
 
 Owned-cons reuse is the next reduction layer. Multi-clause list destructuring
-now preserves a hidden, ignored entry parameter from a projected head back to
-the original source cons cell. The spec dump exposes this under
-`owned_cons_reuse`:
+records a physical capability from a projected head back to the original source
+cons cell. The source slot is not a source value and is not modeled as an
+ignored semantic parameter. The spec dump exposes the capability and the
+remaining reuse credit:
 
 ```text
+physical_capabilities:
+  owned_cons_source param=Var(C) head=Var(H)
 owned_cons_reuse:
   reuse_credit head=Var(H) source_cons=Var(C)
 ```
 
-The hidden parameter is not part of semantic specialization (`_` in the spec
+The physical parameter is not part of semantic specialization (`_` in the spec
 key), but it gives native codegen the object-local capability needed to turn
 `[h | new_tail]` into a reuse attempt for `C`. Native lowering consumes the
 fact through one helper for `MakeList`, `DestListCons`, and `cons_then_direct`

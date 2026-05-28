@@ -13,18 +13,18 @@ Final form:
   or crosses a scheduler/materialization boundary;
 - codegen consumes validated facts mechanically.
 
-`src/ir_effects.rs` owns operation effect classification. Reuse pruning,
-planner return-context barriers, and future capability validation should read
-that classifier instead of carrying local publication rules.
+`src/ir_effects.rs` owns operation effect classification. Planner
+return-context barriers and capability validation read that classifier instead
+of carrying local publication rules.
 
-## Current Scaffold
+## Current Model
 
 The current owned-cons reuse implementation reaches the right allocation floor,
-but it still uses transitional plumbing:
+with these compiler facts:
 
 - `src/fz_ir.rs` exposes `physical_entry_params` as the destination for
   object-local capabilities.
-- `src/fz_ir.rs` stores `ignored_entry_params` beside semantic params.
+- `src/fz_ir.rs` keeps `ignored_entry_params` only for source wildcard holes.
 - `src/fz_ir.rs` stores `owned_cons_reuse_credits` as the reusable-cons seed.
 - `src/ir_lower/cps.rs` transports `owned_cons_captures` through ordinary
   continuation capture machinery, but owned-cons source slots are physical
@@ -37,9 +37,9 @@ but it still uses transitional plumbing:
   `emit_owned_cons_reuse_or_alloc`; its source cache is physical-first while
   non-entry transitional credits remain.
 
-The standalone reuse-pruning pass has been removed. Remaining removal targets
-are acceptable only while non-entry reuse credits still need a compatibility
-path.
+The standalone reuse-pruning pass has been removed. The remaining compatibility
+path is codegen's non-entry reuse-credit fallback; entry-source capabilities are
+read from `physical_entry_params`.
 
 Spec dumps render `physical_capabilities` records so tests can assert the IR
 facts directly instead of inferring them from backend text.

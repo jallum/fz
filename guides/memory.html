@@ -828,12 +828,14 @@ closure call, or <code>Process.heap_alloc_stats()</code>. Allocation alone is no
 source-visible, but allocation timing becomes visible when a program reads the
 current process allocation counters.</p>
 
-<p>Owned list-cell reuse has one more boundary: publication. A cons cell that is
-stored into another heap object, captured by an escaping closure or lazy
-continuation, carried across a scheduler-visible same-heap handoff, or passed to
-a non-tail call while the caller's continuation retains the same value is no longer privately owned by the
-rewrite that destructured it. The compiler either refuses to create a reuse
-credit for that cell or marks the cell aliased before a later reuse attempt.</p>
+<p>Owned list-cell reuse has one more boundary: publication. The compiler records
+the source cons as a physical capability, not as a source-level argument. If a
+cons cell is stored into another heap object, captured by an escaping closure or
+lazy continuation, carried across a scheduler-visible same-heap handoff, or
+passed to a non-tail call while the caller's continuation retains the same value,
+the cell is no longer privately owned by the rewrite that destructured it. The
+compiler either refuses to create a reuse credit for that cell or marks the cell
+aliased before a later reuse attempt.</p>
 
 <p>Extern calls do not publish their arguments for alias tracking. If an extern
 wants to retain a value after returning, the extern must copy it.</p>

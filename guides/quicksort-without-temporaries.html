@@ -113,10 +113,10 @@ native JIT/AOT fixture target pinned by
 <code>fixtures/quicksort/README.md</code> and
 <code>tests/fixture_matrix.rs</code>: they are exactly the input list literal.
 Partition accumulator cells and pivot cells are handled through owned reuse
-credits: codegen carries the source cons as a hidden capability and calls the
-total reuse-or-cons helper. If the source cell is still private, the helper
-relinks it in place; if it has been published, the helper allocates a fresh
-cons instead.</p>
+credits: lowering records a physical source-cons capability, separate from the
+program's semantic arguments, and codegen calls the total reuse-or-cons helper.
+If the source cell is still private, the helper relinks it in place; if it has
+been published, the helper allocates a fresh cons instead.</p>
 
 <p>The two numbers that are surprising are the zeros. In this fixture, native
 JIT and AOT allocate no tuple structs and no continuation closures on the
