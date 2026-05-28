@@ -2846,10 +2846,11 @@ fn enum_list_allocations_pin_minimum_list_cons() {
         "the input list literal allocates five cons cells",
         "`Enum.count/1`, `Enum.member?/2`, and `Enum.reduce/3` allocate no additional",
         "native `Enum.reduce/3` currently allocates six closures",
+        "continuation capture normalization prunes dead reducer-return captures",
         "`list_cons_allocs = 5`",
         "`list_cons_bytes = 80`",
         "`closure_allocs = 6`",
-        "`closure_bytes = 352`",
+        "`closure_bytes = 272`",
     ] {
         assert!(
             readme.contains(needle),
@@ -2868,7 +2869,7 @@ fn enum_list_allocations_pin_minimum_list_cons() {
             ":list_cons_allocs => 5",
             ":list_cons_bytes => 80",
             ":closure_allocs => 6",
-            ":closure_bytes => 352",
+            ":closure_bytes => 272",
             ":map_allocs => 0",
             "\n368\n",
         ],
