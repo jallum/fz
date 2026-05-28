@@ -147,8 +147,8 @@ Allocation by itself is not source-observable, but
 allocation becomes observable in the presence of allocation-stat reads.
 
 The pinned evidence is `fixtures/quicksort`: native JIT/AOT output now
-keeps `list_cons_allocs = 48`, `list_cons_bytes = 768`,
-`struct_allocs = 0`, and headline `heap_bytes = 768`.
+keeps `list_cons_allocs = 11`, `list_cons_bytes = 176`,
+`struct_allocs = 0`, and headline `heap_bytes = 176`.
 
 Owned-cons reuse is the next reduction layer. Multi-clause list destructuring
 now preserves a hidden, ignored entry parameter from a projected head back to
@@ -162,10 +162,10 @@ owned_cons_reuse:
 
 The hidden parameter is not part of semantic specialization (`_` in the spec
 key), but it gives native codegen the object-local capability needed to turn
-`[h | new_tail]` into a checked tail relink of `C`. Final lowering must still
-respect observable barriers and the runtime alias bit; this planning fact is
-only the ownership-carrying proof that the head and source cell travelled
-together across generated helper boundaries.
+`[h | new_tail]` into a checked tail relink of `C`. Native lowering consumes
+the fact in list construction and in `cons_then_direct` ListTail return plans;
+the runtime alias bit remains the cell-local guard that rejects relinking if a
+cell was marked aliased.
 
 ## IR Vocabulary
 

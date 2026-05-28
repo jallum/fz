@@ -2339,8 +2339,8 @@ fn quicksort_has_no_tuple_dp_any_fanout() {
     );
     assert!(
         stanzas.iter().any(|s| s.key
-            == "[{[], []} | {[], nonempty_list(int)} | {nonempty_list(int), nonempty_list(int)} | {nonempty_list(int), []}, int]"),
-        "k_31 should receive the typed partition tuple union plus the integer pivot:\n{}",
+            == "[{[], []} | {[], nonempty_list(int)} | {nonempty_list(int), nonempty_list(int)} | {nonempty_list(int), []}, int, any]"),
+        "the qsort tuple continuation should receive the typed partition tuple union, integer pivot, and hidden source cons:\n{}",
         specs
     );
 }
@@ -2621,7 +2621,12 @@ fn list_cell_uninit_is_immediately_initialized_in_clif() {
     );
     assert!(
         clif.contains("@fz_list_cons_int"),
-        "quicksort should construct integer lists through the typed list-cons BIF:\n{}",
+        "quicksort should still build the input literal through the typed list-cons BIF:\n{}",
+        clif
+    );
+    assert!(
+        clif.contains("@fz_list_relink_unaliased_tail_ref"),
+        "quicksort should reuse owned cons cells through the checked relink helper:\n{}",
         clif
     );
 }
@@ -2650,13 +2655,13 @@ fn quicksort_list_literal_uses_static_tail_links() {
 fn quicksort_pins_return_demand_target() {
     let readme = fs::read_to_string("fixtures/quicksort/README.md").expect("read quicksort README");
     for expected in [
-        "`list_cons_allocs = 48`",
-        "`list_cons_bytes = 768`",
+        "`list_cons_allocs = 11`",
+        "`list_cons_bytes = 176`",
         "`struct_allocs = 0`",
         "`struct_bytes = 0`",
         "`map_allocs = 0`",
         "`map_bytes = 0`",
-        "`heap_bytes = 768`",
+        "`heap_bytes = 176`",
     ] {
         assert!(
             readme.contains(expected),
@@ -2842,8 +2847,8 @@ fn quicksort_continuations_capture_only_live_values() {
     let specs = dump_specs_for_fixture("quicksort");
     let capture_lengths = spec_continuation_capture_lengths(&specs);
     assert!(
-        capture_lengths.contains(&2) && capture_lengths.iter().all(|len| *len <= 2),
-        "quicksort continuation should capture only p and sorted_lo once, not rest/lo/hi or duplicate p:\n{}",
+        capture_lengths.contains(&3) && capture_lengths.iter().all(|len| *len <= 3),
+        "quicksort continuations should capture only live values plus a hidden source-cons capability, not rest/lo/hi or duplicate p:\n{}",
         specs
     );
 
@@ -2856,9 +2861,10 @@ fn quicksort_continuations_capture_only_live_values() {
     assert!(
         !tuple_list_tail_cont.contains("@fz_alloc_closure")
             && tuple_list_tail_cont.contains("iconst.i64 3")
+            && tuple_list_tail_cont.contains("iconst.i64 4")
             && tuple_list_tail_cont.contains("stack_addr")
             && tuple_list_tail_cont.contains("bor_imm"),
-        "quicksort should plan its sorting continuation as a three-field lazy descriptor: outer_cont, p, sorted_lo:\n{}",
+        "quicksort should plan its sorting continuation as a four-field lazy descriptor: outer_cont, p, sorted_lo, source_cons:\n{}",
         tuple_list_tail_cont
     );
     assert_eq!(

@@ -610,6 +610,16 @@ pub fn absorb_callee(caller: &mut FnIr, bi: usize, mut callee: FnIr, args: &[Var
             b.stmts = b.stmts.iter().map(|s| subst_stmt(s, &subst)).collect();
             b.terminator = subst_term(&b.terminator, &subst);
         }
+        callee.owned_cons_head_origins = callee
+            .owned_cons_head_origins
+            .iter()
+            .map(|(head, source_cons)| {
+                (
+                    subst.get(head).copied().unwrap_or(*head),
+                    subst.get(source_cons).copied().unwrap_or(*source_cons),
+                )
+            })
+            .collect();
     }
 
     let entry_block = callee.blocks.remove(entry_idx);
@@ -618,6 +628,9 @@ pub fn absorb_callee(caller: &mut FnIr, bi: usize, mut callee: FnIr, args: &[Var
     caller.blocks[bi].stmts.extend(entry_block.stmts);
     caller.blocks[bi].terminator = entry_block.terminator;
     caller.blocks.extend(callee.blocks);
+    caller
+        .owned_cons_head_origins
+        .extend(callee.owned_cons_head_origins);
 }
 
 // ---------- pass: inline_tail_calls_once ----------

@@ -52,18 +52,19 @@ After printing the sorted list, this fixture prints
 path counters visible; the headline isolates immutable value heap objects from
 frame and scheduler details.
 
-Return-demand destination planning target for native JIT/AOT:
+Owned-cons reuse target for native JIT/AOT:
 
-- `list_cons_allocs = 48`
-- `list_cons_bytes = 768`
+- `list_cons_allocs = 11`
+- `list_cons_bytes = 176`
 - `struct_allocs = 0`
 - `struct_bytes = 0`
 - `closure_allocs = 0`
 - `closure_bytes = 0`
 - `map_allocs = 0`
 - `map_bytes = 0`
-- `heap_bytes = 768`
+- `heap_bytes = 176`
 
-Those numbers are the pinned return-demand result. JIT and AOT keep this
-target; the interpreter and REPL remain direct IR baselines because they do not
-execute native ReturnDemand lowering.
+Those numbers mean the native paths allocate only the 11 literal input cons
+cells. JIT and AOT keep this target; the interpreter and REPL remain direct IR
+baselines because they do not execute native ReturnDemand or owned-cons reuse
+lowering.

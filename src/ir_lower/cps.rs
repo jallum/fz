@@ -70,15 +70,36 @@ pub(crate) fn mint_cont_fn(
 ) -> ContFn {
     let id = ctx.mb.fresh_fn_id();
     ctx.fn_spans.insert(id, span);
+    let outer_captured = ctx.visible_locals();
+    let owned_cons_captures = owned_cons_captures_for_visible_locals(ctx, &outer_captured);
     ContFn {
         id,
         name: name.into(),
-        outer_captured: ctx.visible_locals(),
+        outer_captured,
         span,
         category,
         owner_module: ctx.current_owner_module.clone(),
-        owned_cons_captures: Vec::new(),
+        owned_cons_captures,
     }
+}
+
+fn owned_cons_captures_for_visible_locals(
+    ctx: &LowerCtx,
+    visible: &[(String, Var)],
+) -> Vec<OwnedConsCapture> {
+    let Some(cur) = ctx.cur.as_ref() else {
+        return Vec::new();
+    };
+    visible
+        .iter()
+        .filter_map(|(name, head)| {
+            cur.owned_cons_origin_for_head(*head)
+                .map(|source_cons| OwnedConsCapture {
+                    head_name: name.clone(),
+                    source_cons,
+                })
+        })
+        .collect()
 }
 
 pub(crate) fn cont_call_args(ctx: &LowerCtx, cont: &ContFn) -> Vec<Var> {
@@ -198,7 +219,8 @@ pub(crate) fn finalize_arm(ctx: &mut LowerCtx, arm_value: Var, join: Option<&Con
         return;
     }
     if let Some(join) = join {
-        let mut tail_args = Vec::with_capacity(1 + join.outer_captured.len());
+        let mut tail_args =
+            Vec::with_capacity(1 + join.outer_captured.len() + join.owned_cons_captures.len());
         tail_args.push(arm_value);
         for (name, _outer_v) in &join.outer_captured {
             let v = ctx.env.get(name).copied().unwrap_or_else(|| {
@@ -209,6 +231,11 @@ pub(crate) fn finalize_arm(ctx: &mut LowerCtx, arm_value: Var, join: Option<&Con
             });
             tail_args.push(v);
         }
+        tail_args.extend(
+            join.owned_cons_captures
+                .iter()
+                .map(|capture| capture.source_cons),
+        );
         ctx.set_term(Term::TailCall {
             ident: crate::fz_ir::CallsiteIdent::from_source(Span::DUMMY),
             callee: join.id,
@@ -227,7 +254,13 @@ pub(crate) fn cps_split_call_closure(
     call_span: Span,
 ) -> Result<Var, LowerError> {
     let captured = ctx.visible_locals();
-    let captured_vars: Vec<Var> = captured.iter().map(|(_, v)| *v).collect();
+    let owned_cons_captures = owned_cons_captures_for_visible_locals(ctx, &captured);
+    let mut captured_vars: Vec<Var> = captured.iter().map(|(_, v)| *v).collect();
+    captured_vars.extend(
+        owned_cons_captures
+            .iter()
+            .map(|capture| capture.source_cons),
+    );
     let cont_id = ctx.mb.fresh_fn_id();
 
     ctx.set_term_at(
@@ -251,9 +284,26 @@ pub(crate) fn cps_split_call_closure(
         .with_owner_module(ctx.current_owner_module.clone());
     let result_param = kbuilder.fresh_var();
     let cap_params: Vec<Var> = captured.iter().map(|_| kbuilder.fresh_var()).collect();
+    let owned_cons_params: Vec<Var> = owned_cons_captures
+        .iter()
+        .map(|_| kbuilder.fresh_var())
+        .collect();
     let mut params = vec![result_param];
     params.extend(cap_params.clone());
+    params.extend(owned_cons_params.clone());
     let entry = kbuilder.block(params);
+    for hidden in &owned_cons_params {
+        kbuilder.mark_param_ignored(*hidden);
+    }
+    for (capture, source_param) in owned_cons_captures.iter().zip(&owned_cons_params) {
+        if let Some((_, head_param)) = captured
+            .iter()
+            .zip(&cap_params)
+            .find(|((name, _), _)| name == &capture.head_name)
+        {
+            kbuilder.record_owned_cons_head_origin(*head_param, *source_param);
+        }
+    }
     ctx.cur = Some(kbuilder);
     ctx.cur_fn_id = Some(cont_id);
     ctx.fn_spans.insert(cont_id, call_span);
@@ -284,7 +334,13 @@ pub(crate) fn cps_split_receive(
     is_tail: bool,
 ) -> Result<Var, LowerError> {
     let captured = ctx.visible_locals();
-    let captured_vars: Vec<Var> = captured.iter().map(|(_, v)| *v).collect();
+    let owned_cons_captures = owned_cons_captures_for_visible_locals(ctx, &captured);
+    let mut captured_vars: Vec<Var> = captured.iter().map(|(_, v)| *v).collect();
+    captured_vars.extend(
+        owned_cons_captures
+            .iter()
+            .map(|capture| capture.source_cons),
+    );
     let cont_id = ctx.mb.fresh_fn_id();
 
     // Terminate current block with Term::Receive.
@@ -310,9 +366,26 @@ pub(crate) fn cps_split_receive(
         .with_owner_module(ctx.current_owner_module.clone());
     let result_param = kbuilder.fresh_var();
     let cap_params: Vec<Var> = captured.iter().map(|_| kbuilder.fresh_var()).collect();
+    let owned_cons_params: Vec<Var> = owned_cons_captures
+        .iter()
+        .map(|_| kbuilder.fresh_var())
+        .collect();
     let mut params = vec![result_param];
     params.extend(cap_params.clone());
+    params.extend(owned_cons_params.clone());
     let entry = kbuilder.block(params);
+    for hidden in &owned_cons_params {
+        kbuilder.mark_param_ignored(*hidden);
+    }
+    for (capture, source_param) in owned_cons_captures.iter().zip(&owned_cons_params) {
+        if let Some((_, head_param)) = captured
+            .iter()
+            .zip(&cap_params)
+            .find(|((name, _), _)| name == &capture.head_name)
+        {
+            kbuilder.record_owned_cons_head_origin(*head_param, *source_param);
+        }
+    }
     ctx.cur = Some(kbuilder);
     ctx.cur_fn_id = Some(cont_id);
     ctx.fn_spans.insert(cont_id, call_span);
@@ -342,7 +415,13 @@ pub(crate) fn cps_split_call(
     call_span: Span,
 ) -> Result<Var, LowerError> {
     let captured = ctx.visible_locals();
-    let captured_vars: Vec<Var> = captured.iter().map(|(_, v)| *v).collect();
+    let owned_cons_captures = owned_cons_captures_for_visible_locals(ctx, &captured);
+    let mut captured_vars: Vec<Var> = captured.iter().map(|(_, v)| *v).collect();
+    captured_vars.extend(
+        owned_cons_captures
+            .iter()
+            .map(|capture| capture.source_cons),
+    );
     let cont_id = ctx.mb.fresh_fn_id();
 
     // Terminate current block with the call.
@@ -369,9 +448,26 @@ pub(crate) fn cps_split_call(
         .with_owner_module(ctx.current_owner_module.clone());
     let result_param = kbuilder.fresh_var();
     let cap_params: Vec<Var> = captured.iter().map(|_| kbuilder.fresh_var()).collect();
+    let owned_cons_params: Vec<Var> = owned_cons_captures
+        .iter()
+        .map(|_| kbuilder.fresh_var())
+        .collect();
     let mut params = vec![result_param];
     params.extend(cap_params.clone());
+    params.extend(owned_cons_params.clone());
     let entry = kbuilder.block(params);
+    for hidden in &owned_cons_params {
+        kbuilder.mark_param_ignored(*hidden);
+    }
+    for (capture, source_param) in owned_cons_captures.iter().zip(&owned_cons_params) {
+        if let Some((_, head_param)) = captured
+            .iter()
+            .zip(&cap_params)
+            .find(|((name, _), _)| name == &capture.head_name)
+        {
+            kbuilder.record_owned_cons_head_origin(*head_param, *source_param);
+        }
+    }
     ctx.cur = Some(kbuilder);
     ctx.cur_fn_id = Some(cont_id);
     ctx.fn_spans.insert(cont_id, call_span);

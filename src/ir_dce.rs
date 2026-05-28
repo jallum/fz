@@ -207,7 +207,12 @@ pub fn classify_var_uses(f: &FnIr) -> (HashSet<Var>, HashSet<Var>) {
 }
 
 pub fn collect_used(f: &FnIr) -> HashSet<Var> {
-    classify_var_uses(f).1
+    let mut used = classify_var_uses(f).1;
+    for (head, source_cons) in &f.owned_cons_head_origins {
+        used.insert(*head);
+        used.insert(*source_cons);
+    }
+    used
 }
 
 fn collect_prim_vars(p: &Prim, used: &mut HashSet<Var>) {

@@ -101,18 +101,19 @@ callsite capability, then lower that capability mechanically in native codegen.
 run, on both the JIT and the AOT backend:</p>
 
 <pre>
-list_cons_bytes  = 768          <span class="note">48 cons cells × 16 bytes each</span>
+list_cons_bytes  = 176          <span class="note">11 cons cells × 16 bytes each</span>
 struct_bytes     = 0            <span class="note">no tuples allocated</span>
 closure_bytes    = 0            <span class="note">no continuation closures allocated</span>
 map_bytes        = 0
 </pre>
 
 <p>A cons cell in fz is 16 bytes: one word for the head payload, one word for
-the tail pointer plus the head-kind tag bits. The 48 cells are the native
-JIT/AOT fixture target pinned by <code>fixtures/quicksort/README.md</code> and
-<code>tests/fixture_matrix.rs</code>: they cover the input list literal, the
-partition sublists across the recursive calls, and the final sorted list. There
-is no extra append-prefix copy on the demanded quicksort path.</p>
+the tail pointer plus the head-kind and alias tag bits. The 11 cells are the
+native JIT/AOT fixture target pinned by
+<code>fixtures/quicksort/README.md</code> and
+<code>tests/fixture_matrix.rs</code>: they are exactly the input list literal.
+Partition accumulator cells and pivot cells are reused by checked tail relinks
+when the compiler carries the source cons as an owned hidden capability.</p>
 
 <p>The two numbers that are surprising are the zeros. In this fixture, native
 JIT and AOT allocate no tuple structs and no continuation closures on the
@@ -233,7 +234,7 @@ must become resumable outside the current native activation.
   <li><strong>The pinned native allocation target is reached without source
       ownership annotations.</strong> The fixture source has no linearity,
       borrow marker, uniqueness annotation, or refcount credit syntax. The
-      JIT/AOT output pins <code>list_cons_bytes = 768</code>,
+      JIT/AOT output pins <code>list_cons_bytes = 176</code>,
       <code>struct_bytes = 0</code>, <code>closure_bytes = 0</code>, and
       <code>map_bytes = 0</code>.</li>
   <li><strong>Same descriptor, two roles.</strong> The lazy continuation acts

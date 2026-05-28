@@ -101,4 +101,9 @@ pub(crate) struct CodegenCache {
     /// MakeList return vars whose normal lowering is skipped because
     /// Term::Return rebuilds them onto the ListTail destination.
     pub(super) skipped_list_tail_return_vars: std::collections::HashSet<u32>,
+    /// Head Var -> source cons Var facts for checked owned-cons relinking.
+    pub(super) owned_cons_head_origins: HashMap<u32, crate::fz_ir::Var>,
+    /// This spec is in a return-demand path where destructive list reuse is
+    /// part of the selected ABI plan.
+    pub(super) owned_cons_reuse_enabled: bool,
 }

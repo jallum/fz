@@ -1369,6 +1369,10 @@ impl FnBuilder {
         self.owned_cons_head_origins.insert(head, source_cons);
     }
 
+    pub fn owned_cons_origin_for_head(&self, head: Var) -> Option<Var> {
+        self.owned_cons_head_origins.get(&head).copied()
+    }
+
     pub fn prim_for_var(&self, var: Var) -> Option<&Prim> {
         self.blocks.iter().find_map(|block| {
             block

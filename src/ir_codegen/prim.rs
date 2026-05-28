@@ -393,6 +393,20 @@ pub(crate) fn lower_collection_prim<
             LowerOut::ValueRefWord(b.inst_results(inst)[0])
         }
         Prim::MakeList(elems, tail) => {
+            if cache.owned_cons_reuse_enabled
+                && elems.len() == 1
+                && let Some(tail_var) = tail
+                && let Some(source_cons) = cache.owned_cons_head_origins.get(&elems[0].0)
+            {
+                let source_ref = any_ref_for_var(var_env, b, jmod, runtime, source_cons.0, cache);
+                let tail_bits = any_ref_for_var(var_env, b, jmod, runtime, tail_var.0, cache);
+                let tail = list_tail_bits_for_var(t, fn_types, block_env, *tail_var, tail_bits);
+                let tail_ref = list_tail_ref_word(b, cache, tail);
+                let relink =
+                    jmod.declare_func_in_func(runtime.list_relink_unaliased_tail_ref_id, b.func);
+                let inst = b.ins().call(relink, &[source_ref, tail_ref]);
+                return Ok(LowerOut::ValueRef(b.inst_results(inst)[0]));
+            }
             // Default tail of a list-literal is the empty list (`[]`),
             // NOT the nil atom value — distinct runtime bit patterns.
             let mut acc = match tail {
@@ -476,6 +490,19 @@ pub(crate) fn lower_collection_prim<
         }
         Prim::DestListBegin { .. } => LowerOut::DeadUnit,
         Prim::DestListCons { head, tail, .. } => {
+            if cache.owned_cons_reuse_enabled
+                && let Some(tail_var) = tail
+                && let Some(source_cons) = cache.owned_cons_head_origins.get(&head.0)
+            {
+                let source_ref = any_ref_for_var(var_env, b, jmod, runtime, source_cons.0, cache);
+                let tail_bits = any_ref_for_var(var_env, b, jmod, runtime, tail_var.0, cache);
+                let tail = list_tail_bits_for_var(t, fn_types, block_env, *tail_var, tail_bits);
+                let tail_ref = list_tail_ref_word(b, cache, tail);
+                let relink =
+                    jmod.declare_func_in_func(runtime.list_relink_unaliased_tail_ref_id, b.func);
+                let inst = b.ins().call(relink, &[source_ref, tail_ref]);
+                return Ok(LowerOut::ValueRef(b.inst_results(inst)[0]));
+            }
             let acc = match tail {
                 Some(tail_var) => {
                     let tail_bits = any_ref_for_var(var_env, b, jmod, runtime, tail_var.0, cache);

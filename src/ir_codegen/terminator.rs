@@ -584,10 +584,20 @@ fn emit_call_term<
             );
             native_args.push(list_tail_destination_arg(b, cache));
             let cont_fid = *fn_ids.get(&cont_sid).expect("cont fn_id missing");
-            let cap_bindings = [
+            let mut cap_bindings = vec![
                 closure_capture_for_var(var_env, b, jmod, runtime, pivot_capture.0, cache),
                 closure_capture_for_var(var_env, b, jmod, runtime, args[0].0, cache),
             ];
+            if let Some(source_cons) = cache.owned_cons_head_origins.get(&pivot_capture.0) {
+                cap_bindings.push(closure_capture_for_var(
+                    var_env,
+                    b,
+                    jmod,
+                    runtime,
+                    source_cons.0,
+                    cache,
+                ));
+            }
             let cont_arg = build_lazy_cont_descriptor(
                 jmod,
                 b,
@@ -616,16 +626,28 @@ fn emit_call_term<
             let entry = caller_fn.block(caller_fn.entry);
             if entry.params.first().copied() == Some(tail_capture) {
                 let tail_bits = any_ref_for_var(var_env, b, jmod, runtime, tail_capture.0, cache);
-                let pivot_tail = emit_list_cons_bif(
-                    b,
-                    jmod,
-                    runtime,
-                    var_env,
-                    pivot_capture,
-                    expected_runtime_value_kind(t, fn_types, block_env, pivot_capture),
-                    ListTailBits::ValueRef(tail_bits),
-                    cache,
-                );
+                let pivot_tail = if cache.owned_cons_reuse_enabled
+                    && let Some(source_cons) = cache.owned_cons_head_origins.get(&pivot_capture.0)
+                {
+                    let source_ref =
+                        any_ref_for_var(var_env, b, jmod, runtime, source_cons.0, cache);
+                    let tail_ref = list_tail_ref_word(b, cache, ListTailBits::ValueRef(tail_bits));
+                    let relink = jmod
+                        .declare_func_in_func(runtime.list_relink_unaliased_tail_ref_id, b.func);
+                    let inst = b.ins().call(relink, &[source_ref, tail_ref]);
+                    b.inst_results(inst)[0]
+                } else {
+                    emit_list_cons_bif(
+                        b,
+                        jmod,
+                        runtime,
+                        var_env,
+                        pivot_capture,
+                        expected_runtime_value_kind(t, fn_types, block_env, pivot_capture),
+                        ListTailBits::ValueRef(tail_bits),
+                        cache,
+                    )
+                };
                 let callee_param_reprs = &param_reprs[callee_sid as usize];
                 let callee_fid = *fn_ids.get(&callee_sid).expect("callee fn_id missing");
                 let callee_fref = jmod.declare_func_in_func(callee_fid, b.func);
