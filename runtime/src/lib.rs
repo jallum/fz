@@ -31,6 +31,7 @@ pub mod timer;
 
 pub(crate) fn emit_print_line(s: String) {
     println!("{}", s);
+    crate::scheduler_hooks::dispatch_output(&s);
     crate::ir_runtime::TEST_CAPTURE.with(|c| c.borrow_mut().push(s));
 }
 

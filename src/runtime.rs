@@ -122,6 +122,21 @@ extern "C" fn send_hook_thunk(receiver_pid: u32, msg_ref_word: u64) {
     send_via_current_runtime(receiver_pid, msg_ref);
 }
 
+/// Output sink: `emit_print_line` (the shared dbg/print render seam) forwards
+/// each rendered line here. Emits it as `fz.runtime.dbg` on the current
+/// Runtime's telemetry — the observation channel beside production stdout.
+extern "C" fn output_hook_thunk(line_ptr: *const u8, line_len: usize) {
+    let raw = CURRENT_RUNTIME.with(|c| c.get());
+    if raw.is_null() {
+        return;
+    }
+    let rt = unsafe { &*(raw as *const Runtime<'static>) };
+    let bytes = unsafe { std::slice::from_raw_parts(line_ptr, line_len) };
+    let line = std::str::from_utf8(bytes).unwrap_or("<non-utf8 dbg line>");
+    rt.tel
+        .event(&["fz", "runtime", "dbg"], crate::metadata! { line: line });
+}
+
 // fz-swt.10 — `MakeResourceHook` installed by the binary so the runtime
 // crate's `fz_make_resource` BIF (callable from JIT/AOT-emitted code) can
 // resolve the user-supplied dtor closure. The thunk reads the IR Module
@@ -466,6 +481,7 @@ impl<'a> Runtime<'a> {
         fz_runtime::scheduler_hooks::install_spawn_hook(spawn_hook_thunk);
         fz_runtime::scheduler_hooks::install_spawn_opt_hook(spawn_opt_hook_thunk);
         fz_runtime::scheduler_hooks::install_send_hook(send_hook_thunk);
+        fz_runtime::scheduler_hooks::install_output_hook(output_hook_thunk);
         // fz-swt.10 — install the resource-allocation hook if a Module
         // has been attached via `with_module`. Programs that never call
         // `make_resource` leave it clear; calls in that mode panic with
@@ -590,6 +606,7 @@ impl<'a> Runtime<'a> {
         fz_runtime::scheduler_hooks::clear_spawn_hook();
         fz_runtime::scheduler_hooks::clear_spawn_opt_hook();
         fz_runtime::scheduler_hooks::clear_send_hook();
+        fz_runtime::scheduler_hooks::clear_output_hook();
         if self.module.is_some() {
             clear_make_resource_hook_with_module(prev_module);
         }
@@ -836,6 +853,41 @@ mod tests {
         rt.run_until_idle();
 
         assert_eq!(seen_halt.get(), Some(7));
+    }
+
+    /// `dbg` output is routed onto the telemetry bus as `fz.runtime.dbg`
+    /// events (via the OutputHook), so tests observe printed output through
+    /// the same seam as everything else.
+    #[test]
+    fn dbg_output_emits_telemetry_events() {
+        use crate::telemetry::bus::ConfiguredTelemetry;
+        use crate::telemetry::capture::Capture;
+        use crate::telemetry::value::Value;
+
+        let src = "fn main(), do: dbg(42)";
+        let m = lower_src(src);
+        let entry = m.fn_by_name("main").unwrap().id;
+        let compiled = compile(
+            &mut crate::types::ConcreteTypes,
+            &m,
+            &crate::telemetry::NullTelemetry,
+        )
+        .unwrap();
+
+        let tel = ConfiguredTelemetry::new();
+        let cap = Capture::new();
+        tel.attach(&[], cap.handler());
+
+        let mut rt = Runtime::new(&compiled, 1).with_telemetry(&tel);
+        let _ = rt.spawn(entry);
+        rt.run_until_idle();
+
+        let dbg_events = cap.find(&["fz", "runtime", "dbg"]);
+        assert_eq!(dbg_events.len(), 1, "one dbg call → one event");
+        assert!(matches!(
+            dbg_events[0].metadata.get("line"),
+            Some(Value::Str(s)) if s.as_ref() == "42"
+        ));
     }
 
     /// Each task has its own heap. Two tasks build different maps; each
