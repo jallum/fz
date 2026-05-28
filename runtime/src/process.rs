@@ -339,6 +339,27 @@ impl Process {
         self.yield_reasons = 0;
     }
 
+    /// Scheduler-boundary maintenance shared by every execution mode. Decide
+    /// whether this boundary must GC; if so, run the caller's mode-specific
+    /// root-gather GC (compiled: runnable closure + mailbox; interpreter:
+    /// resume args + after-conts) and reset the quiet-quanta shrink counter,
+    /// otherwise advance it. Either way, clear the transient pressure and
+    /// yield-reason signals so the next quantum starts clean.
+    pub fn boundary_maintenance<E>(
+        &mut self,
+        gc_roots: impl FnOnce(&mut Self) -> Result<(), E>,
+    ) -> Result<(), E> {
+        if self.needs_boundary_gc() {
+            gc_roots(self)?;
+            self.quiet_quanta = 0;
+        } else {
+            self.quiet_quanta = self.quiet_quanta.saturating_add(1);
+        }
+        self.heap.clear_should_gc_flag();
+        self.clear_yield_reasons();
+        Ok(())
+    }
+
     pub fn needs_boundary_gc(&self) -> bool {
         self.heap.should_gc()
             || (self.yield_reasons & YIELD_REASON_ALLOCATION_PRESSURE)

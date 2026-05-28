@@ -471,14 +471,11 @@ impl<'a> Runtime<'a> {
             if task.state == ProcessState::Running && !task.runnable_closure.is_null() {
                 // Closure-shaped mid-flight yield: the continuation closure
                 // captures live loop state and is the primary GC root.
-                if task.needs_boundary_gc() {
-                    task.heap
-                        .gc_process_roots(&mut task.runnable_closure, &mut task.mailbox);
-                    task.quiet_quanta = 0;
-                } else {
-                    task.quiet_quanta = task.quiet_quanta.saturating_add(1);
-                }
-                task.clear_yield_reasons();
+                task.boundary_maintenance::<()>(|p| {
+                    p.heap.gc_process_roots(&mut p.runnable_closure, &mut p.mailbox);
+                    Ok(())
+                })
+                .expect("compiled boundary maintenance is infallible");
                 task.state = ProcessState::Ready;
                 self.tasks.insert(pid, task);
                 self.run_queue.push_back(pid);

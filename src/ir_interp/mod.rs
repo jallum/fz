@@ -290,14 +290,9 @@ impl IrInterpRuntime {
                         new_after.extend(after);
                         let process = unsafe { &mut *proc_ptr };
                         process.finish_yield_report(remaining_reductions, reason);
-                        if process.needs_boundary_gc() {
-                            gc_interp_scheduler_roots(process, &mut resume_args, &mut new_after)?;
-                            process.quiet_quanta = 0;
-                        } else {
-                            process.quiet_quanta = process.quiet_quanta.saturating_add(1);
-                        }
-                        process.heap.clear_should_gc_flag();
-                        process.clear_yield_reasons();
+                        process.boundary_maintenance(|p| {
+                            gc_interp_scheduler_roots(p, &mut resume_args, &mut new_after)
+                        })?;
                         self.set_process_state(pid, ProcessState::Ready);
                         self.resume.insert(pid, (resume_fn, resume_args, new_after));
                         self.run_queue.push_back(pid);
