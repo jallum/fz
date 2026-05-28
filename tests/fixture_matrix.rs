@@ -2888,10 +2888,27 @@ fn enum_list_allocations_pin_minimum_list_cons() {
         reduce_list
     );
     assert!(
-        reduce_list.contains("stack_store") && reduce_list.contains("0x0800_0000_0000_0000"),
+        reduce_list.contains("stack_store")
+            && reduce_list.contains(&clif_hex_word(lazy_continuation_marker_word())),
         "known native Enum.reduce should pass a stack-backed lazy continuation descriptor:\n{}",
         reduce_list
     );
+}
+
+fn lazy_continuation_marker_word() -> u64 {
+    fz_runtime::any_value::TAG_FWD
+        << fz_runtime::any_value::AnyValueRefPacking::current().tag_shift()
+}
+
+fn clif_hex_word(word: u64) -> String {
+    let raw = format!("{word:016x}");
+    format!(
+        "0x{}_{}_{}_{}",
+        &raw[0..4],
+        &raw[4..8],
+        &raw[8..12],
+        &raw[12..16]
+    )
 }
 
 fn continuation_materialization_boundaries_stay_explicit() {
