@@ -20,6 +20,7 @@ that keep future work aligned.
 | [docs/module-separate-compilation.md](docs/module-separate-compilation.md) | Module identity, imports/interfaces, compiled units/images, runtime library modules, or LTO boundary erasure. |
 | [../docs/protocols.md](../docs/protocols.md) | `defprotocol` / `defimpl`, protocol-domain types, implementation target identity, protocol dispatch, or no-replanning protocol/link rules. |
 | [docs/physical-capabilities.md](docs/physical-capabilities.md) | Physical runtime-object capabilities, owned cons reuse, publication effects, or semantic/physical entry-param boundaries. |
+| [docs/pinned-process-register-plan.md](docs/pinned-process-register-plan.md) | Cranelift pinned register, compiled `Process*` base pointer, or replacing compiled reductions thread-local mirror state. |
 | [docs/repl-session.md](docs/repl-session.md) | REPL world/bindings/runtime layering, chunk synthesis, docs/help, or macro/runtime boundaries. |
 | [docs/reduction-yielding-plan.md](docs/reduction-yielding-plan.md) | Reduction-driven scheduler yielding, allocation-pressure budget expiration, continuation reserve policy, or removing GC-specific yield triggers. |
 | [docs/reduction-yielding-review-gate.md](docs/reduction-yielding-review-gate.md) | Review gate and acceptance plans for reduction-yielding correctness gaps before building further on the reductions scheduler work. |
