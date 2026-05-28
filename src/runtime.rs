@@ -53,7 +53,17 @@ pub struct Runtime<'a> {
     /// expired entries each iteration and emits ResumeMatched for the
     /// after-cont closure.
     pub(crate) timers: fz_runtime::timer::TimerWheel,
+
+    /// Observability sink. Defaults to the silent `NullTelemetry`; the
+    /// driver attaches a real one via `with_telemetry`. The run loop emits
+    /// a task-lifecycle event at each task exit (halt value + heap stats),
+    /// which is the seam tests observe instead of poking task internals.
+    tel: &'a dyn crate::telemetry::Telemetry,
 }
+
+/// Silent default for `Runtime.tel` — a `'static` so it coerces to the
+/// `&'a dyn Telemetry` field for any runtime lifetime.
+static NULL_TELEMETRY: crate::telemetry::NullTelemetry = crate::telemetry::NullTelemetry;
 
 thread_local! {
     /// Raw pointer to the Runtime currently driving `run_until_idle` on
@@ -323,7 +333,16 @@ impl<'a> Runtime<'a> {
             next_pid: 1,
             timers: fz_runtime::timer::TimerWheel::new(),
             module: None,
+            tel: &NULL_TELEMETRY,
         }
+    }
+
+    /// Attach an observability sink. The run loop emits a task-exit event
+    /// (`fz.runtime.task_exited`) carrying the halt value and heap stats.
+    /// The telemetry must outlive `run_until_idle`.
+    pub fn with_telemetry(mut self, tel: &'a dyn crate::telemetry::Telemetry) -> Self {
+        self.tel = tel;
+        self
     }
 
     /// fz-swt.10 — attach the IR Module so the `MakeResourceHook` thunk
@@ -503,6 +522,15 @@ impl<'a> Runtime<'a> {
                     let _ = drain(closure, payload_ref);
                 }
                 CURRENT_PROCESS.with(|c| c.set(prev));
+                self.tel.execute(
+                    &["fz", "runtime", "task_exited"],
+                    &crate::measurements! {
+                        halt_value: task.halt_value,
+                        live_count: task.heap.live_count() as u64,
+                        live_bytes: task.heap.bytes_used() as u64,
+                    },
+                    &crate::metadata! { pid: pid as u64 },
+                );
             } else if task.state == ProcessState::Blocked {
                 // Park: keep in registry, no re-enqueue. send() will
                 // wake.
@@ -628,6 +656,45 @@ mod tests {
         assert_eq!(rt.task(a).unwrap().state, ProcessState::Exited);
         assert_eq!(rt.task(b).unwrap().state, ProcessState::Exited);
         assert_eq!(rt.task(c).unwrap().state, ProcessState::Exited);
+    }
+
+    /// The Runtime emits a `fz.runtime.task_exited` event carrying the
+    /// halt value and heap stats. This is the seam tests use to observe a
+    /// run's result and live-object count without poking the Process.
+    #[test]
+    fn task_exit_emits_telemetry_with_halt_value_and_heap_stats() {
+        use crate::telemetry::bus::ConfiguredTelemetry;
+        use crate::telemetry::capture::Capture;
+        use crate::telemetry::value::Value;
+
+        // Allocates a map, so the heap has live objects at exit.
+        let src = "fn main(), do: %{1 => 10, 2 => 20}[2]";
+        let m = lower_src(src);
+        let entry = m.fn_by_name("main").unwrap().id;
+        let compiled = compile(
+            &mut crate::types::ConcreteTypes,
+            &m,
+            &crate::telemetry::NullTelemetry,
+        )
+        .unwrap();
+
+        let tel = ConfiguredTelemetry::new();
+        let cap = Capture::new();
+        tel.attach(&[], cap.handler());
+
+        let mut rt = Runtime::new(&compiled, 1).with_telemetry(&tel);
+        let pid = rt.spawn(entry);
+        rt.run_until_idle();
+
+        let ev = cap
+            .last(&["fz", "runtime", "task_exited"])
+            .expect("task_exited event emitted");
+        assert!(matches!(ev.measurements.get("halt_value"), Some(Value::I64(20))));
+        let Some(Value::U64(live)) = ev.measurements.get("live_count") else {
+            panic!("live_count measurement missing");
+        };
+        assert!(*live > 0, "map build leaves live heap objects");
+        assert_eq!(rt.task(pid).unwrap().halt_value, 20);
     }
 
     /// Each task has its own heap. Two tasks build different maps; each
