@@ -198,7 +198,7 @@ fn run_fn_typed<
                     args: call_args,
                     is_back_edge,
                 } => {
-                    let mut arg_vals = collect(&env, call_args)?;
+                    let arg_vals = collect(&env, call_args)?;
                     // fz-02r.6 — interpreter back-edge cooperative GC.
                     // The interpreter runs synchronously, so a pressured
                     // back-edge forwards its live RuntimeAnyValue args in place
@@ -212,24 +212,8 @@ fn run_fn_typed<
                             }
                             exhausted
                         };
-                        if fz_runtime::yield_flag::load() != 0 {
-                            let p = fz_runtime::process::current_process();
-                            let mut root_slots: Vec<RuntimeAnyValue> = arg_vals
-                                .iter()
-                                .map(|v| v.value())
-                                .collect::<Result<_, _>>()?;
-                            p.heap.gc_any_value_roots_with_process_roots(
-                                &mut root_slots,
-                                &mut p.mailbox,
-                            );
-                            arg_vals = root_slots.into_iter().map(interp_value_from_slot).collect();
-                            p.interpreter_yields = p.interpreter_yields.saturating_add(1);
-                            p.quiet_quanta = 0;
-                            fz_runtime::yield_flag::clear();
-                        } else {
-                            let p = fz_runtime::process::current_process();
-                            p.quiet_quanta = p.quiet_quanta.saturating_add(1);
-                        }
+                        let p = fz_runtime::process::current_process();
+                        p.quiet_quanta = p.quiet_quanta.saturating_add(1);
                         if budget_exhausted {
                             return Ok(InterpStep::Yielded(*callee, arg_vals, vec![]));
                         }

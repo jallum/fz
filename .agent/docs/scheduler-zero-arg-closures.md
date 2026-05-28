@@ -59,7 +59,7 @@ The old model makes each suspension kind special:
 receive park        -> parked_cont plus resume_park(msg, kind, cont)
 selective receive   -> pending_resume_matched
 timeout             -> after-cont special path
-mid-flight GC yield -> fn pointer plus roots slab plus tags slab
+mid-flight reduction yield -> fn pointer plus roots slab plus tags slab
 spawn/main entry    -> pending entry pointer fields
 ```
 
@@ -72,7 +72,7 @@ The closure model removes that distinction:
 receive park        -> later produces closure()
 selective receive   -> later produces closure()
 timeout             -> later produces closure()
-mid-flight GC yield -> immediately produces closure()
+mid-flight reduction yield -> immediately produces closure()
 spawn/main entry    -> initially produces closure()
 ```
 
@@ -132,7 +132,7 @@ Either way, the runnable result is the same shape:
 closure()
 ```
 
-## Mid-flight GC Yield
+## Mid-flight Reduction Yield
 
 A back-edge yield is not different. The process is in the middle of a loop, and
 the live state is the next loop iteration plus the current continuation.
@@ -141,7 +141,8 @@ Instead of spilling raw words and side-band tags into process fields, the slow
 path builds a continuation closure:
 
 ```text
-if should_yield:
+reductions_remaining -= back_edge_cost
+if reductions_remaining <= 0:
   k = closure captures(next_loop_args, continuation_state)
   yield_mid_flight(k)
   return YIELD_PTR
@@ -149,8 +150,9 @@ else:
   tail_call loop(next_loop_args)
 ```
 
-The scheduler runs GC with `k` as the primary root. After GC, `k` points at the
-to-space copy. Restarting the process is just:
+The scheduler treats `k` as the primary root. If boundary maintenance decides
+the process needs GC, `k` is forwarded to its to-space copy before restart.
+Restarting the process is just:
 
 ```text
 k()
@@ -161,7 +163,7 @@ per-ABI resume shim to reload spilled arguments.
 
 Synchronous native calls do not need to build this closure early. They may carry
 compiler-known continuation state as a stack-backed lazy descriptor and
-materialize it only if the `should_yield` branch is actually taken. See
+materialize it only if the exhausted-budget branch is actually taken. See
 [`lazy-continuation-materialization.md`](lazy-continuation-materialization.md).
 
 Destination-passing values do not add a scheduler side channel. If a tuple,
@@ -225,7 +227,7 @@ runtime event handling that produces a closure.
 A good implementation should prove these properties:
 
 - A receive resume runs through the same zero-arg closure entry as a timeout.
-- A mid-flight GC yield roots the continuation closure and resumes from the
+- A mid-flight reduction yield roots the continuation closure and resumes from the
   moved closure after collection.
 - Message-bound values are captured before scheduling; the scheduler does not
   pass message args.

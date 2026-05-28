@@ -449,10 +449,6 @@ impl<'a> Runtime<'a> {
             task.state = ProcessState::Running;
             task.reset_reduction_budget();
             let ptr: *mut Process = &mut *task;
-            // Clear FZ_SHOULD_YIELD before installing the process so a
-            // stale flag from the previous quantum doesn't immediately
-            // re-yield the incoming task.
-            fz_runtime::yield_flag::clear();
             let prev = CURRENT_PROCESS.with(|c| c.replace(ptr));
             self.compiled.run_quantum(&mut task);
             task.sync_reduction_budget_from_runtime();
@@ -484,7 +480,6 @@ impl<'a> Runtime<'a> {
                     task.quiet_quanta = task.quiet_quanta.saturating_add(1);
                 }
                 task.clear_yield_reasons();
-                fz_runtime::yield_flag::clear();
                 task.state = ProcessState::Ready;
                 self.tasks.insert(pid, task);
                 self.run_queue.push_back(pid);
@@ -1057,45 +1052,11 @@ mod tests {
         assert_eq!(fz_runtime::ir_runtime::test_capture_take(), vec![":alice"]);
     }
 
-    // ----- fz-02r.2: FZ_SHOULD_YIELD global -----
-
-    /// run_until_idle clears FZ_SHOULD_YIELD before each quantum so a stale
-    /// flag from a previous task's watermark crossing doesn't falsely
-    /// pre-yield the incoming task.
-    #[test]
-    fn run_until_idle_clears_yield_flag_before_each_quantum() {
-        // Pre-set the flag as if a previous task had crossed the watermark.
-        fz_runtime::yield_flag::set(1);
-
-        let src = "fn main(), do: 7";
-        let m = lower_src(src);
-        let entry = m.fn_by_name("main").unwrap().id;
-        let compiled = compile(
-            &mut crate::types::ConcreteTypes,
-            &m,
-            &crate::telemetry::NullTelemetry,
-        )
-        .unwrap();
-        let mut rt = Runtime::new(&compiled, 1);
-        rt.spawn(entry);
-        rt.run_until_idle();
-
-        // After the quantum completes the flag is 0 (cleared at quantum
-        // start; task allocates nothing near the watermark).
-        assert_eq!(
-            fz_runtime::yield_flag::load(),
-            0,
-            "FZ_SHOULD_YIELD should be 0 after run_until_idle"
-        );
-    }
-
     // ----- fz-02r.8: mid-flight back-edge GC integration -----
 
     /// A recursive function that allocates a cons cell per iteration runs to
-    /// completion with the correct integer result even when the GC watermark
-    /// fires mid-loop. We force the watermark to be crossed on the very first
-    /// allocation by setting allocation_watermark to null (always < bump_top) before
-    /// spawning.
+    /// completion with the correct integer result even when allocation
+    /// pressure expires the reduction budget mid-loop.
     #[test]
     fn mid_flight_gc_fires_and_result_is_correct() {
         // sum(n, acc, _) allocates [n] per iteration so the watermark trips.

@@ -31,18 +31,18 @@ The observable proof of success is:
 - telemetry can distinguish natural quantum exhaustion from allocation-pressure
   exhaustion.
 
-## Current State
+## Historical Starting State
 
-Compiled back edges currently read `FZ_SHOULD_YIELD`. Heap allocation sets that
-flag when `bump_top >= gc_watermark`, and the scheduler treats the resulting
-mid-flight yield as a GC event.
+Before this plan was implemented, compiled back edges read a GC-specific yield
+flag. Heap allocation set that flag when a process crossed its GC watermark, and
+the scheduler treated the resulting mid-flight yield as a GC event.
 
 That couples fairness to allocation pressure:
 
 ```text
 allocation crosses watermark
-  set FZ_SHOULD_YIELD
-back edge sees FZ_SHOULD_YIELD
+  set GC-specific yield flag
+back edge sees yield flag
   materialize continuation closure
   yield
 scheduler sees runnable continuation
@@ -252,8 +252,8 @@ Goal: collapse the old model once reductions own yielding.
 
 Tasks:
 
-- remove or rename `FZ_SHOULD_YIELD` once compiled and AOT paths no longer need
-  a GC-specific flag;
+- remove the GC-specific yield flag once compiled and AOT paths no longer need
+  it;
 - remove docs that describe a GC-specific mid-flight yield trigger;
 - update `guides/processes.html`, `guides/memory.html`,
   `.agent/docs/ir-interp-runtime.md`, and
@@ -266,9 +266,9 @@ Tasks:
 The target design should remove these concepts:
 
 - GC-specific back-edge branch condition;
-- `FZ_SHOULD_YIELD` as a GC request byte;
+- a GC-specific yield byte;
 - the 75% watermark as an implicit continuation reserve;
-- docs that describe allocation as directly triggering mid-flight GC yield.
+- docs that describe allocation as directly triggering a GC-specific yield.
 
 The zero-arg scheduler continuation model stays. Reductions decide when that
 continuation must be produced; GC decides what maintenance happens after it is

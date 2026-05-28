@@ -186,10 +186,9 @@ then copying it through <code>append</code>.</p>
 <p>Most ordinary native calls only need the first job. So fz keeps the
 continuation as a lightweight stack-backed descriptor by default. It
 <em>materializes</em> into a real heap closure only at the moment the process
-actually has to yield, governed by a single byte
-(<code>FZ_SHOULD_YIELD</code>). The same descriptor plays both roles; the
-runtime picks which one based on whether the scheduler is asking for the
-process back.</p>
+actually has to yield because its reduction budget is exhausted. The same
+descriptor plays both roles; the runtime picks which one based on whether the
+scheduler is asking for the process back.</p>
 
 <div class="aside">
 The mental model is: run normally while you can; allocate only the immutable
@@ -307,16 +306,17 @@ building:</p>
 <p>A back-edge yield is the key boundary. The fast path just keeps running:</p>
 
 <pre>
-if FZ_SHOULD_YIELD == 0:
+reductions_remaining -= 1
+if reductions_remaining > 0:
   return_call loop(next_args)
 </pre>
 
-<p>If the heap watermark or scheduler asks the process to yield, the slow path
+<p>If the budget is exhausted, the slow path
 spills the next iteration into a GC-safe closure and hands that closure to the
 scheduler:</p>
 
 <pre>
-if FZ_SHOULD_YIELD != 0:
+if reductions_remaining <= 0:
   k = closure(next_loop_fn, next_args, current_cont)
   return fz_yield_mid_flight(k)
 </pre>

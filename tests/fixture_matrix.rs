@@ -1278,9 +1278,9 @@ fn native_fns_have_no_dead_frame_ptr_placeholder() {
 
 /// fz-siu.1.2 acceptance per docs/cps-in-clif.md §8.1.
 /// tail_recursion.fz's `count` fn must compile as the native-tier
-/// Tail-CC body whose recursive case ends in `return_call %count(...)`
-/// with zero `fz_alloc_*` calls. Base case ends in
-/// `load.i64 ...+16` followed by `return_call_indirect ...`.
+/// Tail-CC body whose recursive fast path ends in `return_call %count(...)`.
+/// Reduction exhaustion may branch to a continuation-materializing slow path.
+/// Base case ends in `load.i64 ...+16` followed by `return_call_indirect ...`.
 fn tail_recursion_count_matches_cps_in_clif_section_8_1() {
     let out = Command::new(FZ_BIN)
         .args([
@@ -1314,22 +1314,27 @@ fn tail_recursion_count_matches_cps_in_clif_section_8_1() {
         body,
     );
 
-    // §8.1 block_rec: recursive case ends in `return_call %count(...)`
-    // with no allocator calls in the body.
+    // §8.1 block_rec: recursive fast path still ends in `return_call %count(...)`.
     assert!(
         body.contains("return_call "),
         "count_s2 must end recursive case in return_call:\n{}",
         body,
     );
-    // No alloc helpers — neither fz_alloc_frame nor fz_alloc_closure.
-    for helper in &["fz_alloc_frame", "fz_alloc_closure", "fz_alloc_struct"] {
-        assert!(
-            !body.contains(helper),
-            "count_s2 contains `{}` — §8.1 requires zero allocs:\n{}",
-            helper,
-            body,
-        );
-    }
+    assert!(
+        body.contains("global_value.i64") && body.contains("isub") && body.contains("icmp_imm sle"),
+        "count_s2 recursive case must spend a reduction before the fast tail call:\n{}",
+        body,
+    );
+    assert!(
+        body.contains("@fz_yield_mid_flight"),
+        "count_s2 must materialize a continuation when its reduction budget expires:\n{}",
+        body,
+    );
+    assert!(
+        !body.contains("fz_alloc_frame") && !body.contains("fz_alloc_struct"),
+        "count_s2 reduction slow path should only allocate the yield continuation closure:\n{}",
+        body,
+    );
 
     // §8.1 block_done: tail-call the continuation. fz-ul4.43.B made
     // per-spec fold more aggressive — when the cont is statically

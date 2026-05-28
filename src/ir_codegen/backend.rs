@@ -516,8 +516,6 @@ fn register_runtime_symbols(builder: &mut JITBuilder) {
         "fz_get_halt_cont",
         fz_runtime::ir_runtime::fz_get_halt_cont as *const u8,
     );
-    // Cooperative yield-flag data.
-    builder.symbol("FZ_SHOULD_YIELD", fz_runtime::yield_flag::jit_flag_ptr());
     builder.symbol(
         "FZ_REDUCTIONS_REMAINING",
         fz_runtime::reductions::jit_remaining_ptr() as *const u8,

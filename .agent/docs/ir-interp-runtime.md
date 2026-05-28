@@ -82,6 +82,7 @@ while run queue has pid:
   install pid as CURRENT_PROCESS
   run_fn(..., pid_code_image.module)
   Done    -> drain task resources unless pid is keepalive
+  Yielded -> store resume entry, run boundary maintenance, re-enqueue
   Blocked -> store resume entry, mark blocked
   Parked  -> store selective receive park record, mark blocked
 ```

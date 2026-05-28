@@ -528,7 +528,7 @@ A "server" without a <code>receive</code> loop is a one-shot fire-and-forget.
       of native worker threads (currently 1). A process that blocks on
       <code>receive</code> yields its worker; one that loops without
       yielding will hog it. Pure-fz code yields automatically at
-      function-call and receive boundaries — only an extern that blocks
+      recursive back-edge and receive boundaries — only an extern that blocks
       on its own (a long <code>read</code>, say) ties up the worker.</li>
   <li>They're not channels. The mailbox is per-recipient, not
       per-conversation. If you want a typed channel between two

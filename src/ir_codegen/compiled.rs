@@ -1382,9 +1382,6 @@ impl CompiledModule {
 
             process.heap.clear_should_gc_flag();
             process.clear_yield_reasons();
-            // After park-time GC the process is about to park on receive,
-            // so FZ_SHOULD_YIELD no longer applies to this quantum.
-            fz_runtime::yield_flag::clear();
         }
 
         // Selective-receive initial scan. Hit sets runnable_closure and

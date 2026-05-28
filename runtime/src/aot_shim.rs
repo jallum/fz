@@ -596,7 +596,6 @@ fn dispatch_quantum(pid: u32, addrs: &ShimAddrs) {
             process.quiet_quanta = process.quiet_quanta.saturating_add(1);
         }
         process.clear_yield_reasons();
-        crate::yield_flag::clear();
         unsafe { (*proc_ptr).state = ProcessState::Ready };
         AOT_RUN_QUEUE.with(|q| q.borrow_mut().push_back(pid));
     } else if state == ProcessState::Ready {

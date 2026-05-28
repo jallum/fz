@@ -23,7 +23,6 @@ pub mod sched;
 pub mod scheduler_hooks;
 pub mod sync;
 pub mod timer;
-pub mod yield_flag;
 
 // ---------------------------------------------------------------------------
 // C-ABI builtins called from compiled fz code
