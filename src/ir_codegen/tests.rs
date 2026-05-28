@@ -813,6 +813,40 @@ fn aot_compile_produces_object_with_main_symbol() {
     );
 }
 
+/// A run observed entirely through telemetry: the process_exited `ExitRecord`
+/// plus the `dbg` output line stream. The one seam the result/output/heap test
+/// helpers are built on — no helper reads `task.halt_value` or `TEST_CAPTURE`.
+struct Observation {
+    exit: crate::runtime::ExitRecord,
+    output: Vec<String>,
+}
+
+fn observe(compiled: &CompiledModule, entry: FnId) -> Observation {
+    use crate::telemetry::bus::ConfiguredTelemetry;
+    use crate::telemetry::capture::Capture;
+    use crate::telemetry::value::Value;
+
+    let tel = ConfiguredTelemetry::new();
+    let exits = crate::runtime::ProcessExitCapture::new();
+    let out = Capture::new();
+    tel.attach(&[], exits.handler());
+    tel.attach(&[], out.handler());
+    let mut rt = crate::runtime::Runtime::new(compiled, 1).with_telemetry(&tel);
+    let _ = rt.spawn(entry);
+    rt.run_until_idle();
+
+    let exit = exits.last().expect("process_exited captured");
+    let output = out
+        .find(&["fz", "runtime", "dbg"])
+        .iter()
+        .filter_map(|ev| match ev.metadata.get("line") {
+            Some(Value::Str(s)) => Some(s.as_ref().to_string()),
+            _ => None,
+        })
+        .collect();
+    Observation { exit, output }
+}
+
 fn run_main(src: &str) -> i64 {
     let m = lower_src(src);
     let entry = m.fn_by_name("main").unwrap().id;
@@ -879,15 +913,13 @@ fn capture_main_with_runtime_graph(src: &str) -> Vec<String> {
 fn capture_main_module(m: Module) -> Vec<String> {
     let entry = m.fn_by_name("main").unwrap().id;
     assert_direct_call_arities(&m);
-    let _ = test_capture_take();
-    let _ = compile(
+    let compiled = compile(
         &mut crate::types::ConcreteTypes,
         &m,
         &crate::telemetry::NullTelemetry,
     )
-    .unwrap()
-    .run(entry);
-    test_capture_take()
+    .unwrap();
+    observe(&compiled, entry).output
 }
 
 fn assert_direct_call_arities(m: &Module) {
@@ -916,21 +948,11 @@ fn assert_direct_call_arities(m: &Module) {
     }
 }
 
-/// Run `entry` on a single-task Runtime with a telemetry `Capture` attached,
-/// returning the halt value and live heap-object count read from the
-/// `fz.runtime.process_exited` event via `ProcessExitCapture`. The seam tests
-/// use to observe a run's result and heap without poking a Process.
+/// (halt value, live heap-object count) observed via `observe`. The seam tests
+/// use to check a run's result and heap without poking a Process.
 fn run_capturing(compiled: &CompiledModule, entry: FnId) -> (i64, usize) {
-    use crate::telemetry::bus::ConfiguredTelemetry;
-
-    let tel = ConfiguredTelemetry::new();
-    let cap = crate::runtime::ProcessExitCapture::new();
-    tel.attach(&[], cap.handler());
-    let mut rt = crate::runtime::Runtime::new(compiled, 1).with_telemetry(&tel);
-    let _ = rt.spawn(entry);
-    rt.run_until_idle();
-    let rec = cap.last().expect("process_exited captured");
-    (rec.halt_value, rec.live_count)
+    let o = observe(compiled, entry);
+    (o.exit.halt_value, o.exit.live_count)
 }
 
 fn run_main_and_count_live(src: &str) -> usize {

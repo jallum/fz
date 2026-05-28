@@ -1518,11 +1518,17 @@ impl CompiledModule {
     /// that need to observe heap stats attach a telemetry `Capture` to their
     /// own `Runtime` and read the `fz.runtime.task_exited` event instead.
     pub fn run(&self, fn_id: FnId) -> i64 {
-        let mut rt = crate::runtime::Runtime::new(self, 1);
-        let pid = rt.spawn(fn_id);
+        // Observe the result through the telemetry seam rather than reading
+        // task.halt_value off the Runtime — same path every other test uses.
+        let tel = crate::telemetry::bus::ConfiguredTelemetry::new();
+        let exits = crate::runtime::ProcessExitCapture::new();
+        tel.attach(&[], exits.handler());
+        let mut rt = crate::runtime::Runtime::new(self, 1).with_telemetry(&tel);
+        let _ = rt.spawn(fn_id);
         rt.run_until_idle();
-        rt.task(pid)
-            .expect("spawned task present after run")
+        exits
+            .last()
+            .expect("process_exited captured")
             .halt_value
     }
 }

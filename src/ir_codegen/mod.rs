@@ -78,8 +78,6 @@ pub use compiled::{
 };
 pub use error::CodegenError;
 pub use support::{asm_record_enable, asm_record_take, ir_text_record_enable, ir_text_record_take};
-#[cfg(test)]
-pub use support::test_capture_take;
 
 pub use fz_runtime::process::{CURRENT_PROCESS, PidId, Process, ProcessState};
 #[cfg(test)]

@@ -116,13 +116,6 @@ pub fn asm_record_take() -> Vec<(String, String)> {
     ASM_RECORD.with(|c| c.borrow_mut().take().unwrap_or_default())
 }
 
-/// Drain the per-thread print-capture buffer. Storage lives in the
-/// runtime crate alongside fz_dbg_value.
-#[cfg(test)]
-pub fn test_capture_take() -> Vec<String> {
-    fz_runtime::ir_runtime::test_capture_take()
-}
-
 /// Begin recording per-fn Cranelift IR display text. Subsequent `compile()`
 /// calls on this thread append `(fn_name, clif_text)` pairs to a TLS
 /// buffer; `ir_text_record_take` drains and returns them.
