@@ -1040,6 +1040,13 @@ pub struct FnIr {
     /// The slot exists physically, but semantic specialization must not
     /// inspect its type.
     pub ignored_entry_params: Vec<bool>,
+    /// Head Var -> source cons Var facts for linear cons reuse.
+    ///
+    /// Lowering records these only when a list-head projection and its
+    /// original cons cell are carried together into a generated helper body.
+    /// Codegen may use the fact to relink the source cons tail instead of
+    /// allocating a fresh cons, subject to the runtime alias bit.
+    pub owned_cons_head_origins: HashMap<Var, Var>,
 }
 
 impl FnIr {
@@ -1318,6 +1325,7 @@ pub struct FnBuilder {
     category: FnCategory,
     owner_module: String,
     ignored_params: std::collections::HashSet<Var>,
+    owned_cons_head_origins: HashMap<Var, Var>,
 }
 
 impl FnBuilder {
@@ -1332,6 +1340,7 @@ impl FnBuilder {
             category: FnCategory::User,
             owner_module: String::new(),
             ignored_params: std::collections::HashSet::new(),
+            owned_cons_head_origins: HashMap::new(),
         }
     }
 
@@ -1354,6 +1363,19 @@ impl FnBuilder {
 
     pub fn mark_param_ignored(&mut self, v: Var) {
         self.ignored_params.insert(v);
+    }
+
+    pub fn record_owned_cons_head_origin(&mut self, head: Var, source_cons: Var) {
+        self.owned_cons_head_origins.insert(head, source_cons);
+    }
+
+    pub fn prim_for_var(&self, var: Var) -> Option<&Prim> {
+        self.blocks.iter().find_map(|block| {
+            block
+                .stmts
+                .iter()
+                .find_map(|Stmt::Let(v, prim)| (*v == var).then_some(prim))
+        })
     }
 
     /// Create a new block with the given parameters; first call's block becomes
@@ -1413,6 +1435,7 @@ impl FnBuilder {
             category: self.category,
             owner_module: self.owner_module,
             ignored_entry_params,
+            owned_cons_head_origins: self.owned_cons_head_origins,
         }
     }
 }

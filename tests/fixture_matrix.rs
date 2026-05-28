@@ -2480,6 +2480,17 @@ fn quicksort_structured_return_demand_facts() {
         "spec dump should expose typed ListTail plans with explicit operands:\n{}",
         specs
     );
+    assert!(
+        stanzas.iter().any(|s| {
+            (s.name == "fn_clause_1" || s.name == "fn_clause_2")
+                && s.arity == 6
+                && s.key.contains("_")
+                && s.body.contains("owned_cons_reuse")
+                && s.body.contains("head=Var(3) source_cons=Var(5)")
+        }),
+        "partition clause helpers must carry a hidden source-cons capability for owned cons reuse:\n{}",
+        specs
+    );
 }
 
 fn quicksort_list_tail_abi_carries_destination_param() {

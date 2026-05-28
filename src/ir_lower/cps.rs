@@ -50,6 +50,13 @@ pub(crate) struct ContFn {
     /// fz-f88.5 — origin tag baked in at mint time.
     pub(super) category: crate::fz_ir::FnCategory,
     pub(super) owner_module: String,
+    pub(super) owned_cons_captures: Vec<OwnedConsCapture>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct OwnedConsCapture {
+    pub(super) head_name: String,
+    pub(super) source_cons: Var,
 }
 
 /// Mint a fresh continuation FnId, snapshot the outer env at this point,
@@ -70,14 +77,22 @@ pub(crate) fn mint_cont_fn(
         span,
         category,
         owner_module: ctx.current_owner_module.clone(),
+        owned_cons_captures: Vec::new(),
     }
 }
 
 pub(crate) fn cont_call_args(ctx: &LowerCtx, cont: &ContFn) -> Vec<Var> {
-    cont.outer_captured
+    let mut args: Vec<Var> = cont
+        .outer_captured
         .iter()
         .map(|(name, original)| ctx.lookup(name).unwrap_or(*original))
-        .collect()
+        .collect();
+    args.extend(
+        cont.owned_cons_captures
+            .iter()
+            .map(|capture| capture.source_cons),
+    );
+    args
 }
 
 /// Finalize ctx.cur (adding it to the module) and switch into a fresh
@@ -114,9 +129,28 @@ pub(crate) fn switch_to_cont_fn(
         .iter()
         .map(|_| kbuilder.fresh_var())
         .collect();
+    let owned_cons_params: Vec<Var> = cont
+        .owned_cons_captures
+        .iter()
+        .map(|_| kbuilder.fresh_var())
+        .collect();
     let mut entry_params = extras.clone();
     entry_params.extend(cap_params.clone());
+    entry_params.extend(owned_cons_params.clone());
     let entry = kbuilder.block(entry_params);
+    for hidden in &owned_cons_params {
+        kbuilder.mark_param_ignored(*hidden);
+    }
+    for (capture, source_param) in cont.owned_cons_captures.iter().zip(&owned_cons_params) {
+        if let Some((_, head_param)) = cont
+            .outer_captured
+            .iter()
+            .zip(&cap_params)
+            .find(|((name, _), _)| name == &capture.head_name)
+        {
+            kbuilder.record_owned_cons_head_origin(*head_param, *source_param);
+        }
+    }
 
     ctx.cur = Some(kbuilder);
     ctx.cur_fn_id = Some(cont.id);
@@ -130,6 +164,10 @@ pub(crate) fn switch_to_cont_fn(
             .insert((cont.id, *v), (cont.span, String::new()));
     }
     for v in &cap_params {
+        ctx.var_meta
+            .insert((cont.id, *v), (cont.span, String::new()));
+    }
+    for v in &owned_cons_params {
         ctx.var_meta
             .insert((cont.id, *v), (cont.span, String::new()));
     }

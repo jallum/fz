@@ -569,6 +569,11 @@ pub fn alpha_rename(callee: &FnIr, caller: &FnIr) -> FnIr {
         category: callee.category,
         owner_module: callee.owner_module.clone(),
         ignored_entry_params: callee.ignored_entry_params.clone(),
+        owned_cons_head_origins: callee
+            .owned_cons_head_origins
+            .iter()
+            .map(|(head, source_cons)| (shift_v(*head), shift_v(*source_cons)))
+            .collect(),
     }
 }
 

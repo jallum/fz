@@ -67,6 +67,7 @@ fn render_spec<
     let f = m.fn_by_id(spec_key.fn_id);
     render_spec_header(t, m, mt, spec_key, any_ty, out);
     render_fn_constants(m, ft, out);
+    render_owned_cons_reuse(f, out);
     render_vars(t, ft, out);
     render_exits(t, m, mt, spec_key, ft, f, any_ty, out);
     out.push('\n');
@@ -115,6 +116,21 @@ fn render_fn_constants(m: &Module, ft: &super::fn_types::SpecPlan, out: &mut Str
             v.0,
             fn_name(m, *fc),
             fc.0
+        ));
+    }
+}
+
+fn render_owned_cons_reuse(f: &crate::fz_ir::FnIr, out: &mut String) {
+    if f.owned_cons_head_origins.is_empty() {
+        return;
+    }
+    let mut origins: Vec<_> = f.owned_cons_head_origins.iter().collect();
+    origins.sort_by_key(|(head, _)| head.0);
+    out.push_str(";   owned_cons_reuse:\n");
+    for (head, source_cons) in origins {
+        out.push_str(&format!(
+            ";     head=Var({}) source_cons=Var({})\n",
+            head.0, source_cons.0
         ));
     }
 }

@@ -108,12 +108,13 @@ pub(crate) fn lower_multi_clause<T: crate::types::Types<Ty = crate::types::Ty>>(
             let cont = match &clause_conts_ref[i] {
                 Some(cont) => cont.clone(),
                 None => {
-                    let cont = mint_cont_fn(
+                    let mut cont = mint_cont_fn(
                         ctx,
                         format!("fn_clause_{}", i),
                         clause.span,
                         crate::fz_ir::FnCategory::MultiClauseCont,
                     );
+                    cont.owned_cons_captures = owned_cons_captures_for_bindings(ctx, &bindings);
                     clause_conts_ref[i] = Some(cont.clone());
                     cont
                 }
@@ -147,6 +148,26 @@ pub(crate) fn lower_multi_clause<T: crate::types::Types<Ty = crate::types::Ty>>(
 
     Ok(())
 }
+
+fn owned_cons_captures_for_bindings(
+    ctx: &LowerCtx,
+    bindings: &[(String, Var)],
+) -> Vec<OwnedConsCapture> {
+    let Some(cur) = ctx.cur.as_ref() else {
+        return Vec::new();
+    };
+    bindings
+        .iter()
+        .filter_map(|(name, head)| match cur.prim_for_var(*head) {
+            Some(Prim::ListHead(source_cons)) => Some(OwnedConsCapture {
+                head_name: name.clone(),
+                source_cons: *source_cons,
+            }),
+            _ => None,
+        })
+        .collect()
+}
+
 pub(crate) fn lower_if(
     ctx: &mut LowerCtx,
     cond: &Spanned<Expr>,

@@ -150,6 +150,23 @@ The pinned evidence is `fixtures/quicksort`: native JIT/AOT output now
 keeps `list_cons_allocs = 48`, `list_cons_bytes = 768`,
 `struct_allocs = 0`, and headline `heap_bytes = 768`.
 
+Owned-cons reuse is the next reduction layer. Multi-clause list destructuring
+now preserves a hidden, ignored entry parameter from a projected head back to
+the original source cons cell. The spec dump exposes this under
+`owned_cons_reuse`:
+
+```text
+owned_cons_reuse:
+  head=Var(H) source_cons=Var(C)
+```
+
+The hidden parameter is not part of semantic specialization (`_` in the spec
+key), but it gives native codegen the object-local capability needed to turn
+`[h | new_tail]` into a checked tail relink of `C`. Final lowering must still
+respect observable barriers and the runtime alias bit; this planning fact is
+only the ownership-carrying proof that the head and source cell travelled
+together across generated helper boundaries.
+
 ## IR Vocabulary
 
 `fz_ir::Prim` owns the destination operations:
