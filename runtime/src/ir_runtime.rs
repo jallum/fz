@@ -343,17 +343,6 @@ pub extern "C" fn fz_dbg_value(ref_word: u64) -> u64 {
     ref_word
 }
 
-thread_local! {
-    /// Test-only capture of every fz_dbg_value rendering. Tests in the
-    /// fz binary (ir_codegen::tests) read it via `test_capture_take()`.
-    /// Lifted from ir_codegen.rs alongside the FFI body in fz-ul4.23.10.
-    pub static TEST_CAPTURE: std::cell::RefCell<Vec<String>> =
-        const { std::cell::RefCell::new(Vec::new()) };
-}
-
-pub fn test_capture_take() -> Vec<String> {
-    TEST_CAPTURE.with(|c| std::mem::take(&mut *c.borrow_mut()))
-}
 
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_dynamic_float_arith_unsupported() -> u64 {

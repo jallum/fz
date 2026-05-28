@@ -1,0 +1,27 @@
+defmodule FileHandle do
+  @type t :: opaque resource(integer)
+
+  extern "C" fn libc::open(path :: cstring, flags :: integer, ...) :: integer
+  extern "C" fn libc::close(integer) :: nil
+  extern "C" fn libc::errno() :: integer
+
+  @spec open(binary, integer, integer) :: {:ok, t} | {:error, integer}
+  fn open(path, flags, mode) do
+    path
+    |> libc::open(flags, mode)
+    |> case do
+      raw_fd when raw_fd >= 0 -> {:ok, make_resource(raw_fd, &libc::close/1)}
+      _error -> {:error, libc::errno()}
+    end
+  end
+
+  fn close(fd :: t) do
+    libc::close(fd.value)
+    :ok
+  end
+end
+
+fn main() do
+  f = FileHandle.open("f", 0x200, 0o644)
+  dbg(f)
+end

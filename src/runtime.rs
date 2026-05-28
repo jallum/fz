@@ -712,6 +712,52 @@ impl ProcessExitCapture {
     }
 }
 
+/// Test seam: records the `fz.runtime.dbg` line stream. Attach to a
+/// `ConfiguredTelemetry`, run, then read `lines()` — the telemetry-based
+/// replacement for the old `TEST_CAPTURE` print buffer. Works for both
+/// engines, since both route output through `route_output_to`.
+#[cfg(test)]
+pub struct DbgCapture {
+    lines: std::rc::Rc<std::cell::RefCell<Vec<String>>>,
+}
+
+#[cfg(test)]
+impl DbgCapture {
+    pub fn new() -> Self {
+        Self {
+            lines: std::rc::Rc::new(std::cell::RefCell::new(Vec::new())),
+        }
+    }
+
+    pub fn handler(&self) -> Box<dyn crate::telemetry::handler::Handler> {
+        Box::new(DbgHandler {
+            lines: self.lines.clone(),
+        })
+    }
+
+    pub fn lines(&self) -> Vec<String> {
+        self.lines.borrow().clone()
+    }
+}
+
+#[cfg(test)]
+struct DbgHandler {
+    lines: std::rc::Rc<std::cell::RefCell<Vec<String>>>,
+}
+
+#[cfg(test)]
+impl crate::telemetry::handler::Handler for DbgHandler {
+    fn handle(&self, ev: &crate::telemetry::handler::Event<'_, '_, '_>) {
+        use crate::telemetry::value::Value;
+        if ev.name != ["fz", "runtime", "dbg"] {
+            return;
+        }
+        if let Some(Value::Str(s)) = ev.metadata.get("line") {
+            self.lines.borrow_mut().push(s.as_ref().to_string());
+        }
+    }
+}
+
 #[cfg(test)]
 struct ProcessExitHandler {
     records: std::rc::Rc<std::cell::RefCell<Vec<ExitRecord>>>,
@@ -1328,11 +1374,13 @@ mod tests {
             &crate::telemetry::NullTelemetry,
         )
         .unwrap();
-        let _ = fz_runtime::ir_runtime::test_capture_take();
-        let mut rt = Runtime::new(&compiled, 1);
+        let tel = crate::telemetry::bus::ConfiguredTelemetry::new();
+        let dbg = DbgCapture::new();
+        tel.attach(&[], dbg.handler());
+        let mut rt = Runtime::new(&compiled, 1).with_telemetry(&tel);
         rt.spawn(entry);
         rt.run_until_idle();
-        assert_eq!(fz_runtime::ir_runtime::test_capture_take(), vec!["nil"]);
+        assert_eq!(dbg.lines(), vec!["nil"]);
     }
 
     /// fz-siu.7.3: park-time GC hook fires when allocation pressure
@@ -1386,12 +1434,14 @@ mod tests {
             &crate::telemetry::NullTelemetry,
         )
         .unwrap();
-        let _ = fz_runtime::ir_runtime::test_capture_take();
-        let mut rt = Runtime::new(&compiled, 1);
+        let tel = crate::telemetry::bus::ConfiguredTelemetry::new();
+        let dbg = DbgCapture::new();
+        tel.attach(&[], dbg.handler());
+        let mut rt = Runtime::new(&compiled, 1).with_telemetry(&tel);
         let pid = rt.spawn(entry);
         rt.tasks.get_mut(&pid).unwrap().heap.gc_threshold_bytes = 64;
         rt.run_until_idle();
-        assert_eq!(fz_runtime::ir_runtime::test_capture_take(), vec![":alice"]);
+        assert_eq!(dbg.lines(), vec![":alice"]);
     }
 
     // ----- fz-02r.8: mid-flight back-edge GC integration -----

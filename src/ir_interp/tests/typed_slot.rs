@@ -24,9 +24,11 @@ fn run_checked(src: &str) -> i64 {
 
 fn capture(src: &str) -> String {
     let m = lower_src(src);
-    let _ = fz_runtime::ir_runtime::test_capture_take();
-    run_main(&crate::telemetry::NullTelemetry, &m).expect("interp run");
-    fz_runtime::ir_runtime::test_capture_take().join("\n")
+    let tel = crate::telemetry::bus::ConfiguredTelemetry::new();
+    let dbg = crate::runtime::DbgCapture::new();
+    tel.attach(&[], dbg.handler());
+    run_main(&tel, &m).expect("interp run");
+    dbg.lines().join("\n")
 }
 
 #[test]

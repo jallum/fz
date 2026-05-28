@@ -1,11 +1,12 @@
-## A Good Plan
-- A _good_ plan **requires** a goal, a signal and a strategy. 
-- A _good_ plan starts with a goal, and works backwards to the current state: the answer to "what do i need to do _this_?" at each point will inform the changes that must be made at each step -- those steps, when organized into a DAG, will then lead inexorably to the goal. Hard things are tractable if broken into steps. This pattern is fractal. A difficult step can be broken down further. If two steps cannot be performed in an atomic fashion, then we have learned that they are _one_ step.
-- A _good_ plan is simple, elegant and holistic -- no quick-fixes, shims, shams, shortcuts.
-- A _good_ plan contains all of the necessary references, details, strategies and tactics -- it is grounded in fact because it is the fruit of research and due-diligence. 
-- A _good_ plan cares as much about what we _remove_ as what we add or change. What goes away? What _could_ go away?
-- A _good_ plan leaves guideposts for the future -- what documentation needs to be updated? What topics help us in the future?
-- A _good_ plan considers judicious measurements/metrics/telemetry -- signal.
+## A _Good_ Plan...
+- **Requires** a goal, a signal and a strategy. 
+- Starts with a goal, and works backwards to the current state: the answer to "what do i need to do _this_?" at each point will inform the changes that must be made at each step -- those steps, when organized into a DAG, will then lead inexorably to the goal. Hard things are tractable if broken into steps. This pattern is fractal. A difficult step can be broken down further. If two steps cannot be performed in an atomic fashion, then we have learned that they are _one_ step.
+- Is simple, elegant and holistic -- no quick-fixes, shims, shams, shortcuts.
+- Contains all of the necessary references, details, strategies and tactics -- it is grounded in fact because it is the fruit of research and due-diligence. 
+- Cares as much about what we _remove_ as what we add or change. What goes away? What _could_ go away?
+- Leaves guideposts for the future -- what documentation needs to be updated? What topics help us in the future?
+- Considers adding measurements/metrics/telemetry to provide better signal.
+- Tracks and *removes* the temporary fixtures, scaffolding and affordances put in place during construction.
 
 ## Work Rules
 - Don't commit until you're proud of the work.
@@ -17,12 +18,18 @@
 - Warnings are _errors_ if it's something we control.
 - Documentation must be updated along with code. Before committing, consider the agent docs and guides that must be updated. All information presented must be provable fact, grounded in the code itself.
 - Refrain from even attempting to estimate time to accomplish work -- that is my concern.
+- If affordances/scaffolding are added on the fly, that's fine, but tickets to remove / collapse them *must be added* -- that's the price.
 
 ## Tickets and Plans
 - Plans decompose into bw tickets (`bw --help`) that are executed in dependency order
 - One ticket == one commit, one close.
 - Ready tickets are surfaced as their dependencies are closed.
 - Tickets are persistent memory beyond context and free you from having to worry about context usage.
+
+# Pull Requests
+- Should have titles "<ticket>: ..."
+- Are produced after examining the diff against the branch-root.
+- Have descriptions that explain in eli5 _style_ (no need to _say it) why we're making the change, what we've changed, and how it works -- with examples.
 
 ## Best Practices
 - Prefer short functions with crisp names over comments.

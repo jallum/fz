@@ -823,28 +823,20 @@ struct Observation {
 
 fn observe(compiled: &CompiledModule, entry: FnId) -> Observation {
     use crate::telemetry::bus::ConfiguredTelemetry;
-    use crate::telemetry::capture::Capture;
-    use crate::telemetry::value::Value;
 
     let tel = ConfiguredTelemetry::new();
     let exits = crate::runtime::ProcessExitCapture::new();
-    let out = Capture::new();
+    let out = crate::runtime::DbgCapture::new();
     tel.attach(&[], exits.handler());
     tel.attach(&[], out.handler());
     let mut rt = crate::runtime::Runtime::new(compiled, 1).with_telemetry(&tel);
     let _ = rt.spawn(entry);
     rt.run_until_idle();
 
-    let exit = exits.last().expect("process_exited captured");
-    let output = out
-        .find(&["fz", "runtime", "dbg"])
-        .iter()
-        .filter_map(|ev| match ev.metadata.get("line") {
-            Some(Value::Str(s)) => Some(s.as_ref().to_string()),
-            _ => None,
-        })
-        .collect();
-    Observation { exit, output }
+    Observation {
+        exit: exits.last().expect("process_exited captured"),
+        output: out.lines(),
+    }
 }
 
 fn run_main(src: &str) -> i64 {

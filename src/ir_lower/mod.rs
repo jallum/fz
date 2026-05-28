@@ -891,15 +891,19 @@ mod tests {
     fn run_and_capture(src: &str) -> String {
         let m = lower_src(src);
         let entry = m.fn_by_name("main").expect("no main fn").id;
-        let _ = fz_runtime::ir_runtime::test_capture_take();
-        let _ = crate::ir_codegen::compile(
+        let compiled = crate::ir_codegen::compile(
             &mut crate::types::ConcreteTypes,
             &m,
             &crate::telemetry::NullTelemetry,
         )
-        .unwrap()
-        .run(entry);
-        fz_runtime::ir_runtime::test_capture_take().join("\n")
+        .unwrap();
+        let tel = crate::telemetry::bus::ConfiguredTelemetry::new();
+        let dbg = crate::runtime::DbgCapture::new();
+        tel.attach(&[], dbg.handler());
+        let mut rt = crate::runtime::Runtime::new(&compiled, 1).with_telemetry(&tel);
+        let _ = rt.spawn(entry);
+        rt.run_until_idle();
+        dbg.lines().join("\n")
     }
 
     fn count_prims(m: &Module, pred: impl Fn(&Prim) -> bool) -> usize {
