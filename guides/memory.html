@@ -144,7 +144,10 @@ heap pointer tags and container-local metadata.</p>
 
 <p>The cell itself is named by a <code>TAG_LIST</code> pointer. Empty list is
 the null next address. Improper-list representation is outside this first
-layout migration and must be handled by a follow-up if encountered.</p>
+layout migration and must be handled by a follow-up if encountered. The alias
+flag is a conservative reuse guard: runtime helpers may mark a cons aliased,
+and destructive relink helpers reject aliased cells instead of rewiring
+them.</p>
 
 <p><strong>Map:</strong></p>
 

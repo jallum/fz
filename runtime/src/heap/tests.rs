@@ -37,6 +37,11 @@ fn alloc_int_list_cons(heap: &mut Heap, head: i64, tail_bits: u64) -> u64 {
     heap.alloc_list_cons_slot(AnyValue::int(head), tail_bits)
 }
 
+fn list_ref_from_bits(bits: u64) -> AnyValueRef {
+    let addr = crate::any_value::list_addr_from_tagged(bits).expect("list addr");
+    AnyValueRef::from_heap_object(ValueKind::LIST, addr).expect("list ref")
+}
+
 #[test]
 fn alloc_stats_record_heap_allocations_by_kind() {
     let registry = empty_registry();
@@ -674,6 +679,59 @@ fn gc_copies_rooted_list_and_rewrites_root() {
 }
 
 #[test]
+fn gc_preserves_list_alias_metadata() {
+    let mut h = Heap::new(1024, empty_registry());
+    let n2 = alloc_int_list_cons(&mut h, 2, crate::any_value::EMPTY_LIST);
+    let n1 = alloc_int_list_cons(&mut h, 1, n2);
+    let n2_ref = list_ref_from_bits(n2);
+    h.mark_list_cons_aliased(n2_ref).expect("mark aliased");
+
+    let mut root = std::ptr::null_mut();
+    let mut roots = [heap_root(n1)];
+    h.gc_with_extra_root_slots(&mut root, &mut roots);
+
+    let copied_n1 = crate::any_value::list_addr_from_tagged(root_bits(roots[0])).unwrap();
+    let copied_n1 = unsafe { &*(copied_n1 as *const ListCons) };
+    let copied_n2 = unsafe { &*(copied_n1.tail_addr() as *const ListCons) };
+    assert!(copied_n2.aliased());
+    assert_eq!(copied_n2.head as i64, 2);
+}
+
+#[test]
+fn unaliased_list_cons_can_be_relinked_in_place() {
+    let mut h = Heap::new(1024, empty_registry());
+    let old_tail = alloc_int_list_cons(&mut h, 1, crate::any_value::EMPTY_LIST);
+    let new_tail = alloc_int_list_cons(&mut h, 2, crate::any_value::EMPTY_LIST);
+    let head = alloc_int_list_cons(&mut h, 0, old_tail);
+
+    let out = h
+        .relink_unaliased_list_cons_tail(list_ref_from_bits(head), list_ref_from_bits(new_tail))
+        .expect("relink");
+
+    assert_eq!(out, list_ref_from_bits(head));
+    let cons =
+        unsafe { &*(crate::any_value::list_addr_from_tagged(head).unwrap() as *const ListCons) };
+    assert_eq!(cons.head as i64, 0);
+    assert_eq!(cons.tail_bits(), new_tail);
+    assert!(!cons.aliased());
+}
+
+#[test]
+#[should_panic(expected = "cannot destructively relink aliased list cons")]
+fn aliased_list_cons_rejects_destructive_relink() {
+    let mut h = Heap::new(1024, empty_registry());
+    let old_tail = alloc_int_list_cons(&mut h, 1, crate::any_value::EMPTY_LIST);
+    let new_tail = alloc_int_list_cons(&mut h, 2, crate::any_value::EMPTY_LIST);
+    let head = alloc_int_list_cons(&mut h, 0, old_tail);
+    let head_ref = list_ref_from_bits(head);
+    h.mark_list_cons_aliased(head_ref).expect("mark aliased");
+
+    let _ = h
+        .relink_unaliased_list_cons_tail(head_ref, list_ref_from_bits(new_tail))
+        .expect("relink must panic before returning");
+}
+
+#[test]
 fn any_value_roots_forward_only_heap_values() {
     let mut h = Heap::new(1024, empty_registry());
     let list_bits = alloc_int_list_cons(&mut h, 1, crate::any_value::EMPTY_LIST);
@@ -939,6 +997,24 @@ fn deep_copy_tagged_list_preserves_nested_list_head() {
     assert_eq!(child.head_kind(), ValueKind::INT);
     assert_eq!(child.head as i64, 7);
     assert_eq!(child.tail_bits(), crate::any_value::EMPTY_LIST);
+}
+
+#[test]
+fn deep_copy_preserves_list_alias_metadata() {
+    let mut src = Heap::new(1024, empty_registry());
+    let mut dst = Heap::new(1024, empty_registry());
+    let list_bits = alloc_int_list_cons(&mut src, 7, crate::any_value::EMPTY_LIST);
+    src.mark_list_cons_aliased(list_ref_from_bits(list_bits))
+        .expect("mark aliased");
+
+    let mut forwarding = std::collections::HashMap::new();
+    let copied = deep_copy_slot(heap_root(list_bits), &src, &mut dst, &mut forwarding);
+    let copied_list =
+        crate::any_value::list_addr_from_tagged(tagged_bits(copied)).expect("copied list ptr");
+    let copied_cons = unsafe { &*(copied_list as *const ListCons) };
+
+    assert!(copied_cons.aliased());
+    assert_eq!(copied_cons.head as i64, 7);
 }
 
 #[test]

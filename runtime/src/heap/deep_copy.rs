@@ -117,6 +117,7 @@ pub fn deep_copy_any_value(
                 )
             };
             unsafe {
+                let source_aliased = cons.aliased();
                 std::ptr::write(
                     dp as *mut ListCons,
                     ListCons::new(
@@ -129,6 +130,9 @@ pub fn deep_copy_any_value(
                         },
                     ),
                 );
+                if source_aliased {
+                    (*(dp as *mut ListCons)).mark_aliased();
+                }
             }
             AnyValue::heap_ptr(dp, ValueKind::LIST)
         }

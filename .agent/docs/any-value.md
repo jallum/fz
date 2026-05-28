@@ -180,6 +180,10 @@ Closure:
   local capture kind metadata
 ```
 
+The list link alias bit is a conservative cell-local reuse guard. Runtime
+helpers may mark a cons aliased, and destructive relink helpers must reject an
+aliased cell instead of rewiring it. GC and deep copy preserve the bit.
+
 Public refs are public refs. Object-local metadata is object-local metadata.
 
 ## GC Rule

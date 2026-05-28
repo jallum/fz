@@ -761,6 +761,31 @@ impl Heap {
         }
     }
 
+    pub fn mark_list_cons_aliased(
+        &mut self,
+        list: AnyValueRef,
+    ) -> Result<AnyValueRef, AnyValueRefError> {
+        let addr = nonempty_list_addr(list)?;
+        let cons = unsafe { &mut *(addr as *mut ListCons) };
+        cons.mark_aliased();
+        Ok(list)
+    }
+
+    pub fn relink_unaliased_list_cons_tail(
+        &mut self,
+        list: AnyValueRef,
+        tail: AnyValueRef,
+    ) -> Result<AnyValueRef, AnyValueRefError> {
+        let addr = nonempty_list_addr(list)?;
+        let tail_bits = list_tail_bits_from_ref(tail)?;
+        let cons = unsafe { &mut *(addr as *mut ListCons) };
+        assert!(
+            cons.relink_tail_if_unaliased(tail_bits),
+            "cannot destructively relink aliased list cons"
+        );
+        Ok(list)
+    }
+
     pub fn read_map_value_ref(
         &self,
         map: AnyValueRef,
@@ -1280,6 +1305,14 @@ impl Heap {
         }
         stats
     }
+}
+
+fn nonempty_list_addr(list: AnyValueRef) -> Result<*mut u8, AnyValueRefError> {
+    let addr = list.list_addr()?;
+    if addr.is_null() {
+        return Err(AnyValueRefError::NullAddress(ValueKind::LIST));
+    }
+    Ok(addr)
 }
 
 impl Drop for Heap {
