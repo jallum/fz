@@ -241,9 +241,7 @@ fn harness_cont_fn<M: cranelift_module::Module>(
     let list_tail_val = if has_appended_list_tail {
         let idx = 1 + user_captures;
         let index = b.ins().iconst(types::I64, idx as i64);
-        let fref = jmod.declare_func_in_func(env.runtime.closure_get_capture_ref_id, b.func);
-        let inst = b.ins().call(fref, &[self_val, index]);
-        Some(b.inst_results(inst)[0])
+        Some(cx.closure_capture_ref(b, jmod, self_val, index))
     } else {
         None
     };

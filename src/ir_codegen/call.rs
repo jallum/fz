@@ -10,7 +10,7 @@ pub(crate) fn emit_halt_for_binding<M: cranelift_module::Module>(
     cx: &mut CodegenFn<'_>,
     b: &mut FunctionBuilder<'_>,
     jmod: &mut M,
-    runtime: &RuntimeRefs,
+    _runtime: &RuntimeRefs,
     var_env: &HashMap<u32, CodegenValue>,
     cache: &mut CodegenCache,
     var: u32,
@@ -18,17 +18,14 @@ pub(crate) fn emit_halt_for_binding<M: cranelift_module::Module>(
 ) {
     match binding.repr() {
         ArgRepr::RawInt => {
-            let fref = jmod.declare_func_in_func(runtime.halt_implicit_i64_id, b.func);
-            b.ins().call(fref, &[binding.value()]);
+            cx.halt_implicit(b, jmod, ArgRepr::RawInt, binding.value());
         }
         ArgRepr::RawF64 => {
-            let fref = jmod.declare_func_in_func(runtime.halt_implicit_f64_id, b.func);
-            b.ins().call(fref, &[binding.value()]);
+            cx.halt_implicit(b, jmod, ArgRepr::RawF64, binding.value());
         }
         ArgRepr::ValueRef | ArgRepr::Condition => {
             let value_ref = cx.tagged_var(var_env, b, jmod, var, cache);
-            let fref = jmod.declare_func_in_func(runtime.halt_implicit_ref_id, b.func);
-            b.ins().call(fref, &[value_ref]);
+            cx.halt_implicit(b, jmod, ArgRepr::ValueRef, value_ref);
         }
     }
 }
@@ -37,23 +34,20 @@ pub(crate) fn emit_halt_from_codegen_value<M: cranelift_module::Module>(
     cx: &mut CodegenFn<'_>,
     b: &mut FunctionBuilder<'_>,
     jmod: &mut M,
-    runtime: &RuntimeRefs,
+    _runtime: &RuntimeRefs,
     cache: &mut CodegenCache,
     value: CodegenValue,
 ) {
     match value {
         CodegenValue::RawInt(value) => {
-            let fref = jmod.declare_func_in_func(runtime.halt_implicit_i64_id, b.func);
-            b.ins().call(fref, &[value]);
+            cx.halt_implicit(b, jmod, ArgRepr::RawInt, value);
         }
         CodegenValue::RawF64(value) => {
-            let fref = jmod.declare_func_in_func(runtime.halt_implicit_f64_id, b.func);
-            b.ins().call(fref, &[value]);
+            cx.halt_implicit(b, jmod, ArgRepr::RawF64, value);
         }
         value => {
             let value_ref = cx.value_as_any_ref(b, jmod, cache, value);
-            let fref = jmod.declare_func_in_func(runtime.halt_implicit_ref_id, b.func);
-            b.ins().call(fref, &[value_ref]);
+            cx.halt_implicit(b, jmod, ArgRepr::ValueRef, value_ref);
         }
     }
 }
@@ -146,7 +140,7 @@ pub(crate) fn emit_call<M: cranelift_module::Module>(
     cx: &mut CodegenFn<'_>,
     b: &mut FunctionBuilder<'_>,
     jmod: &mut M,
-    runtime: &RuntimeRefs,
+    _runtime: &RuntimeRefs,
     schemas: &[Schema],
     frame_ptr: Option<ir::Value>,
     callee_id: u32,
@@ -156,8 +150,6 @@ pub(crate) fn emit_call<M: cranelift_module::Module>(
 ) {
     let frame_ptr = frame_ptr
         .expect("emit_call reached from native-fn body — natively_callable invariant violated");
-    let alloc_fref = jmod.declare_func_in_func(runtime.alloc_id, b.func);
-
     // Read my cont_ptr from current frame[16] — this becomes the cont frame's cont_ptr.
     let my_cont = b
         .ins()
@@ -170,8 +162,7 @@ pub(crate) fn emit_call<M: cranelift_module::Module>(
             let sz = b
                 .ins()
                 .iconst(types::I32, cont_schema.allocation_payload_size() as i64);
-            let call_inst = b.ins().call(alloc_fref, &[sid, sz]);
-            let cf = b.inst_results(call_inst)[0];
+            let cf = cx.alloc_frame(b, jmod, sid, sz);
             // Slot 0 (offset 16): cont_ptr = my_cont (my own continuation).
             b.ins().store(MemFlags::trusted(), my_cont, cf, HEADER_SIZE);
             // Slot 1 (offset 24) is the continuation's "result" param —
@@ -191,8 +182,7 @@ pub(crate) fn emit_call<M: cranelift_module::Module>(
     let sz = b
         .ins()
         .iconst(types::I32, callee_schema.allocation_payload_size() as i64);
-    let call_inst = b.ins().call(alloc_fref, &[sid, sz]);
-    let callee_frame = b.inst_results(call_inst)[0];
+    let callee_frame = cx.alloc_frame(b, jmod, sid, sz);
     // Slot 0: cont_ptr = cont_frame_val.
     b.ins().store(
         MemFlags::trusted(),
@@ -308,7 +298,7 @@ pub(crate) fn emit_tail_call<M: cranelift_module::Module>(
     cx: &mut CodegenFn<'_>,
     b: &mut FunctionBuilder<'_>,
     jmod: &mut M,
-    runtime: &RuntimeRefs,
+    _runtime: &RuntimeRefs,
     schemas: &[Schema],
     self_id: u32,
     frame_ptr: Option<ir::Value>,
@@ -330,13 +320,11 @@ pub(crate) fn emit_tail_call<M: cranelift_module::Module>(
         let my_cont = b
             .ins()
             .load(types::I64, MemFlags::trusted(), frame_ptr, HEADER_SIZE);
-        let alloc_fref = jmod.declare_func_in_func(runtime.alloc_id, b.func);
         let sid = b.ins().iconst(types::I32, callee_id as i64);
         let sz = b
             .ins()
             .iconst(types::I32, callee_schema.allocation_payload_size() as i64);
-        let call_inst = b.ins().call(alloc_fref, &[sid, sz]);
-        let nf = b.inst_results(call_inst)[0];
+        let nf = cx.alloc_frame(b, jmod, sid, sz);
         b.ins().store(MemFlags::trusted(), my_cont, nf, HEADER_SIZE);
         store_bindings_into_callee_frame(cx, b, jmod, callee_schema, nf, args, 1, cache);
         b.ins().return_(&[nf]);

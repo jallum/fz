@@ -182,6 +182,64 @@ impl<'env, K> CodegenFn<'env, K> {
         self.call_func1(b, jmod, self.runtime.unbox_atom_id, &[value_ref])
     }
 
+    pub(crate) fn halt_implicit<M: cranelift_module::Module>(
+        &mut self,
+        b: &mut FunctionBuilder<'_>,
+        jmod: &mut M,
+        repr: ArgRepr,
+        value: ir::Value,
+    ) {
+        let id = match repr {
+            ArgRepr::RawInt => self.runtime.halt_implicit_i64_id,
+            ArgRepr::RawF64 => self.runtime.halt_implicit_f64_id,
+            ArgRepr::ValueRef => self.runtime.halt_implicit_ref_id,
+            ArgRepr::Condition => unreachable!("condition halt values must be materialized"),
+        };
+        self.call_func(b, jmod, id, &[value]);
+    }
+
+    pub(crate) fn alloc_frame<M: cranelift_module::Module>(
+        &mut self,
+        b: &mut FunctionBuilder<'_>,
+        jmod: &mut M,
+        schema_id: ir::Value,
+        size: ir::Value,
+    ) -> ir::Value {
+        self.call_func1(b, jmod, self.runtime.alloc_id, &[schema_id, size])
+    }
+
+    pub(crate) fn get_halt_cont<M: cranelift_module::Module>(
+        &mut self,
+        b: &mut FunctionBuilder<'_>,
+        jmod: &mut M,
+        body_addr: ir::Value,
+        halt_kind: ir::Value,
+    ) -> ir::Value {
+        self.call_func1(
+            b,
+            jmod,
+            self.runtime.get_halt_cont_id,
+            &[body_addr, halt_kind],
+        )
+    }
+
+    pub(crate) fn alloc_closure<M: cranelift_module::Module>(
+        &mut self,
+        b: &mut FunctionBuilder<'_>,
+        jmod: &mut M,
+        func_id: ir::Value,
+        captured_count: ir::Value,
+        halt_kind: ir::Value,
+        code_addr: ir::Value,
+    ) -> ir::Value {
+        self.call_func1(
+            b,
+            jmod,
+            self.runtime.alloc_closure_id,
+            &[func_id, captured_count, halt_kind, code_addr],
+        )
+    }
+
     pub(crate) fn empty_list_ref(
         &mut self,
         b: &mut FunctionBuilder<'_>,
@@ -503,9 +561,9 @@ mod tests {
     #[test]
     fn ordinary_lowering_runtime_plumbing_stays_budgeted() {
         let files = [
-            ("call.rs", include_str!("call.rs"), 8, 8, 0),
-            ("closure.rs", include_str!("closure.rs"), 3, 6, 0),
-            ("entry.rs", include_str!("entry.rs"), 1, 1, 0),
+            ("call.rs", include_str!("call.rs"), 0, 0, 0),
+            ("closure.rs", include_str!("closure.rs"), 0, 3, 0),
+            ("entry.rs", include_str!("entry.rs"), 0, 0, 0),
             ("function.rs", include_str!("function.rs"), 0, 0, 0),
             ("prim.rs", include_str!("prim.rs"), 47, 57, 0),
             ("repr.rs", include_str!("repr.rs"), 0, 0, 0),

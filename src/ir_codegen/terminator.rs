@@ -971,7 +971,7 @@ fn emit_native_call_with_cont<
             Some(c) => c,
             None => {
                 synth_halt_cont = true;
-                synthesize_halt_cont(jmod, b, runtime, callee_ret_repr)
+                synthesize_halt_cont(cx, jmod, b, runtime, callee_ret_repr)
             }
         }
     };
@@ -1177,7 +1177,7 @@ fn emit_native_tail_call<M: cranelift_module::Module>(
             Some(c) => c,
             None => {
                 synth_halt_cont = true;
-                synthesize_halt_cont(jmod, b, runtime, callee_ret_repr)
+                synthesize_halt_cont(cx, jmod, b, runtime, callee_ret_repr)
             }
         }
     };

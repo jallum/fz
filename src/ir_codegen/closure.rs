@@ -21,16 +21,15 @@ use std::sync::Arc;
 /// Used when the caller has no cont_param and needs a halt-cont to pass to the
 /// callee — the callee's Term::Return chains through it to record halt_value.
 pub(crate) fn synthesize_halt_cont<M: cranelift_module::Module>(
+    cx: &mut CodegenFn<'_>,
     jmod: &mut M,
     b: &mut FunctionBuilder<'_>,
     runtime: &RuntimeRefs,
     repr: ArgRepr,
 ) -> ir::Value {
-    let fref = jmod.declare_func_in_func(runtime.get_halt_cont_id, b.func);
     let hcb_addr = fn_addr(jmod, halt_cont_body_id_for(runtime, repr), b);
     let kind_v = b.ins().iconst(types::I32, repr.halt_kind() as i64);
-    let inst = b.ins().call(fref, &[hcb_addr, kind_v]);
-    b.inst_results(inst)[0]
+    cx.get_halt_cont(b, jmod, hcb_addr, kind_v)
 }
 
 /// Pick the halt_cont_body FuncId matching `repr`.
@@ -267,14 +266,12 @@ pub(crate) fn resolve_outer_cont<M: cranelift_module::Module>(
                 );
                 b.switch_to_block(alloc_blk);
                 b.seal_block(alloc_blk);
-                let acl = jmod.declare_func_in_func(runtime.alloc_closure_id, b.func);
                 let dummy_fid = b.ins().iconst(types::I32, 0);
                 let n_caps0 = b.ins().iconst(types::I32, 0);
                 let hc_repr = return_reprs[cont_sid as usize];
                 let hcb_addr = fn_addr(jmod, halt_cont_body_id_for(runtime, hc_repr), b);
                 let zero_hk = b.ins().iconst(types::I32, 0);
-                let halt_alloc = b.ins().call(acl, &[dummy_fid, n_caps0, zero_hk, hcb_addr]);
-                let halt_cl = b.inst_results(halt_alloc)[0];
+                let halt_cl = cx.alloc_closure(b, jmod, dummy_fid, n_caps0, zero_hk, hcb_addr);
                 b.ins().jump(join_blk, &[BlockArg::Value(halt_cl)]);
                 b.switch_to_block(join_blk);
                 b.seal_block(join_blk);
@@ -315,7 +312,6 @@ pub(crate) fn build_cont_closure<M: cranelift_module::Module>(
         frame_ptr,
         cont_sid,
     );
-    let acl_fref = jmod.declare_func_in_func(runtime.alloc_closure_id, b.func);
     let cl_fid_v = b.ins().iconst(types::I32, cont_sid as i64);
     // +1 reserves env field 0 for the synthetic outer_cont; user captures follow.
     let n_caps_v = b.ins().iconst(
@@ -324,10 +320,7 @@ pub(crate) fn build_cont_closure<M: cranelift_module::Module>(
     );
     let zero_hk = b.ins().iconst(types::I32, 0);
     let cont_code_addr = fn_addr(jmod, cont_fid, b);
-    let cl_inst = b
-        .ins()
-        .call(acl_fref, &[cl_fid_v, n_caps_v, zero_hk, cont_code_addr]);
-    let cl_ptr = b.inst_results(cl_inst)[0];
+    let cl_ptr = cx.alloc_closure(b, jmod, cl_fid_v, n_caps_v, zero_hk, cont_code_addr);
     let captured_count = cap_bindings.len() + extra_ref_captures.len() + 1;
     let heap_safe_outer_cont = materialize_cont_word(cx, b, jmod, runtime, my_outer_cont);
     store_outer_cont_capture(

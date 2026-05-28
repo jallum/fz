@@ -34,6 +34,12 @@ dynamic user-function calls, or inside `CodegenFn`/semantic operation
 implementations. Codegen changes should remove the bridge code they replace
 before landing; do not leave old and new paths in parallel.
 
+Small runtime helper calls in ordinary body lowering should be named
+`CodegenFn` semantic methods before they spread. `call.rs`, `closure.rs`, and
+`entry.rs` are pinned to zero direct function imports; new direct imports there
+should move behind `CodegenFn` unless they are truly dynamic user-function
+boundaries.
+
 The cleanup has source-level budget tests for ordinary lowering modules. They
 pin direct imports, `runtime.*` helper reach-ins, retired helper-local
 constructors, the single ordinary function context, and explicit runtime-shim
