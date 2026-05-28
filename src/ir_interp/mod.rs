@@ -279,6 +279,14 @@ impl IrInterpRuntime {
                         self.set_process_state(pid, ProcessState::Exited);
                         continue 'sched;
                     }
+                    Ok(InterpStep::Yielded(resume_fn, resume_args, mut new_after)) => {
+                        fz_runtime::process::CURRENT_PROCESS.with(|c| c.set(prev));
+                        new_after.extend(after);
+                        self.set_process_state(pid, ProcessState::Ready);
+                        self.resume.insert(pid, (resume_fn, resume_args, new_after));
+                        self.run_queue.push_back(pid);
+                        continue 'sched;
+                    }
                     Ok(InterpStep::Blocked(resume_fn, cap_vals, mut new_after)) => {
                         fz_runtime::process::CURRENT_PROCESS.with(|c| c.set(prev));
                         new_after.extend(after);
@@ -415,6 +423,7 @@ pub fn run_test_fn(
     fz_runtime::process::CURRENT_PROCESS.with(|c| c.set(prev));
     match result {
         Ok(InterpStep::Done(_)) => Ok(()),
+        Ok(InterpStep::Yielded(..)) => Err("test fn yielded outside scheduler drive".to_string()),
         Ok(InterpStep::Blocked(..)) | Ok(InterpStep::BlockedMatched(..)) => {
             Err("test fn blocked on receive with empty mailbox".to_string())
         }

@@ -158,6 +158,51 @@ fn persistent_runtime_drives_entries_without_resetting_mailbox() {
 }
 
 #[test]
+fn interp_reductions_yield_allocation_light_loops() {
+    let m = lower_src(
+        r#"
+        fn count(0, acc), do: acc
+        fn count(n, acc), do: count(n - 1, acc + 1)
+
+        fn child(parent) do
+          count(5000, 0)
+          send(parent, 99)
+        end
+
+        fn main() do
+          me = self()
+          spawn(fn () -> child(me))
+          count(5000, 0)
+          receive()
+        end
+    "#,
+    );
+
+    let (halt, runtime) =
+        run_main_with_runtime(&crate::telemetry::NullTelemetry, &m).expect("interp run");
+
+    assert_eq!(halt, 99);
+    let main = runtime.task(1).expect("main task remains registered");
+    let child = runtime.task(2).expect("child task remains registered");
+    assert!(
+        main.reduction_yields > 0,
+        "main should yield on reduction budget exhaustion"
+    );
+    assert!(
+        child.reduction_yields > 0,
+        "child should yield on reduction budget exhaustion"
+    );
+    assert_eq!(
+        main.interpreter_yields, 0,
+        "test should be allocation-light"
+    );
+    assert_eq!(
+        child.interpreter_yields, 0,
+        "test should be allocation-light"
+    );
+}
+
+#[test]
 fn interp_typed_int_send_receive_boundary() {
     assert_eq!(
         run(r#"

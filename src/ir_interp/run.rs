@@ -186,6 +186,10 @@ fn run_fn_typed<
                             inner_after.push((continuation.fn_id, outer_cap_vals));
                             return Ok(InterpStep::BlockedMatched(park, inner_after));
                         }
+                        InterpStep::Yielded(rf, cv, mut inner_after) => {
+                            inner_after.push((continuation.fn_id, outer_cap_vals));
+                            return Ok(InterpStep::Yielded(rf, cv, inner_after));
+                        }
                     }
                 }
                 Term::TailCall {
@@ -200,6 +204,14 @@ fn run_fn_typed<
                     // back-edge forwards its live RuntimeAnyValue args in place
                     // instead of yielding a scheduler continuation closure.
                     if *is_back_edge {
+                        let budget_exhausted = {
+                            let p = fz_runtime::process::current_process();
+                            let exhausted = p.spend_reductions(1);
+                            if exhausted {
+                                p.note_reduction_yield();
+                            }
+                            exhausted
+                        };
                         if fz_runtime::yield_flag::load() != 0 {
                             let p = fz_runtime::process::current_process();
                             let mut root_slots: Vec<RuntimeAnyValue> = arg_vals
@@ -217,6 +229,9 @@ fn run_fn_typed<
                         } else {
                             let p = fz_runtime::process::current_process();
                             p.quiet_quanta = p.quiet_quanta.saturating_add(1);
+                        }
+                        if budget_exhausted {
+                            return Ok(InterpStep::Yielded(*callee, arg_vals, vec![]));
                         }
                     }
                     fn_id = *callee;
@@ -248,6 +263,10 @@ fn run_fn_typed<
                         InterpStep::BlockedMatched(park, mut inner_after) => {
                             inner_after.push((continuation.fn_id, outer_cap_vals));
                             return Ok(InterpStep::BlockedMatched(park, inner_after));
+                        }
+                        InterpStep::Yielded(rf, cv, mut inner_after) => {
+                            inner_after.push((continuation.fn_id, outer_cap_vals));
+                            return Ok(InterpStep::Yielded(rf, cv, inner_after));
                         }
                     }
                 }
@@ -439,7 +458,9 @@ pub(super) fn drain_pending_dtors_interp<
         )?);
         match run_fn(runtime, t, module, tel, fn_id, args)? {
             InterpStep::Done(_) => {}
-            InterpStep::Blocked(_, _, _) | InterpStep::BlockedMatched(_, _) => {
+            InterpStep::Yielded(_, _, _)
+            | InterpStep::Blocked(_, _, _)
+            | InterpStep::BlockedMatched(_, _) => {
                 return Err("fz-4mk drain: dtor blocked on receive (unsupported in v1)".into());
             }
         }
