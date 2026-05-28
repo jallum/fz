@@ -1,0 +1,5 @@
+{:ok, 5}
+{:ok, true}
+{:done, 15}
+%{:allocs => 26, :bytes => 816, :list_cons_allocs => 5, :list_cons_bytes => 80, :struct_allocs => 9, :struct_bytes => 288, :closure_allocs => 6, :closure_bytes => 352, :map_allocs => 0, :map_bytes => 0, :bitstring_allocs => 0, :bitstring_bytes => 0, :procbin_allocs => 0, :procbin_bytes => 0, :scalar_box_allocs => 6, :scalar_box_bytes => 96, :frame_allocs => 0, :frame_bytes => 0, :resource_allocs => 0, :resource_bytes => 0, :other_allocs => 0, :other_bytes => 0, :scheduler_yields => 0, :interpreter_yields => 0}
+368

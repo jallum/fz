@@ -269,6 +269,10 @@ fn static_tests() -> Vec<(&'static str, fn())> {
             append_pins_source_append_target,
         ),
         (
+            "enum_list_allocations_pin_minimum_list_cons",
+            enum_list_allocations_pin_minimum_list_cons,
+        ),
+        (
             "reverse_filter_tree_pin_current_shape",
             reverse_filter_tree_pin_current_shape,
         ),
@@ -2780,8 +2784,8 @@ fn append_pins_source_append_target() {
     let readme = fs::read_to_string("fixtures/append/README.md").expect("read append README");
     for needle in [
         "the two list literals allocate five cons cells",
-        "the append prefix copy allocates three cons cells",
-        "`heap_bytes = 128`",
+        "owned-cons reuse removes the append prefix copy",
+        "`heap_bytes = 80`",
     ] {
         assert!(
             readme.contains(needle),
@@ -2832,6 +2836,37 @@ fn append_pins_source_append_target() {
         !clif.contains("@fz_append"),
         "append must not call an append BIF:\n{}",
         clif
+    );
+}
+
+fn enum_list_allocations_pin_minimum_list_cons() {
+    let readme = fs::read_to_string("fixtures/enum_list_allocations/README.md")
+        .expect("read enum_list_allocations README");
+    for needle in [
+        "the input list literal allocates five cons cells",
+        "`Enum.count/1`, `Enum.member?/2`, and `Enum.reduce/3` allocate no additional",
+        "`list_cons_allocs = 5`",
+        "`list_cons_bytes = 80`",
+    ] {
+        assert!(
+            readme.contains(needle),
+            "enum_list_allocations README must pin allocation contract `{}`",
+            needle
+        );
+    }
+
+    assert_fixture_output_contains(
+        "enum_list_allocations",
+        "expected.txt",
+        &[
+            "{:ok, 5}",
+            "{:ok, true}",
+            "{:done, 15}",
+            ":list_cons_allocs => 5",
+            ":list_cons_bytes => 80",
+            ":map_allocs => 0",
+            "\n368\n",
+        ],
     );
 }
 
