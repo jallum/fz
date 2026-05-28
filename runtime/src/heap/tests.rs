@@ -1346,15 +1346,28 @@ fn gc_updates_last_gc_live_bytes() {
     assert_eq!(h.size_class, 0, "tiny live set stays at smallest class");
 }
 
-/// Watermark is set to 75% of block. After alloc crossing watermark,
-/// FZ_SHOULD_YIELD is set; it can be cleared externally.
+/// Allocation watermark is currently set to 75% of block.
 #[test]
 fn watermark_is_75_percent_of_block() {
-    crate::yield_flag::clear();
     let h = Heap::new(SIZE_TABLE[0], empty_registry());
     let expected = unsafe { h.block_start.add(SIZE_TABLE[0] * 3 / 4) };
-    assert_eq!(h.gc_watermark, expected);
-    crate::yield_flag::clear(); // cleanup
+    assert_eq!(h.allocation_watermark, expected);
+}
+
+#[test]
+fn allocation_watermark_expires_reduction_budget() {
+    crate::reductions::install_budget(7);
+    let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
+    h.allocation_watermark = h.block_start;
+
+    let _ = h.alloc_list_cons_slot(AnyValue::nil_atom(), crate::any_value::EMPTY_LIST);
+
+    assert_eq!(crate::reductions::load(), 0);
+    assert_eq!(
+        crate::reductions::take_yield_reasons(),
+        crate::process::YIELD_REASON_ALLOCATION_PRESSURE
+    );
+    crate::reductions::install_budget(crate::process::DEFAULT_REDUCTIONS_PER_QUANTUM);
 }
 
 /// Large struct (200-byte payload, well past the old 64-byte cap)

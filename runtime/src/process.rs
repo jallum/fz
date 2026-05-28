@@ -296,6 +296,7 @@ impl Process {
         let spent = self.reductions_remaining.saturating_sub(remaining).max(0);
         self.reductions_remaining = remaining;
         self.reductions_executed = self.reductions_executed.saturating_add(spent as u64);
+        self.yield_reasons |= crate::reductions::take_yield_reasons();
     }
 
     pub fn spend_reductions(&mut self, amount: i32) -> bool {

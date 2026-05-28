@@ -1084,7 +1084,7 @@ mod tests {
     /// A recursive function that allocates a cons cell per iteration runs to
     /// completion with the correct integer result even when the GC watermark
     /// fires mid-loop. We force the watermark to be crossed on the very first
-    /// allocation by setting gc_watermark to null (always < bump_top) before
+    /// allocation by setting allocation_watermark to null (always < bump_top) before
     /// spawning.
     #[test]
     fn mid_flight_gc_fires_and_result_is_correct() {

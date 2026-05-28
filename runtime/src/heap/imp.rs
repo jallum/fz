@@ -37,7 +37,7 @@ impl Heap {
             block_end,
             block_size,
             size_class,
-            gc_watermark: watermark_for(block_start, block_size),
+            allocation_watermark: watermark_for(block_start, block_size),
             last_gc_live_bytes: 0,
             last_gc_stats: GcStats::default(),
             abandoned_blocks: Vec::new(),
@@ -127,14 +127,14 @@ impl Heap {
             self.block_end = unsafe { new_block.add(new_size) };
             self.block_size = new_size;
             self.size_class = new_class;
-            self.gc_watermark = watermark_for(new_block, new_size);
+            self.allocation_watermark = watermark_for(new_block, new_size);
         }
         let p = self.bump_top;
         self.bump_top = unsafe { self.bump_top.add(size) };
         self.alloc_count += 1;
         self.note_alloc_pressure();
-        if self.bump_top >= self.gc_watermark {
-            crate::yield_flag::request();
+        if self.bump_top >= self.allocation_watermark {
+            crate::reductions::expire_for(crate::process::YIELD_REASON_ALLOCATION_PRESSURE);
         }
         p
     }
@@ -1284,7 +1284,7 @@ impl Heap {
         self.alloc_count = live_count;
         self.gc_run_count += 1;
         self.gc_threshold_bytes = to_size / 2;
-        self.gc_watermark = watermark_for(to_start, to_size);
+        self.allocation_watermark = watermark_for(to_start, to_size);
         self.last_gc_live_bytes = unsafe { free.offset_from(to_start) } as usize;
         stats.fragment_survivors = live_count.saturating_sub(copied_objects.len() as u64);
         stats.fragment_live_bytes = fragment_live_bytes as u64;

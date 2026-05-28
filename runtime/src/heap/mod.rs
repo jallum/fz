@@ -57,10 +57,10 @@ pub struct Heap {
     /// Index into SIZE_TABLE (§6.3, wired in fz-siu.9). Tracked here so
     /// proactive shrinkage can read/adjust it without growing the API.
     pub size_class: u8,
-    /// 75% of `block_end`. Crossing this pointer in `alloc()` sets
-    /// `FZ_SHOULD_YIELD` so the next back-edge can yield a continuation
-    /// closure or let the interpreter forward its current roots in place.
-    pub gc_watermark: *mut u8,
+    /// Allocation pressure watermark. Crossing this pointer in `alloc()`
+    /// expires the current process's reductions budget so the next back-edge
+    /// yields through the normal scheduler path.
+    pub allocation_watermark: *mut u8,
     /// Exact live bytes after the most recent GC. Zero until the first GC.
     /// Used by proactive shrinkage to size the to-space and detect low-live
     /// quiet periods.
