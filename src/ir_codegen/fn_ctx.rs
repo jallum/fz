@@ -731,6 +731,30 @@ where
         self.cx.list_tail_ref_word(self.b, self.cache, tail)
     }
 
+    pub(crate) fn empty_list_ref(&mut self) -> ir::Value {
+        self.cx.empty_list_ref(self.b, self.cache)
+    }
+
+    pub(crate) fn list_cons_with(&mut self, cons_id: FuncId, args: &[ir::Value]) -> ir::Value {
+        self.cx.list_cons_with(self.b, self.jmod, cons_id, args)
+    }
+
+    pub(crate) fn list_head(&mut self, list_ref: ir::Value) -> ir::Value {
+        self.cx.list_head(self.b, self.jmod, list_ref)
+    }
+
+    pub(crate) fn list_head_int(&mut self, list_ref: ir::Value) -> ir::Value {
+        self.cx.list_head_int(self.b, self.jmod, list_ref)
+    }
+
+    pub(crate) fn list_head_float(&mut self, list_ref: ir::Value) -> ir::Value {
+        self.cx.list_head_float(self.b, self.jmod, list_ref)
+    }
+
+    pub(crate) fn list_tail(&mut self, list_ref: ir::Value) -> ir::Value {
+        self.cx.list_tail(self.b, self.jmod, list_ref)
+    }
+
     pub(crate) fn owned_cons_reuse_source(
         &self,
         head: crate::fz_ir::Var,

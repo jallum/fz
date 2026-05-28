@@ -786,16 +786,14 @@ fn emit_call_term<
                 let pivot_tail = if let Some(reused) = reused {
                     reused
                 } else {
+                    let mut body = cx.body(b, jmod, cache);
                     emit_list_cons_bif(
-                        cx,
-                        b,
-                        jmod,
+                        &mut body,
                         env,
                         var_env,
                         pivot_capture,
                         expected_runtime_value_kind(t, fn_types, block_env, pivot_capture),
                         ListTailBits::ValueRef(tail_bits),
-                        cache,
                     )
                 };
                 let callee_param_reprs = &param_reprs[callee_sid as usize];
@@ -2031,17 +2029,17 @@ fn emit_list_tail_return_value<
 ) -> ir::Value {
     let mut acc = ListTailBits::ValueRef(list_tail_destination_arg(b, cache));
     for elem in elems.iter().rev() {
-        let cons = emit_list_cons_bif(
-            cx,
-            b,
-            jmod,
-            env,
-            var_env,
-            *elem,
-            expected_runtime_value_kind(t, env.fn_types, block_env, *elem),
-            acc,
-            cache,
-        );
+        let cons = {
+            let mut body = cx.body(b, jmod, cache);
+            emit_list_cons_bif(
+                &mut body,
+                env,
+                var_env,
+                *elem,
+                expected_runtime_value_kind(t, env.fn_types, block_env, *elem),
+                acc,
+            )
+        };
         acc = ListTailBits::NonEmptyValueRef(cons);
     }
     match acc {

@@ -16,60 +16,50 @@ pub(crate) fn emit_map_get_value_ref_for_key<
     M: cranelift_module::Module,
     T: crate::types::Types<Ty = crate::types::Ty>,
 >(
-    cx: &mut CodegenFn<'_>,
-    b: &mut FunctionBuilder<'_>,
-    jmod: &mut M,
+    body: &mut CodegenFnBody<'_, '_, '_, M>,
     t: &mut T,
     env: &CodegenEnv<'_>,
     var_env: &HashMap<u32, CodegenValue>,
     map: crate::fz_ir::Var,
     key: crate::fz_ir::Var,
-    cache: &mut CodegenCache,
     block_env: Option<&HashMap<crate::fz_ir::Var, crate::types::Ty>>,
 ) -> ir::Value {
     let runtime = env.runtime;
     let fn_types = env.fn_types;
-    let map_ref = {
-        let mut body = cx.body(b, jmod, cache);
-        body.tagged_var(var_env, map.0)
-    };
+    let map_ref = body.tagged_var(var_env, map.0);
     let key_kind = expected_runtime_value_kind(t, fn_types, block_env, key);
     match key_kind {
         Some(fz_runtime::any_value::ValueKind::ATOM) => {
-            let kv = {
-                let mut body = cx.body(b, jmod, cache);
-                body.value_raw_atom(binding_for_var(var_env, key.0))
-            };
-            let fref = jmod.declare_func_in_func(runtime.map_get_atom_key_ref_id, b.func);
-            let inst = b.ins().call(fref, &[map_ref, kv]);
-            b.inst_results(inst)[0]
+            let kv = body.value_raw_atom(binding_for_var(var_env, key.0));
+            let fref = body
+                .jmod
+                .declare_func_in_func(runtime.map_get_atom_key_ref_id, body.b.func);
+            let inst = body.b.ins().call(fref, &[map_ref, kv]);
+            body.b.inst_results(inst)[0]
         }
         Some(fz_runtime::any_value::ValueKind::INT) => {
-            let kv = {
-                let mut body = cx.body(b, jmod, cache);
-                body.value_raw_int(binding_for_var(var_env, key.0))
-            };
-            let fref = jmod.declare_func_in_func(runtime.map_get_int_key_ref_id, b.func);
-            let inst = b.ins().call(fref, &[map_ref, kv]);
-            b.inst_results(inst)[0]
+            let kv = body.value_raw_int(binding_for_var(var_env, key.0));
+            let fref = body
+                .jmod
+                .declare_func_in_func(runtime.map_get_int_key_ref_id, body.b.func);
+            let inst = body.b.ins().call(fref, &[map_ref, kv]);
+            body.b.inst_results(inst)[0]
         }
         Some(fz_runtime::any_value::ValueKind::FLOAT) => {
-            let key_float = {
-                let mut body = cx.body(b, jmod, cache);
-                body.value_raw_float(binding_for_var(var_env, key.0))
-            };
-            let fref = jmod.declare_func_in_func(runtime.map_get_float_key_ref_id, b.func);
-            let inst = b.ins().call(fref, &[map_ref, key_float]);
-            b.inst_results(inst)[0]
+            let key_float = body.value_raw_float(binding_for_var(var_env, key.0));
+            let fref = body
+                .jmod
+                .declare_func_in_func(runtime.map_get_float_key_ref_id, body.b.func);
+            let inst = body.b.ins().call(fref, &[map_ref, key_float]);
+            body.b.inst_results(inst)[0]
         }
         _ => {
-            let fref = jmod.declare_func_in_func(runtime.map_get_ref_id, b.func);
-            let key_ref = {
-                let mut body = cx.body(b, jmod, cache);
-                body.tagged_var(var_env, key.0)
-            };
-            let inst = b.ins().call(fref, &[map_ref, key_ref]);
-            b.inst_results(inst)[0]
+            let fref = body
+                .jmod
+                .declare_func_in_func(runtime.map_get_ref_id, body.b.func);
+            let key_ref = body.tagged_var(var_env, key.0);
+            let inst = body.b.ins().call(fref, &[map_ref, key_ref]);
+            body.b.inst_results(inst)[0]
         }
     }
 }
@@ -78,16 +68,13 @@ pub(crate) fn emit_map_put_for_key_and_value<
     M: cranelift_module::Module,
     T: crate::types::Types<Ty = crate::types::Ty>,
 >(
-    cx: &mut CodegenFn<'_>,
-    b: &mut FunctionBuilder<'_>,
-    jmod: &mut M,
+    body: &mut CodegenFnBody<'_, '_, '_, M>,
     t: &mut T,
     env: &CodegenEnv<'_>,
     var_env: &HashMap<u32, CodegenValue>,
     map_bits: ir::Value,
     key: crate::fz_ir::Var,
     value: crate::fz_ir::Var,
-    cache: &mut CodegenCache,
     block_env: Option<&HashMap<crate::fz_ir::Var, crate::types::Ty>>,
 ) -> ir::Value {
     let runtime = env.runtime;
@@ -136,15 +123,12 @@ pub(crate) fn emit_map_put_for_key_and_value<
     if let Some(func_id) = scalar_put_id {
         let key_arg = match key_kind {
             Some(fz_runtime::any_value::ValueKind::INT) => {
-                let mut body = cx.body(b, jmod, cache);
                 body.value_raw_int(binding_for_var(var_env, key.0))
             }
             Some(fz_runtime::any_value::ValueKind::FLOAT) => {
-                let mut body = cx.body(b, jmod, cache);
                 body.value_raw_float(binding_for_var(var_env, key.0))
             }
             Some(fz_runtime::any_value::ValueKind::ATOM) => {
-                let mut body = cx.body(b, jmod, cache);
                 body.value_raw_atom(binding_for_var(var_env, key.0))
             }
             Some(_) => unreachable!("scalar map put requires scalar key kind"),
@@ -152,73 +136,67 @@ pub(crate) fn emit_map_put_for_key_and_value<
         };
         let value_arg = match value_kind {
             Some(fz_runtime::any_value::ValueKind::INT) => {
-                let mut body = cx.body(b, jmod, cache);
                 body.value_raw_int(binding_for_var(var_env, value.0))
             }
             Some(fz_runtime::any_value::ValueKind::FLOAT) => {
-                let mut body = cx.body(b, jmod, cache);
                 body.value_raw_float(binding_for_var(var_env, value.0))
             }
             Some(fz_runtime::any_value::ValueKind::ATOM) => {
-                let mut body = cx.body(b, jmod, cache);
                 body.value_raw_atom(binding_for_var(var_env, value.0))
             }
             Some(_) => unreachable!("scalar map put requires scalar value kind"),
             None => unreachable!("scalar map put requires known value kind"),
         };
-        let fref = jmod.declare_func_in_func(func_id, b.func);
-        let inst = b.ins().call(fref, &[map_bits, key_arg, value_arg]);
-        return b.inst_results(inst)[0];
+        let fref = body.jmod.declare_func_in_func(func_id, body.b.func);
+        let inst = body.b.ins().call(fref, &[map_bits, key_arg, value_arg]);
+        return body.b.inst_results(inst)[0];
     }
 
-    let key_ref = {
-        let mut body = cx.body(b, jmod, cache);
-        let key_ref = body.tagged_var(var_env, key.0);
-        body.mark_published_ref_aliased(key_ref)
-    };
+    let key_ref = body.tagged_var(var_env, key.0);
+    let key_ref = body.mark_published_ref_aliased(key_ref);
     let (fref, args): (ir::FuncRef, Vec<ir::Value>) = match value_kind {
         Some(fz_runtime::any_value::ValueKind::INT) => (
-            jmod.declare_func_in_func(runtime.map_put_int_id, b.func),
-            vec![map_bits, key_ref, {
-                let mut body = cx.body(b, jmod, cache);
-                body.value_raw_int(binding_for_var(var_env, value.0))
-            }],
+            body.jmod
+                .declare_func_in_func(runtime.map_put_int_id, body.b.func),
+            vec![
+                map_bits,
+                key_ref,
+                body.value_raw_int(binding_for_var(var_env, value.0)),
+            ],
         ),
         Some(fz_runtime::any_value::ValueKind::FLOAT) => {
-            let value_f64 = {
-                let mut body = cx.body(b, jmod, cache);
-                body.value_raw_float(binding_for_var(var_env, value.0))
-            };
+            let value_f64 = body.value_raw_float(binding_for_var(var_env, value.0));
             (
-                jmod.declare_func_in_func(runtime.map_put_float_id, b.func),
+                body.jmod
+                    .declare_func_in_func(runtime.map_put_float_id, body.b.func),
                 vec![map_bits, key_ref, value_f64],
             )
         }
         Some(fz_runtime::any_value::ValueKind::ATOM) => (
-            jmod.declare_func_in_func(runtime.map_put_atom_id, b.func),
-            vec![map_bits, key_ref, {
-                let mut body = cx.body(b, jmod, cache);
-                body.value_raw_atom(binding_for_var(var_env, value.0))
-            }],
+            body.jmod
+                .declare_func_in_func(runtime.map_put_atom_id, body.b.func),
+            vec![
+                map_bits,
+                key_ref,
+                body.value_raw_atom(binding_for_var(var_env, value.0)),
+            ],
         ),
         _ => {
-            let value_ref = {
-                let mut body = cx.body(b, jmod, cache);
-                let value_ref = body.tagged_var(var_env, value.0);
-                body.mark_published_ref_aliased(value_ref)
-            };
+            let value_ref = body.tagged_var(var_env, value.0);
+            let value_ref = body.mark_published_ref_aliased(value_ref);
             (
-                jmod.declare_func_in_func(runtime.map_put_ref_id, b.func),
+                body.jmod
+                    .declare_func_in_func(runtime.map_put_ref_id, body.b.func),
                 vec![map_bits, key_ref, value_ref],
             )
         }
     };
-    let inst = b.ins().call(fref, &args);
-    b.inst_results(inst)[0]
+    let inst = body.b.ins().call(fref, &args);
+    body.b.inst_results(inst)[0]
 }
 
-fn value_raw_kind_parts(
-    b: &mut FunctionBuilder<'_>,
+fn value_raw_kind_parts<M: cranelift_module::Module>(
+    body: &mut CodegenFnBody<'_, '_, '_, M>,
     value: CodegenValue,
 ) -> Option<(ir::Value, fz_runtime::any_value::ValueKind)> {
     match value {
@@ -228,7 +206,7 @@ fn value_raw_kind_parts(
             kind: fz_runtime::any_value::ValueKind::INT,
         } => Some((raw, fz_runtime::any_value::ValueKind::INT)),
         CodegenValue::RawF64(raw) => {
-            let bits = b.ins().bitcast(types::I64, MemFlags::new(), raw);
+            let bits = body.b.ins().bitcast(types::I64, MemFlags::new(), raw);
             Some((bits, fz_runtime::any_value::ValueKind::FLOAT))
         }
         CodegenValue::Known {
@@ -249,87 +227,61 @@ fn value_raw_kind_parts(
 }
 
 fn emit_map_destination_put<M: cranelift_module::Module>(
-    cx: &mut CodegenFn<'_>,
-    b: &mut FunctionBuilder<'_>,
-    jmod: &mut M,
+    body: &mut CodegenFnBody<'_, '_, '_, M>,
     runtime: &RuntimeRefs,
-    cache: &mut CodegenCache,
     map_bits: ir::Value,
     key: CodegenValue,
     value: CodegenValue,
 ) {
-    if let (Some((key_raw, key_kind)), Some((value_raw, value_kind))) =
-        (value_raw_kind_parts(b, key), value_raw_kind_parts(b, value))
-        && key_kind.is_scalar()
+    if let (Some((key_raw, key_kind)), Some((value_raw, value_kind))) = (
+        value_raw_kind_parts(body, key),
+        value_raw_kind_parts(body, value),
+    ) && key_kind.is_scalar()
         && value_kind.is_scalar()
     {
-        let fref = jmod.declare_func_in_func(runtime.map_dest_put_parts_id, b.func);
-        let key_kind = b.ins().iconst(types::I64, key_kind.tag() as i64);
-        let value_kind = b.ins().iconst(types::I64, value_kind.tag() as i64);
-        b.ins()
+        let fref = body
+            .jmod
+            .declare_func_in_func(runtime.map_dest_put_parts_id, body.b.func);
+        let key_kind = body.b.ins().iconst(types::I64, key_kind.tag() as i64);
+        let value_kind = body.b.ins().iconst(types::I64, value_kind.tag() as i64);
+        body.b
+            .ins()
             .call(fref, &[map_bits, key_raw, key_kind, value_raw, value_kind]);
     } else {
-        let (key_ref, value_ref) = {
-            let mut body = cx.body(b, jmod, cache);
-            let key_ref = body.value_as_any_ref(key);
-            let value_ref = body.value_as_any_ref(value);
-            (
-                body.mark_published_ref_aliased(key_ref),
-                body.mark_published_ref_aliased(value_ref),
-            )
-        };
-        let fref = jmod.declare_func_in_func(runtime.map_dest_put_ref_id, b.func);
-        b.ins().call(fref, &[map_bits, key_ref, value_ref]);
+        let key_ref = body.value_as_any_ref(key);
+        let value_ref = body.value_as_any_ref(value);
+        let key_ref = body.mark_published_ref_aliased(key_ref);
+        let value_ref = body.mark_published_ref_aliased(value_ref);
+        let fref = body
+            .jmod
+            .declare_func_in_func(runtime.map_dest_put_ref_id, body.b.func);
+        body.b.ins().call(fref, &[map_bits, key_ref, value_ref]);
     }
 }
 
 pub(crate) fn emit_list_cons_bif<M: cranelift_module::Module>(
-    cx: &mut CodegenFn<'_>,
-    b: &mut FunctionBuilder<'_>,
-    jmod: &mut M,
+    body: &mut CodegenFnBody<'_, '_, '_, M>,
     env: &CodegenEnv<'_>,
     var_env: &HashMap<u32, CodegenValue>,
     head: crate::fz_ir::Var,
     head_kind: Option<fz_runtime::any_value::ValueKind>,
     tail: ListTailBits,
-    cache: &mut CodegenCache,
 ) -> ir::Value {
     let runtime = env.runtime;
-    let tail_ref = {
-        let mut body = cx.body(b, jmod, cache);
-        body.list_tail_ref_word(tail)
-    };
+    let tail_ref = body.list_tail_ref_word(tail);
     let head_value = binding_for_var(var_env, head.0);
     let (func_id, args): (FuncId, Vec<ir::Value>) = match head_kind {
         Some(fz_runtime::any_value::ValueKind::INT) => (
             runtime.list_cons_int_id,
-            vec![
-                {
-                    let mut body = cx.body(b, jmod, cache);
-                    body.value_raw_int(head_value)
-                },
-                tail_ref,
-            ],
+            vec![body.value_raw_int(head_value), tail_ref],
         ),
         Some(fz_runtime::any_value::ValueKind::FLOAT) => (
             runtime.list_cons_float_id,
-            vec![
-                {
-                    let mut body = cx.body(b, jmod, cache);
-                    body.value_raw_float(head_value)
-                },
-                tail_ref,
-            ],
+            vec![body.value_raw_float(head_value), tail_ref],
         ),
         Some(fz_runtime::any_value::ValueKind::ATOM) => (
             runtime.list_cons_atom_id,
-            vec![
-                {
-                    let mut body = cx.body(b, jmod, cache);
-                    body.value_raw_atom(head_value)
-                },
-                tail_ref,
-            ],
+            vec![body.value_raw_atom(head_value), tail_ref],
         ),
         None if matches!(
             head_value,
@@ -342,13 +294,7 @@ pub(crate) fn emit_list_cons_bif<M: cranelift_module::Module>(
         {
             (
                 runtime.list_cons_int_id,
-                vec![
-                    {
-                        let mut body = cx.body(b, jmod, cache);
-                        body.value_raw_int(head_value)
-                    },
-                    tail_ref,
-                ],
+                vec![body.value_raw_int(head_value), tail_ref],
             )
         }
         None if matches!(
@@ -362,13 +308,7 @@ pub(crate) fn emit_list_cons_bif<M: cranelift_module::Module>(
         {
             (
                 runtime.list_cons_float_id,
-                vec![
-                    {
-                        let mut body = cx.body(b, jmod, cache);
-                        body.value_raw_float(head_value)
-                    },
-                    tail_ref,
-                ],
+                vec![body.value_raw_float(head_value), tail_ref],
             )
         }
         None if matches!(
@@ -381,37 +321,19 @@ pub(crate) fn emit_list_cons_bif<M: cranelift_module::Module>(
         {
             (
                 runtime.list_cons_atom_id,
-                vec![
-                    {
-                        let mut body = cx.body(b, jmod, cache);
-                        body.value_raw_atom(head_value)
-                    },
-                    tail_ref,
-                ],
+                vec![body.value_raw_atom(head_value), tail_ref],
             )
         }
         None => (
             runtime.list_cons_any_id,
-            vec![
-                {
-                    let mut body = cx.body(b, jmod, cache);
-                    body.value_as_any_ref(head_value)
-                },
-                tail_ref,
-            ],
+            vec![body.value_as_any_ref(head_value), tail_ref],
         ),
         _ => (
             runtime.list_cons_any_id,
-            vec![
-                {
-                    let mut body = cx.body(b, jmod, cache);
-                    body.value_as_any_ref(head_value)
-                },
-                tail_ref,
-            ],
+            vec![body.value_as_any_ref(head_value), tail_ref],
         ),
     };
-    cx.list_cons_with(b, jmod, func_id, &args)
+    body.list_cons_with(func_id, &args)
 }
 
 /// Lower collection-typed Prim variants (List, Tuple, AllocStruct, Bitstring,
@@ -437,11 +359,13 @@ pub(crate) fn lower_collection_prim<
     let v: LowerOut = match prim {
         Prim::ListHead(c) => {
             let list_ref = known_list_ref_for_var(var_env, b, cache, block_id, c.0);
-            LowerOut::ValueRefWord(cx.list_head(b, jmod, list_ref))
+            let mut body = cx.body(b, jmod, cache);
+            LowerOut::ValueRefWord(body.list_head(list_ref))
         }
         Prim::ListTail(c) => {
             let list_ref = known_list_ref_for_var(var_env, b, cache, block_id, c.0);
-            LowerOut::ValueRefWord(cx.list_tail(b, jmod, list_ref))
+            let mut body = cx.body(b, jmod, cache);
+            LowerOut::ValueRefWord(body.list_tail(list_ref))
         }
         Prim::MakeList(elems, tail) => {
             if elems.len() == 1
@@ -473,17 +397,17 @@ pub(crate) fn lower_collection_prim<
                 None => ListTailBits::Empty,
             };
             for e in elems.iter().rev() {
-                let cons = emit_list_cons_bif(
-                    cx,
-                    b,
-                    jmod,
-                    env,
-                    var_env,
-                    *e,
-                    expected_runtime_value_kind(t, fn_types, block_env, *e),
-                    acc,
-                    cache,
-                );
+                let cons = {
+                    let mut body = cx.body(b, jmod, cache);
+                    emit_list_cons_bif(
+                        &mut body,
+                        env,
+                        var_env,
+                        *e,
+                        expected_runtime_value_kind(t, fn_types, block_env, *e),
+                        acc,
+                    )
+                };
                 acc = ListTailBits::NonEmptyValueRef(cons);
             }
             match acc {
@@ -491,7 +415,8 @@ pub(crate) fn lower_collection_prim<
                     LowerOut::ValueRef(bits)
                 }
                 ListTailBits::Empty => {
-                    LowerOut::ValueRefWord(emit_empty_list_value_ref_word(b, cache))
+                    let mut body = cx.body(b, jmod, cache);
+                    LowerOut::ValueRefWord(body.empty_list_ref())
                 }
             }
         }
@@ -577,17 +502,17 @@ pub(crate) fn lower_collection_prim<
                 }
                 None => ListTailBits::Empty,
             };
-            let cons = emit_list_cons_bif(
-                cx,
-                b,
-                jmod,
-                env,
-                var_env,
-                *head,
-                expected_runtime_value_kind(t, fn_types, block_env, *head),
-                acc,
-                cache,
-            );
+            let cons = {
+                let mut body = cx.body(b, jmod, cache);
+                emit_list_cons_bif(
+                    &mut body,
+                    env,
+                    var_env,
+                    *head,
+                    expected_runtime_value_kind(t, fn_types, block_env, *head),
+                    acc,
+                )
+            };
             LowerOut::ValueRef(cons)
         }
         Prim::DestListFreeze { list, .. } => {
@@ -791,8 +716,9 @@ pub(crate) fn lower_collection_prim<
                 b.ins().iconst(types::I64, 0)
             };
             for (k, v) in entries {
+                let mut body = cx.body(b, jmod, cache);
                 map_bits = emit_map_put_for_key_and_value(
-                    cx, b, jmod, t, env, var_env, map_bits, *k, *v, cache, block_env,
+                    &mut body, t, env, var_env, map_bits, *k, *v, block_env,
                 );
             }
             LowerOut::ValueRef(map_bits)
@@ -803,8 +729,9 @@ pub(crate) fn lower_collection_prim<
                 body.any_ref_for_var(var_env, base.0)
             };
             for (k, v) in entries {
+                let mut body = cx.body(b, jmod, cache);
                 map_bits = emit_map_put_for_key_and_value(
-                    cx, b, jmod, t, env, var_env, map_bits, *k, *v, cache, block_env,
+                    &mut body, t, env, var_env, map_bits, *k, *v, block_env,
                 );
             }
             LowerOut::ValueRef(map_bits)
@@ -834,7 +761,8 @@ pub(crate) fn lower_collection_prim<
             };
             let key = binding_for_var(var_env, key.0);
             let value = binding_for_var(var_env, value.0);
-            emit_map_destination_put(cx, b, jmod, runtime, cache, map_bits, key, value);
+            let mut body = cx.body(b, jmod, cache);
+            emit_map_destination_put(&mut body, runtime, map_bits, key, value);
             LowerOut::DeadUnit
         }
         Prim::DestMapFreeze { map, .. } => {
@@ -847,9 +775,9 @@ pub(crate) fn lower_collection_prim<
             LowerOut::ValueRef(b.inst_results(inst)[0])
         }
         Prim::MapGet(m, k) => {
-            let value_ref = emit_map_get_value_ref_for_key(
-                cx, b, jmod, t, env, var_env, *m, *k, cache, block_env,
-            );
+            let mut body = cx.body(b, jmod, cache);
+            let value_ref =
+                emit_map_get_value_ref_for_key(&mut body, t, env, var_env, *m, *k, block_env);
             LowerOut::ValueRefWord(value_ref)
         }
         Prim::MatcherMapGet(m, k) => {
@@ -1259,7 +1187,10 @@ pub(crate) fn lower_prim<
                     let mut body = cx.body(b, jmod, cache);
                     body.ref_tag(value)
                 };
-                let empty_list_v = cx.empty_list_ref(b, cache);
+                let empty_list_v = {
+                    let mut body = cx.body(b, jmod, cache);
+                    body.empty_list_ref()
+                };
                 let is_list = b.ins().icmp_imm(
                     IntCC::Equal,
                     tag,
@@ -1272,7 +1203,10 @@ pub(crate) fn lower_prim<
                     let mut body = cx.body(b, jmod, cache);
                     body.tagged_var(var_env, c.0)
                 };
-                let empty_list_v = emit_empty_list_value_ref_word(b, cache);
+                let empty_list_v = {
+                    let mut body = cx.body(b, jmod, cache);
+                    body.empty_list_ref()
+                };
                 b.ins().icmp(IntCC::Equal, cv, empty_list_v)
             };
             if cache.if_only_conds.contains(&dest_var.0) {
@@ -1294,25 +1228,28 @@ pub(crate) fn lower_prim<
             Ok(LowerOut::Strict(strict_bool(b, cmp)))
         }
         Prim::MapGet(m, k) if ty_is_float(t, fn_types, dest_var) => {
-            let value_ref = emit_map_get_value_ref_for_key(
-                cx, b, jmod, t, env, var_env, *m, *k, cache, block_env,
-            );
+            let value_ref = {
+                let mut body = cx.body(b, jmod, cache);
+                emit_map_get_value_ref_for_key(&mut body, t, env, var_env, *m, *k, block_env)
+            };
             let load_float = jmod.declare_func_in_func(runtime.ref_load_float_id, b.func);
             let load_inst = b.ins().call(load_float, &[value_ref]);
             Ok(LowerOut::RawF64(b.inst_results(load_inst)[0]))
         }
         Prim::MapGet(m, k) if ty_is_int(t, fn_types, dest_var) => {
-            let value_ref = emit_map_get_value_ref_for_key(
-                cx, b, jmod, t, env, var_env, *m, *k, cache, block_env,
-            );
+            let value_ref = {
+                let mut body = cx.body(b, jmod, cache);
+                emit_map_get_value_ref_for_key(&mut body, t, env, var_env, *m, *k, block_env)
+            };
             let load_int = jmod.declare_func_in_func(runtime.ref_load_int_id, b.func);
             let load_inst = b.ins().call(load_int, &[value_ref]);
             Ok(LowerOut::RawI64(b.inst_results(load_inst)[0]))
         }
         Prim::MapGet(m, k) if ty_is_atom(t, fn_types, dest_var) => {
-            let value_ref = emit_map_get_value_ref_for_key(
-                cx, b, jmod, t, env, var_env, *m, *k, cache, block_env,
-            );
+            let value_ref = {
+                let mut body = cx.body(b, jmod, cache);
+                emit_map_get_value_ref_for_key(&mut body, t, env, var_env, *m, *k, block_env)
+            };
             let load_atom = jmod.declare_func_in_func(runtime.ref_load_atom_id, b.func);
             let load_inst = b.ins().call(load_atom, &[value_ref]);
             Ok(LowerOut::RawI64(b.inst_results(load_inst)[0]))
@@ -1322,18 +1259,21 @@ pub(crate) fn lower_prim<
                 && ty_is_int(t, fn_types, dest_var) =>
         {
             let list_ref = known_list_ref_for_var(var_env, b, cache, block_id, c.0);
-            Ok(LowerOut::RawI64(cx.list_head_int(b, jmod, list_ref)))
+            let mut body = cx.body(b, jmod, cache);
+            Ok(LowerOut::RawI64(body.list_head_int(list_ref)))
         }
         Prim::ListHead(c)
             if list_projection_is_safe(t, fn_types, *c, block_env)
                 && ty_is_float(t, fn_types, dest_var) =>
         {
             let list_ref = known_list_ref_for_var(var_env, b, cache, block_id, c.0);
-            Ok(LowerOut::RawF64(cx.list_head_float(b, jmod, list_ref)))
+            let mut body = cx.body(b, jmod, cache);
+            Ok(LowerOut::RawF64(body.list_head_float(list_ref)))
         }
         Prim::ListTail(c) if list_projection_is_safe(t, fn_types, *c, block_env) => {
             let list_ref = known_list_ref_for_var(var_env, b, cache, block_id, c.0);
-            Ok(LowerOut::ValueRefWord(cx.list_tail(b, jmod, list_ref)))
+            let mut body = cx.body(b, jmod, cache);
+            Ok(LowerOut::ValueRefWord(body.list_tail(list_ref)))
         }
         Prim::ListHead(..)
         | Prim::ListTail(..)
