@@ -1300,7 +1300,8 @@ impl CompiledModule {
         /// receive templates, runnable + pending entry closures) and
         /// rewrites those pointers to their to-space copies.
         fn park_time_gc(process: &mut Process) {
-            if !process.heap.should_gc() {
+            process.sync_reduction_budget_from_runtime();
+            if !process.needs_boundary_gc() {
                 return;
             }
 
@@ -1380,6 +1381,7 @@ impl CompiledModule {
             }
 
             process.heap.clear_should_gc_flag();
+            process.clear_yield_reasons();
             // After park-time GC the process is about to park on receive,
             // so FZ_SHOULD_YIELD no longer applies to this quantum.
             fz_runtime::yield_flag::clear();

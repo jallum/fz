@@ -587,10 +587,15 @@ fn dispatch_quantum(pid: u32, addrs: &ShimAddrs) {
     let runnable = unsafe { (*proc_ptr).runnable_closure };
     if state == ProcessState::Running && !runnable.is_null() {
         let process = unsafe { &mut *proc_ptr };
-        process
-            .heap
-            .gc_process_roots(&mut process.runnable_closure, &mut process.mailbox);
-        process.quiet_quanta = 0;
+        if process.needs_boundary_gc() {
+            process
+                .heap
+                .gc_process_roots(&mut process.runnable_closure, &mut process.mailbox);
+            process.quiet_quanta = 0;
+        } else {
+            process.quiet_quanta = process.quiet_quanta.saturating_add(1);
+        }
+        process.clear_yield_reasons();
         crate::yield_flag::clear();
         unsafe { (*proc_ptr).state = ProcessState::Ready };
         AOT_RUN_QUEUE.with(|q| q.borrow_mut().push_back(pid));

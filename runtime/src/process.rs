@@ -307,6 +307,10 @@ impl Process {
         let spent = self.reductions_remaining.saturating_sub(remaining).max(0);
         self.reductions_remaining = remaining;
         self.reductions_executed = self.reductions_executed.saturating_add(spent as u64);
+        self.sync_yield_reasons_from_runtime();
+    }
+
+    pub fn sync_yield_reasons_from_runtime(&mut self) {
         self.yield_reasons |= crate::reductions::take_yield_reasons();
     }
 
@@ -332,6 +336,12 @@ impl Process {
 
     pub fn clear_yield_reasons(&mut self) {
         self.yield_reasons = 0;
+    }
+
+    pub fn needs_boundary_gc(&self) -> bool {
+        self.heap.should_gc()
+            || (self.yield_reasons & YIELD_REASON_ALLOCATION_PRESSURE)
+                == YIELD_REASON_ALLOCATION_PRESSURE
     }
 
     pub fn note_yield_continuation_allocation(&mut self, bytes: usize, margin_after: usize) {

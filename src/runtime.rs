@@ -476,10 +476,15 @@ impl<'a> Runtime<'a> {
             if task.state == ProcessState::Running && !task.runnable_closure.is_null() {
                 // Closure-shaped mid-flight yield: the continuation closure
                 // captures live loop state and is the primary GC root.
-                task.heap
-                    .gc_process_roots(&mut task.runnable_closure, &mut task.mailbox);
+                if task.needs_boundary_gc() {
+                    task.heap
+                        .gc_process_roots(&mut task.runnable_closure, &mut task.mailbox);
+                    task.quiet_quanta = 0;
+                } else {
+                    task.quiet_quanta = task.quiet_quanta.saturating_add(1);
+                }
+                task.clear_yield_reasons();
                 fz_runtime::yield_flag::clear();
-                task.quiet_quanta = 0;
                 task.state = ProcessState::Ready;
                 self.tasks.insert(pid, task);
                 self.run_queue.push_back(pid);
@@ -594,6 +599,11 @@ mod tests {
 
     fn force_reduction_yield(task: &mut Process) {
         task.reductions_per_quantum = 1;
+    }
+
+    fn force_allocation_pressure_yield(task: &mut Process) {
+        task.reductions_per_quantum = 1;
+        task.heap.allocation_watermark = std::ptr::null_mut();
     }
 
     fn test_int_ref(value: i64) -> AnyValueRef {
@@ -1104,7 +1114,7 @@ fn main(), do: sum(10, 0, nil)";
         .unwrap();
         let mut rt = Runtime::new(&compiled, 1);
         let pid = rt.spawn(entry);
-        force_reduction_yield(rt.tasks.get_mut(&pid).unwrap());
+        force_allocation_pressure_yield(rt.tasks.get_mut(&pid).unwrap());
         rt.run_until_idle();
         let task = rt.task(pid).unwrap();
         assert_eq!(task.state, ProcessState::Exited);
@@ -1127,7 +1137,7 @@ fn main(), do: sumf(4, 0.0, nil)";
         .unwrap();
         let mut rt = Runtime::new(&compiled, 1);
         let pid = rt.spawn(entry);
-        force_reduction_yield(rt.tasks.get_mut(&pid).unwrap());
+        force_allocation_pressure_yield(rt.tasks.get_mut(&pid).unwrap());
         rt.run_until_idle();
         let task = rt.task(pid).unwrap();
         assert_eq!(task.state, ProcessState::Exited);
@@ -1151,7 +1161,7 @@ fn main(), do: sumf(4, 0.0, nil)";
         .unwrap();
         let mut rt = Runtime::new(&compiled, 1);
         let pid = rt.spawn(entry);
-        force_reduction_yield(rt.tasks.get_mut(&pid).unwrap());
+        force_allocation_pressure_yield(rt.tasks.get_mut(&pid).unwrap());
         rt.run_until_idle();
         let task = rt.task(pid).unwrap();
         assert_eq!(task.state, ProcessState::Exited);
@@ -1179,7 +1189,7 @@ fn main(), do: sumf(4, 0.0, nil)";
         .unwrap();
         let mut rt = Runtime::new(&compiled, 1);
         let pid = rt.spawn(entry);
-        force_reduction_yield(rt.tasks.get_mut(&pid).unwrap());
+        force_allocation_pressure_yield(rt.tasks.get_mut(&pid).unwrap());
         rt.run_until_idle();
         let task = rt.task(pid).unwrap();
         assert_eq!(task.state, ProcessState::Exited);
@@ -1207,7 +1217,7 @@ fn main(), do: sumf(4, 0.0, nil)";
         .unwrap();
         let mut rt = Runtime::new(&compiled, 1);
         let pid = rt.spawn(entry);
-        force_reduction_yield(rt.tasks.get_mut(&pid).unwrap());
+        force_allocation_pressure_yield(rt.tasks.get_mut(&pid).unwrap());
         rt.run_until_idle();
         let task = rt.task(pid).unwrap();
         assert_eq!(task.state, ProcessState::Exited);
@@ -1236,7 +1246,7 @@ fn main(), do: sum(10, 0, nil)";
         .unwrap();
         let mut rt = Runtime::new(&compiled, 1);
         let pid = rt.spawn(entry);
-        force_reduction_yield(rt.tasks.get_mut(&pid).unwrap());
+        force_allocation_pressure_yield(rt.tasks.get_mut(&pid).unwrap());
         rt.run_until_idle();
         let task = rt.task(pid).unwrap();
         assert!(
@@ -1264,8 +1274,8 @@ fn main(), do: sum(8, 0, nil)";
         let mut rt = Runtime::new(&compiled, 1);
         let pa = rt.spawn(entry);
         let pb = rt.spawn(entry);
-        force_reduction_yield(rt.tasks.get_mut(&pa).unwrap());
-        force_reduction_yield(rt.tasks.get_mut(&pb).unwrap());
+        force_allocation_pressure_yield(rt.tasks.get_mut(&pa).unwrap());
+        force_allocation_pressure_yield(rt.tasks.get_mut(&pb).unwrap());
         rt.run_until_idle();
         // sum(8,0,nil) = 8+7+...+1 = 36
         assert_eq!(rt.task(pa).unwrap().halt_value, 36);
@@ -1347,7 +1357,7 @@ fn main(), do: sum(10, 0, nil)";
         .unwrap();
         let mut rt = Runtime::new(&compiled, 1);
         let pid = rt.spawn(entry);
-        force_reduction_yield(rt.tasks.get_mut(&pid).unwrap());
+        force_allocation_pressure_yield(rt.tasks.get_mut(&pid).unwrap());
         rt.run_until_idle();
         // After mid-flight GC fires, quiet_quanta is reset to 0 by the
         // scheduler, then incremented by 1 in the final (halting) quantum.
