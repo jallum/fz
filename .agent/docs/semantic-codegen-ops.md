@@ -15,3 +15,8 @@ Direct `declare_func_in_func` use belongs at module-construction boundaries or
 inside `CodegenFn`/semantic operation implementations. Migration tickets must
 remove the bridge code they introduce before closing; do not leave old and new
 paths in parallel.
+
+The cleanup has a source-level budget test for ordinary lowering modules. When
+a ticket removes more runtime-call plumbing, lower the budget in that test. A
+new direct import or `runtime.*` helper reference should either move behind a
+semantic `CodegenFn` method or be documented as a boundary exception.

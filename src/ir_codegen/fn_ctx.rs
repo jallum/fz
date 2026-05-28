@@ -337,4 +337,32 @@ mod tests {
         assert_eq!(first, second);
         b.finalize();
     }
+
+    fn count_matches(haystack: &str, needle: &str) -> usize {
+        haystack.matches(needle).count()
+    }
+
+    #[test]
+    fn ordinary_lowering_runtime_plumbing_stays_budgeted() {
+        let files = [
+            ("call.rs", include_str!("call.rs"), 8, 8),
+            ("closure.rs", include_str!("closure.rs"), 3, 6),
+            ("prim.rs", include_str!("prim.rs"), 47, 57),
+            ("terminator.rs", include_str!("terminator.rs"), 13, 7),
+            ("value.rs", include_str!("value.rs"), 1, 1),
+        ];
+
+        for (name, source, max_declares, max_runtime_ids) in files {
+            let declares = count_matches(source, "declare_func_in_func");
+            assert!(
+                declares <= max_declares,
+                "{name} has {declares} direct function imports; budget is {max_declares}"
+            );
+            let runtime_ids = count_matches(source, "runtime.");
+            assert!(
+                runtime_ids <= max_runtime_ids,
+                "{name} has {runtime_ids} runtime helper id references; budget is {max_runtime_ids}"
+            );
+        }
+    }
 }
