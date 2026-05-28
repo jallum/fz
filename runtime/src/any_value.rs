@@ -1034,8 +1034,10 @@ pub fn alloc_struct(schema_id: u32, payload_size: u32) -> *mut u8 {
 
 /// vrx.A.1 — List cons cell: head (8) + link/head-kind (8) = 16 bytes.
 ///
-/// `head` is raw payload. `link` stores the next cons address in the high 60
-/// bits and the head's canonical kind tag in the low 4 bits.
+/// `head` is raw payload. `link` stores an architecture-local tail address plus
+/// a high metadata field: 4 bits of head kind followed by one alias flag bit.
+/// Low pointer-alignment bits stay clear so future layout checks can keep using
+/// normal aligned-address invariants.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct ListCons {
@@ -1048,23 +1050,42 @@ const _: () = {
     assert!(std::mem::align_of::<ListCons>() == 8);
 };
 
-impl ListCons {
-    pub fn new(head_raw: u64, head_kind: ValueKind, tail_bits: u64) -> Self {
-        Self {
-            head: head_raw,
-            link: list_tail_addr_from_bits(tail_bits) | head_kind.tag() as u64,
-        }
+const LIST_LINK_KIND_SHIFT: u8 = AnyValueRefPacking::current().tag_shift();
+const LIST_LINK_ALIAS_SHIFT: u8 = LIST_LINK_KIND_SHIFT + TAG_BITS as u8;
+const LIST_LINK_KIND_MASK: u64 = TAG_MASK << LIST_LINK_KIND_SHIFT;
+pub const LIST_LINK_ALIAS_MASK: u64 = 1u64 << LIST_LINK_ALIAS_SHIFT;
+const LIST_LINK_ADDR_MASK: u64 = AnyValueRefPacking::current().address_mask() & !TAG_MASK;
+const LIST_LINK_METADATA_MASK: u64 = LIST_LINK_KIND_MASK | LIST_LINK_ALIAS_MASK;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ListLink(u64);
+
+impl ListLink {
+    pub fn new(tail_bits: u64, head_kind: ValueKind) -> Self {
+        Self(
+            list_tail_addr_from_bits(tail_bits)
+                | ((head_kind.tag() as u64) << LIST_LINK_KIND_SHIFT),
+        )
     }
 
-    pub fn head_kind(&self) -> ValueKind {
-        ValueKind::new((self.link & TAG_MASK) as u8).expect("list head kind tag")
+    pub fn from_raw(raw: u64) -> Self {
+        Self(raw)
     }
 
-    pub fn tail_addr(&self) -> u64 {
-        self.link & !TAG_MASK
+    pub fn raw(self) -> u64 {
+        self.0
     }
 
-    pub fn tail_bits(&self) -> u64 {
+    pub fn head_kind(self) -> ValueKind {
+        let tag = ((self.0 & LIST_LINK_KIND_MASK) >> LIST_LINK_KIND_SHIFT) as u8;
+        ValueKind::new(tag).expect("list head kind tag")
+    }
+
+    pub fn tail_addr(self) -> u64 {
+        self.0 & LIST_LINK_ADDR_MASK
+    }
+
+    pub fn tail_bits(self) -> u64 {
         let addr = self.tail_addr();
         if addr == 0 {
             EMPTY_LIST
@@ -1073,12 +1094,64 @@ impl ListCons {
         }
     }
 
+    pub fn aliased(self) -> bool {
+        self.0 & LIST_LINK_ALIAS_MASK != 0
+    }
+
+    pub fn mark_aliased(&mut self) {
+        self.0 |= LIST_LINK_ALIAS_MASK;
+    }
+
+    pub fn with_tail(self, tail_bits: u64) -> Self {
+        let metadata = self.0 & LIST_LINK_METADATA_MASK;
+        Self(metadata | list_tail_addr_from_bits(tail_bits))
+    }
+}
+
+impl ListCons {
+    pub fn new(head_raw: u64, head_kind: ValueKind, tail_bits: u64) -> Self {
+        Self {
+            head: head_raw,
+            link: ListLink::new(tail_bits, head_kind).raw(),
+        }
+    }
+
+    pub fn head_kind(&self) -> ValueKind {
+        self.link().head_kind()
+    }
+
+    pub fn tail_addr(&self) -> u64 {
+        self.link().tail_addr()
+    }
+
+    pub fn tail_bits(&self) -> u64 {
+        self.link().tail_bits()
+    }
+
     pub fn head_raw_kind(&self) -> (u64, ValueKind) {
         (self.head, self.head_kind())
     }
 
     pub fn head_value(&self) -> AnyValue {
         AnyValue::decode_parts(self.head, self.head_kind().tag()).expect("list head value")
+    }
+
+    pub fn aliased(&self) -> bool {
+        self.link().aliased()
+    }
+
+    pub fn mark_aliased(&mut self) {
+        let mut link = self.link();
+        link.mark_aliased();
+        self.link = link.raw();
+    }
+
+    pub fn set_tail_bits(&mut self, tail_bits: u64) {
+        self.link = self.link().with_tail(tail_bits).raw();
+    }
+
+    pub fn link(&self) -> ListLink {
+        ListLink::from_raw(self.link)
     }
 }
 
@@ -1335,6 +1408,12 @@ mod tests {
             assert_eq!(cons.head_kind(), ValueKind::INT);
             assert_eq!(cons.head as i64, 7);
             assert_eq!(cons.tail_bits(), EMPTY_LIST);
+            assert_eq!(cons.link & TAG_MASK, 0);
+            assert_eq!(
+                (cons.link & LIST_LINK_KIND_MASK) >> LIST_LINK_KIND_SHIFT,
+                TAG_KIND_INT
+            );
+            assert!(!cons.aliased());
         }
     }
 
@@ -1540,13 +1619,49 @@ mod tests {
     }
 
     #[test]
-    fn list_cons_stores_canonical_head_kind_in_link_low_bits() {
+    fn list_cons_stores_canonical_head_kind_in_link_high_bits() {
         let cons = ListCons::new(2.5f64.to_bits(), ValueKind::FLOAT, EMPTY_LIST);
 
         assert_eq!(cons.head, 2.5f64.to_bits());
         assert_eq!(cons.head_kind(), ValueKind::FLOAT);
         assert_eq!(cons.head_value(), AnyValue::float(2.5));
         assert_eq!(cons.tail_bits(), EMPTY_LIST);
+        assert_eq!(cons.link & TAG_MASK, 0);
+        assert_eq!(
+            (cons.link & LIST_LINK_KIND_MASK) >> LIST_LINK_KIND_SHIFT,
+            TAG_KIND_FLOAT
+        );
+    }
+
+    #[test]
+    fn list_link_keeps_alias_bit_in_high_metadata() {
+        let tail = alloc_list_cons_raw_kind(3, ValueKind::INT, EMPTY_LIST);
+        let mut cons = ListCons::new(7, ValueKind::INT, tail);
+
+        assert_eq!(cons.tail_bits(), tail);
+        assert!(!cons.aliased());
+
+        cons.mark_aliased();
+
+        assert!(cons.aliased());
+        assert_eq!(cons.head_kind(), ValueKind::INT);
+        assert_eq!(cons.tail_bits(), tail);
+        assert_ne!(cons.link & LIST_LINK_ALIAS_MASK, 0);
+        assert_eq!(cons.link & TAG_MASK, 0);
+    }
+
+    #[test]
+    fn list_link_tail_rewrite_preserves_high_metadata() {
+        let old_tail = alloc_list_cons_raw_kind(1, ValueKind::INT, EMPTY_LIST);
+        let new_tail = alloc_list_cons_raw_kind(2, ValueKind::INT, EMPTY_LIST);
+        let mut cons = ListCons::new(7, ValueKind::ATOM, old_tail);
+        cons.mark_aliased();
+
+        cons.set_tail_bits(new_tail);
+
+        assert_eq!(cons.head_kind(), ValueKind::ATOM);
+        assert!(cons.aliased());
+        assert_eq!(cons.tail_bits(), new_tail);
     }
 
     #[test]

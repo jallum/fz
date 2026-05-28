@@ -50,7 +50,7 @@ pub fn cheney_trace_list(
             copied_objects,
             stats,
         );
-        cons.link = tail.raw() | cons.head_kind().tag() as u64;
+        cons.set_tail_bits(tail.heap_object_word().expect("forwarded list tail"));
     }
 }
 

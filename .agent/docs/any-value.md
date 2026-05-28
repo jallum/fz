@@ -168,7 +168,7 @@ when dynamic code reads them.
 ```text
 List cons:
   head payload word
-  next pointer word with local head kind bits
+  link word with high alias/head-kind metadata and local next pointer bits
 
 Map:
   key/value payload words

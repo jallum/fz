@@ -176,10 +176,14 @@ impl Heap {
     fn alloc_list_cons_value(&mut self, head: AnyValueRef, tail_bits: u64) -> u64 {
         let p = self.alloc_kind(HeapAllocKind::ListCons, 16);
         unsafe {
-            let cons = &mut *(p as *mut ListCons);
-            write_ref_to_storage(&mut cons.head, None, head);
-            cons.link =
-                crate::any_value::list_tail_addr_from_bits(tail_bits) | head.tag().tag() as u64;
+            std::ptr::write(
+                p as *mut ListCons,
+                ListCons::new(
+                    head.storage_raw().expect("list head storage raw"),
+                    head.tag(),
+                    tail_bits,
+                ),
+            );
         }
         crate::any_value::heap_object_word(p, crate::any_value::ValueKind::LIST)
     }
@@ -187,10 +191,10 @@ impl Heap {
     pub fn alloc_list_cons_slot(&mut self, head: AnyValue, tail_bits: u64) -> u64 {
         let p = self.alloc_kind(HeapAllocKind::ListCons, 16);
         unsafe {
-            let cons = &mut *(p as *mut ListCons);
-            write_any_value_to_storage(&mut cons.head, None, head);
-            cons.link =
-                crate::any_value::list_tail_addr_from_bits(tail_bits) | head.kind().tag() as u64;
+            std::ptr::write(
+                p as *mut ListCons,
+                ListCons::new(head.raw(), head.kind(), tail_bits),
+            );
         }
         crate::any_value::heap_object_word(p, crate::any_value::ValueKind::LIST)
     }

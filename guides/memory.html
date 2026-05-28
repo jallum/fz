@@ -136,9 +136,10 @@ heap pointer tags and container-local metadata.</p>
 
 <pre>
   offset 0:  head: u64
-  offset 8:  next_addr_with_head_kind: u64
-             high 60 bits = next cons address, or 0 for end-of-list
-             low 4 bits   = head kind tag
+  offset 8:  link: u64
+             high metadata = alias flag + head kind tag
+             address bits  = next cons address, or 0 for end-of-list
+             low 4 bits    = clear pointer-alignment bits
 </pre>
 
 <p>The cell itself is named by a <code>TAG_LIST</code> pointer. Empty list is
