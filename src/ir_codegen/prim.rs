@@ -2231,7 +2231,8 @@ fn emit_null_stub_closure<M: cranelift_module::Module>(
     let nc_v = b.ins().iconst(types::I32, n_caps as i64);
     let hk_v = b.ins().iconst(types::I32, 0);
     let null = b.ins().iconst(types::I64, 0);
-    cx.alloc_closure(b, jmod, fid_v, nc_v, hk_v, null)
+    cx.site(b, jmod)
+        .alloc_closure(fid_v, nc_v, hk_v, null)
 }
 
 /// Non-zero captures: alloc closure heap object, write body's
@@ -2268,7 +2269,7 @@ fn emit_capturing_closure<M: cranelift_module::Module>(
         .ins()
         .iconst(types::I32, body_return_repr.halt_kind() as i64);
     let body_addr = fn_addr(jmod, body_func_id, b);
-    let cl_ptr = cx.alloc_closure(b, jmod, fid_v, nc_v, hk_v, body_addr);
+    let cl_ptr = cx.site(b, jmod).alloc_closure(fid_v, nc_v, hk_v, body_addr);
     // The closure env stores captures as opaque refs. The body's
     // entry harness coerces each capture to its narrow repr.
     for (i, cv) in captured.iter().enumerate() {

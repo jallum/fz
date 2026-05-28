@@ -1333,7 +1333,9 @@ fn emit_back_edge_yield_check<M: cranelift_module::Module>(
     let stub_fref = jmod.declare_func_in_func(cont_id, b.func);
     let stub_addr = b.ins().func_addr(types::I64, stub_fref);
     let zero_hk = b.ins().iconst(types::I32, 0);
-    let cont_closure = cx.alloc_closure(b, jmod, fid_v, n_caps_v, zero_hk, stub_addr);
+    let cont_closure = cx
+        .site(b, jmod)
+        .alloc_closure(fid_v, n_caps_v, zero_hk, stub_addr);
     let last_root = native_root_values.len().saturating_sub(1);
     for (i, root) in native_root_values.iter().copied().enumerate() {
         let mut root_ref = {
@@ -1342,7 +1344,7 @@ fn emit_back_edge_yield_check<M: cranelift_module::Module>(
         };
         if i == last_root {
             let mut site = cx.site(b, jmod);
-            root_ref = site.materialize_cont_word(root_ref);
+            root_ref = site.materialize_cont(root_ref);
         }
         {
             let mut site = cx.site(b, jmod);

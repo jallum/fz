@@ -127,7 +127,7 @@ pub(super) fn emit_raw_int_as_abi_value_ref<M: cranelift_module::Module>(
     jmod: &mut M,
     raw: ir::Value,
 ) -> ir::Value {
-    cx.box_int_for_any(b, jmod, raw)
+    cx.site(b, jmod).box_int_for_any(raw)
 }
 
 pub(super) fn emit_raw_float_as_abi_value_ref<M: cranelift_module::Module>(
@@ -136,7 +136,7 @@ pub(super) fn emit_raw_float_as_abi_value_ref<M: cranelift_module::Module>(
     jmod: &mut M,
     raw: ir::Value,
 ) -> ir::Value {
-    cx.box_float_for_any(b, jmod, raw)
+    cx.site(b, jmod).box_float_for_any(raw)
 }
 
 pub(super) fn emit_raw_atom_as_abi_value_ref<M: cranelift_module::Module>(
@@ -145,7 +145,7 @@ pub(super) fn emit_raw_atom_as_abi_value_ref<M: cranelift_module::Module>(
     jmod: &mut M,
     raw: ir::Value,
 ) -> ir::Value {
-    cx.box_atom_for_any(b, jmod, raw)
+    cx.site(b, jmod).box_atom_for_any(raw)
 }
 
 pub(crate) fn emit_empty_list_value_ref_word(
@@ -434,7 +434,7 @@ fn emit_ref_tag<M: cranelift_module::Module>(
     jmod: &mut M,
     value_ref: ir::Value,
 ) -> ir::Value {
-    cx.ref_tag(b, jmod, value_ref)
+    cx.site(b, jmod).ref_tag(value_ref)
 }
 
 fn codegen_value_truthy<M: cranelift_module::Module>(
@@ -468,7 +468,7 @@ fn codegen_value_truthy<M: cranelift_module::Module>(
             b.ins().bxor_imm(falsey, 1)
         }
         CodegenValue::Known { .. } => b.ins().iconst(types::I8, 1),
-        CodegenValue::AnyRef(value_ref) => cx.truthy_ref(b, jmod, value_ref),
+        CodegenValue::AnyRef(value_ref) => cx.site(b, jmod).truthy_ref(value_ref),
     }
 }
 
@@ -549,7 +549,7 @@ fn codegen_value_atom_id_is<M: cranelift_module::Module>(
 
             b.switch_to_block(atom_blk);
             b.seal_block(atom_blk);
-            let atom = cx.unbox_atom(b, jmod, value_ref);
+            let atom = cx.site(b, jmod).unbox_atom(value_ref);
             let found = b.ins().icmp_imm(IntCC::Equal, atom, atom_id as i64);
             b.ins().jump(join_blk, &[BlockArg::Value(found)]);
 
@@ -572,7 +572,7 @@ fn codegen_value_raw_int<M: cranelift_module::Module>(
             payload,
             kind: fz_runtime::any_value::ValueKind::INT,
         } => payload,
-        CodegenValue::AnyRef(value_ref) => cx.unbox_int(b, jmod, value_ref),
+        CodegenValue::AnyRef(value_ref) => cx.site(b, jmod).unbox_int(value_ref),
         _ => panic!("CodegenValue is not an int"),
     }
 }
@@ -589,7 +589,7 @@ fn codegen_value_raw_float<M: cranelift_module::Module>(
             payload,
             kind: fz_runtime::any_value::ValueKind::FLOAT,
         } => b.ins().bitcast(types::F64, MemFlags::new(), payload),
-        CodegenValue::AnyRef(value_ref) => cx.unbox_float(b, jmod, value_ref),
+        CodegenValue::AnyRef(value_ref) => cx.site(b, jmod).unbox_float(value_ref),
         _ => panic!("CodegenValue is not a float"),
     }
 }
@@ -607,7 +607,7 @@ fn codegen_value_raw_atom<M: cranelift_module::Module>(
             payload,
             kind: fz_runtime::any_value::ValueKind::ATOM,
         } => payload,
-        CodegenValue::AnyRef(value_ref) => cx.unbox_atom(b, jmod, value_ref),
+        CodegenValue::AnyRef(value_ref) => cx.site(b, jmod).unbox_atom(value_ref),
         _ => panic!("CodegenValue is not an atom"),
     }
 }
@@ -666,7 +666,7 @@ pub(crate) fn as_raw_f64(
         CodegenValue::Known { payload, .. } => {
             b.ins().bitcast(types::F64, MemFlags::new(), payload)
         }
-        CodegenValue::AnyRef(value_ref) => cx.unbox_float(b, jmod, value_ref),
+        CodegenValue::AnyRef(value_ref) => cx.site(b, jmod).unbox_float(value_ref),
         _ => tagged_to_raw_f64_unsupported(b, vb.value()),
     }
 }
@@ -696,7 +696,7 @@ pub(crate) fn as_raw_i64(
     match *vb {
         CodegenValue::RawInt(value) => value,
         CodegenValue::Known { payload, .. } => payload,
-        CodegenValue::AnyRef(value_ref) => cx.unbox_int(b, jmod, value_ref),
+        CodegenValue::AnyRef(value_ref) => cx.site(b, jmod).unbox_int(value_ref),
         _ => panic!("cannot read raw i64 from non-integer value"),
     }
 }
@@ -732,8 +732,8 @@ pub(crate) fn coerce_binding_to<M: cranelift_module::Module>(
             unreachable!("condition is never a callee ABI target")
         }
         (CodegenValue::AnyRef(value), ArgRepr::ValueRef) => value,
-        (CodegenValue::AnyRef(value), ArgRepr::RawInt) => cx.unbox_int(b, jmod, value),
-        (CodegenValue::AnyRef(value), ArgRepr::RawF64) => cx.unbox_float(b, jmod, value),
+        (CodegenValue::AnyRef(value), ArgRepr::RawInt) => cx.site(b, jmod).unbox_int(value),
+        (CodegenValue::AnyRef(value), ArgRepr::RawF64) => cx.site(b, jmod).unbox_float(value),
         (CodegenValue::AnyRef(_), ArgRepr::Condition) => {
             unreachable!("condition is never a callee ABI target")
         }

@@ -27,7 +27,7 @@ pub(crate) fn synthesize_halt_cont<M: cranelift_module::Module>(
 ) -> ir::Value {
     let hcb_addr = fn_addr(jmod, halt_cont_body_id_for(runtime, repr), b);
     let kind_v = b.ins().iconst(types::I32, repr.halt_kind() as i64);
-    cx.get_halt_cont(b, jmod, hcb_addr, kind_v)
+    cx.site(b, jmod).get_halt_cont(hcb_addr, kind_v)
 }
 
 /// Pick the halt_cont_body FuncId matching `repr`.
@@ -96,7 +96,9 @@ pub(crate) fn resolve_outer_cont<M: cranelift_module::Module>(
                 let hc_repr = return_reprs[cont_sid as usize];
                 let hcb_addr = fn_addr(jmod, halt_cont_body_id_for(runtime, hc_repr), b);
                 let zero_hk = b.ins().iconst(types::I32, 0);
-                let halt_cl = cx.alloc_closure(b, jmod, dummy_fid, n_caps0, zero_hk, hcb_addr);
+                let halt_cl = cx
+                    .site(b, jmod)
+                    .alloc_closure(dummy_fid, n_caps0, zero_hk, hcb_addr);
                 b.ins().jump(join_blk, &[BlockArg::Value(halt_cl)]);
                 b.switch_to_block(join_blk);
                 b.seal_block(join_blk);
@@ -145,16 +147,18 @@ pub(crate) fn build_cont_closure<M: cranelift_module::Module>(
     );
     let zero_hk = b.ins().iconst(types::I32, 0);
     let cont_code_addr = fn_addr(jmod, cont_fid, b);
-    let cl_ptr = cx.alloc_closure(b, jmod, cl_fid_v, n_caps_v, zero_hk, cont_code_addr);
+    let cl_ptr = cx
+        .site(b, jmod)
+        .alloc_closure(cl_fid_v, n_caps_v, zero_hk, cont_code_addr);
     let mut site = cx.site(b, jmod);
-    let heap_safe_outer_cont = site.materialize_cont_word(my_outer_cont);
+    let heap_safe_outer_cont = site.materialize_cont(my_outer_cont);
     site.store_closure_capture_ref_word(cl_ptr, 0, heap_safe_outer_cont);
     store_user_captures(
         cap_bindings,
         extra_ref_captures,
         |idx, capture| match capture {
             ClosureCapture::RefWord(ref_word) => {
-                let heap_safe_ref = site.materialize_cont_word(ref_word);
+                let heap_safe_ref = site.materialize_cont(ref_word);
                 site.store_closure_capture_ref_word(cl_ptr, idx, heap_safe_ref);
             }
             ClosureCapture::RawInt(raw) => {

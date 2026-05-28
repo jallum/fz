@@ -88,440 +88,241 @@ impl<'env> CodegenFn<'env> {
             .or_insert_with(|| jmod.declare_func_in_func(id, b.func))
     }
 
-    fn call_func<M: cranelift_module::Module>(
-        &mut self,
-        b: &mut FunctionBuilder<'_>,
-        jmod: &mut M,
-        id: FuncId,
-        args: &[ir::Value],
-    ) -> ir::Inst {
-        let fref = self.func_ref(b, jmod, id);
+}
+
+/// One fz function body's call sites share a `CodegenFn` (runtime refs +
+/// the function-local import table), a `FunctionBuilder`, and a module.
+/// `CallSite` is the single home for the runtime-BIF operations they emit:
+/// a view exposes `(cx, b, jmod)` via `parts`, and every operation is a
+/// default method built on `call`/`call1`. Implementors only wire `parts`;
+/// the operations are defined once here rather than mirrored per view.
+pub(crate) trait CallSite<'env, 'fb, M: cranelift_module::Module> {
+    fn parts(&mut self) -> (&mut CodegenFn<'env>, &mut FunctionBuilder<'fb>, &mut M);
+
+    fn call(&mut self, id: FuncId, args: &[ir::Value]) -> ir::Inst {
+        let (cx, b, jmod) = self.parts();
+        let fref = cx.func_ref(b, jmod, id);
         b.ins().call(fref, args)
     }
 
-    fn call_func1<M: cranelift_module::Module>(
-        &mut self,
-        b: &mut FunctionBuilder<'_>,
-        jmod: &mut M,
-        id: FuncId,
-        args: &[ir::Value],
-    ) -> ir::Value {
-        let inst = self.call_func(b, jmod, id, args);
-        b.inst_results(inst)[0]
+    fn call1(&mut self, id: FuncId, args: &[ir::Value]) -> ir::Value {
+        let inst = self.call(id, args);
+        self.parts().1.inst_results(inst)[0]
     }
 
-    pub(super) fn ref_tag<M: cranelift_module::Module>(
-        &mut self,
-        b: &mut FunctionBuilder<'_>,
-        jmod: &mut M,
-        value_ref: ir::Value,
-    ) -> ir::Value {
-        self.call_func1(b, jmod, self.runtime.type_of_id, &[value_ref])
+    fn ref_tag(&mut self, value_ref: ir::Value) -> ir::Value {
+        let id = self.parts().0.runtime.type_of_id;
+        self.call1(id, &[value_ref])
     }
 
-    pub(super) fn truthy_ref<M: cranelift_module::Module>(
-        &mut self,
-        b: &mut FunctionBuilder<'_>,
-        jmod: &mut M,
-        value_ref: ir::Value,
-    ) -> ir::Value {
-        self.call_func1(b, jmod, self.runtime.truthy_ref_id, &[value_ref])
+    fn truthy_ref(&mut self, value_ref: ir::Value) -> ir::Value {
+        let id = self.parts().0.runtime.truthy_ref_id;
+        self.call1(id, &[value_ref])
     }
 
-    pub(super) fn mark_published_ref_aliased<M: cranelift_module::Module>(
-        &mut self,
-        b: &mut FunctionBuilder<'_>,
-        jmod: &mut M,
-        value_ref: ir::Value,
-    ) -> ir::Value {
-        self.call_func1(
-            b,
-            jmod,
-            self.runtime.mark_published_ref_aliased_id,
-            &[value_ref],
-        )
+    fn mark_published_ref_aliased(&mut self, value_ref: ir::Value) -> ir::Value {
+        let id = self.parts().0.runtime.mark_published_ref_aliased_id;
+        self.call1(id, &[value_ref])
     }
 
-    pub(super) fn box_int_for_any<M: cranelift_module::Module>(
-        &mut self,
-        b: &mut FunctionBuilder<'_>,
-        jmod: &mut M,
-        raw: ir::Value,
-    ) -> ir::Value {
-        self.call_func1(b, jmod, self.runtime.box_int_for_any_id, &[raw])
+    fn box_int_for_any(&mut self, raw: ir::Value) -> ir::Value {
+        let id = self.parts().0.runtime.box_int_for_any_id;
+        self.call1(id, &[raw])
     }
 
-    pub(super) fn box_float_for_any<M: cranelift_module::Module>(
-        &mut self,
-        b: &mut FunctionBuilder<'_>,
-        jmod: &mut M,
-        raw: ir::Value,
-    ) -> ir::Value {
-        self.call_func1(b, jmod, self.runtime.box_float_for_any_id, &[raw])
+    fn box_float_for_any(&mut self, raw: ir::Value) -> ir::Value {
+        let id = self.parts().0.runtime.box_float_for_any_id;
+        self.call1(id, &[raw])
     }
 
-    pub(crate) fn box_atom_for_any<M: cranelift_module::Module>(
-        &mut self,
-        b: &mut FunctionBuilder<'_>,
-        jmod: &mut M,
-        raw: ir::Value,
-    ) -> ir::Value {
-        self.call_func1(b, jmod, self.runtime.box_atom_for_any_id, &[raw])
+    fn box_atom_for_any(&mut self, raw: ir::Value) -> ir::Value {
+        let id = self.parts().0.runtime.box_atom_for_any_id;
+        self.call1(id, &[raw])
     }
 
-    pub(crate) fn unbox_int<M: cranelift_module::Module>(
-        &mut self,
-        b: &mut FunctionBuilder<'_>,
-        jmod: &mut M,
-        value_ref: ir::Value,
-    ) -> ir::Value {
-        self.call_func1(b, jmod, self.runtime.unbox_int_id, &[value_ref])
+    fn unbox_int(&mut self, value_ref: ir::Value) -> ir::Value {
+        let id = self.parts().0.runtime.unbox_int_id;
+        self.call1(id, &[value_ref])
     }
 
-    pub(crate) fn unbox_float<M: cranelift_module::Module>(
-        &mut self,
-        b: &mut FunctionBuilder<'_>,
-        jmod: &mut M,
-        value_ref: ir::Value,
-    ) -> ir::Value {
-        self.call_func1(b, jmod, self.runtime.unbox_float_id, &[value_ref])
+    fn unbox_float(&mut self, value_ref: ir::Value) -> ir::Value {
+        let id = self.parts().0.runtime.unbox_float_id;
+        self.call1(id, &[value_ref])
     }
 
-    pub(crate) fn unbox_atom<M: cranelift_module::Module>(
-        &mut self,
-        b: &mut FunctionBuilder<'_>,
-        jmod: &mut M,
-        value_ref: ir::Value,
-    ) -> ir::Value {
-        self.call_func1(b, jmod, self.runtime.unbox_atom_id, &[value_ref])
+    fn unbox_atom(&mut self, value_ref: ir::Value) -> ir::Value {
+        let id = self.parts().0.runtime.unbox_atom_id;
+        self.call1(id, &[value_ref])
     }
 
-    pub(crate) fn halt_implicit<M: cranelift_module::Module>(
-        &mut self,
-        b: &mut FunctionBuilder<'_>,
-        jmod: &mut M,
-        repr: ArgRepr,
-        value: ir::Value,
-    ) {
+    fn halt_implicit(&mut self, repr: ArgRepr, value: ir::Value) {
         let id = match repr {
-            ArgRepr::RawInt => self.runtime.halt_implicit_i64_id,
-            ArgRepr::RawF64 => self.runtime.halt_implicit_f64_id,
-            ArgRepr::ValueRef => self.runtime.halt_implicit_ref_id,
+            ArgRepr::RawInt => self.parts().0.runtime.halt_implicit_i64_id,
+            ArgRepr::RawF64 => self.parts().0.runtime.halt_implicit_f64_id,
+            ArgRepr::ValueRef => self.parts().0.runtime.halt_implicit_ref_id,
             ArgRepr::Condition => unreachable!("condition halt values must be materialized"),
         };
-        self.call_func(b, jmod, id, &[value]);
+        self.call(id, &[value]);
     }
 
-    pub(crate) fn alloc_frame<M: cranelift_module::Module>(
-        &mut self,
-        b: &mut FunctionBuilder<'_>,
-        jmod: &mut M,
-        schema_id: ir::Value,
-        size: ir::Value,
-    ) -> ir::Value {
-        self.call_func1(b, jmod, self.runtime.alloc_id, &[schema_id, size])
+    fn alloc_frame(&mut self, schema_id: ir::Value, size: ir::Value) -> ir::Value {
+        let id = self.parts().0.runtime.alloc_id;
+        self.call1(id, &[schema_id, size])
     }
 
-    pub(crate) fn get_halt_cont<M: cranelift_module::Module>(
-        &mut self,
-        b: &mut FunctionBuilder<'_>,
-        jmod: &mut M,
-        body_addr: ir::Value,
-        halt_kind: ir::Value,
-    ) -> ir::Value {
-        self.call_func1(
-            b,
-            jmod,
-            self.runtime.get_halt_cont_id,
-            &[body_addr, halt_kind],
-        )
+    fn get_halt_cont(&mut self, body_addr: ir::Value, halt_kind: ir::Value) -> ir::Value {
+        let id = self.parts().0.runtime.get_halt_cont_id;
+        self.call1(id, &[body_addr, halt_kind])
     }
 
-    pub(crate) fn alloc_closure<M: cranelift_module::Module>(
+    fn alloc_closure(
         &mut self,
-        b: &mut FunctionBuilder<'_>,
-        jmod: &mut M,
         func_id: ir::Value,
         captured_count: ir::Value,
         halt_kind: ir::Value,
         code_addr: ir::Value,
     ) -> ir::Value {
-        self.call_func1(
-            b,
-            jmod,
-            self.runtime.alloc_closure_id,
-            &[func_id, captured_count, halt_kind, code_addr],
-        )
+        let id = self.parts().0.runtime.alloc_closure_id;
+        self.call1(id, &[func_id, captured_count, halt_kind, code_addr])
     }
 
-    pub(crate) fn empty_list_ref(
-        &mut self,
-        b: &mut FunctionBuilder<'_>,
-        cache: &mut CodegenCache,
-    ) -> ir::Value {
-        emit_empty_list_value_ref_word(b, cache)
+    fn list_cons_with(&mut self, cons_id: FuncId, args: &[ir::Value]) -> ir::Value {
+        self.call1(cons_id, args)
     }
 
-    pub(crate) fn list_tail_ref_word(
-        &mut self,
-        b: &mut FunctionBuilder<'_>,
-        cache: &mut CodegenCache,
-        tail: ListTailBits,
-    ) -> ir::Value {
-        match tail {
-            ListTailBits::Empty => self.empty_list_ref(b, cache),
-            ListTailBits::ValueRef(value) | ListTailBits::NonEmptyValueRef(value) => value,
-        }
+    fn list_head(&mut self, list_ref: ir::Value) -> ir::Value {
+        let id = self.parts().0.runtime.list_head_fallback_id;
+        self.call1(id, &[list_ref])
     }
 
-    pub(crate) fn list_cons_with<M: cranelift_module::Module>(
-        &mut self,
-        b: &mut FunctionBuilder<'_>,
-        jmod: &mut M,
-        cons_id: FuncId,
-        args: &[ir::Value],
-    ) -> ir::Value {
-        self.call_func1(b, jmod, cons_id, args)
+    fn list_head_int(&mut self, list_ref: ir::Value) -> ir::Value {
+        let id = self.parts().0.runtime.list_head_int_ref_id;
+        self.call1(id, &[list_ref])
     }
 
-    pub(crate) fn list_head<M: cranelift_module::Module>(
-        &mut self,
-        b: &mut FunctionBuilder<'_>,
-        jmod: &mut M,
-        list_ref: ir::Value,
-    ) -> ir::Value {
-        self.call_func1(b, jmod, self.runtime.list_head_fallback_id, &[list_ref])
+    fn list_head_float(&mut self, list_ref: ir::Value) -> ir::Value {
+        let id = self.parts().0.runtime.list_head_float_ref_id;
+        self.call1(id, &[list_ref])
     }
 
-    pub(crate) fn list_head_int<M: cranelift_module::Module>(
-        &mut self,
-        b: &mut FunctionBuilder<'_>,
-        jmod: &mut M,
-        list_ref: ir::Value,
-    ) -> ir::Value {
-        self.call_func1(b, jmod, self.runtime.list_head_int_ref_id, &[list_ref])
+    fn list_tail(&mut self, list_ref: ir::Value) -> ir::Value {
+        let id = self.parts().0.runtime.list_tail_fallback_id;
+        self.call1(id, &[list_ref])
     }
 
-    pub(crate) fn list_head_float<M: cranelift_module::Module>(
+    fn list_reuse_or_cons_tail_ref(
         &mut self,
-        b: &mut FunctionBuilder<'_>,
-        jmod: &mut M,
-        list_ref: ir::Value,
-    ) -> ir::Value {
-        self.call_func1(b, jmod, self.runtime.list_head_float_ref_id, &[list_ref])
-    }
-
-    pub(crate) fn list_tail<M: cranelift_module::Module>(
-        &mut self,
-        b: &mut FunctionBuilder<'_>,
-        jmod: &mut M,
-        list_ref: ir::Value,
-    ) -> ir::Value {
-        self.call_func1(b, jmod, self.runtime.list_tail_fallback_id, &[list_ref])
-    }
-
-    pub(crate) fn list_reuse_or_cons_tail_ref<M: cranelift_module::Module>(
-        &mut self,
-        b: &mut FunctionBuilder<'_>,
-        jmod: &mut M,
         source_ref: ir::Value,
         tail_ref: ir::Value,
     ) -> ir::Value {
-        self.call_func1(
-            b,
-            jmod,
-            self.runtime.list_reuse_or_cons_tail_ref_id,
-            &[source_ref, tail_ref],
-        )
+        let id = self.parts().0.runtime.list_reuse_or_cons_tail_ref_id;
+        self.call1(id, &[source_ref, tail_ref])
     }
 
-    pub(crate) fn closure_capture_i64<M: cranelift_module::Module>(
-        &mut self,
-        b: &mut FunctionBuilder<'_>,
-        jmod: &mut M,
-        closure_ref: ir::Value,
-        index: ir::Value,
-    ) -> ir::Value {
-        self.call_func1(
-            b,
-            jmod,
-            self.runtime.closure_get_capture_i64_id,
-            &[closure_ref, index],
-        )
+    fn closure_capture_i64(&mut self, closure_ref: ir::Value, index: ir::Value) -> ir::Value {
+        let id = self.parts().0.runtime.closure_get_capture_i64_id;
+        self.call1(id, &[closure_ref, index])
     }
 
-    pub(crate) fn closure_capture_f64<M: cranelift_module::Module>(
-        &mut self,
-        b: &mut FunctionBuilder<'_>,
-        jmod: &mut M,
-        closure_ref: ir::Value,
-        index: ir::Value,
-    ) -> ir::Value {
-        self.call_func1(
-            b,
-            jmod,
-            self.runtime.closure_get_capture_f64_id,
-            &[closure_ref, index],
-        )
+    fn closure_capture_f64(&mut self, closure_ref: ir::Value, index: ir::Value) -> ir::Value {
+        let id = self.parts().0.runtime.closure_get_capture_f64_id;
+        self.call1(id, &[closure_ref, index])
     }
 
-    pub(crate) fn closure_capture_ref<M: cranelift_module::Module>(
-        &mut self,
-        b: &mut FunctionBuilder<'_>,
-        jmod: &mut M,
-        closure_ref: ir::Value,
-        index: ir::Value,
-    ) -> ir::Value {
-        self.call_func1(
-            b,
-            jmod,
-            self.runtime.closure_get_capture_ref_id,
-            &[closure_ref, index],
-        )
+    fn closure_capture_ref(&mut self, closure_ref: ir::Value, index: ir::Value) -> ir::Value {
+        let id = self.parts().0.runtime.closure_get_capture_ref_id;
+        self.call1(id, &[closure_ref, index])
     }
 
-    pub(crate) fn closure_code_ref<M: cranelift_module::Module>(
-        &mut self,
-        b: &mut FunctionBuilder<'_>,
-        jmod: &mut M,
-        closure_ref: ir::Value,
-    ) -> ir::Value {
-        self.call_func1(b, jmod, self.runtime.closure_code_ref_id, &[closure_ref])
+    fn closure_code_ref(&mut self, closure_ref: ir::Value) -> ir::Value {
+        let id = self.parts().0.runtime.closure_code_ref_id;
+        self.call1(id, &[closure_ref])
     }
 
-    pub(crate) fn closure_halt_kind_ref<M: cranelift_module::Module>(
-        &mut self,
-        b: &mut FunctionBuilder<'_>,
-        jmod: &mut M,
-        closure_ref: ir::Value,
-    ) -> ir::Value {
-        self.call_func1(
-            b,
-            jmod,
-            self.runtime.closure_halt_kind_ref_id,
-            &[closure_ref],
-        )
+    fn closure_halt_kind_ref(&mut self, closure_ref: ir::Value) -> ir::Value {
+        let id = self.parts().0.runtime.closure_halt_kind_ref_id;
+        self.call1(id, &[closure_ref])
     }
 
-    pub(crate) fn set_closure_capture_ref<M: cranelift_module::Module>(
+    fn set_closure_capture_ref(
         &mut self,
-        b: &mut FunctionBuilder<'_>,
-        jmod: &mut M,
         closure_ref: ir::Value,
         index: ir::Value,
         value: ir::Value,
     ) {
-        self.call_func(
-            b,
-            jmod,
-            self.runtime.closure_set_capture_ref_id,
-            &[closure_ref, index, value],
-        );
+        let id = self.parts().0.runtime.closure_set_capture_ref_id;
+        self.call(id, &[closure_ref, index, value]);
     }
 
-    pub(crate) fn set_closure_capture_i64<M: cranelift_module::Module>(
+    fn set_closure_capture_i64(
         &mut self,
-        b: &mut FunctionBuilder<'_>,
-        jmod: &mut M,
         closure_ref: ir::Value,
         index: ir::Value,
         value: ir::Value,
     ) {
-        self.call_func(
-            b,
-            jmod,
-            self.runtime.closure_set_capture_i64_id,
-            &[closure_ref, index, value],
-        );
+        let id = self.parts().0.runtime.closure_set_capture_i64_id;
+        self.call(id, &[closure_ref, index, value]);
     }
 
-    pub(crate) fn set_closure_capture_f64<M: cranelift_module::Module>(
+    fn set_closure_capture_f64(
         &mut self,
-        b: &mut FunctionBuilder<'_>,
-        jmod: &mut M,
         closure_ref: ir::Value,
         index: ir::Value,
         value: ir::Value,
     ) {
-        self.call_func(
-            b,
-            jmod,
-            self.runtime.closure_set_capture_f64_id,
-            &[closure_ref, index, value],
-        );
+        let id = self.parts().0.runtime.closure_set_capture_f64_id;
+        self.call(id, &[closure_ref, index, value]);
     }
 
-    pub(crate) fn materialize_cont<M: cranelift_module::Module>(
-        &mut self,
-        b: &mut FunctionBuilder<'_>,
-        jmod: &mut M,
-        value: ir::Value,
-    ) -> ir::Value {
-        self.call_func1(b, jmod, self.runtime.materialize_cont_id, &[value])
+    fn materialize_cont(&mut self, value: ir::Value) -> ir::Value {
+        let id = self.parts().0.runtime.materialize_cont_id;
+        self.call1(id, &[value])
     }
 
-    fn struct_set_field_int<M: cranelift_module::Module>(
+    fn struct_set_field_int(&mut self, struct_bits: ir::Value, offset: ir::Value, value: ir::Value) {
+        let id = self.parts().0.runtime.struct_set_field_int_id;
+        self.call(id, &[struct_bits, offset, value]);
+    }
+
+    fn struct_set_field_float(
         &mut self,
-        b: &mut FunctionBuilder<'_>,
-        jmod: &mut M,
         struct_bits: ir::Value,
         offset: ir::Value,
         value: ir::Value,
     ) {
-        self.call_func(
-            b,
-            jmod,
-            self.runtime.struct_set_field_int_id,
-            &[struct_bits, offset, value],
-        );
+        let id = self.parts().0.runtime.struct_set_field_float_id;
+        self.call(id, &[struct_bits, offset, value]);
     }
 
-    fn struct_set_field_float<M: cranelift_module::Module>(
+    fn struct_set_field_atom(
         &mut self,
-        b: &mut FunctionBuilder<'_>,
-        jmod: &mut M,
         struct_bits: ir::Value,
         offset: ir::Value,
         value: ir::Value,
     ) {
-        self.call_func(
-            b,
-            jmod,
-            self.runtime.struct_set_field_float_id,
-            &[struct_bits, offset, value],
-        );
+        let id = self.parts().0.runtime.struct_set_field_atom_id;
+        self.call(id, &[struct_bits, offset, value]);
     }
 
-    fn struct_set_field_atom<M: cranelift_module::Module>(
-        &mut self,
-        b: &mut FunctionBuilder<'_>,
-        jmod: &mut M,
-        struct_bits: ir::Value,
-        offset: ir::Value,
-        value: ir::Value,
-    ) {
-        self.call_func(
-            b,
-            jmod,
-            self.runtime.struct_set_field_atom_id,
-            &[struct_bits, offset, value],
-        );
+    fn struct_set_field_ref(&mut self, struct_bits: ir::Value, offset: ir::Value, value: ir::Value) {
+        let id = self.parts().0.runtime.struct_set_field_ref_id;
+        self.call(id, &[struct_bits, offset, value]);
     }
+}
 
-    fn struct_set_field_ref<M: cranelift_module::Module>(
-        &mut self,
-        b: &mut FunctionBuilder<'_>,
-        jmod: &mut M,
-        struct_bits: ir::Value,
-        offset: ir::Value,
-        value: ir::Value,
-    ) {
-        self.call_func(
-            b,
-            jmod,
-            self.runtime.struct_set_field_ref_id,
-            &[struct_bits, offset, value],
-        );
+impl<'a, 'env, 'fb, M: cranelift_module::Module> CallSite<'env, 'fb, M>
+    for CodegenFnBody<'a, 'env, 'fb, M>
+{
+    fn parts(&mut self) -> (&mut CodegenFn<'env>, &mut FunctionBuilder<'fb>, &mut M) {
+        (&mut *self.cx, &mut *self.b, &mut *self.jmod)
+    }
+}
+
+impl<'a, 'env, 'fb, M: cranelift_module::Module> CallSite<'env, 'fb, M>
+    for CodegenFnSite<'a, 'env, 'fb, M>
+{
+    fn parts(&mut self) -> (&mut CodegenFn<'env>, &mut FunctionBuilder<'fb>, &mut M) {
+        (&mut *self.cx, &mut *self.b, &mut *self.jmod)
     }
 }
 
@@ -535,8 +336,7 @@ where
         idx: usize,
     ) -> ir::Value {
         let index = self.b.ins().iconst(types::I64, idx as i64);
-        self.cx
-            .closure_capture_i64(self.b, self.jmod, closure_ref, index)
+        self.closure_capture_i64(closure_ref, index)
     }
 
     pub(crate) fn closure_capture_f64_at(
@@ -545,8 +345,7 @@ where
         idx: usize,
     ) -> ir::Value {
         let index = self.b.ins().iconst(types::I64, idx as i64);
-        self.cx
-            .closure_capture_f64(self.b, self.jmod, closure_ref, index)
+        self.closure_capture_f64(closure_ref, index)
     }
 
     pub(crate) fn closure_capture_ref_at(
@@ -555,8 +354,7 @@ where
         idx: usize,
     ) -> ir::Value {
         let index = self.b.ins().iconst(types::I64, idx as i64);
-        self.cx
-            .closure_capture_ref(self.b, self.jmod, closure_ref, index)
+        self.closure_capture_ref(closure_ref, index)
     }
 
     pub(crate) fn closure_capture_as_binding(
@@ -583,15 +381,6 @@ where
         self.closure_capture_ref_at(closure_ref, 0)
     }
 
-    pub(crate) fn closure_code_ref(&mut self, closure_ref: ir::Value) -> ir::Value {
-        self.cx.closure_code_ref(self.b, self.jmod, closure_ref)
-    }
-
-    pub(crate) fn closure_halt_kind_ref(&mut self, closure_ref: ir::Value) -> ir::Value {
-        self.cx
-            .closure_halt_kind_ref(self.b, self.jmod, closure_ref)
-    }
-
     pub(crate) fn value_truthy(&mut self, value: CodegenValue) -> ir::Value {
         self.cx.value_truthy(self.b, self.jmod, value)
     }
@@ -616,21 +405,15 @@ where
         self.cx.value_raw_float(self.b, self.jmod, value)
     }
 
-    pub(crate) fn mark_published_ref_aliased(&mut self, value_ref: ir::Value) -> ir::Value {
-        self.cx
-            .mark_published_ref_aliased(self.b, self.jmod, value_ref)
-    }
-
     pub(crate) fn store_closure_capture_ref_word(
         &mut self,
         closure_ref: ir::Value,
         idx: usize,
         value: ir::Value,
     ) {
-        let value = self.cx.mark_published_ref_aliased(self.b, self.jmod, value);
+        let value = self.mark_published_ref_aliased(value);
         let index = self.b.ins().iconst(types::I64, idx as i64);
-        self.cx
-            .set_closure_capture_ref(self.b, self.jmod, closure_ref, index, value);
+        self.set_closure_capture_ref(closure_ref, index, value);
     }
 
     pub(crate) fn store_closure_capture_i64(
@@ -640,8 +423,7 @@ where
         value: ir::Value,
     ) {
         let index = self.b.ins().iconst(types::I64, idx as i64);
-        self.cx
-            .set_closure_capture_i64(self.b, self.jmod, closure_ref, index, value);
+        self.set_closure_capture_i64(closure_ref, index, value);
     }
 
     pub(crate) fn store_closure_capture_f64(
@@ -651,12 +433,7 @@ where
         value: ir::Value,
     ) {
         let index = self.b.ins().iconst(types::I64, idx as i64);
-        self.cx
-            .set_closure_capture_f64(self.b, self.jmod, closure_ref, index, value);
-    }
-
-    pub(crate) fn materialize_cont_word(&mut self, value: ir::Value) -> ir::Value {
-        self.cx.materialize_cont(self.b, self.jmod, value)
+        self.set_closure_capture_f64(closure_ref, index, value);
     }
 }
 
@@ -690,15 +467,6 @@ where
         self.cx.value_raw_atom(self.b, self.jmod, self.cache, value)
     }
 
-    pub(crate) fn ref_tag(&mut self, value_ref: ir::Value) -> ir::Value {
-        self.cx.ref_tag(self.b, self.jmod, value_ref)
-    }
-
-    pub(crate) fn mark_published_ref_aliased(&mut self, value_ref: ir::Value) -> ir::Value {
-        self.cx
-            .mark_published_ref_aliased(self.b, self.jmod, value_ref)
-    }
-
     pub(crate) fn any_ref_for_var(
         &mut self,
         var_env: &HashMap<u32, CodegenValue>,
@@ -708,32 +476,16 @@ where
             .any_ref_for_var(var_env, self.b, self.jmod, var, self.cache)
     }
 
-    pub(crate) fn list_tail_ref_word(&mut self, tail: ListTailBits) -> ir::Value {
-        self.cx.list_tail_ref_word(self.b, self.cache, tail)
-    }
-
+    /// Empty-list ABI word, cached per function body.
     pub(crate) fn empty_list_ref(&mut self) -> ir::Value {
-        self.cx.empty_list_ref(self.b, self.cache)
+        emit_empty_list_value_ref_word(self.b, self.cache)
     }
 
-    pub(crate) fn list_cons_with(&mut self, cons_id: FuncId, args: &[ir::Value]) -> ir::Value {
-        self.cx.list_cons_with(self.b, self.jmod, cons_id, args)
-    }
-
-    pub(crate) fn list_head(&mut self, list_ref: ir::Value) -> ir::Value {
-        self.cx.list_head(self.b, self.jmod, list_ref)
-    }
-
-    pub(crate) fn list_head_int(&mut self, list_ref: ir::Value) -> ir::Value {
-        self.cx.list_head_int(self.b, self.jmod, list_ref)
-    }
-
-    pub(crate) fn list_head_float(&mut self, list_ref: ir::Value) -> ir::Value {
-        self.cx.list_head_float(self.b, self.jmod, list_ref)
-    }
-
-    pub(crate) fn list_tail(&mut self, list_ref: ir::Value) -> ir::Value {
-        self.cx.list_tail(self.b, self.jmod, list_ref)
+    pub(crate) fn list_tail_ref_word(&mut self, tail: ListTailBits) -> ir::Value {
+        match tail {
+            ListTailBits::Empty => self.empty_list_ref(),
+            ListTailBits::ValueRef(value) | ListTailBits::NonEmptyValueRef(value) => value,
+        }
     }
 
     pub(crate) fn owned_cons_reuse_source(
@@ -741,23 +493,6 @@ where
         head: crate::fz_ir::Var,
     ) -> Option<crate::fz_ir::Var> {
         self.cache.owned_cons_reuse_sources.get(&head.0).copied()
-    }
-
-    pub(crate) fn list_reuse_or_cons_tail_ref(
-        &mut self,
-        source_ref: ir::Value,
-        tail_ref: ir::Value,
-    ) -> ir::Value {
-        self.cx
-            .list_reuse_or_cons_tail_ref(self.b, self.jmod, source_ref, tail_ref)
-    }
-
-    pub(crate) fn halt_implicit(&mut self, repr: ArgRepr, value: ir::Value) {
-        self.cx.halt_implicit(self.b, self.jmod, repr, value);
-    }
-
-    pub(crate) fn alloc_frame(&mut self, schema_id: ir::Value, size: ir::Value) -> ir::Value {
-        self.cx.alloc_frame(self.b, self.jmod, schema_id, size)
     }
 
     pub(crate) fn store_frame_value_dynamic(
@@ -864,11 +599,11 @@ where
                 FieldKind::AnyValue => {
                     let value_ref = match from {
                         ArgRepr::ValueRef => value,
-                        ArgRepr::RawInt => self.cx.box_int_for_any(self.b, self.jmod, value),
-                        ArgRepr::RawF64 => self.cx.box_float_for_any(self.b, self.jmod, value),
+                        ArgRepr::RawInt => self.box_int_for_any(value),
+                        ArgRepr::RawF64 => self.box_float_for_any(value),
                         ArgRepr::Condition => {
                             let atom = bool_to_fz(self.b, self.cache, value);
-                            self.cx.box_atom_for_any(self.b, self.jmod, atom)
+                            self.box_atom_for_any(atom)
                         }
                     };
                     self.b
@@ -949,33 +684,28 @@ where
                 payload: raw,
                 kind: fz_runtime::any_value::ValueKind::INT,
             } => {
-                self.cx
-                    .struct_set_field_int(self.b, self.jmod, struct_bits, offset, raw);
+                self.struct_set_field_int(struct_bits, offset, raw);
             }
             CodegenValue::RawF64(raw) => {
-                self.cx
-                    .struct_set_field_float(self.b, self.jmod, struct_bits, offset, raw);
+                self.struct_set_field_float(struct_bits, offset, raw);
             }
             CodegenValue::Known {
                 payload,
                 kind: fz_runtime::any_value::ValueKind::FLOAT,
             } => {
                 let raw = self.b.ins().bitcast(types::F64, MemFlags::new(), payload);
-                self.cx
-                    .struct_set_field_float(self.b, self.jmod, struct_bits, offset, raw);
+                self.struct_set_field_float(struct_bits, offset, raw);
             }
             CodegenValue::Known {
                 payload,
                 kind: fz_runtime::any_value::ValueKind::ATOM,
             } => {
-                self.cx
-                    .struct_set_field_atom(self.b, self.jmod, struct_bits, offset, payload);
+                self.struct_set_field_atom(struct_bits, offset, payload);
             }
             other => {
                 let value_ref = self.value_as_any_ref(other);
                 let value_ref = self.mark_published_ref_aliased(value_ref);
-                self.cx
-                    .struct_set_field_ref(self.b, self.jmod, struct_bits, offset, value_ref);
+                self.struct_set_field_ref(struct_bits, offset, value_ref);
             }
         }
     }
