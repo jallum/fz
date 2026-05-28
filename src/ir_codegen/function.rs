@@ -273,9 +273,7 @@ pub(crate) fn compile_fn<
         }
 
         emit_terminator(
-            &mut cx,
-            &mut b,
-            jmod,
+            &mut cx.body(&mut b, jmod, &mut cache),
             t,
             env,
             schemas,
@@ -290,7 +288,6 @@ pub(crate) fn compile_fn<
             frame_ptr,
             host_ctx,
             cont_param,
-            &mut cache,
             block_env,
         )?;
     }

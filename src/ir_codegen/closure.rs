@@ -233,14 +233,38 @@ pub(crate) fn build_lazy_cont_descriptor<M: cranelift_module::Module>(
         extra_ref_captures,
         |idx, capture| match capture {
             ClosureCapture::RefWord(value) => {
-                store_lazy_capture(body.b, slot, raw_base, kind_base, idx, value, LAZY_CONT_KIND_REF);
+                store_lazy_capture(
+                    body.b,
+                    slot,
+                    raw_base,
+                    kind_base,
+                    idx,
+                    value,
+                    LAZY_CONT_KIND_REF,
+                );
             }
             ClosureCapture::RawInt(value) => {
-                store_lazy_capture(body.b, slot, raw_base, kind_base, idx, value, LAZY_CONT_KIND_I64);
+                store_lazy_capture(
+                    body.b,
+                    slot,
+                    raw_base,
+                    kind_base,
+                    idx,
+                    value,
+                    LAZY_CONT_KIND_I64,
+                );
             }
             ClosureCapture::RawF64(value) => {
                 let raw = body.b.ins().bitcast(types::I64, MemFlags::new(), value);
-                store_lazy_capture(body.b, slot, raw_base, kind_base, idx, raw, LAZY_CONT_KIND_F64);
+                store_lazy_capture(
+                    body.b,
+                    slot,
+                    raw_base,
+                    kind_base,
+                    idx,
+                    raw,
+                    LAZY_CONT_KIND_F64,
+                );
             }
         },
     );

@@ -630,7 +630,9 @@ pub(crate) trait CallSite<'env, 'fb, M: cranelift_module::Module> {
             ArgRepr::RawF64 => {
                 CodegenValue::from_abi_value(self.closure_capture_f64_at(closure_ref, idx), repr)
             }
-            ArgRepr::ValueRef => CodegenValue::any_ref(self.closure_capture_ref_at(closure_ref, idx)),
+            ArgRepr::ValueRef => {
+                CodegenValue::any_ref(self.closure_capture_ref_at(closure_ref, idx))
+            }
             ArgRepr::Condition => unreachable!("closure captures are never condition-only"),
         }
     }
@@ -639,7 +641,12 @@ pub(crate) trait CallSite<'env, 'fb, M: cranelift_module::Module> {
         self.closure_capture_ref_at(closure_ref, 0)
     }
 
-    fn store_closure_capture_ref_word(&mut self, closure_ref: ir::Value, idx: usize, value: ir::Value) {
+    fn store_closure_capture_ref_word(
+        &mut self,
+        closure_ref: ir::Value,
+        idx: usize,
+        value: ir::Value,
+    ) {
         let value = self.mark_published_ref_aliased(value);
         let index = self.index_const(idx);
         self.set_closure_capture_ref(closure_ref, index, value);
