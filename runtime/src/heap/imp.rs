@@ -780,6 +780,23 @@ impl Heap {
         Ok(list)
     }
 
+    pub fn mark_published_ref_aliased(
+        &mut self,
+        value: AnyValueRef,
+    ) -> Result<AnyValueRef, AnyValueRefError> {
+        if value.tag() != ValueKind::LIST || value.is_empty_list() {
+            return Ok(value);
+        }
+
+        let mut addr = value.list_addr()?;
+        while !addr.is_null() {
+            let cons = unsafe { &mut *(addr as *mut ListCons) };
+            cons.mark_aliased();
+            addr = cons.tail_addr() as *mut u8;
+        }
+        Ok(value)
+    }
+
     pub fn relink_unaliased_list_cons_tail(
         &mut self,
         list: AnyValueRef,

@@ -161,6 +161,10 @@ fn register_runtime_symbols(builder: &mut JITBuilder) {
         fz_runtime::ir_runtime::fz_list_relink_unaliased_tail_ref as *const u8,
     );
     builder.symbol(
+        "fz_mark_published_ref_aliased",
+        fz_runtime::ir_runtime::fz_mark_published_ref_aliased as *const u8,
+    );
+    builder.symbol(
         "fz_alloc_struct",
         fz_runtime::ir_runtime::fz_alloc_struct as *const u8,
     );

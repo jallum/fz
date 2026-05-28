@@ -1319,6 +1319,17 @@ fn tuple_literal_initializes_scalar_fields_without_boxing() {
 }
 
 #[test]
+fn tuple_literal_marks_ref_fields_as_published() {
+    let m = lower_src("fn main(), do: {[1, 2]}");
+    let ir = get_main_ir(&m);
+    assert!(
+        ir.contains("@fz_mark_published_ref_aliased") && ir.contains("@fz_struct_set_field_ref"),
+        "tuple ref fields should be alias-marked before publication:\n{}",
+        ir
+    );
+}
+
+#[test]
 fn print_list_literal_renders_via_jit() {
     assert_eq!(
         capture_main("fn main(), do: dbg([1, 2, 3])"),
@@ -1391,6 +1402,25 @@ end
 "#
         ),
         15
+    );
+}
+
+#[test]
+fn closure_literal_marks_ref_captures_as_published() {
+    let m = lower_src(
+        r#"
+fn main() do
+  xs = [1, 2]
+  f = fn() -> xs
+  f()
+end
+"#,
+    );
+    let ir = get_main_ir(&m);
+    assert!(
+        ir.contains("@fz_mark_published_ref_aliased") && ir.contains("@fz_closure_set_capture_ref"),
+        "closure ref captures should be alias-marked before publication:\n{}",
+        ir
     );
 }
 
@@ -1584,6 +1614,17 @@ fn map_literal_and_update_use_destinations_not_repeated_puts() {
     assert!(
         !ir.contains("@fz_map_put_"),
         "known-entry map construction should not be repeated immutable map_put copies:\n{}",
+        ir
+    );
+}
+
+#[test]
+fn map_literal_marks_ref_entries_as_published() {
+    let m = lower_src("fn main() do\n  xs = [1, 2]\n  %{a: xs}\nend");
+    let ir = get_main_ir(&m);
+    assert!(
+        ir.contains("@fz_mark_published_ref_aliased") && ir.contains("@fz_map_dest_put_ref"),
+        "map ref entries should be alias-marked before publication:\n{}",
         ir
     );
 }

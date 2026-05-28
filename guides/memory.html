@@ -829,10 +829,12 @@ current process allocation counters.</p>
 
 <p>Owned list-cell reuse has one more boundary: publication. A cons cell that is
 stored into another heap object, captured by an escaping closure or lazy
-continuation, passed through an opaque same-heap extern/runtime call, or carried
-across a scheduler-visible same-heap handoff is no longer privately owned by the
+continuation, or carried across a scheduler-visible same-heap handoff is no longer privately owned by the
 rewrite that destructured it. The compiler either refuses to create a reuse
 credit for that cell or marks the cell aliased before a later reuse attempt.</p>
+
+<p>Extern calls do not publish their arguments for alias tracking. If an extern
+wants to retain a value after returning, the extern must copy it.</p>
 
 <p>Send is a copy boundary, not an alias boundary. Cross-process send and
 self-send deep-copy the message graph before enqueueing it, so the sender's

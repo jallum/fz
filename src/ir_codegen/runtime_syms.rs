@@ -97,6 +97,7 @@ pub(crate) fn declare_runtime_symbols<M: cranelift_module::Module>(
         list_head_float_ref_id: list.list_head_float_ref_id,
         list_tail_fallback_id: list.list_tail_fallback_id,
         list_relink_unaliased_tail_ref_id: list.list_relink_unaliased_tail_ref_id,
+        mark_published_ref_aliased_id: list.mark_published_ref_aliased_id,
         alloc_struct_id: strct.alloc_struct_id,
         struct_get_field_id: strct.struct_get_field_id,
         struct_set_field_ref_id: strct.struct_set_field_ref_id,
@@ -209,6 +210,7 @@ struct ListRefs {
     list_head_float_ref_id: FuncId,
     list_tail_fallback_id: FuncId,
     list_relink_unaliased_tail_ref_id: FuncId,
+    mark_published_ref_aliased_id: FuncId,
 }
 
 /// Cons-cell list FFI entries.
@@ -259,6 +261,12 @@ fn declare_list_runtime<M: cranelift_module::Module>(
             jmod,
             "fz_list_relink_unaliased_tail_ref",
             &[types::I64, types::I64],
+            &[types::I64],
+        )?,
+        mark_published_ref_aliased_id: decl_import(
+            jmod,
+            "fz_mark_published_ref_aliased",
+            &[types::I64],
             &[types::I64],
         )?,
     })
@@ -943,6 +951,7 @@ pub(crate) struct RuntimeRefs {
     pub(super) list_head_float_ref_id: FuncId,
     pub(super) list_tail_fallback_id: FuncId,
     pub(super) list_relink_unaliased_tail_ref_id: FuncId,
+    pub(super) mark_published_ref_aliased_id: FuncId,
     pub(super) alloc_struct_id: FuncId,
     pub(super) struct_get_field_id: FuncId,
     pub(super) struct_set_field_ref_id: FuncId,

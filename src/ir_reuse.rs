@@ -53,9 +53,11 @@ fn credit_source_is_owned(
 
 fn prim_publishes_credit_source(prim: &Prim, source_cons: Var) -> bool {
     match prim {
-        Prim::ListHead(_) | Prim::ListTail(_) | Prim::IsEmptyList(_) | Prim::TypeTest(_, _) => {
-            false
-        }
+        Prim::Extern(_, _)
+        | Prim::ListHead(_)
+        | Prim::ListTail(_)
+        | Prim::IsEmptyList(_)
+        | Prim::TypeTest(_, _) => false,
         _ => prim_uses_var(prim, source_cons),
     }
 }
@@ -83,5 +85,37 @@ fn term_publishes_credit_source(term: &Term, source_cons: Var, hidden_transport:
                 || pinned.iter().any(|(_, v)| *v == source_cons)
                 || captures.contains(&source_cons)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::fz_ir::{ExternArg, ExternId, ExternTy, FnBuilder, FnId, ModuleBuilder};
+
+    #[test]
+    fn extern_arguments_do_not_prune_owned_cons_reuse_credits() {
+        let mut b = FnBuilder::new(FnId(0), "extern_arg");
+        let source = b.fresh_var();
+        let entry = b.block(vec![source]);
+        let head = b.let_(entry, Prim::ListHead(source));
+        b.record_owned_cons_reuse_credit(head, source);
+        b.let_(
+            entry,
+            Prim::Extern(ExternId(0), vec![ExternArg::fixed(source, ExternTy::Any)]),
+        );
+        b.set_terminator(entry, Term::Return(head));
+
+        let mut mb = ModuleBuilder::new();
+        mb.add_fn(b.build());
+        let mut module = mb.build();
+
+        prune_borrowed_owned_cons_reuse_credits(&mut module);
+
+        assert_eq!(module.fns[0].owned_cons_reuse_credits.len(), 1);
+        assert_eq!(
+            module.fns[0].owned_cons_reuse_credits[0].source_cons,
+            source
+        );
     }
 }

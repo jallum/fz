@@ -698,6 +698,43 @@ fn gc_preserves_list_alias_metadata() {
 }
 
 #[test]
+fn published_ref_alias_marking_marks_every_reachable_list_cons() {
+    let mut h = Heap::new(1024, empty_registry());
+    let n3 = alloc_int_list_cons(&mut h, 3, crate::any_value::EMPTY_LIST);
+    let n2 = alloc_int_list_cons(&mut h, 2, n3);
+    let n1 = alloc_int_list_cons(&mut h, 1, n2);
+
+    let out = h
+        .mark_published_ref_aliased(list_ref_from_bits(n1))
+        .expect("mark published list");
+
+    assert_eq!(out, list_ref_from_bits(n1));
+    for bits in [n1, n2, n3] {
+        let cons = unsafe {
+            &*(crate::any_value::list_addr_from_tagged(bits).unwrap() as *const ListCons)
+        };
+        assert!(cons.aliased(), "cons {bits:#x} should be aliased");
+    }
+}
+
+#[test]
+fn published_ref_alias_marking_ignores_non_list_refs_and_empty_list() {
+    let mut h = Heap::new(1024, empty_registry());
+    let scalar = 42u64;
+    let int_ref = AnyValueRef::from_scalar_slot(ValueKind::INT, &scalar).expect("int ref");
+
+    assert_eq!(
+        h.mark_published_ref_aliased(int_ref).expect("mark int"),
+        int_ref
+    );
+    assert_eq!(
+        h.mark_published_ref_aliased(AnyValueRef::empty_list())
+            .expect("mark empty list"),
+        AnyValueRef::empty_list()
+    );
+}
+
+#[test]
 fn unaliased_list_cons_can_be_relinked_in_place() {
     let mut h = Heap::new(1024, empty_registry());
     let old_tail = alloc_int_list_cons(&mut h, 1, crate::any_value::EMPTY_LIST);

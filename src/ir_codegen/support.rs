@@ -2,11 +2,23 @@
 
 use super::*;
 use crate::fz_ir::{Prim, Stmt};
-use cranelift_codegen::ir;
+use cranelift_codegen::ir::{self, InstBuilder};
+use cranelift_frontend::FunctionBuilder;
 use std::collections::HashMap;
 
 pub(crate) const HEADER_SIZE: i32 = 16;
 pub(crate) const SLOT_BYTES: i32 = 8;
+
+pub(crate) fn mark_published_ref_aliased<M: cranelift_module::Module>(
+    b: &mut FunctionBuilder<'_>,
+    jmod: &mut M,
+    runtime: &RuntimeRefs,
+    value_ref: ir::Value,
+) -> ir::Value {
+    let fref = jmod.declare_func_in_func(runtime.mark_published_ref_aliased_id, b.func);
+    let inst = b.ins().call(fref, &[value_ref]);
+    b.inst_results(inst)[0]
+}
 
 #[derive(Clone, Copy)]
 pub(crate) enum ListTailBits {

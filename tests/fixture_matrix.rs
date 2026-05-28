@@ -2355,20 +2355,6 @@ end
 fn main(), do: publish([1, 2])
 "#,
         ),
-        (
-            "extern",
-            r#"
-extern "C" fn getpid() :: integer
-fn id(x), do: x
-
-fn publish([h | t]) do
-  getpid()
-  id([h | t])
-end
-
-fn main(), do: publish([1, 2])
-"#,
-        ),
     ];
 
     for (name, source) in cases {

@@ -192,8 +192,9 @@ unaliased even when the source cell was marked aliased.
 The alias bit is set, or reuse-credit creation is refused, when a cons cell is
 published outside the single owned rewrite path. A publication includes storing
 the cell in another heap object, capturing it in a closure or scheduler-visible
-continuation, passing it through an opaque same-heap extern/runtime boundary,
-or crossing a barrier where allocation timing becomes observable. Cross-process
+continuation, or crossing a barrier where allocation timing becomes observable.
+Passing a value to an extern does not publish it: an extern that wants to retain
+a value beyond the call must copy it. Cross-process
 send and self-send are copy boundaries, not alias boundaries: the sender's
 current-process cells need not be marked, and the receiver/mailbox copy is a
 fresh unaliased graph. The bit is intentionally one-way inside a heap: once a

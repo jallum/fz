@@ -1631,6 +1631,16 @@ pub extern "C" fn fz_list_mark_aliased_ref(list_ref_word: u64) -> u64 {
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn fz_mark_published_ref_aliased(value_ref_word: u64) -> u64 {
+    let value = any_value_ref_from_word(value_ref_word, "fz_mark_published_ref_aliased");
+    current_process()
+        .heap
+        .mark_published_ref_aliased(value)
+        .expect("fz_mark_published_ref_aliased")
+        .raw_word()
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn fz_list_relink_unaliased_tail_ref(list_ref_word: u64, tail_ref_word: u64) -> u64 {
     let list = any_value_ref_from_word(list_ref_word, "fz_list_relink_unaliased_tail_ref list");
     let tail = any_value_ref_from_word(tail_ref_word, "fz_list_relink_unaliased_tail_ref tail");
