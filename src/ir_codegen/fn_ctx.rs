@@ -442,6 +442,114 @@ pub(crate) trait CallSite<'env, 'fb, M: cranelift_module::Module> {
             _ => panic!("CodegenValue is not a float"),
         }
     }
+
+    // -- ABI boxing / representation coercion (cache-free) --
+
+    fn box_known_non_heap(
+        &mut self,
+        raw: ir::Value,
+        kind: fz_runtime::any_value::ValueKind,
+    ) -> ir::Value {
+        use fz_runtime::any_value::ValueKind;
+        if kind == ValueKind::INT {
+            return self.box_int_for_any(raw);
+        }
+        if kind == ValueKind::FLOAT {
+            let raw = {
+                let (_, b, _) = self.parts();
+                b.ins().bitcast(types::F64, MemFlags::new(), raw)
+            };
+            return self.box_float_for_any(raw);
+        }
+        if kind == ValueKind::ATOM {
+            return self.box_atom_for_any(raw);
+        }
+        let (_, b, _) = self.parts();
+        if kind == ValueKind::NULL {
+            return b.ins().iconst(types::I64, 0);
+        }
+        if kind == ValueKind::LIST {
+            let _ = raw;
+            let word = fz_runtime::any_value::AnyValueRef::empty_list().raw_word();
+            return b.ins().iconst(types::I64, word as i64);
+        }
+        unreachable!("heap refs must stay as CodegenValue::AnyRef")
+    }
+
+    fn coerce_binding_to(&mut self, binding: CodegenValue, to: ArgRepr) -> ir::Value {
+        match (binding, to) {
+            (CodegenValue::Known { payload, kind }, ArgRepr::ValueRef) => {
+                self.box_known_non_heap(payload, kind)
+            }
+            (CodegenValue::Known { payload, .. }, ArgRepr::RawInt) => payload,
+            (CodegenValue::Known { payload, .. }, ArgRepr::RawF64) => {
+                let (_, b, _) = self.parts();
+                b.ins().bitcast(types::F64, MemFlags::new(), payload)
+            }
+            (CodegenValue::Known { .. }, ArgRepr::Condition) => {
+                unreachable!("condition is never a callee ABI target")
+            }
+            (CodegenValue::AnyRef(value), ArgRepr::ValueRef) => value,
+            (CodegenValue::AnyRef(value), ArgRepr::RawInt) => self.unbox_int(value),
+            (CodegenValue::AnyRef(value), ArgRepr::RawF64) => self.unbox_float(value),
+            (CodegenValue::AnyRef(_), ArgRepr::Condition) => {
+                unreachable!("condition is never a callee ABI target")
+            }
+            (CodegenValue::RawInt(value), ArgRepr::ValueRef) => self.box_int_for_any(value),
+            (CodegenValue::RawF64(value), ArgRepr::ValueRef) => self.box_float_for_any(value),
+            (CodegenValue::Condition(value), ArgRepr::ValueRef) => {
+                let atom = {
+                    let (_, b, _) = self.parts();
+                    let true_v = b
+                        .ins()
+                        .iconst(types::I64, fz_runtime::any_value::TRUE_BITS as i64);
+                    let false_v = b
+                        .ins()
+                        .iconst(types::I64, fz_runtime::any_value::FALSE_BITS as i64);
+                    b.ins().select(value, true_v, false_v)
+                };
+                self.box_atom_for_any(atom)
+            }
+            (binding, to) => {
+                if binding.repr() == to {
+                    binding.value()
+                } else {
+                    self.coerce_to(binding.value(), binding.repr(), to)
+                }
+            }
+        }
+    }
+
+    fn coerce_to(&mut self, val: ir::Value, from: ArgRepr, to: ArgRepr) -> ir::Value {
+        if from == to {
+            return val;
+        }
+        match (from, to) {
+            (ArgRepr::ValueRef, ArgRepr::RawInt) => val,
+            (ArgRepr::ValueRef, ArgRepr::RawF64) => {
+                let (_, b, _) = self.parts();
+                tagged_to_raw_f64_unsupported(b, val)
+            }
+            (ArgRepr::RawInt, ArgRepr::ValueRef) => self.box_int_for_any(val),
+            (ArgRepr::RawF64, ArgRepr::ValueRef) => self.box_float_for_any(val),
+            (ArgRepr::RawInt, ArgRepr::RawF64) => {
+                let (_, b, _) = self.parts();
+                b.ins().fcvt_from_sint(types::F64, val)
+            }
+            (ArgRepr::RawF64, ArgRepr::RawInt) => {
+                let (_, b, _) = self.parts();
+                b.ins().fcvt_to_sint(types::I64, val)
+            }
+            (ArgRepr::Condition, _) | (_, ArgRepr::Condition) => {
+                unreachable!("Condition vars are never coerced")
+            }
+            (ArgRepr::ValueRef, ArgRepr::ValueRef)
+            | (ArgRepr::RawInt, ArgRepr::RawInt)
+            | (ArgRepr::RawF64, ArgRepr::RawF64) => {
+                unreachable!("same-repr coerce: handled by early return")
+            }
+        }
+    }
 }
 
 impl<'a, 'env, 'fb, M: cranelift_module::Module> CallSite<'env, 'fb, M>
@@ -743,29 +851,20 @@ where
         to: ArgRepr,
     ) {
         if to == ArgRepr::ValueRef {
-            out.push(match binding {
-                CodegenValue::RawInt(value) => {
-                    emit_raw_int_as_abi_value_ref(self.cx, self.b, self.jmod, value)
-                }
-                CodegenValue::RawF64(value) => {
-                    emit_raw_float_as_abi_value_ref(self.cx, self.b, self.jmod, value)
-                }
+            let value_ref = match binding {
+                CodegenValue::RawInt(value) => self.box_int_for_any(value),
+                CodegenValue::RawF64(value) => self.box_float_for_any(value),
                 CodegenValue::Condition(value) => {
                     let atom = bool_to_fz(self.b, self.cache, value);
-                    emit_raw_atom_as_abi_value_ref(self.cx, self.b, self.jmod, atom)
+                    self.box_atom_for_any(atom)
                 }
                 CodegenValue::AnyRef(value) => value,
-                CodegenValue::Known { payload, kind } => {
-                    box_known_non_heap_as_any_ref(self.cx, self.b, self.jmod, payload, kind)
-                }
-            });
+                CodegenValue::Known { payload, kind } => self.box_known_non_heap(payload, kind),
+            };
+            out.push(value_ref);
         } else {
             out.push(self.coerce_binding_to(binding, to));
         }
-    }
-
-    pub(crate) fn coerce_binding_to(&mut self, binding: CodegenValue, to: ArgRepr) -> ir::Value {
-        coerce_binding_to(self.cx, self.b, self.jmod, binding, to)
     }
 
     /// Write `value` into field `field_idx` of the struct/tuple at
