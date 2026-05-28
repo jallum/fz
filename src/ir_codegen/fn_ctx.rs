@@ -594,6 +594,66 @@ pub(crate) trait CallSite<'env, 'fb, M: cranelift_module::Module> {
             }
         }
     }
+
+    // -- closure capture access by usize index (cache-free) --
+
+    fn index_const(&mut self, idx: usize) -> ir::Value {
+        let (_, b, _) = self.parts();
+        b.ins().iconst(types::I64, idx as i64)
+    }
+
+    fn closure_capture_i64_at(&mut self, closure_ref: ir::Value, idx: usize) -> ir::Value {
+        let index = self.index_const(idx);
+        self.closure_capture_i64(closure_ref, index)
+    }
+
+    fn closure_capture_f64_at(&mut self, closure_ref: ir::Value, idx: usize) -> ir::Value {
+        let index = self.index_const(idx);
+        self.closure_capture_f64(closure_ref, index)
+    }
+
+    fn closure_capture_ref_at(&mut self, closure_ref: ir::Value, idx: usize) -> ir::Value {
+        let index = self.index_const(idx);
+        self.closure_capture_ref(closure_ref, index)
+    }
+
+    fn closure_capture_as_binding(
+        &mut self,
+        closure_ref: ir::Value,
+        idx: usize,
+        repr: ArgRepr,
+    ) -> CodegenValue {
+        match repr {
+            ArgRepr::RawInt => {
+                CodegenValue::from_abi_value(self.closure_capture_i64_at(closure_ref, idx), repr)
+            }
+            ArgRepr::RawF64 => {
+                CodegenValue::from_abi_value(self.closure_capture_f64_at(closure_ref, idx), repr)
+            }
+            ArgRepr::ValueRef => CodegenValue::any_ref(self.closure_capture_ref_at(closure_ref, idx)),
+            ArgRepr::Condition => unreachable!("closure captures are never condition-only"),
+        }
+    }
+
+    fn outer_cont_ref(&mut self, closure_ref: ir::Value) -> ir::Value {
+        self.closure_capture_ref_at(closure_ref, 0)
+    }
+
+    fn store_closure_capture_ref_word(&mut self, closure_ref: ir::Value, idx: usize, value: ir::Value) {
+        let value = self.mark_published_ref_aliased(value);
+        let index = self.index_const(idx);
+        self.set_closure_capture_ref(closure_ref, index, value);
+    }
+
+    fn store_closure_capture_i64(&mut self, closure_ref: ir::Value, idx: usize, value: ir::Value) {
+        let index = self.index_const(idx);
+        self.set_closure_capture_i64(closure_ref, index, value);
+    }
+
+    fn store_closure_capture_f64(&mut self, closure_ref: ir::Value, idx: usize, value: ir::Value) {
+        let index = self.index_const(idx);
+        self.set_closure_capture_f64(closure_ref, index, value);
+    }
 }
 
 impl<'a, 'env, 'fb, M: cranelift_module::Module> CallSite<'env, 'fb, M>
@@ -609,93 +669,6 @@ impl<'a, 'env, 'fb, M: cranelift_module::Module> CallSite<'env, 'fb, M>
 {
     fn parts(&mut self) -> (&mut CodegenFn<'env>, &mut FunctionBuilder<'fb>, &mut M) {
         (&mut *self.cx, &mut *self.b, &mut *self.jmod)
-    }
-}
-
-impl<M> CodegenFnSite<'_, '_, '_, M>
-where
-    M: cranelift_module::Module,
-{
-    pub(crate) fn closure_capture_i64_at(
-        &mut self,
-        closure_ref: ir::Value,
-        idx: usize,
-    ) -> ir::Value {
-        let index = self.b.ins().iconst(types::I64, idx as i64);
-        self.closure_capture_i64(closure_ref, index)
-    }
-
-    pub(crate) fn closure_capture_f64_at(
-        &mut self,
-        closure_ref: ir::Value,
-        idx: usize,
-    ) -> ir::Value {
-        let index = self.b.ins().iconst(types::I64, idx as i64);
-        self.closure_capture_f64(closure_ref, index)
-    }
-
-    pub(crate) fn closure_capture_ref_at(
-        &mut self,
-        closure_ref: ir::Value,
-        idx: usize,
-    ) -> ir::Value {
-        let index = self.b.ins().iconst(types::I64, idx as i64);
-        self.closure_capture_ref(closure_ref, index)
-    }
-
-    pub(crate) fn closure_capture_as_binding(
-        &mut self,
-        closure_ref: ir::Value,
-        idx: usize,
-        repr: ArgRepr,
-    ) -> CodegenValue {
-        match repr {
-            ArgRepr::RawInt => {
-                CodegenValue::from_abi_value(self.closure_capture_i64_at(closure_ref, idx), repr)
-            }
-            ArgRepr::RawF64 => {
-                CodegenValue::from_abi_value(self.closure_capture_f64_at(closure_ref, idx), repr)
-            }
-            ArgRepr::ValueRef => {
-                CodegenValue::any_ref(self.closure_capture_ref_at(closure_ref, idx))
-            }
-            ArgRepr::Condition => unreachable!("closure captures are never condition-only"),
-        }
-    }
-
-    pub(crate) fn outer_cont_ref(&mut self, closure_ref: ir::Value) -> ir::Value {
-        self.closure_capture_ref_at(closure_ref, 0)
-    }
-
-    pub(crate) fn store_closure_capture_ref_word(
-        &mut self,
-        closure_ref: ir::Value,
-        idx: usize,
-        value: ir::Value,
-    ) {
-        let value = self.mark_published_ref_aliased(value);
-        let index = self.b.ins().iconst(types::I64, idx as i64);
-        self.set_closure_capture_ref(closure_ref, index, value);
-    }
-
-    pub(crate) fn store_closure_capture_i64(
-        &mut self,
-        closure_ref: ir::Value,
-        idx: usize,
-        value: ir::Value,
-    ) {
-        let index = self.b.ins().iconst(types::I64, idx as i64);
-        self.set_closure_capture_i64(closure_ref, index, value);
-    }
-
-    pub(crate) fn store_closure_capture_f64(
-        &mut self,
-        closure_ref: ir::Value,
-        idx: usize,
-        value: ir::Value,
-    ) {
-        let index = self.b.ins().iconst(types::I64, idx as i64);
-        self.set_closure_capture_f64(closure_ref, index, value);
     }
 }
 

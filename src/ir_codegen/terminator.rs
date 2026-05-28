@@ -183,13 +183,16 @@ impl ContinuationPlan {
         cont_param: Option<ir::Value>,
         frame_ptr: Option<ir::Value>,
     ) -> ir::Value {
+        // Bridge: these builders never read the cache, but the body view
+        // needs one to construct. A scratch cache here is replaced when
+        // emit_value itself takes a body (terminator migration).
+        let mut cache = CodegenCache::default();
+        let mut body = cx.body(b, jmod, &mut cache);
         match self {
             ContinuationPlan::LazyNativeDescriptor(payload) => {
                 let ref_captures = payload.ref_captures();
                 build_lazy_cont_descriptor(
-                    cx,
-                    jmod,
-                    b,
+                    &mut body,
                     runtime,
                     return_reprs,
                     is_cont_fn,
@@ -204,9 +207,7 @@ impl ContinuationPlan {
             ContinuationPlan::HeapClosure(payload) => {
                 let ref_captures = payload.ref_captures();
                 build_cont_closure(
-                    cx,
-                    jmod,
-                    b,
+                    &mut body,
                     runtime,
                     return_reprs,
                     is_cont_fn,
@@ -998,7 +999,7 @@ fn emit_native_call_with_cont<
             Some(c) => c,
             None => {
                 synth_halt_cont = true;
-                synthesize_halt_cont(cx, jmod, b, runtime, callee_ret_repr)
+                synthesize_halt_cont(&mut cx.body(b, jmod, cache), runtime, callee_ret_repr)
             }
         }
     };
@@ -1204,7 +1205,7 @@ fn emit_native_tail_call<M: cranelift_module::Module>(
             Some(c) => c,
             None => {
                 synth_halt_cont = true;
-                synthesize_halt_cont(cx, jmod, b, runtime, callee_ret_repr)
+                synthesize_halt_cont(&mut cx.body(b, jmod, cache), runtime, callee_ret_repr)
             }
         }
     };
