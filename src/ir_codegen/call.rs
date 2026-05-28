@@ -95,7 +95,8 @@ pub(crate) fn emit_return<M: cranelift_module::Module>(
     // invoke: write val to cont[24], return cont_ptr.
     b.switch_to_block(invoke_blk);
     b.seal_block(invoke_blk);
-    store_frame_value_dynamic(cx, b, jmod, cache, cont_ptr, SLOT_BYTES as u32, value);
+    cx.body(b, jmod, cache)
+        .store_frame_value_dynamic(cont_ptr, SLOT_BYTES as u32, value);
     b.ins().return_(&[cont_ptr]);
 }
 
@@ -117,20 +118,6 @@ pub(crate) fn emit_halt_and_return_null<M: cranelift_module::Module>(
     emit_halt_from_codegen_value(cx, b, jmod, runtime, cache, value);
     let null = b.ins().iconst(types::I64, 0);
     b.ins().return_(&[null]);
-}
-
-pub(crate) fn store_frame_value_dynamic<M: cranelift_module::Module>(
-    cx: &mut CodegenFn<'_>,
-    b: &mut FunctionBuilder<'_>,
-    jmod: &mut M,
-    cache: &mut CodegenCache,
-    frame: ir::Value,
-    field_offset: u32,
-    value: CodegenValue,
-) {
-    let value_ref = cx.body(b, jmod, cache).value_as_any_ref(value);
-    b.ins()
-        .store(MemFlags::trusted(), value_ref, frame, field_offset as i32);
 }
 
 /// Term::Call: allocate continuation frame + callee frame. Continuation

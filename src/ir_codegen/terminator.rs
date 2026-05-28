@@ -756,15 +756,16 @@ fn emit_call_term<
             let entry = caller_fn.block(caller_fn.entry);
             if entry.params.first().copied() == Some(tail_capture) {
                 let tail_bits = cx.any_ref_for_var(var_env, b, jmod, tail_capture.0, cache);
-                let pivot_tail = if let Some(reused) = emit_owned_cons_reuse_or_alloc(
-                    cx,
-                    b,
-                    jmod,
-                    var_env,
-                    cache,
-                    pivot_capture,
-                    ListTailBits::ValueRef(tail_bits),
-                ) {
+                let reused = {
+                    let mut body = cx.body(b, jmod, cache);
+                    emit_owned_cons_reuse_or_alloc(
+                        &mut body,
+                        var_env,
+                        pivot_capture,
+                        ListTailBits::ValueRef(tail_bits),
+                    )
+                };
+                let pivot_tail = if let Some(reused) = reused {
                     reused
                 } else {
                     emit_list_cons_bif(
@@ -1245,7 +1246,8 @@ fn emit_native_tail_call<M: cranelift_module::Module>(
         b.ins().return_(&[null]);
         b.switch_to_block(invoke_blk);
         b.seal_block(invoke_blk);
-        store_frame_value_dynamic(cx, b, jmod, cache, my_cont, SLOT_BYTES as u32, result_value);
+        cx.body(b, jmod, cache)
+            .store_frame_value_dynamic(my_cont, SLOT_BYTES as u32, result_value);
         b.ins().return_(&[my_cont]);
     }
 }

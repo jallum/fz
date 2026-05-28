@@ -53,23 +53,15 @@ pub(crate) fn list_tail_bits_for_var<T: crate::types::Types<Ty = crate::types::T
 }
 
 pub(crate) fn emit_owned_cons_reuse_or_alloc<M: cranelift_module::Module>(
-    cx: &mut CodegenFn<'_>,
-    b: &mut FunctionBuilder<'_>,
-    jmod: &mut M,
+    body: &mut CodegenFnBody<'_, '_, '_, M>,
     var_env: &HashMap<u32, CodegenValue>,
-    cache: &mut CodegenCache,
     head: crate::fz_ir::Var,
     tail: ListTailBits,
 ) -> Option<ir::Value> {
-    let source_cons = *cache.owned_cons_reuse_sources.get(&head.0)?;
-    let (source_ref, tail_ref) = {
-        let mut body = cx.body(b, jmod, cache);
-        (
-            body.any_ref_for_var(var_env, source_cons.0),
-            body.list_tail_ref_word(tail),
-        )
-    };
-    Some(cx.list_reuse_or_cons_tail_ref(b, jmod, source_ref, tail_ref))
+    let source_cons = body.owned_cons_reuse_source(head)?;
+    let source_ref = body.any_ref_for_var(var_env, source_cons.0);
+    let tail_ref = body.list_tail_ref_word(tail);
+    Some(body.list_reuse_or_cons_tail_ref(source_ref, tail_ref))
 }
 
 // Raw atom payloads used with side-band ATOM kind tags.

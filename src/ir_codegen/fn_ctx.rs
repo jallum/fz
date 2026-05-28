@@ -7,7 +7,7 @@
 //! runtime helper calls remain an implementation detail behind those methods.
 
 use super::*;
-use cranelift_codegen::ir::{self, InstBuilder, types};
+use cranelift_codegen::ir::{self, InstBuilder, MemFlags, types};
 use cranelift_frontend::FunctionBuilder;
 use cranelift_module::FuncId;
 use std::collections::HashMap;
@@ -557,6 +557,34 @@ where
         self.cx.list_tail_ref_word(self.b, self.cache, tail)
     }
 
+    pub(crate) fn owned_cons_reuse_source(
+        &self,
+        head: crate::fz_ir::Var,
+    ) -> Option<crate::fz_ir::Var> {
+        self.cache.owned_cons_reuse_sources.get(&head.0).copied()
+    }
+
+    pub(crate) fn list_reuse_or_cons_tail_ref(
+        &mut self,
+        source_ref: ir::Value,
+        tail_ref: ir::Value,
+    ) -> ir::Value {
+        self.cx
+            .list_reuse_or_cons_tail_ref(self.b, self.jmod, source_ref, tail_ref)
+    }
+
+    pub(crate) fn store_frame_value_dynamic(
+        &mut self,
+        frame: ir::Value,
+        field_offset: u32,
+        value: CodegenValue,
+    ) {
+        let value_ref = self.value_as_any_ref(value);
+        self.b
+            .ins()
+            .store(MemFlags::trusted(), value_ref, frame, field_offset as i32);
+    }
+
     pub(crate) fn coerce_binding_to(&mut self, binding: CodegenValue, to: ArgRepr) -> ir::Value {
         coerce_binding_to(self.cx, self.b, self.jmod, binding, to)
     }
@@ -704,11 +732,25 @@ mod tests {
             !include_str!("support.rs").contains("pub(crate) fn list_tail_ref_word("),
             "support.rs should not keep the retired list_tail_ref_word free helper"
         );
+        let support_source = include_str!("support.rs");
+        assert!(
+            support_source.contains("body: &mut CodegenFnBody"),
+            "owned-cons reuse should accept the semantic body surface"
+        );
+        assert!(
+            !support_source.contains("emit_owned_cons_reuse_or_alloc<M: cranelift_module::Module>(\n    cx: &mut CodegenFn"),
+            "owned-cons reuse should not accept raw lowering plumbing"
+        );
+        assert!(
+            !include_str!("call.rs").contains("pub(crate) fn store_frame_value_dynamic"),
+            "frame value stores should be CodegenFn body operations, not free helpers"
+        );
 
         assert!(
             context_source.contains("fn value_as_any_ref(")
                 && context_source.contains("fn any_ref_for_var(")
                 && context_source.contains("fn list_tail_ref_word(")
+                && context_source.contains("fn store_frame_value_dynamic(")
                 && context_source.contains("fn coerce_binding_to("),
             "CodegenFn body surface should expose migrated semantic coercions"
         );
