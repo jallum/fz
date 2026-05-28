@@ -31,264 +31,381 @@ impl FunctionImports {
     }
 }
 
-pub(crate) struct CodegenFn<'builder, 'ctx, M: cranelift_module::Module> {
-    pub(crate) b: &'ctx mut FunctionBuilder<'builder>,
-    pub(crate) jmod: &'ctx mut M,
-    runtime: &'ctx RuntimeRefs,
-    cache: Option<&'ctx mut CodegenCache>,
+pub(crate) struct CodegenFn<'env> {
+    runtime: &'env RuntimeRefs,
     imports: FunctionImports,
 }
 
-impl<'builder, 'ctx, M: cranelift_module::Module> CodegenFn<'builder, 'ctx, M> {
-    pub(crate) fn new(
-        b: &'ctx mut FunctionBuilder<'builder>,
-        jmod: &'ctx mut M,
-        env: &'ctx CodegenEnv<'_>,
-        cache: &'ctx mut CodegenCache,
-    ) -> Self {
+impl<'env> CodegenFn<'env> {
+    pub(crate) fn new(env: &'env CodegenEnv<'_>) -> Self {
         Self {
-            b,
-            jmod,
             runtime: env.runtime,
-            cache: Some(cache),
             imports: FunctionImports::default(),
         }
     }
 
-    pub(crate) fn new_runtime(
-        b: &'ctx mut FunctionBuilder<'builder>,
-        jmod: &'ctx mut M,
-        runtime: &'ctx RuntimeRefs,
-    ) -> Self {
+    /// Build a semantic context for generated runtime shim bodies, which
+    /// have runtime refs but no fz `CodegenEnv`.
+    pub(crate) fn for_runtime_shim(runtime: &'env RuntimeRefs) -> Self {
         Self {
-            b,
-            jmod,
             runtime,
-            cache: None,
             imports: FunctionImports::default(),
         }
     }
 
-    pub(crate) fn new_runtime_with_cache(
-        b: &'ctx mut FunctionBuilder<'builder>,
-        jmod: &'ctx mut M,
-        runtime: &'ctx RuntimeRefs,
-        cache: &'ctx mut CodegenCache,
-    ) -> Self {
-        Self {
-            b,
-            jmod,
-            runtime,
-            cache: Some(cache),
-            imports: FunctionImports::default(),
-        }
+    pub(crate) fn func_ref<M: cranelift_module::Module>(
+        &mut self,
+        b: &mut FunctionBuilder<'_>,
+        jmod: &mut M,
+        id: FuncId,
+    ) -> ir::FuncRef {
+        self.imports.func_ref(jmod, b.func, id)
     }
 
-    pub(crate) fn func_ref(&mut self, id: FuncId) -> ir::FuncRef {
-        self.imports.func_ref(self.jmod, self.b.func, id)
+    pub(crate) fn call_func<M: cranelift_module::Module>(
+        &mut self,
+        b: &mut FunctionBuilder<'_>,
+        jmod: &mut M,
+        id: FuncId,
+        args: &[ir::Value],
+    ) -> ir::Inst {
+        let fref = self.func_ref(b, jmod, id);
+        b.ins().call(fref, args)
     }
 
-    pub(crate) fn call_func(&mut self, id: FuncId, args: &[ir::Value]) -> ir::Inst {
-        let fref = self.func_ref(id);
-        self.b.ins().call(fref, args)
+    pub(crate) fn call_func1<M: cranelift_module::Module>(
+        &mut self,
+        b: &mut FunctionBuilder<'_>,
+        jmod: &mut M,
+        id: FuncId,
+        args: &[ir::Value],
+    ) -> ir::Value {
+        let inst = self.call_func(b, jmod, id, args);
+        b.inst_results(inst)[0]
     }
 
-    pub(crate) fn call_func1(&mut self, id: FuncId, args: &[ir::Value]) -> ir::Value {
-        let inst = self.call_func(id, args);
-        self.b.inst_results(inst)[0]
+    pub(crate) fn ref_tag<M: cranelift_module::Module>(
+        &mut self,
+        b: &mut FunctionBuilder<'_>,
+        jmod: &mut M,
+        value_ref: ir::Value,
+    ) -> ir::Value {
+        self.call_func1(b, jmod, self.runtime.type_of_id, &[value_ref])
     }
 
-    pub(crate) fn ref_tag(&mut self, value_ref: ir::Value) -> ir::Value {
-        self.call_func1(self.runtime.type_of_id, &[value_ref])
+    pub(crate) fn truthy_ref<M: cranelift_module::Module>(
+        &mut self,
+        b: &mut FunctionBuilder<'_>,
+        jmod: &mut M,
+        value_ref: ir::Value,
+    ) -> ir::Value {
+        self.call_func1(b, jmod, self.runtime.truthy_ref_id, &[value_ref])
     }
 
-    pub(crate) fn truthy_ref(&mut self, value_ref: ir::Value) -> ir::Value {
-        self.call_func1(self.runtime.truthy_ref_id, &[value_ref])
+    pub(crate) fn box_int_for_any<M: cranelift_module::Module>(
+        &mut self,
+        b: &mut FunctionBuilder<'_>,
+        jmod: &mut M,
+        raw: ir::Value,
+    ) -> ir::Value {
+        self.call_func1(b, jmod, self.runtime.box_int_for_any_id, &[raw])
     }
 
-    pub(crate) fn box_int_for_any(&mut self, raw: ir::Value) -> ir::Value {
-        self.call_func1(self.runtime.box_int_for_any_id, &[raw])
+    pub(crate) fn box_float_for_any<M: cranelift_module::Module>(
+        &mut self,
+        b: &mut FunctionBuilder<'_>,
+        jmod: &mut M,
+        raw: ir::Value,
+    ) -> ir::Value {
+        self.call_func1(b, jmod, self.runtime.box_float_for_any_id, &[raw])
     }
 
-    pub(crate) fn box_float_for_any(&mut self, raw: ir::Value) -> ir::Value {
-        self.call_func1(self.runtime.box_float_for_any_id, &[raw])
+    pub(crate) fn box_atom_for_any<M: cranelift_module::Module>(
+        &mut self,
+        b: &mut FunctionBuilder<'_>,
+        jmod: &mut M,
+        raw: ir::Value,
+    ) -> ir::Value {
+        self.call_func1(b, jmod, self.runtime.box_atom_for_any_id, &[raw])
     }
 
-    pub(crate) fn box_atom_for_any(&mut self, raw: ir::Value) -> ir::Value {
-        self.call_func1(self.runtime.box_atom_for_any_id, &[raw])
+    pub(crate) fn unbox_int<M: cranelift_module::Module>(
+        &mut self,
+        b: &mut FunctionBuilder<'_>,
+        jmod: &mut M,
+        value_ref: ir::Value,
+    ) -> ir::Value {
+        self.call_func1(b, jmod, self.runtime.unbox_int_id, &[value_ref])
     }
 
-    pub(crate) fn unbox_int(&mut self, value_ref: ir::Value) -> ir::Value {
-        self.call_func1(self.runtime.unbox_int_id, &[value_ref])
+    pub(crate) fn unbox_float<M: cranelift_module::Module>(
+        &mut self,
+        b: &mut FunctionBuilder<'_>,
+        jmod: &mut M,
+        value_ref: ir::Value,
+    ) -> ir::Value {
+        self.call_func1(b, jmod, self.runtime.unbox_float_id, &[value_ref])
     }
 
-    pub(crate) fn unbox_float(&mut self, value_ref: ir::Value) -> ir::Value {
-        self.call_func1(self.runtime.unbox_float_id, &[value_ref])
+    pub(crate) fn unbox_atom<M: cranelift_module::Module>(
+        &mut self,
+        b: &mut FunctionBuilder<'_>,
+        jmod: &mut M,
+        value_ref: ir::Value,
+    ) -> ir::Value {
+        self.call_func1(b, jmod, self.runtime.unbox_atom_id, &[value_ref])
     }
 
-    pub(crate) fn unbox_atom(&mut self, value_ref: ir::Value) -> ir::Value {
-        self.call_func1(self.runtime.unbox_atom_id, &[value_ref])
+    pub(crate) fn empty_list_ref(
+        &mut self,
+        b: &mut FunctionBuilder<'_>,
+        cache: &mut CodegenCache,
+    ) -> ir::Value {
+        emit_empty_list_value_ref_word(b, cache)
     }
 
-    pub(crate) fn empty_list_ref(&mut self) -> ir::Value {
-        let cache = self
-            .cache
-            .as_deref_mut()
-            .expect("empty list refs require a CodegenCache");
-        emit_empty_list_value_ref_word(self.b, cache)
-    }
-
-    pub(crate) fn list_tail_ref_word(&mut self, tail: ListTailBits) -> ir::Value {
+    pub(crate) fn list_tail_ref_word(
+        &mut self,
+        b: &mut FunctionBuilder<'_>,
+        cache: &mut CodegenCache,
+        tail: ListTailBits,
+    ) -> ir::Value {
         match tail {
-            ListTailBits::Empty => self.empty_list_ref(),
+            ListTailBits::Empty => self.empty_list_ref(b, cache),
             ListTailBits::ValueRef(value) | ListTailBits::NonEmptyValueRef(value) => value,
         }
     }
 
-    pub(crate) fn list_cons_with(&mut self, cons_id: FuncId, args: &[ir::Value]) -> ir::Value {
-        self.call_func1(cons_id, args)
-    }
-
-    pub(crate) fn list_head(&mut self, list_ref: ir::Value) -> ir::Value {
-        self.call_func1(self.runtime.list_head_fallback_id, &[list_ref])
-    }
-
-    pub(crate) fn list_head_int(&mut self, list_ref: ir::Value) -> ir::Value {
-        self.call_func1(self.runtime.list_head_int_ref_id, &[list_ref])
-    }
-
-    pub(crate) fn list_head_float(&mut self, list_ref: ir::Value) -> ir::Value {
-        self.call_func1(self.runtime.list_head_float_ref_id, &[list_ref])
-    }
-
-    pub(crate) fn list_tail(&mut self, list_ref: ir::Value) -> ir::Value {
-        self.call_func1(self.runtime.list_tail_fallback_id, &[list_ref])
-    }
-
-    pub(crate) fn closure_capture_i64(
+    pub(crate) fn list_cons_with<M: cranelift_module::Module>(
         &mut self,
+        b: &mut FunctionBuilder<'_>,
+        jmod: &mut M,
+        cons_id: FuncId,
+        args: &[ir::Value],
+    ) -> ir::Value {
+        self.call_func1(b, jmod, cons_id, args)
+    }
+
+    pub(crate) fn list_head<M: cranelift_module::Module>(
+        &mut self,
+        b: &mut FunctionBuilder<'_>,
+        jmod: &mut M,
+        list_ref: ir::Value,
+    ) -> ir::Value {
+        self.call_func1(b, jmod, self.runtime.list_head_fallback_id, &[list_ref])
+    }
+
+    pub(crate) fn list_head_int<M: cranelift_module::Module>(
+        &mut self,
+        b: &mut FunctionBuilder<'_>,
+        jmod: &mut M,
+        list_ref: ir::Value,
+    ) -> ir::Value {
+        self.call_func1(b, jmod, self.runtime.list_head_int_ref_id, &[list_ref])
+    }
+
+    pub(crate) fn list_head_float<M: cranelift_module::Module>(
+        &mut self,
+        b: &mut FunctionBuilder<'_>,
+        jmod: &mut M,
+        list_ref: ir::Value,
+    ) -> ir::Value {
+        self.call_func1(b, jmod, self.runtime.list_head_float_ref_id, &[list_ref])
+    }
+
+    pub(crate) fn list_tail<M: cranelift_module::Module>(
+        &mut self,
+        b: &mut FunctionBuilder<'_>,
+        jmod: &mut M,
+        list_ref: ir::Value,
+    ) -> ir::Value {
+        self.call_func1(b, jmod, self.runtime.list_tail_fallback_id, &[list_ref])
+    }
+
+    pub(crate) fn closure_capture_i64<M: cranelift_module::Module>(
+        &mut self,
+        b: &mut FunctionBuilder<'_>,
+        jmod: &mut M,
         closure_ref: ir::Value,
         index: ir::Value,
     ) -> ir::Value {
         self.call_func1(
+            b,
+            jmod,
             self.runtime.closure_get_capture_i64_id,
             &[closure_ref, index],
         )
     }
 
-    pub(crate) fn closure_capture_f64(
+    pub(crate) fn closure_capture_f64<M: cranelift_module::Module>(
         &mut self,
+        b: &mut FunctionBuilder<'_>,
+        jmod: &mut M,
         closure_ref: ir::Value,
         index: ir::Value,
     ) -> ir::Value {
         self.call_func1(
+            b,
+            jmod,
             self.runtime.closure_get_capture_f64_id,
             &[closure_ref, index],
         )
     }
 
-    pub(crate) fn closure_capture_ref(
+    pub(crate) fn closure_capture_ref<M: cranelift_module::Module>(
         &mut self,
+        b: &mut FunctionBuilder<'_>,
+        jmod: &mut M,
         closure_ref: ir::Value,
         index: ir::Value,
     ) -> ir::Value {
         self.call_func1(
+            b,
+            jmod,
             self.runtime.closure_get_capture_ref_id,
             &[closure_ref, index],
         )
     }
 
-    pub(crate) fn closure_code_ref(&mut self, closure_ref: ir::Value) -> ir::Value {
-        self.call_func1(self.runtime.closure_code_ref_id, &[closure_ref])
-    }
-
-    pub(crate) fn closure_halt_kind_ref(&mut self, closure_ref: ir::Value) -> ir::Value {
-        self.call_func1(self.runtime.closure_halt_kind_ref_id, &[closure_ref])
-    }
-
-    pub(crate) fn set_closure_capture_ref(
+    pub(crate) fn closure_code_ref<M: cranelift_module::Module>(
         &mut self,
+        b: &mut FunctionBuilder<'_>,
+        jmod: &mut M,
+        closure_ref: ir::Value,
+    ) -> ir::Value {
+        self.call_func1(b, jmod, self.runtime.closure_code_ref_id, &[closure_ref])
+    }
+
+    pub(crate) fn closure_halt_kind_ref<M: cranelift_module::Module>(
+        &mut self,
+        b: &mut FunctionBuilder<'_>,
+        jmod: &mut M,
+        closure_ref: ir::Value,
+    ) -> ir::Value {
+        self.call_func1(
+            b,
+            jmod,
+            self.runtime.closure_halt_kind_ref_id,
+            &[closure_ref],
+        )
+    }
+
+    pub(crate) fn set_closure_capture_ref<M: cranelift_module::Module>(
+        &mut self,
+        b: &mut FunctionBuilder<'_>,
+        jmod: &mut M,
         closure_ref: ir::Value,
         index: ir::Value,
         value: ir::Value,
     ) {
         self.call_func(
+            b,
+            jmod,
             self.runtime.closure_set_capture_ref_id,
             &[closure_ref, index, value],
         );
     }
 
-    pub(crate) fn set_closure_capture_i64(
+    pub(crate) fn set_closure_capture_i64<M: cranelift_module::Module>(
         &mut self,
+        b: &mut FunctionBuilder<'_>,
+        jmod: &mut M,
         closure_ref: ir::Value,
         index: ir::Value,
         value: ir::Value,
     ) {
         self.call_func(
+            b,
+            jmod,
             self.runtime.closure_set_capture_i64_id,
             &[closure_ref, index, value],
         );
     }
 
-    pub(crate) fn set_closure_capture_f64(
+    pub(crate) fn set_closure_capture_f64<M: cranelift_module::Module>(
         &mut self,
+        b: &mut FunctionBuilder<'_>,
+        jmod: &mut M,
         closure_ref: ir::Value,
         index: ir::Value,
         value: ir::Value,
     ) {
         self.call_func(
+            b,
+            jmod,
             self.runtime.closure_set_capture_f64_id,
             &[closure_ref, index, value],
         );
     }
 
-    pub(crate) fn materialize_cont(&mut self, value: ir::Value) -> ir::Value {
-        self.call_func1(self.runtime.materialize_cont_id, &[value])
+    pub(crate) fn materialize_cont<M: cranelift_module::Module>(
+        &mut self,
+        b: &mut FunctionBuilder<'_>,
+        jmod: &mut M,
+        value: ir::Value,
+    ) -> ir::Value {
+        self.call_func1(b, jmod, self.runtime.materialize_cont_id, &[value])
     }
 
-    pub(crate) fn struct_set_field_int(
+    pub(crate) fn struct_set_field_int<M: cranelift_module::Module>(
         &mut self,
+        b: &mut FunctionBuilder<'_>,
+        jmod: &mut M,
         struct_bits: ir::Value,
         offset: ir::Value,
         value: ir::Value,
     ) {
         self.call_func(
+            b,
+            jmod,
             self.runtime.struct_set_field_int_id,
             &[struct_bits, offset, value],
         );
     }
 
-    pub(crate) fn struct_set_field_float(
+    pub(crate) fn struct_set_field_float<M: cranelift_module::Module>(
         &mut self,
+        b: &mut FunctionBuilder<'_>,
+        jmod: &mut M,
         struct_bits: ir::Value,
         offset: ir::Value,
         value: ir::Value,
     ) {
         self.call_func(
+            b,
+            jmod,
             self.runtime.struct_set_field_float_id,
             &[struct_bits, offset, value],
         );
     }
 
-    pub(crate) fn struct_set_field_atom(
+    pub(crate) fn struct_set_field_atom<M: cranelift_module::Module>(
         &mut self,
+        b: &mut FunctionBuilder<'_>,
+        jmod: &mut M,
         struct_bits: ir::Value,
         offset: ir::Value,
         value: ir::Value,
     ) {
         self.call_func(
+            b,
+            jmod,
             self.runtime.struct_set_field_atom_id,
             &[struct_bits, offset, value],
         );
     }
 
-    pub(crate) fn struct_set_field_ref(
+    pub(crate) fn struct_set_field_ref<M: cranelift_module::Module>(
         &mut self,
+        b: &mut FunctionBuilder<'_>,
+        jmod: &mut M,
         struct_bits: ir::Value,
         offset: ir::Value,
         value: ir::Value,
     ) {
         self.call_func(
+            b,
+            jmod,
             self.runtime.struct_set_field_ref_id,
             &[struct_bits, offset, value],
         );
@@ -345,14 +462,18 @@ mod tests {
     #[test]
     fn ordinary_lowering_runtime_plumbing_stays_budgeted() {
         let files = [
-            ("call.rs", include_str!("call.rs"), 8, 8),
-            ("closure.rs", include_str!("closure.rs"), 3, 6),
-            ("prim.rs", include_str!("prim.rs"), 47, 57),
-            ("terminator.rs", include_str!("terminator.rs"), 13, 7),
-            ("value.rs", include_str!("value.rs"), 1, 1),
+            ("call.rs", include_str!("call.rs"), 8, 8, 0),
+            ("closure.rs", include_str!("closure.rs"), 3, 6, 0),
+            ("entry.rs", include_str!("entry.rs"), 1, 1, 0),
+            ("function.rs", include_str!("function.rs"), 0, 0, 0),
+            ("prim.rs", include_str!("prim.rs"), 47, 57, 0),
+            ("repr.rs", include_str!("repr.rs"), 1, 1, 0),
+            ("support.rs", include_str!("support.rs"), 2, 2, 0),
+            ("terminator.rs", include_str!("terminator.rs"), 13, 7, 0),
+            ("value.rs", include_str!("value.rs"), 1, 1, 0),
         ];
 
-        for (name, source, max_declares, max_runtime_ids) in files {
+        for (name, source, max_declares, max_runtime_ids, max_runtime_contexts) in files {
             let declares = count_matches(source, "declare_func_in_func");
             assert!(
                 declares <= max_declares,
@@ -362,6 +483,11 @@ mod tests {
             assert!(
                 runtime_ids <= max_runtime_ids,
                 "{name} has {runtime_ids} runtime helper id references; budget is {max_runtime_ids}"
+            );
+            let runtime_contexts = count_matches(source, "CodegenFn::for_runtime_shim");
+            assert!(
+                runtime_contexts <= max_runtime_contexts,
+                "{name} has {runtime_contexts} helper-local CodegenFn contexts; budget is {max_runtime_contexts}"
             );
         }
     }

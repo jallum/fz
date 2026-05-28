@@ -32,6 +32,7 @@ pub(crate) struct EntryHarnessOut {
 }
 
 pub(crate) fn build_entry_harness<M: cranelift_module::Module>(
+    cx: &mut CodegenFn<'_>,
     b: &mut FunctionBuilder<'_>,
     jmod: &mut M,
     env: &CodegenEnv<'_>,
@@ -68,6 +69,7 @@ pub(crate) fn build_entry_harness<M: cranelift_module::Module>(
         let my_param_reprs = &param_reprs[this_spec_id as usize];
         if is_cont_fn {
             harness_cont_fn(
+                cx,
                 b,
                 jmod,
                 env,
@@ -81,6 +83,7 @@ pub(crate) fn build_entry_harness<M: cranelift_module::Module>(
             )
         } else if let Some(n_caps) = closure_target_n_caps {
             harness_closure_target(
+                cx,
                 b,
                 jmod,
                 env,
@@ -166,6 +169,7 @@ pub(crate) fn build_entry_harness<M: cranelift_module::Module>(
 ///
 /// Returns (frame_ptr, host_ctx, cont_param, list_tail_param).
 fn harness_cont_fn<M: cranelift_module::Module>(
+    cx: &mut CodegenFn<'_>,
     b: &mut FunctionBuilder<'_>,
     jmod: &mut M,
     env: &CodegenEnv<'_>,
@@ -223,6 +227,7 @@ fn harness_cont_fn<M: cranelift_module::Module>(
             i
         };
         let binding = load_closure_capture_as_binding(
+            cx,
             b,
             jmod,
             env.runtime,
@@ -260,6 +265,7 @@ fn harness_cont_fn<M: cranelift_module::Module>(
 ///
 /// Returns (frame_ptr, host_ctx, cont_param, list_tail_param).
 fn harness_closure_target<M: cranelift_module::Module>(
+    cx: &mut CodegenFn<'_>,
     b: &mut FunctionBuilder<'_>,
     jmod: &mut M,
     env: &CodegenEnv<'_>,
@@ -290,6 +296,7 @@ fn harness_closure_target<M: cranelift_module::Module>(
     let cont_val = params[param_cursor + 1 + usize::from(has_list_tail_dest)];
     for (k, p) in entry_blk.params.iter().enumerate().take(n_caps) {
         let binding = load_closure_capture_as_binding(
+            cx,
             b,
             jmod,
             env.runtime,

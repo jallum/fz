@@ -128,6 +128,7 @@ pub(crate) fn compile_fn<
     b.switch_to_block(entry_cl);
     b.seal_block(entry_cl);
 
+    let mut cx = CodegenFn::new(env);
     let EntryHarnessOut {
         mut var_env,
         frame_ptr,
@@ -136,6 +137,7 @@ pub(crate) fn compile_fn<
         tuple_field_params,
         list_tail_param,
     } = build_entry_harness(
+        &mut cx,
         &mut b,
         jmod,
         env,
@@ -167,7 +169,6 @@ pub(crate) fn compile_fn<
             ..CodegenCache::default()
         }
     };
-
     // Walk blocks in declared order with entry first. Unreachable
     // fz_ir blocks are filtered out — they have no Cranelift counterpart.
     let mut order: Vec<&crate::fz_ir::Block> = Vec::with_capacity(f.blocks.len());
@@ -215,7 +216,8 @@ pub(crate) fn compile_fn<
             b.set_srcloc(span_to_srcloc(span));
             let Stmt::Let(v, prim) = stmt;
             let out = lower_prim(
-                &mut b, jmod, t, env, &var_env, prim, *v, &mut cache, f.id, blk.id, idx, block_env,
+                &mut cx, &mut b, jmod, t, env, &var_env, prim, *v, &mut cache, f.id, blk.id, idx,
+                block_env,
             )?;
             if !matches!(out, LowerOut::DeadUnit) {
                 let binding = match out {
@@ -265,16 +267,18 @@ pub(crate) fn compile_fn<
                 );
                 let vb = *var_env.get(&arg.0).expect("unbound goto arg");
                 if want == ArgRepr::ValueRef {
-                    let value_ref = codegen_value_as_any_ref(&mut b, jmod, runtime, &mut cache, vb);
+                    let value_ref =
+                        codegen_value_as_any_ref(&mut cx, &mut b, jmod, runtime, &mut cache, vb);
                     var_env.insert(arg.0, CodegenValue::any_ref(value_ref));
                 } else if vb.repr() != want {
-                    let coerced = coerce_binding_to(&mut b, jmod, runtime, vb, want);
+                    let coerced = coerce_binding_to(&mut cx, &mut b, jmod, runtime, vb, want);
                     var_env.insert(arg.0, CodegenValue::from_abi_value(coerced, want));
                 }
             }
         }
 
         emit_terminator(
+            &mut cx,
             &mut b,
             jmod,
             t,

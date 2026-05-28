@@ -44,62 +44,65 @@ pub(crate) fn halt_cont_body_id_for(runtime: &RuntimeRefs, repr: ArgRepr) -> Fun
 }
 
 pub(crate) fn load_closure_capture_as_binding(
+    cx: &mut CodegenFn<'_>,
     b: &mut FunctionBuilder<'_>,
     jmod: &mut impl cranelift_module::Module,
-    runtime: &RuntimeRefs,
+    _runtime: &RuntimeRefs,
     closure_ref: ir::Value,
     _captured_count: usize,
     idx: usize,
     repr: ArgRepr,
 ) -> CodegenValue {
     let index = b.ins().iconst(types::I64, idx as i64);
-    let mut cx = CodegenFn::new_runtime(b, jmod, runtime);
     match repr {
         ArgRepr::RawInt => CodegenValue::from_abi_value(
-            cx.closure_capture_i64(closure_ref, index),
+            cx.closure_capture_i64(b, jmod, closure_ref, index),
             ArgRepr::RawInt,
         ),
         ArgRepr::RawF64 => CodegenValue::from_abi_value(
-            cx.closure_capture_f64(closure_ref, index),
+            cx.closure_capture_f64(b, jmod, closure_ref, index),
             ArgRepr::RawF64,
         ),
-        ArgRepr::ValueRef => CodegenValue::any_ref(cx.closure_capture_ref(closure_ref, index)),
+        ArgRepr::ValueRef => {
+            CodegenValue::any_ref(cx.closure_capture_ref(b, jmod, closure_ref, index))
+        }
         ArgRepr::Condition => unreachable!("closure captures are never condition-only"),
     }
 }
 
 pub(crate) fn load_outer_cont_ref<M: cranelift_module::Module>(
+    cx: &mut CodegenFn<'_>,
     b: &mut FunctionBuilder<'_>,
     jmod: &mut M,
-    runtime: &RuntimeRefs,
+    _runtime: &RuntimeRefs,
     closure_ref: ir::Value,
 ) -> ir::Value {
     let index = b.ins().iconst(types::I64, 0);
-    let mut cx = CodegenFn::new_runtime(b, jmod, runtime);
-    cx.closure_capture_ref(closure_ref, index)
+    cx.closure_capture_ref(b, jmod, closure_ref, index)
 }
 
 pub(crate) fn load_closure_code_ref<M: cranelift_module::Module>(
+    cx: &mut CodegenFn<'_>,
     b: &mut FunctionBuilder<'_>,
     jmod: &mut M,
-    runtime: &RuntimeRefs,
+    _runtime: &RuntimeRefs,
     closure_ref: ir::Value,
 ) -> ir::Value {
-    let mut cx = CodegenFn::new_runtime(b, jmod, runtime);
-    cx.closure_code_ref(closure_ref)
+    cx.closure_code_ref(b, jmod, closure_ref)
 }
 
 pub(crate) fn load_closure_halt_kind_ref<M: cranelift_module::Module>(
+    cx: &mut CodegenFn<'_>,
     b: &mut FunctionBuilder<'_>,
     jmod: &mut M,
-    runtime: &RuntimeRefs,
+    _runtime: &RuntimeRefs,
     closure_ref: ir::Value,
 ) -> ir::Value {
-    let mut cx = CodegenFn::new_runtime(b, jmod, runtime);
-    cx.closure_halt_kind_ref(closure_ref)
+    cx.closure_halt_kind_ref(b, jmod, closure_ref)
 }
 
 pub(crate) fn store_closure_capture_ref_word<M: cranelift_module::Module>(
+    cx: &mut CodegenFn<'_>,
     b: &mut FunctionBuilder<'_>,
     jmod: &mut M,
     runtime: &RuntimeRefs,
@@ -110,47 +113,47 @@ pub(crate) fn store_closure_capture_ref_word<M: cranelift_module::Module>(
 ) {
     let value = mark_published_ref_aliased(b, jmod, runtime, value);
     let index = b.ins().iconst(types::I64, idx as i64);
-    let mut cx = CodegenFn::new_runtime(b, jmod, runtime);
-    cx.set_closure_capture_ref(closure_ref, index, value);
+    cx.set_closure_capture_ref(b, jmod, closure_ref, index, value);
 }
 
 fn materialize_cont_word<M: cranelift_module::Module>(
+    cx: &mut CodegenFn<'_>,
     b: &mut FunctionBuilder<'_>,
     jmod: &mut M,
-    runtime: &RuntimeRefs,
+    _runtime: &RuntimeRefs,
     value: ir::Value,
 ) -> ir::Value {
-    let mut cx = CodegenFn::new_runtime(b, jmod, runtime);
-    cx.materialize_cont(value)
+    cx.materialize_cont(b, jmod, value)
 }
 
 pub(crate) fn store_closure_capture_i64<M: cranelift_module::Module>(
+    cx: &mut CodegenFn<'_>,
     b: &mut FunctionBuilder<'_>,
     jmod: &mut M,
-    runtime: &RuntimeRefs,
+    _runtime: &RuntimeRefs,
     closure_ref: ir::Value,
     idx: usize,
     value: ir::Value,
 ) {
     let index = b.ins().iconst(types::I64, idx as i64);
-    let mut cx = CodegenFn::new_runtime(b, jmod, runtime);
-    cx.set_closure_capture_i64(closure_ref, index, value);
+    cx.set_closure_capture_i64(b, jmod, closure_ref, index, value);
 }
 
 pub(crate) fn store_closure_capture_f64<M: cranelift_module::Module>(
+    cx: &mut CodegenFn<'_>,
     b: &mut FunctionBuilder<'_>,
     jmod: &mut M,
-    runtime: &RuntimeRefs,
+    _runtime: &RuntimeRefs,
     closure_ref: ir::Value,
     idx: usize,
     value: ir::Value,
 ) {
     let index = b.ins().iconst(types::I64, idx as i64);
-    let mut cx = CodegenFn::new_runtime(b, jmod, runtime);
-    cx.set_closure_capture_f64(closure_ref, index, value);
+    cx.set_closure_capture_f64(b, jmod, closure_ref, index, value);
 }
 
 pub(crate) fn store_outer_cont_capture(
+    cx: &mut CodegenFn<'_>,
     b: &mut FunctionBuilder<'_>,
     jmod: &mut impl cranelift_module::Module,
     runtime: &RuntimeRefs,
@@ -158,10 +161,20 @@ pub(crate) fn store_outer_cont_capture(
     captured_count: usize,
     outer_cont: ir::Value,
 ) {
-    store_closure_capture_ref_word(b, jmod, runtime, closure_ref, captured_count, 0, outer_cont);
+    store_closure_capture_ref_word(
+        cx,
+        b,
+        jmod,
+        runtime,
+        closure_ref,
+        captured_count,
+        0,
+        outer_cont,
+    );
 }
 
 pub(crate) fn emit_struct_set_field_value<M: cranelift_module::Module>(
+    cx: &mut CodegenFn<'_>,
     b: &mut FunctionBuilder<'_>,
     jmod: &mut M,
     runtime: &RuntimeRefs,
@@ -179,33 +192,28 @@ pub(crate) fn emit_struct_set_field_value<M: cranelift_module::Module>(
             payload: raw,
             kind: fz_runtime::any_value::ValueKind::INT,
         } => {
-            let mut cx = CodegenFn::new_runtime_with_cache(b, jmod, runtime, cache);
-            cx.struct_set_field_int(struct_bits, offset, raw);
+            cx.struct_set_field_int(b, jmod, struct_bits, offset, raw);
         }
         CodegenValue::RawF64(raw) => {
-            let mut cx = CodegenFn::new_runtime_with_cache(b, jmod, runtime, cache);
-            cx.struct_set_field_float(struct_bits, offset, raw);
+            cx.struct_set_field_float(b, jmod, struct_bits, offset, raw);
         }
         CodegenValue::Known {
             payload,
             kind: fz_runtime::any_value::ValueKind::FLOAT,
         } => {
             let raw = b.ins().bitcast(types::F64, MemFlags::new(), payload);
-            let mut cx = CodegenFn::new_runtime_with_cache(b, jmod, runtime, cache);
-            cx.struct_set_field_float(struct_bits, offset, raw);
+            cx.struct_set_field_float(b, jmod, struct_bits, offset, raw);
         }
         CodegenValue::Known {
             payload,
             kind: fz_runtime::any_value::ValueKind::ATOM,
         } => {
-            let mut cx = CodegenFn::new_runtime_with_cache(b, jmod, runtime, cache);
-            cx.struct_set_field_atom(struct_bits, offset, payload);
+            cx.struct_set_field_atom(b, jmod, struct_bits, offset, payload);
         }
         other => {
-            let value_ref = codegen_value_as_any_ref(b, jmod, runtime, cache, other);
+            let value_ref = codegen_value_as_any_ref(cx, b, jmod, runtime, cache, other);
             let value_ref = mark_published_ref_aliased(b, jmod, runtime, value_ref);
-            let mut cx = CodegenFn::new_runtime_with_cache(b, jmod, runtime, cache);
-            cx.struct_set_field_ref(struct_bits, offset, value_ref);
+            cx.struct_set_field_ref(b, jmod, struct_bits, offset, value_ref);
         }
     }
 }
@@ -220,6 +228,7 @@ pub(crate) fn emit_struct_set_field_value<M: cranelift_module::Module>(
 /// ABI) have no `self` closure ptr; their outer_cont lives in frame slot 0
 /// — fall through to the uniform branch when cont_param is None.
 pub(crate) fn resolve_outer_cont<M: cranelift_module::Module>(
+    cx: &mut CodegenFn<'_>,
     jmod: &mut M,
     b: &mut FunctionBuilder<'_>,
     runtime: &RuntimeRefs,
@@ -230,7 +239,7 @@ pub(crate) fn resolve_outer_cont<M: cranelift_module::Module>(
     cont_sid: u32,
 ) -> ir::Value {
     if is_cont_fn && let Some(self_val) = cont_param {
-        return load_outer_cont_ref(b, jmod, runtime, self_val);
+        return load_outer_cont_ref(cx, b, jmod, runtime, self_val);
     }
     // No `self` closure ptr: caller dispatched through the uniform
     // path; outer_cont lives in frame slot 0. Fall through.
@@ -283,6 +292,7 @@ pub(crate) fn resolve_outer_cont<M: cranelift_module::Module>(
 /// payload slots; `ValueRef` captures are already one-word any value refs.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn build_cont_closure<M: cranelift_module::Module>(
+    cx: &mut CodegenFn<'_>,
     jmod: &mut M,
     b: &mut FunctionBuilder<'_>,
     runtime: &RuntimeRefs,
@@ -296,6 +306,7 @@ pub(crate) fn build_cont_closure<M: cranelift_module::Module>(
     extra_ref_captures: &[ir::Value],
 ) -> ir::Value {
     let my_outer_cont = resolve_outer_cont(
+        cx,
         jmod,
         b,
         runtime,
@@ -319,8 +330,9 @@ pub(crate) fn build_cont_closure<M: cranelift_module::Module>(
         .call(acl_fref, &[cl_fid_v, n_caps_v, zero_hk, cont_code_addr]);
     let cl_ptr = b.inst_results(cl_inst)[0];
     let captured_count = cap_bindings.len() + extra_ref_captures.len() + 1;
-    let heap_safe_outer_cont = materialize_cont_word(b, jmod, runtime, my_outer_cont);
+    let heap_safe_outer_cont = materialize_cont_word(cx, b, jmod, runtime, my_outer_cont);
     store_outer_cont_capture(
+        cx,
         b,
         jmod,
         runtime,
@@ -333,8 +345,9 @@ pub(crate) fn build_cont_closure<M: cranelift_module::Module>(
         extra_ref_captures,
         |idx, capture| match capture {
             ClosureCapture::RefWord(ref_word) => {
-                let heap_safe_ref = materialize_cont_word(b, jmod, runtime, ref_word);
+                let heap_safe_ref = materialize_cont_word(cx, b, jmod, runtime, ref_word);
                 store_closure_capture_ref_word(
+                    cx,
                     b,
                     jmod,
                     runtime,
@@ -345,10 +358,10 @@ pub(crate) fn build_cont_closure<M: cranelift_module::Module>(
                 );
             }
             ClosureCapture::RawInt(raw) => {
-                store_closure_capture_i64(b, jmod, runtime, cl_ptr, idx, raw);
+                store_closure_capture_i64(cx, b, jmod, runtime, cl_ptr, idx, raw);
             }
             ClosureCapture::RawF64(raw) => {
-                store_closure_capture_f64(b, jmod, runtime, cl_ptr, idx, raw);
+                store_closure_capture_f64(cx, b, jmod, runtime, cl_ptr, idx, raw);
             }
         },
     );
@@ -380,6 +393,7 @@ const LAZY_CONT_KIND_I64: i64 = 1;
 const LAZY_CONT_KIND_F64: i64 = 2;
 
 pub(crate) fn build_lazy_cont_descriptor<M: cranelift_module::Module>(
+    cx: &mut CodegenFn<'_>,
     jmod: &mut M,
     b: &mut FunctionBuilder<'_>,
     runtime: &RuntimeRefs,
@@ -393,6 +407,7 @@ pub(crate) fn build_lazy_cont_descriptor<M: cranelift_module::Module>(
     extra_ref_captures: &[ir::Value],
 ) -> ir::Value {
     let my_outer_cont = resolve_outer_cont(
+        cx,
         jmod,
         b,
         runtime,

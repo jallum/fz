@@ -130,6 +130,7 @@ impl ContinuationPayload {
     }
 
     fn from_capture_vars<M: cranelift_module::Module>(
+        cx: &mut CodegenFn<'_>,
         b: &mut FunctionBuilder<'_>,
         jmod: &mut M,
         env: &CodegenEnv<'_>,
@@ -140,7 +141,7 @@ impl ContinuationPayload {
     ) -> Self {
         let cap_bindings = captures
             .iter()
-            .map(|cv| closure_capture_for_var(var_env, b, jmod, env.runtime, cv.0, cache))
+            .map(|cv| closure_capture_for_var(cx, var_env, b, jmod, env.runtime, cv.0, cache))
             .collect();
         let extra_ref_captures =
             cont_extra_ref_captures(b, cache, &env.spec_keys[cont_sid as usize]);
@@ -176,6 +177,7 @@ impl ContinuationPlan {
     #[allow(clippy::too_many_arguments)]
     fn emit_value<M: cranelift_module::Module>(
         &self,
+        cx: &mut CodegenFn<'_>,
         jmod: &mut M,
         b: &mut FunctionBuilder<'_>,
         runtime: &RuntimeRefs,
@@ -188,6 +190,7 @@ impl ContinuationPlan {
             ContinuationPlan::LazyNativeDescriptor(payload) => {
                 let ref_captures = payload.ref_captures();
                 build_lazy_cont_descriptor(
+                    cx,
                     jmod,
                     b,
                     runtime,
@@ -204,6 +207,7 @@ impl ContinuationPlan {
             ContinuationPlan::HeapClosure(payload) => {
                 let ref_captures = payload.ref_captures();
                 build_cont_closure(
+                    cx,
                     jmod,
                     b,
                     runtime,
@@ -237,6 +241,7 @@ pub(crate) fn emit_terminator<
     M: cranelift_module::Module,
     T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
 >(
+    cx: &mut CodegenFn<'_>,
     b: &mut FunctionBuilder<'_>,
     jmod: &mut M,
     t: &mut T,
@@ -263,9 +268,10 @@ pub(crate) fn emit_terminator<
             then_b,
             else_b,
             ..
-        } => emit_if(b, jmod, env, var_env, block_map, cond, then_b, else_b),
-        Term::Halt(v) => emit_halt(b, jmod, env, var_env, cache, is_native, host_ctx, v),
+        } => emit_if(cx, b, jmod, env, var_env, block_map, cond, then_b, else_b),
+        Term::Halt(v) => emit_halt(cx, b, jmod, env, var_env, cache, is_native, host_ctx, v),
         Term::Return(v) => emit_return_term(
+            cx,
             b,
             jmod,
             t,
@@ -288,6 +294,7 @@ pub(crate) fn emit_terminator<
             args,
             continuation,
         } => emit_call_term(
+            cx,
             b,
             jmod,
             t,
@@ -313,6 +320,7 @@ pub(crate) fn emit_terminator<
             args,
             is_back_edge,
         } => emit_tail_call_term(
+            cx,
             b,
             jmod,
             t,
@@ -338,6 +346,7 @@ pub(crate) fn emit_terminator<
             args,
             continuation,
         } => emit_call_closure(
+            cx,
             b,
             jmod,
             t,
@@ -360,13 +369,14 @@ pub(crate) fn emit_terminator<
             args,
             ident: _,
         } => emit_tail_call_closure(
-            b, jmod, t, env, var_env, is_native, is_cont_fn, frame_ptr, host_ctx, cont_param,
+            cx, b, jmod, t, env, var_env, is_native, is_cont_fn, frame_ptr, host_ctx, cont_param,
             cache, closure, args,
         ),
         Term::Receive {
             continuation,
             ident: _,
         } => emit_receive(
+            cx,
             b,
             jmod,
             t,
@@ -388,6 +398,7 @@ pub(crate) fn emit_terminator<
             matcher: _,
             ident: _,
         } => emit_receive_matched(
+            cx,
             b,
             jmod,
             t,
@@ -425,6 +436,7 @@ fn emit_goto(
 
 #[allow(clippy::too_many_arguments)]
 fn emit_if<M: cranelift_module::Module>(
+    cx: &mut CodegenFn<'_>,
     b: &mut FunctionBuilder<'_>,
     jmod: &mut M,
     env: &CodegenEnv<'_>,
@@ -441,7 +453,7 @@ fn emit_if<M: cranelift_module::Module>(
     let truthy = if matches!(vb.repr(), ArgRepr::Condition) {
         vb.value()
     } else {
-        codegen_value_truthy(b, jmod, env.runtime, *vb)
+        codegen_value_truthy(cx, b, jmod, env.runtime, *vb)
     };
     b.ins().brif(truthy, t_b, &no_args, e_b, &no_args);
     Ok(())
@@ -449,6 +461,7 @@ fn emit_if<M: cranelift_module::Module>(
 
 #[allow(clippy::too_many_arguments)]
 fn emit_halt<M: cranelift_module::Module>(
+    cx: &mut CodegenFn<'_>,
     b: &mut FunctionBuilder<'_>,
     jmod: &mut M,
     env: &CodegenEnv<'_>,
@@ -461,7 +474,7 @@ fn emit_halt<M: cranelift_module::Module>(
     let runtime = env.runtime;
     let _ = host_ctx;
     let binding = *var_env.get(&v.0).expect("unbound halt val");
-    emit_halt_for_binding(b, jmod, runtime, var_env, cache, v.0, binding);
+    emit_halt_for_binding(cx, b, jmod, runtime, var_env, cache, v.0, binding);
     if is_native {
         // fz_halt already recorded process.halt_value; the
         // returned bits are unobservable but the sig requires
@@ -482,6 +495,7 @@ fn emit_return_term<
     M: cranelift_module::Module,
     T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
 >(
+    cx: &mut CodegenFn<'_>,
     b: &mut FunctionBuilder<'_>,
     jmod: &mut M,
     t: &mut T,
@@ -507,15 +521,16 @@ fn emit_return_term<
             if this_demand.delivers_list_tail_return()
                 && let Some(elems) = cache.list_tail_return_elems.get(&v.0).cloned()
             {
-                let delivered =
-                    emit_list_tail_return_value(b, jmod, t, env, var_env, cache, block_env, &elems);
+                let delivered = emit_list_tail_return_value(
+                    cx, b, jmod, t, env, var_env, cache, block_env, &elems,
+                );
                 let cont_val = if is_cont_fn {
                     let self_val = cont_param.expect("cont fn binds self via cont_param");
-                    load_outer_cont_ref(b, jmod, runtime, self_val)
+                    load_outer_cont_ref(cx, b, jmod, runtime, self_val)
                 } else {
                     cont_param.expect("non-cont native fn has cont_param")
                 };
-                let code = load_closure_code_ref(b, jmod, runtime, cont_val);
+                let code = load_closure_code_ref(cx, b, jmod, runtime, cont_val);
                 let mut sig = Signature::new(CallConv::Tail);
                 sig.params.push(AbiParam::new(types::I64));
                 sig.params.push(AbiParam::new(types::I64));
@@ -532,11 +547,11 @@ fn emit_return_term<
                 debug_assert_eq!(fields.len(), arity);
                 let cont_val = if is_cont_fn {
                     let self_val = cont_param.expect("cont fn binds self via cont_param");
-                    load_outer_cont_ref(b, jmod, runtime, self_val)
+                    load_outer_cont_ref(cx, b, jmod, runtime, self_val)
                 } else {
                     cont_param.expect("non-cont native fn has cont_param")
                 };
-                let code = load_closure_code_ref(b, jmod, runtime, cont_val);
+                let code = load_closure_code_ref(cx, b, jmod, runtime, cont_val);
                 let mut sig = Signature::new(CallConv::Tail);
                 let mut cont_args = Vec::with_capacity(fields.len() + 1);
                 for field in fields {
@@ -544,6 +559,7 @@ fn emit_return_term<
                     let repr = binding.repr();
                     push_repr_param(&mut sig, repr);
                     push_binding_as_abi_args(
+                        cx,
                         &mut cont_args,
                         b,
                         jmod,
@@ -579,11 +595,11 @@ fn emit_return_term<
             let binding = *var_env.get(&v.0).expect("unbound return val");
             let cont_val = if is_cont_fn {
                 let self_val = cont_param.expect("cont fn binds self via cont_param");
-                load_outer_cont_ref(b, jmod, runtime, self_val)
+                load_outer_cont_ref(cx, b, jmod, runtime, self_val)
             } else {
                 cont_param.expect("non-cont native fn has cont_param")
             };
-            let code = load_closure_code_ref(b, jmod, runtime, cont_val);
+            let code = load_closure_code_ref(cx, b, jmod, runtime, cont_val);
             let mut sig = Signature::new(CallConv::Tail);
             push_repr_param(&mut sig, my_return_repr);
             sig.params.push(AbiParam::new(types::I64));
@@ -591,6 +607,7 @@ fn emit_return_term<
             let sigref = b.import_signature(sig);
             let mut cont_args = Vec::with_capacity(2);
             push_binding_as_abi_args(
+                cx,
                 &mut cont_args,
                 b,
                 jmod,
@@ -605,10 +622,10 @@ fn emit_return_term<
             let value = *var_env.get(&v.0).expect("unbound return val");
             // This fn is never a cont target; cont_ptr is statically
             // null. Skip the load/icmp/brif dispatch.
-            emit_halt_and_return_null(b, jmod, runtime, cache, value);
+            emit_halt_and_return_null(cx, b, jmod, runtime, cache, value);
         } else {
             let value = *var_env.get(&v.0).expect("unbound return val");
-            emit_return(b, jmod, runtime, cache, frame_ptr, value);
+            emit_return(cx, b, jmod, runtime, cache, frame_ptr, value);
         }
     }
     Ok(())
@@ -619,6 +636,7 @@ fn emit_call_term<
     M: cranelift_module::Module,
     T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
 >(
+    cx: &mut CodegenFn<'_>,
     b: &mut FunctionBuilder<'_>,
     jmod: &mut M,
     t: &mut T,
@@ -716,6 +734,7 @@ fn emit_call_term<
             let callee_fid = *fn_ids.get(&callee_sid).expect("callee fn_id missing");
             let callee_fref = jmod.declare_func_in_func(callee_fid, b.func);
             let mut native_args = coerce_call_args(
+                cx,
                 &hi_arg,
                 callee_param_reprs,
                 var_env,
@@ -726,11 +745,18 @@ fn emit_call_term<
             );
             native_args.push(list_tail_destination_arg(b, cache));
             let cap_bindings = vec![
-                closure_capture_for_var(var_env, b, jmod, runtime, pivot_capture.0, cache),
-                closure_capture_for_var(var_env, b, jmod, runtime, args[0].0, cache),
+                closure_capture_for_var(cx, var_env, b, jmod, runtime, pivot_capture.0, cache),
+                closure_capture_for_var(cx, var_env, b, jmod, runtime, args[0].0, cache),
             ];
-            let physical_ref_captures =
-                owned_cons_physical_ref_captures(b, jmod, runtime, var_env, cache, pivot_capture);
+            let physical_ref_captures = owned_cons_physical_ref_captures(
+                cx,
+                b,
+                jmod,
+                runtime,
+                var_env,
+                cache,
+                pivot_capture,
+            );
             let payload = ContinuationPayload::from_parts(
                 env,
                 cont_sid,
@@ -739,6 +765,7 @@ fn emit_call_term<
                 vec![],
             );
             let cont_arg = ContinuationPlan::lazy_native_descriptor(payload).emit_value(
+                cx,
                 jmod,
                 b,
                 runtime,
@@ -761,8 +788,10 @@ fn emit_call_term<
             let caller_fn = module.fn_by_id(caller_fn_id);
             let entry = caller_fn.block(caller_fn.entry);
             if entry.params.first().copied() == Some(tail_capture) {
-                let tail_bits = any_ref_for_var(var_env, b, jmod, runtime, tail_capture.0, cache);
+                let tail_bits =
+                    any_ref_for_var(cx, var_env, b, jmod, runtime, tail_capture.0, cache);
                 let pivot_tail = if let Some(reused) = emit_owned_cons_reuse_or_alloc(
+                    cx,
                     b,
                     jmod,
                     runtime,
@@ -774,6 +803,7 @@ fn emit_call_term<
                     reused
                 } else {
                     emit_list_cons_bif(
+                        cx,
                         b,
                         jmod,
                         env,
@@ -787,12 +817,20 @@ fn emit_call_term<
                 let callee_param_reprs = &param_reprs[callee_sid as usize];
                 let callee_fid = *fn_ids.get(&callee_sid).expect("callee fn_id missing");
                 let callee_fref = jmod.declare_func_in_func(callee_fid, b.func);
-                let mut native_args =
-                    coerce_call_args(args, callee_param_reprs, var_env, b, jmod, runtime, cache);
+                let mut native_args = coerce_call_args(
+                    cx,
+                    args,
+                    callee_param_reprs,
+                    var_env,
+                    b,
+                    jmod,
+                    runtime,
+                    cache,
+                );
                 native_args.push(pivot_tail);
                 let tail_cont_arg = if is_cont_fn {
                     let self_val = cont_param.expect("cont fn binds self via cont_param");
-                    load_outer_cont_ref(b, jmod, runtime, self_val)
+                    load_outer_cont_ref(cx, b, jmod, runtime, self_val)
                 } else {
                     cont_param.expect("non-cont native fn has cont_param")
                 };
@@ -803,6 +841,7 @@ fn emit_call_term<
         }
         if callee_is_native(env, callee.0) {
             emit_native_call_with_cont(
+                cx,
                 b,
                 jmod,
                 t,
@@ -834,6 +873,7 @@ fn emit_call_term<
                 .map(|v| *var_env.get(&v.0).expect("unbound captured val"))
                 .collect();
             emit_call(
+                cx,
                 b,
                 jmod,
                 runtime,
@@ -857,6 +897,7 @@ fn emit_native_call_with_cont<
     M: cranelift_module::Module,
     T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
 >(
+    cx: &mut CodegenFn<'_>,
     b: &mut FunctionBuilder<'_>,
     jmod: &mut M,
     t: &mut T,
@@ -892,8 +933,16 @@ fn emit_native_call_with_cont<
     let callee_ret_repr = return_reprs[callee_sid as usize];
     let callee_fid = *fn_ids.get(&callee_sid).expect("callee fn_id missing");
     let callee_fref = jmod.declare_func_in_func(callee_fid, b.func);
-    let mut native_args =
-        coerce_call_args(args, callee_param_reprs, var_env, b, jmod, runtime, cache);
+    let mut native_args = coerce_call_args(
+        cx,
+        args,
+        callee_param_reprs,
+        var_env,
+        b,
+        jmod,
+        runtime,
+        cache,
+    );
     // Closure-target sig is `(args..., self, cont) tail`. Direct
     // callers pass the per-Process static singleton as `self`.
     // The zero-cap invariant (asserted at closure_target_fns
@@ -928,6 +977,7 @@ fn emit_native_call_with_cont<
         && !caller_has_callable_state;
     let continuation_plan = if cont_is_native {
         let payload = ContinuationPayload::from_capture_vars(
+            cx,
             b,
             jmod,
             env,
@@ -945,6 +995,7 @@ fn emit_native_call_with_cont<
     };
     let cont_value_opt = continuation_plan.as_ref().map(|plan| {
         plan.emit_value(
+            cx,
             jmod,
             b,
             runtime,
@@ -1030,7 +1081,17 @@ fn emit_native_call_with_cont<
             let from = var_env.get(&cv.0).map_or(ArgRepr::ValueRef, |vb| vb.repr());
             payload.push((*val, from));
         }
-        store_typed_args_into_callee_frame(b, jmod, runtime, cache, cont_schema, cf, &payload, 1);
+        store_typed_args_into_callee_frame(
+            cx,
+            b,
+            jmod,
+            runtime,
+            cache,
+            cont_schema,
+            cf,
+            &payload,
+            1,
+        );
         b.ins().return_(&[cf]);
     }
 }
@@ -1040,6 +1101,7 @@ fn emit_tail_call_term<
     M: cranelift_module::Module,
     T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
 >(
+    cx: &mut CodegenFn<'_>,
     b: &mut FunctionBuilder<'_>,
     jmod: &mut M,
     t: &mut T,
@@ -1065,6 +1127,7 @@ fn emit_tail_call_term<
         let callee_sid = resolve_callee_sid(t, env, caller_fn_id, blk);
         if callee_is_native(env, callee.0) {
             emit_native_tail_call(
+                cx,
                 b,
                 jmod,
                 env,
@@ -1087,6 +1150,7 @@ fn emit_tail_call_term<
                 .map(|v| *var_env.get(&v.0).expect("unbound tailcall arg"))
                 .collect();
             emit_tail_call(
+                cx,
                 b,
                 jmod,
                 runtime,
@@ -1107,6 +1171,7 @@ fn emit_tail_call_term<
 // return_call is ABI-compatible.
 #[allow(clippy::too_many_arguments)]
 fn emit_native_tail_call<M: cranelift_module::Module>(
+    cx: &mut CodegenFn<'_>,
     b: &mut FunctionBuilder<'_>,
     jmod: &mut M,
     env: &CodegenEnv<'_>,
@@ -1140,9 +1205,9 @@ fn emit_native_tail_call<M: cranelift_module::Module>(
         let binding = *var_env.get(&av.0).expect("unbound call arg");
         let to = callee_param_reprs[i];
         if to == ArgRepr::ValueRef {
-            push_binding_as_abi_args(&mut native_args, b, jmod, runtime, cache, binding, to);
+            push_binding_as_abi_args(cx, &mut native_args, b, jmod, runtime, cache, binding, to);
         } else {
-            let value = coerce_binding_to(b, jmod, runtime, binding, to);
+            let value = coerce_binding_to(cx, b, jmod, runtime, binding, to);
             native_args.push(value);
         }
         mid_flight_arg_shapes.push(MidFlightArgShape::Value(to));
@@ -1168,7 +1233,7 @@ fn emit_native_tail_call<M: cranelift_module::Module>(
     let mut synth_halt_cont = false;
     let tail_cont_arg = if is_cont_fn {
         let self_val = cont_param.expect("cont fn binds self via cont_param");
-        load_outer_cont_ref(b, jmod, runtime, self_val)
+        load_outer_cont_ref(cx, b, jmod, runtime, self_val)
     } else {
         match cont_param {
             Some(c) => c,
@@ -1192,6 +1257,7 @@ fn emit_native_tail_call<M: cranelift_module::Module>(
         // zero-allocation CLIF contract.
         if is_back_edge && env.spec_heap_allocates[this_spec_id as usize] {
             emit_back_edge_yield_check(
+                cx,
                 b,
                 jmod,
                 env,
@@ -1236,12 +1302,13 @@ fn emit_native_tail_call<M: cranelift_module::Module>(
         b.switch_to_block(halt_blk);
         b.seal_block(halt_blk);
         let _ = host_ctx;
-        emit_halt_from_codegen_value(b, jmod, runtime, cache, result_value);
+        emit_halt_from_codegen_value(cx, b, jmod, runtime, cache, result_value);
         let null = b.ins().iconst(types::I64, 0);
         b.ins().return_(&[null]);
         b.switch_to_block(invoke_blk);
         b.seal_block(invoke_blk);
         store_frame_value_dynamic(
+            cx,
             b,
             jmod,
             runtime,
@@ -1259,6 +1326,7 @@ fn emit_native_tail_call<M: cranelift_module::Module>(
 // closure and yield it as the primary mid-flight GC root. Otherwise
 // fall through to the caller's normal TCO path.
 fn emit_back_edge_yield_check<M: cranelift_module::Module>(
+    cx: &mut CodegenFn<'_>,
     b: &mut FunctionBuilder<'_>,
     jmod: &mut M,
     env: &CodegenEnv<'_>,
@@ -1317,12 +1385,21 @@ fn emit_back_edge_yield_check<M: cranelift_module::Module>(
     let materialize_cont_fref = jmod.declare_func_in_func(runtime.materialize_cont_id, b.func);
     let last_root = native_root_values.len().saturating_sub(1);
     for (i, root) in native_root_values.iter().copied().enumerate() {
-        let mut root_ref = codegen_value_as_any_ref(b, jmod, runtime, cache, root);
+        let mut root_ref = codegen_value_as_any_ref(cx, b, jmod, runtime, cache, root);
         if i == last_root {
             let inst = b.ins().call(materialize_cont_fref, &[root_ref]);
             root_ref = b.inst_results(inst)[0];
         }
-        store_closure_capture_ref_word(b, jmod, runtime, cont_closure, captured_count, i, root_ref);
+        store_closure_capture_ref_word(
+            cx,
+            b,
+            jmod,
+            runtime,
+            cont_closure,
+            captured_count,
+            i,
+            root_ref,
+        );
     }
     let yield_fref = jmod.declare_func_in_func(runtime.yield_mid_flight_id, b.func);
     let yield_inst = b.ins().call(yield_fref, &[cont_closure]);
@@ -1338,6 +1415,7 @@ fn emit_call_closure<
     M: cranelift_module::Module,
     T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
 >(
+    cx: &mut CodegenFn<'_>,
     b: &mut FunctionBuilder<'_>,
     jmod: &mut M,
     t: &mut T,
@@ -1396,6 +1474,7 @@ fn emit_call_closure<
             Some((body_sid, body_fid, n_caps))
         })();
         let cont_payload = ContinuationPayload::from_capture_vars(
+            cx,
             b,
             jmod,
             env,
@@ -1408,6 +1487,7 @@ fn emit_call_closure<
         let can_use_lazy_cont = is_native && cont_is_native && lit_resolved.is_some();
         let continuation_plan = plan_closure_shaped_continuation(cont_payload, can_use_lazy_cont);
         let cf = continuation_plan.emit_value(
+            cx,
             jmod,
             b,
             runtime,
@@ -1426,7 +1506,16 @@ fn emit_call_closure<
                     .get(n_caps + i)
                     .copied()
                     .unwrap_or(ArgRepr::ValueRef);
-                push_binding_as_abi_args(&mut direct_args, b, jmod, runtime, cache, binding, to);
+                push_binding_as_abi_args(
+                    cx,
+                    &mut direct_args,
+                    b,
+                    jmod,
+                    runtime,
+                    cache,
+                    binding,
+                    to,
+                );
             }
             direct_args.push(cl_val);
             direct_args.push(cf);
@@ -1449,7 +1538,7 @@ fn emit_call_closure<
         // `(args..., self, cont) -> i64 tail` (all-ValueRef params).
         // Native callers use return_call_indirect (TCO); uniform
         // callers use call_indirect Tail (cross-CC) and return result.
-        let body_fp = load_closure_code_ref(b, jmod, runtime, cl_val);
+        let body_fp = load_closure_code_ref(cx, b, jmod, runtime, cl_val);
         let mut sig = Signature::new(CallConv::Tail);
         for _ in &arg_vals {
             push_repr_param(&mut sig, ArgRepr::ValueRef);
@@ -1462,6 +1551,7 @@ fn emit_call_closure<
         for (i, _v) in arg_vals.iter().enumerate() {
             let binding = *var_env.get(&args[i].0).expect("unbound callclosure arg");
             push_binding_as_abi_args(
+                cx,
                 &mut indirect_args,
                 b,
                 jmod,
@@ -1491,6 +1581,7 @@ fn emit_tail_call_closure<
     M: cranelift_module::Module,
     T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
 >(
+    cx: &mut CodegenFn<'_>,
     b: &mut FunctionBuilder<'_>,
     jmod: &mut M,
     t: &mut T,
@@ -1539,7 +1630,7 @@ fn emit_tail_call_closure<
             .collect();
         let my_cont = if is_cont_fn {
             let self_val = cont_param.expect("cont fn binds self via cont_param");
-            load_outer_cont_ref(b, jmod, runtime, self_val)
+            load_outer_cont_ref(cx, b, jmod, runtime, self_val)
         } else {
             match cont_param {
                 Some(c) => c,
@@ -1582,7 +1673,16 @@ fn emit_tail_call_closure<
                     .get(n_caps + i)
                     .copied()
                     .unwrap_or(ArgRepr::ValueRef);
-                push_binding_as_abi_args(&mut direct_args, b, jmod, runtime, cache, binding, to);
+                push_binding_as_abi_args(
+                    cx,
+                    &mut direct_args,
+                    b,
+                    jmod,
+                    runtime,
+                    cache,
+                    binding,
+                    to,
+                );
             }
             direct_args.push(cl_val);
             direct_args.push(my_cont);
@@ -1596,7 +1696,7 @@ fn emit_tail_call_closure<
                 b.ins().return_(&[result]);
             }
         } else {
-            let body_fp = load_closure_code_ref(b, jmod, runtime, cl_val);
+            let body_fp = load_closure_code_ref(cx, b, jmod, runtime, cl_val);
             let mut sig = Signature::new(CallConv::Tail);
             for _ in &arg_vals {
                 push_repr_param(&mut sig, ArgRepr::ValueRef);
@@ -1611,6 +1711,7 @@ fn emit_tail_call_closure<
                     .get(&args[i].0)
                     .expect("unbound tailcallclosure arg");
                 push_binding_as_abi_args(
+                    cx,
                     &mut indirect_args,
                     b,
                     jmod,
@@ -1641,6 +1742,7 @@ fn emit_receive<
     M: cranelift_module::Module,
     T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
 >(
+    cx: &mut CodegenFn<'_>,
     b: &mut FunctionBuilder<'_>,
     jmod: &mut M,
     t: &mut T,
@@ -1662,6 +1764,7 @@ fn emit_receive<
         // accept-any matcher record and returns the YIELD sentinel.
         let cont_sid = resolve_cont_sid(t, env, caller_fn_id, blk);
         let payload = ContinuationPayload::from_capture_vars(
+            cx,
             b,
             jmod,
             env,
@@ -1671,6 +1774,7 @@ fn emit_receive<
             &continuation.captured,
         );
         let cl_ptr = ContinuationPlan::heap_closure(payload).emit_value(
+            cx,
             jmod,
             b,
             runtime,
@@ -1720,6 +1824,7 @@ fn emit_receive_matched<
     M: cranelift_module::Module,
     T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
 >(
+    cx: &mut CodegenFn<'_>,
     b: &mut FunctionBuilder<'_>,
     jmod: &mut M,
     t: &mut T,
@@ -1742,6 +1847,7 @@ fn emit_receive_matched<
         .expect("matcher fn pre-declared by compile_with_backend pre-pass");
     let matcher_addr = fn_addr(jmod, matcher_fid, b);
     let yield_sentinel = build_park_record(
+        cx,
         b,
         jmod,
         t,
@@ -1772,6 +1878,7 @@ fn build_park_record<
     M: cranelift_module::Module,
     T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
 >(
+    cx: &mut CodegenFn<'_>,
     b: &mut FunctionBuilder<'_>,
     jmod: &mut M,
     t: &mut T,
@@ -1802,7 +1909,7 @@ fn build_park_record<
             3,
         ));
         for (i, (_name, v)) in pinned.iter().enumerate() {
-            let value_ref = tagged_get(var_env, b, jmod, runtime, v.0, cache);
+            let value_ref = tagged_get(cx, var_env, b, jmod, runtime, v.0, cache);
             b.ins()
                 .stack_store(value_ref, slot, (i * SLOT_BYTES as usize) as i32);
         }
@@ -1815,7 +1922,7 @@ fn build_park_record<
     // capture-param slots line up with this order.
     let cap_bindings: Vec<ClosureCapture> = captures
         .iter()
-        .map(|cv| closure_capture_for_var(var_env, b, jmod, runtime, cv.0, cache))
+        .map(|cv| closure_capture_for_var(cx, var_env, b, jmod, runtime, cv.0, cache))
         .collect();
 
     // bound_arity: max bound-var count across clauses (matcher
@@ -1871,6 +1978,7 @@ fn build_park_record<
         let payload =
             ContinuationPayload::from_parts(env, cont_sid, cap_bindings.clone(), vec![], vec![]);
         let cl_ptr = ContinuationPlan::heap_closure(payload).emit_value(
+            cx,
             jmod,
             b,
             runtime,
@@ -1905,6 +2013,7 @@ fn build_park_record<
                 vec![],
             );
             let cl_ptr = ContinuationPlan::heap_closure(payload).emit_value(
+                cx,
                 jmod,
                 b,
                 runtime,
@@ -1913,7 +2022,7 @@ fn build_park_record<
                 cont_param,
                 frame_ptr,
             );
-            let unboxed = as_raw_i64(var_env, b, jmod, runtime, a.timeout.0);
+            let unboxed = as_raw_i64(cx, var_env, b, jmod, runtime, a.timeout.0);
             (unboxed, cl_ptr)
         }
         None => {
@@ -1964,6 +2073,7 @@ fn cont_extra_ref_captures(
 }
 
 fn owned_cons_physical_ref_captures<M: cranelift_module::Module>(
+    cx: &mut CodegenFn<'_>,
     b: &mut FunctionBuilder<'_>,
     jmod: &mut M,
     runtime: &RuntimeRefs,
@@ -1975,6 +2085,7 @@ fn owned_cons_physical_ref_captures<M: cranelift_module::Module>(
         return Vec::new();
     };
     vec![any_ref_for_var(
+        cx,
         var_env,
         b,
         jmod,
@@ -1988,6 +2099,7 @@ fn emit_list_tail_return_value<
     M: cranelift_module::Module,
     T: crate::types::Types<Ty = crate::types::Ty>,
 >(
+    cx: &mut CodegenFn<'_>,
     b: &mut FunctionBuilder<'_>,
     jmod: &mut M,
     t: &mut T,
@@ -2000,6 +2112,7 @@ fn emit_list_tail_return_value<
     let mut acc = ListTailBits::ValueRef(list_tail_destination_arg(b, cache));
     for elem in elems.iter().rev() {
         let cons = emit_list_cons_bif(
+            cx,
             b,
             jmod,
             env,

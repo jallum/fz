@@ -7,6 +7,7 @@ use fz_runtime::heap::{FieldKind, Schema};
 use std::collections::HashMap;
 
 pub(crate) fn emit_halt_for_binding<M: cranelift_module::Module>(
+    cx: &mut CodegenFn<'_>,
     b: &mut FunctionBuilder<'_>,
     jmod: &mut M,
     runtime: &RuntimeRefs,
@@ -25,7 +26,7 @@ pub(crate) fn emit_halt_for_binding<M: cranelift_module::Module>(
             b.ins().call(fref, &[binding.value()]);
         }
         ArgRepr::ValueRef | ArgRepr::Condition => {
-            let value_ref = tagged_get(var_env, b, jmod, runtime, var, cache);
+            let value_ref = tagged_get(cx, var_env, b, jmod, runtime, var, cache);
             let fref = jmod.declare_func_in_func(runtime.halt_implicit_ref_id, b.func);
             b.ins().call(fref, &[value_ref]);
         }
@@ -33,6 +34,7 @@ pub(crate) fn emit_halt_for_binding<M: cranelift_module::Module>(
 }
 
 pub(crate) fn emit_halt_from_codegen_value<M: cranelift_module::Module>(
+    cx: &mut CodegenFn<'_>,
     b: &mut FunctionBuilder<'_>,
     jmod: &mut M,
     runtime: &RuntimeRefs,
@@ -49,7 +51,7 @@ pub(crate) fn emit_halt_from_codegen_value<M: cranelift_module::Module>(
             b.ins().call(fref, &[value]);
         }
         value => {
-            let value_ref = codegen_value_as_any_ref(b, jmod, runtime, cache, value);
+            let value_ref = codegen_value_as_any_ref(cx, b, jmod, runtime, cache, value);
             let fref = jmod.declare_func_in_func(runtime.halt_implicit_ref_id, b.func);
             b.ins().call(fref, &[value_ref]);
         }
@@ -66,6 +68,7 @@ pub(crate) fn emit_halt_from_codegen_value<M: cranelift_module::Module>(
 /// invariant break into a loud panic at codegen time rather than a
 /// silent load-from-zero.
 pub(crate) fn emit_return<M: cranelift_module::Module>(
+    cx: &mut CodegenFn<'_>,
     b: &mut FunctionBuilder<'_>,
     jmod: &mut M,
     runtime: &RuntimeRefs,
@@ -92,13 +95,22 @@ pub(crate) fn emit_return<M: cranelift_module::Module>(
     // halt: record the strict value and return null (reusing `zero`).
     b.switch_to_block(halt_blk);
     b.seal_block(halt_blk);
-    emit_halt_from_codegen_value(b, jmod, runtime, cache, value);
+    emit_halt_from_codegen_value(cx, b, jmod, runtime, cache, value);
     b.ins().return_(&[zero]);
 
     // invoke: write val to cont[24], return cont_ptr.
     b.switch_to_block(invoke_blk);
     b.seal_block(invoke_blk);
-    store_frame_value_dynamic(b, jmod, runtime, cache, cont_ptr, SLOT_BYTES as u32, value);
+    store_frame_value_dynamic(
+        cx,
+        b,
+        jmod,
+        runtime,
+        cache,
+        cont_ptr,
+        SLOT_BYTES as u32,
+        value,
+    );
     b.ins().return_(&[cont_ptr]);
 }
 
@@ -110,18 +122,20 @@ pub(crate) fn emit_return<M: cranelift_module::Module>(
 ///
 /// Takes no `frame_ptr` because none is read.
 pub(crate) fn emit_halt_and_return_null<M: cranelift_module::Module>(
+    cx: &mut CodegenFn<'_>,
     b: &mut FunctionBuilder<'_>,
     jmod: &mut M,
     runtime: &RuntimeRefs,
     cache: &mut CodegenCache,
     value: CodegenValue,
 ) {
-    emit_halt_from_codegen_value(b, jmod, runtime, cache, value);
+    emit_halt_from_codegen_value(cx, b, jmod, runtime, cache, value);
     let null = b.ins().iconst(types::I64, 0);
     b.ins().return_(&[null]);
 }
 
 pub(crate) fn store_frame_value_dynamic<M: cranelift_module::Module>(
+    cx: &mut CodegenFn<'_>,
     b: &mut FunctionBuilder<'_>,
     jmod: &mut M,
     runtime: &RuntimeRefs,
@@ -130,7 +144,7 @@ pub(crate) fn store_frame_value_dynamic<M: cranelift_module::Module>(
     field_offset: u32,
     value: CodegenValue,
 ) {
-    let value_ref = codegen_value_as_any_ref(b, jmod, runtime, cache, value);
+    let value_ref = codegen_value_as_any_ref(cx, b, jmod, runtime, cache, value);
     b.ins()
         .store(MemFlags::trusted(), value_ref, frame, field_offset as i32);
 }
@@ -139,6 +153,7 @@ pub(crate) fn store_frame_value_dynamic<M: cranelift_module::Module>(
 /// frame = [my_cont_ptr, result_placeholder, ...captured]. Callee frame =
 /// [cont_frame_ptr, ...args]. Return callee frame ptr.
 pub(crate) fn emit_call<M: cranelift_module::Module>(
+    cx: &mut CodegenFn<'_>,
     b: &mut FunctionBuilder<'_>,
     jmod: &mut M,
     runtime: &RuntimeRefs,
@@ -174,7 +189,17 @@ pub(crate) fn emit_call<M: cranelift_module::Module>(
             // Slots 2..K+2: captured vars in declaration order. Kind-aware
             // store so a typed-int / typed-float captured slot gets its
             // raw payload, not one-word ValueRef.
-            store_bindings_into_callee_frame(b, jmod, runtime, cont_schema, cf, captured, 2, cache);
+            store_bindings_into_callee_frame(
+                cx,
+                b,
+                jmod,
+                runtime,
+                cont_schema,
+                cf,
+                captured,
+                2,
+                cache,
+            );
             cf
         }
         None => my_cont,
@@ -198,6 +223,7 @@ pub(crate) fn emit_call<M: cranelift_module::Module>(
     // Slots 1..N+1: args. Each local binding is written according to the
     // callee frame schema.
     store_bindings_into_callee_frame(
+        cx,
         b,
         jmod,
         runtime,
@@ -212,6 +238,7 @@ pub(crate) fn emit_call<M: cranelift_module::Module>(
 }
 
 pub(crate) fn store_bindings_into_callee_frame<M: cranelift_module::Module>(
+    cx: &mut CodegenFn<'_>,
     b: &mut FunctionBuilder<'_>,
     jmod: &mut M,
     runtime: &RuntimeRefs,
@@ -245,7 +272,7 @@ pub(crate) fn store_bindings_into_callee_frame<M: cranelift_module::Module>(
                 b.ins().store(MemFlags::trusted(), n, callee_frame, off);
             }
             FieldKind::AnyValue => {
-                let value_ref = codegen_value_as_any_ref(b, jmod, runtime, cache, binding);
+                let value_ref = codegen_value_as_any_ref(cx, b, jmod, runtime, cache, binding);
                 b.ins()
                     .store(MemFlags::trusted(), value_ref, callee_frame, off);
             }
@@ -258,6 +285,7 @@ pub(crate) fn store_bindings_into_callee_frame<M: cranelift_module::Module>(
 }
 
 pub(crate) fn store_typed_args_into_callee_frame<M: cranelift_module::Module>(
+    cx: &mut CodegenFn<'_>,
     b: &mut FunctionBuilder<'_>,
     jmod: &mut M,
     runtime: &RuntimeRefs,
@@ -288,11 +316,11 @@ pub(crate) fn store_typed_args_into_callee_frame<M: cranelift_module::Module>(
             FieldKind::AnyValue => {
                 let value_ref = match from {
                     ArgRepr::ValueRef => value,
-                    ArgRepr::RawInt => emit_raw_int_as_abi_value_ref(b, jmod, runtime, value),
-                    ArgRepr::RawF64 => emit_raw_float_as_abi_value_ref(b, jmod, runtime, value),
+                    ArgRepr::RawInt => emit_raw_int_as_abi_value_ref(cx, b, jmod, runtime, value),
+                    ArgRepr::RawF64 => emit_raw_float_as_abi_value_ref(cx, b, jmod, runtime, value),
                     ArgRepr::Condition => {
                         let atom = bool_to_fz(b, cache, value);
-                        emit_raw_atom_as_abi_value_ref(b, jmod, runtime, atom)
+                        emit_raw_atom_as_abi_value_ref(cx, b, jmod, runtime, atom)
                     }
                 };
                 b.ins()
@@ -309,6 +337,7 @@ pub(crate) fn store_typed_args_into_callee_frame<M: cranelift_module::Module>(
 /// frame in place. Otherwise allocate a new frame. Either way, cont_ptr is
 /// preserved (the parent's continuation).
 pub(crate) fn emit_tail_call<M: cranelift_module::Module>(
+    cx: &mut CodegenFn<'_>,
     b: &mut FunctionBuilder<'_>,
     jmod: &mut M,
     runtime: &RuntimeRefs,
@@ -327,6 +356,7 @@ pub(crate) fn emit_tail_call<M: cranelift_module::Module>(
     if self_id == callee_id {
         // Same schema: overwrite slots 1..N+1 with new args. Slot 0 (cont) stays.
         store_bindings_into_callee_frame(
+            cx,
             b,
             jmod,
             runtime,
@@ -350,7 +380,7 @@ pub(crate) fn emit_tail_call<M: cranelift_module::Module>(
         let call_inst = b.ins().call(alloc_fref, &[sid, sz]);
         let nf = b.inst_results(call_inst)[0];
         b.ins().store(MemFlags::trusted(), my_cont, nf, HEADER_SIZE);
-        store_bindings_into_callee_frame(b, jmod, runtime, callee_schema, nf, args, 1, cache);
+        store_bindings_into_callee_frame(cx, b, jmod, runtime, callee_schema, nf, args, 1, cache);
         b.ins().return_(&[nf]);
     }
 }
