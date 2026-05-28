@@ -343,7 +343,6 @@ pub extern "C" fn fz_dbg_value(ref_word: u64) -> u64 {
     ref_word
 }
 
-
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_dynamic_float_arith_unsupported() -> u64 {
     panic!("dynamic float arithmetic needs a typed float result carrier")

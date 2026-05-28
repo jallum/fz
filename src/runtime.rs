@@ -581,7 +581,8 @@ impl<'a> Runtime<'a> {
                 // Closure-shaped mid-flight yield: the continuation closure
                 // captures live loop state and is the primary GC root.
                 task.boundary_maintenance::<()>(|p| {
-                    p.heap.gc_process_roots(&mut p.runnable_closure, &mut p.mailbox);
+                    p.heap
+                        .gc_process_roots(&mut p.runnable_closure, &mut p.mailbox);
                     Ok(())
                 })
                 .expect("compiled boundary maintenance is infallible");

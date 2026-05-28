@@ -1526,10 +1526,7 @@ impl CompiledModule {
         let mut rt = crate::runtime::Runtime::new(self, 1).with_telemetry(&tel);
         let _ = rt.spawn(fn_id);
         rt.run_until_idle();
-        exits
-            .last()
-            .expect("process_exited captured")
-            .halt_value
+        exits.last().expect("process_exited captured").halt_value
     }
 }
 
