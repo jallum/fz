@@ -115,24 +115,58 @@ item.
 ## Runtime Telemetry
 
 Telemetry is also how the running scheduler reports what a task did, and how
-tests observe a run without reaching into a `Process`.
+tests observe a run without reaching into a `Process`. `Runtime::with_telemetry`
+attaches the sink; both execution engines — the compiled `Runtime` and the
+interpreter `IrInterpRuntime` — emit the same events, so a test behaves
+identically across interpreter, JIT, and AOT.
 
-`Runtime::with_telemetry` attaches a sink; the scheduler emits at each task
-exit:
+### `fz.runtime.process_exited`
+
+Emitted once per task exit, through the single `ExitRecord::emit` site shared by
+both engines:
 
 ```text
-event:        fz.runtime.task_exited
-metadata:     pid
-measurements: halt_value, live_count, live_bytes
+event:        fz.runtime.process_exited
+measurements: halt_value, live_count, bytes_used   (durable; built by ExitRecord::project)
+metadata:     pid, process = opaque(&Process)       (live during dispatch only)
 ```
 
-Tests run a program by spawning it on a `Runtime` and reading this event from a
-`Capture`, rather than constructing a caller-owned `Process` and inspecting its
-heap. The single-task test convenience `CompiledModule::run(fn_id)` is a thin
-wrapper over `spawn` + `run_until_idle`; there is one run path, and it is the
-production scheduler. When a test needs the live-object count or the result as
-an observed fact, attach a `Capture` and read `fz.runtime.task_exited` (see
-`run_capturing` in the codegen tests).
+It carries **both** a measurement projection and the live `&Process`, and the
+split is deliberate:
+
+- The **measurements** are the durable, stable contract. `durable_owned()` keeps
+  them, so they survive into stored events (`Capture`, JSONL). `ExitRecord::project`
+  is the *single* place that reads `Process` internals for the event.
+- The **opaque `&Process`** is the escape hatch for a synchronous handler that
+  needs a field the projection omits. `durable_owned()` drops opaque values, so
+  it is only valid *during dispatch* — never read it from a stored event.
+
+### `fz.runtime.dbg`
+
+`dbg`/print output is routed onto the bus too. `emit_print_line` (the shared
+render seam) still writes production stdout, and additionally forwards each line
+through the `OutputHook` to `CURRENT_TEL`, which whichever scheduler is driving
+points at its sink (`route_output_to`). So dbg output is observable as events on
+both engines:
+
+```text
+event:    fz.runtime.dbg
+metadata: line
+```
+
+### Observing in tests
+
+There is one run path — the production scheduler — and the test convenience
+`CompiledModule::run(fn_id)` is a thin `spawn` + `run_until_idle` over it that
+reads its result from `process_exited`, not from `task.halt_value`. Tests do not
+construct a caller-owned `Process` or read a print buffer; they observe:
+
+- `ProcessExitCapture` → a typed `ExitRecord` (result + heap stats).
+- `DbgCapture` → the `fz.runtime.dbg` line stream.
+
+`observe(compiled, entry)` (codegen tests) bundles both, and the `run_main` /
+`capture_main` family is built on it. (Supersedes the earlier
+`fz.runtime.task_exited` event.)
 
 ## What To Put In Events
 
