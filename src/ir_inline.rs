@@ -569,6 +569,11 @@ pub fn alpha_rename(callee: &FnIr, caller: &FnIr) -> FnIr {
         category: callee.category,
         owner_module: callee.owner_module.clone(),
         ignored_entry_params: callee.ignored_entry_params.clone(),
+        physical_entry_params: callee
+            .physical_entry_params
+            .iter()
+            .map(|physical| physical.map_vars(shift_v))
+            .collect(),
         owned_cons_reuse_credits: callee
             .owned_cons_reuse_credits
             .iter()
@@ -623,6 +628,11 @@ pub fn absorb_callee(caller: &mut FnIr, bi: usize, mut callee: FnIr, args: &[Var
                     .copied()
                     .unwrap_or(credit.source_cons),
             })
+            .collect();
+        callee.physical_entry_params = callee
+            .physical_entry_params
+            .iter()
+            .map(|physical| physical.map_vars(|var| subst.get(&var).copied().unwrap_or(var)))
             .collect();
     }
 

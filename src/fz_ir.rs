@@ -1040,6 +1040,9 @@ pub struct FnIr {
     /// The slot exists physically, but semantic specialization must not
     /// inspect its type.
     pub ignored_entry_params: Vec<bool>,
+    /// Entry parameters that transport physical capabilities, not source
+    /// values. They are ignored by semantic specialization by construction.
+    pub physical_entry_params: Vec<PhysicalEntryParam>,
     /// FIP-style reuse credits available inside this function body.
     ///
     /// Lowering records these when a destructured list head and its original
@@ -1052,17 +1055,39 @@ pub struct FnIr {
 
 impl FnIr {
     pub fn semantic_key(&self, input_tys: Vec<crate::types::Ty>) -> Vec<crate::types::KeySlot> {
+        let entry_params = &self.block(self.entry).params;
         input_tys
             .into_iter()
             .enumerate()
             .map(|(i, ty)| {
-                if self.ignored_entry_params.get(i).copied().unwrap_or(false) {
+                let is_physical = entry_params
+                    .get(i)
+                    .is_some_and(|param| self.is_physical_entry_param(*param));
+                if is_physical || self.ignored_entry_params.get(i).copied().unwrap_or(false) {
                     None
                 } else {
                     Some(ty)
                 }
             })
             .collect()
+    }
+
+    pub fn semantic_entry_params(&self) -> Vec<Var> {
+        self.block(self.entry)
+            .params
+            .iter()
+            .enumerate()
+            .filter_map(|(i, param)| {
+                let ignored = self.ignored_entry_params.get(i).copied().unwrap_or(false);
+                (!ignored && !self.is_physical_entry_param(*param)).then_some(*param)
+            })
+            .collect()
+    }
+
+    pub fn is_physical_entry_param(&self, param: Var) -> bool {
+        self.physical_entry_params
+            .iter()
+            .any(|physical| physical.param == param)
     }
 
     pub fn block(&self, id: BlockId) -> &Block {
@@ -1077,6 +1102,36 @@ impl FnIr {
 pub struct OwnedConsReuseCredit {
     pub head: Var,
     pub source_cons: Var,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct PhysicalEntryParam {
+    pub param: Var,
+    pub capability: PhysicalCapability,
+}
+
+impl PhysicalEntryParam {
+    pub fn map_vars(self, mut map: impl FnMut(Var) -> Var) -> Self {
+        Self {
+            param: map(self.param),
+            capability: self.capability.map_vars(map),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum PhysicalCapability {
+    OwnedConsReuse { head: Var },
+}
+
+impl PhysicalCapability {
+    pub fn map_vars(self, mut map: impl FnMut(Var) -> Var) -> Self {
+        match self {
+            PhysicalCapability::OwnedConsReuse { head } => {
+                PhysicalCapability::OwnedConsReuse { head: map(head) }
+            }
+        }
+    }
 }
 
 /// Side-tables that map IR positions back to source spans. Populated by
@@ -1332,6 +1387,7 @@ pub struct FnBuilder {
     category: FnCategory,
     owner_module: String,
     ignored_params: std::collections::HashSet<Var>,
+    physical_entry_params: Vec<PhysicalEntryParam>,
     owned_cons_reuse_credits: Vec<OwnedConsReuseCredit>,
 }
 
@@ -1347,6 +1403,7 @@ impl FnBuilder {
             category: FnCategory::User,
             owner_module: String::new(),
             ignored_params: std::collections::HashSet::new(),
+            physical_entry_params: Vec::new(),
             owned_cons_reuse_credits: Vec::new(),
         }
     }
@@ -1372,7 +1429,33 @@ impl FnBuilder {
         self.ignored_params.insert(v);
     }
 
+    fn is_entry_param(&self, param: Var) -> bool {
+        self.entry
+            .and_then(|entry| self.blocks.iter().find(|block| block.id == entry))
+            .is_some_and(|entry| entry.params.contains(&param))
+    }
+
+    pub fn record_physical_entry_param(&mut self, param: Var, capability: PhysicalCapability) {
+        if let Some(physical) = self
+            .physical_entry_params
+            .iter_mut()
+            .find(|physical| physical.param == param)
+        {
+            physical.capability = capability;
+            return;
+        }
+        self.physical_entry_params
+            .push(PhysicalEntryParam { param, capability });
+    }
+
+    pub fn record_owned_cons_physical_entry_param(&mut self, head: Var, source_cons: Var) {
+        self.record_physical_entry_param(source_cons, PhysicalCapability::OwnedConsReuse { head });
+    }
+
     pub fn record_owned_cons_reuse_credit(&mut self, head: Var, source_cons: Var) {
+        if self.is_entry_param(source_cons) {
+            self.record_owned_cons_physical_entry_param(head, source_cons);
+        }
         if let Some(credit) = self
             .owned_cons_reuse_credits
             .iter_mut()
@@ -1457,6 +1540,7 @@ impl FnBuilder {
             category: self.category,
             owner_module: self.owner_module,
             ignored_entry_params,
+            physical_entry_params: self.physical_entry_params,
             owned_cons_reuse_credits: self.owned_cons_reuse_credits,
         }
     }
@@ -1853,10 +1937,38 @@ impl fmt::Display for FnIr {
             "{} {} (entry={}, frame_schema={}) {{",
             self.id, self.name, self.entry, self.frame_schema_id
         )?;
+        if !self.physical_entry_params.is_empty() {
+            let mut params = self.physical_entry_params.clone();
+            params.sort_by_key(|physical| physical.param.0);
+            writeln!(
+                f,
+                "  semantic_params=[{}]",
+                fmt_var_list(&self.semantic_entry_params())
+            )?;
+            for physical in params {
+                writeln!(f, "  physical {}", physical)?;
+            }
+        }
         for b in &self.blocks {
             write!(f, "{}", b)?;
         }
         writeln!(f, "}}")
+    }
+}
+
+impl fmt::Display for PhysicalEntryParam {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}: {}", self.param, self.capability)
+    }
+}
+
+impl fmt::Display for PhysicalCapability {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            PhysicalCapability::OwnedConsReuse { head } => {
+                write!(f, "owned_cons_reuse(head={})", head)
+            }
+        }
     }
 }
 
@@ -1932,6 +2044,34 @@ mod tests {
         let a = b.fresh_var();
         let c = b.fresh_var();
         assert_ne!(a, c);
+    }
+
+    #[test]
+    fn physical_entry_params_are_not_semantic_key_inputs() {
+        use crate::types::Types;
+
+        let mut b = FnBuilder::new(FnId(0), "with_physical");
+        let head = b.fresh_var();
+        let source = b.fresh_var();
+        let value = b.fresh_var();
+        let entry = b.block(vec![source, value]);
+        b.record_owned_cons_physical_entry_param(head, source);
+        b.set_terminator(entry, Term::Return(value));
+        let fn_ir = b.build();
+
+        assert_eq!(
+            fn_ir.physical_entry_params,
+            vec![PhysicalEntryParam {
+                param: source,
+                capability: PhysicalCapability::OwnedConsReuse { head },
+            }]
+        );
+        assert_eq!(fn_ir.semantic_entry_params(), vec![value]);
+
+        let mut t = crate::types::ConcreteTypes;
+        let key = fn_ir.semantic_key(vec![t.any(), t.int()]);
+        assert!(key[0].is_none());
+        assert!(key[1].is_some());
     }
 
     #[test]

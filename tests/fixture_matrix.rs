@@ -2343,6 +2343,7 @@ fn physical_capability_scaffold_and_signals_are_pinned() {
         "operation effect classification",
         "codegen consumes validated facts",
         "src/fz_ir.rs",
+        "physical_entry_params",
         "ignored_entry_params",
         "owned_cons_reuse_credits",
         "src/ir_lower/cps.rs",
@@ -2364,6 +2365,8 @@ fn physical_capability_scaffold_and_signals_are_pinned() {
     let fz_ir = fs::read_to_string("src/fz_ir.rs").expect("read fz_ir");
     assert!(
         fz_ir.contains("ignored_entry_params")
+            && fz_ir.contains("physical_entry_params")
+            && fz_ir.contains("PhysicalCapability")
             && fz_ir.contains("owned_cons_reuse_credits")
             && fz_ir.contains("record_owned_cons_reuse_credit"),
         "current FnIr scaffold should stay explicit until the physical capability lane replaces it"
@@ -2540,8 +2543,8 @@ fn quicksort_has_no_tuple_dp_any_fanout() {
     );
     assert!(
         stanzas.iter().any(|s| s.key
-            == "[{[], []} | {[], nonempty_list(int)} | {nonempty_list(int), nonempty_list(int)} | {nonempty_list(int), []}, int, any]"),
-        "the qsort tuple continuation should receive the typed partition tuple union, integer pivot, and hidden source cons:\n{}",
+            == "[{[], []} | {[], nonempty_list(int)} | {nonempty_list(int), nonempty_list(int)} | {nonempty_list(int), []}, int, _]"),
+        "the qsort tuple continuation should receive the typed partition tuple union, integer pivot, and physical source-cons hole:\n{}",
         specs
     );
 }

@@ -22,6 +22,8 @@ that classifier instead of carrying local publication rules.
 The current owned-cons reuse implementation reaches the right allocation floor,
 but it still uses transitional plumbing:
 
+- `src/fz_ir.rs` exposes `physical_entry_params` as the destination for
+  object-local capabilities.
 - `src/fz_ir.rs` stores `ignored_entry_params` beside semantic params.
 - `src/fz_ir.rs` stores `owned_cons_reuse_credits` as the reusable-cons seed.
 - `src/ir_lower/cps.rs` transports `owned_cons_captures` through ordinary
