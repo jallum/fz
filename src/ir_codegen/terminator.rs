@@ -9,6 +9,7 @@ use cranelift_codegen::isa::CallConv;
 use cranelift_frontend::FunctionBuilder;
 use cranelift_module::{FuncId, Linkage};
 use fz_runtime::heap::Schema;
+use fz_runtime::process_abi::PROCESS_REDUCTIONS_REMAINING_OFFSET;
 use std::collections::HashMap;
 
 // Resolve the Cont-slot SpecId for the call-shape terminator in `blk`.
@@ -1263,8 +1264,10 @@ fn emit_back_edge_yield_check<M: cranelift_module::Module>(
     native_args: &[ir::Value],
 ) {
     let runtime = env.runtime;
-    let reductions_gv = jmod.declare_data_in_func(runtime.reductions_remaining_data_id, b.func);
-    let reductions_ptr = b.ins().global_value(types::I64, reductions_gv);
+    let process = b.ins().get_pinned_reg(types::I64);
+    let reductions_ptr = b
+        .ins()
+        .iadd_imm(process, PROCESS_REDUCTIONS_REMAINING_OFFSET as i64);
     let remaining = b
         .ins()
         .load(types::I32, MemFlags::trusted(), reductions_ptr, 0);

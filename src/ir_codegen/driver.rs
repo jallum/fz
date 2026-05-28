@@ -2346,6 +2346,7 @@ pub(crate) fn compile_with_backend_impl<
 
     let (matcher_fn_ids, receive_matched_sites) =
         declare_matcher_fns(backend.module_mut(), module, tel)?;
+    let verifier_isa = host_isa();
 
     for sid in 0..spec_count {
         let Some(_idx) = spec_fnidx[sid] else {
@@ -2499,16 +2500,17 @@ pub(crate) fn compile_with_backend_impl<
             }
         });
         let fn_span = module.source.fn_span_of(f.id);
-        let flags = settings::Flags::new(settings::builder());
-        cranelift_codegen::verifier::verify_function(&ctx.func, &flags).map_err(|e| {
-            CodegenError::new(format!(
-                "verify {}:\n{}\n--- IR ---\n{}",
-                display_name,
-                e,
-                ctx.func.display()
-            ))
-            .with_span(fn_span)
-        })?;
+        cranelift_codegen::verifier::verify_function(&ctx.func, verifier_isa.as_ref()).map_err(
+            |e| {
+                CodegenError::new(format!(
+                    "verify {}:\n{}\n--- IR ---\n{}",
+                    display_name,
+                    e,
+                    ctx.func.display()
+                ))
+                .with_span(fn_span)
+            },
+        )?;
         backend
             .module_mut()
             .define_function(func_id, &mut ctx)

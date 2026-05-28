@@ -217,6 +217,10 @@ fn static_tests() -> Vec<(&'static str, fn())> {
             quicksort_clif_inlines_nonempty_list_projection,
         ),
         (
+            "compiled_back_edges_spend_reductions_through_pinned_process",
+            compiled_back_edges_spend_reductions_through_pinned_process,
+        ),
+        (
             "quicksort_has_no_tuple_dp_any_fanout",
             quicksort_has_no_tuple_dp_any_fanout,
         ),
@@ -1325,8 +1329,8 @@ fn tail_recursion_count_matches_cps_in_clif_section_8_1() {
         body,
     );
     assert!(
-        body.contains("global_value.i64") && body.contains("isub") && body.contains("icmp_imm sle"),
-        "count_s2 recursive case must spend a reduction before the fast tail call:\n{}",
+        body.contains("get_pinned_reg") && body.contains("isub") && body.contains("icmp_imm sle"),
+        "count_s2 recursive case must spend a Process reduction before the fast tail call:\n{}",
         body,
     );
     assert!(
@@ -2528,6 +2532,22 @@ fn quicksort_clif_inlines_nonempty_list_projection() {
         !qsort.contains("@fz_value_ref_from_parts"),
         "qsort(nonempty_list) should not reconstruct refs from split payload/kind pieces:\n{}",
         qsort
+    );
+}
+
+fn compiled_back_edges_spend_reductions_through_pinned_process() {
+    let clif = dump_quicksort_clif();
+    let partition = clif_function_with_banner_prefix(&clif, "; fn partition_s")
+        .expect("missing partition CLIF");
+    assert!(
+        partition.contains("get_pinned_reg"),
+        "compiled back-edge reductions should read Process through the pinned register:\n{}",
+        partition
+    );
+    assert!(
+        !clif.contains("FZ_REDUCTIONS_REMAINING"),
+        "compiled reductions should not reference the old global mirror cell:\n{}",
+        clif
     );
 }
 

@@ -1054,5 +1054,8 @@ pub(crate) struct RuntimeRefs {
     pub(super) drain_dtor_entry_id: FuncId,
     pub(super) yield_mid_flight_report_id: FuncId,
     pub(super) yield_slow_path_begin_id: FuncId,
+    // Removed in fz-aoi.5 after pinned Process reductions replace the
+    // compiled-code mirror cell completely.
+    #[allow(dead_code)]
     pub(super) reductions_remaining_data_id: DataId,
 }
