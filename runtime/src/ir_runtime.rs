@@ -136,13 +136,14 @@ pub extern "C" fn fz_process_heap_alloc_stats() -> u64 {
     let reductions_per_quantum = process.reductions_per_quantum;
     let reductions_executed = process.reductions_executed;
     let reduction_yields = process.reduction_yields;
+    let allocation_pressure_yields = process.allocation_pressure_yields;
     let yield_reasons = process.yield_reasons;
     let max_yield_continuation_bytes = process.max_yield_continuation_bytes;
     let min_yield_continuation_margin_before_bytes =
         process.min_yield_continuation_margin_before_bytes;
     let min_yield_continuation_margin_after_bytes =
         process.min_yield_continuation_margin_after_bytes;
-    let mut entries = Vec::with_capacity(32);
+    let mut entries = Vec::with_capacity(33);
     entries.push((
         crate::any_value::AnyValue::atom(process_atom_id("allocs")),
         crate::any_value::AnyValue::int(snapshot.total.allocs as i64),
@@ -184,6 +185,10 @@ pub extern "C" fn fz_process_heap_alloc_stats() -> u64 {
     entries.push((
         crate::any_value::AnyValue::atom(process_atom_id("reduction_yields")),
         crate::any_value::AnyValue::int(reduction_yields as i64),
+    ));
+    entries.push((
+        crate::any_value::AnyValue::atom(process_atom_id("allocation_pressure_yields")),
+        crate::any_value::AnyValue::int(allocation_pressure_yields as i64),
     ));
     entries.push((
         crate::any_value::AnyValue::atom(process_atom_id("yield_reasons")),
@@ -2390,6 +2395,10 @@ mod tests {
             0
         );
         assert_eq!(map_int_value_by_atom_name(stats_ref, "reduction_yields"), 0);
+        assert_eq!(
+            map_int_value_by_atom_name(stats_ref, "allocation_pressure_yields"),
+            0
+        );
         assert_eq!(map_int_value_by_atom_name(stats_ref, "yield_reasons"), 0);
         assert_eq!(
             map_int_value_by_atom_name(stats_ref, "max_yield_continuation_bytes"),

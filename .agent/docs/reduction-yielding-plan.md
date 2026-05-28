@@ -182,7 +182,8 @@ Goal: make reductions visible without changing scheduling behavior.
 Tasks:
 
 - add process fields for `reductions_remaining`, `reductions_per_quantum`,
-  `reductions_executed`, `reduction_yields`, and compact yield reasons;
+  `reductions_executed`, `reduction_yields`, `allocation_pressure_yields`, and
+  compact yield reasons;
 - expose the counters through process stats or focused runtime telemetry;
 - add tests that prove the counters reset at dispatch and accrue at back-edge
   observation points.

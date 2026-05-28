@@ -144,6 +144,9 @@ pub struct Process {
     pub reductions_executed: u64,
     /// Cumulative yields caused by ordinary reduction-budget exhaustion.
     pub reduction_yields: u64,
+    /// Cumulative yields caused by allocation pressure expiring the current
+    /// reduction budget.
+    pub allocation_pressure_yields: u64,
     /// Compact reason bits describing why the current/last quantum yielded.
     /// See `YIELD_REASON_*`.
     pub yield_reasons: u8,
@@ -215,6 +218,7 @@ impl Process {
             reductions_per_quantum: DEFAULT_REDUCTIONS_PER_QUANTUM,
             reductions_executed: 0,
             reduction_yields: 0,
+            allocation_pressure_yields: 0,
             yield_reasons: 0,
             pending_yield_continuation_margin_before_bytes: 0,
             max_yield_continuation_bytes: 0,
@@ -316,7 +320,11 @@ impl Process {
             self.reductions_executed = self.reductions_executed.saturating_add(burned as u64);
         }
         self.yield_reasons |= reason;
-        if (reason & YIELD_REASON_REDUCTIONS) == YIELD_REASON_REDUCTIONS {
+        let allocation_pressure =
+            (reason & YIELD_REASON_ALLOCATION_PRESSURE) == YIELD_REASON_ALLOCATION_PRESSURE;
+        if allocation_pressure {
+            self.allocation_pressure_yields = self.allocation_pressure_yields.saturating_add(1);
+        } else if (reason & YIELD_REASON_REDUCTIONS) == YIELD_REASON_REDUCTIONS {
             self.reduction_yields = self.reduction_yields.saturating_add(1);
         }
     }
@@ -420,7 +428,7 @@ pub fn try_current_process() -> Option<&'static mut Process> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Process, YIELD_REASON_REDUCTIONS};
+    use super::{Process, YIELD_REASON_ALLOCATION_PRESSURE, YIELD_REASON_REDUCTIONS};
     use std::cell::RefCell;
     use std::rc::Rc;
 
@@ -444,9 +452,28 @@ mod tests {
         assert_eq!(process.reductions_remaining, -1);
         assert_eq!(process.reductions_executed, 4);
         assert_eq!(process.reduction_yields, 1);
+        assert_eq!(process.allocation_pressure_yields, 0);
         assert_eq!(
             process.yield_reasons & YIELD_REASON_REDUCTIONS,
             YIELD_REASON_REDUCTIONS
+        );
+    }
+
+    #[test]
+    fn allocation_pressure_yields_are_counted_by_cause() {
+        let schemas = Rc::new(RefCell::new(crate::heap::SchemaRegistry::new()));
+        let mut process = Process::new(schemas);
+
+        process.finish_yield_report(
+            9,
+            YIELD_REASON_REDUCTIONS | YIELD_REASON_ALLOCATION_PRESSURE,
+        );
+
+        assert_eq!(process.reduction_yields, 0);
+        assert_eq!(process.allocation_pressure_yields, 1);
+        assert_eq!(
+            process.yield_reasons & YIELD_REASON_ALLOCATION_PRESSURE,
+            YIELD_REASON_ALLOCATION_PRESSURE
         );
     }
 }

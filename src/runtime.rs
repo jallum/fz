@@ -1074,11 +1074,17 @@ fn main(), do: sum(10, 0, nil)";
         .unwrap();
         let mut rt = Runtime::new(&compiled, 1);
         let pid = rt.spawn(entry);
-        force_allocation_pressure_yield(rt.tasks.get_mut(&pid).unwrap());
+        {
+            let task = rt.tasks.get_mut(&pid).unwrap();
+            task.reductions_per_quantum = 1000;
+            task.heap.allocation_watermark = std::ptr::null_mut();
+        }
         rt.run_until_idle();
         let task = rt.task(pid).unwrap();
         assert_eq!(task.state, ProcessState::Exited);
         assert_eq!(task.halt_value, 55, "sum(10,0,nil) should be 55");
+        assert_eq!(task.reduction_yields, 0);
+        assert!(task.allocation_pressure_yields > 0);
     }
 
     #[test]
@@ -1269,6 +1275,8 @@ fn main(), do: sum(8, 0, nil)";
         assert_eq!(b.halt_value, 5000);
         assert!(a.reduction_yields > 0);
         assert!(b.reduction_yields > 0);
+        assert_eq!(a.allocation_pressure_yields, 0);
+        assert_eq!(b.allocation_pressure_yields, 0);
         assert_eq!(a.interpreter_yields, 0);
         assert_eq!(b.interpreter_yields, 0);
     }

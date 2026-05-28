@@ -489,6 +489,8 @@ passed to the next iteration, plus the current continuation.</p>
     ...
     runnable_closure:      *mut u8,       <span class="note">// tagged closure to run next; null = none</span>
     quiet_quanta:          u8,            <span class="note">// non-yielding quanta since last GC</span>
+    reduction_yields:      u64,           <span class="note">// ordinary budget exhaustion</span>
+    allocation_pressure_yields: u64,      <span class="note">// allocation pressure expired budget</span>
   }
 </pre>
 

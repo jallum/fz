@@ -192,6 +192,8 @@ fn interp_reductions_yield_allocation_light_loops() {
         child.reduction_yields > 0,
         "child should yield on reduction budget exhaustion"
     );
+    assert_eq!(main.allocation_pressure_yields, 0);
+    assert_eq!(child.allocation_pressure_yields, 0);
     assert_eq!(
         main.interpreter_yields, 0,
         "test should be allocation-light"
@@ -278,6 +280,10 @@ fn interp_allocation_pressure_yields_before_budget_exhaustion() {
     assert_eq!(
         task.reduction_yields, 0,
         "allocation pressure should not be counted as ordinary reduction exhaustion"
+    );
+    assert!(
+        task.allocation_pressure_yields > 0,
+        "allocation pressure should have its own cause-specific counter"
     );
     assert!(
         task.reductions_executed < task.reductions_per_quantum as u64,

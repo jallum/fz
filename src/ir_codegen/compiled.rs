@@ -1271,6 +1271,7 @@ impl CompiledModule {
             reductions_per_quantum: fz_runtime::process::DEFAULT_REDUCTIONS_PER_QUANTUM,
             reductions_executed: 0,
             reduction_yields: 0,
+            allocation_pressure_yields: 0,
             yield_reasons: 0,
             pending_yield_continuation_margin_before_bytes: 0,
             max_yield_continuation_bytes: 0,
