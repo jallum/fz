@@ -34,6 +34,19 @@ until a scheduler boundary requires an ordinary heap closure. See
 It runs during lowering after brand erasure and before planner/codegen consumers
 depend on continuation ABI shape.
 
+Shared continuation sites are normalized as a unit. If several branches feed
+the same continuation body, `ir_capture_norm` computes which captured positions
+survive local DCE and removes the same dead positions from every edge. That
+keeps the continuation entry params, every call edge, and every closure or lazy
+descriptor payload in one shape.
+
+Owned-cons reuse credits are capability facts, not ordinary user values. Local
+DCE may remove the source cons variable because no source expression reads it
+again, but codegen still needs that source cons if the live head capture carries
+an owned-reuse credit. `ir_capture_norm` therefore treats `source_cons` as live
+when the credit's `head` is live, and drops the credit when the head is not
+semantically used.
+
 ## Lambda Captures
 
 Lambda closures use the same idea earlier: capture the lambda body's free
@@ -63,6 +76,10 @@ cont k captured=[only_live_var]
 entry params match captured vars
 call edge args match entry params
 ```
+
+For shared continuation sites, assert every edge lost the same dead positions.
+For owned-cons reuse, assert live head credits still carry their source cons and
+dead head credits disappear before codegen.
 
 Telemetry proves the compiler acted. Structure proves it acted correctly.
 

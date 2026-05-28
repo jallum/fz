@@ -32,6 +32,12 @@ if should_yield:
 That keeps scheduler and GC machinery simple: parked runnable work is still a
 normal typed closure.
 
+This applies to known higher-order calls too. If `Term::CallClosure` resolves
+to one known native closure body, codegen resolves the target before building
+the continuation value. The reducer body still receives a closure-shaped `self`
+word for its continuation, but that word can be a stack-backed lazy descriptor
+instead of a heap closure.
+
 ## Runtime Shape
 
 Lazy descriptors are not `AnyValueRef`s. They use the invalid high-bit
@@ -106,6 +112,8 @@ tion.
 Use these gates when touching lazy continuation materialization:
 
 - `cargo test --test fixture_matrix quicksort`
+- `cargo test --test fixture_matrix enum_list_allocations`
+- `cargo test --test fixture_matrix enum_reduce_suspend`
 - `cargo test --test fixture_matrix append`
 - `cargo test --test fixture_matrix reverse`
 - `cargo test --test fixture_matrix filter`
@@ -118,3 +126,17 @@ closure_bytes = 0
 list_cons_bytes = 176
 heap_bytes = 176
 ```
+
+`enum_list_allocations` pins the runtime-library list-consumer floor for known
+native higher-order calls:
+
+```text
+list_cons_allocs = 5
+list_cons_bytes = 80
+closure_allocs = 0
+closure_bytes = 0
+```
+
+`enum_reduce_suspend` is the paired negative gate. A returned suspend function
+is a source-visible value, not an internal continuation edge, so native JIT/AOT
+must still allocate one real heap closure there.

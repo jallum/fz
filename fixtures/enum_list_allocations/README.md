@@ -1,5 +1,5 @@
 ---
-purpose: "runtime Enum list functions preserve the minimum native list-cons allocation floor"
+purpose: "runtime Enum list functions preserve minimum native list-cons and continuation-closure allocation floors"
 paths: [jit, interp, aot, repl]
 ---
 
