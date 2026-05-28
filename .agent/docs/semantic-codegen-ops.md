@@ -56,3 +56,12 @@ contexts. When work removes more runtime-call plumbing, lower the budget in
 that test. A new direct import or `runtime.*` helper reference should either
 move behind a semantic `CodegenFn` method or be documented as a boundary
 exception.
+
+Current signal: `call.rs`, `closure.rs`, `entry.rs`, and `support.rs` have zero
+direct `declare_func_in_func` imports; `call.rs`, `closure.rs`, and
+`support.rs` use `CodegenFn::body(...)` for migrated value/list operations; and
+the retired `support::list_tail_ref_word` and `call::store_frame_value_dynamic`
+free helpers are pinned out by source tests. Larger `prim.rs` and
+`terminator.rs` still contain documented boundary imports for dynamic calls,
+externs, data imports, and broad lowering flows; reduce those only by moving a
+complete semantic operation behind `CodegenFn` or `CodegenFnBody`.
