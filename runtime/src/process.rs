@@ -147,6 +147,14 @@ pub struct Process {
     /// Compact reason bits describing why the current/last quantum yielded.
     /// See `YIELD_REASON_*`.
     pub yield_reasons: u8,
+    /// Largest scheduler continuation closure observed at a mid-flight yield.
+    pub max_yield_continuation_bytes: u64,
+    /// Lowest remaining in-block heap margin immediately before observed
+    /// continuation materialization. Zero means no sample yet.
+    pub min_yield_continuation_margin_before_bytes: u64,
+    /// Lowest remaining in-block heap margin immediately after observed
+    /// continuation materialization. Zero means no sample yet.
+    pub min_yield_continuation_margin_after_bytes: u64,
 }
 
 /// Stable per-Process identifier assigned at spawn time. v1: simple u32
@@ -202,6 +210,9 @@ impl Process {
             reductions_executed: 0,
             reduction_yields: 0,
             yield_reasons: 0,
+            max_yield_continuation_bytes: 0,
+            min_yield_continuation_margin_before_bytes: 0,
+            min_yield_continuation_margin_after_bytes: 0,
         }
     }
 
@@ -321,6 +332,27 @@ impl Process {
 
     pub fn clear_yield_reasons(&mut self) {
         self.yield_reasons = 0;
+    }
+
+    pub fn note_yield_continuation_allocation(&mut self, bytes: usize, margin_after: usize) {
+        let bytes = bytes as u64;
+        let margin_after = margin_after as u64;
+        let margin_before = margin_after.saturating_add(bytes);
+        self.max_yield_continuation_bytes = self.max_yield_continuation_bytes.max(bytes);
+        self.min_yield_continuation_margin_before_bytes = min_nonzero(
+            self.min_yield_continuation_margin_before_bytes,
+            margin_before,
+        );
+        self.min_yield_continuation_margin_after_bytes =
+            min_nonzero(self.min_yield_continuation_margin_after_bytes, margin_after);
+    }
+}
+
+fn min_nonzero(current: u64, candidate: u64) -> u64 {
+    if current == 0 {
+        candidate
+    } else {
+        current.min(candidate)
     }
 }
 

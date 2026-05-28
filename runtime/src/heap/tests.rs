@@ -1346,11 +1346,14 @@ fn gc_updates_last_gc_live_bytes() {
     assert_eq!(h.size_class, 0, "tiny live set stays at smallest class");
 }
 
-/// Allocation watermark is currently set to 75% of block.
+/// Allocation watermark leaves the explicit yield-continuation reserve.
 #[test]
-fn watermark_is_75_percent_of_block() {
+fn allocation_watermark_leaves_continuation_reserve() {
     let h = Heap::new(SIZE_TABLE[0], empty_registry());
-    let expected = unsafe { h.block_start.add(SIZE_TABLE[0] * 3 / 4) };
+    let expected = unsafe {
+        h.block_end
+            .sub(crate::heap::YIELD_CONTINUATION_RESERVE_BYTES)
+    };
     assert_eq!(h.allocation_watermark, expected);
 }
 

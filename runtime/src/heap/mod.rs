@@ -48,6 +48,7 @@ pub use self::stats::{AllocStat, GcStats, HeapAllocKind, HeapAllocStats};
 /// stub) instead of being inlined on the per-process heap. Matches
 /// BEAM's refc-binary threshold.
 pub const SHARED_BIN_THRESHOLD_BYTES: usize = 64;
+pub const YIELD_CONTINUATION_RESERVE_BYTES: usize = 256;
 
 pub struct Heap {
     block_start: *mut u8,

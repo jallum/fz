@@ -137,7 +137,12 @@ pub extern "C" fn fz_process_heap_alloc_stats() -> u64 {
     let reductions_executed = process.reductions_executed;
     let reduction_yields = process.reduction_yields;
     let yield_reasons = process.yield_reasons;
-    let mut entries = Vec::with_capacity(29);
+    let max_yield_continuation_bytes = process.max_yield_continuation_bytes;
+    let min_yield_continuation_margin_before_bytes =
+        process.min_yield_continuation_margin_before_bytes;
+    let min_yield_continuation_margin_after_bytes =
+        process.min_yield_continuation_margin_after_bytes;
+    let mut entries = Vec::with_capacity(32);
     entries.push((
         crate::any_value::AnyValue::atom(process_atom_id("allocs")),
         crate::any_value::AnyValue::int(snapshot.total.allocs as i64),
@@ -183,6 +188,22 @@ pub extern "C" fn fz_process_heap_alloc_stats() -> u64 {
     entries.push((
         crate::any_value::AnyValue::atom(process_atom_id("yield_reasons")),
         crate::any_value::AnyValue::int(yield_reasons as i64),
+    ));
+    entries.push((
+        crate::any_value::AnyValue::atom(process_atom_id("max_yield_continuation_bytes")),
+        crate::any_value::AnyValue::int(max_yield_continuation_bytes as i64),
+    ));
+    entries.push((
+        crate::any_value::AnyValue::atom(process_atom_id(
+            "min_yield_continuation_margin_before_bytes",
+        )),
+        crate::any_value::AnyValue::int(min_yield_continuation_margin_before_bytes as i64),
+    ));
+    entries.push((
+        crate::any_value::AnyValue::atom(process_atom_id(
+            "min_yield_continuation_margin_after_bytes",
+        )),
+        crate::any_value::AnyValue::int(min_yield_continuation_margin_after_bytes as i64),
     ));
     map_ref_word_from_bits(current_process().heap.alloc_map_slots(&entries))
 }
@@ -601,10 +622,12 @@ pub extern "C" fn fz_yield_mid_flight(cont_closure_bits: u64) -> *mut u8 {
     let p = current_process();
     p.scheduler_yields = p.scheduler_yields.saturating_add(1);
     p.note_reduction_yield();
-    p.set_runnable_closure(closure_addr_from_ref_word(
-        cont_closure_bits,
-        "fz_yield_mid_flight cont",
-    ));
+    let closure_addr = closure_addr_from_ref_word(cont_closure_bits, "fz_yield_mid_flight cont");
+    let closure_bits = crate::any_value::heap_object_word(closure_addr, ValueKind::CLOSURE);
+    let continuation_bytes = crate::any_value::object_size(closure_bits);
+    let margin_after = p.heap.bytes_remaining_in_block();
+    p.note_yield_continuation_allocation(continuation_bytes, margin_after);
+    p.set_runnable_closure(closure_addr);
     YIELD_PTR as *mut u8
 }
 
@@ -2353,6 +2376,18 @@ mod tests {
         );
         assert_eq!(map_int_value_by_atom_name(stats_ref, "reduction_yields"), 0);
         assert_eq!(map_int_value_by_atom_name(stats_ref, "yield_reasons"), 0);
+        assert_eq!(
+            map_int_value_by_atom_name(stats_ref, "max_yield_continuation_bytes"),
+            0
+        );
+        assert_eq!(
+            map_int_value_by_atom_name(stats_ref, "min_yield_continuation_margin_before_bytes",),
+            0
+        );
+        assert_eq!(
+            map_int_value_by_atom_name(stats_ref, "min_yield_continuation_margin_after_bytes"),
+            0
+        );
 
         let after = current_process().heap.alloc_stats_snapshot();
         assert_eq!(after.list_cons.allocs, 1);
@@ -2403,6 +2438,11 @@ mod tests {
             assert_eq!(ret as u64, crate::scheduler_hooks::YIELD_PTR);
             assert_eq!(current_process().runnable_closure, closure_addr);
             assert_eq!(current_process().scheduler_yields, 1);
+            assert_eq!(
+                current_process().max_yield_continuation_bytes,
+                crate::any_value::closure_size_for_count(0) as u64
+            );
+            assert!(current_process().min_yield_continuation_margin_after_bytes > 0);
         });
     }
 

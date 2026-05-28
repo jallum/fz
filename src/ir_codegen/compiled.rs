@@ -1272,6 +1272,9 @@ impl CompiledModule {
             reductions_executed: 0,
             reduction_yields: 0,
             yield_reasons: 0,
+            max_yield_continuation_bytes: 0,
+            min_yield_continuation_margin_before_bytes: 0,
+            min_yield_continuation_margin_after_bytes: 0,
         };
         // One static singleton per zero-cap closure-target spec.
         // See docs/cps-in-clif.md §8.2.
