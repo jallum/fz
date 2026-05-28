@@ -63,7 +63,7 @@ pub(crate) enum ClosureCapture {
 }
 
 pub(crate) fn closure_capture_for_var<M: cranelift_module::Module>(
-    body: &mut CodegenFnBody<'_, '_, '_, M>,
+    body: &mut CodegenFn<'_, '_, '_, M>,
     var_env: &HashMap<u32, CodegenValue>,
     v: u32,
 ) -> ClosureCapture {

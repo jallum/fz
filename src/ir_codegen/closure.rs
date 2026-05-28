@@ -19,7 +19,7 @@ use std::sync::Arc;
 /// Used when the caller has no cont_param and needs a halt-cont to pass to the
 /// callee — the callee's Term::Return chains through it to record halt_value.
 pub(crate) fn synthesize_halt_cont<M: cranelift_module::Module>(
-    body: &mut CodegenFnBody<'_, '_, '_, M>,
+    body: &mut CodegenFn<'_, '_, '_, M>,
     runtime: &RuntimeRefs,
     repr: ArgRepr,
 ) -> ir::Value {
@@ -48,7 +48,7 @@ pub(crate) fn halt_cont_body_id_for(runtime: &RuntimeRefs, repr: ArgRepr) -> Fun
 /// ABI) have no `self` closure ptr; their outer_cont lives in frame slot 0
 /// — fall through to the uniform branch when cont_param is None.
 pub(crate) fn resolve_outer_cont<M: cranelift_module::Module>(
-    body: &mut CodegenFnBody<'_, '_, '_, M>,
+    body: &mut CodegenFn<'_, '_, '_, M>,
     runtime: &RuntimeRefs,
     return_reprs: &[ArgRepr],
     is_cont_fn: bool,
@@ -108,7 +108,7 @@ pub(crate) fn resolve_outer_cont<M: cranelift_module::Module>(
 /// payload slots; `ValueRef` captures are already one-word any value refs.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn build_cont_closure<M: cranelift_module::Module>(
-    body: &mut CodegenFnBody<'_, '_, '_, M>,
+    body: &mut CodegenFn<'_, '_, '_, M>,
     runtime: &RuntimeRefs,
     return_reprs: &[ArgRepr],
     is_cont_fn: bool,
@@ -183,7 +183,7 @@ const LAZY_CONT_KIND_I64: i64 = 1;
 const LAZY_CONT_KIND_F64: i64 = 2;
 
 pub(crate) fn build_lazy_cont_descriptor<M: cranelift_module::Module>(
-    body: &mut CodegenFnBody<'_, '_, '_, M>,
+    body: &mut CodegenFn<'_, '_, '_, M>,
     runtime: &RuntimeRefs,
     return_reprs: &[ArgRepr],
     is_cont_fn: bool,

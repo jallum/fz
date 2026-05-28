@@ -130,7 +130,7 @@ impl ContinuationPayload {
     }
 
     fn from_capture_vars<M: cranelift_module::Module>(
-        body: &mut CodegenFnBody<'_, '_, '_, M>,
+        body: &mut CodegenFn<'_, '_, '_, M>,
         env: &CodegenEnv<'_>,
         var_env: &HashMap<u32, CodegenValue>,
         cont_sid: u32,
@@ -173,7 +173,7 @@ impl ContinuationPlan {
     #[allow(clippy::too_many_arguments)]
     fn emit_value<M: cranelift_module::Module>(
         &self,
-        body: &mut CodegenFnBody<'_, '_, '_, M>,
+        body: &mut CodegenFn<'_, '_, '_, M>,
         runtime: &RuntimeRefs,
         return_reprs: &[ArgRepr],
         is_cont_fn: bool,
@@ -231,7 +231,7 @@ pub(crate) fn emit_terminator<
     M: cranelift_module::Module,
     T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
 >(
-    body: &mut CodegenFnBody<'_, '_, '_, M>,
+    body: &mut CodegenFn<'_, '_, '_, M>,
     t: &mut T,
     env: &CodegenEnv<'_>,
     schemas: &[Schema],
@@ -405,7 +405,7 @@ fn emit_goto(
 
 #[allow(clippy::too_many_arguments)]
 fn emit_if<M: cranelift_module::Module>(
-    body: &mut CodegenFnBody<'_, '_, '_, M>,
+    body: &mut CodegenFn<'_, '_, '_, M>,
     var_env: &HashMap<u32, CodegenValue>,
     block_map: &HashMap<u32, ir::Block>,
     cond: &crate::fz_ir::Var,
@@ -427,7 +427,7 @@ fn emit_if<M: cranelift_module::Module>(
 
 #[allow(clippy::too_many_arguments)]
 fn emit_halt<M: cranelift_module::Module>(
-    body: &mut CodegenFnBody<'_, '_, '_, M>,
+    body: &mut CodegenFn<'_, '_, '_, M>,
     var_env: &HashMap<u32, CodegenValue>,
     is_native: bool,
     host_ctx: Option<ir::Value>,
@@ -456,7 +456,7 @@ fn emit_return_term<
     M: cranelift_module::Module,
     T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
 >(
-    body: &mut CodegenFnBody<'_, '_, '_, M>,
+    body: &mut CodegenFn<'_, '_, '_, M>,
     t: &mut T,
     env: &CodegenEnv<'_>,
     var_env: &HashMap<u32, CodegenValue>,
@@ -575,7 +575,7 @@ fn emit_call_term<
     M: cranelift_module::Module,
     T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
 >(
-    body: &mut CodegenFnBody<'_, '_, '_, M>,
+    body: &mut CodegenFn<'_, '_, '_, M>,
     t: &mut T,
     env: &CodegenEnv<'_>,
     schemas: &[Schema],
@@ -785,7 +785,7 @@ fn emit_native_call_with_cont<
     M: cranelift_module::Module,
     T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
 >(
-    body: &mut CodegenFnBody<'_, '_, '_, M>,
+    body: &mut CodegenFn<'_, '_, '_, M>,
     t: &mut T,
     env: &CodegenEnv<'_>,
     schemas: &[Schema],
@@ -967,7 +967,7 @@ fn emit_tail_call_term<
     M: cranelift_module::Module,
     T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
 >(
-    body: &mut CodegenFnBody<'_, '_, '_, M>,
+    body: &mut CodegenFn<'_, '_, '_, M>,
     t: &mut T,
     env: &CodegenEnv<'_>,
     schemas: &[Schema],
@@ -1026,7 +1026,7 @@ fn emit_tail_call_term<
 // return_call is ABI-compatible.
 #[allow(clippy::too_many_arguments)]
 fn emit_native_tail_call<M: cranelift_module::Module>(
-    body: &mut CodegenFnBody<'_, '_, '_, M>,
+    body: &mut CodegenFn<'_, '_, '_, M>,
     env: &CodegenEnv<'_>,
     var_env: &HashMap<u32, CodegenValue>,
     is_native: bool,
@@ -1156,7 +1156,7 @@ fn emit_native_tail_call<M: cranelift_module::Module>(
 // closure and yield it as the primary mid-flight GC root. Otherwise
 // fall through to the caller's normal TCO path.
 fn emit_back_edge_yield_check<M: cranelift_module::Module>(
-    body: &mut CodegenFnBody<'_, '_, '_, M>,
+    body: &mut CodegenFn<'_, '_, '_, M>,
     env: &CodegenEnv<'_>,
     callee_sid: u32,
     mid_flight_arg_shapes: &[MidFlightArgShape],
@@ -1237,7 +1237,7 @@ fn emit_call_closure<
     M: cranelift_module::Module,
     T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
 >(
-    body: &mut CodegenFnBody<'_, '_, '_, M>,
+    body: &mut CodegenFn<'_, '_, '_, M>,
     t: &mut T,
     env: &CodegenEnv<'_>,
     var_env: &HashMap<u32, CodegenValue>,
@@ -1371,7 +1371,7 @@ fn emit_tail_call_closure<
     M: cranelift_module::Module,
     T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
 >(
-    body: &mut CodegenFnBody<'_, '_, '_, M>,
+    body: &mut CodegenFn<'_, '_, '_, M>,
     t: &mut T,
     env: &CodegenEnv<'_>,
     var_env: &HashMap<u32, CodegenValue>,
@@ -1511,7 +1511,7 @@ fn emit_receive<
     M: cranelift_module::Module,
     T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
 >(
-    body: &mut CodegenFnBody<'_, '_, '_, M>,
+    body: &mut CodegenFn<'_, '_, '_, M>,
     t: &mut T,
     env: &CodegenEnv<'_>,
     var_env: &HashMap<u32, CodegenValue>,
@@ -1587,7 +1587,7 @@ fn emit_receive_matched<
     M: cranelift_module::Module,
     T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
 >(
-    body: &mut CodegenFnBody<'_, '_, '_, M>,
+    body: &mut CodegenFn<'_, '_, '_, M>,
     t: &mut T,
     env: &CodegenEnv<'_>,
     var_env: &HashMap<u32, CodegenValue>,
@@ -1635,7 +1635,7 @@ fn build_park_record<
     M: cranelift_module::Module,
     T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
 >(
-    body: &mut CodegenFnBody<'_, '_, '_, M>,
+    body: &mut CodegenFn<'_, '_, '_, M>,
     t: &mut T,
     env: &CodegenEnv<'_>,
     var_env: &HashMap<u32, CodegenValue>,
@@ -1812,7 +1812,7 @@ fn build_park_record<
 }
 
 fn list_tail_destination_arg<M: cranelift_module::Module>(
-    body: &mut CodegenFnBody<'_, '_, '_, M>,
+    body: &mut CodegenFn<'_, '_, '_, M>,
 ) -> ir::Value {
     body.cache
         .list_tail_param
@@ -1820,7 +1820,7 @@ fn list_tail_destination_arg<M: cranelift_module::Module>(
 }
 
 fn cont_extra_ref_captures<M: cranelift_module::Module>(
-    body: &mut CodegenFnBody<'_, '_, '_, M>,
+    body: &mut CodegenFn<'_, '_, '_, M>,
     cont_key: &crate::ir_planner::fn_types::SpecKey,
 ) -> Vec<ir::Value> {
     if DemandAbi::new(cont_key).carries_list_tail_capture() {
@@ -1831,7 +1831,7 @@ fn cont_extra_ref_captures<M: cranelift_module::Module>(
 }
 
 fn owned_cons_physical_ref_captures<M: cranelift_module::Module>(
-    body: &mut CodegenFnBody<'_, '_, '_, M>,
+    body: &mut CodegenFn<'_, '_, '_, M>,
     var_env: &HashMap<u32, CodegenValue>,
     head: crate::fz_ir::Var,
 ) -> Vec<ir::Value> {
@@ -1845,7 +1845,7 @@ fn emit_list_tail_return_value<
     M: cranelift_module::Module,
     T: crate::types::Types<Ty = crate::types::Ty>,
 >(
-    body: &mut CodegenFnBody<'_, '_, '_, M>,
+    body: &mut CodegenFn<'_, '_, '_, M>,
     t: &mut T,
     env: &CodegenEnv<'_>,
     var_env: &HashMap<u32, CodegenValue>,

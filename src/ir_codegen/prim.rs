@@ -16,7 +16,7 @@ pub(crate) fn emit_map_get_value_ref_for_key<
     M: cranelift_module::Module,
     T: crate::types::Types<Ty = crate::types::Ty>,
 >(
-    body: &mut CodegenFnBody<'_, '_, '_, M>,
+    body: &mut CodegenFn<'_, '_, '_, M>,
     t: &mut T,
     env: &CodegenEnv<'_>,
     var_env: &HashMap<u32, CodegenValue>,
@@ -68,7 +68,7 @@ pub(crate) fn emit_map_put_for_key_and_value<
     M: cranelift_module::Module,
     T: crate::types::Types<Ty = crate::types::Ty>,
 >(
-    body: &mut CodegenFnBody<'_, '_, '_, M>,
+    body: &mut CodegenFn<'_, '_, '_, M>,
     t: &mut T,
     env: &CodegenEnv<'_>,
     var_env: &HashMap<u32, CodegenValue>,
@@ -196,7 +196,7 @@ pub(crate) fn emit_map_put_for_key_and_value<
 }
 
 fn value_raw_kind_parts<M: cranelift_module::Module>(
-    body: &mut CodegenFnBody<'_, '_, '_, M>,
+    body: &mut CodegenFn<'_, '_, '_, M>,
     value: CodegenValue,
 ) -> Option<(ir::Value, fz_runtime::any_value::ValueKind)> {
     match value {
@@ -227,7 +227,7 @@ fn value_raw_kind_parts<M: cranelift_module::Module>(
 }
 
 fn emit_map_destination_put<M: cranelift_module::Module>(
-    body: &mut CodegenFnBody<'_, '_, '_, M>,
+    body: &mut CodegenFn<'_, '_, '_, M>,
     runtime: &RuntimeRefs,
     map_bits: ir::Value,
     key: CodegenValue,
@@ -260,7 +260,7 @@ fn emit_map_destination_put<M: cranelift_module::Module>(
 }
 
 pub(crate) fn emit_list_cons_bif<M: cranelift_module::Module>(
-    body: &mut CodegenFnBody<'_, '_, '_, M>,
+    body: &mut CodegenFn<'_, '_, '_, M>,
     env: &CodegenEnv<'_>,
     var_env: &HashMap<u32, CodegenValue>,
     head: crate::fz_ir::Var,
@@ -342,7 +342,7 @@ pub(crate) fn lower_collection_prim<
     M: cranelift_module::Module,
     T: crate::types::Types<Ty = crate::types::Ty>,
 >(
-    body: &mut CodegenFnBody<'_, '_, '_, M>,
+    body: &mut CodegenFn<'_, '_, '_, M>,
     t: &mut T,
     env: &CodegenEnv<'_>,
     var_env: &HashMap<u32, CodegenValue>,
@@ -783,7 +783,7 @@ fn lower_out_for_codegen_value(value: CodegenValue) -> LowerOut {
 
 #[allow(clippy::too_many_arguments)]
 fn marshal_extern_arg<M: cranelift_module::Module>(
-    body: &mut CodegenFnBody<'_, '_, '_, M>,
+    body: &mut CodegenFn<'_, '_, '_, M>,
     runtime: &RuntimeRefs,
     var_env: &HashMap<u32, CodegenValue>,
     var: crate::fz_ir::Var,
@@ -886,7 +886,7 @@ fn emit_extern_symbol_name<M: cranelift_module::Module>(
 
 #[allow(clippy::too_many_arguments)]
 fn emit_variadic_extern_call<M: cranelift_module::Module>(
-    body: &mut CodegenFnBody<'_, '_, '_, M>,
+    body: &mut CodegenFn<'_, '_, '_, M>,
     env: &CodegenEnv<'_>,
     var_env: &HashMap<u32, CodegenValue>,
     eid: crate::fz_ir::ExternId,
@@ -967,7 +967,7 @@ pub(crate) fn lower_prim<
     M: cranelift_module::Module,
     T: crate::types::Types<Ty = crate::types::Ty>,
 >(
-    body: &mut CodegenFnBody<'_, '_, '_, M>,
+    body: &mut CodegenFn<'_, '_, '_, M>,
     t: &mut T,
     env: &CodegenEnv<'_>,
     var_env: &HashMap<u32, CodegenValue>,
@@ -1252,7 +1252,7 @@ pub(crate) fn lower_prim<
 /// values; final result is `Condition` if the test feeds an `if`,
 /// otherwise a strict bool.
 fn lower_type_test<M: cranelift_module::Module>(
-    body: &mut CodegenFnBody<'_, '_, '_, M>,
+    body: &mut CodegenFn<'_, '_, '_, M>,
     env: &CodegenEnv<'_>,
     var_env: &HashMap<u32, CodegenValue>,
     runtime: &RuntimeRefs,
@@ -1299,7 +1299,7 @@ fn lower_type_test<M: cranelift_module::Module>(
 /// and ignores heap-bearing axes. For finite atom literal sets we
 /// compare the raw atom id.
 fn emit_scalar_kind_checks<M: cranelift_module::Module>(
-    body: &mut CodegenFnBody<'_, '_, '_, M>,
+    body: &mut CodegenFn<'_, '_, '_, M>,
     module: &crate::fz_ir::Module,
     descr: &crate::concrete_types::Descr,
     value: CodegenValue,
@@ -1354,7 +1354,7 @@ fn emit_scalar_kind_checks<M: cranelift_module::Module>(
 /// Tuple arity check: gates on the STRUCT tag, then compares the
 /// struct's schema id against the per-arity tuple-schema ids.
 fn emit_tuple_arity_check<M: cranelift_module::Module>(
-    body: &mut CodegenFnBody<'_, '_, '_, M>,
+    body: &mut CodegenFn<'_, '_, '_, M>,
     runtime: &RuntimeRefs,
     tuple_schema_ids: &HashMap<usize, u32>,
     value: CodegenValue,
@@ -1408,7 +1408,7 @@ fn emit_tuple_arity_check<M: cranelift_module::Module>(
 /// run the matching op closure, bypassing tagged dispatch. Returns None
 /// when neither lane applies (caller falls back to runtime tag tests).
 fn try_typed_binop_fast_path<T, F, I, M>(
-    body: &mut CodegenFnBody<'_, '_, '_, M>,
+    body: &mut CodegenFn<'_, '_, '_, M>,
     t: &mut T,
     fn_types: &crate::ir_planner::SpecPlan,
     a: crate::fz_ir::Var,
@@ -1445,7 +1445,7 @@ where
 /// (same-kind int or float), and tagged dispatch fallback that splits
 /// on runtime tag tests.
 fn lower_arith_binop<M, T>(
-    body: &mut CodegenFnBody<'_, '_, '_, M>,
+    body: &mut CodegenFn<'_, '_, '_, M>,
     t: &mut T,
     fn_types: &crate::ir_planner::SpecPlan,
     var_env: &HashMap<u32, CodegenValue>,
@@ -1564,7 +1564,7 @@ where
 /// raw atom compare for atom/nil/bool pairs, or calls the runtime
 /// value_eq_ref for the heterogeneous fallback.
 fn lower_eq_binop<M, T>(
-    body: &mut CodegenFnBody<'_, '_, '_, M>,
+    body: &mut CodegenFn<'_, '_, '_, M>,
     t: &mut T,
     fn_types: &crate::ir_planner::SpecPlan,
     var_env: &HashMap<u32, CodegenValue>,
@@ -1663,7 +1663,7 @@ where
 /// int-tag test and falls back to an inlined float promote+fcmp slow
 /// path for any non-int-int operand mix.
 fn lower_cmp_binop<M, T>(
-    body: &mut CodegenFnBody<'_, '_, '_, M>,
+    body: &mut CodegenFn<'_, '_, '_, M>,
     t: &mut T,
     fn_types: &crate::ir_planner::SpecPlan,
     var_env: &HashMap<u32, CodegenValue>,
@@ -1774,7 +1774,7 @@ where
 /// Both operands are coerced to truthy i8s and combined with
 /// `band`/`bor`.
 fn lower_bool_binop<M: cranelift_module::Module>(
-    body: &mut CodegenFnBody<'_, '_, '_, M>,
+    body: &mut CodegenFn<'_, '_, '_, M>,
     var_env: &HashMap<u32, CodegenValue>,
     op: BinOp,
     a: crate::fz_ir::Var,
@@ -1798,7 +1798,7 @@ fn lower_bool_binop<M: cranelift_module::Module>(
 
 /// `fz_panic(value)`: forwards one ValueRef to the runtime fatal path.
 fn lower_extern_fz_panic<M: cranelift_module::Module>(
-    body: &mut CodegenFnBody<'_, '_, '_, M>,
+    body: &mut CodegenFn<'_, '_, '_, M>,
     var_env: &HashMap<u32, CodegenValue>,
     args: &[crate::fz_ir::Var],
     dest_var: crate::fz_ir::Var,
@@ -1824,7 +1824,7 @@ fn lower_extern_fz_panic<M: cranelift_module::Module>(
 /// arg and forwards to `fz_send_ref`. The wrapper's declared return type
 /// drives normal return coercion from this boxed ABI result.
 fn lower_extern_fz_send<M: cranelift_module::Module>(
-    body: &mut CodegenFnBody<'_, '_, '_, M>,
+    body: &mut CodegenFn<'_, '_, '_, M>,
     var_env: &HashMap<u32, CodegenValue>,
     args: &[crate::fz_ir::Var],
 ) -> Result<LowerOut, CodegenError> {
@@ -1873,7 +1873,7 @@ fn lower_extern_fz_make_ref<M: cranelift_module::Module>(
 
 /// `fz_spawn(closure)`: forwards the closure ref to `fz_spawn_ref`.
 fn lower_extern_fz_spawn<M: cranelift_module::Module>(
-    body: &mut CodegenFnBody<'_, '_, '_, M>,
+    body: &mut CodegenFn<'_, '_, '_, M>,
     var_env: &HashMap<u32, CodegenValue>,
     args: &[crate::fz_ir::Var],
 ) -> Result<LowerOut, CodegenError> {
@@ -1891,7 +1891,7 @@ fn lower_extern_fz_spawn<M: cranelift_module::Module>(
 /// `fz_spawn_opt(closure, min_heap_size)`: variant of `fz_spawn` that
 /// also passes a heap-size hint through to `fz_spawn_opt_ref`.
 fn lower_extern_fz_spawn_opt<M: cranelift_module::Module>(
-    body: &mut CodegenFnBody<'_, '_, '_, M>,
+    body: &mut CodegenFn<'_, '_, '_, M>,
     var_env: &HashMap<u32, CodegenValue>,
     args: &[crate::fz_ir::Var],
 ) -> Result<LowerOut, CodegenError> {
@@ -1910,7 +1910,7 @@ fn lower_extern_fz_spawn_opt<M: cranelift_module::Module>(
 /// `fz_make_resource(payload, dtor)`: builds a runtime resource with
 /// the raw payload bits and the destructor closure ref.
 fn lower_extern_fz_make_resource<M: cranelift_module::Module>(
-    body: &mut CodegenFnBody<'_, '_, '_, M>,
+    body: &mut CodegenFn<'_, '_, '_, M>,
     var_env: &HashMap<u32, CodegenValue>,
     args: &[crate::fz_ir::Var],
 ) -> Result<LowerOut, CodegenError> {
@@ -1933,7 +1933,7 @@ fn lower_extern_fz_make_resource<M: cranelift_module::Module>(
 /// `ExternTy`, looks up (or caches) the FuncRef, and packages the
 /// return as RawI64 / ValueRef / nil / DeadUnit per the decl shape.
 fn lower_extern_generic<M: cranelift_module::Module>(
-    body: &mut CodegenFnBody<'_, '_, '_, M>,
+    body: &mut CodegenFn<'_, '_, '_, M>,
     runtime: &RuntimeRefs,
     var_env: &HashMap<u32, CodegenValue>,
     decl: &crate::fz_ir::ExternDecl,
@@ -2010,7 +2010,7 @@ fn lower_extern_generic<M: cranelift_module::Module>(
 /// alloc+populate. Resolves the narrow SpecId via the lambda's full
 /// input-type key (captures from caller's `fn_types`, args = `any`).
 pub(crate) fn lower_make_closure<M: cranelift_module::Module>(
-    body: &mut CodegenFnBody<'_, '_, '_, M>,
+    body: &mut CodegenFn<'_, '_, '_, M>,
     runtime: &RuntimeRefs,
     var_env: &HashMap<u32, CodegenValue>,
     fn_ids: &HashMap<u32, FuncId>,
@@ -2073,7 +2073,7 @@ pub(crate) fn lower_make_closure<M: cranelift_module::Module>(
 /// slots uninitialized (the body that would read them doesn't exist).
 /// halt_kind is irrelevant for an un-invoked closure; pick 0.
 fn emit_null_stub_closure<M: cranelift_module::Module>(
-    body: &mut CodegenFnBody<'_, '_, '_, M>,
+    body: &mut CodegenFn<'_, '_, '_, M>,
     fn_id: crate::fz_ir::FnId,
     n_caps: usize,
 ) -> ir::Value {
@@ -2089,7 +2089,7 @@ fn emit_null_stub_closure<M: cranelift_module::Module>(
 /// closure-target sig `(args..., self, cont) tail` and projects
 /// captures from `self` in its entry harness.
 fn emit_capturing_closure<M: cranelift_module::Module>(
-    body: &mut CodegenFnBody<'_, '_, '_, M>,
+    body: &mut CodegenFn<'_, '_, '_, M>,
     var_env: &HashMap<u32, CodegenValue>,
     fn_ids: &HashMap<u32, FuncId>,
     param_reprs: &[Vec<ArgRepr>],

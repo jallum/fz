@@ -10,7 +10,7 @@ pub(crate) const HEADER_SIZE: i32 = 16;
 pub(crate) const SLOT_BYTES: i32 = 8;
 
 pub(crate) fn mark_retained_call_args_as_published<M: cranelift_module::Module>(
-    body: &mut CodegenFnBody<'_, '_, '_, M>,
+    body: &mut CodegenFn<'_, '_, '_, M>,
     var_env: &HashMap<u32, CodegenValue>,
     args: &[crate::fz_ir::Var],
     captured: &[crate::fz_ir::Var],
@@ -50,7 +50,7 @@ pub(crate) fn list_tail_bits_for_var<T: crate::types::Types<Ty = crate::types::T
 }
 
 pub(crate) fn emit_owned_cons_reuse_or_alloc<M: cranelift_module::Module>(
-    body: &mut CodegenFnBody<'_, '_, '_, M>,
+    body: &mut CodegenFn<'_, '_, '_, M>,
     var_env: &HashMap<u32, CodegenValue>,
     head: crate::fz_ir::Var,
     tail: ListTailBits,

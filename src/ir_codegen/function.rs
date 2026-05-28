@@ -127,12 +127,12 @@ pub(crate) fn compile_fn<
     b.switch_to_block(entry_cl);
     b.seal_block(entry_cl);
 
-    let mut cx = CodegenFn::new(env);
-    // The cache's contents depend on the entry-harness output (tuple-field
-    // params, list-tail param), so the harness runs first through a body
-    // bound over an empty cache; the real cache is then built and a single
-    // body is bound over it for the block walk.
+    // One machine for the whole function. Its cache starts empty: the entry
+    // harness never reads the cache -- it produces the inputs (tuple-field
+    // params, list-tail param) the cache is then populated from. Builder,
+    // module, cache, and import table are bound once, here.
     let mut cache = CodegenCache::default();
+    let mut body = CodegenFn::new(env, &mut b, jmod, &mut cache);
     let EntryHarnessOut {
         mut var_env,
         frame_ptr,
@@ -141,7 +141,7 @@ pub(crate) fn compile_fn<
         tuple_field_params,
         list_tail_param,
     } = build_entry_harness(
-        &mut cx.body(&mut b, jmod, &mut cache),
+        &mut body,
         env,
         schemas,
         f,
@@ -152,25 +152,22 @@ pub(crate) fn compile_fn<
         entry_cl,
     );
 
-    cache = {
+    {
         let (if_only, all_used) = crate::ir_dce::classify_var_uses(f);
         let (tuple_return_fields, skipped_tuple_return_vars) =
             tuple_return_delivery_plan(f, &env.spec_keys[this_spec_id as usize]);
         let (list_tail_return_elems, skipped_list_tail_return_vars) =
             list_tail_delivery_plan(f, &env.spec_keys[this_spec_id as usize]);
-        CodegenCache {
-            if_only_conds: if_only.into_iter().map(|v| v.0).collect(),
-            used_vars: all_used.into_iter().map(|v| v.0).collect(),
-            tuple_field_params,
-            skipped_tuple_return_vars,
-            tuple_return_fields,
-            list_tail_param,
-            list_tail_return_elems,
-            skipped_list_tail_return_vars,
-            owned_cons_reuse_sources: owned_cons_reuse_sources(f),
-            ..CodegenCache::default()
-        }
-    };
+        body.cache.if_only_conds = if_only.into_iter().map(|v| v.0).collect();
+        body.cache.used_vars = all_used.into_iter().map(|v| v.0).collect();
+        body.cache.tuple_field_params = tuple_field_params;
+        body.cache.skipped_tuple_return_vars = skipped_tuple_return_vars;
+        body.cache.tuple_return_fields = tuple_return_fields;
+        body.cache.list_tail_param = list_tail_param;
+        body.cache.list_tail_return_elems = list_tail_return_elems;
+        body.cache.skipped_list_tail_return_vars = skipped_list_tail_return_vars;
+        body.cache.owned_cons_reuse_sources = owned_cons_reuse_sources(f);
+    }
     // Walk blocks in declared order with entry first. Unreachable
     // fz_ir blocks are filtered out — they have no Cranelift counterpart.
     let mut order: Vec<&crate::fz_ir::Block> = Vec::with_capacity(f.blocks.len());
@@ -186,9 +183,6 @@ pub(crate) fn compile_fn<
         }
     }
 
-    // One body view for the whole walk: the builder, module, per-fn cache,
-    // and import table are bound once here rather than reassembled per call.
-    let mut body = cx.body(&mut b, jmod, &mut cache);
     for blk in &order {
         let cl_blk = *block_map.get(&blk.id.0).unwrap();
         if blk.id != f.entry {

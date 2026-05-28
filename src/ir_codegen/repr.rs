@@ -129,7 +129,7 @@ impl MidFlightArgShape {
 
     pub(crate) fn replay_from_capture<M: cranelift_module::Module>(
         &self,
-        body: &mut CodegenFnBody<'_, '_, '_, M>,
+        body: &mut CodegenFn<'_, '_, '_, M>,
         value: CodegenValue,
         out: &mut Vec<ir::Value>,
     ) {
