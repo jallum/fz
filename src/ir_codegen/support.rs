@@ -10,9 +10,7 @@ pub(crate) const HEADER_SIZE: i32 = 16;
 pub(crate) const SLOT_BYTES: i32 = 8;
 
 pub(crate) fn mark_retained_call_args_as_published<M: cranelift_module::Module>(
-    cx: &mut CodegenFn<'_>,
-    b: &mut FunctionBuilder<'_>,
-    jmod: &mut M,
+    body: &mut CodegenFnBody<'_, '_, '_, M>,
     var_env: &HashMap<u32, CodegenValue>,
     args: &[crate::fz_ir::Var],
     captured: &[crate::fz_ir::Var],
@@ -24,8 +22,7 @@ pub(crate) fn mark_retained_call_args_as_published<M: cranelift_module::Module>(
         let Some(CodegenValue::AnyRef(value_ref)) = var_env.get(&arg.0).copied() else {
             continue;
         };
-        let mut site = cx.site(b, jmod);
-        let _ = site.mark_published_ref_aliased(value_ref);
+        let _ = body.mark_published_ref_aliased(value_ref);
     }
 }
 

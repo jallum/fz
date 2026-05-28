@@ -668,7 +668,12 @@ fn emit_call_term<
             .iter()
             .map(|v| var_env.get(&v.0).expect("unbound captured val").value())
             .collect();
-        mark_retained_call_args_as_published(cx, b, jmod, var_env, args, &continuation.captured);
+        mark_retained_call_args_as_published(
+            &mut cx.body(b, jmod, cache),
+            var_env,
+            args,
+            &continuation.captured,
+        );
         let callee_sid = resolve_callee_sid(t, env, caller_fn_id, blk);
         let mut cont_sid = resolve_cont_sid(t, env, caller_fn_id, blk);
         let this_demand = DemandAbi::new(&env.spec_keys[this_spec_id as usize]);
@@ -1402,7 +1407,12 @@ fn emit_call_closure<
             .iter()
             .map(|v| var_env.get(&v.0).expect("unbound callclosure arg").value())
             .collect();
-        mark_retained_call_args_as_published(cx, b, jmod, var_env, args, &continuation.captured);
+        mark_retained_call_args_as_published(
+            &mut cx.body(b, jmod, cache),
+            var_env,
+            args,
+            &continuation.captured,
+        );
         let cont_sid = resolve_cont_sid(t, env, caller_fn_id, blk);
         // Singleton closure-lit fast path: if this spec types `closure`
         // as a single closure_lit(F, K), resolve F's narrow body spec
