@@ -10,6 +10,11 @@
 use std::alloc::{Layout, alloc_zeroed, dealloc, handle_alloc_error};
 use std::ptr::NonNull;
 
+pub const DEFAULT_REDUCTIONS_PER_QUANTUM: i32 = 4000;
+pub const YIELD_REASON_REDUCTIONS: u8 = 1 << 0;
+pub const YIELD_REASON_ALLOCATION_PRESSURE: u8 = 1 << 1;
+pub const YIELD_REASON_EXPLICIT: u8 = 1 << 2;
+
 pub struct AlignedClosureStorage {
     ptr: NonNull<u8>,
     layout: Layout,
@@ -130,6 +135,18 @@ pub struct Process {
     /// scheduler continuation closures; the interpreter forwards roots
     /// synchronously and keeps running.
     pub interpreter_yields: u64,
+    /// Reductions left in the current scheduler quantum. Dispatch resets this
+    /// to `reductions_per_quantum`; loop back edges and runtime work spend it.
+    pub reductions_remaining: i32,
+    /// Reductions granted to this process at each scheduler dispatch.
+    pub reductions_per_quantum: i32,
+    /// Cumulative reductions charged to this process.
+    pub reductions_executed: u64,
+    /// Cumulative yields caused by ordinary reduction-budget exhaustion.
+    pub reduction_yields: u64,
+    /// Compact reason bits describing why the current/last quantum yielded.
+    /// See `YIELD_REASON_*`.
+    pub yield_reasons: u8,
 }
 
 /// Stable per-Process identifier assigned at spawn time. v1: simple u32
@@ -180,6 +197,11 @@ impl Process {
             quiet_quanta: 0,
             scheduler_yields: 0,
             interpreter_yields: 0,
+            reductions_remaining: DEFAULT_REDUCTIONS_PER_QUANTUM,
+            reductions_per_quantum: DEFAULT_REDUCTIONS_PER_QUANTUM,
+            reductions_executed: 0,
+            reduction_yields: 0,
+            yield_reasons: 0,
         }
     }
 
@@ -258,6 +280,34 @@ impl Process {
             Some(closure)
         }
     }
+
+    pub fn reset_reduction_budget(&mut self) {
+        self.reductions_remaining = self.reductions_per_quantum;
+    }
+
+    pub fn spend_reductions(&mut self, amount: i32) -> bool {
+        debug_assert!(amount >= 0, "cannot spend negative reductions");
+        if amount <= 0 {
+            return self.reductions_remaining <= 0;
+        }
+        self.reductions_remaining = self.reductions_remaining.saturating_sub(amount);
+        self.reductions_executed = self.reductions_executed.saturating_add(amount as u64);
+        self.reductions_remaining <= 0
+    }
+
+    pub fn expire_reductions(&mut self, reason: u8) {
+        self.reductions_remaining = 0;
+        self.yield_reasons |= reason;
+    }
+
+    pub fn note_reduction_yield(&mut self) {
+        self.reduction_yields = self.reduction_yields.saturating_add(1);
+        self.yield_reasons |= YIELD_REASON_REDUCTIONS;
+    }
+
+    pub fn clear_yield_reasons(&mut self) {
+        self.yield_reasons = 0;
+    }
 }
 
 thread_local! {
@@ -314,11 +364,36 @@ pub fn try_current_process() -> Option<&'static mut Process> {
 
 #[cfg(test)]
 mod tests {
+    use super::{Process, YIELD_REASON_REDUCTIONS};
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
     #[test]
     fn aligned_closure_storage_is_taggable() {
         for _ in 0..128 {
             let mut buf = super::AlignedClosureStorage::zeroed();
             assert_eq!(buf.as_ptr() as u64 & crate::any_value::TAG_MASK, 0);
         }
+    }
+
+    #[test]
+    fn reduction_budget_resets_and_spends() {
+        let schemas = Rc::new(RefCell::new(crate::heap::SchemaRegistry::new()));
+        let mut process = Process::new(schemas);
+        process.reductions_per_quantum = 3;
+        process.reset_reduction_budget();
+
+        assert_eq!(process.reductions_remaining, 3);
+        assert!(!process.spend_reductions(1));
+        assert_eq!(process.reductions_remaining, 2);
+        assert_eq!(process.reductions_executed, 1);
+        assert!(process.spend_reductions(2));
+        process.note_reduction_yield();
+        assert_eq!(process.reductions_remaining, 0);
+        assert_eq!(process.reduction_yields, 1);
+        assert_eq!(
+            process.yield_reasons & YIELD_REASON_REDUCTIONS,
+            YIELD_REASON_REDUCTIONS
+        );
     }
 }

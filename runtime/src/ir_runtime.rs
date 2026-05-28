@@ -132,7 +132,12 @@ pub extern "C" fn fz_process_heap_alloc_stats() -> u64 {
     let snapshot = process.heap.alloc_stats_snapshot();
     let scheduler_yields = process.scheduler_yields;
     let interpreter_yields = process.interpreter_yields;
-    let mut entries = Vec::with_capacity(24);
+    let reductions_remaining = process.reductions_remaining;
+    let reductions_per_quantum = process.reductions_per_quantum;
+    let reductions_executed = process.reductions_executed;
+    let reduction_yields = process.reduction_yields;
+    let yield_reasons = process.yield_reasons;
+    let mut entries = Vec::with_capacity(29);
     entries.push((
         crate::any_value::AnyValue::atom(process_atom_id("allocs")),
         crate::any_value::AnyValue::int(snapshot.total.allocs as i64),
@@ -158,6 +163,26 @@ pub extern "C" fn fz_process_heap_alloc_stats() -> u64 {
     entries.push((
         crate::any_value::AnyValue::atom(process_atom_id("interpreter_yields")),
         crate::any_value::AnyValue::int(interpreter_yields as i64),
+    ));
+    entries.push((
+        crate::any_value::AnyValue::atom(process_atom_id("reductions_remaining")),
+        crate::any_value::AnyValue::int(reductions_remaining as i64),
+    ));
+    entries.push((
+        crate::any_value::AnyValue::atom(process_atom_id("reductions_per_quantum")),
+        crate::any_value::AnyValue::int(reductions_per_quantum as i64),
+    ));
+    entries.push((
+        crate::any_value::AnyValue::atom(process_atom_id("reductions_executed")),
+        crate::any_value::AnyValue::int(reductions_executed as i64),
+    ));
+    entries.push((
+        crate::any_value::AnyValue::atom(process_atom_id("reduction_yields")),
+        crate::any_value::AnyValue::int(reduction_yields as i64),
+    ));
+    entries.push((
+        crate::any_value::AnyValue::atom(process_atom_id("yield_reasons")),
+        crate::any_value::AnyValue::int(yield_reasons as i64),
     ));
     map_ref_word_from_bits(current_process().heap.alloc_map_slots(&entries))
 }
@@ -2313,6 +2338,20 @@ mod tests {
             map_int_value_by_atom_name(stats_ref, "interpreter_yields"),
             0
         );
+        assert_eq!(
+            map_int_value_by_atom_name(stats_ref, "reductions_remaining"),
+            crate::process::DEFAULT_REDUCTIONS_PER_QUANTUM as i64
+        );
+        assert_eq!(
+            map_int_value_by_atom_name(stats_ref, "reductions_per_quantum"),
+            crate::process::DEFAULT_REDUCTIONS_PER_QUANTUM as i64
+        );
+        assert_eq!(
+            map_int_value_by_atom_name(stats_ref, "reductions_executed"),
+            0
+        );
+        assert_eq!(map_int_value_by_atom_name(stats_ref, "reduction_yields"), 0);
+        assert_eq!(map_int_value_by_atom_name(stats_ref, "yield_reasons"), 0);
 
         let after = current_process().heap.alloc_stats_snapshot();
         assert_eq!(after.list_cons.allocs, 1);

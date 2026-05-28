@@ -240,7 +240,10 @@ impl IrInterpRuntime {
             let proc_ptr = self
                 .process_ptr(pid)
                 .expect("pid in run_queue with no process entry");
-            unsafe { (*proc_ptr).state = ProcessState::Running };
+            unsafe {
+                (*proc_ptr).state = ProcessState::Running;
+                (*proc_ptr).reset_reduction_budget();
+            };
             let prev = fz_runtime::process::CURRENT_PROCESS.with(|c| c.replace(proc_ptr));
             let mut step = run_fn(self, &mut t, module, tel, fn_id, args);
             loop {

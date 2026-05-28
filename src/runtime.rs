@@ -447,6 +447,7 @@ impl<'a> Runtime<'a> {
                 .remove(&pid)
                 .expect("task in run_queue not in registry");
             task.state = ProcessState::Running;
+            task.reset_reduction_budget();
             let ptr: *mut Process = &mut *task;
             // Clear FZ_SHOULD_YIELD before installing the process so a
             // stale flag from the previous quantum doesn't immediately

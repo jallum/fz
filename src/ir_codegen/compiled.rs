@@ -1267,6 +1267,11 @@ impl CompiledModule {
             quiet_quanta: 0,
             scheduler_yields: 0,
             interpreter_yields: 0,
+            reductions_remaining: fz_runtime::process::DEFAULT_REDUCTIONS_PER_QUANTUM,
+            reductions_per_quantum: fz_runtime::process::DEFAULT_REDUCTIONS_PER_QUANTUM,
+            reductions_executed: 0,
+            reduction_yields: 0,
+            yield_reasons: 0,
         };
         // One static singleton per zero-cap closure-target spec.
         // See docs/cps-in-clif.md §8.2.
