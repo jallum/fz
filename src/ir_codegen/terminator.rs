@@ -1319,30 +1319,7 @@ fn emit_call_closure<
             args,
             &continuation.captured,
         );
-        // Build the continuation as a closure env. The body will
-        // project any captures it needs from `self`.
         let cont_sid = resolve_cont_sid(t, env, caller_fn_id, blk);
-        let cont_fid = *fn_ids.get(&cont_sid).expect("cont fn_id missing");
-        let cap_bindings: Vec<ClosureCapture> = continuation
-            .captured
-            .iter()
-            .map(|cv| closure_capture_for_var(var_env, b, jmod, runtime, cv.0, cache))
-            .collect();
-        let extra_ref_captures =
-            cont_extra_ref_captures(b, cache, &env.spec_keys[cont_sid as usize]);
-        let cf = build_cont_closure(
-            jmod,
-            b,
-            runtime,
-            return_reprs,
-            is_cont_fn,
-            cont_param,
-            frame_ptr,
-            cont_sid,
-            cont_fid,
-            &cap_bindings,
-            &extra_ref_captures,
-        );
         // Singleton closure-lit fast path: if this spec types `closure`
         // as a single closure_lit(F, K), resolve F's narrow body spec
         // at [K..., arg_descrs...] and call it directly with the body's
@@ -1355,6 +1332,38 @@ fn emit_call_closure<
             let n_caps = closure_n_captures.get(&body_fn_id).copied().unwrap_or(0);
             Some((body_sid, body_fid, n_caps))
         })();
+        let cont_fid = *fn_ids.get(&cont_sid).expect("cont fn_id missing");
+        let cap_bindings: Vec<ClosureCapture> = continuation
+            .captured
+            .iter()
+            .map(|cv| closure_capture_for_var(var_env, b, jmod, runtime, cv.0, cache))
+            .collect();
+        let extra_ref_captures =
+            cont_extra_ref_captures(b, cache, &env.spec_keys[cont_sid as usize]);
+        let cont_payload = ContinuationPayload {
+            cont_sid,
+            cont_fid,
+            cap_bindings,
+            extra_ref_captures,
+        };
+        let cont_is_native = callee_is_native(env, continuation.fn_id.0);
+        let can_use_lazy_cont = is_native && cont_is_native && lit_resolved.is_some();
+        let continuation_plan = if can_use_lazy_cont {
+            ContinuationPlan::LazyNativeDescriptor(cont_payload)
+        } else {
+            ContinuationPlan::HeapClosure(cont_payload)
+        };
+        let cf = continuation_plan
+            .emit_value(
+                jmod,
+                b,
+                runtime,
+                return_reprs,
+                is_cont_fn,
+                cont_param,
+                frame_ptr,
+            )
+            .expect("call-closure continuation must pass a closure-shaped value");
         if let Some((body_sid, body_fid, n_caps)) = lit_resolved {
             let body_param_reprs = &param_reprs[body_sid as usize];
             let body_fref = jmod.declare_func_in_func(body_fid, b.func);
@@ -1370,7 +1379,11 @@ fn emit_call_closure<
             direct_args.push(cl_val);
             direct_args.push(cf);
             let _ = host_ctx;
-            if is_native {
+            if can_use_lazy_cont {
+                let call_inst = b.ins().call(body_fref, &direct_args);
+                let result = b.inst_results(call_inst)[0];
+                b.ins().return_(&[result]);
+            } else if is_native {
                 b.ins().return_call(body_fref, &direct_args);
             } else {
                 let call_inst = b.ins().call(body_fref, &direct_args);

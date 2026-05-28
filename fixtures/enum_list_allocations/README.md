@@ -22,15 +22,14 @@ Target for native JIT/AOT:
 - the input list literal allocates five cons cells;
 - `Enum.count/1`, `Enum.member?/2`, and `Enum.reduce/3` allocate no additional
   cons cells while walking that list;
-- native `Enum.reduce/3` currently allocates six closures: one zero-capture
-  reducer value and five per-element reducer-return continuation closures;
-- continuation capture normalization prunes dead reducer-return captures before
-  codegen, so those six closures occupy 272 bytes instead of carrying dead state;
+- native `Enum.reduce/3` allocates no heap closures for the known zero-capture
+  reducer; the reducer value is static and reducer-return continuations are
+  stack-backed lazy descriptors;
 - no map objects are needed before the stats snapshot;
 - `list_cons_allocs = 5`;
 - `list_cons_bytes = 80`;
-- `closure_allocs = 6`;
-- `closure_bytes = 272`.
+- `closure_allocs = 0`;
+- `closure_bytes = 0`.
 
 This fixture deliberately excludes `Enum.sort/1`. The current runtime sort is
 a source-level merge sort that builds split/reverse/merge work lists, so it has

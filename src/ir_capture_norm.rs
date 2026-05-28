@@ -702,9 +702,16 @@ fn plan_receive_matched_site(
 
 fn live_vars_after_local_dce(f: &crate::fz_ir::FnIr) -> HashSet<Var> {
     let mut pruned = f.clone();
+    let credits = pruned.owned_cons_reuse_credits.clone();
     pruned.owned_cons_reuse_credits.clear();
     dce_fn_with_telemetry("", &mut pruned, &crate::telemetry::NullTelemetry);
-    classify_var_uses(&pruned).1
+    let mut used = classify_var_uses(&pruned).1;
+    for credit in credits {
+        if used.contains(&credit.head) {
+            used.insert(credit.source_cons);
+        }
+    }
+    used
 }
 
 fn dce_after_capture_prune(f: &mut crate::fz_ir::FnIr) {
@@ -713,10 +720,7 @@ fn dce_after_capture_prune(f: &mut crate::fz_ir::FnIr) {
     let semantically_used = classify_var_uses(f).1;
     f.owned_cons_reuse_credits = credits
         .into_iter()
-        .filter(|credit| {
-            semantically_used.contains(&credit.head)
-                && semantically_used.contains(&credit.source_cons)
-        })
+        .filter(|credit| semantically_used.contains(&credit.head))
         .collect();
 }
 
