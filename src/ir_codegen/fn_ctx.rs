@@ -7,7 +7,7 @@
 //! runtime helper calls remain an implementation detail behind those methods.
 
 use super::*;
-use cranelift_codegen::ir::{self, InstBuilder, MemFlags, types};
+use cranelift_codegen::ir::{self, BlockArg, InstBuilder, MemFlags, condcodes::IntCC, types};
 use cranelift_frontend::FunctionBuilder;
 use cranelift_module::FuncId;
 use fz_runtime::heap::{FieldKind, Schema};
@@ -308,6 +308,140 @@ pub(crate) trait CallSite<'env, 'fb, M: cranelift_module::Module> {
         let id = self.parts().0.runtime.struct_set_field_ref_id;
         self.call(id, &[struct_bits, offset, value]);
     }
+
+    // -- value classification reads (cache-free) --
+
+    fn value_truthy(&mut self, value: CodegenValue) -> ir::Value {
+        use fz_runtime::any_value::ValueKind;
+        if let CodegenValue::AnyRef(value_ref) = value {
+            return self.truthy_ref(value_ref);
+        }
+        let (_, b, _) = self.parts();
+        match value {
+            CodegenValue::Condition(flag) => flag,
+            CodegenValue::RawInt(_) | CodegenValue::RawF64(_) => b.ins().iconst(types::I8, 1),
+            CodegenValue::Known {
+                kind: ValueKind::NULL,
+                ..
+            } => b.ins().iconst(types::I8, 0),
+            CodegenValue::Known {
+                payload,
+                kind: ValueKind::ATOM,
+            } => {
+                let is_false = b.ins().icmp_imm(
+                    IntCC::Equal,
+                    payload,
+                    fz_runtime::any_value::FALSE_ATOM_ID as i64,
+                );
+                let is_nil = b.ins().icmp_imm(
+                    IntCC::Equal,
+                    payload,
+                    fz_runtime::any_value::NIL_ATOM_ID as i64,
+                );
+                let falsey = b.ins().bor(is_false, is_nil);
+                b.ins().bxor_imm(falsey, 1)
+            }
+            CodegenValue::Known { .. } => b.ins().iconst(types::I8, 1),
+            CodegenValue::AnyRef(_) => unreachable!("handled above"),
+        }
+    }
+
+    fn value_type_tag(&mut self, value: CodegenValue) -> ir::Value {
+        use fz_runtime::any_value::ValueKind;
+        if let CodegenValue::AnyRef(value_ref) = value {
+            return self.ref_tag(value_ref);
+        }
+        let (_, b, _) = self.parts();
+        match value {
+            CodegenValue::RawInt(_) => b.ins().iconst(types::I8, ValueKind::INT.tag() as i64),
+            CodegenValue::RawF64(_) => b.ins().iconst(types::I8, ValueKind::FLOAT.tag() as i64),
+            CodegenValue::Condition(_) => b.ins().iconst(types::I8, ValueKind::ATOM.tag() as i64),
+            CodegenValue::Known { payload, kind } => known_kind_ref_tag(b, payload, kind),
+            CodegenValue::AnyRef(_) => unreachable!("handled above"),
+        }
+    }
+
+    fn value_is_tag(&mut self, value: CodegenValue, tag: fz_runtime::any_value::ValueKind) -> ir::Value {
+        let actual = self.value_type_tag(value);
+        let (_, b, _) = self.parts();
+        b.ins().icmp_imm(IntCC::Equal, actual, tag.tag() as i64)
+    }
+
+    fn value_atom_id_is(&mut self, value: CodegenValue, atom_id: u32) -> ir::Value {
+        use fz_runtime::any_value::ValueKind;
+        if let CodegenValue::AnyRef(value_ref) = value {
+            // The AnyRef path interleaves block-building with an unbox BIF, so
+            // each builder burst is scoped to release the borrow around the
+            // `unbox_atom` call (which needs `&mut self`).
+            let is_atom = self.value_is_tag(value, ValueKind::ATOM);
+            let join_blk = {
+                let (_, b, _) = self.parts();
+                let atom_blk = b.create_block();
+                let join_blk = b.create_block();
+                b.append_block_param(join_blk, types::I8);
+                let false8 = b.ins().iconst(types::I8, 0);
+                let no_args: Vec<BlockArg> = Vec::new();
+                b.ins()
+                    .brif(is_atom, atom_blk, &no_args, join_blk, &[BlockArg::Value(false8)]);
+                b.switch_to_block(atom_blk);
+                b.seal_block(atom_blk);
+                join_blk
+            };
+            let atom = self.unbox_atom(value_ref);
+            let (_, b, _) = self.parts();
+            let found = b.ins().icmp_imm(IntCC::Equal, atom, atom_id as i64);
+            b.ins().jump(join_blk, &[BlockArg::Value(found)]);
+            b.switch_to_block(join_blk);
+            b.seal_block(join_blk);
+            return b.block_params(join_blk)[0];
+        }
+        let (_, b, _) = self.parts();
+        match value {
+            CodegenValue::Condition(flag) => {
+                if atom_id == fz_runtime::any_value::TRUE_ATOM_ID {
+                    return flag;
+                }
+                if atom_id == fz_runtime::any_value::FALSE_ATOM_ID {
+                    return b.ins().bxor_imm(flag, 1);
+                }
+                b.ins().iconst(types::I8, 0)
+            }
+            CodegenValue::RawInt(_) | CodegenValue::RawF64(_) => b.ins().iconst(types::I8, 0),
+            CodegenValue::Known {
+                payload,
+                kind: ValueKind::ATOM,
+            } => b.ins().icmp_imm(IntCC::Equal, payload, atom_id as i64),
+            CodegenValue::Known { .. } => b.ins().iconst(types::I8, 0),
+            CodegenValue::AnyRef(_) => unreachable!("handled above"),
+        }
+    }
+
+    fn value_raw_int(&mut self, value: CodegenValue) -> ir::Value {
+        match value {
+            CodegenValue::RawInt(value) => value,
+            CodegenValue::Known {
+                payload,
+                kind: fz_runtime::any_value::ValueKind::INT,
+            } => payload,
+            CodegenValue::AnyRef(value_ref) => self.unbox_int(value_ref),
+            _ => panic!("CodegenValue is not an int"),
+        }
+    }
+
+    fn value_raw_float(&mut self, value: CodegenValue) -> ir::Value {
+        match value {
+            CodegenValue::RawF64(value) => value,
+            CodegenValue::Known {
+                payload,
+                kind: fz_runtime::any_value::ValueKind::FLOAT,
+            } => {
+                let (_, b, _) = self.parts();
+                b.ins().bitcast(types::F64, MemFlags::new(), payload)
+            }
+            CodegenValue::AnyRef(value_ref) => self.unbox_float(value_ref),
+            _ => panic!("CodegenValue is not a float"),
+        }
+    }
 }
 
 impl<'a, 'env, 'fb, M: cranelift_module::Module> CallSite<'env, 'fb, M>
@@ -381,29 +515,6 @@ where
         self.closure_capture_ref_at(closure_ref, 0)
     }
 
-    pub(crate) fn value_truthy(&mut self, value: CodegenValue) -> ir::Value {
-        self.cx.value_truthy(self.b, self.jmod, value)
-    }
-
-    pub(crate) fn value_is_tag(
-        &mut self,
-        value: CodegenValue,
-        tag: fz_runtime::any_value::ValueKind,
-    ) -> ir::Value {
-        self.cx.value_is_tag(self.b, self.jmod, value, tag)
-    }
-
-    pub(crate) fn value_atom_id_is(&mut self, value: CodegenValue, atom_id: u32) -> ir::Value {
-        self.cx.value_atom_id_is(self.b, self.jmod, value, atom_id)
-    }
-
-    pub(crate) fn value_raw_int(&mut self, value: CodegenValue) -> ir::Value {
-        self.cx.value_raw_int(self.b, self.jmod, value)
-    }
-
-    pub(crate) fn value_raw_float(&mut self, value: CodegenValue) -> ir::Value {
-        self.cx.value_raw_float(self.b, self.jmod, value)
-    }
 
     pub(crate) fn store_closure_capture_ref_word(
         &mut self,
@@ -453,14 +564,6 @@ where
     ) -> ir::Value {
         self.cx
             .tagged_var(var_env, self.b, self.jmod, var, self.cache)
-    }
-
-    pub(crate) fn value_raw_int(&mut self, value: CodegenValue) -> ir::Value {
-        self.cx.value_raw_int(self.b, self.jmod, value)
-    }
-
-    pub(crate) fn value_raw_float(&mut self, value: CodegenValue) -> ir::Value {
-        self.cx.value_raw_float(self.b, self.jmod, value)
     }
 
     pub(crate) fn value_raw_atom(&mut self, value: CodegenValue) -> ir::Value {
