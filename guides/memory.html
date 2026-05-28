@@ -229,7 +229,7 @@ predictable. A plain recursive append:</p>
 <p>still compiles as source code. In the <code>append</code> fixture,
 <code>append([1, 2, 3], [4, 5])</code> allocates the five list-literal cons cells
 and no prefix-copy cons cells, with no tuple/struct or map allocation in the
-value path. The recursive append clauses get ordinary owned-cons reuse credits;
+value path. The recursive append clauses get ordinary owned-cons reuse capabilities;
 there is no append BIF.</p>
 
 <p><strong>Map construction:</strong></p>
@@ -834,7 +834,7 @@ cons cell is stored into another heap object, captured by an escaping closure or
 lazy continuation, carried across a scheduler-visible same-heap handoff, or
 passed to a non-tail call while the caller's continuation retains the same value,
 the cell is no longer privately owned by the rewrite that destructured it. The
-compiler either refuses to create a reuse credit for that cell or marks the cell
+compiler either refuses to create a reuse capability for that cell or marks the cell
 aliased before a later reuse attempt.</p>
 
 <p>Extern calls do not publish their arguments for alias tracking. If an extern

@@ -9,8 +9,8 @@ Final form:
 
 - semantic values carry program meaning;
 - physical capabilities carry object-local permissions such as owned cons reuse;
-- effect facts say when an operation publishes, observes allocation, deep-copies,
-  or crosses a scheduler/materialization boundary;
+- effect facts say when an operation allocates, observes allocation, is externally
+  observable, reaches the scheduler, or halts;
 - codegen consumes validated facts mechanically.
 
 `src/ir_effects.rs` owns operation effect classification. Planner

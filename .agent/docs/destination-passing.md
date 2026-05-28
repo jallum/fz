@@ -171,8 +171,8 @@ the helper relinks it in place; if `C` was marked aliased, the helper allocates
 a fresh cons with the same head and the requested tail. An aliased reuse
 attempt is therefore an allocation miss, not a user-visible panic.
 
-A source cons becomes ineligible for an owned reuse credit, or has its alias bit
-set before reuse, when it is published outside the single owned rewrite path.
+A source cons becomes ineligible for an owned reuse capability, or has its alias
+bit set before reuse, when it is published outside the single owned rewrite path.
 The publication barriers include closure and lazy-continuation capture that can
 escape the current native activation, insertion into another heap container,
 receive/scheduler-visible same-heap handoff, a non-tail call whose continuation

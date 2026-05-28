@@ -988,8 +988,8 @@ mod tests {
     }
 
     #[test]
-    fn owned_cons_source_is_live_only_when_credit_head_is_used() {
-        let mut b = FnBuilder::new(FnId(0), "live_credit");
+    fn owned_cons_source_is_live_only_when_capability_head_is_used() {
+        let mut b = FnBuilder::new(FnId(0), "live_capability");
         let source = b.fresh_var();
         let entry = b.block(vec![source]);
         let head = b.let_(entry, Prim::ListHead(source));
@@ -1008,10 +1008,10 @@ mod tests {
                 .stmts
                 .iter()
                 .any(|Stmt::Let(_, prim)| matches!(prim, Prim::ListHead(v) if *v == source)),
-            "live credit head should keep its source projection alive"
+            "live capability head should keep its source projection alive"
         );
 
-        let mut b = FnBuilder::new(FnId(1), "dead_credit");
+        let mut b = FnBuilder::new(FnId(1), "dead_capability");
         let source = b.fresh_var();
         let entry = b.block(vec![source]);
         let head = b.let_(entry, Prim::ListHead(source));
@@ -1029,7 +1029,7 @@ mod tests {
                 .stmts
                 .iter()
                 .all(|Stmt::Let(_, prim)| !matches!(prim, Prim::ListHead(_))),
-            "dead credit head should not keep source projection alive"
+            "dead capability head should not keep source projection alive"
         );
     }
 }

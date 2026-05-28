@@ -3,14 +3,10 @@ use crate::fz_ir::{Module, Prim, Term};
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct IrEffects {
     pub allocates: bool,
-    pub publishes_same_heap_refs: bool,
     pub observes_allocation: bool,
-    pub deep_copies: bool,
     pub scheduler_boundary: bool,
-    pub materialization_boundary: bool,
     pub externally_observable: bool,
     pub halts: bool,
-    pub extern_retains_arguments: bool,
 }
 
 pub(crate) fn prim_effects(module: &Module, prim: &Prim) -> IrEffects {
@@ -18,18 +14,15 @@ pub(crate) fn prim_effects(module: &Module, prim: &Prim) -> IrEffects {
         Prim::Extern(eid, _) => {
             let decl = module.extern_by_id(*eid);
             let observes_allocation = decl.symbol == "fz_process_heap_alloc_stats";
-            let deep_copies = matches!(decl.symbol.as_str(), "fz_send");
             let scheduler_boundary = matches!(
                 decl.symbol.as_str(),
                 "fz_send" | "fz_spawn" | "fz_spawn_opt"
             );
             IrEffects {
                 observes_allocation,
-                deep_copies,
                 scheduler_boundary,
                 externally_observable: true,
                 halts: decl.ret == crate::fz_ir::ExternTy::Never,
-                extern_retains_arguments: false,
                 ..IrEffects::default()
             }
         }
@@ -51,7 +44,6 @@ pub(crate) fn prim_effects(module: &Module, prim: &Prim) -> IrEffects {
         | Prim::ConstBitstring(_, _)
         | Prim::BitReaderInit(_) => IrEffects {
             allocates: true,
-            publishes_same_heap_refs: true,
             ..IrEffects::default()
         },
         Prim::Const(_)
@@ -73,19 +65,13 @@ pub(crate) fn prim_effects(module: &Module, prim: &Prim) -> IrEffects {
 
 pub(crate) fn term_effects(term: &Term) -> IrEffects {
     match term {
-        Term::Call { .. } | Term::CallClosure { .. } => IrEffects {
-            publishes_same_heap_refs: true,
-            ..IrEffects::default()
-        },
+        Term::Call { .. } | Term::CallClosure { .. } => IrEffects::default(),
         Term::Receive { .. } | Term::ReceiveMatched { .. } => IrEffects {
-            publishes_same_heap_refs: true,
             scheduler_boundary: true,
-            materialization_boundary: true,
             externally_observable: true,
             ..IrEffects::default()
         },
         Term::Halt(_) => IrEffects {
-            publishes_same_heap_refs: true,
             externally_observable: true,
             halts: true,
             ..IrEffects::default()
@@ -93,10 +79,7 @@ pub(crate) fn term_effects(term: &Term) -> IrEffects {
         Term::Return(_)
         | Term::Goto(_, _)
         | Term::TailCall { .. }
-        | Term::TailCallClosure { .. } => IrEffects {
-            publishes_same_heap_refs: true,
-            ..IrEffects::default()
-        },
+        | Term::TailCallClosure { .. } => IrEffects::default(),
         Term::If { .. } => IrEffects::default(),
     }
 }
@@ -124,7 +107,7 @@ mod tests {
     }
 
     #[test]
-    fn extern_arguments_are_not_retained_by_default() {
+    fn externs_are_observable_without_scheduler_effects_by_default() {
         let module = module_with_extern("user_extern", ExternTy::Any);
         let effects = prim_effects(
             &module,
@@ -135,12 +118,11 @@ mod tests {
         );
 
         assert!(effects.externally_observable);
-        assert!(!effects.extern_retains_arguments);
-        assert!(!effects.publishes_same_heap_refs);
+        assert!(!effects.scheduler_boundary);
     }
 
     #[test]
-    fn send_is_deep_copy_scheduler_boundary_not_same_heap_publish() {
+    fn send_is_scheduler_visible() {
         let module = module_with_extern("fz_send", ExternTy::Unit);
         let effects = prim_effects(
             &module,
@@ -150,9 +132,8 @@ mod tests {
             ),
         );
 
-        assert!(effects.deep_copies);
         assert!(effects.scheduler_boundary);
-        assert!(!effects.publishes_same_heap_refs);
+        assert!(effects.externally_observable);
     }
 
     #[test]

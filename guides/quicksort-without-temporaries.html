@@ -113,7 +113,7 @@ native JIT/AOT fixture target pinned by
 <code>fixtures/quicksort/README.md</code> and
 <code>tests/fixture_matrix.rs</code>: they are exactly the input list literal.
 Partition accumulator cells and pivot cells are handled through owned reuse
-credits: lowering records a physical source-cons capability, separate from the
+capabilities: lowering records a physical source-cons capability, separate from the
 program's semantic arguments, and codegen calls the total reuse-or-cons helper.
 If the source cell is still private, the helper relinks it in place; if it has
 been published, the helper allocates a fresh cons instead.</p>
@@ -221,7 +221,7 @@ must become resumable outside the current native activation.
       Swierstra (2023) and Reinking et al. on Perceus (2021), in Koka. These
       systems attack allocation pressure through linearity, reuse, or precise
       reference counting; fz's quicksort fixture instead keeps ordinary source
-      syntax and uses compiler-created reuse credits plus a runtime alias bit
+      syntax and uses compiler-created reuse capabilities plus a runtime alias bit
       to remove the temporary tuple, append copy, and fast-path continuation
       closures.</li>
 </ul>
@@ -237,7 +237,7 @@ must become resumable outside the current native activation.
       axis.</li>
   <li><strong>The pinned native allocation target is reached without source
       ownership annotations.</strong> The fixture source has no linearity,
-      borrow marker, uniqueness annotation, or refcount credit syntax. The
+      borrow marker, uniqueness annotation, or refcount syntax. The
       JIT/AOT output pins <code>list_cons_bytes = 176</code>,
       <code>struct_bytes = 0</code>, <code>closure_bytes = 0</code>, and
       <code>map_bytes = 0</code>.</li>

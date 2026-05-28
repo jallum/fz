@@ -209,8 +209,8 @@ fn static_tests() -> Vec<(&'static str, fn())> {
             physical_capability_model_and_signals_are_pinned,
         ),
         (
-            "owned_cons_reuse_negative_barriers_do_not_advertise_credits",
-            owned_cons_reuse_negative_barriers_do_not_advertise_credits,
+            "owned_cons_reuse_negative_barriers_do_not_advertise_capabilities",
+            owned_cons_reuse_negative_barriers_do_not_advertise_capabilities,
         ),
         (
             "quicksort_clif_inlines_nonempty_list_projection",
@@ -2419,7 +2419,7 @@ fn physical_capability_model_and_signals_are_pinned() {
     );
 }
 
-fn owned_cons_reuse_negative_barriers_do_not_advertise_credits() {
+fn owned_cons_reuse_negative_barriers_do_not_advertise_capabilities() {
     let cases = [
         (
             "double_use",
@@ -2465,8 +2465,8 @@ fn main(), do: publish([1, 2])
     for (name, source) in cases {
         let specs = dump_specs_for_source(&format!("owned_cons_negative_{}", name), source);
         assert!(
-            !specs.contains("owned_cons_reuse"),
-            "{} must not advertise owned-cons reuse across a publication or observer barrier:\n{}",
+            !specs.contains("owned_cons_source") && !specs.contains("physical_capabilities"),
+            "{} must not advertise owned-cons reuse capabilities across a publication or observer barrier:\n{}",
             name,
             specs
         );
