@@ -121,16 +121,16 @@ fn render_fn_constants(m: &Module, ft: &super::fn_types::SpecPlan, out: &mut Str
 }
 
 fn render_owned_cons_reuse(f: &crate::fz_ir::FnIr, out: &mut String) {
-    if f.owned_cons_head_origins.is_empty() {
+    if f.owned_cons_reuse_credits.is_empty() {
         return;
     }
-    let mut origins: Vec<_> = f.owned_cons_head_origins.iter().collect();
-    origins.sort_by_key(|(head, _)| head.0);
+    let mut credits = f.owned_cons_reuse_credits.clone();
+    credits.sort_by_key(|credit| credit.head.0);
     out.push_str(";   owned_cons_reuse:\n");
-    for (head, source_cons) in origins {
+    for credit in credits {
         out.push_str(&format!(
-            ";     head=Var({}) source_cons=Var({})\n",
-            head.0, source_cons.0
+            ";     reuse_credit head=Var({}) source_cons=Var({})\n",
+            credit.head.0, credit.source_cons.0
         ));
     }
 }

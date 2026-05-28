@@ -569,10 +569,13 @@ pub fn alpha_rename(callee: &FnIr, caller: &FnIr) -> FnIr {
         category: callee.category,
         owner_module: callee.owner_module.clone(),
         ignored_entry_params: callee.ignored_entry_params.clone(),
-        owned_cons_head_origins: callee
-            .owned_cons_head_origins
+        owned_cons_reuse_credits: callee
+            .owned_cons_reuse_credits
             .iter()
-            .map(|(head, source_cons)| (shift_v(*head), shift_v(*source_cons)))
+            .map(|credit| crate::fz_ir::OwnedConsReuseCredit {
+                head: shift_v(credit.head),
+                source_cons: shift_v(credit.source_cons),
+            })
             .collect(),
     }
 }
@@ -610,14 +613,15 @@ pub fn absorb_callee(caller: &mut FnIr, bi: usize, mut callee: FnIr, args: &[Var
             b.stmts = b.stmts.iter().map(|s| subst_stmt(s, &subst)).collect();
             b.terminator = subst_term(&b.terminator, &subst);
         }
-        callee.owned_cons_head_origins = callee
-            .owned_cons_head_origins
+        callee.owned_cons_reuse_credits = callee
+            .owned_cons_reuse_credits
             .iter()
-            .map(|(head, source_cons)| {
-                (
-                    subst.get(head).copied().unwrap_or(*head),
-                    subst.get(source_cons).copied().unwrap_or(*source_cons),
-                )
+            .map(|credit| crate::fz_ir::OwnedConsReuseCredit {
+                head: subst.get(&credit.head).copied().unwrap_or(credit.head),
+                source_cons: subst
+                    .get(&credit.source_cons)
+                    .copied()
+                    .unwrap_or(credit.source_cons),
             })
             .collect();
     }
@@ -629,8 +633,8 @@ pub fn absorb_callee(caller: &mut FnIr, bi: usize, mut callee: FnIr, args: &[Var
     caller.blocks[bi].terminator = entry_block.terminator;
     caller.blocks.extend(callee.blocks);
     caller
-        .owned_cons_head_origins
-        .extend(callee.owned_cons_head_origins);
+        .owned_cons_reuse_credits
+        .extend(callee.owned_cons_reuse_credits);
 }
 
 // ---------- pass: inline_tail_calls_once ----------

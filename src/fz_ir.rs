@@ -1040,13 +1040,14 @@ pub struct FnIr {
     /// The slot exists physically, but semantic specialization must not
     /// inspect its type.
     pub ignored_entry_params: Vec<bool>,
-    /// Head Var -> source cons Var facts for linear cons reuse.
+    /// FIP-style reuse credits available inside this function body.
     ///
-    /// Lowering records these only when a list-head projection and its
-    /// original cons cell are carried together into a generated helper body.
-    /// Codegen may use the fact to relink the source cons tail instead of
-    /// allocating a fresh cons, subject to the runtime alias bit.
-    pub owned_cons_head_origins: HashMap<Var, Var>,
+    /// Lowering records these when a destructured list head and its original
+    /// source cons cell are carried together into a generated helper body.
+    /// Codegen may consume a compatible credit to rebuild a cons by reusing the
+    /// source cell or falling back to allocation when the runtime alias bit is
+    /// set.
+    pub owned_cons_reuse_credits: Vec<OwnedConsReuseCredit>,
 }
 
 impl FnIr {
@@ -1070,6 +1071,12 @@ impl FnIr {
             .find(|b| b.id == id)
             .expect("unknown block")
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct OwnedConsReuseCredit {
+    pub head: Var,
+    pub source_cons: Var,
 }
 
 /// Side-tables that map IR positions back to source spans. Populated by
@@ -1325,7 +1332,7 @@ pub struct FnBuilder {
     category: FnCategory,
     owner_module: String,
     ignored_params: std::collections::HashSet<Var>,
-    owned_cons_head_origins: HashMap<Var, Var>,
+    owned_cons_reuse_credits: Vec<OwnedConsReuseCredit>,
 }
 
 impl FnBuilder {
@@ -1340,7 +1347,7 @@ impl FnBuilder {
             category: FnCategory::User,
             owner_module: String::new(),
             ignored_params: std::collections::HashSet::new(),
-            owned_cons_head_origins: HashMap::new(),
+            owned_cons_reuse_credits: Vec::new(),
         }
     }
 
@@ -1365,12 +1372,23 @@ impl FnBuilder {
         self.ignored_params.insert(v);
     }
 
-    pub fn record_owned_cons_head_origin(&mut self, head: Var, source_cons: Var) {
-        self.owned_cons_head_origins.insert(head, source_cons);
+    pub fn record_owned_cons_reuse_credit(&mut self, head: Var, source_cons: Var) {
+        if let Some(credit) = self
+            .owned_cons_reuse_credits
+            .iter_mut()
+            .find(|credit| credit.head == head)
+        {
+            credit.source_cons = source_cons;
+            return;
+        }
+        self.owned_cons_reuse_credits
+            .push(OwnedConsReuseCredit { head, source_cons });
     }
 
-    pub fn owned_cons_origin_for_head(&self, head: Var) -> Option<Var> {
-        self.owned_cons_head_origins.get(&head).copied()
+    pub fn owned_cons_reuse_source_for_head(&self, head: Var) -> Option<Var> {
+        self.owned_cons_reuse_credits
+            .iter()
+            .find_map(|credit| (credit.head == head).then_some(credit.source_cons))
     }
 
     pub fn prim_for_var(&self, var: Var) -> Option<&Prim> {
@@ -1439,7 +1457,7 @@ impl FnBuilder {
             category: self.category,
             owner_module: self.owner_module,
             ignored_entry_params,
-            owned_cons_head_origins: self.owned_cons_head_origins,
+            owned_cons_reuse_credits: self.owned_cons_reuse_credits,
         }
     }
 }

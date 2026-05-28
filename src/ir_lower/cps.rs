@@ -93,7 +93,7 @@ fn owned_cons_captures_for_visible_locals(
     visible
         .iter()
         .filter_map(|(name, head)| {
-            cur.owned_cons_origin_for_head(*head)
+            cur.owned_cons_reuse_source_for_head(*head)
                 .map(|source_cons| OwnedConsCapture {
                     head_name: name.clone(),
                     source_cons,
@@ -153,7 +153,7 @@ fn install_capture_metadata(
             .zip(&params.semantic)
             .find(|((name, _), _)| name == &capture.head_name)
         {
-            builder.record_owned_cons_head_origin(*head_param, *source_param);
+            builder.record_owned_cons_reuse_credit(*head_param, *source_param);
         }
     }
 }

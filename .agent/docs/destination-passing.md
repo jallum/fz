@@ -157,7 +157,7 @@ the original source cons cell. The spec dump exposes this under
 
 ```text
 owned_cons_reuse:
-  head=Var(H) source_cons=Var(C)
+  reuse_credit head=Var(H) source_cons=Var(C)
 ```
 
 The hidden parameter is not part of semantic specialization (`_` in the spec

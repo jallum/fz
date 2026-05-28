@@ -166,9 +166,9 @@ pub(crate) fn compile_fn<
             list_tail_return_elems,
             skipped_list_tail_return_vars,
             owned_cons_head_origins: f
-                .owned_cons_head_origins
+                .owned_cons_reuse_credits
                 .iter()
-                .map(|(head, source_cons)| (head.0, *source_cons))
+                .map(|credit| (credit.head.0, credit.source_cons))
                 .collect(),
             owned_cons_reuse_enabled,
             ..CodegenCache::default()

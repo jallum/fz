@@ -208,9 +208,9 @@ pub fn classify_var_uses(f: &FnIr) -> (HashSet<Var>, HashSet<Var>) {
 
 pub fn collect_used(f: &FnIr) -> HashSet<Var> {
     let mut used = classify_var_uses(f).1;
-    for (head, source_cons) in &f.owned_cons_head_origins {
-        used.insert(*head);
-        used.insert(*source_cons);
+    for credit in &f.owned_cons_reuse_credits {
+        used.insert(credit.head);
+        used.insert(credit.source_cons);
     }
     used
 }
