@@ -10,6 +10,7 @@ use super::*;
 use cranelift_codegen::ir::{self, InstBuilder, MemFlags, types};
 use cranelift_frontend::FunctionBuilder;
 use cranelift_module::FuncId;
+use fz_runtime::heap::{FieldKind, Schema};
 use std::collections::HashMap;
 use std::marker::PhantomData;
 
@@ -573,6 +574,14 @@ where
             .list_reuse_or_cons_tail_ref(self.b, self.jmod, source_ref, tail_ref)
     }
 
+    pub(crate) fn halt_implicit(&mut self, repr: ArgRepr, value: ir::Value) {
+        self.cx.halt_implicit(self.b, self.jmod, repr, value);
+    }
+
+    pub(crate) fn alloc_frame(&mut self, schema_id: ir::Value, size: ir::Value) -> ir::Value {
+        self.cx.alloc_frame(self.b, self.jmod, schema_id, size)
+    }
+
     pub(crate) fn store_frame_value_dynamic(
         &mut self,
         frame: ir::Value,
@@ -583,6 +592,55 @@ where
         self.b
             .ins()
             .store(MemFlags::trusted(), value_ref, frame, field_offset as i32);
+    }
+
+    pub(crate) fn store_bindings_into_callee_frame(
+        &mut self,
+        callee_schema: &Schema,
+        callee_frame: ir::Value,
+        args: &[CodegenValue],
+        slot_base: usize,
+    ) {
+        for (i, binding) in args.iter().copied().enumerate() {
+            let slot_idx = slot_base + i;
+            let off = HEADER_SIZE + SLOT_BYTES * (slot_idx as i32);
+            match callee_schema.fields[slot_idx].kind {
+                FieldKind::RawF64 => {
+                    let f = match binding.repr() {
+                        ArgRepr::RawF64 => binding.value(),
+                        ArgRepr::ValueRef if binding.known_kind().is_some() => self
+                            .b
+                            .ins()
+                            .bitcast(types::F64, MemFlags::new(), binding.value()),
+                        _ => tagged_to_raw_f64_unsupported(self.b, binding.value()),
+                    };
+                    self.b
+                        .ins()
+                        .store(MemFlags::trusted(), f, callee_frame, off);
+                }
+                FieldKind::RawI64 => {
+                    let n = match binding.repr() {
+                        ArgRepr::RawInt => binding.value(),
+                        ArgRepr::ValueRef if binding.known_kind().is_some() => binding.value(),
+                        _ => panic!("RawI64 frame slot requires raw int binding"),
+                    };
+                    self.b
+                        .ins()
+                        .store(MemFlags::trusted(), n, callee_frame, off);
+                }
+                FieldKind::AnyValue => {
+                    let value_ref = self.value_as_any_ref(binding);
+                    self.b
+                        .ins()
+                        .store(MemFlags::trusted(), value_ref, callee_frame, off);
+                }
+                FieldKind::RawBytes(_) => {
+                    self.b
+                        .ins()
+                        .store(MemFlags::trusted(), binding.value(), callee_frame, off);
+                }
+            }
+        }
     }
 
     pub(crate) fn coerce_binding_to(&mut self, binding: CodegenValue, to: ArgRepr) -> ir::Value {
@@ -745,12 +803,29 @@ mod tests {
             !include_str!("call.rs").contains("pub(crate) fn store_frame_value_dynamic"),
             "frame value stores should be CodegenFn body operations, not free helpers"
         );
+        assert!(
+            !include_str!("call.rs").contains("pub(crate) fn store_bindings_into_callee_frame"),
+            "callee-frame binding stores should be CodegenFn body operations, not free helpers"
+        );
+        for (name, source) in [
+            ("call.rs", include_str!("call.rs")),
+            ("closure.rs", include_str!("closure.rs")),
+            ("support.rs", include_str!("support.rs")),
+        ] {
+            assert!(
+                !source.contains("_runtime: &RuntimeRefs"),
+                "{name} should not thread dead runtime parameters"
+            );
+        }
 
         assert!(
             context_source.contains("fn value_as_any_ref(")
                 && context_source.contains("fn any_ref_for_var(")
                 && context_source.contains("fn list_tail_ref_word(")
                 && context_source.contains("fn store_frame_value_dynamic(")
+                && context_source.contains("fn store_bindings_into_callee_frame(")
+                && context_source.contains("fn halt_implicit(")
+                && context_source.contains("fn alloc_frame(")
                 && context_source.contains("fn coerce_binding_to("),
             "CodegenFn body surface should expose migrated semantic coercions"
         );

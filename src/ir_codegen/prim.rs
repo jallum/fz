@@ -2146,11 +2146,11 @@ fn emit_capturing_closure<M: cranelift_module::Module>(
         let to = param_reprs[cl_sid as usize][i];
         if to == ArgRepr::ValueRef {
             let capture = cx.value_as_any_ref(b, jmod, cache, *vb);
-            store_closure_capture_ref_word(cx, b, jmod, runtime, cl_ptr, n_caps, i, capture);
+            store_closure_capture_ref_word(cx, b, jmod, cl_ptr, n_caps, i, capture);
         } else {
             let mut capture = Vec::with_capacity(1);
             push_binding_as_abi_args(cx, &mut capture, b, jmod, cache, *vb, ArgRepr::ValueRef);
-            store_closure_capture_ref_word(cx, b, jmod, runtime, cl_ptr, n_caps, i, capture[0]);
+            store_closure_capture_ref_word(cx, b, jmod, cl_ptr, n_caps, i, capture[0]);
         }
     }
     Ok(cl_ptr)

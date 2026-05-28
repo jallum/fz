@@ -1472,7 +1472,7 @@ fn emit_drain_dtor_entry<M: cranelift_module::Module>(
         let ghc_fref = m.declare_func_in_func(runtime.get_halt_cont_id, b.func);
         let halt_inst = b.ins().call(ghc_fref, &[strict_addr, zero]);
         let halt_cl = b.inst_results(halt_inst)[0];
-        let code = load_closure_code_ref(&mut cx, b, m, runtime, closure);
+        let code = load_closure_code_ref(&mut cx, b, m, closure);
         // Closure-target body sig: `(args..., self, cont) tail -> i64`.
         // Generic args are one-word ValueRefs.
         let mut closure_sig = Signature::new(CallConv::Tail);
@@ -1522,7 +1522,7 @@ fn emit_spawn_entry<M: cranelift_module::Module>(
         b.seal_block(entry);
         let closure = b.block_params(entry)[0];
         let mut cx = CodegenFn::for_runtime_shim(runtime);
-        let kind = load_closure_halt_kind_ref(&mut cx, b, m, runtime, closure);
+        let kind = load_closure_halt_kind_ref(&mut cx, b, m, closure);
         // Select halt_cont_body_addr by kind. Branchless via three
         // func_addrs + a tiny dispatch — keeps the spawn shim a leaf.
         let a_strict = fn_addr(m, runtime.halt_cont_body_strict_id, b);
@@ -1539,7 +1539,7 @@ fn emit_spawn_entry<M: cranelift_module::Module>(
         let halt_cl = b.inst_results(halt_inst)[0];
         // Read closure body addr through the runtime ABI and invoke as
         // closure-target sig `(self, cont) tail` (zero user args).
-        let code = load_closure_code_ref(&mut cx, b, m, runtime, closure);
+        let code = load_closure_code_ref(&mut cx, b, m, closure);
         let mut closure_sig = Signature::new(CallConv::Tail);
         closure_sig.params.push(AbiParam::new(types::I64)); // self
         closure_sig.params.push(AbiParam::new(types::I64)); // cont
@@ -1632,7 +1632,7 @@ fn emit_resume<M: cranelift_module::Module>(
         b.seal_block(entry);
         let cont = b.block_params(entry)[0];
         let mut cx = CodegenFn::for_runtime_shim(runtime);
-        let code = load_closure_code_ref(&mut cx, b, m, runtime, cont);
+        let code = load_closure_code_ref(&mut cx, b, m, cont);
         let mut stub_sig = Signature::new(CallConv::Tail);
         stub_sig.params.push(AbiParam::new(types::I64)); // self
         stub_sig.returns.push(AbiParam::new(types::I64));

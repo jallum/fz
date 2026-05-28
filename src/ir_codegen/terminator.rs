@@ -269,7 +269,7 @@ pub(crate) fn emit_terminator<
             else_b,
             ..
         } => emit_if(cx, b, jmod, var_env, block_map, cond, then_b, else_b),
-        Term::Halt(v) => emit_halt(cx, b, jmod, env, var_env, cache, is_native, host_ctx, v),
+        Term::Halt(v) => emit_halt(cx, b, jmod, var_env, cache, is_native, host_ctx, v),
         Term::Return(v) => emit_return_term(
             cx,
             b,
@@ -463,17 +463,15 @@ fn emit_halt<M: cranelift_module::Module>(
     cx: &mut CodegenFn<'_>,
     b: &mut FunctionBuilder<'_>,
     jmod: &mut M,
-    env: &CodegenEnv<'_>,
     var_env: &HashMap<u32, CodegenValue>,
     cache: &mut CodegenCache,
     is_native: bool,
     host_ctx: Option<ir::Value>,
     v: &crate::fz_ir::Var,
 ) -> Result<(), CodegenError> {
-    let runtime = env.runtime;
     let _ = host_ctx;
     let binding = *var_env.get(&v.0).expect("unbound halt val");
-    emit_halt_for_binding(cx, b, jmod, runtime, var_env, cache, v.0, binding);
+    emit_halt_for_binding(cx, b, jmod, var_env, cache, v.0, binding);
     if is_native {
         // fz_halt already recorded process.halt_value; the
         // returned bits are unobservable but the sig requires
@@ -511,7 +509,6 @@ fn emit_return_term<
     cont_param: Option<ir::Value>,
     v: &crate::fz_ir::Var,
 ) -> Result<(), CodegenError> {
-    let runtime = env.runtime;
     let return_reprs = env.return_reprs;
     let closure_n_captures = env.closure_n_captures;
     {
@@ -525,11 +522,11 @@ fn emit_return_term<
                 );
                 let cont_val = if is_cont_fn {
                     let self_val = cont_param.expect("cont fn binds self via cont_param");
-                    load_outer_cont_ref(cx, b, jmod, runtime, self_val)
+                    load_outer_cont_ref(cx, b, jmod, self_val)
                 } else {
                     cont_param.expect("non-cont native fn has cont_param")
                 };
-                let code = load_closure_code_ref(cx, b, jmod, runtime, cont_val);
+                let code = load_closure_code_ref(cx, b, jmod, cont_val);
                 let mut sig = Signature::new(CallConv::Tail);
                 sig.params.push(AbiParam::new(types::I64));
                 sig.params.push(AbiParam::new(types::I64));
@@ -546,11 +543,11 @@ fn emit_return_term<
                 debug_assert_eq!(fields.len(), arity);
                 let cont_val = if is_cont_fn {
                     let self_val = cont_param.expect("cont fn binds self via cont_param");
-                    load_outer_cont_ref(cx, b, jmod, runtime, self_val)
+                    load_outer_cont_ref(cx, b, jmod, self_val)
                 } else {
                     cont_param.expect("non-cont native fn has cont_param")
                 };
-                let code = load_closure_code_ref(cx, b, jmod, runtime, cont_val);
+                let code = load_closure_code_ref(cx, b, jmod, cont_val);
                 let mut sig = Signature::new(CallConv::Tail);
                 let mut cont_args = Vec::with_capacity(fields.len() + 1);
                 for field in fields {
@@ -585,11 +582,11 @@ fn emit_return_term<
             let binding = *var_env.get(&v.0).expect("unbound return val");
             let cont_val = if is_cont_fn {
                 let self_val = cont_param.expect("cont fn binds self via cont_param");
-                load_outer_cont_ref(cx, b, jmod, runtime, self_val)
+                load_outer_cont_ref(cx, b, jmod, self_val)
             } else {
                 cont_param.expect("non-cont native fn has cont_param")
             };
-            let code = load_closure_code_ref(cx, b, jmod, runtime, cont_val);
+            let code = load_closure_code_ref(cx, b, jmod, cont_val);
             let mut sig = Signature::new(CallConv::Tail);
             push_repr_param(&mut sig, my_return_repr);
             sig.params.push(AbiParam::new(types::I64));
@@ -603,10 +600,10 @@ fn emit_return_term<
             let value = *var_env.get(&v.0).expect("unbound return val");
             // This fn is never a cont target; cont_ptr is statically
             // null. Skip the load/icmp/brif dispatch.
-            emit_halt_and_return_null(cx, b, jmod, runtime, cache, value);
+            emit_halt_and_return_null(cx, b, jmod, cache, value);
         } else {
             let value = *var_env.get(&v.0).expect("unbound return val");
-            emit_return(cx, b, jmod, runtime, cache, frame_ptr, value);
+            emit_return(cx, b, jmod, cache, frame_ptr, value);
         }
     }
     Ok(())
@@ -650,15 +647,7 @@ fn emit_call_term<
             .iter()
             .map(|v| var_env.get(&v.0).expect("unbound captured val").value())
             .collect();
-        mark_retained_call_args_as_published(
-            cx,
-            b,
-            jmod,
-            runtime,
-            var_env,
-            args,
-            &continuation.captured,
-        );
+        mark_retained_call_args_as_published(cx, b, jmod, var_env, args, &continuation.captured);
         let callee_sid = resolve_callee_sid(t, env, caller_fn_id, blk);
         let mut cont_sid = resolve_cont_sid(t, env, caller_fn_id, blk);
         let this_demand = DemandAbi::new(&env.spec_keys[this_spec_id as usize]);
@@ -788,7 +777,7 @@ fn emit_call_term<
                 native_args.push(pivot_tail);
                 let tail_cont_arg = if is_cont_fn {
                     let self_val = cont_param.expect("cont fn binds self via cont_param");
-                    load_outer_cont_ref(cx, b, jmod, runtime, self_val)
+                    load_outer_cont_ref(cx, b, jmod, self_val)
                 } else {
                     cont_param.expect("non-cont native fn has cont_param")
                 };
@@ -834,7 +823,6 @@ fn emit_call_term<
                 cx,
                 b,
                 jmod,
-                runtime,
                 schemas,
                 frame_ptr,
                 callee_sid,
@@ -1060,7 +1048,6 @@ fn emit_tail_call_term<
     args: &[crate::fz_ir::Var],
     is_back_edge: bool,
 ) -> Result<(), CodegenError> {
-    let runtime = env.runtime;
     let _ = schemas;
     {
         let callee_sid = resolve_callee_sid(t, env, caller_fn_id, blk);
@@ -1092,7 +1079,6 @@ fn emit_tail_call_term<
                 cx,
                 b,
                 jmod,
-                runtime,
                 schemas,
                 this_spec_id,
                 frame_ptr,
@@ -1172,7 +1158,7 @@ fn emit_native_tail_call<M: cranelift_module::Module>(
     let mut synth_halt_cont = false;
     let tail_cont_arg = if is_cont_fn {
         let self_val = cont_param.expect("cont fn binds self via cont_param");
-        load_outer_cont_ref(cx, b, jmod, runtime, self_val)
+        load_outer_cont_ref(cx, b, jmod, self_val)
     } else {
         match cont_param {
             Some(c) => c,
@@ -1241,7 +1227,10 @@ fn emit_native_tail_call<M: cranelift_module::Module>(
         b.switch_to_block(halt_blk);
         b.seal_block(halt_blk);
         let _ = host_ctx;
-        emit_halt_from_codegen_value(cx, b, jmod, runtime, cache, result_value);
+        {
+            let mut body = cx.body(b, jmod, cache);
+            emit_halt_from_codegen_value(&mut body, result_value);
+        }
         let null = b.ins().iconst(types::I64, 0);
         b.ins().return_(&[null]);
         b.switch_to_block(invoke_blk);
@@ -1321,16 +1310,7 @@ fn emit_back_edge_yield_check<M: cranelift_module::Module>(
             let inst = b.ins().call(materialize_cont_fref, &[root_ref]);
             root_ref = b.inst_results(inst)[0];
         }
-        store_closure_capture_ref_word(
-            cx,
-            b,
-            jmod,
-            runtime,
-            cont_closure,
-            captured_count,
-            i,
-            root_ref,
-        );
+        store_closure_capture_ref_word(cx, b, jmod, cont_closure, captured_count, i, root_ref);
     }
     let yield_fref = jmod.declare_func_in_func(runtime.yield_mid_flight_id, b.func);
     let yield_inst = b.ins().call(yield_fref, &[cont_closure]);
@@ -1383,15 +1363,7 @@ fn emit_call_closure<
             .iter()
             .map(|v| var_env.get(&v.0).expect("unbound callclosure arg").value())
             .collect();
-        mark_retained_call_args_as_published(
-            cx,
-            b,
-            jmod,
-            runtime,
-            var_env,
-            args,
-            &continuation.captured,
-        );
+        mark_retained_call_args_as_published(cx, b, jmod, var_env, args, &continuation.captured);
         let cont_sid = resolve_cont_sid(t, env, caller_fn_id, blk);
         // Singleton closure-lit fast path: if this spec types `closure`
         // as a single closure_lit(F, K), resolve F's narrow body spec
@@ -1461,7 +1433,7 @@ fn emit_call_closure<
         // `(args..., self, cont) -> i64 tail` (all-ValueRef params).
         // Native callers use return_call_indirect (TCO); uniform
         // callers use call_indirect Tail (cross-CC) and return result.
-        let body_fp = load_closure_code_ref(cx, b, jmod, runtime, cl_val);
+        let body_fp = load_closure_code_ref(cx, b, jmod, cl_val);
         let mut sig = Signature::new(CallConv::Tail);
         for _ in &arg_vals {
             push_repr_param(&mut sig, ArgRepr::ValueRef);
@@ -1518,7 +1490,6 @@ fn emit_tail_call_closure<
     closure: &crate::fz_ir::Var,
     args: &[crate::fz_ir::Var],
 ) -> Result<(), CodegenError> {
-    let runtime = env.runtime;
     let fn_types = env.fn_types;
     let spec_registry = env.spec_registry;
     let fn_ids = env.fn_ids;
@@ -1552,7 +1523,7 @@ fn emit_tail_call_closure<
             .collect();
         let my_cont = if is_cont_fn {
             let self_val = cont_param.expect("cont fn binds self via cont_param");
-            load_outer_cont_ref(cx, b, jmod, runtime, self_val)
+            load_outer_cont_ref(cx, b, jmod, self_val)
         } else {
             match cont_param {
                 Some(c) => c,
@@ -1609,7 +1580,7 @@ fn emit_tail_call_closure<
                 b.ins().return_(&[result]);
             }
         } else {
-            let body_fp = load_closure_code_ref(cx, b, jmod, runtime, cl_val);
+            let body_fp = load_closure_code_ref(cx, b, jmod, cl_val);
             let mut sig = Signature::new(CallConv::Tail);
             for _ in &arg_vals {
                 push_repr_param(&mut sig, ArgRepr::ValueRef);

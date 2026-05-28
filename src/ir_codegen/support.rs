@@ -13,7 +13,6 @@ pub(crate) fn mark_retained_call_args_as_published<M: cranelift_module::Module>(
     cx: &mut CodegenFn<'_>,
     b: &mut FunctionBuilder<'_>,
     jmod: &mut M,
-    _runtime: &RuntimeRefs,
     var_env: &HashMap<u32, CodegenValue>,
     args: &[crate::fz_ir::Var],
     captured: &[crate::fz_ir::Var],

@@ -86,7 +86,6 @@ pub(crate) fn build_entry_harness<M: cranelift_module::Module>(
                 cx,
                 b,
                 jmod,
-                env,
                 entry_blk,
                 &params,
                 my_param_reprs,
@@ -230,7 +229,6 @@ fn harness_cont_fn<M: cranelift_module::Module>(
             cx,
             b,
             jmod,
-            env.runtime,
             self_val,
             captured_count,
             capture_idx,
@@ -266,7 +264,6 @@ fn harness_closure_target<M: cranelift_module::Module>(
     cx: &mut CodegenFn<'_>,
     b: &mut FunctionBuilder<'_>,
     jmod: &mut M,
-    env: &CodegenEnv<'_>,
     entry_blk: &crate::fz_ir::Block,
     params: &[ir::Value],
     my_param_reprs: &[ArgRepr],
@@ -293,16 +290,8 @@ fn harness_closure_target<M: cranelift_module::Module>(
     };
     let cont_val = params[param_cursor + 1 + usize::from(has_list_tail_dest)];
     for (k, p) in entry_blk.params.iter().enumerate().take(n_caps) {
-        let binding = load_closure_capture_as_binding(
-            cx,
-            b,
-            jmod,
-            env.runtime,
-            self_val,
-            n_caps,
-            k,
-            my_param_reprs[k],
-        );
+        let binding =
+            load_closure_capture_as_binding(cx, b, jmod, self_val, n_caps, k, my_param_reprs[k]);
         var_env.insert(p.0, binding);
     }
     debug_assert_eq!(

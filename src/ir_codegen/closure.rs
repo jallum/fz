@@ -46,7 +46,6 @@ pub(crate) fn load_closure_capture_as_binding(
     cx: &mut CodegenFn<'_>,
     b: &mut FunctionBuilder<'_>,
     jmod: &mut impl cranelift_module::Module,
-    _runtime: &RuntimeRefs,
     closure_ref: ir::Value,
     _captured_count: usize,
     idx: usize,
@@ -73,7 +72,6 @@ pub(crate) fn load_outer_cont_ref<M: cranelift_module::Module>(
     cx: &mut CodegenFn<'_>,
     b: &mut FunctionBuilder<'_>,
     jmod: &mut M,
-    _runtime: &RuntimeRefs,
     closure_ref: ir::Value,
 ) -> ir::Value {
     let index = b.ins().iconst(types::I64, 0);
@@ -84,7 +82,6 @@ pub(crate) fn load_closure_code_ref<M: cranelift_module::Module, K>(
     cx: &mut CodegenFn<'_, K>,
     b: &mut FunctionBuilder<'_>,
     jmod: &mut M,
-    _runtime: &RuntimeRefs,
     closure_ref: ir::Value,
 ) -> ir::Value {
     cx.closure_code_ref(b, jmod, closure_ref)
@@ -94,7 +91,6 @@ pub(crate) fn load_closure_halt_kind_ref<M: cranelift_module::Module, K>(
     cx: &mut CodegenFn<'_, K>,
     b: &mut FunctionBuilder<'_>,
     jmod: &mut M,
-    _runtime: &RuntimeRefs,
     closure_ref: ir::Value,
 ) -> ir::Value {
     cx.closure_halt_kind_ref(b, jmod, closure_ref)
@@ -104,7 +100,6 @@ pub(crate) fn store_closure_capture_ref_word<M: cranelift_module::Module>(
     cx: &mut CodegenFn<'_>,
     b: &mut FunctionBuilder<'_>,
     jmod: &mut M,
-    _runtime: &RuntimeRefs,
     closure_ref: ir::Value,
     _captured_count: usize,
     idx: usize,
@@ -119,7 +114,6 @@ fn materialize_cont_word<M: cranelift_module::Module>(
     cx: &mut CodegenFn<'_>,
     b: &mut FunctionBuilder<'_>,
     jmod: &mut M,
-    _runtime: &RuntimeRefs,
     value: ir::Value,
 ) -> ir::Value {
     cx.materialize_cont(b, jmod, value)
@@ -129,7 +123,6 @@ pub(crate) fn store_closure_capture_i64<M: cranelift_module::Module>(
     cx: &mut CodegenFn<'_>,
     b: &mut FunctionBuilder<'_>,
     jmod: &mut M,
-    _runtime: &RuntimeRefs,
     closure_ref: ir::Value,
     idx: usize,
     value: ir::Value,
@@ -142,7 +135,6 @@ pub(crate) fn store_closure_capture_f64<M: cranelift_module::Module>(
     cx: &mut CodegenFn<'_>,
     b: &mut FunctionBuilder<'_>,
     jmod: &mut M,
-    _runtime: &RuntimeRefs,
     closure_ref: ir::Value,
     idx: usize,
     value: ir::Value,
@@ -155,21 +147,11 @@ pub(crate) fn store_outer_cont_capture(
     cx: &mut CodegenFn<'_>,
     b: &mut FunctionBuilder<'_>,
     jmod: &mut impl cranelift_module::Module,
-    runtime: &RuntimeRefs,
     closure_ref: ir::Value,
     captured_count: usize,
     outer_cont: ir::Value,
 ) {
-    store_closure_capture_ref_word(
-        cx,
-        b,
-        jmod,
-        runtime,
-        closure_ref,
-        captured_count,
-        0,
-        outer_cont,
-    );
+    store_closure_capture_ref_word(cx, b, jmod, closure_ref, captured_count, 0, outer_cont);
 }
 
 pub(crate) fn emit_struct_set_field_value<M: cranelift_module::Module>(
@@ -237,7 +219,7 @@ pub(crate) fn resolve_outer_cont<M: cranelift_module::Module>(
     cont_sid: u32,
 ) -> ir::Value {
     if is_cont_fn && let Some(self_val) = cont_param {
-        return load_outer_cont_ref(cx, b, jmod, runtime, self_val);
+        return load_outer_cont_ref(cx, b, jmod, self_val);
     }
     // No `self` closure ptr: caller dispatched through the uniform
     // path; outer_cont lives in frame slot 0. Fall through.
@@ -322,27 +304,18 @@ pub(crate) fn build_cont_closure<M: cranelift_module::Module>(
     let cont_code_addr = fn_addr(jmod, cont_fid, b);
     let cl_ptr = cx.alloc_closure(b, jmod, cl_fid_v, n_caps_v, zero_hk, cont_code_addr);
     let captured_count = cap_bindings.len() + extra_ref_captures.len() + 1;
-    let heap_safe_outer_cont = materialize_cont_word(cx, b, jmod, runtime, my_outer_cont);
-    store_outer_cont_capture(
-        cx,
-        b,
-        jmod,
-        runtime,
-        cl_ptr,
-        captured_count,
-        heap_safe_outer_cont,
-    );
+    let heap_safe_outer_cont = materialize_cont_word(cx, b, jmod, my_outer_cont);
+    store_outer_cont_capture(cx, b, jmod, cl_ptr, captured_count, heap_safe_outer_cont);
     store_user_captures(
         cap_bindings,
         extra_ref_captures,
         |idx, capture| match capture {
             ClosureCapture::RefWord(ref_word) => {
-                let heap_safe_ref = materialize_cont_word(cx, b, jmod, runtime, ref_word);
+                let heap_safe_ref = materialize_cont_word(cx, b, jmod, ref_word);
                 store_closure_capture_ref_word(
                     cx,
                     b,
                     jmod,
-                    runtime,
                     cl_ptr,
                     captured_count,
                     idx,
@@ -350,10 +323,10 @@ pub(crate) fn build_cont_closure<M: cranelift_module::Module>(
                 );
             }
             ClosureCapture::RawInt(raw) => {
-                store_closure_capture_i64(cx, b, jmod, runtime, cl_ptr, idx, raw);
+                store_closure_capture_i64(cx, b, jmod, cl_ptr, idx, raw);
             }
             ClosureCapture::RawF64(raw) => {
-                store_closure_capture_f64(cx, b, jmod, runtime, cl_ptr, idx, raw);
+                store_closure_capture_f64(cx, b, jmod, cl_ptr, idx, raw);
             }
         },
     );

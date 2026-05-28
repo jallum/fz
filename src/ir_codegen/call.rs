@@ -10,44 +10,40 @@ pub(crate) fn emit_halt_for_binding<M: cranelift_module::Module>(
     cx: &mut CodegenFn<'_>,
     b: &mut FunctionBuilder<'_>,
     jmod: &mut M,
-    _runtime: &RuntimeRefs,
     var_env: &HashMap<u32, CodegenValue>,
     cache: &mut CodegenCache,
     var: u32,
     binding: CodegenValue,
 ) {
+    let mut body = cx.body(b, jmod, cache);
     match binding.repr() {
         ArgRepr::RawInt => {
-            cx.halt_implicit(b, jmod, ArgRepr::RawInt, binding.value());
+            body.halt_implicit(ArgRepr::RawInt, binding.value());
         }
         ArgRepr::RawF64 => {
-            cx.halt_implicit(b, jmod, ArgRepr::RawF64, binding.value());
+            body.halt_implicit(ArgRepr::RawF64, binding.value());
         }
         ArgRepr::ValueRef | ArgRepr::Condition => {
-            let value_ref = cx.tagged_var(var_env, b, jmod, var, cache);
-            cx.halt_implicit(b, jmod, ArgRepr::ValueRef, value_ref);
+            let value_ref = body.any_ref_for_var(var_env, var);
+            body.halt_implicit(ArgRepr::ValueRef, value_ref);
         }
     }
 }
 
 pub(crate) fn emit_halt_from_codegen_value<M: cranelift_module::Module>(
-    cx: &mut CodegenFn<'_>,
-    b: &mut FunctionBuilder<'_>,
-    jmod: &mut M,
-    _runtime: &RuntimeRefs,
-    cache: &mut CodegenCache,
+    body: &mut CodegenFnBody<'_, '_, '_, M>,
     value: CodegenValue,
 ) {
     match value {
         CodegenValue::RawInt(value) => {
-            cx.halt_implicit(b, jmod, ArgRepr::RawInt, value);
+            body.halt_implicit(ArgRepr::RawInt, value);
         }
         CodegenValue::RawF64(value) => {
-            cx.halt_implicit(b, jmod, ArgRepr::RawF64, value);
+            body.halt_implicit(ArgRepr::RawF64, value);
         }
         value => {
-            let value_ref = cx.body(b, jmod, cache).value_as_any_ref(value);
-            cx.halt_implicit(b, jmod, ArgRepr::ValueRef, value_ref);
+            let value_ref = body.value_as_any_ref(value);
+            body.halt_implicit(ArgRepr::ValueRef, value_ref);
         }
     }
 }
@@ -65,7 +61,6 @@ pub(crate) fn emit_return<M: cranelift_module::Module>(
     cx: &mut CodegenFn<'_>,
     b: &mut FunctionBuilder<'_>,
     jmod: &mut M,
-    runtime: &RuntimeRefs,
     cache: &mut CodegenCache,
     frame_ptr: Option<ir::Value>,
     value: CodegenValue,
@@ -89,7 +84,10 @@ pub(crate) fn emit_return<M: cranelift_module::Module>(
     // halt: record the strict value and return null (reusing `zero`).
     b.switch_to_block(halt_blk);
     b.seal_block(halt_blk);
-    emit_halt_from_codegen_value(cx, b, jmod, runtime, cache, value);
+    {
+        let mut body = cx.body(b, jmod, cache);
+        emit_halt_from_codegen_value(&mut body, value);
+    }
     b.ins().return_(&[zero]);
 
     // invoke: write val to cont[24], return cont_ptr.
@@ -111,11 +109,13 @@ pub(crate) fn emit_halt_and_return_null<M: cranelift_module::Module>(
     cx: &mut CodegenFn<'_>,
     b: &mut FunctionBuilder<'_>,
     jmod: &mut M,
-    runtime: &RuntimeRefs,
     cache: &mut CodegenCache,
     value: CodegenValue,
 ) {
-    emit_halt_from_codegen_value(cx, b, jmod, runtime, cache, value);
+    {
+        let mut body = cx.body(b, jmod, cache);
+        emit_halt_from_codegen_value(&mut body, value);
+    }
     let null = b.ins().iconst(types::I64, 0);
     b.ins().return_(&[null]);
 }
@@ -127,7 +127,6 @@ pub(crate) fn emit_call<M: cranelift_module::Module>(
     cx: &mut CodegenFn<'_>,
     b: &mut FunctionBuilder<'_>,
     jmod: &mut M,
-    _runtime: &RuntimeRefs,
     schemas: &[Schema],
     frame_ptr: Option<ir::Value>,
     callee_id: u32,
@@ -149,7 +148,7 @@ pub(crate) fn emit_call<M: cranelift_module::Module>(
             let sz = b
                 .ins()
                 .iconst(types::I32, cont_schema.allocation_payload_size() as i64);
-            let cf = cx.alloc_frame(b, jmod, sid, sz);
+            let cf = cx.body(b, jmod, cache).alloc_frame(sid, sz);
             // Slot 0 (offset 16): cont_ptr = my_cont (my own continuation).
             b.ins().store(MemFlags::trusted(), my_cont, cf, HEADER_SIZE);
             // Slot 1 (offset 24) is the continuation's "result" param —
@@ -157,7 +156,8 @@ pub(crate) fn emit_call<M: cranelift_module::Module>(
             // Slots 2..K+2: captured vars in declaration order. Kind-aware
             // store so a typed-int / typed-float captured slot gets its
             // raw payload, not one-word ValueRef.
-            store_bindings_into_callee_frame(cx, b, jmod, cont_schema, cf, captured, 2, cache);
+            cx.body(b, jmod, cache)
+                .store_bindings_into_callee_frame(cont_schema, cf, captured, 2);
             cf
         }
         None => my_cont,
@@ -169,7 +169,7 @@ pub(crate) fn emit_call<M: cranelift_module::Module>(
     let sz = b
         .ins()
         .iconst(types::I32, callee_schema.allocation_payload_size() as i64);
-    let callee_frame = cx.alloc_frame(b, jmod, sid, sz);
+    let callee_frame = cx.body(b, jmod, cache).alloc_frame(sid, sz);
     // Slot 0: cont_ptr = cont_frame_val.
     b.ins().store(
         MemFlags::trusted(),
@@ -179,55 +179,10 @@ pub(crate) fn emit_call<M: cranelift_module::Module>(
     );
     // Slots 1..N+1: args. Each local binding is written according to the
     // callee frame schema.
-    store_bindings_into_callee_frame(cx, b, jmod, callee_schema, callee_frame, args, 1, cache);
+    cx.body(b, jmod, cache)
+        .store_bindings_into_callee_frame(callee_schema, callee_frame, args, 1);
 
     b.ins().return_(&[callee_frame]);
-}
-
-pub(crate) fn store_bindings_into_callee_frame<M: cranelift_module::Module>(
-    cx: &mut CodegenFn<'_>,
-    b: &mut FunctionBuilder<'_>,
-    jmod: &mut M,
-    callee_schema: &Schema,
-    callee_frame: ir::Value,
-    args: &[CodegenValue],
-    slot_base: usize,
-    cache: &mut CodegenCache,
-) {
-    for (i, binding) in args.iter().copied().enumerate() {
-        let slot_idx = slot_base + i;
-        let off = HEADER_SIZE + SLOT_BYTES * (slot_idx as i32);
-        match callee_schema.fields[slot_idx].kind {
-            FieldKind::RawF64 => {
-                let f = match binding.repr() {
-                    ArgRepr::RawF64 => binding.value(),
-                    ArgRepr::ValueRef if binding.known_kind().is_some() => {
-                        b.ins()
-                            .bitcast(types::F64, MemFlags::new(), binding.value())
-                    }
-                    _ => tagged_to_raw_f64_unsupported(b, binding.value()),
-                };
-                b.ins().store(MemFlags::trusted(), f, callee_frame, off);
-            }
-            FieldKind::RawI64 => {
-                let n = match binding.repr() {
-                    ArgRepr::RawInt => binding.value(),
-                    ArgRepr::ValueRef if binding.known_kind().is_some() => binding.value(),
-                    _ => panic!("RawI64 frame slot requires raw int binding"),
-                };
-                b.ins().store(MemFlags::trusted(), n, callee_frame, off);
-            }
-            FieldKind::AnyValue => {
-                let value_ref = cx.body(b, jmod, cache).value_as_any_ref(binding);
-                b.ins()
-                    .store(MemFlags::trusted(), value_ref, callee_frame, off);
-            }
-            FieldKind::RawBytes(_) => {
-                b.ins()
-                    .store(MemFlags::trusted(), binding.value(), callee_frame, off);
-            }
-        }
-    }
 }
 
 pub(crate) fn store_typed_args_into_callee_frame<M: cranelift_module::Module>(
@@ -285,7 +240,6 @@ pub(crate) fn emit_tail_call<M: cranelift_module::Module>(
     cx: &mut CodegenFn<'_>,
     b: &mut FunctionBuilder<'_>,
     jmod: &mut M,
-    _runtime: &RuntimeRefs,
     schemas: &[Schema],
     self_id: u32,
     frame_ptr: Option<ir::Value>,
@@ -300,7 +254,8 @@ pub(crate) fn emit_tail_call<M: cranelift_module::Module>(
 
     if self_id == callee_id {
         // Same schema: overwrite slots 1..N+1 with new args. Slot 0 (cont) stays.
-        store_bindings_into_callee_frame(cx, b, jmod, callee_schema, frame_ptr, args, 1, cache);
+        cx.body(b, jmod, cache)
+            .store_bindings_into_callee_frame(callee_schema, frame_ptr, args, 1);
         b.ins().return_(&[frame_ptr]);
     } else {
         // Different schema: alloc fresh, copy cont_ptr, write args.
@@ -311,9 +266,10 @@ pub(crate) fn emit_tail_call<M: cranelift_module::Module>(
         let sz = b
             .ins()
             .iconst(types::I32, callee_schema.allocation_payload_size() as i64);
-        let nf = cx.alloc_frame(b, jmod, sid, sz);
+        let nf = cx.body(b, jmod, cache).alloc_frame(sid, sz);
         b.ins().store(MemFlags::trusted(), my_cont, nf, HEADER_SIZE);
-        store_bindings_into_callee_frame(cx, b, jmod, callee_schema, nf, args, 1, cache);
+        cx.body(b, jmod, cache)
+            .store_bindings_into_callee_frame(callee_schema, nf, args, 1);
         b.ins().return_(&[nf]);
     }
 }
