@@ -56,7 +56,7 @@ pub struct Runtime<'a> {
 
     /// Observability sink. Defaults to the silent `NullTelemetry`; the
     /// driver attaches a real one via `with_telemetry`. The run loop emits
-    /// a task-lifecycle event at each task exit (halt value + heap stats),
+    /// `fz.runtime.process_exited` at each task exit (see `ExitRecord`),
     /// which is the seam tests observe instead of poking task internals.
     tel: &'a dyn crate::telemetry::Telemetry,
 }
@@ -64,6 +64,31 @@ pub struct Runtime<'a> {
 /// Silent default for `Runtime.tel` — a `'static` so it coerces to the
 /// `&'a dyn Telemetry` field for any runtime lifetime.
 static NULL_TELEMETRY: crate::telemetry::NullTelemetry = crate::telemetry::NullTelemetry;
+
+/// The facts observed when a task exits, projected from its `Process`. This is
+/// the single place that reads `Process` internals for the
+/// `fz.runtime.process_exited` event: the scalars become event measurements,
+/// and a `ProcessExitCapture` reconstructs an `ExitRecord` from them. Sync
+/// handlers needing a field this projection omits can downcast the event's
+/// opaque `process` metadata directly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ExitRecord {
+    pub pid: PidId,
+    pub halt_value: i64,
+    pub live_count: usize,
+    pub bytes_used: usize,
+}
+
+impl ExitRecord {
+    pub fn project(pid: PidId, process: &Process) -> Self {
+        Self {
+            pid,
+            halt_value: process.halt_value,
+            live_count: process.heap.live_count(),
+            bytes_used: process.heap.bytes_used(),
+        }
+    }
+}
 
 thread_local! {
     /// Raw pointer to the Runtime currently driving `run_until_idle` on
@@ -522,14 +547,18 @@ impl<'a> Runtime<'a> {
                     let _ = drain(closure, payload_ref);
                 }
                 CURRENT_PROCESS.with(|c| c.set(prev));
+                let exit = ExitRecord::project(pid, &task);
                 self.tel.execute(
-                    &["fz", "runtime", "task_exited"],
+                    &["fz", "runtime", "process_exited"],
                     &crate::measurements! {
-                        halt_value: task.halt_value,
-                        live_count: task.heap.live_count() as u64,
-                        live_bytes: task.heap.bytes_used() as u64,
+                        halt_value: exit.halt_value,
+                        live_count: exit.live_count as u64,
+                        bytes_used: exit.bytes_used as u64,
                     },
-                    &crate::metadata! { pid: pid as u64 },
+                    &crate::metadata! {
+                        pid: exit.pid as u64,
+                        process: crate::telemetry::value::opaque(&*task),
+                    },
                 );
             } else if task.state == ProcessState::Blocked {
                 // Park: keep in registry, no re-enqueue. send() will
@@ -602,6 +631,71 @@ impl<'a> Runtime<'a> {
     }
 }
 
+/// Test seam: a telemetry handler that projects each `fz.runtime.process_exited`
+/// event into an owned `ExitRecord` (read from the durable measurements). Tests
+/// attach it to a `ConfiguredTelemetry`, run, then read the records — observing
+/// the run instead of poking the `Process`.
+#[cfg(test)]
+pub struct ProcessExitCapture {
+    records: std::rc::Rc<std::cell::RefCell<Vec<ExitRecord>>>,
+}
+
+#[cfg(test)]
+impl ProcessExitCapture {
+    pub fn new() -> Self {
+        Self {
+            records: std::rc::Rc::new(std::cell::RefCell::new(Vec::new())),
+        }
+    }
+
+    pub fn handler(&self) -> Box<dyn crate::telemetry::handler::Handler> {
+        Box::new(ProcessExitHandler {
+            records: self.records.clone(),
+        })
+    }
+
+    pub fn last(&self) -> Option<ExitRecord> {
+        self.records.borrow().last().copied()
+    }
+}
+
+#[cfg(test)]
+struct ProcessExitHandler {
+    records: std::rc::Rc<std::cell::RefCell<Vec<ExitRecord>>>,
+}
+
+#[cfg(test)]
+impl crate::telemetry::handler::Handler for ProcessExitHandler {
+    fn handle(&self, ev: &crate::telemetry::handler::Event<'_, '_, '_>) {
+        use crate::telemetry::value::Value;
+        if ev.name != ["fz", "runtime", "process_exited"] {
+            return;
+        }
+        let pid = match ev.metadata.get("pid") {
+            Some(Value::U64(v)) => *v as PidId,
+            _ => 0,
+        };
+        let halt_value = match ev.measurements.get("halt_value") {
+            Some(Value::I64(v)) => *v,
+            _ => 0,
+        };
+        let live_count = match ev.measurements.get("live_count") {
+            Some(Value::U64(v)) => *v as usize,
+            _ => 0,
+        };
+        let bytes_used = match ev.measurements.get("bytes_used") {
+            Some(Value::U64(v)) => *v as usize,
+            _ => 0,
+        };
+        self.records.borrow_mut().push(ExitRecord {
+            pid,
+            halt_value,
+            live_count,
+            bytes_used,
+        });
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -658,14 +752,13 @@ mod tests {
         assert_eq!(rt.task(c).unwrap().state, ProcessState::Exited);
     }
 
-    /// The Runtime emits a `fz.runtime.task_exited` event carrying the
-    /// halt value and heap stats. This is the seam tests use to observe a
-    /// run's result and live-object count without poking the Process.
+    /// The Runtime emits `fz.runtime.process_exited` at task exit. A
+    /// `ProcessExitCapture` projects it into an `ExitRecord` (read from the
+    /// durable measurements) — the seam tests use to observe a run's result
+    /// and live-object count without poking the Process.
     #[test]
-    fn task_exit_emits_telemetry_with_halt_value_and_heap_stats() {
+    fn process_exit_capture_yields_exit_record() {
         use crate::telemetry::bus::ConfiguredTelemetry;
-        use crate::telemetry::capture::Capture;
-        use crate::telemetry::value::Value;
 
         // Allocates a map, so the heap has live objects at exit.
         let src = "fn main(), do: %{1 => 10, 2 => 20}[2]";
@@ -679,27 +772,75 @@ mod tests {
         .unwrap();
 
         let tel = ConfiguredTelemetry::new();
-        let cap = Capture::new();
+        let cap = ProcessExitCapture::new();
         tel.attach(&[], cap.handler());
 
         let mut rt = Runtime::new(&compiled, 1).with_telemetry(&tel);
         let pid = rt.spawn(entry);
         rt.run_until_idle();
 
-        let ev = cap
-            .last(&["fz", "runtime", "task_exited"])
-            .expect("task_exited event emitted");
-        assert!(matches!(ev.measurements.get("halt_value"), Some(Value::I64(20))));
-        let Some(Value::U64(live)) = ev.measurements.get("live_count") else {
-            panic!("live_count measurement missing");
-        };
-        assert!(*live > 0, "map build leaves live heap objects");
-        assert_eq!(rt.task(pid).unwrap().halt_value, 20);
+        let rec = cap.last().expect("process_exited captured");
+        assert_eq!(rec.pid, pid);
+        assert_eq!(rec.halt_value, 20);
+        assert!(rec.live_count > 0, "map build leaves live heap objects");
+    }
+
+    /// The event also carries the live `&Process` as opaque metadata, so a
+    /// synchronous handler can downcast it and read any field the standard
+    /// projection omits — the escape hatch beside the durable measurements.
+    #[test]
+    fn process_exit_event_carries_opaque_process() {
+        use crate::telemetry::bus::ConfiguredTelemetry;
+        use crate::telemetry::handler::{Event, Handler};
+        use std::cell::Cell;
+        use std::rc::Rc;
+
+        struct OpaqueProbe {
+            seen_halt: Rc<Cell<Option<i64>>>,
+        }
+        impl Handler for OpaqueProbe {
+            fn handle(&self, ev: &Event<'_, '_, '_>) {
+                if ev.name != ["fz", "runtime", "process_exited"] {
+                    return;
+                }
+                let p = ev
+                    .metadata
+                    .get("process")
+                    .and_then(|v| v.downcast_ref::<Process>())
+                    .expect("opaque &Process present during dispatch");
+                self.seen_halt.set(Some(p.halt_value));
+            }
+        }
+
+        let src = "fn main(), do: 7";
+        let m = lower_src(src);
+        let entry = m.fn_by_name("main").unwrap().id;
+        let compiled = compile(
+            &mut crate::types::ConcreteTypes,
+            &m,
+            &crate::telemetry::NullTelemetry,
+        )
+        .unwrap();
+
+        let seen_halt = Rc::new(Cell::new(None));
+        let tel = ConfiguredTelemetry::new();
+        tel.attach(
+            &[],
+            Box::new(OpaqueProbe {
+                seen_halt: seen_halt.clone(),
+            }),
+        );
+
+        let mut rt = Runtime::new(&compiled, 1).with_telemetry(&tel);
+        let _ = rt.spawn(entry);
+        rt.run_until_idle();
+
+        assert_eq!(seen_halt.get(), Some(7));
     }
 
     /// Each task has its own heap. Two tasks build different maps; each
     /// observes only its own state. Same invariant as the .11.32 gating
-    /// test but driven through the scheduler instead of direct run_in.
+    /// test but driven through the scheduler with two spawned tasks.
     #[test]
     fn tasks_have_independent_heaps_and_builders() {
         let src_a = "fn main(), do: %{1 => 10, 2 => 20}[2]";

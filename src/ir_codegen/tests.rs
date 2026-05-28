@@ -918,31 +918,19 @@ fn assert_direct_call_arities(m: &Module) {
 
 /// Run `entry` on a single-task Runtime with a telemetry `Capture` attached,
 /// returning the halt value and live heap-object count read from the
-/// `fz.runtime.task_exited` event. The seam tests use to observe a run's
-/// result and heap without poking a Process.
+/// `fz.runtime.process_exited` event via `ProcessExitCapture`. The seam tests
+/// use to observe a run's result and heap without poking a Process.
 fn run_capturing(compiled: &CompiledModule, entry: FnId) -> (i64, usize) {
     use crate::telemetry::bus::ConfiguredTelemetry;
-    use crate::telemetry::capture::Capture;
-    use crate::telemetry::value::Value;
 
     let tel = ConfiguredTelemetry::new();
-    let cap = Capture::new();
+    let cap = crate::runtime::ProcessExitCapture::new();
     tel.attach(&[], cap.handler());
     let mut rt = crate::runtime::Runtime::new(compiled, 1).with_telemetry(&tel);
     let _ = rt.spawn(entry);
     rt.run_until_idle();
-    let ev = cap
-        .last(&["fz", "runtime", "task_exited"])
-        .expect("task_exited event emitted");
-    let halt = match ev.measurements.get("halt_value") {
-        Some(Value::I64(v)) => *v,
-        other => panic!("halt_value measurement missing/typed wrong: {other:?}"),
-    };
-    let live = match ev.measurements.get("live_count") {
-        Some(Value::U64(n)) => *n as usize,
-        other => panic!("live_count measurement missing/typed wrong: {other:?}"),
-    };
-    (halt, live)
+    let rec = cap.last().expect("process_exited captured");
+    (rec.halt_value, rec.live_count)
 }
 
 fn run_main_and_count_live(src: &str) -> usize {
