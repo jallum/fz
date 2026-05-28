@@ -24,7 +24,6 @@ pub(crate) fn compile_fn<
     this_spec_id: u32,
     source: &crate::fz_ir::SourceInfo,
 ) -> Result<(), CodegenError> {
-    let runtime = env.runtime;
     let fn_types = env.fn_types;
     let param_reprs = env.param_reprs;
     let natively_callable = env.natively_callable;
@@ -128,6 +127,12 @@ pub(crate) fn compile_fn<
     b.switch_to_block(entry_cl);
     b.seal_block(entry_cl);
 
+    // One machine for the whole function. Its cache starts empty: the entry
+    // harness never reads the cache -- it produces the inputs (tuple-field
+    // params, list-tail param) the cache is then populated from. Builder,
+    // module, cache, and import table are bound once, here.
+    let mut cache = CodegenCache::default();
+    let mut body = CodegenFn::new(env, &mut b, jmod, &mut cache);
     let EntryHarnessOut {
         mut var_env,
         frame_ptr,
@@ -136,8 +141,7 @@ pub(crate) fn compile_fn<
         tuple_field_params,
         list_tail_param,
     } = build_entry_harness(
-        &mut b,
-        jmod,
+        &mut body,
         env,
         schemas,
         f,
@@ -148,26 +152,22 @@ pub(crate) fn compile_fn<
         entry_cl,
     );
 
-    let mut cache = {
+    {
         let (if_only, all_used) = crate::ir_dce::classify_var_uses(f);
         let (tuple_return_fields, skipped_tuple_return_vars) =
             tuple_return_delivery_plan(f, &env.spec_keys[this_spec_id as usize]);
         let (list_tail_return_elems, skipped_list_tail_return_vars) =
             list_tail_delivery_plan(f, &env.spec_keys[this_spec_id as usize]);
-        CodegenCache {
-            if_only_conds: if_only.into_iter().map(|v| v.0).collect(),
-            used_vars: all_used.into_iter().map(|v| v.0).collect(),
-            tuple_field_params,
-            skipped_tuple_return_vars,
-            tuple_return_fields,
-            list_tail_param,
-            list_tail_return_elems,
-            skipped_list_tail_return_vars,
-            owned_cons_reuse_sources: owned_cons_reuse_sources(f),
-            ..CodegenCache::default()
-        }
-    };
-
+        body.cache.if_only_conds = if_only.into_iter().map(|v| v.0).collect();
+        body.cache.used_vars = all_used.into_iter().map(|v| v.0).collect();
+        body.cache.tuple_field_params = tuple_field_params;
+        body.cache.skipped_tuple_return_vars = skipped_tuple_return_vars;
+        body.cache.tuple_return_fields = tuple_return_fields;
+        body.cache.list_tail_param = list_tail_param;
+        body.cache.list_tail_return_elems = list_tail_return_elems;
+        body.cache.skipped_list_tail_return_vars = skipped_list_tail_return_vars;
+        body.cache.owned_cons_reuse_sources = owned_cons_reuse_sources(f);
+    }
     // Walk blocks in declared order with entry first. Unreachable
     // fz_ir blocks are filtered out — they have no Cranelift counterpart.
     let mut order: Vec<&crate::fz_ir::Block> = Vec::with_capacity(f.blocks.len());
@@ -186,8 +186,8 @@ pub(crate) fn compile_fn<
     for blk in &order {
         let cl_blk = *block_map.get(&blk.id.0).unwrap();
         if blk.id != f.entry {
-            b.switch_to_block(cl_blk);
-            let params: Vec<ir::Value> = b.block_params(cl_blk).to_vec();
+            body.b.switch_to_block(cl_blk);
+            let params: Vec<ir::Value> = body.b.block_params(cl_blk).to_vec();
             let mut param_cursor = 0;
             for p in &blk.params {
                 let fallback = t.any();
@@ -197,7 +197,7 @@ pub(crate) fn compile_fn<
                 );
                 var_env.insert(
                     p.0,
-                    take_param_binding(&mut b, &params, &mut param_cursor, repr),
+                    take_param_binding(body.b, &params, &mut param_cursor, repr),
                 );
             }
         }
@@ -212,15 +212,15 @@ pub(crate) fn compile_fn<
                 .and_then(|v| v.get(idx))
                 .copied()
                 .unwrap_or(crate::diag::Span::DUMMY);
-            b.set_srcloc(span_to_srcloc(span));
+            body.b.set_srcloc(span_to_srcloc(span));
             let Stmt::Let(v, prim) = stmt;
             let out = lower_prim(
-                &mut b, jmod, t, env, &var_env, prim, *v, &mut cache, f.id, blk.id, idx, block_env,
+                &mut body, t, env, &var_env, prim, *v, f.id, blk.id, idx, block_env,
             )?;
             if !matches!(out, LowerOut::DeadUnit) {
                 let binding = match out {
                     LowerOut::StrictConst(value) => {
-                        let raw = b.ins().iconst(types::I64, value.raw() as i64);
+                        let raw = body.b.ins().iconst(types::I64, value.raw() as i64);
                         CodegenValue::known(raw, value.kind())
                     }
                     LowerOut::Strict(value) => value,
@@ -249,7 +249,7 @@ pub(crate) fn compile_fn<
             .get(&(f.id, blk.id))
             .copied()
             .unwrap_or(crate::diag::Span::DUMMY);
-        b.set_srcloc(span_to_srcloc(term_span));
+        body.b.set_srcloc(span_to_srcloc(term_span));
 
         // Repr-aware Goto coercion. Mirrors coerce_call_args but for
         // intra-function block edges. Each arg is coerced to the repr
@@ -264,19 +264,14 @@ pub(crate) fn compile_fn<
                     &fn_types.vars.get(param).cloned().unwrap_or(fallback),
                 );
                 let vb = *var_env.get(&arg.0).expect("unbound goto arg");
-                if want == ArgRepr::ValueRef {
-                    let value_ref = codegen_value_as_any_ref(&mut b, jmod, runtime, &mut cache, vb);
-                    var_env.insert(arg.0, CodegenValue::any_ref(value_ref));
-                } else if vb.repr() != want {
-                    let coerced = coerce_binding_to(&mut b, jmod, runtime, vb, want);
-                    var_env.insert(arg.0, CodegenValue::from_abi_value(coerced, want));
+                if let Some(coerced) = body.coerce_goto_arg(vb, want) {
+                    var_env.insert(arg.0, coerced);
                 }
             }
         }
 
         emit_terminator(
-            &mut b,
-            jmod,
+            &mut body,
             t,
             env,
             schemas,
@@ -291,7 +286,6 @@ pub(crate) fn compile_fn<
             frame_ptr,
             host_ctx,
             cont_param,
-            &mut cache,
             block_env,
         )?;
     }
@@ -302,9 +296,10 @@ pub(crate) fn compile_fn<
         }
         let cl_blk = *block_map.get(&blk.id.0).unwrap();
         if blk.id != f.entry {
-            b.seal_block(cl_blk);
+            body.b.seal_block(cl_blk);
         }
     }
+    drop(body);
     b.finalize();
     // Publish Value -> Ty for the dump path. Only values bound to fz
     // Vars are recorded; pure Cranelift intermediates stay unannotated.
