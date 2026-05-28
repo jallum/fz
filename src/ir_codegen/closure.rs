@@ -191,7 +191,10 @@ pub(crate) fn emit_struct_set_field_value<M: cranelift_module::Module>(
             cx.struct_set_field_atom(b, jmod, struct_bits, offset, payload);
         }
         other => {
-            let value_ref = cx.body(b, jmod, cache).value_as_any_ref(other);
+            let value_ref = {
+                let mut body = cx.body(b, jmod, cache);
+                body.value_as_any_ref(other)
+            };
             let value_ref = cx.mark_published_ref_aliased(b, jmod, value_ref);
             cx.struct_set_field_ref(b, jmod, struct_bits, offset, value_ref);
         }

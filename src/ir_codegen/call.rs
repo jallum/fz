@@ -93,8 +93,10 @@ pub(crate) fn emit_return<M: cranelift_module::Module>(
     // invoke: write val to cont[24], return cont_ptr.
     b.switch_to_block(invoke_blk);
     b.seal_block(invoke_blk);
-    cx.body(b, jmod, cache)
-        .store_frame_value_dynamic(cont_ptr, SLOT_BYTES as u32, value);
+    {
+        let mut body = cx.body(b, jmod, cache);
+        body.store_frame_value_dynamic(cont_ptr, SLOT_BYTES as u32, value);
+    }
     b.ins().return_(&[cont_ptr]);
 }
 
@@ -148,16 +150,16 @@ pub(crate) fn emit_call<M: cranelift_module::Module>(
             let sz = b
                 .ins()
                 .iconst(types::I32, cont_schema.allocation_payload_size() as i64);
-            let cf = cx.body(b, jmod, cache).alloc_frame(sid, sz);
+            let mut body = cx.body(b, jmod, cache);
+            let cf = body.alloc_frame(sid, sz);
             // Slot 0 (offset 16): cont_ptr = my_cont (my own continuation).
-            b.ins().store(MemFlags::trusted(), my_cont, cf, HEADER_SIZE);
+            body.store_frame_word(cf, HEADER_SIZE as u32, my_cont);
             // Slot 1 (offset 24) is the continuation's "result" param —
             // left uninitialized; will be filled by callee's Term::Return.
             // Slots 2..K+2: captured vars in declaration order. Kind-aware
             // store so a typed-int / typed-float captured slot gets its
             // raw payload, not one-word ValueRef.
-            cx.body(b, jmod, cache)
-                .store_bindings_into_callee_frame(cont_schema, cf, captured, 2);
+            body.store_bindings_into_callee_frame(cont_schema, cf, captured, 2);
             cf
         }
         None => my_cont,
@@ -169,18 +171,13 @@ pub(crate) fn emit_call<M: cranelift_module::Module>(
     let sz = b
         .ins()
         .iconst(types::I32, callee_schema.allocation_payload_size() as i64);
-    let callee_frame = cx.body(b, jmod, cache).alloc_frame(sid, sz);
+    let mut body = cx.body(b, jmod, cache);
+    let callee_frame = body.alloc_frame(sid, sz);
     // Slot 0: cont_ptr = cont_frame_val.
-    b.ins().store(
-        MemFlags::trusted(),
-        cont_frame_val,
-        callee_frame,
-        HEADER_SIZE,
-    );
+    body.store_frame_word(callee_frame, HEADER_SIZE as u32, cont_frame_val);
     // Slots 1..N+1: args. Each local binding is written according to the
     // callee frame schema.
-    cx.body(b, jmod, cache)
-        .store_bindings_into_callee_frame(callee_schema, callee_frame, args, 1);
+    body.store_bindings_into_callee_frame(callee_schema, callee_frame, args, 1);
 
     b.ins().return_(&[callee_frame]);
 }
@@ -206,8 +203,10 @@ pub(crate) fn emit_tail_call<M: cranelift_module::Module>(
 
     if self_id == callee_id {
         // Same schema: overwrite slots 1..N+1 with new args. Slot 0 (cont) stays.
-        cx.body(b, jmod, cache)
-            .store_bindings_into_callee_frame(callee_schema, frame_ptr, args, 1);
+        {
+            let mut body = cx.body(b, jmod, cache);
+            body.store_bindings_into_callee_frame(callee_schema, frame_ptr, args, 1);
+        }
         b.ins().return_(&[frame_ptr]);
     } else {
         // Different schema: alloc fresh, copy cont_ptr, write args.
@@ -218,10 +217,10 @@ pub(crate) fn emit_tail_call<M: cranelift_module::Module>(
         let sz = b
             .ins()
             .iconst(types::I32, callee_schema.allocation_payload_size() as i64);
-        let nf = cx.body(b, jmod, cache).alloc_frame(sid, sz);
-        b.ins().store(MemFlags::trusted(), my_cont, nf, HEADER_SIZE);
-        cx.body(b, jmod, cache)
-            .store_bindings_into_callee_frame(callee_schema, nf, args, 1);
+        let mut body = cx.body(b, jmod, cache);
+        let nf = body.alloc_frame(sid, sz);
+        body.store_frame_word(nf, HEADER_SIZE as u32, my_cont);
+        body.store_bindings_into_callee_frame(callee_schema, nf, args, 1);
         b.ins().return_(&[nf]);
     }
 }

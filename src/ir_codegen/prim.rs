@@ -1814,8 +1814,10 @@ fn lower_extern_fz_send<M: cranelift_module::Module>(
     let receiver = as_raw_i64(cx, var_env, b, jmod, args[0].0);
     let msg_binding = *var_env.get(&args[1].0).expect("fz_send msg var");
     let mut msg_args = Vec::with_capacity(1);
-    cx.body(b, jmod, cache)
-        .push_binding_as_abi_arg(&mut msg_args, msg_binding, ArgRepr::ValueRef);
+    {
+        let mut body = cx.body(b, jmod, cache);
+        body.push_binding_as_abi_arg(&mut msg_args, msg_binding, ArgRepr::ValueRef);
+    }
     let msg_ref = msg_args[0];
     let sig = sig1(&[types::I64, types::I64], &[types::I64]);
     let func_id = jmod
@@ -2139,8 +2141,10 @@ fn emit_capturing_closure<M: cranelift_module::Module>(
             store_closure_capture_ref_word(cx, b, jmod, cl_ptr, n_caps, i, capture);
         } else {
             let mut capture = Vec::with_capacity(1);
-            cx.body(b, jmod, cache)
-                .push_binding_as_abi_arg(&mut capture, *vb, ArgRepr::ValueRef);
+            {
+                let mut body = cx.body(b, jmod, cache);
+                body.push_binding_as_abi_arg(&mut capture, *vb, ArgRepr::ValueRef);
+            }
             store_closure_capture_ref_word(cx, b, jmod, cl_ptr, n_caps, i, capture[0]);
         }
     }

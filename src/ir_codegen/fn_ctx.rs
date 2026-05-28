@@ -594,6 +594,17 @@ where
             .store(MemFlags::trusted(), value_ref, frame, field_offset as i32);
     }
 
+    pub(crate) fn store_frame_word(
+        &mut self,
+        frame: ir::Value,
+        field_offset: u32,
+        value: ir::Value,
+    ) {
+        self.b
+            .ins()
+            .store(MemFlags::trusted(), value, frame, field_offset as i32);
+    }
+
     pub(crate) fn store_bindings_into_callee_frame(
         &mut self,
         callee_schema: &Schema,
@@ -911,6 +922,19 @@ mod tests {
             !include_str!("call.rs").contains("pub(crate) fn store_typed_args_into_callee_frame"),
             "typed callee-frame stores should be CodegenFn body operations, not free helpers"
         );
+        for (name, source) in [
+            ("call.rs", include_str!("call.rs")),
+            ("closure.rs", include_str!("closure.rs")),
+            ("function.rs", include_str!("function.rs")),
+            ("prim.rs", include_str!("prim.rs")),
+            ("terminator.rs", include_str!("terminator.rs")),
+        ] {
+            assert!(
+                !source.contains("cx.body(b, jmod, cache).")
+                    && !source.contains("cx.body(&mut b, jmod, &mut cache)."),
+                "{name} should bind CodegenFnBody before calling semantic body operations"
+            );
+        }
         for (name, source) in [
             ("call.rs", include_str!("call.rs")),
             ("closure.rs", include_str!("closure.rs")),
