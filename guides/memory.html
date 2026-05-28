@@ -829,12 +829,18 @@ current process allocation counters.</p>
 
 <p>Owned list-cell reuse has one more boundary: publication. A cons cell that is
 stored into another heap object, captured by an escaping closure or lazy
-continuation, sent to a mailbox, passed through an opaque extern/runtime call,
-or carried across a scheduler-visible handoff is no longer privately owned by
-the rewrite that destructured it. The compiler either refuses to create a reuse
-credit for that cell or marks the cell aliased before a later reuse attempt.
-The alias bit is one-way, so a miss falls back to allocation rather than
-rewiring a value another observer may still hold.</p>
+continuation, passed through an opaque same-heap extern/runtime call, or carried
+across a scheduler-visible same-heap handoff is no longer privately owned by the
+rewrite that destructured it. The compiler either refuses to create a reuse
+credit for that cell or marks the cell aliased before a later reuse attempt.</p>
+
+<p>Send is a copy boundary, not an alias boundary. Cross-process send and
+self-send deep-copy the message graph before enqueueing it, so the sender's
+current-process list cells need not be marked aliased just because they were
+sent. The copied list cells in the destination heap are fresh and start with
+clear alias bits. Inside a single heap the alias bit is one-way, so a reuse miss
+falls back to allocation rather than rewiring a value another observer may still
+hold.</p>
 
 <!-- ─────────────────────────────── 11. ALLOC STATS ─────────────────────────────── -->
 <h2 id="alloc-stats">11. Heap allocation stats</h2>

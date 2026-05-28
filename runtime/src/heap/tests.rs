@@ -1049,7 +1049,7 @@ fn deep_copy_tagged_list_preserves_nested_list_head() {
 }
 
 #[test]
-fn deep_copy_preserves_list_alias_metadata() {
+fn deep_copy_clears_list_alias_metadata() {
     let mut src = Heap::new(1024, empty_registry());
     let mut dst = Heap::new(1024, empty_registry());
     let list_bits = alloc_int_list_cons(&mut src, 7, crate::any_value::EMPTY_LIST);
@@ -1062,7 +1062,7 @@ fn deep_copy_preserves_list_alias_metadata() {
         crate::any_value::list_addr_from_tagged(tagged_bits(copied)).expect("copied list ptr");
     let copied_cons = unsafe { &*(copied_list as *const ListCons) };
 
-    assert!(copied_cons.aliased());
+    assert!(!copied_cons.aliased());
     assert_eq!(copied_cons.head as i64, 7);
 }
 

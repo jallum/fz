@@ -174,10 +174,16 @@ A source cons becomes ineligible for an owned reuse credit, or has its alias bit
 set before reuse, when it is published outside the single owned rewrite path.
 The publication barriers include closure and lazy-continuation capture that can
 escape the current native activation, insertion into another heap container,
-send or mailbox enqueue, receive/scheduler-visible handoff, opaque extern or
-runtime calls, halt, and allocation-stat reads that make allocation timing
-observable. Allocation alone is still not source-observable; crossing an
-observer is the barrier.
+receive/scheduler-visible same-heap handoff, opaque extern or runtime calls,
+halt, and allocation-stat reads that make allocation timing observable.
+Allocation alone is still not source-observable; crossing an observer is the
+barrier.
+
+Send is different from same-heap publication. The runtime deep-copies messages
+for cross-process send and self-send, so the sender's current-process cons
+cells do not become aliased merely because they were sent. The destination
+message graph is fresh in its heap; copied list cells must have clear alias
+bits even if the source cells were already marked aliased.
 
 ## IR Vocabulary
 
