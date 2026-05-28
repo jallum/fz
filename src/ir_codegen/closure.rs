@@ -179,33 +179,33 @@ pub(crate) fn emit_struct_set_field_value<M: cranelift_module::Module>(
             payload: raw,
             kind: fz_runtime::any_value::ValueKind::INT,
         } => {
-            let fref = jmod.declare_func_in_func(runtime.struct_set_field_int_id, b.func);
-            b.ins().call(fref, &[struct_bits, offset, raw]);
+            let mut cx = CodegenFn::new_runtime_with_cache(b, jmod, runtime, cache);
+            cx.struct_set_field_int(struct_bits, offset, raw);
         }
         CodegenValue::RawF64(raw) => {
-            let fref = jmod.declare_func_in_func(runtime.struct_set_field_float_id, b.func);
-            b.ins().call(fref, &[struct_bits, offset, raw]);
+            let mut cx = CodegenFn::new_runtime_with_cache(b, jmod, runtime, cache);
+            cx.struct_set_field_float(struct_bits, offset, raw);
         }
         CodegenValue::Known {
             payload,
             kind: fz_runtime::any_value::ValueKind::FLOAT,
         } => {
-            let fref = jmod.declare_func_in_func(runtime.struct_set_field_float_id, b.func);
             let raw = b.ins().bitcast(types::F64, MemFlags::new(), payload);
-            b.ins().call(fref, &[struct_bits, offset, raw]);
+            let mut cx = CodegenFn::new_runtime_with_cache(b, jmod, runtime, cache);
+            cx.struct_set_field_float(struct_bits, offset, raw);
         }
         CodegenValue::Known {
             payload,
             kind: fz_runtime::any_value::ValueKind::ATOM,
         } => {
-            let fref = jmod.declare_func_in_func(runtime.struct_set_field_atom_id, b.func);
-            b.ins().call(fref, &[struct_bits, offset, payload]);
+            let mut cx = CodegenFn::new_runtime_with_cache(b, jmod, runtime, cache);
+            cx.struct_set_field_atom(struct_bits, offset, payload);
         }
         other => {
             let value_ref = codegen_value_as_any_ref(b, jmod, runtime, cache, other);
             let value_ref = mark_published_ref_aliased(b, jmod, runtime, value_ref);
-            let fref = jmod.declare_func_in_func(runtime.struct_set_field_ref_id, b.func);
-            b.ins().call(fref, &[struct_bits, offset, value_ref]);
+            let mut cx = CodegenFn::new_runtime_with_cache(b, jmod, runtime, cache);
+            cx.struct_set_field_ref(struct_bits, offset, value_ref);
         }
     }
 }

@@ -69,6 +69,21 @@ impl<'builder, 'ctx, M: cranelift_module::Module> CodegenFn<'builder, 'ctx, M> {
         }
     }
 
+    pub(crate) fn new_runtime_with_cache(
+        b: &'ctx mut FunctionBuilder<'builder>,
+        jmod: &'ctx mut M,
+        runtime: &'ctx RuntimeRefs,
+        cache: &'ctx mut CodegenCache,
+    ) -> Self {
+        Self {
+            b,
+            jmod,
+            runtime,
+            cache: Some(cache),
+            imports: FunctionImports::default(),
+        }
+    }
+
     pub(crate) fn func_ref(&mut self, id: FuncId) -> ir::FuncRef {
         self.imports.func_ref(self.jmod, self.b.func, id)
     }
@@ -85,6 +100,34 @@ impl<'builder, 'ctx, M: cranelift_module::Module> CodegenFn<'builder, 'ctx, M> {
 
     pub(crate) fn ref_tag(&mut self, value_ref: ir::Value) -> ir::Value {
         self.call_func1(self.runtime.type_of_id, &[value_ref])
+    }
+
+    pub(crate) fn truthy_ref(&mut self, value_ref: ir::Value) -> ir::Value {
+        self.call_func1(self.runtime.truthy_ref_id, &[value_ref])
+    }
+
+    pub(crate) fn box_int_for_any(&mut self, raw: ir::Value) -> ir::Value {
+        self.call_func1(self.runtime.box_int_for_any_id, &[raw])
+    }
+
+    pub(crate) fn box_float_for_any(&mut self, raw: ir::Value) -> ir::Value {
+        self.call_func1(self.runtime.box_float_for_any_id, &[raw])
+    }
+
+    pub(crate) fn box_atom_for_any(&mut self, raw: ir::Value) -> ir::Value {
+        self.call_func1(self.runtime.box_atom_for_any_id, &[raw])
+    }
+
+    pub(crate) fn unbox_int(&mut self, value_ref: ir::Value) -> ir::Value {
+        self.call_func1(self.runtime.unbox_int_id, &[value_ref])
+    }
+
+    pub(crate) fn unbox_float(&mut self, value_ref: ir::Value) -> ir::Value {
+        self.call_func1(self.runtime.unbox_float_id, &[value_ref])
+    }
+
+    pub(crate) fn unbox_atom(&mut self, value_ref: ir::Value) -> ir::Value {
+        self.call_func1(self.runtime.unbox_atom_id, &[value_ref])
     }
 
     pub(crate) fn empty_list_ref(&mut self) -> ir::Value {
@@ -201,6 +244,54 @@ impl<'builder, 'ctx, M: cranelift_module::Module> CodegenFn<'builder, 'ctx, M> {
 
     pub(crate) fn materialize_cont(&mut self, value: ir::Value) -> ir::Value {
         self.call_func1(self.runtime.materialize_cont_id, &[value])
+    }
+
+    pub(crate) fn struct_set_field_int(
+        &mut self,
+        struct_bits: ir::Value,
+        offset: ir::Value,
+        value: ir::Value,
+    ) {
+        self.call_func(
+            self.runtime.struct_set_field_int_id,
+            &[struct_bits, offset, value],
+        );
+    }
+
+    pub(crate) fn struct_set_field_float(
+        &mut self,
+        struct_bits: ir::Value,
+        offset: ir::Value,
+        value: ir::Value,
+    ) {
+        self.call_func(
+            self.runtime.struct_set_field_float_id,
+            &[struct_bits, offset, value],
+        );
+    }
+
+    pub(crate) fn struct_set_field_atom(
+        &mut self,
+        struct_bits: ir::Value,
+        offset: ir::Value,
+        value: ir::Value,
+    ) {
+        self.call_func(
+            self.runtime.struct_set_field_atom_id,
+            &[struct_bits, offset, value],
+        );
+    }
+
+    pub(crate) fn struct_set_field_ref(
+        &mut self,
+        struct_bits: ir::Value,
+        offset: ir::Value,
+        value: ir::Value,
+    ) {
+        self.call_func(
+            self.runtime.struct_set_field_ref_id,
+            &[struct_bits, offset, value],
+        );
     }
 }
 

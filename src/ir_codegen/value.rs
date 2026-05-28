@@ -130,9 +130,8 @@ pub(crate) fn emit_raw_int_as_abi_value_ref<M: cranelift_module::Module>(
     runtime: &RuntimeRefs,
     raw: ir::Value,
 ) -> ir::Value {
-    let fref = jmod.declare_func_in_func(runtime.box_int_for_any_id, b.func);
-    let inst = b.ins().call(fref, &[raw]);
-    b.inst_results(inst)[0]
+    let mut cx = CodegenFn::new_runtime(b, jmod, runtime);
+    cx.box_int_for_any(raw)
 }
 
 pub(crate) fn emit_raw_float_as_abi_value_ref<M: cranelift_module::Module>(
@@ -141,9 +140,8 @@ pub(crate) fn emit_raw_float_as_abi_value_ref<M: cranelift_module::Module>(
     runtime: &RuntimeRefs,
     raw: ir::Value,
 ) -> ir::Value {
-    let fref = jmod.declare_func_in_func(runtime.box_float_for_any_id, b.func);
-    let inst = b.ins().call(fref, &[raw]);
-    b.inst_results(inst)[0]
+    let mut cx = CodegenFn::new_runtime(b, jmod, runtime);
+    cx.box_float_for_any(raw)
 }
 
 pub(crate) fn emit_raw_atom_as_abi_value_ref<M: cranelift_module::Module>(
@@ -152,9 +150,8 @@ pub(crate) fn emit_raw_atom_as_abi_value_ref<M: cranelift_module::Module>(
     runtime: &RuntimeRefs,
     raw: ir::Value,
 ) -> ir::Value {
-    let fref = jmod.declare_func_in_func(runtime.box_atom_for_any_id, b.func);
-    let inst = b.ins().call(fref, &[raw]);
-    b.inst_results(inst)[0]
+    let mut cx = CodegenFn::new_runtime(b, jmod, runtime);
+    cx.box_atom_for_any(raw)
 }
 
 pub(crate) fn emit_empty_list_value_ref_word(
@@ -353,9 +350,8 @@ pub(crate) fn emit_ref_tag<M: cranelift_module::Module>(
     runtime: &RuntimeRefs,
     value_ref: ir::Value,
 ) -> ir::Value {
-    let fref = jmod.declare_func_in_func(runtime.type_of_id, b.func);
-    let inst = b.ins().call(fref, &[value_ref]);
-    b.inst_results(inst)[0]
+    let mut cx = CodegenFn::new_runtime(b, jmod, runtime);
+    cx.ref_tag(value_ref)
 }
 
 pub(crate) fn codegen_value_truthy<M: cranelift_module::Module>(
@@ -390,9 +386,8 @@ pub(crate) fn codegen_value_truthy<M: cranelift_module::Module>(
         }
         CodegenValue::Known { .. } => b.ins().iconst(types::I8, 1),
         CodegenValue::AnyRef(value_ref) => {
-            let fref = jmod.declare_func_in_func(runtime.truthy_ref_id, b.func);
-            let inst = b.ins().call(fref, &[value_ref]);
-            b.inst_results(inst)[0]
+            let mut cx = CodegenFn::new_runtime(b, jmod, runtime);
+            cx.truthy_ref(value_ref)
         }
     }
 }
@@ -474,9 +469,8 @@ pub(crate) fn codegen_value_atom_id_is<M: cranelift_module::Module>(
 
             b.switch_to_block(atom_blk);
             b.seal_block(atom_blk);
-            let fref = jmod.declare_func_in_func(runtime.unbox_atom_id, b.func);
-            let inst = b.ins().call(fref, &[value_ref]);
-            let atom = b.inst_results(inst)[0];
+            let mut cx = CodegenFn::new_runtime(b, jmod, runtime);
+            let atom = cx.unbox_atom(value_ref);
             let found = b.ins().icmp_imm(IntCC::Equal, atom, atom_id as i64);
             b.ins().jump(join_blk, &[BlockArg::Value(found)]);
 
@@ -500,9 +494,8 @@ pub(crate) fn codegen_value_raw_int<M: cranelift_module::Module>(
             kind: fz_runtime::any_value::ValueKind::INT,
         } => payload,
         CodegenValue::AnyRef(value_ref) => {
-            let fref = jmod.declare_func_in_func(runtime.unbox_int_id, b.func);
-            let inst = b.ins().call(fref, &[value_ref]);
-            b.inst_results(inst)[0]
+            let mut cx = CodegenFn::new_runtime(b, jmod, runtime);
+            cx.unbox_int(value_ref)
         }
         _ => panic!("CodegenValue is not an int"),
     }
@@ -521,9 +514,8 @@ pub(crate) fn codegen_value_raw_float<M: cranelift_module::Module>(
             kind: fz_runtime::any_value::ValueKind::FLOAT,
         } => b.ins().bitcast(types::F64, MemFlags::new(), payload),
         CodegenValue::AnyRef(value_ref) => {
-            let fref = jmod.declare_func_in_func(runtime.unbox_float_id, b.func);
-            let inst = b.ins().call(fref, &[value_ref]);
-            b.inst_results(inst)[0]
+            let mut cx = CodegenFn::new_runtime(b, jmod, runtime);
+            cx.unbox_float(value_ref)
         }
         _ => panic!("CodegenValue is not a float"),
     }
@@ -543,9 +535,8 @@ pub(crate) fn codegen_value_raw_atom<M: cranelift_module::Module>(
             kind: fz_runtime::any_value::ValueKind::ATOM,
         } => payload,
         CodegenValue::AnyRef(value_ref) => {
-            let fref = jmod.declare_func_in_func(runtime.unbox_atom_id, b.func);
-            let inst = b.ins().call(fref, &[value_ref]);
-            b.inst_results(inst)[0]
+            let mut cx = CodegenFn::new_runtime(b, jmod, runtime);
+            cx.unbox_atom(value_ref)
         }
         _ => panic!("CodegenValue is not an atom"),
     }
@@ -618,9 +609,8 @@ pub(crate) fn as_raw_f64(
             b.ins().bitcast(types::F64, MemFlags::new(), payload)
         }
         CodegenValue::AnyRef(value_ref) => {
-            let fref = jmod.declare_func_in_func(runtime.unbox_float_id, b.func);
-            let inst = b.ins().call(fref, &[value_ref]);
-            b.inst_results(inst)[0]
+            let mut cx = CodegenFn::new_runtime(b, jmod, runtime);
+            cx.unbox_float(value_ref)
         }
         _ => tagged_to_raw_f64_unsupported(b, vb.value()),
     }
@@ -652,9 +642,8 @@ pub(crate) fn as_raw_i64(
         CodegenValue::RawInt(value) => value,
         CodegenValue::Known { payload, .. } => payload,
         CodegenValue::AnyRef(value_ref) => {
-            let fref = jmod.declare_func_in_func(runtime.unbox_int_id, b.func);
-            let inst = b.ins().call(fref, &[value_ref]);
-            b.inst_results(inst)[0]
+            let mut cx = CodegenFn::new_runtime(b, jmod, runtime);
+            cx.unbox_int(value_ref)
         }
         _ => panic!("cannot read raw i64 from non-integer value"),
     }
@@ -737,14 +726,12 @@ pub(crate) fn coerce_binding_to<M: cranelift_module::Module>(
         }
         (CodegenValue::AnyRef(value), ArgRepr::ValueRef) => value,
         (CodegenValue::AnyRef(value), ArgRepr::RawInt) => {
-            let fref = jmod.declare_func_in_func(runtime.unbox_int_id, b.func);
-            let inst = b.ins().call(fref, &[value]);
-            b.inst_results(inst)[0]
+            let mut cx = CodegenFn::new_runtime(b, jmod, runtime);
+            cx.unbox_int(value)
         }
         (CodegenValue::AnyRef(value), ArgRepr::RawF64) => {
-            let fref = jmod.declare_func_in_func(runtime.unbox_float_id, b.func);
-            let inst = b.ins().call(fref, &[value]);
-            b.inst_results(inst)[0]
+            let mut cx = CodegenFn::new_runtime(b, jmod, runtime);
+            cx.unbox_float(value)
         }
         (CodegenValue::AnyRef(_), ArgRepr::Condition) => {
             unreachable!("condition is never a callee ABI target")
