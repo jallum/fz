@@ -228,6 +228,10 @@ impl IrInterpRuntime {
         use fz_runtime::process::ProcessState;
         let mut completions = Vec::new();
         let mut t = crate::types::ConcreteTypes;
+        // Route fz output (dbg/print) to telemetry for the duration of the
+        // drive — same seam the compiled scheduler uses, so dbg observability
+        // is engine-uniform.
+        let _output_scope = crate::runtime::route_output_to(tel);
 
         'sched: while let Some(pid) = self.pop_runnable() {
             let image = self
@@ -276,6 +280,13 @@ impl IrInterpRuntime {
                             );
                         }
                         fz_runtime::process::CURRENT_PROCESS.with(|c| c.set(prev));
+                        // Parity with the compiled engine: record the result on
+                        // the Process and emit the same process_exited event
+                        // through the single shared emit site.
+                        unsafe {
+                            (*proc_ptr).halt_value = value_to_halt(val);
+                            crate::runtime::ExitRecord::emit(tel, pid, &*proc_ptr);
+                        }
                         self.set_process_state(pid, ProcessState::Exited);
                         continue 'sched;
                     }

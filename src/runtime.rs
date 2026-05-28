@@ -88,6 +88,25 @@ impl ExitRecord {
             bytes_used: process.heap.bytes_used(),
         }
     }
+
+    /// The single emit site for `fz.runtime.process_exited`, shared by the
+    /// compiled and interpreter schedulers so the event shape is identical
+    /// across engines (durable measurements + opaque `&Process`).
+    pub fn emit(tel: &dyn crate::telemetry::Telemetry, pid: PidId, process: &Process) {
+        let exit = Self::project(pid, process);
+        tel.execute(
+            &["fz", "runtime", "process_exited"],
+            &crate::measurements! {
+                halt_value: exit.halt_value,
+                live_count: exit.live_count as u64,
+                bytes_used: exit.bytes_used as u64,
+            },
+            &crate::metadata! {
+                pid: exit.pid as u64,
+                process: crate::telemetry::value::opaque(process),
+            },
+        );
+    }
 }
 
 thread_local! {
@@ -122,19 +141,49 @@ extern "C" fn send_hook_thunk(receiver_pid: u32, msg_ref_word: u64) {
     send_via_current_runtime(receiver_pid, msg_ref);
 }
 
-/// Output sink: `emit_print_line` (the shared dbg/print render seam) forwards
-/// each rendered line here. Emits it as `fz.runtime.dbg` on the current
-/// Runtime's telemetry — the observation channel beside production stdout.
-extern "C" fn output_hook_thunk(line_ptr: *const u8, line_len: usize) {
-    let raw = CURRENT_RUNTIME.with(|c| c.get());
-    if raw.is_null() {
-        return;
+thread_local! {
+    /// The telemetry sink fz output (dbg/print) is routed to. Set by whichever
+    /// scheduler is driving — compiled OR interpreter — so dbg observability is
+    /// engine-uniform. Defaults to the silent sink.
+    static CURRENT_TEL: std::cell::Cell<*const dyn crate::telemetry::Telemetry> =
+        std::cell::Cell::new(&NULL_TELEMETRY as *const dyn crate::telemetry::Telemetry);
+}
+
+/// RAII scope routing fz output to `tel` as `fz.runtime.dbg` events for its
+/// lifetime. Installs the output hook and points `CURRENT_TEL` at `tel`;
+/// restores both on drop. Both schedulers open one around their drive loop, so
+/// dbg routes to telemetry identically on every engine. `tel` must outlive the
+/// scope (it does — the scope lives only inside the drive).
+pub struct OutputTelemetryScope {
+    prev: *const dyn crate::telemetry::Telemetry,
+}
+
+pub fn route_output_to(tel: &dyn crate::telemetry::Telemetry) -> OutputTelemetryScope {
+    fz_runtime::scheduler_hooks::install_output_hook(output_hook_thunk);
+    // Erase the borrow's lifetime: the scope restores the previous pointer on
+    // drop, so the stored pointer never outlives `tel`.
+    let erased: *const (dyn crate::telemetry::Telemetry + 'static) =
+        unsafe { std::mem::transmute(tel as *const dyn crate::telemetry::Telemetry) };
+    let prev = CURRENT_TEL.with(|c| c.replace(erased));
+    OutputTelemetryScope { prev }
+}
+
+impl Drop for OutputTelemetryScope {
+    fn drop(&mut self) {
+        CURRENT_TEL.with(|c| c.set(self.prev));
+        fz_runtime::scheduler_hooks::clear_output_hook();
     }
-    let rt = unsafe { &*(raw as *const Runtime<'static>) };
+}
+
+/// Output sink: `emit_print_line` (the shared dbg/print render seam) forwards
+/// each rendered line here. Emits it as `fz.runtime.dbg` on `CURRENT_TEL` — the
+/// observation channel beside production stdout, set by whichever engine drives.
+extern "C" fn output_hook_thunk(line_ptr: *const u8, line_len: usize) {
+    let tel = CURRENT_TEL.with(|c| c.get());
+    let tel: &dyn crate::telemetry::Telemetry = unsafe { &*tel };
     let bytes = unsafe { std::slice::from_raw_parts(line_ptr, line_len) };
     let line = std::str::from_utf8(bytes).unwrap_or("<non-utf8 dbg line>");
-    rt.tel
-        .event(&["fz", "runtime", "dbg"], crate::metadata! { line: line });
+    tel.event(&["fz", "runtime", "dbg"], crate::metadata! { line: line });
 }
 
 // fz-swt.10 — `MakeResourceHook` installed by the binary so the runtime
@@ -481,7 +530,7 @@ impl<'a> Runtime<'a> {
         fz_runtime::scheduler_hooks::install_spawn_hook(spawn_hook_thunk);
         fz_runtime::scheduler_hooks::install_spawn_opt_hook(spawn_opt_hook_thunk);
         fz_runtime::scheduler_hooks::install_send_hook(send_hook_thunk);
-        fz_runtime::scheduler_hooks::install_output_hook(output_hook_thunk);
+        let _output_scope = route_output_to(self.tel);
         // fz-swt.10 — install the resource-allocation hook if a Module
         // has been attached via `with_module`. Programs that never call
         // `make_resource` leave it clear; calls in that mode panic with
@@ -563,19 +612,7 @@ impl<'a> Runtime<'a> {
                     let _ = drain(closure, payload_ref);
                 }
                 CURRENT_PROCESS.with(|c| c.set(prev));
-                let exit = ExitRecord::project(pid, &task);
-                self.tel.execute(
-                    &["fz", "runtime", "process_exited"],
-                    &crate::measurements! {
-                        halt_value: exit.halt_value,
-                        live_count: exit.live_count as u64,
-                        bytes_used: exit.bytes_used as u64,
-                    },
-                    &crate::metadata! {
-                        pid: exit.pid as u64,
-                        process: crate::telemetry::value::opaque(&*task),
-                    },
-                );
+                ExitRecord::emit(self.tel, pid, &task);
             } else if task.state == ProcessState::Blocked {
                 // Park: keep in registry, no re-enqueue. send() will
                 // wake.
@@ -606,7 +643,6 @@ impl<'a> Runtime<'a> {
         fz_runtime::scheduler_hooks::clear_spawn_hook();
         fz_runtime::scheduler_hooks::clear_spawn_opt_hook();
         fz_runtime::scheduler_hooks::clear_send_hook();
-        fz_runtime::scheduler_hooks::clear_output_hook();
         if self.module.is_some() {
             clear_make_resource_hook_with_module(prev_module);
         }
@@ -853,6 +889,56 @@ mod tests {
         rt.run_until_idle();
 
         assert_eq!(seen_halt.get(), Some(7));
+    }
+
+    /// Three-path parity: the interpreter and compiled engines emit the same
+    /// process_exited (equal halt value, live heap) and dbg event stream for
+    /// the same program, through the one shared emit + output seam.
+    #[test]
+    fn both_engines_emit_equivalent_process_exited_and_dbg() {
+        use crate::telemetry::bus::ConfiguredTelemetry;
+        use crate::telemetry::capture::Capture;
+
+        // dbg returns its arg, so this halts with 9 and prints "9".
+        let src = "fn main(), do: dbg(%{1 => 9}[1])";
+        let m = lower_src(src);
+        let entry = m.fn_by_name("main").unwrap().id;
+        let compiled = compile(
+            &mut crate::types::ConcreteTypes,
+            &m,
+            &crate::telemetry::NullTelemetry,
+        )
+        .unwrap();
+
+        // Compiled engine.
+        let tel_c = ConfiguredTelemetry::new();
+        let exits_c = ProcessExitCapture::new();
+        let out_c = Capture::new();
+        tel_c.attach(&[], exits_c.handler());
+        tel_c.attach(&[], out_c.handler());
+        let mut rt = Runtime::new(&compiled, 1).with_telemetry(&tel_c);
+        let _ = rt.spawn(entry);
+        rt.run_until_idle();
+        let c = exits_c.last().expect("compiled process_exited");
+
+        // Interpreter engine — same program, observed through the same seam.
+        let tel_i = ConfiguredTelemetry::new();
+        let exits_i = ProcessExitCapture::new();
+        let out_i = Capture::new();
+        tel_i.attach(&[], exits_i.handler());
+        tel_i.attach(&[], out_i.handler());
+        let _ = crate::ir_interp::run_main(&tel_i, &m).unwrap();
+        let i = exits_i.last().expect("interp process_exited");
+
+        assert_eq!(c.halt_value, 9);
+        assert_eq!(c.halt_value, i.halt_value, "halt value parity");
+        assert!(c.live_count > 0 && i.live_count > 0, "both leave live heap");
+        assert_eq!(out_c.count(&["fz", "runtime", "dbg"]), 1);
+        assert_eq!(
+            out_i.count(&["fz", "runtime", "dbg"]),
+            1,
+            "interp dbg routes to telemetry too"
+        );
     }
 
     /// `dbg` output is routed onto the telemetry bus as `fz.runtime.dbg`
