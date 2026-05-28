@@ -29,8 +29,10 @@ but it still uses transitional plumbing:
 - `src/ir_lower/cps.rs` transports `owned_cons_captures` through ordinary
   continuation capture machinery, but owned-cons source slots are physical
   params rather than ignored semantic params.
-- `src/ir_capture_norm.rs` runs local DCE to repair capability liveness after
-  capture pruning.
+- `src/ir_dce.rs` owns capability liveness: live heads keep their source-cons
+  params, dead heads drop their credits.
+- `src/ir_capture_norm.rs` rewrites capture shapes and relies on DCE to preserve
+  or drop capability payloads.
 - `src/ir_reuse.rs` performs a standalone publication-pruning cleanup pass
   driven by `src/ir_effects.rs`.
 - `src/ir_codegen/support.rs` consumes the remaining credits with

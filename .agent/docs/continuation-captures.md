@@ -43,9 +43,11 @@ descriptor payload in one shape.
 Owned-cons reuse credits are capability facts, not ordinary user values. Local
 DCE may remove the source cons variable because no source expression reads it
 again, but codegen still needs that source cons if the live head capture carries
-an owned-reuse credit. `ir_capture_norm` therefore treats `source_cons` as live
-when the credit's `head` is live, and drops the credit when the head is not
-semantically used.
+an owned-reuse credit. `ir_dce` therefore treats `source_cons` as physically
+live when the credit's `head` is semantically live, and drops the credit and its
+physical entry param when the head is not semantically used. `ir_capture_norm`
+rewrites capture shapes and then runs ordinary DCE; it does not carry a separate
+owned-cons repair path.
 
 ## Lambda Captures
 

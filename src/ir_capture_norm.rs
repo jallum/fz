@@ -7,7 +7,7 @@
 //! entry param.
 
 use crate::fz_ir::{Cont, FnId, Module, Stmt, Term, Var};
-use crate::ir_dce::{classify_var_uses, dce_fn_with_telemetry};
+use crate::ir_dce::dce_fn_with_telemetry;
 use crate::ir_fuse::{subst_stmt, subst_term};
 use std::collections::{HashMap, HashSet};
 
@@ -702,25 +702,15 @@ fn plan_receive_matched_site(
 
 fn live_vars_after_local_dce(f: &crate::fz_ir::FnIr) -> HashSet<Var> {
     let mut pruned = f.clone();
-    let credits = pruned.owned_cons_reuse_credits.clone();
-    pruned.owned_cons_reuse_credits.clear();
     dce_fn_with_telemetry("", &mut pruned, &crate::telemetry::NullTelemetry);
-    let mut used = classify_var_uses(&pruned).1;
-    for credit in credits {
-        if used.contains(&credit.head) {
-            used.insert(credit.source_cons);
-        }
-    }
-    used
+    crate::ir_dce::collect_used(&pruned)
 }
 
-fn dce_after_capture_prune(f: &mut crate::fz_ir::FnIr) {
-    let credits = std::mem::take(&mut f.owned_cons_reuse_credits);
-    dce_fn_with_telemetry("", f, &crate::telemetry::NullTelemetry);
-    let semantically_used = classify_var_uses(f).1;
-    f.owned_cons_reuse_credits = credits
-        .into_iter()
-        .filter(|credit| semantically_used.contains(&credit.head))
+fn subst_physical_entry_params(f: &mut crate::fz_ir::FnIr, subst: &HashMap<Var, Var>) {
+    f.physical_entry_params = f
+        .physical_entry_params
+        .iter()
+        .map(|physical| physical.map_vars(|var| subst.get(&var).copied().unwrap_or(var)))
         .collect();
 }
 
@@ -754,6 +744,7 @@ fn apply_plan(module: &mut Module, site: ContinuationSite, plan: NormalizePlan) 
             block.stmts = stmts;
             block.terminator = subst_term(&block.terminator, &plan.subst);
         }
+        subst_physical_entry_params(cont_fn, &plan.subst);
     }
     let entry = cont_fn
         .blocks
@@ -762,7 +753,7 @@ fn apply_plan(module: &mut Module, site: ContinuationSite, plan: NormalizePlan) 
         .expect("continuation entry block exists");
     entry.params = plan.entry_params;
     cont_fn.ignored_entry_params = vec![false; entry.params.len()];
-    dce_after_capture_prune(cont_fn);
+    dce_fn_with_telemetry("", cont_fn, &crate::telemetry::NullTelemetry);
 
     let term = &mut module.fns[site.caller_fn_idx].blocks[site.caller_block_idx].terminator;
     match term {
@@ -792,7 +783,7 @@ fn apply_shared_continuation_plan(
         .expect("shared continuation entry block exists");
     entry.params = plan.entry_params;
     cont_fn.ignored_entry_params = vec![false; entry.params.len()];
-    dce_after_capture_prune(cont_fn);
+    dce_fn_with_telemetry("", cont_fn, &crate::telemetry::NullTelemetry);
 
     for call_site in site.sites {
         let term =
@@ -830,7 +821,7 @@ fn apply_tail_call_continuation_plan(
         .expect("tail-call continuation entry block exists");
     entry.params = plan.entry_params;
     callee.ignored_entry_params = plan.ignored_entry_params;
-    dce_after_capture_prune(callee);
+    dce_fn_with_telemetry("", callee, &crate::telemetry::NullTelemetry);
 
     for caller in plan.callers {
         let term = &mut module.fns[caller.caller_fn_idx].blocks[caller.caller_block_idx].terminator;
@@ -862,6 +853,7 @@ fn apply_receive_matched_plan(
                 block.stmts = stmts;
                 block.terminator = subst_term(&block.terminator, &outcome.subst);
             }
+            subst_physical_entry_params(f, &outcome.subst);
         }
         let entry = f
             .blocks
@@ -870,7 +862,7 @@ fn apply_receive_matched_plan(
             .expect("receive outcome entry block exists");
         entry.params = outcome.entry_params;
         f.ignored_entry_params = vec![false; entry.params.len()];
-        dce_after_capture_prune(f);
+        dce_fn_with_telemetry("", f, &crate::telemetry::NullTelemetry);
     }
 
     let term = &mut module.fns[site.caller_fn_idx].blocks[site.caller_block_idx].terminator;

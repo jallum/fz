@@ -132,6 +132,7 @@ pub fn dce_fn_with_telemetry(
             break;
         }
     }
+    prune_dead_owned_cons_capabilities(f);
 
     // Dead block elimination: compute reachable set BEFORE retaining so that
     // f.block(id) — which panics on unknown id — is still safe to call.
@@ -207,12 +208,35 @@ pub fn classify_var_uses(f: &FnIr) -> (HashSet<Var>, HashSet<Var>) {
 }
 
 pub fn collect_used(f: &FnIr) -> HashSet<Var> {
-    let mut used = classify_var_uses(f).1;
+    let semantic_used = classify_var_uses(f).1;
+    let mut used = semantic_used.clone();
     for credit in &f.owned_cons_reuse_credits {
-        used.insert(credit.head);
-        used.insert(credit.source_cons);
+        if semantic_used.contains(&credit.head) {
+            used.insert(credit.source_cons);
+        }
     }
     used
+}
+
+fn prune_dead_owned_cons_capabilities(f: &mut FnIr) {
+    let semantic_used = classify_var_uses(f).1;
+    f.owned_cons_reuse_credits
+        .retain(|credit| semantic_used.contains(&credit.head));
+
+    let live_owned_cons: HashSet<(Var, Var)> = f
+        .owned_cons_reuse_credits
+        .iter()
+        .map(|credit| (credit.source_cons, credit.head))
+        .collect();
+    let entry_params: HashSet<Var> = f.block(f.entry).params.iter().copied().collect();
+    f.physical_entry_params.retain(|physical| {
+        entry_params.contains(&physical.param)
+            && match physical.capability {
+                crate::fz_ir::PhysicalCapability::OwnedConsReuse { head } => {
+                    live_owned_cons.contains(&(physical.param, head))
+                }
+            }
+    });
 }
 
 fn collect_prim_vars(p: &Prim, used: &mut HashSet<Var>) {
@@ -961,6 +985,52 @@ mod tests {
         assert!(
             !if_only2.contains(&c2),
             "dual-use condition must NOT be in if_only_conds"
+        );
+    }
+
+    #[test]
+    fn owned_cons_source_is_live_only_when_credit_head_is_used() {
+        let mut b = FnBuilder::new(FnId(0), "live_credit");
+        let source = b.fresh_var();
+        let entry = b.block(vec![source]);
+        let head = b.let_(entry, Prim::ListHead(source));
+        b.record_owned_cons_reuse_credit(head, source);
+        let tail = b.let_(entry, Prim::MakeList(vec![], None));
+        let result = b.let_(entry, Prim::MakeList(vec![head], Some(tail)));
+        b.set_terminator(entry, Term::Return(result));
+        let mut f = b.build();
+
+        dce_fn_with_telemetry("", &mut f, &crate::telemetry::NullTelemetry);
+
+        assert_eq!(f.owned_cons_reuse_credits.len(), 1);
+        assert_eq!(f.physical_entry_params.len(), 1);
+        assert!(
+            f.block(f.entry)
+                .stmts
+                .iter()
+                .any(|Stmt::Let(_, prim)| matches!(prim, Prim::ListHead(v) if *v == source)),
+            "live credit head should keep its source projection alive"
+        );
+
+        let mut b = FnBuilder::new(FnId(1), "dead_credit");
+        let source = b.fresh_var();
+        let entry = b.block(vec![source]);
+        let head = b.let_(entry, Prim::ListHead(source));
+        b.record_owned_cons_reuse_credit(head, source);
+        let nil = b.let_(entry, Prim::MakeList(vec![], None));
+        b.set_terminator(entry, Term::Return(nil));
+        let mut f = b.build();
+
+        dce_fn_with_telemetry("", &mut f, &crate::telemetry::NullTelemetry);
+
+        assert!(f.owned_cons_reuse_credits.is_empty());
+        assert!(f.physical_entry_params.is_empty());
+        assert!(
+            f.block(f.entry)
+                .stmts
+                .iter()
+                .all(|Stmt::Let(_, prim)| !matches!(prim, Prim::ListHead(_))),
+            "dead credit head should not keep source projection alive"
         );
     }
 }

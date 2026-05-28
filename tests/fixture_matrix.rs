@@ -2349,6 +2349,8 @@ fn physical_capability_scaffold_and_signals_are_pinned() {
         "src/ir_lower/cps.rs",
         "owned_cons_captures",
         "physical\n  params",
+        "src/ir_dce.rs",
+        "live heads keep their source-cons",
         "src/ir_capture_norm.rs",
         "src/ir_reuse.rs",
         "emit_owned_cons_reuse_or_alloc",
@@ -2385,8 +2387,14 @@ fn physical_capability_scaffold_and_signals_are_pinned() {
         fs::read_to_string("src/ir_capture_norm.rs").expect("read capture normalization");
     assert!(
         capture_norm.contains("live_vars_after_local_dce")
-            && capture_norm.contains("dce_after_capture_prune"),
-        "current capability liveness repair should stay visible until DCE owns it"
+            && !capture_norm.contains("dce_after_capture_prune"),
+        "capture normalization should rely on ordinary DCE for capability liveness"
+    );
+
+    let dce = fs::read_to_string("src/ir_dce.rs").expect("read dce");
+    assert!(
+        dce.contains("prune_dead_owned_cons_capabilities") && dce.contains("physical_entry_params"),
+        "ordinary DCE should preserve or drop physical capabilities"
     );
 
     let reuse = fs::read_to_string("src/ir_reuse.rs").expect("read ir_reuse");
