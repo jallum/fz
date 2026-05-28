@@ -22,5 +22,6 @@ that keep future work aligned.
 | [docs/physical-capabilities.md](docs/physical-capabilities.md) | Physical runtime-object capabilities, owned cons reuse, publication effects, or semantic/physical entry-param boundaries. |
 | [docs/repl-session.md](docs/repl-session.md) | REPL world/bindings/runtime layering, chunk synthesis, docs/help, or macro/runtime boundaries. |
 | [docs/scheduler-zero-arg-closures.md](docs/scheduler-zero-arg-closures.md) | Scheduler, receive, yield, spawn, timeout, or continuation re-entry. |
+| [docs/semantic-codegen-ops.md](docs/semantic-codegen-ops.md) | Cranelift lowering helpers, runtime helper call plumbing, function-local imports, or semantic codegen operation boundaries. |
 | [docs/any-value.md](docs/any-value.md) | `AnyValueRef`, `ValueRef`, raw scalar lanes, boxed scalars, pointer format, or GC-visible values. |
 | [docs/telemetry.md](docs/telemetry.md) | Adding telemetry, testing compiler decisions, or measuring performance work. |
