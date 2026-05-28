@@ -1,12 +1,12 @@
 fn main() do
   xs = [1, 2, 3, 4, 5]
 
-  print(Enum.count(xs))
-  print(Enum.member?(xs, 3))
-  print(Enum.reduce(xs, {:cont, 0}, fn (x, acc) -> {:cont, acc + x}))
+  dbg(Enum.count(xs))
+  dbg(Enum.member?(xs, 3))
+  dbg(Enum.reduce(xs, {:cont, 0}, fn (x, acc) -> {:cont, acc + x}))
 
   stats = Process.heap_alloc_stats()
-  print(stats)
+  dbg(stats)
   heap_bytes = stats[:list_cons_bytes] + stats[:struct_bytes] + stats[:map_bytes]
-  print(heap_bytes)
+  dbg(heap_bytes)
 end
