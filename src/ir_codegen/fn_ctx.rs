@@ -14,32 +14,13 @@ use fz_runtime::heap::{FieldKind, Schema};
 use std::collections::HashMap;
 use std::marker::PhantomData;
 
-#[derive(Default)]
-pub(crate) struct FunctionImports {
-    refs: HashMap<FuncId, ir::FuncRef>,
-}
-
-impl FunctionImports {
-    fn func_ref<M: cranelift_module::Module>(
-        &mut self,
-        jmod: &mut M,
-        func: &mut ir::Function,
-        id: FuncId,
-    ) -> ir::FuncRef {
-        *self
-            .refs
-            .entry(id)
-            .or_insert_with(|| jmod.declare_func_in_func(id, func))
-    }
-}
-
 pub(crate) enum BodyContext {}
 
 pub(crate) enum RuntimeShimContext {}
 
 pub(crate) struct CodegenFn<'env, K = BodyContext> {
     runtime: &'env RuntimeRefs,
-    imports: FunctionImports,
+    imports: HashMap<FuncId, ir::FuncRef>,
     _kind: PhantomData<K>,
 }
 
@@ -66,7 +47,7 @@ impl<'env> CodegenFn<'env, BodyContext> {
     pub(crate) fn new(env: &'env CodegenEnv<'_>) -> Self {
         Self {
             runtime: env.runtime,
-            imports: FunctionImports::default(),
+            imports: HashMap::new(),
             _kind: PhantomData,
         }
     }
@@ -78,7 +59,7 @@ impl<'env> CodegenFn<'env, RuntimeShimContext> {
     pub(crate) fn for_runtime_shim(runtime: &'env RuntimeRefs) -> Self {
         Self {
             runtime,
-            imports: FunctionImports::default(),
+            imports: HashMap::new(),
             _kind: PhantomData,
         }
     }
@@ -113,7 +94,10 @@ impl<'env, K> CodegenFn<'env, K> {
         jmod: &mut M,
         id: FuncId,
     ) -> ir::FuncRef {
-        self.imports.func_ref(jmod, b.func, id)
+        *self
+            .imports
+            .entry(id)
+            .or_insert_with(|| jmod.declare_func_in_func(id, b.func))
     }
 
     fn call_func<M: cranelift_module::Module>(
@@ -981,8 +965,9 @@ mod tests {
     }
 
     #[test]
-    fn function_imports_reuse_func_ref_per_function() {
+    fn codegen_fn_reuses_func_ref_per_function() {
         let mut module = jit_module();
+        let runtime = declare_runtime_symbols(&mut module).expect("declare runtime");
         let mut sig = module.make_signature();
         sig.returns.push(AbiParam::new(types::I64));
         let callee = module
@@ -992,11 +977,11 @@ mod tests {
         let mut ctx = module.make_context();
         ctx.func.signature = module.make_signature();
         let mut fbctx = FunctionBuilderContext::new();
-        let b = FunctionBuilder::new(&mut ctx.func, &mut fbctx);
+        let mut b = FunctionBuilder::new(&mut ctx.func, &mut fbctx);
 
-        let mut imports = FunctionImports::default();
-        let first = imports.func_ref(&mut module, b.func, callee);
-        let second = imports.func_ref(&mut module, b.func, callee);
+        let mut cx = CodegenFn::for_runtime_shim(&runtime);
+        let first = cx.func_ref(&mut b, &mut module, callee);
+        let second = cx.func_ref(&mut b, &mut module, callee);
 
         assert_eq!(first, second);
         b.finalize();
