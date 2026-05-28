@@ -67,6 +67,7 @@ fn render_spec<
     let f = m.fn_by_id(spec_key.fn_id);
     render_spec_header(t, m, mt, spec_key, any_ty, out);
     render_fn_constants(m, ft, out);
+    render_physical_capabilities(f, out);
     render_owned_cons_reuse(f, out);
     render_vars(t, ft, out);
     render_exits(t, m, mt, spec_key, ft, f, any_ty, out);
@@ -132,6 +133,25 @@ fn render_owned_cons_reuse(f: &crate::fz_ir::FnIr, out: &mut String) {
             ";     reuse_credit head=Var({}) source_cons=Var({})\n",
             credit.head.0, credit.source_cons.0
         ));
+    }
+}
+
+fn render_physical_capabilities(f: &crate::fz_ir::FnIr, out: &mut String) {
+    if f.physical_entry_params.is_empty() {
+        return;
+    }
+    let mut physical = f.physical_entry_params.clone();
+    physical.sort_by_key(|cap| cap.param.0);
+    out.push_str(";   physical_capabilities:\n");
+    for cap in physical {
+        match cap.capability {
+            crate::fz_ir::PhysicalCapability::OwnedConsReuse { head } => {
+                out.push_str(&format!(
+                    ";     owned_cons_source param=Var({}) head=Var({})\n",
+                    cap.param.0, head.0
+                ));
+            }
+        }
     }
 }
 

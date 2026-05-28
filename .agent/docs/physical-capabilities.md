@@ -41,6 +41,9 @@ The standalone reuse-pruning pass has been removed. Remaining removal targets
 are acceptable only while non-entry reuse credits still need a compatibility
 path.
 
+Spec dumps render `physical_capabilities` records so tests can assert the IR
+facts directly instead of inferring them from backend text.
+
 ## Pinned Signal
 
 Keep these floors green while removing the scaffold:

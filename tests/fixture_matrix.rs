@@ -2353,6 +2353,7 @@ fn physical_capability_scaffold_and_signals_are_pinned() {
         "live heads keep their source-cons",
         "src/ir_capture_norm.rs",
         "standalone reuse-pruning pass has been removed",
+        "physical_capabilities",
         "emit_owned_cons_reuse_or_alloc",
         "physical-first",
         "list_cons_allocs = 11",
@@ -2696,10 +2697,13 @@ fn quicksort_structured_return_demand_facts() {
             (s.name == "fn_clause_1" || s.name == "fn_clause_2")
                 && s.arity == 6
                 && s.key.contains("_")
+                && s.body.contains("physical_capabilities")
+                && s.body
+                    .contains("owned_cons_source param=Var(5) head=Var(3)")
                 && s.body.contains("owned_cons_reuse")
                 && s.body.contains("head=Var(3) source_cons=Var(5)")
         }),
-        "partition clause helpers must carry a hidden source-cons capability for owned cons reuse:\n{}",
+        "partition clause helpers must dump a physical source-cons capability for owned cons reuse:\n{}",
         specs
     );
 }
