@@ -181,8 +181,20 @@ Closure:
 ```
 
 The list link alias bit is a conservative cell-local reuse guard. Runtime
-helpers may mark a cons aliased, and destructive relink helpers must reject an
-aliased cell instead of rewiring it. GC and deep copy preserve the bit.
+helpers may mark a cons aliased. Internal primitive checks may reject an
+aliased cell, but codegen-facing reuse helpers must be total for valid inputs:
+if the source cons is still unaliased they may relink it in place; if it is
+aliased they must use fallback allocation for a fresh cons with the same head
+and the requested tail. GC and deep copy preserve the bit.
+
+The alias bit is set, or reuse-credit creation is refused, when a cons cell is
+published outside the single owned rewrite path. A publication includes storing
+the cell in another heap object, capturing it in a closure or scheduler-visible
+continuation, sending or mailbox-enqueueing it, passing it through an opaque
+extern/runtime boundary, or crossing a barrier where allocation timing becomes
+observable. The bit is intentionally one-way: once a cell has been published,
+later local code may still read it, but destructive reuse must fall back to
+allocation.
 
 Public refs are public refs. Object-local metadata is object-local metadata.
 

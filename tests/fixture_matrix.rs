@@ -201,6 +201,10 @@ fn static_tests() -> Vec<(&'static str, fn())> {
             production_and_guides_have_no_old_value_format_gate_names,
         ),
         (
+            "owned_cons_reuse_docs_pin_alias_fallback_contract",
+            owned_cons_reuse_docs_pin_alias_fallback_contract,
+        ),
+        (
             "quicksort_clif_inlines_nonempty_list_projection",
             quicksort_clif_inlines_nonempty_list_projection,
         ),
@@ -2265,6 +2269,43 @@ fn collect_source_files(dir: &Path, files: &mut Vec<PathBuf>) {
         let ext = path.extension().and_then(|s| s.to_str());
         if matches!(ext, Some("rs" | "md" | "html")) {
             files.push(path);
+        }
+    }
+}
+
+fn owned_cons_reuse_docs_pin_alias_fallback_contract() {
+    let docs = [
+        (
+            ".agent/docs/any-value.md",
+            fs::read_to_string(".agent/docs/any-value.md").expect("read any-value docs"),
+        ),
+        (
+            ".agent/docs/destination-passing.md",
+            fs::read_to_string(".agent/docs/destination-passing.md")
+                .expect("read destination-passing docs"),
+        ),
+        (
+            "guides/memory.html",
+            fs::read_to_string("guides/memory.html").expect("read memory guide"),
+        ),
+    ];
+    for (path, text) in docs {
+        for needle in [
+            "aliased",
+            "fallback",
+            "fresh cons",
+            "publication",
+            "closure",
+            "send",
+            "extern",
+            "allocation",
+        ] {
+            assert!(
+                text.contains(needle),
+                "{} must document owned-cons reuse contract term `{}`",
+                path,
+                needle
+            );
         }
     }
 }

@@ -162,10 +162,22 @@ owned_cons_reuse:
 
 The hidden parameter is not part of semantic specialization (`_` in the spec
 key), but it gives native codegen the object-local capability needed to turn
-`[h | new_tail]` into a checked tail relink of `C`. Native lowering consumes
-the fact in list construction and in `cons_then_direct` ListTail return plans;
-the runtime alias bit remains the cell-local guard that rejects relinking if a
-cell was marked aliased.
+`[h | new_tail]` into a reuse attempt for `C`. Native lowering consumes the
+fact in list construction and in `cons_then_direct` ListTail return plans. The
+runtime alias bit remains the cell-local guard: if `C` is still unaliased, the
+runtime may relink it in place; if `C` was marked aliased, the codegen-facing
+operation must allocate a fresh cons with the same head and the requested tail.
+An aliased reuse attempt is therefore an allocation miss, not a user-visible
+panic.
+
+A source cons becomes ineligible for an owned reuse credit, or has its alias bit
+set before reuse, when it is published outside the single owned rewrite path.
+The publication barriers include closure and lazy-continuation capture that can
+escape the current native activation, insertion into another heap container,
+send or mailbox enqueue, receive/scheduler-visible handoff, opaque extern or
+runtime calls, halt, and allocation-stat reads that make allocation timing
+observable. Allocation alone is still not source-observable; crossing an
+observer is the barrier.
 
 ## IR Vocabulary
 

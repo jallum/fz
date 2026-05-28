@@ -145,9 +145,11 @@ heap pointer tags and container-local metadata.</p>
 <p>The cell itself is named by a <code>TAG_LIST</code> pointer. Empty list is
 the null next address. Improper-list representation is outside this first
 layout migration and must be handled by a follow-up if encountered. The alias
-flag is a conservative reuse guard: runtime helpers may mark a cons aliased,
-and destructive relink helpers reject aliased cells instead of rewiring
-them.</p>
+flag is a conservative reuse guard: runtime helpers may mark a cons aliased.
+Compiler-facing reuse helpers treat an aliased source cell as an allocation
+miss: unaliased cells may be relinked in place, while aliased cells use
+fallback allocation to produce a fresh cons with the same head and the
+requested tail.</p>
 
 <p><strong>Map:</strong></p>
 
@@ -824,6 +826,15 @@ an extern call, a receive, scheduler-visible process operation, halt, unknown
 closure call, or <code>Process.heap_alloc_stats()</code>. Allocation alone is not
 source-visible, but allocation timing becomes visible when a program reads the
 current process allocation counters.</p>
+
+<p>Owned list-cell reuse has one more boundary: publication. A cons cell that is
+stored into another heap object, captured by an escaping closure or lazy
+continuation, sent to a mailbox, passed through an opaque extern/runtime call,
+or carried across a scheduler-visible handoff is no longer privately owned by
+the rewrite that destructured it. The compiler either refuses to create a reuse
+credit for that cell or marks the cell aliased before a later reuse attempt.
+The alias bit is one-way, so a miss falls back to allocation rather than
+rewiring a value another observer may still hold.</p>
 
 <!-- ─────────────────────────────── 11. ALLOC STATS ─────────────────────────────── -->
 <h2 id="alloc-stats">11. Heap allocation stats</h2>
