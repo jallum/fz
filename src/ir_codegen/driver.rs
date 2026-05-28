@@ -1465,6 +1465,7 @@ fn emit_drain_dtor_entry<M: cranelift_module::Module>(
         let closure = b.block_params(entry)[0];
         let payload_ref = b.block_params(entry)[1];
         let mut cx = CodegenFn::for_runtime_shim(runtime);
+        let mut shim_cache = CodegenCache::default();
         // Strict halt-cont (kind=0). Dtor return is discarded;
         // ValueRef avoids RawInt/F64 unboxing.
         let strict_addr = fn_addr(m, runtime.halt_cont_body_strict_id, b);
@@ -1473,8 +1474,8 @@ fn emit_drain_dtor_entry<M: cranelift_module::Module>(
         let halt_inst = b.ins().call(ghc_fref, &[strict_addr, zero]);
         let halt_cl = b.inst_results(halt_inst)[0];
         let code = {
-            let mut site = cx.site(b, m);
-            site.closure_code_ref(closure)
+            let mut body = cx.body(b, m, &mut shim_cache);
+            body.closure_code_ref(closure)
         };
         // Closure-target body sig: `(args..., self, cont) tail -> i64`.
         // Generic args are one-word ValueRefs.
@@ -1525,9 +1526,10 @@ fn emit_spawn_entry<M: cranelift_module::Module>(
         b.seal_block(entry);
         let closure = b.block_params(entry)[0];
         let mut cx = CodegenFn::for_runtime_shim(runtime);
+        let mut shim_cache = CodegenCache::default();
         let kind = {
-            let mut site = cx.site(b, m);
-            site.closure_halt_kind_ref(closure)
+            let mut body = cx.body(b, m, &mut shim_cache);
+            body.closure_halt_kind_ref(closure)
         };
         // Select halt_cont_body_addr by kind. Branchless via three
         // func_addrs + a tiny dispatch — keeps the spawn shim a leaf.
@@ -1546,8 +1548,8 @@ fn emit_spawn_entry<M: cranelift_module::Module>(
         // Read closure body addr through the runtime ABI and invoke as
         // closure-target sig `(self, cont) tail` (zero user args).
         let code = {
-            let mut site = cx.site(b, m);
-            site.closure_code_ref(closure)
+            let mut body = cx.body(b, m, &mut shim_cache);
+            body.closure_code_ref(closure)
         };
         let mut closure_sig = Signature::new(CallConv::Tail);
         closure_sig.params.push(AbiParam::new(types::I64)); // self
@@ -1641,9 +1643,10 @@ fn emit_resume<M: cranelift_module::Module>(
         b.seal_block(entry);
         let cont = b.block_params(entry)[0];
         let mut cx = CodegenFn::for_runtime_shim(runtime);
+        let mut shim_cache = CodegenCache::default();
         let code = {
-            let mut site = cx.site(b, m);
-            site.closure_code_ref(cont)
+            let mut body = cx.body(b, m, &mut shim_cache);
+            body.closure_code_ref(cont)
         };
         let mut stub_sig = Signature::new(CallConv::Tail);
         stub_sig.params.push(AbiParam::new(types::I64)); // self
@@ -1906,14 +1909,15 @@ fn emit_mid_flight_cont_bodies<M: cranelift_module::Module>(
             let mut args =
                 Vec::with_capacity(arg_shapes.iter().map(MidFlightArgShape::abi_arity).sum());
             let mut cx = CodegenFn::for_runtime_shim(runtime);
+            let mut shim_cache = CodegenCache::default();
             for (i, arg_shape) in arg_shapes.iter().enumerate() {
                 let value_ref = {
-                    let mut site = cx.site(b, m);
-                    site.closure_capture_ref_at(self_bits, i)
+                    let mut body = cx.body(b, m, &mut shim_cache);
+                    body.closure_capture_ref_at(self_bits, i)
                 };
-                let mut site = cx.site(b, m);
+                let mut body = cx.body(b, m, &mut shim_cache);
                 arg_shape.replay_from_capture(
-                    &mut site,
+                    &mut body,
                     CodegenValue::AnyRef(value_ref),
                     &mut args,
                 );

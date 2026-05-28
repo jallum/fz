@@ -28,15 +28,6 @@ where
     pub(super) cache: &'a mut CodegenCache,
 }
 
-pub(crate) struct CodegenFnSite<'a, 'env, 'fb, M>
-where
-    M: cranelift_module::Module,
-{
-    cx: &'a mut CodegenFn<'env>,
-    b: &'a mut FunctionBuilder<'fb>,
-    jmod: &'a mut M,
-}
-
 impl<'env> CodegenFn<'env> {
     pub(crate) fn new(env: &'env CodegenEnv<'_>) -> Self {
         Self {
@@ -66,14 +57,6 @@ impl<'env> CodegenFn<'env> {
             jmod,
             cache,
         }
-    }
-
-    pub(crate) fn site<'a, 'fb, M: cranelift_module::Module>(
-        &'a mut self,
-        b: &'a mut FunctionBuilder<'fb>,
-        jmod: &'a mut M,
-    ) -> CodegenFnSite<'a, 'env, 'fb, M> {
-        CodegenFnSite { cx: self, b, jmod }
     }
 
     pub(crate) fn func_ref<M: cranelift_module::Module>(
@@ -665,14 +648,6 @@ pub(crate) trait CallSite<'env, 'fb, M: cranelift_module::Module> {
 
 impl<'a, 'env, 'fb, M: cranelift_module::Module> CallSite<'env, 'fb, M>
     for CodegenFnBody<'a, 'env, 'fb, M>
-{
-    fn parts(&mut self) -> (&mut CodegenFn<'env>, &mut FunctionBuilder<'fb>, &mut M) {
-        (&mut *self.cx, &mut *self.b, &mut *self.jmod)
-    }
-}
-
-impl<'a, 'env, 'fb, M: cranelift_module::Module> CallSite<'env, 'fb, M>
-    for CodegenFnSite<'a, 'env, 'fb, M>
 {
     fn parts(&mut self) -> (&mut CodegenFn<'env>, &mut FunctionBuilder<'fb>, &mut M) {
         (&mut *self.cx, &mut *self.b, &mut *self.jmod)

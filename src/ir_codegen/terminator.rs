@@ -140,8 +140,7 @@ impl ContinuationPayload {
             .iter()
             .map(|cv| closure_capture_for_var(body, var_env, cv.0))
             .collect();
-        let extra_ref_captures =
-            cont_extra_ref_captures(body.b, body.cache, &env.spec_keys[cont_sid as usize]);
+        let extra_ref_captures = cont_extra_ref_captures(body, &env.spec_keys[cont_sid as usize]);
         Self::from_parts(env, cont_sid, cap_bindings, vec![], extra_ref_captures)
     }
 
@@ -479,9 +478,8 @@ fn emit_return_term<
             if this_demand.delivers_list_tail_return()
                 && let Some(elems) = body.cache.list_tail_return_elems.get(&v.0).cloned()
             {
-                let delivered = emit_list_tail_return_value(
-                    body.cx, body.b, body.jmod, t, env, var_env, body.cache, block_env, &elems,
-                );
+                let delivered =
+                    emit_list_tail_return_value(body, t, env, var_env, block_env, &elems);
                 let cont_val = if is_cont_fn {
                     let self_val = cont_param.expect("cont fn binds self via cont_param");
                     body.outer_cont_ref(self_val)
@@ -665,19 +663,13 @@ fn emit_call_term<
             let callee_fid = *fn_ids.get(&callee_sid).expect("callee fn_id missing");
             let callee_fref = body.jmod.declare_func_in_func(callee_fid, body.b.func);
             let mut native_args = body.coerce_call_args(&hi_arg, callee_param_reprs, var_env);
-            native_args.push(list_tail_destination_arg(body.b, body.cache));
+            native_args.push(list_tail_destination_arg(body));
             let cap_bindings = vec![
                 closure_capture_for_var(body, var_env, pivot_capture.0),
                 closure_capture_for_var(body, var_env, args[0].0),
             ];
-            let physical_ref_captures = owned_cons_physical_ref_captures(
-                body.cx,
-                body.b,
-                body.jmod,
-                var_env,
-                body.cache,
-                pivot_capture,
-            );
+            let physical_ref_captures =
+                owned_cons_physical_ref_captures(body, var_env, pivot_capture);
             let payload = ContinuationPayload::from_parts(
                 env,
                 cont_sid,
@@ -836,7 +828,7 @@ fn emit_native_call_with_cont<
         native_args.push(fetch_static_closure(body.jmod, body.b, runtime, callee.0));
     }
     if DemandAbi::new(&env.spec_keys[callee_sid as usize]).has_list_tail_context() {
-        native_args.push(list_tail_destination_arg(body.b, body.cache));
+        native_args.push(list_tail_destination_arg(body));
     }
     let cont_is_native = callee_is_native(env, continuation.fn_id.0);
     let cont_captures_callable = continuation.captured.iter().any(|cv| {
@@ -1076,7 +1068,7 @@ fn emit_native_tail_call<M: cranelift_module::Module>(
         mid_flight_arg_shapes.push(MidFlightArgShape::HeapRef);
     }
     if DemandAbi::new(&env.spec_keys[callee_sid as usize]).has_list_tail_context() {
-        native_args.push(list_tail_destination_arg(body.b, body.cache));
+        native_args.push(list_tail_destination_arg(body));
         mid_flight_arg_shapes.push(MidFlightArgShape::HeapRef);
     }
     // Trailing cont arg (docs/cps-in-clif.md §2.1). Build a
@@ -1819,36 +1811,33 @@ fn build_park_record<
     body.b.inst_results(park_inst)[0]
 }
 
-fn list_tail_destination_arg(b: &mut FunctionBuilder<'_>, cache: &mut CodegenCache) -> ir::Value {
-    cache
+fn list_tail_destination_arg<M: cranelift_module::Module>(
+    body: &mut CodegenFnBody<'_, '_, '_, M>,
+) -> ir::Value {
+    body.cache
         .list_tail_param
-        .unwrap_or_else(|| emit_empty_list_value_ref_word(b, cache))
+        .unwrap_or_else(|| emit_empty_list_value_ref_word(body.b, body.cache))
 }
 
-fn cont_extra_ref_captures(
-    b: &mut FunctionBuilder<'_>,
-    cache: &mut CodegenCache,
+fn cont_extra_ref_captures<M: cranelift_module::Module>(
+    body: &mut CodegenFnBody<'_, '_, '_, M>,
     cont_key: &crate::ir_planner::fn_types::SpecKey,
 ) -> Vec<ir::Value> {
     if DemandAbi::new(cont_key).carries_list_tail_capture() {
-        vec![list_tail_destination_arg(b, cache)]
+        vec![list_tail_destination_arg(body)]
     } else {
         Vec::new()
     }
 }
 
 fn owned_cons_physical_ref_captures<M: cranelift_module::Module>(
-    cx: &mut CodegenFn<'_>,
-    b: &mut FunctionBuilder<'_>,
-    jmod: &mut M,
+    body: &mut CodegenFnBody<'_, '_, '_, M>,
     var_env: &HashMap<u32, CodegenValue>,
-    cache: &mut CodegenCache,
     head: crate::fz_ir::Var,
 ) -> Vec<ir::Value> {
-    let Some(source_cons) = cache.owned_cons_reuse_sources.get(&head.0).copied() else {
+    let Some(source_cons) = body.owned_cons_reuse_source(head) else {
         return Vec::new();
     };
-    let mut body = cx.body(b, jmod, cache);
     vec![body.any_ref_for_var(var_env, source_cons.0)]
 }
 
@@ -1856,33 +1845,27 @@ fn emit_list_tail_return_value<
     M: cranelift_module::Module,
     T: crate::types::Types<Ty = crate::types::Ty>,
 >(
-    cx: &mut CodegenFn<'_>,
-    b: &mut FunctionBuilder<'_>,
-    jmod: &mut M,
+    body: &mut CodegenFnBody<'_, '_, '_, M>,
     t: &mut T,
     env: &CodegenEnv<'_>,
     var_env: &HashMap<u32, CodegenValue>,
-    cache: &mut CodegenCache,
     block_env: Option<&HashMap<crate::fz_ir::Var, crate::types::Ty>>,
     elems: &[crate::fz_ir::Var],
 ) -> ir::Value {
-    let mut acc = ListTailBits::ValueRef(list_tail_destination_arg(b, cache));
+    let mut acc = ListTailBits::ValueRef(list_tail_destination_arg(body));
     for elem in elems.iter().rev() {
-        let cons = {
-            let mut body = cx.body(b, jmod, cache);
-            emit_list_cons_bif(
-                &mut body,
-                env,
-                var_env,
-                *elem,
-                expected_runtime_value_kind(t, env.fn_types, block_env, *elem),
-                acc,
-            )
-        };
+        let cons = emit_list_cons_bif(
+            body,
+            env,
+            var_env,
+            *elem,
+            expected_runtime_value_kind(t, env.fn_types, block_env, *elem),
+            acc,
+        );
         acc = ListTailBits::NonEmptyValueRef(cons);
     }
     match acc {
         ListTailBits::ValueRef(bits) | ListTailBits::NonEmptyValueRef(bits) => bits,
-        ListTailBits::Empty => emit_empty_list_value_ref_word(b, cache),
+        ListTailBits::Empty => emit_empty_list_value_ref_word(body.b, body.cache),
     }
 }
