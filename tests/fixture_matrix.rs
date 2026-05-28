@@ -205,6 +205,10 @@ fn static_tests() -> Vec<(&'static str, fn())> {
             owned_cons_reuse_docs_pin_alias_fallback_contract,
         ),
         (
+            "physical_capability_scaffold_and_signals_are_pinned",
+            physical_capability_scaffold_and_signals_are_pinned,
+        ),
+        (
             "owned_cons_reuse_negative_barriers_do_not_advertise_credits",
             owned_cons_reuse_negative_barriers_do_not_advertise_credits,
         ),
@@ -2320,6 +2324,88 @@ fn owned_cons_reuse_docs_pin_alias_fallback_contract() {
             );
         }
     }
+}
+
+fn physical_capability_scaffold_and_signals_are_pinned() {
+    let index = fs::read_to_string(".agent/docs.md").expect("read agent docs index");
+    assert!(
+        index.contains("docs/physical-capabilities.md"),
+        "agent docs index must point at physical capability guidance"
+    );
+
+    let docs = fs::read_to_string(".agent/docs/physical-capabilities.md")
+        .expect("read physical capability docs");
+    for needle in [
+        "semantic values",
+        "physical capabilities",
+        "effect facts",
+        "codegen consumes validated facts",
+        "src/fz_ir.rs",
+        "ignored_entry_params",
+        "owned_cons_reuse_credits",
+        "src/ir_lower/cps.rs",
+        "owned_cons_captures",
+        "src/ir_capture_norm.rs",
+        "src/ir_reuse.rs",
+        "emit_owned_cons_reuse_or_alloc",
+        "list_cons_allocs = 11",
+        "list_cons_allocs = 5",
+        "closure_allocs = 1",
+    ] {
+        assert!(
+            docs.contains(needle),
+            "physical capability docs must pin `{}`",
+            needle
+        );
+    }
+
+    let fz_ir = fs::read_to_string("src/fz_ir.rs").expect("read fz_ir");
+    assert!(
+        fz_ir.contains("ignored_entry_params")
+            && fz_ir.contains("owned_cons_reuse_credits")
+            && fz_ir.contains("record_owned_cons_reuse_credit"),
+        "current FnIr scaffold should stay explicit until the physical capability lane replaces it"
+    );
+
+    let cps = fs::read_to_string("src/ir_lower/cps.rs").expect("read cps lowering");
+    assert!(
+        cps.contains("owned_cons_captures")
+            && cps.contains("hidden_owned_cons")
+            && cps.contains("mark_param_ignored"),
+        "current CPS transport scaffold should stay visible until replaced"
+    );
+
+    let capture_norm =
+        fs::read_to_string("src/ir_capture_norm.rs").expect("read capture normalization");
+    assert!(
+        capture_norm.contains("live_vars_after_local_dce")
+            && capture_norm.contains("dce_after_capture_prune"),
+        "current capability liveness repair should stay visible until DCE owns it"
+    );
+
+    let reuse = fs::read_to_string("src/ir_reuse.rs").expect("read ir_reuse");
+    assert!(
+        reuse.contains("prune_borrowed_owned_cons_reuse_credits")
+            && reuse.contains("prim_publishes_credit_source")
+            && reuse.contains("term_publishes_credit_source"),
+        "current standalone reuse pruning pass should stay visible until effect facts replace it"
+    );
+
+    assert_fixture_output_contains(
+        "quicksort",
+        "expected.jit.txt",
+        &[":list_cons_allocs => 11", ":closure_allocs => 0", "\n176\n"],
+    );
+    assert_fixture_output_contains(
+        "enum_list_allocations",
+        "expected.txt",
+        &[":list_cons_allocs => 5", ":closure_allocs => 0"],
+    );
+    assert_fixture_output_contains(
+        "enum_reduce_suspend",
+        "expected.txt",
+        &[":closure_allocs => 1", ":closure_bytes => 48"],
+    );
 }
 
 fn owned_cons_reuse_negative_barriers_do_not_advertise_credits() {
