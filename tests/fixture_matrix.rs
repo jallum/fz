@@ -2352,7 +2352,7 @@ fn physical_capability_scaffold_and_signals_are_pinned() {
         "src/ir_dce.rs",
         "live heads keep their source-cons",
         "src/ir_capture_norm.rs",
-        "src/ir_reuse.rs",
+        "standalone reuse-pruning pass has been removed",
         "emit_owned_cons_reuse_or_alloc",
         "physical-first",
         "list_cons_allocs = 11",
@@ -2398,12 +2398,9 @@ fn physical_capability_scaffold_and_signals_are_pinned() {
         "ordinary DCE should preserve or drop physical capabilities"
     );
 
-    let reuse = fs::read_to_string("src/ir_reuse.rs").expect("read ir_reuse");
     assert!(
-        reuse.contains("prune_borrowed_owned_cons_reuse_credits")
-            && reuse.contains("prim_publishes_var")
-            && reuse.contains("term_publishes_var"),
-        "current standalone reuse pruning pass should delegate publication facts to ir_effects"
+        !std::path::Path::new("src/ir_reuse.rs").exists(),
+        "standalone reuse pruning should be deleted"
     );
 
     assert_fixture_output_contains(

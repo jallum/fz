@@ -466,7 +466,6 @@ pub fn lower_program_full_with_telemetry<T: crate::types::Types<Ty = crate::type
     // silent identity-fallbacks.
     crate::ir_brand_erase::erase_brands(&mut module);
     crate::ir_capture_norm::normalize_continuation_captures_with_telemetry(&mut module, tel);
-    crate::ir_reuse::prune_borrowed_owned_cons_reuse_credits(&mut module);
     // fz-uwq.1 — verify the unique-cont invariant the post-type pipeline
     // depends on. See `debug_assert_unique_conts` for the contract.
     debug_assert_unique_conts(&module);

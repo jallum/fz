@@ -29,7 +29,6 @@ mod ir_inline;
 mod ir_lower;
 mod ir_planner;
 mod ir_reducer;
-mod ir_reuse;
 mod lexer;
 mod macros;
 mod matcher;

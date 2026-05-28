@@ -1,4 +1,4 @@
-use crate::fz_ir::{Module, Prim, Term, Var, prim_uses_var};
+use crate::fz_ir::{Module, Prim, Term};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct IrEffects {
@@ -101,43 +101,10 @@ pub(crate) fn term_effects(term: &Term) -> IrEffects {
     }
 }
 
-pub(crate) fn prim_publishes_var(module: &Module, prim: &Prim, var: Var) -> bool {
-    let effects = prim_effects(module, prim);
-    effects.publishes_same_heap_refs && prim_uses_var(prim, var)
-}
-
-pub(crate) fn term_publishes_var(term: &Term, var: Var, hidden_transport: bool) -> bool {
-    if !term_effects(term).publishes_same_heap_refs {
-        return false;
-    }
-    match term {
-        Term::Goto(_, args) | Term::TailCall { args, .. } => {
-            !hidden_transport && args.contains(&var)
-        }
-        Term::TailCallClosure { args, .. } => args.contains(&var),
-        Term::Call { args, .. } | Term::CallClosure { args, .. } => args.contains(&var),
-        Term::Return(value) | Term::Halt(value) => *value == var,
-        Term::Receive { continuation, .. } => {
-            !hidden_transport && continuation.captured.contains(&var)
-        }
-        Term::ReceiveMatched {
-            after,
-            pinned,
-            captures,
-            ..
-        } => {
-            after.as_ref().is_some_and(|after| after.timeout == var)
-                || pinned.iter().any(|(_, pinned)| *pinned == var)
-                || captures.contains(&var)
-        }
-        Term::If { .. } => false,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fz_ir::{ExternDecl, ExternId, ExternTy};
+    use crate::fz_ir::{ExternDecl, ExternId, ExternTy, Var};
     use crate::types::Types;
 
     fn module_with_extern(symbol: &str, ret: ExternTy) -> Module {
