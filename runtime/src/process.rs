@@ -308,12 +308,10 @@ impl Process {
         // a clean slate so a reason bit cannot outlive the quantum that set it.
         self.reductions_remaining = self.reductions_per_quantum;
         self.yield_reasons = 0;
-        crate::reductions::install_budget(self.reductions_remaining);
     }
 
     pub fn install_unbounded_reduction_budget(&mut self) {
         self.reductions_remaining = i32::MAX;
-        crate::reductions::install_budget(i32::MAX);
     }
 
     pub fn finish_yield_report(&mut self, remaining_reductions: i32, reason: u8) {
@@ -322,12 +320,17 @@ impl Process {
         if burned > 0 {
             self.reductions_executed = self.reductions_executed.saturating_add(burned as u64);
         }
+        // Count cause off the accumulated reasons, not just this report's
+        // bits: allocation pressure expires the budget directly on the
+        // Process during the quantum (see `expire_current_budget`), so the
+        // back edge that finally yields reports only REDUCTIONS while the
+        // ALLOCATION_PRESSURE bit is already standing on `yield_reasons`.
         self.yield_reasons |= reason;
-        let allocation_pressure =
-            (reason & YIELD_REASON_ALLOCATION_PRESSURE) == YIELD_REASON_ALLOCATION_PRESSURE;
+        let allocation_pressure = (self.yield_reasons & YIELD_REASON_ALLOCATION_PRESSURE)
+            == YIELD_REASON_ALLOCATION_PRESSURE;
         if allocation_pressure {
             self.allocation_pressure_yields = self.allocation_pressure_yields.saturating_add(1);
-        } else if (reason & YIELD_REASON_REDUCTIONS) == YIELD_REASON_REDUCTIONS {
+        } else if (self.yield_reasons & YIELD_REASON_REDUCTIONS) == YIELD_REASON_REDUCTIONS {
             self.reduction_yields = self.reduction_yields.saturating_add(1);
         }
     }
@@ -427,6 +430,18 @@ pub fn current_process() -> &'static mut Process {
 pub fn try_current_process() -> Option<&'static mut Process> {
     let p = CURRENT_PROCESS.with(|c| c.get());
     (!p.is_null()).then(|| unsafe { &mut *p })
+}
+
+/// Expire the current process's reduction budget and record why. Called from
+/// the heap allocation slow path when bump crosses the allocation watermark:
+/// zeroing `reductions_remaining` forces the next back edge to yield, and the
+/// reason bit rides on `yield_reasons` until the scheduler boundary consumes
+/// it. A no-op when no process is installed (standalone-heap unit tests).
+pub fn expire_current_budget(reason: u8) {
+    if let Some(process) = try_current_process() {
+        process.reductions_remaining = 0;
+        process.yield_reasons |= reason;
+    }
 }
 
 #[cfg(test)]

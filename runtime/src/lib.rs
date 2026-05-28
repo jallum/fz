@@ -19,7 +19,6 @@ pub mod pinned_abi;
 pub mod procbin;
 pub mod process;
 pub mod process_abi;
-pub mod reductions;
 pub mod resource;
 pub mod sched;
 pub mod scheduler_hooks;

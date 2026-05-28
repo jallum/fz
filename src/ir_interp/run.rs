@@ -221,18 +221,18 @@ fn run_fn_typed<
                             p.reductions_remaining -= 1;
                             (p.reductions_remaining <= 0, p.reductions_remaining)
                         };
-                        let pending_reason = fz_runtime::reductions::take_yield_reasons();
-                        if budget_exhausted || pending_reason != 0 {
-                            let mut reason = pending_reason;
-                            if budget_exhausted {
-                                reason |= fz_runtime::process::YIELD_REASON_REDUCTIONS;
-                            }
+                        // Allocation pressure zeroes the budget on the Process
+                        // (`expire_current_budget`), so a pressured loop trips
+                        // `budget_exhausted` here too; its ALLOCATION_PRESSURE
+                        // bit already stands on `yield_reasons` and is folded in
+                        // by the scheduler-boundary `finish_yield_report`.
+                        if budget_exhausted {
                             return Ok(InterpStep::Yielded {
                                 resume_fn: *callee,
                                 resume_args: arg_vals,
                                 after: vec![],
                                 remaining_reductions,
-                                reason,
+                                reason: fz_runtime::process::YIELD_REASON_REDUCTIONS,
                             });
                         }
                     }

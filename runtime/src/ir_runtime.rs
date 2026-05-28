@@ -633,8 +633,9 @@ pub extern "C" fn fz_yield_mid_flight_report(
     use crate::scheduler_hooks::YIELD_PTR;
     let p = current_process();
     p.scheduler_yields = p.scheduler_yields.saturating_add(1);
-    let reason = (reason as u8) | crate::reductions::take_yield_reasons();
-    p.finish_yield_report(remaining_reductions, reason);
+    // Allocation-pressure reasons already stand on `p.yield_reasons`;
+    // finish_yield_report folds them in when attributing the cause.
+    p.finish_yield_report(remaining_reductions, reason as u8);
     let closure_addr =
         closure_addr_from_ref_word(cont_closure_bits, "fz_yield_mid_flight_report cont");
     let closure_bits = crate::any_value::heap_object_word(closure_addr, ValueKind::CLOSURE);

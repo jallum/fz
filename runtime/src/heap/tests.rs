@@ -1359,18 +1359,23 @@ fn allocation_watermark_leaves_continuation_reserve() {
 
 #[test]
 fn allocation_watermark_expires_reduction_budget() {
-    crate::reductions::install_budget(7);
-    let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
-    h.allocation_watermark = h.block_start;
+    let mut process = crate::process::Process::new(empty_registry());
+    process.reductions_remaining = 7;
+    process.yield_reasons = 0;
+    // Force the very next allocation across the watermark.
+    process.heap.allocation_watermark = process.heap.block_start;
+    let guard = crate::process::CurrentProcessGuard::install(&mut process);
 
-    let _ = h.alloc_list_cons_slot(AnyValue::nil_atom(), crate::any_value::EMPTY_LIST);
+    let _ = process
+        .heap
+        .alloc_list_cons_slot(AnyValue::nil_atom(), crate::any_value::EMPTY_LIST);
+    drop(guard);
 
-    assert_eq!(crate::reductions::load(), 0);
+    assert_eq!(process.reductions_remaining, 0);
     assert_eq!(
-        crate::reductions::take_yield_reasons(),
+        process.yield_reasons & crate::process::YIELD_REASON_ALLOCATION_PRESSURE,
         crate::process::YIELD_REASON_ALLOCATION_PRESSURE
     );
-    crate::reductions::install_budget(crate::process::DEFAULT_REDUCTIONS_PER_QUANTUM);
 }
 
 /// Large struct (200-byte payload, well past the old 64-byte cap)

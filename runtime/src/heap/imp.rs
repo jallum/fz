@@ -134,7 +134,7 @@ impl Heap {
         self.alloc_count += 1;
         self.note_alloc_pressure();
         if self.bump_top >= self.allocation_watermark {
-            crate::reductions::expire_for(crate::process::YIELD_REASON_ALLOCATION_PRESSURE);
+            crate::process::expire_current_budget(crate::process::YIELD_REASON_ALLOCATION_PRESSURE);
         }
         p
     }
