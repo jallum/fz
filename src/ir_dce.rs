@@ -154,6 +154,7 @@ pub fn dce_fn_with_telemetry(
         }
     }
     f.blocks.retain(|b| reachable.contains(&b.id));
+    prune_dead_owned_cons_capabilities(f);
 }
 
 fn reachable_from_entry(f: &FnIr) -> HashSet<BlockId> {
@@ -815,6 +816,33 @@ mod tests {
         dce_module_with_telemetry(&mut m, &crate::telemetry::NullTelemetry);
         assert_eq!(m.fns[0].blocks.len(), 1, "orphan block should be removed");
         assert_eq!(m.fns[0].blocks[0].id, entry);
+    }
+
+    #[test]
+    fn unreachable_capability_use_does_not_keep_physical_facts() {
+        let mut b = FnBuilder::new(FnId(0), "main");
+        let source = b.fresh_var();
+        let entry = b.block(vec![source]);
+        let orphan = b.block(vec![]);
+
+        let nil = b.let_(entry, Prim::MakeList(vec![], None));
+        b.set_terminator(entry, Term::Return(nil));
+
+        let head = b.let_(orphan, Prim::ListHead(source));
+        b.record_owned_cons_reuse_capability(head, source);
+        let tail = b.let_(orphan, Prim::MakeList(vec![], None));
+        let result = b.let_(orphan, Prim::MakeList(vec![head], Some(tail)));
+        b.set_terminator(orphan, Term::Return(result));
+
+        let mut f = b.build();
+        assert_eq!(f.physical_entry_params, vec![source]);
+        assert_eq!(f.physical_capabilities.len(), 1);
+
+        dce_fn_with_telemetry("", &mut f, &crate::telemetry::NullTelemetry);
+
+        assert_eq!(f.blocks.len(), 1, "orphan block should be removed");
+        assert!(f.physical_entry_params.is_empty());
+        assert!(f.physical_capabilities.is_empty());
     }
 
     #[test]

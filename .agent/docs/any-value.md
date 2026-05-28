@@ -189,7 +189,7 @@ and the requested tail. GC preserves the bit inside a process heap. Deep copy
 creates fresh cells in the destination heap, so copied list cells start
 unaliased even when the source cell was marked aliased.
 
-The alias bit is set, or reuse-credit creation is refused, when a cons cell is
+The alias bit is set, or a physical reuse capability is not recorded, when a cons cell is
 published outside the single owned rewrite path. A publication includes storing
 the cell in another heap object, capturing it in a closure or scheduler-visible
 continuation, or crossing a barrier where allocation timing becomes observable.

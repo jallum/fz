@@ -4,8 +4,8 @@ Use this when changing `extern "C"` parsing, lowering, typing, codegen, or
 interpreter behavior.
 
 Extern arguments are borrow-only from the fz heap's point of view. Passing a
-value to an extern does not set list alias bits and does not prune owned-cons
-reuse credits. If an extern needs to retain a value after it returns, the
+value to an extern does not set list alias bits and does not block owned-cons
+physical capabilities. If an extern needs to retain a value after it returns, the
 extern must copy it into storage it owns.
 
 ## Variadic Calls

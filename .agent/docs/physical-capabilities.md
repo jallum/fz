@@ -37,7 +37,7 @@ with these compiler facts:
 - `src/ir_codegen/support.rs` consumes physical capability facts with
   `emit_owned_cons_reuse_or_alloc`.
 
-The standalone reuse-pruning pass and duplicate owned-cons reuse-credit lane
+The standalone reuse-pruning pass and duplicate owned-cons capability lane
 have been removed. Codegen reads reusable source objects from
 `physical_capabilities`; semantic specialization ignores only the entry params
 listed in `physical_entry_params`.

@@ -2351,7 +2351,7 @@ fn physical_capability_model_and_signals_are_pinned() {
         "src/ir_dce.rs",
         "live heads keep their source-cons",
         "src/ir_capture_norm.rs",
-        "standalone reuse-pruning pass and duplicate owned-cons reuse-credit lane",
+        "standalone reuse-pruning pass and duplicate owned-cons capability lane",
         "physical_capabilities",
         "emit_owned_cons_reuse_or_alloc",
         "list_cons_allocs = 11",
