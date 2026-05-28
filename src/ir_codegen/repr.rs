@@ -132,16 +132,15 @@ impl MidFlightArgShape {
         cx: &mut CodegenFn<'_>,
         b: &mut FunctionBuilder<'_>,
         jmod: &mut M,
-        runtime: &RuntimeRefs,
         value: CodegenValue,
         out: &mut Vec<ir::Value>,
     ) {
         match self {
             MidFlightArgShape::Value(ArgRepr::RawF64) => {
-                out.push(codegen_value_raw_float(cx, b, jmod, runtime, value));
+                out.push(cx.value_raw_float(b, jmod, value));
             }
             MidFlightArgShape::Value(ArgRepr::RawInt) => {
-                out.push(codegen_value_raw_int(cx, b, jmod, runtime, value));
+                out.push(cx.value_raw_int(b, jmod, value));
             }
             MidFlightArgShape::Value(ArgRepr::ValueRef) => out.push(value.value()),
             MidFlightArgShape::Value(ArgRepr::Condition) => {

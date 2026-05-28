@@ -177,7 +177,6 @@ pub(crate) fn emit_struct_set_field_value<M: cranelift_module::Module>(
     cx: &mut CodegenFn<'_>,
     b: &mut FunctionBuilder<'_>,
     jmod: &mut M,
-    runtime: &RuntimeRefs,
     cache: &mut CodegenCache,
     struct_bits: ir::Value,
     field_idx: usize,
@@ -211,7 +210,7 @@ pub(crate) fn emit_struct_set_field_value<M: cranelift_module::Module>(
             cx.struct_set_field_atom(b, jmod, struct_bits, offset, payload);
         }
         other => {
-            let value_ref = codegen_value_as_any_ref(cx, b, jmod, runtime, cache, other);
+            let value_ref = cx.value_as_any_ref(b, jmod, cache, other);
             let value_ref = cx.mark_published_ref_aliased(b, jmod, value_ref);
             cx.struct_set_field_ref(b, jmod, struct_bits, offset, value_ref);
         }

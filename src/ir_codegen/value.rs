@@ -67,7 +67,6 @@ pub(crate) fn closure_capture_for_var<M: cranelift_module::Module>(
     var_env: &HashMap<u32, CodegenValue>,
     b: &mut FunctionBuilder<'_>,
     jmod: &mut M,
-    runtime: &RuntimeRefs,
     v: u32,
     cache: &mut CodegenCache,
 ) -> ClosureCapture {
@@ -91,29 +90,28 @@ pub(crate) fn closure_capture_for_var<M: cranelift_module::Module>(
             ClosureCapture::RawF64(raw)
         }
         _ => {
-            let value_ref = tagged_get(cx, var_env, b, jmod, runtime, v, cache);
+            let value_ref = cx.tagged_var(var_env, b, jmod, v, cache);
             ClosureCapture::RefWord(value_ref)
         }
     }
 }
 
-pub(crate) fn box_known_non_heap_as_any_ref<M: cranelift_module::Module>(
+fn box_known_non_heap_as_any_ref<M: cranelift_module::Module>(
     cx: &mut CodegenFn<'_>,
     b: &mut FunctionBuilder<'_>,
     jmod: &mut M,
-    runtime: &RuntimeRefs,
     raw: ir::Value,
     kind: fz_runtime::any_value::ValueKind,
 ) -> ir::Value {
     if kind == fz_runtime::any_value::ValueKind::INT {
-        return emit_raw_int_as_abi_value_ref(cx, b, jmod, runtime, raw);
+        return emit_raw_int_as_abi_value_ref(cx, b, jmod, raw);
     }
     if kind == fz_runtime::any_value::ValueKind::FLOAT {
         let raw = b.ins().bitcast(types::F64, MemFlags::new(), raw);
-        return emit_raw_float_as_abi_value_ref(cx, b, jmod, runtime, raw);
+        return emit_raw_float_as_abi_value_ref(cx, b, jmod, raw);
     }
     if kind == fz_runtime::any_value::ValueKind::ATOM {
-        return emit_raw_atom_as_abi_value_ref(cx, b, jmod, runtime, raw);
+        return emit_raw_atom_as_abi_value_ref(cx, b, jmod, raw);
     }
     if kind == fz_runtime::any_value::ValueKind::NULL {
         return b.ins().iconst(types::I64, 0);
@@ -126,31 +124,28 @@ pub(crate) fn box_known_non_heap_as_any_ref<M: cranelift_module::Module>(
     unreachable!("heap refs must stay as CodegenValue::AnyRef")
 }
 
-pub(crate) fn emit_raw_int_as_abi_value_ref<M: cranelift_module::Module>(
+fn emit_raw_int_as_abi_value_ref<M: cranelift_module::Module>(
     cx: &mut CodegenFn<'_>,
     b: &mut FunctionBuilder<'_>,
     jmod: &mut M,
-    _runtime: &RuntimeRefs,
     raw: ir::Value,
 ) -> ir::Value {
     cx.box_int_for_any(b, jmod, raw)
 }
 
-pub(crate) fn emit_raw_float_as_abi_value_ref<M: cranelift_module::Module>(
+fn emit_raw_float_as_abi_value_ref<M: cranelift_module::Module>(
     cx: &mut CodegenFn<'_>,
     b: &mut FunctionBuilder<'_>,
     jmod: &mut M,
-    _runtime: &RuntimeRefs,
     raw: ir::Value,
 ) -> ir::Value {
     cx.box_float_for_any(b, jmod, raw)
 }
 
-pub(crate) fn emit_raw_atom_as_abi_value_ref<M: cranelift_module::Module>(
+fn emit_raw_atom_as_abi_value_ref<M: cranelift_module::Module>(
     cx: &mut CodegenFn<'_>,
     b: &mut FunctionBuilder<'_>,
     jmod: &mut M,
-    _runtime: &RuntimeRefs,
     raw: ir::Value,
 ) -> ir::Value {
     cx.box_atom_for_any(b, jmod, raw)
@@ -212,7 +207,6 @@ pub(crate) fn known_list_ref_for_var<M: cranelift_module::Module>(
     var_env: &HashMap<u32, CodegenValue>,
     b: &mut FunctionBuilder<'_>,
     _jmod: &mut M,
-    _runtime: &RuntimeRefs,
     cache: &mut CodegenCache,
     block_id: crate::fz_ir::BlockId,
     v: u32,
@@ -294,75 +288,163 @@ impl CodegenValue {
     }
 }
 
+impl CodegenFn<'_> {
+    pub(crate) fn tagged_var<M: cranelift_module::Module>(
+        &mut self,
+        var_env: &HashMap<u32, CodegenValue>,
+        b: &mut FunctionBuilder<'_>,
+        jmod: &mut M,
+        v: u32,
+        cache: &mut CodegenCache,
+    ) -> ir::Value {
+        tagged_get(self, var_env, b, jmod, v, cache)
+    }
+
+    pub(crate) fn value_as_any_ref<M: cranelift_module::Module>(
+        &mut self,
+        b: &mut FunctionBuilder<'_>,
+        jmod: &mut M,
+        cache: &mut CodegenCache,
+        value: CodegenValue,
+    ) -> ir::Value {
+        codegen_value_as_any_ref(self, b, jmod, cache, value)
+    }
+
+    pub(crate) fn value_truthy<M: cranelift_module::Module>(
+        &mut self,
+        b: &mut FunctionBuilder<'_>,
+        jmod: &mut M,
+        value: CodegenValue,
+    ) -> ir::Value {
+        codegen_value_truthy(self, b, jmod, value)
+    }
+
+    pub(crate) fn value_is_tag<M: cranelift_module::Module>(
+        &mut self,
+        b: &mut FunctionBuilder<'_>,
+        jmod: &mut M,
+        value: CodegenValue,
+        tag: fz_runtime::any_value::ValueKind,
+    ) -> ir::Value {
+        codegen_value_is_tag(self, b, jmod, value, tag)
+    }
+
+    pub(crate) fn value_atom_id_is<M: cranelift_module::Module>(
+        &mut self,
+        b: &mut FunctionBuilder<'_>,
+        jmod: &mut M,
+        value: CodegenValue,
+        atom_id: u32,
+    ) -> ir::Value {
+        codegen_value_atom_id_is(self, b, jmod, value, atom_id)
+    }
+
+    pub(crate) fn value_raw_int<M: cranelift_module::Module>(
+        &mut self,
+        b: &mut FunctionBuilder<'_>,
+        jmod: &mut M,
+        value: CodegenValue,
+    ) -> ir::Value {
+        codegen_value_raw_int(self, b, jmod, value)
+    }
+
+    pub(crate) fn value_raw_float<M: cranelift_module::Module>(
+        &mut self,
+        b: &mut FunctionBuilder<'_>,
+        jmod: &mut M,
+        value: CodegenValue,
+    ) -> ir::Value {
+        codegen_value_raw_float(self, b, jmod, value)
+    }
+
+    pub(crate) fn value_raw_atom<M: cranelift_module::Module>(
+        &mut self,
+        b: &mut FunctionBuilder<'_>,
+        jmod: &mut M,
+        cache: &mut CodegenCache,
+        value: CodegenValue,
+    ) -> ir::Value {
+        codegen_value_raw_atom(self, b, jmod, cache, value)
+    }
+
+    pub(crate) fn any_ref_for_var<M: cranelift_module::Module>(
+        &mut self,
+        var_env: &HashMap<u32, CodegenValue>,
+        b: &mut FunctionBuilder<'_>,
+        jmod: &mut M,
+        v: u32,
+        cache: &mut CodegenCache,
+    ) -> ir::Value {
+        let binding = *var_env.get(&v).expect("unbound var");
+        self.value_as_any_ref(b, jmod, cache, binding)
+    }
+}
+
 /// Materialize a local value as an ABI `AnyValueRef` word.
-pub(crate) fn tagged_get<M: cranelift_module::Module>(
+fn tagged_get<M: cranelift_module::Module>(
     cx: &mut CodegenFn<'_>,
     var_env: &HashMap<u32, CodegenValue>,
     b: &mut FunctionBuilder<'_>,
     jmod: &mut M,
-    runtime: &RuntimeRefs,
     v: u32,
     cache: &mut CodegenCache,
 ) -> ir::Value {
     let vb = var_env.get(&v).expect("unbound var");
     match *vb {
-        CodegenValue::RawF64(value) => emit_raw_float_as_abi_value_ref(cx, b, jmod, runtime, value),
+        CodegenValue::RawF64(value) => emit_raw_float_as_abi_value_ref(cx, b, jmod, value),
         CodegenValue::RawInt(value) => {
             let raw = if let Some(&n) = cache.raw_int_consts.get(&v) {
                 cached_iconst(b, cache, n)
             } else {
                 value
             };
-            emit_raw_int_as_abi_value_ref(cx, b, jmod, runtime, raw)
+            emit_raw_int_as_abi_value_ref(cx, b, jmod, raw)
         }
         CodegenValue::Known { payload, kind } => {
-            box_known_non_heap_as_any_ref(cx, b, jmod, runtime, payload, kind)
+            box_known_non_heap_as_any_ref(cx, b, jmod, payload, kind)
         }
         CodegenValue::AnyRef(value) => value,
         CodegenValue::Condition(value) => {
             let atom = bool_to_fz(b, cache, value);
-            emit_raw_atom_as_abi_value_ref(cx, b, jmod, runtime, atom)
+            emit_raw_atom_as_abi_value_ref(cx, b, jmod, atom)
         }
     }
 }
 
-pub(crate) fn codegen_value_as_any_ref<M: cranelift_module::Module>(
+fn codegen_value_as_any_ref<M: cranelift_module::Module>(
     cx: &mut CodegenFn<'_>,
     b: &mut FunctionBuilder<'_>,
     jmod: &mut M,
-    runtime: &RuntimeRefs,
     cache: &mut CodegenCache,
     value: CodegenValue,
 ) -> ir::Value {
     match value {
         CodegenValue::AnyRef(value) => value,
-        CodegenValue::RawInt(value) => emit_raw_int_as_abi_value_ref(cx, b, jmod, runtime, value),
-        CodegenValue::RawF64(value) => emit_raw_float_as_abi_value_ref(cx, b, jmod, runtime, value),
+        CodegenValue::RawInt(value) => emit_raw_int_as_abi_value_ref(cx, b, jmod, value),
+        CodegenValue::RawF64(value) => emit_raw_float_as_abi_value_ref(cx, b, jmod, value),
         CodegenValue::Condition(value) => {
             let atom = bool_to_fz(b, cache, value);
-            emit_raw_atom_as_abi_value_ref(cx, b, jmod, runtime, atom)
+            emit_raw_atom_as_abi_value_ref(cx, b, jmod, atom)
         }
         CodegenValue::Known { payload, kind } => {
-            box_known_non_heap_as_any_ref(cx, b, jmod, runtime, payload, kind)
+            box_known_non_heap_as_any_ref(cx, b, jmod, payload, kind)
         }
     }
 }
 
-pub(crate) fn emit_ref_tag<M: cranelift_module::Module>(
+fn emit_ref_tag<M: cranelift_module::Module>(
     cx: &mut CodegenFn<'_>,
     b: &mut FunctionBuilder<'_>,
     jmod: &mut M,
-    _runtime: &RuntimeRefs,
     value_ref: ir::Value,
 ) -> ir::Value {
     cx.ref_tag(b, jmod, value_ref)
 }
 
-pub(crate) fn codegen_value_truthy<M: cranelift_module::Module>(
+fn codegen_value_truthy<M: cranelift_module::Module>(
     cx: &mut CodegenFn<'_>,
     b: &mut FunctionBuilder<'_>,
     jmod: &mut M,
-    _runtime: &RuntimeRefs,
     value: CodegenValue,
 ) -> ir::Value {
     match value {
@@ -402,16 +484,15 @@ pub(crate) fn known_kind_ref_tag(
     b.ins().iconst(types::I8, kind.tag() as i64)
 }
 
-pub(crate) fn codegen_value_type_tag<M: cranelift_module::Module>(
+fn codegen_value_type_tag<M: cranelift_module::Module>(
     cx: &mut CodegenFn<'_>,
     b: &mut FunctionBuilder<'_>,
     jmod: &mut M,
-    runtime: &RuntimeRefs,
     value: CodegenValue,
 ) -> ir::Value {
     use fz_runtime::any_value::ValueKind;
     match value {
-        CodegenValue::AnyRef(value_ref) => emit_ref_tag(cx, b, jmod, runtime, value_ref),
+        CodegenValue::AnyRef(value_ref) => emit_ref_tag(cx, b, jmod, value_ref),
         CodegenValue::RawInt(_) => b.ins().iconst(types::I8, ValueKind::INT.tag() as i64),
         CodegenValue::RawF64(_) => b.ins().iconst(types::I8, ValueKind::FLOAT.tag() as i64),
         CodegenValue::Condition(_) => b.ins().iconst(types::I8, ValueKind::ATOM.tag() as i64),
@@ -419,23 +500,21 @@ pub(crate) fn codegen_value_type_tag<M: cranelift_module::Module>(
     }
 }
 
-pub(crate) fn codegen_value_is_tag<M: cranelift_module::Module>(
+fn codegen_value_is_tag<M: cranelift_module::Module>(
     cx: &mut CodegenFn<'_>,
     b: &mut FunctionBuilder<'_>,
     jmod: &mut M,
-    runtime: &RuntimeRefs,
     value: CodegenValue,
     tag: fz_runtime::any_value::ValueKind,
 ) -> ir::Value {
-    let actual = codegen_value_type_tag(cx, b, jmod, runtime, value);
+    let actual = codegen_value_type_tag(cx, b, jmod, value);
     b.ins().icmp_imm(IntCC::Equal, actual, tag.tag() as i64)
 }
 
-pub(crate) fn codegen_value_atom_id_is<M: cranelift_module::Module>(
+fn codegen_value_atom_id_is<M: cranelift_module::Module>(
     cx: &mut CodegenFn<'_>,
     b: &mut FunctionBuilder<'_>,
     jmod: &mut M,
-    runtime: &RuntimeRefs,
     value: CodegenValue,
     atom_id: u32,
 ) -> ir::Value {
@@ -458,7 +537,7 @@ pub(crate) fn codegen_value_atom_id_is<M: cranelift_module::Module>(
         } => b.ins().icmp_imm(IntCC::Equal, payload, atom_id as i64),
         CodegenValue::Known { .. } => b.ins().iconst(types::I8, 0),
         CodegenValue::AnyRef(value_ref) => {
-            let is_atom = codegen_value_is_tag(cx, b, jmod, runtime, value, ValueKind::ATOM);
+            let is_atom = codegen_value_is_tag(cx, b, jmod, value, ValueKind::ATOM);
             let atom_blk = b.create_block();
             let join_blk = b.create_block();
             b.append_block_param(join_blk, types::I8);
@@ -485,11 +564,10 @@ pub(crate) fn codegen_value_atom_id_is<M: cranelift_module::Module>(
     }
 }
 
-pub(crate) fn codegen_value_raw_int<M: cranelift_module::Module>(
+fn codegen_value_raw_int<M: cranelift_module::Module>(
     cx: &mut CodegenFn<'_>,
     b: &mut FunctionBuilder<'_>,
     jmod: &mut M,
-    _runtime: &RuntimeRefs,
     value: CodegenValue,
 ) -> ir::Value {
     match value {
@@ -503,11 +581,10 @@ pub(crate) fn codegen_value_raw_int<M: cranelift_module::Module>(
     }
 }
 
-pub(crate) fn codegen_value_raw_float<M: cranelift_module::Module>(
+fn codegen_value_raw_float<M: cranelift_module::Module>(
     cx: &mut CodegenFn<'_>,
     b: &mut FunctionBuilder<'_>,
     jmod: &mut M,
-    _runtime: &RuntimeRefs,
     value: CodegenValue,
 ) -> ir::Value {
     match value {
@@ -521,11 +598,10 @@ pub(crate) fn codegen_value_raw_float<M: cranelift_module::Module>(
     }
 }
 
-pub(crate) fn codegen_value_raw_atom<M: cranelift_module::Module>(
+fn codegen_value_raw_atom<M: cranelift_module::Module>(
     cx: &mut CodegenFn<'_>,
     b: &mut FunctionBuilder<'_>,
     jmod: &mut M,
-    _runtime: &RuntimeRefs,
     cache: &mut CodegenCache,
     value: CodegenValue,
 ) -> ir::Value {
@@ -538,19 +614,6 @@ pub(crate) fn codegen_value_raw_atom<M: cranelift_module::Module>(
         CodegenValue::AnyRef(value_ref) => cx.unbox_atom(b, jmod, value_ref),
         _ => panic!("CodegenValue is not an atom"),
     }
-}
-
-pub(crate) fn any_ref_for_var<M: cranelift_module::Module>(
-    cx: &mut CodegenFn<'_>,
-    var_env: &HashMap<u32, CodegenValue>,
-    b: &mut FunctionBuilder<'_>,
-    jmod: &mut M,
-    runtime: &RuntimeRefs,
-    v: u32,
-    cache: &mut CodegenCache,
-) -> ir::Value {
-    let binding = *var_env.get(&v).expect("unbound var");
-    codegen_value_as_any_ref(cx, b, jmod, runtime, cache, binding)
 }
 
 /// Check if both BinOp args have narrow typed types and, if so, apply
@@ -567,7 +630,6 @@ pub(crate) fn try_typed_binop_fast_path<T, F, I, M>(
     bv: crate::fz_ir::Var,
     b: &mut FunctionBuilder<'_>,
     jmod: &mut M,
-    runtime: &RuntimeRefs,
     var_env: &HashMap<u32, CodegenValue>,
     float_op: F,
     int_op: I,
@@ -579,15 +641,15 @@ where
     I: FnOnce(&mut FunctionBuilder<'_>, ir::Value, ir::Value) -> Option<LowerOut>,
 {
     if ty_is_float(t, fn_types, a) && ty_is_float(t, fn_types, bv) {
-        let af = as_raw_f64(cx, var_env, b, jmod, runtime, a.0);
-        let bf = as_raw_f64(cx, var_env, b, jmod, runtime, bv.0);
+        let af = as_raw_f64(cx, var_env, b, jmod, a.0);
+        let bf = as_raw_f64(cx, var_env, b, jmod, bv.0);
         if let Some(out) = float_op(b, af, bf) {
             return Some(out);
         }
     }
     if ty_is_int(t, fn_types, a) && ty_is_int(t, fn_types, bv) {
-        let ai = as_raw_i64(cx, var_env, b, jmod, runtime, a.0);
-        let bi = as_raw_i64(cx, var_env, b, jmod, runtime, bv.0);
+        let ai = as_raw_i64(cx, var_env, b, jmod, a.0);
+        let bi = as_raw_i64(cx, var_env, b, jmod, bv.0);
         if let Some(out) = int_op(b, ai, bi) {
             return Some(out);
         }
@@ -600,7 +662,6 @@ pub(crate) fn as_raw_f64(
     var_env: &HashMap<u32, CodegenValue>,
     b: &mut FunctionBuilder<'_>,
     jmod: &mut impl cranelift_module::Module,
-    _runtime: &RuntimeRefs,
     v: u32,
 ) -> ir::Value {
     let vb = var_env.get(&v).expect("unbound var");
@@ -633,7 +694,6 @@ pub(crate) fn as_raw_i64(
     var_env: &HashMap<u32, CodegenValue>,
     b: &mut FunctionBuilder<'_>,
     jmod: &mut impl cranelift_module::Module,
-    _runtime: &RuntimeRefs,
     v: u32,
 ) -> ir::Value {
     let vb = var_env.get(&v).expect("unbound var");
@@ -664,14 +724,13 @@ pub(crate) fn coerce_call_args<M: cranelift_module::Module>(
     var_env: &HashMap<u32, CodegenValue>,
     b: &mut FunctionBuilder<'_>,
     jmod: &mut M,
-    runtime: &RuntimeRefs,
     cache: &mut CodegenCache,
 ) -> Vec<ir::Value> {
     let mut out: Vec<ir::Value> = Vec::with_capacity(args.len() + 1);
     for (i, av) in args.iter().enumerate() {
         let binding = *var_env.get(&av.0).expect("unbound call arg");
         let to = callee_param_reprs[i];
-        push_binding_as_abi_args(cx, &mut out, b, jmod, runtime, cache, binding, to);
+        push_binding_as_abi_args(cx, &mut out, b, jmod, cache, binding, to);
     }
     out
 }
@@ -681,30 +740,25 @@ pub(crate) fn push_binding_as_abi_args<M: cranelift_module::Module>(
     out: &mut Vec<ir::Value>,
     b: &mut FunctionBuilder<'_>,
     jmod: &mut M,
-    runtime: &RuntimeRefs,
     cache: &mut CodegenCache,
     binding: CodegenValue,
     to: ArgRepr,
 ) {
     if to == ArgRepr::ValueRef {
         out.push(match binding {
-            CodegenValue::RawInt(value) => {
-                emit_raw_int_as_abi_value_ref(cx, b, jmod, runtime, value)
-            }
-            CodegenValue::RawF64(value) => {
-                emit_raw_float_as_abi_value_ref(cx, b, jmod, runtime, value)
-            }
+            CodegenValue::RawInt(value) => emit_raw_int_as_abi_value_ref(cx, b, jmod, value),
+            CodegenValue::RawF64(value) => emit_raw_float_as_abi_value_ref(cx, b, jmod, value),
             CodegenValue::Condition(value) => {
                 let atom = bool_to_fz(b, cache, value);
-                emit_raw_atom_as_abi_value_ref(cx, b, jmod, runtime, atom)
+                emit_raw_atom_as_abi_value_ref(cx, b, jmod, atom)
             }
             CodegenValue::AnyRef(value) => value,
             CodegenValue::Known { payload, kind } => {
-                box_known_non_heap_as_any_ref(cx, b, jmod, runtime, payload, kind)
+                box_known_non_heap_as_any_ref(cx, b, jmod, payload, kind)
             }
         });
     } else {
-        out.push(coerce_binding_to(cx, b, jmod, runtime, binding, to));
+        out.push(coerce_binding_to(cx, b, jmod, binding, to));
     }
 }
 
@@ -712,13 +766,12 @@ pub(crate) fn coerce_binding_to<M: cranelift_module::Module>(
     cx: &mut CodegenFn<'_>,
     b: &mut FunctionBuilder<'_>,
     jmod: &mut M,
-    runtime: &RuntimeRefs,
     binding: CodegenValue,
     to: ArgRepr,
 ) -> ir::Value {
     match (binding, to) {
         (CodegenValue::Known { payload, kind }, ArgRepr::ValueRef) => {
-            box_known_non_heap_as_any_ref(cx, b, jmod, runtime, payload, kind)
+            box_known_non_heap_as_any_ref(cx, b, jmod, payload, kind)
         }
         (CodegenValue::Known { payload, .. }, ArgRepr::RawInt) => payload,
         (CodegenValue::Known { payload, .. }, ArgRepr::RawF64) => {
@@ -734,10 +787,10 @@ pub(crate) fn coerce_binding_to<M: cranelift_module::Module>(
             unreachable!("condition is never a callee ABI target")
         }
         (CodegenValue::RawInt(value), ArgRepr::ValueRef) => {
-            emit_raw_int_as_abi_value_ref(cx, b, jmod, runtime, value)
+            emit_raw_int_as_abi_value_ref(cx, b, jmod, value)
         }
         (CodegenValue::RawF64(value), ArgRepr::ValueRef) => {
-            emit_raw_float_as_abi_value_ref(cx, b, jmod, runtime, value)
+            emit_raw_float_as_abi_value_ref(cx, b, jmod, value)
         }
         (CodegenValue::Condition(value), ArgRepr::ValueRef) => {
             let true_v = b
@@ -747,13 +800,13 @@ pub(crate) fn coerce_binding_to<M: cranelift_module::Module>(
                 .ins()
                 .iconst(types::I64, fz_runtime::any_value::FALSE_BITS as i64);
             let atom = b.ins().select(value, true_v, false_v);
-            emit_raw_atom_as_abi_value_ref(cx, b, jmod, runtime, atom)
+            emit_raw_atom_as_abi_value_ref(cx, b, jmod, atom)
         }
         (binding, to) => {
             if binding.repr() == to {
                 binding.value()
             } else {
-                coerce_to(cx, b, jmod, runtime, binding.value(), binding.repr(), to)
+                coerce_to(cx, b, jmod, binding.value(), binding.repr(), to)
             }
         }
     }
@@ -763,7 +816,6 @@ pub(crate) fn coerce_to<M: cranelift_module::Module>(
     cx: &mut CodegenFn<'_>,
     b: &mut FunctionBuilder<'_>,
     jmod: &mut M,
-    runtime: &RuntimeRefs,
     val: ir::Value,
     from: ArgRepr,
     to: ArgRepr,
@@ -774,12 +826,8 @@ pub(crate) fn coerce_to<M: cranelift_module::Module>(
     match (from, to) {
         (ArgRepr::ValueRef, ArgRepr::RawInt) => val,
         (ArgRepr::ValueRef, ArgRepr::RawF64) => tagged_to_raw_f64_unsupported(b, val),
-        (ArgRepr::RawInt, ArgRepr::ValueRef) => {
-            emit_raw_int_as_abi_value_ref(cx, b, jmod, runtime, val)
-        }
-        (ArgRepr::RawF64, ArgRepr::ValueRef) => {
-            emit_raw_float_as_abi_value_ref(cx, b, jmod, runtime, val)
-        }
+        (ArgRepr::RawInt, ArgRepr::ValueRef) => emit_raw_int_as_abi_value_ref(cx, b, jmod, val),
+        (ArgRepr::RawF64, ArgRepr::ValueRef) => emit_raw_float_as_abi_value_ref(cx, b, jmod, val),
         (ArgRepr::RawInt, ArgRepr::RawF64) => b.ins().fcvt_from_sint(types::F64, val),
         (ArgRepr::RawF64, ArgRepr::RawInt) => b.ins().fcvt_to_sint(types::I64, val),
         (ArgRepr::Condition, _) | (_, ArgRepr::Condition) => {

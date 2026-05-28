@@ -12,6 +12,11 @@ borrows are short-lived, but semantic operations such as list access, closure
 capture access, value boxing/unboxing, struct field writes, owned-cons reuse,
 and alias publication should flow through `CodegenFn`.
 
+Value coercion is part of that semantic surface. Lowering code should call
+methods such as `cx.value_as_any_ref`, `cx.value_raw_int`, `cx.value_truthy`,
+and `cx.tagged_var`; the private `codegen_value_*` and `tagged_get` helpers are
+implementation details inside `value.rs`.
+
 Generated runtime shim bodies do not have a `CodegenEnv`, so they use
 `CodegenFn::for_runtime_shim`. That constructor is a boundary marker, not a
 shortcut for ordinary lowering helpers.

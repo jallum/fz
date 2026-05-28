@@ -24,7 +24,6 @@ pub(crate) fn compile_fn<
     this_spec_id: u32,
     source: &crate::fz_ir::SourceInfo,
 ) -> Result<(), CodegenError> {
-    let runtime = env.runtime;
     let fn_types = env.fn_types;
     let param_reprs = env.param_reprs;
     let natively_callable = env.natively_callable;
@@ -267,11 +266,10 @@ pub(crate) fn compile_fn<
                 );
                 let vb = *var_env.get(&arg.0).expect("unbound goto arg");
                 if want == ArgRepr::ValueRef {
-                    let value_ref =
-                        codegen_value_as_any_ref(&mut cx, &mut b, jmod, runtime, &mut cache, vb);
+                    let value_ref = cx.value_as_any_ref(&mut b, jmod, &mut cache, vb);
                     var_env.insert(arg.0, CodegenValue::any_ref(value_ref));
                 } else if vb.repr() != want {
-                    let coerced = coerce_binding_to(&mut cx, &mut b, jmod, runtime, vb, want);
+                    let coerced = coerce_binding_to(&mut cx, &mut b, jmod, vb, want);
                     var_env.insert(arg.0, CodegenValue::from_abi_value(coerced, want));
                 }
             }

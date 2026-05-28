@@ -56,14 +56,13 @@ pub(crate) fn emit_owned_cons_reuse_or_alloc<M: cranelift_module::Module>(
     cx: &mut CodegenFn<'_>,
     b: &mut FunctionBuilder<'_>,
     jmod: &mut M,
-    runtime: &RuntimeRefs,
     var_env: &HashMap<u32, CodegenValue>,
     cache: &mut CodegenCache,
     head: crate::fz_ir::Var,
     tail: ListTailBits,
 ) -> Option<ir::Value> {
     let source_cons = *cache.owned_cons_reuse_sources.get(&head.0)?;
-    let source_ref = any_ref_for_var(cx, var_env, b, jmod, runtime, source_cons.0, cache);
+    let source_ref = cx.any_ref_for_var(var_env, b, jmod, source_cons.0, cache);
     let tail_ref = list_tail_ref_word(b, cache, tail);
     Some(cx.list_reuse_or_cons_tail_ref(b, jmod, source_ref, tail_ref))
 }

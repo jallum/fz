@@ -141,7 +141,7 @@ impl ContinuationPayload {
     ) -> Self {
         let cap_bindings = captures
             .iter()
-            .map(|cv| closure_capture_for_var(cx, var_env, b, jmod, env.runtime, cv.0, cache))
+            .map(|cv| closure_capture_for_var(cx, var_env, b, jmod, cv.0, cache))
             .collect();
         let extra_ref_captures =
             cont_extra_ref_captures(b, cache, &env.spec_keys[cont_sid as usize]);
@@ -268,7 +268,7 @@ pub(crate) fn emit_terminator<
             then_b,
             else_b,
             ..
-        } => emit_if(cx, b, jmod, env, var_env, block_map, cond, then_b, else_b),
+        } => emit_if(cx, b, jmod, var_env, block_map, cond, then_b, else_b),
         Term::Halt(v) => emit_halt(cx, b, jmod, env, var_env, cache, is_native, host_ctx, v),
         Term::Return(v) => emit_return_term(
             cx,
@@ -439,7 +439,6 @@ fn emit_if<M: cranelift_module::Module>(
     cx: &mut CodegenFn<'_>,
     b: &mut FunctionBuilder<'_>,
     jmod: &mut M,
-    env: &CodegenEnv<'_>,
     var_env: &HashMap<u32, CodegenValue>,
     block_map: &HashMap<u32, ir::Block>,
     cond: &crate::fz_ir::Var,
@@ -453,7 +452,7 @@ fn emit_if<M: cranelift_module::Module>(
     let truthy = if matches!(vb.repr(), ArgRepr::Condition) {
         vb.value()
     } else {
-        codegen_value_truthy(cx, b, jmod, env.runtime, *vb)
+        cx.value_truthy(b, jmod, *vb)
     };
     b.ins().brif(truthy, t_b, &no_args, e_b, &no_args);
     Ok(())
@@ -558,16 +557,7 @@ fn emit_return_term<
                     let binding = *var_env.get(&field.0).expect("unbound tuple return field");
                     let repr = binding.repr();
                     push_repr_param(&mut sig, repr);
-                    push_binding_as_abi_args(
-                        cx,
-                        &mut cont_args,
-                        b,
-                        jmod,
-                        runtime,
-                        cache,
-                        binding,
-                        repr,
-                    );
+                    push_binding_as_abi_args(cx, &mut cont_args, b, jmod, cache, binding, repr);
                 }
                 sig.params.push(AbiParam::new(types::I64));
                 sig.returns.push(AbiParam::new(types::I64));
@@ -606,16 +596,7 @@ fn emit_return_term<
             sig.returns.push(AbiParam::new(types::I64));
             let sigref = b.import_signature(sig);
             let mut cont_args = Vec::with_capacity(2);
-            push_binding_as_abi_args(
-                cx,
-                &mut cont_args,
-                b,
-                jmod,
-                runtime,
-                cache,
-                binding,
-                my_return_repr,
-            );
+            push_binding_as_abi_args(cx, &mut cont_args, b, jmod, cache, binding, my_return_repr);
             cont_args.push(cont_val);
             b.ins().return_call_indirect(sigref, code, &cont_args);
         } else if cont_ptr_known_null {
@@ -734,30 +715,15 @@ fn emit_call_term<
             let callee_param_reprs = &param_reprs[callee_sid as usize];
             let callee_fid = *fn_ids.get(&callee_sid).expect("callee fn_id missing");
             let callee_fref = jmod.declare_func_in_func(callee_fid, b.func);
-            let mut native_args = coerce_call_args(
-                cx,
-                &hi_arg,
-                callee_param_reprs,
-                var_env,
-                b,
-                jmod,
-                runtime,
-                cache,
-            );
+            let mut native_args =
+                coerce_call_args(cx, &hi_arg, callee_param_reprs, var_env, b, jmod, cache);
             native_args.push(list_tail_destination_arg(b, cache));
             let cap_bindings = vec![
-                closure_capture_for_var(cx, var_env, b, jmod, runtime, pivot_capture.0, cache),
-                closure_capture_for_var(cx, var_env, b, jmod, runtime, args[0].0, cache),
+                closure_capture_for_var(cx, var_env, b, jmod, pivot_capture.0, cache),
+                closure_capture_for_var(cx, var_env, b, jmod, args[0].0, cache),
             ];
-            let physical_ref_captures = owned_cons_physical_ref_captures(
-                cx,
-                b,
-                jmod,
-                runtime,
-                var_env,
-                cache,
-                pivot_capture,
-            );
+            let physical_ref_captures =
+                owned_cons_physical_ref_captures(cx, b, jmod, var_env, cache, pivot_capture);
             let payload = ContinuationPayload::from_parts(
                 env,
                 cont_sid,
@@ -789,13 +755,11 @@ fn emit_call_term<
             let caller_fn = module.fn_by_id(caller_fn_id);
             let entry = caller_fn.block(caller_fn.entry);
             if entry.params.first().copied() == Some(tail_capture) {
-                let tail_bits =
-                    any_ref_for_var(cx, var_env, b, jmod, runtime, tail_capture.0, cache);
+                let tail_bits = cx.any_ref_for_var(var_env, b, jmod, tail_capture.0, cache);
                 let pivot_tail = if let Some(reused) = emit_owned_cons_reuse_or_alloc(
                     cx,
                     b,
                     jmod,
-                    runtime,
                     var_env,
                     cache,
                     pivot_capture,
@@ -818,16 +782,8 @@ fn emit_call_term<
                 let callee_param_reprs = &param_reprs[callee_sid as usize];
                 let callee_fid = *fn_ids.get(&callee_sid).expect("callee fn_id missing");
                 let callee_fref = jmod.declare_func_in_func(callee_fid, b.func);
-                let mut native_args = coerce_call_args(
-                    cx,
-                    args,
-                    callee_param_reprs,
-                    var_env,
-                    b,
-                    jmod,
-                    runtime,
-                    cache,
-                );
+                let mut native_args =
+                    coerce_call_args(cx, args, callee_param_reprs, var_env, b, jmod, cache);
                 native_args.push(pivot_tail);
                 let tail_cont_arg = if is_cont_fn {
                     let self_val = cont_param.expect("cont fn binds self via cont_param");
@@ -934,16 +890,7 @@ fn emit_native_call_with_cont<
     let callee_ret_repr = return_reprs[callee_sid as usize];
     let callee_fid = *fn_ids.get(&callee_sid).expect("callee fn_id missing");
     let callee_fref = jmod.declare_func_in_func(callee_fid, b.func);
-    let mut native_args = coerce_call_args(
-        cx,
-        args,
-        callee_param_reprs,
-        var_env,
-        b,
-        jmod,
-        runtime,
-        cache,
-    );
+    let mut native_args = coerce_call_args(cx, args, callee_param_reprs, var_env, b, jmod, cache);
     // Closure-target sig is `(args..., self, cont) tail`. Direct
     // callers pass the per-Process static singleton as `self`.
     // The zero-cap invariant (asserted at closure_target_fns
@@ -1082,17 +1029,7 @@ fn emit_native_call_with_cont<
             let from = var_env.get(&cv.0).map_or(ArgRepr::ValueRef, |vb| vb.repr());
             payload.push((*val, from));
         }
-        store_typed_args_into_callee_frame(
-            cx,
-            b,
-            jmod,
-            runtime,
-            cache,
-            cont_schema,
-            cf,
-            &payload,
-            1,
-        );
+        store_typed_args_into_callee_frame(cx, b, jmod, cache, cont_schema, cf, &payload, 1);
         b.ins().return_(&[cf]);
     }
 }
@@ -1206,9 +1143,9 @@ fn emit_native_tail_call<M: cranelift_module::Module>(
         let binding = *var_env.get(&av.0).expect("unbound call arg");
         let to = callee_param_reprs[i];
         if to == ArgRepr::ValueRef {
-            push_binding_as_abi_args(cx, &mut native_args, b, jmod, runtime, cache, binding, to);
+            push_binding_as_abi_args(cx, &mut native_args, b, jmod, cache, binding, to);
         } else {
-            let value = coerce_binding_to(cx, b, jmod, runtime, binding, to);
+            let value = coerce_binding_to(cx, b, jmod, binding, to);
             native_args.push(value);
         }
         mid_flight_arg_shapes.push(MidFlightArgShape::Value(to));
@@ -1308,16 +1245,7 @@ fn emit_native_tail_call<M: cranelift_module::Module>(
         b.ins().return_(&[null]);
         b.switch_to_block(invoke_blk);
         b.seal_block(invoke_blk);
-        store_frame_value_dynamic(
-            cx,
-            b,
-            jmod,
-            runtime,
-            cache,
-            my_cont,
-            SLOT_BYTES as u32,
-            result_value,
-        );
+        store_frame_value_dynamic(cx, b, jmod, cache, my_cont, SLOT_BYTES as u32, result_value);
         b.ins().return_(&[my_cont]);
     }
 }
@@ -1386,7 +1314,7 @@ fn emit_back_edge_yield_check<M: cranelift_module::Module>(
     let materialize_cont_fref = jmod.declare_func_in_func(runtime.materialize_cont_id, b.func);
     let last_root = native_root_values.len().saturating_sub(1);
     for (i, root) in native_root_values.iter().copied().enumerate() {
-        let mut root_ref = codegen_value_as_any_ref(cx, b, jmod, runtime, cache, root);
+        let mut root_ref = cx.value_as_any_ref(b, jmod, cache, root);
         if i == last_root {
             let inst = b.ins().call(materialize_cont_fref, &[root_ref]);
             root_ref = b.inst_results(inst)[0];
@@ -1508,16 +1436,7 @@ fn emit_call_closure<
                     .get(n_caps + i)
                     .copied()
                     .unwrap_or(ArgRepr::ValueRef);
-                push_binding_as_abi_args(
-                    cx,
-                    &mut direct_args,
-                    b,
-                    jmod,
-                    runtime,
-                    cache,
-                    binding,
-                    to,
-                );
+                push_binding_as_abi_args(cx, &mut direct_args, b, jmod, cache, binding, to);
             }
             direct_args.push(cl_val);
             direct_args.push(cf);
@@ -1557,7 +1476,6 @@ fn emit_call_closure<
                 &mut indirect_args,
                 b,
                 jmod,
-                runtime,
                 cache,
                 binding,
                 ArgRepr::ValueRef,
@@ -1675,16 +1593,7 @@ fn emit_tail_call_closure<
                     .get(n_caps + i)
                     .copied()
                     .unwrap_or(ArgRepr::ValueRef);
-                push_binding_as_abi_args(
-                    cx,
-                    &mut direct_args,
-                    b,
-                    jmod,
-                    runtime,
-                    cache,
-                    binding,
-                    to,
-                );
+                push_binding_as_abi_args(cx, &mut direct_args, b, jmod, cache, binding, to);
             }
             direct_args.push(cl_val);
             direct_args.push(my_cont);
@@ -1717,7 +1626,6 @@ fn emit_tail_call_closure<
                     &mut indirect_args,
                     b,
                     jmod,
-                    runtime,
                     cache,
                     binding,
                     ArgRepr::ValueRef,
@@ -1911,7 +1819,7 @@ fn build_park_record<
             3,
         ));
         for (i, (_name, v)) in pinned.iter().enumerate() {
-            let value_ref = tagged_get(cx, var_env, b, jmod, runtime, v.0, cache);
+            let value_ref = cx.tagged_var(var_env, b, jmod, v.0, cache);
             b.ins()
                 .stack_store(value_ref, slot, (i * SLOT_BYTES as usize) as i32);
         }
@@ -1924,7 +1832,7 @@ fn build_park_record<
     // capture-param slots line up with this order.
     let cap_bindings: Vec<ClosureCapture> = captures
         .iter()
-        .map(|cv| closure_capture_for_var(cx, var_env, b, jmod, runtime, cv.0, cache))
+        .map(|cv| closure_capture_for_var(cx, var_env, b, jmod, cv.0, cache))
         .collect();
 
     // bound_arity: max bound-var count across clauses (matcher
@@ -2024,7 +1932,7 @@ fn build_park_record<
                 cont_param,
                 frame_ptr,
             );
-            let unboxed = as_raw_i64(cx, var_env, b, jmod, runtime, a.timeout.0);
+            let unboxed = as_raw_i64(cx, var_env, b, jmod, a.timeout.0);
             (unboxed, cl_ptr)
         }
         None => {
@@ -2078,7 +1986,6 @@ fn owned_cons_physical_ref_captures<M: cranelift_module::Module>(
     cx: &mut CodegenFn<'_>,
     b: &mut FunctionBuilder<'_>,
     jmod: &mut M,
-    runtime: &RuntimeRefs,
     var_env: &HashMap<u32, CodegenValue>,
     cache: &mut CodegenCache,
     head: crate::fz_ir::Var,
@@ -2086,15 +1993,7 @@ fn owned_cons_physical_ref_captures<M: cranelift_module::Module>(
     let Some(source_cons) = cache.owned_cons_reuse_sources.get(&head.0).copied() else {
         return Vec::new();
     };
-    vec![any_ref_for_var(
-        cx,
-        var_env,
-        b,
-        jmod,
-        runtime,
-        source_cons.0,
-        cache,
-    )]
+    vec![cx.any_ref_for_var(var_env, b, jmod, source_cons.0, cache)]
 }
 
 fn emit_list_tail_return_value<

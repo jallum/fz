@@ -1903,7 +1903,6 @@ fn emit_mid_flight_cont_bodies<M: cranelift_module::Module>(
                     &mut cx,
                     b,
                     m,
-                    runtime,
                     CodegenValue::AnyRef(value_ref),
                     &mut args,
                 );

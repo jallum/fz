@@ -523,6 +523,14 @@ mod tests {
                     && !source.contains("CodegenFn::new_runtime_with_cache"),
                 "{name} uses retired helper-local CodegenFn constructors"
             );
+            if name != "value.rs" {
+                assert!(
+                    !source.contains("codegen_value_")
+                        && !source.contains("tagged_get(cx")
+                        && !source.contains("any_ref_for_var(cx"),
+                    "{name} reaches around CodegenFn value coercion methods"
+                );
+            }
         }
     }
 
