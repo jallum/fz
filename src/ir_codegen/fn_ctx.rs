@@ -76,6 +76,33 @@ impl<'builder, 'ctx, 'env, M: cranelift_module::Module> CodegenFn<'builder, 'ctx
     pub(crate) fn empty_list_ref(&mut self) -> ir::Value {
         emit_empty_list_value_ref_word(self.b, self.cache)
     }
+
+    pub(crate) fn list_tail_ref_word(&mut self, tail: ListTailBits) -> ir::Value {
+        match tail {
+            ListTailBits::Empty => self.empty_list_ref(),
+            ListTailBits::ValueRef(value) | ListTailBits::NonEmptyValueRef(value) => value,
+        }
+    }
+
+    pub(crate) fn list_cons_with(&mut self, cons_id: FuncId, args: &[ir::Value]) -> ir::Value {
+        self.call_func1(cons_id, args)
+    }
+
+    pub(crate) fn list_head(&mut self, list_ref: ir::Value) -> ir::Value {
+        self.call_func1(self.env.runtime.list_head_fallback_id, &[list_ref])
+    }
+
+    pub(crate) fn list_head_int(&mut self, list_ref: ir::Value) -> ir::Value {
+        self.call_func1(self.env.runtime.list_head_int_ref_id, &[list_ref])
+    }
+
+    pub(crate) fn list_head_float(&mut self, list_ref: ir::Value) -> ir::Value {
+        self.call_func1(self.env.runtime.list_head_float_ref_id, &[list_ref])
+    }
+
+    pub(crate) fn list_tail(&mut self, list_ref: ir::Value) -> ir::Value {
+        self.call_func1(self.env.runtime.list_tail_fallback_id, &[list_ref])
+    }
 }
 
 #[cfg(test)]

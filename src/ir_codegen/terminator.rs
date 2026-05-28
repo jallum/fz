@@ -765,7 +765,7 @@ fn emit_call_term<
                 let pivot_tail = if let Some(reused) = emit_owned_cons_reuse_or_alloc(
                     b,
                     jmod,
-                    runtime,
+                    env,
                     var_env,
                     cache,
                     pivot_capture,
@@ -2002,7 +2002,7 @@ fn emit_list_tail_return_value<
         let cons = emit_list_cons_bif(
             b,
             jmod,
-            env.runtime,
+            env,
             var_env,
             *elem,
             expected_runtime_value_kind(t, env.fn_types, block_env, *elem),

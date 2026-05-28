@@ -254,14 +254,18 @@ fn emit_map_destination_put<M: cranelift_module::Module>(
 pub(crate) fn emit_list_cons_bif<M: cranelift_module::Module>(
     b: &mut FunctionBuilder<'_>,
     jmod: &mut M,
-    runtime: &RuntimeRefs,
+    env: &CodegenEnv<'_>,
     var_env: &HashMap<u32, CodegenValue>,
     head: crate::fz_ir::Var,
     head_kind: Option<fz_runtime::any_value::ValueKind>,
     tail: ListTailBits,
     cache: &mut CodegenCache,
 ) -> ir::Value {
-    let tail_ref = list_tail_ref_word(b, cache, tail);
+    let runtime = env.runtime;
+    let tail_ref = {
+        let mut cx = CodegenFn::new(b, jmod, env, cache);
+        cx.list_tail_ref_word(tail)
+    };
     let head_value = binding_for_var(var_env, head.0);
     let (func_id, args): (FuncId, Vec<ir::Value>) = match head_kind {
         Some(fz_runtime::any_value::ValueKind::INT) => (
@@ -350,9 +354,8 @@ pub(crate) fn emit_list_cons_bif<M: cranelift_module::Module>(
             ],
         ),
     };
-    let fref = jmod.declare_func_in_func(func_id, b.func);
-    let inst = b.ins().call(fref, &args);
-    b.inst_results(inst)[0]
+    let mut cx = CodegenFn::new(b, jmod, env, cache);
+    cx.list_cons_with(func_id, &args)
 }
 
 /// Lower collection-typed Prim variants (List, Tuple, AllocStruct, Bitstring,
@@ -376,16 +379,14 @@ pub(crate) fn lower_collection_prim<
     let tuple_schema_ids = env.tuple_schema_ids;
     let v: LowerOut = match prim {
         Prim::ListHead(c) => {
-            let fref = jmod.declare_func_in_func(runtime.list_head_fallback_id, b.func);
             let list_ref = known_list_ref_for_var(var_env, b, jmod, runtime, cache, block_id, c.0);
-            let inst = b.ins().call(fref, &[list_ref]);
-            LowerOut::ValueRefWord(b.inst_results(inst)[0])
+            let mut cx = CodegenFn::new(b, jmod, env, cache);
+            LowerOut::ValueRefWord(cx.list_head(list_ref))
         }
         Prim::ListTail(c) => {
-            let fref = jmod.declare_func_in_func(runtime.list_tail_fallback_id, b.func);
             let list_ref = known_list_ref_for_var(var_env, b, jmod, runtime, cache, block_id, c.0);
-            let inst = b.ins().call(fref, &[list_ref]);
-            LowerOut::ValueRefWord(b.inst_results(inst)[0])
+            let mut cx = CodegenFn::new(b, jmod, env, cache);
+            LowerOut::ValueRefWord(cx.list_tail(list_ref))
         }
         Prim::MakeList(elems, tail) => {
             if elems.len() == 1
@@ -412,7 +413,7 @@ pub(crate) fn lower_collection_prim<
                 let cons = emit_list_cons_bif(
                     b,
                     jmod,
-                    runtime,
+                    env,
                     var_env,
                     *e,
                     expected_runtime_value_kind(t, fn_types, block_env, *e),
@@ -501,7 +502,7 @@ pub(crate) fn lower_collection_prim<
             let cons = emit_list_cons_bif(
                 b,
                 jmod,
-                runtime,
+                env,
                 var_env,
                 *head,
                 expected_runtime_value_kind(t, fn_types, block_env, *head),
@@ -1187,25 +1188,22 @@ pub(crate) fn lower_prim<
             if list_projection_is_safe(t, fn_types, *c, block_env)
                 && ty_is_int(t, fn_types, dest_var) =>
         {
-            let list_head = jmod.declare_func_in_func(runtime.list_head_int_ref_id, b.func);
             let list_ref = known_list_ref_for_var(var_env, b, jmod, runtime, cache, block_id, c.0);
-            let inst = b.ins().call(list_head, &[list_ref]);
-            Ok(LowerOut::RawI64(b.inst_results(inst)[0]))
+            let mut cx = CodegenFn::new(b, jmod, env, cache);
+            Ok(LowerOut::RawI64(cx.list_head_int(list_ref)))
         }
         Prim::ListHead(c)
             if list_projection_is_safe(t, fn_types, *c, block_env)
                 && ty_is_float(t, fn_types, dest_var) =>
         {
-            let list_head = jmod.declare_func_in_func(runtime.list_head_float_ref_id, b.func);
             let list_ref = known_list_ref_for_var(var_env, b, jmod, runtime, cache, block_id, c.0);
-            let inst = b.ins().call(list_head, &[list_ref]);
-            Ok(LowerOut::RawF64(b.inst_results(inst)[0]))
+            let mut cx = CodegenFn::new(b, jmod, env, cache);
+            Ok(LowerOut::RawF64(cx.list_head_float(list_ref)))
         }
         Prim::ListTail(c) if list_projection_is_safe(t, fn_types, *c, block_env) => {
-            let list_tail = jmod.declare_func_in_func(runtime.list_tail_fallback_id, b.func);
             let list_ref = known_list_ref_for_var(var_env, b, jmod, runtime, cache, block_id, c.0);
-            let inst = b.ins().call(list_tail, &[list_ref]);
-            Ok(LowerOut::ValueRefWord(b.inst_results(inst)[0]))
+            let mut cx = CodegenFn::new(b, jmod, env, cache);
+            Ok(LowerOut::ValueRefWord(cx.list_tail(list_ref)))
         }
         Prim::ListHead(..)
         | Prim::ListTail(..)
