@@ -138,16 +138,7 @@ impl MidFlightArgShape {
     ) {
         match self {
             MidFlightArgShape::Value(ArgRepr::RawF64) => {
-                let value = match value {
-                    CodegenValue::RawF64(value) => value,
-                    CodegenValue::AnyRef(value_ref) => {
-                        let fref = jmod.declare_func_in_func(runtime.unbox_float_id, b.func);
-                        let inst = b.ins().call(fref, &[value_ref]);
-                        b.inst_results(inst)[0]
-                    }
-                    _ => panic!("mid-flight RawF64 capture replay expected RawF64/ref"),
-                };
-                out.push(value);
+                out.push(codegen_value_raw_float(cx, b, jmod, runtime, value));
             }
             MidFlightArgShape::Value(ArgRepr::RawInt) => {
                 out.push(codegen_value_raw_int(cx, b, jmod, runtime, value));

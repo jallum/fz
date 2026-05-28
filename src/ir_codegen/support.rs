@@ -65,9 +65,7 @@ pub(crate) fn emit_owned_cons_reuse_or_alloc<M: cranelift_module::Module>(
     let source_cons = *cache.owned_cons_reuse_sources.get(&head.0)?;
     let source_ref = any_ref_for_var(cx, var_env, b, jmod, runtime, source_cons.0, cache);
     let tail_ref = list_tail_ref_word(b, cache, tail);
-    let fref = jmod.declare_func_in_func(runtime.list_reuse_or_cons_tail_ref_id, b.func);
-    let inst = b.ins().call(fref, &[source_ref, tail_ref]);
-    Some(b.inst_results(inst)[0])
+    Some(cx.list_reuse_or_cons_tail_ref(b, jmod, source_ref, tail_ref))
 }
 
 pub(crate) fn list_tail_ref_word(

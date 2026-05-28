@@ -236,6 +236,21 @@ impl<'env> CodegenFn<'env> {
         self.call_func1(b, jmod, self.runtime.list_tail_fallback_id, &[list_ref])
     }
 
+    pub(crate) fn list_reuse_or_cons_tail_ref<M: cranelift_module::Module>(
+        &mut self,
+        b: &mut FunctionBuilder<'_>,
+        jmod: &mut M,
+        source_ref: ir::Value,
+        tail_ref: ir::Value,
+    ) -> ir::Value {
+        self.call_func1(
+            b,
+            jmod,
+            self.runtime.list_reuse_or_cons_tail_ref_id,
+            &[source_ref, tail_ref],
+        )
+    }
+
     pub(crate) fn closure_capture_i64<M: cranelift_module::Module>(
         &mut self,
         b: &mut FunctionBuilder<'_>,
@@ -481,8 +496,8 @@ mod tests {
             ("entry.rs", include_str!("entry.rs"), 1, 1, 0),
             ("function.rs", include_str!("function.rs"), 0, 0, 0),
             ("prim.rs", include_str!("prim.rs"), 47, 57, 0),
-            ("repr.rs", include_str!("repr.rs"), 1, 1, 0),
-            ("support.rs", include_str!("support.rs"), 1, 1, 0),
+            ("repr.rs", include_str!("repr.rs"), 0, 0, 0),
+            ("support.rs", include_str!("support.rs"), 0, 0, 0),
             ("terminator.rs", include_str!("terminator.rs"), 13, 7, 0),
             ("value.rs", include_str!("value.rs"), 1, 1, 0),
         ];
