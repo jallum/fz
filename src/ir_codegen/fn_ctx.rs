@@ -42,6 +42,16 @@ pub(crate) struct CodegenFn<'env, K = BodyContext> {
     _kind: PhantomData<K>,
 }
 
+pub(crate) struct CodegenFnBody<'a, 'env, 'fb, M, K = BodyContext>
+where
+    M: cranelift_module::Module,
+{
+    cx: &'a mut CodegenFn<'env, K>,
+    b: &'a mut FunctionBuilder<'fb>,
+    jmod: &'a mut M,
+    cache: &'a mut CodegenCache,
+}
+
 impl<'env> CodegenFn<'env, BodyContext> {
     pub(crate) fn new(env: &'env CodegenEnv<'_>) -> Self {
         Self {
@@ -65,6 +75,20 @@ impl<'env> CodegenFn<'env, RuntimeShimContext> {
 }
 
 impl<'env, K> CodegenFn<'env, K> {
+    pub(crate) fn body<'a, 'fb, M: cranelift_module::Module>(
+        &'a mut self,
+        b: &'a mut FunctionBuilder<'fb>,
+        jmod: &'a mut M,
+        cache: &'a mut CodegenCache,
+    ) -> CodegenFnBody<'a, 'env, 'fb, M, K> {
+        CodegenFnBody {
+            cx: self,
+            b,
+            jmod,
+            cache,
+        }
+    }
+
     pub(crate) fn func_ref<M: cranelift_module::Module>(
         &mut self,
         b: &mut FunctionBuilder<'_>,
@@ -511,6 +535,20 @@ impl<'env, K> CodegenFn<'env, K> {
     }
 }
 
+impl<M> CodegenFnBody<'_, '_, '_, M, BodyContext>
+where
+    M: cranelift_module::Module,
+{
+    pub(crate) fn value_as_any_ref(&mut self, value: CodegenValue) -> ir::Value {
+        self.cx
+            .value_as_any_ref(self.b, self.jmod, self.cache, value)
+    }
+
+    pub(crate) fn coerce_binding_to(&mut self, binding: CodegenValue, to: ArgRepr) -> ir::Value {
+        coerce_binding_to(self.cx, self.b, self.jmod, binding, to)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -627,6 +665,16 @@ mod tests {
         assert_eq!(
             shim_contexts, 4,
             "runtime shim bodies should make their CodegenFn boundary explicit"
+        );
+
+        let function_source = include_str!("function.rs");
+        assert!(
+            !function_source.contains("cx.value_as_any_ref(&mut b, jmod, &mut cache"),
+            "compile_fn should use the body lowering surface for semantic coercions"
+        );
+        assert!(
+            !function_source.contains("coerce_binding_to(&mut cx, &mut b, jmod"),
+            "compile_fn should not call semantic coercions with raw lowering plumbing"
         );
     }
 }

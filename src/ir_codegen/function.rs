@@ -266,10 +266,12 @@ pub(crate) fn compile_fn<
                 );
                 let vb = *var_env.get(&arg.0).expect("unbound goto arg");
                 if want == ArgRepr::ValueRef {
-                    let value_ref = cx.value_as_any_ref(&mut b, jmod, &mut cache, vb);
+                    let value_ref = cx.body(&mut b, jmod, &mut cache).value_as_any_ref(vb);
                     var_env.insert(arg.0, CodegenValue::any_ref(value_ref));
                 } else if vb.repr() != want {
-                    let coerced = coerce_binding_to(&mut cx, &mut b, jmod, vb, want);
+                    let coerced = cx
+                        .body(&mut b, jmod, &mut cache)
+                        .coerce_binding_to(vb, want);
                     var_env.insert(arg.0, CodegenValue::from_abi_value(coerced, want));
                 }
             }

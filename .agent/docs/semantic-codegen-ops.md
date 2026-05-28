@@ -29,6 +29,12 @@ made available to shims by accident.
 implementation detail. A later inline CLIF implementation should be local to
 the semantic method.
 
+When a lowering site needs the current `FunctionBuilder`, module, and
+`CodegenCache` together, use the short-lived `CodegenFn::body(...)` surface
+and call intent methods on that body surface. This keeps Rust's explicit
+mutable borrows while giving call sites one semantic receiver to migrate
+toward; do not hide these borrows behind raw pointers or parallel local caches.
+
 Direct `declare_func_in_func` use belongs at module-construction boundaries,
 dynamic user-function calls, or inside `CodegenFn`/semantic operation
 implementations. Codegen changes should remove the bridge code they replace
