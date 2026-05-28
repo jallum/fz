@@ -544,6 +544,19 @@ where
             .value_as_any_ref(self.b, self.jmod, self.cache, value)
     }
 
+    pub(crate) fn any_ref_for_var(
+        &mut self,
+        var_env: &HashMap<u32, CodegenValue>,
+        var: u32,
+    ) -> ir::Value {
+        self.cx
+            .any_ref_for_var(var_env, self.b, self.jmod, var, self.cache)
+    }
+
+    pub(crate) fn list_tail_ref_word(&mut self, tail: ListTailBits) -> ir::Value {
+        self.cx.list_tail_ref_word(self.b, self.cache, tail)
+    }
+
     pub(crate) fn coerce_binding_to(&mut self, binding: CodegenValue, to: ArgRepr) -> ir::Value {
         coerce_binding_to(self.cx, self.b, self.jmod, binding, to)
     }
@@ -675,6 +688,29 @@ mod tests {
         assert!(
             !function_source.contains("coerce_binding_to(&mut cx, &mut b, jmod"),
             "compile_fn should not call semantic coercions with raw lowering plumbing"
+        );
+
+        for (name, source) in [
+            ("call.rs", include_str!("call.rs")),
+            ("closure.rs", include_str!("closure.rs")),
+            ("support.rs", include_str!("support.rs")),
+        ] {
+            assert!(
+                !source.contains("cx.value_as_any_ref(b, jmod, cache"),
+                "{name} should use CodegenFn::body for value_as_any_ref"
+            );
+        }
+        assert!(
+            !include_str!("support.rs").contains("pub(crate) fn list_tail_ref_word("),
+            "support.rs should not keep the retired list_tail_ref_word free helper"
+        );
+
+        assert!(
+            context_source.contains("fn value_as_any_ref(")
+                && context_source.contains("fn any_ref_for_var(")
+                && context_source.contains("fn list_tail_ref_word(")
+                && context_source.contains("fn coerce_binding_to("),
+            "CodegenFn body surface should expose migrated semantic coercions"
         );
     }
 }

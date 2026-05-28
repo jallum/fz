@@ -34,6 +34,9 @@ When a lowering site needs the current `FunctionBuilder`, module, and
 and call intent methods on that body surface. This keeps Rust's explicit
 mutable borrows while giving call sites one semantic receiver to migrate
 toward; do not hide these borrows behind raw pointers or parallel local caches.
+The body surface should grow only with semantic operation names that have
+active migrated callers, rather than by exposing generic builder or cache
+accessors.
 
 Direct `declare_func_in_func` use belongs at module-construction boundaries,
 dynamic user-function calls, or inside `CodegenFn`/semantic operation

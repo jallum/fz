@@ -46,7 +46,7 @@ pub(crate) fn emit_halt_from_codegen_value<M: cranelift_module::Module>(
             cx.halt_implicit(b, jmod, ArgRepr::RawF64, value);
         }
         value => {
-            let value_ref = cx.value_as_any_ref(b, jmod, cache, value);
+            let value_ref = cx.body(b, jmod, cache).value_as_any_ref(value);
             cx.halt_implicit(b, jmod, ArgRepr::ValueRef, value_ref);
         }
     }
@@ -128,7 +128,7 @@ pub(crate) fn store_frame_value_dynamic<M: cranelift_module::Module>(
     field_offset: u32,
     value: CodegenValue,
 ) {
-    let value_ref = cx.value_as_any_ref(b, jmod, cache, value);
+    let value_ref = cx.body(b, jmod, cache).value_as_any_ref(value);
     b.ins()
         .store(MemFlags::trusted(), value_ref, frame, field_offset as i32);
 }
@@ -231,7 +231,7 @@ pub(crate) fn store_bindings_into_callee_frame<M: cranelift_module::Module>(
                 b.ins().store(MemFlags::trusted(), n, callee_frame, off);
             }
             FieldKind::AnyValue => {
-                let value_ref = cx.value_as_any_ref(b, jmod, cache, binding);
+                let value_ref = cx.body(b, jmod, cache).value_as_any_ref(binding);
                 b.ins()
                     .store(MemFlags::trusted(), value_ref, callee_frame, off);
             }

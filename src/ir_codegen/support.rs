@@ -62,20 +62,14 @@ pub(crate) fn emit_owned_cons_reuse_or_alloc<M: cranelift_module::Module>(
     tail: ListTailBits,
 ) -> Option<ir::Value> {
     let source_cons = *cache.owned_cons_reuse_sources.get(&head.0)?;
-    let source_ref = cx.any_ref_for_var(var_env, b, jmod, source_cons.0, cache);
-    let tail_ref = list_tail_ref_word(b, cache, tail);
+    let (source_ref, tail_ref) = {
+        let mut body = cx.body(b, jmod, cache);
+        (
+            body.any_ref_for_var(var_env, source_cons.0),
+            body.list_tail_ref_word(tail),
+        )
+    };
     Some(cx.list_reuse_or_cons_tail_ref(b, jmod, source_ref, tail_ref))
-}
-
-pub(crate) fn list_tail_ref_word(
-    b: &mut FunctionBuilder<'_>,
-    cache: &mut CodegenCache,
-    tail: ListTailBits,
-) -> ir::Value {
-    match tail {
-        ListTailBits::Empty => emit_empty_list_value_ref_word(b, cache),
-        ListTailBits::ValueRef(value) | ListTailBits::NonEmptyValueRef(value) => value,
-    }
 }
 
 // Raw atom payloads used with side-band ATOM kind tags.
