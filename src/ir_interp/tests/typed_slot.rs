@@ -203,6 +203,44 @@ fn interp_reductions_yield_allocation_light_loops() {
 }
 
 #[test]
+fn interp_quiet_quanta_moves_only_at_scheduler_boundaries() {
+    let m = lower_src(
+        r#"
+        fn count(0, acc), do: acc
+        fn count(n, acc), do: count(n - 1, acc + 1)
+        fn main(), do: count(250, 0)
+    "#,
+    );
+    let main = m.fn_by_name("main").expect("main").id;
+    let mut runtime = IrInterpRuntime::fresh_with_root(&m);
+    runtime
+        .enqueue_entry(&m, 1, main, vec![])
+        .expect("enqueue main");
+    runtime
+        .task_mut(1)
+        .expect("main task")
+        .reductions_per_quantum = 100;
+
+    let completions = runtime
+        .drive_until_idle(&crate::telemetry::NullTelemetry, None)
+        .expect("drive interp");
+    let halt = completions
+        .iter()
+        .rev()
+        .find_map(|(pid, value)| (*pid == 1).then_some(value.as_i64().expect("int halt")))
+        .expect("main completion");
+
+    let task = runtime.task(1).expect("main task remains registered");
+    assert_eq!(halt, 250);
+    assert!(task.reduction_yields > 0);
+    assert_eq!(
+        task.quiet_quanta, task.reduction_yields as u8,
+        "quiet_quanta should move once per scheduler yield, not once per interpreted back edge"
+    );
+    assert_eq!(task.interpreter_yields, 0);
+}
+
+#[test]
 fn interp_allocation_pressure_yields_before_budget_exhaustion() {
     let m = lower_src(
         r#"

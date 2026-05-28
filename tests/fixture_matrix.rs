@@ -281,6 +281,10 @@ fn static_tests() -> Vec<(&'static str, fn())> {
             continuation_materialization_boundaries_stay_explicit,
         ),
         (
+            "interpreter_stepper_does_not_update_quiet_quanta",
+            interpreter_stepper_does_not_update_quiet_quanta,
+        ),
+        (
             "reverse_filter_tree_pin_current_shape",
             reverse_filter_tree_pin_current_shape,
         ),
@@ -3070,6 +3074,14 @@ fn continuation_materialization_boundaries_stay_explicit() {
             needle
         );
     }
+}
+
+fn interpreter_stepper_does_not_update_quiet_quanta() {
+    let source = fs::read_to_string("src/ir_interp/run.rs").expect("read interp runner");
+    assert!(
+        !source.contains("quiet_quanta"),
+        "interpreter hot loop must leave quiet_quanta to scheduler boundary code"
+    );
 }
 
 fn reverse_filter_tree_pin_current_shape() {
