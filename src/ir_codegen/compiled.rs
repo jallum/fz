@@ -1300,7 +1300,6 @@ impl CompiledModule {
         /// receive templates, runnable + pending entry closures) and
         /// rewrites those pointers to their to-space copies.
         fn park_time_gc(process: &mut Process) {
-            process.sync_reduction_budget_from_runtime();
             if !process.needs_boundary_gc() {
                 return;
             }

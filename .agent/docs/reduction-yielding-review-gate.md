@@ -161,9 +161,10 @@ Goal: heap/process stats must distinguish ordinary reduction exhaustion from
 allocation-pressure-triggered yields, even though both use the same scheduler
 mechanism.
 
-Current state: `fz_yield_mid_flight()` always calls `note_reduction_yield()`.
-That makes `reduction_yields` mean "mid-flight yield via reductions machinery",
-not "ordinary budget exhaustion" as documented.
+Current state: `fz_yield_mid_flight_report()` records the boundary reason bits,
+but `reduction_yields` still needs cause-specific acceptance coverage so it
+cannot drift back into meaning "any mid-flight yield via reductions machinery"
+instead of "ordinary budget exhaustion."
 
 Plan:
 

@@ -613,16 +613,25 @@ pub extern "C" fn fz_receive_attempt(cont_frame_ptr: *mut u8) -> *mut u8 {
     }
 }
 
-/// Signal a cooperative mid-flight yield using a closure-shaped continuation.
-/// The closure captures the next loop state; the scheduler treats it as the
-/// primary GC root, then requeues the process and later dispatches closure().
+/// Boundary-reporting mid-flight yield entry.
+///
+/// Generated/interpreted code reports the scheduler continuation, signed
+/// reductions left in the turn, and the reason bits that caused the yield. The
+/// scheduler knows how many reductions it granted, so it derives burned work at
+/// the boundary instead of syncing against the hot-path budget cell.
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_yield_mid_flight(cont_closure_bits: u64) -> *mut u8 {
+pub extern "C" fn fz_yield_mid_flight_report(
+    cont_closure_bits: u64,
+    remaining_reductions: i32,
+    reason: u32,
+) -> *mut u8 {
     use crate::scheduler_hooks::YIELD_PTR;
     let p = current_process();
     p.scheduler_yields = p.scheduler_yields.saturating_add(1);
-    p.note_reduction_yield();
-    let closure_addr = closure_addr_from_ref_word(cont_closure_bits, "fz_yield_mid_flight cont");
+    let reason = (reason as u8) | crate::reductions::take_yield_reasons();
+    p.finish_yield_report(remaining_reductions, reason);
+    let closure_addr =
+        closure_addr_from_ref_word(cont_closure_bits, "fz_yield_mid_flight_report cont");
     let closure_bits = crate::any_value::heap_object_word(closure_addr, ValueKind::CLOSURE);
     let continuation_bytes = crate::any_value::object_size(closure_bits);
     let margin_after = p.heap.bytes_remaining_in_block();
@@ -2426,7 +2435,7 @@ mod tests {
     }
 
     #[test]
-    fn yield_mid_flight_stashes_runnable_closure() {
+    fn yield_mid_flight_report_stashes_runnable_closure() {
         with_process(|| {
             let bits = current_process().heap.alloc_closure_slots(0, 0, 0);
             let closure_addr =
@@ -2434,10 +2443,20 @@ mod tests {
             let closure_ref = AnyValueRef::from_heap_object(ValueKind::CLOSURE, closure_addr)
                 .expect("closure ref")
                 .raw_word();
-            let ret = fz_yield_mid_flight(closure_ref);
+            let ret = fz_yield_mid_flight_report(
+                closure_ref,
+                -1,
+                crate::process::YIELD_REASON_REDUCTIONS as u32,
+            );
             assert_eq!(ret as u64, crate::scheduler_hooks::YIELD_PTR);
             assert_eq!(current_process().runnable_closure, closure_addr);
             assert_eq!(current_process().scheduler_yields, 1);
+            assert_eq!(current_process().reductions_remaining, -1);
+            assert_eq!(current_process().reduction_yields, 1);
+            assert_eq!(
+                current_process().yield_reasons,
+                crate::process::YIELD_REASON_REDUCTIONS
+            );
             assert_eq!(
                 current_process().max_yield_continuation_bytes,
                 crate::any_value::closure_size_for_count(0) as u64

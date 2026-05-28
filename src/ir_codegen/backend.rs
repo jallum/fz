@@ -505,8 +505,8 @@ fn register_runtime_symbols(builder: &mut JITBuilder) {
         fz_runtime::ir_runtime::fz_receive_park_matched as *const u8,
     );
     builder.symbol(
-        "fz_yield_mid_flight",
-        fz_runtime::ir_runtime::fz_yield_mid_flight as *const u8,
+        "fz_yield_mid_flight_report",
+        fz_runtime::ir_runtime::fz_yield_mid_flight_report as *const u8,
     );
     builder.symbol(
         "fz_get_static_closure",

@@ -580,8 +580,6 @@ fn dispatch_quantum(pid: u32, addrs: &ShimAddrs) {
             run_scheduler_closure(addrs.resume, closure);
         }
     }
-    unsafe { (*proc_ptr).sync_reduction_budget_from_runtime() };
-
     // Post-quantum state check.
     let state = unsafe { (*proc_ptr).state };
     let runnable = unsafe { (*proc_ptr).runnable_closure };

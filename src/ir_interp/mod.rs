@@ -279,11 +279,17 @@ impl IrInterpRuntime {
                         self.set_process_state(pid, ProcessState::Exited);
                         continue 'sched;
                     }
-                    Ok(InterpStep::Yielded(resume_fn, mut resume_args, mut new_after)) => {
+                    Ok(InterpStep::Yielded {
+                        resume_fn,
+                        mut resume_args,
+                        after: mut new_after,
+                        remaining_reductions,
+                        reason,
+                    }) => {
                         fz_runtime::process::CURRENT_PROCESS.with(|c| c.set(prev));
                         new_after.extend(after);
                         let process = unsafe { &mut *proc_ptr };
-                        process.sync_yield_reasons_from_runtime();
+                        process.finish_yield_report(remaining_reductions, reason);
                         if process.needs_boundary_gc() {
                             gc_interp_scheduler_roots(process, &mut resume_args, &mut new_after)?;
                             process.quiet_quanta = 0;
@@ -466,7 +472,9 @@ pub fn run_test_fn(
     fz_runtime::process::CURRENT_PROCESS.with(|c| c.set(prev));
     match result {
         Ok(InterpStep::Done(_)) => Ok(()),
-        Ok(InterpStep::Yielded(..)) => Err("test fn yielded outside scheduler drive".to_string()),
+        Ok(InterpStep::Yielded { .. }) => {
+            Err("test fn yielded outside scheduler drive".to_string())
+        }
         Ok(InterpStep::Blocked(..)) | Ok(InterpStep::BlockedMatched(..)) => {
             Err("test fn blocked on receive with empty mailbox".to_string())
         }

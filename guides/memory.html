@@ -410,7 +410,7 @@ mutual recursion (<code>f → g → f</code>) is covered automatically.</p>
   store arg0, cont.capture[0]
   store arg1, cont.capture[1]
   ...
-  call fz_yield_mid_flight(cont)
+  call fz_yield_mid_flight_report(cont, remaining, YIELD_REASON_REDUCTIONS)
   return [YIELD_PTR]                          <span class="note">; sentinel; scheduler sees it and re-queues</span>
 
   $fast:

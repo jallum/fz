@@ -129,7 +129,7 @@ pub struct Process {
     pub quiet_quanta: u8,
     /// Cumulative compiled-code mid-flight yields for this process. Each
     /// increment means native code built a scheduler-owned continuation
-    /// closure and returned to the scheduler through `fz_yield_mid_flight`.
+    /// closure and returned to the scheduler through `fz_yield_mid_flight_report`.
     pub scheduler_yields: u64,
     /// Cumulative interpreter back-edge GC yields. These do not allocate
     /// scheduler continuation closures; the interpreter forwards roots
@@ -302,36 +302,16 @@ impl Process {
         crate::reductions::install_budget(i32::MAX);
     }
 
-    pub fn sync_reduction_budget_from_runtime(&mut self) {
-        let remaining = crate::reductions::load().max(0);
-        let spent = self.reductions_remaining.saturating_sub(remaining).max(0);
-        self.reductions_remaining = remaining;
-        self.reductions_executed = self.reductions_executed.saturating_add(spent as u64);
-        self.sync_yield_reasons_from_runtime();
-    }
-
-    pub fn sync_yield_reasons_from_runtime(&mut self) {
-        self.yield_reasons |= crate::reductions::take_yield_reasons();
-    }
-
-    pub fn spend_reductions(&mut self, amount: i32) -> bool {
-        debug_assert!(amount >= 0, "cannot spend negative reductions");
-        if amount <= 0 {
-            return self.reductions_remaining <= 0;
+    pub fn finish_yield_report(&mut self, remaining_reductions: i32, reason: u8) {
+        self.reductions_remaining = remaining_reductions;
+        let burned = i64::from(self.reductions_per_quantum) - i64::from(remaining_reductions);
+        if burned > 0 {
+            self.reductions_executed = self.reductions_executed.saturating_add(burned as u64);
         }
-        self.reductions_remaining = self.reductions_remaining.saturating_sub(amount);
-        self.reductions_executed = self.reductions_executed.saturating_add(amount as u64);
-        self.reductions_remaining <= 0
-    }
-
-    pub fn expire_reductions(&mut self, reason: u8) {
-        self.reductions_remaining = 0;
         self.yield_reasons |= reason;
-    }
-
-    pub fn note_reduction_yield(&mut self) {
-        self.reduction_yields = self.reduction_yields.saturating_add(1);
-        self.yield_reasons |= YIELD_REASON_REDUCTIONS;
+        if (reason & YIELD_REASON_REDUCTIONS) == YIELD_REASON_REDUCTIONS {
+            self.reduction_yields = self.reduction_yields.saturating_add(1);
+        }
     }
 
     pub fn clear_yield_reasons(&mut self) {
@@ -440,12 +420,9 @@ mod tests {
         process.reset_reduction_budget();
 
         assert_eq!(process.reductions_remaining, 3);
-        assert!(!process.spend_reductions(1));
-        assert_eq!(process.reductions_remaining, 2);
-        assert_eq!(process.reductions_executed, 1);
-        assert!(process.spend_reductions(2));
-        process.note_reduction_yield();
-        assert_eq!(process.reductions_remaining, 0);
+        process.finish_yield_report(-1, YIELD_REASON_REDUCTIONS);
+        assert_eq!(process.reductions_remaining, -1);
+        assert_eq!(process.reductions_executed, 4);
         assert_eq!(process.reduction_yields, 1);
         assert_eq!(
             process.yield_reasons & YIELD_REASON_REDUCTIONS,

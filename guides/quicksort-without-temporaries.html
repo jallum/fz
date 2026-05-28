@@ -318,7 +318,7 @@ scheduler:</p>
 <pre>
 if reductions_remaining <= 0:
   k = closure(next_loop_fn, next_args, current_cont)
-  return fz_yield_mid_flight(k)
+  return fz_yield_mid_flight_report(k, reductions_remaining, YIELD_REASON_REDUCTIONS)
 </pre>
 
 <p>That closure is not "the stack." It is the boxed receipt for restarting the

@@ -1325,8 +1325,14 @@ fn emit_back_edge_yield_check<M: cranelift_module::Module>(
         }
         store_closure_capture_ref_word(b, jmod, runtime, cont_closure, captured_count, i, root_ref);
     }
-    let yield_fref = jmod.declare_func_in_func(runtime.yield_mid_flight_id, b.func);
-    let yield_inst = b.ins().call(yield_fref, &[cont_closure]);
+    let yield_fref = jmod.declare_func_in_func(runtime.yield_mid_flight_report_id, b.func);
+    let reason = b.ins().iconst(
+        types::I32,
+        fz_runtime::process::YIELD_REASON_REDUCTIONS as i64,
+    );
+    let yield_inst = b
+        .ins()
+        .call(yield_fref, &[cont_closure, new_remaining, reason]);
     let yield_ret = b.inst_results(yield_inst)[0];
     b.ins().return_(&[yield_ret]);
 

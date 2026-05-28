@@ -451,7 +451,6 @@ impl<'a> Runtime<'a> {
             let ptr: *mut Process = &mut *task;
             let prev = CURRENT_PROCESS.with(|c| c.replace(ptr));
             self.compiled.run_quantum(&mut task);
-            task.sync_reduction_budget_from_runtime();
             CURRENT_PROCESS.with(|c| c.set(prev));
             // Possible post-quantum states (fz-ul4.19.3):
             //

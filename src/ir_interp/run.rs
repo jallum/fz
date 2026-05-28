@@ -186,9 +186,21 @@ fn run_fn_typed<
                             inner_after.push((continuation.fn_id, outer_cap_vals));
                             return Ok(InterpStep::BlockedMatched(park, inner_after));
                         }
-                        InterpStep::Yielded(rf, cv, mut inner_after) => {
-                            inner_after.push((continuation.fn_id, outer_cap_vals));
-                            return Ok(InterpStep::Yielded(rf, cv, inner_after));
+                        InterpStep::Yielded {
+                            resume_fn,
+                            resume_args,
+                            mut after,
+                            remaining_reductions,
+                            reason,
+                        } => {
+                            after.push((continuation.fn_id, outer_cap_vals));
+                            return Ok(InterpStep::Yielded {
+                                resume_fn,
+                                resume_args,
+                                after,
+                                remaining_reductions,
+                                reason,
+                            });
                         }
                     }
                 }
@@ -206,16 +218,20 @@ fn run_fn_typed<
                     if *is_back_edge {
                         let budget_exhausted = {
                             let p = fz_runtime::process::current_process();
-                            let exhausted = p.spend_reductions(1);
-                            if exhausted {
-                                p.note_reduction_yield();
-                            }
-                            exhausted
+                            p.reductions_remaining -= 1;
+                            p.reductions_remaining <= 0
                         };
-                        let p = fz_runtime::process::current_process();
-                        p.quiet_quanta = p.quiet_quanta.saturating_add(1);
                         if budget_exhausted {
-                            return Ok(InterpStep::Yielded(*callee, arg_vals, vec![]));
+                            let p = fz_runtime::process::current_process();
+                            let reason = fz_runtime::process::YIELD_REASON_REDUCTIONS
+                                | fz_runtime::reductions::take_yield_reasons();
+                            return Ok(InterpStep::Yielded {
+                                resume_fn: *callee,
+                                resume_args: arg_vals,
+                                after: vec![],
+                                remaining_reductions: p.reductions_remaining,
+                                reason,
+                            });
                         }
                     }
                     fn_id = *callee;
@@ -248,9 +264,21 @@ fn run_fn_typed<
                             inner_after.push((continuation.fn_id, outer_cap_vals));
                             return Ok(InterpStep::BlockedMatched(park, inner_after));
                         }
-                        InterpStep::Yielded(rf, cv, mut inner_after) => {
-                            inner_after.push((continuation.fn_id, outer_cap_vals));
-                            return Ok(InterpStep::Yielded(rf, cv, inner_after));
+                        InterpStep::Yielded {
+                            resume_fn,
+                            resume_args,
+                            mut after,
+                            remaining_reductions,
+                            reason,
+                        } => {
+                            after.push((continuation.fn_id, outer_cap_vals));
+                            return Ok(InterpStep::Yielded {
+                                resume_fn,
+                                resume_args,
+                                after,
+                                remaining_reductions,
+                                reason,
+                            });
                         }
                     }
                 }
@@ -442,7 +470,7 @@ pub(super) fn drain_pending_dtors_interp<
         )?);
         match run_fn(runtime, t, module, tel, fn_id, args)? {
             InterpStep::Done(_) => {}
-            InterpStep::Yielded(_, _, _)
+            InterpStep::Yielded { .. }
             | InterpStep::Blocked(_, _, _)
             | InterpStep::BlockedMatched(_, _) => {
                 return Err("fz-4mk drain: dtor blocked on receive (unsupported in v1)".into());
