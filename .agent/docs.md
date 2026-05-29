@@ -11,6 +11,7 @@ Read the one whose trigger matches what you are about to touch:
 - [continuation-captures](docs/continuation-captures.md) — continuation ABI, closure captures, lambda captures, or capture pruning.
 - [destination-passing](docs/destination-passing.md) — destination planning/passing IR, erased init-token facts, tuple/list/map construction lowering, or typed container field initialization.
 - [dispatch-as-planner-output](../docs/dispatch-as-planner-output.md) — planner-owned call-edge facts, `SpecPlan.call_edges`, `SpecKey` variants, or ReturnDemand capability selection.
+- [single-authoritative-plan](../docs/single-authoritative-plan.md) — the one `plan_module` codegen commits to, the `planner.planned` count, `plan_callable_capabilities` / `CapabilityPlan`, why destination lowering needs no re-plan, or why the capability pass keeps the return fixpoint.
 - [externs](docs/externs.md) — `extern "C"` declarations, marshal classes, variadic calls, or extern codegen/interpreter behavior.
 - [guides](docs/guides.md) — writing or updating user-facing `guides/*.html`.
 - [ir-planner-rename](docs/ir-planner-rename.md) — renaming legacy phase/product/telemetry vocabulary to planner vocabulary.

@@ -14,6 +14,13 @@ the protocol-domain type contract, implementation target identity, dispatch
 outcomes, and the requirement that link/load stages preserve planner facts
 instead of reconstructing them with a second planning pass.
 
+The corollary is that there is exactly one such plan. See
+[`single-authoritative-plan.md`](single-authoritative-plan.md) for why
+`compile_with_backend_impl` derives the authoritative plan once (no second plan
+to reconcile, no telemetry-silenced re-derivation), how the pre-plan transforms
+read a capability slice instead of a full plan, and why destination lowering
+needs no re-plan.
+
 ## Authoritative Facts
 
 `SpecPlan.call_edges` is keyed by `CallsiteId`: `(caller FnId, intrinsic
