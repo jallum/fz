@@ -78,7 +78,7 @@ impl JitBackend {
 /// of `JitBackend::new` purely for readability — the list is long and
 /// flat. Grouped by subsystem (debug print/panic, list, struct, bitstring,
 /// map, closure, scheduler, receive, etc.).
-fn register_runtime_symbols(builder: &mut JITBuilder) {
+pub(crate) fn register_runtime_symbols(builder: &mut JITBuilder) {
     builder.symbol(
         "fz_dbg_value_ref",
         fz_runtime::ir_runtime::fz_dbg_value_ref as *const u8,
@@ -147,10 +147,6 @@ fn register_runtime_symbols(builder: &mut JITBuilder) {
     builder.symbol(
         "fz_list_head_float_ref",
         fz_runtime::ir_runtime::fz_list_head_float_ref as *const u8,
-    );
-    builder.symbol(
-        "fz_list_tail",
-        fz_runtime::ir_runtime::fz_list_tail as *const u8,
     );
     builder.symbol(
         "fz_list_tail_ref",
@@ -252,10 +248,6 @@ fn register_runtime_symbols(builder: &mut JITBuilder) {
         fz_runtime::extern_variadic::fz_call_var_i64_cstring_i64_to_i64 as *const u8,
     );
     builder.symbol(
-        "fz_map_empty",
-        fz_runtime::ir_runtime::fz_map_empty as *const u8,
-    );
-    builder.symbol(
         "fz_map_dest_begin",
         fz_runtime::ir_runtime::fz_map_dest_begin as *const u8,
     );
@@ -274,58 +266,6 @@ fn register_runtime_symbols(builder: &mut JITBuilder) {
     builder.symbol(
         "fz_map_dest_freeze",
         fz_runtime::ir_runtime::fz_map_dest_freeze as *const u8,
-    );
-    builder.symbol(
-        "fz_map_put_ref",
-        fz_runtime::ir_runtime::fz_map_put_ref as *const u8,
-    );
-    builder.symbol(
-        "fz_map_put_int",
-        fz_runtime::ir_runtime::fz_map_put_int as *const u8,
-    );
-    builder.symbol(
-        "fz_map_put_float",
-        fz_runtime::ir_runtime::fz_map_put_float as *const u8,
-    );
-    builder.symbol(
-        "fz_map_put_atom",
-        fz_runtime::ir_runtime::fz_map_put_atom as *const u8,
-    );
-    builder.symbol(
-        "fz_map_put_atom_key_int",
-        fz_runtime::ir_runtime::fz_map_put_atom_key_int as *const u8,
-    );
-    builder.symbol(
-        "fz_map_put_atom_key_float",
-        fz_runtime::ir_runtime::fz_map_put_atom_key_float as *const u8,
-    );
-    builder.symbol(
-        "fz_map_put_atom_key_atom",
-        fz_runtime::ir_runtime::fz_map_put_atom_key_atom as *const u8,
-    );
-    builder.symbol(
-        "fz_map_put_int_key_int",
-        fz_runtime::ir_runtime::fz_map_put_int_key_int as *const u8,
-    );
-    builder.symbol(
-        "fz_map_put_int_key_float",
-        fz_runtime::ir_runtime::fz_map_put_int_key_float as *const u8,
-    );
-    builder.symbol(
-        "fz_map_put_int_key_atom",
-        fz_runtime::ir_runtime::fz_map_put_int_key_atom as *const u8,
-    );
-    builder.symbol(
-        "fz_map_put_float_key_int",
-        fz_runtime::ir_runtime::fz_map_put_float_key_int as *const u8,
-    );
-    builder.symbol(
-        "fz_map_put_float_key_float",
-        fz_runtime::ir_runtime::fz_map_put_float_key_float as *const u8,
-    );
-    builder.symbol(
-        "fz_map_put_float_key_atom",
-        fz_runtime::ir_runtime::fz_map_put_float_key_atom as *const u8,
     );
     builder.symbol(
         "fz_map_get_ref",
@@ -489,10 +429,6 @@ fn register_runtime_symbols(builder: &mut JITBuilder) {
     builder.symbol(
         "fz_resource_test_print_dtor",
         fz_runtime::resource::fz_resource_test_print_dtor as *const u8,
-    );
-    builder.symbol(
-        "fz_receive_attempt",
-        fz_runtime::ir_runtime::fz_receive_attempt as *const u8,
     );
     builder.symbol(
         "fz_receive_park",

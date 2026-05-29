@@ -1,26 +1,20 @@
-//! Hooks the fz binary installs into the runtime staticlib so the
-//! per-task FFI fns (`fz_spawn`, `fz_send`) can drive a Runtime that
-//! the staticlib itself doesn't link against.
+//! Callback *type* definitions for the scheduler services the per-task FFI fns
+//! (`fz_spawn`, `fz_send`, `fz_make_resource`, after-timers, dbg output) drive.
 //!
-//! Background: spawn / send semantically belong to the runtime substrate
-//! (they manipulate Process state), but the *scheduler* — `Runtime` in
-//! src/runtime.rs — depends on `CompiledModule` (codegen-side, JIT-only
-//! today). So Runtime stays in the binary, and the runtime crate exposes
-//! function-pointer slots that the binary fills in before driving any
-//! task.
+//! Background: these services semantically belong to the runtime substrate (they
+//! manipulate Process state), but the *scheduler* — `Runtime` in src/runtime.rs —
+//! depends on `CompiledModule` (codegen-side, JIT-only). So `Runtime` stays in the
+//! binary, and the runtime crate can't name it directly; the binary supplies
+//! `extern "C"` callbacks that re-narrow a type-erased scheduler/module handle.
 //!
-//! Lifecycle:
-//!
-//!   1. Binary builds a Runtime around a CompiledModule.
-//!   2. Before `run_until_idle`, binary calls install_spawn_hook /
-//!      install_send_hook with extern "C" callbacks that close over the
-//!      Runtime via the existing CURRENT_RUNTIME TLS (a *mut ()).
-//!   3. JIT'd code (or interp / AOT entry shim) calls fz_spawn /
-//!      fz_send; those dispatch through the hooks.
-//!   4. After `run_until_idle`, binary clears the hooks (so a later call
-//!      from outside a Runtime fails loudly).
+//! Those callbacks no longer live in per-thread hook slots. Each one is a field
+//! of the running task's [`crate::exec_ctx::ExecCtx`], installed by whichever
+//! scheduler owns the Process and passed its erased scheduler handle explicitly.
+//! Per-context, not per-thread, is what lets independent schedulers be live at
+//! once. This module now only defines the callback fn-pointer *types* (the shape
+//! of those ExecCtx fields) plus the `YIELD_PTR` sentinel.
 
-use std::cell::Cell;
+use crate::process::Process;
 
 /// Non-pointer trampoline sentinel: fz_receive_attempt returns this when
 /// the mailbox is empty so the JIT trampoline parks the task instead of
@@ -35,24 +29,31 @@ pub const YIELD_PTR: u64 = 0x1;
 /// closure_bits (AnyValue ptr) and returns the new pid. The hook handles
 /// deep-copy of the closure into the new task's heap, dispatch via the
 /// closure's code pointer to materialize the initial frame, and enqueue.
-pub type SpawnHook = extern "C" fn(closure_bits: u64) -> u32;
+pub type SpawnHook =
+    extern "C" fn(sender: *mut Process, scheduler: *mut (), closure_bits: u64) -> u32;
 
 /// fz-siu.12: fz_spawn_opt FFI signature. Like SpawnHook but also accepts
 /// min_heap_size (bytes, already unboxed from AnyValue). v1: hint accepted
 /// and ignored by the binary; hook body is identical to SpawnHook.
-pub type SpawnOptHook = extern "C" fn(closure_bits: u64, min_heap_size: u32) -> u32;
+pub type SpawnOptHook = extern "C" fn(
+    sender: *mut Process,
+    scheduler: *mut (),
+    closure_bits: u64,
+    min_heap_size: u32,
+) -> u32;
 
 /// fz_send FFI signature on the binary side: takes receiver pid plus the
 /// one-word any value ref to deliver. The binary's send_via_current_runtime
 /// handles the deep-copy into the receiver's heap and the wake-up.
-pub type SendHook = extern "C" fn(receiver_pid: u32, msg_ref_word: u64);
+pub type SendHook =
+    extern "C" fn(sender: *mut Process, scheduler: *mut (), receiver_pid: u32, msg_ref_word: u64);
 
 /// Output sink signature on the binary side. `emit_print_line` (the `dbg` /
 /// print render seam, shared by both engines) forwards each rendered line so
 /// the binary can emit it as a telemetry event on the current Runtime's sink.
 /// Production stdout still happens at the `emit_print_line` call site; this is
 /// the additional observation channel.
-pub type OutputHook = extern "C" fn(line_ptr: *const u8, line_len: usize);
+pub type OutputHook = extern "C" fn(tel: *const (), line_ptr: *const u8, line_len: usize);
 
 /// fz-swt.10 — `fz_make_resource(payload, dtor_closure)` FFI signature on
 /// the binary side. The runtime crate forwards the raw integer payload and an
@@ -62,7 +63,8 @@ pub type OutputHook = extern "C" fn(line_ptr: *const u8, line_len: usize);
 /// `Prim::Extern`). The hook allocates the off-heap `Resource` + on-heap stub
 /// on the current process heap and returns the resulting tagged resource
 /// pointer.
-pub type MakeResourceHook = extern "C" fn(payload_raw: u64, dtor_ref: u64) -> u64;
+pub type MakeResourceHook =
+    extern "C" fn(process: *mut Process, module: *const (), payload_raw: u64, dtor_ref: u64) -> u64;
 
 /// fz-yxs/fz-st5 — after-timer schedule hook. Called by
 /// `fz_receive_park_matched` when the park record carries a non-`None`
@@ -71,176 +73,14 @@ pub type MakeResourceHook = extern "C" fn(payload_raw: u64, dtor_ref: u64) -> u6
 /// crossing through the staticlib boundary. Returns the fresh
 /// `TimerId` (u64) so the FFI can stash it on the park record for
 /// later cancellation.
-pub type TimerScheduleHook = extern "C" fn(pid: u32, after_ms: u64) -> u64;
+pub type TimerScheduleHook = extern "C" fn(scheduler: *mut (), pid: u32, after_ms: u64) -> u64;
 
 /// fz-yxs/fz-st5 — counterpart cancel hook, fired when a matcher hit
 /// (sender-probe or initial-scan) wakes the receiver before the timer
 /// expires. No-op when `timer_id` is unknown (already fired).
-pub type TimerCancelHook = extern "C" fn(timer_id: u64);
+pub type TimerCancelHook = extern "C" fn(scheduler: *mut (), timer_id: u64);
 
-// Per-thread hook storage. A Runtime is single-worker by design
-// (fz-ul4.19.1) and "the current Runtime" is a per-thread concept — same
-// shape as CURRENT_PROCESS (runtime/src/process.rs) and CURRENT_RUNTIME
-// (src/runtime.rs). Storing the hooks per-thread lets independent
-// Runtimes run on independent threads (e.g. cargo's parallel test
-// harness) without clobbering each other's dispatch table.
-//
-// fz-esw: an earlier attempt at thread_local! produced duplicate
-// __ZN…_tlv$init symbols in AOT-linked binaries, so install and dispatch
-// resolved to different slots. That bug was caused by the slot being
-// defined in the binary crate and crossing the staticlib boundary
-// through extern "C". The .23.10 move lifted scheduler_hooks into this
-// crate; CURRENT_PROCESS demonstrates that runtime-crate TLS works fine
-// under AOT.
-thread_local! {
-    static SPAWN_HOOK: Cell<usize> = const { Cell::new(0) };
-    static SPAWN_OPT_HOOK: Cell<usize> = const { Cell::new(0) };
-    static SEND_HOOK: Cell<usize> = const { Cell::new(0) };
-    static OUTPUT_HOOK: Cell<usize> = const { Cell::new(0) };
-    static MAKE_RESOURCE_HOOK: Cell<usize> = const { Cell::new(0) };
-    static TIMER_SCHEDULE_HOOK: Cell<usize> = const { Cell::new(0) };
-    static TIMER_CANCEL_HOOK: Cell<usize> = const { Cell::new(0) };
-}
-
-pub fn install_spawn_hook(hook: SpawnHook) {
-    SPAWN_HOOK.with(|c| c.set(hook as usize));
-}
-
-pub fn clear_spawn_hook() {
-    SPAWN_HOOK.with(|c| c.set(0));
-}
-
-pub fn install_spawn_opt_hook(hook: SpawnOptHook) {
-    SPAWN_OPT_HOOK.with(|c| c.set(hook as usize));
-}
-
-pub fn clear_spawn_opt_hook() {
-    SPAWN_OPT_HOOK.with(|c| c.set(0));
-}
-
-pub fn install_send_hook(hook: SendHook) {
-    SEND_HOOK.with(|c| c.set(hook as usize));
-}
-
-pub fn clear_send_hook() {
-    SEND_HOOK.with(|c| c.set(0));
-}
-
-pub fn install_output_hook(hook: OutputHook) {
-    OUTPUT_HOOK.with(|c| c.set(hook as usize));
-}
-
-pub fn clear_output_hook() {
-    OUTPUT_HOOK.with(|c| c.set(0));
-}
-
-/// Forward a rendered output line to the installed sink. No-op when no
-/// Runtime is driving (e.g. unit tests that call render paths directly).
-pub(crate) fn dispatch_output(line: &str) {
-    let raw = OUTPUT_HOOK.with(|c| c.get());
-    if raw == 0 {
-        return;
-    }
-    let hook: OutputHook = unsafe { std::mem::transmute(raw) };
-    hook(line.as_ptr(), line.len());
-}
-
-pub fn install_timer_schedule_hook(hook: TimerScheduleHook) {
-    TIMER_SCHEDULE_HOOK.with(|c| c.set(hook as usize));
-}
-
-pub fn clear_timer_schedule_hook() {
-    TIMER_SCHEDULE_HOOK.with(|c| c.set(0));
-}
-
-pub fn install_timer_cancel_hook(hook: TimerCancelHook) {
-    TIMER_CANCEL_HOOK.with(|c| c.set(hook as usize));
-}
-
-pub fn clear_timer_cancel_hook() {
-    TIMER_CANCEL_HOOK.with(|c| c.set(0));
-}
-
-/// Crate-internal dispatchers. Return `None` when the hook is not
-/// installed — the caller decides whether absence is fatal. The
-/// after-timer path treats absence as "no timer wired" (interp-style
-/// indefinite park) so the runtime keeps working in test contexts
-/// that don't stand up a Runtime.
-pub(crate) fn dispatch_timer_schedule(pid: u32, after_ms: u64) -> Option<u64> {
-    let raw = TIMER_SCHEDULE_HOOK.with(|c| c.get());
-    if raw == 0 {
-        return None;
-    }
-    let hook: TimerScheduleHook = unsafe { std::mem::transmute(raw) };
-    Some(hook(pid, after_ms))
-}
-
-/// fz-yxs/fz-st5 — public cancel dispatcher. Called by the binary's
-/// sender-probe path (and by the after-timer fire path if a follow-up
-/// landing wires it that way) to retire a previously scheduled timer
-/// when a matcher hit gets there first. No-op if the hook isn't
-/// installed (e.g. unit tests that don't drive a Runtime).
-pub fn dispatch_timer_cancel(timer_id: u64) {
-    let raw = TIMER_CANCEL_HOOK.with(|c| c.get());
-    if raw == 0 {
-        return;
-    }
-    let hook: TimerCancelHook = unsafe { std::mem::transmute(raw) };
-    hook(timer_id);
-}
-
-pub(crate) fn dispatch_spawn(closure_bits: u64) -> u32 {
-    let raw = SPAWN_HOOK.with(|c| c.get());
-    if raw == 0 {
-        panic!(
-            "fz_spawn called outside a Runtime — install_spawn_hook \
-             must be called before driving any task"
-        );
-    }
-    let hook: SpawnHook = unsafe { std::mem::transmute(raw) };
-    hook(closure_bits)
-}
-
-pub(crate) fn dispatch_spawn_opt(closure_bits: u64, min_heap_size: u32) -> u32 {
-    let raw = SPAWN_OPT_HOOK.with(|c| c.get());
-    if raw == 0 {
-        panic!(
-            "fz_spawn_opt called outside a Runtime — install_spawn_opt_hook \
-             must be called before driving any task"
-        );
-    }
-    let hook: SpawnOptHook = unsafe { std::mem::transmute(raw) };
-    hook(closure_bits, min_heap_size)
-}
-
-pub(crate) fn dispatch_send(receiver_pid: u32, msg_ref_word: u64) {
-    let raw = SEND_HOOK.with(|c| c.get());
-    if raw == 0 {
-        panic!(
-            "fz_send called outside a Runtime — install_send_hook \
-             must be called before driving any task"
-        );
-    }
-    let hook: SendHook = unsafe { std::mem::transmute(raw) };
-    hook(receiver_pid, msg_ref_word);
-}
-
-pub fn install_make_resource_hook(hook: MakeResourceHook) {
-    MAKE_RESOURCE_HOOK.with(|c| c.set(hook as usize));
-}
-
-pub fn clear_make_resource_hook() {
-    MAKE_RESOURCE_HOOK.with(|c| c.set(0));
-}
-
-pub(crate) fn dispatch_make_resource(payload_raw: u64, dtor_ref: u64) -> u64 {
-    let raw = MAKE_RESOURCE_HOOK.with(|c| c.get());
-    if raw == 0 {
-        panic!(
-            "fz_make_resource called outside a Runtime — \
-             install_make_resource_hook must be called before driving any task"
-        );
-    }
-    let hook: MakeResourceHook = unsafe { std::mem::transmute(raw) };
-    hook(payload_raw, dtor_ref)
-}
+// fz-vdt ctx.4-6: the per-thread scheduler-hook slots are gone. Each callback
+// now lives on the running task's `ExecCtx` (see exec_ctx.rs) — per-context,
+// not per-thread — so independent schedulers can be live at once. Only the
+// callback *type* definitions above remain, as the shape of those ExecCtx fields.

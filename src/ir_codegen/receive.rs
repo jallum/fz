@@ -35,6 +35,7 @@ use std::collections::HashMap;
 /// `fz_runtime::park::MatcherFn`.
 pub(crate) fn matcher_signature() -> Signature {
     let mut sig = Signature::new(CallConv::SystemV);
+    sig.params.push(AbiParam::new(types::I64)); // process (*mut Process)
     sig.params.push(AbiParam::new(types::I64)); // msg_ref
     sig.params.push(AbiParam::new(types::I64)); // pinned_ptr
     sig.params.push(AbiParam::new(types::I64)); // out_ptr
@@ -190,9 +191,10 @@ pub(crate) fn emit_matcher_body_from_matcher<M: cranelift_module::Module>(
         b.append_block_params_for_function_params(entry);
         b.switch_to_block(entry);
         b.seal_block(entry);
-        let msg_ref = b.block_params(entry)[0];
-        let pinned_ptr = b.block_params(entry)[1];
-        let out_ptr = b.block_params(entry)[2];
+        let process = b.block_params(entry)[0];
+        let msg_ref = b.block_params(entry)[1];
+        let pinned_ptr = b.block_params(entry)[2];
+        let out_ptr = b.block_params(entry)[3];
         let msg = receive_value_from_ref_word(b, msg_ref);
 
         let miss_block = b.create_block();
@@ -230,6 +232,7 @@ pub(crate) fn emit_matcher_body_from_matcher<M: cranelift_module::Module>(
         };
 
         let ctx = MatcherCtx {
+            process,
             fz_module,
             tuple_schema_ids,
             bound_indices_per_clause: &bound_indices_per_clause,
@@ -273,6 +276,11 @@ enum ReceiveValue {
 }
 
 struct MatcherCtx<'a> {
+    /// The running receiver's `Process*` (matcher fn's first param). Field
+    /// projections that need heap state (struct fields via the schema registry,
+    /// map values) pass it to their BIFs — the matcher fn is invoked from Rust,
+    /// not through the pinned-register ABI, so it carries the process explicitly.
+    process: ir::Value,
     fz_module: &'a Module,
     tuple_schema_ids: &'a HashMap<usize, u32>,
     bound_indices_per_clause: &'a [HashMap<String, usize>],
@@ -305,7 +313,7 @@ fn emit_receive_value_ref(
                     "int any-boundary requires fz_box_int_for_any",
                 ));
             };
-            let inst = b.ins().call(fref, &[raw]);
+            let inst = b.ins().call(fref, &[ctx.process, raw]);
             Ok(b.inst_results(inst)[0])
         }
         ReceiveValue::Float(raw) => {
@@ -314,7 +322,7 @@ fn emit_receive_value_ref(
                     "float any-boundary requires fz_box_float_for_any",
                 ));
             };
-            let inst = b.ins().call(fref, &[raw]);
+            let inst = b.ins().call(fref, &[ctx.process, raw]);
             Ok(b.inst_results(inst)[0])
         }
         ReceiveValue::Atom(raw) => {
@@ -323,7 +331,7 @@ fn emit_receive_value_ref(
                     "atom any-boundary requires fz_box_atom_for_any",
                 ));
             };
-            let inst = b.ins().call(fref, &[raw]);
+            let inst = b.ins().call(fref, &[ctx.process, raw]);
             Ok(b.inst_results(inst)[0])
         }
         ReceiveValue::Null => Ok(b.ins().iconst(types::I64, 0)),
@@ -591,6 +599,7 @@ fn resolve_matcher_subject(
                 ));
             };
             let parent_ref = emit_receive_value_ref(b, ctx, parent)?;
+            // fz_list_head_ref is a pure read — no process needed.
             let inst = b.ins().call(fref, &[parent_ref]);
             let out_ref = b.inst_results(inst)[0];
             receive_value_from_ref_word(b, out_ref)
@@ -603,6 +612,7 @@ fn resolve_matcher_subject(
                 ));
             };
             let parent_ref = emit_receive_value_ref(b, ctx, parent)?;
+            // fz_list_tail_ref is a pure read — no process needed.
             let inst = b.ins().call(fref, &[parent_ref]);
             let out_ref = b.inst_results(inst)[0];
             receive_value_from_ref_word(b, out_ref)
@@ -1010,7 +1020,9 @@ fn emit_matcher_map_get_value(
         let key = load_receive_value_ref(b, ctx.pinned_ptr, idx);
         let map_ref = emit_receive_value_ref(b, ctx, map)?;
         let key_ref = emit_receive_value_ref(b, ctx, key)?;
-        let inst = b.ins().call(map_get_ref_fref, &[map_ref, key_ref]);
+        let inst = b
+            .ins()
+            .call(map_get_ref_fref, &[ctx.process, map_ref, key_ref]);
         let out_ref = b.inst_results(inst)[0];
         return Ok(receive_value_from_ref_word(b, out_ref));
     }
@@ -1028,7 +1040,9 @@ fn emit_matcher_map_get_value(
     let map_ref = emit_receive_value_ref(b, ctx, map)?;
     let key_value = matcher_const_receive_value(b, key_value);
     let key_ref = emit_receive_value_ref(b, ctx, key_value)?;
-    let inst = b.ins().call(map_get_ref_fref, &[map_ref, key_ref]);
+    let inst = b
+        .ins()
+        .call(map_get_ref_fref, &[ctx.process, map_ref, key_ref]);
     let out_ref = b.inst_results(inst)[0];
     Ok(receive_value_from_ref_word(b, out_ref))
 }
@@ -1055,7 +1069,7 @@ fn emit_bitstring_test(
     let value = resolve_matcher_subject(b, ctx, subject, state)?;
     emit_bitstring_like_guard(b, ctx, value, false_b)?;
     let value_ref = emit_receive_value_ref(b, ctx, value)?;
-    let init = b.ins().call(init_fref, &[value_ref]);
+    let init = b.ins().call(init_fref, &[ctx.process, value_ref]);
     let mut reader = b.inst_results(init)[0];
 
     for (index, field) in fields.iter().enumerate() {
@@ -1069,7 +1083,9 @@ fn emit_bitstring_test(
             (index + 1 == fields.len()) as u32,
         );
         let field_spec = b.ins().iconst(types::I64, field_spec as i64);
-        let inst = b.ins().call(read_fref, &[reader, field_spec, size_value]);
+        let inst = b
+            .ins()
+            .call(read_fref, &[ctx.process, reader, field_spec, size_value]);
         let result = b.inst_results(inst)[0];
         let result_value = ReceiveValue::AnyRef(result);
         let ok = emit_struct_get_field(b, ctx, result_value, 0)?;
@@ -1123,7 +1139,7 @@ fn emit_struct_get_field_value(
         .ins()
         .iconst(types::I32, field_index as i64 * SLOT_BYTES as i64);
     let struct_ref = emit_receive_value_ref(b, ctx, struct_value)?;
-    let inst = b.ins().call(fref, &[struct_ref, field_offset]);
+    let inst = b.ins().call(fref, &[ctx.process, struct_ref, field_offset]);
     let out_ref = b.inst_results(inst)[0];
     Ok(receive_value_from_ref_word(b, out_ref))
 }
@@ -1332,6 +1348,7 @@ fn emit_guard_dispatch(
     let done = b.create_block();
     b.append_block_param(done, types::I64);
     let ctx = MatcherCtx {
+        process: parent.process,
         fz_module: parent.fz_module,
         tuple_schema_ids: parent.tuple_schema_ids,
         bound_indices_per_clause: parent.bound_indices_per_clause,
@@ -1618,7 +1635,7 @@ fn emit_typed_eq_cmp(
     };
     let lhs_ref = emit_receive_value_ref(b, ctx, lhs)?;
     let rhs_ref = emit_receive_value_ref(b, ctx, rhs)?;
-    let call = b.ins().call(fref, &[lhs_ref, rhs_ref]);
+    let call = b.ins().call(fref, &[ctx.process, lhs_ref, rhs_ref]);
     let eq = b.inst_results(call)[0];
     Ok(b.ins().icmp_imm(IntCC::NotEqual, eq, 0))
 }
@@ -1864,7 +1881,7 @@ mod tests {
     use fz_runtime::any_value::AnyValueRef;
     use fz_runtime::any_value::ValueKind;
     use fz_runtime::heap::{Schema, SchemaRegistry};
-    use fz_runtime::process::{CurrentProcessGuard, Process, current_process};
+    use fz_runtime::process::Process;
     use std::cell::RefCell;
     use std::rc::Rc;
 
@@ -1877,64 +1894,26 @@ mod tests {
             .finish(settings::Flags::new(flag_builder))
             .expect("isa finish");
         let mut builder = JITBuilder::with_isa(isa, cranelift_module::default_libcall_names());
-        builder.symbol(
-            "fz_struct_get_field_ref",
-            fz_runtime::ir_runtime::fz_struct_get_field_ref as *const u8,
-        );
-        builder.symbol(
-            "fz_type_of",
-            fz_runtime::ir_runtime::fz_type_of as *const u8,
-        );
-        builder.symbol(
-            "fz_unbox_int",
-            fz_runtime::ir_runtime::fz_unbox_int as *const u8,
-        );
-        builder.symbol(
-            "fz_unbox_float",
-            fz_runtime::ir_runtime::fz_unbox_float as *const u8,
-        );
-        builder.symbol(
-            "fz_unbox_atom",
-            fz_runtime::ir_runtime::fz_unbox_atom as *const u8,
-        );
-        builder.symbol(
-            "fz_struct_schema_id_ref",
-            fz_runtime::ir_runtime::fz_struct_schema_id_ref as *const u8,
-        );
-        builder.symbol(
-            "fz_truthy_ref",
-            fz_runtime::ir_runtime::fz_truthy_ref as *const u8,
-        );
-        builder.symbol(
-            "fz_value_eq_ref",
-            fz_runtime::ir_runtime::fz_value_eq_ref as *const u8,
-        );
-        builder.symbol(
-            "fz_box_int_for_any",
-            fz_runtime::ir_runtime::fz_box_int_for_any as *const u8,
-        );
-        builder.symbol(
-            "fz_box_float_for_any",
-            fz_runtime::ir_runtime::fz_box_float_for_any as *const u8,
-        );
-        builder.symbol(
-            "fz_box_atom_for_any",
-            fz_runtime::ir_runtime::fz_box_atom_for_any as *const u8,
-        );
+        // Production symbol registration — keep the test linker in lockstep with
+        // the real JIT so signatures can't drift (tests use production code).
+        crate::ir_codegen::backend::register_runtime_symbols(&mut builder);
         (JITModule::new(builder), FunctionBuilderContext::new())
     }
 
-    type MatcherAbi = extern "C" fn(u64, *const AnyValueRef, *mut AnyValueRef) -> u32;
+    type MatcherAbi = extern "C" fn(*mut Process, u64, *const AnyValueRef, *mut AnyValueRef) -> u32;
 
-    fn install_process() -> (Box<Process>, CurrentProcessGuard) {
+    /// Stand up a fresh process for a matcher test. The caller holds the box
+    /// and threads `process.as_mut()` to the matcher fn (its 1st arg) and to
+    /// `int_ref` — exactly as production threads the process. No ambient state.
+    fn new_process() -> Box<Process> {
         let schemas = Rc::new(RefCell::new(SchemaRegistry::new()));
-        let mut process = Box::new(Process::new(schemas));
-        let guard = CurrentProcessGuard::install(process.as_mut() as *mut Process);
-        (process, guard)
+        Box::new(Process::new(schemas))
     }
 
-    fn int_ref(value: i64) -> AnyValueRef {
-        let raw = fz_runtime::ir_runtime::fz_box_int_for_any(value);
+    /// Box a scalar onto `proc`'s heap via the production BIF — same call the
+    /// compiled/interpreted any-boundary uses.
+    fn int_ref(proc: *mut Process, value: i64) -> AnyValueRef {
+        let raw = fz_runtime::ir_runtime::fz_box_int_for_any(proc, value);
         AnyValueRef::from_raw_word(raw).expect("int ref")
     }
 
@@ -2001,78 +1980,11 @@ mod tests {
         name: &str,
     ) -> MatcherAbi {
         let fid = declare_matcher(jmod, name).expect("declare matcher");
-        let mut sig = jmod.make_signature();
-        sig.params.push(AbiParam::new(types::I64));
-        sig.params.push(AbiParam::new(types::I32));
-        sig.returns.push(AbiParam::new(types::I64));
-        let struct_get_field_id = jmod
-            .declare_function("fz_struct_get_field_ref", Linkage::Import, &sig)
-            .expect("declare fz_struct_get_field_ref");
-        let mut type_of_sig = jmod.make_signature();
-        type_of_sig.params.push(AbiParam::new(types::I64));
-        type_of_sig.returns.push(AbiParam::new(types::I8));
-        let type_of_id = jmod
-            .declare_function("fz_type_of", Linkage::Import, &type_of_sig)
-            .expect("declare fz_type_of");
-        let mut unbox_int_sig = jmod.make_signature();
-        unbox_int_sig.params.push(AbiParam::new(types::I64));
-        unbox_int_sig.returns.push(AbiParam::new(types::I64));
-        let unbox_int_id = jmod
-            .declare_function("fz_unbox_int", Linkage::Import, &unbox_int_sig)
-            .expect("declare fz_unbox_int");
-        let mut unbox_float_sig = jmod.make_signature();
-        unbox_float_sig.params.push(AbiParam::new(types::I64));
-        unbox_float_sig.returns.push(AbiParam::new(types::F64));
-        let unbox_float_id = jmod
-            .declare_function("fz_unbox_float", Linkage::Import, &unbox_float_sig)
-            .expect("declare fz_unbox_float");
-        let mut unbox_atom_sig = jmod.make_signature();
-        unbox_atom_sig.params.push(AbiParam::new(types::I64));
-        unbox_atom_sig.returns.push(AbiParam::new(types::I64));
-        let unbox_atom_id = jmod
-            .declare_function("fz_unbox_atom", Linkage::Import, &unbox_atom_sig)
-            .expect("declare fz_unbox_atom");
-        let mut struct_schema_sig = jmod.make_signature();
-        struct_schema_sig.params.push(AbiParam::new(types::I64));
-        struct_schema_sig.returns.push(AbiParam::new(types::I32));
-        let struct_schema_id = jmod
-            .declare_function(
-                "fz_struct_schema_id_ref",
-                Linkage::Import,
-                &struct_schema_sig,
-            )
-            .expect("declare fz_struct_schema_id_ref");
-        let mut truthy_sig = jmod.make_signature();
-        truthy_sig.params.push(AbiParam::new(types::I64));
-        truthy_sig.returns.push(AbiParam::new(types::I8));
-        let truthy_id = jmod
-            .declare_function("fz_truthy_ref", Linkage::Import, &truthy_sig)
-            .expect("declare fz_truthy_ref");
-        let mut value_eq_sig = jmod.make_signature();
-        value_eq_sig.params.push(AbiParam::new(types::I64));
-        value_eq_sig.params.push(AbiParam::new(types::I64));
-        value_eq_sig.returns.push(AbiParam::new(types::I64));
-        let value_eq_id = jmod
-            .declare_function("fz_value_eq_ref", Linkage::Import, &value_eq_sig)
-            .expect("declare fz_value_eq_ref");
-        let mut box_int_sig = jmod.make_signature();
-        box_int_sig.params.push(AbiParam::new(types::I64));
-        box_int_sig.returns.push(AbiParam::new(types::I64));
-        let box_int_for_any_id = jmod
-            .declare_function("fz_box_int_for_any", Linkage::Import, &box_int_sig)
-            .expect("declare fz_box_int_for_any");
-        let mut box_float_sig = jmod.make_signature();
-        box_float_sig.params.push(AbiParam::new(types::F64));
-        box_float_sig.returns.push(AbiParam::new(types::I64));
-        let box_float_for_any_id = jmod
-            .declare_function("fz_box_float_for_any", Linkage::Import, &box_float_sig)
-            .expect("declare fz_box_float_for_any");
-        let mut box_atom_sig = jmod.make_signature();
-        box_atom_sig.params.push(AbiParam::new(types::I64));
-        box_atom_sig.returns.push(AbiParam::new(types::I64));
-        let box_atom_for_any_id = jmod
-            .declare_function("fz_box_atom_for_any", Linkage::Import, &box_atom_sig)
-            .expect("declare fz_box_atom_for_any");
+        // Declare the runtime symbols from the production source so the matcher's
+        // helper signatures can never drift from the real pipeline (tests use
+        // production code). Mirrors the MatcherRuntimeHelpers wiring in driver.rs.
+        let runtime = crate::ir_codegen::runtime_syms::declare_runtime_symbols(jmod)
+            .expect("declare runtime symbols");
         emit_matcher_body_from_matcher(
             jmod,
             fbctx,
@@ -2083,26 +1995,26 @@ mod tests {
             clauses,
             matcher,
             &MatcherRuntimeHelpers {
-                value_eq_typed_id: Some(value_eq_id),
-                matcher_eq_bytes_id: None,
-                matcher_map_get_id: None,
-                matcher_map_get_ref_id: None,
-                type_of_id: Some(type_of_id),
-                unbox_int_id: Some(unbox_int_id),
-                unbox_float_id: Some(unbox_float_id),
-                unbox_atom_id: Some(unbox_atom_id),
-                struct_schema_id_ref_id: Some(struct_schema_id),
-                truthy_ref_id: Some(truthy_id),
-                box_int_for_any_id: Some(box_int_for_any_id),
-                box_float_for_any_id: Some(box_float_for_any_id),
-                box_atom_for_any_id: Some(box_atom_for_any_id),
-                map_is_map_id: None,
-                bs_reader_init_id: None,
-                bs_read_field_id: None,
-                struct_get_field_id: Some(struct_get_field_id),
-                list_is_cons_id: None,
-                list_head_id: None,
-                list_tail_id: None,
+                value_eq_typed_id: Some(runtime.value_eq_ref_id),
+                matcher_eq_bytes_id: Some(runtime.matcher_eq_bytes_id),
+                matcher_map_get_id: Some(runtime.matcher_map_get_id),
+                matcher_map_get_ref_id: Some(runtime.matcher_map_get_ref_id),
+                type_of_id: Some(runtime.type_of_id),
+                unbox_int_id: Some(runtime.unbox_int_id),
+                unbox_float_id: Some(runtime.unbox_float_id),
+                unbox_atom_id: Some(runtime.unbox_atom_id),
+                struct_schema_id_ref_id: Some(runtime.struct_schema_id_ref_id),
+                truthy_ref_id: Some(runtime.truthy_ref_id),
+                box_int_for_any_id: Some(runtime.box_int_for_any_id),
+                box_float_for_any_id: Some(runtime.box_float_for_any_id),
+                box_atom_for_any_id: Some(runtime.box_atom_for_any_id),
+                map_is_map_id: Some(runtime.map_is_map_id),
+                bs_reader_init_id: Some(runtime.bs_reader_init_ref_id),
+                bs_read_field_id: Some(runtime.bs_read_field_ref_id),
+                struct_get_field_id: Some(runtime.struct_get_field_id),
+                list_is_cons_id: Some(runtime.list_is_cons_id),
+                list_head_id: Some(runtime.list_head_fallback_id),
+                list_tail_id: Some(runtime.list_tail_fallback_id),
             },
         )
         .expect("emit cached matcher");
@@ -2111,7 +2023,8 @@ mod tests {
 
     #[test]
     fn cached_matcher_int_literal_hits_only_exact_tagged_value() {
-        let (_process, _guard) = install_process();
+        let mut process = new_process();
+        let pp = process.as_mut() as *mut Process;
         let (mut jmod, mut fbctx) = make_jit();
         let m = empty_module();
         let tuple_ids = HashMap::new();
@@ -2130,13 +2043,30 @@ mod tests {
         );
         let pin: [AnyValueRef; 0] = [];
         let mut out: [AnyValueRef; 0] = [];
-        assert_eq!(f(int_ref(42).raw_word(), pin.as_ptr(), out.as_mut_ptr()), 1);
-        assert_eq!(f(int_ref(41).raw_word(), pin.as_ptr(), out.as_mut_ptr()), 0);
+        assert_eq!(
+            f(
+                pp,
+                int_ref(pp, 42).raw_word(),
+                pin.as_ptr(),
+                out.as_mut_ptr()
+            ),
+            1
+        );
+        assert_eq!(
+            f(
+                pp,
+                int_ref(pp, 41).raw_word(),
+                pin.as_ptr(),
+                out.as_mut_ptr()
+            ),
+            0
+        );
     }
 
     #[test]
     fn cached_matcher_var_writes_input_to_out_slot_zero() {
-        let (_process, _guard) = install_process();
+        let mut process = new_process();
+        let pp = process.as_mut() as *mut Process;
         let (mut jmod, mut fbctx) = make_jit();
         let m = empty_module();
         let tuple_ids = HashMap::new();
@@ -2157,7 +2087,12 @@ mod tests {
         let mut out = [AnyValueRef::null()];
         let msg = 7;
         assert_eq!(
-            f(int_ref(msg).raw_word(), pin.as_ptr(), out.as_mut_ptr()),
+            f(
+                pp,
+                int_ref(pp, msg).raw_word(),
+                pin.as_ptr(),
+                out.as_mut_ptr()
+            ),
             1
         );
         assert_eq!(out[0].load_int().expect("out int"), msg);
@@ -2165,7 +2100,8 @@ mod tests {
 
     #[test]
     fn cached_matcher_guard_falls_through_when_false() {
-        let (_process, _guard) = install_process();
+        let mut process = new_process();
+        let pp = process.as_mut() as *mut Process;
         let (mut jmod, mut fbctx) = make_jit();
         let m = empty_module();
         let tuple_ids = HashMap::new();
@@ -2192,14 +2128,31 @@ mod tests {
         );
         let pin: [AnyValueRef; 0] = [];
         let mut out = [AnyValueRef::null()];
-        assert_eq!(f(int_ref(11).raw_word(), pin.as_ptr(), out.as_mut_ptr()), 1);
+        assert_eq!(
+            f(
+                pp,
+                int_ref(pp, 11).raw_word(),
+                pin.as_ptr(),
+                out.as_mut_ptr()
+            ),
+            1
+        );
         assert_eq!(out[0].load_int().expect("out int"), 11);
-        assert_eq!(f(int_ref(9).raw_word(), pin.as_ptr(), out.as_mut_ptr()), 2);
+        assert_eq!(
+            f(
+                pp,
+                int_ref(pp, 9).raw_word(),
+                pin.as_ptr(),
+                out.as_mut_ptr()
+            ),
+            2
+        );
     }
 
     #[test]
     fn cached_matcher_guard_reads_pinned_capture() {
-        let (_process, _guard) = install_process();
+        let mut process = new_process();
+        let pp = process.as_mut() as *mut Process;
         let (mut jmod, mut fbctx) = make_jit();
         let m = empty_module();
         let tuple_ids = HashMap::new();
@@ -2225,14 +2178,24 @@ mod tests {
             "cached_matcher_guard_pinned",
         );
         let mut out: [AnyValueRef; 0] = [];
-        let pin_9 = [int_ref(9)];
-        let pin_8 = [int_ref(8)];
+        let pin_9 = [int_ref(pp, 9)];
+        let pin_8 = [int_ref(pp, 8)];
         assert_eq!(
-            f(int_ref(0).raw_word(), pin_9.as_ptr(), out.as_mut_ptr()),
+            f(
+                pp,
+                int_ref(pp, 0).raw_word(),
+                pin_9.as_ptr(),
+                out.as_mut_ptr()
+            ),
             1
         );
         assert_eq!(
-            f(int_ref(0).raw_word(), pin_8.as_ptr(), out.as_mut_ptr()),
+            f(
+                pp,
+                int_ref(pp, 0).raw_word(),
+                pin_8.as_ptr(),
+                out.as_mut_ptr()
+            ),
             2
         );
     }
@@ -2245,8 +2208,8 @@ mod tests {
 
         let schemas = Rc::new(RefCell::new(SchemaRegistry::new()));
         let mut process = Box::new(Process::new(schemas));
-        let _guard = CurrentProcessGuard::install(process.as_mut() as *mut Process);
-        let tuple_schema_id = current_process()
+        let pp = process.as_mut() as *mut Process;
+        let tuple_schema_id = unsafe { &mut *pp }
             .heap
             .register_schema(Schema::tuple_of_arity(3));
         let mut tuple_ids = HashMap::new();
@@ -2271,25 +2234,23 @@ mod tests {
             "cached_matcher_tuple_reply",
         );
 
-        let tuple_p = current_process().heap.alloc_struct(tuple_schema_id);
-        current_process()
-            .heap
-            .write_field_slot(tuple_p, 0, AnyValue::atom(3));
-        current_process()
-            .heap
-            .write_field_slot(tuple_p, 8, AnyValue::int(170));
-        current_process()
-            .heap
-            .write_field_slot(tuple_p, 16, AnyValue::int(23));
+        let tuple_p = unsafe { &mut *pp }.heap.alloc_struct(tuple_schema_id);
+        let proc = unsafe { &mut *pp };
+        proc.heap.write_field_slot(tuple_p, 0, AnyValue::atom(3));
+        proc.heap.write_field_slot(tuple_p, 8, AnyValue::int(170));
+        proc.heap.write_field_slot(tuple_p, 16, AnyValue::int(23));
 
-        let pin = [int_ref(170)];
+        let pin = [int_ref(pp, 170)];
         let mut out = [AnyValueRef::null()];
         let val = struct_ref(tuple_p);
-        assert_eq!(f(val.raw_word(), pin.as_ptr(), out.as_mut_ptr()), 1);
+        assert_eq!(f(pp, val.raw_word(), pin.as_ptr(), out.as_mut_ptr()), 1);
         assert_eq!(out[0].load_int().expect("out int"), 23);
 
-        let pin_other = [int_ref(255)];
+        let pin_other = [int_ref(pp, 255)];
         let mut out2 = [AnyValueRef::null()];
-        assert_eq!(f(val.raw_word(), pin_other.as_ptr(), out2.as_mut_ptr()), 0);
+        assert_eq!(
+            f(pp, val.raw_word(), pin_other.as_ptr(), out2.as_mut_ptr()),
+            0
+        );
     }
 }

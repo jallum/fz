@@ -10,8 +10,8 @@ of these happens:
 
 There is no separate GC-yield control path. Allocation pressure expresses itself
 as budget expiration, so allocation-heavy loops reach GC through the same yield
-boundary as ordinary budget exhaustion, and an allocation-light CPU loop can no
-longer monopolize the worker.
+boundary as ordinary budget exhaustion, and an allocation-light CPU loop cannot
+monopolize the worker.
 
 ## Process budget state
 
@@ -40,9 +40,9 @@ back edge         reductions_remaining -= back_edge_cost
 
 allocation        bump_top += size
                   if bump_top >= allocation_watermark:
-                    expire_current_budget(ALLOCATION_PRESSURE)
-                      reductions_remaining = 0
-                      yield_reasons |= ALLOCATION_PRESSURE
+                    heap.owner.expire_budget(ALLOCATION_PRESSURE) # owner set per quantum:
+                                                                  # banks reductions burned so far,
+                                                                  # zeroes the budget, sets the bit
 
 boundary          boundary_maintenance():
                     if needs_boundary_gc():  # should_gc flag or ALLOCATION_PRESSURE bit
@@ -58,8 +58,9 @@ observable through the yield-reason bits and the split cumulative counters.
 Compiled code spends the budget by reading and writing `reductions_remaining`
 directly through the pinned `Process` base register; see
 [`pinned-process-register.md`](pinned-process-register.md). The interpreter
-spends the same field through the `CURRENT_PROCESS` pointer. Both engines
-materialize the same zero-arg continuation closure on exhaustion; see
+spends the same field through the process it threads explicitly
+(`IrInterpRuntime.current_proc`). Both engines materialize the same zero-arg
+continuation closure on exhaustion; see
 [`scheduler-zero-arg-closures.md`](scheduler-zero-arg-closures.md).
 
 ## Allocation watermark and the continuation reserve
@@ -91,11 +92,14 @@ report: the scheduler knows the budget it issued, so it derives
 `reductions_executed`. A signed (possibly negative) `remaining_reductions`
 records how far past budget the process ran before reaching a back edge.
 
-Cause is counted off the *accumulated* `yield_reasons`, not just the report's
-bits: allocation pressure sets its bit directly on the `Process` mid-quantum via
-`expire_current_budget`, so the back edge that finally yields reports only
-`REDUCTIONS` while `ALLOCATION_PRESSURE` is already standing. Allocation pressure
-therefore dominates the cause classification when both bits are present.
+Allocation pressure banks earlier. `expire_budget` fires mid-quantum through the
+heap's per-quantum `owner` back-pointer: it banks the reductions burned up to the
+watermark cross and stands the `ALLOCATION_PRESSURE` bit before it zeroes the
+budget. The back edge that then observes the zeroed budget reports only
+`REDUCTIONS`, so `finish_yield_report` reads the already-standing bit, skips a
+second bank, and credits only the work done since expiry. Cause is counted off
+the *accumulated* `yield_reasons`, so allocation pressure dominates the
+classification when both bits are present.
 
 `quiet_quanta` is scheduler-boundary state: it advances only in
 `boundary_maintenance`, never per back edge, so it counts scheduler quanta

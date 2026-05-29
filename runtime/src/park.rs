@@ -27,12 +27,17 @@ use crate::any_value::AnyValueRef;
 ///
 /// Return: `k = 0` on miss; `k > 0` is the 1-based clause index the
 /// caller's clause-body table indexes into via `cont = bodies[k-1]`.
-pub type MatcherFn =
-    extern "C" fn(msg_ref: u64, pinned: *const AnyValueRef, out: *mut AnyValueRef) -> u32;
+pub type MatcherFn = extern "C" fn(
+    process: *mut crate::process::Process,
+    msg_ref: u64,
+    pinned: *const AnyValueRef,
+    out: *mut AnyValueRef,
+) -> u32;
 
 /// Matcher for plain `receive()`: accept the first mailbox message and bind
 /// it as the single outcome value.
 pub(crate) extern "C" fn match_any_message(
+    _process: *mut crate::process::Process,
     msg_ref: u64,
     _pinned: *const AnyValueRef,
     out: *mut AnyValueRef,
@@ -81,9 +86,18 @@ impl ParkRecord {
     /// Try the registered matcher against `msg`. On a hit, returns
     /// `Some((clause_idx, bound_vals))` where `bound_vals.len()` is the
     /// winning clause's own bound-variable count. On a miss, returns `None`.
-    pub fn try_match(&self, msg: AnyValueRef) -> Option<(usize, Vec<AnyValueRef>)> {
+    pub fn try_match(
+        &self,
+        process: *mut crate::process::Process,
+        msg: AnyValueRef,
+    ) -> Option<(usize, Vec<AnyValueRef>)> {
         let mut out_buf: Vec<AnyValueRef> = vec![AnyValueRef::null(); self.bound_arity as usize];
-        let k = (self.matcher_fn)(msg.raw_word(), self.pinned.as_ptr(), out_buf.as_mut_ptr());
+        let k = (self.matcher_fn)(
+            process,
+            msg.raw_word(),
+            self.pinned.as_ptr(),
+            out_buf.as_mut_ptr(),
+        );
         if k == 0 {
             None
         } else {
@@ -188,6 +202,7 @@ mod tests {
     ///   out[0]: matched int value.
     /// Returns 1 if `msg == pinned[0]`, else 0.
     extern "C" fn mock_eq_matcher(
+        _process: *mut crate::process::Process,
         msg: u64,
         pinned: *const AnyValueRef,
         out: *mut AnyValueRef,
@@ -232,7 +247,7 @@ mod tests {
             after_cont: std::ptr::null_mut(),
             after_timer_id: None,
         };
-        let hit = p.try_match(int_ref(&INT_99));
+        let hit = p.try_match(std::ptr::null_mut(), int_ref(&INT_99));
         assert!(hit.is_some());
         let (idx, vals) = hit.unwrap();
         assert_eq!(idx, 0);
@@ -243,6 +258,7 @@ mod tests {
     #[test]
     fn try_match_trims_scratch_to_winning_clause_bound_count() {
         extern "C" fn second_clause(
+            _process: *mut crate::process::Process,
             _msg: u64,
             _pinned: *const AnyValueRef,
             out: *mut AnyValueRef,
@@ -262,7 +278,9 @@ mod tests {
             after_cont: std::ptr::null_mut(),
             after_timer_id: None,
         };
-        let (idx, vals) = p.try_match(int_ref(&INT_99)).expect("match");
+        let (idx, vals) = p
+            .try_match(std::ptr::null_mut(), int_ref(&INT_99))
+            .expect("match");
         assert_eq!(idx, 1);
         assert!(vals.is_empty());
     }
@@ -279,6 +297,9 @@ mod tests {
             after_cont: std::ptr::null_mut(),
             after_timer_id: None,
         };
-        assert!(p.try_match(int_ref(&INT_100)).is_none());
+        assert!(
+            p.try_match(std::ptr::null_mut(), int_ref(&INT_100))
+                .is_none()
+        );
     }
 }

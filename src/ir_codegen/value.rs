@@ -264,8 +264,9 @@ pub(crate) fn fetch_static_closure<M: cranelift_module::Module>(
     spec_id: u32,
 ) -> ir::Value {
     let fref = jmod.declare_func_in_func(runtime.get_static_closure_id, b.func);
+    let process = b.ins().get_pinned_reg(types::I64);
     let sid_v = b.ins().iconst(types::I32, spec_id as i64);
-    let inst = b.ins().call(fref, &[sid_v]);
+    let inst = b.ins().call(fref, &[process, sid_v]);
     b.inst_results(inst)[0]
 }
 

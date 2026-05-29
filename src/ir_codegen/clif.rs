@@ -172,7 +172,11 @@ mod tests {
         let mut module = JITModule::new(builder);
 
         let yield_slow_path_begin_id = module
-            .declare_function("fz_yield_slow_path_begin", Linkage::Import, &sig1(&[], &[]))
+            .declare_function(
+                "fz_yield_slow_path_begin",
+                Linkage::Import,
+                &sig1(&[types::I64], &[]),
+            )
             .expect("declare yield slow path helper");
         let probe_id = module
             .declare_function(
@@ -195,7 +199,8 @@ mod tests {
                 b.seal_block(entry);
 
                 let slow_path = module.declare_func_in_func(yield_slow_path_begin_id, b.func);
-                b.ins().call(slow_path, &[]);
+                let process = b.ins().get_pinned_reg(types::I64);
+                b.ins().call(slow_path, &[process]);
 
                 let observed = b.ins().get_pinned_reg(types::I64);
                 b.ins().return_(&[observed]);
@@ -208,7 +213,6 @@ mod tests {
         let schemas = Rc::new(RefCell::new(fz_runtime::heap::SchemaRegistry::new()));
         let mut process = fz_runtime::process::Process::new(schemas);
         let expected = (&mut process as *mut fz_runtime::process::Process) as u64;
-        let _guard = fz_runtime::process::CurrentProcessGuard::install(&mut process);
 
         let observed = unsafe { fz_runtime::pinned_abi::call1(probe_addr, &mut process, 0) } as u64;
         assert_eq!(observed, expected);

@@ -21,6 +21,43 @@ use std::alloc::{Layout, alloc_zeroed, dealloc};
 use std::cell::RefCell;
 use std::rc::Rc;
 
+// fz-vdt.16 — pure reads that need no heap state. Reading a list head/tail or a
+// closure capture is a dereference of the self-describing value pointer, so these
+// are free functions (the `Heap::read_*` methods below delegate). BIFs call them
+// directly, with no `current_process()` and no process argument — which is also
+// why the receive matcher can project list/closure shapes without a process.
+
+pub fn list_head_ref(list: AnyValueRef) -> Result<AnyValueRef, AnyValueRefError> {
+    let addr = list.list_addr()?;
+    let cons = unsafe { &*(addr as *const ListCons) };
+    any_value_ref_from_storage(&cons.head as *const u64, cons.head_kind())
+}
+
+pub fn list_tail_ref(list: AnyValueRef) -> Result<AnyValueRef, AnyValueRefError> {
+    let addr = list.list_addr()?;
+    let cons = unsafe { &*(addr as *const ListCons) };
+    let tail_addr = cons.tail_addr();
+    if tail_addr == 0 {
+        Ok(AnyValueRef::empty_list())
+    } else {
+        AnyValueRef::from_heap_object(ValueKind::LIST, tail_addr as *const u8)
+    }
+}
+
+pub fn closure_capture_ref(
+    closure: AnyValueRef,
+    idx: usize,
+) -> Result<AnyValueRef, AnyValueRefError> {
+    let addr = closure.closure_addr()?;
+    let raw_slot = unsafe { crate::any_value::closure_capture_raw_slot(addr as *const u8, idx) };
+    let kind_slot = unsafe { crate::any_value::closure_capture_kind_slot(addr as *const u8, idx) };
+    let kind = unsafe { std::ptr::read(kind_slot) };
+    any_value_ref_from_storage(
+        raw_slot as *const u64,
+        ValueKind::new(kind).expect("closure capture kind"),
+    )
+}
+
 impl Heap {
     pub fn new(capacity: usize, schemas: Rc<RefCell<SchemaRegistry>>) -> Self {
         assert!(
@@ -52,7 +89,14 @@ impl Heap {
             mso_head: 0,
             pending_dtors: std::collections::VecDeque::new(),
             fragments: Vec::new(),
+            owner: std::ptr::null_mut(),
         }
+    }
+
+    /// Install the owning process for allocation-pressure budget expiry.
+    /// Called per quantum at scheduler entry (alongside `Process.ctx`).
+    pub fn set_owner(&mut self, owner: *mut crate::process::Process) {
+        self.owner = owner;
     }
 
     pub fn should_gc(&self) -> bool {
@@ -133,8 +177,15 @@ impl Heap {
         self.bump_top = unsafe { self.bump_top.add(size) };
         self.alloc_count += 1;
         self.note_alloc_pressure();
-        if self.bump_top >= self.allocation_watermark {
-            crate::process::expire_current_budget(crate::process::YIELD_REASON_ALLOCATION_PRESSURE);
+        if self.bump_top >= self.allocation_watermark && !self.owner.is_null() {
+            // Expire the owning process's reduction budget so the next back-edge
+            // yields through the normal scheduler path. Reached via the per-quantum
+            // owner back-pointer — no ambient current-process. Routes through
+            // `expire_budget` (not a hand-rolled zero) so the reductions burned
+            // before the watermark cross are banked into `reductions_executed`
+            // exactly once; `finish_yield_report` depends on this invariant.
+            let owner = unsafe { &mut *self.owner };
+            owner.expire_budget(crate::process::YIELD_REASON_ALLOCATION_PRESSURE);
         }
         p
     }
@@ -754,20 +805,11 @@ impl Heap {
     }
 
     pub fn read_list_head_ref(&self, list: AnyValueRef) -> Result<AnyValueRef, AnyValueRefError> {
-        let addr = list.list_addr()?;
-        let cons = unsafe { &*(addr as *const ListCons) };
-        any_value_ref_from_storage(&cons.head as *const u64, cons.head_kind())
+        list_head_ref(list)
     }
 
     pub fn read_list_tail_ref(&self, list: AnyValueRef) -> Result<AnyValueRef, AnyValueRefError> {
-        let addr = list.list_addr()?;
-        let cons = unsafe { &*(addr as *const ListCons) };
-        let tail_addr = cons.tail_addr();
-        if tail_addr == 0 {
-            Ok(AnyValueRef::empty_list())
-        } else {
-            AnyValueRef::from_heap_object(ValueKind::LIST, tail_addr as *const u8)
-        }
+        list_tail_ref(list)
     }
 
     pub fn mark_list_cons_aliased(
@@ -901,16 +943,7 @@ impl Heap {
         closure: AnyValueRef,
         idx: usize,
     ) -> Result<AnyValueRef, AnyValueRefError> {
-        let addr = closure.closure_addr()?;
-        let raw_slot =
-            unsafe { crate::any_value::closure_capture_raw_slot(addr as *const u8, idx) };
-        let kind_slot =
-            unsafe { crate::any_value::closure_capture_kind_slot(addr as *const u8, idx) };
-        let kind = unsafe { std::ptr::read(kind_slot) };
-        any_value_ref_from_storage(
-            raw_slot as *const u64,
-            ValueKind::new(kind).expect("closure capture kind"),
-        )
+        closure_capture_ref(closure, idx)
     }
 
     /// Register a schema in this heap's registry, returning its id. Codegen

@@ -1229,7 +1229,8 @@ fn emit_back_edge_yield_check<M: cranelift_module::Module>(
     let slow_path_begin_fref = body
         .jmod
         .declare_func_in_func(runtime.yield_slow_path_begin_id, body.b.func);
-    body.b.ins().call(slow_path_begin_fref, &[]);
+    let process = body.process_arg();
+    body.b.ins().call(slow_path_begin_fref, &[process]);
     let fid_v = body.b.ins().iconst(types::I32, callee_sid as i64);
     let n_caps_v = body
         .b
@@ -1257,7 +1258,7 @@ fn emit_back_edge_yield_check<M: cranelift_module::Module>(
     let yield_inst = body
         .b
         .ins()
-        .call(yield_fref, &[cont_closure, new_remaining, reason]);
+        .call(yield_fref, &[process, cont_closure, new_remaining, reason]);
     let yield_ret = body.b.inst_results(yield_inst)[0];
     body.b.ins().return_(&[yield_ret]);
 
@@ -1582,7 +1583,8 @@ fn emit_receive<
         let park_fref = body
             .jmod
             .declare_func_in_func(runtime.receive_park_id, body.b.func);
-        let park_inst = body.b.ins().call(park_fref, &[cl_ptr]);
+        let process = body.process_arg();
+        let park_inst = body.b.ins().call(park_fref, &[process, cl_ptr]);
         let yield_sentinel = body.b.inst_results(park_inst)[0];
         // Both native and uniform paths return the YIELD sentinel;
         // native returns i64, uniform returns next_frame ptr (which
@@ -1827,9 +1829,11 @@ fn build_park_record<
     let park_fref = body
         .jmod
         .declare_func_in_func(runtime.receive_park_matched_id, body.b.func);
+    let process = body.process_arg();
     let park_inst = body.b.ins().call(
         park_fref,
         &[
+            process,
             matcher_addr,
             pinned_ptr,
             n_pinned_v,

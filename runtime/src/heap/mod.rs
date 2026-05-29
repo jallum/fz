@@ -40,6 +40,7 @@ pub use self::block_pool::{pool_drain_for_test, pool_total_cached_blocks};
 pub use self::deep_copy::{
     deep_copy_any_value, deep_copy_any_value_ref, deep_copy_slot, deep_copy_tagged_bits,
 };
+pub use self::imp::{closure_capture_ref, list_head_ref, list_tail_ref};
 pub use self::schema::{FieldDescriptor, FieldKind, Schema, SchemaRegistry};
 pub use self::stats::{AllocStat, GcStats, HeapAllocKind, HeapAllocStats};
 
@@ -111,4 +112,10 @@ pub struct Heap {
     /// backed singletons. GC marks them via the `mark` bit; survivors
     /// stay put across collections, dead fragments are freed.
     fragments: Vec<Fragment>,
+    /// Back-pointer to the owning Process, set per quantum at scheduler entry
+    /// (alongside `Process.ctx`). Crossing `allocation_watermark` in `alloc()`
+    /// expires this process's reduction budget directly through it — per
+    /// process, not via an ambient thread-local, so two schedulers can be live
+    /// at once. Null outside a quantum (the cross is then a no-op).
+    pub(crate) owner: *mut crate::process::Process,
 }

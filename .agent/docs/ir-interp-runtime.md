@@ -52,24 +52,25 @@ child pid     -> older image, blocked in receive
 The child must resume against the older image even after the evaluator has
 advanced.
 
-## CURRENT_PROCESS Boundary
+## Running process is threaded, not ambient
 
-`fz_runtime::process::CURRENT_PROCESS` is a dynamic bridge, not the runtime
-owner.
+The interpreter owns its processes and threads the running one explicitly; the
+running process is never ambient. Each quantum, `drive_until_idle` sets
+`IrInterpRuntime.current_proc` to the dispatched process; `cur_proc()` returns
+it, and the free helpers that lack a runtime handle take a `*mut Process`
+parameter threaded down from the eval loop. Sites that use it:
 
-During one interpreter quantum, the scheduler installs the selected process in
-`CURRENT_PROCESS`, calls `run_fn`, then restores the previous pointer. Helpers
-below `run_fn` use that bridge for:
-
-- heap allocation
+- heap allocation (list cons, map/struct/bitstring builders, scalar boxing)
 - mailbox reads
 - tuple schema lookup
 - `self()`
 - resource allocation and destructor draining
 - back-edge GC over process roots
+- the receive matcher (`resolve_matcher_subject` and friends carry it)
 
-The runtime decides which process runs. `CURRENT_PROCESS` only exposes that
-process while it is running.
+Because the process is per-instance state on `IrInterpRuntime`, two interpreters
+can run on one thread without clobbering each other (see
+`ir_interp/tests/coexistence.rs`).
 
 ## Drive Semantics
 
@@ -79,7 +80,7 @@ The scheduler loop is:
 enqueue(pid, fn_id, args)
 while run queue has pid:
   load pid's CodeImage
-  install pid as CURRENT_PROCESS
+  set current_proc = pid's process (+ heap owner, ExecCtx)
   run_fn(..., pid_code_image.module)
   Done    -> drain task resources unless pid is keepalive
   Yielded -> store resume entry, run boundary maintenance, re-enqueue

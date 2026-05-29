@@ -144,10 +144,11 @@ split is deliberate:
 ### `fz.runtime.dbg`
 
 `dbg`/print output is routed onto the bus too. `emit_print_line` (the shared
-render seam) still writes production stdout, and additionally forwards each line
-through the `OutputHook` to `CURRENT_TEL`, which whichever scheduler is driving
-points at its sink (`route_output_to`). So dbg output is observable as events on
-both engines:
+render seam) writes production stdout and forwards each line
+through the running process's `ExecCtx.output` hook to the sink on
+`ExecCtx.tel` — the per-task dispatch table the scheduler installs, not a
+thread-global. So dbg output is observable as events on both engines, and each
+scheduler's output stays on its own sink:
 
 ```text
 event:    fz.runtime.dbg

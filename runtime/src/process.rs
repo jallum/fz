@@ -1,11 +1,12 @@
-//! Per-task runtime state and the TLS plumbing that lets FFI fns reach it.
+//! Per-task runtime state.
 //!
 //! Lifted out of ir_codegen.rs by fz-ul4.23.4.2 so that any execution path
-//! (JIT, future interp/AOT) can stand up a Process without dragging the
-//! codegen module along. The Process owns the per-task heap and builders;
-//! the Runtime in src/runtime.rs schedules Processes; FFI fns in
-//! src/ir_runtime.rs read/write the currently-running Process through
-//! `current_process()`.
+//! (JIT, interp, AOT) can stand up a Process without dragging the codegen
+//! module along. The Process owns the per-task heap and builders; the Runtime
+//! in src/runtime.rs schedules Processes. FFI/BIF fns in src/ir_runtime.rs
+//! receive their `*mut Process` explicitly — compiled code passes the pinned
+//! register, the interpreter threads it as a parameter — so there is no
+//! ambient current-process and two schedulers can be live at once (fz-vdt).
 
 use std::alloc::{Layout, alloc_zeroed, dealloc, handle_alloc_error};
 use std::ptr::NonNull;
@@ -45,9 +46,10 @@ impl Drop for AlignedClosureStorage {
     }
 }
 
-/// Per-task runtime state. One Process per fz-level task; the worker thread
-/// installs `*mut Process` in `CURRENT_PROCESS` for the duration of a run,
-/// and FFI fns reach the running task's state via `current_process()`.
+/// Per-task runtime state. One Process per fz-level task; the scheduler hands
+/// each running task's `*mut Process` to FFI fns explicitly — compiled code via
+/// the pinned register, the interpreter as a threaded parameter — so there is
+/// no ambient current-process.
 ///
 /// libdispatch-style: TLS records the currently-running task's pointer per
 /// worker; a task is owned by exactly one worker at a time (scheduler
@@ -55,6 +57,15 @@ impl Drop for AlignedClosureStorage {
 /// call.
 pub struct Process {
     pub heap: crate::heap::Heap,
+    /// Execution-context dispatch table for this task: scheduler services,
+    /// telemetry sink, and IR module, reached explicitly by BIFs instead of
+    /// through thread-local singletons. Set by the owning scheduler (JIT
+    /// `Runtime`, interpreter, or AOT shim) at each quantum entry; the pointee
+    /// outlives any FFI call made under this process. Null until a scheduler
+    /// installs one. The spawn/send/make_resource/timer/output BIFs dispatch
+    /// through it — this is what replaced the `CURRENT_PROCESS`-era thread-local
+    /// singletons (removed in `fz-vdt`), so two schedulers can be live at once.
+    pub ctx: *mut crate::exec_ctx::ExecCtx,
     pub halt_value: i64,
     pub bs_builder: Option<crate::bitstr::BitWriter>,
     // fz-ul4.29.5: closure_builder / closure_args fields removed. Closure
@@ -201,6 +212,7 @@ impl Process {
             // set demands it; shrink hysteresis (§6.5 / fz-siu.11) brings
             // it back down for short-lived spikes.
             heap: crate::heap::Heap::new(crate::heap::SIZE_TABLE[0], schemas),
+            ctx: std::ptr::null_mut(),
             halt_value: 0,
             bs_builder: None,
             frame_sizes: Vec::new(),
@@ -440,60 +452,13 @@ fn min_nonzero(current: u64, candidate: u64) -> u64 {
     }
 }
 
-thread_local! {
-    /// Raw pointer to the Process currently being run by this worker (this
-    /// thread). Set by the scheduler for the duration of each quantum;
-    /// cleared afterwards. FFI fns called from JIT'd code read it via
-    /// `current_process()`.
-    pub static CURRENT_PROCESS: std::cell::Cell<*mut Process> =
-        const { std::cell::Cell::new(std::ptr::null_mut()) };
-}
-
-pub struct CurrentProcessGuard {
-    prev: *mut Process,
-}
-
-impl CurrentProcessGuard {
-    pub fn install(ptr: *mut Process) -> Self {
-        let prev = CURRENT_PROCESS.with(|c| c.replace(ptr));
-        Self { prev }
-    }
-}
-
-impl Drop for CurrentProcessGuard {
-    fn drop(&mut self) {
-        CURRENT_PROCESS.with(|c| c.set(self.prev));
-    }
-}
-
-/// Access the currently-installed Process via the raw TLS pointer. Must only
-/// be called from FFI fns invoked synchronously inside a scheduler quantum.
-/// The Process is owned by the scheduler's task registry; the pointer is
-/// valid for the duration of the quantum.
-pub fn current_process() -> &'static mut Process {
-    let p = CURRENT_PROCESS.with(|c| c.get());
-    assert!(
-        !p.is_null(),
-        "current_process(): no Process installed (running outside a scheduler quantum?)"
-    );
-    unsafe { &mut *p }
-}
-
-pub fn try_current_process() -> Option<&'static mut Process> {
-    let p = CURRENT_PROCESS.with(|c| c.get());
-    (!p.is_null()).then(|| unsafe { &mut *p })
-}
-
-/// Expire the current process's reduction budget and record why. Called from
-/// the heap allocation slow path when bump crosses the allocation watermark:
-/// zeroing `reductions_remaining` forces the next back edge to yield, and the
-/// reason bit rides on `yield_reasons` until the scheduler boundary consumes
-/// it. A no-op when no process is installed (standalone-heap unit tests).
-pub fn expire_current_budget(reason: u8) {
-    if let Some(process) = try_current_process() {
-        process.expire_budget(reason);
-    }
-}
+// fz-vdt ctx.8: the ambient `CURRENT_PROCESS` thread-local, its
+// `CurrentProcessGuard`, and the `current_process()`/`try_current_process()`
+// accessors are gone. Every FFI/BIF now receives its `*mut Process` explicitly
+// (in the pinned register for compiled code, threaded as a parameter for the
+// interpreter), and the heap reaches its owning process for allocation-pressure
+// budget expiry through `Heap::owner` (set per quantum at scheduler entry).
+// This is what lets two schedulers be live at once on one thread.
 
 #[cfg(test)]
 mod tests {

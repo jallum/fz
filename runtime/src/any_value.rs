@@ -1785,70 +1785,69 @@ mod tests {
 /// Debug rendering of AnyValues. Lifted out of ir_codegen.rs by
 /// fz-ul4.23.4.3 so that any execution path (JIT, future interp/AOT) can
 /// use the same rendering — values are uniformly tagged, regardless of
-/// what produced them. The single runtime dependency is the heap's
-/// schema registry on the current Process, accessed via
-/// `crate::process::current_process()`.
+/// what produced them. The single runtime dependency is the heap's schema
+/// registry + atom-name table on a `Process`, threaded in explicitly (a
+/// nullable `*mut Process`) so two schedulers can render concurrently
+/// without an ambient thread-local.
 pub mod debug {
     use super::{ListCons, ValueKind};
-    use crate::process::{CURRENT_PROCESS, current_process};
+    use crate::process::Process;
 
-    /// Render an atom id as `:name` if the current Process has a name
-    /// for it; fall back to `:atom_N` otherwise. The fallback fires when
-    /// render is called without a Process installed (e.g. unit tests
-    /// poking the renderer directly) or when an id is outside the
-    /// module's table (defensive — shouldn't happen in practice).
-    fn render_atom(id: u32) -> String {
+    /// Render an atom id as `:name` if `proc` has a name for it; fall back
+    /// to `:atom_N` otherwise. `proc` is nullable — render may be called
+    /// without a process (unit tests poking the renderer directly, or the
+    /// panic path) — in which case the fallback fires. Threading the process
+    /// explicitly is what lets two schedulers render concurrently without an
+    /// ambient `CURRENT_PROCESS`.
+    fn render_atom(proc: *mut Process, id: u32) -> String {
         match id {
             super::NIL_ATOM_ID => return "nil".to_string(),
             super::TRUE_ATOM_ID => return "true".to_string(),
             super::FALSE_ATOM_ID => return "false".to_string(),
             _ => {}
         }
-        let proc_ptr = CURRENT_PROCESS.with(|c| c.get());
-        if proc_ptr.is_null() {
+        if proc.is_null() {
             return format!(":atom_{}", id);
         }
-        let names = unsafe { &(*proc_ptr).atom_names };
+        let names = unsafe { &(*proc).atom_names };
         match names.get(id as usize) {
             Some(name) if !name.is_empty() => format!(":{}", name),
             _ => format!(":atom_{}", id),
         }
     }
 
-    fn is_current_heap_list(bits: u64) -> bool {
+    fn is_proc_heap_list(proc: *mut Process, bits: u64) -> bool {
         let Some(p) = super::list_addr_from_tagged(bits) else {
             return false;
         };
         if p.is_null() {
             return false;
         }
-        let proc_ptr = CURRENT_PROCESS.with(|c| c.get());
-        !proc_ptr.is_null() && unsafe { (*proc_ptr).heap.contains_heap_addr(p) }
+        !proc.is_null() && unsafe { (*proc).heap.contains_heap_addr(p) }
     }
 
-    fn is_current_heap_map(bits: u64) -> bool {
+    fn is_proc_heap_map(proc: *mut Process, bits: u64) -> bool {
         let Some(p) = super::map_addr_from_tagged(bits) else {
             return false;
         };
         if p.is_null() {
             return false;
         }
-        let proc_ptr = CURRENT_PROCESS.with(|c| c.get());
-        !proc_ptr.is_null() && unsafe { (*proc_ptr).heap.contains_heap_addr(p) }
+        !proc.is_null() && unsafe { (*proc).heap.contains_heap_addr(p) }
     }
 
-    pub fn render(bits: u64) -> String {
-        if is_current_heap_list(bits) {
-            return render_list(bits);
+    pub fn render(proc: *mut Process, bits: u64) -> String {
+        if is_proc_heap_list(proc, bits) {
+            return render_list(proc, bits);
         }
-        if is_current_heap_map(bits) {
-            return render_map(bits);
+        if is_proc_heap_map(proc, bits) {
+            return render_map(proc, bits);
         }
         if super::closure_addr_from_tagged(bits).is_some() {
             return render_closure(bits);
         }
         if super::struct_addr_from_tagged(bits).is_some() {
-            return render_struct(bits);
+            return render_struct(proc, bits);
         }
         if super::bitstring_addr_from_tagged(bits).is_some() {
             return render_bitstring(bits);
@@ -1867,11 +1866,12 @@ pub mod debug {
     /// the schema from the current Process's SchemaRegistry to determine
     /// field count. Each value field renders inline; non-value fields
     /// are elided (no callers emit them yet).
-    fn render_struct(bits: u64) -> String {
+    fn render_struct(proc: *mut Process, bits: u64) -> String {
         let p = super::struct_addr_from_tagged(bits).expect("struct bits");
         let schema_id = unsafe { super::struct_schema_id(p) };
+        let heap = &unsafe { &*proc }.heap;
         let field_offsets: Vec<u32> = {
-            let reg = current_process().heap.schemas_registry();
+            let reg = heap.schemas_registry();
             let registry = reg.borrow();
             let schema = registry.get(schema_id);
             schema
@@ -1883,13 +1883,13 @@ pub mod debug {
         };
         let parts: Vec<String> = field_offsets
             .into_iter()
-            .map(|offset| render_value(current_process().heap.read_field_slot(p, offset)))
+            .map(|offset| render_value(proc, heap.read_field_slot(p, offset)))
             .collect();
         format!("{{{}}}", parts.join(", "))
     }
 
     /// Render a heap Map as `%{k => v, ...}` in canonical sorted order.
-    fn render_map(bits: u64) -> String {
+    fn render_map(proc: *mut Process, bits: u64) -> String {
         let p = super::map_addr_from_tagged(bits).unwrap();
         let count = unsafe { super::map_count(p) };
         let mut parts: Vec<String> = Vec::with_capacity(count);
@@ -1897,18 +1897,22 @@ pub mod debug {
             let (kr, kk, vr, vk) = unsafe { super::map_entry_raw_kinds(p, i) };
             let k = super::AnyValue::decode_parts(kr, kk.tag()).expect("map key");
             let v = super::AnyValue::decode_parts(vr, vk.tag()).expect("map value");
-            parts.push(format!("{} => {}", render_value(k), render_value(v)));
+            parts.push(format!(
+                "{} => {}",
+                render_value(proc, k),
+                render_value(proc, v)
+            ));
         }
         format!("%{{{}}}", parts.join(", "))
     }
 
-    pub fn render_value(value: super::AnyValue) -> String {
+    pub fn render_value(proc: *mut Process, value: super::AnyValue) -> String {
         match value.kind() {
             ValueKind::INT => (value.raw() as i64).to_string(),
             ValueKind::FLOAT => render_float(f64::from_bits(value.raw())),
-            ValueKind::ATOM => render_atom(value.raw() as u32),
+            ValueKind::ATOM => render_atom(proc, value.raw() as u32),
             ValueKind::LIST if value.raw() == 0 => "[]".to_string(),
-            kind if kind.is_heap() => render(value.heap_object_word().expect("heap object")),
+            kind if kind.is_heap() => render(proc, value.heap_object_word().expect("heap object")),
             ValueKind::NULL => "null".to_string(),
             _ => format!("#value<{:#x}:{}>", value.raw(), value.kind().tag()),
         }
@@ -1995,7 +1999,7 @@ pub mod debug {
         format!("#fn<{}/{}>", schema_id, flags)
     }
 
-    fn render_list(bits: u64) -> String {
+    fn render_list(proc: *mut Process, bits: u64) -> String {
         let mut parts: Vec<String> = Vec::new();
         let mut cur_bits = bits;
         let mut tail_render: Option<String> = None;
@@ -2006,12 +2010,12 @@ pub mod debug {
             let cp = match super::list_addr_from_tagged(cur_bits) {
                 Some(p) => p,
                 None => {
-                    tail_render = Some(render(cur_bits));
+                    tail_render = Some(render(proc, cur_bits));
                     break;
                 }
             };
             let cons = unsafe { &*(cp as *const ListCons) };
-            parts.push(render_typed_list_head(cons));
+            parts.push(render_typed_list_head(proc, cons));
             cur_bits = cons.tail_bits();
         }
         match tail_render {
@@ -2020,14 +2024,14 @@ pub mod debug {
         }
     }
 
-    fn render_typed_list_head(cons: &ListCons) -> String {
+    fn render_typed_list_head(proc: *mut Process, cons: &ListCons) -> String {
         match cons.head_kind() {
             ValueKind::INT => (cons.head as i64).to_string(),
             ValueKind::FLOAT => f64::from_bits(cons.head).to_string(),
-            ValueKind::ATOM => render_atom(cons.head as u32),
+            ValueKind::ATOM => render_atom(proc, cons.head as u32),
             kind if kind.is_heap() => {
                 let bits = cons.head | kind.tag() as u64;
-                render(bits)
+                render(proc, bits)
             }
             _ => format!("#slot<{:#x}:{}>", cons.head, cons.head_kind().tag()),
         }

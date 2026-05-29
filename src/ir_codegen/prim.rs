@@ -27,6 +27,7 @@ pub(crate) fn emit_map_get_value_ref_for_key<
     let runtime = env.runtime;
     let fn_types = env.fn_types;
     let map_ref = body.tagged_var(var_env, map.0);
+    let process = body.process_arg();
     let key_kind = expected_runtime_value_kind(t, fn_types, block_env, key);
     match key_kind {
         Some(fz_runtime::any_value::ValueKind::ATOM) => {
@@ -34,7 +35,7 @@ pub(crate) fn emit_map_get_value_ref_for_key<
             let fref = body
                 .jmod
                 .declare_func_in_func(runtime.map_get_atom_key_ref_id, body.b.func);
-            let inst = body.b.ins().call(fref, &[map_ref, kv]);
+            let inst = body.b.ins().call(fref, &[process, map_ref, kv]);
             body.b.inst_results(inst)[0]
         }
         Some(fz_runtime::any_value::ValueKind::INT) => {
@@ -42,7 +43,7 @@ pub(crate) fn emit_map_get_value_ref_for_key<
             let fref = body
                 .jmod
                 .declare_func_in_func(runtime.map_get_int_key_ref_id, body.b.func);
-            let inst = body.b.ins().call(fref, &[map_ref, kv]);
+            let inst = body.b.ins().call(fref, &[process, map_ref, kv]);
             body.b.inst_results(inst)[0]
         }
         Some(fz_runtime::any_value::ValueKind::FLOAT) => {
@@ -50,7 +51,7 @@ pub(crate) fn emit_map_get_value_ref_for_key<
             let fref = body
                 .jmod
                 .declare_func_in_func(runtime.map_get_float_key_ref_id, body.b.func);
-            let inst = body.b.ins().call(fref, &[map_ref, key_float]);
+            let inst = body.b.ins().call(fref, &[process, map_ref, key_float]);
             body.b.inst_results(inst)[0]
         }
         _ => {
@@ -58,141 +59,10 @@ pub(crate) fn emit_map_get_value_ref_for_key<
                 .jmod
                 .declare_func_in_func(runtime.map_get_ref_id, body.b.func);
             let key_ref = body.tagged_var(var_env, key.0);
-            let inst = body.b.ins().call(fref, &[map_ref, key_ref]);
+            let inst = body.b.ins().call(fref, &[process, map_ref, key_ref]);
             body.b.inst_results(inst)[0]
         }
     }
-}
-
-pub(crate) fn emit_map_put_for_key_and_value<
-    M: cranelift_module::Module,
-    T: crate::types::Types<Ty = crate::types::Ty>,
->(
-    body: &mut CodegenFn<'_, '_, '_, M>,
-    t: &mut T,
-    env: &CodegenEnv<'_>,
-    var_env: &HashMap<u32, CodegenValue>,
-    map_bits: ir::Value,
-    key: crate::fz_ir::Var,
-    value: crate::fz_ir::Var,
-    block_env: Option<&HashMap<crate::fz_ir::Var, crate::types::Ty>>,
-) -> ir::Value {
-    let runtime = env.runtime;
-    let fn_types = env.fn_types;
-    let key_kind = expected_runtime_value_kind(t, fn_types, block_env, key);
-    let value_kind = expected_runtime_value_kind(t, fn_types, block_env, value);
-    let scalar_put_id = match (key_kind, value_kind) {
-        (
-            Some(fz_runtime::any_value::ValueKind::ATOM),
-            Some(fz_runtime::any_value::ValueKind::INT),
-        ) => Some(runtime.map_put_atom_key_int_id),
-        (
-            Some(fz_runtime::any_value::ValueKind::ATOM),
-            Some(fz_runtime::any_value::ValueKind::FLOAT),
-        ) => Some(runtime.map_put_atom_key_float_id),
-        (
-            Some(fz_runtime::any_value::ValueKind::ATOM),
-            Some(fz_runtime::any_value::ValueKind::ATOM),
-        ) => Some(runtime.map_put_atom_key_atom_id),
-        (
-            Some(fz_runtime::any_value::ValueKind::INT),
-            Some(fz_runtime::any_value::ValueKind::INT),
-        ) => Some(runtime.map_put_int_key_int_id),
-        (
-            Some(fz_runtime::any_value::ValueKind::INT),
-            Some(fz_runtime::any_value::ValueKind::FLOAT),
-        ) => Some(runtime.map_put_int_key_float_id),
-        (
-            Some(fz_runtime::any_value::ValueKind::INT),
-            Some(fz_runtime::any_value::ValueKind::ATOM),
-        ) => Some(runtime.map_put_int_key_atom_id),
-        (
-            Some(fz_runtime::any_value::ValueKind::FLOAT),
-            Some(fz_runtime::any_value::ValueKind::INT),
-        ) => Some(runtime.map_put_float_key_int_id),
-        (
-            Some(fz_runtime::any_value::ValueKind::FLOAT),
-            Some(fz_runtime::any_value::ValueKind::FLOAT),
-        ) => Some(runtime.map_put_float_key_float_id),
-        (
-            Some(fz_runtime::any_value::ValueKind::FLOAT),
-            Some(fz_runtime::any_value::ValueKind::ATOM),
-        ) => Some(runtime.map_put_float_key_atom_id),
-        _ => None,
-    };
-    if let Some(func_id) = scalar_put_id {
-        let key_arg = match key_kind {
-            Some(fz_runtime::any_value::ValueKind::INT) => {
-                body.value_raw_int(binding_for_var(var_env, key.0))
-            }
-            Some(fz_runtime::any_value::ValueKind::FLOAT) => {
-                body.value_raw_float(binding_for_var(var_env, key.0))
-            }
-            Some(fz_runtime::any_value::ValueKind::ATOM) => {
-                body.value_raw_atom(binding_for_var(var_env, key.0))
-            }
-            Some(_) => unreachable!("scalar map put requires scalar key kind"),
-            None => unreachable!("scalar map put requires known key kind"),
-        };
-        let value_arg = match value_kind {
-            Some(fz_runtime::any_value::ValueKind::INT) => {
-                body.value_raw_int(binding_for_var(var_env, value.0))
-            }
-            Some(fz_runtime::any_value::ValueKind::FLOAT) => {
-                body.value_raw_float(binding_for_var(var_env, value.0))
-            }
-            Some(fz_runtime::any_value::ValueKind::ATOM) => {
-                body.value_raw_atom(binding_for_var(var_env, value.0))
-            }
-            Some(_) => unreachable!("scalar map put requires scalar value kind"),
-            None => unreachable!("scalar map put requires known value kind"),
-        };
-        let fref = body.jmod.declare_func_in_func(func_id, body.b.func);
-        let inst = body.b.ins().call(fref, &[map_bits, key_arg, value_arg]);
-        return body.b.inst_results(inst)[0];
-    }
-
-    let key_ref = body.tagged_var(var_env, key.0);
-    let key_ref = body.mark_published_ref_aliased(key_ref);
-    let (fref, args): (ir::FuncRef, Vec<ir::Value>) = match value_kind {
-        Some(fz_runtime::any_value::ValueKind::INT) => (
-            body.jmod
-                .declare_func_in_func(runtime.map_put_int_id, body.b.func),
-            vec![
-                map_bits,
-                key_ref,
-                body.value_raw_int(binding_for_var(var_env, value.0)),
-            ],
-        ),
-        Some(fz_runtime::any_value::ValueKind::FLOAT) => {
-            let value_f64 = body.value_raw_float(binding_for_var(var_env, value.0));
-            (
-                body.jmod
-                    .declare_func_in_func(runtime.map_put_float_id, body.b.func),
-                vec![map_bits, key_ref, value_f64],
-            )
-        }
-        Some(fz_runtime::any_value::ValueKind::ATOM) => (
-            body.jmod
-                .declare_func_in_func(runtime.map_put_atom_id, body.b.func),
-            vec![
-                map_bits,
-                key_ref,
-                body.value_raw_atom(binding_for_var(var_env, value.0)),
-            ],
-        ),
-        _ => {
-            let value_ref = body.tagged_var(var_env, value.0);
-            let value_ref = body.mark_published_ref_aliased(value_ref);
-            (
-                body.jmod
-                    .declare_func_in_func(runtime.map_put_ref_id, body.b.func),
-                vec![map_bits, key_ref, value_ref],
-            )
-        }
-    };
-    let inst = body.b.ins().call(fref, &args);
-    body.b.inst_results(inst)[0]
 }
 
 fn value_raw_kind_parts<M: cranelift_module::Module>(
@@ -244,9 +114,11 @@ fn emit_map_destination_put<M: cranelift_module::Module>(
             .declare_func_in_func(runtime.map_dest_put_parts_id, body.b.func);
         let key_kind = body.b.ins().iconst(types::I64, key_kind.tag() as i64);
         let value_kind = body.b.ins().iconst(types::I64, value_kind.tag() as i64);
-        body.b
-            .ins()
-            .call(fref, &[map_bits, key_raw, key_kind, value_raw, value_kind]);
+        let process = body.process_arg();
+        body.b.ins().call(
+            fref,
+            &[process, map_bits, key_raw, key_kind, value_raw, value_kind],
+        );
     } else {
         let key_ref = body.value_as_any_ref(key);
         let value_ref = body.value_as_any_ref(value);
@@ -255,7 +127,10 @@ fn emit_map_destination_put<M: cranelift_module::Module>(
         let fref = body
             .jmod
             .declare_func_in_func(runtime.map_dest_put_ref_id, body.b.func);
-        body.b.ins().call(fref, &[map_bits, key_ref, value_ref]);
+        let process = body.process_arg();
+        body.b
+            .ins()
+            .call(fref, &[process, map_bits, key_ref, value_ref]);
     }
 }
 
@@ -412,7 +287,8 @@ pub(crate) fn lower_collection_prim<
                 .jmod
                 .declare_func_in_func(runtime.alloc_struct_id, body.b.func);
             let sid = body.b.ins().iconst(types::I32, schema_id as i64);
-            let inst = body.b.ins().call(fref, &[sid]);
+            let process = body.process_arg();
+            let inst = body.b.ins().call(fref, &[process, sid]);
             let p = body.b.inst_results(inst)[0];
             for (i, e) in elems.iter().enumerate() {
                 let value = binding_for_var(var_env, e.0);
@@ -431,7 +307,8 @@ pub(crate) fn lower_collection_prim<
                 .jmod
                 .declare_func_in_func(runtime.alloc_struct_id, body.b.func);
             let sid = body.b.ins().iconst(types::I32, schema_id as i64);
-            let inst = body.b.ins().call(fref, &[sid]);
+            let process = body.process_arg();
+            let inst = body.b.ins().call(fref, &[process, sid]);
             LowerOut::ValueRef(body.b.inst_results(inst)[0])
         }
         Prim::DestTupleSet {
@@ -494,14 +371,19 @@ pub(crate) fn lower_collection_prim<
                 .ins()
                 .iconst(types::I32, (*idx as i64) * SLOT_BYTES as i64);
             let struct_ref = body.tagged_var(var_env, c.0);
-            let inst = body.b.ins().call(fref, &[struct_ref, field_offset]);
+            let process = body.process_arg();
+            let inst = body
+                .b
+                .ins()
+                .call(fref, &[process, struct_ref, field_offset]);
             LowerOut::ValueRefWord(body.b.inst_results(inst)[0])
         }
         Prim::MakeBitstring(fields) => {
             let begin = body
                 .jmod
                 .declare_func_in_func(runtime.bs_begin_id, body.b.func);
-            body.b.ins().call(begin, &[]);
+            let process = body.process_arg();
+            body.b.ins().call(begin, &[process]);
             let write = body
                 .jmod
                 .declare_func_in_func(runtime.bs_write_ref_id, body.b.func);
@@ -538,6 +420,7 @@ pub(crate) fn lower_collection_prim<
                 body.b.ins().call(
                     write,
                     &[
+                        process,
                         value_ref,
                         ty_tag,
                         size_present,
@@ -551,7 +434,8 @@ pub(crate) fn lower_collection_prim<
             let fin = body
                 .jmod
                 .declare_func_in_func(runtime.bs_finalize_id, body.b.func);
-            let inst = body.b.ins().call(fin, &[]);
+            let process = body.process_arg();
+            let inst = body.b.ins().call(fin, &[process]);
             LowerOut::ValueRef(body.b.inst_results(inst)[0])
         }
         Prim::ConstBitstring(bytes, bit_len) => {
@@ -621,7 +505,8 @@ pub(crate) fn lower_collection_prim<
                 let fref = body
                     .jmod
                     .declare_func_in_func(runtime.alloc_procbin_from_static_id, body.b.func);
-                let inst = body.b.ins().call(fref, &[sb_ptr]);
+                let process = body.process_arg();
+                let inst = body.b.ins().call(fref, &[process, sb_ptr]);
                 LowerOut::ValueRef(body.b.inst_results(inst)[0])
             } else {
                 let gv = body.jmod.declare_data_in_func(syms.bytes_id, body.b.func);
@@ -631,16 +516,21 @@ pub(crate) fn lower_collection_prim<
                 let fref = body
                     .jmod
                     .declare_func_in_func(runtime.alloc_bitstring_const_id, body.b.func);
-                let inst = body.b.ins().call(fref, &[ptr_v, byte_len_v, bit_len_v]);
+                let process = body.process_arg();
+                let inst = body
+                    .b
+                    .ins()
+                    .call(fref, &[process, ptr_v, byte_len_v, bit_len_v]);
                 LowerOut::ValueRef(body.b.inst_results(inst)[0])
             }
         }
         Prim::BitReaderInit(v) => {
             let value_ref = body.tagged_var(var_env, v.0);
+            let process = body.process_arg();
             let fref = body
                 .jmod
                 .declare_func_in_func(runtime.bs_reader_init_ref_id, body.b.func);
-            let inst = body.b.ins().call(fref, &[value_ref]);
+            let inst = body.b.ins().call(fref, &[process, value_ref]);
             LowerOut::ValueRef(body.b.inst_results(inst)[0])
         }
         Prim::BitReadField {
@@ -673,40 +563,24 @@ pub(crate) fn lower_collection_prim<
                 *is_last as u32,
             );
             let field_spec = body.b.ins().iconst(types::I64, field_spec as i64);
+            let process = body.process_arg();
             let fref = body
                 .jmod
                 .declare_func_in_func(runtime.bs_read_field_ref_id, body.b.func);
             let inst = body
                 .b
                 .ins()
-                .call(fref, &[reader_ref, field_spec, size_value]);
+                .call(fref, &[process, reader_ref, field_spec, size_value]);
             LowerOut::ValueRef(body.b.inst_results(inst)[0])
         }
-        Prim::MakeMap(entries) => {
-            let mut map_bits = if entries.is_empty() {
-                let empty = body
-                    .jmod
-                    .declare_func_in_func(runtime.map_empty_id, body.b.func);
-                let inst = body.b.ins().call(empty, &[]);
-                body.b.inst_results(inst)[0]
-            } else {
-                body.b.ins().iconst(types::I64, 0)
-            };
-            for (k, v) in entries {
-                map_bits = emit_map_put_for_key_and_value(
-                    body, t, env, var_env, map_bits, *k, *v, block_env,
-                );
-            }
-            LowerOut::ValueRef(map_bits)
-        }
-        Prim::MapUpdate(base, entries) => {
-            let mut map_bits = body.any_ref_for_var(var_env, base.0);
-            for (k, v) in entries {
-                map_bits = emit_map_put_for_key_and_value(
-                    body, t, env, var_env, map_bits, *k, *v, block_env,
-                );
-            }
-            LowerOut::ValueRef(map_bits)
+        // `MakeMap`/`MapUpdate` are rewritten to the destination-passing form
+        // (`DestMapBegin`/`DestMapPut`/`DestMapFreeze`) by
+        // `ir_dest::lower_destinations`, which runs unconditionally before
+        // codegen and is enforced by `verify_module` — so they never reach
+        // here. Map construction always lowers through `DestMap*` (and so will
+        // `Map.put`/`Map.update` when the Map module lands).
+        Prim::MakeMap(_) | Prim::MapUpdate(..) => {
+            unreachable!("MakeMap/MapUpdate are lowered to DestMap by ir_dest before codegen")
         }
         Prim::DestMapBegin { base, extra, .. } => {
             let extra = body.b.ins().iconst(types::I32, *extra as i64);
@@ -715,13 +589,15 @@ pub(crate) fn lower_collection_prim<
                 let fref = body
                     .jmod
                     .declare_func_in_func(runtime.map_dest_begin_update_id, body.b.func);
-                let inst = body.b.ins().call(fref, &[base_bits, extra]);
+                let process = body.process_arg();
+                let inst = body.b.ins().call(fref, &[process, base_bits, extra]);
                 LowerOut::ValueRef(body.b.inst_results(inst)[0])
             } else {
                 let fref = body
                     .jmod
                     .declare_func_in_func(runtime.map_dest_begin_id, body.b.func);
-                let inst = body.b.ins().call(fref, &[extra]);
+                let process = body.process_arg();
+                let inst = body.b.ins().call(fref, &[process, extra]);
                 LowerOut::ValueRef(body.b.inst_results(inst)[0])
             }
         }
@@ -739,7 +615,8 @@ pub(crate) fn lower_collection_prim<
             let fref = body
                 .jmod
                 .declare_func_in_func(runtime.map_dest_freeze_id, body.b.func);
-            let inst = body.b.ins().call(fref, &[map_bits]);
+            let process = body.process_arg();
+            let inst = body.b.ins().call(fref, &[process, map_bits]);
             LowerOut::ValueRef(body.b.inst_results(inst)[0])
         }
         Prim::MapGet(m, k) => {
@@ -753,7 +630,8 @@ pub(crate) fn lower_collection_prim<
                 .declare_func_in_func(runtime.matcher_map_get_ref_id, body.b.func);
             let map_ref = body.tagged_var(var_env, m.0);
             let key_ref = body.tagged_var(var_env, k.0);
-            let inst = body.b.ins().call(fref, &[map_ref, key_ref]);
+            let process = body.process_arg();
+            let inst = body.b.ins().call(fref, &[process, map_ref, key_ref]);
             LowerOut::ValueRefWord(body.b.inst_results(inst)[0])
         }
         Prim::IsMatcherMapMiss(v) => {
@@ -1086,10 +964,23 @@ pub(crate) fn lower_prim<
                 return lower_extern_fz_send(body, var_env, &arg_vars);
             }
             if decl.symbol == "fz_self" && args.is_empty() {
-                return lower_extern_fz_self(body.b, body.jmod);
+                return lower_extern_fz_self(body);
+            }
+            if decl.symbol == "fz_process_heap_alloc_stats" && args.is_empty() {
+                let process = body.process_arg();
+                let sig = sig1(&[types::I64], &[types::I64]);
+                let func_id = body
+                    .jmod
+                    .declare_function("fz_process_heap_alloc_stats", Linkage::Import, &sig)
+                    .map_err(|e| {
+                        CodegenError::new(format!("declare fz_process_heap_alloc_stats: {}", e))
+                    })?;
+                let fref = body.jmod.declare_func_in_func(func_id, body.b.func);
+                let inst = body.b.ins().call(fref, &[process]);
+                return Ok(LowerOut::ValueRef(body.b.inst_results(inst)[0]));
             }
             if decl.symbol == "fz_make_ref" && args.is_empty() {
-                return lower_extern_fz_make_ref(body.b, body.jmod);
+                return lower_extern_fz_make_ref(body);
             }
             if decl.symbol == "fz_spawn" && args.len() == 1 {
                 return lower_extern_fz_spawn(body, var_env, &arg_vars);
@@ -1099,6 +990,9 @@ pub(crate) fn lower_prim<
             }
             if decl.symbol == "fz_make_resource" && args.len() == 2 {
                 return lower_extern_fz_make_resource(body, var_env, &arg_vars);
+            }
+            if decl.symbol == "fz_dbg_value" && args.len() == 1 {
+                return lower_extern_fz_dbg_value(body, var_env, &arg_vars, dest_var);
             }
             if decl.variadic {
                 return emit_variadic_extern_call(
@@ -1142,7 +1036,8 @@ pub(crate) fn lower_prim<
             let fref = body
                 .jmod
                 .declare_func_in_func(runtime.bs_reader_done_ref_id, body.b.func);
-            let inst = body.b.ins().call(fref, &[rv]);
+            let process = body.process_arg();
+            let inst = body.b.ins().call(fref, &[process, rv]);
             let cmp = body.b.inst_results(inst)[0];
             if body.cache.if_only_conds.contains(&dest_var.0) {
                 return Ok(LowerOut::Condition(cmp));
@@ -1640,10 +1535,11 @@ where
     } else {
         let a_ref = body.tagged_var(var_env, a.0);
         let b_ref = body.tagged_var(var_env, bv.0);
+        let process = body.process_arg();
         let fref = body
             .jmod
             .declare_func_in_func(runtime.value_eq_ref_id, body.b.func);
-        let inst = body.b.ins().call(fref, &[a_ref, b_ref]);
+        let inst = body.b.ins().call(fref, &[process, a_ref, b_ref]);
         let eq = body.b.inst_results(inst)[0];
         let eq_bool = body.b.ins().icmp_imm(IntCC::NotEqual, eq, 0);
         let cmp = if is_eq {
@@ -1796,6 +1692,13 @@ fn lower_bool_binop<M: cranelift_module::Module>(
     Ok(LowerOut::Strict(strict_bool(body.b, combined)))
 }
 
+// fz "process intrinsics": externs the front end exposes but the runtime
+// implements as BIFs that need the running process (and/or bespoke arg
+// marshaling). Each marshals its args, then routes through `body.call_named`
+// — the one declare→call path — and wraps the result per its ABI. The process,
+// when needed, is the pinned register (`process_arg`), prepended here rather
+// than appearing in the fz extern decl.
+
 /// `fz_panic(value)`: forwards one ValueRef to the runtime fatal path.
 fn lower_extern_fz_panic<M: cranelift_module::Module>(
     body: &mut CodegenFn<'_, '_, '_, M>,
@@ -1804,13 +1707,8 @@ fn lower_extern_fz_panic<M: cranelift_module::Module>(
     dest_var: crate::fz_ir::Var,
 ) -> Result<LowerOut, CodegenError> {
     let value_ref = body.tagged_var(var_env, args[0].0);
-    let sig = sig1(&[types::I64], &[]);
-    let func_id = body
-        .jmod
-        .declare_function("fz_panic", Linkage::Import, &sig)
-        .map_err(|e| CodegenError::new(format!("declare fz_panic: {}", e)))?;
-    let fref = body.jmod.declare_func_in_func(func_id, body.b.func);
-    body.b.ins().call(fref, &[value_ref]);
+    let process = body.process_arg();
+    body.call_named("fz_panic", &[process, value_ref]);
     if body.cache.used_vars.contains(&dest_var.0) {
         return Ok(LowerOut::Strict(strict_const_value(
             body.b,
@@ -1820,9 +1718,27 @@ fn lower_extern_fz_panic<M: cranelift_module::Module>(
     Ok(LowerOut::DeadUnit)
 }
 
-/// `fz_send(receiver, msg)`: marshals `msg` as a single ABI ValueRef
-/// arg and forwards to `fz_send_ref`. The wrapper's declared return type
-/// drives normal return coercion from this boxed ABI result.
+/// `fz_dbg_value(value)`: prints the value and returns it. The runtime BIF
+/// renders atom names off the process and routes output through the process's
+/// ExecCtx telemetry sink, so the process is prepended from the pinned register.
+fn lower_extern_fz_dbg_value<M: cranelift_module::Module>(
+    body: &mut CodegenFn<'_, '_, '_, M>,
+    var_env: &HashMap<u32, CodegenValue>,
+    args: &[crate::fz_ir::Var],
+    dest_var: crate::fz_ir::Var,
+) -> Result<LowerOut, CodegenError> {
+    let value_ref = body.tagged_var(var_env, args[0].0);
+    let process = body.process_arg();
+    let call = body.call_named("fz_dbg_value", &[process, value_ref]);
+    let result = body.b.inst_results(call)[0];
+    if body.cache.used_vars.contains(&dest_var.0) {
+        return Ok(LowerOut::Strict(CodegenValue::AnyRef(result)));
+    }
+    Ok(LowerOut::DeadUnit)
+}
+
+/// `fz_send(receiver, msg)`: marshals `msg` as a single ABI ValueRef arg and
+/// forwards to `fz_send_ref`.
 fn lower_extern_fz_send<M: cranelift_module::Module>(
     body: &mut CodegenFn<'_, '_, '_, M>,
     var_env: &HashMap<u32, CodegenValue>,
@@ -1833,42 +1749,26 @@ fn lower_extern_fz_send<M: cranelift_module::Module>(
     let mut msg_args = Vec::with_capacity(1);
     body.push_binding_as_abi_arg(&mut msg_args, msg_binding, ArgRepr::ValueRef);
     let msg_ref = msg_args[0];
-    let sig = sig1(&[types::I64, types::I64], &[types::I64]);
-    let func_id = body
-        .jmod
-        .declare_function("fz_send_ref", Linkage::Import, &sig)
-        .map_err(|e| CodegenError::new(format!("declare fz_send_ref: {}", e)))?;
-    let fref = body.jmod.declare_func_in_func(func_id, body.b.func);
-    let inst = body.b.ins().call(fref, &[receiver, msg_ref]);
+    let process = body.process_arg();
+    let inst = body.call_named("fz_send_ref", &[process, receiver, msg_ref]);
     Ok(LowerOut::ValueRefWord(body.b.inst_results(inst)[0]))
 }
 
-/// `fz_self()`: returns the current process id from `fz_self_raw`.
+/// `fz_self()`: the current process id from `fz_self_raw`.
 fn lower_extern_fz_self<M: cranelift_module::Module>(
-    b: &mut FunctionBuilder<'_>,
-    jmod: &mut M,
+    body: &mut CodegenFn<'_, '_, '_, M>,
 ) -> Result<LowerOut, CodegenError> {
-    let sig = sig1(&[], &[types::I64]);
-    let func_id = jmod
-        .declare_function("fz_self_raw", Linkage::Import, &sig)
-        .map_err(|e| CodegenError::new(format!("declare fz_self_raw: {}", e)))?;
-    let fref = jmod.declare_func_in_func(func_id, b.func);
-    let inst = b.ins().call(fref, &[]);
-    Ok(LowerOut::RawI64(b.inst_results(inst)[0]))
+    let process = body.process_arg();
+    let inst = body.call_named("fz_self_raw", &[process]);
+    Ok(LowerOut::RawI64(body.b.inst_results(inst)[0]))
 }
 
-/// `fz_make_ref()`: allocates a fresh opaque ref via `fz_make_ref_raw`.
+/// `fz_make_ref()`: a fresh opaque ref from `fz_make_ref_raw` (no process).
 fn lower_extern_fz_make_ref<M: cranelift_module::Module>(
-    b: &mut FunctionBuilder<'_>,
-    jmod: &mut M,
+    body: &mut CodegenFn<'_, '_, '_, M>,
 ) -> Result<LowerOut, CodegenError> {
-    let sig = sig1(&[], &[types::I64]);
-    let func_id = jmod
-        .declare_function("fz_make_ref_raw", Linkage::Import, &sig)
-        .map_err(|e| CodegenError::new(format!("declare fz_make_ref_raw: {}", e)))?;
-    let fref = jmod.declare_func_in_func(func_id, b.func);
-    let inst = b.ins().call(fref, &[]);
-    Ok(LowerOut::RawI64(b.inst_results(inst)[0]))
+    let inst = body.call_named("fz_make_ref_raw", &[]);
+    Ok(LowerOut::RawI64(body.b.inst_results(inst)[0]))
 }
 
 /// `fz_spawn(closure)`: forwards the closure ref to `fz_spawn_ref`.
@@ -1878,18 +1778,12 @@ fn lower_extern_fz_spawn<M: cranelift_module::Module>(
     args: &[crate::fz_ir::Var],
 ) -> Result<LowerOut, CodegenError> {
     let closure_ref = body.tagged_var(var_env, args[0].0);
-    let sig = sig1(&[types::I64], &[types::I64]);
-    let func_id = body
-        .jmod
-        .declare_function("fz_spawn_ref", Linkage::Import, &sig)
-        .map_err(|e| CodegenError::new(format!("declare fz_spawn_ref: {}", e)))?;
-    let fref = body.jmod.declare_func_in_func(func_id, body.b.func);
-    let inst = body.b.ins().call(fref, &[closure_ref]);
+    let process = body.process_arg();
+    let inst = body.call_named("fz_spawn_ref", &[process, closure_ref]);
     Ok(LowerOut::RawI64(body.b.inst_results(inst)[0]))
 }
 
-/// `fz_spawn_opt(closure, min_heap_size)`: variant of `fz_spawn` that
-/// also passes a heap-size hint through to `fz_spawn_opt_ref`.
+/// `fz_spawn_opt(closure, min_heap_size)`: `fz_spawn` plus a heap-size hint.
 fn lower_extern_fz_spawn_opt<M: cranelift_module::Module>(
     body: &mut CodegenFn<'_, '_, '_, M>,
     var_env: &HashMap<u32, CodegenValue>,
@@ -1897,18 +1791,12 @@ fn lower_extern_fz_spawn_opt<M: cranelift_module::Module>(
 ) -> Result<LowerOut, CodegenError> {
     let closure_ref = body.tagged_var(var_env, args[0].0);
     let min_heap_size = body.as_raw_i64(var_env, args[1].0);
-    let sig = sig1(&[types::I64, types::I64], &[types::I64]);
-    let func_id = body
-        .jmod
-        .declare_function("fz_spawn_opt_ref", Linkage::Import, &sig)
-        .map_err(|e| CodegenError::new(format!("declare fz_spawn_opt_typed: {}", e)))?;
-    let fref = body.jmod.declare_func_in_func(func_id, body.b.func);
-    let inst = body.b.ins().call(fref, &[closure_ref, min_heap_size]);
+    let process = body.process_arg();
+    let inst = body.call_named("fz_spawn_opt_ref", &[process, closure_ref, min_heap_size]);
     Ok(LowerOut::RawI64(body.b.inst_results(inst)[0]))
 }
 
-/// `fz_make_resource(payload, dtor)`: builds a runtime resource with
-/// the raw payload bits and the destructor closure ref.
+/// `fz_make_resource(payload, dtor)`: raw payload bits + destructor closure ref.
 fn lower_extern_fz_make_resource<M: cranelift_module::Module>(
     body: &mut CodegenFn<'_, '_, '_, M>,
     var_env: &HashMap<u32, CodegenValue>,
@@ -1919,13 +1807,8 @@ fn lower_extern_fz_make_resource<M: cranelift_module::Module>(
         .expect("unbound make_resource payload");
     let payload_raw = body.value_raw_int(payload);
     let dtor_ref = body.tagged_var(var_env, args[1].0);
-    let sig = sig1(&[types::I64, types::I64], &[types::I64]);
-    let func_id = body
-        .jmod
-        .declare_function("fz_make_resource_ref", Linkage::Import, &sig)
-        .map_err(|e| CodegenError::new(format!("declare fz_make_resource_ref: {}", e)))?;
-    let fref = body.jmod.declare_func_in_func(func_id, body.b.func);
-    let inst = body.b.ins().call(fref, &[payload_raw, dtor_ref]);
+    let process = body.process_arg();
+    let inst = body.call_named("fz_make_resource_ref", &[process, payload_raw, dtor_ref]);
     Ok(LowerOut::ValueRef(body.b.inst_results(inst)[0]))
 }
 

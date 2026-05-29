@@ -34,14 +34,114 @@ pub(crate) fn sig1(params: &[ir::Type], rets: &[ir::Type]) -> Signature {
     s
 }
 
+pub(crate) fn runtime_import_sig(name: &str) -> Signature {
+    use types::{F64, I8, I32, I64};
+    // Single source of every runtime import's wire ABI. Every arg/return is a
+    // pointer-width-or-narrower word; the signature is just the type list.
+    // `decl_import` (JIT/AOT declaration) and `CodegenFn::call_named` (the
+    // by-name intrinsic call path) both consult this — one place to keep in
+    // step with the `extern "C"` bodies in ir_runtime.rs.
+    let (params, rets): (&[ir::Type], &[ir::Type]) = match name {
+        // process intrinsics lowered by name (prim.rs)
+        "fz_panic" => (&[I64, I64], &[]),
+        "fz_dbg_value" => (&[I64, I64], &[I64]),
+        "fz_send_ref" => (&[I64, I64, I64], &[I64]),
+        "fz_self_raw" => (&[I64], &[I64]),
+        "fz_make_ref_raw" => (&[], &[I64]),
+        "fz_spawn_ref" => (&[I64, I64], &[I64]),
+        "fz_spawn_opt_ref" => (&[I64, I64, I64], &[I64]),
+        "fz_make_resource_ref" => (&[I64, I64, I64], &[I64]),
+        // runtime FFI declared into RuntimeRefs
+        "fz_alloc_frame" => (&[I64, I32, I32], &[I64]),
+        "fz_halt_implicit_ref" => (&[I64, I64], &[]),
+        "fz_halt_implicit_i64" => (&[I64, I64], &[]),
+        "fz_halt_implicit_f64" => (&[I64, F64], &[]),
+        "fz_list_cons_any" => (&[I64, I64, I64], &[I64]),
+        "fz_list_cons_int" => (&[I64, I64, I64], &[I64]),
+        "fz_list_cons_float" => (&[I64, F64, I64], &[I64]),
+        "fz_list_cons_atom" => (&[I64, I64, I64], &[I64]),
+        "fz_list_is_cons" => (&[I64], &[I8]),
+        "fz_list_head_ref" => (&[I64], &[I64]),
+        "fz_list_head_int_ref" => (&[I64], &[I64]),
+        "fz_list_head_float_ref" => (&[I64], &[F64]),
+        "fz_list_tail_ref" => (&[I64], &[I64]),
+        "fz_list_reuse_or_cons_tail_ref" => (&[I64, I64, I64], &[I64]),
+        "fz_mark_published_ref_aliased" => (&[I64, I64], &[I64]),
+        "fz_alloc_struct" => (&[I64, I32], &[I64]),
+        "fz_struct_get_field_ref" => (&[I64, I64, I32], &[I64]),
+        "fz_struct_set_field_ref" => (&[I64, I64, I32, I64], &[]),
+        "fz_struct_set_field_int" => (&[I64, I64, I32, I64], &[]),
+        "fz_struct_set_field_float" => (&[I64, I64, I32, F64], &[]),
+        "fz_struct_set_field_atom" => (&[I64, I64, I32, I64], &[]),
+        "fz_bs_begin" => (&[I64], &[]),
+        "fz_bs_write_field_ref" => (&[I64, I64, I32, I32, I32, I32, I32, I32], &[]),
+        "fz_bs_finalize" => (&[I64], &[I64]),
+        "fz_alloc_bitstring_const" => (&[I64, I64, I64, I64], &[I64]),
+        "fz_alloc_procbin_from_static" => (&[I64, I64], &[I64]),
+        "shared_bin_destructor_noop" => (&[I64], &[]),
+        "fz_binary_as_ptr" => (&[I64], &[I64]),
+        "fz_binary_as_cstring" => (&[I64], &[I64]),
+        "fz_extern_symbol_addr" => (&[I64], &[I64]),
+        "fz_call_var_i64_cstring_i64_i64_to_i64" => (&[I64, I64, I64, I64], &[I64]),
+        "fz_call_var_i64_cstring_i64_to_i64" => (&[I64, I64, I64], &[I64]),
+        "fz_bs_reader_init_ref" => (&[I64, I64], &[I64]),
+        "fz_bs_read_field_ref" => (&[I64, I64, I64, I32], &[I64]),
+        "fz_bs_reader_done_ref" => (&[I64, I64], &[I8]),
+        "fz_map_dest_begin" => (&[I64, I32], &[I64]),
+        "fz_map_dest_begin_update" => (&[I64, I64, I32], &[I64]),
+        "fz_map_dest_put_parts" => (&[I64, I64, I64, I64, I64, I64], &[]),
+        "fz_map_dest_put_ref" => (&[I64, I64, I64, I64], &[]),
+        "fz_map_dest_freeze" => (&[I64, I64], &[I64]),
+        "fz_map_get_ref" => (&[I64, I64, I64], &[I64]),
+        "fz_map_get_atom_key_ref" => (&[I64, I64, I64], &[I64]),
+        "fz_map_get_int_key_ref" => (&[I64, I64, I64], &[I64]),
+        "fz_map_get_float_key_ref" => (&[I64, I64, F64], &[I64]),
+        "fz_ref_load_int" => (&[I64], &[I64]),
+        "fz_ref_load_float" => (&[I64], &[F64]),
+        "fz_ref_load_atom" => (&[I64], &[I64]),
+        "fz_type_of" => (&[I64], &[I8]),
+        "fz_unbox_int" => (&[I64], &[I64]),
+        "fz_unbox_float" => (&[I64], &[F64]),
+        "fz_unbox_atom" => (&[I64], &[I64]),
+        "fz_struct_schema_id_ref" => (&[I64], &[I32]),
+        "fz_truthy_ref" => (&[I64], &[I8]),
+        "fz_box_int_for_any" => (&[I64, I64], &[I64]),
+        "fz_box_float_for_any" => (&[I64, F64], &[I64]),
+        "fz_box_atom_for_any" => (&[I64, I64], &[I64]),
+        "fz_map_is_map" => (&[I64], &[I8]),
+        "fz_promote_f64" => (&[I64], &[F64]),
+        "fz_dynamic_float_arith_unsupported" => (&[], &[I64]),
+        "fz_value_eq_ref" => (&[I64, I64, I64], &[I64]),
+        "fz_matcher_eq_bytes" => (&[I64, I64, I64], &[I32]),
+        "fz_matcher_map_get" => (&[I64, I64], &[I64]),
+        "fz_matcher_map_get_ref" => (&[I64, I64, I64], &[I64]),
+        "fz_alloc_closure" => (&[I64, I32, I32, I32, I64], &[I64]),
+        "fz_closure_code_ref" => (&[I64], &[I64]),
+        "fz_closure_halt_kind_ref" => (&[I64], &[I32]),
+        "fz_materialize_cont" => (&[I64, I64], &[I64]),
+        "fz_closure_get_capture_ref" => (&[I64, I64], &[I64]),
+        "fz_closure_get_capture_i64" => (&[I64, I64], &[I64]),
+        "fz_closure_get_capture_f64" => (&[I64, I64], &[F64]),
+        "fz_closure_set_capture_ref" => (&[I64, I64, I64, I64], &[]),
+        "fz_closure_set_capture_i64" => (&[I64, I64, I64, I64], &[]),
+        "fz_closure_set_capture_f64" => (&[I64, I64, I64, F64], &[]),
+        "fz_get_static_closure" => (&[I64, I32], &[I64]),
+        "fz_receive_park" => (&[I64, I64], &[I64]),
+        "fz_receive_park_matched" => (&[I64, I64, I64, I64, I64, I64, I64, I32, I64, I64], &[I64]),
+        "fz_get_halt_cont" => (&[I64, I64, I32], &[I64]),
+        "fz_yield_mid_flight_report" => (&[I64, I64, I32, I32], &[I64]),
+        "fz_yield_slow_path_begin" => (&[I64], &[]),
+        other => panic!("runtime_import_sig: unknown runtime import `{other}`"),
+    };
+    sig1(params, rets)
+}
+
 /// Declare a SystemV runtime FFI fn as an Import in `jmod`.
 fn decl_import<M: cranelift_module::Module>(
     jmod: &mut M,
     name: &str,
-    params: &[ir::Type],
-    rets: &[ir::Type],
 ) -> Result<FuncId, CodegenError> {
-    let sig = sig1(params, rets);
+    let sig = runtime_import_sig(name);
     jmod.declare_function(name, Linkage::Import, &sig)
         .map_err(|e| CodegenError::new(format!("declare {}: {}", name, e)))
 }
@@ -67,12 +167,7 @@ pub(crate) fn declare_runtime_symbols<M: cranelift_module::Module>(
     let receive = declare_receive_runtime(jmod)?;
     let halt_cont = declare_halt_cont_runtime(jmod)?;
     let scheduler = declare_scheduler_runtime(jmod)?;
-    let alloc_id = decl_import(
-        jmod,
-        "fz_alloc_frame",
-        &[types::I32, types::I32],
-        &[types::I64],
-    )?;
+    let alloc_id = decl_import(jmod, "fz_alloc_frame")?;
 
     Ok(RuntimeRefs {
         halt_implicit_ref_id: halt.halt_implicit_ref_id,
@@ -113,25 +208,11 @@ pub(crate) fn declare_runtime_symbols<M: cranelift_module::Module>(
         bs_reader_init_ref_id: bs.bs_reader_init_ref_id,
         bs_read_field_ref_id: bs.bs_read_field_ref_id,
         bs_reader_done_ref_id: bs.bs_reader_done_ref_id,
-        map_empty_id: map.map_empty_id,
         map_dest_begin_id: map.map_dest_begin_id,
         map_dest_begin_update_id: map.map_dest_begin_update_id,
         map_dest_put_parts_id: map.map_dest_put_parts_id,
         map_dest_put_ref_id: map.map_dest_put_ref_id,
         map_dest_freeze_id: map.map_dest_freeze_id,
-        map_put_ref_id: map.map_put_ref_id,
-        map_put_int_id: map.map_put_int_id,
-        map_put_float_id: map.map_put_float_id,
-        map_put_atom_id: map.map_put_atom_id,
-        map_put_atom_key_int_id: map.map_put_atom_key_int_id,
-        map_put_atom_key_float_id: map.map_put_atom_key_float_id,
-        map_put_atom_key_atom_id: map.map_put_atom_key_atom_id,
-        map_put_int_key_int_id: map.map_put_int_key_int_id,
-        map_put_int_key_float_id: map.map_put_int_key_float_id,
-        map_put_int_key_atom_id: map.map_put_int_key_atom_id,
-        map_put_float_key_int_id: map.map_put_float_key_int_id,
-        map_put_float_key_float_id: map.map_put_float_key_float_id,
-        map_put_float_key_atom_id: map.map_put_float_key_atom_id,
         map_get_ref_id: map.map_get_ref_id,
         map_get_atom_key_ref_id: map.map_get_atom_key_ref_id,
         map_get_int_key_ref_id: map.map_get_int_key_ref_id,
@@ -188,9 +269,9 @@ fn declare_halt_runtime<M: cranelift_module::Module>(
     jmod: &mut M,
 ) -> Result<HaltRefs, CodegenError> {
     Ok(HaltRefs {
-        halt_implicit_ref_id: decl_import(jmod, "fz_halt_implicit_ref", &[types::I64], &[])?,
-        halt_implicit_i64_id: decl_import(jmod, "fz_halt_implicit_i64", &[types::I64], &[])?,
-        halt_implicit_f64_id: decl_import(jmod, "fz_halt_implicit_f64", &[types::F64], &[])?,
+        halt_implicit_ref_id: decl_import(jmod, "fz_halt_implicit_ref")?,
+        halt_implicit_i64_id: decl_import(jmod, "fz_halt_implicit_i64")?,
+        halt_implicit_f64_id: decl_import(jmod, "fz_halt_implicit_f64")?,
     })
 }
 
@@ -213,57 +294,17 @@ fn declare_list_runtime<M: cranelift_module::Module>(
     jmod: &mut M,
 ) -> Result<ListRefs, CodegenError> {
     Ok(ListRefs {
-        list_cons_any_id: decl_import(
-            jmod,
-            "fz_list_cons_any",
-            &[types::I64, types::I64],
-            &[types::I64],
-        )?,
-        list_cons_int_id: decl_import(
-            jmod,
-            "fz_list_cons_int",
-            &[types::I64, types::I64],
-            &[types::I64],
-        )?,
-        list_cons_float_id: decl_import(
-            jmod,
-            "fz_list_cons_float",
-            &[types::F64, types::I64],
-            &[types::I64],
-        )?,
-        list_cons_atom_id: decl_import(
-            jmod,
-            "fz_list_cons_atom",
-            &[types::I64, types::I64],
-            &[types::I64],
-        )?,
-        list_is_cons_id: decl_import(jmod, "fz_list_is_cons", &[types::I64], &[types::I8])?,
-        list_head_fallback_id: decl_import(jmod, "fz_list_head_ref", &[types::I64], &[types::I64])?,
-        list_head_int_ref_id: decl_import(
-            jmod,
-            "fz_list_head_int_ref",
-            &[types::I64],
-            &[types::I64],
-        )?,
-        list_head_float_ref_id: decl_import(
-            jmod,
-            "fz_list_head_float_ref",
-            &[types::I64],
-            &[types::F64],
-        )?,
-        list_tail_fallback_id: decl_import(jmod, "fz_list_tail_ref", &[types::I64], &[types::I64])?,
-        list_reuse_or_cons_tail_ref_id: decl_import(
-            jmod,
-            "fz_list_reuse_or_cons_tail_ref",
-            &[types::I64, types::I64],
-            &[types::I64],
-        )?,
-        mark_published_ref_aliased_id: decl_import(
-            jmod,
-            "fz_mark_published_ref_aliased",
-            &[types::I64],
-            &[types::I64],
-        )?,
+        list_cons_any_id: decl_import(jmod, "fz_list_cons_any")?,
+        list_cons_int_id: decl_import(jmod, "fz_list_cons_int")?,
+        list_cons_float_id: decl_import(jmod, "fz_list_cons_float")?,
+        list_cons_atom_id: decl_import(jmod, "fz_list_cons_atom")?,
+        list_is_cons_id: decl_import(jmod, "fz_list_is_cons")?,
+        list_head_fallback_id: decl_import(jmod, "fz_list_head_ref")?,
+        list_head_int_ref_id: decl_import(jmod, "fz_list_head_int_ref")?,
+        list_head_float_ref_id: decl_import(jmod, "fz_list_head_float_ref")?,
+        list_tail_fallback_id: decl_import(jmod, "fz_list_tail_ref")?,
+        list_reuse_or_cons_tail_ref_id: decl_import(jmod, "fz_list_reuse_or_cons_tail_ref")?,
+        mark_published_ref_aliased_id: decl_import(jmod, "fz_mark_published_ref_aliased")?,
     })
 }
 
@@ -281,37 +322,12 @@ fn declare_struct_runtime<M: cranelift_module::Module>(
     jmod: &mut M,
 ) -> Result<StructRefs, CodegenError> {
     Ok(StructRefs {
-        alloc_struct_id: decl_import(jmod, "fz_alloc_struct", &[types::I32], &[types::I64])?,
-        struct_get_field_id: decl_import(
-            jmod,
-            "fz_struct_get_field_ref",
-            &[types::I64, types::I32],
-            &[types::I64],
-        )?,
-        struct_set_field_ref_id: decl_import(
-            jmod,
-            "fz_struct_set_field_ref",
-            &[types::I64, types::I32, types::I64],
-            &[],
-        )?,
-        struct_set_field_int_id: decl_import(
-            jmod,
-            "fz_struct_set_field_int",
-            &[types::I64, types::I32, types::I64],
-            &[],
-        )?,
-        struct_set_field_float_id: decl_import(
-            jmod,
-            "fz_struct_set_field_float",
-            &[types::I64, types::I32, types::F64],
-            &[],
-        )?,
-        struct_set_field_atom_id: decl_import(
-            jmod,
-            "fz_struct_set_field_atom",
-            &[types::I64, types::I32, types::I64],
-            &[],
-        )?,
+        alloc_struct_id: decl_import(jmod, "fz_alloc_struct")?,
+        struct_get_field_id: decl_import(jmod, "fz_struct_get_field_ref")?,
+        struct_set_field_ref_id: decl_import(jmod, "fz_struct_set_field_ref")?,
+        struct_set_field_int_id: decl_import(jmod, "fz_struct_set_field_int")?,
+        struct_set_field_float_id: decl_import(jmod, "fz_struct_set_field_float")?,
+        struct_set_field_atom_id: decl_import(jmod, "fz_struct_set_field_atom")?,
     })
 }
 
@@ -336,73 +352,28 @@ struct BitstringRefs {
 fn declare_bitstring_runtime<M: cranelift_module::Module>(
     jmod: &mut M,
 ) -> Result<BitstringRefs, CodegenError> {
-    let bs_begin_id = decl_import(jmod, "fz_bs_begin", &[], &[])?;
-    let bs_write_ref_id = decl_import(
-        jmod,
-        "fz_bs_write_field_ref",
-        &[
-            types::I64, // value ref
-            types::I32, // ty tag
-            types::I32, // size_present
-            types::I32, // size_value
-            types::I32, // unit
-            types::I32, // endian
-            types::I32, // signed
-        ],
-        &[],
-    )?;
-    let bs_finalize_id = decl_import(jmod, "fz_bs_finalize", &[], &[types::I64])?;
-    let alloc_bitstring_const_id = decl_import(
-        jmod,
-        "fz_alloc_bitstring_const",
-        &[types::I64, types::I64, types::I64],
-        &[types::I64],
-    )?;
+    let bs_begin_id = decl_import(jmod, "fz_bs_begin")?;
+    let bs_write_ref_id = decl_import(jmod, "fz_bs_write_field_ref")?;
+    let bs_finalize_id = decl_import(jmod, "fz_bs_finalize")?;
+    let alloc_bitstring_const_id = decl_import(jmod, "fz_alloc_bitstring_const")?;
     // Retains the anchor on a static SharedBin and allocates a ProcBin on
     // the current process heap that owns the new refcount edge.
-    let alloc_procbin_from_static_id = decl_import(
-        jmod,
-        "fz_alloc_procbin_from_static",
-        &[types::I64],
-        &[types::I64],
-    )?;
+    let alloc_procbin_from_static_id = decl_import(jmod, "fz_alloc_procbin_from_static")?;
     // Noop destructor symbol. Imported so its address can be baked into
     // each static SharedBin's `destructor` slot via a function-address
     // relocation. Matches the runtime's `extern "C" fn (*mut SharedBin)`
     // signature exactly.
-    let shared_bin_destructor_noop_id =
-        decl_import(jmod, "shared_bin_destructor_noop", &[types::I64], &[])?;
-    let binary_as_ptr_id = decl_import(jmod, "fz_binary_as_ptr", &[types::I64], &[types::I64])?;
-    let binary_as_cstring_id =
-        decl_import(jmod, "fz_binary_as_cstring", &[types::I64], &[types::I64])?;
-    let extern_symbol_addr_id =
-        decl_import(jmod, "fz_extern_symbol_addr", &[types::I64], &[types::I64])?;
-    let extern_var_i64_cstring_i64_i64_to_i64_id = decl_import(
-        jmod,
-        "fz_call_var_i64_cstring_i64_i64_to_i64",
-        &[types::I64, types::I64, types::I64, types::I64],
-        &[types::I64],
-    )?;
-    let extern_var_i64_cstring_i64_to_i64_id = decl_import(
-        jmod,
-        "fz_call_var_i64_cstring_i64_to_i64",
-        &[types::I64, types::I64, types::I64],
-        &[types::I64],
-    )?;
-    let bs_reader_init_ref_id =
-        decl_import(jmod, "fz_bs_reader_init_ref", &[types::I64], &[types::I64])?;
-    let bs_read_field_ref_id = decl_import(
-        jmod,
-        "fz_bs_read_field_ref",
-        &[
-            types::I64, // reader ref
-            types::I64, // packed field spec
-            types::I32, // size_value
-        ],
-        &[types::I64],
-    )?;
-    let bs_reader_done_ref_id =
-        decl_import(jmod, "fz_bs_reader_done_ref", &[types::I64], &[types::I8])?;
+    let shared_bin_destructor_noop_id = decl_import(jmod, "shared_bin_destructor_noop")?;
+    let binary_as_ptr_id = decl_import(jmod, "fz_binary_as_ptr")?;
+    let binary_as_cstring_id = decl_import(jmod, "fz_binary_as_cstring")?;
+    let extern_symbol_addr_id = decl_import(jmod, "fz_extern_symbol_addr")?;
+    let extern_var_i64_cstring_i64_i64_to_i64_id =
+        decl_import(jmod, "fz_call_var_i64_cstring_i64_i64_to_i64")?;
+    let extern_var_i64_cstring_i64_to_i64_id =
+        decl_import(jmod, "fz_call_var_i64_cstring_i64_to_i64")?;
+    let bs_reader_init_ref_id = decl_import(jmod, "fz_bs_reader_init_ref")?;
+    let bs_read_field_ref_id = decl_import(jmod, "fz_bs_read_field_ref")?;
+    let bs_reader_done_ref_id = decl_import(jmod, "fz_bs_reader_done_ref")?;
     Ok(BitstringRefs {
         bs_begin_id,
         bs_write_ref_id,
@@ -422,25 +393,11 @@ fn declare_bitstring_runtime<M: cranelift_module::Module>(
 }
 
 struct MapRefs {
-    map_empty_id: FuncId,
     map_dest_begin_id: FuncId,
     map_dest_begin_update_id: FuncId,
     map_dest_put_parts_id: FuncId,
     map_dest_put_ref_id: FuncId,
     map_dest_freeze_id: FuncId,
-    map_put_ref_id: FuncId,
-    map_put_int_id: FuncId,
-    map_put_float_id: FuncId,
-    map_put_atom_id: FuncId,
-    map_put_atom_key_int_id: FuncId,
-    map_put_atom_key_float_id: FuncId,
-    map_put_atom_key_atom_id: FuncId,
-    map_put_int_key_int_id: FuncId,
-    map_put_int_key_float_id: FuncId,
-    map_put_int_key_atom_id: FuncId,
-    map_put_float_key_int_id: FuncId,
-    map_put_float_key_float_id: FuncId,
-    map_put_float_key_atom_id: FuncId,
     map_get_ref_id: FuncId,
     map_get_atom_key_ref_id: FuncId,
     map_get_int_key_ref_id: FuncId,
@@ -450,129 +407,15 @@ struct MapRefs {
 /// Map construction, mutation and lookup FFI entries.
 fn declare_map_runtime<M: cranelift_module::Module>(jmod: &mut M) -> Result<MapRefs, CodegenError> {
     Ok(MapRefs {
-        map_empty_id: decl_import(jmod, "fz_map_empty", &[], &[types::I64])?,
-        map_dest_begin_id: decl_import(jmod, "fz_map_dest_begin", &[types::I32], &[types::I64])?,
-        map_dest_begin_update_id: decl_import(
-            jmod,
-            "fz_map_dest_begin_update",
-            &[types::I64, types::I32],
-            &[types::I64],
-        )?,
-        map_dest_put_parts_id: decl_import(
-            jmod,
-            "fz_map_dest_put_parts",
-            &[types::I64, types::I64, types::I64, types::I64, types::I64],
-            &[],
-        )?,
-        map_dest_put_ref_id: decl_import(
-            jmod,
-            "fz_map_dest_put_ref",
-            &[types::I64, types::I64, types::I64],
-            &[],
-        )?,
-        map_dest_freeze_id: decl_import(jmod, "fz_map_dest_freeze", &[types::I64], &[types::I64])?,
-        map_put_ref_id: decl_import(
-            jmod,
-            "fz_map_put_ref",
-            &[types::I64, types::I64, types::I64],
-            &[types::I64],
-        )?,
-        map_put_int_id: decl_import(
-            jmod,
-            "fz_map_put_int",
-            &[types::I64, types::I64, types::I64],
-            &[types::I64],
-        )?,
-        map_put_float_id: decl_import(
-            jmod,
-            "fz_map_put_float",
-            &[types::I64, types::I64, types::F64],
-            &[types::I64],
-        )?,
-        map_put_atom_id: decl_import(
-            jmod,
-            "fz_map_put_atom",
-            &[types::I64, types::I64, types::I64],
-            &[types::I64],
-        )?,
-        map_put_atom_key_int_id: decl_import(
-            jmod,
-            "fz_map_put_atom_key_int",
-            &[types::I64, types::I64, types::I64],
-            &[types::I64],
-        )?,
-        map_put_atom_key_float_id: decl_import(
-            jmod,
-            "fz_map_put_atom_key_float",
-            &[types::I64, types::I64, types::F64],
-            &[types::I64],
-        )?,
-        map_put_atom_key_atom_id: decl_import(
-            jmod,
-            "fz_map_put_atom_key_atom",
-            &[types::I64, types::I64, types::I64],
-            &[types::I64],
-        )?,
-        map_put_int_key_int_id: decl_import(
-            jmod,
-            "fz_map_put_int_key_int",
-            &[types::I64, types::I64, types::I64],
-            &[types::I64],
-        )?,
-        map_put_int_key_float_id: decl_import(
-            jmod,
-            "fz_map_put_int_key_float",
-            &[types::I64, types::I64, types::F64],
-            &[types::I64],
-        )?,
-        map_put_int_key_atom_id: decl_import(
-            jmod,
-            "fz_map_put_int_key_atom",
-            &[types::I64, types::I64, types::I64],
-            &[types::I64],
-        )?,
-        map_put_float_key_int_id: decl_import(
-            jmod,
-            "fz_map_put_float_key_int",
-            &[types::I64, types::F64, types::I64],
-            &[types::I64],
-        )?,
-        map_put_float_key_float_id: decl_import(
-            jmod,
-            "fz_map_put_float_key_float",
-            &[types::I64, types::F64, types::F64],
-            &[types::I64],
-        )?,
-        map_put_float_key_atom_id: decl_import(
-            jmod,
-            "fz_map_put_float_key_atom",
-            &[types::I64, types::F64, types::I64],
-            &[types::I64],
-        )?,
-        map_get_ref_id: decl_import(
-            jmod,
-            "fz_map_get_ref",
-            &[types::I64, types::I64],
-            &[types::I64],
-        )?,
-        map_get_atom_key_ref_id: decl_import(
-            jmod,
-            "fz_map_get_atom_key_ref",
-            &[types::I64, types::I64],
-            &[types::I64],
-        )?,
-        map_get_int_key_ref_id: decl_import(
-            jmod,
-            "fz_map_get_int_key_ref",
-            &[types::I64, types::I64],
-            &[types::I64],
-        )?,
-        map_get_float_key_ref_id: decl_import(
-            jmod,
-            "fz_map_get_float_key_ref",
-            &[types::I64, types::F64],
-            &[types::I64],
-        )?,
+        map_dest_begin_id: decl_import(jmod, "fz_map_dest_begin")?,
+        map_dest_begin_update_id: decl_import(jmod, "fz_map_dest_begin_update")?,
+        map_dest_put_parts_id: decl_import(jmod, "fz_map_dest_put_parts")?,
+        map_dest_put_ref_id: decl_import(jmod, "fz_map_dest_put_ref")?,
+        map_dest_freeze_id: decl_import(jmod, "fz_map_dest_freeze")?,
+        map_get_ref_id: decl_import(jmod, "fz_map_get_ref")?,
+        map_get_atom_key_ref_id: decl_import(jmod, "fz_map_get_atom_key_ref")?,
+        map_get_int_key_ref_id: decl_import(jmod, "fz_map_get_int_key_ref")?,
+        map_get_float_key_ref_id: decl_import(jmod, "fz_map_get_float_key_ref")?,
     })
 }
 
@@ -597,34 +440,19 @@ fn declare_value_runtime<M: cranelift_module::Module>(
     jmod: &mut M,
 ) -> Result<ValueRefs, CodegenError> {
     Ok(ValueRefs {
-        ref_load_int_id: decl_import(jmod, "fz_ref_load_int", &[types::I64], &[types::I64])?,
-        ref_load_float_id: decl_import(jmod, "fz_ref_load_float", &[types::I64], &[types::F64])?,
-        ref_load_atom_id: decl_import(jmod, "fz_ref_load_atom", &[types::I64], &[types::I64])?,
-        type_of_id: decl_import(jmod, "fz_type_of", &[types::I64], &[types::I8])?,
-        unbox_int_id: decl_import(jmod, "fz_unbox_int", &[types::I64], &[types::I64])?,
-        unbox_float_id: decl_import(jmod, "fz_unbox_float", &[types::I64], &[types::F64])?,
-        unbox_atom_id: decl_import(jmod, "fz_unbox_atom", &[types::I64], &[types::I64])?,
-        struct_schema_id_ref_id: decl_import(
-            jmod,
-            "fz_struct_schema_id_ref",
-            &[types::I64],
-            &[types::I32],
-        )?,
-        truthy_ref_id: decl_import(jmod, "fz_truthy_ref", &[types::I64], &[types::I8])?,
-        box_int_for_any_id: decl_import(jmod, "fz_box_int_for_any", &[types::I64], &[types::I64])?,
-        box_float_for_any_id: decl_import(
-            jmod,
-            "fz_box_float_for_any",
-            &[types::F64],
-            &[types::I64],
-        )?,
-        box_atom_for_any_id: decl_import(
-            jmod,
-            "fz_box_atom_for_any",
-            &[types::I64],
-            &[types::I64],
-        )?,
-        map_is_map_id: decl_import(jmod, "fz_map_is_map", &[types::I64], &[types::I8])?,
+        ref_load_int_id: decl_import(jmod, "fz_ref_load_int")?,
+        ref_load_float_id: decl_import(jmod, "fz_ref_load_float")?,
+        ref_load_atom_id: decl_import(jmod, "fz_ref_load_atom")?,
+        type_of_id: decl_import(jmod, "fz_type_of")?,
+        unbox_int_id: decl_import(jmod, "fz_unbox_int")?,
+        unbox_float_id: decl_import(jmod, "fz_unbox_float")?,
+        unbox_atom_id: decl_import(jmod, "fz_unbox_atom")?,
+        struct_schema_id_ref_id: decl_import(jmod, "fz_struct_schema_id_ref")?,
+        truthy_ref_id: decl_import(jmod, "fz_truthy_ref")?,
+        box_int_for_any_id: decl_import(jmod, "fz_box_int_for_any")?,
+        box_float_for_any_id: decl_import(jmod, "fz_box_float_for_any")?,
+        box_atom_for_any_id: decl_import(jmod, "fz_box_atom_for_any")?,
+        map_is_map_id: decl_import(jmod, "fz_map_is_map")?,
     })
 }
 
@@ -640,21 +468,13 @@ struct ArithRefs {
 fn declare_arith_runtime<M: cranelift_module::Module>(
     jmod: &mut M,
 ) -> Result<ArithRefs, CodegenError> {
-    let arith_ret: &[ir::Type] = &[types::I64];
     Ok(ArithRefs {
-        promote_f64_id: decl_import(jmod, "fz_promote_f64", &[types::I64], &[types::F64])?,
+        promote_f64_id: decl_import(jmod, "fz_promote_f64")?,
         dynamic_float_arith_unsupported_id: decl_import(
             jmod,
             "fz_dynamic_float_arith_unsupported",
-            &[],
-            &[types::I64],
         )?,
-        value_eq_ref_id: decl_import(
-            jmod,
-            "fz_value_eq_ref",
-            &[types::I64, types::I64],
-            arith_ret,
-        )?,
+        value_eq_ref_id: decl_import(jmod, "fz_value_eq_ref")?,
     })
 }
 
@@ -669,25 +489,10 @@ fn declare_matcher_runtime<M: cranelift_module::Module>(
     jmod: &mut M,
 ) -> Result<MatcherRefs, CodegenError> {
     // Receive matcher binary-literal comparison.
-    let matcher_eq_bytes_id = decl_import(
-        jmod,
-        "fz_matcher_eq_bytes",
-        &[types::I64, types::I64, types::I64],
-        &[types::I32],
-    )?;
+    let matcher_eq_bytes_id = decl_import(jmod, "fz_matcher_eq_bytes")?;
     // Receive matcher map-key lookup. Returns matcher miss sentinel on miss.
-    let matcher_map_get_id = decl_import(
-        jmod,
-        "fz_matcher_map_get",
-        &[types::I64, types::I64],
-        &[types::I64],
-    )?;
-    let matcher_map_get_ref_id = decl_import(
-        jmod,
-        "fz_matcher_map_get_ref",
-        &[types::I64, types::I64],
-        &[types::I64],
-    )?;
+    let matcher_map_get_id = decl_import(jmod, "fz_matcher_map_get")?;
+    let matcher_map_get_ref_id = decl_import(jmod, "fz_matcher_map_get_ref")?;
     Ok(MatcherRefs {
         matcher_eq_bytes_id,
         matcher_map_get_id,
@@ -713,62 +518,19 @@ struct ClosureRefs {
 fn declare_closure_runtime<M: cranelift_module::Module>(
     jmod: &mut M,
 ) -> Result<ClosureRefs, CodegenError> {
-    let alloc_closure_id = decl_import(
-        jmod,
-        "fz_alloc_closure",
-        &[types::I32, types::I32, types::I32, types::I64],
-        &[types::I64],
-    )?;
-    let closure_code_ref_id =
-        decl_import(jmod, "fz_closure_code_ref", &[types::I64], &[types::I64])?;
-    let closure_halt_kind_ref_id = decl_import(
-        jmod,
-        "fz_closure_halt_kind_ref",
-        &[types::I64],
-        &[types::I32],
-    )?;
-    let materialize_cont_id =
-        decl_import(jmod, "fz_materialize_cont", &[types::I64], &[types::I64])?;
-    let closure_get_capture_ref_id = decl_import(
-        jmod,
-        "fz_closure_get_capture_ref",
-        &[types::I64, types::I64],
-        &[types::I64],
-    )?;
-    let closure_get_capture_i64_id = decl_import(
-        jmod,
-        "fz_closure_get_capture_i64",
-        &[types::I64, types::I64],
-        &[types::I64],
-    )?;
-    let closure_get_capture_f64_id = decl_import(
-        jmod,
-        "fz_closure_get_capture_f64",
-        &[types::I64, types::I64],
-        &[types::F64],
-    )?;
-    let closure_set_capture_ref_id = decl_import(
-        jmod,
-        "fz_closure_set_capture_ref",
-        &[types::I64, types::I64, types::I64],
-        &[],
-    )?;
-    let closure_set_capture_i64_id = decl_import(
-        jmod,
-        "fz_closure_set_capture_i64",
-        &[types::I64, types::I64, types::I64],
-        &[],
-    )?;
-    let closure_set_capture_f64_id = decl_import(
-        jmod,
-        "fz_closure_set_capture_f64",
-        &[types::I64, types::I64, types::F64],
-        &[],
-    )?;
+    let alloc_closure_id = decl_import(jmod, "fz_alloc_closure")?;
+    let closure_code_ref_id = decl_import(jmod, "fz_closure_code_ref")?;
+    let closure_halt_kind_ref_id = decl_import(jmod, "fz_closure_halt_kind_ref")?;
+    let materialize_cont_id = decl_import(jmod, "fz_materialize_cont")?;
+    let closure_get_capture_ref_id = decl_import(jmod, "fz_closure_get_capture_ref")?;
+    let closure_get_capture_i64_id = decl_import(jmod, "fz_closure_get_capture_i64")?;
+    let closure_get_capture_f64_id = decl_import(jmod, "fz_closure_get_capture_f64")?;
+    let closure_set_capture_ref_id = decl_import(jmod, "fz_closure_set_capture_ref")?;
+    let closure_set_capture_i64_id = decl_import(jmod, "fz_closure_set_capture_i64")?;
+    let closure_set_capture_f64_id = decl_import(jmod, "fz_closure_set_capture_f64")?;
     // Static zero-capture closure singleton lookup. Returns the per-Process
     // singleton pointer for the given cl_sid.
-    let get_static_closure_id =
-        decl_import(jmod, "fz_get_static_closure", &[types::I32], &[types::I64])?;
+    let get_static_closure_id = decl_import(jmod, "fz_get_static_closure")?;
     Ok(ClosureRefs {
         alloc_closure_id,
         closure_code_ref_id,
@@ -795,29 +557,14 @@ fn declare_receive_runtime<M: cranelift_module::Module>(
 ) -> Result<ReceiveRefs, CodegenError> {
     // Receive: parks an accept-any matcher record on the cont closure;
     // returns YIELD sentinel.
-    let receive_park_id = decl_import(jmod, "fz_receive_park", &[types::I64], &[types::I64])?;
+    let receive_park_id = decl_import(jmod, "fz_receive_park")?;
     // Selective-receive park entry. Args:
     //   matcher_fn_bits (i64), pinned_ptr (i64), n_pinned (i64),
     //   clause_bodies_ptr (i64), n_clauses (i64),
     //   clause_bound_counts_ptr (i64), bound_arity (i32),
     //   after_deadline_or_neg1 (i64), after_cont_bits (i64).
     // Returns YIELD sentinel (i64).
-    let receive_park_matched_id = decl_import(
-        jmod,
-        "fz_receive_park_matched",
-        &[
-            types::I64,
-            types::I64,
-            types::I64,
-            types::I64,
-            types::I64,
-            types::I64,
-            types::I32,
-            types::I64,
-            types::I64,
-        ],
-        &[types::I64],
-    )?;
+    let receive_park_matched_id = decl_import(jmod, "fz_receive_park_matched")?;
     Ok(ReceiveRefs {
         receive_park_id,
         receive_park_matched_id,
@@ -839,12 +586,7 @@ fn declare_halt_cont_runtime<M: cranelift_module::Module>(
     // Process singletons (0=ValueRef, 1=RawInt, 2=RawF64). Lazily
     // initialized using the supplied halt_cont_body addr (JIT pre-populates
     // at make_process time; AOT relies on lazy init at first call).
-    let get_halt_cont_id = decl_import(
-        jmod,
-        "fz_get_halt_cont",
-        &[types::I64, types::I32],
-        &[types::I64],
-    )?;
+    let get_halt_cont_id = decl_import(jmod, "fz_get_halt_cont")?;
     // Three fz_halt_cont_body variants, declared LOCAL (bodies emitted
     // elsewhere). Strict: `(raw i64, kind i8, self i64) -> i64 tail`;
     // RawInt: `(i64, self i64) -> i64 tail`; RawF64: `(f64, self i64) -> i64 tail`.
@@ -887,13 +629,8 @@ struct SchedulerRefs {
 fn declare_scheduler_runtime<M: cranelift_module::Module>(
     jmod: &mut M,
 ) -> Result<SchedulerRefs, CodegenError> {
-    let yield_mid_flight_report_id = decl_import(
-        jmod,
-        "fz_yield_mid_flight_report",
-        &[types::I64, types::I32, types::I32],
-        &[types::I64],
-    )?;
-    let yield_slow_path_begin_id = decl_import(jmod, "fz_yield_slow_path_begin", &[], &[])?;
+    let yield_mid_flight_report_id = decl_import(jmod, "fz_yield_mid_flight_report")?;
+    let yield_slow_path_begin_id = decl_import(jmod, "fz_yield_slow_path_begin")?;
     // fz_spawn_entry: SystemV entry the scheduler calls to launch a new
     // task's zero-arg closure. Sig: `(closure:i64) -> i64`.
     let mut se_sig = Signature::new(CallConv::SystemV);
@@ -979,25 +716,11 @@ pub(crate) struct RuntimeRefs {
     pub(super) bs_reader_init_ref_id: FuncId,
     pub(super) bs_read_field_ref_id: FuncId,
     pub(super) bs_reader_done_ref_id: FuncId,
-    pub(super) map_empty_id: FuncId,
     pub(super) map_dest_begin_id: FuncId,
     pub(super) map_dest_begin_update_id: FuncId,
     pub(super) map_dest_put_parts_id: FuncId,
     pub(super) map_dest_put_ref_id: FuncId,
     pub(super) map_dest_freeze_id: FuncId,
-    pub(super) map_put_ref_id: FuncId,
-    pub(super) map_put_int_id: FuncId,
-    pub(super) map_put_float_id: FuncId,
-    pub(super) map_put_atom_id: FuncId,
-    pub(super) map_put_atom_key_int_id: FuncId,
-    pub(super) map_put_atom_key_float_id: FuncId,
-    pub(super) map_put_atom_key_atom_id: FuncId,
-    pub(super) map_put_int_key_int_id: FuncId,
-    pub(super) map_put_int_key_float_id: FuncId,
-    pub(super) map_put_int_key_atom_id: FuncId,
-    pub(super) map_put_float_key_int_id: FuncId,
-    pub(super) map_put_float_key_float_id: FuncId,
-    pub(super) map_put_float_key_atom_id: FuncId,
     pub(super) map_get_ref_id: FuncId,
     pub(super) map_get_atom_key_ref_id: FuncId,
     pub(super) map_get_int_key_ref_id: FuncId,

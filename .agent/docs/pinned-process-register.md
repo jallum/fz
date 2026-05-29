@@ -2,9 +2,8 @@
 
 Generated code uses a Cranelift **pinned register** as the base pointer for the
 current `Process`. This makes process switching for compiled code a single
-base-pointer change rather than synchronizing a bundle of process-local mirror
-cells, and it lets back edges spend the reduction budget by touching `Process`
-fields directly.
+base-pointer change, and it lets back edges spend the reduction budget by
+touching `Process` fields directly.
 
 ## The register
 
@@ -31,25 +30,27 @@ pub const PROCESS_YIELD_REASONS_OFFSET: i32 =
 Each offset has a test asserting it equals the field's real offset in `Process`.
 Only fields listed in this module are fair game for direct CLIF access.
 
-## Dual invariant with `CURRENT_PROCESS`
+## Sole process handle for compiled code
 
-The pinned register does **not** replace the `CURRENT_PROCESS` thread-local.
-Runtime helper functions called from generated code still resolve the process
-through `current_process()` (the TLS pointer). The invariant is that both views
-agree: every scheduler-facing generated entry sets the pinned register to the
-same `Process*` the scheduler installed in TLS, and restores the host's pinned
-register before returning to Rust.
+The pinned register is the **only** way generated code names the running
+process — there is no ambient thread-local. Runtime helper functions (BIFs)
+called from generated code receive the process as their leading argument, which
+codegen supplies by reading the pinned register (`get_pinned_reg`) at the call
+site. Every scheduler-facing generated entry sets the pinned register to the
+`Process*` the scheduler is dispatching, and restores the host's pinned register
+before returning to Rust.
 
 ```text
-CURRENT_PROCESS = process_ptr        # for runtime helpers
 save host_pinned_reg
-host_pinned_reg = process_ptr        # for generated code
+host_pinned_reg = process_ptr        # for generated code + BIF args
 call fz_entry(...)
 restore host_pinned_reg
 ```
 
 Because the wrapper preserves Rust's ABI at the boundary, the pinned register
 survives ordinary runtime-helper calls made from within generated code.
+Threading the process per call, never through an ambient global, is what lets
+two schedulers run live on one worker at once.
 
 ## Entry coverage
 
@@ -61,8 +62,7 @@ when it runs generated fz code under a process.
 ## Back-edge spending
 
 With the base pinned, a back edge reads, decrements, and stores
-`reductions_remaining` through `get_pinned_reg` plus the ABI offset — no
-process-independent reductions global is involved:
+`reductions_remaining` through `get_pinned_reg` plus the ABI offset:
 
 ```text
 p = get_pinned_reg.i64
@@ -73,7 +73,6 @@ brgt remaining, 0, fast
 ```
 
 `Process.reductions_remaining` and `Process.yield_reasons` are the sole
-authority for the budget on every engine; the old compiled-only reductions
-global and its thread-local mirror are gone. See
+authority for the budget on every engine. See
 [`reduction-yielding.md`](reduction-yielding.md) for how the budget is spent and
 accounted.

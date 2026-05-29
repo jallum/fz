@@ -86,8 +86,7 @@ impl IrInterpRuntime {
         msg: AnyValue,
     ) -> Result<(), String> {
         use fz_runtime::process::ProcessState;
-        let sender_heap =
-            &fz_runtime::process::current_process().heap as *const fz_runtime::heap::Heap;
+        let sender_heap = &unsafe { &*self.cur_proc() }.heap as *const fz_runtime::heap::Heap;
         // fz-yxs/fz-2v3 — sender-side probe for selective receive. If the
         // receiver is parked on a Term::ReceiveMatched, run the parked
         // matcher inline against the new message; on a hit, set up the
@@ -119,7 +118,7 @@ impl IrInterpRuntime {
                 None => {
                     // Miss: park stays in place; message lands in mailbox.
                     self.parked.insert(receiver_pid, (park, after_chain));
-                    let msg_ref = msg.as_any_value_ref()?;
+                    let msg_ref = msg.as_any_value_ref(self.cur_proc())?;
                     if let Some(task) = self.tasks.get_mut(&receiver_pid) {
                         let mut forwarding = std::collections::HashMap::new();
                         let copied = fz_runtime::heap::deep_copy_any_value_ref(
@@ -140,7 +139,7 @@ impl IrInterpRuntime {
             }
         }
 
-        let msg_ref = msg.as_any_value_ref()?;
+        let msg_ref = msg.as_any_value_ref(self.cur_proc())?;
         let Some(task) = self.tasks.get_mut(&receiver_pid) else {
             tel.event(
                 &["fz", "runtime", "send_to_unknown_pid"],
@@ -186,15 +185,10 @@ impl IrInterpRuntime {
         child.atom_names = module.atom_names.clone();
         child.state = ProcessState::Ready;
         self.insert_task(pid, child);
-        let image = fz_runtime::process::CURRENT_PROCESS
-            .try_with(|current| {
-                let proc_ptr = current.get();
-                (!proc_ptr.is_null())
-                    .then(|| unsafe { (*proc_ptr).pid })
-                    .and_then(|parent_pid| self.task_code_image(parent_pid))
-            })
-            .ok()
-            .flatten()
+        let parent_ptr = self.current_proc;
+        let image = (!parent_ptr.is_null())
+            .then(|| unsafe { (*parent_ptr).pid })
+            .and_then(|parent_pid| self.task_code_image(parent_pid))
             .unwrap_or_else(|| std::rc::Rc::new(CodeImage::new(module)));
         self.set_task_code_image(pid, image);
         self.enqueue_resume(pid, (fn_id, args, vec![]));

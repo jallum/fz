@@ -24,6 +24,12 @@ where
 {
     runtime: &'env RuntimeRefs,
     imports: HashMap<FuncId, ir::FuncRef>,
+    /// Memoized current-`Process*` value per block: `get_pinned_reg` reads a
+    /// register that is constant for the whole function invocation, so each
+    /// block that calls a process-taking BIF reads it once and reuses it.
+    /// Keyed by block (not function-wide) so the value always dominates its
+    /// uses without a cross-block dominance argument.
+    process_by_block: HashMap<ir::Block, ir::Value>,
     pub(super) b: &'a mut FunctionBuilder<'fb>,
     pub(super) jmod: &'a mut M,
     pub(super) cache: &'a mut CodegenCache,
@@ -39,6 +45,7 @@ impl<'a, 'env, 'fb, M: cranelift_module::Module> CodegenFn<'a, 'env, 'fb, M> {
         Self {
             runtime: env.runtime,
             imports: HashMap::new(),
+            process_by_block: HashMap::new(),
             b,
             jmod,
             cache,
@@ -56,6 +63,7 @@ impl<'a, 'env, 'fb, M: cranelift_module::Module> CodegenFn<'a, 'env, 'fb, M> {
         Self {
             runtime,
             imports: HashMap::new(),
+            process_by_block: HashMap::new(),
             b,
             jmod,
             cache,
@@ -89,6 +97,57 @@ impl<'a, 'env, 'fb, M: cranelift_module::Module> CodegenFn<'a, 'env, 'fb, M> {
         self.b.inst_results(inst)[0]
     }
 
+    /// The current task's `Process*` — the value the scheduler placed in the
+    /// pinned register at entry. It is valid anywhere in compiled code (it
+    /// survives runtime-helper calls), so it is the leading argument every
+    /// process-taking BIF receives, in place of a thread-local lookup. See
+    /// `runtime/src/exec_ctx.rs`.
+    pub(crate) fn process_arg(&mut self) -> ir::Value {
+        let blk = self
+            .b
+            .current_block()
+            .expect("process_arg requires a current block");
+        if let Some(&v) = self.process_by_block.get(&blk) {
+            return v;
+        }
+        let v = self.b.ins().get_pinned_reg(types::I64);
+        self.process_by_block.insert(blk, v);
+        v
+    }
+
+    /// Call a process-taking BIF, prepending the pinned `Process*` to `args`.
+    fn call1_p(&mut self, id: FuncId, args: &[ir::Value]) -> ir::Value {
+        let process = self.process_arg();
+        let mut full = Vec::with_capacity(args.len() + 1);
+        full.push(process);
+        full.extend_from_slice(args);
+        self.call1(id, &full)
+    }
+
+    /// Like `call1_p`, for a process-taking BIF with no return value.
+    fn call_p(&mut self, id: FuncId, args: &[ir::Value]) -> ir::Inst {
+        let process = self.process_arg();
+        let mut full = Vec::with_capacity(args.len() + 1);
+        full.push(process);
+        full.extend_from_slice(args);
+        self.call(id, &full)
+    }
+
+    /// Declare a runtime import by symbol name (idempotent) and call it. The
+    /// single declare→fref→call path for the intrinsics lowered by name rather
+    /// than through a `RuntimeRefs` id; the wire ABI comes from the one
+    /// `runtime_import_sig` table and `func_ref` dedups the per-fn import like
+    /// every other call site.
+    pub(crate) fn call_named(&mut self, name: &str, args: &[ir::Value]) -> ir::Inst {
+        let sig = runtime_import_sig(name);
+        let id = self
+            .jmod
+            .declare_function(name, cranelift_module::Linkage::Import, &sig)
+            .expect("declare runtime import");
+        let fref = self.func_ref(id);
+        self.b.ins().call(fref, args)
+    }
+
     pub(crate) fn ref_tag(&mut self, value_ref: ir::Value) -> ir::Value {
         let id = self.runtime.type_of_id;
         self.call1(id, &[value_ref])
@@ -101,22 +160,22 @@ impl<'a, 'env, 'fb, M: cranelift_module::Module> CodegenFn<'a, 'env, 'fb, M> {
 
     pub(crate) fn mark_published_ref_aliased(&mut self, value_ref: ir::Value) -> ir::Value {
         let id = self.runtime.mark_published_ref_aliased_id;
-        self.call1(id, &[value_ref])
+        self.call1_p(id, &[value_ref])
     }
 
     pub(crate) fn box_int_for_any(&mut self, raw: ir::Value) -> ir::Value {
         let id = self.runtime.box_int_for_any_id;
-        self.call1(id, &[raw])
+        self.call1_p(id, &[raw])
     }
 
     pub(crate) fn box_float_for_any(&mut self, raw: ir::Value) -> ir::Value {
         let id = self.runtime.box_float_for_any_id;
-        self.call1(id, &[raw])
+        self.call1_p(id, &[raw])
     }
 
     pub(crate) fn box_atom_for_any(&mut self, raw: ir::Value) -> ir::Value {
         let id = self.runtime.box_atom_for_any_id;
-        self.call1(id, &[raw])
+        self.call1_p(id, &[raw])
     }
 
     pub(crate) fn unbox_int(&mut self, value_ref: ir::Value) -> ir::Value {
@@ -141,12 +200,12 @@ impl<'a, 'env, 'fb, M: cranelift_module::Module> CodegenFn<'a, 'env, 'fb, M> {
             ArgRepr::ValueRef => self.runtime.halt_implicit_ref_id,
             ArgRepr::Condition => unreachable!("condition halt values must be materialized"),
         };
-        self.call(id, &[value]);
+        self.call_p(id, &[value]);
     }
 
     pub(crate) fn alloc_frame(&mut self, schema_id: ir::Value, size: ir::Value) -> ir::Value {
         let id = self.runtime.alloc_id;
-        self.call1(id, &[schema_id, size])
+        self.call1_p(id, &[schema_id, size])
     }
 
     pub(crate) fn get_halt_cont(
@@ -155,7 +214,7 @@ impl<'a, 'env, 'fb, M: cranelift_module::Module> CodegenFn<'a, 'env, 'fb, M> {
         halt_kind: ir::Value,
     ) -> ir::Value {
         let id = self.runtime.get_halt_cont_id;
-        self.call1(id, &[body_addr, halt_kind])
+        self.call1_p(id, &[body_addr, halt_kind])
     }
 
     pub(crate) fn alloc_closure(
@@ -166,11 +225,11 @@ impl<'a, 'env, 'fb, M: cranelift_module::Module> CodegenFn<'a, 'env, 'fb, M> {
         code_addr: ir::Value,
     ) -> ir::Value {
         let id = self.runtime.alloc_closure_id;
-        self.call1(id, &[func_id, captured_count, halt_kind, code_addr])
+        self.call1_p(id, &[func_id, captured_count, halt_kind, code_addr])
     }
 
     pub(crate) fn list_cons_with(&mut self, cons_id: FuncId, args: &[ir::Value]) -> ir::Value {
-        self.call1(cons_id, args)
+        self.call1_p(cons_id, args)
     }
 
     pub(crate) fn list_head(&mut self, list_ref: ir::Value) -> ir::Value {
@@ -199,7 +258,7 @@ impl<'a, 'env, 'fb, M: cranelift_module::Module> CodegenFn<'a, 'env, 'fb, M> {
         tail_ref: ir::Value,
     ) -> ir::Value {
         let id = self.runtime.list_reuse_or_cons_tail_ref_id;
-        self.call1(id, &[source_ref, tail_ref])
+        self.call1_p(id, &[source_ref, tail_ref])
     }
 
     pub(crate) fn closure_capture_i64(
@@ -246,7 +305,7 @@ impl<'a, 'env, 'fb, M: cranelift_module::Module> CodegenFn<'a, 'env, 'fb, M> {
         value: ir::Value,
     ) {
         let id = self.runtime.closure_set_capture_ref_id;
-        self.call(id, &[closure_ref, index, value]);
+        self.call_p(id, &[closure_ref, index, value]);
     }
 
     pub(crate) fn set_closure_capture_i64(
@@ -256,7 +315,7 @@ impl<'a, 'env, 'fb, M: cranelift_module::Module> CodegenFn<'a, 'env, 'fb, M> {
         value: ir::Value,
     ) {
         let id = self.runtime.closure_set_capture_i64_id;
-        self.call(id, &[closure_ref, index, value]);
+        self.call_p(id, &[closure_ref, index, value]);
     }
 
     pub(crate) fn set_closure_capture_f64(
@@ -266,12 +325,12 @@ impl<'a, 'env, 'fb, M: cranelift_module::Module> CodegenFn<'a, 'env, 'fb, M> {
         value: ir::Value,
     ) {
         let id = self.runtime.closure_set_capture_f64_id;
-        self.call(id, &[closure_ref, index, value]);
+        self.call_p(id, &[closure_ref, index, value]);
     }
 
     pub(crate) fn materialize_cont(&mut self, value: ir::Value) -> ir::Value {
         let id = self.runtime.materialize_cont_id;
-        self.call1(id, &[value])
+        self.call1_p(id, &[value])
     }
 
     pub(crate) fn struct_set_field_int(
@@ -281,7 +340,7 @@ impl<'a, 'env, 'fb, M: cranelift_module::Module> CodegenFn<'a, 'env, 'fb, M> {
         value: ir::Value,
     ) {
         let id = self.runtime.struct_set_field_int_id;
-        self.call(id, &[struct_bits, offset, value]);
+        self.call_p(id, &[struct_bits, offset, value]);
     }
 
     pub(crate) fn struct_set_field_float(
@@ -291,7 +350,7 @@ impl<'a, 'env, 'fb, M: cranelift_module::Module> CodegenFn<'a, 'env, 'fb, M> {
         value: ir::Value,
     ) {
         let id = self.runtime.struct_set_field_float_id;
-        self.call(id, &[struct_bits, offset, value]);
+        self.call_p(id, &[struct_bits, offset, value]);
     }
 
     pub(crate) fn struct_set_field_atom(
@@ -301,7 +360,7 @@ impl<'a, 'env, 'fb, M: cranelift_module::Module> CodegenFn<'a, 'env, 'fb, M> {
         value: ir::Value,
     ) {
         let id = self.runtime.struct_set_field_atom_id;
-        self.call(id, &[struct_bits, offset, value]);
+        self.call_p(id, &[struct_bits, offset, value]);
     }
 
     pub(crate) fn struct_set_field_ref(
@@ -311,7 +370,7 @@ impl<'a, 'env, 'fb, M: cranelift_module::Module> CodegenFn<'a, 'env, 'fb, M> {
         value: ir::Value,
     ) {
         let id = self.runtime.struct_set_field_ref_id;
-        self.call(id, &[struct_bits, offset, value]);
+        self.call_p(id, &[struct_bits, offset, value]);
     }
 
     // -- value classification reads (cache-free) --

@@ -122,10 +122,9 @@ fn static_closure_lookup_returns_singleton_pointer() {
     let targets = compiled.static_closure_targets();
     let (cl_sid, _, _, _) = *targets.first().expect("at least one static closure target");
     let mut p = compiled.make_process();
-    let _current_process =
-        fz_runtime::process::CurrentProcessGuard::install(&mut p as *mut Process);
-    let a = fz_runtime::ir_runtime::fz_get_static_closure(cl_sid);
-    let b = fz_runtime::ir_runtime::fz_get_static_closure(cl_sid);
+    let pp: *mut Process = &mut p;
+    let a = fz_runtime::ir_runtime::fz_get_static_closure(pp, cl_sid);
+    let b = fz_runtime::ir_runtime::fz_get_static_closure(pp, cl_sid);
     assert_eq!(a, b, "static-closure lookup must return the same pointer");
     assert_ne!(a, 0, "static-closure lookup must return non-null");
 }
@@ -1132,37 +1131,54 @@ fn main(), do: count(100000, 0)
 #[test]
 fn render_any_value_dispatches_per_tag() {
     assert_eq!(
-        fz_runtime::any_value::debug::render_value(fz_runtime::any_value::AnyValue::int(42)),
+        fz_runtime::any_value::debug::render_value(
+            std::ptr::null_mut(),
+            fz_runtime::any_value::AnyValue::int(42)
+        ),
         "42"
     );
     assert_eq!(
-        fz_runtime::any_value::debug::render_value(fz_runtime::any_value::AnyValue::int(0)),
+        fz_runtime::any_value::debug::render_value(
+            std::ptr::null_mut(),
+            fz_runtime::any_value::AnyValue::int(0)
+        ),
         "0"
     );
     assert_eq!(
-        fz_runtime::any_value::debug::render_value(fz_runtime::any_value::AnyValue::int(-7)),
+        fz_runtime::any_value::debug::render_value(
+            std::ptr::null_mut(),
+            fz_runtime::any_value::AnyValue::int(-7)
+        ),
         "-7"
     );
     assert_eq!(
-        fz_runtime::any_value::debug::render_value(fz_runtime::any_value::AnyValue::nil_atom()),
+        fz_runtime::any_value::debug::render_value(
+            std::ptr::null_mut(),
+            fz_runtime::any_value::AnyValue::nil_atom()
+        ),
         "nil"
     );
     assert_eq!(
-        fz_runtime::any_value::debug::render_value(fz_runtime::any_value::AnyValue::bool_atom(
-            true
-        )),
+        fz_runtime::any_value::debug::render_value(
+            std::ptr::null_mut(),
+            fz_runtime::any_value::AnyValue::bool_atom(true)
+        ),
         "true"
     );
     assert_eq!(
-        fz_runtime::any_value::debug::render_value(fz_runtime::any_value::AnyValue::bool_atom(
-            false
-        )),
+        fz_runtime::any_value::debug::render_value(
+            std::ptr::null_mut(),
+            fz_runtime::any_value::AnyValue::bool_atom(false)
+        ),
         "false"
     );
     // Empty Process.atom_names: render falls back to `:atom_N`. The
     // source-name path is verified end-to-end by the fixture matrix.
     assert_eq!(
-        fz_runtime::any_value::debug::render_value(fz_runtime::any_value::AnyValue::atom(3)),
+        fz_runtime::any_value::debug::render_value(
+            std::ptr::null_mut(),
+            fz_runtime::any_value::AnyValue::atom(3)
+        ),
         ":atom_3"
     );
 }

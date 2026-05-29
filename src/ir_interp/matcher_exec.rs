@@ -45,6 +45,7 @@ pub(super) fn execute_matcher_node(
             let mut out = Vec::with_capacity(leaf.bindings.len());
             for binding in &leaf.bindings {
                 let value = resolve_matcher_subject(
+                    runtime.cur_proc(),
                     module,
                     matcher,
                     &binding.source,
@@ -63,7 +64,15 @@ pub(super) fn execute_matcher_node(
             default,
             ..
         } => {
-            let value = resolve_matcher_subject(module, matcher, subject, inputs, pinned, state)?;
+            let value = resolve_matcher_subject(
+                runtime.cur_proc(),
+                module,
+                matcher,
+                subject,
+                inputs,
+                pinned,
+                state,
+            )?;
             for (key, case_node) in cases {
                 if matcher_switch_hit(runtime, module, value, kind, key) {
                     return execute_matcher_node(
@@ -115,9 +124,15 @@ pub(super) fn eval_matcher_guard(
     use crate::matcher::{GuardBinOp, GuardExpr, GuardUnaryOp};
     Some(match expr {
         GuardExpr::Const(c) => matcher_const_to_value(module, c)?,
-        GuardExpr::Subject(subject) => {
-            resolve_matcher_subject(module, matcher, subject, inputs, pinned, state)?
-        }
+        GuardExpr::Subject(subject) => resolve_matcher_subject(
+            runtime.cur_proc(),
+            module,
+            matcher,
+            subject,
+            inputs,
+            pinned,
+            state,
+        )?,
         GuardExpr::Pinned(pinned_id) => {
             let p = matcher.pinned.get(pinned_id.0 as usize)?;
             if let Some(var) = p.var {
@@ -149,8 +164,12 @@ pub(super) fn eval_matcher_guard(
                 GuardBinOp::Mul => AnyValue::Int(guard_int(l)? * guard_int(r)?),
                 GuardBinOp::Div => AnyValue::Int(guard_int(l)? / guard_int(r)?),
                 GuardBinOp::Rem => AnyValue::Int(guard_int(l)? % guard_int(r)?),
-                GuardBinOp::Eq => interp_bool_value(interp_value_eq(l, r).ok()?),
-                GuardBinOp::Neq => interp_bool_value(!interp_value_eq(l, r).ok()?),
+                GuardBinOp::Eq => {
+                    interp_bool_value(interp_value_eq(runtime.cur_proc(), l, r).ok()?)
+                }
+                GuardBinOp::Neq => {
+                    interp_bool_value(!interp_value_eq(runtime.cur_proc(), l, r).ok()?)
+                }
                 GuardBinOp::Lt => interp_bool_value(guard_int(l)? < guard_int(r)?),
                 GuardBinOp::LtEq => interp_bool_value(guard_int(l)? <= guard_int(r)?),
                 GuardBinOp::Gt => interp_bool_value(guard_int(l)? > guard_int(r)?),
@@ -216,6 +235,7 @@ pub(super) fn matcher_const_to_value(
 }
 
 pub(super) fn resolve_matcher_subject(
+    proc: *mut fz_runtime::process::Process,
     module: &Module,
     matcher: &crate::matcher::Matcher,
     subject: &crate::matcher::SubjectRef,
@@ -229,28 +249,31 @@ pub(super) fn resolve_matcher_subject(
     match subject {
         crate::matcher::SubjectRef::Input(id) => inputs.get(id.0 as usize).copied(),
         crate::matcher::SubjectRef::TupleField { tuple, index } => {
-            let parent = resolve_matcher_subject(module, matcher, tuple, inputs, pinned, state)?;
+            let parent =
+                resolve_matcher_subject(proc, module, matcher, tuple, inputs, pinned, state)?;
             let parent_slot = parent.value().ok()?;
             if parent_slot.kind() != ValueKind::STRUCT {
                 return None;
             }
-            with_value_ref(parent, "matcher tuple field", |struct_ref| {
-                fz_runtime::ir_runtime::fz_struct_get_field_ref(struct_ref, index * 8)
+            with_value_ref(proc, parent, "matcher tuple field", |struct_ref| {
+                fz_runtime::ir_runtime::fz_struct_get_field_ref(proc, struct_ref, index * 8)
             })
             .ok()
             .and_then(|ref_word| interp_value_from_ref_word(ref_word, "matcher tuple field").ok())
         }
         crate::matcher::SubjectRef::ListHead(list) => {
-            let parent = resolve_matcher_subject(module, matcher, list, inputs, pinned, state)?;
-            interp_list_head(parent).ok()
+            let parent =
+                resolve_matcher_subject(proc, module, matcher, list, inputs, pinned, state)?;
+            interp_list_head(proc, parent).ok()
         }
         crate::matcher::SubjectRef::ListTail(list) => {
-            let parent = resolve_matcher_subject(module, matcher, list, inputs, pinned, state)?;
-            interp_list_tail(parent).ok()
+            let parent =
+                resolve_matcher_subject(proc, module, matcher, list, inputs, pinned, state)?;
+            interp_list_tail(proc, parent).ok()
         }
         crate::matcher::SubjectRef::MapValue { map, key } => {
-            let map = resolve_matcher_subject(module, matcher, map, inputs, pinned, state)?;
-            matcher_map_lookup(matcher, module, map, key, pinned)
+            let map = resolve_matcher_subject(proc, module, matcher, map, inputs, pinned, state)?;
+            matcher_map_lookup(proc, matcher, module, map, key, pinned)
         }
         crate::matcher::SubjectRef::BitstringField { bitstring, index } => state
             .bitstring_fields
@@ -269,33 +292,51 @@ pub(super) fn matcher_test_hit(
     state: &mut MatcherExecState,
 ) -> bool {
     match test {
-        crate::matcher::MatcherTest::EqConst { subject, value } => {
-            resolve_matcher_subject(module, matcher, subject, inputs, pinned, state)
-                .is_some_and(|v| matcher_const_eq(module, v, value))
-        }
+        crate::matcher::MatcherTest::EqConst { subject, value } => resolve_matcher_subject(
+            runtime.cur_proc(),
+            module,
+            matcher,
+            subject,
+            inputs,
+            pinned,
+            state,
+        )
+        .is_some_and(|v| matcher_const_eq(module, v, value)),
         crate::matcher::MatcherTest::EqPinned {
             subject,
             pinned: pin_id,
         } => {
-            let Some(value) =
-                resolve_matcher_subject(module, matcher, subject, inputs, pinned, state)
-            else {
+            let Some(value) = resolve_matcher_subject(
+                runtime.cur_proc(),
+                module,
+                matcher,
+                subject,
+                inputs,
+                pinned,
+                state,
+            ) else {
                 return false;
             };
             let Some(pin) = matcher.pinned.get(pin_id.0 as usize) else {
                 return false;
             };
             if let Some(var) = pin.var {
-                return inputs
-                    .get(var.0 as usize)
-                    .is_some_and(|want| interp_value_eq(*want, value).unwrap_or(false));
+                return inputs.get(var.0 as usize).is_some_and(|want| {
+                    interp_value_eq(runtime.cur_proc(), *want, value).unwrap_or(false)
+                });
             }
-            pinned
-                .get(&pin.name)
-                .is_some_and(|want| interp_value_eq(*want, value).unwrap_or(false))
+            pinned.get(&pin.name).is_some_and(|want| {
+                interp_value_eq(runtime.cur_proc(), *want, value).unwrap_or(false)
+            })
         }
         crate::matcher::MatcherTest::TupleArity { subject, arity } => resolve_matcher_subject(
-            module, matcher, subject, inputs, pinned, state,
+            runtime.cur_proc(),
+            module,
+            matcher,
+            subject,
+            inputs,
+            pinned,
+            state,
         )
         .is_some_and(|v| {
             v.value().ok().is_some_and(|v| {
@@ -306,20 +347,41 @@ pub(super) fn matcher_test_hit(
                     })
             })
         }),
-        crate::matcher::MatcherTest::ListCons { subject } => {
-            resolve_matcher_subject(module, matcher, subject, inputs, pinned, state)
-                .is_some_and(|v| v.value().ok().is_some_and(interp_is_list_cons))
-        }
-        crate::matcher::MatcherTest::MapKind { subject } => {
-            resolve_matcher_subject(module, matcher, subject, inputs, pinned, state)
-                .is_some_and(|v| v.value().ok().is_some_and(is_map_value))
-        }
+        crate::matcher::MatcherTest::ListCons { subject } => resolve_matcher_subject(
+            runtime.cur_proc(),
+            module,
+            matcher,
+            subject,
+            inputs,
+            pinned,
+            state,
+        )
+        .is_some_and(|v| v.value().ok().is_some_and(interp_is_list_cons)),
+        crate::matcher::MatcherTest::MapKind { subject } => resolve_matcher_subject(
+            runtime.cur_proc(),
+            module,
+            matcher,
+            subject,
+            inputs,
+            pinned,
+            state,
+        )
+        .is_some_and(|v| v.value().ok().is_some_and(is_map_value)),
         crate::matcher::MatcherTest::MapHasKey { subject, key } => {
-            let Some(v) = resolve_matcher_subject(module, matcher, subject, inputs, pinned, state)
-            else {
+            let Some(v) = resolve_matcher_subject(
+                runtime.cur_proc(),
+                module,
+                matcher,
+                subject,
+                inputs,
+                pinned,
+                state,
+            ) else {
                 return false;
             };
-            let Some(value) = matcher_map_lookup(matcher, module, v, key, pinned) else {
+            let Some(value) =
+                matcher_map_lookup(runtime.cur_proc(), matcher, module, v, key, pinned)
+            else {
                 return false;
             };
             state
@@ -328,15 +390,20 @@ pub(super) fn matcher_test_hit(
             true
         }
         crate::matcher::MatcherTest::Bitstring { subject, fields } => {
-            let Some(value) =
-                resolve_matcher_subject(module, matcher, subject, inputs, pinned, state)
-            else {
+            let Some(value) = resolve_matcher_subject(
+                runtime.cur_proc(),
+                module,
+                matcher,
+                subject,
+                inputs,
+                pinned,
+                state,
+            ) else {
                 return false;
             };
-            value
-                .value()
-                .ok()
-                .is_some_and(|value| matcher_read_bitstring(subject, value, fields, state))
+            value.value().ok().is_some_and(|value| {
+                matcher_read_bitstring(runtime.cur_proc(), subject, value, fields, state)
+            })
         }
         crate::matcher::MatcherTest::Type { .. } => true,
     }
@@ -437,6 +504,7 @@ pub(super) fn matcher_const_eq(
 }
 
 pub(super) fn matcher_map_lookup(
+    proc: *mut fz_runtime::process::Process,
     matcher: &crate::matcher::Matcher,
     module: &Module,
     map: AnyValue,
@@ -447,9 +515,9 @@ pub(super) fn matcher_map_lookup(
         return None;
     }
     let key = matcher_const_key_value(matcher, module, key, pinned)?;
-    let ref_word = with_value_ref(map, "MatcherMapGet map", |map_ref| {
-        with_value_ref(key, "MatcherMapGet key", |key_ref| {
-            fz_runtime::ir_runtime::fz_matcher_map_get_ref(map_ref, key_ref)
+    let ref_word = with_value_ref(proc, map, "MatcherMapGet map", |map_ref| {
+        with_value_ref(proc, key, "MatcherMapGet key", |key_ref| {
+            fz_runtime::ir_runtime::fz_matcher_map_get_ref(proc, map_ref, key_ref)
         })
     })
     .ok()?
@@ -489,6 +557,7 @@ pub(super) fn matcher_const_key_value(
 }
 
 pub(super) fn matcher_read_bitstring(
+    proc: *mut fz_runtime::process::Process,
     subject: &crate::matcher::SubjectRef,
     value: RuntimeAnyValue,
     fields: &[crate::matcher::MatcherBitField],
@@ -503,7 +572,8 @@ pub(super) fn matcher_read_bitstring(
     if !unsafe { fz_runtime::procbin::is_bitstring_like(p) } {
         return false;
     }
-    let mut reader = fz_runtime::ir_runtime::fz_bs_reader_init_ref(value.ref_word().raw_word());
+    let mut reader =
+        fz_runtime::ir_runtime::fz_bs_reader_init_ref(proc, value.ref_word().raw_word());
     let mut size_bindings: HashMap<String, AnyValue> = HashMap::new();
     for (index, field) in fields.iter().enumerate() {
         let Some((size_present, size_value)) = matcher_bit_size_value(&field.size, &size_bindings)
@@ -513,7 +583,7 @@ pub(super) fn matcher_read_bitstring(
         let Ok(reader_any) = interp_value_from_ref_word(reader, "bitstring matcher reader") else {
             return false;
         };
-        let Ok(reader_ref) = reader_any.as_ref_word() else {
+        let Ok(reader_ref) = reader_any.as_ref_word(proc) else {
             return false;
         };
         let field_spec = fz_runtime::ir_runtime::fz_bs_field_spec(
@@ -525,20 +595,21 @@ pub(super) fn matcher_read_bitstring(
             (index + 1 == fields.len()) as u32,
         );
         let result =
-            fz_runtime::ir_runtime::fz_bs_read_field_ref(reader_ref, field_spec, size_value);
-        let Ok(ok) = interp_struct_field_from_tagged_bits(result, 0, "bitstring matcher ok") else {
+            fz_runtime::ir_runtime::fz_bs_read_field_ref(proc, reader_ref, field_spec, size_value);
+        let Ok(ok) = interp_struct_field_from_tagged_bits(proc, result, 0, "bitstring matcher ok")
+        else {
             return false;
         };
         if ok.is_false() || ok.is_nil() {
             return false;
         }
         let Ok(extracted) =
-            interp_struct_field_from_tagged_bits(result, 8, "bitstring matcher extracted")
+            interp_struct_field_from_tagged_bits(proc, result, 8, "bitstring matcher extracted")
         else {
             return false;
         };
         let Ok(next_reader) =
-            interp_struct_field_from_tagged_bits(result, 16, "bitstring matcher next reader")
+            interp_struct_field_from_tagged_bits(proc, result, 16, "bitstring matcher next reader")
         else {
             return false;
         };
@@ -548,16 +619,18 @@ pub(super) fn matcher_read_bitstring(
         for name in &field.direct_bindings {
             size_bindings.insert(name.clone(), extracted);
         }
-        let Ok(next_reader_ref) = next_reader.as_ref_word() else {
+        let Ok(next_reader_ref) = next_reader.as_ref_word(proc) else {
             return false;
         };
         reader = next_reader_ref;
     }
-    let Ok(bit_len) = interp_struct_field_from_tagged_bits(reader, 8, "bitstring matcher bit_len")
+    let Ok(bit_len) =
+        interp_struct_field_from_tagged_bits(proc, reader, 8, "bitstring matcher bit_len")
     else {
         return false;
     };
-    let Ok(pos) = interp_struct_field_from_tagged_bits(reader, 16, "bitstring matcher pos") else {
+    let Ok(pos) = interp_struct_field_from_tagged_bits(proc, reader, 16, "bitstring matcher pos")
+    else {
         return false;
     };
     bit_len.as_i64() == pos.as_i64()

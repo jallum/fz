@@ -169,8 +169,8 @@ module build.
 Parse, type, and lowering errors leave `ReplRuntime` untouched.
 
 Runtime errors are reported for the current chunk. The session may keep the
-runtime only when `CURRENT_PROCESS` has been restored and the evaluator process
-state is still well-defined.
+runtime only when the evaluator process state is still well-defined after the
+drive returns.
 
 If a chunk parks the evaluator on `receive`, `drive_until_idle` can return
 without a completed display value. Surface that as blocked state; do not invent

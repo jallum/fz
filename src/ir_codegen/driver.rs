@@ -1569,7 +1569,8 @@ fn emit_halt_cont_bodies<M: cranelift_module::Module>(
         b.seal_block(entry);
         let value_ref = b.block_params(entry)[0];
         let hi_fref = m.declare_func_in_func(runtime.halt_implicit_ref_id, b.func);
-        b.ins().call(hi_fref, &[value_ref]);
+        let process = b.ins().get_pinned_reg(types::I64);
+        b.ins().call(hi_fref, &[process, value_ref]);
         let zero = b.ins().iconst(types::I64, 0);
         b.ins().return_(&[zero]);
     })
@@ -1597,7 +1598,8 @@ fn emit_halt_cont_bodies<M: cranelift_module::Module>(
             b.seal_block(entry);
             let val = b.block_params(entry)[0];
             let hi_fref = m.declare_func_in_func(halt_impl_id, b.func);
-            b.ins().call(hi_fref, &[val]);
+            let process = b.ins().get_pinned_reg(types::I64);
+            b.ins().call(hi_fref, &[process, val]);
             let zero = b.ins().iconst(types::I64, 0);
             b.ins().return_(&[zero]);
         })

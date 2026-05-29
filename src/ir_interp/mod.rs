@@ -97,6 +97,12 @@ pub(crate) struct IrInterpRuntime {
     run_queue: VecDeque<u32>,
     resume: HashMap<u32, ResumeEntry>,
     parked: HashMap<u32, InterpParked>,
+    /// The process executing in the current quantum. Set per-quantum in
+    /// `drive_until_idle`; read by BIF call sites that allocate or touch the
+    /// running process's heap/mailbox. Per-instance — replaces reads of the
+    /// global `CURRENT_PROCESS` thread-local so two interpreters can be live
+    /// at once on one thread.
+    current_proc: *mut Process,
 }
 
 impl IrInterpRuntime {
@@ -110,7 +116,17 @@ impl IrInterpRuntime {
             run_queue: VecDeque::new(),
             resume: HashMap::new(),
             parked: HashMap::new(),
+            current_proc: std::ptr::null_mut(),
         }
+    }
+
+    /// The process running in the current quantum. Call sites that allocate or
+    /// touch the running process read this instead of the global
+    /// `CURRENT_PROCESS` thread-local.
+    #[inline]
+    pub(crate) fn cur_proc(&self) -> *mut Process {
+        debug_assert!(!self.current_proc.is_null(), "cur_proc outside a quantum");
+        self.current_proc
     }
 
     pub(crate) fn fresh_with_root(module: &Module) -> Self {
@@ -231,7 +247,22 @@ impl IrInterpRuntime {
         // Route fz output (dbg/print) to telemetry for the duration of the
         // drive — same seam the compiled scheduler uses, so dbg observability
         // is engine-uniform.
-        let _output_scope = crate::runtime::route_output_to(tel);
+
+        // Per-context dispatch table for this interpreter run. The interpreter
+        // is its own scheduler and handles spawn/send/timer in-engine, so the
+        // BIF callbacks stay None; the scheduler handle and telemetry sink
+        // identify this run, and `module` is refreshed per task below. Lives on
+        // this stack frame, which outlives every quantum; each task's
+        // `Process.ctx` points here and BIFs dispatch output/make_resource
+        // through it.
+        let mut exec_ctx = fz_runtime::exec_ctx::ExecCtx {
+            scheduler: self as *mut Self as *mut (),
+            tel: (&tel) as *const &dyn crate::telemetry::Telemetry as *const (),
+            // dbg/print routes to telemetry through the same thunk the compiled
+            // engine uses; the rest of the BIF callbacks are interpreter-internal.
+            output: Some(crate::runtime::output_hook_thunk),
+            ..fz_runtime::exec_ctx::ExecCtx::empty()
+        };
 
         'sched: while let Some(pid) = self.pop_runnable() {
             let image = self
@@ -244,11 +275,15 @@ impl IrInterpRuntime {
             let proc_ptr = self
                 .process_ptr(pid)
                 .expect("pid in run_queue with no process entry");
+            exec_ctx.module = module as *const crate::fz_ir::Module as *const ();
             unsafe {
                 (*proc_ptr).state = ProcessState::Running;
                 (*proc_ptr).reset_reduction_budget();
+                (*proc_ptr).ctx = &mut exec_ctx;
+                (*proc_ptr).heap.set_owner(proc_ptr);
+                debug_assert!(!(*proc_ptr).ctx.is_null(), "interp ctx installed");
             };
-            let prev = fz_runtime::process::CURRENT_PROCESS.with(|c| c.replace(proc_ptr));
+            self.current_proc = proc_ptr;
             let mut step = run_fn(self, &mut t, module, tel, fn_id, args);
             loop {
                 match step {
@@ -261,15 +296,12 @@ impl IrInterpRuntime {
                             continue;
                         }
 
-                        fz_runtime::process::CURRENT_PROCESS.with(|c| c.set(prev));
                         completions.push((pid, val));
                         if keepalive_pid == Some(pid) {
                             self.set_process_state(pid, ProcessState::Ready);
                             continue 'sched;
                         }
 
-                        let prev =
-                            fz_runtime::process::CURRENT_PROCESS.with(|c| c.replace(proc_ptr));
                         unsafe {
                             fz_runtime::procbin::mso_drop_all_deferred(&mut (*proc_ptr).heap);
                         }
@@ -279,7 +311,6 @@ impl IrInterpRuntime {
                                 crate::metadata! { error: e },
                             );
                         }
-                        fz_runtime::process::CURRENT_PROCESS.with(|c| c.set(prev));
                         // Parity with the compiled engine: record the result on
                         // the Process and emit the same process_exited event
                         // through the single shared emit site.
@@ -297,7 +328,6 @@ impl IrInterpRuntime {
                         remaining_reductions,
                         reason,
                     }) => {
-                        fz_runtime::process::CURRENT_PROCESS.with(|c| c.set(prev));
                         new_after.extend(after);
                         let process = unsafe { &mut *proc_ptr };
                         process.finish_yield_report(remaining_reductions, reason);
@@ -310,21 +340,18 @@ impl IrInterpRuntime {
                         continue 'sched;
                     }
                     Ok(InterpStep::Blocked(resume_fn, cap_vals, mut new_after)) => {
-                        fz_runtime::process::CURRENT_PROCESS.with(|c| c.set(prev));
                         new_after.extend(after);
                         self.set_process_state(pid, ProcessState::Blocked);
                         self.resume.insert(pid, (resume_fn, cap_vals, new_after));
                         continue 'sched;
                     }
                     Ok(InterpStep::BlockedMatched(park, mut new_after)) => {
-                        fz_runtime::process::CURRENT_PROCESS.with(|c| c.set(prev));
                         new_after.extend(after);
                         self.set_process_state(pid, ProcessState::Blocked);
                         self.parked.insert(pid, (park, new_after));
                         continue 'sched;
                     }
                     Err(e) => {
-                        fz_runtime::process::CURRENT_PROCESS.with(|c| c.set(prev));
                         return Err(e);
                     }
                 }
@@ -351,7 +378,10 @@ impl IrInterpRuntime {
         arity: usize,
     ) -> Result<Vec<AnyValue>, String> {
         let AnyValue::Ref(value_ref) = value else {
-            return Err(format!("expected tuple ref, got {}", value.render()));
+            return Err(format!(
+                "expected tuple ref, got {}",
+                value.render(std::ptr::null_mut())
+            ));
         };
         if value_ref.tag() != fz_runtime::any_value::ValueKind::STRUCT {
             return Err(format!("expected tuple struct, got {:?}", value));
@@ -374,10 +404,7 @@ impl IrInterpRuntime {
             .get(&pid)
             .ok_or_else(|| format!("render_value: unknown pid {}", pid))?;
         let proc_ptr = task.as_ref() as *const Process as *mut Process;
-        let prev = fz_runtime::process::CURRENT_PROCESS.with(|c| c.replace(proc_ptr));
-        let rendered = value.render();
-        fz_runtime::process::CURRENT_PROCESS.with(|c| c.set(prev));
-        Ok(rendered)
+        Ok(value.render(proc_ptr))
     }
 }
 
@@ -465,12 +492,13 @@ pub fn run_test_fn(
     task.atom_names = module.atom_names.clone();
     runtime.insert_task(1, task);
     let task_ptr = runtime.process_ptr(1).expect("run_test_fn installed pid 1");
-    let prev = fz_runtime::process::CURRENT_PROCESS.with(|c| c.replace(task_ptr));
+    runtime.current_proc = task_ptr;
+    unsafe { (*task_ptr).heap.set_owner(task_ptr) };
     let mut t = crate::types::ConcreteTypes;
     let result = run_fn(&mut runtime, &mut t, module, tel, fn_id, Vec::new());
     // fz-4mk — shutdown drain mirrors run_main's exit path: enqueue every
-    // surviving resource's dtor and dispatch each as a real fz call while
-    // CURRENT_PROCESS is still pointing at the test task's heap.
+    // surviving resource's dtor and dispatch each as a real fz call. The dtor
+    // helpers reach this task through `runtime.current_proc` (set above).
     unsafe {
         fz_runtime::procbin::mso_drop_all_deferred(&mut (*task_ptr).heap);
     }
@@ -480,7 +508,6 @@ pub fn run_test_fn(
             crate::metadata! { error: e },
         );
     }
-    fz_runtime::process::CURRENT_PROCESS.with(|c| c.set(prev));
     match result {
         Ok(InterpStep::Done(_)) => Ok(()),
         Ok(InterpStep::Yielded { .. }) => {
@@ -512,6 +539,7 @@ fn value_to_halt(v: AnyValue) -> i64 {
 /// Resource's C-side dtor slot is the no-op so refcount→0 paths that
 /// bypass the drain don't double-fire.
 pub(crate) fn make_resource_in_current_process(
+    proc: *mut Process,
     _module: &Module,
     payload: i64,
     dtor_closure: fz_runtime::any_value::AnyValue,
@@ -528,7 +556,7 @@ pub(crate) fn make_resource_in_current_process(
         payload as u64,
         fz_runtime::resource::fz_resource_destructor_noop,
     );
-    let heap = &mut fz_runtime::process::current_process().heap;
+    let heap = &mut unsafe { &mut *proc }.heap;
     let stub = fz_runtime::resource::alloc_resource(heap, handle, dtor_closure);
     Ok(fz_runtime::any_value::AnyValue::heap_ptr(
         stub.as_raw(),

@@ -17,10 +17,16 @@
 //! Cranelift-emitted code via the symbol-binding list in
 //! `ir_codegen::compile`. Do not reorder args or change return types
 //! without updating the matching `declare_function` signatures.
+//!
+//! Every BIF takes its `*mut Process` (or value-ref ptr) from the caller — the
+//! pinned register for compiled code, a threaded param for the interpreter —
+//! and dereferences it. That's the entire purpose of this FFI surface, so the
+//! `not_unsafe_ptr_arg_deref` lint is allowed module-wide instead of per-fn.
+#![allow(clippy::not_unsafe_ptr_arg_deref)]
 
 use crate::any_value::AnyValueRef;
 use crate::any_value::ValueKind;
-use crate::process::{current_process, try_current_process};
+use crate::process::Process;
 
 static NIL_ATOM_REF_SLOT: u64 = crate::any_value::NIL_ATOM_ID as u64;
 
@@ -95,8 +101,8 @@ fn map_ref_word_from_bits(bits: u64) -> u64 {
     heap_ref_word(ValueKind::MAP, addr)
 }
 
-fn process_atom_id(name: &str) -> u32 {
-    let process = current_process();
+fn process_atom_id(process: *mut Process, name: &str) -> u32 {
+    let process = unsafe { &mut *process };
     if let Some(id) = process
         .atom_names
         .iter()
@@ -110,12 +116,13 @@ fn process_atom_id(name: &str) -> u32 {
 }
 
 fn alloc_stat_entries(
+    process: *mut Process,
     entries: &mut Vec<(crate::any_value::AnyValue, crate::any_value::AnyValue)>,
     prefix: &str,
     stat: crate::heap::AllocStat,
 ) {
-    let allocs_key = process_atom_id(&format!("{prefix}_allocs"));
-    let bytes_key = process_atom_id(&format!("{prefix}_bytes"));
+    let allocs_key = process_atom_id(process, &format!("{prefix}_allocs"));
+    let bytes_key = process_atom_id(process, &format!("{prefix}_bytes"));
     entries.push((
         crate::any_value::AnyValue::atom(allocs_key),
         crate::any_value::AnyValue::int(stat.allocs as i64),
@@ -127,90 +134,90 @@ fn alloc_stat_entries(
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_process_heap_alloc_stats() -> u64 {
-    let process = current_process();
-    let snapshot = process.heap.alloc_stats_snapshot();
-    let scheduler_yields = process.scheduler_yields;
-    let interpreter_yields = process.interpreter_yields;
-    let reductions_remaining = process.reductions_remaining;
-    let reductions_per_quantum = process.reductions_per_quantum;
-    let reductions_executed = process.reductions_executed;
-    let reduction_yields = process.reduction_yields;
-    let allocation_pressure_yields = process.allocation_pressure_yields;
-    let yield_reasons = process.yield_reasons;
-    let max_yield_continuation_bytes = process.max_yield_continuation_bytes;
-    let min_yield_continuation_margin_before_bytes =
-        process.min_yield_continuation_margin_before_bytes;
-    let min_yield_continuation_margin_after_bytes =
-        process.min_yield_continuation_margin_after_bytes;
+pub extern "C" fn fz_process_heap_alloc_stats(process: *mut Process) -> u64 {
+    let p = unsafe { &mut *process };
+    let snapshot = p.heap.alloc_stats_snapshot();
+    let scheduler_yields = p.scheduler_yields;
+    let interpreter_yields = p.interpreter_yields;
+    let reductions_remaining = p.reductions_remaining;
+    let reductions_per_quantum = p.reductions_per_quantum;
+    let reductions_executed = p.reductions_executed;
+    let reduction_yields = p.reduction_yields;
+    let allocation_pressure_yields = p.allocation_pressure_yields;
+    let yield_reasons = p.yield_reasons;
+    let max_yield_continuation_bytes = p.max_yield_continuation_bytes;
+    let min_yield_continuation_margin_before_bytes = p.min_yield_continuation_margin_before_bytes;
+    let min_yield_continuation_margin_after_bytes = p.min_yield_continuation_margin_after_bytes;
     let mut entries = Vec::with_capacity(33);
     entries.push((
-        crate::any_value::AnyValue::atom(process_atom_id("allocs")),
+        crate::any_value::AnyValue::atom(process_atom_id(process, "allocs")),
         crate::any_value::AnyValue::int(snapshot.total.allocs as i64),
     ));
     entries.push((
-        crate::any_value::AnyValue::atom(process_atom_id("bytes")),
+        crate::any_value::AnyValue::atom(process_atom_id(process, "bytes")),
         crate::any_value::AnyValue::int(snapshot.total.bytes as i64),
     ));
-    alloc_stat_entries(&mut entries, "list_cons", snapshot.list_cons);
-    alloc_stat_entries(&mut entries, "struct", snapshot.struct_);
-    alloc_stat_entries(&mut entries, "closure", snapshot.closure);
-    alloc_stat_entries(&mut entries, "map", snapshot.map);
-    alloc_stat_entries(&mut entries, "bitstring", snapshot.bitstring);
-    alloc_stat_entries(&mut entries, "procbin", snapshot.procbin);
-    alloc_stat_entries(&mut entries, "scalar_box", snapshot.scalar_box);
-    alloc_stat_entries(&mut entries, "frame", snapshot.frame);
-    alloc_stat_entries(&mut entries, "resource", snapshot.resource);
-    alloc_stat_entries(&mut entries, "other", snapshot.other);
+    alloc_stat_entries(process, &mut entries, "list_cons", snapshot.list_cons);
+    alloc_stat_entries(process, &mut entries, "struct", snapshot.struct_);
+    alloc_stat_entries(process, &mut entries, "closure", snapshot.closure);
+    alloc_stat_entries(process, &mut entries, "map", snapshot.map);
+    alloc_stat_entries(process, &mut entries, "bitstring", snapshot.bitstring);
+    alloc_stat_entries(process, &mut entries, "procbin", snapshot.procbin);
+    alloc_stat_entries(process, &mut entries, "scalar_box", snapshot.scalar_box);
+    alloc_stat_entries(process, &mut entries, "frame", snapshot.frame);
+    alloc_stat_entries(process, &mut entries, "resource", snapshot.resource);
+    alloc_stat_entries(process, &mut entries, "other", snapshot.other);
     entries.push((
-        crate::any_value::AnyValue::atom(process_atom_id("scheduler_yields")),
+        crate::any_value::AnyValue::atom(process_atom_id(process, "scheduler_yields")),
         crate::any_value::AnyValue::int(scheduler_yields as i64),
     ));
     entries.push((
-        crate::any_value::AnyValue::atom(process_atom_id("interpreter_yields")),
+        crate::any_value::AnyValue::atom(process_atom_id(process, "interpreter_yields")),
         crate::any_value::AnyValue::int(interpreter_yields as i64),
     ));
     entries.push((
-        crate::any_value::AnyValue::atom(process_atom_id("reductions_remaining")),
+        crate::any_value::AnyValue::atom(process_atom_id(process, "reductions_remaining")),
         crate::any_value::AnyValue::int(reductions_remaining as i64),
     ));
     entries.push((
-        crate::any_value::AnyValue::atom(process_atom_id("reductions_per_quantum")),
+        crate::any_value::AnyValue::atom(process_atom_id(process, "reductions_per_quantum")),
         crate::any_value::AnyValue::int(reductions_per_quantum as i64),
     ));
     entries.push((
-        crate::any_value::AnyValue::atom(process_atom_id("reductions_executed")),
+        crate::any_value::AnyValue::atom(process_atom_id(process, "reductions_executed")),
         crate::any_value::AnyValue::int(reductions_executed as i64),
     ));
     entries.push((
-        crate::any_value::AnyValue::atom(process_atom_id("reduction_yields")),
+        crate::any_value::AnyValue::atom(process_atom_id(process, "reduction_yields")),
         crate::any_value::AnyValue::int(reduction_yields as i64),
     ));
     entries.push((
-        crate::any_value::AnyValue::atom(process_atom_id("allocation_pressure_yields")),
+        crate::any_value::AnyValue::atom(process_atom_id(process, "allocation_pressure_yields")),
         crate::any_value::AnyValue::int(allocation_pressure_yields as i64),
     ));
     entries.push((
-        crate::any_value::AnyValue::atom(process_atom_id("yield_reasons")),
+        crate::any_value::AnyValue::atom(process_atom_id(process, "yield_reasons")),
         crate::any_value::AnyValue::int(yield_reasons as i64),
     ));
     entries.push((
-        crate::any_value::AnyValue::atom(process_atom_id("max_yield_continuation_bytes")),
+        crate::any_value::AnyValue::atom(process_atom_id(process, "max_yield_continuation_bytes")),
         crate::any_value::AnyValue::int(max_yield_continuation_bytes as i64),
     ));
     entries.push((
         crate::any_value::AnyValue::atom(process_atom_id(
+            process,
             "min_yield_continuation_margin_before_bytes",
         )),
         crate::any_value::AnyValue::int(min_yield_continuation_margin_before_bytes as i64),
     ));
     entries.push((
         crate::any_value::AnyValue::atom(process_atom_id(
+            process,
             "min_yield_continuation_margin_after_bytes",
         )),
         crate::any_value::AnyValue::int(min_yield_continuation_margin_after_bytes as i64),
     ));
-    map_ref_word_from_bits(current_process().heap.alloc_map_slots(&entries))
+    map_ref_word_from_bits((unsafe { &mut *process }).heap.alloc_map_slots(&entries))
 }
 
 fn map_bits_from_ref_word(word: u64, context: &str) -> u64 {
@@ -301,8 +308,8 @@ fn ref_load_atom_impl(ref_word: u64) -> u64 {
         .expect("fz_ref_load_atom")
 }
 
-fn box_scalar_for_any(raw: u64, tag: ValueKind) -> u64 {
-    let slot = current_process().heap.alloc_kind(
+fn box_scalar_for_any(process: *mut Process, raw: u64, tag: ValueKind) -> u64 {
+    let slot = (unsafe { &mut *process }).heap.alloc_kind(
         crate::heap::HeapAllocKind::ScalarBox,
         std::mem::size_of::<u64>(),
     ) as *mut u64;
@@ -315,31 +322,34 @@ fn box_scalar_for_any(raw: u64, tag: ValueKind) -> u64 {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_box_int_for_any(raw: i64) -> u64 {
-    box_scalar_for_any(raw as u64, ValueKind::INT)
+pub extern "C" fn fz_box_int_for_any(process: *mut Process, raw: i64) -> u64 {
+    box_scalar_for_any(process, raw as u64, ValueKind::INT)
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_box_float_for_any(raw: f64) -> u64 {
-    box_scalar_for_any(raw.to_bits(), ValueKind::FLOAT)
+pub extern "C" fn fz_box_float_for_any(process: *mut Process, raw: f64) -> u64 {
+    box_scalar_for_any(process, raw.to_bits(), ValueKind::FLOAT)
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_box_atom_for_any(raw: u64) -> u64 {
-    box_scalar_for_any(raw, ValueKind::ATOM)
+pub extern "C" fn fz_box_atom_for_any(process: *mut Process, raw: u64) -> u64 {
+    box_scalar_for_any(process, raw, ValueKind::ATOM)
 }
 
 // ===== Halt + print cluster (fz-ul4.23.4.13) =====
 
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_dbg_value_ref(ref_word: u64) {
+pub extern "C" fn fz_dbg_value_ref(process: *mut Process, ref_word: u64) {
     let value = any_value_from_ref_word(ref_word, "fz_dbg_value_ref");
-    crate::emit_print_line(crate::any_value::debug::render_value(value));
+    crate::emit_print_line(
+        process,
+        crate::any_value::debug::render_value(process, value),
+    );
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_dbg_value(ref_word: u64) -> u64 {
-    fz_dbg_value_ref(ref_word);
+pub extern "C" fn fz_dbg_value(process: *mut Process, ref_word: u64) -> u64 {
+    fz_dbg_value_ref(process, ref_word);
     ref_word
 }
 
@@ -352,21 +362,21 @@ pub extern "C" fn fz_dynamic_float_arith_unsupported() -> u64 {
 /// carries a raw i64 all the way to halt-cont's RawInt body; no
 /// unboxing — value is already a machine int.
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_halt_implicit_i64(val: i64) {
-    current_process().halt_value = val;
+pub extern "C" fn fz_halt_implicit_i64(process: *mut Process, val: i64) {
+    (unsafe { &mut *process }).halt_value = val;
 }
 
 /// fz-ul4.27.22.3 — typed halt for narrow-float seams. Mirrors
 /// fz_halt's Boxed-float branch: store `to_bits() as i64` so tests
 /// can round-trip via f64::from_bits.
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_halt_implicit_f64(val: f64) {
-    current_process().halt_value = val.to_bits() as i64;
+pub extern "C" fn fz_halt_implicit_f64(process: *mut Process, val: f64) {
+    (unsafe { &mut *process }).halt_value = val.to_bits() as i64;
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_halt_implicit_ref(ref_word: u64) {
-    current_process().halt_value =
+pub extern "C" fn fz_halt_implicit_ref(process: *mut Process, ref_word: u64) {
+    (unsafe { &mut *process }).halt_value =
         halt_value_from_slot(any_value_from_ref_word(ref_word, "fz_halt_implicit_ref"));
 }
 
@@ -389,14 +399,35 @@ fn halt_value_from_slot(value: crate::any_value::AnyValue) -> i64 {
 /// Both consume a Runtime installed in TLS by Runtime::run_until_idle.
 /// Calling either outside the scheduler path panics with a clear message.
 ///
-#[unsafe(no_mangle)]
-pub extern "C" fn fz_spawn_ref(closure_ref_word: u64) -> u64 {
-    crate::scheduler_hooks::dispatch_spawn(closure_ref_word) as u64
+/// Borrow the execution context a BIF reaches scheduler services through.
+/// The owning scheduler installs it on the Process (`ctx.2`); it outlives any
+/// FFI call made under this process.
+#[inline]
+unsafe fn process_ctx<'a>(process: *mut Process) -> &'a crate::exec_ctx::ExecCtx {
+    let ctx = unsafe { (*process).ctx };
+    debug_assert!(!ctx.is_null(), "process.ctx installed before BIF dispatch");
+    unsafe { &*ctx }
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_spawn_opt_ref(closure_ref_word: u64, min_heap_size: u64) -> u64 {
-    crate::scheduler_hooks::dispatch_spawn_opt(closure_ref_word, min_heap_size as u32) as u64
+pub extern "C" fn fz_spawn_ref(process: *mut Process, closure_ref_word: u64) -> u64 {
+    let ctx = unsafe { process_ctx(process) };
+    (ctx.spawn.expect("spawn callback installed"))(process, ctx.scheduler, closure_ref_word) as u64
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_spawn_opt_ref(
+    process: *mut Process,
+    closure_ref_word: u64,
+    min_heap_size: u64,
+) -> u64 {
+    let ctx = unsafe { process_ctx(process) };
+    (ctx.spawn_opt.expect("spawn_opt callback installed"))(
+        process,
+        ctx.scheduler,
+        closure_ref_word,
+        min_heap_size as u32,
+    ) as u64
 }
 
 /// fz-swt.10 — `make_resource(payload, dtor)` runtime BIF, callable from
@@ -410,13 +441,23 @@ pub extern "C" fn fz_spawn_opt_ref(closure_ref_word: u64, min_heap_size: u64) ->
 /// both interp and JIT/AOT execution — the symbol path is therefore
 /// uniform across all three legs (see fz-swt.10's `MakeResourceHook`).
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_make_resource_ref(payload_raw: u64, dtor_ref: u64) -> u64 {
-    crate::scheduler_hooks::dispatch_make_resource(payload_raw, dtor_ref)
+pub extern "C" fn fz_make_resource_ref(
+    process: *mut Process,
+    payload_raw: u64,
+    dtor_ref: u64,
+) -> u64 {
+    let ctx = unsafe { process_ctx(process) };
+    (ctx.make_resource.expect("make_resource callback installed"))(
+        process,
+        ctx.module,
+        payload_raw,
+        dtor_ref,
+    )
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_self_raw() -> u64 {
-    current_process().pid as u64
+pub extern "C" fn fz_self_raw(process: *mut Process) -> u64 {
+    (unsafe { &mut *process }).pid as u64
 }
 
 /// fz-ht5 — process-global monotonic counter feeding `fz_make_ref`.
@@ -436,10 +477,20 @@ pub extern "C" fn fz_make_ref_raw() -> u64 {
 /// the scheduler/mailbox moves the one-word any value ref until a matcher or
 /// receiver unwraps it.
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_send_ref(receiver_pid_bits: u64, msg_ref_word: u64) -> u64 {
+pub extern "C" fn fz_send_ref(
+    process: *mut Process,
+    receiver_pid_bits: u64,
+    msg_ref_word: u64,
+) -> u64 {
     let receiver_pid = receiver_pid_bits as u32;
     let _ = any_value_ref_from_word(msg_ref_word, "fz_send_ref message");
-    crate::scheduler_hooks::dispatch_send(receiver_pid, msg_ref_word);
+    let ctx = unsafe { process_ctx(process) };
+    (ctx.send.expect("send callback installed"))(
+        process,
+        ctx.scheduler,
+        receiver_pid,
+        msg_ref_word,
+    );
     msg_ref_word
 }
 
@@ -448,9 +499,9 @@ pub extern "C" fn fz_send_ref(receiver_pid_bits: u64, msg_ref_word: u64) -> u64 
 /// accept-any matcher, so the scheduler wakes it through the same
 /// `runnable_closure` path as selective receive.
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_receive_park(cont_closure_bits: u64) -> *mut u8 {
+pub extern "C" fn fz_receive_park(process: *mut Process, cont_closure_bits: u64) -> *mut u8 {
     use crate::{process::ProcessState, scheduler_hooks::YIELD_PTR};
-    let p = current_process();
+    let p = unsafe { &mut *process };
     p.parked_matched = Some(Box::new(crate::park::ParkRecord {
         matcher_fn: crate::park::match_any_message,
         pinned: Vec::new(),
@@ -495,6 +546,7 @@ pub extern "C" fn fz_receive_park(cont_closure_bits: u64) -> *mut u8 {
 #[unsafe(no_mangle)]
 #[allow(clippy::too_many_arguments, clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn fz_receive_park_matched(
+    process: *mut Process,
     matcher_fn_bits: u64,
     pinned_ptr: *const crate::any_value::AnyValueRef,
     n_pinned: u64,
@@ -546,9 +598,9 @@ pub extern "C" fn fz_receive_park_matched(
         Some(after_deadline_or_neg1 as u64)
     };
 
-    let p = current_process();
+    let p = unsafe { &mut *process };
     let after_timer_id = match after_deadline_ms {
-        Some(after_ms) => crate::scheduler_hooks::dispatch_timer_schedule(p.pid, after_ms),
+        Some(after_ms) => crate::exec_ctx::timer_schedule(p, p.pid, after_ms),
         None => None,
     };
     let after_cont = if after_cont_bits == 0 {
@@ -581,31 +633,6 @@ pub extern "C" fn fz_receive_park_matched(
     YIELD_PTR as *mut u8
 }
 
-/// # Safety
-/// `cont_frame_ptr` must point at a valid cont closure heap object
-/// (built by codegen at the Receive seam). Called only from JIT/AOT-
-/// emitted Cranelift code; clippy's `not_unsafe_ptr_arg_deref` is
-/// silenced because the C ABI is fixed by codegen.
-#[unsafe(no_mangle)]
-#[allow(clippy::not_unsafe_ptr_arg_deref)]
-pub extern "C" fn fz_receive_attempt(cont_frame_ptr: *mut u8) -> *mut u8 {
-    use crate::{process::ProcessState, scheduler_hooks::YIELD_PTR};
-    let p = current_process();
-    if let Some(msg) = p.mailbox.pop_front() {
-        unsafe {
-            crate::any_value::closure_capture_set_ref_word(
-                cont_frame_ptr as *const u8,
-                1,
-                msg.raw_word(),
-            );
-        }
-        cont_frame_ptr
-    } else {
-        p.state = ProcessState::Blocked;
-        YIELD_PTR as *mut u8
-    }
-}
-
 /// Boundary-reporting mid-flight yield entry.
 ///
 /// Generated/interpreted code reports the scheduler continuation, signed
@@ -614,12 +641,13 @@ pub extern "C" fn fz_receive_attempt(cont_frame_ptr: *mut u8) -> *mut u8 {
 /// the boundary instead of syncing against the hot-path budget cell.
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_yield_mid_flight_report(
+    process: *mut Process,
     cont_closure_bits: u64,
     remaining_reductions: i32,
     reason: u32,
 ) -> *mut u8 {
     use crate::scheduler_hooks::YIELD_PTR;
-    let p = current_process();
+    let p = unsafe { &mut *process };
     p.scheduler_yields = p.scheduler_yields.saturating_add(1);
     // Allocation-pressure reasons already stand on `p.yield_reasons`;
     // finish_yield_report folds them in when attributing the cause.
@@ -635,8 +663,8 @@ pub extern "C" fn fz_yield_mid_flight_report(
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_yield_slow_path_begin() {
-    let p = current_process();
+pub extern "C" fn fz_yield_slow_path_begin(process: *mut Process) {
+    let p = unsafe { &mut *process };
     p.begin_yield_continuation_allocation(p.heap.bytes_remaining_in_block());
 }
 
@@ -654,13 +682,14 @@ pub extern "C" fn fz_yield_slow_path_begin() {
 /// at task launch.
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_alloc_closure(
+    process: *mut Process,
     callee_fn_id: u32,
     captured_count: u32,
     halt_kind: u32,
     body_addr: u64,
 ) -> u64 {
     FRAME_ALLOC_COUNT.with(|c| c.set(c.get() + 1));
-    let bits = current_process().heap.alloc_closure_slots(
+    let bits = (unsafe { &mut *process }).heap.alloc_closure_slots(
         callee_fn_id,
         captured_count as usize,
         halt_kind as u16,
@@ -695,12 +724,16 @@ pub extern "C" fn fz_closure_halt_kind_ref(closure_ref_word: u64) -> u32 {
 /// call site preserves test invariants that count heap allocations
 /// exactly (`gc_traces_closure_captured_via_jit`).
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_get_halt_cont(halt_cont_body_addr: u64, kind: u32) -> u64 {
+pub extern "C" fn fz_get_halt_cont(
+    process: *mut Process,
+    halt_cont_body_addr: u64,
+    kind: u32,
+) -> u64 {
     // fz-ul4.27.22.3 — `kind` selects which of three per-Process halt-cont
     // singletons to return (0=ValueRef, 1=RawInt, 2=RawF64). Each holds a
     // body whose Tail-CC sig matches its repr. Producer's Term::Return
     // uses sig (return_repr, i64); the code pointer at +8 must agree.
-    let p = current_process();
+    let p = unsafe { &mut *process };
     let slot = kind as usize;
     if !p.halt_cont_singletons[slot].is_null() {
         return heap_ref_word(
@@ -734,8 +767,8 @@ pub extern "C" fn fz_get_halt_cont(halt_cont_body_addr: u64, kind: u32) -> u64 {
 /// site. See docs/cps-in-clif.md §8.2 acceptance: "Module-init region produces
 /// double/neg static closures exactly once."
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_get_static_closure(cl_sid: u32) -> u64 {
-    let p = current_process();
+pub extern "C" fn fz_get_static_closure(process: *mut Process, cl_sid: u32) -> u64 {
+    let p = unsafe { &mut *process };
     let idx = cl_sid as usize;
     if idx < p.static_closures.len() {
         let ptr = p.static_closures[idx];
@@ -779,8 +812,8 @@ fn bitstring_like_ptr_from_ref(word: u64) -> Option<*mut u8> {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_bs_begin() {
-    current_process().bs_builder = Some(crate::bitstr::BitWriter::new());
+pub extern "C" fn fz_bs_begin(process: *mut Process) {
+    (unsafe { &mut *process }).bs_builder = Some(crate::bitstr::BitWriter::new());
 }
 
 /// Write one field into the active builder. Field-type tags match the order
@@ -790,6 +823,7 @@ pub extern "C" fn fz_bs_begin() {
 #[allow(clippy::too_many_arguments)]
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_bs_write_field_ref(
+    process: *mut Process,
     value_ref: u64,
     ty_tag: u32,
     size_present: u32,
@@ -800,6 +834,7 @@ pub extern "C" fn fz_bs_write_field_ref(
 ) {
     let value = any_value_from_ref_word(value_ref, "fz_bs_write_field_ref");
     fz_bs_write_field_value(
+        process,
         value,
         ty_tag,
         size_present,
@@ -812,6 +847,7 @@ pub extern "C" fn fz_bs_write_field_ref(
 
 #[allow(clippy::too_many_arguments)]
 fn fz_bs_write_field_value(
+    process: *mut Process,
     value: crate::any_value::AnyValue,
     ty_tag: u32,
     size_present: u32,
@@ -834,7 +870,7 @@ fn fz_bs_write_field_value(
     // is consumed on read (fz_bs_read_field) for sign extension.
     let _ = signed;
     {
-        let w = current_process()
+        let w = (unsafe { &mut *process })
             .bs_builder
             .as_mut()
             .expect("fz_bs_write_field called without fz_bs_begin");
@@ -932,14 +968,16 @@ fn fz_bs_write_field_value(
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_bs_finalize() -> u64 {
-    let w = current_process()
+pub extern "C" fn fz_bs_finalize(process: *mut Process) -> u64 {
+    let w = (unsafe { &mut *process })
         .bs_builder
         .take()
         .expect("fz_bs_finalize without fz_bs_begin");
     let bit_len = w.bit_len as u64;
     let bytes = w.bytes;
-    let p = current_process().heap.alloc_bitstring(&bytes, bit_len);
+    let p = (unsafe { &mut *process })
+        .heap
+        .alloc_bitstring(&bytes, bit_len);
     if bytes.len() > crate::heap::SHARED_BIN_THRESHOLD_BYTES {
         heap_ref_word(ValueKind::PROCBIN, p)
     } else {
@@ -955,12 +993,19 @@ pub extern "C" fn fz_bs_finalize() -> u64 {
 /// copies through `Heap::alloc_bitstring`, which picks inline / ProcBin /
 /// SharedBin storage by length.
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_alloc_bitstring_const(ptr: u64, byte_len: u64, bit_len: u64) -> u64 {
+pub extern "C" fn fz_alloc_bitstring_const(
+    process: *mut Process,
+    ptr: u64,
+    byte_len: u64,
+    bit_len: u64,
+) -> u64 {
     // ptr is the address of a module-baked byte payload (Cranelift Local data
     // symbol). It outlives the call; we materialise a slice over it just long
     // enough for Heap::alloc_bitstring to copy / wrap.
     let bytes = unsafe { std::slice::from_raw_parts(ptr as *const u8, byte_len as usize) };
-    let p = current_process().heap.alloc_bitstring(bytes, bit_len);
+    let p = (unsafe { &mut *process })
+        .heap
+        .alloc_bitstring(bytes, bit_len);
     if bytes.len() > crate::heap::SHARED_BIN_THRESHOLD_BYTES {
         heap_ref_word(ValueKind::PROCBIN, p)
     } else {
@@ -978,10 +1023,13 @@ pub extern "C" fn fz_alloc_bitstring_const(ptr: u64, byte_len: u64, bit_len: u64
 /// emitted into `.data` by codegen, with bytes_ptr and destructor
 /// relocations resolved by the linker.
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_alloc_procbin_from_static(static_sharedbin: u64) -> u64 {
+pub extern "C" fn fz_alloc_procbin_from_static(
+    process: *mut Process,
+    static_sharedbin: u64,
+) -> u64 {
     let sb = static_sharedbin as *mut crate::procbin::SharedBin;
     let handle = unsafe { crate::procbin::SharedBinHandle::retain_from_raw(sb) };
-    let pb = crate::procbin::alloc_procbin(&mut current_process().heap, handle);
+    let pb = crate::procbin::alloc_procbin(&mut (unsafe { &mut *process }).heap, handle);
     heap_ref_word(ValueKind::PROCBIN, pb.as_raw() as *const u8)
 }
 
@@ -1049,40 +1097,44 @@ fn decode_bs_field_spec(spec: u64) -> (u32, u32, u32, u32, u32, u32) {
 /// Allocate a 3-tuple reader `[bs_ptr, bit_len_int, pos_int]` for an input
 /// bitstring. Schema id is set by compile() into BS_TUPLE_ARITY3_SCHEMA.
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_bs_reader_init_ref(bs_ref: u64) -> u64 {
-    fz_bs_reader_init_bits(heap_object_word_from_ref_word(
-        bs_ref,
-        "fz_bs_reader_init_ref",
-    ))
+pub extern "C" fn fz_bs_reader_init_ref(process: *mut Process, bs_ref: u64) -> u64 {
+    fz_bs_reader_init_bits(
+        process,
+        heap_object_word_from_ref_word(bs_ref, "fz_bs_reader_init_ref"),
+    )
 }
 
-fn fz_bs_reader_init_bits(bs_bits: u64) -> u64 {
+fn fz_bs_reader_init_bits(process: *mut Process, bs_bits: u64) -> u64 {
     let p = bitstring_like_ptr(bs_bits).unwrap_or_else(|| panic!("reader_init expects heap value"));
     if !unsafe { crate::procbin::is_bitstring_like(p) } {
         panic!("reader_init source is not a Bitstring");
     }
     let bit_len = unsafe { crate::procbin::bitstring_bit_len(p) } as i64;
-    let arity3 = current_process()
+    let proc = unsafe { &mut *process };
+    let arity3 = proc
         .bs_tuple_arity3_schema
         .expect("bs_tuple_arity3_schema not set");
-    let tuple_p = current_process().heap.alloc_struct(arity3);
-    current_process()
-        .heap
+    let tuple_p = proc.heap.alloc_struct(arity3);
+    proc.heap
         .write_field_slot(tuple_p, 0, any_value_from_heap_object_word(bs_bits));
-    current_process()
-        .heap
+    proc.heap
         .write_field_slot(tuple_p, 8, crate::any_value::AnyValue::int(bit_len));
-    current_process()
-        .heap
+    proc.heap
         .write_field_slot(tuple_p, 16, crate::any_value::AnyValue::int(0));
     heap_ref_word(ValueKind::STRUCT, tuple_p as *const u8)
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_bs_read_field_ref(reader_ref: u64, field_spec: u64, size_value: u32) -> u64 {
+pub extern "C" fn fz_bs_read_field_ref(
+    process: *mut Process,
+    reader_ref: u64,
+    field_spec: u64,
+    size_value: u32,
+) -> u64 {
     let (ty_tag, size_present, unit, endian_tag, signed, is_last) =
         decode_bs_field_spec(field_spec);
     fz_bs_read_field_bits(
+        process,
         heap_object_word_from_ref_word(reader_ref, "fz_bs_read_field_ref"),
         ty_tag,
         size_present,
@@ -1095,17 +1147,24 @@ pub extern "C" fn fz_bs_read_field_ref(reader_ref: u64, field_spec: u64, size_va
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_bs_reader_done_ref(reader_ref: u64) -> u8 {
+pub extern "C" fn fz_bs_reader_done_ref(process: *mut Process, reader_ref: u64) -> u8 {
     let reader = any_value_ref_from_word(reader_ref, "fz_bs_reader_done_ref")
         .struct_addr()
         .expect("fz_bs_reader_done_ref");
-    let bit_len = current_process().heap.read_field_slot(reader, 8).raw();
-    let pos = current_process().heap.read_field_slot(reader, 16).raw();
+    let bit_len = (unsafe { &mut *process })
+        .heap
+        .read_field_slot(reader, 8)
+        .raw();
+    let pos = (unsafe { &mut *process })
+        .heap
+        .read_field_slot(reader, 16)
+        .raw();
     (bit_len == pos) as u8
 }
 
 #[allow(clippy::too_many_arguments)]
 fn fz_bs_read_field_bits(
+    process: *mut Process,
     reader_bits: u64,
     ty_tag: u32,
     size_present: u32,
@@ -1130,13 +1189,16 @@ fn fz_bs_read_field_bits(
     // Decode reader tuple.
     let rp = crate::any_value::struct_addr_from_tagged(reader_bits)
         .unwrap_or_else(|| panic!("read_field: reader is not a tagged Struct"));
-    let bs_bits = current_process()
+    let bs_bits = (unsafe { &mut *process })
         .heap
         .read_field_slot(rp, 0)
         .heap_object_word()
         .expect("reader bitstring bits");
-    let bit_len = current_process().heap.read_field_slot(rp, 8).raw() as usize;
-    let pos = current_process().heap.read_field_slot(rp, 16).raw() as usize;
+    let bit_len = (unsafe { &mut *process }).heap.read_field_slot(rp, 8).raw() as usize;
+    let pos = (unsafe { &mut *process })
+        .heap
+        .read_field_slot(rp, 16)
+        .raw() as usize;
 
     // Bytes pointer from bs.
     let bsp = bitstring_like_ptr(bs_bits).expect("read_field: reader bs not a ptr");
@@ -1147,17 +1209,19 @@ fn fz_bs_read_field_bits(
     let bytes = unsafe { std::slice::from_raw_parts(bytes_ptr, bit_len.div_ceil(8)) };
 
     // Failure path: alloc 1-tuple [false].
-    let arity1 = current_process()
+    let arity1 = (unsafe { &mut *process })
         .bs_tuple_arity1_schema
         .expect("bs_tuple_arity1_schema not set");
-    let arity3 = current_process()
+    let arity3 = (unsafe { &mut *process })
         .bs_tuple_arity3_schema
         .expect("bs_tuple_arity3_schema not set");
     let fail = || -> u64 {
-        let p = current_process().heap.alloc_struct(arity1);
-        current_process()
-            .heap
-            .write_field_slot(p, 0, crate::any_value::AnyValue::bool_atom(false));
+        let p = (unsafe { &mut *process }).heap.alloc_struct(arity1);
+        (unsafe { &mut *process }).heap.write_field_slot(
+            p,
+            0,
+            crate::any_value::AnyValue::bool_atom(false),
+        );
         heap_ref_word(ValueKind::STRUCT, p)
     };
 
@@ -1205,7 +1269,7 @@ fn fz_bs_read_field_bits(
                 w.append_bit(r.read_bit().unwrap());
             }
             sub_bytes.extend_from_slice(&w.bytes);
-            let new_bs = current_process()
+            let new_bs = (unsafe { &mut *process })
                 .heap
                 .alloc_bitstring(&sub_bytes, needed_bits as u64);
             let new_bs_kind = if sub_bytes.len() > crate::heap::SHARED_BIN_THRESHOLD_BYTES {
@@ -1237,34 +1301,34 @@ fn fz_bs_read_field_bits(
 
     // Allocate fresh reader tuple [bs_bits, bit_len_boxed, new_pos_boxed].
     let new_pos = (pos + consumed) as i64;
-    let new_reader_p = current_process().heap.alloc_struct(arity3);
-    current_process().heap.write_field_slot(
+    let new_reader_p = (unsafe { &mut *process }).heap.alloc_struct(arity3);
+    (unsafe { &mut *process }).heap.write_field_slot(
         new_reader_p,
         0,
         any_value_from_heap_object_word(bs_bits),
     );
-    current_process().heap.write_field_slot(
+    (unsafe { &mut *process }).heap.write_field_slot(
         new_reader_p,
         8,
         crate::any_value::AnyValue::int(bit_len as i64),
     );
-    current_process().heap.write_field_slot(
+    (unsafe { &mut *process }).heap.write_field_slot(
         new_reader_p,
         16,
         crate::any_value::AnyValue::int(new_pos),
     );
 
     // Allocate result tuple [true, extracted, new_reader].
-    let result_p = current_process().heap.alloc_struct(arity3);
-    current_process().heap.write_field_slot(
+    let result_p = (unsafe { &mut *process }).heap.alloc_struct(arity3);
+    (unsafe { &mut *process }).heap.write_field_slot(
         result_p,
         0,
         crate::any_value::AnyValue::bool_atom(true),
     );
-    current_process()
+    (unsafe { &mut *process })
         .heap
         .write_field_slot(result_p, 8, extracted_value);
-    current_process().heap.write_field_slot(
+    (unsafe { &mut *process }).heap.write_field_slot(
         result_p,
         16,
         crate::any_value::AnyValue::heap_ptr(new_reader_p, crate::any_value::ValueKind::STRUCT),
@@ -1282,35 +1346,29 @@ fn fz_bs_read_field_bits(
 // within each category, by raw bits (Int compares signed). Keys compare
 // equal iff their u64 bits are equal — pointer-equal heap keys for v1.
 
-fn current_heap_addr_for_kind(bits: u64, kind: crate::any_value::ValueKind) -> Option<*mut u8> {
-    current_process()
-        .heap
-        .current_heap_addr_for_kind(bits, kind)
-}
-
-fn current_heap_list_addr(bits: u64) -> Option<*mut u8> {
-    current_heap_addr_for_kind(bits, crate::any_value::ValueKind::LIST)
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_map_empty(process: *mut Process) -> u64 {
+    map_ref_word_from_bits((unsafe { &mut *process }).heap.alloc_map_slots(&[]))
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_map_empty() -> u64 {
-    map_ref_word_from_bits(current_process().heap.alloc_map_slots(&[]))
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn fz_map_dest_begin(extra: u32) -> u64 {
+pub extern "C" fn fz_map_dest_begin(process: *mut Process, extra: u32) -> u64 {
     map_ref_word_from_bits(
-        current_process()
+        (unsafe { &mut *process })
             .heap
             .alloc_map_destination(None, extra as usize),
     )
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_map_dest_begin_update(base_ref_word: u64, extra: u32) -> u64 {
+pub extern "C" fn fz_map_dest_begin_update(
+    process: *mut Process,
+    base_ref_word: u64,
+    extra: u32,
+) -> u64 {
     let base = any_value_ref_from_word(base_ref_word, "fz_map_dest_begin_update base");
     map_ref_word_from_bits(
-        current_process()
+        (unsafe { &mut *process })
             .heap
             .alloc_map_destination(Some(base), extra as usize),
     )
@@ -1318,6 +1376,7 @@ pub extern "C" fn fz_map_dest_begin_update(base_ref_word: u64, extra: u32) -> u6
 
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_map_dest_put_parts(
+    process: *mut Process,
     dest_ref_word: u64,
     key_raw: u64,
     key_kind: u64,
@@ -1329,35 +1388,48 @@ pub extern "C" fn fz_map_dest_put_parts(
         .expect("fz_map_dest_put_parts key");
     let value = crate::any_value::AnyValue::decode_parts(value_raw, value_kind as u8)
         .expect("fz_map_dest_put_parts value");
-    current_process()
+    (unsafe { &mut *process })
         .heap
         .map_destination_put(dest_bits, key, value);
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_map_dest_put_ref(dest_ref_word: u64, key_ref_word: u64, value_ref_word: u64) {
+pub extern "C" fn fz_map_dest_put_ref(
+    process: *mut Process,
+    dest_ref_word: u64,
+    key_ref_word: u64,
+    value_ref_word: u64,
+) {
     let dest_bits = map_bits_from_ref_word(dest_ref_word, "fz_map_dest_put_ref dest");
     let key = any_value_from_ref_word(key_ref_word, "fz_map_dest_put_ref key");
     let value = any_value_from_ref_word(value_ref_word, "fz_map_dest_put_ref value");
-    current_process()
+    (unsafe { &mut *process })
         .heap
         .map_destination_put(dest_bits, key, value);
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_map_dest_freeze(dest_ref_word: u64) -> u64 {
+pub extern "C" fn fz_map_dest_freeze(process: *mut Process, dest_ref_word: u64) -> u64 {
     let dest_bits = map_bits_from_ref_word(dest_ref_word, "fz_map_dest_freeze dest");
-    map_ref_word_from_bits(current_process().heap.map_destination_freeze(dest_bits))
+    map_ref_word_from_bits(
+        (unsafe { &mut *process })
+            .heap
+            .map_destination_freeze(dest_bits),
+    )
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_map_get_ref(map_ref_word: u64, key_ref_word: u64) -> u64 {
+pub extern "C" fn fz_map_get_ref(
+    process: *mut Process,
+    map_ref_word: u64,
+    key_ref_word: u64,
+) -> u64 {
     let map = any_value_ref_from_word(map_ref_word, "fz_map_get_ref map");
     let key = any_value_ref_from_word(key_ref_word, "fz_map_get_ref key");
-    fz_map_get_value_ref(map, key)
+    fz_map_get_value_ref(process, map, key)
 }
 
-fn fz_map_get_value_ref(map: AnyValueRef, key: AnyValueRef) -> u64 {
+fn fz_map_get_value_ref(process: *mut Process, map: AnyValueRef, key: AnyValueRef) -> u64 {
     if map.tag() == ValueKind::RESOURCE {
         let rs = unsafe {
             crate::resource::ResourceStub::from_raw(map.resource_addr().expect("resource map get"))
@@ -1367,7 +1439,7 @@ fn fz_map_get_value_ref(map: AnyValueRef, key: AnyValueRef) -> u64 {
             .expect("resource integer payload ref")
             .raw_word();
     }
-    current_process()
+    (unsafe { &mut *process })
         .heap
         .read_map_value_ref(map, key)
         .expect("fz_map_get_ref")
@@ -1378,7 +1450,11 @@ fn fz_map_get_value_ref(map: AnyValueRef, key: AnyValueRef) -> u64 {
         .raw_word()
 }
 
-fn fz_map_get_scalar_key_ref(map: AnyValueRef, key: crate::any_value::AnyValue) -> u64 {
+fn fz_map_get_scalar_key_ref(
+    process: *mut Process,
+    map: AnyValueRef,
+    key: crate::any_value::AnyValue,
+) -> u64 {
     if map.tag() == ValueKind::RESOURCE {
         let rs = unsafe {
             crate::resource::ResourceStub::from_raw(map.resource_addr().expect("resource map get"))
@@ -1388,7 +1464,7 @@ fn fz_map_get_scalar_key_ref(map: AnyValueRef, key: crate::any_value::AnyValue) 
             .expect("resource integer payload ref")
             .raw_word();
     }
-    current_process()
+    (unsafe { &mut *process })
         .heap
         .read_map_value_for_any_key(map, key)
         .expect("fz_map_get scalar key")
@@ -1400,37 +1476,59 @@ fn fz_map_get_scalar_key_ref(map: AnyValueRef, key: crate::any_value::AnyValue) 
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_map_get_atom_key_ref(map_ref_word: u64, atom_id: u64) -> u64 {
+pub extern "C" fn fz_map_get_atom_key_ref(
+    process: *mut Process,
+    map_ref_word: u64,
+    atom_id: u64,
+) -> u64 {
     let map = any_value_ref_from_word(map_ref_word, "fz_map_get_atom_key_ref map");
-    fz_map_get_scalar_key_ref(map, crate::any_value::AnyValue::atom(atom_id as u32))
+    fz_map_get_scalar_key_ref(
+        process,
+        map,
+        crate::any_value::AnyValue::atom(atom_id as u32),
+    )
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_map_get_int_key_ref(map_ref_word: u64, value: i64) -> u64 {
+pub extern "C" fn fz_map_get_int_key_ref(
+    process: *mut Process,
+    map_ref_word: u64,
+    value: i64,
+) -> u64 {
     let map = any_value_ref_from_word(map_ref_word, "fz_map_get_int_key_ref map");
-    fz_map_get_scalar_key_ref(map, crate::any_value::AnyValue::int(value))
+    fz_map_get_scalar_key_ref(process, map, crate::any_value::AnyValue::int(value))
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_map_get_float_key_ref(map_ref_word: u64, value: f64) -> u64 {
+pub extern "C" fn fz_map_get_float_key_ref(
+    process: *mut Process,
+    map_ref_word: u64,
+    value: f64,
+) -> u64 {
     let map = any_value_ref_from_word(map_ref_word, "fz_map_get_float_key_ref map");
-    fz_map_get_scalar_key_ref(map, crate::any_value::AnyValue::float(value))
+    fz_map_get_scalar_key_ref(process, map, crate::any_value::AnyValue::float(value))
 }
 
 fn map_put_slot_value(
+    process: *mut Process,
     map_ref_word: u64,
     key: crate::any_value::AnyValue,
     value: crate::any_value::AnyValue,
 ) -> u64 {
     let map_bits = map_bits_from_ref_word(map_ref_word, "map_put map");
-    let new_map_bits = current_process()
+    let new_map_bits = (unsafe { &mut *process })
         .heap
         .map_put_slot_bits(map_bits, key, value);
     map_ref_word_from_bits(new_map_bits)
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_map_put_ref(map_ref_word: u64, key_ref_word: u64, value_ref_word: u64) -> u64 {
+pub extern "C" fn fz_map_put_ref(
+    process: *mut Process,
+    map_ref_word: u64,
+    key_ref_word: u64,
+    value_ref_word: u64,
+) -> u64 {
     let key = any_value_ref_from_word(key_ref_word, "fz_map_put_ref key");
     let value = any_value_ref_from_word(value_ref_word, "fz_map_put_ref value");
     if value.tag().is_scalar() {
@@ -1439,6 +1537,7 @@ pub extern "C" fn fz_map_put_ref(map_ref_word: u64, key_ref_word: u64, value_ref
         );
     }
     map_put_slot_value(
+        process,
         map_ref_word,
         crate::any_value::AnyValue::from_ref(key).expect("fz_map_put_ref key"),
         crate::any_value::AnyValue::from_ref(value).expect("fz_map_put_ref value"),
@@ -1446,9 +1545,15 @@ pub extern "C" fn fz_map_put_ref(map_ref_word: u64, key_ref_word: u64, value_ref
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_map_put_int(map_ref_word: u64, key_ref_word: u64, value: i64) -> u64 {
+pub extern "C" fn fz_map_put_int(
+    process: *mut Process,
+    map_ref_word: u64,
+    key_ref_word: u64,
+    value: i64,
+) -> u64 {
     let key = any_value_ref_from_word(key_ref_word, "fz_map_put_int key");
     map_put_slot_value(
+        process,
         map_ref_word,
         crate::any_value::AnyValue::from_ref(key).expect("fz_map_put_int key"),
         crate::any_value::AnyValue::int(value),
@@ -1456,9 +1561,15 @@ pub extern "C" fn fz_map_put_int(map_ref_word: u64, key_ref_word: u64, value: i6
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_map_put_float(map_ref_word: u64, key_ref_word: u64, value: f64) -> u64 {
+pub extern "C" fn fz_map_put_float(
+    process: *mut Process,
+    map_ref_word: u64,
+    key_ref_word: u64,
+    value: f64,
+) -> u64 {
     let key = any_value_ref_from_word(key_ref_word, "fz_map_put_float key");
     map_put_slot_value(
+        process,
         map_ref_word,
         crate::any_value::AnyValue::from_ref(key).expect("fz_map_put_float key"),
         crate::any_value::AnyValue::float(value),
@@ -1466,113 +1577,50 @@ pub extern "C" fn fz_map_put_float(map_ref_word: u64, key_ref_word: u64, value: 
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_map_put_atom(map_ref_word: u64, key_ref_word: u64, atom_id: u64) -> u64 {
+pub extern "C" fn fz_map_put_atom(
+    process: *mut Process,
+    map_ref_word: u64,
+    key_ref_word: u64,
+    atom_id: u64,
+) -> u64 {
     let key = any_value_ref_from_word(key_ref_word, "fz_map_put_atom key");
     map_put_slot_value(
+        process,
         map_ref_word,
         crate::any_value::AnyValue::from_ref(key).expect("fz_map_put_atom key"),
         crate::any_value::AnyValue::atom(atom_id as u32),
     )
 }
 
-macro_rules! scalar_key_map_put {
-    ($name:ident, $key_ty:ty, $value_ty:ty, $key:expr, $value:expr) => {
-        #[unsafe(no_mangle)]
-        pub extern "C" fn $name(map_ref_word: u64, key: $key_ty, value: $value_ty) -> u64 {
-            map_put_slot_value(map_ref_word, $key(key), $value(value))
-        }
-    };
-}
-
-scalar_key_map_put!(
-    fz_map_put_atom_key_int,
-    u64,
-    i64,
-    |key| crate::any_value::AnyValue::atom(key as u32),
-    crate::any_value::AnyValue::int
-);
-scalar_key_map_put!(
-    fz_map_put_atom_key_float,
-    u64,
-    f64,
-    |key| crate::any_value::AnyValue::atom(key as u32),
-    crate::any_value::AnyValue::float
-);
-scalar_key_map_put!(
-    fz_map_put_atom_key_atom,
-    u64,
-    u64,
-    |key| crate::any_value::AnyValue::atom(key as u32),
-    |value| crate::any_value::AnyValue::atom(value as u32)
-);
-scalar_key_map_put!(
-    fz_map_put_int_key_int,
-    i64,
-    i64,
-    crate::any_value::AnyValue::int,
-    crate::any_value::AnyValue::int
-);
-scalar_key_map_put!(
-    fz_map_put_int_key_float,
-    i64,
-    f64,
-    crate::any_value::AnyValue::int,
-    crate::any_value::AnyValue::float
-);
-scalar_key_map_put!(
-    fz_map_put_int_key_atom,
-    i64,
-    u64,
-    crate::any_value::AnyValue::int,
-    |value| crate::any_value::AnyValue::atom(value as u32)
-);
-scalar_key_map_put!(
-    fz_map_put_float_key_int,
-    f64,
-    i64,
-    crate::any_value::AnyValue::float,
-    crate::any_value::AnyValue::int
-);
-scalar_key_map_put!(
-    fz_map_put_float_key_float,
-    f64,
-    f64,
-    crate::any_value::AnyValue::float,
-    crate::any_value::AnyValue::float
-);
-scalar_key_map_put!(
-    fz_map_put_float_key_atom,
-    f64,
-    u64,
-    crate::any_value::AnyValue::float,
-    |value| crate::any_value::AnyValue::atom(value as u32)
-);
-
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_map_get_int(map_ref_word: u64, key_ref_word: u64) -> i64 {
-    map_get_int_impl(map_ref_word, key_ref_word)
+pub extern "C" fn fz_map_get_int(
+    process: *mut Process,
+    map_ref_word: u64,
+    key_ref_word: u64,
+) -> i64 {
+    map_get_int_impl(process, map_ref_word, key_ref_word)
 }
 
-fn map_get_int_impl(map_ref_word: u64, key_ref_word: u64) -> i64 {
-    ref_load_int_impl(fz_map_get_ref(map_ref_word, key_ref_word))
+fn map_get_int_impl(process: *mut Process, map_ref_word: u64, key_ref_word: u64) -> i64 {
+    ref_load_int_impl(fz_map_get_ref(process, map_ref_word, key_ref_word))
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_map_get_float(map_ref_word: u64, key_ref_word: u64) -> f64 {
-    map_get_float_impl(map_ref_word, key_ref_word)
-}
-
-fn map_get_float_impl(map_ref_word: u64, key_ref_word: u64) -> f64 {
-    ref_load_float_impl(fz_map_get_ref(map_ref_word, key_ref_word))
+pub extern "C" fn fz_map_get_float(
+    process: *mut Process,
+    map_ref_word: u64,
+    key_ref_word: u64,
+) -> f64 {
+    ref_load_float_impl(fz_map_get_ref(process, map_ref_word, key_ref_word))
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_map_get_atom(map_ref_word: u64, key_ref_word: u64) -> u64 {
-    map_get_atom_impl(map_ref_word, key_ref_word)
-}
-
-fn map_get_atom_impl(map_ref_word: u64, key_ref_word: u64) -> u64 {
-    ref_load_atom_impl(fz_map_get_ref(map_ref_word, key_ref_word))
+pub extern "C" fn fz_map_get_atom(
+    process: *mut Process,
+    map_ref_word: u64,
+    key_ref_word: u64,
+) -> u64 {
+    ref_load_atom_impl(fz_map_get_ref(process, map_ref_word, key_ref_word))
 }
 
 #[unsafe(no_mangle)]
@@ -1588,10 +1636,14 @@ pub extern "C" fn fz_list_is_cons(list_ref_word: u64) -> u8 {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_list_cons_ref(head_ref_word: u64, tail_ref_word: u64) -> u64 {
+pub extern "C" fn fz_list_cons_ref(
+    process: *mut Process,
+    head_ref_word: u64,
+    tail_ref_word: u64,
+) -> u64 {
     let head = any_value_ref_from_word(head_ref_word, "fz_list_cons_ref head");
     let tail = any_value_ref_from_word(tail_ref_word, "fz_list_cons_ref tail");
-    current_process()
+    (unsafe { &mut *process })
         .heap
         .alloc_list_cons_ref(head, tail)
         .expect("fz_list_cons_ref")
@@ -1599,10 +1651,14 @@ pub extern "C" fn fz_list_cons_ref(head_ref_word: u64, tail_ref_word: u64) -> u6
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_list_cons_any(head_ref_word: u64, tail_ref_word: u64) -> u64 {
+pub extern "C" fn fz_list_cons_any(
+    process: *mut Process,
+    head_ref_word: u64,
+    tail_ref_word: u64,
+) -> u64 {
     let head = any_value_from_ref_word(head_ref_word, "fz_list_cons_any head");
     let tail = any_value_ref_from_word(tail_ref_word, "fz_list_cons_any tail");
-    current_process()
+    (unsafe { &mut *process })
         .heap
         .alloc_list_cons_any(head, tail)
         .expect("fz_list_cons_any")
@@ -1610,9 +1666,9 @@ pub extern "C" fn fz_list_cons_any(head_ref_word: u64, tail_ref_word: u64) -> u6
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_list_cons_int(head: i64, tail_ref_word: u64) -> u64 {
+pub extern "C" fn fz_list_cons_int(process: *mut Process, head: i64, tail_ref_word: u64) -> u64 {
     let tail = any_value_ref_from_word(tail_ref_word, "fz_list_cons_int tail");
-    current_process()
+    (unsafe { &mut *process })
         .heap
         .alloc_list_cons_int(head, tail)
         .expect("fz_list_cons_int")
@@ -1620,9 +1676,9 @@ pub extern "C" fn fz_list_cons_int(head: i64, tail_ref_word: u64) -> u64 {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_list_cons_float(head: f64, tail_ref_word: u64) -> u64 {
+pub extern "C" fn fz_list_cons_float(process: *mut Process, head: f64, tail_ref_word: u64) -> u64 {
     let tail = any_value_ref_from_word(tail_ref_word, "fz_list_cons_float tail");
-    current_process()
+    (unsafe { &mut *process })
         .heap
         .alloc_list_cons_float(head, tail)
         .expect("fz_list_cons_float")
@@ -1630,21 +1686,27 @@ pub extern "C" fn fz_list_cons_float(head: f64, tail_ref_word: u64) -> u64 {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_list_cons_atom(atom_id: u64, tail_ref_word: u64) -> u64 {
+pub extern "C" fn fz_list_cons_atom(
+    process: *mut Process,
+    atom_id: u64,
+    tail_ref_word: u64,
+) -> u64 {
     let tail = any_value_ref_from_word(tail_ref_word, "fz_list_cons_atom tail");
-    current_process()
+    (unsafe { &mut *process })
         .heap
         .alloc_list_cons_atom(atom_id as u32, tail)
         .expect("fz_list_cons_atom")
         .raw_word()
 }
 
+// Reading a list head/tail is a pure dereference of the self-describing list
+// pointer — no allocation, no heap state — so these take no process. (The
+// `current_process().heap` receiver is vestigial: the read methods take `&self`
+// and ignore it; fz-vdt ctx.8 makes them process-free free functions.)
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_list_head_ref(list_ref_word: u64) -> u64 {
     let list = any_value_ref_from_word(list_ref_word, "fz_list_head_ref");
-    current_process()
-        .heap
-        .read_list_head_ref(list)
+    crate::heap::list_head_ref(list)
         .expect("fz_list_head_ref")
         .raw_word()
 }
@@ -1662,36 +1724,17 @@ pub extern "C" fn fz_list_head_float_ref(list_ref_word: u64) -> f64 {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_list_tail(bits: u64) -> u64 {
-    let p = current_heap_list_addr(bits)
-        .unwrap_or_else(|| panic!("fz_list_tail on empty/null/non-heap list {bits:#x}"));
-    unsafe { (*(p as *const crate::any_value::ListCons)).tail_bits() }
-}
-
-#[unsafe(no_mangle)]
 pub extern "C" fn fz_list_tail_ref(list_ref_word: u64) -> u64 {
     let list = any_value_ref_from_word(list_ref_word, "fz_list_tail_ref");
-    current_process()
-        .heap
-        .read_list_tail_ref(list)
+    crate::heap::list_tail_ref(list)
         .expect("fz_list_tail_ref")
         .raw_word()
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_list_mark_aliased_ref(list_ref_word: u64) -> u64 {
-    let list = any_value_ref_from_word(list_ref_word, "fz_list_mark_aliased_ref");
-    current_process()
-        .heap
-        .mark_list_cons_aliased(list)
-        .expect("fz_list_mark_aliased_ref")
-        .raw_word()
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn fz_mark_published_ref_aliased(value_ref_word: u64) -> u64 {
+pub extern "C" fn fz_mark_published_ref_aliased(process: *mut Process, value_ref_word: u64) -> u64 {
     let value = any_value_ref_from_word(value_ref_word, "fz_mark_published_ref_aliased");
-    current_process()
+    (unsafe { &mut *process })
         .heap
         .mark_published_ref_aliased(value)
         .expect("fz_mark_published_ref_aliased")
@@ -1699,21 +1742,14 @@ pub extern "C" fn fz_mark_published_ref_aliased(value_ref_word: u64) -> u64 {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_list_relink_unaliased_tail_ref(list_ref_word: u64, tail_ref_word: u64) -> u64 {
-    let list = any_value_ref_from_word(list_ref_word, "fz_list_relink_unaliased_tail_ref list");
-    let tail = any_value_ref_from_word(tail_ref_word, "fz_list_relink_unaliased_tail_ref tail");
-    current_process()
-        .heap
-        .relink_unaliased_list_cons_tail(list, tail)
-        .expect("fz_list_relink_unaliased_tail_ref")
-        .raw_word()
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn fz_list_reuse_or_cons_tail_ref(list_ref_word: u64, tail_ref_word: u64) -> u64 {
+pub extern "C" fn fz_list_reuse_or_cons_tail_ref(
+    process: *mut Process,
+    list_ref_word: u64,
+    tail_ref_word: u64,
+) -> u64 {
     let list = any_value_ref_from_word(list_ref_word, "fz_list_reuse_or_cons_tail_ref list");
     let tail = any_value_ref_from_word(tail_ref_word, "fz_list_reuse_or_cons_tail_ref tail");
-    current_process()
+    (unsafe { &mut *process })
         .heap
         .reuse_or_alloc_list_cons_tail(list, tail)
         .expect("fz_list_reuse_or_cons_tail_ref")
@@ -1725,15 +1761,19 @@ pub extern "C" fn fz_list_reuse_or_cons_tail_ref(list_ref_word: u64, tail_ref_wo
 /// Returns a TAG_STRUCT-tagged heap pointer. Caller is
 /// responsible for writing field values into payload slots after allocation.
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_alloc_struct(schema_id: u32) -> u64 {
-    let p = current_process().heap.alloc_struct(schema_id);
+pub extern "C" fn fz_alloc_struct(process: *mut Process, schema_id: u32) -> u64 {
+    let p = (unsafe { &mut *process }).heap.alloc_struct(schema_id);
     heap_ref_word(ValueKind::STRUCT, p)
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_struct_get_field_ref(struct_ref_word: u64, field_offset: u32) -> u64 {
+pub extern "C" fn fz_struct_get_field_ref(
+    process: *mut Process,
+    struct_ref_word: u64,
+    field_offset: u32,
+) -> u64 {
     let value = any_value_ref_from_word(struct_ref_word, "fz_struct_get_field_ref");
-    current_process()
+    (unsafe { &mut *process })
         .heap
         .read_struct_field_ref(value, field_offset)
         .expect("fz_struct_get_field_ref")
@@ -1742,25 +1782,31 @@ pub extern "C" fn fz_struct_get_field_ref(struct_ref_word: u64, field_offset: u3
 
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_struct_set_field_ref(
+    process: *mut Process,
     struct_ref_word: u64,
     field_offset: u32,
     value_ref_word: u64,
 ) {
     let object = any_value_ref_from_word(struct_ref_word, "fz_struct_set_field_ref object");
     let value = any_value_ref_from_word(value_ref_word, "fz_struct_set_field_ref value");
-    current_process()
+    (unsafe { &mut *process })
         .heap
         .write_struct_field_ref(object, field_offset, value)
         .expect("fz_struct_set_field_ref");
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_struct_set_field_int(struct_ref_word: u64, field_offset: u32, value: i64) {
+pub extern "C" fn fz_struct_set_field_int(
+    process: *mut Process,
+    struct_ref_word: u64,
+    field_offset: u32,
+    value: i64,
+) {
     let object = any_value_ref_from_word(struct_ref_word, "fz_struct_set_field_int object");
     let obj = object
         .struct_addr()
         .expect("fz_struct_set_field_int object");
-    current_process().heap.write_field_slot(
+    (unsafe { &mut *process }).heap.write_field_slot(
         obj,
         field_offset,
         crate::any_value::AnyValue::int(value),
@@ -1768,12 +1814,17 @@ pub extern "C" fn fz_struct_set_field_int(struct_ref_word: u64, field_offset: u3
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_struct_set_field_float(struct_ref_word: u64, field_offset: u32, value: f64) {
+pub extern "C" fn fz_struct_set_field_float(
+    process: *mut Process,
+    struct_ref_word: u64,
+    field_offset: u32,
+    value: f64,
+) {
     let object = any_value_ref_from_word(struct_ref_word, "fz_struct_set_field_float object");
     let obj = object
         .struct_addr()
         .expect("fz_struct_set_field_float object");
-    current_process().heap.write_field_slot(
+    (unsafe { &mut *process }).heap.write_field_slot(
         obj,
         field_offset,
         crate::any_value::AnyValue::float(value),
@@ -1781,12 +1832,17 @@ pub extern "C" fn fz_struct_set_field_float(struct_ref_word: u64, field_offset: 
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_struct_set_field_atom(struct_ref_word: u64, field_offset: u32, atom_id: u64) {
+pub extern "C" fn fz_struct_set_field_atom(
+    process: *mut Process,
+    struct_ref_word: u64,
+    field_offset: u32,
+    atom_id: u64,
+) {
     let object = any_value_ref_from_word(struct_ref_word, "fz_struct_set_field_atom object");
     let obj = object
         .struct_addr()
         .expect("fz_struct_set_field_atom object");
-    current_process().heap.write_field_slot(
+    (unsafe { &mut *process }).heap.write_field_slot(
         obj,
         field_offset,
         crate::any_value::AnyValue::atom(atom_id as u32),
@@ -1799,9 +1855,7 @@ pub extern "C" fn fz_closure_get_capture_ref(closure_ref_word: u64, index: u64) 
         return unsafe { lazy_cont_capture_raw(closure_ref_word, index as usize) };
     }
     let value = any_value_ref_from_word(closure_ref_word, "fz_closure_get_capture_ref");
-    current_process()
-        .heap
-        .read_closure_capture_ref(value, index as usize)
+    crate::heap::closure_capture_ref(value, index as usize)
         .expect("fz_closure_get_capture_ref")
         .raw_word()
 }
@@ -1815,11 +1869,7 @@ pub extern "C" fn fz_closure_get_capture_i64(closure_ref_word: u64, index: u64) 
     let addr = value
         .closure_addr()
         .expect("fz_closure_get_capture_i64 closure");
-    match unsafe {
-        current_process()
-            .heap
-            .read_closure_capture_value(addr, index as usize)
-    } {
+    match unsafe { crate::any_value::closure_capture_value(addr, index as usize) } {
         crate::any_value::AnyValue::Int(value) => value,
         other => panic!("fz_closure_get_capture_i64 expected int, got {:?}", other),
     }
@@ -1834,11 +1884,7 @@ pub extern "C" fn fz_closure_get_capture_f64(closure_ref_word: u64, index: u64) 
     let addr = value
         .closure_addr()
         .expect("fz_closure_get_capture_f64 closure");
-    match unsafe {
-        current_process()
-            .heap
-            .read_closure_capture_value(addr, index as usize)
-    } {
+    match unsafe { crate::any_value::closure_capture_value(addr, index as usize) } {
         crate::any_value::AnyValue::Float(bits) => f64::from_bits(bits),
         other => panic!("fz_closure_get_capture_f64 expected float, got {:?}", other),
     }
@@ -1846,26 +1892,32 @@ pub extern "C" fn fz_closure_get_capture_f64(closure_ref_word: u64, index: u64) 
 
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_closure_set_capture_ref(
+    process: *mut Process,
     closure_ref_word: u64,
     index: u64,
     value_ref_word: u64,
 ) {
     let closure = any_value_ref_from_word(closure_ref_word, "fz_closure_set_capture_ref closure");
     let value = any_value_ref_from_word(value_ref_word, "fz_closure_set_capture_ref value");
-    current_process()
+    (unsafe { &mut *process })
         .heap
         .write_closure_capture_ref(closure, index as usize, value)
         .expect("fz_closure_set_capture_ref");
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_closure_set_capture_i64(closure_ref_word: u64, index: u64, value: i64) {
+pub extern "C" fn fz_closure_set_capture_i64(
+    process: *mut Process,
+    closure_ref_word: u64,
+    index: u64,
+    value: i64,
+) {
     let closure = any_value_ref_from_word(closure_ref_word, "fz_closure_set_capture_i64 closure");
     let addr = closure
         .closure_addr()
         .expect("fz_closure_set_capture_i64 closure");
     unsafe {
-        current_process().heap.write_closure_capture_value(
+        (&mut *process).heap.write_closure_capture_value(
             addr,
             index as usize,
             crate::any_value::AnyValue::Int(value),
@@ -1874,13 +1926,18 @@ pub extern "C" fn fz_closure_set_capture_i64(closure_ref_word: u64, index: u64, 
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_closure_set_capture_f64(closure_ref_word: u64, index: u64, value: f64) {
+pub extern "C" fn fz_closure_set_capture_f64(
+    process: *mut Process,
+    closure_ref_word: u64,
+    index: u64,
+    value: f64,
+) {
     let closure = any_value_ref_from_word(closure_ref_word, "fz_closure_set_capture_f64 closure");
     let addr = closure
         .closure_addr()
         .expect("fz_closure_set_capture_f64 closure");
     unsafe {
-        current_process().heap.write_closure_capture_value(
+        (&mut *process).heap.write_closure_capture_value(
             addr,
             index as usize,
             crate::any_value::AnyValue::Float(value.to_bits()),
@@ -1926,7 +1983,7 @@ unsafe fn lazy_cont_capture_raw(word: u64, index: usize) -> u64 {
 /// Materialize a stack-backed lazy continuation descriptor into a normal
 /// scheduler-visible closure. Ordinary closure refs are returned unchanged.
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_materialize_cont(cont_word: u64) -> u64 {
+pub extern "C" fn fz_materialize_cont(process: *mut Process, cont_word: u64) -> u64 {
     if !is_lazy_cont_ref(cont_word) {
         return cont_word;
     }
@@ -1934,7 +1991,9 @@ pub extern "C" fn fz_materialize_cont(cont_word: u64) -> u64 {
     let code = unsafe { *(ptr.add(LAZY_CONT_CODE_OFF) as *const u64) };
     let sid = unsafe { *(ptr.add(LAZY_CONT_SID_OFF) as *const u64) as u32 };
     let count = unsafe { lazy_cont_count(ptr) };
-    let bits = current_process().heap.alloc_closure_slots(sid, count, 0);
+    let bits = (unsafe { &mut *process })
+        .heap
+        .alloc_closure_slots(sid, count, 0);
     let addr = crate::any_value::closure_addr_from_tagged(bits).expect("materialized cont bits");
     unsafe { std::ptr::write(addr.add(8) as *mut u64, code) };
     let kind_base = unsafe { lazy_cont_kind_base(ptr, count) };
@@ -1944,12 +2003,12 @@ pub extern "C" fn fz_materialize_cont(cont_word: u64) -> u64 {
         match kind {
             LAZY_CONT_KIND_REF => {
                 let value = if is_lazy_cont_ref(raw) {
-                    fz_materialize_cont(raw)
+                    fz_materialize_cont(process, raw)
                 } else {
                     raw
                 };
                 let any = any_value_ref_from_word(value, "fz_materialize_cont capture");
-                current_process()
+                (unsafe { &mut *process })
                     .heap
                     .write_closure_capture_ref(
                         crate::any_value::AnyValueRef::from_raw_word(closure_ref_word_from_bits(
@@ -1962,14 +2021,14 @@ pub extern "C" fn fz_materialize_cont(cont_word: u64) -> u64 {
                     .expect("materialized closure capture ref");
             }
             LAZY_CONT_KIND_I64 => unsafe {
-                current_process().heap.write_closure_capture_value(
+                (&mut *process).heap.write_closure_capture_value(
                     addr,
                     i,
                     crate::any_value::AnyValue::Int(raw as i64),
                 )
             },
             LAZY_CONT_KIND_F64 => unsafe {
-                current_process().heap.write_closure_capture_value(
+                (&mut *process).heap.write_closure_capture_value(
                     addr,
                     i,
                     crate::any_value::AnyValue::Float(raw),
@@ -1984,19 +2043,19 @@ pub extern "C" fn fz_materialize_cont(cont_word: u64) -> u64 {
 /// Allocate a frame for fn `fn_id`, looking up its size in the current
 /// Process's frame_sizes table populated at make_process() time.
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_alloc_frame_dyn(fn_id: u32) -> *mut u8 {
-    let size = *current_process()
+pub extern "C" fn fz_alloc_frame_dyn(process: *mut Process, fn_id: u32) -> *mut u8 {
+    let size = *(unsafe { &mut *process })
         .frame_sizes
         .get(fn_id as usize)
         .unwrap_or_else(|| panic!("frame_sizes has no entry for fn_id {}", fn_id));
-    fz_alloc_frame(fn_id, size)
+    fz_alloc_frame(process, fn_id, size)
 }
 
-/// Public wrapper around the internal frame allocator. Used by the
-/// Runtime in src/runtime.rs to spawn a task's entry frame and by
-/// ir_codegen for the synchronous run path.
-pub fn fz_alloc_frame_for_test(schema_id: u32, total_size: u32) -> *mut u8 {
-    fz_alloc_frame(schema_id, total_size)
+/// Public wrapper around the internal frame allocator that records the
+/// allocation on the given process (frame-only when null). Test-support entry
+/// for the frame-alloc accounting path.
+pub fn fz_alloc_frame_for_test(process: *mut Process, schema_id: u32, total_size: u32) -> *mut u8 {
+    fz_alloc_frame(process, schema_id, total_size)
 }
 
 thread_local! {
@@ -2018,15 +2077,21 @@ pub fn frame_alloc_count_take() -> u64 {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_alloc_frame(schema_id: u32, total_size: u32) -> *mut u8 {
+pub extern "C" fn fz_alloc_frame(
+    process: *mut Process,
+    schema_id: u32,
+    total_size: u32,
+) -> *mut u8 {
     FRAME_ALLOC_COUNT.with(|c| c.set(c.get() + 1));
     use std::alloc::{Layout, alloc_zeroed};
     // Round size up to a multiple of 16 to keep allocator happy and ensure
     // the resulting block aligns whatever follows.
     let rounded = ((total_size as usize) + 15) & !15;
     let layout = Layout::from_size_align(rounded, 16).expect("bad frame layout");
-    if let Some(process) = try_current_process() {
-        process
+    // Codegen always passes the pinned Process*; the for-test helper passes
+    // null (it allocates a frame outside any process). Skip stats when absent.
+    if !process.is_null() {
+        unsafe { &mut *process }
             .heap
             .record_external_alloc(crate::heap::HeapAllocKind::Frame, rounded);
     }
@@ -2062,16 +2127,20 @@ pub extern "C" fn fz_fmod(a: f64, b: f64) -> f64 {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_value_eq_ref(a_ref: u64, b_ref: u64) -> u64 {
+pub extern "C" fn fz_value_eq_ref(process: *mut Process, a_ref: u64, b_ref: u64) -> u64 {
     if a_ref == b_ref {
         return 1;
     }
     let a = any_value_from_ref_word(a_ref, "fz_value_eq_ref lhs");
     let b = any_value_from_ref_word(b_ref, "fz_value_eq_ref rhs");
-    u64::from(eq_value(a, b))
+    u64::from(eq_value(process, a, b))
 }
 
-fn eq_value(a: crate::any_value::AnyValue, b: crate::any_value::AnyValue) -> bool {
+fn eq_value(
+    process: *mut Process,
+    a: crate::any_value::AnyValue,
+    b: crate::any_value::AnyValue,
+) -> bool {
     use crate::any_value::ValueKind;
     if matches!(a.kind(), ValueKind::BITSTRING | ValueKind::PROCBIN)
         && matches!(b.kind(), ValueKind::BITSTRING | ValueKind::PROCBIN)
@@ -2093,21 +2162,27 @@ fn eq_value(a: crate::any_value::AnyValue, b: crate::any_value::AnyValue) -> boo
             if a.raw() == 0 || b.raw() == 0 {
                 false
             } else {
-                eq_list(a.raw() as *mut u8, b.raw() as *mut u8)
+                eq_list(process, a.raw() as *mut u8, b.raw() as *mut u8)
             }
         }
-        ValueKind::MAP => eq_map(a.raw() as *mut u8, b.raw() as *mut u8),
+        ValueKind::MAP => eq_map(process, a.raw() as *mut u8, b.raw() as *mut u8),
         ValueKind::STRUCT => {
             let a_schema = unsafe { crate::any_value::struct_schema_id(a.raw() as *const u8) };
             let b_schema = unsafe { crate::any_value::struct_schema_id(b.raw() as *const u8) };
-            eq_struct(a.raw() as *mut u8, b.raw() as *mut u8, a_schema, b_schema)
+            eq_struct(
+                process,
+                a.raw() as *mut u8,
+                b.raw() as *mut u8,
+                a_schema,
+                b_schema,
+            )
         }
         ValueKind::BITSTRING | ValueKind::PROCBIN => unreachable!("handled before kind check"),
         _ => false,
     }
 }
 
-fn eq_list(ap: *mut u8, bp: *mut u8) -> bool {
+fn eq_list(process: *mut Process, ap: *mut u8, bp: *mut u8) -> bool {
     use crate::any_value::ListCons;
     // Walk both chains in lockstep. NIL terminates both at the same step.
     let mut a = ap as *const u8;
@@ -2118,7 +2193,7 @@ fn eq_list(ap: *mut u8, bp: *mut u8) -> bool {
         if ac.head_kind() != bc.head_kind() {
             return false;
         }
-        if !eq_value(ac.head_value(), bc.head_value()) {
+        if !eq_value(process, ac.head_value(), bc.head_value()) {
             return false;
         }
         // Decide each tail: NIL => done; Ptr to List => recurse; else mismatch.
@@ -2141,19 +2216,29 @@ fn eq_list(ap: *mut u8, bp: *mut u8) -> bool {
     }
 }
 
-fn eq_struct(ap: *mut u8, bp: *mut u8, a_schema: u32, b_schema: u32) -> bool {
+fn eq_struct(
+    process: *mut Process,
+    ap: *mut u8,
+    bp: *mut u8,
+    a_schema: u32,
+    b_schema: u32,
+) -> bool {
     if a_schema != b_schema {
         return false;
     }
-    let reg = current_process().heap.schemas_registry();
+    let reg = (unsafe { &mut *process }).heap.schemas_registry();
     let registry = reg.borrow();
     let schema = registry.get(a_schema);
     for field in &schema.fields {
         match field.kind {
             crate::heap::FieldKind::AnyValue => {
-                let av = current_process().heap.read_field_slot(ap, field.offset);
-                let bv = current_process().heap.read_field_slot(bp, field.offset);
-                if !eq_value(av, bv) {
+                let av = (unsafe { &mut *process })
+                    .heap
+                    .read_field_slot(ap, field.offset);
+                let bv = (unsafe { &mut *process })
+                    .heap
+                    .read_field_slot(bp, field.offset);
+                if !eq_value(process, av, bv) {
                     return false;
                 }
             }
@@ -2184,7 +2269,7 @@ fn eq_bitstring(ap: *mut u8, bp: *mut u8) -> bool {
     unsafe { crate::procbin::bitstring_like_eq(ap, bp) }
 }
 
-fn eq_map(ap: *mut u8, bp: *mut u8) -> bool {
+fn eq_map(process: *mut Process, ap: *mut u8, bp: *mut u8) -> bool {
     let a_count = unsafe { crate::any_value::map_count(ap as *const u8) };
     let b_count = unsafe { crate::any_value::map_count(bp as *const u8) };
     if a_count != b_count {
@@ -2198,10 +2283,10 @@ fn eq_map(ap: *mut u8, bp: *mut u8) -> bool {
         if ak.kind() != bk.kind() || av.kind() != bv.kind() {
             return false;
         }
-        if !eq_value(ak, bk) {
+        if !eq_value(process, ak, bk) {
             return false;
         }
-        if !eq_value(av, bv) {
+        if !eq_value(process, av, bv) {
             return false;
         }
     }
@@ -2247,10 +2332,14 @@ pub extern "C" fn fz_bitstring_valid_utf8(bs_bits: u64) -> i64 {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_matcher_map_get_ref(map_ref_word: u64, key_ref_word: u64) -> u64 {
+pub extern "C" fn fz_matcher_map_get_ref(
+    process: *mut Process,
+    map_ref_word: u64,
+    key_ref_word: u64,
+) -> u64 {
     let map = any_value_ref_from_word(map_ref_word, "fz_matcher_map_get_ref map");
     let key = any_value_ref_from_word(key_ref_word, "fz_matcher_map_get_ref key");
-    current_process()
+    (unsafe { &mut *process })
         .heap
         .read_map_value_ref(map, key)
         .expect("fz_matcher_map_get_ref")
@@ -2313,24 +2402,20 @@ mod tests {
     use crate::any_value::{AnyValue, AnyValueRef, ValueKind};
     use crate::heap::SchemaRegistry;
     use crate::procbin::{bitstring_bit_len, bitstring_byte_ptr};
-    use crate::process::{CURRENT_PROCESS, CurrentProcessGuard, Process};
+    use crate::process::Process;
     use std::cell::RefCell;
     use std::rc::Rc;
 
-    /// Install a fresh Process for the duration of `f`. Mirrors the
-    /// install/clear dance done by aot_shim and the scheduler, but stays
-    /// on the test thread.
-    fn with_process<R>(f: impl FnOnce() -> R) -> R {
+    /// Run `f` with a fresh Process. The process is threaded explicitly — the
+    /// runtime no longer has an ambient `CURRENT_PROCESS`, so BIFs and helpers
+    /// take it as a parameter.
+    fn with_process<R>(f: impl FnOnce(&mut Process) -> R) -> R {
         let schemas = Rc::new(RefCell::new(SchemaRegistry::new()));
         let mut proc = Box::new(Process::new(schemas));
-        let prev = CURRENT_PROCESS.with(|c| c.replace(proc.as_mut() as *mut Process));
-        let r = f();
-        CURRENT_PROCESS.with(|c| c.set(prev));
-        r
+        f(&mut proc)
     }
 
-    fn map_int_value_by_atom_name(map_ref_word: u64, name: &str) -> i64 {
-        let process = current_process();
+    fn map_int_value_by_atom_name(process: &Process, map_ref_word: u64, name: &str) -> i64 {
         let map_ref = AnyValueRef::from_raw_word(map_ref_word).expect("stats map ref");
         let map_addr = map_ref.map_addr().expect("stats map addr");
         let count = unsafe { crate::any_value::map_count(map_addr as *const u8) };
@@ -2355,54 +2440,77 @@ mod tests {
     #[test]
     fn process_heap_alloc_stats_returns_pre_materialization_snapshot() {
         let schemas = Rc::new(RefCell::new(SchemaRegistry::new()));
-        let mut process = Process::new(schemas);
-        let _guard = CurrentProcessGuard::install(&mut process as *mut Process);
-        current_process().heap.reset_alloc_stats();
-        let _ = current_process()
+        let mut proc_owned = Process::new(schemas);
+        let process = &mut proc_owned;
+        process.heap.reset_alloc_stats();
+        let _ = process
             .heap
             .alloc_list_cons_slot(AnyValue::int(1), crate::any_value::EMPTY_LIST_BITS);
 
-        let stats_ref = fz_process_heap_alloc_stats();
-        assert_eq!(map_int_value_by_atom_name(stats_ref, "allocs"), 1);
-        assert_eq!(map_int_value_by_atom_name(stats_ref, "list_cons_allocs"), 1);
-        assert_eq!(map_int_value_by_atom_name(stats_ref, "map_allocs"), 0);
-        assert_eq!(map_int_value_by_atom_name(stats_ref, "scheduler_yields"), 0);
+        let stats_ref = fz_process_heap_alloc_stats(process);
+        assert_eq!(map_int_value_by_atom_name(process, stats_ref, "allocs"), 1);
         assert_eq!(
-            map_int_value_by_atom_name(stats_ref, "interpreter_yields"),
+            map_int_value_by_atom_name(process, stats_ref, "list_cons_allocs"),
+            1
+        );
+        assert_eq!(
+            map_int_value_by_atom_name(process, stats_ref, "map_allocs"),
             0
         );
         assert_eq!(
-            map_int_value_by_atom_name(stats_ref, "reductions_remaining"),
+            map_int_value_by_atom_name(process, stats_ref, "scheduler_yields"),
+            0
+        );
+        assert_eq!(
+            map_int_value_by_atom_name(process, stats_ref, "interpreter_yields"),
+            0
+        );
+        assert_eq!(
+            map_int_value_by_atom_name(process, stats_ref, "reductions_remaining"),
             crate::process::DEFAULT_REDUCTIONS_PER_QUANTUM as i64
         );
         assert_eq!(
-            map_int_value_by_atom_name(stats_ref, "reductions_per_quantum"),
+            map_int_value_by_atom_name(process, stats_ref, "reductions_per_quantum"),
             crate::process::DEFAULT_REDUCTIONS_PER_QUANTUM as i64
         );
         assert_eq!(
-            map_int_value_by_atom_name(stats_ref, "reductions_executed"),
-            0
-        );
-        assert_eq!(map_int_value_by_atom_name(stats_ref, "reduction_yields"), 0);
-        assert_eq!(
-            map_int_value_by_atom_name(stats_ref, "allocation_pressure_yields"),
-            0
-        );
-        assert_eq!(map_int_value_by_atom_name(stats_ref, "yield_reasons"), 0);
-        assert_eq!(
-            map_int_value_by_atom_name(stats_ref, "max_yield_continuation_bytes"),
+            map_int_value_by_atom_name(process, stats_ref, "reductions_executed"),
             0
         );
         assert_eq!(
-            map_int_value_by_atom_name(stats_ref, "min_yield_continuation_margin_before_bytes",),
+            map_int_value_by_atom_name(process, stats_ref, "reduction_yields"),
             0
         );
         assert_eq!(
-            map_int_value_by_atom_name(stats_ref, "min_yield_continuation_margin_after_bytes"),
+            map_int_value_by_atom_name(process, stats_ref, "allocation_pressure_yields"),
+            0
+        );
+        assert_eq!(
+            map_int_value_by_atom_name(process, stats_ref, "yield_reasons"),
+            0
+        );
+        assert_eq!(
+            map_int_value_by_atom_name(process, stats_ref, "max_yield_continuation_bytes"),
+            0
+        );
+        assert_eq!(
+            map_int_value_by_atom_name(
+                process,
+                stats_ref,
+                "min_yield_continuation_margin_before_bytes",
+            ),
+            0
+        );
+        assert_eq!(
+            map_int_value_by_atom_name(
+                process,
+                stats_ref,
+                "min_yield_continuation_margin_after_bytes"
+            ),
             0
         );
 
-        let after = current_process().heap.alloc_stats_snapshot();
+        let after = process.heap.alloc_stats_snapshot();
         assert_eq!(after.list_cons.allocs, 1);
         assert_eq!(after.map.allocs, 1);
         assert_eq!(after.total.allocs, 2);
@@ -2411,13 +2519,13 @@ mod tests {
     #[test]
     fn frame_alloc_records_on_installed_process() {
         let schemas = Rc::new(RefCell::new(SchemaRegistry::new()));
-        let mut process = Process::new(schemas);
-        let _guard = CurrentProcessGuard::install(&mut process as *mut Process);
-        current_process().heap.reset_alloc_stats();
+        let mut proc_owned = Process::new(schemas);
+        let process = &mut proc_owned;
+        process.heap.reset_alloc_stats();
 
-        let _ = fz_alloc_frame_for_test(7, 17);
+        let _ = fz_alloc_frame_for_test(process, 7, 17);
 
-        let stats = current_process().heap.alloc_stats_snapshot();
+        let stats = process.heap.alloc_stats_snapshot();
         assert_eq!(stats.frame.allocs, 1);
         assert_eq!(stats.frame.bytes, 32);
         assert_eq!(stats.total.allocs, 1);
@@ -2427,9 +2535,10 @@ mod tests {
     /// fz-axu.14 (R1) — valid UTF-8 byte-aligned bitstring → 1.
     #[test]
     fn fz_bitstring_valid_utf8_accepts_byte_aligned_utf8() {
-        with_process(|| {
+        with_process(|process| {
             let bytes = "héllo".as_bytes();
             let bits = fz_alloc_bitstring_const(
+                process,
                 bytes.as_ptr() as u64,
                 bytes.len() as u64,
                 (bytes.len() * 8) as u64,
@@ -2440,41 +2549,42 @@ mod tests {
 
     #[test]
     fn yield_mid_flight_report_stashes_runnable_closure() {
-        with_process(|| {
-            let bits = current_process().heap.alloc_closure_slots(0, 0, 0);
+        with_process(|process| {
+            let bits = process.heap.alloc_closure_slots(0, 0, 0);
             let closure_addr =
                 crate::any_value::closure_addr_from_tagged(bits).expect("closure addr");
             let closure_ref = AnyValueRef::from_heap_object(ValueKind::CLOSURE, closure_addr)
                 .expect("closure ref")
                 .raw_word();
             let ret = fz_yield_mid_flight_report(
+                process,
                 closure_ref,
                 -1,
                 crate::process::YIELD_REASON_REDUCTIONS as u32,
             );
             assert_eq!(ret as u64, crate::scheduler_hooks::YIELD_PTR);
-            assert_eq!(current_process().runnable_closure, closure_addr);
-            assert_eq!(current_process().scheduler_yields, 1);
-            assert_eq!(current_process().reductions_remaining, -1);
-            assert_eq!(current_process().reduction_yields, 1);
+            assert_eq!(process.runnable_closure, closure_addr);
+            assert_eq!(process.scheduler_yields, 1);
+            assert_eq!(process.reductions_remaining, -1);
+            assert_eq!(process.reduction_yields, 1);
             assert_eq!(
-                current_process().yield_reasons,
+                process.yield_reasons,
                 crate::process::YIELD_REASON_REDUCTIONS
             );
             assert_eq!(
-                current_process().max_yield_continuation_bytes,
+                process.max_yield_continuation_bytes,
                 crate::any_value::closure_size_for_count(0) as u64
             );
-            assert!(current_process().min_yield_continuation_margin_after_bytes > 0);
+            assert!(process.min_yield_continuation_margin_after_bytes > 0);
         });
     }
 
     /// Invalid byte sequence → 0.
     #[test]
     fn fz_bitstring_valid_utf8_rejects_bad_bytes() {
-        with_process(|| {
+        with_process(|process| {
             let bytes = [0xffu8, 0xffu8];
-            let bits = fz_alloc_bitstring_const(bytes.as_ptr() as u64, 2, 16);
+            let bits = fz_alloc_bitstring_const(process, bytes.as_ptr() as u64, 2, 16);
             assert_eq!(fz_bitstring_valid_utf8(bits), 0);
         });
     }
@@ -2483,9 +2593,9 @@ mod tests {
     /// be valid UTF-8 — UTF-8 is byte-oriented.
     #[test]
     fn fz_bitstring_valid_utf8_rejects_non_byte_aligned() {
-        with_process(|| {
+        with_process(|process| {
             let bytes = [b'h'];
-            let bits = fz_alloc_bitstring_const(bytes.as_ptr() as u64, 1, 7);
+            let bits = fz_alloc_bitstring_const(process, bytes.as_ptr() as u64, 1, 7);
             assert_eq!(fz_bitstring_valid_utf8(bits), 0);
         });
     }
@@ -2523,28 +2633,31 @@ mod tests {
     fn map_typed_get_projects_expected_scalar_value() {
         use crate::any_value::AnyValueRef;
 
-        with_process(|| {
+        with_process(|process| {
             let key_slot = 1u64;
             let key_ref =
                 AnyValueRef::from_scalar_slot(ValueKind::ATOM, &key_slot).expect("key ref");
-            let map_bits = current_process().heap.alloc_map_slots(&[(
+            let map_bits = process.heap.alloc_map_slots(&[(
                 crate::any_value::AnyValue::atom(1),
                 crate::any_value::AnyValue::int(42),
             )]);
             let map_addr = crate::any_value::map_addr_from_tagged(map_bits).expect("map addr");
             let map_ref = AnyValueRef::from_heap_object(ValueKind::MAP, map_addr).expect("map ref");
 
-            assert_eq!(map_get_int_impl(map_ref.raw_word(), key_ref.raw_word()), 42);
+            assert_eq!(
+                map_get_int_impl(process, map_ref.raw_word(), key_ref.raw_word()),
+                42
+            );
         });
     }
 
     #[test]
     fn typed_map_put_ffi_round_trips_atom_key_int_value() {
-        with_process(|| {
-            let key = fz_box_atom_for_any(1);
-            let map = fz_map_put_int(fz_map_empty(), key, 42);
+        with_process(|process| {
+            let key = fz_box_atom_for_any(process, 1);
+            let map = fz_map_put_int(process, fz_map_empty(process), key, 42);
             let map_ref = AnyValueRef::from_raw_word(map).expect("map ref");
-            let got = fz_map_get_ref(map_ref.raw_word(), key);
+            let got = fz_map_get_ref(process, map_ref.raw_word(), key);
             assert_eq!(fz_ref_load_int(got), 42);
         });
     }
@@ -2554,27 +2667,27 @@ mod tests {
     fn map_typed_get_panics_on_wrong_scalar_type() {
         use crate::any_value::AnyValueRef;
 
-        with_process(|| {
+        with_process(|process| {
             let key_slot = 1u64;
             let key_ref =
                 AnyValueRef::from_scalar_slot(ValueKind::ATOM, &key_slot).expect("key ref");
-            let map_bits = current_process().heap.alloc_map_slots(&[(
+            let map_bits = process.heap.alloc_map_slots(&[(
                 crate::any_value::AnyValue::atom(1),
                 crate::any_value::AnyValue::atom(7),
             )]);
             let map_addr = crate::any_value::map_addr_from_tagged(map_bits).expect("map addr");
             let map_ref = AnyValueRef::from_heap_object(ValueKind::MAP, map_addr).expect("map ref");
 
-            let _ = map_get_int_impl(map_ref.raw_word(), key_ref.raw_word());
+            let _ = map_get_int_impl(process, map_ref.raw_word(), key_ref.raw_word());
         });
     }
 
     /// fz-cty.8 — small (<= threshold) payload allocates inline Bitstring.
     #[test]
     fn alloc_bitstring_const_small_payload_is_inline() {
-        with_process(|| {
+        with_process(|process| {
             let bytes: [u8; 3] = [0xaa, 0xbb, 0xcc];
-            let ref_word = fz_alloc_bitstring_const(bytes.as_ptr() as u64, 3, 24);
+            let ref_word = fz_alloc_bitstring_const(process, bytes.as_ptr() as u64, 3, 24);
             let bitstring_ref = AnyValueRef::from_raw_word(ref_word).expect("bitstring ref");
             let addr = bitstring_ref.bitstring_addr().expect("bitstring addr");
             let bits =
@@ -2614,8 +2727,8 @@ mod tests {
             destructor: noop,
         };
         let sb_ptr = &mut sb as *mut SharedBin;
-        with_process(|| {
-            let ref_word = fz_alloc_procbin_from_static(sb_ptr as u64);
+        with_process(|process| {
+            let ref_word = fz_alloc_procbin_from_static(process, sb_ptr as u64);
             let procbin_ref = AnyValueRef::from_raw_word(ref_word).expect("procbin ref");
             let addr = procbin_ref.procbin_addr().expect("procbin addr");
             let bits =
@@ -2643,10 +2756,14 @@ mod tests {
     #[test]
     #[serial_test::serial]
     fn alloc_bitstring_const_large_payload_is_procbin() {
-        with_process(|| {
+        with_process(|process| {
             let payload: Vec<u8> = (0..70u8).collect(); // 70 > SHARED_BIN_THRESHOLD_BYTES (64)
-            let ref_word =
-                fz_alloc_bitstring_const(payload.as_ptr() as u64, payload.len() as u64, 70 * 8);
+            let ref_word = fz_alloc_bitstring_const(
+                process,
+                payload.as_ptr() as u64,
+                payload.len() as u64,
+                70 * 8,
+            );
             let procbin_ref = AnyValueRef::from_raw_word(ref_word).expect("procbin ref");
             let addr = procbin_ref.procbin_addr().expect("procbin addr");
             let bits =

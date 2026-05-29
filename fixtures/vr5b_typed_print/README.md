@@ -2,7 +2,7 @@
 purpose: VR.5b — dbg boxes across the any extern ABI and narrows by spec on return
 paths: [jit, interp, aot, repl]
 budget.codegen.functions: 1
-budget.codegen.instructions: 9
+budget.codegen.instructions: 12
 budget.specs.count: 1
 budget.planner.worklist_pops: 1
 budget.planner.walk_calls: 1

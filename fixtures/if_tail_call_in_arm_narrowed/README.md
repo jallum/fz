@@ -2,7 +2,7 @@
 purpose: "fz-84m repro B — if-arm tail call + per-callsite narrowing; formerly silently dropped the tail-call (overwritten with Goto(join_b, [Var(0)]))"
 paths: [jit, interp, aot, repl]
 budget.codegen.functions: 2
-budget.codegen.instructions: 8
+budget.codegen.instructions: 11
 budget.specs.count: 2
 budget.planner.worklist_pops: 3
 budget.planner.walk_calls: 3

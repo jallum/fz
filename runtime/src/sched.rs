@@ -38,8 +38,9 @@ pub enum ProbeOutcome {
 /// If not parked: push msg to mailbox. Returns Miss; caller may apply
 /// the non-selective wake rule itself.
 pub fn probe_sender(task: &mut Process, msg: crate::any_value::AnyValueRef) -> ProbeOutcome {
+    let task_ptr: *mut Process = task;
     if let Some(park) = task.parked_matched.as_ref() {
-        match park.try_match(msg) {
+        match park.try_match(task_ptr, msg) {
             Some((clause_idx, bound_vals)) => {
                 let (template, timer_id) = {
                     let park = task.parked_matched.as_ref().expect("checked above");
@@ -48,7 +49,7 @@ pub fn probe_sender(task: &mut Process, msg: crate::any_value::AnyValueRef) -> P
                 let cont = materialize_outcome_closure(&mut task.heap, template, &bound_vals);
                 task.parked_matched = None;
                 if let Some(id) = timer_id {
-                    crate::scheduler_hooks::dispatch_timer_cancel(id);
+                    crate::exec_ctx::timer_cancel(task, id);
                 }
                 task.set_runnable_closure(cont);
                 task.state = ProcessState::Ready;
@@ -89,13 +90,14 @@ pub fn initial_scan(task: &mut Process) -> ScanOutcome {
     if task.parked_matched.is_none() || task.mailbox.is_empty() {
         return ScanOutcome::NotApplicable;
     }
+    let task_ptr: *mut Process = task;
 
     let mut hit: Option<(usize, Vec<crate::any_value::AnyValueRef>)> = None;
     let mut scanned: std::collections::VecDeque<crate::any_value::AnyValueRef> =
         std::collections::VecDeque::new();
     while let Some(msg) = task.mailbox.pop_front() {
         let park = task.parked_matched.as_ref().expect("checked above");
-        match park.try_match(msg) {
+        match park.try_match(task_ptr, msg) {
             Some(h) => {
                 hit = Some(h);
                 break;
@@ -116,7 +118,7 @@ pub fn initial_scan(task: &mut Process) -> ScanOutcome {
             let cont = materialize_outcome_closure(&mut task.heap, template, &bound_vals);
             task.parked_matched = None;
             if let Some(id) = timer_id {
-                crate::scheduler_hooks::dispatch_timer_cancel(id);
+                crate::exec_ctx::timer_cancel(task, id);
             }
             task.set_runnable_closure(cont);
             ScanOutcome::Hit
@@ -160,7 +162,12 @@ mod tests {
     use std::cell::RefCell;
     use std::rc::Rc;
 
-    extern "C" fn match_42(msg: u64, _pinned: *const AnyValueRef, out: *mut AnyValueRef) -> u32 {
+    extern "C" fn match_42(
+        _process: *mut Process,
+        msg: u64,
+        _pinned: *const AnyValueRef,
+        out: *mut AnyValueRef,
+    ) -> u32 {
         let msg_ref = AnyValueRef::from_raw_word(msg).expect("msg ref");
         if msg_ref.load_int().expect("int msg") == 42 {
             unsafe {

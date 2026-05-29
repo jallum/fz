@@ -16,7 +16,11 @@ fn format_extern_shape(ret: ExternTy, fixed: &[ExternTy], variadic: &[ExternTy])
     format!("ret={:?} fixed=[{}] variadic=[{}]", ret, fixed, variadic)
 }
 
-fn marshal_arg(value: AnyValue, ty: ExternTy) -> Result<u64, String> {
+fn marshal_arg(
+    proc: *mut fz_runtime::process::Process,
+    value: AnyValue,
+    ty: ExternTy,
+) -> Result<u64, String> {
     Ok(match ty {
         ExternTy::I64 => value
             .as_i64()
@@ -27,15 +31,16 @@ fn marshal_arg(value: AnyValue, ty: ExternTy) -> Result<u64, String> {
             .ok_or_else(|| "extern float arg must be Float".to_string())?
             .to_bits(),
         ExternTy::Binary => {
-            (unsafe { fz_runtime::extern_binary::fz_binary_as_ptr(value.extern_arg_ref_word()?) })
-                as u64
+            (unsafe {
+                fz_runtime::extern_binary::fz_binary_as_ptr(value.extern_arg_ref_word(proc)?)
+            }) as u64
         }
         ExternTy::CString => {
             (unsafe {
-                fz_runtime::extern_binary::fz_binary_as_cstring(value.extern_arg_ref_word()?)
+                fz_runtime::extern_binary::fz_binary_as_cstring(value.extern_arg_ref_word(proc)?)
             }) as u64
         }
-        ExternTy::Any => value.extern_arg_ref_word()?,
+        ExternTy::Any => value.extern_arg_ref_word(proc)?,
         ExternTy::Unit | ExternTy::Never => {
             return Err(format!(
                 "{:?} is not a valid extern argument marshal class",
@@ -46,6 +51,7 @@ fn marshal_arg(value: AnyValue, ty: ExternTy) -> Result<u64, String> {
 }
 
 fn call_variadic_extern(
+    proc: *mut fz_runtime::process::Process,
     module: &Module,
     fn_types: &crate::ir_planner::SpecPlan,
     block_id: crate::fz_ir::BlockId,
@@ -84,7 +90,7 @@ fn call_variadic_extern(
     let raw_args: Vec<u64> = values
         .iter()
         .zip(arg_tys.iter().copied())
-        .map(|(value, ty)| marshal_arg(*value, ty))
+        .map(|(value, ty)| marshal_arg(proc, *value, ty))
         .collect::<Result<_, _>>()?;
 
     match (decl.ret, fixed, variadic) {
@@ -129,7 +135,7 @@ pub(super) fn call_extern<T: Types<Ty = crate::types::Ty>>(
             if args.len() != 1 {
                 return Err(format!("fz_panic/1 got {} args", args.len()));
             }
-            return Err(format!("fz panic: {}", args[0].render()));
+            return Err(format!("fz panic: {}", args[0].render(runtime.cur_proc())));
         }
         "fz_process_heap_alloc_stats" => {
             if !args.is_empty() {
@@ -139,7 +145,7 @@ pub(super) fn call_extern<T: Types<Ty = crate::types::Ty>>(
                 ));
             }
             return interp_value_from_extern_ref_word(
-                fz_runtime::ir_runtime::fz_process_heap_alloc_stats(),
+                fz_runtime::ir_runtime::fz_process_heap_alloc_stats(runtime.cur_proc()),
             );
         }
         // Spawn/send/self need the interpreter's own scheduler — the C
@@ -156,9 +162,7 @@ pub(super) fn call_extern<T: Types<Ty = crate::types::Ty>>(
             return Ok(AnyValue::Int(pid as i64));
         }
         "fz_self" => {
-            return Ok(AnyValue::Int(
-                fz_runtime::process::current_process().pid as i64,
-            ));
+            return Ok(AnyValue::Int(unsafe { &*runtime.cur_proc() }.pid as i64));
         }
         "fz_make_ref" => {
             // fz-ht5 — route through the runtime FFI so interp and JIT
@@ -189,8 +193,13 @@ pub(super) fn call_extern<T: Types<Ty = crate::types::Ty>>(
             let payload = args[0]
                 .as_i64()
                 .ok_or_else(|| "make_resource/2: payload must be integer".to_string())?;
-            return super::make_resource_in_current_process(module, payload, args[1].value()?)
-                .map(interp_value_from_slot);
+            return super::make_resource_in_current_process(
+                runtime.cur_proc(),
+                module,
+                payload,
+                args[1].value()?,
+            )
+            .map(interp_value_from_slot);
         }
         "fz_brand_bitstring_as_utf8" => {
             if args.len() != 1 {
@@ -201,11 +210,32 @@ pub(super) fn call_extern<T: Types<Ty = crate::types::Ty>>(
             }
             return Ok(args[0]);
         }
+        // dbg/print is a process intrinsic: the runtime BIF renders atom
+        // names off the process and routes output through the process's
+        // ExecCtx telemetry sink, so the interp calls it with its own
+        // running process rather than through the generic 1-arg FFI path
+        // (whose arity no longer matches the widened BIF ABI).
+        "fz_dbg_value" => {
+            if args.len() != 1 {
+                return Err(format!("fz_dbg_value/1 got {} args", args.len()));
+            }
+            let ref_word = args[0].extern_arg_ref_word(runtime.cur_proc())?;
+            let out = fz_runtime::ir_runtime::fz_dbg_value(runtime.cur_proc(), ref_word);
+            return interp_value_from_extern_ref_word(out);
+        }
         _ => {}
     }
     if decl.variadic {
-        let ret =
-            call_variadic_extern(module, fn_types, block_id, stmt_idx, eid, extern_args, args)?;
+        let ret = call_variadic_extern(
+            runtime.cur_proc(),
+            module,
+            fn_types,
+            block_id,
+            stmt_idx,
+            eid,
+            extern_args,
+            args,
+        )?;
         return match decl.ret {
             ExternTy::I64 => Ok(AnyValue::Int(ret as i64)),
             ExternTy::F64 => Ok(AnyValue::Float(f64::from_bits(ret))),
@@ -219,7 +249,7 @@ pub(super) fn call_extern<T: Types<Ty = crate::types::Ty>>(
     let raw_args: Vec<u64> = args
         .iter()
         .zip(decl.params.iter())
-        .map(|(v, ty)| marshal_arg(*v, *ty))
+        .map(|(v, ty)| marshal_arg(runtime.cur_proc(), *v, *ty))
         .collect::<Result<_, _>>()?;
     let returns_value = !matches!(decl.ret, ExternTy::Unit | ExternTy::Never);
     let ret = if returns_value {
@@ -256,11 +286,10 @@ pub(super) fn resolve_symbol(name: &str) -> Result<*const (), String> {
         return Ok(fp);
     }
     let native: Option<*const ()> = match name {
-        "fz_dbg_value" => Some(fz_runtime::ir_runtime::fz_dbg_value as *const ()),
-        "fz_panic" => Some(fz_runtime::fz_panic as *const ()),
-        "fz_process_heap_alloc_stats" => {
-            Some(fz_runtime::ir_runtime::fz_process_heap_alloc_stats as *const ())
-        }
+        // fz_dbg_value / fz_panic / fz_process_heap_alloc_stats are process
+        // intrinsics special-cased in call_extern above; their widened BIF ABI
+        // (leading process arg) no longer matches the generic FFI path, so they
+        // must never be resolved as plain symbols here.
         // fz-swt.11 — fixture/test dtor exported from the runtime crate.
         // Bound here so interp-leg invocations of fixtures using this
         // symbol (e.g. when `fz interp` is run by hand on the AOT-only
