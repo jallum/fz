@@ -361,6 +361,7 @@ fn declare_bitstring_runtime<M: cranelift_module::Module>(
         jmod,
         "fz_bs_write_field_ref",
         &[
+            types::I64, // process
             types::I64, // value ref
             types::I32, // ty tag
             types::I32, // size_present
@@ -409,12 +410,17 @@ fn declare_bitstring_runtime<M: cranelift_module::Module>(
         &[types::I64, types::I64, types::I64],
         &[types::I64],
     )?;
-    let bs_reader_init_ref_id =
-        decl_import(jmod, "fz_bs_reader_init_ref", &[types::I64], &[types::I64])?;
+    let bs_reader_init_ref_id = decl_import(
+        jmod,
+        "fz_bs_reader_init_ref",
+        &[types::I64, types::I64],
+        &[types::I64],
+    )?;
     let bs_read_field_ref_id = decl_import(
         jmod,
         "fz_bs_read_field_ref",
         &[
+            types::I64, // process
             types::I64, // reader ref
             types::I64, // packed field spec
             types::I32, // size_value

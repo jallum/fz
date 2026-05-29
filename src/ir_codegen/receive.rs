@@ -1069,7 +1069,7 @@ fn emit_bitstring_test(
     let value = resolve_matcher_subject(b, ctx, subject, state)?;
     emit_bitstring_like_guard(b, ctx, value, false_b)?;
     let value_ref = emit_receive_value_ref(b, ctx, value)?;
-    let init = b.ins().call(init_fref, &[value_ref]);
+    let init = b.ins().call(init_fref, &[ctx.process, value_ref]);
     let mut reader = b.inst_results(init)[0];
 
     for (index, field) in fields.iter().enumerate() {
@@ -1083,7 +1083,9 @@ fn emit_bitstring_test(
             (index + 1 == fields.len()) as u32,
         );
         let field_spec = b.ins().iconst(types::I64, field_spec as i64);
-        let inst = b.ins().call(read_fref, &[reader, field_spec, size_value]);
+        let inst = b
+            .ins()
+            .call(read_fref, &[ctx.process, reader, field_spec, size_value]);
         let result = b.inst_results(inst)[0];
         let result_value = ReceiveValue::AnyRef(result);
         let ok = emit_struct_get_field(b, ctx, result_value, 0)?;

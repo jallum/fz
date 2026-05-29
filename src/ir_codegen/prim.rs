@@ -557,6 +557,7 @@ pub(crate) fn lower_collection_prim<
                 body.b.ins().call(
                     write,
                     &[
+                        process,
                         value_ref,
                         ty_tag,
                         size_present,
@@ -662,10 +663,11 @@ pub(crate) fn lower_collection_prim<
         }
         Prim::BitReaderInit(v) => {
             let value_ref = body.tagged_var(var_env, v.0);
+            let process = body.process_arg();
             let fref = body
                 .jmod
                 .declare_func_in_func(runtime.bs_reader_init_ref_id, body.b.func);
-            let inst = body.b.ins().call(fref, &[value_ref]);
+            let inst = body.b.ins().call(fref, &[process, value_ref]);
             LowerOut::ValueRef(body.b.inst_results(inst)[0])
         }
         Prim::BitReadField {
@@ -698,13 +700,14 @@ pub(crate) fn lower_collection_prim<
                 *is_last as u32,
             );
             let field_spec = body.b.ins().iconst(types::I64, field_spec as i64);
+            let process = body.process_arg();
             let fref = body
                 .jmod
                 .declare_func_in_func(runtime.bs_read_field_ref_id, body.b.func);
             let inst = body
                 .b
                 .ins()
-                .call(fref, &[reader_ref, field_spec, size_value]);
+                .call(fref, &[process, reader_ref, field_spec, size_value]);
             LowerOut::ValueRef(body.b.inst_results(inst)[0])
         }
         Prim::MakeMap(entries) => {

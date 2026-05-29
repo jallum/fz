@@ -187,6 +187,7 @@ pub(super) fn eval_prim<T: Types<Ty = crate::types::Ty>>(
                     }
                 };
                 fz_runtime::ir_runtime::fz_bs_write_field_ref(
+                    runtime.cur_proc(),
                     value_v.as_ref_word()?,
                     ty_tag,
                     size_present,

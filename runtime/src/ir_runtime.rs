@@ -826,7 +826,9 @@ pub extern "C" fn fz_bs_begin(process: *mut Process) {
 /// `size_value` is in size-units (multiplied by `unit` internally).
 #[allow(clippy::too_many_arguments)]
 #[unsafe(no_mangle)]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn fz_bs_write_field_ref(
+    process: *mut Process,
     value_ref: u64,
     ty_tag: u32,
     size_present: u32,
@@ -837,6 +839,7 @@ pub extern "C" fn fz_bs_write_field_ref(
 ) {
     let value = any_value_from_ref_word(value_ref, "fz_bs_write_field_ref");
     fz_bs_write_field_value(
+        process,
         value,
         ty_tag,
         size_present,
@@ -849,6 +852,7 @@ pub extern "C" fn fz_bs_write_field_ref(
 
 #[allow(clippy::too_many_arguments)]
 fn fz_bs_write_field_value(
+    process: *mut Process,
     value: crate::any_value::AnyValue,
     ty_tag: u32,
     size_present: u32,
@@ -871,7 +875,7 @@ fn fz_bs_write_field_value(
     // is consumed on read (fz_bs_read_field) for sign extension.
     let _ = signed;
     {
-        let w = current_process()
+        let w = (unsafe { &mut *process })
             .bs_builder
             .as_mut()
             .expect("fz_bs_write_field called without fz_bs_begin");
@@ -1101,40 +1105,46 @@ fn decode_bs_field_spec(spec: u64) -> (u32, u32, u32, u32, u32, u32) {
 /// Allocate a 3-tuple reader `[bs_ptr, bit_len_int, pos_int]` for an input
 /// bitstring. Schema id is set by compile() into BS_TUPLE_ARITY3_SCHEMA.
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_bs_reader_init_ref(bs_ref: u64) -> u64 {
-    fz_bs_reader_init_bits(heap_object_word_from_ref_word(
-        bs_ref,
-        "fz_bs_reader_init_ref",
-    ))
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn fz_bs_reader_init_ref(process: *mut Process, bs_ref: u64) -> u64 {
+    fz_bs_reader_init_bits(
+        process,
+        heap_object_word_from_ref_word(bs_ref, "fz_bs_reader_init_ref"),
+    )
 }
 
-fn fz_bs_reader_init_bits(bs_bits: u64) -> u64 {
+fn fz_bs_reader_init_bits(process: *mut Process, bs_bits: u64) -> u64 {
     let p = bitstring_like_ptr(bs_bits).unwrap_or_else(|| panic!("reader_init expects heap value"));
     if !unsafe { crate::procbin::is_bitstring_like(p) } {
         panic!("reader_init source is not a Bitstring");
     }
     let bit_len = unsafe { crate::procbin::bitstring_bit_len(p) } as i64;
-    let arity3 = current_process()
+    let proc = unsafe { &mut *process };
+    let arity3 = proc
         .bs_tuple_arity3_schema
         .expect("bs_tuple_arity3_schema not set");
-    let tuple_p = current_process().heap.alloc_struct(arity3);
-    current_process()
-        .heap
+    let tuple_p = proc.heap.alloc_struct(arity3);
+    proc.heap
         .write_field_slot(tuple_p, 0, any_value_from_heap_object_word(bs_bits));
-    current_process()
-        .heap
+    proc.heap
         .write_field_slot(tuple_p, 8, crate::any_value::AnyValue::int(bit_len));
-    current_process()
-        .heap
+    proc.heap
         .write_field_slot(tuple_p, 16, crate::any_value::AnyValue::int(0));
     heap_ref_word(ValueKind::STRUCT, tuple_p as *const u8)
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_bs_read_field_ref(reader_ref: u64, field_spec: u64, size_value: u32) -> u64 {
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn fz_bs_read_field_ref(
+    process: *mut Process,
+    reader_ref: u64,
+    field_spec: u64,
+    size_value: u32,
+) -> u64 {
     let (ty_tag, size_present, unit, endian_tag, signed, is_last) =
         decode_bs_field_spec(field_spec);
     fz_bs_read_field_bits(
+        process,
         heap_object_word_from_ref_word(reader_ref, "fz_bs_read_field_ref"),
         ty_tag,
         size_present,
@@ -1165,6 +1175,7 @@ pub extern "C" fn fz_bs_reader_done_ref(process: *mut Process, reader_ref: u64) 
 
 #[allow(clippy::too_many_arguments)]
 fn fz_bs_read_field_bits(
+    process: *mut Process,
     reader_bits: u64,
     ty_tag: u32,
     size_present: u32,
@@ -1189,13 +1200,16 @@ fn fz_bs_read_field_bits(
     // Decode reader tuple.
     let rp = crate::any_value::struct_addr_from_tagged(reader_bits)
         .unwrap_or_else(|| panic!("read_field: reader is not a tagged Struct"));
-    let bs_bits = current_process()
+    let bs_bits = (unsafe { &mut *process })
         .heap
         .read_field_slot(rp, 0)
         .heap_object_word()
         .expect("reader bitstring bits");
-    let bit_len = current_process().heap.read_field_slot(rp, 8).raw() as usize;
-    let pos = current_process().heap.read_field_slot(rp, 16).raw() as usize;
+    let bit_len = (unsafe { &mut *process }).heap.read_field_slot(rp, 8).raw() as usize;
+    let pos = (unsafe { &mut *process })
+        .heap
+        .read_field_slot(rp, 16)
+        .raw() as usize;
 
     // Bytes pointer from bs.
     let bsp = bitstring_like_ptr(bs_bits).expect("read_field: reader bs not a ptr");
@@ -1206,17 +1220,19 @@ fn fz_bs_read_field_bits(
     let bytes = unsafe { std::slice::from_raw_parts(bytes_ptr, bit_len.div_ceil(8)) };
 
     // Failure path: alloc 1-tuple [false].
-    let arity1 = current_process()
+    let arity1 = (unsafe { &mut *process })
         .bs_tuple_arity1_schema
         .expect("bs_tuple_arity1_schema not set");
-    let arity3 = current_process()
+    let arity3 = (unsafe { &mut *process })
         .bs_tuple_arity3_schema
         .expect("bs_tuple_arity3_schema not set");
     let fail = || -> u64 {
-        let p = current_process().heap.alloc_struct(arity1);
-        current_process()
-            .heap
-            .write_field_slot(p, 0, crate::any_value::AnyValue::bool_atom(false));
+        let p = (unsafe { &mut *process }).heap.alloc_struct(arity1);
+        (unsafe { &mut *process }).heap.write_field_slot(
+            p,
+            0,
+            crate::any_value::AnyValue::bool_atom(false),
+        );
         heap_ref_word(ValueKind::STRUCT, p)
     };
 
@@ -1264,7 +1280,7 @@ fn fz_bs_read_field_bits(
                 w.append_bit(r.read_bit().unwrap());
             }
             sub_bytes.extend_from_slice(&w.bytes);
-            let new_bs = current_process()
+            let new_bs = (unsafe { &mut *process })
                 .heap
                 .alloc_bitstring(&sub_bytes, needed_bits as u64);
             let new_bs_kind = if sub_bytes.len() > crate::heap::SHARED_BIN_THRESHOLD_BYTES {
@@ -1296,34 +1312,34 @@ fn fz_bs_read_field_bits(
 
     // Allocate fresh reader tuple [bs_bits, bit_len_boxed, new_pos_boxed].
     let new_pos = (pos + consumed) as i64;
-    let new_reader_p = current_process().heap.alloc_struct(arity3);
-    current_process().heap.write_field_slot(
+    let new_reader_p = (unsafe { &mut *process }).heap.alloc_struct(arity3);
+    (unsafe { &mut *process }).heap.write_field_slot(
         new_reader_p,
         0,
         any_value_from_heap_object_word(bs_bits),
     );
-    current_process().heap.write_field_slot(
+    (unsafe { &mut *process }).heap.write_field_slot(
         new_reader_p,
         8,
         crate::any_value::AnyValue::int(bit_len as i64),
     );
-    current_process().heap.write_field_slot(
+    (unsafe { &mut *process }).heap.write_field_slot(
         new_reader_p,
         16,
         crate::any_value::AnyValue::int(new_pos),
     );
 
     // Allocate result tuple [true, extracted, new_reader].
-    let result_p = current_process().heap.alloc_struct(arity3);
-    current_process().heap.write_field_slot(
+    let result_p = (unsafe { &mut *process }).heap.alloc_struct(arity3);
+    (unsafe { &mut *process }).heap.write_field_slot(
         result_p,
         0,
         crate::any_value::AnyValue::bool_atom(true),
     );
-    current_process()
+    (unsafe { &mut *process })
         .heap
         .write_field_slot(result_p, 8, extracted_value);
-    current_process().heap.write_field_slot(
+    (unsafe { &mut *process }).heap.write_field_slot(
         result_p,
         16,
         crate::any_value::AnyValue::heap_ptr(new_reader_p, crate::any_value::ValueKind::STRUCT),

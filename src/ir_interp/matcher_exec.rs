@@ -572,7 +572,8 @@ pub(super) fn matcher_read_bitstring(
     if !unsafe { fz_runtime::procbin::is_bitstring_like(p) } {
         return false;
     }
-    let mut reader = fz_runtime::ir_runtime::fz_bs_reader_init_ref(value.ref_word().raw_word());
+    let mut reader =
+        fz_runtime::ir_runtime::fz_bs_reader_init_ref(proc, value.ref_word().raw_word());
     let mut size_bindings: HashMap<String, AnyValue> = HashMap::new();
     for (index, field) in fields.iter().enumerate() {
         let Some((size_present, size_value)) = matcher_bit_size_value(&field.size, &size_bindings)
@@ -594,7 +595,7 @@ pub(super) fn matcher_read_bitstring(
             (index + 1 == fields.len()) as u32,
         );
         let result =
-            fz_runtime::ir_runtime::fz_bs_read_field_ref(reader_ref, field_spec, size_value);
+            fz_runtime::ir_runtime::fz_bs_read_field_ref(proc, reader_ref, field_spec, size_value);
         let Ok(ok) = interp_struct_field_from_tagged_bits(proc, result, 0, "bitstring matcher ok")
         else {
             return false;
