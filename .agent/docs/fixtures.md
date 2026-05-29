@@ -20,6 +20,10 @@ README frontmatter carries `purpose`, `paths`, and any `budget.*` targets.
 `fixtures/index.md` is generated from the frontmatter; regenerate it with
 `BLESS=1 cargo test fixture_index_up_to_date` after editing a fixture.
 
+The README prose is a plain statement of facts about the current state — what
+the fixture proves, in present tense, no adornment and no chronology. It carries
+no code: the code is `input.fz`, and a code block in a README is duplication.
+
 ## The four-path matrix
 
 `tests/fixture_matrix.rs` runs each fixture on the paths its `paths:` lists:

@@ -52,6 +52,13 @@ goldens respectively. Do **not** add an assertion to a shape-primary fixture: th
 `assert` adds IR (an `==`, an `if`, a panic branch) and pollutes the very shape
 it pins.
 
+## README convention
+
+A fixture `README.md` is a plain statement of facts about the current state:
+what the fixture proves, in present tense, no adornment and no chronology. It
+does not contain code — the code is `input.fz`, and a code block in a README is
+duplication. State the fact instead.
+
 ## Realignment map
 
 Decision for the current suite (the executable subset of this is the `fz-6df`
