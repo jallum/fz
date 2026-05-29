@@ -32,7 +32,7 @@ pub struct SpecPlan {
     pub call_edges: HashMap<crate::fz_ir::CallsiteId, CallEdgePlan>,
     /// Per-spec concrete C marshal classes for extern call arguments.
     ///
-    /// Variadic `Auto` args are resolved after this `FnTypes` has inferred
+    /// Variadic `Auto` args are resolved after this `SpecPlan` has inferred
     /// Var types. The map is per spec because the same syntactic call can be
     /// reached under different argument types in different specializations.
     pub extern_marshals: HashMap<crate::fz_ir::ExternMarshalSite, crate::fz_ir::ExternTy>,

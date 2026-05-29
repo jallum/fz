@@ -46,13 +46,13 @@ fz_list_head_ref(list_ref)
 ```
 
 **Dynamic reads return refs.** Heap reads do not return copied value parts. If
-a map already stores the value, `fz_map_get` returns a ref to that stored
+a map already stores the value, `fz_map_get_ref` returns a ref to that stored
 value:
 
 ```text
-fz_map_get(map, key)             -> AnyValueRef
-fz_list_head(list)               -> AnyValueRef
-fz_struct_get_field(tuple, fld)  -> AnyValueRef
+fz_map_get_ref(map, key)             -> AnyValueRef
+fz_list_head_ref(list)               -> AnyValueRef
+fz_struct_get_field_ref(tuple, fld)  -> AnyValueRef
 ```
 
 **Typed fast paths** are fused helpers for callers that already know the type.
@@ -77,11 +77,11 @@ scalar refs, to keep the representation honest.
 
 ## Walkthrough
 
-A map contains `:answer => 42`. The integer payload lives in the heap. `fz_map_get`
+A map contains `:answer => 42`. The integer payload lives in the heap. `fz_map_get_ref`
 returns a ref to it:
 
 ```text
-let value_ref = fz_map_get(map_ref, atom_answer_ref)
+let value_ref = fz_map_get_ref(map_ref, atom_answer_ref)
 
 value_ref tag     = Int
 value_ref address = address of the stored i64 payload
@@ -93,7 +93,7 @@ If the map contains another map at `:child`, the returned ref is already a map
 ref — no extra two-part result is needed:
 
 ```text
-let child_ref = fz_map_get(parent_map_ref, atom_child_ref)
+let child_ref = fz_map_get_ref(parent_map_ref, atom_child_ref)
 
 child_ref tag     = Map
 child_ref address = address of child map object
@@ -222,7 +222,7 @@ unless it has been stored in a traced root form.
 Only heap-object refs are followed as heap edges:
 
 ```text
-Map, List, Struct, Closure, Binary, ProcBin, Resource
+Map, List, Struct, Closure, Bitstring, ProcBin, Resource
 ```
 
 Scalar refs point at scalar payloads inside some heap/container object. They
@@ -250,11 +250,9 @@ Every dynamic stored value is self-describing. Scalar refs point at boxed
 scalar payloads and have no children. Heap-object refs point at heap objects
 and are scanned by object layout. Sentinels have no children.
 
-Older split carriers are transitional debt from split storage. Mailboxes,
-parked receive matchers, pinned receive snapshots, and matcher outputs now use
-`AnyValueRef`; remaining split shapes should stay layout-local until they
-disappear. Map construction has no process-root builder; it is a fold of
-immutable put operations.
+Mailboxes, parked receive matchers, pinned receive snapshots, and matcher
+outputs use `AnyValueRef`. Map construction has no process-root builder; it is a
+fold of immutable put operations.
 
 ## What This Model Keeps Out
 
@@ -278,6 +276,5 @@ either hands that ref to the waiting matcher or deep-copies the ref into the
 receiver heap before enqueueing it. There is no special scalar side path
 inside send.
 
-Architecture-specific pointer tricks stay hidden behind the API. Parallel
-value wrappers that are 95% the same are not reintroduced — that last 5% is
-where bugs live.
+Architecture-specific pointer tricks stay hidden behind the API. There are no
+parallel value wrappers that are 95% the same — that last 5% is where bugs live.

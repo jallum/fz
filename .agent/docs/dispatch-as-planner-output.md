@@ -4,8 +4,14 @@ The compiler treats dispatch decisions as typed facts produced by the planner.
 Codegen consumes those facts; it does not re-derive them from names, source
 spans, or best-effort local type reconstruction.
 
-Destination planning is the main current application of this rule. See
-[`destination-passing.md`](../.agent/docs/destination-passing.md) for the
+Source calls, closure calls, continuation hops, recursive back edges, and
+scheduler suspension have different runtime shapes, but the planner models them
+all as state transitions over facts it already records — call-edge targets,
+return-context plans, and callable capabilities. Passes read those facts rather
+than reconstructing control shape from closure frames or capture order.
+
+Destination planning is the main application of this rule. See
+[`destination-passing.md`](destination-passing.md) for the
 container construction model, `ReturnDemand` composition, and return-context
 plans.
 
@@ -14,6 +20,24 @@ the protocol-domain type contract, implementation target identity, dispatch
 outcomes, and the requirement that link/load stages preserve planner facts
 instead of reconstructing them with a second planning pass.
 
+## Planner Vocabulary
+
+The phase that produces these facts is `ir_planner::plan_module`. Its products
+are deliberately broader than type maps:
+
+- `SpecPlan` is one specialization's plan. It owns Var and block-env types,
+  callable capabilities, dispatch choices (`call_edges`, which carry the
+  return-use and return-context facts), reachable blocks, dead-branch facts, and
+  extern-marshal facts.
+- `ModulePlan` is one module's plan. It owns the specialization plans, effective
+  returns, any-key indexes, precedence, effect summaries, cross-spec dead
+  branches, and (under `cfg(test)`) closure handles.
+
+Local type-inference vocabulary stays narrow where the code is literally type
+inference: `type_fn`, `Ty`, `vars`, block environments, and the narrowing and
+concrete-type helpers keep their type-specific names. A plan is more than the
+types it carries; the planner names match that scope.
+
 ## Authoritative Facts
 
 `SpecPlan.call_edges` is keyed by `CallsiteId`: `(caller FnId, intrinsic
@@ -21,14 +45,13 @@ CallsiteIdent, EmitSlot)`. The value is a `CallEdgePlan`, which names the
 selected target capability plus the return-use and return-context facts for that
 edge.
 
-Local direct, closure, and continuation call edges currently target a
-`SpecKey`, which names the callee function, its semantic input key, and its
-`ReturnDemand`. The same `CallEdgePlan` shape is the home for future
-provider-boundary and protocol targets.
+Local direct, closure, and continuation call edges target a `SpecKey`, which
+names the callee function, its semantic input key, and its `ReturnDemand`.
+Provider-boundary and protocol targets ride the same `CallEdgePlan` shape.
 
-Imported module calls use that provider-boundary shape today. Before link, the
+Imported module calls use that provider-boundary shape. Before link, the
 IR carries an `ExternalCallEdge` and the call edge names the target `ExportKey`
-plus the public input and demand selected upstream. `link_ir_units_with_plan`
+plus the public input and demand selected upstream. `link_ir_units`
 remaps unit-local facts into linked ids and resolves the provider-boundary
 target to the local `SpecKey` while `Module::rewrite_external_calls_for_lto`
 rewrites the terminator.
@@ -51,10 +74,48 @@ capture order.
 
 - `Direct` names the direct callee body.
 - `Cont` names the continuation body.
-- `ClosureCall` names a closure invocation target when the closure type carries
-  enough compile-time identity.
+- `ClosureCall` names a closure-call callsite. It is purely structural — it
+  identifies where the closure dispatch happens, while the call edge's target
+  shapes what runs, whether that comes from a known callable capability or a
+  closure literal clause.
 - `MakeClosure` names the body spec made reachable by constructing a closure
   value.
+
+## Callable Capabilities
+
+`SpecPlan.callable_capabilities` carries callable identity as value-capability
+data:
+
+```text
+CallableCapability =
+  KnownFn(fn_id)
+  KnownClosure { fn_id, captures }
+  OpaqueCallable
+```
+
+The names describe what the compiler knows about a value, not which runtime
+object must be built:
+
+- `KnownFn` is a direct code identity with no runtime closure state. It can come
+  from a zero-capture closure literal, but the useful fact is "this value can be
+  called as this function," not "this value is a closure." The module inliner
+  uses this: direct callsites to a `KnownFn` target can inline even when a
+  zero-state closure value for the same function also exists elsewhere.
+- `KnownClosure` is a direct code identity plus captured runtime state. It
+  supports direct call edges, but the captures are real state and stay a
+  representation barrier; the inliner keeps these targets callable as closure
+  entries.
+- `OpaqueCallable` is a callable boundary whose concrete target is not a single
+  known function in this plan — for example, control flow that joins several
+  zero-capture function values. It keeps the indirect-call shape and the
+  conservative materialization rules, and is not collapsed to one static
+  identity.
+
+Call-edge facts consume callable capabilities alongside the return context: the
+target says what code may run, and the return context says how the result
+becomes the next state. The same fact gates continuation representation; see the
+callable-capability gate in
+[`lazy-continuation-materialization.md`](lazy-continuation-materialization.md).
 
 ## Return Demand Is A Variant Capability
 
@@ -68,7 +129,7 @@ body for exactly that capability.
 - delivery: `Value` or `TupleFields(N)`;
 - context: `None` or `ListTail(tail_ty)`.
 
-Current rendered capabilities are:
+Rendered capabilities are:
 
 - `Value`: ordinary material return.
 - `TupleFields(N)`: tuple field delivery to a continuation.
@@ -77,12 +138,14 @@ Current rendered capabilities are:
   carried list-tail destination for product contexts, rendered as
   `tuple_fields(N, list_tail(tail_ty))`.
 
-This shape leaves room for future dispatch work. Choosing a function variant,
-choosing a tuple-return ABI, and choosing a return-context body are all the same
-kind of decision: a typed callsite capability selected before codegen.
+Choosing a function variant, choosing a tuple-return ABI, and choosing a
+return-context body are the same kind of decision: a typed callsite capability
+selected before codegen.
 Protocol implementation selection is the same kind of decision: the planner
-selects a direct, provider-boundary, closed-switch, runtime, or diagnostic edge
-from receiver type facts and visible implementation-domain facts.
+selects a static-direct (`ProtocolDispatch::Local`), provider-boundary
+(`ProtocolDispatch::External`), or diagnostic edge from receiver type facts and
+visible implementation-domain facts. Finite-union switch dispatch and runtime
+lookup for open or erased receiver domains are not emitted.
 
 Protocol callback callsites lower to ordinary call-shaped IR with a protocol
 stub callee. The stub is not the semantic target. It is a stable callsite
