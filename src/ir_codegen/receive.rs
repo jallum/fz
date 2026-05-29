@@ -1881,9 +1881,19 @@ mod tests {
     use fz_runtime::any_value::AnyValueRef;
     use fz_runtime::any_value::ValueKind;
     use fz_runtime::heap::{Schema, SchemaRegistry};
-    use fz_runtime::process::{CurrentProcessGuard, Process, current_process};
+    use fz_runtime::process::Process;
     use std::cell::RefCell;
     use std::rc::Rc;
+
+    // Test scaffolding: the matcher unit tests need a process to hand the
+    // matcher fn (its 1st arg) and to box scalar test values. The runtime no
+    // longer has an ambient current-process, so the harness keeps its own
+    // per-test process pointer here, set by `install_process`. This cell is
+    // test-only — production threads the process explicitly.
+    thread_local! {
+        static HARNESS_PROC: std::cell::Cell<*mut Process> =
+            const { std::cell::Cell::new(std::ptr::null_mut()) };
+    }
 
     fn make_jit() -> (JITModule, FunctionBuilderContext) {
         let isa_builder = cranelift_native::builder().expect("native isa");
@@ -1902,23 +1912,20 @@ mod tests {
 
     type MatcherAbi = extern "C" fn(*mut Process, u64, *const AnyValueRef, *mut AnyValueRef) -> u32;
 
-    /// The installed process pointer to hand a matcher fn (its 1st param).
+    /// The harness process pointer to hand a matcher fn (its 1st param).
     fn cp() -> *mut Process {
-        fz_runtime::process::current_process()
+        HARNESS_PROC.with(|c| c.get())
     }
 
-    fn install_process() -> (Box<Process>, CurrentProcessGuard) {
+    fn install_process() -> Box<Process> {
         let schemas = Rc::new(RefCell::new(SchemaRegistry::new()));
         let mut process = Box::new(Process::new(schemas));
-        let guard = CurrentProcessGuard::install(process.as_mut() as *mut Process);
-        (process, guard)
+        HARNESS_PROC.with(|c| c.set(process.as_mut() as *mut Process));
+        process
     }
 
     fn int_ref(value: i64) -> AnyValueRef {
-        let raw = fz_runtime::ir_runtime::fz_box_int_for_any(
-            fz_runtime::process::current_process(),
-            value,
-        );
+        let raw = fz_runtime::ir_runtime::fz_box_int_for_any(cp(), value);
         AnyValueRef::from_raw_word(raw).expect("int ref")
     }
 
@@ -2028,7 +2035,7 @@ mod tests {
 
     #[test]
     fn cached_matcher_int_literal_hits_only_exact_tagged_value() {
-        let (_process, _guard) = install_process();
+        let _process = install_process();
         let (mut jmod, mut fbctx) = make_jit();
         let m = empty_module();
         let tuple_ids = HashMap::new();
@@ -2059,7 +2066,7 @@ mod tests {
 
     #[test]
     fn cached_matcher_var_writes_input_to_out_slot_zero() {
-        let (_process, _guard) = install_process();
+        let _process = install_process();
         let (mut jmod, mut fbctx) = make_jit();
         let m = empty_module();
         let tuple_ids = HashMap::new();
@@ -2093,7 +2100,7 @@ mod tests {
 
     #[test]
     fn cached_matcher_guard_falls_through_when_false() {
-        let (_process, _guard) = install_process();
+        let _process = install_process();
         let (mut jmod, mut fbctx) = make_jit();
         let m = empty_module();
         let tuple_ids = HashMap::new();
@@ -2133,7 +2140,7 @@ mod tests {
 
     #[test]
     fn cached_matcher_guard_reads_pinned_capture() {
-        let (_process, _guard) = install_process();
+        let _process = install_process();
         let (mut jmod, mut fbctx) = make_jit();
         let m = empty_module();
         let tuple_ids = HashMap::new();
@@ -2189,8 +2196,8 @@ mod tests {
 
         let schemas = Rc::new(RefCell::new(SchemaRegistry::new()));
         let mut process = Box::new(Process::new(schemas));
-        let _guard = CurrentProcessGuard::install(process.as_mut() as *mut Process);
-        let tuple_schema_id = current_process()
+        HARNESS_PROC.with(|c| c.set(process.as_mut() as *mut Process));
+        let tuple_schema_id = unsafe { &mut *cp() }
             .heap
             .register_schema(Schema::tuple_of_arity(3));
         let mut tuple_ids = HashMap::new();
@@ -2215,16 +2222,11 @@ mod tests {
             "cached_matcher_tuple_reply",
         );
 
-        let tuple_p = current_process().heap.alloc_struct(tuple_schema_id);
-        current_process()
-            .heap
-            .write_field_slot(tuple_p, 0, AnyValue::atom(3));
-        current_process()
-            .heap
-            .write_field_slot(tuple_p, 8, AnyValue::int(170));
-        current_process()
-            .heap
-            .write_field_slot(tuple_p, 16, AnyValue::int(23));
+        let tuple_p = unsafe { &mut *cp() }.heap.alloc_struct(tuple_schema_id);
+        let proc = unsafe { &mut *cp() };
+        proc.heap.write_field_slot(tuple_p, 0, AnyValue::atom(3));
+        proc.heap.write_field_slot(tuple_p, 8, AnyValue::int(170));
+        proc.heap.write_field_slot(tuple_p, 16, AnyValue::int(23));
 
         let pin = [int_ref(170)];
         let mut out = [AnyValueRef::null()];

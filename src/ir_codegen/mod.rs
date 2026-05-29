@@ -81,9 +81,7 @@ pub use compiled::{
 pub use error::CodegenError;
 pub use support::{asm_record_enable, asm_record_take, ir_text_record_enable, ir_text_record_take};
 
-#[cfg(test)]
-pub(crate) use fz_runtime::process::current_process;
-pub use fz_runtime::process::{CURRENT_PROCESS, PidId, Process, ProcessState};
+pub use fz_runtime::process::{PidId, Process, ProcessState};
 
 /// Drive the shared compile pipeline through any Backend impl. JIT and
 /// AOT both route through here; the backend's hooks pick the legit

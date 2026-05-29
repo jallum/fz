@@ -1364,12 +1364,12 @@ fn allocation_watermark_expires_reduction_budget() {
     process.yield_reasons = 0;
     // Force the very next allocation across the watermark.
     process.heap.allocation_watermark = process.heap.block_start;
-    let guard = crate::process::CurrentProcessGuard::install(&mut process);
+    let owner: *mut crate::process::Process = &mut process;
+    process.heap.set_owner(owner);
 
     let _ = process
         .heap
         .alloc_list_cons_slot(AnyValue::nil_atom(), crate::any_value::EMPTY_LIST);
-    drop(guard);
 
     assert_eq!(process.reductions_remaining, 0);
     assert_eq!(

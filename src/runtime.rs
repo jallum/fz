@@ -28,7 +28,7 @@
 //!     Arc when threading lands).
 
 use crate::fz_ir::FnId;
-use crate::ir_codegen::{CURRENT_PROCESS, CompiledModule, PidId, Process, ProcessState};
+use crate::ir_codegen::{CompiledModule, PidId, Process, ProcessState};
 use fz_runtime::any_value::AnyValueRef;
 use std::collections::{HashMap, VecDeque};
 
@@ -490,11 +490,10 @@ impl<'a> Runtime<'a> {
             task.state = ProcessState::Running;
             task.reset_reduction_budget();
             task.ctx = ctx_ptr;
+            let owner: *mut Process = &mut *task;
+            task.heap.set_owner(owner);
             debug_assert!(!task.ctx.is_null(), "task.ctx installed before dispatch");
-            let ptr: *mut Process = &mut *task;
-            let prev = CURRENT_PROCESS.with(|c| c.replace(ptr));
             self.compiled.run_quantum(&mut task);
-            CURRENT_PROCESS.with(|c| c.set(prev));
             // Possible post-quantum states (fz-ul4.19.3):
             //
             // 1. next_frame is null -> trampoline halted, task is done.
@@ -534,11 +533,10 @@ impl<'a> Runtime<'a> {
                 // fz-4mk.3a — task is exiting; before the Heap drops at
                 // task-cleanup time, flush surviving MSO resources onto
                 // `pending_dtors` and dispatch each dtor closure body as
-                // real fz code through the `fz_drain_dtor_entry` shim.
-                // CURRENT_PROCESS must be live for the duration so the
-                // dtor body can allocate on the task heap, etc.
+                // real fz code through the `fz_drain_dtor_entry` shim. The dtor
+                // body reaches this process through the pinned register set by
+                // the `pinned_abi::call2` entry below.
                 let ptr: *mut Process = &mut *task;
-                let prev = CURRENT_PROCESS.with(|c| c.replace(ptr));
                 fz_runtime::procbin::mso_drop_all_deferred(&mut task.heap);
                 // Enter the dtor body through pinned_abi so the pinned register
                 // holds this process: the dtor is real fz code and its closure
@@ -550,7 +548,6 @@ impl<'a> Runtime<'a> {
                         fz_runtime::pinned_abi::call2(drain_addr, ptr, closure, payload_ref)
                     };
                 }
-                CURRENT_PROCESS.with(|c| c.set(prev));
                 ExitRecord::emit(self.tel, pid, &task);
             } else if task.state == ProcessState::Blocked {
                 // Park: keep in registry, no re-enqueue. send() will
@@ -1838,12 +1835,9 @@ fn main(), do: sum(10, 0, nil)";
         // scheduler handle is passed explicitly.
         let rt_ptr = &mut rt as *mut Runtime<'_> as *mut ();
         let sender_ptr = rt.tasks.get_mut(&sender_pid).unwrap().as_mut() as *mut Process;
-        let prev_proc = CURRENT_PROCESS.with(|c| c.replace(sender_ptr));
 
         // Hit case: msg == 42 matches the pinned.
         send_via(sender_ptr, rt_ptr, receiver_pid, test_int_ref(42));
-
-        CURRENT_PROCESS.with(|c| c.set(prev_proc));
 
         let r = rt.task(receiver_pid).unwrap();
         assert_eq!(r.state, ProcessState::Ready);
@@ -1895,12 +1889,9 @@ fn main(), do: sum(10, 0, nil)";
 
         let rt_ptr = &mut rt as *mut Runtime<'_> as *mut ();
         let sender_ptr = rt.tasks.get_mut(&sender_pid).unwrap().as_mut() as *mut Process;
-        let prev_proc = CURRENT_PROCESS.with(|c| c.replace(sender_ptr));
 
         // Miss case: msg == 7 does not match pinned 42.
         send_via(sender_ptr, rt_ptr, receiver_pid, test_int_ref(7));
-
-        CURRENT_PROCESS.with(|c| c.set(prev_proc));
 
         let r = rt.task(receiver_pid).unwrap();
         assert_eq!(r.state, ProcessState::Blocked, "still parked on miss");

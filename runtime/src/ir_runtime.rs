@@ -2187,14 +2187,10 @@ pub extern "C" fn fz_alloc_frame_dyn(process: *mut Process, fn_id: u32) -> *mut 
     fz_alloc_frame(process, fn_id, size)
 }
 
-/// Public wrapper around the internal frame allocator. Used by the
-/// Runtime in src/runtime.rs to spawn a task's entry frame and by
-/// ir_codegen for the synchronous run path.
-pub fn fz_alloc_frame_for_test(schema_id: u32, total_size: u32) -> *mut u8 {
-    // Mirror the old try_current_process() behavior: record on the installed
-    // process when there is one, otherwise allocate frame-only (null process).
-    let process =
-        crate::process::try_current_process().map_or(std::ptr::null_mut(), |p| p as *mut Process);
+/// Public wrapper around the internal frame allocator that records the
+/// allocation on the given process (frame-only when null). Test-support entry
+/// for the frame-alloc accounting path.
+pub fn fz_alloc_frame_for_test(process: *mut Process, schema_id: u32, total_size: u32) -> *mut u8 {
     fz_alloc_frame(process, schema_id, total_size)
 }
 
@@ -2545,25 +2541,20 @@ mod tests {
     use crate::any_value::{AnyValue, AnyValueRef, ValueKind};
     use crate::heap::SchemaRegistry;
     use crate::procbin::{bitstring_bit_len, bitstring_byte_ptr};
-    use crate::process::current_process;
-    use crate::process::{CURRENT_PROCESS, CurrentProcessGuard, Process};
+    use crate::process::Process;
     use std::cell::RefCell;
     use std::rc::Rc;
 
-    /// Install a fresh Process for the duration of `f`. Mirrors the
-    /// install/clear dance done by aot_shim and the scheduler, but stays
-    /// on the test thread.
-    fn with_process<R>(f: impl FnOnce() -> R) -> R {
+    /// Run `f` with a fresh Process. The process is threaded explicitly — the
+    /// runtime no longer has an ambient `CURRENT_PROCESS`, so BIFs and helpers
+    /// take it as a parameter.
+    fn with_process<R>(f: impl FnOnce(&mut Process) -> R) -> R {
         let schemas = Rc::new(RefCell::new(SchemaRegistry::new()));
         let mut proc = Box::new(Process::new(schemas));
-        let prev = CURRENT_PROCESS.with(|c| c.replace(proc.as_mut() as *mut Process));
-        let r = f();
-        CURRENT_PROCESS.with(|c| c.set(prev));
-        r
+        f(&mut proc)
     }
 
-    fn map_int_value_by_atom_name(map_ref_word: u64, name: &str) -> i64 {
-        let process = current_process();
+    fn map_int_value_by_atom_name(process: &Process, map_ref_word: u64, name: &str) -> i64 {
         let map_ref = AnyValueRef::from_raw_word(map_ref_word).expect("stats map ref");
         let map_addr = map_ref.map_addr().expect("stats map addr");
         let count = unsafe { crate::any_value::map_count(map_addr as *const u8) };
@@ -2588,54 +2579,77 @@ mod tests {
     #[test]
     fn process_heap_alloc_stats_returns_pre_materialization_snapshot() {
         let schemas = Rc::new(RefCell::new(SchemaRegistry::new()));
-        let mut process = Process::new(schemas);
-        let _guard = CurrentProcessGuard::install(&mut process as *mut Process);
-        current_process().heap.reset_alloc_stats();
-        let _ = current_process()
+        let mut proc_owned = Process::new(schemas);
+        let process = &mut proc_owned;
+        process.heap.reset_alloc_stats();
+        let _ = process
             .heap
             .alloc_list_cons_slot(AnyValue::int(1), crate::any_value::EMPTY_LIST_BITS);
 
-        let stats_ref = fz_process_heap_alloc_stats(current_process());
-        assert_eq!(map_int_value_by_atom_name(stats_ref, "allocs"), 1);
-        assert_eq!(map_int_value_by_atom_name(stats_ref, "list_cons_allocs"), 1);
-        assert_eq!(map_int_value_by_atom_name(stats_ref, "map_allocs"), 0);
-        assert_eq!(map_int_value_by_atom_name(stats_ref, "scheduler_yields"), 0);
+        let stats_ref = fz_process_heap_alloc_stats(process);
+        assert_eq!(map_int_value_by_atom_name(process, stats_ref, "allocs"), 1);
         assert_eq!(
-            map_int_value_by_atom_name(stats_ref, "interpreter_yields"),
+            map_int_value_by_atom_name(process, stats_ref, "list_cons_allocs"),
+            1
+        );
+        assert_eq!(
+            map_int_value_by_atom_name(process, stats_ref, "map_allocs"),
             0
         );
         assert_eq!(
-            map_int_value_by_atom_name(stats_ref, "reductions_remaining"),
+            map_int_value_by_atom_name(process, stats_ref, "scheduler_yields"),
+            0
+        );
+        assert_eq!(
+            map_int_value_by_atom_name(process, stats_ref, "interpreter_yields"),
+            0
+        );
+        assert_eq!(
+            map_int_value_by_atom_name(process, stats_ref, "reductions_remaining"),
             crate::process::DEFAULT_REDUCTIONS_PER_QUANTUM as i64
         );
         assert_eq!(
-            map_int_value_by_atom_name(stats_ref, "reductions_per_quantum"),
+            map_int_value_by_atom_name(process, stats_ref, "reductions_per_quantum"),
             crate::process::DEFAULT_REDUCTIONS_PER_QUANTUM as i64
         );
         assert_eq!(
-            map_int_value_by_atom_name(stats_ref, "reductions_executed"),
-            0
-        );
-        assert_eq!(map_int_value_by_atom_name(stats_ref, "reduction_yields"), 0);
-        assert_eq!(
-            map_int_value_by_atom_name(stats_ref, "allocation_pressure_yields"),
-            0
-        );
-        assert_eq!(map_int_value_by_atom_name(stats_ref, "yield_reasons"), 0);
-        assert_eq!(
-            map_int_value_by_atom_name(stats_ref, "max_yield_continuation_bytes"),
+            map_int_value_by_atom_name(process, stats_ref, "reductions_executed"),
             0
         );
         assert_eq!(
-            map_int_value_by_atom_name(stats_ref, "min_yield_continuation_margin_before_bytes",),
+            map_int_value_by_atom_name(process, stats_ref, "reduction_yields"),
             0
         );
         assert_eq!(
-            map_int_value_by_atom_name(stats_ref, "min_yield_continuation_margin_after_bytes"),
+            map_int_value_by_atom_name(process, stats_ref, "allocation_pressure_yields"),
+            0
+        );
+        assert_eq!(
+            map_int_value_by_atom_name(process, stats_ref, "yield_reasons"),
+            0
+        );
+        assert_eq!(
+            map_int_value_by_atom_name(process, stats_ref, "max_yield_continuation_bytes"),
+            0
+        );
+        assert_eq!(
+            map_int_value_by_atom_name(
+                process,
+                stats_ref,
+                "min_yield_continuation_margin_before_bytes",
+            ),
+            0
+        );
+        assert_eq!(
+            map_int_value_by_atom_name(
+                process,
+                stats_ref,
+                "min_yield_continuation_margin_after_bytes"
+            ),
             0
         );
 
-        let after = current_process().heap.alloc_stats_snapshot();
+        let after = process.heap.alloc_stats_snapshot();
         assert_eq!(after.list_cons.allocs, 1);
         assert_eq!(after.map.allocs, 1);
         assert_eq!(after.total.allocs, 2);
@@ -2644,13 +2658,13 @@ mod tests {
     #[test]
     fn frame_alloc_records_on_installed_process() {
         let schemas = Rc::new(RefCell::new(SchemaRegistry::new()));
-        let mut process = Process::new(schemas);
-        let _guard = CurrentProcessGuard::install(&mut process as *mut Process);
-        current_process().heap.reset_alloc_stats();
+        let mut proc_owned = Process::new(schemas);
+        let process = &mut proc_owned;
+        process.heap.reset_alloc_stats();
 
-        let _ = fz_alloc_frame_for_test(7, 17);
+        let _ = fz_alloc_frame_for_test(process, 7, 17);
 
-        let stats = current_process().heap.alloc_stats_snapshot();
+        let stats = process.heap.alloc_stats_snapshot();
         assert_eq!(stats.frame.allocs, 1);
         assert_eq!(stats.frame.bytes, 32);
         assert_eq!(stats.total.allocs, 1);
@@ -2660,10 +2674,10 @@ mod tests {
     /// fz-axu.14 (R1) — valid UTF-8 byte-aligned bitstring → 1.
     #[test]
     fn fz_bitstring_valid_utf8_accepts_byte_aligned_utf8() {
-        with_process(|| {
+        with_process(|process| {
             let bytes = "héllo".as_bytes();
             let bits = fz_alloc_bitstring_const(
-                current_process(),
+                process,
                 bytes.as_ptr() as u64,
                 bytes.len() as u64,
                 (bytes.len() * 8) as u64,
@@ -2674,42 +2688,42 @@ mod tests {
 
     #[test]
     fn yield_mid_flight_report_stashes_runnable_closure() {
-        with_process(|| {
-            let bits = current_process().heap.alloc_closure_slots(0, 0, 0);
+        with_process(|process| {
+            let bits = process.heap.alloc_closure_slots(0, 0, 0);
             let closure_addr =
                 crate::any_value::closure_addr_from_tagged(bits).expect("closure addr");
             let closure_ref = AnyValueRef::from_heap_object(ValueKind::CLOSURE, closure_addr)
                 .expect("closure ref")
                 .raw_word();
             let ret = fz_yield_mid_flight_report(
-                current_process(),
+                process,
                 closure_ref,
                 -1,
                 crate::process::YIELD_REASON_REDUCTIONS as u32,
             );
             assert_eq!(ret as u64, crate::scheduler_hooks::YIELD_PTR);
-            assert_eq!(current_process().runnable_closure, closure_addr);
-            assert_eq!(current_process().scheduler_yields, 1);
-            assert_eq!(current_process().reductions_remaining, -1);
-            assert_eq!(current_process().reduction_yields, 1);
+            assert_eq!(process.runnable_closure, closure_addr);
+            assert_eq!(process.scheduler_yields, 1);
+            assert_eq!(process.reductions_remaining, -1);
+            assert_eq!(process.reduction_yields, 1);
             assert_eq!(
-                current_process().yield_reasons,
+                process.yield_reasons,
                 crate::process::YIELD_REASON_REDUCTIONS
             );
             assert_eq!(
-                current_process().max_yield_continuation_bytes,
+                process.max_yield_continuation_bytes,
                 crate::any_value::closure_size_for_count(0) as u64
             );
-            assert!(current_process().min_yield_continuation_margin_after_bytes > 0);
+            assert!(process.min_yield_continuation_margin_after_bytes > 0);
         });
     }
 
     /// Invalid byte sequence → 0.
     #[test]
     fn fz_bitstring_valid_utf8_rejects_bad_bytes() {
-        with_process(|| {
+        with_process(|process| {
             let bytes = [0xffu8, 0xffu8];
-            let bits = fz_alloc_bitstring_const(current_process(), bytes.as_ptr() as u64, 2, 16);
+            let bits = fz_alloc_bitstring_const(process, bytes.as_ptr() as u64, 2, 16);
             assert_eq!(fz_bitstring_valid_utf8(bits), 0);
         });
     }
@@ -2718,9 +2732,9 @@ mod tests {
     /// be valid UTF-8 — UTF-8 is byte-oriented.
     #[test]
     fn fz_bitstring_valid_utf8_rejects_non_byte_aligned() {
-        with_process(|| {
+        with_process(|process| {
             let bytes = [b'h'];
-            let bits = fz_alloc_bitstring_const(current_process(), bytes.as_ptr() as u64, 1, 7);
+            let bits = fz_alloc_bitstring_const(process, bytes.as_ptr() as u64, 1, 7);
             assert_eq!(fz_bitstring_valid_utf8(bits), 0);
         });
     }
@@ -2758,11 +2772,11 @@ mod tests {
     fn map_typed_get_projects_expected_scalar_value() {
         use crate::any_value::AnyValueRef;
 
-        with_process(|| {
+        with_process(|process| {
             let key_slot = 1u64;
             let key_ref =
                 AnyValueRef::from_scalar_slot(ValueKind::ATOM, &key_slot).expect("key ref");
-            let map_bits = current_process().heap.alloc_map_slots(&[(
+            let map_bits = process.heap.alloc_map_slots(&[(
                 crate::any_value::AnyValue::atom(1),
                 crate::any_value::AnyValue::int(42),
             )]);
@@ -2770,7 +2784,7 @@ mod tests {
             let map_ref = AnyValueRef::from_heap_object(ValueKind::MAP, map_addr).expect("map ref");
 
             assert_eq!(
-                map_get_int_impl(current_process(), map_ref.raw_word(), key_ref.raw_word()),
+                map_get_int_impl(process, map_ref.raw_word(), key_ref.raw_word()),
                 42
             );
         });
@@ -2778,11 +2792,11 @@ mod tests {
 
     #[test]
     fn typed_map_put_ffi_round_trips_atom_key_int_value() {
-        with_process(|| {
-            let key = fz_box_atom_for_any(current_process(), 1);
-            let map = fz_map_put_int(current_process(), fz_map_empty(current_process()), key, 42);
+        with_process(|process| {
+            let key = fz_box_atom_for_any(process, 1);
+            let map = fz_map_put_int(process, fz_map_empty(process), key, 42);
             let map_ref = AnyValueRef::from_raw_word(map).expect("map ref");
-            let got = fz_map_get_ref(current_process(), map_ref.raw_word(), key);
+            let got = fz_map_get_ref(process, map_ref.raw_word(), key);
             assert_eq!(fz_ref_load_int(got), 42);
         });
     }
@@ -2792,28 +2806,27 @@ mod tests {
     fn map_typed_get_panics_on_wrong_scalar_type() {
         use crate::any_value::AnyValueRef;
 
-        with_process(|| {
+        with_process(|process| {
             let key_slot = 1u64;
             let key_ref =
                 AnyValueRef::from_scalar_slot(ValueKind::ATOM, &key_slot).expect("key ref");
-            let map_bits = current_process().heap.alloc_map_slots(&[(
+            let map_bits = process.heap.alloc_map_slots(&[(
                 crate::any_value::AnyValue::atom(1),
                 crate::any_value::AnyValue::atom(7),
             )]);
             let map_addr = crate::any_value::map_addr_from_tagged(map_bits).expect("map addr");
             let map_ref = AnyValueRef::from_heap_object(ValueKind::MAP, map_addr).expect("map ref");
 
-            let _ = map_get_int_impl(current_process(), map_ref.raw_word(), key_ref.raw_word());
+            let _ = map_get_int_impl(process, map_ref.raw_word(), key_ref.raw_word());
         });
     }
 
     /// fz-cty.8 — small (<= threshold) payload allocates inline Bitstring.
     #[test]
     fn alloc_bitstring_const_small_payload_is_inline() {
-        with_process(|| {
+        with_process(|process| {
             let bytes: [u8; 3] = [0xaa, 0xbb, 0xcc];
-            let ref_word =
-                fz_alloc_bitstring_const(current_process(), bytes.as_ptr() as u64, 3, 24);
+            let ref_word = fz_alloc_bitstring_const(process, bytes.as_ptr() as u64, 3, 24);
             let bitstring_ref = AnyValueRef::from_raw_word(ref_word).expect("bitstring ref");
             let addr = bitstring_ref.bitstring_addr().expect("bitstring addr");
             let bits =
@@ -2853,8 +2866,8 @@ mod tests {
             destructor: noop,
         };
         let sb_ptr = &mut sb as *mut SharedBin;
-        with_process(|| {
-            let ref_word = fz_alloc_procbin_from_static(current_process(), sb_ptr as u64);
+        with_process(|process| {
+            let ref_word = fz_alloc_procbin_from_static(process, sb_ptr as u64);
             let procbin_ref = AnyValueRef::from_raw_word(ref_word).expect("procbin ref");
             let addr = procbin_ref.procbin_addr().expect("procbin addr");
             let bits =
@@ -2882,10 +2895,10 @@ mod tests {
     #[test]
     #[serial_test::serial]
     fn alloc_bitstring_const_large_payload_is_procbin() {
-        with_process(|| {
+        with_process(|process| {
             let payload: Vec<u8> = (0..70u8).collect(); // 70 > SHARED_BIN_THRESHOLD_BYTES (64)
             let ref_word = fz_alloc_bitstring_const(
-                current_process(),
+                process,
                 payload.as_ptr() as u64,
                 payload.len() as u64,
                 70 * 8,

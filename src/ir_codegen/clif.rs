@@ -213,7 +213,6 @@ mod tests {
         let schemas = Rc::new(RefCell::new(fz_runtime::heap::SchemaRegistry::new()));
         let mut process = fz_runtime::process::Process::new(schemas);
         let expected = (&mut process as *mut fz_runtime::process::Process) as u64;
-        let _guard = fz_runtime::process::CurrentProcessGuard::install(&mut process);
 
         let observed = unsafe { fz_runtime::pinned_abi::call1(probe_addr, &mut process, 0) } as u64;
         assert_eq!(observed, expected);

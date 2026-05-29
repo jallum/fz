@@ -279,9 +279,9 @@ impl IrInterpRuntime {
                 (*proc_ptr).state = ProcessState::Running;
                 (*proc_ptr).reset_reduction_budget();
                 (*proc_ptr).ctx = &mut exec_ctx;
+                (*proc_ptr).heap.set_owner(proc_ptr);
                 debug_assert!(!(*proc_ptr).ctx.is_null(), "interp ctx installed");
             };
-            let prev = fz_runtime::process::CURRENT_PROCESS.with(|c| c.replace(proc_ptr));
             self.current_proc = proc_ptr;
             let mut step = run_fn(self, &mut t, module, tel, fn_id, args);
             loop {
@@ -295,15 +295,12 @@ impl IrInterpRuntime {
                             continue;
                         }
 
-                        fz_runtime::process::CURRENT_PROCESS.with(|c| c.set(prev));
                         completions.push((pid, val));
                         if keepalive_pid == Some(pid) {
                             self.set_process_state(pid, ProcessState::Ready);
                             continue 'sched;
                         }
 
-                        let prev =
-                            fz_runtime::process::CURRENT_PROCESS.with(|c| c.replace(proc_ptr));
                         unsafe {
                             fz_runtime::procbin::mso_drop_all_deferred(&mut (*proc_ptr).heap);
                         }
@@ -313,7 +310,6 @@ impl IrInterpRuntime {
                                 crate::metadata! { error: e },
                             );
                         }
-                        fz_runtime::process::CURRENT_PROCESS.with(|c| c.set(prev));
                         // Parity with the compiled engine: record the result on
                         // the Process and emit the same process_exited event
                         // through the single shared emit site.
@@ -331,7 +327,6 @@ impl IrInterpRuntime {
                         remaining_reductions,
                         reason,
                     }) => {
-                        fz_runtime::process::CURRENT_PROCESS.with(|c| c.set(prev));
                         new_after.extend(after);
                         let process = unsafe { &mut *proc_ptr };
                         process.finish_yield_report(remaining_reductions, reason);
@@ -344,21 +339,18 @@ impl IrInterpRuntime {
                         continue 'sched;
                     }
                     Ok(InterpStep::Blocked(resume_fn, cap_vals, mut new_after)) => {
-                        fz_runtime::process::CURRENT_PROCESS.with(|c| c.set(prev));
                         new_after.extend(after);
                         self.set_process_state(pid, ProcessState::Blocked);
                         self.resume.insert(pid, (resume_fn, cap_vals, new_after));
                         continue 'sched;
                     }
                     Ok(InterpStep::BlockedMatched(park, mut new_after)) => {
-                        fz_runtime::process::CURRENT_PROCESS.with(|c| c.set(prev));
                         new_after.extend(after);
                         self.set_process_state(pid, ProcessState::Blocked);
                         self.parked.insert(pid, (park, new_after));
                         continue 'sched;
                     }
                     Err(e) => {
-                        fz_runtime::process::CURRENT_PROCESS.with(|c| c.set(prev));
                         return Err(e);
                     }
                 }
@@ -499,8 +491,8 @@ pub fn run_test_fn(
     task.atom_names = module.atom_names.clone();
     runtime.insert_task(1, task);
     let task_ptr = runtime.process_ptr(1).expect("run_test_fn installed pid 1");
-    let prev = fz_runtime::process::CURRENT_PROCESS.with(|c| c.replace(task_ptr));
     runtime.current_proc = task_ptr;
+    unsafe { (*task_ptr).heap.set_owner(task_ptr) };
     let mut t = crate::types::ConcreteTypes;
     let result = run_fn(&mut runtime, &mut t, module, tel, fn_id, Vec::new());
     // fz-4mk — shutdown drain mirrors run_main's exit path: enqueue every
@@ -515,7 +507,6 @@ pub fn run_test_fn(
             crate::metadata! { error: e },
         );
     }
-    fz_runtime::process::CURRENT_PROCESS.with(|c| c.set(prev));
     match result {
         Ok(InterpStep::Done(_)) => Ok(()),
         Ok(InterpStep::Yielded { .. }) => {

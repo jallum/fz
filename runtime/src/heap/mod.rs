@@ -112,4 +112,10 @@ pub struct Heap {
     /// backed singletons. GC marks them via the `mark` bit; survivors
     /// stay put across collections, dead fragments are freed.
     fragments: Vec<Fragment>,
+    /// Back-pointer to the owning Process, set per quantum at scheduler entry
+    /// (alongside `Process.ctx`). Crossing `allocation_watermark` in `alloc()`
+    /// expires this process's reduction budget directly through it — per
+    /// process, not via an ambient thread-local, so two schedulers can be live
+    /// at once. Null outside a quantum (the cross is then a no-op).
+    pub(crate) owner: *mut crate::process::Process,
 }

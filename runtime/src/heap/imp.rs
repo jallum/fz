@@ -89,7 +89,14 @@ impl Heap {
             mso_head: 0,
             pending_dtors: std::collections::VecDeque::new(),
             fragments: Vec::new(),
+            owner: std::ptr::null_mut(),
         }
+    }
+
+    /// Install the owning process for allocation-pressure budget expiry.
+    /// Called per quantum at scheduler entry (alongside `Process.ctx`).
+    pub fn set_owner(&mut self, owner: *mut crate::process::Process) {
+        self.owner = owner;
     }
 
     pub fn should_gc(&self) -> bool {
@@ -170,8 +177,13 @@ impl Heap {
         self.bump_top = unsafe { self.bump_top.add(size) };
         self.alloc_count += 1;
         self.note_alloc_pressure();
-        if self.bump_top >= self.allocation_watermark {
-            crate::process::expire_current_budget(crate::process::YIELD_REASON_ALLOCATION_PRESSURE);
+        if self.bump_top >= self.allocation_watermark && !self.owner.is_null() {
+            // Expire the owning process's reduction budget so the next back-edge
+            // yields through the normal scheduler path. Reached via the per-quantum
+            // owner back-pointer — no ambient current-process.
+            let owner = unsafe { &mut *self.owner };
+            owner.reductions_remaining = 0;
+            owner.yield_reasons |= crate::process::YIELD_REASON_ALLOCATION_PRESSURE;
         }
         p
     }

@@ -23,7 +23,7 @@
 
 use crate::exec_ctx::ExecCtx;
 use crate::heap::SchemaRegistry;
-use crate::process::{CURRENT_PROCESS, Process, ProcessState};
+use crate::process::{Process, ProcessState};
 use crate::timer::TimerWheel;
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, VecDeque};
@@ -116,7 +116,7 @@ fn parse_atom_blob(blob: *const u8) -> Vec<String> {
     out
 }
 
-/// AOT setup: create the main Process, install it as CURRENT_PROCESS,
+/// AOT setup: create the main Process, register it in the AOT task table,
 /// initialize the halt-cont singleton, register the spawn-entry address,
 /// install scheduler hooks, parse the atom blob. Returns the process pointer
 /// for subsequent register/run calls. `atom_blob` may be null (program has no
@@ -156,7 +156,6 @@ pub extern "C" fn fz_aot_setup(
         t.insert(1, proc_box);
         t.get_mut(&1).map(|b| b.as_mut() as *mut Process).unwrap()
     });
-    CURRENT_PROCESS.with(|c| c.set(proc_ptr));
 
     // Install scheduler hooks so fz_spawn / fz_send (in ir_runtime) dispatch
     // back to the AOT eager-sync handlers.
@@ -475,7 +474,6 @@ pub extern "C" fn fz_aot_run_main(
     AOT_MAIN_ENTRY.with(|c| c.set(std::ptr::null()));
     AOT_HALT_CL.with(|c| c.set(0));
     AOT_HALT_CONT_BODIES.with(|c| c.set([std::ptr::null(); 3]));
-    CURRENT_PROCESS.with(|c| c.set(std::ptr::null_mut()));
     AOT_TASKS.with(|c| c.borrow_mut().clear());
     AOT_RUN_QUEUE.with(|q| q.borrow_mut().clear());
     AOT_SCHEMAS.with(|s| *s.borrow_mut() = None);
@@ -561,14 +559,13 @@ fn dispatch_quantum(pid: u32, addrs: &ShimAddrs) {
             std::process::abort();
         });
 
-    let prev = CURRENT_PROCESS.with(|c| c.replace(proc_ptr));
-
     // Mark Running so a clean halt (no fz_receive_park call) is
     // distinguishable from Blocked/Ready after dispatch.
     unsafe {
         (*proc_ptr).state = ProcessState::Running;
         (*proc_ptr).reset_reduction_budget();
         (*proc_ptr).ctx = aot_exec_ctx_ptr();
+        (*proc_ptr).heap.set_owner(proc_ptr);
         debug_assert!(!(*proc_ptr).ctx.is_null(), "aot ctx installed");
     };
 
@@ -579,7 +576,6 @@ fn dispatch_quantum(pid: u32, addrs: &ShimAddrs) {
             // Fall through to the runnable_closure branch.
         }
         crate::sched::ScanOutcome::Miss => {
-            CURRENT_PROCESS.with(|c| c.set(prev));
             return;
         }
         crate::sched::ScanOutcome::NotApplicable => {}
@@ -641,8 +637,6 @@ fn dispatch_quantum(pid: u32, addrs: &ShimAddrs) {
             }
         }
     }
-
-    CURRENT_PROCESS.with(|c| c.set(prev));
 }
 
 /// Cooperative run-queue loop. Drives all enqueued processes to
@@ -735,7 +729,6 @@ mod tests {
                 .map(|p| p.as_mut() as *mut Process)
                 .expect("sender task")
         });
-        CURRENT_PROCESS.with(|c| c.set(sender_ptr));
 
         aot_send_hook(sender_ptr, std::ptr::null_mut(), 2, msg.raw_word());
 
@@ -750,7 +743,6 @@ mod tests {
             assert!(receiver.heap.contains_heap_addr(copied_addr));
         });
 
-        CURRENT_PROCESS.with(|c| c.set(std::ptr::null_mut()));
         AOT_TASKS.with(|c| c.borrow_mut().clear());
         AOT_RUN_QUEUE.with(|q| q.borrow_mut().clear());
     }
