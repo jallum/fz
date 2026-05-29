@@ -629,7 +629,6 @@ impl Descr {
         false
     }
 
-
     /// Returns the largest arity of any positive tuple clause, or 0 if
     /// there are no positive tuple clauses. Used for tuple-field projection
     /// when the field index might exceed some clauses' arities.

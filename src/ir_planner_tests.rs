@@ -2705,7 +2705,8 @@ fn value_accessor_outside_declaring_module_emits_diagnostic() {
     mt.specs
         .insert(value_spec_key(FnId(0), key_tys(narrow_key_ty)), ft);
 
-    let diags = crate::ir_planner::collect_diagnostics(&mut ct, &m, &mt, &crate::telemetry::NullTelemetry);
+    let diags =
+        crate::ir_planner::collect_diagnostics(&mut ct, &m, &mt, &crate::telemetry::NullTelemetry);
     let visibility = diags
         .as_slice()
         .iter()
@@ -2752,7 +2753,8 @@ defmodule A do
 end
 "#;
     let (mut t, m, mt) = pipeline(src, &crate::telemetry::NullTelemetry);
-    let diags = crate::ir_planner::collect_diagnostics(&mut t, &m, &mt, &crate::telemetry::NullTelemetry);
+    let diags =
+        crate::ir_planner::collect_diagnostics(&mut t, &m, &mt, &crate::telemetry::NullTelemetry);
     assert!(
         !diags
             .as_slice()
@@ -2915,7 +2917,8 @@ fn const_bitstring_types_as_str_t() {
 fn opaque_arithmetic_pid_plus_int_rejected() {
     let src = "fn main(), do: self() + 1";
     let (mut t, m, mt) = pipeline(src, &crate::telemetry::NullTelemetry);
-    let diags = crate::ir_planner::collect_diagnostics(&mut t, &m, &mt, &crate::telemetry::NullTelemetry);
+    let diags =
+        crate::ir_planner::collect_diagnostics(&mut t, &m, &mt, &crate::telemetry::NullTelemetry);
     let d = diags
         .as_slice()
         .iter()
@@ -2946,7 +2949,8 @@ fn opaque_arithmetic_pid_plus_int_rejected() {
 fn opaque_arithmetic_ref_plus_int_rejected() {
     let src = "fn main(), do: make_ref() + 1";
     let (mut t, m, mt) = pipeline(src, &crate::telemetry::NullTelemetry);
-    let diags = crate::ir_planner::collect_diagnostics(&mut t, &m, &mt, &crate::telemetry::NullTelemetry);
+    let diags =
+        crate::ir_planner::collect_diagnostics(&mut t, &m, &mt, &crate::telemetry::NullTelemetry);
     assert!(
         diags
             .as_slice()
@@ -2973,7 +2977,8 @@ fn main() do
 end
 "#;
     let (mut t, m, mt) = pipeline(src, &crate::telemetry::NullTelemetry);
-    let diags = crate::ir_planner::collect_diagnostics(&mut t, &m, &mt, &crate::telemetry::NullTelemetry);
+    let diags =
+        crate::ir_planner::collect_diagnostics(&mut t, &m, &mt, &crate::telemetry::NullTelemetry);
     assert!(
         !diags
             .as_slice()
@@ -2992,7 +2997,8 @@ end
 fn plain_int_arithmetic_still_passes() {
     let src = "fn main(), do: 1 + 1";
     let (mut t, m, mt) = pipeline(src, &crate::telemetry::NullTelemetry);
-    let diags = crate::ir_planner::collect_diagnostics(&mut t, &m, &mt, &crate::telemetry::NullTelemetry);
+    let diags =
+        crate::ir_planner::collect_diagnostics(&mut t, &m, &mt, &crate::telemetry::NullTelemetry);
     assert!(
         !diags
             .as_slice()

@@ -1296,7 +1296,12 @@ mod tests {
         ));
         let mut ct = crate::types::ConcreteTypes;
         let mt = crate::ir_planner::plan_module(&mut ct, &m, &crate::telemetry::NullTelemetry);
-        let diags = crate::ir_planner::collect_diagnostics(&mut ct, &m, &mt, &crate::telemetry::NullTelemetry);
+        let diags = crate::ir_planner::collect_diagnostics(
+            &mut ct,
+            &m,
+            &mt,
+            &crate::telemetry::NullTelemetry,
+        );
         let unreachable: Vec<_> = diags
             .as_slice()
             .iter()
@@ -2550,7 +2555,12 @@ end
         let mut ct = crate::types::ConcreteTypes;
         let mt = crate::ir_planner::plan_module(&mut ct, &m, &crate::telemetry::NullTelemetry);
         // No diagnostics from the pure-guard / pure-pattern pass either.
-        let diags = crate::ir_planner::collect_diagnostics(&mut ct, &m, &mt, &crate::telemetry::NullTelemetry);
+        let diags = crate::ir_planner::collect_diagnostics(
+            &mut ct,
+            &m,
+            &mt,
+            &crate::telemetry::NullTelemetry,
+        );
         let impure: Vec<_> = diags
             .as_slice()
             .iter()

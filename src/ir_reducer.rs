@@ -224,8 +224,14 @@ fn reduce_block<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::Li
         let block = m.fns[fn_idx].block(bid);
         for stmt in &block.stmts {
             let Stmt::Let(v, prim) = stmt;
-            if let Some(d) = fold_prim(t, prim, &env, &atom_names, &m.brand_inners, &m.opaque_inners)
-            {
+            if let Some(d) = fold_prim(
+                t,
+                prim,
+                &env,
+                &atom_names,
+                &m.brand_inners,
+                &m.opaque_inners,
+            ) {
                 env.insert(*v, d);
             }
         }

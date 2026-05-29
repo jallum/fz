@@ -1030,9 +1030,13 @@ fn erase_nominal_discharges_brand_to_inner() {
     // with its inner, not clear it (clearing would collapse to `none`).
     let inners = brand_inners(&[("utf8", Descr::str_t())]);
     let utf8 = Descr::brand_of("utf8");
-    assert!(utf8.intersect(&Descr::str_t()).is_empty(), "pure tag ∩ binary is empty (the bug)");
     assert!(
-        utf8.erase_nominal(&inners, &no_inners()).is_equiv(&Descr::str_t()),
+        utf8.intersect(&Descr::str_t()).is_empty(),
+        "pure tag ∩ binary is empty (the bug)"
+    );
+    assert!(
+        utf8.erase_nominal(&inners, &no_inners())
+            .is_equiv(&Descr::str_t()),
         "erase(utf8) must be binary",
     );
 }
@@ -1085,11 +1089,8 @@ fn value_disjoint_distinct_atoms_is_true() {
     // Structural disjointness survives erasure (erasure only neutralises
     // the nominal axes): :ok vs :error is still definitely unequal.
     assert!(
-        Descr::atom_lit("ok").value_disjoint(
-            &Descr::atom_lit("error"),
-            &no_inners(),
-            &no_inners(),
-        ),
+        Descr::atom_lit("ok")
+            .value_disjoint(&Descr::atom_lit("error"), &no_inners(), &no_inners(),),
         ":ok vs :error remains value-disjoint",
     );
 }
@@ -1102,7 +1103,10 @@ fn differs_only_nominally_holds_for_brand_vs_unbranded() {
     let utf8 = Descr::brand_of("utf8");
     let aware_disjoint = utf8.intersect(&Descr::str_t()).is_empty();
     let value_disjoint = utf8.value_disjoint(&Descr::str_t(), &inners, &no_inners());
-    assert!(aware_disjoint && !value_disjoint, "this is the delta the fold broke");
+    assert!(
+        aware_disjoint && !value_disjoint,
+        "this is the delta the fold broke"
+    );
 }
 
 // fz-bsx.6 — soundness backstop for value-disjointness. The eq-fold and the
@@ -1134,13 +1138,28 @@ fn value_disjoint_soundness_table() {
         (&int, &bin, true, "int vs binary"),
         (&utf8, &int, true, "utf8 (a binary) vs int"),
         (&ok, &err, true, ":ok vs :error"),
-        (&ok_utf8, &err_inv, true, "{:ok,utf8} vs {:error,:invalid} — tag differs"),
+        (
+            &ok_utf8,
+            &err_inv,
+            true,
+            "{:ok,utf8} vs {:error,:invalid} — tag differs",
+        ),
         // Same runtime representation once brands are erased: NOT foldable —
         // these values can be equal, `==` must run.
         (&utf8, &bin, false, "utf8 vs unbranded binary"),
-        (&ascii, &utf8, false, "ascii vs utf8 — distinct brands, same bytes"),
+        (
+            &ascii,
+            &utf8,
+            false,
+            "ascii vs utf8 — distinct brands, same bytes",
+        ),
         (&utf8, &utf8, false, "utf8 vs utf8"),
-        (&ok_utf8, &ok_bin, false, "{:ok,utf8} vs {:ok,binary} — nested brand"),
+        (
+            &ok_utf8,
+            &ok_bin,
+            false,
+            "{:ok,utf8} vs {:ok,binary} — nested brand",
+        ),
     ];
     for (a, b, expect, why) in cases {
         assert_eq!(
