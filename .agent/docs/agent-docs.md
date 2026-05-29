@@ -22,6 +22,23 @@ Good agent docs are:
 They are not research logs. Research is staging: use it to learn, then promote
 the durable model into a doc and delete the stale notes.
 
+## Voice
+
+Write in the present tense about the system as it is right now. The doc
+describes how the subsystem behaves, not how it got here or where it is going.
+
+- State facts, not plans. If something is not built yet, it does not belong in
+  the doc. There are no roadmaps, "removal targets", "future work", or "this
+  should let us…" sections.
+- No ticket or tracker IDs, and no "tracked by X" deferrals. A doc records what
+  is true, not what is outstanding. Work items live in the tracker.
+- Avoid chronology words — "now", "previously", "used to", "no longer". They
+  date the doc and smuggle in history. Say what holds today and stop.
+- Prefer "the planner records X" over "do not re-derive X". Describe the
+  behavior; the rule then follows from the model (see Name The Pieces).
+- Keep the data structures honest: name the variants and fields that actually
+  exist in the code, not a richer shape you wish existed.
+
 ## Start With The Model
 
 Say what the subsystem is for and name the few pieces that matter. A reader
@@ -118,7 +135,9 @@ Use sparingly:
 
 Cut:
 
-- chronology
+- chronology and history ("now", "previously", "used to")
+- ticket / tracker IDs and "tracked by X" deferrals
+- roadmaps, "future work", and "removal targets"
 - stale research
 - vague warnings
 - repeated examples

@@ -119,10 +119,10 @@ these cases:
   either carry captured state or cross a callable boundary the current spec
   cannot name precisely.
 
-Continuation captures are still checked conservatively from their callable type.
-A captured callable becomes scheduler-visible if the continuation materializes,
-so zero-state capture relaxation must wait until the runtime reduce/resume
-carrier bug tracked by `fz-pu9` is fixed.
+Continuation captures are checked conservatively from their callable type. A
+captured callable becomes scheduler-visible if the continuation materializes, so
+the relaxation that applies to caller state does not extend to captures: even a
+`KnownFn` capture is treated as a barrier.
 
 ## Proof Gates
 

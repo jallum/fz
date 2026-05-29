@@ -107,8 +107,8 @@ Current rendered forms:
   `tuple_fields(N, list_tail(tail_ty))`.
 
 `TupleFields(N)` is an input-delivery capability for the continuation that
-immediately consumes the callee result. It must not leak through that
-continuation into tail calls made with a captured outer continuation. At that
+immediately consumes the callee result. It does not leak through that
+continuation into tail calls made with a captured outer continuation: at that
 boundary the tuple-field proof has ended, so tail-call planning collapses the
 tuple-field portion back to material `Value` delivery while preserving any
 independently-proven `ListTail` context.
@@ -154,25 +154,25 @@ allocation-stats readers such as `Process.heap_alloc_stats()`, or halt.
 Allocation by itself is not source-observable, but
 allocation becomes observable in the presence of allocation-stat reads.
 
-The pinned evidence is `fixtures/quicksort`: native JIT/AOT output now
-keeps `list_cons_allocs = 11`, `list_cons_bytes = 176`,
-`struct_allocs = 0`, and headline `heap_bytes = 176`.
+The pinned evidence is `fixtures/quicksort`: native JIT/AOT output keeps
+`list_cons_allocs = 11`, `list_cons_bytes = 176`, `struct_allocs = 0`, and
+headline `heap_bytes = 176`.
 
 `fixtures/enum_sort` is the constant-callable return-demand baseline. The
 default comparator is a zero-capture closure created inside the runtime library,
 then threaded through `sort_list`, `fn_clause_2`, and `merge_sort_lists` under
 both ordinary value demand and `ListTail` demand. Callable identity is
-demand-independent: if the value is `KnownFn(F)` in one specialization and the
-validation pass proves every occurrence is pure pass-through, constant-closure
-elimination must be allowed to remove that dead parameter from return-demand
-specs too. Otherwise the sorter remains in continuation frames and trips the
+demand-independent: when the value is `KnownFn(F)` in every specialization and
+the validation pass proves every occurrence is pure pass-through,
+constant-closure elimination removes that dead parameter from the return-demand
+specs as well, so the sorter never stays in a continuation frame to trip the
 lazy-continuation materialization gate.
 
-The native JIT/AOT evidence for `enum_sort` now keeps
-`list_cons_allocs = 22`, `closure_allocs = 0`, `scalar_box_allocs = 0`, and
-headline `heap_bytes = 352`. Its static CLIF gate asserts that
-`sort_list`/`fn_clause_2`/`merge_sort_lists` no longer carry the constant sorter
-signature (`&fn43[]`) or heap-allocate sorter-carrying continuations.
+The native JIT/AOT evidence for `enum_sort` keeps `list_cons_allocs = 22`,
+`closure_allocs = 0`, `scalar_box_allocs = 0`, and headline `heap_bytes = 352`.
+Its static CLIF gate asserts that `sort_list`/`fn_clause_2`/`merge_sort_lists`
+carry no constant-sorter signature (`&fn43[]`) and heap-allocate no
+sorter-carrying continuations.
 
 Owned-cons reuse is the next reduction layer. Multi-clause list destructuring
 records a physical capability from a projected head back to the original source

@@ -1,19 +1,17 @@
 # State Transitions
 
-## Goal
-
-Model control before representation. Source calls, closure calls,
-continuation hops, recursive back edges, and scheduler suspension have
-different runtime shapes, but planner/codegen should consume the existing
-call-edge and return-context facts before reconstructing anything from closure
-frames or capture order.
+Source calls, closure calls, continuation hops, recursive back edges, and
+scheduler suspension have different runtime shapes, but the planner models them
+all as state transitions over facts it already records: call-edge targets,
+return-context plans, and callable capabilities. Passes read those facts rather
+than reconstructing control shape from closure frames or capture order.
 
 ## Enum.reduce Shape
 
-Runtime `Enum.reduce/3` delegates to `Enumerable.reduce_list/3`.
-`reduce_list` is the public state dispatcher; the `:cont` path enters
-`reduce_list_cont/3`, which carries the list and accumulator as first-class
-state instead of re-threading a tagged reduce state through every hot step:
+Runtime `Enum.reduce/3` delegates to `Enumerable.reduce_list/3`. `reduce_list`
+is the public state dispatcher; the `:cont` path enters `reduce_list_cont/3`,
+which carries the list and accumulator as first-class state instead of
+re-threading a tagged reduce state through every hot step:
 
 ```text
 state = (list, acc, reducer, outer_cont)
@@ -38,9 +36,9 @@ reduce_list_step(t, {:cont, acc}, reducer, k) ->
   TailCall(reduce_list_cont, t, acc, reducer, k)
 ```
 
-This is the useful source-level simplification: the hot loop state is
-`(list, acc, reducer)`. `reduce_list/3` remains the public state dispatcher;
-`reduce_list_step/3` handles reducer outputs that leave the hot `:cont` path.
+The hot loop state is `(list, acc, reducer)`. `reduce_list/3` is the public
+state dispatcher; `reduce_list_step/3` handles reducer outputs that leave the
+hot `:cont` path.
 
 ## Continuations Are Join Points First
 
@@ -59,16 +57,15 @@ Fallback representation:
 heap closure / lazy descriptor / scheduler root
 ```
 
-This keeps lazy-continuation materialization as a representation choice, not a
-semantic fact. It also keeps the escape rule precise: returning, storing,
-sending, parking, or capturing a continuation into an escaping closure forces
+Lazy-continuation materialization is therefore a representation choice, not a
+semantic fact. The escape rule is precise: returning, storing, sending,
+parking, or capturing a continuation into an escaping closure forces
 materialization. A local join that immediately computes the next loop state
 does not.
 
 ## Planner Vocabulary
 
-Do not add another recognizer just to rediscover continuation shape. The
-planner already records:
+The planner records each call edge as:
 
 ```text
 CallEdgePlan {
@@ -78,76 +75,58 @@ CallEdgePlan {
 }
 ```
 
-Loopification should make new behavior fall out of these facts. If a pass needs
-to know how a callee result is consumed, extend `ReturnContextPlan`; do not add
-a parallel `resume=` dump recognizer.
+These facts already carry continuation shape: how a callee result is consumed
+lives in `return_context` (`ReturnContextPlan`), not in a separate dump-shape
+recognizer. Loopification reads the same facts.
 
 ## Callable Values
 
-`SpecPlan.callable_capabilities` carries callable identity as value capability
+`SpecPlan.callable_capabilities` carries callable identity as value-capability
 data:
 
 ```text
-Callable =
+CallableCapability =
   KnownFn(fn_id)
-  KnownClosure(fn_id, captures)
-  OpaqueCallable(arity, effects, return)
-  Union(KnownFn..., KnownClosure..., OpaqueCallable...)
+  KnownClosure { fn_id, captures }
+  OpaqueCallable
 ```
 
-These names describe what the compiler knows, not which runtime object must be
-built:
+The names describe what the compiler knows about a value, not which runtime
+object must be built:
 
-- `KnownFn` is a direct code identity with no runtime closure state. It may come
-  from a zero-capture closure literal, but consumers must treat the useful fact
-  as "this value can be called as this function" rather than "this value must be
-  represented as a closure." The module inliner consumes this distinction:
-  direct callsites to `KnownFn` targets may inline even if a zero-state closure
-  value also exists elsewhere in the module.
-- `KnownClosure` is a direct code identity plus captured runtime state. It can
-  still support direct call edges, but the captures are real state and remain a
-  representation barrier until a pass proves otherwise. Inlining must keep these
-  targets callable as closure entries.
+- `KnownFn` is a direct code identity with no runtime closure state. It can
+  come from a zero-capture closure literal, but the useful fact is "this value
+  can be called as this function," not "this value is a closure." The module
+  inliner uses this: direct callsites to a `KnownFn` target can inline even when
+  a zero-state closure value for the same function also exists elsewhere.
+- `KnownClosure` is a direct code identity plus captured runtime state. It
+  supports direct call edges, but the captures are real state and stay a
+  representation barrier; the inliner keeps these targets callable as closure
+  entries.
 - `OpaqueCallable` is a callable boundary whose concrete target is not a single
-  known function in the current plan. It keeps the indirect-call shape and the
-  conservative materialization rules.
+  known function in this plan — for example, control flow that joins several
+  zero-capture function values. It keeps the indirect-call shape and the
+  conservative materialization rules; it stays closure-shaped and callable when
+  it enters the `reduce_list_cont` state machine, and is not collapsed to one
+  static identity.
 
-Planner call-edge facts can then consume callable capabilities uniformly with
-`ReturnContextPlan`: the target tells us what code may run, and the return
-context tells us how the result becomes the next state. Provider-library
-planning now uses the linked working module for this rewrite, so a zero-state
-`Enum.reduce` reducer passed into `reduce_list_cont/3` becomes an ordinary
-direct call early enough for the module inliner to splice it without forcing a
-heap continuation or a stack lazy reducer descriptor.
-
-When a reducer is opaque because control flow joins multiple zero-capture
-function values, the representation rule is different but the state model is
-the same. The value must remain closure-shaped and callable when it enters the
-`reduce_list_cont` state machine. The current planner may split that joined
-value back into branch-specialized reducer specs, but it must not collapse the
-join into one static identity or force heap-continuation allocation on the hot
-path.
+Call-edge facts consume callable capabilities alongside `return_context`: the
+target says what code may run, and the return context says how the result
+becomes the next state. Provider-library planning runs this rewrite over the
+linked working module, so a zero-state `Enum.reduce` reducer passed into
+`reduce_list_cont/3` is an ordinary direct call by the time the module inliner
+runs — spliced without a heap continuation or a stack lazy reducer descriptor.
 
 ## Proof Gates
 
-When changing this area, keep these signals explicit:
-
 - `Enum.reduce(xs, {:cont, 0}, reducer)` enters `reduce_list_cont/3` directly
   from the dispatcher.
-- Local known-reducer `reduce_list` lowers without the reducer-continuation
+- A local known reducer lowers `reduce_list` without the reducer-continuation
   trampoline.
-- Known reducer path keeps `closure_allocs = 0`.
-- Opaque reducer joins stay closure-shaped, callable, and heap-continuation-free
-  inside the `reduce_list_cont` state machine.
-- `{:suspend, acc}` remains a real materialized resumable closure.
-- `count_list`, `member_list?`, `foldl`, and `map(double, xs)` do not regress.
-
-## Removal Targets
-
-This model should let future work remove or demote:
-
-- closure-shaped local continuations as the default representation;
-- special passes whose only job is to erase function values after direct-call
-  planning has already made them dead;
-- duplicated callsite-shape logic that can instead read planner call-edge and
-  return-context facts.
+- The known-reducer path keeps `closure_allocs = 0`.
+- An opaque reducer join stays closure-shaped, callable, and
+  heap-continuation-free inside the `reduce_list_cont` state machine
+  (`fixtures/opaque_fn_value_join`).
+- `{:suspend, acc}` is a real materialized resumable closure.
+- `count_list`, `member_list?`, `foldl`, and `map(double, xs)` keep their
+  allocation floors.
