@@ -693,7 +693,7 @@ fn declare_arith_runtime<M: cranelift_module::Module>(
         value_eq_ref_id: decl_import(
             jmod,
             "fz_value_eq_ref",
-            &[types::I64, types::I64],
+            &[types::I64, types::I64, types::I64],
             arith_ret,
         )?,
     })

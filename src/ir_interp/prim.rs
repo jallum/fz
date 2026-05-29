@@ -122,7 +122,7 @@ pub(super) fn eval_prim<T: Types<Ty = crate::types::Ty>>(
         Prim::BinOp(op, a, b) => {
             let av = env_get(env, *a)?;
             let bv = env_get(env, *b)?;
-            eval_binop(*op, av, bv)?
+            eval_binop(runtime.cur_proc(), *op, av, bv)?
         }
         Prim::UnOp(op, a) => {
             let av = env_get(env, *a)?;

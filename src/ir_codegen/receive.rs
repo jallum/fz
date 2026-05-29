@@ -1633,7 +1633,7 @@ fn emit_typed_eq_cmp(
     };
     let lhs_ref = emit_receive_value_ref(b, ctx, lhs)?;
     let rhs_ref = emit_receive_value_ref(b, ctx, rhs)?;
-    let call = b.ins().call(fref, &[lhs_ref, rhs_ref]);
+    let call = b.ins().call(fref, &[ctx.process, lhs_ref, rhs_ref]);
     let eq = b.inst_results(call)[0];
     Ok(b.ins().icmp_imm(IntCC::NotEqual, eq, 0))
 }

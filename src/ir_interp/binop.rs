@@ -13,7 +13,12 @@ pub(super) fn const_to_interp(c: &Const) -> AnyValue {
     }
 }
 
-pub(super) fn eval_binop(op: BinOp, a: AnyValue, b: AnyValue) -> Result<AnyValue, String> {
+pub(super) fn eval_binop(
+    proc: *mut fz_runtime::process::Process,
+    op: BinOp,
+    a: AnyValue,
+    b: AnyValue,
+) -> Result<AnyValue, String> {
     macro_rules! int_arith {
         ($op:tt) => {
             match (a.as_i64(), b.as_i64()) {
@@ -39,8 +44,8 @@ pub(super) fn eval_binop(op: BinOp, a: AnyValue, b: AnyValue) -> Result<AnyValue
         BinOp::Mul => int_arith!(*),
         BinOp::Div => int_arith!(/),
         BinOp::Mod => int_arith!(%),
-        BinOp::Eq => Ok(interp_bool_value(interp_value_eq(a, b)?)),
-        BinOp::Neq => Ok(interp_bool_value(!interp_value_eq(a, b)?)),
+        BinOp::Eq => Ok(interp_bool_value(interp_value_eq(proc, a, b)?)),
+        BinOp::Neq => Ok(interp_bool_value(!interp_value_eq(proc, a, b)?)),
         BinOp::Lt => float_cmp!(<),
         BinOp::Le => float_cmp!(<=),
         BinOp::Gt => float_cmp!(>),
@@ -61,7 +66,11 @@ pub(super) fn eval_unop(op: UnOp, a: AnyValue) -> Result<AnyValue, String> {
     }
 }
 
-pub(super) fn interp_value_eq(a: AnyValue, b: AnyValue) -> Result<bool, String> {
+pub(super) fn interp_value_eq(
+    proc: *mut fz_runtime::process::Process,
+    a: AnyValue,
+    b: AnyValue,
+) -> Result<bool, String> {
     match (a, b) {
         (AnyValue::Null, AnyValue::Null) => Ok(true),
         (AnyValue::Int(a), AnyValue::Int(b)) => Ok(a == b),
@@ -72,11 +81,13 @@ pub(super) fn interp_value_eq(a: AnyValue, b: AnyValue) -> Result<bool, String> 
         (AnyValue::Atom(a), AnyValue::Atom(b)) => Ok(a == b),
         (AnyValue::EmptyList, AnyValue::EmptyList) => Ok(true),
         (AnyValue::Ref(a), AnyValue::Ref(b)) => {
-            Ok(fz_runtime::ir_runtime::fz_value_eq_ref(a.raw_word(), b.raw_word()) != 0)
+            Ok(fz_runtime::ir_runtime::fz_value_eq_ref(proc, a.raw_word(), b.raw_word()) != 0)
         }
-        (a, b) => {
-            Ok(fz_runtime::ir_runtime::fz_value_eq_ref(a.as_ref_word()?, b.as_ref_word()?) != 0)
-        }
+        (a, b) => Ok(fz_runtime::ir_runtime::fz_value_eq_ref(
+            proc,
+            a.as_ref_word()?,
+            b.as_ref_word()?,
+        ) != 0),
     }
 }
 

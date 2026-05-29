@@ -164,8 +164,12 @@ pub(super) fn eval_matcher_guard(
                 GuardBinOp::Mul => AnyValue::Int(guard_int(l)? * guard_int(r)?),
                 GuardBinOp::Div => AnyValue::Int(guard_int(l)? / guard_int(r)?),
                 GuardBinOp::Rem => AnyValue::Int(guard_int(l)? % guard_int(r)?),
-                GuardBinOp::Eq => interp_bool_value(interp_value_eq(l, r).ok()?),
-                GuardBinOp::Neq => interp_bool_value(!interp_value_eq(l, r).ok()?),
+                GuardBinOp::Eq => {
+                    interp_bool_value(interp_value_eq(runtime.cur_proc(), l, r).ok()?)
+                }
+                GuardBinOp::Neq => {
+                    interp_bool_value(!interp_value_eq(runtime.cur_proc(), l, r).ok()?)
+                }
                 GuardBinOp::Lt => interp_bool_value(guard_int(l)? < guard_int(r)?),
                 GuardBinOp::LtEq => interp_bool_value(guard_int(l)? <= guard_int(r)?),
                 GuardBinOp::Gt => interp_bool_value(guard_int(l)? > guard_int(r)?),
@@ -317,13 +321,13 @@ pub(super) fn matcher_test_hit(
                 return false;
             };
             if let Some(var) = pin.var {
-                return inputs
-                    .get(var.0 as usize)
-                    .is_some_and(|want| interp_value_eq(*want, value).unwrap_or(false));
+                return inputs.get(var.0 as usize).is_some_and(|want| {
+                    interp_value_eq(runtime.cur_proc(), *want, value).unwrap_or(false)
+                });
             }
-            pinned
-                .get(&pin.name)
-                .is_some_and(|want| interp_value_eq(*want, value).unwrap_or(false))
+            pinned.get(&pin.name).is_some_and(|want| {
+                interp_value_eq(runtime.cur_proc(), *want, value).unwrap_or(false)
+            })
         }
         crate::matcher::MatcherTest::TupleArity { subject, arity } => resolve_matcher_subject(
             runtime.cur_proc(),

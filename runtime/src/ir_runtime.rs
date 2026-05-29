@@ -2241,16 +2241,21 @@ pub extern "C" fn fz_fmod(a: f64, b: f64) -> f64 {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_value_eq_ref(a_ref: u64, b_ref: u64) -> u64 {
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn fz_value_eq_ref(process: *mut Process, a_ref: u64, b_ref: u64) -> u64 {
     if a_ref == b_ref {
         return 1;
     }
     let a = any_value_from_ref_word(a_ref, "fz_value_eq_ref lhs");
     let b = any_value_from_ref_word(b_ref, "fz_value_eq_ref rhs");
-    u64::from(eq_value(a, b))
+    u64::from(eq_value(process, a, b))
 }
 
-fn eq_value(a: crate::any_value::AnyValue, b: crate::any_value::AnyValue) -> bool {
+fn eq_value(
+    process: *mut Process,
+    a: crate::any_value::AnyValue,
+    b: crate::any_value::AnyValue,
+) -> bool {
     use crate::any_value::ValueKind;
     if matches!(a.kind(), ValueKind::BITSTRING | ValueKind::PROCBIN)
         && matches!(b.kind(), ValueKind::BITSTRING | ValueKind::PROCBIN)
@@ -2272,21 +2277,27 @@ fn eq_value(a: crate::any_value::AnyValue, b: crate::any_value::AnyValue) -> boo
             if a.raw() == 0 || b.raw() == 0 {
                 false
             } else {
-                eq_list(a.raw() as *mut u8, b.raw() as *mut u8)
+                eq_list(process, a.raw() as *mut u8, b.raw() as *mut u8)
             }
         }
-        ValueKind::MAP => eq_map(a.raw() as *mut u8, b.raw() as *mut u8),
+        ValueKind::MAP => eq_map(process, a.raw() as *mut u8, b.raw() as *mut u8),
         ValueKind::STRUCT => {
             let a_schema = unsafe { crate::any_value::struct_schema_id(a.raw() as *const u8) };
             let b_schema = unsafe { crate::any_value::struct_schema_id(b.raw() as *const u8) };
-            eq_struct(a.raw() as *mut u8, b.raw() as *mut u8, a_schema, b_schema)
+            eq_struct(
+                process,
+                a.raw() as *mut u8,
+                b.raw() as *mut u8,
+                a_schema,
+                b_schema,
+            )
         }
         ValueKind::BITSTRING | ValueKind::PROCBIN => unreachable!("handled before kind check"),
         _ => false,
     }
 }
 
-fn eq_list(ap: *mut u8, bp: *mut u8) -> bool {
+fn eq_list(process: *mut Process, ap: *mut u8, bp: *mut u8) -> bool {
     use crate::any_value::ListCons;
     // Walk both chains in lockstep. NIL terminates both at the same step.
     let mut a = ap as *const u8;
@@ -2297,7 +2308,7 @@ fn eq_list(ap: *mut u8, bp: *mut u8) -> bool {
         if ac.head_kind() != bc.head_kind() {
             return false;
         }
-        if !eq_value(ac.head_value(), bc.head_value()) {
+        if !eq_value(process, ac.head_value(), bc.head_value()) {
             return false;
         }
         // Decide each tail: NIL => done; Ptr to List => recurse; else mismatch.
@@ -2320,19 +2331,29 @@ fn eq_list(ap: *mut u8, bp: *mut u8) -> bool {
     }
 }
 
-fn eq_struct(ap: *mut u8, bp: *mut u8, a_schema: u32, b_schema: u32) -> bool {
+fn eq_struct(
+    process: *mut Process,
+    ap: *mut u8,
+    bp: *mut u8,
+    a_schema: u32,
+    b_schema: u32,
+) -> bool {
     if a_schema != b_schema {
         return false;
     }
-    let reg = current_process().heap.schemas_registry();
+    let reg = (unsafe { &mut *process }).heap.schemas_registry();
     let registry = reg.borrow();
     let schema = registry.get(a_schema);
     for field in &schema.fields {
         match field.kind {
             crate::heap::FieldKind::AnyValue => {
-                let av = current_process().heap.read_field_slot(ap, field.offset);
-                let bv = current_process().heap.read_field_slot(bp, field.offset);
-                if !eq_value(av, bv) {
+                let av = (unsafe { &mut *process })
+                    .heap
+                    .read_field_slot(ap, field.offset);
+                let bv = (unsafe { &mut *process })
+                    .heap
+                    .read_field_slot(bp, field.offset);
+                if !eq_value(process, av, bv) {
                     return false;
                 }
             }
@@ -2363,7 +2384,7 @@ fn eq_bitstring(ap: *mut u8, bp: *mut u8) -> bool {
     unsafe { crate::procbin::bitstring_like_eq(ap, bp) }
 }
 
-fn eq_map(ap: *mut u8, bp: *mut u8) -> bool {
+fn eq_map(process: *mut Process, ap: *mut u8, bp: *mut u8) -> bool {
     let a_count = unsafe { crate::any_value::map_count(ap as *const u8) };
     let b_count = unsafe { crate::any_value::map_count(bp as *const u8) };
     if a_count != b_count {
@@ -2377,10 +2398,10 @@ fn eq_map(ap: *mut u8, bp: *mut u8) -> bool {
         if ak.kind() != bk.kind() || av.kind() != bv.kind() {
             return false;
         }
-        if !eq_value(ak, bk) {
+        if !eq_value(process, ak, bk) {
             return false;
         }
-        if !eq_value(av, bv) {
+        if !eq_value(process, av, bv) {
             return false;
         }
     }

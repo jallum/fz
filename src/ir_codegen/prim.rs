@@ -1674,10 +1674,11 @@ where
     } else {
         let a_ref = body.tagged_var(var_env, a.0);
         let b_ref = body.tagged_var(var_env, bv.0);
+        let process = body.process_arg();
         let fref = body
             .jmod
             .declare_func_in_func(runtime.value_eq_ref_id, body.b.func);
-        let inst = body.b.ins().call(fref, &[a_ref, b_ref]);
+        let inst = body.b.ins().call(fref, &[process, a_ref, b_ref]);
         let eq = body.b.inst_results(inst)[0];
         let eq_bool = body.b.ins().icmp_imm(IntCC::NotEqual, eq, 0);
         let cmp = if is_eq {
