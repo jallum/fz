@@ -708,8 +708,7 @@ fn collect_protocol_registry_items<T: crate::types::Types<Ty = crate::types::Ty>
                 let protocol = qualify_protocol_name(parent, &protocol_impl.protocol);
                 let target =
                     ImplTarget::module(qualify_module_child(parent, &protocol_impl.target.path));
-                let (callbacks, callback_specs) =
-                    protocol_impl_callbacks(parent, protocol_impl)?;
+                let (callbacks, callback_specs) = protocol_impl_callbacks(parent, protocol_impl)?;
                 let fact = ProtocolImplFact {
                     protocol: protocol.clone(),
                     target: target.clone(),
@@ -878,7 +877,12 @@ fn validate_protocol_impls(registry: &ProtocolRegistry) -> Result<(), ResolveErr
                 msg: match provided_arity {
                     Some(provided) => format!(
                         "implementation for protocol `{}` on `{}` implements callback `{}` at arity {} but the protocol declares `{}/{}`",
-                        fact.protocol, fact.target, callback.name, provided, callback.name, callback.arity
+                        fact.protocol,
+                        fact.target,
+                        callback.name,
+                        provided,
+                        callback.name,
+                        callback.arity
                     ),
                     None => format!(
                         "implementation for protocol `{}` on `{}` is missing callback `{}/{}`",

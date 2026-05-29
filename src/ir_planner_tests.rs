@@ -2617,8 +2617,7 @@ fn main(), do: P.to_thing([1])
         .parse_program()
         .expect("parse");
     let mut t = crate::types::ConcreteTypes;
-    crate::resolve::flatten_modules(&mut t, parsed)
-        .expect("compatible callback spec must resolve");
+    crate::resolve::flatten_modules(&mut t, parsed).expect("compatible callback spec must resolve");
 }
 
 // ---- fz-t1m.1.3 — no-implementation diagnostic at dispatch ----
@@ -2679,8 +2678,9 @@ fn main(), do: P.each(42)
         d.message
     );
     assert!(
-        d.notes.iter().any(|n| n.contains("known implementors")
-            && n.contains("List")),
+        d.notes
+            .iter()
+            .any(|n| n.contains("known implementors") && n.contains("List")),
         "diag should list known implementors including List; got notes: {:?}",
         d.notes
     );
@@ -2767,20 +2767,22 @@ end
 
     // It tests the receiver's type at least once...
     let has_type_test = describe.blocks.iter().any(|b| {
-        b.stmts
-            .iter()
-            .any(|crate::fz_ir::Stmt::Let(_, prim)| matches!(prim, crate::fz_ir::Prim::TypeTest(..)))
+        b.stmts.iter().any(|crate::fz_ir::Stmt::Let(_, prim)| {
+            matches!(prim, crate::fz_ir::Prim::TypeTest(..))
+        })
     });
-    assert!(has_type_test, "rewrite must emit a TypeTest on the receiver");
+    assert!(
+        has_type_test,
+        "rewrite must emit a TypeTest on the receiver"
+    );
 
     // ...and dispatches to two distinct concrete impl fns.
     let mut impl_callees: Vec<crate::fz_ir::FnId> = describe
         .blocks
         .iter()
         .filter_map(|b| match &b.terminator {
-            crate::fz_ir::Term::Call { callee, .. } | crate::fz_ir::Term::TailCall { callee, .. } => {
-                Some(*callee)
-            }
+            crate::fz_ir::Term::Call { callee, .. }
+            | crate::fz_ir::Term::TailCall { callee, .. } => Some(*callee),
             _ => None,
         })
         .collect();
@@ -2884,8 +2886,7 @@ end
 
     // ...and a stub fallthrough survives for the residual (atom) arm.
     let keeps_stub_fallthrough = describe.blocks.iter().any(|b| match &b.terminator {
-        crate::fz_ir::Term::Call { callee, .. }
-        | crate::fz_ir::Term::TailCall { callee, .. } => {
+        crate::fz_ir::Term::Call { callee, .. } | crate::fz_ir::Term::TailCall { callee, .. } => {
             m.protocol_call_targets.contains_key(callee)
         }
         _ => false,
@@ -3424,7 +3425,3 @@ fn rewrite_keeps_non_constant_closure() {
         "apply's parameters must be untouched when its closure is non-constant"
     );
 }
-
-
-
-

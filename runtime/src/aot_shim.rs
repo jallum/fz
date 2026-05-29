@@ -671,7 +671,9 @@ fn dispatch_quantum(sched: *mut AotScheduler, pid: u32, addrs: &ShimAddrs) {
         let process = unsafe { &mut *proc_ptr };
         if process.needs_boundary_gc() {
             let mut root = process.runnable_ptr();
-            process.heap.gc_process_roots(&mut root, &mut process.mailbox);
+            process
+                .heap
+                .gc_process_roots(&mut root, &mut process.mailbox);
             process.set_runnable_closure(root);
             process.quiet_quanta = 0;
         } else {

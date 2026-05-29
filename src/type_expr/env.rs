@@ -67,9 +67,10 @@ where
                 .map(|(ty, _consumed)| ty)
         })
         .collect();
-    let result = super::parser::parse_type_expr_with_vars(t, &decl.result_body_tokens.0, env, &mut vars)
-        .ok()
-        .map(|(ty, _consumed)| ty);
+    let result =
+        super::parser::parse_type_expr_with_vars(t, &decl.result_body_tokens.0, env, &mut vars)
+            .ok()
+            .map(|(ty, _consumed)| ty);
     (params, result)
 }
 

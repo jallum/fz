@@ -396,7 +396,12 @@ impl<'a> Runtime<'a> {
             .compiled
             .fn_ptr(fn_id)
             .unwrap_or_else(|| panic!("no fn ptr for entry {}", fn_id.0));
-        let halt_kind = self.compiled.fn_halt_kinds.get(&fn_id.0).copied().unwrap_or(0) as u16;
+        let halt_kind = self
+            .compiled
+            .fn_halt_kinds
+            .get(&fn_id.0)
+            .copied()
+            .unwrap_or(0) as u16;
         let inner = fz_runtime::sched::mint_main_inner(
             &mut process.heap,
             self.compiled.main_trampoline_addr,

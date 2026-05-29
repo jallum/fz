@@ -256,10 +256,8 @@ impl<'a, T: crate::types::Types<Ty = crate::types::Ty>> TypeExprParser<'a, T> {
                 } else {
                     elem
                 };
-                let sigma = std::collections::HashMap::from([(
-                    crate::protocols::PROTOCOL_ELEM_VAR,
-                    elem,
-                )]);
+                let sigma =
+                    std::collections::HashMap::from([(crate::protocols::PROTOCOL_ELEM_VAR, elem)]);
                 return Ok(self.t.instantiate(&template, &sigma));
             }
             TypeAlias::Parameterized(alias) => alias,

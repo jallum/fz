@@ -206,11 +206,7 @@ pub struct ClosureRef(*mut u8);
 impl ClosureRef {
     /// Wrap a closure heap address; `None` if null (no work).
     pub fn new(ptr: *mut u8) -> Option<Self> {
-        if ptr.is_null() {
-            None
-        } else {
-            Some(Self(ptr))
-        }
+        if ptr.is_null() { None } else { Some(Self(ptr)) }
     }
 
     pub fn as_ptr(self) -> *mut u8 {
@@ -239,7 +235,10 @@ impl AtomTable {
             .enumerate()
             .map(|(i, n)| (n.clone(), i as u32))
             .collect();
-        Self { by_id: names, by_name }
+        Self {
+            by_id: names,
+            by_name,
+        }
     }
 
     /// Return the atom's id, allocating a fresh one (the next dense index) if

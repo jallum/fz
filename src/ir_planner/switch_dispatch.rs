@@ -241,14 +241,15 @@ fn apply_block_rewrite(module: &mut Module, rewrite: BlockRewrite) {
     let original = f.blocks[head_idx].terminator.clone();
     let (args, continuation, is_tail, is_back_edge) = match &original {
         Term::Call {
-            args,
-            continuation,
-            ..
+            args, continuation, ..
         } => (args.clone(), Some(continuation.clone()), false, false),
         Term::TailCall {
             args, is_back_edge, ..
         } => (args.clone(), None, true, *is_back_edge),
-        other => unreachable!("rewrite block terminator is a protocol call, got {:?}", other),
+        other => unreachable!(
+            "rewrite block terminator is a protocol call, got {:?}",
+            other
+        ),
     };
     let receiver = args[0];
     let n = rewrite.arms.len();
@@ -291,7 +292,9 @@ fn apply_block_rewrite(module: &mut Module, rewrite: BlockRewrite) {
                 ident,
                 callee: impl_fn,
                 args: args.clone(),
-                continuation: continuation.clone().expect("non-tail call has a continuation"),
+                continuation: continuation
+                    .clone()
+                    .expect("non-tail call has a continuation"),
             }
         }
     };
