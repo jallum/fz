@@ -47,13 +47,20 @@ struct SwitchArm {
     impl_fn: FnId,
 }
 
-/// A rewrite to apply to one block whose terminator is a closed-union protocol
-/// call. Collected in a read-only pass, then applied in a second mutating pass
-/// so the planner facts stay valid while we decide.
+/// A rewrite to apply to one block whose terminator is a protocol call.
+/// Collected in a read-only pass, then applied in a second mutating pass so the
+/// planner facts stay valid while we decide.
 struct BlockRewrite {
     fn_id: FnId,
     block_id: BlockId,
     arms: Vec<SwitchArm>,
+    /// True when the arms together cover the whole receiver (a closed union):
+    /// the last arm is the cascade's final `else` and no fallthrough is needed.
+    /// False for an open or erased receiver (an `any`, or a union with a
+    /// residual outside every impl): every arm is tested and the final `else`
+    /// preserves the original stub call, so a runtime value matching no impl
+    /// halts exactly as it does today.
+    fully_covered: bool,
 }
 
 /// Rewrite every closed-union protocol-dispatch callsite into a `TypeTest`/`If`
@@ -106,11 +113,12 @@ fn collect_block_rewrites<
                 continue;
             };
             let receiver_ty = merged_receiver_ty(t, module, specs, b, receiver_var);
-            if let Some(arms) = closed_union_arms(t, module, target, &receiver_ty) {
+            if let Some((arms, fully_covered)) = switch_arms(t, module, target, &receiver_ty) {
                 out.push(BlockRewrite {
                     fn_id: f.id,
                     block_id: b.id,
                     arms,
+                    fully_covered,
                 });
             }
         }
@@ -143,16 +151,24 @@ fn merged_receiver_ty<
     merged
 }
 
-/// If `receiver_ty` is a closed union of two or more locally-implemented
-/// targets — every part covered, no residual — return one arm per covered
-/// target. Otherwise `None` (single target, residual, or an external impl —
-/// all left to the existing single-dispatch path or to open/erased lookup).
-fn closed_union_arms<T: crate::types::Types<Ty = crate::types::Ty>>(
+/// Compute the dispatch arms for a protocol callsite, with one arm per local
+/// implementing target the receiver overlaps. Returns the arms and whether they
+/// cover the whole receiver (a closed union) or leave a residual (an open or
+/// erased domain). `None` when no cascade is warranted: no overlapping local
+/// impl, or a single fully-covering impl (ordinary static dispatch, already
+/// devirtualized by `apply_planned_direct_call_targets`).
+///
+/// Arms are local-only: an arm calls its impl directly, so the callback must
+/// resolve to an in-module fn. An overlapping target whose impl is external
+/// (a provider not yet linked) makes the receiver not fully covered here — its
+/// part of the receiver becomes residual handled by the fallthrough, the same
+/// boundary `protocol_dispatch_key` draws between local and external dispatch.
+fn switch_arms<T: crate::types::Types<Ty = crate::types::Ty>>(
     t: &mut T,
     module: &Module,
     target: &crate::fz_ir::ProtocolCallTarget,
     receiver_ty: &crate::types::Ty,
-) -> Option<Vec<SwitchArm>> {
+) -> Option<(Vec<SwitchArm>, bool)> {
     if t.is_empty(receiver_ty) {
         return None;
     }
@@ -170,23 +186,30 @@ fn closed_union_arms<T: crate::types::Types<Ty = crate::types::Ty>>(
             continue;
         }
         // The receiver overlaps this target. The arm can only be a local,
-        // direct call if the impl callback resolves to an in-module fn.
-        let export = fact.callbacks.get(&(target.callback.clone(), target.arity))?;
+        // direct call if the impl callback resolves to an in-module fn; an
+        // external impl is left to the fallthrough (its overlap stays residual).
+        let Some(export) = fact.callbacks.get(&(target.callback.clone(), target.arity)) else {
+            continue;
+        };
         let fn_name = format!("{}.{}", export.module, export.name);
-        let impl_fn = module.fn_by_name(&fn_name)?.id;
+        let Some(impl_fn) = module.fn_by_name(&fn_name).map(|f| f.id) else {
+            continue;
+        };
         covered = t.union(covered, overlap);
         arms.push(SwitchArm { target_ty, impl_fn });
     }
-    // A switch is warranted only for a genuine closed union: at least two
-    // arms, and the arms together account for the whole receiver. A single
-    // arm is ordinary single dispatch; an uncovered residual is an open or
-    // erased domain (runtime lookup, a separate concern).
-    if arms.len() < 2 || !t.is_subtype(receiver_ty, &covered) {
+    if arms.is_empty() {
+        return None;
+    }
+    let fully_covered = t.is_subtype(receiver_ty, &covered);
+    // A single arm that covers the whole receiver is ordinary single dispatch
+    // (`protocol_dispatch_key` already matched it by subtype); no cascade.
+    if arms.len() == 1 && fully_covered {
         return None;
     }
     // Sort arms by impl FnId for a deterministic cascade order.
     arms.sort_by_key(|arm| arm.impl_fn.0);
-    Some(arms)
+    Some((arms, fully_covered))
 }
 
 /// Replace the protocol-call terminator in one block with the switch cascade.
@@ -194,8 +217,12 @@ fn closed_union_arms<T: crate::types::Types<Ty = crate::types::Ty>>(
 /// The original block keeps its statements and becomes the cascade head. Each
 /// arm gets a fresh block that calls its impl directly with the original call's
 /// arguments and continuation; the receiver narrows to the arm's target type
-/// when the module is re-planned. Tests are emitted for every arm except the
-/// last, which is the final fall-through `else`.
+/// when the module is re-planned.
+///
+/// A fully-covered (closed-union) receiver tests every arm but the last, which
+/// is the final `else`. An open or erased receiver tests every arm and routes
+/// the final `else` to a fallthrough block that preserves the original stub
+/// call, so a runtime value matching no arm halts as it does today.
 fn apply_block_rewrite(module: &mut Module, rewrite: BlockRewrite) {
     let f = module
         .fns
@@ -209,8 +236,10 @@ fn apply_block_rewrite(module: &mut Module, rewrite: BlockRewrite) {
         .position(|b| b.id == rewrite.block_id)
         .expect("rewrite targets an existing block");
 
-    // The terminator we are replacing carries the call shape every arm reuses.
-    let (args, continuation, is_tail, is_back_edge) = match &f.blocks[head_idx].terminator {
+    // The original stub terminator carries the call shape every arm reuses and,
+    // for an open receiver, becomes the no-match fallthrough verbatim.
+    let original = f.blocks[head_idx].terminator.clone();
+    let (args, continuation, is_tail, is_back_edge) = match &original {
         Term::Call {
             args,
             continuation,
@@ -223,22 +252,29 @@ fn apply_block_rewrite(module: &mut Module, rewrite: BlockRewrite) {
     };
     let receiver = args[0];
     let n = rewrite.arms.len();
+    // Arms tested in the cascade. A closed union leaves its last arm untested
+    // (the final `else`); an open receiver tests them all.
+    let num_tests = if rewrite.fully_covered { n - 1 } else { n };
 
     let var_base = crate::ir_inline::max_var(f) + 1;
     let block_base = crate::ir_inline::max_block(f) + 1;
-
-    // Block id layout: arm blocks first (one per arm), then the intermediate
-    // test blocks (one per tested arm beyond the head, i.e. arms 1..n-1).
+    // Block id layout: arm blocks [0, n), then (open only) the fallthrough
+    // block, then the intermediate test blocks (tests 1..num_tests; test 0 is
+    // the head block).
     let arm_block = |i: usize| BlockId(block_base + i as u32);
-    let test_block = |i: usize| BlockId(block_base + n as u32 + (i as u32 - 1));
-    // The test point for arm i: the head block for arm 0, a fresh test block
-    // otherwise. The last arm (n-1) is never tested — it is the final `else`.
+    let fallthrough_block = BlockId(block_base + n as u32);
+    let test_extra_base = block_base + n as u32 + if rewrite.fully_covered { 0 } else { 1 };
     let test_point = |i: usize| {
         if i == 0 {
             rewrite.block_id
         } else {
-            test_block(i)
+            BlockId(test_extra_base + (i as u32 - 1))
         }
+    };
+    let final_else = if rewrite.fully_covered {
+        arm_block(n - 1)
+    } else {
+        fallthrough_block
     };
 
     let arm_terminator = |impl_fn: FnId| -> Term {
@@ -261,17 +297,19 @@ fn apply_block_rewrite(module: &mut Module, rewrite: BlockRewrite) {
     };
 
     // Emit the test cascade onto the head block and the intermediate test
-    // blocks. For tested arm i, the `else` target is the next test point
-    // (arm i+1's test) — except the penultimate test, whose `else` is the
-    // final untested arm block.
-    let mut new_blocks: Vec<Block> = Vec::with_capacity(2 * n);
-    for i in 0..n - 1 {
+    // blocks. Tested arm i branches then→arm i, else→the next test point, or
+    // the final `else` (the untested last arm, or the fallthrough).
+    let mut new_blocks: Vec<Block> = Vec::with_capacity(2 * n + 1);
+    for i in 0..num_tests {
         let tv = Var(var_base + i as u32);
-        let test_stmt = Stmt::Let(tv, Prim::TypeTest(receiver, Box::new(rewrite.arms[i].target_ty.clone())));
-        let else_b = if i + 1 == n - 1 {
-            arm_block(n - 1)
+        let test_stmt = Stmt::Let(
+            tv,
+            Prim::TypeTest(receiver, Box::new(rewrite.arms[i].target_ty.clone())),
+        );
+        let else_b = if i + 1 < num_tests {
+            test_point(i + 1)
         } else {
-            test_block(i + 1)
+            final_else
         };
         let term = Term::If {
             cond: tv,
@@ -279,13 +317,12 @@ fn apply_block_rewrite(module: &mut Module, rewrite: BlockRewrite) {
             else_b,
             origin: BranchOrigin::ClauseDispatch,
         };
-        let point = test_point(i);
-        if point == rewrite.block_id {
+        if i == 0 {
             f.blocks[head_idx].stmts.push(test_stmt);
             f.blocks[head_idx].terminator = term;
         } else {
             new_blocks.push(Block {
-                id: point,
+                id: test_point(i),
                 params: vec![],
                 stmts: vec![test_stmt],
                 terminator: term,
@@ -293,13 +330,24 @@ fn apply_block_rewrite(module: &mut Module, rewrite: BlockRewrite) {
         }
     }
 
-    // Emit one arm block per target, each a direct call to the impl.
+    // One arm block per target, each a direct call to the impl.
     for (i, arm) in rewrite.arms.iter().enumerate() {
         new_blocks.push(Block {
             id: arm_block(i),
             params: vec![],
             stmts: vec![],
             terminator: arm_terminator(arm.impl_fn),
+        });
+    }
+
+    // Open receiver: the fallthrough preserves the original stub call so a
+    // value matching no arm halts exactly as before the rewrite.
+    if !rewrite.fully_covered {
+        new_blocks.push(Block {
+            id: fallthrough_block,
+            params: vec![],
+            stmts: vec![],
+            terminator: original,
         });
     }
 

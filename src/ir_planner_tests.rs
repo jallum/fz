@@ -2822,6 +2822,78 @@ fn main(), do: describe([1, 2, 3])
     );
 }
 
+// ---- fz-t1m.1.6 — open/erased protocol dispatch (cascade + fallthrough) ----
+
+/// A receiver that overlaps some impls but is not fully covered — here
+/// `integer | list(int) | atom`, where only `Integer` and `List` implement
+/// `Sizer` (the atom is residual) — is rewritten into a cascade that tests
+/// every implementing arm and falls through to the original stub for a value
+/// matching none. The dispatch fn keeps a call to the `__protocol__` stub (the
+/// fallthrough), unlike the fully-covered closed-union case.
+#[test]
+fn open_protocol_receiver_rewrites_to_cascade_with_stub_fallthrough() {
+    let src = r#"
+defprotocol Sizer do
+  fn size(value)
+end
+
+defimpl Sizer, for: Integer do
+  fn size(value), do: 1
+end
+
+defimpl Sizer, for: List do
+  fn size(value), do: 2
+end
+
+fn describe(value), do: Sizer.size(value)
+
+fn main() do
+  case [7, [1, 2, 3], :other] do
+    [a, b, c] -> describe(a) + describe(b)
+    _ -> 0
+  end
+end
+"#;
+    let (mut t, mut m, mt) = plan_protocol_src(src);
+    crate::ir_planner::rewrite_closed_union_protocol_dispatch(&mut t, &mut m, &mt);
+
+    let describe = m.fn_by_name("describe").expect("describe fn");
+
+    // Two distinct impl arms are emitted...
+    let mut impl_callees: Vec<crate::fz_ir::FnId> = describe
+        .blocks
+        .iter()
+        .filter_map(|b| match &b.terminator {
+            crate::fz_ir::Term::Call { callee, .. }
+            | crate::fz_ir::Term::TailCall { callee, .. } => {
+                (!m.protocol_call_targets.contains_key(callee)).then_some(*callee)
+            }
+            _ => None,
+        })
+        .collect();
+    impl_callees.sort();
+    impl_callees.dedup();
+    assert_eq!(
+        impl_callees.len(),
+        2,
+        "Integer and List arms must be emitted; got {:?}",
+        impl_callees
+    );
+
+    // ...and a stub fallthrough survives for the residual (atom) arm.
+    let keeps_stub_fallthrough = describe.blocks.iter().any(|b| match &b.terminator {
+        crate::fz_ir::Term::Call { callee, .. }
+        | crate::fz_ir::Term::TailCall { callee, .. } => {
+            m.protocol_call_targets.contains_key(callee)
+        }
+        _ => false,
+    });
+    assert!(
+        keeps_stub_fallthrough,
+        "an open receiver must keep the stub call as the no-match fallthrough"
+    );
+}
+
 // ---- fz-swt.8 — `.value` accessor: typing + visibility gating ----
 
 /// Inside the declaring module, `handle.value` typechecks as the inner
@@ -3350,6 +3422,7 @@ fn rewrite_keeps_non_constant_closure() {
         "apply's parameters must be untouched when its closure is non-constant"
     );
 }
+
 
 
 

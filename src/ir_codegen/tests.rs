@@ -655,6 +655,55 @@ end
     assert_eq!(image.run(entry), 107, "native switch dispatch");
 }
 
+/// fz-t1m.1.6 — an open/erased receiver (`integer | list(int) | atom`, only
+/// `Integer` and `List` implement `Sizer`) dispatches matching values to the
+/// right impl through the cascade, with the residual atom routed to the stub
+/// fallthrough. Runtime values 7 and [1,2,3] match arms; the program never
+/// reaches the fallthrough, so it runs identically in interp and native:
+/// `describe(7) + describe([1,2,3])` = `1 + 2` = `3`.
+#[test]
+fn open_protocol_receiver_dispatch_runs_in_interp_and_native() {
+    const SRC: &str = r#"
+defprotocol Sizer do
+  fn size(value)
+end
+
+defimpl Sizer, for: Integer do
+  fn size(value), do: 1
+end
+
+defimpl Sizer, for: List do
+  fn size(value), do: 2
+end
+
+fn describe(value), do: Sizer.size(value)
+
+fn main() do
+  case [7, [1, 2, 3], :other] do
+    [a, b, c] -> describe(a) + describe(b)
+    _ -> 0
+  end
+end
+"#;
+    let mut t = crate::types::ConcreteTypes;
+    let tel = crate::telemetry::NullTelemetry;
+    let frontend = crate::frontend::compile_source_with_types(
+        &mut t,
+        SRC.to_string(),
+        "sizer_open.fz".to_string(),
+        &tel,
+    )
+    .unwrap_or_else(|err| panic!("frontend: {:?}", err.diagnostics));
+    let entry = frontend.module.fn_by_name("main").expect("main").id;
+
+    let interp = crate::ir_interp::run_main(&tel, &frontend.module).expect("interp run");
+    assert_eq!(interp, 3, "interpreter open dispatch");
+
+    let compiled = compile(&mut t, &frontend.module, &tel).expect("compile");
+    let image = CompiledImage::from_linked(compiled);
+    assert_eq!(image.run(entry), 3, "native open dispatch");
+}
+
 #[test]
 fn runtime_enumerable_list_count_member_and_reduce() {
     let got = capture_main_with_runtime_graph(

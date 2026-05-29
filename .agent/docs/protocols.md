@@ -74,8 +74,9 @@ requires `P.t(...)` requires proof that the argument type is inside the
 implementation domain of `P`. That proof may come from a concrete impl target,
 a closed union whose arms all implement `P`, or an explicitly open boundary.
 Executable dispatch is emitted when the planner statically selects a single
-implementation and for a closed union of implementing targets (switch
-dispatch); open-boundary runtime lookup is not emitted.
+implementation and, for any receiver overlapping two or more implementing
+targets, as a `TypeTest`/`If` cascade (with a stub fallthrough when the receiver
+is open or erased).
 
 Because the protocol-domain type is a real union (not `any`), a use site that
 passes an `Integer` where `Enumerable.t(a)` is required is rejected at spec
@@ -114,11 +115,13 @@ Compilation can see two useful domain shapes:
   known.
 
 Open domains type-check calls and specs. Executable dispatch is emitted when the
-planner selects a single static implementation callback and for a closed union
-of implementing targets (a TypeTest/If cascade of per-target direct calls);
-open or erased receiver domains get no runtime-lookup fallback. Closed domains
-let the planner resolve every dispatch to a direct implementation call without a
-fallback path.
+planner selects a single static implementation callback and, for any receiver
+overlapping two or more implementing targets, as a `TypeTest`/`If` cascade of
+per-target direct calls. An open or erased receiver's cascade ends in a stub
+fallthrough for the unimplemented residual; a closed union resolves every value
+to a direct implementation call. Because fz links whole programs, the linked
+implementation set is known where the cascade is built — no separate
+runtime-lookup table.
 
 ## Dispatch Outcomes
 
@@ -136,15 +139,29 @@ one of these outcomes:
   callback is known by `ExportKey`, but its body lives in another unit until
   module graph linking.
 
-When the receiver is a closed union of two or more locally implemented targets
-(no single subtype match, no residual), a frontend rewrite
-(`rewrite_closed_union_protocol_dispatch`) replaces the stub call with a
-`TypeTest`/`If` cascade of per-target direct calls. Receiver narrowing makes
-each arm's call resolve to the right implementation when the module is
-re-planned, so the cascade is ordinary `TypeTest`/`If`/`Call` IR — it lowers in
-the interpreter, JIT, and AOT with no dispatch-specific codegen. The rewrite
-lives in the shared frontend (beside `apply_planned_direct_call_targets`), so
-the interpreter and codegen see the same devirtualized IR.
+When no single target matches but the receiver overlaps two or more locally
+implemented targets, a frontend rewrite
+(`rewrite_closed_union_protocol_dispatch`, in `ir_planner::switch_dispatch`)
+replaces the stub call with a `TypeTest`/`If` cascade of per-target direct
+calls. Receiver narrowing makes each arm's call resolve to the right
+implementation when the module is re-planned, so the cascade is ordinary
+`TypeTest`/`If`/`Call` IR — it lowers in the interpreter, JIT, and AOT with no
+dispatch-specific codegen. The rewrite lives in the shared frontend (beside
+`apply_planned_direct_call_targets`), so the interpreter and codegen see the
+same devirtualized IR.
+
+The cascade covers both closed and open receivers. A closed union (the arms
+cover the whole receiver, no residual) tests every arm but the last, which is
+the final `else`. An open or erased receiver — an `any`, or a union with a
+residual outside every implemented target — tests every arm and routes the
+final `else` to a fallthrough that preserves the original stub call, so a
+runtime value matching no implementation halts with `:protocol_dispatch_unplanned`
+exactly as before the rewrite. No runtime lookup table is needed: fz links whole
+programs (an unresolved import fails the link), so every implementation is known
+at the point the cascade is built; the cascade is the dispatch table. Cascade
+arms are local implementations; an overlapping target whose implementation is
+external (a provider not yet linked) is left to the fallthrough, the same
+boundary `protocol_dispatch_key` draws between local and external dispatch.
 
 When the receiver is wholly outside the domain, the planner emits a dedicated
 `type/protocol-no-impl` diagnostic at dispatch (naming the protocol, the
@@ -152,14 +169,11 @@ receiver type, and the known implementors); spec checking
 (`spec_check::validate_specs`) also rejects a disjoint receiver via the ordinary
 "not a subtype of declared" check.
 
-Runtime lookup for open or erased receiver domains is not emitted: a receiver
-that is `any`, or a union with a residual outside every known target, keeps the
-unplanned protocol stub and halts at runtime.
-
 Direct and switch dispatch do not require heap boxing of scalar receivers. The
 selected callback ABI and the caller's argument shape cooperate the same way
 direct-call variants and return-demand variants do; the cascade tests the
-receiver's existing runtime tag.
+receiver's existing runtime tag (`Prim::TypeTest` distinguishes int, float,
+atom, list, map, binary, and tuple-arity kinds in every engine).
 
 ## No-Replanning Rule
 
