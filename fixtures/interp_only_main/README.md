@@ -13,7 +13,3 @@ budget.planner.blocks: 1
 budget.planner.stmts: 4
 budget.planner.dispatches: 0
 ---
-
-# interp_only_main
-
-tiny module with a single helper and a main — historical interp-tier-0 smoke test

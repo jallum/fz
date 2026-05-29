@@ -13,7 +13,3 @@ budget.planner.blocks: 9
 budget.planner.stmts: 23
 budget.planner.dispatches: 3
 ---
-
-# multi_clause
-
-multi-clause dispatch with a guard clause (`when n > 0`), plus recursive `fact`

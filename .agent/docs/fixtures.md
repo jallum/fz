@@ -25,6 +25,9 @@ README frontmatter carries `purpose`, `paths`, an optional `expect:`, and any
 The README prose is a plain statement of facts about the current state — what
 the fixture proves, in present tense, no adornment and no chronology. It carries
 no code: the code is `input.fz`, and a code block in a README is duplication.
+The `purpose:` line is the single source of the one-line description; the prose
+body below the frontmatter is optional and present only when it adds something
+`purpose:` does not. Most fixtures are frontmatter-only.
 
 ## The four-path matrix
 

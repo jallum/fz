@@ -13,7 +13,3 @@ budget.planner.blocks: 1
 budget.planner.stmts: 4
 budget.planner.dispatches: 0
 ---
-
-# add1
-
-smallest JIT round-trip — fn def + call + print

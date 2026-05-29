@@ -71,6 +71,13 @@ what the fixture proves, in present tense, no adornment and no chronology. It
 does not contain code — the code is `input.fz`, and a code block in a README is
 duplication. State the fact instead.
 
+The `purpose:` frontmatter line is the single source of the one-line
+description (`fixtures/index.md` is generated from it). The prose body below the
+frontmatter is **optional**: include it only when it says something `purpose:`
+does not — a mechanism, a rationale, an allocation target. When `purpose:` is
+the whole story, the README *is* its frontmatter; do not restate the purpose
+line as a body.
+
 ## Realignment map
 
 Decision for the current suite (the executable subset of this is the `fz-6df`
