@@ -1,0 +1,12 @@
+fn add_a(x, acc), do: {:cont, acc + x}
+fn add_b(x, acc), do: {:cont, acc + x}
+
+fn main() do
+  xs = [1, 2, 3]
+  stats0 = Process.heap_alloc_stats()
+  reducer = case stats0[:allocs] == 0 do
+    true -> add_a
+    _ -> add_b
+  end
+  dbg(Enum.reduce(xs, {:cont, 0}, reducer))
+end
