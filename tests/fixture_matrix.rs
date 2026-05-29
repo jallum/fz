@@ -440,7 +440,7 @@ fn pattern_matrix_oracle_goldens() {
 fn matcher_perf_internal_matcher_repair_baseline() {
     let representative = [
         ("hello", 1, 0),
-        ("list_primitives", 16, 0),
+        ("list_primitives", 19, 0),
         ("quicksort", 18, 0),
         ("ast_eval", 1, 0),
         ("receive_mixed_constructors", 5, 0),

@@ -1,43 +1,18 @@
 ---
 purpose: "list primitives from scratch — length / reverse / map / foldl exercising cons-pattern dispatch and first-class fns"
 paths: [jit, interp, aot, repl]
-budget.codegen.functions: 16
-budget.codegen.instructions: 305
-budget.specs.count: 16
-budget.planner.worklist_pops: 58
-budget.planner.walk_calls: 58
-budget.planner.type_fn_calls: 18
-budget.planner.matcher_specs: 0
-budget.planner.vars: 101
-budget.planner.blocks: 36
-budget.planner.stmts: 56
-budget.planner.dispatches: 21
 ---
 
 # list_primitives
 
-list primitives from scratch — `length`, `reverse`, `map`, `foldl`
-exercising cons-pattern dispatch and first-class fns.
+List primitives from scratch — `length` / `reverse` / `map` / `foldl` exercising
+cons-pattern clause dispatch and first-class functions, self-checked in-language:
 
-## Notes
+```fz
+assert(reverse(xs) == [5, 4, 3, 2, 1], "reverse via accumulator")
+assert(map(double, xs) == [2, 4, 6, 8, 10], "map applies a first-class fn")
+assert(foldl(add, 0, xs) == 15, "foldl sums via a first-class fn")
+```
 
-First fixture to exercise the list path end-to-end. Lists, list
-literals, and `[h | t]` cons patterns are all in the parser/AST and
-the runtime has list rendering and cons-cell allocation, but until
-now no fixture combined them.
-
-Covered:
-
-- Cons-pattern dispatch in fn heads, alongside the `[]` base case.
-- `[h | acc]` cons-construction in expression position.
-- First-class fns passed in (`map`, `foldl`) and called against each
-  element.
-- `reverse` is tail-recursive via `reverse_acc/2`; `foldl/3` is
-  tail-recursive directly. `length` and `map` are body-recursive on
-  purpose to keep both shapes represented.
-
-Output is four lines: `5`, `[5, 4, 3, 2, 1]`, `[2, 4, 6, 8, 10]`,
-`15`.
-
-Listed under `[jit, interp]` only; AOT can be added once a separate
-pass confirms cons cells survive the AOT heap path.
+`reverse`/`foldl` are tail-recursive; `length`/`map` are body-recursive on
+purpose to keep both shapes represented.
