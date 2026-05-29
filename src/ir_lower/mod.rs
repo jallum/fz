@@ -845,13 +845,13 @@ fn build_source_info(module: &Module, ctx: &LowerCtx) -> SourceInfo {
             }
         }
     }
-    SourceInfo {
+    SourceInfo::from_parts(
         var_span,
         var_name,
-        stmt_spans: ctx.stmt_spans.clone(),
-        term_span: ctx.term_spans.clone(),
+        ctx.stmt_spans.clone(),
+        ctx.term_spans.clone(),
         fn_span,
-    }
+    )
 }
 
 #[cfg(test)]

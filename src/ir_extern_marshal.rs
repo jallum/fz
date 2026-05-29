@@ -51,7 +51,7 @@ where
     fn_types.extern_marshals.clear();
 
     for block in &f.blocks {
-        let stmt_spans = module.source.stmt_spans.get(&(f.id, block.id));
+        let stmt_spans = module.source.stmt_spans_of(f.id, block.id);
         for (stmt_idx, stmt) in block.stmts.iter().enumerate() {
             let Stmt::Let(_, Prim::Extern(eid, args)) = stmt else {
                 continue;

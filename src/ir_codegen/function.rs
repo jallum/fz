@@ -205,7 +205,7 @@ pub(crate) fn compile_fn<
         // Per-stmt source location: ir_lower records spans into
         // SourceInfo.stmt_spans; encode each as a Cranelift SourceLoc so
         // `fz dump --emit clif` can render `; @file:line:col` comments.
-        let stmt_spans = source.stmt_spans.get(&(f.id, blk.id));
+        let stmt_spans = source.stmt_spans_of(f.id, blk.id);
         let block_env = fn_types.block_envs.get(&blk.id);
         for (idx, stmt) in blk.stmts.iter().enumerate() {
             let span = stmt_spans
@@ -245,10 +245,7 @@ pub(crate) fn compile_fn<
         // Terminator gets its own srcloc (often the same as the last
         // stmt for Return blocks; distinct for Call/Goto).
         let term_span = source
-            .term_span
-            .get(&(f.id, blk.id))
-            .copied()
-            .unwrap_or(crate::diag::Span::DUMMY);
+            .term_span_of(f.id, blk.id);
         body.b.set_srcloc(span_to_srcloc(term_span));
 
         // Repr-aware Goto coercion. Mirrors coerce_call_args but for

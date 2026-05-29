@@ -224,7 +224,6 @@ fn collect_unreachable_arm_diagnostics<
     types: &ModulePlan,
     out: &mut crate::diag::Diagnostics,
 ) {
-    use crate::diag::Span;
     let mut specs_by_fn = value_specs_by_fn(types);
     let adhoc_specs = add_adhoc_specs_for_unregistered_fns(t, module, &mut specs_by_fn);
     for f in sorted_fns(module) {
@@ -253,12 +252,7 @@ fn collect_unreachable_arm_diagnostics<
             if !matches!(origin, crate::fz_ir::BranchOrigin::User) {
                 continue;
             }
-            let term_span = module
-                .source
-                .term_span
-                .get(&(f.id, b.id))
-                .copied()
-                .unwrap_or(Span::DUMMY);
+            let term_span = module.source.term_span_of(f.id, b.id);
             let mut dead_then: Vec<(crate::fz_ir::Var, T::Ty, T::Ty)> = Vec::new();
             let mut dead_else: Vec<(crate::fz_ir::Var, T::Ty, T::Ty)> = Vec::new();
             for key in keys {
@@ -307,7 +301,7 @@ fn collect_stmt_type_diagnostics<
         for b in sorted_blocks(f) {
             let mut env: HashMap<Var, crate::types::Ty> =
                 ft.block_envs.get(&b.id).cloned().unwrap_or_default();
-            let spans = module.source.stmt_spans.get(&(f.id, b.id));
+            let spans = module.source.stmt_spans_of(f.id, b.id);
             for (sidx, stmt) in b.stmts.iter().enumerate() {
                 let Stmt::Let(v, prim) = stmt;
                 collect_dead_binop_diagnostic(t, &f.name, spans, sidx, prim, &env, out);
@@ -491,7 +485,7 @@ fn collect_dead_binop_diagnostic<
 >(
     t: &mut T,
     fn_name: &str,
-    spans: Option<&Vec<crate::diag::Span>>,
+    spans: Option<&[crate::diag::Span]>,
     sidx: usize,
     prim: &Prim,
     env: &HashMap<Var, crate::types::Ty>,
@@ -540,7 +534,7 @@ fn collect_opaque_arithmetic_diagnostic<
 >(
     t: &mut T,
     fn_name: &str,
-    spans: Option<&Vec<crate::diag::Span>>,
+    spans: Option<&[crate::diag::Span]>,
     sidx: usize,
     prim: &Prim,
     env: &HashMap<Var, crate::types::Ty>,
@@ -591,7 +585,7 @@ fn collect_opaque_visibility_diagnostic<
     t: &mut T,
     module: &Module,
     fn_name: &str,
-    spans: Option<&Vec<crate::diag::Span>>,
+    spans: Option<&[crate::diag::Span]>,
     sidx: usize,
     prim: &Prim,
     env: &HashMap<Var, crate::types::Ty>,

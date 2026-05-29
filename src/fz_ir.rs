@@ -1142,27 +1142,43 @@ pub struct SourceInfo {
     /// introduced this Var. `Span::DUMMY` for compiler-introduced temps
     /// or any Var introduced before .20.4 hooks (e.g. ir_planner's
     /// rewrite_vec_kinds may mint Vars during a pass).
-    pub var_span: Vec<Span>,
+    var_span: Vec<Span>,
     /// Indexed by `Var.0`: the source name that produced this Var, or
     /// "" for compiler-introduced temps. Used by .20.8 to render
     /// "`x` has type `int | atom`" instead of "v3 has type …".
-    pub var_name: Vec<String>,
+    var_name: Vec<String>,
     /// Span per `(FnId, BlockId, stmt_idx)` for `Stmt::Let`. Sparse —
     /// absent entries mean DUMMY. Populated by `ir_lower` per emitted
     /// stmt; codegen-internal transformations may leave their stmts
     /// unspanned, which is fine.
-    pub stmt_spans: HashMap<(FnId, BlockId), Vec<Span>>,
+    stmt_spans: HashMap<(FnId, BlockId), Vec<Span>>,
     /// Span per `(FnId, BlockId)` for the block's terminator. Same
     /// sparsity contract as `stmt_spans`.
-    pub term_span: HashMap<(FnId, BlockId), Span>,
+    term_span: HashMap<(FnId, BlockId), Span>,
     /// Span of the source fn declaration. Indexed by `FnId.0`. Synthetic
     /// continuations created by CPS-splitting an expression use the
     /// originating Call's span (the user-visible position of the work
     /// the continuation is doing).
-    pub fn_span: Vec<Span>,
+    fn_span: Vec<Span>,
 }
 
 impl SourceInfo {
+    pub fn from_parts(
+        var_span: Vec<Span>,
+        var_name: Vec<String>,
+        stmt_spans: HashMap<(FnId, BlockId), Vec<Span>>,
+        term_span: HashMap<(FnId, BlockId), Span>,
+        fn_span: Vec<Span>,
+    ) -> Self {
+        Self {
+            var_span,
+            var_name,
+            stmt_spans,
+            term_span,
+            fn_span,
+        }
+    }
+
     pub fn var_name_of(&self, v: Var) -> Option<&str> {
         self.var_name
             .get(v.0 as usize)
@@ -1182,6 +1198,14 @@ impl SourceInfo {
             .get(f.0 as usize)
             .copied()
             .unwrap_or(Span::DUMMY)
+    }
+
+    pub fn stmt_spans_of(&self, f: FnId, b: BlockId) -> Option<&[Span]> {
+        self.stmt_spans.get(&(f, b)).map(Vec::as_slice)
+    }
+
+    pub fn term_span_of(&self, f: FnId, b: BlockId) -> Span {
+        self.term_span.get(&(f, b)).copied().unwrap_or(Span::DUMMY)
     }
 }
 
