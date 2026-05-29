@@ -3162,8 +3162,8 @@ fn opaque_reduce_join_preserves_closure_values_and_lazy_state_machine() {
         reduce_list_conts.join("\n\n")
     );
     assert!(
-        reduce_list_conts.iter().any(|f| f.contains("&fn14[]"))
-            && reduce_list_conts.iter().any(|f| f.contains("&fn15[]")),
+        reduce_list_conts.iter().any(|f| f.contains("&fn20[]"))
+            && reduce_list_conts.iter().any(|f| f.contains("&fn21[]")),
         "opaque reducer join currently specializes both joined zero-cap reducers without collapsing them into one static identity:\n{}",
         reduce_list_conts.join("\n\n")
     );

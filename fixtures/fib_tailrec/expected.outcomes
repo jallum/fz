@@ -1,38 +1,38 @@
 outcomes for fixtures/fib_tailrec/input.fz
 
 fib[int, int, int] demand=value:
-  @0:0-22 Direct -> Static(fn_clause_0#16 [int] demand=value)
-  @0:23-45 Direct -> Static(fn_clause_1#17 [int] demand=value)
-  @0:46-87 Direct -> Static(fn_clause_2#18 [int, int, int] demand=value)
+  @0:0-22 Direct -> Static(fn_clause_0#22 [int] demand=value)
+  @0:23-45 Direct -> Static(fn_clause_1#23 [int] demand=value)
+  @0:46-87 Direct -> Static(fn_clause_2#24 [int, int, int] demand=value)
 
 fn_clause_2[int, int, int] demand=value:
-  @0:67-87 Direct -> Static(fib#14 [int, int, int] demand=value)
+  @0:67-87 Direct -> Static(fib#20 [int, int, int] demand=value)
 
 main[] demand=value:
   @0:108-120 Direct -> Folded(0)
-  @0:108-120 Direct -> Static(k_19#19 [0] demand=value)
+  @0:108-120 Direct -> Static(k_25#25 [0] demand=value)
 
-k_19[0] demand=value:
-  @0:104-121 Cont -> Static(k_20#20 [int] demand=value)
+k_25[0] demand=value:
+  @0:104-121 Cont -> Static(k_26#26 [int] demand=value)
   @0:104-121 Direct -> Static(Kernel.dbg#1 [int] demand=value)
 
-k_20[int] demand=value:
-  @0:128-140 Direct -> Static(k_21#21 [int] demand=value)
+k_26[int] demand=value:
+  @0:128-140 Direct -> Static(k_27#27 [int] demand=value)
 
-k_21[int] demand=value:
-  @0:124-141 Cont -> Static(k_22#22 [int] demand=value)
+k_27[int] demand=value:
+  @0:124-141 Cont -> Static(k_28#28 [int] demand=value)
   @0:124-141 Direct -> Static(Kernel.dbg#1 [int] demand=value)
 
-k_22[int] demand=value:
-  @0:148-161 Direct -> Static(k_23#23 [int] demand=value)
+k_28[int] demand=value:
+  @0:148-161 Direct -> Static(k_29#29 [int] demand=value)
 
-k_23[int] demand=value:
-  @0:144-162 Cont -> Static(k_24#24 [int] demand=value)
+k_29[int] demand=value:
+  @0:144-162 Cont -> Static(k_30#30 [int] demand=value)
   @0:144-162 Direct -> Static(Kernel.dbg#1 [int] demand=value)
 
-k_24[int] demand=value:
-  @0:169-182 Cont -> Static(k_25#25 [int] demand=value)
-  @0:169-182 Direct -> Static(fib#14 [int, int, int] demand=value)
+k_30[int] demand=value:
+  @0:169-182 Cont -> Static(k_31#31 [int] demand=value)
+  @0:169-182 Direct -> Static(fib#20 [int, int, int] demand=value)
 
-k_25[int] demand=value:
+k_31[int] demand=value:
   @0:165-183 Direct -> Static(Kernel.dbg#1 [int] demand=value)

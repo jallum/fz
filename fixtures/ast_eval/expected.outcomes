@@ -2,21 +2,21 @@ outcomes for fixtures/ast_eval/input.fz
 
 main[] demand=value:
   @0:136-152 Direct -> Folded(42)
-  @0:136-152 Direct -> Static(k_23#23 [42] demand=value)
+  @0:136-152 Direct -> Static(k_29#29 [42] demand=value)
 
-k_23[42] demand=value:
-  @0:132-153 Cont -> Static(k_24#24 [int] demand=value)
+k_29[42] demand=value:
+  @0:132-153 Cont -> Static(k_30#30 [int] demand=value)
   @0:132-153 Direct -> Static(Kernel.dbg#1 [int] demand=value)
 
-k_24[int] demand=value:
-  @0:160-213 Direct -> Static(k_25#25 [int] demand=value)
+k_30[int] demand=value:
+  @0:160-213 Direct -> Static(k_31#31 [int] demand=value)
 
-k_25[int] demand=value:
-  @0:156-214 Cont -> Static(k_26#26 [int] demand=value)
+k_31[int] demand=value:
+  @0:156-214 Cont -> Static(k_32#32 [int] demand=value)
   @0:156-214 Direct -> Static(Kernel.dbg#1 [int] demand=value)
 
-k_26[int] demand=value:
-  @0:221-293 Direct -> Static(k_27#27 [int] demand=value)
+k_32[int] demand=value:
+  @0:221-293 Direct -> Static(k_33#33 [int] demand=value)
 
-k_27[int] demand=value:
+k_33[int] demand=value:
   @0:217-294 Direct -> Static(Kernel.dbg#1 [int] demand=value)
