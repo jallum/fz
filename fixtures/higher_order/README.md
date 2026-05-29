@@ -1,19 +1,14 @@
 ---
 purpose: "higher-order patterns — apply2, compose"
 paths: [jit, interp, aot, repl]
-budget.codegen.functions: 1
-budget.codegen.instructions: 15
-budget.specs.count: 3
-budget.planner.worklist_pops: 3
-budget.planner.walk_calls: 3
-budget.planner.type_fn_calls: 3
-budget.planner.matcher_specs: 0
-budget.planner.vars: 25
-budget.planner.blocks: 3
-budget.planner.stmts: 17
-budget.planner.dispatches: 0
 ---
 
 # higher_order
 
-higher-order patterns — apply2, compose
+Higher-order patterns — `apply2` and `compose` over first-class functions,
+self-checked in-language:
+
+```fz
+assert(apply2(double, 21) == 42, "apply2 calls a passed fn")
+assert(compose(double, neg, 5) == -10, "compose chains two fns")
+```

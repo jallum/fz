@@ -61,7 +61,7 @@ conversion arc):
 `classify_two_clause`, `wildcard_then_specific`, `type_dispatch`,
 `multi_clause_body_with_call`, `destructure_tuple`,
 `case_tuple_pattern_sequential`, `mutual_recursion`,
-`tail_recursion`, `list_primitives`, `higher_order`, `apply2`, `polymorphic`,
+`tail_recursion`, `higher_order`, `apply2`, `polymorphic`,
 `utf8_equality`, `utf8_pattern_match`, `utf8_smart_constructor`, `keyword_lists`,
 `guard_calls_pure_user_fn`, `map_three_path_parity`, `nested_tuple_producer`,
 `relay`, `multi_relay`, `three_process_chain`, `concurrency_ping_pong`,
@@ -97,10 +97,13 @@ conversion arc):
 observed through printed output order).
 
 **Keep golden — blocked on a codegen bug:** `destructure_cons`,
-`destructure_mixed`. Converting these to assertions surfaced a native-path
-parity defect: a refutable cons-destructure in a body followed by a Direct call
-with computed args panics at `ir_codegen/terminator.rs:81` on jit/aot (interp and
-repl tolerate it). Tracked as **fz-gv1**; convert once that lands.
+`destructure_mixed`, `list_primitives`. Converting these to assertions surfaced a
+native-path parity defect (**fz-gv1**): the planner fails to populate a Direct
+callsite's dispatch entry, so codegen panics at `ir_codegen/terminator.rs:81` on
+jit/aot while interp/repl tolerate it. Two triggers found — a refutable
+cons-destructure in a body followed by a Direct call with computed args, and two
+`assert`s each consuming a distinct multi-clause recursive function. Convert
+these once fz-gv1 lands.
 
 ---
 
