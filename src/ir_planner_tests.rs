@@ -2131,7 +2131,7 @@ fn callable_capability_opaque_for_multi_target_join() {
 /// agrees that `callable_capabilities[v] = KnownFn(F)`.
 #[test]
 fn closure_call_rewritten_to_direct_call() {
-    let (mut t, mut m, mt) = pipeline(
+    let (mut t, mut m, _mt) = pipeline(
         r#"
 fn double(x), do: x * 2
 fn apply_plus1(f, x) do
@@ -2144,7 +2144,8 @@ end
 "#,
         &crate::telemetry::NullTelemetry,
     );
-    rewrite_known_target_closures(&mut t, &mut m, &mt);
+    let caps = crate::ir_planner::plan_callable_capabilities(&mut t, &m);
+    rewrite_known_target_closures(&mut t, &mut m, &caps);
     let apply2 = m.fns.iter().find(|f| f.name == "apply_plus1").unwrap();
     let double_id = m.fns.iter().find(|f| f.name == "double").unwrap().id;
     let mut saw_direct = false;
@@ -2168,7 +2169,7 @@ end
 /// Same rewrite for `Term::TailCallClosure → Term::TailCall`.
 #[test]
 fn tailcall_closure_variant_rewritten() {
-    let (mut t, mut m, mt) = pipeline(
+    let (mut t, mut m, _mt) = pipeline(
         r#"
 fn double(x), do: x * 2
 fn apply2(f, x), do: f(x)
@@ -2178,7 +2179,8 @@ end
 "#,
         &crate::telemetry::NullTelemetry,
     );
-    rewrite_known_target_closures(&mut t, &mut m, &mt);
+    let caps = crate::ir_planner::plan_callable_capabilities(&mut t, &m);
+    rewrite_known_target_closures(&mut t, &mut m, &caps);
     let apply2 = m.fns.iter().find(|f| f.name == "apply2").unwrap();
     let double_id = m.fns.iter().find(|f| f.name == "double").unwrap().id;
     let mut saw_direct = false;
@@ -3350,8 +3352,8 @@ fn rewrite_closures(src: &str) -> Module {
         .unwrap_or_else(|e| panic!("frontend: {:?}", e.diagnostics));
     let mut working = fe.module.clone();
     let mut t = crate::types::ConcreteTypes;
-    let pre = crate::ir_planner::plan_module(&mut t, &working, &crate::telemetry::NullTelemetry);
-    crate::ir_planner::rewrite_known_target_closures(&mut t, &mut working, &pre);
+    let caps = crate::ir_planner::plan_callable_capabilities(&mut t, &working);
+    crate::ir_planner::rewrite_known_target_closures(&mut t, &mut working, &caps);
     working
 }
 

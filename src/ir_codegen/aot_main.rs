@@ -125,7 +125,7 @@ pub(crate) fn emit_aot_c_main<M: cranelift_module::Module>(
         {
             let drain_addr = fn_addr(jmod, drain_dtor_entry_id, &mut b);
             let set_drain_fref = jmod.declare_func_in_func(set_drain_id, b.func);
-            b.ins().call(set_drain_fref, &[drain_addr]);
+            b.ins().call(set_drain_fref, &[proc_v, drain_addr]);
         }
 
         // Register the `fz_resume` shim so the AOT run-queue loop can
@@ -133,7 +133,7 @@ pub(crate) fn emit_aot_c_main<M: cranelift_module::Module>(
         {
             let resume_addr_v = fn_addr(jmod, resume_id, &mut b);
             let set_resume_fref = jmod.declare_func_in_func(set_resume_id, b.func);
-            b.ins().call(set_resume_fref, &[resume_addr_v]);
+            b.ins().call(set_resume_fref, &[proc_v, resume_addr_v]);
         }
 
         // fz_aot_run_main(proc, main_fp, main_trampoline_addr): wraps main_fp

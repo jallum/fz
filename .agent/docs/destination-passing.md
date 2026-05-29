@@ -225,6 +225,49 @@ cells do not become aliased merely because they were sent. The destination
 message graph is fresh in its heap; copied list cells must have clear alias
 bits even if the source cells were already marked aliased.
 
+### Layers and capability plumbing
+
+The model layers cleanly: **semantic values** carry program meaning;
+**physical capabilities** carry object-local permissions such as owned-cons
+reuse; **effect facts** say when an operation allocates, observes allocation, is
+externally observable, reaches the scheduler, or halts; and
+codegen consumes validated facts mechanically. `src/ir_effects.rs` owns
+operation effect classification, so planner return-context barriers and
+capability validation read one classifier rather than re-deriving publication
+rules.
+
+The capability rides the existing IR machinery rather than a bespoke lane:
+
+- `src/fz_ir.rs` exposes `physical_capabilities` as the destination for
+  object-local capabilities, `physical_entry_params` for entry slots that carry
+  physical facts (not semantic source values), and `ignored_entry_params` only for
+  source wildcard holes.
+- `src/ir_lower/cps.rs` transports `owned_cons_captures` through ordinary
+  continuation-capture machinery; owned-cons source slots are physical
+  params, not ignored semantic params.
+- `src/ir_dce.rs` owns capability liveness — live heads keep their source-cons
+  params; dead heads drop the capability.
+- `src/ir_capture_norm.rs` rewrites capture shapes and relies on DCE to preserve or
+  drop capability payloads.
+- `src/ir_codegen/support.rs` lowers the surviving fact through
+  `emit_owned_cons_reuse_or_alloc`.
+
+The standalone reuse-pruning pass and duplicate owned-cons capability lane have
+been removed: codegen reads reusable source objects straight from
+`physical_capabilities`, and semantic specialization ignores only the entry params
+listed in `physical_entry_params`.
+
+### Pinned signal
+
+These native allocation floors stay green; a regression means the capability was
+dropped on the floor (numbers verified against the fixture budgets):
+
+```text
+quicksort native:             list_cons_allocs = 11,  closure_allocs = 0
+enum_list_allocations native: list_cons_allocs = 5,   closure_allocs = 0
+enum_reduce_suspend native:                           closure_allocs = 1
+```
+
 ## IR Vocabulary
 
 `fz_ir::Prim` owns the destination operations:

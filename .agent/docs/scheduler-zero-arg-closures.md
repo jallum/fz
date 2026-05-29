@@ -64,7 +64,7 @@ Bound pattern values and any original continuation state are captures.
 ```text
 message matches:
   outcome = closure captures(bound_values, continuation_state)
-  process.runnable = outcome
+  process.runnable_closure = outcome
   enqueue process
 ```
 
