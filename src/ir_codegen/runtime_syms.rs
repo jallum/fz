@@ -70,7 +70,7 @@ pub(crate) fn declare_runtime_symbols<M: cranelift_module::Module>(
     let alloc_id = decl_import(
         jmod,
         "fz_alloc_frame",
-        &[types::I32, types::I32],
+        &[types::I64, types::I32, types::I32],
         &[types::I64],
     )?;
 
@@ -188,9 +188,24 @@ fn declare_halt_runtime<M: cranelift_module::Module>(
     jmod: &mut M,
 ) -> Result<HaltRefs, CodegenError> {
     Ok(HaltRefs {
-        halt_implicit_ref_id: decl_import(jmod, "fz_halt_implicit_ref", &[types::I64], &[])?,
-        halt_implicit_i64_id: decl_import(jmod, "fz_halt_implicit_i64", &[types::I64], &[])?,
-        halt_implicit_f64_id: decl_import(jmod, "fz_halt_implicit_f64", &[types::F64], &[])?,
+        halt_implicit_ref_id: decl_import(
+            jmod,
+            "fz_halt_implicit_ref",
+            &[types::I64, types::I64],
+            &[],
+        )?,
+        halt_implicit_i64_id: decl_import(
+            jmod,
+            "fz_halt_implicit_i64",
+            &[types::I64, types::I64],
+            &[],
+        )?,
+        halt_implicit_f64_id: decl_import(
+            jmod,
+            "fz_halt_implicit_f64",
+            &[types::I64, types::F64],
+            &[],
+        )?,
     })
 }
 

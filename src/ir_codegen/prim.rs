@@ -1866,12 +1866,13 @@ fn lower_extern_fz_self<M: cranelift_module::Module>(
     b: &mut FunctionBuilder<'_>,
     jmod: &mut M,
 ) -> Result<LowerOut, CodegenError> {
-    let sig = sig1(&[], &[types::I64]);
+    let sig = sig1(&[types::I64], &[types::I64]);
     let func_id = jmod
         .declare_function("fz_self_raw", Linkage::Import, &sig)
         .map_err(|e| CodegenError::new(format!("declare fz_self_raw: {}", e)))?;
     let fref = jmod.declare_func_in_func(func_id, b.func);
-    let inst = b.ins().call(fref, &[]);
+    let process = b.ins().get_pinned_reg(types::I64);
+    let inst = b.ins().call(fref, &[process]);
     Ok(LowerOut::RawI64(b.inst_results(inst)[0]))
 }
 

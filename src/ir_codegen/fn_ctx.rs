@@ -185,12 +185,12 @@ impl<'a, 'env, 'fb, M: cranelift_module::Module> CodegenFn<'a, 'env, 'fb, M> {
             ArgRepr::ValueRef => self.runtime.halt_implicit_ref_id,
             ArgRepr::Condition => unreachable!("condition halt values must be materialized"),
         };
-        self.call(id, &[value]);
+        self.call_p(id, &[value]);
     }
 
     pub(crate) fn alloc_frame(&mut self, schema_id: ir::Value, size: ir::Value) -> ir::Value {
         let id = self.runtime.alloc_id;
-        self.call1(id, &[schema_id, size])
+        self.call1_p(id, &[schema_id, size])
     }
 
     pub(crate) fn get_halt_cont(

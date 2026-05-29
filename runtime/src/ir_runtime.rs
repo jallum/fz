@@ -20,7 +20,7 @@
 
 use crate::any_value::AnyValueRef;
 use crate::any_value::ValueKind;
-use crate::process::{Process, current_process, try_current_process};
+use crate::process::{Process, current_process};
 
 static NIL_ATOM_REF_SLOT: u64 = crate::any_value::NIL_ATOM_ID as u64;
 
@@ -352,21 +352,24 @@ pub extern "C" fn fz_dynamic_float_arith_unsupported() -> u64 {
 /// carries a raw i64 all the way to halt-cont's RawInt body; no
 /// unboxing — value is already a machine int.
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_halt_implicit_i64(val: i64) {
-    current_process().halt_value = val;
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn fz_halt_implicit_i64(process: *mut Process, val: i64) {
+    (unsafe { &mut *process }).halt_value = val;
 }
 
 /// fz-ul4.27.22.3 — typed halt for narrow-float seams. Mirrors
 /// fz_halt's Boxed-float branch: store `to_bits() as i64` so tests
 /// can round-trip via f64::from_bits.
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_halt_implicit_f64(val: f64) {
-    current_process().halt_value = val.to_bits() as i64;
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn fz_halt_implicit_f64(process: *mut Process, val: f64) {
+    (unsafe { &mut *process }).halt_value = val.to_bits() as i64;
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_halt_implicit_ref(ref_word: u64) {
-    current_process().halt_value =
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn fz_halt_implicit_ref(process: *mut Process, ref_word: u64) {
+    (unsafe { &mut *process }).halt_value =
         halt_value_from_slot(any_value_from_ref_word(ref_word, "fz_halt_implicit_ref"));
 }
 
@@ -415,8 +418,9 @@ pub extern "C" fn fz_make_resource_ref(payload_raw: u64, dtor_ref: u64) -> u64 {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_self_raw() -> u64 {
-    current_process().pid as u64
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn fz_self_raw(process: *mut Process) -> u64 {
+    (unsafe { &mut *process }).pid as u64
 }
 
 /// fz-ht5 — process-global monotonic counter feeding `fz_make_ref`.
@@ -2098,19 +2102,24 @@ pub extern "C" fn fz_materialize_cont(process: *mut Process, cont_word: u64) -> 
 /// Allocate a frame for fn `fn_id`, looking up its size in the current
 /// Process's frame_sizes table populated at make_process() time.
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_alloc_frame_dyn(fn_id: u32) -> *mut u8 {
-    let size = *current_process()
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn fz_alloc_frame_dyn(process: *mut Process, fn_id: u32) -> *mut u8 {
+    let size = *(unsafe { &mut *process })
         .frame_sizes
         .get(fn_id as usize)
         .unwrap_or_else(|| panic!("frame_sizes has no entry for fn_id {}", fn_id));
-    fz_alloc_frame(fn_id, size)
+    fz_alloc_frame(process, fn_id, size)
 }
 
 /// Public wrapper around the internal frame allocator. Used by the
 /// Runtime in src/runtime.rs to spawn a task's entry frame and by
 /// ir_codegen for the synchronous run path.
 pub fn fz_alloc_frame_for_test(schema_id: u32, total_size: u32) -> *mut u8 {
-    fz_alloc_frame(schema_id, total_size)
+    // Mirror the old try_current_process() behavior: record on the installed
+    // process when there is one, otherwise allocate frame-only (null process).
+    let process =
+        crate::process::try_current_process().map_or(std::ptr::null_mut(), |p| p as *mut Process);
+    fz_alloc_frame(process, schema_id, total_size)
 }
 
 thread_local! {
@@ -2132,15 +2141,22 @@ pub fn frame_alloc_count_take() -> u64 {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_alloc_frame(schema_id: u32, total_size: u32) -> *mut u8 {
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn fz_alloc_frame(
+    process: *mut Process,
+    schema_id: u32,
+    total_size: u32,
+) -> *mut u8 {
     FRAME_ALLOC_COUNT.with(|c| c.set(c.get() + 1));
     use std::alloc::{Layout, alloc_zeroed};
     // Round size up to a multiple of 16 to keep allocator happy and ensure
     // the resulting block aligns whatever follows.
     let rounded = ((total_size as usize) + 15) & !15;
     let layout = Layout::from_size_align(rounded, 16).expect("bad frame layout");
-    if let Some(process) = try_current_process() {
-        process
+    // Codegen always passes the pinned Process*; the for-test helper passes
+    // null (it allocates a frame outside any process). Skip stats when absent.
+    if !process.is_null() {
+        unsafe { &mut *process }
             .heap
             .record_external_alloc(crate::heap::HeapAllocKind::Frame, rounded);
     }
