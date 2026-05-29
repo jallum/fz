@@ -591,6 +591,7 @@ fn resolve_matcher_subject(
                 ));
             };
             let parent_ref = emit_receive_value_ref(b, ctx, parent)?;
+            // fz_list_head_ref is a pure read — no process needed.
             let inst = b.ins().call(fref, &[parent_ref]);
             let out_ref = b.inst_results(inst)[0];
             receive_value_from_ref_word(b, out_ref)
@@ -603,6 +604,7 @@ fn resolve_matcher_subject(
                 ));
             };
             let parent_ref = emit_receive_value_ref(b, ctx, parent)?;
+            // fz_list_tail_ref is a pure read — no process needed.
             let inst = b.ins().call(fref, &[parent_ref]);
             let out_ref = b.inst_results(inst)[0];
             receive_value_from_ref_word(b, out_ref)

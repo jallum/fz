@@ -20,7 +20,7 @@
 
 use crate::any_value::AnyValueRef;
 use crate::any_value::ValueKind;
-use crate::process::{current_process, try_current_process};
+use crate::process::{Process, current_process, try_current_process};
 
 static NIL_ATOM_REF_SLOT: u64 = crate::any_value::NIL_ATOM_ID as u64;
 
@@ -1588,10 +1588,15 @@ pub extern "C" fn fz_list_is_cons(list_ref_word: u64) -> u8 {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_list_cons_ref(head_ref_word: u64, tail_ref_word: u64) -> u64 {
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn fz_list_cons_ref(
+    process: *mut Process,
+    head_ref_word: u64,
+    tail_ref_word: u64,
+) -> u64 {
     let head = any_value_ref_from_word(head_ref_word, "fz_list_cons_ref head");
     let tail = any_value_ref_from_word(tail_ref_word, "fz_list_cons_ref tail");
-    current_process()
+    (unsafe { &mut *process })
         .heap
         .alloc_list_cons_ref(head, tail)
         .expect("fz_list_cons_ref")
@@ -1599,10 +1604,15 @@ pub extern "C" fn fz_list_cons_ref(head_ref_word: u64, tail_ref_word: u64) -> u6
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_list_cons_any(head_ref_word: u64, tail_ref_word: u64) -> u64 {
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn fz_list_cons_any(
+    process: *mut Process,
+    head_ref_word: u64,
+    tail_ref_word: u64,
+) -> u64 {
     let head = any_value_from_ref_word(head_ref_word, "fz_list_cons_any head");
     let tail = any_value_ref_from_word(tail_ref_word, "fz_list_cons_any tail");
-    current_process()
+    (unsafe { &mut *process })
         .heap
         .alloc_list_cons_any(head, tail)
         .expect("fz_list_cons_any")
@@ -1610,9 +1620,10 @@ pub extern "C" fn fz_list_cons_any(head_ref_word: u64, tail_ref_word: u64) -> u6
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_list_cons_int(head: i64, tail_ref_word: u64) -> u64 {
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn fz_list_cons_int(process: *mut Process, head: i64, tail_ref_word: u64) -> u64 {
     let tail = any_value_ref_from_word(tail_ref_word, "fz_list_cons_int tail");
-    current_process()
+    (unsafe { &mut *process })
         .heap
         .alloc_list_cons_int(head, tail)
         .expect("fz_list_cons_int")
@@ -1620,9 +1631,10 @@ pub extern "C" fn fz_list_cons_int(head: i64, tail_ref_word: u64) -> u64 {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_list_cons_float(head: f64, tail_ref_word: u64) -> u64 {
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn fz_list_cons_float(process: *mut Process, head: f64, tail_ref_word: u64) -> u64 {
     let tail = any_value_ref_from_word(tail_ref_word, "fz_list_cons_float tail");
-    current_process()
+    (unsafe { &mut *process })
         .heap
         .alloc_list_cons_float(head, tail)
         .expect("fz_list_cons_float")
@@ -1630,15 +1642,24 @@ pub extern "C" fn fz_list_cons_float(head: f64, tail_ref_word: u64) -> u64 {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_list_cons_atom(atom_id: u64, tail_ref_word: u64) -> u64 {
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn fz_list_cons_atom(
+    process: *mut Process,
+    atom_id: u64,
+    tail_ref_word: u64,
+) -> u64 {
     let tail = any_value_ref_from_word(tail_ref_word, "fz_list_cons_atom tail");
-    current_process()
+    (unsafe { &mut *process })
         .heap
         .alloc_list_cons_atom(atom_id as u32, tail)
         .expect("fz_list_cons_atom")
         .raw_word()
 }
 
+// Reading a list head/tail is a pure dereference of the self-describing list
+// pointer — no allocation, no heap state — so these take no process. (The
+// `current_process().heap` receiver is vestigial: the read methods take `&self`
+// and ignore it; fz-vdt ctx.8 makes them process-free free functions.)
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_list_head_ref(list_ref_word: u64) -> u64 {
     let list = any_value_ref_from_word(list_ref_word, "fz_list_head_ref");
@@ -1689,9 +1710,10 @@ pub extern "C" fn fz_list_mark_aliased_ref(list_ref_word: u64) -> u64 {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_mark_published_ref_aliased(value_ref_word: u64) -> u64 {
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn fz_mark_published_ref_aliased(process: *mut Process, value_ref_word: u64) -> u64 {
     let value = any_value_ref_from_word(value_ref_word, "fz_mark_published_ref_aliased");
-    current_process()
+    (unsafe { &mut *process })
         .heap
         .mark_published_ref_aliased(value)
         .expect("fz_mark_published_ref_aliased")
@@ -1710,10 +1732,15 @@ pub extern "C" fn fz_list_relink_unaliased_tail_ref(list_ref_word: u64, tail_ref
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_list_reuse_or_cons_tail_ref(list_ref_word: u64, tail_ref_word: u64) -> u64 {
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn fz_list_reuse_or_cons_tail_ref(
+    process: *mut Process,
+    list_ref_word: u64,
+    tail_ref_word: u64,
+) -> u64 {
     let list = any_value_ref_from_word(list_ref_word, "fz_list_reuse_or_cons_tail_ref list");
     let tail = any_value_ref_from_word(tail_ref_word, "fz_list_reuse_or_cons_tail_ref tail");
-    current_process()
+    (unsafe { &mut *process })
         .heap
         .reuse_or_alloc_list_cons_tail(list, tail)
         .expect("fz_list_reuse_or_cons_tail_ref")

@@ -216,25 +216,25 @@ fn declare_list_runtime<M: cranelift_module::Module>(
         list_cons_any_id: decl_import(
             jmod,
             "fz_list_cons_any",
-            &[types::I64, types::I64],
+            &[types::I64, types::I64, types::I64],
             &[types::I64],
         )?,
         list_cons_int_id: decl_import(
             jmod,
             "fz_list_cons_int",
-            &[types::I64, types::I64],
+            &[types::I64, types::I64, types::I64],
             &[types::I64],
         )?,
         list_cons_float_id: decl_import(
             jmod,
             "fz_list_cons_float",
-            &[types::F64, types::I64],
+            &[types::I64, types::F64, types::I64],
             &[types::I64],
         )?,
         list_cons_atom_id: decl_import(
             jmod,
             "fz_list_cons_atom",
-            &[types::I64, types::I64],
+            &[types::I64, types::I64, types::I64],
             &[types::I64],
         )?,
         list_is_cons_id: decl_import(jmod, "fz_list_is_cons", &[types::I64], &[types::I8])?,
@@ -255,13 +255,13 @@ fn declare_list_runtime<M: cranelift_module::Module>(
         list_reuse_or_cons_tail_ref_id: decl_import(
             jmod,
             "fz_list_reuse_or_cons_tail_ref",
-            &[types::I64, types::I64],
+            &[types::I64, types::I64, types::I64],
             &[types::I64],
         )?,
         mark_published_ref_aliased_id: decl_import(
             jmod,
             "fz_mark_published_ref_aliased",
-            &[types::I64],
+            &[types::I64, types::I64],
             &[types::I64],
         )?,
     })

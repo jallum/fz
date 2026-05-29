@@ -6,29 +6,46 @@ use crate::types::Types;
 use fz_runtime::any_value::AnyValueRef;
 use fz_runtime::any_value::ValueKind;
 
+/// The currently-installed process pointer, handed to process-taking BIFs.
+/// Bridges the interpreter onto the widened BIF ABI; reads the same TLS the
+/// BIFs read today, so behavior is unchanged until the interpreter threads an
+/// explicit `&mut Process` (fz-vdt ctx.8).
+#[inline]
+fn cur_proc() -> *mut fz_runtime::process::Process {
+    fz_runtime::process::current_process()
+}
+
 pub(super) fn interp_list_cons(
     head: AnyValue,
     tail: AnyValue,
     context: &str,
 ) -> Result<AnyValue, String> {
-    let bits = with_value_ref(tail, context, |tail_ref| match head {
-        AnyValue::Int(value) => {
-            Ok::<u64, String>(fz_runtime::ir_runtime::fz_list_cons_int(value, tail_ref))
-        }
-        AnyValue::Float(value) => {
-            Ok::<u64, String>(fz_runtime::ir_runtime::fz_list_cons_float(value, tail_ref))
-        }
-        AnyValue::Atom(value) => Ok::<u64, String>(fz_runtime::ir_runtime::fz_list_cons_atom(
-            value as u64,
-            tail_ref,
-        )),
-        AnyValue::Null | AnyValue::EmptyList | AnyValue::Ref(_) => {
-            let head = head
-                .as_ref_word()
-                .map_err(|err| format!("{context}: cannot create head ref: {err}"))?;
-            Ok(fz_runtime::ir_runtime::fz_list_cons_ref(head, tail_ref))
-        }
-    })??;
+    let bits =
+        with_value_ref(tail, context, |tail_ref| match head {
+            AnyValue::Int(value) => Ok::<u64, String>(fz_runtime::ir_runtime::fz_list_cons_int(
+                cur_proc(),
+                value,
+                tail_ref,
+            )),
+            AnyValue::Float(value) => Ok::<u64, String>(
+                fz_runtime::ir_runtime::fz_list_cons_float(cur_proc(), value, tail_ref),
+            ),
+            AnyValue::Atom(value) => Ok::<u64, String>(fz_runtime::ir_runtime::fz_list_cons_atom(
+                cur_proc(),
+                value as u64,
+                tail_ref,
+            )),
+            AnyValue::Null | AnyValue::EmptyList | AnyValue::Ref(_) => {
+                let head = head
+                    .as_ref_word()
+                    .map_err(|err| format!("{context}: cannot create head ref: {err}"))?;
+                Ok(fz_runtime::ir_runtime::fz_list_cons_ref(
+                    cur_proc(),
+                    head,
+                    tail_ref,
+                ))
+            }
+        })??;
     interp_value_from_ref_word(bits, context)
 }
 

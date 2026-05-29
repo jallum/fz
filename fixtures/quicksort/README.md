@@ -2,7 +2,7 @@
 purpose: "closing fixture of the destructure-up-through-quicksort arc — `{lo, hi} = partition(...)` on the hot path of a recursive sort"
 paths: [jit, interp, aot, repl]
 budget.codegen.functions: 18
-budget.codegen.instructions: 578
+budget.codegen.instructions: 703
 budget.specs.count: 18
 budget.planner.worklist_pops: 110
 budget.planner.walk_calls: 110

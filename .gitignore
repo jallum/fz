@@ -1,3 +1,9 @@
 .claude/
 build/
 target/
+
+# Dump-budget scratch written by fixture_matrix when a dump shape is inspected
+# or a budget fails. Diff against the checked-in expected.* files instead.
+fixtures/*/actual.clif
+fixtures/*/actual.specs
+fixtures/*/actual.diagnostics
