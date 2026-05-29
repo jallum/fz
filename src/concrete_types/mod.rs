@@ -235,16 +235,10 @@ impl Types for ConcreteTypes {
     fn is_disjoint(&self, a: &Ty, b: &Ty) -> bool {
         ty_descr(a).intersect(ty_descr(b)).is_empty()
     }
-    fn is_value_disjoint(
-        &self,
-        a: &Ty,
-        b: &Ty,
-        brand_inners: &HashMap<String, Ty>,
-        opaque_inners: &HashMap<String, Ty>,
-    ) -> bool {
-        let bi = descr_inner_map(brand_inners);
-        let oi = descr_inner_map(opaque_inners);
-        ty_descr(a).value_disjoint(ty_descr(b), &bi, &oi)
+    fn is_value_disjoint(&self, a: &Ty, b: &Ty, nominals: crate::types::Nominals<'_, Ty>) -> bool {
+        let bi = descr_inner_map(nominals.brand_inners);
+        let oi = descr_inner_map(nominals.opaque_inners);
+        ty_descr(a).value_disjoint(ty_descr(b), crate::types::Nominals::new(&bi, &oi))
     }
     fn is_equivalent(&self, a: &Ty, b: &Ty) -> bool {
         ty_descr(a).is_equiv(ty_descr(b))

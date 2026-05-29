@@ -224,14 +224,7 @@ fn reduce_block<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::Li
         let block = m.fns[fn_idx].block(bid);
         for stmt in &block.stmts {
             let Stmt::Let(v, prim) = stmt;
-            if let Some(d) = fold_prim(
-                t,
-                prim,
-                &env,
-                &atom_names,
-                &m.brand_inners,
-                &m.opaque_inners,
-            ) {
+            if let Some(d) = fold_prim(t, prim, &env, &atom_names, m.nominals()) {
                 env.insert(*v, d);
             }
         }
@@ -709,8 +702,7 @@ fn walk_block<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::Lite
             prim,
             &env,
             &ctx.module.atom_names,
-            &ctx.module.brand_inners,
-            &ctx.module.opaque_inners,
+            ctx.module.nominals(),
         ) else {
             ctx.note(StalledReason::OpaqueArg);
             return None;

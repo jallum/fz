@@ -146,9 +146,7 @@ pub(crate) fn descrs_value_disjoint<T: crate::types::Types<Ty = crate::types::Ty
     b: crate::fz_ir::Var,
 ) -> bool {
     match (fn_types.vars.get(&a), fn_types.vars.get(&b)) {
-        (Some(da), Some(db)) => {
-            t.is_value_disjoint(da, db, &fn_types.brand_inners, &fn_types.opaque_inners)
-        }
+        (Some(da), Some(db)) => t.is_value_disjoint(da, db, fn_types.nominals()),
         _ => false,
     }
 }

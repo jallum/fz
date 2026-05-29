@@ -1173,15 +1173,14 @@ impl Descr {
     /// `none`. Unknown tags and cofinite ("any brand") axes over-approximate
     /// to `any()`, so the erased set is never too small; `value_disjoint`
     /// then errs toward "not disjoint" and never folds a comparison unsoundly.
-    pub(crate) fn erase_nominal(
-        &self,
-        brand_inners: &std::collections::HashMap<String, Descr>,
-        opaque_inners: &std::collections::HashMap<String, Descr>,
-    ) -> Descr {
+    pub(crate) fn erase_nominal(&self, nominals: crate::types::Nominals<'_, Descr>) -> Descr {
         let mut d = self.clone();
         let brands = std::mem::replace(&mut d.brands, LiteralSet::none());
         let opaques = std::mem::replace(&mut d.opaques, LiteralSet::none());
-        for (tags, inners) in [(&brands, brand_inners), (&opaques, opaque_inners)] {
+        for (tags, inners) in [
+            (&brands, nominals.brand_inners),
+            (&opaques, nominals.opaque_inners),
+        ] {
             if tags.is_none() {
                 continue;
             }
@@ -1194,7 +1193,7 @@ impl Descr {
             for tag in &tags.set {
                 match inners.get(tag) {
                     Some(inner) => {
-                        d = d.union(&inner.erase_nominal(brand_inners, opaque_inners));
+                        d = d.union(&inner.erase_nominal(nominals));
                     }
                     // Unknown tag: be conservative rather than collapse to none.
                     None => d = d.union(&Descr::any()),
@@ -1204,7 +1203,7 @@ impl Descr {
         // Recurse into nested input positions (tuple elems, list elem, arrow
         // args/ret, map values, resource payload) so a brand nested inside a
         // tuple — the original fz-bsx failure — is discharged too.
-        d.map_recursive_spec_key_inputs(&|x| x.erase_nominal(brand_inners, opaque_inners))
+        d.map_recursive_spec_key_inputs(&|x| x.erase_nominal(nominals))
     }
 
     /// fz-bsx.1 — true iff no two runtime values of these types can ever be
@@ -1215,11 +1214,10 @@ impl Descr {
     pub(crate) fn value_disjoint(
         &self,
         other: &Descr,
-        brand_inners: &std::collections::HashMap<String, Descr>,
-        opaque_inners: &std::collections::HashMap<String, Descr>,
+        nominals: crate::types::Nominals<'_, Descr>,
     ) -> bool {
-        self.erase_nominal(brand_inners, opaque_inners)
-            .intersect(&other.erase_nominal(brand_inners, opaque_inners))
+        self.erase_nominal(nominals)
+            .intersect(&other.erase_nominal(nominals))
             .is_empty()
     }
 

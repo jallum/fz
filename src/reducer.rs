@@ -17,7 +17,7 @@
 
 use crate::ast::{self, Pattern, Spanned};
 use crate::fz_ir::{BinOp, Const, Prim, UnOp, Var};
-use crate::types::{LiteralTypes, Types};
+use crate::types::{LiteralTypes, Nominals, Types};
 use std::collections::HashMap;
 
 // ---------------------------------------------------------------------------
@@ -35,12 +35,11 @@ pub fn fold_prim<T: Types<Ty = crate::types::Ty> + LiteralTypes>(
     prim: &Prim,
     env: &HashMap<Var, T::Ty>,
     atom_names: &[String],
-    brand_inners: &HashMap<String, T::Ty>,
-    opaque_inners: &HashMap<String, T::Ty>,
+    nominals: Nominals<'_>,
 ) -> Option<T::Ty> {
     match prim {
         Prim::Const(c) => fold_const(t, c, atom_names),
-        Prim::BinOp(op, a, b) => fold_binop(t, *op, *a, *b, env, brand_inners, opaque_inners),
+        Prim::BinOp(op, a, b) => fold_binop(t, *op, *a, *b, env, nominals),
         Prim::UnOp(op, v) => fold_unop(t, *op, *v, env),
         Prim::MakeTuple(vs) => fold_make_tuple(t, vs, env),
         Prim::TupleField(v, i) => fold_tuple_field(t, *v, *i as usize, env),
@@ -112,17 +111,14 @@ fn fold_binop<T: Types<Ty = crate::types::Ty> + LiteralTypes>(
     a: Var,
     b: Var,
     env: &HashMap<Var, T::Ty>,
-    brand_inners: &HashMap<String, T::Ty>,
-    opaque_inners: &HashMap<String, T::Ty>,
+    nominals: Nominals<'_>,
 ) -> Option<T::Ty> {
     let ad = env.get(&a)?;
     let bd = env.get(&b)?;
     use BinOp::*;
     match op {
         Add | Sub | Mul | Div | Mod => fold_arith(t, op, ad, bd),
-        Eq | Neq => {
-            fold_runtime_eq(t, op, ad, bd, brand_inners, opaque_inners).map(|b| t.bool_lit(b))
-        }
+        Eq | Neq => fold_runtime_eq(t, op, ad, bd, nominals).map(|b| t.bool_lit(b)),
         Lt | Le | Gt | Ge => fold_cmp(t, op, ad, bd),
         And | Or => fold_logical(t, op, ad, bd),
     }
@@ -167,10 +163,11 @@ fn fold_arith<T: Types>(t: &mut T, op: BinOp, ad: &T::Ty, bd: &T::Ty) -> Option<
     None
 }
 
-/// fz-bsx.2 — the single authoritative compile-time decision for `==`/`!=`,
-/// shared by the reducer (here) and codegen (`lower_eq_binop`, fz-bsx.3).
-/// Returns `Some(true/false)` when the result is statically known, else
-/// `None` (emit the runtime comparison).
+/// fz-bsx.2 — the reducer's compile-time decision for `==`/`!=`. Returns
+/// `Some(true/false)` when the result is statically known, else `None` (emit
+/// the runtime comparison). Codegen makes the same decision independently via
+/// `descrs_value_disjoint`; both bottom out in the one shared relation,
+/// `is_value_disjoint`.
 ///
 /// Runtime equality is brand-BLIND (`ir_brand_erase` strips brands;
 /// `fz_value_eq` compares bytes), so the "definitely unequal" arm uses
@@ -178,13 +175,12 @@ fn fold_arith<T: Types>(t: &mut T, op: BinOp, ad: &T::Ty, bd: &T::Ty) -> Option<
 /// arm is unchanged: a minted brand is a pure tag, never a singleton, so it
 /// never reaches `is_literal`, and `is_equivalent` only sees brand-free
 /// literals there.
-pub fn fold_runtime_eq<T: Types<Ty = crate::types::Ty> + LiteralTypes>(
+fn fold_runtime_eq<T: Types<Ty = crate::types::Ty> + LiteralTypes>(
     t: &T,
     op: BinOp,
     ad: &T::Ty,
     bd: &T::Ty,
-    brand_inners: &HashMap<String, T::Ty>,
-    opaque_inners: &HashMap<String, T::Ty>,
+    nominals: Nominals<'_>,
 ) -> Option<bool> {
     let is_eq = matches!(op, BinOp::Eq);
 
@@ -194,10 +190,7 @@ pub fn fold_runtime_eq<T: Types<Ty = crate::types::Ty> + LiteralTypes>(
     }
 
     // Definitely unequal: disjoint in the brand-erased (runtime) model.
-    if !t.is_empty(ad)
-        && !t.is_empty(bd)
-        && t.is_value_disjoint(ad, bd, brand_inners, opaque_inners)
-    {
+    if !t.is_empty(ad) && !t.is_empty(bd) && t.is_value_disjoint(ad, bd, nominals) {
         return Some(!is_eq);
     }
 
@@ -405,8 +398,7 @@ pub fn dispatch_clauses<T: Types<Ty = crate::types::Ty> + LiteralTypes>(
     clauses: &[Clause<'_>],
     subject_tys: &[T::Ty],
     atom_names: &[String],
-    brand_inners: &HashMap<String, T::Ty>,
-    opaque_inners: &HashMap<String, T::Ty>,
+    nominals: Nominals<'_>,
 ) -> Dispatch<T> {
     for (idx, row) in clauses.iter().enumerate() {
         if row.patterns.len() != subject_tys.len() {
@@ -436,14 +428,7 @@ pub fn dispatch_clauses<T: Types<Ty = crate::types::Ty> + LiteralTypes>(
         }
         // Patterns matched — try guard.
         if let Some(guard) = row.guard {
-            match fold_expr(
-                t,
-                &guard.node,
-                &bindings,
-                atom_names,
-                brand_inners,
-                opaque_inners,
-            ) {
+            match fold_expr(t, &guard.node, &bindings, atom_names, nominals) {
                 Some(d) => match t.as_bool_lit(&d) {
                     Some(true) => {
                         return Dispatch::MatchedRow {
@@ -602,8 +587,7 @@ pub fn fold_expr<T: Types<Ty = crate::types::Ty> + LiteralTypes>(
     expr: &ast::Expr,
     bindings: &HashMap<String, T::Ty>,
     atom_names: &[String],
-    brand_inners: &HashMap<String, T::Ty>,
-    opaque_inners: &HashMap<String, T::Ty>,
+    nominals: Nominals<'_>,
 ) -> Option<T::Ty> {
     use ast::Expr;
     match expr {
@@ -620,43 +604,15 @@ pub fn fold_expr<T: Types<Ty = crate::types::Ty> + LiteralTypes>(
         Expr::Bool(b) => Some(t.bool_lit(*b)),
         Expr::Nil => Some(t.nil()),
         Expr::BinOp(op, a, b) => {
-            let ad = fold_expr(
-                t,
-                &a.node,
-                bindings,
-                atom_names,
-                brand_inners,
-                opaque_inners,
-            )?;
-            let bd = fold_expr(
-                t,
-                &b.node,
-                bindings,
-                atom_names,
-                brand_inners,
-                opaque_inners,
-            )?;
-            ast_binop_fold(t, *op, &ad, &bd, brand_inners, opaque_inners)
+            let ad = fold_expr(t, &a.node, bindings, atom_names, nominals)?;
+            let bd = fold_expr(t, &b.node, bindings, atom_names, nominals)?;
+            ast_binop_fold(t, *op, &ad, &bd, nominals)
         }
         Expr::UnOp(op, v) => {
-            let vd = fold_expr(
-                t,
-                &v.node,
-                bindings,
-                atom_names,
-                brand_inners,
-                opaque_inners,
-            )?;
+            let vd = fold_expr(t, &v.node, bindings, atom_names, nominals)?;
             ast_unop_fold(t, *op, &vd)
         }
-        Expr::Ascribe(inner, _) => fold_expr(
-            t,
-            &inner.node,
-            bindings,
-            atom_names,
-            brand_inners,
-            opaque_inners,
-        ),
+        Expr::Ascribe(inner, _) => fold_expr(t, &inner.node, bindings, atom_names, nominals),
         _ => None,
     }
 }
@@ -667,8 +623,7 @@ fn ast_binop_fold<T: Types<Ty = crate::types::Ty> + LiteralTypes>(
     op: ast::BinOp,
     ad: &T::Ty,
     bd: &T::Ty,
-    brand_inners: &HashMap<String, T::Ty>,
-    opaque_inners: &HashMap<String, T::Ty>,
+    nominals: Nominals<'_>,
 ) -> Option<T::Ty> {
     use ast::BinOp::*;
     let ir_op = match op {
@@ -694,7 +649,7 @@ fn ast_binop_fold<T: Types<Ty = crate::types::Ty> + LiteralTypes>(
         }
         // Brand-blind, like every other == site (fz-bsx).
         BinOp::Eq | BinOp::Neq => {
-            fold_runtime_eq(t, ir_op, ad, bd, brand_inners, opaque_inners).map(|b| t.bool_lit(b))
+            fold_runtime_eq(t, ir_op, ad, bd, nominals).map(|b| t.bool_lit(b))
         }
         BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => fold_cmp(t, ir_op, ad, bd),
         BinOp::And | BinOp::Or => fold_logical(t, ir_op, ad, bd),
@@ -785,8 +740,7 @@ mod tests {
             &Prim::Const(Const::Int(42)),
             &HashMap::new(),
             &[],
-            &HashMap::new(),
-            &HashMap::new(),
+            Nominals::empty(),
         )
         .unwrap();
         assert_int_ty(&t, &r, 42);
@@ -800,8 +754,7 @@ mod tests {
             &Prim::Const(Const::Nil),
             &HashMap::new(),
             &[],
-            &HashMap::new(),
-            &HashMap::new(),
+            Nominals::empty(),
         )
         .unwrap();
         assert_nil_ty(&t, &nil);
@@ -810,8 +763,7 @@ mod tests {
             &Prim::Const(Const::True),
             &HashMap::new(),
             &[],
-            &HashMap::new(),
-            &HashMap::new(),
+            Nominals::empty(),
         )
         .unwrap();
         assert_bool_ty(&t, &bt, true);
@@ -820,8 +772,7 @@ mod tests {
             &Prim::Const(Const::False),
             &HashMap::new(),
             &[],
-            &HashMap::new(),
-            &HashMap::new(),
+            Nominals::empty(),
         )
         .unwrap();
         assert_bool_ty(&t, &bf, false);
@@ -836,8 +787,7 @@ mod tests {
             &Prim::Const(Const::Atom(1)),
             &HashMap::new(),
             &names,
-            &HashMap::new(),
-            &HashMap::new(),
+            Nominals::empty(),
         )
         .unwrap();
         assert_atom_ty(&t, &a, "beta");
@@ -852,8 +802,7 @@ mod tests {
                 &Prim::Const(Const::Atom(0)),
                 &HashMap::new(),
                 &names,
-                &HashMap::new(),
-                &HashMap::new()
+                Nominals::empty()
             )
             .is_none()
         );
@@ -870,8 +819,7 @@ mod tests {
             &Prim::BinOp(BinOp::Add, v(0), v(1)),
             &env,
             &[],
-            &HashMap::new(),
-            &HashMap::new(),
+            Nominals::empty(),
         )
         .unwrap();
         assert_int_ty(&t, &r, 42);
@@ -887,8 +835,7 @@ mod tests {
                 &Prim::BinOp(BinOp::Div, v(0), v(1)),
                 &env,
                 &[],
-                &HashMap::new(),
-                &HashMap::new()
+                Nominals::empty()
             )
             .is_none()
         );
@@ -904,8 +851,7 @@ mod tests {
                 &Prim::BinOp(BinOp::Add, v(0), v(1)),
                 &env,
                 &[],
-                &HashMap::new(),
-                &HashMap::new()
+                Nominals::empty()
             )
             .is_none()
         );
@@ -920,8 +866,7 @@ mod tests {
             &Prim::BinOp(BinOp::Add, v(0), v(1)),
             &env,
             &[],
-            &HashMap::new(),
-            &HashMap::new(),
+            Nominals::empty(),
         )
         .unwrap();
         assert_eq!(t.as_float_singleton(&r), Some(4.0));
@@ -938,8 +883,7 @@ mod tests {
                 &Prim::BinOp(BinOp::Add, v(0), v(1)),
                 &env,
                 &[],
-                &HashMap::new(),
-                &HashMap::new()
+                Nominals::empty()
             )
             .is_none()
         );
@@ -955,8 +899,7 @@ mod tests {
                 &Prim::BinOp(BinOp::Add, v(0), v(1)),
                 &env,
                 &[],
-                &HashMap::new(),
-                &HashMap::new()
+                Nominals::empty()
             )
             .is_none()
         );
@@ -973,8 +916,7 @@ mod tests {
             &Prim::BinOp(BinOp::Lt, v(0), v(1)),
             &env,
             &[],
-            &HashMap::new(),
-            &HashMap::new(),
+            Nominals::empty(),
         )
         .unwrap();
         assert_bool_ty(&t, &r, true);
@@ -991,8 +933,7 @@ mod tests {
             &Prim::BinOp(BinOp::Eq, v(0), v(1)),
             &env,
             &[],
-            &HashMap::new(),
-            &HashMap::new(),
+            Nominals::empty(),
         )
         .unwrap();
         assert_bool_ty(&t, &r, true);
@@ -1007,8 +948,7 @@ mod tests {
             &Prim::BinOp(BinOp::Eq, v(0), v(1)),
             &env,
             &[],
-            &HashMap::new(),
-            &HashMap::new(),
+            Nominals::empty(),
         )
         .unwrap();
         assert_bool_ty(&t, &r, false);
@@ -1023,8 +963,7 @@ mod tests {
             &Prim::BinOp(BinOp::Neq, v(0), v(1)),
             &env,
             &[],
-            &HashMap::new(),
-            &HashMap::new(),
+            Nominals::empty(),
         )
         .unwrap();
         assert_bool_ty(&t, &r, true);
@@ -1041,8 +980,7 @@ mod tests {
             &Prim::BinOp(BinOp::Eq, v(0), v(1)),
             &env,
             &[],
-            &HashMap::new(),
-            &HashMap::new(),
+            Nominals::empty(),
         )
         .unwrap();
         assert_bool_ty(&t, &r, false);
@@ -1051,8 +989,7 @@ mod tests {
             &Prim::BinOp(BinOp::Neq, v(0), v(1)),
             &env,
             &[],
-            &HashMap::new(),
-            &HashMap::new(),
+            Nominals::empty(),
         )
         .unwrap();
         assert_bool_ty(&t, &r, true);
@@ -1069,8 +1006,7 @@ mod tests {
                 &Prim::BinOp(BinOp::Eq, v(0), v(1)),
                 &env,
                 &[],
-                &HashMap::new(),
-                &HashMap::new()
+                Nominals::empty()
             )
             .is_none()
         );
@@ -1090,14 +1026,15 @@ mod tests {
         let inners: HashMap<String, crate::types::Ty> =
             [("utf8".to_string(), binary.clone())].into_iter().collect();
         let empty = HashMap::new();
+        let nominals = Nominals::new(&inners, &empty);
 
         assert_eq!(
-            fold_runtime_eq(&t, BinOp::Eq, &utf8, &binary, &inners, &empty),
+            fold_runtime_eq(&t, BinOp::Eq, &utf8, &binary, nominals),
             None,
             "brand-only disjoint: must defer to the runtime comparison",
         );
         assert_eq!(
-            fold_runtime_eq(&t, BinOp::Eq, &utf8, &int, &inners, &empty),
+            fold_runtime_eq(&t, BinOp::Eq, &utf8, &int, nominals),
             Some(false),
             "value-disjoint: still folds",
         );
@@ -1114,8 +1051,7 @@ mod tests {
             &Prim::BinOp(BinOp::And, v(0), v(1)),
             &env,
             &[],
-            &HashMap::new(),
-            &HashMap::new(),
+            Nominals::empty(),
         )
         .unwrap();
         assert_bool_ty(&t, &r, false);
@@ -1125,8 +1061,7 @@ mod tests {
             &Prim::BinOp(BinOp::Or, v(0), v(1)),
             &env,
             &[],
-            &HashMap::new(),
-            &HashMap::new(),
+            Nominals::empty(),
         )
         .unwrap();
         assert_bool_ty(&t, &r, true);
@@ -1147,8 +1082,7 @@ mod tests {
             &Prim::UnOp(UnOp::Neg, v(0)),
             &env,
             &[],
-            &HashMap::new(),
-            &HashMap::new(),
+            Nominals::empty(),
         )
         .unwrap();
         assert_int_ty(&t, &r, -5);
@@ -1163,8 +1097,7 @@ mod tests {
             &Prim::UnOp(UnOp::Not, v(0)),
             &env,
             &[],
-            &HashMap::new(),
-            &HashMap::new(),
+            Nominals::empty(),
         )
         .unwrap();
         assert_bool_ty(&t, &r, false);
@@ -1181,8 +1114,7 @@ mod tests {
             &Prim::MakeTuple(vec![v(0), v(1)]),
             &env,
             &[],
-            &HashMap::new(),
-            &HashMap::new(),
+            Nominals::empty(),
         )
         .unwrap();
         let elems = t.tuple_lit_elems(&r).unwrap();
@@ -1201,8 +1133,7 @@ mod tests {
                 &Prim::MakeTuple(vec![v(0), v(1)]),
                 &env,
                 &[],
-                &HashMap::new(),
-                &HashMap::new()
+                Nominals::empty()
             )
             .is_none()
         );
@@ -1218,8 +1149,7 @@ mod tests {
             &Prim::TupleField(v(0), 1),
             &env,
             &[],
-            &HashMap::new(),
-            &HashMap::new(),
+            Nominals::empty(),
         )
         .unwrap();
         assert_int_ty(&t, &r, 42);
@@ -1228,8 +1158,7 @@ mod tests {
             &Prim::TupleField(v(0), 0),
             &env,
             &[],
-            &HashMap::new(),
-            &HashMap::new(),
+            Nominals::empty(),
         )
         .unwrap();
         assert_atom_ty(&t, &r, "num");
@@ -1246,8 +1175,7 @@ mod tests {
                 &Prim::TupleField(v(0), 7),
                 &env,
                 &[],
-                &HashMap::new(),
-                &HashMap::new()
+                Nominals::empty()
             )
             .is_none()
         );
@@ -1265,8 +1193,7 @@ mod tests {
             &Prim::TypeTest(v(0), Box::new(int)),
             &env,
             &[],
-            &HashMap::new(),
-            &HashMap::new(),
+            Nominals::empty(),
         )
         .unwrap();
         assert_bool_ty(&t, &r, true);
@@ -1282,8 +1209,7 @@ mod tests {
             &Prim::TypeTest(v(0), Box::new(atom)),
             &env,
             &[],
-            &HashMap::new(),
-            &HashMap::new(),
+            Nominals::empty(),
         )
         .unwrap();
         assert_bool_ty(&t, &r, false);
@@ -1300,8 +1226,7 @@ mod tests {
                 &Prim::TypeTest(v(0), Box::new(int)),
                 &env,
                 &[],
-                &HashMap::new(),
-                &HashMap::new()
+                Nominals::empty()
             )
             .is_none()
         );
@@ -1320,8 +1245,7 @@ mod tests {
             &Prim::IsEmptyList(v(0)),
             &env,
             &[],
-            &HashMap::new(),
-            &HashMap::new(),
+            Nominals::empty(),
         )
         .unwrap();
         assert_bool_ty(&t, &r, false);
@@ -1340,8 +1264,7 @@ mod tests {
                 &Prim::IsEmptyList(v(0)),
                 &env,
                 &[],
-                &HashMap::new(),
-                &HashMap::new()
+                Nominals::empty()
             )
             .is_none()
         );
@@ -1362,8 +1285,7 @@ mod tests {
                 &Prim::IsEmptyList(v(0)),
                 &env,
                 &[],
-                &HashMap::new(),
-                &HashMap::new()
+                Nominals::empty()
             )
             .is_none()
         );
@@ -1381,8 +1303,7 @@ mod tests {
                 &Prim::Extern(ExternId(0), vec![]),
                 &env,
                 &[],
-                &HashMap::new(),
-                &HashMap::new(),
+                Nominals::empty(),
             )
             .is_none()
         );
@@ -1399,8 +1320,7 @@ mod tests {
                 &Prim::MakeList(vec![v(0), v(1)], None),
                 &env,
                 &[],
-                &HashMap::new(),
-                &HashMap::new()
+                Nominals::empty()
             )
             .is_none()
         );
@@ -1435,14 +1355,7 @@ mod tests {
             guard: None,
         }];
         let subject = tys(&[t.any()]);
-        let result = dispatch_clauses(
-            &mut t,
-            &clauses,
-            &subject,
-            &[],
-            &HashMap::new(),
-            &HashMap::new(),
-        );
+        let result = dispatch_clauses(&mut t, &clauses, &subject, &[], Nominals::empty());
         assert!(matches!(result, Dispatch::MatchedRow { row_idx: 0, .. }));
     }
 
@@ -1455,14 +1368,7 @@ mod tests {
             guard: None,
         }];
         let subject = tys(&[t.int_lit(42)]);
-        let result = dispatch_clauses(
-            &mut t,
-            &clauses,
-            &subject,
-            &[],
-            &HashMap::new(),
-            &HashMap::new(),
-        );
+        let result = dispatch_clauses(&mut t, &clauses, &subject, &[], Nominals::empty());
         match result {
             Dispatch::MatchedRow {
                 row_idx: 0,
@@ -1483,14 +1389,7 @@ mod tests {
             guard: None,
         }];
         let subject = tys(&[t.int_lit(0)]);
-        let result = dispatch_clauses(
-            &mut t,
-            &clauses,
-            &subject,
-            &[],
-            &HashMap::new(),
-            &HashMap::new(),
-        );
+        let result = dispatch_clauses(&mut t, &clauses, &subject, &[], Nominals::empty());
         assert!(matches!(result, Dispatch::MatchedRow { row_idx: 0, .. }));
     }
 
@@ -1503,14 +1402,7 @@ mod tests {
             guard: None,
         }];
         let subject = tys(&[t.int_lit(7)]);
-        let result = dispatch_clauses(
-            &mut t,
-            &clauses,
-            &subject,
-            &[],
-            &HashMap::new(),
-            &HashMap::new(),
-        );
+        let result = dispatch_clauses(&mut t, &clauses, &subject, &[], Nominals::empty());
         assert!(matches!(result, Dispatch::NoMatch));
     }
 
@@ -1524,14 +1416,7 @@ mod tests {
             guard: None,
         }];
         let subject = tys(&[t.int()]);
-        let result = dispatch_clauses(
-            &mut t,
-            &clauses,
-            &subject,
-            &[],
-            &HashMap::new(),
-            &HashMap::new(),
-        );
+        let result = dispatch_clauses(&mut t, &clauses, &subject, &[], Nominals::empty());
         assert!(matches!(result, Dispatch::Opaque));
     }
 
@@ -1574,14 +1459,7 @@ mod tests {
         ];
 
         let subject_tys = tys(&[num_tuple_ty(&mut t, 42)]);
-        match dispatch_clauses(
-            &mut t,
-            &clauses,
-            &subject_tys,
-            &[],
-            &HashMap::new(),
-            &HashMap::new(),
-        ) {
+        match dispatch_clauses(&mut t, &clauses, &subject_tys, &[], Nominals::empty()) {
             Dispatch::MatchedRow { row_idx, bindings } => {
                 assert_eq!(row_idx, 0);
                 assert_int_ty(&t, bindings.get("n").unwrap(), 42);
@@ -1620,14 +1498,7 @@ mod tests {
         let add = t.atom_lit("add");
         let subject = t.tuple(&[add, inner_a.clone(), inner_b.clone()]);
         let subject_tys = tys(&[subject]);
-        match dispatch_clauses(
-            &mut t,
-            &clauses,
-            &subject_tys,
-            &[],
-            &HashMap::new(),
-            &HashMap::new(),
-        ) {
+        match dispatch_clauses(&mut t, &clauses, &subject_tys, &[], Nominals::empty()) {
             Dispatch::MatchedRow { row_idx, bindings } => {
                 assert_eq!(row_idx, 1);
                 assert_num_tuple_ty(&t, bindings.get("a").unwrap(), 2);
@@ -1650,14 +1521,7 @@ mod tests {
             guard: None,
         }];
         let subject = tys(&[t.any()]);
-        let result = dispatch_clauses(
-            &mut t,
-            &clauses,
-            &subject,
-            &[],
-            &HashMap::new(),
-            &HashMap::new(),
-        );
+        let result = dispatch_clauses(&mut t, &clauses, &subject, &[], Nominals::empty());
         assert!(matches!(result, Dispatch::Opaque));
     }
 
@@ -1681,14 +1545,7 @@ mod tests {
             },
         ];
         let subject = tys(&[t.int_lit(0)]);
-        let result = dispatch_clauses(
-            &mut t,
-            &clauses,
-            &subject,
-            &[],
-            &HashMap::new(),
-            &HashMap::new(),
-        );
+        let result = dispatch_clauses(&mut t, &clauses, &subject, &[], Nominals::empty());
         assert!(matches!(result, Dispatch::MatchedRow { row_idx: 0, .. }));
     }
 
@@ -1709,14 +1566,7 @@ mod tests {
             guard: Some(&guard),
         }];
         let subject = tys(&[t.int_lit(7)]);
-        let result = dispatch_clauses(
-            &mut t,
-            &clauses,
-            &subject,
-            &[],
-            &HashMap::new(),
-            &HashMap::new(),
-        );
+        let result = dispatch_clauses(&mut t, &clauses, &subject, &[], Nominals::empty());
         assert!(matches!(result, Dispatch::MatchedRow { row_idx: 0, .. }));
     }
 
@@ -1743,14 +1593,7 @@ mod tests {
             },
         ];
         let subject = tys(&[t.int_lit(-3)]);
-        let result = dispatch_clauses(
-            &mut t,
-            &clauses,
-            &subject,
-            &[],
-            &HashMap::new(),
-            &HashMap::new(),
-        );
+        let result = dispatch_clauses(&mut t, &clauses, &subject, &[], Nominals::empty());
         assert!(matches!(result, Dispatch::MatchedRow { row_idx: 1, .. }));
     }
 
@@ -1769,14 +1612,7 @@ mod tests {
             guard: Some(&guard),
         }];
         let subject = tys(&[t.int()]);
-        let result = dispatch_clauses(
-            &mut t,
-            &clauses,
-            &subject,
-            &[],
-            &HashMap::new(),
-            &HashMap::new(),
-        );
+        let result = dispatch_clauses(&mut t, &clauses, &subject, &[], Nominals::empty());
         assert!(matches!(result, Dispatch::Opaque));
     }
 
@@ -1792,14 +1628,7 @@ mod tests {
         }];
         let elem = t.int_lit(1);
         let subject = tys(&[t.list(elem)]);
-        let result = dispatch_clauses(
-            &mut t,
-            &clauses,
-            &subject,
-            &[],
-            &HashMap::new(),
-            &HashMap::new(),
-        );
+        let result = dispatch_clauses(&mut t, &clauses, &subject, &[], Nominals::empty());
         assert!(matches!(result, Dispatch::Opaque));
     }
 
@@ -1819,14 +1648,7 @@ mod tests {
             guard: None,
         }];
         let subject_tys = tys(&[num_tuple_ty(&mut t, 42)]);
-        match dispatch_clauses(
-            &mut t,
-            &clauses,
-            &subject_tys,
-            &[],
-            &HashMap::new(),
-            &HashMap::new(),
-        ) {
+        match dispatch_clauses(&mut t, &clauses, &subject_tys, &[], Nominals::empty()) {
             Dispatch::MatchedRow { bindings, .. } => {
                 assert_num_tuple_ty(&t, bindings.get("whole").unwrap(), 42);
                 assert_int_ty(&t, bindings.get("n").unwrap(), 42);
@@ -1860,14 +1682,7 @@ mod tests {
             },
         ];
         let subject = tys(&[t.int_lit(7)]);
-        let result = dispatch_clauses(
-            &mut t,
-            &clauses,
-            &subject,
-            &[],
-            &HashMap::new(),
-            &HashMap::new(),
-        );
+        let result = dispatch_clauses(&mut t, &clauses, &subject, &[], Nominals::empty());
         assert!(matches!(result, Dispatch::NoMatch));
     }
 }

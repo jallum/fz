@@ -320,8 +320,7 @@ fn collect_stmt_type_diagnostics<
                     prim,
                     &env,
                     out,
-                    &module.brand_inners,
-                    &module.opaque_inners,
+                    module.nominals(),
                     tel,
                 );
                 collect_opaque_arithmetic_diagnostic(t, &f.name, spans, sidx, prim, &env, out);
@@ -510,8 +509,7 @@ fn collect_dead_binop_diagnostic<
     prim: &Prim,
     env: &HashMap<Var, crate::types::Ty>,
     out: &mut crate::diag::Diagnostics,
-    brand_inners: &HashMap<String, crate::types::Ty>,
-    opaque_inners: &HashMap<String, crate::types::Ty>,
+    nominals: crate::types::Nominals<'_>,
     tel: &dyn crate::telemetry::Telemetry,
 ) {
     use crate::diag::{Diagnostic, Span, codes::TYPE_DEAD_BINOP};
@@ -534,12 +532,12 @@ fn collect_dead_binop_diagnostic<
     // within-axis literal-disjoint pairs (`:ok == :err`) stay quiet because
     // `kinds_overlap` is true for them (deliberate lint ergonomics).
     let cross_kind = !t.kinds_overlap(&ta_ty, &tb_ty);
-    let value_disjoint = t.is_value_disjoint(&ta_ty, &tb_ty, brand_inners, opaque_inners);
+    let value_disjoint = t.is_value_disjoint(&ta_ty, &tb_ty, nominals);
     if !(cross_kind && value_disjoint) {
         // Not a genuinely-dead comparison. If it only looks disjoint because
         // of an erased brand/opaque, emit a telemetry signal and let it sail
         // — the runtime comparison is real and brand-blind (fz-bsx).
-        if t.differs_only_nominally(&ta_ty, &tb_ty, brand_inners, opaque_inners) {
+        if t.differs_only_nominally(&ta_ty, &tb_ty, nominals) {
             tel.event(
                 &["fz", "type", "brand_blind_eq"],
                 crate::metadata! { units: 1u64 },

@@ -29,6 +29,53 @@ mod visibility;
 pub use closure::{CallableClause, ClosureLitInfo, ClosureTarget, ClosureTypes};
 pub use literal::{LiteralTypes, ScalarLiteral, TypeMatch};
 pub use map::MapKey;
+
+/// A borrowed view of a module's nominal environment: the brand- and
+/// opaque-tag inner-type maps. They are only ever consulted together — to
+/// discharge a tag to its runtime representation — so they travel as one
+/// value rather than two parallel parameters. `Module::nominals` /
+/// `SpecPlan::nominals` mint a view over the owned maps; `Nominals::empty` is
+/// the no-declarations case.
+pub struct Nominals<'a, T = Ty> {
+    pub brand_inners: &'a HashMap<String, T>,
+    pub opaque_inners: &'a HashMap<String, T>,
+}
+
+// Hand-rolled so the `Copy` bound lands on the references, not on `T`
+// (a derive would demand `T: Copy`, which `Descr`/`Ty` are not).
+impl<T> Clone for Nominals<'_, T> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+impl<T> Copy for Nominals<'_, T> {}
+
+impl<'a, T> Nominals<'a, T> {
+    pub fn new(
+        brand_inners: &'a HashMap<String, T>,
+        opaque_inners: &'a HashMap<String, T>,
+    ) -> Self {
+        Self {
+            brand_inners,
+            opaque_inners,
+        }
+    }
+}
+
+#[cfg(test)]
+impl Nominals<'static, Ty> {
+    /// The empty nominal environment — no brands or opaques in scope. Shared
+    /// so a tag-free fold need not own a map. Only tests construct one
+    /// directly; production threads `Module::nominals` / `SpecPlan::nominals`.
+    pub fn empty() -> Self {
+        static EMPTY: std::sync::LazyLock<HashMap<String, Ty>> =
+            std::sync::LazyLock::new(HashMap::new);
+        Self {
+            brand_inners: &EMPTY,
+            opaque_inners: &EMPTY,
+        }
+    }
+}
 pub use poly::TypeVarId;
 pub use render::RenderTypes;
 pub(crate) use visibility::check_brand_mint_visibility;
@@ -188,29 +235,27 @@ pub trait Types {
     /// NEVER use this to decide whether two runtime values can be equal or
     /// whether a pattern can match; use `is_value_disjoint` for that.
     fn is_disjoint(&self, a: &Self::Ty, b: &Self::Ty) -> bool;
-    /// fz-bsx.1 — brand-BLIND disjointness in the runtime-representation
-    /// model: true iff no two runtime values of `a`/`b` can ever be equal /
-    /// match. The ONLY disjointness that may authorize folding `==`/`!=` or
-    /// pruning a pattern arm. Tags are discharged via the inner-type maps.
+    /// Brand-BLIND disjointness in the runtime-representation model: true iff
+    /// no two runtime values of `a`/`b` can ever be equal / match. The ONLY
+    /// disjointness that may authorize folding `==`/`!=` or pruning a pattern
+    /// arm. Tags are discharged through `nominals`.
     fn is_value_disjoint(
         &self,
         a: &Self::Ty,
         b: &Self::Ty,
-        brand_inners: &HashMap<String, Self::Ty>,
-        opaque_inners: &HashMap<String, Self::Ty>,
+        nominals: Nominals<'_, Self::Ty>,
     ) -> bool;
-    /// fz-bsx.1 — true iff `a`/`b` are brand-AWARE disjoint yet NOT
-    /// value-disjoint: i.e. they differ only by a brand/opaque the runtime
-    /// erases. This is exactly the set of comparisons the old brand-aware
-    /// fold broke; consumers emit a telemetry signal on it.
+    /// True iff `a`/`b` are brand-AWARE disjoint yet NOT value-disjoint: they
+    /// differ only by a brand/opaque the runtime erases. This is exactly the
+    /// set of comparisons the old brand-aware fold broke; consumers emit a
+    /// telemetry signal on it.
     fn differs_only_nominally(
         &self,
         a: &Self::Ty,
         b: &Self::Ty,
-        brand_inners: &HashMap<String, Self::Ty>,
-        opaque_inners: &HashMap<String, Self::Ty>,
+        nominals: Nominals<'_, Self::Ty>,
     ) -> bool {
-        self.is_disjoint(a, b) && !self.is_value_disjoint(a, b, brand_inners, opaque_inners)
+        self.is_disjoint(a, b) && !self.is_value_disjoint(a, b, nominals)
     }
     fn is_equivalent(&self, a: &Self::Ty, b: &Self::Ty) -> bool;
 

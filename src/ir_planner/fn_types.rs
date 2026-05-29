@@ -66,6 +66,12 @@ impl CallableCapability {
 }
 
 impl SpecPlan {
+    /// A borrowed view of the brand/opaque inner-type maps copied from the
+    /// module, for codegen's brand-blind value-equality fold.
+    pub fn nominals(&self) -> crate::types::Nominals<'_> {
+        crate::types::Nominals::new(&self.brand_inners, &self.opaque_inners)
+    }
+
     pub fn known_fn(&self, var: &Var) -> Option<FnId> {
         self.callable_capabilities
             .get(var)
