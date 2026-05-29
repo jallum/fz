@@ -728,7 +728,52 @@ pub fn inline_tail_calls_once(m: &mut Module) -> usize {
 /// where `callee` is inlinable, inline the callee body and rewrite each
 /// `Return(v')` in the callee to `TailCall(K, [v', captured...])`.
 /// Returns the number of inlinings performed.
-fn inline_calls_once_protecting(m: &mut Module, protected_fns: &HashSet<FnId>) -> usize {
+/// True when `v` is bound in `caller` to a value the reducer can evaluate: a
+/// scalar `Const` or a zero-capture `MakeClosure` (a bare function identity).
+fn is_reducer_literal(caller: &crate::fz_ir::FnIr, v: Var) -> bool {
+    caller.blocks.iter().any(|b| {
+        b.stmts.iter().any(|Stmt::Let(bound, prim)| {
+            *bound == v
+                && match prim {
+                    Prim::Const(_) => true,
+                    Prim::MakeClosure(_, _, caps) => caps.is_empty(),
+                    _ => false,
+                }
+        })
+    })
+}
+
+/// A higher-order call whose arguments are all reducer-literals and which
+/// passes at least one bare function identity (a zero-capture `MakeClosure`) is
+/// fully evaluable by the reducer to a single literal. Inlining it first would
+/// splice the composition into an arithmetic chain the post-inline reducer can
+/// no longer collapse (it folds calls, not `Let` statements), so such call
+/// sites are left for the reducer — matching the pre-capability behavior where
+/// e.g. `compose(double, neg, 5)` became one `Const`.
+///
+/// The closure-argument requirement scopes this to higher-order composition.
+/// Plain constant calls (`fib(5)`, a boxed-int fold) keep inlining as before —
+/// inlining then folding is what makes *those* collapse — and calls with a
+/// non-literal argument (`map(double, list)`) inline normally.
+fn call_is_higher_order_constant(caller: &crate::fz_ir::FnIr, args: &[Var]) -> bool {
+    !args.is_empty()
+        && args.iter().all(|a| is_reducer_literal(caller, *a))
+        && args.iter().any(|a| is_zero_capture_closure(caller, *a))
+}
+
+fn is_zero_capture_closure(caller: &crate::fz_ir::FnIr, v: Var) -> bool {
+    caller.blocks.iter().any(|b| {
+        b.stmts.iter().any(|Stmt::Let(bound, prim)| {
+            *bound == v && matches!(prim, Prim::MakeClosure(_, _, caps) if caps.is_empty())
+        })
+    })
+}
+
+fn inline_calls_once_protecting(
+    m: &mut Module,
+    protected_fns: &HashSet<FnId>,
+    fold_skip: &HashSet<FnId>,
+) -> usize {
     let mut count = 0;
 
     type InlineWorkItem = (
@@ -792,6 +837,13 @@ fn inline_calls_once_protecting(m: &mut Module, protected_fns: &HashSet<FnId>) -
         if !is_inlinable(&m.fns[callee_idx]) {
             continue;
         }
+        // Leave a pure higher-order constant call for the reducer to fold to a
+        // literal instead of inlining it into an uncollapsible chain. Gated on
+        // callee purity so effectful higher-order calls (e.g. `spawn(relay)`)
+        // still inline normally.
+        if fold_skip.contains(&callee_id) && call_is_higher_order_constant(&m.fns[fi], &args) {
+            continue;
+        }
 
         let callee = m.fns[callee_idx].clone();
         let caller = &m.fns[fi];
@@ -829,7 +881,7 @@ fn inline_calls_once_protecting(m: &mut Module, protected_fns: &HashSet<FnId>) -
 
 #[cfg(test)]
 pub fn inline_calls_once(m: &mut Module) -> usize {
-    inline_calls_once_protecting(m, &closure_targets(m))
+    inline_calls_once_protecting(m, &closure_targets(m), &HashSet::new())
 }
 
 // ---------- pass: inline_single_use_conts_once ----------
@@ -1048,21 +1100,41 @@ pub fn inline_single_use_conts(m: &mut Module) {
 /// Returns total inlinings performed.
 #[cfg(test)]
 pub fn inline_module(m: &mut Module) -> usize {
-    inline_module_protecting(m, &closure_targets(m))
+    inline_module_protecting(m, &closure_targets(m), &HashSet::new())
 }
 
 pub fn inline_module_with_plan(m: &mut Module, types: &ModulePlan) -> usize {
-    inline_module_protecting(m, &stateful_closure_targets(types))
+    // Fns the reducer can evaluate when handed constant args: no externally
+    // observable effect, no scheduler/mailbox interaction, no halt, no
+    // allocation-stat read. `calls_opaque` (a fn calling its own closure
+    // params, e.g. `compose`) is intentionally allowed — at a fully-constant
+    // call site those params are known fns the reducer resolves; if a resolved
+    // target turns out effectful the reducer declines and the call stays
+    // inlinable. Effectful higher-order calls like `spawn(relay)` are excluded
+    // here (scheduler_visible) and inline normally.
+    let fold_skip: HashSet<FnId> = types
+        .fn_effects
+        .iter()
+        .filter(|(_, eff)| {
+            !eff.observable && !eff.scheduler_visible && !eff.halts && !eff.reads_allocation_stats
+        })
+        .map(|(fid, _)| *fid)
+        .collect();
+    inline_module_protecting(m, &stateful_closure_targets(types), &fold_skip)
 }
 
-fn inline_module_protecting(m: &mut Module, protected_fns: &HashSet<FnId>) -> usize {
+fn inline_module_protecting(
+    m: &mut Module,
+    protected_fns: &HashSet<FnId>,
+    fold_skip: &HashSet<FnId>,
+) -> usize {
     let base_stmts: usize = m.fns.iter().map(stmt_count).sum();
     let cap = base_stmts * GROWTH_CAP + 1;
     let mut total = 0;
 
     for _ in 0..MAX_ITERATIONS {
         let n = inline_tail_calls_once_protecting(m, protected_fns)
-            + inline_calls_once_protecting(m, protected_fns);
+            + inline_calls_once_protecting(m, protected_fns, fold_skip);
         if n == 0 {
             break;
         }
@@ -1927,6 +1999,75 @@ mod tests {
                 }
             )),
             "KnownClosure target carries state and must remain callable"
+        );
+    }
+
+    #[test]
+    fn inline_module_with_plan_defers_constant_higher_order_call_to_reducer() {
+        // apply(f, x) = f(x) — pure (calls only its closure param).
+        let mut ab = FnBuilder::new(FnId(2), "apply");
+        let f = ab.fresh_var();
+        let x = ab.fresh_var();
+        let ae = ab.block(vec![f, x]);
+        ab.set_terminator(
+            ae,
+            Term::TailCallClosure {
+                ident: crate::fz_ir::CallsiteIdent::synthetic(),
+                closure: f,
+                args: vec![x],
+            },
+        );
+
+        // main() = apply(add1, 5) — a constant higher-order call (a bare fn
+        // identity plus a literal). It should be LEFT for the reducer to fold,
+        // not inlined into an uncollapsible chain.
+        let mut mainb = FnBuilder::new(FnId(0), "main");
+        let e0 = mainb.block(vec![]);
+        let clo = mainb.let_(
+            e0,
+            Prim::MakeClosure(crate::fz_ir::CallsiteIdent::synthetic(), FnId(1), vec![]),
+        );
+        let c = mainb.let_(e0, Prim::Const(Const::Int(5)));
+        mainb.set_terminator(
+            e0,
+            Term::Call {
+                ident: crate::fz_ir::CallsiteIdent::synthetic(),
+                callee: FnId(2),
+                args: vec![clo, c],
+                continuation: Cont {
+                    fn_id: FnId(3),
+                    captured: vec![],
+                },
+            },
+        );
+
+        // k(r) = return r — the continuation.
+        let mut kb = FnBuilder::new(FnId(3), "k");
+        let r = kb.fresh_var();
+        let ke = kb.block(vec![r]);
+        kb.set_terminator(ke, Term::Return(r));
+
+        let mut mb = ModuleBuilder::new();
+        mb.add_fn(mainb.build());
+        mb.add_fn(make_leaf_add1());
+        mb.add_fn(ab.build());
+        mb.add_fn(kb.build());
+        let mut m = mb.build();
+        let plan = crate::ir_planner::plan_module(
+            &mut crate::types::ConcreteTypes,
+            &m,
+            &crate::telemetry::NullTelemetry,
+        );
+
+        inline_module_with_plan(&mut m, &plan);
+        let main = m.fns.iter().find(|f| f.name == "main").unwrap();
+        assert!(
+            main.blocks.iter().any(|b| matches!(
+                &b.terminator,
+                Term::Call { callee, .. } if *callee == FnId(2)
+            )),
+            "a pure constant higher-order call must be left as a call for the \
+             reducer to fold, not inlined"
         );
     }
 
