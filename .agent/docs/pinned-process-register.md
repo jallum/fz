@@ -31,25 +31,27 @@ pub const PROCESS_YIELD_REASONS_OFFSET: i32 =
 Each offset has a test asserting it equals the field's real offset in `Process`.
 Only fields listed in this module are fair game for direct CLIF access.
 
-## Dual invariant with `CURRENT_PROCESS`
+## Sole process handle for compiled code
 
-The pinned register does **not** replace the `CURRENT_PROCESS` thread-local.
-Runtime helper functions called from generated code still resolve the process
-through `current_process()` (the TLS pointer). The invariant is that both views
-agree: every scheduler-facing generated entry sets the pinned register to the
-same `Process*` the scheduler installed in TLS, and restores the host's pinned
-register before returning to Rust.
+The pinned register is the **only** way generated code names the running
+process — there is no ambient thread-local. Runtime helper functions (BIFs)
+called from generated code receive the process as their leading argument, which
+codegen supplies by reading the pinned register (`get_pinned_reg`) at the call
+site. Every scheduler-facing generated entry sets the pinned register to the
+`Process*` the scheduler is dispatching, and restores the host's pinned register
+before returning to Rust.
 
 ```text
-CURRENT_PROCESS = process_ptr        # for runtime helpers
 save host_pinned_reg
-host_pinned_reg = process_ptr        # for generated code
+host_pinned_reg = process_ptr        # for generated code + BIF args
 call fz_entry(...)
 restore host_pinned_reg
 ```
 
 Because the wrapper preserves Rust's ABI at the boundary, the pinned register
-survives ordinary runtime-helper calls made from within generated code.
+survives ordinary runtime-helper calls made from within generated code. (The
+old `CURRENT_PROCESS` thread-local was retired in fz-vdt — the process is now
+threaded per call, never ambient, so two schedulers can be live at once.)
 
 ## Entry coverage
 

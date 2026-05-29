@@ -71,8 +71,8 @@ thread_local! {
     /// Per-context dispatch table for the AOT run. AOT has no binary Runtime,
     /// telemetry sink, or IR module, so those handles stay null; the callbacks
     /// are the AOT eager-sync hooks installed in `fz_aot_setup`. Every AOT
-    /// task points its `Process.ctx` here. Populated at setup; not yet read for
-    /// dispatch (the `fz-vdt` arc moves readers onto `process->ctx`).
+    /// task points its `Process.ctx` here, and the spawn/send/make_resource/
+    /// timer BIFs dispatch through it.
     static AOT_EXEC_CTX: Cell<ExecCtx> = const { Cell::new(ExecCtx::empty()) };
 }
 

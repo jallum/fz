@@ -252,8 +252,9 @@ impl IrInterpRuntime {
         // is its own scheduler and handles spawn/send/timer in-engine, so the
         // BIF callbacks stay None; the scheduler handle and telemetry sink
         // identify this run, and `module` is refreshed per task below. Lives on
-        // this stack frame, which outlives every quantum. Populated now; not
-        // yet read for dispatch.
+        // this stack frame, which outlives every quantum; each task's
+        // `Process.ctx` points here and BIFs dispatch output/make_resource
+        // through it.
         let mut exec_ctx = fz_runtime::exec_ctx::ExecCtx {
             scheduler: self as *mut Self as *mut (),
             tel: (&tel) as *const &dyn crate::telemetry::Telemetry as *const (),

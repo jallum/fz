@@ -59,10 +59,11 @@ pub struct Process {
     /// Execution-context dispatch table for this task: scheduler services,
     /// telemetry sink, and IR module, reached explicitly by BIFs instead of
     /// through thread-local singletons. Set by the owning scheduler (JIT
-    /// `Runtime`, interpreter, or AOT shim); the pointee outlives any FFI call
-    /// made under this process. Null until a scheduler installs one. The
-    /// `CURRENT_PROCESS`-era globals it supersedes are removed across the
-    /// `fz-vdt` arc; until then it is populated but not yet read for dispatch.
+    /// `Runtime`, interpreter, or AOT shim) at each quantum entry; the pointee
+    /// outlives any FFI call made under this process. Null until a scheduler
+    /// installs one. The spawn/send/make_resource/timer/output BIFs dispatch
+    /// through it — this is what replaced the `CURRENT_PROCESS`-era thread-local
+    /// singletons (removed in `fz-vdt`), so two schedulers can be live at once.
     pub ctx: *mut crate::exec_ctx::ExecCtx,
     pub halt_value: i64,
     pub bs_builder: Option<crate::bitstr::BitWriter>,
