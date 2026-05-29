@@ -247,6 +247,7 @@ pub(crate) fn emit_terminator<
     frame_ptr: Option<ir::Value>,
     host_ctx: Option<ir::Value>,
     cont_param: Option<ir::Value>,
+    var_types: &HashMap<crate::fz_ir::Var, crate::types::Ty>,
     block_env: Option<&HashMap<crate::fz_ir::Var, crate::types::Ty>>,
 ) -> Result<(), CodegenError> {
     match &blk.terminator {
@@ -263,6 +264,7 @@ pub(crate) fn emit_terminator<
             t,
             env,
             var_env,
+            var_types,
             block_env,
             is_native,
             is_cont_fn,
@@ -461,6 +463,7 @@ fn emit_return_term<
     t: &mut T,
     env: &CodegenEnv<'_>,
     var_env: &HashMap<u32, CodegenValue>,
+    var_types: &HashMap<crate::fz_ir::Var, crate::types::Ty>,
     block_env: Option<&HashMap<crate::fz_ir::Var, crate::types::Ty>>,
     is_native: bool,
     is_cont_fn: bool,
@@ -514,7 +517,10 @@ fn emit_return_term<
                 let mut cont_args = Vec::with_capacity(fields.len() + 1);
                 for field in fields {
                     let binding = *var_env.get(&field.0).expect("unbound tuple return field");
-                    let repr = binding.repr();
+                    let repr = var_types
+                        .get(&field)
+                        .map(|ty| ArgRepr::from_ty(t, ty))
+                        .unwrap_or_else(|| binding.repr());
                     push_repr_param(&mut sig, repr);
                     body.push_binding_as_abi_arg(&mut cont_args, binding, repr);
                 }

@@ -286,6 +286,7 @@ pub(crate) fn compile_fn<
             frame_ptr,
             host_ctx,
             cont_param,
+            &fn_types.vars,
             block_env,
         )?;
     }

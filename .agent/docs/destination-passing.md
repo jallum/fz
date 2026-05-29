@@ -106,6 +106,13 @@ Current rendered forms:
   list-tail capture. This is rendered as
   `tuple_fields(N, list_tail(tail_ty))`.
 
+`TupleFields(N)` is an input-delivery capability for the continuation that
+immediately consumes the callee result. It must not leak through that
+continuation into tail calls made with a captured outer continuation. At that
+boundary the tuple-field proof has ended, so tail-call planning collapses the
+tuple-field portion back to material `Value` delivery while preserving any
+independently-proven `ListTail` context.
+
 ListTail is the first typed return-context instance. For the source shape:
 
 ```text

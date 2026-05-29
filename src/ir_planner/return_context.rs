@@ -38,11 +38,21 @@ pub(crate) fn direct_call_return_plan<T: crate::types::Types<Ty = crate::types::
 }
 
 pub(crate) fn tail_call_return_plan(
+    m: &Module,
     caller_spec_key: &SpecKey,
     callee: FnId,
     args: &[Var],
 ) -> (ReturnDemand, Option<ReturnContextPlan>) {
-    let demand = caller_spec_key.demand.clone();
+    let demand = if caller_spec_key.demand.tuple_field_arity().is_some()
+        && is_continuation_fn(m, caller_spec_key.fn_id)
+    {
+        match caller_spec_key.demand.list_tail_ty() {
+            Some(tail_ty) => ReturnDemand::list_tail(tail_ty.clone()),
+            None => ReturnDemand::value(),
+        }
+    } else {
+        caller_spec_key.demand.clone()
+    };
     let context_plan = match demand.list_tail_ty() {
         Some(tail_ty) if args.len() >= 2 => Some(ReturnContextPlan::TailCallDestination {
             callee,
@@ -53,6 +63,23 @@ pub(crate) fn tail_call_return_plan(
         _ => None,
     };
     (demand, context_plan)
+}
+
+fn is_continuation_fn(m: &Module, fn_id: FnId) -> bool {
+    m.fns.iter().any(|f| {
+        f.blocks.iter().any(|b| match &b.terminator {
+            Term::Call { continuation, .. }
+            | Term::CallClosure { continuation, .. }
+            | Term::Receive { continuation, .. } => continuation.fn_id == fn_id,
+            Term::ReceiveMatched { clauses, after, .. } => {
+                clauses
+                    .iter()
+                    .any(|clause| clause.body == fn_id || clause.guard == Some(fn_id))
+                    || after.as_ref().is_some_and(|after| after.body == fn_id)
+            }
+            _ => false,
+        })
+    })
 }
 
 pub(crate) fn continuation_return_demand(

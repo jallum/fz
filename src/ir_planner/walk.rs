@@ -389,7 +389,7 @@ where
             } else if matches!(term, Term::TailCall { .. }) {
                 let target_fn = entry_key.fn_id;
                 let (demand, context_plan) =
-                    tail_call_return_plan(self.caller_spec_key, target_fn, args);
+                    tail_call_return_plan(self.m, self.caller_spec_key, target_fn, args);
                 entry_key.demand = demand;
                 self.out
                     .record_dispatch(self.caller_spec_key, term_ident, slot, entry_key.clone());
@@ -432,7 +432,8 @@ where
             self.out
                 .record_return_use(&cid, entry_key.demand.clone(), context_plan);
         } else if matches!(term, Term::TailCall { .. }) {
-            let (demand, context_plan) = tail_call_return_plan(self.caller_spec_key, callee, args);
+            let (demand, context_plan) =
+                tail_call_return_plan(self.m, self.caller_spec_key, callee, args);
             entry_key.demand = demand;
             self.out
                 .record_dispatch(self.caller_spec_key, term_ident, slot, entry_key.clone());

@@ -208,9 +208,7 @@ fn eliminate_constant_closure_values(
             }
         }
         let param_tainted = |fn_id: FnId, pos: usize| -> bool {
-            tainted_params
-                .get(&fn_id)
-                .is_some_and(|s| s.contains(&pos))
+            tainted_params.get(&fn_id).is_some_and(|s| s.contains(&pos))
         };
 
         let mut cand_makeclosure: HashSet<(FnId, Var)> = HashSet::new();
