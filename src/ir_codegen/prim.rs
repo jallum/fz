@@ -1121,6 +1121,19 @@ pub(crate) fn lower_prim<
             if decl.symbol == "fz_self" && args.is_empty() {
                 return lower_extern_fz_self(body.b, body.jmod);
             }
+            if decl.symbol == "fz_process_heap_alloc_stats" && args.is_empty() {
+                let process = body.process_arg();
+                let sig = sig1(&[types::I64], &[types::I64]);
+                let func_id = body
+                    .jmod
+                    .declare_function("fz_process_heap_alloc_stats", Linkage::Import, &sig)
+                    .map_err(|e| {
+                        CodegenError::new(format!("declare fz_process_heap_alloc_stats: {}", e))
+                    })?;
+                let fref = body.jmod.declare_func_in_func(func_id, body.b.func);
+                let inst = body.b.ins().call(fref, &[process]);
+                return Ok(LowerOut::ValueRef(body.b.inst_results(inst)[0]));
+            }
             if decl.symbol == "fz_make_ref" && args.is_empty() {
                 return lower_extern_fz_make_ref(body.b, body.jmod);
             }

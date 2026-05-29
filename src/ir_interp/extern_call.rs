@@ -145,7 +145,7 @@ pub(super) fn call_extern<T: Types<Ty = crate::types::Ty>>(
                 ));
             }
             return interp_value_from_extern_ref_word(
-                fz_runtime::ir_runtime::fz_process_heap_alloc_stats(),
+                fz_runtime::ir_runtime::fz_process_heap_alloc_stats(runtime.cur_proc()),
             );
         }
         // Spawn/send/self need the interpreter's own scheduler — the C
@@ -286,13 +286,10 @@ pub(super) fn resolve_symbol(name: &str) -> Result<*const (), String> {
         return Ok(fp);
     }
     let native: Option<*const ()> = match name {
-        // fz_dbg_value / fz_panic are process intrinsics special-cased in
-        // call_extern above; their widened BIF ABI (leading process arg) no
-        // longer matches the generic FFI path, so they must never be resolved
-        // as plain symbols here.
-        "fz_process_heap_alloc_stats" => {
-            Some(fz_runtime::ir_runtime::fz_process_heap_alloc_stats as *const ())
-        }
+        // fz_dbg_value / fz_panic / fz_process_heap_alloc_stats are process
+        // intrinsics special-cased in call_extern above; their widened BIF ABI
+        // (leading process arg) no longer matches the generic FFI path, so they
+        // must never be resolved as plain symbols here.
         // fz-swt.11 — fixture/test dtor exported from the runtime crate.
         // Bound here so interp-leg invocations of fixtures using this
         // symbol (e.g. when `fz interp` is run by hand on the AOT-only

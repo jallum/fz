@@ -20,7 +20,7 @@
 
 use crate::any_value::AnyValueRef;
 use crate::any_value::ValueKind;
-use crate::process::{Process, current_process};
+use crate::process::Process;
 
 static NIL_ATOM_REF_SLOT: u64 = crate::any_value::NIL_ATOM_ID as u64;
 
@@ -95,8 +95,8 @@ fn map_ref_word_from_bits(bits: u64) -> u64 {
     heap_ref_word(ValueKind::MAP, addr)
 }
 
-fn process_atom_id(name: &str) -> u32 {
-    let process = current_process();
+fn process_atom_id(process: *mut Process, name: &str) -> u32 {
+    let process = unsafe { &mut *process };
     if let Some(id) = process
         .atom_names
         .iter()
@@ -110,12 +110,13 @@ fn process_atom_id(name: &str) -> u32 {
 }
 
 fn alloc_stat_entries(
+    process: *mut Process,
     entries: &mut Vec<(crate::any_value::AnyValue, crate::any_value::AnyValue)>,
     prefix: &str,
     stat: crate::heap::AllocStat,
 ) {
-    let allocs_key = process_atom_id(&format!("{prefix}_allocs"));
-    let bytes_key = process_atom_id(&format!("{prefix}_bytes"));
+    let allocs_key = process_atom_id(process, &format!("{prefix}_allocs"));
+    let bytes_key = process_atom_id(process, &format!("{prefix}_bytes"));
     entries.push((
         crate::any_value::AnyValue::atom(allocs_key),
         crate::any_value::AnyValue::int(stat.allocs as i64),
@@ -127,90 +128,91 @@ fn alloc_stat_entries(
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_process_heap_alloc_stats() -> u64 {
-    let process = current_process();
-    let snapshot = process.heap.alloc_stats_snapshot();
-    let scheduler_yields = process.scheduler_yields;
-    let interpreter_yields = process.interpreter_yields;
-    let reductions_remaining = process.reductions_remaining;
-    let reductions_per_quantum = process.reductions_per_quantum;
-    let reductions_executed = process.reductions_executed;
-    let reduction_yields = process.reduction_yields;
-    let allocation_pressure_yields = process.allocation_pressure_yields;
-    let yield_reasons = process.yield_reasons;
-    let max_yield_continuation_bytes = process.max_yield_continuation_bytes;
-    let min_yield_continuation_margin_before_bytes =
-        process.min_yield_continuation_margin_before_bytes;
-    let min_yield_continuation_margin_after_bytes =
-        process.min_yield_continuation_margin_after_bytes;
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn fz_process_heap_alloc_stats(process: *mut Process) -> u64 {
+    let p = unsafe { &mut *process };
+    let snapshot = p.heap.alloc_stats_snapshot();
+    let scheduler_yields = p.scheduler_yields;
+    let interpreter_yields = p.interpreter_yields;
+    let reductions_remaining = p.reductions_remaining;
+    let reductions_per_quantum = p.reductions_per_quantum;
+    let reductions_executed = p.reductions_executed;
+    let reduction_yields = p.reduction_yields;
+    let allocation_pressure_yields = p.allocation_pressure_yields;
+    let yield_reasons = p.yield_reasons;
+    let max_yield_continuation_bytes = p.max_yield_continuation_bytes;
+    let min_yield_continuation_margin_before_bytes = p.min_yield_continuation_margin_before_bytes;
+    let min_yield_continuation_margin_after_bytes = p.min_yield_continuation_margin_after_bytes;
     let mut entries = Vec::with_capacity(33);
     entries.push((
-        crate::any_value::AnyValue::atom(process_atom_id("allocs")),
+        crate::any_value::AnyValue::atom(process_atom_id(process, "allocs")),
         crate::any_value::AnyValue::int(snapshot.total.allocs as i64),
     ));
     entries.push((
-        crate::any_value::AnyValue::atom(process_atom_id("bytes")),
+        crate::any_value::AnyValue::atom(process_atom_id(process, "bytes")),
         crate::any_value::AnyValue::int(snapshot.total.bytes as i64),
     ));
-    alloc_stat_entries(&mut entries, "list_cons", snapshot.list_cons);
-    alloc_stat_entries(&mut entries, "struct", snapshot.struct_);
-    alloc_stat_entries(&mut entries, "closure", snapshot.closure);
-    alloc_stat_entries(&mut entries, "map", snapshot.map);
-    alloc_stat_entries(&mut entries, "bitstring", snapshot.bitstring);
-    alloc_stat_entries(&mut entries, "procbin", snapshot.procbin);
-    alloc_stat_entries(&mut entries, "scalar_box", snapshot.scalar_box);
-    alloc_stat_entries(&mut entries, "frame", snapshot.frame);
-    alloc_stat_entries(&mut entries, "resource", snapshot.resource);
-    alloc_stat_entries(&mut entries, "other", snapshot.other);
+    alloc_stat_entries(process, &mut entries, "list_cons", snapshot.list_cons);
+    alloc_stat_entries(process, &mut entries, "struct", snapshot.struct_);
+    alloc_stat_entries(process, &mut entries, "closure", snapshot.closure);
+    alloc_stat_entries(process, &mut entries, "map", snapshot.map);
+    alloc_stat_entries(process, &mut entries, "bitstring", snapshot.bitstring);
+    alloc_stat_entries(process, &mut entries, "procbin", snapshot.procbin);
+    alloc_stat_entries(process, &mut entries, "scalar_box", snapshot.scalar_box);
+    alloc_stat_entries(process, &mut entries, "frame", snapshot.frame);
+    alloc_stat_entries(process, &mut entries, "resource", snapshot.resource);
+    alloc_stat_entries(process, &mut entries, "other", snapshot.other);
     entries.push((
-        crate::any_value::AnyValue::atom(process_atom_id("scheduler_yields")),
+        crate::any_value::AnyValue::atom(process_atom_id(process, "scheduler_yields")),
         crate::any_value::AnyValue::int(scheduler_yields as i64),
     ));
     entries.push((
-        crate::any_value::AnyValue::atom(process_atom_id("interpreter_yields")),
+        crate::any_value::AnyValue::atom(process_atom_id(process, "interpreter_yields")),
         crate::any_value::AnyValue::int(interpreter_yields as i64),
     ));
     entries.push((
-        crate::any_value::AnyValue::atom(process_atom_id("reductions_remaining")),
+        crate::any_value::AnyValue::atom(process_atom_id(process, "reductions_remaining")),
         crate::any_value::AnyValue::int(reductions_remaining as i64),
     ));
     entries.push((
-        crate::any_value::AnyValue::atom(process_atom_id("reductions_per_quantum")),
+        crate::any_value::AnyValue::atom(process_atom_id(process, "reductions_per_quantum")),
         crate::any_value::AnyValue::int(reductions_per_quantum as i64),
     ));
     entries.push((
-        crate::any_value::AnyValue::atom(process_atom_id("reductions_executed")),
+        crate::any_value::AnyValue::atom(process_atom_id(process, "reductions_executed")),
         crate::any_value::AnyValue::int(reductions_executed as i64),
     ));
     entries.push((
-        crate::any_value::AnyValue::atom(process_atom_id("reduction_yields")),
+        crate::any_value::AnyValue::atom(process_atom_id(process, "reduction_yields")),
         crate::any_value::AnyValue::int(reduction_yields as i64),
     ));
     entries.push((
-        crate::any_value::AnyValue::atom(process_atom_id("allocation_pressure_yields")),
+        crate::any_value::AnyValue::atom(process_atom_id(process, "allocation_pressure_yields")),
         crate::any_value::AnyValue::int(allocation_pressure_yields as i64),
     ));
     entries.push((
-        crate::any_value::AnyValue::atom(process_atom_id("yield_reasons")),
+        crate::any_value::AnyValue::atom(process_atom_id(process, "yield_reasons")),
         crate::any_value::AnyValue::int(yield_reasons as i64),
     ));
     entries.push((
-        crate::any_value::AnyValue::atom(process_atom_id("max_yield_continuation_bytes")),
+        crate::any_value::AnyValue::atom(process_atom_id(process, "max_yield_continuation_bytes")),
         crate::any_value::AnyValue::int(max_yield_continuation_bytes as i64),
     ));
     entries.push((
         crate::any_value::AnyValue::atom(process_atom_id(
+            process,
             "min_yield_continuation_margin_before_bytes",
         )),
         crate::any_value::AnyValue::int(min_yield_continuation_margin_before_bytes as i64),
     ));
     entries.push((
         crate::any_value::AnyValue::atom(process_atom_id(
+            process,
             "min_yield_continuation_margin_after_bytes",
         )),
         crate::any_value::AnyValue::int(min_yield_continuation_margin_after_bytes as i64),
     ));
-    map_ref_word_from_bits(current_process().heap.alloc_map_slots(&entries))
+    map_ref_word_from_bits((unsafe { &mut *process }).heap.alloc_map_slots(&entries))
 }
 
 fn map_bits_from_ref_word(word: u64, context: &str) -> u64 {
@@ -2537,6 +2539,7 @@ mod tests {
     use crate::any_value::{AnyValue, AnyValueRef, ValueKind};
     use crate::heap::SchemaRegistry;
     use crate::procbin::{bitstring_bit_len, bitstring_byte_ptr};
+    use crate::process::current_process;
     use crate::process::{CURRENT_PROCESS, CurrentProcessGuard, Process};
     use std::cell::RefCell;
     use std::rc::Rc;
@@ -2586,7 +2589,7 @@ mod tests {
             .heap
             .alloc_list_cons_slot(AnyValue::int(1), crate::any_value::EMPTY_LIST_BITS);
 
-        let stats_ref = fz_process_heap_alloc_stats();
+        let stats_ref = fz_process_heap_alloc_stats(current_process());
         assert_eq!(map_int_value_by_atom_name(stats_ref, "allocs"), 1);
         assert_eq!(map_int_value_by_atom_name(stats_ref, "list_cons_allocs"), 1);
         assert_eq!(map_int_value_by_atom_name(stats_ref, "map_allocs"), 0);
