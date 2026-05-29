@@ -629,11 +629,15 @@ impl<'a> Runtime<'a> {
                 let ptr: *mut Process = &mut *task;
                 let prev = CURRENT_PROCESS.with(|c| c.replace(ptr));
                 fz_runtime::procbin::mso_drop_all_deferred(&mut task.heap);
-                type DrainDtor = extern "C" fn(u64, u64) -> i64;
-                let drain: DrainDtor =
-                    unsafe { std::mem::transmute(self.compiled.drain_dtor_entry_addr) };
+                // Enter the dtor body through pinned_abi so the pinned register
+                // holds this process: the dtor is real fz code and its closure
+                // BIFs (alloc_closure, get_halt_cont, …) read the process from
+                // the pinned register, like every other scheduler-facing entry.
+                let drain_addr = self.compiled.drain_dtor_entry_addr;
                 while let Some((closure, payload_ref)) = task.heap.pending_dtors.pop_front() {
-                    let _ = drain(closure, payload_ref);
+                    let _ = unsafe {
+                        fz_runtime::pinned_abi::call2(drain_addr, ptr, closure, payload_ref)
+                    };
                 }
                 CURRENT_PROCESS.with(|c| c.set(prev));
                 ExitRecord::emit(self.tel, pid, &task);

@@ -738,7 +738,7 @@ fn declare_closure_runtime<M: cranelift_module::Module>(
     let alloc_closure_id = decl_import(
         jmod,
         "fz_alloc_closure",
-        &[types::I32, types::I32, types::I32, types::I64],
+        &[types::I64, types::I32, types::I32, types::I32, types::I64],
         &[types::I64],
     )?;
     let closure_code_ref_id =
@@ -749,8 +749,12 @@ fn declare_closure_runtime<M: cranelift_module::Module>(
         &[types::I64],
         &[types::I32],
     )?;
-    let materialize_cont_id =
-        decl_import(jmod, "fz_materialize_cont", &[types::I64], &[types::I64])?;
+    let materialize_cont_id = decl_import(
+        jmod,
+        "fz_materialize_cont",
+        &[types::I64, types::I64],
+        &[types::I64],
+    )?;
     let closure_get_capture_ref_id = decl_import(
         jmod,
         "fz_closure_get_capture_ref",
@@ -772,25 +776,29 @@ fn declare_closure_runtime<M: cranelift_module::Module>(
     let closure_set_capture_ref_id = decl_import(
         jmod,
         "fz_closure_set_capture_ref",
-        &[types::I64, types::I64, types::I64],
+        &[types::I64, types::I64, types::I64, types::I64],
         &[],
     )?;
     let closure_set_capture_i64_id = decl_import(
         jmod,
         "fz_closure_set_capture_i64",
-        &[types::I64, types::I64, types::I64],
+        &[types::I64, types::I64, types::I64, types::I64],
         &[],
     )?;
     let closure_set_capture_f64_id = decl_import(
         jmod,
         "fz_closure_set_capture_f64",
-        &[types::I64, types::I64, types::F64],
+        &[types::I64, types::I64, types::I64, types::F64],
         &[],
     )?;
     // Static zero-capture closure singleton lookup. Returns the per-Process
     // singleton pointer for the given cl_sid.
-    let get_static_closure_id =
-        decl_import(jmod, "fz_get_static_closure", &[types::I32], &[types::I64])?;
+    let get_static_closure_id = decl_import(
+        jmod,
+        "fz_get_static_closure",
+        &[types::I64, types::I32],
+        &[types::I64],
+    )?;
     Ok(ClosureRefs {
         alloc_closure_id,
         closure_code_ref_id,
@@ -864,7 +872,7 @@ fn declare_halt_cont_runtime<M: cranelift_module::Module>(
     let get_halt_cont_id = decl_import(
         jmod,
         "fz_get_halt_cont",
-        &[types::I64, types::I32],
+        &[types::I64, types::I64, types::I32],
         &[types::I64],
     )?;
     // Three fz_halt_cont_body variants, declared LOCAL (bodies emitted

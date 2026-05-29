@@ -114,8 +114,14 @@ fn static_closure_lookup_returns_singleton_pointer() {
     let mut p = compiled.make_process();
     let _current_process =
         fz_runtime::process::CurrentProcessGuard::install(&mut p as *mut Process);
-    let a = fz_runtime::ir_runtime::fz_get_static_closure(cl_sid);
-    let b = fz_runtime::ir_runtime::fz_get_static_closure(cl_sid);
+    let a = fz_runtime::ir_runtime::fz_get_static_closure(
+        fz_runtime::process::current_process(),
+        cl_sid,
+    );
+    let b = fz_runtime::ir_runtime::fz_get_static_closure(
+        fz_runtime::process::current_process(),
+        cl_sid,
+    );
     assert_eq!(a, b, "static-closure lookup must return the same pointer");
     assert_ne!(a, 0, "static-closure lookup must return non-null");
 }

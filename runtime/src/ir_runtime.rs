@@ -653,14 +653,16 @@ pub extern "C" fn fz_yield_slow_path_begin() {
 /// `flags` so `fz_spawn_entry` can pick the matching halt-cont singleton
 /// at task launch.
 #[unsafe(no_mangle)]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn fz_alloc_closure(
+    process: *mut Process,
     callee_fn_id: u32,
     captured_count: u32,
     halt_kind: u32,
     body_addr: u64,
 ) -> u64 {
     FRAME_ALLOC_COUNT.with(|c| c.set(c.get() + 1));
-    let bits = current_process().heap.alloc_closure_slots(
+    let bits = (unsafe { &mut *process }).heap.alloc_closure_slots(
         callee_fn_id,
         captured_count as usize,
         halt_kind as u16,
@@ -695,12 +697,17 @@ pub extern "C" fn fz_closure_halt_kind_ref(closure_ref_word: u64) -> u32 {
 /// call site preserves test invariants that count heap allocations
 /// exactly (`gc_traces_closure_captured_via_jit`).
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_get_halt_cont(halt_cont_body_addr: u64, kind: u32) -> u64 {
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn fz_get_halt_cont(
+    process: *mut Process,
+    halt_cont_body_addr: u64,
+    kind: u32,
+) -> u64 {
     // fz-ul4.27.22.3 — `kind` selects which of three per-Process halt-cont
     // singletons to return (0=ValueRef, 1=RawInt, 2=RawF64). Each holds a
     // body whose Tail-CC sig matches its repr. Producer's Term::Return
     // uses sig (return_repr, i64); the code pointer at +8 must agree.
-    let p = current_process();
+    let p = unsafe { &mut *process };
     let slot = kind as usize;
     if !p.halt_cont_singletons[slot].is_null() {
         return heap_ref_word(
@@ -734,8 +741,9 @@ pub extern "C" fn fz_get_halt_cont(halt_cont_body_addr: u64, kind: u32) -> u64 {
 /// site. See docs/cps-in-clif.md §8.2 acceptance: "Module-init region produces
 /// double/neg static closures exactly once."
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_get_static_closure(cl_sid: u32) -> u64 {
-    let p = current_process();
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn fz_get_static_closure(process: *mut Process, cl_sid: u32) -> u64 {
+    let p = unsafe { &mut *process };
     let idx = cl_sid as usize;
     if idx < p.static_closures.len() {
         let ptr = p.static_closures[idx];
@@ -1913,27 +1921,35 @@ pub extern "C" fn fz_closure_get_capture_f64(closure_ref_word: u64, index: u64) 
 }
 
 #[unsafe(no_mangle)]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn fz_closure_set_capture_ref(
+    process: *mut Process,
     closure_ref_word: u64,
     index: u64,
     value_ref_word: u64,
 ) {
     let closure = any_value_ref_from_word(closure_ref_word, "fz_closure_set_capture_ref closure");
     let value = any_value_ref_from_word(value_ref_word, "fz_closure_set_capture_ref value");
-    current_process()
+    (unsafe { &mut *process })
         .heap
         .write_closure_capture_ref(closure, index as usize, value)
         .expect("fz_closure_set_capture_ref");
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_closure_set_capture_i64(closure_ref_word: u64, index: u64, value: i64) {
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn fz_closure_set_capture_i64(
+    process: *mut Process,
+    closure_ref_word: u64,
+    index: u64,
+    value: i64,
+) {
     let closure = any_value_ref_from_word(closure_ref_word, "fz_closure_set_capture_i64 closure");
     let addr = closure
         .closure_addr()
         .expect("fz_closure_set_capture_i64 closure");
     unsafe {
-        current_process().heap.write_closure_capture_value(
+        (&mut *process).heap.write_closure_capture_value(
             addr,
             index as usize,
             crate::any_value::AnyValue::Int(value),
@@ -1942,13 +1958,19 @@ pub extern "C" fn fz_closure_set_capture_i64(closure_ref_word: u64, index: u64, 
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_closure_set_capture_f64(closure_ref_word: u64, index: u64, value: f64) {
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn fz_closure_set_capture_f64(
+    process: *mut Process,
+    closure_ref_word: u64,
+    index: u64,
+    value: f64,
+) {
     let closure = any_value_ref_from_word(closure_ref_word, "fz_closure_set_capture_f64 closure");
     let addr = closure
         .closure_addr()
         .expect("fz_closure_set_capture_f64 closure");
     unsafe {
-        current_process().heap.write_closure_capture_value(
+        (&mut *process).heap.write_closure_capture_value(
             addr,
             index as usize,
             crate::any_value::AnyValue::Float(value.to_bits()),
@@ -1994,7 +2016,8 @@ unsafe fn lazy_cont_capture_raw(word: u64, index: usize) -> u64 {
 /// Materialize a stack-backed lazy continuation descriptor into a normal
 /// scheduler-visible closure. Ordinary closure refs are returned unchanged.
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_materialize_cont(cont_word: u64) -> u64 {
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn fz_materialize_cont(process: *mut Process, cont_word: u64) -> u64 {
     if !is_lazy_cont_ref(cont_word) {
         return cont_word;
     }
@@ -2002,7 +2025,9 @@ pub extern "C" fn fz_materialize_cont(cont_word: u64) -> u64 {
     let code = unsafe { *(ptr.add(LAZY_CONT_CODE_OFF) as *const u64) };
     let sid = unsafe { *(ptr.add(LAZY_CONT_SID_OFF) as *const u64) as u32 };
     let count = unsafe { lazy_cont_count(ptr) };
-    let bits = current_process().heap.alloc_closure_slots(sid, count, 0);
+    let bits = (unsafe { &mut *process })
+        .heap
+        .alloc_closure_slots(sid, count, 0);
     let addr = crate::any_value::closure_addr_from_tagged(bits).expect("materialized cont bits");
     unsafe { std::ptr::write(addr.add(8) as *mut u64, code) };
     let kind_base = unsafe { lazy_cont_kind_base(ptr, count) };
@@ -2012,12 +2037,12 @@ pub extern "C" fn fz_materialize_cont(cont_word: u64) -> u64 {
         match kind {
             LAZY_CONT_KIND_REF => {
                 let value = if is_lazy_cont_ref(raw) {
-                    fz_materialize_cont(raw)
+                    fz_materialize_cont(process, raw)
                 } else {
                     raw
                 };
                 let any = any_value_ref_from_word(value, "fz_materialize_cont capture");
-                current_process()
+                (unsafe { &mut *process })
                     .heap
                     .write_closure_capture_ref(
                         crate::any_value::AnyValueRef::from_raw_word(closure_ref_word_from_bits(
@@ -2030,14 +2055,14 @@ pub extern "C" fn fz_materialize_cont(cont_word: u64) -> u64 {
                     .expect("materialized closure capture ref");
             }
             LAZY_CONT_KIND_I64 => unsafe {
-                current_process().heap.write_closure_capture_value(
+                (&mut *process).heap.write_closure_capture_value(
                     addr,
                     i,
                     crate::any_value::AnyValue::Int(raw as i64),
                 )
             },
             LAZY_CONT_KIND_F64 => unsafe {
-                current_process().heap.write_closure_capture_value(
+                (&mut *process).heap.write_closure_capture_value(
                     addr,
                     i,
                     crate::any_value::AnyValue::Float(raw),

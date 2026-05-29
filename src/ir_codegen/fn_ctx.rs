@@ -199,7 +199,7 @@ impl<'a, 'env, 'fb, M: cranelift_module::Module> CodegenFn<'a, 'env, 'fb, M> {
         halt_kind: ir::Value,
     ) -> ir::Value {
         let id = self.runtime.get_halt_cont_id;
-        self.call1(id, &[body_addr, halt_kind])
+        self.call1_p(id, &[body_addr, halt_kind])
     }
 
     pub(crate) fn alloc_closure(
@@ -210,7 +210,7 @@ impl<'a, 'env, 'fb, M: cranelift_module::Module> CodegenFn<'a, 'env, 'fb, M> {
         code_addr: ir::Value,
     ) -> ir::Value {
         let id = self.runtime.alloc_closure_id;
-        self.call1(id, &[func_id, captured_count, halt_kind, code_addr])
+        self.call1_p(id, &[func_id, captured_count, halt_kind, code_addr])
     }
 
     pub(crate) fn list_cons_with(&mut self, cons_id: FuncId, args: &[ir::Value]) -> ir::Value {
@@ -290,7 +290,7 @@ impl<'a, 'env, 'fb, M: cranelift_module::Module> CodegenFn<'a, 'env, 'fb, M> {
         value: ir::Value,
     ) {
         let id = self.runtime.closure_set_capture_ref_id;
-        self.call(id, &[closure_ref, index, value]);
+        self.call_p(id, &[closure_ref, index, value]);
     }
 
     pub(crate) fn set_closure_capture_i64(
@@ -300,7 +300,7 @@ impl<'a, 'env, 'fb, M: cranelift_module::Module> CodegenFn<'a, 'env, 'fb, M> {
         value: ir::Value,
     ) {
         let id = self.runtime.closure_set_capture_i64_id;
-        self.call(id, &[closure_ref, index, value]);
+        self.call_p(id, &[closure_ref, index, value]);
     }
 
     pub(crate) fn set_closure_capture_f64(
@@ -310,12 +310,12 @@ impl<'a, 'env, 'fb, M: cranelift_module::Module> CodegenFn<'a, 'env, 'fb, M> {
         value: ir::Value,
     ) {
         let id = self.runtime.closure_set_capture_f64_id;
-        self.call(id, &[closure_ref, index, value]);
+        self.call_p(id, &[closure_ref, index, value]);
     }
 
     pub(crate) fn materialize_cont(&mut self, value: ir::Value) -> ir::Value {
         let id = self.runtime.materialize_cont_id;
-        self.call1(id, &[value])
+        self.call1_p(id, &[value])
     }
 
     pub(crate) fn struct_set_field_int(
