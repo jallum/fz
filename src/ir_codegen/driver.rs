@@ -2054,13 +2054,18 @@ pub(crate) fn compile_with_backend_impl<
         }
     };
     // Lower known-target CallClosure / TailCallClosure to direct
-    // Call / TailCall. After this, the final plan_module sees direct
-    // dispatch where the closure-stub used to live, allowing the
-    // any-key drop logic to remove the now-dead any-key.
+    // Call / TailCall, then erase any module-constant zero-capture closure
+    // that now survives only as a threaded value (its entry-param slots,
+    // matching call args, continuation captures, and the dead MakeClosure).
+    // After this, the final plan_module sees direct dispatch where the
+    // closure-stub used to live, and the erased lambda is no longer a
+    // closure-target — so the inliner below splices it and the lazy-cont
+    // gate sees a closure-free frame.
     //
-    // Reuses `pre_types`: `fn_constants` tracks Vars bound to
-    // `Prim::Const(Value::Fn)` / `Prim::MakeClosure`, neither of which
-    // is touched, so a re-type would produce the same `fn_constants`.
+    // Reads `pre_types` for the `fn_constants` proof of which Vars hold a
+    // constant closure. The subsequent `inline_module` needs no types, and
+    // the pipeline re-runs `plan_module` from scratch before any types are
+    // consumed, so erasing the MakeClosure here does not stale anything.
     crate::ir_planner::rewrite_known_target_closures(t, &mut working, pre_types);
     #[cfg(not(test))]
     crate::ir_inline::inline_module(&mut working);

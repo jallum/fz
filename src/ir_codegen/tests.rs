@@ -96,9 +96,19 @@ fn static_closure_targets_registered_for_zero_cap_make_closure() {
 /// singleton's pointer; two lookups return the same pointer.
 #[test]
 fn static_closure_lookup_returns_singleton_pointer() {
+    // Two distinct fns flow into `apply`'s `h`, so it is not a module-wide
+    // constant: `rewrite_known_target_closures` cannot devirtualize+erase the
+    // closure value, and the static-closure singletons survive for this
+    // runtime-lookup test. (A single `apply(f, 1)` would reduce to a direct
+    // `f(1)` and leave zero static closures — see
+    // `eliminate_constant_closure_values`.)
     let src = "fn f(x), do: x + 1\n\
+               fn g(x), do: x * 2\n\
                fn apply(h, x), do: h(x)\n\
-               fn main() do dbg(apply(f, 1)) end";
+               fn main() do\n\
+                 dbg(apply(f, 1))\n\
+                 dbg(apply(g, 2))\n\
+               end";
     let m = lower_src(src);
     // Reducer disabled — see sibling test above.
     let compiled = crate::ir_codegen::with_reducer_disabled(|| {

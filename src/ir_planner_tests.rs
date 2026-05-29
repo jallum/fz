@@ -2958,3 +2958,83 @@ fn plain_int_arithmetic_still_passes() {
             .collect::<Vec<_>>(),
     );
 }
+
+/// Compile `src` to IR and run `rewrite_known_target_closures` (devirtualize
+/// + constant-closure value elimination), returning the rewritten module.
+fn rewrite_closures(src: &str) -> Module {
+    let fe = crate::frontend::compile_source(src.to_string(), "closures-test.fz".to_string())
+        .unwrap_or_else(|e| panic!("frontend: {:?}", e.diagnostics));
+    let mut working = fe.module.clone();
+    let mut t = crate::types::ConcreteTypes;
+    let pre = crate::ir_planner::plan_module(&mut t, &working, &crate::telemetry::NullTelemetry);
+    crate::ir_planner::rewrite_known_target_closures(&mut t, &mut working, &pre);
+    working
+}
+
+fn count_make_closures(m: &Module) -> usize {
+    m.fns
+        .iter()
+        .flat_map(|f| f.blocks.iter())
+        .flat_map(|b| b.stmts.iter())
+        .filter(|Stmt::Let(_, prim)| matches!(prim, Prim::MakeClosure(_, _, _)))
+        .count()
+}
+
+fn fn_arity(m: &Module, name: &str) -> usize {
+    let f = m.fn_by_name(name).expect("fn present");
+    f.block(f.entry).params.len()
+}
+
+/// A module-wide-constant, zero-capture closure threaded through a recursive
+/// HOF is erased entirely: the `MakeClosure` disappears and the threaded
+/// parameter slot is removed from the HOF's arity. This is what frees
+/// `Enum.sort`'s comparator from the lazy-continuation gate.
+#[test]
+fn rewrite_erases_threaded_constant_closure() {
+    let src = "fn merge([], right, _s), do: right\n\
+               fn merge(left, [], _s), do: left\n\
+               fn merge([lh | lt], [rh | rt], s) do\n\
+                 if s(lh, rh) do\n\
+                   [lh | merge(lt, [rh | rt], s)]\n\
+                 else\n\
+                   [rh | merge([lh | lt], rt, s)]\n\
+                 end\n\
+               end\n\
+               fn main(), do: merge([1, 3], [2, 4], fn (a, b) -> a <= b)";
+    let after = rewrite_closures(src);
+    assert_eq!(
+        count_make_closures(&after),
+        0,
+        "the constant comparator's MakeClosure must be erased"
+    );
+    assert_eq!(
+        fn_arity(&after, "merge"),
+        2,
+        "merge's threaded comparator parameter must be removed (3 -> 2)"
+    );
+}
+
+/// Two distinct lambdas flowing into the same HOF parameter make it
+/// non-constant (`fn_constants` disagree across specs), so the closure value
+/// is NOT erased — the static-closure machinery must still see it. Guards
+/// against over-eager elimination.
+#[test]
+fn rewrite_keeps_non_constant_closure() {
+    let src = "fn f(x), do: x + 1\n\
+               fn g(x), do: x * 2\n\
+               fn apply(h, x), do: h(x)\n\
+               fn main() do\n\
+                 apply(f, 1)\n\
+                 apply(g, 2)\n\
+               end";
+    let after = rewrite_closures(src);
+    assert!(
+        count_make_closures(&after) >= 1,
+        "a non-constant closure value must survive the rewrite"
+    );
+    assert_eq!(
+        fn_arity(&after, "apply"),
+        2,
+        "apply's parameters must be untouched when its closure is non-constant"
+    );
+}
