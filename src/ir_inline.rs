@@ -2002,6 +2002,75 @@ mod tests {
         );
     }
 
+    #[test]
+    fn inline_module_with_plan_defers_constant_higher_order_call_to_reducer() {
+        // apply(f, x) = f(x) — pure (calls only its closure param).
+        let mut ab = FnBuilder::new(FnId(2), "apply");
+        let f = ab.fresh_var();
+        let x = ab.fresh_var();
+        let ae = ab.block(vec![f, x]);
+        ab.set_terminator(
+            ae,
+            Term::TailCallClosure {
+                ident: crate::fz_ir::CallsiteIdent::synthetic(),
+                closure: f,
+                args: vec![x],
+            },
+        );
+
+        // main() = apply(add1, 5) — a constant higher-order call (a bare fn
+        // identity plus a literal). It should be LEFT for the reducer to fold,
+        // not inlined into an uncollapsible chain.
+        let mut mainb = FnBuilder::new(FnId(0), "main");
+        let e0 = mainb.block(vec![]);
+        let clo = mainb.let_(
+            e0,
+            Prim::MakeClosure(crate::fz_ir::CallsiteIdent::synthetic(), FnId(1), vec![]),
+        );
+        let c = mainb.let_(e0, Prim::Const(Const::Int(5)));
+        mainb.set_terminator(
+            e0,
+            Term::Call {
+                ident: crate::fz_ir::CallsiteIdent::synthetic(),
+                callee: FnId(2),
+                args: vec![clo, c],
+                continuation: Cont {
+                    fn_id: FnId(3),
+                    captured: vec![],
+                },
+            },
+        );
+
+        // k(r) = return r — the continuation.
+        let mut kb = FnBuilder::new(FnId(3), "k");
+        let r = kb.fresh_var();
+        let ke = kb.block(vec![r]);
+        kb.set_terminator(ke, Term::Return(r));
+
+        let mut mb = ModuleBuilder::new();
+        mb.add_fn(mainb.build());
+        mb.add_fn(make_leaf_add1());
+        mb.add_fn(ab.build());
+        mb.add_fn(kb.build());
+        let mut m = mb.build();
+        let plan = crate::ir_planner::plan_module(
+            &mut crate::types::ConcreteTypes,
+            &m,
+            &crate::telemetry::NullTelemetry,
+        );
+
+        inline_module_with_plan(&mut m, &plan);
+        let main = m.fns.iter().find(|f| f.name == "main").unwrap();
+        assert!(
+            main.blocks.iter().any(|b| matches!(
+                &b.terminator,
+                Term::Call { callee, .. } if *callee == FnId(2)
+            )),
+            "a pure constant higher-order call must be left as a call for the \
+             reducer to fold, not inlined"
+        );
+    }
+
     // --- ir_interp parity: semantics preserved across inline ---
 
     fn lower_src(src: &str) -> crate::fz_ir::Module {
