@@ -1,9 +1,11 @@
 # State Transitions
 
 The runtime-library `reduce` family lowers a recursive higher-order loop into an
-explicit state machine. The hot state is carried as ordinary first-class values —
-the list and the accumulator — instead of a tagged reduce state re-threaded
-through every step.
+explicit state machine. The hot loop is carried as ordinary first-class values —
+the list, the accumulator, and the reducer — by `reduce_list_cont/3`. The tagged
+reduce state (`{:cont, acc}` / `{:halt, acc}` / `{:suspend, acc}`) is peeled by
+the dispatchers (`reduce_list/3` at entry, `reduce_list_step/3` on each reducer
+result) rather than re-threaded through the hot carrier itself.
 
 This is one application of the planner's general model: source calls, closure
 calls, continuation hops, back edges, and suspension are all state transitions
@@ -21,31 +23,31 @@ which carries the list and accumulator as first-class state instead of
 re-threading a tagged reduce state through every hot step:
 
 ```text
-state = (list, acc, reducer, outer_cont)
+state = (list, acc, reducer)
 
-(list, {:halt, acc}, reducer, k) ->
-  Return(k({:halted, acc}))
+reduce_list(list, {:cont, acc}, reducer) ->
+  reduce_list_cont(list, acc, reducer)
 
-(list, {:suspend, acc}, reducer, k) ->
-  Suspend(fn () -> reduce_list_cont(list, acc, reducer))
+reduce_list(_list, {:halt, acc}, _reducer) ->
+  {:halted, acc}
 
-(list, {:cont, acc}, reducer, k) ->
-  TailCall(reduce_list_cont, list, acc, reducer, k)
+reduce_list(list, {:suspend, acc}, reducer) ->
+  {:suspended, acc, (fn () -> reduce_list_cont(list, acc, reducer))}
 
-reduce_list_cont([], acc, reducer, k) ->
-  Return(k({:done, acc}))
+reduce_list_cont([], acc, _reducer) ->
+  {:done, acc}
 
-reduce_list_cont([h | t], acc, reducer, k) ->
-  CallThen(reducer, h, acc,
-    resume(result) = reduce_list_step(t, result, reducer, k))
+reduce_list_cont([h | t], acc, reducer) ->
+  reduce_list_step(t, reducer(h, acc), reducer)
 
-reduce_list_step(t, {:cont, acc}, reducer, k) ->
-  TailCall(reduce_list_cont, t, acc, reducer, k)
+reduce_list_step(list, {:cont, acc}, reducer) ->
+  reduce_list_cont(list, acc, reducer)
 ```
 
 The hot loop state is `(list, acc, reducer)`. `reduce_list/3` is the public
-state dispatcher; `reduce_list_step/3` handles reducer outputs that leave the
-hot `:cont` path.
+state dispatcher; `reduce_list_step/3` dispatches each reducer output, routing
+`:cont` back into `reduce_list_cont/3` and peeling `:halt`/`:suspend` out of the
+hot path.
 
 ## Known vs Opaque Reducers
 
@@ -79,5 +81,9 @@ rather than an internal continuation edge.
   heap-continuation-free inside the `reduce_list_cont` state machine
   (`fixtures/opaque_fn_value_join`).
 - `{:suspend, acc}` is a real materialized resumable closure.
-- `count_list`, `member_list?`, `foldl`, and `map(double, xs)` keep their
-  allocation floors.
+- `count_list` and `member_list?` keep their allocation floors alongside
+  `Enum.reduce/3` (`fixtures/enum_list_allocations`: `list_cons_allocs = 5`,
+  `closure_allocs = 0`).
+- `foldl` and `map(double, xs)` (`fixtures/list_primitives`) keep their spec
+  baseline (16 specs, 0 matchers) exercising cons-pattern dispatch and
+  first-class fns passed in.

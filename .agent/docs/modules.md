@@ -229,16 +229,15 @@ fz build --emit-fzi --emit-fzo --artifact-root build/fz path/to/input.fz -o path
 `--emit-fzi` writes one `.fzi` per module through `ArtifactStore` and applies
 strict public export-spec validation before writing. Loading uses
 `ArtifactStore::load_fzi_artifact` / `load_interface_table`, which deserialize
-`FziArtifact` without reading the provider source body. Telemetry-producing
-variants (`write_fzi_artifacts_with_telemetry`,
-`load_interface_table_with_telemetry`) emit process facts for stats dumps.
+`FziArtifact` without reading the provider source body. These store helpers
+take a `Telemetry` argument and emit `.fzi`/`.fzo` write/load process facts
+directly for stats dumps; there are no separate telemetry-only variants.
 `--emit-fzo` writes the checked module product as a pre-link source-unit
 envelope: it stores the checked source text as `fz-source-unit-v1`, records the
 root `CompiledUnit` identity/import/export facts, derives IR-level link
 metadata without machine-code compiling unresolved imports, and writes the
 result through `ArtifactStore::write_fzo_artifacts`. The object path comes from
-the same typed `ModuleName` policy. The `.fzo` telemetry variants emit `.fzo`
-write/load process facts.
+the same typed `ModuleName` policy.
 
 Reachable graph loading:
 
@@ -452,21 +451,20 @@ reachable `CompiledUnit` IR bodies into one dense linked `Module`, remaps
 implemented interfaces, and rewrites `ExternalCallEdge` placeholders to direct
 local calls before JIT codegen sees the module.
 
-Linking must also preserve planner facts that codegen consumes. A provider graph
-must not depend on a normal post-link `plan_module` pass to recover dispatch,
-return-demand, return-context, extern-marshal, or protocol call-edge facts that
-were known upstream. Link/load may validate, remap, resolve, and strengthen
-facts; ordinary provider linking is a fact-preserving transformation.
-Provider-backed codegen uses `link_ir_units_with_plan`; missing planner facts
-are a link error.
+The linker carries provider planner facts forward on a best-effort basis:
+`IrUnitLinker::copy_planner_facts` remaps each unit's `module_plan` into an
+internal `linked_plan` and resolves the external call edges it can. That
+internal plan only needs to cover the edges it rewrites; codegen re-plans the
+linked working module afterwards regardless, so missing upstream planner facts
+are not a link error.
 
 `CompiledProgram::link_image_with_telemetry` is the single-unit JIT run path. It
 validates the unit through `link_ir_units`, links that unit's runtime metadata,
 and wraps the compiled machine-code module. Provider-backed run/build paths
 first call `modules::pipeline::prepare_execution_graph`, which materializes
-provider units and calls `link_ir_units_with_plan`; codegen then sees one
-linked IR module and one remapped `ModulePlan` with no unresolved external
-edges. `CompiledImage::from_linked_with_telemetry` only wraps that
+provider units and calls `link_ir_units`; codegen then re-plans the single
+linked IR module, which has no unresolved external edges.
+`CompiledImage::from_linked_with_telemetry` only wraps that
 already-linked machine-code module and emits link telemetry.
 `CompiledModule` remains the executable payload inside the image, not the
 driver-facing product.
@@ -577,7 +575,7 @@ Rules:
   and `utf8` are compiler-known built-ins, not source aliases in this file;
 - core prelude modules such as `Kernel` live in separate source files but are
   flattened into the built-in prelude, keeping raw extern declarations
-  module-scoped while exposing imported names like `print/1`;
+  module-scoped while exposing imported names like `dbg/1`;
 - ordinary module bodies live in individual files such as
   `src/modules/runtime_library/utf8.fz` and
   `src/modules/runtime_library/process.fz`; `Enumerable` and `Enum` also live

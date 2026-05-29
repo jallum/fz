@@ -146,8 +146,8 @@ Examples:
 
 ```text
 fz.ir.capture_norm.captures_pruned
-fz.gc.copy.scalar_cell_copied
-fz.planner.worklist.item_popped
+fz.ir.dce.block_pruned
+fz.codegen.function_lowered
 ```
 
 Use metadata for identity and reasons. Use measurements for numbers.

@@ -26,12 +26,12 @@ The phase that produces these facts is `ir_planner::plan_module`. Its products
 are deliberately broader than type maps:
 
 - `SpecPlan` is one specialization's plan. It owns Var and block-env types,
-  dispatch choices (`call_edges`), return-use and return-context facts,
-  reachable blocks, dead-branch facts, function-constant facts, physical
-  capabilities, and extern-marshal facts.
+  callable capabilities, dispatch choices (`call_edges`, which carry the
+  return-use and return-context facts), reachable blocks, dead-branch facts, and
+  extern-marshal facts.
 - `ModulePlan` is one module's plan. It owns the specialization plans, effective
-  returns, any-key indexes, precedence, effect summaries, SCC facts, cross-spec
-  dead branches, and closure handles.
+  returns, any-key indexes, precedence, effect summaries, cross-spec dead
+  branches, and (under `cfg(test)`) closure handles.
 
 Local type-inference vocabulary stays narrow where the code is literally type
 inference: `type_fn`, `Ty`, `vars`, block environments, and the narrowing and
@@ -51,7 +51,7 @@ Provider-boundary and protocol targets ride the same `CallEdgePlan` shape.
 
 Imported module calls use that provider-boundary shape. Before link, the
 IR carries an `ExternalCallEdge` and the call edge names the target `ExportKey`
-plus the public input and demand selected upstream. `link_ir_units_with_plan`
+plus the public input and demand selected upstream. `link_ir_units`
 remaps unit-local facts into linked ids and resolves the provider-boundary
 target to the local `SpecKey` while `Module::rewrite_external_calls_for_lto`
 rewrites the terminator.
@@ -74,8 +74,10 @@ capture order.
 
 - `Direct` names the direct callee body.
 - `Cont` names the continuation body.
-- `ClosureCall` names a closure invocation target when the closure type carries
-  enough compile-time identity.
+- `ClosureCall` names a closure-call callsite. It is purely structural — it
+  identifies where the closure dispatch happens, while the call edge's target
+  shapes what runs, whether that comes from a known callable capability or a
+  closure literal clause.
 - `MakeClosure` names the body spec made reachable by constructing a closure
   value.
 
@@ -140,8 +142,10 @@ Choosing a function variant, choosing a tuple-return ABI, and choosing a
 return-context body are the same kind of decision: a typed callsite capability
 selected before codegen.
 Protocol implementation selection is the same kind of decision: the planner
-selects a direct, provider-boundary, closed-switch, runtime, or diagnostic edge
-from receiver type facts and visible implementation-domain facts.
+selects a static-direct (`ProtocolDispatch::Local`), provider-boundary
+(`ProtocolDispatch::External`), or diagnostic edge from receiver type facts and
+visible implementation-domain facts. Finite-union switch dispatch and runtime
+lookup for open or erased receiver domains are not emitted.
 
 Protocol callback callsites lower to ordinary call-shaped IR with a protocol
 stub callee. The stub is not the semantic target. It is a stable callsite

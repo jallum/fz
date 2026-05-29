@@ -92,12 +92,12 @@ the concrete fixed/variadic `ExternTy` list.
 
 ## Resource Typing
 
-`make_resource(payload, dtor)` is typed by the declared runtime spec, not by the
-low-level `fz_make_resource` extern return. The extern still returns `any`
-because it is the runtime allocation primitive; user-visible call typing
-instantiates:
+`make_resource(payload, dtor)` is the `Kernel` wrapper around the
+`fz_make_resource` extern. Both carry the same declared signature, so the
+resource type flows from the boundary:
 
 ```fz
+extern "C" fn fz_make_resource(t, (t) -> nil) :: resource(t) when t: integer | cpointer
 @spec make_resource(t, (t) -> nil) :: resource(t) when t: integer | cpointer
 ```
 

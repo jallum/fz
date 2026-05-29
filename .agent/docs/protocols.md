@@ -50,8 +50,9 @@ stable merge sort over the list implementation.
 
 `Protocol.t(...)` is not `any`. It is an implementation-domain constraint:
 a value of type `Enumerable.t(a)` is a value for which an `Enumerable`
-implementation is known, preserving the element parameter carried by the
-protocol declaration.
+implementation is known. The element parameter spelled in `Enumerable.t(a)` is
+parsed but currently discarded — the resolved domain is the bare union of the
+protocol's known implementation target shapes, with no element refinement.
 
 ## Callback Surface vs Domain Type
 
@@ -59,7 +60,11 @@ The protocol callback surface and the protocol-domain type are related but not
 identical.
 
 The callback surface is checked at implementation time. An implementation must
-define every required callback with the required arity and compatible specs.
+define every required callback with the required arity, and must not provide
+callbacks the protocol never declared (`validate_protocol_impls`). Callback
+spec compatibility is not yet enforced: the declared callback `spec` is stored
+on `ProtocolCallbackFact` but currently carries `#[allow(dead_code)]` pending a
+later protocol ticket.
 
 The domain type is checked at use sites and function boundaries. A spec that
 requires `P.t(...)` requires proof that the argument type is inside the
@@ -68,9 +73,11 @@ a closed union whose arms all implement `P`, or an explicitly open boundary.
 Executable dispatch is emitted only when the planner statically selects a single
 implementation; open-boundary runtime lookup is not emitted.
 
-This lets the compiler produce diagnostics such as "List implements
-Enumerable, Integer does not" instead of treating a protocol annotation as
-plain `any`.
+Because the protocol-domain type is a real union (not `any`), a use site that
+passes an `Integer` where `Enumerable.t(a)` is required is rejected at spec
+checking: `Integer` is disjoint from the `Enumerable` domain, so it fails the
+generic "not a subtype of declared" check. A protocol-specific message such as
+"List implements Enumerable, Integer does not" is not yet produced.
 
 ## Implementation Targets
 
@@ -119,8 +126,13 @@ one of these outcomes:
   callback;
 - provider-boundary external edge (`ProtocolDispatch::External`): the matching
   callback is known by `ExportKey`, but its body lives in another unit until
-  module graph linking;
-- diagnostic: no implementation satisfies the protocol-domain constraint.
+  module graph linking.
+
+When no impl matches, `protocol_dispatch_key` returns `None`: the planner does
+not yet emit a dedicated "no implementation" diagnostic. The unplanned protocol
+stub is left in place, and rejection happens earlier at spec checking
+(`spec_check::validate_specs`), where a receiver type disjoint from the
+protocol-domain union fails the ordinary "not a subtype of declared" check.
 
 Finite-union switch dispatch and runtime lookup for open or erased receiver
 domains are not emitted.
@@ -156,18 +168,26 @@ passes needed to make normal linking correct.
 
 ## Diagnostics
 
-Protocol diagnostics are tied to the typed fact that failed:
+Protocol diagnostics are tied to the typed fact that failed. The resolver
+(`validate_protocol_impls` plus the collection passes) currently produces:
 
-- missing implementation: name the protocol, required domain type, actual
-  receiver type, and known implementors in scope;
-- duplicate implementation: name the `(protocol, target)` pair and both
-  implementation sites;
-- callback arity mismatch: name the protocol callback and expected/actual
-  arity;
-- callback spec mismatch: name the callback and show the required protocol
-  spec against the implementation spec;
-- protocol-domain spec mismatch: name the parameter or return position whose
-  `Protocol.t(...)` constraint failed.
+- duplicate implementation: names the `(protocol, target)` pair, carrying the
+  span of the duplicate impl site (a single span, not both sites);
+- duplicate protocol declaration, and duplicate callback declaration within a
+  protocol;
+- impl references an unknown protocol;
+- missing callback: names the protocol, target, and the missing callback
+  `name/arity` (an arity that does not match a declared callback surfaces here
+  rather than as a distinct "arity mismatch" message);
+- unknown/extra callback: an impl that provides a callback the protocol never
+  declared, named by protocol, target, and `name/arity`.
+
+The following diagnostics are intended but not yet implemented: a use-site
+"missing implementation" message naming the receiver type and known
+implementors; a dedicated callback-arity-mismatch message; a callback spec
+mismatch; and a protocol-domain spec mismatch naming the failing parameter or
+return position. A protocol-domain constraint that fails today surfaces only as
+the generic spec-check "not a subtype" diagnostic.
 
 These are compiler diagnostics, not runtime surprises, whenever the receiver
 type is statically known enough to prove failure.
@@ -182,9 +202,12 @@ subsystem:
 - `resolve::flatten_modules` collects protocol facts while source-level
   protocol AST is still available, validates duplicate impls and callback
   coverage, and installs `Protocol.t` domain aliases in module type envs.
-- `type_expr` accepts dotted parametric protocol-domain spellings such as
-  `Enumerable.t(integer)` and resolves them to an open nominal marker unioned
-  with obvious known implementation target shapes, never to `any`.
+- `type_expr` parses dotted parametric protocol-domain spellings such as
+  `Enumerable.t(integer)` (the type arguments are consumed and discarded) and
+  looks `Enumerable.t` up in the module type env. The looked-up type is built by
+  `resolve::protocol_domain_type` as an open nominal marker
+  (`opaque_of(protocol_domain_tag)`) unioned with the known implementation
+  target shapes, never `any`.
 - `ModuleInterface` carries protocol declaration and implementation facts in
   interface fingerprints so artifacts can expose protocol contracts without
   provider bodies.
@@ -195,7 +218,7 @@ subsystem:
 - `ir_lower` records protocol callback calls as protocol stub callsites with
   stable `CallsiteId`s; `ir_planner` replaces those stubs with local or
   provider-boundary `CallEdgePlan` targets from receiver type facts.
-- `link_ir_units_with_plan` remaps protocol call facts and resolves provider
+- `link_ir_units` remaps protocol call facts and resolves provider
   protocol implementation callbacks to local call edges without a post-link
   planning pass. Link-time callsite rewrites must preserve the caller/identity
   match and target arity; arity mismatch means the candidate is not the same

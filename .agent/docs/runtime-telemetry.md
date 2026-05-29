@@ -56,5 +56,6 @@ construct a caller-owned `Process` or read a print buffer; they observe:
 - `ProcessExitCapture` → a typed `ExitRecord` (result + heap stats).
 - `DbgCapture` → the `fz.runtime.dbg` line stream.
 
-`observe(compiled, entry)` (codegen tests) bundles both, and the `run_main` /
-`capture_main` family is built on it.
+`observe(compiled, entry)` (codegen tests) bundles both. `capture_main` (output)
+and `run_capturing` (result + heap) are built on it; `run_main` reaches the same
+`process_exited` seam through `CompiledModule::run`.
