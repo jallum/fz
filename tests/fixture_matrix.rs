@@ -3037,16 +3037,16 @@ fn enum_list_allocations_pin_minimum_list_cons() {
         reduce_list
     );
     assert!(
-        reduce_list.contains("stack_store")
-            && reduce_list.contains(&clif_hex_word(lazy_continuation_marker_word())),
-        "known native Enum.reduce should pass a stack-backed lazy continuation descriptor:\n{}",
+        reduce_list.contains("return_call") && !reduce_list.contains("stack_store"),
+        "known native Enum.reduce dispatcher should enter the cont helper directly:\n{}",
         reduce_list
     );
-}
 
-fn lazy_continuation_marker_word() -> u64 {
-    fz_runtime::any_value::TAG_FWD
-        << fz_runtime::any_value::AnyValueRefPacking::current().tag_shift()
+    assert!(
+        clif_function_with_banner_prefix(&clif, "; fn Enumerable.reduce_list_cont_s").is_some(),
+        "enum_list_allocations native dump must include reduce_list_cont:\n{}",
+        clif
+    );
 }
 
 fn enum_reduce_resume_state_update_is_rendered() {
@@ -3104,17 +3104,6 @@ fn local_reduce_state_update_lowers_without_trampoline() {
         "local reduce state update should not keep the reducer-continuation trampoline in reduce_list CLIF:\n{}",
         reduce_list
     );
-}
-
-fn clif_hex_word(word: u64) -> String {
-    let raw = format!("{word:016x}");
-    format!(
-        "0x{}_{}_{}_{}",
-        &raw[0..4],
-        &raw[4..8],
-        &raw[8..12],
-        &raw[12..16]
-    )
 }
 
 fn continuation_materialization_boundaries_stay_explicit() {

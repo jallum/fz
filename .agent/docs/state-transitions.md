@@ -27,23 +27,31 @@ from closure frames or capture order.
 ## Enum.reduce Shape
 
 Runtime `Enum.reduce/3` delegates to `Enumerable.reduce_list/3`.
-`reduce_list` is already a state machine:
+`reduce_list` is the public state dispatcher; the `:cont` path enters
+`reduce_list_cont/3`, which carries the list and accumulator as first-class
+state instead of re-threading a tagged reduce state through every hot step:
 
 ```text
-state = (list, reduce_state, reducer, outer_cont)
-
-([], {:cont, acc}, reducer, k) ->
-  Return(k({:done, acc}))
+state = (list, acc, reducer, outer_cont)
 
 (list, {:halt, acc}, reducer, k) ->
   Return(k({:halted, acc}))
 
 (list, {:suspend, acc}, reducer, k) ->
-  Suspend(fn () -> reduce_list(list, {:cont, acc}, reducer))
+  Suspend(fn () -> reduce_list_cont(list, acc, reducer))
 
-([h | t], {:cont, acc}, reducer, k) ->
+(list, {:cont, acc}, reducer, k) ->
+  TailCall(reduce_list_cont, list, acc, reducer, k)
+
+reduce_list_cont([], acc, reducer, k) ->
+  Return(k({:done, acc}))
+
+reduce_list_cont([h | t], acc, reducer, k) ->
   CallThen(reducer, h, acc,
-    resume(result) = reduce_list(t, result, reducer, k))
+    resume(result) = reduce_list_step(t, result, reducer, k))
+
+reduce_list_step(t, {:cont, acc}, reducer, k) ->
+  TailCall(reduce_list_cont, t, acc, reducer, k)
 ```
 
 The current CLIF shape still makes the hot path look like a trampoline:
