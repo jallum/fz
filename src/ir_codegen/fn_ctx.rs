@@ -124,6 +124,15 @@ impl<'a, 'env, 'fb, M: cranelift_module::Module> CodegenFn<'a, 'env, 'fb, M> {
         self.call1(id, &full)
     }
 
+    /// Like `call1_p`, for a process-taking BIF with no return value.
+    fn call_p(&mut self, id: FuncId, args: &[ir::Value]) -> ir::Inst {
+        let process = self.process_arg();
+        let mut full = Vec::with_capacity(args.len() + 1);
+        full.push(process);
+        full.extend_from_slice(args);
+        self.call(id, &full)
+    }
+
     pub(crate) fn ref_tag(&mut self, value_ref: ir::Value) -> ir::Value {
         let id = self.runtime.type_of_id;
         self.call1(id, &[value_ref])
@@ -316,7 +325,7 @@ impl<'a, 'env, 'fb, M: cranelift_module::Module> CodegenFn<'a, 'env, 'fb, M> {
         value: ir::Value,
     ) {
         let id = self.runtime.struct_set_field_int_id;
-        self.call(id, &[struct_bits, offset, value]);
+        self.call_p(id, &[struct_bits, offset, value]);
     }
 
     pub(crate) fn struct_set_field_float(
@@ -326,7 +335,7 @@ impl<'a, 'env, 'fb, M: cranelift_module::Module> CodegenFn<'a, 'env, 'fb, M> {
         value: ir::Value,
     ) {
         let id = self.runtime.struct_set_field_float_id;
-        self.call(id, &[struct_bits, offset, value]);
+        self.call_p(id, &[struct_bits, offset, value]);
     }
 
     pub(crate) fn struct_set_field_atom(
@@ -336,7 +345,7 @@ impl<'a, 'env, 'fb, M: cranelift_module::Module> CodegenFn<'a, 'env, 'fb, M> {
         value: ir::Value,
     ) {
         let id = self.runtime.struct_set_field_atom_id;
-        self.call(id, &[struct_bits, offset, value]);
+        self.call_p(id, &[struct_bits, offset, value]);
     }
 
     pub(crate) fn struct_set_field_ref(
@@ -346,7 +355,7 @@ impl<'a, 'env, 'fb, M: cranelift_module::Module> CodegenFn<'a, 'env, 'fb, M> {
         value: ir::Value,
     ) {
         let id = self.runtime.struct_set_field_ref_id;
-        self.call(id, &[struct_bits, offset, value]);
+        self.call_p(id, &[struct_bits, offset, value]);
     }
 
     // -- value classification reads (cache-free) --

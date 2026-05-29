@@ -377,7 +377,7 @@ pub(super) fn eval_prim<T: Types<Ty = crate::types::Ty>>(
         }
         Prim::MakeMap(entries) => {
             let mut map_bits = if entries.is_empty() {
-                fz_runtime::ir_runtime::fz_map_empty()
+                fz_runtime::ir_runtime::fz_map_empty(cur_proc())
             } else {
                 0
             };
@@ -403,11 +403,12 @@ pub(super) fn eval_prim<T: Types<Ty = crate::types::Ty>>(
                 Some(base) => {
                     let base = env_get(env, *base)?;
                     fz_runtime::ir_runtime::fz_map_dest_begin_update(
+                        cur_proc(),
                         base.value()?.ref_word().raw_word(),
                         *extra as u32,
                     )
                 }
-                None => fz_runtime::ir_runtime::fz_map_dest_begin(*extra as u32),
+                None => fz_runtime::ir_runtime::fz_map_dest_begin(cur_proc(), *extra as u32),
             };
             interp_value_from_ref_word(map_bits, "DestMapBegin")?
         }
@@ -420,6 +421,7 @@ pub(super) fn eval_prim<T: Types<Ty = crate::types::Ty>>(
             let key = key.value()?;
             let value = value.value()?;
             fz_runtime::ir_runtime::fz_map_dest_put_parts(
+                cur_proc(),
                 map.value()?.ref_word().raw_word(),
                 key.raw(),
                 key.kind().tag() as u64,
@@ -430,8 +432,10 @@ pub(super) fn eval_prim<T: Types<Ty = crate::types::Ty>>(
         }
         Prim::DestMapFreeze { map, .. } => {
             let map = env_get(env, *map)?;
-            let map_bits =
-                fz_runtime::ir_runtime::fz_map_dest_freeze(map.value()?.ref_word().raw_word());
+            let map_bits = fz_runtime::ir_runtime::fz_map_dest_freeze(
+                cur_proc(),
+                map.value()?.ref_word().raw_word(),
+            );
             interp_value_from_ref_word(map_bits, "DestMapFreeze")?
         }
         Prim::MakeList(elems, tail) => {

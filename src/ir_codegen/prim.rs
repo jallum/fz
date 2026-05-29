@@ -244,9 +244,11 @@ fn emit_map_destination_put<M: cranelift_module::Module>(
             .declare_func_in_func(runtime.map_dest_put_parts_id, body.b.func);
         let key_kind = body.b.ins().iconst(types::I64, key_kind.tag() as i64);
         let value_kind = body.b.ins().iconst(types::I64, value_kind.tag() as i64);
-        body.b
-            .ins()
-            .call(fref, &[map_bits, key_raw, key_kind, value_raw, value_kind]);
+        let process = body.process_arg();
+        body.b.ins().call(
+            fref,
+            &[process, map_bits, key_raw, key_kind, value_raw, value_kind],
+        );
     } else {
         let key_ref = body.value_as_any_ref(key);
         let value_ref = body.value_as_any_ref(value);
@@ -255,7 +257,10 @@ fn emit_map_destination_put<M: cranelift_module::Module>(
         let fref = body
             .jmod
             .declare_func_in_func(runtime.map_dest_put_ref_id, body.b.func);
-        body.b.ins().call(fref, &[map_bits, key_ref, value_ref]);
+        let process = body.process_arg();
+        body.b
+            .ins()
+            .call(fref, &[process, map_bits, key_ref, value_ref]);
     }
 }
 
@@ -412,7 +417,8 @@ pub(crate) fn lower_collection_prim<
                 .jmod
                 .declare_func_in_func(runtime.alloc_struct_id, body.b.func);
             let sid = body.b.ins().iconst(types::I32, schema_id as i64);
-            let inst = body.b.ins().call(fref, &[sid]);
+            let process = body.process_arg();
+            let inst = body.b.ins().call(fref, &[process, sid]);
             let p = body.b.inst_results(inst)[0];
             for (i, e) in elems.iter().enumerate() {
                 let value = binding_for_var(var_env, e.0);
@@ -431,7 +437,8 @@ pub(crate) fn lower_collection_prim<
                 .jmod
                 .declare_func_in_func(runtime.alloc_struct_id, body.b.func);
             let sid = body.b.ins().iconst(types::I32, schema_id as i64);
-            let inst = body.b.ins().call(fref, &[sid]);
+            let process = body.process_arg();
+            let inst = body.b.ins().call(fref, &[process, sid]);
             LowerOut::ValueRef(body.b.inst_results(inst)[0])
         }
         Prim::DestTupleSet {
@@ -687,7 +694,8 @@ pub(crate) fn lower_collection_prim<
                 let empty = body
                     .jmod
                     .declare_func_in_func(runtime.map_empty_id, body.b.func);
-                let inst = body.b.ins().call(empty, &[]);
+                let process = body.process_arg();
+                let inst = body.b.ins().call(empty, &[process]);
                 body.b.inst_results(inst)[0]
             } else {
                 body.b.ins().iconst(types::I64, 0)
@@ -715,13 +723,15 @@ pub(crate) fn lower_collection_prim<
                 let fref = body
                     .jmod
                     .declare_func_in_func(runtime.map_dest_begin_update_id, body.b.func);
-                let inst = body.b.ins().call(fref, &[base_bits, extra]);
+                let process = body.process_arg();
+                let inst = body.b.ins().call(fref, &[process, base_bits, extra]);
                 LowerOut::ValueRef(body.b.inst_results(inst)[0])
             } else {
                 let fref = body
                     .jmod
                     .declare_func_in_func(runtime.map_dest_begin_id, body.b.func);
-                let inst = body.b.ins().call(fref, &[extra]);
+                let process = body.process_arg();
+                let inst = body.b.ins().call(fref, &[process, extra]);
                 LowerOut::ValueRef(body.b.inst_results(inst)[0])
             }
         }
@@ -739,7 +749,8 @@ pub(crate) fn lower_collection_prim<
             let fref = body
                 .jmod
                 .declare_func_in_func(runtime.map_dest_freeze_id, body.b.func);
-            let inst = body.b.ins().call(fref, &[map_bits]);
+            let process = body.process_arg();
+            let inst = body.b.ins().call(fref, &[process, map_bits]);
             LowerOut::ValueRef(body.b.inst_results(inst)[0])
         }
         Prim::MapGet(m, k) => {

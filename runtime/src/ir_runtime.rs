@@ -1293,31 +1293,40 @@ fn current_heap_list_addr(bits: u64) -> Option<*mut u8> {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_map_empty() -> u64 {
-    map_ref_word_from_bits(current_process().heap.alloc_map_slots(&[]))
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn fz_map_empty(process: *mut Process) -> u64 {
+    map_ref_word_from_bits((unsafe { &mut *process }).heap.alloc_map_slots(&[]))
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_map_dest_begin(extra: u32) -> u64 {
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn fz_map_dest_begin(process: *mut Process, extra: u32) -> u64 {
     map_ref_word_from_bits(
-        current_process()
+        (unsafe { &mut *process })
             .heap
             .alloc_map_destination(None, extra as usize),
     )
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_map_dest_begin_update(base_ref_word: u64, extra: u32) -> u64 {
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn fz_map_dest_begin_update(
+    process: *mut Process,
+    base_ref_word: u64,
+    extra: u32,
+) -> u64 {
     let base = any_value_ref_from_word(base_ref_word, "fz_map_dest_begin_update base");
     map_ref_word_from_bits(
-        current_process()
+        (unsafe { &mut *process })
             .heap
             .alloc_map_destination(Some(base), extra as usize),
     )
 }
 
 #[unsafe(no_mangle)]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn fz_map_dest_put_parts(
+    process: *mut Process,
     dest_ref_word: u64,
     key_raw: u64,
     key_kind: u64,
@@ -1329,25 +1338,36 @@ pub extern "C" fn fz_map_dest_put_parts(
         .expect("fz_map_dest_put_parts key");
     let value = crate::any_value::AnyValue::decode_parts(value_raw, value_kind as u8)
         .expect("fz_map_dest_put_parts value");
-    current_process()
+    (unsafe { &mut *process })
         .heap
         .map_destination_put(dest_bits, key, value);
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_map_dest_put_ref(dest_ref_word: u64, key_ref_word: u64, value_ref_word: u64) {
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn fz_map_dest_put_ref(
+    process: *mut Process,
+    dest_ref_word: u64,
+    key_ref_word: u64,
+    value_ref_word: u64,
+) {
     let dest_bits = map_bits_from_ref_word(dest_ref_word, "fz_map_dest_put_ref dest");
     let key = any_value_from_ref_word(key_ref_word, "fz_map_dest_put_ref key");
     let value = any_value_from_ref_word(value_ref_word, "fz_map_dest_put_ref value");
-    current_process()
+    (unsafe { &mut *process })
         .heap
         .map_destination_put(dest_bits, key, value);
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_map_dest_freeze(dest_ref_word: u64) -> u64 {
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn fz_map_dest_freeze(process: *mut Process, dest_ref_word: u64) -> u64 {
     let dest_bits = map_bits_from_ref_word(dest_ref_word, "fz_map_dest_freeze dest");
-    map_ref_word_from_bits(current_process().heap.map_destination_freeze(dest_bits))
+    map_ref_word_from_bits(
+        (unsafe { &mut *process })
+            .heap
+            .map_destination_freeze(dest_bits),
+    )
 }
 
 #[unsafe(no_mangle)]
@@ -1752,8 +1772,9 @@ pub extern "C" fn fz_list_reuse_or_cons_tail_ref(
 /// Returns a TAG_STRUCT-tagged heap pointer. Caller is
 /// responsible for writing field values into payload slots after allocation.
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_alloc_struct(schema_id: u32) -> u64 {
-    let p = current_process().heap.alloc_struct(schema_id);
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn fz_alloc_struct(process: *mut Process, schema_id: u32) -> u64 {
+    let p = (unsafe { &mut *process }).heap.alloc_struct(schema_id);
     heap_ref_word(ValueKind::STRUCT, p)
 }
 
@@ -1768,26 +1789,34 @@ pub extern "C" fn fz_struct_get_field_ref(struct_ref_word: u64, field_offset: u3
 }
 
 #[unsafe(no_mangle)]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn fz_struct_set_field_ref(
+    process: *mut Process,
     struct_ref_word: u64,
     field_offset: u32,
     value_ref_word: u64,
 ) {
     let object = any_value_ref_from_word(struct_ref_word, "fz_struct_set_field_ref object");
     let value = any_value_ref_from_word(value_ref_word, "fz_struct_set_field_ref value");
-    current_process()
+    (unsafe { &mut *process })
         .heap
         .write_struct_field_ref(object, field_offset, value)
         .expect("fz_struct_set_field_ref");
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_struct_set_field_int(struct_ref_word: u64, field_offset: u32, value: i64) {
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn fz_struct_set_field_int(
+    process: *mut Process,
+    struct_ref_word: u64,
+    field_offset: u32,
+    value: i64,
+) {
     let object = any_value_ref_from_word(struct_ref_word, "fz_struct_set_field_int object");
     let obj = object
         .struct_addr()
         .expect("fz_struct_set_field_int object");
-    current_process().heap.write_field_slot(
+    (unsafe { &mut *process }).heap.write_field_slot(
         obj,
         field_offset,
         crate::any_value::AnyValue::int(value),
@@ -1795,12 +1824,18 @@ pub extern "C" fn fz_struct_set_field_int(struct_ref_word: u64, field_offset: u3
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_struct_set_field_float(struct_ref_word: u64, field_offset: u32, value: f64) {
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn fz_struct_set_field_float(
+    process: *mut Process,
+    struct_ref_word: u64,
+    field_offset: u32,
+    value: f64,
+) {
     let object = any_value_ref_from_word(struct_ref_word, "fz_struct_set_field_float object");
     let obj = object
         .struct_addr()
         .expect("fz_struct_set_field_float object");
-    current_process().heap.write_field_slot(
+    (unsafe { &mut *process }).heap.write_field_slot(
         obj,
         field_offset,
         crate::any_value::AnyValue::float(value),
@@ -1808,12 +1843,18 @@ pub extern "C" fn fz_struct_set_field_float(struct_ref_word: u64, field_offset: 
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_struct_set_field_atom(struct_ref_word: u64, field_offset: u32, atom_id: u64) {
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn fz_struct_set_field_atom(
+    process: *mut Process,
+    struct_ref_word: u64,
+    field_offset: u32,
+    atom_id: u64,
+) {
     let object = any_value_ref_from_word(struct_ref_word, "fz_struct_set_field_atom object");
     let obj = object
         .struct_addr()
         .expect("fz_struct_set_field_atom object");
-    current_process().heap.write_field_slot(
+    (unsafe { &mut *process }).heap.write_field_slot(
         obj,
         field_offset,
         crate::any_value::AnyValue::atom(atom_id as u32),
@@ -2569,7 +2610,7 @@ mod tests {
     fn typed_map_put_ffi_round_trips_atom_key_int_value() {
         with_process(|| {
             let key = fz_box_atom_for_any(1);
-            let map = fz_map_put_int(fz_map_empty(), key, 42);
+            let map = fz_map_put_int(fz_map_empty(current_process()), key, 42);
             let map_ref = AnyValueRef::from_raw_word(map).expect("map ref");
             let got = fz_map_get_ref(map_ref.raw_word(), key);
             assert_eq!(fz_ref_load_int(got), 42);

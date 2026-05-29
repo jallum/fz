@@ -281,7 +281,12 @@ fn declare_struct_runtime<M: cranelift_module::Module>(
     jmod: &mut M,
 ) -> Result<StructRefs, CodegenError> {
     Ok(StructRefs {
-        alloc_struct_id: decl_import(jmod, "fz_alloc_struct", &[types::I32], &[types::I64])?,
+        alloc_struct_id: decl_import(
+            jmod,
+            "fz_alloc_struct",
+            &[types::I64, types::I32],
+            &[types::I64],
+        )?,
         struct_get_field_id: decl_import(
             jmod,
             "fz_struct_get_field_ref",
@@ -291,25 +296,25 @@ fn declare_struct_runtime<M: cranelift_module::Module>(
         struct_set_field_ref_id: decl_import(
             jmod,
             "fz_struct_set_field_ref",
-            &[types::I64, types::I32, types::I64],
+            &[types::I64, types::I64, types::I32, types::I64],
             &[],
         )?,
         struct_set_field_int_id: decl_import(
             jmod,
             "fz_struct_set_field_int",
-            &[types::I64, types::I32, types::I64],
+            &[types::I64, types::I64, types::I32, types::I64],
             &[],
         )?,
         struct_set_field_float_id: decl_import(
             jmod,
             "fz_struct_set_field_float",
-            &[types::I64, types::I32, types::F64],
+            &[types::I64, types::I64, types::I32, types::F64],
             &[],
         )?,
         struct_set_field_atom_id: decl_import(
             jmod,
             "fz_struct_set_field_atom",
-            &[types::I64, types::I32, types::I64],
+            &[types::I64, types::I64, types::I32, types::I64],
             &[],
         )?,
     })
@@ -450,27 +455,44 @@ struct MapRefs {
 /// Map construction, mutation and lookup FFI entries.
 fn declare_map_runtime<M: cranelift_module::Module>(jmod: &mut M) -> Result<MapRefs, CodegenError> {
     Ok(MapRefs {
-        map_empty_id: decl_import(jmod, "fz_map_empty", &[], &[types::I64])?,
-        map_dest_begin_id: decl_import(jmod, "fz_map_dest_begin", &[types::I32], &[types::I64])?,
+        map_empty_id: decl_import(jmod, "fz_map_empty", &[types::I64], &[types::I64])?,
+        map_dest_begin_id: decl_import(
+            jmod,
+            "fz_map_dest_begin",
+            &[types::I64, types::I32],
+            &[types::I64],
+        )?,
         map_dest_begin_update_id: decl_import(
             jmod,
             "fz_map_dest_begin_update",
-            &[types::I64, types::I32],
+            &[types::I64, types::I64, types::I32],
             &[types::I64],
         )?,
         map_dest_put_parts_id: decl_import(
             jmod,
             "fz_map_dest_put_parts",
-            &[types::I64, types::I64, types::I64, types::I64, types::I64],
+            &[
+                types::I64,
+                types::I64,
+                types::I64,
+                types::I64,
+                types::I64,
+                types::I64,
+            ],
             &[],
         )?,
         map_dest_put_ref_id: decl_import(
             jmod,
             "fz_map_dest_put_ref",
-            &[types::I64, types::I64, types::I64],
+            &[types::I64, types::I64, types::I64, types::I64],
             &[],
         )?,
-        map_dest_freeze_id: decl_import(jmod, "fz_map_dest_freeze", &[types::I64], &[types::I64])?,
+        map_dest_freeze_id: decl_import(
+            jmod,
+            "fz_map_dest_freeze",
+            &[types::I64, types::I64],
+            &[types::I64],
+        )?,
         map_put_ref_id: decl_import(
             jmod,
             "fz_map_put_ref",
