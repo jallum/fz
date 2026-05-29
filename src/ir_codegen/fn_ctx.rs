@@ -150,17 +150,17 @@ impl<'a, 'env, 'fb, M: cranelift_module::Module> CodegenFn<'a, 'env, 'fb, M> {
 
     pub(crate) fn box_int_for_any(&mut self, raw: ir::Value) -> ir::Value {
         let id = self.runtime.box_int_for_any_id;
-        self.call1(id, &[raw])
+        self.call1_p(id, &[raw])
     }
 
     pub(crate) fn box_float_for_any(&mut self, raw: ir::Value) -> ir::Value {
         let id = self.runtime.box_float_for_any_id;
-        self.call1(id, &[raw])
+        self.call1_p(id, &[raw])
     }
 
     pub(crate) fn box_atom_for_any(&mut self, raw: ir::Value) -> ir::Value {
         let id = self.runtime.box_atom_for_any_id;
-        self.call1(id, &[raw])
+        self.call1_p(id, &[raw])
     }
 
     pub(crate) fn unbox_int(&mut self, value_ref: ir::Value) -> ir::Value {

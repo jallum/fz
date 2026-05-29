@@ -16,7 +16,11 @@ fn format_extern_shape(ret: ExternTy, fixed: &[ExternTy], variadic: &[ExternTy])
     format!("ret={:?} fixed=[{}] variadic=[{}]", ret, fixed, variadic)
 }
 
-fn marshal_arg(value: AnyValue, ty: ExternTy) -> Result<u64, String> {
+fn marshal_arg(
+    proc: *mut fz_runtime::process::Process,
+    value: AnyValue,
+    ty: ExternTy,
+) -> Result<u64, String> {
     Ok(match ty {
         ExternTy::I64 => value
             .as_i64()
@@ -27,15 +31,16 @@ fn marshal_arg(value: AnyValue, ty: ExternTy) -> Result<u64, String> {
             .ok_or_else(|| "extern float arg must be Float".to_string())?
             .to_bits(),
         ExternTy::Binary => {
-            (unsafe { fz_runtime::extern_binary::fz_binary_as_ptr(value.extern_arg_ref_word()?) })
-                as u64
+            (unsafe {
+                fz_runtime::extern_binary::fz_binary_as_ptr(value.extern_arg_ref_word(proc)?)
+            }) as u64
         }
         ExternTy::CString => {
             (unsafe {
-                fz_runtime::extern_binary::fz_binary_as_cstring(value.extern_arg_ref_word()?)
+                fz_runtime::extern_binary::fz_binary_as_cstring(value.extern_arg_ref_word(proc)?)
             }) as u64
         }
-        ExternTy::Any => value.extern_arg_ref_word()?,
+        ExternTy::Any => value.extern_arg_ref_word(proc)?,
         ExternTy::Unit | ExternTy::Never => {
             return Err(format!(
                 "{:?} is not a valid extern argument marshal class",
@@ -46,6 +51,7 @@ fn marshal_arg(value: AnyValue, ty: ExternTy) -> Result<u64, String> {
 }
 
 fn call_variadic_extern(
+    proc: *mut fz_runtime::process::Process,
     module: &Module,
     fn_types: &crate::ir_planner::SpecPlan,
     block_id: crate::fz_ir::BlockId,
@@ -84,7 +90,7 @@ fn call_variadic_extern(
     let raw_args: Vec<u64> = values
         .iter()
         .zip(arg_tys.iter().copied())
-        .map(|(value, ty)| marshal_arg(*value, ty))
+        .map(|(value, ty)| marshal_arg(proc, *value, ty))
         .collect::<Result<_, _>>()?;
 
     match (decl.ret, fixed, variadic) {
@@ -213,15 +219,23 @@ pub(super) fn call_extern<T: Types<Ty = crate::types::Ty>>(
             if args.len() != 1 {
                 return Err(format!("fz_dbg_value/1 got {} args", args.len()));
             }
-            let ref_word = args[0].extern_arg_ref_word()?;
+            let ref_word = args[0].extern_arg_ref_word(runtime.cur_proc())?;
             let out = fz_runtime::ir_runtime::fz_dbg_value(runtime.cur_proc(), ref_word);
             return interp_value_from_extern_ref_word(out);
         }
         _ => {}
     }
     if decl.variadic {
-        let ret =
-            call_variadic_extern(module, fn_types, block_id, stmt_idx, eid, extern_args, args)?;
+        let ret = call_variadic_extern(
+            runtime.cur_proc(),
+            module,
+            fn_types,
+            block_id,
+            stmt_idx,
+            eid,
+            extern_args,
+            args,
+        )?;
         return match decl.ret {
             ExternTy::I64 => Ok(AnyValue::Int(ret as i64)),
             ExternTy::F64 => Ok(AnyValue::Float(f64::from_bits(ret))),
@@ -235,7 +249,7 @@ pub(super) fn call_extern<T: Types<Ty = crate::types::Ty>>(
     let raw_args: Vec<u64> = args
         .iter()
         .zip(decl.params.iter())
-        .map(|(v, ty)| marshal_arg(*v, *ty))
+        .map(|(v, ty)| marshal_arg(runtime.cur_proc(), *v, *ty))
         .collect::<Result<_, _>>()?;
     let returns_value = !matches!(decl.ret, ExternTy::Unit | ExternTy::Never);
     let ret = if returns_value {

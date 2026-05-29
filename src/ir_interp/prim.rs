@@ -12,7 +12,7 @@ pub(super) fn interp_list_cons(
     tail: AnyValue,
     context: &str,
 ) -> Result<AnyValue, String> {
-    let bits = with_value_ref(tail, context, |tail_ref| match head {
+    let bits = with_value_ref(proc, tail, context, |tail_ref| match head {
         AnyValue::Int(value) => Ok::<u64, String>(fz_runtime::ir_runtime::fz_list_cons_int(
             proc, value, tail_ref,
         )),
@@ -26,7 +26,7 @@ pub(super) fn interp_list_cons(
         )),
         AnyValue::Null | AnyValue::EmptyList | AnyValue::Ref(_) => {
             let head = head
-                .as_ref_word()
+                .as_ref_word(proc)
                 .map_err(|err| format!("{context}: cannot create head ref: {err}"))?;
             Ok(fz_runtime::ir_runtime::fz_list_cons_ref(
                 proc, head, tail_ref,
@@ -43,7 +43,7 @@ pub(super) fn interp_map_put(
     value: AnyValue,
     context: &str,
 ) -> Result<u64, String> {
-    with_value_ref(key, context, |key_ref| match value {
+    with_value_ref(proc, key, context, |key_ref| match value {
         AnyValue::Int(value) => Ok::<u64, String>(fz_runtime::ir_runtime::fz_map_put_int(
             proc, map_bits, key_ref, value,
         )),
@@ -58,7 +58,7 @@ pub(super) fn interp_map_put(
         )),
         AnyValue::Null | AnyValue::EmptyList | AnyValue::Ref(_) => {
             let value_ref = value
-                .as_ref_word()
+                .as_ref_word(proc)
                 .map_err(|err| format!("{context}: cannot create value ref: {err}"))?;
             Ok(fz_runtime::ir_runtime::fz_map_put_ref(
                 proc, map_bits, key_ref, value_ref,
@@ -67,23 +67,29 @@ pub(super) fn interp_map_put(
     })?
 }
 
-pub(super) fn interp_list_head(value: AnyValue) -> Result<AnyValue, String> {
+pub(super) fn interp_list_head(
+    proc: *mut fz_runtime::process::Process,
+    value: AnyValue,
+) -> Result<AnyValue, String> {
     let slot = value.value()?;
     if !interp_is_list_cons(slot) {
         return Err(format!("ListHead: subject is not a list cons ({:?})", slot));
     }
-    with_value_ref(value, "ListHead", |list_ref| {
+    with_value_ref(proc, value, "ListHead", |list_ref| {
         fz_runtime::ir_runtime::fz_list_head_ref(list_ref)
     })
     .and_then(|ref_word| interp_value_from_ref_word(ref_word, "ListHead"))
 }
 
-pub(super) fn interp_list_tail(value: AnyValue) -> Result<AnyValue, String> {
+pub(super) fn interp_list_tail(
+    proc: *mut fz_runtime::process::Process,
+    value: AnyValue,
+) -> Result<AnyValue, String> {
     let slot = value.value()?;
     if !interp_is_list_cons(slot) {
         return Err(format!("ListTail: subject is not a list cons ({:?})", slot));
     }
-    with_value_ref(value, "ListTail", |list_ref| {
+    with_value_ref(proc, value, "ListTail", |list_ref| {
         fz_runtime::ir_runtime::fz_list_tail_ref(list_ref)
     })
     .and_then(|ref_word| interp_value_from_ref_word(ref_word, "ListTail"))
@@ -98,8 +104,8 @@ pub(super) fn interp_map_get(
     if map_slot.kind() != ValueKind::RESOURCE && !is_map_value(map_slot) {
         return Ok(interp_nil_value());
     }
-    with_value_ref(map, "MapGet map", |map_ref| {
-        with_value_ref(key, "MapGet key", |key_ref| {
+    with_value_ref(proc, map, "MapGet map", |map_ref| {
+        with_value_ref(proc, key, "MapGet key", |key_ref| {
             fz_runtime::ir_runtime::fz_map_get_ref(proc, map_ref, key_ref)
         })
     })?
@@ -188,7 +194,7 @@ pub(super) fn eval_prim<T: Types<Ty = crate::types::Ty>>(
                 };
                 fz_runtime::ir_runtime::fz_bs_write_field_ref(
                     runtime.cur_proc(),
-                    value_v.as_ref_word()?,
+                    value_v.as_ref_word(runtime.cur_proc())?,
                     ty_tag,
                     size_present,
                     size_value,
@@ -279,7 +285,7 @@ pub(super) fn eval_prim<T: Types<Ty = crate::types::Ty>>(
             if slot.kind() != ValueKind::STRUCT {
                 return Err("TupleField: subject is not a Struct".to_string());
             }
-            with_value_ref(cv, "TupleField", |struct_ref| {
+            with_value_ref(runtime.cur_proc(), cv, "TupleField", |struct_ref| {
                 fz_runtime::ir_runtime::fz_struct_get_field_ref(
                     runtime.cur_proc(),
                     struct_ref,
@@ -346,11 +352,11 @@ pub(super) fn eval_prim<T: Types<Ty = crate::types::Ty>>(
         }
         Prim::ListHead(c) => {
             let cv = env_get(env, *c)?;
-            interp_list_head(cv)?
+            interp_list_head(runtime.cur_proc(), cv)?
         }
         Prim::ListTail(c) => {
             let cv = env_get(env, *c)?;
-            interp_list_tail(cv)?
+            interp_list_tail(runtime.cur_proc(), cv)?
         }
         Prim::IsEmptyList(c) => {
             let cv = env_get(env, *c)?;
@@ -368,8 +374,8 @@ pub(super) fn eval_prim<T: Types<Ty = crate::types::Ty>>(
             if !is_map_value(map) {
                 return Err("MatcherMapGet expects a map".to_string());
             }
-            let value = with_value_ref(mv, "MatcherMapGet map", |map_ref| {
-                with_value_ref(kv, "MatcherMapGet key", |key_ref| {
+            let value = with_value_ref(runtime.cur_proc(), mv, "MatcherMapGet map", |map_ref| {
+                with_value_ref(runtime.cur_proc(), kv, "MatcherMapGet key", |key_ref| {
                     fz_runtime::ir_runtime::fz_matcher_map_get_ref(
                         runtime.cur_proc(),
                         map_ref,

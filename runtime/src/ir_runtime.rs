@@ -301,8 +301,8 @@ fn ref_load_atom_impl(ref_word: u64) -> u64 {
         .expect("fz_ref_load_atom")
 }
 
-fn box_scalar_for_any(raw: u64, tag: ValueKind) -> u64 {
-    let slot = current_process().heap.alloc_kind(
+fn box_scalar_for_any(process: *mut Process, raw: u64, tag: ValueKind) -> u64 {
+    let slot = (unsafe { &mut *process }).heap.alloc_kind(
         crate::heap::HeapAllocKind::ScalarBox,
         std::mem::size_of::<u64>(),
     ) as *mut u64;
@@ -315,18 +315,21 @@ fn box_scalar_for_any(raw: u64, tag: ValueKind) -> u64 {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_box_int_for_any(raw: i64) -> u64 {
-    box_scalar_for_any(raw as u64, ValueKind::INT)
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn fz_box_int_for_any(process: *mut Process, raw: i64) -> u64 {
+    box_scalar_for_any(process, raw as u64, ValueKind::INT)
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_box_float_for_any(raw: f64) -> u64 {
-    box_scalar_for_any(raw.to_bits(), ValueKind::FLOAT)
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn fz_box_float_for_any(process: *mut Process, raw: f64) -> u64 {
+    box_scalar_for_any(process, raw.to_bits(), ValueKind::FLOAT)
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_box_atom_for_any(raw: u64) -> u64 {
-    box_scalar_for_any(raw, ValueKind::ATOM)
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn fz_box_atom_for_any(process: *mut Process, raw: u64) -> u64 {
+    box_scalar_for_any(process, raw, ValueKind::ATOM)
 }
 
 // ===== Halt + print cluster (fz-ul4.23.4.13) =====
@@ -2767,7 +2770,7 @@ mod tests {
     #[test]
     fn typed_map_put_ffi_round_trips_atom_key_int_value() {
         with_process(|| {
-            let key = fz_box_atom_for_any(1);
+            let key = fz_box_atom_for_any(current_process(), 1);
             let map = fz_map_put_int(current_process(), fz_map_empty(current_process()), key, 42);
             let map_ref = AnyValueRef::from_raw_word(map).expect("map ref");
             let got = fz_map_get_ref(current_process(), map_ref.raw_word(), key);

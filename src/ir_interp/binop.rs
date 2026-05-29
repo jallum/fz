@@ -85,8 +85,8 @@ pub(super) fn interp_value_eq(
         }
         (a, b) => Ok(fz_runtime::ir_runtime::fz_value_eq_ref(
             proc,
-            a.as_ref_word()?,
-            b.as_ref_word()?,
+            a.as_ref_word(proc)?,
+            b.as_ref_word(proc)?,
         ) != 0),
     }
 }

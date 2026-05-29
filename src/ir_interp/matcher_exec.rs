@@ -255,7 +255,7 @@ pub(super) fn resolve_matcher_subject(
             if parent_slot.kind() != ValueKind::STRUCT {
                 return None;
             }
-            with_value_ref(parent, "matcher tuple field", |struct_ref| {
+            with_value_ref(proc, parent, "matcher tuple field", |struct_ref| {
                 fz_runtime::ir_runtime::fz_struct_get_field_ref(proc, struct_ref, index * 8)
             })
             .ok()
@@ -264,12 +264,12 @@ pub(super) fn resolve_matcher_subject(
         crate::matcher::SubjectRef::ListHead(list) => {
             let parent =
                 resolve_matcher_subject(proc, module, matcher, list, inputs, pinned, state)?;
-            interp_list_head(parent).ok()
+            interp_list_head(proc, parent).ok()
         }
         crate::matcher::SubjectRef::ListTail(list) => {
             let parent =
                 resolve_matcher_subject(proc, module, matcher, list, inputs, pinned, state)?;
-            interp_list_tail(parent).ok()
+            interp_list_tail(proc, parent).ok()
         }
         crate::matcher::SubjectRef::MapValue { map, key } => {
             let map = resolve_matcher_subject(proc, module, matcher, map, inputs, pinned, state)?;
@@ -515,8 +515,8 @@ pub(super) fn matcher_map_lookup(
         return None;
     }
     let key = matcher_const_key_value(matcher, module, key, pinned)?;
-    let ref_word = with_value_ref(map, "MatcherMapGet map", |map_ref| {
-        with_value_ref(key, "MatcherMapGet key", |key_ref| {
+    let ref_word = with_value_ref(proc, map, "MatcherMapGet map", |map_ref| {
+        with_value_ref(proc, key, "MatcherMapGet key", |key_ref| {
             fz_runtime::ir_runtime::fz_matcher_map_get_ref(proc, map_ref, key_ref)
         })
     })
@@ -583,7 +583,7 @@ pub(super) fn matcher_read_bitstring(
         let Ok(reader_any) = interp_value_from_ref_word(reader, "bitstring matcher reader") else {
             return false;
         };
-        let Ok(reader_ref) = reader_any.as_ref_word() else {
+        let Ok(reader_ref) = reader_any.as_ref_word(proc) else {
             return false;
         };
         let field_spec = fz_runtime::ir_runtime::fz_bs_field_spec(
@@ -619,7 +619,7 @@ pub(super) fn matcher_read_bitstring(
         for name in &field.direct_bindings {
             size_bindings.insert(name.clone(), extracted);
         }
-        let Ok(next_reader_ref) = next_reader.as_ref_word() else {
+        let Ok(next_reader_ref) = next_reader.as_ref_word(proc) else {
             return false;
         };
         reader = next_reader_ref;

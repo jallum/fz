@@ -118,7 +118,7 @@ impl IrInterpRuntime {
                 None => {
                     // Miss: park stays in place; message lands in mailbox.
                     self.parked.insert(receiver_pid, (park, after_chain));
-                    let msg_ref = msg.as_any_value_ref()?;
+                    let msg_ref = msg.as_any_value_ref(self.cur_proc())?;
                     if let Some(task) = self.tasks.get_mut(&receiver_pid) {
                         let mut forwarding = std::collections::HashMap::new();
                         let copied = fz_runtime::heap::deep_copy_any_value_ref(
@@ -139,7 +139,7 @@ impl IrInterpRuntime {
             }
         }
 
-        let msg_ref = msg.as_any_value_ref()?;
+        let msg_ref = msg.as_any_value_ref(self.cur_proc())?;
         let Some(task) = self.tasks.get_mut(&receiver_pid) else {
             tel.event(
                 &["fz", "runtime", "send_to_unknown_pid"],

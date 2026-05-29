@@ -313,7 +313,7 @@ fn emit_receive_value_ref(
                     "int any-boundary requires fz_box_int_for_any",
                 ));
             };
-            let inst = b.ins().call(fref, &[raw]);
+            let inst = b.ins().call(fref, &[ctx.process, raw]);
             Ok(b.inst_results(inst)[0])
         }
         ReceiveValue::Float(raw) => {
@@ -322,7 +322,7 @@ fn emit_receive_value_ref(
                     "float any-boundary requires fz_box_float_for_any",
                 ));
             };
-            let inst = b.ins().call(fref, &[raw]);
+            let inst = b.ins().call(fref, &[ctx.process, raw]);
             Ok(b.inst_results(inst)[0])
         }
         ReceiveValue::Atom(raw) => {
@@ -331,7 +331,7 @@ fn emit_receive_value_ref(
                     "atom any-boundary requires fz_box_atom_for_any",
                 ));
             };
-            let inst = b.ins().call(fref, &[raw]);
+            let inst = b.ins().call(fref, &[ctx.process, raw]);
             Ok(b.inst_results(inst)[0])
         }
         ReceiveValue::Null => Ok(b.ins().iconst(types::I64, 0)),
@@ -1915,7 +1915,10 @@ mod tests {
     }
 
     fn int_ref(value: i64) -> AnyValueRef {
-        let raw = fz_runtime::ir_runtime::fz_box_int_for_any(value);
+        let raw = fz_runtime::ir_runtime::fz_box_int_for_any(
+            fz_runtime::process::current_process(),
+            value,
+        );
         AnyValueRef::from_raw_word(raw).expect("int ref")
     }
 

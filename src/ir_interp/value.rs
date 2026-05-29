@@ -28,32 +28,47 @@ impl AnyValue {
         })
     }
 
-    pub(super) fn extern_arg_ref_word(self) -> Result<u64, String> {
-        self.as_ref_word()
+    pub(super) fn extern_arg_ref_word(
+        self,
+        proc: *mut fz_runtime::process::Process,
+    ) -> Result<u64, String> {
+        self.as_ref_word(proc)
     }
 
     pub(super) fn from_any_value_ref(value: AnyValueRef) -> Result<Self, String> {
         interp_value_from_ref(value, "interpreter tagged mailbox value")
     }
 
-    pub(super) fn as_ref_word(self) -> Result<u64, String> {
+    /// Box this value into a heap ref word. Scalar arms allocate a ScalarBox
+    /// on `proc`'s heap (`proc` must be the running process); Ref/EmptyList/Null
+    /// arms are allocation-free and ignore it.
+    pub(super) fn as_ref_word(
+        self,
+        proc: *mut fz_runtime::process::Process,
+    ) -> Result<u64, String> {
         match self {
             AnyValue::Null => Ok(AnyValueRef::null().raw_word()),
-            AnyValue::Int(value) => Ok(fz_runtime::ir_runtime::fz_box_int_for_any(value)),
-            AnyValue::Float(value) => Ok(fz_runtime::ir_runtime::fz_box_float_for_any(value)),
-            AnyValue::Atom(value) => Ok(fz_runtime::ir_runtime::fz_box_atom_for_any(value as u64)),
+            AnyValue::Int(value) => Ok(fz_runtime::ir_runtime::fz_box_int_for_any(proc, value)),
+            AnyValue::Float(value) => Ok(fz_runtime::ir_runtime::fz_box_float_for_any(proc, value)),
+            AnyValue::Atom(value) => Ok(fz_runtime::ir_runtime::fz_box_atom_for_any(
+                proc,
+                value as u64,
+            )),
             AnyValue::EmptyList => Ok(AnyValueRef::empty_list().raw_word()),
             AnyValue::Ref(value) => Ok(value.raw_word()),
         }
     }
 
-    pub(super) fn as_any_value_ref(self) -> Result<AnyValueRef, String> {
+    pub(super) fn as_any_value_ref(
+        self,
+        proc: *mut fz_runtime::process::Process,
+    ) -> Result<AnyValueRef, String> {
         match self {
             AnyValue::Null => Ok(AnyValueRef::null()),
             AnyValue::EmptyList => Ok(AnyValueRef::empty_list()),
             AnyValue::Ref(value) => Ok(value),
             AnyValue::Int(_) | AnyValue::Float(_) | AnyValue::Atom(_) => {
-                let ref_word = self.as_ref_word()?;
+                let ref_word = self.as_ref_word(proc)?;
                 AnyValueRef::from_raw_word(ref_word)
                     .map_err(|err| format!("interpreter value ref word {ref_word:#x}: {err:?}"))
             }
@@ -190,12 +205,13 @@ pub(super) fn interp_value_from_ref(value: AnyValueRef, context: &str) -> Result
 }
 
 pub(super) fn with_value_ref<T>(
+    proc: *mut fz_runtime::process::Process,
     value: AnyValue,
     context: &str,
     f: impl FnOnce(u64) -> T,
 ) -> Result<T, String> {
     let value_ref = value
-        .as_ref_word()
+        .as_ref_word(proc)
         .map_err(|err| format!("{context}: cannot create any value ref: {err}"))?;
     Ok(f(value_ref))
 }
@@ -207,7 +223,7 @@ pub(super) fn interp_struct_field_from_tagged_bits(
     context: &str,
 ) -> Result<AnyValue, String> {
     let value = interp_value_from_ref_word(bits, context)?;
-    with_value_ref(value, context, |struct_ref| {
+    with_value_ref(proc, value, context, |struct_ref| {
         fz_runtime::ir_runtime::fz_struct_get_field_ref(proc, struct_ref, field_offset)
     })
     .and_then(|ref_word| interp_value_from_ref_word(ref_word, context))
