@@ -90,15 +90,32 @@ longer-term shape should make callable identity part of value capability data:
 
 ```text
 Callable =
-  KnownFn(fn_id, captures)
-  OpaqueArrow(arity, effects, return)
-  Union(KnownFn..., OpaqueArrow...)
+  KnownFn(fn_id)
+  KnownClosure(fn_id, captures)
+  OpaqueCallable(arity, effects, return)
+  Union(KnownFn..., KnownClosure..., OpaqueCallable...)
 ```
 
-Planner call-edge facts can then consume callable capabilities uniformly. The
-remaining known-reducer timing work is tracked by `fz-xac`: expose
-closure-literal reducer calls early enough for module-level inlining without
-forcing heap continuation materialization.
+These names describe what the compiler knows, not which runtime object must be
+built:
+
+- `KnownFn` is a direct code identity with no runtime closure state. It may come
+  from a zero-capture closure literal, but consumers must treat the useful fact
+  as "this value can be called as this function" rather than "this value must be
+  represented as a closure."
+- `KnownClosure` is a direct code identity plus captured runtime state. It can
+  still support direct call edges, but the captures are real state and remain a
+  representation barrier until a pass proves otherwise.
+- `OpaqueCallable` is a callable boundary whose concrete target is not a single
+  known function in the current plan. It keeps the indirect-call shape and the
+  conservative materialization rules.
+
+Planner call-edge facts can then consume callable capabilities uniformly with
+`ReturnContextPlan`: the target tells us what code may run, and the return
+context tells us how the result becomes the next state. The remaining
+known-reducer timing work is tracked by `fz-xac`: expose closure-literal reducer
+calls early enough for module-level inlining without forcing heap continuation
+materialization.
 
 ## Proof Gates
 
