@@ -9,6 +9,12 @@ A continuation has two separate meanings:
 - scheduler root: a heap closure the process can park, move through GC, and
   resume later.
 
+A continuation body is a join point with captures. It becomes a heap closure
+only when it escapes: returning, storing, sending, parking, or capturing it into
+an escaping closure forces materialization. A local join that immediately
+computes the next loop state does not. Materialization is therefore a
+representation choice, not a semantic fact.
+
 Most native calls only need the first meaning. They run synchronously and do
 not cross a scheduler boundary. In that case codegen uses a stack-backed lazy
 continuation descriptor instead of allocating a heap closure.

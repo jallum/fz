@@ -14,7 +14,7 @@ representation choices.
 
 ## Source Contract
 
-The v1 source forms are:
+The source forms are:
 
 ```fz
 defprotocol Enumerable do
@@ -65,8 +65,8 @@ The domain type is checked at use sites and function boundaries. A spec that
 requires `P.t(...)` requires proof that the argument type is inside the
 implementation domain of `P`. That proof may come from a concrete impl target,
 a closed union whose arms all implement `P`, or an explicitly open boundary.
-The current executable path requires a statically selected implementation;
-runtime lookup for open boundaries is future work.
+Executable dispatch is emitted only when the planner statically selects a single
+implementation; open-boundary runtime lookup is not emitted.
 
 This lets the compiler produce diagnostics such as "List implements
 Enumerable, Integer does not" instead of treating a protocol annotation as
@@ -76,13 +76,11 @@ plain `any`.
 
 Implementation targets are typed identities. They are never display strings.
 
-The implemented v1 target space is module-shaped implementation targets keyed
-by typed module identity. Built-in scalar/list names map to known type shapes
-when the planner checks dispatch. `Any` fallback, deriving, optional callbacks,
-and struct-specific target sugar are reserved future features. Display
-spellings are diagnostics and source syntax. Compiler facts use a semantic
-`ImplTarget` identity, just as module linking uses `ModuleName` and `ExportKey`
-instead of dotted strings.
+Implementation targets are module-shaped, keyed by typed module identity.
+Built-in scalar and list names map to known type shapes when the planner checks
+dispatch. Display spellings are diagnostics and source syntax; compiler facts use
+a semantic `ImplTarget` identity, just as module linking uses `ModuleName` and
+`ExportKey` instead of dotted strings.
 
 Duplicate `(protocol, target)` implementations are errors. Missing required
 callbacks and callback arity mismatches are errors. The diagnostics should name
@@ -102,33 +100,34 @@ Compilation can see two useful domain shapes:
 - a closed executable or link domain, where the linked implementation set is
   known.
 
-Open domains can still type-check calls and specs. Today, executable dispatch is
-only emitted when the planner can select a static implementation callback.
-Runtime lookup for erased or genuinely open receiver domains is a future
-feature, not a hidden fallback. Closed domains allow the planner to choose
-direct calls or finite switches without a fallback path.
+Open domains type-check calls and specs. Executable dispatch is emitted only
+when the planner selects a single static implementation callback; open or erased
+receiver domains get no runtime-lookup fallback. Closed domains let the planner
+choose a direct call to the selected implementation without a fallback path.
 
 ## Dispatch Outcomes
 
 Protocol dispatch is a call-edge capability selected by the planner and linker.
 It is not a separate string lookup path in codegen.
 
-For a protocol call, the compiler must select one of these outcomes:
+For a protocol call, the planner (`protocol_dispatch_key`) matches the receiver
+type by subtype against the registered `(protocol, ImplTarget)` impls and selects
+one of these outcomes:
 
-- static direct: the receiver type has one known implementation, so the edge is
-  an ordinary direct call to that implementation callback;
-- closed-domain switch: the receiver type is a finite union of known
-  implementation targets, so the edge is a matcher or switch whose arms call
-  the selected implementation callbacks;
-- provider-boundary external edge: the implementation callback is known by
-  `ExportKey`, but its body lives in another unit until module graph linking;
-- runtime lookup: future feature for genuinely open or erased receiver domains;
-- diagnostic: no implementation can satisfy the protocol-domain constraint.
+- static direct (`ProtocolDispatch::Local`): a matching implementation lives in
+  this unit, so the edge is an ordinary direct call to that implementation
+  callback;
+- provider-boundary external edge (`ProtocolDispatch::External`): the matching
+  callback is known by `ExportKey`, but its body lives in another unit until
+  module graph linking;
+- diagnostic: no implementation satisfies the protocol-domain constraint.
 
-Static direct and closed-domain switch dispatch must not require heap boxing of
-scalar receivers. The selected callback ABI and the caller's argument shape
-cooperate the same way direct call variants and return-demand variants do
-today.
+Finite-union switch dispatch and runtime lookup for open or erased receiver
+domains are not emitted.
+
+Static direct dispatch does not require heap boxing of scalar receivers. The
+selected callback ABI and the caller's argument shape cooperate the same way
+direct-call variants and return-demand variants do.
 
 ## No-Replanning Rule
 
@@ -143,13 +142,13 @@ facts through the unit boundary:
 - return demand and return-context plans;
 - function constant facts;
 - extern marshal facts;
-- protocol implementation edge facts once protocols exist.
+- protocol implementation edge facts.
 
-`ExternalCallEdge` is the existing provider-boundary call edge. Protocol
-implementation calls that cross a provider boundary should use the same model:
-an implementation callback is known by typed export identity before its local
-`FnId` is available. Linking resolves that boundary edge and updates the
-preserved call-edge plan in the same transformation that rewrites the IR.
+`ExternalCallEdge` is the provider-boundary call edge. Protocol implementation
+calls that cross a provider boundary use the same model: an implementation
+callback is known by typed export identity before its local `FnId` is available.
+Linking resolves that boundary edge and updates the preserved call-edge plan in
+the same transformation that rewrites the IR.
 
 Whole-program or LTO passes may add information that was not available
 upstream. They must earn their place as strengthening passes, not cleanup
@@ -157,7 +156,7 @@ passes needed to make normal linking correct.
 
 ## Diagnostics
 
-Protocol diagnostics should be tied to the typed fact that failed:
+Protocol diagnostics are tied to the typed fact that failed:
 
 - missing implementation: name the protocol, required domain type, actual
   receiver type, and known implementors in scope;
@@ -173,10 +172,10 @@ Protocol diagnostics should be tied to the typed fact that failed:
 These are compiler diagnostics, not runtime surprises, whenever the receiver
 type is statically known enough to prove failure.
 
-## Current Anchors
+## Where This Lives
 
-The implementation should extend existing compiler ownership instead of
-creating a parallel subsystem:
+Protocol facts extend existing compiler ownership rather than a parallel
+subsystem:
 
 - `protocols::ProtocolRegistry` stores resolver-owned declarations and
   `(protocol, ImplTarget)` implementation facts.
@@ -205,7 +204,7 @@ creating a parallel subsystem:
   stub callsites before interpretation or native emission. The interpreter and
   codegen therefore execute ordinary typed impl calls, preserving scalar
   argument representations such as raw integers.
-- `docs/dispatch-as-planner-output.md` defines planner-owned dispatch facts.
+- [`dispatch-as-planner-output.md`](dispatch-as-planner-output.md) defines planner-owned dispatch facts.
 - `SpecPlan.call_edges` is keyed by `CallsiteId` and stores selected call-edge
   capabilities.
 - `ReturnDemand` is already a call-edge capability selected before codegen.

@@ -52,7 +52,7 @@ The token fact is local to `ir_planner::type_fn`; it is not persisted in
 `SpecPlan` because codegen needs only the final value type of ordinary vars.
 
 For the broader dispatch rule that made this cleanup possible, see
-[`docs/dispatch-as-planner-output.md`](../../docs/dispatch-as-planner-output.md).
+[`dispatch-as-planner-output.md`](dispatch-as-planner-output.md).
 
 ## Return Demand
 
@@ -61,12 +61,11 @@ not a runtime side channel. The planner chooses demanded variants while walking
 specific callsites; codegen must implement the selected capability and must not
 invent a different variant by guessing from function names.
 
-`ReturnDemand` is factored into two axes:
-
-- delivery: how the callee delivers the return value (`Value` or
-  `TupleFields(N)`);
-- context: what result context is already available at the return edge
-  (`None` or `ListTail(tail_ty)`).
+`ReturnDemand` is a two-axis capability — delivery (`Value` or `TupleFields(N)`)
+crossed with context (`None` or `ListTail(tail_ty)`). The capability catalog and
+the dispatch-selection rule are canonical in
+[`dispatch-as-planner-output`](dispatch-as-planner-output.md); this doc
+covers what each capability does to construction.
 
 The central invariant is that demand follows a specific return edge/result
 hole, not the whole caller spec. A caller spec can contain more than one call,
@@ -91,7 +90,7 @@ walker in `ir_planner::walk` should only call those helpers and record the
 resulting facts. Keep new list-tail or tuple-field analyses in that helper
 module unless they truly change traversal or worklist ownership.
 
-Current rendered forms:
+Rendered forms and what each builds:
 
 - `Value` is the ordinary material return.
 - `TupleFields(N)` means a tuple result is delivered to the continuation as
@@ -174,7 +173,20 @@ Its static CLIF gate asserts that `sort_list`/`fn_clause_2`/`merge_sort_lists`
 carry no constant-sorter signature (`&fn43[]`) and heap-allocate no
 sorter-carrying continuations.
 
-Owned-cons reuse is the next reduction layer. Multi-clause list destructuring
+## Physical Capabilities
+
+Some facts the planner records are not about source values at all: they are
+object-local permissions on private runtime objects — chiefly owned-cons reuse.
+A physical capability must not affect semantic specialization. `src/ir_effects.rs`
+classifies operation effects — whether an operation allocates, observes
+allocation, is externally observable, reaches the scheduler, or halts — and
+planner return-context barriers and capability validation read that classifier
+rather than carrying their own publication rules. Lowering records the
+capability, effect classification validates it, DCE and capture normalization
+(`ir_dce`, `ir_capture_norm`) preserve or drop it, and codegen lowers what
+remains. The model is never repaired in codegen.
+
+Owned-cons reuse eliminates the copied prefix. Multi-clause list destructuring
 records a physical capability from a projected head back to the original source
 cons cell. The source slot is not a source value and is not modeled as an
 ignored semantic parameter. The spec dump exposes the capability:

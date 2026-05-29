@@ -32,4 +32,4 @@ those reads through `SpecPlan.dispatches`, which is *per-spec* by
 construction. This fixture pins down the correct behavior so a
 future migration regression can't slip through silently.
 
-Worked through in `docs/dispatch-as-planner-output.md` (Worry 2).
+Worked through in `.agent/docs/dispatch-as-planner-output.md` (Worry 2).

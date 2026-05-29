@@ -26,8 +26,8 @@ available.
 
 - `ModuleName` is the semantic module path. It is built from parsed path
   segments and can render to dotted text at the edge.
-- `QualifiedName` is a possibly module-qualified function/type name. It exists
-  mostly to bridge current flattened IR spellings.
+- `QualifiedName` is a possibly module-qualified function/type name. It bridges
+  the flattened IR spellings.
 - `ExportKey` is the link identity for a public function:
 
 ```text
@@ -47,7 +47,7 @@ nodes still exist. It produces one `ModuleInterface` per module.
 `ModuleInterface` contains:
 
 - `name`: the `ModuleName`;
-- `abi_version`: currently `FZ_INTERFACE_ABI_VERSION`;
+- `abi_version`: `FZ_INTERFACE_ABI_VERSION`;
 - `imports`: declared module imports and their `only` / `except` filters;
 - `exports`: non-macro, non-extern, non-`fnp` public functions by name and
   arity;
@@ -91,11 +91,11 @@ Important behavior:
 - conflicting imports of the same `name/arity` from different modules are
   `RESOLVE_CONFLICTING_IMPORT`.
 - local sibling functions shadow imports.
-- bare imported calls rewrite to the qualified current flattened spelling,
-  e.g. `add(x, y)` becomes `Math.add(x, y)`.
+- bare imported calls rewrite to the qualified flattened spelling, e.g.
+  `add(x, y)` becomes `Math.add(x, y)`.
 
-This is still compatible with the current flattened IR, but new boundary code
-should pass typed `ModuleName` / `ExportKey` values wherever possible.
+The flattened spelling is the IR rendering; boundary code keys on the typed
+`ModuleName` / `ExportKey` identity, not on the dotted text.
 
 ## Strict Interfaces
 
@@ -132,9 +132,7 @@ Use these terms precisely:
   needed by graph loading. Graph loading can recover the provider
   implementation input from the artifact without reading the original provider
   source path. Runtime-library modules use their own `fz-runtime-module-v1`
-  payload, and internal inspection artifacts may still use `fz-ir-text-v1`
-  until the linker consumes final object bytes or a richer relocatable unit
-  format.
+  payload, and internal inspection artifacts use `fz-ir-text-v1`.
 - `CompiledUnit`: one module before image link. It owns module-local IR plus
   the interface/import/export facts needed to prove link compatibility.
 - `CompiledImage`: one linked runnable image. It owns runtime-global executable
@@ -405,15 +403,15 @@ The first line is the artifact magic. The body is pretty JSON serialized from
 typed deserializer and explicit ABI/fingerprint checks, not by ad hoc
 line-count parsing.
 
-Current `.fzo` deliberately stores a typed implementation payload instead of
-final object bytes. `fz build --emit-fzo` stores the checked source text as
+`.fzo` stores a typed implementation payload rather than final object bytes.
+`fz build --emit-fzo` stores the checked source text as
 `fz-source-unit-v1` and derives required imports from the pre-link
 `CompiledUnit` external-call edges; that lets imported modules emit their own
 `.fzo` without compiling unresolved external calls through machine codegen.
 `FzoArtifact::source_unit_text` is the materialization gate: it accepts
 `fz-source-unit-v1` user artifacts and `fz-runtime-module-v1` built-in runtime
 module artifacts. It rejects inspection-only payloads before graph loading can
-treat them as source units. `FzoArtifact::from_unit` still derives an internal
+treat them as source units. `FzoArtifact::from_unit` derives an internal
 `fz-ir-text-v1` payload from `CompiledUnit::code.to_string()` for
 tests and inspection paths that need a deterministic unit dump, not a
 reloadable implementation source.

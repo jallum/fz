@@ -18,9 +18,9 @@ Variadic syntax is represented in two layers:
   `Fixed`, explicitly ascribed variadic args are `Ascribed`, and un-ascribed
   variadic args start as `Auto`.
 
-Do not resolve `Auto` globally on the IR. `FnTypes` is per specialization, so a
+Do not resolve `Auto` globally on the IR. `SpecPlan` is per specialization, so a
 single syntactic call can need different marshal classes in different specs.
-`ir_extern_marshal::resolve_module_types` fills `FnTypes::extern_marshals`
+`ir_extern_marshal::resolve_module_types` fills `SpecPlan::extern_marshals`
 with concrete `ExternTy` values keyed by `ExternMarshalSite`.
 
 Automatic variadic defaults are intentionally narrow:
@@ -30,8 +30,9 @@ Automatic variadic defaults are intentionally narrow:
 - binary/string values require explicit `:: binary` or `:: cstring`
 - other fz values produce `type/extern-marshal`
 
-Later codegen/interpreter work should consume the per-spec side table rather
-than guessing from `ExternMarshal::Auto` at the boundary.
+Codegen (`src/ir_codegen/prim.rs`) and the interpreter
+(`src/ir_interp/extern_call.rs`) read the resolved per-spec side table keyed by
+`ExternMarshalSite`; they do not guess from `ExternMarshal::Auto` at the boundary.
 
 ## Spec-Guided Return ABI
 
@@ -77,8 +78,8 @@ This indirection is intentional. Cranelift 0.131 exposes a fixed `Signature`
 made of `AbiParam`s; it does not expose the target ABI's variadic fixed-count
 marker for a call. Emitting a direct call to `open(path, flags, mode)` as a
 normal fixed-arity C call is not ABI-correct on platforms where variadic calls
-change register classification. Keep backend code selecting concrete runtime
-dispatchers until Cranelift has a first-class variadic call API.
+change register classification. Backend code therefore selects concrete runtime
+dispatchers rather than emitting the variadic call directly.
 
 `fz_extern_symbol_addr(name)` resolves `dlsym(RTLD_DEFAULT, name)` and caches
 both hits and misses. It returns `0` for null or unresolved symbols; callers
@@ -101,8 +102,7 @@ instantiates:
 ```
 
 The spec type variable is bound from the payload argument. The `when` bound
-keeps resource payloads to raw host handles for now: integers and future
-`cpointer` values.
+keeps resource payloads to raw host handles: `integer` and `cpointer` values.
 
 `resource(T)` is a real type constructor. It carries `T` through substitution,
 so `make_resource(42, &close/1)` returns `resource(integer)`. If that call is

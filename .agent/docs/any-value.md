@@ -250,11 +250,9 @@ Every dynamic stored value is self-describing. Scalar refs point at boxed
 scalar payloads and have no children. Heap-object refs point at heap objects
 and are scanned by object layout. Sentinels have no children.
 
-Older split carriers are transitional debt from split storage. Mailboxes,
-parked receive matchers, pinned receive snapshots, and matcher outputs now use
-`AnyValueRef`; remaining split shapes should stay layout-local until they
-disappear. Map construction has no process-root builder; it is a fold of
-immutable put operations.
+Mailboxes, parked receive matchers, pinned receive snapshots, and matcher
+outputs use `AnyValueRef`. Map construction has no process-root builder; it is a
+fold of immutable put operations.
 
 ## What This Model Keeps Out
 
@@ -278,6 +276,5 @@ either hands that ref to the waiting matcher or deep-copies the ref into the
 receiver heap before enqueueing it. There is no special scalar side path
 inside send.
 
-Architecture-specific pointer tricks stay hidden behind the API. Parallel
-value wrappers that are 95% the same are not reintroduced — that last 5% is
-where bugs live.
+Architecture-specific pointer tricks stay hidden behind the API. There are no
+parallel value wrappers that are 95% the same — that last 5% is where bugs live.
