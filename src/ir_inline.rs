@@ -2,7 +2,7 @@ use crate::fz_ir::{
     BitSizeIr, Block, BlockId, Cont, FnCategory, FnId, FnIr, Module, Prim, Stmt, Term, Var,
 };
 use crate::ir_fuse::{subst_stmt, subst_term};
-use crate::ir_planner::fn_types::{CallableCapability, ModulePlan};
+use crate::ir_planner::fn_types::{CallableCapability, CapabilityPlan};
 use std::collections::{HashMap, HashSet};
 
 const INLINE_BUDGET: usize = 8;
@@ -127,11 +127,11 @@ fn closure_targets(m: &Module) -> HashSet<FnId> {
 /// closure-target entry shape. `KnownFn` is intentionally absent: it is a
 /// state-free callable identity, so direct callsites may inline it without
 /// destroying closure state.
-fn stateful_closure_targets(types: &ModulePlan) -> HashSet<FnId> {
+fn stateful_closure_targets(types: &CapabilityPlan) -> HashSet<FnId> {
     types
-        .specs
-        .values()
-        .flat_map(|ft| ft.callable_capabilities.values())
+        .spec_capabilities
+        .iter()
+        .flat_map(|(_, caps)| caps.values())
         .filter_map(|capability| match capability {
             CallableCapability::KnownClosure { fn_id, .. } => Some(*fn_id),
             CallableCapability::KnownFn(_) | CallableCapability::OpaqueCallable => None,
@@ -1103,7 +1103,7 @@ pub fn inline_module(m: &mut Module) -> usize {
     inline_module_protecting(m, &closure_targets(m), &HashSet::new())
 }
 
-pub fn inline_module_with_plan(m: &mut Module, types: &ModulePlan) -> usize {
+pub fn inline_module_with_plan(m: &mut Module, types: &CapabilityPlan) -> usize {
     // Fns the reducer can evaluate when handed constant args: no externally
     // observable effect, no scheduler/mailbox interaction, no halt, no
     // allocation-stat read. `calls_opaque` (a fn calling its own closure
@@ -1934,11 +1934,8 @@ mod tests {
         mb.add_fn(caller.build());
         mb.add_fn(make_leaf_add1());
         let mut m = mb.build();
-        let plan = crate::ir_planner::plan_module(
-            &mut crate::types::ConcreteTypes,
-            &m,
-            &crate::telemetry::NullTelemetry,
-        );
+        let plan =
+            crate::ir_planner::plan_callable_capabilities(&mut crate::types::ConcreteTypes, &m);
 
         assert_eq!(inline_module_with_plan(&mut m, &plan), 1);
         let caller = m.fns.iter().find(|f| f.name == "main").unwrap();
@@ -1978,11 +1975,8 @@ mod tests {
         mb.add_fn(caller.build());
         mb.add_fn(make_leaf_add1());
         let mut m = mb.build();
-        let plan = crate::ir_planner::plan_module(
-            &mut crate::types::ConcreteTypes,
-            &m,
-            &crate::telemetry::NullTelemetry,
-        );
+        let plan =
+            crate::ir_planner::plan_callable_capabilities(&mut crate::types::ConcreteTypes, &m);
 
         assert!(
             stateful_closure_targets(&plan).contains(&FnId(1)),
@@ -2053,11 +2047,8 @@ mod tests {
         mb.add_fn(ab.build());
         mb.add_fn(kb.build());
         let mut m = mb.build();
-        let plan = crate::ir_planner::plan_module(
-            &mut crate::types::ConcreteTypes,
-            &m,
-            &crate::telemetry::NullTelemetry,
-        );
+        let plan =
+            crate::ir_planner::plan_callable_capabilities(&mut crate::types::ConcreteTypes, &m);
 
         inline_module_with_plan(&mut m, &plan);
         let main = m.fns.iter().find(|f| f.name == "main").unwrap();
