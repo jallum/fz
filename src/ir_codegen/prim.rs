@@ -27,6 +27,7 @@ pub(crate) fn emit_map_get_value_ref_for_key<
     let runtime = env.runtime;
     let fn_types = env.fn_types;
     let map_ref = body.tagged_var(var_env, map.0);
+    let process = body.process_arg();
     let key_kind = expected_runtime_value_kind(t, fn_types, block_env, key);
     match key_kind {
         Some(fz_runtime::any_value::ValueKind::ATOM) => {
@@ -34,7 +35,7 @@ pub(crate) fn emit_map_get_value_ref_for_key<
             let fref = body
                 .jmod
                 .declare_func_in_func(runtime.map_get_atom_key_ref_id, body.b.func);
-            let inst = body.b.ins().call(fref, &[map_ref, kv]);
+            let inst = body.b.ins().call(fref, &[process, map_ref, kv]);
             body.b.inst_results(inst)[0]
         }
         Some(fz_runtime::any_value::ValueKind::INT) => {
@@ -42,7 +43,7 @@ pub(crate) fn emit_map_get_value_ref_for_key<
             let fref = body
                 .jmod
                 .declare_func_in_func(runtime.map_get_int_key_ref_id, body.b.func);
-            let inst = body.b.ins().call(fref, &[map_ref, kv]);
+            let inst = body.b.ins().call(fref, &[process, map_ref, kv]);
             body.b.inst_results(inst)[0]
         }
         Some(fz_runtime::any_value::ValueKind::FLOAT) => {
@@ -50,7 +51,7 @@ pub(crate) fn emit_map_get_value_ref_for_key<
             let fref = body
                 .jmod
                 .declare_func_in_func(runtime.map_get_float_key_ref_id, body.b.func);
-            let inst = body.b.ins().call(fref, &[map_ref, key_float]);
+            let inst = body.b.ins().call(fref, &[process, map_ref, key_float]);
             body.b.inst_results(inst)[0]
         }
         _ => {
@@ -58,7 +59,7 @@ pub(crate) fn emit_map_get_value_ref_for_key<
                 .jmod
                 .declare_func_in_func(runtime.map_get_ref_id, body.b.func);
             let key_ref = body.tagged_var(var_env, key.0);
-            let inst = body.b.ins().call(fref, &[map_ref, key_ref]);
+            let inst = body.b.ins().call(fref, &[process, map_ref, key_ref]);
             body.b.inst_results(inst)[0]
         }
     }
@@ -79,6 +80,7 @@ pub(crate) fn emit_map_put_for_key_and_value<
 ) -> ir::Value {
     let runtime = env.runtime;
     let fn_types = env.fn_types;
+    let process = body.process_arg();
     let key_kind = expected_runtime_value_kind(t, fn_types, block_env, key);
     let value_kind = expected_runtime_value_kind(t, fn_types, block_env, value);
     let scalar_put_id = match (key_kind, value_kind) {
@@ -148,7 +150,10 @@ pub(crate) fn emit_map_put_for_key_and_value<
             None => unreachable!("scalar map put requires known value kind"),
         };
         let fref = body.jmod.declare_func_in_func(func_id, body.b.func);
-        let inst = body.b.ins().call(fref, &[map_bits, key_arg, value_arg]);
+        let inst = body
+            .b
+            .ins()
+            .call(fref, &[process, map_bits, key_arg, value_arg]);
         return body.b.inst_results(inst)[0];
     }
 
@@ -159,6 +164,7 @@ pub(crate) fn emit_map_put_for_key_and_value<
             body.jmod
                 .declare_func_in_func(runtime.map_put_int_id, body.b.func),
             vec![
+                process,
                 map_bits,
                 key_ref,
                 body.value_raw_int(binding_for_var(var_env, value.0)),
@@ -169,13 +175,14 @@ pub(crate) fn emit_map_put_for_key_and_value<
             (
                 body.jmod
                     .declare_func_in_func(runtime.map_put_float_id, body.b.func),
-                vec![map_bits, key_ref, value_f64],
+                vec![process, map_bits, key_ref, value_f64],
             )
         }
         Some(fz_runtime::any_value::ValueKind::ATOM) => (
             body.jmod
                 .declare_func_in_func(runtime.map_put_atom_id, body.b.func),
             vec![
+                process,
                 map_bits,
                 key_ref,
                 body.value_raw_atom(binding_for_var(var_env, value.0)),
@@ -187,7 +194,7 @@ pub(crate) fn emit_map_put_for_key_and_value<
             (
                 body.jmod
                     .declare_func_in_func(runtime.map_put_ref_id, body.b.func),
-                vec![map_bits, key_ref, value_ref],
+                vec![process, map_bits, key_ref, value_ref],
             )
         }
     };

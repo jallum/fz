@@ -1420,13 +1420,18 @@ pub extern "C" fn fz_map_dest_freeze(process: *mut Process, dest_ref_word: u64) 
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_map_get_ref(map_ref_word: u64, key_ref_word: u64) -> u64 {
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn fz_map_get_ref(
+    process: *mut Process,
+    map_ref_word: u64,
+    key_ref_word: u64,
+) -> u64 {
     let map = any_value_ref_from_word(map_ref_word, "fz_map_get_ref map");
     let key = any_value_ref_from_word(key_ref_word, "fz_map_get_ref key");
-    fz_map_get_value_ref(map, key)
+    fz_map_get_value_ref(process, map, key)
 }
 
-fn fz_map_get_value_ref(map: AnyValueRef, key: AnyValueRef) -> u64 {
+fn fz_map_get_value_ref(process: *mut Process, map: AnyValueRef, key: AnyValueRef) -> u64 {
     if map.tag() == ValueKind::RESOURCE {
         let rs = unsafe {
             crate::resource::ResourceStub::from_raw(map.resource_addr().expect("resource map get"))
@@ -1436,7 +1441,7 @@ fn fz_map_get_value_ref(map: AnyValueRef, key: AnyValueRef) -> u64 {
             .expect("resource integer payload ref")
             .raw_word();
     }
-    current_process()
+    (unsafe { &mut *process })
         .heap
         .read_map_value_ref(map, key)
         .expect("fz_map_get_ref")
@@ -1447,7 +1452,11 @@ fn fz_map_get_value_ref(map: AnyValueRef, key: AnyValueRef) -> u64 {
         .raw_word()
 }
 
-fn fz_map_get_scalar_key_ref(map: AnyValueRef, key: crate::any_value::AnyValue) -> u64 {
+fn fz_map_get_scalar_key_ref(
+    process: *mut Process,
+    map: AnyValueRef,
+    key: crate::any_value::AnyValue,
+) -> u64 {
     if map.tag() == ValueKind::RESOURCE {
         let rs = unsafe {
             crate::resource::ResourceStub::from_raw(map.resource_addr().expect("resource map get"))
@@ -1457,7 +1466,7 @@ fn fz_map_get_scalar_key_ref(map: AnyValueRef, key: crate::any_value::AnyValue) 
             .expect("resource integer payload ref")
             .raw_word();
     }
-    current_process()
+    (unsafe { &mut *process })
         .heap
         .read_map_value_for_any_key(map, key)
         .expect("fz_map_get scalar key")
@@ -1469,37 +1478,63 @@ fn fz_map_get_scalar_key_ref(map: AnyValueRef, key: crate::any_value::AnyValue) 
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_map_get_atom_key_ref(map_ref_word: u64, atom_id: u64) -> u64 {
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn fz_map_get_atom_key_ref(
+    process: *mut Process,
+    map_ref_word: u64,
+    atom_id: u64,
+) -> u64 {
     let map = any_value_ref_from_word(map_ref_word, "fz_map_get_atom_key_ref map");
-    fz_map_get_scalar_key_ref(map, crate::any_value::AnyValue::atom(atom_id as u32))
+    fz_map_get_scalar_key_ref(
+        process,
+        map,
+        crate::any_value::AnyValue::atom(atom_id as u32),
+    )
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_map_get_int_key_ref(map_ref_word: u64, value: i64) -> u64 {
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn fz_map_get_int_key_ref(
+    process: *mut Process,
+    map_ref_word: u64,
+    value: i64,
+) -> u64 {
     let map = any_value_ref_from_word(map_ref_word, "fz_map_get_int_key_ref map");
-    fz_map_get_scalar_key_ref(map, crate::any_value::AnyValue::int(value))
+    fz_map_get_scalar_key_ref(process, map, crate::any_value::AnyValue::int(value))
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_map_get_float_key_ref(map_ref_word: u64, value: f64) -> u64 {
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn fz_map_get_float_key_ref(
+    process: *mut Process,
+    map_ref_word: u64,
+    value: f64,
+) -> u64 {
     let map = any_value_ref_from_word(map_ref_word, "fz_map_get_float_key_ref map");
-    fz_map_get_scalar_key_ref(map, crate::any_value::AnyValue::float(value))
+    fz_map_get_scalar_key_ref(process, map, crate::any_value::AnyValue::float(value))
 }
 
 fn map_put_slot_value(
+    process: *mut Process,
     map_ref_word: u64,
     key: crate::any_value::AnyValue,
     value: crate::any_value::AnyValue,
 ) -> u64 {
     let map_bits = map_bits_from_ref_word(map_ref_word, "map_put map");
-    let new_map_bits = current_process()
+    let new_map_bits = (unsafe { &mut *process })
         .heap
         .map_put_slot_bits(map_bits, key, value);
     map_ref_word_from_bits(new_map_bits)
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_map_put_ref(map_ref_word: u64, key_ref_word: u64, value_ref_word: u64) -> u64 {
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn fz_map_put_ref(
+    process: *mut Process,
+    map_ref_word: u64,
+    key_ref_word: u64,
+    value_ref_word: u64,
+) -> u64 {
     let key = any_value_ref_from_word(key_ref_word, "fz_map_put_ref key");
     let value = any_value_ref_from_word(value_ref_word, "fz_map_put_ref value");
     if value.tag().is_scalar() {
@@ -1508,6 +1543,7 @@ pub extern "C" fn fz_map_put_ref(map_ref_word: u64, key_ref_word: u64, value_ref
         );
     }
     map_put_slot_value(
+        process,
         map_ref_word,
         crate::any_value::AnyValue::from_ref(key).expect("fz_map_put_ref key"),
         crate::any_value::AnyValue::from_ref(value).expect("fz_map_put_ref value"),
@@ -1515,9 +1551,16 @@ pub extern "C" fn fz_map_put_ref(map_ref_word: u64, key_ref_word: u64, value_ref
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_map_put_int(map_ref_word: u64, key_ref_word: u64, value: i64) -> u64 {
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn fz_map_put_int(
+    process: *mut Process,
+    map_ref_word: u64,
+    key_ref_word: u64,
+    value: i64,
+) -> u64 {
     let key = any_value_ref_from_word(key_ref_word, "fz_map_put_int key");
     map_put_slot_value(
+        process,
         map_ref_word,
         crate::any_value::AnyValue::from_ref(key).expect("fz_map_put_int key"),
         crate::any_value::AnyValue::int(value),
@@ -1525,9 +1568,16 @@ pub extern "C" fn fz_map_put_int(map_ref_word: u64, key_ref_word: u64, value: i6
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_map_put_float(map_ref_word: u64, key_ref_word: u64, value: f64) -> u64 {
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn fz_map_put_float(
+    process: *mut Process,
+    map_ref_word: u64,
+    key_ref_word: u64,
+    value: f64,
+) -> u64 {
     let key = any_value_ref_from_word(key_ref_word, "fz_map_put_float key");
     map_put_slot_value(
+        process,
         map_ref_word,
         crate::any_value::AnyValue::from_ref(key).expect("fz_map_put_float key"),
         crate::any_value::AnyValue::float(value),
@@ -1535,9 +1585,16 @@ pub extern "C" fn fz_map_put_float(map_ref_word: u64, key_ref_word: u64, value: 
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_map_put_atom(map_ref_word: u64, key_ref_word: u64, atom_id: u64) -> u64 {
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn fz_map_put_atom(
+    process: *mut Process,
+    map_ref_word: u64,
+    key_ref_word: u64,
+    atom_id: u64,
+) -> u64 {
     let key = any_value_ref_from_word(key_ref_word, "fz_map_put_atom key");
     map_put_slot_value(
+        process,
         map_ref_word,
         crate::any_value::AnyValue::from_ref(key).expect("fz_map_put_atom key"),
         crate::any_value::AnyValue::atom(atom_id as u32),
@@ -1547,8 +1604,14 @@ pub extern "C" fn fz_map_put_atom(map_ref_word: u64, key_ref_word: u64, atom_id:
 macro_rules! scalar_key_map_put {
     ($name:ident, $key_ty:ty, $value_ty:ty, $key:expr, $value:expr) => {
         #[unsafe(no_mangle)]
-        pub extern "C" fn $name(map_ref_word: u64, key: $key_ty, value: $value_ty) -> u64 {
-            map_put_slot_value(map_ref_word, $key(key), $value(value))
+        #[allow(clippy::not_unsafe_ptr_arg_deref)]
+        pub extern "C" fn $name(
+            process: *mut Process,
+            map_ref_word: u64,
+            key: $key_ty,
+            value: $value_ty,
+        ) -> u64 {
+            map_put_slot_value(process, map_ref_word, $key(key), $value(value))
         }
     };
 }
@@ -1618,30 +1681,37 @@ scalar_key_map_put!(
 );
 
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_map_get_int(map_ref_word: u64, key_ref_word: u64) -> i64 {
-    map_get_int_impl(map_ref_word, key_ref_word)
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn fz_map_get_int(
+    process: *mut Process,
+    map_ref_word: u64,
+    key_ref_word: u64,
+) -> i64 {
+    map_get_int_impl(process, map_ref_word, key_ref_word)
 }
 
-fn map_get_int_impl(map_ref_word: u64, key_ref_word: u64) -> i64 {
-    ref_load_int_impl(fz_map_get_ref(map_ref_word, key_ref_word))
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn fz_map_get_float(map_ref_word: u64, key_ref_word: u64) -> f64 {
-    map_get_float_impl(map_ref_word, key_ref_word)
-}
-
-fn map_get_float_impl(map_ref_word: u64, key_ref_word: u64) -> f64 {
-    ref_load_float_impl(fz_map_get_ref(map_ref_word, key_ref_word))
+fn map_get_int_impl(process: *mut Process, map_ref_word: u64, key_ref_word: u64) -> i64 {
+    ref_load_int_impl(fz_map_get_ref(process, map_ref_word, key_ref_word))
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_map_get_atom(map_ref_word: u64, key_ref_word: u64) -> u64 {
-    map_get_atom_impl(map_ref_word, key_ref_word)
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn fz_map_get_float(
+    process: *mut Process,
+    map_ref_word: u64,
+    key_ref_word: u64,
+) -> f64 {
+    ref_load_float_impl(fz_map_get_ref(process, map_ref_word, key_ref_word))
 }
 
-fn map_get_atom_impl(map_ref_word: u64, key_ref_word: u64) -> u64 {
-    ref_load_atom_impl(fz_map_get_ref(map_ref_word, key_ref_word))
+#[unsafe(no_mangle)]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn fz_map_get_atom(
+    process: *mut Process,
+    map_ref_word: u64,
+    key_ref_word: u64,
+) -> u64 {
+    ref_load_atom_impl(fz_map_get_ref(process, map_ref_word, key_ref_word))
 }
 
 #[unsafe(no_mangle)]
@@ -2650,7 +2720,10 @@ mod tests {
             let map_addr = crate::any_value::map_addr_from_tagged(map_bits).expect("map addr");
             let map_ref = AnyValueRef::from_heap_object(ValueKind::MAP, map_addr).expect("map ref");
 
-            assert_eq!(map_get_int_impl(map_ref.raw_word(), key_ref.raw_word()), 42);
+            assert_eq!(
+                map_get_int_impl(current_process(), map_ref.raw_word(), key_ref.raw_word()),
+                42
+            );
         });
     }
 
@@ -2658,9 +2731,9 @@ mod tests {
     fn typed_map_put_ffi_round_trips_atom_key_int_value() {
         with_process(|| {
             let key = fz_box_atom_for_any(1);
-            let map = fz_map_put_int(fz_map_empty(current_process()), key, 42);
+            let map = fz_map_put_int(current_process(), fz_map_empty(current_process()), key, 42);
             let map_ref = AnyValueRef::from_raw_word(map).expect("map ref");
-            let got = fz_map_get_ref(map_ref.raw_word(), key);
+            let got = fz_map_get_ref(current_process(), map_ref.raw_word(), key);
             assert_eq!(fz_ref_load_int(got), 42);
         });
     }
@@ -2681,7 +2754,7 @@ mod tests {
             let map_addr = crate::any_value::map_addr_from_tagged(map_bits).expect("map addr");
             let map_ref = AnyValueRef::from_heap_object(ValueKind::MAP, map_addr).expect("map ref");
 
-            let _ = map_get_int_impl(map_ref.raw_word(), key_ref.raw_word());
+            let _ = map_get_int_impl(current_process(), map_ref.raw_word(), key_ref.raw_word());
         });
     }
 

@@ -37,6 +37,7 @@ pub(super) fn interp_list_cons(
 }
 
 pub(super) fn interp_map_put(
+    proc: *mut fz_runtime::process::Process,
     map_bits: u64,
     key: AnyValue,
     value: AnyValue,
@@ -44,12 +45,13 @@ pub(super) fn interp_map_put(
 ) -> Result<u64, String> {
     with_value_ref(key, context, |key_ref| match value {
         AnyValue::Int(value) => Ok::<u64, String>(fz_runtime::ir_runtime::fz_map_put_int(
-            map_bits, key_ref, value,
+            proc, map_bits, key_ref, value,
         )),
         AnyValue::Float(value) => Ok::<u64, String>(fz_runtime::ir_runtime::fz_map_put_float(
-            map_bits, key_ref, value,
+            proc, map_bits, key_ref, value,
         )),
         AnyValue::Atom(value) => Ok::<u64, String>(fz_runtime::ir_runtime::fz_map_put_atom(
+            proc,
             map_bits,
             key_ref,
             value as u64,
@@ -59,7 +61,7 @@ pub(super) fn interp_map_put(
                 .as_ref_word()
                 .map_err(|err| format!("{context}: cannot create value ref: {err}"))?;
             Ok(fz_runtime::ir_runtime::fz_map_put_ref(
-                map_bits, key_ref, value_ref,
+                proc, map_bits, key_ref, value_ref,
             ))
         }
     })?
@@ -87,14 +89,18 @@ pub(super) fn interp_list_tail(value: AnyValue) -> Result<AnyValue, String> {
     .and_then(|ref_word| interp_value_from_ref_word(ref_word, "ListTail"))
 }
 
-pub(super) fn interp_map_get(map: AnyValue, key: AnyValue) -> Result<AnyValue, String> {
+pub(super) fn interp_map_get(
+    proc: *mut fz_runtime::process::Process,
+    map: AnyValue,
+    key: AnyValue,
+) -> Result<AnyValue, String> {
     let map_slot = map.value()?;
     if map_slot.kind() != ValueKind::RESOURCE && !is_map_value(map_slot) {
         return Ok(interp_nil_value());
     }
     with_value_ref(map, "MapGet map", |map_ref| {
         with_value_ref(key, "MapGet key", |key_ref| {
-            fz_runtime::ir_runtime::fz_map_get_ref(map_ref, key_ref)
+            fz_runtime::ir_runtime::fz_map_get_ref(proc, map_ref, key_ref)
         })
     })?
     .and_then(|ref_word| interp_value_from_ref_word(ref_word, "MapGet"))
@@ -352,7 +358,7 @@ pub(super) fn eval_prim<T: Types<Ty = crate::types::Ty>>(
         Prim::MapGet(m, k) => {
             let mv = env_get(env, *m)?;
             let kv = env_get(env, *k)?;
-            interp_map_get(mv, kv)?
+            interp_map_get(runtime.cur_proc(), mv, kv)?
         }
         Prim::MatcherMapGet(m, k) => {
             let mv = env_get(env, *m)?;
@@ -385,7 +391,7 @@ pub(super) fn eval_prim<T: Types<Ty = crate::types::Ty>>(
             for (kv, vv) in entries {
                 let k = env_get(env, *kv)?;
                 let v = env_get(env, *vv)?;
-                map_bits = interp_map_put(map_bits, k, v, "MakeMap")?;
+                map_bits = interp_map_put(runtime.cur_proc(), map_bits, k, v, "MakeMap")?;
             }
             interp_value_from_ref_word(map_bits, "MakeMap")?
         }
@@ -395,7 +401,7 @@ pub(super) fn eval_prim<T: Types<Ty = crate::types::Ty>>(
             for (kv, vv) in entries {
                 let k = env_get(env, *kv)?;
                 let v = env_get(env, *vv)?;
-                map_bits = interp_map_put(map_bits, k, v, "MapUpdate")?;
+                map_bits = interp_map_put(runtime.cur_proc(), map_bits, k, v, "MapUpdate")?;
             }
             interp_value_from_ref_word(map_bits, "MapUpdate")?
         }
