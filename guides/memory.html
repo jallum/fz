@@ -296,12 +296,12 @@ is a pointer bump — two comparisons and an increment on the fast path.</p>
 <pre>
   Process heap (one block, contiguous):
 
-  block_start                      gc_watermark (75%)   block_end
-      │                                   │                 │
-      ▼                                   ▼                 ▼
-      ┌──────────────────────────────────┬──────────────────┐
-      │  allocated objects  ← bump_top   │    free space    │
-      └──────────────────────────────────┴──────────────────┘
+  block_start                allocation_watermark          block_end
+      │                              │                         │
+      ▼                              ▼                         ▼
+      ┌─────────────────────────────┬─────────────────────────┐
+      │ allocated objects ← bump_top│ continuation reserve    │
+      └─────────────────────────────┴─────────────────────────┘
                             ▲
                          bump_top
 </pre>
@@ -364,48 +364,34 @@ their off-heap payload. See
 </div>
 
 <!-- ─────────────────────────────── 3. PRESSURE ─────────────────────────────── -->
-<h2 id="pressure">3. Watermark and back-edge yield</h2>
+<h2 id="pressure">3. Reductions, allocation pressure, and back-edge yield</h2>
 
-<p>GC fires at two moments: when a process parks on <code>receive</code>
-(park-time) and when allocation crosses a watermark mid-loop (mid-flight,
-via a cooperative back-edge yield). The mid-flight path is what keeps long
-compute loops from growing the heap unboundedly — without it, a CPU-bound
-process would never park and never get collected.</p>
+<p>Processes run on a reduction budget. Every compiled or interpreted loop
+back-edge spends budget. When the budget reaches zero, the process materializes
+a scheduler-owned continuation closure and yields. Allocation pressure uses the
+same mechanism: crossing the allocation watermark expires the budget and marks
+the process as needing GC at the next scheduler boundary.</p>
 
-<h3>gc_watermark</h3>
+<h3>allocation_watermark</h3>
 
-<p>Set to 75% of <code>block_end</code> whenever a new block is created.
-Every <code>Heap::alloc()</code> call checks:</p>
+<p>Set to <code>block_end - YIELD_CONTINUATION_RESERVE_BYTES</code> whenever a
+new block is created. Every <code>Heap::alloc()</code> call keeps the hot path
+to a bump and one precomputed watermark compare:</p>
 
 <pre>
-  if bump_top >= gc_watermark {
-      FZ_SHOULD_YIELD.store(1, Relaxed);
+  if bump_top >= allocation_watermark {
+      reductions_remaining = 0
+      yield_reasons |= NEEDS_GC
   }
 </pre>
 
-<p>The flag means "please yield at the next chance you get."</p>
+<p>The reserved band is a soft emergency margin so the process can still build
+the scheduler continuation it must hand back. Compiled yield telemetry samples
+the margin before and after the slow path, so
+<code>max_yield_continuation_bytes</code> includes the continuation closure,
+scalar boxes, and materialized continuation state observed while yielding.</p>
 
-<h3>FZ_SHOULD_YIELD — one byte, all processes</h3>
-
-<pre>
-  #[no_mangle]
-  pub static FZ_SHOULD_YIELD: AtomicU8 = AtomicU8::new(0);
-</pre>
-
-<p>A single global byte. Why global rather than per-process?</p>
-<ul>
-  <li>Native (Tail-CC) JIT functions have no easy way to fetch the current
-  process — a global is a single <code>load</code> via Cranelift's
-  <code>global_value</code>.</li>
-  <li>An external timer or signal handler can set it at a known address
-  without knowing which process is currently running. That's the seed for
-  future soft preemption with no kernel interrupt machinery.</li>
-</ul>
-
-<p>The scheduler clears the flag before installing each process, and again
-after any GC.</p>
-
-<h3>The back-edge check — 3 inline instructions</h3>
+<h3>The back-edge check</h3>
 
 <p>Every loop in fz is a tail-recursive call. The compiler uses
 <strong>Tarjan SCC</strong> (already run by the type system) to figure out
@@ -416,25 +402,28 @@ mutual recursion (<code>f → g → f</code>) is covered automatically.</p>
 <p>At every back-edge call site, codegen emits:</p>
 
 <pre>
-  gv   = global_value.i64 %FZ_SHOULD_YIELD   <span class="note">; address of the global</span>
-  flag = load.i8 notrap aligned gv+0          <span class="note">; one load</span>
-  brz  flag, $fast                            <span class="note">; almost always taken</span>
+  gv        = global_value.i64 %FZ_REDUCTIONS_REMAINING
+  remaining = load.i32 gv+0
+  remaining = remaining - 1
+  store remaining, gv+0
+  brgt remaining, 0, $fast
 
-  <span class="note">; slow path (flag set):</span>
+  <span class="note">; slow path (budget exhausted):</span>
+  call fz_yield_slow_path_begin()
   cont = call fz_alloc_closure(next_loop_fn, argc, halt_kind, code_ptr)
   store arg0, cont.capture[0]
   store arg1, cont.capture[1]
   ...
-  call fz_yield_mid_flight(cont)
+  call fz_yield_mid_flight_report(cont, remaining, YIELD_REASON_REDUCTIONS)
   return [YIELD_PTR]                          <span class="note">; sentinel; scheduler sees it and re-queues</span>
 
   $fast:
   return_call loop_fn(args...)                <span class="note">; unchanged hot path</span>
 </pre>
 
-<p>The fast path costs one load and one branch — well-predicted on modern
-hardware after the first iteration. The slow path only fires when the
-watermark has been crossed or the scheduler has requested a yield.</p>
+<p>The slow path only fires when the process has spent its quantum. Allocation
+pressure makes that happen by expiring the same budget instead of using a
+separate GC-yield flag.</p>
 
 <!-- ─────────────────────────────── 4. PARK-TIME GC ─────────────────────────────── -->
 <h2 id="gc-parktime">4. Park-time GC — Cheney with explicit roots</h2>
@@ -500,6 +489,8 @@ passed to the next iteration, plus the current continuation.</p>
     ...
     runnable_closure:      *mut u8,       <span class="note">// tagged closure to run next; null = none</span>
     quiet_quanta:          u8,            <span class="note">// non-yielding quanta since last GC</span>
+    reduction_yields:      u64,           <span class="note">// ordinary budget exhaustion</span>
+    allocation_pressure_yields: u64,      <span class="note">// allocation pressure expired budget</span>
   }
 </pre>
 
@@ -605,9 +596,9 @@ stub still on the chain.</p>
 
 <pre>
   1. if runnable_closure != null:
-       gc_process_roots(runnable_closure, mailbox)
-       FZ_SHOULD_YIELD.store(0)
-       quiet_quanta = 0
+       if NEEDS_GC or heap pressure:
+         gc_process_roots(runnable_closure, mailbox)
+         quiet_quanta = 0
        re-enqueue process
        return
   2. if pending_main_entry / pending_closure_entry:
@@ -624,8 +615,10 @@ to <code>0</code> whenever a mid-flight GC runs:</p>
 
 <pre>
   if task.runnable_closure != null {
-      gc_process_roots(...);
-      task.quiet_quanta = 0;
+      if task.needs_boundary_gc() {
+          gc_process_roots(...);
+          task.quiet_quanta = 0;
+      }
       re-enqueue;
   } else {
       task.quiet_quanta = task.quiet_quanta.saturating_add(1);
@@ -636,7 +629,7 @@ to <code>0</code> whenever a mid-flight GC runs:</p>
 <p>The intent: a process that allocated a lot, GC'd down to a small live
 set, and is now allocating very little shouldn't keep hogging a large
 block. The counter is the signal a future scheduler pass can use to
-proactively fire <code>FZ_SHOULD_YIELD</code> and let the next back-edge
+proactively expire the process reduction budget and let the next back-edge
 move the process onto a smaller block through process-root GC. The counter exists and is
 maintained; the heuristic that consumes it isn't wired yet.</p>
 

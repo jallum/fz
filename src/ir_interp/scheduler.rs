@@ -26,6 +26,16 @@ use crate::types::Types;
 /// Returned by run_fn to signal either completion or a receive-park.
 pub(super) enum InterpStep {
     Done(AnyValue),
+    /// Task yielded cooperatively at a scheduler-safe back edge. The next
+    /// quantum resumes by calling `resume_fn(args...)`, then drains `after`
+    /// continuations exactly like a receive resume.
+    Yielded {
+        resume_fn: FnId,
+        resume_args: Vec<AnyValue>,
+        after: Vec<(FnId, Vec<AnyValue>)>,
+        remaining_reductions: i32,
+        reason: u8,
+    },
     /// Task parked on receive. `resume_fn(msg, cap_vals...)` is called when
     /// the message arrives. `after` is a chain of (fn_id, caps) continuations
     /// to call in order with each successive return value — built up when

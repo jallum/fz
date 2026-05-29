@@ -228,6 +228,10 @@ impl IrInterpRuntime {
         use fz_runtime::process::ProcessState;
         let mut completions = Vec::new();
         let mut t = crate::types::ConcreteTypes;
+        // Route fz output (dbg/print) to telemetry for the duration of the
+        // drive — same seam the compiled scheduler uses, so dbg observability
+        // is engine-uniform.
+        let _output_scope = crate::runtime::route_output_to(tel);
 
         'sched: while let Some(pid) = self.pop_runnable() {
             let image = self
@@ -240,7 +244,10 @@ impl IrInterpRuntime {
             let proc_ptr = self
                 .process_ptr(pid)
                 .expect("pid in run_queue with no process entry");
-            unsafe { (*proc_ptr).state = ProcessState::Running };
+            unsafe {
+                (*proc_ptr).state = ProcessState::Running;
+                (*proc_ptr).reset_reduction_budget();
+            };
             let prev = fz_runtime::process::CURRENT_PROCESS.with(|c| c.replace(proc_ptr));
             let mut step = run_fn(self, &mut t, module, tel, fn_id, args);
             loop {
@@ -273,7 +280,33 @@ impl IrInterpRuntime {
                             );
                         }
                         fz_runtime::process::CURRENT_PROCESS.with(|c| c.set(prev));
+                        // Parity with the compiled engine: record the result on
+                        // the Process and emit the same process_exited event
+                        // through the single shared emit site.
+                        unsafe {
+                            (*proc_ptr).halt_value = value_to_halt(val);
+                            crate::runtime::ExitRecord::emit(tel, pid, &*proc_ptr);
+                        }
                         self.set_process_state(pid, ProcessState::Exited);
+                        continue 'sched;
+                    }
+                    Ok(InterpStep::Yielded {
+                        resume_fn,
+                        mut resume_args,
+                        after: mut new_after,
+                        remaining_reductions,
+                        reason,
+                    }) => {
+                        fz_runtime::process::CURRENT_PROCESS.with(|c| c.set(prev));
+                        new_after.extend(after);
+                        let process = unsafe { &mut *proc_ptr };
+                        process.finish_yield_report(remaining_reductions, reason);
+                        process.boundary_maintenance(|p| {
+                            gc_interp_scheduler_roots(p, &mut resume_args, &mut new_after)
+                        })?;
+                        self.set_process_state(pid, ProcessState::Ready);
+                        self.resume.insert(pid, (resume_fn, resume_args, new_after));
+                        self.run_queue.push_back(pid);
                         continue 'sched;
                     }
                     Ok(InterpStep::Blocked(resume_fn, cap_vals, mut new_after)) => {
@@ -304,6 +337,11 @@ impl IrInterpRuntime {
     #[cfg(test)]
     pub(crate) fn task(&self, pid: u32) -> Option<&Process> {
         self.tasks.get(&pid).map(Box::as_ref)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn task_mut(&mut self, pid: u32) -> Option<&mut Process> {
+        self.tasks.get_mut(&pid).map(Box::as_mut)
     }
 
     pub(crate) fn read_tuple_fields(
@@ -341,6 +379,39 @@ impl IrInterpRuntime {
         fz_runtime::process::CURRENT_PROCESS.with(|c| c.set(prev));
         Ok(rendered)
     }
+}
+
+fn gc_interp_scheduler_roots(
+    process: &mut Process,
+    resume_args: &mut [AnyValue],
+    after: &mut [(FnId, Vec<AnyValue>)],
+) -> Result<(), String> {
+    let resume_len = resume_args.len();
+    let mut roots: Vec<fz_runtime::any_value::AnyValue> = Vec::new();
+    for value in resume_args.iter() {
+        roots.push(value.value()?);
+    }
+    for (_, caps) in after.iter() {
+        for value in caps {
+            roots.push(value.value()?);
+        }
+    }
+
+    process
+        .heap
+        .gc_any_value_roots_with_process_roots(&mut roots, &mut process.mailbox);
+
+    for (slot, root) in resume_args.iter_mut().zip(roots.iter().take(resume_len)) {
+        *slot = interp_value_from_slot(*root);
+    }
+    let mut idx = resume_len;
+    for (_, caps) in after.iter_mut() {
+        for value in caps {
+            *value = interp_value_from_slot(roots[idx]);
+            idx += 1;
+        }
+    }
+    Ok(())
 }
 
 /// Run `module`'s `main` fn through the interpreter.
@@ -412,6 +483,9 @@ pub fn run_test_fn(
     fz_runtime::process::CURRENT_PROCESS.with(|c| c.set(prev));
     match result {
         Ok(InterpStep::Done(_)) => Ok(()),
+        Ok(InterpStep::Yielded { .. }) => {
+            Err("test fn yielded outside scheduler drive".to_string())
+        }
         Ok(InterpStep::Blocked(..)) | Ok(InterpStep::BlockedMatched(..)) => {
             Err("test fn blocked on receive with empty mailbox".to_string())
         }

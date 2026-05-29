@@ -55,11 +55,6 @@ fn decl_import<M: cranelift_module::Module>(
 pub(crate) fn declare_runtime_symbols<M: cranelift_module::Module>(
     jmod: &mut M,
 ) -> Result<RuntimeRefs, CodegenError> {
-    // FZ_SHOULD_YIELD is a 1-byte external data object.
-    let should_yield_data_id = jmod
-        .declare_data("FZ_SHOULD_YIELD", Linkage::Import, false, false)
-        .map_err(|e| CodegenError::new(format!("declare FZ_SHOULD_YIELD: {}", e)))?;
-
     let halt = declare_halt_runtime(jmod)?;
     let list = declare_list_runtime(jmod)?;
     let strct = declare_struct_runtime(jmod)?;
@@ -177,8 +172,8 @@ pub(crate) fn declare_runtime_symbols<M: cranelift_module::Module>(
         spawn_entry_id: scheduler.spawn_entry_id,
         main_entry_id: scheduler.main_entry_id,
         drain_dtor_entry_id: scheduler.drain_dtor_entry_id,
-        yield_mid_flight_id: scheduler.yield_mid_flight_id,
-        should_yield_data_id,
+        yield_mid_flight_report_id: scheduler.yield_mid_flight_report_id,
+        yield_slow_path_begin_id: scheduler.yield_slow_path_begin_id,
     })
 }
 
@@ -884,15 +879,21 @@ struct SchedulerRefs {
     spawn_entry_id: FuncId,
     main_entry_id: FuncId,
     drain_dtor_entry_id: FuncId,
-    yield_mid_flight_id: FuncId,
+    yield_mid_flight_report_id: FuncId,
+    yield_slow_path_begin_id: FuncId,
 }
 
 /// Scheduler-facing LOCAL entry shims and the mid-flight yield helper.
 fn declare_scheduler_runtime<M: cranelift_module::Module>(
     jmod: &mut M,
 ) -> Result<SchedulerRefs, CodegenError> {
-    let yield_mid_flight_id =
-        decl_import(jmod, "fz_yield_mid_flight", &[types::I64], &[types::I64])?;
+    let yield_mid_flight_report_id = decl_import(
+        jmod,
+        "fz_yield_mid_flight_report",
+        &[types::I64, types::I32, types::I32],
+        &[types::I64],
+    )?;
+    let yield_slow_path_begin_id = decl_import(jmod, "fz_yield_slow_path_begin", &[], &[])?;
     // fz_spawn_entry: SystemV entry the scheduler calls to launch a new
     // task's zero-arg closure. Sig: `(closure:i64) -> i64`.
     let mut se_sig = Signature::new(CallConv::SystemV);
@@ -928,7 +929,8 @@ fn declare_scheduler_runtime<M: cranelift_module::Module>(
         spawn_entry_id,
         main_entry_id,
         drain_dtor_entry_id,
-        yield_mid_flight_id,
+        yield_mid_flight_report_id,
+        yield_slow_path_begin_id,
     })
 }
 
@@ -1045,6 +1047,6 @@ pub(crate) struct RuntimeRefs {
     /// (closure, payload, halt_cl) via Tail-CC; result discarded. Scheduler
     /// drains `pending_dtors` through this shim at task-exit.
     pub(super) drain_dtor_entry_id: FuncId,
-    pub(super) yield_mid_flight_id: FuncId,
-    pub(super) should_yield_data_id: DataId,
+    pub(super) yield_mid_flight_report_id: FuncId,
+    pub(super) yield_slow_path_begin_id: FuncId,
 }

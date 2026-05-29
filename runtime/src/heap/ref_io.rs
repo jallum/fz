@@ -5,8 +5,12 @@ use super::schema::SchemaRegistry;
 use crate::any_value::{AnyValue, ValueKind};
 use crate::any_value::{AnyValueRef, AnyValueRefError};
 
-pub(super) fn watermark_for(block_start: *mut u8, block_size: usize) -> *mut u8 {
-    let offset = (block_size * 3) / 4;
+pub(super) fn allocation_watermark_for(block_start: *mut u8, block_size: usize) -> *mut u8 {
+    assert!(
+        block_size > super::YIELD_CONTINUATION_RESERVE_BYTES,
+        "heap block must leave continuation reserve"
+    );
+    let offset = block_size - super::YIELD_CONTINUATION_RESERVE_BYTES;
     unsafe { block_start.add(offset) }
 }
 

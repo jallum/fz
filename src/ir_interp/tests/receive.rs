@@ -13,9 +13,11 @@ fn lower_src(src: &str) -> Module {
 
 fn run_and_capture(src: &str) -> Result<String, String> {
     let m = lower_src(src);
-    let _ = fz_runtime::ir_runtime::test_capture_take();
-    run_main(&crate::telemetry::NullTelemetry, &m)?;
-    Ok(fz_runtime::ir_runtime::test_capture_take().join("\n"))
+    let tel = crate::telemetry::bus::ConfiguredTelemetry::new();
+    let dbg = crate::runtime::DbgCapture::new();
+    tel.attach(&[], dbg.handler());
+    run_main(&tel, &m)?;
+    Ok(dbg.lines().join("\n"))
 }
 
 fn drive_completion_i64(done: &[(u32, AnyValue)], pid: u32) -> Option<i64> {
@@ -259,10 +261,11 @@ fn receive_reuses_lowered_matcher_during_interp_probes() {
     let tel = ConfiguredTelemetry::new();
     let cap = Capture::new();
     tel.attach(&["fz", "interp", "receive"], cap.handler());
+    let dbg = crate::runtime::DbgCapture::new();
+    tel.attach(&[], dbg.handler());
     crate::pattern_matrix::reset_compile_count();
-    let _ = fz_runtime::ir_runtime::test_capture_take();
     run_main(&tel, &m).expect("interp run");
-    let out = fz_runtime::ir_runtime::test_capture_take().join("\n");
+    let out = dbg.lines().join("\n");
     assert!(out.contains("2"), "expected 2, got: {}", out);
     assert_eq!(
         cap.count(&["fz", "interp", "receive", "probe_miss"]),
@@ -301,9 +304,11 @@ fn receive_map_probe_uses_matcher_without_ast_pattern_walk() {
         end
     "#;
     let m = lower_src(src);
-    let _ = fz_runtime::ir_runtime::test_capture_take();
-    run_main(&crate::telemetry::NullTelemetry, &m).expect("interp run");
-    let out = fz_runtime::ir_runtime::test_capture_take().join("\n");
+    let tel = crate::telemetry::bus::ConfiguredTelemetry::new();
+    let dbg = crate::runtime::DbgCapture::new();
+    tel.attach(&[], dbg.handler());
+    run_main(&tel, &m).expect("interp run");
+    let out = dbg.lines().join("\n");
     assert!(out.contains("42"), "expected 42, got: {}", out);
 }
 
@@ -322,9 +327,11 @@ fn receive_map_pattern_matches_present_nil_value() {
         end
     "#;
     let m = lower_src(src);
-    let _ = fz_runtime::ir_runtime::test_capture_take();
-    run_main(&crate::telemetry::NullTelemetry, &m).expect("interp run");
-    let out = fz_runtime::ir_runtime::test_capture_take().join("\n");
+    let tel = crate::telemetry::bus::ConfiguredTelemetry::new();
+    let dbg = crate::runtime::DbgCapture::new();
+    tel.attach(&[], dbg.handler());
+    run_main(&tel, &m).expect("interp run");
+    let out = dbg.lines().join("\n");
     assert_eq!(out, "nil", "present nil map value must match, got: {}", out);
 }
 

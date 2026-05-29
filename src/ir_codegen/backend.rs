@@ -505,8 +505,12 @@ fn register_runtime_symbols(builder: &mut JITBuilder) {
         fz_runtime::ir_runtime::fz_receive_park_matched as *const u8,
     );
     builder.symbol(
-        "fz_yield_mid_flight",
-        fz_runtime::ir_runtime::fz_yield_mid_flight as *const u8,
+        "fz_yield_mid_flight_report",
+        fz_runtime::ir_runtime::fz_yield_mid_flight_report as *const u8,
+    );
+    builder.symbol(
+        "fz_yield_slow_path_begin",
+        fz_runtime::ir_runtime::fz_yield_slow_path_begin as *const u8,
     );
     builder.symbol(
         "fz_get_static_closure",
@@ -516,8 +520,6 @@ fn register_runtime_symbols(builder: &mut JITBuilder) {
         "fz_get_halt_cont",
         fz_runtime::ir_runtime::fz_get_halt_cont as *const u8,
     );
-    // Cooperative yield-flag data.
-    builder.symbol("FZ_SHOULD_YIELD", fz_runtime::yield_flag::jit_flag_ptr());
     // Test externs (e.g. the `_resource_test_dtor` counter used by
     // JIT-leg resource lifecycle tests). Production paths see no
     // extra symbols.

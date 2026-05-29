@@ -24,7 +24,7 @@ If execution reaches a real yield edge, the lazy descriptor is materialized into
 an ordinary closure before the scheduler sees it:
 
 ```text
-if should_yield:
+if reductions_remaining <= 0:
   k = materialize(lazy_cont)
   yield_mid_flight(k)
 ```

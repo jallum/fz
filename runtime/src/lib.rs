@@ -15,14 +15,15 @@ pub mod extern_variadic;
 pub mod heap;
 pub mod ir_runtime;
 pub mod park;
+pub mod pinned_abi;
 pub mod procbin;
 pub mod process;
+pub mod process_abi;
 pub mod resource;
 pub mod sched;
 pub mod scheduler_hooks;
 pub mod sync;
 pub mod timer;
-pub mod yield_flag;
 
 // ---------------------------------------------------------------------------
 // C-ABI builtins called from compiled fz code
@@ -30,7 +31,7 @@ pub mod yield_flag;
 
 pub(crate) fn emit_print_line(s: String) {
     println!("{}", s);
-    crate::ir_runtime::TEST_CAPTURE.with(|c| c.borrow_mut().push(s));
+    crate::scheduler_hooks::dispatch_output(&s);
 }
 
 /// Aborts with the fz value rendered to stderr.

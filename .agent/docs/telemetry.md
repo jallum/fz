@@ -112,6 +112,61 @@ That proves the pass intentionally pruned two items. A separate structural
 assertion should still prove the rewritten continuation has the one correct
 item.
 
+## Runtime Telemetry
+
+Telemetry is also how the running scheduler reports what a task did, and how
+tests observe a run without reaching into a `Process`. `Runtime::with_telemetry`
+attaches the sink; both execution engines — the compiled `Runtime` and the
+interpreter `IrInterpRuntime` — emit the same events, so a test behaves
+identically across interpreter, JIT, and AOT.
+
+### `fz.runtime.process_exited`
+
+Emitted once per task exit, through the single `ExitRecord::emit` site shared by
+both engines:
+
+```text
+event:        fz.runtime.process_exited
+measurements: halt_value, live_count, bytes_used   (durable; built by ExitRecord::project)
+metadata:     pid, process = opaque(&Process)       (live during dispatch only)
+```
+
+It carries **both** a measurement projection and the live `&Process`, and the
+split is deliberate:
+
+- The **measurements** are the durable, stable contract. `durable_owned()` keeps
+  them, so they survive into stored events (`Capture`, JSONL). `ExitRecord::project`
+  is the *single* place that reads `Process` internals for the event.
+- The **opaque `&Process`** is the escape hatch for a synchronous handler that
+  needs a field the projection omits. `durable_owned()` drops opaque values, so
+  it is only valid *during dispatch* — never read it from a stored event.
+
+### `fz.runtime.dbg`
+
+`dbg`/print output is routed onto the bus too. `emit_print_line` (the shared
+render seam) still writes production stdout, and additionally forwards each line
+through the `OutputHook` to `CURRENT_TEL`, which whichever scheduler is driving
+points at its sink (`route_output_to`). So dbg output is observable as events on
+both engines:
+
+```text
+event:    fz.runtime.dbg
+metadata: line
+```
+
+### Observing in tests
+
+There is one run path — the production scheduler — and the test convenience
+`CompiledModule::run(fn_id)` is a thin `spawn` + `run_until_idle` over it that
+reads its result from `process_exited`, not from `task.halt_value`. Tests do not
+construct a caller-owned `Process` or read a print buffer; they observe:
+
+- `ProcessExitCapture` → a typed `ExitRecord` (result + heap stats).
+- `DbgCapture` → the `fz.runtime.dbg` line stream.
+
+`observe(compiled, entry)` (codegen tests) bundles both, and the `run_main` /
+`capture_main` family is built on it.
+
 ## What To Put In Events
 
 Put in values that are natural byproducts of the current work:

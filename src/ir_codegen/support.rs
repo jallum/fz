@@ -1,7 +1,6 @@
 //! Shared codegen support constants, recording controls, and small scans.
 
 use super::*;
-use crate::fz_ir::{Prim, Stmt};
 use cranelift_codegen::ir::{self, InstBuilder};
 use cranelift_frontend::FunctionBuilder;
 use std::collections::HashMap;
@@ -88,13 +87,6 @@ pub fn asm_record_take() -> Vec<(String, String)> {
     ASM_RECORD.with(|c| c.borrow_mut().take().unwrap_or_default())
 }
 
-/// Drain the per-thread print-capture buffer. Storage lives in the
-/// runtime crate alongside fz_dbg_value.
-#[cfg(test)]
-pub fn test_capture_take() -> Vec<String> {
-    fz_runtime::ir_runtime::test_capture_take()
-}
-
 /// Begin recording per-fn Cranelift IR display text. Subsequent `compile()`
 /// calls on this thread append `(fn_name, clif_text)` pairs to a TLS
 /// buffer; `ir_text_record_take` drains and returns them.
@@ -108,13 +100,6 @@ pub fn ir_text_record_enable() {
 pub fn ir_text_record_take() -> Vec<(String, String)> {
     VALUE_DESCR_RECORD.with(|c| *c.borrow_mut() = None);
     IR_TEXT_RECORD.with(|c| c.borrow_mut().take().unwrap_or_default())
-}
-
-/// Reset DEFAULT_PROCESS. Call at the start of any test that needs a clean
-/// heap — cargo's worker-pool thread reuse makes leftover state sticky.
-#[cfg(test)]
-pub fn heap_reset_for_test() {
-    DEFAULT_PROCESS.with(|c| *c.borrow_mut() = None);
 }
 
 // ----- Map runtime fns -----
@@ -183,31 +168,6 @@ pub(crate) fn default_unit_for(ty: crate::ast::BitType) -> u32 {
 // fadd/fsub/fmul/fdiv when the result can stay RawF64. Typed float-float
 // and typed int-int fast paths sit in front of the dispatch entirely.
 // Eq/Neq do NOT promote: `1 == 1.0` is false.
-
-pub(crate) fn fn_may_allocate_heap(f: &crate::fz_ir::FnIr) -> bool {
-    f.blocks.iter().any(|block| {
-        block.stmts.iter().any(|stmt| {
-            let Stmt::Let(_, prim) = stmt;
-            matches!(
-                prim,
-                Prim::MakeTuple(..)
-                    | Prim::DestTupleBegin { .. }
-                    | Prim::DestTupleSet { .. }
-                    | Prim::DestListCons { .. }
-                    | Prim::MakeList(..)
-                    | Prim::MakeClosure(..)
-                    | Prim::MakeMap(..)
-                    | Prim::MapUpdate(..)
-                    | Prim::DestMapBegin { .. }
-                    | Prim::DestMapFreeze { .. }
-                    | Prim::MakeBitstring(..)
-                    | Prim::ConstBitstring(..)
-                    | Prim::BitReaderInit(..)
-                    | Prim::BitReadField { .. }
-            )
-        })
-    })
-}
 
 #[cfg(test)]
 thread_local! {

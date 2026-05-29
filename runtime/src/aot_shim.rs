@@ -537,7 +537,10 @@ fn dispatch_quantum(pid: u32, addrs: &ShimAddrs) {
 
     // Mark Running so a clean halt (no fz_receive_park call) is
     // distinguishable from Blocked/Ready after dispatch.
-    unsafe { (*proc_ptr).state = ProcessState::Running };
+    unsafe {
+        (*proc_ptr).state = ProcessState::Running;
+        (*proc_ptr).reset_reduction_budget();
+    };
 
     // fz-qw6 — selective-receive initial scan lifted to runtime::sched.
     let process = unsafe { &mut *proc_ptr };
@@ -552,42 +555,44 @@ fn dispatch_quantum(pid: u32, addrs: &ShimAddrs) {
         crate::sched::ScanOutcome::NotApplicable => {}
     }
 
-    fn run_scheduler_closure(resume_addr: *const u8, closure: *mut u8) {
-        type Resume = extern "C" fn(u64) -> i64;
-        let f: Resume = unsafe { std::mem::transmute(resume_addr) };
-        let _ = f(closure_ref_word(closure));
+    fn run_scheduler_closure(resume_addr: *const u8, process: *mut Process, closure: *mut u8) {
+        let _ =
+            unsafe { crate::pinned_abi::call1(resume_addr, process, closure_ref_word(closure)) };
     }
 
     if !unsafe { (*proc_ptr).pending_main_entry }.is_null() {
         let main_fp = unsafe { (*proc_ptr).pending_main_entry };
         unsafe { (*proc_ptr).pending_main_entry = std::ptr::null_mut() };
-        type MainEntry = extern "C" fn(u64, u64) -> i64;
-        let f: MainEntry = unsafe { std::mem::transmute(addrs.main_entry) };
-        let _ = f(main_fp as u64, addrs.halt_cl);
+        let _ = unsafe {
+            crate::pinned_abi::call2(addrs.main_entry, proc_ptr, main_fp as u64, addrs.halt_cl)
+        };
     } else if !unsafe { (*proc_ptr).pending_closure_entry }.is_null() {
         let closure_ptr = unsafe { (*proc_ptr).pending_closure_entry };
         unsafe { (*proc_ptr).pending_closure_entry = std::ptr::null_mut() };
-        type SpawnEntry = extern "C" fn(u64) -> i64;
-        let f: SpawnEntry = unsafe { std::mem::transmute(addrs.spawn_entry) };
-        let _ = f(closure_ref_word(closure_ptr));
+        let _ = unsafe {
+            crate::pinned_abi::call1(addrs.spawn_entry, proc_ptr, closure_ref_word(closure_ptr))
+        };
     } else if unsafe { !(*proc_ptr).runnable_closure.is_null() } {
         // Receive and mid-flight wakeups resume through zero-arg closures.
         // Bound args travel in the outcome closure env.
         if let Some(closure) = unsafe { (*proc_ptr).take_runnable_closure() } {
-            run_scheduler_closure(addrs.resume, closure);
+            run_scheduler_closure(addrs.resume, proc_ptr, closure);
         }
     }
-
     // Post-quantum state check.
     let state = unsafe { (*proc_ptr).state };
     let runnable = unsafe { (*proc_ptr).runnable_closure };
     if state == ProcessState::Running && !runnable.is_null() {
         let process = unsafe { &mut *proc_ptr };
-        process
-            .heap
-            .gc_process_roots(&mut process.runnable_closure, &mut process.mailbox);
-        process.quiet_quanta = 0;
-        crate::yield_flag::clear();
+        if process.needs_boundary_gc() {
+            process
+                .heap
+                .gc_process_roots(&mut process.runnable_closure, &mut process.mailbox);
+            process.quiet_quanta = 0;
+        } else {
+            process.quiet_quanta = process.quiet_quanta.saturating_add(1);
+        }
+        process.clear_yield_reasons();
         unsafe { (*proc_ptr).state = ProcessState::Ready };
         AOT_RUN_QUEUE.with(|q| q.borrow_mut().push_back(pid));
     } else if state == ProcessState::Ready {
@@ -600,10 +605,9 @@ fn dispatch_quantum(pid: u32, addrs: &ShimAddrs) {
         if !drain_addr.is_null() {
             let process = unsafe { &mut *proc_ptr };
             crate::procbin::mso_drop_all_deferred(&mut process.heap);
-            type DrainDtor = extern "C" fn(u64, u64) -> i64;
-            let drain: DrainDtor = unsafe { std::mem::transmute(drain_addr) };
             while let Some((closure, payload_ref)) = process.heap.pending_dtors.pop_front() {
-                let _ = drain(closure, payload_ref);
+                let _ =
+                    unsafe { crate::pinned_abi::call2(drain_addr, proc_ptr, closure, payload_ref) };
             }
         }
     }

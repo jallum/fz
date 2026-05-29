@@ -813,6 +813,32 @@ fn aot_compile_produces_object_with_main_symbol() {
     );
 }
 
+/// A run observed entirely through telemetry: the process_exited `ExitRecord`
+/// plus the `dbg` output line stream. The one seam the result/output/heap test
+/// helpers are built on — no helper reads `task.halt_value` or `TEST_CAPTURE`.
+struct Observation {
+    exit: crate::runtime::ExitRecord,
+    output: Vec<String>,
+}
+
+fn observe(compiled: &CompiledModule, entry: FnId) -> Observation {
+    use crate::telemetry::bus::ConfiguredTelemetry;
+
+    let tel = ConfiguredTelemetry::new();
+    let exits = crate::runtime::ProcessExitCapture::new();
+    let out = crate::runtime::DbgCapture::new();
+    tel.attach(&[], exits.handler());
+    tel.attach(&[], out.handler());
+    let mut rt = crate::runtime::Runtime::new(compiled, 1).with_telemetry(&tel);
+    let _ = rt.spawn(entry);
+    rt.run_until_idle();
+
+    Observation {
+        exit: exits.last().expect("process_exited captured"),
+        output: out.lines(),
+    }
+}
+
 fn run_main(src: &str) -> i64 {
     let m = lower_src(src);
     let entry = m.fn_by_name("main").unwrap().id;
@@ -825,10 +851,9 @@ fn run_main(src: &str) -> i64 {
     .run(entry)
 }
 
-fn run_main_after_heap_reset(src: &str) -> (i64, Module) {
+fn run_main_returning_module(src: &str) -> (i64, Module) {
     let m = lower_src(src);
     let entry = m.fn_by_name("main").unwrap().id;
-    heap_reset_for_test();
     let r = compile(
         &mut crate::types::ConcreteTypes,
         &m,
@@ -880,16 +905,13 @@ fn capture_main_with_runtime_graph(src: &str) -> Vec<String> {
 fn capture_main_module(m: Module) -> Vec<String> {
     let entry = m.fn_by_name("main").unwrap().id;
     assert_direct_call_arities(&m);
-    heap_reset_for_test();
-    let _ = test_capture_take();
-    let _ = compile(
+    let compiled = compile(
         &mut crate::types::ConcreteTypes,
         &m,
         &crate::telemetry::NullTelemetry,
     )
-    .unwrap()
-    .run(entry);
-    test_capture_take()
+    .unwrap();
+    observe(&compiled, entry).output
 }
 
 fn assert_direct_call_arities(m: &Module) {
@@ -918,6 +940,13 @@ fn assert_direct_call_arities(m: &Module) {
     }
 }
 
+/// (halt value, live heap-object count) observed via `observe`. The seam tests
+/// use to check a run's result and heap without poking a Process.
+fn run_capturing(compiled: &CompiledModule, entry: FnId) -> (i64, usize) {
+    let o = observe(compiled, entry);
+    (o.exit.halt_value, o.exit.live_count)
+}
+
 fn run_main_and_count_live(src: &str) -> usize {
     let m = lower_src(src);
     let entry = m.fn_by_name("main").unwrap().id;
@@ -927,9 +956,7 @@ fn run_main_and_count_live(src: &str) -> usize {
         &crate::telemetry::NullTelemetry,
     )
     .unwrap();
-    let mut process = compiled.make_process();
-    let _ = compiled.run_in(entry, &mut process);
-    process.heap.live_count()
+    run_capturing(&compiled, entry).1
 }
 
 /// Two Processes built from the same CompiledModule observe equal atom
@@ -949,10 +976,8 @@ fn atom_identity_preserved_across_processes_from_same_module() {
     .unwrap();
     let entry = m.fn_by_name("main").unwrap().id;
 
-    let mut pa = compiled.make_process();
-    let mut pb = compiled.make_process();
-    let ra = compiled.run_in(entry, &mut pa);
-    let rb = compiled.run_in(entry, &mut pb);
+    let (ra, _) = run_capturing(&compiled, entry);
+    let (rb, _) = run_capturing(&compiled, entry);
     assert_eq!(
         ra, rb,
         "atom id stable across processes from the same module"
@@ -990,50 +1015,19 @@ fn two_processes_run_independent_map_builds() {
     let entry_a = ma.fn_by_name("main").unwrap().id;
     let entry_b = mb.fn_by_name("main").unwrap().id;
 
-    let mut pa = ca.make_process();
-    let mut pb = cb.make_process();
+    // Independent runs: each spawns its own task with its own heap, so any
+    // cross-talk would surface as a wrong halt. Running program A twice
+    // proves a second run is unaffected by the first.
+    let (ra, la) = run_capturing(&ca, entry_a);
+    let (rb, lb) = run_capturing(&cb, entry_b);
+    let (ra2, _) = run_capturing(&ca, entry_a);
 
-    // Interleave runs: each must see only its own state.
-    let ra = ca.run_in(entry_a, &mut pa);
-    let rb = cb.run_in(entry_b, &mut pb);
-    let ra2 = ca.run_in(entry_a, &mut pa);
+    assert_eq!(ra, 10, "program a's first run returns map[1] = 10");
+    assert_eq!(rb, 30, "program b's run returns map[3] = 30");
+    assert_eq!(ra2, 10, "program a's second run returns 10 (independent)");
 
-    assert_eq!(ra, 10, "process a's first run returns map[1] = 10");
-    assert_eq!(rb, 30, "process b's run returns map[3] = 30");
-    assert_eq!(
-        ra2, 10,
-        "process a's second run returns 10 (independent of b)"
-    );
-
-    assert!(pa.heap.live_count() > 0, "process a has live heap allocs");
-    assert!(pb.heap.live_count() > 0, "process b has live heap allocs");
-}
-
-#[test]
-fn run_in_restores_existing_current_process() {
-    let src = "fn main(), do: 1";
-    let m = lower_src(src);
-    let compiled = compile(
-        &mut crate::types::ConcreteTypes,
-        &m,
-        &crate::telemetry::NullTelemetry,
-    )
-    .unwrap();
-    let entry = m.fn_by_name("main").unwrap().id;
-
-    let mut outer = compiled.make_process();
-    let outer_ptr = &mut outer as *mut Process;
-    let _outer_guard = fz_runtime::process::CurrentProcessGuard::install(outer_ptr);
-
-    let mut inner = compiled.make_process();
-    let inner_result = compiled.run_in(entry, &mut inner);
-
-    assert_eq!(inner_result, 1);
-    let restored = fz_runtime::process::CURRENT_PROCESS.with(|c| c.get());
-    assert_eq!(
-        restored, outer_ptr,
-        "run_in must restore the caller's current process"
-    );
+    assert!(la > 0, "program a leaves live heap allocs");
+    assert!(lb > 0, "program b leaves live heap allocs");
 }
 
 #[test]
@@ -1088,7 +1082,7 @@ fn unop_neg_runs() {
 
 #[test]
 fn atom_const_returns_atom_id() {
-    let (atom_id, module) = run_main_after_heap_reset("fn main(), do: :ok");
+    let (atom_id, module) = run_main_returning_module("fn main(), do: :ok");
     assert_eq!(module.atom_names[atom_id as usize], "ok");
 }
 
@@ -1495,7 +1489,7 @@ fn neq_inverts_structural_eq() {
 
 #[test]
 fn float_const_halt_round_trips_via_bits() {
-    let (halt, _m) = run_main_after_heap_reset("fn main(), do: 2.5");
+    let (halt, _m) = run_main_returning_module("fn main(), do: 2.5");
     assert_eq!(f64::from_bits(halt as u64), 2.5);
 }
 
@@ -1534,7 +1528,7 @@ fn float_ordered_comparison_dispatches_through_helper() {
 
 #[test]
 fn float_bit_field_round_trips_via_bitstring() {
-    let (halt, _m) = run_main_after_heap_reset("fn main(), do: <<2.5::float>>");
+    let (halt, _m) = run_main_returning_module("fn main(), do: <<2.5::float>>");
     let halt = halt as u64;
     let p = fz_runtime::any_value::bitstring_addr_from_tagged(halt).unwrap();
     let bytes = unsafe {
@@ -1566,7 +1560,7 @@ fn render_raw_float_in_container() {
 #[test]
 fn float_list_head_projects_raw_f64() {
     let src = "fn first([h | _]), do: h\nfn main(), do: first([2.5])";
-    let (halt, _m) = run_main_after_heap_reset(src);
+    let (halt, _m) = run_main_returning_module(src);
     assert_eq!(f64::from_bits(halt as u64), 2.5);
 }
 
@@ -2546,7 +2540,7 @@ end
 /// runtime bit pattern and this call returned 1.)
 #[test]
 fn nil_does_not_match_empty_list_pattern() {
-    let (halt, module) = run_main_after_heap_reset("fn f([]), do: 1\nfn main(), do: f(nil)");
+    let (halt, module) = run_main_returning_module("fn f([]), do: 1\nfn main(), do: f(nil)");
     assert_eq!(
         module.atom_names[halt as usize], "match_error",
         "expected :match_error halt; got atom id {}",
@@ -2557,7 +2551,7 @@ fn nil_does_not_match_empty_list_pattern() {
 /// `fn f(nil)` does NOT match an `[]` argument. Symmetric to the above.
 #[test]
 fn empty_list_does_not_match_nil_pattern() {
-    let (halt, module) = run_main_after_heap_reset("fn f(nil), do: 1\nfn main(), do: f([])");
+    let (halt, module) = run_main_returning_module("fn f(nil), do: 1\nfn main(), do: f([])");
     assert_eq!(
         module.atom_names[halt as usize], "match_error",
         "expected :match_error halt; got atom id {}",
@@ -2576,13 +2570,15 @@ fn print_distinguishes_nil_from_empty_list() {
 // Refcount + dtor on the JIT path. Mirrors the interp-leg tests in
 // `ir_interp::resource_bif_tests`, but drives compile(...).run(...). The
 // JIT lowers `make_resource(payload, &dwrap/1)` to an extern call into
-// `fz_make_resource`, which dispatches through the `MakeResourceHook`
-// installed for the duration of the test (the hook takes `&Module` so
-// the thunk can walk the dtor closure's IR body — see src/runtime.rs).
+// `fz_make_resource`, which dispatches through the `MakeResourceHook` that
+// `Runtime::with_module` installs for the duration of `run_until_idle` (the
+// hook takes `&Module` so the thunk can walk the dtor closure's IR body —
+// see src/runtime.rs).
 //
-// Dtor firing depends on the per-process MSO sweep at heap drop;
-// `heap_reset_for_test` between tests drops the prior DEFAULT_PROCESS
-// heap so leftover Resource dtors fire into a fresh counter snapshot.
+// Dtor firing happens on the production task-exit drain: when a task Exits,
+// the Runtime runs the MSO sweep and dispatches each surviving Resource's
+// dtor closure, so the counters reflect the run by the time `run_until_idle`
+// returns.
 
 mod resource_jit_tests {
     use super::*;
@@ -2591,9 +2587,11 @@ mod resource_jit_tests {
         tests_support_lock,
     };
 
-    /// Drive `main` through the JIT with the `MakeResourceHook` wired up
-    /// to walk `module`. Returns after the heap has been dropped so the
-    /// dtor counters reflect every Resource the run produced.
+    /// Drive `main` through the production Runtime with the module attached
+    /// so `make_resource` can resolve dtor closures, and so surviving
+    /// Resource dtors fire on the task-exit drain. Returns after
+    /// `run_until_idle`, by which point the dtor counters reflect every
+    /// Resource the run produced.
     fn run_jit_with_resources(src: &str) {
         let module = lower_src(src);
         let entry = module.fn_by_name("main").expect("main fn").id;
@@ -2603,14 +2601,11 @@ mod resource_jit_tests {
             &crate::telemetry::NullTelemetry,
         )
         .expect("compile");
-        // Hook lets the JIT-emitted call into `fz_make_resource`
-        // resolve the dtor closure against this module.
-        let prev = crate::runtime::install_make_resource_hook_with_module(&module);
-        heap_reset_for_test();
-        let _ = compiled.run(entry);
-        // Drop the per-test DEFAULT_PROCESS to fire MSO sweep + dtors.
-        heap_reset_for_test();
-        crate::runtime::clear_make_resource_hook_with_module(prev);
+        // with_module installs the MakeResourceHook for the duration of
+        // run_until_idle; the task-exit path runs the MSO sweep + dtors.
+        let mut rt = crate::runtime::Runtime::new(&compiled, 1).with_module(&module);
+        let _pid = rt.spawn(entry);
+        rt.run_until_idle();
     }
 
     /// JIT-leg round trip mirroring `make_resource_bif_round_trip`

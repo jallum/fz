@@ -132,7 +132,18 @@ pub extern "C" fn fz_process_heap_alloc_stats() -> u64 {
     let snapshot = process.heap.alloc_stats_snapshot();
     let scheduler_yields = process.scheduler_yields;
     let interpreter_yields = process.interpreter_yields;
-    let mut entries = Vec::with_capacity(24);
+    let reductions_remaining = process.reductions_remaining;
+    let reductions_per_quantum = process.reductions_per_quantum;
+    let reductions_executed = process.reductions_executed;
+    let reduction_yields = process.reduction_yields;
+    let allocation_pressure_yields = process.allocation_pressure_yields;
+    let yield_reasons = process.yield_reasons;
+    let max_yield_continuation_bytes = process.max_yield_continuation_bytes;
+    let min_yield_continuation_margin_before_bytes =
+        process.min_yield_continuation_margin_before_bytes;
+    let min_yield_continuation_margin_after_bytes =
+        process.min_yield_continuation_margin_after_bytes;
+    let mut entries = Vec::with_capacity(33);
     entries.push((
         crate::any_value::AnyValue::atom(process_atom_id("allocs")),
         crate::any_value::AnyValue::int(snapshot.total.allocs as i64),
@@ -158,6 +169,46 @@ pub extern "C" fn fz_process_heap_alloc_stats() -> u64 {
     entries.push((
         crate::any_value::AnyValue::atom(process_atom_id("interpreter_yields")),
         crate::any_value::AnyValue::int(interpreter_yields as i64),
+    ));
+    entries.push((
+        crate::any_value::AnyValue::atom(process_atom_id("reductions_remaining")),
+        crate::any_value::AnyValue::int(reductions_remaining as i64),
+    ));
+    entries.push((
+        crate::any_value::AnyValue::atom(process_atom_id("reductions_per_quantum")),
+        crate::any_value::AnyValue::int(reductions_per_quantum as i64),
+    ));
+    entries.push((
+        crate::any_value::AnyValue::atom(process_atom_id("reductions_executed")),
+        crate::any_value::AnyValue::int(reductions_executed as i64),
+    ));
+    entries.push((
+        crate::any_value::AnyValue::atom(process_atom_id("reduction_yields")),
+        crate::any_value::AnyValue::int(reduction_yields as i64),
+    ));
+    entries.push((
+        crate::any_value::AnyValue::atom(process_atom_id("allocation_pressure_yields")),
+        crate::any_value::AnyValue::int(allocation_pressure_yields as i64),
+    ));
+    entries.push((
+        crate::any_value::AnyValue::atom(process_atom_id("yield_reasons")),
+        crate::any_value::AnyValue::int(yield_reasons as i64),
+    ));
+    entries.push((
+        crate::any_value::AnyValue::atom(process_atom_id("max_yield_continuation_bytes")),
+        crate::any_value::AnyValue::int(max_yield_continuation_bytes as i64),
+    ));
+    entries.push((
+        crate::any_value::AnyValue::atom(process_atom_id(
+            "min_yield_continuation_margin_before_bytes",
+        )),
+        crate::any_value::AnyValue::int(min_yield_continuation_margin_before_bytes as i64),
+    ));
+    entries.push((
+        crate::any_value::AnyValue::atom(process_atom_id(
+            "min_yield_continuation_margin_after_bytes",
+        )),
+        crate::any_value::AnyValue::int(min_yield_continuation_margin_after_bytes as i64),
     ));
     map_ref_word_from_bits(current_process().heap.alloc_map_slots(&entries))
 }
@@ -290,18 +341,6 @@ pub extern "C" fn fz_dbg_value_ref(ref_word: u64) {
 pub extern "C" fn fz_dbg_value(ref_word: u64) -> u64 {
     fz_dbg_value_ref(ref_word);
     ref_word
-}
-
-thread_local! {
-    /// Test-only capture of every fz_dbg_value rendering. Tests in the
-    /// fz binary (ir_codegen::tests) read it via `test_capture_take()`.
-    /// Lifted from ir_codegen.rs alongside the FFI body in fz-ul4.23.10.
-    pub static TEST_CAPTURE: std::cell::RefCell<Vec<String>> =
-        const { std::cell::RefCell::new(Vec::new()) };
-}
-
-pub fn test_capture_take() -> Vec<String> {
-    TEST_CAPTURE.with(|c| std::mem::take(&mut *c.borrow_mut()))
 }
 
 #[unsafe(no_mangle)]
@@ -567,19 +606,38 @@ pub extern "C" fn fz_receive_attempt(cont_frame_ptr: *mut u8) -> *mut u8 {
     }
 }
 
-/// Signal a cooperative mid-flight yield using a closure-shaped continuation.
-/// The closure captures the next loop state; the scheduler treats it as the
-/// primary GC root, then requeues the process and later dispatches closure().
+/// Boundary-reporting mid-flight yield entry.
+///
+/// Generated/interpreted code reports the scheduler continuation, signed
+/// reductions left in the turn, and the reason bits that caused the yield. The
+/// scheduler knows how many reductions it granted, so it derives burned work at
+/// the boundary instead of syncing against the hot-path budget cell.
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_yield_mid_flight(cont_closure_bits: u64) -> *mut u8 {
+pub extern "C" fn fz_yield_mid_flight_report(
+    cont_closure_bits: u64,
+    remaining_reductions: i32,
+    reason: u32,
+) -> *mut u8 {
     use crate::scheduler_hooks::YIELD_PTR;
     let p = current_process();
     p.scheduler_yields = p.scheduler_yields.saturating_add(1);
-    p.set_runnable_closure(closure_addr_from_ref_word(
-        cont_closure_bits,
-        "fz_yield_mid_flight cont",
-    ));
+    // Allocation-pressure reasons already stand on `p.yield_reasons`;
+    // finish_yield_report folds them in when attributing the cause.
+    p.finish_yield_report(remaining_reductions, reason as u8);
+    let closure_addr =
+        closure_addr_from_ref_word(cont_closure_bits, "fz_yield_mid_flight_report cont");
+    let closure_bits = crate::any_value::heap_object_word(closure_addr, ValueKind::CLOSURE);
+    let continuation_bytes = crate::any_value::object_size(closure_bits);
+    let margin_after = p.heap.bytes_remaining_in_block();
+    p.note_yield_continuation_allocation(continuation_bytes, margin_after);
+    p.set_runnable_closure(closure_addr);
     YIELD_PTR as *mut u8
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_yield_slow_path_begin() {
+    let p = current_process();
+    p.begin_yield_continuation_allocation(p.heap.bytes_remaining_in_block());
 }
 
 // ===== Closure cluster (fz-ul4.23.4.11) =====
@@ -2313,6 +2371,36 @@ mod tests {
             map_int_value_by_atom_name(stats_ref, "interpreter_yields"),
             0
         );
+        assert_eq!(
+            map_int_value_by_atom_name(stats_ref, "reductions_remaining"),
+            crate::process::DEFAULT_REDUCTIONS_PER_QUANTUM as i64
+        );
+        assert_eq!(
+            map_int_value_by_atom_name(stats_ref, "reductions_per_quantum"),
+            crate::process::DEFAULT_REDUCTIONS_PER_QUANTUM as i64
+        );
+        assert_eq!(
+            map_int_value_by_atom_name(stats_ref, "reductions_executed"),
+            0
+        );
+        assert_eq!(map_int_value_by_atom_name(stats_ref, "reduction_yields"), 0);
+        assert_eq!(
+            map_int_value_by_atom_name(stats_ref, "allocation_pressure_yields"),
+            0
+        );
+        assert_eq!(map_int_value_by_atom_name(stats_ref, "yield_reasons"), 0);
+        assert_eq!(
+            map_int_value_by_atom_name(stats_ref, "max_yield_continuation_bytes"),
+            0
+        );
+        assert_eq!(
+            map_int_value_by_atom_name(stats_ref, "min_yield_continuation_margin_before_bytes",),
+            0
+        );
+        assert_eq!(
+            map_int_value_by_atom_name(stats_ref, "min_yield_continuation_margin_after_bytes"),
+            0
+        );
 
         let after = current_process().heap.alloc_stats_snapshot();
         assert_eq!(after.list_cons.allocs, 1);
@@ -2351,7 +2439,7 @@ mod tests {
     }
 
     #[test]
-    fn yield_mid_flight_stashes_runnable_closure() {
+    fn yield_mid_flight_report_stashes_runnable_closure() {
         with_process(|| {
             let bits = current_process().heap.alloc_closure_slots(0, 0, 0);
             let closure_addr =
@@ -2359,10 +2447,25 @@ mod tests {
             let closure_ref = AnyValueRef::from_heap_object(ValueKind::CLOSURE, closure_addr)
                 .expect("closure ref")
                 .raw_word();
-            let ret = fz_yield_mid_flight(closure_ref);
+            let ret = fz_yield_mid_flight_report(
+                closure_ref,
+                -1,
+                crate::process::YIELD_REASON_REDUCTIONS as u32,
+            );
             assert_eq!(ret as u64, crate::scheduler_hooks::YIELD_PTR);
             assert_eq!(current_process().runnable_closure, closure_addr);
             assert_eq!(current_process().scheduler_yields, 1);
+            assert_eq!(current_process().reductions_remaining, -1);
+            assert_eq!(current_process().reduction_yields, 1);
+            assert_eq!(
+                current_process().yield_reasons,
+                crate::process::YIELD_REASON_REDUCTIONS
+            );
+            assert_eq!(
+                current_process().max_yield_continuation_bytes,
+                crate::any_value::closure_size_for_count(0) as u64
+            );
+            assert!(current_process().min_yield_continuation_margin_after_bytes > 0);
         });
     }
 

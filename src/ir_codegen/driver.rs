@@ -1670,22 +1670,6 @@ fn declare_spec_fns<M: cranelift_module::Module>(
     Ok(fn_ids)
 }
 
-/// Per-spec flag: true iff the spec body may allocate on the GC heap.
-/// Indexed by SpecId.0.
-fn compute_spec_heap_allocates(
-    module: &Module,
-    spec_count: usize,
-    spec_fnidx: &[Option<usize>],
-) -> Vec<bool> {
-    (0..spec_count)
-        .map(|sid| {
-            spec_fnidx[sid]
-                .map(|idx| fn_may_allocate_heap(&module.fns[idx]))
-                .unwrap_or(false)
-        })
-        .collect()
-}
-
 /// Pre-pass over Term::ReceiveMatched sites: one matcher FuncId per
 /// site, keyed by `(fn_id.0, block_id.0)`. Declared up front so the
 /// park-site terminator arm can take a `func_addr` of an as-yet-unemitted
@@ -2303,7 +2287,6 @@ pub(crate) fn compile_with_backend_impl<
         &fn_sigs,
     )?;
 
-    let spec_heap_allocates = compute_spec_heap_allocates(module, spec_count, &spec_fnidx);
     let (mid_flight_cont_fn_ids, mid_flight_cont_tail_fn_ids) = declare_mid_flight_conts(
         t,
         backend.module_mut(),
@@ -2357,6 +2340,7 @@ pub(crate) fn compile_with_backend_impl<
 
     let (matcher_fn_ids, receive_matched_sites) =
         declare_matcher_fns(backend.module_mut(), module, tel)?;
+    let verifier_isa = host_isa();
 
     for sid in 0..spec_count {
         let Some(_idx) = spec_fnidx[sid] else {
@@ -2412,7 +2396,6 @@ pub(crate) fn compile_with_backend_impl<
             spec_registry: &spec_registry,
             fn_ids: &fn_ids,
             mid_flight_cont_tail_fn_ids: &mid_flight_cont_tail_fn_ids,
-            spec_heap_allocates: &spec_heap_allocates,
             tuple_schema_ids: &tuple_schema_ids,
             bs_const_data: &bs_const_data,
             param_reprs: &param_reprs,
@@ -2511,16 +2494,17 @@ pub(crate) fn compile_with_backend_impl<
             }
         });
         let fn_span = module.source.fn_span_of(f.id);
-        let flags = settings::Flags::new(settings::builder());
-        cranelift_codegen::verifier::verify_function(&ctx.func, &flags).map_err(|e| {
-            CodegenError::new(format!(
-                "verify {}:\n{}\n--- IR ---\n{}",
-                display_name,
-                e,
-                ctx.func.display()
-            ))
-            .with_span(fn_span)
-        })?;
+        cranelift_codegen::verifier::verify_function(&ctx.func, verifier_isa.as_ref()).map_err(
+            |e| {
+                CodegenError::new(format!(
+                    "verify {}:\n{}\n--- IR ---\n{}",
+                    display_name,
+                    e,
+                    ctx.func.display()
+                ))
+                .with_span(fn_span)
+            },
+        )?;
         backend
             .module_mut()
             .define_function(func_id, &mut ctx)

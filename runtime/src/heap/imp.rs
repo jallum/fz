@@ -8,8 +8,8 @@ use super::gc::{
 };
 use super::key_cmp::{map_key_cmp_any, map_key_cmp_refs, same_any_value, same_value_ref};
 use super::ref_io::{
-    any_value_ref_from_storage, list_tail_bits_from_ref, map_entry_refs, reject_scalar_ref_write,
-    watermark_for, write_any_value_to_storage, write_ref_to_storage,
+    allocation_watermark_for, any_value_ref_from_storage, list_tail_bits_from_ref, map_entry_refs,
+    reject_scalar_ref_write, write_any_value_to_storage, write_ref_to_storage,
 };
 use super::schema::{Schema, SchemaRegistry};
 use super::stats::GcStats;
@@ -37,7 +37,7 @@ impl Heap {
             block_end,
             block_size,
             size_class,
-            gc_watermark: watermark_for(block_start, block_size),
+            allocation_watermark: allocation_watermark_for(block_start, block_size),
             last_gc_live_bytes: 0,
             last_gc_stats: GcStats::default(),
             abandoned_blocks: Vec::new(),
@@ -127,14 +127,14 @@ impl Heap {
             self.block_end = unsafe { new_block.add(new_size) };
             self.block_size = new_size;
             self.size_class = new_class;
-            self.gc_watermark = watermark_for(new_block, new_size);
+            self.allocation_watermark = allocation_watermark_for(new_block, new_size);
         }
         let p = self.bump_top;
         self.bump_top = unsafe { self.bump_top.add(size) };
         self.alloc_count += 1;
         self.note_alloc_pressure();
-        if self.bump_top >= self.gc_watermark {
-            crate::yield_flag::request();
+        if self.bump_top >= self.allocation_watermark {
+            crate::process::expire_current_budget(crate::process::YIELD_REASON_ALLOCATION_PRESSURE);
         }
         p
     }
@@ -955,6 +955,10 @@ impl Heap {
         current + abandoned + fragments
     }
 
+    pub fn bytes_remaining_in_block(&self) -> usize {
+        unsafe { self.block_end.offset_from(self.bump_top) as usize }
+    }
+
     /// Park-time Cheney GC (§6.4). The caller passes a primary closure root
     /// by mutable pointer; on return it is updated to the to-space copy (or
     /// left null on entry — nothing to trace, just recycle blocks).
@@ -1284,7 +1288,7 @@ impl Heap {
         self.alloc_count = live_count;
         self.gc_run_count += 1;
         self.gc_threshold_bytes = to_size / 2;
-        self.gc_watermark = watermark_for(to_start, to_size);
+        self.allocation_watermark = allocation_watermark_for(to_start, to_size);
         self.last_gc_live_bytes = unsafe { free.offset_from(to_start) } as usize;
         stats.fragment_survivors = live_count.saturating_sub(copied_objects.len() as u64);
         stats.fragment_live_bytes = fragment_live_bytes as u64;

@@ -53,6 +53,60 @@ pub struct Runtime<'a> {
     /// expired entries each iteration and emits ResumeMatched for the
     /// after-cont closure.
     pub(crate) timers: fz_runtime::timer::TimerWheel,
+
+    /// Observability sink. Defaults to the silent `NullTelemetry`; the
+    /// driver attaches a real one via `with_telemetry`. The run loop emits
+    /// `fz.runtime.process_exited` at each task exit (see `ExitRecord`),
+    /// which is the seam tests observe instead of poking task internals.
+    tel: &'a dyn crate::telemetry::Telemetry,
+}
+
+/// Silent default for `Runtime.tel` — a `'static` so it coerces to the
+/// `&'a dyn Telemetry` field for any runtime lifetime.
+static NULL_TELEMETRY: crate::telemetry::NullTelemetry = crate::telemetry::NullTelemetry;
+
+/// The facts observed when a task exits, projected from its `Process`. This is
+/// the single place that reads `Process` internals for the
+/// `fz.runtime.process_exited` event: the scalars become event measurements,
+/// and a `ProcessExitCapture` reconstructs an `ExitRecord` from them. Sync
+/// handlers needing a field this projection omits can downcast the event's
+/// opaque `process` metadata directly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ExitRecord {
+    pub pid: PidId,
+    pub halt_value: i64,
+    pub live_count: usize,
+    pub bytes_used: usize,
+}
+
+impl ExitRecord {
+    pub fn project(pid: PidId, process: &Process) -> Self {
+        Self {
+            pid,
+            halt_value: process.halt_value,
+            live_count: process.heap.live_count(),
+            bytes_used: process.heap.bytes_used(),
+        }
+    }
+
+    /// The single emit site for `fz.runtime.process_exited`, shared by the
+    /// compiled and interpreter schedulers so the event shape is identical
+    /// across engines (durable measurements + opaque `&Process`).
+    pub fn emit(tel: &dyn crate::telemetry::Telemetry, pid: PidId, process: &Process) {
+        let exit = Self::project(pid, process);
+        tel.execute(
+            &["fz", "runtime", "process_exited"],
+            &crate::measurements! {
+                halt_value: exit.halt_value,
+                live_count: exit.live_count as u64,
+                bytes_used: exit.bytes_used as u64,
+            },
+            &crate::metadata! {
+                pid: exit.pid as u64,
+                process: crate::telemetry::value::opaque(process),
+            },
+        );
+    }
 }
 
 thread_local! {
@@ -85,6 +139,51 @@ extern "C" fn spawn_opt_hook_thunk(closure_bits: u64, _min_heap_size: u32) -> u3
 extern "C" fn send_hook_thunk(receiver_pid: u32, msg_ref_word: u64) {
     let msg_ref = AnyValueRef::from_raw_word(msg_ref_word).expect("send hook message ref");
     send_via_current_runtime(receiver_pid, msg_ref);
+}
+
+thread_local! {
+    /// The telemetry sink fz output (dbg/print) is routed to. Set by whichever
+    /// scheduler is driving — compiled OR interpreter — so dbg observability is
+    /// engine-uniform. Defaults to the silent sink.
+    static CURRENT_TEL: std::cell::Cell<*const dyn crate::telemetry::Telemetry> =
+        std::cell::Cell::new(&NULL_TELEMETRY as *const dyn crate::telemetry::Telemetry);
+}
+
+/// RAII scope routing fz output to `tel` as `fz.runtime.dbg` events for its
+/// lifetime. Installs the output hook and points `CURRENT_TEL` at `tel`;
+/// restores both on drop. Both schedulers open one around their drive loop, so
+/// dbg routes to telemetry identically on every engine. `tel` must outlive the
+/// scope (it does — the scope lives only inside the drive).
+pub struct OutputTelemetryScope {
+    prev: *const dyn crate::telemetry::Telemetry,
+}
+
+pub fn route_output_to(tel: &dyn crate::telemetry::Telemetry) -> OutputTelemetryScope {
+    fz_runtime::scheduler_hooks::install_output_hook(output_hook_thunk);
+    // Erase the borrow's lifetime: the scope restores the previous pointer on
+    // drop, so the stored pointer never outlives `tel`.
+    let erased: *const (dyn crate::telemetry::Telemetry + 'static) =
+        unsafe { std::mem::transmute(tel as *const dyn crate::telemetry::Telemetry) };
+    let prev = CURRENT_TEL.with(|c| c.replace(erased));
+    OutputTelemetryScope { prev }
+}
+
+impl Drop for OutputTelemetryScope {
+    fn drop(&mut self) {
+        CURRENT_TEL.with(|c| c.set(self.prev));
+        fz_runtime::scheduler_hooks::clear_output_hook();
+    }
+}
+
+/// Output sink: `emit_print_line` (the shared dbg/print render seam) forwards
+/// each rendered line here. Emits it as `fz.runtime.dbg` on `CURRENT_TEL` — the
+/// observation channel beside production stdout, set by whichever engine drives.
+extern "C" fn output_hook_thunk(line_ptr: *const u8, line_len: usize) {
+    let tel = CURRENT_TEL.with(|c| c.get());
+    let tel: &dyn crate::telemetry::Telemetry = unsafe { &*tel };
+    let bytes = unsafe { std::slice::from_raw_parts(line_ptr, line_len) };
+    let line = std::str::from_utf8(bytes).unwrap_or("<non-utf8 dbg line>");
+    tel.event(&["fz", "runtime", "dbg"], crate::metadata! { line: line });
 }
 
 // fz-swt.10 — `MakeResourceHook` installed by the binary so the runtime
@@ -323,7 +422,16 @@ impl<'a> Runtime<'a> {
             next_pid: 1,
             timers: fz_runtime::timer::TimerWheel::new(),
             module: None,
+            tel: &NULL_TELEMETRY,
         }
+    }
+
+    /// Attach an observability sink. The run loop emits a task-exit event
+    /// (`fz.runtime.task_exited`) carrying the halt value and heap stats.
+    /// The telemetry must outlive `run_until_idle`.
+    pub fn with_telemetry(mut self, tel: &'a dyn crate::telemetry::Telemetry) -> Self {
+        self.tel = tel;
+        self
     }
 
     /// fz-swt.10 — attach the IR Module so the `MakeResourceHook` thunk
@@ -422,6 +530,7 @@ impl<'a> Runtime<'a> {
         fz_runtime::scheduler_hooks::install_spawn_hook(spawn_hook_thunk);
         fz_runtime::scheduler_hooks::install_spawn_opt_hook(spawn_opt_hook_thunk);
         fz_runtime::scheduler_hooks::install_send_hook(send_hook_thunk);
+        let _output_scope = route_output_to(self.tel);
         // fz-swt.10 — install the resource-allocation hook if a Module
         // has been attached via `with_module`. Programs that never call
         // `make_resource` leave it clear; calls in that mode panic with
@@ -447,11 +556,8 @@ impl<'a> Runtime<'a> {
                 .remove(&pid)
                 .expect("task in run_queue not in registry");
             task.state = ProcessState::Running;
+            task.reset_reduction_budget();
             let ptr: *mut Process = &mut *task;
-            // Clear FZ_SHOULD_YIELD before installing the process so a
-            // stale flag from the previous quantum doesn't immediately
-            // re-yield the incoming task.
-            fz_runtime::yield_flag::clear();
             let prev = CURRENT_PROCESS.with(|c| c.replace(ptr));
             self.compiled.run_quantum(&mut task);
             CURRENT_PROCESS.with(|c| c.set(prev));
@@ -474,10 +580,12 @@ impl<'a> Runtime<'a> {
             if task.state == ProcessState::Running && !task.runnable_closure.is_null() {
                 // Closure-shaped mid-flight yield: the continuation closure
                 // captures live loop state and is the primary GC root.
-                task.heap
-                    .gc_process_roots(&mut task.runnable_closure, &mut task.mailbox);
-                fz_runtime::yield_flag::clear();
-                task.quiet_quanta = 0;
+                task.boundary_maintenance::<()>(|p| {
+                    p.heap
+                        .gc_process_roots(&mut p.runnable_closure, &mut p.mailbox);
+                    Ok(())
+                })
+                .expect("compiled boundary maintenance is infallible");
                 task.state = ProcessState::Ready;
                 self.tasks.insert(pid, task);
                 self.run_queue.push_back(pid);
@@ -505,6 +613,7 @@ impl<'a> Runtime<'a> {
                     let _ = drain(closure, payload_ref);
                 }
                 CURRENT_PROCESS.with(|c| c.set(prev));
+                ExitRecord::emit(self.tel, pid, &task);
             } else if task.state == ProcessState::Blocked {
                 // Park: keep in registry, no re-enqueue. send() will
                 // wake.
@@ -576,6 +685,117 @@ impl<'a> Runtime<'a> {
     }
 }
 
+/// Test seam: a telemetry handler that projects each `fz.runtime.process_exited`
+/// event into an owned `ExitRecord` (read from the durable measurements). Tests
+/// attach it to a `ConfiguredTelemetry`, run, then read the records — observing
+/// the run instead of poking the `Process`.
+#[cfg(test)]
+pub struct ProcessExitCapture {
+    records: std::rc::Rc<std::cell::RefCell<Vec<ExitRecord>>>,
+}
+
+#[cfg(test)]
+impl ProcessExitCapture {
+    pub fn new() -> Self {
+        Self {
+            records: std::rc::Rc::new(std::cell::RefCell::new(Vec::new())),
+        }
+    }
+
+    pub fn handler(&self) -> Box<dyn crate::telemetry::handler::Handler> {
+        Box::new(ProcessExitHandler {
+            records: self.records.clone(),
+        })
+    }
+
+    pub fn last(&self) -> Option<ExitRecord> {
+        self.records.borrow().last().copied()
+    }
+}
+
+/// Test seam: records the `fz.runtime.dbg` line stream. Attach to a
+/// `ConfiguredTelemetry`, run, then read `lines()` — the telemetry-based
+/// replacement for the old `TEST_CAPTURE` print buffer. Works for both
+/// engines, since both route output through `route_output_to`.
+#[cfg(test)]
+pub struct DbgCapture {
+    lines: std::rc::Rc<std::cell::RefCell<Vec<String>>>,
+}
+
+#[cfg(test)]
+impl DbgCapture {
+    pub fn new() -> Self {
+        Self {
+            lines: std::rc::Rc::new(std::cell::RefCell::new(Vec::new())),
+        }
+    }
+
+    pub fn handler(&self) -> Box<dyn crate::telemetry::handler::Handler> {
+        Box::new(DbgHandler {
+            lines: self.lines.clone(),
+        })
+    }
+
+    pub fn lines(&self) -> Vec<String> {
+        self.lines.borrow().clone()
+    }
+}
+
+#[cfg(test)]
+struct DbgHandler {
+    lines: std::rc::Rc<std::cell::RefCell<Vec<String>>>,
+}
+
+#[cfg(test)]
+impl crate::telemetry::handler::Handler for DbgHandler {
+    fn handle(&self, ev: &crate::telemetry::handler::Event<'_, '_, '_>) {
+        use crate::telemetry::value::Value;
+        if ev.name != ["fz", "runtime", "dbg"] {
+            return;
+        }
+        if let Some(Value::Str(s)) = ev.metadata.get("line") {
+            self.lines.borrow_mut().push(s.as_ref().to_string());
+        }
+    }
+}
+
+#[cfg(test)]
+struct ProcessExitHandler {
+    records: std::rc::Rc<std::cell::RefCell<Vec<ExitRecord>>>,
+}
+
+#[cfg(test)]
+impl crate::telemetry::handler::Handler for ProcessExitHandler {
+    fn handle(&self, ev: &crate::telemetry::handler::Event<'_, '_, '_>) {
+        use crate::telemetry::value::Value;
+        if ev.name != ["fz", "runtime", "process_exited"] {
+            return;
+        }
+        let pid = match ev.metadata.get("pid") {
+            Some(Value::U64(v)) => *v as PidId,
+            _ => 0,
+        };
+        let halt_value = match ev.measurements.get("halt_value") {
+            Some(Value::I64(v)) => *v,
+            _ => 0,
+        };
+        let live_count = match ev.measurements.get("live_count") {
+            Some(Value::U64(v)) => *v as usize,
+            _ => 0,
+        };
+        let bytes_used = match ev.measurements.get("bytes_used") {
+            Some(Value::U64(v)) => *v as usize,
+            _ => 0,
+        };
+        self.records.borrow_mut().push(ExitRecord {
+            pid,
+            halt_value,
+            live_count,
+            bytes_used,
+        });
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -588,6 +808,15 @@ mod tests {
         let toks = Lexer::new(src).tokenize().expect("lex");
         let prog = Parser::new(toks).parse_program().expect("parse");
         lower_program(&mut crate::types::ConcreteTypes, &prog).expect("lower")
+    }
+
+    fn force_reduction_yield(task: &mut Process) {
+        task.reductions_per_quantum = 1;
+    }
+
+    fn force_allocation_pressure_yield(task: &mut Process) {
+        task.reductions_per_quantum = 1;
+        task.heap.allocation_watermark = std::ptr::null_mut();
     }
 
     fn test_int_ref(value: i64) -> AnyValueRef {
@@ -623,9 +852,180 @@ mod tests {
         assert_eq!(rt.task(c).unwrap().state, ProcessState::Exited);
     }
 
+    /// The Runtime emits `fz.runtime.process_exited` at task exit. A
+    /// `ProcessExitCapture` projects it into an `ExitRecord` (read from the
+    /// durable measurements) — the seam tests use to observe a run's result
+    /// and live-object count without poking the Process.
+    #[test]
+    fn process_exit_capture_yields_exit_record() {
+        use crate::telemetry::bus::ConfiguredTelemetry;
+
+        // Allocates a map, so the heap has live objects at exit.
+        let src = "fn main(), do: %{1 => 10, 2 => 20}[2]";
+        let m = lower_src(src);
+        let entry = m.fn_by_name("main").unwrap().id;
+        let compiled = compile(
+            &mut crate::types::ConcreteTypes,
+            &m,
+            &crate::telemetry::NullTelemetry,
+        )
+        .unwrap();
+
+        let tel = ConfiguredTelemetry::new();
+        let cap = ProcessExitCapture::new();
+        tel.attach(&[], cap.handler());
+
+        let mut rt = Runtime::new(&compiled, 1).with_telemetry(&tel);
+        let pid = rt.spawn(entry);
+        rt.run_until_idle();
+
+        let rec = cap.last().expect("process_exited captured");
+        assert_eq!(rec.pid, pid);
+        assert_eq!(rec.halt_value, 20);
+        assert!(rec.live_count > 0, "map build leaves live heap objects");
+    }
+
+    /// The event also carries the live `&Process` as opaque metadata, so a
+    /// synchronous handler can downcast it and read any field the standard
+    /// projection omits — the escape hatch beside the durable measurements.
+    #[test]
+    fn process_exit_event_carries_opaque_process() {
+        use crate::telemetry::bus::ConfiguredTelemetry;
+        use crate::telemetry::handler::{Event, Handler};
+        use std::cell::Cell;
+        use std::rc::Rc;
+
+        struct OpaqueProbe {
+            seen_halt: Rc<Cell<Option<i64>>>,
+        }
+        impl Handler for OpaqueProbe {
+            fn handle(&self, ev: &Event<'_, '_, '_>) {
+                if ev.name != ["fz", "runtime", "process_exited"] {
+                    return;
+                }
+                let p = ev
+                    .metadata
+                    .get("process")
+                    .and_then(|v| v.downcast_ref::<Process>())
+                    .expect("opaque &Process present during dispatch");
+                self.seen_halt.set(Some(p.halt_value));
+            }
+        }
+
+        let src = "fn main(), do: 7";
+        let m = lower_src(src);
+        let entry = m.fn_by_name("main").unwrap().id;
+        let compiled = compile(
+            &mut crate::types::ConcreteTypes,
+            &m,
+            &crate::telemetry::NullTelemetry,
+        )
+        .unwrap();
+
+        let seen_halt = Rc::new(Cell::new(None));
+        let tel = ConfiguredTelemetry::new();
+        tel.attach(
+            &[],
+            Box::new(OpaqueProbe {
+                seen_halt: seen_halt.clone(),
+            }),
+        );
+
+        let mut rt = Runtime::new(&compiled, 1).with_telemetry(&tel);
+        let _ = rt.spawn(entry);
+        rt.run_until_idle();
+
+        assert_eq!(seen_halt.get(), Some(7));
+    }
+
+    /// Three-path parity: the interpreter and compiled engines emit the same
+    /// process_exited (equal halt value, live heap) and dbg event stream for
+    /// the same program, through the one shared emit + output seam.
+    #[test]
+    fn both_engines_emit_equivalent_process_exited_and_dbg() {
+        use crate::telemetry::bus::ConfiguredTelemetry;
+        use crate::telemetry::capture::Capture;
+
+        // dbg returns its arg, so this halts with 9 and prints "9".
+        let src = "fn main(), do: dbg(%{1 => 9}[1])";
+        let m = lower_src(src);
+        let entry = m.fn_by_name("main").unwrap().id;
+        let compiled = compile(
+            &mut crate::types::ConcreteTypes,
+            &m,
+            &crate::telemetry::NullTelemetry,
+        )
+        .unwrap();
+
+        // Compiled engine.
+        let tel_c = ConfiguredTelemetry::new();
+        let exits_c = ProcessExitCapture::new();
+        let out_c = Capture::new();
+        tel_c.attach(&[], exits_c.handler());
+        tel_c.attach(&[], out_c.handler());
+        let mut rt = Runtime::new(&compiled, 1).with_telemetry(&tel_c);
+        let _ = rt.spawn(entry);
+        rt.run_until_idle();
+        let c = exits_c.last().expect("compiled process_exited");
+
+        // Interpreter engine — same program, observed through the same seam.
+        let tel_i = ConfiguredTelemetry::new();
+        let exits_i = ProcessExitCapture::new();
+        let out_i = Capture::new();
+        tel_i.attach(&[], exits_i.handler());
+        tel_i.attach(&[], out_i.handler());
+        let _ = crate::ir_interp::run_main(&tel_i, &m).unwrap();
+        let i = exits_i.last().expect("interp process_exited");
+
+        assert_eq!(c.halt_value, 9);
+        assert_eq!(c.halt_value, i.halt_value, "halt value parity");
+        assert!(c.live_count > 0 && i.live_count > 0, "both leave live heap");
+        assert_eq!(out_c.count(&["fz", "runtime", "dbg"]), 1);
+        assert_eq!(
+            out_i.count(&["fz", "runtime", "dbg"]),
+            1,
+            "interp dbg routes to telemetry too"
+        );
+    }
+
+    /// `dbg` output is routed onto the telemetry bus as `fz.runtime.dbg`
+    /// events (via the OutputHook), so tests observe printed output through
+    /// the same seam as everything else.
+    #[test]
+    fn dbg_output_emits_telemetry_events() {
+        use crate::telemetry::bus::ConfiguredTelemetry;
+        use crate::telemetry::capture::Capture;
+        use crate::telemetry::value::Value;
+
+        let src = "fn main(), do: dbg(42)";
+        let m = lower_src(src);
+        let entry = m.fn_by_name("main").unwrap().id;
+        let compiled = compile(
+            &mut crate::types::ConcreteTypes,
+            &m,
+            &crate::telemetry::NullTelemetry,
+        )
+        .unwrap();
+
+        let tel = ConfiguredTelemetry::new();
+        let cap = Capture::new();
+        tel.attach(&[], cap.handler());
+
+        let mut rt = Runtime::new(&compiled, 1).with_telemetry(&tel);
+        let _ = rt.spawn(entry);
+        rt.run_until_idle();
+
+        let dbg_events = cap.find(&["fz", "runtime", "dbg"]);
+        assert_eq!(dbg_events.len(), 1, "one dbg call → one event");
+        assert!(matches!(
+            dbg_events[0].metadata.get("line"),
+            Some(Value::Str(s)) if s.as_ref() == "42"
+        ));
+    }
+
     /// Each task has its own heap. Two tasks build different maps; each
     /// observes only its own state. Same invariant as the .11.32 gating
-    /// test but driven through the scheduler instead of direct run_in.
+    /// test but driven through the scheduler with two spawned tasks.
     #[test]
     fn tasks_have_independent_heaps_and_builders() {
         let src_a = "fn main(), do: %{1 => 10, 2 => 20}[2]";
@@ -975,11 +1375,13 @@ mod tests {
             &crate::telemetry::NullTelemetry,
         )
         .unwrap();
-        let _ = fz_runtime::ir_runtime::test_capture_take();
-        let mut rt = Runtime::new(&compiled, 1);
+        let tel = crate::telemetry::bus::ConfiguredTelemetry::new();
+        let dbg = DbgCapture::new();
+        tel.attach(&[], dbg.handler());
+        let mut rt = Runtime::new(&compiled, 1).with_telemetry(&tel);
         rt.spawn(entry);
         rt.run_until_idle();
-        assert_eq!(fz_runtime::ir_runtime::test_capture_take(), vec!["nil"]);
+        assert_eq!(dbg.lines(), vec!["nil"]);
     }
 
     /// fz-siu.7.3: park-time GC hook fires when allocation pressure
@@ -1033,53 +1435,21 @@ mod tests {
             &crate::telemetry::NullTelemetry,
         )
         .unwrap();
-        let _ = fz_runtime::ir_runtime::test_capture_take();
-        let mut rt = Runtime::new(&compiled, 1);
+        let tel = crate::telemetry::bus::ConfiguredTelemetry::new();
+        let dbg = DbgCapture::new();
+        tel.attach(&[], dbg.handler());
+        let mut rt = Runtime::new(&compiled, 1).with_telemetry(&tel);
         let pid = rt.spawn(entry);
         rt.tasks.get_mut(&pid).unwrap().heap.gc_threshold_bytes = 64;
         rt.run_until_idle();
-        assert_eq!(fz_runtime::ir_runtime::test_capture_take(), vec![":alice"]);
-    }
-
-    // ----- fz-02r.2: FZ_SHOULD_YIELD global -----
-
-    /// run_until_idle clears FZ_SHOULD_YIELD before each quantum so a stale
-    /// flag from a previous task's watermark crossing doesn't falsely
-    /// pre-yield the incoming task.
-    #[test]
-    fn run_until_idle_clears_yield_flag_before_each_quantum() {
-        // Pre-set the flag as if a previous task had crossed the watermark.
-        fz_runtime::yield_flag::set(1);
-
-        let src = "fn main(), do: 7";
-        let m = lower_src(src);
-        let entry = m.fn_by_name("main").unwrap().id;
-        let compiled = compile(
-            &mut crate::types::ConcreteTypes,
-            &m,
-            &crate::telemetry::NullTelemetry,
-        )
-        .unwrap();
-        let mut rt = Runtime::new(&compiled, 1);
-        rt.spawn(entry);
-        rt.run_until_idle();
-
-        // After the quantum completes the flag is 0 (cleared at quantum
-        // start; task allocates nothing near the watermark).
-        assert_eq!(
-            fz_runtime::yield_flag::load(),
-            0,
-            "FZ_SHOULD_YIELD should be 0 after run_until_idle"
-        );
+        assert_eq!(dbg.lines(), vec![":alice"]);
     }
 
     // ----- fz-02r.8: mid-flight back-edge GC integration -----
 
     /// A recursive function that allocates a cons cell per iteration runs to
-    /// completion with the correct integer result even when the GC watermark
-    /// fires mid-loop. We force the watermark to be crossed on the very first
-    /// allocation by setting gc_watermark to null (always < bump_top) before
-    /// spawning.
+    /// completion with the correct integer result even when allocation
+    /// pressure expires the reduction budget mid-loop.
     #[test]
     fn mid_flight_gc_fires_and_result_is_correct() {
         // sum(n, acc, _) allocates [n] per iteration so the watermark trips.
@@ -1098,14 +1468,17 @@ fn main(), do: sum(10, 0, nil)";
         .unwrap();
         let mut rt = Runtime::new(&compiled, 1);
         let pid = rt.spawn(entry);
-        // Force the GC watermark to null so any allocation immediately sets
-        // FZ_SHOULD_YIELD=1, triggering the back-edge yield on the first
-        // recursive call.
-        rt.tasks.get_mut(&pid).unwrap().heap.gc_watermark = std::ptr::null_mut();
+        {
+            let task = rt.tasks.get_mut(&pid).unwrap();
+            task.reductions_per_quantum = 1000;
+            task.heap.allocation_watermark = std::ptr::null_mut();
+        }
         rt.run_until_idle();
         let task = rt.task(pid).unwrap();
         assert_eq!(task.state, ProcessState::Exited);
         assert_eq!(task.halt_value, 55, "sum(10,0,nil) should be 55");
+        assert_eq!(task.reduction_yields, 0);
+        assert!(task.allocation_pressure_yields > 0);
     }
 
     #[test]
@@ -1124,7 +1497,7 @@ fn main(), do: sumf(4, 0.0, nil)";
         .unwrap();
         let mut rt = Runtime::new(&compiled, 1);
         let pid = rt.spawn(entry);
-        rt.tasks.get_mut(&pid).unwrap().heap.gc_watermark = std::ptr::null_mut();
+        force_allocation_pressure_yield(rt.tasks.get_mut(&pid).unwrap());
         rt.run_until_idle();
         let task = rt.task(pid).unwrap();
         assert_eq!(task.state, ProcessState::Exited);
@@ -1148,7 +1521,7 @@ fn main(), do: sumf(4, 0.0, nil)";
         .unwrap();
         let mut rt = Runtime::new(&compiled, 1);
         let pid = rt.spawn(entry);
-        rt.tasks.get_mut(&pid).unwrap().heap.gc_watermark = std::ptr::null_mut();
+        force_allocation_pressure_yield(rt.tasks.get_mut(&pid).unwrap());
         rt.run_until_idle();
         let task = rt.task(pid).unwrap();
         assert_eq!(task.state, ProcessState::Exited);
@@ -1176,7 +1549,7 @@ fn main(), do: sumf(4, 0.0, nil)";
         .unwrap();
         let mut rt = Runtime::new(&compiled, 1);
         let pid = rt.spawn(entry);
-        rt.tasks.get_mut(&pid).unwrap().heap.gc_watermark = std::ptr::null_mut();
+        force_allocation_pressure_yield(rt.tasks.get_mut(&pid).unwrap());
         rt.run_until_idle();
         let task = rt.task(pid).unwrap();
         assert_eq!(task.state, ProcessState::Exited);
@@ -1204,7 +1577,7 @@ fn main(), do: sumf(4, 0.0, nil)";
         .unwrap();
         let mut rt = Runtime::new(&compiled, 1);
         let pid = rt.spawn(entry);
-        rt.tasks.get_mut(&pid).unwrap().heap.gc_watermark = std::ptr::null_mut();
+        force_allocation_pressure_yield(rt.tasks.get_mut(&pid).unwrap());
         rt.run_until_idle();
         let task = rt.task(pid).unwrap();
         assert_eq!(task.state, ProcessState::Exited);
@@ -1233,7 +1606,7 @@ fn main(), do: sum(10, 0, nil)";
         .unwrap();
         let mut rt = Runtime::new(&compiled, 1);
         let pid = rt.spawn(entry);
-        rt.tasks.get_mut(&pid).unwrap().heap.gc_watermark = std::ptr::null_mut();
+        force_allocation_pressure_yield(rt.tasks.get_mut(&pid).unwrap());
         rt.run_until_idle();
         let task = rt.task(pid).unwrap();
         assert!(
@@ -1261,15 +1634,76 @@ fn main(), do: sum(8, 0, nil)";
         let mut rt = Runtime::new(&compiled, 1);
         let pa = rt.spawn(entry);
         let pb = rt.spawn(entry);
-        // Force watermark on both processes.
-        rt.tasks.get_mut(&pa).unwrap().heap.gc_watermark = std::ptr::null_mut();
-        rt.tasks.get_mut(&pb).unwrap().heap.gc_watermark = std::ptr::null_mut();
+        force_allocation_pressure_yield(rt.tasks.get_mut(&pa).unwrap());
+        force_allocation_pressure_yield(rt.tasks.get_mut(&pb).unwrap());
         rt.run_until_idle();
         // sum(8,0,nil) = 8+7+...+1 = 36
         assert_eq!(rt.task(pa).unwrap().halt_value, 36);
         assert_eq!(rt.task(pb).unwrap().halt_value, 36);
         assert_eq!(rt.task(pa).unwrap().state, ProcessState::Exited);
         assert_eq!(rt.task(pb).unwrap().state, ProcessState::Exited);
+    }
+
+    #[test]
+    fn compiled_reductions_yield_allocation_light_loops() {
+        let src = "fn count(0, acc), do: acc\nfn count(n, acc), do: count(n - 1, acc + 1)\nfn main(), do: count(5000, 0)";
+        let m = lower_src(src);
+        let entry = m.fn_by_name("main").unwrap().id;
+        let compiled = compile(
+            &mut crate::types::ConcreteTypes,
+            &m,
+            &crate::telemetry::NullTelemetry,
+        )
+        .unwrap();
+        let mut rt = Runtime::new(&compiled, 1);
+        let pa = rt.spawn(entry);
+        let pb = rt.spawn(entry);
+        force_reduction_yield(rt.tasks.get_mut(&pa).unwrap());
+        force_reduction_yield(rt.tasks.get_mut(&pb).unwrap());
+
+        rt.run_until_idle();
+
+        let a = rt.task(pa).unwrap();
+        let b = rt.task(pb).unwrap();
+        assert_eq!(a.halt_value, 5000);
+        assert_eq!(b.halt_value, 5000);
+        assert!(a.reduction_yields > 0);
+        assert!(b.reduction_yields > 0);
+        assert_eq!(a.allocation_pressure_yields, 0);
+        assert_eq!(b.allocation_pressure_yields, 0);
+        assert_eq!(a.interpreter_yields, 0);
+        assert_eq!(b.interpreter_yields, 0);
+    }
+
+    #[test]
+    fn compiled_yield_measures_full_continuation_allocation_window() {
+        let src = "fn count(0, acc), do: acc\nfn count(n, acc), do: count(n - 1, acc + 1)\nfn main(), do: count(5000, 0)";
+        let m = lower_src(src);
+        let entry = m.fn_by_name("main").unwrap().id;
+        let compiled = compile(
+            &mut crate::types::ConcreteTypes,
+            &m,
+            &crate::telemetry::NullTelemetry,
+        )
+        .unwrap();
+        let mut rt = Runtime::new(&compiled, 1);
+        let pid = rt.spawn(entry);
+        force_reduction_yield(rt.tasks.get_mut(&pid).unwrap());
+
+        rt.run_until_idle();
+
+        let task = rt.task(pid).unwrap();
+        assert_eq!(task.halt_value, 5000);
+        assert!(task.reduction_yields > 0);
+        assert_eq!(task.pending_yield_continuation_margin_before_bytes, 0);
+        assert!(
+            task.max_yield_continuation_bytes
+                > fz_runtime::any_value::closure_size_for_count(3) as u64,
+            "yield telemetry should include scalar boxes as well as the continuation closure; got {} bytes",
+            task.max_yield_continuation_bytes
+        );
+        assert!(task.min_yield_continuation_margin_before_bytes > 0);
+        assert!(task.min_yield_continuation_margin_after_bytes > 0);
     }
 
     /// quiet_quanta increments each quantum that completes without a
@@ -1316,7 +1750,7 @@ fn main(), do: sum(10, 0, nil)";
         .unwrap();
         let mut rt = Runtime::new(&compiled, 1);
         let pid = rt.spawn(entry);
-        rt.tasks.get_mut(&pid).unwrap().heap.gc_watermark = std::ptr::null_mut();
+        force_allocation_pressure_yield(rt.tasks.get_mut(&pid).unwrap());
         rt.run_until_idle();
         // After mid-flight GC fires, quiet_quanta is reset to 0 by the
         // scheduler, then incremented by 1 in the final (halting) quantum.

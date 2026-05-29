@@ -20,7 +20,9 @@ that keep future work aligned.
 | [docs/module-separate-compilation.md](docs/module-separate-compilation.md) | Module identity, imports/interfaces, compiled units/images, runtime library modules, or LTO boundary erasure. |
 | [../docs/protocols.md](../docs/protocols.md) | `defprotocol` / `defimpl`, protocol-domain types, implementation target identity, protocol dispatch, or no-replanning protocol/link rules. |
 | [docs/physical-capabilities.md](docs/physical-capabilities.md) | Physical runtime-object capabilities, owned cons reuse, publication effects, or semantic/physical entry-param boundaries. |
+| [docs/pinned-process-register.md](docs/pinned-process-register.md) | Cranelift pinned register, compiled `Process*` base pointer, process ABI offsets, or the `CURRENT_PROCESS` dual invariant. |
 | [docs/repl-session.md](docs/repl-session.md) | REPL world/bindings/runtime layering, chunk synthesis, docs/help, or macro/runtime boundaries. |
+| [docs/reduction-yielding.md](docs/reduction-yielding.md) | Reduction-driven scheduler yielding, the per-process budget, allocation-pressure expiration, the continuation reserve, or boundary maintenance. |
 | [docs/scheduler-zero-arg-closures.md](docs/scheduler-zero-arg-closures.md) | Scheduler, receive, yield, spawn, timeout, or continuation re-entry. |
 | [docs/any-value.md](docs/any-value.md) | `AnyValueRef`, `ValueRef`, raw scalar lanes, boxed scalars, pointer format, or GC-visible values. |
 | [docs/telemetry.md](docs/telemetry.md) | Adding telemetry, testing compiler decisions, or measuring performance work. |

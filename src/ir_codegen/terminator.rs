@@ -9,6 +9,7 @@ use cranelift_codegen::isa::CallConv;
 use cranelift_frontend::FunctionBuilder;
 use cranelift_module::{FuncId, Linkage};
 use fz_runtime::heap::Schema;
+use fz_runtime::process_abi::PROCESS_REDUCTIONS_REMAINING_OFFSET;
 use std::collections::HashMap;
 
 // Resolve the Cont-slot SpecId for the call-shape terminator in `blk`.
@@ -994,7 +995,6 @@ fn emit_tail_call_term<
                 var_env,
                 is_native,
                 is_cont_fn,
-                this_spec_id,
                 frame_ptr,
                 host_ctx,
                 cont_param,
@@ -1031,7 +1031,6 @@ fn emit_native_tail_call<M: cranelift_module::Module>(
     var_env: &HashMap<u32, CodegenValue>,
     is_native: bool,
     is_cont_fn: bool,
-    this_spec_id: u32,
     frame_ptr: Option<ir::Value>,
     host_ctx: Option<ir::Value>,
     cont_param: Option<ir::Value>,
@@ -1097,12 +1096,9 @@ fn emit_native_tail_call<M: cranelift_module::Module>(
         // recursive tail calls reuse the same stack frame
         // (TCO). Without this, count_100k blows the stack.
         //
-        // Back-edge cooperative yield check: only
-        // allocation-capable native loop bodies can set the
-        // heap-pressure flag this path services. Pure scalar
-        // loops stay a plain return_call and keep their
-        // zero-allocation CLIF contract.
-        if is_back_edge && env.spec_heap_allocates[this_spec_id as usize] {
+        // Back-edge cooperative yield check: every native loop spends
+        // reductions, including pure scalar loops that do not allocate.
+        if is_back_edge {
             emit_back_edge_yield_check(body, env, callee_sid, &mid_flight_arg_shapes, &native_args);
         }
         body.b.ins().return_call(callee_fref, &native_args);
@@ -1151,10 +1147,10 @@ fn emit_native_tail_call<M: cranelift_module::Module>(
     }
 }
 
-// Cooperative back-edge yield check: read the heap-pressure flag;
-// if set, capture next-iteration args into a scheduler-runnable
-// closure and yield it as the primary mid-flight GC root. Otherwise
-// fall through to the caller's normal TCO path.
+// Cooperative back-edge yield check: spend one reduction from the
+// scheduler-installed budget; if exhausted, capture next-iteration args into a
+// scheduler-runnable closure and yield it as the primary mid-flight root.
+// Otherwise fall through to the caller's normal TCO path.
 fn emit_back_edge_yield_check<M: cranelift_module::Module>(
     body: &mut CodegenFn<'_, '_, '_, M>,
     env: &CodegenEnv<'_>,
@@ -1163,23 +1159,30 @@ fn emit_back_edge_yield_check<M: cranelift_module::Module>(
     native_args: &[ir::Value],
 ) {
     let runtime = env.runtime;
-    let yield_gv = body
-        .jmod
-        .declare_data_in_func(runtime.should_yield_data_id, body.b.func);
-    let flag_ptr = body.b.ins().global_value(types::I64, yield_gv);
-    let flag = body
+    let process = body.b.ins().get_pinned_reg(types::I64);
+    let reductions_ptr = body
         .b
         .ins()
-        .load(types::I8, MemFlags::trusted(), flag_ptr, 0);
-    let flag64 = body.b.ins().uextend(types::I64, flag);
-    let zero64 = body.b.ins().iconst(types::I64, 0);
-    let is_set = body.b.ins().icmp(IntCC::NotEqual, flag64, zero64);
+        .iadd_imm(process, PROCESS_REDUCTIONS_REMAINING_OFFSET as i64);
+    let remaining = body
+        .b
+        .ins()
+        .load(types::I32, MemFlags::trusted(), reductions_ptr, 0);
+    let one = body.b.ins().iconst(types::I32, 1);
+    let new_remaining = body.b.ins().isub(remaining, one);
+    body.b
+        .ins()
+        .store(MemFlags::trusted(), new_remaining, reductions_ptr, 0);
+    let exhausted = body
+        .b
+        .ins()
+        .icmp_imm(IntCC::SignedLessThanOrEqual, new_remaining, 0);
     let yield_blk = body.b.create_block();
     let proceed_blk = body.b.create_block();
     let no_args: Vec<BlockArg> = Vec::new();
     body.b
         .ins()
-        .brif(is_set, yield_blk, &no_args, proceed_blk, &no_args);
+        .brif(exhausted, yield_blk, &no_args, proceed_blk, &no_args);
 
     body.b.switch_to_block(yield_blk);
     body.b.seal_block(yield_blk);
@@ -1204,6 +1207,10 @@ fn emit_back_edge_yield_check<M: cranelift_module::Module>(
         })
         .collect();
     debug_assert_eq!(abi_cursor, native_args.len());
+    let slow_path_begin_fref = body
+        .jmod
+        .declare_func_in_func(runtime.yield_slow_path_begin_id, body.b.func);
+    body.b.ins().call(slow_path_begin_fref, &[]);
     let fid_v = body.b.ins().iconst(types::I32, callee_sid as i64);
     let n_caps_v = body
         .b
@@ -1223,8 +1230,15 @@ fn emit_back_edge_yield_check<M: cranelift_module::Module>(
     }
     let yield_fref = body
         .jmod
-        .declare_func_in_func(runtime.yield_mid_flight_id, body.b.func);
-    let yield_inst = body.b.ins().call(yield_fref, &[cont_closure]);
+        .declare_func_in_func(runtime.yield_mid_flight_report_id, body.b.func);
+    let reason = body.b.ins().iconst(
+        types::I32,
+        fz_runtime::process::YIELD_REASON_REDUCTIONS as i64,
+    );
+    let yield_inst = body
+        .b
+        .ins()
+        .call(yield_fref, &[cont_closure, new_remaining, reason]);
     let yield_ret = body.b.inst_results(yield_inst)[0];
     body.b.ins().return_(&[yield_ret]);
 

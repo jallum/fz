@@ -10,6 +10,11 @@
 use std::alloc::{Layout, alloc_zeroed, dealloc, handle_alloc_error};
 use std::ptr::NonNull;
 
+pub const DEFAULT_REDUCTIONS_PER_QUANTUM: i32 = 4000;
+pub const YIELD_REASON_REDUCTIONS: u8 = 1 << 0;
+pub const YIELD_REASON_ALLOCATION_PRESSURE: u8 = 1 << 1;
+pub const YIELD_REASON_EXPLICIT: u8 = 1 << 2;
+
 pub struct AlignedClosureStorage {
     ptr: NonNull<u8>,
     layout: Layout,
@@ -65,7 +70,7 @@ pub struct Process {
     pub bs_tuple_arity1_schema: Option<u32>,
     pub bs_tuple_arity3_schema: Option<u32>,
     // fz-ul4.19.1 scheduler-level fields. Populated when a Process is
-    // owned by a Runtime; the standalone `make_process()` / `run_in` path
+    // owned by a Runtime; the standalone `make_process()` path
     // leaves these at defaults.
     pub pid: PidId,
     pub state: ProcessState,
@@ -124,12 +129,49 @@ pub struct Process {
     pub quiet_quanta: u8,
     /// Cumulative compiled-code mid-flight yields for this process. Each
     /// increment means native code built a scheduler-owned continuation
-    /// closure and returned to the scheduler through `fz_yield_mid_flight`.
+    /// closure and returned to the scheduler through `fz_yield_mid_flight_report`.
     pub scheduler_yields: u64,
     /// Cumulative interpreter back-edge GC yields. These do not allocate
     /// scheduler continuation closures; the interpreter forwards roots
     /// synchronously and keeps running.
     pub interpreter_yields: u64,
+    /// Reductions left in the current scheduler quantum. Dispatch resets this
+    /// to `reductions_per_quantum`; loop back edges and runtime work spend it.
+    pub reductions_remaining: i32,
+    /// Reductions granted to this process at each scheduler dispatch.
+    pub reductions_per_quantum: i32,
+    /// Cumulative reductions charged to this process.
+    pub reductions_executed: u64,
+    /// Cumulative yields caused by ordinary reduction-budget exhaustion.
+    pub reduction_yields: u64,
+    /// Cumulative yields caused by allocation pressure expiring the current
+    /// reduction budget.
+    pub allocation_pressure_yields: u64,
+    /// Compact reason bits pending for the next scheduler boundary. Allocation
+    /// pressure (`expire_current_budget`) and the yielding back edge both set
+    /// bits here; the boundary consumes them via `finish_yield_report` (which
+    /// attributes the cumulative cause counters) and `boundary_maintenance`
+    /// (which clears them). A bit can therefore be observed standing on a
+    /// running process — e.g. a tail allocation trips the watermark after the
+    /// final back edge and the process exits before yielding. The cumulative
+    /// `reduction_yields` / `allocation_pressure_yields` counters, not this
+    /// transient bitfield, are the authoritative yield-cause telemetry.
+    /// See `YIELD_REASON_*`.
+    pub yield_reasons: u8,
+    /// Heap margin sampled before the compiled yield slow path starts building
+    /// its scheduler continuation. Zero means no active sample.
+    pub pending_yield_continuation_margin_before_bytes: u64,
+    /// Largest scheduler continuation allocation window observed at a
+    /// mid-flight yield. This includes the closure, scalar capture boxes, and
+    /// materialized continuation state when the compiled slow path provides a
+    /// begin sample.
+    pub max_yield_continuation_bytes: u64,
+    /// Lowest remaining in-block heap margin immediately before observed
+    /// continuation materialization. Zero means no sample yet.
+    pub min_yield_continuation_margin_before_bytes: u64,
+    /// Lowest remaining in-block heap margin immediately after observed
+    /// continuation materialization. Zero means no sample yet.
+    pub min_yield_continuation_margin_after_bytes: u64,
 }
 
 /// Stable per-Process identifier assigned at spawn time. v1: simple u32
@@ -180,6 +222,16 @@ impl Process {
             quiet_quanta: 0,
             scheduler_yields: 0,
             interpreter_yields: 0,
+            reductions_remaining: DEFAULT_REDUCTIONS_PER_QUANTUM,
+            reductions_per_quantum: DEFAULT_REDUCTIONS_PER_QUANTUM,
+            reductions_executed: 0,
+            reduction_yields: 0,
+            allocation_pressure_yields: 0,
+            yield_reasons: 0,
+            pending_yield_continuation_margin_before_bytes: 0,
+            max_yield_continuation_bytes: 0,
+            min_yield_continuation_margin_before_bytes: 0,
+            min_yield_continuation_margin_after_bytes: 0,
         }
     }
 
@@ -258,23 +310,108 @@ impl Process {
             Some(closure)
         }
     }
+
+    pub fn reset_reduction_budget(&mut self) {
+        // Dispatch resets budget and reasons together: each quantum starts with
+        // a clean slate so a reason bit cannot outlive the quantum that set it.
+        self.reductions_remaining = self.reductions_per_quantum;
+        self.yield_reasons = 0;
+    }
+
+    pub fn finish_yield_report(&mut self, remaining_reductions: i32, reason: u8) {
+        self.reductions_remaining = remaining_reductions;
+        let burned = i64::from(self.reductions_per_quantum) - i64::from(remaining_reductions);
+        if burned > 0 {
+            self.reductions_executed = self.reductions_executed.saturating_add(burned as u64);
+        }
+        // Count cause off the accumulated reasons, not just this report's
+        // bits: allocation pressure expires the budget directly on the
+        // Process during the quantum (see `expire_current_budget`), so the
+        // back edge that finally yields reports only REDUCTIONS while the
+        // ALLOCATION_PRESSURE bit is already standing on `yield_reasons`.
+        self.yield_reasons |= reason;
+        let allocation_pressure = (self.yield_reasons & YIELD_REASON_ALLOCATION_PRESSURE)
+            == YIELD_REASON_ALLOCATION_PRESSURE;
+        if allocation_pressure {
+            self.allocation_pressure_yields = self.allocation_pressure_yields.saturating_add(1);
+        } else if (self.yield_reasons & YIELD_REASON_REDUCTIONS) == YIELD_REASON_REDUCTIONS {
+            self.reduction_yields = self.reduction_yields.saturating_add(1);
+        }
+    }
+
+    pub fn clear_yield_reasons(&mut self) {
+        self.yield_reasons = 0;
+    }
+
+    /// Scheduler-boundary maintenance shared by every execution mode. Decide
+    /// whether this boundary must GC; if so, run the caller's mode-specific
+    /// root-gather GC (compiled: runnable closure + mailbox; interpreter:
+    /// resume args + after-conts) and reset the quiet-quanta shrink counter,
+    /// otherwise advance it. Either way, clear the transient pressure and
+    /// yield-reason signals so the next quantum starts clean.
+    pub fn boundary_maintenance<E>(
+        &mut self,
+        gc_roots: impl FnOnce(&mut Self) -> Result<(), E>,
+    ) -> Result<(), E> {
+        if self.needs_boundary_gc() {
+            gc_roots(self)?;
+            self.quiet_quanta = 0;
+        } else {
+            self.quiet_quanta = self.quiet_quanta.saturating_add(1);
+        }
+        self.heap.clear_should_gc_flag();
+        self.clear_yield_reasons();
+        Ok(())
+    }
+
+    pub fn needs_boundary_gc(&self) -> bool {
+        self.heap.should_gc()
+            || (self.yield_reasons & YIELD_REASON_ALLOCATION_PRESSURE)
+                == YIELD_REASON_ALLOCATION_PRESSURE
+    }
+
+    pub fn begin_yield_continuation_allocation(&mut self, margin_before: usize) {
+        self.pending_yield_continuation_margin_before_bytes = margin_before as u64;
+    }
+
+    pub fn note_yield_continuation_allocation(&mut self, bytes: usize, margin_after: usize) {
+        let observed_bytes = bytes as u64;
+        let margin_after = margin_after as u64;
+        let sampled_margin_before = self.pending_yield_continuation_margin_before_bytes;
+        self.pending_yield_continuation_margin_before_bytes = 0;
+        let margin_before = if sampled_margin_before == 0 {
+            margin_after.saturating_add(observed_bytes)
+        } else {
+            sampled_margin_before
+        };
+        let bytes = margin_before
+            .saturating_sub(margin_after)
+            .max(observed_bytes);
+        self.max_yield_continuation_bytes = self.max_yield_continuation_bytes.max(bytes);
+        self.min_yield_continuation_margin_before_bytes = min_nonzero(
+            self.min_yield_continuation_margin_before_bytes,
+            margin_before,
+        );
+        self.min_yield_continuation_margin_after_bytes =
+            min_nonzero(self.min_yield_continuation_margin_after_bytes, margin_after);
+    }
+}
+
+fn min_nonzero(current: u64, candidate: u64) -> u64 {
+    if current == 0 {
+        candidate
+    } else {
+        current.min(candidate)
+    }
 }
 
 thread_local! {
     /// Raw pointer to the Process currently being run by this worker (this
-    /// thread). Set by `run_in` for the duration of the run; cleared
-    /// afterwards. FFI fns called from JIT'd code read it via
+    /// thread). Set by the scheduler for the duration of each quantum;
+    /// cleared afterwards. FFI fns called from JIT'd code read it via
     /// `current_process()`.
     pub static CURRENT_PROCESS: std::cell::Cell<*mut Process> =
         const { std::cell::Cell::new(std::ptr::null_mut()) };
-    /// Backing storage for the convenience `compiled.run(fn_id)` path: a
-    /// Process is constructed, stashed here, and CURRENT_PROCESS points at
-    /// it. After the run, CURRENT_PROCESS is cleared but the Process remains
-    /// here so test helpers (heap_live_count, heap_gc, ...) can inspect.
-    /// Tests using the explicit `run_in(fn_id, &mut Process)` path own
-    /// their Process directly and don't use this slot.
-    pub static DEFAULT_PROCESS: std::cell::RefCell<Option<Process>> =
-        const { std::cell::RefCell::new(None) };
 }
 
 pub struct CurrentProcessGuard {
@@ -295,14 +432,14 @@ impl Drop for CurrentProcessGuard {
 }
 
 /// Access the currently-installed Process via the raw TLS pointer. Must only
-/// be called from FFI fns invoked synchronously inside `run_in`. The Process
-/// is owned by either the caller (run_in path) or by DEFAULT_PROCESS (run
-/// path); the pointer is valid for the duration of the run.
+/// be called from FFI fns invoked synchronously inside a scheduler quantum.
+/// The Process is owned by the scheduler's task registry; the pointer is
+/// valid for the duration of the quantum.
 pub fn current_process() -> &'static mut Process {
     let p = CURRENT_PROCESS.with(|c| c.get());
     assert!(
         !p.is_null(),
-        "current_process(): no Process installed (running outside run_in?)"
+        "current_process(): no Process installed (running outside a scheduler quantum?)"
     );
     unsafe { &mut *p }
 }
@@ -312,13 +449,80 @@ pub fn try_current_process() -> Option<&'static mut Process> {
     (!p.is_null()).then(|| unsafe { &mut *p })
 }
 
+/// Expire the current process's reduction budget and record why. Called from
+/// the heap allocation slow path when bump crosses the allocation watermark:
+/// zeroing `reductions_remaining` forces the next back edge to yield, and the
+/// reason bit rides on `yield_reasons` until the scheduler boundary consumes
+/// it. A no-op when no process is installed (standalone-heap unit tests).
+pub fn expire_current_budget(reason: u8) {
+    if let Some(process) = try_current_process() {
+        process.reductions_remaining = 0;
+        process.yield_reasons |= reason;
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use super::{Process, YIELD_REASON_ALLOCATION_PRESSURE, YIELD_REASON_REDUCTIONS};
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
     #[test]
     fn aligned_closure_storage_is_taggable() {
         for _ in 0..128 {
             let mut buf = super::AlignedClosureStorage::zeroed();
             assert_eq!(buf.as_ptr() as u64 & crate::any_value::TAG_MASK, 0);
         }
+    }
+
+    #[test]
+    fn reduction_budget_resets_and_spends() {
+        let schemas = Rc::new(RefCell::new(crate::heap::SchemaRegistry::new()));
+        let mut process = Process::new(schemas);
+        process.reductions_per_quantum = 3;
+        process.reset_reduction_budget();
+
+        assert_eq!(process.reductions_remaining, 3);
+        process.finish_yield_report(-1, YIELD_REASON_REDUCTIONS);
+        assert_eq!(process.reductions_remaining, -1);
+        assert_eq!(process.reductions_executed, 4);
+        assert_eq!(process.reduction_yields, 1);
+        assert_eq!(process.allocation_pressure_yields, 0);
+        assert_eq!(
+            process.yield_reasons & YIELD_REASON_REDUCTIONS,
+            YIELD_REASON_REDUCTIONS
+        );
+    }
+
+    #[test]
+    fn reset_reduction_budget_clears_yield_reasons() {
+        let schemas = Rc::new(RefCell::new(crate::heap::SchemaRegistry::new()));
+        let mut process = Process::new(schemas);
+        process.reductions_per_quantum = 5;
+        process.reductions_remaining = 0;
+        process.yield_reasons = YIELD_REASON_ALLOCATION_PRESSURE | YIELD_REASON_REDUCTIONS;
+
+        process.reset_reduction_budget();
+
+        assert_eq!(process.reductions_remaining, 5);
+        assert_eq!(process.yield_reasons, 0);
+    }
+
+    #[test]
+    fn allocation_pressure_yields_are_counted_by_cause() {
+        let schemas = Rc::new(RefCell::new(crate::heap::SchemaRegistry::new()));
+        let mut process = Process::new(schemas);
+
+        process.finish_yield_report(
+            9,
+            YIELD_REASON_REDUCTIONS | YIELD_REASON_ALLOCATION_PRESSURE,
+        );
+
+        assert_eq!(process.reduction_yields, 0);
+        assert_eq!(process.allocation_pressure_yields, 1);
+        assert_eq!(
+            process.yield_reasons & YIELD_REASON_ALLOCATION_PRESSURE,
+            YIELD_REASON_ALLOCATION_PRESSURE
+        );
     }
 }

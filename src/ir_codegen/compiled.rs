@@ -1167,8 +1167,9 @@ fn schema_key(schema: &Schema) -> String {
 }
 
 /// Compiled module: persistent JITModule + per-fn ptr table + schemas. The
-/// host runs a fn via `compiled.run(fn_id)` (constructs an internal default
-/// Process) or `compiled.run_in(fn_id, &mut Process)` (caller-owned Process).
+/// host runs a program by spawning it on a `Runtime` (`Runtime::new(module)`
+/// then `spawn` + `run_until_idle`); the test-only `run(fn_id)` is a thin
+/// one-task wrapper over exactly that.
 pub struct CompiledModule {
     pub(super) _module: JITModule,
     /// fz_fn_id -> compiled fn ptr.
@@ -1199,7 +1200,7 @@ pub struct CompiledModule {
     pub(crate) spawn_entry_addr: *const u8,
     /// SystemV→Tail-CC shim `fz_main_entry(main_fp) -> i64`. Allocates a
     /// halt-cont and indirect-calls main with `(halt_cont)`. Used by
-    /// `Runtime::spawn(fn_id)` / `CompiledModule::run_internal`.
+    /// `Runtime`'s main-entry dispatch.
     pub(crate) main_entry_addr: *const u8,
     /// SystemV→Tail-CC shim `fz_drain_dtor_entry(closure, payload_ref) -> i64`.
     /// The scheduler calls this once per entry on
@@ -1267,6 +1268,16 @@ impl CompiledModule {
             quiet_quanta: 0,
             scheduler_yields: 0,
             interpreter_yields: 0,
+            reductions_remaining: fz_runtime::process::DEFAULT_REDUCTIONS_PER_QUANTUM,
+            reductions_per_quantum: fz_runtime::process::DEFAULT_REDUCTIONS_PER_QUANTUM,
+            reductions_executed: 0,
+            reduction_yields: 0,
+            allocation_pressure_yields: 0,
+            yield_reasons: 0,
+            pending_yield_continuation_margin_before_bytes: 0,
+            max_yield_continuation_bytes: 0,
+            min_yield_continuation_margin_before_bytes: 0,
+            min_yield_continuation_margin_after_bytes: 0,
         };
         // One static singleton per zero-cap closure-target spec.
         // See docs/cps-in-clif.md §8.2.
@@ -1292,7 +1303,7 @@ impl CompiledModule {
         /// receive templates, runnable + pending entry closures) and
         /// rewrites those pointers to their to-space copies.
         fn park_time_gc(process: &mut Process) {
-            if !process.heap.should_gc() {
+            if !process.needs_boundary_gc() {
                 return;
             }
 
@@ -1372,9 +1383,7 @@ impl CompiledModule {
             }
 
             process.heap.clear_should_gc_flag();
-            // After park-time GC the process is about to park on receive,
-            // so FZ_SHOULD_YIELD no longer applies to this quantum.
-            fz_runtime::yield_flag::clear();
+            process.clear_yield_reasons();
         }
 
         // Selective-receive initial scan. Hit sets runnable_closure and
@@ -1390,16 +1399,15 @@ impl CompiledModule {
             }
             fz_runtime::sched::ScanOutcome::NotApplicable => {}
         }
-        fn run_scheduler_closure(resume_addr: *const u8, closure: *mut u8) {
+        fn run_scheduler_closure(resume_addr: *const u8, process: &mut Process, closure: *mut u8) {
             let closure = fz_runtime::any_value::AnyValueRef::from_heap_object(
                 fz_runtime::any_value::ValueKind::CLOSURE,
                 closure as *const u8,
             )
             .expect("scheduler closure ref")
             .raw_word();
-            type Resume = extern "C" fn(u64) -> i64;
-            let f: Resume = unsafe { std::mem::transmute(resume_addr) };
-            let _ = f(closure);
+            let process_ptr = process as *mut Process;
+            let _ = unsafe { fz_runtime::pinned_abi::call1(resume_addr, process_ptr, closure) };
         }
 
         // One dispatch decision per quantum. Variants are listed in
@@ -1414,7 +1422,7 @@ impl CompiledModule {
             // shim.
             RunnableClosure(*mut u8),
             // Fresh main-style task entry: fn ptr queued by
-            // `Runtime::spawn` or `run_internal`. Dispatch via
+            // `Runtime::spawn`. Dispatch via
             // `fz_main_entry`; the body runs synchronously to halt or
             // Receive.
             MainEntry { fp: *mut u8, kind: usize },
@@ -1453,7 +1461,7 @@ impl CompiledModule {
 
         match dispatch {
             Dispatch::RunnableClosure(closure) => {
-                run_scheduler_closure(self.resume_addr, closure);
+                run_scheduler_closure(self.resume_addr, process, closure);
                 process.next_frame = std::ptr::null_mut();
                 park_time_gc(process);
             }
@@ -1464,9 +1472,15 @@ impl CompiledModule {
                 )
                 .expect("halt continuation ref")
                 .raw_word();
-                type MainEntry = extern "C" fn(u64, u64) -> i64;
-                let f: MainEntry = unsafe { std::mem::transmute(self.main_entry_addr) };
-                let _ = f(fp as u64, halt_cl);
+                let process_ptr = process as *mut Process;
+                let _ = unsafe {
+                    fz_runtime::pinned_abi::call2(
+                        self.main_entry_addr,
+                        process_ptr,
+                        fp as u64,
+                        halt_cl,
+                    )
+                };
                 process.next_frame = std::ptr::null_mut();
                 park_time_gc(process);
             }
@@ -1477,9 +1491,10 @@ impl CompiledModule {
                 )
                 .expect("pending closure ref")
                 .raw_word();
-                type SpawnEntry = extern "C" fn(u64) -> i64;
-                let f: SpawnEntry = unsafe { std::mem::transmute(self.spawn_entry_addr) };
-                let _ = f(cl_ref);
+                let process_ptr = process as *mut Process;
+                let _ = unsafe {
+                    fz_runtime::pinned_abi::call1(self.spawn_entry_addr, process_ptr, cl_ref)
+                };
                 process.next_frame = std::ptr::null_mut();
                 park_time_gc(process);
             }
@@ -1497,55 +1512,21 @@ impl CompiledModule {
         &self.static_closure_targets
     }
 
-    /// Run the trampoline with `fn_id` as the entry fn, using a fresh Process
-    /// stashed in DEFAULT_PROCESS for post-run inspection.
+    /// Run `fn_id` to completion on a single-task Runtime and return its
+    /// halt value. The production scheduler is the only run path; this is
+    /// the test-ergonomic spelling of "spawn one task and drain it." Tests
+    /// that need to observe heap stats attach a telemetry `Capture` to their
+    /// own `Runtime` and read the `fz.runtime.task_exited` event instead.
     pub fn run(&self, fn_id: FnId) -> i64 {
-        DEFAULT_PROCESS.with(|c| *c.borrow_mut() = Some(self.make_process()));
-        let ptr = DEFAULT_PROCESS.with(|c| {
-            let mut b = c.borrow_mut();
-            b.as_mut().unwrap() as *mut Process
-        });
-        let _current_process = fz_runtime::process::CurrentProcessGuard::install(ptr);
-        self.run_internal(fn_id)
-    }
-
-    /// Run with a caller-owned Process.
-    pub fn run_in(&self, fn_id: FnId, process: &mut Process) -> i64 {
-        let ptr = process as *mut Process;
-        let _current_process = fz_runtime::process::CurrentProcessGuard::install(ptr);
-        self.run_internal(fn_id)
-    }
-
-    pub(crate) fn run_internal(&self, fn_id: FnId) -> i64 {
-        let fp = self
-            .fn_ptrs
-            .get(&fn_id.0)
-            .copied()
-            .unwrap_or_else(|| panic!("no fn ptr for entry {}", fn_id.0));
-        let kind = self.fn_halt_kinds.get(&fn_id.0).copied().unwrap_or(0) as usize;
-        let halt_cl = fz_runtime::any_value::AnyValueRef::from_heap_object(
-            fz_runtime::any_value::ValueKind::CLOSURE,
-            current_process().halt_cont_singletons[kind] as *const u8,
-        )
-        .expect("halt continuation ref")
-        .raw_word();
-        type MainEntry = extern "C" fn(u64, u64) -> i64;
-        let f: MainEntry = unsafe { std::mem::transmute(self.main_entry_addr) };
-        let _ = f(fp as u64, halt_cl);
-        // Single-shot entry path: flush surviving MSO resources and run
-        // their dtor closures as fz code before returning. Mirrors the
-        // task-exit drain in `Runtime::run_until_idle` and
-        // `aot_run_queue_loop`.
-        {
-            let proc_mut = current_process();
-            fz_runtime::procbin::mso_drop_all_deferred(&mut proc_mut.heap);
-            type DrainDtor = extern "C" fn(u64, u64) -> i64;
-            let drain: DrainDtor = unsafe { std::mem::transmute(self.drain_dtor_entry_addr) };
-            while let Some((closure, payload_ref)) = proc_mut.heap.pending_dtors.pop_front() {
-                let _ = drain(closure, payload_ref);
-            }
-        }
-        current_process().halt_value
+        // Observe the result through the telemetry seam rather than reading
+        // task.halt_value off the Runtime — same path every other test uses.
+        let tel = crate::telemetry::bus::ConfiguredTelemetry::new();
+        let exits = crate::runtime::ProcessExitCapture::new();
+        tel.attach(&[], exits.handler());
+        let mut rt = crate::runtime::Runtime::new(self, 1).with_telemetry(&tel);
+        let _ = rt.spawn(fn_id);
+        rt.run_until_idle();
+        exits.last().expect("process_exited captured").halt_value
     }
 }
 

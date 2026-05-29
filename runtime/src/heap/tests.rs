@@ -1346,15 +1346,36 @@ fn gc_updates_last_gc_live_bytes() {
     assert_eq!(h.size_class, 0, "tiny live set stays at smallest class");
 }
 
-/// Watermark is set to 75% of block. After alloc crossing watermark,
-/// FZ_SHOULD_YIELD is set; it can be cleared externally.
+/// Allocation watermark leaves the explicit yield-continuation reserve.
 #[test]
-fn watermark_is_75_percent_of_block() {
-    crate::yield_flag::clear();
+fn allocation_watermark_leaves_continuation_reserve() {
     let h = Heap::new(SIZE_TABLE[0], empty_registry());
-    let expected = unsafe { h.block_start.add(SIZE_TABLE[0] * 3 / 4) };
-    assert_eq!(h.gc_watermark, expected);
-    crate::yield_flag::clear(); // cleanup
+    let expected = unsafe {
+        h.block_end
+            .sub(crate::heap::YIELD_CONTINUATION_RESERVE_BYTES)
+    };
+    assert_eq!(h.allocation_watermark, expected);
+}
+
+#[test]
+fn allocation_watermark_expires_reduction_budget() {
+    let mut process = crate::process::Process::new(empty_registry());
+    process.reductions_remaining = 7;
+    process.yield_reasons = 0;
+    // Force the very next allocation across the watermark.
+    process.heap.allocation_watermark = process.heap.block_start;
+    let guard = crate::process::CurrentProcessGuard::install(&mut process);
+
+    let _ = process
+        .heap
+        .alloc_list_cons_slot(AnyValue::nil_atom(), crate::any_value::EMPTY_LIST);
+    drop(guard);
+
+    assert_eq!(process.reductions_remaining, 0);
+    assert_eq!(
+        process.yield_reasons & crate::process::YIELD_REASON_ALLOCATION_PRESSURE,
+        crate::process::YIELD_REASON_ALLOCATION_PRESSURE
+    );
 }
 
 /// Large struct (200-byte payload, well past the old 64-byte cap)

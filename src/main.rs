@@ -1548,8 +1548,9 @@ fn run_jit_src(
     };
     // fz-swt.10 — attach the IR Module so `fz_make_resource` (callable
     // from JIT'd code) can resolve dtor closures.
-    let mut rt =
-        runtime::Runtime::new(compiled.image.compiled_module(), 1).with_module(&compiled.module);
+    let mut rt = runtime::Runtime::new(compiled.image.compiled_module(), 1)
+        .with_module(&compiled.module)
+        .with_telemetry(tel);
     let _main_pid = rt.spawn(main_fn);
     notify_fixture_execution_start();
     rt.run_until_idle();
