@@ -114,7 +114,7 @@ impl FzoUnitPayload {
 
 impl FziArtifact {
     pub fn new(interface: ModuleInterface) -> Self {
-        let interface_fingerprint = interface.fingerprint_inputs.clone();
+        let interface_fingerprint = interface.fingerprint_inputs().to_vec();
         Self {
             compiler_abi_version: FZ_ARTIFACT_ABI_VERSION,
             runtime_abi_version: FZ_RUNTIME_ARTIFACT_ABI_VERSION,
@@ -179,13 +179,13 @@ impl FziArtifact {
                 ),
             );
         }
-        if artifact.interface().abi_version != FZ_INTERFACE_ABI_VERSION {
+        if artifact.interface().abi_version() != FZ_INTERFACE_ABI_VERSION {
             return emit_invalid(
                 tel,
                 path,
                 format!(
                     "interface ABI {} is not supported by ABI {}",
-                    artifact.interface().abi_version,
+                    artifact.interface().abi_version(),
                     FZ_INTERFACE_ABI_VERSION
                 ),
             );
@@ -194,7 +194,7 @@ impl FziArtifact {
         if artifact.interface_fingerprint_digest() != computed_digest {
             return emit_invalid(tel, path, "fzi interface fingerprint digest mismatch");
         }
-        if artifact.interface().fingerprint_inputs != artifact.interface_fingerprint() {
+        if artifact.interface().fingerprint_inputs() != artifact.interface_fingerprint() {
             return emit_invalid(tel, path, "fzi interface fingerprint inputs mismatch");
         }
         if let Some(expected) = expected_fingerprint
@@ -559,7 +559,7 @@ mod tests {
             &crate::telemetry::NullTelemetry,
             None,
             &artifact.serialize(),
-            Some(&interface.fingerprint_inputs),
+            Some(&interface.fingerprint_inputs()),
         )
         .expect("deserialize");
 

@@ -89,7 +89,7 @@ impl ArtifactStore {
         let mut written = Vec::new();
         for interface in interfaces.values() {
             let artifact = FziArtifact::new(interface.clone());
-            let path = self.interface_path(&interface.name)?;
+            let path = self.interface_path(interface.name())?;
             if let Some(parent) = path.parent() {
                 std::fs::create_dir_all(parent).map_err(|source| ArtifactStoreError::Io {
                     path: parent.to_path_buf(),
@@ -158,7 +158,10 @@ impl ArtifactStore {
         let mut table = BTreeMap::new();
         for module in &modules {
             let artifact = self.load_fzi_artifact(tel, module, None)?;
-            table.insert(artifact.interface().name.clone(), artifact.interface().clone());
+            table.insert(
+                artifact.interface().name().clone(),
+                artifact.interface().clone(),
+            );
         }
         if !modules.is_empty() {
             tel.event(

@@ -1310,7 +1310,7 @@ impl Module {
     ) -> BTreeMap<ExportKey, FnId> {
         let mut out = BTreeMap::new();
         for (module, interface) in interfaces {
-            for export in &interface.exports {
+            for export in interface.exports() {
                 let name = format!("{}.{}", module, export.name);
                 if let Some(f) = self
                     .fns
@@ -1323,7 +1323,7 @@ impl Module {
                     );
                 }
             }
-            for protocol_impl in &interface.protocol_impls {
+            for protocol_impl in interface.protocol_impls() {
                 for callback in &protocol_impl.callbacks {
                     let name = format!("{}.{}", callback.module, callback.name);
                     if let Some(f) = self

@@ -153,7 +153,7 @@ impl LowerCtx {
         >,
     ) {
         for (module, interface) in interfaces {
-            for export in &interface.exports {
+            for export in interface.exports() {
                 self.external_exports.insert(
                     (format!("{}.{}", module, export.name), export.arity),
                     crate::modules::identity::ExportKey::new(
@@ -192,7 +192,7 @@ impl LowerCtx {
         >,
     ) {
         for interface in interfaces.values() {
-            for protocol in &interface.protocols {
+            for protocol in interface.protocols() {
                 for callback in &protocol.callbacks {
                     self.protocol_callbacks.insert(
                         (

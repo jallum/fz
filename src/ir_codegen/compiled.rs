@@ -53,17 +53,17 @@ impl CompiledUnit {
     ) -> Self {
         let module = interface
             .as_ref()
-            .map(|interface| interface.name.clone())
+            .map(|interface| interface.name().clone())
             .or_else(|| {
                 crate::modules::identity::ModuleName::parse_dotted(code.module_path()).ok()
             });
         let exports = interface
             .as_ref()
-            .map(|interface| interface.exports.clone())
+            .map(|interface| interface.exports().to_vec())
             .unwrap_or_default();
         let interface_fingerprint = interface
             .as_ref()
-            .map(|interface| interface.fingerprint_inputs.clone())
+            .map(|interface| interface.fingerprint_inputs().to_vec())
             .unwrap_or_default();
         Self {
             module,
@@ -244,7 +244,7 @@ impl IrUnitLinker {
 
     fn add_unit(&mut self, unit: &CompiledUnit) -> Result<(), ImageLinkError> {
         if let Some(interface) = &unit.interface
-            && interface.fingerprint_inputs != unit.interface_fingerprint
+            && interface.fingerprint_inputs() != unit.interface_fingerprint
         {
             return Err(ImageLinkError::InterfaceFingerprintMismatch {
                 module: unit.module.clone(),
@@ -445,7 +445,7 @@ impl IrUnitLinker {
             }
         }
         if let Some(interface) = &unit.interface {
-            for protocol_impl in &interface.protocol_impls {
+            for protocol_impl in interface.protocol_impls() {
                 for callback in &protocol_impl.callbacks {
                     let qualified = format!("{}.{}", callback.module, callback.name);
                     let target = unit

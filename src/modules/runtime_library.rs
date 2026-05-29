@@ -236,7 +236,7 @@ fn runtime_module_fzo(
     name: &ModuleName,
     interface: &ModuleInterface,
 ) -> FzoArtifact {
-    let interface_fingerprint = interface.fingerprint_inputs.clone();
+    let interface_fingerprint = interface.fingerprint_inputs().to_vec();
     FzoArtifact::runtime_module(
         name.clone(),
         FzoUnitPayload::runtime_module(
@@ -250,7 +250,7 @@ fn runtime_module_fzo(
 
 fn interface_imports(interface: &ModuleInterface) -> Vec<ExportKey> {
     interface
-        .imports
+        .imports()
         .iter()
         .flat_map(|import| {
             import
@@ -347,7 +347,7 @@ mod tests {
             .expect("Utf8 interface");
 
         let exports = utf8
-            .exports
+            .exports()
             .iter()
             .map(|f| format!("{}/{}", f.name, f.arity))
             .collect::<Vec<_>>();
@@ -362,17 +362,17 @@ mod tests {
             .expect("Enumerable interface");
         assert!(
             enumerable
-                .protocols
+                .protocols()
                 .iter()
                 .any(|protocol| protocol.name.dotted() == "Enumerable")
         );
-        assert!(enumerable.protocol_impls.iter().any(
+        assert!(enumerable.protocol_impls().iter().any(
             |protocol_impl| protocol_impl.protocol.dotted() == "Enumerable"
                 && protocol_impl.target.display_name() == "Enumerable.List"
         ));
         assert!(
             !enumerable
-                .protocols
+                .protocols()
                 .iter()
                 .any(|protocol| protocol.name.dotted() == "Enumerable.Enumerable")
         );
@@ -381,7 +381,7 @@ mod tests {
             .get(&ModuleName::from_segments(vec!["Enum".to_string()]))
             .expect("Enum interface");
         let enum_exports = enum_module
-            .exports
+            .exports()
             .iter()
             .map(|f| format!("{}/{}", f.name, f.arity))
             .collect::<Vec<_>>();
@@ -398,17 +398,17 @@ mod tests {
         );
         assert!(
             enum_module
-                .imports
+                .imports()
                 .iter()
                 .any(|import| import.module.dotted() == "Enumerable")
         );
 
         assert_eq!(
-            utf8.docs.as_deref(),
+            utf8.docs(),
             Some("UTF-8 validation and branding for byte-aligned binaries.")
         );
         let specs = utf8
-            .exports
+            .exports()
             .iter()
             .map(|export| {
                 let spec = export.spec.as_ref().expect("runtime export spec");
@@ -474,21 +474,21 @@ mod tests {
                 &crate::telemetry::NullTelemetry,
                 None,
                 &fzi_text,
-                Some(&artifact.interface.fingerprint_inputs),
+                Some(&artifact.interface.fingerprint_inputs()),
             )
             .expect("fzi roundtrip");
-            assert_eq!(fzi.interface().name, artifact.interface.name);
-            assert_eq!(fzi.interface().imports, artifact.interface.imports);
-            assert_eq!(fzi.interface().types, artifact.interface.types);
+            assert_eq!(fzi.interface().name(), artifact.interface.name());
+            assert_eq!(fzi.interface().imports(), artifact.interface.imports());
+            assert_eq!(fzi.interface().types(), artifact.interface.types());
             assert_eq!(
                 fzi.interface()
-                    .exports
+                    .exports()
                     .iter()
                     .map(|f| (&f.name, f.arity, &f.spec))
                     .collect::<Vec<_>>(),
                 artifact
                     .interface
-                    .exports
+                    .exports()
                     .iter()
                     .map(|f| (&f.name, f.arity, &f.spec))
                     .collect::<Vec<_>>()
@@ -503,7 +503,7 @@ mod tests {
             )
             .expect("fzo roundtrip");
             assert_eq!(fzo.module(), Some(&artifact.module));
-            assert_eq!(fzo.interface_fingerprint(), artifact.interface.fingerprint_inputs);
+            assert_eq!(fzo.interface_fingerprint(), artifact.interface.fingerprint_inputs());
             assert_eq!(fzo.required_imports(), artifact.fzo.required_imports());
             assert_eq!(
                 fzo.implementation_fingerprint(),
@@ -540,14 +540,14 @@ mod tests {
 
         let utf8 = ModuleName::from_segments(vec!["Utf8".to_string()]);
         let loaded_interfaces = store.load_interface_table(&tel, [&utf8]).expect("load fzi");
-        assert!(loaded_interfaces[&utf8].exports.iter().any(|export| {
+        assert!(loaded_interfaces[&utf8].exports().iter().any(|export| {
             export.name == "valid?" && export.arity == 1 && export.spec.is_some()
         }));
         let loaded_fzo = store
             .load_fzo_artifact(
                 &tel,
                 &utf8,
-                Some(&loaded_interfaces[&utf8].fingerprint_inputs),
+                Some(&loaded_interfaces[&utf8].fingerprint_inputs()),
             )
             .expect("load fzo");
         assert_eq!(loaded_fzo.module(), Some(&utf8));

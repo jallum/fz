@@ -21,20 +21,87 @@ pub const FZ_INTERFACE_ABI_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ModuleInterface {
-    pub name: ModuleName,
-    pub abi_version: u32,
-    pub imports: Vec<InterfaceImport>,
-    pub exports: Vec<InterfaceFn>,
-    pub types: Vec<InterfaceType>,
+    pub(crate) name: ModuleName,
+    pub(crate) abi_version: u32,
+    pub(crate) imports: Vec<InterfaceImport>,
+    pub(crate) exports: Vec<InterfaceFn>,
+    pub(crate) types: Vec<InterfaceType>,
     #[serde(default)]
-    pub protocols: Vec<InterfaceProtocol>,
+    pub(crate) protocols: Vec<InterfaceProtocol>,
     #[serde(default)]
-    pub protocol_impls: Vec<InterfaceProtocolImpl>,
-    pub docs: Option<String>,
+    pub(crate) protocol_impls: Vec<InterfaceProtocolImpl>,
+    pub(crate) docs: Option<String>,
     /// Deterministic semantic inputs used by future artifact fingerprinting.
     /// This is not a digest yet; keeping the inputs visible makes the first
     /// interface tests easier to audit.
-    pub fingerprint_inputs: Vec<String>,
+    pub(crate) fingerprint_inputs: Vec<String>,
+}
+
+impl ModuleInterface {
+    pub fn new(
+        name: ModuleName,
+        abi_version: u32,
+        imports: Vec<InterfaceImport>,
+        exports: Vec<InterfaceFn>,
+        types: Vec<InterfaceType>,
+        protocols: Vec<InterfaceProtocol>,
+        protocol_impls: Vec<InterfaceProtocolImpl>,
+        docs: Option<String>,
+        fingerprint_inputs: Vec<String>,
+    ) -> Self {
+        Self {
+            name,
+            abi_version,
+            imports,
+            exports,
+            types,
+            protocols,
+            protocol_impls,
+            docs,
+            fingerprint_inputs,
+        }
+    }
+
+    pub fn name(&self) -> &ModuleName {
+        &self.name
+    }
+
+    pub fn abi_version(&self) -> u32 {
+        self.abi_version
+    }
+
+    pub fn imports(&self) -> &[InterfaceImport] {
+        &self.imports
+    }
+
+    pub fn exports(&self) -> &[InterfaceFn] {
+        &self.exports
+    }
+
+    pub fn types(&self) -> &[InterfaceType] {
+        &self.types
+    }
+
+    pub fn protocols(&self) -> &[InterfaceProtocol] {
+        &self.protocols
+    }
+
+    pub fn protocol_impls(&self) -> &[InterfaceProtocolImpl] {
+        &self.protocol_impls
+    }
+
+    #[cfg(test)]
+    pub fn protocol_impls_mut(&mut self) -> &mut Vec<InterfaceProtocolImpl> {
+        &mut self.protocol_impls
+    }
+
+    pub fn docs(&self) -> Option<&str> {
+        self.docs.as_deref()
+    }
+
+    pub fn fingerprint_inputs(&self) -> &[String] {
+        &self.fingerprint_inputs
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -180,9 +247,9 @@ fn collect_module(
     );
     out.insert(
         name.clone(),
-        ModuleInterface {
-            name: name.clone(),
-            abi_version: FZ_INTERFACE_ABI_VERSION,
+        ModuleInterface::new(
+            name.clone(),
+            FZ_INTERFACE_ABI_VERSION,
             imports,
             exports,
             types,
@@ -190,7 +257,7 @@ fn collect_module(
             protocol_impls,
             docs,
             fingerprint_inputs,
-        },
+        ),
     );
 
     for item in &module.items {
@@ -424,14 +491,14 @@ pub fn render_interfaces(interfaces: &BTreeMap<ModuleName, ModuleInterface>) -> 
     for interface in interfaces.values() {
         out.push_str(&format!(
             "interface {} abi={}\n",
-            interface.name, interface.abi_version
+            interface.name(), interface.abi_version()
         ));
-        if let Some(docs) = &interface.docs {
+        if let Some(docs) = interface.docs() {
             out.push_str(&format!("  moduledoc {:?}\n", docs));
         }
-        if !interface.imports.is_empty() {
+        if !interface.imports().is_empty() {
             out.push_str("  imports\n");
-            for import in &interface.imports {
+            for import in interface.imports() {
                 let only = render_import_filter(&import.only);
                 let except = render_import_filter(&import.except);
                 if !only.is_empty() {
@@ -443,15 +510,15 @@ pub fn render_interfaces(interfaces: &BTreeMap<ModuleName, ModuleInterface>) -> 
                 }
             }
         }
-        if !interface.types.is_empty() {
+        if !interface.types().is_empty() {
             out.push_str("  types\n");
-            for ty in &interface.types {
+            for ty in interface.types() {
                 out.push_str(&format!("    {} {:?} = {}\n", ty.name, ty.kind, ty.body));
             }
         }
-        if !interface.exports.is_empty() {
+        if !interface.exports().is_empty() {
             out.push_str("  exports\n");
-            for export in &interface.exports {
+            for export in interface.exports() {
                 out.push_str(&format!("    {}/{}", export.name, export.arity));
                 if let Some(spec) = &export.spec {
                     out.push_str(&format!(
@@ -603,10 +670,10 @@ end
         );
 
         let account = &interfaces[&module(&["Account"])];
-        assert_eq!(account.docs.as_deref(), Some("Accounts."));
+        assert_eq!(account.docs(), Some("Accounts."));
         assert_eq!(
             account
-                .types
+                .types()
                 .iter()
                 .map(|ty| (&ty.name, ty.kind))
                 .collect::<Vec<_>>(),

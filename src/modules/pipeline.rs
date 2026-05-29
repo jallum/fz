@@ -224,7 +224,7 @@ pub(crate) fn prepare_execution_graph(
             .filter_map(|unit| {
                 unit.interface
                     .clone()
-                    .map(|interface| (interface.name.clone(), interface))
+                    .map(|interface| (interface.name().clone(), interface))
             })
             .collect();
         let linked =

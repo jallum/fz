@@ -100,7 +100,7 @@ impl ProtocolRegistry {
         >,
     ) {
         for interface in interfaces.values() {
-            for protocol in &interface.protocols {
+            for protocol in interface.protocols() {
                 self.protocols
                     .entry(protocol.name.clone())
                     .or_insert_with(|| ProtocolDecl {
@@ -117,7 +117,7 @@ impl ProtocolRegistry {
                         span: Span::DUMMY,
                     });
             }
-            for protocol_impl in &interface.protocol_impls {
+            for protocol_impl in interface.protocol_impls() {
                 let callbacks = protocol_impl
                     .callbacks
                     .iter()

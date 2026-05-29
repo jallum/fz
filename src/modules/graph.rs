@@ -61,15 +61,15 @@ impl ModuleGraphLoader {
             if let Some(interface) = crate::modules::runtime_library::interface(&module) {
                 interfaces.insert(module, interface.clone());
                 enqueue_imports(&mut queue, &interface);
-                runtime_modules.insert(interface.name.clone());
+                runtime_modules.insert(interface.name().clone());
                 continue;
             }
 
             let artifact = self.store.load_fzi_artifact(tel, &module, None)?;
             let interface = artifact.interface().clone();
             enqueue_imports(&mut queue, &interface);
-            user_modules.insert(interface.name.clone());
-            interfaces.insert(interface.name.clone(), interface);
+            user_modules.insert(interface.name().clone());
+            interfaces.insert(interface.name().clone(), interface);
         }
 
         let mut objects = Vec::new();
@@ -82,7 +82,7 @@ impl ModuleGraphLoader {
         for module in user_modules {
             let expected = interfaces
                 .get(&module)
-                .map(|interface| interface.fingerprint_inputs.as_slice());
+                .map(|interface| interface.fingerprint_inputs());
             objects.push(self.store.load_fzo_artifact(tel, &module, expected)?);
         }
 
@@ -94,7 +94,7 @@ impl ModuleGraphLoader {
 }
 
 fn enqueue_imports(queue: &mut VecDeque<ModuleName>, interface: &ModuleInterface) {
-    for import in &interface.imports {
+    for import in interface.imports() {
         queue.push_back(import.module.clone());
     }
 }
@@ -170,8 +170,8 @@ mod tests {
         let math = interface("Math", Vec::new(), vec![("add", 2)]);
         let extra = interface("Extra", Vec::new(), vec![("unused", 0)]);
         let mut artifacts = InterfaceTable::new();
-        artifacts.insert(math.name.clone(), math.clone());
-        artifacts.insert(extra.name.clone(), extra.clone());
+        artifacts.insert(math.name().clone(), math.clone());
+        artifacts.insert(extra.name().clone(), extra.clone());
         store
             .write_fzi_artifacts(&crate::telemetry::NullTelemetry, &artifacts)
             .unwrap();
@@ -184,14 +184,14 @@ mod tests {
                 )],
             )
             .unwrap();
-        let extra_path = store.object_path(&extra.name).unwrap();
+        let extra_path = store.object_path(extra.name()).unwrap();
         if let Some(parent) = extra_path.parent() {
             std::fs::create_dir_all(parent).unwrap();
         }
         std::fs::write(&extra_path, "not a valid fzo").unwrap();
 
         let mut roots = InterfaceTable::new();
-        roots.insert(app.name.clone(), app);
+        roots.insert(app.name().clone(), app);
         let graph = ModuleGraphLoader::new(store)
             .load_reachable(&crate::telemetry::NullTelemetry, &roots, [])
             .expect("load graph");
@@ -215,7 +215,7 @@ mod tests {
         let store = ArtifactStore::new(&root);
 
         let mut app = interface("App", Vec::new(), vec![("main", 0)]);
-        app.protocol_impls
+        app.protocol_impls_mut()
             .push(crate::protocols::InterfaceProtocolImpl {
                 protocol: module("Enumerable"),
                 target: crate::protocols::ImplTarget::module(module("List")),
@@ -226,7 +226,7 @@ mod tests {
                 )],
             });
         let mut roots = InterfaceTable::new();
-        roots.insert(app.name.clone(), app);
+        roots.insert(app.name().clone(), app);
         let graph = ModuleGraphLoader::new(store)
             .load_reachable(&crate::telemetry::NullTelemetry, &roots, [])
             .expect("load graph");
@@ -250,7 +250,7 @@ mod tests {
         let math_fzi = interface("Math", Vec::new(), vec![("add", 2)]);
         let math_fzo = interface("Math", Vec::new(), vec![("sub", 2)]);
         let mut artifacts = InterfaceTable::new();
-        artifacts.insert(math_fzi.name.clone(), math_fzi.clone());
+        artifacts.insert(math_fzi.name().clone(), math_fzi.clone());
         store
             .write_fzi_artifacts(&crate::telemetry::NullTelemetry, &artifacts)
             .unwrap();
@@ -265,7 +265,7 @@ mod tests {
             .unwrap();
 
         let mut roots = InterfaceTable::new();
-        roots.insert(app.name.clone(), app);
+        roots.insert(app.name().clone(), app);
         let err = ModuleGraphLoader::new(store)
             .load_reachable(&crate::telemetry::NullTelemetry, &roots, [])
             .unwrap_err();
@@ -282,7 +282,7 @@ mod tests {
         );
         let app = interface("App", vec!["Utf8"], vec![("main", 0)]);
         let mut roots = InterfaceTable::new();
-        roots.insert(app.name.clone(), app);
+        roots.insert(app.name().clone(), app);
 
         let graph = ModuleGraphLoader::new(store)
             .load_reachable(&crate::telemetry::NullTelemetry, &roots, [])

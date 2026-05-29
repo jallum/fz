@@ -160,7 +160,7 @@ fn collect_runtime_prelude_import(
         )
     });
     let mut exports = interface
-        .exports
+        .exports()
         .iter()
         .map(|export| (export.name.clone(), export.arity))
         .collect::<Vec<_>>();

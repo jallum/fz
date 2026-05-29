@@ -869,7 +869,7 @@ fn collect_visible_module_paths(prog: &Program, interfaces: &InterfaceTable) -> 
     for interface in interfaces.values() {
         out.extend(
             interface
-                .protocols
+                .protocols()
                 .iter()
                 .map(|protocol| protocol.name.dotted()),
         );
@@ -1353,7 +1353,7 @@ fn importable_exports(
     local_macros: Option<&HashSet<(String, usize)>>,
 ) -> HashSet<(String, usize)> {
     let mut out: HashSet<(String, usize)> = interface
-        .exports
+        .exports()
         .iter()
         .map(|export| ((export.name.clone(), export.arity), export))
         .map(|(key, _)| key)
