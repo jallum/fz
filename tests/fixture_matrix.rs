@@ -289,6 +289,10 @@ fn static_tests() -> Vec<(&'static str, fn())> {
             enum_reduce_parameter_reducer_still_renders_resume,
         ),
         (
+            "local_reduce_state_update_lowers_without_trampoline",
+            local_reduce_state_update_lowers_without_trampoline,
+        ),
+        (
             "continuation_materialization_boundaries_stay_explicit",
             continuation_materialization_boundaries_stay_explicit,
         ),
@@ -3081,6 +3085,27 @@ fn enum_reduce_parameter_reducer_still_renders_resume() {
     );
 }
 
+fn local_reduce_state_update_lowers_without_trampoline() {
+    let clif = dump_clif_for_source(
+        "local_reduce_state_update",
+        "fn reduce_list([], {:cont, acc}, _reducer), do: {:done, acc}\n\
+         fn reduce_list([h | t], {:cont, acc}, reducer), do: reduce_list(t, reducer(h, acc), reducer)\n\
+         fn main(), do: reduce_list([1, 2], {:cont, 0}, fn (x, acc) -> {:cont, acc + x})",
+    );
+    let reduce_list = clif_function_with_banner_prefix(&clif, "; fn reduce_list_s")
+        .expect("local reduce_list CLIF should be present");
+    assert!(
+        reduce_list.contains("return_call") && reduce_list.contains("reduce_list"),
+        "local reduce state update should lower to a direct recursive tail call:\n{}",
+        reduce_list
+    );
+    assert!(
+        !reduce_list.contains("lambda_") && !reduce_list.contains("; fn k_"),
+        "local reduce state update should not keep the reducer-continuation trampoline in reduce_list CLIF:\n{}",
+        reduce_list
+    );
+}
+
 fn clif_hex_word(word: u64) -> String {
     let raw = format!("{word:016x}");
     format!(
@@ -3318,6 +3343,25 @@ fn dump_fixture_clif(name: &str) -> String {
         .output()
         .expect("spawn fz dump");
     assert!(out.status.success(), "fz dump exited {}", out.status);
+    String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
+fn dump_clif_for_source(name: &str, src: &str) -> String {
+    let path = std::env::temp_dir().join(format!("fz_{}_{}_input.fz", name, std::process::id()));
+    fs::write(&path, src).unwrap_or_else(|e| panic!("write temp source {:?}: {}", path, e));
+    let out = Command::new(FZ_BIN)
+        .args(["dump", "--emit", "clif"])
+        .arg(&path)
+        .output()
+        .unwrap_or_else(|e| panic!("spawn fz dump --emit clif {}: {}", name, e));
+    let _ = fs::remove_file(&path);
+    assert!(
+        out.status.success(),
+        "fz dump --emit clif {} exited {}: {}",
+        name,
+        out.status,
+        String::from_utf8_lossy(&out.stderr)
+    );
     String::from_utf8_lossy(&out.stdout).into_owned()
 }
 
