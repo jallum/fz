@@ -448,9 +448,10 @@ pub extern "C" fn fz_send_ref(receiver_pid_bits: u64, msg_ref_word: u64) -> u64 
 /// accept-any matcher, so the scheduler wakes it through the same
 /// `runnable_closure` path as selective receive.
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_receive_park(cont_closure_bits: u64) -> *mut u8 {
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn fz_receive_park(process: *mut Process, cont_closure_bits: u64) -> *mut u8 {
     use crate::{process::ProcessState, scheduler_hooks::YIELD_PTR};
-    let p = current_process();
+    let p = unsafe { &mut *process };
     p.parked_matched = Some(Box::new(crate::park::ParkRecord {
         matcher_fn: crate::park::match_any_message,
         pinned: Vec::new(),
@@ -495,6 +496,7 @@ pub extern "C" fn fz_receive_park(cont_closure_bits: u64) -> *mut u8 {
 #[unsafe(no_mangle)]
 #[allow(clippy::too_many_arguments, clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn fz_receive_park_matched(
+    process: *mut Process,
     matcher_fn_bits: u64,
     pinned_ptr: *const crate::any_value::AnyValueRef,
     n_pinned: u64,
@@ -546,7 +548,7 @@ pub extern "C" fn fz_receive_park_matched(
         Some(after_deadline_or_neg1 as u64)
     };
 
-    let p = current_process();
+    let p = unsafe { &mut *process };
     let after_timer_id = match after_deadline_ms {
         Some(after_ms) => crate::scheduler_hooks::dispatch_timer_schedule(p.pid, after_ms),
         None => None,
@@ -613,13 +615,15 @@ pub extern "C" fn fz_receive_attempt(cont_frame_ptr: *mut u8) -> *mut u8 {
 /// scheduler knows how many reductions it granted, so it derives burned work at
 /// the boundary instead of syncing against the hot-path budget cell.
 #[unsafe(no_mangle)]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn fz_yield_mid_flight_report(
+    process: *mut Process,
     cont_closure_bits: u64,
     remaining_reductions: i32,
     reason: u32,
 ) -> *mut u8 {
     use crate::scheduler_hooks::YIELD_PTR;
-    let p = current_process();
+    let p = unsafe { &mut *process };
     p.scheduler_yields = p.scheduler_yields.saturating_add(1);
     // Allocation-pressure reasons already stand on `p.yield_reasons`;
     // finish_yield_report folds them in when attributing the cause.
@@ -635,8 +639,9 @@ pub extern "C" fn fz_yield_mid_flight_report(
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_yield_slow_path_begin() {
-    let p = current_process();
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn fz_yield_slow_path_begin(process: *mut Process) {
+    let p = unsafe { &mut *process };
     p.begin_yield_continuation_allocation(p.heap.bytes_remaining_in_block());
 }
 
@@ -2558,6 +2563,7 @@ mod tests {
                 .expect("closure ref")
                 .raw_word();
             let ret = fz_yield_mid_flight_report(
+                current_process(),
                 closure_ref,
                 -1,
                 crate::process::YIELD_REASON_REDUCTIONS as u32,

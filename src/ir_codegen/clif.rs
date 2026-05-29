@@ -172,7 +172,11 @@ mod tests {
         let mut module = JITModule::new(builder);
 
         let yield_slow_path_begin_id = module
-            .declare_function("fz_yield_slow_path_begin", Linkage::Import, &sig1(&[], &[]))
+            .declare_function(
+                "fz_yield_slow_path_begin",
+                Linkage::Import,
+                &sig1(&[types::I64], &[]),
+            )
             .expect("declare yield slow path helper");
         let probe_id = module
             .declare_function(
@@ -195,7 +199,8 @@ mod tests {
                 b.seal_block(entry);
 
                 let slow_path = module.declare_func_in_func(yield_slow_path_begin_id, b.func);
-                b.ins().call(slow_path, &[]);
+                let process = b.ins().get_pinned_reg(types::I64);
+                b.ins().call(slow_path, &[process]);
 
                 let observed = b.ins().get_pinned_reg(types::I64);
                 b.ins().return_(&[observed]);

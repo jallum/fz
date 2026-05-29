@@ -825,7 +825,12 @@ fn declare_receive_runtime<M: cranelift_module::Module>(
 ) -> Result<ReceiveRefs, CodegenError> {
     // Receive: parks an accept-any matcher record on the cont closure;
     // returns YIELD sentinel.
-    let receive_park_id = decl_import(jmod, "fz_receive_park", &[types::I64], &[types::I64])?;
+    let receive_park_id = decl_import(
+        jmod,
+        "fz_receive_park",
+        &[types::I64, types::I64],
+        &[types::I64],
+    )?;
     // Selective-receive park entry. Args:
     //   matcher_fn_bits (i64), pinned_ptr (i64), n_pinned (i64),
     //   clause_bodies_ptr (i64), n_clauses (i64),
@@ -836,6 +841,7 @@ fn declare_receive_runtime<M: cranelift_module::Module>(
         jmod,
         "fz_receive_park_matched",
         &[
+            types::I64,
             types::I64,
             types::I64,
             types::I64,
@@ -920,10 +926,11 @@ fn declare_scheduler_runtime<M: cranelift_module::Module>(
     let yield_mid_flight_report_id = decl_import(
         jmod,
         "fz_yield_mid_flight_report",
-        &[types::I64, types::I32, types::I32],
+        &[types::I64, types::I64, types::I32, types::I32],
         &[types::I64],
     )?;
-    let yield_slow_path_begin_id = decl_import(jmod, "fz_yield_slow_path_begin", &[], &[])?;
+    let yield_slow_path_begin_id =
+        decl_import(jmod, "fz_yield_slow_path_begin", &[types::I64], &[])?;
     // fz_spawn_entry: SystemV entry the scheduler calls to launch a new
     // task's zero-arg closure. Sig: `(closure:i64) -> i64`.
     let mut se_sig = Signature::new(CallConv::SystemV);
