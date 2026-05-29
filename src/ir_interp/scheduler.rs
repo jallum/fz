@@ -86,8 +86,7 @@ impl IrInterpRuntime {
         msg: AnyValue,
     ) -> Result<(), String> {
         use fz_runtime::process::ProcessState;
-        let sender_heap =
-            &fz_runtime::process::current_process().heap as *const fz_runtime::heap::Heap;
+        let sender_heap = &unsafe { &*self.cur_proc() }.heap as *const fz_runtime::heap::Heap;
         // fz-yxs/fz-2v3 — sender-side probe for selective receive. If the
         // receiver is parked on a Term::ReceiveMatched, run the parked
         // matcher inline against the new message; on a hit, set up the

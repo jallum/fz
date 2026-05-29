@@ -190,7 +190,12 @@ pub extern "C" fn fz_aot_setup(
 /// body runs as fz code at scheduler-boundary drain via the
 /// `fz_drain_dtor_entry` shim; the Resource's C-side dtor slot is the
 /// no-op so refcount→0 outside the drain doesn't double-fire.
-extern "C" fn aot_make_resource_hook(_module: *const (), payload_raw: u64, dtor_ref: u64) -> u64 {
+extern "C" fn aot_make_resource_hook(
+    process: *mut Process,
+    _module: *const (),
+    payload_raw: u64,
+    dtor_ref: u64,
+) -> u64 {
     let dtor_ref = crate::any_value::AnyValueRef::from_raw_word(dtor_ref)
         .expect("fz_make_resource (AOT): dtor ref");
     let dtor_closure =
@@ -202,12 +207,11 @@ extern "C" fn aot_make_resource_hook(_module: *const (), payload_raw: u64, dtor_
         eprintln!("fz_make_resource (AOT): dtor arg is not a closure");
         std::process::abort();
     }
-    let proc_ptr = CURRENT_PROCESS.with(|c| c.get());
     assert!(
-        !proc_ptr.is_null(),
+        !process.is_null(),
         "fz_make_resource (AOT): no current process"
     );
-    let heap = unsafe { &mut (*proc_ptr).heap };
+    let heap = unsafe { &mut (*process).heap };
     let handle = crate::resource::ResourceHandle::new(
         payload_raw,
         crate::resource::fz_resource_destructor_noop,

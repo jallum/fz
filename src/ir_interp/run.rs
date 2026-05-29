@@ -217,7 +217,7 @@ fn run_fn_typed<
                     // instead of yielding a scheduler continuation closure.
                     if *is_back_edge {
                         let (budget_exhausted, remaining_reductions) = {
-                            let p = fz_runtime::process::current_process();
+                            let p = unsafe { &mut *runtime.cur_proc() };
                             p.reductions_remaining -= 1;
                             (p.reductions_remaining <= 0, p.reductions_remaining)
                         };
@@ -303,7 +303,7 @@ fn run_fn_typed<
                     ident: _,
                 } => {
                     let cap_vals = collect(&env, &continuation.captured)?;
-                    match fz_runtime::process::current_process().mailbox.pop_front() {
+                    match unsafe { &mut *runtime.cur_proc() }.mailbox.pop_front() {
                         Some(msg) => {
                             let msg = AnyValue::from_any_value_ref(msg)?;
                             let mut cont_args = vec![msg];
@@ -346,11 +346,11 @@ fn run_fn_typed<
                         .collect();
 
                     // Initial mailbox scan.
-                    let mailbox_len = fz_runtime::process::current_process().mailbox.len();
+                    let mailbox_len = unsafe { &mut *runtime.cur_proc() }.mailbox.len();
                     let mut hit: Option<(usize, usize, Vec<AnyValue>)> = None;
                     for mb_idx in 0..mailbox_len {
                         let msg = {
-                            let p = fz_runtime::process::current_process();
+                            let p = unsafe { &mut *runtime.cur_proc() };
                             AnyValue::from_any_value_ref(p.mailbox[mb_idx])?
                         };
                         if let Some((clause_idx, binds)) = try_match_clauses(
@@ -370,9 +370,7 @@ fn run_fn_typed<
                     }
 
                     if let Some((mb_idx, clause_idx, bound_vals)) = hit {
-                        fz_runtime::process::current_process()
-                            .mailbox
-                            .remove(mb_idx);
+                        unsafe { &mut *runtime.cur_proc() }.mailbox.remove(mb_idx);
                         let body = matched_clauses[clause_idx].body;
                         let mut new_args = bound_vals;
                         new_args.extend(capture_vals);
@@ -428,7 +426,7 @@ pub(super) fn is_truthy(v: AnyValue) -> bool {
 /// discarded. Errors from the dtor body propagate to the caller; the
 /// run-loop logs and continues.
 ///
-/// Pre-conditions: `CURRENT_PROCESS` is set to the heap owning the
+/// Pre-conditions: `runtime.cur_proc()` owns the heap holding the
 /// queue. Closures in the queue point into that heap.
 pub(super) fn drain_pending_dtors_interp<
     T: Types<Ty = crate::types::Ty> + crate::types::ClosureTypes + crate::types::RenderTypes,
@@ -440,7 +438,7 @@ pub(super) fn drain_pending_dtors_interp<
 ) -> Result<(), String> {
     loop {
         let entry = {
-            let p = fz_runtime::process::current_process();
+            let p = unsafe { &mut *runtime.cur_proc() };
             p.heap.pending_dtors.pop_front()
         };
         let Some((closure_bits, payload_ref)) = entry else {

@@ -156,9 +156,7 @@ pub(super) fn call_extern<T: Types<Ty = crate::types::Ty>>(
             return Ok(AnyValue::Int(pid as i64));
         }
         "fz_self" => {
-            return Ok(AnyValue::Int(
-                fz_runtime::process::current_process().pid as i64,
-            ));
+            return Ok(AnyValue::Int(unsafe { &*runtime.cur_proc() }.pid as i64));
         }
         "fz_make_ref" => {
             // fz-ht5 — route through the runtime FFI so interp and JIT
@@ -189,8 +187,13 @@ pub(super) fn call_extern<T: Types<Ty = crate::types::Ty>>(
             let payload = args[0]
                 .as_i64()
                 .ok_or_else(|| "make_resource/2: payload must be integer".to_string())?;
-            return super::make_resource_in_current_process(module, payload, args[1].value()?)
-                .map(interp_value_from_slot);
+            return super::make_resource_in_current_process(
+                runtime.cur_proc(),
+                module,
+                payload,
+                args[1].value()?,
+            )
+            .map(interp_value_from_slot);
         }
         "fz_brand_bitstring_as_utf8" => {
             if args.len() != 1 {

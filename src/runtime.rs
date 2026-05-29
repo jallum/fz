@@ -156,7 +156,12 @@ pub(crate) extern "C" fn output_hook_thunk(tel: *const (), line_ptr: *const u8, 
 // in `ir_interp::make_resource_in_current_process`. The helper walks the
 // closure's wrapper-fn body to find the underlying `Prim::Extern` and
 // resolves its symbol — uniform across all three legs.
-extern "C" fn make_resource_hook_thunk(module: *const (), payload_raw: u64, dtor_ref: u64) -> u64 {
+extern "C" fn make_resource_hook_thunk(
+    process: *mut fz_runtime::process::Process,
+    module: *const (),
+    payload_raw: u64,
+    dtor_ref: u64,
+) -> u64 {
     assert!(
         !module.is_null(),
         "fz_make_resource called with no IR Module in the execution context"
@@ -167,7 +172,7 @@ extern "C" fn make_resource_hook_thunk(module: *const (), payload_raw: u64, dtor
     let payload = payload_raw as i64;
     let dtor =
         fz_runtime::any_value::AnyValue::from_ref(dtor_ref).expect("fz_make_resource: dtor value");
-    let res = crate::ir_interp::make_resource_in_current_process(module, payload, dtor);
+    let res = crate::ir_interp::make_resource_in_current_process(process, module, payload, dtor);
     match res {
         Ok(value) => value.ref_word().raw_word(),
         // Mirror the assertion/extern-error contract used elsewhere: a

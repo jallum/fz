@@ -200,17 +200,14 @@ pub(super) fn with_value_ref<T>(
 }
 
 pub(super) fn interp_struct_field_from_tagged_bits(
+    proc: *mut fz_runtime::process::Process,
     bits: u64,
     field_offset: u32,
     context: &str,
 ) -> Result<AnyValue, String> {
     let value = interp_value_from_ref_word(bits, context)?;
     with_value_ref(value, context, |struct_ref| {
-        fz_runtime::ir_runtime::fz_struct_get_field_ref(
-            fz_runtime::process::current_process(),
-            struct_ref,
-            field_offset,
-        )
+        fz_runtime::ir_runtime::fz_struct_get_field_ref(proc, struct_ref, field_offset)
     })
     .and_then(|ref_word| interp_value_from_ref_word(ref_word, context))
 }

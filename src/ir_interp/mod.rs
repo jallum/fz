@@ -97,6 +97,12 @@ pub(crate) struct IrInterpRuntime {
     run_queue: VecDeque<u32>,
     resume: HashMap<u32, ResumeEntry>,
     parked: HashMap<u32, InterpParked>,
+    /// The process executing in the current quantum. Set per-quantum in
+    /// `drive_until_idle`; read by BIF call sites that allocate or touch the
+    /// running process's heap/mailbox. Per-instance — replaces reads of the
+    /// global `CURRENT_PROCESS` thread-local so two interpreters can be live
+    /// at once on one thread.
+    current_proc: *mut Process,
 }
 
 impl IrInterpRuntime {
@@ -110,7 +116,17 @@ impl IrInterpRuntime {
             run_queue: VecDeque::new(),
             resume: HashMap::new(),
             parked: HashMap::new(),
+            current_proc: std::ptr::null_mut(),
         }
+    }
+
+    /// The process running in the current quantum. Call sites that allocate or
+    /// touch the running process read this instead of the global
+    /// `CURRENT_PROCESS` thread-local.
+    #[inline]
+    pub(crate) fn cur_proc(&self) -> *mut Process {
+        debug_assert!(!self.current_proc.is_null(), "cur_proc outside a quantum");
+        self.current_proc
     }
 
     pub(crate) fn fresh_with_root(module: &Module) -> Self {
@@ -266,6 +282,7 @@ impl IrInterpRuntime {
                 debug_assert!(!(*proc_ptr).ctx.is_null(), "interp ctx installed");
             };
             let prev = fz_runtime::process::CURRENT_PROCESS.with(|c| c.replace(proc_ptr));
+            self.current_proc = proc_ptr;
             let mut step = run_fn(self, &mut t, module, tel, fn_id, args);
             loop {
                 match step {
@@ -483,6 +500,7 @@ pub fn run_test_fn(
     runtime.insert_task(1, task);
     let task_ptr = runtime.process_ptr(1).expect("run_test_fn installed pid 1");
     let prev = fz_runtime::process::CURRENT_PROCESS.with(|c| c.replace(task_ptr));
+    runtime.current_proc = task_ptr;
     let mut t = crate::types::ConcreteTypes;
     let result = run_fn(&mut runtime, &mut t, module, tel, fn_id, Vec::new());
     // fz-4mk — shutdown drain mirrors run_main's exit path: enqueue every
@@ -529,6 +547,7 @@ fn value_to_halt(v: AnyValue) -> i64 {
 /// Resource's C-side dtor slot is the no-op so refcount→0 paths that
 /// bypass the drain don't double-fire.
 pub(crate) fn make_resource_in_current_process(
+    proc: *mut Process,
     _module: &Module,
     payload: i64,
     dtor_closure: fz_runtime::any_value::AnyValue,
@@ -545,7 +564,7 @@ pub(crate) fn make_resource_in_current_process(
         payload as u64,
         fz_runtime::resource::fz_resource_destructor_noop,
     );
-    let heap = &mut fz_runtime::process::current_process().heap;
+    let heap = &mut unsafe { &mut *proc }.heap;
     let stub = fz_runtime::resource::alloc_resource(heap, handle, dtor_closure);
     Ok(fz_runtime::any_value::AnyValue::heap_ptr(
         stub.as_raw(),

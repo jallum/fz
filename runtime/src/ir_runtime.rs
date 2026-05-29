@@ -443,6 +443,7 @@ pub extern "C" fn fz_make_resource_ref(
 ) -> u64 {
     let ctx = unsafe { process_ctx(process) };
     (ctx.make_resource.expect("make_resource callback installed"))(
+        process,
         ctx.module,
         payload_raw,
         dtor_ref,

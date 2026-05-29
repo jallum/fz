@@ -6,46 +6,33 @@ use crate::types::Types;
 use fz_runtime::any_value::AnyValueRef;
 use fz_runtime::any_value::ValueKind;
 
-/// The currently-installed process pointer, handed to process-taking BIFs.
-/// Bridges the interpreter onto the widened BIF ABI; reads the same TLS the
-/// BIFs read today, so behavior is unchanged until the interpreter threads an
-/// explicit `&mut Process` (fz-vdt ctx.8).
-#[inline]
-fn cur_proc() -> *mut fz_runtime::process::Process {
-    fz_runtime::process::current_process()
-}
-
 pub(super) fn interp_list_cons(
+    proc: *mut fz_runtime::process::Process,
     head: AnyValue,
     tail: AnyValue,
     context: &str,
 ) -> Result<AnyValue, String> {
-    let bits =
-        with_value_ref(tail, context, |tail_ref| match head {
-            AnyValue::Int(value) => Ok::<u64, String>(fz_runtime::ir_runtime::fz_list_cons_int(
-                cur_proc(),
-                value,
-                tail_ref,
-            )),
-            AnyValue::Float(value) => Ok::<u64, String>(
-                fz_runtime::ir_runtime::fz_list_cons_float(cur_proc(), value, tail_ref),
-            ),
-            AnyValue::Atom(value) => Ok::<u64, String>(fz_runtime::ir_runtime::fz_list_cons_atom(
-                cur_proc(),
-                value as u64,
-                tail_ref,
-            )),
-            AnyValue::Null | AnyValue::EmptyList | AnyValue::Ref(_) => {
-                let head = head
-                    .as_ref_word()
-                    .map_err(|err| format!("{context}: cannot create head ref: {err}"))?;
-                Ok(fz_runtime::ir_runtime::fz_list_cons_ref(
-                    cur_proc(),
-                    head,
-                    tail_ref,
-                ))
-            }
-        })??;
+    let bits = with_value_ref(tail, context, |tail_ref| match head {
+        AnyValue::Int(value) => Ok::<u64, String>(fz_runtime::ir_runtime::fz_list_cons_int(
+            proc, value, tail_ref,
+        )),
+        AnyValue::Float(value) => Ok::<u64, String>(fz_runtime::ir_runtime::fz_list_cons_float(
+            proc, value, tail_ref,
+        )),
+        AnyValue::Atom(value) => Ok::<u64, String>(fz_runtime::ir_runtime::fz_list_cons_atom(
+            proc,
+            value as u64,
+            tail_ref,
+        )),
+        AnyValue::Null | AnyValue::EmptyList | AnyValue::Ref(_) => {
+            let head = head
+                .as_ref_word()
+                .map_err(|err| format!("{context}: cannot create head ref: {err}"))?;
+            Ok(fz_runtime::ir_runtime::fz_list_cons_ref(
+                proc, head, tail_ref,
+            ))
+        }
+    })??;
     interp_value_from_ref_word(bits, context)
 }
 
@@ -175,7 +162,7 @@ pub(super) fn eval_prim<T: Types<Ty = crate::types::Ty>>(
                     AstBitType::Utf8 | AstBitType::Utf16 | AstBitType::Utf32 => 1,
                 }
             }
-            fz_runtime::ir_runtime::fz_bs_begin(cur_proc());
+            fz_runtime::ir_runtime::fz_bs_begin(runtime.cur_proc());
             for f in fields {
                 let value_v = env_get(env, f.value)?;
                 let ty_tag = encode_bit_type(f.ty);
@@ -204,7 +191,7 @@ pub(super) fn eval_prim<T: Types<Ty = crate::types::Ty>>(
                 );
             }
             interp_value_from_ref_word(
-                fz_runtime::ir_runtime::fz_bs_finalize(cur_proc()),
+                fz_runtime::ir_runtime::fz_bs_finalize(runtime.cur_proc()),
                 "MakeBitstring",
             )?
         }
@@ -214,7 +201,7 @@ pub(super) fn eval_prim<T: Types<Ty = crate::types::Ty>>(
             // the shared runtime FFI; identical to the JIT/AOT lowering.
             interp_value_from_ref_word(
                 fz_runtime::ir_runtime::fz_alloc_bitstring_const(
-                    cur_proc(),
+                    runtime.cur_proc(),
                     bytes.as_ptr() as u64,
                     bytes.len() as u64,
                     *bit_len,
@@ -224,7 +211,7 @@ pub(super) fn eval_prim<T: Types<Ty = crate::types::Ty>>(
         }
         Prim::MakeClosure(_, fn_id, captured) => {
             let cap_vals: Vec<AnyValue> = collect(env, captured)?;
-            let heap = &mut fz_runtime::process::current_process().heap;
+            let heap = &mut unsafe { &mut *runtime.cur_proc() }.heap;
             let bits = heap.alloc_closure_slots(fn_id.0, cap_vals.len(), 0);
             let p = fz_runtime::any_value::closure_addr_from_tagged(bits).expect("new closure ptr");
             unsafe { std::ptr::write(p.add(8) as *mut u64, fn_id.0 as u64) };
@@ -241,20 +228,22 @@ pub(super) fn eval_prim<T: Types<Ty = crate::types::Ty>>(
         Prim::MakeTuple(elems) => {
             let arity = elems.len();
             let schema_id = interp_tuple_schema_id(runtime, arity);
-            let p = fz_runtime::process::current_process()
+            let p = unsafe { &mut *runtime.cur_proc() }
                 .heap
                 .alloc_struct(schema_id);
             for (i, v) in elems.iter().enumerate() {
                 let val = env_get(env, *v)?;
-                fz_runtime::process::current_process()
-                    .heap
-                    .write_field_slot(p, (i * 8) as u32, val.value()?);
+                unsafe { &mut *runtime.cur_proc() }.heap.write_field_slot(
+                    p,
+                    (i * 8) as u32,
+                    val.value()?,
+                );
             }
             AnyValue::Ref(AnyValueRef::from_heap_object(ValueKind::STRUCT, p).expect("tuple ref"))
         }
         Prim::DestTupleBegin { arity, .. } => {
             let schema_id = interp_tuple_schema_id(runtime, *arity);
-            let p = fz_runtime::process::current_process()
+            let p = unsafe { &mut *runtime.cur_proc() }
                 .heap
                 .alloc_struct(schema_id);
             AnyValue::Ref(AnyValueRef::from_heap_object(ValueKind::STRUCT, p).expect("tuple ref"))
@@ -271,7 +260,7 @@ pub(super) fn eval_prim<T: Types<Ty = crate::types::Ty>>(
                 .heap_addr()
                 .ok_or_else(|| "DestTupleSet: null destination".to_string())?;
             let value = env_get(env, *value)?.value()?;
-            fz_runtime::process::current_process()
+            unsafe { &mut *runtime.cur_proc() }
                 .heap
                 .write_field_slot(p, index * 8, value);
             AnyValue::Atom(fz_runtime::any_value::NIL_ATOM_ID)
@@ -284,7 +273,11 @@ pub(super) fn eval_prim<T: Types<Ty = crate::types::Ty>>(
                 return Err("TupleField: subject is not a Struct".to_string());
             }
             with_value_ref(cv, "TupleField", |struct_ref| {
-                fz_runtime::ir_runtime::fz_struct_get_field_ref(cur_proc(), struct_ref, idx * 8)
+                fz_runtime::ir_runtime::fz_struct_get_field_ref(
+                    runtime.cur_proc(),
+                    struct_ref,
+                    idx * 8,
+                )
             })
             .and_then(|ref_word| interp_value_from_ref_word(ref_word, "TupleField"))?
         }
@@ -370,7 +363,11 @@ pub(super) fn eval_prim<T: Types<Ty = crate::types::Ty>>(
             }
             let value = with_value_ref(mv, "MatcherMapGet map", |map_ref| {
                 with_value_ref(kv, "MatcherMapGet key", |key_ref| {
-                    fz_runtime::ir_runtime::fz_matcher_map_get_ref(cur_proc(), map_ref, key_ref)
+                    fz_runtime::ir_runtime::fz_matcher_map_get_ref(
+                        runtime.cur_proc(),
+                        map_ref,
+                        key_ref,
+                    )
                 })
             })??;
             interp_value_from_ref_word(value, "MatcherMapGet")?
@@ -381,7 +378,7 @@ pub(super) fn eval_prim<T: Types<Ty = crate::types::Ty>>(
         }
         Prim::MakeMap(entries) => {
             let mut map_bits = if entries.is_empty() {
-                fz_runtime::ir_runtime::fz_map_empty(cur_proc())
+                fz_runtime::ir_runtime::fz_map_empty(runtime.cur_proc())
             } else {
                 0
             };
@@ -407,12 +404,14 @@ pub(super) fn eval_prim<T: Types<Ty = crate::types::Ty>>(
                 Some(base) => {
                     let base = env_get(env, *base)?;
                     fz_runtime::ir_runtime::fz_map_dest_begin_update(
-                        cur_proc(),
+                        runtime.cur_proc(),
                         base.value()?.ref_word().raw_word(),
                         *extra as u32,
                     )
                 }
-                None => fz_runtime::ir_runtime::fz_map_dest_begin(cur_proc(), *extra as u32),
+                None => {
+                    fz_runtime::ir_runtime::fz_map_dest_begin(runtime.cur_proc(), *extra as u32)
+                }
             };
             interp_value_from_ref_word(map_bits, "DestMapBegin")?
         }
@@ -425,7 +424,7 @@ pub(super) fn eval_prim<T: Types<Ty = crate::types::Ty>>(
             let key = key.value()?;
             let value = value.value()?;
             fz_runtime::ir_runtime::fz_map_dest_put_parts(
-                cur_proc(),
+                runtime.cur_proc(),
                 map.value()?.ref_word().raw_word(),
                 key.raw(),
                 key.kind().tag() as u64,
@@ -437,7 +436,7 @@ pub(super) fn eval_prim<T: Types<Ty = crate::types::Ty>>(
         Prim::DestMapFreeze { map, .. } => {
             let map = env_get(env, *map)?;
             let map_bits = fz_runtime::ir_runtime::fz_map_dest_freeze(
-                cur_proc(),
+                runtime.cur_proc(),
                 map.value()?.ref_word().raw_word(),
             );
             interp_value_from_ref_word(map_bits, "DestMapFreeze")?
@@ -451,7 +450,7 @@ pub(super) fn eval_prim<T: Types<Ty = crate::types::Ty>>(
             };
             for e in elems.iter().rev() {
                 let ev = env_get(env, *e)?;
-                acc = interp_list_cons(ev, acc, "MakeList")?;
+                acc = interp_list_cons(runtime.cur_proc(), ev, acc, "MakeList")?;
             }
             acc
         }
@@ -462,7 +461,7 @@ pub(super) fn eval_prim<T: Types<Ty = crate::types::Ty>>(
                 Some(t) => env_get(env, *t)?,
                 None => interp_empty_list_value(),
             };
-            interp_list_cons(head, tail, "DestListCons")?
+            interp_list_cons(runtime.cur_proc(), head, tail, "DestListCons")?
         }
         Prim::DestListFreeze { list, .. } => env_get(env, *list)?,
         // fz-axu.23 (M2) — lower_program_full erases Prim::Brand

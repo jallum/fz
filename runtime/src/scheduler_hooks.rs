@@ -14,6 +14,8 @@
 //! once. This module now only defines the callback fn-pointer *types* (the shape
 //! of those ExecCtx fields) plus the `YIELD_PTR` sentinel.
 
+use crate::process::Process;
+
 /// Non-pointer trampoline sentinel: fz_receive_attempt returns this when
 /// the mailbox is empty so the JIT trampoline parks the task instead of
 /// dispatching the returned ptr. 0x1 is never 16-aligned so it cannot
@@ -56,7 +58,7 @@ pub type OutputHook = extern "C" fn(tel: *const (), line_ptr: *const u8, line_le
 /// on the current process heap and returns the resulting tagged resource
 /// pointer.
 pub type MakeResourceHook =
-    extern "C" fn(module: *const (), payload_raw: u64, dtor_ref: u64) -> u64;
+    extern "C" fn(process: *mut Process, module: *const (), payload_raw: u64, dtor_ref: u64) -> u64;
 
 /// fz-yxs/fz-st5 — after-timer schedule hook. Called by
 /// `fz_receive_park_matched` when the park record carries a non-`None`
