@@ -41,6 +41,7 @@ pub struct FzoArtifact {
     pub unit_payload: FzoUnitPayload,
     pub required_imports: Vec<ExportKey>,
     pub implementation_fingerprint: Vec<String>,
+    pub implementation_fingerprint_digest: String,
     pub interface_fingerprint_digest: String,
     pub interface_fingerprint: Vec<String>,
 }
@@ -49,6 +50,14 @@ pub struct FzoArtifact {
 pub struct FzoUnitPayload {
     pub format: String,
     pub body: String,
+}
+
+/// Integrity digest over the PAYLOAD CONTENT (format tag + full body). Covers
+/// the serialized IR + sources for structural units, or the source text for
+/// source units. Recomputed at load to reject semantically-valid-but-tampered
+/// payloads that still parse as JSON.
+pub(crate) fn payload_digest(payload: &FzoUnitPayload) -> String {
+    fingerprint_digest(&[payload.format.clone(), payload.body.clone()])
 }
 
 /// Decoded body of an `FZO_PAYLOAD_IR_UNIT_V1` payload: the structural IR
@@ -245,6 +254,7 @@ impl FzoArtifact {
         implementation_fingerprint: Vec<String>,
     ) -> Self {
         let interface_fingerprint = unit.interface_fingerprint.clone();
+        let implementation_fingerprint_digest = payload_digest(&unit_payload);
         Self {
             compiler_abi_version: FZ_ARTIFACT_ABI_VERSION,
             runtime_abi_version: FZ_RUNTIME_ARTIFACT_ABI_VERSION,
@@ -257,6 +267,7 @@ impl FzoArtifact {
                 .map(|edge| edge.target.clone())
                 .collect(),
             implementation_fingerprint,
+            implementation_fingerprint_digest,
             interface_fingerprint_digest: fingerprint_digest(&interface_fingerprint),
             interface_fingerprint,
         }
@@ -334,6 +345,9 @@ impl FzoArtifact {
             && artifact.interface_fingerprint != expected
         {
             return emit_invalid(tel, path, "fzo implemented interface fingerprint mismatch");
+        }
+        if artifact.implementation_fingerprint_digest != payload_digest(&artifact.unit_payload) {
+            return emit_invalid(tel, path, "fzo implementation payload digest mismatch");
         }
         Ok(artifact)
     }
@@ -563,6 +577,68 @@ mod tests {
         );
         // Sources survived: name + bytes + content_hash all preserved.
         assert_eq!(payload.sources, sources, "source files survive the round-trip");
+    }
+
+    /// Build a non-trivial structural IR-unit artifact: one fn, one external
+    /// call edge, one interned source file.
+    fn structural_ir_artifact() -> FzoArtifact {
+        let interface = math_interface();
+        let mut builder = crate::fz_ir::FnBuilder::new(crate::fz_ir::FnId(0), "Math.add");
+        let entry = builder.block(Vec::new());
+        builder.set_terminator(entry, crate::fz_ir::Term::Halt(crate::fz_ir::Var(0)));
+        let mut code = crate::fz_ir::Module::new();
+        code.fn_idx.insert(crate::fz_ir::FnId(0), 0);
+        code.fns.push(builder.build());
+        code.external_call_edges
+            .push(crate::fz_ir::ExternalCallEdge {
+                callsite: crate::fz_ir::CallsiteId {
+                    caller: crate::fz_ir::FnId(0),
+                    ident: crate::fz_ir::CallsiteIdent::synthetic(),
+                    slot: crate::fz_ir::EmitSlot::Direct,
+                },
+                target: ExportKey::new(module("Dep"), "seed", 0),
+            });
+        let unit = CompiledUnit::from_ir_module(code, Some(interface), crate::diag::Diagnostics::new());
+        let mut sm = crate::diag::SourceMap::new();
+        let fid = sm.add_file("Math.fz", "defmodule Math do\n  fn add(x, y), do: x + y\nend\n");
+        let sources = vec![sm.file(fid).to_portable(fid)];
+        FzoArtifact::from_unit_ir(&unit, sources, vec!["impl:struct".to_string()])
+    }
+
+    #[test]
+    fn fzo_payload_digest_round_trips() {
+        let artifact = structural_ir_artifact();
+        // The construct path set a digest over format + body.
+        assert_eq!(
+            artifact.implementation_fingerprint_digest,
+            payload_digest(&artifact.unit_payload)
+        );
+        let text = artifact.serialize();
+        let decoded = FzoArtifact::deserialize(&crate::telemetry::NullTelemetry, None, &text, None)
+            .expect("matching payload digest is accepted");
+        assert_eq!(decoded, artifact);
+    }
+
+    #[test]
+    fn fzo_rejects_tampered_payload() {
+        // Serialize a valid structural artifact, then swap its body for a
+        // DIFFERENT-but-valid IrUnitPayload JSON while leaving the stored
+        // implementation_fingerprint_digest stale.
+        let mut artifact = structural_ir_artifact();
+        let tampered_body = serde_json::to_string(&IrUnitPayload {
+            module: crate::fz_ir::Module::new(),
+            sources: Vec::new(),
+        })
+        .expect("tampered payload serialization");
+        assert_ne!(artifact.unit_payload.body, tampered_body);
+        // Stale digest: mutate the body but NOT implementation_fingerprint_digest.
+        artifact.unit_payload.body = tampered_body;
+        let text = artifact.serialize();
+        // The tampered body is still valid JSON, so this only trips the digest.
+        let err = FzoArtifact::deserialize(&crate::telemetry::NullTelemetry, None, &text, None)
+            .unwrap_err();
+        assert_eq!(err.to_diagnostic().code, codes::ARTIFACT_INVALID);
+        assert_eq!(err.to_string(), "fzo implementation payload digest mismatch");
     }
 
     #[test]
