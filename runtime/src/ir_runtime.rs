@@ -1353,16 +1353,6 @@ fn fz_bs_read_field_bits(
 // within each category, by raw bits (Int compares signed). Keys compare
 // equal iff their u64 bits are equal — pointer-equal heap keys for v1.
 
-fn current_heap_addr_for_kind(bits: u64, kind: crate::any_value::ValueKind) -> Option<*mut u8> {
-    current_process()
-        .heap
-        .current_heap_addr_for_kind(bits, kind)
-}
-
-fn current_heap_list_addr(bits: u64) -> Option<*mut u8> {
-    current_heap_addr_for_kind(bits, crate::any_value::ValueKind::LIST)
-}
-
 #[unsafe(no_mangle)]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn fz_map_empty(process: *mut Process) -> u64 {
@@ -1774,29 +1764,12 @@ pub extern "C" fn fz_list_head_float_ref(list_ref_word: u64) -> f64 {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_list_tail(bits: u64) -> u64 {
-    let p = current_heap_list_addr(bits)
-        .unwrap_or_else(|| panic!("fz_list_tail on empty/null/non-heap list {bits:#x}"));
-    unsafe { (*(p as *const crate::any_value::ListCons)).tail_bits() }
-}
-
-#[unsafe(no_mangle)]
 pub extern "C" fn fz_list_tail_ref(list_ref_word: u64) -> u64 {
     let list = any_value_ref_from_word(list_ref_word, "fz_list_tail_ref");
     current_process()
         .heap
         .read_list_tail_ref(list)
         .expect("fz_list_tail_ref")
-        .raw_word()
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn fz_list_mark_aliased_ref(list_ref_word: u64) -> u64 {
-    let list = any_value_ref_from_word(list_ref_word, "fz_list_mark_aliased_ref");
-    current_process()
-        .heap
-        .mark_list_cons_aliased(list)
-        .expect("fz_list_mark_aliased_ref")
         .raw_word()
 }
 
@@ -1808,17 +1781,6 @@ pub extern "C" fn fz_mark_published_ref_aliased(process: *mut Process, value_ref
         .heap
         .mark_published_ref_aliased(value)
         .expect("fz_mark_published_ref_aliased")
-        .raw_word()
-}
-
-#[unsafe(no_mangle)]
-pub extern "C" fn fz_list_relink_unaliased_tail_ref(list_ref_word: u64, tail_ref_word: u64) -> u64 {
-    let list = any_value_ref_from_word(list_ref_word, "fz_list_relink_unaliased_tail_ref list");
-    let tail = any_value_ref_from_word(tail_ref_word, "fz_list_relink_unaliased_tail_ref tail");
-    current_process()
-        .heap
-        .relink_unaliased_list_cons_tail(list, tail)
-        .expect("fz_list_relink_unaliased_tail_ref")
         .raw_word()
 }
 
