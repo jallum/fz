@@ -16,7 +16,7 @@
 //! (b) compute its target spec key:
 //!
 //!   - `Direct` — callee `FnId`, arg `Var`s.
-//!   - `CallClosureKnown` — resolved target `FnId` (via fn_constants),
+//!   - `CallClosureKnown` — resolved target `FnId` (via callable capability),
 //!     arg `Var`s.
 //!   - `ClosureLit(c, s)` — target `FnId` from the lit, captures,
 //!     arg `Var`s.
@@ -66,7 +66,7 @@ pub enum CallsiteKind<'a> {
     /// `Term::Call` / `Term::TailCall`. `callee` is the static FnId.
     Direct { callee: FnId, args: &'a [Var] },
     /// `Term::CallClosure` / `Term::TailCallClosure` whose `closure`
-    /// Var resolved through `fn_constants` to a static FnId. Distinct
+    /// Var resolved through callable capabilities to a static FnId. Distinct
     /// from `Direct` because the same block can simultaneously emit a
     /// `Cont` for the same Call.
     CallClosureKnown { target: FnId, args: &'a [Var] },
@@ -96,7 +96,7 @@ pub enum ContSource<'a> {
     /// `Term::Call`: slot 0 = `effective_returns[(callee, arg_tys)]`.
     Call { callee: FnId, args: &'a [Var] },
     /// `Term::CallClosure`: slot 0 = effective_return of the closure
-    /// target (fn_constants path) OR resolved via closure-lit lattice.
+    /// target (known capability path) OR resolved via closure-lit lattice.
     /// Both paths use `closure`/`args`.
     CallClosure { closure: Var, args: &'a [Var] },
     /// `Term::Receive`: slot 0 is opaque (`any`).
@@ -108,10 +108,10 @@ pub enum ContSource<'a> {
 /// `env` is the caller-side per-Var type env at the *end* of the
 /// block's stmt sequence; used to extract a `closure` Var's
 /// closure-literal callable clauses when the terminator is `CallClosure` /
-/// `TailCallClosure`. `fn_constants` is the caller spec's resolved
-/// Var → FnId map (planner-side); the reducer passes an empty map and
-/// gets no `CallClosureKnown` entries — its closure-literal path comes
-/// from the seam query alone.
+/// `TailCallClosure`. `known_fns` is the caller spec's resolved Var → FnId
+/// capability map (planner-side); the reducer passes an empty map and gets no
+/// `CallClosureKnown` entries — its closure-literal path comes from the seam
+/// query alone.
 ///
 /// Block-stmt callsites (`Prim::MakeClosure`) and per-stmt
 /// opaque-arity bookkeeping are *not* yielded — they're planner-specific
@@ -120,7 +120,7 @@ pub fn block_callsites<'a, T: Types<Ty = crate::types::Ty> + ClosureTypes>(
     t: &mut T,
     term: &'a Term,
     env: &'a HashMap<Var, crate::types::Ty>,
-    fn_constants: &HashMap<Var, FnId>,
+    known_fns: &HashMap<Var, FnId>,
 ) -> Vec<BlockCallsite<'a>> {
     let mut out: Vec<BlockCallsite<'a>> = Vec::new();
     match term {
@@ -163,7 +163,7 @@ pub fn block_callsites<'a, T: Types<Ty = crate::types::Ty> + ClosureTypes>(
             args,
             continuation,
         } => {
-            push_closure_call(t, &mut out, *closure, args, env, fn_constants);
+            push_closure_call(t, &mut out, *closure, args, env, known_fns);
             out.push(BlockCallsite {
                 slot: EmitSlot::Cont,
                 kind: CallsiteKind::Cont {
@@ -180,7 +180,7 @@ pub fn block_callsites<'a, T: Types<Ty = crate::types::Ty> + ClosureTypes>(
             args,
             ident: _,
         } => {
-            push_closure_call(t, &mut out, *closure, args, env, fn_constants);
+            push_closure_call(t, &mut out, *closure, args, env, known_fns);
         }
         Term::Receive {
             continuation,
@@ -211,13 +211,13 @@ fn push_closure_call<'a, T: Types<Ty = crate::types::Ty> + ClosureTypes>(
     closure: Var,
     args: &'a [Var],
     env: &'a HashMap<Var, crate::types::Ty>,
-    fn_constants: &HashMap<Var, FnId>,
+    known_fns: &HashMap<Var, FnId>,
 ) {
-    // fz-try.11 — both fn_constants and closure_lit paths share the same
+    // fz-try.11 — both known-capability and closure_lit paths share the same
     // structural slot `EmitSlot::ClosureCall`. Variation between
-    // statically-resolvable (fn_constants) and runtime-resolved (lit)
+    // statically-resolvable (known capability) and runtime-resolved (lit)
     // dispatch lives on the Dispatch enum at row time, not on the slot.
-    if let Some(&target) = fn_constants.get(&closure) {
+    if let Some(&target) = known_fns.get(&closure) {
         out.push(BlockCallsite {
             slot: EmitSlot::ClosureCall,
             kind: CallsiteKind::CallClosureKnown { target, args },
@@ -356,7 +356,7 @@ mod tests {
     }
 
     #[test]
-    fn tail_call_closure_fn_constants_yields_known() {
+    fn tail_call_closure_known_fns_yields_known() {
         let mut ct = crate::types::ConcreteTypes;
         let term = Term::TailCallClosure {
             ident: crate::fz_ir::CallsiteIdent::synthetic(),

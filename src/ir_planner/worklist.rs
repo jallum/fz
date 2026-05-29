@@ -2,11 +2,11 @@ use super::closures::resolve_closure_return;
 use super::diagnostics::{compute_dead_branches, module_plan_stats};
 use super::effects::{prim_effect_summary, term_local_effect_summary};
 use super::fn_types::{
-    CallsiteCallableCapabilities, CallsiteFnConsts, EffectSummary, EmitsByCaller, EmitterSiteSet,
-    FnEffects, HoldersMap, ModulePlan, PLAN_MODULE_CALLS, ProducesMap, ReturnReaders, SpecKey,
-    SpecKeySet, SpecPlan, TYPE_FN_CALLS, VISIT_HARD_BOUND, WALK_CALLS, WORKLIST_POPS,
-    build_any_key_index, key_precedence_order, recursive_direct_spec_key,
-    recursive_direct_spec_key_for_arity, spec_key_for_fn_id, spec_key_input_tys,
+    CallsiteCallableCapabilities, EffectSummary, EmitsByCaller, EmitterSiteSet, FnEffects,
+    HoldersMap, ModulePlan, PLAN_MODULE_CALLS, ProducesMap, ReturnReaders, SpecKey, SpecKeySet,
+    SpecPlan, TYPE_FN_CALLS, VISIT_HARD_BOUND, WALK_CALLS, WORKLIST_POPS, build_any_key_index,
+    key_precedence_order, recursive_direct_spec_key, recursive_direct_spec_key_for_arity,
+    spec_key_for_fn_id, spec_key_input_tys,
 };
 use super::reachable::{cont_key_from_slot0, env_at_terminator};
 use super::type_fn::type_fn;
@@ -89,7 +89,6 @@ pub fn plan_module<T: crate::types::Types<Ty = crate::types::Ty> + crate::types:
 
     let mut specs: HashMap<SpecKey, SpecPlan> = HashMap::new();
     let mut effective_returns: HashMap<SpecKey, crate::types::Ty> = HashMap::new();
-    let mut callsite_fn_consts: CallsiteFnConsts = HashMap::new();
     let mut callsite_callable_capabilities: CallsiteCallableCapabilities = HashMap::new();
     let mut return_readers: ReturnReaders = HashMap::new();
     let mut visit_count: HashMap<SpecKey, usize> = HashMap::new();
@@ -117,7 +116,6 @@ pub fn plan_module<T: crate::types::Types<Ty = crate::types::Ty> + crate::types:
         &mut in_work,
         &mut specs,
         &mut effective_returns,
-        &mut callsite_fn_consts,
         &mut callsite_callable_capabilities,
         &mut return_readers,
         &mut visit_count,
@@ -290,7 +288,6 @@ pub(crate) fn process_worklist<
     in_work: &mut SpecKeySet,
     specs: &mut HashMap<SpecKey, SpecPlan>,
     effective_returns: &mut HashMap<SpecKey, crate::types::Ty>,
-    callsite_fn_consts: &mut CallsiteFnConsts,
     callsite_callable_capabilities: &mut CallsiteCallableCapabilities,
     return_readers: &mut ReturnReaders,
     visit_count: &mut HashMap<SpecKey, usize>,
@@ -306,15 +303,7 @@ pub(crate) fn process_worklist<
         let Some(&j) = m.fn_idx.get(&spec_key.fn_id) else {
             continue;
         };
-        ensure_spec_typed(
-            t,
-            m,
-            j,
-            &spec_key,
-            callsite_fn_consts,
-            callsite_callable_capabilities,
-            specs,
-        );
+        ensure_spec_typed(t, m, j, &spec_key, callsite_callable_capabilities, specs);
         check_visit_bound(&spec_key, visit_count);
         let result = discover_spec_outputs(
             t,
@@ -325,7 +314,6 @@ pub(crate) fn process_worklist<
             specs,
             effective_returns,
             recursive_fns,
-            callsite_fn_consts,
             callsite_callable_capabilities,
         );
         let WalkResult {
@@ -366,7 +354,6 @@ fn ensure_spec_typed<T: crate::types::Types<Ty = crate::types::Ty> + crate::type
     m: &Module,
     fn_idx: usize,
     spec_key: &SpecKey,
-    callsite_fn_consts: &CallsiteFnConsts,
     callsite_callable_capabilities: &CallsiteCallableCapabilities,
     specs: &mut HashMap<SpecKey, SpecPlan>,
 ) {
@@ -376,15 +363,6 @@ fn ensure_spec_typed<T: crate::types::Types<Ty = crate::types::Ty> + crate::type
     TYPE_FN_CALLS.with(|c| c.set(c.get() + 1));
     let input_tys = spec_key_input_tys(t, spec_key);
     let mut ft = type_fn(t, &m.fns[fn_idx], m, Some(&input_tys));
-    if let Some(arg_consts) = callsite_fn_consts.get(spec_key) {
-        let entry = m.fns[fn_idx].entry;
-        let entry_params = &m.fns[fn_idx].block(entry).params;
-        for (slot, p) in entry_params.iter().enumerate() {
-            if let Some(Some(fid_const)) = arg_consts.get(slot) {
-                ft.fn_constants.insert(*p, *fid_const);
-            }
-        }
-    }
     if let Some(arg_caps) = callsite_callable_capabilities.get(spec_key) {
         let entry = m.fns[fn_idx].entry;
         let entry_params = &m.fns[fn_idx].block(entry).params;
@@ -419,7 +397,6 @@ fn discover_spec_outputs<
     specs: &HashMap<SpecKey, SpecPlan>,
     effective_returns: &HashMap<SpecKey, crate::types::Ty>,
     recursive_fns: &std::collections::HashSet<FnId>,
-    callsite_fn_consts: &mut CallsiteFnConsts,
     callsite_callable_capabilities: &mut CallsiteCallableCapabilities,
 ) -> WalkResult {
     let caller_ft = specs.get(spec_key).unwrap();
@@ -433,7 +410,6 @@ fn discover_spec_outputs<
         effective_returns,
         recursive_fns,
         spec_key,
-        callsite_fn_consts,
         callsite_callable_capabilities,
         &mut result,
     );
@@ -713,7 +689,7 @@ fn tail_closure_return_contribution<
     closure: crate::fz_ir::Var,
     args: &[crate::fz_ir::Var],
 ) -> crate::types::Ty {
-    if let Some(&target) = ft.fn_constants.get(&closure) {
+    if let Some(target) = ft.known_fn(&closure) {
         return known_tail_closure_return_contribution(
             t,
             module,
@@ -954,7 +930,7 @@ pub(crate) fn cont_key_for_spec<
                 .unwrap_or_else(|| any_t.clone())
         }
         Term::CallClosure { closure, args, .. } => {
-            if let Some(&target) = ft.fn_constants.get(closure) {
+            if let Some(target) = ft.known_fn(closure) {
                 let target_fn = module.fn_by_id(target);
                 let np = target_fn.block(target_fn.entry).params.len();
                 let ad: Vec<Ty> = args

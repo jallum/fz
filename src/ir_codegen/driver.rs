@@ -171,7 +171,7 @@ fn augment_reachable_for_codegen_bodies<
                     continuation,
                     ..
                 } => {
-                    if let Some(&target) = ft.fn_constants.get(closure) {
+                    if let Some(target) = ft.known_fn(closure) {
                         push_reachable_spec(
                             t,
                             spec_registry,
@@ -194,7 +194,7 @@ fn augment_reachable_for_codegen_bodies<
                     let _ = continuation;
                 }
                 Term::TailCallClosure { closure, args, .. } => {
-                    if let Some(&target) = ft.fn_constants.get(closure) {
+                    if let Some(target) = ft.known_fn(closure) {
                         push_reachable_spec(
                             t,
                             spec_registry,

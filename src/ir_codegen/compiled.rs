@@ -587,11 +587,6 @@ fn remap_spec_plan(
     crate::ir_planner::SpecPlan {
         vars: spec.vars.clone(),
         block_envs: spec.block_envs.clone(),
-        fn_constants: spec
-            .fn_constants
-            .iter()
-            .filter_map(|(var, fid)| fn_map.get(fid).map(|new| (*var, *new)))
-            .collect(),
         callable_capabilities: spec
             .callable_capabilities
             .iter()

@@ -1,4 +1,4 @@
-use super::fn_types::{CallableCapability, ModulePlan, SpecKey};
+use super::fn_types::{ModulePlan, SpecKey};
 use crate::fz_ir::{FnId, Module, Prim, Stmt, Term, Var};
 use std::collections::{BTreeSet, HashMap, HashSet};
 
@@ -55,16 +55,12 @@ pub fn rewrite_known_target_closures<
             continue;
         }
         let entry = unified.entry(key.fn_id).or_default();
-        for (v, fnid) in ft.fn_constants.iter().map(|(v, fnid)| (v, *fnid)).chain(
-            ft.callable_capabilities
-                .iter()
-                .filter_map(|(v, cap)| match cap {
-                    CallableCapability::KnownFn(fnid) => Some((v, *fnid)),
-                    CallableCapability::KnownClosure { .. }
-                    | CallableCapability::OpaqueCallable => None,
-                }),
-        ) {
-            merge_known_fn(entry, *v, fnid);
+        for (v, fnid) in ft
+            .callable_capabilities
+            .iter()
+            .filter_map(|(v, cap)| cap.known_fn().map(|fnid| (*v, fnid)))
+        {
+            merge_known_fn(entry, v, fnid);
         }
     }
     for f in &mut module.fns {
@@ -137,7 +133,7 @@ fn merge_known_fn(entry: &mut HashMap<Var, Option<FnId>>, var: Var, fnid: FnId) 
 ///
 /// After `rewrite_known_target_closures` devirtualizes `CallClosure(v, …)` to
 /// `Call(F, …)`, the closure value `v` is no longer *called* anywhere — but the
-/// typer's `fn_constants` shows it is still *passed*: threaded as a parameter
+/// callable capability facts show it is still *passed*: threaded as a parameter
 /// through a recursive component and captured into continuations (e.g.
 /// `Enum.sort`'s comparator riding `merge`'s frame). A callable left in a
 /// frame trips the lazy-continuation gate (`caller_has_callable_state`), forcing

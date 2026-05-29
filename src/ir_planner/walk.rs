@@ -1,9 +1,9 @@
 use super::closures::resolve_closure_return;
 use super::fn_types::{
-    CallEdgePlan, CallEdgeTarget, CallableCapability, CallsiteCallableCapabilities,
-    CallsiteFnConsts, EmitterSite, FnEffects, ReturnContextPlan, ReturnDemand, SpecKey, SpecPlan,
-    WALK_CALLS, padded_direct_input_tys, recursive_direct_spec_key,
-    recursive_direct_spec_key_for_arity, spec_key_for_fn,
+    CallEdgePlan, CallEdgeTarget, CallableCapability, CallsiteCallableCapabilities, EmitterSite,
+    FnEffects, ReturnContextPlan, ReturnDemand, SpecKey, SpecPlan, WALK_CALLS,
+    padded_direct_input_tys, recursive_direct_spec_key, recursive_direct_spec_key_for_arity,
+    spec_key_for_fn,
 };
 use super::reachable::cont_key_from_slot0;
 use super::return_context::{
@@ -118,26 +118,6 @@ impl WalkResult {
     }
 }
 
-fn merge_callsite_fn_consts(
-    callsite_fn_consts: &mut CallsiteFnConsts,
-    key: &SpecKey,
-    incoming: Vec<Option<FnId>>,
-) {
-    match callsite_fn_consts.get(key) {
-        None => {
-            callsite_fn_consts.insert(key.clone(), incoming);
-        }
-        Some(prev) => {
-            let merged: Vec<Option<FnId>> = prev
-                .iter()
-                .zip(incoming.iter())
-                .map(|(a, b)| if a == b { *a } else { None })
-                .collect();
-            callsite_fn_consts.insert(key.clone(), merged);
-        }
-    }
-}
-
 fn merge_callsite_callable_capabilities(
     callsite_callable_capabilities: &mut CallsiteCallableCapabilities,
     key: &SpecKey,
@@ -178,8 +158,8 @@ enum ProtocolDispatch {
 /// Emit kinds:
 ///   - `EmitSlot::Direct` for `Term::Call` / `Term::TailCall`.
 ///   - `EmitSlot::ClosureCall` for `Term::CallClosure` / `Term::TailCallClosure`
-///     callsites, whether the target comes from `fn_constants` or a closure
-///     literal clause.
+///     callsites, whether the target comes from a known callable capability or
+///     a closure literal clause.
 ///   - `EmitSlot::Cont` for the continuation of Call/CallClosure/Receive.
 ///   - `EmitSlot::MakeClosure` for the any-key body spec reachable through a
 ///     closure value.
@@ -207,7 +187,6 @@ pub(crate) fn walk_spec_for_discovery<
     effective_returns: &HashMap<SpecKey, crate::types::Ty>,
     recursive_fns: &std::collections::HashSet<FnId>,
     caller_spec_key: &SpecKey,
-    callsite_fn_consts: &mut CallsiteFnConsts,
     callsite_callable_capabilities: &mut CallsiteCallableCapabilities,
     out: &mut WalkResult,
 ) {
@@ -221,7 +200,6 @@ pub(crate) fn walk_spec_for_discovery<
         effective_returns,
         recursive_fns,
         caller_spec_key,
-        callsite_fn_consts,
         callsite_callable_capabilities,
         out,
         any_ty,
@@ -240,7 +218,6 @@ where
     effective_returns: &'a HashMap<SpecKey, crate::types::Ty>,
     recursive_fns: &'a HashSet<FnId>,
     caller_spec_key: &'a SpecKey,
-    callsite_fn_consts: &'a mut CallsiteFnConsts,
     callsite_callable_capabilities: &'a mut CallsiteCallableCapabilities,
     out: &'a mut WalkResult,
     any_ty: crate::types::Ty,
@@ -279,9 +256,13 @@ where
         let Some(term_ident) = term.ident().cloned() else {
             return;
         };
-        for BlockCallsite { slot, kind } in
-            block_callsites(self.t, term, env, &self.caller_ft.fn_constants)
-        {
+        let known_fns: HashMap<Var, FnId> = self
+            .caller_ft
+            .callable_capabilities
+            .iter()
+            .filter_map(|(var, cap)| cap.known_fn().map(|fid| (*var, fid)))
+            .collect();
+        for BlockCallsite { slot, kind } in block_callsites(self.t, term, env, &known_fns) {
             self.record_callsite(term, &term_ident, env, slot, kind);
         }
         self.seed_receive_matched_outcomes(term);
@@ -399,8 +380,6 @@ where
                 self.out
                     .record_dispatch(self.caller_spec_key, term_ident, slot, entry_key.clone());
             }
-            let per_arg = self.fn_constant_args(args, n_params);
-            merge_callsite_fn_consts(self.callsite_fn_consts, &entry_key, per_arg);
             let per_arg = self.callable_capability_args(args, n_params);
             merge_callsite_callable_capabilities(
                 self.callsite_callable_capabilities,
@@ -443,8 +422,6 @@ where
             self.out
                 .record_dispatch(self.caller_spec_key, term_ident, slot, entry_key.clone());
         }
-        let per_arg = self.fn_constant_args(args, n_params);
-        merge_callsite_fn_consts(self.callsite_fn_consts, &entry_key, per_arg);
         let per_arg = self.callable_capability_args(args, n_params);
         merge_callsite_callable_capabilities(
             self.callsite_callable_capabilities,
@@ -545,7 +522,6 @@ where
         if self.has_bottom_arg(&key) {
             return;
         }
-        let per_param = self.continuation_fn_constants(&cont, n_params);
         let per_param_capabilities = self.continuation_callable_capabilities(&cont, n_params);
         let demand = continuation_return_demand(self.m, self.caller_spec_key, &cont, &source);
         let mut entry_key = spec_key_for_fn(cont_fn, std::mem::take(&mut key));
@@ -559,7 +535,6 @@ where
             &demand,
             &entry_key,
         );
-        merge_callsite_fn_consts(self.callsite_fn_consts, &entry_key, per_param);
         merge_callsite_callable_capabilities(
             self.callsite_callable_capabilities,
             &entry_key,
@@ -677,7 +652,7 @@ where
         args: &[Var],
         env: &HashMap<Var, crate::types::Ty>,
     ) -> Option<crate::types::Ty> {
-        if let Some(&target) = self.caller_ft.fn_constants.get(&closure) {
+        if let Some(target) = self.caller_ft.known_fn(&closure) {
             return self.known_closure_return_slot0(target, args, env);
         }
         let Some(cv_descr) = env.get(&closure) else {
@@ -868,15 +843,6 @@ where
         ))
     }
 
-    fn fn_constant_args(&self, args: &[Var], n_params: usize) -> Vec<Option<FnId>> {
-        let mut per_arg: Vec<Option<FnId>> = args
-            .iter()
-            .map(|av| self.caller_ft.fn_constants.get(av).copied())
-            .collect();
-        pad_and_truncate(&mut per_arg, n_params, &None);
-        per_arg
-    }
-
     fn callable_capability_args(
         &self,
         args: &[Var],
@@ -888,20 +854,6 @@ where
             .collect();
         pad_and_truncate(&mut per_arg, n_params, &None);
         per_arg
-    }
-
-    fn continuation_fn_constants(
-        &self,
-        cont: &crate::fz_ir::Cont,
-        n_params: usize,
-    ) -> Vec<Option<FnId>> {
-        let mut per_param = vec![None; n_params];
-        for (k, cvv) in cont.captured.iter().enumerate() {
-            if let Some(p) = per_param.get_mut(k + 1) {
-                *p = self.caller_ft.fn_constants.get(cvv).copied();
-            }
-        }
-        per_param
     }
 
     fn continuation_callable_capabilities(

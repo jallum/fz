@@ -1,4 +1,4 @@
-use crate::fz_ir::{CallsiteId, EmitSlot, FnId, FnIr, Module};
+use crate::fz_ir::{CallsiteId, EmitSlot, FnId, FnIr, Module, Var};
 use std::collections::HashMap;
 
 #[derive(Debug, Clone, Default)]
@@ -9,14 +9,10 @@ pub struct SpecPlan {
     pub vars: HashMap<crate::fz_ir::Var, crate::types::Ty>,
     /// Entry env per block, with branch narrowing applied at If terminators.
     pub block_envs: HashMap<crate::fz_ir::BlockId, HashMap<crate::fz_ir::Var, crate::types::Ty>>,
-    /// Vars known to hold a specific top-level fn identity from
-    /// zero-capture `MakeClosure(F, [])`. The type token carries no FnId
-    /// identity, so direct-call specialization keeps this side-channel.
-    pub fn_constants: HashMap<crate::fz_ir::Var, FnId>,
     /// Vars known to hold callable values, separated by capability instead of
-    /// representation. This generalizes `fn_constants`: a zero-capture closure
-    /// is callable as a known fn, while captured or opaque callables still carry
-    /// runtime-state/boundary facts for later consumers.
+    /// representation. A zero-capture closure is callable as a known fn, while
+    /// captured or opaque callables still carry runtime-state/boundary facts for
+    /// later consumers.
     pub callable_capabilities: HashMap<crate::fz_ir::Var, CallableCapability>,
     /// Blocks provably reachable from the entry under the inferred types.
     /// If terminators whose condition is a singleton bool prune the dead
@@ -52,7 +48,22 @@ pub enum CallableCapability {
     OpaqueCallable,
 }
 
+impl CallableCapability {
+    pub fn known_fn(&self) -> Option<FnId> {
+        match self {
+            CallableCapability::KnownFn(fid) => Some(*fid),
+            CallableCapability::KnownClosure { .. } | CallableCapability::OpaqueCallable => None,
+        }
+    }
+}
+
 impl SpecPlan {
+    pub fn known_fn(&self, var: &Var) -> Option<FnId> {
+        self.callable_capabilities
+            .get(var)
+            .and_then(CallableCapability::known_fn)
+    }
+
     pub fn local_call_target(&self, callsite: &crate::fz_ir::CallsiteId) -> Option<&SpecKey> {
         self.call_edges
             .get(callsite)
@@ -638,7 +649,6 @@ pub type FnEffects = HashMap<FnId, EffectSummary>;
 /// Worklist-internal aliases for repeated index shapes.
 pub(crate) type SpecKeySet = std::collections::HashSet<SpecKey>;
 pub(crate) type ReturnReaders = HashMap<SpecKey, SpecKeySet>;
-pub(crate) type CallsiteFnConsts = HashMap<SpecKey, Vec<Option<FnId>>>;
 pub(crate) type CallsiteCallableCapabilities = HashMap<SpecKey, Vec<Option<CallableCapability>>>;
 pub(crate) type EmitterSiteSet = std::collections::HashSet<EmitterSite>;
 pub(crate) type HoldersMap = HashMap<SpecKey, EmitterSiteSet>;

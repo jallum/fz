@@ -84,9 +84,8 @@ a parallel `resume=` dump recognizer.
 
 ## Callable Values
 
-`SpecPlan.fn_constants` currently carries a side-channel for zero-capture
-function identity. That is useful, but narrower than the transition model. The
-longer-term shape should make callable identity part of value capability data:
+`SpecPlan.callable_capabilities` carries callable identity as value capability
+data:
 
 ```text
 Callable =

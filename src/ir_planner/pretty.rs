@@ -66,7 +66,7 @@ fn render_spec<
     let ft = &mt.specs[spec_key];
     let f = m.fn_by_id(spec_key.fn_id);
     render_spec_header(t, m, mt, spec_key, any_ty, out);
-    render_fn_constants(m, ft, out);
+    render_callable_capabilities(m, ft, out);
     render_physical_capabilities(f, out);
     render_vars(t, ft, out);
     render_exits(t, m, mt, spec_key, ft, f, any_ty, out);
@@ -103,20 +103,34 @@ fn render_spec_header<T: crate::types::Types<Ty = crate::types::Ty> + crate::typ
     ));
 }
 
-fn render_fn_constants(m: &Module, ft: &super::fn_types::SpecPlan, out: &mut String) {
-    if ft.fn_constants.is_empty() {
+fn render_callable_capabilities(m: &Module, ft: &super::fn_types::SpecPlan, out: &mut String) {
+    use super::fn_types::CallableCapability;
+
+    if ft.callable_capabilities.is_empty() {
         return;
     }
-    let mut fcs: Vec<(&crate::fz_ir::Var, &FnId)> = ft.fn_constants.iter().collect();
-    fcs.sort_by_key(|(v, _)| v.0);
-    out.push_str(";   fn_constants:\n");
-    for (v, fc) in fcs {
-        out.push_str(&format!(
-            ";     Var({}) = {}#{}\n",
-            v.0,
-            fn_name(m, *fc),
-            fc.0
-        ));
+    let mut capabilities: Vec<_> = ft.callable_capabilities.iter().collect();
+    capabilities.sort_by_key(|(v, _)| v.0);
+    out.push_str(";   callable_capabilities:\n");
+    for (v, capability) in capabilities {
+        match capability {
+            CallableCapability::KnownFn(fid) => out.push_str(&format!(
+                ";     Var({}) = KnownFn({}#{})\n",
+                v.0,
+                fn_name(m, *fid),
+                fid.0
+            )),
+            CallableCapability::KnownClosure { fn_id, captures } => out.push_str(&format!(
+                ";     Var({}) = KnownClosure({}#{}, {} captures)\n",
+                v.0,
+                fn_name(m, *fn_id),
+                fn_id.0,
+                captures.len()
+            )),
+            CallableCapability::OpaqueCallable => {
+                out.push_str(&format!(";     Var({}) = OpaqueCallable\n", v.0))
+            }
+        }
     }
 }
 
@@ -372,7 +386,7 @@ fn render_call_closure_exit<
     let arg_vars = vars_str(args);
     let cap_vars = vars_str(&continuation.captured);
     let ck = cont_input_key(t, b, continuation, ft, m, mt);
-    let target = ft.fn_constants.get(&closure).copied();
+    let target = ft.known_fn(&closure);
     let target_str = resolved_target_str(m, target);
     out.push_str(&format!(
         ";     blk{} CallClosure Var({})({}){}\n",
@@ -393,7 +407,7 @@ fn render_tail_call_closure_exit(
     out: &mut String,
 ) {
     let arg_vars = vars_str(args);
-    let target = ft.fn_constants.get(&closure).copied();
+    let target = ft.known_fn(&closure);
     let target_str = resolved_target_str(m, target);
     out.push_str(&format!(
         ";     blk{} TailCallClosure Var({})({}){}\n",

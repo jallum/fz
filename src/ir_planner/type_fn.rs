@@ -2,7 +2,7 @@ use super::expr_types::{lookup, var_as_map_key};
 use super::fn_types::SpecPlan;
 use super::narrow::{find_emptied_var, merge_into, narrow_for_if};
 use super::prim::type_prim;
-use crate::fz_ir::{BlockId, FnId, FnIr, InitTokenId, Module, Prim, Stmt, Term, Var};
+use crate::fz_ir::{BlockId, FnIr, InitTokenId, Module, Prim, Stmt, Term, Var};
 use crate::ir_dest::{
     TokenState, TupleDestState, begin_tuple_dest, consume_init_token, define_init_token,
     freeze_tuple_dest, set_tuple_dest_field,
@@ -210,14 +210,12 @@ pub fn type_fn<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::Clo
     let (mut vars, mut block_envs) = initialize_block_envs(t, f, entry_param_types);
     let topo = topo_order(f);
     run_type_fixed_point(t, f, m, &topo, &mut vars, &mut block_envs);
-    let fn_constants = collect_fn_constants(f);
     let callable_capabilities = collect_callable_capabilities(t, f, &vars);
     let (reachable_blocks, dead_branches) =
         compute_reachable_blocks_and_dead_branches(t, f, m, &block_envs);
     SpecPlan {
         vars,
         block_envs,
-        fn_constants,
         callable_capabilities,
         reachable_blocks,
         dead_branches,
@@ -423,21 +421,6 @@ fn propagate_if<T: crate::types::Types<Ty = crate::types::Ty>>(
     let then_changed = merge_into(t, block_envs, then_b, &then_env);
     let else_changed = merge_into(t, block_envs, else_b, &else_env);
     then_changed || else_changed
-}
-
-fn collect_fn_constants(f: &FnIr) -> HashMap<Var, FnId> {
-    let mut fn_constants = HashMap::new();
-    for b in &f.blocks {
-        for stmt in &b.stmts {
-            let Stmt::Let(v, prim) = stmt;
-            if let Prim::MakeClosure(_, fid, captured) = prim
-                && captured.is_empty()
-            {
-                fn_constants.insert(*v, *fid);
-            }
-        }
-    }
-    fn_constants
 }
 
 fn collect_callable_capabilities<

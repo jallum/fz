@@ -1550,8 +1550,9 @@ fn main(), do: dbg(add1(40) + 2)
 
 /// fz-ul4.29.10: when a top-level fn is passed as a closure value
 /// (`apply2(double, …)`), `ir_lower` synthesizes
-/// `MakeClosure(double, [])`. .29.10.1 propagates `fn_constants[f]
-/// = double` into apply2's spec; .29.10.2 registers double's narrow
+/// `MakeClosure(double, [])`. The planner propagates
+/// `callable_capabilities[f] = KnownFn(double)` into apply2's spec;
+/// .29.10.2 registers double's narrow
 /// spec for the typed arg from apply2's CallClosure; the CallClosure
 /// is rewritten into a direct `Call(double, …)`.
 ///
@@ -1834,7 +1835,7 @@ end
 }
 
 /// fz-rh5.1 — at a `CallClosure` whose closure operand resolves
-/// via `closure_lit` (not `fn_constants`), the continuation's slot 0
+/// via `closure_lit` (not a known callable capability), the continuation's slot 0
 /// must be the lambda's narrow return type — NOT `any()`.
 ///
 /// Pre-fz-5j5.3, `cont_key_for_spec` and `walk_spec_for_discovery`
@@ -1948,13 +1949,13 @@ end
     assert!(saw_cc, "test premise: apply should have a CallClosure");
 }
 
-// ---- fz-ul4.29.10.1 — fn_constants side-channel ----
+// ---- fz-ul4.29.10.1 — callable capability propagation ----
 
 /// A zero-capture `MakeClosure(F, [])` (synthesized by ir_lower when
 /// a bare top-level fn name is used as a value) populates
-/// `fn_constants[v] = F` on the Let-bound var.
+/// `callable_capabilities[v] = KnownFn(F)` on the Let-bound var.
 #[test]
-fn fn_constant_from_makeclosure_zero_captures() {
+fn known_fn_capability_from_makeclosure_zero_captures() {
     let (_t, m, mt) = pipeline(
         r#"
 fn double(x), do: x * 2
@@ -1988,11 +1989,6 @@ end
         .map(|(_, ft)| ft)
         .expect("main spec exists");
     assert_eq!(
-        main_ft.fn_constants.get(&v).copied(),
-        Some(double.id),
-        "zero-capture MakeClosure should populate fn_constants"
-    );
-    assert_eq!(
         main_ft.callable_capabilities.get(&v),
         Some(&CallableCapability::KnownFn(double.id)),
         "zero-capture MakeClosure should populate KnownFn capability"
@@ -2000,9 +1996,9 @@ end
 }
 
 /// A `MakeClosure` with captures is a real closure value, not a
-/// fn-as-value. No `fn_constants` entry.
+/// fn-as-value. It records a stateful closure capability, not `KnownFn`.
 #[test]
-fn fn_constant_not_set_for_captures() {
+fn known_fn_capability_not_set_for_captures() {
     let (_t, m, mt) = pipeline(
         r#"
 fn main() do
@@ -2034,10 +2030,6 @@ end
         }
     }
     let v = closure_var.expect("test premise: a captured-MakeClosure in main");
-    assert!(
-        !main_ft.fn_constants.contains_key(&v),
-        "MakeClosure with captures must NOT set fn_constants"
-    );
     match main_ft.callable_capabilities.get(&v) {
         Some(CallableCapability::KnownClosure { fn_id, captures }) => {
             assert!(!captures.is_empty(), "captured closure should record state");
@@ -2053,10 +2045,10 @@ end
 }
 
 /// `apply2(double, 21)` — in apply2's specialized SpecPlan, the
-/// `f` entry param has `fn_constants[f_param] = double.id`,
+/// `f` entry param has `callable_capabilities[f_param] = KnownFn(double)`,
 /// propagated from main's callsite.
 #[test]
-fn fn_constant_propagates_via_direct_call() {
+fn known_fn_capability_propagates_via_direct_call() {
     let (_t, m, mt) = pipeline(
         r#"
 fn double(x), do: x * 2
@@ -2071,27 +2063,6 @@ end
     let double = m.fns.iter().find(|f| f.name == "double").unwrap();
     let apply2_entry = apply2.block(apply2.entry);
     let f_param = apply2_entry.params[0]; // first param is `f`
-    // Look at every spec of apply2 — at least one must carry the
-    // propagated fn_constant.
-    let mut saw_propagation = false;
-    for (key, ft) in &mt.specs {
-        if key.fn_id != apply2.id {
-            continue;
-        }
-        if ft.fn_constants.get(&f_param).copied() == Some(double.id) {
-            saw_propagation = true;
-        }
-    }
-    assert!(
-        saw_propagation,
-        "expected apply2's spec to carry fn_constants[f] = double; \
-         specs for apply2: {:?}",
-        mt.specs
-            .iter()
-            .filter(|(key, _)| key.fn_id == apply2.id)
-            .map(|(key, ft)| (key.input.clone(), ft.fn_constants.clone()))
-            .collect::<Vec<_>>()
-    );
     let mut saw_capability = false;
     for (key, ft) in &mt.specs {
         if key.fn_id != apply2.id {
@@ -2157,7 +2128,7 @@ fn callable_capability_opaque_for_multi_target_join() {
 
 /// `rewrite_known_target_closures` replaces `Term::CallClosure(v, …)`
 /// with `Term::Call(F, …)` when every spec of the enclosing FnIr
-/// agrees that `fn_constants[v] = F`.
+/// agrees that `callable_capabilities[v] = KnownFn(F)`.
 #[test]
 fn closure_call_rewritten_to_direct_call() {
     let (mut t, mut m, mt) = pipeline(
@@ -2232,13 +2203,13 @@ end
 }
 
 /// `apply2(double, 21)` — apply2's body has `CallClosure(f, [x])`.
-/// With `fn_constants[f] = double` propagated from main, the planner's
+/// With `KnownFn(double)` propagated from main, the planner's
 /// queried-set walk should register `(double, [int_lit(21)])` as a
 /// narrow spec for double — alongside its any-key (which .29.10.3
 /// will drop). This guarantees a narrow spec exists for the IR
 /// rewrite to dispatch into.
 #[test]
-fn callclosure_with_fn_constant_registers_narrow_spec() {
+fn callclosure_with_known_fn_capability_registers_narrow_spec() {
     let (t, m, mt) = pipeline(
         r#"
 fn double(x), do: x * 2
@@ -2266,7 +2237,7 @@ end
     assert!(
         saw_narrow,
         "expected a narrow int-typed spec for double from \
-         apply2's CallClosure with fn_constants[f] = double; \
+         apply2's CallClosure with callable_capabilities[f] = KnownFn(double); \
          registered specs for double: {:?}",
         mt.specs
             .iter()
@@ -3090,7 +3061,7 @@ fn rewrite_erases_threaded_constant_closure() {
 }
 
 /// Two distinct lambdas flowing into the same HOF parameter make it
-/// non-constant (`fn_constants` disagree across specs), so the closure value
+/// non-constant (`KnownFn` capabilities disagree across specs), so the closure value
 /// is NOT erased — the static-closure machinery must still see it. Guards
 /// against over-eager elimination.
 #[test]
