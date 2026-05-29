@@ -724,11 +724,11 @@ mod tests {
         assert_eq!(foo.span.file, a);
         assert_eq!(bar.span.file, b);
         assert_eq!(
-            &sm.file(foo.span.file).bytes[foo.span.start as usize..foo.span.end as usize],
+            &sm.file(foo.span.file).bytes()[foo.span.start as usize..foo.span.end as usize],
             "foo"
         );
         assert_eq!(
-            &sm.file(bar.span.file).bytes[bar.span.start as usize..bar.span.end as usize],
+            &sm.file(bar.span.file).bytes()[bar.span.start as usize..bar.span.end as usize],
             "bar"
         );
     }

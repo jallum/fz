@@ -144,8 +144,13 @@ impl<'a> Renderer<'a> {
             return Ok(());
         }
         let loc = self.sm.locate(span);
-        let file = &self.sm.file(loc.file).name;
-        writeln!(out, "  --> {}:{}:{}", file, loc.line, loc.col)
+        writeln!(
+            out,
+            "  --> {}:{}:{}",
+            self.sm.file_name(loc.file),
+            loc.line,
+            loc.col
+        )
     }
 
     fn snippet_block(
@@ -164,9 +169,8 @@ impl<'a> Renderer<'a> {
             return Ok(());
         }
         let loc = self.sm.locate(sl.span);
-        let f = self.sm.file(loc.file);
-        let source_line = &f.bytes.as_bytes()[loc.line_start as usize..loc.line_end as usize];
-        let (expanded_line, byte_to_col) = expand_tabs(source_line, self.tab_width as usize);
+        let source_line = self.sm.line_text(&loc);
+        let (expanded_line, byte_to_col) = expand_tabs(source_line.as_bytes(), self.tab_width as usize);
 
         // Source line itself. Color is applied to the underline glyph
         // below (color_pre / color_post), not to the source bytes —
@@ -183,10 +187,10 @@ impl<'a> Renderer<'a> {
         )?;
 
         // Underline. Compute start/end column in expanded coords.
-        let local_start = (sl.span.start.saturating_sub(loc.line_start)) as usize;
+        let (line_start, line_end) = loc.line_bounds();
+        let local_start = (sl.span.start.saturating_sub(line_start)) as usize;
         // If span spans into next lines, clamp to end of current line.
-        let local_end_byte =
-            std::cmp::min(sl.span.end, loc.line_end) as usize - loc.line_start as usize;
+        let local_end_byte = std::cmp::min(sl.span.end, line_end) as usize - line_start as usize;
         let start_col = byte_to_col.get(local_start).copied().unwrap_or(0);
         let end_col = byte_to_col
             .get(local_end_byte)

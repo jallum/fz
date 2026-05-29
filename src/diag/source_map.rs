@@ -10,8 +10,8 @@ use super::span::{FileId, Span};
 
 #[derive(Clone)]
 pub struct SourceFile {
-    pub name: String,
-    pub bytes: Arc<str>,
+    name: String,
+    bytes: Arc<str>,
     /// Lazily computed on first `locate` for this file. Each entry is the
     /// byte offset of the start of a line; line 1 starts at byte 0.
     line_starts: std::sync::OnceLock<Vec<u32>>,
@@ -24,6 +24,19 @@ impl SourceFile {
             bytes,
             line_starts: std::sync::OnceLock::new(),
         }
+    }
+
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    #[cfg(test)]
+    pub fn bytes(&self) -> &str {
+        &self.bytes
+    }
+
+    pub fn line_text(&self, loc: &Location) -> &str {
+        &self.bytes[loc.line_start as usize..loc.line_end as usize]
     }
 
     fn line_starts(&self) -> &[u32] {
@@ -53,8 +66,14 @@ pub struct Location {
     pub col: u32,
     /// Byte range `[start, end)` of the line containing `span.start`. Used
     /// by the renderer to extract the source snippet.
-    pub line_start: u32,
-    pub line_end: u32,
+    line_start: u32,
+    line_end: u32,
+}
+
+impl Location {
+    pub fn line_bounds(&self) -> (u32, u32) {
+        (self.line_start, self.line_end)
+    }
 }
 
 #[derive(Default, Clone)]
@@ -79,6 +98,14 @@ impl SourceMap {
 
     pub fn file_count(&self) -> usize {
         self.files.len()
+    }
+
+    pub fn file_name(&self, id: FileId) -> &str {
+        self.file(id).name()
+    }
+
+    pub fn line_text(&self, loc: &Location) -> &str {
+        self.file(loc.file).line_text(loc)
     }
 
     /// Returns the location of `span.start`. Panics on DUMMY spans —
@@ -141,8 +168,7 @@ mod tests {
         let loc = sm.locate(Span::new(f, 0, 1));
         assert_eq!(loc.line, 1);
         assert_eq!(loc.col, 1);
-        assert_eq!(loc.line_start, 0);
-        assert_eq!(loc.line_end, 3); // "abc"
+        assert_eq!(loc.line_bounds(), (0, 3)); // "abc"
     }
 
     #[test]
@@ -151,8 +177,7 @@ mod tests {
         let loc = sm.locate(Span::new(f, 5, 6)); // 'e' in "def"
         assert_eq!(loc.line, 2);
         assert_eq!(loc.col, 2);
-        assert_eq!(loc.line_start, 4);
-        assert_eq!(loc.line_end, 7); // "def"
+        assert_eq!(loc.line_bounds(), (4, 7)); // "def"
     }
 
     #[test]
@@ -161,8 +186,7 @@ mod tests {
         let loc = sm.locate(Span::new(f, 2, 3));
         assert_eq!(loc.line, 1);
         assert_eq!(loc.col, 3);
-        assert_eq!(loc.line_start, 0);
-        assert_eq!(loc.line_end, 3);
+        assert_eq!(loc.line_bounds(), (0, 3));
     }
 
     #[test]
@@ -171,10 +195,7 @@ mod tests {
         let loc = sm.locate(Span::new(f, 8, 13));
         assert_eq!(loc.line, 3);
         assert_eq!(loc.col, 1);
-        assert_eq!(
-            &sm.file(f).bytes[loc.line_start as usize..loc.line_end as usize],
-            "three"
-        );
+        assert_eq!(sm.line_text(&loc), "three");
     }
 
     #[test]
@@ -182,8 +203,8 @@ mod tests {
         let mut sm = SourceMap::new();
         let a = sm.add_file("a", "abc");
         let b = sm.add_file("b", "def");
-        assert_eq!(sm.file(a).bytes.as_ref(), "abc");
-        assert_eq!(sm.file(b).bytes.as_ref(), "def");
+        assert_eq!(sm.file(a).bytes(), "abc");
+        assert_eq!(sm.file(b).bytes(), "def");
     }
 
     #[test]
