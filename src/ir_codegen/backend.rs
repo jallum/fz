@@ -517,12 +517,18 @@ impl Backend for JitBackend {
             jmod.get_finalized_function(meta.halt_cont_body_ids[2]),
         ];
         let resume_addr = jmod.get_finalized_function(meta.resume_id);
+        // Build the module's shared node once; every Process clones the Rc.
+        let node = std::rc::Rc::new(fz_runtime::process::Node::new(
+            meta.atom_names.clone(),
+            meta.frame_sizes.clone(),
+        ));
         Ok(CompiledModule {
             _module: jmod,
             fn_ptrs,
             user_schemas: meta.user_schemas,
             frame_sizes: meta.frame_sizes,
             atom_names: meta.atom_names,
+            node,
             bs_tuple_arity1_schema: meta.bs_tuple_arity1_schema,
             bs_tuple_arity3_schema: meta.bs_tuple_arity3_schema,
             diagnostics: meta.diagnostics,

@@ -145,11 +145,15 @@ pub extern "C" fn fz_aot_setup(
     let schemas = Rc::new(RefCell::new(SchemaRegistry::new()));
     AOT_SCHEMAS.with(|s| *s.borrow_mut() = Some(schemas.clone()));
 
-    let consts = crate::process::CompiledModuleConsts {
-        atom_names: parse_atom_blob(atom_blob),
-        ..crate::process::CompiledModuleConsts::empty()
-    };
+    // The AOT run's node-global atom table, seeded from the program's atom
+    // blob and shared by every spawned process.
+    let node = Rc::new(crate::process::Node::new(
+        parse_atom_blob(atom_blob),
+        Vec::new(),
+    ));
+    let consts = crate::process::CompiledModuleConsts::empty();
     let proc_box = Box::new(Process::from_consts(
+        node,
         schemas,
         &consts,
         1,
@@ -315,12 +319,15 @@ extern "C" fn aot_spawn_hook(sender: *mut Process, _scheduler: *mut (), closure_
     let schemas = parent.heap.schemas_registry();
     let halt_cont_body_addrs = AOT_HALT_CONT_BODIES.with(|c| c.get());
 
+    // Child shares the parent's node (the same atom table), so a runtime atom
+    // interned by either is consistent — a pointer clone, not a table copy.
+    let node = std::rc::Rc::clone(&parent.node);
     let consts = crate::process::CompiledModuleConsts {
-        atom_names: parent.atom_names.clone(),
         halt_cont_body_addrs,
         ..crate::process::CompiledModuleConsts::empty()
     };
     let mut child = Box::new(Process::from_consts(
+        node,
         schemas,
         &consts,
         pid,

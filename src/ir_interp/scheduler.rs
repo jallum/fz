@@ -180,11 +180,11 @@ impl IrInterpRuntime {
         use fz_runtime::process::ProcessState;
         let pid = self.next_pid();
         let user_schemas = self.schemas();
-        let consts = fz_runtime::process::CompiledModuleConsts {
-            atom_names: module.atom_names.clone(),
-            ..fz_runtime::process::CompiledModuleConsts::empty()
-        };
+        // Child shares the interpreter's node (same atom table) by Rc clone.
+        let node = std::rc::Rc::clone(&self.node);
+        let consts = fz_runtime::process::CompiledModuleConsts::empty();
         let mut child = Box::new(Process::from_consts(
+            node,
             user_schemas,
             &consts,
             pid,

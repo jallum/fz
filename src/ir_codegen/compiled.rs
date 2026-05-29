@@ -1181,9 +1181,14 @@ pub struct CompiledModule {
     /// None means no bitstring prim is present in this module.
     pub(crate) bs_tuple_arity1_schema: Option<u32>,
     pub(crate) bs_tuple_arity3_schema: Option<u32>,
-    /// Atom names indexed by id. Copied into each Process so
-    /// `any_value::debug::render` can spell atoms as `:name`.
+    /// Atom names indexed by id. The compile-time source for this module's
+    /// `node` atom table.
     pub(crate) atom_names: Vec<String>,
+    /// Node-global state (atom table + frame sizes) shared by every Process
+    /// `make_process` builds, by `Rc` clone — so spawning copies a pointer,
+    /// not the tables, and runtime-interned atoms are consistent across the
+    /// module's processes.
+    pub(crate) node: std::rc::Rc<fz_runtime::process::Node>,
     pub(crate) diagnostics: crate::diag::Diagnostics,
     /// Zero-capture closure-target spec singletons resolved to code
     /// addresses at JIT-finalize time. `make_process` allocates one
@@ -1254,14 +1259,13 @@ impl CompiledModule {
         // compile-time tables (see docs/cps-in-clif.md §8.2) and the
         // alloc-stats reset the compiled path wants on a fresh process.
         let consts = fz_runtime::process::CompiledModuleConsts {
-            frame_sizes: self.frame_sizes.clone(),
-            atom_names: self.atom_names.clone(),
             bs_tuple_arity1_schema: self.bs_tuple_arity1_schema,
             bs_tuple_arity3_schema: self.bs_tuple_arity3_schema,
             static_closure_targets: self.static_closure_targets.clone(),
             halt_cont_body_addrs: self.halt_cont_body_addrs,
         };
         let mut p = Process::from_consts(
+            std::rc::Rc::clone(&self.node),
             std::rc::Rc::clone(&self.user_schemas),
             &consts,
             0,

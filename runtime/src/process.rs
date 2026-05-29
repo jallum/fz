@@ -71,13 +71,12 @@ pub struct Process {
     // fz-ul4.29.5: closure_builder / closure_args fields removed. Closure
     // construction is inlined at codegen; capture storage is schema-backed,
     // and invocation is a direct call_indirect through the closure code ptr.
-    // Per-CompiledModule constants copied at make_process() time. See
-    // fz-ul4.19.1 follow-up to move these behind an Rc<CompiledModuleConsts>.
-    pub frame_sizes: Vec<u32>,
-    /// Atom names indexed by id. Populated at task-setup time from the
-    /// IR Module's atom_names. any_value::debug::render reads this to
-    /// print `:source_name` instead of `:atom_N`. fz-ul4.25.
-    pub atom_names: Vec<String>,
+    /// Node-global state shared by every Process in this execution context:
+    /// the atom table and the per-fn frame-size table. Cloned (`Rc`) into each
+    /// process, so spawn is a pointer copy, not a table copy. The atom table is
+    /// shared and append-only across the context's processes — runtime atom
+    /// interning is visible to every process, like the BEAM's node-global table.
+    pub node: std::rc::Rc<Node>,
     pub bs_tuple_arity1_schema: Option<u32>,
     pub bs_tuple_arity3_schema: Option<u32>,
     // fz-ul4.19.1 scheduler-level fields. Populated when a Process is
@@ -219,17 +218,48 @@ impl ClosureRef {
     }
 }
 
-/// Per-`CompiledModule` constant tables copied into every Process spawned
-/// from that module. These are the compile-time facts the runtime carries
-/// (frame sizes, atom names, bitstring-tuple schemas, static-closure and
-/// halt-cont singleton seeds) as distinct from the per-spawn scheduler state
-/// (pid, mailbox, run state) the spawner sets. `Process::from_consts` is the
-/// single construction site that applies them, so a newly-added module-const
-/// field flows through one path instead of diverging across the JIT,
-/// interpreter, and AOT spawners.
-pub struct CompiledModuleConsts {
+/// Node-global state shared by every Process in one execution context — a JIT
+/// `Runtime`/`CompiledModule`, an interpreter instance, or an AOT run. The
+/// smallest shared home a process points at; today it owns the atom table and
+/// the per-fn frame-size table. Seeded from the linked module's compile-time
+/// data and shared by `Rc` clone, so spawning a process copies a pointer rather
+/// than cloning the tables. The obvious accretion point for later node-global
+/// state (schemas, loaded code, pid allocation).
+pub struct Node {
+    /// Interned atom text, indexed by atom id. Seeded from the module's
+    /// compile-time atoms; runtime atom interning (`process_atom_id`) appends
+    /// here. Shared and append-only across the context's processes — the
+    /// BEAM's node-global atom table, scaled to one execution context — so a
+    /// runtime-interned atom has the same id in every process.
+    pub atoms: std::cell::RefCell<Vec<String>>,
+    /// Per-fn frame sizes, indexed by `FnId.0`. Read-only after construction
+    /// (the JIT `fz_alloc_frame_dyn` reads it); empty under the interpreter and
+    /// AOT, which do not use compiled frame tables.
     pub frame_sizes: Vec<u32>,
-    pub atom_names: Vec<String>,
+}
+
+impl Node {
+    pub fn new(atoms: Vec<String>, frame_sizes: Vec<u32>) -> Self {
+        Self {
+            atoms: std::cell::RefCell::new(atoms),
+            frame_sizes,
+        }
+    }
+
+    /// No node-global tables: the shape a bare `Process::new` carries.
+    pub fn empty() -> Self {
+        Self::new(Vec::new(), Vec::new())
+    }
+}
+
+/// Per-`CompiledModule` construction inputs applied to a Process at spawn —
+/// the bitstring-tuple schemas plus the static-closure and halt-cont singleton
+/// seeds — as distinct from the per-spawn scheduler state (pid, mailbox, run
+/// state) the spawner sets, and from the shared `Node` tables. `from_consts` is
+/// the single construction site that applies them, so a newly-added field flows
+/// through one path instead of diverging across the JIT, interpreter, and AOT
+/// spawners.
+pub struct CompiledModuleConsts {
     pub bs_tuple_arity1_schema: Option<u32>,
     pub bs_tuple_arity3_schema: Option<u32>,
     pub static_closure_targets: Vec<(
@@ -242,12 +272,10 @@ pub struct CompiledModuleConsts {
 }
 
 impl CompiledModuleConsts {
-    /// No module constants: the shape a bare `Process::new` and the
+    /// No construction inputs: the shape a bare `Process::new` and the
     /// minimal-setup interpreter/AOT spawners carry.
     pub fn empty() -> Self {
         Self {
-            frame_sizes: Vec::new(),
-            atom_names: Vec::new(),
             bs_tuple_arity1_schema: None,
             bs_tuple_arity3_schema: None,
             static_closure_targets: Vec::new(),
@@ -262,6 +290,7 @@ impl Process {
     /// and halt-cont singleton tables. Per-spawn scheduler state (run state,
     /// mailbox, pending entries) stays at defaults for the spawner to set.
     pub fn from_consts(
+        node: std::rc::Rc<Node>,
         schemas: std::rc::Rc<std::cell::RefCell<crate::heap::SchemaRegistry>>,
         consts: &CompiledModuleConsts,
         pid: PidId,
@@ -276,8 +305,7 @@ impl Process {
             ctx: std::ptr::null_mut(),
             halt_value: 0,
             bs_builder: None,
-            frame_sizes: consts.frame_sizes.clone(),
-            atom_names: consts.atom_names.clone(),
+            node,
             bs_tuple_arity1_schema: consts.bs_tuple_arity1_schema,
             bs_tuple_arity3_schema: consts.bs_tuple_arity3_schema,
             pid,
@@ -324,6 +352,7 @@ impl Process {
 
     pub fn new(schemas: std::rc::Rc<std::cell::RefCell<crate::heap::SchemaRegistry>>) -> Self {
         Self::from_consts(
+            std::rc::Rc::new(Node::empty()),
             schemas,
             &CompiledModuleConsts::empty(),
             0,
