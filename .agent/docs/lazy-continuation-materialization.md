@@ -107,6 +107,23 @@ for a compiler-known native continuation, codegen can carry the same typed
 capture facts on the stack until a scheduler boundary forces heap materializa-
 tion.
 
+## Callable Capability Gate
+
+Callable-typed caller state is a lazy-descriptor barrier only when it carries
+runtime callable state. `SpecPlan.callable_capabilities` lets codegen distinguish
+these cases:
+
+- `KnownFn` has no runtime closure state and does not, by itself, force caller
+  continuations onto the heap.
+- `KnownClosure` and `OpaqueCallable` remain conservative barriers because they
+  either carry captured state or cross a callable boundary the current spec
+  cannot name precisely.
+
+Continuation captures are still checked conservatively from their callable type.
+A captured callable becomes scheduler-visible if the continuation materializes,
+so zero-state capture relaxation must wait until the runtime reduce/resume
+carrier bug tracked by `fz-pu9` is fixed.
+
 ## Proof Gates
 
 Use these gates when touching lazy continuation materialization:
