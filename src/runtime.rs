@@ -233,13 +233,10 @@ thread_local! {
 /// until `clear_make_resource_hook_with_module` runs. Returns the previous
 /// module pointer (typically null) so callers can nest scopes if needed.
 pub fn install_make_resource_hook_with_module(module: &crate::fz_ir::Module) -> *const () {
-    let prev = CURRENT_MODULE.with(|c| c.replace(module as *const _ as *const ()));
-    fz_runtime::scheduler_hooks::install_make_resource_hook(make_resource_hook_thunk);
-    prev
+    CURRENT_MODULE.with(|c| c.replace(module as *const _ as *const ()))
 }
 
 pub fn clear_make_resource_hook_with_module(prev: *const ()) {
-    fz_runtime::scheduler_hooks::clear_make_resource_hook();
     CURRENT_MODULE.with(|c| c.set(prev));
 }
 
@@ -527,9 +524,6 @@ impl<'a> Runtime<'a> {
         // (now in the runtime crate) can dispatch back into this
         // Runtime. The runtime crate can't see Runtime directly, so it
         // calls through extern "C" fn pointers we register here.
-        fz_runtime::scheduler_hooks::install_spawn_hook(spawn_hook_thunk);
-        fz_runtime::scheduler_hooks::install_spawn_opt_hook(spawn_opt_hook_thunk);
-        fz_runtime::scheduler_hooks::install_send_hook(send_hook_thunk);
         let _output_scope = route_output_to(self.tel);
         // fz-swt.10 — install the resource-allocation hook if a Module
         // has been attached via `with_module`. Programs that never call
@@ -668,9 +662,6 @@ impl<'a> Runtime<'a> {
             self.tasks.insert(pid, task);
         }
         CURRENT_RUNTIME.with(|c| c.set(prev_rt));
-        fz_runtime::scheduler_hooks::clear_spawn_hook();
-        fz_runtime::scheduler_hooks::clear_spawn_opt_hook();
-        fz_runtime::scheduler_hooks::clear_send_hook();
         if self.module.is_some() {
             clear_make_resource_hook_with_module(prev_module);
         }

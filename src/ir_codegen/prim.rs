@@ -1851,13 +1851,14 @@ fn lower_extern_fz_send<M: cranelift_module::Module>(
     let mut msg_args = Vec::with_capacity(1);
     body.push_binding_as_abi_arg(&mut msg_args, msg_binding, ArgRepr::ValueRef);
     let msg_ref = msg_args[0];
-    let sig = sig1(&[types::I64, types::I64], &[types::I64]);
+    let sig = sig1(&[types::I64, types::I64, types::I64], &[types::I64]);
     let func_id = body
         .jmod
         .declare_function("fz_send_ref", Linkage::Import, &sig)
         .map_err(|e| CodegenError::new(format!("declare fz_send_ref: {}", e)))?;
     let fref = body.jmod.declare_func_in_func(func_id, body.b.func);
-    let inst = body.b.ins().call(fref, &[receiver, msg_ref]);
+    let process = body.process_arg();
+    let inst = body.b.ins().call(fref, &[process, receiver, msg_ref]);
     Ok(LowerOut::ValueRefWord(body.b.inst_results(inst)[0]))
 }
 
@@ -1897,13 +1898,14 @@ fn lower_extern_fz_spawn<M: cranelift_module::Module>(
     args: &[crate::fz_ir::Var],
 ) -> Result<LowerOut, CodegenError> {
     let closure_ref = body.tagged_var(var_env, args[0].0);
-    let sig = sig1(&[types::I64], &[types::I64]);
+    let sig = sig1(&[types::I64, types::I64], &[types::I64]);
     let func_id = body
         .jmod
         .declare_function("fz_spawn_ref", Linkage::Import, &sig)
         .map_err(|e| CodegenError::new(format!("declare fz_spawn_ref: {}", e)))?;
     let fref = body.jmod.declare_func_in_func(func_id, body.b.func);
-    let inst = body.b.ins().call(fref, &[closure_ref]);
+    let process = body.process_arg();
+    let inst = body.b.ins().call(fref, &[process, closure_ref]);
     Ok(LowerOut::RawI64(body.b.inst_results(inst)[0]))
 }
 
@@ -1916,13 +1918,17 @@ fn lower_extern_fz_spawn_opt<M: cranelift_module::Module>(
 ) -> Result<LowerOut, CodegenError> {
     let closure_ref = body.tagged_var(var_env, args[0].0);
     let min_heap_size = body.as_raw_i64(var_env, args[1].0);
-    let sig = sig1(&[types::I64, types::I64], &[types::I64]);
+    let sig = sig1(&[types::I64, types::I64, types::I64], &[types::I64]);
     let func_id = body
         .jmod
         .declare_function("fz_spawn_opt_ref", Linkage::Import, &sig)
         .map_err(|e| CodegenError::new(format!("declare fz_spawn_opt_typed: {}", e)))?;
     let fref = body.jmod.declare_func_in_func(func_id, body.b.func);
-    let inst = body.b.ins().call(fref, &[closure_ref, min_heap_size]);
+    let process = body.process_arg();
+    let inst = body
+        .b
+        .ins()
+        .call(fref, &[process, closure_ref, min_heap_size]);
     Ok(LowerOut::RawI64(body.b.inst_results(inst)[0]))
 }
 
@@ -1938,13 +1944,14 @@ fn lower_extern_fz_make_resource<M: cranelift_module::Module>(
         .expect("unbound make_resource payload");
     let payload_raw = body.value_raw_int(payload);
     let dtor_ref = body.tagged_var(var_env, args[1].0);
-    let sig = sig1(&[types::I64, types::I64], &[types::I64]);
+    let sig = sig1(&[types::I64, types::I64, types::I64], &[types::I64]);
     let func_id = body
         .jmod
         .declare_function("fz_make_resource_ref", Linkage::Import, &sig)
         .map_err(|e| CodegenError::new(format!("declare fz_make_resource_ref: {}", e)))?;
     let fref = body.jmod.declare_func_in_func(func_id, body.b.func);
-    let inst = body.b.ins().call(fref, &[payload_raw, dtor_ref]);
+    let process = body.process_arg();
+    let inst = body.b.ins().call(fref, &[process, payload_raw, dtor_ref]);
     Ok(LowerOut::ValueRef(body.b.inst_results(inst)[0]))
 }
 

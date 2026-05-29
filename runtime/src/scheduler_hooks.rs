@@ -93,37 +93,9 @@ pub type TimerCancelHook = extern "C" fn(timer_id: u64);
 // crate; CURRENT_PROCESS demonstrates that runtime-crate TLS works fine
 // under AOT.
 thread_local! {
-    static SPAWN_HOOK: Cell<usize> = const { Cell::new(0) };
-    static SPAWN_OPT_HOOK: Cell<usize> = const { Cell::new(0) };
-    static SEND_HOOK: Cell<usize> = const { Cell::new(0) };
     static OUTPUT_HOOK: Cell<usize> = const { Cell::new(0) };
-    static MAKE_RESOURCE_HOOK: Cell<usize> = const { Cell::new(0) };
     static TIMER_SCHEDULE_HOOK: Cell<usize> = const { Cell::new(0) };
     static TIMER_CANCEL_HOOK: Cell<usize> = const { Cell::new(0) };
-}
-
-pub fn install_spawn_hook(hook: SpawnHook) {
-    SPAWN_HOOK.with(|c| c.set(hook as usize));
-}
-
-pub fn clear_spawn_hook() {
-    SPAWN_HOOK.with(|c| c.set(0));
-}
-
-pub fn install_spawn_opt_hook(hook: SpawnOptHook) {
-    SPAWN_OPT_HOOK.with(|c| c.set(hook as usize));
-}
-
-pub fn clear_spawn_opt_hook() {
-    SPAWN_OPT_HOOK.with(|c| c.set(0));
-}
-
-pub fn install_send_hook(hook: SendHook) {
-    SEND_HOOK.with(|c| c.set(hook as usize));
-}
-
-pub fn clear_send_hook() {
-    SEND_HOOK.with(|c| c.set(0));
 }
 
 pub fn install_output_hook(hook: OutputHook) {
@@ -187,60 +159,4 @@ pub fn dispatch_timer_cancel(timer_id: u64) {
     }
     let hook: TimerCancelHook = unsafe { std::mem::transmute(raw) };
     hook(timer_id);
-}
-
-pub(crate) fn dispatch_spawn(closure_bits: u64) -> u32 {
-    let raw = SPAWN_HOOK.with(|c| c.get());
-    if raw == 0 {
-        panic!(
-            "fz_spawn called outside a Runtime — install_spawn_hook \
-             must be called before driving any task"
-        );
-    }
-    let hook: SpawnHook = unsafe { std::mem::transmute(raw) };
-    hook(closure_bits)
-}
-
-pub(crate) fn dispatch_spawn_opt(closure_bits: u64, min_heap_size: u32) -> u32 {
-    let raw = SPAWN_OPT_HOOK.with(|c| c.get());
-    if raw == 0 {
-        panic!(
-            "fz_spawn_opt called outside a Runtime — install_spawn_opt_hook \
-             must be called before driving any task"
-        );
-    }
-    let hook: SpawnOptHook = unsafe { std::mem::transmute(raw) };
-    hook(closure_bits, min_heap_size)
-}
-
-pub(crate) fn dispatch_send(receiver_pid: u32, msg_ref_word: u64) {
-    let raw = SEND_HOOK.with(|c| c.get());
-    if raw == 0 {
-        panic!(
-            "fz_send called outside a Runtime — install_send_hook \
-             must be called before driving any task"
-        );
-    }
-    let hook: SendHook = unsafe { std::mem::transmute(raw) };
-    hook(receiver_pid, msg_ref_word);
-}
-
-pub fn install_make_resource_hook(hook: MakeResourceHook) {
-    MAKE_RESOURCE_HOOK.with(|c| c.set(hook as usize));
-}
-
-pub fn clear_make_resource_hook() {
-    MAKE_RESOURCE_HOOK.with(|c| c.set(0));
-}
-
-pub(crate) fn dispatch_make_resource(payload_raw: u64, dtor_ref: u64) -> u64 {
-    let raw = MAKE_RESOURCE_HOOK.with(|c| c.get());
-    if raw == 0 {
-        panic!(
-            "fz_make_resource called outside a Runtime — \
-             install_make_resource_hook must be called before driving any task"
-        );
-    }
-    let hook: MakeResourceHook = unsafe { std::mem::transmute(raw) };
-    hook(payload_raw, dtor_ref)
 }

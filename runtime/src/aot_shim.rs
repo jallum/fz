@@ -160,9 +160,6 @@ pub extern "C" fn fz_aot_setup(
 
     // Install scheduler hooks so fz_spawn / fz_send (in ir_runtime) dispatch
     // back to the AOT eager-sync handlers.
-    crate::scheduler_hooks::install_spawn_hook(aot_spawn_hook);
-    crate::scheduler_hooks::install_spawn_opt_hook(aot_spawn_opt_hook);
-    crate::scheduler_hooks::install_send_hook(aot_send_hook);
     // fz-xx8.3 — timer schedule/cancel hooks for `receive ... after N`.
     crate::scheduler_hooks::install_timer_schedule_hook(aot_timer_schedule_hook);
     crate::scheduler_hooks::install_timer_cancel_hook(aot_timer_cancel_hook);
@@ -170,7 +167,6 @@ pub extern "C" fn fz_aot_setup(
     // fz-4mk — AOT MakeResourceHook. Allocates a Resource carrying the
     // dtor closure on the stub; the closure body fires as fz code at
     // task-exit drain via `fz_drain_dtor_entry`.
-    crate::scheduler_hooks::install_make_resource_hook(aot_make_resource_hook);
 
     // Gather the AOT eager-sync hooks into the per-context dispatch table and
     // point the root task at it. Spawned children are stamped at dispatch.
@@ -462,9 +458,6 @@ pub extern "C" fn fz_aot_run_main(
     aot_run_queue_loop();
 
     // Teardown.
-    crate::scheduler_hooks::clear_spawn_hook();
-    crate::scheduler_hooks::clear_send_hook();
-    crate::scheduler_hooks::clear_make_resource_hook();
     crate::scheduler_hooks::clear_timer_schedule_hook();
     crate::scheduler_hooks::clear_timer_cancel_hook();
     AOT_TIMERS.with(|w| *w.borrow_mut() = TimerWheel::new());

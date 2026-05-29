@@ -392,14 +392,33 @@ fn halt_value_from_slot(value: crate::any_value::AnyValue) -> i64 {
 /// Both consume a Runtime installed in TLS by Runtime::run_until_idle.
 /// Calling either outside the scheduler path panics with a clear message.
 ///
-#[unsafe(no_mangle)]
-pub extern "C" fn fz_spawn_ref(closure_ref_word: u64) -> u64 {
-    crate::scheduler_hooks::dispatch_spawn(closure_ref_word) as u64
+/// Borrow the execution context a BIF reaches scheduler services through.
+/// The owning scheduler installs it on the Process (`ctx.2`); it outlives any
+/// FFI call made under this process.
+#[inline]
+unsafe fn process_ctx<'a>(process: *mut Process) -> &'a crate::exec_ctx::ExecCtx {
+    let ctx = unsafe { (*process).ctx };
+    debug_assert!(!ctx.is_null(), "process.ctx installed before BIF dispatch");
+    unsafe { &*ctx }
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_spawn_opt_ref(closure_ref_word: u64, min_heap_size: u64) -> u64 {
-    crate::scheduler_hooks::dispatch_spawn_opt(closure_ref_word, min_heap_size as u32) as u64
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn fz_spawn_ref(process: *mut Process, closure_ref_word: u64) -> u64 {
+    let ctx = unsafe { process_ctx(process) };
+    (ctx.spawn.expect("spawn callback installed"))(closure_ref_word) as u64
+}
+
+#[unsafe(no_mangle)]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn fz_spawn_opt_ref(
+    process: *mut Process,
+    closure_ref_word: u64,
+    min_heap_size: u64,
+) -> u64 {
+    let ctx = unsafe { process_ctx(process) };
+    (ctx.spawn_opt.expect("spawn_opt callback installed"))(closure_ref_word, min_heap_size as u32)
+        as u64
 }
 
 /// fz-swt.10 — `make_resource(payload, dtor)` runtime BIF, callable from
@@ -413,8 +432,14 @@ pub extern "C" fn fz_spawn_opt_ref(closure_ref_word: u64, min_heap_size: u64) ->
 /// both interp and JIT/AOT execution — the symbol path is therefore
 /// uniform across all three legs (see fz-swt.10's `MakeResourceHook`).
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_make_resource_ref(payload_raw: u64, dtor_ref: u64) -> u64 {
-    crate::scheduler_hooks::dispatch_make_resource(payload_raw, dtor_ref)
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn fz_make_resource_ref(
+    process: *mut Process,
+    payload_raw: u64,
+    dtor_ref: u64,
+) -> u64 {
+    let ctx = unsafe { process_ctx(process) };
+    (ctx.make_resource.expect("make_resource callback installed"))(payload_raw, dtor_ref)
 }
 
 #[unsafe(no_mangle)]
@@ -440,10 +465,16 @@ pub extern "C" fn fz_make_ref_raw() -> u64 {
 /// the scheduler/mailbox moves the one-word any value ref until a matcher or
 /// receiver unwraps it.
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_send_ref(receiver_pid_bits: u64, msg_ref_word: u64) -> u64 {
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn fz_send_ref(
+    process: *mut Process,
+    receiver_pid_bits: u64,
+    msg_ref_word: u64,
+) -> u64 {
     let receiver_pid = receiver_pid_bits as u32;
     let _ = any_value_ref_from_word(msg_ref_word, "fz_send_ref message");
-    crate::scheduler_hooks::dispatch_send(receiver_pid, msg_ref_word);
+    let ctx = unsafe { process_ctx(process) };
+    (ctx.send.expect("send callback installed"))(receiver_pid, msg_ref_word);
     msg_ref_word
 }
 
