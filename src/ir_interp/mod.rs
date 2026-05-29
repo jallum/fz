@@ -207,7 +207,7 @@ impl IrInterpRuntime {
         // the image's module so a REPL chunk that introduced new compile-time
         // atoms is visible to rendering/matching (the image carries the
         // cumulative atom set).
-        *self.node.atoms.borrow_mut() = image.module().atom_names.clone();
+        self.node.reset_atoms(&image.module().atom_names);
         self.code_images.insert(pid, image);
     }
 

@@ -218,6 +218,60 @@ impl ClosureRef {
     }
 }
 
+/// The node-global atom table: text↔id, append-only. Seeded from a module's
+/// compile-time atoms (ids 0..N, dense) and grown by runtime interning.
+///
+/// Atoms are integers once interned; the table is touched only at the
+/// text↔index boundary (interning a new atom, rendering one to text). It keeps
+/// both directions so each is O(1): `by_id` for id→text (dense `Vec`, since
+/// atoms are append-only with no gaps — the next id is just `by_id.len()`),
+/// and `by_name` for text→id so interning is a hash lookup, not a scan. The
+/// BEAM shape (index array + interning hash table), scaled to one node.
+pub struct AtomTable {
+    by_id: Vec<String>,
+    by_name: std::collections::HashMap<String, u32>,
+}
+
+impl AtomTable {
+    pub fn new(names: Vec<String>) -> Self {
+        let by_name = names
+            .iter()
+            .enumerate()
+            .map(|(i, n)| (n.clone(), i as u32))
+            .collect();
+        Self { by_id: names, by_name }
+    }
+
+    /// Return the atom's id, allocating a fresh one (the next dense index) if
+    /// the name is new. O(1).
+    pub fn intern(&mut self, name: &str) -> u32 {
+        if let Some(&id) = self.by_name.get(name) {
+            return id;
+        }
+        let id = self.by_id.len() as u32;
+        self.by_id.push(name.to_string());
+        self.by_name.insert(name.to_string(), id);
+        id
+    }
+
+    /// The atom's text, or `None` if `id` is out of range. O(1).
+    pub fn name(&self, id: u32) -> Option<&str> {
+        self.by_id.get(id as usize).map(String::as_str)
+    }
+
+    /// Replace the whole table with `names` (ids 0..len). Used by the
+    /// interpreter when a REPL chunk's code image carries a new cumulative
+    /// atom set.
+    pub fn reset_from(&mut self, names: &[String]) {
+        self.by_id = names.to_vec();
+        self.by_name = names
+            .iter()
+            .enumerate()
+            .map(|(i, n)| (n.clone(), i as u32))
+            .collect();
+    }
+}
+
 /// Node-global state shared by every Process in one execution context — a JIT
 /// `Runtime`/`CompiledModule`, an interpreter instance, or an AOT run. The
 /// smallest shared home a process points at; today it owns the atom table and
@@ -226,22 +280,22 @@ impl ClosureRef {
 /// than cloning the tables. The obvious accretion point for later node-global
 /// state (schemas, loaded code, pid allocation).
 pub struct Node {
-    /// Interned atom text, indexed by atom id. Seeded from the module's
-    /// compile-time atoms; runtime atom interning (`process_atom_id`) appends
-    /// here. Shared and append-only across the context's processes — the
-    /// BEAM's node-global atom table, scaled to one execution context — so a
-    /// runtime-interned atom has the same id in every process.
-    pub atoms: std::cell::RefCell<Vec<String>>,
+    /// The node-global atom table. Shared and append-only across the context's
+    /// processes, so a runtime-interned atom has the same id in every process —
+    /// the BEAM's node-global atom table, scaled to one execution context.
+    /// Reached through `intern_atom` / `atom_name` / `reset_atoms`, never
+    /// directly, so the interior mutability stays an implementation detail.
+    atoms: std::cell::RefCell<AtomTable>,
     /// Per-fn frame sizes, indexed by `FnId.0`. Read-only after construction
-    /// (the JIT `fz_alloc_frame_dyn` reads it); empty under the interpreter and
-    /// AOT, which do not use compiled frame tables.
-    pub frame_sizes: Vec<u32>,
+    /// (the JIT `fz_alloc_frame_dyn` reads it via `frame_size`); empty under
+    /// the interpreter and AOT, which do not use compiled frame tables.
+    frame_sizes: Vec<u32>,
 }
 
 impl Node {
     pub fn new(atoms: Vec<String>, frame_sizes: Vec<u32>) -> Self {
         Self {
-            atoms: std::cell::RefCell::new(atoms),
+            atoms: std::cell::RefCell::new(AtomTable::new(atoms)),
             frame_sizes,
         }
     }
@@ -249,6 +303,27 @@ impl Node {
     /// No node-global tables: the shape a bare `Process::new` carries.
     pub fn empty() -> Self {
         Self::new(Vec::new(), Vec::new())
+    }
+
+    /// Intern an atom into the node-global table, returning its id.
+    pub fn intern_atom(&self, name: &str) -> u32 {
+        self.atoms.borrow_mut().intern(name)
+    }
+
+    /// The atom's text, or `None` if `id` is unknown. Returns an owned `String`
+    /// so callers do not hold the table borrow.
+    pub fn atom_name(&self, id: u32) -> Option<String> {
+        self.atoms.borrow().name(id).map(str::to_owned)
+    }
+
+    /// Replace the atom table (interpreter REPL code-image refresh).
+    pub fn reset_atoms(&self, names: &[String]) {
+        self.atoms.borrow_mut().reset_from(names);
+    }
+
+    /// The compiled frame size for `fn_id`, or `None` if absent.
+    pub fn frame_size(&self, fn_id: u32) -> Option<u32> {
+        self.frame_sizes.get(fn_id as usize).copied()
     }
 }
 

@@ -102,16 +102,9 @@ fn map_ref_word_from_bits(bits: u64) -> u64 {
 }
 
 fn process_atom_id(process: *mut Process, name: &str) -> u32 {
-    let process = unsafe { &mut *process };
     // Intern into the node-global atom table (shared, append-only): a
     // runtime-created atom gets the same id in every process on this node.
-    let mut atoms = process.node.atoms.borrow_mut();
-    if let Some(id) = atoms.iter().position(|existing| existing == name) {
-        return id as u32;
-    }
-    let id = atoms.len() as u32;
-    atoms.push(name.to_string());
-    id
+    unsafe { (*process).node.intern_atom(name) }
 }
 
 fn alloc_stat_entries(
@@ -2043,10 +2036,9 @@ pub extern "C" fn fz_materialize_cont(process: *mut Process, cont_word: u64) -> 
 /// Process's frame_sizes table populated at make_process() time.
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_alloc_frame_dyn(process: *mut Process, fn_id: u32) -> *mut u8 {
-    let size = *(unsafe { &*process })
+    let size = (unsafe { &*process })
         .node
-        .frame_sizes
-        .get(fn_id as usize)
+        .frame_size(fn_id)
         .unwrap_or_else(|| panic!("frame_sizes has no entry for fn_id {}", fn_id));
     fz_alloc_frame(process, fn_id, size)
 }
@@ -2422,13 +2414,7 @@ mod tests {
         for i in 0..count {
             let (key, value) = unsafe { crate::any_value::map_entry(map_addr as *const u8, i) };
             if key.kind() == ValueKind::ATOM
-                && process
-                    .node
-                    .atoms
-                    .borrow()
-                    .get(key.raw() as usize)
-                    .map(String::as_str)
-                    == Some(name)
+                && process.node.atom_name(key.raw() as u32).as_deref() == Some(name)
             {
                 if let AnyValue::Int(value) = value {
                     return value;
