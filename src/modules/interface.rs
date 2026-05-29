@@ -124,8 +124,15 @@ fn collect_module(
         .items
         .iter()
         .filter_map(|item| match &**item {
+            // `__info__/1` is an implicit reflection builtin (fz-6df.12), not a
+            // declared export: it is callable as `M.__info__` within a program
+            // but is excluded from the module interface, so it is not imported,
+            // not artifact-exported, and not subject to strict @spec validation.
             crate::ast::Item::Fn(def)
-                if !def.is_macro && !def.is_private && def.extern_abi.is_none() =>
+                if !def.is_macro
+                    && !def.is_private
+                    && def.extern_abi.is_none()
+                    && def.name != "__info__" =>
             {
                 Some(interface_fn(def))
             }
