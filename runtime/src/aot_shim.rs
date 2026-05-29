@@ -161,8 +161,6 @@ pub extern "C" fn fz_aot_setup(
     // Install scheduler hooks so fz_spawn / fz_send (in ir_runtime) dispatch
     // back to the AOT eager-sync handlers.
     // fz-xx8.3 — timer schedule/cancel hooks for `receive ... after N`.
-    crate::scheduler_hooks::install_timer_schedule_hook(aot_timer_schedule_hook);
-    crate::scheduler_hooks::install_timer_cancel_hook(aot_timer_cancel_hook);
     AOT_TIMERS.with(|w| *w.borrow_mut() = TimerWheel::new());
     // fz-4mk — AOT MakeResourceHook. Allocates a Resource carrying the
     // dtor closure on the stub; the closure body fires as fz code at
@@ -192,7 +190,7 @@ pub extern "C" fn fz_aot_setup(
 /// body runs as fz code at scheduler-boundary drain via the
 /// `fz_drain_dtor_entry` shim; the Resource's C-side dtor slot is the
 /// no-op so refcount→0 outside the drain doesn't double-fire.
-extern "C" fn aot_make_resource_hook(payload_raw: u64, dtor_ref: u64) -> u64 {
+extern "C" fn aot_make_resource_hook(_module: *const (), payload_raw: u64, dtor_ref: u64) -> u64 {
     let dtor_ref = crate::any_value::AnyValueRef::from_raw_word(dtor_ref)
         .expect("fz_make_resource (AOT): dtor ref");
     let dtor_closure =
@@ -296,7 +294,7 @@ pub extern "C" fn fz_aot_register_static_closure(
 /// closure into its heap, sets pending_closure_entry, and enqueues the
 /// child — returning immediately to the caller. The run-queue loop in
 /// fz_aot_run_main drives the child when the parent yields or halts.
-extern "C" fn aot_spawn_hook(closure_bits: u64) -> u32 {
+extern "C" fn aot_spawn_hook(_scheduler: *mut (), closure_bits: u64) -> u32 {
     let pid = AOT_NEXT_PID.with(|c| {
         let p = c.get();
         c.set(p + 1);
@@ -341,8 +339,12 @@ extern "C" fn aot_spawn_hook(closure_bits: u64) -> u32 {
 }
 
 /// fz-siu.12: spawn_opt hook. v1 ignores min_heap_size; delegates to aot_spawn_hook.
-extern "C" fn aot_spawn_opt_hook(closure_bits: u64, _min_heap_size: u32) -> u32 {
-    aot_spawn_hook(closure_bits)
+extern "C" fn aot_spawn_opt_hook(
+    scheduler: *mut (),
+    closure_bits: u64,
+    _min_heap_size: u32,
+) -> u32 {
+    aot_spawn_hook(scheduler, closure_bits)
 }
 
 fn deep_copy_send_ref_for_aot(
@@ -368,7 +370,7 @@ fn deep_copy_self_send_ref_for_aot(
 /// fz-xx8.3 — schedule an after-clause timer on the AOT wheel. Returns the
 /// fresh `TimerId` (a u64); `fz_receive_park_matched` stashes it on the
 /// park record so a matcher hit can cancel.
-extern "C" fn aot_timer_schedule_hook(pid: u32, after_ms: u64) -> u64 {
+extern "C" fn aot_timer_schedule_hook(_scheduler: *mut (), pid: u32, after_ms: u64) -> u64 {
     AOT_TIMERS.with(|w| {
         w.borrow_mut()
             .schedule(pid, Duration::from_millis(after_ms))
@@ -377,7 +379,7 @@ extern "C" fn aot_timer_schedule_hook(pid: u32, after_ms: u64) -> u64 {
 
 /// fz-xx8.3 — cancel an after-clause timer (no-op when already fired or
 /// unknown, matching the JIT path's `TimerWheel::cancel`).
-extern "C" fn aot_timer_cancel_hook(timer_id: u64) {
+extern "C" fn aot_timer_cancel_hook(_scheduler: *mut (), timer_id: u64) {
     AOT_TIMERS.with(|w| w.borrow_mut().cancel(timer_id));
 }
 
@@ -385,7 +387,7 @@ extern "C" fn aot_timer_cancel_hook(timer_id: u64) {
 /// If the receiver was Blocked on non-selective `receive()`, flips it to Ready
 /// and enqueues — matching the JIT's send_via_current_runtime semantics.
 /// Selective-receive arrivals route through `sched::probe_sender`.
-extern "C" fn aot_send_hook(receiver_pid: u32, msg_ref_word: u64) {
+extern "C" fn aot_send_hook(_scheduler: *mut (), receiver_pid: u32, msg_ref_word: u64) {
     let msg =
         crate::any_value::AnyValueRef::from_raw_word(msg_ref_word).expect("aot_send message ref");
     let sender_ptr = CURRENT_PROCESS.with(|c| c.get());
@@ -458,8 +460,6 @@ pub extern "C" fn fz_aot_run_main(
     aot_run_queue_loop();
 
     // Teardown.
-    crate::scheduler_hooks::clear_timer_schedule_hook();
-    crate::scheduler_hooks::clear_timer_cancel_hook();
     AOT_TIMERS.with(|w| *w.borrow_mut() = TimerWheel::new());
     AOT_DRAIN_DTOR_ENTRY.with(|c| c.set(std::ptr::null()));
     AOT_RESUME_ADDR.with(|c| c.set(std::ptr::null()));
@@ -729,7 +729,7 @@ mod tests {
         });
         CURRENT_PROCESS.with(|c| c.set(sender_ptr));
 
-        aot_send_hook(2, msg.raw_word());
+        aot_send_hook(std::ptr::null_mut(), 2, msg.raw_word());
 
         AOT_TASKS.with(|c| {
             let tasks = c.borrow();
@@ -770,9 +770,6 @@ mod tests {
         AOT_TASKS.with(|c| c.borrow_mut().clear());
         AOT_RUN_QUEUE.with(|q| q.borrow_mut().clear());
 
-        crate::scheduler_hooks::install_timer_schedule_hook(aot_timer_schedule_hook);
-        crate::scheduler_hooks::install_timer_cancel_hook(aot_timer_cancel_hook);
-
         // Stand up a single task with a parked_matched that has an
         // after_timer_id. matcher_fn is unused on the drain path.
         extern "C" fn never_match(
@@ -785,8 +782,7 @@ mod tests {
         let schemas = Rc::new(RefCell::new(SchemaRegistry::new()));
         let mut p = Box::new(Process::new(schemas));
         p.pid = 7;
-        let timer_id =
-            crate::scheduler_hooks::dispatch_timer_schedule(p.pid, 1).expect("hook installed");
+        let timer_id = aot_timer_schedule_hook(std::ptr::null_mut(), p.pid, 1);
         let after_cont_addr: usize = 0xCAFE_BABE;
         p.parked_matched = Some(Box::new(ParkRecord {
             matcher_fn: never_match,
@@ -832,8 +828,6 @@ mod tests {
         assert!(AOT_RUN_QUEUE.with(|q| q.borrow().iter().any(|p| *p == 7)));
 
         // Cleanup so we don't leak hooks into a sibling test.
-        crate::scheduler_hooks::clear_timer_schedule_hook();
-        crate::scheduler_hooks::clear_timer_cancel_hook();
         AOT_TASKS.with(|c| c.borrow_mut().clear());
         AOT_RUN_QUEUE.with(|q| q.borrow_mut().clear());
         AOT_TIMERS.with(|w| *w.borrow_mut() = TimerWheel::new());
@@ -845,16 +839,11 @@ mod tests {
     #[test]
     fn timer_cancel_removes_pending_entry() {
         AOT_TIMERS.with(|w| *w.borrow_mut() = TimerWheel::new());
-        crate::scheduler_hooks::install_timer_schedule_hook(aot_timer_schedule_hook);
-        crate::scheduler_hooks::install_timer_cancel_hook(aot_timer_cancel_hook);
 
-        let id = crate::scheduler_hooks::dispatch_timer_schedule(99, 10_000).unwrap();
+        let id = aot_timer_schedule_hook(std::ptr::null_mut(), 99, 10_000);
         assert!(AOT_TIMERS.with(|w| w.borrow().next_deadline().is_some()));
-        crate::scheduler_hooks::dispatch_timer_cancel(id);
+        aot_timer_cancel_hook(std::ptr::null_mut(), id);
         assert!(AOT_TIMERS.with(|w| w.borrow().next_deadline().is_none()));
-
-        crate::scheduler_hooks::clear_timer_schedule_hook();
-        crate::scheduler_hooks::clear_timer_cancel_hook();
     }
 
     #[test]

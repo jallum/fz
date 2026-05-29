@@ -406,7 +406,7 @@ unsafe fn process_ctx<'a>(process: *mut Process) -> &'a crate::exec_ctx::ExecCtx
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn fz_spawn_ref(process: *mut Process, closure_ref_word: u64) -> u64 {
     let ctx = unsafe { process_ctx(process) };
-    (ctx.spawn.expect("spawn callback installed"))(closure_ref_word) as u64
+    (ctx.spawn.expect("spawn callback installed"))(ctx.scheduler, closure_ref_word) as u64
 }
 
 #[unsafe(no_mangle)]
@@ -417,8 +417,11 @@ pub extern "C" fn fz_spawn_opt_ref(
     min_heap_size: u64,
 ) -> u64 {
     let ctx = unsafe { process_ctx(process) };
-    (ctx.spawn_opt.expect("spawn_opt callback installed"))(closure_ref_word, min_heap_size as u32)
-        as u64
+    (ctx.spawn_opt.expect("spawn_opt callback installed"))(
+        ctx.scheduler,
+        closure_ref_word,
+        min_heap_size as u32,
+    ) as u64
 }
 
 /// fz-swt.10 — `make_resource(payload, dtor)` runtime BIF, callable from
@@ -439,7 +442,11 @@ pub extern "C" fn fz_make_resource_ref(
     dtor_ref: u64,
 ) -> u64 {
     let ctx = unsafe { process_ctx(process) };
-    (ctx.make_resource.expect("make_resource callback installed"))(payload_raw, dtor_ref)
+    (ctx.make_resource.expect("make_resource callback installed"))(
+        ctx.module,
+        payload_raw,
+        dtor_ref,
+    )
 }
 
 #[unsafe(no_mangle)]
@@ -474,7 +481,7 @@ pub extern "C" fn fz_send_ref(
     let receiver_pid = receiver_pid_bits as u32;
     let _ = any_value_ref_from_word(msg_ref_word, "fz_send_ref message");
     let ctx = unsafe { process_ctx(process) };
-    (ctx.send.expect("send callback installed"))(receiver_pid, msg_ref_word);
+    (ctx.send.expect("send callback installed"))(ctx.scheduler, receiver_pid, msg_ref_word);
     msg_ref_word
 }
 
@@ -585,7 +592,7 @@ pub extern "C" fn fz_receive_park_matched(
 
     let p = unsafe { &mut *process };
     let after_timer_id = match after_deadline_ms {
-        Some(after_ms) => crate::scheduler_hooks::dispatch_timer_schedule(p.pid, after_ms),
+        Some(after_ms) => crate::exec_ctx::timer_schedule(p, p.pid, after_ms),
         None => None,
     };
     let after_cont = if after_cont_bits == 0 {

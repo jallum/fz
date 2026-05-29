@@ -109,36 +109,25 @@ impl ExitRecord {
     }
 }
 
-thread_local! {
-    /// Raw pointer to the Runtime currently driving `run_until_idle` on
-    /// this worker. Set during run_until_idle for the duration of each
-    /// task's quantum; reset to null after. fz_spawn (.19.2) reads this
-    /// to enqueue new tasks from JIT'd code.
-    ///
-    /// The pointer type is type-erased to `*mut ()` because Runtime
-    /// carries a lifetime; the consumer (fz_spawn) re-narrows it via
-    /// scheduler hook thunks transmute back to `*mut Runtime<'_>`. Safe
-    /// because the Runtime outlives any FFI call: it owns the
-    /// run_until_idle stack frame.
-    pub(crate) static CURRENT_RUNTIME: std::cell::Cell<*mut ()> =
-        const { std::cell::Cell::new(std::ptr::null_mut()) };
-}
-
 /// fz-ul4.23.10 scheduler-hook thunks. These are the extern "C" fns the
 /// runtime crate dispatches through when fz_spawn / fz_send fire from
 /// JIT'd code. They translate the raw-u32 hook ABI back into the
 /// FnId/PidId newtypes Runtime expects and call the existing impls.
-extern "C" fn spawn_hook_thunk(closure_bits: u64) -> u32 {
-    spawn_closure_via_current_runtime(closure_bits)
+extern "C" fn spawn_hook_thunk(scheduler: *mut (), closure_bits: u64) -> u32 {
+    spawn_closure_via(scheduler, closure_bits)
 }
 
-extern "C" fn spawn_opt_hook_thunk(closure_bits: u64, _min_heap_size: u32) -> u32 {
-    spawn_closure_via_current_runtime(closure_bits)
+extern "C" fn spawn_opt_hook_thunk(
+    scheduler: *mut (),
+    closure_bits: u64,
+    _min_heap_size: u32,
+) -> u32 {
+    spawn_closure_via(scheduler, closure_bits)
 }
 
-extern "C" fn send_hook_thunk(receiver_pid: u32, msg_ref_word: u64) {
+extern "C" fn send_hook_thunk(scheduler: *mut (), receiver_pid: u32, msg_ref_word: u64) {
     let msg_ref = AnyValueRef::from_raw_word(msg_ref_word).expect("send hook message ref");
-    send_via_current_runtime(receiver_pid, msg_ref);
+    send_via(scheduler, receiver_pid, msg_ref);
 }
 
 /// Output sink for `dbg`/print: the runtime's `emit_print_line` forwards each
@@ -167,14 +156,12 @@ pub(crate) extern "C" fn output_hook_thunk(tel: *const (), line_ptr: *const u8, 
 // in `ir_interp::make_resource_in_current_process`. The helper walks the
 // closure's wrapper-fn body to find the underlying `Prim::Extern` and
 // resolves its symbol — uniform across all three legs.
-extern "C" fn make_resource_hook_thunk(payload_raw: u64, dtor_ref: u64) -> u64 {
-    let raw = CURRENT_MODULE.with(|c| c.get());
+extern "C" fn make_resource_hook_thunk(module: *const (), payload_raw: u64, dtor_ref: u64) -> u64 {
     assert!(
-        !raw.is_null(),
-        "fz_make_resource called outside a scope that installed the IR Module \
-         (use `install_make_resource_hook_with_module` before driving the task)"
+        !module.is_null(),
+        "fz_make_resource called with no IR Module in the execution context"
     );
-    let module: &crate::fz_ir::Module = unsafe { &*(raw as *const crate::fz_ir::Module) };
+    let module: &crate::fz_ir::Module = unsafe { &*(module as *const crate::fz_ir::Module) };
     let dtor_ref = fz_runtime::any_value::AnyValueRef::from_raw_word(dtor_ref)
         .expect("fz_make_resource: dtor ref");
     let payload = payload_raw as i64;
@@ -191,48 +178,20 @@ extern "C" fn make_resource_hook_thunk(payload_raw: u64, dtor_ref: u64) -> u64 {
     }
 }
 
-thread_local! {
-    /// fz-swt.10 — `*const fz_ir::Module` the `make_resource_hook_thunk`
-    /// reads to walk the dtor closure's IR body. Set/cleared by
-    /// `install_make_resource_hook_with_module` / `clear_*` (called once
-    /// per Runtime::run_until_idle, and also by JIT unit tests that
-    /// drive `CompiledModule::run` directly).
-    pub(crate) static CURRENT_MODULE: std::cell::Cell<*const ()> =
-        const { std::cell::Cell::new(std::ptr::null()) };
-}
-
-/// fz-swt.10 — install the runtime's `MakeResourceHook` and stash `module`
-/// as the IR source the thunk walks. The caller MUST keep `module` alive
-/// until `clear_make_resource_hook_with_module` runs. Returns the previous
-/// module pointer (typically null) so callers can nest scopes if needed.
-pub fn install_make_resource_hook_with_module(module: &crate::fz_ir::Module) -> *const () {
-    CURRENT_MODULE.with(|c| c.replace(module as *const _ as *const ()))
-}
-
-pub fn clear_make_resource_hook_with_module(prev: *const ()) {
-    CURRENT_MODULE.with(|c| c.set(prev));
-}
-
 /// fz-yxs/fz-st5 — installed via `install_timer_schedule_hook`. Called
 /// by `fz_receive_park_matched` when the after-clause carries a real
 /// timeout. Routes through `CURRENT_RUNTIME`'s `TimerWheel`.
-extern "C" fn timer_schedule_hook_thunk(pid: u32, after_ms: u64) -> u64 {
-    let raw = CURRENT_RUNTIME.with(|c| c.get());
-    assert!(
-        !raw.is_null(),
-        "timer_schedule called outside Runtime::run_until_idle"
-    );
-    let rt = unsafe { &mut *(raw as *mut Runtime<'static>) };
+extern "C" fn timer_schedule_hook_thunk(scheduler: *mut (), pid: u32, after_ms: u64) -> u64 {
+    let rt = unsafe { &mut *(scheduler as *mut Runtime<'static>) };
     rt.timers
         .schedule(pid, std::time::Duration::from_millis(after_ms))
 }
 
-extern "C" fn timer_cancel_hook_thunk(timer_id: u64) {
-    let raw = CURRENT_RUNTIME.with(|c| c.get());
-    if raw.is_null() {
+extern "C" fn timer_cancel_hook_thunk(scheduler: *mut (), timer_id: u64) {
+    if scheduler.is_null() {
         return;
     }
-    let rt = unsafe { &mut *(raw as *mut Runtime<'static>) };
+    let rt = unsafe { &mut *(scheduler as *mut Runtime<'static>) };
     rt.timers.cancel(timer_id);
 }
 
@@ -240,13 +199,12 @@ extern "C" fn timer_cancel_hook_thunk(timer_id: u64) {
 /// from a closure. Deep-copies the closure into the new task's heap and
 /// records it as a pending closure entry for the child task's next quantum.
 /// Panics outside a running Runtime.
-pub fn spawn_closure_via_current_runtime(closure_bits: u64) -> PidId {
-    let raw = CURRENT_RUNTIME.with(|c| c.get());
+pub fn spawn_closure_via(scheduler: *mut (), closure_bits: u64) -> PidId {
     assert!(
-        !raw.is_null(),
-        "spawn() called outside Runtime::run_until_idle — no scheduler to spawn into"
+        !scheduler.is_null(),
+        "spawn() called with no scheduler in the execution context"
     );
-    let rt = unsafe { &mut *(raw as *mut Runtime<'static>) };
+    let rt = unsafe { &mut *(scheduler as *mut Runtime<'static>) };
     rt.spawn_closure(closure_bits)
 }
 
@@ -259,13 +217,12 @@ pub fn spawn_closure_via_current_runtime(closure_bits: u64) -> PidId {
 /// running (its Box<Process> has been taken OUT of the registry by
 /// run_until_idle), the receiver is sitting in the registry. No borrow
 /// conflict.
-pub fn send_via_current_runtime(receiver_pid: PidId, msg: AnyValueRef) {
-    let raw = CURRENT_RUNTIME.with(|c| c.get());
+pub fn send_via(scheduler: *mut (), receiver_pid: PidId, msg: AnyValueRef) {
     assert!(
-        !raw.is_null(),
-        "send() called outside Runtime::run_until_idle — no scheduler to find receiver"
+        !scheduler.is_null(),
+        "send() called with no scheduler in the execution context"
     );
-    let rt = unsafe { &mut *(raw as *mut Runtime<'static>) };
+    let rt = unsafe { &mut *(scheduler as *mut Runtime<'static>) };
     let sender_ptr = CURRENT_PROCESS.with(|c| c.get());
     assert!(
         !sender_ptr.is_null(),
@@ -339,7 +296,7 @@ pub fn send_via_current_runtime(receiver_pid: PidId, msg: AnyValueRef) {
                 );
                 receiver.parked_matched = None;
                 if let Some(id) = timer_id {
-                    fz_runtime::scheduler_hooks::dispatch_timer_cancel(id);
+                    fz_runtime::exec_ctx::timer_cancel(receiver, id);
                 }
                 receiver.set_runnable_closure(cont);
                 receiver.state = fz_runtime::process::ProcessState::Ready;
@@ -488,26 +445,9 @@ impl<'a> Runtime<'a> {
     pub fn run_until_idle(&mut self) {
         // fz-ul4.19.2: install Runtime in TLS so fz_spawn (.19.2) and
         // future scheduler-bound FFI fns can reach back. Pointer is
-        // erased to *mut () because Runtime carries 'a; consumers
-        // re-narrow via spawn_via_current_runtime which transmutes the
-        // lifetime back. Safe: we restore the previous value on exit.
+        // This Runtime, erased to *mut () for the per-context dispatch table
+        // below; the callbacks re-narrow it back to &mut Runtime.
         let self_ptr = self as *mut Runtime<'a> as *mut ();
-        let prev_rt = CURRENT_RUNTIME.with(|c| c.replace(self_ptr));
-        // fz-ul4.23.10: install scheduler hooks so fz_spawn / fz_send
-        // (now in the runtime crate) can dispatch back into this
-        // Runtime. The runtime crate can't see Runtime directly, so it
-        // calls through extern "C" fn pointers we register here.
-        // fz-swt.10 — install the resource-allocation hook if a Module
-        // has been attached via `with_module`. Programs that never call
-        // `make_resource` leave it clear; calls in that mode panic with
-        // the "no module attached" message from the thunk.
-        let prev_module = if let Some(m) = self.module {
-            install_make_resource_hook_with_module(m)
-        } else {
-            std::ptr::null()
-        };
-        fz_runtime::scheduler_hooks::install_timer_schedule_hook(timer_schedule_hook_thunk);
-        fz_runtime::scheduler_hooks::install_timer_cancel_hook(timer_cancel_hook_thunk);
         // The per-context dispatch table for this Runtime: the same scheduler
         // handle, telemetry sink, module, and callbacks installed above as
         // thread-globals, gathered into one value each task points its `ctx`
@@ -633,12 +573,6 @@ impl<'a> Runtime<'a> {
             // so send() can find a Blocked receiver.
             self.tasks.insert(pid, task);
         }
-        CURRENT_RUNTIME.with(|c| c.set(prev_rt));
-        if self.module.is_some() {
-            clear_make_resource_hook_with_module(prev_module);
-        }
-        fz_runtime::scheduler_hooks::clear_timer_schedule_hook();
-        fz_runtime::scheduler_hooks::clear_timer_cancel_hook();
     }
 
     /// fz-yxs/fz-st5 — drain expired timers and wake the matching
@@ -1894,18 +1828,16 @@ fn main(), do: sum(10, 0, nil)";
         // Clear run queue so both tasks are quiescent.
         rt.run_queue.clear();
 
-        // Install CURRENT_RUNTIME + CURRENT_PROCESS so send_via_current_runtime
-        // can find the sender and the receiver.
+        // Install CURRENT_PROCESS so send_via can find the sender's heap; the
+        // scheduler handle is passed explicitly.
         let rt_ptr = &mut rt as *mut Runtime<'_> as *mut ();
-        let prev_rt = CURRENT_RUNTIME.with(|c| c.replace(rt_ptr));
         let sender_ptr = rt.tasks.get_mut(&sender_pid).unwrap().as_mut() as *mut Process;
         let prev_proc = CURRENT_PROCESS.with(|c| c.replace(sender_ptr));
 
         // Hit case: msg == 42 matches the pinned.
-        send_via_current_runtime(receiver_pid, test_int_ref(42));
+        send_via(rt_ptr, receiver_pid, test_int_ref(42));
 
         CURRENT_PROCESS.with(|c| c.set(prev_proc));
-        CURRENT_RUNTIME.with(|c| c.set(prev_rt));
 
         let r = rt.task(receiver_pid).unwrap();
         assert_eq!(r.state, ProcessState::Ready);
@@ -1956,15 +1888,13 @@ fn main(), do: sum(10, 0, nil)";
         rt.run_queue.clear();
 
         let rt_ptr = &mut rt as *mut Runtime<'_> as *mut ();
-        let prev_rt = CURRENT_RUNTIME.with(|c| c.replace(rt_ptr));
         let sender_ptr = rt.tasks.get_mut(&sender_pid).unwrap().as_mut() as *mut Process;
         let prev_proc = CURRENT_PROCESS.with(|c| c.replace(sender_ptr));
 
         // Miss case: msg == 7 does not match pinned 42.
-        send_via_current_runtime(receiver_pid, test_int_ref(7));
+        send_via(rt_ptr, receiver_pid, test_int_ref(7));
 
         CURRENT_PROCESS.with(|c| c.set(prev_proc));
-        CURRENT_RUNTIME.with(|c| c.set(prev_rt));
 
         let r = rt.task(receiver_pid).unwrap();
         assert_eq!(r.state, ProcessState::Blocked, "still parked on miss");

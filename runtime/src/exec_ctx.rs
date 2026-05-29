@@ -74,11 +74,34 @@ impl Default for ExecCtx {
     }
 }
 
+/// Schedule an after-timer through a process's execution context. Returns the
+/// new `TimerId`, or `None` when the context wires no timer (e.g. a test that
+/// doesn't stand up a scheduler) — the caller treats that as an indefinite park.
+pub fn timer_schedule(process: &crate::process::Process, pid: u32, after_ms: u64) -> Option<u64> {
+    if process.ctx.is_null() {
+        return None;
+    }
+    let ctx = unsafe { &*process.ctx };
+    ctx.timer_schedule.map(|f| f(ctx.scheduler, pid, after_ms))
+}
+
+/// Cancel a previously scheduled after-timer through a process's context.
+/// No-op when the context wires no timer.
+pub fn timer_cancel(process: &crate::process::Process, timer_id: u64) {
+    if process.ctx.is_null() {
+        return;
+    }
+    let ctx = unsafe { &*process.ctx };
+    if let Some(f) = ctx.timer_cancel {
+        f(ctx.scheduler, timer_id);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    extern "C" fn sample_send(_pid: u32, _msg: u64) {}
+    extern "C" fn sample_send(_scheduler: *mut (), _pid: u32, _msg: u64) {}
 
     #[test]
     fn empty_ctx_has_null_handles_and_no_callbacks() {

@@ -48,7 +48,7 @@ pub fn probe_sender(task: &mut Process, msg: crate::any_value::AnyValueRef) -> P
                 let cont = materialize_outcome_closure(&mut task.heap, template, &bound_vals);
                 task.parked_matched = None;
                 if let Some(id) = timer_id {
-                    crate::scheduler_hooks::dispatch_timer_cancel(id);
+                    crate::exec_ctx::timer_cancel(task, id);
                 }
                 task.set_runnable_closure(cont);
                 task.state = ProcessState::Ready;
@@ -116,7 +116,7 @@ pub fn initial_scan(task: &mut Process) -> ScanOutcome {
             let cont = materialize_outcome_closure(&mut task.heap, template, &bound_vals);
             task.parked_matched = None;
             if let Some(id) = timer_id {
-                crate::scheduler_hooks::dispatch_timer_cancel(id);
+                crate::exec_ctx::timer_cancel(task, id);
             }
             task.set_runnable_closure(cont);
             ScanOutcome::Hit
