@@ -1105,6 +1105,60 @@ fn differs_only_nominally_holds_for_brand_vs_unbranded() {
     assert!(aware_disjoint && !value_disjoint, "this is the delta the fold broke");
 }
 
+// fz-bsx.6 — soundness backstop for value-disjointness. The eq-fold and the
+// dead-binop lint may collapse a comparison to a constant ONLY when the
+// operands are value-disjoint, so the dangerous direction is OVER-reporting
+// disjointness (folding a comparison that could be true at runtime). This
+// table pins both directions across the representative shapes; the
+// static->runtime link itself is locked end-to-end by the integration
+// fixtures (bsx_nested_eq proves not-disjoint => runtime true on all paths;
+// vr5a_* prove disjoint => false).
+#[test]
+fn value_disjoint_soundness_table() {
+    // utf8 and ascii both refine binary; both erase to a plain binary.
+    let inners = brand_inners(&[("utf8", Descr::str_t()), ("ascii", Descr::str_t())]);
+    let oi = no_inners();
+    let utf8 = Descr::brand_of("utf8");
+    let ascii = Descr::brand_of("ascii");
+    let bin = Descr::str_t();
+    let int = Descr::int();
+    let ok = Descr::atom_lit("ok");
+    let err = Descr::atom_lit("error");
+    let ok_utf8 = Descr::tuple_of([ok.clone(), utf8.clone()]);
+    let ok_bin = Descr::tuple_of([ok.clone(), bin.clone()]);
+    let err_inv = Descr::tuple_of([err.clone(), Descr::atom_lit("invalid")]);
+
+    // (a, b, expect_value_disjoint, why)
+    let cases: &[(&Descr, &Descr, bool, &str)] = &[
+        // Different runtime kinds can never be byte/structure equal: FOLDABLE.
+        (&int, &bin, true, "int vs binary"),
+        (&utf8, &int, true, "utf8 (a binary) vs int"),
+        (&ok, &err, true, ":ok vs :error"),
+        (&ok_utf8, &err_inv, true, "{:ok,utf8} vs {:error,:invalid} — tag differs"),
+        // Same runtime representation once brands are erased: NOT foldable —
+        // these values can be equal, `==` must run.
+        (&utf8, &bin, false, "utf8 vs unbranded binary"),
+        (&ascii, &utf8, false, "ascii vs utf8 — distinct brands, same bytes"),
+        (&utf8, &utf8, false, "utf8 vs utf8"),
+        (&ok_utf8, &ok_bin, false, "{:ok,utf8} vs {:ok,binary} — nested brand"),
+    ];
+    for (a, b, expect, why) in cases {
+        assert_eq!(
+            a.value_disjoint(b, &inners, &oi),
+            *expect,
+            "value_disjoint mismatch: {}",
+            why
+        );
+        // Symmetry: disjointness is order-independent.
+        assert_eq!(
+            b.value_disjoint(a, &inners, &oi),
+            *expect,
+            "value_disjoint not symmetric: {}",
+            why
+        );
+    }
+}
+
 #[test]
 fn is_subtype_under_discharges_brand_when_inner_fits() {
     // utf8 :: refines binary. A value typed `brands={utf8} ∧ str_t`
