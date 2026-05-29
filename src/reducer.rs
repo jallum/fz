@@ -204,27 +204,6 @@ pub fn fold_runtime_eq<T: Types<Ty = crate::types::Ty> + LiteralTypes>(
     None
 }
 
-/// fz-bsx.2 — brand-AWARE equality fold, retained ONLY for the guard path
-/// (`ast_binop_fold`). fz-bsx.4 migrates guards onto `fold_runtime_eq` and
-/// deletes this.
-fn fold_eq<T: Types + LiteralTypes>(t: &mut T, op: BinOp, ad: &T::Ty, bd: &T::Ty) -> Option<T::Ty> {
-    let is_eq = matches!(op, BinOp::Eq);
-
-    // Both literal: exact compare.
-    if t.is_literal(ad) && t.is_literal(bd) {
-        let equal = t.is_equivalent(ad, bd);
-        return Some(t.bool_lit(if is_eq { equal } else { !equal }));
-    }
-
-    // Kind-disjoint (intersection empty): result is definitively
-    // false-for-Eq / true-for-Neq even without both being literal.
-    if !t.is_empty(ad) && !t.is_empty(bd) && t.is_disjoint(ad, bd) {
-        return Some(t.bool_lit(!is_eq));
-    }
-
-    None
-}
-
 fn fold_cmp<T: Types>(t: &mut T, op: BinOp, ad: &T::Ty, bd: &T::Ty) -> Option<T::Ty> {
     use BinOp::*;
     if let (Some(ai), Some(bi)) = (t.as_int_singleton(ad), t.as_int_singleton(bd)) {
@@ -421,11 +400,13 @@ pub enum Dispatch<T: Types> {
 ///   later rows would be unsound since this row might match at runtime.
 /// - If every row is skipped (NoMatch), return NoMatch.
 #[allow(dead_code)] // wired by RED.4+.
-pub fn dispatch_clauses<T: Types + LiteralTypes>(
+pub fn dispatch_clauses<T: Types<Ty = crate::types::Ty> + LiteralTypes>(
     t: &mut T,
     clauses: &[Clause<'_>],
     subject_tys: &[T::Ty],
     atom_names: &[String],
+    brand_inners: &HashMap<String, T::Ty>,
+    opaque_inners: &HashMap<String, T::Ty>,
 ) -> Dispatch<T> {
     for (idx, row) in clauses.iter().enumerate() {
         if row.patterns.len() != subject_tys.len() {
@@ -455,7 +436,7 @@ pub fn dispatch_clauses<T: Types + LiteralTypes>(
         }
         // Patterns matched — try guard.
         if let Some(guard) = row.guard {
-            match fold_expr(t, &guard.node, &bindings, atom_names) {
+            match fold_expr(t, &guard.node, &bindings, atom_names, brand_inners, opaque_inners) {
                 Some(d) => match t.as_bool_lit(&d) {
                     Some(true) => {
                         return Dispatch::MatchedRow {
@@ -609,11 +590,13 @@ fn match_tuple_pattern<T: Types + LiteralTypes>(
 #[allow(dead_code)]
 // pub for fz-jg5.3's dispatcher; called by fold_expr; main bin's call graph doesn't reach it yet (RED.3+).
 #[allow(clippy::only_used_in_recursion)] // atom_names threaded for API symmetry with siblings; future Expr arms may consult it.
-pub fn fold_expr<T: Types + LiteralTypes>(
+pub fn fold_expr<T: Types<Ty = crate::types::Ty> + LiteralTypes>(
     t: &mut T,
     expr: &ast::Expr,
     bindings: &HashMap<String, T::Ty>,
     atom_names: &[String],
+    brand_inners: &HashMap<String, T::Ty>,
+    opaque_inners: &HashMap<String, T::Ty>,
 ) -> Option<T::Ty> {
     use ast::Expr;
     match expr {
@@ -630,25 +613,29 @@ pub fn fold_expr<T: Types + LiteralTypes>(
         Expr::Bool(b) => Some(t.bool_lit(*b)),
         Expr::Nil => Some(t.nil()),
         Expr::BinOp(op, a, b) => {
-            let ad = fold_expr(t, &a.node, bindings, atom_names)?;
-            let bd = fold_expr(t, &b.node, bindings, atom_names)?;
-            ast_binop_fold(t, *op, &ad, &bd)
+            let ad = fold_expr(t, &a.node, bindings, atom_names, brand_inners, opaque_inners)?;
+            let bd = fold_expr(t, &b.node, bindings, atom_names, brand_inners, opaque_inners)?;
+            ast_binop_fold(t, *op, &ad, &bd, brand_inners, opaque_inners)
         }
         Expr::UnOp(op, v) => {
-            let vd = fold_expr(t, &v.node, bindings, atom_names)?;
+            let vd = fold_expr(t, &v.node, bindings, atom_names, brand_inners, opaque_inners)?;
             ast_unop_fold(t, *op, &vd)
         }
-        Expr::Ascribe(inner, _) => fold_expr(t, &inner.node, bindings, atom_names),
+        Expr::Ascribe(inner, _) => {
+            fold_expr(t, &inner.node, bindings, atom_names, brand_inners, opaque_inners)
+        }
         _ => None,
     }
 }
 
 #[allow(dead_code)] // used via fold_expr; cf. RED.3+ wiring.
-fn ast_binop_fold<T: Types + LiteralTypes>(
+fn ast_binop_fold<T: Types<Ty = crate::types::Ty> + LiteralTypes>(
     t: &mut T,
     op: ast::BinOp,
     ad: &T::Ty,
     bd: &T::Ty,
+    brand_inners: &HashMap<String, T::Ty>,
+    opaque_inners: &HashMap<String, T::Ty>,
 ) -> Option<T::Ty> {
     use ast::BinOp::*;
     let ir_op = match op {
@@ -672,7 +659,10 @@ fn ast_binop_fold<T: Types + LiteralTypes>(
         BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod => {
             fold_arith(t, ir_op, ad, bd)
         }
-        BinOp::Eq | BinOp::Neq => fold_eq(t, ir_op, ad, bd),
+        // Brand-blind, like every other == site (fz-bsx).
+        BinOp::Eq | BinOp::Neq => {
+            fold_runtime_eq(t, ir_op, ad, bd, brand_inners, opaque_inners).map(|b| t.bool_lit(b))
+        }
         BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => fold_cmp(t, ir_op, ad, bd),
         BinOp::And | BinOp::Or => fold_logical(t, ir_op, ad, bd),
     }
@@ -1126,7 +1116,7 @@ mod tests {
             guard: None,
         }];
         let subject = tys(&[t.any()]);
-        let result = dispatch_clauses(&mut t, &clauses, &subject, &[]);
+        let result = dispatch_clauses(&mut t, &clauses, &subject, &[], &HashMap::new(), &HashMap::new());
         assert!(matches!(result, Dispatch::MatchedRow { row_idx: 0, .. }));
     }
 
@@ -1139,7 +1129,7 @@ mod tests {
             guard: None,
         }];
         let subject = tys(&[t.int_lit(42)]);
-        let result = dispatch_clauses(&mut t, &clauses, &subject, &[]);
+        let result = dispatch_clauses(&mut t, &clauses, &subject, &[], &HashMap::new(), &HashMap::new());
         match result {
             Dispatch::MatchedRow {
                 row_idx: 0,
@@ -1160,7 +1150,7 @@ mod tests {
             guard: None,
         }];
         let subject = tys(&[t.int_lit(0)]);
-        let result = dispatch_clauses(&mut t, &clauses, &subject, &[]);
+        let result = dispatch_clauses(&mut t, &clauses, &subject, &[], &HashMap::new(), &HashMap::new());
         assert!(matches!(result, Dispatch::MatchedRow { row_idx: 0, .. }));
     }
 
@@ -1173,7 +1163,7 @@ mod tests {
             guard: None,
         }];
         let subject = tys(&[t.int_lit(7)]);
-        let result = dispatch_clauses(&mut t, &clauses, &subject, &[]);
+        let result = dispatch_clauses(&mut t, &clauses, &subject, &[], &HashMap::new(), &HashMap::new());
         assert!(matches!(result, Dispatch::NoMatch));
     }
 
@@ -1187,7 +1177,7 @@ mod tests {
             guard: None,
         }];
         let subject = tys(&[t.int()]);
-        let result = dispatch_clauses(&mut t, &clauses, &subject, &[]);
+        let result = dispatch_clauses(&mut t, &clauses, &subject, &[], &HashMap::new(), &HashMap::new());
         assert!(matches!(result, Dispatch::Opaque));
     }
 
@@ -1230,7 +1220,7 @@ mod tests {
         ];
 
         let subject_tys = tys(&[num_tuple_ty(&mut t, 42)]);
-        match dispatch_clauses(&mut t, &clauses, &subject_tys, &[]) {
+        match dispatch_clauses(&mut t, &clauses, &subject_tys, &[], &HashMap::new(), &HashMap::new()) {
             Dispatch::MatchedRow { row_idx, bindings } => {
                 assert_eq!(row_idx, 0);
                 assert_int_ty(&t, bindings.get("n").unwrap(), 42);
@@ -1269,7 +1259,7 @@ mod tests {
         let add = t.atom_lit("add");
         let subject = t.tuple(&[add, inner_a.clone(), inner_b.clone()]);
         let subject_tys = tys(&[subject]);
-        match dispatch_clauses(&mut t, &clauses, &subject_tys, &[]) {
+        match dispatch_clauses(&mut t, &clauses, &subject_tys, &[], &HashMap::new(), &HashMap::new()) {
             Dispatch::MatchedRow { row_idx, bindings } => {
                 assert_eq!(row_idx, 1);
                 assert_num_tuple_ty(&t, bindings.get("a").unwrap(), 2);
@@ -1292,7 +1282,7 @@ mod tests {
             guard: None,
         }];
         let subject = tys(&[t.any()]);
-        let result = dispatch_clauses(&mut t, &clauses, &subject, &[]);
+        let result = dispatch_clauses(&mut t, &clauses, &subject, &[], &HashMap::new(), &HashMap::new());
         assert!(matches!(result, Dispatch::Opaque));
     }
 
@@ -1316,7 +1306,7 @@ mod tests {
             },
         ];
         let subject = tys(&[t.int_lit(0)]);
-        let result = dispatch_clauses(&mut t, &clauses, &subject, &[]);
+        let result = dispatch_clauses(&mut t, &clauses, &subject, &[], &HashMap::new(), &HashMap::new());
         assert!(matches!(result, Dispatch::MatchedRow { row_idx: 0, .. }));
     }
 
@@ -1337,7 +1327,7 @@ mod tests {
             guard: Some(&guard),
         }];
         let subject = tys(&[t.int_lit(7)]);
-        let result = dispatch_clauses(&mut t, &clauses, &subject, &[]);
+        let result = dispatch_clauses(&mut t, &clauses, &subject, &[], &HashMap::new(), &HashMap::new());
         assert!(matches!(result, Dispatch::MatchedRow { row_idx: 0, .. }));
     }
 
@@ -1364,7 +1354,7 @@ mod tests {
             },
         ];
         let subject = tys(&[t.int_lit(-3)]);
-        let result = dispatch_clauses(&mut t, &clauses, &subject, &[]);
+        let result = dispatch_clauses(&mut t, &clauses, &subject, &[], &HashMap::new(), &HashMap::new());
         assert!(matches!(result, Dispatch::MatchedRow { row_idx: 1, .. }));
     }
 
@@ -1383,7 +1373,7 @@ mod tests {
             guard: Some(&guard),
         }];
         let subject = tys(&[t.int()]);
-        let result = dispatch_clauses(&mut t, &clauses, &subject, &[]);
+        let result = dispatch_clauses(&mut t, &clauses, &subject, &[], &HashMap::new(), &HashMap::new());
         assert!(matches!(result, Dispatch::Opaque));
     }
 
@@ -1399,7 +1389,7 @@ mod tests {
         }];
         let elem = t.int_lit(1);
         let subject = tys(&[t.list(elem)]);
-        let result = dispatch_clauses(&mut t, &clauses, &subject, &[]);
+        let result = dispatch_clauses(&mut t, &clauses, &subject, &[], &HashMap::new(), &HashMap::new());
         assert!(matches!(result, Dispatch::Opaque));
     }
 
@@ -1419,7 +1409,7 @@ mod tests {
             guard: None,
         }];
         let subject_tys = tys(&[num_tuple_ty(&mut t, 42)]);
-        match dispatch_clauses(&mut t, &clauses, &subject_tys, &[]) {
+        match dispatch_clauses(&mut t, &clauses, &subject_tys, &[], &HashMap::new(), &HashMap::new()) {
             Dispatch::MatchedRow { bindings, .. } => {
                 assert_num_tuple_ty(&t, bindings.get("whole").unwrap(), 42);
                 assert_int_ty(&t, bindings.get("n").unwrap(), 42);
@@ -1453,7 +1443,7 @@ mod tests {
             },
         ];
         let subject = tys(&[t.int_lit(7)]);
-        let result = dispatch_clauses(&mut t, &clauses, &subject, &[]);
+        let result = dispatch_clauses(&mut t, &clauses, &subject, &[], &HashMap::new(), &HashMap::new());
         assert!(matches!(result, Dispatch::NoMatch));
     }
 }
