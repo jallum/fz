@@ -115,10 +115,11 @@ built:
 
 Planner call-edge facts can then consume callable capabilities uniformly with
 `ReturnContextPlan`: the target tells us what code may run, and the return
-context tells us how the result becomes the next state. The remaining
-known-reducer timing work is tracked by `fz-xac`: expose closure-literal reducer
-calls early enough for module-level inlining without forcing heap continuation
-materialization.
+context tells us how the result becomes the next state. Provider-library
+planning now uses the linked working module for this rewrite, so a zero-state
+`Enum.reduce` reducer passed into `reduce_list_cont/3` becomes an ordinary
+direct call early enough for the module inliner to splice it without forcing a
+heap continuation or a stack lazy reducer descriptor.
 
 ## Proof Gates
 

@@ -492,13 +492,47 @@ where
         target: FnId,
         args: &[Var],
     ) {
-        let Some(mut target_key) = self.direct_call_key(target, args, env).map(|(key, _)| key)
-        else {
+        let Some((mut target_key, n_params)) = self.direct_call_key(target, args, env) else {
             return;
         };
-        self.inherit_tail_closure_demand(term, &mut target_key);
-        self.out
-            .record_dispatch(self.caller_spec_key, term_ident, slot, target_key.clone());
+        let mut return_use = None;
+        match term {
+            Term::CallClosure { continuation, .. } => {
+                let (demand, context_plan) = direct_call_return_plan(
+                    self.t,
+                    self.m,
+                    self.fn_effects,
+                    self.caller_spec_key,
+                    env,
+                    target,
+                    args,
+                    continuation,
+                );
+                target_key.demand = demand;
+                return_use = Some((target_key.demand.clone(), context_plan));
+            }
+            Term::TailCallClosure { .. } => {
+                let (demand, context_plan) =
+                    tail_call_return_plan(self.m, self.caller_spec_key, target, args);
+                target_key.demand = demand;
+                return_use = Some((target_key.demand.clone(), context_plan));
+            }
+            _ => {}
+        }
+        let cid =
+            self.out
+                .record_dispatch(self.caller_spec_key, term_ident, slot, target_key.clone());
+        if let Some((demand, context_plan)) = return_use {
+            self.out.record_return_use(&cid, demand, context_plan);
+        }
+        let per_arg = self.fn_constant_args(args, n_params);
+        merge_callsite_fn_consts(self.callsite_fn_consts, &target_key, per_arg);
+        let per_arg = self.callable_capability_args(args, n_params);
+        merge_callsite_callable_capabilities(
+            self.callsite_callable_capabilities,
+            &target_key,
+            per_arg,
+        );
         self.emit(slot, term_ident.clone(), target_key);
     }
 
@@ -515,9 +549,36 @@ where
         let Some(mut target_key) = self.closure_lit_key(fn_id, captures, args, env) else {
             return;
         };
-        self.inherit_tail_closure_demand(term, &mut target_key);
-        self.out
-            .record_dispatch(self.caller_spec_key, term_ident, slot, target_key.clone());
+        let mut return_use = None;
+        match term {
+            Term::CallClosure { continuation, .. } => {
+                let (demand, context_plan) = direct_call_return_plan(
+                    self.t,
+                    self.m,
+                    self.fn_effects,
+                    self.caller_spec_key,
+                    env,
+                    fn_id,
+                    args,
+                    continuation,
+                );
+                target_key.demand = demand;
+                return_use = Some((target_key.demand.clone(), context_plan));
+            }
+            Term::TailCallClosure { .. } => {
+                let (demand, context_plan) =
+                    tail_call_return_plan(self.m, self.caller_spec_key, fn_id, args);
+                target_key.demand = demand;
+                return_use = Some((target_key.demand.clone(), context_plan));
+            }
+            _ => {}
+        }
+        let cid =
+            self.out
+                .record_dispatch(self.caller_spec_key, term_ident, slot, target_key.clone());
+        if let Some((demand, context_plan)) = return_use {
+            self.out.record_return_use(&cid, demand, context_plan);
+        }
         self.emit(slot, term_ident.clone(), target_key);
     }
 
@@ -594,7 +655,7 @@ where
                 declared.or_else(|| self.effective_returns.get(&callee_key).cloned())
             }
             ContSource::CallClosure { closure, args } => {
-                self.closure_return_slot0(closure, args, env)
+                self.closure_return_slot0(term_ident, closure, args, env)
             }
             ContSource::Receive => Some(self.any_ty.clone()),
         }
@@ -673,10 +734,26 @@ where
 
     fn closure_return_slot0(
         &mut self,
+        term_ident: &CallsiteIdent,
         closure: Var,
         args: &[Var],
         env: &HashMap<Var, crate::types::Ty>,
     ) -> Option<crate::types::Ty> {
+        let closure_cid =
+            WalkResult::callsite_id(self.caller_spec_key, term_ident, EmitSlot::ClosureCall);
+        if let Some(target_key) = self
+            .out
+            .call_edges
+            .get(&closure_cid)
+            .and_then(CallEdgePlan::local_target)
+            .cloned()
+        {
+            let ret = self.effective_returns.get(&target_key).cloned();
+            if ret.is_none() {
+                self.out.return_reads.push(target_key);
+            }
+            return ret;
+        }
         if let Some(&target) = self.caller_ft.fn_constants.get(&closure) {
             return self.known_closure_return_slot0(target, args, env);
         }
@@ -922,12 +999,6 @@ where
         args.iter()
             .map(|av| env.get(av).cloned().unwrap_or_else(|| self.any_ty.clone()))
             .collect()
-    }
-
-    fn inherit_tail_closure_demand(&self, term: &Term, key: &mut SpecKey) {
-        if matches!(term, Term::TailCallClosure { .. }) {
-            key.demand = self.caller_spec_key.demand.clone();
-        }
     }
 
     fn has_bottom_arg(&mut self, key: &[crate::types::Ty]) -> bool {

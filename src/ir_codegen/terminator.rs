@@ -95,6 +95,20 @@ fn resolve_callee_sid<
         })
 }
 
+fn resolve_closure_call_target(
+    env: &CodegenEnv<'_>,
+    caller_fn_id: crate::fz_ir::FnId,
+    blk: &crate::fz_ir::Block,
+) -> Option<crate::ir_planner::fn_types::SpecKey> {
+    let term_ident = blk.terminator.ident()?;
+    let cid = crate::fz_ir::CallsiteId {
+        caller: caller_fn_id,
+        ident: term_ident.clone(),
+        slot: crate::fz_ir::EmitSlot::ClosureCall,
+    };
+    env.fn_types.local_call_target(&cid).cloned()
+}
+
 fn callee_is_native(env: &CodegenEnv<'_>, id: u32) -> bool {
     env.natively_callable.contains(&crate::fz_ir::FnId(id))
 }
@@ -1313,7 +1327,12 @@ fn emit_call_closure<
         // all-ValueRef indirect seam below.
         let lit_resolved: Option<(u32, FuncId, usize)> = (|| {
             let (body_fn_id, body_sid) =
-                resolve_tcc_body(t, closure, args, fn_types, module, spec_registry)?;
+                if let Some(target_key) = resolve_closure_call_target(env, caller_fn_id, blk) {
+                    let sid = spec_registry.resolve_spec_key(t, &target_key)?.0;
+                    (target_key.fn_id, sid)
+                } else {
+                    resolve_tcc_body(t, closure, args, fn_types, module, spec_registry)?
+                };
             let body_fid = *fn_ids.get(&body_sid)?;
             let n_caps = closure_n_captures.get(&body_fn_id).copied().unwrap_or(0);
             Some((body_sid, body_fid, n_caps))

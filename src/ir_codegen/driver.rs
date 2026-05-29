@@ -2006,7 +2006,7 @@ pub(crate) fn compile_with_backend_impl<
     t: &mut T,
     module: &Module,
     mut backend: B,
-    pre_types: Option<&crate::ir_planner::ModulePlan>,
+    _pre_types: Option<&crate::ir_planner::ModulePlan>,
     tel: &dyn crate::telemetry::Telemetry,
 ) -> Result<B::Output, CodegenError> {
     if let Some(edge) = module.external_call_edges.first() {
@@ -2045,14 +2045,6 @@ pub(crate) fn compile_with_backend_impl<
     // Run the typer ahead of codegen so per-fn Var->type info is
     // available during lowering.
     let mut working = module.clone();
-    let owned_pre_types;
-    let pre_types = match pre_types {
-        Some(pre_types) => pre_types,
-        None => {
-            owned_pre_types = crate::ir_planner::plan_module(t, &working, tel);
-            &owned_pre_types
-        }
-    };
     // Lower known-target CallClosure / TailCallClosure to direct
     // Call / TailCall, then erase any module-constant zero-capture closure
     // that now survives only as a threaded value (its entry-param slots,
@@ -2062,16 +2054,16 @@ pub(crate) fn compile_with_backend_impl<
     // closure-target — so the inliner below splices it and the lazy-cont
     // gate sees a closure-free frame.
     //
-    // Reads `pre_types` for the `fn_constants` proof of which Vars hold a
-    // constant closure. The subsequent `inline_module` needs no types, and
-    // the pipeline re-runs `plan_module` from scratch before any types are
-    // consumed, so erasing the MakeClosure here does not stale anything.
-    crate::ir_planner::rewrite_known_target_closures(t, &mut working, pre_types);
+    // Reads a plan for the linked working module, so provider-library entry
+    // params can carry interprocedural `KnownFn` capabilities. The final
+    // `plan_module` below remains authoritative for codegen types.
+    let rewrite_types = crate::ir_planner::plan_module(t, &working, tel);
+    crate::ir_planner::rewrite_known_target_closures(t, &mut working, &rewrite_types);
     #[cfg(not(test))]
-    crate::ir_inline::inline_module_with_plan(&mut working, pre_types);
+    crate::ir_inline::inline_module_with_plan(&mut working, &rewrite_types);
     #[cfg(test)]
     if !INLINE_DISABLED.with(|d| d.get()) {
-        crate::ir_inline::inline_module_with_plan(&mut working, pre_types);
+        crate::ir_inline::inline_module_with_plan(&mut working, &rewrite_types);
     }
     crate::ir_fuse::fuse_blocks_with_telemetry(&mut working, tel);
     // Compile-time reducer pass. Folds calls whose return is statically

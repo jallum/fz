@@ -154,6 +154,12 @@ closure_allocs = 0
 closure_bytes = 0
 ```
 
+Its native CLIF gate also checks `Enumerable.reduce_list_cont` directly: the
+known zero-state reducer path must contain neither `@fz_alloc_closure` nor
+`stack_store`. That pins the intended model boundary: `KnownFn` reducer values
+are direct code identities consumed before continuation materialization, while
+real suspend functions remain source-visible closure values.
+
 `enum_reduce_suspend` is the paired negative gate. A returned suspend function
 is a source-visible value, not an internal continuation edge, so native JIT/AOT
 must still allocate one real heap closure there.

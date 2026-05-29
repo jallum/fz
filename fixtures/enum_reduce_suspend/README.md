@@ -18,6 +18,8 @@ real heap closure even as native call continuations become direct or lazy.
 Target for native JIT/AOT:
 
 - the three-element input list allocates three cons cells;
+- the known zero-state reducer path boxes no scalar operands before reaching
+  the suspend boundary;
 - the returned suspend function allocates one closure;
 - `closure_allocs = 1`;
 - `closure_bytes = 48`.

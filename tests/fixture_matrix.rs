@@ -3034,10 +3034,14 @@ fn enum_list_allocations_pin_minimum_list_cons() {
         reduce_list
     );
 
+    let reduce_list_cont =
+        clif_function_with_banner_prefix(&clif, "; fn Enumerable.reduce_list_cont_s")
+            .expect("enum_list_allocations native dump must include reduce_list_cont");
     assert!(
-        clif_function_with_banner_prefix(&clif, "; fn Enumerable.reduce_list_cont_s").is_some(),
-        "enum_list_allocations native dump must include reduce_list_cont:\n{}",
-        clif
+        !reduce_list_cont.contains("@fz_alloc_closure")
+            && !reduce_list_cont.contains("stack_store"),
+        "known native Enum.reduce cont helper should inline the zero-state reducer without a heap closure or stack lazy descriptor:\n{}",
+        reduce_list_cont
     );
 }
 
