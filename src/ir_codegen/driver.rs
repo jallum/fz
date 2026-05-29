@@ -2090,7 +2090,7 @@ pub(crate) fn compile_with_backend_impl<
     // `debug_assert_unique_conts` check at the end of `ir_lower`
     // guarantees this pass sees each continuation fn exactly once, so it
     // can be applied before the planner commits to specs. See
-    // `docs/dispatch-as-planner-output.md` (Worry 1).
+    // `.agent/docs/dispatch-as-planner-output.md` (Worry 1).
     crate::ir_inline::inline_single_use_conts(&mut working);
     let mut module_plan = crate::ir_planner::plan_module(t, &working, tel);
     // Snapshot per-fn call-shape multisets right after the planner commits
