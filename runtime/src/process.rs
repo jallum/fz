@@ -319,15 +319,29 @@ impl Process {
     }
 
     pub fn finish_yield_report(&mut self, remaining_reductions: i32, reason: u8) {
+        // When allocation pressure expired the budget mid-quantum, the
+        // reductions genuinely burned up to that point were already banked by
+        // `expire_budget`, while `reductions_remaining` was still truthful.
+        // Zeroing it there makes `reductions_per_quantum - remaining` an
+        // invalid "burned" derivation, so re-deriving here would credit a
+        // whole phantom quantum. In that case bank only the work done *since*
+        // expiry — the cost of the back edge that finally observed the zeroed
+        // budget and yielded; otherwise derive burned the normal way.
+        let already_banked = (self.yield_reasons & YIELD_REASON_ALLOCATION_PRESSURE)
+            == YIELD_REASON_ALLOCATION_PRESSURE;
+        let burned = if already_banked {
+            (-i64::from(remaining_reductions)).max(0)
+        } else {
+            i64::from(self.reductions_per_quantum) - i64::from(remaining_reductions)
+        };
         self.reductions_remaining = remaining_reductions;
-        let burned = i64::from(self.reductions_per_quantum) - i64::from(remaining_reductions);
         if burned > 0 {
             self.reductions_executed = self.reductions_executed.saturating_add(burned as u64);
         }
         // Count cause off the accumulated reasons, not just this report's
         // bits: allocation pressure expires the budget directly on the
-        // Process during the quantum (see `expire_current_budget`), so the
-        // back edge that finally yields reports only REDUCTIONS while the
+        // Process during the quantum (see `expire_budget`), so the back edge
+        // that finally yields reports only REDUCTIONS while the
         // ALLOCATION_PRESSURE bit is already standing on `yield_reasons`.
         self.yield_reasons |= reason;
         let allocation_pressure = (self.yield_reasons & YIELD_REASON_ALLOCATION_PRESSURE)
@@ -337,6 +351,27 @@ impl Process {
         } else if (self.yield_reasons & YIELD_REASON_REDUCTIONS) == YIELD_REASON_REDUCTIONS {
             self.reduction_yields = self.reduction_yields.saturating_add(1);
         }
+    }
+
+    /// Force the reduction budget to expire so the next back edge yields,
+    /// recording `reason`. Allocation pressure rides this path: it must drive
+    /// `reductions_remaining` to zero to trip the single hot-path back-edge
+    /// check. Before zeroing, bank the reductions genuinely burned so far —
+    /// once per quantum, guarded on the reason bit — so the later
+    /// `finish_yield_report` cannot misread the zeroed budget as a full
+    /// quantum of work. See `finish_yield_report`.
+    pub fn expire_budget(&mut self, reason: u8) {
+        let first_pressure = reason == YIELD_REASON_ALLOCATION_PRESSURE
+            && (self.yield_reasons & YIELD_REASON_ALLOCATION_PRESSURE) == 0;
+        if first_pressure {
+            let burned =
+                i64::from(self.reductions_per_quantum) - i64::from(self.reductions_remaining);
+            if burned > 0 {
+                self.reductions_executed = self.reductions_executed.saturating_add(burned as u64);
+            }
+        }
+        self.reductions_remaining = 0;
+        self.yield_reasons |= reason;
     }
 
     pub fn clear_yield_reasons(&mut self) {
@@ -456,8 +491,7 @@ pub fn try_current_process() -> Option<&'static mut Process> {
 /// it. A no-op when no process is installed (standalone-heap unit tests).
 pub fn expire_current_budget(reason: u8) {
     if let Some(process) = try_current_process() {
-        process.reductions_remaining = 0;
-        process.yield_reasons |= reason;
+        process.expire_budget(reason);
     }
 }
 
@@ -492,6 +526,37 @@ mod tests {
             process.yield_reasons & YIELD_REASON_REDUCTIONS,
             YIELD_REASON_REDUCTIONS
         );
+    }
+
+    #[test]
+    fn allocation_pressure_banks_only_genuine_reductions() {
+        let schemas = Rc::new(RefCell::new(crate::heap::SchemaRegistry::new()));
+        let mut process = Process::new(schemas);
+        process.reductions_per_quantum = 4000;
+        process.reset_reduction_budget();
+
+        // Real work: back edges spent the budget down to 3950 (50 burned).
+        process.reductions_remaining = 3950;
+
+        // Allocation crosses the watermark mid-quantum and force-expires the
+        // budget. The 50 genuinely-burned reductions are banked now, while
+        // `reductions_remaining` is still truthful; the budget is then zeroed
+        // to trip the next back edge.
+        process.expire_budget(YIELD_REASON_ALLOCATION_PRESSURE);
+        assert_eq!(process.reductions_remaining, 0);
+        assert_eq!(process.reductions_executed, 50);
+
+        // A second crossing in the same quantum must not double-count.
+        process.expire_budget(YIELD_REASON_ALLOCATION_PRESSURE);
+        assert_eq!(process.reductions_executed, 50);
+
+        // The back edge that observes the zeroed budget yields, reporting a
+        // slightly-negative remaining (its own cost). finish_yield_report
+        // banks only that post-expiry work — NOT a re-credited full quantum.
+        process.finish_yield_report(-1, YIELD_REASON_REDUCTIONS);
+        assert_eq!(process.reductions_executed, 51);
+        assert_eq!(process.allocation_pressure_yields, 1);
+        assert_eq!(process.reduction_yields, 0);
     }
 
     #[test]

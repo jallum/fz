@@ -1245,40 +1245,19 @@ impl CompiledModule {
     /// Processes can be made from the same CompiledModule and run
     /// concurrently (one worker at a time per Process; libdispatch model).
     pub fn make_process(&self) -> Process {
-        let mut p = Process {
-            heap: fz_runtime::heap::Heap::new(64 * 1024, std::rc::Rc::clone(&self.user_schemas)),
-            halt_value: 0,
-            bs_builder: None,
-            frame_sizes: self.frame_sizes.clone(),
-            atom_names: self.atom_names.clone(),
-            bs_tuple_arity1_schema: self.bs_tuple_arity1_schema,
-            bs_tuple_arity3_schema: self.bs_tuple_arity3_schema,
-            pid: 0,
-            state: ProcessState::New,
-            next_frame: std::ptr::null_mut(),
-            mailbox: std::collections::VecDeque::new(),
-            parked_matched: None,
-            runnable_closure: std::ptr::null_mut(),
-            halt_cont_singletons: [std::ptr::null_mut(); 3],
-            pending_closure_entry: std::ptr::null_mut(),
-            pending_main_entry: std::ptr::null_mut(),
-            pending_main_entry_fn_id: 0,
-            static_closures: Vec::new(),
-            static_closure_bufs: Vec::new(),
-            quiet_quanta: 0,
-            scheduler_yields: 0,
-            interpreter_yields: 0,
-            reductions_remaining: fz_runtime::process::DEFAULT_REDUCTIONS_PER_QUANTUM,
-            reductions_per_quantum: fz_runtime::process::DEFAULT_REDUCTIONS_PER_QUANTUM,
-            reductions_executed: 0,
-            reduction_yields: 0,
-            allocation_pressure_yields: 0,
-            yield_reasons: 0,
-            pending_yield_continuation_margin_before_bytes: 0,
-            max_yield_continuation_bytes: 0,
-            min_yield_continuation_margin_before_bytes: 0,
-            min_yield_continuation_margin_after_bytes: 0,
-        };
+        // One source of truth for heap sizing and field defaults:
+        // `Process::new` (SIZE_TABLE[0] starter heap, grows under GC). The
+        // JIT path used to hand-roll this literal with a flat 64 KiB heap,
+        // which never crossed the allocation watermark — so `fz run`
+        // observed zero allocation-pressure yields where the AOT binary
+        // (which goes through `Process::new`) yielded and GC'd. That broke
+        // JIT/AOT stats parity. Delegate, then layer on the per-module
+        // compile-time tables that only the compiled path carries.
+        let mut p = Process::new(std::rc::Rc::clone(&self.user_schemas));
+        p.frame_sizes = self.frame_sizes.clone();
+        p.atom_names = self.atom_names.clone();
+        p.bs_tuple_arity1_schema = self.bs_tuple_arity1_schema;
+        p.bs_tuple_arity3_schema = self.bs_tuple_arity3_schema;
         // One static singleton per zero-cap closure-target spec.
         // See docs/cps-in-clif.md §8.2.
         p.init_static_closures(&self.static_closure_targets);
