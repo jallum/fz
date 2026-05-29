@@ -2330,7 +2330,7 @@ fn frontend_to_codegen_pretyped_pipeline_types_exactly_three_times() {
     assert_eq!(
         cap.count(&["fz", "planner", "planned"]),
         2,
-        "frontend-to-codegen pretyped path should reuse frontend ModulePlan while the internal destination retype stays telemetry-silent"
+        "pretyped path reports exactly two planner.planned events — the frontend plan and the authoritative codegen plan_module; the constant-closure rewrite re-plans the linked working module and the post-destination retype are both internal intermediate plans and stay telemetry-silent"
     );
 }
 

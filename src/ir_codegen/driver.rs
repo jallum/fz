@@ -2055,9 +2055,15 @@ pub(crate) fn compile_with_backend_impl<
     // gate sees a closure-free frame.
     //
     // Reads a plan for the linked working module, so provider-library entry
-    // params can carry interprocedural `KnownFn` capabilities. The final
-    // `plan_module` below remains authoritative for codegen types.
-    let rewrite_types = crate::ir_planner::plan_module(t, &working, tel);
+    // params can carry interprocedural `KnownFn` capabilities — the shallow
+    // `_pre_types` handed in by the pretyped entry points cannot see linked
+    // bodies, so this re-plans `working` itself. It is an internal intermediate
+    // plan, NOT the authoritative codegen plan (that is `module_plan` below), so
+    // it is telemetry-silent — exactly like the post-destination retype. The
+    // pretyped path therefore still reports exactly two `planner.planned`
+    // events (the frontend plan plus `module_plan`).
+    let rewrite_types =
+        crate::ir_planner::plan_module(t, &working, &crate::telemetry::NullTelemetry);
     crate::ir_planner::rewrite_known_target_closures(t, &mut working, &rewrite_types);
     #[cfg(not(test))]
     crate::ir_inline::inline_module_with_plan(&mut working, &rewrite_types);
