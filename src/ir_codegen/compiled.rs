@@ -1247,6 +1247,7 @@ impl CompiledModule {
     pub fn make_process(&self) -> Process {
         let mut p = Process {
             heap: fz_runtime::heap::Heap::new(64 * 1024, std::rc::Rc::clone(&self.user_schemas)),
+            ctx: std::ptr::null_mut(),
             halt_value: 0,
             bs_builder: None,
             frame_sizes: self.frame_sizes.clone(),

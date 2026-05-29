@@ -10,6 +10,7 @@
 pub mod any_value;
 pub mod aot_shim;
 pub mod bitstr;
+pub mod exec_ctx;
 pub mod extern_binary;
 pub mod extern_variadic;
 pub mod heap;

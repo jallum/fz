@@ -55,6 +55,14 @@ impl Drop for AlignedClosureStorage {
 /// call.
 pub struct Process {
     pub heap: crate::heap::Heap,
+    /// Execution-context dispatch table for this task: scheduler services,
+    /// telemetry sink, and IR module, reached explicitly by BIFs instead of
+    /// through thread-local singletons. Set by the owning scheduler (JIT
+    /// `Runtime`, interpreter, or AOT shim); the pointee outlives any FFI call
+    /// made under this process. Null until a scheduler installs one. The
+    /// `CURRENT_PROCESS`-era globals it supersedes are removed across the
+    /// `fz-vdt` arc; until then it is populated but not yet read for dispatch.
+    pub ctx: *mut crate::exec_ctx::ExecCtx,
     pub halt_value: i64,
     pub bs_builder: Option<crate::bitstr::BitWriter>,
     // fz-ul4.29.5: closure_builder / closure_args fields removed. Closure
@@ -201,6 +209,7 @@ impl Process {
             // set demands it; shrink hysteresis (§6.5 / fz-siu.11) brings
             // it back down for short-lived spikes.
             heap: crate::heap::Heap::new(crate::heap::SIZE_TABLE[0], schemas),
+            ctx: std::ptr::null_mut(),
             halt_value: 0,
             bs_builder: None,
             frame_sizes: Vec::new(),
