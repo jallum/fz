@@ -1,4 +1,0 @@
-fn main() do
-  assert(1 + 1 == 2, "arithmetic still works")
-  refute(1 == 2, "one is not two")
-end

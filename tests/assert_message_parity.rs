@@ -8,8 +8,8 @@
 //!
 //! The fixture matrix cannot cover this: a runtime abort is a nonzero exit,
 //! which the matrix scores as a failure before any output comparison. So the
-//! failing branch is pinned here, while `fixtures/assert_message` pins the
-//! passing branch across the same four paths.
+//! failing branch is pinned here; the passing branch is exercised by the broad
+//! assertion-fixture set (every converted fixture calls `assert`/`refute`).
 
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
