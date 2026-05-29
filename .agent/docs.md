@@ -12,6 +12,7 @@ Read the one whose trigger matches what you are about to touch:
 - [destination-passing](docs/destination-passing.md) — destination planning/passing IR, erased init-token facts, tuple/list/map construction lowering, or typed container field initialization.
 - [dispatch-as-planner-output](../docs/dispatch-as-planner-output.md) — planner-owned call-edge facts, `SpecPlan.call_edges`, `SpecKey` variants, or ReturnDemand capability selection.
 - [externs](docs/externs.md) — `extern "C"` declarations, marshal classes, variadic calls, or extern codegen/interpreter behavior.
+- [fixtures](docs/fixtures.md) — authoring or changing a fixture, the four-path matrix, pass/fail rules, the four expressive media, or the dump-budget mechanism.
 - [guides](docs/guides.md) — writing or updating user-facing `guides/*.html`.
 - [ir-planner-rename](docs/ir-planner-rename.md) — renaming legacy phase/product/telemetry vocabulary to planner vocabulary.
 - [ir-interp-runtime](docs/ir-interp-runtime.md) — IR interpreter runtime ownership, persistent drives, or REPL session execution.
