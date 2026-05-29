@@ -206,7 +206,11 @@ pub(super) fn interp_struct_field_from_tagged_bits(
 ) -> Result<AnyValue, String> {
     let value = interp_value_from_ref_word(bits, context)?;
     with_value_ref(value, context, |struct_ref| {
-        fz_runtime::ir_runtime::fz_struct_get_field_ref(struct_ref, field_offset)
+        fz_runtime::ir_runtime::fz_struct_get_field_ref(
+            fz_runtime::process::current_process(),
+            struct_ref,
+            field_offset,
+        )
     })
     .and_then(|ref_word| interp_value_from_ref_word(ref_word, context))
 }

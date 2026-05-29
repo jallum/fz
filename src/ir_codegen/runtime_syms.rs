@@ -305,7 +305,7 @@ fn declare_struct_runtime<M: cranelift_module::Module>(
         struct_get_field_id: decl_import(
             jmod,
             "fz_struct_get_field_ref",
-            &[types::I64, types::I32],
+            &[types::I64, types::I64, types::I32],
             &[types::I64],
         )?,
         struct_set_field_ref_id: decl_import(
@@ -421,8 +421,12 @@ fn declare_bitstring_runtime<M: cranelift_module::Module>(
         ],
         &[types::I64],
     )?;
-    let bs_reader_done_ref_id =
-        decl_import(jmod, "fz_bs_reader_done_ref", &[types::I64], &[types::I8])?;
+    let bs_reader_done_ref_id = decl_import(
+        jmod,
+        "fz_bs_reader_done_ref",
+        &[types::I64, types::I64],
+        &[types::I8],
+    )?;
     Ok(BitstringRefs {
         bs_begin_id,
         bs_write_ref_id,
@@ -722,7 +726,7 @@ fn declare_matcher_runtime<M: cranelift_module::Module>(
     let matcher_map_get_ref_id = decl_import(
         jmod,
         "fz_matcher_map_get_ref",
-        &[types::I64, types::I64],
+        &[types::I64, types::I64, types::I64],
         &[types::I64],
     )?;
     Ok(MatcherRefs {

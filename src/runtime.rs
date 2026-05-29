@@ -266,10 +266,11 @@ pub fn send_via(scheduler: *mut (), receiver_pid: PidId, msg: AnyValueRef) {
         .get_mut(&receiver_pid)
         .unwrap_or_else(|| panic!("send: receiver pid {} not in task registry", receiver_pid));
     if receiver.parked_matched.is_some() {
+        let receiver_ptr: *mut Process = &mut **receiver;
         let hit = receiver
             .parked_matched
             .as_ref()
-            .and_then(|park| park.try_match(msg));
+            .and_then(|park| park.try_match(receiver_ptr, msg));
         match hit {
             Some((clause_idx, bound_vals)) => {
                 let (template, timer_id) = {
@@ -1753,6 +1754,7 @@ fn main(), do: sum(10, 0, nil)";
     /// Deterministic mock matcher. Returns 1 when `msg == pinned[0]`,
     /// and writes `msg` into `out[0]` (bound_arity must be >= 1).
     extern "C" fn mock_eq_matcher(
+        _process: *mut Process,
         msg: u64,
         pinned: *const AnyValueRef,
         out: *mut AnyValueRef,

@@ -1141,12 +1141,19 @@ pub extern "C" fn fz_bs_read_field_ref(reader_ref: u64, field_spec: u64, size_va
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_bs_reader_done_ref(reader_ref: u64) -> u8 {
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn fz_bs_reader_done_ref(process: *mut Process, reader_ref: u64) -> u8 {
     let reader = any_value_ref_from_word(reader_ref, "fz_bs_reader_done_ref")
         .struct_addr()
         .expect("fz_bs_reader_done_ref");
-    let bit_len = current_process().heap.read_field_slot(reader, 8).raw();
-    let pos = current_process().heap.read_field_slot(reader, 16).raw();
+    let bit_len = (unsafe { &mut *process })
+        .heap
+        .read_field_slot(reader, 8)
+        .raw();
+    let pos = (unsafe { &mut *process })
+        .heap
+        .read_field_slot(reader, 16)
+        .raw();
     (bit_len == pos) as u8
 }
 
@@ -1783,9 +1790,14 @@ pub extern "C" fn fz_alloc_struct(process: *mut Process, schema_id: u32) -> u64 
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_struct_get_field_ref(struct_ref_word: u64, field_offset: u32) -> u64 {
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn fz_struct_get_field_ref(
+    process: *mut Process,
+    struct_ref_word: u64,
+    field_offset: u32,
+) -> u64 {
     let value = any_value_ref_from_word(struct_ref_word, "fz_struct_get_field_ref");
-    current_process()
+    (unsafe { &mut *process })
         .heap
         .read_struct_field_ref(value, field_offset)
         .expect("fz_struct_get_field_ref")
@@ -2338,10 +2350,15 @@ pub extern "C" fn fz_bitstring_valid_utf8(bs_bits: u64) -> i64 {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_matcher_map_get_ref(map_ref_word: u64, key_ref_word: u64) -> u64 {
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn fz_matcher_map_get_ref(
+    process: *mut Process,
+    map_ref_word: u64,
+    key_ref_word: u64,
+) -> u64 {
     let map = any_value_ref_from_word(map_ref_word, "fz_matcher_map_get_ref map");
     let key = any_value_ref_from_word(key_ref_word, "fz_matcher_map_get_ref key");
-    current_process()
+    (unsafe { &mut *process })
         .heap
         .read_map_value_ref(map, key)
         .expect("fz_matcher_map_get_ref")

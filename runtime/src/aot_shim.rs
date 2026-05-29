@@ -773,6 +773,7 @@ mod tests {
         // Stand up a single task with a parked_matched that has an
         // after_timer_id. matcher_fn is unused on the drain path.
         extern "C" fn never_match(
+            _process: *mut Process,
             _msg: u64,
             _pinned: *const crate::any_value::AnyValueRef,
             _out: *mut crate::any_value::AnyValueRef,

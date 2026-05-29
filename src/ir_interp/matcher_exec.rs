@@ -235,7 +235,11 @@ pub(super) fn resolve_matcher_subject(
                 return None;
             }
             with_value_ref(parent, "matcher tuple field", |struct_ref| {
-                fz_runtime::ir_runtime::fz_struct_get_field_ref(struct_ref, index * 8)
+                fz_runtime::ir_runtime::fz_struct_get_field_ref(
+                    fz_runtime::process::current_process(),
+                    struct_ref,
+                    index * 8,
+                )
             })
             .ok()
             .and_then(|ref_word| interp_value_from_ref_word(ref_word, "matcher tuple field").ok())
@@ -449,7 +453,11 @@ pub(super) fn matcher_map_lookup(
     let key = matcher_const_key_value(matcher, module, key, pinned)?;
     let ref_word = with_value_ref(map, "MatcherMapGet map", |map_ref| {
         with_value_ref(key, "MatcherMapGet key", |key_ref| {
-            fz_runtime::ir_runtime::fz_matcher_map_get_ref(map_ref, key_ref)
+            fz_runtime::ir_runtime::fz_matcher_map_get_ref(
+                fz_runtime::process::current_process(),
+                map_ref,
+                key_ref,
+            )
         })
     })
     .ok()?

@@ -284,7 +284,7 @@ pub(super) fn eval_prim<T: Types<Ty = crate::types::Ty>>(
                 return Err("TupleField: subject is not a Struct".to_string());
             }
             with_value_ref(cv, "TupleField", |struct_ref| {
-                fz_runtime::ir_runtime::fz_struct_get_field_ref(struct_ref, idx * 8)
+                fz_runtime::ir_runtime::fz_struct_get_field_ref(cur_proc(), struct_ref, idx * 8)
             })
             .and_then(|ref_word| interp_value_from_ref_word(ref_word, "TupleField"))?
         }
@@ -370,7 +370,7 @@ pub(super) fn eval_prim<T: Types<Ty = crate::types::Ty>>(
             }
             let value = with_value_ref(mv, "MatcherMapGet map", |map_ref| {
                 with_value_ref(kv, "MatcherMapGet key", |key_ref| {
-                    fz_runtime::ir_runtime::fz_matcher_map_get_ref(map_ref, key_ref)
+                    fz_runtime::ir_runtime::fz_matcher_map_get_ref(cur_proc(), map_ref, key_ref)
                 })
             })??;
             interp_value_from_ref_word(value, "MatcherMapGet")?

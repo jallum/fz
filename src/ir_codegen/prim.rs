@@ -501,7 +501,11 @@ pub(crate) fn lower_collection_prim<
                 .ins()
                 .iconst(types::I32, (*idx as i64) * SLOT_BYTES as i64);
             let struct_ref = body.tagged_var(var_env, c.0);
-            let inst = body.b.ins().call(fref, &[struct_ref, field_offset]);
+            let process = body.process_arg();
+            let inst = body
+                .b
+                .ins()
+                .call(fref, &[process, struct_ref, field_offset]);
             LowerOut::ValueRefWord(body.b.inst_results(inst)[0])
         }
         Prim::MakeBitstring(fields) => {
@@ -771,7 +775,8 @@ pub(crate) fn lower_collection_prim<
                 .declare_func_in_func(runtime.matcher_map_get_ref_id, body.b.func);
             let map_ref = body.tagged_var(var_env, m.0);
             let key_ref = body.tagged_var(var_env, k.0);
-            let inst = body.b.ins().call(fref, &[map_ref, key_ref]);
+            let process = body.process_arg();
+            let inst = body.b.ins().call(fref, &[process, map_ref, key_ref]);
             LowerOut::ValueRefWord(body.b.inst_results(inst)[0])
         }
         Prim::IsMatcherMapMiss(v) => {
@@ -1160,7 +1165,8 @@ pub(crate) fn lower_prim<
             let fref = body
                 .jmod
                 .declare_func_in_func(runtime.bs_reader_done_ref_id, body.b.func);
-            let inst = body.b.ins().call(fref, &[rv]);
+            let process = body.process_arg();
+            let inst = body.b.ins().call(fref, &[process, rv]);
             let cmp = body.b.inst_results(inst)[0];
             if body.cache.if_only_conds.contains(&dest_var.0) {
                 return Ok(LowerOut::Condition(cmp));

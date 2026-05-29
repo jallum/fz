@@ -35,6 +35,7 @@ use std::collections::HashMap;
 /// `fz_runtime::park::MatcherFn`.
 pub(crate) fn matcher_signature() -> Signature {
     let mut sig = Signature::new(CallConv::SystemV);
+    sig.params.push(AbiParam::new(types::I64)); // process (*mut Process)
     sig.params.push(AbiParam::new(types::I64)); // msg_ref
     sig.params.push(AbiParam::new(types::I64)); // pinned_ptr
     sig.params.push(AbiParam::new(types::I64)); // out_ptr
@@ -190,9 +191,10 @@ pub(crate) fn emit_matcher_body_from_matcher<M: cranelift_module::Module>(
         b.append_block_params_for_function_params(entry);
         b.switch_to_block(entry);
         b.seal_block(entry);
-        let msg_ref = b.block_params(entry)[0];
-        let pinned_ptr = b.block_params(entry)[1];
-        let out_ptr = b.block_params(entry)[2];
+        let process = b.block_params(entry)[0];
+        let msg_ref = b.block_params(entry)[1];
+        let pinned_ptr = b.block_params(entry)[2];
+        let out_ptr = b.block_params(entry)[3];
         let msg = receive_value_from_ref_word(b, msg_ref);
 
         let miss_block = b.create_block();
@@ -230,6 +232,7 @@ pub(crate) fn emit_matcher_body_from_matcher<M: cranelift_module::Module>(
         };
 
         let ctx = MatcherCtx {
+            process,
             fz_module,
             tuple_schema_ids,
             bound_indices_per_clause: &bound_indices_per_clause,
@@ -273,6 +276,11 @@ enum ReceiveValue {
 }
 
 struct MatcherCtx<'a> {
+    /// The running receiver's `Process*` (matcher fn's first param). Field
+    /// projections that need heap state (struct fields via the schema registry,
+    /// map values) pass it to their BIFs — the matcher fn is invoked from Rust,
+    /// not through the pinned-register ABI, so it carries the process explicitly.
+    process: ir::Value,
     fz_module: &'a Module,
     tuple_schema_ids: &'a HashMap<usize, u32>,
     bound_indices_per_clause: &'a [HashMap<String, usize>],
@@ -1012,7 +1020,9 @@ fn emit_matcher_map_get_value(
         let key = load_receive_value_ref(b, ctx.pinned_ptr, idx);
         let map_ref = emit_receive_value_ref(b, ctx, map)?;
         let key_ref = emit_receive_value_ref(b, ctx, key)?;
-        let inst = b.ins().call(map_get_ref_fref, &[map_ref, key_ref]);
+        let inst = b
+            .ins()
+            .call(map_get_ref_fref, &[ctx.process, map_ref, key_ref]);
         let out_ref = b.inst_results(inst)[0];
         return Ok(receive_value_from_ref_word(b, out_ref));
     }
@@ -1030,7 +1040,9 @@ fn emit_matcher_map_get_value(
     let map_ref = emit_receive_value_ref(b, ctx, map)?;
     let key_value = matcher_const_receive_value(b, key_value);
     let key_ref = emit_receive_value_ref(b, ctx, key_value)?;
-    let inst = b.ins().call(map_get_ref_fref, &[map_ref, key_ref]);
+    let inst = b
+        .ins()
+        .call(map_get_ref_fref, &[ctx.process, map_ref, key_ref]);
     let out_ref = b.inst_results(inst)[0];
     Ok(receive_value_from_ref_word(b, out_ref))
 }
@@ -1125,7 +1137,7 @@ fn emit_struct_get_field_value(
         .ins()
         .iconst(types::I32, field_index as i64 * SLOT_BYTES as i64);
     let struct_ref = emit_receive_value_ref(b, ctx, struct_value)?;
-    let inst = b.ins().call(fref, &[struct_ref, field_offset]);
+    let inst = b.ins().call(fref, &[ctx.process, struct_ref, field_offset]);
     let out_ref = b.inst_results(inst)[0];
     Ok(receive_value_from_ref_word(b, out_ref))
 }
@@ -1334,6 +1346,7 @@ fn emit_guard_dispatch(
     let done = b.create_block();
     b.append_block_param(done, types::I64);
     let ctx = MatcherCtx {
+        process: parent.process,
         fz_module: parent.fz_module,
         tuple_schema_ids: parent.tuple_schema_ids,
         bound_indices_per_clause: parent.bound_indices_per_clause,
@@ -1926,7 +1939,12 @@ mod tests {
         (JITModule::new(builder), FunctionBuilderContext::new())
     }
 
-    type MatcherAbi = extern "C" fn(u64, *const AnyValueRef, *mut AnyValueRef) -> u32;
+    type MatcherAbi = extern "C" fn(*mut Process, u64, *const AnyValueRef, *mut AnyValueRef) -> u32;
+
+    /// The installed process pointer to hand a matcher fn (its 1st param).
+    fn cp() -> *mut Process {
+        fz_runtime::process::current_process()
+    }
 
     fn install_process() -> (Box<Process>, CurrentProcessGuard) {
         let schemas = Rc::new(RefCell::new(SchemaRegistry::new()));
@@ -2004,6 +2022,7 @@ mod tests {
     ) -> MatcherAbi {
         let fid = declare_matcher(jmod, name).expect("declare matcher");
         let mut sig = jmod.make_signature();
+        sig.params.push(AbiParam::new(types::I64)); // process
         sig.params.push(AbiParam::new(types::I64));
         sig.params.push(AbiParam::new(types::I32));
         sig.returns.push(AbiParam::new(types::I64));
@@ -2132,8 +2151,14 @@ mod tests {
         );
         let pin: [AnyValueRef; 0] = [];
         let mut out: [AnyValueRef; 0] = [];
-        assert_eq!(f(int_ref(42).raw_word(), pin.as_ptr(), out.as_mut_ptr()), 1);
-        assert_eq!(f(int_ref(41).raw_word(), pin.as_ptr(), out.as_mut_ptr()), 0);
+        assert_eq!(
+            f(cp(), int_ref(42).raw_word(), pin.as_ptr(), out.as_mut_ptr()),
+            1
+        );
+        assert_eq!(
+            f(cp(), int_ref(41).raw_word(), pin.as_ptr(), out.as_mut_ptr()),
+            0
+        );
     }
 
     #[test]
@@ -2159,7 +2184,12 @@ mod tests {
         let mut out = [AnyValueRef::null()];
         let msg = 7;
         assert_eq!(
-            f(int_ref(msg).raw_word(), pin.as_ptr(), out.as_mut_ptr()),
+            f(
+                cp(),
+                int_ref(msg).raw_word(),
+                pin.as_ptr(),
+                out.as_mut_ptr()
+            ),
             1
         );
         assert_eq!(out[0].load_int().expect("out int"), msg);
@@ -2194,9 +2224,15 @@ mod tests {
         );
         let pin: [AnyValueRef; 0] = [];
         let mut out = [AnyValueRef::null()];
-        assert_eq!(f(int_ref(11).raw_word(), pin.as_ptr(), out.as_mut_ptr()), 1);
+        assert_eq!(
+            f(cp(), int_ref(11).raw_word(), pin.as_ptr(), out.as_mut_ptr()),
+            1
+        );
         assert_eq!(out[0].load_int().expect("out int"), 11);
-        assert_eq!(f(int_ref(9).raw_word(), pin.as_ptr(), out.as_mut_ptr()), 2);
+        assert_eq!(
+            f(cp(), int_ref(9).raw_word(), pin.as_ptr(), out.as_mut_ptr()),
+            2
+        );
     }
 
     #[test]
@@ -2230,11 +2266,21 @@ mod tests {
         let pin_9 = [int_ref(9)];
         let pin_8 = [int_ref(8)];
         assert_eq!(
-            f(int_ref(0).raw_word(), pin_9.as_ptr(), out.as_mut_ptr()),
+            f(
+                cp(),
+                int_ref(0).raw_word(),
+                pin_9.as_ptr(),
+                out.as_mut_ptr()
+            ),
             1
         );
         assert_eq!(
-            f(int_ref(0).raw_word(), pin_8.as_ptr(), out.as_mut_ptr()),
+            f(
+                cp(),
+                int_ref(0).raw_word(),
+                pin_8.as_ptr(),
+                out.as_mut_ptr()
+            ),
             2
         );
     }
@@ -2287,11 +2333,14 @@ mod tests {
         let pin = [int_ref(170)];
         let mut out = [AnyValueRef::null()];
         let val = struct_ref(tuple_p);
-        assert_eq!(f(val.raw_word(), pin.as_ptr(), out.as_mut_ptr()), 1);
+        assert_eq!(f(cp(), val.raw_word(), pin.as_ptr(), out.as_mut_ptr()), 1);
         assert_eq!(out[0].load_int().expect("out int"), 23);
 
         let pin_other = [int_ref(255)];
         let mut out2 = [AnyValueRef::null()];
-        assert_eq!(f(val.raw_word(), pin_other.as_ptr(), out2.as_mut_ptr()), 0);
+        assert_eq!(
+            f(cp(), val.raw_word(), pin_other.as_ptr(), out2.as_mut_ptr()),
+            0
+        );
     }
 }
