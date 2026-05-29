@@ -29,18 +29,24 @@ pub const YIELD_PTR: u64 = 0x1;
 /// closure_bits (AnyValue ptr) and returns the new pid. The hook handles
 /// deep-copy of the closure into the new task's heap, dispatch via the
 /// closure's code pointer to materialize the initial frame, and enqueue.
-pub type SpawnHook = extern "C" fn(scheduler: *mut (), closure_bits: u64) -> u32;
+pub type SpawnHook =
+    extern "C" fn(sender: *mut Process, scheduler: *mut (), closure_bits: u64) -> u32;
 
 /// fz-siu.12: fz_spawn_opt FFI signature. Like SpawnHook but also accepts
 /// min_heap_size (bytes, already unboxed from AnyValue). v1: hint accepted
 /// and ignored by the binary; hook body is identical to SpawnHook.
-pub type SpawnOptHook =
-    extern "C" fn(scheduler: *mut (), closure_bits: u64, min_heap_size: u32) -> u32;
+pub type SpawnOptHook = extern "C" fn(
+    sender: *mut Process,
+    scheduler: *mut (),
+    closure_bits: u64,
+    min_heap_size: u32,
+) -> u32;
 
 /// fz_send FFI signature on the binary side: takes receiver pid plus the
 /// one-word any value ref to deliver. The binary's send_via_current_runtime
 /// handles the deep-copy into the receiver's heap and the wake-up.
-pub type SendHook = extern "C" fn(scheduler: *mut (), receiver_pid: u32, msg_ref_word: u64);
+pub type SendHook =
+    extern "C" fn(sender: *mut Process, scheduler: *mut (), receiver_pid: u32, msg_ref_word: u64);
 
 /// Output sink signature on the binary side. `emit_print_line` (the `dbg` /
 /// print render seam, shared by both engines) forwards each rendered line so

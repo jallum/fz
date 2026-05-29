@@ -113,21 +113,27 @@ impl ExitRecord {
 /// runtime crate dispatches through when fz_spawn / fz_send fire from
 /// JIT'd code. They translate the raw-u32 hook ABI back into the
 /// FnId/PidId newtypes Runtime expects and call the existing impls.
-extern "C" fn spawn_hook_thunk(scheduler: *mut (), closure_bits: u64) -> u32 {
-    spawn_closure_via(scheduler, closure_bits)
+extern "C" fn spawn_hook_thunk(sender: *mut Process, scheduler: *mut (), closure_bits: u64) -> u32 {
+    spawn_closure_via(sender, scheduler, closure_bits)
 }
 
 extern "C" fn spawn_opt_hook_thunk(
+    sender: *mut Process,
     scheduler: *mut (),
     closure_bits: u64,
     _min_heap_size: u32,
 ) -> u32 {
-    spawn_closure_via(scheduler, closure_bits)
+    spawn_closure_via(sender, scheduler, closure_bits)
 }
 
-extern "C" fn send_hook_thunk(scheduler: *mut (), receiver_pid: u32, msg_ref_word: u64) {
+extern "C" fn send_hook_thunk(
+    sender: *mut Process,
+    scheduler: *mut (),
+    receiver_pid: u32,
+    msg_ref_word: u64,
+) {
     let msg_ref = AnyValueRef::from_raw_word(msg_ref_word).expect("send hook message ref");
-    send_via(scheduler, receiver_pid, msg_ref);
+    send_via(sender, scheduler, receiver_pid, msg_ref);
 }
 
 /// Output sink for `dbg`/print: the runtime's `emit_print_line` forwards each
@@ -204,13 +210,13 @@ extern "C" fn timer_cancel_hook_thunk(scheduler: *mut (), timer_id: u64) {
 /// from a closure. Deep-copies the closure into the new task's heap and
 /// records it as a pending closure entry for the child task's next quantum.
 /// Panics outside a running Runtime.
-pub fn spawn_closure_via(scheduler: *mut (), closure_bits: u64) -> PidId {
+pub fn spawn_closure_via(sender: *mut Process, scheduler: *mut (), closure_bits: u64) -> PidId {
     assert!(
         !scheduler.is_null(),
         "spawn() called with no scheduler in the execution context"
     );
     let rt = unsafe { &mut *(scheduler as *mut Runtime<'static>) };
-    rt.spawn_closure(closure_bits)
+    rt.spawn_closure(sender, closure_bits)
 }
 
 /// fz-ul4.19.3: called from fz_send (ir_codegen.rs FFI) to deliver a
@@ -222,18 +228,14 @@ pub fn spawn_closure_via(scheduler: *mut (), closure_bits: u64) -> PidId {
 /// running (its Box<Process> has been taken OUT of the registry by
 /// run_until_idle), the receiver is sitting in the registry. No borrow
 /// conflict.
-pub fn send_via(scheduler: *mut (), receiver_pid: PidId, msg: AnyValueRef) {
+pub fn send_via(sender: *mut Process, scheduler: *mut (), receiver_pid: PidId, msg: AnyValueRef) {
     assert!(
         !scheduler.is_null(),
         "send() called with no scheduler in the execution context"
     );
     let rt = unsafe { &mut *(scheduler as *mut Runtime<'static>) };
-    let sender_ptr = CURRENT_PROCESS.with(|c| c.get());
-    assert!(
-        !sender_ptr.is_null(),
-        "send() called with no current_process"
-    );
-    let sender = unsafe { &mut *sender_ptr };
+    assert!(!sender.is_null(), "send() called with no sender process");
+    let sender = unsafe { &mut *sender };
     if sender.pid == receiver_pid {
         // Self-send: sender is currently OUT of rt.tasks (run_until_idle
         // has it borrowed). We can't .get_mut from rt.tasks. Write
@@ -403,9 +405,7 @@ impl<'a> Runtime<'a> {
     /// currently-running process. Deep-copies the closure into the new
     /// task's heap, then stores it as a pending entry. The scheduler later
     /// dispatches that closure via fz_spawn_entry in the child task's quantum.
-    pub fn spawn_closure(&mut self, closure_ref_word: u64) -> PidId {
-        use fz_runtime::process::CURRENT_PROCESS;
-
+    pub fn spawn_closure(&mut self, sender: *mut Process, closure_ref_word: u64) -> PidId {
         let pid = self.next_pid;
         self.next_pid += 1;
         let mut process = self.compiled.make_process();
@@ -413,9 +413,8 @@ impl<'a> Runtime<'a> {
         process.state = ProcessState::Ready;
 
         // Deep-copy the closure from sender's heap into the new task's heap.
-        let sender_ptr = CURRENT_PROCESS.with(|c| c.get());
-        assert!(!sender_ptr.is_null(), "spawn_closure: no current_process");
-        let sender = unsafe { &*sender_ptr };
+        assert!(!sender.is_null(), "spawn_closure: no sender process");
+        let sender = unsafe { &*sender };
         let mut forwarding: std::collections::HashMap<*mut u8, *mut u8> =
             std::collections::HashMap::new();
         let closure_ref = fz_runtime::any_value::AnyValueRef::from_raw_word(closure_ref_word)
@@ -1842,7 +1841,7 @@ fn main(), do: sum(10, 0, nil)";
         let prev_proc = CURRENT_PROCESS.with(|c| c.replace(sender_ptr));
 
         // Hit case: msg == 42 matches the pinned.
-        send_via(rt_ptr, receiver_pid, test_int_ref(42));
+        send_via(sender_ptr, rt_ptr, receiver_pid, test_int_ref(42));
 
         CURRENT_PROCESS.with(|c| c.set(prev_proc));
 
@@ -1899,7 +1898,7 @@ fn main(), do: sum(10, 0, nil)";
         let prev_proc = CURRENT_PROCESS.with(|c| c.replace(sender_ptr));
 
         // Miss case: msg == 7 does not match pinned 42.
-        send_via(rt_ptr, receiver_pid, test_int_ref(7));
+        send_via(sender_ptr, rt_ptr, receiver_pid, test_int_ref(7));
 
         CURRENT_PROCESS.with(|c| c.set(prev_proc));
 

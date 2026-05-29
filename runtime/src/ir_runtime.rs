@@ -416,7 +416,7 @@ unsafe fn process_ctx<'a>(process: *mut Process) -> &'a crate::exec_ctx::ExecCtx
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn fz_spawn_ref(process: *mut Process, closure_ref_word: u64) -> u64 {
     let ctx = unsafe { process_ctx(process) };
-    (ctx.spawn.expect("spawn callback installed"))(ctx.scheduler, closure_ref_word) as u64
+    (ctx.spawn.expect("spawn callback installed"))(process, ctx.scheduler, closure_ref_word) as u64
 }
 
 #[unsafe(no_mangle)]
@@ -428,6 +428,7 @@ pub extern "C" fn fz_spawn_opt_ref(
 ) -> u64 {
     let ctx = unsafe { process_ctx(process) };
     (ctx.spawn_opt.expect("spawn_opt callback installed"))(
+        process,
         ctx.scheduler,
         closure_ref_word,
         min_heap_size as u32,
@@ -492,7 +493,12 @@ pub extern "C" fn fz_send_ref(
     let receiver_pid = receiver_pid_bits as u32;
     let _ = any_value_ref_from_word(msg_ref_word, "fz_send_ref message");
     let ctx = unsafe { process_ctx(process) };
-    (ctx.send.expect("send callback installed"))(ctx.scheduler, receiver_pid, msg_ref_word);
+    (ctx.send.expect("send callback installed"))(
+        process,
+        ctx.scheduler,
+        receiver_pid,
+        msg_ref_word,
+    );
     msg_ref_word
 }
 

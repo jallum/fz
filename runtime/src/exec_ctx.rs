@@ -101,7 +101,13 @@ pub fn timer_cancel(process: &crate::process::Process, timer_id: u64) {
 mod tests {
     use super::*;
 
-    extern "C" fn sample_send(_scheduler: *mut (), _pid: u32, _msg: u64) {}
+    extern "C" fn sample_send(
+        _sender: *mut crate::process::Process,
+        _scheduler: *mut (),
+        _pid: u32,
+        _msg: u64,
+    ) {
+    }
 
     #[test]
     fn empty_ctx_has_null_handles_and_no_callbacks() {

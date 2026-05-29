@@ -298,16 +298,15 @@ pub extern "C" fn fz_aot_register_static_closure(
 /// closure into its heap, sets pending_closure_entry, and enqueues the
 /// child — returning immediately to the caller. The run-queue loop in
 /// fz_aot_run_main drives the child when the parent yields or halts.
-extern "C" fn aot_spawn_hook(_scheduler: *mut (), closure_bits: u64) -> u32 {
+extern "C" fn aot_spawn_hook(sender: *mut Process, _scheduler: *mut (), closure_bits: u64) -> u32 {
     let pid = AOT_NEXT_PID.with(|c| {
         let p = c.get();
         c.set(p + 1);
         p
     });
 
-    let parent_ptr = CURRENT_PROCESS.with(|c| c.get());
-    assert!(!parent_ptr.is_null(), "aot_spawn_hook: no current process");
-    let parent = unsafe { &*parent_ptr };
+    assert!(!sender.is_null(), "aot_spawn_hook: no sender process");
+    let parent = unsafe { &*sender };
     let schemas = parent.heap.schemas_registry();
     let halt_cont_body_addrs = AOT_HALT_CONT_BODIES.with(|c| c.get());
     let static_closures = parent.static_closures.clone();
@@ -344,11 +343,12 @@ extern "C" fn aot_spawn_hook(_scheduler: *mut (), closure_bits: u64) -> u32 {
 
 /// fz-siu.12: spawn_opt hook. v1 ignores min_heap_size; delegates to aot_spawn_hook.
 extern "C" fn aot_spawn_opt_hook(
+    sender: *mut Process,
     scheduler: *mut (),
     closure_bits: u64,
     _min_heap_size: u32,
 ) -> u32 {
-    aot_spawn_hook(scheduler, closure_bits)
+    aot_spawn_hook(sender, scheduler, closure_bits)
 }
 
 fn deep_copy_send_ref_for_aot(
@@ -391,11 +391,15 @@ extern "C" fn aot_timer_cancel_hook(_scheduler: *mut (), timer_id: u64) {
 /// If the receiver was Blocked on non-selective `receive()`, flips it to Ready
 /// and enqueues — matching the JIT's send_via_current_runtime semantics.
 /// Selective-receive arrivals route through `sched::probe_sender`.
-extern "C" fn aot_send_hook(_scheduler: *mut (), receiver_pid: u32, msg_ref_word: u64) {
+extern "C" fn aot_send_hook(
+    sender_ptr: *mut Process,
+    _scheduler: *mut (),
+    receiver_pid: u32,
+    msg_ref_word: u64,
+) {
     let msg =
         crate::any_value::AnyValueRef::from_raw_word(msg_ref_word).expect("aot_send message ref");
-    let sender_ptr = CURRENT_PROCESS.with(|c| c.get());
-    assert!(!sender_ptr.is_null(), "aot_send_hook: no current process");
+    assert!(!sender_ptr.is_null(), "aot_send_hook: no sender process");
     let wake = AOT_TASKS.with(|c| {
         let mut t = c.borrow_mut();
         let Some(task) = t.get_mut(&receiver_pid) else {
@@ -733,7 +737,7 @@ mod tests {
         });
         CURRENT_PROCESS.with(|c| c.set(sender_ptr));
 
-        aot_send_hook(std::ptr::null_mut(), 2, msg.raw_word());
+        aot_send_hook(sender_ptr, std::ptr::null_mut(), 2, msg.raw_word());
 
         AOT_TASKS.with(|c| {
             let tasks = c.borrow();
