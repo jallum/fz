@@ -36,6 +36,14 @@ pub struct SpecPlan {
     /// Var types. The map is per spec because the same syntactic call can be
     /// reached under different argument types in different specializations.
     pub extern_marshals: HashMap<crate::fz_ir::ExternMarshalSite, crate::fz_ir::ExternTy>,
+    /// fz-bsx.3 — the module's brand/opaque inner-type maps, carried here so
+    /// codegen's value-equality fold (`lower_eq_binop`) can discharge brand /
+    /// opaque tags to their runtime representation. Runtime equality is
+    /// brand-blind, so the fold must consult `is_value_disjoint` (which needs
+    /// these), never the brand-aware `is_disjoint`. Copied from `Module` at
+    /// spec construction; tiny (one entry per declared brand/opaque).
+    pub brand_inners: HashMap<String, crate::types::Ty>,
+    pub opaque_inners: HashMap<String, crate::types::Ty>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -58,6 +66,12 @@ impl CallableCapability {
 }
 
 impl SpecPlan {
+    /// A borrowed view of the brand/opaque inner-type maps copied from the
+    /// module, for codegen's brand-blind value-equality fold.
+    pub fn nominals(&self) -> crate::types::Nominals<'_> {
+        crate::types::Nominals::new(&self.brand_inners, &self.opaque_inners)
+    }
+
     pub fn known_fn(&self, var: &Var) -> Option<FnId> {
         self.callable_capabilities
             .get(var)
