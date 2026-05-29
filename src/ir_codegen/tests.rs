@@ -2279,12 +2279,13 @@ fn const_nil_bool_atom_deduplicated_within_block() {
     );
 }
 
-/// plan_module is called exactly 3 times in the codegen pipeline. The
-/// final pass runs after destination lowering so dispatch metadata
-/// covers the optimized IR; codegen then merges narrower pre-DP facts
-/// for vars that destination lowering did not semantically change.
+/// plan_module is called exactly once in the codegen pipeline: the single
+/// authoritative plan, derived after the structural transforms. The pre-plan
+/// rewrite + inline now read a capability-only analysis
+/// (`plan_callable_capabilities`, which does not count as a plan_module call,
+/// fz-hfc.3), and destination lowering no longer re-plans (fz-hfc.4).
 #[test]
-fn plan_module_called_exactly_three_times_in_pipeline() {
+fn plan_module_called_exactly_once_in_pipeline() {
     let src = "fn main(), do: dbg(42)";
     let m = lower_src(src);
     crate::ir_planner::PLAN_MODULE_CALLS.with(|c| c.set(0));
@@ -2295,7 +2296,7 @@ fn plan_module_called_exactly_three_times_in_pipeline() {
     )
     .expect("compile");
     let count = crate::ir_planner::PLAN_MODULE_CALLS.with(|c| c.get());
-    assert_eq!(count, 3, "plan_module called {} times, expected 3", count);
+    assert_eq!(count, 1, "plan_module called {} times, expected 1", count);
 }
 
 #[test]
@@ -2318,10 +2319,15 @@ fn frontend_to_codegen_pipeline_reports_two_planner_events() {
 
     compile(&mut t, &frontend.module, &tel).expect("compile");
 
+    // The single authoritative plan: the pretyped path now reports exactly two
+    // planner.planned events — the frontend plan and the one codegen
+    // plan_module. The pre-plan rewrite + inline read a capability-only analysis
+    // that emits no event (fz-hfc.3), and destination lowering no longer
+    // re-plans (fz-hfc.4). This is the end state invariant 1 targets.
     assert_eq!(
         cap.count(&["fz", "planner", "planned"]),
         2,
-        "pretyped path reports exactly two planner.planned events — the frontend plan and the authoritative codegen plan_module; the constant-closure rewrite re-plans the linked working module and the post-destination retype are both internal intermediate plans and stay telemetry-silent"
+        "pretyped path reports exactly two planner.planned events — the frontend plan and the single authoritative codegen plan"
     );
 }
 

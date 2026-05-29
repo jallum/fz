@@ -520,7 +520,7 @@ fn user_fn_category(fn_def: &crate::ast::FnDef) -> crate::fz_ir::FnCategory {
 /// guarantee down so a future change to the lowerer (or a corner case
 /// not yet exercised) cannot silently break the downstream pipeline.
 ///
-/// See `docs/dispatch-as-planner-output.md` (Worry 1) for the stress-test
+/// See `.agent/docs/dispatch-as-planner-output.md` (Worry 1) for the stress-test
 /// that named this invariant.
 ///
 /// Debug-build only — the check is O(blocks) but redundant in release

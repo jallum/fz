@@ -1960,7 +1960,15 @@ fn dump_telemetry_stats(fixture: &Path) -> DumpTelemetryStats {
                 });
         }
         if line.contains("\"name\":[\"fz\",\"planner\",\"planned\"]") {
+            // The budget metrics track the committed plan. dump runs the
+            // frontend plan plus the codegen pipeline; both are authoritative
+            // (fz-hfc removed the intermediate re-derivations), and the parser
+            // keys the spec-shape metrics on the role label so the captured
+            // plan is the one codegen commits to, not an order accident.
             stats.planner.event_count += 1;
+            if !line.contains("\"role\":\"authoritative\"") {
+                continue;
+            }
             stats.planner.spec_count = parse_json_u64_field(line, "spec_count")
                 .unwrap_or_else(|| panic!("{} telemetry missing spec_count", fixture.display()));
             stats.planner.worklist_pops = parse_json_u64_field(line, "worklist_pops")
@@ -2359,12 +2367,12 @@ fn owned_cons_reuse_docs_pin_alias_fallback_contract() {
 fn physical_capability_model_and_signals_are_pinned() {
     let index = fs::read_to_string(".agent/docs.md").expect("read agent docs index");
     assert!(
-        index.contains("docs/physical-capabilities.md"),
-        "agent docs index must point at physical capability guidance"
+        index.contains("docs/destination-passing.md"),
+        "agent docs index must point at the doc carrying physical capability guidance"
     );
 
-    let docs = fs::read_to_string(".agent/docs/physical-capabilities.md")
-        .expect("read physical capability docs");
+    let docs = fs::read_to_string(".agent/docs/destination-passing.md")
+        .expect("read destination-passing docs (physical capability guidance lives here)");
     for needle in [
         "semantic values",
         "physical capabilities",

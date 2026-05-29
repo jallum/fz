@@ -627,8 +627,8 @@ impl Backend for AotBackend {
 
         // Registers the SystemV→Tail-CC `fz_drain_dtor_entry` shim so
         // the AOT run-queue loop can dispatch pending dtor closures at
-        // task-exit.
-        let set_drain_sig = sig1(&[types::I64], &[]);
+        // task-exit. `(proc, addr)` — proc carries the scheduler handle.
+        let set_drain_sig = sig1(&[types::I64, types::I64], &[]);
         let set_drain_id = self
             .omod
             .declare_function(
@@ -643,7 +643,8 @@ impl Backend for AotBackend {
         // Registers the SystemV `fz_resume(cont)` shim so the AOT
         // run-queue loop can dispatch `runnable_closure`
         // (selective-receive wakeup) on parity with the JIT path.
-        let set_resume_sig = sig1(&[types::I64], &[]);
+        // `(proc, addr)` — proc carries the scheduler handle.
+        let set_resume_sig = sig1(&[types::I64, types::I64], &[]);
         let set_resume_id = self
             .omod
             .declare_function("fz_aot_set_resume_addr", Linkage::Import, &set_resume_sig)
