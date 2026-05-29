@@ -133,6 +133,24 @@ impl<'a, 'env, 'fb, M: cranelift_module::Module> CodegenFn<'a, 'env, 'fb, M> {
         self.call(id, &full)
     }
 
+    /// Declare a runtime import by symbol name (idempotent) and call it. The
+    /// single declare→fref→call path for the few intrinsics lowered by name
+    /// rather than through a `RuntimeRefs` id; `func_ref` dedups the per-fn
+    /// import like every other call site.
+    pub(crate) fn call_named(
+        &mut self,
+        name: &str,
+        sig: &ir::Signature,
+        args: &[ir::Value],
+    ) -> ir::Inst {
+        let id = self
+            .jmod
+            .declare_function(name, cranelift_module::Linkage::Import, sig)
+            .expect("declare runtime import");
+        let fref = self.func_ref(id);
+        self.b.ins().call(fref, args)
+    }
+
     pub(crate) fn ref_tag(&mut self, value_ref: ir::Value) -> ir::Value {
         let id = self.runtime.type_of_id;
         self.call1(id, &[value_ref])

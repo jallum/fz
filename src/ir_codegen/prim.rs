@@ -1119,7 +1119,7 @@ pub(crate) fn lower_prim<
                 return lower_extern_fz_send(body, var_env, &arg_vars);
             }
             if decl.symbol == "fz_self" && args.is_empty() {
-                return lower_extern_fz_self(body.b, body.jmod);
+                return lower_extern_fz_self(body);
             }
             if decl.symbol == "fz_process_heap_alloc_stats" && args.is_empty() {
                 let process = body.process_arg();
@@ -1135,7 +1135,7 @@ pub(crate) fn lower_prim<
                 return Ok(LowerOut::ValueRef(body.b.inst_results(inst)[0]));
             }
             if decl.symbol == "fz_make_ref" && args.is_empty() {
-                return lower_extern_fz_make_ref(body.b, body.jmod);
+                return lower_extern_fz_make_ref(body);
             }
             if decl.symbol == "fz_spawn" && args.len() == 1 {
                 return lower_extern_fz_spawn(body, var_env, &arg_vars);
@@ -1847,6 +1847,13 @@ fn lower_bool_binop<M: cranelift_module::Module>(
     Ok(LowerOut::Strict(strict_bool(body.b, combined)))
 }
 
+// fz "process intrinsics": externs the front end exposes but the runtime
+// implements as BIFs that need the running process (and/or bespoke arg
+// marshaling). Each marshals its args, then routes through `body.call_named`
+// — the one declare→call path — and wraps the result per its ABI. The process,
+// when needed, is the pinned register (`process_arg`), prepended here rather
+// than appearing in the fz extern decl.
+
 /// `fz_panic(value)`: forwards one ValueRef to the runtime fatal path.
 fn lower_extern_fz_panic<M: cranelift_module::Module>(
     body: &mut CodegenFn<'_, '_, '_, M>,
@@ -1856,13 +1863,11 @@ fn lower_extern_fz_panic<M: cranelift_module::Module>(
 ) -> Result<LowerOut, CodegenError> {
     let value_ref = body.tagged_var(var_env, args[0].0);
     let process = body.process_arg();
-    let sig = sig1(&[types::I64, types::I64], &[]);
-    let func_id = body
-        .jmod
-        .declare_function("fz_panic", Linkage::Import, &sig)
-        .map_err(|e| CodegenError::new(format!("declare fz_panic: {}", e)))?;
-    let fref = body.jmod.declare_func_in_func(func_id, body.b.func);
-    body.b.ins().call(fref, &[process, value_ref]);
+    body.call_named(
+        "fz_panic",
+        &sig1(&[types::I64, types::I64], &[]),
+        &[process, value_ref],
+    );
     if body.cache.used_vars.contains(&dest_var.0) {
         return Ok(LowerOut::Strict(strict_const_value(
             body.b,
@@ -1873,9 +1878,8 @@ fn lower_extern_fz_panic<M: cranelift_module::Module>(
 }
 
 /// `fz_dbg_value(value)`: prints the value and returns it. The runtime BIF
-/// is a process intrinsic (it renders atom names off the process and routes
-/// output through the process's ExecCtx telemetry sink), so the process is
-/// prepended from the pinned register — it is not part of the fz extern decl.
+/// renders atom names off the process and routes output through the process's
+/// ExecCtx telemetry sink, so the process is prepended from the pinned register.
 fn lower_extern_fz_dbg_value<M: cranelift_module::Module>(
     body: &mut CodegenFn<'_, '_, '_, M>,
     var_env: &HashMap<u32, CodegenValue>,
@@ -1884,13 +1888,11 @@ fn lower_extern_fz_dbg_value<M: cranelift_module::Module>(
 ) -> Result<LowerOut, CodegenError> {
     let value_ref = body.tagged_var(var_env, args[0].0);
     let process = body.process_arg();
-    let sig = sig1(&[types::I64, types::I64], &[types::I64]);
-    let func_id = body
-        .jmod
-        .declare_function("fz_dbg_value", Linkage::Import, &sig)
-        .map_err(|e| CodegenError::new(format!("declare fz_dbg_value: {}", e)))?;
-    let fref = body.jmod.declare_func_in_func(func_id, body.b.func);
-    let call = body.b.ins().call(fref, &[process, value_ref]);
+    let call = body.call_named(
+        "fz_dbg_value",
+        &sig1(&[types::I64, types::I64], &[types::I64]),
+        &[process, value_ref],
+    );
     let result = body.b.inst_results(call)[0];
     if body.cache.used_vars.contains(&dest_var.0) {
         return Ok(LowerOut::Strict(CodegenValue::AnyRef(result)));
@@ -1898,9 +1900,8 @@ fn lower_extern_fz_dbg_value<M: cranelift_module::Module>(
     Ok(LowerOut::DeadUnit)
 }
 
-/// `fz_send(receiver, msg)`: marshals `msg` as a single ABI ValueRef
-/// arg and forwards to `fz_send_ref`. The wrapper's declared return type
-/// drives normal return coercion from this boxed ABI result.
+/// `fz_send(receiver, msg)`: marshals `msg` as a single ABI ValueRef arg and
+/// forwards to `fz_send_ref`.
 fn lower_extern_fz_send<M: cranelift_module::Module>(
     body: &mut CodegenFn<'_, '_, '_, M>,
     var_env: &HashMap<u32, CodegenValue>,
@@ -1911,44 +1912,34 @@ fn lower_extern_fz_send<M: cranelift_module::Module>(
     let mut msg_args = Vec::with_capacity(1);
     body.push_binding_as_abi_arg(&mut msg_args, msg_binding, ArgRepr::ValueRef);
     let msg_ref = msg_args[0];
-    let sig = sig1(&[types::I64, types::I64, types::I64], &[types::I64]);
-    let func_id = body
-        .jmod
-        .declare_function("fz_send_ref", Linkage::Import, &sig)
-        .map_err(|e| CodegenError::new(format!("declare fz_send_ref: {}", e)))?;
-    let fref = body.jmod.declare_func_in_func(func_id, body.b.func);
     let process = body.process_arg();
-    let inst = body.b.ins().call(fref, &[process, receiver, msg_ref]);
+    let inst = body.call_named(
+        "fz_send_ref",
+        &sig1(&[types::I64, types::I64, types::I64], &[types::I64]),
+        &[process, receiver, msg_ref],
+    );
     Ok(LowerOut::ValueRefWord(body.b.inst_results(inst)[0]))
 }
 
-/// `fz_self()`: returns the current process id from `fz_self_raw`.
+/// `fz_self()`: the current process id from `fz_self_raw`.
 fn lower_extern_fz_self<M: cranelift_module::Module>(
-    b: &mut FunctionBuilder<'_>,
-    jmod: &mut M,
+    body: &mut CodegenFn<'_, '_, '_, M>,
 ) -> Result<LowerOut, CodegenError> {
-    let sig = sig1(&[types::I64], &[types::I64]);
-    let func_id = jmod
-        .declare_function("fz_self_raw", Linkage::Import, &sig)
-        .map_err(|e| CodegenError::new(format!("declare fz_self_raw: {}", e)))?;
-    let fref = jmod.declare_func_in_func(func_id, b.func);
-    let process = b.ins().get_pinned_reg(types::I64);
-    let inst = b.ins().call(fref, &[process]);
-    Ok(LowerOut::RawI64(b.inst_results(inst)[0]))
+    let process = body.process_arg();
+    let inst = body.call_named(
+        "fz_self_raw",
+        &sig1(&[types::I64], &[types::I64]),
+        &[process],
+    );
+    Ok(LowerOut::RawI64(body.b.inst_results(inst)[0]))
 }
 
-/// `fz_make_ref()`: allocates a fresh opaque ref via `fz_make_ref_raw`.
+/// `fz_make_ref()`: a fresh opaque ref from `fz_make_ref_raw` (no process).
 fn lower_extern_fz_make_ref<M: cranelift_module::Module>(
-    b: &mut FunctionBuilder<'_>,
-    jmod: &mut M,
+    body: &mut CodegenFn<'_, '_, '_, M>,
 ) -> Result<LowerOut, CodegenError> {
-    let sig = sig1(&[], &[types::I64]);
-    let func_id = jmod
-        .declare_function("fz_make_ref_raw", Linkage::Import, &sig)
-        .map_err(|e| CodegenError::new(format!("declare fz_make_ref_raw: {}", e)))?;
-    let fref = jmod.declare_func_in_func(func_id, b.func);
-    let inst = b.ins().call(fref, &[]);
-    Ok(LowerOut::RawI64(b.inst_results(inst)[0]))
+    let inst = body.call_named("fz_make_ref_raw", &sig1(&[], &[types::I64]), &[]);
+    Ok(LowerOut::RawI64(body.b.inst_results(inst)[0]))
 }
 
 /// `fz_spawn(closure)`: forwards the closure ref to `fz_spawn_ref`.
@@ -1958,19 +1949,16 @@ fn lower_extern_fz_spawn<M: cranelift_module::Module>(
     args: &[crate::fz_ir::Var],
 ) -> Result<LowerOut, CodegenError> {
     let closure_ref = body.tagged_var(var_env, args[0].0);
-    let sig = sig1(&[types::I64, types::I64], &[types::I64]);
-    let func_id = body
-        .jmod
-        .declare_function("fz_spawn_ref", Linkage::Import, &sig)
-        .map_err(|e| CodegenError::new(format!("declare fz_spawn_ref: {}", e)))?;
-    let fref = body.jmod.declare_func_in_func(func_id, body.b.func);
     let process = body.process_arg();
-    let inst = body.b.ins().call(fref, &[process, closure_ref]);
+    let inst = body.call_named(
+        "fz_spawn_ref",
+        &sig1(&[types::I64, types::I64], &[types::I64]),
+        &[process, closure_ref],
+    );
     Ok(LowerOut::RawI64(body.b.inst_results(inst)[0]))
 }
 
-/// `fz_spawn_opt(closure, min_heap_size)`: variant of `fz_spawn` that
-/// also passes a heap-size hint through to `fz_spawn_opt_ref`.
+/// `fz_spawn_opt(closure, min_heap_size)`: `fz_spawn` plus a heap-size hint.
 fn lower_extern_fz_spawn_opt<M: cranelift_module::Module>(
     body: &mut CodegenFn<'_, '_, '_, M>,
     var_env: &HashMap<u32, CodegenValue>,
@@ -1978,22 +1966,16 @@ fn lower_extern_fz_spawn_opt<M: cranelift_module::Module>(
 ) -> Result<LowerOut, CodegenError> {
     let closure_ref = body.tagged_var(var_env, args[0].0);
     let min_heap_size = body.as_raw_i64(var_env, args[1].0);
-    let sig = sig1(&[types::I64, types::I64, types::I64], &[types::I64]);
-    let func_id = body
-        .jmod
-        .declare_function("fz_spawn_opt_ref", Linkage::Import, &sig)
-        .map_err(|e| CodegenError::new(format!("declare fz_spawn_opt_typed: {}", e)))?;
-    let fref = body.jmod.declare_func_in_func(func_id, body.b.func);
     let process = body.process_arg();
-    let inst = body
-        .b
-        .ins()
-        .call(fref, &[process, closure_ref, min_heap_size]);
+    let inst = body.call_named(
+        "fz_spawn_opt_ref",
+        &sig1(&[types::I64, types::I64, types::I64], &[types::I64]),
+        &[process, closure_ref, min_heap_size],
+    );
     Ok(LowerOut::RawI64(body.b.inst_results(inst)[0]))
 }
 
-/// `fz_make_resource(payload, dtor)`: builds a runtime resource with
-/// the raw payload bits and the destructor closure ref.
+/// `fz_make_resource(payload, dtor)`: raw payload bits + destructor closure ref.
 fn lower_extern_fz_make_resource<M: cranelift_module::Module>(
     body: &mut CodegenFn<'_, '_, '_, M>,
     var_env: &HashMap<u32, CodegenValue>,
@@ -2004,14 +1986,12 @@ fn lower_extern_fz_make_resource<M: cranelift_module::Module>(
         .expect("unbound make_resource payload");
     let payload_raw = body.value_raw_int(payload);
     let dtor_ref = body.tagged_var(var_env, args[1].0);
-    let sig = sig1(&[types::I64, types::I64, types::I64], &[types::I64]);
-    let func_id = body
-        .jmod
-        .declare_function("fz_make_resource_ref", Linkage::Import, &sig)
-        .map_err(|e| CodegenError::new(format!("declare fz_make_resource_ref: {}", e)))?;
-    let fref = body.jmod.declare_func_in_func(func_id, body.b.func);
     let process = body.process_arg();
-    let inst = body.b.ins().call(fref, &[process, payload_raw, dtor_ref]);
+    let inst = body.call_named(
+        "fz_make_resource_ref",
+        &sig1(&[types::I64, types::I64, types::I64], &[types::I64]),
+        &[process, payload_raw, dtor_ref],
+    );
     Ok(LowerOut::ValueRef(body.b.inst_results(inst)[0]))
 }
 
