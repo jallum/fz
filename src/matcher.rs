@@ -5,9 +5,10 @@
 //! frontend may build it from AST patterns, but executable matcher data must
 //! carry only subjects, constants, spans, tests, bindings, and outcomes.
 
-use crate::diag::Span;
+use crate::diag::{FileId, Span};
 use crate::fz_ir::Var;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 pub type BodyId = u32;
 
@@ -46,9 +47,50 @@ pub fn map_value_subject(map: &SubjectRef, key: &MatcherConst) -> SubjectRef {
     }
 }
 
+/// Rewrite `s.file` through `remap`; a `FileId` absent from the map (including
+/// `FileId::NONE`/DUMMY) is left unchanged. The single source of span-remap
+/// truth shared by `Matcher` and `Module::remap_file_ids`.
+fn remap_span(s: &mut Span, remap: &HashMap<FileId, FileId>) {
+    if let Some(&to) = remap.get(&s.file) {
+        s.file = to;
+    }
+}
+
 impl Matcher {
     pub fn node(&self, id: NodeId) -> Option<&MatcherNode> {
         self.nodes.get(id.0 as usize)
+    }
+
+    /// Rewrite every `Span.file` reachable from this matcher through `remap`.
+    /// Covers input/pinned spans, every `MatcherNode` variant's span, and the
+    /// leaf/binding spans. Used when a relocatably-loaded module's receive
+    /// matchers are merged into a consumer's `SourceMap`.
+    // Reached via `Module::remap_file_ids` (the relocation loader's entry
+    // point, wired up in a later ticket); today only the gate test drives it.
+    #[allow(dead_code)]
+    pub(crate) fn remap_file_ids(&mut self, remap: &HashMap<FileId, FileId>) {
+        for input in &mut self.inputs {
+            remap_span(&mut input.span, remap);
+        }
+        for pinned in &mut self.pinned {
+            remap_span(&mut pinned.span, remap);
+        }
+        for node in &mut self.nodes {
+            // Exhaustive: a future span-carrying variant must fail to compile,
+            // not be silently skipped.
+            match node {
+                MatcherNode::Fail { span } => remap_span(span, remap),
+                MatcherNode::Leaf(leaf) => {
+                    remap_span(&mut leaf.span, remap);
+                    for binding in &mut leaf.bindings {
+                        remap_span(&mut binding.span, remap);
+                    }
+                }
+                MatcherNode::Switch { span, .. } => remap_span(span, remap),
+                MatcherNode::Test { span, .. } => remap_span(span, remap),
+                MatcherNode::Guard { span, .. } => remap_span(span, remap),
+            }
+        }
     }
 }
 

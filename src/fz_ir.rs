@@ -18,7 +18,7 @@
 //! If-else continuations in this IR.
 
 use crate::ast::{BitType, Endian};
-use crate::diag::Span;
+use crate::diag::{FileId, Span};
 use crate::modules::identity::{ExportKey, ModuleName};
 use fz_runtime::heap::Schema;
 use serde::{Deserialize, Serialize};
@@ -1316,6 +1316,58 @@ impl Module {
             .collect();
     }
 
+    /// Rewrite the `file` of every `Span` reachable from this module through
+    /// `remap`. A `FileId` absent from `remap` (including `FileId::NONE`/DUMMY)
+    /// is left unchanged. This is how a relocatably-loaded module's spans are
+    /// merged onto a consumer's `SourceMap`: the consumer interns the loaded
+    /// module's source files (`SourceMap::intern`), builds the old→new FileId
+    /// map, then calls this so every diagnostic resolves against real source.
+    ///
+    /// Span-site inventory (kept exhaustive by `match` arms below, so a future
+    /// span-carrying variant fails to compile rather than being missed):
+    ///   - `SourceInfo`: `var_span`, `fn_span`, `stmt_spans`, `term_span`.
+    ///   - `Prim::MakeClosure` callsite ident (the only span-carrying Prim).
+    ///   - the six call-ident `Term`s (rebuilt via `from_source`), plus
+    ///     `ReceiveClause`/`ReceiveAfter` spans and the `ReceiveMatched`
+    ///     matcher (`Matcher::remap_file_ids`).
+    ///   - `external_call_edges[].callsite.ident`.
+    // The relocation loader that calls this (interning a loaded module's files,
+    // then remapping its spans onto the host SourceMap) lands in a later
+    // ticket; today only the gate test exercises it.
+    #[allow(dead_code)]
+    pub fn remap_file_ids(&mut self, remap: &HashMap<FileId, FileId>) {
+        // SourceInfo side-tables.
+        for s in &mut self.source.var_span {
+            remap_span(s, remap);
+        }
+        for s in &mut self.source.fn_span {
+            remap_span(s, remap);
+        }
+        for spans in self.source.stmt_spans.values_mut() {
+            for s in spans {
+                remap_span(s, remap);
+            }
+        }
+        for s in self.source.term_span.values_mut() {
+            remap_span(s, remap);
+        }
+
+        // Per-fn IR: stmt prims and block terminators.
+        for f in &mut self.fns {
+            for block in &mut f.blocks {
+                for Stmt::Let(_, prim) in &mut block.stmts {
+                    remap_prim_span(prim, remap);
+                }
+                remap_term_span(&mut block.terminator, remap);
+            }
+        }
+
+        // External call edges carry their own callsite ident span.
+        for edge in &mut self.external_call_edges {
+            remap_ident(&mut edge.callsite.ident, remap);
+        }
+    }
+
     pub fn extern_by_id(&self, eid: ExternId) -> &ExternDecl {
         &self.externs[*self.extern_idx.get(&eid).expect("unknown extern id")]
     }
@@ -1433,6 +1485,97 @@ pub(crate) fn rewrite_external_callsite_for_link(
     target: FnId,
 ) -> bool {
     rewrite_external_callsite(m, callsite, target)
+}
+
+/// Rewrite `s.file` through `remap`; a `FileId` absent from the map (including
+/// `FileId::NONE`/DUMMY) is left unchanged. Single source of span-remap truth
+/// for `Module::remap_file_ids`.
+fn remap_span(s: &mut Span, remap: &HashMap<FileId, FileId>) {
+    if let Some(&to) = remap.get(&s.file) {
+        s.file = to;
+    }
+}
+
+/// Rebuild a `CallsiteIdent` carrying its span remapped. Minting a fresh `Rc`
+/// is fine at load time — a freshly deserialized module has no aliases to
+/// preserve. `from_source` faithfully reconstructs the single-field inner.
+fn remap_ident(ident: &mut CallsiteIdent, remap: &HashMap<FileId, FileId>) {
+    let mut span = ident.span();
+    remap_span(&mut span, remap);
+    *ident = CallsiteIdent::from_source(span);
+}
+
+/// Remap any span carried by a `Prim`. Only `MakeClosure` carries one; the
+/// `match` is exhaustive so a future span-carrying Prim variant fails to
+/// compile rather than being silently skipped.
+fn remap_prim_span(prim: &mut Prim, remap: &HashMap<FileId, FileId>) {
+    match prim {
+        Prim::MakeClosure(ident, _, _) => remap_ident(ident, remap),
+        // Span-free prims: explicit no-op arms keep the match exhaustive.
+        Prim::Const(_)
+        | Prim::BinOp(_, _, _)
+        | Prim::UnOp(_, _)
+        | Prim::Extern(_, _)
+        | Prim::ListHead(_)
+        | Prim::ListTail(_)
+        | Prim::IsEmptyList(_)
+        | Prim::MakeTuple(_)
+        | Prim::DestTupleBegin { .. }
+        | Prim::DestTupleSet { .. }
+        | Prim::DestFreeze { .. }
+        | Prim::TupleField(_, _)
+        | Prim::MakeList(_, _)
+        | Prim::DestListBegin { .. }
+        | Prim::DestListCons { .. }
+        | Prim::DestListFreeze { .. }
+        | Prim::MakeMap(_)
+        | Prim::MapUpdate(_, _)
+        | Prim::DestMapBegin { .. }
+        | Prim::DestMapPut { .. }
+        | Prim::DestMapFreeze { .. }
+        | Prim::MapGet(_, _)
+        | Prim::MatcherMapGet(_, _)
+        | Prim::IsMatcherMapMiss(_)
+        | Prim::MakeBitstring(_)
+        | Prim::ConstBitstring(_, _)
+        | Prim::BitReaderInit(_)
+        | Prim::BitReadField { .. }
+        | Prim::BitReaderDone(_)
+        | Prim::TypeTest(_, _)
+        | Prim::Brand(_, _) => {}
+    }
+}
+
+/// Remap every span carried by a `Term`: the six call-ident terms rebuild
+/// their `CallsiteIdent`; `ReceiveMatched` also remaps its clause/after spans
+/// and its cached matcher. The `match` is exhaustive so a future span-carrying
+/// terminator variant fails to compile rather than being silently skipped.
+fn remap_term_span(term: &mut Term, remap: &HashMap<FileId, FileId>) {
+    match term {
+        Term::Call { ident, .. }
+        | Term::TailCall { ident, .. }
+        | Term::CallClosure { ident, .. }
+        | Term::TailCallClosure { ident, .. }
+        | Term::Receive { ident, .. } => remap_ident(ident, remap),
+        Term::ReceiveMatched {
+            ident,
+            clauses,
+            matcher,
+            after,
+            ..
+        } => {
+            remap_ident(ident, remap);
+            for clause in clauses {
+                remap_span(&mut clause.span, remap);
+            }
+            if let Some(after) = after {
+                remap_span(&mut after.span, remap);
+            }
+            std::sync::Arc::make_mut(matcher).remap_file_ids(remap);
+        }
+        // Span-free terminators: explicit no-op arms keep the match exhaustive.
+        Term::Goto(_, _) | Term::If { .. } | Term::Return(_) | Term::Halt(_) => {}
+    }
 }
 
 // ---------- builder ----------
@@ -2145,6 +2288,190 @@ mod tests {
         back.rebuild_indices();
         assert_eq!(back.fn_by_id(FnId(0)).name, "pair");
         assert_eq!(back.fn_by_id(FnId(1)).name, "go");
+    }
+
+    /// fz-t1m.3.1.6 — `Module::remap_file_ids` rewrites the `file` of every
+    /// span reachable from the module. Builds a module populating EVERY span
+    /// site, places one span in an unmapped file and one DUMMY span, applies
+    /// `{FileId(7) -> FileId(3)}`, and asserts every FileId(7) span (including
+    /// the receive matcher's) became FileId(3) while FileId(9) and DUMMY are
+    /// untouched.
+    #[test]
+    fn remap_file_ids_rewrites_every_span_site() {
+        use crate::matcher::{Matcher, MatcherInput, MatcherLeaf, MatcherNode, NodeId};
+        use std::sync::Arc;
+
+        let f7 = FileId(7);
+        let f9 = FileId(9);
+        let s7 = |start, end| Span::new(f7, start, end);
+
+        // One fn carrying a MakeClosure (Prim span), a Term::Call (ident span),
+        // and a Term::ReceiveMatched whose matcher carries non-DUMMY spans.
+        let mut b = FnBuilder::new(FnId(0), "host");
+        let p = b.fresh_var();
+        let entry = b.block(vec![p]);
+        let call_b = b.block(vec![]);
+        let recv_b = b.block(vec![]);
+        let k = b.block(vec![Var(99)]);
+
+        // entry: MakeClosure (Prim span at f7) then Goto call_b.
+        let _clos = b.let_(entry, Prim::make_closure(s7(30, 40), FnId(0), vec![p]));
+        b.set_terminator(entry, Term::Goto(call_b, vec![]));
+
+        // call_b: Term::Call with a non-DUMMY ident span at f7.
+        b.set_terminator(
+            call_b,
+            Term::Call {
+                ident: CallsiteIdent::from_source(s7(10, 20)),
+                callee: FnId(0),
+                args: vec![p],
+                continuation: Cont {
+                    fn_id: FnId(0),
+                    captured: vec![],
+                },
+            },
+        );
+
+        // recv_b: Term::ReceiveMatched with clause/after spans + a matcher
+        // whose input and leaf spans live in f7.
+        let matcher = {
+            let mut m = Matcher::new(
+                vec![MatcherInput {
+                    var: Some(p),
+                    span: s7(50, 51),
+                }],
+                MatcherNode::Leaf(MatcherLeaf {
+                    body_id: 0,
+                    bindings: Vec::new(),
+                    span: s7(52, 53),
+                }),
+            );
+            // A second node parked in an unmapped file proves non-f7 spans
+            // are left alone inside the matcher too.
+            m.push_node(MatcherNode::Fail {
+                span: Span::new(f9, 54, 55),
+            });
+            m
+        };
+        b.set_terminator(
+            recv_b,
+            Term::ReceiveMatched {
+                ident: CallsiteIdent::from_source(s7(60, 61)),
+                clauses: vec![ReceiveClause {
+                    bound_names: vec![],
+                    guard: None,
+                    body: FnId(0),
+                    span: s7(62, 63),
+                }],
+                matcher: Arc::new(matcher),
+                after: Some(ReceiveAfter {
+                    timeout: p,
+                    body: FnId(0),
+                    span: s7(64, 65),
+                }),
+                pinned: vec![],
+                captures: vec![],
+            },
+        );
+        b.set_terminator(k, Term::Return(Var(99)));
+
+        let mut mb = ModuleBuilder::new();
+        mb.add_fn(b.build());
+        let mut m = mb.build();
+
+        // SourceInfo side-tables: var_span, fn_span, stmt_spans, term_span.
+        // Slot 0 = f7, slot 1 = f9 (unmapped), slot 2 = DUMMY.
+        m.source.var_span = vec![s7(0, 1), Span::new(f9, 2, 3), Span::DUMMY];
+        m.source.fn_span = vec![s7(4, 5)];
+        m.source
+            .stmt_spans
+            .insert((FnId(0), BlockId(0)), vec![s7(6, 7)]);
+        m.source
+            .term_span
+            .insert((FnId(0), BlockId(1)), s7(8, 9));
+
+        // external_call_edge whose callsite ident span is non-DUMMY (f7).
+        let export = ExportKey::new(
+            crate::modules::identity::ModuleName::from_segments(vec!["A".to_string()]),
+            "f",
+            0,
+        );
+        m.external_call_edges.push(ExternalCallEdge {
+            callsite: CallsiteId::new(
+                FnId(0),
+                &CallsiteIdent::from_source(s7(70, 71)),
+                EmitSlot::Direct,
+            ),
+            target: export,
+        });
+
+        let remap: HashMap<FileId, FileId> =
+            [(FileId(7), FileId(3))].into_iter().collect();
+        m.remap_file_ids(&remap);
+
+        let f3 = FileId(3);
+        // SourceInfo: f7 -> f3; f9 and DUMMY unchanged.
+        assert_eq!(m.source.var_span[0].file, f3, "var_span f7");
+        assert_eq!(m.source.var_span[1].file, f9, "var_span f9 untouched");
+        assert!(m.source.var_span[2].is_dummy(), "var_span DUMMY untouched");
+        assert_eq!(m.source.fn_span[0].file, f3, "fn_span f7");
+        assert_eq!(
+            m.source.stmt_spans[&(FnId(0), BlockId(0))][0].file,
+            f3,
+            "stmt_span f7"
+        );
+        assert_eq!(
+            m.source.term_span[&(FnId(0), BlockId(1))].file,
+            f3,
+            "term_span f7"
+        );
+
+        // Per-fn spans.
+        let host = m.fn_by_name("host").unwrap();
+        match host.block(BlockId(0)).stmts.first() {
+            Some(Stmt::Let(_, Prim::MakeClosure(ident, ..))) => {
+                assert_eq!(ident.span().file, f3, "MakeClosure ident f7")
+            }
+            other => panic!("expected MakeClosure, got {:?}", other),
+        }
+        match &host.block(BlockId(1)).terminator {
+            Term::Call { ident, .. } => assert_eq!(ident.span().file, f3, "Call ident f7"),
+            other => panic!("expected Call, got {:?}", other),
+        }
+        match &host.block(BlockId(2)).terminator {
+            Term::ReceiveMatched {
+                ident,
+                clauses,
+                matcher,
+                after,
+                ..
+            } => {
+                assert_eq!(ident.span().file, f3, "Receive ident f7");
+                assert_eq!(clauses[0].span.file, f3, "ReceiveClause f7");
+                assert_eq!(after.as_ref().unwrap().span.file, f3, "ReceiveAfter f7");
+                assert_eq!(matcher.inputs[0].span.file, f3, "matcher input f7");
+                match matcher.node(matcher.root) {
+                    Some(MatcherNode::Leaf(leaf)) => {
+                        assert_eq!(leaf.span.file, f3, "matcher leaf f7")
+                    }
+                    other => panic!("expected leaf root, got {:?}", other),
+                }
+                match matcher.node(NodeId(1)) {
+                    Some(MatcherNode::Fail { span }) => {
+                        assert_eq!(span.file, f9, "matcher f9 node untouched")
+                    }
+                    other => panic!("expected fail node, got {:?}", other),
+                }
+            }
+            other => panic!("expected ReceiveMatched, got {:?}", other),
+        }
+
+        // external_call_edge ident span.
+        assert_eq!(
+            m.external_call_edges[0].callsite.ident.span().file,
+            f3,
+            "external edge ident f7"
+        );
     }
 
     /// fn identity(x) = x
