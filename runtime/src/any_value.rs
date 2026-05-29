@@ -1785,9 +1785,10 @@ mod tests {
 /// Debug rendering of AnyValues. Lifted out of ir_codegen.rs by
 /// fz-ul4.23.4.3 so that any execution path (JIT, future interp/AOT) can
 /// use the same rendering — values are uniformly tagged, regardless of
-/// what produced them. The single runtime dependency is the heap's
-/// schema registry on the current Process, accessed via
-/// `crate::process::current_process()`.
+/// what produced them. The single runtime dependency is the heap's schema
+/// registry + atom-name table on a `Process`, threaded in explicitly (a
+/// nullable `*mut Process`) so two schedulers can render concurrently
+/// without an ambient thread-local.
 pub mod debug {
     use super::{ListCons, ValueKind};
     use crate::process::Process;
