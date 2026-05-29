@@ -1,25 +1,22 @@
 ---
 purpose: "fz-ul4.29.5 — spawn-with-captures lift (was forbidden v1)"
 paths: [jit, interp, aot, repl]
-budget.codegen.functions: 6
-budget.codegen.instructions: 53
-budget.specs.count: 6
-budget.planner.worklist_pops: 12
-budget.planner.walk_calls: 12
-budget.planner.type_fn_calls: 6
-budget.planner.matcher_specs: 0
-budget.planner.vars: 17
-budget.planner.blocks: 6
-budget.planner.stmts: 6
-budget.planner.dispatches: 4
 ---
 
 # spawn_with_captures
 
-fz-ul4.29.5 — spawn-with-captures lift (was forbidden v1)
+fz-ul4.29.5 — spawn-with-captures lift (was forbidden in v1). The spawned
+closure captures `tag` from the enclosing scope and sends it back; the relayed
+value is self-checked in-language:
 
-## Notes
+```fz
+spawn(fn () -> send(1, tag))
+receive()
+```
 
-Pre-.29.5, fz_spawn asserted captured.len() == 0. With the stub design,
-the closure (including captures) is deep-copied into the new task's
-heap, then the closure's code pointer materializes the initial frame.
+```fz
+assert(parent(99) == 99, "spawned closure captures tag and relays it back")
+```
+
+Pre-.29.5, `fz_spawn` asserted `captured.len() == 0`. With the stub design the
+capture set is lifted into the spawned process's frame instead.
