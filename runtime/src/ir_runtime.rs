@@ -625,31 +625,6 @@ pub extern "C" fn fz_receive_park_matched(
     YIELD_PTR as *mut u8
 }
 
-/// # Safety
-/// `cont_frame_ptr` must point at a valid cont closure heap object
-/// (built by codegen at the Receive seam). Called only from JIT/AOT-
-/// emitted Cranelift code; clippy's `not_unsafe_ptr_arg_deref` is
-/// silenced because the C ABI is fixed by codegen.
-#[unsafe(no_mangle)]
-#[allow(clippy::not_unsafe_ptr_arg_deref)]
-pub extern "C" fn fz_receive_attempt(cont_frame_ptr: *mut u8) -> *mut u8 {
-    use crate::{process::ProcessState, scheduler_hooks::YIELD_PTR};
-    let p = current_process();
-    if let Some(msg) = p.mailbox.pop_front() {
-        unsafe {
-            crate::any_value::closure_capture_set_ref_word(
-                cont_frame_ptr as *const u8,
-                1,
-                msg.raw_word(),
-            );
-        }
-        cont_frame_ptr
-    } else {
-        p.state = ProcessState::Blocked;
-        YIELD_PTR as *mut u8
-    }
-}
-
 /// Boundary-reporting mid-flight yield entry.
 ///
 /// Generated/interpreted code reports the scheduler continuation, signed

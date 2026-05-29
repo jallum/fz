@@ -487,10 +487,6 @@ fn register_runtime_symbols(builder: &mut JITBuilder) {
         fz_runtime::resource::fz_resource_test_print_dtor as *const u8,
     );
     builder.symbol(
-        "fz_receive_attempt",
-        fz_runtime::ir_runtime::fz_receive_attempt as *const u8,
-    );
-    builder.symbol(
         "fz_receive_park",
         fz_runtime::ir_runtime::fz_receive_park as *const u8,
     );
