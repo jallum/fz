@@ -63,10 +63,45 @@ use std::collections::HashMap;
 ///   O(|specs| · (1 + H · |return-edges per spec|))
 /// which is finite. `VISIT_HARD_BOUND` below is a debug-only
 /// tripwire for invariant violation, NOT a release safety net.
+/// Which plan a `plan_module` call produces, for telemetry attribution.
+///
+/// `Authoritative` is the single plan codegen (or a single-plan consumer like
+/// the frontend) commits to. `Intermediate` marks a re-derivation that exists
+/// only to feed a transform — it is telemetry-counted so the redundancy
+/// invariant 1 (fz-hfc) removes is measurable, and consumers that track the
+/// committed plan (dump budgets) key on `Authoritative` rather than guessing
+/// from event order. When the redundant runs are gone, only `Authoritative`
+/// events remain.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlanRole {
+    Authoritative,
+    Intermediate,
+}
+
+impl PlanRole {
+    fn as_str(self) -> &'static str {
+        match self {
+            PlanRole::Authoritative => "authoritative",
+            PlanRole::Intermediate => "intermediate",
+        }
+    }
+}
+
 pub fn plan_module<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes>(
     t: &mut T,
     m: &Module,
     tel: &dyn crate::telemetry::Telemetry,
+) -> ModulePlan {
+    plan_module_with_role(t, m, tel, PlanRole::Authoritative)
+}
+
+pub fn plan_module_with_role<
+    T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
+>(
+    t: &mut T,
+    m: &Module,
+    tel: &dyn crate::telemetry::Telemetry,
+    role: PlanRole,
 ) -> ModulePlan {
     PLAN_MODULE_CALLS.with(|c| c.set(c.get() + 1));
     WORKLIST_POPS.with(|c| c.set(0));
@@ -186,6 +221,7 @@ pub fn plan_module<T: crate::types::Types<Ty = crate::types::Ty> + crate::types:
                 receive_matched_count: stats.receive_matched_count as u64,
             },
             &crate::metadata! {
+                role: role.as_str(),
                 module_path: m.module_path().to_owned(),
                 module: crate::telemetry::value::opaque(m),
                 module_plan: crate::telemetry::value::opaque(&mt),

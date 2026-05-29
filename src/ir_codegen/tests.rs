@@ -2299,7 +2299,7 @@ fn plan_module_called_exactly_three_times_in_pipeline() {
 }
 
 #[test]
-fn frontend_to_codegen_pipeline_reports_two_planner_events() {
+fn frontend_to_codegen_pipeline_reports_every_planner_event() {
     let tel = crate::telemetry::ConfiguredTelemetry::new();
     let cap = crate::telemetry::Capture::new();
     tel.attach(&[], cap.handler());
@@ -2318,10 +2318,16 @@ fn frontend_to_codegen_pipeline_reports_two_planner_events() {
 
     compile(&mut t, &frontend.module, &tel).expect("compile");
 
+    // Honest baseline: every plan_module is telemetry-counted. The pretyped
+    // path runs four — the frontend plan, the constant-closure rewrite re-plan
+    // (run A), the authoritative codegen plan_module, and the post-destination
+    // re-plan (run C). fz-hfc collapses this to two (frontend + authoritative)
+    // by removing runs A and C; this assertion drops with each removal and is
+    // the visible signal of progress.
     assert_eq!(
         cap.count(&["fz", "planner", "planned"]),
-        2,
-        "pretyped path reports exactly two planner.planned events — the frontend plan and the authoritative codegen plan_module; the constant-closure rewrite re-plans the linked working module and the post-destination retype are both internal intermediate plans and stay telemetry-silent"
+        4,
+        "pretyped path reports four planner.planned events (frontend + run A + authoritative + run C); fz-hfc drives this to two"
     );
 }
 

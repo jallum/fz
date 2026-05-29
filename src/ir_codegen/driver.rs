@@ -2059,12 +2059,18 @@ pub(crate) fn compile_with_backend_impl<
     // params can carry interprocedural `KnownFn` capabilities — the shallow
     // `_pre_types` handed in by the pretyped entry points cannot see linked
     // bodies, so this re-plans `working` itself. It is an internal intermediate
-    // plan, NOT the authoritative codegen plan (that is `module_plan` below), so
-    // it is telemetry-silent — exactly like the post-destination retype. The
-    // pretyped path therefore still reports exactly two `planner.planned`
-    // events (the frontend plan plus `module_plan`).
-    let rewrite_types =
-        crate::ir_planner::plan_module(t, &working, &crate::telemetry::NullTelemetry);
+    // plan (run A), NOT the authoritative codegen plan (that is `module_plan`
+    // below). It is telemetry-counted so the redundancy invariant 1 (fz-hfc)
+    // targets is measurable: this run plus the post-destination re-plan (run C)
+    // are the redundant re-derivations the epic removes. Until then the pretyped
+    // path reports four `planner.planned` events (frontend + run A + module_plan
+    // + run C); the count drops to two as runs A and C are eliminated.
+    let rewrite_types = crate::ir_planner::plan_module_with_role(
+        t,
+        &working,
+        tel,
+        crate::ir_planner::PlanRole::Intermediate,
+    );
     crate::ir_planner::rewrite_known_target_closures(t, &mut working, &rewrite_types);
     #[cfg(not(test))]
     crate::ir_inline::inline_module_with_plan(&mut working, &rewrite_types);
@@ -2127,8 +2133,16 @@ pub(crate) fn compile_with_backend_impl<
                 .join("\n")
         ))
     })?;
-    let mut module_plan =
-        crate::ir_planner::plan_module(t, &working, &crate::telemetry::NullTelemetry);
+    // Run C: the post-destination re-plan. Telemetry-counted as Intermediate
+    // (see run A) so the redundancy is measurable; removed by fz-hfc.4 once
+    // destination lowering is shown to maintain no plan facts the authoritative
+    // plan does not already hold.
+    let mut module_plan = crate::ir_planner::plan_module_with_role(
+        t,
+        &working,
+        tel,
+        crate::ir_planner::PlanRole::Intermediate,
+    );
     for (key, before_types) in &pre_dest_module_plan.specs {
         if let Some(after_types) = module_plan.specs.get_mut(key) {
             for (var, before_ty) in &before_types.vars {

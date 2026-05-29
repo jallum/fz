@@ -57,7 +57,7 @@ pub use reachable::reachable_specs;
 pub(crate) use reachable::{cont_input_key, cont_slot0_descr};
 #[cfg(test)]
 pub(crate) use type_fn::type_fn;
-pub use worklist::plan_module;
+pub use worklist::{PlanRole, plan_module, plan_module_with_role};
 
 // ----------------------------------------------------------------------
 // Tests

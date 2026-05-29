@@ -1960,7 +1960,16 @@ fn dump_telemetry_stats(fixture: &Path) -> DumpTelemetryStats {
                 });
         }
         if line.contains("\"name\":[\"fz\",\"planner\",\"planned\"]") {
+            // Every plan_module is counted (the honest redundancy signal), but
+            // the budget metrics track the committed plan: dump runs the
+            // frontend plan plus the codegen pipeline, and only the
+            // authoritative plans carry the spec shape the budgets pin. The
+            // intermediate re-derivations (runs A/C, fz-hfc) would otherwise
+            // skew the last-event-wins capture toward post-transform artifacts.
             stats.planner.event_count += 1;
+            if !line.contains("\"role\":\"authoritative\"") {
+                continue;
+            }
             stats.planner.spec_count = parse_json_u64_field(line, "spec_count")
                 .unwrap_or_else(|| panic!("{} telemetry missing spec_count", fixture.display()));
             stats.planner.worklist_pops = parse_json_u64_field(line, "worklist_pops")
