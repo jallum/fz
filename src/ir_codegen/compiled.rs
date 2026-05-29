@@ -592,6 +592,13 @@ fn remap_spec_plan(
             .iter()
             .filter_map(|(var, fid)| fn_map.get(fid).map(|new| (*var, *new)))
             .collect(),
+        callable_capabilities: spec
+            .callable_capabilities
+            .iter()
+            .filter_map(|(var, capability)| {
+                remap_callable_capability(capability, fn_map).map(|capability| (*var, capability))
+            })
+            .collect(),
         reachable_blocks: spec.reachable_blocks.clone(),
         dead_branches: spec.dead_branches.clone(),
         call_edges: spec
@@ -605,6 +612,29 @@ fn remap_spec_plan(
             })
             .collect(),
         extern_marshals: spec.extern_marshals.clone(),
+    }
+}
+
+fn remap_callable_capability(
+    capability: &crate::ir_planner::fn_types::CallableCapability,
+    fn_map: &BTreeMap<FnId, FnId>,
+) -> Option<crate::ir_planner::fn_types::CallableCapability> {
+    use crate::ir_planner::fn_types::CallableCapability;
+
+    match capability {
+        CallableCapability::KnownFn(fid) => {
+            fn_map.get(fid).copied().map(CallableCapability::KnownFn)
+        }
+        CallableCapability::KnownClosure { fn_id, captures } => {
+            fn_map
+                .get(fn_id)
+                .copied()
+                .map(|fn_id| CallableCapability::KnownClosure {
+                    fn_id,
+                    captures: captures.clone(),
+                })
+        }
+        CallableCapability::OpaqueCallable => Some(CallableCapability::OpaqueCallable),
     }
 }
 

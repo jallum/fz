@@ -13,6 +13,11 @@ pub struct SpecPlan {
     /// zero-capture `MakeClosure(F, [])`. The type token carries no FnId
     /// identity, so direct-call specialization keeps this side-channel.
     pub fn_constants: HashMap<crate::fz_ir::Var, FnId>,
+    /// Vars known to hold callable values, separated by capability instead of
+    /// representation. This generalizes `fn_constants`: a zero-capture closure
+    /// is callable as a known fn, while captured or opaque callables still carry
+    /// runtime-state/boundary facts for later consumers.
+    pub callable_capabilities: HashMap<crate::fz_ir::Var, CallableCapability>,
     /// Blocks provably reachable from the entry under the inferred types.
     /// If terminators whose condition is a singleton bool prune the dead
     /// branch. Used by `compute_return_for_spec` to ignore returns that
@@ -35,6 +40,16 @@ pub struct SpecPlan {
     /// Var types. The map is per spec because the same syntactic call can be
     /// reached under different argument types in different specializations.
     pub extern_marshals: HashMap<crate::fz_ir::ExternMarshalSite, crate::fz_ir::ExternTy>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CallableCapability {
+    KnownFn(FnId),
+    KnownClosure {
+        fn_id: FnId,
+        captures: Vec<crate::types::Ty>,
+    },
+    OpaqueCallable,
 }
 
 impl SpecPlan {
@@ -624,6 +639,7 @@ pub type FnEffects = HashMap<FnId, EffectSummary>;
 pub(crate) type SpecKeySet = std::collections::HashSet<SpecKey>;
 pub(crate) type ReturnReaders = HashMap<SpecKey, SpecKeySet>;
 pub(crate) type CallsiteFnConsts = HashMap<SpecKey, Vec<Option<FnId>>>;
+pub(crate) type CallsiteCallableCapabilities = HashMap<SpecKey, Vec<Option<CallableCapability>>>;
 pub(crate) type EmitterSiteSet = std::collections::HashSet<EmitterSite>;
 pub(crate) type HoldersMap = HashMap<SpecKey, EmitterSiteSet>;
 pub(crate) type EmitsByCaller = HashMap<SpecKey, EmitterSiteSet>;

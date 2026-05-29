@@ -211,12 +211,14 @@ pub fn type_fn<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::Clo
     let topo = topo_order(f);
     run_type_fixed_point(t, f, m, &topo, &mut vars, &mut block_envs);
     let fn_constants = collect_fn_constants(f);
+    let callable_capabilities = collect_callable_capabilities(t, f, &vars);
     let (reachable_blocks, dead_branches) =
         compute_reachable_blocks_and_dead_branches(t, f, m, &block_envs);
     SpecPlan {
         vars,
         block_envs,
         fn_constants,
+        callable_capabilities,
         reachable_blocks,
         dead_branches,
         call_edges: HashMap::new(),
@@ -436,6 +438,64 @@ fn collect_fn_constants(f: &FnIr) -> HashMap<Var, FnId> {
         }
     }
     fn_constants
+}
+
+fn collect_callable_capabilities<
+    T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
+>(
+    t: &mut T,
+    f: &FnIr,
+    vars: &HashMap<Var, crate::types::Ty>,
+) -> HashMap<Var, super::fn_types::CallableCapability> {
+    use super::fn_types::CallableCapability;
+
+    let mut capabilities = HashMap::new();
+    for b in &f.blocks {
+        for stmt in &b.stmts {
+            let Stmt::Let(v, prim) = stmt;
+            if let Prim::MakeClosure(_, fid, captured) = prim {
+                let cap = if captured.is_empty() {
+                    CallableCapability::KnownFn(*fid)
+                } else {
+                    let captures = captured
+                        .iter()
+                        .filter_map(|cv| vars.get(cv).cloned())
+                        .collect();
+                    CallableCapability::KnownClosure {
+                        fn_id: *fid,
+                        captures,
+                    }
+                };
+                capabilities.insert(*v, cap);
+            }
+        }
+    }
+
+    for (&v, ty) in vars {
+        if capabilities.contains_key(&v) {
+            continue;
+        }
+        let Some(clauses) = t.callable_clauses(ty) else {
+            continue;
+        };
+        let mut closure_lits = clauses
+            .into_iter()
+            .filter_map(|clause| clause.closure)
+            .collect::<Vec<_>>();
+        closure_lits.sort_by_key(|lit| lit.target);
+        closure_lits.dedup();
+        let cap = match closure_lits.as_slice() {
+            [lit] if lit.captures.is_empty() => CallableCapability::KnownFn(lit.target.into()),
+            [lit] => CallableCapability::KnownClosure {
+                fn_id: lit.target.into(),
+                captures: lit.captures.clone(),
+            },
+            _ => CallableCapability::OpaqueCallable,
+        };
+        capabilities.insert(v, cap);
+    }
+
+    capabilities
 }
 
 fn compute_reachable_blocks_and_dead_branches<

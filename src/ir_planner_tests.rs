@@ -1,3 +1,4 @@
+use super::fn_types::CallableCapability;
 use super::fn_types::{EmitterSite, SpecKey};
 use super::type_fn::type_fn;
 use super::*;
@@ -1991,6 +1992,11 @@ end
         Some(double.id),
         "zero-capture MakeClosure should populate fn_constants"
     );
+    assert_eq!(
+        main_ft.callable_capabilities.get(&v),
+        Some(&CallableCapability::KnownFn(double.id)),
+        "zero-capture MakeClosure should populate KnownFn capability"
+    );
 }
 
 /// A `MakeClosure` with captures is a real closure value, not a
@@ -2032,6 +2038,18 @@ end
         !main_ft.fn_constants.contains_key(&v),
         "MakeClosure with captures must NOT set fn_constants"
     );
+    match main_ft.callable_capabilities.get(&v) {
+        Some(CallableCapability::KnownClosure { fn_id, captures }) => {
+            assert!(!captures.is_empty(), "captured closure should record state");
+            let lambda = m.fn_by_id(*fn_id);
+            assert!(
+                lambda.name.contains("lambda") || lambda.name.contains("anon"),
+                "expected synthesized lambda target, got {}",
+                lambda.name
+            );
+        }
+        other => panic!("captured MakeClosure should record KnownClosure, got {other:?}"),
+    }
 }
 
 /// `apply2(double, 21)` — in apply2's specialized SpecPlan, the
@@ -2073,6 +2091,63 @@ end
             .filter(|(key, _)| key.fn_id == apply2.id)
             .map(|(key, ft)| (key.input.clone(), ft.fn_constants.clone()))
             .collect::<Vec<_>>()
+    );
+    let mut saw_capability = false;
+    for (key, ft) in &mt.specs {
+        if key.fn_id != apply2.id {
+            continue;
+        }
+        if ft.callable_capabilities.get(&f_param) == Some(&CallableCapability::KnownFn(double.id)) {
+            saw_capability = true;
+        }
+    }
+    assert!(
+        saw_capability,
+        "expected apply2's spec to carry callable_capabilities[f] = KnownFn(double)"
+    );
+}
+
+#[test]
+fn callable_capability_opaque_for_multi_target_join() {
+    let mut id_a = FnBuilder::new(FnId(1), "id_a");
+    let a_x = id_a.fresh_var();
+    let a_entry = id_a.block(vec![a_x]);
+    id_a.set_terminator(a_entry, Term::Return(a_x));
+
+    let mut id_b = FnBuilder::new(FnId(2), "id_b");
+    let b_x = id_b.fresh_var();
+    let b_entry = id_b.block(vec![b_x]);
+    id_b.set_terminator(b_entry, Term::Return(b_x));
+
+    let mut main = FnBuilder::new(FnId(0), "main");
+    let cond = main.fresh_var();
+    let entry = main.block(vec![cond]);
+    let then_b = main.block(vec![]);
+    let else_b = main.block(vec![]);
+    let join = main.fresh_var();
+    let join_b = main.block(vec![join]);
+    let a = main.let_(
+        then_b,
+        Prim::MakeClosure(crate::fz_ir::CallsiteIdent::synthetic(), FnId(1), vec![]),
+    );
+    main.set_terminator(then_b, Term::Goto(join_b, vec![a]));
+    let b = main.let_(
+        else_b,
+        Prim::MakeClosure(crate::fz_ir::CallsiteIdent::synthetic(), FnId(2), vec![]),
+    );
+    main.set_terminator(else_b, Term::Goto(join_b, vec![b]));
+    main.set_terminator(entry, Term::if_user(cond, then_b, else_b));
+    main.set_terminator(join_b, Term::Return(join));
+
+    let m = build_module(vec![main.build(), id_a.build(), id_b.build()]);
+    let mut t = crate::types::ConcreteTypes;
+    let mt = plan_module(&mut t, &m, &crate::telemetry::NullTelemetry);
+    let main_ft = mt.any_spec_for(FnId(0)).expect("main spec exists");
+
+    assert_eq!(
+        main_ft.callable_capabilities.get(&join),
+        Some(&CallableCapability::OpaqueCallable),
+        "join of distinct closure targets should be an opaque callable capability"
     );
 }
 
