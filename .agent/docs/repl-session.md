@@ -39,8 +39,10 @@ bare top-level `type` declaration is not an item-start token, so it is not kept
 as an item chunk. It is also where help queries are answered.
 
 `ReplFrame` is the runtime value frame between prompts. It is not an AST
-environment. It is an ordered ABI: field names plus `AnyValue`s that become the
-arguments to the next lowered REPL expression entry.
+environment. It is a `BTreeMap<String, AnyValue>` — named bindings plus their
+runtime values — that becomes the arguments to the next lowered REPL expression
+entry. The ABI order is the map's key-sorted order, not source-declaration
+order; the lowered entry agrees on that same ordering.
 
 `ReplRuntime` is the persistent IR interpreter owner. It owns an
 `IrInterpRuntime`, the evaluator pid, and the current evaluator module image.
