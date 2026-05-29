@@ -121,6 +121,14 @@ planning now uses the linked working module for this rewrite, so a zero-state
 direct call early enough for the module inliner to splice it without forcing a
 heap continuation or a stack lazy reducer descriptor.
 
+When a reducer is opaque because control flow joins multiple zero-capture
+function values, the representation rule is different but the state model is
+the same. The value must remain closure-shaped and callable when it enters the
+`reduce_list_cont` state machine. The current planner may split that joined
+value back into branch-specialized reducer specs, but it must not collapse the
+join into one static identity or force heap-continuation allocation on the hot
+path.
+
 ## Proof Gates
 
 When changing this area, keep these signals explicit:
@@ -130,7 +138,8 @@ When changing this area, keep these signals explicit:
 - Local known-reducer `reduce_list` lowers without the reducer-continuation
   trampoline.
 - Known reducer path keeps `closure_allocs = 0`.
-- Opaque reducer path still loopifies around an indirect call.
+- Opaque reducer joins stay closure-shaped, callable, and heap-continuation-free
+  inside the `reduce_list_cont` state machine.
 - `{:suspend, acc}` remains a real materialized resumable closure.
 - `count_list`, `member_list?`, `foldl`, and `map(double, xs)` do not regress.
 

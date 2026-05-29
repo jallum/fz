@@ -285,6 +285,10 @@ fn static_tests() -> Vec<(&'static str, fn())> {
             local_reduce_state_update_lowers_without_trampoline,
         ),
         (
+            "opaque_reduce_join_preserves_closure_values_and_lazy_state_machine",
+            opaque_reduce_join_preserves_closure_values_and_lazy_state_machine,
+        ),
+        (
             "continuation_materialization_boundaries_stay_explicit",
             continuation_materialization_boundaries_stay_explicit,
         ),
@@ -3063,6 +3067,50 @@ fn local_reduce_state_update_lowers_without_trampoline() {
         !reduce_list.contains("lambda_") && !reduce_list.contains("; fn k_"),
         "local reduce state update should not keep the reducer-continuation trampoline in reduce_list CLIF:\n{}",
         reduce_list
+    );
+}
+
+fn opaque_reduce_join_preserves_closure_values_and_lazy_state_machine() {
+    let readme =
+        fs::read_to_string("fixtures/opaque_fn_value_join/README.md").expect("read opaque README");
+    for needle in [
+        "control-flow join",
+        "closure-shaped value",
+        "one static reducer identity",
+    ] {
+        assert!(
+            readme.contains(needle),
+            "opaque_fn_value_join README must pin `{}`",
+            needle
+        );
+    }
+
+    assert_fixture_output_contains("opaque_fn_value_join", "expected.txt", &["{:done, 6}"]);
+
+    let clif = dump_fixture_clif("opaque_fn_value_join");
+    let reduce_list_conts = clif_functions_containing(&clif, "Enumerable.reduce_list_cont");
+    assert!(
+        !reduce_list_conts.is_empty(),
+        "opaque reducer join should still lower through Enumerable.reduce_list_cont:\n{}",
+        clif
+    );
+    assert!(
+        reduce_list_conts
+            .iter()
+            .all(|f| !f.contains("@fz_alloc_closure")),
+        "opaque reducer join must not force heap continuation allocation in reduce_list_cont:\n{}",
+        reduce_list_conts.join("\n\n")
+    );
+    assert!(
+        reduce_list_conts.iter().any(|f| f.contains("stack_store")),
+        "opaque reducer join should keep lazy state-machine descriptors explicit:\n{}",
+        reduce_list_conts.join("\n\n")
+    );
+    assert!(
+        reduce_list_conts.iter().any(|f| f.contains("&fn14[]"))
+            && reduce_list_conts.iter().any(|f| f.contains("&fn15[]")),
+        "opaque reducer join currently specializes both joined zero-cap reducers without collapsing them into one static identity:\n{}",
+        reduce_list_conts.join("\n\n")
     );
 }
 
