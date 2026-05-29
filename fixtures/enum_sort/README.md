@@ -29,8 +29,10 @@ different yield and closure counts for the same program. They must now agree.
 
 Native floor:
 
-- `list_cons_allocs = 80`
-- `closure_allocs = 80` — see the decomposition below
+- `list_cons_allocs = 61`
+- `closure_allocs = 53` — see the decomposition below
+- `scalar_box_allocs = 0`
+- `heap_bytes = 976`
 - `allocation_pressure_yields = 2`
 
 The interpreter and REPL legs are direct-IR baselines: they do not run native
@@ -38,19 +40,22 @@ The interpreter and REPL legs are direct-IR baselines: they do not run native
 (`154`) and only the single comparator closure. They share the same growable
 heap, so they take the same `2` allocation-pressure yields.
 
-## The closure count is a target, not a victory
+## The closure count improved, but is not zero
 
 Where the hand-written quicksort lowers to **0** continuation closures (its
 `append`/`qsort` non-tail recursion gets `ListTail` destination planning),
-`Enum.sort` allocates ~78 genuine continuation closures. They come from the
-merge sort's non-tail recursion in `enum.fz` — `merge_sort_lists` builds
-`[head | merge_sort_lists(...)]` inside a guarded `if` with an indirect
-`sorter(...)` call between the prefix and the recursive cons, plus two non-tail
-`sort_list` calls. Destination planning does not see through that shape yet.
+`Enum.sort` still allocates 53 closures. That is a real improvement over the
+old native floor (`80` closures, `80` cons cells, `27` scalar boxes, and `1280`
+heap headline bytes), but it is not the fully closure-free merge-sort shape.
+Callable capabilities now let the planner see farther through the runtime
+library boundary, so known reducer/comparator values stop carrying as much
+dead callable state through native frames.
 
-The remaining `2` closures in the native count are GC yield-continuations from
-the `2` allocation-pressure collections — an honest cost of starting on the
-1 KiB heap class and growing to fit (see [[fz-5ua]]), not merge-sort overhead.
+The remaining closures come from merge sort's non-tail recursion in `enum.fz`:
+`merge_sort_lists` builds `[head | merge_sort_lists(...)]` inside a guarded
+`if`, and the sort still has recursive structure that destination planning does
+not fully flatten into the quicksort-style owned-cons path.
 
-Reducing the ~78 is tracked by [[fz-w34]]. Until then this fixture pins the
-current contract so that any change in either direction shows up loudly.
+Further reducing the native count is future optimizer work. This fixture pins
+the current post-capability contract so that any change in either direction
+shows up loudly.
