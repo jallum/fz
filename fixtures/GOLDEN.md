@@ -68,9 +68,11 @@ conversion arc):
 `actor_ring`, `spawn2_basic`, `spawn_with_captures`. Template:
 `make_ref_distinct`, `assert_message`.
 
-**Assertion via `__info__` (module-structure; gated on the `__info__` feature):**
-`attributes`, `import`, `alias`, `modules`, `nested_modules`, `fn_ref_ampersand`,
-`macro_inc`, `cross_module_macro`.
+**Assertion + `__info__` (module-structure):** `attributes`, `import`, `alias`,
+`modules`, `nested_modules`, `cross_module_macro` assert their structure via the
+synthesized `__info__/1` (see `module_info`) alongside the behavioural calls.
+`fn_ref_ampersand` and `macro_inc` are top-level (no module), so they convert to
+behavioural assertions only.
 
 **Keep rendering golden (the string is the artifact):** `hello`,
 `utf8_literal_print`, `empty_list_distinct_from_nil`, `utf8_smart_constructor`
