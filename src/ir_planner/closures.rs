@@ -1,4 +1,4 @@
-use super::fn_types::{ModulePlan, SpecKey};
+use super::fn_types::{CapabilityPlan, SpecKey};
 use crate::fz_ir::{FnId, Module, Prim, Stmt, Term, Var};
 use std::collections::{BTreeSet, HashMap, HashSet};
 
@@ -47,13 +47,12 @@ pub fn rewrite_known_target_closures<
 >(
     _t: &mut T,
     module: &mut Module,
-    types: &ModulePlan,
+    types: &CapabilityPlan,
 ) {
     let mut unified: HashMap<FnId, HashMap<Var, Option<FnId>>> = HashMap::new();
-    for (key, ft) in &types.specs {
-        let entry = unified.entry(key.fn_id).or_default();
-        for (v, fnid) in ft
-            .callable_capabilities
+    for (fn_id, caps) in &types.spec_capabilities {
+        let entry = unified.entry(*fn_id).or_default();
+        for (v, fnid) in caps
             .iter()
             .filter_map(|(v, cap)| cap.known_fn().map(|fnid| (*v, fnid)))
         {

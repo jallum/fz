@@ -2,11 +2,11 @@ use super::closures::resolve_closure_return;
 use super::diagnostics::{compute_dead_branches, module_plan_stats};
 use super::effects::{prim_effect_summary, term_local_effect_summary};
 use super::fn_types::{
-    CallsiteCallableCapabilities, EffectSummary, EmitsByCaller, EmitterSiteSet, FnEffects,
-    HoldersMap, ModulePlan, PLAN_MODULE_CALLS, ProducesMap, ReturnReaders, SpecKey, SpecKeySet,
-    SpecPlan, TYPE_FN_CALLS, VISIT_HARD_BOUND, WALK_CALLS, WORKLIST_POPS, build_any_key_index,
-    key_precedence_order, recursive_direct_spec_key, recursive_direct_spec_key_for_arity,
-    spec_key_for_fn_id, spec_key_input_tys,
+    CallsiteCallableCapabilities, CapabilityPlan, EffectSummary, EmitsByCaller, EmitterSiteSet,
+    FnEffects, HoldersMap, ModulePlan, PLAN_MODULE_CALLS, ProducesMap, ReturnReaders, SpecKey,
+    SpecKeySet, SpecPlan, TYPE_FN_CALLS, VISIT_HARD_BOUND, WALK_CALLS, WORKLIST_POPS,
+    build_any_key_index, key_precedence_order, recursive_direct_spec_key,
+    recursive_direct_spec_key_for_arity, spec_key_for_fn_id, spec_key_input_tys,
 };
 use super::reachable::{cont_key_from_slot0, env_at_terminator};
 use super::type_fn::type_fn;
@@ -63,51 +63,134 @@ use std::collections::HashMap;
 ///   O(|specs| · (1 + H · |return-edges per spec|))
 /// which is finite. `VISIT_HARD_BOUND` below is a debug-only
 /// tripwire for invariant violation, NOT a release safety net.
-/// Which plan a `plan_module` call produces, for telemetry attribution.
-///
-/// `Authoritative` is the single plan codegen (or a single-plan consumer like
-/// the frontend) commits to. `Intermediate` marks a re-derivation that exists
-/// only to feed a transform — it is telemetry-counted so the redundancy
-/// invariant 1 (fz-hfc) removes is measurable, and consumers that track the
-/// committed plan (dump budgets) key on `Authoritative` rather than guessing
-/// from event order. When the redundant runs are gone, only `Authoritative`
-/// events remain.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PlanRole {
-    Authoritative,
-    Intermediate,
-}
-
-impl PlanRole {
-    fn as_str(self) -> &'static str {
-        match self {
-            PlanRole::Authoritative => "authoritative",
-            PlanRole::Intermediate => "intermediate",
-        }
-    }
-}
-
 pub fn plan_module<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes>(
     t: &mut T,
     m: &Module,
     tel: &dyn crate::telemetry::Telemetry,
-) -> ModulePlan {
-    plan_module_with_role(t, m, tel, PlanRole::Authoritative)
-}
-
-pub fn plan_module_with_role<
-    T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
->(
-    t: &mut T,
-    m: &Module,
-    tel: &dyn crate::telemetry::Telemetry,
-    role: PlanRole,
 ) -> ModulePlan {
     PLAN_MODULE_CALLS.with(|c| c.set(c.get() + 1));
     WORKLIST_POPS.with(|c| c.set(0));
     TYPE_FN_CALLS.with(|c| c.set(0));
     WALK_CALLS.with(|c| c.set(0));
 
+    let out = discover_specs(t, m);
+
+    let any_key_specs = build_any_key_index(t, m, &out.specs);
+    let spec_precedence = key_precedence_order(&out.specs, &any_key_specs);
+
+    let mut mt = ModulePlan {
+        specs: out.specs,
+        effective_returns: out.effective_returns,
+        any_key_specs,
+        spec_precedence,
+        fn_effects: out.fn_effects,
+        dead_branches: HashMap::new(),
+        #[cfg(test)]
+        closure_handles: out.closure_handles,
+    };
+    mt.dead_branches = compute_dead_branches(t, m, &mt);
+    {
+        let pops = WORKLIST_POPS.with(|c| c.get()) as u64;
+        let walks = WALK_CALLS.with(|c| c.get()) as u64;
+        let type_fns = TYPE_FN_CALLS.with(|c| c.get()) as u64;
+        let stats = module_plan_stats(m, &mt);
+        tel.execute(
+            &["fz", "planner", "planned"],
+            &crate::measurements! {
+                worklist_pops: pops,
+                walk_calls: walks,
+                type_fn_calls: type_fns,
+                spec_count: mt.specs.len() as u64,
+                matcher_spec_count: stats.matcher_spec_count as u64,
+                spec_var_count: stats.spec_var_count as u64,
+                spec_block_count: stats.spec_block_count as u64,
+                spec_stmt_count: stats.spec_stmt_count as u64,
+                dispatch_count: stats.dispatch_count as u64,
+                direct_call_count: stats.direct_call_count as u64,
+                tail_call_count: stats.tail_call_count as u64,
+                if_count: stats.if_count as u64,
+                receive_count: stats.receive_count as u64,
+                receive_matched_count: stats.receive_matched_count as u64,
+            },
+            &crate::metadata! {
+                // `plan_module` derives the one authoritative plan codegen (or a
+                // single-plan consumer like the frontend) commits to. The label
+                // is explicit so the dump-budget parser keys the committed plan's
+                // shape on it instead of guessing from event order — and so a
+                // future re-derivation, were one ever reintroduced, would be
+                // visibly distinct rather than silently skewing the budgets.
+                role: "authoritative",
+                module_path: m.module_path().to_owned(),
+                module: crate::telemetry::value::opaque(m),
+                module_plan: crate::telemetry::value::opaque(&mt),
+            },
+        );
+    }
+    mt
+}
+
+/// Capability + effect facts for the pre-plan transforms (closure
+/// devirtualization + inlining).
+///
+/// `rewrite_known_target_closures` and `inline_module_with_plan` read only
+/// per-spec `callable_capabilities` (and `fn_effects`) — never effective
+/// returns, call edges, dead branches, or precedence. So this runs the shared
+/// spec-discovery worklist and then keeps *only* the capability slice: the
+/// returned `CapabilityPlan` carries no types, call edges, or returns and is
+/// not a codegen plan. It emits no `planner.planned` event, because the one
+/// authoritative plan is derived once, later, by `plan_module`.
+///
+/// The worklist (including the effective-return fixpoint) is reused rather than
+/// replaced by a fixpoint-free pass: capability precision is load-bearing.
+/// A var's callable capability narrows as its type narrows under return
+/// refinement, and the consensus `KnownFn` that drives a devirtualization can
+/// be lost if returns stay coarse — empirically, dropping the fixpoint
+/// regresses `apply2`, `enum_sort`, `higher_order`, and
+/// `multi_caller_spec_divergent`. The redundancy removed is run A's
+/// authoritative-plan *shape* (the full `ModulePlan` with dead-branch and
+/// precedence finalization, and its `planner.planned` event), not the
+/// worklist compute, which the capabilities genuinely require. The analysis is
+/// interprocedural over the linked working module — the reason the pretyped
+/// frontend's shallow `_pre_types` cannot serve here.
+pub fn plan_callable_capabilities<
+    T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
+>(
+    t: &mut T,
+    m: &Module,
+) -> CapabilityPlan {
+    let out = discover_specs(t, m);
+    let spec_capabilities = out
+        .specs
+        .into_iter()
+        .map(|(key, ft)| (key.fn_id, ft.callable_capabilities))
+        .collect();
+    CapabilityPlan {
+        spec_capabilities,
+        fn_effects: out.fn_effects,
+    }
+}
+
+/// Outcome of the shared worklist core: the discovered specs (each carrying its
+/// callable capabilities, call edges, and types), their effective returns, the
+/// per-FnId effect summary, and the closure-handle registry. `plan_module`
+/// finalizes this into a `ModulePlan` (any-key index, precedence, dead
+/// branches, telemetry); `plan_callable_capabilities` keeps only the
+/// per-spec capabilities.
+struct DiscoverOutput {
+    specs: HashMap<SpecKey, SpecPlan>,
+    effective_returns: HashMap<SpecKey, crate::types::Ty>,
+    fn_effects: FnEffects,
+    #[cfg_attr(not(test), allow(dead_code))]
+    closure_handles: std::collections::HashSet<(FnId, Vec<crate::types::Ty>)>,
+}
+
+/// Drive the worklist to discover every reachable spec from the module's entry
+/// seeds (running the effective-return fixpoint), then prune orphans. Shared by
+/// `plan_module` and `plan_callable_capabilities`.
+fn discover_specs<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes>(
+    t: &mut T,
+    m: &Module,
+) -> DiscoverOutput {
     let call_graph = build_call_graph(m);
     let mut sccs = super::scc::tarjan_scc(&call_graph);
     sccs.reverse();
@@ -183,52 +266,12 @@ pub fn plan_module_with_role<
     specs.retain(|k, _| reachable.contains(k));
     effective_returns.retain(|k, _| reachable.contains(k));
 
-    let any_key_specs = build_any_key_index(t, m, &specs);
-    let spec_precedence = key_precedence_order(&specs, &any_key_specs);
-
-    let mut mt = ModulePlan {
+    DiscoverOutput {
         specs,
         effective_returns,
-        any_key_specs,
-        spec_precedence,
         fn_effects,
-        dead_branches: HashMap::new(),
-        #[cfg(test)]
         closure_handles,
-    };
-    mt.dead_branches = compute_dead_branches(t, m, &mt);
-    {
-        let pops = WORKLIST_POPS.with(|c| c.get()) as u64;
-        let walks = WALK_CALLS.with(|c| c.get()) as u64;
-        let type_fns = TYPE_FN_CALLS.with(|c| c.get()) as u64;
-        let stats = module_plan_stats(m, &mt);
-        tel.execute(
-            &["fz", "planner", "planned"],
-            &crate::measurements! {
-                worklist_pops: pops,
-                walk_calls: walks,
-                type_fn_calls: type_fns,
-                spec_count: mt.specs.len() as u64,
-                matcher_spec_count: stats.matcher_spec_count as u64,
-                spec_var_count: stats.spec_var_count as u64,
-                spec_block_count: stats.spec_block_count as u64,
-                spec_stmt_count: stats.spec_stmt_count as u64,
-                dispatch_count: stats.dispatch_count as u64,
-                direct_call_count: stats.direct_call_count as u64,
-                tail_call_count: stats.tail_call_count as u64,
-                if_count: stats.if_count as u64,
-                receive_count: stats.receive_count as u64,
-                receive_matched_count: stats.receive_matched_count as u64,
-            },
-            &crate::metadata! {
-                role: role.as_str(),
-                module_path: m.module_path().to_owned(),
-                module: crate::telemetry::value::opaque(m),
-                module_plan: crate::telemetry::value::opaque(&mt),
-            },
-        );
     }
-    mt
 }
 
 /// One per-FnId effect fact over the static call graph.

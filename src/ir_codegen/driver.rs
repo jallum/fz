@@ -2055,28 +2055,21 @@ pub(crate) fn compile_with_backend_impl<
     // closure-target — so the inliner below splices it and the lazy-cont
     // gate sees a closure-free frame.
     //
-    // Reads a plan for the linked working module, so provider-library entry
-    // params can carry interprocedural `KnownFn` capabilities — the shallow
-    // `_pre_types` handed in by the pretyped entry points cannot see linked
-    // bodies, so this re-plans `working` itself. It is an internal intermediate
-    // plan (run A), NOT the authoritative codegen plan (that is `module_plan`
-    // below). It is telemetry-counted so the redundancy invariant 1 (fz-hfc)
-    // targets is measurable: this run plus the post-destination re-plan (run C)
-    // are the redundant re-derivations the epic removes. Until then the pretyped
-    // path reports four `planner.planned` events (frontend + run A + module_plan
-    // + run C); the count drops to two as runs A and C are eliminated.
-    let rewrite_types = crate::ir_planner::plan_module_with_role(
-        t,
-        &working,
-        tel,
-        crate::ir_planner::PlanRole::Intermediate,
-    );
-    crate::ir_planner::rewrite_known_target_closures(t, &mut working, &rewrite_types);
+    // Both transforms read only callable capabilities + per-fn effects — never
+    // effective returns, call edges, or dead branches — so this derives a
+    // capability-only plan, not a full specializing one. It is interprocedural
+    // over the linked working module (so provider-library entry params carry
+    // KnownFn capabilities the shallow pretyped `_pre_types` cannot see) but
+    // skips the return-type fixpoint, and emits no `planner.planned` event. The
+    // authoritative plan is derived once, below, after these transforms settle —
+    // there is no longer a second specializing plan here (fz-hfc.3 / inv1).
+    let capabilities = crate::ir_planner::plan_callable_capabilities(t, &working);
+    crate::ir_planner::rewrite_known_target_closures(t, &mut working, &capabilities);
     #[cfg(not(test))]
-    crate::ir_inline::inline_module_with_plan(&mut working, &rewrite_types);
+    crate::ir_inline::inline_module_with_plan(&mut working, &capabilities);
     #[cfg(test)]
     if !INLINE_DISABLED.with(|d| d.get()) {
-        crate::ir_inline::inline_module_with_plan(&mut working, &rewrite_types);
+        crate::ir_inline::inline_module_with_plan(&mut working, &capabilities);
     }
     crate::ir_fuse::fuse_blocks_with_telemetry(&mut working, tel);
     // Compile-time reducer pass. Folds calls whose return is statically
