@@ -13,11 +13,39 @@ use std::fmt;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ProtocolRegistry {
+    /// `ModuleName` derives `Serialize` as a struct (`{ segments: [...] }`),
+    /// which serde_json rejects as a map key, so this map serializes as a
+    /// sequence of `(key, value)` entries.
+    #[serde(with = "protocols_as_seq")]
     pub protocols: BTreeMap<ModuleName, ProtocolDecl>,
     /// `ProtocolImplKey` is a struct, which serde_json rejects as a map key,
     /// so this map serializes as a sequence of `(key, value)` entries.
     #[serde(with = "impls_as_seq")]
     pub impls: BTreeMap<ProtocolImplKey, ProtocolImplFact>,
+}
+
+/// (De)serialize `BTreeMap<ModuleName, ProtocolDecl>` as a
+/// `Vec<(ModuleName, ProtocolDecl)>` so the struct key survives serde_json
+/// (which forbids non-string object keys).
+mod protocols_as_seq {
+    use super::{ModuleName, ProtocolDecl};
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    use std::collections::BTreeMap;
+
+    pub fn serialize<S: Serializer>(
+        map: &BTreeMap<ModuleName, ProtocolDecl>,
+        s: S,
+    ) -> Result<S::Ok, S::Error> {
+        map.iter().collect::<Vec<_>>().serialize(s)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(
+        d: D,
+    ) -> Result<BTreeMap<ModuleName, ProtocolDecl>, D::Error> {
+        Ok(Vec::<(ModuleName, ProtocolDecl)>::deserialize(d)?
+            .into_iter()
+            .collect())
+    }
 }
 
 /// (De)serialize `BTreeMap<ProtocolImplKey, ProtocolImplFact>` as a

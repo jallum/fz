@@ -1161,6 +1161,33 @@ mod tuple_keyed_map {
     }
 }
 
+/// (De)serialize a `HashMap<FnId, V>` as a sequence of `(FnId, value)` entries.
+/// `FnId` is a newtype over `u32`, which serde_json renders as a number — not a
+/// valid object key — so the natural map encoding fails the moment the map is
+/// non-empty. The sequence form round-trips losslessly and order-independently,
+/// matching `tuple_keyed_map`'s approach for `(FnId, BlockId)`-keyed tables.
+mod fn_keyed_map {
+    use super::FnId;
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    use std::collections::HashMap;
+
+    pub fn serialize<S, V>(map: &HashMap<FnId, V>, s: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+        V: Serialize,
+    {
+        map.iter().collect::<Vec<_>>().serialize(s)
+    }
+
+    pub fn deserialize<'de, D, V>(d: D) -> Result<HashMap<FnId, V>, D::Error>
+    where
+        D: Deserializer<'de>,
+        V: Deserialize<'de>,
+    {
+        Ok(Vec::<(FnId, V)>::deserialize(d)?.into_iter().collect())
+    }
+}
+
 /// Side-tables that map IR positions back to source spans. Populated by
 /// `ir_lower` as it goes; consumed by `ir_planner` / diagnostics renderers
 /// to point at the right source byte range for a given Var or Stmt.
@@ -1252,6 +1279,7 @@ pub struct Module {
     /// placeholder `FnId` until link/LTO resolution loads the provider
     /// implementation and rewrites the edge to a direct local call.
     pub external_call_edges: Vec<ExternalCallEdge>,
+    #[serde(with = "fn_keyed_map")]
     pub protocol_call_targets: HashMap<FnId, ProtocolCallTarget>,
     pub protocol_registry: crate::protocols::ProtocolRegistry,
     /// fz-jg5.12 (RED.9) — Fns marked as reduction boundaries. Populated
@@ -1278,6 +1306,7 @@ pub struct Module {
     pub brand_inners: HashMap<String, crate::types::Ty>,
     /// Resolved declared `@spec`s keyed by IR function id. Used by call
     /// typing for source-level polymorphic contracts.
+    #[serde(with = "fn_keyed_map")]
     pub declared_specs: HashMap<FnId, crate::type_expr::ResolvedSpec>,
 }
 
@@ -1297,10 +1326,6 @@ impl Module {
     /// `extern_by_id` usable again. Mirrors `ModuleBuilder::add_fn`'s keying
     /// (FnId → position in `fns`) and `extern_by_id`'s (ExternId → position
     /// in `externs`).
-    // The deserialization consumer that calls this lands in a later ticket
-    // (serde round-trip is wired up first); today only the round-trip test
-    // exercises it.
-    #[allow(dead_code)]
     pub fn rebuild_indices(&mut self) {
         self.fn_idx = self
             .fns
@@ -1331,10 +1356,6 @@ impl Module {
     ///     `ReceiveClause`/`ReceiveAfter` spans and the `ReceiveMatched`
     ///     matcher (`Matcher::remap_file_ids`).
     ///   - `external_call_edges[].callsite.ident`.
-    // The relocation loader that calls this (interning a loaded module's files,
-    // then remapping its spans onto the host SourceMap) lands in a later
-    // ticket; today only the gate test exercises it.
-    #[allow(dead_code)]
     pub fn remap_file_ids(&mut self, remap: &HashMap<FileId, FileId>) {
         // SourceInfo side-tables.
         for s in &mut self.source.var_span {
@@ -1371,9 +1392,6 @@ impl Module {
     /// Read-only twin of `remap_file_ids`: visits every `Span` reachable from
     /// the module, in the same exhaustive span-site inventory. Used to gather a
     /// module's referenced source files for portable IR units.
-    // The IR-unit writer that calls this (`referenced_files`) is consumed by
-    // the loader in fz-t1m.3.1.3; today only the gate test drives it.
-    #[allow(dead_code)]
     pub fn visit_spans(&self, f: &mut impl FnMut(Span)) {
         // SourceInfo side-tables.
         for s in &self.source.var_span {
@@ -1410,9 +1428,6 @@ impl Module {
     /// Every distinct, non-`NONE` `FileId` referenced by the module's spans.
     /// `DUMMY`/`FileId::NONE` spans are excluded. This is the source-file set a
     /// portable IR unit must carry so a later loader can relocate the module.
-    // Consumed by the IR-unit writer / loader in fz-t1m.3.1.3; today only the
-    // gate tests drive it.
-    #[allow(dead_code)]
     pub fn referenced_files(&self) -> std::collections::BTreeSet<FileId> {
         let mut files = std::collections::BTreeSet::new();
         self.visit_spans(&mut |span| {

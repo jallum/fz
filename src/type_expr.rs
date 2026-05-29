@@ -144,7 +144,32 @@ impl std::fmt::Display for TypeExprError {
 pub struct ResolvedSpec {
     pub params: Vec<crate::types::Ty>,
     pub result: crate::types::Ty,
+    /// `TypeVarId` is a `u32` newtype, which serde_json renders as a number —
+    /// not a valid object key — so this map serializes as a sequence of
+    /// `(TypeVarId, Ty)` entries.
+    #[serde(with = "constraints_as_seq")]
     pub constraints: HashMap<crate::types::TypeVarId, crate::types::Ty>,
+}
+
+/// (De)serialize `HashMap<TypeVarId, Ty>` as a `Vec<(TypeVarId, Ty)>` so the
+/// numeric key survives serde_json (which forbids non-string object keys).
+mod constraints_as_seq {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    use std::collections::HashMap;
+
+    type Constraints = HashMap<crate::types::TypeVarId, crate::types::Ty>;
+
+    pub fn serialize<S: Serializer>(map: &Constraints, s: S) -> Result<S::Ok, S::Error> {
+        map.iter().collect::<Vec<_>>().serialize(s)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Constraints, D::Error> {
+        Ok(
+            Vec::<(crate::types::TypeVarId, crate::types::Ty)>::deserialize(d)?
+                .into_iter()
+                .collect(),
+        )
+    }
 }
 
 /// fz-swt.8 — Inner-type map for opaque aliases declared in one

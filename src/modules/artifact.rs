@@ -107,6 +107,7 @@ impl FzoUnitPayload {
         Self::new(FZO_PAYLOAD_IR_TEXT_V1, body)
     }
 
+    #[cfg(test)]
     pub fn source_unit(body: impl Into<String>) -> Self {
         Self::new(FZO_PAYLOAD_SOURCE_UNIT_V1, body)
     }
@@ -115,9 +116,6 @@ impl FzoUnitPayload {
         Self::new(FZO_PAYLOAD_RUNTIME_MODULE_V1, body)
     }
 
-    // The IR-unit payload is consumed by the loader in fz-t1m.3.1.3; today only
-    // `from_unit_ir` and the round-trip gate build one.
-    #[allow(dead_code)]
     fn ir_unit(body: impl Into<String>) -> Self {
         Self::new(FZO_PAYLOAD_IR_UNIT_V1, body)
     }
@@ -204,6 +202,7 @@ impl FzoArtifact {
         )
     }
 
+    #[cfg(test)]
     pub fn from_unit_source(
         unit: &CompiledUnit,
         source: impl Into<String>,
@@ -220,9 +219,9 @@ impl FzoArtifact {
     /// serde form plus every source file its spans reference, so a later loader
     /// can materialize the provider WITHOUT recompiling. The
     /// `required_imports`/fingerprint wiring is identical to `from_unit_source`.
-    // The loader that reads this format lands in fz-t1m.3.1.3; today only the
-    // round-trip gate drives it. Production `fz build` still emits source units.
-    #[allow(dead_code)]
+    /// Production `fz build` emits this structural format; the loader in
+    /// `modules::pipeline::load_provider_units` materializes it without the
+    /// frontend.
     pub fn from_unit_ir(
         unit: &CompiledUnit,
         sources: Vec<PortableSourceFile>,
@@ -284,11 +283,9 @@ impl FzoArtifact {
     }
 
     /// Decode an IR-unit payload back into its `Module` + source files. The
-    /// read side the loader (fz-t1m.3.1.3) calls; the round-trip gate uses it
-    /// now. Errors if this artifact is not an `FZO_PAYLOAD_IR_UNIT_V1` unit.
-    // Consumed by the loader in fz-t1m.3.1.3; today only the round-trip gate
-    // drives it.
-    #[allow(dead_code)]
+    /// read side `modules::pipeline::load_provider_units` calls to materialize a
+    /// provider structurally. Errors if this artifact is not an
+    /// `FZO_PAYLOAD_IR_UNIT_V1` unit.
     pub fn ir_unit_payload(&self) -> Result<IrUnitPayload, ArtifactFormatError> {
         if self.unit_payload.format != FZO_PAYLOAD_IR_UNIT_V1 {
             return Err(invalid(format!(
@@ -548,7 +545,7 @@ mod tests {
         // all synthetic, so we add one file and carry it explicitly.
         let mut sm = crate::diag::SourceMap::new();
         let fid = sm.add_file("Math.fz", "defmodule Math do\n  fn add(x, y), do: x + y\nend\n");
-        let sources = vec![sm.file(fid).to_portable()];
+        let sources = vec![sm.file(fid).to_portable(fid)];
 
         let fzo = FzoArtifact::from_unit_ir(&unit, sources.clone(), vec![]);
         let text = fzo.serialize();

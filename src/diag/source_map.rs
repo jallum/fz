@@ -62,13 +62,13 @@ impl SourceFile {
 
     /// Wire form of this file for a portable IR unit. `SourceFile` itself can't
     /// derive serde (the `OnceLock` line cache), so this DTO carries the
-    /// serializable identity — name, bytes, and the FNV content hash — that a
-    /// loader re-interns via `SourceMap::intern`.
-    // The IR-unit writer that calls this lands in fz-t1m.3.1.3; today only the
-    // round-trip gate drives it.
-    #[allow(dead_code)]
-    pub fn to_portable(&self) -> PortableSourceFile {
+    /// serializable identity — provider-side `FileId`, name, bytes, and the FNV
+    /// content hash — that a loader re-interns via `SourceMap::intern`. The
+    /// `id` is the file's `FileId` in the producing `SourceMap`, recorded so the
+    /// loader can build the provider→consumer remap.
+    pub fn to_portable(&self, id: FileId) -> PortableSourceFile {
         PortableSourceFile {
+            file: id,
             name: self.name.clone(),
             bytes: self.bytes.to_string(),
             content_hash: self.content_hash,
@@ -95,8 +95,12 @@ impl SourceFile {
 /// portable IR unit (`.fzo`). A loader re-interns each one via
 /// `SourceMap::intern(name, bytes)`, which recomputes the same FNV hash;
 /// `content_hash` rides along so the identity can be checked without re-hashing.
+/// `file` is the `FileId` this source had in the *producing* `SourceMap`; the
+/// loader pairs it with the consumer `FileId` returned by `intern` to build the
+/// remap that `Module::remap_file_ids` applies to every span.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PortableSourceFile {
+    pub file: FileId,
     pub name: String,
     pub bytes: String,
     pub content_hash: u64,
@@ -138,9 +142,6 @@ impl SourceMap {
     /// `FileId` rather than appending a duplicate. This is the merge seam for
     /// relocatably-loaded modules — a consumer interns each of a loaded
     /// module's files, then remaps the module's spans onto the returned ids.
-    // The relocation loader that calls this lands in a later ticket; today the
-    // unit tests below exercise it.
-    #[allow(dead_code)]
     pub fn intern(&mut self, name: impl Into<String>, bytes: impl Into<Arc<str>>) -> FileId {
         let name = name.into();
         let bytes = bytes.into();

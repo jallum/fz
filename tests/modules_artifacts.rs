@@ -158,7 +158,7 @@ fn main(), do: Math.id(1)
         .unwrap_or_else(|e| panic!("read {}: {}", fzo_path.display(), e));
     assert!(fzo.starts_with("fzo\n"), "{fzo}");
     assert!(fzo.contains("\"Math\""), "{fzo}");
-    assert!(fzo.contains("\"format\": \"fz-source-unit-v1\""), "{fzo}");
+    assert!(fzo.contains("\"format\": \"fz-ir-unit-v1\""), "{fzo}");
     assert!(fzo.contains("defmodule Math"), "{fzo}");
     assert!(fzo.contains("\"interface_fingerprint_digest\""), "{fzo}");
 
@@ -349,7 +349,7 @@ fn main(), do: dbg(User.run())
     let fzo = fs::read_to_string(&fzo_path)
         .unwrap_or_else(|e| panic!("read {}: {}", fzo_path.display(), e));
     assert!(fzo.contains("\"User\""), "{fzo}");
-    assert!(fzo.contains("\"format\": \"fz-source-unit-v1\""), "{fzo}");
+    assert!(fzo.contains("\"format\": \"fz-ir-unit-v1\""), "{fzo}");
     assert!(
         fzo.contains("\"add\"") && fzo.contains("\"arity\": 2"),
         "{fzo}"

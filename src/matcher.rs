@@ -65,9 +65,6 @@ impl Matcher {
     /// Covers input/pinned spans, every `MatcherNode` variant's span, and the
     /// leaf/binding spans. Used when a relocatably-loaded module's receive
     /// matchers are merged into a consumer's `SourceMap`.
-    // Reached via `Module::remap_file_ids` (the relocation loader's entry
-    // point, wired up in a later ticket); today only the gate test drives it.
-    #[allow(dead_code)]
     pub(crate) fn remap_file_ids(&mut self, remap: &HashMap<FileId, FileId>) {
         for input in &mut self.inputs {
             remap_span(&mut input.span, remap);
@@ -96,9 +93,6 @@ impl Matcher {
     /// Read-only twin of `remap_file_ids`: visits every `Span` reachable from
     /// this matcher, in the same exhaustive site inventory. Used to gather a
     /// receive matcher's referenced source files for portable IR units.
-    // Reached via `Module::visit_spans` (the IR-unit writer's entry point);
-    // today only the gate tests drive it.
-    #[allow(dead_code)]
     pub(crate) fn visit_spans(&self, f: &mut impl FnMut(Span)) {
         for input in &self.inputs {
             f(input.span);
