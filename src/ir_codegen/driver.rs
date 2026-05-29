@@ -2006,7 +2006,6 @@ pub(crate) fn compile_with_backend_impl<
     t: &mut T,
     module: &Module,
     mut backend: B,
-    _pre_types: Option<&crate::ir_planner::ModulePlan>,
     tel: &dyn crate::telemetry::Telemetry,
 ) -> Result<B::Output, CodegenError> {
     if let Some(edge) = module.external_call_edges.first() {

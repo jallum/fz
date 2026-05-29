@@ -79,7 +79,6 @@ impl CheckedModule {
 pub(crate) struct PreparedExecutionGraph {
     pub(crate) units: Vec<CompiledUnit>,
     pub(crate) module: fz_ir::Module,
-    pub(crate) module_plan: ir_planner::ModulePlan,
     pub(crate) sm: diag::SourceMap,
 }
 
@@ -210,19 +209,16 @@ pub(crate) fn prepare_execution_graph(
 ) -> Result<PreparedExecutionGraph, PipelineError> {
     let units = load_provider_units(t, &prepared, providers, tel)?;
     let linked_units = units.len() > 1;
-    let linked = if !linked_units {
-        None
-    } else {
-        Some(ir_codegen::link_ir_units_with_plan(&units).map_err(PipelineError::Link)?)
-    };
-    let module = if let Some(linked) = &linked {
-        linked.module.clone()
+    let module = if linked_units {
+        ir_codegen::link_ir_units(&units).map_err(PipelineError::Link)?
     } else {
         units[0].code.clone()
     };
-    let module_plan = if !linked_units {
-        prepared.module_plan
-    } else if mode.is_lto() {
+    // Codegen re-plans the linked working module itself (see
+    // `compile_with_backend_impl`), so no plan is threaded out of here. LTO
+    // mode still runs boundary erasure for its module-mutating side effect
+    // (rewriting external calls to direct ones); its plan is discarded.
+    if mode.is_lto() {
         let interfaces = units
             .iter()
             .filter_map(|unit| {
@@ -236,21 +232,13 @@ pub(crate) fn prepare_execution_graph(
         let (module, _) = linked.erase_boundaries(tel)?;
         return Ok(PreparedExecutionGraph {
             units,
-            module_plan: ir_planner::plan_module(t, &module, tel),
             module,
             sm: prepared.sm,
         });
-    } else {
-        linked
-            .and_then(|linked| linked.module_plan)
-            .ok_or(PipelineError::Link(ImageLinkError::MissingPlannerFacts {
-                module: None,
-            }))?
-    };
+    }
     Ok(PreparedExecutionGraph {
         units,
         module,
-        module_plan,
         sm: prepared.sm,
     })
 }

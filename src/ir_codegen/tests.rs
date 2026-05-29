@@ -454,12 +454,11 @@ fn linked_ir_units_rewrite_external_edges_and_run_provider_body() {
         crate::diag::Diagnostics::new(),
     );
     let linked =
-        link_ir_units_with_plan(&[math_unit.clone(), user_unit.clone()]).expect("link ir units");
-    let linked_plan = linked
-        .module_plan
-        .as_ref()
-        .expect("linked planner facts must be preserved");
-    let linked = linked.module;
+        link_ir_units(&[math_unit.clone(), user_unit.clone()]).expect("link ir units");
+    // Re-plan the linked module: after the linker rewrites external stub
+    // callsites to their resolved targets, a fresh plan must show no External
+    // call edges and no protocol-stub targets.
+    let linked_plan = crate::ir_planner::plan_module(&mut t, &linked, &tel);
     assert!(
         !linked_plan.specs.values().any(|spec| {
             spec.call_edges.values().any(|edge| {
@@ -489,7 +488,7 @@ fn linked_ir_units_rewrite_external_edges_and_run_provider_body() {
     assert!(linked.external_call_edges.is_empty());
     let entry = linked.fn_by_name("main").expect("main").id;
 
-    let compiled = compile_pretyped(&mut t, &linked, linked_plan, &tel).expect("compile linked");
+    let compiled = compile(&mut t, &linked, &tel).expect("compile linked");
     let image = CompiledImage::from_linked(compiled);
 
     assert_eq!(image.run(entry), 42);
@@ -567,14 +566,9 @@ fn main(), do: User.run()
         None,
         crate::diag::Diagnostics::new(),
     );
-    let linked = link_ir_units_with_plan(&[provider_unit, user_unit]).expect("link ir units");
-    let linked_plan = linked
-        .module_plan
-        .as_ref()
-        .expect("linked planner facts must be preserved");
-    let linked = linked.module;
+    let linked = link_ir_units(&[provider_unit, user_unit]).expect("link ir units");
     let entry = linked.fn_by_name("main").expect("main").id;
-    let compiled = compile_pretyped(&mut t, &linked, linked_plan, &tel).expect("compile linked");
+    let compiled = compile(&mut t, &linked, &tel).expect("compile linked");
     let image = CompiledImage::from_linked(compiled);
 
     assert_eq!(image.run(entry), 42);
@@ -604,7 +598,7 @@ fn main(), do: Integerish.id(41)
     .unwrap_or_else(|err| panic!("frontend: {:?}", err.diagnostics));
     let entry = frontend.module.fn_by_name("main").expect("main").id;
     let compiled =
-        compile_pretyped(&mut t, &frontend.module, &frontend.module_plan, &tel).expect("compile");
+        compile(&mut t, &frontend.module, &tel).expect("compile");
     let image = CompiledImage::from_linked(compiled);
 
     assert_eq!(image.run(entry), 42);
@@ -712,22 +706,6 @@ fn image_linker_rejects_missing_and_duplicate_providers() {
     assert!(matches!(err, ImageLinkError::DuplicateProvider { .. }));
 }
 
-#[test]
-fn planned_image_link_rejects_units_without_planner_facts() {
-    let (unit, _) = link_test_unit("User", &[("run", 0)], Vec::new());
-    let err = match link_ir_units_with_plan(&[unit]) {
-        Ok(_) => panic!("expected missing planner facts"),
-        Err(err) => err,
-    };
-    assert_eq!(
-        err,
-        ImageLinkError::MissingPlannerFacts {
-            module: Some(crate::modules::identity::ModuleName::from_segments(vec![
-                "User".to_string()
-            ])),
-        }
-    );
-}
 
 #[test]
 fn image_linker_rejects_unresolved_external_imports_without_provider() {
@@ -2308,7 +2286,7 @@ fn plan_module_called_exactly_three_times_in_pipeline() {
 }
 
 #[test]
-fn frontend_to_codegen_pretyped_pipeline_types_exactly_three_times() {
+fn frontend_to_codegen_pipeline_reports_two_planner_events() {
     let tel = crate::telemetry::ConfiguredTelemetry::new();
     let cap = crate::telemetry::Capture::new();
     tel.attach(&[], cap.handler());
@@ -2325,7 +2303,7 @@ fn frontend_to_codegen_pretyped_pipeline_types_exactly_three_times() {
         Err(_) => panic!("frontend"),
     };
 
-    compile_pretyped(&mut t, &frontend.module, &frontend.module_plan, &tel).expect("compile");
+    compile(&mut t, &frontend.module, &tel).expect("compile");
 
     assert_eq!(
         cap.count(&["fz", "planner", "planned"]),

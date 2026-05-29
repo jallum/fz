@@ -176,9 +176,6 @@ pub enum ImageLinkError {
         import: crate::modules::identity::ExportKey,
     },
     RuntimeMetadata(RuntimeMetadataLinkError),
-    MissingPlannerFacts {
-        module: Option<crate::modules::identity::ModuleName>,
-    },
 }
 
 impl std::fmt::Display for ImageLinkError {
@@ -213,46 +210,24 @@ impl std::fmt::Display for ImageLinkError {
                 write!(f, "export `{}` has more than one provider", import)
             }
             Self::RuntimeMetadata(err) => write!(f, "{}", err),
-            Self::MissingPlannerFacts { module } => write!(
-                f,
-                "compiled unit `{}` is missing planner facts required for linked codegen",
-                module
-                    .as_ref()
-                    .map(ToString::to_string)
-                    .unwrap_or_else(|| "<root>".to_string())
-            ),
         }
     }
 }
 
 impl std::error::Error for ImageLinkError {}
 
-pub struct LinkedIr {
-    pub module: Module,
-    pub module_plan: Option<crate::ir_planner::ModulePlan>,
-}
-
 pub fn link_ir_units(units: &[CompiledUnit]) -> Result<Module, ImageLinkError> {
     let mut linker = IrUnitLinker::new();
     for unit in units {
         linker.add_unit(unit)?;
     }
-    linker.finish().map(|linked| linked.module)
-}
-
-pub fn link_ir_units_with_plan(units: &[CompiledUnit]) -> Result<LinkedIr, ImageLinkError> {
-    let mut linker = IrUnitLinker::new();
-    for unit in units {
-        linker.add_unit(unit)?;
-    }
-    linker.finish_with_plan()
+    linker.finish()
 }
 
 #[derive(Default)]
 struct IrUnitLinker {
     linked: Module,
     linked_plan: Option<crate::ir_planner::ModulePlan>,
-    missing_planner_facts: Option<Option<crate::modules::identity::ModuleName>>,
     export_map: BTreeMap<crate::modules::identity::ExportKey, FnId>,
 }
 
@@ -287,13 +262,13 @@ impl IrUnitLinker {
         Ok(())
     }
 
-    fn finish(mut self) -> Result<LinkedIr, ImageLinkError> {
+    /// Resolve external call edges (using the merged planner facts) and rewrite
+    /// stub callsites to their linked targets. Mutates `self.linked` in place;
+    /// both finish paths share it.
+    fn resolve_links(&mut self) -> Result<(), ImageLinkError> {
         self.resolve_external_call_edges_in_plan();
         match self.linked.rewrite_external_calls_for_lto(&self.export_map) {
-            Ok(_) => Ok(LinkedIr {
-                module: self.linked,
-                module_plan: self.linked_plan,
-            }),
+            Ok(_) => Ok(()),
             Err(crate::fz_ir::ExternalLinkError::MissingTarget(import)) => {
                 let requester = self
                     .linked
@@ -310,13 +285,9 @@ impl IrUnitLinker {
         }
     }
 
-    fn finish_with_plan(self) -> Result<LinkedIr, ImageLinkError> {
-        if self.missing_planner_facts.is_some() {
-            return Err(ImageLinkError::MissingPlannerFacts {
-                module: self.missing_planner_facts.flatten(),
-            });
-        }
-        self.finish()
+    fn finish(mut self) -> Result<Module, ImageLinkError> {
+        self.resolve_links()?;
+        Ok(self.linked)
     }
 
     fn copy_fns(&mut self, unit: &CompiledUnit) -> BTreeMap<FnId, FnId> {
@@ -397,12 +368,12 @@ impl IrUnitLinker {
     }
 
     fn copy_planner_facts(&mut self, unit: &CompiledUnit, fn_map: &BTreeMap<FnId, FnId>) {
-        let Some(plan) = &unit.module_plan else {
-            self.missing_planner_facts
-                .get_or_insert_with(|| unit.module.clone());
-            return;
-        };
-        merge_module_plan(&mut self.linked_plan, remap_module_plan(plan, fn_map));
+        // A unit without planner facts simply contributes none; the linker's
+        // internal `linked_plan` only needs to cover the edges it resolves, and
+        // codegen re-plans the linked module afterwards regardless.
+        if let Some(plan) = &unit.module_plan {
+            merge_module_plan(&mut self.linked_plan, remap_module_plan(plan, fn_map));
+        }
     }
 
     fn resolve_external_call_edges_in_plan(&mut self) {

@@ -368,7 +368,7 @@ fn run_build(tel: &telemetry::ConfiguredTelemetry, args: &[String]) {
         .and_then(|s| s.to_str())
         .unwrap_or("fz_program");
     let artifact =
-        ir_codegen::compile_aot_pretyped(&mut t, &graph.module, &graph.module_plan, obj_name, tel)
+        ir_codegen::compile_aot(&mut t, &graph.module, obj_name, tel)
             .unwrap_or_else(|e| {
                 diag::report_or_exit_through(tel, &[e.to_diagnostic()]);
                 std::process::exit(1);
@@ -1459,7 +1459,7 @@ fn compile_pipeline(
     let graph = modules::pipeline::prepare_execution_graph(&mut t, prepared, providers, tel, mode)
         .unwrap_or_else(|err| report_pipeline_error_or_exit("fz run", tel, sm_cell, err));
     let main_fn = graph.module.fn_by_name("main").map(|f| f.id);
-    let executable = ir_codegen::compile_pretyped(&mut t, &graph.module, &graph.module_plan, tel)
+    let executable = ir_codegen::compile(&mut t, &graph.module, tel)
         .unwrap_or_else(|e| {
             diag::report_or_exit_through(tel, &[e.to_diagnostic()]);
             std::process::exit(1);
