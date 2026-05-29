@@ -33,15 +33,15 @@ pub fn truncate_diverging_blocks(
     }
     for f in &mut m.fns {
         for b in &mut f.blocks {
-            let cut = b.stmts.iter().position(|Stmt::Let(_, prim)| {
-                matches!(prim, Prim::Extern(eid, _) if never.contains(eid))
-            });
+            let cut = b.stmts.iter().position(
+                |Stmt::Let(_, prim)| matches!(prim, Prim::Extern(eid, _) if never.contains(eid)),
+            );
             let Some(idx) = cut else { continue };
             let Stmt::Let(result, _) = b.stmts[idx];
             // Already truncated (idempotent): the diverging call is the last
             // statement and the block halts on its result.
-            let already = idx + 1 == b.stmts.len()
-                && matches!(b.terminator, Term::Halt(v) if v == result);
+            let already =
+                idx + 1 == b.stmts.len() && matches!(b.terminator, Term::Halt(v) if v == result);
             if already {
                 continue;
             }
@@ -144,7 +144,10 @@ mod tests {
         let entry_block = m.fns[0].block(m.fns[0].entry);
         assert!(matches!(
             entry_block.terminator,
-            Term::TailCall { callee: FnId(1), .. }
+            Term::TailCall {
+                callee: FnId(1),
+                ..
+            }
         ));
     }
 }
