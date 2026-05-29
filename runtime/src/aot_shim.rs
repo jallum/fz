@@ -147,9 +147,16 @@ pub extern "C" fn fz_aot_setup(
     let schemas = Rc::new(RefCell::new(SchemaRegistry::new()));
     AOT_SCHEMAS.with(|s| *s.borrow_mut() = Some(schemas.clone()));
 
-    let mut proc_box = Box::new(Process::new(schemas));
-    proc_box.pid = 1;
-    proc_box.atom_names = parse_atom_blob(atom_blob);
+    let consts = crate::process::CompiledModuleConsts {
+        atom_names: parse_atom_blob(atom_blob),
+        ..crate::process::CompiledModuleConsts::empty()
+    };
+    let proc_box = Box::new(Process::from_consts(
+        schemas,
+        &consts,
+        1,
+        crate::process::DEFAULT_REDUCTIONS_PER_QUANTUM,
+    ));
 
     let proc_ptr = AOT_TASKS.with(|c| {
         let mut t = c.borrow_mut();
@@ -308,13 +315,22 @@ extern "C" fn aot_spawn_hook(sender: *mut Process, _scheduler: *mut (), closure_
     let parent = unsafe { &*sender };
     let schemas = parent.heap.schemas_registry();
     let halt_cont_body_addrs = AOT_HALT_CONT_BODIES.with(|c| c.get());
-    let static_closures = parent.static_closures.clone();
 
-    let mut child = Box::new(Process::new(schemas));
-    child.pid = pid;
-    child.atom_names = parent.atom_names.clone();
-    child.init_halt_cont_singletons(halt_cont_body_addrs);
-    child.static_closures = static_closures;
+    let consts = crate::process::CompiledModuleConsts {
+        atom_names: parent.atom_names.clone(),
+        halt_cont_body_addrs,
+        ..crate::process::CompiledModuleConsts::empty()
+    };
+    let mut child = Box::new(Process::from_consts(
+        schemas,
+        &consts,
+        pid,
+        crate::process::DEFAULT_REDUCTIONS_PER_QUANTUM,
+    ));
+    // The child inherits the parent's already-built static-closure singletons
+    // by copying the pointers (they alias the parent's process-lifetime
+    // buffers), not by rebuilding from targets.
+    child.static_closures = parent.static_closures.clone();
 
     // Deep-copy the closure into the child's heap.
     let mut forwarding = HashMap::new();

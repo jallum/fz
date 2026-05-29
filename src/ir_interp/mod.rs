@@ -134,11 +134,18 @@ impl IrInterpRuntime {
         let user_schemas = runtime.schemas();
         let (bs_tuple_arity1_schema, bs_tuple_arity3_schema) =
             runtime.register_bitstring_tuple_schemas();
-        let mut process = Box::new(Process::new(user_schemas));
-        process.pid = 1;
-        process.atom_names = module.atom_names.clone();
-        process.bs_tuple_arity1_schema = Some(bs_tuple_arity1_schema);
-        process.bs_tuple_arity3_schema = Some(bs_tuple_arity3_schema);
+        let consts = fz_runtime::process::CompiledModuleConsts {
+            atom_names: module.atom_names.clone(),
+            bs_tuple_arity1_schema: Some(bs_tuple_arity1_schema),
+            bs_tuple_arity3_schema: Some(bs_tuple_arity3_schema),
+            ..fz_runtime::process::CompiledModuleConsts::empty()
+        };
+        let process = Box::new(Process::from_consts(
+            user_schemas,
+            &consts,
+            1,
+            fz_runtime::process::DEFAULT_REDUCTIONS_PER_QUANTUM,
+        ));
         runtime.insert_task(1, process);
         runtime.set_task_code_image(1, Rc::new(CodeImage::new(module)));
         runtime
@@ -487,9 +494,16 @@ pub fn run_test_fn(
 ) -> Result<(), String> {
     let mut runtime = IrInterpRuntime::fresh();
     let user_schemas = runtime.schemas();
-    let mut task = Box::new(Process::new(user_schemas));
-    task.pid = 1;
-    task.atom_names = module.atom_names.clone();
+    let consts = fz_runtime::process::CompiledModuleConsts {
+        atom_names: module.atom_names.clone(),
+        ..fz_runtime::process::CompiledModuleConsts::empty()
+    };
+    let task = Box::new(Process::from_consts(
+        user_schemas,
+        &consts,
+        1,
+        fz_runtime::process::DEFAULT_REDUCTIONS_PER_QUANTUM,
+    ));
     runtime.insert_task(1, task);
     let task_ptr = runtime.process_ptr(1).expect("run_test_fn installed pid 1");
     runtime.current_proc = task_ptr;

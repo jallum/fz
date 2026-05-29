@@ -1241,25 +1241,30 @@ impl CompiledModule {
     /// Processes can be made from the same CompiledModule and run
     /// concurrently (one worker at a time per Process; libdispatch model).
     pub fn make_process(&self) -> Process {
-        // One source of truth for heap sizing and field defaults:
-        // `Process::new` (SIZE_TABLE[0] starter heap, grows under GC). The
-        // JIT path used to hand-roll this literal with a flat 64 KiB heap,
-        // which never crossed the allocation watermark — so `fz run`
-        // observed zero allocation-pressure yields where the AOT binary
-        // (which goes through `Process::new`) yielded and GC'd. That broke
-        // JIT/AOT stats parity. Delegate, then layer on the per-module
-        // compile-time tables that only the compiled path carries.
-        let mut p = Process::new(std::rc::Rc::clone(&self.user_schemas));
-        p.frame_sizes = self.frame_sizes.clone();
-        p.atom_names = self.atom_names.clone();
-        p.bs_tuple_arity1_schema = self.bs_tuple_arity1_schema;
-        p.bs_tuple_arity3_schema = self.bs_tuple_arity3_schema;
-        // One static singleton per zero-cap closure-target spec.
-        // See docs/cps-in-clif.md §8.2.
-        p.init_static_closures(&self.static_closure_targets);
-        // Seed all three halt-cont singletons; each slot's body sig
-        // matches its repr kind (ValueRef / RawInt / RawF64).
-        p.init_halt_cont_singletons(self.halt_cont_body_addrs);
+        // One construction site for every engine: `Process::from_consts`
+        // (SIZE_TABLE[0] starter heap, grows under GC; static-closure and
+        // halt-cont singletons seeded from the consts). The JIT path used to
+        // hand-roll the heap as a flat 64 KiB buffer, which never crossed the
+        // allocation watermark — so `fz run` observed zero allocation-pressure
+        // yields where the AOT binary yielded and GC'd, breaking JIT/AOT stats
+        // parity. Routing through the shared constructor keeps the heap and
+        // field defaults identical; this path adds only the per-module
+        // compile-time tables (see docs/cps-in-clif.md §8.2) and the
+        // alloc-stats reset the compiled path wants on a fresh process.
+        let consts = fz_runtime::process::CompiledModuleConsts {
+            frame_sizes: self.frame_sizes.clone(),
+            atom_names: self.atom_names.clone(),
+            bs_tuple_arity1_schema: self.bs_tuple_arity1_schema,
+            bs_tuple_arity3_schema: self.bs_tuple_arity3_schema,
+            static_closure_targets: self.static_closure_targets.clone(),
+            halt_cont_body_addrs: self.halt_cont_body_addrs,
+        };
+        let mut p = Process::from_consts(
+            std::rc::Rc::clone(&self.user_schemas),
+            &consts,
+            0,
+            fz_runtime::process::DEFAULT_REDUCTIONS_PER_QUANTUM,
+        );
         p.heap.reset_alloc_stats();
         p
     }

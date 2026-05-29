@@ -204,9 +204,55 @@ pub enum ProcessState {
     Exited,
 }
 
-impl Process {
-    pub fn new(schemas: std::rc::Rc<std::cell::RefCell<crate::heap::SchemaRegistry>>) -> Self {
+/// Per-`CompiledModule` constant tables copied into every Process spawned
+/// from that module. These are the compile-time facts the runtime carries
+/// (frame sizes, atom names, bitstring-tuple schemas, static-closure and
+/// halt-cont singleton seeds) as distinct from the per-spawn scheduler state
+/// (pid, mailbox, run state) the spawner sets. `Process::from_consts` is the
+/// single construction site that applies them, so a newly-added module-const
+/// field flows through one path instead of diverging across the JIT,
+/// interpreter, and AOT spawners.
+pub struct CompiledModuleConsts {
+    pub frame_sizes: Vec<u32>,
+    pub atom_names: Vec<String>,
+    pub bs_tuple_arity1_schema: Option<u32>,
+    pub bs_tuple_arity3_schema: Option<u32>,
+    pub static_closure_targets: Vec<(
+        u32,       /* cl_sid */
+        u32,       /* fn_id */
+        *const u8, /* code_ptr */
+        u32,       /* halt_kind */
+    )>,
+    pub halt_cont_body_addrs: [*const u8; 3],
+}
+
+impl CompiledModuleConsts {
+    /// No module constants: the shape a bare `Process::new` and the
+    /// minimal-setup interpreter/AOT spawners carry.
+    pub fn empty() -> Self {
         Self {
+            frame_sizes: Vec::new(),
+            atom_names: Vec::new(),
+            bs_tuple_arity1_schema: None,
+            bs_tuple_arity3_schema: None,
+            static_closure_targets: Vec::new(),
+            halt_cont_body_addrs: [std::ptr::null(); 3],
+        }
+    }
+}
+
+impl Process {
+    /// The single Process construction site. Builds the heap and field
+    /// defaults, applies the module constants, and seeds the static-closure
+    /// and halt-cont singleton tables. Per-spawn scheduler state (run state,
+    /// mailbox, pending entries) stays at defaults for the spawner to set.
+    pub fn from_consts(
+        schemas: std::rc::Rc<std::cell::RefCell<crate::heap::SchemaRegistry>>,
+        consts: &CompiledModuleConsts,
+        pid: PidId,
+        reductions_per_quantum: i32,
+    ) -> Self {
+        let mut p = Self {
             // §6.3: initial size on spawn = SIZE_TABLE[0] (1 KiB). Cheney
             // promotes to a higher size_class on first GC if the working
             // set demands it; shrink hysteresis (§6.5 / fz-siu.11) brings
@@ -215,11 +261,11 @@ impl Process {
             ctx: std::ptr::null_mut(),
             halt_value: 0,
             bs_builder: None,
-            frame_sizes: Vec::new(),
-            atom_names: Vec::new(),
-            bs_tuple_arity1_schema: None,
-            bs_tuple_arity3_schema: None,
-            pid: 0,
+            frame_sizes: consts.frame_sizes.clone(),
+            atom_names: consts.atom_names.clone(),
+            bs_tuple_arity1_schema: consts.bs_tuple_arity1_schema,
+            bs_tuple_arity3_schema: consts.bs_tuple_arity3_schema,
+            pid,
             state: ProcessState::New,
             next_frame: std::ptr::null_mut(),
             mailbox: std::collections::VecDeque::new(),
@@ -234,8 +280,8 @@ impl Process {
             quiet_quanta: 0,
             scheduler_yields: 0,
             interpreter_yields: 0,
-            reductions_remaining: DEFAULT_REDUCTIONS_PER_QUANTUM,
-            reductions_per_quantum: DEFAULT_REDUCTIONS_PER_QUANTUM,
+            reductions_remaining: reductions_per_quantum,
+            reductions_per_quantum,
             reductions_executed: 0,
             reduction_yields: 0,
             allocation_pressure_yields: 0,
@@ -244,7 +290,25 @@ impl Process {
             max_yield_continuation_bytes: 0,
             min_yield_continuation_margin_before_bytes: 0,
             min_yield_continuation_margin_after_bytes: 0,
+        };
+        // An empty target set leaves `static_closures` empty (no cl_sid is
+        // ever looked up); only build the table when the module carries one.
+        if !consts.static_closure_targets.is_empty() {
+            p.init_static_closures(&consts.static_closure_targets);
         }
+        // Null body addrs leave every slot null (lazily filled on first use),
+        // so this is a no-op for the empty/minimal paths.
+        p.init_halt_cont_singletons(consts.halt_cont_body_addrs);
+        p
+    }
+
+    pub fn new(schemas: std::rc::Rc<std::cell::RefCell<crate::heap::SchemaRegistry>>) -> Self {
+        Self::from_consts(
+            schemas,
+            &CompiledModuleConsts::empty(),
+            0,
+            DEFAULT_REDUCTIONS_PER_QUANTUM,
+        )
     }
 
     /// fz-cps.1.7 — populate the static closure singleton table. Each

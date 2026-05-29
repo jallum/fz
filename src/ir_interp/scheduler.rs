@@ -180,9 +180,17 @@ impl IrInterpRuntime {
         use fz_runtime::process::ProcessState;
         let pid = self.next_pid();
         let user_schemas = self.schemas();
-        let mut child = Box::new(Process::new(user_schemas));
-        child.pid = pid;
-        child.atom_names = module.atom_names.clone();
+        let consts = fz_runtime::process::CompiledModuleConsts {
+            atom_names: module.atom_names.clone(),
+            ..fz_runtime::process::CompiledModuleConsts::empty()
+        };
+        let mut child = Box::new(Process::from_consts(
+            user_schemas,
+            &consts,
+            pid,
+            fz_runtime::process::DEFAULT_REDUCTIONS_PER_QUANTUM,
+        ));
+        // Per-spawn scheduler state: enqueued ready to run in a later quantum.
         child.state = ProcessState::Ready;
         self.insert_task(pid, child);
         let parent_ptr = self.current_proc;
