@@ -21,6 +21,7 @@
 //! Blocked / Ready); `aot_send_hook` wakes Blocked receivers. This matches
 //! the JIT's `run_until_idle` semantics.
 
+use crate::exec_ctx::ExecCtx;
 use crate::heap::SchemaRegistry;
 use crate::process::{CURRENT_PROCESS, Process, ProcessState};
 use crate::timer::TimerWheel;
@@ -67,6 +68,17 @@ thread_local! {
     /// `aot_timer_cancel_hook`, drained at the top of each
     /// `aot_run_queue_loop` iteration.
     static AOT_TIMERS: RefCell<TimerWheel> = RefCell::new(TimerWheel::new());
+    /// Per-context dispatch table for the AOT run. AOT has no binary Runtime,
+    /// telemetry sink, or IR module, so those handles stay null; the callbacks
+    /// are the AOT eager-sync hooks installed in `fz_aot_setup`. Every AOT
+    /// task points its `Process.ctx` here. Populated at setup; not yet read for
+    /// dispatch (the `fz-vdt` arc moves readers onto `process->ctx`).
+    static AOT_EXEC_CTX: Cell<ExecCtx> = const { Cell::new(ExecCtx::empty()) };
+}
+
+/// Pointer to the AOT run's shared `ExecCtx`, for stamping onto each task.
+fn aot_exec_ctx_ptr() -> *mut ExecCtx {
+    AOT_EXEC_CTX.with(|c| c.as_ptr())
 }
 
 /// Decode an atom-name blob emitted by AOT codegen into a `Vec<String>`.
@@ -159,6 +171,21 @@ pub extern "C" fn fz_aot_setup(
     // dtor closure on the stub; the closure body fires as fz code at
     // task-exit drain via `fz_drain_dtor_entry`.
     crate::scheduler_hooks::install_make_resource_hook(aot_make_resource_hook);
+
+    // Gather the AOT eager-sync hooks into the per-context dispatch table and
+    // point the root task at it. Spawned children are stamped at dispatch.
+    AOT_EXEC_CTX.with(|c| {
+        c.set(ExecCtx {
+            spawn: Some(aot_spawn_hook),
+            spawn_opt: Some(aot_spawn_opt_hook),
+            send: Some(aot_send_hook),
+            make_resource: Some(aot_make_resource_hook),
+            timer_schedule: Some(aot_timer_schedule_hook),
+            timer_cancel: Some(aot_timer_cancel_hook),
+            ..ExecCtx::empty()
+        })
+    });
+    unsafe { (*proc_ptr).ctx = aot_exec_ctx_ptr() };
 
     proc_ptr
 }
@@ -540,6 +567,8 @@ fn dispatch_quantum(pid: u32, addrs: &ShimAddrs) {
     unsafe {
         (*proc_ptr).state = ProcessState::Running;
         (*proc_ptr).reset_reduction_budget();
+        (*proc_ptr).ctx = aot_exec_ctx_ptr();
+        debug_assert!(!(*proc_ptr).ctx.is_null(), "aot ctx installed");
     };
 
     // fz-qw6 — selective-receive initial scan lifted to runtime::sched.

@@ -542,6 +542,27 @@ impl<'a> Runtime<'a> {
         };
         fz_runtime::scheduler_hooks::install_timer_schedule_hook(timer_schedule_hook_thunk);
         fz_runtime::scheduler_hooks::install_timer_cancel_hook(timer_cancel_hook_thunk);
+        // The per-context dispatch table for this Runtime: the same scheduler
+        // handle, telemetry sink, module, and callbacks installed above as
+        // thread-globals, gathered into one value each task points its `ctx`
+        // at. Lives on this stack frame, which outlives every quantum below.
+        // Populated now; dispatch still reads the globals until the `fz-vdt`
+        // arc moves each reader onto `process->ctx`.
+        let mut exec_ctx = fz_runtime::exec_ctx::ExecCtx {
+            scheduler: self_ptr,
+            tel: (&self.tel) as *const &dyn crate::telemetry::Telemetry as *const (),
+            module: self
+                .module
+                .map_or(std::ptr::null(), |m| m as *const _ as *const ()),
+            spawn: Some(spawn_hook_thunk),
+            spawn_opt: Some(spawn_opt_hook_thunk),
+            send: Some(send_hook_thunk),
+            output: Some(output_hook_thunk),
+            make_resource: self.module.is_some().then_some(make_resource_hook_thunk),
+            timer_schedule: Some(timer_schedule_hook_thunk),
+            timer_cancel: Some(timer_cancel_hook_thunk),
+        };
+        let ctx_ptr: *mut fz_runtime::exec_ctx::ExecCtx = &mut exec_ctx;
         loop {
             // fz-yxs/fz-st5 — service any expired after-timers before
             // picking the next task. Cheaper to do here than on every
@@ -557,6 +578,8 @@ impl<'a> Runtime<'a> {
                 .expect("task in run_queue not in registry");
             task.state = ProcessState::Running;
             task.reset_reduction_budget();
+            task.ctx = ctx_ptr;
+            debug_assert!(!task.ctx.is_null(), "task.ctx installed before dispatch");
             let ptr: *mut Process = &mut *task;
             let prev = CURRENT_PROCESS.with(|c| c.replace(ptr));
             self.compiled.run_quantum(&mut task);
@@ -936,6 +959,70 @@ mod tests {
         rt.run_until_idle();
 
         assert_eq!(seen_halt.get(), Some(7));
+    }
+
+    /// ctx.2: every task carries a populated `ExecCtx` (`Process.ctx`) while it
+    /// runs. Observed at exit via the opaque `&Process`: the JIT Runtime's ctx
+    /// names a scheduler handle, a telemetry sink, and the output callback.
+    #[test]
+    fn process_ctx_installed_during_run() {
+        use crate::telemetry::bus::ConfiguredTelemetry;
+        use crate::telemetry::handler::{Event, Handler};
+        use std::cell::Cell;
+        use std::rc::Rc;
+
+        struct CtxProbe {
+            scheduler_set: Rc<Cell<bool>>,
+            tel_set: Rc<Cell<bool>>,
+            output_set: Rc<Cell<bool>>,
+        }
+        impl Handler for CtxProbe {
+            fn handle(&self, ev: &Event<'_, '_, '_>) {
+                if ev.name != ["fz", "runtime", "process_exited"] {
+                    return;
+                }
+                let p = ev
+                    .metadata
+                    .get("process")
+                    .and_then(|v| v.downcast_ref::<Process>())
+                    .expect("opaque &Process present during dispatch");
+                assert!(!p.ctx.is_null(), "process.ctx installed during run");
+                let ctx = unsafe { &*p.ctx };
+                self.scheduler_set.set(!ctx.scheduler.is_null());
+                self.tel_set.set(!ctx.tel.is_null());
+                self.output_set.set(ctx.output.is_some());
+            }
+        }
+
+        let m = lower_src("fn main(), do: 7");
+        let entry = m.fn_by_name("main").unwrap().id;
+        let compiled = compile(
+            &mut crate::types::ConcreteTypes,
+            &m,
+            &crate::telemetry::NullTelemetry,
+        )
+        .unwrap();
+
+        let scheduler_set = Rc::new(Cell::new(false));
+        let tel_set = Rc::new(Cell::new(false));
+        let output_set = Rc::new(Cell::new(false));
+        let tel = ConfiguredTelemetry::new();
+        tel.attach(
+            &[],
+            Box::new(CtxProbe {
+                scheduler_set: scheduler_set.clone(),
+                tel_set: tel_set.clone(),
+                output_set: output_set.clone(),
+            }),
+        );
+
+        let mut rt = Runtime::new(&compiled, 1).with_telemetry(&tel);
+        let _ = rt.spawn(entry);
+        rt.run_until_idle();
+
+        assert!(scheduler_set.get(), "ctx.scheduler populated");
+        assert!(tel_set.get(), "ctx.tel populated");
+        assert!(output_set.get(), "ctx.output callback populated");
     }
 
     /// Three-path parity: the interpreter and compiled engines emit the same

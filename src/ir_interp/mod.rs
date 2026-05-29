@@ -233,6 +233,18 @@ impl IrInterpRuntime {
         // is engine-uniform.
         let _output_scope = crate::runtime::route_output_to(tel);
 
+        // Per-context dispatch table for this interpreter run. The interpreter
+        // is its own scheduler and handles spawn/send/timer in-engine, so the
+        // BIF callbacks stay None; the scheduler handle and telemetry sink
+        // identify this run, and `module` is refreshed per task below. Lives on
+        // this stack frame, which outlives every quantum. Populated now; not
+        // yet read for dispatch.
+        let mut exec_ctx = fz_runtime::exec_ctx::ExecCtx {
+            scheduler: self as *mut Self as *mut (),
+            tel: (&tel) as *const &dyn crate::telemetry::Telemetry as *const (),
+            ..fz_runtime::exec_ctx::ExecCtx::empty()
+        };
+
         'sched: while let Some(pid) = self.pop_runnable() {
             let image = self
                 .task_code_image(pid)
@@ -244,9 +256,12 @@ impl IrInterpRuntime {
             let proc_ptr = self
                 .process_ptr(pid)
                 .expect("pid in run_queue with no process entry");
+            exec_ctx.module = module as *const crate::fz_ir::Module as *const ();
             unsafe {
                 (*proc_ptr).state = ProcessState::Running;
                 (*proc_ptr).reset_reduction_budget();
+                (*proc_ptr).ctx = &mut exec_ctx;
+                debug_assert!(!(*proc_ptr).ctx.is_null(), "interp ctx installed");
             };
             let prev = fz_runtime::process::CURRENT_PROCESS.with(|c| c.replace(proc_ptr));
             let mut step = run_fn(self, &mut t, module, tel, fn_id, args);
