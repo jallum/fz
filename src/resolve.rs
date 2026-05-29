@@ -630,11 +630,19 @@ fn collect_protocol_registry<T: crate::types::Types<Ty = crate::types::Ty>>(
     validate_protocol_impls(&registry)?;
     for protocol in registry.protocols.keys() {
         let ty = protocol_domain_type(t, protocol, &registry);
+        // Element-refining template: `Protocol.t(elem)` instantiates
+        // PROTOCOL_ELEM_VAR with `elem`, so a `List` target refines from
+        // `list(any)` to `list(elem)`. The bare `Protocol.t` (arity 0) stays
+        // the `element = any` domain above.
+        let element = t.type_var(crate::protocols::PROTOCOL_ELEM_VAR);
+        let template = protocol_domain_template(t, protocol, &registry, element);
         for env in module_type_envs.values_mut() {
             env.insert(format!("{}.t", protocol), ty.clone());
+            env.insert_protocol_domain(format!("{}.t", protocol), template.clone());
         }
         if let Some(env) = module_type_envs.get_mut(&protocol.dotted()) {
             env.insert("t".to_string(), ty);
+            env.insert_protocol_domain("t".to_string(), template);
         }
     }
     validate_protocol_callback_specs(t, &registry, module_type_envs)?;
@@ -646,13 +654,28 @@ fn protocol_domain_type<T: crate::types::Types<Ty = crate::types::Ty>>(
     protocol: &ModuleName,
     registry: &ProtocolRegistry,
 ) -> crate::types::Ty {
+    let any = t.any();
+    protocol_domain_template(t, protocol, registry, any)
+}
+
+/// The protocol's domain — its domain tag unioned with each implementing
+/// target's type — with `element` threaded into element-parametric targets.
+/// `protocol_domain_type` is the `element = any` case; the registration loop
+/// passes `PROTOCOL_ELEM_VAR` to build the refining template.
+fn protocol_domain_template<T: crate::types::Types<Ty = crate::types::Ty>>(
+    t: &mut T,
+    protocol: &ModuleName,
+    registry: &ProtocolRegistry,
+    element: crate::types::Ty,
+) -> crate::types::Ty {
     let mut domain = t.opaque_of(&crate::protocols::protocol_domain_tag(protocol));
     for fact in registry
         .impls
         .values()
         .filter(|fact| fact.protocol == *protocol)
     {
-        let target_ty = crate::protocols::impl_target_type(t, &fact.target);
+        let target_ty =
+            crate::protocols::impl_target_type_with_element(t, &fact.target, element.clone());
         domain = t.union(domain, target_ty);
     }
     domain
@@ -3469,6 +3492,54 @@ end
         let int = ct.int();
         assert!(ct.is_subtype(&list_any, protocol_ty));
         assert!(ct.is_disjoint(&int, protocol_ty));
+    }
+
+    #[test]
+    fn protocol_domain_refines_concrete_element_parameter() {
+        let mut ct = crate::types::ConcreteTypes;
+        let p = flatten_modules(
+            &mut ct,
+            parse(
+                r#"
+defprotocol Enumerable do
+  fn reduce(enumerable, acc, reducer)
+end
+
+defimpl Enumerable, for: List do
+  fn reduce(list, acc, reducer), do: acc
+end
+
+defmodule Consumer do
+  fn use(xs), do: 1
+end
+"#,
+            ),
+        )
+        .expect("flatten");
+
+        let env = &p.module_type_envs["Consumer"];
+        let parse_dom = |ct: &mut crate::types::ConcreteTypes, src: &str| {
+            let toks = crate::lexer::Lexer::new(src).tokenize().expect("lex");
+            let (ty, _) = crate::type_expr::parse_type_expr(ct, &toks, env).expect("parse");
+            ty
+        };
+        let refined = parse_dom(&mut ct, "Enumerable.t(integer)");
+        let bare = parse_dom(&mut ct, "Enumerable.t");
+
+        let int = ct.int();
+        let atom = ct.atom();
+        let list_int = ct.list(int);
+        let list_atom = ct.list(atom);
+
+        // The concrete element refines the List target to `list(integer)`.
+        assert!(ct.is_subtype(&list_int, &refined));
+        assert!(
+            !ct.is_subtype(&list_atom, &refined),
+            "a refined `Enumerable.t(integer)` must exclude `list(atom)`"
+        );
+        // The bare domain stays element-agnostic (`list(any)`), so it still
+        // admits `list(atom)` — proving the refinement genuinely narrows.
+        assert!(ct.is_subtype(&list_atom, &bare));
     }
 
     #[test]

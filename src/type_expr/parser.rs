@@ -175,14 +175,32 @@ impl<'a, T: crate::types::Types<Ty = crate::types::Ty>> TypeExprParser<'a, T> {
         let ty = self.lookup_named(&name)?;
         if matches!(self.peek(), Tok::LParen) {
             self.bump();
+            let mut args = Vec::new();
             if !matches!(self.peek(), Tok::RParen) {
-                let _ = self.parse_union()?;
+                args.push(self.parse_union()?);
                 while matches!(self.peek(), Tok::Comma) {
                     self.bump();
-                    let _ = self.parse_union()?;
+                    args.push(self.parse_union()?);
                 }
             }
             self.expect(&Tok::RParen, "`)` after type arguments")?;
+            // A protocol domain `Protocol.t(elem)` refines its element-parametric
+            // targets with `elem`. The element is the first argument; the domain
+            // is single-parameter, so any extra arguments do not refine further.
+            // A `elem` that still mentions a free type variable (e.g. the `a` in
+            // a protocol's own `t(a)` callback declaration) carries no concrete
+            // refinement — `list(a)` for unconstrained `a` is `list(any)` — so
+            // the bare domain is used and dispatch is left unperturbed.
+            if let (Some(TypeAlias::ProtocolDomain(template)), Some(elem)) =
+                (self.env.get_alias(&name, args.len()).cloned(), args.first())
+                && !self.t.has_vars(elem)
+            {
+                let sigma = std::collections::HashMap::from([(
+                    crate::protocols::PROTOCOL_ELEM_VAR,
+                    elem.clone(),
+                )]);
+                return Ok(self.t.instantiate(&template, &sigma));
+            }
         }
         Ok(ty)
     }
@@ -228,6 +246,22 @@ impl<'a, T: crate::types::Types<Ty = crate::types::Ty>> TypeExprParser<'a, T> {
         };
         let alias = match alias {
             TypeAlias::Resolved(ty) => return Ok(ty),
+            TypeAlias::ProtocolDomain(template) => {
+                let elem = args.first().cloned().unwrap_or_else(|| self.t.any());
+                // A concrete element refines; an element mentioning a free
+                // variable carries no refinement, so `PROTOCOL_ELEM_VAR` falls
+                // back to `any` (the bare domain).
+                let elem = if self.t.has_vars(&elem) {
+                    self.t.any()
+                } else {
+                    elem
+                };
+                let sigma = std::collections::HashMap::from([(
+                    crate::protocols::PROTOCOL_ELEM_VAR,
+                    elem,
+                )]);
+                return Ok(self.t.instantiate(&template, &sigma));
+            }
             TypeAlias::Parameterized(alias) => alias,
         };
         let key = (name, arity);

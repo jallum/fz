@@ -148,16 +148,33 @@ pub fn protocol_domain_tag(protocol: &ModuleName) -> String {
     format!("protocol::{}.t", protocol)
 }
 
+/// Reserved type variable standing for a protocol domain's element parameter
+/// (the `a` in `Enumerable.t(a)`). The domain *template* carries this variable
+/// in every element-parametric target position; applying `t(arg)` instantiates
+/// it with `arg`. The id is `u32::MAX` so it never collides with the `0,1,2,…`
+/// variables minted for user-written type names.
+pub const PROTOCOL_ELEM_VAR: crate::types::TypeVarId = crate::types::TypeVarId(u32::MAX);
+
 pub fn impl_target_type<T: crate::types::Types<Ty = crate::types::Ty>>(
     t: &mut T,
     target: &ImplTarget,
 ) -> crate::types::Ty {
+    let any = t.any();
+    impl_target_type_with_element(t, target, any)
+}
+
+/// The type of an impl target, with `element` threaded into element-parametric
+/// targets. `List` becomes `list(element)`; scalar and map targets are not
+/// parametric in a single element type, so `element` does not refine them.
+/// `impl_target_type` is the `element = any` case.
+pub fn impl_target_type_with_element<T: crate::types::Types<Ty = crate::types::Ty>>(
+    t: &mut T,
+    target: &ImplTarget,
+    element: crate::types::Ty,
+) -> crate::types::Ty {
     match target {
         ImplTarget::Module(module) => match module.last_segment() {
-            "List" => {
-                let any = t.any();
-                t.list(any)
-            }
+            "List" => t.list(element),
             "Integer" => t.int(),
             "Float" => t.float(),
             "Atom" => t.atom(),

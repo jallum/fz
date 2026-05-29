@@ -47,6 +47,10 @@ pub struct ParameterizedTypeAlias {
 enum TypeAlias {
     Resolved(crate::types::Ty),
     Parameterized(ParameterizedTypeAlias),
+    /// A protocol domain template carrying `PROTOCOL_ELEM_VAR` in its
+    /// element-parametric positions. Applying `Protocol.t(arg)` instantiates
+    /// that variable with `arg`, refining `list(_)` targets to `list(arg)`.
+    ProtocolDomain(crate::types::Ty),
 }
 
 #[derive(Debug, Clone, Default)]
@@ -105,12 +109,19 @@ impl ModuleTypeEnv {
         self.aliases.get(&(name.to_string(), arity))
     }
 
+    /// Register a protocol domain template under `name` at arity 1. Applying
+    /// `name(arg)` instantiates `PROTOCOL_ELEM_VAR` in the template with `arg`.
+    pub fn insert_protocol_domain(&mut self, name: String, template: crate::types::Ty) {
+        self.aliases
+            .insert((name, 1), TypeAlias::ProtocolDomain(template));
+    }
+
     pub fn param_aliases(
         &self,
     ) -> impl Iterator<Item = (&(String, usize), &ParameterizedTypeAlias)> {
         self.aliases.iter().filter_map(|(key, alias)| match alias {
             TypeAlias::Parameterized(alias) => Some((key, alias)),
-            TypeAlias::Resolved(_) => None,
+            TypeAlias::Resolved(_) | TypeAlias::ProtocolDomain(_) => None,
         })
     }
 }
