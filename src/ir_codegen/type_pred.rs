@@ -133,17 +133,22 @@ pub(crate) fn descr_is_nil_or_bool<T: crate::types::Types<Ty = crate::types::Ty>
     var_ty_satisfies(t, fn_types, v, nb)
 }
 
-/// True when the two operands' types have empty intersection — Eq folds to
-/// false, Neq folds to true. Powers both the lowering shortcut and the
-/// `type/dead-binop` diagnostic.
-pub(crate) fn descrs_disjoint<T: crate::types::Types<Ty = crate::types::Ty>>(
+/// fz-bsx.3 — true when no two runtime values of the operands' types can
+/// ever be equal: disjointness in the brand-erased (runtime) model. This is
+/// the ONLY disjointness that may authorize folding `==`/`!=` to a constant.
+/// Brand/opaque tags are discharged via the spec's inner-type maps, because
+/// `==` is brand-blind at runtime (`ir_brand_erase` + byte-wise `fz_value_eq`).
+/// Using the brand-AWARE `is_disjoint` here was the fz-bsx bug.
+pub(crate) fn descrs_value_disjoint<T: crate::types::Types<Ty = crate::types::Ty>>(
     t: &T,
     fn_types: &crate::ir_planner::SpecPlan,
     a: crate::fz_ir::Var,
     b: crate::fz_ir::Var,
 ) -> bool {
     match (fn_types.vars.get(&a), fn_types.vars.get(&b)) {
-        (Some(da), Some(db)) => t.is_disjoint(da, db),
+        (Some(da), Some(db)) => {
+            t.is_value_disjoint(da, db, &fn_types.brand_inners, &fn_types.opaque_inners)
+        }
         _ => false,
     }
 }
