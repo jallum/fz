@@ -74,6 +74,14 @@ pub enum ResolveError {
         msg: String,
         span: Span,
     },
+    /// A protocol has two implementations for the same target. Carries both
+    /// the first and the duplicate site so the diagnostic can point at each.
+    DuplicateProtocolImpl {
+        protocol: ModuleName,
+        target: ImplTarget,
+        first_span: Span,
+        duplicate_span: Span,
+    },
 }
 
 impl ResolveError {
@@ -131,6 +139,20 @@ impl ResolveError {
             Self::ProtocolError { msg, span } => {
                 Diagnostic::error(codes::RESOLVE_PROTOCOL, msg.clone(), *span)
             }
+            Self::DuplicateProtocolImpl {
+                protocol,
+                target,
+                first_span,
+                duplicate_span,
+            } => Diagnostic::error(
+                codes::RESOLVE_PROTOCOL,
+                format!(
+                    "protocol `{}` already has an implementation for `{}`",
+                    protocol, target
+                ),
+                *duplicate_span,
+            )
+            .with_secondary(*first_span, "first implementation here"),
         }
     }
 }
@@ -673,15 +695,15 @@ fn collect_protocol_registry_items<T: crate::types::Types<Ty = crate::types::Ty>
                     span: protocol_impl.span,
                 };
                 let key = ProtocolImplKey { protocol, target };
-                if registry.impls.insert(key.clone(), fact).is_some() {
-                    return Err(ResolveError::ProtocolError {
-                        msg: format!(
-                            "protocol `{}` already has an implementation for `{}`",
-                            key.protocol, key.target
-                        ),
-                        span: protocol_impl.span,
+                if let Some(existing) = registry.impls.get(&key) {
+                    return Err(ResolveError::DuplicateProtocolImpl {
+                        protocol: key.protocol.clone(),
+                        target: key.target.clone(),
+                        first_span: existing.span,
+                        duplicate_span: protocol_impl.span,
                     });
                 }
+                registry.impls.insert(key, fact);
             }
             Item::Module(module) => {
                 let name = if let Some(parent) = parent {
@@ -813,33 +835,54 @@ fn validate_protocol_impls(registry: &ProtocolRegistry) -> Result<(), ResolveErr
             });
         };
         for callback in &protocol.callbacks {
-            if !fact
+            if fact
                 .callbacks
                 .contains_key(&(callback.name.clone(), callback.arity))
             {
-                return Err(ResolveError::ProtocolError {
-                    msg: format!(
+                continue;
+            }
+            // The protocol declares `name/arity` but the impl does not provide it
+            // at that arity. If the impl provides the same name at a *different*
+            // arity, that is an arity mismatch (a more precise diagnosis than a
+            // bare missing callback), so name both the declared and provided
+            // arities. Otherwise the callback is simply absent.
+            let provided_arity = fact
+                .callbacks
+                .keys()
+                .find(|(name, _)| *name == callback.name)
+                .map(|(_, arity)| *arity);
+            return Err(ResolveError::ProtocolError {
+                msg: match provided_arity {
+                    Some(provided) => format!(
+                        "implementation for protocol `{}` on `{}` implements callback `{}` at arity {} but the protocol declares `{}/{}`",
+                        fact.protocol, fact.target, callback.name, provided, callback.name, callback.arity
+                    ),
+                    None => format!(
                         "implementation for protocol `{}` on `{}` is missing callback `{}/{}`",
                         fact.protocol, fact.target, callback.name, callback.arity
                     ),
-                    span: fact.span,
-                });
-            }
+                },
+                span: fact.span,
+            });
         }
         for (name, arity) in fact.callbacks.keys() {
-            if !protocol
+            // A name the protocol does not declare at all is unknown. A name the
+            // protocol declares only at another arity is already reported above
+            // as an arity mismatch, so it is not re-reported here.
+            if protocol
                 .callbacks
                 .iter()
-                .any(|callback| callback.name == *name && callback.arity == *arity)
+                .any(|callback| callback.name == *name)
             {
-                return Err(ResolveError::ProtocolError {
-                    msg: format!(
-                        "implementation for protocol `{}` on `{}` provides unknown callback `{}/{}`",
-                        fact.protocol, fact.target, name, arity
-                    ),
-                    span: fact.span,
-                });
+                continue;
             }
+            return Err(ResolveError::ProtocolError {
+                msg: format!(
+                    "implementation for protocol `{}` on `{}` provides unknown callback `{}/{}`",
+                    fact.protocol, fact.target, name, arity
+                ),
+                span: fact.span,
+            });
         }
     }
     Ok(())
@@ -3478,5 +3521,41 @@ end
         let d = err.to_diagnostic();
         assert_eq!(d.code, codes::RESOLVE_PROTOCOL);
         assert!(d.message.contains("already has an implementation"));
+        // Both the duplicate and the first implementation are pointed at.
+        assert_eq!(d.secondaries.len(), 1);
+        assert!(d.secondaries[0].label.contains("first implementation"));
+    }
+
+    #[test]
+    fn protocol_impl_wrong_arity_is_an_arity_mismatch_not_missing() {
+        let mut ct = crate::types::ConcreteTypes;
+        let err = flatten_modules(
+            &mut ct,
+            parse(
+                r#"
+defprotocol P do
+  fn each(x)
+end
+
+defimpl P, for: List do
+  fn each(x, extra), do: x
+end
+"#,
+            ),
+        )
+        .expect_err("arity mismatch must fail");
+
+        let d = err.to_diagnostic();
+        assert_eq!(d.code, codes::RESOLVE_PROTOCOL);
+        assert!(
+            d.message.contains("at arity 2") && d.message.contains("`each/1`"),
+            "expected arity-mismatch diagnostic naming both arities, got: {}",
+            d.message
+        );
+        assert!(
+            !d.message.contains("missing callback") && !d.message.contains("unknown callback"),
+            "arity mismatch must not degrade to missing/unknown, got: {}",
+            d.message
+        );
     }
 }
