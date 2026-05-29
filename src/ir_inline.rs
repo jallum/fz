@@ -2,6 +2,7 @@ use crate::fz_ir::{
     BitSizeIr, Block, BlockId, Cont, FnCategory, FnId, FnIr, Module, Prim, Stmt, Term, Var,
 };
 use crate::ir_fuse::{subst_stmt, subst_term};
+use crate::ir_planner::fn_types::{CallableCapability, ModulePlan};
 use std::collections::{HashMap, HashSet};
 
 const INLINE_BUDGET: usize = 8;
@@ -120,6 +121,22 @@ fn closure_targets(m: &Module) -> HashSet<FnId> {
         }
     }
     set
+}
+
+/// Fns whose closure values carry runtime state. These must keep their
+/// closure-target entry shape. `KnownFn` is intentionally absent: it is a
+/// state-free callable identity, so direct callsites may inline it without
+/// destroying closure state.
+fn stateful_closure_targets(types: &ModulePlan) -> HashSet<FnId> {
+    types
+        .specs
+        .values()
+        .flat_map(|ft| ft.callable_capabilities.values())
+        .filter_map(|capability| match capability {
+            CallableCapability::KnownClosure { fn_id, .. } => Some(*fn_id),
+            CallableCapability::KnownFn(_) | CallableCapability::OpaqueCallable => None,
+        })
+        .collect()
 }
 
 // ---------- alpha-rename ----------
@@ -645,9 +662,8 @@ pub fn absorb_callee(caller: &mut FnIr, bi: usize, mut callee: FnIr, args: &[Var
 /// inlinable, replace the block's terminator with a `Goto` to the callee's
 /// (alpha-renamed) entry, substituting `args` for the entry params.
 /// Returns the number of inlinings performed.
-pub fn inline_tail_calls_once(m: &mut Module) -> usize {
+fn inline_tail_calls_once_protecting(m: &mut Module, protected_fns: &HashSet<FnId>) -> usize {
     let mut count = 0;
-    let closure_fns = closure_targets(m);
 
     // Collect (fn_idx, block_idx) pairs that need inlining.
     // Borrow check: we need to read callee and mutate caller separately.
@@ -672,7 +688,7 @@ pub fn inline_tail_calls_once(m: &mut Module) -> usize {
         if m.fns[fi].category == FnCategory::Matcher {
             continue;
         }
-        if closure_fns.contains(&callee_id) {
+        if protected_fns.contains(&callee_id) {
             continue; // closure target — must stay callable, don't inline
         }
         // fz-jg5.12 (RED.9): @spec'd fns are reduction boundaries.
@@ -701,15 +717,19 @@ pub fn inline_tail_calls_once(m: &mut Module) -> usize {
     count
 }
 
+#[cfg(test)]
+pub fn inline_tail_calls_once(m: &mut Module) -> usize {
+    inline_tail_calls_once_protecting(m, &closure_targets(m))
+}
+
 // ---------- pass: inline_calls_once ----------
 
 /// One pass over `m`: for every `Call { callee, args, continuation: Cont { fn_id: K, captured } }`
 /// where `callee` is inlinable, inline the callee body and rewrite each
 /// `Return(v')` in the callee to `TailCall(K, [v', captured...])`.
 /// Returns the number of inlinings performed.
-pub fn inline_calls_once(m: &mut Module) -> usize {
+fn inline_calls_once_protecting(m: &mut Module, protected_fns: &HashSet<FnId>) -> usize {
     let mut count = 0;
-    let closure_fns = closure_targets(m);
 
     type InlineWorkItem = (
         usize,
@@ -753,7 +773,7 @@ pub fn inline_calls_once(m: &mut Module) -> usize {
         if m.fns[fi].category == FnCategory::Matcher {
             continue;
         }
-        if closure_fns.contains(&callee_id) {
+        if protected_fns.contains(&callee_id) {
             continue;
         }
         // fz-jg5.12 (RED.9): @spec'd fns are reduction boundaries. The
@@ -805,6 +825,11 @@ pub fn inline_calls_once(m: &mut Module) -> usize {
     }
 
     count
+}
+
+#[cfg(test)]
+pub fn inline_calls_once(m: &mut Module) -> usize {
+    inline_calls_once_protecting(m, &closure_targets(m))
 }
 
 // ---------- pass: inline_single_use_conts_once ----------
@@ -1021,13 +1046,23 @@ pub fn inline_single_use_conts(m: &mut Module) {
 
 /// Run both inliner passes to fixed-point (up to MAX_ITERATIONS rounds).
 /// Returns total inlinings performed.
+#[cfg(test)]
 pub fn inline_module(m: &mut Module) -> usize {
+    inline_module_protecting(m, &closure_targets(m))
+}
+
+pub fn inline_module_with_plan(m: &mut Module, types: &ModulePlan) -> usize {
+    inline_module_protecting(m, &stateful_closure_targets(types))
+}
+
+fn inline_module_protecting(m: &mut Module, protected_fns: &HashSet<FnId>) -> usize {
     let base_stmts: usize = m.fns.iter().map(stmt_count).sum();
     let cap = base_stmts * GROWTH_CAP + 1;
     let mut total = 0;
 
     for _ in 0..MAX_ITERATIONS {
-        let n = inline_tail_calls_once(m) + inline_calls_once(m);
+        let n = inline_tail_calls_once_protecting(m, protected_fns)
+            + inline_calls_once_protecting(m, protected_fns);
         if n == 0 {
             break;
         }
@@ -1802,6 +1837,97 @@ mod tests {
         inline_module(&mut m);
         // Second run: no new TailCall sites targeting add1 remain.
         assert_eq!(inline_module(&mut m), 0);
+    }
+
+    #[test]
+    fn inline_module_with_plan_inlines_zero_state_closure_target_direct_call() {
+        let mut caller = FnBuilder::new(FnId(0), "main");
+        let y = caller.fresh_var();
+        let entry = caller.block(vec![y]);
+        let _closure = caller.let_(
+            entry,
+            Prim::MakeClosure(crate::fz_ir::CallsiteIdent::synthetic(), FnId(1), vec![]),
+        );
+        caller.set_terminator(
+            entry,
+            Term::TailCall {
+                ident: crate::fz_ir::CallsiteIdent::synthetic(),
+                callee: FnId(1),
+                args: vec![y],
+                is_back_edge: false,
+            },
+        );
+
+        let mut mb = ModuleBuilder::new();
+        mb.add_fn(caller.build());
+        mb.add_fn(make_leaf_add1());
+        let mut m = mb.build();
+        let plan = crate::ir_planner::plan_module(
+            &mut crate::types::ConcreteTypes,
+            &m,
+            &crate::telemetry::NullTelemetry,
+        );
+
+        assert_eq!(inline_module_with_plan(&mut m, &plan), 1);
+        let caller = m.fns.iter().find(|f| f.name == "main").unwrap();
+        assert!(
+            !caller.blocks.iter().any(|b| matches!(
+                b.terminator,
+                Term::TailCall {
+                    callee: FnId(1),
+                    ..
+                }
+            )),
+            "KnownFn direct call should inline even while its closure value exists"
+        );
+    }
+
+    #[test]
+    fn inline_module_with_plan_keeps_stateful_closure_target_direct_call() {
+        let mut caller = FnBuilder::new(FnId(0), "main");
+        let cap = caller.fresh_var();
+        let y = caller.fresh_var();
+        let entry = caller.block(vec![cap, y]);
+        let _closure = caller.let_(
+            entry,
+            Prim::MakeClosure(crate::fz_ir::CallsiteIdent::synthetic(), FnId(1), vec![cap]),
+        );
+        caller.set_terminator(
+            entry,
+            Term::TailCall {
+                ident: crate::fz_ir::CallsiteIdent::synthetic(),
+                callee: FnId(1),
+                args: vec![y],
+                is_back_edge: false,
+            },
+        );
+
+        let mut mb = ModuleBuilder::new();
+        mb.add_fn(caller.build());
+        mb.add_fn(make_leaf_add1());
+        let mut m = mb.build();
+        let plan = crate::ir_planner::plan_module(
+            &mut crate::types::ConcreteTypes,
+            &m,
+            &crate::telemetry::NullTelemetry,
+        );
+
+        assert!(
+            stateful_closure_targets(&plan).contains(&FnId(1)),
+            "test premise: captured MakeClosure should publish KnownClosure capability"
+        );
+        assert_eq!(inline_module_with_plan(&mut m, &plan), 0);
+        let caller = m.fns.iter().find(|f| f.name == "main").unwrap();
+        assert!(
+            caller.blocks.iter().any(|b| matches!(
+                b.terminator,
+                Term::TailCall {
+                    callee: FnId(1),
+                    ..
+                }
+            )),
+            "KnownClosure target carries state and must remain callable"
+        );
     }
 
     // --- ir_interp parity: semantics preserved across inline ---

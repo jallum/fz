@@ -176,9 +176,6 @@ pub enum ImageLinkError {
         import: crate::modules::identity::ExportKey,
     },
     RuntimeMetadata(RuntimeMetadataLinkError),
-    MissingPlannerFacts {
-        module: Option<crate::modules::identity::ModuleName>,
-    },
 }
 
 impl std::fmt::Display for ImageLinkError {
@@ -213,46 +210,24 @@ impl std::fmt::Display for ImageLinkError {
                 write!(f, "export `{}` has more than one provider", import)
             }
             Self::RuntimeMetadata(err) => write!(f, "{}", err),
-            Self::MissingPlannerFacts { module } => write!(
-                f,
-                "compiled unit `{}` is missing planner facts required for linked codegen",
-                module
-                    .as_ref()
-                    .map(ToString::to_string)
-                    .unwrap_or_else(|| "<root>".to_string())
-            ),
         }
     }
 }
 
 impl std::error::Error for ImageLinkError {}
 
-pub struct LinkedIr {
-    pub module: Module,
-    pub module_plan: Option<crate::ir_planner::ModulePlan>,
-}
-
 pub fn link_ir_units(units: &[CompiledUnit]) -> Result<Module, ImageLinkError> {
     let mut linker = IrUnitLinker::new();
     for unit in units {
         linker.add_unit(unit)?;
     }
-    linker.finish().map(|linked| linked.module)
-}
-
-pub fn link_ir_units_with_plan(units: &[CompiledUnit]) -> Result<LinkedIr, ImageLinkError> {
-    let mut linker = IrUnitLinker::new();
-    for unit in units {
-        linker.add_unit(unit)?;
-    }
-    linker.finish_with_plan()
+    linker.finish()
 }
 
 #[derive(Default)]
 struct IrUnitLinker {
     linked: Module,
     linked_plan: Option<crate::ir_planner::ModulePlan>,
-    missing_planner_facts: Option<Option<crate::modules::identity::ModuleName>>,
     export_map: BTreeMap<crate::modules::identity::ExportKey, FnId>,
 }
 
@@ -287,13 +262,13 @@ impl IrUnitLinker {
         Ok(())
     }
 
-    fn finish(mut self) -> Result<LinkedIr, ImageLinkError> {
+    /// Resolve external call edges (using the merged planner facts) and rewrite
+    /// stub callsites to their linked targets. Mutates `self.linked` in place;
+    /// both finish paths share it.
+    fn resolve_links(&mut self) -> Result<(), ImageLinkError> {
         self.resolve_external_call_edges_in_plan();
         match self.linked.rewrite_external_calls_for_lto(&self.export_map) {
-            Ok(_) => Ok(LinkedIr {
-                module: self.linked,
-                module_plan: self.linked_plan,
-            }),
+            Ok(_) => Ok(()),
             Err(crate::fz_ir::ExternalLinkError::MissingTarget(import)) => {
                 let requester = self
                     .linked
@@ -310,13 +285,9 @@ impl IrUnitLinker {
         }
     }
 
-    fn finish_with_plan(self) -> Result<LinkedIr, ImageLinkError> {
-        if self.missing_planner_facts.is_some() {
-            return Err(ImageLinkError::MissingPlannerFacts {
-                module: self.missing_planner_facts.flatten(),
-            });
-        }
-        self.finish()
+    fn finish(mut self) -> Result<Module, ImageLinkError> {
+        self.resolve_links()?;
+        Ok(self.linked)
     }
 
     fn copy_fns(&mut self, unit: &CompiledUnit) -> BTreeMap<FnId, FnId> {
@@ -397,12 +368,12 @@ impl IrUnitLinker {
     }
 
     fn copy_planner_facts(&mut self, unit: &CompiledUnit, fn_map: &BTreeMap<FnId, FnId>) {
-        let Some(plan) = &unit.module_plan else {
-            self.missing_planner_facts
-                .get_or_insert_with(|| unit.module.clone());
-            return;
-        };
-        merge_module_plan(&mut self.linked_plan, remap_module_plan(plan, fn_map));
+        // A unit without planner facts simply contributes none; the linker's
+        // internal `linked_plan` only needs to cover the edges it resolves, and
+        // codegen re-plans the linked module afterwards regardless.
+        if let Some(plan) = &unit.module_plan {
+            merge_module_plan(&mut self.linked_plan, remap_module_plan(plan, fn_map));
+        }
     }
 
     fn resolve_external_call_edges_in_plan(&mut self) {
@@ -527,7 +498,7 @@ fn merge_module_plan(
                 .extend(incoming.effective_returns);
             existing.any_key_specs.extend(incoming.any_key_specs);
             existing.spec_precedence.extend(incoming.spec_precedence);
-            existing.effect_summaries.extend(incoming.effect_summaries);
+            existing.fn_effects.extend(incoming.fn_effects);
             existing.dead_branches.extend(incoming.dead_branches);
             #[cfg(test)]
             existing.closure_handles.extend(incoming.closure_handles);
@@ -561,10 +532,10 @@ fn remap_module_plan(
             .iter()
             .map(|(key, value)| (remap_spec_key(key, fn_map), *value))
             .collect(),
-        effect_summaries: plan
-            .effect_summaries
+        fn_effects: plan
+            .fn_effects
             .iter()
-            .map(|(key, value)| (remap_spec_key(key, fn_map), *value))
+            .filter_map(|(fid, value)| fn_map.get(fid).map(|new| (*new, *value)))
             .collect(),
         dead_branches: plan
             .dead_branches
@@ -587,10 +558,12 @@ fn remap_spec_plan(
     crate::ir_planner::SpecPlan {
         vars: spec.vars.clone(),
         block_envs: spec.block_envs.clone(),
-        fn_constants: spec
-            .fn_constants
+        callable_capabilities: spec
+            .callable_capabilities
             .iter()
-            .filter_map(|(var, fid)| fn_map.get(fid).map(|new| (*var, *new)))
+            .filter_map(|(var, capability)| {
+                remap_callable_capability(capability, fn_map).map(|capability| (*var, capability))
+            })
             .collect(),
         reachable_blocks: spec.reachable_blocks.clone(),
         dead_branches: spec.dead_branches.clone(),
@@ -605,6 +578,29 @@ fn remap_spec_plan(
             })
             .collect(),
         extern_marshals: spec.extern_marshals.clone(),
+    }
+}
+
+fn remap_callable_capability(
+    capability: &crate::ir_planner::fn_types::CallableCapability,
+    fn_map: &BTreeMap<FnId, FnId>,
+) -> Option<crate::ir_planner::fn_types::CallableCapability> {
+    use crate::ir_planner::fn_types::CallableCapability;
+
+    match capability {
+        CallableCapability::KnownFn(fid) => {
+            fn_map.get(fid).copied().map(CallableCapability::KnownFn)
+        }
+        CallableCapability::KnownClosure { fn_id, captures } => {
+            fn_map
+                .get(fn_id)
+                .copied()
+                .map(|fn_id| CallableCapability::KnownClosure {
+                    fn_id,
+                    captures: captures.clone(),
+                })
+        }
+        CallableCapability::OpaqueCallable => Some(CallableCapability::OpaqueCallable),
     }
 }
 
@@ -1245,40 +1241,19 @@ impl CompiledModule {
     /// Processes can be made from the same CompiledModule and run
     /// concurrently (one worker at a time per Process; libdispatch model).
     pub fn make_process(&self) -> Process {
-        let mut p = Process {
-            heap: fz_runtime::heap::Heap::new(64 * 1024, std::rc::Rc::clone(&self.user_schemas)),
-            halt_value: 0,
-            bs_builder: None,
-            frame_sizes: self.frame_sizes.clone(),
-            atom_names: self.atom_names.clone(),
-            bs_tuple_arity1_schema: self.bs_tuple_arity1_schema,
-            bs_tuple_arity3_schema: self.bs_tuple_arity3_schema,
-            pid: 0,
-            state: ProcessState::New,
-            next_frame: std::ptr::null_mut(),
-            mailbox: std::collections::VecDeque::new(),
-            parked_matched: None,
-            runnable_closure: std::ptr::null_mut(),
-            halt_cont_singletons: [std::ptr::null_mut(); 3],
-            pending_closure_entry: std::ptr::null_mut(),
-            pending_main_entry: std::ptr::null_mut(),
-            pending_main_entry_fn_id: 0,
-            static_closures: Vec::new(),
-            static_closure_bufs: Vec::new(),
-            quiet_quanta: 0,
-            scheduler_yields: 0,
-            interpreter_yields: 0,
-            reductions_remaining: fz_runtime::process::DEFAULT_REDUCTIONS_PER_QUANTUM,
-            reductions_per_quantum: fz_runtime::process::DEFAULT_REDUCTIONS_PER_QUANTUM,
-            reductions_executed: 0,
-            reduction_yields: 0,
-            allocation_pressure_yields: 0,
-            yield_reasons: 0,
-            pending_yield_continuation_margin_before_bytes: 0,
-            max_yield_continuation_bytes: 0,
-            min_yield_continuation_margin_before_bytes: 0,
-            min_yield_continuation_margin_after_bytes: 0,
-        };
+        // One source of truth for heap sizing and field defaults:
+        // `Process::new` (SIZE_TABLE[0] starter heap, grows under GC). The
+        // JIT path used to hand-roll this literal with a flat 64 KiB heap,
+        // which never crossed the allocation watermark — so `fz run`
+        // observed zero allocation-pressure yields where the AOT binary
+        // (which goes through `Process::new`) yielded and GC'd. That broke
+        // JIT/AOT stats parity. Delegate, then layer on the per-module
+        // compile-time tables that only the compiled path carries.
+        let mut p = Process::new(std::rc::Rc::clone(&self.user_schemas));
+        p.frame_sizes = self.frame_sizes.clone();
+        p.atom_names = self.atom_names.clone();
+        p.bs_tuple_arity1_schema = self.bs_tuple_arity1_schema;
+        p.bs_tuple_arity3_schema = self.bs_tuple_arity3_schema;
         // One static singleton per zero-cap closure-target spec.
         // See docs/cps-in-clif.md §8.2.
         p.init_static_closures(&self.static_closure_targets);

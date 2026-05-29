@@ -25,6 +25,7 @@ Run with `BLESS=1` to rewrite after editing fixtures.
 | `empty_list_distinct_from_nil/` | pin fz-s9y semantics — `nil` and `[]` print as distinct strings | jit, aot, interp, repl |
 | `enum_list_allocations/` | runtime Enum list functions preserve minimum native list-cons and continuation-closure allocation floors | jit, interp, aot, repl |
 | `enum_reduce_suspend/` | Enum.reduce/3 suspend returns a real resumable closure at the runtime-value boundary | jit, interp, aot, repl |
+| `enum_sort/` | runtime-library Enum.sort (merge sort) allocation contract across four paths; pins JIT/AOT parity and the merge-step continuation-closure floor | jit, interp, aot, repl |
 | `fib_tailrec/` | fibonacci via two-accumulator tail recursion — three-clause dispatch + tail-call forwarding under load | jit, interp, aot, repl |
 | `file_handle/` | FileHandle = fd + dtor, exercising cstring/binary/integer marshal classes against real libc with an observable resource lifecycle | jit, interp, aot, repl |
 | `file_resource_lifecycle/` | fz-swt.13 / fz-4mk — File module wraps an fd in a resource; the dtor closes the fd at task-exit drain (interp/JIT/AOT parity). | interp, jit, aot, repl |
@@ -52,6 +53,7 @@ Run with `BLESS=1` to rewrite after editing fixtures.
 | `mutual_recursion/` | mutual recursion — is_even/is_odd call each other; exercises cross-function recursive dispatch | jit, interp, aot, repl |
 | `nested_modules/` | inner module addressed both fully-qualified (`Outer.Inner.f`) and via outer-local reference | jit, interp, aot, repl |
 | `nested_tuple_producer/` | nested tuple producer call inside an outer tuple literal; keeps tuple DP live across continuations | jit, interp, aot, repl |
+| `opaque_fn_value_join/` | opaque join of zero-capture function values remains callable through Enum.reduce/3 | jit, interp, aot, repl |
 | `pipe_headless_case/` | pipe macro rewrite for call RHS and headless case RHS | jit, interp, aot, repl |
 | `polymorphic/` | parametric `id` exercised over int, atom, and bool | jit, interp, aot, repl |
 | `process_heap_stats/` | Process.heap_alloc_stats/0 exposes deterministic current-process heap allocation counters as ordinary runtime output | jit, interp, aot, repl |

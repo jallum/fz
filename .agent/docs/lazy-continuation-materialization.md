@@ -107,6 +107,23 @@ for a compiler-known native continuation, codegen can carry the same typed
 capture facts on the stack until a scheduler boundary forces heap materializa-
 tion.
 
+## Callable Capability Gate
+
+Callable-typed caller state is a lazy-descriptor barrier only when it carries
+runtime callable state. `SpecPlan.callable_capabilities` lets codegen distinguish
+these cases:
+
+- `KnownFn` has no runtime closure state and does not, by itself, force caller
+  continuations onto the heap.
+- `KnownClosure` and `OpaqueCallable` remain conservative barriers because they
+  either carry captured state or cross a callable boundary the current spec
+  cannot name precisely.
+
+Continuation captures are checked conservatively from their callable type. A
+captured callable becomes scheduler-visible if the continuation materializes, so
+the relaxation that applies to caller state does not extend to captures: even a
+`KnownFn` capture is treated as a barrier.
+
 ## Proof Gates
 
 Use these gates when touching lazy continuation materialization:
@@ -136,6 +153,12 @@ list_cons_bytes = 80
 closure_allocs = 0
 closure_bytes = 0
 ```
+
+Its native CLIF gate also checks `Enumerable.reduce_list_cont` directly: the
+known zero-state reducer path must contain neither `@fz_alloc_closure` nor
+`stack_store`. That pins the intended model boundary: `KnownFn` reducer values
+are direct code identities consumed before continuation materialization, while
+real suspend functions remain source-visible closure values.
 
 `enum_reduce_suspend` is the paired negative gate. A returned suspend function
 is a source-visible value, not an internal continuation edge, so native JIT/AOT

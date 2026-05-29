@@ -21,12 +21,22 @@ defmodule Enumerable do
     fn slice(_list), do: {:error, :unsupported}
   end
 
-  fn reduce_list([], {:cont, acc}, _reducer), do: {:done, acc}
+  fn reduce_list(list, {:cont, acc}, reducer), do: reduce_list_cont(list, acc, reducer)
   fn reduce_list(_list, {:halt, acc}, _reducer), do: {:halted, acc}
   fn reduce_list(list, {:suspend, acc}, reducer) do
-    {:suspended, acc, (fn () -> reduce_list(list, {:cont, acc}, reducer))}
+    {:suspended, acc, (fn () -> reduce_list_cont(list, acc, reducer))}
   end
-  fn reduce_list([h | t], {:cont, acc}, reducer), do: reduce_list(t, reducer(h, acc), reducer)
+
+  fn reduce_list_cont([], acc, _reducer), do: {:done, acc}
+  fn reduce_list_cont([h | t], acc, reducer) do
+    reduce_list_step(t, reducer(h, acc), reducer)
+  end
+
+  fn reduce_list_step(list, {:cont, acc}, reducer), do: reduce_list_cont(list, acc, reducer)
+  fn reduce_list_step(_list, {:halt, acc}, _reducer), do: {:halted, acc}
+  fn reduce_list_step(list, {:suspend, acc}, reducer) do
+    {:suspended, acc, (fn () -> reduce_list_cont(list, acc, reducer))}
+  end
 
   fn count_list([], acc), do: acc
   fn count_list([_ | t], acc), do: count_list(t, acc + 1)

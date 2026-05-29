@@ -136,6 +136,11 @@ created them.
 of allocating a tuple struct, and the continuation receives those fields in the
 same order.
 
+The proof is local to that callee-to-continuation edge. A continuation compiled
+to receive tuple fields may still tail-call another function using its captured
+outer continuation; that outgoing tail call must not inherit the tuple-field
+input shape unless a separate proof selected it for that edge.
+
 `ListTail` is typed context passing. It can reorder pure recursive list work
 only when the context proof does not cross observable operations. The effect
 legality gates reject extern calls, scheduler-visible operations, receives,

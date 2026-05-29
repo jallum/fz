@@ -1023,17 +1023,53 @@ impl Heap {
             f.mark = false;
         }
 
-        // Pick to-space size: first GC uses bytes_used() as upper bound;
-        // subsequent GCs use last_gc_live_bytes * 2 (50% post-GC target).
-        // Fragment bytes are excluded from the bump-arena sizing because
-        // fragments don't get copied into to-space.
-        let bump_live_for_sizing = if self.last_gc_live_bytes > 0 {
-            self.last_gc_live_bytes.saturating_mul(2)
+        // Pick to-space size with BEAM-style grow/shrink bands
+        // (erlang.org/doc/apps/erts/garbagecollection). Fragment bytes are
+        // excluded — fragments are never copied into to-space.
+        //
+        // The steady-state target is ~2x live (a 50% post-GC fill).
+        // `prev_live` is the last GC's survivor bytes (0 before the first GC).
+        let fragment_bytes: usize = self.fragments.iter().map(|f| f.size).sum();
+        let prev_live = self.last_gc_live_bytes;
+        let fit_to_live = if prev_live > 0 {
+            prev_live.saturating_mul(2)
         } else {
-            self.bytes_used()
-                .saturating_sub(self.fragments.iter().map(|f| f.size).sum())
+            self.bytes_used().saturating_sub(fragment_bytes)
         };
-        let size_class = pick_size_class(bump_live_for_sizing.max(SIZE_TABLE[0]));
+
+        // Three bands, biased toward holding size — unlike a BEAM minor
+        // collection, a copy GC here costs a scheduler yield, so frequent
+        // collection is expensive and oscillation is worth avoiding:
+        //
+        //   GROW   — this GC fired under allocation pressure (the from-space
+        //            reached the watermark, or we abandoned a block and grew
+        //            mid-quantum). The heap can't hold the allocation rate;
+        //            refitting to 2x *live* would just thrash. Size to hold
+        //            this cycle's realized footprint (live + garbage since the
+        //            last GC), doubled for headroom, jumping as many classes
+        //            as needed and never less than one class up. Self-bounding:
+        //            once a quantum of allocation fits below the watermark, GCs
+        //            go back to reduction-driven and the pressure clears.
+        //   SHRINK — live has fallen to <=25% of the heap; refit to ~50%.
+        //   KEEP   — live sits in the 25%–75% dead zone; hold the current size.
+        let was_pressured =
+            !self.abandoned_blocks.is_empty() || self.bump_top >= self.allocation_watermark;
+        let target_bytes = if was_pressured {
+            let footprint = self.bytes_used().saturating_sub(fragment_bytes);
+            fit_to_live.max(footprint.saturating_mul(2))
+        } else if prev_live == 0 || prev_live.saturating_mul(4) <= self.block_size {
+            fit_to_live
+        } else {
+            self.block_size
+        };
+        let mut size_class = pick_size_class(target_bytes.max(SIZE_TABLE[0]));
+        if was_pressured {
+            let grown = self
+                .size_class
+                .saturating_add(1)
+                .min((SIZE_TABLE.len() - 1) as u8);
+            size_class = size_class.max(grown);
+        }
         let to_size = SIZE_TABLE[size_class as usize];
         let to_start = pool_alloc(size_class);
         let to_end = unsafe { to_start.add(to_size) };

@@ -25,6 +25,9 @@ Target for native JIT/AOT:
 - native `Enum.reduce/3` allocates no heap closures for the known zero-capture
   reducer; the reducer value is static and reducer-return continuations are
   stack-backed lazy descriptors;
+- the runtime `:cont` dispatcher enters `Enumerable.reduce_list_cont/3`
+  directly, so the broad `:halt`/`:suspend` state cases stay out of the entry
+  path;
 - no map objects are needed before the stats snapshot;
 - `list_cons_allocs = 5`;
 - `list_cons_bytes = 80`;

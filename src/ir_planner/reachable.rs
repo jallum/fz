@@ -109,7 +109,7 @@ pub fn cont_slot0_descr<
 ///     closure_lit resolution).
 ///   - BFS: for each reached spec, walk its reachable blocks, find
 ///     direct Call/TailCall + their conts and CallClosure/TailCallClosure
-///     resolvable via fn_constants. Use the same `SpecRegistry::resolve`
+///     resolvable via known callable capabilities. Use the same `SpecRegistry::resolve`
 ///     subsumption search codegen uses, so a spec marked reachable here
 ///     is exactly a spec codegen will look up.
 pub fn reachable_specs<
@@ -241,13 +241,13 @@ where
                 continuation,
                 ..
             } => {
-                if let Some(&target) = ft.fn_constants.get(closure) {
+                if let Some(target) = ft.known_fn(closure) {
                     self.enqueue_direct_call(target, args, &env, worklist);
                 }
                 self.enqueue_continuation(blk, ft, continuation, worklist);
             }
             Term::TailCallClosure { closure, args, .. } => {
-                if let Some(&target) = ft.fn_constants.get(closure) {
+                if let Some(target) = ft.known_fn(closure) {
                     self.enqueue_direct_call(target, args, &env, worklist);
                 }
             }

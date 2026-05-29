@@ -1,4 +1,4 @@
-use super::fn_types::{ReturnContextPlan, ReturnDemand, SpecKey};
+use super::fn_types::{FnEffects, ReturnContextPlan, ReturnDemand, SpecKey};
 use crate::callsite_walk::ContSource;
 use crate::fz_ir::{FnId, FnIr, Module, Prim, Stmt, Term, Var, prim_uses_var, term_uses_var};
 use std::collections::{HashMap, HashSet};
@@ -6,6 +6,7 @@ use std::collections::{HashMap, HashSet};
 pub(crate) fn direct_call_return_plan<T: crate::types::Types<Ty = crate::types::Ty>>(
     t: &mut T,
     m: &Module,
+    fn_effects: &FnEffects,
     caller_spec_key: &SpecKey,
     env: &HashMap<Var, crate::types::Ty>,
     callee: FnId,
@@ -18,7 +19,7 @@ pub(crate) fn direct_call_return_plan<T: crate::types::Types<Ty = crate::types::
         let demand = if caller_spec_key.demand.tuple_field_arity().is_none() {
             ReturnDemand::list_tail(tail_ty.clone())
         } else {
-            return_demand_for_call(t, m, env, callee, continuation)
+            return_demand_for_call(t, m, fn_effects, env, callee, continuation)
         };
         return (
             demand,
@@ -31,17 +32,27 @@ pub(crate) fn direct_call_return_plan<T: crate::types::Types<Ty = crate::types::
         );
     }
 
-    let demand = return_demand_for_call(t, m, env, callee, continuation);
+    let demand = return_demand_for_call(t, m, fn_effects, env, callee, continuation);
     let context_plan = direct_call_return_context_plan(m, caller_spec_key, continuation, &demand);
     (demand, context_plan)
 }
 
 pub(crate) fn tail_call_return_plan(
+    m: &Module,
     caller_spec_key: &SpecKey,
     callee: FnId,
     args: &[Var],
 ) -> (ReturnDemand, Option<ReturnContextPlan>) {
-    let demand = caller_spec_key.demand.clone();
+    let demand = if caller_spec_key.demand.tuple_field_arity().is_some()
+        && is_continuation_fn(m, caller_spec_key.fn_id)
+    {
+        match caller_spec_key.demand.list_tail_ty() {
+            Some(tail_ty) => ReturnDemand::list_tail(tail_ty.clone()),
+            None => ReturnDemand::value(),
+        }
+    } else {
+        caller_spec_key.demand.clone()
+    };
     let context_plan = match demand.list_tail_ty() {
         Some(tail_ty) if args.len() >= 2 => Some(ReturnContextPlan::TailCallDestination {
             callee,
@@ -52,6 +63,23 @@ pub(crate) fn tail_call_return_plan(
         _ => None,
     };
     (demand, context_plan)
+}
+
+fn is_continuation_fn(m: &Module, fn_id: FnId) -> bool {
+    m.fns.iter().any(|f| {
+        f.blocks.iter().any(|b| match &b.terminator {
+            Term::Call { continuation, .. }
+            | Term::CallClosure { continuation, .. }
+            | Term::Receive { continuation, .. } => continuation.fn_id == fn_id,
+            Term::ReceiveMatched { clauses, after, .. } => {
+                clauses
+                    .iter()
+                    .any(|clause| clause.body == fn_id || clause.guard == Some(fn_id))
+                    || after.as_ref().is_some_and(|after| after.body == fn_id)
+            }
+            _ => false,
+        })
+    })
 }
 
 pub(crate) fn continuation_return_demand(
@@ -157,6 +185,7 @@ fn tuple_return_demand_for_call(
 fn return_demand_for_call<T: crate::types::Types<Ty = crate::types::Ty>>(
     t: &mut T,
     m: &Module,
+    fn_effects: &FnEffects,
     env: &HashMap<Var, crate::types::Ty>,
     callee: FnId,
     cont: &crate::fz_ir::Cont,
@@ -165,7 +194,7 @@ fn return_demand_for_call<T: crate::types::Types<Ty = crate::types::Ty>>(
     if demand.tuple_field_arity().is_some() {
         return demand;
     }
-    let Some(tail_ty) = continuation_list_tail_context(t, m, cont, env) else {
+    let Some(tail_ty) = continuation_list_tail_context(t, m, fn_effects, cont, env) else {
         return ReturnDemand::value();
     };
     if fn_can_return_list_tail(m, callee) {
@@ -241,6 +270,7 @@ fn fn_returns_tuple_fields_without_material_value(m: &Module, fn_id: FnId, arity
 fn continuation_list_tail_context<T: crate::types::Types<Ty = crate::types::Ty>>(
     t: &mut T,
     m: &Module,
+    fn_effects: &FnEffects,
     cont: &crate::fz_ir::Cont,
     caller_env: &HashMap<Var, crate::types::Ty>,
 ) -> Option<crate::types::Ty> {
@@ -250,6 +280,7 @@ fn continuation_list_tail_context<T: crate::types::Types<Ty = crate::types::Ty>>
     list_tail_context_for_hole(
         t,
         m,
+        fn_effects,
         cont.fn_id,
         result_param,
         Some(caller_env),
@@ -260,6 +291,7 @@ fn continuation_list_tail_context<T: crate::types::Types<Ty = crate::types::Ty>>
 fn list_tail_context_for_hole<T: crate::types::Types<Ty = crate::types::Ty>>(
     t: &mut T,
     m: &Module,
+    fn_effects: &FnEffects,
     fn_id: FnId,
     hole: Var,
     local_env: Option<&HashMap<Var, crate::types::Ty>>,
@@ -270,7 +302,7 @@ fn list_tail_context_for_hole<T: crate::types::Types<Ty = crate::types::Ty>>(
         return Some(t.list(any));
     }
     let f = m.fn_by_id(fn_id);
-    if fn_blocks_return_context_motion(m, fn_id, &mut HashSet::new()) {
+    if fn_blocks_return_context_motion(fn_effects, fn_id) {
         visiting.remove(&(fn_id, hole));
         return None;
     }
@@ -305,6 +337,7 @@ fn list_tail_context_for_hole<T: crate::types::Types<Ty = crate::types::Ty>>(
                 let next = list_tail_context_for_hole(
                     t,
                     m,
+                    fn_effects,
                     continuation.fn_id,
                     next_hole,
                     None,
@@ -323,49 +356,17 @@ fn list_tail_context_for_hole<T: crate::types::Types<Ty = crate::types::Ty>>(
     found
 }
 
-fn fn_blocks_return_context_motion(m: &Module, fn_id: FnId, visiting: &mut HashSet<FnId>) -> bool {
-    if !visiting.insert(fn_id) {
-        return false;
-    }
-    let f = m.fn_by_id(fn_id);
-    for b in &f.blocks {
-        for Stmt::Let(_, prim) in &b.stmts {
-            if super::effects::prim_effect_summary(m, prim).blocks_return_context_motion() {
-                visiting.remove(&fn_id);
-                return true;
-            }
-        }
-        match &b.terminator {
-            Term::Call {
-                callee,
-                continuation,
-                ..
-            } => {
-                if fn_blocks_return_context_motion(m, *callee, visiting)
-                    || fn_blocks_return_context_motion(m, continuation.fn_id, visiting)
-                {
-                    visiting.remove(&fn_id);
-                    return true;
-                }
-            }
-            Term::TailCall { callee, .. } => {
-                if fn_blocks_return_context_motion(m, *callee, visiting) {
-                    visiting.remove(&fn_id);
-                    return true;
-                }
-            }
-            Term::CallClosure { .. }
-            | Term::TailCallClosure { .. }
-            | Term::Receive { .. }
-            | Term::ReceiveMatched { .. } => {
-                visiting.remove(&fn_id);
-                return true;
-            }
-            Term::Goto(_, _) | Term::If { .. } | Term::Return(_) | Term::Halt(_) => {}
-        }
-    }
-    visiting.remove(&fn_id);
-    false
+/// Does executing `fn_id` perform — or reach through its call graph — any
+/// operation that could observe or be disturbed by relocating an allocation
+/// between building a cons cell and filling its tail? Read from the cached
+/// per-FnId fact (`compute_fn_effects`); an absent entry is treated as the
+/// conservative blocking default.
+fn fn_blocks_return_context_motion(fn_effects: &FnEffects, fn_id: FnId) -> bool {
+    fn_effects
+        .get(&fn_id)
+        .copied()
+        .unwrap_or_default()
+        .blocks_return_context_motion()
 }
 
 fn cons_then_direct_list_tail_plan(

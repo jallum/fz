@@ -1,0 +1,9 @@
+fn main() do
+  sorted = Enum.sort([3, 1, 4, 1, 5, 9, 2, 6, 5, 3, 5])
+  dbg(sorted)
+
+  stats = Process.heap_alloc_stats()
+  dbg(stats)
+  heap_bytes = stats[:list_cons_bytes] + stats[:struct_bytes] + stats[:map_bytes]
+  dbg(heap_bytes)
+end
