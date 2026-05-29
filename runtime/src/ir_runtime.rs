@@ -17,6 +17,12 @@
 //! Cranelift-emitted code via the symbol-binding list in
 //! `ir_codegen::compile`. Do not reorder args or change return types
 //! without updating the matching `declare_function` signatures.
+//!
+//! Every BIF takes its `*mut Process` (or value-ref ptr) from the caller — the
+//! pinned register for compiled code, a threaded param for the interpreter —
+//! and dereferences it. That's the entire purpose of this FFI surface, so the
+//! `not_unsafe_ptr_arg_deref` lint is allowed module-wide instead of per-fn.
+#![allow(clippy::not_unsafe_ptr_arg_deref)]
 
 use crate::any_value::AnyValueRef;
 use crate::any_value::ValueKind;
@@ -128,7 +134,6 @@ fn alloc_stat_entries(
 }
 
 #[unsafe(no_mangle)]
-#[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn fz_process_heap_alloc_stats(process: *mut Process) -> u64 {
     let p = unsafe { &mut *process };
     let snapshot = p.heap.alloc_stats_snapshot();
@@ -317,19 +322,16 @@ fn box_scalar_for_any(process: *mut Process, raw: u64, tag: ValueKind) -> u64 {
 }
 
 #[unsafe(no_mangle)]
-#[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn fz_box_int_for_any(process: *mut Process, raw: i64) -> u64 {
     box_scalar_for_any(process, raw as u64, ValueKind::INT)
 }
 
 #[unsafe(no_mangle)]
-#[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn fz_box_float_for_any(process: *mut Process, raw: f64) -> u64 {
     box_scalar_for_any(process, raw.to_bits(), ValueKind::FLOAT)
 }
 
 #[unsafe(no_mangle)]
-#[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn fz_box_atom_for_any(process: *mut Process, raw: u64) -> u64 {
     box_scalar_for_any(process, raw, ValueKind::ATOM)
 }
@@ -337,7 +339,6 @@ pub extern "C" fn fz_box_atom_for_any(process: *mut Process, raw: u64) -> u64 {
 // ===== Halt + print cluster (fz-ul4.23.4.13) =====
 
 #[unsafe(no_mangle)]
-#[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn fz_dbg_value_ref(process: *mut Process, ref_word: u64) {
     let value = any_value_from_ref_word(ref_word, "fz_dbg_value_ref");
     crate::emit_print_line(
@@ -347,7 +348,6 @@ pub extern "C" fn fz_dbg_value_ref(process: *mut Process, ref_word: u64) {
 }
 
 #[unsafe(no_mangle)]
-#[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn fz_dbg_value(process: *mut Process, ref_word: u64) -> u64 {
     fz_dbg_value_ref(process, ref_word);
     ref_word
@@ -362,7 +362,6 @@ pub extern "C" fn fz_dynamic_float_arith_unsupported() -> u64 {
 /// carries a raw i64 all the way to halt-cont's RawInt body; no
 /// unboxing — value is already a machine int.
 #[unsafe(no_mangle)]
-#[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn fz_halt_implicit_i64(process: *mut Process, val: i64) {
     (unsafe { &mut *process }).halt_value = val;
 }
@@ -371,13 +370,11 @@ pub extern "C" fn fz_halt_implicit_i64(process: *mut Process, val: i64) {
 /// fz_halt's Boxed-float branch: store `to_bits() as i64` so tests
 /// can round-trip via f64::from_bits.
 #[unsafe(no_mangle)]
-#[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn fz_halt_implicit_f64(process: *mut Process, val: f64) {
     (unsafe { &mut *process }).halt_value = val.to_bits() as i64;
 }
 
 #[unsafe(no_mangle)]
-#[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn fz_halt_implicit_ref(process: *mut Process, ref_word: u64) {
     (unsafe { &mut *process }).halt_value =
         halt_value_from_slot(any_value_from_ref_word(ref_word, "fz_halt_implicit_ref"));
@@ -413,14 +410,12 @@ unsafe fn process_ctx<'a>(process: *mut Process) -> &'a crate::exec_ctx::ExecCtx
 }
 
 #[unsafe(no_mangle)]
-#[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn fz_spawn_ref(process: *mut Process, closure_ref_word: u64) -> u64 {
     let ctx = unsafe { process_ctx(process) };
     (ctx.spawn.expect("spawn callback installed"))(process, ctx.scheduler, closure_ref_word) as u64
 }
 
 #[unsafe(no_mangle)]
-#[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn fz_spawn_opt_ref(
     process: *mut Process,
     closure_ref_word: u64,
@@ -446,7 +441,6 @@ pub extern "C" fn fz_spawn_opt_ref(
 /// both interp and JIT/AOT execution — the symbol path is therefore
 /// uniform across all three legs (see fz-swt.10's `MakeResourceHook`).
 #[unsafe(no_mangle)]
-#[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn fz_make_resource_ref(
     process: *mut Process,
     payload_raw: u64,
@@ -462,7 +456,6 @@ pub extern "C" fn fz_make_resource_ref(
 }
 
 #[unsafe(no_mangle)]
-#[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn fz_self_raw(process: *mut Process) -> u64 {
     (unsafe { &mut *process }).pid as u64
 }
@@ -484,7 +477,6 @@ pub extern "C" fn fz_make_ref_raw() -> u64 {
 /// the scheduler/mailbox moves the one-word any value ref until a matcher or
 /// receiver unwraps it.
 #[unsafe(no_mangle)]
-#[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn fz_send_ref(
     process: *mut Process,
     receiver_pid_bits: u64,
@@ -507,7 +499,6 @@ pub extern "C" fn fz_send_ref(
 /// accept-any matcher, so the scheduler wakes it through the same
 /// `runnable_closure` path as selective receive.
 #[unsafe(no_mangle)]
-#[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn fz_receive_park(process: *mut Process, cont_closure_bits: u64) -> *mut u8 {
     use crate::{process::ProcessState, scheduler_hooks::YIELD_PTR};
     let p = unsafe { &mut *process };
@@ -649,7 +640,6 @@ pub extern "C" fn fz_receive_park_matched(
 /// scheduler knows how many reductions it granted, so it derives burned work at
 /// the boundary instead of syncing against the hot-path budget cell.
 #[unsafe(no_mangle)]
-#[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn fz_yield_mid_flight_report(
     process: *mut Process,
     cont_closure_bits: u64,
@@ -673,7 +663,6 @@ pub extern "C" fn fz_yield_mid_flight_report(
 }
 
 #[unsafe(no_mangle)]
-#[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn fz_yield_slow_path_begin(process: *mut Process) {
     let p = unsafe { &mut *process };
     p.begin_yield_continuation_allocation(p.heap.bytes_remaining_in_block());
@@ -692,7 +681,6 @@ pub extern "C" fn fz_yield_slow_path_begin(process: *mut Process) {
 /// `flags` so `fz_spawn_entry` can pick the matching halt-cont singleton
 /// at task launch.
 #[unsafe(no_mangle)]
-#[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn fz_alloc_closure(
     process: *mut Process,
     callee_fn_id: u32,
@@ -736,7 +724,6 @@ pub extern "C" fn fz_closure_halt_kind_ref(closure_ref_word: u64) -> u32 {
 /// call site preserves test invariants that count heap allocations
 /// exactly (`gc_traces_closure_captured_via_jit`).
 #[unsafe(no_mangle)]
-#[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn fz_get_halt_cont(
     process: *mut Process,
     halt_cont_body_addr: u64,
@@ -780,7 +767,6 @@ pub extern "C" fn fz_get_halt_cont(
 /// site. See docs/cps-in-clif.md §8.2 acceptance: "Module-init region produces
 /// double/neg static closures exactly once."
 #[unsafe(no_mangle)]
-#[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn fz_get_static_closure(process: *mut Process, cl_sid: u32) -> u64 {
     let p = unsafe { &mut *process };
     let idx = cl_sid as usize;
@@ -826,7 +812,6 @@ fn bitstring_like_ptr_from_ref(word: u64) -> Option<*mut u8> {
 }
 
 #[unsafe(no_mangle)]
-#[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn fz_bs_begin(process: *mut Process) {
     (unsafe { &mut *process }).bs_builder = Some(crate::bitstr::BitWriter::new());
 }
@@ -837,7 +822,6 @@ pub extern "C" fn fz_bs_begin(process: *mut Process) {
 /// `size_value` is in size-units (multiplied by `unit` internally).
 #[allow(clippy::too_many_arguments)]
 #[unsafe(no_mangle)]
-#[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn fz_bs_write_field_ref(
     process: *mut Process,
     value_ref: u64,
@@ -984,7 +968,6 @@ fn fz_bs_write_field_value(
 }
 
 #[unsafe(no_mangle)]
-#[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn fz_bs_finalize(process: *mut Process) -> u64 {
     let w = (unsafe { &mut *process })
         .bs_builder
@@ -1010,7 +993,6 @@ pub extern "C" fn fz_bs_finalize(process: *mut Process) -> u64 {
 /// copies through `Heap::alloc_bitstring`, which picks inline / ProcBin /
 /// SharedBin storage by length.
 #[unsafe(no_mangle)]
-#[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn fz_alloc_bitstring_const(
     process: *mut Process,
     ptr: u64,
@@ -1041,7 +1023,6 @@ pub extern "C" fn fz_alloc_bitstring_const(
 /// emitted into `.data` by codegen, with bytes_ptr and destructor
 /// relocations resolved by the linker.
 #[unsafe(no_mangle)]
-#[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn fz_alloc_procbin_from_static(
     process: *mut Process,
     static_sharedbin: u64,
@@ -1116,7 +1097,6 @@ fn decode_bs_field_spec(spec: u64) -> (u32, u32, u32, u32, u32, u32) {
 /// Allocate a 3-tuple reader `[bs_ptr, bit_len_int, pos_int]` for an input
 /// bitstring. Schema id is set by compile() into BS_TUPLE_ARITY3_SCHEMA.
 #[unsafe(no_mangle)]
-#[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn fz_bs_reader_init_ref(process: *mut Process, bs_ref: u64) -> u64 {
     fz_bs_reader_init_bits(
         process,
@@ -1145,7 +1125,6 @@ fn fz_bs_reader_init_bits(process: *mut Process, bs_bits: u64) -> u64 {
 }
 
 #[unsafe(no_mangle)]
-#[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn fz_bs_read_field_ref(
     process: *mut Process,
     reader_ref: u64,
@@ -1168,7 +1147,6 @@ pub extern "C" fn fz_bs_read_field_ref(
 }
 
 #[unsafe(no_mangle)]
-#[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn fz_bs_reader_done_ref(process: *mut Process, reader_ref: u64) -> u8 {
     let reader = any_value_ref_from_word(reader_ref, "fz_bs_reader_done_ref")
         .struct_addr()
@@ -1369,13 +1347,11 @@ fn fz_bs_read_field_bits(
 // equal iff their u64 bits are equal — pointer-equal heap keys for v1.
 
 #[unsafe(no_mangle)]
-#[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn fz_map_empty(process: *mut Process) -> u64 {
     map_ref_word_from_bits((unsafe { &mut *process }).heap.alloc_map_slots(&[]))
 }
 
 #[unsafe(no_mangle)]
-#[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn fz_map_dest_begin(process: *mut Process, extra: u32) -> u64 {
     map_ref_word_from_bits(
         (unsafe { &mut *process })
@@ -1385,7 +1361,6 @@ pub extern "C" fn fz_map_dest_begin(process: *mut Process, extra: u32) -> u64 {
 }
 
 #[unsafe(no_mangle)]
-#[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn fz_map_dest_begin_update(
     process: *mut Process,
     base_ref_word: u64,
@@ -1400,7 +1375,6 @@ pub extern "C" fn fz_map_dest_begin_update(
 }
 
 #[unsafe(no_mangle)]
-#[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn fz_map_dest_put_parts(
     process: *mut Process,
     dest_ref_word: u64,
@@ -1420,7 +1394,6 @@ pub extern "C" fn fz_map_dest_put_parts(
 }
 
 #[unsafe(no_mangle)]
-#[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn fz_map_dest_put_ref(
     process: *mut Process,
     dest_ref_word: u64,
@@ -1436,7 +1409,6 @@ pub extern "C" fn fz_map_dest_put_ref(
 }
 
 #[unsafe(no_mangle)]
-#[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn fz_map_dest_freeze(process: *mut Process, dest_ref_word: u64) -> u64 {
     let dest_bits = map_bits_from_ref_word(dest_ref_word, "fz_map_dest_freeze dest");
     map_ref_word_from_bits(
@@ -1447,7 +1419,6 @@ pub extern "C" fn fz_map_dest_freeze(process: *mut Process, dest_ref_word: u64) 
 }
 
 #[unsafe(no_mangle)]
-#[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn fz_map_get_ref(
     process: *mut Process,
     map_ref_word: u64,
@@ -1505,7 +1476,6 @@ fn fz_map_get_scalar_key_ref(
 }
 
 #[unsafe(no_mangle)]
-#[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn fz_map_get_atom_key_ref(
     process: *mut Process,
     map_ref_word: u64,
@@ -1520,7 +1490,6 @@ pub extern "C" fn fz_map_get_atom_key_ref(
 }
 
 #[unsafe(no_mangle)]
-#[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn fz_map_get_int_key_ref(
     process: *mut Process,
     map_ref_word: u64,
@@ -1531,7 +1500,6 @@ pub extern "C" fn fz_map_get_int_key_ref(
 }
 
 #[unsafe(no_mangle)]
-#[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn fz_map_get_float_key_ref(
     process: *mut Process,
     map_ref_word: u64,
@@ -1555,7 +1523,6 @@ fn map_put_slot_value(
 }
 
 #[unsafe(no_mangle)]
-#[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn fz_map_put_ref(
     process: *mut Process,
     map_ref_word: u64,
@@ -1578,7 +1545,6 @@ pub extern "C" fn fz_map_put_ref(
 }
 
 #[unsafe(no_mangle)]
-#[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn fz_map_put_int(
     process: *mut Process,
     map_ref_word: u64,
@@ -1595,7 +1561,6 @@ pub extern "C" fn fz_map_put_int(
 }
 
 #[unsafe(no_mangle)]
-#[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn fz_map_put_float(
     process: *mut Process,
     map_ref_word: u64,
@@ -1612,7 +1577,6 @@ pub extern "C" fn fz_map_put_float(
 }
 
 #[unsafe(no_mangle)]
-#[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn fz_map_put_atom(
     process: *mut Process,
     map_ref_word: u64,
@@ -1631,7 +1595,6 @@ pub extern "C" fn fz_map_put_atom(
 macro_rules! scalar_key_map_put {
     ($name:ident, $key_ty:ty, $value_ty:ty, $key:expr, $value:expr) => {
         #[unsafe(no_mangle)]
-        #[allow(clippy::not_unsafe_ptr_arg_deref)]
         pub extern "C" fn $name(
             process: *mut Process,
             map_ref_word: u64,
@@ -1708,7 +1671,6 @@ scalar_key_map_put!(
 );
 
 #[unsafe(no_mangle)]
-#[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn fz_map_get_int(
     process: *mut Process,
     map_ref_word: u64,
@@ -1722,7 +1684,6 @@ fn map_get_int_impl(process: *mut Process, map_ref_word: u64, key_ref_word: u64)
 }
 
 #[unsafe(no_mangle)]
-#[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn fz_map_get_float(
     process: *mut Process,
     map_ref_word: u64,
@@ -1732,7 +1693,6 @@ pub extern "C" fn fz_map_get_float(
 }
 
 #[unsafe(no_mangle)]
-#[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn fz_map_get_atom(
     process: *mut Process,
     map_ref_word: u64,
@@ -1754,7 +1714,6 @@ pub extern "C" fn fz_list_is_cons(list_ref_word: u64) -> u8 {
 }
 
 #[unsafe(no_mangle)]
-#[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn fz_list_cons_ref(
     process: *mut Process,
     head_ref_word: u64,
@@ -1770,7 +1729,6 @@ pub extern "C" fn fz_list_cons_ref(
 }
 
 #[unsafe(no_mangle)]
-#[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn fz_list_cons_any(
     process: *mut Process,
     head_ref_word: u64,
@@ -1786,7 +1744,6 @@ pub extern "C" fn fz_list_cons_any(
 }
 
 #[unsafe(no_mangle)]
-#[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn fz_list_cons_int(process: *mut Process, head: i64, tail_ref_word: u64) -> u64 {
     let tail = any_value_ref_from_word(tail_ref_word, "fz_list_cons_int tail");
     (unsafe { &mut *process })
@@ -1797,7 +1754,6 @@ pub extern "C" fn fz_list_cons_int(process: *mut Process, head: i64, tail_ref_wo
 }
 
 #[unsafe(no_mangle)]
-#[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn fz_list_cons_float(process: *mut Process, head: f64, tail_ref_word: u64) -> u64 {
     let tail = any_value_ref_from_word(tail_ref_word, "fz_list_cons_float tail");
     (unsafe { &mut *process })
@@ -1808,7 +1764,6 @@ pub extern "C" fn fz_list_cons_float(process: *mut Process, head: f64, tail_ref_
 }
 
 #[unsafe(no_mangle)]
-#[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn fz_list_cons_atom(
     process: *mut Process,
     atom_id: u64,
@@ -1855,7 +1810,6 @@ pub extern "C" fn fz_list_tail_ref(list_ref_word: u64) -> u64 {
 }
 
 #[unsafe(no_mangle)]
-#[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn fz_mark_published_ref_aliased(process: *mut Process, value_ref_word: u64) -> u64 {
     let value = any_value_ref_from_word(value_ref_word, "fz_mark_published_ref_aliased");
     (unsafe { &mut *process })
@@ -1866,7 +1820,6 @@ pub extern "C" fn fz_mark_published_ref_aliased(process: *mut Process, value_ref
 }
 
 #[unsafe(no_mangle)]
-#[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn fz_list_reuse_or_cons_tail_ref(
     process: *mut Process,
     list_ref_word: u64,
@@ -1886,14 +1839,12 @@ pub extern "C" fn fz_list_reuse_or_cons_tail_ref(
 /// Returns a TAG_STRUCT-tagged heap pointer. Caller is
 /// responsible for writing field values into payload slots after allocation.
 #[unsafe(no_mangle)]
-#[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn fz_alloc_struct(process: *mut Process, schema_id: u32) -> u64 {
     let p = (unsafe { &mut *process }).heap.alloc_struct(schema_id);
     heap_ref_word(ValueKind::STRUCT, p)
 }
 
 #[unsafe(no_mangle)]
-#[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn fz_struct_get_field_ref(
     process: *mut Process,
     struct_ref_word: u64,
@@ -1908,7 +1859,6 @@ pub extern "C" fn fz_struct_get_field_ref(
 }
 
 #[unsafe(no_mangle)]
-#[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn fz_struct_set_field_ref(
     process: *mut Process,
     struct_ref_word: u64,
@@ -1924,7 +1874,6 @@ pub extern "C" fn fz_struct_set_field_ref(
 }
 
 #[unsafe(no_mangle)]
-#[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn fz_struct_set_field_int(
     process: *mut Process,
     struct_ref_word: u64,
@@ -1943,7 +1892,6 @@ pub extern "C" fn fz_struct_set_field_int(
 }
 
 #[unsafe(no_mangle)]
-#[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn fz_struct_set_field_float(
     process: *mut Process,
     struct_ref_word: u64,
@@ -1962,7 +1910,6 @@ pub extern "C" fn fz_struct_set_field_float(
 }
 
 #[unsafe(no_mangle)]
-#[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn fz_struct_set_field_atom(
     process: *mut Process,
     struct_ref_word: u64,
@@ -2022,7 +1969,6 @@ pub extern "C" fn fz_closure_get_capture_f64(closure_ref_word: u64, index: u64) 
 }
 
 #[unsafe(no_mangle)]
-#[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn fz_closure_set_capture_ref(
     process: *mut Process,
     closure_ref_word: u64,
@@ -2038,7 +1984,6 @@ pub extern "C" fn fz_closure_set_capture_ref(
 }
 
 #[unsafe(no_mangle)]
-#[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn fz_closure_set_capture_i64(
     process: *mut Process,
     closure_ref_word: u64,
@@ -2059,7 +2004,6 @@ pub extern "C" fn fz_closure_set_capture_i64(
 }
 
 #[unsafe(no_mangle)]
-#[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn fz_closure_set_capture_f64(
     process: *mut Process,
     closure_ref_word: u64,
@@ -2117,7 +2061,6 @@ unsafe fn lazy_cont_capture_raw(word: u64, index: usize) -> u64 {
 /// Materialize a stack-backed lazy continuation descriptor into a normal
 /// scheduler-visible closure. Ordinary closure refs are returned unchanged.
 #[unsafe(no_mangle)]
-#[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn fz_materialize_cont(process: *mut Process, cont_word: u64) -> u64 {
     if !is_lazy_cont_ref(cont_word) {
         return cont_word;
@@ -2178,7 +2121,6 @@ pub extern "C" fn fz_materialize_cont(process: *mut Process, cont_word: u64) -> 
 /// Allocate a frame for fn `fn_id`, looking up its size in the current
 /// Process's frame_sizes table populated at make_process() time.
 #[unsafe(no_mangle)]
-#[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn fz_alloc_frame_dyn(process: *mut Process, fn_id: u32) -> *mut u8 {
     let size = *(unsafe { &mut *process })
         .frame_sizes
@@ -2213,7 +2155,6 @@ pub fn frame_alloc_count_take() -> u64 {
 }
 
 #[unsafe(no_mangle)]
-#[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn fz_alloc_frame(
     process: *mut Process,
     schema_id: u32,
@@ -2264,7 +2205,6 @@ pub extern "C" fn fz_fmod(a: f64, b: f64) -> f64 {
 }
 
 #[unsafe(no_mangle)]
-#[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn fz_value_eq_ref(process: *mut Process, a_ref: u64, b_ref: u64) -> u64 {
     if a_ref == b_ref {
         return 1;
@@ -2470,7 +2410,6 @@ pub extern "C" fn fz_bitstring_valid_utf8(bs_bits: u64) -> i64 {
 }
 
 #[unsafe(no_mangle)]
-#[allow(clippy::not_unsafe_ptr_arg_deref)]
 pub extern "C" fn fz_matcher_map_get_ref(
     process: *mut Process,
     map_ref_word: u64,
