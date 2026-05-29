@@ -1368,6 +1368,61 @@ impl Module {
         }
     }
 
+    /// Read-only twin of `remap_file_ids`: visits every `Span` reachable from
+    /// the module, in the same exhaustive span-site inventory. Used to gather a
+    /// module's referenced source files for portable IR units.
+    // The IR-unit writer that calls this (`referenced_files`) is consumed by
+    // the loader in fz-t1m.3.1.3; today only the gate test drives it.
+    #[allow(dead_code)]
+    pub fn visit_spans(&self, f: &mut impl FnMut(Span)) {
+        // SourceInfo side-tables.
+        for s in &self.source.var_span {
+            f(*s);
+        }
+        for s in &self.source.fn_span {
+            f(*s);
+        }
+        for spans in self.source.stmt_spans.values() {
+            for s in spans {
+                f(*s);
+            }
+        }
+        for s in self.source.term_span.values() {
+            f(*s);
+        }
+
+        // Per-fn IR: stmt prims and block terminators.
+        for fn_ir in &self.fns {
+            for block in &fn_ir.blocks {
+                for Stmt::Let(_, prim) in &block.stmts {
+                    visit_prim_span(prim, f);
+                }
+                visit_term_span(&block.terminator, f);
+            }
+        }
+
+        // External call edges carry their own callsite ident span.
+        for edge in &self.external_call_edges {
+            f(edge.callsite.ident.span());
+        }
+    }
+
+    /// Every distinct, non-`NONE` `FileId` referenced by the module's spans.
+    /// `DUMMY`/`FileId::NONE` spans are excluded. This is the source-file set a
+    /// portable IR unit must carry so a later loader can relocate the module.
+    // Consumed by the IR-unit writer / loader in fz-t1m.3.1.3; today only the
+    // gate tests drive it.
+    #[allow(dead_code)]
+    pub fn referenced_files(&self) -> std::collections::BTreeSet<FileId> {
+        let mut files = std::collections::BTreeSet::new();
+        self.visit_spans(&mut |span| {
+            if span.file != FileId::NONE {
+                files.insert(span.file);
+            }
+        });
+        files
+    }
+
     pub fn extern_by_id(&self, eid: ExternId) -> &ExternDecl {
         &self.externs[*self.extern_idx.get(&eid).expect("unknown extern id")]
     }
@@ -1572,6 +1627,79 @@ fn remap_term_span(term: &mut Term, remap: &HashMap<FileId, FileId>) {
                 remap_span(&mut after.span, remap);
             }
             std::sync::Arc::make_mut(matcher).remap_file_ids(remap);
+        }
+        // Span-free terminators: explicit no-op arms keep the match exhaustive.
+        Term::Goto(_, _) | Term::If { .. } | Term::Return(_) | Term::Halt(_) => {}
+    }
+}
+
+/// Read-only twin of `remap_prim_span`: visits any span carried by a `Prim`.
+/// Only `MakeClosure` carries one; the `match` is exhaustive so a future
+/// span-carrying Prim variant fails to compile rather than being skipped.
+fn visit_prim_span(prim: &Prim, f: &mut impl FnMut(Span)) {
+    match prim {
+        Prim::MakeClosure(ident, _, _) => f(ident.span()),
+        // Span-free prims: explicit no-op arms keep the match exhaustive.
+        Prim::Const(_)
+        | Prim::BinOp(_, _, _)
+        | Prim::UnOp(_, _)
+        | Prim::Extern(_, _)
+        | Prim::ListHead(_)
+        | Prim::ListTail(_)
+        | Prim::IsEmptyList(_)
+        | Prim::MakeTuple(_)
+        | Prim::DestTupleBegin { .. }
+        | Prim::DestTupleSet { .. }
+        | Prim::DestFreeze { .. }
+        | Prim::TupleField(_, _)
+        | Prim::MakeList(_, _)
+        | Prim::DestListBegin { .. }
+        | Prim::DestListCons { .. }
+        | Prim::DestListFreeze { .. }
+        | Prim::MakeMap(_)
+        | Prim::MapUpdate(_, _)
+        | Prim::DestMapBegin { .. }
+        | Prim::DestMapPut { .. }
+        | Prim::DestMapFreeze { .. }
+        | Prim::MapGet(_, _)
+        | Prim::MatcherMapGet(_, _)
+        | Prim::IsMatcherMapMiss(_)
+        | Prim::MakeBitstring(_)
+        | Prim::ConstBitstring(_, _)
+        | Prim::BitReaderInit(_)
+        | Prim::BitReadField { .. }
+        | Prim::BitReaderDone(_)
+        | Prim::TypeTest(_, _)
+        | Prim::Brand(_, _) => {}
+    }
+}
+
+/// Read-only twin of `remap_term_span`: visits every span carried by a `Term`,
+/// including the `ReceiveMatched` clause/after spans and its cached matcher.
+/// The `match` is exhaustive so a future span-carrying terminator variant fails
+/// to compile rather than being silently skipped.
+fn visit_term_span(term: &Term, f: &mut impl FnMut(Span)) {
+    match term {
+        Term::Call { ident, .. }
+        | Term::TailCall { ident, .. }
+        | Term::CallClosure { ident, .. }
+        | Term::TailCallClosure { ident, .. }
+        | Term::Receive { ident, .. } => f(ident.span()),
+        Term::ReceiveMatched {
+            ident,
+            clauses,
+            matcher,
+            after,
+            ..
+        } => {
+            f(ident.span());
+            for clause in clauses {
+                f(clause.span);
+            }
+            if let Some(after) = after {
+                f(after.span);
+            }
+            matcher.visit_spans(f);
         }
         // Span-free terminators: explicit no-op arms keep the match exhaustive.
         Term::Goto(_, _) | Term::If { .. } | Term::Return(_) | Term::Halt(_) => {}
@@ -2471,6 +2599,35 @@ mod tests {
             m.external_call_edges[0].callsite.ident.span().file,
             f3,
             "external edge ident f7"
+        );
+    }
+
+    /// fz-t1m.3.1.2 — `Module::referenced_files` is the read-only twin of
+    /// `remap_file_ids`: it collects every non-`NONE` `FileId` its spans touch.
+    /// Populates spans at FileId(7) and FileId(9) plus a DUMMY span and asserts
+    /// exactly {FileId(7), FileId(9)} comes back — DUMMY excluded.
+    #[test]
+    fn referenced_files_collects_non_dummy_file_ids() {
+        let f7 = FileId(7);
+        let f9 = FileId(9);
+
+        // A trivial fn so the module is well-formed; its body carries no spans.
+        let mut b = FnBuilder::new(FnId(0), "host");
+        let x = b.fresh_var();
+        let entry = b.block(vec![x]);
+        b.set_terminator(entry, Term::Return(x));
+        let mut mb = ModuleBuilder::new();
+        mb.add_fn(b.build());
+        let mut m = mb.build();
+
+        // SourceInfo spans across two files plus a DUMMY that must be excluded.
+        m.source.var_span = vec![Span::new(f7, 0, 1), Span::new(f9, 2, 3), Span::DUMMY];
+
+        let files = m.referenced_files();
+        assert_eq!(
+            files,
+            [f7, f9].into_iter().collect::<std::collections::BTreeSet<_>>(),
+            "referenced_files returns exactly the non-DUMMY files"
         );
     }
 

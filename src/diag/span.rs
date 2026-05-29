@@ -4,7 +4,9 @@
 //! The SourceMap holds the bytes; the renderer resolves spans to display
 //! line/col on demand. This keeps the AST/IR cheap to copy.
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub struct FileId(pub u32);
 
 impl FileId {

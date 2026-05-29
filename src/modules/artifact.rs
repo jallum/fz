@@ -1,5 +1,6 @@
 //! Deterministic `.fzi` / `.fzo` artifact envelopes for module-first builds.
 
+use crate::diag::source_map::PortableSourceFile;
 use crate::diag::{Diagnostic, Span, codes};
 use crate::ir_codegen::CompiledUnit;
 use crate::modules::identity::{ExportKey, ModuleName};
@@ -18,6 +19,7 @@ pub const FZ_RUNTIME_ARTIFACT_ABI_VERSION: u32 = 1;
 pub const FZO_PAYLOAD_IR_TEXT_V1: &str = "fz-ir-text-v1";
 pub const FZO_PAYLOAD_SOURCE_UNIT_V1: &str = "fz-source-unit-v1";
 pub const FZO_PAYLOAD_RUNTIME_MODULE_V1: &str = "fz-runtime-module-v1";
+pub const FZO_PAYLOAD_IR_UNIT_V1: &str = "fz-ir-unit-v1";
 
 const FZI_MAGIC: &str = "fzi";
 const FZO_MAGIC: &str = "fzo";
@@ -47,6 +49,16 @@ pub struct FzoArtifact {
 pub struct FzoUnitPayload {
     pub format: String,
     pub body: String,
+}
+
+/// Decoded body of an `FZO_PAYLOAD_IR_UNIT_V1` payload: the structural IR
+/// `Module` plus every source file its spans reference. A later loader
+/// (fz-t1m.3.1.3) re-interns `sources` into the host `SourceMap`, remaps the
+/// module's `FileId`s, and materializes the provider WITHOUT recompiling.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IrUnitPayload {
+    pub module: crate::fz_ir::Module,
+    pub sources: Vec<PortableSourceFile>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -101,6 +113,13 @@ impl FzoUnitPayload {
 
     pub fn runtime_module(body: impl Into<String>) -> Self {
         Self::new(FZO_PAYLOAD_RUNTIME_MODULE_V1, body)
+    }
+
+    // The IR-unit payload is consumed by the loader in fz-t1m.3.1.3; today only
+    // `from_unit_ir` and the round-trip gate build one.
+    #[allow(dead_code)]
+    fn ir_unit(body: impl Into<String>) -> Self {
+        Self::new(FZO_PAYLOAD_IR_UNIT_V1, body)
     }
 }
 
@@ -197,6 +216,30 @@ impl FzoArtifact {
         )
     }
 
+    /// Build an `.fzo` whose payload is the STRUCTURAL IR unit: the module's
+    /// serde form plus every source file its spans reference, so a later loader
+    /// can materialize the provider WITHOUT recompiling. The
+    /// `required_imports`/fingerprint wiring is identical to `from_unit_source`.
+    // The loader that reads this format lands in fz-t1m.3.1.3; today only the
+    // round-trip gate drives it. Production `fz build` still emits source units.
+    #[allow(dead_code)]
+    pub fn from_unit_ir(
+        unit: &CompiledUnit,
+        sources: Vec<PortableSourceFile>,
+        implementation_fingerprint: Vec<String>,
+    ) -> Self {
+        let body = serde_json::to_string(&IrUnitPayload {
+            module: unit.code.clone(),
+            sources,
+        })
+        .expect("ir unit payload serialization");
+        Self::from_unit_payload(
+            unit,
+            FzoUnitPayload::ir_unit(body),
+            implementation_fingerprint,
+        )
+    }
+
     fn from_unit_payload(
         unit: &CompiledUnit,
         unit_payload: FzoUnitPayload,
@@ -238,6 +281,23 @@ impl FzoArtifact {
                 ),
             )
         }
+    }
+
+    /// Decode an IR-unit payload back into its `Module` + source files. The
+    /// read side the loader (fz-t1m.3.1.3) calls; the round-trip gate uses it
+    /// now. Errors if this artifact is not an `FZO_PAYLOAD_IR_UNIT_V1` unit.
+    // Consumed by the loader in fz-t1m.3.1.3; today only the round-trip gate
+    // drives it.
+    #[allow(dead_code)]
+    pub fn ir_unit_payload(&self) -> Result<IrUnitPayload, ArtifactFormatError> {
+        if self.unit_payload.format != FZO_PAYLOAD_IR_UNIT_V1 {
+            return Err(invalid(format!(
+                "fzo payload `{}` is not an IR unit",
+                self.unit_payload.format
+            )));
+        }
+        serde_json::from_str(&self.unit_payload.body)
+            .map_err(|err| invalid(format!("malformed fzo IR unit payload: {}", err)))
     }
 
     pub fn serialize(&self) -> String {
@@ -455,6 +515,73 @@ mod tests {
         assert_eq!(decoded.unit_payload.body, expected_payload);
         assert_eq!(decoded, artifact);
         assert_eq!(decoded.serialize(), text);
+    }
+
+    #[test]
+    fn fzo_ir_unit_round_trips() {
+        // A real unit: one fn, an external call edge — enough that the module's
+        // serde form is non-trivial and survives the round-trip unchanged.
+        let interface = math_interface();
+        let mut builder = crate::fz_ir::FnBuilder::new(crate::fz_ir::FnId(0), "Math.add");
+        let entry = builder.block(Vec::new());
+        builder.set_terminator(entry, crate::fz_ir::Term::Halt(crate::fz_ir::Var(0)));
+        let mut code = crate::fz_ir::Module::new();
+        code.fn_idx.insert(crate::fz_ir::FnId(0), 0);
+        code.fns.push(builder.build());
+        code.external_call_edges
+            .push(crate::fz_ir::ExternalCallEdge {
+                callsite: crate::fz_ir::CallsiteId {
+                    caller: crate::fz_ir::FnId(0),
+                    ident: crate::fz_ir::CallsiteIdent::synthetic(),
+                    slot: crate::fz_ir::EmitSlot::Direct,
+                },
+                target: ExportKey::new(module("Dep"), "seed", 0),
+            });
+        let unit = CompiledUnit::from_ir_module(
+            code,
+            Some(interface),
+            crate::diag::Diagnostics::new(),
+        );
+
+        // The realistic path: intern the unit's source into a SourceMap and
+        // pull `to_portable()` for each referenced file. This module's spans are
+        // all synthetic, so we add one file and carry it explicitly.
+        let mut sm = crate::diag::SourceMap::new();
+        let fid = sm.add_file("Math.fz", "defmodule Math do\n  fn add(x, y), do: x + y\nend\n");
+        let sources = vec![sm.file(fid).to_portable()];
+
+        let fzo = FzoArtifact::from_unit_ir(&unit, sources.clone(), vec![]);
+        let text = fzo.serialize();
+        assert!(text.contains(r#""format": "fz-ir-unit-v1""#), "{text}");
+
+        let back =
+            FzoArtifact::deserialize(&crate::telemetry::NullTelemetry, None, &text, None).unwrap();
+        let payload = back.ir_unit_payload().unwrap();
+
+        // The Module survived: canonical Value equality.
+        assert_eq!(
+            serde_json::to_value(&payload.module).unwrap(),
+            serde_json::to_value(&unit.code).unwrap(),
+            "module survives the IR-unit round-trip"
+        );
+        // Sources survived: name + bytes + content_hash all preserved.
+        assert_eq!(payload.sources, sources, "source files survive the round-trip");
+    }
+
+    #[test]
+    fn fzo_ir_unit_payload_rejects_non_ir_unit() {
+        let interface = math_interface();
+        let unit = CompiledUnit::from_ir_module(
+            crate::fz_ir::Module::new(),
+            Some(interface),
+            crate::diag::Diagnostics::new(),
+        );
+        let artifact = FzoArtifact::from_unit(&unit, Vec::new());
+        let err = artifact.ir_unit_payload().unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "fzo payload `fz-ir-text-v1` is not an IR unit"
+        );
     }
 
     #[test]

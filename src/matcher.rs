@@ -92,6 +92,37 @@ impl Matcher {
             }
         }
     }
+
+    /// Read-only twin of `remap_file_ids`: visits every `Span` reachable from
+    /// this matcher, in the same exhaustive site inventory. Used to gather a
+    /// receive matcher's referenced source files for portable IR units.
+    // Reached via `Module::visit_spans` (the IR-unit writer's entry point);
+    // today only the gate tests drive it.
+    #[allow(dead_code)]
+    pub(crate) fn visit_spans(&self, f: &mut impl FnMut(Span)) {
+        for input in &self.inputs {
+            f(input.span);
+        }
+        for pinned in &self.pinned {
+            f(pinned.span);
+        }
+        for node in &self.nodes {
+            // Exhaustive: a future span-carrying variant must fail to compile,
+            // not be silently skipped.
+            match node {
+                MatcherNode::Fail { span } => f(*span),
+                MatcherNode::Leaf(leaf) => {
+                    f(leaf.span);
+                    for binding in &leaf.bindings {
+                        f(binding.span);
+                    }
+                }
+                MatcherNode::Switch { span, .. } => f(*span),
+                MatcherNode::Test { span, .. } => f(*span),
+                MatcherNode::Guard { span, .. } => f(*span),
+            }
+        }
+    }
 }
 
 #[cfg(test)]

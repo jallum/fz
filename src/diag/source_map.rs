@@ -6,6 +6,8 @@
 
 use std::sync::Arc;
 
+use serde::{Deserialize, Serialize};
+
 use super::span::{FileId, Span};
 
 /// FNV-1a (64-bit) over the file's bytes. Gives a relocation-stable identity
@@ -58,6 +60,21 @@ impl SourceFile {
         self.content_hash
     }
 
+    /// Wire form of this file for a portable IR unit. `SourceFile` itself can't
+    /// derive serde (the `OnceLock` line cache), so this DTO carries the
+    /// serializable identity — name, bytes, and the FNV content hash — that a
+    /// loader re-interns via `SourceMap::intern`.
+    // The IR-unit writer that calls this lands in fz-t1m.3.1.3; today only the
+    // round-trip gate drives it.
+    #[allow(dead_code)]
+    pub fn to_portable(&self) -> PortableSourceFile {
+        PortableSourceFile {
+            name: self.name.clone(),
+            bytes: self.bytes.to_string(),
+            content_hash: self.content_hash,
+        }
+    }
+
     fn line_starts(&self) -> &[u32] {
         self.line_starts.get_or_init(|| {
             let mut v = vec![0u32];
@@ -72,6 +89,17 @@ impl SourceFile {
             v
         })
     }
+}
+
+/// Serializable identity of a `SourceFile` — the wire form embedded in a
+/// portable IR unit (`.fzo`). A loader re-interns each one via
+/// `SourceMap::intern(name, bytes)`, which recomputes the same FNV hash;
+/// `content_hash` rides along so the identity can be checked without re-hashing.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PortableSourceFile {
+    pub name: String,
+    pub bytes: String,
+    pub content_hash: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
