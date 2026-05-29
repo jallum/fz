@@ -324,7 +324,46 @@ fn static_tests() -> Vec<(&'static str, fn())> {
         ),
         ("dump_budgets", dump_budgets),
         ("golden_outcomes", golden_outcomes),
+        (
+            "bsx_brand_blind_eq_emits_telemetry",
+            bsx_brand_blind_eq_emits_telemetry,
+        ),
     ]
+}
+
+/// fz-bsx.7 — the brand-blind comparison signal ("warn to telemetry, let it
+/// sail") is observable on the bus. Compiling the nested case-match, whose
+/// `{:ok, "hi"}` arm compares a `utf8` against a binary literal, must emit a
+/// `[fz, type, brand_blind_eq]` event — the migration delta the old
+/// brand-aware fold would have silently dropped.
+fn bsx_brand_blind_eq_emits_telemetry() {
+    let fixture = PathBuf::from("fixtures/bsx_nested_match");
+    let telemetry_path = temp_telemetry_path(&fixture, "brand_blind");
+    let out = Command::new(FZ_BIN)
+        .args(["--log-telemetry"])
+        .arg(&telemetry_path)
+        .arg("run")
+        .arg(fixture.join("input.fz"))
+        .output()
+        .unwrap_or_else(|e| panic!("spawn fz run: {}", e));
+    assert!(
+        out.status.success(),
+        "fz run {} exited {}: {}",
+        fixture.display(),
+        out.status,
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let log = fs::read_to_string(&telemetry_path)
+        .unwrap_or_else(|e| panic!("read {}: {}", telemetry_path.display(), e));
+    let _ = fs::remove_file(&telemetry_path);
+    let count = log
+        .lines()
+        .filter(|l| l.contains("\"name\":[\"fz\",\"type\",\"brand_blind_eq\"]"))
+        .count();
+    assert!(
+        count >= 1,
+        "expected a [fz, type, brand_blind_eq] telemetry event; got none",
+    );
 }
 
 /// fz-puj.29 — freeze the current `PatternMatrix` behavior as a

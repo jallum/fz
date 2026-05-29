@@ -2498,7 +2498,7 @@ pub(crate) fn compile_with_backend_impl<
     let static_closure_targets =
         collect_static_closure_targets(&closure_shapes, &spec_keys, &fn_ids, &return_reprs);
 
-    let diagnostics = crate::ir_planner::collect_diagnostics(t, module, &module_plan);
+    let diagnostics = crate::ir_planner::collect_diagnostics(t, module, &module_plan, tel);
     let chain_repr = compute_chain_repr(
         t,
         module,

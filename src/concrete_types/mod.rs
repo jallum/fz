@@ -54,6 +54,15 @@ pub(crate) fn ty_descr(t: &Ty) -> &Descr {
     &t.0
 }
 
+/// Convert a `Ty`-keyed inner-type map (as carried by `Module`) into the
+/// `Descr`-keyed form `Descr::erase_nominal` consumes. The maps are tiny
+/// (one entry per declared brand/opaque), so the per-call clone is cheap.
+fn descr_inner_map(m: &HashMap<String, Ty>) -> HashMap<String, Descr> {
+    m.iter()
+        .map(|(k, v)| (k.clone(), ty_descr(v).clone()))
+        .collect()
+}
+
 pub(crate) fn ty_display(t: &Ty) -> String {
     format!("{}", ty_descr(t))
 }
@@ -225,6 +234,11 @@ impl Types for ConcreteTypes {
     }
     fn is_disjoint(&self, a: &Ty, b: &Ty) -> bool {
         ty_descr(a).intersect(ty_descr(b)).is_empty()
+    }
+    fn is_value_disjoint(&self, a: &Ty, b: &Ty, nominals: crate::types::Nominals<'_, Ty>) -> bool {
+        let bi = descr_inner_map(nominals.brand_inners);
+        let oi = descr_inner_map(nominals.opaque_inners);
+        ty_descr(a).value_disjoint(ty_descr(b), crate::types::Nominals::new(&bi, &oi))
     }
     fn is_equivalent(&self, a: &Ty, b: &Ty) -> bool {
         ty_descr(a).is_equiv(ty_descr(b))

@@ -3,6 +3,7 @@ use super::conj::Conj;
 use super::dnf::is_dnf_top;
 use super::sigs::{ArrowSig, ClosureLit};
 use super::*;
+use crate::types::Nominals;
 
 // (`str_t` was promoted to a public Descr constructor by fz-ul4.31.1.)
 impl BasicBits {
@@ -1016,6 +1017,168 @@ fn brand_inners(items: &[(&str, Descr)]) -> std::collections::HashMap<String, De
         .iter()
         .map(|(n, d)| (n.to_string(), d.clone()))
         .collect()
+}
+
+fn no_inners() -> std::collections::HashMap<String, Descr> {
+    std::collections::HashMap::new()
+}
+
+// fz-bsx.1 — brand-erased (runtime representation) disjointness.
+
+#[test]
+fn erase_nominal_discharges_brand_to_inner() {
+    // A minted brand is a pure tag (basic empty); erasure must REPLACE it
+    // with its inner, not clear it (clearing would collapse to `none`).
+    let inners = brand_inners(&[("utf8", Descr::str_t())]);
+    let utf8 = Descr::brand_of("utf8");
+    assert!(
+        utf8.intersect(&Descr::str_t()).is_empty(),
+        "pure tag ∩ binary is empty (the bug)"
+    );
+    assert!(
+        utf8.erase_nominal(Nominals::new(&inners, &no_inners()))
+            .is_equiv(&Descr::str_t()),
+        "erase(utf8) must be binary",
+    );
+}
+
+#[test]
+fn value_disjoint_utf8_vs_binary_is_false() {
+    // The core fix: a utf8 and an unbranded binary can be byte-equal.
+    let inners = brand_inners(&[("utf8", Descr::str_t())]);
+    let utf8 = Descr::brand_of("utf8");
+    assert!(
+        utf8.intersect(&Descr::str_t()).is_empty(),
+        "brand-AWARE: disjoint (correct for typing)",
+    );
+    assert!(
+        !utf8.value_disjoint(&Descr::str_t(), Nominals::new(&inners, &no_inners())),
+        "brand-BLIND: NOT disjoint — `==` must run",
+    );
+}
+
+#[test]
+fn value_disjoint_nested_in_tuple_is_false() {
+    // The original failure: {:ok, utf8} vs {:ok, binary} nested.
+    let inners = brand_inners(&[("utf8", Descr::str_t())]);
+    let lhs = Descr::tuple_of([Descr::atom_lit("ok"), Descr::brand_of("utf8")]);
+    let rhs = Descr::tuple_of([Descr::atom_lit("ok"), Descr::str_t()]);
+    assert!(
+        lhs.intersect(&rhs).is_empty(),
+        "brand-AWARE: the nested brand makes the tuple clauses disjoint (the bug)",
+    );
+    assert!(
+        !lhs.value_disjoint(&rhs, Nominals::new(&inners, &no_inners())),
+        "brand-BLIND: erasure recurses into the tuple — NOT disjoint",
+    );
+}
+
+#[test]
+fn value_disjoint_utf8_vs_int_is_true() {
+    // Soundness: erasure must NOT over-collapse. A binary is never an int,
+    // so a utf8 is never == an int; the fold here is still legitimate.
+    let inners = brand_inners(&[("utf8", Descr::str_t())]);
+    let utf8 = Descr::brand_of("utf8");
+    assert!(
+        utf8.value_disjoint(&Descr::int(), Nominals::new(&inners, &no_inners())),
+        "utf8 vs int stays value-disjoint",
+    );
+}
+
+#[test]
+fn value_disjoint_distinct_atoms_is_true() {
+    // Structural disjointness survives erasure (erasure only neutralises
+    // the nominal axes): :ok vs :error is still definitely unequal.
+    assert!(
+        Descr::atom_lit("ok").value_disjoint(
+            &Descr::atom_lit("error"),
+            Nominals::new(&no_inners(), &no_inners()),
+        ),
+        ":ok vs :error remains value-disjoint",
+    );
+}
+
+#[test]
+fn differs_only_nominally_holds_for_brand_vs_unbranded() {
+    // The exact telemetry-delta set: brand-aware-disjoint yet not
+    // value-disjoint — the comparisons the old fold silently broke.
+    let inners = brand_inners(&[("utf8", Descr::str_t())]);
+    let utf8 = Descr::brand_of("utf8");
+    let aware_disjoint = utf8.intersect(&Descr::str_t()).is_empty();
+    let value_disjoint = utf8.value_disjoint(&Descr::str_t(), Nominals::new(&inners, &no_inners()));
+    assert!(
+        aware_disjoint && !value_disjoint,
+        "this is the delta the fold broke"
+    );
+}
+
+// fz-bsx.6 — soundness backstop for value-disjointness. The eq-fold and the
+// dead-binop lint may collapse a comparison to a constant ONLY when the
+// operands are value-disjoint, so the dangerous direction is OVER-reporting
+// disjointness (folding a comparison that could be true at runtime). This
+// table pins both directions across the representative shapes; the
+// static->runtime link itself is locked end-to-end by the integration
+// fixtures (bsx_nested_eq proves not-disjoint => runtime true on all paths;
+// vr5a_* prove disjoint => false).
+#[test]
+fn value_disjoint_soundness_table() {
+    // utf8 and ascii both refine binary; both erase to a plain binary.
+    let inners = brand_inners(&[("utf8", Descr::str_t()), ("ascii", Descr::str_t())]);
+    let oi = no_inners();
+    let utf8 = Descr::brand_of("utf8");
+    let ascii = Descr::brand_of("ascii");
+    let bin = Descr::str_t();
+    let int = Descr::int();
+    let ok = Descr::atom_lit("ok");
+    let err = Descr::atom_lit("error");
+    let ok_utf8 = Descr::tuple_of([ok.clone(), utf8.clone()]);
+    let ok_bin = Descr::tuple_of([ok.clone(), bin.clone()]);
+    let err_inv = Descr::tuple_of([err.clone(), Descr::atom_lit("invalid")]);
+
+    // (a, b, expect_value_disjoint, why)
+    let cases: &[(&Descr, &Descr, bool, &str)] = &[
+        // Different runtime kinds can never be byte/structure equal: FOLDABLE.
+        (&int, &bin, true, "int vs binary"),
+        (&utf8, &int, true, "utf8 (a binary) vs int"),
+        (&ok, &err, true, ":ok vs :error"),
+        (
+            &ok_utf8,
+            &err_inv,
+            true,
+            "{:ok,utf8} vs {:error,:invalid} — tag differs",
+        ),
+        // Same runtime representation once brands are erased: NOT foldable —
+        // these values can be equal, `==` must run.
+        (&utf8, &bin, false, "utf8 vs unbranded binary"),
+        (
+            &ascii,
+            &utf8,
+            false,
+            "ascii vs utf8 — distinct brands, same bytes",
+        ),
+        (&utf8, &utf8, false, "utf8 vs utf8"),
+        (
+            &ok_utf8,
+            &ok_bin,
+            false,
+            "{:ok,utf8} vs {:ok,binary} — nested brand",
+        ),
+    ];
+    for (a, b, expect, why) in cases {
+        assert_eq!(
+            a.value_disjoint(b, Nominals::new(&inners, &oi)),
+            *expect,
+            "value_disjoint mismatch: {}",
+            why
+        );
+        // Symmetry: disjointness is order-independent.
+        assert_eq!(
+            b.value_disjoint(a, Nominals::new(&inners, &oi)),
+            *expect,
+            "value_disjoint not symmetric: {}",
+            why
+        );
+    }
 }
 
 #[test]
