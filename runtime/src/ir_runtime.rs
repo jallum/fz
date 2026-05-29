@@ -1744,9 +1744,7 @@ pub extern "C" fn fz_list_cons_atom(
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_list_head_ref(list_ref_word: u64) -> u64 {
     let list = any_value_ref_from_word(list_ref_word, "fz_list_head_ref");
-    current_process()
-        .heap
-        .read_list_head_ref(list)
+    crate::heap::list_head_ref(list)
         .expect("fz_list_head_ref")
         .raw_word()
 }
@@ -1766,9 +1764,7 @@ pub extern "C" fn fz_list_head_float_ref(list_ref_word: u64) -> f64 {
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_list_tail_ref(list_ref_word: u64) -> u64 {
     let list = any_value_ref_from_word(list_ref_word, "fz_list_tail_ref");
-    current_process()
-        .heap
-        .read_list_tail_ref(list)
+    crate::heap::list_tail_ref(list)
         .expect("fz_list_tail_ref")
         .raw_word()
 }
@@ -1900,9 +1896,7 @@ pub extern "C" fn fz_closure_get_capture_ref(closure_ref_word: u64, index: u64) 
         return unsafe { lazy_cont_capture_raw(closure_ref_word, index as usize) };
     }
     let value = any_value_ref_from_word(closure_ref_word, "fz_closure_get_capture_ref");
-    current_process()
-        .heap
-        .read_closure_capture_ref(value, index as usize)
+    crate::heap::closure_capture_ref(value, index as usize)
         .expect("fz_closure_get_capture_ref")
         .raw_word()
 }
@@ -1916,11 +1910,7 @@ pub extern "C" fn fz_closure_get_capture_i64(closure_ref_word: u64, index: u64) 
     let addr = value
         .closure_addr()
         .expect("fz_closure_get_capture_i64 closure");
-    match unsafe {
-        current_process()
-            .heap
-            .read_closure_capture_value(addr, index as usize)
-    } {
+    match unsafe { crate::any_value::closure_capture_value(addr, index as usize) } {
         crate::any_value::AnyValue::Int(value) => value,
         other => panic!("fz_closure_get_capture_i64 expected int, got {:?}", other),
     }
@@ -1935,11 +1925,7 @@ pub extern "C" fn fz_closure_get_capture_f64(closure_ref_word: u64, index: u64) 
     let addr = value
         .closure_addr()
         .expect("fz_closure_get_capture_f64 closure");
-    match unsafe {
-        current_process()
-            .heap
-            .read_closure_capture_value(addr, index as usize)
-    } {
+    match unsafe { crate::any_value::closure_capture_value(addr, index as usize) } {
         crate::any_value::AnyValue::Float(bits) => f64::from_bits(bits),
         other => panic!("fz_closure_get_capture_f64 expected float, got {:?}", other),
     }
