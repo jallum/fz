@@ -2359,12 +2359,12 @@ fn owned_cons_reuse_docs_pin_alias_fallback_contract() {
 fn physical_capability_model_and_signals_are_pinned() {
     let index = fs::read_to_string(".agent/docs.md").expect("read agent docs index");
     assert!(
-        index.contains("docs/physical-capabilities.md"),
-        "agent docs index must point at physical capability guidance"
+        index.contains("docs/destination-passing.md"),
+        "agent docs index must point at the doc carrying physical capability guidance"
     );
 
-    let docs = fs::read_to_string(".agent/docs/physical-capabilities.md")
-        .expect("read physical capability docs");
+    let docs = fs::read_to_string(".agent/docs/destination-passing.md")
+        .expect("read destination-passing docs (physical capability guidance lives here)");
     for needle in [
         "semantic values",
         "physical capabilities",
