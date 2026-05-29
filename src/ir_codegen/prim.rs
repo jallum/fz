@@ -1863,11 +1863,7 @@ fn lower_extern_fz_panic<M: cranelift_module::Module>(
 ) -> Result<LowerOut, CodegenError> {
     let value_ref = body.tagged_var(var_env, args[0].0);
     let process = body.process_arg();
-    body.call_named(
-        "fz_panic",
-        &sig1(&[types::I64, types::I64], &[]),
-        &[process, value_ref],
-    );
+    body.call_named("fz_panic", &[process, value_ref]);
     if body.cache.used_vars.contains(&dest_var.0) {
         return Ok(LowerOut::Strict(strict_const_value(
             body.b,
@@ -1888,11 +1884,7 @@ fn lower_extern_fz_dbg_value<M: cranelift_module::Module>(
 ) -> Result<LowerOut, CodegenError> {
     let value_ref = body.tagged_var(var_env, args[0].0);
     let process = body.process_arg();
-    let call = body.call_named(
-        "fz_dbg_value",
-        &sig1(&[types::I64, types::I64], &[types::I64]),
-        &[process, value_ref],
-    );
+    let call = body.call_named("fz_dbg_value", &[process, value_ref]);
     let result = body.b.inst_results(call)[0];
     if body.cache.used_vars.contains(&dest_var.0) {
         return Ok(LowerOut::Strict(CodegenValue::AnyRef(result)));
@@ -1913,11 +1905,7 @@ fn lower_extern_fz_send<M: cranelift_module::Module>(
     body.push_binding_as_abi_arg(&mut msg_args, msg_binding, ArgRepr::ValueRef);
     let msg_ref = msg_args[0];
     let process = body.process_arg();
-    let inst = body.call_named(
-        "fz_send_ref",
-        &sig1(&[types::I64, types::I64, types::I64], &[types::I64]),
-        &[process, receiver, msg_ref],
-    );
+    let inst = body.call_named("fz_send_ref", &[process, receiver, msg_ref]);
     Ok(LowerOut::ValueRefWord(body.b.inst_results(inst)[0]))
 }
 
@@ -1926,11 +1914,7 @@ fn lower_extern_fz_self<M: cranelift_module::Module>(
     body: &mut CodegenFn<'_, '_, '_, M>,
 ) -> Result<LowerOut, CodegenError> {
     let process = body.process_arg();
-    let inst = body.call_named(
-        "fz_self_raw",
-        &sig1(&[types::I64], &[types::I64]),
-        &[process],
-    );
+    let inst = body.call_named("fz_self_raw", &[process]);
     Ok(LowerOut::RawI64(body.b.inst_results(inst)[0]))
 }
 
@@ -1938,7 +1922,7 @@ fn lower_extern_fz_self<M: cranelift_module::Module>(
 fn lower_extern_fz_make_ref<M: cranelift_module::Module>(
     body: &mut CodegenFn<'_, '_, '_, M>,
 ) -> Result<LowerOut, CodegenError> {
-    let inst = body.call_named("fz_make_ref_raw", &sig1(&[], &[types::I64]), &[]);
+    let inst = body.call_named("fz_make_ref_raw", &[]);
     Ok(LowerOut::RawI64(body.b.inst_results(inst)[0]))
 }
 
@@ -1950,11 +1934,7 @@ fn lower_extern_fz_spawn<M: cranelift_module::Module>(
 ) -> Result<LowerOut, CodegenError> {
     let closure_ref = body.tagged_var(var_env, args[0].0);
     let process = body.process_arg();
-    let inst = body.call_named(
-        "fz_spawn_ref",
-        &sig1(&[types::I64, types::I64], &[types::I64]),
-        &[process, closure_ref],
-    );
+    let inst = body.call_named("fz_spawn_ref", &[process, closure_ref]);
     Ok(LowerOut::RawI64(body.b.inst_results(inst)[0]))
 }
 
@@ -1967,11 +1947,7 @@ fn lower_extern_fz_spawn_opt<M: cranelift_module::Module>(
     let closure_ref = body.tagged_var(var_env, args[0].0);
     let min_heap_size = body.as_raw_i64(var_env, args[1].0);
     let process = body.process_arg();
-    let inst = body.call_named(
-        "fz_spawn_opt_ref",
-        &sig1(&[types::I64, types::I64, types::I64], &[types::I64]),
-        &[process, closure_ref, min_heap_size],
-    );
+    let inst = body.call_named("fz_spawn_opt_ref", &[process, closure_ref, min_heap_size]);
     Ok(LowerOut::RawI64(body.b.inst_results(inst)[0]))
 }
 
@@ -1987,11 +1963,7 @@ fn lower_extern_fz_make_resource<M: cranelift_module::Module>(
     let payload_raw = body.value_raw_int(payload);
     let dtor_ref = body.tagged_var(var_env, args[1].0);
     let process = body.process_arg();
-    let inst = body.call_named(
-        "fz_make_resource_ref",
-        &sig1(&[types::I64, types::I64, types::I64], &[types::I64]),
-        &[process, payload_raw, dtor_ref],
-    );
+    let inst = body.call_named("fz_make_resource_ref", &[process, payload_raw, dtor_ref]);
     Ok(LowerOut::ValueRef(body.b.inst_results(inst)[0]))
 }
 

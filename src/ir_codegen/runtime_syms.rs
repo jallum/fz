@@ -34,6 +34,28 @@ pub(crate) fn sig1(params: &[ir::Type], rets: &[ir::Type]) -> Signature {
     s
 }
 
+/// Wire ABI of the runtime imports that codegen lowers by symbol name — the
+/// "process intrinsics" in prim.rs (and `fz_make_ref`). Every arg/return is a
+/// pointer-width word (a `Process*`, a value-ref, or a raw scalar), so the
+/// signature is just an arg count plus whether it returns. Keyed here, in the
+/// module that owns runtime wire ABIs, so call sites name the import instead of
+/// repeating a `sig1(...)` and the eight ABIs are auditable in one place.
+pub(crate) fn runtime_import_sig(name: &str) -> Signature {
+    use types::I64;
+    let (params, rets): (&[ir::Type], &[ir::Type]) = match name {
+        "fz_panic" => (&[I64, I64], &[]),
+        "fz_dbg_value" => (&[I64, I64], &[I64]),
+        "fz_send_ref" => (&[I64, I64, I64], &[I64]),
+        "fz_self_raw" => (&[I64], &[I64]),
+        "fz_make_ref_raw" => (&[], &[I64]),
+        "fz_spawn_ref" => (&[I64, I64], &[I64]),
+        "fz_spawn_opt_ref" => (&[I64, I64, I64], &[I64]),
+        "fz_make_resource_ref" => (&[I64, I64, I64], &[I64]),
+        other => panic!("runtime_import_sig: unknown runtime import `{other}`"),
+    };
+    sig1(params, rets)
+}
+
 /// Declare a SystemV runtime FFI fn as an Import in `jmod`.
 fn decl_import<M: cranelift_module::Module>(
     jmod: &mut M,
