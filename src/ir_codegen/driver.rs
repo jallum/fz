@@ -2068,10 +2068,10 @@ pub(crate) fn compile_with_backend_impl<
     // consumed, so erasing the MakeClosure here does not stale anything.
     crate::ir_planner::rewrite_known_target_closures(t, &mut working, pre_types);
     #[cfg(not(test))]
-    crate::ir_inline::inline_module(&mut working);
+    crate::ir_inline::inline_module_with_plan(&mut working, pre_types);
     #[cfg(test)]
     if !INLINE_DISABLED.with(|d| d.get()) {
-        crate::ir_inline::inline_module(&mut working);
+        crate::ir_inline::inline_module_with_plan(&mut working, pre_types);
     }
     crate::ir_fuse::fuse_blocks_with_telemetry(&mut working, tel);
     // Compile-time reducer pass. Folds calls whose return is statically

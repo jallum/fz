@@ -102,10 +102,13 @@ built:
 - `KnownFn` is a direct code identity with no runtime closure state. It may come
   from a zero-capture closure literal, but consumers must treat the useful fact
   as "this value can be called as this function" rather than "this value must be
-  represented as a closure."
+  represented as a closure." The module inliner consumes this distinction:
+  direct callsites to `KnownFn` targets may inline even if a zero-state closure
+  value also exists elsewhere in the module.
 - `KnownClosure` is a direct code identity plus captured runtime state. It can
   still support direct call edges, but the captures are real state and remain a
-  representation barrier until a pass proves otherwise.
+  representation barrier until a pass proves otherwise. Inlining must keep these
+  targets callable as closure entries.
 - `OpaqueCallable` is a callable boundary whose concrete target is not a single
   known function in the current plan. It keeps the indirect-call shape and the
   conservative materialization rules.
