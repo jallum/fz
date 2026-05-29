@@ -65,143 +65,6 @@ pub(crate) fn emit_map_get_value_ref_for_key<
     }
 }
 
-pub(crate) fn emit_map_put_for_key_and_value<
-    M: cranelift_module::Module,
-    T: crate::types::Types<Ty = crate::types::Ty>,
->(
-    body: &mut CodegenFn<'_, '_, '_, M>,
-    t: &mut T,
-    env: &CodegenEnv<'_>,
-    var_env: &HashMap<u32, CodegenValue>,
-    map_bits: ir::Value,
-    key: crate::fz_ir::Var,
-    value: crate::fz_ir::Var,
-    block_env: Option<&HashMap<crate::fz_ir::Var, crate::types::Ty>>,
-) -> ir::Value {
-    let runtime = env.runtime;
-    let fn_types = env.fn_types;
-    let process = body.process_arg();
-    let key_kind = expected_runtime_value_kind(t, fn_types, block_env, key);
-    let value_kind = expected_runtime_value_kind(t, fn_types, block_env, value);
-    let scalar_put_id = match (key_kind, value_kind) {
-        (
-            Some(fz_runtime::any_value::ValueKind::ATOM),
-            Some(fz_runtime::any_value::ValueKind::INT),
-        ) => Some(runtime.map_put_atom_key_int_id),
-        (
-            Some(fz_runtime::any_value::ValueKind::ATOM),
-            Some(fz_runtime::any_value::ValueKind::FLOAT),
-        ) => Some(runtime.map_put_atom_key_float_id),
-        (
-            Some(fz_runtime::any_value::ValueKind::ATOM),
-            Some(fz_runtime::any_value::ValueKind::ATOM),
-        ) => Some(runtime.map_put_atom_key_atom_id),
-        (
-            Some(fz_runtime::any_value::ValueKind::INT),
-            Some(fz_runtime::any_value::ValueKind::INT),
-        ) => Some(runtime.map_put_int_key_int_id),
-        (
-            Some(fz_runtime::any_value::ValueKind::INT),
-            Some(fz_runtime::any_value::ValueKind::FLOAT),
-        ) => Some(runtime.map_put_int_key_float_id),
-        (
-            Some(fz_runtime::any_value::ValueKind::INT),
-            Some(fz_runtime::any_value::ValueKind::ATOM),
-        ) => Some(runtime.map_put_int_key_atom_id),
-        (
-            Some(fz_runtime::any_value::ValueKind::FLOAT),
-            Some(fz_runtime::any_value::ValueKind::INT),
-        ) => Some(runtime.map_put_float_key_int_id),
-        (
-            Some(fz_runtime::any_value::ValueKind::FLOAT),
-            Some(fz_runtime::any_value::ValueKind::FLOAT),
-        ) => Some(runtime.map_put_float_key_float_id),
-        (
-            Some(fz_runtime::any_value::ValueKind::FLOAT),
-            Some(fz_runtime::any_value::ValueKind::ATOM),
-        ) => Some(runtime.map_put_float_key_atom_id),
-        _ => None,
-    };
-    if let Some(func_id) = scalar_put_id {
-        let key_arg = match key_kind {
-            Some(fz_runtime::any_value::ValueKind::INT) => {
-                body.value_raw_int(binding_for_var(var_env, key.0))
-            }
-            Some(fz_runtime::any_value::ValueKind::FLOAT) => {
-                body.value_raw_float(binding_for_var(var_env, key.0))
-            }
-            Some(fz_runtime::any_value::ValueKind::ATOM) => {
-                body.value_raw_atom(binding_for_var(var_env, key.0))
-            }
-            Some(_) => unreachable!("scalar map put requires scalar key kind"),
-            None => unreachable!("scalar map put requires known key kind"),
-        };
-        let value_arg = match value_kind {
-            Some(fz_runtime::any_value::ValueKind::INT) => {
-                body.value_raw_int(binding_for_var(var_env, value.0))
-            }
-            Some(fz_runtime::any_value::ValueKind::FLOAT) => {
-                body.value_raw_float(binding_for_var(var_env, value.0))
-            }
-            Some(fz_runtime::any_value::ValueKind::ATOM) => {
-                body.value_raw_atom(binding_for_var(var_env, value.0))
-            }
-            Some(_) => unreachable!("scalar map put requires scalar value kind"),
-            None => unreachable!("scalar map put requires known value kind"),
-        };
-        let fref = body.jmod.declare_func_in_func(func_id, body.b.func);
-        let inst = body
-            .b
-            .ins()
-            .call(fref, &[process, map_bits, key_arg, value_arg]);
-        return body.b.inst_results(inst)[0];
-    }
-
-    let key_ref = body.tagged_var(var_env, key.0);
-    let key_ref = body.mark_published_ref_aliased(key_ref);
-    let (fref, args): (ir::FuncRef, Vec<ir::Value>) = match value_kind {
-        Some(fz_runtime::any_value::ValueKind::INT) => (
-            body.jmod
-                .declare_func_in_func(runtime.map_put_int_id, body.b.func),
-            vec![
-                process,
-                map_bits,
-                key_ref,
-                body.value_raw_int(binding_for_var(var_env, value.0)),
-            ],
-        ),
-        Some(fz_runtime::any_value::ValueKind::FLOAT) => {
-            let value_f64 = body.value_raw_float(binding_for_var(var_env, value.0));
-            (
-                body.jmod
-                    .declare_func_in_func(runtime.map_put_float_id, body.b.func),
-                vec![process, map_bits, key_ref, value_f64],
-            )
-        }
-        Some(fz_runtime::any_value::ValueKind::ATOM) => (
-            body.jmod
-                .declare_func_in_func(runtime.map_put_atom_id, body.b.func),
-            vec![
-                process,
-                map_bits,
-                key_ref,
-                body.value_raw_atom(binding_for_var(var_env, value.0)),
-            ],
-        ),
-        _ => {
-            let value_ref = body.tagged_var(var_env, value.0);
-            let value_ref = body.mark_published_ref_aliased(value_ref);
-            (
-                body.jmod
-                    .declare_func_in_func(runtime.map_put_ref_id, body.b.func),
-                vec![process, map_bits, key_ref, value_ref],
-            )
-        }
-    };
-    let inst = body.b.ins().call(fref, &args);
-    body.b.inst_results(inst)[0]
-}
-
 fn value_raw_kind_parts<M: cranelift_module::Module>(
     body: &mut CodegenFn<'_, '_, '_, M>,
     value: CodegenValue,
@@ -710,32 +573,14 @@ pub(crate) fn lower_collection_prim<
                 .call(fref, &[process, reader_ref, field_spec, size_value]);
             LowerOut::ValueRef(body.b.inst_results(inst)[0])
         }
-        Prim::MakeMap(entries) => {
-            let mut map_bits = if entries.is_empty() {
-                let empty = body
-                    .jmod
-                    .declare_func_in_func(runtime.map_empty_id, body.b.func);
-                let process = body.process_arg();
-                let inst = body.b.ins().call(empty, &[process]);
-                body.b.inst_results(inst)[0]
-            } else {
-                body.b.ins().iconst(types::I64, 0)
-            };
-            for (k, v) in entries {
-                map_bits = emit_map_put_for_key_and_value(
-                    body, t, env, var_env, map_bits, *k, *v, block_env,
-                );
-            }
-            LowerOut::ValueRef(map_bits)
-        }
-        Prim::MapUpdate(base, entries) => {
-            let mut map_bits = body.any_ref_for_var(var_env, base.0);
-            for (k, v) in entries {
-                map_bits = emit_map_put_for_key_and_value(
-                    body, t, env, var_env, map_bits, *k, *v, block_env,
-                );
-            }
-            LowerOut::ValueRef(map_bits)
+        // `MakeMap`/`MapUpdate` are rewritten to the destination-passing form
+        // (`DestMapBegin`/`DestMapPut`/`DestMapFreeze`) by
+        // `ir_dest::lower_destinations`, which runs unconditionally before
+        // codegen and is enforced by `verify_module` — so they never reach
+        // here. Map construction always lowers through `DestMap*` (and so will
+        // `Map.put`/`Map.update` when the Map module lands).
+        Prim::MakeMap(_) | Prim::MapUpdate(..) => {
+            unreachable!("MakeMap/MapUpdate are lowered to DestMap by ir_dest before codegen")
         }
         Prim::DestMapBegin { base, extra, .. } => {
             let extra = body.b.ins().iconst(types::I32, *extra as i64);
