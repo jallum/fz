@@ -281,6 +281,14 @@ fn static_tests() -> Vec<(&'static str, fn())> {
             enum_list_allocations_pin_minimum_list_cons,
         ),
         (
+            "enum_reduce_resume_state_update_is_rendered",
+            enum_reduce_resume_state_update_is_rendered,
+        ),
+        (
+            "enum_reduce_parameter_reducer_still_renders_resume",
+            enum_reduce_parameter_reducer_still_renders_resume,
+        ),
+        (
             "continuation_materialization_boundaries_stay_explicit",
             continuation_materialization_boundaries_stay_explicit,
         ),
@@ -3035,6 +3043,42 @@ fn enum_list_allocations_pin_minimum_list_cons() {
 fn lazy_continuation_marker_word() -> u64 {
     fz_runtime::any_value::TAG_FWD
         << fz_runtime::any_value::AnyValueRefPacking::current().tag_shift()
+}
+
+fn enum_reduce_resume_state_update_is_rendered() {
+    let specs = dump_specs_for_source(
+        "enum_reduce_resume_state_update",
+        "fn reduce_list([], {:cont, acc}, _reducer), do: {:done, acc}\n\
+         fn reduce_list([h | t], {:cont, acc}, reducer), do: reduce_list(t, reducer(h, acc), reducer)\n\
+         fn main(), do: reduce_list([1, 2], {:cont, 0}, fn (x, acc) -> {:cont, acc + x})",
+    );
+    assert!(
+        specs.contains("resume=tail_call reduce_list#") && specs.contains("<result>"),
+        "reduce_list hot reducer continuation should render as a resume state update:\n{}",
+        specs
+    );
+}
+
+fn enum_reduce_parameter_reducer_still_renders_resume() {
+    let specs = dump_specs_for_source(
+        "enum_reduce_parameter_reducer",
+        "fn reduce_list([], {:cont, acc}, _reducer), do: {:done, acc}\n\
+         fn reduce_list([h | t], {:cont, acc}, reducer), do: reduce_list(t, reducer(h, acc), reducer)\n\
+         fn drive(reducer), do: reduce_list([1, 2], {:cont, 0}, reducer)\n\
+         fn plus(x, acc), do: {:cont, acc + x}\n\
+         fn times(x, acc), do: {:cont, acc * x}\n\
+         fn main() do\n\
+           drive(plus)\n\
+           drive(times)\n\
+         end",
+    );
+    assert!(
+        specs.contains("CallClosure Var(")
+            && specs.contains("resume=tail_call reduce_list#")
+            && specs.contains("<result>"),
+        "parameter-threaded reducer should still expose reduce_list resume shape:\n{}",
+        specs
+    );
 }
 
 fn clif_hex_word(word: u64) -> String {
