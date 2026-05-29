@@ -601,6 +601,60 @@ fn main(), do: Integerish.id(41)
     assert_eq!(image.run(entry), 42);
 }
 
+/// fz-t1m.1.5 — a closed-union protocol receiver dispatches to the correct
+/// impl per runtime value, identically in the interpreter and native codegen.
+///
+/// `describe`'s argument is the element type of `[7, [1, 2, 3]]`, i.e.
+/// `integer | list(int)` — a closed union over the `Integer` and `List`
+/// impls. The frontend rewrites the single stub call into a TypeTest/If
+/// cascade. The impls return distinguishing values (the integer itself vs the
+/// constant 100), so a swapped or missing arm would change the result:
+/// `describe(7) + describe([1,2,3])` = `7 + 100` = `107`.
+#[test]
+fn closed_union_protocol_switch_dispatch_runs_in_interp_and_native() {
+    const SRC: &str = r#"
+defprotocol Sizer do
+  fn size(value)
+end
+
+defimpl Sizer, for: Integer do
+  fn size(value), do: value
+end
+
+defimpl Sizer, for: List do
+  fn size(value), do: 100
+end
+
+fn describe(value), do: Sizer.size(value)
+
+fn main() do
+  case [7, [1, 2, 3]] do
+    [a, b] -> describe(a) + describe(b)
+    _ -> 0
+  end
+end
+"#;
+    let mut t = crate::types::ConcreteTypes;
+    let tel = crate::telemetry::NullTelemetry;
+    let frontend = crate::frontend::compile_source_with_types(
+        &mut t,
+        SRC.to_string(),
+        "sizer.fz".to_string(),
+        &tel,
+    )
+    .unwrap_or_else(|err| panic!("frontend: {:?}", err.diagnostics));
+    let entry = frontend.module.fn_by_name("main").expect("main").id;
+
+    // Interpreter path — runs the frontend module directly.
+    let interp = crate::ir_interp::run_main(&tel, &frontend.module).expect("interp run");
+    assert_eq!(interp, 107, "interpreter switch dispatch");
+
+    // Native path — same module through codegen.
+    let compiled = compile(&mut t, &frontend.module, &tel).expect("compile");
+    let image = CompiledImage::from_linked(compiled);
+    assert_eq!(image.run(entry), 107, "native switch dispatch");
+}
+
 #[test]
 fn runtime_enumerable_list_count_member_and_reduce() {
     let got = capture_main_with_runtime_graph(

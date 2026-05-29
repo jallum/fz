@@ -50,9 +50,13 @@ stable merge sort over the list implementation.
 
 `Protocol.t(...)` is not `any`. It is an implementation-domain constraint:
 a value of type `Enumerable.t(a)` is a value for which an `Enumerable`
-implementation is known. The element parameter spelled in `Enumerable.t(a)` is
-parsed but currently discarded — the resolved domain is the bare union of the
-protocol's known implementation target shapes, with no element refinement.
+implementation is known. A concrete element argument refines the domain: the
+protocol's domain template carries a reserved element variable
+(`PROTOCOL_ELEM_VAR`) in every element-parametric target position, and applying
+`Enumerable.t(integer)` instantiates it — so `list(...)` targets refine to
+`list(integer)`. A bare `Enumerable.t` or a free-variable element
+(`Enumerable.t(a)`) carries no refinement and resolves to the bare union of the
+protocol's implementation target shapes.
 
 ## Callback Surface vs Domain Type
 
@@ -62,22 +66,24 @@ identical.
 The callback surface is checked at implementation time. An implementation must
 define every required callback with the required arity, and must not provide
 callbacks the protocol never declared (`validate_protocol_impls`). Callback
-spec compatibility is not yet enforced: the declared callback `spec` is stored
-on `ProtocolCallbackFact` but currently carries `#[allow(dead_code)]` pending a
-later protocol ticket.
+spec compatibility is enforced: an implementation callback whose declared `spec`
+contradicts the protocol's declared callback spec is rejected.
 
 The domain type is checked at use sites and function boundaries. A spec that
 requires `P.t(...)` requires proof that the argument type is inside the
 implementation domain of `P`. That proof may come from a concrete impl target,
 a closed union whose arms all implement `P`, or an explicitly open boundary.
-Executable dispatch is emitted only when the planner statically selects a single
-implementation; open-boundary runtime lookup is not emitted.
+Executable dispatch is emitted when the planner statically selects a single
+implementation and for a closed union of implementing targets (switch
+dispatch); open-boundary runtime lookup is not emitted.
 
 Because the protocol-domain type is a real union (not `any`), a use site that
 passes an `Integer` where `Enumerable.t(a)` is required is rejected at spec
 checking: `Integer` is disjoint from the `Enumerable` domain, so it fails the
-generic "not a subtype of declared" check. A protocol-specific message such as
-"List implements Enumerable, Integer does not" is not yet produced.
+generic "not a subtype of declared" check. A protocol call on a receiver wholly
+outside the domain also raises a dedicated diagnostic at dispatch
+(`type/protocol-no-impl`) naming the protocol, the receiver type, and the known
+implementors.
 
 ## Implementation Targets
 
@@ -107,10 +113,12 @@ Compilation can see two useful domain shapes:
 - a closed executable or link domain, where the linked implementation set is
   known.
 
-Open domains type-check calls and specs. Executable dispatch is emitted only
-when the planner selects a single static implementation callback; open or erased
-receiver domains get no runtime-lookup fallback. Closed domains let the planner
-choose a direct call to the selected implementation without a fallback path.
+Open domains type-check calls and specs. Executable dispatch is emitted when the
+planner selects a single static implementation callback and for a closed union
+of implementing targets (a TypeTest/If cascade of per-target direct calls);
+open or erased receiver domains get no runtime-lookup fallback. Closed domains
+let the planner resolve every dispatch to a direct implementation call without a
+fallback path.
 
 ## Dispatch Outcomes
 
@@ -128,18 +136,30 @@ one of these outcomes:
   callback is known by `ExportKey`, but its body lives in another unit until
   module graph linking.
 
-When no impl matches, `protocol_dispatch_key` returns `None`: the planner does
-not yet emit a dedicated "no implementation" diagnostic. The unplanned protocol
-stub is left in place, and rejection happens earlier at spec checking
-(`spec_check::validate_specs`), where a receiver type disjoint from the
-protocol-domain union fails the ordinary "not a subtype of declared" check.
+When the receiver is a closed union of two or more locally implemented targets
+(no single subtype match, no residual), a frontend rewrite
+(`rewrite_closed_union_protocol_dispatch`) replaces the stub call with a
+`TypeTest`/`If` cascade of per-target direct calls. Receiver narrowing makes
+each arm's call resolve to the right implementation when the module is
+re-planned, so the cascade is ordinary `TypeTest`/`If`/`Call` IR — it lowers in
+the interpreter, JIT, and AOT with no dispatch-specific codegen. The rewrite
+lives in the shared frontend (beside `apply_planned_direct_call_targets`), so
+the interpreter and codegen see the same devirtualized IR.
 
-Finite-union switch dispatch and runtime lookup for open or erased receiver
-domains are not emitted.
+When the receiver is wholly outside the domain, the planner emits a dedicated
+`type/protocol-no-impl` diagnostic at dispatch (naming the protocol, the
+receiver type, and the known implementors); spec checking
+(`spec_check::validate_specs`) also rejects a disjoint receiver via the ordinary
+"not a subtype of declared" check.
 
-Static direct dispatch does not require heap boxing of scalar receivers. The
+Runtime lookup for open or erased receiver domains is not emitted: a receiver
+that is `any`, or a union with a residual outside every known target, keeps the
+unplanned protocol stub and halts at runtime.
+
+Direct and switch dispatch do not require heap boxing of scalar receivers. The
 selected callback ABI and the caller's argument shape cooperate the same way
-direct-call variants and return-demand variants do.
+direct-call variants and return-demand variants do; the cascade tests the
+receiver's existing runtime tag.
 
 ## No-Replanning Rule
 
@@ -169,25 +189,29 @@ passes needed to make normal linking correct.
 ## Diagnostics
 
 Protocol diagnostics are tied to the typed fact that failed. The resolver
-(`validate_protocol_impls` plus the collection passes) currently produces:
+(`validate_protocol_impls` plus the collection passes) and the planner's
+dispatch pass (`collect_protocol_no_impl_diagnostics`) produce:
 
-- duplicate implementation: names the `(protocol, target)` pair, carrying the
-  span of the duplicate impl site (a single span, not both sites);
+- duplicate implementation: names the `(protocol, target)` pair and points at
+  both the first and the duplicate impl sites;
 - duplicate protocol declaration, and duplicate callback declaration within a
   protocol;
 - impl references an unknown protocol;
 - missing callback: names the protocol, target, and the missing callback
-  `name/arity` (an arity that does not match a declared callback surfaces here
-  rather than as a distinct "arity mismatch" message);
+  `name/arity`;
+- callback arity mismatch: an impl that provides a declared callback name at the
+  wrong arity is reported as an arity mismatch, distinct from "missing callback";
+- callback spec mismatch: an impl callback whose declared spec contradicts the
+  protocol's declared callback spec;
 - unknown/extra callback: an impl that provides a callback the protocol never
-  declared, named by protocol, target, and `name/arity`.
+  declared (at any arity), named by protocol, target, and `name/arity`;
+- no implementation at dispatch (`type/protocol-no-impl`): a protocol call whose
+  receiver type is disjoint from every implementing target, naming the protocol,
+  receiver type, and known implementors.
 
-The following diagnostics are intended but not yet implemented: a use-site
-"missing implementation" message naming the receiver type and known
-implementors; a dedicated callback-arity-mismatch message; a callback spec
-mismatch; and a protocol-domain spec mismatch naming the failing parameter or
-return position. A protocol-domain constraint that fails today surfaces only as
-the generic spec-check "not a subtype" diagnostic.
+A protocol-domain spec mismatch that names the failing parameter or return
+position is not yet produced: such a constraint surfaces as the generic
+spec-check "not a subtype" diagnostic.
 
 These are compiler diagnostics, not runtime surprises, whenever the receiver
 type is statically known enough to prove failure.
@@ -203,8 +227,10 @@ subsystem:
   protocol AST is still available, validates duplicate impls and callback
   coverage, and installs `Protocol.t` domain aliases in module type envs.
 - `type_expr` parses dotted parametric protocol-domain spellings such as
-  `Enumerable.t(integer)` (the type arguments are consumed and discarded) and
-  looks `Enumerable.t` up in the module type env. The looked-up type is built by
+  `Enumerable.t(integer)` and looks `Enumerable.t` up in the module type env. A
+  concrete element argument instantiates the domain template's reserved element
+  variable (refining `list(...)` targets); a bare `Enumerable.t` or free-variable
+  element carries no refinement. The base domain is built by
   `resolve::protocol_domain_type` as an open nominal marker
   (`opaque_of(protocol_domain_tag)`) unioned with the known implementation
   target shapes, never `any`.
@@ -224,9 +250,10 @@ subsystem:
   match and target arity; arity mismatch means the candidate is not the same
   callsite.
 - Frontend checking applies planned direct call targets back onto protocol
-  stub callsites before interpretation or native emission. The interpreter and
-  codegen therefore execute ordinary typed impl calls, preserving scalar
-  argument representations such as raw integers.
+  stub callsites and rewrites closed-union receivers into `TypeTest`/`If`
+  cascades (`ir_planner::switch_dispatch`) before interpretation or native
+  emission. The interpreter and codegen therefore execute ordinary typed impl
+  calls, preserving scalar argument representations such as raw integers.
 - [`dispatch-as-planner-output.md`](dispatch-as-planner-output.md) defines planner-owned dispatch facts.
 - `SpecPlan.call_edges` is keyed by `CallsiteId` and stores selected call-edge
   capabilities.

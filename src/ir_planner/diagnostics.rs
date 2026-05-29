@@ -592,7 +592,7 @@ fn spec_for_diag<'a>(
         .expect("diagnostic spec key must have a registered or ad-hoc plan")
 }
 
-fn env_after_block_stmts<
+pub(crate) fn env_after_block_stmts<
     T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
 >(
     t: &mut T,

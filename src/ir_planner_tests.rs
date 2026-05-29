@@ -2715,6 +2715,113 @@ fn main(), do: P.each([1])
     );
 }
 
+// ---- fz-t1m.1.5 — closed-domain protocol switch dispatch ----
+
+/// A protocol call whose receiver is a closed union of two implementing
+/// targets (`7 | list(int)`, covered by `Integer` and `List`) is rewritten
+/// from a single stub call into a `TypeTest`/`If` cascade with one direct
+/// call per impl. After the rewrite the dispatching fn calls the concrete
+/// impls — never the `__protocol__` stub.
+#[test]
+fn closed_union_protocol_receiver_rewrites_to_typetest_cascade() {
+    let src = r#"
+defprotocol Sizer do
+  fn size(value)
+end
+
+defimpl Sizer, for: Integer do
+  fn size(value), do: 1
+end
+
+defimpl Sizer, for: List do
+  fn size(value), do: 2
+end
+
+fn describe(value), do: Sizer.size(value)
+
+fn main() do
+  case [7, [1, 2, 3]] do
+    [a, b] -> describe(a) + describe(b)
+    _ -> 0
+  end
+end
+"#;
+    let (mut t, mut m, mt) = plan_protocol_src(src);
+    crate::ir_planner::rewrite_closed_union_protocol_dispatch(&mut t, &mut m, &mt);
+
+    let describe = m.fn_by_name("describe").expect("describe fn");
+
+    // The dispatch fn no longer calls a protocol stub directly.
+    let still_calls_stub = describe.blocks.iter().any(|b| match &b.terminator {
+        crate::fz_ir::Term::Call { callee, .. } | crate::fz_ir::Term::TailCall { callee, .. } => {
+            m.protocol_call_targets.contains_key(callee)
+        }
+        _ => false,
+    });
+    assert!(
+        !still_calls_stub,
+        "after the rewrite, describe must not call the __protocol__ stub"
+    );
+
+    // It tests the receiver's type at least once...
+    let has_type_test = describe.blocks.iter().any(|b| {
+        b.stmts
+            .iter()
+            .any(|crate::fz_ir::Stmt::Let(_, prim)| matches!(prim, crate::fz_ir::Prim::TypeTest(..)))
+    });
+    assert!(has_type_test, "rewrite must emit a TypeTest on the receiver");
+
+    // ...and dispatches to two distinct concrete impl fns.
+    let mut impl_callees: Vec<crate::fz_ir::FnId> = describe
+        .blocks
+        .iter()
+        .filter_map(|b| match &b.terminator {
+            crate::fz_ir::Term::Call { callee, .. } | crate::fz_ir::Term::TailCall { callee, .. } => {
+                Some(*callee)
+            }
+            _ => None,
+        })
+        .collect();
+    impl_callees.sort();
+    impl_callees.dedup();
+    assert_eq!(
+        impl_callees.len(),
+        2,
+        "closed union over Integer and List must produce two direct-call arms; got {:?}",
+        impl_callees
+            .iter()
+            .map(|id| &m.fn_by_id(*id).name)
+            .collect::<Vec<_>>()
+    );
+}
+
+/// A single-target receiver (a plain list, only `List` implements `Sizer`)
+/// is left untouched — ordinary single dispatch, no cascade.
+#[test]
+fn single_target_protocol_receiver_is_not_rewritten() {
+    let src = r#"
+defprotocol Sizer do
+  fn size(value)
+end
+
+defimpl Sizer, for: List do
+  fn size(value), do: 2
+end
+
+fn describe(value), do: Sizer.size(value)
+
+fn main(), do: describe([1, 2, 3])
+"#;
+    let (mut t, mut m, mt) = plan_protocol_src(src);
+    let before = m.fn_by_name("describe").unwrap().blocks.len();
+    crate::ir_planner::rewrite_closed_union_protocol_dispatch(&mut t, &mut m, &mt);
+    let after = m.fn_by_name("describe").unwrap().blocks.len();
+    assert_eq!(
+        before, after,
+        "a single-target receiver must not grow a switch cascade"
+    );
+}
+
 // ---- fz-swt.8 — `.value` accessor: typing + visibility gating ----
 
 /// Inside the declaring module, `handle.value` typechecks as the inner
@@ -3243,3 +3350,6 @@ fn rewrite_keeps_non_constant_closure() {
         "apply's parameters must be untouched when its closure is non-constant"
     );
 }
+
+
+
