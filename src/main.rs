@@ -11,6 +11,7 @@ mod ir_callgraph;
 mod ir_capture_norm;
 mod ir_codegen;
 mod ir_dest;
+mod ir_diverge;
 mod ir_extern_marshal;
 mod ir_interp;
 // ir_liveness removed (fz-ul4.11.31 subsumes .11.30): frame schemas are

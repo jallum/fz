@@ -2093,6 +2093,9 @@ pub(crate) fn compile_with_backend_impl<
     // can be applied before the planner commits to specs. See
     // `docs/dispatch-as-planner-output.md` (Worry 1).
     crate::ir_inline::inline_single_use_conts(&mut working);
+    // Honour `:: never`: cut dead tails after diverging calls (e.g. inlined
+    // `assert`'s `panic` branch) so the planner/codegen never see them.
+    crate::ir_diverge::truncate_diverging_blocks(module.module_path(), &mut working, tel);
     let module_plan = crate::ir_planner::plan_module(t, &working, tel);
     // Snapshot per-fn call-shape multisets right after the planner commits
     // to specs. The post-planner passes (branch_fold, fold, const_bs::fold,

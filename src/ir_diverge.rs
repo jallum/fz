@@ -1,0 +1,150 @@
+//! fz-6df.21 — honour `:: never` by truncating control flow after a
+//! diverging call.
+//!
+//! A call to a `:: never` extern (e.g. `fz_panic`) does not return, so any
+//! statement or terminator after it in the same block is unreachable.
+//! Inlining a function with a never-branch — `assert`'s `else: panic` is the
+//! canonical case — splices that never value into the caller's continuation,
+//! leaving a reachable-but-dead tail-call whose argument is bottom-typed. The
+//! planner cannot give that callsite a call edge (its argument is `none`) and
+//! codegen then panics when it tries to emit the dead terminator.
+//!
+//! This pass makes the IR honour `never` by construction: a block is cut at
+//! its first diverging call and re-terminated with `Halt`, so the dead tail
+//! never reaches the planner or codegen.
+
+use crate::fz_ir::{ExternId, ExternTy, Module, Prim, Stmt, Term};
+use std::collections::HashSet;
+
+/// Truncate every block at its first `:: never` extern call.
+pub fn truncate_diverging_blocks(
+    module_path: &str,
+    m: &mut Module,
+    tel: &dyn crate::telemetry::Telemetry,
+) {
+    let never: HashSet<ExternId> = m
+        .externs
+        .iter()
+        .filter(|e| e.ret == ExternTy::Never)
+        .map(|e| e.id)
+        .collect();
+    if never.is_empty() {
+        return;
+    }
+    for f in &mut m.fns {
+        for b in &mut f.blocks {
+            let cut = b.stmts.iter().position(|Stmt::Let(_, prim)| {
+                matches!(prim, Prim::Extern(eid, _) if never.contains(eid))
+            });
+            let Some(idx) = cut else { continue };
+            let Stmt::Let(result, _) = b.stmts[idx];
+            // Already truncated (idempotent): the diverging call is the last
+            // statement and the block halts on its result.
+            let already = idx + 1 == b.stmts.len()
+                && matches!(b.terminator, Term::Halt(v) if v == result);
+            if already {
+                continue;
+            }
+            b.stmts.truncate(idx + 1);
+            b.terminator = Term::Halt(result);
+            tel.execute(
+                &["fz", "ir", "diverge", "block_truncated"],
+                &crate::measurements! {
+                    fn_id: f.id.0 as u64,
+                    block_id: b.id.0 as u64,
+                },
+                &crate::metadata! {
+                    module_path: module_path.to_owned(),
+                    fn_name: f.name.clone(),
+                },
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::fz_ir::{ExternArg, ExternDecl, ExternId, FnBuilder, FnId, ModuleBuilder, Term};
+
+    /// A block whose first statement is a `:: never` call, followed by a dead
+    /// statement and a tail-call, is cut to `[never-call]` + `Halt(result)`.
+    #[test]
+    fn truncates_dead_tail_after_never_call() {
+        let panic_id = ExternId(0);
+        let mut b = FnBuilder::new(FnId(0), "caller");
+        let entry = b.block(vec![]);
+        let arg = b.let_(entry, Prim::Const(crate::fz_ir::Const::Nil));
+        let result = b.let_(
+            entry,
+            Prim::Extern(panic_id, vec![ExternArg::fixed(arg, ExternTy::Any)]),
+        );
+        // Dead code after the diverging call: another const + a tail-call.
+        let _dead = b.let_(entry, Prim::Const(crate::fz_ir::Const::Int(7)));
+        b.set_terminator(
+            entry,
+            Term::TailCall {
+                ident: crate::fz_ir::CallsiteIdent::from_source(crate::diag::Span::DUMMY),
+                callee: FnId(1),
+                args: vec![result],
+                is_back_edge: false,
+            },
+        );
+        let mut mb = ModuleBuilder::new();
+        mb.add_fn(b.build());
+        let mut m = mb.build();
+        let mut ct = crate::types::ConcreteTypes;
+        let any = crate::types::Types::any(&mut ct);
+        m.externs.push(ExternDecl {
+            id: panic_id,
+            fz_name: "fz_panic".into(),
+            symbol: "fz_panic".into(),
+            params: vec![ExternTy::Any],
+            variadic: false,
+            ret: ExternTy::Never,
+            ret_descr: any,
+        });
+        m.extern_idx.insert(panic_id, 0);
+
+        truncate_diverging_blocks("test", &mut m, &crate::telemetry::NullTelemetry);
+
+        let entry_block = m.fns[0].block(m.fns[0].entry);
+        assert_eq!(
+            entry_block.stmts.len(),
+            2,
+            "stmts cut to [nil-const, never-call]; dead const dropped"
+        );
+        assert!(
+            matches!(entry_block.terminator, Term::Halt(v) if v == result),
+            "block re-terminated with Halt on the diverging call's result"
+        );
+    }
+
+    /// A block with no `:: never` call is untouched.
+    #[test]
+    fn leaves_ordinary_blocks_alone() {
+        let mut b = FnBuilder::new(FnId(0), "caller");
+        let entry = b.block(vec![]);
+        let v = b.let_(entry, Prim::Const(crate::fz_ir::Const::Int(1)));
+        b.set_terminator(
+            entry,
+            Term::TailCall {
+                ident: crate::fz_ir::CallsiteIdent::from_source(crate::diag::Span::DUMMY),
+                callee: FnId(1),
+                args: vec![v],
+                is_back_edge: false,
+            },
+        );
+        let mut mb = ModuleBuilder::new();
+        mb.add_fn(b.build());
+        let mut m = mb.build();
+
+        truncate_diverging_blocks("test", &mut m, &crate::telemetry::NullTelemetry);
+
+        let entry_block = m.fns[0].block(m.fns[0].entry);
+        assert!(matches!(
+            entry_block.terminator,
+            Term::TailCall { callee: FnId(1), .. }
+        ));
+    }
+}
