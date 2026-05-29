@@ -24,5 +24,6 @@ that keep future work aligned.
 | [docs/repl-session.md](docs/repl-session.md) | REPL world/bindings/runtime layering, chunk synthesis, docs/help, or macro/runtime boundaries. |
 | [docs/reduction-yielding.md](docs/reduction-yielding.md) | Reduction-driven scheduler yielding, the per-process budget, allocation-pressure expiration, the continuation reserve, or boundary maintenance. |
 | [docs/scheduler-zero-arg-closures.md](docs/scheduler-zero-arg-closures.md) | Scheduler, receive, yield, spawn, timeout, or continuation re-entry. |
+| [docs/state-transitions.md](docs/state-transitions.md) | Calls, continuations, closure calls, join points, loopification, or `Enum.reduce` state-transition planning. |
 | [docs/any-value.md](docs/any-value.md) | `AnyValueRef`, `ValueRef`, raw scalar lanes, boxed scalars, pointer format, or GC-visible values. |
 | [docs/telemetry.md](docs/telemetry.md) | Adding telemetry, testing compiler decisions, or measuring performance work. |
