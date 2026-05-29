@@ -165,8 +165,7 @@ construct a caller-owned `Process` or read a print buffer; they observe:
 - `DbgCapture` → the `fz.runtime.dbg` line stream.
 
 `observe(compiled, entry)` (codegen tests) bundles both, and the `run_main` /
-`capture_main` family is built on it. (Supersedes the earlier
-`fz.runtime.task_exited` event.)
+`capture_main` family is built on it.
 
 ## What To Put In Events
 
