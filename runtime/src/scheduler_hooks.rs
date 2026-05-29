@@ -52,7 +52,7 @@ pub type SendHook = extern "C" fn(receiver_pid: u32, msg_ref_word: u64);
 /// the binary can emit it as a telemetry event on the current Runtime's sink.
 /// Production stdout still happens at the `emit_print_line` call site; this is
 /// the additional observation channel.
-pub type OutputHook = extern "C" fn(line_ptr: *const u8, line_len: usize);
+pub type OutputHook = extern "C" fn(tel: *const (), line_ptr: *const u8, line_len: usize);
 
 /// fz-swt.10 — `fz_make_resource(payload, dtor_closure)` FFI signature on
 /// the binary side. The runtime crate forwards the raw integer payload and an
@@ -93,28 +93,8 @@ pub type TimerCancelHook = extern "C" fn(timer_id: u64);
 // crate; CURRENT_PROCESS demonstrates that runtime-crate TLS works fine
 // under AOT.
 thread_local! {
-    static OUTPUT_HOOK: Cell<usize> = const { Cell::new(0) };
     static TIMER_SCHEDULE_HOOK: Cell<usize> = const { Cell::new(0) };
     static TIMER_CANCEL_HOOK: Cell<usize> = const { Cell::new(0) };
-}
-
-pub fn install_output_hook(hook: OutputHook) {
-    OUTPUT_HOOK.with(|c| c.set(hook as usize));
-}
-
-pub fn clear_output_hook() {
-    OUTPUT_HOOK.with(|c| c.set(0));
-}
-
-/// Forward a rendered output line to the installed sink. No-op when no
-/// Runtime is driving (e.g. unit tests that call render paths directly).
-pub(crate) fn dispatch_output(line: &str) {
-    let raw = OUTPUT_HOOK.with(|c| c.get());
-    if raw == 0 {
-        return;
-    }
-    let hook: OutputHook = unsafe { std::mem::transmute(raw) };
-    hook(line.as_ptr(), line.len());
 }
 
 pub fn install_timer_schedule_hook(hook: TimerScheduleHook) {

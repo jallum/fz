@@ -231,7 +231,6 @@ impl IrInterpRuntime {
         // Route fz output (dbg/print) to telemetry for the duration of the
         // drive — same seam the compiled scheduler uses, so dbg observability
         // is engine-uniform.
-        let _output_scope = crate::runtime::route_output_to(tel);
 
         // Per-context dispatch table for this interpreter run. The interpreter
         // is its own scheduler and handles spawn/send/timer in-engine, so the
@@ -242,6 +241,9 @@ impl IrInterpRuntime {
         let mut exec_ctx = fz_runtime::exec_ctx::ExecCtx {
             scheduler: self as *mut Self as *mut (),
             tel: (&tel) as *const &dyn crate::telemetry::Telemetry as *const (),
+            // dbg/print routes to telemetry through the same thunk the compiled
+            // engine uses; the rest of the BIF callbacks are interpreter-internal.
+            output: Some(crate::runtime::output_hook_thunk),
             ..fz_runtime::exec_ctx::ExecCtx::empty()
         };
 

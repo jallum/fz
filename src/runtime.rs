@@ -141,46 +141,19 @@ extern "C" fn send_hook_thunk(receiver_pid: u32, msg_ref_word: u64) {
     send_via_current_runtime(receiver_pid, msg_ref);
 }
 
-thread_local! {
-    /// The telemetry sink fz output (dbg/print) is routed to. Set by whichever
-    /// scheduler is driving — compiled OR interpreter — so dbg observability is
-    /// engine-uniform. Defaults to the silent sink.
-    static CURRENT_TEL: std::cell::Cell<*const dyn crate::telemetry::Telemetry> =
-        std::cell::Cell::new(&NULL_TELEMETRY as *const dyn crate::telemetry::Telemetry);
-}
-
-/// RAII scope routing fz output to `tel` as `fz.runtime.dbg` events for its
-/// lifetime. Installs the output hook and points `CURRENT_TEL` at `tel`;
-/// restores both on drop. Both schedulers open one around their drive loop, so
-/// dbg routes to telemetry identically on every engine. `tel` must outlive the
-/// scope (it does — the scope lives only inside the drive).
-pub struct OutputTelemetryScope {
-    prev: *const dyn crate::telemetry::Telemetry,
-}
-
-pub fn route_output_to(tel: &dyn crate::telemetry::Telemetry) -> OutputTelemetryScope {
-    fz_runtime::scheduler_hooks::install_output_hook(output_hook_thunk);
-    // Erase the borrow's lifetime: the scope restores the previous pointer on
-    // drop, so the stored pointer never outlives `tel`.
-    let erased: *const (dyn crate::telemetry::Telemetry + 'static) =
-        unsafe { std::mem::transmute(tel as *const dyn crate::telemetry::Telemetry) };
-    let prev = CURRENT_TEL.with(|c| c.replace(erased));
-    OutputTelemetryScope { prev }
-}
-
-impl Drop for OutputTelemetryScope {
-    fn drop(&mut self) {
-        CURRENT_TEL.with(|c| c.set(self.prev));
-        fz_runtime::scheduler_hooks::clear_output_hook();
+/// Output sink for `dbg`/print: the runtime's `emit_print_line` forwards each
+/// rendered line through `ExecCtx.output` (per-context, set at scheduler entry)
+/// with the context's telemetry sink. Emits it as `fz.runtime.dbg` — the
+/// observation channel beside production stdout — engine-uniformly. `tel` is the
+/// erased `&dyn Telemetry` the scheduler stored in the ExecCtx; null = no sink.
+pub(crate) extern "C" fn output_hook_thunk(tel: *const (), line_ptr: *const u8, line_len: usize) {
+    if tel.is_null() {
+        return;
     }
-}
-
-/// Output sink: `emit_print_line` (the shared dbg/print render seam) forwards
-/// each rendered line here. Emits it as `fz.runtime.dbg` on `CURRENT_TEL` — the
-/// observation channel beside production stdout, set by whichever engine drives.
-extern "C" fn output_hook_thunk(line_ptr: *const u8, line_len: usize) {
-    let tel = CURRENT_TEL.with(|c| c.get());
-    let tel: &dyn crate::telemetry::Telemetry = unsafe { &*tel };
+    // ExecCtx.tel is `(&sink) as *const &dyn Telemetry` — a thin pointer to the
+    // scheduler's `&dyn Telemetry`; deref it back to the fat reference.
+    let tel: &dyn crate::telemetry::Telemetry =
+        unsafe { *(tel as *const &dyn crate::telemetry::Telemetry) };
     let bytes = unsafe { std::slice::from_raw_parts(line_ptr, line_len) };
     let line = std::str::from_utf8(bytes).unwrap_or("<non-utf8 dbg line>");
     tel.event(&["fz", "runtime", "dbg"], crate::metadata! { line: line });
@@ -524,7 +497,6 @@ impl<'a> Runtime<'a> {
         // (now in the runtime crate) can dispatch back into this
         // Runtime. The runtime crate can't see Runtime directly, so it
         // calls through extern "C" fn pointers we register here.
-        let _output_scope = route_output_to(self.tel);
         // fz-swt.10 — install the resource-allocation hook if a Module
         // has been attached via `with_module`. Programs that never call
         // `make_resource` leave it clear; calls in that mode panic with

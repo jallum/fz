@@ -32,7 +32,19 @@ pub mod timer;
 
 pub(crate) fn emit_print_line(s: String) {
     println!("{}", s);
-    crate::scheduler_hooks::dispatch_output(&s);
+    // Beyond production stdout, forward the line to the running task's telemetry
+    // sink as an observation channel. The sink + callback live on the task's
+    // ExecCtx (per-context, not a thread-global); reached via the installed
+    // process during a quantum.
+    if let Some(process) = crate::process::try_current_process() {
+        let ctx = process.ctx;
+        if !ctx.is_null() {
+            let ctx = unsafe { &*ctx };
+            if let Some(output) = ctx.output {
+                output(ctx.tel, s.as_ptr(), s.len());
+            }
+        }
+    }
 }
 
 /// Aborts with the fz value rendered to stderr.
