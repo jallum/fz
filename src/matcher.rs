@@ -7,19 +7,20 @@
 
 use crate::diag::Span;
 use crate::fz_ir::Var;
+use serde::{Deserialize, Serialize};
 
 pub type BodyId = u32;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct NodeId(pub u32);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct InputId(pub u32);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct PinnedId(pub u32);
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Matcher {
     pub inputs: Vec<MatcherInput>,
     pub pinned: Vec<PinnedInput>,
@@ -28,7 +29,7 @@ pub struct Matcher {
     pub root: NodeId,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GuardDispatch {
     pub matcher: Matcher,
     pub bodies: Vec<GuardExpr>,
@@ -70,7 +71,7 @@ impl Matcher {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MatcherInput {
     /// Optional IR var this input came from. Receive matchers use ABI inputs
     /// instead; inline case/function matchers usually retain the source var.
@@ -78,14 +79,14 @@ pub struct MatcherInput {
     pub span: Span,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PinnedInput {
     pub name: String,
     pub var: Option<Var>,
     pub span: Span,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum SubjectRef {
     Input(InputId),
     TupleField {
@@ -108,7 +109,7 @@ pub enum SubjectRef {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum MatcherConst {
     Int(i64),
     FloatBits(u64),
@@ -121,7 +122,7 @@ pub enum MatcherConst {
     PreparedKey(u32),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MatcherNode {
     Fail {
         span: Span,
@@ -148,21 +149,21 @@ pub enum MatcherNode {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MatcherLeaf {
     pub body_id: BodyId,
     pub bindings: Vec<MatcherBinding>,
     pub span: Span,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MatcherBinding {
     pub name: String,
     pub source: SubjectRef,
     pub span: Span,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum GuardExpr {
     Const(MatcherConst),
     Subject(SubjectRef),
@@ -182,13 +183,13 @@ pub enum GuardExpr {
     },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum GuardUnaryOp {
     Not,
     Neg,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum GuardBinOp {
     Add,
     Sub,
@@ -205,7 +206,7 @@ pub enum GuardBinOp {
     Or,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MatcherTest {
     EqConst {
         subject: SubjectRef,
@@ -244,7 +245,7 @@ pub enum MatcherTest {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MatcherBitField {
     pub ty: MatcherBitType,
     pub size: Option<MatcherBitSize>,
@@ -256,13 +257,13 @@ pub struct MatcherBitField {
     pub direct_bindings: Vec<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MatcherBitSize {
     Literal(u32),
     BindingName(String),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum MatcherBitType {
     Integer,
     Float,
@@ -273,14 +274,14 @@ pub enum MatcherBitType {
     Utf32,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum MatcherEndian {
     Big,
     Little,
     Native,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SwitchKind {
     TupleArity,
     Atom,
@@ -292,7 +293,7 @@ pub enum SwitchKind {
     ListCons,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum SwitchKey {
     Arity(u32),
     AtomName(String),

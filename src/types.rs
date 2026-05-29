@@ -37,7 +37,7 @@ pub use visibility::{OpaqueVisibilityError, VisibilityTypes};
 /// Opaque handle to a type. Inner representation is private and is
 /// expected to change (interned id, BDD root, ...) without consumer
 /// impact. Consumers must go through `Types` for every operation.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct Ty(pub(crate) Arc<Descr>);
 
 /// Semantic specialization-key slot.

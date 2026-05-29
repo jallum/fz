@@ -140,7 +140,7 @@ impl std::fmt::Display for TypeExprError {
 
 /// fz-ul4.31.4 — Resolved form of a `SpecDecl` after type-expression
 /// lookup. Produced by `resolve_spec_decl` given a `ModuleTypeEnv`.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ResolvedSpec {
     pub params: Vec<crate::types::Ty>,
     pub result: crate::types::Ty,

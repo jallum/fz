@@ -5,7 +5,7 @@ use std::rc::Rc;
 /// A `Vec<Token>` representing a type expression whose resolution is deferred
 /// until the full module type environment is available. Used in five AST fields
 /// that are parsed eagerly but resolved later via `parse_type_expr`.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct TypeExprBody(pub Vec<crate::lexer::Token>);
 
 /// Wraps an AST node with the source span that produced it. Every Expr
@@ -276,7 +276,7 @@ impl BitFieldSpec {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum BitType {
     Integer,
     Float,
@@ -295,7 +295,7 @@ pub enum BitSize {
     Var(String),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Endian {
     Big,
     Little,
@@ -338,7 +338,7 @@ pub enum Attribute {
     Spec(SpecDecl),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SpecDecl {
     pub name: String,
     /// Per-parameter type-expression body tokens. `param_body_tokens.len()`

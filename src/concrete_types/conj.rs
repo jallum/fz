@@ -1,6 +1,6 @@
 //! One conjunctive clause inside a DNF: `⋀ pos  ∧  ⋀ (¬neg)`.
 
-#[derive(Clone, PartialEq, Eq, Hash)]
+#[derive(Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub(crate) struct Conj<T> {
     pub(crate) pos: Vec<T>,
     pub(crate) neg: Vec<T>,
