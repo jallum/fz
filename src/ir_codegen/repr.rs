@@ -129,27 +129,16 @@ impl MidFlightArgShape {
 
     pub(crate) fn replay_from_capture<M: cranelift_module::Module>(
         &self,
-        b: &mut FunctionBuilder<'_>,
-        jmod: &mut M,
-        runtime: &RuntimeRefs,
+        body: &mut CodegenFn<'_, '_, '_, M>,
         value: CodegenValue,
         out: &mut Vec<ir::Value>,
     ) {
         match self {
             MidFlightArgShape::Value(ArgRepr::RawF64) => {
-                let value = match value {
-                    CodegenValue::RawF64(value) => value,
-                    CodegenValue::AnyRef(value_ref) => {
-                        let fref = jmod.declare_func_in_func(runtime.unbox_float_id, b.func);
-                        let inst = b.ins().call(fref, &[value_ref]);
-                        b.inst_results(inst)[0]
-                    }
-                    _ => panic!("mid-flight RawF64 capture replay expected RawF64/ref"),
-                };
-                out.push(value);
+                out.push(body.value_raw_float(value));
             }
             MidFlightArgShape::Value(ArgRepr::RawInt) => {
-                out.push(codegen_value_raw_int(b, jmod, runtime, value));
+                out.push(body.value_raw_int(value));
             }
             MidFlightArgShape::Value(ArgRepr::ValueRef) => out.push(value.value()),
             MidFlightArgShape::Value(ArgRepr::Condition) => {

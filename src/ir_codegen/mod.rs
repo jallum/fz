@@ -33,6 +33,7 @@ pub(crate) mod dump;
 pub(crate) mod entry;
 pub(crate) mod env;
 pub(crate) mod error;
+mod fn_ctx;
 mod function;
 #[cfg(debug_assertions)]
 mod invariants;
@@ -60,6 +61,7 @@ pub(crate) use dump::*;
 pub(crate) use entry::*;
 pub(crate) use env::*;
 pub(crate) use error::*;
+pub(crate) use fn_ctx::*;
 pub(crate) use function::*;
 pub(crate) use prim::*;
 pub(crate) use repr::*;

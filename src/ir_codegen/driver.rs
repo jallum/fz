@@ -1464,14 +1464,14 @@ fn emit_drain_dtor_entry<M: cranelift_module::Module>(
         b.seal_block(entry);
         let closure = b.block_params(entry)[0];
         let payload_ref = b.block_params(entry)[1];
+        let mut shim_cache = CodegenCache::default();
+        let mut cg = CodegenFn::for_runtime_shim(runtime, b, m, &mut shim_cache);
         // Strict halt-cont (kind=0). Dtor return is discarded;
         // ValueRef avoids RawInt/F64 unboxing.
-        let strict_addr = fn_addr(m, runtime.halt_cont_body_strict_id, b);
-        let zero = b.ins().iconst(types::I32, 0);
-        let ghc_fref = m.declare_func_in_func(runtime.get_halt_cont_id, b.func);
-        let halt_inst = b.ins().call(ghc_fref, &[strict_addr, zero]);
-        let halt_cl = b.inst_results(halt_inst)[0];
-        let code = load_closure_code_ref(b, m, runtime, closure);
+        let strict_addr = cg.func_addr(runtime.halt_cont_body_strict_id);
+        let zero = cg.b.ins().iconst(types::I32, 0);
+        let halt_cl = cg.get_halt_cont(strict_addr, zero);
+        let code = cg.closure_code_ref(closure);
         // Closure-target body sig: `(args..., self, cont) tail -> i64`.
         // Generic args are one-word ValueRefs.
         let mut closure_sig = Signature::new(CallConv::Tail);
@@ -1479,12 +1479,12 @@ fn emit_drain_dtor_entry<M: cranelift_module::Module>(
         closure_sig.params.push(AbiParam::new(types::I64)); // self
         closure_sig.params.push(AbiParam::new(types::I64)); // cont
         closure_sig.returns.push(AbiParam::new(types::I64));
-        let sig_ref = b.func.import_signature(closure_sig);
-        let inst = b
-            .ins()
-            .call_indirect(sig_ref, code, &[payload_ref, closure, halt_cl]);
-        let r = b.inst_results(inst)[0];
-        b.ins().return_(&[r]);
+        let sig_ref = cg.b.func.import_signature(closure_sig);
+        let inst =
+            cg.b.ins()
+                .call_indirect(sig_ref, code, &[payload_ref, closure, halt_cl]);
+        let r = cg.b.inst_results(inst)[0];
+        cg.b.ins().return_(&[r]);
     })
     .map_err(|e| CodegenError::new(format!("define fz_drain_dtor_entry: {}", e)))
 }
@@ -1520,32 +1520,32 @@ fn emit_spawn_entry<M: cranelift_module::Module>(
         b.switch_to_block(entry);
         b.seal_block(entry);
         let closure = b.block_params(entry)[0];
-        let kind = load_closure_halt_kind_ref(b, m, runtime, closure);
+        let mut shim_cache = CodegenCache::default();
+        let mut cg = CodegenFn::for_runtime_shim(runtime, b, m, &mut shim_cache);
+        let kind = cg.closure_halt_kind_ref(closure);
         // Select halt_cont_body_addr by kind. Branchless via three
         // func_addrs + a tiny dispatch — keeps the spawn shim a leaf.
-        let a_strict = fn_addr(m, runtime.halt_cont_body_strict_id, b);
-        let a_i64 = fn_addr(m, runtime.halt_cont_body_i64_id, b);
-        let a_f64 = fn_addr(m, runtime.halt_cont_body_f64_id, b);
-        let one = b.ins().iconst(types::I32, 1);
-        let two = b.ins().iconst(types::I32, 2);
-        let is_i64 = b.ins().icmp(IntCC::Equal, kind, one);
-        let is_f64 = b.ins().icmp(IntCC::Equal, kind, two);
-        let pick_i64_or_tagged = b.ins().select(is_i64, a_i64, a_strict);
-        let hcb_addr = b.ins().select(is_f64, a_f64, pick_i64_or_tagged);
-        let ghc_fref = m.declare_func_in_func(runtime.get_halt_cont_id, b.func);
-        let halt_inst = b.ins().call(ghc_fref, &[hcb_addr, kind]);
-        let halt_cl = b.inst_results(halt_inst)[0];
+        let a_strict = cg.func_addr(runtime.halt_cont_body_strict_id);
+        let a_i64 = cg.func_addr(runtime.halt_cont_body_i64_id);
+        let a_f64 = cg.func_addr(runtime.halt_cont_body_f64_id);
+        let one = cg.b.ins().iconst(types::I32, 1);
+        let two = cg.b.ins().iconst(types::I32, 2);
+        let is_i64 = cg.b.ins().icmp(IntCC::Equal, kind, one);
+        let is_f64 = cg.b.ins().icmp(IntCC::Equal, kind, two);
+        let pick_i64_or_tagged = cg.b.ins().select(is_i64, a_i64, a_strict);
+        let hcb_addr = cg.b.ins().select(is_f64, a_f64, pick_i64_or_tagged);
+        let halt_cl = cg.get_halt_cont(hcb_addr, kind);
         // Read closure body addr through the runtime ABI and invoke as
         // closure-target sig `(self, cont) tail` (zero user args).
-        let code = load_closure_code_ref(b, m, runtime, closure);
+        let code = cg.closure_code_ref(closure);
         let mut closure_sig = Signature::new(CallConv::Tail);
         closure_sig.params.push(AbiParam::new(types::I64)); // self
         closure_sig.params.push(AbiParam::new(types::I64)); // cont
         closure_sig.returns.push(AbiParam::new(types::I64));
-        let sig_ref = b.func.import_signature(closure_sig);
-        let inst = b.ins().call_indirect(sig_ref, code, &[closure, halt_cl]);
-        let r = b.inst_results(inst)[0];
-        b.ins().return_(&[r]);
+        let sig_ref = cg.b.func.import_signature(closure_sig);
+        let inst = cg.b.ins().call_indirect(sig_ref, code, &[closure, halt_cl]);
+        let r = cg.b.inst_results(inst)[0];
+        cg.b.ins().return_(&[r]);
     })
     .map_err(|e| CodegenError::new(format!("define fz_spawn_entry: {}", e)))
 }
@@ -1629,14 +1629,16 @@ fn emit_resume<M: cranelift_module::Module>(
         b.switch_to_block(entry);
         b.seal_block(entry);
         let cont = b.block_params(entry)[0];
-        let code = load_closure_code_ref(b, m, runtime, cont);
+        let mut shim_cache = CodegenCache::default();
+        let mut cg = CodegenFn::for_runtime_shim(runtime, b, m, &mut shim_cache);
+        let code = cg.closure_code_ref(cont);
         let mut stub_sig = Signature::new(CallConv::Tail);
         stub_sig.params.push(AbiParam::new(types::I64)); // self
         stub_sig.returns.push(AbiParam::new(types::I64));
-        let sig_ref = b.func.import_signature(stub_sig);
-        let inst = b.ins().call_indirect(sig_ref, code, &[cont]);
-        let r = b.inst_results(inst)[0];
-        b.ins().return_(&[r]);
+        let sig_ref = cg.b.func.import_signature(stub_sig);
+        let inst = cg.b.ins().call_indirect(sig_ref, code, &[cont]);
+        let r = cg.b.inst_results(inst)[0];
+        cg.b.ins().return_(&[r]);
     })
     .map_err(|e| CodegenError::new(format!("define fz_resume: {}", e)))?;
     Ok(id)
@@ -1874,28 +1876,20 @@ fn emit_mid_flight_cont_bodies<M: cranelift_module::Module>(
             let self_bits = b.block_params(entry)[0];
             let mut args =
                 Vec::with_capacity(arg_shapes.iter().map(MidFlightArgShape::abi_arity).sum());
-            let get_capture = m.declare_func_in_func(runtime.closure_get_capture_ref_id, b.func);
+            let mut shim_cache = CodegenCache::default();
+            let mut cg = CodegenFn::for_runtime_shim(runtime, b, m, &mut shim_cache);
             for (i, arg_shape) in arg_shapes.iter().enumerate() {
-                let index = b.ins().iconst(types::I64, i as i64);
-                let inst = b.ins().call(get_capture, &[self_bits, index]);
-                let value_ref = b.inst_results(inst)[0];
-                arg_shape.replay_from_capture(
-                    b,
-                    m,
-                    runtime,
-                    CodegenValue::AnyRef(value_ref),
-                    &mut args,
-                );
+                let value_ref = cg.closure_capture_ref_at(self_bits, i);
+                arg_shape.replay_from_capture(&mut cg, CodegenValue::AnyRef(value_ref), &mut args);
             }
             let mut callee_sig = Signature::new(CallConv::Tail);
             for arg_shape in &arg_shapes {
                 arg_shape.push_param(&mut callee_sig);
             }
             callee_sig.returns.push(AbiParam::new(types::I64));
-            let sig_ref = b.func.import_signature(callee_sig);
-            let callee_ref = m.declare_func_in_func(callee_fid, b.func);
-            let fn_ptr = b.ins().func_addr(types::I64, callee_ref);
-            b.ins().return_call_indirect(sig_ref, fn_ptr, &args);
+            let sig_ref = cg.b.func.import_signature(callee_sig);
+            let fn_ptr = cg.func_addr(callee_fid);
+            cg.b.ins().return_call_indirect(sig_ref, fn_ptr, &args);
         })
         .map_err(|e| CodegenError::new(format!("define {}: {}", tail_name, e)))?;
     }

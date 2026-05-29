@@ -32,8 +32,7 @@ pub(crate) struct EntryHarnessOut {
 }
 
 pub(crate) fn build_entry_harness<M: cranelift_module::Module>(
-    b: &mut FunctionBuilder<'_>,
-    jmod: &mut M,
+    body: &mut CodegenFn<'_, '_, '_, M>,
     env: &CodegenEnv<'_>,
     schemas: &[Schema],
     f: &crate::fz_ir::FnIr,
@@ -64,12 +63,11 @@ pub(crate) fn build_entry_harness<M: cranelift_module::Module>(
         Option<ir::Value>,
         Option<ir::Value>,
     ) = if is_native {
-        let params: Vec<ir::Value> = b.block_params(entry_cl).to_vec();
+        let params: Vec<ir::Value> = body.b.block_params(entry_cl).to_vec();
         let my_param_reprs = &param_reprs[this_spec_id as usize];
         if is_cont_fn {
             harness_cont_fn(
-                b,
-                jmod,
+                body,
                 env,
                 f,
                 entry_blk,
@@ -81,9 +79,7 @@ pub(crate) fn build_entry_harness<M: cranelift_module::Module>(
             )
         } else if let Some(n_caps) = closure_target_n_caps {
             harness_closure_target(
-                b,
-                jmod,
-                env,
+                body,
                 entry_blk,
                 &params,
                 my_param_reprs,
@@ -93,7 +89,7 @@ pub(crate) fn build_entry_harness<M: cranelift_module::Module>(
             )
         } else {
             harness_plain_native(
-                b,
+                body.b,
                 entry_blk,
                 &params,
                 my_param_reprs,
@@ -102,8 +98,8 @@ pub(crate) fn build_entry_harness<M: cranelift_module::Module>(
             )
         }
     } else {
-        let frame_ptr = b.block_params(entry_cl)[0];
-        let host_ctx = b.block_params(entry_cl)[1];
+        let frame_ptr = body.b.block_params(entry_cl)[0];
+        let host_ctx = body.b.block_params(entry_cl)[1];
 
         // Load entry params from frame slots [1..N+1] (offsets 24, 32, ...).
         // RawF64 slots load as raw f64; RawI64 slots load as raw i64
@@ -113,21 +109,24 @@ pub(crate) fn build_entry_harness<M: cranelift_module::Module>(
             let slot_kind = &my_schema.fields[i + 1].kind;
             let binding = match slot_kind {
                 FieldKind::RawF64 => {
-                    let f = b
+                    let f = body
+                        .b
                         .ins()
                         .load(types::F64, MemFlags::trusted(), frame_ptr, off);
                     CodegenValue::from_abi_value(f, ArgRepr::RawF64)
                 }
                 FieldKind::RawI64 => {
-                    let n = b
+                    let n = body
+                        .b
                         .ins()
                         .load(types::I64, MemFlags::trusted(), frame_ptr, off);
                     CodegenValue::from_abi_value(n, ArgRepr::RawInt)
                 }
                 _ => {
-                    let value_ref = b
-                        .ins()
-                        .load(types::I64, MemFlags::trusted(), frame_ptr, off);
+                    let value_ref =
+                        body.b
+                            .ins()
+                            .load(types::I64, MemFlags::trusted(), frame_ptr, off);
                     CodegenValue::any_ref(value_ref)
                 }
             };
@@ -166,8 +165,7 @@ pub(crate) fn build_entry_harness<M: cranelift_module::Module>(
 ///
 /// Returns (frame_ptr, host_ctx, cont_param, list_tail_param).
 fn harness_cont_fn<M: cranelift_module::Module>(
-    b: &mut FunctionBuilder<'_>,
-    jmod: &mut M,
+    body: &mut CodegenFn<'_, '_, '_, M>,
     env: &CodegenEnv<'_>,
     f: &crate::fz_ir::FnIr,
     entry_blk: &crate::fz_ir::Block,
@@ -192,13 +190,16 @@ fn harness_cont_fn<M: cranelift_module::Module>(
             .first()
             .expect("TupleFields cont requires tuple slot0");
         for (i, repr) in my_param_reprs.iter().copied().enumerate().take(field_count) {
-            let binding = take_param_binding(b, params, &mut param_cursor, repr);
+            let binding = take_param_binding(body.b, params, &mut param_cursor, repr);
             tuple_field_params.insert((tuple_param.0, i as u32), binding);
         }
     } else {
         for (i, p) in entry_blk.params.iter().take(extras_count).enumerate() {
             let repr = my_param_reprs[i];
-            var_env.insert(p.0, take_param_binding(b, params, &mut param_cursor, repr));
+            var_env.insert(
+                p.0,
+                take_param_binding(body.b, params, &mut param_cursor, repr),
+            );
         }
     }
     let self_val = params[param_cursor];
@@ -209,7 +210,6 @@ fn harness_cont_fn<M: cranelift_module::Module>(
     };
     let has_appended_list_tail = demand_abi.carries_list_tail_capture();
     let user_captures = entry_blk.params.len().saturating_sub(first_capture_param);
-    let captured_count = 1 + user_captures + usize::from(has_appended_list_tail);
     for (i, p) in entry_blk
         .params
         .iter()
@@ -222,23 +222,13 @@ fn harness_cont_fn<M: cranelift_module::Module>(
         } else {
             i
         };
-        let binding = load_closure_capture_as_binding(
-            b,
-            jmod,
-            env.runtime,
-            self_val,
-            captured_count,
-            capture_idx,
-            my_param_reprs[repr_idx],
-        );
+        let binding =
+            body.closure_capture_as_binding(self_val, capture_idx, my_param_reprs[repr_idx]);
         var_env.insert(p.0, binding);
     }
     let list_tail_val = if has_appended_list_tail {
         let idx = 1 + user_captures;
-        let index = b.ins().iconst(types::I64, idx as i64);
-        let fref = jmod.declare_func_in_func(env.runtime.closure_get_capture_ref_id, b.func);
-        let inst = b.ins().call(fref, &[self_val, index]);
-        Some(b.inst_results(inst)[0])
+        Some(body.closure_capture_ref_at(self_val, idx))
     } else {
         None
     };
@@ -260,9 +250,7 @@ fn harness_cont_fn<M: cranelift_module::Module>(
 ///
 /// Returns (frame_ptr, host_ctx, cont_param, list_tail_param).
 fn harness_closure_target<M: cranelift_module::Module>(
-    b: &mut FunctionBuilder<'_>,
-    jmod: &mut M,
-    env: &CodegenEnv<'_>,
+    body: &mut CodegenFn<'_, '_, '_, M>,
     entry_blk: &crate::fz_ir::Block,
     params: &[ir::Value],
     my_param_reprs: &[ArgRepr],
@@ -279,7 +267,10 @@ fn harness_closure_target<M: cranelift_module::Module>(
     let mut param_cursor = 0;
     for (j, p) in entry_blk.params.iter().enumerate().skip(n_caps) {
         let repr = my_param_reprs[j];
-        var_env.insert(p.0, take_param_binding(b, params, &mut param_cursor, repr));
+        var_env.insert(
+            p.0,
+            take_param_binding(body.b, params, &mut param_cursor, repr),
+        );
     }
     let self_val = params[param_cursor];
     let list_tail_val = if has_list_tail_dest {
@@ -289,15 +280,7 @@ fn harness_closure_target<M: cranelift_module::Module>(
     };
     let cont_val = params[param_cursor + 1 + usize::from(has_list_tail_dest)];
     for (k, p) in entry_blk.params.iter().enumerate().take(n_caps) {
-        let binding = load_closure_capture_as_binding(
-            b,
-            jmod,
-            env.runtime,
-            self_val,
-            n_caps,
-            k,
-            my_param_reprs[k],
-        );
+        let binding = body.closure_capture_as_binding(self_val, k, my_param_reprs[k]);
         var_env.insert(p.0, binding);
     }
     debug_assert_eq!(

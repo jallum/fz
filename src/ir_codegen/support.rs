@@ -8,21 +8,8 @@ use std::collections::HashMap;
 pub(crate) const HEADER_SIZE: i32 = 16;
 pub(crate) const SLOT_BYTES: i32 = 8;
 
-pub(crate) fn mark_published_ref_aliased<M: cranelift_module::Module>(
-    b: &mut FunctionBuilder<'_>,
-    jmod: &mut M,
-    runtime: &RuntimeRefs,
-    value_ref: ir::Value,
-) -> ir::Value {
-    let fref = jmod.declare_func_in_func(runtime.mark_published_ref_aliased_id, b.func);
-    let inst = b.ins().call(fref, &[value_ref]);
-    b.inst_results(inst)[0]
-}
-
 pub(crate) fn mark_retained_call_args_as_published<M: cranelift_module::Module>(
-    b: &mut FunctionBuilder<'_>,
-    jmod: &mut M,
-    runtime: &RuntimeRefs,
+    body: &mut CodegenFn<'_, '_, '_, M>,
     var_env: &HashMap<u32, CodegenValue>,
     args: &[crate::fz_ir::Var],
     captured: &[crate::fz_ir::Var],
@@ -34,7 +21,7 @@ pub(crate) fn mark_retained_call_args_as_published<M: cranelift_module::Module>(
         let Some(CodegenValue::AnyRef(value_ref)) = var_env.get(&arg.0).copied() else {
             continue;
         };
-        let _ = mark_published_ref_aliased(b, jmod, runtime, value_ref);
+        let _ = body.mark_published_ref_aliased(value_ref);
     }
 }
 
@@ -62,31 +49,15 @@ pub(crate) fn list_tail_bits_for_var<T: crate::types::Types<Ty = crate::types::T
 }
 
 pub(crate) fn emit_owned_cons_reuse_or_alloc<M: cranelift_module::Module>(
-    b: &mut FunctionBuilder<'_>,
-    jmod: &mut M,
-    runtime: &RuntimeRefs,
+    body: &mut CodegenFn<'_, '_, '_, M>,
     var_env: &HashMap<u32, CodegenValue>,
-    cache: &mut CodegenCache,
     head: crate::fz_ir::Var,
     tail: ListTailBits,
 ) -> Option<ir::Value> {
-    let source_cons = *cache.owned_cons_reuse_sources.get(&head.0)?;
-    let source_ref = any_ref_for_var(var_env, b, jmod, runtime, source_cons.0, cache);
-    let tail_ref = list_tail_ref_word(b, cache, tail);
-    let fref = jmod.declare_func_in_func(runtime.list_reuse_or_cons_tail_ref_id, b.func);
-    let inst = b.ins().call(fref, &[source_ref, tail_ref]);
-    Some(b.inst_results(inst)[0])
-}
-
-pub(crate) fn list_tail_ref_word(
-    b: &mut FunctionBuilder<'_>,
-    cache: &mut CodegenCache,
-    tail: ListTailBits,
-) -> ir::Value {
-    match tail {
-        ListTailBits::Empty => emit_empty_list_value_ref_word(b, cache),
-        ListTailBits::ValueRef(value) | ListTailBits::NonEmptyValueRef(value) => value,
-    }
+    let source_cons = body.owned_cons_reuse_source(head)?;
+    let source_ref = body.any_ref_for_var(var_env, source_cons.0);
+    let tail_ref = body.list_tail_ref_word(tail);
+    Some(body.list_reuse_or_cons_tail_ref(source_ref, tail_ref))
 }
 
 // Raw atom payloads used with side-band ATOM kind tags.

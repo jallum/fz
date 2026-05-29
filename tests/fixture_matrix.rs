@@ -2879,6 +2879,11 @@ fn list_cell_uninit_is_immediately_initialized_in_clif() {
 fn quicksort_list_literal_uses_static_tail_links() {
     let clif = dump_quicksort_clif();
     let main = clif_function(&clif, "; fn main").expect("missing main CLIF");
+    let input_list_ref = clif_last_assigned_value(main, " = call fn0(")
+        .expect("quicksort main should build the input list with typed cons");
+    let lazy_cont_ref = clif_last_assigned_value(main, " = bor_imm ")
+        .expect("quicksort main should tag the lazy continuation pointer");
+    let expected_call_args = format!("({}, {})", input_list_ref, lazy_cont_ref);
 
     assert!(
         !main.contains("@fz_alloc_list_cons_typed")
@@ -2889,7 +2894,7 @@ fn quicksort_list_literal_uses_static_tail_links() {
     );
     assert!(
         main.contains("@fz_list_cons_int")
-            && main.contains("call fn11(v23, v30)")
+            && main.contains(&expected_call_args)
             && main.contains("stack_addr")
             && main.contains("bor_imm"),
         "quicksort's literal list should pass a single tagged list ref and lazy continuation into qsort:\n{}",
@@ -3084,7 +3089,7 @@ fn continuation_materialization_boundaries_stay_explicit() {
         "fn emit_back_edge_yield_check",
         "runtime.yield_slow_path_begin_id",
         "runtime.yield_mid_flight_report_id",
-        "runtime.materialize_cont_id",
+        "materialize_cont",
         "fn emit_receive",
         "runtime.receive_park_id",
     ] {
@@ -3300,6 +3305,13 @@ fn clif_functions_containing<'a>(clif: &'a str, needle: &str) -> Vec<&'a str> {
         .filter_map(|start| clif_function_from_start(clif, start))
         .filter(|function| function.contains(needle))
         .collect()
+}
+
+fn clif_last_assigned_value<'a>(function: &'a str, op: &str) -> Option<&'a str> {
+    function
+        .lines()
+        .filter_map(|line| line.trim().split_once(op).map(|(lhs, _)| lhs.trim()))
+        .next_back()
 }
 
 fn clif_has_direct_call_with_arg_count(function: &str, arg_count: usize) -> bool {
