@@ -19,9 +19,9 @@ use std::sync::Arc;
 
 /// Emit the AOT C-callable main entry. Drives the cps-in-clif startup:
 /// `fz_aot_setup` → per-closure `fz_aot_register_static_closure` →
-/// `fz_aot_run_main`. Shim addresses (fz_main_entry, fz_halt_cont_body)
-/// are taken via Cranelift `func_addr` against the Local symbols emitted
-/// by compile_with_backend.
+/// `fz_aot_run_main`. Entry-body addresses (fz_entry_thunk,
+/// fz_main_trampoline, fz_halt_cont_body) are taken via Cranelift `func_addr`
+/// against the Local symbols emitted by compile_with_backend.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn emit_aot_c_main<M: cranelift_module::Module>(
     jmod: &mut M,
@@ -29,9 +29,9 @@ pub(crate) fn emit_aot_c_main<M: cranelift_module::Module>(
     c_main_id: FuncId,
     c_main_sig: &Signature,
     main_fz_func_id: FuncId,
-    main_entry_id: FuncId,
+    main_trampoline_id: FuncId,
     halt_cont_body_ids: [FuncId; 3],
-    spawn_entry_id: FuncId,
+    entry_thunk_id: FuncId,
     static_closure_targets: &[(u32, u32, FuncId, u32 /* halt_kind */)],
     atom_blob_data: Option<DataId>,
     atom_blob_len: u32,
@@ -70,13 +70,13 @@ pub(crate) fn emit_aot_c_main<M: cranelift_module::Module>(
         let hcb_strict_addr = fn_addr(jmod, halt_cont_body_ids[0], &mut b);
         let hcb_i64_addr = fn_addr(jmod, halt_cont_body_ids[1], &mut b);
         let hcb_f64_addr = fn_addr(jmod, halt_cont_body_ids[2], &mut b);
-        let me_addr = fn_addr(jmod, main_entry_id, &mut b);
-        let se_addr = fn_addr(jmod, spawn_entry_id, &mut b);
+        let mt_addr = fn_addr(jmod, main_trampoline_id, &mut b);
+        let et_addr = fn_addr(jmod, entry_thunk_id, &mut b);
         let main_fp = fn_addr(jmod, main_fz_func_id, &mut b);
 
         // proc = fz_aot_setup(atom_blob, atom_blob_len,
         //                     hcb_strict, hcb_i64, hcb_f64,
-        //                     se_addr)
+        //                     entry_thunk_addr)
         let setup_fref = jmod.declare_func_in_func(setup_id, b.func);
         let setup_call = b.ins().call(
             setup_fref,
@@ -86,7 +86,7 @@ pub(crate) fn emit_aot_c_main<M: cranelift_module::Module>(
                 hcb_strict_addr,
                 hcb_i64_addr,
                 hcb_f64_addr,
-                se_addr,
+                et_addr,
             ],
         );
         let proc_v = b.inst_results(setup_call)[0];
@@ -129,15 +129,17 @@ pub(crate) fn emit_aot_c_main<M: cranelift_module::Module>(
         }
 
         // Register the `fz_resume` shim so the AOT run-queue loop can
-        // dispatch `runnable_closure` requests.
+        // resume `runnable` continuations.
         {
             let resume_addr_v = fn_addr(jmod, resume_id, &mut b);
             let set_resume_fref = jmod.declare_func_in_func(set_resume_id, b.func);
             b.ins().call(set_resume_fref, &[resume_addr_v]);
         }
 
+        // fz_aot_run_main(proc, main_fp, main_trampoline_addr): wraps main_fp
+        // in a synthetic inner closure (via fz_main_trampoline) + entry thunk.
         let run_fref = jmod.declare_func_in_func(run_id, b.func);
-        let run_call = b.ins().call(run_fref, &[proc_v, main_fp, me_addr]);
+        let run_call = b.ins().call(run_fref, &[proc_v, main_fp, mt_addr]);
         let result = b.inst_results(run_call)[0];
         b.ins().return_(&[result]);
 

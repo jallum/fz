@@ -90,14 +90,18 @@ pub struct Process {
     /// here. v1 only writes this on halt (next_frame = null).
     pub next_frame: *mut u8,
     pub mailbox: std::collections::VecDeque<crate::any_value::AnyValueRef>,
-    /// Receive park snapshot. Plain `receive()` installs an accept-any
-    /// matcher; selective receive installs its compiled matcher. Either way,
-    /// a hit materializes `runnable_closure` and the scheduler runs that.
-    pub parked_matched: Option<Box<crate::park::ParkRecord>>,
-    /// General scheduler-runnable zero-arg closure. Long term, every
-    /// scheduler re-entry path should move work here before enqueue/resume;
-    /// the closure's captures carry the state needed to continue.
-    pub runnable_closure: *mut u8,
+    /// Receive-wait snapshot: the process is blocked in `receive`. Plain
+    /// `receive()` installs an accept-any matcher; selective receive installs
+    /// its compiled matcher. Either way, a hit clears `wait` and moves the
+    /// outcome continuation into `runnable` for the scheduler to resume.
+    pub wait: Option<Box<WaitState>>,
+    /// The one re-entry verb: a `(self)`-callable closure the scheduler
+    /// resumes via the single `fz_resume` shim. It is either a continuation
+    /// (halt continuation baked into its captures, from a receive hit or
+    /// mid-flight yield) or a fresh-task entry thunk (capturing the inner
+    /// entry closure; the thunk supplies the halt continuation and enters it
+    /// on first resume). `None` means no work is queued.
+    pub runnable: Option<ClosureRef>,
     /// fz-ul4.27.22.3 — per-Process halt-cont singletons indexed by
     /// repr kind (0=ValueRef, 1=RawInt, 2=RawF64). Each slot holds a
     /// 24-byte closure whose +8 slot points at the matching
@@ -106,21 +110,6 @@ pub struct Process {
     /// `init_halt_cont_singletons` at make_process. Pointers alias
     /// aligned buffers in `static_closure_bufs`.
     pub halt_cont_singletons: [*mut u8; 3],
-    /// fz-cps.1.11 — pending closure to invoke at the next scheduler
-    /// quantum. Set by `Runtime::spawn_closure` to the closure pointer;
-    /// `run_quantum` clears it and dispatches via the `fz_spawn_entry`
-    /// SystemV→Tail-CC shim. Null means "no pending entry" (either
-    /// trampoline-driven uniform main or already-resumed task).
-    pub pending_closure_entry: *mut u8,
-    /// fz-cps.5 — pending main-style entry fn ptr. Set by
-    /// `Runtime::spawn(fn_id)`; the scheduler's `run_quantum`
-    /// dispatches via the SystemV→Tail-CC `fz_main_entry` shim.
-    pub pending_main_entry: *mut u8,
-    /// fz-ul4.27.22.3 — FnId.0 of the pending entry. Used by
-    /// `run_quantum` to look up the matching halt-cont singleton kind
-    /// in `CompiledModule.fn_halt_kinds`. Defaults to 0 (ValueRef) if
-    /// no entry is queued.
-    pub pending_main_entry_fn_id: u32,
     /// fz-cps.1.7 — per-Process static zero-capture closure singletons.
     /// Indexed by lambda spec id (cl_sid). Null entries indicate "no
     /// singleton registered for this cl_sid." Each non-null entry points
@@ -204,6 +193,32 @@ pub enum ProcessState {
     Exited,
 }
 
+/// The receive-wait snapshot a parked process carries. This is the
+/// scheduler-facing name for the receive-matching record; the matcher,
+/// pinned values, clause bodies, and after-timer continuation all live on it.
+pub type WaitState = crate::park::ParkRecord;
+
+/// A non-null pointer to a `(self)`-callable closure the scheduler can resume
+/// through the `fz_resume` shim. Construction rejects null, so a
+/// `Some(ClosureRef)` always names a real closure to run.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ClosureRef(*mut u8);
+
+impl ClosureRef {
+    /// Wrap a closure heap address; `None` if null (no work).
+    pub fn new(ptr: *mut u8) -> Option<Self> {
+        if ptr.is_null() {
+            None
+        } else {
+            Some(Self(ptr))
+        }
+    }
+
+    pub fn as_ptr(self) -> *mut u8 {
+        self.0
+    }
+}
+
 /// Per-`CompiledModule` constant tables copied into every Process spawned
 /// from that module. These are the compile-time facts the runtime carries
 /// (frame sizes, atom names, bitstring-tuple schemas, static-closure and
@@ -269,12 +284,9 @@ impl Process {
             state: ProcessState::New,
             next_frame: std::ptr::null_mut(),
             mailbox: std::collections::VecDeque::new(),
-            parked_matched: None,
-            runnable_closure: std::ptr::null_mut(),
+            wait: None,
+            runnable: None,
             halt_cont_singletons: [std::ptr::null_mut(); 3],
-            pending_closure_entry: std::ptr::null_mut(),
-            pending_main_entry: std::ptr::null_mut(),
-            pending_main_entry_fn_id: 0,
             static_closures: Vec::new(),
             static_closure_bufs: Vec::new(),
             quiet_quanta: 0,
@@ -296,9 +308,17 @@ impl Process {
         if !consts.static_closure_targets.is_empty() {
             p.init_static_closures(&consts.static_closure_targets);
         }
-        // Null body addrs leave every slot null (lazily filled on first use),
-        // so this is a no-op for the empty/minimal paths.
-        p.init_halt_cont_singletons(consts.halt_cont_body_addrs);
+        // Only seed halt-cont singletons when real body addrs are present.
+        // `init_halt_cont_singletons` registers the `ClosureEnv0` schema even
+        // for null addrs; running it on the empty/minimal paths would register
+        // that schema at process setup and shift the compile-time-baked schema
+        // ids the AOT runtime registry must match. Guarding keeps the bare
+        // `Process::new`/interpreter/AOT-setup registries identical to a fresh
+        // registry (only the JIT `make_process`, which supplies real addrs,
+        // seeds them).
+        if consts.halt_cont_body_addrs.iter().any(|a| !a.is_null()) {
+            p.init_halt_cont_singletons(consts.halt_cont_body_addrs);
+        }
         p
     }
 
@@ -373,18 +393,22 @@ impl Process {
         }
     }
 
+    /// Queue a `(self)`-callable closure (continuation or entry thunk) as the
+    /// next thing to resume. A null pointer clears the slot.
     pub fn set_runnable_closure(&mut self, closure: *mut u8) {
-        self.runnable_closure = closure;
+        self.runnable = ClosureRef::new(closure);
     }
 
+    /// Take the queued runnable closure, clearing the slot.
     pub fn take_runnable_closure(&mut self) -> Option<*mut u8> {
-        if self.runnable_closure.is_null() {
-            None
-        } else {
-            let closure = self.runnable_closure;
-            self.runnable_closure = std::ptr::null_mut();
-            Some(closure)
-        }
+        self.runnable.take().map(ClosureRef::as_ptr)
+    }
+
+    /// The queued runnable closure pointer, if any, without clearing it.
+    pub fn runnable_ptr(&self) -> *mut u8 {
+        self.runnable
+            .map(ClosureRef::as_ptr)
+            .unwrap_or(std::ptr::null_mut())
     }
 
     pub fn reset_reduction_budget(&mut self) {

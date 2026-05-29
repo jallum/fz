@@ -673,11 +673,29 @@ impl Heap {
         captured_count: usize,
         halt_kind: u16,
     ) -> u64 {
+        let schema_id = self.closure_schema_id(captured_count);
+        self.alloc_closure_slots_with_schema(schema_id, captured_count, halt_kind)
+    }
+
+    /// Allocate a closure's slots writing `schema_id` verbatim instead of
+    /// registering a `ClosureEnv{n}` schema. For scheduler scaffolding
+    /// closures (entry thunks, synthetic main inners) whose `schema_id` is
+    /// never consulted: captures are accessed by offset, GC sizes and traces
+    /// them by `captured_count` (the closure `flags`), and they are never
+    /// rendered. Registering a `ClosureEnv` schema for them would only perturb
+    /// the schema-id space the AOT runtime must keep identical to compile time
+    /// (and the schema ids interpreter and codegen render). Scaffolding mints
+    /// pass a placeholder `schema_id`.
+    pub fn alloc_closure_slots_with_schema(
+        &mut self,
+        schema_id: u32,
+        captured_count: usize,
+        halt_kind: u16,
+    ) -> u64 {
         assert!(
             captured_count <= crate::any_value::CLOSURE_FLAGS_CAPTURED_MASK as usize,
             "closure captured count overflow"
         );
-        let schema_id = self.closure_schema_id(captured_count);
         let total = crate::any_value::closure_size_for_count(captured_count);
         let p = self.alloc_kind(HeapAllocKind::Closure, total);
         unsafe {

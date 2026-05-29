@@ -1190,14 +1190,16 @@ pub struct CompiledModule {
     /// 24-byte off-heap closure per entry into `Process.static_closures`.
     /// See docs/cps-in-clif.md §8.2.
     pub(crate) static_closure_targets: Vec<(u32, u32, *const u8, u32 /* halt_kind */)>,
-    /// SystemV→Tail-CC shim `fz_spawn_entry(closure) -> i64`. Allocates a
-    /// halt-cont and indirect-calls the zero-arg closure with
-    /// `(self, halt_cont)`. Used by `Runtime::spawn_closure`.
-    pub(crate) spawn_entry_addr: *const u8,
-    /// SystemV→Tail-CC shim `fz_main_entry(main_fp) -> i64`. Allocates a
-    /// halt-cont and indirect-calls main with `(halt_cont)`. Used by
-    /// `Runtime`'s main-entry dispatch.
-    pub(crate) main_entry_addr: *const u8,
+    /// Tail-CC `fz_entry_thunk(self) -> i64` body. A fresh task's `runnable`
+    /// is an entry-thunk closure whose code is this address; resumed through
+    /// `fz_resume`, it supplies the inner closure's halt-cont and launches it.
+    /// `Runtime::spawn`/`spawn_closure` mint thunks pointing here.
+    pub(crate) entry_thunk_addr: *const u8,
+    /// Tail-CC `fz_main_trampoline(self, cont) -> i64` body. A main-style
+    /// entry's synthetic inner closure has this as its code; it reads the raw
+    /// `(cont)` main fn pointer from capture[0] and tail-calls `main_fp(cont)`.
+    /// `Runtime::spawn` mints main inner closures pointing here.
+    pub(crate) main_trampoline_addr: *const u8,
     /// SystemV→Tail-CC shim `fz_drain_dtor_entry(closure, payload_ref) -> i64`.
     /// The scheduler calls this once per entry on
     /// `process.heap.pending_dtors` at task-exit; dispatches the dtor
@@ -1209,9 +1211,9 @@ pub struct CompiledModule {
     /// `fz_get_halt_cont` at first use.
     pub(crate) halt_cont_body_addrs: [*const u8; 3],
     /// Per-FnId halt-cont singleton kind (the entry fn's any-key return
-    /// repr). The Rust scheduler picks the matching
-    /// `process.halt_cont_singletons[kind]` when dispatching via
-    /// `fz_main_entry`. Default kind 0 (ValueRef) when absent.
+    /// repr). `Runtime::spawn` stamps this kind onto a main-style entry's
+    /// synthetic inner closure so `fz_entry_thunk` resolves the matching
+    /// halt-cont. Default kind 0 (ValueRef) when absent.
     pub(crate) fn_halt_kinds: HashMap<u32, u32>,
     /// Single `fz_resume(cont) -> i64` SystemV shim. Reads the code
     /// pointer through the runtime closure ABI and tail-calls the
@@ -1328,13 +1330,16 @@ impl CompiledModule {
 
             let parked_clause_start = 0usize;
             let mut roots: Vec<fz_runtime::any_value::AnyValue> = Vec::new();
-            if let Some(park) = process.parked_matched.as_ref() {
+            if let Some(park) = process.wait.as_ref() {
                 roots.extend(park.clause_bodies.iter().map(|&p| closure_root(p)));
                 roots.push(closure_root(park.after_cont));
             }
 
-            let runnable_idx = push_closure_root(&mut roots, process.runnable_closure);
-            let pending_closure_idx = push_closure_root(&mut roots, process.pending_closure_entry);
+            // The single `runnable` closure (continuation or entry thunk) is
+            // the one re-entry root. A fresh task's entry thunk reaches its
+            // inner closure (and its captures) through this root, so no
+            // separate pending-entry root is needed.
+            let runnable_idx = push_closure_root(&mut roots, process.runnable_ptr());
 
             let mut null_root = std::ptr::null_mut();
             process.heap.gc_with_value_and_any_value_ref_roots(
@@ -1346,7 +1351,7 @@ impl CompiledModule {
             process.mailbox.clear();
             process.mailbox.extend(mailbox_roots);
 
-            if let Some(park) = process.parked_matched.as_mut() {
+            if let Some(park) = process.wait.as_mut() {
                 for (i, body) in park.clause_bodies.iter_mut().enumerate() {
                     *body = closure_bits(roots[parked_clause_start + i]);
                 }
@@ -1355,18 +1360,14 @@ impl CompiledModule {
             }
 
             if let Some(idx) = runnable_idx {
-                process.runnable_closure = closure_bits(roots[idx]);
-            }
-
-            if let Some(idx) = pending_closure_idx {
-                process.pending_closure_entry = closure_bits(roots[idx]);
+                process.set_runnable_closure(closure_bits(roots[idx]));
             }
 
             process.heap.clear_should_gc_flag();
             process.clear_yield_reasons();
         }
 
-        // Selective-receive initial scan. Hit sets runnable_closure and
+        // Selective-receive initial scan. Hit moves the outcome into `runnable` and
         // cancels the after-timer via the scheduler hook; Miss blocks the
         // task; NotApplicable is a no-op.
         match fz_runtime::sched::initial_scan(process) {
@@ -1390,97 +1391,19 @@ impl CompiledModule {
             let _ = unsafe { fz_runtime::pinned_abi::call1(resume_addr, process_ptr, closure) };
         }
 
-        // One dispatch decision per quantum. Variants are listed in
-        // scheduling-priority order; the classifier returns the first
-        // match. Receive wakeup beats fresh main-entry beats fresh
-        // closure-entry; Idle is the no-work fallthrough.
-        enum Dispatch {
-            // Receive wakeup: a matcher hit (from sender-probe,
-            // after-timer fire, or the initial-scan above) picked the
-            // winning clause and bound values into the outcome closure
-            // env. Dispatch through the single SystemV `fz_resume(cont)`
-            // shim.
-            RunnableClosure(*mut u8),
-            // Fresh main-style task entry: fn ptr queued by
-            // `Runtime::spawn`. Dispatch via
-            // `fz_main_entry`; the body runs synchronously to halt or
-            // Receive.
-            MainEntry { fp: *mut u8, kind: usize },
-            // Fresh task entry: closure queued by
-            // `Runtime::spawn_closure`. Dispatch via `fz_spawn_entry`;
-            // the body runs synchronously to halt or Receive. On Receive
-            // it parks a matcher record and the next wakeup
-            // materializes runnable_closure.
-            ClosureEntry(*mut u8),
-            // All fz fns are Tail-CC; dispatch flows through the three
-            // SystemV shims above. No uniform fns exist, so no
-            // frame-by-frame trampoline loop is needed.
-            Idle,
-        }
-
-        let dispatch = if let Some(closure) = process.take_runnable_closure() {
-            Dispatch::RunnableClosure(closure)
-        } else if !process.pending_main_entry.is_null() {
-            let fp = process.pending_main_entry;
-            process.pending_main_entry = std::ptr::null_mut();
-            // Pick the halt-cont singleton matching the entry fn's
-            // return-repr kind.
-            let kind = self
-                .fn_halt_kinds
-                .get(&process.pending_main_entry_fn_id)
-                .copied()
-                .unwrap_or(0) as usize;
-            Dispatch::MainEntry { fp, kind }
-        } else if !process.pending_closure_entry.is_null() {
-            let cl_ptr = process.pending_closure_entry;
-            process.pending_closure_entry = std::ptr::null_mut();
-            Dispatch::ClosureEntry(cl_ptr)
+        // One re-entry verb. `runnable` is the only thing the scheduler
+        // dispatches: a continuation (receive hit / after-timer fire /
+        // mid-flight yield / initial-scan above) or a fresh-task entry thunk
+        // (`Runtime::spawn`/`spawn_closure`). Both are `(self)`-callable
+        // closures resumed through the single `fz_resume` shim — every fn is
+        // Tail-CC, so no per-program trampoline loop is needed. A `None`
+        // runnable is the no-work fallthrough.
+        if let Some(closure) = process.take_runnable_closure() {
+            run_scheduler_closure(self.resume_addr, process, closure);
+            process.next_frame = std::ptr::null_mut();
+            park_time_gc(process);
         } else {
-            Dispatch::Idle
-        };
-
-        match dispatch {
-            Dispatch::RunnableClosure(closure) => {
-                run_scheduler_closure(self.resume_addr, process, closure);
-                process.next_frame = std::ptr::null_mut();
-                park_time_gc(process);
-            }
-            Dispatch::MainEntry { fp, kind } => {
-                let halt_cl = fz_runtime::any_value::AnyValueRef::from_heap_object(
-                    fz_runtime::any_value::ValueKind::CLOSURE,
-                    process.halt_cont_singletons[kind] as *const u8,
-                )
-                .expect("halt continuation ref")
-                .raw_word();
-                let process_ptr = process as *mut Process;
-                let _ = unsafe {
-                    fz_runtime::pinned_abi::call2(
-                        self.main_entry_addr,
-                        process_ptr,
-                        fp as u64,
-                        halt_cl,
-                    )
-                };
-                process.next_frame = std::ptr::null_mut();
-                park_time_gc(process);
-            }
-            Dispatch::ClosureEntry(cl_ptr) => {
-                let cl_ref = fz_runtime::any_value::AnyValueRef::from_heap_object(
-                    fz_runtime::any_value::ValueKind::CLOSURE,
-                    cl_ptr as *const u8,
-                )
-                .expect("pending closure ref")
-                .raw_word();
-                let process_ptr = process as *mut Process;
-                let _ = unsafe {
-                    fz_runtime::pinned_abi::call1(self.spawn_entry_addr, process_ptr, cl_ref)
-                };
-                process.next_frame = std::ptr::null_mut();
-                park_time_gc(process);
-            }
-            Dispatch::Idle => {
-                process.next_frame = std::ptr::null_mut();
-            }
+            process.next_frame = std::ptr::null_mut();
         }
     }
 }
@@ -1543,8 +1466,8 @@ pub struct CompiledMetadata {
     /// halt_kind)`. JIT finalize resolves stub_func_id to a code address;
     /// `make_process` populates `Process.static_closures` from the result.
     pub static_closure_targets: Vec<(u32, u32, FuncId, u32 /* halt_kind */)>,
-    pub spawn_entry_id: FuncId,
-    pub main_entry_id: FuncId,
+    pub entry_thunk_id: FuncId,
+    pub main_trampoline_id: FuncId,
     pub drain_dtor_entry_id: FuncId,
     /// Three `fz_halt_cont_body` fns indexed by repr kind (0=ValueRef,
     /// 1=RawInt, 2=RawF64). Sigs: (ValueRef|i64|f64, i64) -> i64 tail.

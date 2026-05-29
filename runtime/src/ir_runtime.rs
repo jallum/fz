@@ -502,7 +502,7 @@ pub extern "C" fn fz_send_ref(
 pub extern "C" fn fz_receive_park(process: *mut Process, cont_closure_bits: u64) -> *mut u8 {
     use crate::{process::ProcessState, scheduler_hooks::YIELD_PTR};
     let p = unsafe { &mut *process };
-    p.parked_matched = Some(Box::new(crate::park::ParkRecord {
+    p.wait = Some(Box::new(crate::park::ParkRecord {
         matcher_fn: crate::park::match_any_message,
         pinned: Vec::new(),
         clause_bodies: vec![closure_addr_from_ref_word(
@@ -620,11 +620,11 @@ pub extern "C" fn fz_receive_park_matched(
         after_timer_id,
     };
 
-    p.parked_matched = Some(Box::new(park));
+    p.wait = Some(Box::new(park));
     // Symmetric to fz_receive_park: if any message is already in the
     // mailbox we mark Ready so the scheduler runs an initial scan via
     // the matcher path. The actual scan happens in the scheduler when
-    // it sees parked_matched.is_some() on a Ready task.
+    // it sees wait.is_some() on a Ready task.
     p.state = if p.mailbox.is_empty() {
         ProcessState::Blocked
     } else {
@@ -2563,7 +2563,7 @@ mod tests {
                 crate::process::YIELD_REASON_REDUCTIONS as u32,
             );
             assert_eq!(ret as u64, crate::scheduler_hooks::YIELD_PTR);
-            assert_eq!(process.runnable_closure, closure_addr);
+            assert_eq!(process.runnable_ptr(), closure_addr);
             assert_eq!(process.scheduler_yields, 1);
             assert_eq!(process.reductions_remaining, -1);
             assert_eq!(process.reduction_yields, 1);

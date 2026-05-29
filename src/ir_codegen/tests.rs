@@ -1034,7 +1034,7 @@ fn run_capturing(compiled: &CompiledModule, entry: FnId) -> (i64, usize) {
     (o.exit.halt_value, o.exit.live_count)
 }
 
-fn run_main_and_count_live(src: &str) -> usize {
+fn count_live_objects(src: &str) -> usize {
     let m = lower_src(src);
     let entry = m.fn_by_name("main").unwrap().id;
     let compiled = compile(
@@ -1044,6 +1044,15 @@ fn run_main_and_count_live(src: &str) -> usize {
     )
     .unwrap();
     run_capturing(&compiled, entry).1
+}
+
+/// Live heap objects the program *body* allocates. Every spawned main carries
+/// fixed launch scaffolding (the entry thunk + synthetic main inner closure
+/// the scheduler resumes through `fz_resume`); a no-allocation main isolates
+/// that baseline so callers can assert on the objects their source builds.
+fn run_main_and_count_live(src: &str) -> usize {
+    let scaffolding = count_live_objects("fn main(), do: 0");
+    count_live_objects(src) - scaffolding
 }
 
 /// Two Processes built from the same CompiledModule observe equal atom

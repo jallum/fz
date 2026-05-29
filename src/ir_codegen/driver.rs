@@ -1033,7 +1033,7 @@ fn compute_tagged_slot0_cont_specs<T: crate::types::Types<Ty = crate::types::Ty>
 ///
 /// Closure_lit-driven chain resolution: when this spec's env types the
 /// closure as `closure_lit(F, K)`, the resolved body's chain feeds ours,
-/// so halt_kind selection (fz_spawn_entry, halt-cont singletons) picks
+/// so halt_kind selection (fz_entry_thunk, halt-cont singletons) picks
 /// the right kind. Indirect closure dispatch uses the all-ValueRef seam
 /// ABI, so anything returning through it is ValueRef.
 fn compute_chain_repr<
@@ -1209,7 +1209,7 @@ fn build_fn_sigs(
 /// as the closure handed to MakeClosure(fid, []) sites. See
 /// docs/cps-in-clif.md §8.2.
 ///
-/// Pack halt_kind so fz_spawn_entry can pick the matching halt-cont
+/// Pack halt_kind so fz_entry_thunk can pick the matching halt-cont
 /// singleton at task launch.
 fn collect_static_closure_targets(
     closure_shapes: &std::collections::BTreeMap<u32, usize>,
@@ -1411,35 +1411,44 @@ fn build_return_reprs<T: crate::types::Types<Ty = crate::types::Ty>>(
         .collect()
 }
 
-/// Emit fz_main_entry. Generic shim: takes the entry fn ptr + a
-/// halt-cont singleton ptr supplied by the Rust caller (caller picks
-/// the singleton matching the entry fn's return_repr kind). Body is
-/// just `call_indirect Tail main_fp(halt_cl)`.
-fn emit_main_entry<M: cranelift_module::Module>(
+/// Emit fz_main_trampoline. The closure-target body for a main-style
+/// entry's synthetic inner closure. The inner closure carries the raw
+/// `(cont)` main fn pointer in capture[0] (a raw int, so GC never treats it
+/// as a heap reference). Closure-target sig `(self, cont) tail`: read main_fp
+/// from capture[0] and `call_indirect Tail main_fp(cont)`. This bridges a
+/// plain main fn — whose body sig is `(cont)` — into the uniform
+/// entry-thunk + `fz_resume` dispatch path without forcing a closure-target
+/// body onto the entry fn itself.
+fn emit_main_trampoline<M: cranelift_module::Module>(
     m: &mut M,
     fbctx: &mut FunctionBuilderContext,
     runtime: &super::runtime_syms::RuntimeRefs,
 ) -> Result<(), CodegenError> {
-    let mut sig = Signature::new(CallConv::SystemV);
+    let mut sig = Signature::new(CallConv::Tail);
     sig.params.push(AbiParam::new(types::I64));
     sig.params.push(AbiParam::new(types::I64));
     sig.returns.push(AbiParam::new(types::I64));
-    emit_fn_body(m, fbctx, sig, runtime.main_entry_id, |_m, b| {
+    emit_fn_body(m, fbctx, sig, runtime.main_trampoline_id, |m, b| {
         let entry = b.create_block();
         b.append_block_params_for_function_params(entry);
         b.switch_to_block(entry);
         b.seal_block(entry);
-        let main_fp = b.block_params(entry)[0];
-        let halt_cl = b.block_params(entry)[1];
+        let self_cl = b.block_params(entry)[0];
+        let cont = b.block_params(entry)[1];
+        let mut shim_cache = CodegenCache::default();
+        let mut cg = CodegenFn::for_runtime_shim(runtime, b, m, &mut shim_cache);
+        // capture[0] holds the raw `(cont)` main fn pointer (raw int).
+        let zero = cg.b.ins().iconst(types::I64, 0);
+        let main_fp = cg.closure_capture_i64(self_cl, zero);
         let mut main_sig = Signature::new(CallConv::Tail);
         main_sig.params.push(AbiParam::new(types::I64));
         main_sig.returns.push(AbiParam::new(types::I64));
-        let sig_ref = b.func.import_signature(main_sig);
-        let inst = b.ins().call_indirect(sig_ref, main_fp, &[halt_cl]);
-        let r = b.inst_results(inst)[0];
-        b.ins().return_(&[r]);
+        let sig_ref = cg.b.func.import_signature(main_sig);
+        let inst = cg.b.ins().call_indirect(sig_ref, main_fp, &[cont]);
+        let r = cg.b.inst_results(inst)[0];
+        cg.b.ins().return_(&[r]);
     })
-    .map_err(|e| CodegenError::new(format!("define fz_main_entry: {}", e)))
+    .map_err(|e| CodegenError::new(format!("define fz_main_trampoline: {}", e)))
 }
 
 /// Emit fz_drain_dtor_entry. SystemV scheduler-callable shim that
@@ -1489,42 +1498,44 @@ fn emit_drain_dtor_entry<M: cranelift_module::Module>(
     .map_err(|e| CodegenError::new(format!("define fz_drain_dtor_entry: {}", e)))
 }
 
-/// Emit fz_spawn_entry. SystemV scheduler-callable shim that invokes
-/// a zero-arg closure with a fresh halt-cont. Used by
-/// `Runtime::spawn_closure` to launch the new task's first fn via the
-/// closure-target sig `(self, cont) tail`. The closure body tail-chains
-/// into a halt-cont; halt sets process.halt_value. Sig:
-/// `(closure:i64) -> i64 system_v`.
-///
-/// Picks the matching halt-cont based on the spawned closure's halt_kind
-/// (packed into the high 2 bits of the object-local closure `flags` at
-/// MakeClosure time). For RawInt-returning bodies this routes the i64
-/// raw payload into halt_cont_body_i64.
+/// Emit fz_entry_thunk. The uniform first-entry wrapper for a freshly
+/// spawned task. A task's `runnable` is an entry thunk whose single capture
+/// is the task's inner closure (a user lambda for `spawn_closure`, or the
+/// synthetic `fz_main_trampoline` closure for a main-style entry). The
+/// scheduler resumes the thunk through the one `fz_resume` shim, so the thunk
+/// has the resume-shaped closure-target sig `(self) -> i64 tail`. The body
+/// reads the inner closure from capture[0], picks the halt-cont matching the
+/// inner closure's halt_kind, and tail-calls the inner body `(inner, halt_cl)`
+/// — exactly the launch the retired `fz_spawn_entry` performed, but driven
+/// off the captured inner instead of a scheduler argument.
 ///
 /// Closure metadata layout:
 ///   off 0  : kind (u16)         off 4  : size_bytes (u32)
 ///   off 2  : flags (u16)        off 8  : schema_id (u32)
 ///                               off 12 : _reserved (u32)
 /// flags low 14 bits = captured_count; high 2 bits = halt_kind.
-fn emit_spawn_entry<M: cranelift_module::Module>(
+fn emit_entry_thunk<M: cranelift_module::Module>(
     m: &mut M,
     fbctx: &mut FunctionBuilderContext,
     runtime: &super::runtime_syms::RuntimeRefs,
 ) -> Result<(), CodegenError> {
-    let mut sig = Signature::new(CallConv::SystemV);
+    let mut sig = Signature::new(CallConv::Tail);
     sig.params.push(AbiParam::new(types::I64));
     sig.returns.push(AbiParam::new(types::I64));
-    emit_fn_body(m, fbctx, sig, runtime.spawn_entry_id, |m, b| {
+    emit_fn_body(m, fbctx, sig, runtime.entry_thunk_id, |m, b| {
         let entry = b.create_block();
         b.append_block_params_for_function_params(entry);
         b.switch_to_block(entry);
         b.seal_block(entry);
-        let closure = b.block_params(entry)[0];
+        let self_cl = b.block_params(entry)[0];
         let mut shim_cache = CodegenCache::default();
         let mut cg = CodegenFn::for_runtime_shim(runtime, b, m, &mut shim_cache);
+        // capture[0] is the inner closure to launch.
+        let zero_idx = cg.b.ins().iconst(types::I64, 0);
+        let closure = cg.closure_capture_ref(self_cl, zero_idx);
         let kind = cg.closure_halt_kind_ref(closure);
         // Select halt_cont_body_addr by kind. Branchless via three
-        // func_addrs + a tiny dispatch — keeps the spawn shim a leaf.
+        // func_addrs + a tiny dispatch — keeps the thunk a leaf.
         let a_strict = cg.func_addr(runtime.halt_cont_body_strict_id);
         let a_i64 = cg.func_addr(runtime.halt_cont_body_i64_id);
         let a_f64 = cg.func_addr(runtime.halt_cont_body_f64_id);
@@ -1535,7 +1546,7 @@ fn emit_spawn_entry<M: cranelift_module::Module>(
         let pick_i64_or_tagged = cg.b.ins().select(is_i64, a_i64, a_strict);
         let hcb_addr = cg.b.ins().select(is_f64, a_f64, pick_i64_or_tagged);
         let halt_cl = cg.get_halt_cont(hcb_addr, kind);
-        // Read closure body addr through the runtime ABI and invoke as
+        // Read inner closure body addr through the runtime ABI and invoke as
         // closure-target sig `(self, cont) tail` (zero user args).
         let code = cg.closure_code_ref(closure);
         let mut closure_sig = Signature::new(CallConv::Tail);
@@ -1547,7 +1558,7 @@ fn emit_spawn_entry<M: cranelift_module::Module>(
         let r = cg.b.inst_results(inst)[0];
         cg.b.ins().return_(&[r]);
     })
-    .map_err(|e| CodegenError::new(format!("define fz_spawn_entry: {}", e)))
+    .map_err(|e| CodegenError::new(format!("define fz_entry_thunk: {}", e)))
 }
 
 /// Emit three fz_halt_cont_body fns, one per repr. Generic ValueRef
@@ -2021,9 +2032,9 @@ pub(crate) fn compile_with_backend_impl<
 
     let mut fbctx = FunctionBuilderContext::new();
 
-    emit_main_entry(backend.module_mut(), &mut fbctx, &runtime)?;
+    emit_main_trampoline(backend.module_mut(), &mut fbctx, &runtime)?;
     emit_drain_dtor_entry(backend.module_mut(), &mut fbctx, &runtime)?;
-    emit_spawn_entry(backend.module_mut(), &mut fbctx, &runtime)?;
+    emit_entry_thunk(backend.module_mut(), &mut fbctx, &runtime)?;
     emit_halt_cont_bodies(backend.module_mut(), &mut fbctx, &runtime)?;
 
     // Register a heap Schema for every tuple arity used by MakeTuple, so the
@@ -2576,8 +2587,8 @@ pub(crate) fn compile_with_backend_impl<
         diagnostics,
         main_fn_id,
         static_closure_targets,
-        spawn_entry_id: runtime.spawn_entry_id,
-        main_entry_id: runtime.main_entry_id,
+        entry_thunk_id: runtime.entry_thunk_id,
+        main_trampoline_id: runtime.main_trampoline_id,
         drain_dtor_entry_id: runtime.drain_dtor_entry_id,
         halt_cont_body_ids: [
             runtime.halt_cont_body_strict_id,
