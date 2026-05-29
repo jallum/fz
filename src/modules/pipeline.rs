@@ -312,8 +312,8 @@ fn load_provider_units(
     let mut units = vec![prepared.compiled_unit_input()];
     for object in graph.objects() {
         let module = object
-            .module
-            .clone()
+            .module()
+            .cloned()
             .ok_or(PipelineError::MissingFzoModule)?;
         let source = object
             .source_unit_text(tel)

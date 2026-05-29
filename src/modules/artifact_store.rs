@@ -118,7 +118,7 @@ impl ArtifactStore {
     ) -> Result<Vec<PathBuf>, ArtifactStoreError> {
         let mut written = Vec::new();
         for artifact in artifacts {
-            let module = artifact.module.as_ref().ok_or({
+            let module = artifact.module().ok_or({
                 ArtifactStoreError::MissingModuleIdentity {
                     kind: ArtifactKind::Object,
                 }
@@ -158,7 +158,7 @@ impl ArtifactStore {
         let mut table = BTreeMap::new();
         for module in &modules {
             let artifact = self.load_fzi_artifact(tel, module, None)?;
-            table.insert(artifact.interface.name.clone(), artifact.interface);
+            table.insert(artifact.interface().name.clone(), artifact.interface().clone());
         }
         if !modules.is_empty() {
             tel.event(

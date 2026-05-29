@@ -24,29 +24,29 @@ const FZO_MAGIC: &str = "fzo";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FziArtifact {
-    pub compiler_abi_version: u32,
-    pub runtime_abi_version: u32,
-    pub interface_fingerprint_digest: String,
-    pub interface_fingerprint: Vec<String>,
-    pub interface: ModuleInterface,
+    compiler_abi_version: u32,
+    runtime_abi_version: u32,
+    interface_fingerprint_digest: String,
+    interface_fingerprint: Vec<String>,
+    interface: ModuleInterface,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FzoArtifact {
-    pub compiler_abi_version: u32,
-    pub runtime_abi_version: u32,
-    pub module: Option<ModuleName>,
-    pub unit_payload: FzoUnitPayload,
-    pub required_imports: Vec<ExportKey>,
-    pub implementation_fingerprint: Vec<String>,
-    pub interface_fingerprint_digest: String,
-    pub interface_fingerprint: Vec<String>,
+    compiler_abi_version: u32,
+    runtime_abi_version: u32,
+    module: Option<ModuleName>,
+    unit_payload: FzoUnitPayload,
+    required_imports: Vec<ExportKey>,
+    implementation_fingerprint: Vec<String>,
+    interface_fingerprint_digest: String,
+    interface_fingerprint: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FzoUnitPayload {
-    pub format: String,
-    pub body: String,
+    format: String,
+    body: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -102,6 +102,14 @@ impl FzoUnitPayload {
     pub fn runtime_module(body: impl Into<String>) -> Self {
         Self::new(FZO_PAYLOAD_RUNTIME_MODULE_V1, body)
     }
+
+    pub fn format(&self) -> &str {
+        &self.format
+    }
+
+    pub fn body(&self) -> &str {
+        &self.body
+    }
 }
 
 impl FziArtifact {
@@ -120,6 +128,26 @@ impl FziArtifact {
         encode(FZI_MAGIC, self)
     }
 
+    pub fn compiler_abi_version(&self) -> u32 {
+        self.compiler_abi_version
+    }
+
+    pub fn runtime_abi_version(&self) -> u32 {
+        self.runtime_abi_version
+    }
+
+    pub fn interface_fingerprint_digest(&self) -> &str {
+        &self.interface_fingerprint_digest
+    }
+
+    pub fn interface_fingerprint(&self) -> &[String] {
+        &self.interface_fingerprint
+    }
+
+    pub fn interface(&self) -> &ModuleInterface {
+        &self.interface
+    }
+
     pub fn deserialize(
         tel: &dyn crate::telemetry::Telemetry,
         path: Option<&Path>,
@@ -129,45 +157,48 @@ impl FziArtifact {
         let artifact: Self = decode(FZI_MAGIC, text).inspect_err(|err| {
             err.emit(tel, path);
         })?;
-        if artifact.compiler_abi_version != FZ_ARTIFACT_ABI_VERSION {
+        if artifact.compiler_abi_version() != FZ_ARTIFACT_ABI_VERSION {
             return emit_invalid(
                 tel,
                 path,
                 format!(
                     "fzi compiler ABI {} is not supported by ABI {}",
-                    artifact.compiler_abi_version, FZ_ARTIFACT_ABI_VERSION
+                    artifact.compiler_abi_version(),
+                    FZ_ARTIFACT_ABI_VERSION
                 ),
             );
         }
-        if artifact.runtime_abi_version != FZ_RUNTIME_ARTIFACT_ABI_VERSION {
+        if artifact.runtime_abi_version() != FZ_RUNTIME_ARTIFACT_ABI_VERSION {
             return emit_invalid(
                 tel,
                 path,
                 format!(
                     "fzi runtime ABI {} is not supported by ABI {}",
-                    artifact.runtime_abi_version, FZ_RUNTIME_ARTIFACT_ABI_VERSION
+                    artifact.runtime_abi_version(),
+                    FZ_RUNTIME_ARTIFACT_ABI_VERSION
                 ),
             );
         }
-        if artifact.interface.abi_version != FZ_INTERFACE_ABI_VERSION {
+        if artifact.interface().abi_version != FZ_INTERFACE_ABI_VERSION {
             return emit_invalid(
                 tel,
                 path,
                 format!(
                     "interface ABI {} is not supported by ABI {}",
-                    artifact.interface.abi_version, FZ_INTERFACE_ABI_VERSION
+                    artifact.interface().abi_version,
+                    FZ_INTERFACE_ABI_VERSION
                 ),
             );
         }
-        let computed_digest = fingerprint_digest(&artifact.interface_fingerprint);
-        if artifact.interface_fingerprint_digest != computed_digest {
+        let computed_digest = fingerprint_digest(artifact.interface_fingerprint());
+        if artifact.interface_fingerprint_digest() != computed_digest {
             return emit_invalid(tel, path, "fzi interface fingerprint digest mismatch");
         }
-        if artifact.interface.fingerprint_inputs != artifact.interface_fingerprint {
+        if artifact.interface().fingerprint_inputs != artifact.interface_fingerprint() {
             return emit_invalid(tel, path, "fzi interface fingerprint inputs mismatch");
         }
         if let Some(expected) = expected_fingerprint
-            && artifact.interface_fingerprint != expected
+            && artifact.interface_fingerprint() != expected
         {
             return emit_invalid(tel, path, "fzi interface fingerprint mismatch");
         }
@@ -176,6 +207,25 @@ impl FziArtifact {
 }
 
 impl FzoArtifact {
+    pub fn runtime_module(
+        module: ModuleName,
+        unit_payload: FzoUnitPayload,
+        required_imports: Vec<ExportKey>,
+        implementation_fingerprint: Vec<String>,
+        interface_fingerprint: Vec<String>,
+    ) -> Self {
+        Self {
+            compiler_abi_version: FZ_ARTIFACT_ABI_VERSION,
+            runtime_abi_version: FZ_RUNTIME_ARTIFACT_ABI_VERSION,
+            module: Some(module),
+            unit_payload,
+            required_imports,
+            implementation_fingerprint,
+            interface_fingerprint_digest: fingerprint_digest(&interface_fingerprint),
+            interface_fingerprint,
+        }
+    }
+
     #[cfg(test)]
     pub fn from_unit(unit: &CompiledUnit, implementation_fingerprint: Vec<String>) -> Self {
         Self::from_unit_payload(
@@ -224,17 +274,17 @@ impl FzoArtifact {
         &self,
         tel: &dyn crate::telemetry::Telemetry,
     ) -> Result<&str, ArtifactFormatError> {
-        if self.unit_payload.format == FZO_PAYLOAD_SOURCE_UNIT_V1
-            || self.unit_payload.format == FZO_PAYLOAD_RUNTIME_MODULE_V1
+        if self.unit_payload.format() == FZO_PAYLOAD_SOURCE_UNIT_V1
+            || self.unit_payload.format() == FZO_PAYLOAD_RUNTIME_MODULE_V1
         {
-            Ok(&self.unit_payload.body)
+            Ok(self.unit_payload.body())
         } else {
             emit_invalid(
                 tel,
                 None,
                 format!(
                     "fzo payload `{}` is not a materializable source unit",
-                    self.unit_payload.format
+                    self.unit_payload.format()
                 ),
             )
         }
@@ -242,6 +292,40 @@ impl FzoArtifact {
 
     pub fn serialize(&self) -> String {
         encode(FZO_MAGIC, self)
+    }
+
+    pub fn compiler_abi_version(&self) -> u32 {
+        self.compiler_abi_version
+    }
+
+    pub fn runtime_abi_version(&self) -> u32 {
+        self.runtime_abi_version
+    }
+
+    pub fn module(&self) -> Option<&ModuleName> {
+        self.module.as_ref()
+    }
+
+    pub fn unit_payload(&self) -> &FzoUnitPayload {
+        &self.unit_payload
+    }
+
+    #[cfg(test)]
+    pub fn required_imports(&self) -> &[ExportKey] {
+        &self.required_imports
+    }
+
+    #[cfg(test)]
+    pub fn implementation_fingerprint(&self) -> &[String] {
+        &self.implementation_fingerprint
+    }
+
+    pub fn interface_fingerprint_digest(&self) -> &str {
+        &self.interface_fingerprint_digest
+    }
+
+    pub fn interface_fingerprint(&self) -> &[String] {
+        &self.interface_fingerprint
     }
 
     pub fn deserialize(
@@ -253,20 +337,20 @@ impl FzoArtifact {
         let artifact: Self = decode(FZO_MAGIC, text).inspect_err(|err| {
             err.emit(tel, path);
         })?;
-        if artifact.compiler_abi_version != FZ_ARTIFACT_ABI_VERSION {
+        if artifact.compiler_abi_version() != FZ_ARTIFACT_ABI_VERSION {
             return emit_invalid(tel, path, "fzo compiler ABI mismatch");
         }
-        if artifact.runtime_abi_version != FZ_RUNTIME_ARTIFACT_ABI_VERSION {
+        if artifact.runtime_abi_version() != FZ_RUNTIME_ARTIFACT_ABI_VERSION {
             return emit_invalid(tel, path, "fzo runtime ABI mismatch");
         }
-        if artifact.unit_payload.format.is_empty() {
+        if artifact.unit_payload().format().is_empty() {
             return emit_invalid(tel, path, "fzo unit payload format is empty");
         }
-        if artifact.unit_payload.body.is_empty() {
+        if artifact.unit_payload().body().is_empty() {
             return emit_invalid(tel, path, "fzo unit payload is empty");
         }
-        let computed_digest = fingerprint_digest(&artifact.interface_fingerprint);
-        if artifact.interface_fingerprint_digest != computed_digest {
+        let computed_digest = fingerprint_digest(artifact.interface_fingerprint());
+        if artifact.interface_fingerprint_digest() != computed_digest {
             return emit_invalid(
                 tel,
                 path,
@@ -274,7 +358,7 @@ impl FzoArtifact {
             );
         }
         if let Some(expected) = expected_interface_fingerprint
-            && artifact.interface_fingerprint != expected
+            && artifact.interface_fingerprint() != expected
         {
             return emit_invalid(tel, path, "fzo implemented interface fingerprint mismatch");
         }

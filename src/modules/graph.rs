@@ -66,7 +66,7 @@ impl ModuleGraphLoader {
             }
 
             let artifact = self.store.load_fzi_artifact(tel, &module, None)?;
-            let interface = artifact.interface;
+            let interface = artifact.interface().clone();
             enqueue_imports(&mut queue, &interface);
             user_modules.insert(interface.name.clone());
             interfaces.insert(interface.name.clone(), interface);
@@ -200,7 +200,7 @@ mod tests {
         assert!(graph.interfaces().contains_key(&module("Math")));
         assert!(!graph.interfaces().contains_key(&module("Extra")));
         assert_eq!(graph.objects().len(), 1);
-        assert_eq!(graph.objects()[0].module, Some(module("Math")));
+        assert_eq!(graph.objects()[0].module(), Some(&module("Math")));
 
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -290,8 +290,11 @@ mod tests {
 
         assert!(graph.interfaces().contains_key(&module("Utf8")));
         assert_eq!(graph.objects().len(), 1);
-        assert_eq!(graph.objects()[0].module, Some(module("Utf8")));
-        assert_eq!(graph.objects()[0].unit_payload.format, "fz-runtime-module-v1");
+        assert_eq!(graph.objects()[0].module(), Some(&module("Utf8")));
+        assert_eq!(
+            graph.objects()[0].unit_payload().format(),
+            "fz-runtime-module-v1"
+        );
         assert!(
             graph.objects()[0]
                 .source_unit_text(&crate::telemetry::NullTelemetry)

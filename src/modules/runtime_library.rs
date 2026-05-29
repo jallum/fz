@@ -237,20 +237,15 @@ fn runtime_module_fzo(
     interface: &ModuleInterface,
 ) -> FzoArtifact {
     let interface_fingerprint = interface.fingerprint_inputs.clone();
-    FzoArtifact {
-        compiler_abi_version: crate::modules::artifact::FZ_ARTIFACT_ABI_VERSION,
-        runtime_abi_version: crate::modules::artifact::FZ_RUNTIME_ARTIFACT_ABI_VERSION,
-        module: Some(name.clone()),
-        unit_payload: FzoUnitPayload::runtime_module(
+    FzoArtifact::runtime_module(
+        name.clone(),
+        FzoUnitPayload::runtime_module(
             runtime_module_source(name).expect("runtime module source is registered"),
         ),
-        required_imports: interface_imports(interface),
-        implementation_fingerprint: runtime_implementation_fingerprint(name, module),
-        interface_fingerprint_digest: crate::modules::interface::fingerprint_digest(
-            &interface_fingerprint,
-        ),
+        interface_imports(interface),
+        runtime_implementation_fingerprint(name, module),
         interface_fingerprint,
-    }
+    )
 }
 
 fn interface_imports(interface: &ModuleInterface) -> Vec<ExportKey> {
@@ -482,11 +477,11 @@ mod tests {
                 Some(&artifact.interface.fingerprint_inputs),
             )
             .expect("fzi roundtrip");
-            assert_eq!(fzi.interface.name, artifact.interface.name);
-            assert_eq!(fzi.interface.imports, artifact.interface.imports);
-            assert_eq!(fzi.interface.types, artifact.interface.types);
+            assert_eq!(fzi.interface().name, artifact.interface.name);
+            assert_eq!(fzi.interface().imports, artifact.interface.imports);
+            assert_eq!(fzi.interface().types, artifact.interface.types);
             assert_eq!(
-                fzi.interface
+                fzi.interface()
                     .exports
                     .iter()
                     .map(|f| (&f.name, f.arity, &f.spec))
@@ -504,13 +499,15 @@ mod tests {
                 &crate::telemetry::NullTelemetry,
                 None,
                 &fzo_text,
-                Some(&artifact.fzo.interface_fingerprint),
+                Some(&artifact.fzo.interface_fingerprint()),
             )
             .expect("fzo roundtrip");
-            assert_eq!(fzo.module, Some(artifact.module));
+            assert_eq!(fzo.module(), Some(&artifact.module));
+            assert_eq!(fzo.interface_fingerprint(), artifact.interface.fingerprint_inputs);
+            assert_eq!(fzo.required_imports(), artifact.fzo.required_imports());
             assert_eq!(
-                fzo.interface_fingerprint,
-                artifact.interface.fingerprint_inputs
+                fzo.implementation_fingerprint(),
+                artifact.fzo.implementation_fingerprint()
             );
         }
     }
@@ -553,8 +550,8 @@ mod tests {
                 Some(&loaded_interfaces[&utf8].fingerprint_inputs),
             )
             .expect("load fzo");
-        assert_eq!(loaded_fzo.module, Some(utf8));
-        assert_eq!(loaded_fzo.unit_payload.format, "fz-runtime-module-v1");
+        assert_eq!(loaded_fzo.module(), Some(&utf8));
+        assert_eq!(loaded_fzo.unit_payload().format(), "fz-runtime-module-v1");
 
         let mut t = crate::types::ConcreteTypes;
         let consumer = r#"
