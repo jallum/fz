@@ -29,33 +29,29 @@ different yield and closure counts for the same program. They must now agree.
 
 Native floor:
 
-- `list_cons_allocs = 61`
-- `closure_allocs = 53` — see the decomposition below
+- `list_cons_allocs = 22`
+- `closure_allocs = 0`
 - `scalar_box_allocs = 0`
-- `heap_bytes = 976`
-- `allocation_pressure_yields = 2`
+- `heap_bytes = 352`
+- `allocation_pressure_yields = 0`
 
 The interpreter and REPL legs are direct-IR baselines: they do not run native
 `ReturnDemand` / owned-cons-reuse lowering, so they allocate more cons cells
 (`154`) and only the single comparator closure. They share the same growable
 heap, so they take the same `2` allocation-pressure yields.
 
-## The closure count improved, but is not zero
+## The default sorter is erased from native frames
 
 Where the hand-written quicksort lowers to **0** continuation closures (its
 `append`/`qsort` non-tail recursion gets `ListTail` destination planning),
-`Enum.sort` still allocates 53 closures. That is a real improvement over the
-old native floor (`80` closures, `80` cons cells, `27` scalar boxes, and `1280`
-heap headline bytes), but it is not the fully closure-free merge-sort shape.
-Callable capabilities now let the planner see farther through the runtime
-library boundary, so known reducer/comparator values stop carrying as much
-dead callable state through native frames.
+`Enum.sort` now also lowers to **0** native continuation closures for the
+default comparator. The important detail is that the comparator was a constant
+zero-capture closure flowing through return-demand-specialized runtime-library
+specs. Constant-closure elimination must consume callable capability facts from
+those `list_tail` specs too, not only value-demand specs, so the dead sorter
+parameter disappears from `sort_list`, `fn_clause_2`, and `merge_sort_lists`.
 
-The remaining closures come from merge sort's non-tail recursion in `enum.fz`:
-`merge_sort_lists` builds `[head | merge_sort_lists(...)]` inside a guarded
-`if`, and the sort still has recursive structure that destination planning does
-not fully flatten into the quicksort-style owned-cons path.
-
-Further reducing the native count is future optimizer work. This fixture pins
-the current post-capability contract so that any change in either direction
-shows up loudly.
+The native count is now lower than quicksort because this merge sort reuses the
+input cons cells differently after splitting/reversing. This fixture pins the
+post-capability contract so that any change in either direction shows up
+loudly.

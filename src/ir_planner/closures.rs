@@ -51,9 +51,6 @@ pub fn rewrite_known_target_closures<
 ) {
     let mut unified: HashMap<FnId, HashMap<Var, Option<FnId>>> = HashMap::new();
     for (key, ft) in &types.specs {
-        if !key.demand.is_value() {
-            continue;
-        }
         let entry = unified.entry(key.fn_id).or_default();
         for (v, fnid) in ft
             .callable_capabilities

@@ -281,6 +281,10 @@ fn static_tests() -> Vec<(&'static str, fn())> {
             enum_list_allocations_pin_minimum_list_cons,
         ),
         (
+            "enum_sort_constant_sorter_erased_under_return_demand_specs",
+            enum_sort_constant_sorter_erased_under_return_demand_specs,
+        ),
+        (
             "local_reduce_state_update_lowers_without_trampoline",
             local_reduce_state_update_lowers_without_trampoline,
         ),
@@ -3067,6 +3071,57 @@ fn local_reduce_state_update_lowers_without_trampoline() {
         !reduce_list.contains("lambda_") && !reduce_list.contains("; fn k_"),
         "local reduce state update should not keep the reducer-continuation trampoline in reduce_list CLIF:\n{}",
         reduce_list
+    );
+}
+
+fn enum_sort_constant_sorter_erased_under_return_demand_specs() {
+    assert_fixture_output_contains(
+        "enum_sort",
+        "expected.jit.txt",
+        &[
+            ":list_cons_allocs => 22",
+            ":closure_allocs => 0",
+            ":scalar_box_allocs => 0",
+            ":allocation_pressure_yields => 0",
+        ],
+    );
+
+    let readme = fs::read_to_string("fixtures/enum_sort/README.md").expect("read enum_sort README");
+    for needle in [
+        "default sorter is erased",
+        "return-demand-specialized runtime-library",
+        "not only value-demand specs",
+    ] {
+        assert!(
+            readme.contains(needle),
+            "enum_sort README must pin `{}`",
+            needle
+        );
+    }
+
+    let clif = dump_fixture_clif("enum_sort");
+    let sorter_threading_functions = ["Enum.sort_list", "fn_clause_2", "Enum.merge_sort_lists"]
+        .into_iter()
+        .flat_map(|name| clif_functions_containing(&clif, name))
+        .collect::<Vec<_>>();
+    assert!(
+        !sorter_threading_functions.is_empty(),
+        "enum_sort should emit sorter-threading runtime-library functions:\n{}",
+        clif
+    );
+    assert!(
+        sorter_threading_functions
+            .iter()
+            .all(|f| !f.contains("&fn43[]")),
+        "constant sorter should not remain in sort_list/fn_clause_2/merge_sort_lists signatures:\n{}",
+        sorter_threading_functions.join("\n\n")
+    );
+    assert!(
+        sorter_threading_functions
+            .iter()
+            .all(|f| !f.contains("@fz_alloc_closure")),
+        "constant sorter should not force heap continuation allocation in sorter-threading functions:\n{}",
+        sorter_threading_functions.join("\n\n")
     );
 }
 
