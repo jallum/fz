@@ -209,6 +209,21 @@ where
     self::env::resolve_spec_decl(t, decl, env)
 }
 
+/// Best-effort per-position spec resolution: each param and the result resolve
+/// independently, yielding `None` for any body that does not resolve (rather
+/// than failing the whole spec). Free type variables are shared across
+/// positions. See `env::resolve_spec_decl_positions`.
+pub fn resolve_spec_decl_positions<T>(
+    t: &mut T,
+    decl: &crate::ast::SpecDecl,
+    env: &ModuleTypeEnv,
+) -> (Vec<Option<crate::types::Ty>>, Option<crate::types::Ty>)
+where
+    T: Types<Ty = crate::types::Ty>,
+{
+    self::env::resolve_spec_decl_positions(t, decl, env)
+}
+
 #[cfg(test)]
 pub fn build_module_type_env<T>(
     t: &mut T,

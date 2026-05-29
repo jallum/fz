@@ -2556,6 +2556,69 @@ fn main(), do: Collectable.id([1])
     assert_eq!(target_fn.name, "List.id");
 }
 
+// ---- fz-t1m.1.1 — protocol callback spec compatibility ----
+
+/// An impl callback whose declared `@spec` is set-theoretically disjoint from
+/// the protocol's declared callback spec (here: result `atom` vs `integer`) is
+/// rejected during resolve.
+#[test]
+fn protocol_impl_callback_disjoint_spec_is_rejected() {
+    let src = r#"
+defprotocol P do
+  @spec to_thing(t(a)) :: integer
+  fn to_thing(value)
+end
+
+defimpl P, for: List do
+  @spec to_thing(value) :: atom
+  fn to_thing(value), do: :ok
+end
+
+fn main(), do: P.to_thing([1])
+"#;
+    let toks = crate::lexer::Lexer::new(src).tokenize().expect("lex");
+    let parsed = crate::parser::Parser::new(toks)
+        .parse_program()
+        .expect("parse");
+    let mut t = crate::types::ConcreteTypes;
+    let err = crate::resolve::flatten_modules(&mut t, parsed)
+        .expect_err("disjoint callback result spec must be rejected");
+    let crate::resolve::ResolveError::ProtocolError { msg, .. } = err else {
+        panic!("expected ProtocolError, got {err:?}");
+    };
+    assert!(
+        msg.contains("to_thing/1") && msg.contains("incompatible"),
+        "unexpected message: {msg}"
+    );
+}
+
+/// A compatible impl callback spec (result `integer`, matching the protocol)
+/// resolves without error; free type variables in callback positions never
+/// produce a false positive.
+#[test]
+fn protocol_impl_callback_compatible_spec_is_accepted() {
+    let src = r#"
+defprotocol P do
+  @spec to_thing(t(a)) :: integer
+  fn to_thing(value)
+end
+
+defimpl P, for: List do
+  @spec to_thing(value) :: integer
+  fn to_thing(value), do: 1
+end
+
+fn main(), do: P.to_thing([1])
+"#;
+    let toks = crate::lexer::Lexer::new(src).tokenize().expect("lex");
+    let parsed = crate::parser::Parser::new(toks)
+        .parse_program()
+        .expect("parse");
+    let mut t = crate::types::ConcreteTypes;
+    crate::resolve::flatten_modules(&mut t, parsed)
+        .expect("compatible callback spec must resolve");
+}
+
 // ---- fz-swt.8 — `.value` accessor: typing + visibility gating ----
 
 /// Inside the declaring module, `handle.value` typechecks as the inner

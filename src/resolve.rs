@@ -615,6 +615,7 @@ fn collect_protocol_registry<T: crate::types::Types<Ty = crate::types::Ty>>(
             env.insert("t".to_string(), ty);
         }
     }
+    validate_protocol_callback_specs(t, &registry, module_type_envs)?;
     Ok(registry)
 }
 
@@ -662,11 +663,13 @@ fn collect_protocol_registry_items<T: crate::types::Types<Ty = crate::types::Ty>
                 let protocol = qualify_protocol_name(parent, &protocol_impl.protocol);
                 let target =
                     ImplTarget::module(qualify_module_child(parent, &protocol_impl.target.path));
-                let callbacks = protocol_impl_callbacks(parent, protocol_impl)?;
+                let (callbacks, callback_specs) =
+                    protocol_impl_callbacks(parent, protocol_impl)?;
                 let fact = ProtocolImplFact {
                     protocol: protocol.clone(),
                     target: target.clone(),
                     callbacks,
+                    callback_specs,
                     span: protocol_impl.span,
                 };
                 let key = ProtocolImplKey { protocol, target };
@@ -748,11 +751,17 @@ fn protocol_decl<T: crate::types::Types<Ty = crate::types::Ty>>(
     })
 }
 
+type ProtocolImplCallbacks = (
+    BTreeMap<(String, usize), ExportKey>,
+    BTreeMap<(String, usize), crate::ast::SpecDecl>,
+);
+
 fn protocol_impl_callbacks(
     parent: Option<&ModuleName>,
     protocol_impl: &ProtocolImplDef,
-) -> Result<BTreeMap<(String, usize), ExportKey>, ResolveError> {
+) -> Result<ProtocolImplCallbacks, ResolveError> {
     let mut callbacks = BTreeMap::new();
+    let mut callback_specs = BTreeMap::new();
     let impl_module = qualify_module_child(parent, &protocol_impl.target.path);
     for item in &protocol_impl.items {
         match &**item {
@@ -774,6 +783,12 @@ fn protocol_impl_callbacks(
                         span: def.name_span,
                     });
                 }
+                if let Some(spec) = def.attrs.iter().find_map(|attr| match attr {
+                    Attribute::Spec(spec) => Some(spec.clone()),
+                    _ => None,
+                }) {
+                    callback_specs.insert(key, spec);
+                }
             }
             _ => {
                 return Err(ResolveError::ProtocolError {
@@ -783,7 +798,7 @@ fn protocol_impl_callbacks(
             }
         }
     }
-    Ok(callbacks)
+    Ok((callbacks, callback_specs))
 }
 
 fn validate_protocol_impls(registry: &ProtocolRegistry) -> Result<(), ResolveError> {
@@ -821,6 +836,86 @@ fn validate_protocol_impls(registry: &ProtocolRegistry) -> Result<(), ResolveErr
                     msg: format!(
                         "implementation for protocol `{}` on `{}` provides unknown callback `{}/{}`",
                         fact.protocol, fact.target, name, arity
+                    ),
+                    span: fact.span,
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Reject an impl callback whose declared `@spec` is incompatible with the
+/// protocol's declared callback spec. The protocol callback spec is read with
+/// its domain variable `t` bound to the impl's concrete target type; a callback
+/// position fails only when the protocol-side and impl-side types are
+/// set-theoretically disjoint (empty intersection), so free type variables and
+/// `any` never produce a false positive. Callbacks without a declared spec on
+/// either side are not checked.
+fn validate_protocol_callback_specs<T: crate::types::Types<Ty = crate::types::Ty>>(
+    t: &mut T,
+    registry: &ProtocolRegistry,
+    module_type_envs: &HashMap<String, crate::type_expr::ModuleTypeEnv>,
+) -> Result<(), ResolveError> {
+    for fact in registry.impls.values() {
+        if fact.callback_specs.is_empty() {
+            continue;
+        }
+        let Some(protocol) = registry.protocols.get(&fact.protocol) else {
+            continue;
+        };
+        let target_ty = crate::protocols::impl_target_type(t, &fact.target);
+        let mut proto_env = module_type_envs
+            .get(&fact.protocol.dotted())
+            .cloned()
+            .unwrap_or_else(|| crate::type_expr::builtin_type_env(t));
+        proto_env.insert("t".to_string(), target_ty.clone());
+        proto_env.insert(format!("{}.t", fact.protocol), target_ty);
+        for callback in &protocol.callbacks {
+            let Some(proto_spec) = &callback.spec else {
+                continue;
+            };
+            let key = (callback.name.clone(), callback.arity);
+            let Some(impl_spec) = fact.callback_specs.get(&key) else {
+                continue;
+            };
+            let impl_env = fact
+                .callbacks
+                .get(&key)
+                .and_then(|export| module_type_envs.get(&export.module.dotted()))
+                .cloned()
+                .unwrap_or_else(|| crate::type_expr::builtin_type_env(t));
+            // Per-position so a domain-applied position (`t(a)`) that does not
+            // resolve yet does not mask the result and other params.
+            let (proto_params, proto_result) =
+                crate::type_expr::resolve_spec_decl_positions(t, proto_spec, &proto_env);
+            let (impl_params, impl_result) =
+                crate::type_expr::resolve_spec_decl_positions(t, impl_spec, &impl_env);
+            if proto_params.len() != impl_params.len() {
+                continue;
+            }
+            let mut incompatible: Option<String> = None;
+            for (i, (proto_param, impl_param)) in
+                proto_params.iter().zip(impl_params.iter()).enumerate()
+            {
+                if let (Some(p), Some(q)) = (proto_param, impl_param)
+                    && t.is_disjoint(p, q)
+                {
+                    incompatible = Some(format!("parameter {}", i + 1));
+                    break;
+                }
+            }
+            if incompatible.is_none()
+                && let (Some(p), Some(q)) = (&proto_result, &impl_result)
+                && t.is_disjoint(p, q)
+            {
+                incompatible = Some("result".to_string());
+            }
+            if let Some(position) = incompatible {
+                return Err(ResolveError::ProtocolError {
+                    msg: format!(
+                        "implementation of protocol `{}` for `{}`: callback `{}/{}` {} is incompatible with the protocol's declared spec",
+                        fact.protocol, fact.target, callback.name, callback.arity, position
                     ),
                     span: fact.span,
                 });

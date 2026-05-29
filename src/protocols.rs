@@ -59,6 +59,11 @@ pub struct ProtocolImplFact {
     pub protocol: ModuleName,
     pub target: ImplTarget,
     pub callbacks: BTreeMap<(String, usize), ExportKey>,
+    /// Declared `@spec` of each impl callback that carries one, keyed by
+    /// `(name, arity)`. Empty for interface-sourced impls (the interface does
+    /// not carry impl callback specs) and for callbacks declared without a
+    /// spec. Consumed by callback-spec compatibility checking.
+    pub callback_specs: BTreeMap<(String, usize), crate::ast::SpecDecl>,
     pub span: Span,
 }
 
@@ -131,6 +136,7 @@ impl ProtocolRegistry {
                     protocol: protocol_impl.protocol.clone(),
                     target: protocol_impl.target.clone(),
                     callbacks,
+                    callback_specs: BTreeMap::new(),
                     span: Span::DUMMY,
                 });
             }
