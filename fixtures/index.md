@@ -69,6 +69,7 @@ Run with `BLESS=1` to rewrite after editing fixtures.
 | `receive_mixed_constructors/` | selective receive whose clauses mix top-level constructors (atom + tuple + wildcard) | jit, interp, aot, repl |
 | `receive_selective_refs/` | fz-recv epic acceptance — selective receive across two pinned refs with out-of-order replies + after timeout | interp, jit, aot, repl |
 | `receive_shared_tuple_arity/` | selective receive with consecutive same-arity tuple clauses | jit, interp, aot, repl |
+| `refute_abort_message/` | a failed refute aborts with the caller's message on every path | jit, interp, aot, repl |
 | `relay/` | one-hop relay — spawned child blocks on receive before parent sends; exercises non-blocking spawn + receive-parks semantics | jit, interp, aot, repl |
 | `resource_aot_dtor/` | AOT-compiled binary fires user-supplied resource dtors at heap drop | aot, repl |
 | `resource_lifecycle/` | fz-swt.12 — resource lifecycle (make_resource + .value + dtor) is observably identical across interp, JIT, AOT | interp, jit, aot, repl |
@@ -80,6 +81,7 @@ Run with `BLESS=1` to rewrite after editing fixtures.
 | `spawn_with_captures/` | fz-ul4.29.5 — spawn-with-captures lift (was forbidden v1) | jit, interp, aot, repl |
 | `spec_boundary/` | fz-jg5.12 (RED.9) — @spec is a reduction boundary; fact has 1 body, not 0 | jit, interp, aot, repl |
 | `spec_ok/` | fz-ul4.31.6 — declared @spec matches inferred behavior; | jit, interp, aot, repl |
+| `spec_violation/` | a wrong @spec is rejected with a spec/violation diagnostic on every path | interp, jit, aot, repl |
 | `tail_recursion/` | 100k-deep self-recursion must TCO — exits cleanly with the accumulated count | jit, interp, aot, repl |
 | `tailcall_closure_captures/` | TailCallClosure with captured singleton closure-lit preserves narrow arg ABI through recursive HOF | jit, interp, aot, repl |
 | `three_process_chain/` | two-hop process relay — main → first_relay → second_relay → main; exercises multi-process message chaining | jit, interp, aot, repl |

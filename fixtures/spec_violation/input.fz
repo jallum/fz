@@ -1,0 +1,6 @@
+defmodule M do
+  @spec add1(float) :: float
+  fn add1(n), do: n + 1
+end
+
+fn main(), do: dbg(M.add1(41))
