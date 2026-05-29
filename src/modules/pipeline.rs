@@ -304,13 +304,13 @@ fn load_provider_units(
     tel.event(
         &["fz", "module", "graph_loaded"],
         metadata! {
-            interfaces: graph.interfaces.len() as i64,
-            objects: graph.objects.len() as i64,
+            interfaces: graph.interfaces().len() as i64,
+            objects: graph.objects().len() as i64,
         },
     );
 
     let mut units = vec![prepared.compiled_unit_input()];
-    for object in graph.objects {
+    for object in graph.objects() {
         let module = object
             .module
             .clone()
@@ -323,12 +323,12 @@ fn load_provider_units(
                 t,
                 source.to_string(),
                 format!("artifact:{module}"),
-                graph.interfaces.clone(),
+                graph.interfaces().clone(),
                 tel,
             ),
             tel,
         )?;
-        let interface = graph.interfaces.get(&module).cloned();
+        let interface = graph.interfaces().get(&module).cloned();
         units.push(CompiledUnit::from_ir_module_with_plan(
             frontend.module,
             Some(frontend.module_plan),
