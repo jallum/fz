@@ -203,7 +203,6 @@ pub trait Types {
     /// value-disjoint: i.e. they differ only by a brand/opaque the runtime
     /// erases. This is exactly the set of comparisons the old brand-aware
     /// fold broke; consumers emit a telemetry signal on it.
-    #[allow(dead_code)] // fz-bsx.5 wires this into the dead-binop diagnostic + telemetry.
     fn differs_only_nominally(
         &self,
         a: &Self::Ty,
@@ -248,9 +247,11 @@ pub trait Types {
 
     /// Coarser than `is_disjoint`: true iff `a` and `b` share at least
     /// one populated axis (basic kind, atoms, ints, floats, tuples,
-    /// lists, arrows, maps, opaques, brands, vars). Used by lints that
-    /// want to flag cross-kind comparisons (`x == :ok` when `x: int`)
-    /// without firing on within-axis literal-disjoint cases (`1 == 2`).
+    /// lists, arrows, maps, opaques, brands, vars). Used by the dead-binop
+    /// lint to flag cross-kind comparisons (`x == :ok` when `x: int`)
+    /// without firing on within-axis literal-disjoint cases (`1 == 2`,
+    /// `:ok == :err`). Pair with `is_value_disjoint` to also stay quiet on
+    /// brand-vs-underlying pairs (which overlap once brands are erased).
     fn kinds_overlap(&self, a: &Self::Ty, b: &Self::Ty) -> bool;
 
     /// If `a` is a pure opaque-nominal type — a singleton on the

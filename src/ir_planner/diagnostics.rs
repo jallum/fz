@@ -202,11 +202,12 @@ pub fn collect_diagnostics<
     t: &mut T,
     module: &Module,
     types: &ModulePlan,
+    tel: &dyn crate::telemetry::Telemetry,
 ) -> crate::diag::Diagnostics {
     use crate::diag::Diagnostics;
     let mut out = Diagnostics::new();
     collect_unreachable_arm_diagnostics(t, module, types, &mut out);
-    collect_stmt_type_diagnostics(t, module, types, &mut out);
+    collect_stmt_type_diagnostics(t, module, types, &mut out, tel);
     collect_receive_guard_diagnostics(module, &mut out);
     for d in check_matcher_purity(module) {
         out.push(d);
@@ -296,6 +297,7 @@ fn collect_stmt_type_diagnostics<
     module: &Module,
     types: &ModulePlan,
     out: &mut crate::diag::Diagnostics,
+    tel: &dyn crate::telemetry::Telemetry,
 ) {
     for f in module.fns.iter() {
         let ft_owned = fallback_any_spec(t, module, types, f);
@@ -310,7 +312,18 @@ fn collect_stmt_type_diagnostics<
             let spans = module.source.stmt_spans.get(&(f.id, b.id));
             for (sidx, stmt) in b.stmts.iter().enumerate() {
                 let Stmt::Let(v, prim) = stmt;
-                collect_dead_binop_diagnostic(t, &f.name, spans, sidx, prim, &env, out);
+                collect_dead_binop_diagnostic(
+                    t,
+                    &f.name,
+                    spans,
+                    sidx,
+                    prim,
+                    &env,
+                    out,
+                    &module.brand_inners,
+                    &module.opaque_inners,
+                    tel,
+                );
                 collect_opaque_arithmetic_diagnostic(t, &f.name, spans, sidx, prim, &env, out);
                 collect_opaque_visibility_diagnostic(
                     t, module, &f.name, spans, sidx, prim, &env, out,
@@ -486,6 +499,7 @@ fn sorted_blocks(f: &crate::fz_ir::FnIr) -> Vec<&crate::fz_ir::Block> {
     blocks
 }
 
+#[allow(clippy::too_many_arguments)]
 fn collect_dead_binop_diagnostic<
     T: crate::types::Types<Ty = crate::types::Ty> + crate::types::RenderTypes,
 >(
@@ -496,6 +510,9 @@ fn collect_dead_binop_diagnostic<
     prim: &Prim,
     env: &HashMap<Var, crate::types::Ty>,
     out: &mut crate::diag::Diagnostics,
+    brand_inners: &HashMap<String, crate::types::Ty>,
+    opaque_inners: &HashMap<String, crate::types::Ty>,
+    tel: &dyn crate::telemetry::Telemetry,
 ) {
     use crate::diag::{Diagnostic, Span, codes::TYPE_DEAD_BINOP};
     let Prim::BinOp(op, lhs, rhs) = prim else {
@@ -506,8 +523,28 @@ fn collect_dead_binop_diagnostic<
     }
     let ta_ty = env.get(lhs).cloned().unwrap_or_else(|| t.none());
     let tb_ty = env.get(rhs).cloned().unwrap_or_else(|| t.none());
-    let cross_kind = !t.is_empty(&ta_ty) && !t.is_empty(&tb_ty) && !t.kinds_overlap(&ta_ty, &tb_ty);
-    if !cross_kind {
+    if t.is_empty(&ta_ty) || t.is_empty(&tb_ty) {
+        return;
+    }
+    // The lint flags genuinely cross-kind comparisons: different kind
+    // classes (`kinds_overlap` false) AND no runtime value in common
+    // (`is_value_disjoint`). fz-bsx: `==`/`!=` are brand-BLIND at runtime,
+    // so the value check erases brands — a `utf8` vs an unbranded `binary`
+    // is cross-KIND but NOT value-disjoint, so it must not warn. Pure
+    // within-axis literal-disjoint pairs (`:ok == :err`) stay quiet because
+    // `kinds_overlap` is true for them (deliberate lint ergonomics).
+    let cross_kind = !t.kinds_overlap(&ta_ty, &tb_ty);
+    let value_disjoint = t.is_value_disjoint(&ta_ty, &tb_ty, brand_inners, opaque_inners);
+    if !(cross_kind && value_disjoint) {
+        // Not a genuinely-dead comparison. If it only looks disjoint because
+        // of an erased brand/opaque, emit a telemetry signal and let it sail
+        // — the runtime comparison is real and brand-blind (fz-bsx).
+        if t.differs_only_nominally(&ta_ty, &tb_ty, brand_inners, opaque_inners) {
+            tel.event(
+                &["fz", "type", "brand_blind_eq"],
+                crate::metadata! { units: 1u64 },
+            );
+        }
         return;
     }
     let span = spans

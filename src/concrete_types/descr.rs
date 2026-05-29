@@ -587,9 +587,12 @@ impl Descr {
 
     /// True iff `self` and `other` share at least one axis on which both
     /// are non-empty (basic bits overlap; literal axes both populated;
-    /// structural axes both non-empty). Used by ir_planner's VR.5a lint to
-    /// distinguish "different kinds" from "same kind, narrowed to disjoint
-    /// literals." Cheaper than full `intersect`.
+    /// structural axes both non-empty). Coarser than `intersect`: it asks
+    /// "same KIND?" not "same value?", so it deliberately does NOT fire on
+    /// within-axis literal-disjoint pairs (`1` vs `2`, `:ok` vs `:err`).
+    /// The dead-binop lint pairs this with `value_disjoint` to flag only
+    /// genuinely-cross-kind comparisons (and, post-fz-bsx, to stay quiet on
+    /// brand-vs-underlying pairs, which overlap once brands are erased).
     pub(crate) fn kinds_overlap(&self, other: &Descr) -> bool {
         if !self.basic.intersect(other.basic).is_empty() {
             return true;
@@ -625,6 +628,7 @@ impl Descr {
         }
         false
     }
+
 
     /// Returns the largest arity of any positive tuple clause, or 0 if
     /// there are no positive tuple clauses. Used for tuple-field projection

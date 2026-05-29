@@ -1296,7 +1296,7 @@ mod tests {
         ));
         let mut ct = crate::types::ConcreteTypes;
         let mt = crate::ir_planner::plan_module(&mut ct, &m, &crate::telemetry::NullTelemetry);
-        let diags = crate::ir_planner::collect_diagnostics(&mut ct, &m, &mt);
+        let diags = crate::ir_planner::collect_diagnostics(&mut ct, &m, &mt, &crate::telemetry::NullTelemetry);
         let unreachable: Vec<_> = diags
             .as_slice()
             .iter()
@@ -1306,6 +1306,39 @@ mod tests {
             unreachable.is_empty(),
             "synthesized dispatch Ifs must not warn; got {:?}",
             unreachable,
+        );
+    }
+
+    /// fz-bsx.5 — the dead-binop ("always false") diagnostic is observed
+    /// through the telemetry bus ([fz, diag, warning] carrying
+    /// type/dead-binop), per the project's telemetry-over-stderr policy.
+    #[test]
+    fn dead_binop_diagnostic_observable_via_telemetry() {
+        let m = lower_src("fn main() do\n  dbg(1 == :ok)\nend\n");
+        let mut ct = crate::types::ConcreteTypes;
+        let mt = crate::ir_planner::plan_module(&mut ct, &m, &crate::telemetry::NullTelemetry);
+        let diags = crate::ir_planner::collect_diagnostics(
+            &mut ct,
+            &m,
+            &mt,
+            &crate::telemetry::NullTelemetry,
+        );
+
+        let tel = crate::telemetry::ConfiguredTelemetry::new();
+        let cap = crate::telemetry::Capture::new();
+        tel.attach(&["fz", "diag"], cap.handler());
+        crate::diag::emit_through(&tel, None, diags.as_slice());
+
+        assert!(
+            cap.count(&["fz", "diag", "warning"]) >= 1,
+            "dead-binop warning must surface on the telemetry bus",
+        );
+        assert!(
+            diags
+                .as_slice()
+                .iter()
+                .any(|d| d.code == crate::diag::codes::TYPE_DEAD_BINOP),
+            "the surfaced warning carries the type/dead-binop code",
         );
     }
 
@@ -2517,7 +2550,7 @@ end
         let mut ct = crate::types::ConcreteTypes;
         let mt = crate::ir_planner::plan_module(&mut ct, &m, &crate::telemetry::NullTelemetry);
         // No diagnostics from the pure-guard / pure-pattern pass either.
-        let diags = crate::ir_planner::collect_diagnostics(&mut ct, &m, &mt);
+        let diags = crate::ir_planner::collect_diagnostics(&mut ct, &m, &mt, &crate::telemetry::NullTelemetry);
         let impure: Vec<_> = diags
             .as_slice()
             .iter()
