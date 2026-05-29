@@ -787,8 +787,9 @@ fn bitstring_like_ptr_from_ref(word: u64) -> Option<*mut u8> {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_bs_begin() {
-    current_process().bs_builder = Some(crate::bitstr::BitWriter::new());
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn fz_bs_begin(process: *mut Process) {
+    (unsafe { &mut *process }).bs_builder = Some(crate::bitstr::BitWriter::new());
 }
 
 /// Write one field into the active builder. Field-type tags match the order
@@ -940,14 +941,17 @@ fn fz_bs_write_field_value(
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_bs_finalize() -> u64 {
-    let w = current_process()
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn fz_bs_finalize(process: *mut Process) -> u64 {
+    let w = (unsafe { &mut *process })
         .bs_builder
         .take()
         .expect("fz_bs_finalize without fz_bs_begin");
     let bit_len = w.bit_len as u64;
     let bytes = w.bytes;
-    let p = current_process().heap.alloc_bitstring(&bytes, bit_len);
+    let p = (unsafe { &mut *process })
+        .heap
+        .alloc_bitstring(&bytes, bit_len);
     if bytes.len() > crate::heap::SHARED_BIN_THRESHOLD_BYTES {
         heap_ref_word(ValueKind::PROCBIN, p)
     } else {
@@ -963,12 +967,20 @@ pub extern "C" fn fz_bs_finalize() -> u64 {
 /// copies through `Heap::alloc_bitstring`, which picks inline / ProcBin /
 /// SharedBin storage by length.
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_alloc_bitstring_const(ptr: u64, byte_len: u64, bit_len: u64) -> u64 {
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn fz_alloc_bitstring_const(
+    process: *mut Process,
+    ptr: u64,
+    byte_len: u64,
+    bit_len: u64,
+) -> u64 {
     // ptr is the address of a module-baked byte payload (Cranelift Local data
     // symbol). It outlives the call; we materialise a slice over it just long
     // enough for Heap::alloc_bitstring to copy / wrap.
     let bytes = unsafe { std::slice::from_raw_parts(ptr as *const u8, byte_len as usize) };
-    let p = current_process().heap.alloc_bitstring(bytes, bit_len);
+    let p = (unsafe { &mut *process })
+        .heap
+        .alloc_bitstring(bytes, bit_len);
     if bytes.len() > crate::heap::SHARED_BIN_THRESHOLD_BYTES {
         heap_ref_word(ValueKind::PROCBIN, p)
     } else {
@@ -986,10 +998,14 @@ pub extern "C" fn fz_alloc_bitstring_const(ptr: u64, byte_len: u64, bit_len: u64
 /// emitted into `.data` by codegen, with bytes_ptr and destructor
 /// relocations resolved by the linker.
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_alloc_procbin_from_static(static_sharedbin: u64) -> u64 {
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn fz_alloc_procbin_from_static(
+    process: *mut Process,
+    static_sharedbin: u64,
+) -> u64 {
     let sb = static_sharedbin as *mut crate::procbin::SharedBin;
     let handle = unsafe { crate::procbin::SharedBinHandle::retain_from_raw(sb) };
-    let pb = crate::procbin::alloc_procbin(&mut current_process().heap, handle);
+    let pb = crate::procbin::alloc_procbin(&mut (unsafe { &mut *process }).heap, handle);
     heap_ref_word(ValueKind::PROCBIN, pb.as_raw() as *const u8)
 }
 
@@ -2523,6 +2539,7 @@ mod tests {
         with_process(|| {
             let bytes = "héllo".as_bytes();
             let bits = fz_alloc_bitstring_const(
+                current_process(),
                 bytes.as_ptr() as u64,
                 bytes.len() as u64,
                 (bytes.len() * 8) as u64,
@@ -2567,7 +2584,7 @@ mod tests {
     fn fz_bitstring_valid_utf8_rejects_bad_bytes() {
         with_process(|| {
             let bytes = [0xffu8, 0xffu8];
-            let bits = fz_alloc_bitstring_const(bytes.as_ptr() as u64, 2, 16);
+            let bits = fz_alloc_bitstring_const(current_process(), bytes.as_ptr() as u64, 2, 16);
             assert_eq!(fz_bitstring_valid_utf8(bits), 0);
         });
     }
@@ -2578,7 +2595,7 @@ mod tests {
     fn fz_bitstring_valid_utf8_rejects_non_byte_aligned() {
         with_process(|| {
             let bytes = [b'h'];
-            let bits = fz_alloc_bitstring_const(bytes.as_ptr() as u64, 1, 7);
+            let bits = fz_alloc_bitstring_const(current_process(), bytes.as_ptr() as u64, 1, 7);
             assert_eq!(fz_bitstring_valid_utf8(bits), 0);
         });
     }
@@ -2667,7 +2684,8 @@ mod tests {
     fn alloc_bitstring_const_small_payload_is_inline() {
         with_process(|| {
             let bytes: [u8; 3] = [0xaa, 0xbb, 0xcc];
-            let ref_word = fz_alloc_bitstring_const(bytes.as_ptr() as u64, 3, 24);
+            let ref_word =
+                fz_alloc_bitstring_const(current_process(), bytes.as_ptr() as u64, 3, 24);
             let bitstring_ref = AnyValueRef::from_raw_word(ref_word).expect("bitstring ref");
             let addr = bitstring_ref.bitstring_addr().expect("bitstring addr");
             let bits =
@@ -2708,7 +2726,7 @@ mod tests {
         };
         let sb_ptr = &mut sb as *mut SharedBin;
         with_process(|| {
-            let ref_word = fz_alloc_procbin_from_static(sb_ptr as u64);
+            let ref_word = fz_alloc_procbin_from_static(current_process(), sb_ptr as u64);
             let procbin_ref = AnyValueRef::from_raw_word(ref_word).expect("procbin ref");
             let addr = procbin_ref.procbin_addr().expect("procbin addr");
             let bits =
@@ -2738,8 +2756,12 @@ mod tests {
     fn alloc_bitstring_const_large_payload_is_procbin() {
         with_process(|| {
             let payload: Vec<u8> = (0..70u8).collect(); // 70 > SHARED_BIN_THRESHOLD_BYTES (64)
-            let ref_word =
-                fz_alloc_bitstring_const(payload.as_ptr() as u64, payload.len() as u64, 70 * 8);
+            let ref_word = fz_alloc_bitstring_const(
+                current_process(),
+                payload.as_ptr() as u64,
+                payload.len() as u64,
+                70 * 8,
+            );
             let procbin_ref = AnyValueRef::from_raw_word(ref_word).expect("procbin ref");
             let addr = procbin_ref.procbin_addr().expect("procbin addr");
             let bits =

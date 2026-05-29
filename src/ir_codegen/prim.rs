@@ -508,7 +508,8 @@ pub(crate) fn lower_collection_prim<
             let begin = body
                 .jmod
                 .declare_func_in_func(runtime.bs_begin_id, body.b.func);
-            body.b.ins().call(begin, &[]);
+            let process = body.process_arg();
+            body.b.ins().call(begin, &[process]);
             let write = body
                 .jmod
                 .declare_func_in_func(runtime.bs_write_ref_id, body.b.func);
@@ -558,7 +559,8 @@ pub(crate) fn lower_collection_prim<
             let fin = body
                 .jmod
                 .declare_func_in_func(runtime.bs_finalize_id, body.b.func);
-            let inst = body.b.ins().call(fin, &[]);
+            let process = body.process_arg();
+            let inst = body.b.ins().call(fin, &[process]);
             LowerOut::ValueRef(body.b.inst_results(inst)[0])
         }
         Prim::ConstBitstring(bytes, bit_len) => {
@@ -628,7 +630,8 @@ pub(crate) fn lower_collection_prim<
                 let fref = body
                     .jmod
                     .declare_func_in_func(runtime.alloc_procbin_from_static_id, body.b.func);
-                let inst = body.b.ins().call(fref, &[sb_ptr]);
+                let process = body.process_arg();
+                let inst = body.b.ins().call(fref, &[process, sb_ptr]);
                 LowerOut::ValueRef(body.b.inst_results(inst)[0])
             } else {
                 let gv = body.jmod.declare_data_in_func(syms.bytes_id, body.b.func);
@@ -638,7 +641,11 @@ pub(crate) fn lower_collection_prim<
                 let fref = body
                     .jmod
                     .declare_func_in_func(runtime.alloc_bitstring_const_id, body.b.func);
-                let inst = body.b.ins().call(fref, &[ptr_v, byte_len_v, bit_len_v]);
+                let process = body.process_arg();
+                let inst = body
+                    .b
+                    .ins()
+                    .call(fref, &[process, ptr_v, byte_len_v, bit_len_v]);
                 LowerOut::ValueRef(body.b.inst_results(inst)[0])
             }
         }

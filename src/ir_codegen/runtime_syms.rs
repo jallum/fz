@@ -341,7 +341,7 @@ struct BitstringRefs {
 fn declare_bitstring_runtime<M: cranelift_module::Module>(
     jmod: &mut M,
 ) -> Result<BitstringRefs, CodegenError> {
-    let bs_begin_id = decl_import(jmod, "fz_bs_begin", &[], &[])?;
+    let bs_begin_id = decl_import(jmod, "fz_bs_begin", &[types::I64], &[])?;
     let bs_write_ref_id = decl_import(
         jmod,
         "fz_bs_write_field_ref",
@@ -356,11 +356,11 @@ fn declare_bitstring_runtime<M: cranelift_module::Module>(
         ],
         &[],
     )?;
-    let bs_finalize_id = decl_import(jmod, "fz_bs_finalize", &[], &[types::I64])?;
+    let bs_finalize_id = decl_import(jmod, "fz_bs_finalize", &[types::I64], &[types::I64])?;
     let alloc_bitstring_const_id = decl_import(
         jmod,
         "fz_alloc_bitstring_const",
-        &[types::I64, types::I64, types::I64],
+        &[types::I64, types::I64, types::I64, types::I64],
         &[types::I64],
     )?;
     // Retains the anchor on a static SharedBin and allocates a ProcBin on
@@ -368,7 +368,7 @@ fn declare_bitstring_runtime<M: cranelift_module::Module>(
     let alloc_procbin_from_static_id = decl_import(
         jmod,
         "fz_alloc_procbin_from_static",
-        &[types::I64],
+        &[types::I64, types::I64],
         &[types::I64],
     )?;
     // Noop destructor symbol. Imported so its address can be baked into

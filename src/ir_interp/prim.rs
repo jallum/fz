@@ -175,7 +175,7 @@ pub(super) fn eval_prim<T: Types<Ty = crate::types::Ty>>(
                     AstBitType::Utf8 | AstBitType::Utf16 | AstBitType::Utf32 => 1,
                 }
             }
-            fz_runtime::ir_runtime::fz_bs_begin();
+            fz_runtime::ir_runtime::fz_bs_begin(cur_proc());
             for f in fields {
                 let value_v = env_get(env, f.value)?;
                 let ty_tag = encode_bit_type(f.ty);
@@ -203,7 +203,10 @@ pub(super) fn eval_prim<T: Types<Ty = crate::types::Ty>>(
                     signed,
                 );
             }
-            interp_value_from_ref_word(fz_runtime::ir_runtime::fz_bs_finalize(), "MakeBitstring")?
+            interp_value_from_ref_word(
+                fz_runtime::ir_runtime::fz_bs_finalize(cur_proc()),
+                "MakeBitstring",
+            )?
         }
         Prim::ConstBitstring(bytes, bit_len) => {
             // fz-cty.8 — bytes are owned by the Module (and live as long as
@@ -211,6 +214,7 @@ pub(super) fn eval_prim<T: Types<Ty = crate::types::Ty>>(
             // the shared runtime FFI; identical to the JIT/AOT lowering.
             interp_value_from_ref_word(
                 fz_runtime::ir_runtime::fz_alloc_bitstring_const(
+                    cur_proc(),
                     bytes.as_ptr() as u64,
                     bytes.len() as u64,
                     *bit_len,
