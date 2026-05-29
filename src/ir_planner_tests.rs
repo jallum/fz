@@ -101,13 +101,9 @@ fn only_effect_summary(
     fid: FnId,
 ) -> super::fn_types::EffectSummary {
     let mt = plan_module(t, m, &crate::telemetry::NullTelemetry);
-    let key = mt
-        .effect_summaries
-        .keys()
-        .find(|key| key.fn_id == fid)
-        .cloned()
-        .expect("missing effect summary for fn");
-    mt.effect_summaries[&key]
+    *mt.fn_effects
+        .get(&fid)
+        .expect("missing effect summary for fn")
 }
 
 #[test]
@@ -1095,7 +1091,7 @@ fn reachable_specs_seeds_all_registered_specs_for_closure_targets() {
         effective_returns: HashMap::new(),
         any_key_specs: HashMap::new(),
         spec_precedence: HashMap::new(),
-        effect_summaries: HashMap::new(),
+        fn_effects: HashMap::new(),
         dead_branches: HashMap::new(),
         closure_handles: std::collections::HashSet::new(),
     };

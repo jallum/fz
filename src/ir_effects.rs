@@ -7,6 +7,11 @@ pub(crate) struct IrEffects {
     pub scheduler_boundary: bool,
     pub externally_observable: bool,
     pub halts: bool,
+    /// Calls through a value whose target the planner cannot see (a closure
+    /// call). Opaque because the callee's effects are unknown, so it is a
+    /// conservative barrier to return-context motion until the target is
+    /// resolved.
+    pub calls_opaque: bool,
 }
 
 pub(crate) fn prim_effects(module: &Module, prim: &Prim) -> IrEffects {
@@ -65,7 +70,11 @@ pub(crate) fn prim_effects(module: &Module, prim: &Prim) -> IrEffects {
 
 pub(crate) fn term_effects(term: &Term) -> IrEffects {
     match term {
-        Term::Call { .. } | Term::CallClosure { .. } => IrEffects::default(),
+        Term::Call { .. } | Term::TailCall { .. } => IrEffects::default(),
+        Term::CallClosure { .. } | Term::TailCallClosure { .. } => IrEffects {
+            calls_opaque: true,
+            ..IrEffects::default()
+        },
         Term::Receive { .. } | Term::ReceiveMatched { .. } => IrEffects {
             scheduler_boundary: true,
             externally_observable: true,
@@ -76,10 +85,7 @@ pub(crate) fn term_effects(term: &Term) -> IrEffects {
             halts: true,
             ..IrEffects::default()
         },
-        Term::Return(_)
-        | Term::Goto(_, _)
-        | Term::TailCall { .. }
-        | Term::TailCallClosure { .. } => IrEffects::default(),
+        Term::Return(_) | Term::Goto(_, _) => IrEffects::default(),
         Term::If { .. } => IrEffects::default(),
     }
 }

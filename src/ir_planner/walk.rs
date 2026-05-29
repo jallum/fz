@@ -1,7 +1,7 @@
 use super::closures::resolve_closure_return;
 use super::fn_types::{
-    CallEdgePlan, CallEdgeTarget, CallsiteFnConsts, EmitterSite, ReturnContextPlan, ReturnDemand,
-    SpecKey, SpecPlan, WALK_CALLS, padded_direct_input_tys, recursive_direct_spec_key,
+    CallEdgePlan, CallEdgeTarget, CallsiteFnConsts, EmitterSite, FnEffects, ReturnContextPlan,
+    ReturnDemand, SpecKey, SpecPlan, WALK_CALLS, padded_direct_input_tys, recursive_direct_spec_key,
     recursive_direct_spec_key_for_arity, spec_key_for_fn,
 };
 use super::reachable::cont_key_from_slot0;
@@ -178,6 +178,7 @@ pub(crate) fn walk_spec_for_discovery<
     f: &FnIr,
     caller_ft: &SpecPlan,
     m: &Module,
+    fn_effects: &FnEffects,
     effective_returns: &HashMap<SpecKey, crate::types::Ty>,
     recursive_fns: &std::collections::HashSet<FnId>,
     caller_spec_key: &SpecKey,
@@ -190,6 +191,7 @@ pub(crate) fn walk_spec_for_discovery<
         t,
         caller_ft,
         m,
+        fn_effects,
         effective_returns,
         recursive_fns,
         caller_spec_key,
@@ -207,6 +209,7 @@ where
     t: &'a mut T,
     caller_ft: &'a SpecPlan,
     m: &'a Module,
+    fn_effects: &'a FnEffects,
     effective_returns: &'a HashMap<SpecKey, crate::types::Ty>,
     recursive_fns: &'a HashSet<FnId>,
     caller_spec_key: &'a SpecKey,
@@ -343,6 +346,7 @@ where
                 let (demand, context_plan) = direct_call_return_plan(
                     self.t,
                     self.m,
+                    self.fn_effects,
                     self.caller_spec_key,
                     env,
                     target_fn,
@@ -381,6 +385,7 @@ where
             let (demand, context_plan) = direct_call_return_plan(
                 self.t,
                 self.m,
+                self.fn_effects,
                 self.caller_spec_key,
                 env,
                 callee,

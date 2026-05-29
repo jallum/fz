@@ -527,7 +527,7 @@ fn merge_module_plan(
                 .extend(incoming.effective_returns);
             existing.any_key_specs.extend(incoming.any_key_specs);
             existing.spec_precedence.extend(incoming.spec_precedence);
-            existing.effect_summaries.extend(incoming.effect_summaries);
+            existing.fn_effects.extend(incoming.fn_effects);
             existing.dead_branches.extend(incoming.dead_branches);
             #[cfg(test)]
             existing.closure_handles.extend(incoming.closure_handles);
@@ -561,10 +561,10 @@ fn remap_module_plan(
             .iter()
             .map(|(key, value)| (remap_spec_key(key, fn_map), *value))
             .collect(),
-        effect_summaries: plan
-            .effect_summaries
+        fn_effects: plan
+            .fn_effects
             .iter()
-            .map(|(key, value)| (remap_spec_key(key, fn_map), *value))
+            .filter_map(|(fid, value)| fn_map.get(fid).map(|new| (*new, *value)))
             .collect(),
         dead_branches: plan
             .dead_branches

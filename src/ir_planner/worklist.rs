@@ -2,11 +2,11 @@ use super::closures::resolve_closure_return;
 use super::diagnostics::{compute_dead_branches, module_plan_stats};
 use super::effects::{prim_effect_summary, term_local_effect_summary};
 use super::fn_types::{
-    CallsiteFnConsts, EffectSummary, EmitsByCaller, EmitterSiteSet, HoldersMap, ModulePlan,
-    PLAN_MODULE_CALLS, ProducesMap, ReturnReaders, SpecKey, SpecKeySet, SpecPlan, TYPE_FN_CALLS,
-    VISIT_HARD_BOUND, WALK_CALLS, WORKLIST_POPS, build_any_key_index, key_precedence_order,
-    recursive_direct_spec_key, recursive_direct_spec_key_for_arity, spec_key_for_fn_id,
-    spec_key_input_tys,
+    CallsiteFnConsts, EffectSummary, EmitsByCaller, EmitterSiteSet, FnEffects, HoldersMap,
+    ModulePlan, PLAN_MODULE_CALLS, ProducesMap, ReturnReaders, SpecKey, SpecKeySet, SpecPlan,
+    TYPE_FN_CALLS, VISIT_HARD_BOUND, WALK_CALLS, WORKLIST_POPS, build_any_key_index,
+    key_precedence_order, recursive_direct_spec_key, recursive_direct_spec_key_for_arity,
+    spec_key_for_fn_id, spec_key_input_tys,
 };
 use super::reachable::{cont_key_from_slot0, env_at_terminator};
 use super::type_fn::type_fn;
@@ -99,6 +99,8 @@ pub fn plan_module<T: crate::types::Types<Ty = crate::types::Ty> + crate::types:
     let mut closure_handles: std::collections::HashSet<(FnId, Vec<crate::types::Ty>)> =
         std::collections::HashSet::new();
 
+    let fn_effects = compute_fn_effects(m);
+
     let mut work: std::collections::VecDeque<SpecKey> = entry_seeds(t, m)
         .into_iter()
         .map(|(fid, key)| spec_key_for_fn_id(m, fid, key))
@@ -108,6 +110,7 @@ pub fn plan_module<T: crate::types::Types<Ty = crate::types::Ty> + crate::types:
     process_worklist(
         t,
         m,
+        &fn_effects,
         &recursive_fns,
         &mut work,
         &mut in_work,
@@ -153,13 +156,12 @@ pub fn plan_module<T: crate::types::Types<Ty = crate::types::Ty> + crate::types:
         effective_returns,
         any_key_specs,
         spec_precedence,
-        effect_summaries: HashMap::new(),
+        fn_effects,
         dead_branches: HashMap::new(),
         #[cfg(test)]
         closure_handles,
     };
     mt.dead_branches = compute_dead_branches(t, m, &mt);
-    mt.effect_summaries = compute_effect_summaries(m, &mt);
     {
         let pops = WORKLIST_POPS.with(|c| c.get()) as u64;
         let walks = WALK_CALLS.with(|c| c.get()) as u64;
@@ -193,56 +195,73 @@ pub fn plan_module<T: crate::types::Types<Ty = crate::types::Ty> + crate::types:
     mt
 }
 
-fn compute_effect_summaries(m: &Module, mt: &ModulePlan) -> HashMap<SpecKey, EffectSummary> {
-    let mut summaries: HashMap<SpecKey, EffectSummary> = mt
-        .specs
-        .keys()
-        .map(|key| (key.clone(), local_effect_summary(m, key, mt)))
-        .collect();
+/// One per-FnId effect fact over the static call graph.
+///
+/// A function's effects are independent of any caller's return demand, so this
+/// is computed once — before the worklist — and read by the destination-
+/// planning barrier as a cached fact (replacing an on-demand body re-walk) and
+/// stored on `ModulePlan` for downstream passes.
+///
+/// The fact is the least fixed point of: each function's local effects (every
+/// block, no reachability pruning — a barrier must be conservative across all
+/// paths) unioned with the effects of every function it reaches through a
+/// `Call` (callee and continuation) or `TailCall` (callee). Calls through a
+/// value contribute `calls_opaque` locally and are not followed, because the
+/// target is not statically known here. A terminal `Halt` is transparent (see
+/// the loop body). Effects only grow under `union_with`, so the fixed point
+/// converges in finite steps over a closed module.
+fn compute_fn_effects(m: &Module) -> FnEffects {
+    let mut facts: FnEffects = HashMap::with_capacity(m.fns.len());
+    let mut edges: HashMap<FnId, Vec<FnId>> = HashMap::with_capacity(m.fns.len());
+    for f in &m.fns {
+        let mut local = EffectSummary::default();
+        let mut callees = Vec::new();
+        for b in &f.blocks {
+            for crate::fz_ir::Stmt::Let(_, prim) in &b.stmts {
+                local.union_with(prim_effect_summary(m, prim));
+            }
+            // A terminal `Halt` returns the process's final value to the
+            // scheduler; nothing executes after it, so it cannot observe — or
+            // be disturbed by — relocating an allocation that builds the
+            // returned value. It is transparent to the return-context-motion
+            // barrier (fz-w34.2 generalizes this to position-scoping). Every
+            // other terminator contributes its local effects: closure calls
+            // are opaque, receive is a scheduler boundary.
+            if !matches!(b.terminator, Term::Halt(_)) {
+                local.union_with(term_local_effect_summary(&b.terminator));
+            }
+            match &b.terminator {
+                Term::Call {
+                    callee,
+                    continuation,
+                    ..
+                } => {
+                    callees.push(*callee);
+                    callees.push(continuation.fn_id);
+                }
+                Term::TailCall { callee, .. } => callees.push(*callee),
+                _ => {}
+            }
+        }
+        facts.insert(f.id, local);
+        edges.insert(f.id, callees);
+    }
     loop {
         let mut changed = false;
-        for (key, ft) in &mt.specs {
-            let mut summary = *summaries.get(key).unwrap_or(&EffectSummary::default());
-            for target in ft
-                .call_edges
-                .values()
-                .filter_map(|edge| edge.local_target())
-            {
-                if let Some(target_summary) = summaries.get(target).copied() {
-                    changed |= summary.union_with(target_summary);
+        for f in &m.fns {
+            let mut summary = facts[&f.id];
+            for callee in &edges[&f.id] {
+                if let Some(callee_summary) = facts.get(callee).copied() {
+                    changed |= summary.union_with(callee_summary);
                 }
             }
-            if summaries.get(key).copied() != Some(summary) {
-                summaries.insert(key.clone(), summary);
-                changed = true;
-            }
+            facts.insert(f.id, summary);
         }
         if !changed {
             break;
         }
     }
-    summaries
-}
-
-fn local_effect_summary(m: &Module, key: &SpecKey, mt: &ModulePlan) -> EffectSummary {
-    let Some(ft) = mt.specs.get(key) else {
-        return EffectSummary::default();
-    };
-    let Some(&idx) = m.fn_idx.get(&key.fn_id) else {
-        return EffectSummary::default();
-    };
-    let f = &m.fns[idx];
-    let mut summary = EffectSummary::default();
-    for b in &f.blocks {
-        if !ft.reachable_blocks.contains(&b.id) {
-            continue;
-        }
-        for crate::fz_ir::Stmt::Let(_, prim) in &b.stmts {
-            summary.union_with(prim_effect_summary(m, prim));
-        }
-        summary.union_with(term_local_effect_summary(&b.terminator));
-    }
-    summary
+    facts
 }
 
 /// Worklist driver with provenance.
@@ -263,6 +282,7 @@ pub(crate) fn process_worklist<
 >(
     t: &mut T,
     m: &Module,
+    fn_effects: &FnEffects,
     recursive_fns: &std::collections::HashSet<FnId>,
     work: &mut std::collections::VecDeque<SpecKey>,
     in_work: &mut SpecKeySet,
@@ -288,6 +308,7 @@ pub(crate) fn process_worklist<
         let result = discover_spec_outputs(
             t,
             m,
+            fn_effects,
             j,
             &spec_key,
             specs,
@@ -370,6 +391,7 @@ fn discover_spec_outputs<
 >(
     t: &mut T,
     m: &Module,
+    fn_effects: &FnEffects,
     fn_idx: usize,
     spec_key: &SpecKey,
     specs: &HashMap<SpecKey, SpecPlan>,
@@ -384,6 +406,7 @@ fn discover_spec_outputs<
         &m.fns[fn_idx],
         caller_ft,
         m,
+        fn_effects,
         effective_returns,
         recursive_fns,
         spec_key,
