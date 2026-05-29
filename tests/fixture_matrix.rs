@@ -281,14 +281,6 @@ fn static_tests() -> Vec<(&'static str, fn())> {
             enum_list_allocations_pin_minimum_list_cons,
         ),
         (
-            "enum_reduce_resume_state_update_is_rendered",
-            enum_reduce_resume_state_update_is_rendered,
-        ),
-        (
-            "enum_reduce_parameter_reducer_still_renders_resume",
-            enum_reduce_parameter_reducer_still_renders_resume,
-        ),
-        (
             "local_reduce_state_update_lowers_without_trampoline",
             local_reduce_state_update_lowers_without_trampoline,
         ),
@@ -3046,42 +3038,6 @@ fn enum_list_allocations_pin_minimum_list_cons() {
         clif_function_with_banner_prefix(&clif, "; fn Enumerable.reduce_list_cont_s").is_some(),
         "enum_list_allocations native dump must include reduce_list_cont:\n{}",
         clif
-    );
-}
-
-fn enum_reduce_resume_state_update_is_rendered() {
-    let specs = dump_specs_for_source(
-        "enum_reduce_resume_state_update",
-        "fn reduce_list([], {:cont, acc}, _reducer), do: {:done, acc}\n\
-         fn reduce_list([h | t], {:cont, acc}, reducer), do: reduce_list(t, reducer(h, acc), reducer)\n\
-         fn main(), do: reduce_list([1, 2], {:cont, 0}, fn (x, acc) -> {:cont, acc + x})",
-    );
-    assert!(
-        specs.contains("resume=tail_call reduce_list#") && specs.contains("<result>"),
-        "reduce_list hot reducer continuation should render as a resume state update:\n{}",
-        specs
-    );
-}
-
-fn enum_reduce_parameter_reducer_still_renders_resume() {
-    let specs = dump_specs_for_source(
-        "enum_reduce_parameter_reducer",
-        "fn reduce_list([], {:cont, acc}, _reducer), do: {:done, acc}\n\
-         fn reduce_list([h | t], {:cont, acc}, reducer), do: reduce_list(t, reducer(h, acc), reducer)\n\
-         fn drive(reducer), do: reduce_list([1, 2], {:cont, 0}, reducer)\n\
-         fn plus(x, acc), do: {:cont, acc + x}\n\
-         fn times(x, acc), do: {:cont, acc * x}\n\
-         fn main() do\n\
-           drive(plus)\n\
-           drive(times)\n\
-         end",
-    );
-    assert!(
-        specs.contains("CallClosure Var(")
-            && specs.contains("resume=tail_call reduce_list#")
-            && specs.contains("<result>"),
-        "parameter-threaded reducer should still expose reduce_list resume shape:\n{}",
-        specs
     );
 }
 

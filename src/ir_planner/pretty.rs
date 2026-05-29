@@ -1,6 +1,5 @@
 use super::fn_types::{ModulePlan, SpecKey, display_return_context_plan, display_return_demand};
 use super::reachable::cont_input_key;
-use super::state_transitions::{ResumeStateArg, continuation_resume_state_update};
 use crate::fz_ir::{Block, CallsiteId, CallsiteIdent, EmitSlot, FnId, Module, Term};
 
 // Pretty-printer for ModulePlan golden spec dumps.
@@ -488,23 +487,6 @@ fn render_cont_lines<T: crate::types::Types<Ty = crate::types::Ty> + crate::type
         cap_vars.join(", ")
     ));
     out.push_str(&format!(";              cont_key={}\n", tys_str(t, key)));
-    if let Some(update) = continuation_resume_state_update(m, continuation) {
-        let args: Vec<String> = update.args.iter().map(display_resume_arg).collect();
-        out.push_str(&format!(
-            ";              resume=tail_call {}#{}({})\n",
-            fn_name(m, update.target),
-            update.target.0,
-            args.join(", ")
-        ));
-    }
-}
-
-fn display_resume_arg(arg: &ResumeStateArg) -> String {
-    match arg {
-        ResumeStateArg::Result => "<result>".to_string(),
-        ResumeStateArg::Capture { index, var } => format!("capture[{}]=Var({})", index, var.0),
-        ResumeStateArg::Local(var) => format!("Var({})", var.0),
-    }
 }
 
 fn render_return_use<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::RenderTypes>(
