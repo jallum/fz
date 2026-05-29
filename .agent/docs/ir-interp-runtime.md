@@ -54,8 +54,8 @@ advanced.
 
 ## Running process is threaded, not ambient
 
-The interpreter owns its processes and threads the running one explicitly —
-there is no ambient `CURRENT_PROCESS`. Each quantum, `drive_until_idle` sets
+The interpreter owns its processes and threads the running one explicitly; the
+running process is never ambient. Each quantum, `drive_until_idle` sets
 `IrInterpRuntime.current_proc` to the dispatched process; `cur_proc()` returns
 it, and the free helpers that lack a runtime handle take a `*mut Process`
 parameter threaded down from the eval loop. Sites that use it:

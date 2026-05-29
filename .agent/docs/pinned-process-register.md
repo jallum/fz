@@ -2,9 +2,8 @@
 
 Generated code uses a Cranelift **pinned register** as the base pointer for the
 current `Process`. This makes process switching for compiled code a single
-base-pointer change rather than synchronizing a bundle of process-local mirror
-cells, and it lets back edges spend the reduction budget by touching `Process`
-fields directly.
+base-pointer change, and it lets back edges spend the reduction budget by
+touching `Process` fields directly.
 
 ## The register
 
@@ -49,9 +48,9 @@ restore host_pinned_reg
 ```
 
 Because the wrapper preserves Rust's ABI at the boundary, the pinned register
-survives ordinary runtime-helper calls made from within generated code. (The
-old `CURRENT_PROCESS` thread-local was retired in fz-vdt — the process is now
-threaded per call, never ambient, so two schedulers can be live at once.)
+survives ordinary runtime-helper calls made from within generated code.
+Threading the process per call, never through an ambient global, is what lets
+two schedulers run live on one worker at once.
 
 ## Entry coverage
 
@@ -63,8 +62,7 @@ when it runs generated fz code under a process.
 ## Back-edge spending
 
 With the base pinned, a back edge reads, decrements, and stores
-`reductions_remaining` through `get_pinned_reg` plus the ABI offset — no
-process-independent reductions global is involved:
+`reductions_remaining` through `get_pinned_reg` plus the ABI offset:
 
 ```text
 p = get_pinned_reg.i64
@@ -75,7 +73,6 @@ brgt remaining, 0, fast
 ```
 
 `Process.reductions_remaining` and `Process.yield_reasons` are the sole
-authority for the budget on every engine; the old compiled-only reductions
-global and its thread-local mirror are gone. See
+authority for the budget on every engine. See
 [`reduction-yielding.md`](reduction-yielding.md) for how the budget is spent and
 accounted.
