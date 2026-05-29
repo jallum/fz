@@ -207,6 +207,7 @@ pub fn collect_diagnostics<
     let mut out = Diagnostics::new();
     collect_unreachable_arm_diagnostics(t, module, types, &mut out);
     collect_stmt_type_diagnostics(t, module, types, &mut out);
+    collect_protocol_no_impl_diagnostics(t, module, types, &mut out);
     collect_receive_guard_diagnostics(module, &mut out);
     for d in check_matcher_purity(module) {
         out.push(d);
@@ -320,6 +321,141 @@ fn collect_stmt_type_diagnostics<
             }
         }
     }
+}
+
+/// Emit a dedicated no-implementation diagnostic at protocol dispatch sites.
+///
+/// A `Term::Call`/`TailCall` whose callee is a protocol stub (registered in
+/// `protocol_call_targets`) dispatches on its first argument's type. When that
+/// receiver type is disjoint from every implementing target — so no impl can
+/// ever be selected — the planner would silently fall through to an unresolved
+/// external call and the failure would surface as a generic spec violation.
+/// Naming the protocol, the receiver type, and the known implementors is far
+/// clearer. The disjointness trigger is sound: a receiver that is `any`, a free
+/// variable, or the protocol's own domain type overlaps the domain and never
+/// fires; only a receiver wholly outside the domain does.
+fn collect_protocol_no_impl_diagnostics<
+    T: crate::types::Types<Ty = crate::types::Ty>
+        + crate::types::ClosureTypes
+        + crate::types::RenderTypes,
+>(
+    t: &mut T,
+    module: &Module,
+    types: &ModulePlan,
+    out: &mut crate::diag::Diagnostics,
+) {
+    if module.protocol_call_targets.is_empty() {
+        return;
+    }
+    let mut reported: HashSet<(FnId, crate::fz_ir::BlockId)> = HashSet::new();
+    for (key, ft) in &types.specs {
+        if !key.demand.is_value() {
+            continue;
+        }
+        let f = module.fn_by_id(key.fn_id);
+        for b in sorted_blocks(f) {
+            let (callee, args) = match &b.terminator {
+                Term::Call { callee, args, .. } | Term::TailCall { callee, args, .. } => {
+                    (*callee, args)
+                }
+                _ => continue,
+            };
+            let Some(target) = module.protocol_call_targets.get(&callee) else {
+                continue;
+            };
+            if reported.contains(&(f.id, b.id)) {
+                continue;
+            }
+            let env = env_after_block_stmts(t, module, ft, b);
+            let receiver_ty = args
+                .first()
+                .and_then(|r| env.get(r).cloned())
+                .unwrap_or_else(|| t.any());
+            if t.is_empty(&receiver_ty) {
+                continue;
+            }
+            let domain = protocol_domain_ty(t, module, &target.protocol);
+            if !t.is_disjoint(&receiver_ty, &domain) {
+                continue;
+            }
+            reported.insert((f.id, b.id));
+            let term_span = module
+                .source
+                .term_span
+                .get(&(f.id, b.id))
+                .copied()
+                .unwrap_or(crate::diag::Span::DUMMY);
+            out.push(protocol_no_impl_diagnostic(
+                t,
+                module,
+                &f.name,
+                target,
+                &receiver_ty,
+                term_span,
+            ));
+        }
+    }
+}
+
+/// The set-theoretic domain of a protocol: the protocol's own domain tag unioned
+/// with each implementing target's type. Mirrors `resolve::protocol_domain_type`
+/// so a receiver typed as the domain overlaps it (and never trips the no-impl
+/// check) while a receiver outside every target is disjoint from it.
+fn protocol_domain_ty<T: crate::types::Types<Ty = crate::types::Ty>>(
+    t: &mut T,
+    module: &Module,
+    protocol: &crate::modules::identity::ModuleName,
+) -> crate::types::Ty {
+    let mut domain = t.opaque_of(&crate::protocols::protocol_domain_tag(protocol));
+    for fact in module
+        .protocol_registry
+        .impls
+        .values()
+        .filter(|fact| fact.protocol == *protocol)
+    {
+        let target_ty = crate::protocols::impl_target_type(t, &fact.target);
+        domain = t.union(domain, target_ty);
+    }
+    domain
+}
+
+fn protocol_no_impl_diagnostic<
+    T: crate::types::Types<Ty = crate::types::Ty> + crate::types::RenderTypes,
+>(
+    t: &mut T,
+    module: &Module,
+    fn_name: &str,
+    target: &crate::fz_ir::ProtocolCallTarget,
+    receiver_ty: &crate::types::Ty,
+    term_span: crate::diag::Span,
+) -> crate::diag::Diagnostic {
+    use crate::diag::{Diagnostic, codes::TYPE_PROTOCOL_NO_IMPL};
+    let mut implementors: Vec<String> = module
+        .protocol_registry
+        .impls
+        .values()
+        .filter(|fact| fact.protocol == target.protocol)
+        .map(|fact| fact.target.display_name())
+        .collect();
+    implementors.sort();
+    implementors.dedup();
+    let implementor_note = if implementors.is_empty() {
+        format!("`{}` has no implementations", target.protocol)
+    } else {
+        format!("known implementors: {}", implementors.join(", "))
+    };
+    let message = format!(
+        "no implementation of protocol `{}` for receiver type `{}`",
+        target.protocol,
+        t.display_for_diag(receiver_ty),
+    );
+    Diagnostic::error(TYPE_PROTOCOL_NO_IMPL, message, term_span)
+        .with_label(format!("in fn `{}`", fn_name))
+        .with_note(format!(
+            "`{}.{}/{}` dispatches on its first argument's type",
+            target.protocol, target.callback, target.arity
+        ))
+        .with_note(implementor_note)
 }
 
 fn collect_receive_guard_diagnostics(module: &Module, out: &mut crate::diag::Diagnostics) {

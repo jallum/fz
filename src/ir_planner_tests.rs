@@ -2619,6 +2619,102 @@ fn main(), do: P.to_thing([1])
         .expect("compatible callback spec must resolve");
 }
 
+// ---- fz-t1m.1.3 — no-implementation diagnostic at dispatch ----
+
+fn plan_protocol_src(
+    src: &str,
+) -> (
+    crate::types::ConcreteTypes,
+    crate::fz_ir::Module,
+    crate::ir_planner::ModulePlan,
+) {
+    let toks = crate::lexer::Lexer::new(src).tokenize().expect("lex");
+    let parsed = crate::parser::Parser::new(toks)
+        .parse_program()
+        .expect("parse");
+    let mut t = crate::types::ConcreteTypes;
+    let resolved = crate::resolve::flatten_modules(&mut t, parsed).expect("resolve");
+    let ir = crate::ir_lower::lower_program(&mut t, &resolved).expect("lower");
+    let mt = plan_module(&mut t, &ir, &crate::telemetry::NullTelemetry);
+    (t, ir, mt)
+}
+
+/// Calling a protocol callback on a receiver whose type is disjoint from every
+/// implementing target emits a dedicated no-implementation diagnostic that names
+/// the protocol, the receiver type, and the known implementors.
+#[test]
+fn protocol_call_on_unimplemented_receiver_emits_no_impl_diagnostic() {
+    let src = r#"
+defprotocol P do
+  fn each(value)
+end
+
+defimpl P, for: List do
+  fn each(value), do: value
+end
+
+fn main(), do: P.each(42)
+"#;
+    let (mut t, m, mt) = plan_protocol_src(src);
+    let diags = crate::ir_planner::collect_diagnostics(&mut t, &m, &mt);
+    let d = diags
+        .as_slice()
+        .iter()
+        .find(|d| d.code == crate::diag::codes::TYPE_PROTOCOL_NO_IMPL)
+        .unwrap_or_else(|| {
+            panic!(
+                "expected a type/protocol-no-impl diagnostic; got: {:?}",
+                diags
+                    .as_slice()
+                    .iter()
+                    .map(|d| (d.code, &d.message))
+                    .collect::<Vec<_>>(),
+            )
+        });
+    assert!(
+        d.message.contains("protocol `P`") && d.message.contains("receiver type"),
+        "diag should name the protocol and receiver; got: {}",
+        d.message
+    );
+    assert!(
+        d.notes.iter().any(|n| n.contains("known implementors")
+            && n.contains("List")),
+        "diag should list known implementors including List; got notes: {:?}",
+        d.notes
+    );
+}
+
+/// Calling the same protocol callback on a receiver the protocol does implement
+/// (a list) emits no no-implementation diagnostic.
+#[test]
+fn protocol_call_on_implemented_receiver_emits_no_diagnostic() {
+    let src = r#"
+defprotocol P do
+  fn each(value)
+end
+
+defimpl P, for: List do
+  fn each(value), do: value
+end
+
+fn main(), do: P.each([1])
+"#;
+    let (mut t, m, mt) = plan_protocol_src(src);
+    let diags = crate::ir_planner::collect_diagnostics(&mut t, &m, &mt);
+    assert!(
+        !diags
+            .as_slice()
+            .iter()
+            .any(|d| d.code == crate::diag::codes::TYPE_PROTOCOL_NO_IMPL),
+        "no no-impl diag should fire when an impl matches; got: {:?}",
+        diags
+            .as_slice()
+            .iter()
+            .map(|d| (d.code, &d.message))
+            .collect::<Vec<_>>(),
+    );
+}
+
 // ---- fz-swt.8 — `.value` accessor: typing + visibility gating ----
 
 /// Inside the declaring module, `handle.value` typechecks as the inner
