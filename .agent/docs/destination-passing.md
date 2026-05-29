@@ -336,38 +336,36 @@ See
 
 ## Policy
 
-Do not hide destination semantics only in codegen. Construction intent must be
-visible in IR, verified, and typed through erased token facts. The native
+Destination semantics live in the IR, not only in codegen. Construction intent
+is visible in IR, verified, and typed through erased token facts. The native
 JIT/AOT paths run `ir_dest::lower_destinations` before codegen. The `fz interp`
-and scripted REPL fixture legs remain direct-IR baselines; they can execute
-destination primitives when given already-lowered IR, but the CLI interpreter
-does not apply the destination-lowering pass itself.
+and scripted REPL fixture legs are direct-IR baselines: they execute destination
+primitives when handed already-lowered IR, but the CLI interpreter does not run
+the destination-lowering pass itself.
 
-Do not make ReturnDemand a backend-only heuristic. `SpecPlan.call_edges` and
-`SpecKey.demand` are the authoritative planner output. Codegen may lower only
-those planner-authored ABI and context facts. It must not create a new demand
+ReturnDemand is planner output, not a backend heuristic. `SpecPlan.call_edges`
+and `SpecKey.demand` are authoritative, and codegen lowers only those
+planner-authored ABI and context facts. Codegen does not create a new demand
 variant, probe demanded sibling specs, or infer demand from backend
-closure/capture shapes.
+closure/capture shapes. Concretely:
 
-Current deletion audit:
+- `ReturnDemand` is two-axis (`delivery` × `context`). Tuple-field delivery with
+  a ListTail context is one value of that pair, built by the
+  `tuple_fields_list_tail` constructor — there is no separate
+  `TupleFieldsListTail` variant.
+- `src/ir_codegen` does not mutate dispatch keys (`key.demand = …`); the planner
+  authors demand.
+- `src/ir_codegen/terminator.rs` constructs no demanded sibling `SpecKey`s and
+  reads ListTail context from the planner's `return_context` facts rather than
+  by indexing `continuation.captured[…]`.
 
-- no `TupleFieldsListTail` enum variant exists; tuple-field delivery plus
-  ListTail context is represented by the two-axis `ReturnDemand`;
-- `src/ir_codegen` no longer mutates dispatch keys with `key.demand = ...`;
-- `src/ir_codegen/terminator.rs` no longer constructs demanded sibling
-  `SpecKey`s with `ReturnDemand::list_tail` or
-  `ReturnDemand::tuple_fields_list_tail`;
-- `src/ir_codegen/terminator.rs` no longer recognizes ListTail context by
-  indexing `continuation.captured[...]`.
+Destination lowering runs after the optimizer passes, which keeps init-token
+ownership local to executable IR. Lowering before the optimizer would force
+every inliner and rewriter to remap init tokens correctly.
 
-Run destination lowering after the optimizer for now. Earlier lowering would
-require every inliner/rewriter to remap init tokens correctly; post-optimizer
-lowering keeps token ownership local to executable IR.
-
-Do not resurrect broad same-function pre-DP fact merging. A previous quicksort
-regression showed why: broad merging can attach facts to specs that DCE no
-longer emits. The correct fix is preserving constructor precision through the
-lowered IR with token facts.
+Pre-DP fact merging stays precise: it preserves each constructor's narrower
+pre-lowering type per var through the lowered IR's token facts. Broadly merging
+same-function facts instead would attach facts to specs that DCE does not emit.
 
 ## Proof Gates
 
