@@ -1170,7 +1170,6 @@ impl Descr {
     /// `none`. Unknown tags and cofinite ("any brand") axes over-approximate
     /// to `any()`, so the erased set is never too small; `value_disjoint`
     /// then errs toward "not disjoint" and never folds a comparison unsoundly.
-    #[allow(dead_code)] // fz-bsx.2/.3 wire this into the reducer + codegen folds.
     pub(crate) fn erase_nominal(
         &self,
         brand_inners: &std::collections::HashMap<String, Descr>,
@@ -1210,7 +1209,6 @@ impl Descr {
     /// This is the ONLY disjointness that may authorize folding `==`/`!=` to a
     /// constant or pruning a pattern arm. Contrast `intersect(..).is_empty()`
     /// (brand-aware) used for typing decisions.
-    #[allow(dead_code)] // fz-bsx.2/.3 wire this into the reducer + codegen folds.
     pub(crate) fn value_disjoint(
         &self,
         other: &Descr,

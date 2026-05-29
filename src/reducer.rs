@@ -35,10 +35,12 @@ pub fn fold_prim<T: Types<Ty = crate::types::Ty> + LiteralTypes>(
     prim: &Prim,
     env: &HashMap<Var, T::Ty>,
     atom_names: &[String],
+    brand_inners: &HashMap<String, T::Ty>,
+    opaque_inners: &HashMap<String, T::Ty>,
 ) -> Option<T::Ty> {
     match prim {
         Prim::Const(c) => fold_const(t, c, atom_names),
-        Prim::BinOp(op, a, b) => fold_binop(t, *op, *a, *b, env),
+        Prim::BinOp(op, a, b) => fold_binop(t, *op, *a, *b, env, brand_inners, opaque_inners),
         Prim::UnOp(op, v) => fold_unop(t, *op, *v, env),
         Prim::MakeTuple(vs) => fold_make_tuple(t, vs, env),
         Prim::TupleField(v, i) => fold_tuple_field(t, *v, *i as usize, env),
@@ -104,19 +106,23 @@ fn fold_const<T: Types>(t: &mut T, c: &Const, atom_names: &[String]) -> Option<T
     })
 }
 
-fn fold_binop<T: Types + LiteralTypes>(
+fn fold_binop<T: Types<Ty = crate::types::Ty> + LiteralTypes>(
     t: &mut T,
     op: BinOp,
     a: Var,
     b: Var,
     env: &HashMap<Var, T::Ty>,
+    brand_inners: &HashMap<String, T::Ty>,
+    opaque_inners: &HashMap<String, T::Ty>,
 ) -> Option<T::Ty> {
     let ad = env.get(&a)?;
     let bd = env.get(&b)?;
     use BinOp::*;
     match op {
         Add | Sub | Mul | Div | Mod => fold_arith(t, op, ad, bd),
-        Eq | Neq => fold_eq(t, op, ad, bd),
+        Eq | Neq => {
+            fold_runtime_eq(t, op, ad, bd, brand_inners, opaque_inners).map(|b| t.bool_lit(b))
+        }
         Lt | Le | Gt | Ge => fold_cmp(t, op, ad, bd),
         And | Or => fold_logical(t, op, ad, bd),
     }
@@ -161,6 +167,46 @@ fn fold_arith<T: Types>(t: &mut T, op: BinOp, ad: &T::Ty, bd: &T::Ty) -> Option<
     None
 }
 
+/// fz-bsx.2 — the single authoritative compile-time decision for `==`/`!=`,
+/// shared by the reducer (here) and codegen (`lower_eq_binop`, fz-bsx.3).
+/// Returns `Some(true/false)` when the result is statically known, else
+/// `None` (emit the runtime comparison).
+///
+/// Runtime equality is brand-BLIND (`ir_brand_erase` strips brands;
+/// `fz_value_eq` compares bytes), so the "definitely unequal" arm uses
+/// `is_value_disjoint` (brand-erased), NOT `is_disjoint`. The both-literal
+/// arm is unchanged: a minted brand is a pure tag, never a singleton, so it
+/// never reaches `is_literal`, and `is_equivalent` only sees brand-free
+/// literals there.
+pub fn fold_runtime_eq<T: Types<Ty = crate::types::Ty> + LiteralTypes>(
+    t: &T,
+    op: BinOp,
+    ad: &T::Ty,
+    bd: &T::Ty,
+    brand_inners: &HashMap<String, T::Ty>,
+    opaque_inners: &HashMap<String, T::Ty>,
+) -> Option<bool> {
+    let is_eq = matches!(op, BinOp::Eq);
+
+    // Both literal: exact compare (brand-free — see doc).
+    if t.is_literal(ad) && t.is_literal(bd) {
+        return Some(is_eq == t.is_equivalent(ad, bd));
+    }
+
+    // Definitely unequal: disjoint in the brand-erased (runtime) model.
+    if !t.is_empty(ad)
+        && !t.is_empty(bd)
+        && t.is_value_disjoint(ad, bd, brand_inners, opaque_inners)
+    {
+        return Some(!is_eq);
+    }
+
+    None
+}
+
+/// fz-bsx.2 — brand-AWARE equality fold, retained ONLY for the guard path
+/// (`ast_binop_fold`). fz-bsx.4 migrates guards onto `fold_runtime_eq` and
+/// deletes this.
 fn fold_eq<T: Types + LiteralTypes>(t: &mut T, op: BinOp, ad: &T::Ty, bd: &T::Ty) -> Option<T::Ty> {
     let is_eq = matches!(op, BinOp::Eq);
 
@@ -711,18 +757,18 @@ mod tests {
     #[test]
     fn fold_const_int() {
         let mut t = ct();
-        let r = fold_prim(&mut t, &Prim::Const(Const::Int(42)), &HashMap::new(), &[]).unwrap();
+        let r = fold_prim(&mut t, &Prim::Const(Const::Int(42)), &HashMap::new(), &[], &HashMap::new(), &HashMap::new()).unwrap();
         assert_int_ty(&t, &r, 42);
     }
 
     #[test]
     fn fold_const_nil_and_bools() {
         let mut t = ct();
-        let nil = fold_prim(&mut t, &Prim::Const(Const::Nil), &HashMap::new(), &[]).unwrap();
+        let nil = fold_prim(&mut t, &Prim::Const(Const::Nil), &HashMap::new(), &[], &HashMap::new(), &HashMap::new()).unwrap();
         assert_nil_ty(&t, &nil);
-        let bt = fold_prim(&mut t, &Prim::Const(Const::True), &HashMap::new(), &[]).unwrap();
+        let bt = fold_prim(&mut t, &Prim::Const(Const::True), &HashMap::new(), &[], &HashMap::new(), &HashMap::new()).unwrap();
         assert_bool_ty(&t, &bt, true);
-        let bf = fold_prim(&mut t, &Prim::Const(Const::False), &HashMap::new(), &[]).unwrap();
+        let bf = fold_prim(&mut t, &Prim::Const(Const::False), &HashMap::new(), &[], &HashMap::new(), &HashMap::new()).unwrap();
         assert_bool_ty(&t, &bf, false);
     }
 
@@ -735,6 +781,8 @@ mod tests {
             &Prim::Const(Const::Atom(1)),
             &HashMap::new(),
             &names,
+            &HashMap::new(),
+            &HashMap::new(),
         )
         .unwrap();
         assert_atom_ty(&t, &a, "beta");
@@ -748,7 +796,9 @@ mod tests {
                 &mut ct(),
                 &Prim::Const(Const::Atom(0)),
                 &HashMap::new(),
-                &names
+                &names,
+                &HashMap::new(),
+                &HashMap::new()
             )
             .is_none()
         );
@@ -760,7 +810,7 @@ mod tests {
     fn fold_int_add() {
         let mut t = ct();
         let env = env(&[(0, t.int_lit(41)), (1, t.int_lit(1))]);
-        let r = fold_prim(&mut t, &Prim::BinOp(BinOp::Add, v(0), v(1)), &env, &[]).unwrap();
+        let r = fold_prim(&mut t, &Prim::BinOp(BinOp::Add, v(0), v(1)), &env, &[], &HashMap::new(), &HashMap::new()).unwrap();
         assert_int_ty(&t, &r, 42);
     }
 
@@ -768,21 +818,21 @@ mod tests {
     fn fold_int_div_by_zero_returns_none() {
         let mut t = ct();
         let env = env(&[(0, t.int_lit(10)), (1, t.int_lit(0))]);
-        assert!(fold_prim(&mut t, &Prim::BinOp(BinOp::Div, v(0), v(1)), &env, &[]).is_none());
+        assert!(fold_prim(&mut t, &Prim::BinOp(BinOp::Div, v(0), v(1)), &env, &[], &HashMap::new(), &HashMap::new()).is_none());
     }
 
     #[test]
     fn fold_int_overflow_returns_none() {
         let mut t = ct();
         let env = env(&[(0, t.int_lit(i64::MAX)), (1, t.int_lit(1))]);
-        assert!(fold_prim(&mut t, &Prim::BinOp(BinOp::Add, v(0), v(1)), &env, &[]).is_none());
+        assert!(fold_prim(&mut t, &Prim::BinOp(BinOp::Add, v(0), v(1)), &env, &[], &HashMap::new(), &HashMap::new()).is_none());
     }
 
     #[test]
     fn fold_float_arith() {
         let mut t = ct();
         let env = env(&[(0, t.float_lit(1.5)), (1, t.float_lit(2.5))]);
-        let r = fold_prim(&mut t, &Prim::BinOp(BinOp::Add, v(0), v(1)), &env, &[]).unwrap();
+        let r = fold_prim(&mut t, &Prim::BinOp(BinOp::Add, v(0), v(1)), &env, &[], &HashMap::new(), &HashMap::new()).unwrap();
         assert_eq!(t.as_float_singleton(&r), Some(4.0));
     }
 
@@ -791,14 +841,14 @@ mod tests {
         // No coercion; the planner's policy is no auto-promotion.
         let mut t = ct();
         let env = env(&[(0, t.int_lit(1)), (1, t.float_lit(2.0))]);
-        assert!(fold_prim(&mut t, &Prim::BinOp(BinOp::Add, v(0), v(1)), &env, &[]).is_none());
+        assert!(fold_prim(&mut t, &Prim::BinOp(BinOp::Add, v(0), v(1)), &env, &[], &HashMap::new(), &HashMap::new()).is_none());
     }
 
     #[test]
     fn fold_arith_on_wide_input_returns_none() {
         let mut t = ct();
         let env = env(&[(0, t.int()), (1, t.int_lit(1))]);
-        assert!(fold_prim(&mut t, &Prim::BinOp(BinOp::Add, v(0), v(1)), &env, &[]).is_none());
+        assert!(fold_prim(&mut t, &Prim::BinOp(BinOp::Add, v(0), v(1)), &env, &[], &HashMap::new(), &HashMap::new()).is_none());
     }
 
     // ---- comparison ----
@@ -807,7 +857,7 @@ mod tests {
     fn fold_int_lt() {
         let mut t = ct();
         let env = env(&[(0, t.int_lit(1)), (1, t.int_lit(2))]);
-        let r = fold_prim(&mut t, &Prim::BinOp(BinOp::Lt, v(0), v(1)), &env, &[]).unwrap();
+        let r = fold_prim(&mut t, &Prim::BinOp(BinOp::Lt, v(0), v(1)), &env, &[], &HashMap::new(), &HashMap::new()).unwrap();
         assert_bool_ty(&t, &r, true);
     }
 
@@ -817,7 +867,7 @@ mod tests {
     fn fold_eq_literal_match() {
         let mut t = ct();
         let env = env(&[(0, t.int_lit(42)), (1, t.int_lit(42))]);
-        let r = fold_prim(&mut t, &Prim::BinOp(BinOp::Eq, v(0), v(1)), &env, &[]).unwrap();
+        let r = fold_prim(&mut t, &Prim::BinOp(BinOp::Eq, v(0), v(1)), &env, &[], &HashMap::new(), &HashMap::new()).unwrap();
         assert_bool_ty(&t, &r, true);
     }
 
@@ -825,7 +875,7 @@ mod tests {
     fn fold_eq_literal_mismatch() {
         let mut t = ct();
         let env = env(&[(0, t.int_lit(42)), (1, t.int_lit(7))]);
-        let r = fold_prim(&mut t, &Prim::BinOp(BinOp::Eq, v(0), v(1)), &env, &[]).unwrap();
+        let r = fold_prim(&mut t, &Prim::BinOp(BinOp::Eq, v(0), v(1)), &env, &[], &HashMap::new(), &HashMap::new()).unwrap();
         assert_bool_ty(&t, &r, false);
     }
 
@@ -833,7 +883,7 @@ mod tests {
     fn fold_neq_literal_mismatch_is_true() {
         let mut t = ct();
         let env = env(&[(0, t.int_lit(42)), (1, t.int_lit(7))]);
-        let r = fold_prim(&mut t, &Prim::BinOp(BinOp::Neq, v(0), v(1)), &env, &[]).unwrap();
+        let r = fold_prim(&mut t, &Prim::BinOp(BinOp::Neq, v(0), v(1)), &env, &[], &HashMap::new(), &HashMap::new()).unwrap();
         assert_bool_ty(&t, &r, true);
     }
 
@@ -843,9 +893,9 @@ mod tests {
         // VR.5a's case — fold to false even though operands aren't literal.
         let mut t = ct();
         let env = env(&[(0, t.int()), (1, t.atom())]);
-        let r = fold_prim(&mut t, &Prim::BinOp(BinOp::Eq, v(0), v(1)), &env, &[]).unwrap();
+        let r = fold_prim(&mut t, &Prim::BinOp(BinOp::Eq, v(0), v(1)), &env, &[], &HashMap::new(), &HashMap::new()).unwrap();
         assert_bool_ty(&t, &r, false);
-        let r = fold_prim(&mut t, &Prim::BinOp(BinOp::Neq, v(0), v(1)), &env, &[]).unwrap();
+        let r = fold_prim(&mut t, &Prim::BinOp(BinOp::Neq, v(0), v(1)), &env, &[], &HashMap::new(), &HashMap::new()).unwrap();
         assert_bool_ty(&t, &r, true);
     }
 
@@ -854,7 +904,34 @@ mod tests {
         // int vs int: kinds overlap; cannot decide statically.
         let mut t = ct();
         let env = env(&[(0, t.int()), (1, t.int())]);
-        assert!(fold_prim(&mut t, &Prim::BinOp(BinOp::Eq, v(0), v(1)), &env, &[]).is_none());
+        assert!(fold_prim(&mut t, &Prim::BinOp(BinOp::Eq, v(0), v(1)), &env, &[], &HashMap::new(), &HashMap::new()).is_none());
+    }
+
+    #[test]
+    fn fold_runtime_eq_is_brand_blind() {
+        // fz-bsx.2: a utf8 (pure brand tag) and an unbranded binary can be
+        // byte-equal at runtime, so `==` must NOT fold — even though the
+        // brand-aware lattice reports them disjoint. But a utf8 vs an int is
+        // genuinely value-disjoint and still folds.
+        use crate::concrete_types::{ty_from_descr, Descr};
+        let t = ct();
+        let utf8 = ty_from_descr(Descr::brand_of("utf8"));
+        let binary = ty_from_descr(Descr::str_t());
+        let int = ty_from_descr(Descr::int());
+        let inners: HashMap<String, crate::types::Ty> =
+            [("utf8".to_string(), binary.clone())].into_iter().collect();
+        let empty = HashMap::new();
+
+        assert_eq!(
+            fold_runtime_eq(&t, BinOp::Eq, &utf8, &binary, &inners, &empty),
+            None,
+            "brand-only disjoint: must defer to the runtime comparison",
+        );
+        assert_eq!(
+            fold_runtime_eq(&t, BinOp::Eq, &utf8, &int, &inners, &empty),
+            Some(false),
+            "value-disjoint: still folds",
+        );
     }
 
     // ---- logical ----
@@ -863,10 +940,10 @@ mod tests {
     fn fold_and_bool_lits() {
         let mut t = ct();
         let env = env(&[(0, t.bool_lit(true)), (1, t.bool_lit(false))]);
-        let r = fold_prim(&mut t, &Prim::BinOp(BinOp::And, v(0), v(1)), &env, &[]).unwrap();
+        let r = fold_prim(&mut t, &Prim::BinOp(BinOp::And, v(0), v(1)), &env, &[], &HashMap::new(), &HashMap::new()).unwrap();
         assert_bool_ty(&t, &r, false);
         let env = env_with_true(&mut t);
-        let r = fold_prim(&mut t, &Prim::BinOp(BinOp::Or, v(0), v(1)), &env, &[]).unwrap();
+        let r = fold_prim(&mut t, &Prim::BinOp(BinOp::Or, v(0), v(1)), &env, &[], &HashMap::new(), &HashMap::new()).unwrap();
         assert_bool_ty(&t, &r, true);
     }
 
@@ -880,7 +957,7 @@ mod tests {
     fn fold_neg_int() {
         let mut t = ct();
         let env = env(&[(0, t.int_lit(5))]);
-        let r = fold_prim(&mut t, &Prim::UnOp(UnOp::Neg, v(0)), &env, &[]).unwrap();
+        let r = fold_prim(&mut t, &Prim::UnOp(UnOp::Neg, v(0)), &env, &[], &HashMap::new(), &HashMap::new()).unwrap();
         assert_int_ty(&t, &r, -5);
     }
 
@@ -888,7 +965,7 @@ mod tests {
     fn fold_not_bool() {
         let mut t = ct();
         let env = env(&[(0, t.bool_lit(true))]);
-        let r = fold_prim(&mut t, &Prim::UnOp(UnOp::Not, v(0)), &env, &[]).unwrap();
+        let r = fold_prim(&mut t, &Prim::UnOp(UnOp::Not, v(0)), &env, &[], &HashMap::new(), &HashMap::new()).unwrap();
         assert_bool_ty(&t, &r, false);
     }
 
@@ -898,7 +975,7 @@ mod tests {
     fn fold_make_tuple_of_literals() {
         let mut t = ct();
         let env = env(&[(0, t.atom_lit("num")), (1, t.int_lit(42))]);
-        let r = fold_prim(&mut t, &Prim::MakeTuple(vec![v(0), v(1)]), &env, &[]).unwrap();
+        let r = fold_prim(&mut t, &Prim::MakeTuple(vec![v(0), v(1)]), &env, &[], &HashMap::new(), &HashMap::new()).unwrap();
         let elems = t.tuple_lit_elems(&r).unwrap();
         assert_eq!(elems.len(), 2);
         assert_atom_ty(&t, &elems[0], "num");
@@ -909,7 +986,7 @@ mod tests {
     fn fold_make_tuple_with_wide_element_is_none() {
         let mut t = ct();
         let env = env(&[(0, t.atom_lit("num")), (1, t.int())]);
-        assert!(fold_prim(&mut t, &Prim::MakeTuple(vec![v(0), v(1)]), &env, &[]).is_none());
+        assert!(fold_prim(&mut t, &Prim::MakeTuple(vec![v(0), v(1)]), &env, &[], &HashMap::new(), &HashMap::new()).is_none());
     }
 
     #[test]
@@ -917,9 +994,9 @@ mod tests {
         let mut t = ct();
         let tup = num_tuple_ty(&mut t, 42);
         let env = env(&[(0, tup)]);
-        let r = fold_prim(&mut t, &Prim::TupleField(v(0), 1), &env, &[]).unwrap();
+        let r = fold_prim(&mut t, &Prim::TupleField(v(0), 1), &env, &[], &HashMap::new(), &HashMap::new()).unwrap();
         assert_int_ty(&t, &r, 42);
-        let r = fold_prim(&mut t, &Prim::TupleField(v(0), 0), &env, &[]).unwrap();
+        let r = fold_prim(&mut t, &Prim::TupleField(v(0), 0), &env, &[], &HashMap::new(), &HashMap::new()).unwrap();
         assert_atom_ty(&t, &r, "num");
     }
 
@@ -928,7 +1005,7 @@ mod tests {
         let mut t = ct();
         let tup = num_tuple_ty(&mut t, 42);
         let env = env(&[(0, tup)]);
-        assert!(fold_prim(&mut t, &Prim::TupleField(v(0), 7), &env, &[]).is_none());
+        assert!(fold_prim(&mut t, &Prim::TupleField(v(0), 7), &env, &[], &HashMap::new(), &HashMap::new()).is_none());
     }
 
     // ---- type test ----
@@ -938,7 +1015,7 @@ mod tests {
         let mut t = ct();
         let env = env(&[(0, t.int_lit(42))]);
         let int = t.int();
-        let r = fold_prim(&mut t, &Prim::TypeTest(v(0), Box::new(int)), &env, &[]).unwrap();
+        let r = fold_prim(&mut t, &Prim::TypeTest(v(0), Box::new(int)), &env, &[], &HashMap::new(), &HashMap::new()).unwrap();
         assert_bool_ty(&t, &r, true);
     }
 
@@ -947,7 +1024,7 @@ mod tests {
         let mut t = ct();
         let env = env(&[(0, t.int_lit(42))]);
         let atom = t.atom();
-        let r = fold_prim(&mut t, &Prim::TypeTest(v(0), Box::new(atom)), &env, &[]).unwrap();
+        let r = fold_prim(&mut t, &Prim::TypeTest(v(0), Box::new(atom)), &env, &[], &HashMap::new(), &HashMap::new()).unwrap();
         assert_bool_ty(&t, &r, false);
     }
 
@@ -956,7 +1033,7 @@ mod tests {
         let mut t = ct();
         let env = env(&[(0, t.any())]);
         let int = t.int();
-        assert!(fold_prim(&mut t, &Prim::TypeTest(v(0), Box::new(int)), &env, &[]).is_none());
+        assert!(fold_prim(&mut t, &Prim::TypeTest(v(0), Box::new(int)), &env, &[], &HashMap::new(), &HashMap::new()).is_none());
     }
 
     // ---- list_is_nil ----
@@ -967,7 +1044,7 @@ mod tests {
         // NOT the empty-list sentinel, so IsEmptyList folds to `false`.
         let mut t = ct();
         let env = env(&[(0, t.nil())]);
-        let r = fold_prim(&mut t, &Prim::IsEmptyList(v(0)), &env, &[]).unwrap();
+        let r = fold_prim(&mut t, &Prim::IsEmptyList(v(0)), &env, &[], &HashMap::new(), &HashMap::new()).unwrap();
         assert_bool_ty(&t, &r, false);
     }
 
@@ -978,7 +1055,7 @@ mod tests {
         let mut t = ct();
         let elem = t.int_lit(1);
         let env = env(&[(0, t.list(elem))]);
-        assert!(fold_prim(&mut t, &Prim::IsEmptyList(v(0)), &env, &[]).is_none());
+        assert!(fold_prim(&mut t, &Prim::IsEmptyList(v(0)), &env, &[], &HashMap::new(), &HashMap::new()).is_none());
     }
 
     #[test]
@@ -990,7 +1067,7 @@ mod tests {
         let nil = t.nil();
         let maybe_empty = t.union(list, nil);
         let env = env(&[(0, maybe_empty)]);
-        assert!(fold_prim(&mut t, &Prim::IsEmptyList(v(0)), &env, &[]).is_none());
+        assert!(fold_prim(&mut t, &Prim::IsEmptyList(v(0)), &env, &[], &HashMap::new(), &HashMap::new()).is_none());
     }
 
     // ---- non-foldable prims explicitly return None ----
@@ -999,7 +1076,17 @@ mod tests {
     fn fold_extern_returns_none() {
         use crate::fz_ir::ExternId;
         let env = HashMap::new();
-        assert!(fold_prim(&mut ct(), &Prim::Extern(ExternId(0), vec![]), &env, &[],).is_none());
+        assert!(
+            fold_prim(
+                &mut ct(),
+                &Prim::Extern(ExternId(0), vec![]),
+                &env,
+                &[],
+                &HashMap::new(),
+                &HashMap::new(),
+            )
+            .is_none()
+        );
     }
 
     #[test]
@@ -1007,7 +1094,7 @@ mod tests {
         // Lists are folded by IR-walking in RED.3+, not by fold_prim.
         let mut t = ct();
         let env = env(&[(0, t.int_lit(1)), (1, t.int_lit(2))]);
-        assert!(fold_prim(&mut t, &Prim::MakeList(vec![v(0), v(1)], None), &env, &[]).is_none());
+        assert!(fold_prim(&mut t, &Prim::MakeList(vec![v(0), v(1)], None), &env, &[], &HashMap::new(), &HashMap::new()).is_none());
     }
 
     // Bitstring construction / reader prims aren't foldable in v1; covered

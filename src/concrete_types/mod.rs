@@ -57,7 +57,6 @@ pub(crate) fn ty_descr(t: &Ty) -> &Descr {
 /// Convert a `Ty`-keyed inner-type map (as carried by `Module`) into the
 /// `Descr`-keyed form `Descr::erase_nominal` consumes. The maps are tiny
 /// (one entry per declared brand/opaque), so the per-call clone is cheap.
-#[allow(dead_code)] // fz-bsx.2/.3 wire is_value_disjoint into the folds.
 fn descr_inner_map(m: &HashMap<String, Ty>) -> HashMap<String, Descr> {
     m.iter()
         .map(|(k, v)| (k.clone(), ty_descr(v).clone()))

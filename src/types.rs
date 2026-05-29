@@ -192,7 +192,6 @@ pub trait Types {
     /// model: true iff no two runtime values of `a`/`b` can ever be equal /
     /// match. The ONLY disjointness that may authorize folding `==`/`!=` or
     /// pruning a pattern arm. Tags are discharged via the inner-type maps.
-    #[allow(dead_code)] // fz-bsx.2/.3 wire this into the reducer + codegen folds.
     fn is_value_disjoint(
         &self,
         a: &Self::Ty,
@@ -204,7 +203,7 @@ pub trait Types {
     /// value-disjoint: i.e. they differ only by a brand/opaque the runtime
     /// erases. This is exactly the set of comparisons the old brand-aware
     /// fold broke; consumers emit a telemetry signal on it.
-    #[allow(dead_code)] // fz-bsx.2/.3 wire this into the reducer + codegen folds.
+    #[allow(dead_code)] // fz-bsx.5 wires this into the dead-binop diagnostic + telemetry.
     fn differs_only_nominally(
         &self,
         a: &Self::Ty,
