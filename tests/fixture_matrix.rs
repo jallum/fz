@@ -281,6 +281,18 @@ fn static_tests() -> Vec<(&'static str, fn())> {
             enum_list_allocations_pin_minimum_list_cons,
         ),
         (
+            "enum_sort_constant_sorter_erased_under_return_demand_specs",
+            enum_sort_constant_sorter_erased_under_return_demand_specs,
+        ),
+        (
+            "local_reduce_state_update_lowers_without_trampoline",
+            local_reduce_state_update_lowers_without_trampoline,
+        ),
+        (
+            "opaque_reduce_join_preserves_closure_values_and_lazy_state_machine",
+            opaque_reduce_join_preserves_closure_values_and_lazy_state_machine,
+        ),
+        (
             "continuation_materialization_boundaries_stay_explicit",
             continuation_materialization_boundaries_stay_explicit,
         ),
@@ -428,7 +440,7 @@ fn pattern_matrix_oracle_goldens() {
 fn matcher_perf_internal_matcher_repair_baseline() {
     let representative = [
         ("hello", 1, 0),
-        ("list_primitives", 22, 0),
+        ("list_primitives", 16, 0),
         ("quicksort", 18, 0),
         ("ast_eval", 1, 0),
         ("receive_mixed_constructors", 5, 0),
@@ -3025,27 +3037,136 @@ fn enum_list_allocations_pin_minimum_list_cons() {
         reduce_list
     );
     assert!(
-        reduce_list.contains("stack_store")
-            && reduce_list.contains(&clif_hex_word(lazy_continuation_marker_word())),
-        "known native Enum.reduce should pass a stack-backed lazy continuation descriptor:\n{}",
+        reduce_list.contains("return_call") && !reduce_list.contains("stack_store"),
+        "known native Enum.reduce dispatcher should enter the cont helper directly:\n{}",
+        reduce_list
+    );
+
+    let reduce_list_cont =
+        clif_function_with_banner_prefix(&clif, "; fn Enumerable.reduce_list_cont_s")
+            .expect("enum_list_allocations native dump must include reduce_list_cont");
+    assert!(
+        !reduce_list_cont.contains("@fz_alloc_closure")
+            && !reduce_list_cont.contains("stack_store"),
+        "known native Enum.reduce cont helper should inline the zero-state reducer without a heap closure or stack lazy descriptor:\n{}",
+        reduce_list_cont
+    );
+}
+
+fn local_reduce_state_update_lowers_without_trampoline() {
+    let clif = dump_clif_for_source(
+        "local_reduce_state_update",
+        "fn reduce_list([], {:cont, acc}, _reducer), do: {:done, acc}\n\
+         fn reduce_list([h | t], {:cont, acc}, reducer), do: reduce_list(t, reducer(h, acc), reducer)\n\
+         fn main(), do: reduce_list([1, 2], {:cont, 0}, fn (x, acc) -> {:cont, acc + x})",
+    );
+    let reduce_list = clif_function_with_banner_prefix(&clif, "; fn reduce_list_s")
+        .expect("local reduce_list CLIF should be present");
+    assert!(
+        reduce_list.contains("return_call") && reduce_list.contains("reduce_list"),
+        "local reduce state update should lower to a direct recursive tail call:\n{}",
+        reduce_list
+    );
+    assert!(
+        !reduce_list.contains("lambda_") && !reduce_list.contains("; fn k_"),
+        "local reduce state update should not keep the reducer-continuation trampoline in reduce_list CLIF:\n{}",
         reduce_list
     );
 }
 
-fn lazy_continuation_marker_word() -> u64 {
-    fz_runtime::any_value::TAG_FWD
-        << fz_runtime::any_value::AnyValueRefPacking::current().tag_shift()
+fn enum_sort_constant_sorter_erased_under_return_demand_specs() {
+    assert_fixture_output_contains(
+        "enum_sort",
+        "expected.jit.txt",
+        &[
+            ":list_cons_allocs => 22",
+            ":closure_allocs => 0",
+            ":scalar_box_allocs => 0",
+            ":allocation_pressure_yields => 0",
+        ],
+    );
+
+    let readme = fs::read_to_string("fixtures/enum_sort/README.md").expect("read enum_sort README");
+    for needle in [
+        "default sorter is erased",
+        "return-demand-specialized runtime-library",
+        "not only value-demand specs",
+    ] {
+        assert!(
+            readme.contains(needle),
+            "enum_sort README must pin `{}`",
+            needle
+        );
+    }
+
+    let clif = dump_fixture_clif("enum_sort");
+    let sorter_threading_functions = ["Enum.sort_list", "fn_clause_2", "Enum.merge_sort_lists"]
+        .into_iter()
+        .flat_map(|name| clif_functions_containing(&clif, name))
+        .collect::<Vec<_>>();
+    assert!(
+        !sorter_threading_functions.is_empty(),
+        "enum_sort should emit sorter-threading runtime-library functions:\n{}",
+        clif
+    );
+    assert!(
+        sorter_threading_functions
+            .iter()
+            .all(|f| !f.contains("&fn43[]")),
+        "constant sorter should not remain in sort_list/fn_clause_2/merge_sort_lists signatures:\n{}",
+        sorter_threading_functions.join("\n\n")
+    );
+    assert!(
+        sorter_threading_functions
+            .iter()
+            .all(|f| !f.contains("@fz_alloc_closure")),
+        "constant sorter should not force heap continuation allocation in sorter-threading functions:\n{}",
+        sorter_threading_functions.join("\n\n")
+    );
 }
 
-fn clif_hex_word(word: u64) -> String {
-    let raw = format!("{word:016x}");
-    format!(
-        "0x{}_{}_{}_{}",
-        &raw[0..4],
-        &raw[4..8],
-        &raw[8..12],
-        &raw[12..16]
-    )
+fn opaque_reduce_join_preserves_closure_values_and_lazy_state_machine() {
+    let readme =
+        fs::read_to_string("fixtures/opaque_fn_value_join/README.md").expect("read opaque README");
+    for needle in [
+        "control-flow join",
+        "closure-shaped value",
+        "one static reducer identity",
+    ] {
+        assert!(
+            readme.contains(needle),
+            "opaque_fn_value_join README must pin `{}`",
+            needle
+        );
+    }
+
+    assert_fixture_output_contains("opaque_fn_value_join", "expected.txt", &["{:done, 6}"]);
+
+    let clif = dump_fixture_clif("opaque_fn_value_join");
+    let reduce_list_conts = clif_functions_containing(&clif, "Enumerable.reduce_list_cont");
+    assert!(
+        !reduce_list_conts.is_empty(),
+        "opaque reducer join should still lower through Enumerable.reduce_list_cont:\n{}",
+        clif
+    );
+    assert!(
+        reduce_list_conts
+            .iter()
+            .all(|f| !f.contains("@fz_alloc_closure")),
+        "opaque reducer join must not force heap continuation allocation in reduce_list_cont:\n{}",
+        reduce_list_conts.join("\n\n")
+    );
+    assert!(
+        reduce_list_conts.iter().any(|f| f.contains("stack_store")),
+        "opaque reducer join should keep lazy state-machine descriptors explicit:\n{}",
+        reduce_list_conts.join("\n\n")
+    );
+    assert!(
+        reduce_list_conts.iter().any(|f| f.contains("&fn14[]"))
+            && reduce_list_conts.iter().any(|f| f.contains("&fn15[]")),
+        "opaque reducer join currently specializes both joined zero-cap reducers without collapsing them into one static identity:\n{}",
+        reduce_list_conts.join("\n\n")
+    );
 }
 
 fn continuation_materialization_boundaries_stay_explicit() {
@@ -3274,6 +3395,25 @@ fn dump_fixture_clif(name: &str) -> String {
         .output()
         .expect("spawn fz dump");
     assert!(out.status.success(), "fz dump exited {}", out.status);
+    String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
+fn dump_clif_for_source(name: &str, src: &str) -> String {
+    let path = std::env::temp_dir().join(format!("fz_{}_{}_input.fz", name, std::process::id()));
+    fs::write(&path, src).unwrap_or_else(|e| panic!("write temp source {:?}: {}", path, e));
+    let out = Command::new(FZ_BIN)
+        .args(["dump", "--emit", "clif"])
+        .arg(&path)
+        .output()
+        .unwrap_or_else(|e| panic!("spawn fz dump --emit clif {}: {}", name, e));
+    let _ = fs::remove_file(&path);
+    assert!(
+        out.status.success(),
+        "fz dump --emit clif {} exited {}: {}",
+        name,
+        out.status,
+        String::from_utf8_lossy(&out.stderr)
+    );
     String::from_utf8_lossy(&out.stdout).into_owned()
 }
 

@@ -2,11 +2,11 @@ use super::closures::resolve_closure_return;
 use super::diagnostics::{compute_dead_branches, module_plan_stats};
 use super::effects::{prim_effect_summary, term_local_effect_summary};
 use super::fn_types::{
-    CallsiteFnConsts, EffectSummary, EmitsByCaller, EmitterSiteSet, HoldersMap, ModulePlan,
-    PLAN_MODULE_CALLS, ProducesMap, ReturnReaders, SpecKey, SpecKeySet, SpecPlan, TYPE_FN_CALLS,
-    VISIT_HARD_BOUND, WALK_CALLS, WORKLIST_POPS, build_any_key_index, key_precedence_order,
-    recursive_direct_spec_key, recursive_direct_spec_key_for_arity, spec_key_for_fn_id,
-    spec_key_input_tys,
+    CallsiteCallableCapabilities, EffectSummary, EmitsByCaller, EmitterSiteSet, FnEffects,
+    HoldersMap, ModulePlan, PLAN_MODULE_CALLS, ProducesMap, ReturnReaders, SpecKey, SpecKeySet,
+    SpecPlan, TYPE_FN_CALLS, VISIT_HARD_BOUND, WALK_CALLS, WORKLIST_POPS, build_any_key_index,
+    key_precedence_order, recursive_direct_spec_key, recursive_direct_spec_key_for_arity,
+    spec_key_for_fn_id, spec_key_input_tys,
 };
 use super::reachable::{cont_key_from_slot0, env_at_terminator};
 use super::type_fn::type_fn;
@@ -89,7 +89,7 @@ pub fn plan_module<T: crate::types::Types<Ty = crate::types::Ty> + crate::types:
 
     let mut specs: HashMap<SpecKey, SpecPlan> = HashMap::new();
     let mut effective_returns: HashMap<SpecKey, crate::types::Ty> = HashMap::new();
-    let mut callsite_fn_consts: CallsiteFnConsts = HashMap::new();
+    let mut callsite_callable_capabilities: CallsiteCallableCapabilities = HashMap::new();
     let mut return_readers: ReturnReaders = HashMap::new();
     let mut visit_count: HashMap<SpecKey, usize> = HashMap::new();
 
@@ -98,6 +98,8 @@ pub fn plan_module<T: crate::types::Types<Ty = crate::types::Ty> + crate::types:
     let mut emits_by_caller: EmitsByCaller = HashMap::new();
     let mut closure_handles: std::collections::HashSet<(FnId, Vec<crate::types::Ty>)> =
         std::collections::HashSet::new();
+
+    let fn_effects = compute_fn_effects(m);
 
     let mut work: std::collections::VecDeque<SpecKey> = entry_seeds(t, m)
         .into_iter()
@@ -108,12 +110,13 @@ pub fn plan_module<T: crate::types::Types<Ty = crate::types::Ty> + crate::types:
     process_worklist(
         t,
         m,
+        &fn_effects,
         &recursive_fns,
         &mut work,
         &mut in_work,
         &mut specs,
         &mut effective_returns,
-        &mut callsite_fn_consts,
+        &mut callsite_callable_capabilities,
         &mut return_readers,
         &mut visit_count,
         &mut produces,
@@ -153,13 +156,12 @@ pub fn plan_module<T: crate::types::Types<Ty = crate::types::Ty> + crate::types:
         effective_returns,
         any_key_specs,
         spec_precedence,
-        effect_summaries: HashMap::new(),
+        fn_effects,
         dead_branches: HashMap::new(),
         #[cfg(test)]
         closure_handles,
     };
     mt.dead_branches = compute_dead_branches(t, m, &mt);
-    mt.effect_summaries = compute_effect_summaries(m, &mt);
     {
         let pops = WORKLIST_POPS.with(|c| c.get()) as u64;
         let walks = WALK_CALLS.with(|c| c.get()) as u64;
@@ -193,56 +195,73 @@ pub fn plan_module<T: crate::types::Types<Ty = crate::types::Ty> + crate::types:
     mt
 }
 
-fn compute_effect_summaries(m: &Module, mt: &ModulePlan) -> HashMap<SpecKey, EffectSummary> {
-    let mut summaries: HashMap<SpecKey, EffectSummary> = mt
-        .specs
-        .keys()
-        .map(|key| (key.clone(), local_effect_summary(m, key, mt)))
-        .collect();
+/// One per-FnId effect fact over the static call graph.
+///
+/// A function's effects are independent of any caller's return demand, so this
+/// is computed once — before the worklist — and read by the destination-
+/// planning barrier as a cached fact (replacing an on-demand body re-walk) and
+/// stored on `ModulePlan` for downstream passes.
+///
+/// The fact is the least fixed point of: each function's local effects (every
+/// block, no reachability pruning — a barrier must be conservative across all
+/// paths) unioned with the effects of every function it reaches through a
+/// `Call` (callee and continuation) or `TailCall` (callee). Calls through a
+/// value contribute `calls_opaque` locally and are not followed, because the
+/// target is not statically known here. A terminal `Halt` is transparent (see
+/// the loop body). Effects only grow under `union_with`, so the fixed point
+/// converges in finite steps over a closed module.
+fn compute_fn_effects(m: &Module) -> FnEffects {
+    let mut facts: FnEffects = HashMap::with_capacity(m.fns.len());
+    let mut edges: HashMap<FnId, Vec<FnId>> = HashMap::with_capacity(m.fns.len());
+    for f in &m.fns {
+        let mut local = EffectSummary::default();
+        let mut callees = Vec::new();
+        for b in &f.blocks {
+            for crate::fz_ir::Stmt::Let(_, prim) in &b.stmts {
+                local.union_with(prim_effect_summary(m, prim));
+            }
+            // A terminal `Halt` returns the process's final value to the
+            // scheduler; nothing executes after it, so it cannot observe — or
+            // be disturbed by — relocating an allocation that builds the
+            // returned value. It is transparent to the return-context-motion
+            // barrier (fz-w34.2 generalizes this to position-scoping). Every
+            // other terminator contributes its local effects: closure calls
+            // are opaque, receive is a scheduler boundary.
+            if !matches!(b.terminator, Term::Halt(_)) {
+                local.union_with(term_local_effect_summary(&b.terminator));
+            }
+            match &b.terminator {
+                Term::Call {
+                    callee,
+                    continuation,
+                    ..
+                } => {
+                    callees.push(*callee);
+                    callees.push(continuation.fn_id);
+                }
+                Term::TailCall { callee, .. } => callees.push(*callee),
+                _ => {}
+            }
+        }
+        facts.insert(f.id, local);
+        edges.insert(f.id, callees);
+    }
     loop {
         let mut changed = false;
-        for (key, ft) in &mt.specs {
-            let mut summary = *summaries.get(key).unwrap_or(&EffectSummary::default());
-            for target in ft
-                .call_edges
-                .values()
-                .filter_map(|edge| edge.local_target())
-            {
-                if let Some(target_summary) = summaries.get(target).copied() {
-                    changed |= summary.union_with(target_summary);
+        for f in &m.fns {
+            let mut summary = facts[&f.id];
+            for callee in &edges[&f.id] {
+                if let Some(callee_summary) = facts.get(callee).copied() {
+                    changed |= summary.union_with(callee_summary);
                 }
             }
-            if summaries.get(key).copied() != Some(summary) {
-                summaries.insert(key.clone(), summary);
-                changed = true;
-            }
+            facts.insert(f.id, summary);
         }
         if !changed {
             break;
         }
     }
-    summaries
-}
-
-fn local_effect_summary(m: &Module, key: &SpecKey, mt: &ModulePlan) -> EffectSummary {
-    let Some(ft) = mt.specs.get(key) else {
-        return EffectSummary::default();
-    };
-    let Some(&idx) = m.fn_idx.get(&key.fn_id) else {
-        return EffectSummary::default();
-    };
-    let f = &m.fns[idx];
-    let mut summary = EffectSummary::default();
-    for b in &f.blocks {
-        if !ft.reachable_blocks.contains(&b.id) {
-            continue;
-        }
-        for crate::fz_ir::Stmt::Let(_, prim) in &b.stmts {
-            summary.union_with(prim_effect_summary(m, prim));
-        }
-        summary.union_with(term_local_effect_summary(&b.terminator));
-    }
-    summary
+    facts
 }
 
 /// Worklist driver with provenance.
@@ -263,12 +282,13 @@ pub(crate) fn process_worklist<
 >(
     t: &mut T,
     m: &Module,
+    fn_effects: &FnEffects,
     recursive_fns: &std::collections::HashSet<FnId>,
     work: &mut std::collections::VecDeque<SpecKey>,
     in_work: &mut SpecKeySet,
     specs: &mut HashMap<SpecKey, SpecPlan>,
     effective_returns: &mut HashMap<SpecKey, crate::types::Ty>,
-    callsite_fn_consts: &mut CallsiteFnConsts,
+    callsite_callable_capabilities: &mut CallsiteCallableCapabilities,
     return_readers: &mut ReturnReaders,
     visit_count: &mut HashMap<SpecKey, usize>,
     produces: &mut ProducesMap,
@@ -283,17 +303,18 @@ pub(crate) fn process_worklist<
         let Some(&j) = m.fn_idx.get(&spec_key.fn_id) else {
             continue;
         };
-        ensure_spec_typed(t, m, j, &spec_key, callsite_fn_consts, specs);
+        ensure_spec_typed(t, m, j, &spec_key, callsite_callable_capabilities, specs);
         check_visit_bound(&spec_key, visit_count);
         let result = discover_spec_outputs(
             t,
             m,
+            fn_effects,
             j,
             &spec_key,
             specs,
             effective_returns,
             recursive_fns,
-            callsite_fn_consts,
+            callsite_callable_capabilities,
         );
         let WalkResult {
             emits,
@@ -333,7 +354,7 @@ fn ensure_spec_typed<T: crate::types::Types<Ty = crate::types::Ty> + crate::type
     m: &Module,
     fn_idx: usize,
     spec_key: &SpecKey,
-    callsite_fn_consts: &CallsiteFnConsts,
+    callsite_callable_capabilities: &CallsiteCallableCapabilities,
     specs: &mut HashMap<SpecKey, SpecPlan>,
 ) {
     if specs.contains_key(spec_key) {
@@ -342,12 +363,12 @@ fn ensure_spec_typed<T: crate::types::Types<Ty = crate::types::Ty> + crate::type
     TYPE_FN_CALLS.with(|c| c.set(c.get() + 1));
     let input_tys = spec_key_input_tys(t, spec_key);
     let mut ft = type_fn(t, &m.fns[fn_idx], m, Some(&input_tys));
-    if let Some(arg_consts) = callsite_fn_consts.get(spec_key) {
+    if let Some(arg_caps) = callsite_callable_capabilities.get(spec_key) {
         let entry = m.fns[fn_idx].entry;
         let entry_params = &m.fns[fn_idx].block(entry).params;
         for (slot, p) in entry_params.iter().enumerate() {
-            if let Some(Some(fid_const)) = arg_consts.get(slot) {
-                ft.fn_constants.insert(*p, *fid_const);
+            if let Some(Some(capability)) = arg_caps.get(slot) {
+                ft.callable_capabilities.insert(*p, capability.clone());
             }
         }
     }
@@ -370,12 +391,13 @@ fn discover_spec_outputs<
 >(
     t: &mut T,
     m: &Module,
+    fn_effects: &FnEffects,
     fn_idx: usize,
     spec_key: &SpecKey,
     specs: &HashMap<SpecKey, SpecPlan>,
     effective_returns: &HashMap<SpecKey, crate::types::Ty>,
     recursive_fns: &std::collections::HashSet<FnId>,
-    callsite_fn_consts: &mut CallsiteFnConsts,
+    callsite_callable_capabilities: &mut CallsiteCallableCapabilities,
 ) -> WalkResult {
     let caller_ft = specs.get(spec_key).unwrap();
     let mut result = WalkResult::default();
@@ -384,10 +406,11 @@ fn discover_spec_outputs<
         &m.fns[fn_idx],
         caller_ft,
         m,
+        fn_effects,
         effective_returns,
         recursive_fns,
         spec_key,
-        callsite_fn_consts,
+        callsite_callable_capabilities,
         &mut result,
     );
     result
@@ -666,7 +689,7 @@ fn tail_closure_return_contribution<
     closure: crate::fz_ir::Var,
     args: &[crate::fz_ir::Var],
 ) -> crate::types::Ty {
-    if let Some(&target) = ft.fn_constants.get(&closure) {
+    if let Some(target) = ft.known_fn(&closure) {
         return known_tail_closure_return_contribution(
             t,
             module,
@@ -907,7 +930,7 @@ pub(crate) fn cont_key_for_spec<
                 .unwrap_or_else(|| any_t.clone())
         }
         Term::CallClosure { closure, args, .. } => {
-            if let Some(&target) = ft.fn_constants.get(closure) {
+            if let Some(target) = ft.known_fn(closure) {
                 let target_fn = module.fn_by_id(target);
                 let np = target_fn.block(target_fn.entry).params.len();
                 let ad: Vec<Ty> = args

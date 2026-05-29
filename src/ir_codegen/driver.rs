@@ -171,7 +171,7 @@ fn augment_reachable_for_codegen_bodies<
                     continuation,
                     ..
                 } => {
-                    if let Some(&target) = ft.fn_constants.get(closure) {
+                    if let Some(target) = ft.known_fn(closure) {
                         push_reachable_spec(
                             t,
                             spec_registry,
@@ -194,7 +194,7 @@ fn augment_reachable_for_codegen_bodies<
                     let _ = continuation;
                 }
                 Term::TailCallClosure { closure, args, .. } => {
-                    if let Some(&target) = ft.fn_constants.get(closure) {
+                    if let Some(target) = ft.known_fn(closure) {
                         push_reachable_spec(
                             t,
                             spec_registry,
@@ -2008,7 +2008,6 @@ pub(crate) fn compile_with_backend_impl<
     t: &mut T,
     module: &Module,
     mut backend: B,
-    pre_types: Option<&crate::ir_planner::ModulePlan>,
     tel: &dyn crate::telemetry::Telemetry,
 ) -> Result<B::Output, CodegenError> {
     if let Some(edge) = module.external_call_edges.first() {
@@ -2047,28 +2046,31 @@ pub(crate) fn compile_with_backend_impl<
     // Run the typer ahead of codegen so per-fn Var->type info is
     // available during lowering.
     let mut working = module.clone();
-    let owned_pre_types;
-    let pre_types = match pre_types {
-        Some(pre_types) => pre_types,
-        None => {
-            owned_pre_types = crate::ir_planner::plan_module(t, &working, tel);
-            &owned_pre_types
-        }
-    };
     // Lower known-target CallClosure / TailCallClosure to direct
-    // Call / TailCall. After this, the final plan_module sees direct
-    // dispatch where the closure-stub used to live, allowing the
-    // any-key drop logic to remove the now-dead any-key.
+    // Call / TailCall, then erase any module-constant zero-capture closure
+    // that now survives only as a threaded value (its entry-param slots,
+    // matching call args, continuation captures, and the dead MakeClosure).
+    // After this, the final plan_module sees direct dispatch where the
+    // closure-stub used to live, and the erased lambda is no longer a
+    // closure-target — so the inliner below splices it and the lazy-cont
+    // gate sees a closure-free frame.
     //
-    // Reuses `pre_types`: `fn_constants` tracks Vars bound to
-    // `Prim::Const(Value::Fn)` / `Prim::MakeClosure`, neither of which
-    // is touched, so a re-type would produce the same `fn_constants`.
-    crate::ir_planner::rewrite_known_target_closures(t, &mut working, pre_types);
+    // Reads a plan for the linked working module, so provider-library entry
+    // params can carry interprocedural `KnownFn` capabilities — the shallow
+    // `_pre_types` handed in by the pretyped entry points cannot see linked
+    // bodies, so this re-plans `working` itself. It is an internal intermediate
+    // plan, NOT the authoritative codegen plan (that is `module_plan` below), so
+    // it is telemetry-silent — exactly like the post-destination retype. The
+    // pretyped path therefore still reports exactly two `planner.planned`
+    // events (the frontend plan plus `module_plan`).
+    let rewrite_types =
+        crate::ir_planner::plan_module(t, &working, &crate::telemetry::NullTelemetry);
+    crate::ir_planner::rewrite_known_target_closures(t, &mut working, &rewrite_types);
     #[cfg(not(test))]
-    crate::ir_inline::inline_module(&mut working);
+    crate::ir_inline::inline_module_with_plan(&mut working, &rewrite_types);
     #[cfg(test)]
     if !INLINE_DISABLED.with(|d| d.get()) {
-        crate::ir_inline::inline_module(&mut working);
+        crate::ir_inline::inline_module_with_plan(&mut working, &rewrite_types);
     }
     crate::ir_fuse::fuse_blocks_with_telemetry(&mut working, tel);
     // Compile-time reducer pass. Folds calls whose return is statically

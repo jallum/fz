@@ -247,6 +247,7 @@ pub(crate) fn emit_terminator<
     frame_ptr: Option<ir::Value>,
     host_ctx: Option<ir::Value>,
     cont_param: Option<ir::Value>,
+    var_types: &HashMap<crate::fz_ir::Var, crate::types::Ty>,
     block_env: Option<&HashMap<crate::fz_ir::Var, crate::types::Ty>>,
 ) -> Result<(), CodegenError> {
     match &blk.terminator {
@@ -263,6 +264,7 @@ pub(crate) fn emit_terminator<
             t,
             env,
             var_env,
+            var_types,
             block_env,
             is_native,
             is_cont_fn,
@@ -461,6 +463,7 @@ fn emit_return_term<
     t: &mut T,
     env: &CodegenEnv<'_>,
     var_env: &HashMap<u32, CodegenValue>,
+    var_types: &HashMap<crate::fz_ir::Var, crate::types::Ty>,
     block_env: Option<&HashMap<crate::fz_ir::Var, crate::types::Ty>>,
     is_native: bool,
     is_cont_fn: bool,
@@ -514,7 +517,10 @@ fn emit_return_term<
                 let mut cont_args = Vec::with_capacity(fields.len() + 1);
                 for field in fields {
                     let binding = *var_env.get(&field.0).expect("unbound tuple return field");
-                    let repr = binding.repr();
+                    let repr = var_types
+                        .get(&field)
+                        .map(|ty| ArgRepr::from_ty(t, ty))
+                        .unwrap_or_else(|| binding.repr());
                     push_repr_param(&mut sig, repr);
                     body.push_binding_as_abi_arg(&mut cont_args, binding, repr);
                 }
@@ -843,12 +849,7 @@ fn emit_native_call_with_cont<
         .blocks
         .iter()
         .flat_map(|block| block.params.iter())
-        .any(|param| {
-            fn_types
-                .vars
-                .get(param)
-                .is_some_and(|ty| t.callable_clauses(ty).is_some())
-        });
+        .any(|param| var_has_runtime_callable_state(t, fn_types, *param, fn_types.vars.get(param)));
     let cont_can_use_lazy_descriptor = !closure_n_captures.contains_key(callee)
         && !cont_captures_callable
         && !caller_has_callable_state;
@@ -960,6 +961,24 @@ fn emit_native_call_with_cont<
         }
         body.store_typed_args_into_callee_frame(cont_schema, cf, &payload, 1);
         body.b.ins().return_(&[cf]);
+    }
+}
+
+fn var_has_runtime_callable_state<
+    T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
+>(
+    t: &mut T,
+    fn_types: &crate::ir_planner::SpecPlan,
+    var: crate::fz_ir::Var,
+    ty: Option<&crate::types::Ty>,
+) -> bool {
+    match fn_types.callable_capabilities.get(&var) {
+        Some(crate::ir_planner::fn_types::CallableCapability::KnownFn(_)) => false,
+        Some(
+            crate::ir_planner::fn_types::CallableCapability::KnownClosure { .. }
+            | crate::ir_planner::fn_types::CallableCapability::OpaqueCallable,
+        ) => true,
+        None => ty.is_some_and(|ty| t.callable_clauses(ty).is_some()),
     }
 }
 

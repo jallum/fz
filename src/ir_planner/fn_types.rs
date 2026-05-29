@@ -1,4 +1,4 @@
-use crate::fz_ir::{CallsiteId, EmitSlot, FnId, FnIr, Module};
+use crate::fz_ir::{CallsiteId, EmitSlot, FnId, FnIr, Module, Var};
 use std::collections::HashMap;
 
 #[derive(Debug, Clone, Default)]
@@ -9,10 +9,11 @@ pub struct SpecPlan {
     pub vars: HashMap<crate::fz_ir::Var, crate::types::Ty>,
     /// Entry env per block, with branch narrowing applied at If terminators.
     pub block_envs: HashMap<crate::fz_ir::BlockId, HashMap<crate::fz_ir::Var, crate::types::Ty>>,
-    /// Vars known to hold a specific top-level fn identity from
-    /// zero-capture `MakeClosure(F, [])`. The type token carries no FnId
-    /// identity, so direct-call specialization keeps this side-channel.
-    pub fn_constants: HashMap<crate::fz_ir::Var, FnId>,
+    /// Vars known to hold callable values, separated by capability instead of
+    /// representation. A zero-capture closure is callable as a known fn, while
+    /// captured or opaque callables still carry runtime-state/boundary facts for
+    /// later consumers.
+    pub callable_capabilities: HashMap<crate::fz_ir::Var, CallableCapability>,
     /// Blocks provably reachable from the entry under the inferred types.
     /// If terminators whose condition is a singleton bool prune the dead
     /// branch. Used by `compute_return_for_spec` to ignore returns that
@@ -37,7 +38,32 @@ pub struct SpecPlan {
     pub extern_marshals: HashMap<crate::fz_ir::ExternMarshalSite, crate::fz_ir::ExternTy>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CallableCapability {
+    KnownFn(FnId),
+    KnownClosure {
+        fn_id: FnId,
+        captures: Vec<crate::types::Ty>,
+    },
+    OpaqueCallable,
+}
+
+impl CallableCapability {
+    pub fn known_fn(&self) -> Option<FnId> {
+        match self {
+            CallableCapability::KnownFn(fid) => Some(*fid),
+            CallableCapability::KnownClosure { .. } | CallableCapability::OpaqueCallable => None,
+        }
+    }
+}
+
 impl SpecPlan {
+    pub fn known_fn(&self, var: &Var) -> Option<FnId> {
+        self.callable_capabilities
+            .get(var)
+            .and_then(CallableCapability::known_fn)
+    }
+
     pub fn local_call_target(&self, callsite: &crate::fz_ir::CallsiteId) -> Option<&SpecKey> {
         self.call_edges
             .get(callsite)
@@ -114,11 +140,14 @@ pub struct ModulePlan {
     pub any_key_specs: HashMap<FnId, Vec<crate::types::KeySlot>>,
     /// Stable per-family precedence for specialization selection.
     pub spec_precedence: HashMap<SpecKey, u32>,
-    /// Per-spec summary of effects that are relevant to return-demand
-    /// scheduling. Allocation is tracked separately from externally
-    /// observable barriers so demand selection can move allocation only when
-    /// no runtime-visible operation can observe the move.
-    pub effect_summaries: HashMap<SpecKey, EffectSummary>,
+    /// Per-FnId summary of effects relevant to return-demand scheduling.
+    /// Allocation is tracked separately from externally observable barriers
+    /// so demand selection can move allocation only when no runtime-visible
+    /// operation can observe the move. Computed once over the static call
+    /// graph (a function's effects do not depend on what the caller wants
+    /// back), so the destination-planning barrier reads one cached fact
+    /// instead of re-walking bodies on demand.
+    pub fn_effects: FnEffects,
     /// Per-If dead-branch facts under cross-spec consensus.
     /// Populated at the end of `plan_module` by `compute_dead_branches`.
     /// Keyed by `(FnId, BlockId)` where the block ends in a `Term::If`;
@@ -149,11 +178,20 @@ pub struct EffectSummary {
     pub scheduler_visible: bool,
     /// May halt/abort instead of returning normally.
     pub halts: bool,
+    /// Reaches a call through a value whose target is not statically known
+    /// (a closure call). Conservatively a barrier: the callee's effects are
+    /// invisible, so return-context motion across it is unsafe until the
+    /// target is resolved (see fz-w34.2).
+    pub calls_opaque: bool,
 }
 
 impl EffectSummary {
     pub fn blocks_return_context_motion(self) -> bool {
-        self.observable || self.reads_allocation_stats || self.scheduler_visible || self.halts
+        self.observable
+            || self.reads_allocation_stats
+            || self.scheduler_visible
+            || self.halts
+            || self.calls_opaque
     }
 
     pub fn union_with(&mut self, other: EffectSummary) -> bool {
@@ -163,6 +201,7 @@ impl EffectSummary {
         self.reads_allocation_stats |= other.reads_allocation_stats;
         self.scheduler_visible |= other.scheduler_visible;
         self.halts |= other.halts;
+        self.calls_opaque |= other.calls_opaque;
         *self != before
     }
 }
@@ -175,6 +214,7 @@ impl From<crate::ir_effects::IrEffects> for EffectSummary {
             reads_allocation_stats: effects.observes_allocation,
             scheduler_visible: effects.scheduler_boundary,
             halts: effects.halts,
+            calls_opaque: effects.calls_opaque,
         }
     }
 }
@@ -600,10 +640,16 @@ pub(crate) fn display_return_context_plan<
     }
 }
 
+/// Per-FnId effect facts. Keyed by `FnId` because a function's effects are a
+/// property of its body and call graph, independent of any caller's return
+/// demand. Consumed by the destination-planning barrier and exposed on
+/// `ModulePlan` for downstream passes.
+pub type FnEffects = HashMap<FnId, EffectSummary>;
+
 /// Worklist-internal aliases for repeated index shapes.
 pub(crate) type SpecKeySet = std::collections::HashSet<SpecKey>;
 pub(crate) type ReturnReaders = HashMap<SpecKey, SpecKeySet>;
-pub(crate) type CallsiteFnConsts = HashMap<SpecKey, Vec<Option<FnId>>>;
+pub(crate) type CallsiteCallableCapabilities = HashMap<SpecKey, Vec<Option<CallableCapability>>>;
 pub(crate) type EmitterSiteSet = std::collections::HashSet<EmitterSite>;
 pub(crate) type HoldersMap = HashMap<SpecKey, EmitterSiteSet>;
 pub(crate) type EmitsByCaller = HashMap<SpecKey, EmitterSiteSet>;

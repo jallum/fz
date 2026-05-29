@@ -287,9 +287,19 @@ fn interp_allocation_pressure_yields_before_budget_exhaustion() {
         task.allocation_pressure_yields > 0,
         "allocation pressure should have its own cause-specific counter"
     );
+    // fz-mif: an allocation-pressure yield banks only the reductions genuinely
+    // burned before the budget was force-zeroed — never a phantom full quantum.
+    // This tiny program trips pressure once, early in the quantum, so the
+    // banked count is positive but strictly below a quantum. The pre-fz-mif
+    // over-count credited a whole quantum per pressure yield; these two bounds
+    // pin the honest accounting against regression in either direction.
     assert!(
-        task.reductions_executed >= task.reductions_per_quantum as u64,
-        "allocation pressure should expire the same reductions budget that back edges spend"
+        task.reductions_executed > 0,
+        "allocation pressure should still bank the reductions genuinely burned"
+    );
+    assert!(
+        task.reductions_executed < task.reductions_per_quantum as u64,
+        "allocation pressure must not credit a phantom full quantum"
     );
 }
 
