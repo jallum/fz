@@ -1892,50 +1892,9 @@ mod tests {
             .finish(settings::Flags::new(flag_builder))
             .expect("isa finish");
         let mut builder = JITBuilder::with_isa(isa, cranelift_module::default_libcall_names());
-        builder.symbol(
-            "fz_struct_get_field_ref",
-            fz_runtime::ir_runtime::fz_struct_get_field_ref as *const u8,
-        );
-        builder.symbol(
-            "fz_type_of",
-            fz_runtime::ir_runtime::fz_type_of as *const u8,
-        );
-        builder.symbol(
-            "fz_unbox_int",
-            fz_runtime::ir_runtime::fz_unbox_int as *const u8,
-        );
-        builder.symbol(
-            "fz_unbox_float",
-            fz_runtime::ir_runtime::fz_unbox_float as *const u8,
-        );
-        builder.symbol(
-            "fz_unbox_atom",
-            fz_runtime::ir_runtime::fz_unbox_atom as *const u8,
-        );
-        builder.symbol(
-            "fz_struct_schema_id_ref",
-            fz_runtime::ir_runtime::fz_struct_schema_id_ref as *const u8,
-        );
-        builder.symbol(
-            "fz_truthy_ref",
-            fz_runtime::ir_runtime::fz_truthy_ref as *const u8,
-        );
-        builder.symbol(
-            "fz_value_eq_ref",
-            fz_runtime::ir_runtime::fz_value_eq_ref as *const u8,
-        );
-        builder.symbol(
-            "fz_box_int_for_any",
-            fz_runtime::ir_runtime::fz_box_int_for_any as *const u8,
-        );
-        builder.symbol(
-            "fz_box_float_for_any",
-            fz_runtime::ir_runtime::fz_box_float_for_any as *const u8,
-        );
-        builder.symbol(
-            "fz_box_atom_for_any",
-            fz_runtime::ir_runtime::fz_box_atom_for_any as *const u8,
-        );
+        // Production symbol registration — keep the test linker in lockstep with
+        // the real JIT so signatures can't drift (tests use production code).
+        crate::ir_codegen::backend::register_runtime_symbols(&mut builder);
         (JITModule::new(builder), FunctionBuilderContext::new())
     }
 
@@ -2021,79 +1980,11 @@ mod tests {
         name: &str,
     ) -> MatcherAbi {
         let fid = declare_matcher(jmod, name).expect("declare matcher");
-        let mut sig = jmod.make_signature();
-        sig.params.push(AbiParam::new(types::I64)); // process
-        sig.params.push(AbiParam::new(types::I64));
-        sig.params.push(AbiParam::new(types::I32));
-        sig.returns.push(AbiParam::new(types::I64));
-        let struct_get_field_id = jmod
-            .declare_function("fz_struct_get_field_ref", Linkage::Import, &sig)
-            .expect("declare fz_struct_get_field_ref");
-        let mut type_of_sig = jmod.make_signature();
-        type_of_sig.params.push(AbiParam::new(types::I64));
-        type_of_sig.returns.push(AbiParam::new(types::I8));
-        let type_of_id = jmod
-            .declare_function("fz_type_of", Linkage::Import, &type_of_sig)
-            .expect("declare fz_type_of");
-        let mut unbox_int_sig = jmod.make_signature();
-        unbox_int_sig.params.push(AbiParam::new(types::I64));
-        unbox_int_sig.returns.push(AbiParam::new(types::I64));
-        let unbox_int_id = jmod
-            .declare_function("fz_unbox_int", Linkage::Import, &unbox_int_sig)
-            .expect("declare fz_unbox_int");
-        let mut unbox_float_sig = jmod.make_signature();
-        unbox_float_sig.params.push(AbiParam::new(types::I64));
-        unbox_float_sig.returns.push(AbiParam::new(types::F64));
-        let unbox_float_id = jmod
-            .declare_function("fz_unbox_float", Linkage::Import, &unbox_float_sig)
-            .expect("declare fz_unbox_float");
-        let mut unbox_atom_sig = jmod.make_signature();
-        unbox_atom_sig.params.push(AbiParam::new(types::I64));
-        unbox_atom_sig.returns.push(AbiParam::new(types::I64));
-        let unbox_atom_id = jmod
-            .declare_function("fz_unbox_atom", Linkage::Import, &unbox_atom_sig)
-            .expect("declare fz_unbox_atom");
-        let mut struct_schema_sig = jmod.make_signature();
-        struct_schema_sig.params.push(AbiParam::new(types::I64));
-        struct_schema_sig.returns.push(AbiParam::new(types::I32));
-        let struct_schema_id = jmod
-            .declare_function(
-                "fz_struct_schema_id_ref",
-                Linkage::Import,
-                &struct_schema_sig,
-            )
-            .expect("declare fz_struct_schema_id_ref");
-        let mut truthy_sig = jmod.make_signature();
-        truthy_sig.params.push(AbiParam::new(types::I64));
-        truthy_sig.returns.push(AbiParam::new(types::I8));
-        let truthy_id = jmod
-            .declare_function("fz_truthy_ref", Linkage::Import, &truthy_sig)
-            .expect("declare fz_truthy_ref");
-        let mut value_eq_sig = jmod.make_signature();
-        value_eq_sig.params.push(AbiParam::new(types::I64));
-        value_eq_sig.params.push(AbiParam::new(types::I64));
-        value_eq_sig.returns.push(AbiParam::new(types::I64));
-        let value_eq_id = jmod
-            .declare_function("fz_value_eq_ref", Linkage::Import, &value_eq_sig)
-            .expect("declare fz_value_eq_ref");
-        let mut box_int_sig = jmod.make_signature();
-        box_int_sig.params.push(AbiParam::new(types::I64));
-        box_int_sig.returns.push(AbiParam::new(types::I64));
-        let box_int_for_any_id = jmod
-            .declare_function("fz_box_int_for_any", Linkage::Import, &box_int_sig)
-            .expect("declare fz_box_int_for_any");
-        let mut box_float_sig = jmod.make_signature();
-        box_float_sig.params.push(AbiParam::new(types::F64));
-        box_float_sig.returns.push(AbiParam::new(types::I64));
-        let box_float_for_any_id = jmod
-            .declare_function("fz_box_float_for_any", Linkage::Import, &box_float_sig)
-            .expect("declare fz_box_float_for_any");
-        let mut box_atom_sig = jmod.make_signature();
-        box_atom_sig.params.push(AbiParam::new(types::I64));
-        box_atom_sig.returns.push(AbiParam::new(types::I64));
-        let box_atom_for_any_id = jmod
-            .declare_function("fz_box_atom_for_any", Linkage::Import, &box_atom_sig)
-            .expect("declare fz_box_atom_for_any");
+        // Declare the runtime symbols from the production source so the matcher's
+        // helper signatures can never drift from the real pipeline (tests use
+        // production code). Mirrors the MatcherRuntimeHelpers wiring in driver.rs.
+        let runtime = crate::ir_codegen::runtime_syms::declare_runtime_symbols(jmod)
+            .expect("declare runtime symbols");
         emit_matcher_body_from_matcher(
             jmod,
             fbctx,
@@ -2104,26 +1995,26 @@ mod tests {
             clauses,
             matcher,
             &MatcherRuntimeHelpers {
-                value_eq_typed_id: Some(value_eq_id),
-                matcher_eq_bytes_id: None,
-                matcher_map_get_id: None,
-                matcher_map_get_ref_id: None,
-                type_of_id: Some(type_of_id),
-                unbox_int_id: Some(unbox_int_id),
-                unbox_float_id: Some(unbox_float_id),
-                unbox_atom_id: Some(unbox_atom_id),
-                struct_schema_id_ref_id: Some(struct_schema_id),
-                truthy_ref_id: Some(truthy_id),
-                box_int_for_any_id: Some(box_int_for_any_id),
-                box_float_for_any_id: Some(box_float_for_any_id),
-                box_atom_for_any_id: Some(box_atom_for_any_id),
-                map_is_map_id: None,
-                bs_reader_init_id: None,
-                bs_read_field_id: None,
-                struct_get_field_id: Some(struct_get_field_id),
-                list_is_cons_id: None,
-                list_head_id: None,
-                list_tail_id: None,
+                value_eq_typed_id: Some(runtime.value_eq_ref_id),
+                matcher_eq_bytes_id: Some(runtime.matcher_eq_bytes_id),
+                matcher_map_get_id: Some(runtime.matcher_map_get_id),
+                matcher_map_get_ref_id: Some(runtime.matcher_map_get_ref_id),
+                type_of_id: Some(runtime.type_of_id),
+                unbox_int_id: Some(runtime.unbox_int_id),
+                unbox_float_id: Some(runtime.unbox_float_id),
+                unbox_atom_id: Some(runtime.unbox_atom_id),
+                struct_schema_id_ref_id: Some(runtime.struct_schema_id_ref_id),
+                truthy_ref_id: Some(runtime.truthy_ref_id),
+                box_int_for_any_id: Some(runtime.box_int_for_any_id),
+                box_float_for_any_id: Some(runtime.box_float_for_any_id),
+                box_atom_for_any_id: Some(runtime.box_atom_for_any_id),
+                map_is_map_id: Some(runtime.map_is_map_id),
+                bs_reader_init_id: Some(runtime.bs_reader_init_ref_id),
+                bs_read_field_id: Some(runtime.bs_read_field_ref_id),
+                struct_get_field_id: Some(runtime.struct_get_field_id),
+                list_is_cons_id: Some(runtime.list_is_cons_id),
+                list_head_id: Some(runtime.list_head_fallback_id),
+                list_tail_id: Some(runtime.list_tail_fallback_id),
             },
         )
         .expect("emit cached matcher");

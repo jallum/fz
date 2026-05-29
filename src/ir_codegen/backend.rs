@@ -78,7 +78,7 @@ impl JitBackend {
 /// of `JitBackend::new` purely for readability — the list is long and
 /// flat. Grouped by subsystem (debug print/panic, list, struct, bitstring,
 /// map, closure, scheduler, receive, etc.).
-fn register_runtime_symbols(builder: &mut JITBuilder) {
+pub(crate) fn register_runtime_symbols(builder: &mut JITBuilder) {
     builder.symbol(
         "fz_dbg_value_ref",
         fz_runtime::ir_runtime::fz_dbg_value_ref as *const u8,
