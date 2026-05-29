@@ -10,10 +10,10 @@ fn g(v) do
 end
 
 fn main() do
-  dbg(f({:ok, 7}))
-  dbg(f(:err))
-  dbg(f(:err))
-  dbg(f({:ok, 7}))
-  dbg(g({:ok, 7}))
-  dbg(g(:err))
+  assert(f({:ok, 7}) == 7, "case tuple-pattern arm returns the bound value")
+  assert(f(:err) == 0, "case atom fallback returns 0")
+  assert(f(:err) == 0, "sequential call: atom fallback again")
+  assert(f({:ok, 7}) == 7, "sequential call: tuple arm again")
+  assert(g({:ok, 7}) == 7, "with tuple-pattern returns the bound value")
+  assert(g(:err) == 0, "with else atom fallback returns 0")
 end

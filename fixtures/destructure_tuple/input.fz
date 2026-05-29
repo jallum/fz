@@ -2,7 +2,7 @@ fn pair(), do: {1, 2}
 
 fn main() do
   {a, b} = pair()
-  dbg(a)
-  dbg(b)
-  dbg(a + b)
+  assert(a == 1, "first tuple element binds")
+  assert(b == 2, "second tuple element binds")
+  assert(a + b == 3, "bound values are usable in arithmetic")
 end
