@@ -46,9 +46,10 @@ impl Drop for AlignedClosureStorage {
     }
 }
 
-/// Per-task runtime state. One Process per fz-level task; the worker thread
-/// installs `*mut Process` in `CURRENT_PROCESS` for the duration of a run,
-/// and FFI fns reach the running task's state via `current_process()`.
+/// Per-task runtime state. One Process per fz-level task; the scheduler hands
+/// each running task's `*mut Process` to FFI fns explicitly — compiled code via
+/// the pinned register, the interpreter as a threaded parameter — so there is
+/// no ambient current-process.
 ///
 /// libdispatch-style: TLS records the currently-running task's pointer per
 /// worker; a task is owned by exactly one worker at a time (scheduler

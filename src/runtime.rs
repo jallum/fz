@@ -1831,8 +1831,7 @@ fn main(), do: sum(10, 0, nil)";
         // Clear run queue so both tasks are quiescent.
         rt.run_queue.clear();
 
-        // Install CURRENT_PROCESS so send_via can find the sender's heap; the
-        // scheduler handle is passed explicitly.
+        // send_via takes the sender process and the scheduler handle explicitly.
         let rt_ptr = &mut rt as *mut Runtime<'_> as *mut ();
         let sender_ptr = rt.tasks.get_mut(&sender_pid).unwrap().as_mut() as *mut Process;
 

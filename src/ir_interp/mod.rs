@@ -497,8 +497,8 @@ pub fn run_test_fn(
     let mut t = crate::types::ConcreteTypes;
     let result = run_fn(&mut runtime, &mut t, module, tel, fn_id, Vec::new());
     // fz-4mk — shutdown drain mirrors run_main's exit path: enqueue every
-    // surviving resource's dtor and dispatch each as a real fz call while
-    // CURRENT_PROCESS is still pointing at the test task's heap.
+    // surviving resource's dtor and dispatch each as a real fz call. The dtor
+    // helpers reach this task through `runtime.current_proc` (set above).
     unsafe {
         fz_runtime::procbin::mso_drop_all_deferred(&mut (*task_ptr).heap);
     }
