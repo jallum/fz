@@ -2,7 +2,7 @@
 purpose: "defmacro in one module, called from another via `import Helpers, only: [twice: 1]`"
 paths: [jit, interp, aot, repl]
 budget.codegen.functions: 1
-budget.codegen.instructions: 5
+budget.codegen.instructions: 7
 budget.specs.count: 1
 budget.planner.worklist_pops: 1
 budget.planner.walk_calls: 1

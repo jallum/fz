@@ -332,14 +332,19 @@ pub extern "C" fn fz_box_atom_for_any(raw: u64) -> u64 {
 // ===== Halt + print cluster (fz-ul4.23.4.13) =====
 
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_dbg_value_ref(ref_word: u64) {
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn fz_dbg_value_ref(process: *mut Process, ref_word: u64) {
     let value = any_value_from_ref_word(ref_word, "fz_dbg_value_ref");
-    crate::emit_print_line(crate::any_value::debug::render_value(value));
+    crate::emit_print_line(
+        process,
+        crate::any_value::debug::render_value(process, value),
+    );
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_dbg_value(ref_word: u64) -> u64 {
-    fz_dbg_value_ref(ref_word);
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn fz_dbg_value(process: *mut Process, ref_word: u64) -> u64 {
+    fz_dbg_value_ref(process, ref_word);
     ref_word
 }
 

@@ -345,7 +345,7 @@ impl ReplSession {
         self.runtime
             .as_ref()
             .and_then(|runtime| runtime.render_value(value).ok())
-            .unwrap_or_else(|| value.render())
+            .unwrap_or_else(|| value.render(std::ptr::null_mut()))
     }
 }
 

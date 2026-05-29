@@ -101,18 +101,19 @@ impl AnyValue {
         matches!(self, AnyValue::Atom(value) if value == atom_id)
     }
 
-    pub(crate) fn render(self) -> String {
+    pub(crate) fn render(self, proc: *mut fz_runtime::process::Process) -> String {
         match self {
             AnyValue::Null => "null".to_string(),
             AnyValue::Int(value) => value.to_string(),
             AnyValue::Float(value) => value.to_string(),
             AnyValue::Atom(value) => {
-                fz_runtime::any_value::debug::render_value(RuntimeAnyValue::atom(value))
+                fz_runtime::any_value::debug::render_value(proc, RuntimeAnyValue::atom(value))
             }
             AnyValue::EmptyList => {
-                fz_runtime::any_value::debug::render_value(RuntimeAnyValue::empty_list())
+                fz_runtime::any_value::debug::render_value(proc, RuntimeAnyValue::empty_list())
             }
             AnyValue::Ref(value) => fz_runtime::any_value::debug::render_value(
+                proc,
                 RuntimeAnyValue::from_ref(value).unwrap_or(RuntimeAnyValue::null()),
             ),
         }

@@ -55,7 +55,7 @@ pub(super) fn eval_unop(op: UnOp, a: AnyValue) -> Result<AnyValue, String> {
         UnOp::Neg => match a {
             AnyValue::Int(value) => Ok(AnyValue::Int(-value)),
             AnyValue::Float(value) => Ok(AnyValue::Float(-value)),
-            _ => Err(format!("`-` on {}", a.render())),
+            _ => Err(format!("`-` on {}", a.render(std::ptr::null_mut()))),
         },
         UnOp::Not => Ok(interp_bool_value(!is_truthy(a))),
     }

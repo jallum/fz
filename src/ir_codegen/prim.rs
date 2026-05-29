@@ -1123,6 +1123,9 @@ pub(crate) fn lower_prim<
             if decl.symbol == "fz_make_resource" && args.len() == 2 {
                 return lower_extern_fz_make_resource(body, var_env, &arg_vars);
             }
+            if decl.symbol == "fz_dbg_value" && args.len() == 1 {
+                return lower_extern_fz_dbg_value(body, var_env, &arg_vars, dest_var);
+            }
             if decl.variadic {
                 return emit_variadic_extern_call(
                     body,
@@ -1828,18 +1831,45 @@ fn lower_extern_fz_panic<M: cranelift_module::Module>(
     dest_var: crate::fz_ir::Var,
 ) -> Result<LowerOut, CodegenError> {
     let value_ref = body.tagged_var(var_env, args[0].0);
-    let sig = sig1(&[types::I64], &[]);
+    let process = body.process_arg();
+    let sig = sig1(&[types::I64, types::I64], &[]);
     let func_id = body
         .jmod
         .declare_function("fz_panic", Linkage::Import, &sig)
         .map_err(|e| CodegenError::new(format!("declare fz_panic: {}", e)))?;
     let fref = body.jmod.declare_func_in_func(func_id, body.b.func);
-    body.b.ins().call(fref, &[value_ref]);
+    body.b.ins().call(fref, &[process, value_ref]);
     if body.cache.used_vars.contains(&dest_var.0) {
         return Ok(LowerOut::Strict(strict_const_value(
             body.b,
             fz_runtime::any_value::AnyValue::nil_atom(),
         )));
+    }
+    Ok(LowerOut::DeadUnit)
+}
+
+/// `fz_dbg_value(value)`: prints the value and returns it. The runtime BIF
+/// is a process intrinsic (it renders atom names off the process and routes
+/// output through the process's ExecCtx telemetry sink), so the process is
+/// prepended from the pinned register — it is not part of the fz extern decl.
+fn lower_extern_fz_dbg_value<M: cranelift_module::Module>(
+    body: &mut CodegenFn<'_, '_, '_, M>,
+    var_env: &HashMap<u32, CodegenValue>,
+    args: &[crate::fz_ir::Var],
+    dest_var: crate::fz_ir::Var,
+) -> Result<LowerOut, CodegenError> {
+    let value_ref = body.tagged_var(var_env, args[0].0);
+    let process = body.process_arg();
+    let sig = sig1(&[types::I64, types::I64], &[types::I64]);
+    let func_id = body
+        .jmod
+        .declare_function("fz_dbg_value", Linkage::Import, &sig)
+        .map_err(|e| CodegenError::new(format!("declare fz_dbg_value: {}", e)))?;
+    let fref = body.jmod.declare_func_in_func(func_id, body.b.func);
+    let call = body.b.ins().call(fref, &[process, value_ref]);
+    let result = body.b.inst_results(call)[0];
+    if body.cache.used_vars.contains(&dest_var.0) {
+        return Ok(LowerOut::Strict(CodegenValue::AnyRef(result)));
     }
     Ok(LowerOut::DeadUnit)
 }

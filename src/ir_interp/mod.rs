@@ -385,7 +385,10 @@ impl IrInterpRuntime {
         arity: usize,
     ) -> Result<Vec<AnyValue>, String> {
         let AnyValue::Ref(value_ref) = value else {
-            return Err(format!("expected tuple ref, got {}", value.render()));
+            return Err(format!(
+                "expected tuple ref, got {}",
+                value.render(std::ptr::null_mut())
+            ));
         };
         if value_ref.tag() != fz_runtime::any_value::ValueKind::STRUCT {
             return Err(format!("expected tuple struct, got {:?}", value));
@@ -408,10 +411,7 @@ impl IrInterpRuntime {
             .get(&pid)
             .ok_or_else(|| format!("render_value: unknown pid {}", pid))?;
         let proc_ptr = task.as_ref() as *const Process as *mut Process;
-        let prev = fz_runtime::process::CURRENT_PROCESS.with(|c| c.replace(proc_ptr));
-        let rendered = value.render();
-        fz_runtime::process::CURRENT_PROCESS.with(|c| c.set(prev));
-        Ok(rendered)
+        Ok(value.render(proc_ptr))
     }
 }
 

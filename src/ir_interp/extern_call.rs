@@ -129,7 +129,7 @@ pub(super) fn call_extern<T: Types<Ty = crate::types::Ty>>(
             if args.len() != 1 {
                 return Err(format!("fz_panic/1 got {} args", args.len()));
             }
-            return Err(format!("fz panic: {}", args[0].render()));
+            return Err(format!("fz panic: {}", args[0].render(runtime.cur_proc())));
         }
         "fz_process_heap_alloc_stats" => {
             if !args.is_empty() {
@@ -204,6 +204,19 @@ pub(super) fn call_extern<T: Types<Ty = crate::types::Ty>>(
             }
             return Ok(args[0]);
         }
+        // dbg/print is a process intrinsic: the runtime BIF renders atom
+        // names off the process and routes output through the process's
+        // ExecCtx telemetry sink, so the interp calls it with its own
+        // running process rather than through the generic 1-arg FFI path
+        // (whose arity no longer matches the widened BIF ABI).
+        "fz_dbg_value" => {
+            if args.len() != 1 {
+                return Err(format!("fz_dbg_value/1 got {} args", args.len()));
+            }
+            let ref_word = args[0].extern_arg_ref_word()?;
+            let out = fz_runtime::ir_runtime::fz_dbg_value(runtime.cur_proc(), ref_word);
+            return interp_value_from_extern_ref_word(out);
+        }
         _ => {}
     }
     if decl.variadic {
@@ -259,8 +272,10 @@ pub(super) fn resolve_symbol(name: &str) -> Result<*const (), String> {
         return Ok(fp);
     }
     let native: Option<*const ()> = match name {
-        "fz_dbg_value" => Some(fz_runtime::ir_runtime::fz_dbg_value as *const ()),
-        "fz_panic" => Some(fz_runtime::fz_panic as *const ()),
+        // fz_dbg_value / fz_panic are process intrinsics special-cased in
+        // call_extern above; their widened BIF ABI (leading process arg) no
+        // longer matches the generic FFI path, so they must never be resolved
+        // as plain symbols here.
         "fz_process_heap_alloc_stats" => {
             Some(fz_runtime::ir_runtime::fz_process_heap_alloc_stats as *const ())
         }

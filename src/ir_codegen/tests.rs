@@ -1153,37 +1153,54 @@ fn main(), do: count(100000, 0)
 #[test]
 fn render_any_value_dispatches_per_tag() {
     assert_eq!(
-        fz_runtime::any_value::debug::render_value(fz_runtime::any_value::AnyValue::int(42)),
+        fz_runtime::any_value::debug::render_value(
+            std::ptr::null_mut(),
+            fz_runtime::any_value::AnyValue::int(42)
+        ),
         "42"
     );
     assert_eq!(
-        fz_runtime::any_value::debug::render_value(fz_runtime::any_value::AnyValue::int(0)),
+        fz_runtime::any_value::debug::render_value(
+            std::ptr::null_mut(),
+            fz_runtime::any_value::AnyValue::int(0)
+        ),
         "0"
     );
     assert_eq!(
-        fz_runtime::any_value::debug::render_value(fz_runtime::any_value::AnyValue::int(-7)),
+        fz_runtime::any_value::debug::render_value(
+            std::ptr::null_mut(),
+            fz_runtime::any_value::AnyValue::int(-7)
+        ),
         "-7"
     );
     assert_eq!(
-        fz_runtime::any_value::debug::render_value(fz_runtime::any_value::AnyValue::nil_atom()),
+        fz_runtime::any_value::debug::render_value(
+            std::ptr::null_mut(),
+            fz_runtime::any_value::AnyValue::nil_atom()
+        ),
         "nil"
     );
     assert_eq!(
-        fz_runtime::any_value::debug::render_value(fz_runtime::any_value::AnyValue::bool_atom(
-            true
-        )),
+        fz_runtime::any_value::debug::render_value(
+            std::ptr::null_mut(),
+            fz_runtime::any_value::AnyValue::bool_atom(true)
+        ),
         "true"
     );
     assert_eq!(
-        fz_runtime::any_value::debug::render_value(fz_runtime::any_value::AnyValue::bool_atom(
-            false
-        )),
+        fz_runtime::any_value::debug::render_value(
+            std::ptr::null_mut(),
+            fz_runtime::any_value::AnyValue::bool_atom(false)
+        ),
         "false"
     );
     // Empty Process.atom_names: render falls back to `:atom_N`. The
     // source-name path is verified end-to-end by the fixture matrix.
     assert_eq!(
-        fz_runtime::any_value::debug::render_value(fz_runtime::any_value::AnyValue::atom(3)),
+        fz_runtime::any_value::debug::render_value(
+            std::ptr::null_mut(),
+            fz_runtime::any_value::AnyValue::atom(3)
+        ),
         ":atom_3"
     );
 }
