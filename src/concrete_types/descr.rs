@@ -1153,6 +1153,75 @@ impl Descr {
         self == other || (self.is_subtype(other) && other.is_subtype(self))
     }
 
+    /// fz-bsx.1 — discharge every brand and opaque tag to its underlying
+    /// representation type, recursively through nested structural positions.
+    /// The result is the *runtime representation* of `self`: what the machine
+    /// actually sees once `ir_brand_erase` has stripped the zero-cost brand /
+    /// opaque wrappers and `fz_value_eq` compares by structure / bytes.
+    ///
+    /// This is the model in which runtime equality and pattern matching are
+    /// decided — both are brand-blind. It is the deliberate counterpart of
+    /// `is_subtype` / `intersect` (brand-AWARE), which answer typing /
+    /// dispatch / boundary questions where brands must still count.
+    ///
+    /// A minted brand value is a *pure tag* (`brands = {B}`, all structural
+    /// axes empty — see `brand_of`), so a tag must be *replaced* by its inner
+    /// (`brand_inners[B]`), not merely cleared — clearing would collapse it to
+    /// `none`. Unknown tags and cofinite ("any brand") axes over-approximate
+    /// to `any()`, so the erased set is never too small; `value_disjoint`
+    /// then errs toward "not disjoint" and never folds a comparison unsoundly.
+    #[allow(dead_code)] // fz-bsx.2/.3 wire this into the reducer + codegen folds.
+    pub(crate) fn erase_nominal(
+        &self,
+        brand_inners: &std::collections::HashMap<String, Descr>,
+        opaque_inners: &std::collections::HashMap<String, Descr>,
+    ) -> Descr {
+        let mut d = self.clone();
+        let brands = std::mem::replace(&mut d.brands, LiteralSet::none());
+        let opaques = std::mem::replace(&mut d.opaques, LiteralSet::none());
+        for (tags, inners) in [(&brands, brand_inners), (&opaques, opaque_inners)] {
+            if tags.is_none() {
+                continue;
+            }
+            if tags.cofinite {
+                // "Any brand" (or a cofinite exclusion): the represented set
+                // spans every underlying type. Over-approximate to `any()`.
+                d = d.union(&Descr::any());
+                continue;
+            }
+            for tag in &tags.set {
+                match inners.get(tag) {
+                    Some(inner) => {
+                        d = d.union(&inner.erase_nominal(brand_inners, opaque_inners));
+                    }
+                    // Unknown tag: be conservative rather than collapse to none.
+                    None => d = d.union(&Descr::any()),
+                }
+            }
+        }
+        // Recurse into nested input positions (tuple elems, list elem, arrow
+        // args/ret, map values, resource payload) so a brand nested inside a
+        // tuple — the original fz-bsx failure — is discharged too.
+        d.map_recursive_spec_key_inputs(&|x| x.erase_nominal(brand_inners, opaque_inners))
+    }
+
+    /// fz-bsx.1 — true iff no two runtime values of these types can ever be
+    /// equal / match: disjointness in the brand-erased (representation) model.
+    /// This is the ONLY disjointness that may authorize folding `==`/`!=` to a
+    /// constant or pruning a pattern arm. Contrast `intersect(..).is_empty()`
+    /// (brand-aware) used for typing decisions.
+    #[allow(dead_code)] // fz-bsx.2/.3 wire this into the reducer + codegen folds.
+    pub(crate) fn value_disjoint(
+        &self,
+        other: &Descr,
+        brand_inners: &std::collections::HashMap<String, Descr>,
+        opaque_inners: &std::collections::HashMap<String, Descr>,
+    ) -> bool {
+        self.erase_nominal(brand_inners, opaque_inners)
+            .intersect(&other.erase_nominal(brand_inners, opaque_inners))
+            .is_empty()
+    }
+
     pub(super) fn is_empty_memo(&self, memo: &mut Memo) -> bool {
         if memo.in_flight.contains(self) {
             // Coinductive assumption: re-entering the same query along this

@@ -1018,6 +1018,93 @@ fn brand_inners(items: &[(&str, Descr)]) -> std::collections::HashMap<String, De
         .collect()
 }
 
+fn no_inners() -> std::collections::HashMap<String, Descr> {
+    std::collections::HashMap::new()
+}
+
+// fz-bsx.1 — brand-erased (runtime representation) disjointness.
+
+#[test]
+fn erase_nominal_discharges_brand_to_inner() {
+    // A minted brand is a pure tag (basic empty); erasure must REPLACE it
+    // with its inner, not clear it (clearing would collapse to `none`).
+    let inners = brand_inners(&[("utf8", Descr::str_t())]);
+    let utf8 = Descr::brand_of("utf8");
+    assert!(utf8.intersect(&Descr::str_t()).is_empty(), "pure tag ∩ binary is empty (the bug)");
+    assert!(
+        utf8.erase_nominal(&inners, &no_inners()).is_equiv(&Descr::str_t()),
+        "erase(utf8) must be binary",
+    );
+}
+
+#[test]
+fn value_disjoint_utf8_vs_binary_is_false() {
+    // The core fix: a utf8 and an unbranded binary can be byte-equal.
+    let inners = brand_inners(&[("utf8", Descr::str_t())]);
+    let utf8 = Descr::brand_of("utf8");
+    assert!(
+        utf8.intersect(&Descr::str_t()).is_empty(),
+        "brand-AWARE: disjoint (correct for typing)",
+    );
+    assert!(
+        !utf8.value_disjoint(&Descr::str_t(), &inners, &no_inners()),
+        "brand-BLIND: NOT disjoint — `==` must run",
+    );
+}
+
+#[test]
+fn value_disjoint_nested_in_tuple_is_false() {
+    // The original failure: {:ok, utf8} vs {:ok, binary} nested.
+    let inners = brand_inners(&[("utf8", Descr::str_t())]);
+    let lhs = Descr::tuple_of([Descr::atom_lit("ok"), Descr::brand_of("utf8")]);
+    let rhs = Descr::tuple_of([Descr::atom_lit("ok"), Descr::str_t()]);
+    assert!(
+        lhs.intersect(&rhs).is_empty(),
+        "brand-AWARE: the nested brand makes the tuple clauses disjoint (the bug)",
+    );
+    assert!(
+        !lhs.value_disjoint(&rhs, &inners, &no_inners()),
+        "brand-BLIND: erasure recurses into the tuple — NOT disjoint",
+    );
+}
+
+#[test]
+fn value_disjoint_utf8_vs_int_is_true() {
+    // Soundness: erasure must NOT over-collapse. A binary is never an int,
+    // so a utf8 is never == an int; the fold here is still legitimate.
+    let inners = brand_inners(&[("utf8", Descr::str_t())]);
+    let utf8 = Descr::brand_of("utf8");
+    assert!(
+        utf8.value_disjoint(&Descr::int(), &inners, &no_inners()),
+        "utf8 vs int stays value-disjoint",
+    );
+}
+
+#[test]
+fn value_disjoint_distinct_atoms_is_true() {
+    // Structural disjointness survives erasure (erasure only neutralises
+    // the nominal axes): :ok vs :error is still definitely unequal.
+    assert!(
+        Descr::atom_lit("ok").value_disjoint(
+            &Descr::atom_lit("error"),
+            &no_inners(),
+            &no_inners(),
+        ),
+        ":ok vs :error remains value-disjoint",
+    );
+}
+
+#[test]
+fn differs_only_nominally_holds_for_brand_vs_unbranded() {
+    // The exact telemetry-delta set: brand-aware-disjoint yet not
+    // value-disjoint — the comparisons the old fold silently broke.
+    let inners = brand_inners(&[("utf8", Descr::str_t())]);
+    let utf8 = Descr::brand_of("utf8");
+    let aware_disjoint = utf8.intersect(&Descr::str_t()).is_empty();
+    let value_disjoint = utf8.value_disjoint(&Descr::str_t(), &inners, &no_inners());
+    assert!(aware_disjoint && !value_disjoint, "this is the delta the fold broke");
+}
+
 #[test]
 fn is_subtype_under_discharges_brand_when_inner_fits() {
     // utf8 :: refines binary. A value typed `brands={utf8} ∧ str_t`

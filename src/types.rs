@@ -184,7 +184,36 @@ pub trait Types {
     fn is_empty(&self, a: &Self::Ty) -> bool;
     fn is_top(&self, a: &Self::Ty) -> bool;
     fn is_subtype(&self, a: &Self::Ty, b: &Self::Ty) -> bool;
+    /// Brand-AWARE disjointness — the typing/dispatch/boundary question.
+    /// NEVER use this to decide whether two runtime values can be equal or
+    /// whether a pattern can match; use `is_value_disjoint` for that.
     fn is_disjoint(&self, a: &Self::Ty, b: &Self::Ty) -> bool;
+    /// fz-bsx.1 — brand-BLIND disjointness in the runtime-representation
+    /// model: true iff no two runtime values of `a`/`b` can ever be equal /
+    /// match. The ONLY disjointness that may authorize folding `==`/`!=` or
+    /// pruning a pattern arm. Tags are discharged via the inner-type maps.
+    #[allow(dead_code)] // fz-bsx.2/.3 wire this into the reducer + codegen folds.
+    fn is_value_disjoint(
+        &self,
+        a: &Self::Ty,
+        b: &Self::Ty,
+        brand_inners: &HashMap<String, Self::Ty>,
+        opaque_inners: &HashMap<String, Self::Ty>,
+    ) -> bool;
+    /// fz-bsx.1 — true iff `a`/`b` are brand-AWARE disjoint yet NOT
+    /// value-disjoint: i.e. they differ only by a brand/opaque the runtime
+    /// erases. This is exactly the set of comparisons the old brand-aware
+    /// fold broke; consumers emit a telemetry signal on it.
+    #[allow(dead_code)] // fz-bsx.2/.3 wire this into the reducer + codegen folds.
+    fn differs_only_nominally(
+        &self,
+        a: &Self::Ty,
+        b: &Self::Ty,
+        brand_inners: &HashMap<String, Self::Ty>,
+        opaque_inners: &HashMap<String, Self::Ty>,
+    ) -> bool {
+        self.is_disjoint(a, b) && !self.is_value_disjoint(a, b, brand_inners, opaque_inners)
+    }
     fn is_equivalent(&self, a: &Self::Ty, b: &Self::Ty) -> bool;
 
     /// Count top-level named type vars across a spec key. Used by
