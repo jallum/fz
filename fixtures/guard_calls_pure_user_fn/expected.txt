@@ -1,3 +1,0 @@
-:pos
-:other
-:other

@@ -62,7 +62,7 @@ conversion arc):
 `multi_clause_body_with_call`, `destructure_tuple`, `destructure_cons`,
 `destructure_mixed`, `case_tuple_pattern_sequential`, `mutual_recursion`,
 `tail_recursion`, `list_primitives`, `higher_order`, `apply2`, `polymorphic`,
-`utf8_equality`, `utf8_pattern_match`, `utf8_smart_constructor`, `keyword_lists`,
+`utf8_equality`, `utf8_pattern_match`, `keyword_lists`,
 `guard_calls_pure_user_fn`, `map_three_path_parity`, `nested_tuple_producer`,
 `relay`, `multi_relay`, `three_process_chain`, `concurrency_ping_pong`,
 `actor_ring`, `spawn2_basic`, `spawn_with_captures`. Template:
@@ -73,7 +73,10 @@ conversion arc):
 `macro_inc`, `cross_module_macro`.
 
 **Keep rendering golden (the string is the artifact):** `hello`,
-`utf8_literal_print`, `empty_list_distinct_from_nil`.
+`utf8_literal_print`, `empty_list_distinct_from_nil`, `utf8_smart_constructor`
+(its `{:ok, utf8} | {:error, :invalid_utf8}` result is a sum type whose rendered
+tuples are the informative artifact; asserting the inner string also trips the
+nested binary-vs-utf8 equality defect **fz-bsx**).
 
 **Keep budget — shape-primary (assert would pollute the pin):** the `vr*` group
 (`vr1_int_arith`, `vr2_float_arith`, `vr3_int_args`, `vr3_float_args`,
