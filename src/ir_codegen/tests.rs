@@ -453,8 +453,7 @@ fn linked_ir_units_rewrite_external_edges_and_run_provider_body() {
         None,
         crate::diag::Diagnostics::new(),
     );
-    let linked =
-        link_ir_units(&[math_unit.clone(), user_unit.clone()]).expect("link ir units");
+    let linked = link_ir_units(&[math_unit.clone(), user_unit.clone()]).expect("link ir units");
     // Re-plan the linked module: after the linker rewrites external stub
     // callsites to their resolved targets, a fresh plan must show no External
     // call edges and no protocol-stub targets.
@@ -597,8 +596,7 @@ fn main(), do: Integerish.id(41)
     )
     .unwrap_or_else(|err| panic!("frontend: {:?}", err.diagnostics));
     let entry = frontend.module.fn_by_name("main").expect("main").id;
-    let compiled =
-        compile(&mut t, &frontend.module, &tel).expect("compile");
+    let compiled = compile(&mut t, &frontend.module, &tel).expect("compile");
     let image = CompiledImage::from_linked(compiled);
 
     assert_eq!(image.run(entry), 42);
@@ -705,7 +703,6 @@ fn image_linker_rejects_missing_and_duplicate_providers() {
     };
     assert!(matches!(err, ImageLinkError::DuplicateProvider { .. }));
 }
-
 
 #[test]
 fn image_linker_rejects_unresolved_external_imports_without_provider() {
