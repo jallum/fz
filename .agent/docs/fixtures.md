@@ -13,10 +13,12 @@ fixtures/<name>/
   expected.<path>.txt      per-path stdout golden (optional, overrides expected.txt)
   expected.diagnostics     stderr/diagnostic golden (optional)
   expected.<path>.diagnostics  per-path diagnostic golden (optional)
+  expected.stderr          stderr substring golden for `expect: abort|diagnostic`
   expected.outcomes        planner-dispatch golden (optional)
 ```
 
-README frontmatter carries `purpose`, `paths`, and any `budget.*` targets.
+README frontmatter carries `purpose`, `paths`, an optional `expect:`, and any
+`budget.*` targets.
 `fixtures/index.md` is generated from the frontmatter; regenerate it with
 `BLESS=1 cargo test fixture_index_up_to_date` after editing a fixture.
 
@@ -35,15 +37,18 @@ no code: the code is `input.fz`, and a code block in a README is duplication.
 | `aot`    | `fz build` then run the binary |
 | `repl`   | `fz repl --script <input.fz>`|
 
-A path passes when the process exits successfully **and** stdout matches the
-golden **and** diagnostics match the golden. An absent golden means "expect
-empty": a fixture with no `expected.txt` must produce no stdout. A nonzero exit
-(including a `Kernel.panic` abort) is a failure, scored before any output
-comparison — so a fixture cannot both abort and pass. Exit code 75 marks a path
-as not-yet-wired (`Deferred`), which is reported but does not fail. The
-per-fixture execution timeout is 3s.
+By default (`expect: success`) a path passes when the process exits successfully
+**and** stdout matches the golden **and** diagnostics match the golden. An absent
+golden means "expect empty": a fixture with no `expected.txt` must produce no
+stdout. A nonzero exit is then a failure. A fixture can flip that contract with
+`expect: abort` (run-time panic) or `expect: diagnostic` (compile-time
+rejection): the path passes only when the process exits *nonzero* and its stderr
+contains the `expected.stderr` golden as a substring — this is how a fixture
+pins a negative claim (see medium 5 below). Exit code 75 marks a path as
+not-yet-wired (`Deferred`), which is reported but does not fail. The per-fixture
+execution timeout is 3s.
 
-## The four media
+## The media
 
 A fixture pins its claim in the most direct medium for what it tests:
 
@@ -57,6 +62,12 @@ A fixture pins its claim in the most direct medium for what it tests:
    interp/repl are direct-IR baselines, and JIT equals AOT. No single in-program
    assertion expresses a cross-run relationship, so these stay golden.
 4. **Compiler-shape budget** — `budget.*` frontmatter.
+5. **Expect-failure** — `expect: abort` / `expect: diagnostic` + `expected.stderr`.
+   Pins a *negative* claim: the program must abort (run-time) or be rejected
+   (compile-time). The path passes when the process exits nonzero and its stderr
+   contains the golden as a substring. This is the only medium that lets a
+   fixture assert what the language must *refuse*; positive media (assertions,
+   goldens) can only say what it must accept.
 
 `fixtures/GOLDEN.md` holds the choosing rule and the per-fixture map.
 

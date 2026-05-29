@@ -8,7 +8,7 @@ between them, and the realignment map for the current suite.
 See `.agent/docs/fixtures.md` for the holistic orientation (anatomy, the
 four-path matrix, pass/fail mechanics, the BLESS workflow).
 
-## The four media
+## The media
 
 A fixture proves its claim through one (occasionally two) of these:
 
@@ -32,6 +32,16 @@ A fixture proves its claim through one (occasionally two) of these:
    (instruction counts, spec counts, planner work). Use when the *shape* is the
    point. (Detail below.)
 
+5. **Expect-failure** — `expect: abort` / `expect: diagnostic` frontmatter +
+   `expected.stderr`. The claim is that a program is *rejected* (compile-time
+   diagnostic) or *aborts* (run-time panic). The program must exit nonzero and
+   its stderr must contain the `expected.stderr` golden as a substring (a
+   substring, not an exact match, so per-path prefixes like `fz interp:` and
+   absolute source paths stay out of the pin). The default, `expect: success`,
+   is the ordinary contract every other medium relies on: exit 0, goldens match.
+   Use this for negative claims — what the language must *refuse* — which the
+   positive media cannot express.
+
 A fixture may also carry an `expected.outcomes` planner-dispatch golden — a
 structural pin on how calls lower to specs/continuations.
 
@@ -44,6 +54,8 @@ structural pin on how calls lower to specs/continuations.
 - Purpose is "this value renders as exactly this string" → **rendering golden**.
 - Purpose is "this allocates exactly this much" → **memory-floor stats**.
 - Purpose is "this lowers to this shape" → **budget** (and/or `expected.outcomes`).
+- Purpose is "this is rejected / aborts" → **expect-failure** (`expect:` +
+  `expected.stderr`).
 
 Behavioural correctness is path-invariant, so an assertion runs all four paths
 for free. Compiler-shape and memory facts are not the program's behaviour, so
@@ -68,12 +80,16 @@ conversion arc):
 `classify_two_clause`, `wildcard_then_specific`, `type_dispatch`,
 `multi_clause_body_with_call`, `destructure_tuple`, `destructure_cons`,
 `destructure_mixed`, `case_tuple_pattern_sequential`, `mutual_recursion`,
-`tail_recursion`, `list_primitives`, `higher_order`, `apply2`, `polymorphic`,
+`tail_recursion`, `list_primitives`, `higher_order`, `polymorphic`,
 `utf8_equality`, `utf8_pattern_match`, `keyword_lists`,
 `guard_calls_pure_user_fn`, `map_three_path_parity`, `nested_tuple_producer`,
 `relay`, `multi_relay`, `three_process_chain`, `concurrency_ping_pong`,
 `actor_ring`, `spawn2_basic`, `spawn_with_captures`. Template:
-`make_ref_distinct`, `assert_message`.
+`make_ref_distinct`.
+
+**Expect-failure (negative claims):** `assert_abort_message` (a failed `assert`
+aborts with its message). Template for the `expect: abort` / `expect: diagnostic`
+medium.
 
 **Assertion + `__info__` (module-structure):** `attributes`, `import`, `alias`,
 `modules`, `nested_modules`, `cross_module_macro` assert their structure via the

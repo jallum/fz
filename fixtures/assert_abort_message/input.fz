@@ -1,0 +1,3 @@
+fn main() do
+  assert(1 == 2, "custom assertion message")
+end

@@ -9,6 +9,7 @@ Run with `BLESS=1` to rewrite after editing fixtures.
 | `add1/` | smallest JIT round-trip — fn def + call + print | jit, interp, aot, repl |
 | `alias/` | nested-module path aliasing — `alias Long.Path` and `alias Long.Path, as: LP` | jit, interp, aot, repl |
 | `append/` | source-level append allocation baseline proves ordinary list append needs no append BIF | jit, interp, aot, repl |
+| `assert_abort_message/` | a failed assert aborts with the caller's message on every path (expect-failure medium) | jit, interp, aot, repl |
 | `ast_eval/` | tagged-tuple AST evaluator — first fixture to exercise multi-clause tuple-pattern dispatch end-to-end | jit, interp, aot, repl |
 | `attributes/` | @moduledoc / @doc attributes parse and the module still executes | jit, interp, aot, repl |
 | `case_tuple_pattern_sequential/` | sequential calls returning tuple-pattern results (fz-i82 regression) | interp, jit, aot, repl |
