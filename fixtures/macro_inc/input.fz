@@ -7,7 +7,7 @@ defmacro double(x) do
 end
 
 fn main() do
-  dbg(inc(41))
-  dbg(double(21))
-  dbg(inc(double(20)))
+  assert(inc(41) == 42, "inc macro expands to +1")
+  assert(double(21) == 42, "double macro expands to *2")
+  assert(inc(double(20)) == 41, "nested macro expansion: double(20) then inc")
 end

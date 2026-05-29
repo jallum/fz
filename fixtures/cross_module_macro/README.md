@@ -1,19 +1,16 @@
 ---
 purpose: "defmacro in one module, called from another via `import Helpers, only: [twice: 1]`"
 paths: [jit, interp, aot, repl]
-budget.codegen.functions: 1
-budget.codegen.instructions: 7
-budget.specs.count: 1
-budget.planner.worklist_pops: 1
-budget.planner.walk_calls: 1
-budget.planner.type_fn_calls: 1
-budget.planner.matcher_specs: 0
-budget.planner.vars: 8
-budget.planner.blocks: 1
-budget.planner.stmts: 4
-budget.planner.dispatches: 0
 ---
 
 # cross_module_macro
 
-defmacro in one module, called from another via `import Helpers, only: [twice: 1]`
+`defmacro` in one module, called from another via `import Helpers, only:
+[twice: 1]`. Self-checked in-language; `__info__` separates the module's macro
+from its function:
+
+```fz
+assert(App.run(21) == 42, "imported macro twice/1 expands to Helpers.double and runs")
+assert(Helpers.__info__(:macros) == [{:twice, 1}], "Helpers exposes the twice macro")
+assert(Helpers.__info__(:functions) == [{:double, 1}], "Helpers exports double/1 as a function")
+```

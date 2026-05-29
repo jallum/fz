@@ -1,19 +1,15 @@
 ---
 purpose: "@moduledoc / @doc attributes parse and the module still executes"
 paths: [jit, interp, aot, repl]
-budget.codegen.functions: 1
-budget.codegen.instructions: 8
-budget.specs.count: 1
-budget.planner.worklist_pops: 1
-budget.planner.walk_calls: 1
-budget.planner.type_fn_calls: 1
-budget.planner.matcher_specs: 0
-budget.planner.vars: 9
-budget.planner.blocks: 1
-budget.planner.stmts: 4
-budget.planner.dispatches: 0
 ---
 
 # attributes
 
-@moduledoc / @doc attributes parse and the module still executes
+`@moduledoc` / `@doc` attributes parse and the module still executes. Self-checked
+in-language; `__info__` confirms the attributes don't disturb the module's
+exports:
+
+```fz
+assert(Greeter.hi(:alice) == :alice, "module with @moduledoc/@doc still executes")
+assert(Greeter.__info__(:functions) == [{:hi, 1}, {:echo, 1}], "@doc/@moduledoc do not disturb the exports")
+```

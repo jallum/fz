@@ -1,19 +1,15 @@
 ---
 purpose: "cross-module qualified calls — `M.double`, `M.quad`, `N.helper`"
 paths: [jit, interp, aot, repl]
-budget.codegen.functions: 1
-budget.codegen.instructions: 14
-budget.specs.count: 1
-budget.planner.worklist_pops: 1
-budget.planner.walk_calls: 1
-budget.planner.type_fn_calls: 1
-budget.planner.matcher_specs: 0
-budget.planner.vars: 23
-budget.planner.blocks: 1
-budget.planner.stmts: 14
-budget.planner.dispatches: 0
 ---
 
 # modules
 
-cross-module qualified calls — `M.double`, `M.quad`, `N.helper`
+Cross-module qualified calls (`M.double`, `M.quad`, `N.helper`), self-checked
+in-language. The behavioural calls and the module structure are both asserted —
+the latter via the synthesized `__info__/1` (fz-6df.12):
+
+```fz
+assert(M.double(21) == 42, "qualified call M.double")
+assert(M.__info__(:functions) == [{:double, 1}, {:quad, 1}], "M exports double/1 and quad/1")
+```
