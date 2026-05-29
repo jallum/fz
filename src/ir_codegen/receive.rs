@@ -1885,16 +1885,6 @@ mod tests {
     use std::cell::RefCell;
     use std::rc::Rc;
 
-    // Test scaffolding: the matcher unit tests need a process to hand the
-    // matcher fn (its 1st arg) and to box scalar test values. The runtime no
-    // longer has an ambient current-process, so the harness keeps its own
-    // per-test process pointer here, set by `install_process`. This cell is
-    // test-only — production threads the process explicitly.
-    thread_local! {
-        static HARNESS_PROC: std::cell::Cell<*mut Process> =
-            const { std::cell::Cell::new(std::ptr::null_mut()) };
-    }
-
     fn make_jit() -> (JITModule, FunctionBuilderContext) {
         let isa_builder = cranelift_native::builder().expect("native isa");
         let mut flag_builder = settings::builder();
@@ -1912,20 +1902,18 @@ mod tests {
 
     type MatcherAbi = extern "C" fn(*mut Process, u64, *const AnyValueRef, *mut AnyValueRef) -> u32;
 
-    /// The harness process pointer to hand a matcher fn (its 1st param).
-    fn cp() -> *mut Process {
-        HARNESS_PROC.with(|c| c.get())
-    }
-
-    fn install_process() -> Box<Process> {
+    /// Stand up a fresh process for a matcher test. The caller holds the box
+    /// and threads `process.as_mut()` to the matcher fn (its 1st arg) and to
+    /// `int_ref` — exactly as production threads the process. No ambient state.
+    fn new_process() -> Box<Process> {
         let schemas = Rc::new(RefCell::new(SchemaRegistry::new()));
-        let mut process = Box::new(Process::new(schemas));
-        HARNESS_PROC.with(|c| c.set(process.as_mut() as *mut Process));
-        process
+        Box::new(Process::new(schemas))
     }
 
-    fn int_ref(value: i64) -> AnyValueRef {
-        let raw = fz_runtime::ir_runtime::fz_box_int_for_any(cp(), value);
+    /// Box a scalar onto `proc`'s heap via the production BIF — same call the
+    /// compiled/interpreted any-boundary uses.
+    fn int_ref(proc: *mut Process, value: i64) -> AnyValueRef {
+        let raw = fz_runtime::ir_runtime::fz_box_int_for_any(proc, value);
         AnyValueRef::from_raw_word(raw).expect("int ref")
     }
 
@@ -2035,7 +2023,8 @@ mod tests {
 
     #[test]
     fn cached_matcher_int_literal_hits_only_exact_tagged_value() {
-        let _process = install_process();
+        let mut process = new_process();
+        let pp = process.as_mut() as *mut Process;
         let (mut jmod, mut fbctx) = make_jit();
         let m = empty_module();
         let tuple_ids = HashMap::new();
@@ -2055,18 +2044,29 @@ mod tests {
         let pin: [AnyValueRef; 0] = [];
         let mut out: [AnyValueRef; 0] = [];
         assert_eq!(
-            f(cp(), int_ref(42).raw_word(), pin.as_ptr(), out.as_mut_ptr()),
+            f(
+                pp,
+                int_ref(pp, 42).raw_word(),
+                pin.as_ptr(),
+                out.as_mut_ptr()
+            ),
             1
         );
         assert_eq!(
-            f(cp(), int_ref(41).raw_word(), pin.as_ptr(), out.as_mut_ptr()),
+            f(
+                pp,
+                int_ref(pp, 41).raw_word(),
+                pin.as_ptr(),
+                out.as_mut_ptr()
+            ),
             0
         );
     }
 
     #[test]
     fn cached_matcher_var_writes_input_to_out_slot_zero() {
-        let _process = install_process();
+        let mut process = new_process();
+        let pp = process.as_mut() as *mut Process;
         let (mut jmod, mut fbctx) = make_jit();
         let m = empty_module();
         let tuple_ids = HashMap::new();
@@ -2088,8 +2088,8 @@ mod tests {
         let msg = 7;
         assert_eq!(
             f(
-                cp(),
-                int_ref(msg).raw_word(),
+                pp,
+                int_ref(pp, msg).raw_word(),
                 pin.as_ptr(),
                 out.as_mut_ptr()
             ),
@@ -2100,7 +2100,8 @@ mod tests {
 
     #[test]
     fn cached_matcher_guard_falls_through_when_false() {
-        let _process = install_process();
+        let mut process = new_process();
+        let pp = process.as_mut() as *mut Process;
         let (mut jmod, mut fbctx) = make_jit();
         let m = empty_module();
         let tuple_ids = HashMap::new();
@@ -2128,19 +2129,30 @@ mod tests {
         let pin: [AnyValueRef; 0] = [];
         let mut out = [AnyValueRef::null()];
         assert_eq!(
-            f(cp(), int_ref(11).raw_word(), pin.as_ptr(), out.as_mut_ptr()),
+            f(
+                pp,
+                int_ref(pp, 11).raw_word(),
+                pin.as_ptr(),
+                out.as_mut_ptr()
+            ),
             1
         );
         assert_eq!(out[0].load_int().expect("out int"), 11);
         assert_eq!(
-            f(cp(), int_ref(9).raw_word(), pin.as_ptr(), out.as_mut_ptr()),
+            f(
+                pp,
+                int_ref(pp, 9).raw_word(),
+                pin.as_ptr(),
+                out.as_mut_ptr()
+            ),
             2
         );
     }
 
     #[test]
     fn cached_matcher_guard_reads_pinned_capture() {
-        let _process = install_process();
+        let mut process = new_process();
+        let pp = process.as_mut() as *mut Process;
         let (mut jmod, mut fbctx) = make_jit();
         let m = empty_module();
         let tuple_ids = HashMap::new();
@@ -2166,12 +2178,12 @@ mod tests {
             "cached_matcher_guard_pinned",
         );
         let mut out: [AnyValueRef; 0] = [];
-        let pin_9 = [int_ref(9)];
-        let pin_8 = [int_ref(8)];
+        let pin_9 = [int_ref(pp, 9)];
+        let pin_8 = [int_ref(pp, 8)];
         assert_eq!(
             f(
-                cp(),
-                int_ref(0).raw_word(),
+                pp,
+                int_ref(pp, 0).raw_word(),
                 pin_9.as_ptr(),
                 out.as_mut_ptr()
             ),
@@ -2179,8 +2191,8 @@ mod tests {
         );
         assert_eq!(
             f(
-                cp(),
-                int_ref(0).raw_word(),
+                pp,
+                int_ref(pp, 0).raw_word(),
                 pin_8.as_ptr(),
                 out.as_mut_ptr()
             ),
@@ -2196,8 +2208,8 @@ mod tests {
 
         let schemas = Rc::new(RefCell::new(SchemaRegistry::new()));
         let mut process = Box::new(Process::new(schemas));
-        HARNESS_PROC.with(|c| c.set(process.as_mut() as *mut Process));
-        let tuple_schema_id = unsafe { &mut *cp() }
+        let pp = process.as_mut() as *mut Process;
+        let tuple_schema_id = unsafe { &mut *pp }
             .heap
             .register_schema(Schema::tuple_of_arity(3));
         let mut tuple_ids = HashMap::new();
@@ -2222,22 +2234,22 @@ mod tests {
             "cached_matcher_tuple_reply",
         );
 
-        let tuple_p = unsafe { &mut *cp() }.heap.alloc_struct(tuple_schema_id);
-        let proc = unsafe { &mut *cp() };
+        let tuple_p = unsafe { &mut *pp }.heap.alloc_struct(tuple_schema_id);
+        let proc = unsafe { &mut *pp };
         proc.heap.write_field_slot(tuple_p, 0, AnyValue::atom(3));
         proc.heap.write_field_slot(tuple_p, 8, AnyValue::int(170));
         proc.heap.write_field_slot(tuple_p, 16, AnyValue::int(23));
 
-        let pin = [int_ref(170)];
+        let pin = [int_ref(pp, 170)];
         let mut out = [AnyValueRef::null()];
         let val = struct_ref(tuple_p);
-        assert_eq!(f(cp(), val.raw_word(), pin.as_ptr(), out.as_mut_ptr()), 1);
+        assert_eq!(f(pp, val.raw_word(), pin.as_ptr(), out.as_mut_ptr()), 1);
         assert_eq!(out[0].load_int().expect("out int"), 23);
 
-        let pin_other = [int_ref(255)];
+        let pin_other = [int_ref(pp, 255)];
         let mut out2 = [AnyValueRef::null()];
         assert_eq!(
-            f(cp(), val.raw_word(), pin_other.as_ptr(), out2.as_mut_ptr()),
+            f(pp, val.raw_word(), pin_other.as_ptr(), out2.as_mut_ptr()),
             0
         );
     }
