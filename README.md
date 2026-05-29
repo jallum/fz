@@ -3,7 +3,7 @@
 
 # **fz** - a friendly, functional language
 
-The BEAM got something profound right: cheap processes, isolated heaps,
+The BEAM got some things profoundly right: cheap processes, isolated heaps,
 message-passing, pattern matching at the core, selective receive. Forty
 years on, that's still the model for fault-tolerant concurrent systems,
 and nobody has improved on the semantics.
@@ -15,28 +15,33 @@ whole-program compiler with types can do with them.
 What that means in practice: fz reads like Elixir, runs the actor model
 you already know, and compiles — through a set-theoretic type system, a
 Cranelift JIT, and an AOT path — to native code. One IR powers four
-execution modes (interpreter, JIT, AOT executable, REPL), and a fixture
+execution modes (AOT executable, JIT, interpreter, REPL), and a fixture
 matrix forces them to agree.
 
 ```elixir
 fn add(a, b), do: a + b
 
 fn main() do
-  print(add(2, 3))
+  dbg(add(2, 3))
 end
 ```
 
 Having full control of the stack buys some flexibility in interesting
 places: When you write `receive` in fz, the receiver's pattern is
-compiled into a matcher that can also on the sender's heap, and only the
-values the receiver actually bound cross the process boundary. Everything
-else stays on the cutting room floor. Same Elixir-shaped program, same
-semantics; the machine does less work.
+compiled into a matcher that can also run on the sender's heap, and only
+the values the receiver actually bound cross the process boundary.
+Everything else stays on the cutting room floor. Same Elixir-shaped
+program, same semantics; the machine does less work.
 
-This README is a tour, not a spec. If you're an Elixir or Erlang person
-curious about what a typed, natively-compiled cousin looks like — or a
-compiler person who wants to see the internals of a language that
-takes the BEAM seriously — keep reading.
+The same control buys another trick we think you'll like: the compiler
+builds values directly into their final position and reuses list cells
+it can prove are private — so textbook functional code runs with the
+allocation profile of a hand-tuned loop, and you never write a single
+borrow annotation to get it.
+
+If you're an Elixir or Erlang person curious about what a typed,
+natively-compiled cousin looks like — or a compiler person who wants to
+see the internals of a language that takes the BEAM seriously — keep reading.
 
 ---
 
@@ -90,22 +95,19 @@ JIT, an AOT path that produces real executables, and a REPL — all
 sharing one IR.
 
 The compiler doesn't exist for its own sake. It exists so we can do
-things the BEAM's interpreter structurally couldn't. The sender-side
-matcher above is one example. **FBIP** (functional but in-place) is
-another. You write obviously functional code:
+things the BEAM's interpreter structurally couldn't — and the two
+tricks teased above are both deliberate payoffs of owning the whole
+stack, from source to machine code:
 
-```elixir
-fn map([], _), do: []
-fn map([h | t], f), do: [f(h) | map(t, f)]
-```
+- **Running a receiver's matcher on the sender's heap**, so only the
+  values a `receive` actually asked for ever cross the process boundary.
+  (*Selective receive, sharpened*, below.)
+- **Building values straight into their final position**, so textbook
+  functional code allocates almost nothing — no reference counting, no
+  annotations. (*All of it together: quicksort*, below.)
 
-A naïve runtime allocates a brand-new cons cell for every element. But
-if the compiler can prove the input list is **unique** — nobody else
-is holding a reference to it — it can reuse the existing cons cells in
-place, writing the new head and reusing the tail pointer. Same code,
-same semantics, no extra allocation. You get the readability of pure
-functional code with the memory profile of a mutating loop, and the
-compiler keeps you honest about when that's actually safe.
+Both keep BEAM semantics exactly. The compiler just moves work ahead of
+time so the machine does less of it at runtime.
 
 ---
 
@@ -143,12 +145,35 @@ all values. You don't mutate them; you make new ones:
 fn swap({a, b}), do: {b, a}
 
 fn main() do
-  print(swap({:left, :right}))   # {:right, :left}
+  dbg(swap({:left, :right}))   # {:right, :left}
 end
 ```
 
 This is the load-bearing rule that makes the concurrency story safe:
 if nobody can mutate anything, nobody can race over anything.
+
+### First-class functions, closures, simple macros
+
+Functions are values: pass them around, return them, capture their
+environment in a closure. Macros run at compile time, rewriting code
+before it is lowered.
+
+```elixir
+fn double(x), do: x * 2
+fn compose(f, g, x), do: f(g(x))
+
+defmacro inc(x) do
+  quote do: unquote(x) + 1
+end
+
+fn main() do
+  dbg(compose(double, inc, 20))   # 42
+end
+```
+
+Those closures are what the concurrency examples below spawn — when you
+write `spawn(fn() -> relay(n, home))`, that anonymous function is a
+first-class value handed to a brand-new process.
 
 ### Concurrency: processes, not threads
 
@@ -169,7 +194,7 @@ fn child(), do: send(1, 42)
 
 fn main() do
   spawn(child)
-  print(receive do x -> x end)   # 42
+  dbg(receive do x -> x end)   # 42
 end
 ```
 
@@ -189,7 +214,7 @@ fn main() do
   home = self()
   head = spawn(fn() -> relay(4, home))
   send(head, 0)
-  print(receive())   # 5
+  dbg(receive())   # 5
 end
 ```
 
@@ -236,7 +261,7 @@ fn main() do
     {:reply, ^ref_a, v} -> v
   end
 
-  print(val_a + val_b)
+  dbg(val_a + val_b)
   send(s, {:stop})
 end
 ```
@@ -281,21 +306,6 @@ about; the sender does the work on its own time and its own heap.
 
 The receiver gets concierge treatment.
 
-### First-class functions, closures, simple macros
-
-```elixir
-fn double(x), do: x * 2
-fn compose(f, g, x), do: f(g(x))
-
-defmacro inc(x) do
-  quote do: unquote(x) + 1
-end
-
-fn main() do
-  print(compose(double, inc, 20))   # 42
-end
-```
-
 ### All of it together: quicksort
 
 ```elixir
@@ -313,12 +323,72 @@ fn qsort([p | rest]) do
 end
 
 fn main() do
-  print(qsort([3, 1, 4, 1, 5, 9, 2, 6, 5]))
+  dbg(qsort([3, 1, 4, 1, 5, 9, 2, 6, 5, 3, 5]))
 end
 ```
 
 Pattern matching, recursion, tuples, lists, multiple clauses — that's
-the whole sort, and it's readable end to end.
+the whole sort, and it's readable end to end. It's also where the second
+trick from *The bet* pays off.
+
+The folklore says elegance like this costs allocations: a `{lo, hi}`
+tuple built only to be torn apart, the whole `lo` list built and then
+walked again and re-copied by `append`, a closure for every "what to do
+when this returns." fz mostly doesn't pay. Two compiler ideas get us
+there, and **neither asks anything of you**:
+
+- **Destination planning** — before codegen, the planner asks each call
+  not just *what type* it returns but *where the result is going*. If the
+  caller is about to destructure a pair, the callee hands back two
+  register values and never builds the tuple. If a list's eventual tail
+  is already known, the callee builds its cons cells pointing at that
+  tail from the start — so the `append` that would walk and re-copy the
+  list has nothing left to do.
+- **Owned-cons reuse** — when the compiler can prove a cons cell is still
+  private, the runtime reuses it in place instead of allocating. A single
+  alias bit in the cell guards it: still private, relink it; already
+  published, allocate a fresh one. This doesn't bend the immutability
+  rule from above — the compiler only exploits privacy the program can
+  never observe.
+
+The payoff is measurable and pinned. This exact program, sorting its
+eleven-element list, allocates **exactly the eleven input cons cells —
+zero tuples, zero continuation closures** on the native paths:
+
+```text
+list_cons_allocs = 11     # the input list's cells, nothing more
+struct_allocs    = 0      # no {lo, hi} tuple ever hits the heap
+closure_allocs   = 0      # no continuation closures on the fast path
+```
+
+Here's what we like: **no reference counting, no borrowing annotations.**
+Koka-style reuse leans on runtime refcounts; Rust-style reuse leans on
+lifetimes and `&` in your source. fz does neither — the source is the
+same direct functional code, with no `unique`, no linearity, no "this
+list is mine." The compiler proves it statically; the runtime pays one
+bit. You get the readability of pure functional code with the memory
+profile of a hand-tuned loop.
+
+This is the JIT and the AOT compiler doing their job — turning the
+program you'd actually ship into native code that allocates like you
+hand-tuned it. (The interpreter and REPL run the same code to the same
+answers; they're there to keep us honest, not to win the allocation
+game.) ([the full walkthrough](guides/quicksort-without-temporaries.html))
+
+The same machinery now applies through the standard library too. The
+runtime-library `Enum.sort/1` is a merge sort with a default comparator
+closure. Native code proves that comparator is constant, erases it from
+the recursive sort frames, and keeps the hot path closure-free:
+
+```text
+Enum.sort list_cons_allocs = 22
+Enum.sort closure_allocs   = 0
+Enum.sort heap_bytes       = 352
+```
+
+That is still a general-purpose library sort rather than hand-shaped
+quicksort, so it allocates more cons cells. The important part is that
+the abstraction boundary is no longer where optimization stops.
 
 ### Talking to C
 
@@ -363,7 +433,7 @@ You get both from the same investment.
 ```elixir
 fn main() do
   x = 41 + 1
-  print(x)        # compiler knows x is an integer; uses the int print path
+  dbg(x)          # compiler knows x is an integer; uses the int debug path
 end
 ```
 
@@ -373,7 +443,7 @@ fn kind(n) when n > 0, do: :positive
 fn kind(_), do: :other
 
 fn main() do
-  print(kind(5))   # compiler proves which clause wins, drops the rest
+  dbg(kind(5))   # compiler proves which clause wins, drops the rest
 end
 ```
 
@@ -502,6 +572,9 @@ compiler dump budgets are explained in
   receive with sender-side matching
 - a working interpreter, JIT (Cranelift), AOT path, and REPL
 - C externs with marshal classes and resource destructors
+- destination planning + owned-cons reuse: textbook functional code
+  compiled to near-zero-allocation native code (JIT/AOT), no reference
+  counting, no borrow annotations
 
 ## Repository map
 
@@ -520,6 +593,7 @@ compiler dump budgets are explained in
   [modules](guides/modules.html),
   [pattern matching](guides/pattern-matching.html),
   [memory and destination planning](guides/memory.html#destination-planning),
+  [quicksort without temporaries](guides/quicksort-without-temporaries.html),
   [externs](guides/externs.html))
 
 ---
@@ -527,9 +601,11 @@ compiler dump budgets are explained in
 ## Status
 
 fz is early. The compiler, the runtime, four execution paths, the type
-system, and the sender-side matcher are all working today — but the
-language is small, the standard library is smaller, and the edges are
-sharp. Expect to read the dumps when things surprise you.
+system, the sender-side matcher, and the destination-planning /
+owned-cons-reuse path that gives native code its near-zero-allocation
+profile are all working today — but the language is small, the standard
+library is smaller, and the edges are sharp. Expect to read the dumps
+when things surprise you.
 
 What's next, roughly in order:
 
@@ -539,8 +615,9 @@ What's next, roughly in order:
   thread
 - **Distribution via ETF and disterl** — fz nodes that join existing
   BEAM clusters as ordinary participants in the supervision tree
-- **An FBIP tensor type** — Nx-shape ergonomics, in-place buffer reuse,
-  no `defn` ceremony, BLAS/MKL via externs
+- **An FBIP tensor type** — the same in-place machinery, extended to
+  Nx-shaped buffers: Nx-shape ergonomics, in-place buffer reuse, no
+  `defn` ceremony, BLAS/MKL via externs
 - **Autodiff** over fz IR
 
 The current focus is keeping the four execution paths in lockstep and
