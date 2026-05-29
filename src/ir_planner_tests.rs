@@ -3038,3 +3038,25 @@ fn rewrite_keeps_non_constant_closure() {
         "apply's parameters must be untouched when its closure is non-constant"
     );
 }
+
+/// fz-loop.2 — spec dumps expose the planner-level shape we care about:
+/// a reducer call whose continuation immediately resumes the same state
+/// machine with the reducer result as the next state slot.
+#[test]
+fn specs_render_callthen_resume_state_update() {
+    let src = "fn reduce_list([], {:cont, acc}, _reducer), do: {:done, acc}\n\
+               fn reduce_list([h | t], {:cont, acc}, reducer), do: reduce_list(t, reducer(h, acc), reducer)\n\
+               fn main(), do: reduce_list([1, 2], {:cont, 0}, fn (x, acc) -> {:cont, acc + x})";
+    let (mut t, m, mt) = pipeline(src, &crate::telemetry::NullTelemetry);
+    let dump = crate::ir_planner::pretty_module_plan(&mut t, &m, &mt);
+    assert!(
+        dump.contains("resume=tail_call reduce_list#"),
+        "spec dump should expose reducer continuation as reduce_list resume:\n{}",
+        dump
+    );
+    assert!(
+        dump.contains("<result>"),
+        "resume rendering should name the reducer result slot:\n{}",
+        dump
+    );
+}

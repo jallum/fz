@@ -1,6 +1,6 @@
 use super::fn_types::{ModulePlan, SpecKey, display_return_context_plan, display_return_demand};
 use super::reachable::cont_input_key;
-use crate::fz_ir::{Block, CallsiteId, CallsiteIdent, EmitSlot, FnId, Module, Term};
+use crate::fz_ir::{Block, CallsiteId, CallsiteIdent, EmitSlot, FnId, Module, Term, Var};
 
 // Pretty-printer for ModulePlan golden spec dumps.
 
@@ -487,6 +487,50 @@ fn render_cont_lines<T: crate::types::Types<Ty = crate::types::Ty> + crate::type
         cap_vars.join(", ")
     ));
     out.push_str(&format!(";              cont_key={}\n", tys_str(t, key)));
+    if let Some(resume) = continuation_resume_state(m, continuation) {
+        out.push_str(&format!(";              resume={}\n", resume));
+    }
+}
+
+fn continuation_resume_state(m: &Module, continuation: &crate::fz_ir::Cont) -> Option<String> {
+    let cont_fn = m.fn_by_id(continuation.fn_id);
+    let params = &cont_fn.block(cont_fn.entry).params;
+    let result = *params.first()?;
+    let entry = cont_fn.block(cont_fn.entry);
+    match &entry.terminator {
+        Term::TailCall { callee, args, .. } => Some(format!(
+            "tail_call {}#{}({})",
+            fn_name(m, *callee),
+            callee.0,
+            resume_args(params, &continuation.captured, result, args).join(", ")
+        )),
+        Term::TailCallClosure { closure, args, .. } => Some(format!(
+            "tail_call_closure {}({})",
+            resume_arg(params, &continuation.captured, result, *closure),
+            resume_args(params, &continuation.captured, result, args).join(", ")
+        )),
+        _ => None,
+    }
+}
+
+fn resume_args(params: &[Var], captures: &[Var], result: Var, args: &[Var]) -> Vec<String> {
+    args.iter()
+        .map(|arg| resume_arg(params, captures, result, *arg))
+        .collect()
+}
+
+fn resume_arg(params: &[Var], captures: &[Var], result: Var, arg: Var) -> String {
+    if arg == result {
+        return "<result>".to_string();
+    }
+    if let Some(param_idx) = params.iter().position(|param| *param == arg) {
+        if let Some(capture_idx) = param_idx.checked_sub(1) {
+            if let Some(captured) = captures.get(capture_idx) {
+                return format!("capture[{}]=Var({})", capture_idx, captured.0);
+            }
+        }
+    }
+    format!("Var({})", arg.0)
 }
 
 fn render_return_use<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::RenderTypes>(
