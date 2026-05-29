@@ -2,27 +2,11 @@
 
 ## Goal
 
-Model control before representation. A source call, closure call,
-continuation hop, recursive back edge, and scheduler suspension are different
-runtime shapes, but the planner should first describe them as transitions
-between explicit machine states.
-
-The target vocabulary is:
-
-```text
-Step =
-  Return(value)
-  Jump(target, args...)
-  CallThen(target, args..., resume)
-  Suspend(resume_state)
-  Halt(reason)
-```
-
-`CallThen` is the load-bearing case. It is one logical edge made from a callee
-and the continuation that receives the callee's result. Existing IR stores that
-as `Term::Call` / `Term::CallClosure` plus `Cont`; planner facts should be the
-source of truth for the combined transition. Codegen must not rediscover it
-from closure frames or capture order.
+Model control before representation. Source calls, closure calls,
+continuation hops, recursive back edges, and scheduler suspension have
+different runtime shapes, but planner/codegen should consume the existing
+call-edge and return-context facts before reconstructing anything from closure
+frames or capture order.
 
 ## Enum.reduce Shape
 
@@ -54,16 +38,9 @@ reduce_list_step(t, {:cont, acc}, reducer, k) ->
   TailCall(reduce_list_cont, t, acc, reducer, k)
 ```
 
-The current CLIF shape still makes the hot path look like a trampoline:
-
-```text
-reduce_list -> reducer -> k_result -> reduce_list
-```
-
-The intended normalized shape is a loop over the state tuple, with the reducer
-call inside the loop. Static closure identity is only an optional improvement:
-a known reducer can be called directly or inlined, while an opaque reducer can
-still sit inside the same loop as an indirect call.
+This is the useful source-level simplification: the hot loop state is
+`(list, acc, reducer)`. `reduce_list/3` remains the public state dispatcher;
+`reduce_list_step/3` handles reducer outputs that leave the hot `:cont` path.
 
 ## Continuations Are Join Points First
 
@@ -88,21 +65,22 @@ sending, parking, or capturing a continuation into an escaping closure forces
 materialization. A local join that immediately computes the next loop state
 does not.
 
-## Loopification Rule
+## Planner Vocabulary
 
-A conservative first loopification target is:
+Do not add another recognizer just to rediscover continuation shape. The
+planner already records:
 
 ```text
-F(state...) CallThen G(args..., resume = K(captures...))
-K(result, captures...) TailCall F(next_state(result, captures...))
+CallEdgePlan {
+  target,
+  return_use,
+  return_context,
+}
 ```
 
-When `F` is in the same recursive family and `K` only builds the next state, the
-combined edge is a loop update. The rule is independent of whether `G` is a
-direct function, known closure, closure literal, or opaque closure call.
-
-The first implementation should support self-recursive single-cycle cases. The
-model leaves room for mutual-recursive SCC loops later.
+Loopification should make new behavior fall out of these facts. If a pass needs
+to know how a callee result is consumed, extend `ReturnContextPlan`; do not add
+a parallel `resume=` dump recognizer.
 
 ## Callable Values
 
@@ -117,16 +95,19 @@ Callable =
   Union(KnownFn..., OpaqueArrow...)
 ```
 
-Planner call-edge facts can then consume callable capabilities uniformly.
-Known closure erasure becomes a consequence of state/call planning instead of a
-separate cleanup whose job is to undo closure-shaped plumbing.
+Planner call-edge facts can then consume callable capabilities uniformly. The
+remaining known-reducer timing work is tracked by `fz-xac`: expose
+closure-literal reducer calls early enough for module-level inlining without
+forcing heap continuation materialization.
 
 ## Proof Gates
 
 When changing this area, keep these signals explicit:
 
-- `Enum.reduce(xs, {:cont, 0}, reducer)` hot path is recognized as
-  `CallThen(reducer, ..., resume = reduce_list(...))`.
+- `Enum.reduce(xs, {:cont, 0}, reducer)` enters `reduce_list_cont/3` directly
+  from the dispatcher.
+- Local known-reducer `reduce_list` lowers without the reducer-continuation
+  trampoline.
 - Known reducer path keeps `closure_allocs = 0`.
 - Opaque reducer path still loopifies around an indirect call.
 - `{:suspend, acc}` remains a real materialized resumable closure.
@@ -136,9 +117,8 @@ When changing this area, keep these signals explicit:
 
 This model should let future work remove or demote:
 
-- backend-local reconstruction of continuation state from capture order;
 - closure-shaped local continuations as the default representation;
 - special passes whose only job is to erase function values after direct-call
   planning has already made them dead;
-- duplicated callsite-shape logic that can instead read planner `CallThen`
-  facts.
+- duplicated callsite-shape logic that can instead read planner call-edge and
+  return-context facts.
