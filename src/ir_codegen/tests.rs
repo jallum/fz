@@ -2279,12 +2279,13 @@ fn const_nil_bool_atom_deduplicated_within_block() {
     );
 }
 
-/// plan_module is called exactly 3 times in the codegen pipeline. The
-/// final pass runs after destination lowering so dispatch metadata
-/// covers the optimized IR; codegen then merges narrower pre-DP facts
-/// for vars that destination lowering did not semantically change.
+/// plan_module is called exactly twice in the codegen pipeline: run A (the
+/// pre-transform rewrite re-plan for known-target closures + inlining) and the
+/// authoritative plan after the structural transforms. Destination lowering no
+/// longer re-plans — it maintains no plan facts the authoritative plan does not
+/// already hold (fz-hfc.4). fz-hfc.3 then removes run A, leaving exactly one.
 #[test]
-fn plan_module_called_exactly_three_times_in_pipeline() {
+fn plan_module_called_exactly_twice_in_pipeline() {
     let src = "fn main(), do: dbg(42)";
     let m = lower_src(src);
     crate::ir_planner::PLAN_MODULE_CALLS.with(|c| c.set(0));
@@ -2295,7 +2296,7 @@ fn plan_module_called_exactly_three_times_in_pipeline() {
     )
     .expect("compile");
     let count = crate::ir_planner::PLAN_MODULE_CALLS.with(|c| c.get());
-    assert_eq!(count, 3, "plan_module called {} times, expected 3", count);
+    assert_eq!(count, 2, "plan_module called {} times, expected 2", count);
 }
 
 #[test]
@@ -2318,16 +2319,16 @@ fn frontend_to_codegen_pipeline_reports_every_planner_event() {
 
     compile(&mut t, &frontend.module, &tel).expect("compile");
 
-    // Honest baseline: every plan_module is telemetry-counted. The pretyped
-    // path runs four — the frontend plan, the constant-closure rewrite re-plan
-    // (run A), the authoritative codegen plan_module, and the post-destination
-    // re-plan (run C). fz-hfc collapses this to two (frontend + authoritative)
-    // by removing runs A and C; this assertion drops with each removal and is
-    // the visible signal of progress.
+    // Honest baseline: every plan_module is telemetry-counted. With the
+    // post-destination re-plan (run C) removed (fz-hfc.4), the pretyped path
+    // runs three — the frontend plan, the constant-closure rewrite re-plan
+    // (run A), and the authoritative codegen plan_module. fz-hfc.3 removes run A
+    // next, leaving two (frontend + authoritative); this assertion drops with
+    // each removal and is the visible signal of progress.
     assert_eq!(
         cap.count(&["fz", "planner", "planned"]),
-        4,
-        "pretyped path reports four planner.planned events (frontend + run A + authoritative + run C); fz-hfc drives this to two"
+        3,
+        "pretyped path reports three planner.planned events (frontend + run A + authoritative); fz-hfc.3 drives this to two"
     );
 }
 

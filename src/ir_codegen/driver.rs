@@ -2099,7 +2099,7 @@ pub(crate) fn compile_with_backend_impl<
     // can be applied before the planner commits to specs. See
     // `docs/dispatch-as-planner-output.md` (Worry 1).
     crate::ir_inline::inline_single_use_conts(&mut working);
-    let module_plan = crate::ir_planner::plan_module(t, &working, tel);
+    let mut module_plan = crate::ir_planner::plan_module(t, &working, tel);
     // Snapshot per-fn call-shape multisets right after the planner commits
     // to specs. The post-planner passes (branch_fold, fold, const_bs::fold,
     // dce_module, dce_module_level) may FOLD calls away but must never
@@ -2121,7 +2121,14 @@ pub(crate) fn compile_with_backend_impl<
     crate::ir_dce::dce_module_level(&mut working);
     #[cfg(debug_assertions)]
     super::invariants::assert_no_new_call_shapes(&working, &call_shapes_pre);
-    let pre_dest_module_plan = module_plan;
+    // Destination lowering desugars MakeTuple/MakeList/MakeMap/MapUpdate into
+    // token-linear Dest* sequences. It is intra-block, adds no blocks and no
+    // call edges, and preserves every original construction *result* var —
+    // already typed by the authoritative plan above. Its only new SSA names are
+    // dest holders and init tokens, which codegen lowers from runtime value
+    // bindings, never from plan types. So the authoritative plan stays valid for
+    // everything codegen reads after lowering: no post-destination re-plan, and
+    // no reconciliation of a second plan against the first (fz-hfc.4 / inv1).
     crate::ir_dest::lower_destinations(&mut working);
     crate::ir_dest::verify_module(&working).map_err(|errors| {
         CodegenError::new(format!(
@@ -2133,70 +2140,6 @@ pub(crate) fn compile_with_backend_impl<
                 .join("\n")
         ))
     })?;
-    // Run C: the post-destination re-plan. Telemetry-counted as Intermediate
-    // (see run A) so the redundancy is measurable; removed by fz-hfc.4 once
-    // destination lowering is shown to maintain no plan facts the authoritative
-    // plan does not already hold.
-    let mut module_plan = crate::ir_planner::plan_module_with_role(
-        t,
-        &working,
-        tel,
-        crate::ir_planner::PlanRole::Intermediate,
-    );
-    for (key, before_types) in &pre_dest_module_plan.specs {
-        if let Some(after_types) = module_plan.specs.get_mut(key) {
-            for (var, before_ty) in &before_types.vars {
-                match after_types.vars.get(var) {
-                    Some(after_ty)
-                        if t.is_subtype(before_ty, after_ty)
-                            && !t.is_subtype(after_ty, before_ty) =>
-                    {
-                        after_types.vars.insert(*var, before_ty.clone());
-                    }
-                    None => {
-                        after_types.vars.insert(*var, before_ty.clone());
-                    }
-                    _ => {}
-                }
-            }
-            for (block, before_env) in &before_types.block_envs {
-                let Some(after_env) = after_types.block_envs.get_mut(block) else {
-                    continue;
-                };
-                for (var, before_ty) in before_env {
-                    match after_env.get(var) {
-                        Some(after_ty)
-                            if t.is_subtype(before_ty, after_ty)
-                                && !t.is_subtype(after_ty, before_ty) =>
-                        {
-                            after_env.insert(*var, before_ty.clone());
-                        }
-                        None => {
-                            after_env.insert(*var, before_ty.clone());
-                        }
-                        _ => {}
-                    }
-                }
-            }
-        }
-    }
-    for (key, before_ty) in &pre_dest_module_plan.effective_returns {
-        match module_plan.effective_returns.get(key) {
-            Some(after_ty)
-                if t.is_subtype(before_ty, after_ty) && !t.is_subtype(after_ty, before_ty) =>
-            {
-                module_plan
-                    .effective_returns
-                    .insert(key.clone(), before_ty.clone());
-            }
-            None => {
-                module_plan
-                    .effective_returns
-                    .insert(key.clone(), before_ty.clone());
-            }
-            _ => {}
-        }
-    }
     let diagnostics = crate::ir_extern_marshal::resolve_module_types(t, &working, &mut module_plan);
     if let Some(diagnostic) = diagnostics.into_iter().next() {
         return Err(CodegenError::new(diagnostic.message).with_span(diagnostic.primary.span));
