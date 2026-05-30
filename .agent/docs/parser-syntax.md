@@ -140,6 +140,24 @@ still reject raw `Capture` / `CaptureArg` nodes if they ever survive desugaring.
 The unparenthesized capture-of-call form (`&Mod.fun(&1, &2)`) is NOT parsed:
 after `&name` the parser requires `/arity`. That form is out of scope for 2.6.
 
+## Operator Desugaring
+
+The macro/desugar pass rewrites the Elixir-aligned runtime operators before IR
+lowering:
+
+```text
+a ++ b       => List.concat(a, b)
+a -- b       => List.subtract(a, b)
+a <> b       => Kernel.fz_binary_concat(a, b)
+a..b         => Range.new(a, b, 1)
+a..b//step   => Range.new(a, b, step)
+```
+
+The `List` helpers are ordinary source functions in
+`src/modules/runtime_library/list.fz`; `<>` is the only one backed by a primitive
+runtime BIF because it must allocate a binary. Range construction remains the
+source `defstruct` path.
+
 ## Boundaries
 
 Special forms such as `if`, `with`, and `quote` still own their dedicated

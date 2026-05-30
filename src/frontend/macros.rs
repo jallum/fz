@@ -555,21 +555,61 @@ fn expand_expr_inner(
         Expr::BinOp(op, l, r) => {
             expand_expr_inner(l, interp, macros, depth, in_capture)?;
             expand_expr_inner(r, interp, macros, depth, in_capture)?;
-            if *op == BinOp::Pipe {
-                let lhs = (**l).clone();
-                match &mut r.node {
-                    Expr::Call(callee, args) => {
-                        let mut new_args = Vec::with_capacity(args.len() + 1);
-                        new_args.push(lhs);
-                        new_args.extend(args.iter().cloned());
-                        e.node = Expr::Call(callee.clone(), new_args);
+            match *op {
+                BinOp::Pipe => {
+                    let lhs = (**l).clone();
+                    match &mut r.node {
+                        Expr::Call(callee, args) => {
+                            let mut new_args = Vec::with_capacity(args.len() + 1);
+                            new_args.push(lhs);
+                            new_args.extend(args.iter().cloned());
+                            e.node = Expr::Call(callee.clone(), new_args);
+                        }
+                        Expr::Case(scrut @ None, arms) => {
+                            *scrut = Some(Box::new(lhs));
+                            e.node = Expr::Case(scrut.clone(), arms.clone());
+                        }
+                        _ => {}
                     }
-                    Expr::Case(scrut @ None, arms) => {
-                        *scrut = Some(Box::new(lhs));
-                        e.node = Expr::Case(scrut.clone(), arms.clone());
-                    }
-                    _ => {}
                 }
+                BinOp::ListConcat => {
+                    e.node = call2("List.concat", (**l).clone(), (**r).clone());
+                }
+                BinOp::ListSubtract => {
+                    e.node = call2("List.subtract", (**l).clone(), (**r).clone());
+                }
+                BinOp::BinConcat => {
+                    e.node = call2("Kernel.fz_binary_concat", (**l).clone(), (**r).clone());
+                }
+                BinOp::Range => {
+                    e.node = call3(
+                        "Range.new",
+                        (**l).clone(),
+                        (**r).clone(),
+                        Spanned::new(Expr::Int(1), e.span),
+                    );
+                }
+                BinOp::RangeStep => {
+                    if let Some((first, last)) = range_new_args(l) {
+                        e.node = call3("Range.new", first, last, (**r).clone());
+                    }
+                }
+                BinOp::Add
+                | BinOp::Sub
+                | BinOp::Mul
+                | BinOp::Div
+                | BinOp::Rem
+                | BinOp::Eq
+                | BinOp::Neq
+                | BinOp::Lt
+                | BinOp::LtEq
+                | BinOp::Gt
+                | BinOp::GtEq
+                | BinOp::And
+                | BinOp::Or
+                | BinOp::Cons
+                | BinOp::In
+                | BinOp::NotIn => {}
             }
         }
         Expr::UnOp(_, x) | Expr::Ascribe(x, _) => {
@@ -647,6 +687,34 @@ fn expand_expr_inner(
     }
     desugar_lambda_sugars(e, in_capture);
     Ok(())
+}
+
+fn call2(name: &str, left: Spanned<Expr>, right: Spanned<Expr>) -> Expr {
+    Expr::Call(
+        Box::new(Spanned::new(Expr::Var(name.to_string()), left.span)),
+        vec![left, right],
+    )
+}
+
+fn call3(name: &str, first: Spanned<Expr>, second: Spanned<Expr>, third: Spanned<Expr>) -> Expr {
+    Expr::Call(
+        Box::new(Spanned::new(Expr::Var(name.to_string()), first.span)),
+        vec![first, second, third],
+    )
+}
+
+fn range_new_args(e: &Spanned<Expr>) -> Option<(Spanned<Expr>, Spanned<Expr>)> {
+    let Expr::Call(callee, args) = &e.node else {
+        return None;
+    };
+    let Expr::Var(name) = &callee.node else {
+        return None;
+    };
+    if name == "Range.new" && args.len() == 3 {
+        Some((args[0].clone(), args[1].clone()))
+    } else {
+        None
+    }
 }
 
 fn desugar_lambda_sugars(e: &mut Spanned<Expr>, in_capture: bool) {
@@ -1237,6 +1305,16 @@ mod tests {
         interp.call_named("main", vec![]).expect("eval")
     }
 
+    fn expanded_main_body(src: &str) -> Expr {
+        let mut prog = parse(src);
+        expand_program(&mut prog).expect("expand");
+        let item = prog.items.first().expect("main item");
+        let Item::Fn(def) = &**item else {
+            panic!("expected fn item");
+        };
+        def.clauses[0].body.node.clone()
+    }
+
     #[test]
     fn defmacro_increments_arg() {
         // Classic Elixir-shape macro: receives arg as quoted form, returns
@@ -1515,6 +1593,41 @@ end
     fn pipe_into_call_rewrites_during_expansion() {
         let src = "fn add2(x), do: x + 2\nfn main(), do: 1 |> add2()";
         assert!(matches!(run(src), crate::exec::value::Value::Int(3)));
+    }
+
+    #[test]
+    fn operator_sugars_rewrite_to_runtime_calls() {
+        let body = expanded_main_body(
+            r#"fn main() do
+  {
+    [1] ++ [2],
+    [1, 2, 1] -- [1],
+    "a" <> "b",
+    1..3,
+    1..3//2
+  }
+end"#,
+        );
+        let Expr::Tuple(values) = &body else {
+            panic!("expected tuple");
+        };
+
+        assert_call_name(&values[0], "List.concat", 2);
+        assert_call_name(&values[1], "List.subtract", 2);
+        assert_call_name(&values[2], "Kernel.fz_binary_concat", 2);
+        assert_call_name(&values[3], "Range.new", 3);
+        assert_call_name(&values[4], "Range.new", 3);
+    }
+
+    fn assert_call_name(expr: &Spanned<Expr>, expected: &str, arity: usize) {
+        let Expr::Call(callee, args) = &expr.node else {
+            panic!("expected call, got {:?}", expr.node);
+        };
+        let Expr::Var(name) = &callee.node else {
+            panic!("expected var callee, got {:?}", callee.node);
+        };
+        assert_eq!(name, expected);
+        assert_eq!(args.len(), arity);
     }
 
     #[test]

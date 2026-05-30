@@ -462,6 +462,21 @@ fn add_requested_runtime_interfaces(
     }
 }
 
+pub(crate) fn add_macro_requested_runtime_interfaces(prog: &mut Program) {
+    let mut requested = Vec::new();
+    collect_requested_external_modules(prog, &mut requested);
+    for module in requested {
+        if prog.module_interfaces.contains_key(&module)
+            || prog.external_module_interfaces.contains_key(&module)
+        {
+            continue;
+        }
+        if let Some(interface) = crate::modules::runtime_library::interface(&module) {
+            prog.external_module_interfaces.insert(module, interface);
+        }
+    }
+}
+
 fn collect_requested_external_modules(prog: &Program, out: &mut Vec<ModuleName>) {
     for item in &prog.items {
         match &**item {
@@ -636,6 +651,12 @@ fn collect_top_level_qualified_calls(expr: &Spanned<Expr>, out: &mut Vec<ModuleN
 }
 
 fn qualified_callee_module(callee: &Spanned<Expr>) -> Option<ModuleName> {
+    if let Expr::Var(name) = &callee.node
+        && let Some((module, _fun)) = name.rsplit_once('.')
+    {
+        return ModuleName::parse_dotted(module).ok();
+    }
+
     let mut path = Vec::new();
     let mut cur = &callee.node;
     loop {

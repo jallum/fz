@@ -17,6 +17,11 @@ reads the `first` field without Range-specific extern accessors.
 `Kernel.range/3` is an ordinary fz wrapper around `Range.new/3`. There is no
 `fz_range_new` host constructor.
 
+The frontend desugar pass rewrites `first..last` to `Range.new(first, last, 1)`.
+For the literal stepped form `first..last//step`, it rewrites the already-built
+`Range.new(first, last, 1)` call to `Range.new(first, last, step)`. No Range
+operator path calls a host extern.
+
 Because Range is an ordinary Struct, runtime equality follows the existing
 struct equality path: same schema id, then field-by-field comparison. There is
 no Range-specific equality case.

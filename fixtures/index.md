@@ -67,6 +67,7 @@ Run with `BLESS=1` to rewrite after editing fixtures.
 | `no_parens_do/` | A do/end block on a no-parens call becomes a trailing do: keyword arg. | jit, interp, aot, repl |
 | `no_parens_keyword/` | trailing/leading keyword lists in no-parens calls parse into one list arg; output matches Elixir | jit, interp, aot, repl |
 | `opaque_fn_value_join/` | opaque join of zero-capture function values remains callable through Enum.reduce/3 | jit, interp, aot, repl |
+| `operator_sugars/` | operator desugaring rewrites ++, --, <>, .., and ..// to runtime-library calls | jit, interp, aot, repl |
 | `pipe_headless_case/` | pipe macro rewrite for call RHS and headless case RHS | jit, interp, aot, repl |
 | `polymorphic/` | parametric `id` exercised over int, atom, and bool | jit, interp, aot, repl |
 | `process_heap_stats/` | Process.heap_alloc_stats/0 exposes deterministic current-process heap allocation counters as ordinary runtime output | jit, interp, aot, repl |

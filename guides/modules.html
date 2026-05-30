@@ -361,11 +361,16 @@ prelude modules. <code>Kernel</code> lives in its own file and owns the raw
 primitive extern contracts plus public helpers such as <code>print/1</code>
 and <code>assert/1</code>. Ordinary runtime modules live next to it in
 individual files such as <code>src/modules/runtime_library/utf8.fz</code> and
-<code>src/modules/runtime_library/process.fz</code>. <code>Enumerable</code>
-and <code>Enum</code> follow the same rule: protocol facts, list helpers, and
-the public enumeration wrapper API, including <code>Enum.sort</code>'s merge sort,
-are ordinary runtime-library source, not primitive externs. Implementation
-details such as sort helpers stay private with <code>fnp</code>.</p>
+<code>src/modules/runtime_library/process.fz</code>. <code>List</code>,
+<code>Enumerable</code>, and <code>Enum</code> follow the same rule: operator
+helpers, protocol facts, and the public enumeration wrapper API, including
+<code>Enum.sort</code>'s merge sort, are ordinary runtime-library source, not
+primitive externs. Implementation details such as sort helpers stay private
+with <code>fnp</code>.</p>
+
+<p>Generated qualified calls from the macro/desugar pass request runtime
+interfaces the same way imports do, so operator sugar can depend on modules
+such as <code>List</code> without importing those names into every program.</p>
 
 <p>Adding a runtime module means adding a new file under
 <code>src/modules/runtime_library/</code>, putting one ordinary

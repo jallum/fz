@@ -232,6 +232,7 @@ where
     if let Err(e) = macros::expand_program(&mut prog) {
         return Err(fail(sm, e.to_diagnostic()));
     }
+    resolve::add_macro_requested_runtime_interfaces(&mut prog);
     tel.event(
         &["fz", "frontend", "macro_expanded"],
         crate::metadata! {

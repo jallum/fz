@@ -1,0 +1,5 @@
+IO.inspect([1, 2] ++ [3, 4])
+IO.inspect([1, 2, 1, 3] -- [1, 3])
+IO.inspect("foo" <> "bar")
+IO.inspect(1..5)
+IO.inspect(1..5//2)

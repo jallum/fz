@@ -50,6 +50,11 @@ const RUNTIME_MODULE_SOURCES: &[RuntimeModuleSource] = &[
         role: RuntimeModuleRole::Library,
     },
     RuntimeModuleSource {
+        name: "List",
+        source: include_str!("runtime_library/list.fz"),
+        role: RuntimeModuleRole::Library,
+    },
+    RuntimeModuleSource {
         name: "Enum",
         source: include_str!("runtime_library/enum.fz"),
         role: RuntimeModuleRole::Library,
@@ -425,6 +430,16 @@ mod tests {
                 .iter()
                 .any(|import| import.module.dotted() == "Enumerable")
         );
+
+        let list_module = interfaces
+            .get(&ModuleName::from_segments(vec!["List".to_string()]))
+            .expect("List interface");
+        let list_exports = list_module
+            .exports
+            .iter()
+            .map(|f| format!("{}/{}", f.name, f.arity))
+            .collect::<Vec<_>>();
+        assert_eq!(list_exports, vec!["concat/2", "subtract/2"]);
 
         assert_eq!(
             utf8.docs.as_deref(),
