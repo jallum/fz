@@ -49,21 +49,9 @@ impl SourceFile {
         }
     }
 
-    /// FNV-1a hash of this file's bytes. Stable across processes and
-    /// relocation; the basis for portable source identity.
-    // The consumer that reads this directly (the relocation loader that
-    // matches a loaded module's files against the host SourceMap) lands in a
-    // later ticket; today `SourceMap::intern` uses the private field and only
-    // this accessor exposes it. Kept public so the loader needs no re-plumbing.
-    #[allow(dead_code)]
-    pub fn content_hash(&self) -> u64 {
-        self.content_hash
-    }
-
     /// Wire form of this file for a portable IR unit. `SourceFile` itself can't
     /// derive serde (the `OnceLock` line cache), so this DTO carries the
-    /// serializable identity — provider-side `FileId`, name, bytes, and the FNV
-    /// content hash — that a loader re-interns via `SourceMap::intern`. The
+    /// serializable identity a loader re-interns via `SourceMap::intern`. The
     /// `id` is the file's `FileId` in the producing `SourceMap`, recorded so the
     /// loader can build the provider→consumer remap.
     pub fn to_portable(&self, id: FileId) -> PortableSourceFile {
@@ -71,7 +59,6 @@ impl SourceFile {
             file: id,
             name: self.name.clone(),
             bytes: self.bytes.to_string(),
-            content_hash: self.content_hash,
         }
     }
 
@@ -93,17 +80,16 @@ impl SourceFile {
 
 /// Serializable identity of a `SourceFile` — the wire form embedded in a
 /// portable IR unit (`.fzo`). A loader re-interns each one via
-/// `SourceMap::intern(name, bytes)`, which recomputes the same FNV hash;
-/// `content_hash` rides along so the identity can be checked without re-hashing.
-/// `file` is the `FileId` this source had in the *producing* `SourceMap`; the
-/// loader pairs it with the consumer `FileId` returned by `intern` to build the
-/// remap that `Module::remap_file_ids` applies to every span.
+/// `SourceMap::intern(name, bytes)`, which recomputes the content hash and
+/// dedupes. `file` is the `FileId` this source had in the *producing*
+/// `SourceMap`; the loader pairs it with the consumer `FileId` returned by
+/// `intern` to build the remap that `Module::remap_file_ids` applies to every
+/// span.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PortableSourceFile {
     pub file: FileId,
     pub name: String,
     pub bytes: String,
-    pub content_hash: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

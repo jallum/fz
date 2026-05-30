@@ -207,19 +207,7 @@ pub(crate) fn prepare_execution_graph(
     tel: &dyn telemetry::Telemetry,
     mode: CompileMode,
 ) -> Result<PreparedExecutionGraph, PipelineError> {
-    // Build the root unit while the borrow on `prepared` is still immutable;
-    // the load path then needs `&mut prepared.sm` to intern structurally-loaded
-    // provider sources, so the root must be materialized first.
-    let root_unit = prepared.compiled_unit_input();
-    let units = load_provider_units(
-        t,
-        root_unit,
-        &prepared.interfaces,
-        &prepared.external_interfaces,
-        &mut prepared.sm,
-        providers,
-        tel,
-    )?;
+    let units = load_provider_units(t, &mut prepared, providers, tel)?;
     let linked_units = units.len() > 1;
     let module = if linked_units {
         ir_codegen::link_ir_units(&units).map_err(PipelineError::Link)?
@@ -291,15 +279,13 @@ fn has_errors(diagnostics: &diag::Diagnostics) -> bool {
 #[allow(clippy::too_many_arguments)]
 fn load_provider_units(
     t: &mut types::ConcreteTypes,
-    root_unit: CompiledUnit,
-    interfaces: &BTreeMap<ModuleName, ModuleInterface>,
-    external_interfaces: &BTreeMap<ModuleName, ModuleInterface>,
-    sm: &mut diag::SourceMap,
+    prepared: &mut CheckedModule,
     providers: &ProviderInputs,
     tel: &dyn telemetry::Telemetry,
 ) -> Result<Vec<CompiledUnit>, PipelineError> {
     let store = ArtifactStore::new(&providers.artifact_root);
-    let runtime_roots = external_interfaces
+    let runtime_roots = prepared
+        .external_interfaces
         .keys()
         .filter(|module| {
             crate::modules::runtime_library::interface(module).is_some()
@@ -314,7 +300,7 @@ fn load_provider_units(
         .chain(runtime_roots)
         .collect::<Vec<_>>();
     let graph = ModuleGraphLoader::new(store)
-        .load_reachable(tel, interfaces, &provider_roots)
+        .load_reachable(tel, &prepared.interfaces, &provider_roots)
         .map_err(PipelineError::Artifact)?;
     tel.event(
         &["fz", "module", "graph_loaded"],
@@ -324,7 +310,7 @@ fn load_provider_units(
         },
     );
 
-    let mut units = vec![root_unit];
+    let mut units = vec![prepared.compiled_unit_input()];
     for object in graph.objects {
         let module = object
             .module
@@ -332,7 +318,14 @@ fn load_provider_units(
             .ok_or(PipelineError::MissingFzoModule)?;
         let interface = graph.interfaces.get(&module).cloned();
         if object.unit_payload.format == crate::modules::artifact::FZO_PAYLOAD_IR_UNIT_V1 {
-            units.push(materialize_ir_unit(t, object, &module, interface, sm, tel)?);
+            units.push(materialize_ir_unit(
+                t,
+                object,
+                &module,
+                interface,
+                &mut prepared.sm,
+                tel,
+            )?);
         } else {
             let source = object
                 .source_unit_text(tel)

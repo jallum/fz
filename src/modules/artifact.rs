@@ -559,7 +559,7 @@ mod tests {
             serde_json::to_value(&unit.code).unwrap(),
             "module survives the IR-unit round-trip"
         );
-        // Sources survived: name + bytes + content_hash all preserved.
+        // Sources survived: file id + name + bytes all preserved.
         assert_eq!(
             payload.sources, sources,
             "source files survive the round-trip"
