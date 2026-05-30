@@ -793,7 +793,7 @@ fn derive_param_reprs<T: crate::types::Types<Ty = crate::types::Ty>>(
     spec_fnidx: &[Option<usize>],
     spec_fn_types: &[Option<&crate::ir_planner::SpecPlan>],
     spec_keys: &[crate::ir_planner::fn_types::SpecKey],
-    _cont_fns: &std::collections::HashSet<crate::fz_ir::FnId>,
+    cont_fns: &std::collections::HashSet<crate::fz_ir::FnId>,
 ) -> Vec<Vec<ArgRepr>> {
     (0..spec_count)
         .map(|sid| match spec_fnidx[sid] {
@@ -803,7 +803,7 @@ fn derive_param_reprs<T: crate::types::Types<Ty = crate::types::Ty>>(
                 if spec_keys[sid].input.iter().all(Option::is_none) {
                     build_param_reprs(t, f, ft)
                 } else {
-                    build_param_reprs_for_spec(t, f, ft, &spec_keys[sid])
+                    build_param_reprs_for_spec(t, f, ft, &spec_keys[sid], cont_fns.contains(&f.id))
                 }
             }
             None => Vec::new(),

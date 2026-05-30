@@ -159,6 +159,13 @@ caller's demanded ABI directly with `ReturnStrategy::ForwardedDemand`. The
 strategy's demand must match the target demand. A demand without the matching
 strategy is an unknown/incomplete plan, not a usable fact.
 
+Native codegen lowers from the contract payload. It does not rediscover
+list-tail lanes from captures or treat tuple-field return demand as an entry
+parameter rewrite for ordinary functions. Tuple-field entry expansion is only
+for continuation functions that receive a producer's tuple fields directly; a
+plain function with `ReturnDemand::TupleFields(N)` keeps its normal entry
+parameters and only changes how its return is delivered.
+
 `ReturnDemand` has two axes:
 
 - delivery: `Value` or `TupleFields(N)`;

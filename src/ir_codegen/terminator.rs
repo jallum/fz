@@ -2,6 +2,7 @@
 
 use super::*;
 use crate::fz_ir::Term;
+use crate::ir_planner::fn_types::{ReturnContextPlan, ReturnContract, ReturnStrategy};
 use cranelift_codegen::ir::{
     self, AbiParam, BlockArg, InstBuilder, MemFlags, Signature, condcodes::IntCC, types,
 };
@@ -93,6 +94,28 @@ fn resolve_callee_sid<
                 cid, target
             )
         })
+}
+
+fn callsite_return_contract<'a>(
+    fn_types: &'a crate::ir_planner::SpecPlan,
+    caller: crate::fz_ir::FnId,
+    ident: &crate::fz_ir::CallsiteIdent,
+    slot: crate::fz_ir::EmitSlot,
+) -> Option<&'a ReturnContract> {
+    let cid = crate::fz_ir::CallsiteId {
+        caller,
+        ident: ident.clone(),
+        slot,
+    };
+    fn_types.return_contract(&cid)
+}
+
+fn return_contract_context_plan(contract: &ReturnContract) -> Option<&ReturnContextPlan> {
+    contract.strategy.context_plan()
+}
+
+fn return_contract_has_list_tail_context(contract: &ReturnContract) -> bool {
+    contract.strategy.demand().list_tail_ty().is_some()
 }
 
 fn callee_is_native(env: &CodegenEnv<'_>, id: u32) -> bool {
@@ -648,37 +671,36 @@ fn emit_call_term<
             .ident()
             .expect("Term::Call must carry callsite ident")
             .clone();
-        let direct_cid = crate::fz_ir::CallsiteId {
-            caller: caller_fn_id,
-            ident: term_ident.clone(),
-            slot: crate::fz_ir::EmitSlot::Direct,
-        };
-        let cont_cid = crate::fz_ir::CallsiteId {
-            caller: caller_fn_id,
-            ident: term_ident,
-            slot: crate::fz_ir::EmitSlot::Cont,
-        };
-        let cons_then_direct = match fn_types.return_context_plan(&direct_cid) {
-            Some(crate::ir_planner::fn_types::ReturnContextPlan::ConsThenDirect {
-                pivot,
-                tail,
-                ..
-            }) => Some((*pivot, *tail)),
+        let direct_contract = callsite_return_contract(
+            fn_types,
+            caller_fn_id,
+            &term_ident,
+            crate::fz_ir::EmitSlot::Direct,
+        );
+        let cont_contract = callsite_return_contract(
+            fn_types,
+            caller_fn_id,
+            &term_ident,
+            crate::fz_ir::EmitSlot::Cont,
+        );
+        let cons_then_direct = match direct_contract.and_then(return_contract_context_plan) {
+            Some(ReturnContextPlan::ConsThenDirect { pivot, tail, .. }) => Some((*pivot, *tail)),
             _ => None,
         };
-        let cont_list_tail_bridge = match fn_types.return_context_plan(&direct_cid) {
-            Some(crate::ir_planner::fn_types::ReturnContextPlan::ContinuationListTailBridge {
-                pivot,
-                tail,
-                ..
-            }) => Some((*pivot, *tail)),
+        let cont_list_tail_bridge = match direct_contract.and_then(return_contract_context_plan) {
+            Some(ReturnContextPlan::ContinuationListTailBridge { pivot, tail, .. }) => {
+                Some((*pivot, *tail))
+            }
             _ => None,
         };
         if env.spec_keys[this_spec_id as usize].demand.is_value()
-            && let Some(crate::ir_planner::fn_types::ReturnContextPlan::ContinuationEmptyTail {
-                target,
-                ..
-            }) = fn_types.return_context_plan(&cont_cid)
+            && let Some(contract) = cont_contract
+            && matches!(
+                contract.strategy,
+                ReturnStrategy::TupleFieldsListTail { .. } | ReturnStrategy::ListTail(_)
+            )
+            && let Some(ReturnContextPlan::ContinuationEmptyTail { target, .. }) =
+                return_contract_context_plan(contract)
             && let Some(sid) = spec_registry.resolve_spec_key(t, target)
         {
             cont_sid = sid.0;
@@ -1034,11 +1056,22 @@ fn emit_tail_call_term<
     let _ = schemas;
     {
         let callee_sid = resolve_callee_sid(t, env, caller_fn_id, blk);
+        let term_ident = blk
+            .terminator
+            .ident()
+            .expect("Term::TailCall must carry callsite ident");
+        let return_contract = callsite_return_contract(
+            env.fn_types,
+            caller_fn_id,
+            term_ident,
+            crate::fz_ir::EmitSlot::Direct,
+        );
         if callee_is_native(env, callee.0) {
             emit_native_tail_call(
                 body,
                 env,
                 var_env,
+                return_contract,
                 is_native,
                 is_cont_fn,
                 frame_ptr,
@@ -1075,6 +1108,7 @@ fn emit_native_tail_call<M: cranelift_module::Module>(
     body: &mut CodegenFn<'_, '_, '_, M>,
     env: &CodegenEnv<'_>,
     var_env: &HashMap<u32, CodegenValue>,
+    return_contract: Option<&ReturnContract>,
     is_native: bool,
     is_cont_fn: bool,
     frame_ptr: Option<ir::Value>,
@@ -1112,7 +1146,7 @@ fn emit_native_tail_call<M: cranelift_module::Module>(
         native_args.push(static_closure);
         mid_flight_arg_shapes.push(MidFlightArgShape::HeapRef);
     }
-    if DemandAbi::new(&env.spec_keys[callee_sid as usize]).has_list_tail_context() {
+    if return_contract.is_some_and(return_contract_has_list_tail_context) {
         native_args.push(list_tail_destination_arg(body));
         mid_flight_arg_shapes.push(MidFlightArgShape::HeapRef);
     }
@@ -1137,6 +1171,15 @@ fn emit_native_tail_call<M: cranelift_module::Module>(
     };
     native_args.push(tail_cont_arg);
     mid_flight_arg_shapes.push(MidFlightArgShape::HeapRef);
+    assert_eq!(
+        native_args.len(),
+        expected_native_tail_arg_count(
+            callee_param_reprs,
+            closure_n_captures.contains_key(callee),
+            return_contract.is_some_and(return_contract_has_list_tail_context)
+        ),
+        "native tail-call arg lanes must match planner return contract"
+    );
     if is_native {
         // Native-to-native TailCall: use return_call so
         // recursive tail calls reuse the same stack frame
@@ -1191,6 +1234,20 @@ fn emit_native_tail_call<M: cranelift_module::Module>(
         body.store_frame_value_dynamic(my_cont, SLOT_BYTES as u32, result_value);
         body.b.ins().return_(&[my_cont]);
     }
+}
+
+fn expected_native_tail_arg_count(
+    callee_param_reprs: &[ArgRepr],
+    has_static_self: bool,
+    has_list_tail_dest: bool,
+) -> usize {
+    callee_param_reprs
+        .iter()
+        .map(ArgRepr::abi_arity)
+        .sum::<usize>()
+        + usize::from(has_static_self)
+        + usize::from(has_list_tail_dest)
+        + 1
 }
 
 // Cooperative back-edge yield check: spend one reduction from the

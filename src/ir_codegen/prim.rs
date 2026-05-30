@@ -1230,6 +1230,20 @@ fn lower_type_test<M: cranelift_module::Module>(
     let tuple_arities = descr.type_test_tuple_arities();
     let struct_names = descr.type_test_struct_names();
 
+    if let Some(delivered_arity) = delivered_tuple_field_arity(body, v) {
+        if tuple_has_negations {
+            panic!("TypeTest: negated tuple clauses not yet supported");
+        }
+        let flag = body.b.ins().iconst(
+            types::I8,
+            i64::from(tuple_arities.contains(&delivered_arity)),
+        );
+        if body.cache.if_only_conds.contains(&dest_var.0) {
+            return Ok(LowerOut::Condition(flag));
+        }
+        return Ok(LowerOut::Strict(strict_bool(body.b, flag)));
+    }
+
     let value = *var_env.get(&v.0).expect("type-test subject");
 
     let scalar = emit_scalar_kind_checks(body, env.module, descr, value)?;
@@ -1261,6 +1275,19 @@ fn lower_type_test<M: cranelift_module::Module>(
         return Ok(LowerOut::Condition(flag));
     }
     Ok(LowerOut::Strict(strict_bool(body.b, flag)))
+}
+
+fn delivered_tuple_field_arity<M: cranelift_module::Module>(
+    body: &CodegenFn<'_, '_, '_, M>,
+    tuple: crate::fz_ir::Var,
+) -> Option<usize> {
+    let mut count = 0;
+    for (logical_tuple, _) in body.cache.tuple_field_params.keys() {
+        if *logical_tuple == tuple.0 {
+            count += 1;
+        }
+    }
+    (count > 0).then_some(count)
 }
 
 /// Scalar kind checks: emits icmps that or-into the returned flag

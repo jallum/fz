@@ -576,8 +576,15 @@ where
             self.out
                 .record_dispatch(self.caller_spec_key, term_ident, slot, entry_key.clone());
         if let Some(plan) = context_plan {
+            let contract_target = match &plan {
+                ReturnContextPlan::ContinuationEmptyTail { target, .. } => target.clone(),
+                _ => entry_key.clone(),
+            };
             self.out
-                .record_return_contract(&cid, entry_key.clone(), Some(plan));
+                .record_return_contract(&cid, contract_target.clone(), Some(plan));
+            if contract_target != entry_key {
+                self.emit(slot, term_ident.clone(), contract_target);
+            }
         }
         self.emit(slot, term_ident.clone(), entry_key);
     }

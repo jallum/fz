@@ -1923,9 +1923,36 @@ fn param_reprs_for_spec_use_concrete_key_when_entry_var_is_generic() {
         crate::types::key_slots_from_tys(vec![int]),
     );
 
-    let reprs = build_param_reprs_for_spec(&mut t, &f, &ft, &key);
+    let reprs = build_param_reprs_for_spec(&mut t, &f, &ft, &key, false);
 
     assert_eq!(reprs, vec![ArgRepr::RawInt]);
+}
+
+#[test]
+fn tuple_field_return_demand_does_not_rewrite_plain_function_params() {
+    let mut t = crate::types::ConcreteTypes;
+    let mut builder = FnBuilder::new(FnId(0), "pair");
+    let a = builder.fresh_var();
+    let b = builder.fresh_var();
+    let entry = builder.block(vec![a, b]);
+    let pair = builder.let_(entry, Prim::MakeTuple(vec![a, b]));
+    builder.set_terminator(entry, Term::Return(pair));
+    let f = builder.build();
+
+    let mut ft = crate::ir_planner::SpecPlan::default();
+    ft.vars.insert(a, t.any());
+    ft.vars.insert(b, t.any());
+    let int = t.int();
+    let float = t.float();
+    let key = crate::ir_planner::fn_types::SpecKey {
+        fn_id: f.id,
+        input: crate::types::key_slots_from_tys(vec![int, float]),
+        demand: crate::ir_planner::fn_types::ReturnDemand::tuple_fields(2),
+    };
+
+    let reprs = build_param_reprs_for_spec(&mut t, &f, &ft, &key, false);
+
+    assert_eq!(reprs, vec![ArgRepr::RawInt, ArgRepr::RawF64]);
 }
 
 #[test]
