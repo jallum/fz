@@ -712,38 +712,30 @@ fn main() do
   dbg({
     Enum.count([1, 2, 3]),
     Enum.member?([1, 2, 3], 2),
-    Enum.reduce([1, 2, 3], {:cont, 0}, fn (x, acc) -> {:cont, acc + x} end)
+    Enum.reduce([1, 2, 3], 0, fn (x, acc) -> acc + x end),
+    Enumerable.reduce([1, 2, 3], {:cont, 0}, fn (x, acc) -> {:cont, acc + x} end)
   })
 end
 "#,
     );
 
-    assert_eq!(got, vec!["{{:ok, 3}, {:ok, true}, {:done, 6}}"]);
+    assert_eq!(got, vec!["{3, true, 6, {:done, 6}}"]);
 }
 
 #[test]
-fn runtime_enumerable_list_reduce_can_suspend_and_resume() {
+fn runtime_enumerable_list_reduce_reports_low_level_done_and_halt() {
     let got = capture_main_with_runtime_graph(
         r#"
-fn reducer(x, acc) do
-  case x do
-    1 -> {:suspend, acc + x}
-    _ -> {:cont, acc + x}
-  end
-end
-
 fn main() do
-  case Enum.reduce([1, 2], {:cont, 0}, reducer) do
-    {:suspended, first, resume} ->
-      case resume() do
-        {:done, total} -> dbg(first + total)
-      end
-  end
+  dbg({
+    Enumerable.reduce([1, 2], {:cont, 0}, fn (x, acc) -> {:cont, acc + x} end),
+    Enumerable.reduce([1, 2], {:halt, 7}, fn (x, acc) -> {:cont, acc + x} end)
+  })
 end
 "#,
     );
 
-    assert_eq!(got, vec!["4"]);
+    assert_eq!(got, vec!["{{:done, 3}, {:halted, 7}}"]);
 }
 
 #[test]
