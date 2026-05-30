@@ -9,7 +9,7 @@
 //! This module exposes the second layer as deterministic `.fzi`/`.fzo`
 //! artifact envelopes so resolver and linker work can depend on the same
 //! facts a user library would provide.
-use crate::ast::{Attribute, Item, ModuleDef, Program, ProtocolDef};
+use crate::ast::{Attribute, Expr, Item, ModuleDef, Program, ProtocolDef, Spanned, WithBinding};
 #[cfg(test)]
 use crate::frontend::resolve::InterfaceTable;
 use crate::modules::artifact::{FziArtifact, FzoArtifact, FzoUnitPayload};
@@ -206,6 +206,27 @@ pub fn interface(module: &ModuleName) -> Option<ModuleInterface> {
     artifact(module).map(|artifact| artifact.interface)
 }
 
+pub fn implementation_dependencies(module: &ModuleName) -> Vec<ModuleName> {
+    let Some(source) = runtime_module_source(module) else {
+        return Vec::new();
+    };
+    let toks = crate::parser::lexer::Lexer::new(source)
+        .tokenize()
+        .unwrap_or_else(|_| panic!("{}.fz lex error (bug in built-in runtime library)", module));
+    let (items, _attrs) = crate::parser::Parser::new(toks)
+        .parse_prelude()
+        .unwrap_or_else(|err| {
+            panic!(
+                "{}.fz parse error (bug in built-in runtime library): {} at {:?}",
+                module, err, err.span
+            )
+        });
+    let mut deps = std::collections::BTreeSet::new();
+    collect_runtime_implementation_dependencies(&items, &mut deps);
+    deps.remove(module);
+    deps.into_iter().collect()
+}
+
 pub fn artifact(module: &ModuleName) -> Option<RuntimeLibraryModuleArtifact> {
     artifacts()
         .into_iter()
@@ -226,6 +247,213 @@ pub fn artifacts() -> Vec<RuntimeLibraryModuleArtifact> {
         }
     }
     out
+}
+
+fn collect_runtime_implementation_dependencies(
+    items: &[std::rc::Rc<Item>],
+    out: &mut std::collections::BTreeSet<ModuleName>,
+) {
+    for item in items {
+        match &**item {
+            Item::Import { path, .. }
+            | Item::Alias {
+                full_path: path, ..
+            } => {
+                out.insert(path.clone());
+            }
+            Item::Fn(def) => {
+                for clause in &def.clauses {
+                    collect_expr_dependencies(&clause.body, out);
+                    if let Some(guard) = &clause.guard {
+                        collect_expr_dependencies(guard, out);
+                    }
+                }
+            }
+            Item::Module(module) => {
+                collect_runtime_implementation_dependencies(&module.items, out);
+            }
+            _ => {}
+        }
+    }
+}
+
+fn collect_expr_dependencies(
+    expr: &Spanned<Expr>,
+    out: &mut std::collections::BTreeSet<ModuleName>,
+) {
+    match &expr.node {
+        Expr::Call(callee, args) => {
+            if let Some(module) = qualified_callee_module(callee) {
+                out.insert(module);
+            }
+            collect_expr_dependencies(callee, out);
+            for arg in args {
+                collect_expr_dependencies(arg, out);
+            }
+        }
+        Expr::FnRef { name, .. } => {
+            if let Some((module, _fun)) = name.rsplit_once('.')
+                && let Ok(module) = ModuleName::parse_dotted(module)
+            {
+                out.insert(module);
+            }
+        }
+        Expr::Capture(body) | Expr::Quote(body) | Expr::Unquote(body) | Expr::Ascribe(body, _) => {
+            collect_expr_dependencies(body, out);
+        }
+        Expr::CaptureArg(_) => {}
+        Expr::List(items, tail) => {
+            for item in items {
+                collect_expr_dependencies(item, out);
+            }
+            if let Some(tail) = tail {
+                collect_expr_dependencies(tail, out);
+            }
+        }
+        Expr::Tuple(items) | Expr::Block(items) => {
+            for item in items {
+                collect_expr_dependencies(item, out);
+            }
+        }
+        Expr::Bitstring(fields) => {
+            for field in fields {
+                collect_expr_dependencies(&field.value, out);
+            }
+        }
+        Expr::Map(pairs) => {
+            for (key, value) in pairs {
+                collect_expr_dependencies(key, out);
+                collect_expr_dependencies(value, out);
+            }
+        }
+        Expr::MapUpdate(map, pairs) => {
+            collect_expr_dependencies(map, out);
+            for (key, value) in pairs {
+                collect_expr_dependencies(key, out);
+                collect_expr_dependencies(value, out);
+            }
+        }
+        Expr::Struct { fields, .. } => {
+            for (_field, value) in fields {
+                collect_expr_dependencies(value, out);
+            }
+        }
+        Expr::Index(target, key) => {
+            collect_expr_dependencies(target, out);
+            collect_expr_dependencies(key, out);
+        }
+        Expr::BinOp(_, left, right) => {
+            collect_expr_dependencies(left, out);
+            collect_expr_dependencies(right, out);
+        }
+        Expr::UnOp(_, inner) => collect_expr_dependencies(inner, out),
+        Expr::If(cond, then_expr, else_expr) => {
+            collect_expr_dependencies(cond, out);
+            collect_expr_dependencies(then_expr, out);
+            if let Some(else_expr) = else_expr {
+                collect_expr_dependencies(else_expr, out);
+            }
+        }
+        Expr::Case(scrutinee, arms) => {
+            if let Some(scrutinee) = scrutinee {
+                collect_expr_dependencies(scrutinee, out);
+            }
+            for arm in arms {
+                if let Some(guard) = &arm.guard {
+                    collect_expr_dependencies(guard, out);
+                }
+                collect_expr_dependencies(&arm.body, out);
+            }
+        }
+        Expr::Cond(pairs) => {
+            for (cond, body) in pairs {
+                collect_expr_dependencies(cond, out);
+                collect_expr_dependencies(body, out);
+            }
+        }
+        Expr::With(bindings, body, else_clauses) => {
+            for binding in bindings {
+                match binding {
+                    WithBinding::Match(_, value) => collect_expr_dependencies(value, out),
+                    WithBinding::Bare(value) => collect_expr_dependencies(value, out),
+                }
+            }
+            collect_expr_dependencies(body, out);
+            for clause in else_clauses {
+                if let Some(guard) = &clause.guard {
+                    collect_expr_dependencies(guard, out);
+                }
+                collect_expr_dependencies(&clause.body, out);
+            }
+        }
+        Expr::Receive { clauses, after } => {
+            for clause in clauses {
+                if let Some(guard) = &clause.guard {
+                    collect_expr_dependencies(guard, out);
+                }
+                collect_expr_dependencies(&clause.body, out);
+            }
+            if let Some(after) = after {
+                collect_expr_dependencies(&after.timeout, out);
+                collect_expr_dependencies(&after.body, out);
+            }
+        }
+        Expr::Match(_pattern, rhs) => collect_expr_dependencies(rhs, out),
+        Expr::Lambda(clauses) => {
+            for clause in clauses {
+                if let Some(guard) = &clause.guard {
+                    collect_expr_dependencies(guard, out);
+                }
+                collect_expr_dependencies(&clause.body, out);
+            }
+        }
+        Expr::Var(_)
+        | Expr::Int(_)
+        | Expr::Float(_)
+        | Expr::Binary(_)
+        | Expr::Atom(_)
+        | Expr::Bool(_)
+        | Expr::Nil => {}
+    }
+}
+
+fn qualified_callee_module(callee: &Spanned<Expr>) -> Option<ModuleName> {
+    if let Expr::Var(name) = &callee.node
+        && let Some((module, _fun)) = name.rsplit_once('.')
+    {
+        return ModuleName::parse_dotted(module).ok();
+    }
+
+    let mut path = Vec::new();
+    let mut cur = &callee.node;
+    loop {
+        match cur {
+            Expr::Index(target, key) => {
+                let Expr::Atom(member) = &key.node else {
+                    return None;
+                };
+                path.push(member.clone());
+                cur = &target.node;
+            }
+            Expr::Var(name) if is_upper(name) => {
+                if path.is_empty() {
+                    return None;
+                }
+                path.push(name.clone());
+                path.reverse();
+                path.pop();
+                return Some(ModuleName::from_segments(path));
+            }
+            _ => return None,
+        }
+    }
+}
+
+fn is_upper(s: &str) -> bool {
+    s.chars()
+        .next()
+        .map(|c| c.is_ascii_uppercase())
+        .unwrap_or(false)
 }
 
 fn collect_protocol_artifact(

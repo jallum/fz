@@ -53,6 +53,7 @@ impl ModuleGraphLoader {
                 interfaces.insert(module, interface.clone());
                 enqueue_imports(&mut queue, &interface);
                 enqueue_protocol_impl_protocols(&mut queue, &interface);
+                enqueue_runtime_implementation_imports(&mut queue, &interface);
                 enqueue_runtime_protocol_impls(&mut queue, &interfaces, &interface);
                 runtime_modules.insert(interface.name.clone());
                 continue;
@@ -96,6 +97,15 @@ fn enqueue_imports(queue: &mut VecDeque<ModuleName>, interface: &ModuleInterface
 fn enqueue_protocol_impl_protocols(queue: &mut VecDeque<ModuleName>, interface: &ModuleInterface) {
     for protocol_impl in &interface.protocol_impls {
         queue.push_back(protocol_impl.protocol.clone());
+    }
+}
+
+fn enqueue_runtime_implementation_imports(
+    queue: &mut VecDeque<ModuleName>,
+    interface: &ModuleInterface,
+) {
+    for module in crate::modules::runtime_library::implementation_dependencies(&interface.name) {
+        queue.push_back(module);
     }
 }
 
@@ -325,6 +335,27 @@ mod tests {
                 .expect("runtime fzo source")
                 .contains("defmodule Utf8")
         );
+    }
+
+    #[test]
+    fn graph_loader_follows_runtime_implementation_dependencies() {
+        let store = ArtifactStore::new(std::env::temp_dir().join(format!(
+            "fz-module-graph-{}-runtime-impl-deps",
+            std::process::id()
+        )));
+        let app = interface("App", vec!["Enum"], vec![("main", 0)]);
+        let mut roots = InterfaceTable::new();
+        roots.insert(app.name.clone(), app);
+
+        let graph = ModuleGraphLoader::new(store)
+            .load_reachable(&crate::telemetry::NullTelemetry, &roots, [])
+            .expect("load graph");
+
+        assert!(graph.interfaces.contains_key(&module("Enum")));
+        assert!(graph.interfaces.contains_key(&module("Enumerable")));
+        assert!(graph.interfaces.contains_key(&module("List")));
+        assert!(graph.interfaces.contains_key(&module("Range")));
+        assert!(graph.interfaces.contains_key(&module("Map")));
     }
 
     #[test]

@@ -116,6 +116,23 @@ Inside modules, `fnp name(...)` declares a private helper. It participates in
 normal same-module resolution and lowering, but it is omitted from
 `ModuleInterface` exports and does not require a public `@spec`.
 
+## Reachable Runtime Modules
+
+`modules::graph::ModuleGraphLoader` loads interfaces by public contract first:
+declared imports, provider roots, protocol declarations, and protocol
+implementation facts. A module that publishes a `defimpl` depends on the
+protocol namespace as a public fact, so the graph enqueues the protocol
+interface directly from `ModuleInterface.protocol_impls`.
+
+Runtime-library modules also ship source-backed `.fzo` payloads. Their
+interfaces still do not expose private helper calls, but the graph must load the
+runtime modules their implementation bodies call before materializing a linked
+image. `modules::runtime_library::implementation_dependencies` is the narrow
+exception: it scans checked-in runtime-library source for module references and
+is only consulted for runtime modules. Do not copy this behavior to user module
+interfaces; user implementation dependencies are represented by imports and
+provider roots.
+
 ## Vocabulary
 
 Use these terms precisely:
