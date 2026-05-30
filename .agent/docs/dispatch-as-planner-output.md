@@ -63,6 +63,15 @@ remaps unit-local facts into linked ids and resolves the provider-boundary
 target to the local `SpecKey` while `Module::rewrite_external_calls_for_lto`
 rewrites the terminator.
 
+The synthetic `__external__.*` stub is only a lowering anchor. If a callsite has
+an `ExternalCallEdge`, planner discovery records a provider-boundary
+`CallEdgeTarget::External`; it must not plan through the stub body or read the
+stub's `external_module_unlinked` halt as a real return. Non-tail external
+calls still get an ordinary local `Cont` edge. The continuation's slot-0 type
+comes from the callee's public `@spec` when available, otherwise from `any`,
+because an unknown provider result is a complete boundary fact, not a pending
+local return.
+
 Each call edge may also record the typed return-use fact for its result hole and
 the executable plan for return-use facts that need lowering. The current
 concrete plans lower ListTail contexts. They can also name the already-proved
@@ -172,6 +181,13 @@ the whole caller spec. A caller spec may contain multiple calls, and each call
 can feed a different use. Codegen must therefore consume the `CallsiteId` facts
 the planner produced instead of reusing the caller spec's demand as a blanket
 property.
+
+Effective returns are a worklist fixpoint. Missing downstream return facts are
+pending, not a definite `none`; readers are indexed so they run again when the
+callee's return appears, widens, or completes. Once a provisional return exists,
+the planner may use it to build continuation keys and return joins. That is what
+lets recursive SCCs widen monotonically instead of waiting for themselves to be
+"complete" before contributing to the fixpoint.
 
 ## Why Not Re-Walk In Codegen
 

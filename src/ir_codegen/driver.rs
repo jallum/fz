@@ -796,7 +796,9 @@ fn declared_return_for_spec_key<T: crate::types::Types<Ty = crate::types::Ty>>(
 /// honor build_param_reprs' typed output: closure_lit-typed MakeClosure
 /// combined with direct return_call dispatch means every closure-call
 /// site resolves to a single body spec whose ABI the caller targets
-/// exactly.
+/// exactly. Any concrete `SpecKey` input is authoritative for that entry
+/// slot's ABI; the entry var may still be generic while the selected spec
+/// is already concrete.
 ///
 /// The indirect fallback path in TailCallClosure still assumes
 /// all-ValueRef at the seam, so closures used polymorphically (union of
@@ -810,17 +812,17 @@ fn derive_param_reprs<T: crate::types::Types<Ty = crate::types::Ty>>(
     spec_fnidx: &[Option<usize>],
     spec_fn_types: &[Option<&crate::ir_planner::SpecPlan>],
     spec_keys: &[crate::ir_planner::fn_types::SpecKey],
-    cont_fns: &std::collections::HashSet<crate::fz_ir::FnId>,
+    _cont_fns: &std::collections::HashSet<crate::fz_ir::FnId>,
 ) -> Vec<Vec<ArgRepr>> {
     (0..spec_count)
         .map(|sid| match spec_fnidx[sid] {
             Some(idx) => {
                 let f = &module.fns[idx];
                 let ft = spec_fn_types[sid].expect("non-sentinel spec must have SpecPlan");
-                if cont_fns.contains(&f.id) {
-                    build_param_reprs_for_spec(t, f, ft, &spec_keys[sid])
-                } else {
+                if spec_keys[sid].input.iter().all(Option::is_none) {
                     build_param_reprs(t, f, ft)
+                } else {
+                    build_param_reprs_for_spec(t, f, ft, &spec_keys[sid])
                 }
             }
             None => Vec::new(),

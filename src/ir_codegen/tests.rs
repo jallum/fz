@@ -1915,6 +1915,28 @@ fn signature_uniform_when_not_native() {
 }
 
 #[test]
+fn param_reprs_for_spec_use_concrete_key_when_entry_var_is_generic() {
+    let mut t = crate::types::ConcreteTypes;
+    let mut builder = FnBuilder::new(FnId(0), "k");
+    let x = builder.fresh_var();
+    let entry = builder.block(vec![x]);
+    builder.set_terminator(entry, Term::Return(x));
+    let f = builder.build();
+
+    let mut ft = crate::ir_planner::SpecPlan::default();
+    ft.vars.insert(x, t.any());
+    let int = t.int();
+    let key = crate::ir_planner::fn_types::SpecKey::value(
+        f.id,
+        crate::types::key_slots_from_tys(vec![int]),
+    );
+
+    let reprs = build_param_reprs_for_spec(&mut t, &f, &ft, &key);
+
+    assert_eq!(reprs, vec![ArgRepr::RawInt]);
+}
+
+#[test]
 fn signature_native_uses_typed_params_and_cont() {
     // Same `add`, but call-site narrowing has typed both params as int.
     // Native sig is `(i64, i64, cont: i64) -> i64` (cont trailing).

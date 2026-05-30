@@ -2559,7 +2559,85 @@ fn main(), do: Collectable.id([1])
         .local_call_target(&cid)
         .expect("protocol dispatch should publish a direct impl call edge");
     let target_fn = ir.fn_by_id(target.fn_id);
-    assert_eq!(target_fn.name, "List.id");
+    assert_eq!(target_fn.name, "Collectable.List.id");
+}
+
+#[test]
+fn planner_keeps_external_module_calls_at_provider_boundary() {
+    use crate::fz_ir::{CallsiteId, EmitSlot};
+    use crate::ir_planner::fn_types::CallEdgeTarget;
+
+    let mut t = crate::types::ConcreteTypes;
+    let tel = crate::telemetry::NullTelemetry;
+    let math = crate::frontend::compile_source_with_types(
+        &mut t,
+        "defmodule Math do\n  fn add(x, y), do: x + y\nend\n".to_string(),
+        "math.fz".to_string(),
+        &tel,
+    )
+    .unwrap_or_else(|err| panic!("math frontend: {:?}", err.diagnostics));
+    let math_name = crate::modules::identity::ModuleName::from_segments(vec!["Math".to_string()]);
+    let math_interface = math
+        ._prog
+        .module_interfaces
+        .get(&math_name)
+        .cloned()
+        .expect("Math interface");
+
+    let mut interfaces = crate::frontend::resolve::InterfaceTable::new();
+    interfaces.insert(math_name, math_interface);
+    let user = crate::frontend::compile_source_with_interface_table(
+        &mut t,
+        "defmodule User do\n  import Math, only: [add: 2]\n  fn run(), do: add(20, 22) + 1\nend\nfn main(), do: User.run()\n".to_string(),
+        "user.fz".to_string(),
+        interfaces,
+        &tel,
+    )
+    .unwrap_or_else(|err| panic!("user frontend: {:?}", err.diagnostics));
+
+    let edge = user
+        .module
+        .external_call_edges
+        .first()
+        .expect("lowering should record the imported Math.add callsite");
+    let run = user.module.fn_by_name("User.run").expect("User.run");
+    assert_eq!(edge.callsite.caller, run.id);
+
+    let run_spec = user
+        .module_plan
+        .specs
+        .values()
+        .find(|spec| spec.call_edges.contains_key(&edge.callsite))
+        .expect("User.run spec should carry the direct external edge");
+    let direct = run_spec
+        .call_edges
+        .get(&edge.callsite)
+        .expect("direct call edge");
+    assert!(
+        matches!(&direct.target, CallEdgeTarget::External { target, .. }
+            if target.module.to_string() == "Math" && target.name == "add")
+    );
+
+    let cont_callsite = CallsiteId::new(run.id, &edge.callsite.ident, EmitSlot::Cont);
+    assert!(
+        run_spec.local_call_target(&cont_callsite).is_some(),
+        "external calls still need a local continuation dispatch"
+    );
+    assert!(
+        !user.module_plan.specs.values().any(|spec| {
+            spec.call_edges.values().any(|edge| {
+                edge.local_target()
+                    .map(|target| {
+                        user.module
+                            .fn_by_id(target.fn_id)
+                            .name
+                            .starts_with("__external__.")
+                    })
+                    .unwrap_or(false)
+            })
+        }),
+        "external boundary calls must not be planned through the synthetic stub body"
+    );
 }
 
 // ---- fz-t1m.1.1 — protocol callback spec compatibility ----

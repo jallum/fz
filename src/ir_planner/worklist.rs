@@ -207,6 +207,7 @@ fn discover_specs<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::
 
     let mut specs: HashMap<SpecKey, SpecPlan> = HashMap::new();
     let mut effective_returns: HashMap<SpecKey, crate::types::Ty> = HashMap::new();
+    let mut complete_returns: SpecKeySet = std::collections::HashSet::new();
     let mut callsite_callable_capabilities: CallsiteCallableCapabilities = HashMap::new();
     let mut return_readers: ReturnReaders = HashMap::new();
     let mut visit_count: HashMap<SpecKey, usize> = HashMap::new();
@@ -234,6 +235,7 @@ fn discover_specs<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::
         &mut in_work,
         &mut specs,
         &mut effective_returns,
+        &mut complete_returns,
         &mut callsite_callable_capabilities,
         &mut return_readers,
         &mut visit_count,
@@ -367,6 +369,7 @@ pub(crate) fn process_worklist<
     in_work: &mut SpecKeySet,
     specs: &mut HashMap<SpecKey, SpecPlan>,
     effective_returns: &mut HashMap<SpecKey, crate::types::Ty>,
+    complete_returns: &mut SpecKeySet,
     callsite_callable_capabilities: &mut CallsiteCallableCapabilities,
     return_readers: &mut ReturnReaders,
     visit_count: &mut HashMap<SpecKey, usize>,
@@ -420,6 +423,7 @@ pub(crate) fn process_worklist<
             recursive_fns,
             specs,
             effective_returns,
+            complete_returns,
             return_readers,
             work,
             in_work,
@@ -582,27 +586,37 @@ fn update_effective_return_and_enqueue_readers<
     recursive_fns: &std::collections::HashSet<FnId>,
     specs: &HashMap<SpecKey, SpecPlan>,
     effective_returns: &mut HashMap<SpecKey, crate::types::Ty>,
+    complete_returns: &mut SpecKeySet,
     return_readers: &mut ReturnReaders,
     work: &mut std::collections::VecDeque<SpecKey>,
     in_work: &mut SpecKeySet,
     walk_return_reads: Vec<SpecKey>,
 ) {
     let mut compute_reads = Vec::new();
-    let new_ret = compute_return_for_spec(
+    let (new_ret, complete) = compute_return_for_spec(
         t,
         m,
         spec_key,
         recursive_fns,
         specs,
         effective_returns,
+        complete_returns,
         &mut compute_reads,
     );
     record_return_reads(return_readers, spec_key, walk_return_reads, compute_reads);
-    let changed = effective_returns
+    let ret_changed = effective_returns
         .get(spec_key)
         .is_none_or(|prev| !t.is_equivalent(&new_ret, prev));
-    if changed {
+    let complete_changed = complete_returns.contains(spec_key) != complete;
+    if ret_changed {
         effective_returns.insert(spec_key.clone(), new_ret);
+    }
+    if complete {
+        complete_returns.insert(spec_key.clone());
+    } else {
+        complete_returns.remove(spec_key);
+    }
+    if ret_changed || complete_changed {
         enqueue_return_readers(spec_key, specs, return_readers, work, in_work);
     }
 }
@@ -639,12 +653,20 @@ fn enqueue_return_readers(
 }
 
 /// Compute one spec's effective return by joining every reachable
-/// return-producing terminator. Missing downstream returns contribute
-/// `none()` so partial worklist state does not spuriously widen.
+/// return-producing terminator. A missing downstream return contributes
+/// `none()` as a provisional value and marks the contribution incomplete;
+/// an existing downstream return can still participate before it is complete,
+/// so recursive SCCs can widen to their fixed point.
 ///
 /// Every callee key whose return is consulted is pushed into `reads`; the
 /// worklist folds those into `return_readers` so callee-return changes
 /// re-enqueue this spec.
+#[derive(Clone)]
+struct ReturnContribution {
+    ty: crate::types::Ty,
+    complete: bool,
+}
+
 pub(crate) fn compute_return_for_spec<
     T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
 >(
@@ -654,32 +676,44 @@ pub(crate) fn compute_return_for_spec<
     recursive_fns: &std::collections::HashSet<FnId>,
     specs: &HashMap<SpecKey, SpecPlan>,
     effective_returns: &HashMap<SpecKey, crate::types::Ty>,
+    complete_returns: &SpecKeySet,
     reads: &mut Vec<SpecKey>,
-) -> T::Ty {
+) -> (T::Ty, bool) {
     let Some(&j) = module.fn_idx.get(&spec_key.fn_id) else {
-        return t.none();
+        return (t.none(), true);
     };
     let Some(ft) = specs.get(spec_key) else {
-        return t.none();
+        return (t.none(), false);
     };
     let f = &module.fns[j];
 
     let mut joined = t.none();
+    let mut complete = true;
     for b in &f.blocks {
         if !ft.reachable_blocks.contains(&b.id) {
             continue;
         }
         let term_env = env_at_terminator(t, ft, b, module);
         let contribution = match &b.terminator {
-            Term::Return(rv) => Some(term_env.get(rv).cloned().unwrap_or_else(|| t.any())),
-            Term::TailCall { callee, args, .. } => Some(direct_tail_return_contribution(
+            Term::Return(rv) => Some(ReturnContribution {
+                ty: term_env.get(rv).cloned().unwrap_or_else(|| t.any()),
+                complete: true,
+            }),
+            Term::TailCall {
+                callee,
+                args,
+                ident,
+                ..
+            } => Some(direct_tail_return_contribution(
                 t,
                 module,
                 recursive_fns,
                 spec_key,
                 effective_returns,
+                complete_returns,
                 reads,
                 &term_env,
+                ident,
                 *callee,
                 args,
             )),
@@ -694,6 +728,7 @@ pub(crate) fn compute_return_for_spec<
                 spec_key,
                 ft,
                 effective_returns,
+                complete_returns,
                 reads,
                 &term_env,
                 *closure,
@@ -711,6 +746,7 @@ pub(crate) fn compute_return_for_spec<
                 spec_key,
                 ft,
                 effective_returns,
+                complete_returns,
                 reads,
                 b,
                 continuation,
@@ -720,6 +756,7 @@ pub(crate) fn compute_return_for_spec<
                     t,
                     module,
                     effective_returns,
+                    complete_returns,
                     reads,
                     clauses,
                     after,
@@ -727,11 +764,12 @@ pub(crate) fn compute_return_for_spec<
             }
             Term::Halt(_) | Term::Goto(_, _) | Term::If { .. } => None,
         };
-        if let Some(dy) = contribution {
-            joined = t.union(joined, dy);
+        if let Some(contribution) = contribution {
+            complete &= contribution.complete;
+            joined = t.union(joined, contribution.ty);
         }
     }
-    joined
+    (joined, complete)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -741,16 +779,29 @@ fn direct_tail_return_contribution<T: crate::types::Types<Ty = crate::types::Ty>
     recursive_fns: &std::collections::HashSet<FnId>,
     spec_key: &SpecKey,
     effective_returns: &HashMap<SpecKey, crate::types::Ty>,
+    complete_returns: &SpecKeySet,
     reads: &mut Vec<SpecKey>,
     term_env: &HashMap<crate::fz_ir::Var, crate::types::Ty>,
+    ident: &crate::fz_ir::CallsiteIdent,
     callee: FnId,
     args: &[crate::fz_ir::Var],
-) -> crate::types::Ty {
+) -> ReturnContribution {
     let arg_tys = arg_tys(t, term_env, args);
+    if let Some(ty) = external_call_return_slot0_for_spec(
+        t,
+        module,
+        spec_key.fn_id,
+        ident,
+        callee,
+        &arg_tys,
+        &module.fn_by_id(spec_key.fn_id).owner_module,
+    ) {
+        return ReturnContribution { ty, complete: true };
+    }
     let mut key =
         recursive_direct_spec_key(t, module, recursive_fns, spec_key.fn_id, callee, arg_tys);
     key.demand = spec_key.demand.clone();
-    lookup_return_read(t, effective_returns, reads, key)
+    lookup_return_read(t, effective_returns, complete_returns, reads, key)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -763,11 +814,12 @@ fn tail_closure_return_contribution<
     spec_key: &SpecKey,
     ft: &SpecPlan,
     effective_returns: &HashMap<SpecKey, crate::types::Ty>,
+    complete_returns: &SpecKeySet,
     reads: &mut Vec<SpecKey>,
     term_env: &HashMap<crate::fz_ir::Var, crate::types::Ty>,
     closure: crate::fz_ir::Var,
     args: &[crate::fz_ir::Var],
-) -> crate::types::Ty {
+) -> ReturnContribution {
     if let Some(target) = ft.known_fn(&closure) {
         return known_tail_closure_return_contribution(
             t,
@@ -775,6 +827,7 @@ fn tail_closure_return_contribution<
             recursive_fns,
             spec_key,
             effective_returns,
+            complete_returns,
             reads,
             term_env,
             target,
@@ -782,7 +835,10 @@ fn tail_closure_return_contribution<
         );
     }
     let Some(cv_ty) = term_env.get(&closure) else {
-        return t.any();
+        return ReturnContribution {
+            ty: t.any(),
+            complete: true,
+        };
     };
     literal_tail_closure_return_contribution(
         t,
@@ -790,6 +846,7 @@ fn tail_closure_return_contribution<
         recursive_fns,
         spec_key,
         effective_returns,
+        complete_returns,
         reads,
         term_env,
         cv_ty,
@@ -804,11 +861,12 @@ fn known_tail_closure_return_contribution<T: crate::types::Types<Ty = crate::typ
     recursive_fns: &std::collections::HashSet<FnId>,
     spec_key: &SpecKey,
     effective_returns: &HashMap<SpecKey, crate::types::Ty>,
+    complete_returns: &SpecKeySet,
     reads: &mut Vec<SpecKey>,
     term_env: &HashMap<crate::fz_ir::Var, crate::types::Ty>,
     target: FnId,
     args: &[crate::fz_ir::Var],
-) -> crate::types::Ty {
+) -> ReturnContribution {
     let target_fn = module.fn_by_id(target);
     let np = target_fn.block(target_fn.entry).params.len();
     let ad = arg_tys(t, term_env, args);
@@ -822,7 +880,7 @@ fn known_tail_closure_return_contribution<T: crate::types::Types<Ty = crate::typ
         np,
         Some(spec_key.demand.clone()),
     );
-    lookup_return_read(t, effective_returns, reads, key)
+    lookup_return_read(t, effective_returns, complete_returns, reads, key)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -834,14 +892,16 @@ fn literal_tail_closure_return_contribution<
     recursive_fns: &std::collections::HashSet<FnId>,
     spec_key: &SpecKey,
     effective_returns: &HashMap<SpecKey, crate::types::Ty>,
+    complete_returns: &SpecKeySet,
     reads: &mut Vec<SpecKey>,
     term_env: &HashMap<crate::fz_ir::Var, crate::types::Ty>,
     cv_ty: &crate::types::Ty,
     args: &[crate::fz_ir::Var],
-) -> crate::types::Ty {
+) -> ReturnContribution {
     let clauses = t.callable_clauses(cv_ty);
     let mut all_lit = clauses.is_some();
     let mut acc = t.none();
+    let mut complete = true;
     if let Some(clauses) = clauses {
         for clause in clauses {
             let Some(crate::types::ClosureLitInfo { target, captures }) = clause.closure else {
@@ -863,11 +923,19 @@ fn literal_tail_closure_return_contribution<
                 np,
                 Some(spec_key.demand.clone()),
             );
-            let dy = lookup_return_read(t, effective_returns, reads, key);
-            acc = t.union(acc, dy);
+            let dy = lookup_return_read(t, effective_returns, complete_returns, reads, key);
+            complete &= dy.complete;
+            acc = t.union(acc, dy.ty);
         }
     }
-    if all_lit { acc } else { t.any() }
+    if all_lit {
+        ReturnContribution { ty: acc, complete }
+    } else {
+        ReturnContribution {
+            ty: t.any(),
+            complete: true,
+        }
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -880,10 +948,11 @@ fn continuation_return_contribution<
     spec_key: &SpecKey,
     ft: &SpecPlan,
     effective_returns: &HashMap<SpecKey, crate::types::Ty>,
+    complete_returns: &SpecKeySet,
     reads: &mut Vec<SpecKey>,
     block: &Block,
     continuation: &crate::fz_ir::Cont,
-) -> crate::types::Ty {
+) -> ReturnContribution {
     let key = if let Some(key) = block.terminator.ident().and_then(|ident| {
         ft.local_call_target(&crate::fz_ir::CallsiteId::new(
             spec_key.fn_id,
@@ -904,62 +973,81 @@ fn continuation_return_contribution<
             spec_key.fn_id,
             effective_returns,
         ) else {
-            return t.none();
+            return ReturnContribution {
+                ty: t.none(),
+                complete: false,
+            };
         };
         spec_key_for_fn_id(module, continuation.fn_id, cont_k)
     };
-    lookup_return_read(t, effective_returns, reads, key)
+    lookup_return_read(t, effective_returns, complete_returns, reads, key)
 }
 
 fn receive_matched_return_contribution<T: crate::types::Types<Ty = crate::types::Ty>>(
     t: &mut T,
     module: &Module,
     effective_returns: &HashMap<SpecKey, crate::types::Ty>,
+    complete_returns: &SpecKeySet,
     reads: &mut Vec<SpecKey>,
     clauses: &[crate::fz_ir::ReceiveClause],
     after: &Option<crate::fz_ir::ReceiveAfter>,
-) -> crate::types::Ty {
+) -> ReturnContribution {
     let any = t.any();
     let mut joined = t.none();
+    let mut complete = true;
     for fid in clauses
         .iter()
         .map(|c| c.body)
         .chain(after.iter().map(|a| a.body))
     {
-        let dy =
-            receive_outcome_return_contribution(t, module, effective_returns, reads, fid, &any);
-        joined = t.union(joined, dy);
+        let dy = receive_outcome_return_contribution(
+            t,
+            module,
+            effective_returns,
+            complete_returns,
+            reads,
+            fid,
+            &any,
+        );
+        complete &= dy.complete;
+        joined = t.union(joined, dy.ty);
     }
-    joined
+    ReturnContribution {
+        ty: joined,
+        complete,
+    }
 }
 
 fn receive_outcome_return_contribution<T: crate::types::Types<Ty = crate::types::Ty>>(
     t: &mut T,
     module: &Module,
     effective_returns: &HashMap<SpecKey, crate::types::Ty>,
+    complete_returns: &SpecKeySet,
     reads: &mut Vec<SpecKey>,
     fid: FnId,
     any: &crate::types::Ty,
-) -> crate::types::Ty {
+) -> ReturnContribution {
     let body_fn = module.fn_by_id(fid);
     let np = body_fn.block(body_fn.entry).params.len();
     let key = crate::fz_ir::receive_outcome_spec_key(any, np);
     let lookup_key = spec_key_for_fn_id(module, fid, key);
-    lookup_return_read(t, effective_returns, reads, lookup_key)
+    lookup_return_read(t, effective_returns, complete_returns, reads, lookup_key)
 }
 
 fn lookup_return_read<T: crate::types::Types<Ty = crate::types::Ty>>(
     t: &mut T,
     effective_returns: &HashMap<SpecKey, crate::types::Ty>,
+    complete_returns: &SpecKeySet,
     reads: &mut Vec<SpecKey>,
     key: SpecKey,
-) -> crate::types::Ty {
+) -> ReturnContribution {
     let dy = effective_returns
         .get(&key)
         .cloned()
         .unwrap_or_else(|| t.none());
+    let complete = complete_returns.contains(&key);
     reads.push(key);
-    dy
+    ReturnContribution { ty: dy, complete }
 }
 
 fn arg_tys<T: crate::types::Types<Ty = crate::types::Ty>>(
@@ -1001,9 +1089,23 @@ pub(crate) fn cont_key_for_spec<
                 .iter()
                 .map(|av| env.get(av).cloned().unwrap_or_else(|| any_t.clone()))
                 .collect();
-            let lookup_key =
-                recursive_direct_spec_key(t, module, recursive_fns, caller, *callee, arg_tys);
-            effective_returns.get(&lookup_key).cloned()?
+            if let Some(ident) = block.terminator.ident()
+                && let Some(slot0) = external_call_return_slot0_for_spec(
+                    t,
+                    module,
+                    caller,
+                    ident,
+                    *callee,
+                    &arg_tys,
+                    &module.fn_by_id(caller).owner_module,
+                )
+            {
+                slot0
+            } else {
+                let lookup_key =
+                    recursive_direct_spec_key(t, module, recursive_fns, caller, *callee, arg_tys);
+                effective_returns.get(&lookup_key).cloned()?
+            }
         }
         Term::CallClosure { closure, args, .. } => {
             if let Some(target) = ft.known_fn(closure) {
@@ -1043,4 +1145,55 @@ pub(crate) fn cont_key_for_spec<
         &cont.captured,
         &env,
     ))
+}
+
+fn external_call_return_slot0_for_spec<T: crate::types::Types<Ty = crate::types::Ty>>(
+    t: &mut T,
+    module: &Module,
+    caller: FnId,
+    ident: &crate::fz_ir::CallsiteIdent,
+    callee: FnId,
+    arg_tys: &[crate::types::Ty],
+    owner_module: &str,
+) -> Option<crate::types::Ty> {
+    let callsite = crate::fz_ir::CallsiteId::new(caller, ident, crate::fz_ir::EmitSlot::Direct);
+    module
+        .external_call_edges
+        .iter()
+        .any(|edge| edge.callsite == callsite)
+        .then(|| {
+            declared_call_return(t, module, callee, arg_tys, owner_module)
+                .unwrap_or_else(|| t.any())
+        })
+}
+
+fn declared_call_return<T: crate::types::Types<Ty = crate::types::Ty>>(
+    t: &mut T,
+    module: &Module,
+    callee: FnId,
+    arg_tys: &[crate::types::Ty],
+    owner_module: &str,
+) -> Option<crate::types::Ty> {
+    let spec = module.declared_specs.get(&callee)?;
+    if spec.params.len() != arg_tys.len() {
+        return None;
+    }
+    let mut sigma = HashMap::new();
+    for (pattern, witness) in spec.params.iter().zip(arg_tys.iter()) {
+        t.collect_instantiation_subst(pattern, witness, &mut sigma);
+    }
+    for (var, bound) in &spec.constraints {
+        let actual = sigma.get(var)?;
+        if !t.is_subtype(actual, bound) {
+            return None;
+        }
+    }
+    for (pattern, witness) in spec.params.iter().zip(arg_tys.iter()) {
+        let expected = t.instantiate(pattern, &sigma);
+        if !t.has_vars(witness) && !t.is_subtype(witness, &expected) {
+            return None;
+        }
+    }
+    let ret = t.instantiate(&spec.result, &sigma);
+    Some(t.mint_owned_resource_aliases(ret, owner_module, &module.opaque_inners))
 }

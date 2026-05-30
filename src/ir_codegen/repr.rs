@@ -228,7 +228,21 @@ pub(crate) fn build_param_reprs_for_spec<T: crate::types::Types<Ty = crate::type
         }
         reprs
     } else {
-        build_param_reprs(t, f, ft)
+        let entry = f.blocks.iter().find(|b| b.id == f.entry).unwrap();
+        entry
+            .params
+            .iter()
+            .enumerate()
+            .map(|(idx, p)| {
+                spec_key
+                    .input
+                    .get(idx)
+                    .and_then(|slot| slot.as_ref())
+                    .or_else(|| ft.vars.get(p))
+                    .map(|ty| ArgRepr::from_ty(t, ty))
+                    .unwrap_or(ArgRepr::ValueRef)
+            })
+            .collect()
     }
 }
 

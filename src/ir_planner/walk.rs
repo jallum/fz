@@ -329,6 +329,10 @@ where
         callee: FnId,
         args: &[Var],
     ) {
+        if self.external_target(term_ident, slot).is_some() {
+            self.record_external_call(term, term_ident, env, slot, args);
+            return;
+        }
         if let Some(dispatch) = self.protocol_dispatch_key(callee, args, env) {
             let cid = WalkResult::callsite_id(self.caller_spec_key, term_ident, slot);
             let ProtocolDispatch::Local(mut entry_key, n_params) = dispatch else {
@@ -571,7 +575,8 @@ where
                         Some(effective)
                     }
                     (Some(declared), _) => Some(declared),
-                    (None, effective) => effective,
+                    (None, Some(effective)) => Some(effective),
+                    (None, _) => None,
                 }
             }
             ContSource::CallClosure { closure, args } => {
