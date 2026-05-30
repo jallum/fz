@@ -748,9 +748,9 @@ pub(super) fn match_list(
 ) -> Result<(), LowerError> {
     let mut cur = subject;
     for elem_pat in elems {
-        let isnil = ctx.let_(Prim::IsEmptyList(cur));
+        let iscons = ctx.let_(Prim::IsListCons(cur));
         let cont_b = ctx.cur_mut().block(vec![]);
-        ctx.set_if_term(isnil, fail_block, cont_b);
+        ctx.set_if_term(iscons, cont_b, fail_block);
         ctx.cur_block = Some(cont_b);
         let h = ctx.let_(Prim::ListHead(cur));
         let t = ctx.let_(Prim::ListTail(cur));

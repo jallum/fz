@@ -2700,6 +2700,35 @@ fn empty_list_does_not_match_nil_pattern() {
     );
 }
 
+#[test]
+fn cons_function_clause_falls_through_for_non_lists_in_interp_and_native() {
+    const SRC: &str = r#"
+fn f([head | _tail]), do: head
+fn f(_other), do: 99
+
+fn main() do
+  f([7]) + f([]) + f(%{a: 1}) + f(42)
+end
+"#;
+    let mut t = crate::types::ConcreteTypes;
+    let tel = crate::telemetry::NullTelemetry;
+    let frontend = crate::frontend::compile_source_with_types(
+        &mut t,
+        SRC.to_string(),
+        "cons_clause.fz".into(),
+        &tel,
+    )
+    .unwrap_or_else(|err| panic!("frontend: {:?}", err.diagnostics));
+    let entry = frontend.module.fn_by_name("main").expect("main").id;
+
+    let interp = crate::ir_interp::run_main(&tel, &frontend.module).expect("interp run");
+    assert_eq!(interp, 304, "interpreter function-clause dispatch");
+
+    let compiled = compile(&mut t, &frontend.module, &tel).expect("compile");
+    let image = CompiledImage::from_linked(compiled);
+    assert_eq!(image.run(entry), 304, "native function-clause dispatch");
+}
+
 /// `dbg(nil)` and `dbg([])` render as distinct strings — codegen
 /// pin for the broader fixture-driven check.
 #[test]

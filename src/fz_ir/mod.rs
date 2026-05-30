@@ -431,6 +431,7 @@ pub enum Prim {
     ListHead(Var),
     ListTail(Var),
     IsEmptyList(Var),
+    IsListCons(Var),
     /// Build a tuple (struct with the canonical tuple-of-arity-N schema).
     MakeTuple(Vec<Var>),
     /// Build a named struct using a source `defstruct` schema.
@@ -850,6 +851,7 @@ pub(crate) fn visit_prim_vars(prim: &Prim, mut visit: impl FnMut(Var)) {
         | Prim::ListHead(v)
         | Prim::ListTail(v)
         | Prim::IsEmptyList(v)
+        | Prim::IsListCons(v)
         | Prim::TupleField(v, _)
         | Prim::StructField(v, _)
         | Prim::IsMatcherMapMiss(v)
@@ -1612,6 +1614,7 @@ fn remap_prim_span(prim: &mut Prim, remap: &HashMap<FileId, FileId>) {
         | Prim::ListHead(_)
         | Prim::ListTail(_)
         | Prim::IsEmptyList(_)
+        | Prim::IsListCons(_)
         | Prim::MakeTuple(_)
         | Prim::MakeStruct { .. }
         | Prim::DestTupleBegin { .. }
@@ -1687,6 +1690,7 @@ fn visit_prim_span(prim: &Prim, f: &mut impl FnMut(Span)) {
         | Prim::ListHead(_)
         | Prim::ListTail(_)
         | Prim::IsEmptyList(_)
+        | Prim::IsListCons(_)
         | Prim::MakeTuple(_)
         | Prim::MakeStruct { .. }
         | Prim::DestTupleBegin { .. }
@@ -2101,6 +2105,7 @@ impl fmt::Display for Prim {
             Prim::ListHead(l) => write!(f, "head({})", l),
             Prim::ListTail(l) => write!(f, "tail({})", l),
             Prim::IsEmptyList(l) => write!(f, "is_nil({})", l),
+            Prim::IsListCons(l) => write!(f, "is_list_cons({})", l),
             Prim::MakeTuple(args) => write!(f, "tuple([{}])", fmt_var_list(args)),
             Prim::MakeStruct { module, fields } => {
                 let fields = fields

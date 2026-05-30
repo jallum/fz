@@ -443,6 +443,10 @@ pub(super) fn eval_prim<T: Types<Ty = crate::types::Ty>>(
             let cv = env_get(env, *c)?;
             interp_bool_value(cv.is_empty_list())
         }
+        Prim::IsListCons(c) => {
+            let cv = env_get(env, *c)?;
+            interp_bool_value(cv.value().ok().is_some_and(interp_is_list_cons))
+        }
         Prim::MapGet(m, k) => {
             let mv = env_get(env, *m)?;
             let kv = env_get(env, *k)?;

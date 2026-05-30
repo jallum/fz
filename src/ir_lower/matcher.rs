@@ -365,9 +365,7 @@ pub(super) fn lower_matcher_bool_test(
         }
         crate::exec::matcher::MatcherTest::ListCons { subject } => {
             let subject = materialize_matcher_subject(ctx, matcher, subject, state)?;
-            let is_empty = ctx.let_(Prim::IsEmptyList(subject));
-            let false_v = ctx.let_(Prim::Const(Const::False));
-            ctx.let_(Prim::BinOp(BinOp::Eq, is_empty, false_v))
+            ctx.let_(Prim::IsListCons(subject))
         }
         crate::exec::matcher::MatcherTest::MapKind { subject } => {
             let subject = materialize_matcher_subject(ctx, matcher, subject, state)?;
@@ -456,7 +454,7 @@ pub(super) fn lower_matcher_switch_test(
             crate::exec::matcher::SwitchKey::EmptyList,
         ) => (ctx.let_(Prim::IsEmptyList(subject)), true),
         (crate::exec::matcher::SwitchKind::ListCons, crate::exec::matcher::SwitchKey::Cons) => {
-            (ctx.let_(Prim::IsEmptyList(subject)), false)
+            (ctx.let_(Prim::IsListCons(subject)), true)
         }
         _ => return Ok(None),
     }))

@@ -58,6 +58,7 @@ pub(crate) fn prim_effects(module: &Module, prim: &Prim) -> IrEffects {
         | Prim::ListHead(_)
         | Prim::ListTail(_)
         | Prim::IsEmptyList(_)
+        | Prim::IsListCons(_)
         | Prim::TupleField(_, _)
         | Prim::StructField(_, _)
         | Prim::MapGet(_, _)

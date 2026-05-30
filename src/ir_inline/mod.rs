@@ -172,7 +172,7 @@ fn max_var_in_prim(p: &Prim) -> u32 {
         }
         Prim::UnOp(_, a) => v(*a),
         Prim::Extern(_, args) => args.iter().for_each(|x| v(x.var)),
-        Prim::ListHead(a) | Prim::ListTail(a) | Prim::IsEmptyList(a) => v(*a),
+        Prim::ListHead(a) | Prim::ListTail(a) | Prim::IsEmptyList(a) | Prim::IsListCons(a) => v(*a),
         Prim::MakeTuple(args) => args.iter().for_each(|x| v(*x)),
         Prim::MakeStruct { fields, .. } => fields.iter().for_each(|(_, x)| v(*x)),
         Prim::DestTupleBegin { .. } => {}
@@ -338,6 +338,7 @@ pub fn alpha_rename(callee: &FnIr, caller: &FnIr) -> FnIr {
             Prim::ListHead(a) => Prim::ListHead(sv(*a)),
             Prim::ListTail(a) => Prim::ListTail(sv(*a)),
             Prim::IsEmptyList(a) => Prim::IsEmptyList(sv(*a)),
+            Prim::IsListCons(a) => Prim::IsListCons(sv(*a)),
             Prim::MakeTuple(args) => Prim::MakeTuple(args.iter().map(|x| sv(*x)).collect()),
             Prim::MakeStruct { module, fields } => Prim::MakeStruct {
                 module: module.clone(),

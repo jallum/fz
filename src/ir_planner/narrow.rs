@@ -94,6 +94,15 @@ pub(crate) fn narrow_for_cond<T: crate::types::Types<Ty = crate::types::Ty>>(
             then_env.insert(*v, then_t);
             else_env.insert(*v, else_t);
         }
+        Prim::IsListCons(v) => {
+            let current_ty = lookup_ty(t, env, v);
+            let any_inner = t.any();
+            let cons_ty = t.non_empty_list(any_inner);
+            let then_t = t.intersect(current_ty.clone(), cons_ty.clone());
+            let else_t = t.difference(current_ty, cons_ty);
+            then_env.insert(*v, then_t);
+            else_env.insert(*v, else_t);
+        }
         Prim::BinOp(BinOp::Eq, a, b) => {
             let at = lookup_ty(t, env, a);
             let bt = lookup_ty(t, env, b);

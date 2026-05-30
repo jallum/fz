@@ -195,6 +195,7 @@ pub(crate) fn subst_prim(p: &Prim, subst: &HashMap<Var, Var>) -> Prim {
         Prim::ListHead(a) => Prim::ListHead(sv(*a)),
         Prim::ListTail(a) => Prim::ListTail(sv(*a)),
         Prim::IsEmptyList(a) => Prim::IsEmptyList(sv(*a)),
+        Prim::IsListCons(a) => Prim::IsListCons(sv(*a)),
         Prim::MakeTuple(args) => Prim::MakeTuple(args.iter().map(|x| sv(*x)).collect()),
         Prim::MakeStruct { module, fields } => Prim::MakeStruct {
             module: module.clone(),

@@ -67,7 +67,7 @@ pub(crate) fn type_prim<
             let elem_ty = t.list_element_type(&lt);
             t.list(elem_ty)
         }
-        Prim::IsEmptyList(_) => t.bool(),
+        Prim::IsEmptyList(_) | Prim::IsListCons(_) => t.bool(),
 
         Prim::MakeMap(entries) => type_make_map(t, env, entries),
         Prim::DestMapBegin { base, .. } => {

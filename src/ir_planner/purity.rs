@@ -51,6 +51,7 @@ pub fn prim_is_pure(p: &crate::fz_ir::Prim) -> Result<(), ImpureKind> {
         | ListHead(_)
         | ListTail(_)
         | IsEmptyList(_)
+        | IsListCons(_)
         | TupleField(_, _)
         | StructField(_, _)
         | MapGet(_, _)
@@ -136,6 +137,7 @@ mod purity_tests {
             s(Prim::ListHead(v(1))),
             s(Prim::ListTail(v(1))),
             s(Prim::IsEmptyList(v(1))),
+            s(Prim::IsListCons(v(1))),
         ];
         assert!(check_pure_codegen(&stmts).is_ok());
     }

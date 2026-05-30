@@ -1070,6 +1070,36 @@ pub(crate) fn lower_prim<
             }
             Ok(LowerOut::Strict(strict_bool(body.b, cmp)))
         }
+        Prim::IsListCons(c) => {
+            let cmp = if let Some(CodegenValue::AnyRef(value)) = var_env.get(&c.0).copied() {
+                let tag = body.ref_tag(value);
+                let empty_list_v = body.empty_list_ref();
+                let is_list = body.b.ins().icmp_imm(
+                    IntCC::Equal,
+                    tag,
+                    fz_runtime::any_value::ValueKind::LIST.tag() as i64,
+                );
+                let is_empty_word = body.b.ins().icmp(IntCC::Equal, value, empty_list_v);
+                let not_empty = body.b.ins().icmp_imm(IntCC::Equal, is_empty_word, 0);
+                body.b.ins().band(is_list, not_empty)
+            } else {
+                let cv = body.tagged_var(var_env, c.0);
+                let tag = body.ref_tag(cv);
+                let empty_list_v = body.empty_list_ref();
+                let is_list = body.b.ins().icmp_imm(
+                    IntCC::Equal,
+                    tag,
+                    fz_runtime::any_value::ValueKind::LIST.tag() as i64,
+                );
+                let is_empty_word = body.b.ins().icmp(IntCC::Equal, cv, empty_list_v);
+                let not_empty = body.b.ins().icmp_imm(IntCC::Equal, is_empty_word, 0);
+                body.b.ins().band(is_list, not_empty)
+            };
+            if body.cache.if_only_conds.contains(&dest_var.0) {
+                return Ok(LowerOut::Condition(cmp));
+            }
+            Ok(LowerOut::Strict(strict_bool(body.b, cmp)))
+        }
         Prim::BitReaderDone(r) => {
             let rv = body.tagged_var(var_env, r.0);
             let fref = body

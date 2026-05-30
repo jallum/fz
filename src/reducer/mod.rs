@@ -50,6 +50,7 @@ pub fn fold_prim<T: Types<Ty = crate::types::Ty> + LiteralTypes>(
         // lattice's `list_of(elem)` loses length info. `IsEmptyList` is the
         // exception — type-level subtyping is enough.
         Prim::IsEmptyList(v) => fold_list_is_nil(t, *v, env),
+        Prim::IsListCons(v) => fold_list_is_cons(t, *v, env),
         // fz-f88.3 — empty list literal folds to the explicit `[]` type.
         // Non-empty MakeList still loses length info (L1 follow-up fz-4lo).
         Prim::MakeList(elems, tail_v) if elems.is_empty() && tail_v.is_none() => {
@@ -343,6 +344,22 @@ fn fold_list_is_nil<T: Types>(t: &mut T, v: Var, env: &HashMap<Var, T::Ty>) -> O
         Some(t.bool_lit(true))
     } else {
         None
+    }
+}
+
+fn fold_list_is_cons<T: Types>(t: &mut T, v: Var, env: &HashMap<Var, T::Ty>) -> Option<T::Ty> {
+    let d = env.get(&v)?;
+    let any = t.any();
+    let cons = t.non_empty_list(any);
+    if t.is_subtype(d, &cons) {
+        Some(t.bool_lit(true))
+    } else {
+        let overlap = t.intersect(d.clone(), cons);
+        if t.is_empty(&overlap) {
+            Some(t.bool_lit(false))
+        } else {
+            None
+        }
     }
 }
 

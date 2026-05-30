@@ -411,6 +411,39 @@ fn if_is_empty_list_narrows_v_to_empty_list_in_then_branch() {
 }
 
 #[test]
+fn if_is_list_cons_narrows_only_then_branch_to_non_empty_list() {
+    let mut b = FnBuilder::new(FnId(0), "f");
+    let value = b.fresh_var();
+    let entry = b.block(vec![value]);
+    let cond = b.let_(entry, Prim::IsListCons(value));
+    let then_b = b.block(vec![]);
+    let else_b = b.block(vec![]);
+    b.set_terminator(entry, Term::if_user(cond, then_b, else_b));
+    b.set_terminator(then_b, Term::Return(value));
+    b.set_terminator(else_b, Term::Return(value));
+    let m = build_module(vec![b.build()]);
+    let mut t = crate::types::ConcreteTypes;
+    let mt = plan_module(&mut t, &m, &crate::telemetry::NullTelemetry);
+    let ft = fn_view(&mut t, &m, &mt, 0);
+
+    let then_ty = ft.block_envs.get(&then_b).unwrap().get(&value).unwrap();
+    let any = t.any();
+    let nonempty_any = t.non_empty_list(any);
+    assert!(
+        t.is_equivalent(then_ty, &nonempty_any),
+        "then branch should be a non-empty list: {}",
+        t.display(then_ty)
+    );
+
+    let else_ty = ft.block_envs.get(&else_b).unwrap().get(&value).unwrap();
+    assert!(
+        !t.is_subtype(else_ty, &nonempty_any),
+        "else branch must keep non-list values possible: {}",
+        t.display(else_ty)
+    );
+}
+
+#[test]
 fn if_eq_with_int_singleton_narrows_var_in_then_branch() {
     // entry(x):
     //   z = const(0)
