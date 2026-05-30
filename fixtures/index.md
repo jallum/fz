@@ -31,6 +31,7 @@ Run with `BLESS=1` to rewrite after editing fixtures.
 | `enum_oracle_smoke/` | Enum.sort/1 matches Elixir; expected.txt is owned by the oracle.exs twin | jit, interp, aot, repl |
 | `enum_reduce_suspend/` | Enum.reduce/3 suspend returns a real resumable closure at the runtime-value boundary | jit, interp, aot, repl |
 | `enum_sort/` | runtime-library Enum.sort (merge sort) allocation contract across four paths; pins JIT/AOT parity and the merge-step continuation-closure floor | jit, interp, aot, repl |
+| `enumerable_switch_dispatch/` | Enumerable protocol switch dispatch covers List, Range, and Map receivers | jit, interp, aot, repl |
 | `fib_tailrec/` | fibonacci via two-accumulator tail recursion — three-clause dispatch + tail-call forwarding under load | jit, interp, aot, repl |
 | `file_handle/` | FileHandle = fd + dtor, exercising cstring/binary/integer marshal classes against real libc with an observable resource lifecycle | jit, interp, aot, repl |
 | `file_resource_lifecycle/` | fz-swt.13 / fz-4mk — File module wraps an fd in a resource; the dtor closes the fd at task-exit drain (interp/JIT/AOT parity). | interp, jit, aot, repl |

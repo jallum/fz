@@ -138,8 +138,12 @@ stub is left in place, and rejection happens earlier at spec checking
 (`spec_check::validate_specs`), where a receiver type disjoint from the
 protocol-domain union fails the ordinary "not a subtype of declared" check.
 
-Finite-union switch dispatch and runtime lookup for open or erased receiver
-domains are not emitted.
+Finite-union receiver domains are rewritten before execution into `TypeTest` /
+`If` cascades with one direct-call arm per visible local implementation. The
+same path handles named source structs such as `Range` by testing their struct
+schema id, alongside kind tests for lists and maps. Open or erased receiver
+domains keep a final fallthrough to the protocol stub for the residual
+non-implementing shape; no runtime lookup table is emitted.
 
 Static direct dispatch does not require heap boxing of scalar receivers. The
 selected callback ABI and the caller's argument shape cooperate the same way

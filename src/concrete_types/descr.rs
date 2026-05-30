@@ -1455,4 +1455,16 @@ impl Descr {
         arities.dedup();
         arities
     }
+
+    pub(crate) fn type_test_struct_names(&self) -> Vec<String> {
+        const PREFIX: &str = "impl-target::";
+        if self.opaques.cofinite {
+            return Vec::new();
+        }
+        self.opaques
+            .set
+            .iter()
+            .filter_map(|name| name.strip_prefix(PREFIX).map(String::from))
+            .collect()
+    }
 }

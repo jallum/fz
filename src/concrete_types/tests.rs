@@ -50,6 +50,15 @@ fn type_test_atom_helpers_report_shape() {
 }
 
 #[test]
+fn type_test_struct_names_report_impl_targets() {
+    let target = Descr::opaque_of("impl-target::Range");
+    assert_eq!(target.type_test_struct_names(), vec!["Range".to_string()]);
+
+    let ordinary_opaque = Descr::opaque_of("pid");
+    assert!(ordinary_opaque.type_test_struct_names().is_empty());
+}
+
+#[test]
 fn tuple_constructor() {
     let t = Descr::tuple_of([Descr::int(), Descr::str_t()]);
     assert_eq!(t.to_string(), "{int, binary}");

@@ -151,8 +151,12 @@ selected before codegen.
 Protocol implementation selection is the same kind of decision: the planner
 selects a static-direct (`ProtocolDispatch::Local`), provider-boundary
 (`ProtocolDispatch::External`), or diagnostic edge from receiver type facts and
-visible implementation-domain facts. Finite-union switch dispatch and runtime
-lookup for open or erased receiver domains are not emitted.
+visible implementation-domain facts. Finite-union receiver domains are rewritten
+before execution into `TypeTest` / `If` cascades with direct-call arms for each
+visible local implementation; named source structs are tested by schema id, and
+kinded containers such as lists and maps are tested by value kind. Open or
+erased receiver domains keep a final protocol-stub fallthrough for any residual
+non-implementing shape; no runtime lookup table is emitted.
 
 Protocol callback callsites lower to ordinary call-shaped IR with a protocol
 stub callee. The stub is not the semantic target. It is a stable callsite

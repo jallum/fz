@@ -403,6 +403,7 @@ pub(super) fn eval_prim<T: Types<Ty = crate::types::Ty>>(
                 !descr.type_test_tuple_has_negations(),
                 "TypeTest: negated tuple clauses not yet supported"
             );
+            let struct_names = descr.type_test_struct_names();
             if val.kind() == ValueKind::STRUCT
                 && let Some(sp) = val.heap_addr()
             {
@@ -410,6 +411,18 @@ pub(super) fn eval_prim<T: Types<Ty = crate::types::Ty>>(
                     unsafe { fz_runtime::any_value::struct_schema_id(sp as *const u8) };
                 for arity in descr.type_test_tuple_arities() {
                     let want_schema = interp_tuple_schema_id(runtime, arity);
+                    if actual_schema == want_schema {
+                        matched = true;
+                        break;
+                    }
+                }
+                for name in struct_names {
+                    let Some(fields) = module.struct_schemas.get(&name).cloned() else {
+                        continue;
+                    };
+                    let want_schema = unsafe { &mut *runtime.cur_proc() }
+                        .heap
+                        .register_schema(fz_runtime::heap::Schema::named_struct(name, fields));
                     if actual_schema == want_schema {
                         matched = true;
                         break;

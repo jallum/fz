@@ -1181,9 +1181,8 @@ pub(crate) fn lower_prim<
 }
 
 /// Lower a `Prim::TypeTest`. Combines a scalar-kind disjunction
-/// (int/float/atom-id) with an optional tuple-arity check on struct
-/// values; final result is `Condition` if the test feeds an `if`,
-/// otherwise a strict bool.
+/// (int/float/atom-id) with optional schema checks on struct values; final
+/// result is `Condition` if the test feeds an `if`, otherwise a strict bool.
 fn lower_type_test<M: cranelift_module::Module>(
     body: &mut CodegenFn<'_, '_, '_, M>,
     env: &CodegenEnv<'_>,
@@ -1196,28 +1195,31 @@ fn lower_type_test<M: cranelift_module::Module>(
     let descr = crate::concrete_types::ty_descr(descr_ty);
     let tuple_has_negations = descr.type_test_tuple_has_negations();
     let tuple_arities = descr.type_test_tuple_arities();
+    let struct_names = descr.type_test_struct_names();
 
     let value = *var_env.get(&v.0).expect("type-test subject");
 
     let scalar = emit_scalar_kind_checks(body, env.module, descr, value)?;
     let heap = emit_heap_kind_checks(body, descr, value);
 
-    let tuple_flag = if !tuple_arities.is_empty() {
+    let struct_flag = if !tuple_arities.is_empty() || !struct_names.is_empty() {
         if tuple_has_negations {
             panic!("TypeTest: negated tuple clauses not yet supported");
         }
-        Some(emit_tuple_arity_check(
+        Some(emit_struct_schema_check(
             body,
             runtime,
             env.tuple_schema_ids,
+            env.named_schema_ids,
             value,
             &tuple_arities,
+            &struct_names,
         ))
     } else {
         None
     };
 
-    let flag = [scalar, heap, tuple_flag]
+    let flag = [scalar, heap, struct_flag]
         .into_iter()
         .flatten()
         .reduce(|acc, f| body.b.ins().bor(acc, f))
@@ -1314,14 +1316,16 @@ fn emit_heap_kind_checks<M: cranelift_module::Module>(
     flag
 }
 
-/// Tuple arity check: gates on the STRUCT tag, then compares the
-/// struct's schema id against the per-arity tuple-schema ids.
-fn emit_tuple_arity_check<M: cranelift_module::Module>(
+/// Struct schema check: gates on the STRUCT tag, then compares the struct's
+/// schema id against tuple-arity schemas and named source struct schemas.
+fn emit_struct_schema_check<M: cranelift_module::Module>(
     body: &mut CodegenFn<'_, '_, '_, M>,
     runtime: &RuntimeRefs,
     tuple_schema_ids: &HashMap<usize, u32>,
+    named_schema_ids: &HashMap<String, u32>,
     value: CodegenValue,
     tuple_arities: &[usize],
+    struct_names: &[String],
 ) -> ir::Value {
     let is_struct = body.value_is_tag(value, fz_runtime::any_value::ValueKind::STRUCT);
     let struct_blk = body.b.create_block();
@@ -1349,6 +1353,17 @@ fn emit_tuple_arity_check<M: cranelift_module::Module>(
     let mut tf: Option<ir::Value> = None;
     for arity in tuple_arities {
         if let Some(&sid) = tuple_schema_ids.get(arity) {
+            let want = body.b.ins().iconst(types::I64, sid as i64);
+            let schema_match = body.b.ins().icmp(IntCC::Equal, schema64, want);
+            let combined = body.b.ins().band(is_struct, schema_match);
+            tf = Some(match tf.take() {
+                None => combined,
+                Some(prev) => body.b.ins().bor(prev, combined),
+            });
+        }
+    }
+    for name in struct_names {
+        if let Some(&sid) = named_schema_ids.get(name) {
             let want = body.b.ins().iconst(types::I64, sid as i64);
             let schema_match = body.b.ins().icmp(IntCC::Equal, schema64, want);
             let combined = body.b.ins().band(is_struct, schema_match);
