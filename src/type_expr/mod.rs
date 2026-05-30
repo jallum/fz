@@ -30,6 +30,7 @@
 use std::collections::HashMap;
 
 use crate::diag::Span;
+use crate::modules::identity::ModuleName;
 use crate::parser::lexer::{Tok, Token};
 use crate::types::Types;
 
@@ -53,9 +54,22 @@ enum TypeAlias {
     ProtocolDomain(crate::types::Ty),
 }
 
+#[derive(Debug, Clone)]
+pub struct StructFieldType {
+    pub name: String,
+    pub ty: crate::types::Ty,
+}
+
+#[derive(Debug, Clone)]
+pub struct StructRecordType {
+    pub module: ModuleName,
+    pub fields: Vec<StructFieldType>,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct ModuleTypeEnv {
     aliases: HashMap<(String, usize), TypeAlias>,
+    struct_records: HashMap<String, StructRecordType>,
 }
 
 impl ModuleTypeEnv {
@@ -75,6 +89,19 @@ impl ModuleTypeEnv {
             Some(TypeAlias::Resolved(prev)) => Some(prev),
             _ => None,
         }
+    }
+
+    pub fn insert_struct_record(&mut self, alias: String, record: StructRecordType) {
+        self.struct_records.insert(alias, record);
+    }
+
+    #[cfg(test)]
+    pub fn struct_record(&self, alias: &str) -> Option<&StructRecordType> {
+        self.struct_records.get(alias)
+    }
+
+    pub fn struct_records(&self) -> impl Iterator<Item = (&String, &StructRecordType)> {
+        self.struct_records.iter()
     }
 
     #[cfg(test)]
@@ -232,6 +259,8 @@ where
 mod env;
 mod parser;
 
+#[cfg(test)]
+pub use parser::parse_struct_record_type;
 pub use parser::parse_type_expr;
 
 pub fn resolve_spec_decl<T>(

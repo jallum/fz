@@ -96,6 +96,7 @@ fn parse_runtime_prelude<T: crate::types::Types<Ty = crate::types::Ty>>(
         opaque_inners: Default::default(),
         brand_inners: Default::default(),
         structs: Default::default(),
+        struct_field_types: Default::default(),
     };
     let mut flat = crate::frontend::resolve::flatten_modules(t, staged)
         .expect("runtime.fz module flatten error (bug in built-in prelude)");

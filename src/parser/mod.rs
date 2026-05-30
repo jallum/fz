@@ -293,6 +293,7 @@ impl Parser {
             opaque_inners: Default::default(),
             brand_inners: Default::default(),
             structs: Default::default(),
+            struct_field_types: Default::default(),
         })
     }
 

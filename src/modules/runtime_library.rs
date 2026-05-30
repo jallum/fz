@@ -183,6 +183,7 @@ pub fn parsed_program() -> Program {
         opaque_inners: Default::default(),
         brand_inners: Default::default(),
         structs: Default::default(),
+        struct_field_types: Default::default(),
     }
 }
 
@@ -374,6 +375,7 @@ pub fn primitive_prelude_program() -> Program {
         opaque_inners: Default::default(),
         brand_inners: Default::default(),
         structs: Default::default(),
+        struct_field_types: Default::default(),
     }
 }
 

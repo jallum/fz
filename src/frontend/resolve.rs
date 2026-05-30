@@ -433,6 +433,7 @@ fn flatten_modules_with_options<T: crate::types::Types<Ty = crate::types::Ty>>(
             )?,
         }
     }
+    let struct_field_types = collect_struct_field_types(&module_type_envs);
     Ok(Program {
         items: out,
         module_interfaces,
@@ -443,7 +444,27 @@ fn flatten_modules_with_options<T: crate::types::Types<Ty = crate::types::Ty>>(
         opaque_inners,
         brand_inners,
         structs,
+        struct_field_types,
     })
+}
+
+fn collect_struct_field_types(
+    module_type_envs: &HashMap<String, crate::type_expr::ModuleTypeEnv>,
+) -> BTreeMap<ModuleName, Vec<(String, crate::types::Ty)>> {
+    let mut out = BTreeMap::new();
+    for env in module_type_envs.values() {
+        for (_alias, record) in env.struct_records() {
+            out.insert(
+                record.module.clone(),
+                record
+                    .fields
+                    .iter()
+                    .map(|field| (field.name.clone(), field.ty.clone()))
+                    .collect(),
+            );
+        }
+    }
+    out
 }
 
 fn add_requested_runtime_interfaces(
@@ -3254,6 +3275,34 @@ end
         let pair = ct.tuple(&[atom, int]);
         let expected = ct.list(pair);
         assert!(ct.is_equivalent(opts, &expected));
+    }
+
+    #[test]
+    fn struct_record_type_alias_populates_program_field_types() {
+        let prog = parse(
+            r#"
+defmodule Range do
+  defstruct [:first, :last, :step]
+  @type t :: %Range{first: integer, last: integer, step: integer}
+end
+"#,
+        );
+        let mut ct = crate::types::ConcreteTypes;
+        let flat = flatten_modules(&mut ct, prog).expect("flatten");
+        let range = ModuleName::from_segments(vec!["Range".to_string()]);
+        let fields = flat
+            .struct_field_types
+            .get(&range)
+            .expect("Range field types");
+        assert_eq!(
+            fields
+                .iter()
+                .map(|(name, _ty)| name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["first", "last", "step"]
+        );
+        let int = ct.int();
+        assert!(fields.iter().all(|(_name, ty)| ct.is_equivalent(ty, &int)));
     }
 
     #[test]

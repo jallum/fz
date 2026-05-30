@@ -200,6 +200,35 @@ where
                 .first()
                 .map(|t| matches!(&t.tok, Tok::Ident(n) if n == "refines"))
                 .unwrap_or(false);
+            let is_struct_record = decl
+                .body_tokens
+                .0
+                .first()
+                .map(|t| matches!(t.tok, Tok::Percent))
+                .unwrap_or(false);
+            if is_struct_record {
+                match super::parser::parse_struct_record_type(t, &decl.body_tokens.0, &env) {
+                    Ok((record, ty, consumed)) if consumed == decl.body_tokens.0.len() => {
+                        env.insert(name.clone(), ty);
+                        env.insert_struct_record(name.clone(), record);
+                        resolved.insert(name.clone());
+                        progressed = true;
+                        continue;
+                    }
+                    Ok((_record, _ty, _consumed)) => {
+                        return Err(TypeExprError {
+                            msg: format!(
+                                "unexpected trailing tokens in struct record type alias `{}`",
+                                name
+                            ),
+                            span: decl.span,
+                        });
+                    }
+                    Err(_) => {
+                        continue;
+                    }
+                }
+            }
             if is_refines {
                 let body_after_refines = &decl.body_tokens.0[1..];
                 if body_after_refines.is_empty() {

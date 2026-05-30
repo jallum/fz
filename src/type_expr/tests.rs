@@ -342,6 +342,37 @@ fn primary_position_rejects_bar() {
     assert!(parse_one(&mut ct, "| integer").is_err());
 }
 
+#[test]
+fn struct_record_type_parses_field_types() {
+    let toks = Lexer::new("%Range{first: integer, last: integer, step: integer}")
+        .tokenize()
+        .expect("lex");
+    let env = ModuleTypeEnv::new();
+    let mut ct = ConcreteTypes;
+    let (record, ty, consumed) = parse_struct_record_type(&mut ct, &toks, &env).unwrap();
+    assert_eq!(record.module.dotted(), "Range");
+    assert_eq!(
+        record
+            .fields
+            .iter()
+            .map(|field| field.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["first", "last", "step"]
+    );
+    let int = ct.int();
+    assert!(
+        record
+            .fields
+            .iter()
+            .all(|field| ct.is_equivalent(&field.ty, &int))
+    );
+    assert_eq!(
+        ct.opaque_singleton(&ty).as_deref(),
+        Some("impl-target::Range")
+    );
+    assert_eq!(toks.len() - consumed, 1, "only trailing Eof remains");
+}
+
 // ----- fz-ul4.31.3: build_module_type_env -----
 
 fn type_alias_attr(name: &str, body_src: &str) -> crate::ast::Attribute {
@@ -385,6 +416,30 @@ fn build_env_resolves_simple_alias() {
     let env = build_module_type_env(&mut ct, &attrs).unwrap();
     let int = ct.int();
     assert!(ct.is_equivalent(env.get("id").unwrap(), &int));
+}
+
+#[test]
+fn build_env_records_struct_field_types_from_type_alias() {
+    let attrs = vec![type_alias_attr(
+        "t",
+        "%Range{first: integer, last: integer, step: integer}",
+    )];
+    let mut ct = crate::types::ConcreteTypes;
+    let env = build_module_type_env(&mut ct, &attrs).unwrap();
+    let alias_ty = env.get("t").expect("t alias");
+    assert_eq!(
+        ct.opaque_singleton(alias_ty).as_deref(),
+        Some("impl-target::Range")
+    );
+    let record = env.struct_record("t").expect("struct record");
+    assert_eq!(record.module.dotted(), "Range");
+    let int = ct.int();
+    assert!(
+        record
+            .fields
+            .iter()
+            .all(|field| ct.is_equivalent(&field.ty, &int))
+    );
 }
 
 #[test]

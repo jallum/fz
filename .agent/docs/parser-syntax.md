@@ -52,6 +52,21 @@ aliases:
 @type keyword(t) :: [{atom, t}]
 ```
 
+## Record Type Expressions
+
+`@type` bodies can declare field types for a struct schema with record syntax:
+
+```text
+@type t :: %Range{first: integer, last: integer, step: integer}
+```
+
+The parser keeps the body as type-expression tokens, then `type_expr` resolves
+it during module type-env construction. The resolved fact is keyed by the
+struct module (`Range`) and the field names; field order still comes from the
+matching `defstruct` declaration. This gives later typing passes one schema
+fact to consume instead of reparsing aliases or inferring field types from
+constructor sites.
+
 ## No-Parens Calls
 
 A call may omit its parentheses: `double 21`, `Enum.map xs, f`. The parser

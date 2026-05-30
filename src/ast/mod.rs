@@ -608,6 +608,14 @@ pub struct Program {
     /// empty env stored under "".
     pub module_type_envs: std::collections::HashMap<String, crate::type_expr::ModuleTypeEnv>,
     pub structs: std::collections::BTreeMap<crate::modules::identity::ModuleName, Vec<String>>,
+    /// Qualified struct schema -> resolved field types from record type aliases
+    /// such as `@type t :: %Range{first: integer}`. Field order still comes
+    /// from `defstruct`; this map supplies the per-field type facts.
+    #[allow(dead_code)] // fz-g58.46 consumes this when struct opaques carry field tuples.
+    pub struct_field_types: std::collections::BTreeMap<
+        crate::modules::identity::ModuleName,
+        Vec<(String, crate::types::Ty)>,
+    >,
     /// Protocol declarations and implementations collected during module
     /// resolution while source-level protocol ASTs are still available.
     #[allow(dead_code)]

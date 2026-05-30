@@ -14,6 +14,22 @@ pub fn parse_type_expr<T: crate::types::Types<Ty = crate::types::Ty>>(
     parse_type_expr_with_stack(t, tokens, env, None, Vec::new())
 }
 
+pub fn parse_struct_record_type<T: crate::types::Types<Ty = crate::types::Ty>>(
+    t: &mut T,
+    tokens: &[Token],
+    env: &ModuleTypeEnv,
+) -> Result<(StructRecordType, crate::types::Ty, usize), TypeExprError> {
+    let mut p = TypeExprParser {
+        t,
+        tokens,
+        pos: 0,
+        env,
+        vars: None,
+        alias_stack: Vec::new(),
+    };
+    p.parse_struct_record()
+}
+
 pub(super) fn parse_type_expr_with_stack<T: crate::types::Types<Ty = crate::types::Ty>>(
     t: &mut T,
     tokens: &[Token],
@@ -40,6 +56,13 @@ pub fn parse_type_expr_with_vars<T: crate::types::Types<Ty = crate::types::Ty>>(
     vars: &mut std::collections::HashMap<String, crate::types::TypeVarId>,
 ) -> Result<(T::Ty, usize), TypeExprError> {
     parse_type_expr_with_stack(t, tokens, env, Some(vars), Vec::new())
+}
+
+pub fn struct_record_nominal_ty<T: crate::types::Types<Ty = crate::types::Ty>>(
+    t: &mut T,
+    module: &crate::modules::identity::ModuleName,
+) -> T::Ty {
+    t.opaque_of(&format!("impl-target::{}", module.last_segment()))
 }
 
 struct TypeExprParser<'a, T: crate::types::Types<Ty = crate::types::Ty>> {
@@ -102,6 +125,10 @@ impl<'a, T: crate::types::Types<Ty = crate::types::Ty>> TypeExprParser<'a, T> {
             Tok::LBrack => self.parse_list(),
             Tok::LBrace => self.parse_tuple(),
             Tok::LParen => self.parse_parenthesized_type_or_arrow_type(),
+            Tok::Percent => {
+                let (_record, ty, _consumed) = self.parse_struct_record()?;
+                Ok(ty)
+            }
             Tok::Underscore => {
                 self.bump();
                 Ok(self.t.any())
@@ -153,6 +180,72 @@ impl<'a, T: crate::types::Types<Ty = crate::types::Ty>> TypeExprParser<'a, T> {
             }
             other => Err(self.err(format!("expected a type expression, got {}", other))),
         }
+    }
+
+    fn parse_struct_record(&mut self) -> Result<(StructRecordType, T::Ty, usize), TypeExprError> {
+        self.expect(&Tok::Percent, "`%` before struct record type")?;
+        let module = self.parse_module_name("struct record type module")?;
+        self.expect(&Tok::LBrace, "`{` after struct record type module")?;
+        let mut fields = Vec::new();
+        if !matches!(self.peek(), Tok::RBrace) {
+            loop {
+                let field = self.parse_record_field_name()?;
+                let ty = self.parse_union()?;
+                fields.push(StructFieldType { name: field, ty });
+                if !matches!(self.peek(), Tok::Comma) {
+                    break;
+                }
+                self.bump();
+            }
+        }
+        self.expect(&Tok::RBrace, "`}` after struct record fields")?;
+        let ty = struct_record_nominal_ty(self.t, &module);
+        Ok((StructRecordType { module, fields }, ty, self.pos))
+    }
+
+    fn parse_record_field_name(&mut self) -> Result<String, TypeExprError> {
+        match self.peek().clone() {
+            Tok::KwKey(name) => {
+                self.bump();
+                Ok(name)
+            }
+            Tok::Atom(name) | Tok::Ident(name) => {
+                self.bump();
+                self.expect(&Tok::Colon, "`:` after struct record field name")?;
+                Ok(name)
+            }
+            other => Err(self.err(format!("expected struct record field name, got {}", other))),
+        }
+    }
+
+    fn parse_module_name(
+        &mut self,
+        ctx: &str,
+    ) -> Result<crate::modules::identity::ModuleName, TypeExprError> {
+        let mut segments = match self.peek().clone() {
+            Tok::Upper(name) => {
+                self.bump();
+                vec![name]
+            }
+            other => return Err(self.err(format!("expected {}, got {}", ctx, other))),
+        };
+        while matches!(self.peek(), Tok::Dot) {
+            self.bump();
+            match self.peek().clone() {
+                Tok::Upper(segment) => {
+                    self.bump();
+                    segments.push(segment);
+                }
+                other => {
+                    return Err(
+                        self.err(format!("expected module segment after `.`, got {}", other))
+                    );
+                }
+            }
+        }
+        Ok(crate::modules::identity::ModuleName::from_segments(
+            segments,
+        ))
     }
 
     fn parse_named_type(&mut self, mut name: String) -> Result<T::Ty, TypeExprError> {

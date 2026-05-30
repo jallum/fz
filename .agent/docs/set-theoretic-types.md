@@ -144,6 +144,26 @@ is_value_disjoint(:ok, :error)         = true     (distinct atom singletons)
 A minted brand is never a singleton, so it never reaches the both-literal arm
 of the equality fold; only the disjoint arm consults the erased model.
 
+## Struct Field Type Declarations
+
+A struct schema has two separate source facts:
+
+```text
+defstruct [:first, :last, :step]              # field order
+@type t :: %Range{first: integer, ...}        # field types
+```
+
+The record type expression is resolved during module type-env construction and
+stored as `Program.struct_field_types`, keyed by the struct module name. It is
+not guessed from constructor expressions, because constructors are use sites
+and may omit fields or carry narrower literals. The schema declaration owns
+order; the record type declaration owns declared field types.
+
+The next struct-typing step consumes that map to model a struct as a nominal
+opaque tag over the tuple of declared field types. Field projection then becomes
+the same kind of structural read as tuple projection, guarded by the nominal
+schema tag.
+
 ## Which Predicate, Where
 
 ```text
