@@ -149,6 +149,16 @@ impl Parser {
                 lhs = Spanned::new(Expr::BinOp(BinOp::NotIn, Box::new(lhs), Box::new(rhs)), span);
                 continue;
             }
+            // No-parens call: a callable head followed by a space-separated
+            // argument (`foo a, b`, `Enum.map xs, fn`). The arguments are full
+            // expressions; greedy comma separation at statement/operand
+            // position, single-arg inside a comma-delimited container.
+            if Self::expr_is_callable_head(&lhs.node) && self.starts_no_parens_arg() {
+                let args = self.parse_no_parens_args()?;
+                let span = start.merge(self.prev_span());
+                lhs = Spanned::new(Expr::Call(Box::new(lhs), args), span);
+                continue;
+            }
             let Some((lbp, rbp, op)) = Self::infix_bp(self.peek()) else {
                 break;
             };
@@ -166,6 +176,61 @@ impl Parser {
 
     fn starts_expr_continuation(tok: &Tok) -> bool {
         matches!(tok, Tok::Dot | Tok::Eq) || Self::infix_bp(tok).is_some()
+    }
+
+    /// A callable head for a no-parens call: a bare name (`foo`) or a
+    /// module-qualified path (`Enum.map`, lowered to `Index`). Literals,
+    /// completed calls, and operators are not heads.
+    fn expr_is_callable_head(e: &Expr) -> bool {
+        matches!(e, Expr::Var(_) | Expr::Index(_, _))
+    }
+
+    /// True when the current token can begin a no-parens call argument: it is
+    /// separated from the head by trivia and is a value-starting token, not an
+    /// operator, container close, or block keyword. `(` and `[` are excluded
+    /// (the postfix loop owns them as paren-call and index). `+`/`-` count
+    /// only when unary-positioned — space before the op, none before its
+    /// operand — so `foo -1` is the argument `-1` while `foo - 1` is binary.
+    fn starts_no_parens_arg(&self) -> bool {
+        if !self.space_before_at(0) {
+            return false;
+        }
+        match self.peek() {
+            Tok::Int(_)
+            | Tok::Float(_)
+            | Tok::Binary(_)
+            | Tok::Atom(_)
+            | Tok::True
+            | Tok::False
+            | Tok::Nil
+            | Tok::Ident(_)
+            | Tok::Upper(_)
+            | Tok::LBrace
+            | Tok::PercentLBrace
+            | Tok::LBitstr
+            | Tok::Fn
+            | Tok::Amp => true,
+            Tok::Minus | Tok::Plus => !self.space_before_at(1),
+            _ => false,
+        }
+    }
+
+    /// Parse the arguments of a no-parens call. Each argument is a full
+    /// expression parsed in a fresh (comma-unbound) context, so a nested
+    /// no-parens call owns its own commas (`f g a, b` is `f(g(a, b))`). At
+    /// statement/operand position arguments are comma-separated greedily;
+    /// inside a comma-delimited container only one argument is taken, leaving
+    /// the comma to the container.
+    fn parse_no_parens_args(&mut self) -> PR<Vec<Spanned<Expr>>> {
+        let mut args = vec![self.with_comma_unbound(|p| p.parse_expr())?];
+        if self.comma_bound {
+            return Ok(args);
+        }
+        while self.eat(&Tok::Comma) {
+            self.skip_newlines();
+            args.push(self.with_comma_unbound(|p| p.parse_expr())?);
+        }
+        Ok(args)
     }
 
     pub(super) fn parse_prefix(&mut self) -> PR<Spanned<Expr>> {
@@ -292,7 +357,9 @@ impl Parser {
             Tok::LParen => {
                 self.bump();
                 self.skip_newlines();
-                let e = self.parse_expr()?;
+                // A parenthesized expression is a fresh statement/operand
+                // context: no-parens calls inside are greedy again.
+                let e = self.with_comma_unbound(|p| p.parse_expr())?;
                 self.skip_newlines();
                 self.expect(&Tok::RParen, "`)`")?;
                 return Ok(e);
@@ -308,11 +375,11 @@ impl Parser {
                             elems.extend(self.parse_keyword_entries(&Tok::RBrack)?);
                             break;
                         }
-                        elems.push(self.parse_expr()?);
+                        elems.push(self.with_comma_bound(|p| p.parse_expr())?);
                         self.skip_newlines();
                         if self.eat(&Tok::Bar) {
                             self.skip_newlines();
-                            tail = Some(Box::new(self.parse_expr()?));
+                            tail = Some(Box::new(self.with_comma_bound(|p| p.parse_expr())?));
                             self.skip_newlines();
                             break;
                         }
@@ -375,7 +442,7 @@ impl Parser {
             return Ok(out);
         }
         loop {
-            out.push(self.parse_expr()?);
+            out.push(self.with_comma_bound(|p| p.parse_expr())?);
             self.skip_newlines();
             if !self.eat(&Tok::Comma) {
                 break;
@@ -405,7 +472,7 @@ impl Parser {
                 }
                 break;
             }
-            let expr = self.parse_expr()?;
+            let expr = self.with_comma_bound(|p| p.parse_expr())?;
             let arg = if self.eat(&Tok::ColonColon) {
                 let mut ty_tokens = Vec::new();
                 let mut depth = 0usize;
@@ -487,7 +554,7 @@ impl Parser {
         let key = self.bump_keyword_key()?;
         let key = Spanned::new(Expr::Atom(key.node), key.span);
         self.skip_newlines();
-        let value = self.parse_expr()?;
+        let value = self.with_comma_bound(|p| p.parse_expr())?;
         Ok((key, value))
     }
 
@@ -527,7 +594,8 @@ impl Parser {
             if matches!(self.peek(), Tok::Eof) {
                 break;
             }
-            exprs.push(self.parse_expr()?);
+            // Each block statement is a fresh statement context.
+            exprs.push(self.with_comma_unbound(|p| p.parse_expr())?);
             if !matches!(self.peek(), Tok::Newline | Tok::Semi) {
                 if stops
                     .iter()
@@ -745,7 +813,7 @@ impl Parser {
         self.skip_newlines();
         if !matches!(self.peek(), Tok::RBitstr) {
             loop {
-                let value = self.parse_expr()?;
+                let value = self.with_comma_bound(|p| p.parse_expr())?;
                 let spec = if self.eat(&Tok::ColonColon) {
                     self.parse_bit_spec()?
                 } else {
@@ -949,16 +1017,16 @@ impl Parser {
             let Tok::KwKey(name) = self.bump() else {
                 unreachable!()
             };
-            let v = self.parse_expr()?;
+            let v = self.with_comma_bound(|p| p.parse_expr())?;
             return Ok(MapHead::Pair(Spanned::new(Expr::Atom(name), key_span), v));
         }
-        let first = self.parse_expr()?;
+        let first = self.with_comma_bound(|p| p.parse_expr())?;
         if matches!(self.peek(), Tok::Bar) {
             self.bump();
             return Ok(MapHead::Update(first));
         }
         if self.eat(&Tok::FatArrow) {
-            let v = self.parse_expr()?;
+            let v = self.with_comma_bound(|p| p.parse_expr())?;
             return Ok(MapHead::Pair(first, v));
         }
         self.err(format!(
@@ -978,17 +1046,17 @@ impl Parser {
                 let Tok::KwKey(name) = self.bump() else {
                     unreachable!()
                 };
-                let v = self.parse_expr()?;
+                let v = self.with_comma_bound(|p| p.parse_expr())?;
                 pairs.push((Spanned::new(Expr::Atom(name), key_span), v));
             } else {
-                let k = self.parse_expr()?;
+                let k = self.with_comma_bound(|p| p.parse_expr())?;
                 if !self.eat(&Tok::FatArrow) {
                     return self.err(format!(
                         "expected `=>` after map key, got {:?}",
                         self.peek()
                     ));
                 }
-                let v = self.parse_expr()?;
+                let v = self.with_comma_bound(|p| p.parse_expr())?;
                 pairs.push((k, v));
             }
             self.skip_newlines();
@@ -1010,7 +1078,8 @@ impl Parser {
             vec![self.parse_pattern()?]
         };
         self.expect(&Tok::Arrow, "`->`")?;
-        let body = self.parse_expr()?;
+        // A lambda body is a fresh statement context (greedy no-parens calls).
+        let body = self.with_comma_unbound(|p| p.parse_expr())?;
         Ok(Spanned::new(
             Expr::Lambda(params, Box::new(body)),
             self.finish(start),

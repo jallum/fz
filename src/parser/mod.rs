@@ -82,6 +82,14 @@ pub struct Parser {
     /// parses `pred(h) do … end` as `pred(h, do_block)` and the
     /// surrounding `else`/`end` becomes unexpected.
     suppress_trailing_do: bool,
+    /// fz-g58.2.3a — true while parsing a single element of a comma-delimited
+    /// container (list/tuple/map/bitstring/parenthesized call args). A
+    /// no-parens call recognized in that state takes a single argument and
+    /// leaves the comma to the enclosing container, so `[foo a, b]` is
+    /// `[foo(a), b]` rather than `[foo(a, b)]`. At statement/operand position
+    /// (the default, and inside any nested block, lambda, or grouping) it is
+    /// false, and a no-parens call greedily takes comma-separated args.
+    comma_bound: bool,
 }
 
 type PR<T> = Result<T, ParseError>;
@@ -95,6 +103,7 @@ impl Parser {
             toks,
             pos: 0,
             suppress_trailing_do: false,
+            comma_bound: false,
         }
     }
 
@@ -106,6 +115,36 @@ impl Parser {
         let r = f(self);
         self.suppress_trailing_do = prev;
         r
+    }
+
+    /// Run `f` while parsing a comma-delimited container element: a no-parens
+    /// call recognized inside takes a single argument (see `comma_bound`).
+    fn with_comma_bound<T>(&mut self, f: impl FnOnce(&mut Self) -> PR<T>) -> PR<T> {
+        let prev = self.comma_bound;
+        self.comma_bound = true;
+        let r = f(self);
+        self.comma_bound = prev;
+        r
+    }
+
+    /// Run `f` in a fresh statement/operand context (block, lambda body, or
+    /// grouping): a no-parens call recognized inside greedily takes
+    /// comma-separated args, regardless of any enclosing container.
+    fn with_comma_unbound<T>(&mut self, f: impl FnOnce(&mut Self) -> PR<T>) -> PR<T> {
+        let prev = self.comma_bound;
+        self.comma_bound = false;
+        let r = f(self);
+        self.comma_bound = prev;
+        r
+    }
+
+    /// Whether trivia immediately precedes the token at `pos + off` (so the
+    /// parser can read inter-token spacing for no-parens / dual-op decisions).
+    fn space_before_at(&self, off: usize) -> bool {
+        self.toks
+            .get(self.pos + off)
+            .map(|t| t.space_before)
+            .unwrap_or(false)
     }
 
     // --- token helpers ---

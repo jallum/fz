@@ -58,6 +58,7 @@ Run with `BLESS=1` to rewrite after editing fixtures.
 | `mutual_recursion/` | mutual recursion — is_even/is_odd call each other; exercises cross-function recursive dispatch | jit, interp, aot, repl |
 | `nested_modules/` | inner module addressed both fully-qualified (`Outer.Inner.f`) and via outer-local reference | jit, interp, aot, repl |
 | `nested_tuple_producer/` | nested tuple producer call inside an outer tuple literal; keeps tuple DP live across continuations | jit, interp, aot, repl |
+| `no_parens_call/` | no-parens calls (double 21; sum3 1, 2, 3) parse and run; output matches Elixir | jit, interp, aot, repl |
 | `opaque_fn_value_join/` | opaque join of zero-capture function values remains callable through Enum.reduce/3 | jit, interp, aot, repl |
 | `pipe_headless_case/` | pipe macro rewrite for call RHS and headless case RHS | jit, interp, aot, repl |
 | `polymorphic/` | parametric `id` exercised over int, atom, and bool | jit, interp, aot, repl |

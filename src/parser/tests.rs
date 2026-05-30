@@ -826,3 +826,133 @@ mod elixir_operator_precedence_tests {
         assert!(matches!(lhs, Expr::BinOp(BinOp::Add, _, _)));
     }
 }
+
+#[cfg(test)]
+mod no_parens_call_tests {
+    use super::*;
+    use crate::parser::lexer::Lexer;
+
+    fn parse(src: &str) -> Expr {
+        let toks = Lexer::new(src).tokenize().unwrap();
+        Parser::new(toks).parse_expr_eof().unwrap().node
+    }
+
+    /// Parse `src` and destructure a top-level call into (callee, owned args).
+    fn call(src: &str) -> (Expr, Vec<Expr>) {
+        match parse(src) {
+            Expr::Call(callee, args) => (callee.node, args.into_iter().map(|a| a.node).collect()),
+            other => panic!("expected Call, got {:?}", other),
+        }
+    }
+
+    fn var(e: &Expr) -> &str {
+        match e {
+            Expr::Var(n) => n,
+            other => panic!("expected Var, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn single_arg() {
+        let (c, args) = call("foo a");
+        assert_eq!(var(&c), "foo");
+        assert_eq!(args.len(), 1);
+        assert_eq!(var(&args[0]), "a");
+    }
+
+    #[test]
+    fn many_args() {
+        let (c, args) = call("foo a, b, c");
+        assert_eq!(var(&c), "foo");
+        assert_eq!(args.len(), 3);
+    }
+
+    #[test]
+    fn arg_is_a_full_expression() {
+        // foo a + b  =>  foo(a + b)
+        let (_c, args) = call("foo a + b");
+        assert_eq!(args.len(), 1);
+        assert!(matches!(args[0], Expr::BinOp(BinOp::Add, _, _)));
+    }
+
+    #[test]
+    fn nested_call_grabs_all_args() {
+        // f g a, b  =>  f(g(a, b))
+        let (c, args) = call("f g a, b");
+        assert_eq!(var(&c), "f");
+        assert_eq!(args.len(), 1, "outer call takes one arg");
+        let Expr::Call(inner, inner_args) = &args[0] else {
+            panic!("inner not a call: {:?}", args[0])
+        };
+        assert_eq!(var(&inner.node), "g");
+        assert_eq!(inner_args.len(), 2, "inner call grabbed both args");
+    }
+
+    #[test]
+    fn arg_then_nested_call() {
+        // f a, g b  =>  f(a, g(b))
+        let (c, args) = call("f a, g b");
+        assert_eq!(var(&c), "f");
+        assert_eq!(args.len(), 2);
+        assert!(matches!(&args[1], Expr::Call(_, a) if a.len() == 1));
+    }
+
+    #[test]
+    fn recognized_in_operand_position() {
+        // 1 + foo a  =>  1 + foo(a)
+        let Expr::BinOp(BinOp::Add, _l, r) = parse("1 + foo a") else {
+            panic!("not an addition")
+        };
+        assert!(
+            matches!(&r.node, Expr::Call(c, a)
+                if matches!(&c.node, Expr::Var(n) if n == "foo") && a.len() == 1)
+        );
+    }
+
+    #[test]
+    fn dual_op_spacing_selects_unary_argument() {
+        // foo -1  =>  foo(-1)  (unary, because space before `-`, none after)
+        let (c, args) = call("foo -1");
+        assert_eq!(var(&c), "foo");
+        assert_eq!(args.len(), 1);
+        assert!(matches!(args[0], Expr::UnOp(UnOp::Neg, _)));
+        // foo - 1  =>  binary subtraction, not a call
+        assert!(matches!(parse("foo - 1"), Expr::BinOp(BinOp::Sub, _, _)));
+    }
+
+    #[test]
+    fn module_qualified_head() {
+        // Enum.map xs, f  =>  (Enum.map)(xs, f)
+        let (c, args) = call("Enum.map xs, f");
+        assert!(matches!(c, Expr::Index(_, _)), "head is qualified: {:?}", c);
+        assert_eq!(args.len(), 2);
+    }
+
+    #[test]
+    fn container_keeps_its_comma() {
+        // [foo a, b]  =>  [foo(a), b]: the comma belongs to the list, so the
+        // no-parens call inside a container takes a single argument.
+        let Expr::List(items, None) = parse("[foo a, b]") else {
+            panic!("not a list")
+        };
+        assert_eq!(items.len(), 2, "comma belongs to the list");
+        assert!(
+            matches!(&items[0].node, Expr::Call(c, a)
+                if matches!(&c.node, Expr::Var(n) if n == "foo") && a.len() == 1)
+        );
+        assert_eq!(var(&items[1].node), "b");
+    }
+
+    #[test]
+    fn bare_var_is_not_a_call() {
+        assert!(matches!(parse("foo"), Expr::Var(_)));
+        assert!(matches!(parse("foo + 1"), Expr::BinOp(BinOp::Add, _, _)));
+    }
+
+    #[test]
+    fn paren_call_unaffected() {
+        let (c, args) = call("foo(a, b)");
+        assert_eq!(var(&c), "foo");
+        assert_eq!(args.len(), 2);
+    }
+}
