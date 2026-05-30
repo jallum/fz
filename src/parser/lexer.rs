@@ -112,6 +112,14 @@ impl fmt::Display for Tok {
 pub struct Token {
     pub tok: Tok,
     pub span: Span,
+    /// True when at least one trivia byte (space, tab, CR, or comment)
+    /// immediately precedes this token on the same line. The parser reads it
+    /// to resolve spacing-sensitive grammar: a dual operator (`+`/`-`) with a
+    /// space before but none after binds as a unary prefix (so `foo -1` is the
+    /// call `foo(-1)`, not the subtraction `foo - 1`), and an identifier with
+    /// no space before a following `(`/`[` is a call/access head. The lexer
+    /// reports the spacing fact; the parser owns the grammatical decision.
+    pub space_before: bool,
 }
 
 pub struct Lexer<'a> {
@@ -399,12 +407,15 @@ impl<'a> Lexer<'a> {
     }
 
     pub fn next_token(&mut self) -> Result<Token, LexError> {
+        let before_trivia = self.pos;
         self.skip_trivia();
+        let space_before = self.pos != before_trivia;
         let start = self.pos;
         let Some(c) = self.peek(0) else {
             return Ok(Token {
                 tok: Tok::Eof,
                 span: self.span_from(start),
+                space_before,
             });
         };
 
@@ -668,6 +679,7 @@ impl<'a> Lexer<'a> {
         Ok(Token {
             tok,
             span: self.span_from(start),
+            space_before,
         })
     }
 
@@ -917,6 +929,66 @@ mod tests {
 
     fn id(s: &str) -> Tok {
         Tok::Ident(s.to_string())
+    }
+
+    // fz-g58.1.2 — dual-op space sensitivity. The lexer records, per token,
+    // whether trivia immediately precedes it. The parser (no-parens calls)
+    // reads "space before the op, none before the following operand" as a
+    // unary prefix.
+
+    /// (tok, space_before) for each non-Eof token.
+    fn spacing_of(src: &str) -> Vec<(Tok, bool)> {
+        Lexer::new(src)
+            .tokenize()
+            .expect("lex")
+            .into_iter()
+            .map(|t| (t.tok, t.space_before))
+            .filter(|(t, _)| !matches!(t, Tok::Eof))
+            .collect()
+    }
+
+    /// Given `<head> <op> <operand>`, the op is unary-positioned iff it has a
+    /// space before and the operand has none — the rule the parser applies.
+    fn op_is_unary_positioned(src: &str) -> bool {
+        let s = spacing_of(src);
+        let op = s
+            .iter()
+            .position(|(t, _)| matches!(t, Tok::Minus | Tok::Plus))
+            .expect("an op");
+        s[op].1 && !s[op + 1].1
+    }
+
+    #[test]
+    fn records_space_before_for_each_token() {
+        // Leading token has no space before it; the rest are space-separated.
+        assert_eq!(
+            spacing_of("a - b"),
+            vec![(id("a"), false), (Tok::Minus, true), (id("b"), true)]
+        );
+    }
+
+    #[test]
+    fn dual_op_spacing_distinguishes_unary_from_binary() {
+        // `foo -1`: space before `-`, none before `1` → unary (the call foo(-1)).
+        assert!(op_is_unary_positioned("foo -1"));
+        // `foo - 1`: spaces on both sides → binary subtraction.
+        assert!(!op_is_unary_positioned("foo - 1"));
+        // `foo-1`: no space either side → binary.
+        assert!(!op_is_unary_positioned("foo-1"));
+        // `+` behaves the same as `-`.
+        assert!(op_is_unary_positioned("foo +1"));
+        assert!(!op_is_unary_positioned("foo + 1"));
+    }
+
+    #[test]
+    fn adjacency_visible_for_call_and_access_heads() {
+        // `foo(` — no space before `(` marks a call head; `foo (` has space.
+        let call = spacing_of("foo(x)");
+        let lp = call.iter().position(|(t, _)| matches!(t, Tok::LParen)).unwrap();
+        assert!(!call[lp].1, "call-head `(` is adjacent to the identifier");
+        let spaced = spacing_of("foo (x)");
+        let lp2 = spaced.iter().position(|(t, _)| matches!(t, Tok::LParen)).unwrap();
+        assert!(spaced[lp2].1, "spaced `(` is not a call head");
     }
 
     #[test]
