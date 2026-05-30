@@ -116,6 +116,29 @@ lowering consult, so the two paths agree on what is runnable. Multi-clause and
 guarded lambdas parse but defer execution to the desugar in fz-g58.15 (Arc 3),
 where they become pattern-matrix lambdas.
 
+## Captures
+
+`&` introduces one of three forms, disambiguated by the single token after it:
+
+```text
+&N            => Expr::CaptureArg(N)      (an adjacent integer >= 1)
+&(...)        => Expr::Capture(body)      (a parenthesized body)
+&name/arity   => Expr::FnRef { name, arity }
+```
+
+`&N` requires the integer to be adjacent (no space) so `&1` is a placeholder
+while `& 1` is not. `&(...)` parses its body as a fresh operand context, so the
+body's own `&N` placeholders and nested calls come along. The function-reference
+form (`&name/arity`, `&Mod.fun/n`, `&lib::extern/n`) is unchanged from fz-swt.5.
+
+`CaptureArg` and `Capture` parse but have no runtime meaning on their own: both
+desugar to a `Lambda` whose params are the placeholders in fz-g58.15 (Arc 3).
+Until then the interpreter and IR lowering reject them with a
+"requires desugaring (fz-g58.15)" error, in lockstep (three-path parity).
+
+The unparenthesized capture-of-call form (`&Mod.fun(&1, &2)`) is NOT parsed:
+after `&name` the parser requires `/arity`. That form is out of scope for 2.6.
+
 ## Boundaries
 
 Special forms such as `if`, `with`, and `quote` still own their dedicated
@@ -133,6 +156,7 @@ Gate changes here with:
 - `cargo test parser::tests::no_parens_call_tests`
 - `cargo test parser::tests::no_parens_keyword_ambiguity_tests`
 - `cargo test parser::tests::lambda_tests`
+- `cargo test parser::tests::capture_tests`
 - `cargo test private_fns_are_not_interface_exports`
 - `cargo test --test fixture_matrix keyword_lists`
 - `cargo test --test fixture_matrix no_parens_keyword`

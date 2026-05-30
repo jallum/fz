@@ -108,7 +108,11 @@ pub(super) fn collect_expr_free_names(
         | Expr::Atom(_)
         | Expr::Bool(_)
         | Expr::Nil
-        | Expr::FnRef { .. } => {}
+        | Expr::FnRef { .. }
+        // fz-g58.2.6 — `&N` placeholder binds nothing and references nothing
+        // outer; the `&(...)` body's free names come from recursing into it.
+        | Expr::CaptureArg(_) => {}
+        Expr::Capture(body) => collect_expr_free_names(&body.node, bound, free),
         Expr::Var(name) => record_free_name(name, bound, free),
         Expr::List(items, tail) => {
             for item in items {

@@ -205,8 +205,11 @@ fn walk_expr(e: &Spanned<Expr>, diags: &mut Vec<Diagnostic>) {
         | Expr::Nil
         | Expr::Var(_)
         | Expr::FnRef { .. }
+        // fz-g58.2.6 — `&N` is a leaf; the `&(...)` body is walked below.
+        | Expr::CaptureArg(_)
         | Expr::Quote(_)
         | Expr::Unquote(_) => {}
+        Expr::Capture(body) => walk_expr(body, diags),
         Expr::Block(items) => items.iter().for_each(|i| walk_expr(i, diags)),
         Expr::BinOp(_, a, b) => {
             walk_expr(a, diags);

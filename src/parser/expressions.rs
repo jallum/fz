@@ -420,6 +420,30 @@ impl Parser {
                 let e = self.parse_bp(UNARY_BP)?;
                 Expr::UnOp(UnOp::Not, Box::new(e))
             }
+            // `&` introduces one of three capture forms, disambiguated by the
+            // single token after it (fz-g58.2.6):
+            //   `&N`        — capture placeholder (an adjacent integer)
+            //   `&(...)`    — capture expression over `&N` placeholders
+            //   `&name/n`   — explicit function reference (fz-swt.5)
+            // The first two desugar to a `Lambda` in fz-g58.15 (Arc 3).
+            Tok::Amp if matches!(self.peek_at(1), Tok::Int(n) if *n >= 1)
+                && !self.space_before_at(1) =>
+            {
+                self.bump(); // &
+                let Tok::Int(n) = self.bump() else {
+                    unreachable!("guarded by the match arm");
+                };
+                Expr::CaptureArg(n as usize)
+            }
+            Tok::Amp if matches!(self.peek_at(1), Tok::LParen) => {
+                self.bump(); // &
+                self.bump(); // (
+                self.skip_newlines();
+                let body = self.with_comma_unbound(|p| p.parse_expr())?;
+                self.skip_newlines();
+                self.expect(&Tok::RParen, "`)` to close `&(...)` capture")?;
+                Expr::Capture(Box::new(body))
+            }
             // fz-swt.5: `&name/arity` or `&Mod.Sub.name/arity` — explicit
             // first-class function reference. `name` is captured as a
             // dotted string so the resolver/lowerer can do `(name, arity)`

@@ -140,6 +140,9 @@ pub fn expr_to_value(e: &Spanned<Expr>) -> Result<Value, String> {
         | Expr::With(_, _, _)
         | Expr::Receive { .. }
         | Expr::Lambda(_)
+        // fz-g58.2.6 — capture forms are not reified by the v1 quote reifier.
+        | Expr::Capture(_)
+        | Expr::CaptureArg(_)
         | Expr::Map(_)
         | Expr::MapUpdate(_, _)
         | Expr::Index(_, _)

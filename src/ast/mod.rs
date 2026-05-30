@@ -72,6 +72,16 @@ pub enum Expr {
         arity: usize,
     },
 
+    /// fz-g58.2.6 — capture expression `&(...)`. The body may contain
+    /// `CaptureArg` placeholders; the whole form desugars to a `Lambda` whose
+    /// params are the placeholders, in fz-g58.15 (Arc 3). Until then it parses
+    /// but neither evaluates nor lowers.
+    Capture(Box<Spanned<Expr>>),
+    /// fz-g58.2.6 — capture placeholder `&N` (1-based), only meaningful inside
+    /// a `Capture` body. Desugars to the Nth lambda parameter in fz-g58.15.
+    #[allow(dead_code)] // The index is read by the fz-g58.15 desugar; 2.6 only parses it.
+    CaptureArg(usize),
+
     // collections
     List(Vec<Spanned<Expr>>, Option<Box<Spanned<Expr>>>), // [a, b, c | tail]
     Tuple(Vec<Spanned<Expr>>),

@@ -497,6 +497,10 @@ fn collect_top_level_qualified_calls(expr: &Spanned<Expr>, out: &mut Vec<ModuleN
                 collect_top_level_qualified_calls(arg, out);
             }
         }
+        // fz-g58.2.6 — recurse into the `&(...)` body for qualified calls;
+        // `&N` is a leaf.
+        Expr::Capture(body) => collect_top_level_qualified_calls(body, out),
+        Expr::CaptureArg(_) => {}
         Expr::FnRef { name, .. } => {
             if let Some((module, _fun)) = name.rsplit_once('.')
                 && let Ok(module) = ModuleName::parse_dotted(module)
@@ -1718,6 +1722,18 @@ fn rewrite_expr(
                 *n = format!("{}.{}", module_path, n);
             }
         }
+        // fz-g58.2.6 — sibling/import rewriting recurses into the `&(...)`
+        // body; `&N` is a leaf with no name to resolve.
+        Expr::Capture(body) => rewrite_expr(
+            body,
+            module_path,
+            siblings,
+            intro,
+            module_paths,
+            aliases,
+            imports,
+        ),
+        Expr::CaptureArg(_) => {}
         // fz-swt.5: `&name/arity` follows the same name-resolution rules
         // as a bare call target — sibling rewriting, then import
         // resolution, then alias-qualified paths. We treat the `name`

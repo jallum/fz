@@ -179,6 +179,12 @@ pub(crate) fn lower_expr(
         // fz-swt.5: `&name/arity` — explicit, arity-aware fn reference.
         // Direct (name, arity) lookup in the same fn map Call uses, so an
         // overloaded name resolves unambiguously to the requested clause.
+        // fz-g58.2.6 — `&(...)` / `&N` desugar to a Lambda in fz-g58.15
+        // (Arc 3); they must not reach lowering before that.
+        Expr::Capture(_) | Expr::CaptureArg(_) => Err(LowerError::Unsupported {
+            span: sp,
+            what: "capture `&(...)`/`&N` requires desugaring (fz-g58.15)".to_string(),
+        }),
         Expr::FnRef { name, arity } => {
             if let Some(&fn_id) = ctx.fns.get(&(name.clone(), *arity)) {
                 return Ok(ctx.let_at(Prim::make_closure(sp, fn_id, vec![]), sp));

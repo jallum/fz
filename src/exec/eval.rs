@@ -455,6 +455,11 @@ impl CompileTimeEvaluator {
             Expr::FnRef { name, arity: _ } => env
                 .lookup(name)
                 .ok_or_else(|| format!("undefined: {}", name)),
+            // fz-g58.2.6 — `&(...)` / `&N` desugar to a Lambda in fz-g58.15
+            // (Arc 3); until then they have no runtime meaning.
+            Expr::Capture(_) | Expr::CaptureArg(_) => {
+                Err("capture `&(...)`/`&N` requires desugaring (fz-g58.15)".to_string())
+            }
             Expr::Ascribe(inner, _) => self.eval(inner, env),
             Expr::List(xs, tail) => {
                 let mut out = Vec::with_capacity(xs.len());

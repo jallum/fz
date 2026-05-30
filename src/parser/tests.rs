@@ -1180,3 +1180,69 @@ mod lambda_tests {
         assert!(Parser::new(toks).parse_program().is_err());
     }
 }
+
+/// fz-g58.2.6 — `&` capture forms. Three shapes disambiguated by the token
+/// after `&`: placeholder `&N`, capture expression `&(...)`, and the existing
+/// function reference `&name/arity`. The first two parse to `CaptureArg` /
+/// `Capture` and desugar to a `Lambda` in fz-g58.15 (Arc 3); the reference
+/// form keeps producing `FnRef`.
+mod capture_tests {
+    use super::*;
+    use crate::parser::lexer::Lexer;
+
+    fn expr(src: &str) -> Expr {
+        let toks = Lexer::new(src).tokenize().unwrap();
+        Parser::new(toks).parse_expr_eof().unwrap().node
+    }
+
+    #[test]
+    fn placeholder_parses_to_capture_arg() {
+        assert!(matches!(expr("&1"), Expr::CaptureArg(1)));
+        assert!(matches!(expr("&3"), Expr::CaptureArg(3)));
+    }
+
+    #[test]
+    fn capture_expr_wraps_its_body() {
+        // &(&1 + 1) => Capture(BinOp(Add, CaptureArg(1), Int(1)))
+        let Expr::Capture(body) = expr("&(&1 + 1)") else {
+            panic!("expected capture");
+        };
+        let Expr::BinOp(BinOp::Add, lhs, rhs) = &body.node else {
+            panic!("expected binop body, got {:?}", body.node);
+        };
+        assert!(matches!(lhs.node, Expr::CaptureArg(1)));
+        assert!(matches!(rhs.node, Expr::Int(1)));
+    }
+
+    #[test]
+    fn capture_expr_holds_multiple_placeholders() {
+        let Expr::Capture(body) = expr("&(&1 + &2)") else {
+            panic!("expected capture");
+        };
+        let Expr::BinOp(BinOp::Add, lhs, rhs) = &body.node else {
+            panic!("expected binop body");
+        };
+        assert!(matches!(lhs.node, Expr::CaptureArg(1)));
+        assert!(matches!(rhs.node, Expr::CaptureArg(2)));
+    }
+
+    #[test]
+    fn fn_reference_still_parses_to_fnref() {
+        assert!(matches!(expr("&foo/1"), Expr::FnRef { arity: 1, .. }));
+        let Expr::FnRef { name, arity } = expr("&Mod.bar/2") else {
+            panic!("expected fnref");
+        };
+        assert_eq!(name, "Mod.bar");
+        assert_eq!(arity, 2);
+    }
+
+    #[test]
+    fn capture_appears_as_a_call_argument() {
+        // Enum.map(xs, &(&1 * 2)) — the capture rides in as the last arg.
+        let Expr::Call(_, args) = expr("Enum.map(xs, &(&1 * 2))") else {
+            panic!("expected call");
+        };
+        assert_eq!(args.len(), 2);
+        assert!(matches!(args[1].node, Expr::Capture(_)));
+    }
+}

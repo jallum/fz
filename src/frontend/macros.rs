@@ -483,7 +483,10 @@ pub fn expand_expr(
         | Expr::Bool(_)
         | Expr::Nil
         | Expr::Var(_)
-        | Expr::FnRef { .. } => {}
+        | Expr::FnRef { .. }
+        // fz-g58.2.6 — `&N` is a leaf; `&(...)` body is expanded below.
+        | Expr::CaptureArg(_) => {}
+        Expr::Capture(body) => expand_expr(body, interp, macros, depth)?,
 
         Expr::List(xs, tail) => {
             for x in xs {
@@ -645,7 +648,10 @@ fn stamp_expanded(e: &mut Spanned<Expr>, macro_call: Span, definition: Option<Sp
         | Expr::Bool(_)
         | Expr::Nil
         | Expr::Var(_)
-        | Expr::FnRef { .. } => {}
+        | Expr::FnRef { .. }
+        // fz-g58.2.6 — `&N` is a leaf; `&(...)` body is stamped below.
+        | Expr::CaptureArg(_) => {}
+        Expr::Capture(body) => stamp_expanded(body, macro_call, definition),
         Expr::List(xs, tail) => {
             for x in xs {
                 stamp_expanded(x, macro_call, definition);
