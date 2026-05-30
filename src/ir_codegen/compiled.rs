@@ -578,6 +578,8 @@ fn remap_spec_plan(
             })
             .collect(),
         extern_marshals: spec.extern_marshals.clone(),
+        brand_inners: spec.brand_inners.clone(),
+        opaque_inners: spec.opaque_inners.clone(),
     }
 }
 

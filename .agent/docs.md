@@ -24,6 +24,7 @@ Read the one whose trigger matches what you are about to touch:
 - [scheduler-zero-arg-closures](docs/scheduler-zero-arg-closures.md) — scheduler, receive, yield, spawn, timeout, or continuation re-entry.
 - [state-transitions](docs/state-transitions.md) — `Enum.reduce` / `Enumerable.reduce_list` lowering, the `reduce_list_cont` state machine, or known vs opaque reducers.
 - [any-value](docs/any-value.md) — `AnyValueRef`, `ValueRef`, raw scalar lanes, boxed scalars, pointer format, or GC-visible values.
+- [set-theoretic-types](docs/set-theoretic-types.md) — the type lattice (`Descr` axes, union/intersect/neg, emptiness/disjointness), brands & opaques as nominal refinements, brand erasure, and the two-model rule: runtime equality/matching is brand-blind (`is_value_disjoint`) while typing/dispatch/boundary is brand-aware (`is_disjoint`).
 - [parser-syntax](docs/parser-syntax.md) — surface syntax in `src/parser`: `fn` / `fnp` items, keyword lists, or `do`-block sugar.
 - [telemetry](docs/telemetry.md) — adding compile-time telemetry, testing compiler decisions, or measuring performance work.
 - [runtime-telemetry](docs/runtime-telemetry.md) — runtime/scheduler telemetry events (`fz.runtime.process_exited`, `fz.runtime.dbg`), or observing a run in tests.

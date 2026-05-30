@@ -12,6 +12,9 @@ Run with `BLESS=1` to rewrite after editing fixtures.
 | `apply2/` | first-class fns — pass a fn into another fn and call it | jit, interp, aot, repl |
 | `ast_eval/` | tagged-tuple AST evaluator — first fixture to exercise multi-clause tuple-pattern dispatch end-to-end | jit, interp, aot, repl |
 | `attributes/` | @moduledoc / @doc attributes parse and the module still executes | jit, interp, aot, repl |
+| `bsx_guard_eq/` | fz-bsx.4 — a guard comparison (when s == \"hi\") on a utf8 binding is brand-blind on all paths | jit, interp, aot, repl |
+| `bsx_nested_eq/` | fz-bsx.3 — nested structural == of a heap binary vs a utf8 string agrees on all paths (jit/aot match interp/repl) | jit, interp, aot, repl |
+| `bsx_nested_match/` | fz-bsx.4 — case-match of {:ok, \"hi\"} over a heap binary nested in a tuple matches on all paths | jit, interp, aot, repl |
 | `case_tuple_pattern_sequential/` | sequential calls returning tuple-pattern results (fz-i82 regression) | interp, jit, aot, repl |
 | `classify_two_clause/` | literal-vs-wildcard clause dispatch (`0` and `_`) | jit, interp, aot, repl |
 | `closure_typed_captures/` | fz-ul4.29.5 — closure dispatched via call_indirect through code pointer | jit, interp, aot, repl |

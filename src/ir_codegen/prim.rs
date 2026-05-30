@@ -1511,8 +1511,8 @@ where
         FloatCC::NotEqual
     };
 
-    // Kind-disjoint fold doesn't need either operand.
-    if descrs_disjoint(t, fn_types, a, bv) {
+    // Value-disjoint (brand-erased) fold doesn't need either operand.
+    if descrs_value_disjoint(t, fn_types, a, bv) {
         let raw = body.b.ins().iconst(
             types::I64,
             if is_eq {

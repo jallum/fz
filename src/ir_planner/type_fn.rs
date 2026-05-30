@@ -221,6 +221,8 @@ pub fn type_fn<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::Clo
         dead_branches,
         call_edges: HashMap::new(),
         extern_marshals: HashMap::new(),
+        brand_inners: m.brand_inners.clone(),
+        opaque_inners: m.opaque_inners.clone(),
     }
 }
 

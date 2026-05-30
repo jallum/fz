@@ -1,0 +1,8 @@
+import Utf8
+
+fn main() do
+  good = <<104, 105>>
+  r = Utf8.from_bytes(good)
+  dbg(r == {:ok, "hi"})
+  dbg({:ok, good} == {:ok, "hi"})
+end

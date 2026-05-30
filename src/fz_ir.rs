@@ -1435,6 +1435,12 @@ impl Module {
         files
     }
 
+    /// A borrowed view of this module's brand/opaque inner-type maps, for the
+    /// brand-blind value-equality decisions (`is_value_disjoint`).
+    pub fn nominals(&self) -> crate::types::Nominals<'_> {
+        crate::types::Nominals::new(&self.brand_inners, &self.opaque_inners)
+    }
+
     pub fn extern_by_id(&self, eid: ExternId) -> &ExternDecl {
         &self.externs[*self.extern_idx.get(&eid).expect("unknown extern id")]
     }
