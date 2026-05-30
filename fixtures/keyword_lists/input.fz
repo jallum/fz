@@ -1,9 +1,10 @@
 fn echo(opts), do: opts
 
 fn main() do
-  dbg([a: 1, b: 2])
-  dbg(echo(timeout: 10, retry: true))
-  dbg(echo(label: :work) do
+  assert([a: 1, b: 2] == [{:a, 1}, {:b, 2}], "keyword list lowers to a list of atom/value tuples")
+  assert(echo(timeout: 10, retry: true) == [{:timeout, 10}, {:retry, true}], "trailing keyword args collect into a keyword list")
+  with_do = echo(label: :work) do
     42
-  end)
+  end
+  assert(with_do == [{:label, :work}, {:do, 42}], "a trailing do-block becomes a :do keyword entry")
 end

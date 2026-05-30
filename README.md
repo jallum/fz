@@ -553,7 +553,8 @@ executable, REPL script mode). A fixture is more than a sample file
 the JIT but not in AOT, the fixture matrix catches it.
 
 The fixture catalog lives in [fixtures/index.md](fixtures/index.md);
-compiler dump budgets are explained in
+fixture conventions — how each fixture pins its claim, and the compiler
+dump-budget mechanism — are explained in
 [fixtures/GOLDEN.md](fixtures/GOLDEN.md).
 
 ---

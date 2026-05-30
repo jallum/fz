@@ -2,6 +2,6 @@ fn check(x :: integer) do :is_int end
 fn check(x) do :other end
 
 fn main() do
-  dbg(check(42))
-  dbg(check(:foo))
+  assert(check(42) == :is_int, "integer arg dispatches to the TypeTest clause")
+  assert(check(:foo) == :other, "atom arg falls through to the fallback clause")
 end

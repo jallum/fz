@@ -42,7 +42,7 @@ jobs:
             --workspace \
             --lib \
             --bin fz \
-            --test spec_parity \
+            --test aot_variadic_open \
             --fail-under-lines "$(cat .coverage-threshold)" \
             --json --summary-only \
             --output-path coverage.json

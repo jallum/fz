@@ -13,6 +13,7 @@ Read the one whose trigger matches what you are about to touch:
 - [dispatch-as-planner-output](docs/dispatch-as-planner-output.md) — planner-owned call-edge facts, `SpecPlan.call_edges`, `SpecKey` variants, callable capabilities, or ReturnDemand capability selection.
 - [single-authoritative-plan](docs/single-authoritative-plan.md) — the one `plan_module` codegen commits to, the `planner.planned` count, `plan_callable_capabilities` / `CapabilityPlan`, why destination lowering needs no re-plan, or why the capability pass keeps the return fixpoint.
 - [externs](docs/externs.md) — `extern "C"` declarations, marshal classes, variadic calls, or extern codegen/interpreter behavior.
+- [fixtures](docs/fixtures.md) — authoring or changing a fixture, the four-path matrix, pass/fail rules, the four expressive media, or the dump-budget mechanism.
 - [guides](docs/guides.md) — writing or updating user-facing `guides/*.html`.
 - [ir-interp-runtime](docs/ir-interp-runtime.md) — IR interpreter runtime ownership, persistent drives, or REPL session execution.
 - [lazy-continuation-materialization](docs/lazy-continuation-materialization.md) — compiler-known native continuations, stack-backed continuation descriptors, closure materialization, or scheduler-boundary continuation roots.

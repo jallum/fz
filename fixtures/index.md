@@ -9,7 +9,7 @@ Run with `BLESS=1` to rewrite after editing fixtures.
 | `add1/` | smallest JIT round-trip — fn def + call + print | jit, interp, aot, repl |
 | `alias/` | nested-module path aliasing — `alias Long.Path` and `alias Long.Path, as: LP` | jit, interp, aot, repl |
 | `append/` | source-level append allocation baseline proves ordinary list append needs no append BIF | jit, interp, aot, repl |
-| `apply2/` | first-class fns — pass a fn into another fn and call it | jit, interp, aot, repl |
+| `assert_abort_message/` | a failed assert aborts with the caller's message on every path (expect-failure medium) | jit, interp, aot, repl |
 | `ast_eval/` | tagged-tuple AST evaluator — first fixture to exercise multi-clause tuple-pattern dispatch end-to-end | jit, interp, aot, repl |
 | `attributes/` | @moduledoc / @doc attributes parse and the module still executes | jit, interp, aot, repl |
 | `bsx_guard_eq/` | fz-bsx.4 — a guard comparison (when s == \"hi\") on a utf8 binding is brand-blind on all paths | jit, interp, aot, repl |
@@ -48,6 +48,7 @@ Run with `BLESS=1` to rewrite after editing fixtures.
 | `macro_inc/` | defmacro + quote/unquote round-trip — two macros, one nested in the other | jit, interp, aot, repl |
 | `make_ref_distinct/` | fz-ht5 — make_ref() returns a distinct opaque ref on every call | jit, interp, aot, repl |
 | `map_three_path_parity/` | map layout three-path parity for lookup, update, floats, nil miss, and pointer values | jit, interp, aot, repl |
+| `module_info/` | __info__/1 reflection — a synthesized module fn reports functions, macros, and the module name on all four paths | jit, interp, aot, repl |
 | `modules/` | cross-module qualified calls — `M.double`, `M.quad`, `N.helper` | jit, interp, aot, repl |
 | `multi_caller_spec_divergent/` | fz-uwq.4 regression — divergent dispatch across two caller specs of the same higher-order fn | jit, interp, aot, repl |
 | `multi_clause/` | multi-clause dispatch with a guard clause (`when n > 0`), plus recursive `fact` | jit, interp, aot, repl |
@@ -71,6 +72,7 @@ Run with `BLESS=1` to rewrite after editing fixtures.
 | `receive_mixed_constructors/` | selective receive whose clauses mix top-level constructors (atom + tuple + wildcard) | jit, interp, aot, repl |
 | `receive_selective_refs/` | fz-recv epic acceptance — selective receive across two pinned refs with out-of-order replies + after timeout | interp, jit, aot, repl |
 | `receive_shared_tuple_arity/` | selective receive with consecutive same-arity tuple clauses | jit, interp, aot, repl |
+| `refute_abort_message/` | a failed refute aborts with the caller's message on every path | jit, interp, aot, repl |
 | `relay/` | one-hop relay — spawned child blocks on receive before parent sends; exercises non-blocking spawn + receive-parks semantics | jit, interp, aot, repl |
 | `resource_aot_dtor/` | AOT-compiled binary fires user-supplied resource dtors at heap drop | aot, repl |
 | `resource_lifecycle/` | fz-swt.12 — resource lifecycle (make_resource + .value + dtor) is observably identical across interp, JIT, AOT | interp, jit, aot, repl |
@@ -82,6 +84,7 @@ Run with `BLESS=1` to rewrite after editing fixtures.
 | `spawn_with_captures/` | fz-ul4.29.5 — spawn-with-captures lift (was forbidden v1) | jit, interp, aot, repl |
 | `spec_boundary/` | fz-jg5.12 (RED.9) — @spec is a reduction boundary; fact has 1 body, not 0 | jit, interp, aot, repl |
 | `spec_ok/` | fz-ul4.31.6 — declared @spec matches inferred behavior; | jit, interp, aot, repl |
+| `spec_violation/` | a wrong @spec is rejected with a spec/violation diagnostic on every path | interp, jit, aot, repl |
 | `tail_recursion/` | 100k-deep self-recursion must TCO — exits cleanly with the accumulated count | jit, interp, aot, repl |
 | `tailcall_closure_captures/` | TailCallClosure with captured singleton closure-lit preserves narrow arg ABI through recursive HOF | jit, interp, aot, repl |
 | `three_process_chain/` | two-hop process relay — main → first_relay → second_relay → main; exercises multi-process message chaining | jit, interp, aot, repl |

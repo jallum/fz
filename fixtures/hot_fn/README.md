@@ -13,7 +13,3 @@ budget.planner.blocks: 1
 budget.planner.stmts: 40
 budget.planner.dispatches: 0
 ---
-
-# hot_fn
-
-same call repeated — historical JIT tier-up trigger; today every call is JIT

@@ -13,7 +13,3 @@ budget.planner.blocks: 1
 budget.planner.stmts: 20
 budget.planner.dispatches: 0
 ---
-
-# fib_tailrec
-
-fibonacci via two-accumulator tail recursion — three-clause dispatch + tail-call forwarding under load

@@ -22,9 +22,17 @@ defmodule Kernel do
   @spec assert(any) :: nil
   fn assert(x), do: if x, do: nil, else: panic("assertion failed")
 
+  @doc "Aborts with the given message if the value is nil or false."
+  @spec assert(any, any) :: nil
+  fn assert(x, msg), do: if x, do: nil, else: panic(msg)
+
   @doc "Aborts if the value is truthy."
   @spec refute(any) :: nil
   fn refute(x), do: if x, do: panic("refutation failed"), else: nil
+
+  @doc "Aborts with the given message if the value is truthy."
+  @spec refute(any, any) :: nil
+  fn refute(x, msg), do: if x, do: panic(msg), else: nil
 
   @doc "Starts a process by applying a zero-argument function."
   @spec spawn(() -> any) :: pid

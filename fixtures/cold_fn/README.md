@@ -13,7 +13,3 @@ budget.planner.blocks: 1
 budget.planner.stmts: 4
 budget.planner.dispatches: 0
 ---
-
-# cold_fn
-
-minimal call site — one fn definition, one call, no scaffolding

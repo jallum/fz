@@ -16,8 +16,8 @@ fn add(a, b), do: a + b
 
 fn main() do
   xs = [1, 2, 3, 4, 5]
-  dbg(length(xs))
-  dbg(reverse(xs))
-  dbg(map(double, xs))
-  dbg(foldl(add, 0, xs))
+  assert(length(xs) == 5, "length counts cons cells")
+  assert(reverse(xs) == [5, 4, 3, 2, 1], "reverse via accumulator")
+  assert(map(double, xs) == [2, 4, 6, 8, 10], "map applies a first-class fn")
+  assert(foldl(add, 0, xs) == 15, "foldl sums via a first-class fn")
 end
