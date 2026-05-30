@@ -46,7 +46,9 @@ Init tokens are not runtime values. They are compile-time facts attached to
 - `CallsiteId -> CallEdgePlan` facts in `SpecPlan.call_edges`.
 - `BlockId -> reachable/dead-branch` facts in `SpecPlan.reachable_blocks` and
   `SpecPlan.dead_branches`.
-- `SpecKey.demand` facts such as tuple-field delivery and list-tail context.
+- `ReturnContract` facts on call edges, whose target `SpecKey.demand` selects
+  the callee variant and whose strategy describes the executable return
+  delivery.
 
 The token fact is local to `ir_planner::type_fn`; it is not persisted in
 `SpecPlan` because codegen needs only the final value type of ordinary vars.
@@ -398,11 +400,13 @@ and scripted REPL fixture legs are direct-IR baselines: they execute destination
 primitives when handed already-lowered IR, but the CLI interpreter does not run
 the destination-lowering pass itself.
 
-ReturnDemand is planner output, not a backend heuristic. `SpecPlan.call_edges`
-and `SpecKey.demand` are authoritative, and codegen lowers only those
-planner-authored ABI and context facts. Codegen does not create a new demand
-variant, probe demanded sibling specs, or infer demand from backend
-closure/capture shapes. Concretely:
+ReturnDemand is planner output, not a backend heuristic. The executable call
+edge fact is `ReturnContract`: it pairs the target `SpecKey` with the return
+strategy that makes that demand legal. `SpecKey.demand` is the variant selector
+inside that contract, not a standalone backend instruction. Codegen lowers only
+planner-authored contracts; it does not create a new demand variant, probe
+demanded sibling specs, or infer demand from backend closure/capture shapes.
+Concretely:
 
 - `ReturnDemand` is two-axis (`delivery` × `context`). Tuple-field delivery with
   a ListTail context is one value of that pair, built by the
@@ -411,8 +415,8 @@ closure/capture shapes. Concretely:
 - `src/ir_codegen` does not mutate dispatch keys (`key.demand = …`); the planner
   authors demand.
 - `src/ir_codegen/terminator.rs` constructs no demanded sibling `SpecKey`s and
-  reads ListTail context from the planner's `return_context` facts rather than
-  by indexing `continuation.captured[…]`.
+  reads ListTail context from the planner's `ReturnContract` payload rather
+  than by indexing `continuation.captured[…]`.
 
 Destination lowering runs after the optimizer passes, which keeps init-token
 ownership local to executable IR. Lowering before the optimizer would force

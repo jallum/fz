@@ -3386,6 +3386,13 @@ fn enum_sort_constant_sorter_erased_under_return_demand_specs() {
         );
     }
 
+    let specs = dump_specs_for_fixture("enum_sort");
+    assert!(
+        specs.contains("return_contract=") && specs.contains("target_demand="),
+        "enum_sort should expose planner-authored ReturnContract facts in the spec dump:\n{}",
+        specs
+    );
+
     let clif = dump_fixture_clif("enum_sort");
     let sorter_threading_functions = ["Enum.sort_list", "fn_clause_2", "Enum.merge_sort_lists"]
         .into_iter()
