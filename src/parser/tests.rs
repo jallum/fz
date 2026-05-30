@@ -740,3 +740,89 @@ mod telemetry_tests {
         assert_eq!(prog.items.len(), 1);
     }
 }
+
+#[cfg(test)]
+mod elixir_operator_precedence_tests {
+    use super::*;
+    use crate::parser::lexer::Lexer;
+
+    fn parse(src: &str) -> Expr {
+        let toks = Lexer::new(src).tokenize().unwrap();
+        Parser::new(toks).parse_expr_eof().unwrap().node
+    }
+
+    /// Parse `src` and destructure its top-level binary operation, returning
+    /// owned operand clones so the result outlives the parsed tree.
+    fn binop(src: &str) -> (BinOp, Expr, Expr) {
+        match parse(src) {
+            Expr::BinOp(op, a, b) => (op, a.node, b.node),
+            other => panic!("expected BinOp, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn new_operators_parse_to_their_binops() {
+        assert!(matches!(parse("a ++ b"), Expr::BinOp(BinOp::ListConcat, _, _)));
+        assert!(matches!(parse("a -- b"), Expr::BinOp(BinOp::ListSubtract, _, _)));
+        assert!(matches!(parse("a <> b"), Expr::BinOp(BinOp::BinConcat, _, _)));
+        assert!(matches!(parse("a .. b"), Expr::BinOp(BinOp::Range, _, _)));
+        assert!(matches!(parse("a in b"), Expr::BinOp(BinOp::In, _, _)));
+        assert!(matches!(parse("a not in b"), Expr::BinOp(BinOp::NotIn, _, _)));
+    }
+
+    #[test]
+    fn concat_is_right_associative() {
+        // a ++ b ++ c  =>  a ++ (b ++ c)
+        let (op, _a, rhs) = binop("a ++ b ++ c");
+        assert_eq!(op, BinOp::ListConcat);
+        assert!(
+            matches!(rhs, Expr::BinOp(BinOp::ListConcat, _, _)),
+            "++ must be right-associative"
+        );
+    }
+
+    #[test]
+    fn arithmetic_binds_tighter_than_concat() {
+        // a ++ b + c  =>  a ++ (b + c)
+        let (op, _a, rhs) = binop("a ++ b + c");
+        assert_eq!(op, BinOp::ListConcat);
+        assert!(matches!(rhs, Expr::BinOp(BinOp::Add, _, _)));
+    }
+
+    #[test]
+    fn stepped_range_groups_as_range_then_step() {
+        // 1..10//2  =>  (1..10) // 2
+        let (op, lhs, _step) = binop("1..10//2");
+        assert_eq!(op, BinOp::RangeStep);
+        assert!(matches!(lhs, Expr::BinOp(BinOp::Range, _, _)));
+    }
+
+    #[test]
+    fn unary_binds_tighter_than_multiplication() {
+        // -a * b  =>  (-a) * b
+        let (op, lhs, _b) = binop("-a * b");
+        assert_eq!(op, BinOp::Mul);
+        assert!(matches!(lhs, Expr::UnOp(UnOp::Neg, _)));
+    }
+
+    #[test]
+    fn prefix_not_parses_as_unop_not() {
+        assert!(matches!(parse("not x"), Expr::UnOp(UnOp::Not, _)));
+    }
+
+    #[test]
+    fn pipe_binds_tighter_than_comparison() {
+        // a |> f() == b  =>  (a |> f()) == b
+        let (op, lhs, _b) = binop("a |> f() == b");
+        assert_eq!(op, BinOp::Eq);
+        assert!(matches!(lhs, Expr::BinOp(BinOp::Pipe, _, _)));
+    }
+
+    #[test]
+    fn membership_is_looser_than_arithmetic() {
+        // 1 + 2 in xs  =>  (1 + 2) in xs
+        let (op, lhs, _b) = binop("1 + 2 in xs");
+        assert_eq!(op, BinOp::In);
+        assert!(matches!(lhs, Expr::BinOp(BinOp::Add, _, _)));
+    }
+}

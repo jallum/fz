@@ -1,5 +1,10 @@
 use super::*;
 
+/// Binding power for unary prefixes (`-`, `!`, `not`). Above every infix level
+/// (Mul tops out at 110/111) so unary binds tightest, matching Elixir's
+/// unary_op precedence (300): `-a * b` is `(-a) * b`, not `-(a * b)`.
+const UNARY_BP: u8 = 120;
+
 struct CallArgs {
     args: Vec<Spanned<Expr>>,
     keyword_arg_index: Option<usize>,
@@ -23,22 +28,34 @@ impl Parser {
         Ok(e)
     }
 
+    /// Infix binding powers, mirroring Elixir's operator precedence (higher
+    /// binds tighter). Left-associative ops use `(n, n+1)`; right-associative
+    /// ops use `(n+1, n)`. Two operators sit outside this table: `=` (match,
+    /// Elixir level 100) is handled separately at min-bp 5, and the unary
+    /// prefixes `-`/`!`/`not` (Elixir 300) bind tightest via `parse_bp(UNARY_BP)`.
+    /// `not in` is two tokens, resolved directly in `parse_bp`.
     pub(super) fn infix_bp(t: &Tok) -> Option<(u8, u8, BinOp)> {
         Some(match t {
-            Tok::Pipe => (10, 11, BinOp::Pipe),
-            Tok::OrOr => (20, 21, BinOp::Or),
-            Tok::AndAnd => (30, 31, BinOp::And),
-            Tok::EqEq => (40, 41, BinOp::Eq),
+            Tok::OrOr => (20, 21, BinOp::Or),         // Elixir 120
+            Tok::AndAnd => (30, 31, BinOp::And),       // Elixir 130
+            Tok::EqEq => (40, 41, BinOp::Eq),          // Elixir 140
             Tok::NotEq => (40, 41, BinOp::Neq),
-            Tok::Lt => (50, 51, BinOp::Lt),
+            Tok::Lt => (50, 51, BinOp::Lt),            // Elixir 150
             Tok::LtEq => (50, 51, BinOp::LtEq),
             Tok::Gt => (50, 51, BinOp::Gt),
             Tok::GtEq => (50, 51, BinOp::GtEq),
-            Tok::Plus => (60, 61, BinOp::Add),
-            Tok::Minus => (60, 61, BinOp::Sub),
-            Tok::Star => (70, 71, BinOp::Mul),
-            Tok::Slash => (70, 71, BinOp::Div),
-            Tok::Percent => (70, 71, BinOp::Rem),
+            Tok::Pipe => (60, 61, BinOp::Pipe),        // |>  Elixir 160
+            Tok::In => (70, 71, BinOp::In),            // in  Elixir 170
+            Tok::SlashSlash => (81, 80, BinOp::RangeStep), // //  Elixir 190, right
+            Tok::PlusPlus => (91, 90, BinOp::ListConcat),  // ++  Elixir 200, right
+            Tok::MinusMinus => (91, 90, BinOp::ListSubtract), // --
+            Tok::Concat => (91, 90, BinOp::BinConcat),     // <>
+            Tok::DotDot => (91, 90, BinOp::Range),         // ..  Elixir 200, right
+            Tok::Plus => (100, 101, BinOp::Add),       // Elixir 210
+            Tok::Minus => (100, 101, BinOp::Sub),
+            Tok::Star => (110, 111, BinOp::Mul),       // Elixir 220
+            Tok::Slash => (110, 111, BinOp::Div),
+            Tok::Percent => (110, 111, BinOp::Rem),
             _ => return None,
         })
     }
@@ -116,6 +133,20 @@ impl Parser {
                 let pat = expr_to_pattern(&lhs)?;
                 let span = start.merge(self.prev_span());
                 lhs = Spanned::new(Expr::Match(pat, Box::new(rhs)), span);
+                continue;
+            }
+            // `not in` is two tokens; bind it at `in`'s level (Elixir 170).
+            if matches!(self.peek(), Tok::Not) && matches!(self.peek_at(1), Tok::In) {
+                let (lbp, rbp) = (70u8, 71u8);
+                if lbp < min_bp {
+                    break;
+                }
+                self.bump(); // not
+                self.bump(); // in
+                self.skip_newline_tokens();
+                let rhs = self.parse_bp(rbp)?;
+                let span = start.merge(self.prev_span());
+                lhs = Spanned::new(Expr::BinOp(BinOp::NotIn, Box::new(lhs), Box::new(rhs)), span);
                 continue;
             }
             let Some((lbp, rbp, op)) = Self::infix_bp(self.peek()) else {
@@ -197,12 +228,17 @@ impl Parser {
             }
             Tok::Minus => {
                 self.bump();
-                let e = self.parse_bp(80)?;
+                let e = self.parse_bp(UNARY_BP)?;
                 Expr::UnOp(UnOp::Neg, Box::new(e))
             }
             Tok::Bang => {
                 self.bump();
-                let e = self.parse_bp(80)?;
+                let e = self.parse_bp(UNARY_BP)?;
+                Expr::UnOp(UnOp::Not, Box::new(e))
+            }
+            Tok::Not => {
+                self.bump();
+                let e = self.parse_bp(UNARY_BP)?;
                 Expr::UnOp(UnOp::Not, Box::new(e))
             }
             // fz-swt.5: `&name/arity` or `&Mod.Sub.name/arity` — explicit
