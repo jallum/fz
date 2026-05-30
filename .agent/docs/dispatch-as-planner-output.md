@@ -127,10 +127,10 @@ object must be built:
   conservative materialization rules, and is not collapsed to one static
   identity.
 
-Call-edge facts consume callable capabilities alongside the return context: the
-target says what code may run, and the return context says how the result
-becomes the next state. The same fact gates continuation representation; see the
-callable-capability gate in
+Call-edge facts consume callable capabilities alongside the return contract: the
+target says what code may run, and the return contract pairs that exact target
+with the executable strategy that makes the caller's result context legal. The
+same fact gates continuation representation; see the callable-capability gate in
 [`lazy-continuation-materialization.md`](lazy-continuation-materialization.md).
 
 Known-target closure rewriting is an all-spec consensus rule over these same
@@ -148,6 +148,16 @@ globally replace later captured reducers, which is unsound.
 destination planning uses the same mechanism as ordinary variant selection:
 the planner selects a compile-time capability, then codegen emits the ABI and
 body for exactly that capability.
+
+The executable call-edge fact is `ReturnContract`: it contains the selected
+local target `SpecKey` including demand and a `ReturnStrategy`. Ordinary value
+returns use `ReturnStrategy::Value`; tuple-field returns use
+`ReturnStrategy::TupleFields(N)`; list-tail returns carry the matching
+`ReturnContextPlan` inside `ReturnStrategy::ListTail` or
+`ReturnStrategy::TupleFieldsListTail`, except for tail calls that forward the
+caller's demanded ABI directly with `ReturnStrategy::ForwardedDemand`. The
+strategy's demand must match the target demand. A demand without the matching
+strategy is an unknown/incomplete plan, not a usable fact.
 
 `ReturnDemand` has two axes:
 

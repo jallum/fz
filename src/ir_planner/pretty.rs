@@ -1,4 +1,7 @@
-use super::fn_types::{ModulePlan, SpecKey, display_return_context_plan, display_return_demand};
+use super::fn_types::{
+    ModulePlan, SpecKey, display_return_context_plan, display_return_demand,
+    display_return_strategy,
+};
 use super::reachable::cont_input_key;
 use crate::fz_ir::{Block, CallsiteId, CallsiteIdent, EmitSlot, FnId, Module, Term};
 
@@ -516,6 +519,13 @@ fn render_return_use<T: crate::types::Types<Ty = crate::types::Ty> + crate::type
         out.push_str(&format!(
             ";              return_use={}\n",
             display_return_demand(t, return_use)
+        ));
+    }
+    if let Some(contract) = ft.return_contract(&cid) {
+        out.push_str(&format!(
+            ";              return_contract={} target_demand={}\n",
+            display_return_strategy(t, &contract.strategy),
+            display_return_demand(t, &contract.target.demand)
         ));
     }
 }

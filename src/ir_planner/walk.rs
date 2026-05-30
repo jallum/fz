@@ -2,8 +2,8 @@ use super::closures::resolve_closure_return;
 use super::fn_types::{
     CallEdgePlan, CallEdgeTarget, CallableCapability, CallsiteCallableCapabilities, EmitterSite,
     FnEffects, ReturnContextPlan, ReturnDemand, SpecKey, SpecPlan, WALK_CALLS,
-    padded_direct_input_tys, recursive_direct_spec_key, recursive_direct_spec_key_for_arity,
-    spec_key_for_fn,
+    forwarded_return_contract_for_target, padded_direct_input_tys, recursive_direct_spec_key,
+    recursive_direct_spec_key_for_arity, return_contract_for_target, spec_key_for_fn,
 };
 use super::reachable::cont_key_from_slot0;
 use super::return_context::{
@@ -61,8 +61,7 @@ impl WalkResult {
             cid.clone(),
             CallEdgePlan {
                 target: CallEdgeTarget::Local(target),
-                return_use: None,
-                return_context: None,
+                return_contract: None,
             },
         );
         cid
@@ -86,35 +85,38 @@ impl WalkResult {
                     input,
                     demand,
                 },
-                return_use: None,
-                return_context: None,
+                return_contract: None,
             },
         );
         cid
     }
 
-    fn record_return_use(
+    fn record_return_contract(
         &mut self,
         callsite: &CallsiteId,
-        demand: ReturnDemand,
+        target: SpecKey,
         plan: Option<ReturnContextPlan>,
     ) {
         let edge = self
             .call_edges
             .get_mut(callsite)
-            .expect("return-use facts require an existing call edge");
-        edge.return_use = Some(demand);
-        if let Some(plan) = plan {
-            edge.return_context = Some(plan);
-        }
+            .expect("return contracts require an existing call edge");
+        edge.return_contract = Some(
+            return_contract_for_target(target.clone(), plan.clone()).unwrap_or_else(|| {
+                panic!(
+                    "return demand {:?} for {:?} requires a matching executable return strategy; plan={:?}",
+                    target.demand, callsite, plan
+                )
+            }),
+        );
     }
 
-    fn record_return_context_plan(&mut self, callsite: &CallsiteId, plan: ReturnContextPlan) {
+    fn record_forwarded_return_contract(&mut self, callsite: &CallsiteId, target: SpecKey) {
         let edge = self
             .call_edges
             .get_mut(callsite)
-            .expect("return-context plans require an existing call edge");
-        edge.return_context = Some(plan);
+            .expect("return contracts require an existing call edge");
+        edge.return_contract = Some(forwarded_return_contract_for_target(target));
     }
 }
 
@@ -342,7 +344,6 @@ where
             return;
         }
         if let Some(dispatch) = self.protocol_dispatch_key(callee, args, env) {
-            let cid = WalkResult::callsite_id(self.caller_spec_key, term_ident, slot);
             let ProtocolDispatch::Local(mut entry_key, n_params) = dispatch else {
                 if let ProtocolDispatch::External {
                     target,
@@ -356,12 +357,12 @@ where
                         slot,
                         target,
                         input,
-                        demand.clone(),
+                        demand,
                     );
-                    self.out.record_return_use(&cid, demand, None);
                 }
                 return;
             };
+            let cid = WalkResult::callsite_id(self.caller_spec_key, term_ident, slot);
             if let Term::Call { continuation, .. } = term {
                 let target_fn = entry_key.fn_id;
                 let (demand, context_plan) = direct_call_return_plan(
@@ -378,7 +379,7 @@ where
                 self.out
                     .record_dispatch(self.caller_spec_key, term_ident, slot, entry_key.clone());
                 self.out
-                    .record_return_use(&cid, entry_key.demand.clone(), context_plan);
+                    .record_return_contract(&cid, entry_key.clone(), context_plan);
             } else if matches!(term, Term::TailCall { .. }) {
                 let target_fn = entry_key.fn_id;
                 let (demand, context_plan) =
@@ -386,8 +387,13 @@ where
                 entry_key.demand = demand;
                 self.out
                     .record_dispatch(self.caller_spec_key, term_ident, slot, entry_key.clone());
-                self.out
-                    .record_return_use(&cid, entry_key.demand.clone(), context_plan);
+                if let Some(context_plan) = context_plan {
+                    self.out
+                        .record_return_contract(&cid, entry_key.clone(), Some(context_plan));
+                } else {
+                    self.out
+                        .record_forwarded_return_contract(&cid, entry_key.clone());
+                }
             } else {
                 self.out
                     .record_dispatch(self.caller_spec_key, term_ident, slot, entry_key.clone());
@@ -421,15 +427,20 @@ where
             self.out
                 .record_dispatch(self.caller_spec_key, term_ident, slot, entry_key.clone());
             self.out
-                .record_return_use(&cid, entry_key.demand.clone(), context_plan);
+                .record_return_contract(&cid, entry_key.clone(), context_plan);
         } else if matches!(term, Term::TailCall { .. }) {
             let (demand, context_plan) =
                 tail_call_return_plan(self.m, self.caller_spec_key, callee, args);
             entry_key.demand = demand;
             self.out
                 .record_dispatch(self.caller_spec_key, term_ident, slot, entry_key.clone());
-            self.out
-                .record_return_use(&cid, entry_key.demand.clone(), context_plan);
+            if let Some(context_plan) = context_plan {
+                self.out
+                    .record_return_contract(&cid, entry_key.clone(), Some(context_plan));
+            } else {
+                self.out
+                    .record_forwarded_return_contract(&cid, entry_key.clone());
+            }
         } else {
             self.out
                 .record_dispatch(self.caller_spec_key, term_ident, slot, entry_key.clone());
@@ -459,7 +470,7 @@ where
             Term::TailCall { .. } => self.caller_spec_key.demand.clone(),
             _ => ReturnDemand::value(),
         };
-        let cid = self.out.record_external_dispatch(
+        self.out.record_external_dispatch(
             self.caller_spec_key,
             term_ident,
             slot,
@@ -467,9 +478,6 @@ where
             input,
             demand.clone(),
         );
-        if matches!(term, Term::Call { .. } | Term::TailCall { .. }) {
-            self.out.record_return_use(&cid, demand, None);
-        }
     }
 
     fn record_known_closure_call(
@@ -568,7 +576,8 @@ where
             self.out
                 .record_dispatch(self.caller_spec_key, term_ident, slot, entry_key.clone());
         if let Some(plan) = context_plan {
-            self.out.record_return_context_plan(&cid, plan);
+            self.out
+                .record_return_contract(&cid, entry_key.clone(), Some(plan));
         }
         self.emit(slot, term_ident.clone(), entry_key);
     }

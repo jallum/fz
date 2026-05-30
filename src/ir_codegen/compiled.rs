@@ -650,11 +650,48 @@ fn remap_call_edge_plan(
                 demand: demand.clone(),
             },
         },
-        return_use: edge.return_use.clone(),
-        return_context: edge
-            .return_context
+        return_contract: edge
+            .return_contract
             .as_ref()
-            .map(|plan| remap_return_context_plan(plan, fn_map)),
+            .map(|contract| remap_return_contract(contract, fn_map)),
+    }
+}
+
+fn remap_return_contract(
+    contract: &crate::ir_planner::fn_types::ReturnContract,
+    fn_map: &BTreeMap<FnId, FnId>,
+) -> crate::ir_planner::fn_types::ReturnContract {
+    crate::ir_planner::fn_types::ReturnContract::new(
+        remap_spec_key(&contract.target, fn_map),
+        remap_return_strategy(&contract.strategy, fn_map),
+    )
+}
+
+fn remap_return_strategy(
+    strategy: &crate::ir_planner::fn_types::ReturnStrategy,
+    fn_map: &BTreeMap<FnId, FnId>,
+) -> crate::ir_planner::fn_types::ReturnStrategy {
+    match strategy {
+        crate::ir_planner::fn_types::ReturnStrategy::Value => {
+            crate::ir_planner::fn_types::ReturnStrategy::Value
+        }
+        crate::ir_planner::fn_types::ReturnStrategy::TupleFields(arity) => {
+            crate::ir_planner::fn_types::ReturnStrategy::TupleFields(*arity)
+        }
+        crate::ir_planner::fn_types::ReturnStrategy::ForwardedDemand(demand) => {
+            crate::ir_planner::fn_types::ReturnStrategy::ForwardedDemand(demand.clone())
+        }
+        crate::ir_planner::fn_types::ReturnStrategy::ListTail(plan) => {
+            crate::ir_planner::fn_types::ReturnStrategy::ListTail(remap_return_context_plan(
+                plan, fn_map,
+            ))
+        }
+        crate::ir_planner::fn_types::ReturnStrategy::TupleFieldsListTail { arity, plan } => {
+            crate::ir_planner::fn_types::ReturnStrategy::TupleFieldsListTail {
+                arity: *arity,
+                plan: remap_return_context_plan(plan, fn_map),
+            }
+        }
     }
 }
 
