@@ -608,6 +608,20 @@ pub(super) fn lower_binop(op: AstBinOp, span: Span) -> Result<BinOp, LowerError>
                 what: "BinOp::Cons should be desugared into List with tail".into(),
             });
         }
+        // Elixir-aligned operators are rewritten by the frontend desugar pass
+        // into calls/constructions; none should survive to lowering.
+        AstBinOp::ListConcat
+        | AstBinOp::ListSubtract
+        | AstBinOp::BinConcat
+        | AstBinOp::Range
+        | AstBinOp::RangeStep
+        | AstBinOp::In
+        | AstBinOp::NotIn => {
+            return Err(LowerError::Unsupported {
+                span,
+                what: "operator should be desugared before lowering".into(),
+            });
+        }
     })
 }
 

@@ -640,8 +640,11 @@ fn ast_binop_fold<T: Types<Ty = crate::types::Ty> + LiteralTypes>(
         GtEq => BinOp::Ge,
         And => BinOp::And,
         Or => BinOp::Or,
-        // Pipe and Cons aren't fold-prim-able in the same shape.
-        Pipe | Cons => return None,
+        // Pipe and Cons aren't fold-prim-able in the same shape; the
+        // Elixir-aligned operators desugar away before folding runs.
+        Pipe | Cons | ListConcat | ListSubtract | BinConcat | Range | RangeStep | In | NotIn => {
+            return None;
+        }
     };
     match ir_op {
         BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod => {

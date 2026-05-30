@@ -152,6 +152,17 @@ pub enum BinOp {
     Or,
     Pipe, // |>
     Cons, // |  (head | tail)
+
+    // Elixir-aligned operators. Like Pipe and Cons, these never reach IR
+    // lowering: the frontend desugar pass (src/frontend/macros.rs) rewrites
+    // them into ordinary calls or constructions first.
+    ListConcat,   // ++   list concatenation
+    ListSubtract, // --   list subtraction
+    BinConcat,    // <>   binary concatenation
+    Range,        // ..   a..b
+    RangeStep,    // //   (a..b)//step — valid only with a Range on the left
+    In,           // in   membership (desugars to Enum.member?)
+    NotIn,        // not in
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

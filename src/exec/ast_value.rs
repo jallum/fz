@@ -341,6 +341,13 @@ pub fn binop_atom(op: BinOp) -> &'static str {
         BinOp::Or => "or",
         BinOp::Pipe => "|>",
         BinOp::Cons => "|",
+        BinOp::ListConcat => "++",
+        BinOp::ListSubtract => "--",
+        BinOp::BinConcat => "<>",
+        BinOp::Range => "..",
+        BinOp::RangeStep => "//",
+        BinOp::In => "in",
+        BinOp::NotIn => "not in",
     }
 }
 
@@ -361,6 +368,13 @@ fn binop_from_atom(s: &str) -> Option<BinOp> {
         "or" => BinOp::Or,
         "|>" => BinOp::Pipe,
         "|" => BinOp::Cons,
+        "++" => BinOp::ListConcat,
+        "--" => BinOp::ListSubtract,
+        "<>" => BinOp::BinConcat,
+        ".." => BinOp::Range,
+        "//" => BinOp::RangeStep,
+        "in" => BinOp::In,
+        "not in" => BinOp::NotIn,
         _ => return None,
     })
 }
@@ -526,6 +540,30 @@ mod tests {
     #[test]
     fn binop_eq() {
         round_trip("a == b");
+    }
+
+    // fz-g58.2.2 — the Elixir-aligned operators have AST representations that
+    // round-trip through the quoted-atom reflection used by macros/quote.
+    #[test]
+    fn binop_atom_round_trips_elixir_operators() {
+        for op in [
+            BinOp::ListConcat,
+            BinOp::ListSubtract,
+            BinOp::BinConcat,
+            BinOp::Range,
+            BinOp::RangeStep,
+            BinOp::In,
+            BinOp::NotIn,
+        ] {
+            let atom = binop_atom(op);
+            assert_eq!(
+                binop_from_atom(atom),
+                Some(op),
+                "binop_atom/binop_from_atom must round-trip for {:?} (atom {:?})",
+                op,
+                atom
+            );
+        }
     }
     #[test]
     fn unop_not() {

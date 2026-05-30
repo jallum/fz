@@ -166,7 +166,15 @@ pub(crate) fn guard_expr_to_matcher(
                 BinOp::GtEq => crate::exec::matcher::GuardBinOp::GtEq,
                 BinOp::And => crate::exec::matcher::GuardBinOp::And,
                 BinOp::Or => crate::exec::matcher::GuardBinOp::Or,
-                BinOp::Pipe | BinOp::Cons => {
+                BinOp::Pipe
+                | BinOp::Cons
+                | BinOp::ListConcat
+                | BinOp::ListSubtract
+                | BinOp::BinConcat
+                | BinOp::Range
+                | BinOp::RangeStep
+                | BinOp::In
+                | BinOp::NotIn => {
                     return Err(PatternMatrixCompileError::UnsupportedGuardExpr);
                 }
             },
