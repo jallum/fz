@@ -1,0 +1,84 @@
+defmodule Map do
+  @moduledoc "Map helpers used by Enumerable."
+
+  extern "C" fn fz_map_count(any) :: integer
+  extern "C" fn fz_map_entry_key(any, integer) :: any
+  extern "C" fn fz_map_entry_value(any, integer) :: any
+
+  @doc "Enumerable.reduce/3 callback body for maps."
+  @spec reduce(any, any, any) :: any
+  fn reduce(map, acc, reducer), do: reduce(map, fz_map_count(map), acc, reducer)
+
+  @doc "Counts a map for Enumerable."
+  @spec count(any) :: integer
+  fn count(map), do: fz_map_count(map)
+
+  @doc "Returns true when a key-value pair appears in the map for Enumerable."
+  @spec member?(any, any) :: bool
+  fn member?(map, {key, value}), do: member_pair?(map, fz_map_count(map), 0, key, value)
+  fn member?(_map, _value), do: false
+
+  @doc "Returns the slice contract for maps."
+  @spec slice(any) :: {:ok, integer, any}
+  fn slice(map) do
+    {:ok, fz_map_count(map), (fn (_map) -> to_list(map) end)}
+  end
+
+  fnp reduce(map, count, {:cont, acc}, reducer), do: reduce_cont(map, count, 0, acc, reducer)
+  fnp reduce(_map, _count, {:halt, acc}, _reducer), do: {:halted, acc}
+  fnp reduce(map, count, {:suspend, acc}, reducer) do
+    {:suspended, acc, (fn () -> reduce_cont(map, count, 0, acc, reducer) end)}
+  end
+
+  fnp reduce_cont(map, count, index, acc, reducer) do
+    if index >= count do
+      {:done, acc}
+    else
+      reduce_step(map, count, index, reducer(entry(map, index), acc), reducer)
+    end
+  end
+
+  fnp reduce_step(map, count, index, {:cont, acc}, reducer), do: reduce_cont(map, count, index + 1, acc, reducer)
+  fnp reduce_step(_map, _count, _index, {:halt, acc}, _reducer), do: {:halted, acc}
+  fnp reduce_step(map, count, index, {:suspend, acc}, reducer) do
+    {:suspended, acc, (fn () -> reduce_cont(map, count, index + 1, acc, reducer) end)}
+  end
+
+  fnp member_pair?(map, count, index, key, value) do
+    if index >= count do
+      false
+    else
+      if fz_map_entry_key(map, index) == key && fz_map_entry_value(map, index) == value do
+        true
+      else
+        member_pair?(map, count, index + 1, key, value)
+      end
+    end
+  end
+
+  fnp entry(map, index) do
+    {fz_map_entry_key(map, index), fz_map_entry_value(map, index)}
+  end
+
+  fnp to_list(map), do: to_list(map, fz_map_count(map), 0, [])
+  fnp to_list(map, count, index, acc) do
+    if index >= count do
+      reverse(acc, [])
+    else
+      to_list(map, count, index + 1, [entry(map, index) | acc])
+    end
+  end
+
+  fnp reverse([], acc), do: acc
+  fnp reverse([head | tail], acc), do: reverse(tail, [head | acc])
+
+  defimpl Enumerable, for: Map do
+    fn reduce(map, acc, reducer) do
+      Map.reduce(map, acc, reducer)
+    end
+
+    fn count(map), do: {:ok, Map.count(map)}
+    fn member?(map, pair), do: {:ok, Map.member?(map, pair)}
+    fn slice(map), do: Map.slice(map)
+  end
+end

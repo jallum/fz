@@ -429,6 +429,7 @@ fn flatten_modules_with_options<T: crate::types::Types<Ty = crate::types::Ty>>(
                 &module_paths,
                 &root_aliases,
                 &root_imports,
+                &HashSet::new(),
             )?,
         }
     }
@@ -771,7 +772,8 @@ fn collect_protocol_registry<T: crate::types::Types<Ty = crate::types::Ty>>(
     module_type_envs: &mut HashMap<String, crate::type_expr::ModuleTypeEnv>,
 ) -> Result<ProtocolRegistry, ResolveError> {
     let mut registry = ProtocolRegistry::default();
-    collect_protocol_registry_items(t, &prog.items, None, module_type_envs, &mut registry)?;
+    collect_protocol_declarations(t, &prog.items, None, module_type_envs, &mut registry)?;
+    collect_protocol_implementations(&prog.items, None, &mut registry)?;
     registry.extend_interfaces(external_module_interfaces);
     validate_protocol_impls(&registry)?;
     for protocol in registry.protocols.keys() {
@@ -830,7 +832,7 @@ fn protocol_domain_template<T: crate::types::Types<Ty = crate::types::Ty>>(
     domain
 }
 
-fn collect_protocol_registry_items<T: crate::types::Types<Ty = crate::types::Ty>>(
+fn collect_protocol_declarations<T: crate::types::Types<Ty = crate::types::Ty>>(
     t: &mut T,
     items: &[Rc<Item>],
     parent: Option<&ModuleName>,
@@ -854,10 +856,44 @@ fn collect_protocol_registry_items<T: crate::types::Types<Ty = crate::types::Ty>
                 }
             }
             Item::ProtocolImpl(protocol_impl) => {
-                let protocol = qualify_protocol_name(parent, &protocol_impl.protocol);
-                let target =
-                    ImplTarget::module(qualify_module_child(parent, &protocol_impl.target.path));
-                let (callbacks, callback_specs) = protocol_impl_callbacks(parent, protocol_impl)?;
+                let _ = protocol_impl;
+            }
+            Item::Module(module) => {
+                let name = if let Some(parent) = parent {
+                    parent.child(module.name.clone())
+                } else {
+                    ModuleName::from_segments(vec![module.name.clone()])
+                };
+                collect_protocol_declarations(
+                    t,
+                    &module.items,
+                    Some(&name),
+                    module_type_envs,
+                    registry,
+                )?;
+            }
+            _ => {}
+        }
+    }
+
+    Ok(())
+}
+
+fn collect_protocol_implementations(
+    items: &[Rc<Item>],
+    parent: Option<&ModuleName>,
+    registry: &mut ProtocolRegistry,
+) -> Result<(), ResolveError> {
+    for item in items {
+        match &**item {
+            Item::ProtocolImpl(protocol_impl) => {
+                let protocol =
+                    resolve_impl_protocol_name(parent, &protocol_impl.protocol, registry);
+                let target_module = qualify_module_child(parent, &protocol_impl.target.path);
+                let target = ImplTarget::module(target_module.clone());
+                let impl_module = protocol_impl_module(&protocol, &target_module);
+                let (callbacks, callback_specs) =
+                    protocol_impl_callbacks(&impl_module, protocol_impl)?;
                 let fact = ProtocolImplFact {
                     protocol: protocol.clone(),
                     target: target.clone(),
@@ -882,18 +918,11 @@ fn collect_protocol_registry_items<T: crate::types::Types<Ty = crate::types::Ty>
                 } else {
                     ModuleName::from_segments(vec![module.name.clone()])
                 };
-                collect_protocol_registry_items(
-                    t,
-                    &module.items,
-                    Some(&name),
-                    module_type_envs,
-                    registry,
-                )?;
+                collect_protocol_implementations(&module.items, Some(&name), registry)?;
             }
             _ => {}
         }
     }
-
     Ok(())
 }
 
@@ -950,12 +979,11 @@ type ProtocolImplCallbacks = (
 );
 
 fn protocol_impl_callbacks(
-    parent: Option<&ModuleName>,
+    impl_module: &ModuleName,
     protocol_impl: &ProtocolImplDef,
 ) -> Result<ProtocolImplCallbacks, ResolveError> {
     let mut callbacks = BTreeMap::new();
     let mut callback_specs = BTreeMap::new();
-    let impl_module = qualify_module_child(parent, &protocol_impl.target.path);
     for item in &protocol_impl.items {
         match &**item {
             Item::Fn(def) => {
@@ -1148,10 +1176,39 @@ fn qualify_module_child(parent: Option<&ModuleName>, name: &ModuleName) -> Modul
     if name.segments().len() == 1
         && let Some(parent) = parent
     {
-        parent.child(name.last_segment().to_string())
+        if name.last_segment() == parent.last_segment() {
+            parent.clone()
+        } else {
+            parent.child(name.last_segment().to_string())
+        }
     } else {
         name.clone()
     }
+}
+
+fn resolve_impl_protocol_name(
+    parent: Option<&ModuleName>,
+    name: &ModuleName,
+    registry: &ProtocolRegistry,
+) -> ModuleName {
+    if name.segments().len() != 1 {
+        return name.clone();
+    }
+    if let Some(parent) = parent {
+        let nested = if name.last_segment() == parent.last_segment() {
+            parent.clone()
+        } else {
+            parent.child(name.last_segment().to_string())
+        };
+        if registry.protocols.contains_key(&nested) {
+            return nested;
+        }
+    }
+    name.clone()
+}
+
+fn protocol_impl_module(protocol: &ModuleName, target: &ModuleName) -> ModuleName {
+    protocol.child(target.last_segment().to_string())
 }
 
 fn qualify_protocol_name(parent: Option<&ModuleName>, name: &ModuleName) -> ModuleName {
@@ -1444,12 +1501,16 @@ fn flatten_module(
     };
     let module_path = module_name.dotted();
     let mut siblings: HashSet<String> = HashSet::new();
+    let mut local_protocols: HashSet<String> = HashSet::new();
     let mut aliases: HashMap<String, String> = HashMap::new();
     let mut imports: ImportMap = HashMap::new();
     for item in &m.items {
         match &**item {
             Item::Fn(def) => {
                 siblings.insert(def.name.clone());
+            }
+            Item::Protocol(protocol) if protocol.name.segments().len() == 1 => {
+                local_protocols.insert(protocol.name.last_segment().to_string());
             }
             Item::Alias {
                 full_path,
@@ -1612,6 +1673,7 @@ fn flatten_module(
                 module_paths,
                 &aliases,
                 &imports,
+                &local_protocols,
             )?,
         }
     }
@@ -1625,8 +1687,12 @@ fn flatten_protocol_impl(
     module_paths: &HashSet<String>,
     aliases: &HashMap<String, String>,
     imports: &ImportMap,
+    local_protocols: &HashSet<String>,
 ) -> Result<(), ResolveError> {
-    let impl_module = qualify_module_child(parent_path, &protocol_impl.target.path);
+    let protocol =
+        qualify_impl_protocol_name(parent_path, &protocol_impl.protocol, local_protocols);
+    let target_module = qualify_module_child(parent_path, &protocol_impl.target.path);
+    let impl_module = protocol_impl_module(&protocol, &target_module);
     let module_path = impl_module.dotted();
     let siblings = protocol_impl
         .items
@@ -1669,6 +1735,23 @@ fn flatten_protocol_impl(
         }
     }
     Ok(())
+}
+
+fn qualify_impl_protocol_name(
+    parent: Option<&ModuleName>,
+    name: &ModuleName,
+    local_protocols: &HashSet<String>,
+) -> ModuleName {
+    if name.segments().len() != 1 {
+        return name.clone();
+    }
+    if let Some(parent) = parent
+        && (name.last_segment() == parent.last_segment()
+            || local_protocols.contains(name.last_segment()))
+    {
+        return qualify_protocol_name(Some(parent), name);
+    }
+    name.clone()
 }
 
 fn importable_exports(
@@ -3681,7 +3764,7 @@ end
             .expect("impl fact");
         assert_eq!(
             implementation.callbacks[&("reduce".to_string(), 3)],
-            ExportKey::new(list, "reduce", 3)
+            ExportKey::new(enumerable.child("List".to_string()), "reduce", 3)
         );
         let protocol_ty = p.module_type_envs["Consumer"]
             .get("Enumerable.t")

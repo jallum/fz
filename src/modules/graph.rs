@@ -51,6 +51,7 @@ impl ModuleGraphLoader {
             if let Some(interface) = crate::modules::runtime_library::interface(&module) {
                 interfaces.insert(module, interface.clone());
                 enqueue_imports(&mut queue, &interface);
+                enqueue_runtime_protocol_impls(&mut queue, &interfaces, &interface);
                 runtime_modules.insert(interface.name.clone());
                 continue;
             }
@@ -86,6 +87,33 @@ impl ModuleGraphLoader {
 fn enqueue_imports(queue: &mut VecDeque<ModuleName>, interface: &ModuleInterface) {
     for import in &interface.imports {
         queue.push_back(import.module.clone());
+    }
+}
+
+fn enqueue_runtime_protocol_impls(
+    queue: &mut VecDeque<ModuleName>,
+    loaded: &InterfaceTable,
+    interface: &ModuleInterface,
+) {
+    if interface.protocols.is_empty() {
+        return;
+    }
+    let protocols = interface
+        .protocols
+        .iter()
+        .map(|protocol| protocol.name.clone())
+        .collect::<Vec<_>>();
+    for (module, candidate) in crate::modules::runtime_library::interfaces() {
+        if loaded.contains_key(&module) {
+            continue;
+        }
+        if candidate
+            .protocol_impls
+            .iter()
+            .any(|protocol_impl| protocols.contains(&protocol_impl.protocol))
+        {
+            queue.push_back(module);
+        }
     }
 }
 

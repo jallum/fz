@@ -30,9 +30,10 @@ The value renderer recognizes the Range schema name and prints Elixir-style
 range literals. Step `1` renders as `first..last`; every other step renders as
 `first..last//step`, including negative steps such as `10..1//-1`.
 
-`Enumerable` implements `Range` in source in
-`src/modules/runtime_library/enumerable.fz`. The callbacks destructure
-`%Range{first: first, last: last, step: step}` at the boundary, then use small
-guarded helper clauses over scalar `first`/`last`/`step` values for
-`reduce/3`, O(1) `count/1`, arithmetic `member?/2`, and `slice/1`'s
+`Range` implements `Enumerable` in source in
+`src/modules/runtime_library/range.fz`. The callbacks lower into protocol-owned
+implementation functions such as `Enumerable.Range.reduce/3`; their bodies
+destructure `%Range{first: first, last: last, step: step}` at the boundary,
+then delegate to small `Range` helpers over scalar `first`/`last`/`step` values
+for `reduce/5`, O(1) `count/3`, arithmetic `member?/4`, and `slice/6`'s
 Elixir-compatible slicing function.

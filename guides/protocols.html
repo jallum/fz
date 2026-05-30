@@ -62,7 +62,9 @@ contract and are checked through module interfaces.</p>
 
 <p>Every callback declared by the protocol must be present in the
 implementation with the required arity. Duplicate implementations for the same
-protocol and target are errors.</p>
+protocol and target are errors. Callback functions are compiled under the
+protocol's implementation namespace, such as <code>Sized.List.count/1</code>,
+so they do not replace ordinary functions on <code>List</code>.</p>
 
 <h2 id="domain">4. <code>Protocol.t(...)</code> specs</h2>
 
@@ -141,7 +143,7 @@ supported public wrapper or become a diagnostic.</p>
 <div class="box green">
 <ul>
   <li><code>defprotocol</code> declares required callbacks and a domain type.</li>
-  <li><code>defimpl</code> must provide every required callback for one target.</li>
+  <li><code>defimpl</code> must provide every required callback for one target; callback functions live under the protocol implementation namespace.</li>
   <li><code>Protocol.t(...)</code> constrains values to the implementation domain.</li>
   <li>Known list <code>Enum</code> calls execute through ordinary planned calls over the <code>Enumerable</code> domain.</li>
   <li>Unsupported dynamic protocol features should fail clearly instead of guessing.</li>

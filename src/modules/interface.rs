@@ -165,9 +165,11 @@ fn collect_module(
         .items
         .iter()
         .filter_map(|item| match &**item {
-            crate::ast::Item::ProtocolImpl(protocol_impl) => {
-                Some(interface_protocol_impl(protocol_impl, Some(&name)))
-            }
+            crate::ast::Item::ProtocolImpl(protocol_impl) => Some(interface_protocol_impl(
+                protocol_impl,
+                Some(&name),
+                &module.items,
+            )),
             _ => None,
         })
         .collect::<Vec<_>>();
@@ -266,13 +268,17 @@ fn interface_protocol(protocol: &ProtocolDef, parent: Option<&ModuleName>) -> In
 fn interface_protocol_impl(
     protocol_impl: &ProtocolImplDef,
     parent: Option<&ModuleName>,
+    siblings: &[std::rc::Rc<crate::ast::Item>],
 ) -> InterfaceProtocolImpl {
+    let protocol = interface_impl_protocol_name(parent, &protocol_impl.protocol, siblings);
+    let target = qualify_module_child(parent, &protocol_impl.target.path);
+    let impl_module = protocol_impl_module(&protocol, &target);
     let callbacks = protocol_impl
         .items
         .iter()
         .filter_map(|item| match &**item {
             crate::ast::Item::Fn(def) => Some(crate::modules::identity::ExportKey::new(
-                qualify_module_child(parent, &protocol_impl.target.path),
+                impl_module.clone(),
                 def.name.clone(),
                 def.clauses.first().map(|c| c.params.len()).unwrap_or(0),
             )),
@@ -280,10 +286,38 @@ fn interface_protocol_impl(
         })
         .collect::<Vec<_>>();
     InterfaceProtocolImpl {
-        protocol: qualify_protocol_name(parent, &protocol_impl.protocol),
-        target: ImplTarget::module(qualify_module_child(parent, &protocol_impl.target.path)),
+        protocol,
+        target: ImplTarget::module(target),
         callbacks,
     }
+}
+
+fn interface_impl_protocol_name(
+    parent: Option<&ModuleName>,
+    name: &ModuleName,
+    siblings: &[std::rc::Rc<crate::ast::Item>],
+) -> ModuleName {
+    if name.segments().len() != 1 {
+        return name.clone();
+    }
+    if let Some(parent) = parent {
+        let has_local_protocol = siblings.iter().any(|item| {
+            matches!(
+                &**item,
+                crate::ast::Item::Protocol(protocol)
+                    if protocol.name.segments().len() == 1
+                        && protocol.name.last_segment() == name.last_segment()
+            )
+        });
+        if has_local_protocol || name.last_segment() == parent.last_segment() {
+            return if name.last_segment() == parent.last_segment() {
+                parent.clone()
+            } else {
+                parent.child(name.last_segment().to_string())
+            };
+        }
+    }
+    name.clone()
 }
 
 fn qualify_protocol_name(parent: Option<&ModuleName>, name: &ModuleName) -> ModuleName {
@@ -304,10 +338,18 @@ fn qualify_module_child(parent: Option<&ModuleName>, name: &ModuleName) -> Modul
     if name.segments().len() == 1
         && let Some(parent) = parent
     {
-        parent.child(name.last_segment().to_string())
+        if name.last_segment() == parent.last_segment() {
+            parent.clone()
+        } else {
+            parent.child(name.last_segment().to_string())
+        }
     } else {
         name.clone()
     }
+}
+
+fn protocol_impl_module(protocol: &ModuleName, target: &ModuleName) -> ModuleName {
+    protocol.child(target.last_segment().to_string())
 }
 
 fn interface_type(decl: &TypeAliasDecl) -> InterfaceType {

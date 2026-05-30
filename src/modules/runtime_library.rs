@@ -40,6 +40,11 @@ const RUNTIME_MODULE_SOURCES: &[RuntimeModuleSource] = &[
         role: RuntimeModuleRole::CorePrelude,
     },
     RuntimeModuleSource {
+        name: "Enumerable",
+        source: include_str!("runtime_library/enumerable.fz"),
+        role: RuntimeModuleRole::CorePrelude,
+    },
+    RuntimeModuleSource {
         name: "Range",
         source: include_str!("runtime_library/range.fz"),
         role: RuntimeModuleRole::CorePrelude,
@@ -55,13 +60,13 @@ const RUNTIME_MODULE_SOURCES: &[RuntimeModuleSource] = &[
         role: RuntimeModuleRole::Library,
     },
     RuntimeModuleSource {
-        name: "Enum",
-        source: include_str!("runtime_library/enum.fz"),
+        name: "Map",
+        source: include_str!("runtime_library/map.fz"),
         role: RuntimeModuleRole::Library,
     },
     RuntimeModuleSource {
-        name: "Enumerable",
-        source: include_str!("runtime_library/enumerable.fz"),
+        name: "Enum",
+        source: include_str!("runtime_library/enum.fz"),
         role: RuntimeModuleRole::Library,
     },
     RuntimeModuleSource {
@@ -183,6 +188,10 @@ pub fn parsed_program() -> Program {
 
 #[cfg(test)]
 pub fn interface_table() -> InterfaceTable {
+    interfaces()
+}
+
+pub fn interfaces() -> BTreeMap<ModuleName, ModuleInterface> {
     RUNTIME_MODULE_SOURCES
         .iter()
         .filter_map(|source| {
@@ -386,18 +395,40 @@ mod tests {
                 .iter()
                 .any(|protocol| protocol.name.dotted() == "Enumerable")
         );
-        assert!(enumerable.protocol_impls.iter().any(
-            |protocol_impl| protocol_impl.protocol.dotted() == "Enumerable"
-                && protocol_impl.target.display_name() == "Enumerable.List"
-        ));
-        assert!(enumerable.protocol_impls.iter().any(
-            |protocol_impl| protocol_impl.protocol.dotted() == "Enumerable"
-                && protocol_impl.target.display_name() == "Enumerable.Range"
-        ));
-        assert!(enumerable.protocol_impls.iter().any(
-            |protocol_impl| protocol_impl.protocol.dotted() == "Enumerable"
-                && protocol_impl.target.display_name() == "Enumerable.Map"
-        ));
+        let list_module = interfaces
+            .get(&ModuleName::from_segments(vec!["List".to_string()]))
+            .expect("List interface");
+        let range_module = interfaces
+            .get(&ModuleName::from_segments(vec!["Range".to_string()]))
+            .expect("Range interface");
+        let map_module = interfaces
+            .get(&ModuleName::from_segments(vec!["Map".to_string()]))
+            .expect("Map interface");
+
+        assert!(list_module.protocol_impls.iter().any(|protocol_impl| {
+            protocol_impl.protocol.dotted() == "Enumerable"
+                && protocol_impl.target.display_name() == "List"
+                && protocol_impl
+                    .callbacks
+                    .iter()
+                    .any(|callback| callback.module.dotted() == "Enumerable.List")
+        }));
+        assert!(range_module.protocol_impls.iter().any(|protocol_impl| {
+            protocol_impl.protocol.dotted() == "Enumerable"
+                && protocol_impl.target.display_name() == "Range"
+                && protocol_impl
+                    .callbacks
+                    .iter()
+                    .any(|callback| callback.module.dotted() == "Enumerable.Range")
+        }));
+        assert!(map_module.protocol_impls.iter().any(|protocol_impl| {
+            protocol_impl.protocol.dotted() == "Enumerable"
+                && protocol_impl.target.display_name() == "Map"
+                && protocol_impl
+                    .callbacks
+                    .iter()
+                    .any(|callback| callback.module.dotted() == "Enumerable.Map")
+        }));
         assert!(
             !enumerable
                 .protocols
@@ -431,15 +462,22 @@ mod tests {
                 .any(|import| import.module.dotted() == "Enumerable")
         );
 
-        let list_module = interfaces
-            .get(&ModuleName::from_segments(vec!["List".to_string()]))
-            .expect("List interface");
         let list_exports = list_module
             .exports
             .iter()
             .map(|f| format!("{}/{}", f.name, f.arity))
             .collect::<Vec<_>>();
-        assert_eq!(list_exports, vec!["concat/2", "subtract/2"]);
+        assert_eq!(
+            list_exports,
+            vec![
+                "concat/2",
+                "count/1",
+                "member?/2",
+                "reduce/3",
+                "reverse/2",
+                "subtract/2"
+            ]
+        );
 
         assert_eq!(
             utf8.docs.as_deref(),

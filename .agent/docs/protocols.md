@@ -23,7 +23,7 @@ defprotocol Enumerable do
 end
 
 defimpl Enumerable, for: List do
-  fn reduce(list, acc, reducer), do: Enumerable.reduce_list(list, acc, reducer)
+  fn reduce(list, acc, reducer), do: List.reduce(list, acc, reducer)
 end
 
 defmodule Enum do
@@ -40,7 +40,11 @@ public callback specs, and the protocol-domain type constructor
 `Protocol.t(...)`.
 
 `defimpl` declares the protocol it implements, the semantic implementation
-target, and the callback bodies that satisfy the protocol.
+target, and the callback bodies that satisfy the protocol. Callback functions
+lower into implementation modules owned by the protocol, such as
+`Enumerable.List.reduce/3`, not into the target module namespace. The callback
+body can still delegate to ordinary target-module helpers like `List.reduce/3`
+without colliding with them.
 
 The runtime library follows Elixir's public naming split: `Enumerable` is the
 protocol identity and implementation-domain type, while `Enum` is the
@@ -219,9 +223,10 @@ subsystem:
 - `ModuleInterface` carries protocol declaration and implementation facts in
   interface fingerprints so artifacts can expose protocol contracts without
   provider bodies.
-- `ModuleGraphLoader` traverses module imports, not protocol callback
-  namespaces. A `defimpl` callback path is an export namespace inside the
-  defining artifact; treating it as an artifact root creates false
+- `ModuleGraphLoader` traverses module imports and runtime implementation
+  providers, not protocol callback namespaces. A `defimpl` callback path such
+  as `Enumerable.List.reduce/3` is an export namespace inside the defining
+  artifact; treating it as an artifact root creates false
   `Protocol/Target.fzi` dependencies.
 - `ir_lower` records protocol callback calls as protocol stub callsites with
   stable `CallsiteId`s; `ir_planner` replaces those stubs with local or

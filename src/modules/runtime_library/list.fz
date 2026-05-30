@@ -1,5 +1,5 @@
 defmodule List do
-  @moduledoc "List helpers used by operator desugaring."
+  @moduledoc "List helpers used by operator desugaring and Enumerable."
 
   @doc "Concatenates two lists."
   @spec concat([a], [a]) :: [a]
@@ -14,4 +14,48 @@ defmodule List do
   fnp delete_first([], _value), do: []
   fnp delete_first([head | tail], value) when head == value, do: tail
   fnp delete_first([head | tail], value), do: [head | delete_first(tail, value)]
+
+  @doc "Enumerable.reduce/3 callback body for lists."
+  @spec reduce(any, any, any) :: any
+  fn reduce(list, {:cont, acc}, reducer), do: reduce_cont(list, acc, reducer)
+  fn reduce(_list, {:halt, acc}, _reducer), do: {:halted, acc}
+  fn reduce(list, {:suspend, acc}, reducer) do
+    {:suspended, acc, (fn () -> reduce_cont(list, acc, reducer) end)}
+  end
+
+  @doc "Counts a list for Enumerable."
+  @spec count(any) :: integer
+  fn count(list), do: count(list, 0)
+
+  @doc "Returns true when value appears in list for Enumerable."
+  @spec member?(any, any) :: bool
+  fn member?([], _value), do: false
+  fn member?([head | tail], value) when head == value, do: true
+  fn member?([head | tail], value), do: member?(tail, value)
+
+  @doc "Reverses a list onto a tail."
+  @spec reverse([a], [a]) :: [a]
+  fn reverse([], tail), do: tail
+  fn reverse([head | tail], acc), do: reverse(tail, [head | acc])
+
+  fnp reduce_cont([], acc, _reducer), do: {:done, acc}
+  fnp reduce_cont([head | tail], acc, reducer) do
+    reduce_step(tail, reducer(head, acc), reducer)
+  end
+
+  fnp reduce_step(list, {:cont, acc}, reducer), do: reduce_cont(list, acc, reducer)
+  fnp reduce_step(_list, {:halt, acc}, _reducer), do: {:halted, acc}
+  fnp reduce_step(list, {:suspend, acc}, reducer) do
+    {:suspended, acc, (fn () -> reduce_cont(list, acc, reducer) end)}
+  end
+
+  fnp count([], acc), do: acc
+  fnp count([_head | tail], acc), do: count(tail, acc + 1)
+
+  defimpl Enumerable, for: List do
+    fn reduce(list, acc, reducer), do: List.reduce(list, acc, reducer)
+    fn count(list), do: {:ok, List.count(list)}
+    fn member?(list, value), do: {:ok, List.member?(list, value)}
+    fn slice(_list), do: {:error, :unsupported}
+  end
 end

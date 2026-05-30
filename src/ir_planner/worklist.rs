@@ -884,30 +884,30 @@ fn continuation_return_contribution<
     block: &Block,
     continuation: &crate::fz_ir::Cont,
 ) -> crate::types::Ty {
-    let key = block
-        .terminator
-        .ident()
-        .and_then(|ident| {
-            ft.local_call_target(&crate::fz_ir::CallsiteId::new(
-                spec_key.fn_id,
-                ident,
-                crate::fz_ir::EmitSlot::Cont,
-            ))
-            .cloned()
-        })
-        .unwrap_or_else(|| {
-            let cont_k = cont_key_for_spec(
-                t,
-                block,
-                continuation,
-                ft,
-                module,
-                recursive_fns,
-                spec_key.fn_id,
-                effective_returns,
-            );
-            spec_key_for_fn_id(module, continuation.fn_id, cont_k)
-        });
+    let key = if let Some(key) = block.terminator.ident().and_then(|ident| {
+        ft.local_call_target(&crate::fz_ir::CallsiteId::new(
+            spec_key.fn_id,
+            ident,
+            crate::fz_ir::EmitSlot::Cont,
+        ))
+        .cloned()
+    }) {
+        key
+    } else {
+        let Some(cont_k) = cont_key_for_spec(
+            t,
+            block,
+            continuation,
+            ft,
+            module,
+            recursive_fns,
+            spec_key.fn_id,
+            effective_returns,
+        ) else {
+            return t.none();
+        };
+        spec_key_for_fn_id(module, continuation.fn_id, cont_k)
+    };
     lookup_return_read(t, effective_returns, reads, key)
 }
 
@@ -985,10 +985,10 @@ pub(crate) fn cont_key_for_spec<
     recursive_fns: &std::collections::HashSet<FnId>,
     caller: FnId,
     effective_returns: &HashMap<SpecKey, crate::types::Ty>,
-) -> Vec<crate::types::Ty> {
+) -> Option<Vec<crate::types::Ty>> {
     use crate::types::Ty;
     let Some(_) = module.fn_idx.get(&cont.fn_id) else {
-        return vec![];
+        return Some(vec![]);
     };
     let any_t = t.any();
     let cont_fn = module.fn_by_id(cont.fn_id);
@@ -1003,10 +1003,7 @@ pub(crate) fn cont_key_for_spec<
                 .collect();
             let lookup_key =
                 recursive_direct_spec_key(t, module, recursive_fns, caller, *callee, arg_tys);
-            effective_returns
-                .get(&lookup_key)
-                .cloned()
-                .unwrap_or_else(|| any_t.clone())
+            effective_returns.get(&lookup_key).cloned()?
         }
         Term::CallClosure { closure, args, .. } => {
             if let Some(target) = ft.known_fn(closure) {
@@ -1026,22 +1023,24 @@ pub(crate) fn cont_key_for_spec<
                     np,
                     None,
                 );
-                effective_returns
-                    .get(&lookup_key)
-                    .cloned()
-                    .unwrap_or_else(|| any_t.clone())
+                effective_returns.get(&lookup_key).cloned()?
             } else if let Some(cv_descr) = env.get(closure) {
                 let arg_tys: Vec<Ty> = args
                     .iter()
                     .map(|av| env.get(av).cloned().unwrap_or_else(|| any_t.clone()))
                     .collect();
-                resolve_closure_return(t, cv_descr, effective_returns, &arg_tys)
-                    .unwrap_or_else(|| any_t.clone())
+                resolve_closure_return(t, cv_descr, effective_returns, &arg_tys)?
             } else {
                 any_t.clone()
             }
         }
         _ => any_t.clone(),
     };
-    cont_key_from_slot0(&any_t, n_params, slot0, &cont.captured, &env)
+    Some(cont_key_from_slot0(
+        &any_t,
+        n_params,
+        slot0,
+        &cont.captured,
+        &env,
+    ))
 }

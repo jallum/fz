@@ -587,10 +587,11 @@ Rules:
   module-scoped while exposing imported names like `dbg/1`;
 - ordinary module bodies live in individual files such as
   `src/modules/runtime_library/utf8.fz` and
-  `src/modules/runtime_library/process.fz`; `List`, `Enumerable`, and `Enum`
-  also live here and expose operator helpers, protocol facts, and public
-  enumeration wrappers, with private `fnp` helpers for implementation details
-  such as `Enum.sort`'s merge sort, as ordinary FZ source;
+  `src/modules/runtime_library/process.fz`; `List`, `Map`, `Range`,
+  `Enumerable`, and `Enum` also live here and expose operator helpers, protocol
+  facts, and public enumeration wrappers, with private `fnp` helpers for
+  implementation details such as `Enum.sort`'s merge sort, as ordinary FZ
+  source;
 - every runtime-library module should carry a crisp `@moduledoc`, and every
   public export should have the narrowest accurate `@spec`;
 - module-scoped externs are implementation details, not interface exports;

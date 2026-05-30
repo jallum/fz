@@ -510,6 +510,74 @@ end
         );
     }
 
+    #[test]
+    fn protocol_impl_reduce_callback_plans_to_fixed_point() {
+        let mut concrete_types = types::ConcreteTypes;
+        let tel = telemetry::ConfiguredTelemetry::new();
+        let capture = telemetry::Capture::new();
+        tel.attach(&["fz", "planner", "planned"], capture.handler());
+        let providers = ProviderInputs::new(
+            std::env::temp_dir()
+                .join(format!("fz-protocol-reduce-{}", std::process::id()))
+                .display()
+                .to_string(),
+            Vec::new(),
+        );
+        let source = r#"
+defprotocol Reducible do
+  fn reduce(value, acc, reducer)
+end
+
+defmodule List do
+  fn reduce([], {:cont, acc}, _reducer), do: {:done, acc}
+  fn reduce([head | tail], {:cont, acc}, reducer), do: reduce(tail, reducer(head, acc), reducer)
+  fn reduce(_list, {:halt, acc}, _reducer), do: {:halted, acc}
+end
+
+defimpl Reducible, for: List do
+  fn reduce(list, acc, reducer), do: List.reduce(list, acc, reducer)
+end
+
+fn main() do
+  Reducible.reduce([1, 2, 3], {:cont, 0}, fn (x, acc) -> {:cont, x + acc} end)
+end
+"#;
+
+        let frontend = compile_source_with_providers(
+            &mut concrete_types,
+            source.to_string(),
+            "protocol_reduce.fz".to_string(),
+            &providers,
+            &tel,
+        )
+        .unwrap_or_else(|_| panic!("frontend result"));
+        let checked =
+            checked_module_for_mode(&mut concrete_types, frontend, &tel, CompileMode::Normal)
+                .unwrap_or_else(|_| panic!("checked module"));
+        prepare_execution_graph(
+            &mut concrete_types,
+            checked,
+            &providers,
+            &tel,
+            CompileMode::Normal,
+        )
+        .unwrap_or_else(|_| panic!("execution graph"));
+
+        let max_pops = capture
+            .find(&["fz", "planner", "planned"])
+            .iter()
+            .filter_map(|ev| match ev.measurements.get("worklist_pops") {
+                Some(telemetry::Value::U64(pops)) => Some(*pops),
+                _ => None,
+            })
+            .max()
+            .unwrap_or(0);
+        assert!(
+            max_pops <= 100,
+            "protocol reduce planning should converge without oscillating; max pops {max_pops}"
+        );
+    }
+
     /// Provider source whose `Contracts.Collectable.id/1` impl returns 42. The
     /// fixed return makes the consumer's dispatch observable end-to-end.
     const PROVIDER_SRC: &str = r#"defmodule Contracts do

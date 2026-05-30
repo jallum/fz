@@ -6,4 +6,105 @@ defmodule Range do
   @doc "Constructs a Range struct."
   @spec new(integer, integer, integer) :: any
   fn new(first, last, step), do: %Range{first: first, last: last, step: step}
+
+  @doc "Enumerable.reduce/3 callback body for ranges."
+  @spec reduce(any, any, any, any, any) :: any
+  fn reduce(first, last, step, {:cont, acc}, reducer), do: reduce_cont(first, last, step, first, acc, reducer)
+  fn reduce(_first, _last, _step, {:halt, acc}, _reducer), do: {:halted, acc}
+  fn reduce(first, last, step, {:suspend, acc}, reducer) do
+    {:suspended, acc, (fn () -> reduce_cont(first, last, step, first, acc, reducer) end)}
+  end
+
+  @doc "Counts range elements for Enumerable."
+  @spec count(any, any, any) :: integer
+  fn count(first, last, step) do
+    if done?(last, step, first) do
+      0
+    else
+      (abs_int(last - first) / abs_int(step)) + 1
+    end
+  end
+
+  @doc "Returns true when value appears in the range for Enumerable."
+  @spec member?(any, any, any, any) :: bool
+  fn member?(first, last, step, value) do
+    if done?(last, step, first) do
+      false
+    else
+      if contains?(first, last, step, value) do
+        ((value - first) % step) == 0
+      else
+        false
+      end
+    end
+  end
+
+  @doc "Slices a range for Enumerable."
+  @spec slice(any, any, any, any, any, any) :: any
+  fn slice(first, last, step, start, amount, stride) do
+    slice_from(last, step + stride - 1, first + (start * step), amount, [])
+  end
+
+  fnp reduce_cont(first, last, step, current, acc, reducer) do
+    if done?(last, step, current) do
+      {:done, acc}
+    else
+      reduce_step(first, last, step, current, reducer(current, acc), reducer)
+    end
+  end
+
+  fnp reduce_step(first, last, step, current, {:cont, acc}, reducer), do: reduce_cont(first, last, step, current + step, acc, reducer)
+  fnp reduce_step(_first, _last, _step, _current, {:halt, acc}, _reducer), do: {:halted, acc}
+  fnp reduce_step(first, last, step, current, {:suspend, acc}, reducer) do
+    {:suspended, acc, (fn () -> reduce_cont(first, last, step, current + step, acc, reducer) end)}
+  end
+
+  fnp slice_from(_last, _step, _current, 0, acc), do: reverse(acc, [])
+  fnp slice_from(last, step, current, amount, acc) do
+    if done?(last, step, current) do
+      reverse(acc, [])
+    else
+      slice_from(last, step, current + step, amount - 1, [current | acc])
+    end
+  end
+
+  fnp reverse([], acc), do: acc
+  fnp reverse([head | tail], acc), do: reverse(tail, [head | acc])
+
+  fnp done?(last, step, current) do
+    if step > 0 do
+      current > last
+    else
+      current < last
+    end
+  end
+
+  fnp contains?(first, last, step, value) do
+    if step > 0 do
+      value >= first && value <= last
+    else
+      value <= first && value >= last
+    end
+  end
+
+  fnp abs_int(value) when value < 0, do: 0 - value
+  fnp abs_int(value), do: value
+
+  defimpl Enumerable, for: Range do
+    fn reduce(%Range{first: first, last: last, step: step}, acc, reducer) do
+      Range.reduce(first, last, step, acc, reducer)
+    end
+
+    fn count(%Range{first: first, last: last, step: step}) do
+      {:ok, Range.count(first, last, step)}
+    end
+
+    fn member?(%Range{first: first, last: last, step: step}, value) do
+      {:ok, Range.member?(first, last, step, value)}
+    end
+
+    fn slice(%Range{first: first, last: last, step: step}) do
+      {:ok, Range.count(first, last, step), (fn (start, amount, stride) -> Range.slice(first, last, step, start, amount, stride) end)}
+    end
+  end
 end
