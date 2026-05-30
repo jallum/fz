@@ -1,0 +1,5 @@
+fn main() do
+  dbg(range(1, 10, 1))
+  dbg(range(1, 10, 2))
+  dbg(range(10, 1, -1))
+end

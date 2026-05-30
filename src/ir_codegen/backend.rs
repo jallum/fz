@@ -165,6 +165,10 @@ pub(crate) fn register_runtime_symbols(builder: &mut JITBuilder) {
         fz_runtime::ir_runtime::fz_alloc_struct as *const u8,
     );
     builder.symbol(
+        "fz_range_new",
+        fz_runtime::ir_runtime::fz_range_new as *const u8,
+    );
+    builder.symbol(
         "fz_struct_get_field_ref",
         fz_runtime::ir_runtime::fz_struct_get_field_ref as *const u8,
     );

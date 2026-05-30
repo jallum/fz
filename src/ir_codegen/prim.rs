@@ -991,6 +991,9 @@ pub(crate) fn lower_prim<
             if decl.symbol == "fz_make_resource" && args.len() == 2 {
                 return lower_extern_fz_make_resource(body, var_env, &arg_vars);
             }
+            if decl.symbol == "fz_range_new" && args.len() == 3 {
+                return lower_extern_fz_range_new(body, var_env, &arg_vars);
+            }
             if decl.symbol == "fz_dbg_value" && args.len() == 1 {
                 return lower_extern_fz_dbg_value(body, var_env, &arg_vars, dest_var);
             }
@@ -1765,6 +1768,25 @@ fn lower_extern_fz_dbg_value<M: cranelift_module::Module>(
         return Ok(LowerOut::Strict(CodegenValue::AnyRef(result)));
     }
     Ok(LowerOut::DeadUnit)
+}
+
+/// `fz_range_new(first, last, step)`: constructs the schema-backed Range
+/// struct. The runtime constructor needs the current Process and boxed integer
+/// refs so it can allocate on the process heap.
+fn lower_extern_fz_range_new<M: cranelift_module::Module>(
+    body: &mut CodegenFn<'_, '_, '_, M>,
+    var_env: &HashMap<u32, CodegenValue>,
+    args: &[crate::fz_ir::Var],
+) -> Result<LowerOut, CodegenError> {
+    let process = body.process_arg();
+    let mut call_args = Vec::with_capacity(4);
+    call_args.push(process);
+    for arg in args {
+        let binding = *var_env.get(&arg.0).expect("fz_range_new arg var");
+        body.push_binding_as_abi_arg(&mut call_args, binding, ArgRepr::ValueRef);
+    }
+    let inst = body.call_named("fz_range_new", &call_args);
+    Ok(LowerOut::ValueRefWord(body.b.inst_results(inst)[0]))
 }
 
 /// `fz_send(receiver, msg)`: marshals `msg` as a single ABI ValueRef arg and

@@ -37,6 +37,8 @@ pub struct Schema {
 }
 
 impl Schema {
+    pub const RANGE_NAME: &str = "Range";
+
     /// fz-ul4.38 — canonical `Tuple{N}` schema. N typed any values at offsets
     /// 0, 8, 16, … Used by every path that registers tuple schemas: JIT
     /// codegen (`ir_codegen::compile_with_backend`), interp lazy
@@ -50,6 +52,23 @@ impl Schema {
                 .map(|i| FieldDescriptor {
                     offset: (i * 8) as u32,
                     kind: FieldKind::AnyValue,
+                })
+                .collect(),
+        }
+    }
+
+    /// Elixir-parity Range struct. It is a normal schema-backed Struct, not
+    /// a distinct heap tag. The fields are raw signed integers in order:
+    /// first, last, step.
+    pub fn range() -> Self {
+        Self {
+            name: Self::RANGE_NAME.to_string(),
+            size: 24,
+            fields: [0, 8, 16]
+                .into_iter()
+                .map(|offset| FieldDescriptor {
+                    offset,
+                    kind: FieldKind::RawI64,
                 })
                 .collect(),
         }
@@ -147,6 +166,18 @@ impl SchemaRegistry {
             return id as u32;
         }
         self.register(Schema::closure_env(captures))
+    }
+
+    pub fn range(&mut self) -> u32 {
+        if let Some((id, _)) = self
+            .schemas
+            .iter()
+            .enumerate()
+            .find(|(_, schema)| schema.name == Schema::RANGE_NAME)
+        {
+            return id as u32;
+        }
+        self.register(Schema::range())
     }
 
     pub fn get(&self, id: u32) -> &Schema {

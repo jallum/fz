@@ -8,6 +8,7 @@ import Kernel, only: [
   make_ref: 0,
   make_resource: 2,
   panic: 1,
+  range: 3,
   refute: 1,
   refute: 2,
   self: 0,

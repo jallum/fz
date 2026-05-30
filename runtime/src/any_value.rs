@@ -1870,6 +1870,13 @@ pub mod debug {
         let p = super::struct_addr_from_tagged(bits).expect("struct bits");
         let schema_id = unsafe { super::struct_schema_id(p) };
         let heap = &unsafe { &*proc }.heap;
+        {
+            let reg = heap.schemas_registry();
+            let registry = reg.borrow();
+            if registry.get(schema_id).name.as_str() == crate::heap::Schema::RANGE_NAME {
+                return render_range(proc, bits);
+            }
+        }
         let field_offsets: Vec<u32> = {
             let reg = heap.schemas_registry();
             let registry = reg.borrow();
@@ -1886,6 +1893,23 @@ pub mod debug {
             .map(|offset| render_value(proc, heap.read_field_slot(p, offset)))
             .collect();
         format!("{{{}}}", parts.join(", "))
+    }
+
+    fn render_range(proc: *mut Process, bits: u64) -> String {
+        let range_ref = super::AnyValueRef::from_heap_object(
+            ValueKind::STRUCT,
+            super::struct_addr_from_tagged(bits).expect("range struct bits"),
+        )
+        .expect("range ref");
+        let (first, last, step) = unsafe { &*proc }
+            .heap
+            .range_fields(range_ref)
+            .expect("range fields");
+        if step == 1 {
+            format!("{}..{}", first, last)
+        } else {
+            format!("{}..{}//{}", first, last, step)
+        }
     }
 
     /// Render a heap Map as `%{k => v, ...}` in canonical sorted order.

@@ -463,6 +463,7 @@ mod tests {
                 "fz_make_resource/2",
                 "fz_panic/1",
                 "fz_process_heap_alloc_stats/0",
+                "fz_range_new/3",
                 "fz_self/0",
                 "fz_send/2",
                 "fz_spawn/1",

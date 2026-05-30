@@ -224,6 +224,52 @@ impl Heap {
         self.schemas.borrow_mut().closure_env(captured_count)
     }
 
+    pub fn range_schema_id(&mut self) -> u32 {
+        self.schemas.borrow_mut().range()
+    }
+
+    pub fn alloc_range(&mut self, first: i64, last: i64, step: i64) -> AnyValueRef {
+        assert_ne!(step, 0, "Range step must not be zero");
+        let schema_id = self.range_schema_id();
+        let p = self.alloc_struct(schema_id);
+        unsafe {
+            std::ptr::write(
+                crate::any_value::struct_field_raw_slot(p.cast_const(), 0),
+                first as u64,
+            );
+            std::ptr::write(
+                crate::any_value::struct_field_raw_slot(p.cast_const(), 8),
+                last as u64,
+            );
+            std::ptr::write(
+                crate::any_value::struct_field_raw_slot(p.cast_const(), 16),
+                step as u64,
+            );
+        }
+        AnyValueRef::from_heap_object(ValueKind::STRUCT, p).expect("range struct ref")
+    }
+
+    pub fn range_fields(&self, range: AnyValueRef) -> Result<(i64, i64, i64), AnyValueRefError> {
+        let p = range.struct_addr()?;
+        let schema_id = unsafe { crate::any_value::struct_schema_id(p.cast_const()) };
+        let reg = self.schemas.borrow();
+        assert_eq!(
+            reg.get(schema_id).name.as_str(),
+            Schema::RANGE_NAME,
+            "expected Range schema"
+        );
+        let first = unsafe {
+            std::ptr::read(crate::any_value::struct_field_raw_slot(p.cast_const(), 0)) as i64
+        };
+        let last = unsafe {
+            std::ptr::read(crate::any_value::struct_field_raw_slot(p.cast_const(), 8)) as i64
+        };
+        let step = unsafe {
+            std::ptr::read(crate::any_value::struct_field_raw_slot(p.cast_const(), 16)) as i64
+        };
+        Ok((first, last, step))
+    }
+
     fn alloc_list_cons_value(&mut self, head: AnyValueRef, tail_bits: u64) -> u64 {
         let p = self.alloc_kind(HeapAllocKind::ListCons, 16);
         unsafe {

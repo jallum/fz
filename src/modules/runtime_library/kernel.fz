@@ -9,6 +9,7 @@ defmodule Kernel do
   extern "C" fn fz_send(pid, t) :: t when t: any
   extern "C" fn fz_make_ref() :: ref
   extern "C" fn fz_make_resource(t, (t) -> nil) :: resource(t) when t: integer | cpointer
+  extern "C" fn fz_range_new(integer, integer, integer) :: any
 
   @doc "Aborts the current process."
   @spec panic(any) :: never
@@ -57,4 +58,8 @@ defmodule Kernel do
   @doc "Wraps a host handle and destructor in a resource."
   @spec make_resource(t, (t) -> nil) :: resource(t) when t: integer | cpointer
   fn make_resource(value, dtor), do: fz_make_resource(value, dtor)
+
+  @doc "Constructs a Range struct."
+  @spec range(integer, integer, integer) :: any
+  fn range(first, last, step), do: fz_range_new(first, last, step)
 end

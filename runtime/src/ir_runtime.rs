@@ -1759,6 +1759,28 @@ pub extern "C" fn fz_alloc_struct(process: *mut Process, schema_id: u32) -> u64 
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn fz_range_new(
+    process: *mut Process,
+    first_ref_word: u64,
+    last_ref_word: u64,
+    step_ref_word: u64,
+) -> u64 {
+    let first = any_value_ref_from_word(first_ref_word, "fz_range_new first")
+        .load_int()
+        .expect("fz_range_new first must be integer");
+    let last = any_value_ref_from_word(last_ref_word, "fz_range_new last")
+        .load_int()
+        .expect("fz_range_new last must be integer");
+    let step = any_value_ref_from_word(step_ref_word, "fz_range_new step")
+        .load_int()
+        .expect("fz_range_new step must be integer");
+    (unsafe { &mut *process })
+        .heap
+        .alloc_range(first, last, step)
+        .raw_word()
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn fz_struct_get_field_ref(
     process: *mut Process,
     struct_ref_word: u64,
@@ -2423,6 +2445,94 @@ mod tests {
             }
         }
         panic!("stats key {name} not found");
+    }
+
+    fn boxed_int(process: &mut Process, value: i64) -> u64 {
+        process
+            .heap
+            .box_any_value_ref(AnyValue::int(value))
+            .raw_word()
+    }
+
+    #[test]
+    fn range_constructor_reuses_schema_and_renders_like_elixir() {
+        with_process(|process| {
+            let process_ptr = process as *mut Process;
+
+            let ascending = fz_range_new(
+                process_ptr,
+                boxed_int(process, 1),
+                boxed_int(process, 10),
+                boxed_int(process, 1),
+            );
+            let stepped = fz_range_new(
+                process_ptr,
+                boxed_int(process, 1),
+                boxed_int(process, 10),
+                boxed_int(process, 2),
+            );
+            let descending = fz_range_new(
+                process_ptr,
+                boxed_int(process, 10),
+                boxed_int(process, 1),
+                boxed_int(process, -1),
+            );
+
+            assert_eq!(
+                process.heap.schemas_registry().borrow().len(),
+                1,
+                "all ranges share the canonical Range schema"
+            );
+            assert_eq!(
+                crate::any_value::debug::render_value(
+                    process_ptr,
+                    AnyValue::from_ref(AnyValueRef::from_raw_word(ascending).unwrap()).unwrap()
+                ),
+                "1..10"
+            );
+            assert_eq!(
+                crate::any_value::debug::render_value(
+                    process_ptr,
+                    AnyValue::from_ref(AnyValueRef::from_raw_word(stepped).unwrap()).unwrap()
+                ),
+                "1..10//2"
+            );
+            assert_eq!(
+                crate::any_value::debug::render_value(
+                    process_ptr,
+                    AnyValue::from_ref(AnyValueRef::from_raw_word(descending).unwrap()).unwrap()
+                ),
+                "10..1//-1"
+            );
+        });
+    }
+
+    #[test]
+    fn range_equality_comes_from_struct_fields() {
+        with_process(|process| {
+            let process_ptr = process as *mut Process;
+            let a = fz_range_new(
+                process_ptr,
+                boxed_int(process, 1),
+                boxed_int(process, 3),
+                boxed_int(process, 1),
+            );
+            let b = fz_range_new(
+                process_ptr,
+                boxed_int(process, 1),
+                boxed_int(process, 3),
+                boxed_int(process, 1),
+            );
+            let c = fz_range_new(
+                process_ptr,
+                boxed_int(process, 1),
+                boxed_int(process, 3),
+                boxed_int(process, 2),
+            );
+
+            assert_eq!(fz_value_eq_ref(process_ptr, a, b), 1);
+            assert_eq!(fz_value_eq_ref(process_ptr, a, c), 0);
+        });
     }
 
     #[test]

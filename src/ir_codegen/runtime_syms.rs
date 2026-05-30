@@ -68,6 +68,7 @@ pub(crate) fn runtime_import_sig(name: &str) -> Signature {
         "fz_list_reuse_or_cons_tail_ref" => (&[I64, I64, I64], &[I64]),
         "fz_mark_published_ref_aliased" => (&[I64, I64], &[I64]),
         "fz_alloc_struct" => (&[I64, I32], &[I64]),
+        "fz_range_new" => (&[I64, I64, I64, I64], &[I64]),
         "fz_struct_get_field_ref" => (&[I64, I64, I32], &[I64]),
         "fz_struct_set_field_ref" => (&[I64, I64, I32, I64], &[]),
         "fz_struct_set_field_int" => (&[I64, I64, I32, I64], &[]),

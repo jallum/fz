@@ -201,6 +201,16 @@ pub(super) fn call_extern<T: Types<Ty = crate::types::Ty>>(
             )
             .map(interp_value_from_slot);
         }
+        "fz_range_new" => {
+            if args.len() != 3 {
+                return Err(format!("fz_range_new/3 got {} args", args.len()));
+            }
+            let first = args[0].extern_arg_ref_word(runtime.cur_proc())?;
+            let last = args[1].extern_arg_ref_word(runtime.cur_proc())?;
+            let step = args[2].extern_arg_ref_word(runtime.cur_proc())?;
+            let out = fz_runtime::ir_runtime::fz_range_new(runtime.cur_proc(), first, last, step);
+            return interp_value_from_extern_ref_word(out);
+        }
         "fz_brand_bitstring_as_utf8" => {
             if args.len() != 1 {
                 return Err(format!(
