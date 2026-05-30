@@ -14,6 +14,12 @@ planner output, and there is exactly one plan that owns it.
 - **`plan_module`** produces the authoritative `ModulePlan`. Every call emits a
   `planner.planned` telemetry event tagged `role: "authoritative"`. A pretyped
   single-module program runs two: the frontend plan and this codegen plan.
+- **Frontend protocol rewrites** apply only static-single protocol callsites:
+  the same physical `CallsiteId` must select the same local target in every
+  reachable caller specialization. Conflicting protocol targets are left as
+  protocol stubs until closed-union switch dispatch rewrites them into
+  `TypeTest` / `If` cascades. This preserves one shared IR body while still
+  honoring per-spec protocol facts.
 - **The shaping plan** is a `ModulePlan` tagged `role: "shaping"` used only to
   drive pre-authoritative CFG simplification (`branch_fold` and `fold`). Its
   facts are discarded before codegen facts are published.

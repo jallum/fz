@@ -57,12 +57,12 @@ const RUNTIME_MODULE_SOURCES: &[RuntimeModuleSource] = &[
     RuntimeModuleSource {
         name: "List",
         source: include_str!("runtime_library/list.fz"),
-        role: RuntimeModuleRole::Library,
+        role: RuntimeModuleRole::CorePrelude,
     },
     RuntimeModuleSource {
         name: "Map",
         source: include_str!("runtime_library/map.fz"),
-        role: RuntimeModuleRole::Library,
+        role: RuntimeModuleRole::CorePrelude,
     },
     RuntimeModuleSource {
         name: "Enum",

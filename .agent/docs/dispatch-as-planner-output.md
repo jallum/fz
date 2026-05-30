@@ -176,6 +176,21 @@ Single-unit frontend checking performs the same rewrite for local planned
 targets before interpreter or native execution, using the planner fact rather
 than rediscovering the protocol target in a backend.
 
+There are two frontend rewrite cases:
+
+- Static-single: every reachable caller specialization that mentions the same
+  physical `CallsiteId` selects the same local target. The frontend can rewrite
+  that shared IR callsite to the agreed target.
+- Switch-union: specializations of the same physical callsite select different
+  local protocol targets. The frontend must leave the protocol stub in place so
+  closed-union protocol dispatch can rewrite it into a `TypeTest` / `If`
+  cascade with one direct-call arm per implementation.
+
+The agreement check is required because a physical callsite is shared by all
+monomorphized specs of its caller. Rewriting it per spec would make the last
+planned target win globally, collapsing a polymorphic protocol call such as
+`Enum.count/1` onto one implementation and erasing the switch-dispatch anchor.
+
 The crucial invariant: demand follows a specific return edge/result hole, not
 the whole caller spec. A caller spec may contain multiple calls, and each call
 can feed a different use. Codegen must therefore consume the `CallsiteId` facts

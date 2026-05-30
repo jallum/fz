@@ -294,19 +294,43 @@ fn apply_planned_direct_call_targets(
     module: &mut Module,
     module_plan: &crate::ir_planner::ModulePlan,
 ) -> bool {
-    let mut changed = false;
+    // A physical callsite is shared by every monomorphized spec of its caller.
+    // For ordinary calls the resolved target is spec-invariant, but protocol
+    // dispatch resolves the *same* callsite to different impls in different
+    // specs (`Enum.count/1[Range]` -> `Range.count`, `[Map]` -> `Map.count`).
+    // Rewriting the shared IR to one target would force every spec through one
+    // impl - last writer wins - so a range would run `Map.count` and crash.
+    //
+    // Static devirtualization is sound only when the target is invariant across
+    // every spec that reaches the callsite. Collect targets per callsite; a
+    // callsite with conflicting targets is left as the `__protocol__` stub for
+    // `rewrite_closed_union_protocol_dispatch` to turn into a runtime
+    // type-switch cascade, which is correct for any receiver.
+    let mut target_by_callsite: std::collections::HashMap<
+        crate::fz_ir::CallsiteId,
+        Option<crate::fz_ir::FnId>,
+    > = std::collections::HashMap::new();
     for spec in module_plan.specs.values() {
         for (callsite, edge) in &spec.call_edges {
             if callsite.slot != crate::fz_ir::EmitSlot::Direct {
                 continue;
             }
             if let crate::ir_planner::fn_types::CallEdgeTarget::Local(target) = &edge.target {
-                changed |= crate::fz_ir::rewrite_external_callsite_for_link(
-                    module,
-                    callsite,
-                    target.fn_id,
-                );
+                target_by_callsite
+                    .entry(callsite.clone())
+                    .and_modify(|agreed| {
+                        if *agreed != Some(target.fn_id) {
+                            *agreed = None;
+                        }
+                    })
+                    .or_insert(Some(target.fn_id));
             }
+        }
+    }
+    let mut changed = false;
+    for (callsite, agreed) in &target_by_callsite {
+        if let Some(fn_id) = agreed {
+            changed |= crate::fz_ir::rewrite_external_callsite_for_link(module, callsite, *fn_id);
         }
     }
     changed
