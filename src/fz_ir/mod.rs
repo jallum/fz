@@ -433,6 +433,11 @@ pub enum Prim {
     IsEmptyList(Var),
     /// Build a tuple (struct with the canonical tuple-of-arity-N schema).
     MakeTuple(Vec<Var>),
+    /// Build a named struct using a source `defstruct` schema.
+    MakeStruct {
+        module: String,
+        fields: Vec<(String, Var)>,
+    },
     /// Allocate an unpublished tuple destination and mint its first linear
     /// init token. The enclosing `Stmt::Let` binds the destination handle.
     #[allow(dead_code)] // Produced by the DP transform starting in fz-za0.2.
@@ -461,6 +466,8 @@ pub enum Prim {
     },
     /// Project the i-th element of a tuple.
     TupleField(Var, u32),
+    /// Project a named field from a schema-backed struct.
+    StructField(Var, String),
     /// Build a list [v1, v2, ... | optional_tail]; tail defaults to Nil.
     MakeList(Vec<Var>, Option<Var>),
     /// Mint the first token for a destination-built list chain.
@@ -844,6 +851,7 @@ pub(crate) fn visit_prim_vars(prim: &Prim, mut visit: impl FnMut(Var)) {
         | Prim::ListTail(v)
         | Prim::IsEmptyList(v)
         | Prim::TupleField(v, _)
+        | Prim::StructField(v, _)
         | Prim::IsMatcherMapMiss(v)
         | Prim::BitReaderInit(v)
         | Prim::BitReaderDone(v)
@@ -856,6 +864,11 @@ pub(crate) fn visit_prim_vars(prim: &Prim, mut visit: impl FnMut(Var)) {
         }
         Prim::MakeTuple(args) => {
             for v in args {
+                visit(*v);
+            }
+        }
+        Prim::MakeStruct { fields, .. } => {
+            for (_, v) in fields {
                 visit(*v);
             }
         }
@@ -1301,6 +1314,7 @@ pub struct Module {
     /// `ir_lower::lower_program_full` from the resolved
     /// `Program.brand_inners`.
     pub brand_inners: HashMap<String, crate::types::Ty>,
+    pub struct_schemas: std::collections::BTreeMap<String, Vec<String>>,
     /// Resolved declared `@spec`s keyed by IR function id. Used by call
     /// typing for source-level polymorphic contracts.
     #[serde(with = "fn_keyed_map")]
@@ -1593,10 +1607,12 @@ fn remap_prim_span(prim: &mut Prim, remap: &HashMap<FileId, FileId>) {
         | Prim::ListTail(_)
         | Prim::IsEmptyList(_)
         | Prim::MakeTuple(_)
+        | Prim::MakeStruct { .. }
         | Prim::DestTupleBegin { .. }
         | Prim::DestTupleSet { .. }
         | Prim::DestFreeze { .. }
         | Prim::TupleField(_, _)
+        | Prim::StructField(_, _)
         | Prim::MakeList(_, _)
         | Prim::DestListBegin { .. }
         | Prim::DestListCons { .. }
@@ -1666,10 +1682,12 @@ fn visit_prim_span(prim: &Prim, f: &mut impl FnMut(Span)) {
         | Prim::ListTail(_)
         | Prim::IsEmptyList(_)
         | Prim::MakeTuple(_)
+        | Prim::MakeStruct { .. }
         | Prim::DestTupleBegin { .. }
         | Prim::DestTupleSet { .. }
         | Prim::DestFreeze { .. }
         | Prim::TupleField(_, _)
+        | Prim::StructField(_, _)
         | Prim::MakeList(_, _)
         | Prim::DestListBegin { .. }
         | Prim::DestListCons { .. }
@@ -1965,6 +1983,7 @@ impl ModuleBuilder {
             boundary_fns: HashSet::new(),
             opaque_inners: HashMap::new(),
             brand_inners: HashMap::new(),
+            struct_schemas: Default::default(),
             declared_specs: HashMap::new(),
         }
     }
@@ -2077,6 +2096,14 @@ impl fmt::Display for Prim {
             Prim::ListTail(l) => write!(f, "tail({})", l),
             Prim::IsEmptyList(l) => write!(f, "is_nil({})", l),
             Prim::MakeTuple(args) => write!(f, "tuple([{}])", fmt_var_list(args)),
+            Prim::MakeStruct { module, fields } => {
+                let fields = fields
+                    .iter()
+                    .map(|(name, var)| format!("{}: {}", name, var))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                write!(f, "struct({}, [{}])", module, fields)
+            }
             Prim::DestTupleBegin { token, arity } => {
                 write!(f, "dest_tuple_begin(arity={}, token={})", arity, token)
             }
@@ -2093,6 +2120,7 @@ impl fmt::Display for Prim {
             ),
             Prim::DestFreeze { dest, token } => write!(f, "dest_freeze({}, {})", dest, token),
             Prim::TupleField(v, i) => write!(f, "tuple_field({}, {})", v, i),
+            Prim::StructField(v, name) => write!(f, "struct_field({}, {})", v, name),
             Prim::MakeList(els, tail) => match tail {
                 Some(t) => write!(f, "list([{}] | {})", fmt_var_list(els), t),
                 None => write!(f, "list([{}])", fmt_var_list(els)),
@@ -2905,6 +2933,7 @@ mod tests {
             fields: vec![FieldDescriptor {
                 offset: 0,
                 kind: FieldKind::AnyValue,
+                name: None,
             }],
         });
         assert_eq!(id, 0);

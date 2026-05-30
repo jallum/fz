@@ -262,6 +262,11 @@ fn collect_prim_vars(p: &Prim, used: &mut HashSet<Var>) {
                 used.insert(*v);
             }
         }
+        Prim::MakeStruct { fields, .. } => {
+            for (_, v) in fields {
+                used.insert(*v);
+            }
+        }
         Prim::DestTupleBegin { .. } => {}
         Prim::DestTupleSet { dest, value, .. } => {
             used.insert(*dest);
@@ -280,7 +285,7 @@ fn collect_prim_vars(p: &Prim, used: &mut HashSet<Var>) {
         Prim::DestListFreeze { list, .. } => {
             used.insert(*list);
         }
-        Prim::TupleField(a, _) => {
+        Prim::TupleField(a, _) | Prim::StructField(a, _) => {
             used.insert(*a);
         }
         Prim::MakeList(els, tail) => {

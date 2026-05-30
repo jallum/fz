@@ -378,6 +378,7 @@ pub fn expand_with(
                     span: i.span,
                 }));
             }
+            Item::Struct(_) => {}
             Item::Alias { span, .. } | Item::Import { span, .. } | Item::MacroCall { span, .. } => {
                 return Err(Box::new(MacroError::PostResolutionLeftover { span: *span }));
             }
@@ -399,6 +400,7 @@ pub fn collect_macros(prog: &Program) -> std::collections::HashSet<String> {
                 }
             }
             Item::Module(_)
+            | Item::Struct(_)
             | Item::Protocol(_)
             | Item::ProtocolImpl(_)
             | Item::Alias { .. }
@@ -526,6 +528,11 @@ fn expand_expr_inner(
             expand_expr_inner(m, interp, macros, depth, in_capture)?;
             for (k, v) in pairs {
                 expand_expr_inner(k, interp, macros, depth, in_capture)?;
+                expand_expr_inner(v, interp, macros, depth, in_capture)?;
+            }
+        }
+        Expr::Struct { fields, .. } => {
+            for (_, v) in fields {
                 expand_expr_inner(v, interp, macros, depth, in_capture)?;
             }
         }
@@ -786,6 +793,11 @@ fn visit_expr(e: &Spanned<Expr>, f: &mut impl FnMut(&Expr)) {
                 visit_expr(v, f);
             }
         }
+        Expr::Struct { fields, .. } => {
+            for (_, v) in fields {
+                visit_expr(v, f);
+            }
+        }
         Expr::Index(base, key) | Expr::BinOp(_, base, key) => {
             visit_expr(base, f);
             visit_expr(key, f);
@@ -902,6 +914,11 @@ fn visit_expr_mut(e: &mut Spanned<Expr>, f: &mut impl FnMut(&mut Expr, Span)) {
             visit_expr_mut(base, f);
             for (k, v) in pairs {
                 visit_expr_mut(k, f);
+                visit_expr_mut(v, f);
+            }
+        }
+        Expr::Struct { fields, .. } => {
+            for (_, v) in fields {
                 visit_expr_mut(v, f);
             }
         }
@@ -1048,6 +1065,11 @@ fn stamp_expanded(e: &mut Spanned<Expr>, macro_call: Span, definition: Option<Sp
                 stamp_expanded(v, macro_call, definition);
             }
         }
+        Expr::Struct { fields, .. } => {
+            for (_, v) in fields {
+                stamp_expanded(v, macro_call, definition);
+            }
+        }
         Expr::Index(o, i) => {
             stamp_expanded(o, macro_call, definition);
             stamp_expanded(i, macro_call, definition);
@@ -1175,6 +1197,11 @@ fn stamp_pattern(p: &mut Spanned<Pattern>, macro_call: Span, definition: Option<
         Pattern::Map(pairs) => {
             for (k, v) in pairs {
                 stamp_pattern(k, macro_call, definition);
+                stamp_pattern(v, macro_call, definition);
+            }
+        }
+        Pattern::Struct { fields, .. } => {
+            for (_, v) in fields {
                 stamp_pattern(v, macro_call, definition);
             }
         }

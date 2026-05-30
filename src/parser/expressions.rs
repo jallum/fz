@@ -36,24 +36,24 @@ impl Parser {
     /// `not in` is two tokens, resolved directly in `parse_bp`.
     pub(super) fn infix_bp(t: &Tok) -> Option<(u8, u8, BinOp)> {
         Some(match t {
-            Tok::OrOr => (20, 21, BinOp::Or),         // Elixir 120
-            Tok::AndAnd => (30, 31, BinOp::And),       // Elixir 130
-            Tok::EqEq => (40, 41, BinOp::Eq),          // Elixir 140
+            Tok::OrOr => (20, 21, BinOp::Or),    // Elixir 120
+            Tok::AndAnd => (30, 31, BinOp::And), // Elixir 130
+            Tok::EqEq => (40, 41, BinOp::Eq),    // Elixir 140
             Tok::NotEq => (40, 41, BinOp::Neq),
-            Tok::Lt => (50, 51, BinOp::Lt),            // Elixir 150
+            Tok::Lt => (50, 51, BinOp::Lt), // Elixir 150
             Tok::LtEq => (50, 51, BinOp::LtEq),
             Tok::Gt => (50, 51, BinOp::Gt),
             Tok::GtEq => (50, 51, BinOp::GtEq),
-            Tok::Pipe => (60, 61, BinOp::Pipe),        // |>  Elixir 160
-            Tok::In => (70, 71, BinOp::In),            // in  Elixir 170
+            Tok::Pipe => (60, 61, BinOp::Pipe), // |>  Elixir 160
+            Tok::In => (70, 71, BinOp::In),     // in  Elixir 170
             Tok::SlashSlash => (81, 80, BinOp::RangeStep), // //  Elixir 190, right
-            Tok::PlusPlus => (91, 90, BinOp::ListConcat),  // ++  Elixir 200, right
+            Tok::PlusPlus => (91, 90, BinOp::ListConcat), // ++  Elixir 200, right
             Tok::MinusMinus => (91, 90, BinOp::ListSubtract), // --
-            Tok::Concat => (91, 90, BinOp::BinConcat),     // <>
-            Tok::DotDot => (91, 90, BinOp::Range),         // ..  Elixir 200, right
-            Tok::Plus => (100, 101, BinOp::Add),       // Elixir 210
+            Tok::Concat => (91, 90, BinOp::BinConcat), // <>
+            Tok::DotDot => (91, 90, BinOp::Range), // ..  Elixir 200, right
+            Tok::Plus => (100, 101, BinOp::Add), // Elixir 210
             Tok::Minus => (100, 101, BinOp::Sub),
-            Tok::Star => (110, 111, BinOp::Mul),       // Elixir 220
+            Tok::Star => (110, 111, BinOp::Mul), // Elixir 220
             Tok::Slash => (110, 111, BinOp::Div),
             Tok::Percent => (110, 111, BinOp::Rem),
             _ => return None,
@@ -146,7 +146,10 @@ impl Parser {
                 self.skip_newline_tokens();
                 let rhs = self.parse_bp(rbp)?;
                 let span = start.merge(self.prev_span());
-                lhs = Spanned::new(Expr::BinOp(BinOp::NotIn, Box::new(lhs), Box::new(rhs)), span);
+                lhs = Spanned::new(
+                    Expr::BinOp(BinOp::NotIn, Box::new(lhs), Box::new(rhs)),
+                    span,
+                );
                 continue;
             }
             // No-parens call: a callable head followed by a space-separated
@@ -426,8 +429,9 @@ impl Parser {
             //   `&(...)`    — capture expression over `&N` placeholders
             //   `&name/n`   — explicit function reference (fz-swt.5)
             // The first two desugar to a `Lambda` in fz-g58.15 (Arc 3).
-            Tok::Amp if matches!(self.peek_at(1), Tok::Int(n) if *n >= 1)
-                && !self.space_before_at(1) =>
+            Tok::Amp
+                if matches!(self.peek_at(1), Tok::Int(n) if *n >= 1)
+                    && !self.space_before_at(1) =>
             {
                 self.bump(); // &
                 let Tok::Int(n) = self.bump() else {
@@ -537,6 +541,7 @@ impl Parser {
                 Expr::Tuple(elems)
             }
             Tok::PercentLBrace => return self.parse_map_expr(),
+            Tok::Percent => return self.parse_struct_expr(),
             Tok::If => return self.parse_if(),
             Tok::Case => return self.parse_case(),
             Tok::Cond => return self.parse_cond(),
@@ -1145,6 +1150,40 @@ impl Parser {
         self.expect(&Tok::RBrace, "`}`")?;
         Ok(Spanned::new(
             Expr::MapUpdate(Box::new(base), pairs),
+            self.finish(start),
+        ))
+    }
+
+    pub(super) fn parse_struct_expr(&mut self) -> PR<Spanned<Expr>> {
+        let start = self.cur_span();
+        self.expect(&Tok::Percent, "`%`")?;
+        let (module, _) = self.parse_upper_path("struct")?;
+        self.expect(&Tok::LBrace, "`{`")?;
+        let mut fields = Vec::new();
+        self.skip_newlines();
+        if !matches!(self.peek(), Tok::RBrace) {
+            loop {
+                let field = match self.bump() {
+                    Tok::KwKey(name) | Tok::Ident(name) | Tok::Atom(name) => name,
+                    other => {
+                        return self.err(format!("expected struct field name, got {:?}", other));
+                    }
+                };
+                if !matches!(self.toks[self.pos - 1].tok, Tok::KwKey(_)) {
+                    self.expect(&Tok::FatArrow, "`=>`")?;
+                }
+                let value = self.with_comma_bound(|p| p.parse_expr())?;
+                fields.push((field, value));
+                self.skip_newlines();
+                if !self.eat(&Tok::Comma) {
+                    break;
+                }
+                self.skip_newlines();
+            }
+        }
+        self.expect(&Tok::RBrace, "`}`")?;
+        Ok(Spanned::new(
+            Expr::Struct { module, fields },
             self.finish(start),
         ))
     }

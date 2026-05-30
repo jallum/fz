@@ -1,0 +1,9 @@
+defmodule Range do
+  @moduledoc "Integer range values."
+
+  defstruct [:first, :last, :step]
+
+  @doc "Constructs a Range struct."
+  @spec new(integer, integer, integer) :: any
+  fn new(first, last, step), do: %Range{first: first, last: last, step: step}
+end

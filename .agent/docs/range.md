@@ -1,19 +1,21 @@
 # Range
 
 fz represents `Range` as a normal schema-backed Struct. It does not have a
-dedicated heap tag. The canonical schema is registered lazily through
-`SchemaRegistry::range()` and has three raw signed-integer fields:
+dedicated heap tag. The source surface is `defstruct [:first, :last, :step]` in
+`src/modules/runtime_library/range.fz`, and `Range.new/3` constructs
+`%Range{first: first, last: last, step: step}`.
 
-- offset 0: `first`
-- offset 8: `last`
-- offset 16: `step`
+The compiler carries `defstruct` declarations into `Module.struct_schemas`.
+`%Range{...}` lowers to `Prim::MakeStruct`, which allocates the registered
+schema and writes ordinary `AnyValue` fields in declaration order. JIT and
+interp register named schemas directly; AOT emits a named-schema table and
+registers it before user code runs, in the same order codegen used for baked
+schema ids. Dot access continues to lower through `MapGet`; runtime map-get
+treats atom-key lookup on a Struct as named-field projection, so `range.first`
+reads the `first` field without Range-specific extern accessors.
 
-`Heap::alloc_range(first, last, step)` is the runtime constructor. It asserts
-that `step != 0`, allocates a Struct with the canonical Range schema, writes the
-three raw fields, and returns a `TAG_STRUCT` `AnyValueRef`. The C ABI entrypoint
-is `fz_range_new(process, first, last, step)`, where the three values are
-integer `AnyValueRef` words. `Kernel.range/3` is the fz wrapper used by surface
-desugaring and fixtures.
+`Kernel.range/3` is an ordinary fz wrapper around `Range.new/3`. There is no
+`fz_range_new` host constructor.
 
 Because Range is an ordinary Struct, runtime equality follows the existing
 struct equality path: same schema id, then field-by-field comparison. There is

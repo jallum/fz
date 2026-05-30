@@ -762,12 +762,24 @@ mod elixir_operator_precedence_tests {
 
     #[test]
     fn new_operators_parse_to_their_binops() {
-        assert!(matches!(parse("a ++ b"), Expr::BinOp(BinOp::ListConcat, _, _)));
-        assert!(matches!(parse("a -- b"), Expr::BinOp(BinOp::ListSubtract, _, _)));
-        assert!(matches!(parse("a <> b"), Expr::BinOp(BinOp::BinConcat, _, _)));
+        assert!(matches!(
+            parse("a ++ b"),
+            Expr::BinOp(BinOp::ListConcat, _, _)
+        ));
+        assert!(matches!(
+            parse("a -- b"),
+            Expr::BinOp(BinOp::ListSubtract, _, _)
+        ));
+        assert!(matches!(
+            parse("a <> b"),
+            Expr::BinOp(BinOp::BinConcat, _, _)
+        ));
         assert!(matches!(parse("a .. b"), Expr::BinOp(BinOp::Range, _, _)));
         assert!(matches!(parse("a in b"), Expr::BinOp(BinOp::In, _, _)));
-        assert!(matches!(parse("a not in b"), Expr::BinOp(BinOp::NotIn, _, _)));
+        assert!(matches!(
+            parse("a not in b"),
+            Expr::BinOp(BinOp::NotIn, _, _)
+        ));
     }
 
     #[test]
@@ -903,10 +915,8 @@ mod no_parens_call_tests {
         let Expr::BinOp(BinOp::Add, _l, r) = parse("1 + foo a") else {
             panic!("not an addition")
         };
-        assert!(
-            matches!(&r.node, Expr::Call(c, a)
-                if matches!(&c.node, Expr::Var(n) if n == "foo") && a.len() == 1)
-        );
+        assert!(matches!(&r.node, Expr::Call(c, a)
+                if matches!(&c.node, Expr::Var(n) if n == "foo") && a.len() == 1));
     }
 
     #[test]
@@ -936,10 +946,8 @@ mod no_parens_call_tests {
             panic!("not a list")
         };
         assert_eq!(items.len(), 2, "comma belongs to the list");
-        assert!(
-            matches!(&items[0].node, Expr::Call(c, a)
-                if matches!(&c.node, Expr::Var(n) if n == "foo") && a.len() == 1)
-        );
+        assert!(matches!(&items[0].node, Expr::Call(c, a)
+                if matches!(&c.node, Expr::Var(n) if n == "foo") && a.len() == 1));
         assert_eq!(var(&items[1].node), "b");
     }
 
@@ -1151,7 +1159,9 @@ mod lambda_tests {
     fn missing_end_is_a_parse_error() {
         // Without `end`, the lambda swallows the enclosing `end`; the fn item
         // never closes, so parsing fails.
-        let toks = Lexer::new("fn _t() do\n  fn x -> x + 1\nend\n").tokenize().unwrap();
+        let toks = Lexer::new("fn _t() do\n  fn x -> x + 1\nend\n")
+            .tokenize()
+            .unwrap();
         assert!(Parser::new(toks).parse_program().is_err());
     }
 

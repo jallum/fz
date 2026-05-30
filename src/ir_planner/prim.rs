@@ -42,10 +42,12 @@ pub(crate) fn type_prim<
             let elem_tys: Vec<T::Ty> = vs.iter().map(|v| lookup(t, env, *v)).collect();
             t.tuple(&elem_tys)
         }
+        Prim::MakeStruct { .. } => t.any(),
         Prim::DestTupleBegin { .. } => t.any(),
         Prim::DestTupleSet { .. } => t.nil(),
         Prim::DestFreeze { dest, .. } => lookup(t, env, *dest),
         Prim::TupleField(v, i) => type_tuple_field(t, env, *v, *i),
+        Prim::StructField(_, _) => t.any(),
 
         Prim::MakeList(els, tail) => type_make_list(t, env, els, *tail),
         Prim::DestListBegin { .. } => t.nil(),

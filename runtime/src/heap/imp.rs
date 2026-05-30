@@ -224,31 +224,6 @@ impl Heap {
         self.schemas.borrow_mut().closure_env(captured_count)
     }
 
-    pub fn range_schema_id(&mut self) -> u32 {
-        self.schemas.borrow_mut().range()
-    }
-
-    pub fn alloc_range(&mut self, first: i64, last: i64, step: i64) -> AnyValueRef {
-        assert_ne!(step, 0, "Range step must not be zero");
-        let schema_id = self.range_schema_id();
-        let p = self.alloc_struct(schema_id);
-        unsafe {
-            std::ptr::write(
-                crate::any_value::struct_field_raw_slot(p.cast_const(), 0),
-                first as u64,
-            );
-            std::ptr::write(
-                crate::any_value::struct_field_raw_slot(p.cast_const(), 8),
-                last as u64,
-            );
-            std::ptr::write(
-                crate::any_value::struct_field_raw_slot(p.cast_const(), 16),
-                step as u64,
-            );
-        }
-        AnyValueRef::from_heap_object(ValueKind::STRUCT, p).expect("range struct ref")
-    }
-
     pub fn range_fields(&self, range: AnyValueRef) -> Result<(i64, i64, i64), AnyValueRefError> {
         let p = range.struct_addr()?;
         let schema_id = unsafe { crate::any_value::struct_schema_id(p.cast_const()) };
@@ -258,15 +233,16 @@ impl Heap {
             Schema::RANGE_NAME,
             "expected Range schema"
         );
-        let first = unsafe {
-            std::ptr::read(crate::any_value::struct_field_raw_slot(p.cast_const(), 0)) as i64
-        };
-        let last = unsafe {
-            std::ptr::read(crate::any_value::struct_field_raw_slot(p.cast_const(), 8)) as i64
-        };
-        let step = unsafe {
-            std::ptr::read(crate::any_value::struct_field_raw_slot(p.cast_const(), 16)) as i64
-        };
+        drop(reg);
+        let first = self
+            .read_struct_named_field_ref(range, "first")?
+            .load_int()?;
+        let last = self
+            .read_struct_named_field_ref(range, "last")?
+            .load_int()?;
+        let step = self
+            .read_struct_named_field_ref(range, "step")?
+            .load_int()?;
         Ok((first, last, step))
     }
 
@@ -1000,6 +976,28 @@ impl Heap {
             raw_slot as *const u64,
             ValueKind::new(kind).expect("struct field kind"),
         )
+    }
+
+    pub fn read_struct_named_field_ref(
+        &self,
+        obj: AnyValueRef,
+        field_name: &str,
+    ) -> Result<AnyValueRef, AnyValueRefError> {
+        let addr = obj.struct_addr()?;
+        let schema_id = unsafe { crate::any_value::struct_schema_id(addr as *const u8) };
+        let field_offset = {
+            let schemas = self.schemas.borrow();
+            let schema = schemas.get(schema_id);
+            schema
+                .fields
+                .iter()
+                .find(|field| field.name.as_deref() == Some(field_name))
+                .unwrap_or_else(|| {
+                    panic!("schema {} has no field named {}", schema.name, field_name)
+                })
+                .offset
+        };
+        self.read_struct_field_ref(obj, field_offset)
     }
 
     pub fn read_closure_capture_ref(

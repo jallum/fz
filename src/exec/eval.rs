@@ -216,6 +216,9 @@ impl CompileTimeEvaluator {
                     }));
                     self.globals.bind(&def.name, closure);
                 }
+                // `defstruct` declarations are schema metadata for lowering,
+                // not callable compile-time bindings.
+                Item::Struct(_) => continue,
                 // Modules should have been flattened by `resolve::flatten_modules`
                 // before reaching this point. If one slips through (e.g. a
                 // direct test caller), error loudly.
@@ -508,6 +511,7 @@ impl CompileTimeEvaluator {
                 }
                 Ok(Value::Map(Rc::new(out)))
             }
+            Expr::Struct { .. } => Err("struct eval requires IR runtime".into()),
             Expr::Index(target, key) => {
                 let tv = self.eval(target, env)?;
                 let kv = self.eval(key, env)?;

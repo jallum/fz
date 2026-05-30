@@ -24,6 +24,7 @@ pub enum Tok {
     Extern,
     Defmacro,
     Defmodule,
+    Defstruct,
     Defprotocol,
     Defimpl,
     Alias,
@@ -372,6 +373,7 @@ impl<'a> Lexer<'a> {
             "extern" => Tok::Extern,
             "defmacro" => Tok::Defmacro,
             "defmodule" => Tok::Defmodule,
+            "defstruct" => Tok::Defstruct,
             "defprotocol" => Tok::Defprotocol,
             "defimpl" => Tok::Defimpl,
             "alias" => Tok::Alias,
@@ -878,7 +880,10 @@ mod tests {
     #[test]
     fn lexes_range_and_step() {
         // `..` is its own token, distinct from `.` and `...`.
-        assert_eq!(toks_of("1..10"), vec![Tok::Int(1), Tok::DotDot, Tok::Int(10)]);
+        assert_eq!(
+            toks_of("1..10"),
+            vec![Tok::Int(1), Tok::DotDot, Tok::Int(10)]
+        );
         // `first..last//step` lexes as `..` then `//`.
         assert_eq!(
             toks_of("1..10//2"),
@@ -984,10 +989,16 @@ mod tests {
     fn adjacency_visible_for_call_and_access_heads() {
         // `foo(` — no space before `(` marks a call head; `foo (` has space.
         let call = spacing_of("foo(x)");
-        let lp = call.iter().position(|(t, _)| matches!(t, Tok::LParen)).unwrap();
+        let lp = call
+            .iter()
+            .position(|(t, _)| matches!(t, Tok::LParen))
+            .unwrap();
         assert!(!call[lp].1, "call-head `(` is adjacent to the identifier");
         let spaced = spacing_of("foo (x)");
-        let lp2 = spaced.iter().position(|(t, _)| matches!(t, Tok::LParen)).unwrap();
+        let lp2 = spaced
+            .iter()
+            .position(|(t, _)| matches!(t, Tok::LParen))
+            .unwrap();
         assert!(spaced[lp2].1, "spaced `(` is not a call head");
     }
 

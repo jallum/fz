@@ -87,6 +87,7 @@ pub struct LowerCtx {
     pub(super) external_stubs: HashMap<crate::modules::identity::ExportKey, FnId>,
     pub(super) protocol_callbacks: HashMap<(String, usize), ProtocolCallTarget>,
     pub(super) protocol_stubs: HashMap<(String, usize), FnId>,
+    pub(super) struct_schemas: std::collections::BTreeMap<String, Vec<String>>,
 }
 
 impl LowerCtx {
@@ -122,6 +123,7 @@ impl LowerCtx {
             external_stubs: HashMap::new(),
             protocol_callbacks: HashMap::new(),
             protocol_stubs: HashMap::new(),
+            struct_schemas: Default::default(),
         }
     }
 

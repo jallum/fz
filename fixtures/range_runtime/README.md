@@ -1,9 +1,10 @@
 ---
-purpose: "Range runtime constructor prints Elixir-style range literals"
+purpose: "defstruct-backed Range values print Elixir-style range literals"
 paths: [jit, interp, aot, repl]
 oracle: oracle.exs
 ---
 
-Exercises the runtime Range constructor exposed through `Kernel.range/3`.
-The oracle uses Elixir range literals so fixture output proves the rendered
-form, including explicit non-default steps, matches Elixir.
+Exercises `Range.new/3` and `Kernel.range/3`, both backed by the source
+`defstruct` surface. The oracle uses Elixir range literals so fixture output
+proves field access and rendering, including explicit non-default steps, match
+Elixir.

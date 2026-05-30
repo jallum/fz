@@ -27,6 +27,7 @@ pub(crate) struct CodegenEnv<'a> {
     pub(super) fn_ids: &'a HashMap<u32, FuncId>,
     pub(super) mid_flight_cont_tail_fn_ids: &'a HashMap<(u32, Vec<MidFlightArgShape>), FuncId>,
     pub(super) tuple_schema_ids: &'a HashMap<usize, u32>,
+    pub(super) named_schema_ids: &'a HashMap<String, u32>,
     /// Per-payload symbol cache. Below-threshold payloads carry only
     /// `bytes_id`; above-threshold payloads additionally carry a static
     /// `SharedBin` symbol in `.data`.

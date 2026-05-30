@@ -41,6 +41,9 @@ pub(crate) fn emit_aot_c_main<M: cranelift_module::Module>(
     reg_tuples_id: FuncId,
     tuple_arities_data: Option<DataId>,
     tuple_arities_len: u32,
+    reg_named_schemas_id: FuncId,
+    named_schemas_data: Option<DataId>,
+    named_schemas_len: u32,
     set_drain_id: FuncId,
     drain_dtor_entry_id: FuncId,
     set_resume_id: FuncId,
@@ -107,6 +110,21 @@ pub(crate) fn emit_aot_c_main<M: cranelift_module::Module>(
             b.ins().call(
                 reg_tuples_fref,
                 &[proc_v, tuple_arities_addr, tuple_arities_len_v],
+            );
+        }
+        {
+            let named_schemas_addr = match named_schemas_data {
+                Some(data_id) => {
+                    let gv = jmod.declare_data_in_func(data_id, b.func);
+                    b.ins().symbol_value(types::I64, gv)
+                }
+                None => b.ins().iconst(types::I64, 0),
+            };
+            let named_schemas_len_v = b.ins().iconst(types::I32, named_schemas_len as i64);
+            let reg_named_fref = jmod.declare_func_in_func(reg_named_schemas_id, b.func);
+            b.ins().call(
+                reg_named_fref,
+                &[proc_v, named_schemas_addr, named_schemas_len_v],
             );
         }
 

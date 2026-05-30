@@ -64,6 +64,11 @@ impl Parser {
                     let m = self.parse_module()?;
                     items.push(Rc::new(Item::Module(m)));
                 }
+                Tok::Defstruct => {
+                    flush_fn_groups(&mut items, &mut order, &mut groups);
+                    let s = self.parse_struct_def()?;
+                    items.push(Rc::new(Item::Struct(s)));
+                }
                 Tok::Defprotocol => {
                     flush_fn_groups(&mut items, &mut order, &mut groups);
                     let protocol = self.parse_protocol()?;
@@ -794,7 +799,7 @@ impl Parser {
         Ok(out)
     }
 
-    fn parse_upper_path(&mut self, context: &str) -> PR<(ModuleName, Span)> {
+    pub(super) fn parse_upper_path(&mut self, context: &str) -> PR<(ModuleName, Span)> {
         let span = self.cur_span();
         let mut path: Vec<String> = Vec::new();
         match self.bump() {
@@ -863,6 +868,37 @@ impl Parser {
             name_span,
             callbacks,
             attrs,
+            span: self.finish(start),
+        })
+    }
+
+    pub(super) fn parse_struct_def(&mut self) -> PR<StructDef> {
+        let start = self.cur_span();
+        self.expect(&Tok::Defstruct, "`defstruct`")?;
+        self.expect(&Tok::LBrack, "`[`")?;
+        let mut fields = Vec::new();
+        self.skip_newlines();
+        if !matches!(self.peek(), Tok::RBrack) {
+            loop {
+                let field = match self.bump() {
+                    Tok::Atom(name) | Tok::Ident(name) | Tok::KwKey(name) => name,
+                    other => {
+                        return self
+                            .err(format!("expected field atom in defstruct, got {:?}", other));
+                    }
+                };
+                fields.push(field);
+                self.skip_newlines();
+                if !self.eat(&Tok::Comma) {
+                    break;
+                }
+                self.skip_newlines();
+            }
+        }
+        self.expect(&Tok::RBrack, "`]`")?;
+        Ok(StructDef {
+            module: ModuleName::from_segments(vec!["__unresolved_struct__".to_string()]),
+            fields,
             span: self.finish(start),
         })
     }

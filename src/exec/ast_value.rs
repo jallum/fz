@@ -145,6 +145,7 @@ pub fn expr_to_value(e: &Spanned<Expr>) -> Result<Value, String> {
         | Expr::CaptureArg(_)
         | Expr::Map(_)
         | Expr::MapUpdate(_, _)
+        | Expr::Struct { .. }
         | Expr::Index(_, _)
         | Expr::Bitstring(_) => {
             return Err(format!(
@@ -440,6 +441,7 @@ mod tests {
                 _ => d.clauses[0].body.clone(),
             },
             Item::Module(_)
+            | Item::Struct(_)
             | Item::Protocol(_)
             | Item::ProtocolImpl(_)
             | Item::Alias { .. }

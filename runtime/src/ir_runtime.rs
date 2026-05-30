@@ -1431,6 +1431,18 @@ fn fz_map_get_value_ref(process: *mut Process, map: AnyValueRef, key: AnyValueRe
             .expect("resource integer payload ref")
             .raw_word();
     }
+    if map.tag() == ValueKind::STRUCT && key.tag() == ValueKind::ATOM {
+        let atom_id = key.load_atom().expect("struct field atom key");
+        let field_name = (unsafe { &*process })
+            .node
+            .atom_name(atom_id as u32)
+            .unwrap_or_else(|| panic!("unknown field atom id {}", atom_id));
+        return (unsafe { &mut *process })
+            .heap
+            .read_struct_named_field_ref(map, &field_name)
+            .expect("fz_map_get_ref struct field")
+            .raw_word();
+    }
     (unsafe { &mut *process })
         .heap
         .read_map_value_ref(map, key)
@@ -1454,6 +1466,19 @@ fn fz_map_get_scalar_key_ref(
         let _ = key;
         return AnyValueRef::from_scalar_slot(ValueKind::INT, rs.payload_slot())
             .expect("resource integer payload ref")
+            .raw_word();
+    }
+    if map.tag() == ValueKind::STRUCT
+        && let crate::any_value::AnyValue::Atom(atom_id) = key
+    {
+        let field_name = (unsafe { &*process })
+            .node
+            .atom_name(atom_id)
+            .unwrap_or_else(|| panic!("unknown field atom id {}", atom_id));
+        return (unsafe { &mut *process })
+            .heap
+            .read_struct_named_field_ref(map, &field_name)
+            .expect("fz_map_get scalar struct field")
             .raw_word();
     }
     (unsafe { &mut *process })
@@ -1759,28 +1784,6 @@ pub extern "C" fn fz_alloc_struct(process: *mut Process, schema_id: u32) -> u64 
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn fz_range_new(
-    process: *mut Process,
-    first_ref_word: u64,
-    last_ref_word: u64,
-    step_ref_word: u64,
-) -> u64 {
-    let first = any_value_ref_from_word(first_ref_word, "fz_range_new first")
-        .load_int()
-        .expect("fz_range_new first must be integer");
-    let last = any_value_ref_from_word(last_ref_word, "fz_range_new last")
-        .load_int()
-        .expect("fz_range_new last must be integer");
-    let step = any_value_ref_from_word(step_ref_word, "fz_range_new step")
-        .load_int()
-        .expect("fz_range_new step must be integer");
-    (unsafe { &mut *process })
-        .heap
-        .alloc_range(first, last, step)
-        .raw_word()
-}
-
-#[unsafe(no_mangle)]
 pub extern "C" fn fz_struct_get_field_ref(
     process: *mut Process,
     struct_ref_word: u64,
@@ -1791,6 +1794,27 @@ pub extern "C" fn fz_struct_get_field_ref(
         .heap
         .read_struct_field_ref(value, field_offset)
         .expect("fz_struct_get_field_ref")
+        .raw_word()
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_struct_get_named_field_ref(
+    process: *mut Process,
+    value_ref_word: u64,
+    field_atom_id: u64,
+) -> u64 {
+    let value_ref = any_value_ref_from_word(value_ref_word, "fz_struct_get_named_field_ref");
+    if value_ref.tag() == ValueKind::MAP {
+        return fz_map_get_atom_key_ref(process, value_ref_word, field_atom_id);
+    }
+    let field_name = (unsafe { &*process })
+        .node
+        .atom_name(field_atom_id as u32)
+        .unwrap_or_else(|| panic!("unknown field atom id {}", field_atom_id));
+    (unsafe { &mut *process })
+        .heap
+        .read_struct_named_field_ref(value_ref, &field_name)
+        .expect("fz_struct_get_named_field_ref")
         .raw_word()
 }
 
@@ -2447,10 +2471,14 @@ mod tests {
         panic!("stats key {name} not found");
     }
 
-    fn boxed_int(process: &mut Process, value: i64) -> u64 {
-        process
-            .heap
-            .box_any_value_ref(AnyValue::int(value))
+    fn range_ref(process: &mut Process, first: i64, last: i64, step: i64) -> u64 {
+        let schema_id = process.heap.register_schema(crate::heap::Schema::range());
+        let p = process.heap.alloc_struct(schema_id);
+        process.heap.write_field_slot(p, 0, AnyValue::int(first));
+        process.heap.write_field_slot(p, 8, AnyValue::int(last));
+        process.heap.write_field_slot(p, 16, AnyValue::int(step));
+        AnyValueRef::from_heap_object(ValueKind::STRUCT, p)
+            .expect("range ref")
             .raw_word()
     }
 
@@ -2459,24 +2487,9 @@ mod tests {
         with_process(|process| {
             let process_ptr = process as *mut Process;
 
-            let ascending = fz_range_new(
-                process_ptr,
-                boxed_int(process, 1),
-                boxed_int(process, 10),
-                boxed_int(process, 1),
-            );
-            let stepped = fz_range_new(
-                process_ptr,
-                boxed_int(process, 1),
-                boxed_int(process, 10),
-                boxed_int(process, 2),
-            );
-            let descending = fz_range_new(
-                process_ptr,
-                boxed_int(process, 10),
-                boxed_int(process, 1),
-                boxed_int(process, -1),
-            );
+            let ascending = range_ref(process, 1, 10, 1);
+            let stepped = range_ref(process, 1, 10, 2);
+            let descending = range_ref(process, 10, 1, -1);
 
             assert_eq!(
                 process.heap.schemas_registry().borrow().len(),
@@ -2511,24 +2524,9 @@ mod tests {
     fn range_equality_comes_from_struct_fields() {
         with_process(|process| {
             let process_ptr = process as *mut Process;
-            let a = fz_range_new(
-                process_ptr,
-                boxed_int(process, 1),
-                boxed_int(process, 3),
-                boxed_int(process, 1),
-            );
-            let b = fz_range_new(
-                process_ptr,
-                boxed_int(process, 1),
-                boxed_int(process, 3),
-                boxed_int(process, 1),
-            );
-            let c = fz_range_new(
-                process_ptr,
-                boxed_int(process, 1),
-                boxed_int(process, 3),
-                boxed_int(process, 2),
-            );
+            let a = range_ref(process, 1, 3, 1);
+            let b = range_ref(process, 1, 3, 1);
+            let c = range_ref(process, 1, 3, 2);
 
             assert_eq!(fz_value_eq_ref(process_ptr, a, b), 1);
             assert_eq!(fz_value_eq_ref(process_ptr, a, c), 0);

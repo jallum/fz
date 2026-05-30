@@ -101,7 +101,10 @@ pub(super) fn interp_map_get(
     key: AnyValue,
 ) -> Result<AnyValue, String> {
     let map_slot = map.value()?;
-    if map_slot.kind() != ValueKind::RESOURCE && !is_map_value(map_slot) {
+    if map_slot.kind() != ValueKind::RESOURCE
+        && map_slot.kind() != ValueKind::STRUCT
+        && !is_map_value(map_slot)
+    {
         return Ok(interp_nil_value());
     }
     with_value_ref(proc, map, "MapGet map", |map_ref| {
@@ -254,6 +257,31 @@ pub(super) fn eval_prim<T: Types<Ty = crate::types::Ty>>(
             }
             AnyValue::Ref(AnyValueRef::from_heap_object(ValueKind::STRUCT, p).expect("tuple ref"))
         }
+        Prim::MakeStruct {
+            module: module_name,
+            fields,
+        } => {
+            let schema = module
+                .struct_schemas
+                .get(module_name)
+                .cloned()
+                .ok_or_else(|| format!("MakeStruct: unknown struct `{}`", module_name))?;
+            let schema_id = unsafe { &mut *runtime.cur_proc() }.heap.register_schema(
+                fz_runtime::heap::Schema::named_struct(module_name.clone(), schema),
+            );
+            let p = unsafe { &mut *runtime.cur_proc() }
+                .heap
+                .alloc_struct(schema_id);
+            for (i, (_, v)) in fields.iter().enumerate() {
+                let val = env_get(env, *v)?;
+                unsafe { &mut *runtime.cur_proc() }.heap.write_field_slot(
+                    p,
+                    (i * 8) as u32,
+                    val.value()?,
+                );
+            }
+            AnyValue::Ref(AnyValueRef::from_heap_object(ValueKind::STRUCT, p).expect("struct ref"))
+        }
         Prim::DestTupleBegin { arity, .. } => {
             let schema_id = interp_tuple_schema_id(runtime, *arity);
             let p = unsafe { &mut *runtime.cur_proc() }
@@ -293,6 +321,37 @@ pub(super) fn eval_prim<T: Types<Ty = crate::types::Ty>>(
                 )
             })
             .and_then(|ref_word| interp_value_from_ref_word(ref_word, "TupleField"))?
+        }
+        Prim::StructField(c, field) => {
+            let cv = env_get(env, *c)?;
+            let slot = cv.value()?;
+            if slot.kind() == ValueKind::MAP {
+                let atom_id = module
+                    .atom_names
+                    .iter()
+                    .position(|name| name == field)
+                    .ok_or_else(|| format!("field atom `{}` not interned", field))?;
+                let map = cv.extern_arg_ref_word(runtime.cur_proc())?;
+                let out = fz_runtime::ir_runtime::fz_map_get_atom_key_ref(
+                    runtime.cur_proc(),
+                    map,
+                    atom_id as u64,
+                );
+                return interp_value_from_ref_word(out, "StructField");
+            }
+            if slot.kind() != ValueKind::STRUCT {
+                return Err("StructField: subject is not a map or Struct".to_string());
+            }
+            with_value_ref(runtime.cur_proc(), cv, "StructField", |struct_ref_word| {
+                let struct_ref = fz_runtime::any_value::AnyValueRef::from_raw_word(struct_ref_word)
+                    .expect("StructField ref");
+                unsafe { &*runtime.cur_proc() }
+                    .heap
+                    .read_struct_named_field_ref(struct_ref, field)
+                    .map(|value| value.raw_word())
+                    .map_err(|err| format!("{:?}", err))
+            })?
+            .and_then(|ref_word| interp_value_from_ref_word(ref_word, "StructField"))?
         }
         Prim::TypeTest(v, descr) => {
             let descr = crate::concrete_types::ty_descr(descr.as_ref());

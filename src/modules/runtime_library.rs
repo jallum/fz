@@ -40,6 +40,11 @@ const RUNTIME_MODULE_SOURCES: &[RuntimeModuleSource] = &[
         role: RuntimeModuleRole::CorePrelude,
     },
     RuntimeModuleSource {
+        name: "Range",
+        source: include_str!("runtime_library/range.fz"),
+        role: RuntimeModuleRole::CorePrelude,
+    },
+    RuntimeModuleSource {
         name: "Process",
         source: include_str!("runtime_library/process.fz"),
         role: RuntimeModuleRole::Library,
@@ -167,6 +172,7 @@ pub fn parsed_program() -> Program {
         protocol_registry: Default::default(),
         opaque_inners: Default::default(),
         brand_inners: Default::default(),
+        structs: Default::default(),
     }
 }
 
@@ -312,6 +318,7 @@ pub fn primitive_prelude_program() -> Program {
         protocol_registry: Default::default(),
         opaque_inners: Default::default(),
         brand_inners: Default::default(),
+        structs: Default::default(),
     }
 }
 
@@ -463,7 +470,6 @@ mod tests {
                 "fz_make_resource/2",
                 "fz_panic/1",
                 "fz_process_heap_alloc_stats/0",
-                "fz_range_new/3",
                 "fz_self/0",
                 "fz_send/2",
                 "fz_spawn/1",

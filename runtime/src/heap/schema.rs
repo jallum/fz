@@ -27,6 +27,8 @@ pub enum FieldKind {
 pub struct FieldDescriptor {
     pub offset: u32,
     pub kind: FieldKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -52,25 +54,38 @@ impl Schema {
                 .map(|i| FieldDescriptor {
                     offset: (i * 8) as u32,
                     kind: FieldKind::AnyValue,
+                    name: None,
                 })
                 .collect(),
         }
     }
 
+    pub fn named_struct(name: impl Into<String>, fields: impl IntoIterator<Item = String>) -> Self {
+        let fields = fields
+            .into_iter()
+            .enumerate()
+            .map(|(i, name)| FieldDescriptor {
+                offset: (i * 8) as u32,
+                kind: FieldKind::AnyValue,
+                name: Some(name),
+            })
+            .collect::<Vec<_>>();
+        Self {
+            name: name.into(),
+            size: (fields.len() * 8) as u32,
+            fields,
+        }
+    }
+
     /// Elixir-parity Range struct. It is a normal schema-backed Struct, not
-    /// a distinct heap tag. The fields are raw signed integers in order:
-    /// first, last, step.
+    /// a distinct heap tag. Its field layout comes from the source-level
+    /// `defstruct [:first, :last, :step]` declaration.
     pub fn range() -> Self {
         Self {
-            name: Self::RANGE_NAME.to_string(),
-            size: 24,
-            fields: [0, 8, 16]
-                .into_iter()
-                .map(|offset| FieldDescriptor {
-                    offset,
-                    kind: FieldKind::RawI64,
-                })
-                .collect(),
+            ..Self::named_struct(
+                Self::RANGE_NAME,
+                ["first".to_string(), "last".to_string(), "step".to_string()],
+            )
         }
     }
 
@@ -83,10 +98,12 @@ impl Schema {
         fields.push(FieldDescriptor {
             offset: 0,
             kind: FieldKind::RawBytes(8),
+            name: None,
         });
         fields.extend((0..captures).map(|i| FieldDescriptor {
             offset: 8 + (i * 8) as u32,
             kind: FieldKind::AnyValue,
+            name: None,
         }));
         Self {
             name: format!("ClosureEnv{}", captures),
@@ -150,6 +167,14 @@ impl SchemaRegistry {
     }
 
     pub fn register(&mut self, schema: Schema) -> u32 {
+        if let Some((id, _)) = self
+            .schemas
+            .iter()
+            .enumerate()
+            .find(|(_, existing)| existing.name == schema.name)
+        {
+            return id as u32;
+        }
         let id = self.schemas.len() as u32;
         self.schemas.push(schema);
         id

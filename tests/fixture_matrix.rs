@@ -337,10 +337,7 @@ fn static_tests() -> Vec<(&'static str, fn())> {
             "bsx_brand_blind_eq_emits_telemetry",
             bsx_brand_blind_eq_emits_telemetry,
         ),
-        (
-            "oracle_goldens_match_elixir",
-            oracle_goldens_match_elixir,
-        ),
+        ("oracle_goldens_match_elixir", oracle_goldens_match_elixir),
     ]
 }
 
@@ -3452,8 +3449,8 @@ fn opaque_reduce_join_preserves_closure_values_and_lazy_state_machine() {
         reduce_list_conts.join("\n\n")
     );
     assert!(
-        reduce_list_conts.iter().any(|f| f.contains("&fn25[]"))
-            && reduce_list_conts.iter().any(|f| f.contains("&fn26[]")),
+        reduce_list_conts.iter().any(|f| f.contains("&fn32[]"))
+            && reduce_list_conts.iter().any(|f| f.contains("&fn33[]")),
         "opaque reducer join currently specializes both joined zero-cap reducers without collapsing them into one static identity:\n{}",
         reduce_list_conts.join("\n\n")
     );

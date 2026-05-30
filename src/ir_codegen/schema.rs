@@ -25,11 +25,13 @@ pub(crate) fn build_frame_schema(name: &str, param_kinds: &[FieldKind]) -> Schem
     fields.push(FieldDescriptor {
         offset: 0,
         kind: FieldKind::AnyValue,
+        name: None,
     });
     for (i, k) in param_kinds.iter().enumerate() {
         fields.push(FieldDescriptor {
             offset: ((i + 1) * SLOT_BYTES as usize) as u32,
             kind: k.clone(),
+            name: None,
         });
     }
     Schema {

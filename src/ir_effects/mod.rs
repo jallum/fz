@@ -32,6 +32,7 @@ pub(crate) fn prim_effects(module: &Module, prim: &Prim) -> IrEffects {
             }
         }
         Prim::MakeTuple(_)
+        | Prim::MakeStruct { .. }
         | Prim::DestTupleBegin { .. }
         | Prim::DestTupleSet { .. }
         | Prim::DestFreeze { .. }
@@ -58,6 +59,7 @@ pub(crate) fn prim_effects(module: &Module, prim: &Prim) -> IrEffects {
         | Prim::ListTail(_)
         | Prim::IsEmptyList(_)
         | Prim::TupleField(_, _)
+        | Prim::StructField(_, _)
         | Prim::MapGet(_, _)
         | Prim::MatcherMapGet(_, _)
         | Prim::IsMatcherMapMiss(_)

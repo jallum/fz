@@ -42,7 +42,9 @@ pub fn fold_prim<T: Types<Ty = crate::types::Ty> + LiteralTypes>(
         Prim::BinOp(op, a, b) => fold_binop(t, *op, *a, *b, env, nominals),
         Prim::UnOp(op, v) => fold_unop(t, *op, *v, env),
         Prim::MakeTuple(vs) => fold_make_tuple(t, vs, env),
+        Prim::MakeStruct { .. } => None,
         Prim::TupleField(v, i) => fold_tuple_field(t, *v, *i as usize, env),
+        Prim::StructField(_, _) => None,
         Prim::TypeTest(v, descr) => fold_type_test(t, *v, descr, env),
         // List structural folding requires IR-walking (RED.3+); the type
         // lattice's `list_of(elem)` loses length info. `IsEmptyList` is the
@@ -513,7 +515,7 @@ fn match_pattern<T: Types + LiteralTypes>(
         List(_, _) => Match::Opaque,
         // Map and Bitstring patterns: defer to a per-row IR-walking fallback
         // (the matrix's `PerRow` decision) — for the reducer, treat as opaque.
-        Map(_) | Bitstring(_) => Match::Opaque,
+        Map(_) | Struct { .. } | Bitstring(_) => Match::Opaque,
         // fz-5vj — `^name` compares against an outer binding's runtime value.
         // The reducer doesn't see runtime values, so this is always Opaque.
         Pinned(_) => Match::Opaque,

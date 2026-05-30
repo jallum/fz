@@ -346,6 +346,7 @@ fn flatten_modules_with_options<T: crate::types::Types<Ty = crate::types::Ty>>(
     )?;
     let protocol_registry =
         collect_protocol_registry(t, &prog, &external_module_interfaces, &mut module_type_envs)?;
+    let mut structs = BTreeMap::new();
     let (root_aliases, root_imports) =
         collect_import_scope(&prog.items, &interface_table, &module_macros)?;
     for item in &prog.items {
@@ -382,10 +383,14 @@ fn flatten_modules_with_options<T: crate::types::Types<Ty = crate::types::Ty>>(
                 m,
                 None,
                 &mut out,
+                &mut structs,
                 &module_paths,
                 &interface_table,
                 &module_macros,
             )?,
+            Item::Struct(s) => {
+                structs.insert(s.module.clone(), s.fields.clone());
+            }
             Item::Alias { .. } | Item::Import { .. } => {}
             Item::MacroCall {
                 name,
@@ -436,6 +441,7 @@ fn flatten_modules_with_options<T: crate::types::Types<Ty = crate::types::Ty>>(
         protocol_registry,
         opaque_inners,
         brand_inners,
+        structs,
     })
 }
 
@@ -536,6 +542,11 @@ fn collect_top_level_qualified_calls(expr: &Spanned<Expr>, out: &mut Vec<ModuleN
             collect_top_level_qualified_calls(map, out);
             for (key, value) in pairs {
                 collect_top_level_qualified_calls(key, out);
+                collect_top_level_qualified_calls(value, out);
+            }
+        }
+        Expr::Struct { fields, .. } => {
+            for (_, value) in fields {
                 collect_top_level_qualified_calls(value, out);
             }
         }
@@ -1400,6 +1411,7 @@ fn flatten_module(
     m: &ModuleDef,
     parent_path: Option<&ModuleName>,
     out: &mut Vec<Rc<Item>>,
+    structs: &mut BTreeMap<ModuleName, Vec<String>>,
     module_paths: &HashSet<String>,
     module_interfaces: &InterfaceTable,
     module_macros: &ModuleMacroExports,
@@ -1486,6 +1498,7 @@ fn flatten_module(
                 }
             }
             Item::Module(_)
+            | Item::Struct(_)
             | Item::Protocol(_)
             | Item::ProtocolImpl(_)
             | Item::MacroCall { .. } => {}
@@ -1529,10 +1542,17 @@ fn flatten_module(
                     inner,
                     Some(&module_name),
                     out,
+                    structs,
                     module_paths,
                     module_interfaces,
                     module_macros,
                 )?;
+            }
+            Item::Struct(def) => {
+                let mut def = def.clone();
+                def.module = module_name.clone();
+                structs.insert(def.module.clone(), def.fields.clone());
+                out.push(Rc::new(Item::Struct(def)));
             }
             Item::Alias { .. } | Item::Import { .. } => {}
             Item::MacroCall {
@@ -1885,6 +1905,19 @@ fn rewrite_expr(
                     aliases,
                     imports,
                 );
+                rewrite_expr(
+                    v,
+                    module_path,
+                    siblings,
+                    intro,
+                    module_paths,
+                    aliases,
+                    imports,
+                );
+            }
+        }
+        Expr::Struct { fields, .. } => {
+            for (_, v) in fields {
                 rewrite_expr(
                     v,
                     module_path,

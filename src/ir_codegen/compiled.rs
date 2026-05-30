@@ -1464,6 +1464,9 @@ pub struct CompiledMetadata {
     /// symbol so `fz_aot_setup` re-registers the same `Tuple{N}` schemas in
     /// matching order.
     pub tuple_arities: Vec<u32>,
+    /// Named source `defstruct` schemas in registration order. AOT bakes
+    /// this into a data table so schema ids match the ids iconst'd into CLIF.
+    pub named_schemas: Vec<(String, Vec<String>)>,
     pub diagnostics: crate::diag::Diagnostics,
     /// FnId of fz user `main`, if present. AOT needs it to wire the C
     /// `main` shim; JIT keeps it as a convenience for the run path.

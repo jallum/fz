@@ -2,28 +2,28 @@ outcomes for fixtures/multi_clause/input.fz
 
 main[] demand=value:
   @0:168-179 Direct -> Folded(:zero)
-  @0:168-179 Direct -> Static(k_34#34 [:zero] demand=value)
+  @0:168-179 Direct -> Static(k_41#41 [:zero] demand=value)
 
-k_34[:zero] demand=value:
-  @0:164-180 Cont -> Static(k_35#35 [:zero] demand=value)
+k_41[:zero] demand=value:
+  @0:164-180 Cont -> Static(k_42#42 [:zero] demand=value)
   @0:164-180 Direct -> Static(Kernel.dbg#1 [:zero] demand=value)
 
-k_35[:zero] demand=value:
-  @0:187-198 Direct -> Static(k_36#36 [:positive] demand=value)
+k_42[:zero] demand=value:
+  @0:187-198 Direct -> Static(k_43#43 [:positive] demand=value)
 
-k_36[:positive] demand=value:
-  @0:183-199 Cont -> Static(k_37#37 [:positive] demand=value)
+k_43[:positive] demand=value:
+  @0:183-199 Cont -> Static(k_44#44 [:positive] demand=value)
   @0:183-199 Direct -> Static(Kernel.dbg#1 [:positive] demand=value)
 
-k_37[:positive] demand=value:
-  @0:206-218 Direct -> Static(k_38#38 [:negative] demand=value)
+k_44[:positive] demand=value:
+  @0:206-218 Direct -> Static(k_45#45 [:negative] demand=value)
 
-k_38[:negative] demand=value:
-  @0:202-219 Cont -> Static(k_39#39 [:negative] demand=value)
+k_45[:negative] demand=value:
+  @0:202-219 Cont -> Static(k_46#46 [:negative] demand=value)
   @0:202-219 Direct -> Static(Kernel.dbg#1 [:negative] demand=value)
 
-k_39[:negative] demand=value:
-  @0:226-233 Direct -> Static(k_40#40 [int] demand=value)
+k_46[:negative] demand=value:
+  @0:226-233 Direct -> Static(k_47#47 [int] demand=value)
 
-k_40[int] demand=value:
+k_47[int] demand=value:
   @0:222-234 Direct -> Static(Kernel.dbg#1 [int] demand=value)

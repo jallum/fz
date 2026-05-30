@@ -183,6 +183,36 @@ impl Parser {
                 self.expect(&Tok::RBrace, "`}`")?;
                 Pattern::Map(pairs)
             }
+            Tok::Percent => {
+                self.bump();
+                let (module, _) = self.parse_upper_path("struct pattern")?;
+                self.expect(&Tok::LBrace, "`{`")?;
+                let mut fields = Vec::new();
+                self.skip_newlines();
+                if !matches!(self.peek(), Tok::RBrace) {
+                    loop {
+                        let field = match self.bump() {
+                            Tok::KwKey(name) | Tok::Ident(name) | Tok::Atom(name) => name,
+                            other => {
+                                return self
+                                    .err(format!("expected struct field name, got {:?}", other));
+                            }
+                        };
+                        if !matches!(self.toks[self.pos - 1].tok, Tok::KwKey(_)) {
+                            self.expect(&Tok::FatArrow, "`=>`")?;
+                        }
+                        let value = self.parse_pattern()?;
+                        fields.push((field, value));
+                        self.skip_newlines();
+                        if !self.eat(&Tok::Comma) {
+                            break;
+                        }
+                        self.skip_newlines();
+                    }
+                }
+                self.expect(&Tok::RBrace, "`}`")?;
+                Pattern::Struct { module, fields }
+            }
             other => return self.err(format!("invalid pattern start {:?}", other)),
         };
         Ok(Spanned::new(node, self.finish(start)))

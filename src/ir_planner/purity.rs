@@ -52,6 +52,7 @@ pub fn prim_is_pure(p: &crate::fz_ir::Prim) -> Result<(), ImpureKind> {
         | ListTail(_)
         | IsEmptyList(_)
         | TupleField(_, _)
+        | StructField(_, _)
         | MapGet(_, _)
         | MatcherMapGet(_, _)
         | IsMatcherMapMiss(_)
@@ -62,6 +63,7 @@ pub fn prim_is_pure(p: &crate::fz_ir::Prim) -> Result<(), ImpureKind> {
         | Brand(_, _) => Ok(()),
 
         MakeTuple(_) => Err(ImpureKind::Allocates("MakeTuple")),
+        MakeStruct { .. } => Err(ImpureKind::Allocates("MakeStruct")),
         DestTupleBegin { .. } => Err(ImpureKind::Allocates("DestTupleBegin")),
         DestTupleSet { .. } => Err(ImpureKind::Allocates("DestTupleSet")),
         DestFreeze { .. } => Err(ImpureKind::Allocates("DestFreeze")),

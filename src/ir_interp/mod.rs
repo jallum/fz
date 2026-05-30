@@ -190,6 +190,7 @@ impl IrInterpRuntime {
                 .map(|i| FieldDescriptor {
                     offset: (i * 8) as u32,
                     kind: FieldKind::AnyValue,
+                    name: None,
                 })
                 .collect(),
         };

@@ -63,6 +63,11 @@ pub(crate) fn collect_bound_names_in_pattern(
                 collect_bound_names_in_pattern(&val.node, out);
             }
         }
+        Pattern::Struct { fields, .. } => {
+            for (_, val) in fields {
+                collect_bound_names_in_pattern(&val.node, out);
+            }
+        }
         Pattern::Bitstring(fields) => {
             for field in fields {
                 collect_bound_names_in_pattern(&field.value.node, out);
@@ -122,6 +127,11 @@ pub(crate) fn collect_pinned_names_in_pattern(pattern: &Pattern, out: &mut Vec<S
         Pattern::Map(entries) => {
             for (key, val) in entries {
                 collect_pinned_names_in_pattern(&key.node, out);
+                collect_pinned_names_in_pattern(&val.node, out);
+            }
+        }
+        Pattern::Struct { fields, .. } => {
+            for (_, val) in fields {
                 collect_pinned_names_in_pattern(&val.node, out);
             }
         }

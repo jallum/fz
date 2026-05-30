@@ -165,12 +165,12 @@ pub(crate) fn register_runtime_symbols(builder: &mut JITBuilder) {
         fz_runtime::ir_runtime::fz_alloc_struct as *const u8,
     );
     builder.symbol(
-        "fz_range_new",
-        fz_runtime::ir_runtime::fz_range_new as *const u8,
-    );
-    builder.symbol(
         "fz_struct_get_field_ref",
         fz_runtime::ir_runtime::fz_struct_get_field_ref as *const u8,
+    );
+    builder.symbol(
+        "fz_struct_get_named_field_ref",
+        fz_runtime::ir_runtime::fz_struct_get_named_field_ref as *const u8,
     );
     builder.symbol(
         "fz_struct_set_field_ref",
@@ -676,6 +676,17 @@ impl Backend for AotBackend {
             .map_err(|e| {
                 CodegenError::new(format!("declare fz_aot_register_tuple_schemas: {}", e))
             })?;
+        let reg_named_schemas_sig = sig1(&[types::I64, types::I64, types::I32], &[]);
+        let reg_named_schemas_id = self
+            .omod
+            .declare_function(
+                "fz_aot_register_named_schemas",
+                Linkage::Import,
+                &reg_named_schemas_sig,
+            )
+            .map_err(|e| {
+                CodegenError::new(format!("declare fz_aot_register_named_schemas: {}", e))
+            })?;
 
         let (tuple_arities_data, tuple_arities_len): (Option<DataId>, u32) =
             if meta.tuple_arities.is_empty() {
@@ -719,6 +730,33 @@ impl Backend for AotBackend {
                 .map_err(|e| CodegenError::new(format!("define atom blob: {}", e)))?;
             (Some(id), len)
         };
+        let (named_schemas_data, named_schemas_len): (Option<DataId>, u32) =
+            if meta.named_schemas.is_empty() {
+                (None, 0)
+            } else {
+                let mut bytes: Vec<u8> = Vec::new();
+                bytes.extend_from_slice(&(meta.named_schemas.len() as u32).to_ne_bytes());
+                for (name, fields) in &meta.named_schemas {
+                    bytes.extend_from_slice(&(name.len() as u32).to_ne_bytes());
+                    bytes.extend_from_slice(name.as_bytes());
+                    bytes.extend_from_slice(&(fields.len() as u32).to_ne_bytes());
+                    for field in fields {
+                        bytes.extend_from_slice(&(field.len() as u32).to_ne_bytes());
+                        bytes.extend_from_slice(field.as_bytes());
+                    }
+                }
+                let len = bytes.len() as u32;
+                let id = self
+                    .omod
+                    .declare_data("fz_aot_named_schemas", Linkage::Local, false, false)
+                    .map_err(|e| CodegenError::new(format!("declare named schemas: {}", e)))?;
+                let mut desc = DataDescription::new();
+                desc.define(bytes.into_boxed_slice());
+                self.omod
+                    .define_data(id, &desc)
+                    .map_err(|e| CodegenError::new(format!("define named schemas: {}", e)))?;
+                (Some(id), len)
+            };
 
         let mut c_main_sig = Signature::new(CallConv::SystemV);
         c_main_sig.params.push(AbiParam::new(types::I32));
@@ -746,6 +784,9 @@ impl Backend for AotBackend {
             reg_tuples_id,
             tuple_arities_data,
             tuple_arities_len,
+            reg_named_schemas_id,
+            named_schemas_data,
+            named_schemas_len,
             set_drain_id,
             meta.drain_dtor_entry_id,
             set_resume_id,

@@ -510,10 +510,12 @@ fn schema_registry_register_and_get() {
             FieldDescriptor {
                 offset: 0,
                 kind: FieldKind::AnyValue,
+                name: None,
             },
             FieldDescriptor {
                 offset: 8,
                 kind: FieldKind::AnyValue,
+                name: None,
             },
         ],
     });
@@ -1397,6 +1399,7 @@ fn alloc_large_struct_succeeds_and_grows_size_class() {
         fields.push(FieldDescriptor {
             offset: (i * 8) as u32,
             kind: FieldKind::AnyValue,
+            name: None,
         });
     }
     let id = reg.borrow_mut().register(Schema {
@@ -1747,10 +1750,12 @@ fn gc_handles_cycle_via_forwarding() {
             FieldDescriptor {
                 offset: 0,
                 kind: FieldKind::AnyValue,
+                name: None,
             },
             FieldDescriptor {
                 offset: 8,
                 kind: FieldKind::AnyValue,
+                name: None,
             },
         ],
     });
@@ -1967,10 +1972,12 @@ fn deep_copy_procbin_dedup_via_forwarding_map() {
             FieldDescriptor {
                 offset: 0,
                 kind: FieldKind::AnyValue,
+                name: None,
             },
             FieldDescriptor {
                 offset: 8,
                 kind: FieldKind::AnyValue,
+                name: None,
             },
         ],
     });
@@ -2142,6 +2149,7 @@ fn rooted_fragment_survives_gc() {
         fields.push(FieldDescriptor {
             offset: (i * 8) as u32,
             kind: FieldKind::AnyValue,
+            name: None,
         });
     }
     let id = reg.borrow_mut().register(Schema {
@@ -2188,6 +2196,7 @@ fn mixed_fragment_liveness() {
         fields.push(FieldDescriptor {
             offset: (i * 8) as u32,
             kind: FieldKind::AnyValue,
+            name: None,
         });
     }
     let id = reg.borrow_mut().register(Schema {
@@ -2210,10 +2219,12 @@ fn mixed_fragment_liveness() {
             FieldDescriptor {
                 offset: 0,
                 kind: FieldKind::AnyValue,
+                name: None,
             },
             FieldDescriptor {
                 offset: 8,
                 kind: FieldKind::AnyValue,
+                name: None,
             },
         ],
     });
@@ -2239,6 +2250,7 @@ fn fragment_to_fragment_edge_survives_gc() {
         fields.push(FieldDescriptor {
             offset: (i * 8) as u32,
             kind: FieldKind::AnyValue,
+            name: None,
         });
     }
     let id = reg.borrow_mut().register(Schema {
@@ -2269,6 +2281,7 @@ fn fragment_to_block_edge_promotes_block_object() {
         fields.push(FieldDescriptor {
             offset: (i * 8) as u32,
             kind: FieldKind::AnyValue,
+            name: None,
         });
     }
     let id = reg.borrow_mut().register(Schema {

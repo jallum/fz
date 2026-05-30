@@ -303,6 +303,7 @@ pub(crate) fn lower_expr(
             }
             Ok(ctx.let_(Prim::MakeTuple(vs)))
         }
+        Expr::Struct { module, fields } => lower_struct(ctx, module, fields, sp),
 
         Expr::Call(target, args) => {
             // Lower arg exprs first; park each so they survive subsequent splits.
@@ -701,6 +702,9 @@ pub(crate) fn lower_pattern_bind(
         Pattern::Tuple(elems) => match_tuple(ctx, subject, elems, fail_block),
         Pattern::List(elems, tail) => match_list(ctx, subject, elems, tail.as_deref(), fail_block),
         Pattern::Map(entries) => match_map(ctx, subject, entries, fail_block),
+        Pattern::Struct { module, fields } => {
+            match_struct(ctx, subject, module, fields, fail_block)
+        }
         Pattern::Bitstring(fields) => match_bitstring(ctx, subject, fields, fail_block),
     }
 }
@@ -780,6 +784,21 @@ pub(super) fn match_map(
         let cont_b = ctx.cur_mut().block(vec![]);
         ctx.set_if_term(is_nil, fail_block, cont_b);
         ctx.cur_block = Some(cont_b);
+        lower_pattern_bind(ctx, got, val_pat, fail_block)?;
+    }
+    Ok(())
+}
+
+pub(super) fn match_struct(
+    ctx: &mut LowerCtx,
+    subject: Var,
+    _module: &crate::modules::identity::ModuleName,
+    fields: &[(String, Spanned<Pattern>)],
+    fail_block: BlockId,
+) -> Result<(), LowerError> {
+    for (field, val_pat) in fields {
+        ctx.atoms.intern(field);
+        let got = ctx.let_(Prim::StructField(subject, field.clone()));
         lower_pattern_bind(ctx, got, val_pat, fail_block)?;
     }
     Ok(())
@@ -969,6 +988,38 @@ pub(super) fn lower_index(
     let m_resolved = ctx.unpark(&m_park);
     ctx.unbind(&m_park);
     Ok(ctx.let_(Prim::MapGet(m_resolved, kv)))
+}
+
+pub(super) fn lower_struct(
+    ctx: &mut LowerCtx,
+    module: &crate::modules::identity::ModuleName,
+    fields: &[(String, Spanned<Expr>)],
+    span: Span,
+) -> Result<Var, LowerError> {
+    let module_name = module.dotted();
+    let Some(order) = ctx.struct_schemas.get(&module_name).cloned() else {
+        return Err(LowerError::Unsupported {
+            span,
+            what: format!("unknown struct `{}`", module_name),
+        });
+    };
+    let by_name = fields
+        .iter()
+        .map(|(name, expr)| (name.clone(), expr))
+        .collect::<std::collections::HashMap<_, _>>();
+    let mut lowered = Vec::with_capacity(order.len());
+    for name in order {
+        let value = if let Some(expr) = by_name.get(&name) {
+            lower_expr(ctx, expr, false)?
+        } else {
+            ctx.let_(Prim::Const(Const::Nil))
+        };
+        lowered.push((name, value));
+    }
+    Ok(ctx.let_(Prim::MakeStruct {
+        module: module_name,
+        fields: lowered,
+    }))
 }
 
 pub(super) fn lower_bitstring_expr(

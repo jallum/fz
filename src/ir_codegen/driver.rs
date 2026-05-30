@@ -2049,8 +2049,21 @@ pub(crate) fn compile_with_backend_impl<
     let user_schemas = std::rc::Rc::new(std::cell::RefCell::new(
         fz_runtime::heap::SchemaRegistry::new(),
     ));
+    user_schemas.borrow_mut().closure_env(0);
     let (tuple_arities, tuple_schema_ids, bs_tuple_arity1_schema, bs_tuple_arity3_schema) =
         collect_tuple_arities_and_register_schemas(module, &user_schemas);
+    let named_schema_ids = {
+        let mut ids = HashMap::new();
+        let mut reg = user_schemas.borrow_mut();
+        for (name, fields) in &module.struct_schemas {
+            let id = reg.register(fz_runtime::heap::Schema::named_struct(
+                name.clone(),
+                fields.clone(),
+            ));
+            ids.insert(name.clone(), id);
+        }
+        ids
+    };
 
     // frame_sizes is computed after `schemas` is built (post-spec_registry).
 
@@ -2366,6 +2379,7 @@ pub(crate) fn compile_with_backend_impl<
             fn_ids: &fn_ids,
             mid_flight_cont_tail_fn_ids: &mid_flight_cont_tail_fn_ids,
             tuple_schema_ids: &tuple_schema_ids,
+            named_schema_ids: &named_schema_ids,
             bs_const_data: &bs_const_data,
             param_reprs: &param_reprs,
             return_reprs: &return_reprs,
@@ -2538,6 +2552,11 @@ pub(crate) fn compile_with_backend_impl<
         bs_tuple_arity1_schema,
         bs_tuple_arity3_schema,
         tuple_arities: tuple_arities.iter().map(|&a| a as u32).collect(),
+        named_schemas: module
+            .struct_schemas
+            .iter()
+            .map(|(name, fields)| (name.clone(), fields.clone()))
+            .collect(),
         diagnostics,
         main_fn_id,
         static_closure_targets,

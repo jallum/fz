@@ -146,6 +146,11 @@ pub(super) fn collect_expr_free_names(
                 collect_expr_free_names(&value.node, bound, free);
             }
         }
+        Expr::Struct { fields, .. } => {
+            for (_, value) in fields {
+                collect_expr_free_names(&value.node, bound, free);
+            }
+        }
         Expr::Index(base, key) => {
             collect_expr_free_names(&base.node, bound, free);
             collect_expr_free_names(&key.node, bound, free);
@@ -286,6 +291,11 @@ pub(super) fn collect_pattern_free_names(
                 collect_pattern_free_names(&value.node, bound, free);
             }
         }
+        Pattern::Struct { fields, .. } => {
+            for (_, value) in fields {
+                collect_pattern_free_names(&value.node, bound, free);
+            }
+        }
         Pattern::As(_, inner) => collect_pattern_free_names(&inner.node, bound, free),
         Pattern::Bitstring(fields) => {
             for field in fields {
@@ -364,6 +374,11 @@ pub(crate) fn collect_pattern_bound_names(p: &Pattern, out: &mut Vec<String>) {
                 collect_pattern_bound_names(&v.node, out);
             }
         }
+        Pattern::Struct { fields, .. } => {
+            for (_, v) in fields {
+                collect_pattern_bound_names(&v.node, out);
+            }
+        }
         Pattern::Bitstring(fields) => {
             for field in fields {
                 collect_pattern_bound_names(&field.value.node, out);
@@ -401,6 +416,11 @@ pub(crate) fn collect_pattern_pinned_names(p: &Pattern, out: &mut Vec<String>) {
         Pattern::Map(entries) => {
             for (k, v) in entries {
                 collect_pattern_pinned_names(&k.node, out);
+                collect_pattern_pinned_names(&v.node, out);
+            }
+        }
+        Pattern::Struct { fields, .. } => {
+            for (_, v) in fields {
                 collect_pattern_pinned_names(&v.node, out);
             }
         }

@@ -95,6 +95,7 @@ fn parse_runtime_prelude<T: crate::types::Types<Ty = crate::types::Ty>>(
         protocol_registry: Default::default(),
         opaque_inners: Default::default(),
         brand_inners: Default::default(),
+        structs: Default::default(),
     };
     let mut flat = crate::frontend::resolve::flatten_modules(t, staged)
         .expect("runtime.fz module flatten error (bug in built-in prelude)");
@@ -221,6 +222,11 @@ pub fn lower_program_full_with_telemetry<T: crate::types::Types<Ty = crate::type
     tel: &dyn crate::telemetry::Telemetry,
 ) -> Result<(Module, AtomTable), LowerError> {
     let mut ctx = LowerCtx::new();
+    ctx.struct_schemas.extend(
+        prog.structs
+            .iter()
+            .map(|(name, fields)| (name.dotted(), fields.clone())),
+    );
     ctx.register_external_interfaces(&prog.external_module_interfaces);
     ctx.register_protocol_registry(&prog.protocol_registry);
     ctx.register_interface_protocols(&prog.external_module_interfaces);
@@ -230,6 +236,12 @@ pub fn lower_program_full_with_telemetry<T: crate::types::Types<Ty = crate::type
     // Kernel) contribute the implementations those imports expose.
     let (prelude, prelude_imports) = parse_runtime_prelude(t);
     ctx.prelude_imports = prelude_imports;
+    ctx.struct_schemas.extend(
+        prelude
+            .structs
+            .iter()
+            .map(|(name, fields)| (name.dotted(), fields.clone())),
+    );
     ctx.register_external_interfaces(&prelude.external_module_interfaces);
     let prelude_type_env = prelude
         .module_type_envs
@@ -370,6 +382,7 @@ pub fn lower_program_full_with_telemetry<T: crate::types::Types<Ty = crate::type
                         .into(),
                 });
             }
+            Item::Struct(_) => {}
             Item::Alias { span, .. } | Item::Import { span, .. } => {
                 return Err(LowerError::Unsupported {
                     span: *span,
@@ -450,6 +463,7 @@ pub fn lower_program_full_with_telemetry<T: crate::types::Types<Ty = crate::type
     module.opaque_inners.extend(prelude.opaque_inners.clone());
     module.brand_inners = prog.brand_inners.clone();
     module.brand_inners.extend(prelude.brand_inners.clone());
+    module.struct_schemas = ctx.struct_schemas.clone();
     // fz-02r.4 — annotate TailCall back-edges from the structural SCC.
     annotate_back_edges(&mut module, &ctx.fn_spans)?;
     // fz-axu.24 (M3) — brand-mint visibility. Must run before erasure

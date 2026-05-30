@@ -196,6 +196,13 @@ pub(crate) fn subst_prim(p: &Prim, subst: &HashMap<Var, Var>) -> Prim {
         Prim::ListTail(a) => Prim::ListTail(sv(*a)),
         Prim::IsEmptyList(a) => Prim::IsEmptyList(sv(*a)),
         Prim::MakeTuple(args) => Prim::MakeTuple(args.iter().map(|x| sv(*x)).collect()),
+        Prim::MakeStruct { module, fields } => Prim::MakeStruct {
+            module: module.clone(),
+            fields: fields
+                .iter()
+                .map(|(name, v)| (name.clone(), sv(*v)))
+                .collect(),
+        },
         Prim::DestTupleBegin { token, arity } => Prim::DestTupleBegin {
             token: *token,
             arity: *arity,
@@ -234,6 +241,7 @@ pub(crate) fn subst_prim(p: &Prim, subst: &HashMap<Var, Var>) -> Prim {
             token: *token,
         },
         Prim::TupleField(a, i) => Prim::TupleField(sv(*a), *i),
+        Prim::StructField(a, name) => Prim::StructField(sv(*a), name.clone()),
         Prim::MakeList(els, tail) => {
             Prim::MakeList(els.iter().map(|x| sv(*x)).collect(), tail.map(sv))
         }

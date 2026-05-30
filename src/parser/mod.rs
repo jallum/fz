@@ -292,6 +292,7 @@ impl Parser {
             protocol_registry: Default::default(),
             opaque_inners: Default::default(),
             brand_inners: Default::default(),
+            structs: Default::default(),
         })
     }
 

@@ -174,6 +174,7 @@ fn max_var_in_prim(p: &Prim) -> u32 {
         Prim::Extern(_, args) => args.iter().for_each(|x| v(x.var)),
         Prim::ListHead(a) | Prim::ListTail(a) | Prim::IsEmptyList(a) => v(*a),
         Prim::MakeTuple(args) => args.iter().for_each(|x| v(*x)),
+        Prim::MakeStruct { fields, .. } => fields.iter().for_each(|(_, x)| v(*x)),
         Prim::DestTupleBegin { .. } => {}
         Prim::DestTupleSet { dest, value, .. } => {
             v(*dest);
@@ -188,7 +189,7 @@ fn max_var_in_prim(p: &Prim) -> u32 {
             }
         }
         Prim::DestListFreeze { list, .. } => v(*list),
-        Prim::TupleField(a, _) => v(*a),
+        Prim::TupleField(a, _) | Prim::StructField(a, _) => v(*a),
         Prim::MakeList(els, tail) => {
             els.iter().for_each(|x| v(*x));
             if let Some(t) = tail {
@@ -338,6 +339,13 @@ pub fn alpha_rename(callee: &FnIr, caller: &FnIr) -> FnIr {
             Prim::ListTail(a) => Prim::ListTail(sv(*a)),
             Prim::IsEmptyList(a) => Prim::IsEmptyList(sv(*a)),
             Prim::MakeTuple(args) => Prim::MakeTuple(args.iter().map(|x| sv(*x)).collect()),
+            Prim::MakeStruct { module, fields } => Prim::MakeStruct {
+                module: module.clone(),
+                fields: fields
+                    .iter()
+                    .map(|(name, v)| (name.clone(), sv(*v)))
+                    .collect(),
+            },
             Prim::DestTupleBegin { token, arity } => Prim::DestTupleBegin {
                 token: *token,
                 arity: *arity,
@@ -376,6 +384,7 @@ pub fn alpha_rename(callee: &FnIr, caller: &FnIr) -> FnIr {
                 token: *token,
             },
             Prim::TupleField(a, i) => Prim::TupleField(sv(*a), *i),
+            Prim::StructField(a, name) => Prim::StructField(sv(*a), name.clone()),
             Prim::MakeList(els, tail) => {
                 Prim::MakeList(els.iter().map(|x| sv(*x)).collect(), tail.map(sv))
             }

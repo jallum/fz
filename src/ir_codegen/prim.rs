@@ -296,6 +296,26 @@ pub(crate) fn lower_collection_prim<
             }
             LowerOut::ValueRef(p)
         }
+        Prim::MakeStruct { module, fields } => {
+            let schema_id = *env.named_schema_ids.get(module).ok_or_else(|| {
+                CodegenError::new(format!(
+                    "struct schema {} not pre-registered (compile() walk missed it?)",
+                    module
+                ))
+            })?;
+            let fref = body
+                .jmod
+                .declare_func_in_func(runtime.alloc_struct_id, body.b.func);
+            let sid = body.b.ins().iconst(types::I32, schema_id as i64);
+            let process = body.process_arg();
+            let inst = body.b.ins().call(fref, &[process, sid]);
+            let p = body.b.inst_results(inst)[0];
+            for (i, (_, field_var)) in fields.iter().enumerate() {
+                let value = binding_for_var(var_env, field_var.0);
+                body.struct_set_field(p, i, value);
+            }
+            LowerOut::ValueRef(p)
+        }
         Prim::DestTupleBegin { arity, .. } => {
             let schema_id = *tuple_schema_ids.get(arity).ok_or_else(|| {
                 CodegenError::new(format!(
@@ -376,6 +396,22 @@ pub(crate) fn lower_collection_prim<
                 .b
                 .ins()
                 .call(fref, &[process, struct_ref, field_offset]);
+            LowerOut::ValueRefWord(body.b.inst_results(inst)[0])
+        }
+        Prim::StructField(c, field) => {
+            let atom_id = env
+                .module
+                .atom_names
+                .iter()
+                .position(|name| name == field)
+                .ok_or_else(|| CodegenError::new(format!("field atom `{}` not interned", field)))?;
+            let fref = body
+                .jmod
+                .declare_func_in_func(runtime.struct_get_named_field_id, body.b.func);
+            let struct_ref = body.tagged_var(var_env, c.0);
+            let process = body.process_arg();
+            let atom = body.b.ins().iconst(types::I64, atom_id as i64);
+            let inst = body.b.ins().call(fref, &[process, struct_ref, atom]);
             LowerOut::ValueRefWord(body.b.inst_results(inst)[0])
         }
         Prim::MakeBitstring(fields) => {
@@ -991,9 +1027,6 @@ pub(crate) fn lower_prim<
             if decl.symbol == "fz_make_resource" && args.len() == 2 {
                 return lower_extern_fz_make_resource(body, var_env, &arg_vars);
             }
-            if decl.symbol == "fz_range_new" && args.len() == 3 {
-                return lower_extern_fz_range_new(body, var_env, &arg_vars);
-            }
             if decl.symbol == "fz_dbg_value" && args.len() == 1 {
                 return lower_extern_fz_dbg_value(body, var_env, &arg_vars, dest_var);
             }
@@ -1096,6 +1129,7 @@ pub(crate) fn lower_prim<
         | Prim::ListTail(..)
         | Prim::MakeList(..)
         | Prim::MakeTuple(..)
+        | Prim::MakeStruct { .. }
         | Prim::DestTupleBegin { .. }
         | Prim::DestTupleSet { .. }
         | Prim::DestFreeze { .. }
@@ -1103,6 +1137,7 @@ pub(crate) fn lower_prim<
         | Prim::DestListCons { .. }
         | Prim::DestListFreeze { .. }
         | Prim::TupleField(..)
+        | Prim::StructField(..)
         | Prim::MakeBitstring(..)
         | Prim::ConstBitstring(..)
         | Prim::BitReaderInit(..)
@@ -1768,25 +1803,6 @@ fn lower_extern_fz_dbg_value<M: cranelift_module::Module>(
         return Ok(LowerOut::Strict(CodegenValue::AnyRef(result)));
     }
     Ok(LowerOut::DeadUnit)
-}
-
-/// `fz_range_new(first, last, step)`: constructs the schema-backed Range
-/// struct. The runtime constructor needs the current Process and boxed integer
-/// refs so it can allocate on the process heap.
-fn lower_extern_fz_range_new<M: cranelift_module::Module>(
-    body: &mut CodegenFn<'_, '_, '_, M>,
-    var_env: &HashMap<u32, CodegenValue>,
-    args: &[crate::fz_ir::Var],
-) -> Result<LowerOut, CodegenError> {
-    let process = body.process_arg();
-    let mut call_args = Vec::with_capacity(4);
-    call_args.push(process);
-    for arg in args {
-        let binding = *var_env.get(&arg.0).expect("fz_range_new arg var");
-        body.push_binding_as_abi_arg(&mut call_args, binding, ArgRepr::ValueRef);
-    }
-    let inst = body.call_named("fz_range_new", &call_args);
-    Ok(LowerOut::ValueRefWord(body.b.inst_results(inst)[0]))
 }
 
 /// `fz_send(receiver, msg)`: marshals `msg` as a single ABI ValueRef arg and

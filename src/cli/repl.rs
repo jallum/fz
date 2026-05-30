@@ -861,6 +861,7 @@ fn load_items_filtered(
     for item in &prog.items {
         match &**item {
             Item::Module(_)
+            | Item::Struct(_)
             | Item::Protocol(_)
             | Item::ProtocolImpl(_)
             | Item::Alias { .. }

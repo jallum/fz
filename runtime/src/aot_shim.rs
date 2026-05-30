@@ -25,7 +25,7 @@
 //! the JIT's `run_until_idle` semantics.
 
 use crate::exec_ctx::ExecCtx;
-use crate::heap::SchemaRegistry;
+use crate::heap::{Schema, SchemaRegistry};
 use crate::process::{Process, ProcessState};
 use crate::timer::TimerWheel;
 use std::cell::RefCell;
@@ -139,6 +139,58 @@ fn parse_atom_blob(blob: *const u8) -> Vec<String> {
             Err(_) => out.push(String::new()),
         }
         cur = unsafe { cur.add(len + 1) };
+    }
+    out
+}
+
+fn parse_named_schema_blob(blob: *const u8, len: u32) -> Vec<(String, Vec<String>)> {
+    if blob.is_null() || len == 0 {
+        return Vec::new();
+    }
+    let bytes = unsafe { std::slice::from_raw_parts(blob, len as usize) };
+    let mut pos = 0usize;
+    fn read_u32(bytes: &[u8], pos: &mut usize) -> u32 {
+        let end = *pos + 4;
+        if end > bytes.len() {
+            eprintln!("parse_named_schema_blob: truncated u32");
+            std::process::abort();
+        }
+        let mut raw = [0u8; 4];
+        raw.copy_from_slice(&bytes[*pos..end]);
+        *pos = end;
+        u32::from_ne_bytes(raw)
+    }
+    fn read_string(bytes: &[u8], pos: &mut usize) -> String {
+        let len = read_u32(bytes, pos) as usize;
+        let end = *pos + len;
+        if end > bytes.len() {
+            eprintln!("parse_named_schema_blob: truncated string");
+            std::process::abort();
+        }
+        let s = std::str::from_utf8(&bytes[*pos..end])
+            .unwrap_or_else(|_| {
+                eprintln!("parse_named_schema_blob: invalid utf-8");
+                std::process::abort();
+            })
+            .to_string();
+        *pos = end;
+        s
+    }
+
+    let schema_count = read_u32(bytes, &mut pos);
+    let mut out = Vec::with_capacity(schema_count as usize);
+    for _ in 0..schema_count {
+        let name = read_string(bytes, &mut pos);
+        let field_count = read_u32(bytes, &mut pos);
+        let mut fields = Vec::with_capacity(field_count as usize);
+        for _ in 0..field_count {
+            fields.push(read_string(bytes, &mut pos));
+        }
+        out.push((name, fields));
+    }
+    if pos != bytes.len() {
+        eprintln!("parse_named_schema_blob: trailing bytes");
+        std::process::abort();
     }
     out
 }
@@ -267,8 +319,9 @@ extern "C" fn aot_make_resource_hook(
 
 /// fz-ul4.38 — register the program's tuple schemas with the AOT process,
 /// in the order baked into the `fz_aot_tuple_arities` data symbol. Codegen
-/// iterates arities in sorted order; this fn registers in that same order
-/// so the schema ids match what was iconst'd into the emitted CLIF.
+/// first registers `ClosureEnv0`, then iterates arities in sorted order; this
+/// fn registers in that same order so the schema ids match what was iconst'd
+/// into the emitted CLIF.
 ///
 /// `arities` may be null (no tuples in program); `len` is the element
 /// count (each element is a u32). When arities 1 and 3 are present, the
@@ -289,6 +342,7 @@ pub extern "C" fn fz_aot_register_tuple_schemas(proc: *mut Process, arities: *co
     // `sched_of` reads `proc.ctx`, which must not alias the live &mut below.
     let halt_cont_bodies = unsafe { (*sched_of(proc)).halt_cont_bodies };
     let process = unsafe { &mut *proc };
+    process.heap.closure_schema_id(0);
     if len > 0 {
         assert!(
             !arities.is_null(),
@@ -309,6 +363,27 @@ pub extern "C" fn fz_aot_register_tuple_schemas(proc: *mut Process, arities: *co
         }
     }
     process.init_halt_cont_singletons(halt_cont_bodies);
+}
+
+/// Register named source `defstruct` schemas with the AOT process in the
+/// deterministic order codegen used when baking schema ids into CLIF.
+///
+/// # Safety
+/// `proc` must be a process produced by `fz_aot_setup`. `blob` must point at
+/// `len` bytes emitted by AOT codegen when len > 0.
+#[unsafe(no_mangle)]
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
+pub extern "C" fn fz_aot_register_named_schemas(proc: *mut Process, blob: *const u8, len: u32) {
+    assert!(
+        !proc.is_null(),
+        "fz_aot_register_named_schemas: null process"
+    );
+    let process = unsafe { &mut *proc };
+    let registry = process.heap.schemas_registry();
+    let mut reg = registry.borrow_mut();
+    for (name, fields) in parse_named_schema_blob(blob, len) {
+        reg.register(Schema::named_struct(name, fields));
+    }
 }
 
 /// Register one static closure target. AOT codegen emits one call per

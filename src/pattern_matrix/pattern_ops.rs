@@ -101,6 +101,18 @@ pub(crate) fn append_pattern_ops(
             tests,
             bindings,
         )?,
+        Pattern::Struct { fields, .. } => {
+            for (_, value) in fields {
+                append_pattern_ops(
+                    &value.node,
+                    subject.clone(),
+                    pinned_by_name,
+                    prepared_keys,
+                    tests,
+                    bindings,
+                )?;
+            }
+        }
         Pattern::Bitstring(fields) => append_bitstring_pattern_ops(
             fields,
             subject,

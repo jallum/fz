@@ -22,6 +22,7 @@ Run with `BLESS=1` to rewrite after editing fixtures.
 | `concurrency_ping_pong/` | spawn + send + receive — parent blocks on receive, prints the message | jit, interp, aot, repl |
 | `cross_module_macro/` | defmacro in one module, called from another via `import Helpers, only: [twice: 1]` | jit, interp, aot, repl |
 | `curried_add/` | three-level currying — nested lambdas each capturing outer scope; exercises multi-depth closure allocation | jit, interp, aot, repl |
+| `defstruct_runtime/` | source defstruct construction and field access works for named structs | jit, interp, aot, repl |
 | `destructure_cons/` | refutable list-cons destructure on a statically-non-empty list — success-path parity for `[h | t] = xs` | jit, interp, aot, repl |
 | `destructure_mixed/` | nested destructure mixing tuple arity and list cons — `{[h | t], y} = make()` across all four legs | jit, interp, aot, repl |
 | `destructure_tuple/` | irrefutable tuple destructure in a let-style bind — first fixture to exercise `{a, b} = expr` across all four legs | jit, interp, aot, repl |
@@ -67,7 +68,7 @@ Run with `BLESS=1` to rewrite after editing fixtures.
 | `polymorphic/` | parametric `id` exercised over int, atom, and bool | jit, interp, aot, repl |
 | `process_heap_stats/` | Process.heap_alloc_stats/0 exposes deterministic current-process heap allocation counters as ordinary runtime output | jit, interp, aot, repl |
 | `quicksort/` | closing fixture of the destructure-up-through-quicksort arc — `{lo, hi} = partition(...)` on the hot path of a recursive sort | jit, interp, aot, repl |
-| `range_runtime/` | Range runtime constructor prints Elixir-style range literals | jit, interp, aot, repl |
+| `range_runtime/` | defstruct-backed Range values print Elixir-style range literals | jit, interp, aot, repl |
 | `receive_binary_pattern/` | receive with utf8 binary literals — locks SwitchKind::Binary three-path parity | jit, interp, aot, repl |
 | `receive_bitstring_matcher/` | receive matcher supports bitstring patterns without AST fallback | jit, interp, aot, repl |
 | `receive_float_pattern/` | receive with side-tagged float literals — locks SwitchKind::Float three-path parity | jit, interp, aot, repl |

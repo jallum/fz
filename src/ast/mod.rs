@@ -91,6 +91,11 @@ pub enum Expr {
     Map(Vec<(Spanned<Expr>, Spanned<Expr>)>),
     /// %{m | k => v, ...} — functional update; each key must already exist.
     MapUpdate(Box<Spanned<Expr>>, Vec<(Spanned<Expr>, Spanned<Expr>)>),
+    /// `%Mod{field: value, ...}` — named struct construction.
+    Struct {
+        module: ModuleName,
+        fields: Vec<(String, Spanned<Expr>)>,
+    },
     /// m[k] — bracket access; returns nil if key absent.
     Index(Box<Spanned<Expr>>, Box<Spanned<Expr>>),
 
@@ -254,6 +259,10 @@ pub enum Pattern {
     Tuple(Vec<Spanned<Pattern>>),
     List(Vec<Spanned<Pattern>>, Option<Box<Spanned<Pattern>>>), // [a, b | rest]
     Map(Vec<(Spanned<Pattern>, Spanned<Pattern>)>),
+    Struct {
+        module: ModuleName,
+        fields: Vec<(String, Spanned<Pattern>)>,
+    },
     /// fz-5vj — `^name` pinned variable. The matcher compares the
     /// scrutinee against the value bound to `name` in the enclosing
     /// scope (snapshotted at pattern-match time for `receive`).
@@ -457,6 +466,7 @@ pub enum Item {
     Module(ModuleDef),
     Protocol(ProtocolDef),
     ProtocolImpl(ProtocolImplDef),
+    Struct(StructDef),
     /// `alias A.B.C` (as_name = "C") or `alias A.B.C, as: D` (as_name = "D").
     /// Valid at root scope or inside a defmodule body. The resolver consumes
     /// aliases, so they don't survive into the flattened Program.
@@ -496,6 +506,14 @@ pub enum Item {
         parent_module: Option<String>,
         span: Span,
     },
+}
+
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+pub struct StructDef {
+    pub module: ModuleName,
+    pub fields: Vec<String>,
+    pub span: Span,
 }
 
 #[derive(Debug, Clone)]
@@ -589,6 +607,7 @@ pub struct Program {
     /// the right env. Top-level fns (outside any defmodule) use the
     /// empty env stored under "".
     pub module_type_envs: std::collections::HashMap<String, crate::type_expr::ModuleTypeEnv>,
+    pub structs: std::collections::BTreeMap<crate::modules::identity::ModuleName, Vec<String>>,
     /// Protocol declarations and implementations collected during module
     /// resolution while source-level protocol ASTs are still available.
     #[allow(dead_code)]
