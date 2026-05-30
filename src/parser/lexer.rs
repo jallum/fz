@@ -39,6 +39,8 @@ pub enum Tok {
     Quote,
     Unquote,
     Type,
+    In,  // membership operator: `x in xs`
+    Not, // boolean negation and `not in`
     // fz-5vj — selective `receive do … after … end` syntax. `Receive`
     // is contextual: bare `receive(...)` (postfix call) still parses
     // through Expr::Var until fz-recv.A2 drops the bare-call form.
@@ -89,6 +91,12 @@ pub enum Tok {
     OrOr,
     At,  // @ — for module attributes (@doc, @moduledoc)
     Amp, // & — for explicit function references (`&name/arity`, fz-swt.5)
+
+    PlusPlus,   // ++  list concatenation
+    MinusMinus, // --  list subtraction
+    Concat,     // <>  binary concatenation
+    DotDot,     // ..  range
+    SlashSlash, // //  range step (`first..last//step`)
 
     Newline,
     Eof,
@@ -373,6 +381,8 @@ impl<'a> Lexer<'a> {
             "quote" => Tok::Quote,
             "unquote" => Tok::Unquote,
             "type" => Tok::Type,
+            "in" => Tok::In,
+            "not" => Tok::Not,
             "true" => Tok::True,
             "false" => Tok::False,
             "nil" => Tok::Nil,
@@ -437,6 +447,11 @@ impl<'a> Lexer<'a> {
                 self.bump();
                 Tok::Ellipsis
             }
+            b'.' if self.peek(1) == Some(b'.') => {
+                self.bump();
+                self.bump();
+                Tok::DotDot
+            }
             b'.' => {
                 self.bump();
                 Tok::Dot
@@ -482,6 +497,11 @@ impl<'a> Lexer<'a> {
                     self.bump();
                     Tok::LtEq
                 }
+                Some(b'>') => {
+                    self.bump();
+                    self.bump();
+                    Tok::Concat
+                }
                 _ => {
                     self.bump();
                     Tok::Lt
@@ -508,6 +528,11 @@ impl<'a> Lexer<'a> {
                     self.bump();
                     self.bump();
                     Tok::Arrow
+                }
+                Some(b'-') => {
+                    self.bump();
+                    self.bump();
+                    Tok::MinusMinus
                 }
                 _ => {
                     self.bump();
@@ -573,18 +598,32 @@ impl<'a> Lexer<'a> {
                     Tok::Bang
                 }
             },
-            b'+' => {
-                self.bump();
-                Tok::Plus
-            }
+            b'+' => match self.peek(1) {
+                Some(b'+') => {
+                    self.bump();
+                    self.bump();
+                    Tok::PlusPlus
+                }
+                _ => {
+                    self.bump();
+                    Tok::Plus
+                }
+            },
             b'*' => {
                 self.bump();
                 Tok::Star
             }
-            b'/' => {
-                self.bump();
-                Tok::Slash
-            }
+            b'/' => match self.peek(1) {
+                Some(b'/') => {
+                    self.bump();
+                    self.bump();
+                    Tok::SlashSlash
+                }
+                _ => {
+                    self.bump();
+                    Tok::Slash
+                }
+            },
 
             b':' => match self.peek(1) {
                 Some(b':') => {
@@ -802,6 +841,82 @@ mod tests {
                 _ => panic!("expected Tok::Binary for {}", src),
             }
         }
+    }
+
+    // fz-g58.1.1 — Elixir-aligned operator tokens.
+
+    /// Collect the non-Eof token kinds for a source, for compact assertions.
+    fn toks_of(src: &str) -> Vec<Tok> {
+        Lexer::new(src)
+            .tokenize()
+            .expect("lex")
+            .into_iter()
+            .map(|t| t.tok)
+            .filter(|t| !matches!(t, Tok::Eof))
+            .collect()
+    }
+
+    #[test]
+    fn lexes_new_binary_operators() {
+        assert_eq!(toks_of("a ++ b"), vec![id("a"), Tok::PlusPlus, id("b")]);
+        assert_eq!(toks_of("a -- b"), vec![id("a"), Tok::MinusMinus, id("b")]);
+        assert_eq!(toks_of("a <> b"), vec![id("a"), Tok::Concat, id("b")]);
+    }
+
+    #[test]
+    fn lexes_range_and_step() {
+        // `..` is its own token, distinct from `.` and `...`.
+        assert_eq!(toks_of("1..10"), vec![Tok::Int(1), Tok::DotDot, Tok::Int(10)]);
+        // `first..last//step` lexes as `..` then `//`.
+        assert_eq!(
+            toks_of("1..10//2"),
+            vec![
+                Tok::Int(1),
+                Tok::DotDot,
+                Tok::Int(10),
+                Tok::SlashSlash,
+                Tok::Int(2)
+            ]
+        );
+    }
+
+    #[test]
+    fn dotdot_does_not_steal_from_ellipsis_or_float() {
+        // `...` stays a single Ellipsis (more specific arm wins).
+        assert_eq!(toks_of("..."), vec![Tok::Ellipsis]);
+        // A decimal point with a following digit is still a float.
+        assert_eq!(toks_of("1.5"), vec![Tok::Float(1.5)]);
+        // A range over floats: `1.0..2.0`.
+        assert_eq!(
+            toks_of("1.0..2.0"),
+            vec![Tok::Float(1.0), Tok::DotDot, Tok::Float(2.0)]
+        );
+    }
+
+    #[test]
+    fn concat_does_not_collide_with_bitstring_delimiters() {
+        // `<>` is concat; `<<` / `>>` remain bitstring delimiters.
+        assert_eq!(toks_of("<<>>"), vec![Tok::LBitstr, Tok::RBitstr]);
+        assert_eq!(toks_of("a <> b"), vec![id("a"), Tok::Concat, id("b")]);
+    }
+
+    #[test]
+    fn slashslash_distinct_from_slash() {
+        assert_eq!(toks_of("a / b"), vec![id("a"), Tok::Slash, id("b")]);
+        assert_eq!(toks_of("a // b"), vec![id("a"), Tok::SlashSlash, id("b")]);
+    }
+
+    #[test]
+    fn lexes_membership_keywords() {
+        assert_eq!(toks_of("x in xs"), vec![id("x"), Tok::In, id("xs")]);
+        assert_eq!(
+            toks_of("x not in xs"),
+            vec![id("x"), Tok::Not, Tok::In, id("xs")]
+        );
+    }
+
+    fn id(s: &str) -> Tok {
+        Tok::Ident(s.to_string())
     }
 
     #[test]
