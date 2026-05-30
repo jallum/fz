@@ -28,5 +28,6 @@ Read the one whose trigger matches what you are about to touch:
 - [set-theoretic-types](docs/set-theoretic-types.md) — the type lattice (`Descr` axes, union/intersect/neg, emptiness/disjointness), brands & opaques as nominal refinements, brand erasure, and the two-model rule: runtime equality/matching is brand-blind (`is_value_disjoint`) while typing/dispatch/boundary is brand-aware (`is_disjoint`).
 - [parser-syntax](docs/parser-syntax.md) — surface syntax in `src/parser`: `fn` / `fnp` items, keyword lists, or `do`-block sugar.
 - [range-as-struct](docs/range-as-struct.md) — how `first..last` / `..//` are represented: a schema-tagged struct (`first`/`last`/`step`), not a new heap tag; why; and the `..` desugar + `Enumerable` impl policy.
+- [charlist-divergence](docs/charlist-divergence.md) — why charlists are out of scope for fz-g58 (no `'...'`/`~c`, no charlist-only `List` fns), and the oracle-fixture rule: avoid all-printable integer lists (Elixir inspects them as `~c"..."`).
 - [telemetry](docs/telemetry.md) — adding compile-time telemetry, testing compiler decisions, or measuring performance work.
 - [runtime-telemetry](docs/runtime-telemetry.md) — runtime/scheduler telemetry events (`fz.runtime.process_exited`, `fz.runtime.dbg`), or observing a run in tests.
