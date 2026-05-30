@@ -45,6 +45,7 @@ Run with `BLESS=1` to rewrite after editing fixtures.
 | `import/` | selective import — `import Math, only: [add: 2]` | jit, interp, aot, repl |
 | `interp_only_main/` | tiny module with a single helper and a main — historical interp-tier-0 smoke test | jit, interp, aot, repl |
 | `keyword_lists/` | Elixir-style keyword lists lower to ordinary lists of atom/value tuples | jit, interp, aot, repl |
+| `lambda_sugars/` | capture shorthand and multi-clause anonymous fn desugar to ordinary lambda dispatch | jit, interp, aot, repl |
 | `list_primitives/` | list primitives from scratch — length / reverse / map / foldl exercising cons-pattern dispatch and first-class fns | jit, interp, aot, repl |
 | `macro_inc/` | defmacro + quote/unquote round-trip — two macros, one nested in the other | jit, interp, aot, repl |
 | `make_ref_distinct/` | fz-ht5 — make_ref() returns a distinct opaque ref on every call | jit, interp, aot, repl |

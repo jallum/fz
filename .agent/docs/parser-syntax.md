@@ -110,11 +110,11 @@ guard, `->`, then a body), so the two parsers stay in lockstep. The AST is
 `Expr::Lambda(Vec<LambdaClause>)`, each `LambdaClause` carrying `params`, an
 optional `guard`, a `body`, and its span.
 
-Only the *direct* clause — a single clause with no guard — lowers and evaluates
-today; `lambda_direct_clause` is the one predicate both the interpreter and IR
-lowering consult, so the two paths agree on what is runnable. Multi-clause and
-guarded lambdas parse but defer execution to the desugar in fz-g58.15 (Arc 3),
-where they become pattern-matrix lambdas.
+The macro/desugar pass rewrites guarded or multi-clause anonymous functions
+into a direct lambda whose body is a `case` over synthetic parameters. That
+keeps the runtime shape ordinary: the interpreter and IR lowering still execute
+only a direct lambda, and the `case` body reuses the existing PatternMatrix
+dispatch path.
 
 ## Captures
 
@@ -131,10 +131,11 @@ while `& 1` is not. `&(...)` parses its body as a fresh operand context, so the
 body's own `&N` placeholders and nested calls come along. The function-reference
 form (`&name/arity`, `&Mod.fun/n`, `&lib::extern/n`) is unchanged from fz-swt.5.
 
-`CaptureArg` and `Capture` parse but have no runtime meaning on their own: both
-desugar to a `Lambda` whose params are the placeholders in fz-g58.15 (Arc 3).
-Until then the interpreter and IR lowering reject them with a
-"requires desugaring (fz-g58.15)" error, in lockstep (three-path parity).
+`CaptureArg` and `Capture` have no runtime meaning on their own. The
+macro/desugar pass rewrites `&(... &N ...)` into an ordinary `Lambda` with
+synthetic parameters `1..N`, and rewrites placeholder leaves such as `&1` into
+the same one-argument identity-lambda shape. The interpreter and IR lowering
+still reject raw `Capture` / `CaptureArg` nodes if they ever survive desugaring.
 
 The unparenthesized capture-of-call form (`&Mod.fun(&1, &2)`) is NOT parsed:
 after `&name` the parser requires `/arity`. That form is out of scope for 2.6.

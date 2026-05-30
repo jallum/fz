@@ -418,6 +418,16 @@ pub fn expand_expr(
     macros: &std::collections::HashSet<String>,
     depth: usize,
 ) -> Result<(), Box<MacroError>> {
+    expand_expr_inner(e, interp, macros, depth, false)
+}
+
+fn expand_expr_inner(
+    e: &mut Spanned<Expr>,
+    interp: &CompileTimeEvaluator,
+    macros: &std::collections::HashSet<String>,
+    depth: usize,
+    in_capture: bool,
+) -> Result<(), Box<MacroError>> {
     if depth > MAX_EXPANSION_DEPTH {
         return Err(Box::new(MacroError::ExpansionLoop {
             span: e.span,
@@ -471,7 +481,7 @@ pub fn expand_expr(
         // "expanded from `Foo`, defined at <file>:<line>:<col>".
         stamp_expanded(&mut new_e, call_span, def_span);
         *e = new_e;
-        return expand_expr(e, interp, macros, depth + 1);
+        return expand_expr_inner(e, interp, macros, depth + 1, in_capture);
     }
 
     // Default: recurse into children.
@@ -486,47 +496,47 @@ pub fn expand_expr(
         | Expr::FnRef { .. }
         // fz-g58.2.6 — `&N` is a leaf; `&(...)` body is expanded below.
         | Expr::CaptureArg(_) => {}
-        Expr::Capture(body) => expand_expr(body, interp, macros, depth)?,
+        Expr::Capture(body) => expand_expr_inner(body, interp, macros, depth, true)?,
 
         Expr::List(xs, tail) => {
             for x in xs {
-                expand_expr(x, interp, macros, depth)?;
+                expand_expr_inner(x, interp, macros, depth, in_capture)?;
             }
             if let Some(t) = tail {
-                expand_expr(t, interp, macros, depth)?;
+                expand_expr_inner(t, interp, macros, depth, in_capture)?;
             }
         }
         Expr::Tuple(xs) | Expr::Block(xs) => {
             for x in xs {
-                expand_expr(x, interp, macros, depth)?;
+                expand_expr_inner(x, interp, macros, depth, in_capture)?;
             }
         }
         Expr::Bitstring(fields) => {
             for f in fields {
-                expand_expr(&mut f.value, interp, macros, depth)?;
+                expand_expr_inner(&mut f.value, interp, macros, depth, in_capture)?;
             }
         }
         Expr::Map(pairs) => {
             for (k, v) in pairs {
-                expand_expr(k, interp, macros, depth)?;
-                expand_expr(v, interp, macros, depth)?;
+                expand_expr_inner(k, interp, macros, depth, in_capture)?;
+                expand_expr_inner(v, interp, macros, depth, in_capture)?;
             }
         }
         Expr::MapUpdate(m, pairs) => {
-            expand_expr(m, interp, macros, depth)?;
+            expand_expr_inner(m, interp, macros, depth, in_capture)?;
             for (k, v) in pairs {
-                expand_expr(k, interp, macros, depth)?;
-                expand_expr(v, interp, macros, depth)?;
+                expand_expr_inner(k, interp, macros, depth, in_capture)?;
+                expand_expr_inner(v, interp, macros, depth, in_capture)?;
             }
         }
         Expr::Index(o, i) => {
-            expand_expr(o, interp, macros, depth)?;
-            expand_expr(i, interp, macros, depth)?;
+            expand_expr_inner(o, interp, macros, depth, in_capture)?;
+            expand_expr_inner(i, interp, macros, depth, in_capture)?;
         }
         Expr::Call(callee, args) => {
-            expand_expr(callee, interp, macros, depth)?;
+            expand_expr_inner(callee, interp, macros, depth, in_capture)?;
             for a in args.iter_mut() {
-                expand_expr(a, interp, macros, depth)?;
+                expand_expr_inner(a, interp, macros, depth, in_capture)?;
             }
             if let Expr::BinOp(BinOp::Pipe, lhs, rhs) = &callee.node {
                 let mut new_args = Vec::with_capacity(args.len() + 1);
@@ -536,8 +546,8 @@ pub fn expand_expr(
             }
         }
         Expr::BinOp(op, l, r) => {
-            expand_expr(l, interp, macros, depth)?;
-            expand_expr(r, interp, macros, depth)?;
+            expand_expr_inner(l, interp, macros, depth, in_capture)?;
+            expand_expr_inner(r, interp, macros, depth, in_capture)?;
             if *op == BinOp::Pipe {
                 let lhs = (**l).clone();
                 match &mut r.node {
@@ -555,53 +565,59 @@ pub fn expand_expr(
                 }
             }
         }
-        Expr::UnOp(_, x) | Expr::Ascribe(x, _) => expand_expr(x, interp, macros, depth)?,
+        Expr::UnOp(_, x) | Expr::Ascribe(x, _) => {
+            expand_expr_inner(x, interp, macros, depth, in_capture)?
+        }
         Expr::If(c, t, els) => {
-            expand_expr(c, interp, macros, depth)?;
-            expand_expr(t, interp, macros, depth)?;
+            expand_expr_inner(c, interp, macros, depth, in_capture)?;
+            expand_expr_inner(t, interp, macros, depth, in_capture)?;
             if let Some(e) = els {
-                expand_expr(e, interp, macros, depth)?;
+                expand_expr_inner(e, interp, macros, depth, in_capture)?;
             }
         }
         Expr::Case(scr, arms) => {
             if let Some(scr) = scr {
-                expand_expr(scr, interp, macros, depth)?;
+                expand_expr_inner(scr, interp, macros, depth, in_capture)?;
             }
             for arm in arms {
-                expand_expr(&mut arm.body, interp, macros, depth)?;
+                expand_expr_inner(&mut arm.body, interp, macros, depth, in_capture)?;
                 if let Some(g) = &mut arm.guard {
-                    expand_expr(g, interp, macros, depth)?;
+                    expand_expr_inner(g, interp, macros, depth, in_capture)?;
                 }
             }
         }
         Expr::Cond(pairs) => {
             for (c, b) in pairs {
-                expand_expr(c, interp, macros, depth)?;
-                expand_expr(b, interp, macros, depth)?;
+                expand_expr_inner(c, interp, macros, depth, in_capture)?;
+                expand_expr_inner(b, interp, macros, depth, in_capture)?;
             }
         }
         Expr::With(bindings, body, else_clauses) => {
             for b in bindings {
                 match b {
-                    WithBinding::Match(_, e) => expand_expr(e, interp, macros, depth)?,
-                    WithBinding::Bare(e) => expand_expr(e, interp, macros, depth)?,
+                    WithBinding::Match(_, e) => {
+                        expand_expr_inner(e, interp, macros, depth, in_capture)?
+                    }
+                    WithBinding::Bare(e) => {
+                        expand_expr_inner(e, interp, macros, depth, in_capture)?
+                    }
                 }
             }
-            expand_expr(body, interp, macros, depth)?;
+            expand_expr_inner(body, interp, macros, depth, in_capture)?;
             for arm in else_clauses {
-                expand_expr(&mut arm.body, interp, macros, depth)?;
+                expand_expr_inner(&mut arm.body, interp, macros, depth, in_capture)?;
                 if let Some(g) = &mut arm.guard {
-                    expand_expr(g, interp, macros, depth)?;
+                    expand_expr_inner(g, interp, macros, depth, in_capture)?;
                 }
             }
         }
-        Expr::Match(_, rhs) => expand_expr(rhs, interp, macros, depth)?,
+        Expr::Match(_, rhs) => expand_expr_inner(rhs, interp, macros, depth, in_capture)?,
         Expr::Lambda(clauses) => {
             for clause in clauses.iter_mut() {
                 if let Some(guard) = &mut clause.guard {
-                    expand_expr(guard, interp, macros, depth)?;
+                    expand_expr_inner(guard, interp, macros, depth, in_capture)?;
                 }
-                expand_expr(&mut clause.body, interp, macros, depth)?;
+                expand_expr_inner(&mut clause.body, interp, macros, depth, in_capture)?;
             }
         }
         // fz-5vj — recurse into receive clauses' bodies/guards and the
@@ -609,20 +625,369 @@ pub fn expand_expr(
         // (no macro-call positions inside patterns).
         Expr::Receive { clauses, after } => {
             for arm in clauses {
-                expand_expr(&mut arm.body, interp, macros, depth)?;
+                expand_expr_inner(&mut arm.body, interp, macros, depth, in_capture)?;
                 if let Some(g) = &mut arm.guard {
-                    expand_expr(g, interp, macros, depth)?;
+                    expand_expr_inner(g, interp, macros, depth, in_capture)?;
                 }
             }
             if let Some(af) = after {
-                expand_expr(&mut af.timeout, interp, macros, depth)?;
-                expand_expr(&mut af.body, interp, macros, depth)?;
+                expand_expr_inner(&mut af.timeout, interp, macros, depth, in_capture)?;
+                expand_expr_inner(&mut af.body, interp, macros, depth, in_capture)?;
             }
         }
 
         Expr::Quote(_) | Expr::Unquote(_) => {}
     }
+    desugar_lambda_sugars(e, in_capture);
     Ok(())
+}
+
+fn desugar_lambda_sugars(e: &mut Spanned<Expr>, in_capture: bool) {
+    match &mut e.node {
+        Expr::CaptureArg(n) if !in_capture => {
+            let name = capture_arg_name(*n);
+            e.node = capture_lambda(*n, Spanned::new(Expr::Var(name), e.span), e.span);
+        }
+        Expr::Capture(body) => {
+            let arity = max_capture_arg(body).unwrap_or(0);
+            replace_capture_args(body);
+            e.node = capture_lambda(arity, (**body).clone(), e.span);
+        }
+        Expr::Lambda(clauses) if crate::ast::lambda_direct_clause(clauses).is_none() => {
+            if let Some(rewritten) = desugar_multi_clause_lambda(clauses, e.span) {
+                e.node = rewritten;
+            }
+        }
+        _ => {}
+    }
+}
+
+fn capture_lambda(arity: usize, body: Spanned<Expr>, span: Span) -> Expr {
+    let params = (1..=arity)
+        .map(|n| Spanned::new(Pattern::Var(capture_arg_name(n)), span))
+        .collect();
+    Expr::Lambda(vec![LambdaClause {
+        params,
+        guard: None,
+        body,
+        span,
+    }])
+}
+
+fn capture_arg_name(n: usize) -> String {
+    format!("__fz_capture_arg_{}", n)
+}
+
+fn max_capture_arg(e: &Spanned<Expr>) -> Option<usize> {
+    let mut max = None;
+    visit_expr(e, &mut |expr| {
+        if let Expr::CaptureArg(n) = expr {
+            max = Some(max.map_or(*n, |m: usize| m.max(*n)));
+        }
+    });
+    max
+}
+
+fn replace_capture_args(e: &mut Spanned<Expr>) {
+    visit_expr_mut(e, &mut |expr, _span| {
+        if let Expr::CaptureArg(n) = expr {
+            *expr = Expr::Var(capture_arg_name(*n));
+        }
+    });
+}
+
+fn desugar_multi_clause_lambda(clauses: &[LambdaClause], span: Span) -> Option<Expr> {
+    let arity = clauses.first()?.params.len();
+    if clauses.iter().any(|clause| clause.params.len() != arity) {
+        return None;
+    }
+
+    let params: Vec<Spanned<Pattern>> = (0..arity)
+        .map(|i| Spanned::new(Pattern::Var(lambda_arg_name(i)), span))
+        .collect();
+    let subject = lambda_case_subject(arity, span);
+    let arms = clauses
+        .iter()
+        .map(|clause| MatchClause {
+            pattern: lambda_clause_pattern(&clause.params, span),
+            guard: clause.guard.clone(),
+            body: clause.body.clone(),
+            span: clause.span,
+        })
+        .collect();
+
+    Some(Expr::Lambda(vec![LambdaClause {
+        params,
+        guard: None,
+        body: Spanned::new(Expr::Case(Some(Box::new(subject)), arms), span),
+        span,
+    }]))
+}
+
+fn lambda_arg_name(i: usize) -> String {
+    format!("__fz_lambda_arg_{}", i)
+}
+
+fn lambda_case_subject(arity: usize, span: Span) -> Spanned<Expr> {
+    if arity == 1 {
+        Spanned::new(Expr::Var(lambda_arg_name(0)), span)
+    } else {
+        Spanned::new(
+            Expr::Tuple(
+                (0..arity)
+                    .map(|i| Spanned::new(Expr::Var(lambda_arg_name(i)), span))
+                    .collect(),
+            ),
+            span,
+        )
+    }
+}
+
+fn lambda_clause_pattern(params: &[Spanned<Pattern>], span: Span) -> Spanned<Pattern> {
+    if params.len() == 1 {
+        params[0].clone()
+    } else {
+        Spanned::new(Pattern::Tuple(params.to_vec()), span)
+    }
+}
+
+fn visit_expr(e: &Spanned<Expr>, f: &mut impl FnMut(&Expr)) {
+    f(&e.node);
+    match &e.node {
+        Expr::Capture(body) => visit_expr(body, f),
+        Expr::List(xs, tail) => {
+            for x in xs {
+                visit_expr(x, f);
+            }
+            if let Some(t) = tail {
+                visit_expr(t, f);
+            }
+        }
+        Expr::Tuple(xs) | Expr::Block(xs) => {
+            for x in xs {
+                visit_expr(x, f);
+            }
+        }
+        Expr::Bitstring(fields) => {
+            for field in fields {
+                visit_expr(&field.value, f);
+            }
+        }
+        Expr::Map(pairs) => {
+            for (k, v) in pairs {
+                visit_expr(k, f);
+                visit_expr(v, f);
+            }
+        }
+        Expr::MapUpdate(base, pairs) => {
+            visit_expr(base, f);
+            for (k, v) in pairs {
+                visit_expr(k, f);
+                visit_expr(v, f);
+            }
+        }
+        Expr::Index(base, key) | Expr::BinOp(_, base, key) => {
+            visit_expr(base, f);
+            visit_expr(key, f);
+        }
+        Expr::Call(callee, args) => {
+            visit_expr(callee, f);
+            for arg in args {
+                visit_expr(arg, f);
+            }
+        }
+        Expr::UnOp(_, inner) | Expr::Ascribe(inner, _) => visit_expr(inner, f),
+        Expr::If(c, t, els) => {
+            visit_expr(c, f);
+            visit_expr(t, f);
+            if let Some(e) = els {
+                visit_expr(e, f);
+            }
+        }
+        Expr::Case(subject, arms) => {
+            if let Some(subject) = subject {
+                visit_expr(subject, f);
+            }
+            for arm in arms {
+                if let Some(g) = &arm.guard {
+                    visit_expr(g, f);
+                }
+                visit_expr(&arm.body, f);
+            }
+        }
+        Expr::Cond(pairs) => {
+            for (c, b) in pairs {
+                visit_expr(c, f);
+                visit_expr(b, f);
+            }
+        }
+        Expr::With(bindings, body, else_clauses) => {
+            for binding in bindings {
+                match binding {
+                    WithBinding::Match(_, expr) | WithBinding::Bare(expr) => visit_expr(expr, f),
+                }
+            }
+            visit_expr(body, f);
+            for arm in else_clauses {
+                if let Some(g) = &arm.guard {
+                    visit_expr(g, f);
+                }
+                visit_expr(&arm.body, f);
+            }
+        }
+        Expr::Match(_, rhs) => visit_expr(rhs, f),
+        Expr::Lambda(clauses) => {
+            for clause in clauses {
+                if let Some(g) = &clause.guard {
+                    visit_expr(g, f);
+                }
+                visit_expr(&clause.body, f);
+            }
+        }
+        Expr::Receive { clauses, after } => {
+            for arm in clauses {
+                if let Some(g) = &arm.guard {
+                    visit_expr(g, f);
+                }
+                visit_expr(&arm.body, f);
+            }
+            if let Some(after) = after {
+                visit_expr(&after.timeout, f);
+                visit_expr(&after.body, f);
+            }
+        }
+        Expr::Quote(inner) | Expr::Unquote(inner) => visit_expr(inner, f),
+        Expr::Int(_)
+        | Expr::Float(_)
+        | Expr::Binary(_)
+        | Expr::Atom(_)
+        | Expr::Bool(_)
+        | Expr::Nil
+        | Expr::Var(_)
+        | Expr::FnRef { .. }
+        | Expr::CaptureArg(_) => {}
+    }
+}
+
+fn visit_expr_mut(e: &mut Spanned<Expr>, f: &mut impl FnMut(&mut Expr, Span)) {
+    let span = e.span;
+    f(&mut e.node, span);
+    match &mut e.node {
+        Expr::Capture(body) => visit_expr_mut(body, f),
+        Expr::List(xs, tail) => {
+            for x in xs {
+                visit_expr_mut(x, f);
+            }
+            if let Some(t) = tail {
+                visit_expr_mut(t, f);
+            }
+        }
+        Expr::Tuple(xs) | Expr::Block(xs) => {
+            for x in xs {
+                visit_expr_mut(x, f);
+            }
+        }
+        Expr::Bitstring(fields) => {
+            for field in fields {
+                visit_expr_mut(&mut field.value, f);
+            }
+        }
+        Expr::Map(pairs) => {
+            for (k, v) in pairs {
+                visit_expr_mut(k, f);
+                visit_expr_mut(v, f);
+            }
+        }
+        Expr::MapUpdate(base, pairs) => {
+            visit_expr_mut(base, f);
+            for (k, v) in pairs {
+                visit_expr_mut(k, f);
+                visit_expr_mut(v, f);
+            }
+        }
+        Expr::Index(base, key) | Expr::BinOp(_, base, key) => {
+            visit_expr_mut(base, f);
+            visit_expr_mut(key, f);
+        }
+        Expr::Call(callee, args) => {
+            visit_expr_mut(callee, f);
+            for arg in args {
+                visit_expr_mut(arg, f);
+            }
+        }
+        Expr::UnOp(_, inner) | Expr::Ascribe(inner, _) => visit_expr_mut(inner, f),
+        Expr::If(c, t, els) => {
+            visit_expr_mut(c, f);
+            visit_expr_mut(t, f);
+            if let Some(e) = els {
+                visit_expr_mut(e, f);
+            }
+        }
+        Expr::Case(subject, arms) => {
+            if let Some(subject) = subject {
+                visit_expr_mut(subject, f);
+            }
+            for arm in arms {
+                if let Some(g) = &mut arm.guard {
+                    visit_expr_mut(g, f);
+                }
+                visit_expr_mut(&mut arm.body, f);
+            }
+        }
+        Expr::Cond(pairs) => {
+            for (c, b) in pairs {
+                visit_expr_mut(c, f);
+                visit_expr_mut(b, f);
+            }
+        }
+        Expr::With(bindings, body, else_clauses) => {
+            for binding in bindings {
+                match binding {
+                    WithBinding::Match(_, expr) | WithBinding::Bare(expr) => {
+                        visit_expr_mut(expr, f)
+                    }
+                }
+            }
+            visit_expr_mut(body, f);
+            for arm in else_clauses {
+                if let Some(g) = &mut arm.guard {
+                    visit_expr_mut(g, f);
+                }
+                visit_expr_mut(&mut arm.body, f);
+            }
+        }
+        Expr::Match(_, rhs) => visit_expr_mut(rhs, f),
+        Expr::Lambda(clauses) => {
+            for clause in clauses {
+                if let Some(g) = &mut clause.guard {
+                    visit_expr_mut(g, f);
+                }
+                visit_expr_mut(&mut clause.body, f);
+            }
+        }
+        Expr::Receive { clauses, after } => {
+            for arm in clauses {
+                if let Some(g) = &mut arm.guard {
+                    visit_expr_mut(g, f);
+                }
+                visit_expr_mut(&mut arm.body, f);
+            }
+            if let Some(after) = after {
+                visit_expr_mut(&mut after.timeout, f);
+                visit_expr_mut(&mut after.body, f);
+            }
+        }
+        Expr::Quote(inner) | Expr::Unquote(inner) => visit_expr_mut(inner, f),
+        Expr::Int(_)
+        | Expr::Float(_)
+        | Expr::Binary(_)
+        | Expr::Atom(_)
+        | Expr::Bool(_)
+        | Expr::Nil
+        | Expr::Var(_)
+        | Expr::FnRef { .. }
+        | Expr::CaptureArg(_) => {}
+    }
 }
 
 /// Walk `e` and stamp every node with `SpanOrigin::Expanded { macro_call,
@@ -1123,6 +1488,34 @@ end
     fn pipe_into_call_rewrites_during_expansion() {
         let src = "fn add2(x), do: x + 2\nfn main(), do: 1 |> add2()";
         assert!(matches!(run(src), crate::exec::value::Value::Int(3)));
+    }
+
+    #[test]
+    fn capture_shorthand_desugars_to_runnable_lambda() {
+        let src = "fn main() do\n  f = &(&1 + &2)\n  f(20, 22)\nend";
+        assert!(matches!(run(src), crate::exec::value::Value::Int(42)));
+    }
+
+    #[test]
+    fn bare_capture_arg_desugars_to_identity_lambda() {
+        let src = "fn main() do\n  f = &1\n  f(42)\nend";
+        assert!(matches!(run(src), crate::exec::value::Value::Int(42)));
+    }
+
+    #[test]
+    fn multi_clause_lambda_desugars_to_case_dispatch() {
+        let src = r#"
+fn main() do
+  f = fn
+    0 -> :zero
+    n when n > 0 -> :pos
+    _ -> :other
+  end
+  {f(0), f(2), f(-1)}
+end
+"#;
+        let got = run(src);
+        assert_eq!(format!("{}", got), "{:zero, :pos, :other}");
     }
 
     // ----- .20.3: SpanOrigin lineage on expanded code -----

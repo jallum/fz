@@ -441,6 +441,15 @@ fn reduce_terminator<T: crate::types::Types<Ty = crate::types::Ty> + crate::type
             tail_args.extend(continuation.captured.iter().copied());
             // fz-kgk — INHERIT the CallClosure's ident on the new
             // TailCall; same callsite, transformed terminator shape.
+            record_stalled(
+                m,
+                fn_idx,
+                ident,
+                EmitSlot::Direct,
+                StalledReason::Other,
+                log,
+                tel,
+            );
             Some(Term::TailCall {
                 ident: ident.clone(),
                 callee: continuation.fn_id,
@@ -1019,7 +1028,7 @@ fn scalar_literal_to_const(lit: crate::types::ScalarLiteral, m: &mut Module) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fz_ir::{BinOp, Const, FnBuilder, FnId, ModuleBuilder, Prim, Term};
+    use crate::fz_ir::{BinOp, Const, Cont, FnBuilder, FnId, ModuleBuilder, Prim, Term};
     use crate::types::Types;
 
     /// Build `fn id(x), do: x` and a `main()` that calls `id(42)`.
@@ -1581,6 +1590,70 @@ mod tests {
             None => panic!("expected Consumed log entry, got {:?}", log.consumed),
         }
         assert_eq!(cap.count(&["fz", "reducer", "consumed"]), 1);
+    }
+
+    #[test]
+    fn reducer_logs_direct_slot_after_callclosure_partial_fold() {
+        let mut callee_b = FnBuilder::new(FnId(0), "callee");
+        let x = callee_b.fresh_var();
+        let callee_entry = callee_b.block(vec![x]);
+        callee_b.set_terminator(callee_entry, Term::Return(x));
+
+        let mut cont_b = FnBuilder::new(FnId(1), "k");
+        let result = cont_b.fresh_var();
+        let cont_entry = cont_b.block(vec![result]);
+        cont_b.set_terminator(cont_entry, Term::Return(result));
+
+        let mut main_b = FnBuilder::new(FnId(2), "main");
+        let main_entry = main_b.block(vec![]);
+        let closure = main_b.let_(
+            main_entry,
+            Prim::make_closure(crate::diag::Span::DUMMY, FnId(0), vec![]),
+        );
+        let c42 = main_b.let_(main_entry, Prim::Const(Const::Int(42)));
+        let ident = crate::fz_ir::CallsiteIdent::synthetic();
+        main_b.set_terminator(
+            main_entry,
+            Term::CallClosure {
+                ident: ident.clone(),
+                closure,
+                args: vec![c42],
+                continuation: Cont {
+                    fn_id: FnId(1),
+                    captured: vec![],
+                },
+            },
+        );
+
+        let mut mb = ModuleBuilder::new();
+        mb.add_fn(callee_b.build());
+        mb.add_fn(cont_b.build());
+        mb.add_fn(main_b.build());
+        let mut m = mb.build();
+        let log = reduce_module(&mut crate::types::ConcreteTypes, &mut m);
+
+        let closure_cid = CallsiteId {
+            caller: FnId(2),
+            ident: ident.clone(),
+            slot: EmitSlot::ClosureCall,
+        };
+        assert!(log.consumed.contains_key(&closure_cid));
+
+        let direct_cid = CallsiteId {
+            caller: FnId(2),
+            ident,
+            slot: EmitSlot::Direct,
+        };
+        assert!(log.stalled.contains_key(&direct_cid));
+
+        let main_fn = m.fns.iter().find(|f| f.name == "main").unwrap();
+        assert!(matches!(
+            main_fn.blocks[0].terminator,
+            Term::TailCall {
+                callee: FnId(1),
+                ..
+            }
+        ));
     }
 
     /// fz-f88.3 — `fn pair(x, y), do: {x, y}` then `main(): pair(1, 2)`.
