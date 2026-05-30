@@ -1,9 +1,11 @@
 # Range
 
 fz represents `Range` as a normal schema-backed Struct. It does not have a
-dedicated heap tag. The source surface is `defstruct [:first, :last, :step]` in
-`src/modules/runtime_library/range.fz`, and `Range.new/3` constructs
-`%Range{first: first, last: last, step: step}`.
+dedicated heap tag. The source surface is `defstruct [:first, :last, :step]`
+plus `@type t :: %Range{first: integer, last: integer, step: integer}` in
+`src/modules/runtime_library/range.fz`. `Range.new/3` constructs
+`%Range{first: first, last: last, step: step}` and is specified to return
+`Range.t`.
 
 The compiler carries `defstruct` declarations into `Module.struct_schemas`.
 `%Range{...}` lowers to `Prim::MakeStruct`, which allocates the registered
@@ -13,6 +15,12 @@ registers it before user code runs, in the same order codegen used for baked
 schema ids. Dot access continues to lower through `MapGet`; runtime map-get
 treats atom-key lookup on a Struct as named-field projection, so `range.first`
 reads the `first` field without Range-specific extern accessors.
+
+The record type supplies the field facts for the struct. Resolve checks it
+against the `defstruct` schema, and lowering registers `impl-target::Range`
+with an `{integer, integer, integer}` underlying tuple in schema order. Planner
+struct-field projection therefore reads `first`, `last`, and `step` back as
+integers after a `%Range{...}` match.
 
 `Kernel.range/3` is an ordinary fz wrapper around `Range.new/3`. There is no
 `fz_range_new` host constructor.

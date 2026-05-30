@@ -39,6 +39,7 @@ impl ModuleGraphLoader {
 
         for interface in root_interfaces.values() {
             enqueue_imports(&mut queue, interface);
+            enqueue_protocol_impl_protocols(&mut queue, interface);
         }
         for module in provider_roots {
             queue.push_back(module.clone());
@@ -51,6 +52,7 @@ impl ModuleGraphLoader {
             if let Some(interface) = crate::modules::runtime_library::interface(&module) {
                 interfaces.insert(module, interface.clone());
                 enqueue_imports(&mut queue, &interface);
+                enqueue_protocol_impl_protocols(&mut queue, &interface);
                 enqueue_runtime_protocol_impls(&mut queue, &interfaces, &interface);
                 runtime_modules.insert(interface.name.clone());
                 continue;
@@ -59,6 +61,7 @@ impl ModuleGraphLoader {
             let artifact = self.store.load_fzi_artifact(tel, &module, None)?;
             let interface = artifact.interface;
             enqueue_imports(&mut queue, &interface);
+            enqueue_protocol_impl_protocols(&mut queue, &interface);
             user_modules.insert(interface.name.clone());
             interfaces.insert(interface.name.clone(), interface);
         }
@@ -87,6 +90,12 @@ impl ModuleGraphLoader {
 fn enqueue_imports(queue: &mut VecDeque<ModuleName>, interface: &ModuleInterface) {
     for import in &interface.imports {
         queue.push_back(import.module.clone());
+    }
+}
+
+fn enqueue_protocol_impl_protocols(queue: &mut VecDeque<ModuleName>, interface: &ModuleInterface) {
+    for protocol_impl in &interface.protocol_impls {
+        queue.push_back(protocol_impl.protocol.clone());
     }
 }
 
@@ -316,5 +325,28 @@ mod tests {
                 .expect("runtime fzo source")
                 .contains("defmodule Utf8")
         );
+    }
+
+    #[test]
+    fn graph_loader_follows_protocol_impl_protocol_dependency() {
+        let store = ArtifactStore::new(std::env::temp_dir().join(format!(
+            "fz-module-graph-{}-protocol-impl-protocol",
+            std::process::id()
+        )));
+        let mut app = interface("App", Vec::new(), vec![("main", 0)]);
+        app.protocol_impls
+            .push(crate::frontend::protocols::InterfaceProtocolImpl {
+                protocol: module("Enumerable"),
+                target: crate::frontend::protocols::ImplTarget::module(module("Range")),
+                callbacks: Vec::new(),
+            });
+        let mut roots = InterfaceTable::new();
+        roots.insert(app.name.clone(), app);
+
+        let graph = ModuleGraphLoader::new(store)
+            .load_reachable(&crate::telemetry::NullTelemetry, &roots, [])
+            .expect("load graph");
+
+        assert!(graph.interfaces.contains_key(&module("Enumerable")));
     }
 }

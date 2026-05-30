@@ -519,11 +519,12 @@ fn add_requested_runtime_interfaces(
 ) {
     let mut requested = Vec::new();
     collect_requested_external_modules(prog, &mut requested);
-    for module in requested {
+    while let Some(module) = requested.pop() {
         if local_interfaces.contains_key(&module) || interface_table.contains_key(&module) {
             continue;
         }
         if let Some(interface) = crate::modules::runtime_library::interface(&module) {
+            enqueue_runtime_interface_dependencies(&interface, &mut requested);
             interface_table.insert(module, interface);
         }
     }
@@ -532,15 +533,25 @@ fn add_requested_runtime_interfaces(
 pub(crate) fn add_macro_requested_runtime_interfaces(prog: &mut Program) {
     let mut requested = Vec::new();
     collect_requested_external_modules(prog, &mut requested);
-    for module in requested {
+    while let Some(module) = requested.pop() {
         if prog.module_interfaces.contains_key(&module)
             || prog.external_module_interfaces.contains_key(&module)
         {
             continue;
         }
         if let Some(interface) = crate::modules::runtime_library::interface(&module) {
+            enqueue_runtime_interface_dependencies(&interface, &mut requested);
             prog.external_module_interfaces.insert(module, interface);
         }
+    }
+}
+
+fn enqueue_runtime_interface_dependencies(interface: &ModuleInterface, out: &mut Vec<ModuleName>) {
+    for import in &interface.imports {
+        out.push(import.module.clone());
+    }
+    for protocol_impl in &interface.protocol_impls {
+        out.push(protocol_impl.protocol.clone());
     }
 }
 
@@ -3011,6 +3022,25 @@ end
         assert!(
             p.external_module_interfaces
                 .contains_key(&ModuleName::from_segments(vec!["Utf8".to_string()]))
+        );
+    }
+
+    #[test]
+    fn runtime_protocol_impl_requests_protocol_interface() {
+        let p = flatten(
+            r#"
+defmodule User do
+  fn run(), do: Range.new(1, 3, 1)
+end
+"#,
+        );
+        assert!(
+            p.external_module_interfaces
+                .contains_key(&ModuleName::from_segments(vec!["Range".to_string()]))
+        );
+        assert!(
+            p.external_module_interfaces
+                .contains_key(&ModuleName::from_segments(vec!["Enumerable".to_string()]))
         );
     }
 

@@ -3,12 +3,14 @@ defmodule Range do
 
   defstruct [:first, :last, :step]
 
+  @type t :: %Range{first: integer, last: integer, step: integer}
+
   @doc "Constructs a Range struct."
-  @spec new(integer, integer, integer) :: any
+  @spec new(integer, integer, integer) :: t
   fn new(first, last, step), do: %Range{first: first, last: last, step: step}
 
   @doc "Enumerable.reduce/3 callback body for ranges."
-  @spec reduce(any, any, any, any, any) :: any
+  @spec reduce(integer, integer, integer, any, (integer, any) -> any) :: any
   fn reduce(first, last, step, {:cont, acc}, reducer), do: reduce_cont(first, last, step, first, acc, reducer)
   fn reduce(_first, _last, _step, {:halt, acc}, _reducer), do: {:halted, acc}
   fn reduce(first, last, step, {:suspend, acc}, reducer) do
@@ -16,17 +18,17 @@ defmodule Range do
   end
 
   @doc "Counts range elements for Enumerable."
-  @spec count(any, any, any) :: integer
+  @spec count(integer, integer, integer) :: integer
   fn count(first, last, step) do
     if done?(last, step, first) do
       0
     else
-      (abs_int(last - first) / abs_int(step)) + 1
+      ((last - first) / step) + 1
     end
   end
 
   @doc "Returns true when value appears in the range for Enumerable."
-  @spec member?(any, any, any, any) :: bool
+  @spec member?(integer, integer, integer, any) :: bool
   fn member?(first, last, step, value) do
     if done?(last, step, first) do
       false
@@ -40,7 +42,7 @@ defmodule Range do
   end
 
   @doc "Slices a range for Enumerable."
-  @spec slice(any, any, any, any, any, any) :: any
+  @spec slice(integer, integer, integer, integer, integer, integer) :: [integer]
   fn slice(first, last, step, start, amount, stride) do
     slice_from(last, step + stride - 1, first + (start * step), amount, [])
   end
@@ -71,24 +73,11 @@ defmodule Range do
   fnp reverse([], acc), do: acc
   fnp reverse([head | tail], acc), do: reverse(tail, [head | acc])
 
-  fnp done?(last, step, current) do
-    if step > 0 do
-      current > last
-    else
-      current < last
-    end
-  end
+  fnp done?(last, step, current) when step > 0, do: current > last
+  fnp done?(last, _step, current), do: current < last
 
-  fnp contains?(first, last, step, value) do
-    if step > 0 do
-      value >= first && value <= last
-    else
-      value <= first && value >= last
-    end
-  end
-
-  fnp abs_int(value) when value < 0, do: 0 - value
-  fnp abs_int(value), do: value
+  fnp contains?(first, last, step, value) when step > 0, do: value >= first && value <= last
+  fnp contains?(first, last, _step, value), do: value <= first && value >= last
 
   defimpl Enumerable, for: Range do
     fn reduce(%Range{first: first, last: last, step: step}, acc, reducer) do
