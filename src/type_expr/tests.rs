@@ -1,6 +1,6 @@
 use super::*;
 
-use crate::lexer::Lexer;
+use crate::parser::lexer::Lexer;
 use crate::types::{ConcreteTypes, Ty, Types};
 
 fn parse_one<T: Types<Ty = Ty>>(t: &mut T, src: &str) -> Result<T::Ty, TypeExprError> {

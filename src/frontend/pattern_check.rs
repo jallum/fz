@@ -405,10 +405,12 @@ mod tests {
     fn parse(src: &str) -> Program {
         let mut sm = crate::diag::SourceMap::new();
         let fid = sm.add_file("test.fz", src);
-        let toks = crate::lexer::Lexer::with_file(src, fid).tokenize().unwrap();
+        let toks = crate::parser::lexer::Lexer::with_file(src, fid)
+            .tokenize()
+            .unwrap();
         let prog = Parser::new(toks).parse_program().unwrap();
         let mut ct = crate::types::ConcreteTypes;
-        crate::resolve::flatten_modules(&mut ct, prog).unwrap()
+        crate::frontend::resolve::flatten_modules(&mut ct, prog).unwrap()
     }
 
     #[test]

@@ -435,8 +435,8 @@ warning[type/unreachable-arm]: the then branch is never reachable
         sm: &SourceMap,
         rel: &str,
     ) -> String {
-        use crate::lexer::Lexer;
         use crate::parser::Parser;
+        use crate::parser::lexer::Lexer;
         let toks = match Lexer::with_file(src, id).tokenize() {
             Err(e) => return render(&e.to_diagnostic(), sm),
             Ok(t) => t,
@@ -446,11 +446,11 @@ warning[type/unreachable-arm]: the then branch is never reachable
             Ok(p) => p,
         };
         let mut ct = crate::types::ConcreteTypes;
-        let mut prog = match crate::resolve::flatten_modules(&mut ct, prog) {
+        let mut prog = match crate::frontend::resolve::flatten_modules(&mut ct, prog) {
             Err(e) => return render(&e.to_diagnostic(), sm),
             Ok(p) => p,
         };
-        if let Err(e) = crate::macros::expand_program(&mut prog) {
+        if let Err(e) = crate::frontend::macros::expand_program(&mut prog) {
             return render(&e.to_diagnostic(), sm);
         }
         if let Err(e) = crate::ir_lower::lower_program(&mut crate::types::ConcreteTypes, &prog) {

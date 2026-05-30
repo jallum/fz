@@ -2379,7 +2379,7 @@ fn scheduler_receive_buffers_are_any_value_refs() {
     let files = [
         "runtime/src/park.rs",
         "runtime/src/sched.rs",
-        "src/runtime.rs",
+        "src/exec/runtime.rs",
         "src/ir_codegen/receive.rs",
     ];
     let forbidden = [
@@ -2543,18 +2543,18 @@ fn physical_capability_model_and_signals_are_pinned() {
         "semantic values",
         "physical capabilities",
         "effect facts",
-        "src/ir_effects.rs",
+        "src/ir_effects/mod.rs",
         "operation effect classification",
         "codegen consumes validated facts",
-        "src/fz_ir.rs",
+        "src/fz_ir/mod.rs",
         "physical_entry_params",
         "ignored_entry_params",
         "src/ir_lower/cps.rs",
         "owned_cons_captures",
         "physical\n  params",
-        "src/ir_dce.rs",
+        "src/ir_dce/mod.rs",
         "live heads keep their source-cons",
-        "src/ir_capture_norm.rs",
+        "src/ir_capture_norm/mod.rs",
         "standalone reuse-pruning pass and duplicate owned-cons capability lane",
         "physical_capabilities",
         "emit_owned_cons_reuse_or_alloc",
@@ -2569,7 +2569,7 @@ fn physical_capability_model_and_signals_are_pinned() {
         );
     }
 
-    let fz_ir = fs::read_to_string("src/fz_ir.rs").expect("read fz_ir");
+    let fz_ir = fs::read_to_string("src/fz_ir/mod.rs").expect("read fz_ir");
     assert!(
         fz_ir.contains("ignored_entry_params")
             && fz_ir.contains("physical_entry_params")
@@ -2588,14 +2588,14 @@ fn physical_capability_model_and_signals_are_pinned() {
     );
 
     let capture_norm =
-        fs::read_to_string("src/ir_capture_norm.rs").expect("read capture normalization");
+        fs::read_to_string("src/ir_capture_norm/mod.rs").expect("read capture normalization");
     assert!(
         capture_norm.contains("live_vars_after_local_dce")
             && !capture_norm.contains("dce_after_capture_prune"),
         "capture normalization should rely on ordinary DCE for capability liveness"
     );
 
-    let dce = fs::read_to_string("src/ir_dce.rs").expect("read dce");
+    let dce = fs::read_to_string("src/ir_dce/mod.rs").expect("read dce");
     assert!(
         dce.contains("prune_dead_owned_cons_capabilities") && dce.contains("physical_entry_params"),
         "ordinary DCE should preserve or drop physical capabilities"

@@ -18,10 +18,10 @@
 //! exact-comparable to the other legs' golden.
 
 use crate::ast::{Item, Program};
-use crate::eval::CompileTimeEvaluator;
-use crate::lexer::Lexer;
+use crate::exec::eval::CompileTimeEvaluator;
+use crate::exec::value::Value;
 use crate::parser::Parser;
-use crate::value::Value;
+use crate::parser::lexer::Lexer;
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::io::{self, Write};
@@ -524,17 +524,22 @@ impl ReplWorld {
         let starts_with_item = toks
             .iter()
             .map(|t| &t.tok)
-            .find(|t| !matches!(t, crate::lexer::Tok::Newline | crate::lexer::Tok::Semi))
+            .find(|t| {
+                !matches!(
+                    t,
+                    crate::parser::lexer::Tok::Newline | crate::parser::lexer::Tok::Semi
+                )
+            })
             .map(|t| {
                 matches!(
                     t,
-                    crate::lexer::Tok::At
-                        | crate::lexer::Tok::Fn
-                        | crate::lexer::Tok::Extern
-                        | crate::lexer::Tok::Defmacro
-                        | crate::lexer::Tok::Defmodule
-                        | crate::lexer::Tok::Alias
-                        | crate::lexer::Tok::Import
+                    crate::parser::lexer::Tok::At
+                        | crate::parser::lexer::Tok::Fn
+                        | crate::parser::lexer::Tok::Extern
+                        | crate::parser::lexer::Tok::Defmacro
+                        | crate::parser::lexer::Tok::Defmodule
+                        | crate::parser::lexer::Tok::Alias
+                        | crate::parser::lexer::Tok::Import
                 )
             })
             .unwrap_or(false);
@@ -649,8 +654,8 @@ impl ReplWorld {
 
     fn load_docs_and_macros(&mut self, prog: Program) -> Result<(), String> {
         let mut ct = crate::types::ConcreteTypes;
-        let mut prog =
-            crate::resolve::flatten_modules(&mut ct, prog).map_err(|e| format!("module: {}", e))?;
+        let mut prog = crate::frontend::resolve::flatten_modules(&mut ct, prog)
+            .map_err(|e| format!("module: {}", e))?;
         for (path, doc) in &prog.module_docs {
             self.compile_time
                 .module_docs
@@ -661,7 +666,7 @@ impl ReplWorld {
             return Err(format!("load macros: {}", e));
         }
         let live = self.compile_time.macro_names.borrow().clone();
-        if let Err(e) = crate::macros::expand_with(&mut prog, &self.compile_time, &live) {
+        if let Err(e) = crate::frontend::macros::expand_with(&mut prog, &self.compile_time, &live) {
             return Err(format!("macro: {}", e));
         }
         if let Err(e) = load_items_filtered(&self.compile_time, &prog, /*macros=*/ false) {
@@ -881,7 +886,7 @@ fn load_items_filtered(
                 let existing = interp.globals.lookup(&def.name);
                 let mut clauses = def.clauses.clone();
                 let mut doc = def.doc().map(String::from);
-                let mut spec_text = crate::eval::format_spec_text(def, prog);
+                let mut spec_text = crate::exec::eval::format_spec_text(def, prog);
                 if let Some(Value::Closure(c)) = existing {
                     let same_arity = c.clauses.first().map(|cl| cl.params.len())
                         == clauses.first().map(|cl| cl.params.len());
@@ -898,7 +903,7 @@ fn load_items_filtered(
                         }
                     }
                 }
-                let closure = Value::Closure(Rc::new(crate::value::Closure {
+                let closure = Value::Closure(Rc::new(crate::exec::value::Closure {
                     name: Some(def.name.clone()),
                     clauses,
                     env: interp.globals.clone(),
@@ -1484,7 +1489,7 @@ fn add1(n), do: n + 1"#
         let toks = Lexer::new(src).tokenize().expect("lex");
         let prog = Parser::new(toks).parse_program().expect("parse");
         let mut ct = crate::types::ConcreteTypes;
-        let prog = crate::resolve::flatten_modules(&mut ct, prog).expect("resolve");
+        let prog = crate::frontend::resolve::flatten_modules(&mut ct, prog).expect("resolve");
         for (path, doc) in &prog.module_docs {
             interp
                 .module_docs

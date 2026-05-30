@@ -32,7 +32,7 @@ fn prepare_codegen_body<T: crate::types::Types<Ty = crate::types::Ty>>(
 
 fn push_reachable_spec<T: crate::types::Types<Ty = crate::types::Ty>>(
     t: &mut T,
-    spec_registry: &crate::spec_registry::SpecRegistry,
+    spec_registry: &crate::frontend::spec_registry::SpecRegistry,
     reached: &mut std::collections::HashSet<u32>,
     worklist: &mut Vec<u32>,
     fid: FnId,
@@ -49,7 +49,7 @@ fn push_reachable_spec<T: crate::types::Types<Ty = crate::types::Ty>>(
 
 fn push_dispatch_target<T: crate::types::Types<Ty = crate::types::Ty>>(
     t: &mut T,
-    spec_registry: &crate::spec_registry::SpecRegistry,
+    spec_registry: &crate::frontend::spec_registry::SpecRegistry,
     reached: &mut std::collections::HashSet<u32>,
     worklist: &mut Vec<u32>,
     caller: FnId,
@@ -77,7 +77,7 @@ fn augment_reachable_for_codegen_bodies<
 >(
     t: &mut T,
     module: &Module,
-    spec_registry: &crate::spec_registry::SpecRegistry,
+    spec_registry: &crate::frontend::spec_registry::SpecRegistry,
     module_plan: &crate::ir_planner::ModulePlan,
     codegen_bodies: &[Option<crate::fz_ir::FnIr>],
     reached: &mut std::collections::HashSet<u32>,

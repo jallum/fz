@@ -2,6 +2,7 @@
 
 use crate::diag::{self, Diagnostic};
 use crate::frontend;
+use crate::frontend::resolve::InterfaceTable;
 use crate::fz_ir;
 use crate::ir_codegen::{self, CompiledUnit, ImageLinkError};
 use crate::ir_planner;
@@ -10,7 +11,6 @@ use crate::modules::artifact_store::{ArtifactStore, ArtifactStoreError};
 use crate::modules::graph::ModuleGraphLoader;
 use crate::modules::identity::ModuleName;
 use crate::modules::interface::{ModuleInterface, validate_public_export_specs};
-use crate::resolve::InterfaceTable;
 use crate::telemetry;
 use crate::types;
 use std::collections::BTreeMap;

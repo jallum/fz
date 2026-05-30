@@ -2,14 +2,16 @@
 //!
 //! Surface syntax mirrors Elixir's bitstring expressions and patterns:
 //!
-//!     <<x::8, len::16, payload::binary-size(len), rest::binary>>
+//! ```ignore
+//! <<x::8, len::16, payload::binary-size(len), rest::binary>>
+//! ```
 //!
 //! Internally bitstrings are packed MSB-first within each byte (network /
 //! big-endian byte order). Byte-aligned results are returned as
 //! `Value::Binary`; non-aligned ones as `Value::BitStr(_)`.
 
 use crate::ast::*;
-use crate::value::*;
+use crate::exec::value::*;
 use std::rc::Rc;
 
 // ----------------------------------------------------------------------

@@ -50,7 +50,7 @@ pub trait Backend {
     fn finalize(self, meta: CompiledMetadata) -> Result<Self::Output, CodegenError>;
 }
 
-use crate::spec_registry::SpecRegistry;
+use crate::frontend::spec_registry::SpecRegistry;
 
 /// JIT backend: wraps a JITModule pre-finalize. compile() constructs one,
 /// drives codegen through the Backend trait, then unpacks to call the

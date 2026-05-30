@@ -1,5 +1,5 @@
+use crate::cli::test_runner;
 use crate::ir_interp::extern_call::{tests_support, tests_support_lock};
-use crate::test_runner;
 use std::sync::atomic::Ordering;
 
 /// fz-swt.7 acceptance — interp BIF round-trip.
@@ -164,7 +164,7 @@ fn test_value_round_trip() do
   assert(R.get_value(r) == 99)
 end
 "#;
-    crate::test_runner::run_str(src).expect("test_runner run_str succeeded");
+    crate::cli::test_runner::run_str(src).expect("test_runner run_str succeeded");
     // Verify the dtor fired exactly once with payload 99 once the process heap
     // dropped with its owning runtime.
     assert_eq!(

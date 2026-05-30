@@ -177,7 +177,7 @@ sorter-carrying continuations.
 
 Some facts the planner records are not about source values at all: they are
 object-local permissions on private runtime objects — chiefly owned-cons reuse.
-A physical capability must not affect semantic specialization. `src/ir_effects.rs`
+A physical capability must not affect semantic specialization. `src/ir_effects/mod.rs`
 classifies operation effects — whether an operation allocates, observes
 allocation, is externally observable, reaches the scheduler, or halts — and
 planner return-context barriers and capability validation read that classifier
@@ -231,23 +231,23 @@ The model layers cleanly: **semantic values** carry program meaning;
 **physical capabilities** carry object-local permissions such as owned-cons
 reuse; **effect facts** say when an operation allocates, observes allocation, is
 externally observable, reaches the scheduler, or halts; and
-codegen consumes validated facts mechanically. `src/ir_effects.rs` owns
+codegen consumes validated facts mechanically. `src/ir_effects/mod.rs` owns
 operation effect classification, so planner return-context barriers and
 capability validation read one classifier rather than re-deriving publication
 rules.
 
 The capability rides the existing IR machinery rather than a bespoke lane:
 
-- `src/fz_ir.rs` exposes `physical_capabilities` as the destination for
+- `src/fz_ir/mod.rs` exposes `physical_capabilities` as the destination for
   object-local capabilities, `physical_entry_params` for entry slots that carry
   physical facts (not semantic source values), and `ignored_entry_params` only for
   source wildcard holes.
 - `src/ir_lower/cps.rs` transports `owned_cons_captures` through ordinary
   continuation-capture machinery; owned-cons source slots are physical
   params, not ignored semantic params.
-- `src/ir_dce.rs` owns capability liveness — live heads keep their source-cons
+- `src/ir_dce/mod.rs` owns capability liveness — live heads keep their source-cons
   params; dead heads drop the capability.
-- `src/ir_capture_norm.rs` rewrites capture shapes and relies on DCE to preserve or
+- `src/ir_capture_norm/mod.rs` rewrites capture shapes and relies on DCE to preserve or
   drop capability payloads.
 - `src/ir_codegen/support.rs` lowers the surviving fact through
   `emit_owned_cons_reuse_or_alloc`.

@@ -9,11 +9,11 @@ use crate::ast::{
     TypeExprBody,
 };
 use crate::diag::{Diagnostic, Span, codes};
-use crate::lexer::Tok;
-use crate::modules::identity::ModuleName;
-use crate::protocols::{
+use crate::frontend::protocols::{
     ImplTarget, InterfaceProtocol, InterfaceProtocolCallback, InterfaceProtocolImpl,
 };
+use crate::modules::identity::ModuleName;
+use crate::parser::lexer::Tok;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -539,8 +539,8 @@ pub fn validate_public_export_specs(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::lexer::Lexer;
     use crate::parser::Parser;
+    use crate::parser::lexer::Lexer;
 
     fn interfaces(src: &str) -> BTreeMap<ModuleName, ModuleInterface> {
         let toks = Lexer::new(src).tokenize().expect("lex");

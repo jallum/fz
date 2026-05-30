@@ -98,27 +98,27 @@ pub enum PatternMatrixCompileError {
 /// representation.
 pub fn compile_pattern_matrix(
     pattern_matrix: PatternMatrix,
-) -> Result<crate::matcher::Matcher, PatternMatrixCompileError> {
-    let mut resolver =
-        |_name: &str,
-         _arity: usize,
-         _args: Vec<crate::matcher::GuardExpr>|
-         -> Result<Option<crate::matcher::GuardExpr>, PatternMatrixCompileError> {
-            Ok(None)
-        };
+) -> Result<crate::exec::matcher::Matcher, PatternMatrixCompileError> {
+    let mut resolver = |_name: &str,
+                        _arity: usize,
+                        _args: Vec<crate::exec::matcher::GuardExpr>|
+     -> Result<
+        Option<crate::exec::matcher::GuardExpr>,
+        PatternMatrixCompileError,
+    > { Ok(None) };
     compile_pattern_matrix_with_guard_resolver(pattern_matrix, &mut resolver)
 }
 
 pub fn compile_pattern_matrix_with_guard_resolver<F>(
     pattern_matrix: PatternMatrix,
     guard_call_resolver: &mut F,
-) -> Result<crate::matcher::Matcher, PatternMatrixCompileError>
+) -> Result<crate::exec::matcher::Matcher, PatternMatrixCompileError>
 where
     F: FnMut(
         &str,
         usize,
-        Vec<crate::matcher::GuardExpr>,
-    ) -> Result<Option<crate::matcher::GuardExpr>, PatternMatrixCompileError>,
+        Vec<crate::exec::matcher::GuardExpr>,
+    ) -> Result<Option<crate::exec::matcher::GuardExpr>, PatternMatrixCompileError>,
 {
     use std::collections::HashMap;
 
@@ -128,31 +128,31 @@ where
 
     let input_vars = pattern_matrix.subjects.clone();
     let pinned_names = collect_pinned_names(&pattern_matrix);
-    let inputs: Vec<crate::matcher::MatcherInput> = input_vars
+    let inputs: Vec<crate::exec::matcher::MatcherInput> = input_vars
         .iter()
         .copied()
-        .map(|v| crate::matcher::MatcherInput {
+        .map(|v| crate::exec::matcher::MatcherInput {
             var: Some(v),
             span: crate::diag::Span::DUMMY,
         })
         .collect();
-    let input_by_var: HashMap<Var, crate::matcher::InputId> = input_vars
+    let input_by_var: HashMap<Var, crate::exec::matcher::InputId> = input_vars
         .into_iter()
         .enumerate()
-        .map(|(i, v)| (v, crate::matcher::InputId(i as u32)))
+        .map(|(i, v)| (v, crate::exec::matcher::InputId(i as u32)))
         .collect();
-    let pinned: Vec<crate::matcher::PinnedInput> = pinned_names
+    let pinned: Vec<crate::exec::matcher::PinnedInput> = pinned_names
         .iter()
-        .map(|name| crate::matcher::PinnedInput {
+        .map(|name| crate::exec::matcher::PinnedInput {
             name: name.clone(),
             var: None,
             span: crate::diag::Span::DUMMY,
         })
         .collect();
-    let pinned_by_name: HashMap<String, crate::matcher::PinnedId> = pinned_names
+    let pinned_by_name: HashMap<String, crate::exec::matcher::PinnedId> = pinned_names
         .into_iter()
         .enumerate()
-        .map(|(i, name)| (name, crate::matcher::PinnedId(i as u32)))
+        .map(|(i, name)| (name, crate::exec::matcher::PinnedId(i as u32)))
         .collect();
 
     let mut builder = MatcherBuilder {
@@ -170,7 +170,7 @@ where
             .collect(),
         rows: pattern_matrix.rows,
     })?;
-    Ok(crate::matcher::Matcher {
+    Ok(crate::exec::matcher::Matcher {
         inputs,
         pinned,
         prepared_keys: builder.prepared_keys,

@@ -1,27 +1,27 @@
 use crate::ast::{Pattern, Spanned};
+use crate::exec::matcher::SwitchKind;
 use crate::fz_ir::Var;
-use crate::matcher::SwitchKind;
 
 use super::collect::collect_one;
 use super::{CompilePatternMatrix, PatternMatrixCompileError, Row, SubjectRef};
 
 pub(crate) fn append_pattern_ops(
     pattern: &Pattern,
-    subject: crate::matcher::SubjectRef,
-    pinned_by_name: &std::collections::HashMap<String, crate::matcher::PinnedId>,
-    prepared_keys: &mut Vec<crate::matcher::MatcherConst>,
-    tests: &mut Vec<crate::matcher::MatcherTest>,
-    bindings: &mut Vec<crate::matcher::MatcherBinding>,
+    subject: crate::exec::matcher::SubjectRef,
+    pinned_by_name: &std::collections::HashMap<String, crate::exec::matcher::PinnedId>,
+    prepared_keys: &mut Vec<crate::exec::matcher::MatcherConst>,
+    tests: &mut Vec<crate::exec::matcher::MatcherTest>,
+    bindings: &mut Vec<crate::exec::matcher::MatcherBinding>,
 ) -> Result<(), PatternMatrixCompileError> {
     match pattern {
         Pattern::Wildcard => {}
-        Pattern::Var(name) => bindings.push(crate::matcher::MatcherBinding {
+        Pattern::Var(name) => bindings.push(crate::exec::matcher::MatcherBinding {
             name: name.clone(),
             source: subject,
             span: crate::diag::Span::DUMMY,
         }),
         Pattern::As(name, inner) => {
-            bindings.push(crate::matcher::MatcherBinding {
+            bindings.push(crate::exec::matcher::MatcherBinding {
                 name: name.clone(),
                 source: subject.clone(),
                 span: crate::diag::Span::DUMMY,
@@ -39,41 +39,41 @@ pub(crate) fn append_pattern_ops(
             let pinned = *pinned_by_name
                 .get(name)
                 .ok_or_else(|| PatternMatrixCompileError::UnknownPinned(name.clone()))?;
-            tests.push(crate::matcher::MatcherTest::EqPinned { subject, pinned });
+            tests.push(crate::exec::matcher::MatcherTest::EqPinned { subject, pinned });
         }
-        Pattern::Int(n) => tests.push(crate::matcher::MatcherTest::EqConst {
+        Pattern::Int(n) => tests.push(crate::exec::matcher::MatcherTest::EqConst {
             subject,
-            value: crate::matcher::MatcherConst::Int(*n),
+            value: crate::exec::matcher::MatcherConst::Int(*n),
         }),
-        Pattern::Float(n) => tests.push(crate::matcher::MatcherTest::EqConst {
+        Pattern::Float(n) => tests.push(crate::exec::matcher::MatcherTest::EqConst {
             subject,
-            value: crate::matcher::MatcherConst::FloatBits(n.to_bits()),
+            value: crate::exec::matcher::MatcherConst::FloatBits(n.to_bits()),
         }),
-        Pattern::Binary(bytes) => tests.push(crate::matcher::MatcherTest::EqConst {
+        Pattern::Binary(bytes) => tests.push(crate::exec::matcher::MatcherTest::EqConst {
             subject,
-            value: crate::matcher::MatcherConst::Utf8Binary(bytes.clone()),
+            value: crate::exec::matcher::MatcherConst::Utf8Binary(bytes.clone()),
         }),
-        Pattern::Atom(name) => tests.push(crate::matcher::MatcherTest::EqConst {
+        Pattern::Atom(name) => tests.push(crate::exec::matcher::MatcherTest::EqConst {
             subject,
-            value: crate::matcher::MatcherConst::AtomName(name.clone()),
+            value: crate::exec::matcher::MatcherConst::AtomName(name.clone()),
         }),
-        Pattern::Bool(b) => tests.push(crate::matcher::MatcherTest::EqConst {
+        Pattern::Bool(b) => tests.push(crate::exec::matcher::MatcherTest::EqConst {
             subject,
-            value: crate::matcher::MatcherConst::Bool(*b),
+            value: crate::exec::matcher::MatcherConst::Bool(*b),
         }),
-        Pattern::Nil => tests.push(crate::matcher::MatcherTest::EqConst {
+        Pattern::Nil => tests.push(crate::exec::matcher::MatcherTest::EqConst {
             subject,
-            value: crate::matcher::MatcherConst::Nil,
+            value: crate::exec::matcher::MatcherConst::Nil,
         }),
         Pattern::Tuple(elems) => {
-            tests.push(crate::matcher::MatcherTest::TupleArity {
+            tests.push(crate::exec::matcher::MatcherTest::TupleArity {
                 subject: subject.clone(),
                 arity: elems.len() as u32,
             });
             for (index, elem) in elems.iter().enumerate() {
                 append_pattern_ops(
                     &elem.node,
-                    crate::matcher::SubjectRef::TupleField {
+                    crate::exec::matcher::SubjectRef::TupleField {
                         tuple: Box::new(subject.clone()),
                         index: index as u32,
                     },
@@ -115,15 +115,15 @@ pub(crate) fn append_pattern_ops(
 
 pub(crate) fn append_bitstring_pattern_ops(
     fields: &[crate::ast::BitField<Spanned<Pattern>>],
-    subject: crate::matcher::SubjectRef,
-    pinned_by_name: &std::collections::HashMap<String, crate::matcher::PinnedId>,
-    prepared_keys: &mut Vec<crate::matcher::MatcherConst>,
-    tests: &mut Vec<crate::matcher::MatcherTest>,
-    bindings: &mut Vec<crate::matcher::MatcherBinding>,
+    subject: crate::exec::matcher::SubjectRef,
+    pinned_by_name: &std::collections::HashMap<String, crate::exec::matcher::PinnedId>,
+    prepared_keys: &mut Vec<crate::exec::matcher::MatcherConst>,
+    tests: &mut Vec<crate::exec::matcher::MatcherTest>,
+    bindings: &mut Vec<crate::exec::matcher::MatcherBinding>,
 ) -> Result<(), PatternMatrixCompileError> {
     let matcher_fields = fields
         .iter()
-        .map(|field| crate::matcher::MatcherBitField {
+        .map(|field| crate::exec::matcher::MatcherBitField {
             ty: matcher_bit_type(field.spec.ty),
             size: field.spec.size.as_ref().map(matcher_bit_size),
             endian: matcher_endian(field.spec.endian),
@@ -132,14 +132,14 @@ pub(crate) fn append_bitstring_pattern_ops(
             direct_bindings: direct_bitfield_bindings(&field.value.node),
         })
         .collect();
-    tests.push(crate::matcher::MatcherTest::Bitstring {
+    tests.push(crate::exec::matcher::MatcherTest::Bitstring {
         subject: subject.clone(),
         fields: matcher_fields,
     });
     for (index, field) in fields.iter().enumerate() {
         append_pattern_ops(
             &field.value.node,
-            crate::matcher::SubjectRef::BitstringField {
+            crate::exec::matcher::SubjectRef::BitstringField {
                 bitstring: Box::new(subject.clone()),
                 index: index as u32,
             },
@@ -164,53 +164,55 @@ pub(crate) fn direct_bitfield_bindings(pattern: &Pattern) -> Vec<String> {
     }
 }
 
-pub(crate) fn matcher_bit_size(size: &crate::ast::BitSize) -> crate::matcher::MatcherBitSize {
+pub(crate) fn matcher_bit_size(size: &crate::ast::BitSize) -> crate::exec::matcher::MatcherBitSize {
     match size {
-        crate::ast::BitSize::Literal(n) => crate::matcher::MatcherBitSize::Literal(*n),
-        crate::ast::BitSize::Var(name) => crate::matcher::MatcherBitSize::BindingName(name.clone()),
+        crate::ast::BitSize::Literal(n) => crate::exec::matcher::MatcherBitSize::Literal(*n),
+        crate::ast::BitSize::Var(name) => {
+            crate::exec::matcher::MatcherBitSize::BindingName(name.clone())
+        }
     }
 }
 
-pub(crate) fn matcher_bit_type(ty: crate::ast::BitType) -> crate::matcher::MatcherBitType {
+pub(crate) fn matcher_bit_type(ty: crate::ast::BitType) -> crate::exec::matcher::MatcherBitType {
     match ty {
-        crate::ast::BitType::Integer => crate::matcher::MatcherBitType::Integer,
-        crate::ast::BitType::Float => crate::matcher::MatcherBitType::Float,
-        crate::ast::BitType::Binary => crate::matcher::MatcherBitType::Binary,
-        crate::ast::BitType::Bits => crate::matcher::MatcherBitType::Bits,
-        crate::ast::BitType::Utf8 => crate::matcher::MatcherBitType::Utf8,
-        crate::ast::BitType::Utf16 => crate::matcher::MatcherBitType::Utf16,
-        crate::ast::BitType::Utf32 => crate::matcher::MatcherBitType::Utf32,
+        crate::ast::BitType::Integer => crate::exec::matcher::MatcherBitType::Integer,
+        crate::ast::BitType::Float => crate::exec::matcher::MatcherBitType::Float,
+        crate::ast::BitType::Binary => crate::exec::matcher::MatcherBitType::Binary,
+        crate::ast::BitType::Bits => crate::exec::matcher::MatcherBitType::Bits,
+        crate::ast::BitType::Utf8 => crate::exec::matcher::MatcherBitType::Utf8,
+        crate::ast::BitType::Utf16 => crate::exec::matcher::MatcherBitType::Utf16,
+        crate::ast::BitType::Utf32 => crate::exec::matcher::MatcherBitType::Utf32,
     }
 }
 
-pub(crate) fn matcher_endian(endian: crate::ast::Endian) -> crate::matcher::MatcherEndian {
+pub(crate) fn matcher_endian(endian: crate::ast::Endian) -> crate::exec::matcher::MatcherEndian {
     match endian {
-        crate::ast::Endian::Big => crate::matcher::MatcherEndian::Big,
-        crate::ast::Endian::Little => crate::matcher::MatcherEndian::Little,
-        crate::ast::Endian::Native => crate::matcher::MatcherEndian::Native,
+        crate::ast::Endian::Big => crate::exec::matcher::MatcherEndian::Big,
+        crate::ast::Endian::Little => crate::exec::matcher::MatcherEndian::Little,
+        crate::ast::Endian::Native => crate::exec::matcher::MatcherEndian::Native,
     }
 }
 
 pub(crate) fn append_map_pattern_ops(
     entries: &[(Spanned<Pattern>, Spanned<Pattern>)],
-    subject: crate::matcher::SubjectRef,
-    pinned_by_name: &std::collections::HashMap<String, crate::matcher::PinnedId>,
-    prepared_keys: &mut Vec<crate::matcher::MatcherConst>,
-    tests: &mut Vec<crate::matcher::MatcherTest>,
-    bindings: &mut Vec<crate::matcher::MatcherBinding>,
+    subject: crate::exec::matcher::SubjectRef,
+    pinned_by_name: &std::collections::HashMap<String, crate::exec::matcher::PinnedId>,
+    prepared_keys: &mut Vec<crate::exec::matcher::MatcherConst>,
+    tests: &mut Vec<crate::exec::matcher::MatcherTest>,
+    bindings: &mut Vec<crate::exec::matcher::MatcherBinding>,
 ) -> Result<(), PatternMatrixCompileError> {
-    tests.push(crate::matcher::MatcherTest::MapKind {
+    tests.push(crate::exec::matcher::MatcherTest::MapKind {
         subject: subject.clone(),
     });
     for (key_pat, val_pat) in entries {
         let key = scalar_map_key_const(&key_pat.node, prepared_keys)?;
-        tests.push(crate::matcher::MatcherTest::MapHasKey {
+        tests.push(crate::exec::matcher::MatcherTest::MapHasKey {
             subject: subject.clone(),
             key: key.clone(),
         });
         append_pattern_ops(
             &val_pat.node,
-            crate::matcher::map_value_subject(&subject, &key),
+            crate::exec::matcher::map_value_subject(&subject, &key),
             pinned_by_name,
             prepared_keys,
             tests,
@@ -222,40 +224,40 @@ pub(crate) fn append_map_pattern_ops(
 
 pub(crate) fn scalar_map_key_const(
     pattern: &Pattern,
-    prepared_keys: &mut Vec<crate::matcher::MatcherConst>,
-) -> Result<crate::matcher::MatcherConst, PatternMatrixCompileError> {
+    prepared_keys: &mut Vec<crate::exec::matcher::MatcherConst>,
+) -> Result<crate::exec::matcher::MatcherConst, PatternMatrixCompileError> {
     match pattern {
-        Pattern::Int(n) => Ok(crate::matcher::MatcherConst::Int(*n)),
+        Pattern::Int(n) => Ok(crate::exec::matcher::MatcherConst::Int(*n)),
         Pattern::Float(n) => {
             let id = prepared_key_id(
                 prepared_keys,
-                crate::matcher::MatcherConst::FloatBits(n.to_bits()),
+                crate::exec::matcher::MatcherConst::FloatBits(n.to_bits()),
             );
-            Ok(crate::matcher::MatcherConst::PreparedKey(id))
+            Ok(crate::exec::matcher::MatcherConst::PreparedKey(id))
         }
         Pattern::Binary(bytes) => {
             let id = prepared_key_id(
                 prepared_keys,
-                crate::matcher::MatcherConst::Utf8Binary(bytes.clone()),
+                crate::exec::matcher::MatcherConst::Utf8Binary(bytes.clone()),
             );
-            Ok(crate::matcher::MatcherConst::PreparedKey(id))
+            Ok(crate::exec::matcher::MatcherConst::PreparedKey(id))
         }
         Pattern::Atom(name) => {
             let id = prepared_key_id(
                 prepared_keys,
-                crate::matcher::MatcherConst::AtomName(name.clone()),
+                crate::exec::matcher::MatcherConst::AtomName(name.clone()),
             );
-            Ok(crate::matcher::MatcherConst::PreparedKey(id))
+            Ok(crate::exec::matcher::MatcherConst::PreparedKey(id))
         }
-        Pattern::Bool(b) => Ok(crate::matcher::MatcherConst::Bool(*b)),
-        Pattern::Nil => Ok(crate::matcher::MatcherConst::Nil),
+        Pattern::Bool(b) => Ok(crate::exec::matcher::MatcherConst::Bool(*b)),
+        Pattern::Nil => Ok(crate::exec::matcher::MatcherConst::Nil),
         _ => Err(PatternMatrixCompileError::UnsupportedMapKey),
     }
 }
 
 pub(crate) fn prepared_key_id(
-    prepared_keys: &mut Vec<crate::matcher::MatcherConst>,
-    key: crate::matcher::MatcherConst,
+    prepared_keys: &mut Vec<crate::exec::matcher::MatcherConst>,
+    key: crate::exec::matcher::MatcherConst,
 ) -> u32 {
     if let Some(index) = prepared_keys.iter().position(|existing| existing == &key) {
         return index as u32;
@@ -268,11 +270,11 @@ pub(crate) fn prepared_key_id(
 pub(crate) fn append_list_pattern_ops(
     elems: &[Spanned<Pattern>],
     tail: Option<&Spanned<Pattern>>,
-    subject: crate::matcher::SubjectRef,
-    pinned_by_name: &std::collections::HashMap<String, crate::matcher::PinnedId>,
-    prepared_keys: &mut Vec<crate::matcher::MatcherConst>,
-    tests: &mut Vec<crate::matcher::MatcherTest>,
-    bindings: &mut Vec<crate::matcher::MatcherBinding>,
+    subject: crate::exec::matcher::SubjectRef,
+    pinned_by_name: &std::collections::HashMap<String, crate::exec::matcher::PinnedId>,
+    prepared_keys: &mut Vec<crate::exec::matcher::MatcherConst>,
+    tests: &mut Vec<crate::exec::matcher::MatcherTest>,
+    bindings: &mut Vec<crate::exec::matcher::MatcherBinding>,
 ) -> Result<(), PatternMatrixCompileError> {
     if elems.is_empty() {
         match tail {
@@ -285,26 +287,26 @@ pub(crate) fn append_list_pattern_ops(
                 bindings,
             ),
             None => {
-                tests.push(crate::matcher::MatcherTest::EqConst {
+                tests.push(crate::exec::matcher::MatcherTest::EqConst {
                     subject,
-                    value: crate::matcher::MatcherConst::EmptyList,
+                    value: crate::exec::matcher::MatcherConst::EmptyList,
                 });
                 Ok(())
             }
         }
     } else {
-        tests.push(crate::matcher::MatcherTest::ListCons {
+        tests.push(crate::exec::matcher::MatcherTest::ListCons {
             subject: subject.clone(),
         });
         append_pattern_ops(
             &elems[0].node,
-            crate::matcher::SubjectRef::ListHead(Box::new(subject.clone())),
+            crate::exec::matcher::SubjectRef::ListHead(Box::new(subject.clone())),
             pinned_by_name,
             prepared_keys,
             tests,
             bindings,
         )?;
-        let tail_subject = crate::matcher::SubjectRef::ListTail(Box::new(subject));
+        let tail_subject = crate::exec::matcher::SubjectRef::ListTail(Box::new(subject));
         if elems.len() == 1 {
             match tail {
                 Some(tail) => append_pattern_ops(
@@ -316,9 +318,9 @@ pub(crate) fn append_list_pattern_ops(
                     bindings,
                 ),
                 None => {
-                    tests.push(crate::matcher::MatcherTest::EqConst {
+                    tests.push(crate::exec::matcher::MatcherTest::EqConst {
                         subject: tail_subject,
-                        value: crate::matcher::MatcherConst::EmptyList,
+                        value: crate::exec::matcher::MatcherConst::EmptyList,
                     });
                     Ok(())
                 }
@@ -338,32 +340,32 @@ pub(crate) fn append_list_pattern_ops(
 }
 
 pub(crate) fn push_matcher_node(
-    nodes: &mut Vec<crate::matcher::MatcherNode>,
-    node: crate::matcher::MatcherNode,
-) -> crate::matcher::NodeId {
-    let id = crate::matcher::NodeId(nodes.len() as u32);
+    nodes: &mut Vec<crate::exec::matcher::MatcherNode>,
+    node: crate::exec::matcher::MatcherNode,
+) -> crate::exec::matcher::NodeId {
+    let id = crate::exec::matcher::NodeId(nodes.len() as u32);
     nodes.push(node);
     id
 }
 
 pub(crate) fn subject_to_matcher_ref(
     subject: &SubjectRef,
-    input_by_var: &std::collections::HashMap<Var, crate::matcher::InputId>,
-) -> Result<crate::matcher::SubjectRef, PatternMatrixCompileError> {
+    input_by_var: &std::collections::HashMap<Var, crate::exec::matcher::InputId>,
+) -> Result<crate::exec::matcher::SubjectRef, PatternMatrixCompileError> {
     Ok(match subject {
-        SubjectRef::Var(v) => crate::matcher::SubjectRef::Input(
+        SubjectRef::Var(v) => crate::exec::matcher::SubjectRef::Input(
             *input_by_var
                 .get(v)
                 .ok_or(PatternMatrixCompileError::UnknownSubject(*v))?,
         ),
-        SubjectRef::TupleField { tuple, index } => crate::matcher::SubjectRef::TupleField {
+        SubjectRef::TupleField { tuple, index } => crate::exec::matcher::SubjectRef::TupleField {
             tuple: Box::new(subject_to_matcher_ref(tuple, input_by_var)?),
             index: *index,
         },
-        SubjectRef::ListHead(list) => crate::matcher::SubjectRef::ListHead(Box::new(
+        SubjectRef::ListHead(list) => crate::exec::matcher::SubjectRef::ListHead(Box::new(
             subject_to_matcher_ref(list, input_by_var)?,
         )),
-        SubjectRef::ListTail(list) => crate::matcher::SubjectRef::ListTail(Box::new(
+        SubjectRef::ListTail(list) => crate::exec::matcher::SubjectRef::ListTail(Box::new(
             subject_to_matcher_ref(list, input_by_var)?,
         )),
     })

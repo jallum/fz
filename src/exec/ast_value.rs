@@ -32,7 +32,7 @@
 //!   x = 1               -> {:=, %{}, [{:x,_,_}, 1]}
 
 use crate::ast::*;
-use crate::value::{FzMap, Value};
+use crate::exec::value::{FzMap, Value};
 use std::rc::Rc;
 
 const USER_CTX: &str = "user";
@@ -410,8 +410,8 @@ impl Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::lexer::Lexer;
     use crate::parser::Parser;
+    use crate::parser::lexer::Lexer;
 
     fn parse_expr(src: &str) -> Spanned<Expr> {
         let wrapped = format!("fn _t() do {} end", src);

@@ -2,8 +2,8 @@
 
 use crate::fz_ir::Module;
 use crate::ir_interp::{AnyValue, IrInterpRuntime, run_main};
-use crate::lexer::Lexer;
 use crate::parser::Parser;
+use crate::parser::lexer::Lexer;
 
 fn lower_src(src: &str) -> Module {
     let toks = Lexer::new(src).tokenize().expect("lex");
@@ -14,7 +14,7 @@ fn lower_src(src: &str) -> Module {
 fn run_and_capture(src: &str) -> Result<String, String> {
     let m = lower_src(src);
     let tel = crate::telemetry::bus::ConfiguredTelemetry::new();
-    let dbg = crate::runtime::DbgCapture::new();
+    let dbg = crate::exec::runtime::DbgCapture::new();
     tel.attach(&[], dbg.handler());
     run_main(&tel, &m)?;
     Ok(dbg.lines().join("\n"))
@@ -261,7 +261,7 @@ fn receive_reuses_lowered_matcher_during_interp_probes() {
     let tel = ConfiguredTelemetry::new();
     let cap = Capture::new();
     tel.attach(&["fz", "interp", "receive"], cap.handler());
-    let dbg = crate::runtime::DbgCapture::new();
+    let dbg = crate::exec::runtime::DbgCapture::new();
     tel.attach(&[], dbg.handler());
     crate::pattern_matrix::reset_compile_count();
     run_main(&tel, &m).expect("interp run");
@@ -305,7 +305,7 @@ fn receive_map_probe_uses_matcher_without_ast_pattern_walk() {
     "#;
     let m = lower_src(src);
     let tel = crate::telemetry::bus::ConfiguredTelemetry::new();
-    let dbg = crate::runtime::DbgCapture::new();
+    let dbg = crate::exec::runtime::DbgCapture::new();
     tel.attach(&[], dbg.handler());
     run_main(&tel, &m).expect("interp run");
     let out = dbg.lines().join("\n");
@@ -328,7 +328,7 @@ fn receive_map_pattern_matches_present_nil_value() {
     "#;
     let m = lower_src(src);
     let tel = crate::telemetry::bus::ConfiguredTelemetry::new();
-    let dbg = crate::runtime::DbgCapture::new();
+    let dbg = crate::exec::runtime::DbgCapture::new();
     tel.attach(&[], dbg.handler());
     run_main(&tel, &m).expect("interp run");
     let out = dbg.lines().join("\n");

@@ -1,6 +1,8 @@
+pub(crate) mod lexer;
+
+use self::lexer::{Tok, Token};
 use crate::ast::*;
 use crate::diag::Span;
-use crate::lexer::{Tok, Token};
 use std::rc::Rc;
 
 fn flush_fn_groups(

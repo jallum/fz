@@ -1078,7 +1078,7 @@ fn reachable_specs_seeds_all_registered_specs_for_closure_targets() {
     let int_key = key_tys(vec![t.int()]);
     let main_key = key_tys(vec![]);
 
-    let mut reg = crate::spec_registry::SpecRegistry::new();
+    let mut reg = crate::frontend::spec_registry::SpecRegistry::new();
     let worker_any_sid = reg.register(&t, FnId(0), any_key.clone());
     let main_sid = reg.register(&t, FnId(1), main_key.clone());
     let worker_int_sid = reg.register(&t, FnId(0), int_key.clone());
@@ -1248,12 +1248,14 @@ fn pipeline(
     src: &str,
     tel: &dyn crate::telemetry::Telemetry,
 ) -> (crate::types::ConcreteTypes, Module, ModulePlan) {
-    let toks = crate::lexer::Lexer::new(src).tokenize().expect("lex");
+    let toks = crate::parser::lexer::Lexer::new(src)
+        .tokenize()
+        .expect("lex");
     let prog = crate::parser::Parser::new(toks)
         .parse_program()
         .expect("parse");
     let mut t = crate::types::ConcreteTypes;
-    let prog = crate::resolve::flatten_modules(&mut t, prog).expect("flatten");
+    let prog = crate::frontend::resolve::flatten_modules(&mut t, prog).expect("flatten");
     let ir = crate::ir_lower::lower_program(&mut t, &prog).expect("lower");
     let mt = plan_module(&mut t, &ir, tel);
     (t, ir, mt)
@@ -2529,12 +2531,14 @@ end
 
 fn main(), do: Collectable.id([1])
 "#;
-    let toks = crate::lexer::Lexer::new(src).tokenize().expect("lex");
+    let toks = crate::parser::lexer::Lexer::new(src)
+        .tokenize()
+        .expect("lex");
     let parsed = crate::parser::Parser::new(toks)
         .parse_program()
         .expect("parse");
     let mut t = crate::types::ConcreteTypes;
-    let resolved = crate::resolve::flatten_modules(&mut t, parsed).expect("resolve");
+    let resolved = crate::frontend::resolve::flatten_modules(&mut t, parsed).expect("resolve");
     let ir = crate::ir_lower::lower_program(&mut t, &resolved).expect("lower");
     let mt = plan_module(&mut t, &ir, &crate::telemetry::NullTelemetry);
 
@@ -2578,14 +2582,16 @@ end
 
 fn main(), do: P.to_thing([1])
 "#;
-    let toks = crate::lexer::Lexer::new(src).tokenize().expect("lex");
+    let toks = crate::parser::lexer::Lexer::new(src)
+        .tokenize()
+        .expect("lex");
     let parsed = crate::parser::Parser::new(toks)
         .parse_program()
         .expect("parse");
     let mut t = crate::types::ConcreteTypes;
-    let err = crate::resolve::flatten_modules(&mut t, parsed)
+    let err = crate::frontend::resolve::flatten_modules(&mut t, parsed)
         .expect_err("disjoint callback result spec must be rejected");
-    let crate::resolve::ResolveError::ProtocolError { msg, .. } = err else {
+    let crate::frontend::resolve::ResolveError::ProtocolError { msg, .. } = err else {
         panic!("expected ProtocolError, got {err:?}");
     };
     assert!(
@@ -2612,12 +2618,15 @@ end
 
 fn main(), do: P.to_thing([1])
 "#;
-    let toks = crate::lexer::Lexer::new(src).tokenize().expect("lex");
+    let toks = crate::parser::lexer::Lexer::new(src)
+        .tokenize()
+        .expect("lex");
     let parsed = crate::parser::Parser::new(toks)
         .parse_program()
         .expect("parse");
     let mut t = crate::types::ConcreteTypes;
-    crate::resolve::flatten_modules(&mut t, parsed).expect("compatible callback spec must resolve");
+    crate::frontend::resolve::flatten_modules(&mut t, parsed)
+        .expect("compatible callback spec must resolve");
 }
 
 // ---- fz-t1m.1.3 — no-implementation diagnostic at dispatch ----
@@ -2629,12 +2638,14 @@ fn plan_protocol_src(
     crate::fz_ir::Module,
     crate::ir_planner::ModulePlan,
 ) {
-    let toks = crate::lexer::Lexer::new(src).tokenize().expect("lex");
+    let toks = crate::parser::lexer::Lexer::new(src)
+        .tokenize()
+        .expect("lex");
     let parsed = crate::parser::Parser::new(toks)
         .parse_program()
         .expect("parse");
     let mut t = crate::types::ConcreteTypes;
-    let resolved = crate::resolve::flatten_modules(&mut t, parsed).expect("resolve");
+    let resolved = crate::frontend::resolve::flatten_modules(&mut t, parsed).expect("resolve");
     let ir = crate::ir_lower::lower_program(&mut t, &resolved).expect("lower");
     let mt = plan_module(&mut t, &ir, &crate::telemetry::NullTelemetry);
     (t, ir, mt)
@@ -2982,12 +2993,14 @@ fn main() do
   FileHandle.open("f", 0o1000, 0o644)
 end
 "#;
-    let toks = crate::lexer::Lexer::new(src).tokenize().expect("lex");
+    let toks = crate::parser::lexer::Lexer::new(src)
+        .tokenize()
+        .expect("lex");
     let prog = crate::parser::Parser::new(toks)
         .parse_program()
         .expect("parse");
     let mut t = crate::types::ConcreteTypes;
-    let prog = crate::resolve::flatten_modules(&mut t, prog).expect("flatten");
+    let prog = crate::frontend::resolve::flatten_modules(&mut t, prog).expect("flatten");
     let ir = crate::ir_lower::lower_program(&mut t, &prog).expect("lower");
     let mt = plan_module(&mut t, &ir, &crate::telemetry::NullTelemetry);
     let open = ir.fn_by_name("FileHandle.open").expect("open");
@@ -3001,7 +3014,7 @@ end
         "open should return the owning opaque resource alias, got {}",
         t.display(&open_ret)
     );
-    let diags = crate::spec_check::validate_specs(&mut t, &prog, &ir, &mt);
+    let diags = crate::frontend::spec_check::validate_specs(&mut t, &prog, &ir, &mt);
     assert!(diags.is_empty(), "unexpected spec diagnostics: {diags:?}");
 }
 
@@ -3146,12 +3159,14 @@ fn string_literal_lowers_to_utf8_branded_bitstring() {
     // system can recover the brand context when needed), but no
     // Prim::Brand stmt remains in any FnIr.
     let src = r#"fn main(), do: "hi""#;
-    let toks = crate::lexer::Lexer::new(src).tokenize().expect("lex");
+    let toks = crate::parser::lexer::Lexer::new(src)
+        .tokenize()
+        .expect("lex");
     let prog = crate::parser::Parser::new(toks)
         .parse_program()
         .expect("parse");
     let mut ct = crate::types::ConcreteTypes;
-    let prog = crate::resolve::flatten_modules(&mut ct, prog).expect("resolve");
+    let prog = crate::frontend::resolve::flatten_modules(&mut ct, prog).expect("resolve");
     let m = crate::ir_lower::lower_program(&mut ct, &prog).expect("lower");
     let main = m.fn_by_name("main").expect("main");
     let mut saw_const_bs = false;

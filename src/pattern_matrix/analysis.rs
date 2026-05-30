@@ -43,7 +43,7 @@ pub fn is_inexhaustive_with_domains(
     has_reachable_fail_in_matcher(&matcher, matcher.root, &domain_by_subject)
 }
 
-fn matcher_for_analysis(pattern_matrix: PatternMatrix) -> crate::matcher::Matcher {
+fn matcher_for_analysis(pattern_matrix: PatternMatrix) -> crate::exec::matcher::Matcher {
     compile_pattern_matrix(pattern_matrix).expect("pattern analysis matcher must compile")
 }
 
@@ -57,28 +57,28 @@ fn normalize_guards_for_analysis(mut pattern_matrix: PatternMatrix) -> PatternMa
 }
 
 fn collect_reachable_bodies_from_matcher(
-    matcher: &crate::matcher::Matcher,
-    node: crate::matcher::NodeId,
+    matcher: &crate::exec::matcher::Matcher,
+    node: crate::exec::matcher::NodeId,
     out: &mut std::collections::BTreeSet<BodyId>,
 ) {
     let Some(node) = matcher.node(node) else {
         return;
     };
     match node {
-        crate::matcher::MatcherNode::Fail { .. } => {}
-        crate::matcher::MatcherNode::Leaf(leaf) => {
+        crate::exec::matcher::MatcherNode::Fail { .. } => {}
+        crate::exec::matcher::MatcherNode::Leaf(leaf) => {
             out.insert(leaf.body_id);
         }
-        crate::matcher::MatcherNode::Switch { cases, default, .. } => {
+        crate::exec::matcher::MatcherNode::Switch { cases, default, .. } => {
             for (_, sub) in cases {
                 collect_reachable_bodies_from_matcher(matcher, *sub, out);
             }
             collect_reachable_bodies_from_matcher(matcher, *default, out);
         }
-        crate::matcher::MatcherNode::Test {
+        crate::exec::matcher::MatcherNode::Test {
             on_true, on_false, ..
         }
-        | crate::matcher::MatcherNode::Guard {
+        | crate::exec::matcher::MatcherNode::Guard {
             on_true, on_false, ..
         } => {
             collect_reachable_bodies_from_matcher(matcher, *on_true, out);
@@ -88,17 +88,17 @@ fn collect_reachable_bodies_from_matcher(
 }
 
 fn has_reachable_fail_in_matcher(
-    matcher: &crate::matcher::Matcher,
-    node: crate::matcher::NodeId,
+    matcher: &crate::exec::matcher::Matcher,
+    node: crate::exec::matcher::NodeId,
     domain_by_subject: &std::collections::HashMap<Var, SubjectDomain>,
 ) -> bool {
     let Some(node_ref) = matcher.node(node) else {
         return false;
     };
     match node_ref {
-        crate::matcher::MatcherNode::Fail { .. } => true,
-        crate::matcher::MatcherNode::Leaf(_) => false,
-        crate::matcher::MatcherNode::Switch { cases, default, .. } => {
+        crate::exec::matcher::MatcherNode::Fail { .. } => true,
+        crate::exec::matcher::MatcherNode::Leaf(_) => false,
+        crate::exec::matcher::MatcherNode::Switch { cases, default, .. } => {
             if cases
                 .iter()
                 .any(|(_, sub)| has_reachable_fail_in_matcher(matcher, *sub, domain_by_subject))
@@ -110,10 +110,10 @@ fn has_reachable_fail_in_matcher(
             }
             has_reachable_fail_in_matcher(matcher, *default, domain_by_subject)
         }
-        crate::matcher::MatcherNode::Test {
+        crate::exec::matcher::MatcherNode::Test {
             on_true, on_false, ..
         }
-        | crate::matcher::MatcherNode::Guard {
+        | crate::exec::matcher::MatcherNode::Guard {
             on_true, on_false, ..
         } => {
             has_reachable_fail_in_matcher(matcher, *on_true, domain_by_subject)
@@ -123,13 +123,13 @@ fn has_reachable_fail_in_matcher(
 }
 
 fn list_domain_is_covered_in_matcher(
-    matcher: &crate::matcher::Matcher,
-    node: crate::matcher::NodeId,
+    matcher: &crate::exec::matcher::Matcher,
+    node: crate::exec::matcher::NodeId,
     domain_by_subject: &std::collections::HashMap<Var, SubjectDomain>,
 ) -> bool {
-    let Some(crate::matcher::MatcherNode::Switch {
+    let Some(crate::exec::matcher::MatcherNode::Switch {
         subject,
-        kind: crate::matcher::SwitchKind::ListCons,
+        kind: crate::exec::matcher::SwitchKind::ListCons,
         cases,
         ..
     }) = matcher.node(node)
@@ -143,24 +143,24 @@ fn list_domain_is_covered_in_matcher(
     }
     let has_empty = cases
         .iter()
-        .any(|(key, _)| matches!(key, crate::matcher::SwitchKey::EmptyList));
+        .any(|(key, _)| matches!(key, crate::exec::matcher::SwitchKey::EmptyList));
     let has_cons = cases
         .iter()
-        .any(|(key, _)| matches!(key, crate::matcher::SwitchKey::Cons));
+        .any(|(key, _)| matches!(key, crate::exec::matcher::SwitchKey::Cons));
     has_empty && has_cons
 }
 
 fn matcher_subject_root_var(
-    matcher: &crate::matcher::Matcher,
-    subject: &crate::matcher::SubjectRef,
+    matcher: &crate::exec::matcher::Matcher,
+    subject: &crate::exec::matcher::SubjectRef,
 ) -> Option<Var> {
     let input = match subject {
-        crate::matcher::SubjectRef::Input(input) => *input,
-        crate::matcher::SubjectRef::TupleField { tuple, .. }
-        | crate::matcher::SubjectRef::ListHead(tuple)
-        | crate::matcher::SubjectRef::ListTail(tuple)
-        | crate::matcher::SubjectRef::MapValue { map: tuple, .. }
-        | crate::matcher::SubjectRef::BitstringField {
+        crate::exec::matcher::SubjectRef::Input(input) => *input,
+        crate::exec::matcher::SubjectRef::TupleField { tuple, .. }
+        | crate::exec::matcher::SubjectRef::ListHead(tuple)
+        | crate::exec::matcher::SubjectRef::ListTail(tuple)
+        | crate::exec::matcher::SubjectRef::MapValue { map: tuple, .. }
+        | crate::exec::matcher::SubjectRef::BitstringField {
             bitstring: tuple, ..
         } => return matcher_subject_root_var(matcher, tuple),
     };

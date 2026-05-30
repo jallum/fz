@@ -328,7 +328,7 @@ fn pattern_matrix_var_leaf_preserves_binding() {
         rows: vec![row(vec![Pattern::Var("x".to_string())], 7)],
     };
     let matcher = compile_pattern_matrix(pattern_matrix).expect("compile pattern matrix");
-    let Some(crate::matcher::MatcherNode::Leaf(leaf)) = matcher.node(matcher.root) else {
+    let Some(crate::exec::matcher::MatcherNode::Leaf(leaf)) = matcher.node(matcher.root) else {
         panic!("expected root leaf, got {:?}", matcher.node(matcher.root));
     };
 
@@ -337,7 +337,7 @@ fn pattern_matrix_var_leaf_preserves_binding() {
     assert_eq!(leaf.bindings[0].name, "x");
     assert_eq!(
         leaf.bindings[0].source,
-        crate::matcher::SubjectRef::Input(crate::matcher::InputId(0))
+        crate::exec::matcher::SubjectRef::Input(crate::exec::matcher::InputId(0))
     );
 }
 
@@ -354,15 +354,16 @@ fn pattern_matrix_tuple_switch_preserves_shape_and_field_binding() {
         )],
     };
     let matcher = compile_pattern_matrix(pattern_matrix).expect("compile pattern matrix");
-    let Some(crate::matcher::MatcherNode::Switch { kind, cases, .. }) = matcher.node(matcher.root)
+    let Some(crate::exec::matcher::MatcherNode::Switch { kind, cases, .. }) =
+        matcher.node(matcher.root)
     else {
         panic!("expected root switch, got {:?}", matcher.node(matcher.root));
     };
 
-    assert_eq!(*kind, crate::matcher::SwitchKind::TupleArity);
-    assert_eq!(cases[0].0, crate::matcher::SwitchKey::Arity(2));
+    assert_eq!(*kind, crate::exec::matcher::SwitchKind::TupleArity);
+    assert_eq!(cases[0].0, crate::exec::matcher::SwitchKey::Arity(2));
     let arity_node = cases[0].1;
-    let Some(crate::matcher::MatcherNode::Switch {
+    let Some(crate::exec::matcher::MatcherNode::Switch {
         kind,
         cases: atom_cases,
         ..
@@ -373,12 +374,12 @@ fn pattern_matrix_tuple_switch_preserves_shape_and_field_binding() {
             matcher.node(arity_node)
         );
     };
-    assert_eq!(*kind, crate::matcher::SwitchKind::Atom);
+    assert_eq!(*kind, crate::exec::matcher::SwitchKind::Atom);
     assert_eq!(
         atom_cases[0].0,
-        crate::matcher::SwitchKey::AtomName("ok".to_string())
+        crate::exec::matcher::SwitchKey::AtomName("ok".to_string())
     );
-    let Some(crate::matcher::MatcherNode::Leaf(leaf)) = matcher.node(atom_cases[0].1) else {
+    let Some(crate::exec::matcher::MatcherNode::Leaf(leaf)) = matcher.node(atom_cases[0].1) else {
         panic!(
             "expected atom leaf, got {:?}",
             matcher.node(atom_cases[0].1)
@@ -386,10 +387,10 @@ fn pattern_matrix_tuple_switch_preserves_shape_and_field_binding() {
     };
     assert_eq!(
         leaf.bindings[0].source,
-        crate::matcher::SubjectRef::TupleField {
-            tuple: Box::new(crate::matcher::SubjectRef::Input(crate::matcher::InputId(
-                0
-            ))),
+        crate::exec::matcher::SubjectRef::TupleField {
+            tuple: Box::new(crate::exec::matcher::SubjectRef::Input(
+                crate::exec::matcher::InputId(0)
+            )),
             index: 1,
         }
     );
@@ -411,14 +412,15 @@ fn pattern_matrix_tuple_default_preserves_removed_column_binding() {
         ],
     };
     let matcher = compile_pattern_matrix(pattern_matrix).expect("compile pattern matrix");
-    let Some(crate::matcher::MatcherNode::Switch { default, .. }) = matcher.node(matcher.root)
+    let Some(crate::exec::matcher::MatcherNode::Switch { default, .. }) =
+        matcher.node(matcher.root)
     else {
         panic!(
             "expected tuple switch, got {:?}",
             matcher.node(matcher.root)
         );
     };
-    let Some(crate::matcher::MatcherNode::Leaf(leaf)) = matcher.node(*default) else {
+    let Some(crate::exec::matcher::MatcherNode::Leaf(leaf)) = matcher.node(*default) else {
         panic!("expected default leaf, got {:?}", matcher.node(*default));
     };
 
@@ -427,7 +429,7 @@ fn pattern_matrix_tuple_default_preserves_removed_column_binding() {
     assert_eq!(leaf.bindings[0].name, "fallback");
     assert_eq!(
         leaf.bindings[0].source,
-        crate::matcher::SubjectRef::Input(crate::matcher::InputId(0))
+        crate::exec::matcher::SubjectRef::Input(crate::exec::matcher::InputId(0))
     );
 }
 
@@ -444,28 +446,29 @@ fn pattern_matrix_list_cons_preserves_head_tail_refs() {
         )],
     };
     let matcher = compile_pattern_matrix(pattern_matrix).expect("compile pattern matrix");
-    let Some(crate::matcher::MatcherNode::Switch { cases, .. }) = matcher.node(matcher.root) else {
+    let Some(crate::exec::matcher::MatcherNode::Switch { cases, .. }) = matcher.node(matcher.root)
+    else {
         panic!("expected list switch, got {:?}", matcher.node(matcher.root));
     };
     let (_, cons_node) = cases
         .iter()
-        .find(|(key, _)| *key == crate::matcher::SwitchKey::Cons)
+        .find(|(key, _)| *key == crate::exec::matcher::SwitchKey::Cons)
         .expect("cons case");
-    let Some(crate::matcher::MatcherNode::Leaf(leaf)) = matcher.node(*cons_node) else {
+    let Some(crate::exec::matcher::MatcherNode::Leaf(leaf)) = matcher.node(*cons_node) else {
         panic!("expected cons leaf, got {:?}", matcher.node(*cons_node));
     };
 
     assert_eq!(
         leaf.bindings[0].source,
-        crate::matcher::SubjectRef::ListHead(Box::new(crate::matcher::SubjectRef::Input(
-            crate::matcher::InputId(0),
-        )))
+        crate::exec::matcher::SubjectRef::ListHead(Box::new(
+            crate::exec::matcher::SubjectRef::Input(crate::exec::matcher::InputId(0),)
+        ))
     );
     assert_eq!(
         leaf.bindings[1].source,
-        crate::matcher::SubjectRef::ListTail(Box::new(crate::matcher::SubjectRef::Input(
-            crate::matcher::InputId(0),
-        )))
+        crate::exec::matcher::SubjectRef::ListTail(Box::new(
+            crate::exec::matcher::SubjectRef::Input(crate::exec::matcher::InputId(0),)
+        ))
     );
 }
 
@@ -485,11 +488,12 @@ fn pattern_matrix_list_default_preserves_removed_column_binding() {
         ],
     };
     let matcher = compile_pattern_matrix(pattern_matrix).expect("compile pattern matrix");
-    let Some(crate::matcher::MatcherNode::Switch { default, .. }) = matcher.node(matcher.root)
+    let Some(crate::exec::matcher::MatcherNode::Switch { default, .. }) =
+        matcher.node(matcher.root)
     else {
         panic!("expected list switch, got {:?}", matcher.node(matcher.root));
     };
-    let Some(crate::matcher::MatcherNode::Leaf(leaf)) = matcher.node(*default) else {
+    let Some(crate::exec::matcher::MatcherNode::Leaf(leaf)) = matcher.node(*default) else {
         panic!("expected default leaf, got {:?}", matcher.node(*default));
     };
 
@@ -498,7 +502,7 @@ fn pattern_matrix_list_default_preserves_removed_column_binding() {
     assert_eq!(leaf.bindings[0].name, "fallback");
     assert_eq!(
         leaf.bindings[0].source,
-        crate::matcher::SubjectRef::Input(crate::matcher::InputId(0))
+        crate::exec::matcher::SubjectRef::Input(crate::exec::matcher::InputId(0))
     );
 }
 
@@ -512,7 +516,7 @@ fn pattern_matrix_lowers_guard_to_guard_node() {
         ],
     };
     let matcher = compile_pattern_matrix(pattern_matrix).expect("compile guarded matcher");
-    let Some(crate::matcher::MatcherNode::Guard {
+    let Some(crate::exec::matcher::MatcherNode::Guard {
         expr,
         on_true,
         on_false,
@@ -523,13 +527,13 @@ fn pattern_matrix_lowers_guard_to_guard_node() {
     };
     assert!(matches!(
         expr,
-        crate::matcher::GuardExpr::Const(crate::matcher::MatcherConst::Bool(true))
+        crate::exec::matcher::GuardExpr::Const(crate::exec::matcher::MatcherConst::Bool(true))
     ));
-    let Some(crate::matcher::MatcherNode::Leaf(true_leaf)) = matcher.node(*on_true) else {
+    let Some(crate::exec::matcher::MatcherNode::Leaf(true_leaf)) = matcher.node(*on_true) else {
         panic!("expected guard true leaf, got {:?}", matcher.node(*on_true));
     };
     assert_eq!(true_leaf.body_id, 0);
-    let Some(crate::matcher::MatcherNode::Leaf(false_leaf)) = matcher.node(*on_false) else {
+    let Some(crate::exec::matcher::MatcherNode::Leaf(false_leaf)) = matcher.node(*on_false) else {
         panic!(
             "expected guard false fallthrough leaf, got {:?}",
             matcher.node(*on_false)
@@ -555,9 +559,9 @@ fn pattern_matrix_guard_capture_walks_call_args_without_capturing_callee() {
             row(vec![Pattern::Wildcard], 1),
         ],
     };
-    let mut resolver = |_name: &str, _arity: usize, _args: Vec<crate::matcher::GuardExpr>| {
-        Ok(Some(crate::matcher::GuardExpr::Const(
-            crate::matcher::MatcherConst::Bool(true),
+    let mut resolver = |_name: &str, _arity: usize, _args: Vec<crate::exec::matcher::GuardExpr>| {
+        Ok(Some(crate::exec::matcher::GuardExpr::Const(
+            crate::exec::matcher::MatcherConst::Bool(true),
         )))
     };
     let matcher = compile_pattern_matrix_with_guard_resolver(pattern_matrix, &mut resolver)
@@ -580,7 +584,7 @@ fn pattern_matrix_lowers_pinned_per_row_to_eq_pinned_test() {
 
     assert_eq!(matcher.pinned.len(), 1);
     assert_eq!(matcher.pinned[0].name, "want");
-    let Some(crate::matcher::MatcherNode::Test {
+    let Some(crate::exec::matcher::MatcherNode::Test {
         test,
         on_true,
         on_false,
@@ -594,21 +598,21 @@ fn pattern_matrix_lowers_pinned_per_row_to_eq_pinned_test() {
     };
     assert_eq!(
         *test,
-        crate::matcher::MatcherTest::EqPinned {
-            subject: crate::matcher::SubjectRef::Input(crate::matcher::InputId(0)),
-            pinned: crate::matcher::PinnedId(0),
+        crate::exec::matcher::MatcherTest::EqPinned {
+            subject: crate::exec::matcher::SubjectRef::Input(crate::exec::matcher::InputId(0)),
+            pinned: crate::exec::matcher::PinnedId(0),
         }
     );
     assert!(matches!(
         matcher.node(*on_true),
-        Some(crate::matcher::MatcherNode::Leaf(
-            crate::matcher::MatcherLeaf { body_id: 0, .. }
+        Some(crate::exec::matcher::MatcherNode::Leaf(
+            crate::exec::matcher::MatcherLeaf { body_id: 0, .. }
         ))
     ));
     assert!(matches!(
         matcher.node(*on_false),
-        Some(crate::matcher::MatcherNode::Leaf(
-            crate::matcher::MatcherLeaf { body_id: 1, .. }
+        Some(crate::exec::matcher::MatcherNode::Leaf(
+            crate::exec::matcher::MatcherLeaf { body_id: 1, .. }
         ))
     ));
 }
@@ -631,8 +635,8 @@ fn pattern_matrix_lowers_tuple_field_pinned_with_var_binding() {
         .nodes
         .iter()
         .find_map(|node| match node {
-            crate::matcher::MatcherNode::Test {
-                test: test @ crate::matcher::MatcherTest::EqPinned { .. },
+            crate::exec::matcher::MatcherNode::Test {
+                test: test @ crate::exec::matcher::MatcherTest::EqPinned { .. },
                 ..
             } => Some(test),
             _ => None,
@@ -642,18 +646,18 @@ fn pattern_matrix_lowers_tuple_field_pinned_with_var_binding() {
     assert_eq!(matcher.pinned[0].name, "ref");
     assert_eq!(
         *pinned_test,
-        crate::matcher::MatcherTest::EqPinned {
-            subject: crate::matcher::SubjectRef::TupleField {
-                tuple: Box::new(crate::matcher::SubjectRef::Input(crate::matcher::InputId(
-                    0
-                ))),
+        crate::exec::matcher::MatcherTest::EqPinned {
+            subject: crate::exec::matcher::SubjectRef::TupleField {
+                tuple: Box::new(crate::exec::matcher::SubjectRef::Input(
+                    crate::exec::matcher::InputId(0)
+                )),
                 index: 1,
             },
-            pinned: crate::matcher::PinnedId(0),
+            pinned: crate::exec::matcher::PinnedId(0),
         }
     );
     let payload_binding = matcher.nodes.iter().find_map(|node| match node {
-        crate::matcher::MatcherNode::Leaf(leaf) => leaf
+        crate::exec::matcher::MatcherNode::Leaf(leaf) => leaf
             .bindings
             .iter()
             .find(|binding| binding.name == "payload"),
@@ -661,10 +665,10 @@ fn pattern_matrix_lowers_tuple_field_pinned_with_var_binding() {
     });
     assert_eq!(
         payload_binding.map(|binding| binding.source.clone()),
-        Some(crate::matcher::SubjectRef::TupleField {
-            tuple: Box::new(crate::matcher::SubjectRef::Input(crate::matcher::InputId(
-                0
-            ))),
+        Some(crate::exec::matcher::SubjectRef::TupleField {
+            tuple: Box::new(crate::exec::matcher::SubjectRef::Input(
+                crate::exec::matcher::InputId(0)
+            )),
             index: 2,
         })
     );
@@ -681,7 +685,7 @@ fn pattern_matrix_lowers_empty_map_to_map_kind_test() {
     };
     let matcher = compile_pattern_matrix(pattern_matrix).expect("compile pattern matrix");
 
-    let Some(crate::matcher::MatcherNode::Test {
+    let Some(crate::exec::matcher::MatcherNode::Test {
         test,
         on_true,
         on_false,
@@ -695,20 +699,20 @@ fn pattern_matrix_lowers_empty_map_to_map_kind_test() {
     };
     assert_eq!(
         *test,
-        crate::matcher::MatcherTest::MapKind {
-            subject: crate::matcher::SubjectRef::Input(crate::matcher::InputId(0)),
+        crate::exec::matcher::MatcherTest::MapKind {
+            subject: crate::exec::matcher::SubjectRef::Input(crate::exec::matcher::InputId(0)),
         }
     );
     assert!(matches!(
         matcher.node(*on_true),
-        Some(crate::matcher::MatcherNode::Leaf(
-            crate::matcher::MatcherLeaf { body_id: 0, .. }
+        Some(crate::exec::matcher::MatcherNode::Leaf(
+            crate::exec::matcher::MatcherLeaf { body_id: 0, .. }
         ))
     ));
     assert!(matches!(
         matcher.node(*on_false),
-        Some(crate::matcher::MatcherNode::Leaf(
-            crate::matcher::MatcherLeaf { body_id: 1, .. }
+        Some(crate::exec::matcher::MatcherNode::Leaf(
+            crate::exec::matcher::MatcherLeaf { body_id: 1, .. }
         ))
     ));
 }
@@ -728,15 +732,17 @@ fn pattern_matrix_lowers_scalar_map_key_to_has_key_and_value_subject() {
     let matcher = compile_pattern_matrix(pattern_matrix).expect("compile pattern matrix");
     assert_eq!(
         matcher.prepared_keys,
-        vec![crate::matcher::MatcherConst::AtomName("id".to_string())]
+        vec![crate::exec::matcher::MatcherConst::AtomName(
+            "id".to_string()
+        )]
     );
-    let map_key = crate::matcher::MatcherConst::PreparedKey(0);
+    let map_key = crate::exec::matcher::MatcherConst::PreparedKey(0);
 
     assert!(matcher.nodes.iter().any(|node| matches!(
         node,
-        crate::matcher::MatcherNode::Test {
-            test: crate::matcher::MatcherTest::MapHasKey {
-                subject: crate::matcher::SubjectRef::Input(crate::matcher::InputId(0)),
+        crate::exec::matcher::MatcherNode::Test {
+            test: crate::exec::matcher::MatcherTest::MapHasKey {
+                subject: crate::exec::matcher::SubjectRef::Input(crate::exec::matcher::InputId(0)),
                 key,
             },
             ..
@@ -744,13 +750,13 @@ fn pattern_matrix_lowers_scalar_map_key_to_has_key_and_value_subject() {
     )));
     assert!(matcher.nodes.iter().any(|node| matches!(
         node,
-        crate::matcher::MatcherNode::Test {
-            test: crate::matcher::MatcherTest::EqConst {
-                subject: crate::matcher::SubjectRef::MapValue { map, key },
-                value: crate::matcher::MatcherConst::Int(42),
+        crate::exec::matcher::MatcherNode::Test {
+            test: crate::exec::matcher::MatcherTest::EqConst {
+                subject: crate::exec::matcher::SubjectRef::MapValue { map, key },
+                value: crate::exec::matcher::MatcherConst::Int(42),
             },
             ..
-        } if **map == crate::matcher::SubjectRef::Input(crate::matcher::InputId(0))
+        } if **map == crate::exec::matcher::SubjectRef::Input(crate::exec::matcher::InputId(0))
             && *key == map_key
     )));
 }
@@ -766,8 +772,8 @@ fn pattern_matrix_checks_key_presence_before_matching_nil_value() {
     };
     let matcher = compile_pattern_matrix(pattern_matrix).expect("compile pattern matrix");
 
-    let Some(crate::matcher::MatcherNode::Test {
-        test: crate::matcher::MatcherTest::MapKind { .. },
+    let Some(crate::exec::matcher::MatcherNode::Test {
+        test: crate::exec::matcher::MatcherTest::MapKind { .. },
         on_true: has_key,
         ..
     }) = matcher.node(matcher.root)
@@ -777,8 +783,8 @@ fn pattern_matrix_checks_key_presence_before_matching_nil_value() {
             matcher.node(matcher.root)
         );
     };
-    let Some(crate::matcher::MatcherNode::Test {
-        test: crate::matcher::MatcherTest::MapHasKey { .. },
+    let Some(crate::exec::matcher::MatcherNode::Test {
+        test: crate::exec::matcher::MatcherTest::MapHasKey { .. },
         on_true: value_test,
         ..
     }) = matcher.node(*has_key)
@@ -787,10 +793,10 @@ fn pattern_matrix_checks_key_presence_before_matching_nil_value() {
     };
     assert!(matches!(
         matcher.node(*value_test),
-        Some(crate::matcher::MatcherNode::Test {
-            test: crate::matcher::MatcherTest::EqConst {
-                subject: crate::matcher::SubjectRef::MapValue { .. },
-                value: crate::matcher::MatcherConst::Nil,
+        Some(crate::exec::matcher::MatcherNode::Test {
+            test: crate::exec::matcher::MatcherTest::EqConst {
+                subject: crate::exec::matcher::SubjectRef::MapValue { .. },
+                value: crate::exec::matcher::MatcherConst::Nil,
             },
             ..
         })
@@ -812,13 +818,15 @@ fn pattern_matrix_lowers_heap_map_keys_to_prepared_slots() {
     let matcher = compile_pattern_matrix(pattern_matrix).expect("compile pattern matrix");
     assert_eq!(
         matcher.prepared_keys,
-        vec![crate::matcher::MatcherConst::Utf8Binary(b"id".to_vec())]
+        vec![crate::exec::matcher::MatcherConst::Utf8Binary(
+            b"id".to_vec()
+        )]
     );
     assert!(matcher.nodes.iter().any(|node| matches!(
         node,
-        crate::matcher::MatcherNode::Test {
-            test: crate::matcher::MatcherTest::MapHasKey {
-                key: crate::matcher::MatcherConst::PreparedKey(0),
+        crate::exec::matcher::MatcherNode::Test {
+            test: crate::exec::matcher::MatcherTest::MapHasKey {
+                key: crate::exec::matcher::MatcherConst::PreparedKey(0),
                 ..
             },
             ..
@@ -834,8 +842,8 @@ fn pattern_matrix_lowers_empty_bitstring_to_bitstring_test() {
     };
     let matcher = compile_pattern_matrix(pattern_matrix).expect("compile pattern matrix");
 
-    let Some(crate::matcher::MatcherNode::Test {
-        test: crate::matcher::MatcherTest::Bitstring { subject, fields },
+    let Some(crate::exec::matcher::MatcherNode::Test {
+        test: crate::exec::matcher::MatcherTest::Bitstring { subject, fields },
         ..
     }) = matcher.node(matcher.root)
     else {
@@ -846,7 +854,7 @@ fn pattern_matrix_lowers_empty_bitstring_to_bitstring_test() {
     };
     assert_eq!(
         *subject,
-        crate::matcher::SubjectRef::Input(crate::matcher::InputId(0))
+        crate::exec::matcher::SubjectRef::Input(crate::exec::matcher::InputId(0))
     );
     assert!(fields.is_empty());
 }
@@ -871,8 +879,8 @@ fn pattern_matrix_lowers_bitstring_field_specs_and_bindings() {
     };
     let matcher = compile_pattern_matrix(pattern_matrix).expect("compile pattern matrix");
 
-    let Some(crate::matcher::MatcherNode::Test {
-        test: crate::matcher::MatcherTest::Bitstring { fields, .. },
+    let Some(crate::exec::matcher::MatcherNode::Test {
+        test: crate::exec::matcher::MatcherTest::Bitstring { fields, .. },
         ..
     }) = matcher.node(matcher.root)
     else {
@@ -880,27 +888,27 @@ fn pattern_matrix_lowers_bitstring_field_specs_and_bindings() {
     };
     assert_eq!(
         fields,
-        &vec![crate::matcher::MatcherBitField {
-            ty: crate::matcher::MatcherBitType::Integer,
-            size: Some(crate::matcher::MatcherBitSize::Literal(8)),
-            endian: crate::matcher::MatcherEndian::Little,
+        &vec![crate::exec::matcher::MatcherBitField {
+            ty: crate::exec::matcher::MatcherBitType::Integer,
+            size: Some(crate::exec::matcher::MatcherBitSize::Literal(8)),
+            endian: crate::exec::matcher::MatcherEndian::Little,
             signed: true,
             unit: Some(1),
             direct_bindings: vec!["byte".to_string()],
         }]
     );
     let byte_binding = matcher.nodes.iter().find_map(|node| match node {
-        crate::matcher::MatcherNode::Leaf(leaf) => {
+        crate::exec::matcher::MatcherNode::Leaf(leaf) => {
             leaf.bindings.iter().find(|binding| binding.name == "byte")
         }
         _ => None,
     });
     assert_eq!(
         byte_binding.map(|binding| binding.source.clone()),
-        Some(crate::matcher::SubjectRef::BitstringField {
-            bitstring: Box::new(crate::matcher::SubjectRef::Input(crate::matcher::InputId(
-                0
-            ))),
+        Some(crate::exec::matcher::SubjectRef::BitstringField {
+            bitstring: Box::new(crate::exec::matcher::SubjectRef::Input(
+                crate::exec::matcher::InputId(0)
+            )),
             index: 0,
         })
     );
@@ -933,8 +941,8 @@ fn pattern_matrix_lowers_dynamic_bitstring_size_by_binding_name() {
     };
     let matcher = compile_pattern_matrix(pattern_matrix).expect("compile pattern matrix");
 
-    let Some(crate::matcher::MatcherNode::Test {
-        test: crate::matcher::MatcherTest::Bitstring { fields, .. },
+    let Some(crate::exec::matcher::MatcherNode::Test {
+        test: crate::exec::matcher::MatcherTest::Bitstring { fields, .. },
         ..
     }) = matcher.node(matcher.root)
     else {
@@ -942,6 +950,8 @@ fn pattern_matrix_lowers_dynamic_bitstring_size_by_binding_name() {
     };
     assert_eq!(
         fields[1].size,
-        Some(crate::matcher::MatcherBitSize::BindingName("n".to_string()))
+        Some(crate::exec::matcher::MatcherBitSize::BindingName(
+            "n".to_string()
+        ))
     );
 }

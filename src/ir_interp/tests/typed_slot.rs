@@ -1,6 +1,6 @@
 use crate::ir_interp::*;
-use crate::lexer::Lexer;
 use crate::parser::Parser;
+use crate::parser::lexer::Lexer;
 use fz_runtime::any_value::ValueKind;
 
 use crate::fz_ir::Module;
@@ -25,7 +25,7 @@ fn run_checked(src: &str) -> i64 {
 fn capture(src: &str) -> String {
     let m = lower_src(src);
     let tel = crate::telemetry::bus::ConfiguredTelemetry::new();
-    let dbg = crate::runtime::DbgCapture::new();
+    let dbg = crate::exec::runtime::DbgCapture::new();
     tel.attach(&[], dbg.handler());
     run_main(&tel, &m).expect("interp run");
     dbg.lines().join("\n")

@@ -12,7 +12,9 @@ use crate::fz_ir::Module;
 use crate::ir_interp::IrInterpRuntime;
 
 fn lower_src(src: &str) -> Module {
-    let toks = crate::lexer::Lexer::new(src).tokenize().expect("lex");
+    let toks = crate::parser::lexer::Lexer::new(src)
+        .tokenize()
+        .expect("lex");
     let prog = crate::parser::Parser::new(toks)
         .parse_program()
         .expect("parse");
@@ -23,10 +25,10 @@ fn lower_src(src: &str) -> Module {
 /// handle so the test can read what each runtime emitted.
 fn capture() -> (
     crate::telemetry::bus::ConfiguredTelemetry,
-    crate::runtime::DbgCapture,
+    crate::exec::runtime::DbgCapture,
 ) {
     let tel = crate::telemetry::bus::ConfiguredTelemetry::new();
-    let cap = crate::runtime::DbgCapture::new();
+    let cap = crate::exec::runtime::DbgCapture::new();
     tel.attach(&[], cap.handler());
     (tel, cap)
 }

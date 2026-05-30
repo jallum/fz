@@ -5,15 +5,15 @@ use super::{PatternMatrix, PatternMatrixCompileError, SubjectRef};
 
 pub fn collect_matcher_pattern_bindings(
     patterns: &[Spanned<Pattern>],
-    pinned_by_name: &std::collections::HashMap<String, crate::matcher::PinnedId>,
-) -> Result<Vec<crate::matcher::MatcherBinding>, PatternMatrixCompileError> {
+    pinned_by_name: &std::collections::HashMap<String, crate::exec::matcher::PinnedId>,
+) -> Result<Vec<crate::exec::matcher::MatcherBinding>, PatternMatrixCompileError> {
     let mut tests = Vec::new();
     let mut bindings = Vec::new();
     let mut prepared_keys = Vec::new();
     for (index, pattern) in patterns.iter().enumerate() {
         append_pattern_ops(
             &pattern.node,
-            crate::matcher::SubjectRef::Input(crate::matcher::InputId(index as u32)),
+            crate::exec::matcher::SubjectRef::Input(crate::exec::matcher::InputId(index as u32)),
             pinned_by_name,
             &mut prepared_keys,
             &mut tests,

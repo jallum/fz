@@ -136,7 +136,7 @@ pub(crate) fn lower_expr(
         Expr::Binary(bytes) => {
             // fz-axu.11 (L3) — every `"…"` literal lowers to a
             // `utf8`-branded const bitstring. UTF-8 validity is a lexer
-            // invariant (see read_quoted_binary_bytes in src/lexer.rs); raw
+            // invariant (see read_quoted_binary_bytes in src/parser/lexer.rs); raw
             // bytes flow through `<<…>>` syntax instead.
             let bit_len = (bytes.len() * 8) as u64;
             let bs = ctx.let_at(Prim::ConstBitstring(bytes.clone(), bit_len), sp);
@@ -563,8 +563,10 @@ fn extern_ty_from_ascription(
         });
     };
     let name = match tok {
-        crate::lexer::Tok::Ident(name) | crate::lexer::Tok::Upper(name) => name.as_str(),
-        crate::lexer::Tok::Nil => "nil",
+        crate::parser::lexer::Tok::Ident(name) | crate::parser::lexer::Tok::Upper(name) => {
+            name.as_str()
+        }
+        crate::parser::lexer::Tok::Nil => "nil",
         _ => {
             return Err(LowerError::Unsupported {
                 span,
@@ -806,7 +808,7 @@ pub(super) fn lower_pattern_as_key_expr(
         Pattern::Binary(bytes) => {
             // fz-axu.11 (L3) — map-key pattern: same lowering as
             // Expr::Binary / Pattern::Binary. UTF-8 validity is a lexer
-            // invariant (see read_quoted_binary_bytes in src/lexer.rs).
+            // invariant (see read_quoted_binary_bytes in src/parser/lexer.rs).
             let bit_len = (bytes.len() * 8) as u64;
             let bs = ctx.let_(Prim::ConstBitstring(bytes.clone(), bit_len));
             ctx.let_(Prim::Brand(bs, "utf8".to_string()))

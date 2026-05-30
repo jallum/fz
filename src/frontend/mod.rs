@@ -1,12 +1,18 @@
+pub(crate) mod macros;
+pub(crate) mod pattern_check;
+pub(crate) mod protocols;
+pub(crate) mod resolve;
+pub(crate) mod spec_check;
+pub(crate) mod spec_registry;
+
+use self::resolve::InterfaceTable;
 use crate::ast::{Expr, FnClause, FnDef, Pattern, Program, Spanned};
 use crate::diag::{Diagnostic, Diagnostics, SourceMap};
 use crate::fz_ir::Module;
 use crate::ir_planner::ModulePlan;
-use crate::lexer::Lexer;
-use crate::macros;
 use crate::parser::Parser;
+use crate::parser::lexer::Lexer;
 use crate::pattern_matrix::SubjectDomain;
-use crate::resolve::{self, InterfaceTable};
 use crate::types::{ClosureTypes, LiteralTypes, RenderTypes, Types};
 use std::collections::HashSet;
 
@@ -58,7 +64,7 @@ pub fn check_patterns<T: Types<Ty = crate::types::Ty> + ClosureTypes + LiteralTy
         })
         .collect();
     let domains = fn_subject_domains(t, module, module_plan);
-    Diagnostics::from_vec(crate::pattern_check::check_program(
+    Diagnostics::from_vec(crate::frontend::pattern_check::check_program(
         t,
         prog,
         Some(&survivors),
@@ -121,7 +127,9 @@ where
     T: Types<Ty = crate::types::Ty> + ClosureTypes + LiteralTypes + RenderTypes,
 {
     let mut mt = crate::ir_planner::plan_module(t, module, tel);
-    let mut diags = Diagnostics::from_vec(crate::spec_check::validate_specs(t, prog, module, &mt));
+    let mut diags = Diagnostics::from_vec(crate::frontend::spec_check::validate_specs(
+        t, prog, module, &mt,
+    ));
     diags.extend(check_patterns(t, prog, module, &mt));
     diags.extend(Diagnostics::from_vec(
         crate::ir_extern_marshal::resolve_module_types(t, module, &mut mt),

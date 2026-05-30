@@ -196,7 +196,7 @@ impl<'a, T: crate::types::Types<Ty = crate::types::Ty>> TypeExprParser<'a, T> {
                 && !self.t.has_vars(elem)
             {
                 let sigma = std::collections::HashMap::from([(
-                    crate::protocols::PROTOCOL_ELEM_VAR,
+                    crate::frontend::protocols::PROTOCOL_ELEM_VAR,
                     elem.clone(),
                 )]);
                 return Ok(self.t.instantiate(&template, &sigma));
@@ -256,8 +256,10 @@ impl<'a, T: crate::types::Types<Ty = crate::types::Ty>> TypeExprParser<'a, T> {
                 } else {
                     elem
                 };
-                let sigma =
-                    std::collections::HashMap::from([(crate::protocols::PROTOCOL_ELEM_VAR, elem)]);
+                let sigma = std::collections::HashMap::from([(
+                    crate::frontend::protocols::PROTOCOL_ELEM_VAR,
+                    elem,
+                )]);
                 return Ok(self.t.instantiate(&template, &sigma));
             }
             TypeAlias::Parameterized(alias) => alias,

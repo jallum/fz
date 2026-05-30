@@ -1,10 +1,7 @@
 mod ast;
-mod ast_value;
-mod bitstr;
 mod callsite_walk;
 mod concrete_types;
 mod diag;
-mod eval;
 mod frontend;
 mod fz_ir;
 mod ir_callgraph;
@@ -19,6 +16,8 @@ mod ir_interp;
 // Cranelift handles temporary spills. The richer per-call liveness was
 // never wired into codegen and the .11.31 root walker reads the existing
 // schema directly. See fz-ul4.11.30 (subsumed).
+mod cli;
+mod exec;
 mod ir_branch_fold;
 mod ir_brand_erase;
 mod ir_const_bs;
@@ -30,26 +29,14 @@ mod ir_inline;
 mod ir_lower;
 mod ir_planner;
 mod ir_reducer;
-mod lexer;
-mod macros;
-mod matcher;
 mod modules;
 mod parking;
 mod parser;
-mod pattern_check;
 mod pattern_matrix;
-mod protocols;
 mod reducer;
-mod repl;
-mod resolve;
-mod runtime;
-mod spec_check;
-mod spec_registry;
 mod telemetry;
-mod test_runner;
 mod type_expr;
 mod types;
-mod value;
 use crate::telemetry::Telemetry as _;
 use crate::types::Types;
 use modules::pipeline::{CompileMode, ProviderInputs};
@@ -73,7 +60,7 @@ pub(crate) fn notify_fixture_execution_start() {
     }
 }
 
-fn main() {
+pub fn run() {
     let raw_args: Vec<String> = std::env::args().skip(1).collect();
 
     // Pre-scan global flags before subcommand dispatch. Strip them from the
@@ -142,11 +129,11 @@ fn main() {
                     eprintln!("fz repl --script <path>");
                     std::process::exit(2);
                 });
-                if let Err(e) = repl::run_script(std::path::Path::new(&path)) {
+                if let Err(e) = cli::repl::run_script(std::path::Path::new(&path)) {
                     eprintln!("repl: {}", e);
                     std::process::exit(1);
                 }
-            } else if let Err(e) = repl::run() {
+            } else if let Err(e) = cli::repl::run() {
                 eprintln!("repl: {}", e);
                 std::process::exit(1);
             }
@@ -156,7 +143,7 @@ fn main() {
                 eprintln!("fz test <path>");
                 std::process::exit(2);
             });
-            if let Err(e) = test_runner::run(std::path::Path::new(&src)) {
+            if let Err(e) = cli::test_runner::run(std::path::Path::new(&src)) {
                 eprintln!("{}", e);
                 std::process::exit(1);
             }
@@ -172,7 +159,7 @@ fn main() {
             // during early language work; obsolete now that fixtures + `fz test`
             // + `fz run <path>` exist).
             if std::io::stdin().is_terminal() {
-                if let Err(e) = repl::run() {
+                if let Err(e) = cli::repl::run() {
                     eprintln!("repl: {}", e);
                     std::process::exit(1);
                 }
@@ -1022,7 +1009,7 @@ fn dump_specs_pipeline(
     sm_cell: &Rc<RefCell<diag::SourceMap>>,
     src: String,
     source_name: String,
-    interface_table: resolve::InterfaceTable,
+    interface_table: frontend::resolve::InterfaceTable,
 ) -> String {
     let mut t = types::ConcreteTypes;
     let frontend = run_frontend(
@@ -1045,7 +1032,7 @@ fn dump_interfaces_pipeline(
     src: String,
     source_name: String,
     strict: bool,
-    interface_table: resolve::InterfaceTable,
+    interface_table: frontend::resolve::InterfaceTable,
 ) -> String {
     let mut t = types::ConcreteTypes;
     let frontend = run_frontend(
@@ -1554,7 +1541,7 @@ fn run_jit_src(
     };
     // fz-swt.10 — attach the IR Module so `fz_make_resource` (callable
     // from JIT'd code) can resolve dtor closures.
-    let mut rt = runtime::Runtime::new(compiled.image.compiled_module(), 1)
+    let mut rt = exec::runtime::Runtime::new(compiled.image.compiled_module(), 1)
         .with_module(&compiled.module)
         .with_telemetry(tel);
     let _main_pid = rt.spawn(main_fn);

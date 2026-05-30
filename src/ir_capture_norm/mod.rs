@@ -881,10 +881,10 @@ fn apply_receive_matched_plan(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::exec::matcher::{Matcher, MatcherLeaf, MatcherNode};
     use crate::fz_ir::{
         BinOp, BlockId, Const, FnBuilder, FnId, ModuleBuilder, Prim, ReceiveAfter, ReceiveClause,
     };
-    use crate::matcher::{Matcher, MatcherLeaf, MatcherNode};
     use crate::telemetry::Value;
     use std::sync::Arc;
 

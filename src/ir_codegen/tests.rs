@@ -1,8 +1,8 @@
 use super::*;
 use crate::fz_ir::{BinOp, Const, FnBuilder, FnId, Module, Prim, Term};
 use crate::ir_lower::lower_program;
-use crate::lexer::Lexer;
 use crate::parser::Parser;
+use crate::parser::lexer::Lexer;
 use crate::types::{ClosureTypes, KeySlot, Types};
 use cranelift_codegen::ir::types;
 
@@ -20,7 +20,7 @@ fn lower_resolved_src(src: &str) -> Module {
     let toks = Lexer::new(src).tokenize().expect("lex");
     let prog = Parser::new(toks).parse_program().expect("parse");
     let mut t = crate::types::ConcreteTypes;
-    let prog = crate::resolve::flatten_modules(&mut t, prog).expect("resolve");
+    let prog = crate::frontend::resolve::flatten_modules(&mut t, prog).expect("resolve");
     lower_program(&mut t, &prog).expect("lower")
 }
 
@@ -428,7 +428,7 @@ fn linked_ir_units_rewrite_external_edges_and_run_provider_body() {
         .cloned()
         .expect("math interface");
 
-    let mut interfaces = crate::resolve::InterfaceTable::new();
+    let mut interfaces = crate::frontend::resolve::InterfaceTable::new();
     interfaces.insert(math_name, math_interface.clone());
     let user = crate::frontend::compile_source_with_interface_table(
         &mut t,
@@ -518,7 +518,7 @@ end
         crate::modules::identity::ModuleName::from_segments(vec!["Contracts".to_string()]);
     let contracts_interface = provider._prog.module_interfaces[&contracts].clone();
 
-    let mut interfaces = crate::resolve::InterfaceTable::new();
+    let mut interfaces = crate::frontend::resolve::InterfaceTable::new();
     interfaces.insert(contracts, contracts_interface.clone());
     let user = crate::frontend::compile_source_with_interface_table(
         &mut t,
@@ -904,7 +904,7 @@ fn aot_compile_produces_object_with_main_symbol() {
 /// plus the `dbg` output line stream. The one seam the result/output/heap test
 /// helpers are built on — no helper reads `task.halt_value` or `TEST_CAPTURE`.
 struct Observation {
-    exit: crate::runtime::ExitRecord,
+    exit: crate::exec::runtime::ExitRecord,
     output: Vec<String>,
 }
 
@@ -912,11 +912,11 @@ fn observe(compiled: &CompiledModule, entry: FnId) -> Observation {
     use crate::telemetry::bus::ConfiguredTelemetry;
 
     let tel = ConfiguredTelemetry::new();
-    let exits = crate::runtime::ProcessExitCapture::new();
-    let out = crate::runtime::DbgCapture::new();
+    let exits = crate::exec::runtime::ProcessExitCapture::new();
+    let out = crate::exec::runtime::DbgCapture::new();
     tel.attach(&[], exits.handler());
     tel.attach(&[], out.handler());
-    let mut rt = crate::runtime::Runtime::new(compiled, 1).with_telemetry(&tel);
+    let mut rt = crate::exec::runtime::Runtime::new(compiled, 1).with_telemetry(&tel);
     let _ = rt.spawn(entry);
     rt.run_until_idle();
 
@@ -2692,7 +2692,7 @@ fn print_distinguishes_nil_from_empty_list() {
 // `fz_make_resource`, which dispatches through the `MakeResourceHook` that
 // `Runtime::with_module` installs for the duration of `run_until_idle` (the
 // hook takes `&Module` so the thunk can walk the dtor closure's IR body —
-// see src/runtime.rs).
+// see src/exec/runtime.rs).
 //
 // Dtor firing happens on the production task-exit drain: when a task Exits,
 // the Runtime runs the MSO sweep and dispatches each surviving Resource's
@@ -2722,7 +2722,7 @@ mod resource_jit_tests {
         .expect("compile");
         // with_module installs the MakeResourceHook for the duration of
         // run_until_idle; the task-exit path runs the MSO sweep + dtors.
-        let mut rt = crate::runtime::Runtime::new(&compiled, 1).with_module(&module);
+        let mut rt = crate::exec::runtime::Runtime::new(&compiled, 1).with_module(&module);
         let _pid = rt.spawn(entry);
         rt.run_until_idle();
     }

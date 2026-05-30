@@ -11,10 +11,10 @@
 //! a stack-overflow guard catches runaway expansion).
 
 use crate::ast::*;
-use crate::ast_value::{expr_to_value, value_to_expr};
 use crate::diag::{Diagnostic, Span, SpanOrigin, codes};
-use crate::eval::CompileTimeEvaluator;
-use crate::value::Value;
+use crate::exec::ast_value::{expr_to_value, value_to_expr};
+use crate::exec::eval::CompileTimeEvaluator;
+use crate::exec::value::Value;
 
 const MAX_EXPANSION_DEPTH: usize = 200;
 
@@ -807,8 +807,8 @@ fn stamp_pattern(p: &mut Spanned<Pattern>, macro_call: Span, definition: Option<
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::lexer::Lexer;
     use crate::parser::Parser;
+    use crate::parser::lexer::Lexer;
 
     fn parse(src: &str) -> Program {
         let toks = Lexer::new(src).tokenize().expect("lex");
@@ -817,10 +817,10 @@ mod tests {
 
     /// Run the full pipeline (parse → flatten → expand → eval main) and
     /// return main's return value.
-    fn run(src: &str) -> crate::value::Value {
+    fn run(src: &str) -> crate::exec::value::Value {
         let prog = parse(src);
         let mut ct = crate::types::ConcreteTypes;
-        let mut prog = crate::resolve::flatten_modules(&mut ct, prog).expect("flatten");
+        let mut prog = crate::frontend::resolve::flatten_modules(&mut ct, prog).expect("flatten");
         expand_program(&mut prog).expect("expand");
         let interp = CompileTimeEvaluator::new();
         interp.load_program(&prog).expect("load");
@@ -839,7 +839,7 @@ fn main() do
   plus_one(41)
 end
 "#;
-        assert!(matches!(run(src), crate::value::Value::Int(42)));
+        assert!(matches!(run(src), crate::exec::value::Value::Int(42)));
     }
 
     #[test]
@@ -855,7 +855,7 @@ fn run() do
 end
 fn main() do run() end
 "#;
-        assert!(matches!(run(src), crate::value::Value::Int(60)));
+        assert!(matches!(run(src), crate::exec::value::Value::Int(60)));
     }
 
     #[test]
@@ -868,7 +868,7 @@ defmacro use_helper(x) do
 end
 fn main() do use_helper(7) end
 "#;
-        assert!(matches!(run(src), crate::value::Value::Int(21)));
+        assert!(matches!(run(src), crate::exec::value::Value::Int(21)));
     }
 
     #[test]
@@ -879,7 +879,7 @@ defmacro m1(x) do quote do: unquote(x) + 1 end
 defmacro m2(x) do quote do: m1(unquote(x)) end
 fn main() do m2(40) end
 "#;
-        assert!(matches!(run(src), crate::value::Value::Int(41)));
+        assert!(matches!(run(src), crate::exec::value::Value::Int(41)));
     }
 
     #[test]
@@ -894,7 +894,7 @@ defmacro m1(x) do quote do: unquote(x) + 1 end
 defmacro m2(x) do quote do: unquote(x) + 5 end
 fn main() do m2(m1(0)) end
 "#;
-        assert!(matches!(run(src), crate::value::Value::Int(6)));
+        assert!(matches!(run(src), crate::exec::value::Value::Int(6)));
     }
 
     #[test]
@@ -933,7 +933,7 @@ end
 "#;
         let v = run(src);
         assert!(
-            matches!(v, crate::value::Value::Int(1)),
+            matches!(v, crate::exec::value::Value::Int(1)),
             "expected caller's t (1) to survive, got {:?}",
             v
         );
@@ -953,7 +953,7 @@ fn main() do
   emit(x)
 end
 "#;
-        assert!(matches!(run(src), crate::value::Value::Int(8)));
+        assert!(matches!(run(src), crate::exec::value::Value::Int(8)));
     }
 
     #[test]
@@ -974,7 +974,7 @@ end
 "#;
         // Macro returns Block([t__hyg_N = 21, t__hyg_N + t__hyg_N]) → 42.
         // Caller's t stays at 100; macro's t__hyg_N is 21+21.
-        assert!(matches!(run(src), crate::value::Value::Int(42)));
+        assert!(matches!(run(src), crate::exec::value::Value::Int(42)));
     }
 
     #[test]
@@ -998,7 +998,7 @@ fn main() do User.run() end
         // M.bump expands at compile time into M.helper(7) (a fully
         // qualified call), so the result is 107.
         assert!(
-            matches!(run(src), crate::value::Value::Int(107)),
+            matches!(run(src), crate::exec::value::Value::Int(107)),
             "expected 107, got {:?}",
             run(src)
         );
@@ -1016,7 +1016,7 @@ defmodule User do
 end
 fn main() do User.run() end
 "#;
-        assert!(matches!(run(src), crate::value::Value::Int(42)));
+        assert!(matches!(run(src), crate::exec::value::Value::Int(42)));
     }
 
     #[test]
@@ -1039,7 +1039,7 @@ fn main() do
 end
 "#;
         assert!(
-            matches!(run(src), crate::value::Value::Int(42)),
+            matches!(run(src), crate::exec::value::Value::Int(42)),
             "expected 42, got {:?}",
             run(src)
         );
@@ -1062,7 +1062,7 @@ fn main() do
   first() + second()
 end
 "#;
-        assert!(matches!(run(src), crate::value::Value::Int(30)));
+        assert!(matches!(run(src), crate::exec::value::Value::Int(30)));
     }
 
     #[test]
@@ -1083,7 +1083,7 @@ fn main() do
 end
 "#;
         assert!(
-            matches!(run(src), crate::value::Value::Int(314)),
+            matches!(run(src), crate::exec::value::Value::Int(314)),
             "expected 314, got {:?}",
             run(src)
         );
@@ -1098,13 +1098,13 @@ end
         let interp = CompileTimeEvaluator::new();
         interp.load_program(&prog).expect("load");
         let v = interp.call_named("main", vec![]).expect("eval");
-        assert!(matches!(v, crate::value::Value::Int(3)));
+        assert!(matches!(v, crate::exec::value::Value::Int(3)));
     }
 
     #[test]
     fn pipe_into_call_rewrites_during_expansion() {
         let src = "fn add2(x), do: x + 2\nfn main(), do: 1 |> add2()";
-        assert!(matches!(run(src), crate::value::Value::Int(3)));
+        assert!(matches!(run(src), crate::exec::value::Value::Int(3)));
     }
 
     // ----- .20.3: SpanOrigin lineage on expanded code -----

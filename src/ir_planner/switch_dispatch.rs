@@ -180,7 +180,7 @@ fn switch_arms<T: crate::types::Types<Ty = crate::types::Ty>>(
         .values()
         .filter(|fact| fact.protocol == target.protocol)
     {
-        let target_ty = crate::protocols::impl_target_type(t, &fact.target);
+        let target_ty = crate::frontend::protocols::impl_target_type(t, &fact.target);
         let overlap = t.intersect(receiver_ty.clone(), target_ty.clone());
         if t.is_empty(&overlap) {
             continue;

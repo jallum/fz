@@ -1,7 +1,7 @@
 use crate::fz_ir::Module;
 use crate::ir_interp::run_main;
-use crate::lexer::Lexer;
 use crate::parser::Parser;
+use crate::parser::lexer::Lexer;
 
 fn lower_src(src: &str) -> Module {
     let toks = Lexer::new(src).tokenize().expect("lex");

@@ -758,8 +758,8 @@ mod tests {
     use super::*;
     use crate::ir_codegen::compile;
     use crate::ir_lower::lower_program;
-    use crate::lexer::Lexer;
     use crate::parser::Parser;
+    use crate::parser::lexer::Lexer;
 
     fn lower_src(src: &str) -> crate::fz_ir::Module {
         let toks = Lexer::new(src).tokenize().expect("lex");
@@ -1254,8 +1254,8 @@ mod tests {
         let toks = Lexer::new(src).tokenize().expect("lex");
         let prog = Parser::new(toks).parse_program().expect("parse");
         let mut ct = crate::types::ConcreteTypes;
-        let mut prog = crate::resolve::flatten_modules(&mut ct, prog).expect("resolve");
-        crate::macros::expand_program(&mut prog).expect("expand");
+        let mut prog = crate::frontend::resolve::flatten_modules(&mut ct, prog).expect("resolve");
+        crate::frontend::macros::expand_program(&mut prog).expect("expand");
         let m = crate::ir_lower::lower_program(&mut ct, &prog).expect("lower");
         let entry = m.fn_by_name("main").expect("main fn").id;
         let compiled = compile(&mut ct, &m, &crate::telemetry::NullTelemetry).expect("codegen");

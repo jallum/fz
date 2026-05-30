@@ -418,14 +418,14 @@ fn protocol_domain_ty<T: crate::types::Types<Ty = crate::types::Ty>>(
     module: &Module,
     protocol: &crate::modules::identity::ModuleName,
 ) -> crate::types::Ty {
-    let mut domain = t.opaque_of(&crate::protocols::protocol_domain_tag(protocol));
+    let mut domain = t.opaque_of(&crate::frontend::protocols::protocol_domain_tag(protocol));
     for fact in module
         .protocol_registry
         .impls
         .values()
         .filter(|fact| fact.protocol == *protocol)
     {
-        let target_ty = crate::protocols::impl_target_type(t, &fact.target);
+        let target_ty = crate::frontend::protocols::impl_target_type(t, &fact.target);
         domain = t.union(domain, target_ty);
     }
     domain

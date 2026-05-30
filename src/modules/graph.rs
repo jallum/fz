@@ -3,11 +3,11 @@
 //! The graph loader owns the policy for moving from root interfaces to the
 //! provider `.fzi`/`.fzo` artifacts actually needed to link a runnable image.
 
+use crate::frontend::resolve::InterfaceTable;
 use crate::modules::artifact::FzoArtifact;
 use crate::modules::artifact_store::{ArtifactStore, ArtifactStoreError};
 use crate::modules::identity::ModuleName;
 use crate::modules::interface::ModuleInterface;
-use crate::resolve::InterfaceTable;
 use std::collections::{BTreeSet, VecDeque};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -206,9 +206,9 @@ mod tests {
 
         let mut app = interface("App", Vec::new(), vec![("main", 0)]);
         app.protocol_impls
-            .push(crate::protocols::InterfaceProtocolImpl {
+            .push(crate::frontend::protocols::InterfaceProtocolImpl {
                 protocol: module("Enumerable"),
-                target: crate::protocols::ImplTarget::module(module("List")),
+                target: crate::frontend::protocols::ImplTarget::module(module("List")),
                 callbacks: vec![crate::modules::identity::ExportKey::new(
                     module("EnumerableList"),
                     "reduce",

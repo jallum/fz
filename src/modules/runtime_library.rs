@@ -10,11 +10,11 @@
 //! artifact envelopes so resolver and linker work can depend on the same
 //! facts a user library would provide.
 use crate::ast::{Attribute, Item, ModuleDef, Program};
+#[cfg(test)]
+use crate::frontend::resolve::InterfaceTable;
 use crate::modules::artifact::{FziArtifact, FzoArtifact, FzoUnitPayload};
 use crate::modules::identity::{ExportKey, ModuleName};
 use crate::modules::interface::ModuleInterface;
-#[cfg(test)]
-use crate::resolve::InterfaceTable;
 use std::collections::BTreeMap;
 #[cfg(test)]
 use std::rc::Rc;
@@ -80,7 +80,7 @@ pub fn prelude_source() -> &'static str {
 }
 
 pub fn root_type_env<T: crate::types::Types<Ty = crate::types::Ty>>(t: &mut T) -> RuntimeRootTypes {
-    let toks = crate::lexer::Lexer::new(prelude_source())
+    let toks = crate::parser::lexer::Lexer::new(prelude_source())
         .tokenize()
         .expect("runtime.fz lex error (bug in built-in prelude)");
     let (_items, attrs) = crate::parser::Parser::new(toks)
@@ -140,7 +140,7 @@ pub fn prelude_required_modules() -> Vec<ModuleName> {
 pub fn parsed_program() -> Program {
     let mut items = Vec::new();
     for module_source in RUNTIME_MODULE_SOURCES {
-        let toks = crate::lexer::Lexer::new(module_source.source)
+        let toks = crate::parser::lexer::Lexer::new(module_source.source)
             .tokenize()
             .unwrap_or_else(|_| {
                 panic!(
@@ -297,7 +297,7 @@ fn runtime_module_source(name: &ModuleName) -> Option<&'static str> {
 }
 
 pub fn primitive_prelude_program() -> Program {
-    let toks = crate::lexer::Lexer::new(RUNTIME_PRELUDE_FZ)
+    let toks = crate::parser::lexer::Lexer::new(RUNTIME_PRELUDE_FZ)
         .tokenize()
         .expect("runtime.fz lex error (bug in built-in prelude)");
     let (items, _attrs) = crate::parser::Parser::new(toks)

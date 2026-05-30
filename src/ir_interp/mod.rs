@@ -279,7 +279,7 @@ impl IrInterpRuntime {
             tel: (&tel) as *const &dyn crate::telemetry::Telemetry as *const (),
             // dbg/print routes to telemetry through the same thunk the compiled
             // engine uses; the rest of the BIF callbacks are interpreter-internal.
-            output: Some(crate::runtime::output_hook_thunk),
+            output: Some(crate::exec::runtime::output_hook_thunk),
             ..fz_runtime::exec_ctx::ExecCtx::empty()
         };
 
@@ -335,7 +335,7 @@ impl IrInterpRuntime {
                         // through the single shared emit site.
                         unsafe {
                             (*proc_ptr).halt_value = value_to_halt(val);
-                            crate::runtime::ExitRecord::emit(tel, pid, &*proc_ptr);
+                            crate::exec::runtime::ExitRecord::emit(tel, pid, &*proc_ptr);
                         }
                         self.set_process_state(pid, ProcessState::Exited);
                         continue 'sched;

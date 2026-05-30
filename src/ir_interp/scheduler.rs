@@ -58,7 +58,7 @@ pub(super) enum InterpStep {
 #[derive(Clone)]
 pub(super) struct ParkRecord {
     pub(super) clauses: Vec<MatchedClause>,
-    pub(super) matcher: std::sync::Arc<crate::matcher::Matcher>,
+    pub(super) matcher: std::sync::Arc<crate::exec::matcher::Matcher>,
     pub(super) pinned: HashMap<String, AnyValue>,
     pub(super) captures: Vec<AnyValue>,
 }

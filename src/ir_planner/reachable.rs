@@ -117,7 +117,7 @@ pub fn reachable_specs<
 >(
     t: &mut T,
     module: &Module,
-    spec_registry: &crate::spec_registry::SpecRegistry,
+    spec_registry: &crate::frontend::spec_registry::SpecRegistry,
     module_plan: &ModulePlan,
     extra_seeds: impl IntoIterator<Item = u32>,
 ) -> HashSet<u32> {
@@ -146,7 +146,7 @@ where
 {
     t: &'a mut T,
     module: &'a Module,
-    spec_registry: &'a crate::spec_registry::SpecRegistry,
+    spec_registry: &'a crate::frontend::spec_registry::SpecRegistry,
     module_plan: &'a ModulePlan,
     spec_keys: Vec<SpecKey>,
 }

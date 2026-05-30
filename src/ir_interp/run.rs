@@ -19,7 +19,7 @@ pub(super) fn try_match_clauses<T: Types<Ty = crate::types::Ty>>(
     module: &Module,
     tel: &dyn crate::telemetry::Telemetry,
     clauses: &[MatchedClause],
-    matcher: &crate::matcher::Matcher,
+    matcher: &crate::exec::matcher::Matcher,
     msg: AnyValue,
     pinned: &HashMap<String, AnyValue>,
     _captures: &[AnyValue],

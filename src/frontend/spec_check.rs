@@ -187,11 +187,11 @@ fn validate_one_fn<T: crate::types::Types<Ty = crate::types::Ty> + crate::types:
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::frontend::resolve::flatten_modules;
     use crate::ir_lower;
     use crate::ir_planner::plan_module;
-    use crate::lexer::Lexer;
     use crate::parser::Parser;
-    use crate::resolve::flatten_modules;
+    use crate::parser::lexer::Lexer;
 
     fn pipeline<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes>(
         t: &mut T,

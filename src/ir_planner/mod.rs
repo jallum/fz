@@ -66,5 +66,4 @@ pub use worklist::{plan_callable_capabilities, plan_module};
 // ----------------------------------------------------------------------
 
 #[cfg(test)]
-#[path = "../ir_planner_tests.rs"]
 mod tests;

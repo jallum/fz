@@ -1394,14 +1394,14 @@ mod tests {
     fn is_leaf_receive_matched_is_not_leaf() {
         let mut b = FnBuilder::new(FnId(0), "recv_matched");
         let entry = b.block(vec![]);
-        let matcher = crate::matcher::Matcher {
+        let matcher = crate::exec::matcher::Matcher {
             inputs: Vec::new(),
             pinned: Vec::new(),
             prepared_keys: Vec::new(),
-            nodes: vec![crate::matcher::MatcherNode::Fail {
+            nodes: vec![crate::exec::matcher::MatcherNode::Fail {
                 span: crate::diag::Span::DUMMY,
             }],
-            root: crate::matcher::NodeId(0),
+            root: crate::exec::matcher::NodeId(0),
         };
         b.set_terminator(
             entry,
@@ -2065,7 +2065,7 @@ mod tests {
     // --- ir_interp parity: semantics preserved across inline ---
 
     fn lower_src(src: &str) -> crate::fz_ir::Module {
-        let toks = crate::lexer::Lexer::new(src).tokenize().unwrap();
+        let toks = crate::parser::lexer::Lexer::new(src).tokenize().unwrap();
         let prog = crate::parser::Parser::new(toks).parse_program().unwrap();
         crate::ir_lower::lower_program(&mut crate::types::ConcreteTypes, &prog).unwrap()
     }

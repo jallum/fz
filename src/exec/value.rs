@@ -329,7 +329,7 @@ pub fn match_pattern(pat: &Pattern, v: &Value, env: &Env) -> bool {
             env.bind(name, v.clone());
             match_pattern(&inner.node, v, env)
         }
-        (Pattern::Bitstring(fields), v) => crate::bitstr::match_bitstring(fields, v, env),
+        (Pattern::Bitstring(fields), v) => crate::exec::bitstr::match_bitstring(fields, v, env),
         (Pattern::Map(pairs), Value::Map(m)) => {
             for (kp, vp) in pairs {
                 let key = match pattern_to_value(&kp.node) {

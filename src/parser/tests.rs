@@ -3,7 +3,7 @@ use super::*;
 #[cfg(test)]
 mod do_block_sugar_tests {
     use super::*;
-    use crate::lexer::Lexer;
+    use crate::parser::lexer::Lexer;
 
     fn parse_fn_body(src: &str) -> Expr {
         let wrapped = format!("fn _t() do {} end", src);
@@ -599,7 +599,7 @@ fn spawn(fun, opts), do: fun()
 #[cfg(test)]
 mod extern_parse_tests {
     use super::*;
-    use crate::lexer::Lexer;
+    use crate::parser::lexer::Lexer;
 
     fn parse_extern(src: &str) -> FnDef {
         let toks = Lexer::new(src).tokenize().unwrap();
@@ -678,7 +678,7 @@ mod extern_parse_tests {
 #[cfg(test)]
 mod telemetry_tests {
     use super::*;
-    use crate::lexer::Lexer;
+    use crate::parser::lexer::Lexer;
 
     #[test]
     fn telemetry_emits_pass_span_and_item_count() {

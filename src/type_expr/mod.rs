@@ -30,7 +30,7 @@
 use std::collections::HashMap;
 
 use crate::diag::Span;
-use crate::lexer::{Tok, Token};
+use crate::parser::lexer::{Tok, Token};
 use crate::types::Types;
 
 /// Module-level type environment. Monomorphic aliases resolve directly to

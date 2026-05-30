@@ -172,9 +172,10 @@ pub(crate) fn lower_receive(
         });
     let receive_pattern_matrix = build_receive_pattern_matrix(crate::fz_ir::Var(0), clauses);
     let mut guard_stack = Vec::new();
-    let mut guard_resolver = |name: &str, arity: usize, args: Vec<crate::matcher::GuardExpr>| {
-        lower_guard_helper_call_to_dispatch(ctx, name, arity, args, &mut guard_stack)
-    };
+    let mut guard_resolver =
+        |name: &str, arity: usize, args: Vec<crate::exec::matcher::GuardExpr>| {
+            lower_guard_helper_call_to_dispatch(ctx, name, arity, args, &mut guard_stack)
+        };
     let receive_matcher = crate::pattern_matrix::compile_pattern_matrix_with_guard_resolver(
         receive_pattern_matrix,
         &mut guard_resolver,
@@ -185,7 +186,7 @@ pub(crate) fn lower_receive(
     })
     .map(std::sync::Arc::new)?;
     for (index, key) in receive_matcher.prepared_keys.iter().enumerate() {
-        let name = crate::matcher::prepared_key_name(index);
+        let name = crate::exec::matcher::prepared_key_name(index);
         if !seen_pinned.insert(name.clone()) {
             continue;
         }

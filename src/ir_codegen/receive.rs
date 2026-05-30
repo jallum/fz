@@ -20,9 +20,9 @@
 //! `Term::ReceiveMatched`; it does not rebuild a PatternMatrix/Matcher from receive
 //! clauses.
 
+use crate::exec::matcher::{Matcher, MatcherConst, MatcherNode, MatcherTest};
 use crate::fz_ir::{Module, ReceiveClause, Var};
 use crate::ir_codegen::{CodegenError, SLOT_BYTES, emit_fn_body_stats};
-use crate::matcher::{Matcher, MatcherConst, MatcherNode, MatcherTest};
 use cranelift_codegen::ir::{
     self, AbiParam, InstBuilder, MemFlags, Signature, condcodes::IntCC, types,
 };
@@ -295,8 +295,8 @@ struct MatcherCtx<'a> {
 
 #[derive(Default, Clone)]
 struct MatcherEmitState {
-    values: HashMap<crate::matcher::SubjectRef, ReceiveValue>,
-    bitstring_fields: HashMap<(crate::matcher::SubjectRef, u32), ReceiveValue>,
+    values: HashMap<crate::exec::matcher::SubjectRef, ReceiveValue>,
+    bitstring_fields: HashMap<(crate::exec::matcher::SubjectRef, u32), ReceiveValue>,
     direct_bindings: HashMap<String, ReceiveValue>,
 }
 
@@ -480,7 +480,7 @@ fn finish_failed_matcher_body(b: &mut FunctionBuilder<'_>, miss_block: ir::Block
 fn emit_matcher_node(
     b: &mut FunctionBuilder<'_>,
     ctx: &MatcherCtx<'_>,
-    node_id: crate::matcher::NodeId,
+    node_id: crate::exec::matcher::NodeId,
     miss: ir::Block,
     state: &mut MatcherEmitState,
 ) -> Result<(), CodegenError> {
@@ -575,23 +575,23 @@ fn emit_matcher_node(
 fn resolve_matcher_subject(
     b: &mut FunctionBuilder<'_>,
     ctx: &MatcherCtx<'_>,
-    sref: &crate::matcher::SubjectRef,
+    sref: &crate::exec::matcher::SubjectRef,
     state: &mut MatcherEmitState,
 ) -> Result<ReceiveValue, CodegenError> {
     if let Some(v) = state.values.get(sref).copied() {
         return Ok(v);
     }
     let v = match sref {
-        crate::matcher::SubjectRef::Input(id) => {
+        crate::exec::matcher::SubjectRef::Input(id) => {
             *ctx.inputs.get(id.0 as usize).ok_or_else(|| {
                 CodegenError::new(format!("receive ABI matcher has no input {:?}", id))
             })?
         }
-        crate::matcher::SubjectRef::TupleField { tuple, index } => {
+        crate::exec::matcher::SubjectRef::TupleField { tuple, index } => {
             let parent = resolve_matcher_subject(b, ctx, tuple, state)?;
             emit_struct_get_field(b, ctx, parent, *index)?
         }
-        crate::matcher::SubjectRef::ListHead(list) => {
+        crate::exec::matcher::SubjectRef::ListHead(list) => {
             let parent = resolve_matcher_subject(b, ctx, list, state)?;
             let Some(fref) = ctx.runtime.list_head_fref else {
                 return Err(CodegenError::new(
@@ -604,7 +604,7 @@ fn resolve_matcher_subject(
             let out_ref = b.inst_results(inst)[0];
             receive_value_from_ref_word(b, out_ref)
         }
-        crate::matcher::SubjectRef::ListTail(list) => {
+        crate::exec::matcher::SubjectRef::ListTail(list) => {
             let parent = resolve_matcher_subject(b, ctx, list, state)?;
             let Some(fref) = ctx.runtime.list_tail_fref else {
                 return Err(CodegenError::new(
@@ -617,11 +617,11 @@ fn resolve_matcher_subject(
             let out_ref = b.inst_results(inst)[0];
             receive_value_from_ref_word(b, out_ref)
         }
-        crate::matcher::SubjectRef::MapValue { map, key } => {
+        crate::exec::matcher::SubjectRef::MapValue { map, key } => {
             let map = resolve_matcher_subject(b, ctx, map, state)?;
             emit_matcher_map_get_value(b, ctx, map, key)?
         }
-        crate::matcher::SubjectRef::BitstringField { bitstring, index } => *state
+        crate::exec::matcher::SubjectRef::BitstringField { bitstring, index } => *state
             .bitstring_fields
             .get(&((**bitstring).clone(), *index))
             .ok_or_else(|| {
@@ -638,7 +638,7 @@ fn resolve_matcher_subject(
 fn load_pinned_matcher_value(
     b: &mut FunctionBuilder<'_>,
     ctx: &MatcherCtx<'_>,
-    pinned: crate::matcher::PinnedId,
+    pinned: crate::exec::matcher::PinnedId,
 ) -> Result<ReceiveValue, CodegenError> {
     let p = ctx
         .matcher
@@ -664,7 +664,7 @@ fn emit_matcher_test(
     true_b: ir::Block,
     false_b: ir::Block,
     state: &mut MatcherEmitState,
-) -> Result<Vec<(crate::matcher::SubjectRef, ReceiveValue)>, CodegenError> {
+) -> Result<Vec<(crate::exec::matcher::SubjectRef, ReceiveValue)>, CodegenError> {
     let mut true_values = Vec::new();
     match test {
         MatcherTest::EqConst { subject, value } => {
@@ -699,7 +699,7 @@ fn emit_matcher_test(
         MatcherTest::MapHasKey { subject, key } => {
             let val = resolve_matcher_subject(b, ctx, subject, state)?;
             let got = emit_matcher_map_get_value(b, ctx, val, key)?;
-            true_values.push((crate::matcher::map_value_subject(subject, key), got));
+            true_values.push((crate::exec::matcher::map_value_subject(subject, key), got));
             let cmp = emit_not_matcher_map_miss(b, ctx, got)?;
             b.ins().brif(cmp, true_b, &[], false_b, &[]);
         }
@@ -883,64 +883,75 @@ fn emit_matcher_switch_key_test(
     b: &mut FunctionBuilder<'_>,
     ctx: &MatcherCtx<'_>,
     val: ReceiveValue,
-    kind: &crate::matcher::SwitchKind,
-    key: &crate::matcher::SwitchKey,
+    kind: &crate::exec::matcher::SwitchKind,
+    key: &crate::exec::matcher::SwitchKey,
     match_b: ir::Block,
     next_b: ir::Block,
 ) -> Result<(), CodegenError> {
     match (kind, key) {
-        (crate::matcher::SwitchKind::Atom, crate::matcher::SwitchKey::AtomName(name)) => {
+        (
+            crate::exec::matcher::SwitchKind::Atom,
+            crate::exec::matcher::SwitchKey::AtomName(name),
+        ) => {
             let c = MatcherConst::AtomName(name.clone());
             emit_matcher_const_test(b, ctx, val, &c, match_b, next_b)?;
             Ok(())
         }
-        (crate::matcher::SwitchKind::Int, crate::matcher::SwitchKey::Int(n)) => {
+        (crate::exec::matcher::SwitchKind::Int, crate::exec::matcher::SwitchKey::Int(n)) => {
             let c = MatcherConst::Int(*n);
             emit_matcher_const_test(b, ctx, val, &c, match_b, next_b)?;
             Ok(())
         }
-        (crate::matcher::SwitchKind::Bool, crate::matcher::SwitchKey::Bool(v)) => {
+        (crate::exec::matcher::SwitchKind::Bool, crate::exec::matcher::SwitchKey::Bool(v)) => {
             let c = MatcherConst::Bool(*v);
             emit_matcher_const_test(b, ctx, val, &c, match_b, next_b)?;
             Ok(())
         }
-        (crate::matcher::SwitchKind::Nil, crate::matcher::SwitchKey::Nil) => {
+        (crate::exec::matcher::SwitchKind::Nil, crate::exec::matcher::SwitchKey::Nil) => {
             emit_matcher_const_test(b, ctx, val, &MatcherConst::Nil, match_b, next_b)?;
             Ok(())
         }
-        (crate::matcher::SwitchKind::ListCons, crate::matcher::SwitchKey::Nil) => {
+        (crate::exec::matcher::SwitchKind::ListCons, crate::exec::matcher::SwitchKey::Nil) => {
             emit_matcher_const_test(b, ctx, val, &MatcherConst::EmptyList, match_b, next_b)?;
             Ok(())
         }
-        (crate::matcher::SwitchKind::TupleArity, crate::matcher::SwitchKey::Arity(arity)) => {
-            emit_tuple_arity_test(
-                b,
-                ctx,
-                ctx.tuple_schema_ids,
-                val,
-                *arity as usize,
-                match_b,
-                next_b,
-            )
-        }
-        (crate::matcher::SwitchKind::ListCons, crate::matcher::SwitchKey::EmptyList) => {
+        (
+            crate::exec::matcher::SwitchKind::TupleArity,
+            crate::exec::matcher::SwitchKey::Arity(arity),
+        ) => emit_tuple_arity_test(
+            b,
+            ctx,
+            ctx.tuple_schema_ids,
+            val,
+            *arity as usize,
+            match_b,
+            next_b,
+        ),
+        (
+            crate::exec::matcher::SwitchKind::ListCons,
+            crate::exec::matcher::SwitchKey::EmptyList,
+        ) => {
             emit_matcher_const_test(b, ctx, val, &MatcherConst::EmptyList, match_b, next_b)?;
             Ok(())
         }
-        (crate::matcher::SwitchKind::ListCons, crate::matcher::SwitchKey::Cons) => {
+        (crate::exec::matcher::SwitchKind::ListCons, crate::exec::matcher::SwitchKey::Cons) => {
             emit_list_cons_test(b, ctx, val, match_b, next_b)
         }
-        (crate::matcher::SwitchKind::Float, crate::matcher::SwitchKey::FloatBits(bits)) => {
-            emit_matcher_const_test(
-                b,
-                ctx,
-                val,
-                &MatcherConst::FloatBits(*bits),
-                match_b,
-                next_b,
-            )
-        }
-        (crate::matcher::SwitchKind::Binary, crate::matcher::SwitchKey::Utf8Binary(bytes)) => {
+        (
+            crate::exec::matcher::SwitchKind::Float,
+            crate::exec::matcher::SwitchKey::FloatBits(bits),
+        ) => emit_matcher_const_test(
+            b,
+            ctx,
+            val,
+            &MatcherConst::FloatBits(*bits),
+            match_b,
+            next_b,
+        ),
+        (
+            crate::exec::matcher::SwitchKind::Binary,
+            crate::exec::matcher::SwitchKey::Utf8Binary(bytes),
+        ) => {
             let bits = emit_receive_value_ref(b, ctx, val)?;
             emit_binary_literal_test(
                 b,
@@ -1010,7 +1021,7 @@ fn emit_matcher_map_get_value(
                 "Prepared map matcher key requires fz_matcher_map_get_ref",
             ));
         };
-        let name = crate::matcher::prepared_key_name(*index as usize);
+        let name = crate::exec::matcher::prepared_key_name(*index as usize);
         let &idx = ctx.pinned_indices.get(&name).ok_or_else(|| {
             CodegenError::new(format!(
                 "prepared matcher key {} not in pinned table",
@@ -1050,8 +1061,8 @@ fn emit_matcher_map_get_value(
 fn emit_bitstring_test(
     b: &mut FunctionBuilder<'_>,
     ctx: &MatcherCtx<'_>,
-    subject: &crate::matcher::SubjectRef,
-    fields: &[crate::matcher::MatcherBitField],
+    subject: &crate::exec::matcher::SubjectRef,
+    fields: &[crate::exec::matcher::MatcherBitField],
     true_b: ir::Block,
     false_b: ir::Block,
     state: &mut MatcherEmitState,
@@ -1177,15 +1188,15 @@ fn emit_bitstring_like_guard(
 fn emit_matcher_bit_size(
     b: &mut FunctionBuilder<'_>,
     ctx: &MatcherCtx<'_>,
-    field: &crate::matcher::MatcherBitField,
+    field: &crate::exec::matcher::MatcherBitField,
     state: &MatcherEmitState,
 ) -> Result<(u32, ir::Value), CodegenError> {
     match &field.size {
         None => Ok((0, b.ins().iconst(types::I32, 0))),
-        Some(crate::matcher::MatcherBitSize::Literal(n)) => {
+        Some(crate::exec::matcher::MatcherBitSize::Literal(n)) => {
             Ok((1, b.ins().iconst(types::I32, *n as i64)))
         }
-        Some(crate::matcher::MatcherBitSize::BindingName(name)) => {
+        Some(crate::exec::matcher::MatcherBitSize::BindingName(name)) => {
             let value = state.direct_bindings.get(name).copied().ok_or_else(|| {
                 CodegenError::new(format!("bitstring size binding `{}` not available", name))
             })?;
@@ -1203,45 +1214,45 @@ fn strict_int_i32(
     Ok(b.ins().ireduce(types::I32, raw))
 }
 
-fn matcher_bit_type_tag(ty: crate::matcher::MatcherBitType) -> u32 {
+fn matcher_bit_type_tag(ty: crate::exec::matcher::MatcherBitType) -> u32 {
     match ty {
-        crate::matcher::MatcherBitType::Integer => 0,
-        crate::matcher::MatcherBitType::Float => 1,
-        crate::matcher::MatcherBitType::Binary => 2,
-        crate::matcher::MatcherBitType::Bits => 3,
-        crate::matcher::MatcherBitType::Utf8 => 4,
-        crate::matcher::MatcherBitType::Utf16 => 5,
-        crate::matcher::MatcherBitType::Utf32 => 6,
+        crate::exec::matcher::MatcherBitType::Integer => 0,
+        crate::exec::matcher::MatcherBitType::Float => 1,
+        crate::exec::matcher::MatcherBitType::Binary => 2,
+        crate::exec::matcher::MatcherBitType::Bits => 3,
+        crate::exec::matcher::MatcherBitType::Utf8 => 4,
+        crate::exec::matcher::MatcherBitType::Utf16 => 5,
+        crate::exec::matcher::MatcherBitType::Utf32 => 6,
     }
 }
 
-fn matcher_endian_tag(endian: crate::matcher::MatcherEndian) -> u32 {
+fn matcher_endian_tag(endian: crate::exec::matcher::MatcherEndian) -> u32 {
     match endian {
-        crate::matcher::MatcherEndian::Big => 0,
-        crate::matcher::MatcherEndian::Little => 1,
-        crate::matcher::MatcherEndian::Native => 2,
+        crate::exec::matcher::MatcherEndian::Big => 0,
+        crate::exec::matcher::MatcherEndian::Little => 1,
+        crate::exec::matcher::MatcherEndian::Native => 2,
     }
 }
 
-fn default_matcher_bit_unit(ty: crate::matcher::MatcherBitType) -> u32 {
+fn default_matcher_bit_unit(ty: crate::exec::matcher::MatcherBitType) -> u32 {
     match ty {
-        crate::matcher::MatcherBitType::Integer
-        | crate::matcher::MatcherBitType::Float
-        | crate::matcher::MatcherBitType::Bits => 1,
-        crate::matcher::MatcherBitType::Binary => 8,
-        crate::matcher::MatcherBitType::Utf8
-        | crate::matcher::MatcherBitType::Utf16
-        | crate::matcher::MatcherBitType::Utf32 => 1,
+        crate::exec::matcher::MatcherBitType::Integer
+        | crate::exec::matcher::MatcherBitType::Float
+        | crate::exec::matcher::MatcherBitType::Bits => 1,
+        crate::exec::matcher::MatcherBitType::Binary => 8,
+        crate::exec::matcher::MatcherBitType::Utf8
+        | crate::exec::matcher::MatcherBitType::Utf16
+        | crate::exec::matcher::MatcherBitType::Utf32 => 1,
     }
 }
 
 fn emit_matcher_guard_expr(
     b: &mut FunctionBuilder<'_>,
     ctx: &MatcherCtx<'_>,
-    expr: &crate::matcher::GuardExpr,
+    expr: &crate::exec::matcher::GuardExpr,
     state: &mut MatcherEmitState,
 ) -> Result<ReceiveValue, CodegenError> {
-    use crate::matcher::{GuardBinOp, GuardExpr, GuardUnaryOp};
+    use crate::exec::matcher::{GuardBinOp, GuardExpr, GuardUnaryOp};
     Ok(match expr {
         GuardExpr::Const(c) => {
             let Some(value) = matcher_const_value(ctx.fz_module, c)? else {
@@ -1342,7 +1353,7 @@ fn emit_matcher_guard_expr(
 fn emit_guard_dispatch(
     b: &mut FunctionBuilder<'_>,
     parent: &MatcherCtx<'_>,
-    dispatch: &crate::matcher::GuardDispatch,
+    dispatch: &crate::exec::matcher::GuardDispatch,
     inputs: Vec<ReceiveValue>,
 ) -> Result<ReceiveValue, CodegenError> {
     let done = b.create_block();
@@ -1377,8 +1388,8 @@ fn emit_guard_dispatch(
 fn emit_guard_dispatch_node(
     b: &mut FunctionBuilder<'_>,
     ctx: &MatcherCtx<'_>,
-    bodies: &[crate::matcher::GuardExpr],
-    node_id: crate::matcher::NodeId,
+    bodies: &[crate::exec::matcher::GuardExpr],
+    node_id: crate::exec::matcher::NodeId,
     done: ir::Block,
     state: &mut MatcherEmitState,
 ) -> Result<(), CodegenError> {
@@ -1474,9 +1485,9 @@ fn emit_guard_dispatch_node(
 fn emit_short_circuit_guard(
     b: &mut FunctionBuilder<'_>,
     ctx: &MatcherCtx<'_>,
-    op: crate::matcher::GuardBinOp,
-    lhs: &crate::matcher::GuardExpr,
-    rhs: &crate::matcher::GuardExpr,
+    op: crate::exec::matcher::GuardBinOp,
+    lhs: &crate::exec::matcher::GuardExpr,
+    rhs: &crate::exec::matcher::GuardExpr,
     state: &mut MatcherEmitState,
 ) -> Result<ReceiveValue, CodegenError> {
     let lhs_value = emit_matcher_guard_expr(b, ctx, lhs, state)?;
@@ -1490,14 +1501,14 @@ fn emit_short_circuit_guard(
     let true_ref = emit_receive_value_ref(b, ctx, true_value)?;
     let false_ref = emit_receive_value_ref(b, ctx, false_value)?;
     match op {
-        crate::matcher::GuardBinOp::And => b.ins().brif(
+        crate::exec::matcher::GuardBinOp::And => b.ins().brif(
             lhs_truthy,
             rhs_b,
             &[],
             done_b,
             &[ir::BlockArg::Value(false_ref)],
         ),
-        crate::matcher::GuardBinOp::Or => b.ins().brif(
+        crate::exec::matcher::GuardBinOp::Or => b.ins().brif(
             lhs_truthy,
             done_b,
             &[ir::BlockArg::Value(true_ref)],
@@ -1748,7 +1759,7 @@ fn collect_binary_literals_in_matcher(matcher: &Matcher, out: &mut Vec<Vec<u8>>)
         match node {
             MatcherNode::Switch { cases, .. } => {
                 for (key, _) in cases {
-                    if let crate::matcher::SwitchKey::Utf8Binary(bytes) = key {
+                    if let crate::exec::matcher::SwitchKey::Utf8Binary(bytes) = key {
                         out.push(bytes.clone());
                     }
                 }
@@ -1760,8 +1771,11 @@ fn collect_binary_literals_in_matcher(matcher: &Matcher, out: &mut Vec<Vec<u8>>)
     }
 }
 
-fn collect_binary_literals_in_guard(expr: &crate::matcher::GuardExpr, out: &mut Vec<Vec<u8>>) {
-    use crate::matcher::GuardExpr;
+fn collect_binary_literals_in_guard(
+    expr: &crate::exec::matcher::GuardExpr,
+    out: &mut Vec<Vec<u8>>,
+) {
+    use crate::exec::matcher::GuardExpr;
     match expr {
         GuardExpr::Const(c) => collect_binary_literals_in_const(c, out),
         GuardExpr::Unary { expr, .. } => collect_binary_literals_in_guard(expr, out),
@@ -1944,7 +1958,7 @@ mod tests {
 
     fn matcher_from_rows(
         rows: Vec<(AstPattern, Option<Spanned<AstExpr>>)>,
-    ) -> crate::matcher::Matcher {
+    ) -> crate::exec::matcher::Matcher {
         let pattern_matrix = crate::pattern_matrix::PatternMatrix {
             subjects: vec![Var(0)],
             rows: rows

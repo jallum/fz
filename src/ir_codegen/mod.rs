@@ -18,8 +18,8 @@
 
 #![allow(unused_imports)]
 
+pub(crate) use crate::frontend::spec_registry::SpecRegistry;
 use crate::fz_ir::Module;
-pub(crate) use crate::spec_registry::SpecRegistry;
 
 pub(crate) mod aot_main;
 pub(crate) mod backend;

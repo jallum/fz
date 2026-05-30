@@ -397,8 +397,8 @@ pub fn qualify_opaque_name(module_path: &str, alias: &str) -> String {
 /// can extract the payload type T rather than the wrapper opaque tag.
 /// Pure tokenwise match; semantic resolution still goes through
 /// `parse_resource_payload_type` below.
-fn starts_with_resource_constructor(toks: &[crate::lexer::Token]) -> bool {
-    use crate::lexer::Tok;
+fn starts_with_resource_constructor(toks: &[crate::parser::lexer::Token]) -> bool {
+    use crate::parser::lexer::Tok;
     matches!(toks.first().map(|t| &t.tok), Some(Tok::Ident(n)) if n == "resource")
         && matches!(toks.get(1).map(|t| &t.tok), Some(Tok::LParen))
         && toks
@@ -414,7 +414,7 @@ fn starts_with_resource_constructor(toks: &[crate::lexer::Token]) -> bool {
 /// unqualified built-in `"resource"` opaque.
 fn parse_resource_payload_type<T: crate::types::Types<Ty = crate::types::Ty>>(
     t: &mut T,
-    toks: &[crate::lexer::Token],
+    toks: &[crate::parser::lexer::Token],
     env: &ModuleTypeEnv,
 ) -> Result<T::Ty, TypeExprError> {
     // Drop the leading `resource (` and the trailing `)`. Caller has
@@ -446,8 +446,8 @@ pub fn opaque_owner_module(qualified: &str) -> Option<&str> {
 /// Scan `tokens` and return the user-visible names referenced (any
 /// Ident / Upper that isn't a built-in scalar). Used by
 /// `build_module_type_env` to detect cycles vs unknown-name errors.
-fn referenced_user_type_names(tokens: &[crate::lexer::Token]) -> Vec<String> {
-    use crate::lexer::Tok;
+fn referenced_user_type_names(tokens: &[crate::parser::lexer::Token]) -> Vec<String> {
+    use crate::parser::lexer::Tok;
     tokens
         .iter()
         .filter_map(|t| match &t.tok {

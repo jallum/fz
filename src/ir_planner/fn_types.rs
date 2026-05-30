@@ -343,18 +343,18 @@ impl ModulePlan {
         callee: FnId,
         arg_tys: &[crate::types::Ty],
     ) -> Option<crate::types::Ty> {
-        let candidates: Vec<crate::spec_registry::BestCoverCandidate<'_, &SpecKey>> = self
-            .effective_returns
-            .keys()
-            .filter(|key| key.fn_id == callee && key.demand.is_value())
-            .map(|key| crate::spec_registry::BestCoverCandidate {
-                id: key,
-                key: key.input.as_slice(),
-                key_var_count: crate::types::key_slot_var_count(t, key.input.as_slice()),
-                precedence: *self.spec_precedence.get(key).unwrap_or(&u32::MAX),
-            })
-            .collect();
-        let best = crate::spec_registry::best_covering_candidate(t, arg_tys, candidates)?;
+        let candidates: Vec<crate::frontend::spec_registry::BestCoverCandidate<'_, &SpecKey>> =
+            self.effective_returns
+                .keys()
+                .filter(|key| key.fn_id == callee && key.demand.is_value())
+                .map(|key| crate::frontend::spec_registry::BestCoverCandidate {
+                    id: key,
+                    key: key.input.as_slice(),
+                    key_var_count: crate::types::key_slot_var_count(t, key.input.as_slice()),
+                    precedence: *self.spec_precedence.get(key).unwrap_or(&u32::MAX),
+                })
+                .collect();
+        let best = crate::frontend::spec_registry::best_covering_candidate(t, arg_tys, candidates)?;
         self.effective_returns.get(best).cloned()
     }
 }

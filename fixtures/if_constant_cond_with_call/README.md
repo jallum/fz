@@ -21,7 +21,7 @@ fz-84m repro A — constant cond + non-tail call in if-arm.
 ## History
 
 Before **fz-duq.2**, this program panicked during IR construction at
-`block_mut` (src/fz_ir.rs:453, "unknown block"). The then-arm's
+`block_mut` (src/fz_ir/mod.rs:453, "unknown block"). The then-arm's
 `dbg(helper())` lowered as a non-tail Call inside print's args,
 triggering `cps_split_call` which finalized the outer fn. The
 subsequent switch to else_b (a BlockId in the now-built fn) corrupted

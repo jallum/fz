@@ -6,7 +6,7 @@ use std::rc::Rc;
 /// until the full module type environment is available. Used in five AST fields
 /// that are parsed eagerly but resolved later via `parse_type_expr`.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct TypeExprBody(pub Vec<crate::lexer::Token>);
+pub struct TypeExprBody(pub Vec<crate::parser::lexer::Token>);
 
 /// Wraps an AST node with the source span that produced it. Every Expr
 /// and Pattern reference in the AST is `Spanned<…>`; the outer enum
@@ -545,7 +545,7 @@ pub struct Program {
     /// resolution while source-level protocol ASTs are still available.
     #[allow(dead_code)]
     // Consumed by the protocol dispatch/type tickets after registry resolution.
-    pub protocol_registry: crate::protocols::ProtocolRegistry,
+    pub protocol_registry: crate::frontend::protocols::ProtocolRegistry,
     /// fz-swt.8 — Inner-type map for `opaque` aliases across every
     /// module in the program. Keyed by the qualified opaque tag (as
     /// stored on the qualified opaque type name); value is the parsed body

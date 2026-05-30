@@ -786,7 +786,7 @@ where
             .values()
             .filter(|fact| fact.protocol == target.protocol)
             .filter(|fact| {
-                let target_ty = crate::protocols::impl_target_type(self.t, &fact.target);
+                let target_ty = crate::frontend::protocols::impl_target_type(self.t, &fact.target);
                 self.t.is_subtype(&receiver_ty, &target_ty)
             })
             .filter_map(|fact| {

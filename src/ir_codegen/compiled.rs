@@ -1278,7 +1278,7 @@ impl CompiledModule {
     }
 
     /// Run one quantum for a Process. Resumes from `process.next_frame`
-    /// (which the caller — typically the Runtime in src/runtime.rs — must
+    /// (which the caller — typically the Runtime in src/exec/runtime.rs — must
     /// have set to a fresh entry frame or the saved continuation from a
     /// prior yield). The caller sets the pinned register to this process (and
     /// `process.ctx` / `heap.owner`); we just trampoline. On halt the trampoline
@@ -1430,9 +1430,9 @@ impl CompiledModule {
         // Observe the result through the telemetry seam rather than reading
         // task.halt_value off the Runtime — same path every other test uses.
         let tel = crate::telemetry::bus::ConfiguredTelemetry::new();
-        let exits = crate::runtime::ProcessExitCapture::new();
+        let exits = crate::exec::runtime::ProcessExitCapture::new();
         tel.attach(&[], exits.handler());
-        let mut rt = crate::runtime::Runtime::new(self, 1).with_telemetry(&tel);
+        let mut rt = crate::exec::runtime::Runtime::new(self, 1).with_telemetry(&tel);
         let _ = rt.spawn(fn_id);
         rt.run_until_idle();
         exits.last().expect("process_exited captured").halt_value

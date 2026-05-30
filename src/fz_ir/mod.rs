@@ -701,7 +701,7 @@ pub enum Term {
         ident: CallsiteIdent,
         clauses: Vec<ReceiveClause>,
         /// Cached AST-free matcher for interpreter and native receive probes.
-        matcher: std::sync::Arc<crate::matcher::Matcher>,
+        matcher: std::sync::Arc<crate::exec::matcher::Matcher>,
         after: Option<ReceiveAfter>,
         /// Outer-scope vars referenced by `^name` patterns across all
         /// clauses, paired with their source names so backends can
@@ -1278,7 +1278,7 @@ pub struct Module {
     pub external_call_edges: Vec<ExternalCallEdge>,
     #[serde(with = "fn_keyed_map")]
     pub protocol_call_targets: HashMap<FnId, ProtocolCallTarget>,
-    pub protocol_registry: crate::protocols::ProtocolRegistry,
+    pub protocol_registry: crate::frontend::protocols::ProtocolRegistry,
     /// fz-jg5.12 (RED.9) — Fns marked as reduction boundaries. Populated
     /// by ir_lower from `@spec` declarations. The reducer treats these as
     /// firewalls: a declared spec is the user's signed contract that the
@@ -1961,7 +1961,7 @@ impl ModuleBuilder {
             extern_idx: HashMap::new(),
             external_call_edges: self.external_call_edges,
             protocol_call_targets: self.protocol_call_targets,
-            protocol_registry: crate::protocols::ProtocolRegistry::default(),
+            protocol_registry: crate::frontend::protocols::ProtocolRegistry::default(),
             boundary_fns: HashSet::new(),
             opaque_inners: HashMap::new(),
             brand_inners: HashMap::new(),
@@ -2439,7 +2439,7 @@ mod tests {
     /// untouched.
     #[test]
     fn remap_file_ids_rewrites_every_span_site() {
-        use crate::matcher::{Matcher, MatcherInput, MatcherLeaf, MatcherNode, NodeId};
+        use crate::exec::matcher::{Matcher, MatcherInput, MatcherLeaf, MatcherNode, NodeId};
         use std::sync::Arc;
 
         let f7 = FileId(7);

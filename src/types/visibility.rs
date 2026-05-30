@@ -60,7 +60,7 @@ mod tests {
     fn alias_attr(name: &str, body_src: &str) -> crate::ast::Attribute {
         use crate::ast::{Attribute, TypeAliasDecl, TypeExprBody};
         use crate::diag::Span;
-        use crate::lexer::{Lexer, Tok};
+        use crate::parser::lexer::{Lexer, Tok};
         let toks = Lexer::new(body_src).tokenize().expect("lex body");
         let body_tokens: Vec<_> = toks
             .into_iter()

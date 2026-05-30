@@ -168,7 +168,7 @@ impl LowerCtx {
 
     pub(super) fn register_protocol_registry(
         &mut self,
-        registry: &crate::protocols::ProtocolRegistry,
+        registry: &crate::frontend::protocols::ProtocolRegistry,
     ) {
         for (protocol, decl) in &registry.protocols {
             for callback in &decl.callbacks {

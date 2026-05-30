@@ -23,12 +23,12 @@
 
 use crate::ast::*;
 use crate::diag::{Diagnostic, Span, codes};
-use crate::modules::identity::{ExportKey, ModuleName, QualifiedName};
-use crate::modules::interface::ModuleInterface;
-use crate::protocols::{
+use crate::frontend::protocols::{
     ImplTarget, ProtocolCallbackFact, ProtocolDecl, ProtocolImplFact, ProtocolImplKey,
     ProtocolRegistry,
 };
+use crate::modules::identity::{ExportKey, ModuleName, QualifiedName};
+use crate::modules::interface::ModuleInterface;
 use std::collections::BTreeMap;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
@@ -737,7 +737,7 @@ fn collect_protocol_registry<T: crate::types::Types<Ty = crate::types::Ty>>(
         // PROTOCOL_ELEM_VAR with `elem`, so a `List` target refines from
         // `list(any)` to `list(elem)`. The bare `Protocol.t` (arity 0) stays
         // the `element = any` domain above.
-        let element = t.type_var(crate::protocols::PROTOCOL_ELEM_VAR);
+        let element = t.type_var(crate::frontend::protocols::PROTOCOL_ELEM_VAR);
         let template = protocol_domain_template(t, protocol, &registry, element);
         for env in module_type_envs.values_mut() {
             env.insert(format!("{}.t", protocol), ty.clone());
@@ -771,14 +771,17 @@ fn protocol_domain_template<T: crate::types::Types<Ty = crate::types::Ty>>(
     registry: &ProtocolRegistry,
     element: crate::types::Ty,
 ) -> crate::types::Ty {
-    let mut domain = t.opaque_of(&crate::protocols::protocol_domain_tag(protocol));
+    let mut domain = t.opaque_of(&crate::frontend::protocols::protocol_domain_tag(protocol));
     for fact in registry
         .impls
         .values()
         .filter(|fact| fact.protocol == *protocol)
     {
-        let target_ty =
-            crate::protocols::impl_target_type_with_element(t, &fact.target, element.clone());
+        let target_ty = crate::frontend::protocols::impl_target_type_with_element(
+            t,
+            &fact.target,
+            element.clone(),
+        );
         domain = t.union(domain, target_ty);
     }
     domain
@@ -860,11 +863,11 @@ fn protocol_decl<T: crate::types::Types<Ty = crate::types::Ty>>(
     let mut env = crate::type_expr::ModuleTypeEnv::new();
     env.insert(
         "t".to_string(),
-        t.opaque_of(&crate::protocols::protocol_domain_tag(name)),
+        t.opaque_of(&crate::frontend::protocols::protocol_domain_tag(name)),
     );
     env.insert(
         format!("{}.t", name),
-        t.opaque_of(&crate::protocols::protocol_domain_tag(name)),
+        t.opaque_of(&crate::frontend::protocols::protocol_domain_tag(name)),
     );
     module_type_envs.insert(name.dotted(), env);
 
@@ -1037,7 +1040,7 @@ fn validate_protocol_callback_specs<T: crate::types::Types<Ty = crate::types::Ty
         let Some(protocol) = registry.protocols.get(&fact.protocol) else {
             continue;
         };
-        let target_ty = crate::protocols::impl_target_type(t, &fact.target);
+        let target_ty = crate::frontend::protocols::impl_target_type(t, &fact.target);
         let mut proto_env = module_type_envs
             .get(&fact.protocol.dotted())
             .cloned()
@@ -2237,8 +2240,8 @@ fn is_upper(s: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::lexer::Lexer;
     use crate::parser::Parser;
+    use crate::parser::lexer::Lexer;
     use crate::types::Types;
 
     fn parse(src: &str) -> Program {
@@ -3033,7 +3036,7 @@ end
         assert!(ct.is_equivalent(env.get("pair").unwrap(), &expected));
         let keyword_int = crate::type_expr::parse_type_expr(
             &mut ct,
-            &crate::lexer::Lexer::new("keyword(integer)")
+            &crate::parser::lexer::Lexer::new("keyword(integer)")
                 .tokenize()
                 .unwrap(),
             &env,
@@ -3194,7 +3197,7 @@ end
 
     #[test]
     fn spec_arity_mismatch_errors_at_parse_time() {
-        let toks = crate::lexer::Lexer::new(
+        let toks = crate::parser::lexer::Lexer::new(
             "defmodule M do\n\
               @spec add1(integer, integer) :: integer\n\
               fn add1(n), do: n + 1\n\
@@ -3210,7 +3213,7 @@ end
 
     #[test]
     fn spec_name_mismatch_errors_at_parse_time() {
-        let toks = crate::lexer::Lexer::new(
+        let toks = crate::parser::lexer::Lexer::new(
             "defmodule M do\n\
               @spec other(integer) :: integer\n\
               fn add1(n), do: n + 1\n\
@@ -3231,7 +3234,7 @@ end
     #[test]
     fn spec_without_following_fn_errors() {
         // @spec at the end of a module with no fn following it.
-        let toks = crate::lexer::Lexer::new(
+        let toks = crate::parser::lexer::Lexer::new(
             "defmodule M do\n\
               @spec lonely(integer) :: integer\n\
             end\n",
@@ -3244,7 +3247,7 @@ end
 
     #[test]
     fn multiple_spec_on_one_fn_errors() {
-        let toks = crate::lexer::Lexer::new(
+        let toks = crate::parser::lexer::Lexer::new(
             "defmodule M do\n\
               @spec add1(integer) :: integer\n\
               @spec add1(float) :: float\n\
@@ -3355,7 +3358,7 @@ end
 
     #[test]
     fn type_alias_at_top_level_errors() {
-        let toks = crate::lexer::Lexer::new("@type id :: integer\nfn main(), do: nil")
+        let toks = crate::parser::lexer::Lexer::new("@type id :: integer\nfn main(), do: nil")
             .tokenize()
             .unwrap();
         let r = Parser::new(toks).parse_program();
@@ -3364,7 +3367,7 @@ end
 
     #[test]
     fn unknown_attribute_errors() {
-        let toks = crate::lexer::Lexer::new("@bogus \"x\"\nfn main(), do: nil")
+        let toks = crate::parser::lexer::Lexer::new("@bogus \"x\"\nfn main(), do: nil")
             .tokenize()
             .unwrap();
         let r = Parser::new(toks).parse_program();
@@ -3373,7 +3376,7 @@ end
 
     #[test]
     fn moduledoc_at_top_level_errors() {
-        let toks = crate::lexer::Lexer::new("@moduledoc \"x\"\nfn main(), do: nil")
+        let toks = crate::parser::lexer::Lexer::new("@moduledoc \"x\"\nfn main(), do: nil")
             .tokenize()
             .unwrap();
         let r = Parser::new(toks).parse_program();
@@ -3629,7 +3632,9 @@ end
 
         let env = &p.module_type_envs["Consumer"];
         let parse_dom = |ct: &mut crate::types::ConcreteTypes, src: &str| {
-            let toks = crate::lexer::Lexer::new(src).tokenize().expect("lex");
+            let toks = crate::parser::lexer::Lexer::new(src)
+                .tokenize()
+                .expect("lex");
             let (ty, _) = crate::type_expr::parse_type_expr(ct, &toks, env).expect("parse");
             ty
         };

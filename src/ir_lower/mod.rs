@@ -96,7 +96,7 @@ fn parse_runtime_prelude<T: crate::types::Types<Ty = crate::types::Ty>>(
         opaque_inners: Default::default(),
         brand_inners: Default::default(),
     };
-    let mut flat = crate::resolve::flatten_modules(t, staged)
+    let mut flat = crate::frontend::resolve::flatten_modules(t, staged)
         .expect("runtime.fz module flatten error (bug in built-in prelude)");
     // Merge compiler-known runtime types and any root declarations into the
     // flattened prelude program.
@@ -113,7 +113,7 @@ fn parse_runtime_source_items(
     src: &str,
     label: &str,
 ) -> (Vec<Rc<Item>>, Vec<crate::ast::Attribute>) {
-    let toks = crate::lexer::Lexer::new(src)
+    let toks = crate::parser::lexer::Lexer::new(src)
         .tokenize()
         .unwrap_or_else(|_| panic!("{label} lex error (bug in built-in prelude)"));
     crate::parser::Parser::new(toks)
@@ -606,7 +606,7 @@ pub(super) fn lower_extern_ret_ty<T: crate::types::Types<Ty = crate::types::Ty>>
     fn_def: &FnDef,
     type_env: &crate::type_expr::ModuleTypeEnv,
 ) -> Result<(ExternTy, crate::types::Ty), LowerError> {
-    use crate::lexer::Tok;
+    use crate::parser::lexer::Tok;
     let tokens = &fn_def.extern_ret_tokens.0;
 
     // Try to resolve via parse_type_expr first (handles named types like `pid`).
@@ -858,8 +858,8 @@ fn build_source_info(module: &Module, ctx: &LowerCtx) -> SourceInfo {
 mod tests {
     use super::*;
     use crate::fz_ir::{Const, ExternMarshal, FnId, Prim, Var};
-    use crate::lexer::Lexer;
     use crate::parser::Parser;
+    use crate::parser::lexer::Lexer;
 
     fn lower_src(src: &str) -> Module {
         let toks = Lexer::new(src).tokenize().expect("lex");
@@ -898,9 +898,9 @@ mod tests {
         )
         .unwrap();
         let tel = crate::telemetry::bus::ConfiguredTelemetry::new();
-        let dbg = crate::runtime::DbgCapture::new();
+        let dbg = crate::exec::runtime::DbgCapture::new();
         tel.attach(&[], dbg.handler());
-        let mut rt = crate::runtime::Runtime::new(&compiled, 1).with_telemetry(&tel);
+        let mut rt = crate::exec::runtime::Runtime::new(&compiled, 1).with_telemetry(&tel);
         let _ = rt.spawn(entry);
         rt.run_until_idle();
         dbg.lines().join("\n")
@@ -2587,7 +2587,7 @@ end
         );
     }
 
-    fn first_receive_matcher(m: &Module) -> Option<&crate::matcher::Matcher> {
+    fn first_receive_matcher(m: &Module) -> Option<&crate::exec::matcher::Matcher> {
         for f in &m.fns {
             for b in &f.blocks {
                 if let Term::ReceiveMatched { matcher, .. } = &b.terminator {
@@ -2598,23 +2598,23 @@ end
         None
     }
 
-    fn matcher_has_guard_dispatch(matcher: &crate::matcher::Matcher) -> bool {
-        fn expr_has_dispatch(expr: &crate::matcher::GuardExpr) -> bool {
+    fn matcher_has_guard_dispatch(matcher: &crate::exec::matcher::Matcher) -> bool {
+        fn expr_has_dispatch(expr: &crate::exec::matcher::GuardExpr) -> bool {
             match expr {
-                crate::matcher::GuardExpr::Dispatch { .. } => true,
-                crate::matcher::GuardExpr::Unary { expr, .. } => expr_has_dispatch(expr),
-                crate::matcher::GuardExpr::Binary { lhs, rhs, .. } => {
+                crate::exec::matcher::GuardExpr::Dispatch { .. } => true,
+                crate::exec::matcher::GuardExpr::Unary { expr, .. } => expr_has_dispatch(expr),
+                crate::exec::matcher::GuardExpr::Binary { lhs, rhs, .. } => {
                     expr_has_dispatch(lhs) || expr_has_dispatch(rhs)
                 }
-                crate::matcher::GuardExpr::Const(_)
-                | crate::matcher::GuardExpr::Subject(_)
-                | crate::matcher::GuardExpr::Pinned(_) => false,
+                crate::exec::matcher::GuardExpr::Const(_)
+                | crate::exec::matcher::GuardExpr::Subject(_)
+                | crate::exec::matcher::GuardExpr::Pinned(_) => false,
             }
         }
         matcher.nodes.iter().any(|node| {
             matches!(
                 node,
-                crate::matcher::MatcherNode::Guard { expr, .. } if expr_has_dispatch(expr)
+                crate::exec::matcher::MatcherNode::Guard { expr, .. } if expr_has_dispatch(expr)
             )
         })
     }
@@ -2634,7 +2634,7 @@ end
             matcher
                 .nodes
                 .iter()
-                .any(|node| matches!(node, crate::matcher::MatcherNode::Guard { .. })),
+                .any(|node| matches!(node, crate::exec::matcher::MatcherNode::Guard { .. })),
             "expected inlined helper guard in Matcher: {:#?}",
             matcher
         );
@@ -2674,7 +2674,7 @@ end
             matcher
                 .nodes
                 .iter()
-                .any(|node| matches!(node, crate::matcher::MatcherNode::Guard { .. })),
+                .any(|node| matches!(node, crate::exec::matcher::MatcherNode::Guard { .. })),
             "expected transitive helper guard in Matcher: {:#?}",
             matcher
         );
@@ -2730,7 +2730,9 @@ end
         let matcher = first_receive_matcher(&m).expect("receive matcher");
         assert_eq!(
             matcher.prepared_keys,
-            vec![crate::matcher::MatcherConst::Utf8Binary(b"id".to_vec())]
+            vec![crate::exec::matcher::MatcherConst::Utf8Binary(
+                b"id".to_vec()
+            )]
         );
         let s = format!("{}", m);
         assert!(

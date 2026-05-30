@@ -10,8 +10,8 @@
 //! removable once the test suite is audited for any remaining consumers.
 
 use crate::ast::*;
-use crate::bitstr::*;
-use crate::value::*;
+use crate::exec::bitstr::*;
+use crate::exec::value::*;
 use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
 use std::rc::Rc;
@@ -660,7 +660,7 @@ impl CompileTimeEvaluator {
     /// `Expr::Unquote(e)` is encountered, eval `e` in `env` and splice the
     /// resulting Value into the reified output.
     fn reify_with_unquotes(&self, e: &Spanned<Expr>, env: &Env) -> EvalResult {
-        use crate::ast_value::expr_to_value;
+        use crate::exec::ast_value::expr_to_value;
         match &e.node {
             Expr::Unquote(inner) => self.eval(inner, env),
             Expr::Ascribe(inner, _) => self.reify_with_unquotes(inner, env),
@@ -715,14 +715,14 @@ impl CompileTimeEvaluator {
                 let lv = self.reify_with_unquotes(l, env)?;
                 let rv = self.reify_with_unquotes(r, env)?;
                 Ok(quoted_node(
-                    crate::ast_value::binop_atom(*op),
+                    crate::exec::ast_value::binop_atom(*op),
                     Value::List(Rc::new(vec![lv, rv])),
                 ))
             }
             Expr::UnOp(op, x) => {
                 let xv = self.reify_with_unquotes(x, env)?;
                 Ok(quoted_node(
-                    crate::ast_value::unop_atom(*op),
+                    crate::exec::ast_value::unop_atom(*op),
                     Value::List(Rc::new(vec![xv])),
                 ))
             }
@@ -758,8 +758,8 @@ impl CompileTimeEvaluator {
 // the CompileTimeEvaluator impl that runs them.
 mod quote_tests {
     use super::*;
-    use crate::lexer::Lexer;
     use crate::parser::Parser;
+    use crate::parser::lexer::Lexer;
 
     /// Eval `expr_src` (wrapped in a fn body, called from main) and return
     /// the value it produced.
@@ -908,7 +908,7 @@ fn next_gensym_id() -> u64 {
 fn reified_var(name: String) -> Value {
     Value::Tuple(Rc::new(vec![
         Value::Atom(Rc::from(name.as_str())),
-        Value::Map(Rc::new(crate::value::FzMap::new())),
+        Value::Map(Rc::new(crate::exec::value::FzMap::new())),
         Value::Atom(Rc::from("user")),
     ]))
 }
@@ -916,7 +916,7 @@ fn reified_var(name: String) -> Value {
 fn quoted_node(name: &str, args: Value) -> Value {
     Value::Tuple(Rc::new(vec![
         Value::Atom(Rc::from(name)),
-        Value::Map(Rc::new(crate::value::FzMap::new())),
+        Value::Map(Rc::new(crate::exec::value::FzMap::new())),
         args,
     ]))
 }
@@ -950,7 +950,7 @@ fn param_annotation_matches(annotation: Option<&TypeExprBody>, value: &Value) ->
     let [tok] = annotation.0.as_slice() else {
         return true;
     };
-    let crate::lexer::Tok::Ident(name) = &tok.tok else {
+    let crate::parser::lexer::Tok::Ident(name) = &tok.tok else {
         return true;
     };
     match name.as_str() {

@@ -27,10 +27,10 @@
 
 use crate::ast::Item;
 use crate::diag::SourceMap;
-use crate::lexer::{Lexer, Tok, Token};
-use crate::macros::expand_program;
+use crate::frontend::macros::expand_program;
+use crate::frontend::resolve::flatten_modules;
 use crate::parser::Parser;
-use crate::resolve::flatten_modules;
+use crate::parser::lexer::{Lexer, Tok, Token};
 use std::path::Path;
 
 const PRELUDE: &str = r#"
