@@ -125,7 +125,9 @@ mod map_sig_fields {
     pub fn deserialize<'de, D: Deserializer<'de>>(
         d: D,
     ) -> Result<BTreeMap<MapKey, Descr>, D::Error> {
-        Ok(Vec::<(MapKey, Descr)>::deserialize(d)?.into_iter().collect())
+        Ok(Vec::<(MapKey, Descr)>::deserialize(d)?
+            .into_iter()
+            .collect())
     }
 }
 

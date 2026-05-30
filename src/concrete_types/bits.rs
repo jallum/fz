@@ -49,7 +49,9 @@ impl BasicBits {
 /// ordered/hashed sets. Two distinct bit patterns are considered distinct
 /// values. `+0.0` and `-0.0` are distinct (matches IEEE bit equality but not
 /// IEEE value equality — fine here, where the type system tracks values).
-#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
 pub(crate) struct F64Bits(u64);
 
 impl F64Bits {

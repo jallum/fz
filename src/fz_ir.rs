@@ -1139,10 +1139,7 @@ mod tuple_keyed_map {
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
     use std::collections::HashMap;
 
-    pub fn serialize<S, V>(
-        map: &HashMap<(FnId, BlockId), V>,
-        s: S,
-    ) -> Result<S::Ok, S::Error>
+    pub fn serialize<S, V>(map: &HashMap<(FnId, BlockId), V>, s: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
         V: Serialize,
@@ -2392,10 +2389,7 @@ mod tests {
         );
         caller.set_terminator(k, Term::Return(Var(99)));
         // else: build a closure capturing p, then return it
-        let clos = caller.let_(
-            else_b,
-            Prim::make_closure(span(30, 40), FnId(0), vec![p]),
-        );
+        let clos = caller.let_(else_b, Prim::make_closure(span(30, 40), FnId(0), vec![p]));
         caller.set_terminator(else_b, Term::Return(clos));
 
         let mut mb = ModuleBuilder::new();
@@ -2408,9 +2402,7 @@ mod tests {
         m.source
             .stmt_spans
             .insert((FnId(1), BlockId(2)), vec![span(30, 40)]);
-        m.source
-            .term_span
-            .insert((FnId(1), BlockId(0)), span(0, 5));
+        m.source.term_span.insert((FnId(1), BlockId(0)), span(0, 5));
 
         // Canonical, order-independent round-trip (serde_json::Value sorts
         // object keys), so equality is structural, not textual.
@@ -2529,9 +2521,7 @@ mod tests {
         m.source
             .stmt_spans
             .insert((FnId(0), BlockId(0)), vec![s7(6, 7)]);
-        m.source
-            .term_span
-            .insert((FnId(0), BlockId(1)), s7(8, 9));
+        m.source.term_span.insert((FnId(0), BlockId(1)), s7(8, 9));
 
         // external_call_edge whose callsite ident span is non-DUMMY (f7).
         let export = ExportKey::new(
@@ -2548,8 +2538,7 @@ mod tests {
             target: export,
         });
 
-        let remap: HashMap<FileId, FileId> =
-            [(FileId(7), FileId(3))].into_iter().collect();
+        let remap: HashMap<FileId, FileId> = [(FileId(7), FileId(3))].into_iter().collect();
         m.remap_file_ids(&remap);
 
         let f3 = FileId(3);
@@ -2641,7 +2630,9 @@ mod tests {
         let files = m.referenced_files();
         assert_eq!(
             files,
-            [f7, f9].into_iter().collect::<std::collections::BTreeSet<_>>(),
+            [f7, f9]
+                .into_iter()
+                .collect::<std::collections::BTreeSet<_>>(),
             "referenced_files returns exactly the non-DUMMY files"
         );
     }

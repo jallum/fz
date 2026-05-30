@@ -377,7 +377,10 @@ fn materialize_ir_unit(
     sm: &mut diag::SourceMap,
     tel: &dyn telemetry::Telemetry,
 ) -> Result<CompiledUnit, PipelineError> {
-    let crate::modules::artifact::IrUnitPayload { mut module, sources } = object
+    let crate::modules::artifact::IrUnitPayload {
+        mut module,
+        sources,
+    } = object
         .ir_unit_payload()
         .map_err(|_err| PipelineError::ArtifactPayload)?;
     let mut remap = std::collections::HashMap::new();
@@ -716,7 +719,8 @@ fn main(), do: User.run()
         // It resolves against the CONSUMER's SourceMap (proves the merge) to the
         // provider's real source — not DUMMY, and the snippet is provider text.
         let loc = graph.sm.locate(span);
-        let snippet = &graph.sm.file(loc.file).bytes[loc.line_start as usize..loc.line_end as usize];
+        let snippet =
+            &graph.sm.file(loc.file).bytes[loc.line_start as usize..loc.line_end as usize];
         assert!(
             PROVIDER_SRC.contains(snippet) && !snippet.trim().is_empty(),
             "remapped provider span resolves to a real provider source line, got: {snippet:?}"

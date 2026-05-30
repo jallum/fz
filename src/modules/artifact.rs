@@ -532,17 +532,17 @@ mod tests {
                 },
                 target: ExportKey::new(module("Dep"), "seed", 0),
             });
-        let unit = CompiledUnit::from_ir_module(
-            code,
-            Some(interface),
-            crate::diag::Diagnostics::new(),
-        );
+        let unit =
+            CompiledUnit::from_ir_module(code, Some(interface), crate::diag::Diagnostics::new());
 
         // The realistic path: intern the unit's source into a SourceMap and
         // pull `to_portable()` for each referenced file. This module's spans are
         // all synthetic, so we add one file and carry it explicitly.
         let mut sm = crate::diag::SourceMap::new();
-        let fid = sm.add_file("Math.fz", "defmodule Math do\n  fn add(x, y), do: x + y\nend\n");
+        let fid = sm.add_file(
+            "Math.fz",
+            "defmodule Math do\n  fn add(x, y), do: x + y\nend\n",
+        );
         let sources = vec![sm.file(fid).to_portable(fid)];
 
         let fzo = FzoArtifact::from_unit_ir(&unit, sources.clone(), vec![]);
@@ -560,7 +560,10 @@ mod tests {
             "module survives the IR-unit round-trip"
         );
         // Sources survived: name + bytes + content_hash all preserved.
-        assert_eq!(payload.sources, sources, "source files survive the round-trip");
+        assert_eq!(
+            payload.sources, sources,
+            "source files survive the round-trip"
+        );
     }
 
     /// Build a non-trivial structural IR-unit artifact: one fn, one external
@@ -582,9 +585,13 @@ mod tests {
                 },
                 target: ExportKey::new(module("Dep"), "seed", 0),
             });
-        let unit = CompiledUnit::from_ir_module(code, Some(interface), crate::diag::Diagnostics::new());
+        let unit =
+            CompiledUnit::from_ir_module(code, Some(interface), crate::diag::Diagnostics::new());
         let mut sm = crate::diag::SourceMap::new();
-        let fid = sm.add_file("Math.fz", "defmodule Math do\n  fn add(x, y), do: x + y\nend\n");
+        let fid = sm.add_file(
+            "Math.fz",
+            "defmodule Math do\n  fn add(x, y), do: x + y\nend\n",
+        );
         let sources = vec![sm.file(fid).to_portable(fid)];
         FzoArtifact::from_unit_ir(&unit, sources, vec!["impl:struct".to_string()])
     }
@@ -622,7 +629,10 @@ mod tests {
         let err = FzoArtifact::deserialize(&crate::telemetry::NullTelemetry, None, &text, None)
             .unwrap_err();
         assert_eq!(err.to_diagnostic().code, codes::ARTIFACT_INVALID);
-        assert_eq!(err.to_string(), "fzo implementation payload digest mismatch");
+        assert_eq!(
+            err.to_string(),
+            "fzo implementation payload digest mismatch"
+        );
     }
 
     #[test]
