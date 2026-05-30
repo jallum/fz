@@ -107,8 +107,8 @@ behavioural assertions only.
 **Keep rendering golden (the string is the artifact):** `hello`,
 `utf8_literal_print`, `empty_list_distinct_from_nil`, `utf8_smart_constructor`
 (its `{:ok, utf8} | {:error, :invalid_utf8}` result is a sum type whose rendered
-tuples are the informative artifact; asserting the inner string also trips the
-nested binary-vs-utf8 equality defect **fz-bsx**).
+tuples are the informative artifact — both the `:ok`-wrapped decoded string and
+the `:error` tag are visible in one golden).
 
 **Keep budget — shape-primary (assert would pollute the pin):** the `vr*` group
 (`vr1_int_arith`, `vr2_float_arith`, `vr3_int_args`, `vr3_float_args`,
