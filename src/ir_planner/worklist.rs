@@ -42,6 +42,10 @@ use std::collections::HashMap;
 ///       which is monotone w.r.t. lattice inclusion. So
 ///       `effective_returns` is monotonically non-decreasing in
 ///       the product type lattice.
+///       A pending producer return is therefore seeded as bottom and deferred
+///       at continuation slot 0. Seeding a pending return with `any` would
+///       start that edge at the top of the lattice and later refine downward,
+///       violating the monotone-from-bottom invariant.
 ///
 ///   (b) The type lattice has finite height H, bounded by the
 ///       count of distinct type-axis values in the program

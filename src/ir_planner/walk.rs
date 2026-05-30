@@ -521,20 +521,21 @@ where
         let Some(slot0) = self.continuation_slot0(term_ident, env, &source) else {
             return;
         };
+        // Seed a pending recursive producer return with bottom, not top. The
+        // effective-return fixpoint must climb monotonically from bottom (see
+        // the `plan_module` termination proof): if a continuation whose
+        // producer return is still pending is seeded with `any`, the
+        // continuation's own return is computed from the top of the lattice and
+        // then recomputed downward once the producer settles — the answer keeps
+        // changing instead of only rising, so the fixpoint oscillates and never
+        // converges. Leaving slot0 at bottom makes `has_bottom_arg` below defer
+        // this edge; `return_reads`/`return_readers` re-enqueues the caller once
+        // the producer return refines to a concrete type. A producer whose
+        // return is *complete* and genuinely bottom leaves slot0 bottom too, and
+        // the continuation is correctly dropped as unreachable.
         let slot0 = match slot0 {
             Slot0Knowledge::Known(ty) => ty,
-            Slot0Knowledge::Pending => self.any_ty.clone(),
-        };
-        let none_ty = self.t.none();
-        // A reachable `Term::Call` structurally has a continuation. `none`
-        // is not an executable argument witness for that continuation; if the
-        // producer return analysis reaches bottom before the call term is
-        // proven unreachable, keep the edge with an opaque slot until the
-        // worklist can refine or later passes can remove the call.
-        let slot0 = if self.t.is_equivalent(&slot0, &none_ty) {
-            self.any_ty.clone()
-        } else {
-            slot0
+            Slot0Knowledge::Pending => self.t.none(),
         };
         let Some(&j) = self.m.fn_idx.get(&cont.fn_id) else {
             return;
