@@ -13,7 +13,3 @@ budget.planner.blocks: 1
 budget.planner.stmts: 10
 budget.planner.dispatches: 0
 ---
-
-# hello
-
-dbg each scalar shape — int, atom, bool, nil

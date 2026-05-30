@@ -10,5 +10,6 @@ fn main() do
   spawn(first_relay)
   spawn(second_relay)
   send(2, 40)
-  dbg(receive do x -> x end)
+  got = receive do x -> x end
+  assert(got == 42, "main -> first_relay -> second_relay -> main, +1 each hop")
 end

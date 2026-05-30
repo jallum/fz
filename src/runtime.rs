@@ -1231,22 +1231,27 @@ mod tests {
     // the deep-copy of the same structure.
     // ----- fz-ul4.19 demonstration via the JIT pipeline -----
 
-    /// End-to-end fixture test: load `fixtures/concurrency_ping_pong/input.fz`,
-    /// run it through the FULL JIT pipeline (lex → parse → resolve →
-    /// macros → ir_lower → ir_codegen → Runtime::run_until_idle), and
-    /// assert the parent's halt value matches the message the child sent.
+    /// End-to-end ping-pong: run a minimal spawn/send/receive program
+    /// through the FULL JIT pipeline (lex → parse → resolve → macros →
+    /// ir_lower → ir_codegen → Runtime::run_until_idle) and assert the
+    /// parent's halt value matches the message the child sent.
     ///
-    /// This is the JIT path's proof-of-life for concurrency. The
-    /// interpreter and AOT paths are pending (see memory note
-    /// "Three-path parity"); when they ship, the same fixture should
-    /// drive the same assertion through their pipelines.
+    /// This is the JIT path's proof-of-life for concurrency. The source is
+    /// inline because the assertion checks the parent's halt *value*: the
+    /// `concurrency_ping_pong` fixture self-checks the same delivery with an
+    /// in-language `assert` (halting on nil), so the value-returning shape
+    /// this test needs lives here rather than in the fixture.
     #[test]
     fn fixture_ping_pong_via_jit_runtime() {
-        let src = std::fs::read_to_string("fixtures/concurrency_ping_pong/input.fz")
-            .expect("failed to read fixtures/concurrency_ping_pong/input.fz");
+        let src = "fn child(), do: send(1, 42)\n\
+                   \n\
+                   fn main() do\n\
+                     spawn(child)\n\
+                     dbg(receive do x -> x end)\n\
+                   end\n";
         // Pipeline: lex, parse, resolve (flatten modules), expand macros,
         // ir_lower, ir_codegen, Runtime.
-        let toks = Lexer::new(&src).tokenize().expect("lex");
+        let toks = Lexer::new(src).tokenize().expect("lex");
         let prog = Parser::new(toks).parse_program().expect("parse");
         let mut ct = crate::types::ConcreteTypes;
         let mut prog = crate::resolve::flatten_modules(&mut ct, prog).expect("resolve");

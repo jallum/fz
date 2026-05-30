@@ -152,26 +152,6 @@ impl CompileTimeEvaluator {
                     Value::Atom(Rc::from("invalid_utf8")),
                 ]))),
             }),
-            ("assert", 1, |args, _| match &args[0] {
-                Value::Bool(true) => Ok(Value::Nil),
-                Value::Bool(false) => Err("assertion failed: expected true".into()),
-                Value::Nil => Err("assertion failed: nil is falsy".into()),
-                other => Err(format!("assert/1 expects bool, got {}", other)),
-            }),
-            ("assert_eq", 2, |args, _| {
-                if value_eq(&args[0], &args[1]) {
-                    Ok(Value::Nil)
-                } else {
-                    Err(format!("assertion failed: {} != {}", args[0], args[1]))
-                }
-            }),
-            ("assert_neq", 2, |args, _| {
-                if !value_eq(&args[0], &args[1]) {
-                    Ok(Value::Nil)
-                } else {
-                    Err(format!("assertion failed: {} == {}", args[0], args[1]))
-                }
-            }),
             // Handled inside CompileTimeEvaluator::apply so they can access the REPL/eval
             // task registry without exposing CompileTimeEvaluator through BuiltinFn.
             ("self", 0, |_, _| {

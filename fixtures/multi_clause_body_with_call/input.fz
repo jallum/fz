@@ -4,6 +4,6 @@ fn classify(0), do: helper()
 fn classify(_), do: 99
 
 fn main() do
-  dbg(classify(0))
-  dbg(classify(5))
+  assert(classify(0) == 7, "clause-0 body Call lowers via the per-clause cont-fn path")
+  assert(classify(5) == 99, "wildcard clause returns 99")
 end

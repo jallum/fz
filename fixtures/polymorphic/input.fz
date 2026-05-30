@@ -1,7 +1,7 @@
 fn id(x), do: x
 
 fn main() do
-  dbg(id(42))
-  dbg(id(:hello))
-  dbg(id(true))
+  assert(id(42) == 42, "id on int")
+  assert(id(:hello) == :hello, "id on atom")
+  assert(id(true), "id on bool")
 end

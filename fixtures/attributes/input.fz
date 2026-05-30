@@ -9,6 +9,7 @@ defmodule Greeter do
 end
 
 fn main() do
-  dbg(Greeter.hi(:alice))
-  dbg(Greeter.echo(42))
+  assert(Greeter.hi(:alice) == :alice, "module with @moduledoc/@doc still executes")
+  assert(Greeter.echo(42) == 42, "second documented fn executes")
+  assert(Greeter.__info__(:functions) == [{:hi, 1}, {:echo, 1}], "@doc/@moduledoc do not disturb the exports")
 end

@@ -13,7 +13,3 @@ budget.planner.blocks: 15
 budget.planner.stmts: 19
 budget.planner.dispatches: 12
 ---
-
-# curried_add
-
-three-level currying — nested lambdas each capturing outer scope; exercises multi-depth closure allocation

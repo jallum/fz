@@ -2,6 +2,6 @@ fn classify(0), do: :zero
 fn classify(_), do: :other
 
 fn main() do
-  dbg(classify(0))
-  dbg(classify(7))
+  assert(classify(0) == :zero, "literal clause 0 matches :zero")
+  assert(classify(7) == :other, "wildcard clause matches :other")
 end

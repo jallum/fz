@@ -9,7 +9,9 @@ defmodule Outer do
 end
 
 fn main() do
-  dbg(Outer.f(7))
-  dbg(Outer.Inner.f(7))
-  dbg(Outer.use_inner(7))
+  assert(Outer.f(7) == 7, "outer-local f")
+  assert(Outer.Inner.f(7) == 1007, "fully-qualified inner f")
+  assert(Outer.use_inner(7) == 1007, "outer reaches inner via local reference")
+  assert(Outer.Inner.__info__(:functions) == [{:f, 1}], "inner module exports f/1")
+  assert(Outer.__info__(:functions) == [{:f, 1}, {:use_inner, 1}], "outer exports its own fns, not the nested module")
 end

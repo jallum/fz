@@ -4,5 +4,5 @@ fn parent(tag) do
 end
 
 fn main() do
-  dbg(parent(99))
+  assert(parent(99) == 99, "spawned closure captures tag and relays it back")
 end

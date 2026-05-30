@@ -5,6 +5,8 @@ fn main() do
   spawn(worker)
   send(2, 10)
   send(3, 11)
-  dbg(receive do x -> x end)
-  dbg(receive do x -> x end)
+  a = receive do x -> x end
+  b = receive do x -> x end
+  assert(a == 20, "first worker doubled 10")
+  assert(b == 22, "second worker doubled 11")
 end

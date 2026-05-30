@@ -11,5 +11,6 @@ fn main() do
   home = self()
   head = spawn(fn() -> relay(4, home))
   send(head, 0)
-  dbg(receive())
+  got = receive()
+  assert(got == 5, "5-hop actor ring increments 0 once per hop")
 end

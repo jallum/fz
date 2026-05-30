@@ -1,8 +1,0 @@
-fn double(x), do: x * 2
-fn neg(x), do: 0 - x
-fn apply2(f, x), do: f(x)
-
-fn main() do
-  dbg(apply2(double, 21))
-  dbg(apply2(neg, 7))
-end

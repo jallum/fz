@@ -2,5 +2,6 @@ fn child(), do: send(1, 42)
 
 fn main() do
   spawn(child)
-  dbg(receive do x -> x end)
+  got = receive do x -> x end
+  assert(got == 42, "parent blocks on receive until the child sends")
 end
