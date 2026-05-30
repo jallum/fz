@@ -13,6 +13,8 @@ pub const LEX_UNEXPECTED_CHAR: DiagCode = DiagCode("lex/unexpected-char");
 // ----- parser -----
 
 pub const PARSE_EXPECTED_TOKEN: DiagCode = DiagCode("parse/expected-token");
+pub const PARSE_AMBIGUOUS_NO_PARENS_KEYWORD: DiagCode =
+    DiagCode("parse/ambiguous-no-parens-keyword");
 
 // ----- resolver -----
 

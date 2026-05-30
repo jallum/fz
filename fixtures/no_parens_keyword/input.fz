@@ -1,0 +1,19 @@
+fn run(a, opts) do
+  dbg(a)
+  [{k1, v1}, {k2, v2}] = opts
+  dbg(k1)
+  dbg(v1)
+  dbg(k2)
+  dbg(v2)
+end
+
+fn only_opts(opts) do
+  [{k, v}] = opts
+  dbg(k)
+  dbg(v)
+end
+
+fn main() do
+  run 1, b: 2, c: 3
+  only_opts x: 9
+end

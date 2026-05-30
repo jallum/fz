@@ -52,6 +52,44 @@ aliases:
 @type keyword(t) :: [{atom, t}]
 ```
 
+## No-Parens Calls
+
+A call may omit its parentheses: `double 21`, `Enum.map xs, f`. The parser
+recognizes one when a **callable head** (a bare name or a module-qualified
+path, i.e. `Expr::Var` or the `Expr::Index` that `Mod.fun` lowers to) is
+followed by a token that **starts an argument** — separated from the head by
+spacing, and a value token rather than an operator, container close, or block
+keyword. `(` and `[` are excluded: the postfix loop owns them as paren-call and
+index. `+`/`-` count only when unary-positioned (space before the operator,
+none before its operand), so `foo -1` is the argument `-1` while `foo - 1` is
+subtraction.
+
+Arguments are full expressions, so a nested no-parens call owns its own commas:
+`f g a, b` is `f(g(a, b))`. Comma greediness depends on position:
+
+- At statement/operand position, arguments are comma-separated greedily.
+- Inside a comma-delimited container (list, tuple, map, bitstring, paren call
+  args), a no-parens call takes a single argument and leaves the comma to the
+  container: `[foo a, b]` is `[foo(a), b]`. This is the `comma_bound` flag;
+  blocks, lambda bodies, and parenthesized groupings reset it.
+
+Keyword entries follow the same collapse rule as paren'd calls. Trailing
+`key: value` pairs become one final keyword-list argument, and a keyword key in
+head position makes the whole argument list a lone keyword list:
+
+```text
+foo a, b: 1, c: 2   =>  foo(a, [b: 1, c: 2])
+foo b: 1            =>  foo([b: 1])
+```
+
+When a no-parens call is itself a keyword value and another keyword entry
+follows it, the parse is ambiguous — `b: bar x, c: 2` could fold `c: 2` into
+`bar` or leave it in the outer list. fz keeps the trailing keyword in the outer
+list (`bar(x)` plus `c: 2`); Elixir folds it into the inner call. The parser
+emits a `parse/ambiguous-no-parens-keyword` warning diagnostic to telemetry
+(under `[fz, diag, warning]`) so the divergence is observable and the source
+can be disambiguated with explicit parentheses.
+
 ## Boundaries
 
 Special forms such as `if`, `with`, and `quote` still own their dedicated
@@ -66,6 +104,9 @@ keyword entries, another positional expression is a syntax error.
 Gate changes here with:
 
 - `cargo test parser::tests::do_block_sugar_tests`
+- `cargo test parser::tests::no_parens_call_tests`
+- `cargo test parser::tests::no_parens_keyword_ambiguity_tests`
 - `cargo test private_fns_are_not_interface_exports`
 - `cargo test --test fixture_matrix keyword_lists`
+- `cargo test --test fixture_matrix no_parens_keyword`
 - `cargo test test_runner::tests`

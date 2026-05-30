@@ -955,4 +955,114 @@ mod no_parens_call_tests {
         assert_eq!(var(&c), "foo");
         assert_eq!(args.len(), 2);
     }
+
+    /// A keyword list is `Expr::List` of `{key_atom, value}` tuples. Returns
+    /// the atom keys in order.
+    fn kw_keys(e: &Expr) -> Vec<String> {
+        let Expr::List(entries, None) = e else {
+            panic!("expected keyword list, got {:?}", e);
+        };
+        entries
+            .iter()
+            .map(|entry| match &entry.node {
+                Expr::Tuple(pair) => match &pair[0].node {
+                    Expr::Atom(k) => k.clone(),
+                    other => panic!("key not an atom: {:?}", other),
+                },
+                other => panic!("entry not a tuple: {:?}", other),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn trailing_keyword_collapses_into_one_list() {
+        // foo a, b: 1  =>  foo(a, [b: 1])
+        let (c, args) = call("foo a, b: 1");
+        assert_eq!(var(&c), "foo");
+        assert_eq!(args.len(), 2);
+        assert_eq!(var(&args[0]), "a");
+        assert_eq!(kw_keys(&args[1]), vec!["b"]);
+    }
+
+    #[test]
+    fn many_trailing_keywords_stay_in_one_list() {
+        // foo a, b: 1, c: 2  =>  foo(a, [b: 1, c: 2])
+        let (_c, args) = call("foo a, b: 1, c: 2");
+        assert_eq!(args.len(), 2, "the keywords are one trailing arg");
+        assert_eq!(kw_keys(&args[1]), vec!["b", "c"]);
+    }
+
+    #[test]
+    fn leading_keyword_is_a_lone_list() {
+        // foo b: 1  =>  foo([b: 1])
+        let (c, args) = call("foo b: 1");
+        assert_eq!(var(&c), "foo");
+        assert_eq!(args.len(), 1);
+        assert_eq!(kw_keys(&args[0]), vec!["b"]);
+    }
+
+    #[test]
+    fn nested_call_grabs_trailing_keywords() {
+        // f g a, b: 1  =>  f(g(a, [b: 1]))
+        let (c, args) = call("f g a, b: 1");
+        assert_eq!(var(&c), "f");
+        assert_eq!(args.len(), 1);
+        let Expr::Call(_inner, inner_args) = &args[0] else {
+            panic!("inner not a call: {:?}", args[0])
+        };
+        assert_eq!(inner_args.len(), 2);
+        assert_eq!(kw_keys(&inner_args[1].node), vec!["b"]);
+    }
+}
+
+/// A no-parens call used as a keyword value, with another keyword after it, is
+/// ambiguous — fz keeps the trailing keyword in the outer list where Elixir
+/// would fold it into the inner call. The parser flags it with a telemetry
+/// warning so the divergence is observable. These tests watch that event.
+#[cfg(test)]
+mod no_parens_keyword_ambiguity_tests {
+    use super::*;
+    use crate::parser::lexer::Lexer;
+    use crate::telemetry::bus::ConfiguredTelemetry;
+    use crate::telemetry::capture::Capture;
+
+    const WARNING: &[&str] = &["fz", "diag", "warning"];
+
+    /// Parse `body` as the lone statement of a function, with a capture sink
+    /// attached, and return how many ambiguity warnings the parser emitted.
+    fn warnings_for(body: &str) -> usize {
+        let src = format!("fn _t() do\n  {}\nend\n", body);
+        let toks = Lexer::new(&src).tokenize().unwrap();
+        let capture = Capture::new();
+        let tel = ConfiguredTelemetry::new();
+        tel.attach(&["fz", "diag"], capture.handler());
+        Parser::new(toks)
+            .parse_program_with_telemetry(&tel)
+            .expect("parse");
+        capture.count(WARNING)
+    }
+
+    #[test]
+    fn no_parens_value_before_keyword_warns() {
+        // foo a, b: bar x, c: 2 — `bar x` is a no-parens call, `c: 2` follows.
+        assert_eq!(warnings_for("foo a, b: bar x, c: 2"), 1);
+    }
+
+    #[test]
+    fn parenthesized_value_is_unambiguous() {
+        // bar(x) has explicit parens — no ambiguity, no warning.
+        assert_eq!(warnings_for("foo a, b: bar(x), c: 2"), 0);
+    }
+
+    #[test]
+    fn no_trailing_keyword_is_unambiguous() {
+        // bar x is the last entry; nothing could bind past it.
+        assert_eq!(warnings_for("foo a, b: bar x"), 0);
+    }
+
+    #[test]
+    fn literal_value_before_keyword_does_not_warn() {
+        // foo a, b: 1, c: 2 — the value is a literal, not a no-parens call.
+        assert_eq!(warnings_for("foo a, b: 1, c: 2"), 0);
+    }
 }

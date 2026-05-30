@@ -90,12 +90,25 @@ pub struct Parser {
     /// (the default, and inside any nested block, lambda, or grouping) it is
     /// false, and a no-parens call greedily takes comma-separated args.
     comma_bound: bool,
+    /// fz-g58.2.3b — set by the no-parens-call recognition site, read by the
+    /// caller to learn whether the expression it just parsed was a bare call.
+    /// The AST does not record parens-vs-no-parens (`bar x` and `bar(x)` are
+    /// the same `Call`), so this transient flag carries that distinction to
+    /// the ambiguity check in `parse_no_parens_keyword_list`.
+    saw_no_parens_call: bool,
+    /// fz-g58.2.3b — non-fatal diagnostics gathered during the parse. Emitted
+    /// to telemetry by `parse_program_with_telemetry`; dropped on the plain
+    /// `parse_program` path (warnings are observability, not control flow).
+    warnings: Vec<crate::diag::Diagnostic>,
 }
 
 type PR<T> = Result<T, ParseError>;
 
 const PARSE_PASS_NAME: &[&str] = &["fz", "parser", "pass"];
 const ITEMS_BUILT_NAME: &[&str] = &["fz", "parser", "items_built"];
+/// Diagnostic events under the `[fz, diag]` prefix are rendered by the
+/// telemetry `DiagRenderer`; `warning` is the severity leaf.
+const DIAG_WARNING_NAME: &[&str] = &["fz", "diag", "warning"];
 
 impl Parser {
     pub fn new(toks: Vec<Token>) -> Self {
@@ -104,7 +117,15 @@ impl Parser {
             pos: 0,
             suppress_trailing_do: false,
             comma_bound: false,
+            saw_no_parens_call: false,
+            warnings: Vec::new(),
         }
+    }
+
+    /// Record a non-fatal diagnostic. Surfaced via telemetry on the
+    /// `parse_program_with_telemetry` path; otherwise collected and dropped.
+    fn warn(&mut self, diag: crate::diag::Diagnostic) {
+        self.warnings.push(diag);
     }
 
     /// Run `f` with the call-postfix trailing-do sugar suppressed.
@@ -287,6 +308,12 @@ impl Parser {
             &crate::measurements! { count: prog.items.len() },
             &crate::telemetry::Metadata::new(),
         );
+        for diag in self.warnings.drain(..) {
+            tel.event(
+                DIAG_WARNING_NAME,
+                crate::metadata! { diagnostic: crate::telemetry::value::opaque(&diag) },
+            );
+        }
         Ok(prog)
     }
 

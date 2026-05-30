@@ -157,6 +157,7 @@ impl Parser {
                 let args = self.parse_no_parens_args()?;
                 let span = start.merge(self.prev_span());
                 lhs = Spanned::new(Expr::Call(Box::new(lhs), args), span);
+                self.saw_no_parens_call = true;
                 continue;
             }
             let Some((lbp, rbp, op)) = Self::infix_bp(self.peek()) else {
@@ -209,28 +210,87 @@ impl Parser {
             | Tok::PercentLBrace
             | Tok::LBitstr
             | Tok::Fn
+            | Tok::KwKey(_)
             | Tok::Amp => true,
             Tok::Minus | Tok::Plus => !self.space_before_at(1),
             _ => false,
         }
     }
 
-    /// Parse the arguments of a no-parens call. Each argument is a full
-    /// expression parsed in a fresh (comma-unbound) context, so a nested
+    /// Parse the arguments of a no-parens call. Each positional argument is a
+    /// full expression parsed in a fresh (comma-unbound) context, so a nested
     /// no-parens call owns its own commas (`f g a, b` is `f(g(a, b))`). At
     /// statement/operand position arguments are comma-separated greedily;
     /// inside a comma-delimited container only one argument is taken, leaving
     /// the comma to the container.
+    ///
+    /// Trailing `key: value` pairs collapse into a single keyword-list
+    /// argument appended last (`foo a, b: 1` is `foo(a, [b: 1])`), matching
+    /// Elixir. A keyword key in head position makes the whole argument list a
+    /// lone keyword list (`foo b: 1` is `foo([b: 1])`).
     fn parse_no_parens_args(&mut self) -> PR<Vec<Spanned<Expr>>> {
+        if matches!(self.peek(), Tok::KwKey(_)) {
+            return Ok(vec![self.parse_no_parens_keyword_list()?]);
+        }
         let mut args = vec![self.with_comma_unbound(|p| p.parse_expr())?];
         if self.comma_bound {
             return Ok(args);
         }
         while self.eat(&Tok::Comma) {
             self.skip_newlines();
+            if matches!(self.peek(), Tok::KwKey(_)) {
+                args.push(self.parse_no_parens_keyword_list()?);
+                break;
+            }
             args.push(self.with_comma_unbound(|p| p.parse_expr())?);
         }
         Ok(args)
+    }
+
+    /// Parse a comma-separated run of `key: value` pairs into a single keyword
+    /// list (`Expr::List` of `{key, value}` tuples). Stops at the first token
+    /// that does not continue the list — a newline, `end`, EOF, or any
+    /// non-comma — without consuming it. Positional expressions cannot follow a
+    /// keyword entry, so a comma must be followed by another keyword key.
+    fn parse_no_parens_keyword_list(&mut self) -> PR<Spanned<Expr>> {
+        let start = self.cur_span();
+        let mut entries = Vec::new();
+        loop {
+            let key_span = self.cur_span();
+            let key = self.bump_keyword_key()?;
+            let key = Spanned::new(Expr::Atom(key.node), key.span);
+            self.skip_newlines();
+            self.saw_no_parens_call = false;
+            let value = self.with_comma_bound(|p| p.parse_expr())?;
+            let value_is_no_parens_call =
+                self.saw_no_parens_call && matches!(value.node, Expr::Call(_, _));
+            entries.push(Self::keyword_pair_expr(key, value));
+
+            let continues = self.at(&Tok::Comma) && matches!(self.peek_at(1), Tok::KwKey(_));
+            // Elixir warns (and binds the trailing keyword into the inner call)
+            // when a no-parens call is a keyword value with another keyword
+            // entry after it: `b: bar x, c: 2` could mean `bar(x, c: 2)` or
+            // `bar(x)` plus `c: 2`. fz keeps the trailing keyword in the outer
+            // list; the diagnostic flags the divergence so the source can be
+            // disambiguated with explicit parens.
+            if continues && value_is_no_parens_call {
+                let span = key_span.merge(self.prev_span());
+                self.warn(
+                    crate::diag::Diagnostic::warning(
+                        crate::diag::codes::PARSE_AMBIGUOUS_NO_PARENS_KEYWORD,
+                        "no-parens call as a keyword value before another keyword \
+                         is ambiguous; add parentheses around the call's arguments",
+                        span,
+                    )
+                    .with_label("this call's arguments may extend past the comma"),
+                );
+            }
+            if !continues {
+                break;
+            }
+            self.bump(); // comma
+        }
+        Ok(Spanned::new(Expr::List(entries, None), self.finish(start)))
     }
 
     pub(super) fn parse_prefix(&mut self) -> PR<Spanned<Expr>> {
