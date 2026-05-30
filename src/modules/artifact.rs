@@ -15,8 +15,6 @@ use std::path::Path;
 
 pub const FZ_ARTIFACT_ABI_VERSION: u32 = 1;
 pub const FZ_RUNTIME_ARTIFACT_ABI_VERSION: u32 = 1;
-#[cfg(test)]
-pub const FZO_PAYLOAD_IR_TEXT_V1: &str = "fz-ir-text-v1";
 pub const FZO_PAYLOAD_SOURCE_UNIT_V1: &str = "fz-source-unit-v1";
 pub const FZO_PAYLOAD_RUNTIME_MODULE_V1: &str = "fz-runtime-module-v1";
 pub const FZO_PAYLOAD_IR_UNIT_V1: &str = "fz-ir-unit-v1";
@@ -112,11 +110,6 @@ impl FzoUnitPayload {
     }
 
     #[cfg(test)]
-    pub fn ir_text(body: impl Into<String>) -> Self {
-        Self::new(FZO_PAYLOAD_IR_TEXT_V1, body)
-    }
-
-    #[cfg(test)]
     pub fn source_unit(body: impl Into<String>) -> Self {
         Self::new(FZO_PAYLOAD_SOURCE_UNIT_V1, body)
     }
@@ -202,15 +195,6 @@ impl FziArtifact {
 }
 
 impl FzoArtifact {
-    #[cfg(test)]
-    pub fn from_unit(unit: &CompiledUnit, implementation_fingerprint: Vec<String>) -> Self {
-        Self::from_unit_payload(
-            unit,
-            FzoUnitPayload::ir_text(unit.code.to_string()),
-            implementation_fingerprint,
-        )
-    }
-
     #[cfg(test)]
     pub fn from_unit_source(
         unit: &CompiledUnit,
@@ -510,10 +494,11 @@ mod tests {
             Some(interface.clone()),
             crate::diag::Diagnostics::new(),
         );
-        let expected_payload = unit.code.to_string();
-        let artifact = FzoArtifact::from_unit(&unit, vec!["impl:abc".to_string()]);
+        // This module's spans are all synthetic, so it references no source
+        // files: an empty `sources` is the faithful structural payload.
+        let artifact = FzoArtifact::from_unit_ir(&unit, vec![], vec!["impl:abc".to_string()]);
         let text = artifact.serialize();
-        assert!(text.contains(r#""format": "fz-ir-text-v1""#), "{text}");
+        assert!(text.contains(r#""format": "fz-ir-unit-v1""#), "{text}");
         assert!(text.contains(r#""body": "#), "{text}");
         let decoded = FzoArtifact::deserialize(
             &crate::telemetry::NullTelemetry,
@@ -522,8 +507,7 @@ mod tests {
             Some(&["export:Math.add/2".to_string()]),
         )
         .expect("deserialize");
-        assert_eq!(decoded.unit_payload.format, "fz-ir-text-v1");
-        assert_eq!(decoded.unit_payload.body, expected_payload);
+        assert_eq!(decoded.unit_payload.format, FZO_PAYLOAD_IR_UNIT_V1);
         assert_eq!(decoded, artifact);
         assert_eq!(decoded.serialize(), text);
     }
@@ -649,11 +633,11 @@ mod tests {
             Some(interface),
             crate::diag::Diagnostics::new(),
         );
-        let artifact = FzoArtifact::from_unit(&unit, Vec::new());
+        let artifact = FzoArtifact::from_unit_source(&unit, "defmodule Math do\nend\n", Vec::new());
         let err = artifact.ir_unit_payload().unwrap_err();
         assert_eq!(
             err.to_string(),
-            "fzo payload `fz-ir-text-v1` is not an IR unit"
+            "fzo payload `fz-source-unit-v1` is not an IR unit"
         );
     }
 
@@ -696,7 +680,7 @@ mod tests {
             Some(interface),
             crate::diag::Diagnostics::new(),
         );
-        let artifact = FzoArtifact::from_unit(&unit, Vec::new());
+        let artifact = FzoArtifact::from_unit_ir(&unit, vec![], Vec::new());
 
         let err = artifact
             .source_unit_text(&crate::telemetry::NullTelemetry)
@@ -704,7 +688,7 @@ mod tests {
 
         assert_eq!(
             err.to_string(),
-            "fzo payload `fz-ir-text-v1` is not a materializable source unit"
+            "fzo payload `fz-ir-unit-v1` is not a materializable source unit"
         );
     }
 
@@ -716,7 +700,7 @@ mod tests {
             Some(interface),
             crate::diag::Diagnostics::new(),
         );
-        let artifact = FzoArtifact::from_unit(&unit, Vec::new());
+        let artifact = FzoArtifact::from_unit_ir(&unit, vec![], Vec::new());
         let text = artifact
             .serialize()
             .replace(&artifact.interface_fingerprint_digest, "bad");
@@ -737,7 +721,7 @@ mod tests {
             Some(interface),
             crate::diag::Diagnostics::new(),
         );
-        let mut artifact = FzoArtifact::from_unit(&unit, Vec::new());
+        let mut artifact = FzoArtifact::from_unit_ir(&unit, vec![], Vec::new());
         artifact.unit_payload.body.clear();
         let text = artifact.serialize();
         let err = FzoArtifact::deserialize(&crate::telemetry::NullTelemetry, None, &text, None)
@@ -754,7 +738,7 @@ mod tests {
             Some(interface),
             crate::diag::Diagnostics::new(),
         );
-        let text = FzoArtifact::from_unit(&unit, Vec::new()).serialize();
+        let text = FzoArtifact::from_unit_ir(&unit, vec![], Vec::new()).serialize();
         let err = FzoArtifact::deserialize(
             &crate::telemetry::NullTelemetry,
             None,

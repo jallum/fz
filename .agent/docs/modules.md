@@ -125,14 +125,22 @@ Use these terms precisely:
   export. `fz dump --emit specs` renders `ModulePlan`; it is not a module ABI.
 - `.fzi`: the serialized interface artifact. Dependents use it to resolve and
   check imports without loading provider implementation bodies.
-- `.fzo`: the serialized implementation-unit envelope. Normal
-  `fz build --emit-fzo` output is deliberately pre-link: it stores the checked
-  source text as a materializable source-unit payload
-  (`fz-source-unit-v1`) plus the `CompiledUnit` identity/import/export facts
-  needed by graph loading. Graph loading can recover the provider
-  implementation input from the artifact without reading the original provider
-  source path. Runtime-library modules use their own `fz-runtime-module-v1`
-  payload, and internal inspection artifacts use `fz-ir-text-v1`.
+- `.fzo`: the serialized implementation-unit envelope. A compiled module's
+  `.fzo` carries a structural IR unit (`fz-ir-unit-v1`): the serialized
+  `fz_ir::Module` plus the source files its spans reference. Each source file is
+  a `PortableSourceFile` with name, bytes, FNV content hash, and the provider's
+  `FileId`. Loading materializes the provider WITHOUT recompiling from source:
+  deserialize the `Module`, intern the shipped source files into the consumer
+  `SourceMap` (deduped by name + content hash), remap the `Module`'s `FileId`s
+  onto the interned ids, rebuild the derived indices the serde form drops, and
+  re-plan at load. The load-time plan is authoritative: it regenerates the
+  cross-module/protocol call facts the linker needs. Source identity is portable,
+  so a loaded provider's spans render real diagnostics against its own source. A
+  payload integrity digest (`implementation_fingerprint_digest`) over the
+  payload format and body is validated at load alongside the ABI and
+  interface-fingerprint checks. Runtime-library modules ship as a
+  `fz-runtime-module-v1` source payload and are materialized from source per
+  execution context; they are not relocatable IR units.
 - `CompiledUnit`: one module before image link. It owns module-local IR plus
   the interface/import/export facts needed to prove link compatibility.
 - `CompiledImage`: one linked runnable image. It owns runtime-global executable
@@ -158,6 +166,7 @@ Telemetry keeps process facts out of product dumps:
 - `fz.module.fzi_loaded`
 - `fz.module.fzo_written`
 - `fz.module.fzo_loaded`
+- `fz.module.unit_materialized` (carries a `kind` of `ir-unit` or `source`)
 - `fz.module.graph_loaded`
 - `fz.link.succeeded`
 - `fz.link.failed`
