@@ -7,3 +7,5 @@ target/
 fixtures/*/actual.clif
 fixtures/*/actual.specs
 fixtures/*/actual.diagnostics
+fixtures/*/actual.txt
+fixtures/*/actual.oracle.txt

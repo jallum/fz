@@ -154,9 +154,27 @@ impl Parser {
             // expressions; greedy comma separation at statement/operand
             // position, single-arg inside a comma-delimited container.
             if Self::expr_is_callable_head(&lhs.node) && self.starts_no_parens_arg() {
-                let args = self.parse_no_parens_args()?;
+                let mut call_args = self.parse_no_parens_args()?;
+                self.attach_trailing_do(&mut call_args)?;
                 let span = start.merge(self.prev_span());
-                lhs = Spanned::new(Expr::Call(Box::new(lhs), args), span);
+                lhs = Spanned::new(Expr::Call(Box::new(lhs), call_args.args), span);
+                self.saw_no_parens_call = true;
+                continue;
+            }
+            // Bare `do … end` after a callable head with no positional args:
+            // `foo do … end` is `foo([do: …])`, matching Elixir. Suppressed in
+            // cond positions, where the block belongs to the surrounding form.
+            if Self::expr_is_callable_head(&lhs.node)
+                && !self.suppress_trailing_do
+                && matches!(self.peek(), Tok::Do)
+            {
+                let mut call_args = CallArgs {
+                    args: Vec::new(),
+                    keyword_arg_index: None,
+                };
+                self.attach_trailing_do(&mut call_args)?;
+                let span = start.merge(self.prev_span());
+                lhs = Spanned::new(Expr::Call(Box::new(lhs), call_args.args), span);
                 self.saw_no_parens_call = true;
                 continue;
             }
@@ -228,23 +246,59 @@ impl Parser {
     /// argument appended last (`foo a, b: 1` is `foo(a, [b: 1])`), matching
     /// Elixir. A keyword key in head position makes the whole argument list a
     /// lone keyword list (`foo b: 1` is `foo([b: 1])`).
-    fn parse_no_parens_args(&mut self) -> PR<Vec<Spanned<Expr>>> {
+    ///
+    /// Returns `CallArgs` so the do-block sugar can extend the trailing keyword
+    /// list precisely: `keyword_arg_index` marks the collapsed keyword argument
+    /// (if any), never a positional list literal — `foo [a: 1] do … end` keeps
+    /// `[a: 1]` positional and adds a separate `[do: …]`, matching Elixir.
+    fn parse_no_parens_args(&mut self) -> PR<CallArgs> {
         if matches!(self.peek(), Tok::KwKey(_)) {
-            return Ok(vec![self.parse_no_parens_keyword_list()?]);
+            let kw = self.parse_no_parens_keyword_list()?;
+            return Ok(CallArgs {
+                args: vec![kw],
+                keyword_arg_index: Some(0),
+            });
         }
         let mut args = vec![self.with_comma_unbound(|p| p.parse_expr())?];
         if self.comma_bound {
-            return Ok(args);
+            return Ok(CallArgs {
+                args,
+                keyword_arg_index: None,
+            });
         }
+        let mut keyword_arg_index = None;
         while self.eat(&Tok::Comma) {
             self.skip_newlines();
             if matches!(self.peek(), Tok::KwKey(_)) {
                 args.push(self.parse_no_parens_keyword_list()?);
+                keyword_arg_index = Some(args.len() - 1);
                 break;
             }
             args.push(self.with_comma_unbound(|p| p.parse_expr())?);
         }
-        Ok(args)
+        Ok(CallArgs {
+            args,
+            keyword_arg_index,
+        })
+    }
+
+    /// Attach a trailing `do … end` block to a no-parens call as a `do:`
+    /// keyword argument, when the trailing-do sugar is enabled (it is
+    /// suppressed in cond positions, where the block belongs to the
+    /// surrounding `if`/`case`/… instead). Extends the call's trailing keyword
+    /// list, or creates one — the same shape the paren-call path produces in
+    /// `parse_bp`. The `, do:` shorthand needs no handling here: a keyword key
+    /// after a comma is already collected by `parse_no_parens_keyword_list`.
+    fn attach_trailing_do(&mut self, call_args: &mut CallArgs) -> PR<()> {
+        if self.suppress_trailing_do || !matches!(self.peek(), Tok::Do) {
+            return Ok(());
+        }
+        self.bump();
+        self.skip_newlines();
+        let body = self.parse_block_until(&[Tok::End])?;
+        self.expect(&Tok::End, "`end`")?;
+        Self::append_keyword_arg(call_args, "do".to_string(), body);
+        Ok(())
     }
 
     /// Parse a comma-separated run of `key: value` pairs into a single keyword
