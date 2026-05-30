@@ -43,6 +43,37 @@ where
     })
 }
 
+/// Best-effort per-position resolution of a spec's bodies: a body that fails to
+/// resolve yields `None` for that position instead of failing the whole spec.
+/// Free type variables are shared across positions, matching `resolve_spec_decl`.
+/// Used by protocol callback-spec compatibility checking, where a domain-applied
+/// position (`t(a)`) may not resolve yet while the result and other params still
+/// can.
+pub fn resolve_spec_decl_positions<T>(
+    t: &mut T,
+    decl: &crate::ast::SpecDecl,
+    env: &ModuleTypeEnv,
+) -> (Vec<Option<crate::types::Ty>>, Option<crate::types::Ty>)
+where
+    T: Types<Ty = crate::types::Ty>,
+{
+    let mut vars: HashMap<String, crate::types::TypeVarId> = HashMap::new();
+    let params = decl
+        .param_body_tokens
+        .iter()
+        .map(|body| {
+            super::parser::parse_type_expr_with_vars(t, &body.0, env, &mut vars)
+                .ok()
+                .map(|(ty, _consumed)| ty)
+        })
+        .collect();
+    let result =
+        super::parser::parse_type_expr_with_vars(t, &decl.result_body_tokens.0, env, &mut vars)
+            .ok()
+            .map(|(ty, _consumed)| ty);
+    (params, result)
+}
+
 /// fz-ul4.31.3 — Build a `ModuleTypeEnv` from a module's `@type`
 /// attributes. Resolves each alias body via `parse_type_expr`, threading
 /// a partial env that grows as aliases are resolved. Forward references

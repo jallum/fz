@@ -331,6 +331,15 @@ pub(super) fn eval_prim<T: Types<Ty = crate::types::Ty>>(
                     }
                 }
             }
+            if descr.type_test_has_lists() {
+                matched |= val.kind() == ValueKind::LIST;
+            }
+            if descr.type_test_has_maps() {
+                matched |= val.kind() == ValueKind::MAP;
+            }
+            if descr.type_test_has_binaries() {
+                matched |= val.kind() == ValueKind::BITSTRING;
+            }
             assert!(
                 !descr.type_test_tuple_has_negations(),
                 "TypeTest: negated tuple clauses not yet supported"

@@ -2558,6 +2558,347 @@ fn main(), do: Collectable.id([1])
     assert_eq!(target_fn.name, "List.id");
 }
 
+// ---- fz-t1m.1.1 — protocol callback spec compatibility ----
+
+/// An impl callback whose declared `@spec` is set-theoretically disjoint from
+/// the protocol's declared callback spec (here: result `atom` vs `integer`) is
+/// rejected during resolve.
+#[test]
+fn protocol_impl_callback_disjoint_spec_is_rejected() {
+    let src = r#"
+defprotocol P do
+  @spec to_thing(t(a)) :: integer
+  fn to_thing(value)
+end
+
+defimpl P, for: List do
+  @spec to_thing(value) :: atom
+  fn to_thing(value), do: :ok
+end
+
+fn main(), do: P.to_thing([1])
+"#;
+    let toks = crate::lexer::Lexer::new(src).tokenize().expect("lex");
+    let parsed = crate::parser::Parser::new(toks)
+        .parse_program()
+        .expect("parse");
+    let mut t = crate::types::ConcreteTypes;
+    let err = crate::resolve::flatten_modules(&mut t, parsed)
+        .expect_err("disjoint callback result spec must be rejected");
+    let crate::resolve::ResolveError::ProtocolError { msg, .. } = err else {
+        panic!("expected ProtocolError, got {err:?}");
+    };
+    assert!(
+        msg.contains("to_thing/1") && msg.contains("incompatible"),
+        "unexpected message: {msg}"
+    );
+}
+
+/// A compatible impl callback spec (result `integer`, matching the protocol)
+/// resolves without error; free type variables in callback positions never
+/// produce a false positive.
+#[test]
+fn protocol_impl_callback_compatible_spec_is_accepted() {
+    let src = r#"
+defprotocol P do
+  @spec to_thing(t(a)) :: integer
+  fn to_thing(value)
+end
+
+defimpl P, for: List do
+  @spec to_thing(value) :: integer
+  fn to_thing(value), do: 1
+end
+
+fn main(), do: P.to_thing([1])
+"#;
+    let toks = crate::lexer::Lexer::new(src).tokenize().expect("lex");
+    let parsed = crate::parser::Parser::new(toks)
+        .parse_program()
+        .expect("parse");
+    let mut t = crate::types::ConcreteTypes;
+    crate::resolve::flatten_modules(&mut t, parsed).expect("compatible callback spec must resolve");
+}
+
+// ---- fz-t1m.1.3 — no-implementation diagnostic at dispatch ----
+
+fn plan_protocol_src(
+    src: &str,
+) -> (
+    crate::types::ConcreteTypes,
+    crate::fz_ir::Module,
+    crate::ir_planner::ModulePlan,
+) {
+    let toks = crate::lexer::Lexer::new(src).tokenize().expect("lex");
+    let parsed = crate::parser::Parser::new(toks)
+        .parse_program()
+        .expect("parse");
+    let mut t = crate::types::ConcreteTypes;
+    let resolved = crate::resolve::flatten_modules(&mut t, parsed).expect("resolve");
+    let ir = crate::ir_lower::lower_program(&mut t, &resolved).expect("lower");
+    let mt = plan_module(&mut t, &ir, &crate::telemetry::NullTelemetry);
+    (t, ir, mt)
+}
+
+/// Calling a protocol callback on a receiver whose type is disjoint from every
+/// implementing target emits a dedicated no-implementation diagnostic that names
+/// the protocol, the receiver type, and the known implementors.
+#[test]
+fn protocol_call_on_unimplemented_receiver_emits_no_impl_diagnostic() {
+    let src = r#"
+defprotocol P do
+  fn each(value)
+end
+
+defimpl P, for: List do
+  fn each(value), do: value
+end
+
+fn main(), do: P.each(42)
+"#;
+    let (mut t, m, mt) = plan_protocol_src(src);
+    let diags =
+        crate::ir_planner::collect_diagnostics(&mut t, &m, &mt, &crate::telemetry::NullTelemetry);
+    let d = diags
+        .as_slice()
+        .iter()
+        .find(|d| d.code == crate::diag::codes::TYPE_PROTOCOL_NO_IMPL)
+        .unwrap_or_else(|| {
+            panic!(
+                "expected a type/protocol-no-impl diagnostic; got: {:?}",
+                diags
+                    .as_slice()
+                    .iter()
+                    .map(|d| (d.code, &d.message))
+                    .collect::<Vec<_>>(),
+            )
+        });
+    assert!(
+        d.message.contains("protocol `P`") && d.message.contains("receiver type"),
+        "diag should name the protocol and receiver; got: {}",
+        d.message
+    );
+    assert!(
+        d.notes
+            .iter()
+            .any(|n| n.contains("known implementors") && n.contains("List")),
+        "diag should list known implementors including List; got notes: {:?}",
+        d.notes
+    );
+}
+
+/// Calling the same protocol callback on a receiver the protocol does implement
+/// (a list) emits no no-implementation diagnostic.
+#[test]
+fn protocol_call_on_implemented_receiver_emits_no_diagnostic() {
+    let src = r#"
+defprotocol P do
+  fn each(value)
+end
+
+defimpl P, for: List do
+  fn each(value), do: value
+end
+
+fn main(), do: P.each([1])
+"#;
+    let (mut t, m, mt) = plan_protocol_src(src);
+    let diags =
+        crate::ir_planner::collect_diagnostics(&mut t, &m, &mt, &crate::telemetry::NullTelemetry);
+    assert!(
+        !diags
+            .as_slice()
+            .iter()
+            .any(|d| d.code == crate::diag::codes::TYPE_PROTOCOL_NO_IMPL),
+        "no no-impl diag should fire when an impl matches; got: {:?}",
+        diags
+            .as_slice()
+            .iter()
+            .map(|d| (d.code, &d.message))
+            .collect::<Vec<_>>(),
+    );
+}
+
+// ---- fz-t1m.1.5 — closed-domain protocol switch dispatch ----
+
+/// A protocol call whose receiver is a closed union of two implementing
+/// targets (`7 | list(int)`, covered by `Integer` and `List`) is rewritten
+/// from a single stub call into a `TypeTest`/`If` cascade with one direct
+/// call per impl. After the rewrite the dispatching fn calls the concrete
+/// impls — never the `__protocol__` stub.
+#[test]
+fn closed_union_protocol_receiver_rewrites_to_typetest_cascade() {
+    let src = r#"
+defprotocol Sizer do
+  fn size(value)
+end
+
+defimpl Sizer, for: Integer do
+  fn size(value), do: 1
+end
+
+defimpl Sizer, for: List do
+  fn size(value), do: 2
+end
+
+fn describe(value), do: Sizer.size(value)
+
+fn main() do
+  case [7, [1, 2, 3]] do
+    [a, b] -> describe(a) + describe(b)
+    _ -> 0
+  end
+end
+"#;
+    let (mut t, mut m, mt) = plan_protocol_src(src);
+    crate::ir_planner::rewrite_closed_union_protocol_dispatch(&mut t, &mut m, &mt);
+
+    let describe = m.fn_by_name("describe").expect("describe fn");
+
+    // The dispatch fn no longer calls a protocol stub directly.
+    let still_calls_stub = describe.blocks.iter().any(|b| match &b.terminator {
+        crate::fz_ir::Term::Call { callee, .. } | crate::fz_ir::Term::TailCall { callee, .. } => {
+            m.protocol_call_targets.contains_key(callee)
+        }
+        _ => false,
+    });
+    assert!(
+        !still_calls_stub,
+        "after the rewrite, describe must not call the __protocol__ stub"
+    );
+
+    // It tests the receiver's type at least once...
+    let has_type_test = describe.blocks.iter().any(|b| {
+        b.stmts.iter().any(|crate::fz_ir::Stmt::Let(_, prim)| {
+            matches!(prim, crate::fz_ir::Prim::TypeTest(..))
+        })
+    });
+    assert!(
+        has_type_test,
+        "rewrite must emit a TypeTest on the receiver"
+    );
+
+    // ...and dispatches to two distinct concrete impl fns.
+    let mut impl_callees: Vec<crate::fz_ir::FnId> = describe
+        .blocks
+        .iter()
+        .filter_map(|b| match &b.terminator {
+            crate::fz_ir::Term::Call { callee, .. }
+            | crate::fz_ir::Term::TailCall { callee, .. } => Some(*callee),
+            _ => None,
+        })
+        .collect();
+    impl_callees.sort();
+    impl_callees.dedup();
+    assert_eq!(
+        impl_callees.len(),
+        2,
+        "closed union over Integer and List must produce two direct-call arms; got {:?}",
+        impl_callees
+            .iter()
+            .map(|id| &m.fn_by_id(*id).name)
+            .collect::<Vec<_>>()
+    );
+}
+
+/// A single-target receiver (a plain list, only `List` implements `Sizer`)
+/// is left untouched — ordinary single dispatch, no cascade.
+#[test]
+fn single_target_protocol_receiver_is_not_rewritten() {
+    let src = r#"
+defprotocol Sizer do
+  fn size(value)
+end
+
+defimpl Sizer, for: List do
+  fn size(value), do: 2
+end
+
+fn describe(value), do: Sizer.size(value)
+
+fn main(), do: describe([1, 2, 3])
+"#;
+    let (mut t, mut m, mt) = plan_protocol_src(src);
+    let before = m.fn_by_name("describe").unwrap().blocks.len();
+    crate::ir_planner::rewrite_closed_union_protocol_dispatch(&mut t, &mut m, &mt);
+    let after = m.fn_by_name("describe").unwrap().blocks.len();
+    assert_eq!(
+        before, after,
+        "a single-target receiver must not grow a switch cascade"
+    );
+}
+
+// ---- fz-t1m.1.6 — open/erased protocol dispatch (cascade + fallthrough) ----
+
+/// A receiver that overlaps some impls but is not fully covered — here
+/// `integer | list(int) | atom`, where only `Integer` and `List` implement
+/// `Sizer` (the atom is residual) — is rewritten into a cascade that tests
+/// every implementing arm and falls through to the original stub for a value
+/// matching none. The dispatch fn keeps a call to the `__protocol__` stub (the
+/// fallthrough), unlike the fully-covered closed-union case.
+#[test]
+fn open_protocol_receiver_rewrites_to_cascade_with_stub_fallthrough() {
+    let src = r#"
+defprotocol Sizer do
+  fn size(value)
+end
+
+defimpl Sizer, for: Integer do
+  fn size(value), do: 1
+end
+
+defimpl Sizer, for: List do
+  fn size(value), do: 2
+end
+
+fn describe(value), do: Sizer.size(value)
+
+fn main() do
+  case [7, [1, 2, 3], :other] do
+    [a, b, c] -> describe(a) + describe(b)
+    _ -> 0
+  end
+end
+"#;
+    let (mut t, mut m, mt) = plan_protocol_src(src);
+    crate::ir_planner::rewrite_closed_union_protocol_dispatch(&mut t, &mut m, &mt);
+
+    let describe = m.fn_by_name("describe").expect("describe fn");
+
+    // Two distinct impl arms are emitted...
+    let mut impl_callees: Vec<crate::fz_ir::FnId> = describe
+        .blocks
+        .iter()
+        .filter_map(|b| match &b.terminator {
+            crate::fz_ir::Term::Call { callee, .. }
+            | crate::fz_ir::Term::TailCall { callee, .. } => {
+                (!m.protocol_call_targets.contains_key(callee)).then_some(*callee)
+            }
+            _ => None,
+        })
+        .collect();
+    impl_callees.sort();
+    impl_callees.dedup();
+    assert_eq!(
+        impl_callees.len(),
+        2,
+        "Integer and List arms must be emitted; got {:?}",
+        impl_callees
+    );
+
+    // ...and a stub fallthrough survives for the residual (atom) arm.
+    let keeps_stub_fallthrough = describe.blocks.iter().any(|b| match &b.terminator {
+        crate::fz_ir::Term::Call { callee, .. } | crate::fz_ir::Term::TailCall { callee, .. } => {
+            m.protocol_call_targets.contains_key(callee)
+        }
+        _ => false,
+    });
+    assert!(
+        keeps_stub_fallthrough,
+        "an open receiver must keep the stub call as the no-match fallthrough"
+    );
+}
+
 // ---- fz-swt.8 — `.value` accessor: typing + visibility gating ----
 
 /// Inside the declaring module, `handle.value` typechecks as the inner

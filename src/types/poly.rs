@@ -2,7 +2,9 @@ use std::fmt;
 
 /// Parametric type-variable identifier. Vars are nominal placeholders
 /// distinguished only by id; they are substituted at instantiation sites.
-#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(
+    Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
 pub struct TypeVarId(pub u32);
 
 impl TypeVarId {

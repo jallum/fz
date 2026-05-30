@@ -1,6 +1,8 @@
 //! Strict struct layout descriptors + per-process registry.
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum FieldKind {
     /// Dynamic field stored as a raw payload plus compact kind metadata.
     /// GC traces heap-kind payloads.
@@ -21,13 +23,13 @@ pub enum FieldKind {
     RawBytes(u32),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FieldDescriptor {
     pub offset: u32,
     pub kind: FieldKind,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Schema {
     pub name: String,
     pub size: u32,

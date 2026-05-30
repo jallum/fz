@@ -237,15 +237,18 @@ fn runtime_module_fzo(
     interface: &ModuleInterface,
 ) -> FzoArtifact {
     let interface_fingerprint = interface.fingerprint_inputs.clone();
+    let unit_payload = FzoUnitPayload::runtime_module(
+        runtime_module_source(name).expect("runtime module source is registered"),
+    );
+    let implementation_fingerprint_digest = crate::modules::artifact::payload_digest(&unit_payload);
     FzoArtifact {
         compiler_abi_version: crate::modules::artifact::FZ_ARTIFACT_ABI_VERSION,
         runtime_abi_version: crate::modules::artifact::FZ_RUNTIME_ARTIFACT_ABI_VERSION,
         module: Some(name.clone()),
-        unit_payload: FzoUnitPayload::runtime_module(
-            runtime_module_source(name).expect("runtime module source is registered"),
-        ),
+        unit_payload,
         required_imports: interface_imports(interface),
         implementation_fingerprint: runtime_implementation_fingerprint(name, module),
+        implementation_fingerprint_digest,
         interface_fingerprint_digest: crate::modules::interface::fingerprint_digest(
             &interface_fingerprint,
         ),

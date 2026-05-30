@@ -141,7 +141,7 @@ fn stateful_closure_targets(types: &CapabilityPlan) -> HashSet<FnId> {
 
 // ---------- alpha-rename ----------
 
-fn max_var(f: &FnIr) -> u32 {
+pub(crate) fn max_var(f: &FnIr) -> u32 {
     let mut m = 0u32;
     for b in &f.blocks {
         for p in &b.params {
@@ -157,7 +157,7 @@ fn max_var(f: &FnIr) -> u32 {
     m
 }
 
-fn max_block(f: &FnIr) -> u32 {
+pub(crate) fn max_block(f: &FnIr) -> u32 {
     f.blocks.iter().map(|b| b.id.0).max().unwrap_or(0)
 }
 

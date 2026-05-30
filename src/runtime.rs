@@ -48,7 +48,7 @@ pub struct Runtime<'a> {
     module: Option<&'a crate::fz_ir::Module>,
 
     /// fz-yxs/fz-st5 — sorted-vec timer wheel (F2). Stored inside the
-    /// Runtime so per-Process `parked_matched.after_deadline_ms` can be
+    /// Runtime so per-Process `wait.after_deadline_ms` can be
     /// honoured via `dispatch_timer_schedule`; the run loop drains
     /// expired entries each iteration and emits ResumeMatched for the
     /// after-cont closure.
@@ -272,16 +272,16 @@ pub fn send_via(sender: *mut Process, scheduler: *mut (), receiver_pid: PidId, m
         .tasks
         .get_mut(&receiver_pid)
         .unwrap_or_else(|| panic!("send: receiver pid {} not in task registry", receiver_pid));
-    if receiver.parked_matched.is_some() {
+    if receiver.wait.is_some() {
         let receiver_ptr: *mut Process = &mut **receiver;
         let hit = receiver
-            .parked_matched
+            .wait
             .as_ref()
             .and_then(|park| park.try_match(receiver_ptr, msg));
         match hit {
             Some((clause_idx, bound_vals)) => {
                 let (template, timer_id) = {
-                    let park = receiver.parked_matched.as_ref().expect("checked above");
+                    let park = receiver.wait.as_ref().expect("checked above");
                     (park.clause_bodies[clause_idx], park.after_timer_id)
                 };
                 let mut forwarding: std::collections::HashMap<*mut u8, *mut u8> =
@@ -302,7 +302,7 @@ pub fn send_via(sender: *mut Process, scheduler: *mut (), receiver_pid: PidId, m
                     template,
                     &copied_bound_vals,
                 );
-                receiver.parked_matched = None;
+                receiver.wait = None;
                 if let Some(id) = timer_id {
                     fz_runtime::exec_ctx::timer_cancel(receiver, id);
                 }
@@ -382,9 +382,11 @@ impl<'a> Runtime<'a> {
     /// fresh pid. The task is enqueued immediately; `run_until_idle()`
     /// will drive it.
     pub fn spawn(&mut self, fn_id: FnId) -> PidId {
-        // fz-cps.5 — every fn is Tail-CC, including main. Stash the fn
-        // ptr as a pending entry; the scheduler dispatches it via
-        // `fz_main_entry` on the next quantum.
+        // Every fn is Tail-CC, including main. Make the entry a closure: mint
+        // a synthetic inner closure carrying the raw `(cont)` main fp (via
+        // `fz_main_trampoline`), wrap it in an entry thunk, and queue that as
+        // `runnable`. The scheduler resumes it through the one `fz_resume`
+        // verb — the same path a spawned user closure takes.
         let pid = self.next_pid;
         self.next_pid += 1;
         let mut process = self.compiled.make_process();
@@ -394,8 +396,28 @@ impl<'a> Runtime<'a> {
             .compiled
             .fn_ptr(fn_id)
             .unwrap_or_else(|| panic!("no fn ptr for entry {}", fn_id.0));
-        process.pending_main_entry = fp as *mut u8;
-        process.pending_main_entry_fn_id = fn_id.0;
+        let halt_kind = self
+            .compiled
+            .fn_halt_kinds
+            .get(&fn_id.0)
+            .copied()
+            .unwrap_or(0) as u16;
+        let inner = fz_runtime::sched::mint_main_inner(
+            &mut process.heap,
+            self.compiled.main_trampoline_addr,
+            fp,
+            halt_kind,
+        );
+        let thunk = fz_runtime::sched::mint_entry_thunk(
+            &mut process.heap,
+            self.compiled.entry_thunk_addr,
+            inner,
+        );
+        process.set_runnable_closure(thunk);
+        // The entry thunk + inner are scheduler scaffolding prepared before
+        // the task's own code runs; reset so alloc telemetry measures only the
+        // task's execution (and matches the raw-fp entry's zero-alloc start).
+        process.heap.reset_alloc_stats();
         self.tasks.insert(pid, Box::new(process));
         self.run_queue.push_back(pid);
         pid
@@ -432,13 +454,21 @@ impl<'a> Runtime<'a> {
             .closure_addr()
             .expect("spawn_closure: copied closure must be a closure");
 
-        // fz-cps.1.11 — store the closure ptr as a pending entry; the
-        // scheduler's run_quantum dispatches it via fz_spawn_entry on
-        // the next quantum. Insert into the task registry before
-        // queueing so that cross-task send() during the new task's run
-        // can find this pid.
+        // Wrap the copied closure in an entry thunk and queue it as
+        // `runnable`; the scheduler resumes it via `fz_resume` on the next
+        // quantum. Insert into the task registry before queueing so a
+        // cross-task send() during the new task's run can find this pid.
         process.next_frame = std::ptr::null_mut();
-        process.pending_closure_entry = copied_addr;
+        let thunk = fz_runtime::sched::mint_entry_thunk(
+            &mut process.heap,
+            self.compiled.entry_thunk_addr,
+            copied_addr,
+        );
+        process.set_runnable_closure(thunk);
+        // Scheduler scaffolding (entry thunk + copied entry closure) is
+        // prepared before the child runs; reset so its alloc telemetry
+        // measures only the child's own execution.
+        process.heap.reset_alloc_stats();
         self.tasks.insert(pid, Box::new(process));
         self.run_queue.push_back(pid);
         pid
@@ -508,14 +538,15 @@ impl<'a> Runtime<'a> {
             //
             // 3. next_frame non-null and state still Running -> yielded
             //    without explicit block. Closure-shaped mid-flight yield
-            //    stores the continuation in runnable_closure, which is the
+            //    stores the continuation in `runnable`, which is the
             //    scheduler-owned primary root.
-            if task.state == ProcessState::Running && !task.runnable_closure.is_null() {
+            if task.state == ProcessState::Running && task.runnable.is_some() {
                 // Closure-shaped mid-flight yield: the continuation closure
                 // captures live loop state and is the primary GC root.
                 task.boundary_maintenance::<()>(|p| {
-                    p.heap
-                        .gc_process_roots(&mut p.runnable_closure, &mut p.mailbox);
+                    let mut root = p.runnable_ptr();
+                    p.heap.gc_process_roots(&mut root, &mut p.mailbox);
+                    p.set_runnable_closure(root);
                     Ok(())
                 })
                 .expect("compiled boundary maintenance is infallible");
@@ -523,8 +554,8 @@ impl<'a> Runtime<'a> {
                 self.tasks.insert(pid, task);
                 self.run_queue.push_back(pid);
                 continue;
-            } else if task.next_frame.is_null() && task.parked_matched.is_none() {
-                // `parked_matched` means the task is suspended on receive,
+            } else if task.next_frame.is_null() && task.wait.is_none() {
+                // A pending `wait` means the task is suspended on receive,
                 // not finished. Without this check the run loop would
                 // mis-classify the receiver as Exited and never call its
                 // initial-scan branch.
@@ -603,7 +634,7 @@ impl<'a> Runtime<'a> {
     }
 
     /// fz-yxs/fz-st5 — test-only mutable accessor. Lets the unit tests
-    /// in this module pre-seed a receiver with a `parked_matched`
+    /// in this module pre-seed a receiver with a `wait`
     /// record before driving the sender-probe path.
     #[cfg(test)]
     pub fn task_mut(&mut self, pid: PidId) -> Option<&mut Process> {
@@ -1819,11 +1850,11 @@ fn main(), do: sum(10, 0, nil)";
         .unwrap();
         let (mut rt, sender_pid, receiver_pid) = two_task_rt(&compiled, main_id);
 
-        // Pre-seed receiver as parked_matched. Pinned wants msg == 42.
+        // Pre-seed receiver as wait. Pinned wants msg == 42.
         let receiver = rt.task_mut(receiver_pid).unwrap();
         receiver.state = ProcessState::Blocked;
         let template = template_closure(receiver, 0xdead_beef);
-        receiver.parked_matched = Some(Box::new(fz_runtime::park::ParkRecord {
+        receiver.wait = Some(Box::new(fz_runtime::park::ParkRecord {
             matcher_fn: mock_eq_matcher,
             pinned: vec![test_int_ref(42)],
             clause_bodies: vec![template],
@@ -1833,6 +1864,10 @@ fn main(), do: sum(10, 0, nil)";
             after_cont: std::ptr::null_mut(),
             after_timer_id: None,
         }));
+        // A genuinely parked task has consumed its spawn-time entry thunk;
+        // model that by clearing runnable so the probe-hit assertion observes
+        // only what the wakeup populates.
+        receiver.set_runnable_closure(std::ptr::null_mut());
         // Clear run queue so both tasks are quiescent.
         rt.run_queue.clear();
 
@@ -1845,8 +1880,8 @@ fn main(), do: sum(10, 0, nil)";
 
         let r = rt.task(receiver_pid).unwrap();
         assert_eq!(r.state, ProcessState::Ready);
-        assert!(r.parked_matched.is_none(), "park should be cleared on hit");
-        let runnable = r.runnable_closure;
+        assert!(r.wait.is_none(), "park should be cleared on hit");
+        let runnable = r.runnable_ptr();
         assert!(!runnable.is_null(), "runnable_closure populated on hit");
         unsafe {
             assert_eq!(
@@ -1879,7 +1914,7 @@ fn main(), do: sum(10, 0, nil)";
         let receiver = rt.task_mut(receiver_pid).unwrap();
         receiver.state = ProcessState::Blocked;
         let template = template_closure(receiver, 0xdead_beef);
-        receiver.parked_matched = Some(Box::new(fz_runtime::park::ParkRecord {
+        receiver.wait = Some(Box::new(fz_runtime::park::ParkRecord {
             matcher_fn: mock_eq_matcher,
             pinned: vec![test_int_ref(42)],
             clause_bodies: vec![template],
@@ -1889,6 +1924,9 @@ fn main(), do: sum(10, 0, nil)";
             after_cont: std::ptr::null_mut(),
             after_timer_id: None,
         }));
+        // Parked task has consumed its entry thunk; clear runnable so the
+        // miss assertion observes that the wakeup did NOT populate it.
+        receiver.set_runnable_closure(std::ptr::null_mut());
         rt.run_queue.clear();
 
         let rt_ptr = &mut rt as *mut Runtime<'_> as *mut ();
@@ -1899,8 +1937,8 @@ fn main(), do: sum(10, 0, nil)";
 
         let r = rt.task(receiver_pid).unwrap();
         assert_eq!(r.state, ProcessState::Blocked, "still parked on miss");
-        assert!(r.parked_matched.is_some(), "park preserved on miss");
-        assert!(r.runnable_closure.is_null());
+        assert!(r.wait.is_some(), "park preserved on miss");
+        assert!(r.runnable_ptr().is_null());
         assert_eq!(r.mailbox.len(), 1, "miss appends to mailbox");
         assert_eq!(r.mailbox[0].load_int().unwrap(), 7);
         assert!(
@@ -1932,7 +1970,7 @@ fn main(), do: sum(10, 0, nil)";
         let after_cont_addr: usize = 0xcafe_babe;
         let receiver = rt.task_mut(receiver_pid).unwrap();
         receiver.state = ProcessState::Blocked;
-        receiver.parked_matched = Some(Box::new(fz_runtime::park::ParkRecord {
+        receiver.wait = Some(Box::new(fz_runtime::park::ParkRecord {
             matcher_fn: mock_eq_matcher,
             pinned: vec![],
             clause_bodies: vec![],
@@ -1942,6 +1980,9 @@ fn main(), do: sum(10, 0, nil)";
             after_cont: after_cont_addr as *mut u8,
             after_timer_id: Some(timer_id),
         }));
+        // Parked task has consumed its entry thunk; clear runnable so the
+        // assertion observes the after-timer fire populating it.
+        receiver.set_runnable_closure(std::ptr::null_mut());
 
         // Wait past the deadline (a few millis to be safe) then drain.
         std::thread::sleep(std::time::Duration::from_millis(5));
@@ -1949,8 +1990,8 @@ fn main(), do: sum(10, 0, nil)";
 
         let r = rt.task(receiver_pid).unwrap();
         assert_eq!(r.state, ProcessState::Ready);
-        assert!(r.parked_matched.is_none());
-        assert_eq!(r.runnable_closure as usize, after_cont_addr);
+        assert!(r.wait.is_none());
+        assert_eq!(r.runnable_ptr() as usize, after_cont_addr);
         assert!(rt.run_queue.iter().any(|p| *p == receiver_pid));
     }
 

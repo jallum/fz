@@ -74,6 +74,14 @@ pub enum ResolveError {
         msg: String,
         span: Span,
     },
+    /// A protocol has two implementations for the same target. Carries both
+    /// the first and the duplicate site so the diagnostic can point at each.
+    DuplicateProtocolImpl {
+        protocol: ModuleName,
+        target: ImplTarget,
+        first_span: Span,
+        duplicate_span: Span,
+    },
 }
 
 impl ResolveError {
@@ -131,6 +139,20 @@ impl ResolveError {
             Self::ProtocolError { msg, span } => {
                 Diagnostic::error(codes::RESOLVE_PROTOCOL, msg.clone(), *span)
             }
+            Self::DuplicateProtocolImpl {
+                protocol,
+                target,
+                first_span,
+                duplicate_span,
+            } => Diagnostic::error(
+                codes::RESOLVE_PROTOCOL,
+                format!(
+                    "protocol `{}` already has an implementation for `{}`",
+                    protocol, target
+                ),
+                *duplicate_span,
+            )
+            .with_secondary(*first_span, "first implementation here"),
         }
     }
 }
@@ -711,13 +733,22 @@ fn collect_protocol_registry<T: crate::types::Types<Ty = crate::types::Ty>>(
     validate_protocol_impls(&registry)?;
     for protocol in registry.protocols.keys() {
         let ty = protocol_domain_type(t, protocol, &registry);
+        // Element-refining template: `Protocol.t(elem)` instantiates
+        // PROTOCOL_ELEM_VAR with `elem`, so a `List` target refines from
+        // `list(any)` to `list(elem)`. The bare `Protocol.t` (arity 0) stays
+        // the `element = any` domain above.
+        let element = t.type_var(crate::protocols::PROTOCOL_ELEM_VAR);
+        let template = protocol_domain_template(t, protocol, &registry, element);
         for env in module_type_envs.values_mut() {
             env.insert(format!("{}.t", protocol), ty.clone());
+            env.insert_protocol_domain(format!("{}.t", protocol), template.clone());
         }
         if let Some(env) = module_type_envs.get_mut(&protocol.dotted()) {
             env.insert("t".to_string(), ty);
+            env.insert_protocol_domain("t".to_string(), template);
         }
     }
+    validate_protocol_callback_specs(t, &registry, module_type_envs)?;
     Ok(registry)
 }
 
@@ -726,13 +757,28 @@ fn protocol_domain_type<T: crate::types::Types<Ty = crate::types::Ty>>(
     protocol: &ModuleName,
     registry: &ProtocolRegistry,
 ) -> crate::types::Ty {
+    let any = t.any();
+    protocol_domain_template(t, protocol, registry, any)
+}
+
+/// The protocol's domain — its domain tag unioned with each implementing
+/// target's type — with `element` threaded into element-parametric targets.
+/// `protocol_domain_type` is the `element = any` case; the registration loop
+/// passes `PROTOCOL_ELEM_VAR` to build the refining template.
+fn protocol_domain_template<T: crate::types::Types<Ty = crate::types::Ty>>(
+    t: &mut T,
+    protocol: &ModuleName,
+    registry: &ProtocolRegistry,
+    element: crate::types::Ty,
+) -> crate::types::Ty {
     let mut domain = t.opaque_of(&crate::protocols::protocol_domain_tag(protocol));
     for fact in registry
         .impls
         .values()
         .filter(|fact| fact.protocol == *protocol)
     {
-        let target_ty = crate::protocols::impl_target_type(t, &fact.target);
+        let target_ty =
+            crate::protocols::impl_target_type_with_element(t, &fact.target, element.clone());
         domain = t.union(domain, target_ty);
     }
     domain
@@ -765,23 +811,24 @@ fn collect_protocol_registry_items<T: crate::types::Types<Ty = crate::types::Ty>
                 let protocol = qualify_protocol_name(parent, &protocol_impl.protocol);
                 let target =
                     ImplTarget::module(qualify_module_child(parent, &protocol_impl.target.path));
-                let callbacks = protocol_impl_callbacks(parent, protocol_impl)?;
+                let (callbacks, callback_specs) = protocol_impl_callbacks(parent, protocol_impl)?;
                 let fact = ProtocolImplFact {
                     protocol: protocol.clone(),
                     target: target.clone(),
                     callbacks,
+                    callback_specs,
                     span: protocol_impl.span,
                 };
                 let key = ProtocolImplKey { protocol, target };
-                if registry.impls.insert(key.clone(), fact).is_some() {
-                    return Err(ResolveError::ProtocolError {
-                        msg: format!(
-                            "protocol `{}` already has an implementation for `{}`",
-                            key.protocol, key.target
-                        ),
-                        span: protocol_impl.span,
+                if let Some(existing) = registry.impls.get(&key) {
+                    return Err(ResolveError::DuplicateProtocolImpl {
+                        protocol: key.protocol.clone(),
+                        target: key.target.clone(),
+                        first_span: existing.span,
+                        duplicate_span: protocol_impl.span,
                     });
                 }
+                registry.impls.insert(key, fact);
             }
             Item::Module(module) => {
                 let name = if let Some(parent) = parent {
@@ -851,11 +898,17 @@ fn protocol_decl<T: crate::types::Types<Ty = crate::types::Ty>>(
     })
 }
 
+type ProtocolImplCallbacks = (
+    BTreeMap<(String, usize), ExportKey>,
+    BTreeMap<(String, usize), crate::ast::SpecDecl>,
+);
+
 fn protocol_impl_callbacks(
     parent: Option<&ModuleName>,
     protocol_impl: &ProtocolImplDef,
-) -> Result<BTreeMap<(String, usize), ExportKey>, ResolveError> {
+) -> Result<ProtocolImplCallbacks, ResolveError> {
     let mut callbacks = BTreeMap::new();
+    let mut callback_specs = BTreeMap::new();
     let impl_module = qualify_module_child(parent, &protocol_impl.target.path);
     for item in &protocol_impl.items {
         match &**item {
@@ -877,6 +930,12 @@ fn protocol_impl_callbacks(
                         span: def.name_span,
                     });
                 }
+                if let Some(spec) = def.attrs.iter().find_map(|attr| match attr {
+                    Attribute::Spec(spec) => Some(spec.clone()),
+                    _ => None,
+                }) {
+                    callback_specs.insert(key, spec);
+                }
             }
             _ => {
                 return Err(ResolveError::ProtocolError {
@@ -886,7 +945,7 @@ fn protocol_impl_callbacks(
             }
         }
     }
-    Ok(callbacks)
+    Ok((callbacks, callback_specs))
 }
 
 fn validate_protocol_impls(registry: &ProtocolRegistry) -> Result<(), ResolveError> {
@@ -901,29 +960,135 @@ fn validate_protocol_impls(registry: &ProtocolRegistry) -> Result<(), ResolveErr
             });
         };
         for callback in &protocol.callbacks {
-            if !fact
+            if fact
                 .callbacks
                 .contains_key(&(callback.name.clone(), callback.arity))
             {
-                return Err(ResolveError::ProtocolError {
-                    msg: format!(
+                continue;
+            }
+            // The protocol declares `name/arity` but the impl does not provide it
+            // at that arity. If the impl provides the same name at a *different*
+            // arity, that is an arity mismatch (a more precise diagnosis than a
+            // bare missing callback), so name both the declared and provided
+            // arities. Otherwise the callback is simply absent.
+            let provided_arity = fact
+                .callbacks
+                .keys()
+                .find(|(name, _)| *name == callback.name)
+                .map(|(_, arity)| *arity);
+            return Err(ResolveError::ProtocolError {
+                msg: match provided_arity {
+                    Some(provided) => format!(
+                        "implementation for protocol `{}` on `{}` implements callback `{}` at arity {} but the protocol declares `{}/{}`",
+                        fact.protocol,
+                        fact.target,
+                        callback.name,
+                        provided,
+                        callback.name,
+                        callback.arity
+                    ),
+                    None => format!(
                         "implementation for protocol `{}` on `{}` is missing callback `{}/{}`",
                         fact.protocol, fact.target, callback.name, callback.arity
                     ),
-                    span: fact.span,
-                });
-            }
+                },
+                span: fact.span,
+            });
         }
         for (name, arity) in fact.callbacks.keys() {
-            if !protocol
+            // A name the protocol does not declare at all is unknown. A name the
+            // protocol declares only at another arity is already reported above
+            // as an arity mismatch, so it is not re-reported here.
+            if protocol
                 .callbacks
                 .iter()
-                .any(|callback| callback.name == *name && callback.arity == *arity)
+                .any(|callback| callback.name == *name)
             {
+                continue;
+            }
+            return Err(ResolveError::ProtocolError {
+                msg: format!(
+                    "implementation for protocol `{}` on `{}` provides unknown callback `{}/{}`",
+                    fact.protocol, fact.target, name, arity
+                ),
+                span: fact.span,
+            });
+        }
+    }
+    Ok(())
+}
+
+/// Reject an impl callback whose declared `@spec` is incompatible with the
+/// protocol's declared callback spec. The protocol callback spec is read with
+/// its domain variable `t` bound to the impl's concrete target type; a callback
+/// position fails only when the protocol-side and impl-side types are
+/// set-theoretically disjoint (empty intersection), so free type variables and
+/// `any` never produce a false positive. Callbacks without a declared spec on
+/// either side are not checked.
+fn validate_protocol_callback_specs<T: crate::types::Types<Ty = crate::types::Ty>>(
+    t: &mut T,
+    registry: &ProtocolRegistry,
+    module_type_envs: &HashMap<String, crate::type_expr::ModuleTypeEnv>,
+) -> Result<(), ResolveError> {
+    for fact in registry.impls.values() {
+        if fact.callback_specs.is_empty() {
+            continue;
+        }
+        let Some(protocol) = registry.protocols.get(&fact.protocol) else {
+            continue;
+        };
+        let target_ty = crate::protocols::impl_target_type(t, &fact.target);
+        let mut proto_env = module_type_envs
+            .get(&fact.protocol.dotted())
+            .cloned()
+            .unwrap_or_else(|| crate::type_expr::builtin_type_env(t));
+        proto_env.insert("t".to_string(), target_ty.clone());
+        proto_env.insert(format!("{}.t", fact.protocol), target_ty);
+        for callback in &protocol.callbacks {
+            let Some(proto_spec) = &callback.spec else {
+                continue;
+            };
+            let key = (callback.name.clone(), callback.arity);
+            let Some(impl_spec) = fact.callback_specs.get(&key) else {
+                continue;
+            };
+            let impl_env = fact
+                .callbacks
+                .get(&key)
+                .and_then(|export| module_type_envs.get(&export.module.dotted()))
+                .cloned()
+                .unwrap_or_else(|| crate::type_expr::builtin_type_env(t));
+            // Per-position so a domain-applied position (`t(a)`) that does not
+            // resolve yet does not mask the result and other params.
+            let (proto_params, proto_result) =
+                crate::type_expr::resolve_spec_decl_positions(t, proto_spec, &proto_env);
+            let (impl_params, impl_result) =
+                crate::type_expr::resolve_spec_decl_positions(t, impl_spec, &impl_env);
+            if proto_params.len() != impl_params.len() {
+                continue;
+            }
+            let mut incompatible: Option<String> = None;
+            for (i, (proto_param, impl_param)) in
+                proto_params.iter().zip(impl_params.iter()).enumerate()
+            {
+                if let (Some(p), Some(q)) = (proto_param, impl_param)
+                    && t.is_disjoint(p, q)
+                {
+                    incompatible = Some(format!("parameter {}", i + 1));
+                    break;
+                }
+            }
+            if incompatible.is_none()
+                && let (Some(p), Some(q)) = (&proto_result, &impl_result)
+                && t.is_disjoint(p, q)
+            {
+                incompatible = Some("result".to_string());
+            }
+            if let Some(position) = incompatible {
                 return Err(ResolveError::ProtocolError {
                     msg: format!(
-                        "implementation for protocol `{}` on `{}` provides unknown callback `{}/{}`",
-                        fact.protocol, fact.target, name, arity
+                        "implementation of protocol `{}` for `{}`: callback `{}/{}` {} is incompatible with the protocol's declared spec",
+                        fact.protocol, fact.target, callback.name, callback.arity, position
                     ),
                     span: fact.span,
                 });
@@ -3440,6 +3605,54 @@ end
     }
 
     #[test]
+    fn protocol_domain_refines_concrete_element_parameter() {
+        let mut ct = crate::types::ConcreteTypes;
+        let p = flatten_modules(
+            &mut ct,
+            parse(
+                r#"
+defprotocol Enumerable do
+  fn reduce(enumerable, acc, reducer)
+end
+
+defimpl Enumerable, for: List do
+  fn reduce(list, acc, reducer), do: acc
+end
+
+defmodule Consumer do
+  fn use(xs), do: 1
+end
+"#,
+            ),
+        )
+        .expect("flatten");
+
+        let env = &p.module_type_envs["Consumer"];
+        let parse_dom = |ct: &mut crate::types::ConcreteTypes, src: &str| {
+            let toks = crate::lexer::Lexer::new(src).tokenize().expect("lex");
+            let (ty, _) = crate::type_expr::parse_type_expr(ct, &toks, env).expect("parse");
+            ty
+        };
+        let refined = parse_dom(&mut ct, "Enumerable.t(integer)");
+        let bare = parse_dom(&mut ct, "Enumerable.t");
+
+        let int = ct.int();
+        let atom = ct.atom();
+        let list_int = ct.list(int);
+        let list_atom = ct.list(atom);
+
+        // The concrete element refines the List target to `list(integer)`.
+        assert!(ct.is_subtype(&list_int, &refined));
+        assert!(
+            !ct.is_subtype(&list_atom, &refined),
+            "a refined `Enumerable.t(integer)` must exclude `list(atom)`"
+        );
+        // The bare domain stays element-agnostic (`list(any)`), so it still
+        // admits `list(atom)` — proving the refinement genuinely narrows.
+        assert!(ct.is_subtype(&list_atom, &bare));
+    }
+
+    #[test]
     fn protocol_impl_must_cover_declared_callbacks() {
         let mut ct = crate::types::ConcreteTypes;
         let err = flatten_modules(
@@ -3489,5 +3702,41 @@ end
         let d = err.to_diagnostic();
         assert_eq!(d.code, codes::RESOLVE_PROTOCOL);
         assert!(d.message.contains("already has an implementation"));
+        // Both the duplicate and the first implementation are pointed at.
+        assert_eq!(d.secondaries.len(), 1);
+        assert!(d.secondaries[0].label.contains("first implementation"));
+    }
+
+    #[test]
+    fn protocol_impl_wrong_arity_is_an_arity_mismatch_not_missing() {
+        let mut ct = crate::types::ConcreteTypes;
+        let err = flatten_modules(
+            &mut ct,
+            parse(
+                r#"
+defprotocol P do
+  fn each(x)
+end
+
+defimpl P, for: List do
+  fn each(x, extra), do: x
+end
+"#,
+            ),
+        )
+        .expect_err("arity mismatch must fail");
+
+        let d = err.to_diagnostic();
+        assert_eq!(d.code, codes::RESOLVE_PROTOCOL);
+        assert!(
+            d.message.contains("at arity 2") && d.message.contains("`each/1`"),
+            "expected arity-mismatch diagnostic naming both arities, got: {}",
+            d.message
+        );
+        assert!(
+            !d.message.contains("missing callback") && !d.message.contains("unknown callback"),
+            "arity mismatch must not degrade to missing/unknown, got: {}",
+            d.message
+        );
     }
 }

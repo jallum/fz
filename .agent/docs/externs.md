@@ -5,8 +5,12 @@ interpreter behavior.
 
 Extern arguments are borrow-only from the fz heap's point of view. Passing a
 value to an extern does not set list alias bits and does not block owned-cons
-physical capabilities. If an extern needs to retain a value after it returns, the
-extern must copy it into storage it owns.
+physical capabilities. The alias/publication marking
+(`mark_retained_call_args_as_published`) runs only at `Call` / `CallClosure`
+continuation sites in `src/ir_codegen/terminator.rs`; the `Prim::Extern` lowering
+path in `src/ir_codegen/prim.rs` marks nothing, so an extern argument stays
+unaliased and owned-cons-reusable. If an extern needs to retain a value after it
+returns, the extern must copy it into storage it owns.
 
 ## Variadic Calls
 

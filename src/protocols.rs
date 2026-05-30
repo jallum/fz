@@ -11,10 +11,65 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fmt;
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ProtocolRegistry {
+    /// `ModuleName` derives `Serialize` as a struct (`{ segments: [...] }`),
+    /// which serde_json rejects as a map key, so this map serializes as a
+    /// sequence of `(key, value)` entries.
+    #[serde(with = "protocols_as_seq")]
     pub protocols: BTreeMap<ModuleName, ProtocolDecl>,
+    /// `ProtocolImplKey` is a struct, which serde_json rejects as a map key,
+    /// so this map serializes as a sequence of `(key, value)` entries.
+    #[serde(with = "impls_as_seq")]
     pub impls: BTreeMap<ProtocolImplKey, ProtocolImplFact>,
+}
+
+/// (De)serialize `BTreeMap<ModuleName, ProtocolDecl>` as a
+/// `Vec<(ModuleName, ProtocolDecl)>` so the struct key survives serde_json
+/// (which forbids non-string object keys).
+mod protocols_as_seq {
+    use super::{ModuleName, ProtocolDecl};
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    use std::collections::BTreeMap;
+
+    pub fn serialize<S: Serializer>(
+        map: &BTreeMap<ModuleName, ProtocolDecl>,
+        s: S,
+    ) -> Result<S::Ok, S::Error> {
+        map.iter().collect::<Vec<_>>().serialize(s)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(
+        d: D,
+    ) -> Result<BTreeMap<ModuleName, ProtocolDecl>, D::Error> {
+        Ok(Vec::<(ModuleName, ProtocolDecl)>::deserialize(d)?
+            .into_iter()
+            .collect())
+    }
+}
+
+/// (De)serialize `BTreeMap<ProtocolImplKey, ProtocolImplFact>` as a
+/// `Vec<(ProtocolImplKey, ProtocolImplFact)>` so the struct key survives
+/// serde_json (which forbids non-string object keys).
+mod impls_as_seq {
+    use super::{ProtocolImplFact, ProtocolImplKey};
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    use std::collections::BTreeMap;
+
+    pub fn serialize<S: Serializer>(
+        map: &BTreeMap<ProtocolImplKey, ProtocolImplFact>,
+        s: S,
+    ) -> Result<S::Ok, S::Error> {
+        map.iter().collect::<Vec<_>>().serialize(s)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(
+        d: D,
+    ) -> Result<BTreeMap<ProtocolImplKey, ProtocolImplFact>, D::Error> {
+        Ok(Vec::<(ProtocolImplKey, ProtocolImplFact)>::deserialize(d)?
+            .into_iter()
+            .collect())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -37,13 +92,13 @@ pub struct InterfaceProtocolImpl {
     pub callbacks: Vec<ExportKey>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProtocolDecl {
     pub callbacks: Vec<ProtocolCallbackFact>,
     pub span: Span,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProtocolCallbackFact {
     pub name: String,
     pub arity: usize,
@@ -54,15 +109,68 @@ pub struct ProtocolCallbackFact {
     pub span: Span,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProtocolImplFact {
     pub protocol: ModuleName,
     pub target: ImplTarget,
+    /// Tuple `(String, usize)` keys are not valid serde_json object keys, so
+    /// these two maps serialize as sequences of `(key, value)` entries.
+    #[serde(with = "callbacks_as_seq")]
     pub callbacks: BTreeMap<(String, usize), ExportKey>,
+    /// Declared `@spec` of each impl callback that carries one, keyed by
+    /// `(name, arity)`. Empty for interface-sourced impls (the interface does
+    /// not carry impl callback specs) and for callbacks declared without a
+    /// spec. Consumed by callback-spec compatibility checking.
+    #[serde(with = "callback_specs_as_seq")]
+    pub callback_specs: BTreeMap<(String, usize), crate::ast::SpecDecl>,
     pub span: Span,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+/// (De)serialize the tuple-keyed `callbacks` map as a sequence of entries.
+mod callbacks_as_seq {
+    use crate::modules::identity::ExportKey;
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    use std::collections::BTreeMap;
+
+    pub fn serialize<S: Serializer>(
+        map: &BTreeMap<(String, usize), ExportKey>,
+        s: S,
+    ) -> Result<S::Ok, S::Error> {
+        map.iter().collect::<Vec<_>>().serialize(s)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(
+        d: D,
+    ) -> Result<BTreeMap<(String, usize), ExportKey>, D::Error> {
+        Ok(Vec::<((String, usize), ExportKey)>::deserialize(d)?
+            .into_iter()
+            .collect())
+    }
+}
+
+/// (De)serialize the tuple-keyed `callback_specs` map as a sequence of entries.
+mod callback_specs_as_seq {
+    use crate::ast::SpecDecl;
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    use std::collections::BTreeMap;
+
+    pub fn serialize<S: Serializer>(
+        map: &BTreeMap<(String, usize), SpecDecl>,
+        s: S,
+    ) -> Result<S::Ok, S::Error> {
+        map.iter().collect::<Vec<_>>().serialize(s)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(
+        d: D,
+    ) -> Result<BTreeMap<(String, usize), SpecDecl>, D::Error> {
+        Ok(Vec::<((String, usize), SpecDecl)>::deserialize(d)?
+            .into_iter()
+            .collect())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct ProtocolImplKey {
     pub protocol: ModuleName,
     pub target: ImplTarget,
@@ -131,6 +239,7 @@ impl ProtocolRegistry {
                     protocol: protocol_impl.protocol.clone(),
                     target: protocol_impl.target.clone(),
                     callbacks,
+                    callback_specs: BTreeMap::new(),
                     span: Span::DUMMY,
                 });
             }
@@ -142,16 +251,33 @@ pub fn protocol_domain_tag(protocol: &ModuleName) -> String {
     format!("protocol::{}.t", protocol)
 }
 
+/// Reserved type variable standing for a protocol domain's element parameter
+/// (the `a` in `Enumerable.t(a)`). The domain *template* carries this variable
+/// in every element-parametric target position; applying `t(arg)` instantiates
+/// it with `arg`. The id is `u32::MAX` so it never collides with the `0,1,2,…`
+/// variables minted for user-written type names.
+pub const PROTOCOL_ELEM_VAR: crate::types::TypeVarId = crate::types::TypeVarId(u32::MAX);
+
 pub fn impl_target_type<T: crate::types::Types<Ty = crate::types::Ty>>(
     t: &mut T,
     target: &ImplTarget,
 ) -> crate::types::Ty {
+    let any = t.any();
+    impl_target_type_with_element(t, target, any)
+}
+
+/// The type of an impl target, with `element` threaded into element-parametric
+/// targets. `List` becomes `list(element)`; scalar and map targets are not
+/// parametric in a single element type, so `element` does not refine them.
+/// `impl_target_type` is the `element = any` case.
+pub fn impl_target_type_with_element<T: crate::types::Types<Ty = crate::types::Ty>>(
+    t: &mut T,
+    target: &ImplTarget,
+    element: crate::types::Ty,
+) -> crate::types::Ty {
     match target {
         ImplTarget::Module(module) => match module.last_segment() {
-            "List" => {
-                let any = t.any();
-                t.list(any)
-            }
+            "List" => t.list(element),
             "Integer" => t.int(),
             "Float" => t.float(),
             "Atom" => t.atom(),

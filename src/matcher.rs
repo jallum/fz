@@ -5,21 +5,23 @@
 //! frontend may build it from AST patterns, but executable matcher data must
 //! carry only subjects, constants, spans, tests, bindings, and outcomes.
 
-use crate::diag::Span;
+use crate::diag::{FileId, Span};
 use crate::fz_ir::Var;
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 pub type BodyId = u32;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct NodeId(pub u32);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct InputId(pub u32);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct PinnedId(pub u32);
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Matcher {
     pub inputs: Vec<MatcherInput>,
     pub pinned: Vec<PinnedInput>,
@@ -28,7 +30,7 @@ pub struct Matcher {
     pub root: NodeId,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GuardDispatch {
     pub matcher: Matcher,
     pub bodies: Vec<GuardExpr>,
@@ -45,9 +47,75 @@ pub fn map_value_subject(map: &SubjectRef, key: &MatcherConst) -> SubjectRef {
     }
 }
 
+/// Rewrite `s.file` through `remap`; a `FileId` absent from the map (including
+/// `FileId::NONE`/DUMMY) is left unchanged. The single source of span-remap
+/// truth shared by `Matcher` and `Module::remap_file_ids`.
+fn remap_span(s: &mut Span, remap: &HashMap<FileId, FileId>) {
+    if let Some(&to) = remap.get(&s.file) {
+        s.file = to;
+    }
+}
+
 impl Matcher {
     pub fn node(&self, id: NodeId) -> Option<&MatcherNode> {
         self.nodes.get(id.0 as usize)
+    }
+
+    /// Rewrite every `Span.file` reachable from this matcher through `remap`.
+    /// Covers input/pinned spans, every `MatcherNode` variant's span, and the
+    /// leaf/binding spans. Used when a relocatably-loaded module's receive
+    /// matchers are merged into a consumer's `SourceMap`.
+    pub(crate) fn remap_file_ids(&mut self, remap: &HashMap<FileId, FileId>) {
+        for input in &mut self.inputs {
+            remap_span(&mut input.span, remap);
+        }
+        for pinned in &mut self.pinned {
+            remap_span(&mut pinned.span, remap);
+        }
+        for node in &mut self.nodes {
+            // Exhaustive: a future span-carrying variant must fail to compile,
+            // not be silently skipped.
+            match node {
+                MatcherNode::Fail { span } => remap_span(span, remap),
+                MatcherNode::Leaf(leaf) => {
+                    remap_span(&mut leaf.span, remap);
+                    for binding in &mut leaf.bindings {
+                        remap_span(&mut binding.span, remap);
+                    }
+                }
+                MatcherNode::Switch { span, .. } => remap_span(span, remap),
+                MatcherNode::Test { span, .. } => remap_span(span, remap),
+                MatcherNode::Guard { span, .. } => remap_span(span, remap),
+            }
+        }
+    }
+
+    /// Read-only twin of `remap_file_ids`: visits every `Span` reachable from
+    /// this matcher, in the same exhaustive site inventory. Used to gather a
+    /// receive matcher's referenced source files for portable IR units.
+    pub(crate) fn visit_spans(&self, f: &mut impl FnMut(Span)) {
+        for input in &self.inputs {
+            f(input.span);
+        }
+        for pinned in &self.pinned {
+            f(pinned.span);
+        }
+        for node in &self.nodes {
+            // Exhaustive: a future span-carrying variant must fail to compile,
+            // not be silently skipped.
+            match node {
+                MatcherNode::Fail { span } => f(*span),
+                MatcherNode::Leaf(leaf) => {
+                    f(leaf.span);
+                    for binding in &leaf.bindings {
+                        f(binding.span);
+                    }
+                }
+                MatcherNode::Switch { span, .. } => f(*span),
+                MatcherNode::Test { span, .. } => f(*span),
+                MatcherNode::Guard { span, .. } => f(*span),
+            }
+        }
     }
 }
 
@@ -70,7 +138,7 @@ impl Matcher {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MatcherInput {
     /// Optional IR var this input came from. Receive matchers use ABI inputs
     /// instead; inline case/function matchers usually retain the source var.
@@ -78,14 +146,14 @@ pub struct MatcherInput {
     pub span: Span,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PinnedInput {
     pub name: String,
     pub var: Option<Var>,
     pub span: Span,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum SubjectRef {
     Input(InputId),
     TupleField {
@@ -108,7 +176,7 @@ pub enum SubjectRef {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum MatcherConst {
     Int(i64),
     FloatBits(u64),
@@ -121,7 +189,7 @@ pub enum MatcherConst {
     PreparedKey(u32),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MatcherNode {
     Fail {
         span: Span,
@@ -148,21 +216,21 @@ pub enum MatcherNode {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MatcherLeaf {
     pub body_id: BodyId,
     pub bindings: Vec<MatcherBinding>,
     pub span: Span,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MatcherBinding {
     pub name: String,
     pub source: SubjectRef,
     pub span: Span,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum GuardExpr {
     Const(MatcherConst),
     Subject(SubjectRef),
@@ -182,13 +250,13 @@ pub enum GuardExpr {
     },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum GuardUnaryOp {
     Not,
     Neg,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum GuardBinOp {
     Add,
     Sub,
@@ -205,7 +273,7 @@ pub enum GuardBinOp {
     Or,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MatcherTest {
     EqConst {
         subject: SubjectRef,
@@ -244,7 +312,7 @@ pub enum MatcherTest {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MatcherBitField {
     pub ty: MatcherBitType,
     pub size: Option<MatcherBitSize>,
@@ -256,13 +324,13 @@ pub struct MatcherBitField {
     pub direct_bindings: Vec<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MatcherBitSize {
     Literal(u32),
     BindingName(String),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum MatcherBitType {
     Integer,
     Float,
@@ -273,14 +341,14 @@ pub enum MatcherBitType {
     Utf32,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum MatcherEndian {
     Big,
     Little,
     Native,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SwitchKind {
     TupleArity,
     Atom,
@@ -292,7 +360,7 @@ pub enum SwitchKind {
     ListCons,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum SwitchKey {
     Arity(u32),
     AtomName(String),

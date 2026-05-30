@@ -102,17 +102,9 @@ fn map_ref_word_from_bits(bits: u64) -> u64 {
 }
 
 fn process_atom_id(process: *mut Process, name: &str) -> u32 {
-    let process = unsafe { &mut *process };
-    if let Some(id) = process
-        .atom_names
-        .iter()
-        .position(|existing| existing == name)
-    {
-        return id as u32;
-    }
-    let id = process.atom_names.len() as u32;
-    process.atom_names.push(name.to_string());
-    id
+    // Intern into the node-global atom table (shared, append-only): a
+    // runtime-created atom gets the same id in every process on this node.
+    unsafe { (*process).node.intern_atom(name) }
 }
 
 fn alloc_stat_entries(
@@ -502,7 +494,7 @@ pub extern "C" fn fz_send_ref(
 pub extern "C" fn fz_receive_park(process: *mut Process, cont_closure_bits: u64) -> *mut u8 {
     use crate::{process::ProcessState, scheduler_hooks::YIELD_PTR};
     let p = unsafe { &mut *process };
-    p.parked_matched = Some(Box::new(crate::park::ParkRecord {
+    p.wait = Some(Box::new(crate::park::ParkRecord {
         matcher_fn: crate::park::match_any_message,
         pinned: Vec::new(),
         clause_bodies: vec![closure_addr_from_ref_word(
@@ -620,11 +612,11 @@ pub extern "C" fn fz_receive_park_matched(
         after_timer_id,
     };
 
-    p.parked_matched = Some(Box::new(park));
+    p.wait = Some(Box::new(park));
     // Symmetric to fz_receive_park: if any message is already in the
     // mailbox we mark Ready so the scheduler runs an initial scan via
     // the matcher path. The actual scan happens in the scheduler when
-    // it sees parked_matched.is_some() on a Ready task.
+    // it sees wait.is_some() on a Ready task.
     p.state = if p.mailbox.is_empty() {
         ProcessState::Blocked
     } else {
@@ -2044,9 +2036,9 @@ pub extern "C" fn fz_materialize_cont(process: *mut Process, cont_word: u64) -> 
 /// Process's frame_sizes table populated at make_process() time.
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_alloc_frame_dyn(process: *mut Process, fn_id: u32) -> *mut u8 {
-    let size = *(unsafe { &mut *process })
-        .frame_sizes
-        .get(fn_id as usize)
+    let size = (unsafe { &*process })
+        .node
+        .frame_size(fn_id)
         .unwrap_or_else(|| panic!("frame_sizes has no entry for fn_id {}", fn_id));
     fz_alloc_frame(process, fn_id, size)
 }
@@ -2422,11 +2414,7 @@ mod tests {
         for i in 0..count {
             let (key, value) = unsafe { crate::any_value::map_entry(map_addr as *const u8, i) };
             if key.kind() == ValueKind::ATOM
-                && process
-                    .atom_names
-                    .get(key.raw() as usize)
-                    .map(String::as_str)
-                    == Some(name)
+                && process.node.atom_name(key.raw() as u32).as_deref() == Some(name)
             {
                 if let AnyValue::Int(value) = value {
                     return value;
@@ -2563,7 +2551,7 @@ mod tests {
                 crate::process::YIELD_REASON_REDUCTIONS as u32,
             );
             assert_eq!(ret as u64, crate::scheduler_hooks::YIELD_PTR);
-            assert_eq!(process.runnable_closure, closure_addr);
+            assert_eq!(process.runnable_ptr(), closure_addr);
             assert_eq!(process.scheduler_yields, 1);
             assert_eq!(process.reductions_remaining, -1);
             assert_eq!(process.reduction_yields, 1);

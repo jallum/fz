@@ -310,7 +310,6 @@ fn run_build(tel: &telemetry::ConfiguredTelemetry, args: &[String]) {
         std::process::exit(1);
     });
 
-    let fzo_source = emit_fzo.then(|| src.clone());
     let providers = ProviderInputs::new(artifact_root.clone(), provider_modules);
     let frontend_result = modules::pipeline::compile_source_with_providers(
         &mut t,
@@ -346,9 +345,17 @@ fn run_build(tel: &telemetry::ConfiguredTelemetry, args: &[String]) {
             .units
             .first()
             .expect("execution graph includes root unit");
-        let fzo = modules::artifact::FzoArtifact::from_unit_source(
+        let sources = {
+            let sm = sm_cell.borrow();
+            unit.code
+                .referenced_files()
+                .into_iter()
+                .map(|fid| sm.file(fid).to_portable(fid))
+                .collect::<Vec<_>>()
+        };
+        let fzo = modules::artifact::FzoArtifact::from_unit_ir(
             unit,
-            fzo_source.expect("emit_fzo source"),
+            sources,
             vec![
                 "kind=source-compiled-module".to_string(),
                 format!("source={src_path}"),

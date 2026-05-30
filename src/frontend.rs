@@ -243,8 +243,20 @@ where
             module: crate::telemetry::value::opaque(&module),
         },
     );
-    let (diagnostics, module_plan) = check_frontend(t, &prog, &module, tel);
+    let (diagnostics, mut module_plan) = check_frontend(t, &prog, &module, tel);
     apply_planned_direct_call_targets(&mut module, &module_plan);
+    // Closed-domain protocol switch dispatch. A protocol call whose receiver is
+    // a closed union of implementing targets (`integer | list(...)`) has no
+    // single planned target for `apply_planned_direct_call_targets` to install,
+    // so it would stay a call to the `__protocol__` stub and halt. This rewrites
+    // such callsites into a TypeTest/If cascade of per-target direct calls,
+    // reusing IR that already lowers in every engine. The rewrite lives here, in
+    // the shared frontend, so the interpreter (which runs this module directly)
+    // and codegen alike see the cascade. A rewrite adds blocks the existing plan
+    // does not describe, so refresh it.
+    if crate::ir_planner::rewrite_closed_union_protocol_dispatch(t, &mut module, &module_plan) {
+        module_plan = crate::ir_planner::plan_module(t, &module, &crate::telemetry::NullTelemetry);
+    }
     Ok(FrontendOk {
         sm,
         _prog: prog,

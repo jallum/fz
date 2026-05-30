@@ -71,13 +71,12 @@ pub struct Process {
     // fz-ul4.29.5: closure_builder / closure_args fields removed. Closure
     // construction is inlined at codegen; capture storage is schema-backed,
     // and invocation is a direct call_indirect through the closure code ptr.
-    // Per-CompiledModule constants copied at make_process() time. See
-    // fz-ul4.19.1 follow-up to move these behind an Rc<CompiledModuleConsts>.
-    pub frame_sizes: Vec<u32>,
-    /// Atom names indexed by id. Populated at task-setup time from the
-    /// IR Module's atom_names. any_value::debug::render reads this to
-    /// print `:source_name` instead of `:atom_N`. fz-ul4.25.
-    pub atom_names: Vec<String>,
+    /// Node-global state shared by every Process in this execution context:
+    /// the atom table and the per-fn frame-size table. Cloned (`Rc`) into each
+    /// process, so spawn is a pointer copy, not a table copy. The atom table is
+    /// shared and append-only across the context's processes — runtime atom
+    /// interning is visible to every process, like the BEAM's node-global table.
+    pub node: std::rc::Rc<Node>,
     pub bs_tuple_arity1_schema: Option<u32>,
     pub bs_tuple_arity3_schema: Option<u32>,
     // fz-ul4.19.1 scheduler-level fields. Populated when a Process is
@@ -90,14 +89,18 @@ pub struct Process {
     /// here. v1 only writes this on halt (next_frame = null).
     pub next_frame: *mut u8,
     pub mailbox: std::collections::VecDeque<crate::any_value::AnyValueRef>,
-    /// Receive park snapshot. Plain `receive()` installs an accept-any
-    /// matcher; selective receive installs its compiled matcher. Either way,
-    /// a hit materializes `runnable_closure` and the scheduler runs that.
-    pub parked_matched: Option<Box<crate::park::ParkRecord>>,
-    /// General scheduler-runnable zero-arg closure. Long term, every
-    /// scheduler re-entry path should move work here before enqueue/resume;
-    /// the closure's captures carry the state needed to continue.
-    pub runnable_closure: *mut u8,
+    /// Receive-wait snapshot: the process is blocked in `receive`. Plain
+    /// `receive()` installs an accept-any matcher; selective receive installs
+    /// its compiled matcher. Either way, a hit clears `wait` and moves the
+    /// outcome continuation into `runnable` for the scheduler to resume.
+    pub wait: Option<Box<WaitState>>,
+    /// The one re-entry verb: a `(self)`-callable closure the scheduler
+    /// resumes via the single `fz_resume` shim. It is either a continuation
+    /// (halt continuation baked into its captures, from a receive hit or
+    /// mid-flight yield) or a fresh-task entry thunk (capturing the inner
+    /// entry closure; the thunk supplies the halt continuation and enters it
+    /// on first resume). `None` means no work is queued.
+    pub runnable: Option<ClosureRef>,
     /// fz-ul4.27.22.3 — per-Process halt-cont singletons indexed by
     /// repr kind (0=ValueRef, 1=RawInt, 2=RawF64). Each slot holds a
     /// 24-byte closure whose +8 slot points at the matching
@@ -106,21 +109,6 @@ pub struct Process {
     /// `init_halt_cont_singletons` at make_process. Pointers alias
     /// aligned buffers in `static_closure_bufs`.
     pub halt_cont_singletons: [*mut u8; 3],
-    /// fz-cps.1.11 — pending closure to invoke at the next scheduler
-    /// quantum. Set by `Runtime::spawn_closure` to the closure pointer;
-    /// `run_quantum` clears it and dispatches via the `fz_spawn_entry`
-    /// SystemV→Tail-CC shim. Null means "no pending entry" (either
-    /// trampoline-driven uniform main or already-resumed task).
-    pub pending_closure_entry: *mut u8,
-    /// fz-cps.5 — pending main-style entry fn ptr. Set by
-    /// `Runtime::spawn(fn_id)`; the scheduler's `run_quantum`
-    /// dispatches via the SystemV→Tail-CC `fz_main_entry` shim.
-    pub pending_main_entry: *mut u8,
-    /// fz-ul4.27.22.3 — FnId.0 of the pending entry. Used by
-    /// `run_quantum` to look up the matching halt-cont singleton kind
-    /// in `CompiledModule.fn_halt_kinds`. Defaults to 0 (ValueRef) if
-    /// no entry is queued.
-    pub pending_main_entry_fn_id: u32,
     /// fz-cps.1.7 — per-Process static zero-capture closure singletons.
     /// Indexed by lambda spec id (cl_sid). Null entries indicate "no
     /// singleton registered for this cl_sid." Each non-null entry points
@@ -204,9 +192,185 @@ pub enum ProcessState {
     Exited,
 }
 
-impl Process {
-    pub fn new(schemas: std::rc::Rc<std::cell::RefCell<crate::heap::SchemaRegistry>>) -> Self {
+/// The receive-wait snapshot a parked process carries. This is the
+/// scheduler-facing name for the receive-matching record; the matcher,
+/// pinned values, clause bodies, and after-timer continuation all live on it.
+pub type WaitState = crate::park::ParkRecord;
+
+/// A non-null pointer to a `(self)`-callable closure the scheduler can resume
+/// through the `fz_resume` shim. Construction rejects null, so a
+/// `Some(ClosureRef)` always names a real closure to run.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ClosureRef(*mut u8);
+
+impl ClosureRef {
+    /// Wrap a closure heap address; `None` if null (no work).
+    pub fn new(ptr: *mut u8) -> Option<Self> {
+        if ptr.is_null() { None } else { Some(Self(ptr)) }
+    }
+
+    pub fn as_ptr(self) -> *mut u8 {
+        self.0
+    }
+}
+
+/// The node-global atom table: text↔id, append-only. Seeded from a module's
+/// compile-time atoms (ids 0..N, dense) and grown by runtime interning.
+///
+/// Atoms are integers once interned; the table is touched only at the
+/// text↔index boundary (interning a new atom, rendering one to text). It keeps
+/// both directions so each is O(1): `by_id` for id→text (dense `Vec`, since
+/// atoms are append-only with no gaps — the next id is just `by_id.len()`),
+/// and `by_name` for text→id so interning is a hash lookup, not a scan. The
+/// BEAM shape (index array + interning hash table), scaled to one node.
+pub struct AtomTable {
+    by_id: Vec<String>,
+    by_name: std::collections::HashMap<String, u32>,
+}
+
+impl AtomTable {
+    pub fn new(names: Vec<String>) -> Self {
+        let by_name = names
+            .iter()
+            .enumerate()
+            .map(|(i, n)| (n.clone(), i as u32))
+            .collect();
         Self {
+            by_id: names,
+            by_name,
+        }
+    }
+
+    /// Return the atom's id, allocating a fresh one (the next dense index) if
+    /// the name is new. O(1).
+    pub fn intern(&mut self, name: &str) -> u32 {
+        if let Some(&id) = self.by_name.get(name) {
+            return id;
+        }
+        let id = self.by_id.len() as u32;
+        self.by_id.push(name.to_string());
+        self.by_name.insert(name.to_string(), id);
+        id
+    }
+
+    /// The atom's text, or `None` if `id` is out of range. O(1).
+    pub fn name(&self, id: u32) -> Option<&str> {
+        self.by_id.get(id as usize).map(String::as_str)
+    }
+
+    /// Replace the whole table with `names` (ids 0..len). Used by the
+    /// interpreter when a REPL chunk's code image carries a new cumulative
+    /// atom set.
+    pub fn reset_from(&mut self, names: &[String]) {
+        self.by_id = names.to_vec();
+        self.by_name = names
+            .iter()
+            .enumerate()
+            .map(|(i, n)| (n.clone(), i as u32))
+            .collect();
+    }
+}
+
+/// Node-global state shared by every Process in one execution context — a JIT
+/// `Runtime`/`CompiledModule`, an interpreter instance, or an AOT run. The
+/// smallest shared home a process points at; today it owns the atom table and
+/// the per-fn frame-size table. Seeded from the linked module's compile-time
+/// data and shared by `Rc` clone, so spawning a process copies a pointer rather
+/// than cloning the tables. The obvious accretion point for later node-global
+/// state (schemas, loaded code, pid allocation).
+pub struct Node {
+    /// The node-global atom table. Shared and append-only across the context's
+    /// processes, so a runtime-interned atom has the same id in every process —
+    /// the BEAM's node-global atom table, scaled to one execution context.
+    /// Reached through `intern_atom` / `atom_name` / `reset_atoms`, never
+    /// directly, so the interior mutability stays an implementation detail.
+    atoms: std::cell::RefCell<AtomTable>,
+    /// Per-fn frame sizes, indexed by `FnId.0`. Read-only after construction
+    /// (the JIT `fz_alloc_frame_dyn` reads it via `frame_size`); empty under
+    /// the interpreter and AOT, which do not use compiled frame tables.
+    frame_sizes: Vec<u32>,
+}
+
+impl Node {
+    pub fn new(atoms: Vec<String>, frame_sizes: Vec<u32>) -> Self {
+        Self {
+            atoms: std::cell::RefCell::new(AtomTable::new(atoms)),
+            frame_sizes,
+        }
+    }
+
+    /// No node-global tables: the shape a bare `Process::new` carries.
+    pub fn empty() -> Self {
+        Self::new(Vec::new(), Vec::new())
+    }
+
+    /// Intern an atom into the node-global table, returning its id.
+    pub fn intern_atom(&self, name: &str) -> u32 {
+        self.atoms.borrow_mut().intern(name)
+    }
+
+    /// The atom's text, or `None` if `id` is unknown. Returns an owned `String`
+    /// so callers do not hold the table borrow.
+    pub fn atom_name(&self, id: u32) -> Option<String> {
+        self.atoms.borrow().name(id).map(str::to_owned)
+    }
+
+    /// Replace the atom table (interpreter REPL code-image refresh).
+    pub fn reset_atoms(&self, names: &[String]) {
+        self.atoms.borrow_mut().reset_from(names);
+    }
+
+    /// The compiled frame size for `fn_id`, or `None` if absent.
+    pub fn frame_size(&self, fn_id: u32) -> Option<u32> {
+        self.frame_sizes.get(fn_id as usize).copied()
+    }
+}
+
+/// Per-`CompiledModule` construction inputs applied to a Process at spawn —
+/// the bitstring-tuple schemas plus the static-closure and halt-cont singleton
+/// seeds — as distinct from the per-spawn scheduler state (pid, mailbox, run
+/// state) the spawner sets, and from the shared `Node` tables. `from_consts` is
+/// the single construction site that applies them, so a newly-added field flows
+/// through one path instead of diverging across the JIT, interpreter, and AOT
+/// spawners.
+pub struct CompiledModuleConsts {
+    pub bs_tuple_arity1_schema: Option<u32>,
+    pub bs_tuple_arity3_schema: Option<u32>,
+    pub static_closure_targets: Vec<(
+        u32,       /* cl_sid */
+        u32,       /* fn_id */
+        *const u8, /* code_ptr */
+        u32,       /* halt_kind */
+    )>,
+    pub halt_cont_body_addrs: [*const u8; 3],
+}
+
+impl CompiledModuleConsts {
+    /// No construction inputs: the shape a bare `Process::new` and the
+    /// minimal-setup interpreter/AOT spawners carry.
+    pub fn empty() -> Self {
+        Self {
+            bs_tuple_arity1_schema: None,
+            bs_tuple_arity3_schema: None,
+            static_closure_targets: Vec::new(),
+            halt_cont_body_addrs: [std::ptr::null(); 3],
+        }
+    }
+}
+
+impl Process {
+    /// The single Process construction site. Builds the heap and field
+    /// defaults, applies the module constants, and seeds the static-closure
+    /// and halt-cont singleton tables. Per-spawn scheduler state (run state,
+    /// mailbox, pending entries) stays at defaults for the spawner to set.
+    pub fn from_consts(
+        node: std::rc::Rc<Node>,
+        schemas: std::rc::Rc<std::cell::RefCell<crate::heap::SchemaRegistry>>,
+        consts: &CompiledModuleConsts,
+        pid: PidId,
+        reductions_per_quantum: i32,
+    ) -> Self {
+        let mut p = Self {
             // §6.3: initial size on spawn = SIZE_TABLE[0] (1 KiB). Cheney
             // promotes to a higher size_class on first GC if the working
             // set demands it; shrink hysteresis (§6.5 / fz-siu.11) brings
@@ -215,27 +379,23 @@ impl Process {
             ctx: std::ptr::null_mut(),
             halt_value: 0,
             bs_builder: None,
-            frame_sizes: Vec::new(),
-            atom_names: Vec::new(),
-            bs_tuple_arity1_schema: None,
-            bs_tuple_arity3_schema: None,
-            pid: 0,
+            node,
+            bs_tuple_arity1_schema: consts.bs_tuple_arity1_schema,
+            bs_tuple_arity3_schema: consts.bs_tuple_arity3_schema,
+            pid,
             state: ProcessState::New,
             next_frame: std::ptr::null_mut(),
             mailbox: std::collections::VecDeque::new(),
-            parked_matched: None,
-            runnable_closure: std::ptr::null_mut(),
+            wait: None,
+            runnable: None,
             halt_cont_singletons: [std::ptr::null_mut(); 3],
-            pending_closure_entry: std::ptr::null_mut(),
-            pending_main_entry: std::ptr::null_mut(),
-            pending_main_entry_fn_id: 0,
             static_closures: Vec::new(),
             static_closure_bufs: Vec::new(),
             quiet_quanta: 0,
             scheduler_yields: 0,
             interpreter_yields: 0,
-            reductions_remaining: DEFAULT_REDUCTIONS_PER_QUANTUM,
-            reductions_per_quantum: DEFAULT_REDUCTIONS_PER_QUANTUM,
+            reductions_remaining: reductions_per_quantum,
+            reductions_per_quantum,
             reductions_executed: 0,
             reduction_yields: 0,
             allocation_pressure_yields: 0,
@@ -244,7 +404,34 @@ impl Process {
             max_yield_continuation_bytes: 0,
             min_yield_continuation_margin_before_bytes: 0,
             min_yield_continuation_margin_after_bytes: 0,
+        };
+        // An empty target set leaves `static_closures` empty (no cl_sid is
+        // ever looked up); only build the table when the module carries one.
+        if !consts.static_closure_targets.is_empty() {
+            p.init_static_closures(&consts.static_closure_targets);
         }
+        // Only seed halt-cont singletons when real body addrs are present.
+        // `init_halt_cont_singletons` registers the `ClosureEnv0` schema even
+        // for null addrs; running it on the empty/minimal paths would register
+        // that schema at process setup and shift the compile-time-baked schema
+        // ids the AOT runtime registry must match. Guarding keeps the bare
+        // `Process::new`/interpreter/AOT-setup registries identical to a fresh
+        // registry (only the JIT `make_process`, which supplies real addrs,
+        // seeds them).
+        if consts.halt_cont_body_addrs.iter().any(|a| !a.is_null()) {
+            p.init_halt_cont_singletons(consts.halt_cont_body_addrs);
+        }
+        p
+    }
+
+    pub fn new(schemas: std::rc::Rc<std::cell::RefCell<crate::heap::SchemaRegistry>>) -> Self {
+        Self::from_consts(
+            std::rc::Rc::new(Node::empty()),
+            schemas,
+            &CompiledModuleConsts::empty(),
+            0,
+            DEFAULT_REDUCTIONS_PER_QUANTUM,
+        )
     }
 
     /// fz-cps.1.7 — populate the static closure singleton table. Each
@@ -309,18 +496,22 @@ impl Process {
         }
     }
 
+    /// Queue a `(self)`-callable closure (continuation or entry thunk) as the
+    /// next thing to resume. A null pointer clears the slot.
     pub fn set_runnable_closure(&mut self, closure: *mut u8) {
-        self.runnable_closure = closure;
+        self.runnable = ClosureRef::new(closure);
     }
 
+    /// Take the queued runnable closure, clearing the slot.
     pub fn take_runnable_closure(&mut self) -> Option<*mut u8> {
-        if self.runnable_closure.is_null() {
-            None
-        } else {
-            let closure = self.runnable_closure;
-            self.runnable_closure = std::ptr::null_mut();
-            Some(closure)
-        }
+        self.runnable.take().map(ClosureRef::as_ptr)
+    }
+
+    /// The queued runnable closure pointer, if any, without clearing it.
+    pub fn runnable_ptr(&self) -> *mut u8 {
+        self.runnable
+            .map(ClosureRef::as_ptr)
+            .unwrap_or(std::ptr::null_mut())
     }
 
     pub fn reset_reduction_budget(&mut self) {

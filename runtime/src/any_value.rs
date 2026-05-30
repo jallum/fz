@@ -1809,8 +1809,8 @@ pub mod debug {
         if proc.is_null() {
             return format!(":atom_{}", id);
         }
-        let names = unsafe { &(*proc).atom_names };
-        match names.get(id as usize) {
+        let proc_ref = unsafe { &*proc };
+        match proc_ref.node.atom_name(id) {
             Some(name) if !name.is_empty() => format!(":{}", name),
             _ => format!(":atom_{}", id),
         }

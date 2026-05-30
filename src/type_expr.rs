@@ -47,6 +47,10 @@ pub struct ParameterizedTypeAlias {
 enum TypeAlias {
     Resolved(crate::types::Ty),
     Parameterized(ParameterizedTypeAlias),
+    /// A protocol domain template carrying `PROTOCOL_ELEM_VAR` in its
+    /// element-parametric positions. Applying `Protocol.t(arg)` instantiates
+    /// that variable with `arg`, refining `list(_)` targets to `list(arg)`.
+    ProtocolDomain(crate::types::Ty),
 }
 
 #[derive(Debug, Clone, Default)]
@@ -105,12 +109,19 @@ impl ModuleTypeEnv {
         self.aliases.get(&(name.to_string(), arity))
     }
 
+    /// Register a protocol domain template under `name` at arity 1. Applying
+    /// `name(arg)` instantiates `PROTOCOL_ELEM_VAR` in the template with `arg`.
+    pub fn insert_protocol_domain(&mut self, name: String, template: crate::types::Ty) {
+        self.aliases
+            .insert((name, 1), TypeAlias::ProtocolDomain(template));
+    }
+
     pub fn param_aliases(
         &self,
     ) -> impl Iterator<Item = (&(String, usize), &ParameterizedTypeAlias)> {
         self.aliases.iter().filter_map(|(key, alias)| match alias {
             TypeAlias::Parameterized(alias) => Some((key, alias)),
-            TypeAlias::Resolved(_) => None,
+            TypeAlias::Resolved(_) | TypeAlias::ProtocolDomain(_) => None,
         })
     }
 }
@@ -129,11 +140,36 @@ impl std::fmt::Display for TypeExprError {
 
 /// fz-ul4.31.4 — Resolved form of a `SpecDecl` after type-expression
 /// lookup. Produced by `resolve_spec_decl` given a `ModuleTypeEnv`.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ResolvedSpec {
     pub params: Vec<crate::types::Ty>,
     pub result: crate::types::Ty,
+    /// `TypeVarId` is a `u32` newtype, which serde_json renders as a number —
+    /// not a valid object key — so this map serializes as a sequence of
+    /// `(TypeVarId, Ty)` entries.
+    #[serde(with = "constraints_as_seq")]
     pub constraints: HashMap<crate::types::TypeVarId, crate::types::Ty>,
+}
+
+/// (De)serialize `HashMap<TypeVarId, Ty>` as a `Vec<(TypeVarId, Ty)>` so the
+/// numeric key survives serde_json (which forbids non-string object keys).
+mod constraints_as_seq {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    use std::collections::HashMap;
+
+    type Constraints = HashMap<crate::types::TypeVarId, crate::types::Ty>;
+
+    pub fn serialize<S: Serializer>(map: &Constraints, s: S) -> Result<S::Ok, S::Error> {
+        map.iter().collect::<Vec<_>>().serialize(s)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Constraints, D::Error> {
+        Ok(
+            Vec::<(crate::types::TypeVarId, crate::types::Ty)>::deserialize(d)?
+                .into_iter()
+                .collect(),
+        )
+    }
 }
 
 /// fz-swt.8 — Inner-type map for opaque aliases declared in one
@@ -207,6 +243,21 @@ where
     T: Types<Ty = crate::types::Ty>,
 {
     self::env::resolve_spec_decl(t, decl, env)
+}
+
+/// Best-effort per-position spec resolution: each param and the result resolve
+/// independently, yielding `None` for any body that does not resolve (rather
+/// than failing the whole spec). Free type variables are shared across
+/// positions. See `env::resolve_spec_decl_positions`.
+pub fn resolve_spec_decl_positions<T>(
+    t: &mut T,
+    decl: &crate::ast::SpecDecl,
+    env: &ModuleTypeEnv,
+) -> (Vec<Option<crate::types::Ty>>, Option<crate::types::Ty>)
+where
+    T: Types<Ty = crate::types::Ty>,
+{
+    self::env::resolve_spec_decl_positions(t, decl, env)
 }
 
 #[cfg(test)]

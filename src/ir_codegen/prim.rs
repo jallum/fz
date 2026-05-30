@@ -1162,6 +1162,7 @@ fn lower_type_test<M: cranelift_module::Module>(
     let value = *var_env.get(&v.0).expect("type-test subject");
 
     let scalar = emit_scalar_kind_checks(body, env.module, descr, value)?;
+    let heap = emit_heap_kind_checks(body, descr, value);
 
     let tuple_flag = if !tuple_arities.is_empty() {
         if tuple_has_negations {
@@ -1178,12 +1179,11 @@ fn lower_type_test<M: cranelift_module::Module>(
         None
     };
 
-    let flag = match (scalar, tuple_flag) {
-        (None, None) => body.b.ins().iconst(types::I8, 0),
-        (Some(s), None) => s,
-        (None, Some(t)) => t,
-        (Some(s), Some(t)) => body.b.ins().bor(s, t),
-    };
+    let flag = [scalar, heap, tuple_flag]
+        .into_iter()
+        .flatten()
+        .reduce(|acc, f| body.b.ins().bor(acc, f))
+        .unwrap_or_else(|| body.b.ins().iconst(types::I8, 0));
     if body.cache.if_only_conds.contains(&dest_var.0) {
         return Ok(LowerOut::Condition(flag));
     }
@@ -1244,6 +1244,36 @@ fn emit_scalar_kind_checks<M: cranelift_module::Module>(
         }
     }
     Ok(scalar)
+}
+
+/// Heap kind checks: emits icmps against the LIST / MAP / BITSTRING value tags
+/// for the list, map, and binary axes, or-ing into the returned flag. Kind-level
+/// (the list element / map shape is not inspected), matching the descriptor
+/// predicates and the interpreter.
+fn emit_heap_kind_checks<M: cranelift_module::Module>(
+    body: &mut CodegenFn<'_, '_, '_, M>,
+    descr: &crate::concrete_types::Descr,
+    value: CodegenValue,
+) -> Option<ir::Value> {
+    use fz_runtime::any_value::ValueKind;
+    let mut flag: Option<ir::Value> = None;
+    let mut or_in = |body: &mut CodegenFn<'_, '_, '_, M>, kind: ValueKind| {
+        let c = body.value_is_tag(value, kind);
+        flag = Some(match flag.take() {
+            None => c,
+            Some(p) => body.b.ins().bor(p, c),
+        });
+    };
+    if descr.type_test_has_lists() {
+        or_in(body, ValueKind::LIST);
+    }
+    if descr.type_test_has_maps() {
+        or_in(body, ValueKind::MAP);
+    }
+    if descr.type_test_has_binaries() {
+        or_in(body, ValueKind::BITSTRING);
+    }
+    flag
 }
 
 /// Tuple arity check: gates on the STRUCT tag, then compares the

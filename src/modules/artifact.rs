@@ -1,5 +1,6 @@
 //! Deterministic `.fzi` / `.fzo` artifact envelopes for module-first builds.
 
+use crate::diag::source_map::PortableSourceFile;
 use crate::diag::{Diagnostic, Span, codes};
 use crate::ir_codegen::CompiledUnit;
 use crate::modules::identity::{ExportKey, ModuleName};
@@ -14,10 +15,9 @@ use std::path::Path;
 
 pub const FZ_ARTIFACT_ABI_VERSION: u32 = 1;
 pub const FZ_RUNTIME_ARTIFACT_ABI_VERSION: u32 = 1;
-#[cfg(test)]
-pub const FZO_PAYLOAD_IR_TEXT_V1: &str = "fz-ir-text-v1";
 pub const FZO_PAYLOAD_SOURCE_UNIT_V1: &str = "fz-source-unit-v1";
 pub const FZO_PAYLOAD_RUNTIME_MODULE_V1: &str = "fz-runtime-module-v1";
+pub const FZO_PAYLOAD_IR_UNIT_V1: &str = "fz-ir-unit-v1";
 
 const FZI_MAGIC: &str = "fzi";
 const FZO_MAGIC: &str = "fzo";
@@ -39,6 +39,7 @@ pub struct FzoArtifact {
     pub unit_payload: FzoUnitPayload,
     pub required_imports: Vec<ExportKey>,
     pub implementation_fingerprint: Vec<String>,
+    pub implementation_fingerprint_digest: String,
     pub interface_fingerprint_digest: String,
     pub interface_fingerprint: Vec<String>,
 }
@@ -47,6 +48,24 @@ pub struct FzoArtifact {
 pub struct FzoUnitPayload {
     pub format: String,
     pub body: String,
+}
+
+/// Integrity digest over the PAYLOAD CONTENT (format tag + full body). Covers
+/// the serialized IR + sources for structural units, or the source text for
+/// source units. Recomputed at load to reject semantically-valid-but-tampered
+/// payloads that still parse as JSON.
+pub(crate) fn payload_digest(payload: &FzoUnitPayload) -> String {
+    fingerprint_digest(&[payload.format.clone(), payload.body.clone()])
+}
+
+/// Decoded body of an `FZO_PAYLOAD_IR_UNIT_V1` payload: the structural IR
+/// `Module` plus every source file its spans reference. A later loader
+/// (fz-t1m.3.1.3) re-interns `sources` into the host `SourceMap`, remaps the
+/// module's `FileId`s, and materializes the provider WITHOUT recompiling.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IrUnitPayload {
+    pub module: crate::fz_ir::Module,
+    pub sources: Vec<PortableSourceFile>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -91,16 +110,16 @@ impl FzoUnitPayload {
     }
 
     #[cfg(test)]
-    pub fn ir_text(body: impl Into<String>) -> Self {
-        Self::new(FZO_PAYLOAD_IR_TEXT_V1, body)
-    }
-
     pub fn source_unit(body: impl Into<String>) -> Self {
         Self::new(FZO_PAYLOAD_SOURCE_UNIT_V1, body)
     }
 
     pub fn runtime_module(body: impl Into<String>) -> Self {
         Self::new(FZO_PAYLOAD_RUNTIME_MODULE_V1, body)
+    }
+
+    fn ir_unit(body: impl Into<String>) -> Self {
+        Self::new(FZO_PAYLOAD_IR_UNIT_V1, body)
     }
 }
 
@@ -177,14 +196,6 @@ impl FziArtifact {
 
 impl FzoArtifact {
     #[cfg(test)]
-    pub fn from_unit(unit: &CompiledUnit, implementation_fingerprint: Vec<String>) -> Self {
-        Self::from_unit_payload(
-            unit,
-            FzoUnitPayload::ir_text(unit.code.to_string()),
-            implementation_fingerprint,
-        )
-    }
-
     pub fn from_unit_source(
         unit: &CompiledUnit,
         source: impl Into<String>,
@@ -197,12 +208,37 @@ impl FzoArtifact {
         )
     }
 
+    /// Build an `.fzo` whose payload is the STRUCTURAL IR unit: the module's
+    /// serde form plus every source file its spans reference, so a later loader
+    /// can materialize the provider WITHOUT recompiling. The
+    /// `required_imports`/fingerprint wiring is identical to `from_unit_source`.
+    /// Production `fz build` emits this structural format; the loader in
+    /// `modules::pipeline::load_provider_units` materializes it without the
+    /// frontend.
+    pub fn from_unit_ir(
+        unit: &CompiledUnit,
+        sources: Vec<PortableSourceFile>,
+        implementation_fingerprint: Vec<String>,
+    ) -> Self {
+        let body = serde_json::to_string(&IrUnitPayload {
+            module: unit.code.clone(),
+            sources,
+        })
+        .expect("ir unit payload serialization");
+        Self::from_unit_payload(
+            unit,
+            FzoUnitPayload::ir_unit(body),
+            implementation_fingerprint,
+        )
+    }
+
     fn from_unit_payload(
         unit: &CompiledUnit,
         unit_payload: FzoUnitPayload,
         implementation_fingerprint: Vec<String>,
     ) -> Self {
         let interface_fingerprint = unit.interface_fingerprint.clone();
+        let implementation_fingerprint_digest = payload_digest(&unit_payload);
         Self {
             compiler_abi_version: FZ_ARTIFACT_ABI_VERSION,
             runtime_abi_version: FZ_RUNTIME_ARTIFACT_ABI_VERSION,
@@ -215,6 +251,7 @@ impl FzoArtifact {
                 .map(|edge| edge.target.clone())
                 .collect(),
             implementation_fingerprint,
+            implementation_fingerprint_digest,
             interface_fingerprint_digest: fingerprint_digest(&interface_fingerprint),
             interface_fingerprint,
         }
@@ -238,6 +275,21 @@ impl FzoArtifact {
                 ),
             )
         }
+    }
+
+    /// Decode an IR-unit payload back into its `Module` + source files. The
+    /// read side `modules::pipeline::load_provider_units` calls to materialize a
+    /// provider structurally. Errors if this artifact is not an
+    /// `FZO_PAYLOAD_IR_UNIT_V1` unit.
+    pub fn ir_unit_payload(&self) -> Result<IrUnitPayload, ArtifactFormatError> {
+        if self.unit_payload.format != FZO_PAYLOAD_IR_UNIT_V1 {
+            return Err(invalid(format!(
+                "fzo payload `{}` is not an IR unit",
+                self.unit_payload.format
+            )));
+        }
+        serde_json::from_str(&self.unit_payload.body)
+            .map_err(|err| invalid(format!("malformed fzo IR unit payload: {}", err)))
     }
 
     pub fn serialize(&self) -> String {
@@ -277,6 +329,9 @@ impl FzoArtifact {
             && artifact.interface_fingerprint != expected
         {
             return emit_invalid(tel, path, "fzo implemented interface fingerprint mismatch");
+        }
+        if artifact.implementation_fingerprint_digest != payload_digest(&artifact.unit_payload) {
+            return emit_invalid(tel, path, "fzo implementation payload digest mismatch");
         }
         Ok(artifact)
     }
@@ -439,10 +494,11 @@ mod tests {
             Some(interface.clone()),
             crate::diag::Diagnostics::new(),
         );
-        let expected_payload = unit.code.to_string();
-        let artifact = FzoArtifact::from_unit(&unit, vec!["impl:abc".to_string()]);
+        // This module's spans are all synthetic, so it references no source
+        // files: an empty `sources` is the faithful structural payload.
+        let artifact = FzoArtifact::from_unit_ir(&unit, vec![], vec!["impl:abc".to_string()]);
         let text = artifact.serialize();
-        assert!(text.contains(r#""format": "fz-ir-text-v1""#), "{text}");
+        assert!(text.contains(r#""format": "fz-ir-unit-v1""#), "{text}");
         assert!(text.contains(r#""body": "#), "{text}");
         let decoded = FzoArtifact::deserialize(
             &crate::telemetry::NullTelemetry,
@@ -451,10 +507,148 @@ mod tests {
             Some(&["export:Math.add/2".to_string()]),
         )
         .expect("deserialize");
-        assert_eq!(decoded.unit_payload.format, "fz-ir-text-v1");
-        assert_eq!(decoded.unit_payload.body, expected_payload);
+        assert_eq!(decoded.unit_payload.format, FZO_PAYLOAD_IR_UNIT_V1);
         assert_eq!(decoded, artifact);
         assert_eq!(decoded.serialize(), text);
+    }
+
+    #[test]
+    fn fzo_ir_unit_round_trips() {
+        // A real unit: one fn, an external call edge — enough that the module's
+        // serde form is non-trivial and survives the round-trip unchanged.
+        let interface = math_interface();
+        let mut builder = crate::fz_ir::FnBuilder::new(crate::fz_ir::FnId(0), "Math.add");
+        let entry = builder.block(Vec::new());
+        builder.set_terminator(entry, crate::fz_ir::Term::Halt(crate::fz_ir::Var(0)));
+        let mut code = crate::fz_ir::Module::new();
+        code.fn_idx.insert(crate::fz_ir::FnId(0), 0);
+        code.fns.push(builder.build());
+        code.external_call_edges
+            .push(crate::fz_ir::ExternalCallEdge {
+                callsite: crate::fz_ir::CallsiteId {
+                    caller: crate::fz_ir::FnId(0),
+                    ident: crate::fz_ir::CallsiteIdent::synthetic(),
+                    slot: crate::fz_ir::EmitSlot::Direct,
+                },
+                target: ExportKey::new(module("Dep"), "seed", 0),
+            });
+        let unit =
+            CompiledUnit::from_ir_module(code, Some(interface), crate::diag::Diagnostics::new());
+
+        // The realistic path: intern the unit's source into a SourceMap and
+        // pull `to_portable()` for each referenced file. This module's spans are
+        // all synthetic, so we add one file and carry it explicitly.
+        let mut sm = crate::diag::SourceMap::new();
+        let fid = sm.add_file(
+            "Math.fz",
+            "defmodule Math do\n  fn add(x, y), do: x + y\nend\n",
+        );
+        let sources = vec![sm.file(fid).to_portable(fid)];
+
+        let fzo = FzoArtifact::from_unit_ir(&unit, sources.clone(), vec![]);
+        let text = fzo.serialize();
+        assert!(text.contains(r#""format": "fz-ir-unit-v1""#), "{text}");
+
+        let back =
+            FzoArtifact::deserialize(&crate::telemetry::NullTelemetry, None, &text, None).unwrap();
+        let payload = back.ir_unit_payload().unwrap();
+
+        // The Module survived: canonical Value equality.
+        assert_eq!(
+            serde_json::to_value(&payload.module).unwrap(),
+            serde_json::to_value(&unit.code).unwrap(),
+            "module survives the IR-unit round-trip"
+        );
+        // Sources survived: file id + name + bytes all preserved.
+        assert_eq!(
+            payload.sources, sources,
+            "source files survive the round-trip"
+        );
+    }
+
+    /// Build a non-trivial structural IR-unit artifact: one fn, one external
+    /// call edge, one interned source file.
+    fn structural_ir_artifact() -> FzoArtifact {
+        let interface = math_interface();
+        let mut builder = crate::fz_ir::FnBuilder::new(crate::fz_ir::FnId(0), "Math.add");
+        let entry = builder.block(Vec::new());
+        builder.set_terminator(entry, crate::fz_ir::Term::Halt(crate::fz_ir::Var(0)));
+        let mut code = crate::fz_ir::Module::new();
+        code.fn_idx.insert(crate::fz_ir::FnId(0), 0);
+        code.fns.push(builder.build());
+        code.external_call_edges
+            .push(crate::fz_ir::ExternalCallEdge {
+                callsite: crate::fz_ir::CallsiteId {
+                    caller: crate::fz_ir::FnId(0),
+                    ident: crate::fz_ir::CallsiteIdent::synthetic(),
+                    slot: crate::fz_ir::EmitSlot::Direct,
+                },
+                target: ExportKey::new(module("Dep"), "seed", 0),
+            });
+        let unit =
+            CompiledUnit::from_ir_module(code, Some(interface), crate::diag::Diagnostics::new());
+        let mut sm = crate::diag::SourceMap::new();
+        let fid = sm.add_file(
+            "Math.fz",
+            "defmodule Math do\n  fn add(x, y), do: x + y\nend\n",
+        );
+        let sources = vec![sm.file(fid).to_portable(fid)];
+        FzoArtifact::from_unit_ir(&unit, sources, vec!["impl:struct".to_string()])
+    }
+
+    #[test]
+    fn fzo_payload_digest_round_trips() {
+        let artifact = structural_ir_artifact();
+        // The construct path set a digest over format + body.
+        assert_eq!(
+            artifact.implementation_fingerprint_digest,
+            payload_digest(&artifact.unit_payload)
+        );
+        let text = artifact.serialize();
+        let decoded = FzoArtifact::deserialize(&crate::telemetry::NullTelemetry, None, &text, None)
+            .expect("matching payload digest is accepted");
+        assert_eq!(decoded, artifact);
+    }
+
+    #[test]
+    fn fzo_rejects_tampered_payload() {
+        // Serialize a valid structural artifact, then swap its body for a
+        // DIFFERENT-but-valid IrUnitPayload JSON while leaving the stored
+        // implementation_fingerprint_digest stale.
+        let mut artifact = structural_ir_artifact();
+        let tampered_body = serde_json::to_string(&IrUnitPayload {
+            module: crate::fz_ir::Module::new(),
+            sources: Vec::new(),
+        })
+        .expect("tampered payload serialization");
+        assert_ne!(artifact.unit_payload.body, tampered_body);
+        // Stale digest: mutate the body but NOT implementation_fingerprint_digest.
+        artifact.unit_payload.body = tampered_body;
+        let text = artifact.serialize();
+        // The tampered body is still valid JSON, so this only trips the digest.
+        let err = FzoArtifact::deserialize(&crate::telemetry::NullTelemetry, None, &text, None)
+            .unwrap_err();
+        assert_eq!(err.to_diagnostic().code, codes::ARTIFACT_INVALID);
+        assert_eq!(
+            err.to_string(),
+            "fzo implementation payload digest mismatch"
+        );
+    }
+
+    #[test]
+    fn fzo_ir_unit_payload_rejects_non_ir_unit() {
+        let interface = math_interface();
+        let unit = CompiledUnit::from_ir_module(
+            crate::fz_ir::Module::new(),
+            Some(interface),
+            crate::diag::Diagnostics::new(),
+        );
+        let artifact = FzoArtifact::from_unit_source(&unit, "defmodule Math do\nend\n", Vec::new());
+        let err = artifact.ir_unit_payload().unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "fzo payload `fz-source-unit-v1` is not an IR unit"
+        );
     }
 
     #[test]
@@ -496,7 +690,7 @@ mod tests {
             Some(interface),
             crate::diag::Diagnostics::new(),
         );
-        let artifact = FzoArtifact::from_unit(&unit, Vec::new());
+        let artifact = FzoArtifact::from_unit_ir(&unit, vec![], Vec::new());
 
         let err = artifact
             .source_unit_text(&crate::telemetry::NullTelemetry)
@@ -504,7 +698,7 @@ mod tests {
 
         assert_eq!(
             err.to_string(),
-            "fzo payload `fz-ir-text-v1` is not a materializable source unit"
+            "fzo payload `fz-ir-unit-v1` is not a materializable source unit"
         );
     }
 
@@ -516,7 +710,7 @@ mod tests {
             Some(interface),
             crate::diag::Diagnostics::new(),
         );
-        let artifact = FzoArtifact::from_unit(&unit, Vec::new());
+        let artifact = FzoArtifact::from_unit_ir(&unit, vec![], Vec::new());
         let text = artifact
             .serialize()
             .replace(&artifact.interface_fingerprint_digest, "bad");
@@ -537,7 +731,7 @@ mod tests {
             Some(interface),
             crate::diag::Diagnostics::new(),
         );
-        let mut artifact = FzoArtifact::from_unit(&unit, Vec::new());
+        let mut artifact = FzoArtifact::from_unit_ir(&unit, vec![], Vec::new());
         artifact.unit_payload.body.clear();
         let text = artifact.serialize();
         let err = FzoArtifact::deserialize(&crate::telemetry::NullTelemetry, None, &text, None)
@@ -554,7 +748,7 @@ mod tests {
             Some(interface),
             crate::diag::Diagnostics::new(),
         );
-        let text = FzoArtifact::from_unit(&unit, Vec::new()).serialize();
+        let text = FzoArtifact::from_unit_ir(&unit, vec![], Vec::new()).serialize();
         let err = FzoArtifact::deserialize(
             &crate::telemetry::NullTelemetry,
             None,

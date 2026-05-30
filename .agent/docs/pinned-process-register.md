@@ -33,7 +33,11 @@ Only fields listed in this module are fair game for direct CLIF access.
 ## Sole process handle for compiled code
 
 The pinned register is the **only** way generated code names the running
-process — there is no ambient thread-local. Runtime helper functions (BIFs)
+process: it never reads an ambient thread-local to find the process. (The
+scheduler does keep a libdispatch-style per-worker thread-local recording which
+task each worker currently owns — see `runtime/src/process.rs` — but that is
+ownership bookkeeping the generated code never consults.) Runtime helper
+functions (BIFs)
 called from generated code receive the process as their leading argument, which
 codegen supplies by reading the pinned register (`get_pinned_reg`) at the call
 site. Generated code only ever *reads* the pinned register; installing it is the

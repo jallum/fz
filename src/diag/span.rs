@@ -4,7 +4,9 @@
 //! The SourceMap holds the bytes; the renderer resolves spans to display
 //! line/col on demand. This keeps the AST/IR cheap to copy.
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub struct FileId(pub u32);
 
 impl FileId {
@@ -13,7 +15,7 @@ impl FileId {
 }
 
 /// A half-open byte range `[start, end)` within a single source file.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct Span {
     pub file: FileId,
     pub start: u32,
@@ -28,7 +30,7 @@ pub struct Span {
 ///
 /// The renderer (.20.6) consults this when drawing the trailer:
 ///   = expanded from `<macro>` at file:line:col
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum SpanOrigin {
     Source,
     Expanded {

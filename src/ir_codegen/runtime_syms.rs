@@ -250,8 +250,8 @@ pub(crate) fn declare_runtime_symbols<M: cranelift_module::Module>(
         receive_park_matched_id: receive.receive_park_matched_id,
         get_static_closure_id: closure.get_static_closure_id,
         get_halt_cont_id: halt_cont.get_halt_cont_id,
-        spawn_entry_id: scheduler.spawn_entry_id,
-        main_entry_id: scheduler.main_entry_id,
+        entry_thunk_id: scheduler.entry_thunk_id,
+        main_trampoline_id: scheduler.main_trampoline_id,
         drain_dtor_entry_id: scheduler.drain_dtor_entry_id,
         yield_mid_flight_report_id: scheduler.yield_mid_flight_report_id,
         yield_slow_path_begin_id: scheduler.yield_slow_path_begin_id,
@@ -618,8 +618,8 @@ fn declare_halt_cont_runtime<M: cranelift_module::Module>(
 }
 
 struct SchedulerRefs {
-    spawn_entry_id: FuncId,
-    main_entry_id: FuncId,
+    entry_thunk_id: FuncId,
+    main_trampoline_id: FuncId,
     drain_dtor_entry_id: FuncId,
     yield_mid_flight_report_id: FuncId,
     yield_slow_path_begin_id: FuncId,
@@ -631,25 +631,32 @@ fn declare_scheduler_runtime<M: cranelift_module::Module>(
 ) -> Result<SchedulerRefs, CodegenError> {
     let yield_mid_flight_report_id = decl_import(jmod, "fz_yield_mid_flight_report")?;
     let yield_slow_path_begin_id = decl_import(jmod, "fz_yield_slow_path_begin")?;
-    // fz_spawn_entry: SystemV entry the scheduler calls to launch a new
-    // task's zero-arg closure. Sig: `(closure:i64) -> i64`.
-    let mut se_sig = Signature::new(CallConv::SystemV);
-    se_sig.params.push(AbiParam::new(types::I64));
-    se_sig.returns.push(AbiParam::new(types::I64));
-    let spawn_entry_id = jmod
-        .declare_function("fz_spawn_entry", Linkage::Local, &se_sig)
-        .map_err(|e| CodegenError::new(format!("declare fz_spawn_entry: {}", e)))?;
-    // fz_main_entry: SystemV entry the scheduler calls to launch at a
-    // known main fn. Sig: `(main_fp:i64, halt_cl:i64) -> i64`. Rust caller
-    // picks halt_cl from process.halt_cont_singletons by the entry fn's
-    // return_repr kind.
-    let mut me_sig = Signature::new(CallConv::SystemV);
-    me_sig.params.push(AbiParam::new(types::I64));
-    me_sig.params.push(AbiParam::new(types::I64));
-    me_sig.returns.push(AbiParam::new(types::I64));
-    let main_entry_id = jmod
-        .declare_function("fz_main_entry", Linkage::Local, &me_sig)
-        .map_err(|e| CodegenError::new(format!("declare fz_main_entry: {}", e)))?;
+    // fz_entry_thunk: the uniform first-entry wrapper. A fresh task's
+    // `runnable` is an entry thunk capturing the task's inner closure; the
+    // scheduler resumes it through `fz_resume` exactly like a continuation, so
+    // the thunk body has the resume-shaped closure-target sig `(self) -> i64`.
+    // It reads the inner closure from capture[0], supplies the matching
+    // halt-cont, and tail-calls the inner closure body `(inner, halt_cl)`.
+    let mut et_sig = Signature::new(CallConv::Tail);
+    et_sig.params.push(AbiParam::new(types::I64));
+    et_sig.returns.push(AbiParam::new(types::I64));
+    let entry_thunk_id = jmod
+        .declare_function("fz_entry_thunk", Linkage::Local, &et_sig)
+        .map_err(|e| CodegenError::new(format!("declare fz_entry_thunk: {}", e)))?;
+    // fz_main_trampoline: the closure-target body for a main-style entry's
+    // synthetic inner closure. The inner closure carries the raw `(cont)` main
+    // fn pointer in capture[0] (a raw int, GC-skipped). Closure-target sig
+    // `(self, cont) -> i64`: read main_fp from capture[0] and tail-call
+    // `main_fp(cont)`. This lets a plain main fn ride the same entry-thunk +
+    // `fz_resume` path as a spawned user closure, with no closure-target body
+    // forced onto the entry fn.
+    let mut mt_sig = Signature::new(CallConv::Tail);
+    mt_sig.params.push(AbiParam::new(types::I64));
+    mt_sig.params.push(AbiParam::new(types::I64));
+    mt_sig.returns.push(AbiParam::new(types::I64));
+    let main_trampoline_id = jmod
+        .declare_function("fz_main_trampoline", Linkage::Local, &mt_sig)
+        .map_err(|e| CodegenError::new(format!("declare fz_main_trampoline: {}", e)))?;
     // fz_drain_dtor_entry: SystemV entry the scheduler calls per pending
     // dtor at task-exit. Sig: `(closure:i64, payload_ref:i64) -> i64`.
     // Body reads the closure body addr through the runtime ABI, allocates
@@ -663,8 +670,8 @@ fn declare_scheduler_runtime<M: cranelift_module::Module>(
         .declare_function("fz_drain_dtor_entry", Linkage::Local, &dd_sig)
         .map_err(|e| CodegenError::new(format!("declare fz_drain_dtor_entry: {}", e)))?;
     Ok(SchedulerRefs {
-        spawn_entry_id,
-        main_entry_id,
+        entry_thunk_id,
+        main_trampoline_id,
         drain_dtor_entry_id,
         yield_mid_flight_report_id,
         yield_slow_path_begin_id,
@@ -762,8 +769,8 @@ pub(crate) struct RuntimeRefs {
     pub(super) receive_park_matched_id: FuncId,
     pub(super) get_static_closure_id: FuncId,
     pub(super) get_halt_cont_id: FuncId,
-    pub(super) spawn_entry_id: FuncId,
-    pub(super) main_entry_id: FuncId,
+    pub(super) entry_thunk_id: FuncId,
+    pub(super) main_trampoline_id: FuncId,
     /// fz_drain_dtor_entry: SystemV->Tail-CC shim for invoking a resource
     /// dtor closure with its payload. Sig: `(closure:i64, payload_ref:i64)
     /// -> i64`. Reads body addr through the closure ABI and indirect-calls

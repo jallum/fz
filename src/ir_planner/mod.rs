@@ -35,6 +35,7 @@ pub mod purity;
 pub mod reachable;
 pub(crate) mod return_context;
 pub(crate) mod scc;
+pub mod switch_dispatch;
 pub mod type_fn;
 pub(crate) mod walk;
 pub mod worklist;
@@ -55,6 +56,7 @@ pub use pretty::pretty_module_plan;
 pub use reachable::reachable_specs;
 #[cfg(test)]
 pub(crate) use reachable::{cont_input_key, cont_slot0_descr};
+pub use switch_dispatch::rewrite_closed_union_protocol_dispatch;
 #[cfg(test)]
 pub(crate) use type_fn::type_fn;
 pub use worklist::{plan_callable_capabilities, plan_module};

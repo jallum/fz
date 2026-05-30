@@ -2,7 +2,7 @@ use std::fmt;
 
 use crate::diag::{FileId, Span};
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum Tok {
     // literals
     Int(i64),
@@ -100,7 +100,7 @@ impl fmt::Display for Tok {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Token {
     pub tok: Tok,
     pub span: Span,

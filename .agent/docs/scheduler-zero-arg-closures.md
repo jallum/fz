@@ -56,7 +56,7 @@ receive:
   process becomes Blocked
 ```
 
-The waiting state is a `ParkRecord` in `Process.parked_matched`. Plain `receive()`
+The waiting state is a `WaitState` in `Process.wait`. Plain `receive()`
 installs an accept-any matcher; selective receive installs its compiled matcher.
 When a message later matches, the matcher materializes a zero-arg outcome closure.
 Bound pattern values and any original continuation state are captures.
@@ -83,7 +83,7 @@ receive after 500:
   process becomes Blocked
 ```
 
-If the timer ticks first, `runnable_closure` becomes the timeout closure and the
+If the timer ticks first, `runnable` becomes the timeout closure and the
 process is enqueued. If a message matches first, the scheduler cancels the timer
 and schedules the matched outcome closure instead. Either way the runnable result
 is the same shape: `closure()`.
@@ -122,23 +122,35 @@ closure. See [`destination-passing`](destination-passing.md).
 
 ## Process Fields
 
-`Process` carries the runnable work and the per-path entry pointers directly:
+`Process` carries exactly two scheduler-facing slots:
 
-- `runnable_closure: *mut u8` — the general scheduler-runnable zero-arg closure.
-  The scheduler calls it to continue the process.
-- `parked_matched: Option<Box<ParkRecord>>` — the receive park snapshot; a match
-  materializes `runnable_closure`.
-- `pending_closure_entry` / `pending_main_entry` — a pending spawned-closure or
-  main-style entry. `run_quantum` dispatches them through the `fz_spawn_entry` /
-  `fz_main_entry` SystemV→Tail-CC shims, then clears them.
+- `runnable: Option<ClosureRef>` — the one re-entry verb. A `(self)`-callable
+  closure the scheduler resumes through the single `fz_resume` shim. It is either
+  a continuation (halt continuation baked into its captures, from a receive hit,
+  after-timer fire, or mid-flight yield) or a fresh-task **entry thunk**. `None`
+  means no work is queued.
+- `wait: Option<WaitState>` — the receive park snapshot; a match clears `wait` and
+  moves the outcome continuation into `runnable`.
+
+Supporting per-process tables:
+
 - `halt_cont_singletons: [*mut u8; 3]` — per-repr halt continuations indexed by
   return kind (`ValueRef`, `RawInt`, `RawF64`).
 - `mailbox` and `heap` — process-owned persistent storage, traced as process roots
   until that state becomes heap-owned.
 
-Each of these resolves to the same scheduler action: call a zero-arg closure, or
-dispatch a pending entry through its shim. The continuation always carries its own
-state; the scheduler passes no arguments into it.
+A fresh task has no continuation yet, so spawn builds one. The entry thunk is a
+zero-arg closure (code `fz_entry_thunk`) capturing the task's *inner* closure; on
+first resume it supplies the inner closure's halt continuation and tail-calls it.
+The inner closure is a spawned user closure (for `spawn_closure`) or a synthetic
+closure for a main-style entry — a main fn has a raw `(cont)` body, so its inner
+closure carries the raw fn pointer in a raw-int capture and runs through the fixed
+`fz_main_trampoline` body. Either way the spawned task's `runnable` is just a
+closure, dispatched exactly like a resumed continuation.
+
+Every field resolves to the same scheduler action: resume the `runnable` closure
+through `fz_resume`. The continuation always carries its own state; the scheduler
+passes no arguments into it.
 
 ## Shapes The Scheduler Does Not Carry
 
@@ -175,7 +187,8 @@ event handling that produces a closure.
   with an `after` timeout resumes through the closure entry across interpreter,
   JIT, AOT, and REPL.
 - `cargo test --test fixture_matrix spawn` — spawn entry (`spawn2_basic`,
-  `spawn_with_captures`) dispatched as a pending closure.
+  `spawn_with_captures`) resumed as an entry thunk through `fz_resume`, the same
+  verb a continuation uses.
 - `cargo test reduction_budget` (`runtime/src/process.rs`:
   `reduction_budget_resets_and_spends`,
   `reset_reduction_budget_clears_yield_reasons`) — budget reset/spend and

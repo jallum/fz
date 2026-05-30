@@ -508,8 +508,8 @@ impl Backend for JitBackend {
                 (*cl_sid, *fn_id, ptr, *halt_kind)
             })
             .collect();
-        let spawn_entry_addr = jmod.get_finalized_function(meta.spawn_entry_id);
-        let main_entry_addr = jmod.get_finalized_function(meta.main_entry_id);
+        let entry_thunk_addr = jmod.get_finalized_function(meta.entry_thunk_id);
+        let main_trampoline_addr = jmod.get_finalized_function(meta.main_trampoline_id);
         let drain_dtor_entry_addr = jmod.get_finalized_function(meta.drain_dtor_entry_id);
         let halt_cont_body_addrs = [
             jmod.get_finalized_function(meta.halt_cont_body_ids[0]),
@@ -517,18 +517,24 @@ impl Backend for JitBackend {
             jmod.get_finalized_function(meta.halt_cont_body_ids[2]),
         ];
         let resume_addr = jmod.get_finalized_function(meta.resume_id);
+        // Build the module's shared node once; every Process clones the Rc.
+        let node = std::rc::Rc::new(fz_runtime::process::Node::new(
+            meta.atom_names.clone(),
+            meta.frame_sizes.clone(),
+        ));
         Ok(CompiledModule {
             _module: jmod,
             fn_ptrs,
             user_schemas: meta.user_schemas,
             frame_sizes: meta.frame_sizes,
             atom_names: meta.atom_names,
+            node,
             bs_tuple_arity1_schema: meta.bs_tuple_arity1_schema,
             bs_tuple_arity3_schema: meta.bs_tuple_arity3_schema,
             diagnostics: meta.diagnostics,
             static_closure_targets,
-            spawn_entry_addr,
-            main_entry_addr,
+            entry_thunk_addr,
+            main_trampoline_addr,
             drain_dtor_entry_addr,
             halt_cont_body_addrs,
             fn_halt_kinds: meta.fn_halt_kinds,
@@ -585,8 +591,8 @@ impl Backend for AotBackend {
             return Ok(());
         };
 
-        // AOT C-main is a thin driver around the SystemV→Tail-CC shims
-        // (fz_main_entry / fz_halt_cont_body) emitted in
+        // AOT C-main is a thin driver around the Tail-CC entry bodies
+        // (fz_entry_thunk / fz_main_trampoline / fz_halt_cont_body) emitted in
         // compile_with_backend. Three fz-runtime FFI fns handle Process
         // setup, static-closure registration, and run-main+teardown.
         // Setup takes the three halt_cont_body addrs (ValueRef, RawInt,
@@ -640,9 +646,9 @@ impl Backend for AotBackend {
                 CodegenError::new(format!("declare fz_aot_set_drain_dtor_entry: {}", e))
             })?;
 
-        // Registers the SystemV `fz_resume(cont)` shim so the AOT
-        // run-queue loop can dispatch `runnable_closure`
-        // (selective-receive wakeup) on parity with the JIT path.
+        // Registers the SystemV `fz_resume(cont)` shim so the AOT run-queue
+        // loop can resume `runnable` (entry thunk or selective-receive/
+        // mid-flight continuation) on parity with the JIT.
         // `(proc, addr)` — proc carries the scheduler handle.
         let set_resume_sig = sig1(&[types::I64, types::I64], &[]);
         let set_resume_id = self
@@ -724,9 +730,9 @@ impl Backend for AotBackend {
             c_main_id,
             &c_main_sig,
             meta.fn_ids[&main_fn_id.0],
-            meta.main_entry_id,
+            meta.main_trampoline_id,
             meta.halt_cont_body_ids,
-            meta.spawn_entry_id,
+            meta.entry_thunk_id,
             &meta.static_closure_targets,
             atom_blob_data,
             atom_blob_len,

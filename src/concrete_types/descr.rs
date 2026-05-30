@@ -22,7 +22,7 @@ use super::views::{
 };
 use super::{ty_descr, ty_from_descr};
 
-#[derive(Clone, PartialEq, Eq, Hash)]
+#[derive(Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub(crate) struct Descr {
     pub(crate) basic: BasicBits,
     pub(crate) atoms: AtomSet,
@@ -1409,6 +1409,29 @@ impl Descr {
     pub(crate) fn type_test_has_floats(&self) -> bool {
         self.components()
             .any(|component| matches!(component, Component::Floats(_)))
+    }
+
+    /// True iff this type includes some list. Kind-level (matches Elixir's
+    /// `is_list`): the list element type is not tested at runtime, so a
+    /// `list(int)` descriptor matches any list value. Protocol-dispatch arms
+    /// always test `list(any)`, so this is exactly the right granularity.
+    pub(crate) fn type_test_has_lists(&self) -> bool {
+        self.components()
+            .any(|component| matches!(component, Component::Lists(_)))
+    }
+
+    /// True iff this type includes some map. Kind-level, like
+    /// [`Self::type_test_has_lists`].
+    pub(crate) fn type_test_has_maps(&self) -> bool {
+        self.components()
+            .any(|component| matches!(component, Component::Maps(_)))
+    }
+
+    /// True iff this type includes a binary. The binary kind lives on the
+    /// `basic` axis, so a non-empty basic component is a binary.
+    pub(crate) fn type_test_has_binaries(&self) -> bool {
+        self.components()
+            .any(|component| matches!(component, Component::Basic(_)))
     }
 
     pub(crate) fn type_test_tuple_has_negations(&self) -> bool {

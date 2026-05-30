@@ -97,6 +97,9 @@ pub(crate) struct IrInterpRuntime {
     run_queue: VecDeque<u32>,
     resume: HashMap<u32, ResumeEntry>,
     parked: HashMap<u32, InterpParked>,
+    /// Node-global state (the atom table) shared by every task in this
+    /// interpreter instance, seeded from the program module's atoms.
+    node: Rc<fz_runtime::process::Node>,
     /// The process executing in the current quantum. Set per-quantum in
     /// `drive_until_idle`; read by BIF call sites that allocate or touch the
     /// running process's heap/mailbox. Per-instance — replaces reads of the
@@ -116,6 +119,7 @@ impl IrInterpRuntime {
             run_queue: VecDeque::new(),
             resume: HashMap::new(),
             parked: HashMap::new(),
+            node: Rc::new(fz_runtime::process::Node::empty()),
             current_proc: std::ptr::null_mut(),
         }
     }
@@ -131,14 +135,27 @@ impl IrInterpRuntime {
 
     pub(crate) fn fresh_with_root(module: &Module) -> Self {
         let mut runtime = Self::fresh();
+        // Seed the interpreter's shared node from the program module's atoms;
+        // every task clones this Rc.
+        runtime.node = Rc::new(fz_runtime::process::Node::new(
+            module.atom_names.clone(),
+            Vec::new(),
+        ));
         let user_schemas = runtime.schemas();
         let (bs_tuple_arity1_schema, bs_tuple_arity3_schema) =
             runtime.register_bitstring_tuple_schemas();
-        let mut process = Box::new(Process::new(user_schemas));
-        process.pid = 1;
-        process.atom_names = module.atom_names.clone();
-        process.bs_tuple_arity1_schema = Some(bs_tuple_arity1_schema);
-        process.bs_tuple_arity3_schema = Some(bs_tuple_arity3_schema);
+        let consts = fz_runtime::process::CompiledModuleConsts {
+            bs_tuple_arity1_schema: Some(bs_tuple_arity1_schema),
+            bs_tuple_arity3_schema: Some(bs_tuple_arity3_schema),
+            ..fz_runtime::process::CompiledModuleConsts::empty()
+        };
+        let process = Box::new(Process::from_consts(
+            Rc::clone(&runtime.node),
+            user_schemas,
+            &consts,
+            1,
+            fz_runtime::process::DEFAULT_REDUCTIONS_PER_QUANTUM,
+        ));
         runtime.insert_task(1, process);
         runtime.set_task_code_image(1, Rc::new(CodeImage::new(module)));
         runtime
@@ -186,9 +203,11 @@ impl IrInterpRuntime {
     }
 
     fn set_task_code_image(&mut self, pid: u32, image: Rc<CodeImage>) {
-        if let Some(process) = self.tasks.get_mut(&pid) {
-            process.atom_names = image.module().atom_names.clone();
-        }
+        // Atom names live on the shared `node`, not per-task. Refresh them from
+        // the image's module so a REPL chunk that introduced new compile-time
+        // atoms is visible to rendering/matching (the image carries the
+        // cumulative atom set).
+        self.node.reset_atoms(&image.module().atom_names);
         self.code_images.insert(pid, image);
     }
 
@@ -486,10 +505,19 @@ pub fn run_test_fn(
     fn_id: FnId,
 ) -> Result<(), String> {
     let mut runtime = IrInterpRuntime::fresh();
+    runtime.node = Rc::new(fz_runtime::process::Node::new(
+        module.atom_names.clone(),
+        Vec::new(),
+    ));
     let user_schemas = runtime.schemas();
-    let mut task = Box::new(Process::new(user_schemas));
-    task.pid = 1;
-    task.atom_names = module.atom_names.clone();
+    let consts = fz_runtime::process::CompiledModuleConsts::empty();
+    let task = Box::new(Process::from_consts(
+        Rc::clone(&runtime.node),
+        user_schemas,
+        &consts,
+        1,
+        fz_runtime::process::DEFAULT_REDUCTIONS_PER_QUANTUM,
+    ));
     runtime.insert_task(1, task);
     let task_ptr = runtime.process_ptr(1).expect("run_test_fn installed pid 1");
     runtime.current_proc = task_ptr;

@@ -69,6 +69,11 @@ pub const TYPE_IMPURE_RECEIVE_GUARD: DiagCode = DiagCode("type/impure-receive-gu
 // trivial sites and reasoned about as side-effect-free routers.
 pub const TYPE_IMPURE_MATCHER: DiagCode = DiagCode("type/impure-matcher");
 pub const TYPE_EXTERN_MARSHAL: DiagCode = DiagCode("type/extern-marshal");
+// fz-t1m.1.3 — a protocol callback is invoked on a receiver whose type is
+// disjoint from every implementing target. Dispatch can select no impl, so the
+// call would never resolve. Distinct from a generic spec violation: it names
+// the protocol, the receiver type, and the known implementors.
+pub const TYPE_PROTOCOL_NO_IMPL: DiagCode = DiagCode("type/protocol-no-impl");
 
 // ----- codegen -----
 

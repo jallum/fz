@@ -1,7 +1,7 @@
 //! fz-yxs/fz-st5 — selective-receive park record.
 //!
 //! Holds the snapshot the receiver needs when it parks on a selective
-//! `receive do … end`. Lives on `Process::parked_matched` while the
+//! `receive do … end`. Lives on `Process::wait` while the
 //! task is `Blocked`; cleared (and re-emitted as a runnable closure) the
 //! moment a matcher hit fires.
 //!
@@ -55,7 +55,7 @@ fn write_match_out(out: *mut AnyValueRef, value: AnyValueRef) {
     }
 }
 
-/// Park record stashed on `Process::parked_matched` while a task is
+/// Park record stashed on `Process::wait` while a task is
 /// blocked on a selective receive. Cleared on a matcher hit (sender-
 /// probe or after-timer fire); persists across mailbox arrivals that
 /// the matcher rejects.

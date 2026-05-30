@@ -30,14 +30,19 @@ item chunks, it updates `ReplWorld`. For expression chunks, it asks `ReplWorld`
 to compile a compiler-owned entry, asks `ReplRuntime` to run that entry, and
 stores the returned top-level values in `ReplFrame`.
 
-`ReplWorld` is the source-world memory. It owns definitions, modules, imports,
-aliases, macros, docs, specs, type declarations, item chunks, committed REPL
-entry chunks, and source-map material. It is also where help queries are
-answered.
+`ReplWorld` is the source-world memory, with three fields: a
+`CompileTimeEvaluator` (macros, docs, globals, and spec text), the item chunks
+(`Vec<ReplItemChunk>` — modules, imports, aliases, extern and macro
+declarations), and the committed REPL entry chunks (`Vec<Program>`). It does not
+retain source maps — each chunk gets a fresh `SourceMap` at parse time — and a
+bare top-level `type` declaration is not an item-start token, so it is not kept
+as an item chunk. It is also where help queries are answered.
 
 `ReplFrame` is the runtime value frame between prompts. It is not an AST
-environment. It is an ordered ABI: field names plus `AnyValue`s that become the
-arguments to the next lowered REPL expression entry.
+environment. It is a `BTreeMap<String, AnyValue>` — named bindings plus their
+runtime values — that becomes the arguments to the next lowered REPL expression
+entry. The ABI order is the map's key-sorted order, not source-declaration
+order; the lowered entry agrees on that same ordering.
 
 `ReplRuntime` is the persistent IR interpreter owner. It owns an
 `IrInterpRuntime`, the evaluator pid, and the current evaluator module image.

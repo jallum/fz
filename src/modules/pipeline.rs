@@ -202,12 +202,12 @@ pub(crate) fn checked_module_for_mode(
 
 pub(crate) fn prepare_execution_graph(
     t: &mut types::ConcreteTypes,
-    prepared: CheckedModule,
+    mut prepared: CheckedModule,
     providers: &ProviderInputs,
     tel: &dyn telemetry::Telemetry,
     mode: CompileMode,
 ) -> Result<PreparedExecutionGraph, PipelineError> {
-    let units = load_provider_units(t, &prepared, providers, tel)?;
+    let units = load_provider_units(t, &mut prepared, providers, tel)?;
     let linked_units = units.len() > 1;
     let module = if linked_units {
         ir_codegen::link_ir_units(&units).map_err(PipelineError::Link)?
@@ -276,9 +276,10 @@ fn has_errors(diagnostics: &diag::Diagnostics) -> bool {
         .any(|diagnostic| diagnostic.severity == diag::diagnostic::Severity::Error)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn load_provider_units(
     t: &mut types::ConcreteTypes,
-    prepared: &CheckedModule,
+    prepared: &mut CheckedModule,
     providers: &ProviderInputs,
     tel: &dyn telemetry::Telemetry,
 ) -> Result<Vec<CompiledUnit>, PipelineError> {
@@ -315,28 +316,84 @@ fn load_provider_units(
             .module
             .clone()
             .ok_or(PipelineError::MissingFzoModule)?;
-        let source = object
-            .source_unit_text(tel)
-            .map_err(|_err| PipelineError::ArtifactPayload)?;
-        let frontend = run_frontend(
-            frontend::compile_source_with_interface_table(
-                t,
-                source.to_string(),
-                format!("artifact:{module}"),
-                graph.interfaces.clone(),
-                tel,
-            ),
-            tel,
-        )?;
         let interface = graph.interfaces.get(&module).cloned();
-        units.push(CompiledUnit::from_ir_module_with_plan(
-            frontend.module,
-            Some(frontend.module_plan),
-            interface,
-            diag::Diagnostics::new(),
-        ));
+        if object.unit_payload.format == crate::modules::artifact::FZO_PAYLOAD_IR_UNIT_V1 {
+            units.push(materialize_ir_unit(
+                t,
+                object,
+                &module,
+                interface,
+                &mut prepared.sm,
+                tel,
+            )?);
+        } else {
+            let source = object
+                .source_unit_text(tel)
+                .map_err(|_err| PipelineError::ArtifactPayload)?;
+            let frontend = run_frontend(
+                frontend::compile_source_with_interface_table(
+                    t,
+                    source.to_string(),
+                    format!("artifact:{module}"),
+                    graph.interfaces.clone(),
+                    tel,
+                ),
+                tel,
+            )?;
+            tel.event(
+                &["fz", "module", "unit_materialized"],
+                metadata! { kind: "source", module: module.dotted() },
+            );
+            units.push(CompiledUnit::from_ir_module_with_plan(
+                frontend.module,
+                Some(frontend.module_plan),
+                interface,
+                diag::Diagnostics::new(),
+            ));
+        }
     }
     Ok(units)
+}
+
+/// Materialize a provider from a STRUCTURAL `.fzo` (`FZO_PAYLOAD_IR_UNIT_V1`)
+/// WITHOUT recompiling from source: decode the serde `Module` plus its source
+/// files, merge those files into the consumer `SourceMap` (so provider spans
+/// render real diagnostics), remap the module's `FileId`s onto the interned
+/// consumer ids, rebuild the derived indices the serde form drops, and re-plan
+/// at load (the plan regenerates the protocol provider-boundary facts that link
+/// depends on).
+fn materialize_ir_unit(
+    t: &mut types::ConcreteTypes,
+    object: crate::modules::artifact::FzoArtifact,
+    module_name: &ModuleName,
+    interface: Option<ModuleInterface>,
+    sm: &mut diag::SourceMap,
+    tel: &dyn telemetry::Telemetry,
+) -> Result<CompiledUnit, PipelineError> {
+    let crate::modules::artifact::IrUnitPayload {
+        mut module,
+        sources,
+    } = object
+        .ir_unit_payload()
+        .map_err(|_err| PipelineError::ArtifactPayload)?;
+    let mut remap = std::collections::HashMap::new();
+    for p in &sources {
+        let cid = sm.intern(p.name.clone(), p.bytes.clone());
+        remap.insert(p.file, cid);
+    }
+    module.remap_file_ids(&remap);
+    module.rebuild_indices();
+    let module_plan = ir_planner::plan_module(t, &module, tel);
+    tel.event(
+        &["fz", "module", "unit_materialized"],
+        metadata! { kind: "ir-unit", module: module_name.dotted() },
+    );
+    Ok(CompiledUnit::from_ir_module_with_plan(
+        module,
+        Some(module_plan),
+        interface,
+        diag::Diagnostics::new(),
+    ))
 }
 
 struct LtoLinkedProgram {
@@ -446,6 +503,220 @@ end
             plan_calls, 1,
             "provider graph preparation should plan the loaded runtime module once, \
              not replan the linked graph"
+        );
+    }
+
+    /// Provider source whose `Contracts.Collectable.id/1` impl returns 42. The
+    /// fixed return makes the consumer's dispatch observable end-to-end.
+    const PROVIDER_SRC: &str = r#"defmodule Contracts do
+  defprotocol Collectable do
+    fn id(value)
+  end
+
+  defimpl Collectable, for: List do
+    fn id(value), do: 42
+  end
+end
+"#;
+
+    /// Consumer that calls the provider's protocol through a provider-boundary
+    /// call edge, then a top-level `main` to run.
+    const CONSUMER_SRC: &str = r#"defmodule User do
+  fn run(), do: Contracts.Collectable.id([1])
+end
+fn main(), do: User.run()
+"#;
+
+    struct StructuralProviderFixture {
+        artifact_root: String,
+    }
+
+    impl Drop for StructuralProviderFixture {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.artifact_root);
+        }
+    }
+
+    /// Compile `PROVIDER_SRC` through the real frontend, then emit it as a
+    /// STRUCTURAL `.fzo` (`from_unit_ir`, carrying the module's real source
+    /// files) plus its `.fzi` into a fresh temp `ArtifactStore`. This is exactly
+    /// the production `fz build` emit shape, so the consumer below loads the
+    /// provider structurally — no recompile.
+    fn write_structural_provider(tag: &str) -> (StructuralProviderFixture, ModuleName) {
+        let mut t = types::ConcreteTypes;
+        let tel = telemetry::NullTelemetry;
+        let provider = crate::frontend::compile_source_with_types(
+            &mut t,
+            PROVIDER_SRC.to_string(),
+            "contracts.fz".to_string(),
+            &tel,
+        )
+        .unwrap_or_else(|err| panic!("provider frontend: {:?}", err.diagnostics));
+        let contracts = ModuleName::from_segments(vec!["Contracts".to_string()]);
+        let interface = provider._prog.module_interfaces[&contracts].clone();
+
+        let unit = CompiledUnit::from_ir_module_with_plan(
+            provider.module,
+            Some(provider.module_plan),
+            Some(interface.clone()),
+            diag::Diagnostics::new(),
+        );
+        let sources = unit
+            .code
+            .referenced_files()
+            .into_iter()
+            .map(|fid| provider.sm.file(fid).to_portable(fid))
+            .collect::<Vec<_>>();
+        assert!(
+            !sources.is_empty(),
+            "provider module must reference at least one source file"
+        );
+        let fzo = crate::modules::artifact::FzoArtifact::from_unit_ir(&unit, sources, Vec::new());
+        assert_eq!(
+            fzo.unit_payload.format,
+            crate::modules::artifact::FZO_PAYLOAD_IR_UNIT_V1
+        );
+
+        let artifact_root = std::env::temp_dir()
+            .join(format!("fz-structural-load-{}-{}", std::process::id(), tag))
+            .display()
+            .to_string();
+        let _ = std::fs::remove_dir_all(&artifact_root);
+        let store = crate::modules::artifact_store::ArtifactStore::new(&artifact_root);
+        let mut interfaces = BTreeMap::new();
+        interfaces.insert(contracts.clone(), interface);
+        store.write_fzi_artifacts(&tel, &interfaces).unwrap();
+        store.write_fzo_artifacts(&tel, [&fzo]).unwrap();
+
+        (StructuralProviderFixture { artifact_root }, contracts)
+    }
+
+    /// Drive `CONSUMER_SRC` through the production pipeline against a structural
+    /// provider in `root`, returning the prepared graph and the consumer's
+    /// SourceMap (which the loader merges provider sources into).
+    fn prepare_consumer_against(
+        root: &str,
+        provider: &ModuleName,
+        tel: &dyn telemetry::Telemetry,
+    ) -> PreparedExecutionGraph {
+        let mut t = types::ConcreteTypes;
+        let providers = ProviderInputs::new(root.to_string(), vec![provider.clone()]);
+        let frontend = compile_source_with_providers(
+            &mut t,
+            CONSUMER_SRC.to_string(),
+            "user.fz".to_string(),
+            &providers,
+            tel,
+        )
+        .unwrap_or_else(|_| panic!("consumer frontend"));
+        let checked = checked_module_for_mode(&mut t, frontend, tel, CompileMode::Normal)
+            .unwrap_or_else(|_| panic!("checked module"));
+        prepare_execution_graph(&mut t, checked, &providers, tel, CompileMode::Normal)
+            .unwrap_or_else(|_| panic!("execution graph"))
+    }
+
+    /// Gate 1: a structurally-loaded provider links and runs WITHOUT recompiling
+    /// from source — the consumer's protocol dispatch reaches the provider's
+    /// impl and returns 42.
+    #[test]
+    fn structural_provider_loads_and_runs_without_recompile() {
+        let tel = telemetry::NullTelemetry;
+        let (fixture, provider) = write_structural_provider("run");
+        let graph = prepare_consumer_against(&fixture.artifact_root, &provider, &tel);
+
+        let module = if graph.units.len() > 1 {
+            ir_codegen::link_ir_units(&graph.units).expect("link ir units")
+        } else {
+            graph.units[0].code.clone()
+        };
+        let result = crate::ir_interp::run_main(&tel, &module).expect("run linked image");
+        assert_eq!(result, 42, "structural provider dispatch returns 42");
+    }
+
+    /// Gate 2: the provider was materialized structurally (`kind: "ir-unit"`) and
+    /// the frontend did NOT run for it — `fz.frontend.parsed` fires once (the
+    /// consumer) even though two modules are in the linked graph.
+    #[test]
+    fn structural_provider_is_materialized_without_frontend() {
+        let tel = telemetry::ConfiguredTelemetry::new();
+        let capture = telemetry::Capture::new();
+        tel.attach(&["fz"], capture.handler());
+
+        let (fixture, provider) = write_structural_provider("no-recompile");
+        let _graph = prepare_consumer_against(&fixture.artifact_root, &provider, &tel);
+
+        let materialized = capture.find(&["fz", "module", "unit_materialized"]);
+        let ir_units = materialized
+            .iter()
+            .filter(|ev| {
+                matches!(
+                    ev.metadata.get("kind"),
+                    Some(telemetry::Value::Str(kind)) if kind == "ir-unit"
+                )
+            })
+            .filter(|ev| {
+                matches!(
+                    ev.metadata.get("module"),
+                    Some(telemetry::Value::Str(m)) if m == "Contracts"
+                )
+            })
+            .count();
+        assert_eq!(
+            ir_units, 1,
+            "Contracts must be materialized once as an ir-unit, found events: {materialized:?}"
+        );
+        assert!(
+            !materialized.iter().any(|ev| matches!(
+                ev.metadata.get("kind"),
+                Some(telemetry::Value::Str(kind)) if kind == "source"
+            )),
+            "no provider should take the source-recompile branch"
+        );
+        // The frontend ran exactly once — for the consumer. A recompiled
+        // provider would parse a second time.
+        assert_eq!(
+            capture.count(&["fz", "frontend", "parsed"]),
+            1,
+            "frontend parses only the consumer, never the structural provider"
+        );
+    }
+
+    /// Gate 3: provider spans render REAL diagnostics after structural load —
+    /// the source-merge + FileId-remap make a non-DUMMY provider span resolve
+    /// against the consumer's SourceMap to the provider's actual source line.
+    #[test]
+    fn structural_provider_spans_resolve_to_real_source() {
+        let tel = telemetry::NullTelemetry;
+        let (fixture, provider) = write_structural_provider("diag");
+        let graph = prepare_consumer_against(&fixture.artifact_root, &provider, &tel);
+
+        let provider_unit = graph
+            .units
+            .iter()
+            .find(|unit| {
+                unit.module
+                    .as_ref()
+                    .is_some_and(|m| m.dotted() == "Contracts")
+            })
+            .expect("loaded provider unit present in graph");
+
+        // A concrete, non-DUMMY span from the loaded+remapped provider module.
+        let mut span = None;
+        provider_unit.code.visit_spans(&mut |s| {
+            if span.is_none() && !s.is_dummy() {
+                span = Some(s);
+            }
+        });
+        let span = span.expect("provider module carries a non-DUMMY span after load");
+
+        // It resolves against the CONSUMER's SourceMap (proves the merge) to the
+        // provider's real source — not DUMMY, and the snippet is provider text.
+        let loc = graph.sm.locate(span);
+        let snippet =
+            &graph.sm.file(loc.file).bytes[loc.line_start as usize..loc.line_end as usize];
+        assert!(
+            PROVIDER_SRC.contains(snippet) && !snippet.trim().is_empty(),
+            "remapped provider span resolves to a real provider source line, got: {snippet:?}"
         );
     }
 }
