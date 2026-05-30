@@ -63,6 +63,7 @@ pub struct StructFieldType {
 #[derive(Debug, Clone)]
 pub struct StructRecordType {
     pub module: ModuleName,
+    pub span: crate::diag::Span,
     pub fields: Vec<StructFieldType>,
 }
 

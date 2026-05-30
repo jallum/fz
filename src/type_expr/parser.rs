@@ -183,6 +183,7 @@ impl<'a, T: crate::types::Types<Ty = crate::types::Ty>> TypeExprParser<'a, T> {
     }
 
     fn parse_struct_record(&mut self) -> Result<(StructRecordType, T::Ty, usize), TypeExprError> {
+        let span = self.peek_span();
         self.expect(&Tok::Percent, "`%` before struct record type")?;
         let module = self.parse_module_name("struct record type module")?;
         self.expect(&Tok::LBrace, "`{` after struct record type module")?;
@@ -200,7 +201,15 @@ impl<'a, T: crate::types::Types<Ty = crate::types::Ty>> TypeExprParser<'a, T> {
         }
         self.expect(&Tok::RBrace, "`}` after struct record fields")?;
         let ty = struct_record_nominal_ty(self.t, &module);
-        Ok((StructRecordType { module, fields }, ty, self.pos))
+        Ok((
+            StructRecordType {
+                module,
+                span,
+                fields,
+            },
+            ty,
+            self.pos,
+        ))
     }
 
     fn parse_record_field_name(&mut self) -> Result<String, TypeExprError> {

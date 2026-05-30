@@ -611,7 +611,6 @@ pub struct Program {
     /// Qualified struct schema -> resolved field types from record type aliases
     /// such as `@type t :: %Range{first: integer}`. Field order still comes
     /// from `defstruct`; this map supplies the per-field type facts.
-    #[allow(dead_code)] // fz-g58.46 consumes this when struct opaques carry field tuples.
     pub struct_field_types: std::collections::BTreeMap<
         crate::modules::identity::ModuleName,
         Vec<(String, crate::types::Ty)>,

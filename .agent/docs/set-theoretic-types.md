@@ -154,15 +154,25 @@ defstruct [:first, :last, :step]              # field order
 ```
 
 The record type expression is resolved during module type-env construction and
-stored as `Program.struct_field_types`, keyed by the struct module name. It is
-not guessed from constructor expressions, because constructors are use sites
-and may omit fields or carry narrower literals. The schema declaration owns
-order; the record type declaration owns declared field types.
+stored as `Program.struct_field_types`, keyed by the struct module name. Resolve
+checks the record fields against the `defstruct` schema: the declared record
+must name every schema field exactly once and may not name fields outside the
+schema. It is not guessed from constructor expressions, because constructors are
+use sites and may omit fields or carry narrower literals.
 
-The next struct-typing step consumes that map to model a struct as a nominal
-opaque tag over the tuple of declared field types. Field projection then becomes
-the same kind of structural read as tuple projection, guarded by the nominal
-schema tag.
+Lowering consumes the validated facts by registering an opaque inner type for
+the struct implementation target:
+
+```text
+impl-target::Range -> {integer, integer, integer}
+```
+
+The key is the same nominal tag used for protocol implementation dispatch; the
+value is a tuple whose slots are in `defstruct` order. A struct value is
+therefore modeled as a nominal opaque tag over a structural field tuple:
+`opaque(impl-target::Range) ∩ {first_type, last_type, step_type}`. Field
+projection can then read the tuple slot selected by the schema, while the tag
+keeps `Range` distinct from any other three-integer tuple.
 
 ## Which Predicate, Where
 

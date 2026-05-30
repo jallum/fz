@@ -29,7 +29,7 @@ use crate::frontend::protocols::{
 };
 use crate::modules::identity::{ExportKey, ModuleName, QualifiedName};
 use crate::modules::interface::ModuleInterface;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
@@ -433,7 +433,7 @@ fn flatten_modules_with_options<T: crate::types::Types<Ty = crate::types::Ty>>(
             )?,
         }
     }
-    let struct_field_types = collect_struct_field_types(&module_type_envs);
+    let struct_field_types = collect_struct_field_types(&module_type_envs, &structs)?;
     Ok(Program {
         items: out,
         module_interfaces,
@@ -450,21 +450,66 @@ fn flatten_modules_with_options<T: crate::types::Types<Ty = crate::types::Ty>>(
 
 fn collect_struct_field_types(
     module_type_envs: &HashMap<String, crate::type_expr::ModuleTypeEnv>,
-) -> BTreeMap<ModuleName, Vec<(String, crate::types::Ty)>> {
+    structs: &BTreeMap<ModuleName, Vec<String>>,
+) -> Result<BTreeMap<ModuleName, Vec<(String, crate::types::Ty)>>, ResolveError> {
     let mut out = BTreeMap::new();
     for env in module_type_envs.values() {
         for (_alias, record) in env.struct_records() {
-            out.insert(
-                record.module.clone(),
-                record
-                    .fields
-                    .iter()
-                    .map(|field| (field.name.clone(), field.ty.clone()))
-                    .collect(),
-            );
+            let Some(schema) = structs.get(&record.module) else {
+                return Err(ResolveError::TypeAliasError {
+                    msg: format!("struct type references unknown struct `{}`", record.module),
+                    span: record.span,
+                });
+            };
+            let schema_fields = schema.iter().cloned().collect::<BTreeSet<_>>();
+            let mut seen = BTreeSet::new();
+            for field in &record.fields {
+                if !schema_fields.contains(&field.name) {
+                    return Err(ResolveError::TypeAliasError {
+                        msg: format!("struct `{}` has no field `{}`", record.module, field.name),
+                        span: record.span,
+                    });
+                }
+                if !seen.insert(field.name.clone()) {
+                    return Err(ResolveError::TypeAliasError {
+                        msg: format!(
+                            "struct type for `{}` declares field `{}` more than once",
+                            record.module, field.name
+                        ),
+                        span: record.span,
+                    });
+                }
+            }
+            for field in schema {
+                if !seen.contains(field) {
+                    return Err(ResolveError::TypeAliasError {
+                        msg: format!(
+                            "struct type for `{}` is missing field `{}`",
+                            record.module, field
+                        ),
+                        span: record.span,
+                    });
+                }
+            }
+            if out
+                .insert(
+                    record.module.clone(),
+                    record
+                        .fields
+                        .iter()
+                        .map(|field| (field.name.clone(), field.ty.clone()))
+                        .collect(),
+                )
+                .is_some()
+            {
+                return Err(ResolveError::TypeAliasError {
+                    msg: format!("struct `{}` has more than one record type", record.module),
+                    span: record.span,
+                });
+            }
         }
     }
-    out
+    Ok(out)
 }
 
 fn add_requested_runtime_interfaces(
@@ -3303,6 +3348,27 @@ end
         );
         let int = ct.int();
         assert!(fields.iter().all(|(_name, ty)| ct.is_equivalent(ty, &int)));
+    }
+
+    #[test]
+    fn struct_record_type_alias_must_match_defstruct_schema() {
+        let prog = parse(
+            r#"
+defmodule Range do
+  defstruct [:first, :last, :step]
+  @type t :: %Range{first: integer, last: integer}
+end
+"#,
+        );
+        let mut ct = crate::types::ConcreteTypes;
+        let err = flatten_modules(&mut ct, prog).expect_err("expected schema mismatch");
+        match err {
+            ResolveError::TypeAliasError { msg, span } => {
+                assert!(msg.contains("missing field `step`"), "{msg}");
+                assert!(!span.is_dummy());
+            }
+            other => panic!("expected type alias error, got {other:?}"),
+        }
     }
 
     #[test]

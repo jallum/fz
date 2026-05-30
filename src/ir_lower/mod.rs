@@ -148,6 +148,39 @@ fn collect_runtime_prelude_imports(items: &[Rc<Item>]) -> HashMap<(String, usize
     out
 }
 
+fn struct_opaque_inners<T: crate::types::Types<Ty = crate::types::Ty>>(
+    t: &mut T,
+    structs: &std::collections::BTreeMap<ModuleName, Vec<String>>,
+    struct_field_types: &std::collections::BTreeMap<ModuleName, Vec<(String, crate::types::Ty)>>,
+) -> HashMap<String, crate::types::Ty> {
+    let mut out = HashMap::new();
+    for (module, order) in structs {
+        let Some(fields) = struct_field_types.get(module) else {
+            continue;
+        };
+        let by_name = fields
+            .iter()
+            .map(|(name, ty)| (name.as_str(), ty.clone()))
+            .collect::<HashMap<_, _>>();
+        let ordered = order
+            .iter()
+            .map(|field| {
+                by_name.get(field.as_str()).cloned().unwrap_or_else(|| {
+                    panic!(
+                        "struct field type invariant violated: `{}` lacks `{}`",
+                        module, field
+                    )
+                })
+            })
+            .collect::<Vec<_>>();
+        out.insert(
+            format!("impl-target::{}", module.last_segment()),
+            t.tuple(&ordered),
+        );
+    }
+    out
+}
+
 fn collect_runtime_prelude_import(
     out: &mut HashMap<(String, usize), String>,
     module: &ModuleName,
@@ -471,6 +504,16 @@ pub fn lower_program_full_with_telemetry<T: crate::types::Types<Ty = crate::type
     // flat-prelude Program, merged here alongside user inners.
     module.opaque_inners = prog.opaque_inners.clone();
     module.opaque_inners.extend(prelude.opaque_inners.clone());
+    module.opaque_inners.extend(struct_opaque_inners(
+        t,
+        &prog.structs,
+        &prog.struct_field_types,
+    ));
+    module.opaque_inners.extend(struct_opaque_inners(
+        t,
+        &prelude.structs,
+        &prelude.struct_field_types,
+    ));
     module.brand_inners = prog.brand_inners.clone();
     module.brand_inners.extend(prelude.brand_inners.clone());
     module.struct_schemas = ctx.struct_schemas.clone();
@@ -884,11 +927,21 @@ mod tests {
     use crate::fz_ir::{Const, ExternMarshal, FnId, Prim, Var};
     use crate::parser::Parser;
     use crate::parser::lexer::Lexer;
+    use crate::types::Types;
 
     fn lower_src(src: &str) -> Module {
         let toks = Lexer::new(src).tokenize().expect("lex");
         let prog = Parser::new(toks).parse_program().expect("parse");
         lower_program(&mut crate::types::ConcreteTypes, &prog).expect("lower failed")
+    }
+
+    fn lower_flat_src(src: &str) -> (crate::types::ConcreteTypes, Module) {
+        let toks = Lexer::new(src).tokenize().expect("lex");
+        let prog = Parser::new(toks).parse_program().expect("parse");
+        let mut ct = crate::types::ConcreteTypes;
+        let prog = crate::frontend::resolve::flatten_modules(&mut ct, prog).expect("flatten");
+        let module = lower_program(&mut ct, &prog).expect("lower failed");
+        (ct, module)
     }
 
     fn lower_src_with_capture(src: &str) -> (Module, crate::telemetry::Capture) {
@@ -906,6 +959,27 @@ mod tests {
         let toks = Lexer::new(src).tokenize().expect("lex");
         let prog = Parser::new(toks).parse_program().expect("parse");
         lower_program(&mut crate::types::ConcreteTypes, &prog).expect_err("expected lower error")
+    }
+
+    #[test]
+    fn struct_record_type_registers_opaque_underlying_tuple_in_schema_order() {
+        let (mut ct, m) = lower_flat_src(
+            r#"
+defmodule Range do
+  defstruct [:first, :last, :step]
+  @type t :: %Range{first: integer, last: integer, step: integer}
+  fn new(first, last, step), do: %Range{first: first, last: last, step: step}
+end
+"#,
+        );
+        let inner = m
+            .opaque_inners
+            .get("impl-target::Range")
+            .expect("Range struct underlying tuple")
+            .clone();
+        let fields = ct.tuple_projections(&inner, 3);
+        let int = ct.int();
+        assert!(fields.iter().all(|field| ct.is_equivalent(field, &int)));
     }
 
     /// fz-qbg.4 — Compile + run a fz program through the JIT and return
