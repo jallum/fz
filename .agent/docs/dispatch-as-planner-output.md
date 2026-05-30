@@ -133,6 +133,15 @@ becomes the next state. The same fact gates continuation representation; see the
 callable-capability gate in
 [`lazy-continuation-materialization.md`](lazy-continuation-materialization.md).
 
+Known-target closure rewriting is an all-spec consensus rule over these same
+facts. A threaded callable parameter can be rewritten to a direct zero-capture
+function only when every specialization of the enclosing function that has a
+callable fact agrees on the same `KnownFn`. `KnownClosure` and
+`OpaqueCallable` are not absence of evidence; they are positive evidence that
+runtime callable state may exist, so they poison the consensus. Ignoring those
+facts makes the first zero-capture reducer that reaches a higher-order function
+globally replace later captured reducers, which is unsound.
+
 ## Return Demand Is A Variant Capability
 
 `SpecKey.demand` is part of the dispatch target. That means return-demand

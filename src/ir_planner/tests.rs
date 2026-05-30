@@ -3630,3 +3630,28 @@ fn rewrite_keeps_non_constant_closure() {
         "apply's parameters must be untouched when its closure is non-constant"
     );
 }
+
+/// A zero-capture closure and a captured closure flowing through the same HOF
+/// parameter disagree. Treating only `KnownFn` facts as evidence would rewrite
+/// both call sites to the zero-capture target and silently drop the captured
+/// closure's behavior.
+#[test]
+fn rewrite_keeps_known_fn_when_other_specs_have_captured_closure() {
+    let src = "fn f(x), do: x + 1\n\
+               fn apply(h, x), do: h(x)\n\
+               fn via_capture(n), do: apply(fn x -> x + n end, 2)\n\
+               fn main() do\n\
+                 apply(f, 1)\n\
+                 via_capture(10)\n\
+               end";
+    let after = rewrite_closures(src);
+    assert!(
+        count_make_closures(&after) >= 1,
+        "captured closure disagreement must keep a real closure value"
+    );
+    assert_eq!(
+        fn_arity(&after, "apply"),
+        2,
+        "apply's callable parameter must remain when any spec carries captured closure state"
+    );
+}

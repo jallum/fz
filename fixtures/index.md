@@ -86,6 +86,8 @@ Run with `BLESS=1` to rewrite after editing fixtures.
 | `receive_shared_tuple_arity/` | selective receive with consecutive same-arity tuple clauses | jit, interp, aot, repl |
 | `refute_abort_message/` | a failed refute aborts with the caller's message on every path | jit, interp, aot, repl |
 | `relay/` | one-hop relay — spawned child blocks on receive before parent sends; exercises non-blocking spawn + receive-parks semantics | jit, interp, aot, repl |
+| `repr_seam_closure_predicate/` | Closure predicate results stay truth-preserving across native representation seams | jit, interp, aot, repl |
+| `repr_seam_enum_count_after_reduce2/` | Enum.count/2 remains correct after Enum.reduce/3 retains the same list | jit, interp, aot, repl |
 | `resource_aot_dtor/` | AOT-compiled binary fires user-supplied resource dtors at heap drop | aot, repl |
 | `resource_lifecycle/` | fz-swt.12 — resource lifecycle (make_resource + .value + dtor) is observably identical across interp, JIT, AOT | interp, jit, aot, repl |
 | `reverse/` | source-level reverse allocation baseline for accumulator-style list traversal | jit, interp, aot, repl |

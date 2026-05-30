@@ -548,9 +548,39 @@ impl<'a, 'env, 'fb, M: cranelift_module::Module> CodegenFn<'a, 'env, 'fb, M> {
             (CodegenValue::Known { payload, kind }, ArgRepr::ValueRef) => {
                 self.box_known_non_heap(payload, kind)
             }
-            (CodegenValue::Known { payload, .. }, ArgRepr::RawInt) => payload,
-            (CodegenValue::Known { payload, .. }, ArgRepr::RawF64) => {
-                self.b.ins().bitcast(types::F64, MemFlags::new(), payload)
+            (
+                CodegenValue::Known {
+                    payload,
+                    kind: fz_runtime::any_value::ValueKind::INT,
+                },
+                ArgRepr::RawInt,
+            ) => payload,
+            (
+                CodegenValue::Known {
+                    payload,
+                    kind: fz_runtime::any_value::ValueKind::FLOAT,
+                },
+                ArgRepr::RawF64,
+            ) => self.b.ins().bitcast(types::F64, MemFlags::new(), payload),
+            (
+                CodegenValue::Known {
+                    payload,
+                    kind: fz_runtime::any_value::ValueKind::INT,
+                },
+                ArgRepr::RawF64,
+            ) => self.b.ins().fcvt_from_sint(types::F64, payload),
+            (
+                CodegenValue::Known {
+                    payload,
+                    kind: fz_runtime::any_value::ValueKind::FLOAT,
+                },
+                ArgRepr::RawInt,
+            ) => {
+                let float = self.b.ins().bitcast(types::F64, MemFlags::new(), payload);
+                self.b.ins().fcvt_to_sint(types::I64, float)
+            }
+            (CodegenValue::Known { .. }, ArgRepr::RawInt | ArgRepr::RawF64) => {
+                panic!("known scalar kind does not match requested raw ABI repr")
             }
             (CodegenValue::Known { .. }, ArgRepr::Condition) => {
                 unreachable!("condition is never a callee ABI target")
@@ -591,8 +621,8 @@ impl<'a, 'env, 'fb, M: cranelift_module::Module> CodegenFn<'a, 'env, 'fb, M> {
             return val;
         }
         match (from, to) {
-            (ArgRepr::ValueRef, ArgRepr::RawInt) => val,
-            (ArgRepr::ValueRef, ArgRepr::RawF64) => tagged_to_raw_f64_unsupported(self.b, val),
+            (ArgRepr::ValueRef, ArgRepr::RawInt) => self.unbox_int(val),
+            (ArgRepr::ValueRef, ArgRepr::RawF64) => self.unbox_float(val),
             (ArgRepr::RawInt, ArgRepr::ValueRef) => self.box_int_for_any(val),
             (ArgRepr::RawF64, ArgRepr::ValueRef) => self.box_float_for_any(val),
             (ArgRepr::RawInt, ArgRepr::RawF64) => self.b.ins().fcvt_from_sint(types::F64, val),
@@ -854,24 +884,13 @@ impl<'a, 'env, 'fb, M: cranelift_module::Module> CodegenFn<'a, 'env, 'fb, M> {
             let off = HEADER_SIZE + SLOT_BYTES * (slot_idx as i32);
             match callee_schema.fields[slot_idx].kind {
                 FieldKind::RawF64 => {
-                    let f = match binding.repr() {
-                        ArgRepr::RawF64 => binding.value(),
-                        ArgRepr::ValueRef if binding.known_kind().is_some() => self
-                            .b
-                            .ins()
-                            .bitcast(types::F64, MemFlags::new(), binding.value()),
-                        _ => tagged_to_raw_f64_unsupported(self.b, binding.value()),
-                    };
+                    let f = self.coerce_binding_to(binding, ArgRepr::RawF64);
                     self.b
                         .ins()
                         .store(MemFlags::trusted(), f, callee_frame, off);
                 }
                 FieldKind::RawI64 => {
-                    let n = match binding.repr() {
-                        ArgRepr::RawInt => binding.value(),
-                        ArgRepr::ValueRef if binding.known_kind().is_some() => binding.value(),
-                        _ => panic!("RawI64 frame slot requires raw int binding"),
-                    };
+                    let n = self.coerce_binding_to(binding, ArgRepr::RawInt);
                     self.b
                         .ins()
                         .store(MemFlags::trusted(), n, callee_frame, off);
@@ -903,19 +922,15 @@ impl<'a, 'env, 'fb, M: cranelift_module::Module> CodegenFn<'a, 'env, 'fb, M> {
             let off = HEADER_SIZE + SLOT_BYTES * (slot_idx as i32);
             match callee_schema.fields[slot_idx].kind {
                 FieldKind::RawF64 => {
-                    let f = match from {
-                        ArgRepr::RawF64 => value,
-                        _ => tagged_to_raw_f64_unsupported(self.b, value),
-                    };
+                    let binding = CodegenValue::from_abi_value(value, from);
+                    let f = self.coerce_binding_to(binding, ArgRepr::RawF64);
                     self.b
                         .ins()
                         .store(MemFlags::trusted(), f, callee_frame, off);
                 }
                 FieldKind::RawI64 => {
-                    let n = match from {
-                        ArgRepr::RawInt => value,
-                        _ => panic!("RawI64 frame slot requires raw int ABI value"),
-                    };
+                    let binding = CodegenValue::from_abi_value(value, from);
+                    let n = self.coerce_binding_to(binding, ArgRepr::RawInt);
                     self.b
                         .ins()
                         .store(MemFlags::trusted(), n, callee_frame, off);

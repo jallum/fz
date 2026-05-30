@@ -52,11 +52,11 @@ pub fn rewrite_known_target_closures<
     let mut unified: HashMap<FnId, HashMap<Var, Option<FnId>>> = HashMap::new();
     for (fn_id, caps) in &types.spec_capabilities {
         let entry = unified.entry(*fn_id).or_default();
-        for (v, fnid) in caps
-            .iter()
-            .filter_map(|(v, cap)| cap.known_fn().map(|fnid| (*v, fnid)))
-        {
-            merge_known_fn(entry, v, fnid);
+        for (v, cap) in caps {
+            match cap.known_fn() {
+                Some(fnid) => merge_known_fn(entry, *v, fnid),
+                None => merge_non_constant_callable(entry, *v),
+            }
         }
     }
     for f in &mut module.fns {
@@ -122,6 +122,10 @@ fn merge_known_fn(entry: &mut HashMap<Var, Option<FnId>>, var: Var, fnid: FnId) 
             entry.insert(var, None);
         }
     }
+}
+
+fn merge_non_constant_callable(entry: &mut HashMap<Var, Option<FnId>>, var: Var) {
+    entry.insert(var, None);
 }
 
 /// Erase a module-constant, zero-capture closure that survives only as a

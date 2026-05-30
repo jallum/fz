@@ -134,6 +134,13 @@ send(pid, 42)
   store ValueRef(Int) in the mailbox
 ```
 
+Every generated-code representation seam must coerce through the runtime value
+model. A `ValueRef` flowing into a `RawInt` or `RawF64` slot is unboxed with the
+ref API; a raw scalar flowing into a `ValueRef` slot is boxed; matching raw lanes
+pass through unchanged. This applies equally to call arguments, continuation
+arguments, and typed frame slots. Copying the bits of a `ValueRef(Int)` into a
+`RawInt` slot is never valid: the word is a ref, not the integer payload.
+
 ## Tags And Platform Packing
 
 The tag values are semantic and platform-independent:

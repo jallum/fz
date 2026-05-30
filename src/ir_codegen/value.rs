@@ -220,13 +220,6 @@ impl CodegenValue {
             Self::Condition(_) => ArgRepr::Condition,
         }
     }
-
-    pub(crate) fn known_kind(self) -> Option<fz_runtime::any_value::ValueKind> {
-        match self {
-            Self::Known { kind, .. } => Some(kind),
-            _ => None,
-        }
-    }
 }
 
 pub(crate) fn known_kind_ref_tag(
