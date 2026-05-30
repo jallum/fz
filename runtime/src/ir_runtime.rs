@@ -1526,6 +1526,35 @@ pub extern "C" fn fz_map_get_float_key_ref(
     fz_map_get_scalar_key_ref(process, map, crate::any_value::AnyValue::float(value))
 }
 
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_map_count(map_ref_word: u64) -> i64 {
+    let map = any_value_ref_from_word(map_ref_word, "fz_map_count map");
+    let addr = map.map_addr().expect("fz_map_count expects map");
+    unsafe { crate::any_value::map_count(addr as *const u8) as i64 }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_map_entry_key(map_ref_word: u64, index: i64) -> u64 {
+    let map = any_value_ref_from_word(map_ref_word, "fz_map_entry_key map");
+    let addr = map.map_addr().expect("fz_map_entry_key expects map");
+    let index = usize::try_from(index).expect("fz_map_entry_key index must be non-negative");
+    let count = unsafe { crate::any_value::map_count(addr as *const u8) };
+    assert!(index < count, "fz_map_entry_key index out of bounds");
+    let (key, _) = unsafe { crate::heap::map_entry_refs(addr, index) };
+    key.raw_word()
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_map_entry_value(map_ref_word: u64, index: i64) -> u64 {
+    let map = any_value_ref_from_word(map_ref_word, "fz_map_entry_value map");
+    let addr = map.map_addr().expect("fz_map_entry_value expects map");
+    let index = usize::try_from(index).expect("fz_map_entry_value index must be non-negative");
+    let count = unsafe { crate::any_value::map_count(addr as *const u8) };
+    assert!(index < count, "fz_map_entry_value index out of bounds");
+    let (_, value) = unsafe { crate::heap::map_entry_refs(addr, index) };
+    value.raw_word()
+}
+
 fn map_put_slot_value(
     process: *mut Process,
     map_ref_word: u64,

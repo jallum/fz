@@ -223,6 +223,39 @@ pub(super) fn call_extern<T: Types<Ty = crate::types::Ty>>(
             let out = fz_runtime::ir_runtime::fz_dbg_value(runtime.cur_proc(), ref_word);
             return interp_value_from_extern_ref_word(out);
         }
+        "fz_map_count" => {
+            if args.len() != 1 {
+                return Err(format!("fz_map_count/1 got {} args", args.len()));
+            }
+            let ref_word = args[0].extern_arg_ref_word(runtime.cur_proc())?;
+            return Ok(AnyValue::Int(fz_runtime::ir_runtime::fz_map_count(
+                ref_word,
+            )));
+        }
+        "fz_map_entry_key" => {
+            if args.len() != 2 {
+                return Err(format!("fz_map_entry_key/2 got {} args", args.len()));
+            }
+            let map_ref = args[0].extern_arg_ref_word(runtime.cur_proc())?;
+            let index = args[1]
+                .as_i64()
+                .ok_or_else(|| "fz_map_entry_key/2 index must be integer".to_string())?;
+            return interp_value_from_extern_ref_word(fz_runtime::ir_runtime::fz_map_entry_key(
+                map_ref, index,
+            ));
+        }
+        "fz_map_entry_value" => {
+            if args.len() != 2 {
+                return Err(format!("fz_map_entry_value/2 got {} args", args.len()));
+            }
+            let map_ref = args[0].extern_arg_ref_word(runtime.cur_proc())?;
+            let index = args[1]
+                .as_i64()
+                .ok_or_else(|| "fz_map_entry_value/2 index must be integer".to_string())?;
+            return interp_value_from_extern_ref_word(fz_runtime::ir_runtime::fz_map_entry_value(
+                map_ref, index,
+            ));
+        }
         _ => {}
     }
     if decl.variadic {
@@ -307,6 +340,9 @@ pub(super) fn resolve_symbol(name: &str) -> Result<*const (), String> {
         "fz_brand_bitstring_as_utf8" => {
             Some(fz_runtime::ir_runtime::fz_brand_bitstring_as_utf8 as *const ())
         }
+        "fz_map_count" => Some(fz_runtime::ir_runtime::fz_map_count as *const ()),
+        "fz_map_entry_key" => Some(fz_runtime::ir_runtime::fz_map_entry_key as *const ()),
+        "fz_map_entry_value" => Some(fz_runtime::ir_runtime::fz_map_entry_value as *const ()),
         _ => None,
     };
     if let Some(fp) = native {

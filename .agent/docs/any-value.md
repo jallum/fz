@@ -42,6 +42,9 @@ fz_ref_load_int(value_ref)
 fz_ref_load_float(value_ref)
 fz_ref_load_atom(value_ref)
 fz_map_get_ref(map_ref, key_ref)
+fz_map_count(map_ref)
+fz_map_entry_key(map_ref, index)
+fz_map_entry_value(map_ref, index)
 fz_list_head_ref(list_ref)
 ```
 
@@ -51,9 +54,16 @@ value:
 
 ```text
 fz_map_get_ref(map, key)             -> AnyValueRef
+fz_map_entry_key(map, index)         -> AnyValueRef
+fz_map_entry_value(map, index)       -> AnyValueRef
 fz_list_head_ref(list)               -> AnyValueRef
 fz_struct_get_field_ref(tuple, fld)  -> AnyValueRef
 ```
+
+`Enumerable.Map` walks the runtime's canonical sorted entry storage with
+`fz_map_count`, `fz_map_entry_key`, and `fz_map_entry_value` from source-level
+fz code. The entry helpers return refs into immutable map storage; tuple/list
+construction copies those values into new containers before publishing them.
 
 **Typed fast paths** are fused helpers for callers that already know the type.
 They panic on mismatch; they do not create a second value model:

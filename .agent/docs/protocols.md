@@ -223,8 +223,8 @@ subsystem:
   stable `CallsiteId`s; `ir_planner` replaces those stubs with local or
   provider-boundary `CallEdgePlan` targets from receiver type facts. Prelude
   protocol facts are carried into the lowered module so runtime-library
-  implementations such as `Enumerable` for `List` and `Range` are visible to
-  planner dispatch.
+  implementations such as `Enumerable` for `List`, `Range`, and `Map` are
+  visible to planner dispatch.
 - `link_ir_units` remaps protocol call facts and resolves provider
   protocol implementation callbacks to local call edges without a post-link
   planning pass. Link-time callsite rewrites must preserve the caller/identity

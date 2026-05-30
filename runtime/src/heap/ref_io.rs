@@ -55,7 +55,7 @@ pub(super) fn write_any_value_to_storage(
     }
 }
 
-pub(super) unsafe fn map_entry_refs(addr: *mut u8, index: usize) -> (AnyValueRef, AnyValueRef) {
+pub(crate) unsafe fn map_entry_refs(addr: *mut u8, index: usize) -> (AnyValueRef, AnyValueRef) {
     let count = unsafe { crate::any_value::map_count(addr) };
     let tag = unsafe { std::ptr::read(crate::any_value::map_tag_ptr(addr).add(index)) };
     let keys = unsafe { crate::any_value::map_keys_ptr(addr, count) };

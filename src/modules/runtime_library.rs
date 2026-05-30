@@ -389,6 +389,10 @@ mod tests {
             |protocol_impl| protocol_impl.protocol.dotted() == "Enumerable"
                 && protocol_impl.target.display_name() == "Enumerable.Range"
         ));
+        assert!(enumerable.protocol_impls.iter().any(
+            |protocol_impl| protocol_impl.protocol.dotted() == "Enumerable"
+                && protocol_impl.target.display_name() == "Enumerable.Map"
+        ));
         assert!(
             !enumerable
                 .protocols
@@ -472,6 +476,9 @@ mod tests {
                 "fz_dbg_value/1",
                 "fz_make_ref/0",
                 "fz_make_resource/2",
+                "fz_map_count/1",
+                "fz_map_entry_key/2",
+                "fz_map_entry_value/2",
                 "fz_panic/1",
                 "fz_process_heap_alloc_stats/0",
                 "fz_self/0",

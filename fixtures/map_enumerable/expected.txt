@@ -1,0 +1,9 @@
+{:done, [{3, :three}, {2, :two}, {1, :one}]}
+{:done, 30}
+{:halted, 99}
+{:ok, 3}
+{:ok, true}
+{:ok, false}
+{:ok, false}
+3
+[{1, :one}, {2, :two}, {3, :three}]

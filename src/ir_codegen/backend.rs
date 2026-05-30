@@ -91,6 +91,18 @@ pub(crate) fn register_runtime_symbols(builder: &mut JITBuilder) {
         "fz_process_heap_alloc_stats",
         fz_runtime::ir_runtime::fz_process_heap_alloc_stats as *const u8,
     );
+    builder.symbol(
+        "fz_map_count",
+        fz_runtime::ir_runtime::fz_map_count as *const u8,
+    );
+    builder.symbol(
+        "fz_map_entry_key",
+        fz_runtime::ir_runtime::fz_map_entry_key as *const u8,
+    );
+    builder.symbol(
+        "fz_map_entry_value",
+        fz_runtime::ir_runtime::fz_map_entry_value as *const u8,
+    );
     builder.symbol("fz_panic", fz_runtime::fz_panic as *const u8);
     builder.symbol(
         "fz_dynamic_float_arith_unsupported",
