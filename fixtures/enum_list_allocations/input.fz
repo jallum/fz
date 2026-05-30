@@ -3,7 +3,7 @@ fn main() do
 
   dbg(Enum.count(xs))
   dbg(Enum.member?(xs, 3))
-  dbg(Enum.reduce(xs, {:cont, 0}, fn (x, acc) -> {:cont, acc + x} end))
+  dbg(Enum.reduce(xs, 0, fn (x, acc) -> acc + x end))
 
   stats = Process.heap_alloc_stats()
   dbg(stats)

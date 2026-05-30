@@ -28,10 +28,11 @@ Run with `BLESS=1` to rewrite after editing fixtures.
 | `destructure_mixed/` | nested destructure mixing tuple arity and list cons — `{[h | t], y} = make()` across all four legs | jit, interp, aot, repl |
 | `destructure_tuple/` | irrefutable tuple destructure in a let-style bind — first fixture to exercise `{a, b} = expr` across all four legs | jit, interp, aot, repl |
 | `empty_list_distinct_from_nil/` | pin fz-s9y semantics — `nil` and `[]` print as distinct strings | jit, aot, interp, repl |
-| `enum_list_allocations/` | runtime Enum list functions preserve minimum native list-cons and continuation-closure allocation floors | jit, interp, aot, repl |
+| `enum_list_allocations/` | runtime Enum list functions preserve protocol-first native list-cons and continuation allocation floors | jit, interp, aot, repl |
 | `enum_oracle_smoke/` | Enum.sort/1 matches Elixir; expected.txt is owned by the oracle.exs twin | jit, interp, aot, repl |
 | `enum_reduce_suspend/` | Enumerable.reduce/3 suspend returns a real resumable closure at the runtime-value boundary | jit, interp, aot, repl |
 | `enum_sort/` | runtime-library Enum.sort (merge sort) allocation contract across four paths; pins JIT/AOT parity and the merge-step continuation-closure floor | jit, interp, aot, repl |
+| `enum_tier0/` | Enum tier-0 functions return Elixir-style public values across List, Range, and Map | jit, interp, aot, repl |
 | `enumerable_switch_dispatch/` | Enumerable protocol switch dispatch covers List, Range, and Map receivers | jit, interp, aot, repl |
 | `fib_tailrec/` | fibonacci via two-accumulator tail recursion — three-clause dispatch + tail-call forwarding under load | jit, interp, aot, repl |
 | `file_handle/` | FileHandle = fd + dtor, exercising cstring/binary/integer marshal classes against real libc with an observable resource lifecycle | jit, interp, aot, repl |

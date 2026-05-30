@@ -73,7 +73,7 @@ so they do not replace ordinary functions on <code>List</code>.</p>
 
 <pre><span class="kw">@spec</span> <span class="fn">total</span>(<span class="ty">Enumerable</span>.<span class="fn">t</span>(integer)) :: integer
 <span class="kw">fn</span> <span class="fn">total</span>(values), <span class="kw">do:</span>
-  <span class="ty">Enum</span>.<span class="fn">reduce</span>(values, {:cont, <span class="num">0</span>}, <span class="kw">fn</span> (x, acc) -> {:cont, acc + x})</pre>
+  <span class="ty">Enum</span>.<span class="fn">reduce</span>(values, <span class="num">0</span>, <span class="kw">fn</span> (x, acc) -> acc + x)</pre>
 
 <p>The compiler checks that the value can belong to the protocol's implemented
 domain. For example, a list can satisfy <code>Enumerable.t(integer)</code>
@@ -93,19 +93,19 @@ convenience functions live on <code>Enum</code>, matching Elixir's split.
   <span class="fn">print</span>({
     <span class="ty">Enum</span>.<span class="fn">count</span>([<span class="num">1</span>, <span class="num">2</span>, <span class="num">3</span>]),
     <span class="ty">Enum</span>.<span class="fn">member?</span>([<span class="num">1</span>, <span class="num">2</span>, <span class="num">3</span>], <span class="num">2</span>),
-    <span class="ty">Enum</span>.<span class="fn">reduce</span>([<span class="num">1</span>, <span class="num">2</span>, <span class="num">3</span>], {:cont, <span class="num">0</span>},
-      <span class="kw">fn</span> (x, acc) -> {:cont, acc + x}),
+    <span class="ty">Enum</span>.<span class="fn">reduce</span>([<span class="num">1</span>, <span class="num">2</span>, <span class="num">3</span>], <span class="num">0</span>,
+      <span class="kw">fn</span> (x, acc) -> acc + x),
     <span class="ty">Enum</span>.<span class="fn">sort</span>([<span class="num">3</span>, <span class="num">1</span>, <span class="num">2</span>])
   })
 <span class="kw">end</span></pre>
 
 <p>This prints:</p>
 
-<pre>{{:ok, 3}, {:ok, true}, {:done, 6}, [1, 2, 3]}</pre>
+<pre>{3, true, 6, [1, 2, 3]}</pre>
 
-<p><code>reduce/3</code> follows the tagged accumulator shape:
-<code>{:cont, acc}</code> continues, <code>{:halt, acc}</code> stops, and
-<code>{:suspend, acc}</code> returns a resumable function.</p>
+<p><code>Enum.reduce/3</code> returns the public accumulator value. The tagged
+control shape belongs to the lower-level <code>Enumerable.reduce/3</code>
+callback.</p>
 
 <p><code>sort/1</code> and <code>sort/2</code> are implemented in ordinary FZ as a
 stable merge sort. The merge step builds the output list directly from the

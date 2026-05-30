@@ -266,7 +266,7 @@ dropped on the floor (numbers verified against the fixture budgets):
 
 ```text
 quicksort native:             list_cons_allocs = 11,  closure_allocs = 0
-enum_list_allocations native: list_cons_allocs = 5,   closure_allocs = 0
+enum_list_allocations native: list_cons_allocs = 5,   closure_allocs = 1
 enum_reduce_suspend native:                           closure_allocs = 1
 ```
 

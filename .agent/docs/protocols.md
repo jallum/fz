@@ -27,7 +27,7 @@ defimpl Enumerable, for: List do
 end
 
 defmodule Enum do
-  @spec reduce(Enumerable.t(a), b, (a, b) -> {:cont, b} | {:halt, b}) :: any
+  @spec reduce(Enumerable.t(a), b, (a, b) -> b) :: b
   fn reduce(enumerable, acc, reducer), do: ...
 
   @spec sort(Enumerable.t(a)) :: [a]
@@ -61,6 +61,8 @@ protocol identity and implementation-domain type, while `Enum` is the
 convenience module that users call for enumeration operations. `Enum.sort/1`
 and `Enum.sort/2` are ordinary runtime-library FZ functions implemented as a
 stable merge sort over the list implementation.
+Low-level protocol-control tuples stay on `Enumerable.reduce/3`; public
+`Enum.reduce/2,3` returns accumulator values.
 
 `Protocol.t(...)` is not `any`. It is an implementation-domain constraint:
 a value of type `Enumerable.t(a)` is a value for which an `Enumerable`

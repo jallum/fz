@@ -68,6 +68,13 @@ The ordinary closure accessors understand both forms:
 This is deliberate. Continuation bodies do not need a second ABI. They receive
 their `self` word and ask the runtime for captures exactly as before.
 
+Capture storage is derived from the continuation entry ABI, not from the
+producer's current SSA representation. If the target continuation will read a
+capture with `fz_closure_get_capture_i64`, the lazy descriptor stores an `i64`
+slot even when the producer currently holds that value as an `AnyValueRef`. This
+keeps stack descriptors and materialized heap closures observationally identical
+at the closure accessor boundary.
+
 ## Heap Escape Rule
 
 A lazy descriptor may not be written into heap data. Heap closure captures are
@@ -156,14 +163,14 @@ native higher-order calls:
 ```text
 list_cons_allocs = 5
 list_cons_bytes = 80
-closure_allocs = 0
-closure_bytes = 0
+closure_allocs = 1
+closure_bytes = 32
 ```
 
-Its native CLIF gate also checks `Enumerable.reduce_list_cont` directly: the
-known zero-state reducer path must contain neither `@fz_alloc_closure` nor
-`stack_store`. That pins the intended model boundary: `KnownFn` reducer values
-are direct code identities consumed before continuation materialization, while
+Its native CLIF gate also checks that public `Enum.reduce/3` does not reintroduce
+list shortcut helpers: the known list receiver must statically dispatch to
+`Enumerable.List.reduce/3`, then to local `List.reduce_cont/3`. That pins the
+intended model boundary: protocol dispatch selects the implementation once, and
 real suspend functions remain source-visible closure values.
 
 `enum_reduce_suspend` is the paired negative gate. A returned suspend function

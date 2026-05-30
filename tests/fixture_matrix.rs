@@ -27,6 +27,7 @@
 //!     expect: success      # or `abort` (run-time) / `diagnostic` (compile-time)
 //!     defer: rationale     # required iff `paths:` is empty
 //!     oracle: oracle.exs   # Elixir twin: its stdout owns expected.txt
+//!     timeout.interp_secs: 15  # path-specific timeout override
 //!     budget.codegen.instructions: 123
 //!     budget.planner.matcher_specs: 0
 //!     ---
@@ -555,6 +556,16 @@ struct Header {
     /// owns `expected.txt`. See `oracle_goldens_match_elixir`.
     oracle: Option<String>,
     dump_budget: DumpBudget,
+    path_timeouts: Vec<(String, Duration)>,
+}
+
+impl Header {
+    fn timeout_for_path(&self, path: &str) -> Duration {
+        self.path_timeouts
+            .iter()
+            .find_map(|(timeout_path, timeout)| (timeout_path == path).then_some(*timeout))
+            .unwrap_or(FIXTURE_COMMAND_TIMEOUT)
+    }
 }
 
 /// Parse a fixture's README.md frontmatter. Frontmatter is the block
@@ -583,6 +594,7 @@ fn parse_header_from_dir(dir: &Path) -> Result<Header, String> {
     let mut defer: Option<String> = None;
     let mut oracle: Option<String> = None;
     let mut dump_budget = DumpBudget::default();
+    let mut path_timeouts = Vec::new();
 
     let lines: Vec<&str> = fm.lines().collect();
     let mut i = 0;
@@ -639,6 +651,9 @@ fn parse_header_from_dir(dir: &Path) -> Result<Header, String> {
             key if key.starts_with("budget.") => {
                 parse_dump_budget_field(&mut dump_budget, key, val, &readme, i + 1)?;
             }
+            key if key.starts_with("timeout.") => {
+                parse_timeout_field(&mut path_timeouts, key, val, &readme, i + 1)?;
+            }
             other => return Err(format!("{}: unknown key `{}`", readme.display(), other)),
         }
         i += 1;
@@ -670,6 +685,7 @@ fn parse_header_from_dir(dir: &Path) -> Result<Header, String> {
         defer,
         oracle,
         dump_budget,
+        path_timeouts,
     })
 }
 
@@ -814,6 +830,7 @@ fn fixture_command_output(
     cmd: &mut Command,
     label: &str,
     timeout_start: TimeoutStart,
+    timeout: Duration,
 ) -> Result<Output, String> {
     let ready_pipe = match timeout_start {
         TimeoutStart::OnSpawn => None,
@@ -860,7 +877,7 @@ fn fixture_command_output(
             }
             Ok(None)
                 if start
-                    .map(|started| started.elapsed() >= FIXTURE_COMMAND_TIMEOUT)
+                    .map(|started| started.elapsed() >= timeout)
                     .unwrap_or(false) =>
             {
                 let _ = child.kill();
@@ -874,7 +891,7 @@ fn fixture_command_output(
                 return Err(format!(
                     "{} exceeded {:?}; stderr: {}",
                     label,
-                    FIXTURE_COMMAND_TIMEOUT,
+                    timeout,
                     stderr.trim_end()
                 ));
             }
@@ -909,6 +926,7 @@ fn run_path(fixture: &Path, header: &Header, path: &str) -> RunOutcome {
         Command::new(FZ_BIN).arg(subcmd).arg(&input),
         "fz",
         TimeoutStart::OnExecutionReady,
+        header.timeout_for_path(path),
     ) {
         Ok(o) => o,
         Err(e) => return RunOutcome::Failed(e),
@@ -986,6 +1004,7 @@ fn run_aot_path(fixture: &Path, header: &Header) -> RunOutcome {
         &mut Command::new(&out_path),
         "aot binary",
         TimeoutStart::OnSpawn,
+        header.timeout_for_path("aot"),
     ) {
         Ok(o) => o,
         Err(e) => return RunOutcome::Failed(e),
@@ -1018,6 +1037,7 @@ fn run_repl_path(fixture: &Path, header: &Header) -> RunOutcome {
         Command::new(FZ_BIN).args(["repl", "--script"]).arg(&input),
         "fz repl",
         TimeoutStart::OnExecutionReady,
+        header.timeout_for_path("repl"),
     ) {
         Ok(o) => o,
         Err(e) => return RunOutcome::Failed(e),
@@ -2095,6 +2115,45 @@ fn parse_dump_budget_field(
             ));
         }
     }
+    Ok(())
+}
+
+fn parse_timeout_field(
+    path_timeouts: &mut Vec<(String, Duration)>,
+    key: &str,
+    value: &str,
+    path: &Path,
+    line: usize,
+) -> Result<(), String> {
+    let timeout_path = key
+        .strip_prefix("timeout.")
+        .and_then(|s| s.strip_suffix("_secs"))
+        .ok_or_else(|| {
+            format!(
+                "{}:{}: unknown timeout key `{}` (want timeout.<path>_secs)",
+                path.display(),
+                line,
+                key
+            )
+        })?;
+    if !matches!(timeout_path, "jit" | "interp" | "aot" | "repl") {
+        return Err(format!(
+            "{}:{}: unknown timeout path `{}`",
+            path.display(),
+            line,
+            timeout_path
+        ));
+    }
+    let seconds: u64 = value.trim().parse().map_err(|e| {
+        format!(
+            "{}:{}: invalid timeout `{}`: {}",
+            path.display(),
+            line,
+            value.trim(),
+            e
+        )
+    })?;
+    path_timeouts.push((timeout_path.to_string(), Duration::from_secs(seconds)));
     Ok(())
 }
 
@@ -3285,12 +3344,14 @@ fn enum_list_allocations_pin_minimum_list_cons() {
     for needle in [
         "the input list literal allocates five cons cells",
         "`Enum.count/1`, `Enum.member?/2`, and `Enum.reduce/3` allocate no additional",
-        "native `Enum.reduce/3` allocates no heap closures",
-        "stack-backed lazy descriptors",
+        "public `Enum.reduce/3` stays a small wrapper over `Enumerable.reduce/3`",
+        "static protocol dispatch routes the known list receiver",
+        "native `Enum.reduce/3` allocates one wrapper closure",
         "`list_cons_allocs = 5`",
         "`list_cons_bytes = 80`",
-        "`closure_allocs = 0`",
-        "`closure_bytes = 0`",
+        "`closure_allocs = 1`",
+        "`closure_bytes = 32`",
+        "final list/struct/map heap headline is `368`",
     ] {
         assert!(
             readme.contains(needle),
@@ -3303,40 +3364,35 @@ fn enum_list_allocations_pin_minimum_list_cons() {
         "enum_list_allocations",
         "expected.txt",
         &[
-            "{:ok, 5}",
-            "{:ok, true}",
-            "{:done, 15}",
+            "5\ntrue\n15",
             ":list_cons_allocs => 5",
             ":list_cons_bytes => 80",
-            ":closure_allocs => 0",
-            ":closure_bytes => 0",
+            ":closure_allocs => 1",
+            ":closure_bytes => 32",
             ":map_allocs => 0",
             "\n368\n",
         ],
     );
 
     let clif = dump_fixture_clif("enum_list_allocations");
-    let reduce_list = clif_function_with_banner_prefix(&clif, "; fn Enumerable.reduce_list_s")
-        .expect("enum_list_allocations native dump must include reduce_list");
     assert!(
-        !reduce_list.contains("@fz_alloc_closure"),
-        "known native Enum.reduce must not heap-allocate reducer-return continuations:\n{}",
-        reduce_list
+        !clif.contains("Enum.reduce_plain_list"),
+        "Enum tier-0 should not reintroduce list shortcut helpers:\n{}",
+        clif
+    );
+    let protocol_reduce = clif_function_with_banner_prefix(&clif, "; fn Enumerable.List.reduce_s")
+        .expect("enum_list_allocations native dump must include Enumerable.List.reduce");
+    let reduce_cont = clif_function_with_banner_prefix(&clif, "; fn List.reduce_cont_s")
+        .expect("enum_list_allocations native dump must include List.reduce_cont");
+    assert!(
+        !protocol_reduce.contains("call_indirect"),
+        "known list receiver should statically dispatch to Enumerable.List.reduce:\n{}",
+        protocol_reduce
     );
     assert!(
-        reduce_list.contains("return_call") && !reduce_list.contains("stack_store"),
-        "known native Enum.reduce dispatcher should enter the cont helper directly:\n{}",
-        reduce_list
-    );
-
-    let reduce_list_cont =
-        clif_function_with_banner_prefix(&clif, "; fn Enumerable.reduce_list_cont_s")
-            .expect("enum_list_allocations native dump must include reduce_list_cont");
-    assert!(
-        !reduce_list_cont.contains("@fz_alloc_closure")
-            && !reduce_list_cont.contains("stack_store"),
-        "known native Enum.reduce cont helper should inline the zero-state reducer without a heap closure or stack lazy descriptor:\n{}",
-        reduce_list_cont
+        reduce_cont.contains("return_call"),
+        "List.reduce_cont should keep the recursive hot loop in tail-call form:\n{}",
+        reduce_cont
     );
 }
 
@@ -3434,20 +3490,20 @@ fn opaque_reduce_join_preserves_closure_values_and_lazy_state_machine() {
         );
     }
 
-    assert_fixture_output_contains("opaque_fn_value_join", "expected.txt", &["{:done, 6}"]);
+    assert_fixture_output_contains("opaque_fn_value_join", "expected.txt", &["6"]);
 
     let clif = dump_fixture_clif("opaque_fn_value_join");
-    let reduce_list_conts = clif_functions_containing(&clif, "Enumerable.reduce_list_cont");
+    let reduce_list_conts = clif_functions_containing(&clif, "List.reduce_cont");
     assert!(
         !reduce_list_conts.is_empty(),
-        "opaque reducer join should still lower through Enumerable.reduce_list_cont:\n{}",
+        "opaque reducer join should lower through the protocol-dispatched list reducer:\n{}",
         clif
     );
     assert!(
         reduce_list_conts
             .iter()
             .all(|f| !f.contains("@fz_alloc_closure")),
-        "opaque reducer join must not force heap continuation allocation in reduce_list_cont:\n{}",
+        "opaque reducer join must not force heap continuation allocation in List.reduce_cont:\n{}",
         reduce_list_conts.join("\n\n")
     );
     assert!(
@@ -3456,8 +3512,12 @@ fn opaque_reduce_join_preserves_closure_values_and_lazy_state_machine() {
         reduce_list_conts.join("\n\n")
     );
     assert!(
-        reduce_list_conts.iter().any(|f| f.contains("&fn32[]"))
-            && reduce_list_conts.iter().any(|f| f.contains("&fn33[]")),
+        reduce_list_conts.len() >= 2
+            && reduce_list_conts
+                .iter()
+                .filter(|f| f.contains("&fn"))
+                .count()
+                >= 2,
         "opaque reducer join currently specializes both joined zero-cap reducers without collapsing them into one static identity:\n{}",
         reduce_list_conts.join("\n\n")
     );

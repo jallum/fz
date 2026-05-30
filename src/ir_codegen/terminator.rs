@@ -160,11 +160,22 @@ impl ContinuationPayload {
         cont_sid: u32,
         captures: &[crate::fz_ir::Var],
     ) -> Self {
+        let cont_key = &env.spec_keys[cont_sid as usize];
+        let demand_abi = DemandAbi::new(cont_key);
+        let extras_count =
+            demand_abi.continuation_extras(env.cont_extras_count.get(&cont_key.fn_id).copied());
         let cap_bindings = captures
             .iter()
-            .map(|cv| closure_capture_for_var(body, var_env, cv.0))
+            .enumerate()
+            .map(|(i, cv)| {
+                let repr = env.param_reprs[cont_sid as usize]
+                    .get(extras_count + i)
+                    .copied()
+                    .unwrap_or(ArgRepr::ValueRef);
+                closure_capture_for_var_as(body, var_env, cv.0, repr)
+            })
             .collect();
-        let extra_ref_captures = cont_extra_ref_captures(body, &env.spec_keys[cont_sid as usize]);
+        let extra_ref_captures = cont_extra_ref_captures(body, cont_key);
         Self::from_parts(env, cont_sid, cap_bindings, vec![], extra_ref_captures)
     }
 

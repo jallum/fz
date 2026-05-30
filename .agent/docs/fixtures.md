@@ -17,8 +17,8 @@ fixtures/<name>/
   expected.outcomes        planner-dispatch golden (optional)
 ```
 
-README frontmatter carries `purpose`, `paths`, an optional `expect:`, and any
-`budget.*` targets.
+README frontmatter carries `purpose`, `paths`, an optional `expect:`, optional
+path-specific `timeout.<path>_secs` overrides, and any `budget.*` targets.
 `fixtures/index.md` is generated from the frontmatter; regenerate it with
 `BLESS=1 cargo test fixture_index_up_to_date` after editing a fixture.
 
@@ -48,8 +48,10 @@ stdout. A nonzero exit is then a failure. A fixture can flip that contract with
 rejection): the path passes only when the process exits *nonzero* and its stderr
 contains the `expected.stderr` golden as a substring — this is how a fixture
 pins a negative claim (see medium 5 below). Exit code 75 marks a path as
-not-yet-wired (`Deferred`), which is reported but does not fail. The per-fixture
-execution timeout is 3s.
+not-yet-wired (`Deferred`), which is reported but does not fail. The default
+per-fixture execution timeout is 3s. A `timeout.<path>_secs` override keeps a
+path in correctness coverage while temporarily relaxing that performance gate;
+the fixture README must name the ticket that restores the default.
 
 ## The media
 

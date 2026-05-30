@@ -1,5 +1,5 @@
-fn add_a(x, acc), do: {:cont, acc + x}
-fn add_b(x, acc), do: {:cont, acc + x}
+fn add_a(x, acc), do: acc + x
+fn add_b(x, acc), do: acc + x
 
 fn main() do
   xs = [1, 2, 3]
@@ -8,5 +8,5 @@ fn main() do
     true -> add_a
     _ -> add_b
   end
-  dbg(Enum.reduce(xs, {:cont, 0}, reducer))
+  dbg(Enum.reduce(xs, 0, reducer))
 end

@@ -93,6 +93,21 @@ pub(crate) fn closure_capture_for_var<M: cranelift_module::Module>(
     }
 }
 
+pub(crate) fn closure_capture_for_var_as<M: cranelift_module::Module>(
+    body: &mut CodegenFn<'_, '_, '_, M>,
+    var_env: &HashMap<u32, CodegenValue>,
+    v: u32,
+    repr: ArgRepr,
+) -> ClosureCapture {
+    let binding = *var_env.get(&v).expect("unbound closure capture var");
+    match repr {
+        ArgRepr::RawInt => ClosureCapture::RawInt(body.coerce_binding_to(binding, repr)),
+        ArgRepr::RawF64 => ClosureCapture::RawF64(body.coerce_binding_to(binding, repr)),
+        ArgRepr::ValueRef => ClosureCapture::RefWord(body.tagged_var(var_env, v)),
+        ArgRepr::Condition => unreachable!("closure captures are never condition-only"),
+    }
+}
+
 pub(crate) fn emit_empty_list_value_ref_word(
     b: &mut FunctionBuilder<'_>,
     cache: &mut CodegenCache,
