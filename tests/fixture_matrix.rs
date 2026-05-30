@@ -16,6 +16,7 @@
 //!         expected.diagnostics diagnostic golden (optional)
 //!         expected.jit.diagnostics path-specific diagnostic golden (optional)
 //!         expected.stderr   stderr substring golden for `expect: abort|diagnostic`
+//!         oracle.exs        Elixir twin whose stdout owns `expected.txt` (optional)
 //!
 //! Frontmatter grammar:
 //!
@@ -25,9 +26,17 @@
 //!     kind: run            # or `test`; defaults to run if `fn main` present
 //!     expect: success      # or `abort` (run-time) / `diagnostic` (compile-time)
 //!     defer: rationale     # required iff `paths:` is empty
+//!     oracle: oracle.exs   # Elixir twin: its stdout owns expected.txt
 //!     budget.codegen.instructions: 123
 //!     budget.planner.matcher_specs: 0
 //!     ---
+//!
+//! When `oracle:` is set, the `oracle_goldens_match_elixir` static test runs the
+//! named Elixir program under the real `elixir` binary and asserts its stdout
+//! equals `expected.txt` (and owns it under `BLESS=1`). The per-path matrix
+//! trials independently assert each fz path reproduces that same golden, so
+//! `fz == Elixir` holds transitively. Elixir owns the golden — per-path bless
+//! never rewrites `expected.txt` for an oracle fixture.
 //!
 //! `expect: success` (the default) requires exit 0 with matching stdout/diagnostics.
 //! `expect: abort`/`diagnostic` flip the contract: the program must exit nonzero
@@ -328,6 +337,10 @@ fn static_tests() -> Vec<(&'static str, fn())> {
             "bsx_brand_blind_eq_emits_telemetry",
             bsx_brand_blind_eq_emits_telemetry,
         ),
+        (
+            "oracle_goldens_match_elixir",
+            oracle_goldens_match_elixir,
+        ),
     ]
 }
 
@@ -541,6 +554,9 @@ struct Header {
     kind: Kind,
     expect: Expect,
     defer: Option<String>,
+    /// Relative path (within the fixture dir) to an Elixir twin whose stdout
+    /// owns `expected.txt`. See `oracle_goldens_match_elixir`.
+    oracle: Option<String>,
     dump_budget: DumpBudget,
 }
 
@@ -568,6 +584,7 @@ fn parse_header_from_dir(dir: &Path) -> Result<Header, String> {
     let mut kind: Option<Kind> = None;
     let mut expect: Option<Expect> = None;
     let mut defer: Option<String> = None;
+    let mut oracle: Option<String> = None;
     let mut dump_budget = DumpBudget::default();
 
     let lines: Vec<&str> = fm.lines().collect();
@@ -621,6 +638,7 @@ fn parse_header_from_dir(dir: &Path) -> Result<Header, String> {
                 });
             }
             "defer" => defer = Some(unquote(val).to_string()),
+            "oracle" => oracle = Some(unquote(val).to_string()),
             key if key.starts_with("budget.") => {
                 parse_dump_budget_field(&mut dump_budget, key, val, &readme, i + 1)?;
             }
@@ -653,6 +671,7 @@ fn parse_header_from_dir(dir: &Path) -> Result<Header, String> {
         kind,
         expect: expect.unwrap_or_default(),
         defer,
+        oracle,
         dump_budget,
     })
 }
@@ -1039,7 +1058,7 @@ fn check(fixture: &Path, header: &Header, path: &str, bless: bool) -> CheckOutco
         RunOutcome::Failed(e) => return CheckOutcome::Fail(e),
     };
     match header.expect {
-        Expect::Success => check_success(fixture, path, bless, &ran),
+        Expect::Success => check_success(fixture, path, bless, &ran, header.oracle.is_some()),
         Expect::Abort => check_failure(fixture, "abort", path, bless, &ran),
         Expect::Diagnostic => check_failure(fixture, "diagnostic", path, bless, &ran),
     }
@@ -1047,7 +1066,13 @@ fn check(fixture: &Path, header: &Header, path: &str, bless: bool) -> CheckOutco
 
 /// `expect: success` (the default): the program must exit 0, and its stdout and
 /// diagnostics must match their goldens (absent golden ⇒ expected empty).
-fn check_success(fixture: &Path, path: &str, bless: bool, ran: &Ran) -> CheckOutcome {
+fn check_success(
+    fixture: &Path,
+    path: &str,
+    bless: bool,
+    ran: &Ran,
+    oracle_owned: bool,
+) -> CheckOutcome {
     if !ran.success {
         return CheckOutcome::Fail(format!(
             "{} via {}: expected success but the program exited nonzero\n--- stderr\n{}",
@@ -1080,10 +1105,14 @@ fn check_success(fixture: &Path, path: &str, bless: bool, ran: &Ran) -> CheckOut
         return CheckOutcome::Pass;
     }
     if bless {
-        if actual.is_empty() {
-            let _ = fs::remove_file(&expected_path);
-        } else if let Err(e) = fs::write(&expected_path, &actual) {
-            return CheckOutcome::Fail(format!("bless write: {}", e));
+        // Elixir owns expected.txt for oracle fixtures — per-path bless must not
+        // rewrite it, or a divergent fz path would silently redefine the golden.
+        if !oracle_owned {
+            if actual.is_empty() {
+                let _ = fs::remove_file(&expected_path);
+            } else if let Err(e) = fs::write(&expected_path, &actual) {
+                return CheckOutcome::Fail(format!("bless write: {}", e));
+            }
         }
         if actual_diagnostics.is_empty() {
             let _ = fs::remove_file(&expected_diagnostics_path);
@@ -1172,6 +1201,93 @@ fn check_failure(fixture: &Path, kind: &str, path: &str, bless: bool, ran: &Ran)
         needle,
         diagnostics.trim_end()
     ))
+}
+
+/// fz-g58.1 — Elixir oracle. For every fixture that declares `oracle: <file>.exs`,
+/// the canonical `expected.txt` golden must equal the stdout of running that
+/// Elixir twin under the real `elixir` binary. This makes "matches Elixir" a
+/// mechanical diff rather than a hand-authored claim: Elixir owns the golden,
+/// and the per-path matrix trials independently assert each fz path
+/// (interp/jit/aot/repl) reproduces the same `expected.txt` — so `fz == Elixir`
+/// holds transitively.
+///
+/// `BLESS=1` regenerates `expected.txt` from the Elixir output. Requires the
+/// `elixir` binary on PATH (Elixir 1.19+); a spawn failure fails loudly by
+/// design — the oracle is the signal, so a missing oracle is a hard error, not
+/// a skip.
+fn oracle_goldens_match_elixir() {
+    let bless = std::env::var("BLESS").ok().as_deref() == Some("1");
+    let mut failures: Vec<String> = Vec::new();
+    for dir in discover() {
+        let header = match parse_header_from_dir(&dir) {
+            Ok(h) => h,
+            Err(_) => continue,
+        };
+        let Some(oracle_rel) = header.oracle.as_deref() else {
+            continue;
+        };
+        let oracle_path = dir.join(oracle_rel);
+        if !oracle_path.is_file() {
+            failures.push(format!(
+                "{}: oracle `{}` not found",
+                dir.display(),
+                oracle_path.display()
+            ));
+            continue;
+        }
+        let out = match Command::new("elixir").arg(&oracle_path).output() {
+            Ok(o) => o,
+            Err(e) => {
+                failures.push(format!(
+                    "{}: spawn `elixir {}`: {} (is Elixir installed and on PATH?)",
+                    dir.display(),
+                    oracle_path.display(),
+                    e
+                ));
+                continue;
+            }
+        };
+        if !out.status.success() {
+            failures.push(format!(
+                "{}: `elixir {}` exited {}:\n{}",
+                dir.display(),
+                oracle_path.display(),
+                out.status,
+                String::from_utf8_lossy(&out.stderr).trim_end()
+            ));
+            continue;
+        }
+        let actual = normalize(&String::from_utf8_lossy(&out.stdout));
+        let expected_path = dir.join("expected.txt");
+        if bless {
+            if actual.is_empty() {
+                let _ = fs::remove_file(&expected_path);
+            } else if let Err(e) = fs::write(&expected_path, &actual) {
+                failures.push(format!("{}: bless write: {}", dir.display(), e));
+            }
+            continue;
+        }
+        let expected = normalize(&fs::read_to_string(&expected_path).unwrap_or_default());
+        if actual == expected {
+            let _ = fs::remove_file(dir.join("actual.oracle.txt"));
+        } else {
+            let actual_path = dir.join("actual.oracle.txt");
+            let _ = fs::write(&actual_path, &actual);
+            failures.push(format!(
+                "{}: oracle mismatch; wrote {}\n--- expected.txt (Elixir-owned golden)\n{}--- elixir actual\n{}",
+                dir.display(),
+                actual_path.display(),
+                expected,
+                actual
+            ));
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "oracle golden mismatches ({}):\n\n{}",
+        failures.len(),
+        failures.join("\n\n")
+    );
 }
 
 /// Regenerate `fixtures/index.md` from headers and assert it matches the
