@@ -86,11 +86,33 @@ fn dummy_span() -> Span {
 pub fn collect_from_program(prog: &Program) -> BTreeMap<ModuleName, ModuleInterface> {
     let mut out = BTreeMap::new();
     for item in &prog.items {
-        if let crate::ast::Item::Module(m) = &**item {
-            collect_module(m, None, &mut out);
+        match &**item {
+            crate::ast::Item::Module(m) => collect_module(m, None, &mut out),
+            crate::ast::Item::Protocol(protocol) => collect_protocol_unit(protocol, &mut out),
+            _ => {}
         }
     }
     out
+}
+
+fn collect_protocol_unit(protocol: &ProtocolDef, out: &mut BTreeMap<ModuleName, ModuleInterface>) {
+    let name = protocol.name.clone();
+    let protocols = vec![interface_protocol(protocol, None)];
+    let fingerprint_inputs = fingerprint_inputs(&name, &[], &[], &[], &protocols, &[], None);
+    out.insert(
+        name.clone(),
+        ModuleInterface {
+            name,
+            abi_version: FZ_INTERFACE_ABI_VERSION,
+            imports: Vec::new(),
+            exports: Vec::new(),
+            types: Vec::new(),
+            protocols,
+            protocol_impls: Vec::new(),
+            docs: None,
+            fingerprint_inputs,
+        },
+    );
 }
 
 fn collect_module(
@@ -711,6 +733,31 @@ end
         let rendered = render_interfaces(&interfaces);
         assert!(rendered.contains("protocols"));
         assert!(rendered.contains("Contracts.Enumerable for Contracts.List"));
+    }
+
+    #[test]
+    fn emits_root_protocol_as_own_public_namespace() {
+        let interfaces = interfaces(
+            r#"
+defprotocol Enumerable do
+  @spec reduce(t(a), acc, (a, acc) -> acc) :: acc
+  fn reduce(enumerable, acc, reducer)
+end
+"#,
+        );
+
+        let enumerable = &interfaces[&module(&["Enumerable"])];
+        assert_eq!(enumerable.name, module(&["Enumerable"]));
+        assert_eq!(enumerable.exports, Vec::<InterfaceFn>::new());
+        assert_eq!(enumerable.protocols[0].name, module(&["Enumerable"]));
+        assert_eq!(enumerable.protocols[0].callbacks[0].name, "reduce");
+        assert!(!interfaces.contains_key(&module(&["Enumerable", "Enumerable"])));
+        assert!(
+            enumerable
+                .fingerprint_inputs
+                .iter()
+                .any(|input| input.starts_with("protocol=Enumerable"))
+        );
     }
 
     #[test]

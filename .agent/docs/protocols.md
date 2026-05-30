@@ -35,9 +35,19 @@ defmodule Enum do
 end
 ```
 
-`defprotocol` declares the protocol name, required callback names and arities,
+`defprotocol` declares a first-class protocol namespace at its lexical module
+path. A root declaration `defprotocol Enumerable` publishes the protocol
+namespace `Enumerable`; the same declaration inside `defmodule Foo` publishes
+`Foo.Enumerable`. That namespace owns the required callback names and arities,
 public callback specs, and the protocol-domain type constructor
 `Protocol.t(...)`.
+
+A protocol namespace is not a wrapper module. A runtime protocol source file
+containing root `defprotocol Enumerable` must publish `Enumerable`, not
+`Enumerable.Enumerable`. The interface/artifact layer represents that protocol
+namespace with a module-shaped `ModuleInterface` because imports, artifacts,
+linking, and qualified references already speak in public namespace identities.
+The source semantic object remains the protocol fact.
 
 `defimpl` declares the protocol it implements, the semantic implementation
 target, and the callback bodies that satisfy the protocol. Callback functions
@@ -222,7 +232,9 @@ subsystem:
   target shapes, never `any`.
 - `ModuleInterface` carries protocol declaration and implementation facts in
   interface fingerprints so artifacts can expose protocol contracts without
-  provider bodies.
+  provider bodies. A top-level `defprotocol` contributes its own interface
+  keyed by the protocol namespace, while a nested protocol contributes protocol
+  facts to the containing module interface under its fully qualified name.
 - `ModuleGraphLoader` traverses module imports and runtime implementation
   providers, not protocol callback namespaces. A `defimpl` callback path such
   as `Enumerable.List.reduce/3` is an export namespace inside the defining

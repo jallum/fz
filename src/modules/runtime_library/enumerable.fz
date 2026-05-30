@@ -1,15 +1,13 @@
-defmodule Enumerable do
-  defprotocol Enumerable do
-    @spec reduce(t(a), b, (a, b) -> {:cont, b} | {:halt, b} | {:suspend, b}) :: any
-    fn reduce(enumerable, acc, reducer)
+defprotocol Enumerable do
+  @spec reduce(t(a), b, (a, b) -> {:cont, b} | {:halt, b} | {:suspend, b}) :: any
+  fn reduce(enumerable, acc, reducer)
 
-    @spec count(t(a)) :: {:ok, integer} | {:error, any}
-    fn count(enumerable)
+  @spec count(t(a)) :: {:ok, integer} | {:error, any}
+  fn count(enumerable)
 
-    @spec member?(t(a), a) :: {:ok, bool} | {:error, any}
-    fn member?(enumerable, value)
+  @spec member?(t(a), a) :: {:ok, bool} | {:error, any}
+  fn member?(enumerable, value)
 
-    @spec slice(t(a)) :: {:ok, integer, any} | {:error, any}
-    fn slice(enumerable)
-  end
+  @spec slice(t(a)) :: {:ok, integer, any} | {:error, any}
+  fn slice(enumerable)
 end

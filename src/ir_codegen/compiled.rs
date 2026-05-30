@@ -377,6 +377,13 @@ impl IrUnitLinker {
     }
 
     fn resolve_external_call_edges_in_plan(&mut self) {
+        let structural_edges: std::collections::HashSet<_> = self
+            .linked
+            .external_call_edges
+            .iter()
+            .map(|edge| edge.callsite.clone())
+            .collect();
+        let mut rewritten_plan_edges = std::collections::HashSet::new();
         let Some(plan) = &mut self.linked_plan else {
             return;
         };
@@ -391,11 +398,15 @@ impl IrUnitLinker {
                     continue;
                 };
                 if let Some(fn_id) = self.export_map.get(target).copied() {
-                    let _ = crate::fz_ir::rewrite_external_callsite_for_link(
-                        &mut self.linked,
-                        callsite,
-                        fn_id,
-                    );
+                    if !structural_edges.contains(callsite)
+                        && rewritten_plan_edges.insert(callsite.clone())
+                    {
+                        let _ = crate::fz_ir::rewrite_external_callsite_for_link(
+                            &mut self.linked,
+                            callsite,
+                            fn_id,
+                        );
+                    }
                     edge_plan.target = crate::ir_planner::fn_types::CallEdgeTarget::Local(
                         crate::ir_planner::fn_types::SpecKey {
                             fn_id,

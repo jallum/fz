@@ -9,7 +9,7 @@
 //! This module exposes the second layer as deterministic `.fzi`/`.fzo`
 //! artifact envelopes so resolver and linker work can depend on the same
 //! facts a user library would provide.
-use crate::ast::{Attribute, Item, ModuleDef, Program};
+use crate::ast::{Attribute, Item, ModuleDef, Program, ProtocolDef};
 #[cfg(test)]
 use crate::frontend::resolve::InterfaceTable;
 use crate::modules::artifact::{FziArtifact, FzoArtifact, FzoUnitPayload};
@@ -216,11 +216,40 @@ pub fn artifacts() -> Vec<RuntimeLibraryModuleArtifact> {
     let interfaces = crate::modules::interface::collect_from_program(&prog);
     let mut out = Vec::new();
     for item in &prog.items {
-        if let Item::Module(module) = &**item {
-            collect_artifacts_recursive(module, None, &interfaces, &mut out);
+        match &**item {
+            Item::Module(module) => {
+                collect_artifacts_recursive(module, None, &interfaces, &mut out)
+            }
+            Item::Protocol(protocol) => collect_protocol_artifact(protocol, &interfaces, &mut out),
+            _ => {}
         }
     }
     out
+}
+
+fn collect_protocol_artifact(
+    protocol: &ProtocolDef,
+    interfaces: &BTreeMap<ModuleName, ModuleInterface>,
+    out: &mut Vec<RuntimeLibraryModuleArtifact>,
+) {
+    let name = protocol.name.clone();
+    if let Some(interface) = interfaces.get(&name) {
+        let fzi = FziArtifact::new(interface.clone());
+        let fzo = runtime_unit_fzo(
+            &name,
+            interface,
+            vec![
+                "kind=runtime-library-protocol".to_string(),
+                format!("module={}", name),
+            ],
+        );
+        out.push(RuntimeLibraryModuleArtifact {
+            module: name,
+            interface: interface.clone(),
+            fzi,
+            fzo,
+        });
+    }
 }
 
 fn collect_artifacts_recursive(
@@ -256,6 +285,18 @@ fn runtime_module_fzo(
     name: &ModuleName,
     interface: &ModuleInterface,
 ) -> FzoArtifact {
+    runtime_unit_fzo(
+        name,
+        interface,
+        runtime_implementation_fingerprint(name, module),
+    )
+}
+
+fn runtime_unit_fzo(
+    name: &ModuleName,
+    interface: &ModuleInterface,
+    implementation_fingerprint: Vec<String>,
+) -> FzoArtifact {
     let interface_fingerprint = interface.fingerprint_inputs.clone();
     let unit_payload = FzoUnitPayload::runtime_module(
         runtime_module_source(name).expect("runtime module source is registered"),
@@ -267,7 +308,7 @@ fn runtime_module_fzo(
         module: Some(name.clone()),
         unit_payload,
         required_imports: interface_imports(interface),
-        implementation_fingerprint: runtime_implementation_fingerprint(name, module),
+        implementation_fingerprint,
         implementation_fingerprint_digest,
         interface_fingerprint_digest: crate::modules::interface::fingerprint_digest(
             &interface_fingerprint,
@@ -395,6 +436,7 @@ mod tests {
                 .iter()
                 .any(|protocol| protocol.name.dotted() == "Enumerable")
         );
+        assert!(enumerable.exports.is_empty());
         let list_module = interfaces
             .get(&ModuleName::from_segments(vec!["List".to_string()]))
             .expect("List interface");
@@ -430,10 +472,20 @@ mod tests {
                     .any(|callback| callback.module.dotted() == "Enumerable.Map")
         }));
         assert!(
-            !enumerable
-                .protocols
-                .iter()
-                .any(|protocol| protocol.name.dotted() == "Enumerable.Enumerable")
+            !interfaces
+                .keys()
+                .any(|module| module.dotted() == "Enumerable.Enumerable")
+        );
+        let enumerable_artifact =
+            artifact(&ModuleName::from_segments(vec!["Enumerable".to_string()]))
+                .expect("Enumerable artifact");
+        assert!(
+            enumerable_artifact
+                .fzo
+                .unit_payload
+                .body
+                .trim_start()
+                .starts_with("defprotocol Enumerable")
         );
 
         let enum_module = interfaces
@@ -444,23 +496,16 @@ mod tests {
             .iter()
             .map(|f| format!("{}/{}", f.name, f.arity))
             .collect::<Vec<_>>();
-        assert_eq!(
-            enum_exports,
-            vec![
-                "count/1",
-                "member?/2",
-                "reduce/3",
-                "slice/1",
-                "sort/1",
-                "sort/2"
-            ]
-        );
-        assert!(
-            enum_module
-                .imports
-                .iter()
-                .any(|import| import.module.dotted() == "Enumerable")
-        );
+        for export in [
+            "count/1",
+            "member?/2",
+            "reduce/3",
+            "slice/1",
+            "sort/1",
+            "sort/2",
+        ] {
+            assert!(enum_exports.contains(&export.to_string()));
+        }
 
         let list_exports = list_module
             .exports

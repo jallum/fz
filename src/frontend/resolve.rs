@@ -502,6 +502,14 @@ fn collect_requested_external_modules_recursive(module: &ModuleDef, out: &mut Ve
         match &**item {
             Item::Alias { full_path, .. } => out.push(full_path.clone()),
             Item::Import { path, .. } => out.push(path.clone()),
+            Item::Fn(def) => {
+                for clause in &def.clauses {
+                    collect_top_level_qualified_calls(&clause.body, out);
+                    if let Some(guard) = &clause.guard {
+                        collect_top_level_qualified_calls(guard, out);
+                    }
+                }
+            }
             Item::Module(inner) => collect_requested_external_modules_recursive(inner, out),
             _ => {}
         }
@@ -2909,7 +2917,7 @@ end
     }
 
     #[test]
-    fn unrequested_runtime_module_is_not_a_visible_module_path() {
+    fn qualified_runtime_namespace_reference_requests_interface() {
         let p = flatten(
             r#"
 defmodule User do
@@ -2928,13 +2936,16 @@ end
         match &run.clauses[0].body.node {
             Expr::Call(callee, _) => {
                 assert!(
-                    !matches!(&callee.node, Expr::Var(name) if name == "Utf8.valid?"),
-                    "unimported runtime module call was rewritten as an ambient module call"
+                    matches!(&callee.node, Expr::Var(name) if name == "Utf8.valid?"),
+                    "qualified runtime namespace reference must request and resolve the interface"
                 );
             }
             other => panic!("expected call, got {:?}", other),
         }
-        assert!(p.external_module_interfaces.is_empty());
+        assert!(
+            p.external_module_interfaces
+                .contains_key(&ModuleName::from_segments(vec!["Utf8".to_string()]))
+        );
     }
 
     #[test]

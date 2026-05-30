@@ -1,14 +1,12 @@
 defmodule Enum do
-  import Enumerable, only: [reduce_list: 3, count_list: 2, member_list?: 2]
-
   @spec reduce(Enumerable.t(a), b, (a, b) -> {:cont, b} | {:halt, b} | {:suspend, b}) :: any
-  fn reduce(enumerable, acc, reducer), do: reduce_list(enumerable, acc, reducer)
+  fn reduce(enumerable, acc, reducer), do: Enumerable.reduce(enumerable, acc, reducer)
 
   @spec count(Enumerable.t(a)) :: {:ok, integer} | {:error, any}
-  fn count(enumerable), do: {:ok, count_list(enumerable, 0)}
+  fn count(enumerable), do: Enumerable.count(enumerable)
 
   @spec member?(Enumerable.t(a), a) :: {:ok, bool} | {:error, any}
-  fn member?(enumerable, value), do: {:ok, member_list?(enumerable, value)}
+  fn member?(enumerable, value), do: Enumerable.member?(enumerable, value)
 
   @spec sort(Enumerable.t(a)) :: [a]
   fn sort(enumerable), do: sort(enumerable, fn (left, right) -> left <= right end)

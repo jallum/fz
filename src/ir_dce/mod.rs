@@ -92,6 +92,11 @@ pub fn dce_module_level(m: &mut Module) {
     }
 
     m.fns.retain(|f| reachable.contains(&f.id));
+    m.boundary_fns.retain(|fid| reachable.contains(fid));
+    m.protocol_call_targets
+        .retain(|fid, _target| reachable.contains(fid));
+    m.external_call_edges
+        .retain(|edge| reachable.contains(&edge.callsite.caller));
     m.fn_idx.clear();
     for (i, f) in m.fns.iter().enumerate() {
         m.fn_idx.insert(f.id, i);
@@ -591,6 +596,46 @@ mod tests {
             "leaf unreachable must be removed"
         );
         assert_eq!(m.fns.len(), 1);
+    }
+
+    #[test]
+    fn dce_module_level_prunes_unreachable_fn_side_tables() {
+        let mut m = build_two_fn_module(false);
+        let dead = FnId(1);
+        m.boundary_fns.insert(dead);
+        m.protocol_call_targets.insert(
+            dead,
+            crate::fz_ir::ProtocolCallTarget {
+                protocol: crate::modules::identity::ModuleName::from_segments(vec![
+                    "Enumerable".to_string(),
+                ]),
+                callback: "reduce".to_string(),
+                arity: 3,
+            },
+        );
+        m.external_call_edges.push(crate::fz_ir::ExternalCallEdge {
+            callsite: crate::fz_ir::CallsiteId::new(
+                dead,
+                &crate::fz_ir::CallsiteIdent::synthetic(),
+                crate::fz_ir::EmitSlot::Direct,
+            ),
+            target: crate::modules::identity::ExportKey::new(
+                crate::modules::identity::ModuleName::from_segments(vec!["Dead".to_string()]),
+                "call".to_string(),
+                0,
+            ),
+        });
+
+        dce_module_level(&mut m);
+
+        assert!(!m.fn_idx.contains_key(&dead));
+        assert!(!m.boundary_fns.contains(&dead));
+        assert!(!m.protocol_call_targets.contains_key(&dead));
+        assert!(
+            !m.external_call_edges
+                .iter()
+                .any(|edge| edge.callsite.caller == dead)
+        );
     }
 
     #[test]

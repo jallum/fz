@@ -41,8 +41,9 @@ truth is `ExportKey { module: Math, name: add, arity: 2 }`.
 
 ## Interface Emission
 
-`modules::interface::collect_from_program` runs while source-level `ModuleDef`
-nodes still exist. It produces one `ModuleInterface` per module.
+`modules::interface::collect_from_program` runs while source-level module and
+protocol declarations still exist. It produces one `ModuleInterface` per
+module and one interface for each root `defprotocol` namespace.
 
 `ModuleInterface` contains:
 
@@ -53,7 +54,9 @@ nodes still exist. It produces one `ModuleInterface` per module.
   arity;
 - `types`: public module type aliases, opaques, and refines;
 - `protocols`: protocol declarations and callback surfaces owned by the
-  module;
+  namespace. A root `defprotocol` has no containing module but still publishes
+  a first-class public namespace, so it gets a module-shaped interface keyed by
+  the protocol name;
 - `protocol_impls`: `(protocol, ImplTarget)` implementation facts and callback
   exports;
 - `docs`: optional module docs;
@@ -585,23 +588,25 @@ Rules:
 - core prelude modules such as `Kernel` live in separate source files but are
   flattened into the built-in prelude, keeping raw extern declarations
   module-scoped while exposing imported names like `dbg/1`;
-- ordinary module bodies live in individual files such as
+- ordinary module and protocol bodies live in individual files such as
   `src/modules/runtime_library/utf8.fz` and
   `src/modules/runtime_library/process.fz`; `List`, `Map`, `Range`,
   `Enumerable`, and `Enum` also live here and expose operator helpers, protocol
-  facts, and public enumeration wrappers, with private `fnp` helpers for
-  implementation details such as `Enum.sort`'s merge sort, as ordinary FZ
-  source;
+  facts, and public enumeration wrappers. `Enumerable` is a root
+  `defprotocol`, so the public namespace is `Enumerable`; a nested protocol
+  such as `Foo.Enumerable` would publish under that fully qualified path. Enum
+  helpers remain ordinary FZ source with private `fnp` helpers for
+  implementation details such as `Enum.sort`'s merge sort;
 - every runtime-library module should carry a crisp `@moduledoc`, and every
   public export should have the narrowest accurate `@spec`;
 - module-scoped externs are implementation details, not interface exports;
-- import and alias declarations request runtime interfaces on demand through
-  `modules::runtime_library::interface`;
+- import, alias, and fully qualified namespace references request runtime
+  interfaces on demand through `modules::runtime_library::interface`;
 - after macro/desugar expansion, generated qualified runtime calls request
   runtime interfaces the same way, so operator sugar can depend on `List`
   without importing `List` into every program;
-- `modules::runtime_library::artifacts` creates deterministic `.fzi`/`.fzo` envelopes
-  for built-in runtime-library modules;
+- `modules::runtime_library::artifacts` creates deterministic `.fzi`/`.fzo`
+  envelopes for built-in runtime-library modules and root protocol namespaces;
 - reachable non-core runtime modules contribute `fz-runtime-module-v1` `.fzo`
   objects to `ModuleGraphLoader`, while the core prelude is prepended during
   lowering.
@@ -609,7 +614,9 @@ Rules:
 To add a runtime-library module:
 
 1. add `src/modules/runtime_library/<name>.fz`;
-2. put exactly one ordinary `defmodule Name do ... end` in that file;
+2. put exactly one ordinary `defmodule Name do ... end` in that file, or one
+   root `defprotocol Name do ... end` when the runtime unit is a protocol
+   namespace;
 3. add that file to `RUNTIME_MODULE_SOURCES` in
    `src/modules/runtime_library.rs`;
 4. add a module `@moduledoc` plus public `@spec` declarations for exported
