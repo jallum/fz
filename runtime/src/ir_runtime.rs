@@ -977,6 +977,43 @@ pub extern "C" fn fz_bs_finalize(process: *mut Process) -> u64 {
     }
 }
 
+fn byte_aligned_binary_slice(word: u64, context: &str) -> (*const u8, usize) {
+    let p = bitstring_like_ptr_from_ref(word)
+        .or_else(|| bitstring_like_ptr(word))
+        .unwrap_or_else(|| panic!("{context}: expected binary"));
+    assert!(
+        unsafe { crate::procbin::is_bitstring_like(p) },
+        "{context}: expected binary"
+    );
+    let bit_len = unsafe { crate::procbin::bitstring_bit_len(p) } as usize;
+    assert!(
+        bit_len.is_multiple_of(8),
+        "{context}: expected byte-aligned binary"
+    );
+    let ptr = unsafe { crate::procbin::bitstring_byte_ptr(p) };
+    (ptr, bit_len / 8)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn fz_binary_concat(process: *mut Process, left_ref: u64, right_ref: u64) -> u64 {
+    let (left_ptr, left_len) = byte_aligned_binary_slice(left_ref, "fz_binary_concat left");
+    let (right_ptr, right_len) = byte_aligned_binary_slice(right_ref, "fz_binary_concat right");
+    let left = unsafe { std::slice::from_raw_parts(left_ptr, left_len) };
+    let right = unsafe { std::slice::from_raw_parts(right_ptr, right_len) };
+    let mut bytes = Vec::with_capacity(left_len + right_len);
+    bytes.extend_from_slice(left);
+    bytes.extend_from_slice(right);
+
+    let p = (unsafe { &mut *process })
+        .heap
+        .alloc_bitstring(&bytes, ((left_len + right_len) * 8) as u64);
+    if bytes.len() > crate::heap::SHARED_BIN_THRESHOLD_BYTES {
+        heap_ref_word(ValueKind::PROCBIN, p)
+    } else {
+        heap_ref_word(ValueKind::BITSTRING, p)
+    }
+}
+
 /// fz-cty.8 — single-shot bitstring allocation from module-interned bytes.
 ///
 /// Replaces the begin/write-per-field/finalize sequence for the common

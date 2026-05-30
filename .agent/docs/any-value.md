@@ -41,6 +41,7 @@ fz_ref_tag(value_ref)
 fz_ref_load_int(value_ref)
 fz_ref_load_float(value_ref)
 fz_ref_load_atom(value_ref)
+fz_binary_concat(process, left_ref, right_ref)
 fz_map_get_ref(map_ref, key_ref)
 fz_map_count(map_ref)
 fz_map_entry_key(map_ref, index)
@@ -64,6 +65,11 @@ fz_struct_get_field_ref(tuple, fld)  -> AnyValueRef
 `fz_map_count`, `fz_map_entry_key`, and `fz_map_entry_value` from source-level
 fz code. The entry helpers return refs into immutable map storage; tuple/list
 construction copies those values into new containers before publishing them.
+
+`fz_binary_concat` validates byte-aligned binary inputs, copies their payload
+bytes into the caller process heap, and returns a binary ref. Allocation still
+flows through `Heap::alloc_bitstring`, so large results automatically use the
+ProcBin/shared-binary path.
 
 **Typed fast paths** are fused helpers for callers that already know the type.
 They panic on mismatch; they do not create a second value model:

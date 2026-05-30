@@ -9,6 +9,7 @@ defmodule Kernel do
   extern "C" fn fz_send(pid, t) :: t when t: any
   extern "C" fn fz_make_ref() :: ref
   extern "C" fn fz_make_resource(t, (t) -> nil) :: resource(t) when t: integer | cpointer
+  extern "C" fn fz_binary_concat(binary, binary) :: binary
 
   @doc "Aborts the current process."
   @spec panic(any) :: never

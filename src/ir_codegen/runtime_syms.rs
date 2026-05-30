@@ -78,6 +78,7 @@ pub(crate) fn runtime_import_sig(name: &str) -> Signature {
         "fz_bs_write_field_ref" => (&[I64, I64, I32, I32, I32, I32, I32, I32], &[]),
         "fz_bs_finalize" => (&[I64], &[I64]),
         "fz_alloc_bitstring_const" => (&[I64, I64, I64, I64], &[I64]),
+        "fz_binary_concat" => (&[I64, I64, I64], &[I64]),
         "fz_alloc_procbin_from_static" => (&[I64, I64], &[I64]),
         "shared_bin_destructor_noop" => (&[I64], &[]),
         "fz_binary_as_ptr" => (&[I64], &[I64]),

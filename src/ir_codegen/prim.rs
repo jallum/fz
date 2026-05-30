@@ -1030,6 +1030,9 @@ pub(crate) fn lower_prim<
             if decl.symbol == "fz_dbg_value" && args.len() == 1 {
                 return lower_extern_fz_dbg_value(body, var_env, &arg_vars, dest_var);
             }
+            if decl.symbol == "fz_binary_concat" && args.len() == 2 {
+                return lower_extern_fz_binary_concat(body, var_env, &arg_vars, dest_var);
+            }
             if decl.variadic {
                 return emit_variadic_extern_call(
                     body,
@@ -1813,6 +1816,23 @@ fn lower_extern_fz_dbg_value<M: cranelift_module::Module>(
     let value_ref = body.tagged_var(var_env, args[0].0);
     let process = body.process_arg();
     let call = body.call_named("fz_dbg_value", &[process, value_ref]);
+    let result = body.b.inst_results(call)[0];
+    if body.cache.used_vars.contains(&dest_var.0) {
+        return Ok(LowerOut::Strict(CodegenValue::AnyRef(result)));
+    }
+    Ok(LowerOut::DeadUnit)
+}
+
+fn lower_extern_fz_binary_concat<M: cranelift_module::Module>(
+    body: &mut CodegenFn<'_, '_, '_, M>,
+    var_env: &HashMap<u32, CodegenValue>,
+    args: &[crate::fz_ir::Var],
+    dest_var: crate::fz_ir::Var,
+) -> Result<LowerOut, CodegenError> {
+    let process = body.process_arg();
+    let left = body.tagged_var(var_env, args[0].0);
+    let right = body.tagged_var(var_env, args[1].0);
+    let call = body.call_named("fz_binary_concat", &[process, left, right]);
     let result = body.b.inst_results(call)[0];
     if body.cache.used_vars.contains(&dest_var.0) {
         return Ok(LowerOut::Strict(CodegenValue::AnyRef(result)));

@@ -12,6 +12,7 @@ Run with `BLESS=1` to rewrite after editing fixtures.
 | `assert_abort_message/` | a failed assert aborts with the caller's message on every path (expect-failure medium) | jit, interp, aot, repl |
 | `ast_eval/` | tagged-tuple AST evaluator — first fixture to exercise multi-clause tuple-pattern dispatch end-to-end | jit, interp, aot, repl |
 | `attributes/` | @moduledoc / @doc attributes parse and the module still executes | jit, interp, aot, repl |
+| `binary_concat_runtime/` | runtime fz_binary_concat joins byte-aligned binaries across inline and ProcBin storage | jit, interp, aot, repl |
 | `bsx_guard_eq/` | fz-bsx.4 — a guard comparison (when s == \"hi\") on a utf8 binding is brand-blind on all paths | jit, interp, aot, repl |
 | `bsx_nested_eq/` | fz-bsx.3 — nested structural == of a heap binary vs a utf8 string agrees on all paths (jit/aot match interp/repl) | jit, interp, aot, repl |
 | `bsx_nested_match/` | fz-bsx.4 — case-match of {:ok, \"hi\"} over a heap binary nested in a tuple matches on all paths | jit, interp, aot, repl |

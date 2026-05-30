@@ -217,6 +217,10 @@ pub(crate) fn register_runtime_symbols(builder: &mut JITBuilder) {
         fz_runtime::ir_runtime::fz_alloc_bitstring_const as *const u8,
     );
     builder.symbol(
+        "fz_binary_concat",
+        fz_runtime::ir_runtime::fz_binary_concat as *const u8,
+    );
+    builder.symbol(
         "fz_bs_reader_init_ref",
         fz_runtime::ir_runtime::fz_bs_reader_init_ref as *const u8,
     );

@@ -1,0 +1,9 @@
+fn main() do
+  small = Kernel.fz_binary_concat("foo", "bar")
+  long_left = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  long = Kernel.fz_binary_concat(long_left, "bbbb")
+
+  dbg(small)
+  dbg(long)
+  dbg(Utf8.valid?(long))
+end

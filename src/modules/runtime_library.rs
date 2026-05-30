@@ -471,6 +471,7 @@ mod tests {
         assert_eq!(
             primitive_contract_names(),
             vec![
+                "fz_binary_concat/2",
                 "fz_bitstring_valid_utf8/1",
                 "fz_brand_bitstring_as_utf8/1",
                 "fz_dbg_value/1",
