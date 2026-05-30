@@ -3,7 +3,7 @@ use super::conj::Conj;
 use super::dnf::is_dnf_top;
 use super::sigs::{ArrowSig, ClosureLit};
 use super::*;
-use crate::types::Nominals;
+use crate::types::{ClosureTypes, Nominals, SchemeInstantiation, Types};
 
 // (`str_t` was promoted to a public Descr constructor by fz-ul4.31.1.)
 impl BasicBits {
@@ -1526,6 +1526,72 @@ fn collect_subst_then_instantiate_is_identity_on_concrete_args() {
     Descr::collect_subst_into(&pat_arg, &witness, &mut sigma);
     let resolved_ret = pat_ret.instantiate(&sigma);
     assert!(resolved_ret.is_equiv(&Descr::int()));
+}
+
+#[test]
+fn scheme_result_instantiates_tuple_from_param_witnesses() {
+    let mut t = ConcreteTypes;
+    let a = t.type_var(TypeVarId(0));
+    let b = t.type_var(TypeVarId(1));
+    let result = t.tuple(&[a.clone(), b.clone()]);
+    let one = t.int_lit(1);
+    let ok = t.atom_lit("ok");
+
+    let constraints = std::collections::HashMap::new();
+    let instantiated =
+        crate::types::instantiate_scheme_result(&mut t, &[a, b], &result, &constraints, &[one, ok]);
+
+    let SchemeInstantiation::Known(tuple) = instantiated else {
+        panic!("expected concrete tuple instantiation, got {instantiated:?}");
+    };
+    let Some(elems) = t.tuple_lit_elems(&tuple) else {
+        panic!("expected tuple result, got {}", t.display(&tuple));
+    };
+    assert_eq!(t.as_int_singleton(&elems[0]), Some(1));
+    assert_eq!(t.as_atom_singleton(&elems[1]).as_deref(), Some("ok"));
+}
+
+#[test]
+fn scheme_result_reports_underconstrained_free_result_var() {
+    let mut t = ConcreteTypes;
+    let param = t.int();
+    let result = t.type_var(TypeVarId(9));
+    let witness = t.int_lit(1);
+
+    let constraints = std::collections::HashMap::new();
+    let instantiated = crate::types::instantiate_scheme_result(
+        &mut t,
+        &[param],
+        &result,
+        &constraints,
+        &[witness],
+    );
+
+    assert!(
+        matches!(instantiated, SchemeInstantiation::Underconstrained(_)),
+        "free result var must not be reported as known: {instantiated:?}"
+    );
+}
+
+#[test]
+fn callable_scheme_result_instantiates_tuple_from_call_args() {
+    let mut t = ConcreteTypes;
+    let a = t.type_var(TypeVarId(0));
+    let b = t.type_var(TypeVarId(1));
+    let ret = t.tuple(&[a.clone(), b.clone()]);
+    let closure = t.arrow(&[a, b], ret);
+    let one = t.int_lit(1);
+    let ok = t.atom_lit("ok");
+
+    let result = t
+        .resolve_closure_return(&closure, &std::collections::HashMap::new(), &[one, ok])
+        .expect("plain callable clause should resolve immediately");
+
+    let Some(elems) = t.tuple_lit_elems(&result) else {
+        panic!("expected tuple return, got {}", t.display(&result));
+    };
+    assert_eq!(t.as_int_singleton(&elems[0]), Some(1));
+    assert_eq!(t.as_atom_singleton(&elems[1]).as_deref(), Some("ok"));
 }
 
 #[test]

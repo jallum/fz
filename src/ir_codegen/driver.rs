@@ -767,24 +767,15 @@ fn declared_return_for_spec_key<T: crate::types::Types<Ty = crate::types::Ty>>(
     if spec.params.len() != arg_tys.len() {
         return None;
     }
-    let mut sigma = std::collections::HashMap::new();
-    for (pattern, witness) in spec.params.iter().zip(arg_tys.iter()) {
-        t.collect_instantiation_subst(pattern, witness, &mut sigma);
-    }
-    for (var, bound) in &spec.constraints {
-        let actual = sigma.get(var)?;
-        if !t.is_subtype(actual, bound) {
-            return None;
-        }
-    }
-    for (pattern, witness) in spec.params.iter().zip(arg_tys.iter()) {
-        let expected = t.instantiate(pattern, &sigma);
-        if !t.has_vars(witness) && !t.is_subtype(witness, &expected) {
-            return None;
-        }
-    }
     let owner = &module.fn_by_id(key.fn_id).owner_module;
-    let result = t.instantiate(&spec.result, &sigma);
+    let result = crate::types::instantiate_scheme_result(
+        t,
+        &spec.params,
+        &spec.result,
+        &spec.constraints,
+        &arg_tys,
+    )
+    .known()?;
     Some(t.mint_owned_resource_aliases(result, owner, &module.opaque_inners))
 }
 

@@ -185,6 +185,7 @@ pub(crate) fn walk_spec_for_discovery<
     m: &Module,
     fn_effects: &FnEffects,
     effective_returns: &HashMap<SpecKey, crate::types::Ty>,
+    complete_returns: &HashSet<SpecKey>,
     recursive_fns: &std::collections::HashSet<FnId>,
     caller_spec_key: &SpecKey,
     callsite_callable_capabilities: &mut CallsiteCallableCapabilities,
@@ -198,6 +199,7 @@ pub(crate) fn walk_spec_for_discovery<
         m,
         fn_effects,
         effective_returns,
+        complete_returns,
         recursive_fns,
         caller_spec_key,
         callsite_callable_capabilities,
@@ -216,11 +218,17 @@ where
     m: &'a Module,
     fn_effects: &'a FnEffects,
     effective_returns: &'a HashMap<SpecKey, crate::types::Ty>,
+    complete_returns: &'a HashSet<SpecKey>,
     recursive_fns: &'a HashSet<FnId>,
     caller_spec_key: &'a SpecKey,
     callsite_callable_capabilities: &'a mut CallsiteCallableCapabilities,
     out: &'a mut WalkResult,
     any_ty: crate::types::Ty,
+}
+
+enum Slot0Knowledge {
+    Known(crate::types::Ty),
+    Pending,
 }
 
 impl<T> DiscoveryWalk<'_, T>
@@ -513,10 +521,21 @@ where
         let Some(slot0) = self.continuation_slot0(term_ident, env, &source) else {
             return;
         };
+        let slot0 = match slot0 {
+            Slot0Knowledge::Known(ty) => ty,
+            Slot0Knowledge::Pending => self.any_ty.clone(),
+        };
         let none_ty = self.t.none();
-        if self.t.is_equivalent(&slot0, &none_ty) {
-            return;
-        }
+        // A reachable `Term::Call` structurally has a continuation. `none`
+        // is not an executable argument witness for that continuation; if the
+        // producer return analysis reaches bottom before the call term is
+        // proven unreachable, keep the edge with an opaque slot until the
+        // worklist can refine or later passes can remove the call.
+        let slot0 = if self.t.is_equivalent(&slot0, &none_ty) {
+            self.any_ty.clone()
+        } else {
+            slot0
+        };
         let Some(&j) = self.m.fn_idx.get(&cont.fn_id) else {
             return;
         };
@@ -558,31 +577,41 @@ where
         term_ident: &CallsiteIdent,
         env: &HashMap<Var, crate::types::Ty>,
         source: &ContSource,
-    ) -> Option<crate::types::Ty> {
+    ) -> Option<Slot0Knowledge> {
         match *source {
             ContSource::Call { callee, args } => {
                 if self.external_target(term_ident, EmitSlot::Direct).is_some() {
-                    return self.external_call_return_slot0(callee, args, env);
+                    return self
+                        .external_call_return_slot0(callee, args, env)
+                        .map(Slot0Knowledge::Known);
                 }
                 let callee_key = self.direct_return_key(term_ident, callee, args, env);
                 let callee_arg_tys = crate::types::key_slots_to_tys(self.t, &callee_key.input);
                 let declared = self.declared_call_return(callee, &callee_arg_tys);
                 self.out.return_reads.push(callee_key.clone());
-                match (declared, self.effective_returns.get(&callee_key).cloned()) {
+                let effective = self.effective_returns.get(&callee_key).cloned();
+                let none_ty = self.t.none();
+                let effective_is_pending_bottom = effective.as_ref().is_some_and(|ty| {
+                    !self.complete_returns.contains(&callee_key) && {
+                        self.t.is_equivalent(ty, &none_ty)
+                    }
+                });
+                match (declared, effective) {
                     (Some(declared), Some(effective))
                         if self.t.is_subtype(&effective, &declared) =>
                     {
-                        Some(effective)
+                        Some(Slot0Knowledge::Known(effective))
                     }
-                    (Some(declared), _) => Some(declared),
-                    (None, Some(effective)) => Some(effective),
-                    (None, _) => None,
+                    (Some(declared), _) => Some(Slot0Knowledge::Known(declared)),
+                    (None, _) if effective_is_pending_bottom => Some(Slot0Knowledge::Pending),
+                    (None, Some(effective)) => Some(Slot0Knowledge::Known(effective)),
+                    (None, _) => Some(Slot0Knowledge::Pending),
                 }
             }
-            ContSource::CallClosure { closure, args } => {
-                self.closure_return_slot0(closure, args, env)
-            }
-            ContSource::Receive => Some(self.any_ty.clone()),
+            ContSource::CallClosure { closure, args } => self
+                .closure_return_slot0(closure, args, env)
+                .map(Slot0Knowledge::Known),
+            ContSource::Receive => Some(Slot0Knowledge::Known(self.any_ty.clone())),
         }
     }
 
@@ -907,24 +936,14 @@ where
         if spec.params.len() != arg_tys.len() {
             return None;
         }
-        let mut sigma = HashMap::new();
-        for (pattern, witness) in spec.params.iter().zip(arg_tys.iter()) {
-            self.t
-                .collect_instantiation_subst(pattern, witness, &mut sigma);
-        }
-        for (var, bound) in &spec.constraints {
-            let actual = sigma.get(var)?;
-            if !self.t.is_subtype(actual, bound) {
-                return None;
-            }
-        }
-        for (pattern, witness) in spec.params.iter().zip(arg_tys.iter()) {
-            let expected = self.t.instantiate(pattern, &sigma);
-            if !self.t.has_vars(witness) && !self.t.is_subtype(witness, &expected) {
-                return None;
-            }
-        }
-        let ret = self.t.instantiate(&spec.result, &sigma);
+        let ret = crate::types::instantiate_scheme_result(
+            self.t,
+            &spec.params,
+            &spec.result,
+            &spec.constraints,
+            arg_tys,
+        )
+        .known()?;
         let owner = &self.m.fn_by_id(self.caller_spec_key.fn_id).owner_module;
         Some(
             self.t

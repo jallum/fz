@@ -1,4 +1,4 @@
-use crate::types::Types;
+use crate::types::{SchemeInstantiation, Types, instantiate_scheme_result};
 use std::collections::HashMap;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -69,14 +69,17 @@ pub trait ClosureTypes: Types {
                     let contrib = if self.has_vars(&clause.ret)
                         || clause.args.iter().any(|arg| self.has_vars(arg))
                     {
-                        if clause.args.len() == arg_tys.len() {
-                            let mut sigma = HashMap::new();
-                            for (pat, wit) in clause.args.iter().zip(arg_tys.iter()) {
-                                self.collect_instantiation_subst(pat, wit, &mut sigma);
-                            }
-                            self.instantiate(&clause.ret, &sigma)
-                        } else {
-                            clause.ret
+                        let constraints = HashMap::new();
+                        match instantiate_scheme_result(
+                            self,
+                            &clause.args,
+                            &clause.ret,
+                            &constraints,
+                            arg_tys,
+                        ) {
+                            SchemeInstantiation::Known(ty)
+                            | SchemeInstantiation::Underconstrained(ty) => ty,
+                            SchemeInstantiation::Invalid => return Some(self.any()),
                         }
                     } else {
                         clause.ret

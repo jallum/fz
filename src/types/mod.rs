@@ -24,11 +24,13 @@ mod literal;
 mod map;
 mod poly;
 mod render;
+mod scheme;
 mod visibility;
 
 pub use closure::{CallableClause, ClosureLitInfo, ClosureTarget, ClosureTypes};
 pub use literal::{LiteralTypes, ScalarLiteral, TypeMatch};
 pub use map::MapKey;
+pub use scheme::{SchemeInstantiation, instantiate_result as instantiate_scheme_result};
 
 /// A borrowed view of a module's nominal environment: the brand- and
 /// opaque-tag inner-type maps. They are only ever consulted together — to

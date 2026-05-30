@@ -2640,6 +2640,46 @@ fn planner_keeps_external_module_calls_at_provider_boundary() {
     );
 }
 
+#[test]
+fn declared_spec_tuple_result_instantiates_from_call_witnesses() {
+    let src = r#"
+@spec pair(a, b) :: {a, b}
+fn pair(a, b), do: {a, b}
+
+fn main(), do: pair(1, :ok)
+"#;
+    let toks = crate::parser::lexer::Lexer::new(src)
+        .tokenize()
+        .expect("lex");
+    let parsed = crate::parser::Parser::new(toks)
+        .parse_program()
+        .expect("parse");
+    let mut t = crate::types::ConcreteTypes;
+    let resolved = crate::frontend::resolve::flatten_modules(&mut t, parsed).expect("resolve");
+    let ir = crate::ir_lower::lower_program(&mut t, &resolved).expect("lower");
+    let mt = plan_module(&mut t, &ir, &crate::telemetry::NullTelemetry);
+
+    let pair = ir.fn_by_name("pair").expect("pair");
+    let one = t.int_lit(1);
+    let ok = t.atom_lit("ok");
+    let key = value_spec_key(pair.id, key_tys(vec![one, ok]));
+    let ret = mt
+        .effective_returns
+        .get(&key)
+        .unwrap_or_else(|| panic!("missing pair return for key {key:?}"))
+        .clone();
+    assert!(
+        !t.has_vars(&ret),
+        "instantiated @spec return must be concrete, got {}",
+        t.display(&ret)
+    );
+    let elems = t
+        .tuple_lit_elems(&ret)
+        .unwrap_or_else(|| panic!("expected tuple return, got {}", t.display(&ret)));
+    assert_eq!(t.as_int_singleton(&elems[0]), Some(1));
+    assert_eq!(t.as_atom_singleton(&elems[1]).as_deref(), Some("ok"));
+}
+
 // ---- fz-t1m.1.1 — protocol callback spec compatibility ----
 
 /// An impl callback whose declared `@spec` is set-theoretically disjoint from

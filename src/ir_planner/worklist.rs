@@ -395,6 +395,7 @@ pub(crate) fn process_worklist<
             &spec_key,
             specs,
             effective_returns,
+            complete_returns,
             recursive_fns,
             callsite_callable_capabilities,
         );
@@ -479,6 +480,7 @@ fn discover_spec_outputs<
     spec_key: &SpecKey,
     specs: &HashMap<SpecKey, SpecPlan>,
     effective_returns: &HashMap<SpecKey, crate::types::Ty>,
+    complete_returns: &SpecKeySet,
     recursive_fns: &std::collections::HashSet<FnId>,
     callsite_callable_capabilities: &mut CallsiteCallableCapabilities,
 ) -> WalkResult {
@@ -491,6 +493,7 @@ fn discover_spec_outputs<
         m,
         fn_effects,
         effective_returns,
+        complete_returns,
         recursive_fns,
         spec_key,
         callsite_callable_capabilities,
@@ -1178,22 +1181,13 @@ fn declared_call_return<T: crate::types::Types<Ty = crate::types::Ty>>(
     if spec.params.len() != arg_tys.len() {
         return None;
     }
-    let mut sigma = HashMap::new();
-    for (pattern, witness) in spec.params.iter().zip(arg_tys.iter()) {
-        t.collect_instantiation_subst(pattern, witness, &mut sigma);
-    }
-    for (var, bound) in &spec.constraints {
-        let actual = sigma.get(var)?;
-        if !t.is_subtype(actual, bound) {
-            return None;
-        }
-    }
-    for (pattern, witness) in spec.params.iter().zip(arg_tys.iter()) {
-        let expected = t.instantiate(pattern, &sigma);
-        if !t.has_vars(witness) && !t.is_subtype(witness, &expected) {
-            return None;
-        }
-    }
-    let ret = t.instantiate(&spec.result, &sigma);
+    let ret = crate::types::instantiate_scheme_result(
+        t,
+        &spec.params,
+        &spec.result,
+        &spec.constraints,
+        arg_tys,
+    )
+    .known()?;
     Some(t.mint_owned_resource_aliases(ret, owner_module, &module.opaque_inners))
 }

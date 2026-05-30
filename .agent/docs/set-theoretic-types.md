@@ -40,6 +40,52 @@ A value belongs to a `Descr` if it belongs to the axis for its kind. `any()`
 is every axis at top, `none()` every axis at bottom, and `is_empty` holds when
 every axis is empty (structural clauses checked recursively).
 
+## Schemes Vs Concrete Facts
+
+Free type variables are meaningful only inside a **type scheme**. A scheme is a
+parametric promise such as:
+
+```text
+forall a b. (a, b) -> {a, b}
+```
+
+At a callsite, the scheme is instantiated by collecting a substitution from
+declared parameter patterns and the caller's witness types, then applying that
+substitution to the result pattern:
+
+```text
+params  : [a, b]
+witness : [1, :ok]
+sigma   : a := 1, b := :ok
+result  : {a, b}[sigma] = {1, :ok}
+```
+
+This is the same operation for `@spec foo(a, b) :: {a, b}` and for callable
+arrow clauses like `fn (a, b), do: {a, b}`. The shared API is
+`types::instantiate_scheme_result`, which reports:
+
+```text
+Known(T)             all result variables were determined by witnesses
+Underconstrained(T)  variables remain after substitution
+Invalid              arity or constraint/subtype checks failed
+```
+
+The boundary rule is load-bearing:
+
+```text
+Schemes may contain free variables.
+Concrete planner/codegen facts may not.
+```
+
+A `Ty` with free variables is not executable knowledge. It can live in a
+declared spec, arrow clause, or underconstrained-instantiation result, but it
+must not be published as a known return fact or ABI-driving spec key. Callsite
+shape is structural: a reachable `Term::Call` contributes its direct edge and
+its continuation edge independently of how precise the return type currently
+is. If the return value is still pending, the planner keeps the continuation
+edge with an opaque slot and lets the worklist refine it; it does not encode
+"unknown" as `none()` or erase the edge.
+
 ## Brands And Opaques
 
 `brands` and `opaques` are **nominal refinements** layered on a structural
