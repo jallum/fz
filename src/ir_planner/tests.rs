@@ -3124,6 +3124,35 @@ end
 }
 
 #[test]
+fn struct_field_projects_declared_underlying_tuple_slot() {
+    let mut b = FnBuilder::new(FnId(0), "Range.first");
+    let range = b.fresh_var();
+    let entry = b.block(vec![range]);
+    let first = b.let_(entry, Prim::StructField(range, "first".to_string()));
+    b.set_terminator(entry, Term::Return(first));
+    let mut m = build_module(vec![b.build()]);
+    m.struct_schemas.insert(
+        "Range".to_string(),
+        vec!["first".to_string(), "last".to_string(), "step".to_string()],
+    );
+    let mut ct = crate::types::ConcreteTypes;
+    let int = ct.int();
+    let inner = ct.tuple(&[int.clone(), int.clone(), int]);
+    m.opaque_inners
+        .insert("impl-target::Range".to_string(), inner);
+
+    let arg = ct.opaque_of("impl-target::Range");
+    let ft = crate::ir_planner::type_fn(&mut ct, &m.fns[0], &m, Some(&[arg]));
+    let got = ft.vars.get(&first).expect("StructField result type");
+    let int = ct.int();
+    assert!(
+        ct.is_subtype(got, &int),
+        "Range.first field should type as integer, got `{}`",
+        ct.display(got)
+    );
+}
+
+#[test]
 fn make_resource_mints_declaring_modules_opaque_resource_type() {
     let src = r#"
 defmodule FileHandle do

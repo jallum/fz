@@ -50,7 +50,7 @@ pub(crate) fn type_prim<
         Prim::DestTupleSet { .. } => t.nil(),
         Prim::DestFreeze { dest, .. } => lookup(t, env, *dest),
         Prim::TupleField(v, i) => type_tuple_field(t, env, *v, *i),
-        Prim::StructField(_, _) => t.any(),
+        Prim::StructField(v, field) => type_struct_field(t, env, m, *v, field),
 
         Prim::MakeList(els, tail) => type_make_list(t, env, els, *tail),
         Prim::DestListBegin { .. } => t.nil(),
@@ -126,6 +126,41 @@ fn type_tuple_field<T: crate::types::Types<Ty = crate::types::Ty>>(
     } else {
         t.any()
     }
+}
+
+fn type_struct_field<T: crate::types::Types<Ty = crate::types::Ty>>(
+    t: &mut T,
+    env: &HashMap<Var, crate::types::Ty>,
+    m: &Module,
+    v: Var,
+    field: &str,
+) -> crate::types::Ty {
+    let vt = lookup(t, env, v);
+    let Some(tag) = t.opaque_singleton(&vt) else {
+        return t.any();
+    };
+    let Some(order) = struct_schema_for_impl_target(m, &tag) else {
+        return t.any();
+    };
+    let Some(index) = order.iter().position(|name| name == field) else {
+        return t.any();
+    };
+    let Some(inner) = m.opaque_inners.get(&tag).cloned() else {
+        return t.any();
+    };
+    let comps = t.tuple_projections(&inner, order.len());
+    comps.into_iter().nth(index).unwrap_or_else(|| t.any())
+}
+
+fn struct_schema_for_impl_target<'a>(m: &'a Module, tag: &str) -> Option<&'a Vec<String>> {
+    let target = tag.strip_prefix("impl-target::")?;
+    let mut matches = m
+        .struct_schemas
+        .iter()
+        .filter(|(name, _fields)| name.rsplit('.').next().unwrap_or(name.as_str()) == target)
+        .map(|(_name, fields)| fields);
+    let fields = matches.next()?;
+    matches.next().is_none().then_some(fields)
 }
 
 fn type_make_list<T: crate::types::Types<Ty = crate::types::Ty>>(

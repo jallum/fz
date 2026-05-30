@@ -171,8 +171,11 @@ The key is the same nominal tag used for protocol implementation dispatch; the
 value is a tuple whose slots are in `defstruct` order. A struct value is
 therefore modeled as a nominal opaque tag over a structural field tuple:
 `opaque(impl-target::Range) ∩ {first_type, last_type, step_type}`. Field
-projection can then read the tuple slot selected by the schema, while the tag
-keeps `Range` distinct from any other three-integer tuple.
+projection reads the tuple slot selected by the schema when the receiver is a
+known singleton struct tag. Unknown or ambiguous receivers remain `any`; the
+planner does not invent field facts without the nominal tag plus registered
+underlying tuple. The tag keeps `Range` distinct from any other three-integer
+tuple.
 
 ## Which Predicate, Where
 
