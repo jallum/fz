@@ -415,6 +415,9 @@ impl IrUnitLinker {
         self.linked
             .brand_inners
             .extend(unit.code.brand_inners.clone());
+        self.linked
+            .struct_schemas
+            .extend(unit.code.struct_schemas.clone());
     }
 
     fn copy_exports(
@@ -756,6 +759,9 @@ fn remap_prim(
                 let new_id = intern_linked_atom(linked_atoms, name);
                 *id = new_id;
             }
+        }
+        Prim::StructField(_, field) => {
+            intern_linked_atom(linked_atoms, field);
         }
         Prim::MakeClosure(_, fid, _) => remap_fn_id(fid, fn_map),
         _ => {}

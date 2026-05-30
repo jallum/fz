@@ -21,6 +21,24 @@ defmodule Enumerable do
     fn slice(_list), do: {:error, :unsupported}
   end
 
+  defimpl Enumerable, for: Range do
+    fn reduce(%Range{first: first, last: last, step: step}, acc, reducer) do
+      Enumerable.reduce_range(first, last, step, acc, reducer)
+    end
+
+    fn count(%Range{first: first, last: last, step: step}) do
+      {:ok, Enumerable.count_range(first, last, step)}
+    end
+
+    fn member?(%Range{first: first, last: last, step: step}, value) do
+      {:ok, Enumerable.member_range?(first, last, step, value)}
+    end
+
+    fn slice(%Range{first: first, last: last, step: step}) do
+      {:ok, Enumerable.count_range(first, last, step), (fn (start, amount, stride) -> Enumerable.slice_range(first, last, step, start, amount, stride) end)}
+    end
+  end
+
   fn reduce_list(list, {:cont, acc}, reducer), do: reduce_list_cont(list, acc, reducer)
   fn reduce_list(_list, {:halt, acc}, _reducer), do: {:halted, acc}
   fn reduce_list(list, {:suspend, acc}, reducer) do
@@ -44,4 +62,52 @@ defmodule Enumerable do
   fn member_list?([], _value), do: false
   fn member_list?([h | _], value) when h == value, do: true
   fn member_list?([_ | t], value), do: member_list?(t, value)
+
+  fn reduce_range(first, last, step, {:cont, acc}, reducer), do: reduce_range_cont(first, last, step, first, acc, reducer)
+  fn reduce_range(_first, _last, _step, {:halt, acc}, _reducer), do: {:halted, acc}
+  fn reduce_range(first, last, step, {:suspend, acc}, reducer) do
+    {:suspended, acc, (fn () -> reduce_range_cont(first, last, step, first, acc, reducer) end)}
+  end
+
+  fn reduce_range_cont(_first, last, step, current, acc, _reducer) when (step > 0 && current > last), do: {:done, acc}
+  fn reduce_range_cont(_first, last, step, current, acc, _reducer) when (step < 0 && current < last), do: {:done, acc}
+  fn reduce_range_cont(first, last, step, current, acc, reducer) do
+    reduce_range_step(first, last, step, current, reducer(current, acc), reducer)
+  end
+
+  fn reduce_range_step(first, last, step, current, {:cont, acc}, reducer), do: reduce_range_cont(first, last, step, current + step, acc, reducer)
+  fn reduce_range_step(_first, _last, _step, _current, {:halt, acc}, _reducer), do: {:halted, acc}
+  fn reduce_range_step(first, last, step, current, {:suspend, acc}, reducer) do
+    {:suspended, acc, (fn () -> reduce_range_cont(first, last, step, current + step, acc, reducer) end)}
+  end
+
+  fn count_range(first, last, step) when (step > 0 && first > last), do: 0
+  fn count_range(first, last, step) when (step < 0 && first < last), do: 0
+  fn count_range(first, last, step), do: (abs_int(last - first) / abs_int(step)) + 1
+
+  fn member_range?(first, last, step, _value) when (step > 0 && first > last), do: false
+  fn member_range?(first, last, step, _value) when (step < 0 && first < last), do: false
+  fn member_range?(first, last, step, value) when (step > 0 && value >= first && value <= last), do: ((value - first) % step) == 0
+  fn member_range?(first, last, step, value) when (step < 0 && value <= first && value >= last), do: ((value - first) % step) == 0
+  fn member_range?(_first, _last, _step, _value), do: false
+
+  fn slice_range(first, last, step, start, amount, stride) do
+    slice_range_from(last, step + stride - 1, first + (start * step), amount, [])
+  end
+
+  fn slice_range_from(_last, _step, _current, 0, acc), do: reverse_list(acc, [])
+  fn slice_range_from(last, step, current, _amount, acc) when (step > 0 && current > last), do: reverse_list(acc, [])
+  fn slice_range_from(last, step, current, _amount, acc) when (step < 0 && current < last), do: reverse_list(acc, [])
+  fn slice_range_from(last, step, current, amount, acc), do: slice_range_from(last, step, current + step, amount - 1, [current | acc])
+
+  fn reverse_list([], acc), do: acc
+  fn reverse_list([head | tail], acc), do: reverse_list(tail, [head | acc])
+
+  fn abs_int(value) do
+    if value < 0 do
+      0 - value
+    else
+      value
+    end
+  end
 end

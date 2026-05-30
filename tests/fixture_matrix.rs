@@ -3476,7 +3476,7 @@ fn continuation_materialization_boundaries_stay_explicit() {
         "enum_reduce_suspend",
         "expected.txt",
         &[
-            "{:suspended, 0, #fn<3/3>}",
+            "{:suspended, 0, #fn<4/3>}",
             ":list_cons_allocs => 3",
             ":closure_allocs => 1",
             ":closure_bytes => 48",

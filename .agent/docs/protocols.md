@@ -111,6 +111,10 @@ Open domains type-check calls and specs. Executable dispatch is emitted only
 when the planner selects a single static implementation callback; open or erased
 receiver domains get no runtime-lookup fallback. Closed domains let the planner
 choose a direct call to the selected implementation without a fallback path.
+The direct-call rewrite runs to a fixed point because applying one protocol
+edge can make a later continuation reachable, revealing more protocol calls.
+The same fixed-point rewrite runs after provider linking, where external
+protocol edges have become ordinary local calls in the linked module.
 
 ## Dispatch Outcomes
 
@@ -217,16 +221,22 @@ subsystem:
   `Protocol/Target.fzi` dependencies.
 - `ir_lower` records protocol callback calls as protocol stub callsites with
   stable `CallsiteId`s; `ir_planner` replaces those stubs with local or
-  provider-boundary `CallEdgePlan` targets from receiver type facts.
+  provider-boundary `CallEdgePlan` targets from receiver type facts. Prelude
+  protocol facts are carried into the lowered module so runtime-library
+  implementations such as `Enumerable` for `List` and `Range` are visible to
+  planner dispatch.
 - `link_ir_units` remaps protocol call facts and resolves provider
   protocol implementation callbacks to local call edges without a post-link
   planning pass. Link-time callsite rewrites must preserve the caller/identity
   match and target arity; arity mismatch means the candidate is not the same
-  callsite.
+  callsite. Linked modules also carry `defstruct` schemas and intern struct
+  field names referenced by `StructField`, so provider-backed struct patterns
+  have the same schema/atom facts as same-unit code.
 - Frontend checking applies planned direct call targets back onto protocol
-  stub callsites before interpretation or native emission. The interpreter and
-  codegen therefore execute ordinary typed impl calls, preserving scalar
-  argument representations such as raw integers.
+  stub callsites before interpretation or native emission, iterating plan/apply
+  until no more calls are rewritten. The interpreter and codegen therefore
+  execute ordinary typed impl calls, preserving scalar argument representations
+  such as raw integers.
 - [`dispatch-as-planner-output.md`](dispatch-as-planner-output.md) defines planner-owned dispatch facts.
 - `SpecPlan.call_edges` is keyed by `CallsiteId` and stores selected call-edge
   capabilities.

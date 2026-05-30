@@ -252,19 +252,7 @@ where
         },
     );
     let (diagnostics, mut module_plan) = check_frontend(t, &prog, &module, tel);
-    apply_planned_direct_call_targets(&mut module, &module_plan);
-    // Closed-domain protocol switch dispatch. A protocol call whose receiver is
-    // a closed union of implementing targets (`integer | list(...)`) has no
-    // single planned target for `apply_planned_direct_call_targets` to install,
-    // so it would stay a call to the `__protocol__` stub and halt. This rewrites
-    // such callsites into a TypeTest/If cascade of per-target direct calls,
-    // reusing IR that already lowers in every engine. The rewrite lives here, in
-    // the shared frontend, so the interpreter (which runs this module directly)
-    // and codegen alike see the cascade. A rewrite adds blocks the existing plan
-    // does not describe, so refresh it.
-    if crate::ir_planner::rewrite_closed_union_protocol_dispatch(t, &mut module, &module_plan) {
-        module_plan = crate::ir_planner::plan_module(t, &module, &crate::telemetry::NullTelemetry);
-    }
+    apply_planner_rewrites_to_fixed_point(t, &mut module, &mut module_plan);
     Ok(FrontendOk {
         sm,
         _prog: prog,
@@ -274,20 +262,53 @@ where
     })
 }
 
+pub(crate) fn apply_planner_rewrites_to_fixed_point<T>(
+    t: &mut T,
+    module: &mut Module,
+    module_plan: &mut crate::ir_planner::ModulePlan,
+) where
+    T: Types<Ty = crate::types::Ty> + ClosureTypes,
+{
+    // Protocol/direct-call rewrites can reveal later continuations. Iterate to
+    // a fixed point so every newly reachable protocol call is planned and
+    // rewritten before the interpreter or native backends see the module.
+    loop {
+        let direct_changed = apply_planned_direct_call_targets(module, module_plan);
+        // Closed-domain protocol switch dispatch. A protocol call whose
+        // receiver is a closed union of implementing targets (`integer |
+        // list(...)`) has no single planned target for direct-call application,
+        // so it would stay a call to the `__protocol__` stub and halt. This
+        // rewrites such callsites into a TypeTest/If cascade of per-target
+        // direct calls, reusing IR that already lowers in every engine.
+        let switch_changed =
+            crate::ir_planner::rewrite_closed_union_protocol_dispatch(t, module, module_plan);
+        if !(direct_changed || switch_changed) {
+            break;
+        }
+        *module_plan = crate::ir_planner::plan_module(t, module, &crate::telemetry::NullTelemetry);
+    }
+}
+
 fn apply_planned_direct_call_targets(
     module: &mut Module,
     module_plan: &crate::ir_planner::ModulePlan,
-) {
+) -> bool {
+    let mut changed = false;
     for spec in module_plan.specs.values() {
         for (callsite, edge) in &spec.call_edges {
             if callsite.slot != crate::fz_ir::EmitSlot::Direct {
                 continue;
             }
             if let crate::ir_planner::fn_types::CallEdgeTarget::Local(target) = &edge.target {
-                crate::fz_ir::rewrite_external_callsite_for_link(module, callsite, target.fn_id);
+                changed |= crate::fz_ir::rewrite_external_callsite_for_link(
+                    module,
+                    callsite,
+                    target.fn_id,
+                );
             }
         }
     }
+    changed
 }
 
 pub(crate) fn compile_repl_expr_with_types<T>(

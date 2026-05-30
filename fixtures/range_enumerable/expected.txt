@@ -1,0 +1,13 @@
+{:done, 25}
+{:done, 22}
+{:halted, 99}
+{:ok, 5}
+{:ok, 4}
+{:ok, 0}
+{:ok, true}
+{:ok, false}
+{:ok, true}
+{:ok, false}
+5
+[3, 5]
+[3, 6]

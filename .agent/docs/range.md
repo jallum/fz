@@ -24,3 +24,10 @@ no Range-specific equality case.
 The value renderer recognizes the Range schema name and prints Elixir-style
 range literals. Step `1` renders as `first..last`; every other step renders as
 `first..last//step`, including negative steps such as `10..1//-1`.
+
+`Enumerable` implements `Range` in source in
+`src/modules/runtime_library/enumerable.fz`. The callbacks destructure
+`%Range{first: first, last: last, step: step}` at the boundary, then use small
+guarded helper clauses over scalar `first`/`last`/`step` values for
+`reduce/3`, O(1) `count/1`, arithmetic `member?/2`, and `slice/1`'s
+Elixir-compatible slicing function.

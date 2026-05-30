@@ -155,10 +155,10 @@ pub fn parsed_program() -> Program {
             });
         let (mut parsed_items, _attrs) = crate::parser::Parser::new(toks)
             .parse_prelude()
-            .unwrap_or_else(|_| {
+            .unwrap_or_else(|err| {
                 panic!(
-                    "{}.fz parse error (bug in built-in runtime library)",
-                    module_source.name
+                    "{}.fz parse error (bug in built-in runtime library): {} at {:?}",
+                    module_source.name, err, err.span
                 )
             });
         items.append(&mut parsed_items);
@@ -384,6 +384,10 @@ mod tests {
         assert!(enumerable.protocol_impls.iter().any(
             |protocol_impl| protocol_impl.protocol.dotted() == "Enumerable"
                 && protocol_impl.target.display_name() == "Enumerable.List"
+        ));
+        assert!(enumerable.protocol_impls.iter().any(
+            |protocol_impl| protocol_impl.protocol.dotted() == "Enumerable"
+                && protocol_impl.target.display_name() == "Enumerable.Range"
         ));
         assert!(
             !enumerable

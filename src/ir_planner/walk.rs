@@ -563,10 +563,16 @@ where
                 let callee_key = self.direct_return_key(term_ident, callee, args, env);
                 let callee_arg_tys = crate::types::key_slots_to_tys(self.t, &callee_key.input);
                 let declared = self.declared_call_return(callee, &callee_arg_tys);
-                if declared.is_none() {
-                    self.out.return_reads.push(callee_key.clone());
+                self.out.return_reads.push(callee_key.clone());
+                match (declared, self.effective_returns.get(&callee_key).cloned()) {
+                    (Some(declared), Some(effective))
+                        if self.t.is_subtype(&effective, &declared) =>
+                    {
+                        Some(effective)
+                    }
+                    (Some(declared), _) => Some(declared),
+                    (None, effective) => effective,
                 }
-                declared.or_else(|| self.effective_returns.get(&callee_key).cloned())
             }
             ContSource::CallClosure { closure, args } => {
                 self.closure_return_slot0(closure, args, env)

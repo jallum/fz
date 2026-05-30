@@ -209,11 +209,15 @@ pub(crate) fn prepare_execution_graph(
 ) -> Result<PreparedExecutionGraph, PipelineError> {
     let units = load_provider_units(t, &mut prepared, providers, tel)?;
     let linked_units = units.len() > 1;
-    let module = if linked_units {
+    let mut module = if linked_units {
         ir_codegen::link_ir_units(&units).map_err(PipelineError::Link)?
     } else {
         units[0].code.clone()
     };
+    if !module.protocol_call_targets.is_empty() {
+        let mut module_plan = ir_planner::plan_module(t, &module, tel);
+        frontend::apply_planner_rewrites_to_fixed_point(t, &mut module, &mut module_plan);
+    }
     // Codegen re-plans the linked working module itself (see
     // `compile_with_backend_impl`), so no plan is threaded out of here. LTO
     // mode still runs boundary erasure for its module-mutating side effect

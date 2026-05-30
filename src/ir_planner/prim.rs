@@ -42,7 +42,10 @@ pub(crate) fn type_prim<
             let elem_tys: Vec<T::Ty> = vs.iter().map(|v| lookup(t, env, *v)).collect();
             t.tuple(&elem_tys)
         }
-        Prim::MakeStruct { .. } => t.any(),
+        Prim::MakeStruct { module, .. } => crate::frontend::protocols::struct_impl_target_type(
+            t,
+            module.rsplit('.').next().unwrap_or(module),
+        ),
         Prim::DestTupleBegin { .. } => t.any(),
         Prim::DestTupleSet { .. } => t.nil(),
         Prim::DestFreeze { dest, .. } => lookup(t, env, *dest),

@@ -283,7 +283,14 @@ pub fn impl_target_type_with_element<T: crate::types::Types<Ty = crate::types::T
             "Atom" => t.atom(),
             "Binary" => t.str_t(),
             "Map" => t.map_top(),
-            other => t.opaque_of(&format!("impl-target::{}", other)),
+            other => struct_impl_target_type(t, other),
         },
     }
+}
+
+pub fn struct_impl_target_type<T: crate::types::Types<Ty = crate::types::Ty>>(
+    t: &mut T,
+    module_last_segment: &str,
+) -> crate::types::Ty {
+    t.opaque_of(&format!("impl-target::{}", module_last_segment))
 }

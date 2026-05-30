@@ -1545,6 +1545,9 @@ fn rewrite_external_callsite(m: &mut Module, callsite: &CallsiteId, target: FnId
                 && *ident == callsite.ident
                 && args.len() == target_arity =>
             {
+                if *callee == target {
+                    return false;
+                }
                 *callee = target;
                 return true;
             }
@@ -1557,6 +1560,9 @@ fn rewrite_external_callsite(m: &mut Module, callsite: &CallsiteId, target: FnId
                 && *ident == callsite.ident
                 && args.len() == target_arity =>
             {
+                if *callee == target {
+                    return false;
+                }
                 *callee = target;
                 return true;
             }

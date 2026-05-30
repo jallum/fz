@@ -242,6 +242,7 @@ pub fn lower_program_full_with_telemetry<T: crate::types::Types<Ty = crate::type
             .iter()
             .map(|(name, fields)| (name.dotted(), fields.clone())),
     );
+    ctx.register_protocol_registry(&prelude.protocol_registry);
     ctx.register_external_interfaces(&prelude.external_module_interfaces);
     let prelude_type_env = prelude
         .module_type_envs
@@ -414,6 +415,14 @@ pub fn lower_program_full_with_telemetry<T: crate::types::Types<Ty = crate::type
     let mb = std::mem::take(&mut ctx.mb);
     let mut module = mb.build();
     module.protocol_registry = prog.protocol_registry.clone();
+    module
+        .protocol_registry
+        .protocols
+        .extend(prelude.protocol_registry.protocols.clone());
+    module
+        .protocol_registry
+        .impls
+        .extend(prelude.protocol_registry.impls.clone());
     module
         .protocol_registry
         .extend_interfaces(&prog.external_module_interfaces);
