@@ -211,12 +211,19 @@ pub(super) fn collect_expr_free_names(
                 collect_expr_free_names(&expr.node, bound, free);
             }
         }
-        Expr::Lambda(params, body) => {
-            let mut nested = bound.clone();
-            for param in params {
-                bind_pattern_names(&param.node, &mut nested);
+        Expr::Lambda(clauses) => {
+            // Free names span every clause: each clause binds its own params,
+            // and its guard + body may reference outer names independently.
+            for clause in clauses {
+                let mut nested = bound.clone();
+                for param in &clause.params {
+                    bind_pattern_names(&param.node, &mut nested);
+                }
+                if let Some(guard) = &clause.guard {
+                    collect_expr_free_names(&guard.node, &mut nested, free);
+                }
+                collect_expr_free_names(&clause.body.node, &mut nested, free);
             }
-            collect_expr_free_names(&body.node, &mut nested, free);
         }
         Expr::Quote(inner) | Expr::Unquote(inner) => {
             collect_expr_free_names(&inner.node, bound, free);

@@ -24,7 +24,7 @@ defmodule Enumerable do
   fn reduce_list(list, {:cont, acc}, reducer), do: reduce_list_cont(list, acc, reducer)
   fn reduce_list(_list, {:halt, acc}, _reducer), do: {:halted, acc}
   fn reduce_list(list, {:suspend, acc}, reducer) do
-    {:suspended, acc, (fn () -> reduce_list_cont(list, acc, reducer))}
+    {:suspended, acc, (fn () -> reduce_list_cont(list, acc, reducer) end)}
   end
 
   fn reduce_list_cont([], acc, _reducer), do: {:done, acc}
@@ -35,7 +35,7 @@ defmodule Enumerable do
   fn reduce_list_step(list, {:cont, acc}, reducer), do: reduce_list_cont(list, acc, reducer)
   fn reduce_list_step(_list, {:halt, acc}, _reducer), do: {:halted, acc}
   fn reduce_list_step(list, {:suspend, acc}, reducer) do
-    {:suspended, acc, (fn () -> reduce_list_cont(list, acc, reducer))}
+    {:suspended, acc, (fn () -> reduce_list_cont(list, acc, reducer) end)}
   end
 
   fn count_list([], acc), do: acc

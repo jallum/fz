@@ -1181,23 +1181,50 @@ impl Parser {
         Ok(())
     }
 
+    /// `fn p1 -> b1; p2 when g -> b2; … end` — a non-empty list of clauses,
+    /// mirroring Elixir's anonymous `fn`. The `end` terminator is required:
+    /// without it a multi-clause body has no boundary. Clause structure matches
+    /// `parse_case` (pattern list, optional `when` guard, `->`, body), so the
+    /// two stay in lockstep. Single-clause unguarded lambdas run directly;
+    /// multi-clause and guarded forms desugar in fz-g58.15 (Arc 3).
     pub(super) fn parse_lambda(&mut self) -> PR<Spanned<Expr>> {
         let start = self.cur_span();
         self.expect(&Tok::Fn, "`fn`")?;
-        let params = if self.eat(&Tok::LParen) {
-            let ps = self.parse_pattern_list(&Tok::RParen)?;
-            self.expect(&Tok::RParen, "`)`")?;
-            ps
-        } else {
-            vec![self.parse_pattern()?]
-        };
-        self.expect(&Tok::Arrow, "`->`")?;
-        // A lambda body is a fresh statement context (greedy no-parens calls).
-        let body = self.with_comma_unbound(|p| p.parse_expr())?;
-        Ok(Spanned::new(
-            Expr::Lambda(params, Box::new(body)),
-            self.finish(start),
-        ))
+        self.skip_newlines();
+        let mut clauses = Vec::new();
+        while !matches!(self.peek(), Tok::End | Tok::Eof) {
+            let cl_start = self.cur_span();
+            let params = if self.eat(&Tok::LParen) {
+                let ps = self.parse_pattern_list(&Tok::RParen)?;
+                self.expect(&Tok::RParen, "`)`")?;
+                ps
+            } else {
+                vec![self.parse_pattern()?]
+            };
+            let guard = if matches!(self.peek(), Tok::When) {
+                self.bump();
+                Some(self.with_no_trailing_do(|p| p.parse_expr())?)
+            } else {
+                None
+            };
+            self.expect(&Tok::Arrow, "`->`")?;
+            self.skip_newlines();
+            // A lambda body is a fresh statement context (greedy no-parens calls).
+            let body = self.with_comma_unbound(|p| p.parse_expr())?;
+            let cspan = self.finish(cl_start);
+            clauses.push(LambdaClause {
+                params,
+                guard,
+                body,
+                span: cspan,
+            });
+            self.skip_newlines();
+        }
+        self.expect(&Tok::End, "`end`")?;
+        if clauses.is_empty() {
+            return self.err("`fn` requires at least one `pattern -> body` clause");
+        }
+        Ok(Spanned::new(Expr::Lambda(clauses), self.finish(start)))
     }
 }
 

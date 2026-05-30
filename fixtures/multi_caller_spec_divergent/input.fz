@@ -2,5 +2,5 @@ fn id(x), do: x
 fn route(f, n), do: f(n)
 fn main() do
   dbg(route(id, 5))
-  dbg(route(fn(x) -> x * 2, 5))
+  dbg(route(fn(x) -> x * 2 end, 5))
 end

@@ -1,5 +1,5 @@
 fn parent(tag) do
-  spawn(fn () -> send(1, tag))
+  spawn(fn () -> send(1, tag) end)
   receive()
 end
 

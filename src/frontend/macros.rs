@@ -593,7 +593,14 @@ pub fn expand_expr(
             }
         }
         Expr::Match(_, rhs) => expand_expr(rhs, interp, macros, depth)?,
-        Expr::Lambda(_, body) => expand_expr(body, interp, macros, depth)?,
+        Expr::Lambda(clauses) => {
+            for clause in clauses.iter_mut() {
+                if let Some(guard) = &mut clause.guard {
+                    expand_expr(guard, interp, macros, depth)?;
+                }
+                expand_expr(&mut clause.body, interp, macros, depth)?;
+            }
+        }
         // fz-5vj — recurse into receive clauses' bodies/guards and the
         // after timeout/body. Patterns are leaves at expansion time
         // (no macro-call positions inside patterns).
@@ -733,11 +740,16 @@ fn stamp_expanded(e: &mut Spanned<Expr>, macro_call: Span, definition: Option<Sp
             stamp_pattern(p, macro_call, definition);
             stamp_expanded(rhs, macro_call, definition);
         }
-        Expr::Lambda(params, body) => {
-            for p in params {
-                stamp_pattern(p, macro_call, definition);
+        Expr::Lambda(clauses) => {
+            for clause in clauses.iter_mut() {
+                for p in &mut clause.params {
+                    stamp_pattern(p, macro_call, definition);
+                }
+                if let Some(guard) = &mut clause.guard {
+                    stamp_expanded(guard, macro_call, definition);
+                }
+                stamp_expanded(&mut clause.body, macro_call, definition);
             }
-            stamp_expanded(body, macro_call, definition);
         }
         // fz-5vj — stamp through receive clauses + after.
         Expr::Receive { clauses, after } => {

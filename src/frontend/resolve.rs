@@ -590,7 +590,14 @@ fn collect_top_level_qualified_calls(expr: &Spanned<Expr>, out: &mut Vec<ModuleN
             }
         }
         Expr::Match(_, rhs) => collect_top_level_qualified_calls(rhs, out),
-        Expr::Lambda(_, body) => collect_top_level_qualified_calls(body, out),
+        Expr::Lambda(clauses) => {
+            for clause in clauses {
+                if let Some(guard) = &clause.guard {
+                    collect_top_level_qualified_calls(guard, out);
+                }
+                collect_top_level_qualified_calls(&clause.body, out);
+            }
+        }
         Expr::Receive { clauses, after } => {
             for clause in clauses {
                 if let Some(guard) = &clause.guard {
@@ -2085,20 +2092,33 @@ fn rewrite_expr(
             );
             collect_pattern_vars(&pat.node, intro);
         }
-        Expr::Lambda(params, body) => {
-            let mut nested = intro.clone();
-            for p in params {
-                collect_pattern_vars(&p.node, &mut nested);
+        Expr::Lambda(clauses) => {
+            for clause in clauses {
+                let mut nested = intro.clone();
+                for p in &clause.params {
+                    collect_pattern_vars(&p.node, &mut nested);
+                }
+                if let Some(guard) = &mut clause.guard {
+                    rewrite_expr(
+                        guard,
+                        module_path,
+                        siblings,
+                        &mut nested,
+                        module_paths,
+                        aliases,
+                        imports,
+                    );
+                }
+                rewrite_expr(
+                    &mut clause.body,
+                    module_path,
+                    siblings,
+                    &mut nested,
+                    module_paths,
+                    aliases,
+                    imports,
+                );
             }
-            rewrite_expr(
-                body,
-                module_path,
-                siblings,
-                &mut nested,
-                module_paths,
-                aliases,
-                imports,
-            );
         }
         Expr::Quote(inner) => rewrite_expr(
             inner,

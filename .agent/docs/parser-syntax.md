@@ -90,6 +90,32 @@ emits a `parse/ambiguous-no-parens-keyword` warning diagnostic to telemetry
 (under `[fz, diag, warning]`) so the divergence is observable and the source
 can be disambiguated with explicit parentheses.
 
+## Anonymous Functions
+
+`fn` introduces an anonymous function as a non-empty list of clauses, mirroring
+Elixir, and is terminated by `end`:
+
+```text
+fn x -> x + 1 end
+fn (a, b) -> a + b end
+fn 0 -> :zero
+   n -> n end
+fn x when x > 0 -> x
+   _ -> 0 end
+```
+
+The `end` is required — without a terminator a multi-clause body has no
+boundary. Clause structure matches `case` (a pattern list, an optional `when`
+guard, `->`, then a body), so the two parsers stay in lockstep. The AST is
+`Expr::Lambda(Vec<LambdaClause>)`, each `LambdaClause` carrying `params`, an
+optional `guard`, a `body`, and its span.
+
+Only the *direct* clause — a single clause with no guard — lowers and evaluates
+today; `lambda_direct_clause` is the one predicate both the interpreter and IR
+lowering consult, so the two paths agree on what is runnable. Multi-clause and
+guarded lambdas parse but defer execution to the desugar in fz-g58.15 (Arc 3),
+where they become pattern-matrix lambdas.
+
 ## Boundaries
 
 Special forms such as `if`, `with`, and `quote` still own their dedicated
@@ -106,6 +132,7 @@ Gate changes here with:
 - `cargo test parser::tests::do_block_sugar_tests`
 - `cargo test parser::tests::no_parens_call_tests`
 - `cargo test parser::tests::no_parens_keyword_ambiguity_tests`
+- `cargo test parser::tests::lambda_tests`
 - `cargo test private_fns_are_not_interface_exports`
 - `cargo test --test fixture_matrix keyword_lists`
 - `cargo test --test fixture_matrix no_parens_keyword`

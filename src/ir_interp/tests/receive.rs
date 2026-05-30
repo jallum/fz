@@ -55,7 +55,7 @@ fn sender_side_probe_match() {
         end
         fn main() do
           me = self()
-          spawn(fn () -> child(me))
+          spawn(fn () -> child(me) end)
           v = receive do
             {:reply, :tag, val} -> val
           end
@@ -111,7 +111,7 @@ fn spawned_child_resumes_with_original_code_image_after_root_advances() {
 
         fn start_child() do
           me = self()
-          spawn(fn () -> child(me))
+          spawn(fn () -> child(me) end)
         end
     "#,
     );

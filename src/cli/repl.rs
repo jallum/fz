@@ -1400,7 +1400,7 @@ fn add1(n), do: n + 1"#
         let mut session = ReplSession::new();
         assert_eq!(eval_session_i64(&mut session, "parent = self()"), Some(1));
         assert_eq!(
-            eval_session_i64(&mut session, "spawn(fn () -> send(parent, receive()))"),
+            eval_session_i64(&mut session, "spawn(fn () -> send(parent, receive()) end)"),
             Some(2),
         );
         assert_eq!(eval_session_i64(&mut session, "send(2, 42)"), Some(42));
@@ -1412,7 +1412,7 @@ fn add1(n), do: n + 1"#
         let mut session = ReplSession::new();
         assert_eq!(eval_session_i64(&mut session, "parent = self()"), Some(1));
         assert_eq!(
-            eval_session_i64(&mut session, "spawn(fn () -> send(parent, receive()))"),
+            eval_session_i64(&mut session, "spawn(fn () -> send(parent, receive()) end)"),
             Some(2),
         );
         assert!(matches!(
@@ -1434,7 +1434,7 @@ fn add1(n), do: n + 1"#
     fn repl_spawned_send_round_trips_through_receive_matcher() {
         let r = drive(&[
             "parent = self()",
-            "spawn(fn () -> send(parent, [1, 2.5, :a]))",
+            "spawn(fn () -> send(parent, [1, 2.5, :a]) end)",
             r#"receive do
                  [1, 2.5, :a] -> :ok
                after
@@ -1448,7 +1448,7 @@ fn add1(n), do: n + 1"#
     fn repl_spawn2_accepts_ignored_heap_hint() {
         let r = drive(&[
             "parent = self()",
-            "spawn(fn () -> send(parent, 42), 4096)",
+            "spawn(fn () -> send(parent, 42) end, 4096)",
             "receive()",
         ]);
         assert_eq!(r[2].as_deref(), Ok("42"));

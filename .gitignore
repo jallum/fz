@@ -9,3 +9,4 @@ fixtures/*/actual.specs
 fixtures/*/actual.diagnostics
 fixtures/*/actual.txt
 fixtures/*/actual.oracle.txt
+fixtures/*/actual.stderr

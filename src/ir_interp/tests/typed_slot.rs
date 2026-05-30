@@ -173,7 +173,7 @@ fn interp_reductions_yield_allocation_light_loops() {
 
         fn main() do
           me = self()
-          spawn(fn () -> child(me))
+          spawn(fn () -> child(me) end)
           count(5000, 0)
           receive()
         end
@@ -388,7 +388,7 @@ fn interp_typed_int_sender_wakes_blocked_receiver() {
             end
             fn main() do
               me = self()
-              spawn(fn () -> child(me))
+              spawn(fn () -> child(me) end)
               receive()
             end
         "#),

@@ -1754,7 +1754,7 @@ fn spawn_with_captures_registers_narrow_user_lambda_handle() {
     let (t, m, mt) = pipeline(
         r#"
 fn parent(tag) do
-  spawn(fn () -> send(1, tag))
+  spawn(fn () -> send(1, tag) end)
   receive()
 end
 fn main() do
@@ -1801,7 +1801,7 @@ fn make_closure_with_distinct_captures_registers_distinct_specs() {
     // lambda, different captures", we use a curried-style helper.
     let (_t, m, mt) = pipeline(
         r#"
-fn add_to(x), do: fn (y) -> x + y
+fn add_to(x), do: fn (y) -> x + y end
 fn main() do
   f = add_to(7)
   g = add_to(3.5)
@@ -1854,7 +1854,7 @@ end
 fn cont_slot0_after_closure_lit_callclosure_is_narrow_not_any() {
     let (t, m, mt) = pipeline(
         r#"
-fn add_to(x), do: fn (y) -> x + y
+fn add_to(x), do: fn (y) -> x + y end
 fn main() do
   f = add_to(7)
   r = f(1)
@@ -1912,7 +1912,7 @@ fn apply(f, x) do
   r + 1
 end
 fn main() do
-  inc = fn (n) -> n + 1
+  inc = fn (n) -> n + 1 end
   z = apply(inc, 3)
   dbg(z)
 end
@@ -2005,7 +2005,7 @@ fn known_fn_capability_not_set_for_captures() {
         r#"
 fn main() do
   k = 7
-  f = fn (n) -> n + k
+  f = fn (n) -> n + k end
   dbg(f(3))
 end
 "#,
@@ -3410,7 +3410,7 @@ fn rewrite_erases_threaded_constant_closure() {
                    [rh | merge([lh | lt], rt, s)]\n\
                  end\n\
                end\n\
-               fn main(), do: merge([1, 3], [2, 4], fn (a, b) -> a <= b)";
+               fn main(), do: merge([1, 3], [2, 4], fn (a, b) -> a <= b end)";
     let after = rewrite_closures(src);
     assert_eq!(
         count_make_closures(&after),

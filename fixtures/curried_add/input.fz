@@ -1,4 +1,4 @@
-fn add3(x), do: fn(y) -> fn(z) -> x + y + z
+fn add3(x), do: fn(y) -> fn(z) -> x + y + z end end
 fn apply(f, x), do: f(x)
 
 fn main() do

@@ -412,7 +412,20 @@ pub(crate) fn lower_expr(
             }
         }
 
-        Expr::Lambda(params, body) => lower_lambda(ctx, params, body, sp),
+        Expr::Lambda(clauses) => {
+            // Mirror the interpreter: only the direct (single, unguarded)
+            // clause lowers today. Multi-clause/guarded lambdas desugar to a
+            // pattern-matrix lambda in fz-g58.15 (Arc 3); until then both paths
+            // reject them identically (three-path parity).
+            match crate::ast::lambda_direct_clause(clauses) {
+                Some(clause) => lower_lambda(ctx, &clause.params, &clause.body, sp),
+                None => Err(LowerError::Unsupported {
+                    span: sp,
+                    what: "multi-clause or guarded `fn` requires desugaring (fz-g58.15)"
+                        .to_string(),
+                }),
+            }
+        }
 
         Expr::Case(Some(subject), clauses) => lower_case(ctx, subject, clauses, is_tail, sp),
         Expr::Case(None, _) => Err(LowerError::Unsupported {

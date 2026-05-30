@@ -1066,3 +1066,117 @@ mod no_parens_keyword_ambiguity_tests {
         assert_eq!(warnings_for("foo a, b: 1, c: 2"), 0);
     }
 }
+
+/// fz-g58.2.5 — anonymous `fn … end` parses to a clause list. A single
+/// unguarded clause is the directly-runnable shape; multi-clause and guarded
+/// forms parse here but defer execution to the Arc 3 desugar.
+mod lambda_tests {
+    use super::*;
+    use crate::ast::lambda_direct_clause;
+    use crate::parser::lexer::Lexer;
+
+    fn parse(src: &str) -> Program {
+        let toks = Lexer::new(src).tokenize().unwrap();
+        Parser::new(toks).parse_program().unwrap()
+    }
+
+    /// Parse the first fn's single-expression body (the lambda under test).
+    fn body(src: &str) -> Expr {
+        let prog = parse(src);
+        match &*prog.items[0] {
+            Item::Fn(d) => match &d.clauses[0].body.node {
+                Expr::Block(xs) => xs[0].node.clone(),
+                other => other.clone(),
+            },
+            _ => panic!("expected fn item"),
+        }
+    }
+
+    #[test]
+    fn single_clause_fn_is_one_clause() {
+        let Expr::Lambda(clauses) = body("fn _t() do\n  fn x -> x + 1 end\nend\n") else {
+            panic!("expected lambda");
+        };
+        assert_eq!(clauses.len(), 1);
+        assert!(clauses[0].guard.is_none());
+        assert_eq!(clauses[0].params.len(), 1);
+        // The directly-runnable shape: one clause, no guard.
+        assert!(lambda_direct_clause(&clauses).is_some());
+    }
+
+    #[test]
+    fn parenthesized_params_parse() {
+        let Expr::Lambda(clauses) = body("fn _t() do\n  fn (x, y) -> x + y end\nend\n") else {
+            panic!("expected lambda");
+        };
+        assert_eq!(clauses.len(), 1);
+        assert_eq!(clauses[0].params.len(), 2);
+    }
+
+    #[test]
+    fn multi_clause_fn_collects_every_clause() {
+        let Expr::Lambda(clauses) = body("fn _t() do\n  fn 0 -> :zero\n     n -> n end\nend\n")
+        else {
+            panic!("expected lambda");
+        };
+        assert_eq!(clauses.len(), 2);
+        // Multi-clause is not directly runnable; it awaits the Arc 3 desugar.
+        assert!(lambda_direct_clause(&clauses).is_none());
+    }
+
+    #[test]
+    fn guard_is_captured_on_the_clause() {
+        let Expr::Lambda(clauses) =
+            body("fn _t() do\n  fn x when x > 0 -> x\n     _ -> 0 end\nend\n")
+        else {
+            panic!("expected lambda");
+        };
+        assert_eq!(clauses.len(), 2);
+        assert!(clauses[0].guard.is_some());
+        // A guard makes even a single clause non-direct.
+        assert!(lambda_direct_clause(&clauses).is_none());
+    }
+
+    #[test]
+    fn single_guarded_clause_is_not_direct() {
+        let Expr::Lambda(clauses) = body("fn _t() do\n  fn x when x > 0 -> x end\nend\n") else {
+            panic!("expected lambda");
+        };
+        assert_eq!(clauses.len(), 1);
+        assert!(clauses[0].guard.is_some());
+        assert!(lambda_direct_clause(&clauses).is_none());
+    }
+
+    #[test]
+    fn missing_end_is_a_parse_error() {
+        // Without `end`, the lambda swallows the enclosing `end`; the fn item
+        // never closes, so parsing fails.
+        let toks = Lexer::new("fn _t() do\n  fn x -> x + 1\nend\n").tokenize().unwrap();
+        assert!(Parser::new(toks).parse_program().is_err());
+    }
+
+    #[test]
+    fn do_shorthand_lambda_body_needs_end_before_next_item() {
+        // `fn make(), do: fn x -> x end` is the lambda as a `do:` body. The
+        // lambda's own `end` closes it; the following item parses cleanly.
+        let prog = parse("fn make(), do: fn x -> x + 1 end\nfn main(), do: make()\n");
+        assert_eq!(prog.items.len(), 2);
+        let Item::Fn(d) = &*prog.items[0] else {
+            panic!("expected fn item");
+        };
+        let Expr::Lambda(clauses) = &d.clauses[0].body.node else {
+            panic!("expected lambda body");
+        };
+        assert_eq!(clauses.len(), 1, "lambda must not absorb the next item");
+    }
+
+    #[test]
+    fn do_shorthand_lambda_without_end_is_a_parse_error() {
+        // Drop the `end`: the lambda runs past the newline into `fn main`,
+        // which is not a valid clause, so the program fails to parse.
+        let toks = Lexer::new("fn make(), do: fn x -> x + 1\nfn main(), do: make()\n")
+            .tokenize()
+            .unwrap();
+        assert!(Parser::new(toks).parse_program().is_err());
+    }
+}

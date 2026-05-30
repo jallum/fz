@@ -712,7 +712,7 @@ fn main() do
   dbg({
     Enum.count([1, 2, 3]),
     Enum.member?([1, 2, 3], 2),
-    Enum.reduce([1, 2, 3], {:cont, 0}, fn (x, acc) -> {:cont, acc + x})
+    Enum.reduce([1, 2, 3], {:cont, 0}, fn (x, acc) -> {:cont, acc + x} end)
   })
 end
 "#,
@@ -1501,7 +1501,7 @@ fn closure_captures_local_value() {
     assert_eq!(
         run_main(
             r#"
-fn make_adder(k), do: fn(x) -> x + k
+fn make_adder(k), do: fn(x) -> x + k end
 fn main() do
   f = make_adder(10)
   f(5)
@@ -1518,7 +1518,7 @@ fn closure_literal_marks_ref_captures_as_published() {
         r#"
 fn main() do
   xs = [1, 2]
-  f = fn() -> xs
+  f = fn() -> xs end
   f()
 end
 "#,
@@ -2262,7 +2262,7 @@ fn condition_cache_bypasses_is_truthy_in_type_dispatch() {
     let src = "fn check(x :: integer) do :is_int end\n\
                fn check(x) do :other end\n\
                fn main() do\n\
-                 c = fn(x) -> check(x)\n\
+                 c = fn(x) -> check(x) end\n\
                  dbg(c(42))\n\
                  dbg(c(:foo))\n\
                end";
@@ -2305,7 +2305,7 @@ fn pure_branch_type_test_does_not_materialize_bool() {
     let src = "fn check(x :: integer) do :is_int end\n\
                fn check(x) do :other end\n\
                fn main() do\n\
-                 c = fn(x) -> check(x)\n\
+                 c = fn(x) -> check(x) end\n\
                  dbg(c(42))\n\
                  dbg(c(:foo))\n\
                end";
@@ -2516,7 +2516,7 @@ end
 
 fn main() do
   k = 10
-  each(fn(x) -> dbg(x + k), [1, 2, 3])
+  each(fn(x) -> dbg(x + k) end, [1, 2, 3])
 end
 "#;
     let m = lower_src(src);
@@ -2585,7 +2585,7 @@ end
 
 fn main() do
   k = 10
-  each(fn(x) -> dbg(x + k), [1, 2, 3])
+  each(fn(x) -> dbg(x + k) end, [1, 2, 3])
 end
 "#;
     let m = lower_src(src);
@@ -2628,7 +2628,7 @@ end
 
 fn main() do
   k = 10
-  each(fn(x) -> dbg(x + k), [1, 2, 3])
+  each(fn(x) -> dbg(x + k) end, [1, 2, 3])
 end
 "#;
     let m = lower_src(src);

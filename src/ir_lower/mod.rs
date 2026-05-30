@@ -1457,7 +1457,7 @@ mod tests {
 
     #[test]
     fn lower_lambda_creates_separate_fn_and_closure() {
-        let m = lower_src("fn mk(x), do: fn(y) -> x + y");
+        let m = lower_src("fn mk(x), do: fn(y) -> x + y end");
         let s = format!("{}", m);
         assert!(
             s.contains("closure(fn"),
@@ -1479,7 +1479,7 @@ mod tests {
 
     #[test]
     fn lower_lambda_captures_only_referenced_outer_names() {
-        let m = lower_src("fn mk(x, y), do: fn(z) -> x + z");
+        let m = lower_src("fn mk(x, y), do: fn(z) -> x + z end");
         let mk = m.fn_by_name("mk").expect("mk fn missing");
         let (lambda_id, captured) = first_make_closure(mk);
 
@@ -1499,7 +1499,7 @@ mod tests {
 
     #[test]
     fn lower_lambda_with_no_outer_reads_has_no_captures() {
-        let m = lower_src("fn mk(x), do: fn(y) -> y + 1");
+        let m = lower_src("fn mk(x), do: fn(y) -> y + 1 end");
         let mk = m.fn_by_name("mk").expect("mk fn missing");
         let (lambda_id, captured) = first_make_closure(mk);
 
@@ -1569,7 +1569,7 @@ mod tests {
 
     #[test]
     fn lambda_tail_receive_does_not_terminate_enclosing_spawn_call() {
-        let m = lower_src("fn p(parent) do\nspawn(fn () -> send(parent, receive()))\nend");
+        let m = lower_src("fn p(parent) do\nspawn(fn () -> send(parent, receive()) end)\nend");
         let p = m.fn_by_name("p").expect("p fn missing");
         let entry = p.block(p.entry);
         let spawn = m
@@ -2303,7 +2303,7 @@ fn main() do libc::open(\"x\") end
 fn id(x), do: x
 fn pick(:a), do: 1
 fn pick(:b), do: 2
-fn make_adder(x), do: fn (z) -> x + z
+fn make_adder(x), do: fn (z) -> x + z end
 
 fn main() do
   id(pick(:a))

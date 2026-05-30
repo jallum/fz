@@ -121,8 +121,11 @@ pub enum Expr {
     // sequence of expressions; result is the last
     Block(Vec<Spanned<Expr>>),
 
-    // anonymous fn: fn (p1, p2) -> body  /  multi-clause via Case under the hood later
-    Lambda(Vec<Spanned<Pattern>>, Box<Spanned<Expr>>),
+    // anonymous fn: `fn p1 -> b1; p2 when g -> b2 end`. A non-empty list of
+    // clauses, mirroring Elixir's `fn`. A single unguarded clause lowers and
+    // evals directly; multi-clause and guarded forms desugar to a
+    // pattern-matrix lambda in fz-g58.15 (Arc 3) — see `lambda_direct_clause`.
+    Lambda(Vec<LambdaClause>),
 
     // macro support (fz-ul4.10):
     /// `quote do: <e>` / `quote do <e> end`. Eval reifies `e` to a Value,
@@ -178,6 +181,30 @@ pub struct MatchClause {
     pub body: Spanned<Expr>,
     /// Span of the whole clause: `pattern when guard -> body`.
     pub span: Span,
+}
+
+/// fz-g58.2.5 — one clause of an anonymous `fn`: `params [when guard] -> body`.
+/// A `fn` carries a non-empty `Vec<LambdaClause>` (see `Expr::Lambda`).
+#[derive(Debug, Clone)]
+pub struct LambdaClause {
+    pub params: Vec<Spanned<Pattern>>,
+    pub guard: Option<Spanned<Expr>>,
+    pub body: Spanned<Expr>,
+    /// Span of the whole clause: `params [when guard] -> body`.
+    pub span: Span,
+}
+
+/// The single clause an `Expr::Lambda` can be run directly from, before the
+/// multi-clause/guard desugar (fz-g58.15, Arc 3) rewrites it. That is exactly
+/// one clause with no guard — the shape the interpreter and IR lowering execute
+/// today. Multi-clause or guarded lambdas return `None`: they must be desugared
+/// to a pattern-matrix lambda first, so both execution paths agree on which
+/// forms are runnable (three-path parity).
+pub fn lambda_direct_clause(clauses: &[LambdaClause]) -> Option<&LambdaClause> {
+    match clauses {
+        [clause] if clause.guard.is_none() => Some(clause),
+        _ => None,
+    }
 }
 
 /// fz-5vj — `after <timeout_ms> -> <body>` tail clause on a `receive`.

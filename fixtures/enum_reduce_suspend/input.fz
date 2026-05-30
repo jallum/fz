@@ -1,6 +1,6 @@
 fn main() do
   xs = [1, 2, 3]
-  out = Enum.reduce(xs, {:suspend, 0}, fn (x, acc) -> {:cont, acc + x})
+  out = Enum.reduce(xs, {:suspend, 0}, fn (x, acc) -> {:cont, acc + x} end)
 
   dbg(out)
   stats = Process.heap_alloc_stats()

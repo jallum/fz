@@ -11,7 +11,7 @@ defmodule Enum do
   fn member?(enumerable, value), do: {:ok, member_list?(enumerable, value)}
 
   @spec sort(Enumerable.t(a)) :: [a]
-  fn sort(enumerable), do: sort(enumerable, fn (left, right) -> left <= right)
+  fn sort(enumerable), do: sort(enumerable, fn (left, right) -> left <= right end)
 
   @spec sort(Enumerable.t(a), (a, a) -> bool) :: [a]
   fn sort(enumerable, sorter), do: sort_list(enumerable, sorter)

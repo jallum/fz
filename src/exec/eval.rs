@@ -638,19 +638,28 @@ impl CompileTimeEvaluator {
                 }
                 Ok(last)
             }
-            Expr::Lambda(params, body) => Ok(Value::Closure(Rc::new(Closure {
-                name: None,
-                clauses: vec![FnClause {
-                    param_annotations: vec![None; params.len()],
-                    params: params.clone(),
-                    guard: None,
-                    body: (**body).clone(),
-                    span: e.span,
-                }],
-                env: env.clone(),
-                doc: None,
-                spec_text: None,
-            }))),
+            Expr::Lambda(clauses) => {
+                // Only the direct (single, unguarded) clause runs today; multi-
+                // clause/guarded lambdas are desugared in fz-g58.15 (Arc 3).
+                // Gating both execution paths on the same predicate keeps the
+                // interpreter and IR lowering in lockstep (three-path parity).
+                let clause = crate::ast::lambda_direct_clause(clauses).ok_or_else(|| {
+                    "multi-clause or guarded `fn` requires desugaring (fz-g58.15)".to_string()
+                })?;
+                Ok(Value::Closure(Rc::new(Closure {
+                    name: None,
+                    clauses: vec![FnClause {
+                        param_annotations: vec![None; clause.params.len()],
+                        params: clause.params.clone(),
+                        guard: None,
+                        body: clause.body.clone(),
+                        span: clause.span,
+                    }],
+                    env: env.clone(),
+                    doc: None,
+                    spec_text: None,
+                })))
+            }
             Expr::Quote(inner) => self.reify_with_unquotes(inner, env),
             Expr::Unquote(_) => Err("unquote used outside `quote`".into()),
         }

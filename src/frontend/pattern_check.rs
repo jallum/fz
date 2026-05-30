@@ -258,7 +258,14 @@ fn walk_expr(e: &Spanned<Expr>, diags: &mut Vec<Diagnostic>) {
                 walk_expr(&c.body, diags);
             }
         }
-        Expr::Lambda(_, body) => walk_expr(body, diags),
+        Expr::Lambda(clauses) => {
+            for clause in clauses {
+                if let Some(g) = &clause.guard {
+                    walk_expr(g, diags);
+                }
+                walk_expr(&clause.body, diags);
+            }
+        }
         Expr::Call(target, args) => {
             walk_expr(target, diags);
             args.iter().for_each(|a| walk_expr(a, diags));

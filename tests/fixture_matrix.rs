@@ -2756,7 +2756,7 @@ fn main(), do: shared([1, 2])
         (
             "closure_capture",
             r#"
-fn keep(x), do: fn(y) -> x
+fn keep(x), do: fn(y) -> x end
 
 fn publish([h | t]) do
   f = keep([h | t])
@@ -3348,7 +3348,7 @@ fn local_reduce_state_update_lowers_without_trampoline() {
         "local_reduce_state_update",
         "fn reduce_list([], {:cont, acc}, _reducer), do: {:done, acc}\n\
          fn reduce_list([h | t], {:cont, acc}, reducer), do: reduce_list(t, reducer(h, acc), reducer)\n\
-         fn main(), do: reduce_list([1, 2], {:cont, 0}, fn (x, acc) -> {:cont, acc + x})",
+         fn main(), do: reduce_list([1, 2], {:cont, 0}, fn (x, acc) -> {:cont, acc + x} end)",
     );
     let reduce_list = clif_function_with_banner_prefix(&clif, "; fn reduce_list_s")
         .expect("local reduce_list CLIF should be present");

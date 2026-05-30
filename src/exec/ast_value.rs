@@ -139,7 +139,7 @@ pub fn expr_to_value(e: &Spanned<Expr>) -> Result<Value, String> {
         | Expr::Cond(_)
         | Expr::With(_, _, _)
         | Expr::Receive { .. }
-        | Expr::Lambda(_, _)
+        | Expr::Lambda(_)
         | Expr::Map(_)
         | Expr::MapUpdate(_, _)
         | Expr::Index(_, _)
@@ -621,7 +621,12 @@ mod tests {
 
     #[test]
     fn unsupported_expr_errors_cleanly() {
-        let e = Spanned::dummy(Expr::Lambda(vec![], Box::new(Spanned::dummy(Expr::Int(0)))));
+        let e = Spanned::dummy(Expr::Lambda(vec![crate::ast::LambdaClause {
+            params: vec![],
+            guard: None,
+            body: Spanned::dummy(Expr::Int(0)),
+            span: crate::diag::Span::DUMMY,
+        }]));
         assert!(expr_to_value(&e).is_err());
     }
 
