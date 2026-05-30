@@ -171,9 +171,9 @@ pub fn flatten_modules<T: crate::types::Types<Ty = crate::types::Ty>>(
     flatten_modules_with_options(t, prog, BTreeMap::new())
 }
 
-/// fz-6df.12 — synthesize a literal `__info__/1` reflection fn for every
-/// `defmodule`, so `M.__info__(:functions | :macros | :module)` resolves and
-/// runs like any other module fn. The body is pure literals (atoms, ints,
+/// Synthesize a literal `__info__/1` reflection fn for every `defmodule`, so
+/// `M.__info__(:functions | :macros | :module)` resolves and runs like any
+/// other module fn. The body is pure literals (atoms, ints,
 /// tuples, lists), so it flows through flatten, lowering, and codegen unchanged
 /// — four-path by construction, no backend special-casing. A user-defined
 /// `__info__` is left untouched.
@@ -210,7 +210,9 @@ fn build_module_info_fn(m: &ModuleDef) -> Option<FnDef> {
     let mut macros: Vec<(String, usize)> = Vec::new();
     for it in &m.items {
         let Item::Fn(f) = &**it else { continue };
-        if f.extern_abi.is_some() || f.name == "__info__" {
+        // A user `__info__` already short-circuited the whole fn above, so the
+        // only thing to filter here is externs.
+        if f.extern_abi.is_some() {
             continue;
         }
         let Some(arity) = f.clauses.first().map(|c| c.params.len()) else {
@@ -2107,7 +2109,7 @@ mod tests {
     #[test]
     fn module_qualifies_fn_names() {
         let p = flatten("defmodule M do; fn f(x), do: x + 1 end");
-        // Every module gains a synthesized `__info__/1` (fz-6df.12).
+        // Every module gains a synthesized `__info__/1`.
         assert_eq!(fn_names(&p), vec!["M.f", "M.__info__"]);
     }
 
@@ -2199,8 +2201,8 @@ defmodule A do
 end
 "#,
         );
-        // Every module gains a synthesized `__info__/1` (fz-6df.12) — including
-        // the namespace-only outer module `A`.
+        // Every module gains a synthesized `__info__/1` — including the
+        // namespace-only outer module `A`.
         assert_eq!(fn_names(&p), vec!["A.B.f", "A.B.__info__", "A.__info__"]);
     }
 

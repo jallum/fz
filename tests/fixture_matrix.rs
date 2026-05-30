@@ -705,22 +705,24 @@ fn discover() -> Vec<PathBuf> {
     out
 }
 
-/// Outcome of running a fixture through a single path.
-///
-/// `Ran` is a faithful capture of what the program did — exit status plus
+/// A faithful capture of what the program did on one path — exit status plus
 /// output — with *no* success/failure judgement applied. That judgement is the
 /// fixture's `expect:` policy, applied uniformly in `check()`, so the
 /// success-vs-failure rule lives in one place rather than being re-derived in
-/// each path runner. `Deferred`/`Failed` are reserved for the harness's own
-/// verdicts: a not-yet-wired path, or a spawn/timeout the program never reached.
+/// each path runner.
+struct Ran {
+    /// The program's exit status.
+    success: bool,
+    /// stdout, captured verbatim.
+    stdout: String,
+    /// stderr / diagnostics, captured verbatim.
+    diagnostics: String,
+}
+
+/// Outcome of running a fixture through a single path.
 enum RunOutcome {
-    /// The program ran to completion. `success` is its exit status; `stdout`
-    /// and `diagnostics` (stderr) are captured verbatim.
-    Ran {
-        success: bool,
-        stdout: String,
-        diagnostics: String,
-    },
+    /// The program ran to completion; see [`Ran`].
+    Ran(Ran),
     /// Process exited 75 (EX_TEMPFAIL): the path is declared by the fixture
     /// but not yet wired (e.g. `fz interp` stub before fz-ul4.23.5.2). The
     /// matrix logs but does not fail.
@@ -899,11 +901,11 @@ fn run_path(fixture: &Path, header: &Header, path: &str) -> RunOutcome {
     if let Some(75) = out.status.code() {
         return RunOutcome::Deferred(stderr.trim_end().to_string());
     }
-    RunOutcome::Ran {
+    RunOutcome::Ran(Ran {
         success: out.status.success(),
         stdout: String::from_utf8_lossy(&out.stdout).to_string(),
         diagnostics: stderr,
-    }
+    })
 }
 
 /// Drive the AOT path: `fz build` the fixture to a temp executable, run
@@ -944,11 +946,11 @@ fn run_aot_path(fixture: &Path, header: &Header) -> RunOutcome {
     // step that's expected to fail — there is no binary to run. Hand the build
     // outcome straight to `check()`'s failure policy.
     if header.expect == Expect::Diagnostic {
-        return RunOutcome::Ran {
+        return RunOutcome::Ran(Ran {
             success: build.status.success(),
             stdout: String::from_utf8_lossy(&build.stdout).to_string(),
             diagnostics: build_stderr,
-        };
+        });
     }
     if !build.status.success() {
         // Common failure today: closure-using fixtures abort at runtime
@@ -979,11 +981,11 @@ fn run_aot_path(fixture: &Path, header: &Header) -> RunOutcome {
         return RunOutcome::Deferred(run_stderr.trim_end().to_string());
     }
     let diagnostics = format!("{}{}", build_stderr, run_stderr);
-    RunOutcome::Ran {
+    RunOutcome::Ran(Ran {
         success: run.status.success(),
         stdout: String::from_utf8_lossy(&run.stdout).to_string(),
         diagnostics,
-    }
+    })
 }
 
 /// fz-i67.2 — drive the REPL parity leg: spawn `fz repl --script <input.fz>`,
@@ -1005,11 +1007,11 @@ fn run_repl_path(fixture: &Path, header: &Header) -> RunOutcome {
         Err(e) => return RunOutcome::Failed(e),
     };
     let stderr = String::from_utf8_lossy(&out.stderr).to_string();
-    RunOutcome::Ran {
+    RunOutcome::Ran(Ran {
         success: out.status.success(),
         stdout: String::from_utf8_lossy(&out.stdout).to_string(),
         diagnostics: stderr,
-    }
+    })
 }
 
 fn normalize(s: &str) -> String {
@@ -1031,43 +1033,31 @@ enum CheckOutcome {
 }
 
 fn check(fixture: &Path, header: &Header, path: &str, bless: bool) -> CheckOutcome {
-    let (success, stdout, diagnostics) = match run_path(fixture, header, path) {
-        RunOutcome::Ran {
-            success,
-            stdout,
-            diagnostics,
-        } => (success, stdout, diagnostics),
+    let ran = match run_path(fixture, header, path) {
+        RunOutcome::Ran(ran) => ran,
         RunOutcome::Deferred(msg) => return CheckOutcome::Deferred(msg),
         RunOutcome::Failed(e) => return CheckOutcome::Fail(e),
     };
     match header.expect {
-        Expect::Success => check_success(fixture, path, bless, success, &stdout, &diagnostics),
-        Expect::Abort | Expect::Diagnostic => {
-            check_failure(fixture, header.expect, path, bless, success, &diagnostics)
-        }
+        Expect::Success => check_success(fixture, path, bless, &ran),
+        Expect::Abort => check_failure(fixture, "abort", path, bless, &ran),
+        Expect::Diagnostic => check_failure(fixture, "diagnostic", path, bless, &ran),
     }
 }
 
 /// `expect: success` (the default): the program must exit 0, and its stdout and
 /// diagnostics must match their goldens (absent golden ⇒ expected empty).
-fn check_success(
-    fixture: &Path,
-    path: &str,
-    bless: bool,
-    success: bool,
-    stdout: &str,
-    diagnostics: &str,
-) -> CheckOutcome {
-    if !success {
+fn check_success(fixture: &Path, path: &str, bless: bool, ran: &Ran) -> CheckOutcome {
+    if !ran.success {
         return CheckOutcome::Fail(format!(
             "{} via {}: expected success but the program exited nonzero\n--- stderr\n{}",
             fixture.display(),
             path,
-            diagnostics.trim_end()
+            ran.diagnostics.trim_end()
         ));
     }
-    let actual = normalize(stdout);
-    let actual_diagnostics = normalize(diagnostics);
+    let actual = normalize(&ran.stdout);
+    let actual_diagnostics = normalize(&ran.diagnostics);
     let path_expected_path = fixture.join(format!("expected.{}.txt", path));
     let expected_path = if path_expected_path.exists() {
         path_expected_path
@@ -1129,20 +1119,11 @@ fn check_success(
 ///
 /// BLESS seeds a missing `expected.stderr` with the full captured stderr so the
 /// author can trim it to the stable line; it never overwrites a curated golden.
-fn check_failure(
-    fixture: &Path,
-    expect: Expect,
-    path: &str,
-    bless: bool,
-    success: bool,
-    diagnostics: &str,
-) -> CheckOutcome {
-    let kind = match expect {
-        Expect::Abort => "abort",
-        Expect::Diagnostic => "diagnostic",
-        Expect::Success => unreachable!("check_failure is only called for failure expectations"),
-    };
-    if success {
+///
+/// `kind` is `"abort"` or `"diagnostic"` — the failure mode named in messages.
+fn check_failure(fixture: &Path, kind: &str, path: &str, bless: bool, ran: &Ran) -> CheckOutcome {
+    let diagnostics = ran.diagnostics.as_str();
+    if ran.success {
         return CheckOutcome::Fail(format!(
             "{} via {}: expected {} (nonzero exit) but the program exited 0",
             fixture.display(),
