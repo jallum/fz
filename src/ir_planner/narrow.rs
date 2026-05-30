@@ -82,15 +82,13 @@ pub(crate) fn narrow_for_cond<T: crate::types::Types<Ty = crate::types::Ty>>(
             return (union_envs(t, then_a, &then_b), else_ab);
         }
         Prim::IsEmptyList(v) => {
-            // `[]` and `[_ | _]` are disjoint list shapes. The true branch
-            // narrows to the empty-list shape; the false branch narrows to a
-            // non-empty list with unknown element evidence.
+            // True narrows to the empty-list shape. False only subtracts that
+            // one shape: non-list values are also definitely "not []" and must
+            // remain possible.
             let current_ty = lookup_ty(t, env, v);
             let empty_list = t.empty_list();
-            let then_t = t.intersect(current_ty.clone(), empty_list);
-            let any_inner = t.any();
-            let any_non_empty_list = t.non_empty_list(any_inner);
-            let else_t = t.intersect(current_ty, any_non_empty_list);
+            let then_t = t.intersect(current_ty.clone(), empty_list.clone());
+            let else_t = t.difference(current_ty, empty_list);
             then_env.insert(*v, then_t);
             else_env.insert(*v, else_t);
         }

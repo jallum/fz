@@ -68,6 +68,17 @@ pub fn plan_module<T: crate::types::Types<Ty = crate::types::Ty> + crate::types:
     m: &Module,
     tel: &dyn crate::telemetry::Telemetry,
 ) -> ModulePlan {
+    plan_module_with_role(t, m, tel, "authoritative")
+}
+
+pub fn plan_module_with_role<
+    T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
+>(
+    t: &mut T,
+    m: &Module,
+    tel: &dyn crate::telemetry::Telemetry,
+    role: &'static str,
+) -> ModulePlan {
     PLAN_MODULE_CALLS.with(|c| c.set(c.get() + 1));
     WORKLIST_POPS.with(|c| c.set(0));
     TYPE_FN_CALLS.with(|c| c.set(0));
@@ -113,13 +124,12 @@ pub fn plan_module<T: crate::types::Types<Ty = crate::types::Ty> + crate::types:
                 receive_matched_count: stats.receive_matched_count as u64,
             },
             &crate::metadata! {
-                // `plan_module` derives the one authoritative plan codegen (or a
-                // single-plan consumer like the frontend) commits to. The label
-                // is explicit so the dump-budget parser keys the committed plan's
-                // shape on it instead of guessing from event order — and so a
-                // future re-derivation, were one ever reintroduced, would be
-                // visibly distinct rather than silently skewing the budgets.
-                role: "authoritative",
+                // The label is explicit so consumers can key the committed
+                // codegen/frontend plan's shape on it instead of guessing from
+                // event order. Non-authoritative planning phases must be
+                // visible too, with their own role, rather than hidden behind
+                // NullTelemetry.
+                role: role,
                 module_path: m.module_path().to_owned(),
                 module: crate::telemetry::value::opaque(m),
                 module_plan: crate::telemetry::value::opaque(&mt),

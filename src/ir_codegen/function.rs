@@ -52,7 +52,14 @@ pub(crate) fn compile_fn<
     let cont_ptr_known_null = !cont_target_fns.contains(&f.id);
     let mut b = FunctionBuilder::new(&mut ctx.func, fbctx);
 
-    let reachable_fz_blocks = reachable_block_ids(f);
+    let reachable_fz_blocks: HashSet<u32> =
+        fn_types.reachable_blocks.iter().map(|id| id.0).collect();
+    if !reachable_fz_blocks.contains(&f.entry.0) {
+        return Err(CodegenError::new(format!(
+            "spec for {}#{} does not include entry block {:?}",
+            f.name, f.id.0, f.entry
+        )));
+    }
 
     let mut block_map: HashMap<u32, ir::Block> = HashMap::new();
     for blk in &f.blocks {
@@ -257,6 +264,12 @@ pub(crate) fn compile_fn<
         // fn_types.vars), so RawInt values flow through without a
         // box/unbox round-trip at inliner seams.
         if let Term::Goto(target, args) = &blk.terminator {
+            if !block_map.contains_key(&target.0) {
+                return Err(CodegenError::new(format!(
+                    "reachable block {:?} in {}#{} jumps to spec-unreachable block {:?}",
+                    blk.id, f.name, f.id.0, target
+                )));
+            }
             for (param, arg) in f.block(*target).params.iter().zip(args.iter()) {
                 let fallback = t.any();
                 let want = ArgRepr::for_block_param_ty(
@@ -325,44 +338,6 @@ fn owned_cons_reuse_sources(f: &crate::fz_ir::FnIr) -> HashMap<u32, crate::fz_ir
             crate::fz_ir::PhysicalCapability::OwnedConsReuse { head } => (head.0, fact.source),
         })
         .collect()
-}
-
-/// Compute the set of fz_ir block ids reachable from `f.entry` by
-/// following intra-fn control-flow terminators (Goto / If). Return /
-/// TailCall / Halt / Call / CallClosure / TailCallClosure / Receive
-/// don't pass control to other fz_ir blocks within this fn; codegen
-/// lowers them into Cranelift sub-blocks owned by the lowering site
-/// itself.
-///
-/// Why filter at all: `ir_lower` emits an unconditional `fail_block`
-/// per fn (Halt with :function_clause atom) for clauses whose patterns
-/// fail at runtime, and similar match-fail blocks for `cond` / lambda
-/// bodies. Single-clause fns with bare-var params never Goto their
-/// fail_block, leaving it as dead CLIF whose dead Halt's `return` is
-/// typed i64 regardless of the fn's sig — the Cranelift verifier
-/// rejects f64-sig fns with an i64 return. Skip these blocks entirely.
-fn reachable_block_ids(f: &crate::fz_ir::FnIr) -> HashSet<u32> {
-    let blk_idx: HashMap<u32, &crate::fz_ir::Block> =
-        f.blocks.iter().map(|b| (b.id.0, b)).collect();
-    let mut reach: HashSet<u32> = HashSet::new();
-    let mut stack: Vec<u32> = vec![f.entry.0];
-    while let Some(bid) = stack.pop() {
-        if !reach.insert(bid) {
-            continue;
-        }
-        let Some(blk) = blk_idx.get(&bid) else {
-            continue;
-        };
-        match &blk.terminator {
-            Term::Goto(t, _) => stack.push(t.0),
-            Term::If { then_b, else_b, .. } => {
-                stack.push(then_b.0);
-                stack.push(else_b.0);
-            }
-            _ => {}
-        }
-    }
-    reach
 }
 
 fn tuple_return_delivery_plan(

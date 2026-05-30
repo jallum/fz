@@ -371,7 +371,7 @@ fn if_is_empty_list_narrows_v_to_empty_list_in_then_branch() {
     //     c = IsEmptyList(l)
     //     if c then then_b else else_b
     //   then_b: return l   (l narrowed to empty list here)
-    //   else_b: return l   (l narrowed to list_top here)
+    //   else_b: return l   (l narrowed to any except [] here)
     let mut b = FnBuilder::new(FnId(0), "f");
     let l = b.fresh_var();
     let entry = b.block(vec![l]);
@@ -398,14 +398,16 @@ fn if_is_empty_list_narrows_v_to_empty_list_in_then_branch() {
         t.display(l_then)
     );
 
-    // In else_b's entry env, l should be narrowed to the non-empty list shape.
+    // In else_b's entry env, l should keep every value except the empty-list
+    // shape. Non-list values are also definitely "not []".
     let else_env = ft.block_envs.get(&else_b).unwrap();
     let l_else = else_env.get(&l).unwrap();
     let any = t.any();
-    let nonempty_any = t.non_empty_list(any);
+    let empty_list = t.empty_list();
+    let not_empty_list = t.difference(any, empty_list);
     assert!(
-        t.is_equivalent(l_else, &nonempty_any),
-        "l in else-branch should be non-empty-list-shaped: {}",
+        t.is_equivalent(l_else, &not_empty_list),
+        "l in else-branch should exclude only the empty list: {}",
         t.display(l_else)
     );
 }
@@ -617,13 +619,13 @@ fn malformed_tuple_token_reuse_falls_back_to_any() {
 // ---- .24.6 unreachable-arm diagnostics ----
 
 #[test]
-fn list_is_nil_on_int_var_flags_both_branches_unreachable() {
+fn list_is_nil_on_int_var_flags_true_branch_unreachable() {
     // entry():
     //   five = 5
-    //   c = IsEmptyList(five)    -- predicate over an int -> both branches empty
+    //   c = IsEmptyList(five)    -- predicate over an int -> true branch empty
     //   if c then then_b else else_b
     // then_b: halt five    -- env[five] narrowed to int_lit(5) ∩ nil = empty
-    // else_b: halt five    -- env[five] narrowed to int_lit(5) ∩ list = empty
+    // else_b: halt five    -- env[five] keeps int_lit(5), because 5 is not []
     let mut b = FnBuilder::new(FnId(0), "f");
     let entry = b.block(vec![]);
     let five = b.let_(entry, Prim::Const(Const::Int(5)));
@@ -639,8 +641,8 @@ fn list_is_nil_on_int_var_flags_both_branches_unreachable() {
     let diags = collect_diagnostics(&mut ct, &m, &t, &crate::telemetry::NullTelemetry);
     assert_eq!(
         diags.len(),
-        2,
-        "expected two unreachable arms, got {:?}",
+        1,
+        "expected one unreachable arm, got {:?}",
         diags
     );
     assert!(

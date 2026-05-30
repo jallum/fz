@@ -257,7 +257,16 @@ pub(crate) fn emit_terminator<
             then_b,
             else_b,
             ..
-        } => emit_if(body, var_env, block_map, cond, then_b, else_b),
+        } => emit_if(
+            body,
+            var_env,
+            block_map,
+            caller_fn_id,
+            blk.id,
+            cond,
+            then_b,
+            else_b,
+        ),
         Term::Halt(v) => emit_halt(body, var_env, is_native, host_ctx, v),
         Term::Return(v) => emit_return_term(
             body,
@@ -411,20 +420,38 @@ fn emit_if<M: cranelift_module::Module>(
     body: &mut CodegenFn<'_, '_, '_, M>,
     var_env: &HashMap<u32, CodegenValue>,
     block_map: &HashMap<u32, ir::Block>,
+    caller_fn_id: crate::fz_ir::FnId,
+    block_id: crate::fz_ir::BlockId,
     cond: &crate::fz_ir::Var,
     then_b: &crate::fz_ir::BlockId,
     else_b: &crate::fz_ir::BlockId,
 ) -> Result<(), CodegenError> {
-    let vb = *var_env.get(&cond.0).expect("unbound if cond");
-    let t_b = *block_map.get(&then_b.0).unwrap();
-    let e_b = *block_map.get(&else_b.0).unwrap();
     let no_args: Vec<BlockArg> = Vec::new();
-    let truthy = if matches!(vb.repr(), ArgRepr::Condition) {
-        vb.value()
-    } else {
-        body.value_truthy(vb)
-    };
-    body.b.ins().brif(truthy, t_b, &no_args, e_b, &no_args);
+    let t_b = block_map.get(&then_b.0).copied();
+    let e_b = block_map.get(&else_b.0).copied();
+    match (t_b, e_b) {
+        (Some(t_b), Some(e_b)) => {
+            let vb = *var_env.get(&cond.0).expect("unbound if cond");
+            let truthy = if matches!(vb.repr(), ArgRepr::Condition) {
+                vb.value()
+            } else {
+                body.value_truthy(vb)
+            };
+            body.b.ins().brif(truthy, t_b, &no_args, e_b, &no_args);
+        }
+        (Some(t_b), None) => {
+            body.b.ins().jump(t_b, &no_args);
+        }
+        (None, Some(e_b)) => {
+            body.b.ins().jump(e_b, &no_args);
+        }
+        (None, None) => {
+            return Err(CodegenError::new(format!(
+                "if terminator in caller {:?} block {:?} has no spec-reachable successor: then={:?}, else={:?}",
+                caller_fn_id, block_id, then_b, else_b
+            )));
+        }
+    }
     Ok(())
 }
 

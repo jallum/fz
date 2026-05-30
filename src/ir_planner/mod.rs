@@ -59,7 +59,7 @@ pub(crate) use reachable::{cont_input_key, cont_slot0_descr};
 pub use switch_dispatch::rewrite_closed_union_protocol_dispatch;
 #[cfg(test)]
 pub(crate) use type_fn::type_fn;
-pub use worklist::{plan_callable_capabilities, plan_module};
+pub use worklist::{plan_callable_capabilities, plan_module, plan_module_with_role};
 
 // ----------------------------------------------------------------------
 // Tests

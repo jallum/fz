@@ -16,18 +16,8 @@ use cranelift_module::{DataDescription, DataId, FuncId, Linkage, Module as ClMod
 use fz_runtime::heap::{FieldDescriptor, FieldKind, Schema};
 use std::collections::HashMap;
 
-fn prepare_codegen_body<T: crate::types::Types<Ty = crate::types::Ty>>(
-    t: &mut T,
-    module: &Module,
-    fn_idx: usize,
-    ft: &crate::ir_planner::SpecPlan,
-    tel: &dyn crate::telemetry::Telemetry,
-) -> crate::fz_ir::FnIr {
-    let mut clone = module.fns[fn_idx].clone();
-    crate::ir_fold::fold_fn_with_types(t, &mut clone, ft);
-    crate::ir_dce::dce_fn_with_telemetry(module.module_path(), &mut clone, tel);
-    crate::ir_fuse::fuse_fn_with_telemetry(module.module_path(), &mut clone, tel);
-    clone
+fn prepare_codegen_body(module: &Module, fn_idx: usize) -> crate::fz_ir::FnIr {
+    module.fns[fn_idx].clone()
 }
 
 fn push_reachable_spec<T: crate::types::Types<Ty = crate::types::Ty>>(
@@ -1330,22 +1320,20 @@ fn build_spec_index_tables<'a>(
     (spec_keys, spec_fnidx, spec_fn_types)
 }
 
-/// Build the per-SpecId codegen bodies. Non-sentinel specs get a body
-/// passed through fold, DCE, and fuse via `prepare_codegen_body`;
-/// sentinel slots get `None`.
-fn prepare_codegen_bodies<T: crate::types::Types<Ty = crate::types::Ty>>(
-    t: &mut T,
+/// Build the per-SpecId codegen bodies. Non-sentinel specs get the
+/// authoritative post-plan module body; sentinel slots get `None`.
+fn prepare_codegen_bodies(
     module: &Module,
     spec_count: usize,
     spec_fnidx: &[Option<usize>],
     spec_fn_types: &[Option<&crate::ir_planner::SpecPlan>],
-    tel: &dyn crate::telemetry::Telemetry,
 ) -> Vec<Option<crate::fz_ir::FnIr>> {
     let mut codegen_bodies: Vec<Option<crate::fz_ir::FnIr>> = Vec::with_capacity(spec_count);
     for sid in 0..spec_count {
         match (spec_fnidx[sid], spec_fn_types[sid]) {
             (Some(idx), Some(ft)) => {
-                codegen_bodies.push(Some(prepare_codegen_body(t, module, idx, ft, tel)));
+                let _ = ft;
+                codegen_bodies.push(Some(prepare_codegen_body(module, idx)));
             }
             _ => codegen_bodies.push(None),
         }
@@ -2113,28 +2101,25 @@ pub(crate) fn compile_with_backend_impl<
     // `assert`'s `panic` branch) so the single authoritative plan below — and
     // the codegen that reads it — never see a reachable ⊥-typed tail.
     crate::ir_diverge::truncate_diverging_blocks(module.module_path(), &mut working, tel);
-    let mut module_plan = crate::ir_planner::plan_module(t, &working, tel);
-    // Snapshot per-fn call-shape multisets right after the planner commits
-    // to specs. The post-planner passes (branch_fold, fold, const_bs::fold,
-    // dce_module, dce_module_level) may FOLD calls away but must never
-    // INVENT new ones — the typer's spec set wouldn't cover invented
-    // calls. The assertion below pins the invariant: every fn's
-    // call-shape multiset post-codegen is a subset (per-kind) of the
-    // post-typer multiset.
-    #[cfg(debug_assertions)]
-    let call_shapes_pre = super::invariants::snapshot_call_shapes(&working);
-    // Fold one-sided-dead Ifs to Gotos; DCE below removes the orphaned
-    // blocks and the now-unused TypeTest stmts.
-    crate::ir_branch_fold::fold_module_with_telemetry(&mut working, &module_plan, tel);
-    crate::ir_fold::fold_module(&mut working, &module_plan);
+    let shaping_plan = crate::ir_planner::plan_module_with_role(t, &working, tel, "shaping");
+    // Fold one-sided-dead Ifs to Gotos and singleton prims before the
+    // authoritative plan. These rewrites change block topology, so codegen's
+    // dispatch facts must be produced from the settled body, not remapped after
+    // the fact.
+    crate::ir_branch_fold::fold_module_with_telemetry(&mut working, &shaping_plan, tel);
+    crate::ir_fold::fold_module(&mut working, &shaping_plan);
     // Fold byte-literal MakeBitstring into ConstBitstring before DCE so
     // the per-byte Const(Int) operand stmts go dead in the same pass.
     crate::ir_const_bs::fold_module(&mut working);
     crate::ir_dce::dce_module_with_telemetry(&mut working, tel);
     // Sweep IR fns unreachable from main after inlining.
     crate::ir_dce::dce_module_level(&mut working);
+    let mut module_plan = crate::ir_planner::plan_module(t, &working, tel);
+    // Snapshot per-fn call-shape multisets after the authoritative planner
+    // commits to specs. Later codegen-local rewrites may consume call shapes
+    // but must not invent new ones.
     #[cfg(debug_assertions)]
-    super::invariants::assert_no_new_call_shapes(&working, &call_shapes_pre);
+    let call_shapes_pre = super::invariants::snapshot_call_shapes(&working);
     // Destination lowering desugars MakeTuple/MakeList/MakeMap/MapUpdate into
     // token-linear Dest* sequences. It is intra-block, adds no blocks and no
     // call edges, and preserves every original construction *result* var —
@@ -2154,6 +2139,8 @@ pub(crate) fn compile_with_backend_impl<
                 .join("\n")
         ))
     })?;
+    #[cfg(debug_assertions)]
+    super::invariants::assert_no_new_call_shapes(&working, &call_shapes_pre);
     let diagnostics = crate::ir_extern_marshal::resolve_module_types(t, &working, &mut module_plan);
     if let Some(diagnostic) = diagnostics.into_iter().next() {
         return Err(CodegenError::new(diagnostic.message).with_span(diagnostic.primary.span));
@@ -2285,8 +2272,7 @@ pub(crate) fn compile_with_backend_impl<
     let bs_const_data: std::cell::RefCell<HashMap<Vec<u8>, BsConstSyms>> =
         std::cell::RefCell::new(HashMap::new());
 
-    let codegen_bodies =
-        prepare_codegen_bodies(t, module, spec_count, &spec_fnidx, &spec_fn_types, tel);
+    let codegen_bodies = prepare_codegen_bodies(module, spec_count, &spec_fnidx, &spec_fn_types);
 
     // Set of SpecIds reachable from main + closure-dispatched fns.
     // Specs not in this set get a trap-stub body instead of full

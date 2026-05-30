@@ -23,7 +23,8 @@ continues to the next row or the match failure block.
 
 `Prim::IsEmptyList(subject)` answers a different question. It is true only for
 the empty-list sentinel. Its false branch includes both non-empty lists and
-non-list values, so it must not guard cons projections.
+non-list values, so it must not guard cons projections. Planner narrowing for
+the false branch is `subject \ []`, not `nonempty_list(any)`.
 
 Tuple projections follow the same rule: a tuple field projection is below the
 arity/schema `TypeTest`. Map patterns use matcher map lookup with an explicit
@@ -46,6 +47,8 @@ then project fields or list head/tail.
 Gate changes here with:
 
 - `cargo test cons_function_clause_falls_through_for_non_lists_in_interp_and_native --lib`
+- `cargo test recursive_cons_function_clause_runs_in_interp_and_native --lib`
+- `cargo test if_is_empty_list_narrows_v_to_empty_list_in_then_branch --lib`
 - `cargo test if_is_list_cons_narrows_only_then_branch_to_non_empty_list --lib`
 - `cargo test nil_does_not_match_empty_list_pattern --lib`
 - `cargo test empty_list_does_not_match_nil_pattern --lib`

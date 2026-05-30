@@ -2413,13 +2413,12 @@ fn const_nil_bool_atom_deduplicated_within_block() {
     );
 }
 
-/// plan_module is called exactly once in the codegen pipeline: the single
-/// authoritative plan, derived after the structural transforms. The pre-plan
-/// rewrite + inline now read a capability-only analysis
-/// (`plan_callable_capabilities`, which does not count as a plan_module call,
-/// fz-hfc.3), and destination lowering no longer re-plans (fz-hfc.4).
+/// plan_module is called twice in the codegen pipeline: one visible shaping
+/// plan that drives CFG simplification, then the authoritative plan derived
+/// after those structural transforms. Destination lowering still does not
+/// re-plan (fz-hfc.4).
 #[test]
-fn plan_module_called_exactly_once_in_pipeline() {
+fn plan_module_called_once_for_shaping_once_for_codegen_in_pipeline() {
     let src = "fn main(), do: dbg(42)";
     let m = lower_src(src);
     crate::ir_planner::PLAN_MODULE_CALLS.with(|c| c.set(0));
@@ -2430,11 +2429,11 @@ fn plan_module_called_exactly_once_in_pipeline() {
     )
     .expect("compile");
     let count = crate::ir_planner::PLAN_MODULE_CALLS.with(|c| c.get());
-    assert_eq!(count, 1, "plan_module called {} times, expected 1", count);
+    assert_eq!(count, 2, "plan_module called {} times, expected 2", count);
 }
 
 #[test]
-fn frontend_to_codegen_pipeline_reports_two_planner_events() {
+fn frontend_to_codegen_pipeline_reports_planner_phase_events() {
     let tel = crate::telemetry::ConfiguredTelemetry::new();
     let cap = crate::telemetry::Capture::new();
     tel.attach(&[], cap.handler());
@@ -2453,15 +2452,14 @@ fn frontend_to_codegen_pipeline_reports_two_planner_events() {
 
     compile(&mut t, &frontend.module, &tel).expect("compile");
 
-    // The single authoritative plan: the pretyped path now reports exactly two
-    // planner.planned events — the frontend plan and the one codegen
-    // plan_module. The pre-plan rewrite + inline read a capability-only analysis
-    // that emits no event (fz-hfc.3), and destination lowering no longer
-    // re-plans (fz-hfc.4). This is the end state invariant 1 targets.
+    // The pretyped path reports three planner.planned events: the frontend
+    // authoritative plan, the codegen shaping plan, and the codegen
+    // authoritative plan. The shaping plan is a real compiler phase and stays
+    // visible in telemetry.
     assert_eq!(
         cap.count(&["fz", "planner", "planned"]),
-        2,
-        "pretyped path reports exactly two planner.planned events — the frontend plan and the single authoritative codegen plan"
+        3,
+        "pretyped path reports frontend, shaping, and authoritative codegen planner events"
     );
 }
 
@@ -2727,6 +2725,43 @@ end
     let compiled = compile(&mut t, &frontend.module, &tel).expect("compile");
     let image = CompiledImage::from_linked(compiled);
     assert_eq!(image.run(entry), 304, "native function-clause dispatch");
+}
+
+#[test]
+fn recursive_cons_function_clause_runs_in_interp_and_native() {
+    const SRC: &str = r#"
+fn count([]), do: 0
+fn count([_head | tail]), do: count(tail) + 1
+fn count(_value), do: 99
+
+fn main() do
+  count([1, 2]) + count([]) + count(%{a: 1}) + count(42)
+end
+"#;
+    let mut t = crate::types::ConcreteTypes;
+    let tel = crate::telemetry::NullTelemetry;
+    let frontend = crate::frontend::compile_source_with_types(
+        &mut t,
+        SRC.to_string(),
+        "recursive_cons_clause.fz".into(),
+        &tel,
+    )
+    .unwrap_or_else(|err| panic!("frontend: {:?}", err.diagnostics));
+    let entry = frontend.module.fn_by_name("main").expect("main").id;
+
+    let interp = crate::ir_interp::run_main(&tel, &frontend.module).expect("interp run");
+    assert_eq!(
+        interp, 200,
+        "interpreter recursive function-clause dispatch"
+    );
+
+    let compiled = compile(&mut t, &frontend.module, &tel).expect("compile");
+    let image = CompiledImage::from_linked(compiled);
+    assert_eq!(
+        image.run(entry),
+        200,
+        "native recursive function-clause dispatch"
+    );
 }
 
 /// `dbg(nil)` and `dbg([])` render as distinct strings — codegen

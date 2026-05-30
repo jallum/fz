@@ -212,6 +212,13 @@ from that call edge. Backend closure captures and CLIF parameter shapes are
 implementation details, not proof sources, and codegen must not construct
 alternate demanded `SpecKey`s.
 
+Native lowering also consumes `SpecPlan.reachable_blocks`. A native spec emits
+only blocks reachable for that spec; an `If` whose other successor is
+spec-unreachable lowers as a direct jump to the live successor. This is still
+planner output, not a backend guess: the same branch narrowing that publishes
+reachable blocks is responsible for preserving non-list values on predicates
+such as `not IsEmptyList(x)`.
+
 For provider-boundary rewrites, the linked callsite must still be the same
 call: same caller, same callsite identity, and same target arity. The arity
 check keeps source-span collisions from rewriting a matcher branch or recursive
