@@ -319,23 +319,6 @@ pub(crate) fn lower_expr(
                     });
                 }
             };
-            // Local closure value? (Shadows fn lookup if a local of the same name exists.)
-            if let Some(local_var) = ctx.lookup(&callee_name) {
-                if is_tail {
-                    ctx.set_term_at(
-                        Term::TailCallClosure {
-                            ident: crate::fz_ir::CallsiteIdent::from_source(sp),
-                            closure: local_var,
-                            args: arg_vars,
-                        },
-                        sp,
-                    );
-                    ctx.terminated = true;
-                    return Ok(Var(0));
-                } else {
-                    return cps_split_call_closure(ctx, local_var, arg_vars, sp);
-                }
-            }
             // fz-ul4.19.3: `receive(...)` is a Term, not a Prim — it's a
             // scheduler-mediated yield point. After CPS-style splitting,
             // it has the same continuation shape as Term::Call but no
@@ -416,6 +399,28 @@ pub(crate) fn lower_expr(
                 cps_split_external_call(ctx, callee, target, arg_vars, sp)
             } else {
                 cps_split_call(ctx, callee, arg_vars, sp)
+            }
+        }
+
+        Expr::ClosureCall(target, args) => {
+            let lowered_args = lower_call_args(ctx, args)?;
+            let arg_vars: Vec<Var> = lowered_args.iter().map(|arg| arg.var).collect();
+            let closure_var = lower_expr(ctx, target, false)?;
+            let closure_park = ctx.park(closure_var);
+            let closure_var = ctx.unpark(&closure_park);
+            if is_tail {
+                ctx.set_term_at(
+                    Term::TailCallClosure {
+                        ident: crate::fz_ir::CallsiteIdent::from_source(sp),
+                        closure: closure_var,
+                        args: arg_vars,
+                    },
+                    sp,
+                );
+                ctx.terminated = true;
+                Ok(Var(0))
+            } else {
+                cps_split_call_closure(ctx, closure_var, arg_vars, sp)
             }
         }
 

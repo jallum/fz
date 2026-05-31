@@ -595,7 +595,7 @@ fn collect_requested_external_modules_recursive(module: &ModuleDef, out: &mut Ve
 
 fn collect_top_level_qualified_calls(expr: &Spanned<Expr>, out: &mut Vec<ModuleName>) {
     match &expr.node {
-        Expr::Call(callee, args) => {
+        Expr::Call(callee, args) | Expr::ClosureCall(callee, args) => {
             if let Some(module) = qualified_callee_module(callee) {
                 out.push(module);
             }
@@ -2010,6 +2010,28 @@ fn rewrite_expr(
             {
                 callee.node = Expr::Var(format!("{}.{}", target.module, n));
             }
+            rewrite_expr(
+                callee,
+                module_path,
+                siblings,
+                intro,
+                module_paths,
+                aliases,
+                imports,
+            );
+            for a in args {
+                rewrite_expr(
+                    a,
+                    module_path,
+                    siblings,
+                    intro,
+                    module_paths,
+                    aliases,
+                    imports,
+                );
+            }
+        }
+        Expr::ClosureCall(callee, args) => {
             rewrite_expr(
                 callee,
                 module_path,

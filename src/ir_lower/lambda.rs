@@ -155,7 +155,7 @@ pub(super) fn collect_expr_free_names(
             collect_expr_free_names(&base.node, bound, free);
             collect_expr_free_names(&key.node, bound, free);
         }
-        Expr::Call(callee, args) => {
+        Expr::Call(callee, args) | Expr::ClosureCall(callee, args) => {
             collect_expr_free_names(&callee.node, bound, free);
             for arg in args {
                 collect_expr_free_names(&arg.node, bound, free);

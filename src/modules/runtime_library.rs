@@ -282,7 +282,7 @@ fn collect_expr_dependencies(
     out: &mut std::collections::BTreeSet<ModuleName>,
 ) {
     match &expr.node {
-        Expr::Call(callee, args) => {
+        Expr::Call(callee, args) | Expr::ClosureCall(callee, args) => {
             if let Some(module) = qualified_callee_module(callee) {
                 out.insert(module);
             }

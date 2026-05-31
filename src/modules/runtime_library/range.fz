@@ -51,7 +51,7 @@ defmodule Range do
     if done?(last, step, current) do
       {:done, acc}
     else
-      reduce_step(first, last, step, current, reducer(current, acc), reducer)
+      reduce_step(first, last, step, current, reducer.(current, acc), reducer)
     end
   end
 

@@ -2,8 +2,8 @@ fn double(x), do: x * 2
 fn neg(x), do: 0 - x
 fn add(x, y), do: x + y
 
-fn apply1(f, x), do: f(x)
-fn apply2(f, x, y), do: f(x, y)
+fn apply1(f, x), do: f.(x)
+fn apply2(f, x, y), do: f.(x, y)
 
 fn main() do
   # Explicit &name/arity passes the disambiguated function reference

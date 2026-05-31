@@ -40,7 +40,7 @@ defmodule List do
 
   fnp reduce_cont([], acc, _reducer), do: {:done, acc}
   fnp reduce_cont([head | tail], acc, reducer) do
-    reduce_step(tail, reducer(head, acc), reducer)
+    reduce_step(tail, reducer.(head, acc), reducer)
   end
 
   fnp reduce_step(list, {:cont, acc}, reducer), do: reduce_cont(list, acc, reducer)

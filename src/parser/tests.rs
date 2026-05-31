@@ -1255,4 +1255,22 @@ mod capture_tests {
         assert_eq!(args.len(), 2);
         assert!(matches!(args[1].node, Expr::Capture(_)));
     }
+
+    #[test]
+    fn anonymous_function_call_uses_dot_parens() {
+        let Expr::ClosureCall(callee, args) = expr("fun.(1, 2)") else {
+            panic!("expected closure call");
+        };
+        assert!(matches!(callee.node, Expr::Var(ref n) if n == "fun"));
+        assert_eq!(args.len(), 2);
+    }
+
+    #[test]
+    fn bare_call_stays_named_call_even_when_target_name_looks_like_a_local() {
+        let Expr::Call(callee, args) = expr("count(1)") else {
+            panic!("expected named call");
+        };
+        assert!(matches!(callee.node, Expr::Var(ref n) if n == "count"));
+        assert_eq!(args.len(), 1);
+    }
 }

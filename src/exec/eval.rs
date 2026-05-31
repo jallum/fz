@@ -532,7 +532,18 @@ impl CompileTimeEvaluator {
                 }
                 Ok(writer.finalize())
             }
-            Expr::Call(f, args) => {
+            Expr::Call(callee, args) => {
+                let name = match &callee.node {
+                    Expr::Var(n) => n.as_str(),
+                    _ => return Err("named call target must resolve to a function name".into()),
+                };
+                let mut vs = Vec::with_capacity(args.len());
+                for a in args {
+                    vs.push(self.eval(a, env)?);
+                }
+                self.call_named(name, vs)
+            }
+            Expr::ClosureCall(f, args) => {
                 let callee = self.eval(f, env)?;
                 let mut vs = Vec::with_capacity(args.len());
                 for a in args {
@@ -733,6 +744,7 @@ impl CompileTimeEvaluator {
                 }
                 Ok(quoted_node(&name, Value::List(Rc::new(arg_vs))))
             }
+            Expr::ClosureCall(_, _) => Err("quote: anonymous-function calls not yet supported".into()),
             Expr::BinOp(op, l, r) => {
                 let lv = self.reify_with_unquotes(l, env)?;
                 let rv = self.reify_with_unquotes(r, env)?;
@@ -900,6 +912,26 @@ fn main() do {check(42), check(:foo)} end
         };
         assert!(matches!(&items[0], Value::Atom(atom) if atom.as_ref() == "is_int"));
         assert!(matches!(&items[1], Value::Atom(atom) if atom.as_ref() == "other"));
+    }
+
+    #[test]
+    fn anonymous_function_calls_require_dot_parens() {
+        let v = eval_in_main("f = fn (x) -> x + 1 end\nf.(2)");
+        assert!(matches!(v, Value::Int(3)), "got {}", v);
+    }
+
+    #[test]
+    fn bare_named_calls_do_not_dispatch_to_local_values() {
+        let src = "fn main() do\n  count = fn (x) -> x + 1 end\n  count(2)\nend";
+        let toks = Lexer::new(src).tokenize().expect("lex");
+        let prog = Parser::new(toks).parse_program().expect("parse");
+        let interp = CompileTimeEvaluator::new();
+        interp.load_program(&prog).expect("load");
+        let err = interp.call_named("main", vec![]).expect_err("expected named-call failure");
+        assert!(
+            err.contains("undefined: count"),
+            "expected undefined function error, got {err:?}"
+        );
     }
 }
 

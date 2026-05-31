@@ -86,6 +86,9 @@ pub fn expr_to_value(e: &Spanned<Expr>) -> Result<Value, String> {
             let arg_vs = reify_each(args)?;
             ast_node(&name, &[], Some(Value::List(Rc::new(arg_vs))))
         }
+        Expr::ClosureCall(_, _) => {
+            return Err("quote: anonymous-function calls not yet supported in v1".into());
+        }
 
         Expr::BinOp(op, l, r) => {
             let lv = expr_to_value(l)?;

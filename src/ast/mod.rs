@@ -99,9 +99,12 @@ pub enum Expr {
     /// m[k] — bracket access; returns nil if key absent.
     Index(Box<Spanned<Expr>>, Box<Spanned<Expr>>),
 
-    // call: target(args...)  — target is an expr (usually Var; module
-    // qualification is desugared to Index by the parser)
+    // named call: target(args...)  — target is an expr (usually Var; module
+    // qualification is desugared to Index by the parser and later resolved
+    // to a dotted Var). This is distinct from anonymous-function call.
     Call(Box<Spanned<Expr>>, Vec<Spanned<Expr>>),
+    // anonymous-function call: target.(args...)
+    ClosureCall(Box<Spanned<Expr>>, Vec<Spanned<Expr>>),
     /// Call-argument type ascription: `expr :: TypeExpr`. Produced by the
     /// call parser and consumed by extern lowering.
     #[allow(dead_code)] // Read by fz-zar.B; fz-zar.A only preserves syntax.

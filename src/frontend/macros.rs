@@ -552,6 +552,12 @@ fn expand_expr_inner(
                 e.node = Expr::Call(Box::new((**rhs).clone()), new_args);
             }
         }
+        Expr::ClosureCall(callee, args) => {
+            expand_expr_inner(callee, interp, macros, depth, in_capture)?;
+            for a in args.iter_mut() {
+                expand_expr_inner(a, interp, macros, depth, in_capture)?;
+            }
+        }
         Expr::BinOp(op, l, r) => {
             expand_expr_inner(l, interp, macros, depth, in_capture)?;
             expand_expr_inner(r, interp, macros, depth, in_capture)?;
@@ -564,6 +570,12 @@ fn expand_expr_inner(
                             new_args.push(lhs);
                             new_args.extend(args.iter().cloned());
                             e.node = Expr::Call(callee.clone(), new_args);
+                        }
+                        Expr::ClosureCall(callee, args) => {
+                            let mut new_args = Vec::with_capacity(args.len() + 1);
+                            new_args.push(lhs);
+                            new_args.extend(args.iter().cloned());
+                            e.node = Expr::ClosureCall(callee.clone(), new_args);
                         }
                         Expr::Case(scrut @ None, arms) => {
                             *scrut = Some(Box::new(lhs));
@@ -875,7 +887,7 @@ fn visit_expr(e: &Spanned<Expr>, f: &mut impl FnMut(&Expr)) {
             visit_expr(base, f);
             visit_expr(key, f);
         }
-        Expr::Call(callee, args) => {
+        Expr::Call(callee, args) | Expr::ClosureCall(callee, args) => {
             visit_expr(callee, f);
             for arg in args {
                 visit_expr(arg, f);
@@ -999,7 +1011,7 @@ fn visit_expr_mut(e: &mut Spanned<Expr>, f: &mut impl FnMut(&mut Expr, Span)) {
             visit_expr_mut(base, f);
             visit_expr_mut(key, f);
         }
-        Expr::Call(callee, args) => {
+        Expr::Call(callee, args) | Expr::ClosureCall(callee, args) => {
             visit_expr_mut(callee, f);
             for arg in args {
                 visit_expr_mut(arg, f);
@@ -1147,7 +1159,7 @@ fn stamp_expanded(e: &mut Spanned<Expr>, macro_call: Span, definition: Option<Sp
             stamp_expanded(o, macro_call, definition);
             stamp_expanded(i, macro_call, definition);
         }
-        Expr::Call(callee, args) => {
+        Expr::Call(callee, args) | Expr::ClosureCall(callee, args) => {
             stamp_expanded(callee, macro_call, definition);
             for a in args {
                 stamp_expanded(a, macro_call, definition);

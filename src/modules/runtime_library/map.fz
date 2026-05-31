@@ -34,7 +34,7 @@ defmodule Map do
     if index >= count do
       {:done, acc}
     else
-      reduce_step(map, count, index, reducer(entry(map, index), acc), reducer)
+      reduce_step(map, count, index, reducer.(entry(map, index), acc), reducer)
     end
   end
 

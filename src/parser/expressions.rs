@@ -93,6 +93,16 @@ impl Parser {
                     continue;
                 }
                 Tok::Dot => {
+                    if matches!(self.peek_at(1), Tok::LParen) {
+                        self.bump();
+                        self.bump();
+                        let mut call_args = self.parse_call_args()?;
+                        self.expect(&Tok::RParen, "`)`")?;
+                        self.attach_trailing_do(&mut call_args)?;
+                        let span = start.merge(self.prev_span());
+                        lhs = Spanned::new(Expr::ClosureCall(Box::new(lhs), call_args.args), span);
+                        continue;
+                    }
                     self.bump();
                     let name = match self.bump() {
                         Tok::Ident(n) => n,

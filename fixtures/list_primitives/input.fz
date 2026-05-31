@@ -6,10 +6,10 @@ fn reverse_acc([], acc), do: acc
 fn reverse_acc([h | t], acc), do: reverse_acc(t, [h | acc])
 
 fn map(_, []), do: []
-fn map(f, [h | t]), do: [f(h) | map(f, t)]
+fn map(f, [h | t]), do: [f.(h) | map(f, t)]
 
 fn foldl(_, acc, []), do: acc
-fn foldl(f, acc, [h | t]), do: foldl(f, f(acc, h), t)
+fn foldl(f, acc, [h | t]), do: foldl(f, f.(acc, h), t)
 
 fn double(x), do: x * 2
 fn add(a, b), do: a + b

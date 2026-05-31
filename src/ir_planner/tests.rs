@@ -1694,7 +1694,7 @@ fn higher_order_callee_registers_any_key_body_and_narrow_spec() {
     let (mut t, m, mt) = pipeline(
         r#"
 fn double(x), do: x * 2
-fn apply2(f, x), do: f(x)
+fn apply2(f, x), do: f.(x)
 fn main() do
   dbg(apply2(double, 21))
 end
@@ -1930,8 +1930,8 @@ fn add_to(x), do: fn (y) -> x + y end
 fn main() do
   f = add_to(7)
   g = add_to(3.5)
-  dbg(f(1))
-  dbg(g(2.0))
+  dbg(f.(1))
+  dbg(g.(2.0))
 end
 "#,
         &crate::telemetry::NullTelemetry,
@@ -1974,7 +1974,7 @@ fn cont_slot0_after_closure_lit_callclosure_is_narrow_not_any() {
 fn add_to(x), do: fn (y) -> x + y end
 fn main() do
   f = add_to(7)
-  r = f(1)
+  r = f.(1)
   dbg(r + 100)
 end
 "#,
@@ -2025,7 +2025,7 @@ fn cont_slot0_is_broad_for_call_closure() {
     let (mut t, m, mt) = pipeline(
         r#"
 fn apply(f, x) do
-  r = f(x)
+  r = f.(x)
   r + 1
 end
 fn main() do
@@ -2078,7 +2078,7 @@ fn known_fn_capability_from_makeclosure_zero_captures() {
     let (_t, m, mt) = pipeline(
         r#"
 fn double(x), do: x * 2
-fn apply2(f, x), do: f(x)
+fn apply2(f, x), do: f.(x)
 fn main() do
   dbg(apply2(double, 21))
 end
@@ -2171,7 +2171,7 @@ fn known_fn_capability_propagates_via_direct_call() {
     let (_t, m, mt) = pipeline(
         r#"
 fn double(x), do: x * 2
-fn apply2(f, x), do: f(x)
+fn apply2(f, x), do: f.(x)
 fn main() do
   dbg(apply2(double, 21))
 end
@@ -2254,7 +2254,7 @@ fn closure_call_rewritten_to_direct_call() {
         r#"
 fn double(x), do: x * 2
 fn apply_plus1(f, x) do
-  r = f(x)
+  r = f.(x)
   r + 1
 end
 fn main() do
@@ -2291,7 +2291,7 @@ fn tailcall_closure_variant_rewritten() {
     let (mut t, mut m, _mt) = pipeline(
         r#"
 fn double(x), do: x * 2
-fn apply2(f, x), do: f(x)
+fn apply2(f, x), do: f.(x)
 fn main() do
   apply2(double, 21)
 end
@@ -2334,7 +2334,7 @@ fn callclosure_with_known_fn_capability_registers_narrow_spec() {
     let (t, m, mt) = pipeline(
         r#"
 fn double(x), do: x * 2
-fn apply2(f, x), do: f(x)
+fn apply2(f, x), do: f.(x)
 fn main() do
   dbg(apply2(double, 21))
 end
@@ -3697,7 +3697,7 @@ fn rewrite_erases_threaded_constant_closure() {
 fn rewrite_keeps_non_constant_closure() {
     let src = "fn f(x), do: x + 1\n\
                fn g(x), do: x * 2\n\
-               fn apply(h, x), do: h(x)\n\
+               fn apply(h, x), do: h.(x)\n\
                fn main() do\n\
                  apply(f, 1)\n\
                  apply(g, 2)\n\
@@ -3721,7 +3721,7 @@ fn rewrite_keeps_non_constant_closure() {
 #[test]
 fn rewrite_keeps_known_fn_when_other_specs_have_captured_closure() {
     let src = "fn f(x), do: x + 1\n\
-               fn apply(h, x), do: h(x)\n\
+               fn apply(h, x), do: h.(x)\n\
                fn via_capture(n), do: apply(fn x -> x + n end, 2)\n\
                fn main() do\n\
                  apply(f, 1)\n\

@@ -44,6 +44,17 @@ f(x, [timeout: 10, do: 42])
 This matches Elixir's user-facing model without adding a keyword-list AST node
 or runtime type.
 
+Named calls and anonymous-function calls are different syntax forms:
+
+```text
+count(1)     => named call
+count.(1)    => anonymous-function call
+```
+
+The parser and AST keep them separate. A bare call never falls back to "call a
+local value with the same name". If the source means "call the value currently
+bound to `count`", it must write `count.(...)`.
+
 The type surface follows the same rule. The runtime prelude defines ordinary
 aliases:
 
@@ -104,6 +115,17 @@ list (`bar(x)` plus `c: 2`); Elixir folds it into the inner call. The parser
 emits a `parse/ambiguous-no-parens-keyword` warning diagnostic to telemetry
 (under `[fz, diag, warning]`) so the divergence is observable and the source
 can be disambiguated with explicit parentheses.
+
+Anonymous-function calls use the same postfix `.(...)` form as Elixir:
+
+```text
+fun.(x)
+some_fun.()
+```
+
+They parse to `Expr::ClosureCall(target, args)`. The ordinary `.` field/index
+postfix keeps its existing meaning for `m.k`; only `.(...)` is the closure-call
+operator.
 
 ## Anonymous Functions
 
@@ -191,6 +213,8 @@ Gate changes here with:
 - `cargo test parser::tests::no_parens_keyword_ambiguity_tests`
 - `cargo test parser::tests::lambda_tests`
 - `cargo test parser::tests::capture_tests`
+- `cargo test anonymous_function_calls_require_dot_parens --lib`
+- `cargo test bare_named_calls_do_not_dispatch_to_local_values --lib`
 - `cargo test private_fns_are_not_interface_exports`
 - `cargo test --test fixture_matrix keyword_lists`
 - `cargo test --test fixture_matrix no_parens_keyword`

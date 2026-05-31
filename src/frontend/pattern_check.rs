@@ -269,7 +269,7 @@ fn walk_expr(e: &Spanned<Expr>, diags: &mut Vec<Diagnostic>) {
                 walk_expr(&clause.body, diags);
             }
         }
-        Expr::Call(target, args) => {
+        Expr::Call(target, args) | Expr::ClosureCall(target, args) => {
             walk_expr(target, diags);
             args.iter().for_each(|a| walk_expr(a, diags));
         }

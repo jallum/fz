@@ -1,7 +1,7 @@
 fn double(x), do: x * 2
 fn neg(x), do: 0 - x
-fn apply2(f, x), do: f(x)
-fn compose(f, g, x), do: f(g(x))
+fn apply2(f, x), do: f.(x)
+fn compose(f, g, x), do: f.(g.(x))
 
 fn main() do
   assert(apply2(double, 21) == 42, "apply2 calls a passed fn")

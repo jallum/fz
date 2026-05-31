@@ -12,7 +12,7 @@ defmodule Enum do
   fn reduce(enumerable, acc, reducer) do
     reduce_finish(
       Enumerable.reduce(enumerable, {:cont, acc}, fn (entry, inner_acc) ->
-        {:cont, reducer(entry, inner_acc)}
+        {:cont, reducer.(entry, inner_acc)}
       end)
     )
   end
@@ -35,7 +35,7 @@ defmodule Enum do
   @spec count(Enumerable.t(a), (a) -> any) :: integer
   fn count(enumerable, fun) do
     reduce(enumerable, 0, fn (entry, acc) ->
-      if fun(entry), do: acc + 1, else: acc
+      if fun.(entry), do: acc + 1, else: acc
     end)
   end
 
@@ -46,14 +46,10 @@ defmodule Enum do
   fn to_list(enumerable), do: reverse(reverse(enumerable))
 
   @spec reverse(Enumerable.t(a)) :: [a]
-  fn reverse(enumerable) do
-    reduce(enumerable, [], fn (entry, acc) -> [entry | acc] end)
-  end
+  fn reverse(enumerable), do: reduce(enumerable, [], fn (entry, acc) -> [entry | acc] end)
 
   @spec reverse(Enumerable.t(a), [a]) :: [a]
-  fn reverse(enumerable, tail) do
-    reduce(enumerable, to_list(tail), fn (entry, acc) -> [entry | acc] end)
-  end
+  fn reverse(enumerable, tail), do: reduce(enumerable, to_list(tail), fn (entry, acc) -> [entry | acc] end)
 
   @spec map(Enumerable.t(a), (a) -> b) :: [b]
   fn map(enumerable, fun), do: map_list(to_list(enumerable), fun)
@@ -62,7 +58,7 @@ defmodule Enum do
   fn filter(enumerable, fun), do: filter_list(to_list(enumerable), fun)
 
   @spec reject(Enumerable.t(a), (a) -> any) :: [a]
-  fn reject(enumerable, fun), do: filter(enumerable, fn (entry) -> not fun(entry) end)
+  fn reject(enumerable, fun), do: filter(enumerable, fn (entry) -> not fun.(entry) end)
 
   @spec flat_map(Enumerable.t(a), (a) -> Enumerable.t(b)) :: [b]
   fn flat_map(enumerable, fun), do: flat_map_list(to_list(enumerable), fun)
@@ -105,13 +101,13 @@ defmodule Enum do
   fn all?(enumerable), do: reduce_while(enumerable, true, fn (entry, _acc) -> all_value_step(entry) end)
 
   @spec all?(Enumerable.t(a), (a) -> any) :: bool
-  fn all?(enumerable, fun), do: reduce_while(enumerable, true, fn (entry, _acc) -> all_value_step(fun(entry)) end)
+  fn all?(enumerable, fun), do: reduce_while(enumerable, true, fn (entry, _acc) -> all_value_step(fun.(entry)) end)
 
   @spec any?(Enumerable.t(a)) :: bool
   fn any?(enumerable), do: reduce_while(enumerable, false, fn (entry, _acc) -> any_value_step(entry) end)
 
   @spec any?(Enumerable.t(a), (a) -> any) :: bool
-  fn any?(enumerable, fun), do: reduce_while(enumerable, false, fn (entry, _acc) -> any_value_step(fun(entry)) end)
+  fn any?(enumerable, fun), do: reduce_while(enumerable, false, fn (entry, _acc) -> any_value_step(fun.(entry)) end)
 
   @spec empty?(Enumerable.t(a)) :: bool
   fn empty?(enumerable), do: reduce_while(enumerable, true, fn (_entry, _acc) -> {:halt, false} end)
@@ -122,7 +118,7 @@ defmodule Enum do
   @spec find(Enumerable.t(a), b, (a) -> any) :: a | b
   fn find(enumerable, default, fun) do
     reduce_while(enumerable, default, fn (entry, _acc) ->
-      if fun(entry), do: {:halt, entry}, else: {:cont, default}
+      if fun.(entry), do: {:halt, entry}, else: {:cont, default}
     end)
   end
 
@@ -130,7 +126,7 @@ defmodule Enum do
   fn find_index(enumerable, fun) do
     find_index_finish(
       reduce_while(enumerable, {:not_found, 0}, fn (entry, state) ->
-        find_index_step(fun(entry), state)
+        find_index_step(fun.(entry), state)
       end)
     )
   end
@@ -141,8 +137,72 @@ defmodule Enum do
   @spec find_value(Enumerable.t(a), b, (a) -> c) :: b | c
   fn find_value(enumerable, default, fun) do
     reduce_while(enumerable, default, fn (entry, _acc) ->
-      find_value_step(fun(entry), default)
+      find_value_step(fun.(entry), default)
     end)
+  end
+
+  @spec take(Enumerable.t(a), integer) :: [a]
+  fn take(_enumerable, 0), do: []
+  fn take(enumerable, amount) when amount > 0, do: take_positive(enumerable, amount)
+  fn take(enumerable, amount), do: drop_positive(enumerable, normalized_prefix_count(enumerable, amount))
+
+  @spec take_while(Enumerable.t(a), (a) -> any) :: [a]
+  fn take_while(enumerable, fun) do
+    reverse_list(
+      reduce_while(enumerable, [], fn (entry, acc) ->
+        if fun.(entry), do: {:cont, [entry | acc]}, else: {:halt, acc}
+      end)
+    )
+  end
+
+  @spec take_every(Enumerable.t(a), integer) :: [a]
+  fn take_every(_enumerable, 0), do: []
+  fn take_every(enumerable, 1), do: to_list(enumerable)
+  fn take_every(enumerable, nth) when nth > 1 do
+    take_every_finish(reduce(enumerable, {[], 0}, fn (entry, state) -> take_every_step(entry, state, nth) end))
+  end
+
+  @spec drop(Enumerable.t(a), integer) :: [a]
+  fn drop(enumerable, 0), do: to_list(enumerable)
+  fn drop(enumerable, amount) when amount > 0, do: drop_positive(enumerable, amount)
+  fn drop(enumerable, amount), do: take_positive(enumerable, normalized_prefix_count(enumerable, amount))
+
+  @spec drop_while(Enumerable.t(a), (a) -> any) :: [a]
+  fn drop_while(enumerable, fun) do
+    drop_while_finish(reduce(enumerable, {[], true}, fn (entry, state) -> drop_while_step(entry, state, fun) end))
+  end
+
+  @spec drop_every(Enumerable.t(a), integer) :: [a]
+  fn drop_every(_enumerable, 1), do: []
+  fn drop_every(enumerable, 0), do: to_list(enumerable)
+  fn drop_every(enumerable, nth) when nth > 1 do
+    drop_every_finish(reduce(enumerable, {[], 0}, fn (entry, state) -> drop_every_step(entry, state, nth) end))
+  end
+
+  @spec split(Enumerable.t(a), integer) :: {[a], [a]}
+  fn split(enumerable, count) when count >= 0, do: split_positive(enumerable, count)
+  fn split(enumerable, count), do: split_positive(enumerable, normalized_prefix_count(enumerable, count))
+
+  @spec split_while(Enumerable.t(a), (a) -> any) :: {[a], [a]}
+  fn split_while(enumerable, fun) do
+    split_pair_finish(
+      reduce(enumerable, {[], []}, fn
+        (entry, {left, []}) ->
+          if fun.(entry), do: {[entry | left], []}, else: {left, [entry]}
+
+        (entry, {left, right}) ->
+          {left, [entry | right]}
+      end)
+    )
+  end
+
+  @spec split_with(Enumerable.t(a), (a) -> any) :: {[a], [a]}
+  fn split_with(enumerable, fun) do
+    split_pair_finish(
+      reduce(enumerable, {[], []}, fn (entry, {left, right}) ->
+        if fun.(entry), do: {[entry | left], right}, else: {left, [entry | right]}
+      end)
+    )
   end
 
   @spec sort(Enumerable.t(a)) :: [a]
@@ -159,14 +219,14 @@ defmodule Enum do
   fnp reduce_finish({:suspended, acc, _continuation}), do: acc
 
   fnp reduce_first_step(entry, :first, _reducer), do: {:cont, {:acc, entry}}
-  fnp reduce_first_step(entry, {:acc, acc}, reducer), do: {:cont, {:acc, reducer(entry, acc)}}
+  fnp reduce_first_step(entry, {:acc, acc}, reducer), do: {:cont, {:acc, reducer.(entry, acc)}}
 
   fnp reduce_first_finish(result), do: reduce_first_acc(reduce_finish(result))
   fnp reduce_first_acc(:first), do: panic("Enum.EmptyError")
   fnp reduce_first_acc({:acc, acc}), do: acc
 
   fnp each_step(entry, acc, fun) do
-    fun(entry)
+    fun.(entry)
     acc
   end
 
@@ -185,11 +245,11 @@ defmodule Enum do
   end
 
   fnp map_list([], _fun), do: []
-  fnp map_list([head | tail], fun), do: [fun(head) | map_list(tail, fun)]
+  fnp map_list([head | tail], fun), do: [fun.(head) | map_list(tail, fun)]
 
   fnp filter_list([], _fun), do: []
   fnp filter_list([head | tail], fun) do
-    if fun(head) do
+    if fun.(head) do
       [head | filter_list(tail, fun)]
     else
       filter_list(tail, fun)
@@ -198,7 +258,7 @@ defmodule Enum do
 
   fnp flat_map_list([], _fun), do: []
   fnp flat_map_list([head | tail], fun) do
-    concat_list(to_list(fun(head)), flat_map_list(tail, fun))
+    concat_list(to_list(fun.(head)), flat_map_list(tail, fun))
   end
 
   fnp concat_list([], right), do: right
@@ -206,7 +266,7 @@ defmodule Enum do
 
   fnp map_reduce_list([], acc, _fun), do: {[], acc}
   fnp map_reduce_list([head | tail], acc, fun) do
-    {mapped, next_acc} = fun(head, acc)
+    {mapped, next_acc} = fun.(head, acc)
     {mapped_tail, final_acc} = map_reduce_list(tail, next_acc, fun)
     {[mapped | mapped_tail], final_acc}
   end
@@ -216,7 +276,7 @@ defmodule Enum do
 
   fnp scan_list([], _acc, _fun), do: []
   fnp scan_list([head | tail], acc, fun) do
-    next = fun(head, acc)
+    next = fun.(head, acc)
     [next | scan_list(tail, next, fun)]
   end
 
@@ -230,32 +290,32 @@ defmodule Enum do
   fnp with_index_list([head | tail], index), do: [{head, index} | with_index_list(tail, index + 1)]
 
   fnp with_index_list([], _index, _fun), do: []
-  fnp with_index_list([head | tail], index, fun), do: [fun(head, index) | with_index_list(tail, index + 1, fun)]
+  fnp with_index_list([head | tail], index, fun), do: [fun.(head, index) | with_index_list(tail, index + 1, fun)]
 
   fnp map_every_list([], _nth, _index, _fun), do: []
   fnp map_every_list([head | tail], nth, index, fun) do
-    next = if (index % nth) == 0, do: fun(head), else: head
+    next = if (index % nth) == 0, do: fun.(head), else: head
     [next | map_every_list(tail, nth, index + 1, fun)]
   end
 
   fnp map_join_list([], _joiner, _mapper), do: ""
   fnp map_join_list([head | tail], joiner, mapper) do
-    map_join_tail(tail, joiner, mapper, mapper(head))
+    map_join_tail(tail, joiner, mapper, mapper.(head))
   end
 
   fnp map_join_tail([], _joiner, _mapper, acc), do: acc
   fnp map_join_tail([head | tail], joiner, mapper, acc) do
-    map_join_tail(tail, joiner, mapper, acc <> joiner <> mapper(head))
+    map_join_tail(tail, joiner, mapper, acc <> joiner <> mapper.(head))
   end
 
   fnp map_intersperse_list([], _separator, _mapper), do: []
   fnp map_intersperse_list([head | tail], separator, mapper) do
-    [mapper(head) | map_intersperse_tail(tail, separator, mapper)]
+    [mapper.(head) | map_intersperse_tail(tail, separator, mapper)]
   end
 
   fnp map_intersperse_tail([], _separator, _mapper), do: []
   fnp map_intersperse_tail([head | tail], separator, mapper) do
-    [separator, mapper(head) | map_intersperse_tail(tail, separator, mapper)]
+    [separator, mapper.(head) | map_intersperse_tail(tail, separator, mapper)]
   end
 
   fnp all_value_step(value) do
@@ -277,13 +337,66 @@ defmodule Enum do
     if value, do: {:halt, value}, else: {:cont, default}
   end
 
+  fnp normalized_prefix_count(enumerable, amount), do: non_negative(count(enumerable) + amount)
+  fnp non_negative(count) when count > 0, do: count
+  fnp non_negative(_count), do: 0
+
+  fnp take_positive(enumerable, amount) do
+    take_positive_finish(
+      reduce_while(enumerable, {[], amount}, fn (entry, state) ->
+        take_positive_step(entry, state)
+      end)
+    )
+  end
+
+  fnp take_positive_step(entry, {acc, 1}), do: {:halt, {[entry | acc], 0}}
+  fnp take_positive_step(entry, {acc, amount}), do: {:cont, {[entry | acc], amount - 1}}
+  fnp take_positive_finish({acc, _amount}), do: reverse_list(acc)
+
+  fnp take_every_step(entry, {acc, 0}, nth), do: {[entry | acc], nth - 1}
+  fnp take_every_step(_entry, {acc, countdown}, _nth), do: {acc, countdown - 1}
+  fnp take_every_finish({acc, _countdown}), do: reverse_list(acc)
+
+  fnp drop_positive(enumerable, amount) do
+    drop_positive_finish(reduce(enumerable, {[], amount}, fn (entry, state) -> drop_positive_step(entry, state) end))
+  end
+
+  fnp drop_positive_step(_entry, {acc, amount}) when amount > 0, do: {acc, amount - 1}
+  fnp drop_positive_step(entry, {acc, _amount}), do: {[entry | acc], 0}
+  fnp drop_positive_finish({acc, _amount}), do: reverse_list(acc)
+
+  fnp drop_while_step(entry, {acc, true}, fun) do
+    if fun.(entry), do: {acc, true}, else: {[entry | acc], false}
+  end
+
+  fnp drop_while_step(entry, {acc, false}, _fun), do: {[entry | acc], false}
+  fnp drop_while_finish({acc, _dropping}), do: reverse_list(acc)
+
+  fnp drop_every_step(_entry, {acc, 0}, nth), do: {acc, nth - 1}
+  fnp drop_every_step(entry, {acc, countdown}, _nth), do: {[entry | acc], countdown - 1}
+  fnp drop_every_finish({acc, _countdown}), do: reverse_list(acc)
+
+  fnp split_positive(enumerable, count) do
+    split_counted_finish(
+      reduce(enumerable, {[], [], count}, fn (entry, state) ->
+        split_positive_step(entry, state)
+      end)
+    )
+  end
+
+  fnp split_positive_step(entry, {left, right, count}) when count > 0, do: {[entry | left], right, count - 1}
+  fnp split_positive_step(entry, {left, right, _count}), do: {left, [entry | right], 0}
+
+  fnp split_counted_finish({left, right, _count}), do: {reverse_list(left), reverse_list(right)}
+  fnp split_pair_finish({left, right}), do: {reverse_list(left), reverse_list(right)}
+
   fnp sort_list([], _sorter), do: []
   fnp sort_list([single], _sorter), do: [single]
   fnp sort_list(list, sorter) do
     {left, right} = split_sort_list(list, [], [])
     merge_sort_lists(
-      sort_list(reverse_sort_list(left), sorter),
-      sort_list(reverse_sort_list(right), sorter),
+      sort_list(reverse_list(left), sorter),
+      sort_list(reverse_list(right), sorter),
       sorter
     )
   end
@@ -294,14 +407,14 @@ defmodule Enum do
     split_sort_list(tail, [left_head | left], [right_head | right])
   end
 
-  fnp reverse_sort_list(list), do: reverse_sort_list(list, [])
-  fnp reverse_sort_list([], acc), do: acc
-  fnp reverse_sort_list([head | tail], acc), do: reverse_sort_list(tail, [head | acc])
+  fnp reverse_list(list), do: reverse_list(list, [])
+  fnp reverse_list([], acc), do: acc
+  fnp reverse_list([head | tail], acc), do: reverse_list(tail, [head | acc])
 
   fnp merge_sort_lists([], right, _sorter), do: right
   fnp merge_sort_lists(left, [], _sorter), do: left
   fnp merge_sort_lists([left_head | left_tail], [right_head | right_tail], sorter) do
-    if sorter(left_head, right_head) do
+    if sorter.(left_head, right_head) do
       [left_head | merge_sort_lists(left_tail, [right_head | right_tail], sorter)]
     else
       [right_head | merge_sort_lists([left_head | left_tail], right_tail, sorter)]

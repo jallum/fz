@@ -33,7 +33,7 @@ fn static_closure_targets_registered_for_zero_cap_make_closure() {
     // constants and leave no MakeClosure for the codegen path to handle.
     let src = "fn f(x), do: x + 1\n\
                fn g(x), do: x * 2\n\
-               fn apply(h, x), do: h(x)\n\
+               fn apply(h, x), do: h.(x)\n\
                fn main() do\n\
                  dbg(apply(f, 1))\n\
                  dbg(apply(g, 2))\n\
@@ -86,7 +86,7 @@ fn static_closure_lookup_returns_singleton_pointer() {
     // `eliminate_constant_closure_values`.)
     let src = "fn f(x), do: x + 1\n\
                fn g(x), do: x * 2\n\
-               fn apply(h, x), do: h(x)\n\
+               fn apply(h, x), do: h.(x)\n\
                fn main() do\n\
                  dbg(apply(f, 1))\n\
                  dbg(apply(g, 2))\n\
@@ -1523,7 +1523,7 @@ fn apply_simple_closure_no_captures() {
         run_main(
             r#"
 fn double(x), do: x * 2
-fn apply_f(f, n), do: f(n)
+fn apply_f(f, n), do: f.(n)
 fn main(), do: apply_f(double, 21)
 "#
         ),
@@ -1539,7 +1539,7 @@ fn closure_captures_local_value() {
 fn make_adder(k), do: fn(x) -> x + k end
 fn main() do
   f = make_adder(10)
-  f(5)
+  f.(5)
 end
 "#
         ),
@@ -1554,7 +1554,7 @@ fn closure_literal_marks_ref_captures_as_published() {
 fn main() do
   xs = [1, 2]
   f = fn() -> xs end
-  f()
+  f.()
 end
 "#,
     );
@@ -1573,7 +1573,7 @@ fn map_higher_order_renders_doubled_list() {
             r#"
 fn double(x), do: x * 2
 fn map_l(_, []), do: []
-fn map_l(f, [h | t]), do: [f(h) | map_l(f, t)]
+fn map_l(f, [h | t]), do: [f.(h) | map_l(f, t)]
 fn main(), do: dbg(map_l(double, [1, 2, 3]))
 "#
         ),
@@ -1778,7 +1778,7 @@ fn tail_call_closure_reuses_frame_via_count_loop() {
         run_main(
             r#"
 fn loop_with(f, 0, acc), do: acc
-fn loop_with(f, n, acc), do: f(f, n - 1, acc + 1)
+fn loop_with(f, n, acc), do: f.(f, n - 1, acc + 1)
 fn main(), do: loop_with(loop_with, 100000, 0)
 "#
         ),
@@ -2565,7 +2565,7 @@ fn resolve_tcc_body_handles_callclosure_with_captures() {
     let src = r#"
 fn each(_, []), do: nil
 fn each(f, [h | t]) do
-  f(h)
+  f.(h)
   each(f, t)
 end
 
@@ -2634,7 +2634,7 @@ fn tailcall_closure_capture_repro_emits_live_cont_body() {
     let src = r#"
 fn each(_, []), do: nil
 fn each(f, [h | t]) do
-  f(h)
+  f.(h)
   each(f, t)
 end
 
@@ -2677,7 +2677,7 @@ fn tailcall_closure_capture_repro_marks_cont_spec_reachable() {
     let src = r#"
 fn each(_, []), do: nil
 fn each(f, [h | t]) do
-  f(h)
+  f.(h)
   each(f, t)
 end
 
