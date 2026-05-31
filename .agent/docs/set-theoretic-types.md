@@ -60,6 +60,32 @@ sigma   : a := 1, b := :ok
 result  : {a, b}[sigma] = {1, :ok}
 ```
 
+Witness collection is structural when the declared parameter shape and the
+caller witness shape are compatible. A variable can be determined by a nested
+position, not only by a top-level parameter:
+
+```text
+param   : (a, b) -> {:cont, b} | {:halt, b}
+witness : (integer, {:not_found, int}) ->
+            {:cont, {:not_found, int}} | {:halt, {:found, int}}
+sigma   : a := integer
+          b := {:not_found, int} | {:found, int}
+```
+
+This is the load-bearing case for higher-order functions such as
+`Enum.reduce_while/3`: the accumulator type variable is witnessed by both the
+initial accumulator and the reducer's possible continuation/halt payloads. If
+scheme instantiation only looks at top-level parameters, it can publish a
+partial fact such as `b := {:not_found, 0}` and native code will compile the
+wrong return path.
+
+Structural witness collection must still be conservative. It walks only shapes
+that preserve correlation clearly enough to bind variables: tuples
+positionally, list elements, resource payloads, map fields where keys align,
+and callable arrows through their argument and result shapes. Ambiguous,
+negated, or unsupported shapes leave the result underconstrained or invalid;
+they must not be treated as known executable facts.
+
 This is the same operation for `@spec foo(a, b) :: {a, b}` and for callable
 arrow clauses like `fn (a, b), do: {a, b}`. The shared API is
 `types::instantiate_scheme_result`, which reports:

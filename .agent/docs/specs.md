@@ -97,7 +97,9 @@ hold everywhere:
    inputs, use a selected arrow's instantiated params only when the call picks a
    unique arrow; otherwise keep the concrete call arguments as the demand. For
    return typing, instantiate and union the matched results only after arrow
-   selection.
+   selection. Instantiation uses the shared structural scheme matcher: variables
+   can be witnessed by compatible nested shapes such as higher-order callback
+   arrows, and partial/underconstrained results are not executable return facts.
 
 5. Interfaces and protocols: public function specs and protocol callback specs
    carry ordered spec lists (`specs`), and interface fingerprints include every
