@@ -30,7 +30,7 @@
 
 use crate::ast::{FnDef, Item, Program};
 use crate::diag::Span;
-use crate::fz_ir::{BlockId, ExternDecl, ExternId, ExternTy, FnId, Module, SourceInfo, Term};
+use crate::fz_ir::{BlockId, ExternDecl, ExternId, ExternTy, FnId, Module, SourceInfo, Term, Var};
 use crate::modules::identity::ModuleName;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -49,6 +49,7 @@ mod receive;
 
 pub use atom_table::AtomTable;
 pub use ctx::LowerCtx;
+use ctx::{ContinuationSeed, ContinuationSeedKind};
 pub use error::LowerError;
 pub use extern_table::ExternTable;
 
@@ -223,6 +224,241 @@ fn collect_runtime_prelude_import(
             arity,
             span
         );
+    }
+}
+
+fn synthesize_function_correspondence(module: &mut Module, seeds: &[ContinuationSeed]) {
+    use crate::type_expr::{StructuralCorrespondenceGroup, StructuralOccurrence};
+    use std::collections::BTreeSet;
+
+    fn groups_to_sets(
+        groups: &[StructuralCorrespondenceGroup],
+    ) -> Vec<BTreeSet<StructuralOccurrence>> {
+        groups
+            .iter()
+            .map(|group| group.occurrences.iter().cloned().collect())
+            .collect()
+    }
+
+    fn normalize_sets(
+        mut sets: Vec<BTreeSet<StructuralOccurrence>>,
+    ) -> Vec<BTreeSet<StructuralOccurrence>> {
+        sets.retain(|set| set.len() > 1);
+        let mut changed = true;
+        while changed {
+            changed = false;
+            let mut i = 0;
+            while i < sets.len() {
+                let mut j = i + 1;
+                while j < sets.len() {
+                    if !sets[i].is_disjoint(&sets[j]) {
+                        let right = sets.remove(j);
+                        sets[i].extend(right);
+                        changed = true;
+                    } else {
+                        j += 1;
+                    }
+                }
+                i += 1;
+            }
+        }
+        sets.sort();
+        sets
+    }
+
+    fn sets_to_groups(
+        sets: Vec<BTreeSet<StructuralOccurrence>>,
+    ) -> Vec<StructuralCorrespondenceGroup> {
+        normalize_sets(sets)
+            .into_iter()
+            .enumerate()
+            .map(|(idx, occurrences)| StructuralCorrespondenceGroup {
+                var: crate::types::TypeVarId(idx as u32),
+                occurrences: occurrences.into_iter().collect(),
+            })
+            .collect()
+    }
+
+    fn continuation_capture_param_index(seed: &ContinuationSeed, var: Var) -> Option<usize> {
+        seed.captured
+            .iter()
+            .position(|captured| *captured == var)
+            .map(|slot| slot + 1)
+    }
+
+    fn rebase_caller_groups(
+        seed: &ContinuationSeed,
+        caller_params: &[Var],
+        groups: &[StructuralCorrespondenceGroup],
+    ) -> Vec<BTreeSet<StructuralOccurrence>> {
+        groups
+            .iter()
+            .filter_map(|group| {
+                let mut out = BTreeSet::new();
+                for occ in &group.occurrences {
+                    match occ {
+                        StructuralOccurrence::Param { param_index, path } => {
+                            let caller_var = caller_params.get(*param_index).copied()?;
+                            let cont_param = continuation_capture_param_index(seed, caller_var)?;
+                            out.insert(StructuralOccurrence::Param {
+                                param_index: cont_param,
+                                path: path.clone(),
+                            });
+                        }
+                        StructuralOccurrence::Result { path } => {
+                            out.insert(StructuralOccurrence::Result { path: path.clone() });
+                        }
+                        StructuralOccurrence::CallbackArg { .. }
+                        | StructuralOccurrence::CallbackResult { .. } => {}
+                    }
+                }
+                (out.len() > 1).then_some(out)
+            })
+            .collect()
+    }
+
+    fn project_direct_callee_groups(
+        seed: &ContinuationSeed,
+        args: &[Var],
+        groups: &[StructuralCorrespondenceGroup],
+    ) -> Vec<BTreeSet<StructuralOccurrence>> {
+        groups
+            .iter()
+            .filter_map(|group| {
+                let mut out = BTreeSet::new();
+                for occ in &group.occurrences {
+                    match occ {
+                        StructuralOccurrence::Param { param_index, path } => {
+                            let arg = args.get(*param_index).copied()?;
+                            let cont_param = continuation_capture_param_index(seed, arg)?;
+                            out.insert(StructuralOccurrence::Param {
+                                param_index: cont_param,
+                                path: path.clone(),
+                            });
+                        }
+                        StructuralOccurrence::Result { path } => {
+                            out.insert(StructuralOccurrence::Param {
+                                param_index: 0,
+                                path: path.clone(),
+                            });
+                        }
+                        StructuralOccurrence::CallbackArg { .. }
+                        | StructuralOccurrence::CallbackResult { .. } => {}
+                    }
+                }
+                (out.len() > 1).then_some(out)
+            })
+            .collect()
+    }
+
+    fn project_closure_call_groups(
+        seed: &ContinuationSeed,
+        caller_params: &[Var],
+        closure: Var,
+        args: &[Var],
+        groups: &[StructuralCorrespondenceGroup],
+    ) -> Vec<BTreeSet<StructuralOccurrence>> {
+        let Some(caller_closure_param) = caller_params.iter().position(|param| *param == closure)
+        else {
+            return Vec::new();
+        };
+        groups
+            .iter()
+            .filter_map(|group| {
+                let mut out = BTreeSet::new();
+                for occ in &group.occurrences {
+                    match occ {
+                        StructuralOccurrence::Param { param_index, path } => {
+                            let caller_var = caller_params.get(*param_index).copied()?;
+                            let cont_param = continuation_capture_param_index(seed, caller_var)?;
+                            out.insert(StructuralOccurrence::Param {
+                                param_index: cont_param,
+                                path: path.clone(),
+                            });
+                        }
+                        StructuralOccurrence::Result { path } => {
+                            out.insert(StructuralOccurrence::Result { path: path.clone() });
+                        }
+                        StructuralOccurrence::CallbackArg {
+                            param_index,
+                            arg_index,
+                            path,
+                        } if *param_index == caller_closure_param => {
+                            let arg = args.get(*arg_index).copied()?;
+                            let cont_param = continuation_capture_param_index(seed, arg)?;
+                            out.insert(StructuralOccurrence::Param {
+                                param_index: cont_param,
+                                path: path.clone(),
+                            });
+                        }
+                        StructuralOccurrence::CallbackResult { param_index, path }
+                            if *param_index == caller_closure_param =>
+                        {
+                            out.insert(StructuralOccurrence::Param {
+                                param_index: 0,
+                                path: path.clone(),
+                            });
+                        }
+                        _ => {}
+                    }
+                }
+                (out.len() > 1).then_some(out)
+            })
+            .collect()
+    }
+
+    let mut changed = true;
+    while changed {
+        changed = false;
+        for seed in seeds {
+            let caller = module.fn_by_id(seed.caller);
+            let caller_params = caller.block(caller.entry).params.clone();
+            let caller_groups = module
+                .function_correspondence
+                .get(&seed.caller)
+                .cloned()
+                .unwrap_or_default();
+
+            let mut sets = groups_to_sets(
+                module
+                    .function_correspondence
+                    .get(&seed.continuation)
+                    .cloned()
+                    .unwrap_or_default()
+                    .as_slice(),
+            );
+            sets.extend(rebase_caller_groups(seed, &caller_params, &caller_groups));
+
+            match &seed.kind {
+                ContinuationSeedKind::DirectCall { callee, args } => {
+                    let callee_groups = module
+                        .function_correspondence
+                        .get(callee)
+                        .cloned()
+                        .unwrap_or_default();
+                    sets.extend(project_direct_callee_groups(seed, args, &callee_groups));
+                }
+                ContinuationSeedKind::ClosureCall { closure, args } => {
+                    sets.extend(project_closure_call_groups(
+                        seed,
+                        &caller_params,
+                        *closure,
+                        args,
+                        &caller_groups,
+                    ));
+                }
+            }
+
+            let new_groups = sets_to_groups(sets);
+            let entry = module
+                .function_correspondence
+                .entry(seed.continuation)
+                .or_default();
+            if *entry != new_groups {
+                *entry = new_groups;
+                changed = true;
+            }
+        }
     }
 }
 
@@ -506,6 +742,7 @@ pub fn lower_program_full_with_telemetry<T: crate::types::Types<Ty = crate::type
             module.declared_specs.insert(fid, resolved);
         }
     }
+    synthesize_function_correspondence(&mut module, &ctx.continuation_seeds);
     // fz-swt.8 — carry the resolver's opaque-inner-type map onto the
     // Module so the planner can resolve `handle.value` accesses to T.
     // Runtime built-in inners (utf8 brand, pid/ref opaques, ...) live in the
@@ -1199,6 +1436,103 @@ end
                     },
                 ],
             }]
+        );
+    }
+
+    #[test]
+    fn lower_synthesizes_direct_call_continuation_correspondence() {
+        let m = lower_src(
+            "@spec id(a) :: a\n\
+             fn id(x), do: x\n\
+             @spec pair_after_id(a) :: {a, a}\n\
+             fn pair_after_id(x) do\n\
+               y = id(x)\n\
+               {x, y}\n\
+             end",
+        );
+        let pair_after_id = m
+            .fn_by_name("pair_after_id")
+            .expect("pair_after_id fn missing");
+        let continuation = m
+            .fns
+            .iter()
+            .find(|f| f.name.starts_with("k_") && f.owner_module == pair_after_id.owner_module)
+            .expect("continuation fn missing");
+        let groups = m
+            .function_correspondence
+            .get(&continuation.id)
+            .expect("continuation correspondence missing");
+        assert_eq!(
+            groups,
+            &vec![crate::type_expr::StructuralCorrespondenceGroup {
+                var: crate::types::TypeVarId(0),
+                occurrences: vec![
+                    crate::type_expr::StructuralOccurrence::Param {
+                        param_index: 0,
+                        path: vec![],
+                    },
+                    crate::type_expr::StructuralOccurrence::Param {
+                        param_index: 1,
+                        path: vec![],
+                    },
+                    crate::type_expr::StructuralOccurrence::Result {
+                        path: vec![crate::type_expr::StructuralPathStep::TupleElem(0),],
+                    },
+                    crate::type_expr::StructuralOccurrence::Result {
+                        path: vec![crate::type_expr::StructuralPathStep::TupleElem(1),],
+                    },
+                ],
+            }]
+        );
+    }
+
+    #[test]
+    fn lower_synthesizes_closure_call_continuation_correspondence() {
+        let m = lower_src(
+            "@spec apply_pair((a) -> b, a) :: {a, b}\n\
+             fn apply_pair(f, x) do\n\
+               y = f.(x)\n\
+               {x, y}\n\
+             end",
+        );
+        let apply_pair = m.fn_by_name("apply_pair").expect("apply_pair fn missing");
+        let continuation = m
+            .fns
+            .iter()
+            .find(|f| f.name.starts_with("k_") && f.owner_module == apply_pair.owner_module)
+            .expect("continuation fn missing");
+        let groups = m
+            .function_correspondence
+            .get(&continuation.id)
+            .expect("continuation correspondence missing");
+        assert_eq!(
+            groups,
+            &vec![
+                crate::type_expr::StructuralCorrespondenceGroup {
+                    var: crate::types::TypeVarId(0),
+                    occurrences: vec![
+                        crate::type_expr::StructuralOccurrence::Param {
+                            param_index: 0,
+                            path: vec![],
+                        },
+                        crate::type_expr::StructuralOccurrence::Result {
+                            path: vec![crate::type_expr::StructuralPathStep::TupleElem(1),],
+                        },
+                    ],
+                },
+                crate::type_expr::StructuralCorrespondenceGroup {
+                    var: crate::types::TypeVarId(1),
+                    occurrences: vec![
+                        crate::type_expr::StructuralOccurrence::Param {
+                            param_index: 2,
+                            path: vec![],
+                        },
+                        crate::type_expr::StructuralOccurrence::Result {
+                            path: vec![crate::type_expr::StructuralPathStep::TupleElem(0),],
+                        },
+                    ],
+                },
+            ]
         );
     }
 

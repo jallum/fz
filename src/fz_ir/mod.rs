@@ -1321,8 +1321,9 @@ pub struct Module {
     /// call typing for source-level polymorphic contracts.
     #[serde(with = "fn_keyed_map")]
     pub declared_specs: HashMap<FnId, crate::type_expr::ResolvedSpecSet>,
-    /// Declared source-function correspondence keyed by IR function id.
-    /// CPS continuations join this table in the next ticket.
+    /// Function correspondence keyed by IR function id. Declared source
+    /// functions contribute structural groups directly from `@spec`; CPS
+    /// continuations contribute synthesized groups from lowering provenance.
     #[serde(with = "fn_keyed_map")]
     pub function_correspondence:
         HashMap<FnId, Vec<crate::type_expr::StructuralCorrespondenceGroup>>,

@@ -114,6 +114,20 @@ Lowering now persists the declared source-function groups onto
 spec-layer fact becomes durable enough for later CPS remapping and planner
 consumption.
 
+Lowering also records explicit continuation provenance for non-tail direct and
+closure calls, then synthesizes continuation-local correspondence groups from
+that provenance. The continuation schema is expressed only in continuation
+terms:
+
+- `Param(0)` is the produced value,
+- `Param(1..)` are captured caller locals,
+- `Result` is the continuation's own result.
+
+Callback occurrences are a source-level spec concept, not a continuation ABI
+concept. When a closure call is CPS-split, lowering projects the caller's
+callback correspondence onto those continuation params/results and then
+normalizes overlapping occurrence sets into continuation-local groups.
+
 ## Correct Shape
 
 Add a first-class overload-set shape:

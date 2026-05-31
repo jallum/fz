@@ -318,12 +318,15 @@ pub(crate) fn cps_split_call_closure(
     let owned_cons_captures = owned_cons_captures_for_visible_locals(ctx, &captured);
     let captured_vars = capture_call_args(&captured, &owned_cons_captures);
     let cont_id = ctx.mb.fresh_fn_id();
+    let caller = ctx
+        .cur_fn_id
+        .expect("cps_split_call_closure: missing current fn id");
 
     ctx.set_term_at(
         Term::CallClosure {
             ident: crate::fz_ir::CallsiteIdent::from_source(Span::DUMMY),
             closure: closure_var,
-            args: arg_vars,
+            args: arg_vars.clone(),
             continuation: Cont {
                 fn_id: cont_id,
                 captured: captured_vars.clone(),
@@ -331,6 +334,15 @@ pub(crate) fn cps_split_call_closure(
         },
         call_span,
     );
+    ctx.record_continuation_seed(crate::ir_lower::ctx::ContinuationSeed {
+        caller,
+        continuation: cont_id,
+        captured: captured.iter().map(|(_, var)| *var).collect(),
+        kind: crate::ir_lower::ctx::ContinuationSeedKind::ClosureCall {
+            closure: closure_var,
+            args: arg_vars.clone(),
+        },
+    });
 
     Ok(start_cps_cont_fn(
         ctx,
@@ -399,13 +411,16 @@ pub(crate) fn cps_split_call(
     let owned_cons_captures = owned_cons_captures_for_visible_locals(ctx, &captured);
     let captured_vars = capture_call_args(&captured, &owned_cons_captures);
     let cont_id = ctx.mb.fresh_fn_id();
+    let caller = ctx
+        .cur_fn_id
+        .expect("cps_split_call: missing current fn id");
 
     // Terminate current block with the call.
     ctx.set_term_at(
         Term::Call {
             ident: crate::fz_ir::CallsiteIdent::from_source(Span::DUMMY),
             callee,
-            args: arg_vars,
+            args: arg_vars.clone(),
             continuation: Cont {
                 fn_id: cont_id,
                 captured: captured_vars.clone(),
@@ -413,6 +428,15 @@ pub(crate) fn cps_split_call(
         },
         call_span,
     );
+    ctx.record_continuation_seed(crate::ir_lower::ctx::ContinuationSeed {
+        caller,
+        continuation: cont_id,
+        captured: captured.iter().map(|(_, var)| *var).collect(),
+        kind: crate::ir_lower::ctx::ContinuationSeedKind::DirectCall {
+            callee,
+            args: arg_vars.clone(),
+        },
+    });
 
     Ok(start_cps_cont_fn(
         ctx,
