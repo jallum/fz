@@ -752,7 +752,7 @@ fn declared_return_for_spec_key<T: crate::types::Types<Ty = crate::types::Ty>>(
     module: &crate::fz_ir::Module,
     key: &crate::ir_planner::fn_types::SpecKey,
 ) -> Option<crate::types::Ty> {
-    let spec = module.declared_specs.get(&key.fn_id)?;
+    let spec = module.declared_specs.get(&key.fn_id)?.exactly_one()?;
     let arg_tys = crate::types::key_slots_to_tys(t, &key.input);
     if spec.params.len() != arg_tys.len() {
         return None;

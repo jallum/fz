@@ -651,7 +651,8 @@ where
         arity: usize,
     ) -> Vec<crate::types::KeySlot> {
         if let Some(callee) = callee
-            && let Some(spec) = self.m.declared_specs.get(&callee)
+            && let Some(spec_set) = self.m.declared_specs.get(&callee)
+            && let Some(spec) = spec_set.exactly_one()
             && spec.params.len() == arity
         {
             return crate::types::key_slots_from_tys(spec.params.clone());
@@ -949,7 +950,7 @@ where
         callee: FnId,
         arg_tys: &[crate::types::Ty],
     ) -> Option<crate::types::Ty> {
-        let spec = self.m.declared_specs.get(&callee)?;
+        let spec = self.m.declared_specs.get(&callee)?.exactly_one()?;
         if spec.params.len() != arg_tys.len() {
             return None;
         }

@@ -1317,10 +1317,10 @@ pub struct Module {
     /// `Program.brand_inners`.
     pub brand_inners: HashMap<String, crate::types::Ty>,
     pub struct_schemas: std::collections::BTreeMap<String, Vec<String>>,
-    /// Resolved declared `@spec`s keyed by IR function id. Used by call
-    /// typing for source-level polymorphic contracts.
+    /// Resolved declared `@spec` overload sets keyed by IR function id. Used by
+    /// call typing for source-level polymorphic contracts.
     #[serde(with = "fn_keyed_map")]
-    pub declared_specs: HashMap<FnId, crate::type_expr::ResolvedSpec>,
+    pub declared_specs: HashMap<FnId, crate::type_expr::ResolvedSpecSet>,
 }
 
 impl Module {

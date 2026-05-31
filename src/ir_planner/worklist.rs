@@ -1191,7 +1191,7 @@ fn declared_call_return<T: crate::types::Types<Ty = crate::types::Ty>>(
     arg_tys: &[crate::types::Ty],
     owner_module: &str,
 ) -> Option<crate::types::Ty> {
-    let spec = module.declared_specs.get(&callee)?;
+    let spec = module.declared_specs.get(&callee)?.exactly_one()?;
     if spec.params.len() != arg_tys.len() {
         return None;
     }

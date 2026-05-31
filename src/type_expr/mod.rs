@@ -179,6 +179,20 @@ pub struct ResolvedSpec {
     pub constraints: HashMap<crate::types::TypeVarId, crate::types::Ty>,
 }
 
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct ResolvedSpecSet {
+    pub arrows: Vec<ResolvedSpec>,
+}
+
+impl ResolvedSpecSet {
+    pub fn exactly_one(&self) -> Option<&ResolvedSpec> {
+        match self.arrows.as_slice() {
+            [spec] => Some(spec),
+            _ => None,
+        }
+    }
+}
+
 /// (De)serialize `HashMap<TypeVarId, Ty>` as a `Vec<(TypeVarId, Ty)>` so the
 /// numeric key survives serde_json (which forbids non-string object keys).
 mod constraints_as_seq {
@@ -273,6 +287,21 @@ where
     T: Types<Ty = crate::types::Ty>,
 {
     self::env::resolve_spec_decl(t, decl, env)
+}
+
+pub fn resolve_spec_decls<'a, T>(
+    t: &mut T,
+    decls: impl IntoIterator<Item = &'a crate::ast::SpecDecl>,
+    env: &ModuleTypeEnv,
+) -> Result<ResolvedSpecSet, TypeExprError>
+where
+    T: Types<Ty = crate::types::Ty>,
+{
+    let mut arrows = Vec::new();
+    for decl in decls {
+        arrows.push(resolve_spec_decl(t, decl, env)?);
+    }
+    Ok(ResolvedSpecSet { arrows })
 }
 
 /// Best-effort per-position spec resolution: each param and the result resolve

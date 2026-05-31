@@ -472,12 +472,17 @@ pub fn lower_program_full_with_telemetry<T: crate::types::Types<Ty = crate::type
         let Item::Fn(fn_def) = item.as_ref() else {
             continue;
         };
-        let Some(spec) = fn_def.attrs.iter().find_map(|a| match a {
-            crate::ast::Attribute::Spec(spec) => Some(spec),
-            _ => None,
-        }) else {
+        let specs = fn_def
+            .attrs
+            .iter()
+            .filter_map(|a| match a {
+                crate::ast::Attribute::Spec(spec) => Some(spec),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        if specs.is_empty() {
             continue;
-        };
+        }
         let arity = fn_def.clauses.first().map(|c| c.params.len()).unwrap_or(0);
         let Some(&fid) = ctx.fns.get(&(fn_def.name.clone(), arity)) else {
             continue;
@@ -494,7 +499,7 @@ pub fn lower_program_full_with_telemetry<T: crate::types::Types<Ty = crate::type
                 .get(&module_path)
                 .unwrap_or(&ctx.combined_type_env)
         };
-        if let Ok(resolved) = crate::type_expr::resolve_spec_decl(t, spec, env) {
+        if let Ok(resolved) = crate::type_expr::resolve_spec_decls(t, specs, env) {
             module.declared_specs.insert(fid, resolved);
         }
     }
@@ -1149,6 +1154,21 @@ end
             2,
             "continuation entry should be [result, x], not [result, x, y]"
         );
+    }
+
+    #[test]
+    fn lower_records_declared_spec_overload_set() {
+        let m = lower_src(
+            "@spec pick(integer) :: integer\n\
+             @spec pick(float) :: float\n\
+             fn pick(x), do: x",
+        );
+        let pick = m.fn_by_name("pick").expect("pick fn missing");
+        let specs = m
+            .declared_specs
+            .get(&pick.id)
+            .expect("declared specs missing");
+        assert_eq!(specs.arrows.len(), 2);
     }
 
     #[test]
