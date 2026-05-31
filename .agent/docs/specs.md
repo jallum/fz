@@ -80,6 +80,21 @@ data-flow correctly. The initial accumulator is one witness for `b`; the
 reducer's `{:cont, b}` / `{:halt, b}` exits are another witness. The declared
 result must join both instead of freezing `b` to the initial accumulator shape.
 
+The declared scheme also names which callback positions participate in that
+fixed point. `ResolvedSpec::higher_order_invariant_groups` reports the type
+variables whose occurrences cross from outer params/results into callback
+arg/result positions. For `reduce/3`, the loop-carried group is `b`:
+
+```text
+Param(1)          outer accumulator
+Result            outer result
+CallbackArg(2, 1) reducer accumulator arg
+CallbackResult(2) reducer result
+```
+
+That correspondence is the planner-facing fact used to stabilize higher-order
+callback keying; it is not a post-hoc widening heuristic.
+
 ## Correct Shape
 
 Add a first-class overload-set shape:

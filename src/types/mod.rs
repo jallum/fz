@@ -14,6 +14,7 @@
 //! so the plan survives compaction).
 
 use std::collections::HashMap;
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 pub use crate::concrete_types::ConcreteTypes;
@@ -386,6 +387,10 @@ pub trait Types {
     /// True iff `a` mentions any free type variable.
     /// Used by the planner to decide whether substitution is required.
     fn has_vars(&self, a: &Self::Ty) -> bool;
+
+    /// Exact named type variables mentioned structurally in `a`.
+    /// Unlike `has_vars`, this exposes identity, not just presence.
+    fn mentioned_type_vars(&self, a: &Self::Ty) -> BTreeSet<TypeVarId>;
 
     /// True iff `a` is a conservative structural-decrease step from `p`
     /// for same-callee reducer recursion. Concrete implementations may

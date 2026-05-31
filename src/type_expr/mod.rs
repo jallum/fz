@@ -27,7 +27,7 @@
 //! operator). `{T, U}` is a tuple. `:foo` is the singleton atom.
 //! Bare `42` and `2.5` are singleton literals.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use crate::diag::Span;
 use crate::modules::identity::ModuleName;
@@ -192,6 +192,25 @@ pub struct ResolvedSpecMatch {
     pub result: crate::types::Ty,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HigherOrderInvariantGroup {
+    pub var: crate::types::TypeVarId,
+    pub occurrences: Vec<InvariantOccurrence>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub enum InvariantOccurrence {
+    Param(usize),
+    Result,
+    CallbackArg {
+        param_index: usize,
+        arg_index: usize,
+    },
+    CallbackResult {
+        param_index: usize,
+    },
+}
+
 impl ResolvedSpecSet {
     pub fn matching_arrows<T>(
         &self,
@@ -238,6 +257,65 @@ impl ResolvedSpecSet {
             });
         }
         result
+    }
+}
+
+impl ResolvedSpec {
+    pub fn higher_order_invariant_groups<T>(&self, t: &mut T) -> Vec<HigherOrderInvariantGroup>
+    where
+        T: ClosureTypes<Ty = crate::types::Ty>,
+    {
+        let mut groups: BTreeMap<crate::types::TypeVarId, BTreeSet<InvariantOccurrence>> =
+            BTreeMap::new();
+
+        for (param_index, param) in self.params.iter().enumerate() {
+            if t.callable_clauses(param).is_some() {
+                continue;
+            }
+            for var in t.mentioned_type_vars(param) {
+                groups.entry(var).or_default().insert(InvariantOccurrence::Param(param_index));
+            }
+        }
+        for var in t.mentioned_type_vars(&self.result) {
+            groups.entry(var).or_default().insert(InvariantOccurrence::Result);
+        }
+
+        for (param_index, param) in self.params.iter().enumerate() {
+            let Some(clauses) = t.callable_clauses(param) else {
+                continue;
+            };
+            for clause in clauses {
+                for (arg_index, arg) in clause.args.iter().enumerate() {
+                    for var in t.mentioned_type_vars(arg) {
+                        groups.entry(var).or_default().insert(InvariantOccurrence::CallbackArg {
+                            param_index,
+                            arg_index,
+                        });
+                    }
+                }
+                for var in t.mentioned_type_vars(&clause.ret) {
+                    groups.entry(var)
+                        .or_default()
+                        .insert(InvariantOccurrence::CallbackResult { param_index });
+                }
+            }
+        }
+
+        groups
+            .into_iter()
+            .filter_map(|(var, occurrences)| {
+                let has_callback_result = occurrences
+                    .iter()
+                    .any(|occ| matches!(occ, InvariantOccurrence::CallbackResult { .. }));
+                let has_outer = occurrences.iter().any(|occ| {
+                    matches!(occ, InvariantOccurrence::Param(_) | InvariantOccurrence::Result)
+                });
+                (has_callback_result && has_outer).then_some(HigherOrderInvariantGroup {
+                    var,
+                    occurrences: occurrences.into_iter().collect(),
+                })
+            })
+            .collect()
     }
 }
 

@@ -798,6 +798,77 @@ fn resolved_spec_set_unions_results_only_after_arrow_selection() {
 }
 
 #[test]
+fn resolved_spec_reports_reduce_invariant_slot_correspondence() {
+    let mut ct = ConcreteTypes;
+    let entry_var = ct.type_var(crate::types::TypeVarId(0));
+    let acc_var = ct.type_var(crate::types::TypeVarId(1));
+    let enumerable_param = ct.list(entry_var.clone());
+    let reducer_param = ct.arrow(&[entry_var, acc_var.clone()], acc_var.clone());
+    let spec = ResolvedSpec {
+        params: vec![enumerable_param, acc_var.clone(), reducer_param],
+        result: acc_var,
+        constraints: std::collections::HashMap::new(),
+    };
+
+    let groups = spec.higher_order_invariant_groups(&mut ct);
+    assert_eq!(
+        groups,
+        vec![HigherOrderInvariantGroup {
+            var: crate::types::TypeVarId(1),
+            occurrences: vec![
+                InvariantOccurrence::Param(1),
+                InvariantOccurrence::Result,
+                InvariantOccurrence::CallbackArg {
+                    param_index: 2,
+                    arg_index: 1,
+                },
+                InvariantOccurrence::CallbackResult { param_index: 2 },
+            ],
+        }]
+    );
+}
+
+#[test]
+fn resolved_spec_reports_reduce_while_invariant_slot_correspondence() {
+    let mut ct = ConcreteTypes;
+    let entry_var = ct.type_var(crate::types::TypeVarId(0));
+    let acc_var = ct.type_var(crate::types::TypeVarId(1));
+    let cont = ct.atom_lit("cont");
+    let halt = ct.atom_lit("halt");
+    let reducer_ret = {
+        let cont_tuple = ct.tuple(&[cont, acc_var.clone()]);
+        let halt_tuple = ct.tuple(&[halt, acc_var.clone()]);
+        ct.union(cont_tuple, halt_tuple)
+    };
+    let spec = ResolvedSpec {
+        params: vec![
+            ct.list(entry_var.clone()),
+            acc_var.clone(),
+            ct.arrow(&[entry_var, acc_var.clone()], reducer_ret),
+        ],
+        result: acc_var,
+        constraints: std::collections::HashMap::new(),
+    };
+
+    let groups = spec.higher_order_invariant_groups(&mut ct);
+    assert_eq!(
+        groups,
+        vec![HigherOrderInvariantGroup {
+            var: crate::types::TypeVarId(1),
+            occurrences: vec![
+                InvariantOccurrence::Param(1),
+                InvariantOccurrence::Result,
+                InvariantOccurrence::CallbackArg {
+                    param_index: 2,
+                    arg_index: 1,
+                },
+                InvariantOccurrence::CallbackResult { param_index: 2 },
+            ],
+        }]
+    );
+}
+
+#[test]
 fn build_env_opaque_resource_alias_qualifies_with_module() {
     // The design example: `@type t :: opaque resource(integer)`.
     // Built under module "File", the alias should carry the
