@@ -58,6 +58,21 @@ pub fn parse_type_expr_with_vars<T: crate::types::Types<Ty = crate::types::Ty>>(
     parse_type_expr_with_stack(t, tokens, env, Some(vars), Vec::new())
 }
 
+pub fn parse_type_shape_with_vars(
+    tokens: &[Token],
+    env: &ModuleTypeEnv,
+    vars: &mut std::collections::HashMap<String, crate::types::TypeVarId>,
+) -> Result<(ResolvedTypeShape, usize), TypeExprError> {
+    let mut p = TypeShapeParser {
+        tokens,
+        pos: 0,
+        env,
+        vars,
+    };
+    let shape = p.parse_union()?;
+    Ok((shape, p.pos))
+}
+
 pub fn struct_record_nominal_ty<T: crate::types::Types<Ty = crate::types::Ty>>(
     t: &mut T,
     module: &crate::modules::identity::ModuleName,
@@ -72,6 +87,13 @@ struct TypeExprParser<'a, T: crate::types::Types<Ty = crate::types::Ty>> {
     env: &'a ModuleTypeEnv,
     vars: Option<&'a mut std::collections::HashMap<String, crate::types::TypeVarId>>,
     alias_stack: Vec<(String, usize)>,
+}
+
+struct TypeShapeParser<'a> {
+    tokens: &'a [Token],
+    pos: usize,
+    env: &'a ModuleTypeEnv,
+    vars: &'a mut std::collections::HashMap<String, crate::types::TypeVarId>,
 }
 
 impl<'a, T: crate::types::Types<Ty = crate::types::Ty>> TypeExprParser<'a, T> {
@@ -483,6 +505,341 @@ impl<'a, T: crate::types::Types<Ty = crate::types::Ty>> TypeExprParser<'a, T> {
                         })
                     }
                 }
+            },
+        }
+    }
+}
+
+impl TypeShapeParser<'_> {
+    fn peek(&self) -> &Tok {
+        self.tokens
+            .get(self.pos)
+            .map(|t| &t.tok)
+            .unwrap_or(&Tok::Eof)
+    }
+
+    fn peek_span(&self) -> Span {
+        self.tokens
+            .get(self.pos)
+            .or_else(|| self.tokens.last())
+            .map(|t| t.span)
+            .unwrap_or(Span::DUMMY)
+    }
+
+    fn bump(&mut self) {
+        self.pos += 1;
+    }
+
+    fn err(&self, msg: impl Into<String>) -> TypeExprError {
+        TypeExprError {
+            msg: msg.into(),
+            span: self.peek_span(),
+        }
+    }
+
+    fn expect(&mut self, want: &Tok, ctx: &str) -> Result<(), TypeExprError> {
+        if std::mem::discriminant(self.peek()) == std::mem::discriminant(want) {
+            self.bump();
+            Ok(())
+        } else {
+            Err(self.err(format!("expected {}, got {}", ctx, self.peek())))
+        }
+    }
+
+    fn parse_union(&mut self) -> Result<ResolvedTypeShape, TypeExprError> {
+        let mut elems = vec![self.parse_primary()?];
+        while matches!(self.peek(), Tok::Bar) {
+            self.bump();
+            elems.push(self.parse_primary()?);
+        }
+        match elems.as_slice() {
+            [single] => Ok(single.clone()),
+            _ => Ok(ResolvedTypeShape::Union(elems)),
+        }
+    }
+
+    fn parse_primary(&mut self) -> Result<ResolvedTypeShape, TypeExprError> {
+        match self.peek().clone() {
+            Tok::LBrack => self.parse_list(),
+            Tok::LBrace => self.parse_tuple(),
+            Tok::LParen => self.parse_parenthesized_type_or_arrow_type(),
+            Tok::Percent => self.parse_struct_record(),
+            Tok::Underscore => {
+                self.bump();
+                Ok(ResolvedTypeShape::Any)
+            }
+            Tok::Atom(name) => {
+                self.bump();
+                Ok(ResolvedTypeShape::AtomLit(name))
+            }
+            Tok::Int(n) => {
+                self.bump();
+                Ok(ResolvedTypeShape::IntLit(n))
+            }
+            Tok::Float(f) => {
+                self.bump();
+                Ok(ResolvedTypeShape::FloatLit(f.to_bits()))
+            }
+            Tok::Nil => {
+                self.bump();
+                Ok(ResolvedTypeShape::Nil)
+            }
+            Tok::True | Tok::False => {
+                self.bump();
+                Ok(ResolvedTypeShape::Bool)
+            }
+            Tok::Ident(name) => {
+                self.bump();
+                if name == "resource" {
+                    self.parse_resource()
+                } else if matches!(self.peek(), Tok::LParen) {
+                    self.parse_alias_application(name)
+                } else {
+                    self.parse_named_type(name)
+                }
+            }
+            Tok::Upper(name) => {
+                self.bump();
+                if matches!(self.peek(), Tok::LParen) {
+                    self.parse_alias_application(name)
+                } else {
+                    self.parse_named_type(name)
+                }
+            }
+            other => Err(self.err(format!("expected a type expression, got {}", other))),
+        }
+    }
+
+    fn parse_struct_record(&mut self) -> Result<ResolvedTypeShape, TypeExprError> {
+        self.expect(&Tok::Percent, "`%` before struct record type")?;
+        let module = self.parse_module_name("struct record type module")?;
+        self.expect(&Tok::LBrace, "`{` after struct record type module")?;
+        let mut fields = Vec::new();
+        if !matches!(self.peek(), Tok::RBrace) {
+            loop {
+                let name = self.parse_record_field_name()?;
+                self.expect(&Tok::Colon, "`:` after struct field name")?;
+                let ty = self.parse_union()?;
+                fields.push(ResolvedStructFieldShape { name, ty });
+                if !matches!(self.peek(), Tok::Comma) {
+                    break;
+                }
+                self.bump();
+            }
+        }
+        self.expect(&Tok::RBrace, "`}` after struct record fields")?;
+        Ok(ResolvedTypeShape::StructRecord { module, fields })
+    }
+
+    fn parse_record_field_name(&mut self) -> Result<String, TypeExprError> {
+        match self.peek().clone() {
+            Tok::Atom(name) | Tok::Ident(name) => {
+                self.bump();
+                Ok(name)
+            }
+            other => Err(self.err(format!(
+                "expected field name in struct record type, got {}",
+                other
+            ))),
+        }
+    }
+
+    fn parse_module_name(
+        &mut self,
+        ctx: &str,
+    ) -> Result<crate::modules::identity::ModuleName, TypeExprError> {
+        let mut segments = match self.peek().clone() {
+            Tok::Upper(name) => {
+                self.bump();
+                vec![name]
+            }
+            other => return Err(self.err(format!("expected {}, got {}", ctx, other))),
+        };
+        while matches!(self.peek(), Tok::Dot) {
+            self.bump();
+            match self.peek().clone() {
+                Tok::Upper(segment) => {
+                    self.bump();
+                    segments.push(segment);
+                }
+                other => {
+                    return Err(
+                        self.err(format!("expected module segment after `.`, got {}", other))
+                    );
+                }
+            }
+        }
+        Ok(crate::modules::identity::ModuleName::from_segments(
+            segments,
+        ))
+    }
+
+    fn parse_named_type(&mut self, mut name: String) -> Result<ResolvedTypeShape, TypeExprError> {
+        while matches!(self.peek(), Tok::Dot) {
+            self.bump();
+            match self.peek().clone() {
+                Tok::Ident(segment) | Tok::Upper(segment) => {
+                    self.bump();
+                    name.push('.');
+                    name.push_str(&segment);
+                }
+                other => {
+                    return Err(self.err(format!(
+                        "expected type-name segment after `.`, got {}",
+                        other
+                    )));
+                }
+            }
+        }
+        let shape = self.lookup_named(&name)?;
+        if matches!(self.peek(), Tok::LParen) {
+            self.bump();
+            let mut args = Vec::new();
+            if !matches!(self.peek(), Tok::RParen) {
+                args.push(self.parse_union()?);
+                while matches!(self.peek(), Tok::Comma) {
+                    self.bump();
+                    args.push(self.parse_union()?);
+                }
+            }
+            self.expect(&Tok::RParen, "`)` after type arguments")?;
+            let arity = args.len();
+            if self.env.get_alias(&name, arity).is_none() {
+                return Err(self.err(format!("unknown type alias `{}/{}`", name, arity)));
+            }
+            return Ok(ResolvedTypeShape::Named { name, args });
+        }
+        Ok(shape)
+    }
+
+    fn parse_resource(&mut self) -> Result<ResolvedTypeShape, TypeExprError> {
+        self.expect(&Tok::LParen, "`(` after `resource`")?;
+        let inner = self.parse_union()?;
+        self.expect(&Tok::RParen, "`)` after resource element type")?;
+        Ok(ResolvedTypeShape::Resource(Box::new(inner)))
+    }
+
+    fn parse_alias_application(
+        &mut self,
+        mut name: String,
+    ) -> Result<ResolvedTypeShape, TypeExprError> {
+        while matches!(self.peek(), Tok::Dot) {
+            self.bump();
+            match self.peek().clone() {
+                Tok::Ident(segment) | Tok::Upper(segment) => {
+                    self.bump();
+                    name.push('.');
+                    name.push_str(&segment);
+                }
+                other => {
+                    return Err(self.err(format!(
+                        "expected type-name segment after `.`, got {}",
+                        other
+                    )));
+                }
+            }
+        }
+        self.expect(&Tok::LParen, "`(` after type alias name")?;
+        let mut args = Vec::new();
+        if !matches!(self.peek(), Tok::RParen) {
+            loop {
+                args.push(self.parse_union()?);
+                if !matches!(self.peek(), Tok::Comma) {
+                    break;
+                }
+                self.bump();
+            }
+        }
+        self.expect(&Tok::RParen, "`)` after type alias arguments")?;
+
+        let arity = args.len();
+        if self.env.get_alias(&name, arity).is_none() {
+            return Err(self.err(format!("unknown type alias `{}/{}`", name, arity)));
+        }
+        Ok(ResolvedTypeShape::Named { name, args })
+    }
+
+    fn parse_list(&mut self) -> Result<ResolvedTypeShape, TypeExprError> {
+        self.expect(&Tok::LBrack, "`[`")?;
+        if matches!(self.peek(), Tok::RBrack) {
+            self.bump();
+            return Ok(ResolvedTypeShape::Nil);
+        }
+        let elem = self.parse_union()?;
+        self.expect(&Tok::RBrack, "`]`")?;
+        Ok(ResolvedTypeShape::List(Box::new(elem)))
+    }
+
+    fn parse_tuple(&mut self) -> Result<ResolvedTypeShape, TypeExprError> {
+        self.expect(&Tok::LBrace, "`{`")?;
+        let mut elems = Vec::new();
+        if !matches!(self.peek(), Tok::RBrace) {
+            elems.push(self.parse_union()?);
+            while matches!(self.peek(), Tok::Comma) {
+                self.bump();
+                elems.push(self.parse_union()?);
+            }
+        }
+        self.expect(&Tok::RBrace, "`}`")?;
+        Ok(ResolvedTypeShape::Tuple(elems))
+    }
+
+    fn parse_parenthesized_type_or_arrow_type(&mut self) -> Result<ResolvedTypeShape, TypeExprError> {
+        self.expect(&Tok::LParen, "`(`")?;
+        let mut elems = Vec::new();
+        if !matches!(self.peek(), Tok::RParen) {
+            elems.push(self.parse_union()?);
+            while matches!(self.peek(), Tok::Comma) {
+                self.bump();
+                elems.push(self.parse_union()?);
+            }
+        }
+        self.expect(&Tok::RParen, "`)`")?;
+        if matches!(self.peek(), Tok::Arrow) {
+            self.bump();
+            let ret = self.parse_union()?;
+            return Ok(ResolvedTypeShape::Arrow {
+                params: elems,
+                result: Box::new(ret),
+            });
+        }
+        if elems.len() == 1 {
+            Ok(elems.into_iter().next().unwrap())
+        } else {
+            Err(self.err(
+                "parenthesized type with multiple elements must be followed by `->` (use `{T, U}` for tuple types)",
+            ))
+        }
+    }
+
+    fn lookup_named(&mut self, name: &str) -> Result<ResolvedTypeShape, TypeExprError> {
+        match name {
+            "nil" => Ok(ResolvedTypeShape::Nil),
+            "bool" => Ok(ResolvedTypeShape::Bool),
+            "integer" => Ok(ResolvedTypeShape::Integer),
+            "float" => Ok(ResolvedTypeShape::Float),
+            "cpointer" => Ok(ResolvedTypeShape::CPointer),
+            "binary" => Ok(ResolvedTypeShape::Binary),
+            "atom" => Ok(ResolvedTypeShape::Atom),
+            "any" => Ok(ResolvedTypeShape::Any),
+            "never" => Ok(ResolvedTypeShape::Never),
+            super::BUILTIN_UTF8 => Ok(ResolvedTypeShape::Utf8),
+            super::BUILTIN_PID => Ok(ResolvedTypeShape::Pid),
+            super::BUILTIN_REF => Ok(ResolvedTypeShape::Ref),
+            _ => match self.env.get(name) {
+                Some(_) => Ok(ResolvedTypeShape::Named {
+                    name: name.to_string(),
+                    args: Vec::new(),
+                }),
+                None if name.len() == 1 => {
+                    let next = crate::types::TypeVarId(self.vars.len() as u32);
+                    let id = *self.vars.entry(name.to_string()).or_insert(next);
+                    Ok(ResolvedTypeShape::Var(id))
+                }
+                None => Err(TypeExprError {
+                    msg: format!("unknown type name `{}`", name),
+                    span: self.peek_span(),
+                }),
             },
         }
     }

@@ -173,7 +173,11 @@ impl std::fmt::Display for TypeExprError {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ResolvedSpec {
     pub params: Vec<crate::types::Ty>,
+    #[serde(default)]
+    pub param_shapes: Vec<ResolvedTypeShape>,
     pub result: crate::types::Ty,
+    #[serde(default)]
+    pub result_shape: ResolvedTypeShape,
     /// `TypeVarId` is a `u32` newtype, which serde_json renders as a number —
     /// not a valid object key — so this map serializes as a sequence of
     /// `(TypeVarId, Ty)` entries.
@@ -196,6 +200,49 @@ pub struct ResolvedSpecMatch {
 pub struct HigherOrderInvariantGroup {
     pub var: crate::types::TypeVarId,
     pub occurrences: Vec<InvariantOccurrence>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, Default)]
+pub struct ResolvedStructFieldShape {
+    pub name: String,
+    pub ty: ResolvedTypeShape,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, Default)]
+pub enum ResolvedTypeShape {
+    #[default]
+    Any,
+    Never,
+    Nil,
+    Bool,
+    Integer,
+    Float,
+    CPointer,
+    Binary,
+    Atom,
+    Utf8,
+    Pid,
+    Ref,
+    Var(crate::types::TypeVarId),
+    AtomLit(String),
+    IntLit(i64),
+    FloatLit(u64),
+    Named {
+        name: String,
+        args: Vec<ResolvedTypeShape>,
+    },
+    Resource(Box<ResolvedTypeShape>),
+    List(Box<ResolvedTypeShape>),
+    Tuple(Vec<ResolvedTypeShape>),
+    Arrow {
+        params: Vec<ResolvedTypeShape>,
+        result: Box<ResolvedTypeShape>,
+    },
+    Union(Vec<ResolvedTypeShape>),
+    StructRecord {
+        module: ModuleName,
+        fields: Vec<ResolvedStructFieldShape>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -416,9 +463,9 @@ where
 mod env;
 mod parser;
 
+pub use parser::parse_type_expr;
 #[cfg(test)]
 pub use parser::parse_struct_record_type;
-pub use parser::parse_type_expr;
 
 pub fn resolve_spec_decl<T>(
     t: &mut T,

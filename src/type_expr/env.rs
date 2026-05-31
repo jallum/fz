@@ -15,12 +15,17 @@ where
 {
     let mut vars: HashMap<String, crate::types::TypeVarId> = HashMap::new();
     let mut params = Vec::with_capacity(decl.param_body_tokens.len());
+    let mut param_shapes = Vec::with_capacity(decl.param_body_tokens.len());
     for body in &decl.param_body_tokens {
         let (ty, _consumed) = super::parser::parse_type_expr_with_vars(t, &body.0, env, &mut vars)?;
+        let (shape, _consumed) = super::parser::parse_type_shape_with_vars(&body.0, env, &mut vars)?;
         params.push(ty);
+        param_shapes.push(shape);
     }
     let (result, _consumed) =
         super::parser::parse_type_expr_with_vars(t, &decl.result_body_tokens.0, env, &mut vars)?;
+    let (result_shape, _consumed) =
+        super::parser::parse_type_shape_with_vars(&decl.result_body_tokens.0, env, &mut vars)?;
     let mut constraints = HashMap::new();
     for (name, body) in &decl.constraints {
         let Some(id) = vars.get(name).copied() else {
@@ -38,7 +43,9 @@ where
     }
     Ok(ResolvedSpec {
         params,
+        param_shapes,
         result,
+        result_shape,
         constraints,
     })
 }

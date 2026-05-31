@@ -732,6 +732,98 @@ fn constrained_polymorphic_spec_resolves_vars_and_bounds() {
 }
 
 #[test]
+fn resolved_spec_retains_structural_shape_for_container_parametricity() {
+    let toks = |src: &str| Lexer::new(src).tokenize().expect("lex");
+    let mut ct = ConcreteTypes;
+    let mut env = ModuleTypeEnv::new();
+    env.insert("Enumerable.t".to_string(), ct.any());
+    env.insert_param_alias(
+        "Enumerable.t".to_string(),
+        ParameterizedTypeAlias {
+            params: vec!["a".to_string()],
+            body_tokens: crate::ast::TypeExprBody(toks("a")),
+            span: crate::diag::Span::DUMMY,
+        },
+    );
+    let spec = crate::ast::SpecDecl {
+        name: "drop".to_string(),
+        param_body_tokens: vec![
+            crate::ast::TypeExprBody(toks("Enumerable.t(a)")),
+            crate::ast::TypeExprBody(toks("integer")),
+        ],
+        result_body_tokens: crate::ast::TypeExprBody(toks("[a]")),
+        constraints: vec![],
+    };
+
+    let resolved = resolve_spec_decl(&mut ct, &spec, &env).unwrap();
+    assert_eq!(
+        resolved.param_shapes,
+        vec![
+            ResolvedTypeShape::Named {
+                name: "Enumerable.t".to_string(),
+                args: vec![ResolvedTypeShape::Var(crate::types::TypeVarId(0))],
+            },
+            ResolvedTypeShape::Integer,
+        ]
+    );
+    assert_eq!(
+        resolved.result_shape,
+        ResolvedTypeShape::List(Box::new(ResolvedTypeShape::Var(
+            crate::types::TypeVarId(0)
+        )))
+    );
+}
+
+#[test]
+fn resolved_spec_retains_structural_shape_for_higher_order_parametricity() {
+    let toks = |src: &str| Lexer::new(src).tokenize().expect("lex");
+    let mut ct = ConcreteTypes;
+    let mut env = ModuleTypeEnv::new();
+    env.insert("Enumerable.t".to_string(), ct.any());
+    env.insert_param_alias(
+        "Enumerable.t".to_string(),
+        ParameterizedTypeAlias {
+            params: vec!["a".to_string()],
+            body_tokens: crate::ast::TypeExprBody(toks("a")),
+            span: crate::diag::Span::DUMMY,
+        },
+    );
+    let spec = crate::ast::SpecDecl {
+        name: "reduce".to_string(),
+        param_body_tokens: vec![
+            crate::ast::TypeExprBody(toks("Enumerable.t(a)")),
+            crate::ast::TypeExprBody(toks("b")),
+            crate::ast::TypeExprBody(toks("(a, b) -> b")),
+        ],
+        result_body_tokens: crate::ast::TypeExprBody(toks("b")),
+        constraints: vec![],
+    };
+
+    let resolved = resolve_spec_decl(&mut ct, &spec, &env).unwrap();
+    assert_eq!(
+        resolved.param_shapes,
+        vec![
+            ResolvedTypeShape::Named {
+                name: "Enumerable.t".to_string(),
+                args: vec![ResolvedTypeShape::Var(crate::types::TypeVarId(0))],
+            },
+            ResolvedTypeShape::Var(crate::types::TypeVarId(1)),
+            ResolvedTypeShape::Arrow {
+                params: vec![
+                    ResolvedTypeShape::Var(crate::types::TypeVarId(0)),
+                    ResolvedTypeShape::Var(crate::types::TypeVarId(1)),
+                ],
+                result: Box::new(ResolvedTypeShape::Var(crate::types::TypeVarId(1))),
+            },
+        ]
+    );
+    assert_eq!(
+        resolved.result_shape,
+        ResolvedTypeShape::Var(crate::types::TypeVarId(1))
+    );
+}
+
+#[test]
 fn resolved_spec_set_selects_return_by_matching_arrow() {
     let mut ct = ConcreteTypes;
     let int = ct.int();
@@ -740,12 +832,16 @@ fn resolved_spec_set_selects_return_by_matching_arrow() {
         arrows: vec![
             ResolvedSpec {
                 params: vec![int.clone()],
+                param_shapes: vec![ResolvedTypeShape::Any],
                 result: int.clone(),
+                result_shape: ResolvedTypeShape::Any,
                 constraints: std::collections::HashMap::new(),
             },
             ResolvedSpec {
                 params: vec![float.clone()],
+                param_shapes: vec![ResolvedTypeShape::Any],
                 result: float.clone(),
+                result_shape: ResolvedTypeShape::Any,
                 constraints: std::collections::HashMap::new(),
             },
         ],
@@ -769,17 +865,23 @@ fn resolved_spec_set_unions_results_only_after_arrow_selection() {
         arrows: vec![
             ResolvedSpec {
                 params: vec![int.clone()],
+                param_shapes: vec![ResolvedTypeShape::Any],
                 result: int.clone(),
+                result_shape: ResolvedTypeShape::Any,
                 constraints: std::collections::HashMap::new(),
             },
             ResolvedSpec {
                 params: vec![float.clone()],
+                param_shapes: vec![ResolvedTypeShape::Any],
                 result: float.clone(),
+                result_shape: ResolvedTypeShape::Any,
                 constraints: std::collections::HashMap::new(),
             },
             ResolvedSpec {
                 params: vec![int.clone()],
+                param_shapes: vec![ResolvedTypeShape::Any],
                 result: float.clone(),
+                result_shape: ResolvedTypeShape::Any,
                 constraints: std::collections::HashMap::new(),
             },
         ],
@@ -806,7 +908,13 @@ fn resolved_spec_reports_reduce_invariant_slot_correspondence() {
     let reducer_param = ct.arrow(&[entry_var, acc_var.clone()], acc_var.clone());
     let spec = ResolvedSpec {
         params: vec![enumerable_param, acc_var.clone(), reducer_param],
+        param_shapes: vec![
+            ResolvedTypeShape::Any,
+            ResolvedTypeShape::Any,
+            ResolvedTypeShape::Any,
+        ],
         result: acc_var,
+        result_shape: ResolvedTypeShape::Any,
         constraints: std::collections::HashMap::new(),
     };
 
@@ -846,7 +954,13 @@ fn resolved_spec_reports_reduce_while_invariant_slot_correspondence() {
             acc_var.clone(),
             ct.arrow(&[entry_var, acc_var.clone()], reducer_ret),
         ],
+        param_shapes: vec![
+            ResolvedTypeShape::Any,
+            ResolvedTypeShape::Any,
+            ResolvedTypeShape::Any,
+        ],
         result: acc_var,
+        result_shape: ResolvedTypeShape::Any,
         constraints: std::collections::HashMap::new(),
     };
 

@@ -95,6 +95,13 @@ CallbackResult(2) reducer result
 That correspondence is the planner-facing fact used to stabilize higher-order
 callback keying; it is not a post-hoc widening heuristic.
 
+`ResolvedSpec` now also retains the resolved structural shape of each param and
+the result alongside the concrete `Ty`. This is the non-lossy source of truth
+for declared parametricity: contracts such as `@spec drop(Enumerable.t(a),
+integer) :: [a]` keep the shared `a` in their structural form even when the
+concrete `Ty` used for execution/planning no longer exposes that relation
+directly.
+
 ## Correct Shape
 
 Add a first-class overload-set shape:

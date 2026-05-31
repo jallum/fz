@@ -1312,7 +1312,13 @@ fn declared_reduce_while_return_uses_closure_return_witness() {
     let reducer_param = t.arrow(&[entry_var, acc_var.clone()], reducer_ret);
     let reduce_spec = crate::type_expr::ResolvedSpec {
         params: vec![enumerable_param, acc_var.clone(), reducer_param],
+        param_shapes: vec![
+            crate::type_expr::ResolvedTypeShape::Any,
+            crate::type_expr::ResolvedTypeShape::Any,
+            crate::type_expr::ResolvedTypeShape::Any,
+        ],
         result: acc_var,
+        result_shape: crate::type_expr::ResolvedTypeShape::Any,
         constraints: HashMap::new(),
     };
 
