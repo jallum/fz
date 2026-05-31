@@ -1,0 +1,20 @@
+# The threaded closure captures a plain int `n`, giving capture type `&w[5]`.
+# A concrete capture rides the lattice like any value, so the fixpoint lands.
+#
+# Expected: myreduce([1,2,3], 0, 5) : number ; settles.
+
+fn go(list, acc, f) do
+  case list do
+    [] -> acc
+    [h | t] -> go(t, f.(h, acc), f)
+    _ -> acc
+  end
+end
+
+fn myreduce(list, acc, n) do
+  go(list, acc, fn (entry, inner) -> entry + inner + n end)
+end
+
+fn main() do
+  dbg(myreduce([1, 2, 3], 0, 5))
+end
