@@ -15,6 +15,10 @@ impl<'a> DemandAbi<'a> {
         }
     }
 
+    pub(crate) fn from_demand(demand: &'a ReturnDemand) -> Self {
+        Self { demand }
+    }
+
     pub(crate) fn tuple_field_arity(self) -> Option<usize> {
         self.demand.tuple_field_arity()
     }

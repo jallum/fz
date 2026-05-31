@@ -739,6 +739,50 @@ end
 }
 
 #[test]
+fn runtime_enum_reduce_while_shape_changing_accumulator_runs_native() {
+    let src = r#"
+fn finish({:found, index}), do: index
+fn finish({:not_found, _index}), do: -1
+
+fn collapsed() do
+  Enum.reduce_while([1, 2, 3], {:not_found, 0}, fn (entry, {:not_found, index}) ->
+    if entry == 2 do
+      {:halt, {:found, index}}
+    else
+      {:cont, {:not_found, index + 1}}
+    end
+  end)
+end
+
+fn main() do
+  dbg(finish(collapsed()))
+end
+"#;
+    let mut t = crate::types::ConcreteTypes;
+    let module = runtime_graph_module(&mut t, src);
+
+    let collapsed = module.fn_by_name("collapsed").expect("collapsed");
+    let plan = crate::ir_planner::plan_module(&mut t, &module, &crate::telemetry::NullTelemetry);
+    let ret = plan
+        .effective_returns
+        .get(&crate::ir_planner::fn_types::SpecKey::value(
+            collapsed.id,
+            Vec::new(),
+        ))
+        .unwrap_or_else(|| panic!("missing collapsed return"));
+    let found = t.atom_lit("found");
+    let int = t.int();
+    let found_int = t.tuple(&[found, int]);
+    assert!(
+        t.is_subtype(&found_int, ret),
+        "reduce_while declared return must include halt payload, got {}",
+        t.display(ret)
+    );
+
+    assert_eq!(capture_main_module(module), vec!["1"], "native result");
+}
+
+#[test]
 fn runtime_enum_sort_uses_stable_merge_sort_for_lists() {
     let got = capture_main_with_runtime_graph(
         r#"
@@ -950,13 +994,17 @@ fn capture_main(src: &str) -> Vec<String> {
 
 fn capture_main_with_runtime_graph(src: &str) -> Vec<String> {
     let mut t = crate::types::ConcreteTypes;
+    capture_main_module(runtime_graph_module(&mut t, src))
+}
+
+fn runtime_graph_module(t: &mut crate::types::ConcreteTypes, src: &str) -> Module {
     let tel = crate::telemetry::NullTelemetry;
     let providers = crate::modules::pipeline::ProviderInputs::new(
         crate::modules::artifact_store::DEFAULT_ARTIFACT_ROOT.to_string(),
         Vec::new(),
     );
     let frontend = crate::modules::pipeline::compile_source_with_providers(
-        &mut t,
+        t,
         src.to_string(),
         "test.fz".to_string(),
         &providers,
@@ -964,21 +1012,21 @@ fn capture_main_with_runtime_graph(src: &str) -> Vec<String> {
     )
     .unwrap_or_else(|err| panic!("frontend result: {err}"));
     let checked = crate::modules::pipeline::checked_module_for_mode(
-        &mut t,
+        t,
         frontend,
         &tel,
         crate::modules::pipeline::CompileMode::Normal,
     )
     .unwrap_or_else(|err| panic!("checked module: {err}"));
     let prepared = crate::modules::pipeline::prepare_execution_graph(
-        &mut t,
+        t,
         checked,
         &providers,
         &tel,
         crate::modules::pipeline::CompileMode::Normal,
     )
     .unwrap_or_else(|err| panic!("execution graph: {err}"));
-    capture_main_module(prepared.module)
+    prepared.module
 }
 
 fn capture_main_module(m: Module) -> Vec<String> {

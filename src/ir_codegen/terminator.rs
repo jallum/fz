@@ -2,7 +2,9 @@
 
 use super::*;
 use crate::fz_ir::Term;
-use crate::ir_planner::fn_types::{ReturnContextPlan, ReturnContract, ReturnStrategy};
+use crate::ir_planner::fn_types::{
+    ReturnContextPlan, ReturnContract, ReturnDemand, ReturnStrategy,
+};
 use cranelift_codegen::ir::{
     self, AbiParam, BlockArg, InstBuilder, MemFlags, Signature, condcodes::IntCC, types,
 };
@@ -539,8 +541,19 @@ fn emit_return_term<
     let closure_n_captures = env.closure_n_captures;
     {
         if is_native {
-            let this_demand = DemandAbi::new(&env.spec_keys[this_spec_id as usize]);
-            if this_demand.delivers_list_tail_return()
+            let spec_demand = &env.spec_keys[this_spec_id as usize].demand;
+            let cont_return_demand;
+            let return_demand = if is_cont_fn && spec_demand.tuple_field_arity().is_some() {
+                cont_return_demand = match spec_demand.list_tail_ty() {
+                    Some(tail_ty) => ReturnDemand::list_tail(tail_ty.clone()),
+                    None => ReturnDemand::value(),
+                };
+                &cont_return_demand
+            } else {
+                spec_demand
+            };
+            let return_abi = DemandAbi::from_demand(return_demand);
+            if return_abi.delivers_list_tail_return()
                 && let Some(elems) = body.cache.list_tail_return_elems.get(&v.0).cloned()
             {
                 let delivered =
@@ -562,7 +575,7 @@ fn emit_return_term<
                     .return_call_indirect(sigref, code, &[delivered, cont_val]);
                 return Ok(());
             }
-            if let Some(arity) = this_demand.tuple_field_arity()
+            if let Some(arity) = return_abi.tuple_field_arity()
                 && let Some(fields) = body.cache.tuple_return_fields.get(&v.0)
             {
                 let fields = fields.clone();

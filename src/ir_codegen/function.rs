@@ -162,7 +162,7 @@ pub(crate) fn compile_fn<
     {
         let (if_only, all_used) = crate::ir_dce::classify_var_uses(f);
         let (tuple_return_fields, skipped_tuple_return_vars) =
-            tuple_return_delivery_plan(f, &env.spec_keys[this_spec_id as usize]);
+            tuple_return_delivery_plan(f, &env.spec_keys[this_spec_id as usize], is_cont_fn);
         let (list_tail_return_elems, skipped_list_tail_return_vars) =
             list_tail_delivery_plan(f, &env.spec_keys[this_spec_id as usize]);
         body.cache.if_only_conds = if_only.into_iter().map(|v| v.0).collect();
@@ -343,10 +343,14 @@ fn owned_cons_reuse_sources(f: &crate::fz_ir::FnIr) -> HashMap<u32, crate::fz_ir
 fn tuple_return_delivery_plan(
     f: &crate::fz_ir::FnIr,
     spec_key: &crate::ir_planner::fn_types::SpecKey,
+    is_cont_fn: bool,
 ) -> (
     HashMap<u32, Vec<crate::fz_ir::Var>>,
     std::collections::HashSet<u32>,
 ) {
+    if is_cont_fn && spec_key.demand.tuple_field_arity().is_some() {
+        return (HashMap::new(), std::collections::HashSet::new());
+    }
     let arity = match DemandAbi::new(spec_key).tuple_field_arity() {
         Some(arity) => arity,
         None => return (HashMap::new(), std::collections::HashSet::new()),

@@ -418,6 +418,15 @@ Concretely:
   reads ListTail context from the planner's `ReturnContract` payload rather
   than by indexing `continuation.captured[…]`.
 
+Continuation functions carry two demand facts. Their `SpecKey.demand` tells the
+producer how to deliver the continuation input payload. Their own `Return`
+terminator sends a new result to the outer continuation captured in `self`, so
+native codegen uses the outer return shape there. A reducer continuation may
+receive `{:cont, acc}` as `tuple_fields(2)`, but when it returns
+`{:halted, acc}` to the caller of `reduce`, that return is a normal value unless
+the outer caller requested a list-tail destination. Reusing input delivery for
+that outer return shifts the ABI lanes.
+
 Destination lowering runs after the optimizer passes, which keeps init-token
 ownership local to executable IR. Lowering before the optimizer would force
 every inliner and rewriter to remap init tokens correctly.
