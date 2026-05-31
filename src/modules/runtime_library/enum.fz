@@ -101,6 +101,50 @@ defmodule Enum do
   @spec map_intersperse(Enumerable.t(a), b, (a) -> b) :: [b]
   fn map_intersperse(enumerable, separator, mapper), do: map_intersperse_list(to_list(enumerable), separator, mapper)
 
+  @spec all?(Enumerable.t(a)) :: bool
+  fn all?(enumerable), do: reduce_while(enumerable, true, fn (entry, _acc) -> all_value_step(entry) end)
+
+  @spec all?(Enumerable.t(a), (a) -> any) :: bool
+  fn all?(enumerable, fun), do: reduce_while(enumerable, true, fn (entry, _acc) -> all_value_step(fun(entry)) end)
+
+  @spec any?(Enumerable.t(a)) :: bool
+  fn any?(enumerable), do: reduce_while(enumerable, false, fn (entry, _acc) -> any_value_step(entry) end)
+
+  @spec any?(Enumerable.t(a), (a) -> any) :: bool
+  fn any?(enumerable, fun), do: reduce_while(enumerable, false, fn (entry, _acc) -> any_value_step(fun(entry)) end)
+
+  @spec empty?(Enumerable.t(a)) :: bool
+  fn empty?(enumerable), do: reduce_while(enumerable, true, fn (_entry, _acc) -> {:halt, false} end)
+
+  @spec find(Enumerable.t(a), (a) -> any) :: a | nil
+  fn find(enumerable, fun), do: find(enumerable, nil, fun)
+
+  @spec find(Enumerable.t(a), b, (a) -> any) :: a | b
+  fn find(enumerable, default, fun) do
+    reduce_while(enumerable, default, fn (entry, _acc) ->
+      if fun(entry), do: {:halt, entry}, else: {:cont, default}
+    end)
+  end
+
+  @spec find_index(Enumerable.t(a), (a) -> any) :: integer | nil
+  fn find_index(enumerable, fun) do
+    find_index_finish(
+      reduce_while(enumerable, {:not_found, 0}, fn (entry, state) ->
+        find_index_step(fun(entry), state)
+      end)
+    )
+  end
+
+  @spec find_value(Enumerable.t(a), (a) -> b) :: b | nil
+  fn find_value(enumerable, fun), do: find_value(enumerable, nil, fun)
+
+  @spec find_value(Enumerable.t(a), b, (a) -> c) :: b | c
+  fn find_value(enumerable, default, fun) do
+    reduce_while(enumerable, default, fn (entry, _acc) ->
+      find_value_step(fun(entry), default)
+    end)
+  end
+
   @spec sort(Enumerable.t(a)) :: [a]
   fn sort(enumerable), do: sort(enumerable, fn (left, right) -> left <= right end)
 
@@ -212,6 +256,25 @@ defmodule Enum do
   fnp map_intersperse_tail([], _separator, _mapper), do: []
   fnp map_intersperse_tail([head | tail], separator, mapper) do
     [separator, mapper(head) | map_intersperse_tail(tail, separator, mapper)]
+  end
+
+  fnp all_value_step(value) do
+    if value, do: {:cont, true}, else: {:halt, false}
+  end
+
+  fnp any_value_step(value) do
+    if value, do: {:halt, true}, else: {:cont, false}
+  end
+
+  fnp find_index_step(value, {:not_found, index}) do
+    if value, do: {:halt, {:found, index}}, else: {:cont, {:not_found, index + 1}}
+  end
+
+  fnp find_index_finish({:found, index}), do: index
+  fnp find_index_finish({:not_found, _index}), do: nil
+
+  fnp find_value_step(value, default) do
+    if value, do: {:halt, value}, else: {:cont, default}
   end
 
   fnp sort_list([], _sorter), do: []

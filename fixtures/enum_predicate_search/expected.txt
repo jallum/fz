@@ -1,0 +1,24 @@
+true
+true
+false
+true
+false
+false
+false
+true
+true
+false
+true
+false
+3
+3
+:none
+1
+nil
+{:even, 2}
+:none
+:ok
+false
+true
+1
+:first
