@@ -594,6 +594,13 @@ fn expand_expr_inner(
                         e.node = call3("Range.new", first, last, (**r).clone());
                     }
                 }
+                BinOp::In => {
+                    e.node = call2("Enum.member?", (**r).clone(), (**l).clone());
+                }
+                BinOp::NotIn => {
+                    let member = call2("Enum.member?", (**r).clone(), (**l).clone());
+                    e.node = Expr::UnOp(UnOp::Not, Box::new(Spanned::new(member, e.span)));
+                }
                 BinOp::Add
                 | BinOp::Sub
                 | BinOp::Mul
@@ -607,9 +614,7 @@ fn expand_expr_inner(
                 | BinOp::GtEq
                 | BinOp::And
                 | BinOp::Or
-                | BinOp::Cons
-                | BinOp::In
-                | BinOp::NotIn => {}
+                | BinOp::Cons => {}
             }
         }
         Expr::UnOp(_, x) | Expr::Ascribe(x, _) => {
@@ -1617,6 +1622,30 @@ end"#,
         assert_call_name(&values[2], "Kernel.fz_binary_concat", 2);
         assert_call_name(&values[3], "Range.new", 3);
         assert_call_name(&values[4], "Range.new", 3);
+    }
+
+    #[test]
+    fn membership_sugars_rewrite_to_enum_member() {
+        let body = expanded_main_body(
+            r#"fn main() do
+  {
+    2 in [1, 2, 3],
+    4 not in [1, 2, 3]
+  }
+end"#,
+        );
+        let Expr::Tuple(values) = &body else {
+            panic!("expected tuple");
+        };
+
+        assert_call_name(&values[0], "Enum.member?", 2);
+        let Expr::UnOp(UnOp::Not, inner) = &values[1].node else {
+            panic!(
+                "expected not wrapping Enum.member?, got {:?}",
+                values[1].node
+            );
+        };
+        assert_call_name(inner, "Enum.member?", 2);
     }
 
     fn assert_call_name(expr: &Spanned<Expr>, expected: &str, arity: usize) {

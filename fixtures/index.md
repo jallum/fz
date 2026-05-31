@@ -55,6 +55,7 @@ Run with `BLESS=1` to rewrite after editing fixtures.
 | `make_ref_distinct/` | fz-ht5 — make_ref() returns a distinct opaque ref on every call | jit, interp, aot, repl |
 | `map_enumerable/` | Map implements Enumerable reduce/count/member?/slice callbacks | jit, interp, aot, repl |
 | `map_three_path_parity/` | map layout three-path parity for lookup, update, floats, nil miss, and pointer values | jit, interp, aot, repl |
+| `membership_operator/` | membership operators desugar to Enum.member?/2 and match Elixir over List, Range, and Map | jit, interp, aot, repl |
 | `module_info/` | __info__/1 reflection — a synthesized module fn reports functions, macros, and the module name on all four paths | jit, interp, aot, repl |
 | `modules/` | cross-module qualified calls — `M.double`, `M.quad`, `N.helper` | jit, interp, aot, repl |
 | `multi_caller_spec_divergent/` | fz-uwq.4 regression — divergent dispatch across two caller specs of the same higher-order fn | jit, interp, aot, repl |
