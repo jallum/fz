@@ -790,7 +790,9 @@ pub(crate) fn compute_return_for_spec<
 }
 
 #[allow(clippy::too_many_arguments)]
-fn direct_tail_return_contribution<T: crate::types::Types<Ty = crate::types::Ty>>(
+fn direct_tail_return_contribution<
+    T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
+>(
     t: &mut T,
     module: &Module,
     recursive_fns: &std::collections::HashSet<FnId>,
@@ -1164,7 +1166,9 @@ pub(crate) fn cont_key_for_spec<
     ))
 }
 
-fn external_call_return_slot0_for_spec<T: crate::types::Types<Ty = crate::types::Ty>>(
+fn external_call_return_slot0_for_spec<
+    T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
+>(
     t: &mut T,
     module: &Module,
     caller: FnId,
@@ -1184,7 +1188,9 @@ fn external_call_return_slot0_for_spec<T: crate::types::Types<Ty = crate::types:
         })
 }
 
-fn declared_call_return<T: crate::types::Types<Ty = crate::types::Ty>>(
+fn declared_call_return<
+    T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
+>(
     t: &mut T,
     module: &Module,
     callee: FnId,

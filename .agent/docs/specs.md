@@ -100,6 +100,10 @@ hold everywhere:
    selection. Instantiation uses the shared structural scheme matcher: variables
    can be witnessed by compatible nested shapes such as higher-order callback
    arrows, and partial/underconstrained results are not executable return facts.
+   The matcher returns instantiated params and result together so demand shaping,
+   declared-call return typing, and spec validation cannot drift into separate
+   substitution stories. Validation passes positional holes as unknown witness
+   slots rather than converting them to `any`.
 
 5. Interfaces and protocols: public function specs and protocol callback specs
    carry ordered spec lists (`specs`), and interface fingerprints include every

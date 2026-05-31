@@ -714,7 +714,7 @@ fn build_per_spec_schemas<T: crate::types::Types<Ty = crate::types::Ty>>(
 /// `any` so `ArgRepr::from_descr` doesn't pick RawF64 (none is a
 /// subtype of every set, including float). The value never reaches
 /// anyone for a halt-only spec, but the ABI must still be valid.
-fn derive_return_tys<T: crate::types::Types<Ty = crate::types::Ty>>(
+fn derive_return_tys<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes>(
     t: &mut T,
     module: &crate::fz_ir::Module,
     spec_keys: &[crate::ir_planner::fn_types::SpecKey],
@@ -747,7 +747,9 @@ fn derive_return_tys<T: crate::types::Types<Ty = crate::types::Ty>>(
         .collect()
 }
 
-fn declared_return_for_spec_key<T: crate::types::Types<Ty = crate::types::Ty>>(
+fn declared_return_for_spec_key<
+    T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
+>(
     t: &mut T,
     module: &crate::fz_ir::Module,
     key: &crate::ir_planner::fn_types::SpecKey,

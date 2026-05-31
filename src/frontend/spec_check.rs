@@ -29,11 +29,14 @@ use crate::diag::{Diagnostic, Span, codes};
 use crate::fz_ir::FnId;
 use crate::ir_planner::ModulePlan;
 use crate::type_expr::{ModuleTypeEnv, ResolvedSpec, ResolvedSpecSet, resolve_spec_decls};
+use crate::types::{SchemeInstantiation, instantiate_scheme_match_with_slots};
 
 /// Validate every `@spec` in `program` against the corresponding
 /// inferred specs in `module_plan`. Returns a list of diagnostics
 /// (empty when all specs hold).
-pub fn validate_specs<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::RenderTypes>(
+pub fn validate_specs<
+    T: crate::types::ClosureTypes<Ty = crate::types::Ty> + crate::types::RenderTypes,
+>(
     t: &mut T,
     program: &Program,
     ir_module: &crate::fz_ir::Module,
@@ -97,7 +100,9 @@ pub fn validate_specs<T: crate::types::Types<Ty = crate::types::Ty> + crate::typ
     diags
 }
 
-fn validate_one_fn<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::RenderTypes>(
+fn validate_one_fn<
+    T: crate::types::ClosureTypes<Ty = crate::types::Ty> + crate::types::RenderTypes,
+>(
     t: &mut T,
     declared_specs: &ResolvedSpecSet,
     fn_id: FnId,
@@ -171,33 +176,23 @@ fn inferred_result_ty<T: crate::types::Types<Ty = crate::types::Ty>>(
 }
 
 fn declared_arrow_covers_inferred_spec<
-    T: crate::types::Types<Ty = crate::types::Ty> + crate::types::RenderTypes,
+    T: crate::types::ClosureTypes<Ty = crate::types::Ty> + crate::types::RenderTypes,
 >(
     t: &mut T,
     declared: &ResolvedSpec,
     inferred_inputs: &[crate::types::KeySlot],
     inferred_result: &T::Ty,
 ) -> bool {
-    if declared.params.len() != inferred_inputs.len() {
-        return false;
+    match instantiate_scheme_match_with_slots(
+        t,
+        &declared.params,
+        &declared.result,
+        &declared.constraints,
+        inferred_inputs,
+    ) {
+        SchemeInstantiation::Known(matched) => t.is_subtype(inferred_result, &matched.result),
+        SchemeInstantiation::Underconstrained(_) | SchemeInstantiation::Invalid => false,
     }
-    let mut sigma = std::collections::HashMap::new();
-    for (declared, inferred) in declared.params.iter().zip(inferred_inputs.iter()) {
-        if let Some(inferred) = inferred {
-            t.collect_instantiation_subst(declared, inferred, &mut sigma);
-        }
-    }
-    for (declared, inferred) in declared.params.iter().zip(inferred_inputs.iter()) {
-        let Some(inferred) = inferred else {
-            continue;
-        };
-        let declared_param_ty = t.instantiate(declared, &sigma);
-        if !t.is_subtype(inferred, &declared_param_ty) {
-            return false;
-        }
-    }
-    let declared_result = t.instantiate(&declared.result, &sigma);
-    t.is_subtype(inferred_result, &declared_result)
 }
 
 #[cfg(test)]

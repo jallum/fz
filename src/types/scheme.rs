@@ -8,6 +8,12 @@ pub enum SchemeInstantiation<T> {
     Invalid,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SchemeMatch<T> {
+    pub params: Vec<T>,
+    pub result: T,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Witness {
     Known,
@@ -32,12 +38,53 @@ pub fn instantiate_result<T: ClosureTypes + ?Sized>(
     constraints: &HashMap<TypeVarId, T::Ty>,
     witnesses: &[T::Ty],
 ) -> SchemeInstantiation<T::Ty> {
+    match instantiate_match(t, params, result, constraints, witnesses) {
+        SchemeInstantiation::Known(matched) => SchemeInstantiation::Known(matched.result),
+        SchemeInstantiation::Underconstrained(matched) => {
+            SchemeInstantiation::Underconstrained(matched.result)
+        }
+        SchemeInstantiation::Invalid => SchemeInstantiation::Invalid,
+    }
+}
+
+pub fn instantiate_match<T: ClosureTypes + ?Sized>(
+    t: &mut T,
+    params: &[T::Ty],
+    result: &T::Ty,
+    constraints: &HashMap<TypeVarId, T::Ty>,
+    witnesses: &[T::Ty],
+) -> SchemeInstantiation<SchemeMatch<T::Ty>> {
+    let witness_slots: Vec<Option<&T::Ty>> = witnesses.iter().map(Some).collect();
+    instantiate_match_slots(t, params, result, constraints, &witness_slots)
+}
+
+pub fn instantiate_match_with_slots<T: ClosureTypes + ?Sized>(
+    t: &mut T,
+    params: &[T::Ty],
+    result: &T::Ty,
+    constraints: &HashMap<TypeVarId, T::Ty>,
+    witnesses: &[Option<T::Ty>],
+) -> SchemeInstantiation<SchemeMatch<T::Ty>> {
+    let witness_slots: Vec<Option<&T::Ty>> = witnesses.iter().map(Option::as_ref).collect();
+    instantiate_match_slots(t, params, result, constraints, &witness_slots)
+}
+
+fn instantiate_match_slots<T: ClosureTypes + ?Sized>(
+    t: &mut T,
+    params: &[T::Ty],
+    result: &T::Ty,
+    constraints: &HashMap<TypeVarId, T::Ty>,
+    witnesses: &[Option<&T::Ty>],
+) -> SchemeInstantiation<SchemeMatch<T::Ty>> {
     if params.len() != witnesses.len() {
         return SchemeInstantiation::Invalid;
     }
 
     let mut sigma: Sigma<T::Ty> = Sigma::new();
     for (pattern, witness) in params.iter().zip(witnesses.iter()) {
+        let Some(witness) = witness else {
+            continue;
+        };
         if collect_structural_subst(t, pattern, witness, &mut sigma) == Witness::Invalid {
             return SchemeInstantiation::Invalid;
         }
@@ -45,7 +92,9 @@ pub fn instantiate_result<T: ClosureTypes + ?Sized>(
 
     for (var, bound) in constraints {
         let Some(actual) = sigma.get(var) else {
-            return SchemeInstantiation::Underconstrained(t.instantiate(result, &sigma));
+            return SchemeInstantiation::Underconstrained(instantiated_match(
+                t, params, result, &sigma,
+            ));
         };
         if !t.is_subtype(actual, bound) {
             return SchemeInstantiation::Invalid;
@@ -53,18 +102,35 @@ pub fn instantiate_result<T: ClosureTypes + ?Sized>(
     }
 
     for (pattern, witness) in params.iter().zip(witnesses.iter()) {
+        let Some(witness) = witness else {
+            continue;
+        };
         let expected = t.instantiate(pattern, &sigma);
         if !t.has_vars(witness) && !t.is_subtype(witness, &expected) {
             return SchemeInstantiation::Invalid;
         }
     }
 
-    let instantiated = t.instantiate(result, &sigma);
-    if t.has_vars(&instantiated) {
-        SchemeInstantiation::Underconstrained(instantiated)
+    let matched = instantiated_match(t, params, result, &sigma);
+    if t.has_vars(&matched.result) {
+        SchemeInstantiation::Underconstrained(matched)
     } else {
-        SchemeInstantiation::Known(instantiated)
+        SchemeInstantiation::Known(matched)
     }
+}
+
+fn instantiated_match<T: Types + ?Sized>(
+    t: &mut T,
+    params: &[T::Ty],
+    result: &T::Ty,
+    sigma: &Sigma<T::Ty>,
+) -> SchemeMatch<T::Ty> {
+    let params = params
+        .iter()
+        .map(|param| t.instantiate(param, sigma))
+        .collect::<Vec<_>>();
+    let result = t.instantiate(result, sigma);
+    SchemeMatch { params, result }
 }
 
 fn collect_structural_subst<T: ClosureTypes + ?Sized>(

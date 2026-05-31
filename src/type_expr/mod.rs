@@ -32,7 +32,9 @@ use std::collections::HashMap;
 use crate::diag::Span;
 use crate::modules::identity::ModuleName;
 use crate::parser::lexer::{Tok, Token};
-use crate::types::Types;
+use crate::types::{
+    ClosureTypes, SchemeInstantiation, SchemeMatch, Types, instantiate_scheme_match,
+};
 
 /// Module-level type environment. Monomorphic aliases resolve directly to
 /// `Ty`; parameterized aliases keep their body tokens until an application
@@ -197,7 +199,7 @@ impl ResolvedSpecSet {
         arg_tys: &[crate::types::Ty],
     ) -> Vec<ResolvedSpecMatch>
     where
-        T: Types<Ty = crate::types::Ty>,
+        T: ClosureTypes<Ty = crate::types::Ty>,
     {
         self.arrows
             .iter()
@@ -211,7 +213,7 @@ impl ResolvedSpecSet {
         arg_tys: &[crate::types::Ty],
     ) -> Option<Vec<crate::types::Ty>>
     where
-        T: Types<Ty = crate::types::Ty>,
+        T: ClosureTypes<Ty = crate::types::Ty>,
     {
         match self.matching_arrows(t, arg_tys).as_slice() {
             [matched] => Some(matched.params.clone()),
@@ -225,7 +227,7 @@ impl ResolvedSpecSet {
         arg_tys: &[crate::types::Ty],
     ) -> Option<crate::types::Ty>
     where
-        T: Types<Ty = crate::types::Ty>,
+        T: ClosureTypes<Ty = crate::types::Ty>,
     {
         let mut result = None;
         for matched in self.matching_arrows(t, arg_tys) {
@@ -244,39 +246,14 @@ fn instantiate_matching_arrow<T>(
     arg_tys: &[crate::types::Ty],
 ) -> Option<ResolvedSpecMatch>
 where
-    T: Types<Ty = crate::types::Ty>,
+    T: ClosureTypes<Ty = crate::types::Ty>,
 {
-    if spec.params.len() != arg_tys.len() {
-        return None;
-    }
-
-    let mut sigma = HashMap::new();
-    for (declared, actual) in spec.params.iter().zip(arg_tys.iter()) {
-        t.collect_instantiation_subst(declared, actual, &mut sigma);
-    }
-
-    for (var, bound) in &spec.constraints {
-        let actual = sigma.get(var)?;
-        if !t.is_subtype(actual, bound) {
-            return None;
+    match instantiate_scheme_match(t, &spec.params, &spec.result, &spec.constraints, arg_tys) {
+        SchemeInstantiation::Known(SchemeMatch { params, result }) => {
+            Some(ResolvedSpecMatch { params, result })
         }
+        SchemeInstantiation::Underconstrained(_) | SchemeInstantiation::Invalid => None,
     }
-
-    let mut params = Vec::with_capacity(spec.params.len());
-    for (declared, actual) in spec.params.iter().zip(arg_tys.iter()) {
-        let param = t.instantiate(declared, &sigma);
-        if !t.has_vars(actual) && !t.is_subtype(actual, &param) {
-            return None;
-        }
-        params.push(param);
-    }
-
-    let result = t.instantiate(&spec.result, &sigma);
-    if t.has_vars(&result) {
-        return None;
-    }
-
-    Some(ResolvedSpecMatch { params, result })
 }
 
 /// (De)serialize `HashMap<TypeVarId, Ty>` as a `Vec<(TypeVarId, Ty)>` so the
