@@ -2320,8 +2320,8 @@ fn condition_cache_bypasses_is_truthy_in_type_dispatch() {
                fn check(x) do :other end\n\
                fn main() do\n\
                  c = fn(x) -> check(x) end\n\
-                 dbg(c(42))\n\
-                 dbg(c(:foo))\n\
+                 dbg(c.(42))\n\
+                 dbg(c.(:foo))\n\
                end";
     let m = lower_src(src);
     ir_text_record_enable();
@@ -2363,8 +2363,8 @@ fn pure_branch_type_test_does_not_materialize_bool() {
                fn check(x) do :other end\n\
                fn main() do\n\
                  c = fn(x) -> check(x) end\n\
-                 dbg(c(42))\n\
-                 dbg(c(:foo))\n\
+                 dbg(c.(42))\n\
+                 dbg(c.(:foo))\n\
                end";
     let m = lower_src(src);
     ir_text_record_enable();

@@ -19,7 +19,7 @@ budget.planner.dispatches: 0
 `route(f, n)` is invoked at two source sites with two distinct
 closure literals: the named fn `id` and the inline lambda
 `fn(x) -> x * 2`. The planner mints two specs of `route` — one per
-`f` — whose single inner `f(n)` callsite dispatches to two
+`f` — whose single inner `f.(n)` callsite dispatches to two
 different targets.
 
 The shape collapses if dispatch information is keyed only by

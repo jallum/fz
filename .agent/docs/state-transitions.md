@@ -38,7 +38,7 @@ reduce_list_cont([], acc, _reducer) ->
   {:done, acc}
 
 reduce_list_cont([h | t], acc, reducer) ->
-  reduce_list_step(t, reducer(h, acc), reducer)
+  reduce_list_step(t, reducer.(h, acc), reducer)
 
 reduce_list_step(list, {:cont, acc}, reducer) ->
   reduce_list_cont(list, acc, reducer)
@@ -61,7 +61,7 @@ low-level protocol state machine before peeling `{:done, acc}` with
 Enum.reduce(enumerable, acc, reducer) ->
   reduce_finish(
     Enumerable.reduce(enumerable, {:cont, acc}, fn entry, inner_acc ->
-      {:cont, reducer(entry, inner_acc)}
+      {:cont, reducer.(entry, inner_acc)}
     end)
   )
 ```

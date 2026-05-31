@@ -1358,12 +1358,12 @@ end
     #[test]
     fn non_tail_if_call_arm_flows_through_join() {
         // The branch body is not final tail position when the if has a join.
-        // Pre-fix, `fun(head)` returned directly from if_then and skipped the
+        // Pre-fix, `fun.(head)` returned directly from if_then and skipped the
         // surrounding list construction.
         let out = run_and_capture(
             "fn map_every_list([], _nth, _index, _fun), do: []\n\
              fn map_every_list([head | tail], nth, index, fun) do\n\
-               next = if (index % nth) == 0, do: fun(head), else: head\n\
+               next = if (index % nth) == 0, do: fun.(head), else: head\n\
                [next | map_every_list(tail, nth, index + 1, fun)]\n\
              end\n\
              fn main() do\n\
@@ -1378,7 +1378,7 @@ end
         let out = run_and_capture(
             "fn pick(x, fun) do\n\
                next = case x do\n\
-                 0 -> fun(x)\n\
+                 0 -> fun.(x)\n\
                  _ -> x\n\
                end\n\
                [next]\n\
@@ -1393,7 +1393,7 @@ end
         let out = run_and_capture(
             "fn pick(x, fun) do\n\
                next = cond do\n\
-                 x == 0 -> fun(x)\n\
+                 x == 0 -> fun.(x)\n\
                  true -> x\n\
                end\n\
                [next]\n\

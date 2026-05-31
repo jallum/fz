@@ -16,11 +16,11 @@ to the construct join.
 Example:
 
 ```fz
-next = if rem(index, nth) == 0, do: fun(head), else: head
+next = if rem(index, nth) == 0, do: fun.(head), else: head
 [next | rest]
 ```
 
-The `fun(head)` call does not return from the `if_then` arm directly. It produces
+The `fun.(head)` call does not return from the `if_then` arm directly. It produces
 the `if` value, then the `if_join` continuation binds `next` and lowers
 `[next | rest]`.
 

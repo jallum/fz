@@ -12,5 +12,5 @@ fn main() do
   dbg(Enumerable.member?(map, 1))
   {:ok, n, slicer} = Enumerable.slice(map)
   dbg(n)
-  dbg(slicer(map))
+  dbg(slicer.(map))
 end

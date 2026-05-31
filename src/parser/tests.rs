@@ -318,8 +318,8 @@ end
     fn same_name_different_arity_forms_distinct_fn_defs() {
         let toks = Lexer::new(
             r#"
-fn spawn(fun), do: fun()
-fn spawn(fun, opts), do: fun()
+fn spawn(fun), do: fun.()
+fn spawn(fun, opts), do: fun.()
 "#,
         )
         .tokenize()

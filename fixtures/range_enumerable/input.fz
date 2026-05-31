@@ -18,6 +18,6 @@ fn main() do
 
   {:ok, n, slicer} = Enumerable.slice(r)
   dbg(n)
-  dbg(slicer(1, 2, 1))
-  dbg(slicer(1, 2, 2))
+  dbg(slicer.(1, 2, 1))
+  dbg(slicer.(1, 2, 2))
 end

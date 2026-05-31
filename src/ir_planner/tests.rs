@@ -2123,7 +2123,7 @@ fn known_fn_capability_not_set_for_captures() {
 fn main() do
   k = 7
   f = fn (n) -> n + k end
-  dbg(f(3))
+  dbg(f.(3))
 end
 "#,
         &crate::telemetry::NullTelemetry,

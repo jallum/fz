@@ -20,7 +20,7 @@ fz-ul4.29.5 — closure dispatched via call_indirect through code pointer
 
 ## Notes
 
-fz-ul4.27.22.11 — apply1's `f(z)` resolves via closure_lit to lambda_3's
+fz-ul4.27.22.11 — apply1's `f.(z)` resolves via closure_lit to lambda_3's
 narrow body spec; the cl+8 indirect dispatch is replaced by a direct
 return_call.
 fz-ul4.27.22.5 — typed closure capture seam: ishl/bor pairs dropped at the

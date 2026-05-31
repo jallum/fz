@@ -1673,13 +1673,13 @@ end"#,
 
     #[test]
     fn capture_shorthand_desugars_to_runnable_lambda() {
-        let src = "fn main() do\n  f = &(&1 + &2)\n  f(20, 22)\nend";
+        let src = "fn main() do\n  f = &(&1 + &2)\n  f.(20, 22)\nend";
         assert!(matches!(run(src), crate::exec::value::Value::Int(42)));
     }
 
     #[test]
     fn bare_capture_arg_desugars_to_identity_lambda() {
-        let src = "fn main() do\n  f = &1\n  f(42)\nend";
+        let src = "fn main() do\n  f = &1\n  f.(42)\nend";
         assert!(matches!(run(src), crate::exec::value::Value::Int(42)));
     }
 
@@ -1692,7 +1692,7 @@ fn main() do
     n when n > 0 -> :pos
     _ -> :other
   end
-  {f(0), f(2), f(-1)}
+  {f.(0), f.(2), f.(-1)}
 end
 "#;
         let got = run(src);

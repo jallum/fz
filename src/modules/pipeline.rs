@@ -530,7 +530,7 @@ end
 
 defmodule List do
   fn reduce([], {:cont, acc}, _reducer), do: {:done, acc}
-  fn reduce([head | tail], {:cont, acc}, reducer), do: reduce(tail, reducer(head, acc), reducer)
+  fn reduce([head | tail], {:cont, acc}, reducer), do: reduce(tail, reducer.(head, acc), reducer)
   fn reduce(_list, {:halt, acc}, _reducer), do: {:halted, acc}
 end
 
