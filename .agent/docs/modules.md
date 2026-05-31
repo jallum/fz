@@ -277,6 +277,10 @@ Reachable graph loading:
   recursively queues their imports, and only then loads `.fzo` objects for
   reachable modules. Protocol implementation callback paths are export
   namespaces inside the defining module's object, not separate artifact roots.
+  Protocol declarations already present in a loaded interface are local facts
+  too: a provider artifact for `Contracts` can own the nested protocol
+  `Contracts.Collectable`, so `Contracts.Collectable` must not be reloaded as a
+  sibling `.fzi`.
 - Runtime-library modules are checked through `modules::runtime_library::interface`
   before the filesystem artifact store. If a runtime module is reachable, the
   loader adds its built-in `.fzo` through `modules::runtime_library::artifact`.

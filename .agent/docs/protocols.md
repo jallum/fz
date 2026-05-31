@@ -241,7 +241,10 @@ subsystem:
   providers, not protocol callback namespaces. A `defimpl` callback path such
   as `Enumerable.List.reduce/3` is an export namespace inside the defining
   artifact; treating it as an artifact root creates false
-  `Protocol/Target.fzi` dependencies.
+  `Protocol/Target.fzi` dependencies. A nested protocol declared in the same
+  module interface is also already loaded; a `defimpl Contracts.Collectable`
+  inside `Contracts` must not make the graph loader request a separate
+  `Contracts/Collectable.fzi`.
 - `ir_lower` records protocol callback calls as protocol stub callsites with
   stable `CallsiteId`s; `ir_planner` replaces those stubs with local or
   provider-boundary `CallEdgePlan` targets from receiver type facts. Prelude

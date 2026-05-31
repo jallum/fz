@@ -684,7 +684,7 @@ fn main(), do: User.run()
         let checked = checked_module_for_mode(&mut t, frontend, tel, CompileMode::Normal)
             .unwrap_or_else(|_| panic!("checked module"));
         prepare_execution_graph(&mut t, checked, &providers, tel, CompileMode::Normal)
-            .unwrap_or_else(|_| panic!("execution graph"))
+            .unwrap_or_else(|err| panic!("execution graph: {err:?}"))
     }
 
     /// Gate 1: a structurally-loaded provider links and runs WITHOUT recompiling

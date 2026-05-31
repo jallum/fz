@@ -95,8 +95,15 @@ fn enqueue_imports(queue: &mut VecDeque<ModuleName>, interface: &ModuleInterface
 }
 
 fn enqueue_protocol_impl_protocols(queue: &mut VecDeque<ModuleName>, interface: &ModuleInterface) {
+    let local_protocols = interface
+        .protocols
+        .iter()
+        .map(|protocol| &protocol.name)
+        .collect::<BTreeSet<_>>();
     for protocol_impl in &interface.protocol_impls {
-        queue.push_back(protocol_impl.protocol.clone());
+        if !local_protocols.contains(&protocol_impl.protocol) {
+            queue.push_back(protocol_impl.protocol.clone());
+        }
     }
 }
 
@@ -269,7 +276,13 @@ mod tests {
             .expect("load graph");
 
         assert!(!graph.interfaces.contains_key(&module("EnumerableList")));
-        assert!(graph.objects.is_empty());
+        assert!(
+            !graph
+                .objects
+                .iter()
+                .any(|object| object.module == Some(module("EnumerableList"))),
+            "callback namespace must not be loaded as its own object"
+        );
 
         let _ = std::fs::remove_dir_all(&root);
     }
