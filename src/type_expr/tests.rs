@@ -732,6 +732,72 @@ fn constrained_polymorphic_spec_resolves_vars_and_bounds() {
 }
 
 #[test]
+fn resolved_spec_set_selects_return_by_matching_arrow() {
+    let mut ct = ConcreteTypes;
+    let int = ct.int();
+    let float = ct.float();
+    let set = ResolvedSpecSet {
+        arrows: vec![
+            ResolvedSpec {
+                params: vec![int.clone()],
+                result: int.clone(),
+                constraints: std::collections::HashMap::new(),
+            },
+            ResolvedSpec {
+                params: vec![float.clone()],
+                result: float.clone(),
+                constraints: std::collections::HashMap::new(),
+            },
+        ],
+    };
+
+    let int_arg = ct.int_lit(1);
+    let int_result = set.matching_result(&mut ct, &[int_arg]).unwrap();
+    assert!(ct.is_equivalent(&int_result, &int));
+
+    let float_arg = ct.float_lit(1.5);
+    let float_result = set.matching_result(&mut ct, &[float_arg]).unwrap();
+    assert!(ct.is_equivalent(&float_result, &float));
+}
+
+#[test]
+fn resolved_spec_set_unions_results_only_after_arrow_selection() {
+    let mut ct = ConcreteTypes;
+    let int = ct.int();
+    let float = ct.float();
+    let set = ResolvedSpecSet {
+        arrows: vec![
+            ResolvedSpec {
+                params: vec![int.clone()],
+                result: int.clone(),
+                constraints: std::collections::HashMap::new(),
+            },
+            ResolvedSpec {
+                params: vec![float.clone()],
+                result: float.clone(),
+                constraints: std::collections::HashMap::new(),
+            },
+            ResolvedSpec {
+                params: vec![int.clone()],
+                result: float.clone(),
+                constraints: std::collections::HashMap::new(),
+            },
+        ],
+    };
+
+    let int_arg = ct.int_lit(1);
+    let int_result = set.matching_result(&mut ct, &[int_arg.clone()]).unwrap();
+    assert!(ct.is_subtype(&int, &int_result));
+    assert!(ct.is_subtype(&float, &int_result));
+
+    let params = set.unique_matching_params(&mut ct, &[int_arg]);
+    assert!(
+        params.is_none(),
+        "input demand should stay with the concrete call when several arrows match"
+    );
+}
+
+#[test]
 fn build_env_opaque_resource_alias_qualifies_with_module() {
     // The design example: `@type t :: opaque resource(integer)`.
     // Built under module "File", the alias should carry the

@@ -1191,17 +1191,9 @@ fn declared_call_return<T: crate::types::Types<Ty = crate::types::Ty>>(
     arg_tys: &[crate::types::Ty],
     owner_module: &str,
 ) -> Option<crate::types::Ty> {
-    let spec = module.declared_specs.get(&callee)?.exactly_one()?;
-    if spec.params.len() != arg_tys.len() {
-        return None;
-    }
-    let ret = crate::types::instantiate_scheme_result(
-        t,
-        &spec.params,
-        &spec.result,
-        &spec.constraints,
-        arg_tys,
-    )
-    .known()?;
+    let ret = module
+        .declared_specs
+        .get(&callee)?
+        .matching_result(t, arg_tys)?;
     Some(t.mint_owned_resource_aliases(ret, owner_module, &module.opaque_inners))
 }

@@ -29,27 +29,28 @@ accepted input shape and its result shape.
 
 ## Current Problem
 
-The parser currently rejects adjacent multiple `@spec` declarations for one
-function. That restriction is only the first visible failure; downstream code
-also has single-spec assumptions.
+Multiple adjacent `@spec` declarations now parse and lower into a
+`ResolvedSpecSet`, but each downstream consumer still has to preserve the
+arrow set. Any consumer that asks for “the one declared spec” is wrong for
+overloads because it either drops valid arrows or tempts callers into parameter
+and result unions that lose correlation.
 
 Known single-spec sites:
 
-- `src/parser/items.rs`: rejects a second pending `Attribute::Spec` before a
-  function and has a regression named `multiple_spec_on_one_fn_errors`.
-- `src/frontend/spec_check.rs`: uses `find_map(Attribute::Spec)` and validates
-  inferred specs against one resolved arrow.
+- `src/parser/items.rs`: accepts adjacent matching specs and attaches them in
+  order to the following function.
+- `src/frontend/spec_check.rs`: validates every inferred narrow spec against
+  the declared arrow set.
 - `src/modules/interface.rs`: `InterfaceFn.spec` and protocol callback
   interface specs hold one `InterfaceSpec`.
 - `src/frontend/protocols.rs` and `src/frontend/resolve.rs`: protocol callback
   facts and impl callback-spec compatibility use one spec per `(name, arity)`.
-- `src/ir_lower/mod.rs`: `Module.declared_specs` is populated from the first
-  spec only.
+- `src/ir_lower/mod.rs`: `Module.declared_specs` stores resolved spec sets.
 - `src/fz_ir/mod.rs`: `Module.declared_specs` is
-  `HashMap<FnId, ResolvedSpec>`.
+  `HashMap<FnId, ResolvedSpecSet>`.
 - `src/ir_planner/walk.rs`, `src/ir_planner/worklist.rs`, and
-  `src/ir_codegen/driver.rs`: declared-call input and return typing read one
-  declared arrow.
+  `src/ir_codegen/driver.rs`: declared-call typing must select compatible
+  arrows before reading params or results.
 - `src/exec/eval.rs`: REPL/help spec rendering formats one spec line.
 
 ## Correct Shape
@@ -92,10 +93,10 @@ hold everywhere:
    no declared arrow covers that inferred behavior. Keep any-key inferred specs
    skipped.
 
-4. Declared-call typing: change `Module.declared_specs` to store a resolved set.
-   For call inputs, choose declared arrows whose params are compatible with the
-   call arguments; for return typing, instantiate the matching arrow result. If
-   several arrows remain possible, union those matched results only after arrow
+4. Declared-call typing: `ResolvedSpecSet` owns arrow selection. For call
+   inputs, use a selected arrow's instantiated params only when the call picks a
+   unique arrow; otherwise keep the concrete call arguments as the demand. For
+   return typing, instantiate and union the matched results only after arrow
    selection.
 
 5. Interfaces and protocols: change public function specs and protocol callback

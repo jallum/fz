@@ -8,15 +8,6 @@ pub enum SchemeInstantiation<T> {
     Invalid,
 }
 
-impl<T> SchemeInstantiation<T> {
-    pub fn known(self) -> Option<T> {
-        match self {
-            Self::Known(ty) => Some(ty),
-            Self::Underconstrained(_) | Self::Invalid => None,
-        }
-    }
-}
-
 pub fn instantiate_result<T: Types + ?Sized>(
     t: &mut T,
     params: &[T::Ty],

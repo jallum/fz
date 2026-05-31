@@ -650,18 +650,15 @@ where
         env: &HashMap<Var, crate::types::Ty>,
         arity: usize,
     ) -> Vec<crate::types::KeySlot> {
+        let arg_tys = self.arg_tys(args, env);
         if let Some(callee) = callee
             && let Some(spec_set) = self.m.declared_specs.get(&callee)
-            && let Some(spec) = spec_set.exactly_one()
-            && spec.params.len() == arity
+            && let Some(params) = spec_set.unique_matching_params(self.t, &arg_tys)
+            && params.len() == arity
         {
-            return crate::types::key_slots_from_tys(spec.params.clone());
+            return crate::types::key_slots_from_tys(params);
         }
-        crate::types::key_slots_from_tys(padded_direct_input_tys(
-            self.t,
-            self.arg_tys(args, env),
-            arity,
-        ))
+        crate::types::key_slots_from_tys(padded_direct_input_tys(self.t, arg_tys, arity))
     }
 
     fn external_target(
@@ -950,18 +947,11 @@ where
         callee: FnId,
         arg_tys: &[crate::types::Ty],
     ) -> Option<crate::types::Ty> {
-        let spec = self.m.declared_specs.get(&callee)?.exactly_one()?;
-        if spec.params.len() != arg_tys.len() {
-            return None;
-        }
-        let ret = crate::types::instantiate_scheme_result(
-            self.t,
-            &spec.params,
-            &spec.result,
-            &spec.constraints,
-            arg_tys,
-        )
-        .known()?;
+        let ret = self
+            .m
+            .declared_specs
+            .get(&callee)?
+            .matching_result(self.t, arg_tys)?;
         let owner = &self.m.fn_by_id(self.caller_spec_key.fn_id).owner_module;
         Some(
             self.t

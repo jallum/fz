@@ -184,13 +184,99 @@ pub struct ResolvedSpecSet {
     pub arrows: Vec<ResolvedSpec>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedSpecMatch {
+    pub params: Vec<crate::types::Ty>,
+    pub result: crate::types::Ty,
+}
+
 impl ResolvedSpecSet {
-    pub fn exactly_one(&self) -> Option<&ResolvedSpec> {
-        match self.arrows.as_slice() {
-            [spec] => Some(spec),
+    pub fn matching_arrows<T>(
+        &self,
+        t: &mut T,
+        arg_tys: &[crate::types::Ty],
+    ) -> Vec<ResolvedSpecMatch>
+    where
+        T: Types<Ty = crate::types::Ty>,
+    {
+        self.arrows
+            .iter()
+            .filter_map(|spec| instantiate_matching_arrow(t, spec, arg_tys))
+            .collect()
+    }
+
+    pub fn unique_matching_params<T>(
+        &self,
+        t: &mut T,
+        arg_tys: &[crate::types::Ty],
+    ) -> Option<Vec<crate::types::Ty>>
+    where
+        T: Types<Ty = crate::types::Ty>,
+    {
+        match self.matching_arrows(t, arg_tys).as_slice() {
+            [matched] => Some(matched.params.clone()),
             _ => None,
         }
     }
+
+    pub fn matching_result<T>(
+        &self,
+        t: &mut T,
+        arg_tys: &[crate::types::Ty],
+    ) -> Option<crate::types::Ty>
+    where
+        T: Types<Ty = crate::types::Ty>,
+    {
+        let mut result = None;
+        for matched in self.matching_arrows(t, arg_tys) {
+            result = Some(match result {
+                Some(prev) => t.union(prev, matched.result),
+                None => matched.result,
+            });
+        }
+        result
+    }
+}
+
+fn instantiate_matching_arrow<T>(
+    t: &mut T,
+    spec: &ResolvedSpec,
+    arg_tys: &[crate::types::Ty],
+) -> Option<ResolvedSpecMatch>
+where
+    T: Types<Ty = crate::types::Ty>,
+{
+    if spec.params.len() != arg_tys.len() {
+        return None;
+    }
+
+    let mut sigma = HashMap::new();
+    for (declared, actual) in spec.params.iter().zip(arg_tys.iter()) {
+        t.collect_instantiation_subst(declared, actual, &mut sigma);
+    }
+
+    for (var, bound) in &spec.constraints {
+        let actual = sigma.get(var)?;
+        if !t.is_subtype(actual, bound) {
+            return None;
+        }
+    }
+
+    let mut params = Vec::with_capacity(spec.params.len());
+    for (declared, actual) in spec.params.iter().zip(arg_tys.iter()) {
+        let param = t.instantiate(declared, &sigma);
+        if !t.has_vars(actual) && !t.is_subtype(actual, &param) {
+            return None;
+        }
+        params.push(param);
+    }
+
+    let result = t.instantiate(&spec.result, &sigma);
+    if t.has_vars(&result) {
+        return None;
+    }
+
+    Some(ResolvedSpecMatch { params, result })
 }
 
 /// (De)serialize `HashMap<TypeVarId, Ty>` as a `Vec<(TypeVarId, Ty)>` so the
