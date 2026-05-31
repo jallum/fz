@@ -1321,6 +1321,11 @@ pub struct Module {
     /// call typing for source-level polymorphic contracts.
     #[serde(with = "fn_keyed_map")]
     pub declared_specs: HashMap<FnId, crate::type_expr::ResolvedSpecSet>,
+    /// Declared source-function correspondence keyed by IR function id.
+    /// CPS continuations join this table in the next ticket.
+    #[serde(with = "fn_keyed_map")]
+    pub function_correspondence:
+        HashMap<FnId, Vec<crate::type_expr::StructuralCorrespondenceGroup>>,
 }
 
 impl Module {
@@ -1995,6 +2000,7 @@ impl ModuleBuilder {
             brand_inners: HashMap::new(),
             struct_schemas: Default::default(),
             declared_specs: HashMap::new(),
+            function_correspondence: HashMap::new(),
         }
     }
 }

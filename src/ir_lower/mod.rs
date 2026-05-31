@@ -500,6 +500,9 @@ pub fn lower_program_full_with_telemetry<T: crate::types::Types<Ty = crate::type
                 .unwrap_or(&ctx.combined_type_env)
         };
         if let Ok(resolved) = crate::type_expr::resolve_spec_decls(t, specs, env) {
+            module
+                .function_correspondence
+                .insert(fid, resolved.structural_correspondence_groups());
             module.declared_specs.insert(fid, resolved);
         }
     }
@@ -1169,6 +1172,34 @@ end
             .get(&pick.id)
             .expect("declared specs missing");
         assert_eq!(specs.arrows.len(), 2);
+    }
+
+    #[test]
+    fn lower_records_source_function_correspondence() {
+        let m = lower_src(
+            "@spec drop(Enumerable.t(a), integer) :: [a]\n\
+             fn drop(_enumerable, _count), do: []",
+        );
+        let drop = m.fn_by_name("drop").expect("drop fn missing");
+        let groups = m
+            .function_correspondence
+            .get(&drop.id)
+            .expect("function correspondence missing");
+        assert_eq!(
+            groups,
+            &vec![crate::type_expr::StructuralCorrespondenceGroup {
+                var: crate::types::TypeVarId(0),
+                occurrences: vec![
+                    crate::type_expr::StructuralOccurrence::Param {
+                        param_index: 0,
+                        path: vec![crate::type_expr::StructuralPathStep::NamedArg(0)],
+                    },
+                    crate::type_expr::StructuralOccurrence::Result {
+                        path: vec![crate::type_expr::StructuralPathStep::ListElem],
+                    },
+                ],
+            }]
+        );
     }
 
     #[test]

@@ -202,7 +202,16 @@ pub struct HigherOrderInvariantGroup {
     pub occurrences: Vec<InvariantOccurrence>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug,
+    Clone,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    serde::Serialize,
+    serde::Deserialize,
+)]
 pub struct StructuralCorrespondenceGroup {
     pub var: crate::types::TypeVarId,
     pub occurrences: Vec<StructuralOccurrence>,
@@ -297,6 +306,16 @@ pub enum StructuralOccurrence {
 }
 
 impl ResolvedSpecSet {
+    pub fn structural_correspondence_groups(&self) -> Vec<StructuralCorrespondenceGroup> {
+        let mut groups = BTreeSet::new();
+        for spec in &self.arrows {
+            for group in spec.structural_correspondence_groups() {
+                groups.insert(group);
+            }
+        }
+        groups.into_iter().collect()
+    }
+
     pub fn matching_arrows<T>(
         &self,
         t: &mut T,

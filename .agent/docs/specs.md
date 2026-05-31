@@ -109,6 +109,11 @@ occurrence of each declared type variable across params/results/callbacks.
 that richer fact: it keeps only the top-level callback fixed-point slots that
 the planner currently normalizes.
 
+Lowering now persists the declared source-function groups onto
+`Module.function_correspondence` keyed by `FnId`. This is the IR seam where the
+spec-layer fact becomes durable enough for later CPS remapping and planner
+consumption.
+
 ## Correct Shape
 
 Add a first-class overload-set shape:

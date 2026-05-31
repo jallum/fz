@@ -365,6 +365,12 @@ impl IrUnitLinker {
                 .iter()
                 .filter_map(|(fid, spec)| fn_map.get(fid).map(|new| (*new, spec.clone()))),
         );
+        self.linked.function_correspondence.extend(
+            unit.code
+                .function_correspondence
+                .iter()
+                .filter_map(|(fid, groups)| fn_map.get(fid).map(|new| (*new, groups.clone()))),
+        );
     }
 
     fn copy_planner_facts(&mut self, unit: &CompiledUnit, fn_map: &BTreeMap<FnId, FnId>) {
