@@ -3575,7 +3575,7 @@ end
     }
 
     #[test]
-    fn multiple_spec_on_one_fn_errors() {
+    fn multiple_specs_on_one_fn_attach_in_order() {
         let toks = crate::parser::lexer::Lexer::new(
             "defmodule M do\n\
               @spec add1(integer) :: integer\n\
@@ -3585,14 +3585,36 @@ end
         )
         .tokenize()
         .unwrap();
-        let r = Parser::new(toks).parse_program();
-        assert!(r.is_err(), "duplicate @spec must error");
-        let msg = format!("{:?}", r.unwrap_err());
-        assert!(
-            msg.contains("multiple"),
-            "expected multiple-spec diag, got: {}",
-            msg
-        );
+        let prog = Parser::new(toks).parse_program().expect("parse");
+        let m = prog
+            .items
+            .iter()
+            .find_map(|it| match &**it {
+                Item::Module(m) => Some(m),
+                _ => None,
+            })
+            .unwrap();
+        let add1 = m
+            .items
+            .iter()
+            .find_map(|it| match &**it {
+                Item::Fn(d) if d.name == "add1" => Some(d),
+                _ => None,
+            })
+            .unwrap();
+        let specs = add1
+            .attrs
+            .iter()
+            .filter_map(|a| match a {
+                Attribute::Spec(s) => Some(s),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(specs.len(), 2);
+        assert_eq!(specs[0].name, "add1");
+        assert_eq!(specs[1].name, "add1");
+        assert_eq!(specs[0].param_body_tokens.len(), 1);
+        assert_eq!(specs[1].param_body_tokens.len(), 1);
     }
 
     #[test]

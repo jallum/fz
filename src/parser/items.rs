@@ -38,16 +38,9 @@ impl Parser {
                             pending_fn_attrs.push(attr);
                         }
                         Attribute::Spec(_) => {
-                            // fz-ul4.31.4 — one @spec per fn for v1.
-                            // Multi-clause specs (union of arrows) are
-                            // a deliberate followup.
-                            if pending_fn_attrs.iter().any(
-                                |a| matches!(a, Attribute::Spec(_)))
-                            {
-                                return self.err(
-                                    "multiple @spec declarations for one fn \
-                                     (v1 allows at most one)".to_string());
-                            }
+                            // Multiple adjacent specs form an overload set for
+                            // the following fn. Name/arity checks happen once
+                            // the fn head is known.
                             pending_fn_attrs.push(attr);
                         }
                         Attribute::TypeAlias(_) => {
