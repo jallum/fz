@@ -145,7 +145,7 @@ end
         exports: vec![crate::modules::interface::InterfaceFn {
             name: "add".to_string(),
             arity: 2,
-            spec: None,
+            specs: Vec::new(),
             name_span: crate::diag::Span::DUMMY,
         }],
         types: Vec::new(),
@@ -314,7 +314,7 @@ fn link_test_unit(
             .map(|(name, arity)| crate::modules::interface::InterfaceFn {
                 name: (*name).to_string(),
                 arity: *arity,
-                spec: None,
+                specs: Vec::new(),
                 name_span: crate::diag::Span::DUMMY,
             })
             .collect(),

@@ -762,7 +762,7 @@ mod tests {
             .exports
             .iter()
             .map(|export| {
-                let spec = export.spec.as_ref().expect("runtime export spec");
+                let spec = export.specs.first().expect("runtime export spec");
                 (
                     format!("{}/{}", export.name, export.arity),
                     spec.params.clone(),
@@ -839,13 +839,13 @@ mod tests {
                 fzi.interface
                     .exports
                     .iter()
-                    .map(|f| (&f.name, f.arity, &f.spec))
+                    .map(|f| (&f.name, f.arity, &f.specs))
                     .collect::<Vec<_>>(),
                 artifact
                     .interface
                     .exports
                     .iter()
-                    .map(|f| (&f.name, f.arity, &f.spec))
+                    .map(|f| (&f.name, f.arity, &f.specs))
                     .collect::<Vec<_>>()
             );
 
@@ -894,7 +894,7 @@ mod tests {
         let utf8 = ModuleName::from_segments(vec!["Utf8".to_string()]);
         let loaded_interfaces = store.load_interface_table(&tel, [&utf8]).expect("load fzi");
         assert!(loaded_interfaces[&utf8].exports.iter().any(|export| {
-            export.name == "valid?" && export.arity == 1 && export.spec.is_some()
+            export.name == "valid?" && export.arity == 1 && !export.specs.is_empty()
         }));
         let loaded_fzo = store
             .load_fzo_artifact(

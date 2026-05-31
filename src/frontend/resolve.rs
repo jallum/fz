@@ -1044,10 +1044,14 @@ fn protocol_decl<T: crate::types::Types<Ty = crate::types::Ty>>(
         callbacks.push(ProtocolCallbackFact {
             name: callback.name.clone(),
             arity: callback.arity,
-            spec: callback.attrs.iter().find_map(|attr| match attr {
-                Attribute::Spec(spec) => Some(spec.clone()),
-                _ => None,
-            }),
+            specs: callback
+                .attrs
+                .iter()
+                .filter_map(|attr| match attr {
+                    Attribute::Spec(spec) => Some(spec.clone()),
+                    _ => None,
+                })
+                .collect(),
             span: callback.span,
         });
     }
@@ -1060,7 +1064,7 @@ fn protocol_decl<T: crate::types::Types<Ty = crate::types::Ty>>(
 
 type ProtocolImplCallbacks = (
     BTreeMap<(String, usize), ExportKey>,
-    BTreeMap<(String, usize), crate::ast::SpecDecl>,
+    BTreeMap<(String, usize), Vec<crate::ast::SpecDecl>>,
 );
 
 fn protocol_impl_callbacks(
@@ -1089,11 +1093,16 @@ fn protocol_impl_callbacks(
                         span: def.name_span,
                     });
                 }
-                if let Some(spec) = def.attrs.iter().find_map(|attr| match attr {
-                    Attribute::Spec(spec) => Some(spec.clone()),
-                    _ => None,
-                }) {
-                    callback_specs.insert(key, spec);
+                let specs = def
+                    .attrs
+                    .iter()
+                    .filter_map(|attr| match attr {
+                        Attribute::Spec(spec) => Some(spec.clone()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>();
+                if !specs.is_empty() {
+                    callback_specs.insert(key, specs);
                 }
             }
             _ => {
@@ -1204,11 +1213,11 @@ fn validate_protocol_callback_specs<T: crate::types::Types<Ty = crate::types::Ty
         proto_env.insert("t".to_string(), target_ty.clone());
         proto_env.insert(format!("{}.t", fact.protocol), target_ty);
         for callback in &protocol.callbacks {
-            let Some(proto_spec) = &callback.spec else {
+            if callback.specs.is_empty() {
                 continue;
-            };
+            }
             let key = (callback.name.clone(), callback.arity);
-            let Some(impl_spec) = fact.callback_specs.get(&key) else {
+            let Some(impl_specs) = fact.callback_specs.get(&key) else {
                 continue;
             };
             let impl_env = fact
@@ -1217,32 +1226,21 @@ fn validate_protocol_callback_specs<T: crate::types::Types<Ty = crate::types::Ty
                 .and_then(|export| module_type_envs.get(&export.module.dotted()))
                 .cloned()
                 .unwrap_or_else(|| crate::type_expr::builtin_type_env(t));
-            // Per-position so a domain-applied position (`t(a)`) that does not
-            // resolve yet does not mask the result and other params.
-            let (proto_params, proto_result) =
-                crate::type_expr::resolve_spec_decl_positions(t, proto_spec, &proto_env);
-            let (impl_params, impl_result) =
-                crate::type_expr::resolve_spec_decl_positions(t, impl_spec, &impl_env);
-            if proto_params.len() != impl_params.len() {
-                continue;
-            }
-            let mut incompatible: Option<String> = None;
-            for (i, (proto_param, impl_param)) in
-                proto_params.iter().zip(impl_params.iter()).enumerate()
-            {
-                if let (Some(p), Some(q)) = (proto_param, impl_param)
-                    && t.is_disjoint(p, q)
-                {
-                    incompatible = Some(format!("parameter {}", i + 1));
-                    break;
+            let incompatible = impl_specs.iter().find_map(|impl_spec| {
+                let mut first_incompatibility = None;
+                for proto_spec in &callback.specs {
+                    match protocol_spec_pair_incompatibility(
+                        t, proto_spec, &proto_env, impl_spec, &impl_env,
+                    ) {
+                        None => return None,
+                        Some(position) if first_incompatibility.is_none() => {
+                            first_incompatibility = Some(position);
+                        }
+                        Some(_) => {}
+                    }
                 }
-            }
-            if incompatible.is_none()
-                && let (Some(p), Some(q)) = (&proto_result, &impl_result)
-                && t.is_disjoint(p, q)
-            {
-                incompatible = Some("result".to_string());
-            }
+                first_incompatibility
+            });
             if let Some(position) = incompatible {
                 return Err(ResolveError::ProtocolError {
                     msg: format!(
@@ -1255,6 +1253,37 @@ fn validate_protocol_callback_specs<T: crate::types::Types<Ty = crate::types::Ty
         }
     }
     Ok(())
+}
+
+fn protocol_spec_pair_incompatibility<T: crate::types::Types<Ty = crate::types::Ty>>(
+    t: &mut T,
+    proto_spec: &crate::ast::SpecDecl,
+    proto_env: &crate::type_expr::ModuleTypeEnv,
+    impl_spec: &crate::ast::SpecDecl,
+    impl_env: &crate::type_expr::ModuleTypeEnv,
+) -> Option<String> {
+    // Per-position so a domain-applied position (`t(a)`) that does not
+    // resolve yet does not mask the result and other params.
+    let (proto_params, proto_result) =
+        crate::type_expr::resolve_spec_decl_positions(t, proto_spec, proto_env);
+    let (impl_params, impl_result) =
+        crate::type_expr::resolve_spec_decl_positions(t, impl_spec, impl_env);
+    if proto_params.len() != impl_params.len() {
+        return None;
+    }
+    for (i, (proto_param, impl_param)) in proto_params.iter().zip(impl_params.iter()).enumerate() {
+        if let (Some(p), Some(q)) = (proto_param, impl_param)
+            && t.is_disjoint(p, q)
+        {
+            return Some(format!("parameter {}", i + 1));
+        }
+    }
+    if let (Some(p), Some(q)) = (&proto_result, &impl_result)
+        && t.is_disjoint(p, q)
+    {
+        return Some("result".to_string());
+    }
+    None
 }
 
 fn qualify_module_child(parent: Option<&ModuleName>, name: &ModuleName) -> ModuleName {
@@ -2893,7 +2922,7 @@ end
                 exports: vec![crate::modules::interface::InterfaceFn {
                     name: "add".to_string(),
                     arity: 2,
-                    spec: None,
+                    specs: Vec::new(),
                     name_span: Span::DUMMY,
                 }],
                 types: Vec::new(),
@@ -4093,6 +4122,74 @@ end
             !d.message.contains("missing callback") && !d.message.contains("unknown callback"),
             "arity mismatch must not degrade to missing/unknown, got: {}",
             d.message
+        );
+    }
+
+    #[test]
+    fn protocol_callback_validation_preserves_overload_sets() {
+        let mut ct = crate::types::ConcreteTypes;
+        let p = flatten_modules(
+            &mut ct,
+            parse(
+                r#"
+defprotocol P do
+  @spec pick(integer) :: integer
+  @spec pick(float) :: float
+  fn pick(value)
+end
+
+defimpl P, for: List do
+  @spec pick(integer) :: integer
+  @spec pick(float) :: float
+  fn pick(value), do: value
+end
+"#,
+            ),
+        )
+        .expect("overload-compatible impl must pass");
+
+        let protocol = ModuleName::from_segments(vec!["P".to_string()]);
+        let callback = &p.protocol_registry.protocols[&protocol].callbacks[0];
+        assert_eq!(callback.specs.len(), 2);
+        let implementation = p
+            .protocol_registry
+            .impls
+            .values()
+            .find(|fact| fact.protocol == protocol)
+            .expect("impl fact");
+        assert_eq!(
+            implementation.callback_specs[&("pick".to_string(), 1)].len(),
+            2
+        );
+    }
+
+    #[test]
+    fn protocol_callback_validation_rejects_uncovered_impl_overload() {
+        let mut ct = crate::types::ConcreteTypes;
+        let err = flatten_modules(
+            &mut ct,
+            parse(
+                r#"
+defprotocol P do
+  @spec pick(integer) :: integer
+  fn pick(value)
+end
+
+defimpl P, for: List do
+  @spec pick(integer) :: integer
+  @spec pick(float) :: float
+  fn pick(value), do: value
+end
+"#,
+            ),
+        )
+        .expect_err("uncovered impl overload must fail");
+
+        let d = err.to_diagnostic();
+        assert_eq!(d.code, codes::RESOLVE_PROTOCOL);
+        assert!(
+            d.message
+                .contains("callback `pick/1` parameter 1 is incompatible")
         );
     }
 }

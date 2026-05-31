@@ -82,7 +82,8 @@ pub struct InterfaceProtocol {
 pub struct InterfaceProtocolCallback {
     pub name: String,
     pub arity: usize,
-    pub spec: Option<crate::modules::interface::InterfaceSpec>,
+    #[serde(default)]
+    pub specs: Vec<crate::modules::interface::InterfaceSpec>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -102,9 +103,9 @@ pub struct ProtocolDecl {
 pub struct ProtocolCallbackFact {
     pub name: String,
     pub arity: usize,
-    #[allow(dead_code)]
+    #[serde(default)]
     // Dispatch/type checking consumes callback specs in the next protocol tickets.
-    pub spec: Option<crate::ast::SpecDecl>,
+    pub specs: Vec<crate::ast::SpecDecl>,
     #[allow(dead_code)] // Kept for callback-specific diagnostics as validation grows.
     pub span: Span,
 }
@@ -122,7 +123,7 @@ pub struct ProtocolImplFact {
     /// not carry impl callback specs) and for callbacks declared without a
     /// spec. Consumed by callback-spec compatibility checking.
     #[serde(with = "callback_specs_as_seq")]
-    pub callback_specs: BTreeMap<(String, usize), crate::ast::SpecDecl>,
+    pub callback_specs: BTreeMap<(String, usize), Vec<crate::ast::SpecDecl>>,
     pub span: Span,
 }
 
@@ -155,7 +156,7 @@ mod callback_specs_as_seq {
     use std::collections::BTreeMap;
 
     pub fn serialize<S: Serializer>(
-        map: &BTreeMap<(String, usize), SpecDecl>,
+        map: &BTreeMap<(String, usize), Vec<SpecDecl>>,
         s: S,
     ) -> Result<S::Ok, S::Error> {
         map.iter().collect::<Vec<_>>().serialize(s)
@@ -163,8 +164,8 @@ mod callback_specs_as_seq {
 
     pub fn deserialize<'de, D: Deserializer<'de>>(
         d: D,
-    ) -> Result<BTreeMap<(String, usize), SpecDecl>, D::Error> {
-        Ok(Vec::<((String, usize), SpecDecl)>::deserialize(d)?
+    ) -> Result<BTreeMap<(String, usize), Vec<SpecDecl>>, D::Error> {
+        Ok(Vec::<((String, usize), Vec<SpecDecl>)>::deserialize(d)?
             .into_iter()
             .collect())
     }
@@ -218,7 +219,7 @@ impl ProtocolRegistry {
                             .map(|callback| ProtocolCallbackFact {
                                 name: callback.name.clone(),
                                 arity: callback.arity,
-                                spec: None,
+                                specs: Vec::new(),
                                 span: Span::DUMMY,
                             })
                             .collect(),

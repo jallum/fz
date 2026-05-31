@@ -99,10 +99,11 @@ hold everywhere:
    return typing, instantiate and union the matched results only after arrow
    selection.
 
-5. Interfaces and protocols: change public function specs and protocol callback
-   specs to carry ordered spec lists. Fingerprint rendering must include every
-   arrow in deterministic order. Protocol impl compatibility should compare
-   overload sets by coverage, not by one optional callback spec.
+5. Interfaces and protocols: public function specs and protocol callback specs
+   carry ordered spec lists (`specs`), and interface fingerprints include every
+   arrow in source order. Protocol impl compatibility compares overload sets by
+   checking each impl arrow against the protocol arrow set, not by picking one
+   optional callback spec.
 
 6. REPL/help rendering: render all arrows, one per line, instead of silently
    dropping all but the first.

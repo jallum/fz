@@ -237,6 +237,9 @@ subsystem:
   provider bodies. A top-level `defprotocol` contributes its own interface
   keyed by the protocol namespace, while a nested protocol contributes protocol
   facts to the containing module interface under its fully qualified name.
+  Protocol callback specs are ordered overload sets (`specs`), so multi-`@spec`
+  callbacks preserve input/result correlation through `.fzi` artifacts and
+  compatibility checking.
 - `ModuleGraphLoader` traverses module imports and runtime implementation
   providers, not protocol callback namespaces. A `defimpl` callback path such
   as `Enumerable.List.reduce/3` is an export namespace inside the defining

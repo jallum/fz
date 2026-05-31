@@ -2910,13 +2910,13 @@ mod tests {
                 exports: vec![crate::modules::interface::InterfaceFn {
                     name: "add".to_string(),
                     arity: 2,
-                    spec: Some(crate::modules::interface::InterfaceSpec {
+                    specs: vec![crate::modules::interface::InterfaceSpec {
                         params: vec![
                             "Ident(\"integer\")".to_string(),
                             "Ident(\"integer\")".to_string(),
                         ],
                         result: "Ident(\"integer\")".to_string(),
-                    }),
+                    }],
                     name_span: Span::DUMMY,
                 }],
                 types: Vec::new(),

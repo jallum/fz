@@ -173,7 +173,7 @@ mod tests {
             .map(|(name, arity)| InterfaceFn {
                 name: name.to_string(),
                 arity,
-                spec: None,
+                specs: Vec::new(),
                 name_span: Span::DUMMY,
             })
             .collect::<Vec<_>>();

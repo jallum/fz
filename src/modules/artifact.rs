@@ -391,10 +391,10 @@ mod tests {
             exports: vec![InterfaceFn {
                 name: "add".to_string(),
                 arity: 2,
-                spec: Some(InterfaceSpec {
+                specs: vec![InterfaceSpec {
                     params: vec!["int".to_string(), "int".to_string()],
                     result: "int".to_string(),
-                }),
+                }],
                 name_span: Span::DUMMY,
             }],
             types: vec![InterfaceType {

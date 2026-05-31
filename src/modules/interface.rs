@@ -54,7 +54,8 @@ pub struct InterfaceImportFn {
 pub struct InterfaceFn {
     pub name: String,
     pub arity: usize,
-    pub spec: Option<InterfaceSpec>,
+    #[serde(default)]
+    pub specs: Vec<InterfaceSpec>,
     #[serde(skip, default = "dummy_span")]
     pub name_span: Span,
 }
@@ -246,16 +247,22 @@ fn import_filter(filter: Option<&[(String, usize)]>) -> Vec<InterfaceImportFn> {
 
 fn interface_fn(def: &FnDef) -> InterfaceFn {
     let arity = def.clauses.first().map(|c| c.params.len()).unwrap_or(0);
-    let spec = def.attrs.iter().find_map(|attr| match attr {
-        Attribute::Spec(spec) => Some(interface_spec(spec)),
-        _ => None,
-    });
     InterfaceFn {
         name: def.name.clone(),
         arity,
-        spec,
+        specs: interface_specs(&def.attrs),
         name_span: def.name_span,
     }
+}
+
+fn interface_specs(attrs: &[Attribute]) -> Vec<InterfaceSpec> {
+    attrs
+        .iter()
+        .filter_map(|attr| match attr {
+            Attribute::Spec(spec) => Some(interface_spec(spec)),
+            _ => None,
+        })
+        .collect()
 }
 
 fn interface_spec(spec: &SpecDecl) -> InterfaceSpec {
@@ -277,10 +284,7 @@ fn interface_protocol(protocol: &ProtocolDef, parent: Option<&ModuleName>) -> In
         .map(|callback| InterfaceProtocolCallback {
             name: callback.name.clone(),
             arity: callback.arity,
-            spec: callback.attrs.iter().find_map(|attr| match attr {
-                Attribute::Spec(spec) => Some(interface_spec(spec)),
-                _ => None,
-            }),
+            specs: interface_specs(&callback.attrs),
         })
         .collect::<Vec<_>>();
     callbacks.sort();
@@ -426,24 +430,24 @@ fn fingerprint_inputs(
         inputs.push(format!("type={}:{:?}:{}", ty.name, ty.kind, ty.body));
     }
     for export in exports {
-        let spec = export
-            .spec
-            .as_ref()
-            .map(|spec| format!("({})->{}", spec.params.join(","), spec.result))
-            .unwrap_or_else(|| "<unspecified>".to_string());
-        inputs.push(format!("fn={}/{}:{}", export.name, export.arity, spec));
+        inputs.push(format!(
+            "fn={}/{}:specs=[{}]",
+            export.name,
+            export.arity,
+            render_interface_specs(&export.specs)
+        ));
     }
     for protocol in protocols {
         let callbacks = protocol
             .callbacks
             .iter()
             .map(|callback| {
-                let spec = callback
-                    .spec
-                    .as_ref()
-                    .map(|spec| format!("({})->{}", spec.params.join(","), spec.result))
-                    .unwrap_or_else(|| "<unspecified>".to_string());
-                format!("{}/{}:{}", callback.name, callback.arity, spec)
+                format!(
+                    "{}/{}:specs=[{}]",
+                    callback.name,
+                    callback.arity,
+                    render_interface_specs(&callback.specs)
+                )
             })
             .collect::<Vec<_>>()
             .join(",");
@@ -465,6 +469,17 @@ fn fingerprint_inputs(
         ));
     }
     inputs
+}
+
+fn render_interface_specs(specs: &[InterfaceSpec]) -> String {
+    if specs.is_empty() {
+        return "<unspecified>".to_string();
+    }
+    specs
+        .iter()
+        .map(|spec| format!("({})->{}", spec.params.join(","), spec.result))
+        .collect::<Vec<_>>()
+        .join(";")
 }
 
 pub fn fingerprint_digest(inputs: &[String]) -> String {
@@ -524,7 +539,7 @@ pub fn render_interfaces(interfaces: &BTreeMap<ModuleName, ModuleInterface>) -> 
             out.push_str("  exports\n");
             for export in &interface.exports {
                 out.push_str(&format!("    {}/{}", export.name, export.arity));
-                if let Some(spec) = &export.spec {
+                for spec in &export.specs {
                     out.push_str(&format!(
                         " :: ({}) -> {}",
                         spec.params.join(", "),
@@ -540,7 +555,7 @@ pub fn render_interfaces(interfaces: &BTreeMap<ModuleName, ModuleInterface>) -> 
                 out.push_str(&format!("    {}\n", protocol.name));
                 for callback in &protocol.callbacks {
                     out.push_str(&format!("      {}/{}", callback.name, callback.arity));
-                    if let Some(spec) = &callback.spec {
+                    for spec in &callback.specs {
                         out.push_str(&format!(
                             " :: ({}) -> {}",
                             spec.params.join(", "),
@@ -582,7 +597,7 @@ pub fn validate_public_export_specs(
     let mut out = Vec::new();
     for interface in interfaces.values() {
         for export in &interface.exports {
-            if export.spec.is_none() {
+            if export.specs.is_empty() {
                 out.push(
                     Diagnostic::error(
                         codes::INTERFACE_MISSING_SPEC,
@@ -689,11 +704,11 @@ end
         );
         assert_eq!(account.exports[0].name, "get");
         assert_eq!(
-            account.exports[0].spec,
-            Some(InterfaceSpec {
+            account.exports[0].specs,
+            vec![InterfaceSpec {
                 params: vec!["Upper(\"Id\")".to_string()],
                 result: "Upper(\"Pair\")".to_string(),
-            })
+            }]
         );
     }
 
@@ -733,6 +748,69 @@ end
         let rendered = render_interfaces(&interfaces);
         assert!(rendered.contains("protocols"));
         assert!(rendered.contains("Contracts.Enumerable for Contracts.List"));
+    }
+
+    #[test]
+    fn interface_exports_preserve_multiple_specs_in_order() {
+        let interfaces = interfaces(
+            r#"
+defmodule Enum do
+  @spec with_index(t(a), integer) :: [{a, integer}]
+  @spec with_index(t(a), (a, integer) -> b) :: [b]
+  fn with_index(enumerable, offset_or_fun), do: enumerable
+end
+"#,
+        );
+
+        let enum_interface = &interfaces[&module(&["Enum"])];
+        assert_eq!(enum_interface.exports[0].specs.len(), 2);
+        assert_eq!(
+            enum_interface.exports[0]
+                .specs
+                .iter()
+                .map(|spec| spec.result.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "LBrack LBrace Ident(\"a\") Comma Ident(\"integer\") RBrace RBrack",
+                "LBrack Ident(\"b\") RBrack"
+            ]
+        );
+        assert!(enum_interface.fingerprint_inputs.iter().any(|input| {
+            input.contains("with_index/2:specs=[")
+                && input
+                    .contains("LBrack LBrace Ident(\"a\") Comma Ident(\"integer\") RBrace RBrack")
+                && input.contains("LBrack Ident(\"b\") RBrack")
+        }));
+    }
+
+    #[test]
+    fn protocol_callbacks_preserve_multiple_specs_in_order() {
+        let interfaces = interfaces(
+            r#"
+defprotocol P do
+  @spec pick(integer) :: integer
+  @spec pick(float) :: float
+  fn pick(value)
+end
+"#,
+        );
+
+        let p = &interfaces[&module(&["P"])];
+        let callback = &p.protocols[0].callbacks[0];
+        assert_eq!(callback.specs.len(), 2);
+        assert_eq!(
+            callback
+                .specs
+                .iter()
+                .map(|spec| spec.result.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Ident(\"integer\")", "Ident(\"float\")"]
+        );
+        assert!(p.fingerprint_inputs.iter().any(|input| {
+            input.contains("pick/1:specs=[")
+                && input.contains("Ident(\"integer\")")
+                && input.contains("Ident(\"float\")")
+        }));
     }
 
     #[test]
@@ -882,19 +960,19 @@ end
                     InterfaceFn {
                         name: "f".to_string(),
                         arity: 0,
-                        spec: Some(InterfaceSpec {
+                        specs: vec![InterfaceSpec {
                             params: Vec::new(),
                             result: "Ident(\"integer\")".to_string(),
-                        }),
+                        }],
                         name_span: Span::DUMMY,
                     },
                     InterfaceFn {
                         name: "f".to_string(),
                         arity: 1,
-                        spec: Some(InterfaceSpec {
+                        specs: vec![InterfaceSpec {
                             params: vec!["Ident(\"integer\")".to_string()],
                             result: "Ident(\"integer\")".to_string(),
-                        }),
+                        }],
                         name_span: Span::DUMMY,
                     },
                 ],

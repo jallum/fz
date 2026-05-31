@@ -357,7 +357,7 @@ mod tests {
             exports: vec![crate::modules::interface::InterfaceFn {
                 name: "id".to_string(),
                 arity: 1,
-                spec: None,
+                specs: Vec::new(),
                 name_span: crate::diag::Span::DUMMY,
             }],
             types: Vec::new(),

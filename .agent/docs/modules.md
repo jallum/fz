@@ -335,6 +335,10 @@ Testing policy:
 `FziArtifact` is the public contract artifact. It contains only interface data
 and version/fingerprint metadata.
 
+`InterfaceFn.specs` and protocol callback `specs` are ordered overload sets.
+Every `@spec` arrow appears in the interface fingerprint, in source order, so
+separate compilation sees the same correlated arrows as the source module.
+
 Struct fields:
 
 ```text
