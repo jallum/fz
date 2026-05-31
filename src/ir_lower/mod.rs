@@ -62,7 +62,7 @@ pub(crate) use expr::{bind_param_topname, lower_expr, lower_fn, lower_pattern_bi
 pub(crate) use extern_table::{extern_symbol_from_name, extern_ty_from_name};
 pub(crate) use lambda::{collect_pattern_bound_names, collect_pattern_pinned_names, lower_lambda};
 pub(crate) use matcher::{
-    collect_matcher_pinned_names_recursive, lower_guard_helper_call_to_dispatch,
+    MatchedBinding, collect_matcher_pinned_names_recursive, lower_guard_helper_call_to_dispatch,
     lower_pattern_matrix_to_current_fn, materialize_prepared_matcher_key,
 };
 pub(crate) use param_guards::emit_param_type_guards;
@@ -228,7 +228,9 @@ fn collect_runtime_prelude_import(
 }
 
 fn synthesize_function_correspondence(module: &mut Module, seeds: &[ContinuationSeed]) {
-    use crate::type_expr::{StructuralCorrespondenceGroup, StructuralOccurrence};
+    use crate::type_expr::{
+        StructuralCorrespondenceGroup, StructuralOccurrence, StructuralPathStep,
+    };
     use std::collections::BTreeSet;
 
     fn groups_to_sets(
@@ -305,11 +307,18 @@ fn synthesize_function_correspondence(module: &mut Module, seeds: &[Continuation
                                 path: path.clone(),
                             });
                         }
+                        StructuralOccurrence::CallbackArg { param_index, .. }
+                        | StructuralOccurrence::CallbackResult { param_index, .. } => {
+                            let caller_var = caller_params.get(*param_index).copied()?;
+                            let cont_param = continuation_capture_param_index(seed, caller_var)?;
+                            out.insert(StructuralOccurrence::Param {
+                                param_index: cont_param,
+                                path: vec![],
+                            });
+                        }
                         StructuralOccurrence::Result { path } => {
                             out.insert(StructuralOccurrence::Result { path: path.clone() });
                         }
-                        StructuralOccurrence::CallbackArg { .. }
-                        | StructuralOccurrence::CallbackResult { .. } => {}
                     }
                 }
                 (out.len() > 1).then_some(out)
@@ -336,14 +345,21 @@ fn synthesize_function_correspondence(module: &mut Module, seeds: &[Continuation
                                 path: path.clone(),
                             });
                         }
+                        StructuralOccurrence::CallbackArg { param_index, .. }
+                        | StructuralOccurrence::CallbackResult { param_index, .. } => {
+                            let arg = args.get(*param_index).copied()?;
+                            let cont_param = continuation_capture_param_index(seed, arg)?;
+                            out.insert(StructuralOccurrence::Param {
+                                param_index: cont_param,
+                                path: vec![],
+                            });
+                        }
                         StructuralOccurrence::Result { path } => {
                             out.insert(StructuralOccurrence::Param {
                                 param_index: 0,
                                 path: path.clone(),
                             });
                         }
-                        StructuralOccurrence::CallbackArg { .. }
-                        | StructuralOccurrence::CallbackResult { .. } => {}
                     }
                 }
                 (out.len() > 1).then_some(out)
@@ -407,6 +423,97 @@ fn synthesize_function_correspondence(module: &mut Module, seeds: &[Continuation
             .collect()
     }
 
+    fn project_path_through_matcher_subject(
+        path: &[StructuralPathStep],
+        subject: &crate::exec::matcher::SubjectRef,
+    ) -> Option<Vec<StructuralPathStep>> {
+        fn strip_after_union_prefix(
+            path: &[StructuralPathStep],
+            want: StructuralPathStep,
+        ) -> Option<Vec<StructuralPathStep>> {
+            let mut i = 0;
+            while matches!(path.get(i), Some(StructuralPathStep::UnionMember(_))) {
+                i += 1;
+            }
+            (path.get(i) == Some(&want)).then(|| path[(i + 1)..].to_vec())
+        }
+
+        match subject {
+            crate::exec::matcher::SubjectRef::Input(_) => Some(path.to_vec()),
+            crate::exec::matcher::SubjectRef::TupleField { tuple, index } => {
+                let inner = project_path_through_matcher_subject(path, tuple)?;
+                strip_after_union_prefix(&inner, StructuralPathStep::TupleElem(*index as usize))
+            }
+            crate::exec::matcher::SubjectRef::ListHead(list) => {
+                let inner = project_path_through_matcher_subject(path, list)?;
+                strip_after_union_prefix(&inner, StructuralPathStep::ListElem)
+            }
+            crate::exec::matcher::SubjectRef::ListTail(list) => {
+                project_path_through_matcher_subject(path, list)
+            }
+            crate::exec::matcher::SubjectRef::MapValue { .. }
+            | crate::exec::matcher::SubjectRef::BitstringField { .. } => None,
+        }
+    }
+
+    fn project_matcher_binding_groups(
+        seed: &ContinuationSeed,
+        bindings: &[(Var, crate::exec::matcher::SubjectRef)],
+        groups: &[StructuralCorrespondenceGroup],
+    ) -> Vec<BTreeSet<StructuralOccurrence>> {
+        fn binding_input_id(source: &crate::exec::matcher::SubjectRef) -> Option<u32> {
+            match source {
+                crate::exec::matcher::SubjectRef::Input(input_id) => Some(input_id.0),
+                crate::exec::matcher::SubjectRef::TupleField { tuple, .. }
+                | crate::exec::matcher::SubjectRef::ListHead(tuple)
+                | crate::exec::matcher::SubjectRef::ListTail(tuple) => binding_input_id(tuple),
+                crate::exec::matcher::SubjectRef::MapValue { .. }
+                | crate::exec::matcher::SubjectRef::BitstringField { .. } => None,
+            }
+        }
+
+        groups
+            .iter()
+            .filter_map(|group| {
+                let mut out = BTreeSet::new();
+                for occ in &group.occurrences {
+                    match occ {
+                        StructuralOccurrence::Param { param_index, path } => {
+                            for (binding_var, source) in bindings {
+                                let Some(input_id) = binding_input_id(source) else {
+                                    continue;
+                                };
+                                if *param_index != input_id as usize {
+                                    continue;
+                                }
+                                let Some(cont_param) =
+                                    continuation_capture_param_index(seed, *binding_var)
+                                else {
+                                    continue;
+                                };
+                                let Some(projected_path) =
+                                    project_path_through_matcher_subject(path, source)
+                                else {
+                                    continue;
+                                };
+                                out.insert(StructuralOccurrence::Param {
+                                    param_index: cont_param,
+                                    path: projected_path,
+                                });
+                            }
+                        }
+                        StructuralOccurrence::Result { path } => {
+                            out.insert(StructuralOccurrence::Result { path: path.clone() });
+                        }
+                        StructuralOccurrence::CallbackArg { .. }
+                        | StructuralOccurrence::CallbackResult { .. } => {}
+                    }
+                }
+                (out.len() > 1).then_some(out)
+            })
+            .collect()
+    }
+
     let mut changed = true;
     while changed {
         changed = false;
@@ -444,6 +551,13 @@ fn synthesize_function_correspondence(module: &mut Module, seeds: &[Continuation
                         &caller_params,
                         *closure,
                         args,
+                        &caller_groups,
+                    ));
+                }
+                ContinuationSeedKind::MatcherBody { bindings } => {
+                    sets.extend(project_matcher_binding_groups(
+                        seed,
+                        bindings,
                         &caller_groups,
                     ));
                 }

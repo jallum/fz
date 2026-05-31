@@ -784,7 +784,9 @@ impl TypeShapeParser<'_> {
         Ok(ResolvedTypeShape::Tuple(elems))
     }
 
-    fn parse_parenthesized_type_or_arrow_type(&mut self) -> Result<ResolvedTypeShape, TypeExprError> {
+    fn parse_parenthesized_type_or_arrow_type(
+        &mut self,
+    ) -> Result<ResolvedTypeShape, TypeExprError> {
         self.expect(&Tok::LParen, "`(`")?;
         let mut elems = Vec::new();
         if !matches!(self.peek(), Tok::RParen) {

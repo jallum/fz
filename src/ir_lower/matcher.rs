@@ -9,11 +9,18 @@ use crate::pattern_matrix::{BodyId, PatternMatrix};
 pub(super) type BodyCb<'a> = &'a mut dyn FnMut(
     &mut LowerCtx,
     BodyId,
-    Vec<(String, Var)>,
+    Vec<MatchedBinding>,
     Vec<(Var, crate::types::Ty)>,
     Option<crate::ast::Spanned<crate::ast::Expr>>,
     BlockId,
 ) -> Result<(), LowerError>;
+
+#[derive(Debug, Clone)]
+pub(crate) struct MatchedBinding {
+    pub name: String,
+    pub var: Var,
+    pub source: crate::exec::matcher::SubjectRef,
+}
 
 #[derive(Default)]
 pub(super) struct MatcherLowerState {
@@ -71,10 +78,11 @@ pub(super) fn lower_matcher_node(
                 .bindings
                 .into_iter()
                 .map(|binding| {
-                    Ok((
-                        binding.name,
-                        materialize_matcher_subject(ctx, matcher, &binding.source, state)?,
-                    ))
+                    Ok(MatchedBinding {
+                        name: binding.name,
+                        var: materialize_matcher_subject(ctx, matcher, &binding.source, state)?,
+                        source: binding.source,
+                    })
                 })
                 .collect::<Result<Vec<_>, LowerError>>()?;
             body_cb(ctx, leaf.body_id, bindings, Vec::new(), None, fail_block)?;

@@ -19,7 +19,7 @@
 //! it trivial to profile relative ordering.
 //!
 //! Opaque metadata values are skipped. `Value::Bytes` is rendered as
-//! `"<N bytes>"`.
+//! `"<N bytes>"`; `Value::StrSeq` is rendered as a JSON string array.
 
 use std::cell::RefCell;
 use std::io::Write;
@@ -149,6 +149,16 @@ fn write_value(out: &mut String, v: &Value) {
         }
         Value::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
         Value::Str(s) => write_str_lit(out, s),
+        Value::StrSeq(values) => {
+            out.push('[');
+            for (idx, value) in values.iter().enumerate() {
+                if idx > 0 {
+                    out.push(',');
+                }
+                write_str_lit(out, value);
+            }
+            out.push(']');
+        }
         Value::Bytes(b) => {
             // Emit length tag rather than raw bytes — keeps lines ASCII-clean
             // and avoids a base64 dep. Callers that need binary round-trips
@@ -330,6 +340,21 @@ mod tests {
         let ev = make_event(&["x"], EventKind::Event, &m, &md);
         let line = capture_jsonl(&ev);
         assert!(line.contains("\"blob\":\"<3 bytes>\""), "{}", line);
+    }
+
+    #[test]
+    fn string_sequence_renders_as_json_array() {
+        let (m, md) = (
+            Measurements::new(),
+            crate::metadata! { call_edges: vec!["Direct".to_string(), "Cont".to_string()] },
+        );
+        let ev = make_event(&["x"], EventKind::Event, &m, &md);
+        let line = capture_jsonl(&ev);
+        assert!(
+            line.contains("\"call_edges\":[\"Direct\",\"Cont\"]"),
+            "{}",
+            line
+        );
     }
 
     #[test]

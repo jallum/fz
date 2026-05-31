@@ -123,6 +123,7 @@ Put in values that are natural byproducts of the current work:
 - module name
 - function name
 - block id
+- compile-local context for local ids
 - pass or producer name
 - before and after counts
 - reason something was consumed, skipped, stalled, pruned, or rejected
@@ -133,6 +134,12 @@ telemetry should be nearly free.
 
 Prefer small, stable fields that tests can match. Avoid dumping huge debug
 strings and then parsing them in tests.
+
+When an event reports a module-local identifier such as `FnId`, `SpecId`, or
+`BlockId`, make the compile/run boundary explicit too. The clean pattern is an
+enclosing compile span with stable metadata like `compile_nonce` and
+`module_path`, then child events can keep their cheap local ids without
+pretending those numbers are globally meaningful across separate compiles.
 
 ## Naming
 

@@ -168,6 +168,8 @@ pub(crate) fn checked_module_for_mode(
     tel: &dyn telemetry::Telemetry,
     mode: CompileMode,
 ) -> Result<CheckedModule, PipelineError> {
+    use crate::telemetry::TelemetryExt as _;
+
     let frontend = run_frontend(result, tel)?;
     let interfaces = frontend._prog.module_interfaces;
     let external_interfaces = frontend._prog.external_module_interfaces;
@@ -179,6 +181,13 @@ pub(crate) fn checked_module_for_mode(
         let linked =
             LtoLinkedProgram::validate(frontend.module, interfaces, tel, Some(&frontend.sm))?;
         let (module, interfaces) = linked.erase_boundaries(tel)?;
+        let _compile_span = tel.span(
+            &["fz", "compile"],
+            metadata! {
+                compile_nonce: crate::telemetry::next_compile_nonce(),
+                module_path: module.module_path().to_owned(),
+            },
+        );
         let module_plan = ir_planner::plan_module(t, &module, tel);
         Ok(CheckedModule {
             module,
@@ -207,6 +216,8 @@ pub(crate) fn prepare_execution_graph(
     tel: &dyn telemetry::Telemetry,
     mode: CompileMode,
 ) -> Result<PreparedExecutionGraph, PipelineError> {
+    use crate::telemetry::TelemetryExt as _;
+
     let units = load_provider_units(t, &mut prepared, providers, tel)?;
     let linked_units = units.len() > 1;
     let mut module = if linked_units {
@@ -215,6 +226,13 @@ pub(crate) fn prepare_execution_graph(
         units[0].code.clone()
     };
     if !module.protocol_call_targets.is_empty() {
+        let _compile_span = tel.span(
+            &["fz", "compile"],
+            metadata! {
+                compile_nonce: crate::telemetry::next_compile_nonce(),
+                module_path: module.module_path().to_owned(),
+            },
+        );
         let mut module_plan = ir_planner::plan_module(t, &module, tel);
         frontend::apply_planner_rewrites_to_fixed_point(t, &mut module, &mut module_plan);
     }
@@ -374,6 +392,8 @@ fn materialize_ir_unit(
     sm: &mut diag::SourceMap,
     tel: &dyn telemetry::Telemetry,
 ) -> Result<CompiledUnit, PipelineError> {
+    use crate::telemetry::TelemetryExt as _;
+
     let crate::modules::artifact::IrUnitPayload {
         mut module,
         sources,
@@ -387,6 +407,13 @@ fn materialize_ir_unit(
     }
     module.remap_file_ids(&remap);
     module.rebuild_indices();
+    let _compile_span = tel.span(
+        &["fz", "compile"],
+        metadata! {
+            compile_nonce: crate::telemetry::next_compile_nonce(),
+            module_path: module.module_path().to_owned(),
+        },
+    );
     let module_plan = ir_planner::plan_module(t, &module, tel);
     tel.event(
         &["fz", "module", "unit_materialized"],
@@ -790,5 +817,63 @@ fn main(), do: User.run()
             PROVIDER_SRC.contains(snippet) && !snippet.trim().is_empty(),
             "remapped provider span resolves to a real provider source line, got: {snippet:?}"
         );
+    }
+
+    #[test]
+    fn linked_runtime_graph_keeps_cont_dispatches_for_enum_take_drop_split() {
+        use crate::fz_ir::{CallsiteId, EmitSlot, Term};
+
+        let mut t = types::ConcreteTypes;
+        let tel = telemetry::NullTelemetry;
+        let providers = ProviderInputs::new(
+            std::env::temp_dir()
+                .join(format!("fz-enum-linked-{}", std::process::id()))
+                .display()
+                .to_string(),
+            Vec::new(),
+        );
+        let source = include_str!("../../fixtures/enum_take_drop_split/input.fz");
+
+        let frontend = compile_source_with_providers(
+            &mut t,
+            source.to_string(),
+            "enum_take_drop_split_input.fz".to_string(),
+            &providers,
+            &tel,
+        )
+        .unwrap_or_else(|_| panic!("frontend result"));
+        let checked = checked_module_for_mode(&mut t, frontend, &tel, CompileMode::Normal)
+            .unwrap_or_else(|_| panic!("checked module"));
+        let graph = prepare_execution_graph(&mut t, checked, &providers, &tel, CompileMode::Normal)
+            .unwrap_or_else(|err| panic!("execution graph: {err:?}"));
+        let linked = if graph.units.len() > 1 {
+            ir_codegen::link_ir_units(&graph.units).expect("link ir units")
+        } else {
+            graph.units[0].code.clone()
+        };
+        let mt = ir_planner::plan_module(&mut t, &linked, &tel);
+
+        for (spec_key, spec) in &mt.specs {
+            let body = linked.fn_by_id(spec_key.fn_id);
+            for block in &body.blocks {
+                let Term::Call { ident, .. } = &block.terminator else {
+                    continue;
+                };
+                let cont_callsite = CallsiteId::new(body.id, ident, EmitSlot::Cont);
+                let direct_callsite = CallsiteId::new(body.id, ident, EmitSlot::Direct);
+                let direct_target = spec.local_call_target(&direct_callsite);
+                assert!(
+                    spec.local_call_target(&cont_callsite).is_some(),
+                    "linked runtime graph missing Cont dispatch for {} spec {:?} at {:?}; direct target: {:?}; direct target body: {:?}; direct effective return: {:?}; available call_edges: {:?}",
+                    body.name,
+                    spec_key,
+                    cont_callsite,
+                    direct_target,
+                    direct_target.map(|target| linked.fn_by_id(target.fn_id).name.clone()),
+                    direct_target.and_then(|target| mt.effective_returns.get(target)),
+                    spec.call_edges.keys().collect::<Vec<_>>()
+                );
+            }
+        }
     }
 }

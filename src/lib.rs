@@ -1097,6 +1097,7 @@ fn dump_bodies_pipeline(
     source_name: String,
     mode: CompileMode,
 ) -> String {
+    use crate::telemetry::TelemetryExt as _;
     use crate::ir_planner::ModulePlan;
     let mut t = types::ConcreteTypes;
     let frontend_result = frontend::compile_source_with_types(&mut t, src, source_name, tel);
@@ -1105,6 +1106,13 @@ fn dump_bodies_pipeline(
     // Run the reducer pass directly so the bodies dump reflects what
     // codegen would see, without going all the way to JIT.
     let _ = ir_reducer::reduce_module_with_telemetry(&mut t, &mut module, tel);
+    let _compile_span = tel.span(
+        &["fz", "compile"],
+        crate::metadata! {
+            compile_nonce: crate::telemetry::next_compile_nonce(),
+            module_path: module.module_path().to_owned(),
+        },
+    );
     let mt: ModulePlan = ir_planner::plan_module(&mut t, &module, tel);
 
     // Group surviving specs by user-fn name. Skip the conventional
@@ -1187,6 +1195,7 @@ fn dump_outcomes_pipeline(
     show_all: bool,
     mode: CompileMode,
 ) -> String {
+    use crate::telemetry::TelemetryExt as _;
     use crate::fz_ir::{CallsiteId, EmitSlot, FnId};
     let mut t = types::ConcreteTypes;
     let frontend_result =
@@ -1194,6 +1203,13 @@ fn dump_outcomes_pipeline(
     let prepared = checked_module_or_exit("fz dump", &mut t, frontend_result, sm_cell, tel, mode);
     let mut module = prepared.module;
     let reducer_log = ir_reducer::reduce_module_with_telemetry(&mut t, &mut module, tel);
+    let _compile_span = tel.span(
+        &["fz", "compile"],
+        crate::metadata! {
+            compile_nonce: crate::telemetry::next_compile_nonce(),
+            module_path: module.module_path().to_owned(),
+        },
+    );
     let mt = ir_planner::plan_module(&mut t, &module, tel);
 
     let fn_name = |fid: fz_ir::FnId| -> String {

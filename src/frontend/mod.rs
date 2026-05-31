@@ -175,6 +175,17 @@ pub fn compile_source_with_interface_table<T>(
 where
     T: Types<Ty = crate::types::Ty> + ClosureTypes + LiteralTypes + RenderTypes,
 {
+    use crate::telemetry::TelemetryExt as _;
+
+    let compile_nonce = crate::telemetry::next_compile_nonce();
+    let _compile_span = tel.span(
+        &["fz", "compile"],
+        crate::metadata! {
+            compile_nonce: compile_nonce,
+            source_name: source_name.clone(),
+        },
+    );
+
     let mut sm = SourceMap::new();
     let file_id = sm.add_file(source_name, src.clone());
     let toks = match Lexer::with_file(&src, file_id).tokenize_with_telemetry(tel) {

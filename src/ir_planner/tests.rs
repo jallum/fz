@@ -1297,6 +1297,53 @@ fn pipeline(
 }
 
 #[test]
+fn normalize_result_correspondence_key_erases_result_linked_callback_identity() {
+    let src = r#"
+@spec reducer(integer, integer) :: {:cont, integer}
+fn reducer(_entry, acc), do: {:cont, acc}
+
+@spec reduce_step([a], {:cont, b} | {:halt, b} | {:suspend, b}, (a, b) -> {:cont, b} | {:halt, b} | {:suspend, b}) :: {:done, b} | {:halted, b} | {:suspended, b, () -> any}
+fn reduce_step(_list, {:cont, acc}, _reducer), do: {:done, acc}
+fn reduce_step(_list, {:halt, acc}, _reducer), do: {:halted, acc}
+fn reduce_step(_list, {:suspend, acc}, _reducer), do: {:suspended, acc, (fn () -> 0 end)}
+"#;
+    let (mut t, m, _mt) = pipeline(src, &crate::telemetry::NullTelemetry);
+    let reduce_step = m.fn_by_name("reduce_step").expect("reduce_step fn");
+    let reducer = m.fn_by_name("reducer").expect("reducer fn");
+    let reducer_lit = t.closure_lit(reducer.id.into(), vec![], 2);
+    let cont = t.atom_lit("cont");
+    let halt = t.atom_lit("halt");
+    let suspend = t.atom_lit("suspend");
+    let acc = t.int_lit(1);
+    let cont_state = t.tuple(&[cont.clone(), acc.clone()]);
+    let halt_state = t.tuple(&[halt, acc.clone()]);
+    let suspend_state = t.tuple(&[suspend, acc.clone()]);
+    let cont_or_halt = t.union(cont_state, halt_state);
+    let state = t.union(cont_or_halt, suspend_state);
+    let int_ty = t.int();
+    let list_int = t.list(int_ty);
+    let key = super::fn_types::normalize_result_correspondence_key(
+        &mut t,
+        &m,
+        reduce_step.id,
+        vec![list_int, state.clone(), reducer_lit.clone()],
+    );
+    assert!(
+        !t.is_equivalent(&key[1], &state),
+        "state slot should widen under result-linked correspondence"
+    );
+    let clauses = t
+        .callable_clauses(&key[2])
+        .expect("normalized reducer should remain callable");
+    assert_eq!(clauses.len(), 1);
+    assert!(
+        clauses[0].closure.is_none(),
+        "callback slot should erase closure identity: {}",
+        t.display(&key[2])
+    );
+}
+
+#[test]
 fn declared_reduce_while_return_uses_closure_return_witness() {
     let mut t = crate::types::ConcreteTypes;
     let entry_var = t.type_var(crate::types::TypeVarId(0));
@@ -1393,6 +1440,7 @@ fn declared_reduce_while_return_uses_closure_return_witness() {
         &mut t,
         &m,
         &recursive_fns,
+        &super::fn_types::FixedPointSlotSummaries::new(),
         reduce_id,
         reduce_id,
         &arg_tys,
@@ -1498,6 +1546,41 @@ fn observe_planner_work(src: &str) -> (usize, usize, usize, usize) {
         other => panic!("spec_count missing or wrong type: {:?}", other),
     };
     (pops, walks, typefns, specs)
+}
+
+#[test]
+fn planner_emits_return_fixpoint_step_telemetry() {
+    use crate::telemetry::{Capture, ConfiguredTelemetry};
+
+    let tel = ConfiguredTelemetry::new();
+    let cap = Capture::new();
+    tel.attach(&[], cap.handler());
+
+    let _ = pipeline("fn main(), do: 1 + 1", &tel);
+
+    let ev = cap
+        .last(&["fz", "planner", "return_fixpoint_step"])
+        .expect("fz.planner.return_fixpoint_step event not emitted");
+    assert!(matches!(
+        ev.measurements.get("visit"),
+        Some(crate::telemetry::Value::U64(_))
+    ));
+    assert!(matches!(
+        ev.measurements.get("dep_count"),
+        Some(crate::telemetry::Value::U64(_))
+    ));
+    assert!(matches!(
+        ev.metadata.get("spec_key"),
+        Some(crate::telemetry::Value::Str(_))
+    ));
+    assert!(matches!(
+        ev.metadata.get("deps"),
+        Some(crate::telemetry::Value::StrSeq(_))
+    ));
+    assert!(matches!(
+        ev.metadata.get("new_ret"),
+        Some(crate::telemetry::Value::Str(_))
+    ));
 }
 
 #[test]
@@ -2777,6 +2860,771 @@ fn planner_keeps_external_module_calls_at_provider_boundary() {
             })
         }),
         "external boundary calls must not be planned through the synthetic stub body"
+    );
+}
+
+#[test]
+fn planner_publishes_cont_dispatches_for_non_tail_calls_in_enum_take_drop_split() {
+    use crate::fz_ir::{CallsiteId, EmitSlot, Term};
+
+    let src = include_str!("../../fixtures/enum_take_drop_split/input.fz");
+    let mut t = crate::types::ConcreteTypes;
+    let compiled = crate::frontend::compile_source_with_types(
+        &mut t,
+        src.to_string(),
+        "enum_take_drop_split_input.fz".to_string(),
+        &crate::telemetry::NullTelemetry,
+    )
+    .unwrap_or_else(|err| panic!("frontend compile: {:?}", err.diagnostics));
+    let m = compiled.module;
+    let mt = compiled.module_plan;
+
+    for (spec_key, spec) in &mt.specs {
+        let body = m.fn_by_id(spec_key.fn_id);
+        for block in &body.blocks {
+            let Term::Call {
+                ident,
+                continuation: _,
+                ..
+            } = &block.terminator
+            else {
+                continue;
+            };
+            let cont_callsite = CallsiteId::new(body.id, ident, EmitSlot::Cont);
+            assert!(
+                spec.local_call_target(&cont_callsite).is_some(),
+                "missing Cont dispatch for {} spec {:?} at {:?}; available call_edges: {:?}",
+                body.name,
+                spec_key,
+                cont_callsite,
+                spec.call_edges.keys().collect::<Vec<_>>()
+            );
+        }
+    }
+}
+
+#[test]
+fn declared_return_fact_handles_enum_count_on_range_in_runtime_graph() {
+    let src = include_str!("../../fixtures/enum_take_drop_split/input.fz");
+    let mut t = crate::types::ConcreteTypes;
+    let tel = crate::telemetry::NullTelemetry;
+    let providers = crate::modules::pipeline::ProviderInputs::new(
+        crate::modules::artifact_store::DEFAULT_ARTIFACT_ROOT.to_string(),
+        Vec::new(),
+    );
+    let frontend = crate::modules::pipeline::compile_source_with_providers(
+        &mut t,
+        src.to_string(),
+        "enum_take_drop_split_input.fz".to_string(),
+        &providers,
+        &tel,
+    )
+    .unwrap_or_else(|err| panic!("frontend result: {err}"));
+    let checked = crate::modules::pipeline::checked_module_for_mode(
+        &mut t,
+        frontend,
+        &tel,
+        crate::modules::pipeline::CompileMode::Normal,
+    )
+    .unwrap_or_else(|err| panic!("checked module: {err}"));
+    let prepared = crate::modules::pipeline::prepare_execution_graph(
+        &mut t,
+        checked,
+        &providers,
+        &tel,
+        crate::modules::pipeline::CompileMode::Normal,
+    )
+    .unwrap_or_else(|err| panic!("execution graph: {err}"));
+    let module = prepared.module;
+
+    let callee = module.fn_by_name("Enum.count").expect("Enum.count").id;
+    let range = t.opaque_of("impl-target::Range");
+    let fact = super::spec_witness::declared_return_fact(
+        &mut t,
+        &module,
+        &std::collections::HashSet::new(),
+        &super::fn_types::FixedPointSlotSummaries::new(),
+        callee,
+        callee,
+        &[range],
+        &std::collections::HashMap::new(),
+        None,
+    )
+    .expect("declared return fact for Enum.count(range)");
+    let int = t.int();
+    assert!(
+        t.is_subtype(&fact.ty, &int) && t.is_subtype(&int, &fact.ty),
+        "Enum.count(range) declared return should be integer, got {}",
+        t.display(&fact.ty)
+    );
+}
+
+#[test]
+fn declared_return_fact_handles_enum_reduce_with_runtime_graph_reducer() {
+    let src = include_str!("../../fixtures/enum_take_drop_split/input.fz");
+    let mut t = crate::types::ConcreteTypes;
+    let tel = crate::telemetry::NullTelemetry;
+    let providers = crate::modules::pipeline::ProviderInputs::new(
+        crate::modules::artifact_store::DEFAULT_ARTIFACT_ROOT.to_string(),
+        Vec::new(),
+    );
+    let frontend = crate::modules::pipeline::compile_source_with_providers(
+        &mut t,
+        src.to_string(),
+        "enum_take_drop_split_input.fz".to_string(),
+        &providers,
+        &tel,
+    )
+    .unwrap_or_else(|err| panic!("frontend result: {err}"));
+    let checked = crate::modules::pipeline::checked_module_for_mode(
+        &mut t,
+        frontend,
+        &tel,
+        crate::modules::pipeline::CompileMode::Normal,
+    )
+    .unwrap_or_else(|err| panic!("checked module: {err}"));
+    let prepared = crate::modules::pipeline::prepare_execution_graph(
+        &mut t,
+        checked,
+        &providers,
+        &tel,
+        crate::modules::pipeline::CompileMode::Normal,
+    )
+    .unwrap_or_else(|err| panic!("execution graph: {err}"));
+    let module = prepared.module;
+    let plan = super::plan_module(&mut t, &module, &tel);
+
+    let drop_positive = module
+        .fn_by_name("Enum.drop_positive")
+        .expect("Enum.drop_positive");
+    let drop_positive_key = plan
+        .specs
+        .keys()
+        .find(|key| key.fn_id == drop_positive.id)
+        .cloned()
+        .expect("drop_positive spec key");
+    let drop_positive_spec = plan
+        .specs
+        .get(&drop_positive_key)
+        .expect("drop_positive spec");
+    let block = &drop_positive.blocks[0];
+    let crate::fz_ir::Term::Call { callee, args, .. } = &block.terminator else {
+        panic!("drop_positive entry should call Enum.reduce");
+    };
+    let env = super::diagnostics::env_after_block_stmts(&mut t, &module, drop_positive_spec, block);
+    let arg_tys = args
+        .iter()
+        .map(|arg| env.get(arg).cloned().unwrap_or_else(|| t.any()))
+        .collect::<Vec<_>>();
+    let fact = super::spec_witness::declared_return_fact(
+        &mut t,
+        &module,
+        &std::collections::HashSet::new(),
+        &super::fn_types::FixedPointSlotSummaries::new(),
+        drop_positive.id,
+        *callee,
+        &arg_tys,
+        &plan.effective_returns,
+        None,
+    )
+    .expect("declared return fact for Enum.reduce in drop_positive");
+    let none = t.none();
+    assert!(
+        !t.is_equivalent(&fact.ty, &none),
+        "Enum.reduce in drop_positive should have a non-bottom declared return, got {} from args {:?}",
+        t.display(&fact.ty),
+        arg_tys.iter().map(|ty| t.display(ty)).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn declared_return_fact_handles_take_positive_reduce_while_in_runtime_graph() {
+    let src = include_str!("../../fixtures/enum_take_drop_split/input.fz");
+    let mut t = crate::types::ConcreteTypes;
+    let tel = crate::telemetry::NullTelemetry;
+    let providers = crate::modules::pipeline::ProviderInputs::new(
+        crate::modules::artifact_store::DEFAULT_ARTIFACT_ROOT.to_string(),
+        Vec::new(),
+    );
+    let frontend = crate::modules::pipeline::compile_source_with_providers(
+        &mut t,
+        src.to_string(),
+        "enum_take_drop_split_input.fz".to_string(),
+        &providers,
+        &tel,
+    )
+    .unwrap_or_else(|err| panic!("frontend result: {err}"));
+    let checked = crate::modules::pipeline::checked_module_for_mode(
+        &mut t,
+        frontend,
+        &tel,
+        crate::modules::pipeline::CompileMode::Normal,
+    )
+    .unwrap_or_else(|err| panic!("checked module: {err}"));
+    let prepared = crate::modules::pipeline::prepare_execution_graph(
+        &mut t,
+        checked,
+        &providers,
+        &tel,
+        crate::modules::pipeline::CompileMode::Normal,
+    )
+    .unwrap_or_else(|err| panic!("execution graph: {err}"));
+    let module = prepared.module;
+    let plan = super::plan_module(&mut t, &module, &tel);
+
+    let take_positive = module
+        .fn_by_name("Enum.take_positive")
+        .expect("Enum.take_positive");
+    let int = t.int();
+    let zero = t.int_lit(0);
+    let nonzero = t.difference(int, zero);
+    let specs = plan
+        .specs
+        .iter()
+        .filter(|(key, _)| {
+            key.fn_id == take_positive.id
+                && matches!(key.input.get(1), Some(Some(ty)) if t.is_equivalent(ty, &nonzero))
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        !specs.is_empty(),
+        "expected at least one take_positive nonzero-amount spec, got {:?}",
+        plan.specs
+            .keys()
+            .filter(|key| key.fn_id == take_positive.id)
+            .map(|key| key.input.iter().map(|slot| slot.as_ref().map(|ty| t.display(ty))).collect::<Vec<_>>())
+            .collect::<Vec<_>>()
+    );
+    let block = &take_positive.blocks[0];
+    let crate::fz_ir::Term::Call { callee, args, .. } = &block.terminator else {
+        panic!("take_positive entry should call Enum.reduce_while");
+    };
+    let complete = plan.specs.keys().cloned().collect::<std::collections::HashSet<_>>();
+    for (spec_key, spec) in specs {
+        let env = super::diagnostics::env_after_block_stmts(&mut t, &module, spec, block);
+        let arg_tys = args
+            .iter()
+            .map(|arg| env.get(arg).cloned().unwrap_or_else(|| t.any()))
+            .collect::<Vec<_>>();
+        let fact = super::spec_witness::declared_return_fact(
+            &mut t,
+            &module,
+            &std::collections::HashSet::new(),
+            &super::fn_types::FixedPointSlotSummaries::new(),
+            take_positive.id,
+            *callee,
+            &arg_tys,
+            &plan.effective_returns,
+            Some(&complete),
+        )
+        .unwrap_or_else(|| {
+            let callee_fn = module.fn_by_id(*callee);
+            let declared_set = module.declared_specs.get(callee);
+            let declared = declared_set
+                .map(|set| {
+                    set.arrows
+                        .iter()
+                        .map(|arrow| format!("{:?}", arrow))
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            let first_match = declared_set
+                .and_then(|set| set.arrows.first())
+                .map(|arrow| {
+                    format!(
+                        "{:?}",
+                        crate::types::instantiate_scheme_match(
+                            &mut t,
+                            &arrow.params,
+                            &arrow.result,
+                            &arrow.constraints,
+                            &arg_tys,
+                        )
+                    )
+                })
+                .unwrap_or_else(|| "no declared arrow".to_string());
+            let callback_return = t
+                .callable_clauses(&arg_tys[2])
+                .and_then(|clauses| clauses.into_iter().find_map(|clause| clause.closure))
+                .map(|closure| {
+                    let mut key = closure.captures.clone();
+                    key.extend([arg_tys[0].clone(), arg_tys[1].clone()]);
+                    let target_fn: crate::fz_ir::FnId = closure.target.into();
+                    let target = module.fn_by_id(target_fn);
+                    let spec_key = super::fn_types::fixed_point_spec_key_for_arity(
+                        &mut t,
+                        &module,
+                        &std::collections::HashSet::new(),
+                        &super::fn_types::FixedPointSlotSummaries::new(),
+                        take_positive.id,
+                        target_fn,
+                        key,
+                        target.block(target.entry).params.len(),
+                        Some(super::fn_types::ReturnDemand::value()),
+                    );
+                    format!(
+                        "target={} key={:?} return={}",
+                        target.name,
+                        spec_key.input
+                            .iter()
+                            .map(|slot| slot.as_ref().map(|ty| t.display(ty)))
+                            .collect::<Vec<_>>(),
+                        plan.effective_returns
+                            .get(&spec_key)
+                            .map(|ty| t.display(ty))
+                            .unwrap_or_else(|| "<missing>".to_string())
+                    )
+                })
+                .unwrap_or_else(|| "<no closure lit>".to_string());
+            panic!(
+                "declared return fact for Enum.reduce_while in take_positive should exist for input {:?}; callee={} arg_tys={:?} first_match={} callback_return={} declared={:?}",
+                spec_key
+                    .input
+                    .iter()
+                    .map(|slot| slot.as_ref().map(|ty| t.display(ty)))
+                    .collect::<Vec<_>>(),
+                callee_fn.name,
+                arg_tys.iter().map(|ty| t.display(ty)).collect::<Vec<_>>(),
+                first_match,
+                callback_return,
+                declared
+            )
+        });
+        let none = t.none();
+        assert!(
+            !t.is_equivalent(&fact.ty, &none),
+            "Enum.reduce_while in take_positive should have a non-bottom declared return for input {:?}, got {} (complete={} reads={:?}) from args {:?}",
+            spec_key
+                .input
+                .iter()
+                .map(|slot| slot.as_ref().map(|ty| t.display(ty)))
+                .collect::<Vec<_>>(),
+            t.display(&fact.ty),
+            fact.complete,
+            fact.reads,
+            arg_tys.iter().map(|ty| t.display(ty)).collect::<Vec<_>>()
+        );
+    }
+}
+
+#[test]
+fn cont_key_for_drop_positive_reduce_is_not_bottom_in_runtime_graph() {
+    let src = include_str!("../../fixtures/enum_take_drop_split/input.fz");
+    let mut t = crate::types::ConcreteTypes;
+    let tel = crate::telemetry::NullTelemetry;
+    let providers = crate::modules::pipeline::ProviderInputs::new(
+        crate::modules::artifact_store::DEFAULT_ARTIFACT_ROOT.to_string(),
+        Vec::new(),
+    );
+    let frontend = crate::modules::pipeline::compile_source_with_providers(
+        &mut t,
+        src.to_string(),
+        "enum_take_drop_split_input.fz".to_string(),
+        &providers,
+        &tel,
+    )
+    .unwrap_or_else(|err| panic!("frontend result: {err}"));
+    let checked = crate::modules::pipeline::checked_module_for_mode(
+        &mut t,
+        frontend,
+        &tel,
+        crate::modules::pipeline::CompileMode::Normal,
+    )
+    .unwrap_or_else(|err| panic!("checked module: {err}"));
+    let prepared = crate::modules::pipeline::prepare_execution_graph(
+        &mut t,
+        checked,
+        &providers,
+        &tel,
+        crate::modules::pipeline::CompileMode::Normal,
+    )
+    .unwrap_or_else(|err| panic!("execution graph: {err}"));
+    let module = prepared.module;
+    let plan = super::plan_module(&mut t, &module, &tel);
+
+    let drop_positive = module
+        .fn_by_name("Enum.drop_positive")
+        .expect("Enum.drop_positive");
+    let range = t.opaque_of("impl-target::Range");
+    let int = t.int();
+    let zero = t.int_lit(0);
+    let nonzero = t.difference(int, zero);
+    let (spec_key, spec) = plan
+        .specs
+        .iter()
+        .find(|(key, _)| {
+            key.fn_id == drop_positive.id
+                && matches!(key.input.first(), Some(Some(ty)) if t.is_equivalent(ty, &range))
+                && matches!(key.input.get(1), Some(Some(ty)) if t.is_equivalent(ty, &nonzero))
+        })
+        .expect("drop_positive range/nonzero spec");
+    let block = &drop_positive.blocks[0];
+    let crate::fz_ir::Term::Call { continuation, .. } = &block.terminator else {
+        panic!("drop_positive entry should call Enum.reduce");
+    };
+    let key = super::worklist::cont_key_for_spec(
+        &mut t,
+        block,
+        continuation,
+        spec,
+        &module,
+        &std::collections::HashSet::new(),
+        spec_key.fn_id,
+        &plan.effective_returns,
+        &super::fn_types::FixedPointSlotSummaries::new(),
+    )
+    .expect("cont key should exist");
+    let none = t.none();
+    assert!(
+        !key.iter().any(|ty| t.is_equivalent(ty, &none)),
+        "drop_positive reduce continuation key should not contain bottom, got {:?}",
+        key.iter().map(|ty| t.display(ty)).collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn cont_key_for_take_positive_reduce_while_is_not_bottom_in_runtime_graph() {
+    let src = include_str!("../../fixtures/enum_take_drop_split/input.fz");
+    let mut t = crate::types::ConcreteTypes;
+    let tel = crate::telemetry::NullTelemetry;
+    let providers = crate::modules::pipeline::ProviderInputs::new(
+        crate::modules::artifact_store::DEFAULT_ARTIFACT_ROOT.to_string(),
+        Vec::new(),
+    );
+    let frontend = crate::modules::pipeline::compile_source_with_providers(
+        &mut t,
+        src.to_string(),
+        "enum_take_drop_split_input.fz".to_string(),
+        &providers,
+        &tel,
+    )
+    .unwrap_or_else(|err| panic!("frontend result: {err}"));
+    let checked = crate::modules::pipeline::checked_module_for_mode(
+        &mut t,
+        frontend,
+        &tel,
+        crate::modules::pipeline::CompileMode::Normal,
+    )
+    .unwrap_or_else(|err| panic!("checked module: {err}"));
+    let prepared = crate::modules::pipeline::prepare_execution_graph(
+        &mut t,
+        checked,
+        &providers,
+        &tel,
+        crate::modules::pipeline::CompileMode::Normal,
+    )
+    .unwrap_or_else(|err| panic!("execution graph: {err}"));
+    let module = prepared.module;
+    let plan = super::plan_module(&mut t, &module, &tel);
+
+    let take_positive = module
+        .fn_by_name("Enum.take_positive")
+        .expect("Enum.take_positive");
+    let block = &take_positive.blocks[0];
+    let crate::fz_ir::Term::Call { continuation, .. } = &block.terminator else {
+        panic!("take_positive entry should call Enum.reduce_while");
+    };
+    let int = t.int();
+    let zero = t.int_lit(0);
+    let nonzero = t.difference(int, zero);
+    let specs = plan
+        .specs
+        .iter()
+        .filter(|(key, _)| {
+            key.fn_id == take_positive.id
+                && matches!(key.input.get(1), Some(Some(ty)) if t.is_equivalent(ty, &nonzero))
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        !specs.is_empty(),
+        "expected at least one take_positive nonzero-amount spec, got {:?}",
+        plan.specs
+            .keys()
+            .filter(|key| key.fn_id == take_positive.id)
+            .map(|key| key.input.iter().map(|slot| slot.as_ref().map(|ty| t.display(ty))).collect::<Vec<_>>())
+            .collect::<Vec<_>>()
+    );
+    for (spec_key, spec) in specs {
+        let key = super::worklist::cont_key_for_spec(
+            &mut t,
+            block,
+            continuation,
+            spec,
+            &module,
+            &std::collections::HashSet::new(),
+            spec_key.fn_id,
+            &plan.effective_returns,
+            &super::fn_types::FixedPointSlotSummaries::new(),
+        )
+        .expect("cont key should exist");
+        let none = t.none();
+        assert!(
+            !key.iter().any(|ty| t.is_equivalent(ty, &none)),
+            "take_positive reduce_while continuation key should not contain bottom for input {:?}, got {:?}",
+            spec_key
+                .input
+                .iter()
+                .map(|slot| slot.as_ref().map(|ty| t.display(ty)))
+                .collect::<Vec<_>>(),
+            key.iter().map(|ty| t.display(ty)).collect::<Vec<_>>()
+        );
+    }
+}
+
+#[test]
+fn discovery_walk_publishes_take_positive_reduce_while_cont_with_final_returns() {
+    let src = include_str!("../../fixtures/enum_take_drop_split/input.fz");
+    let mut t = crate::types::ConcreteTypes;
+    let tel = crate::telemetry::NullTelemetry;
+    let providers = crate::modules::pipeline::ProviderInputs::new(
+        crate::modules::artifact_store::DEFAULT_ARTIFACT_ROOT.to_string(),
+        Vec::new(),
+    );
+    let frontend = crate::modules::pipeline::compile_source_with_providers(
+        &mut t,
+        src.to_string(),
+        "enum_take_drop_split_input.fz".to_string(),
+        &providers,
+        &tel,
+    )
+    .unwrap_or_else(|err| panic!("frontend result: {err}"));
+    let checked = crate::modules::pipeline::checked_module_for_mode(
+        &mut t,
+        frontend,
+        &tel,
+        crate::modules::pipeline::CompileMode::Normal,
+    )
+    .unwrap_or_else(|err| panic!("checked module: {err}"));
+    let prepared = crate::modules::pipeline::prepare_execution_graph(
+        &mut t,
+        checked,
+        &providers,
+        &tel,
+        crate::modules::pipeline::CompileMode::Normal,
+    )
+    .unwrap_or_else(|err| panic!("execution graph: {err}"));
+    let module = prepared.module;
+    let plan = super::plan_module(&mut t, &module, &tel);
+
+    let take_positive = module
+        .fn_by_name("Enum.take_positive")
+        .expect("Enum.take_positive");
+    let int = t.int();
+    let zero = t.int_lit(0);
+    let nonzero = t.difference(int, zero);
+    let specs = plan
+        .specs
+        .iter()
+        .filter(|(key, _)| {
+            key.fn_id == take_positive.id
+                && matches!(key.input.get(1), Some(Some(ty)) if t.is_equivalent(ty, &nonzero))
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        !specs.is_empty(),
+        "expected at least one take_positive nonzero-amount spec, got {:?}",
+        plan.specs
+            .keys()
+            .filter(|key| key.fn_id == take_positive.id)
+            .map(|key| key.input.iter().map(|slot| slot.as_ref().map(|ty| t.display(ty))).collect::<Vec<_>>())
+            .collect::<Vec<_>>()
+    );
+    let mut capabilities = std::collections::HashMap::new();
+    let block = &take_positive.blocks[0];
+    let crate::fz_ir::Term::Call { ident, .. } = &block.terminator else {
+        panic!("take_positive entry should call Enum.reduce_while");
+    };
+    let cont_callsite =
+        crate::fz_ir::CallsiteId::new(take_positive.id, ident, crate::fz_ir::EmitSlot::Cont);
+    for (spec_key, spec) in specs {
+        let mut out = super::walk::WalkResult::default();
+        super::walk::walk_spec_for_discovery(
+            &mut t,
+            take_positive,
+            spec,
+            &module,
+            &plan.fn_effects,
+            &plan.effective_returns,
+            &plan.specs.keys().cloned().collect(),
+            &std::collections::HashSet::new(),
+            &super::fn_types::FixedPointSlotSummaries::new(),
+            spec_key,
+            &mut capabilities,
+            &mut out,
+        );
+        assert!(
+            out.call_edges.contains_key(&cont_callsite),
+            "discovery walk with final returns should publish Cont edge for {:?} on input {:?}; got {:?}",
+            cont_callsite,
+            spec_key
+                .input
+                .iter()
+                .map(|slot| slot.as_ref().map(|ty| t.display(ty)))
+                .collect::<Vec<_>>(),
+            out.call_edges.keys().collect::<Vec<_>>()
+        );
+    }
+}
+
+#[test]
+fn direct_call_slot0_for_take_positive_reduce_while_is_known_with_final_returns() {
+    let src = include_str!("../../fixtures/enum_take_drop_split/input.fz");
+    let mut t = crate::types::ConcreteTypes;
+    let tel = crate::telemetry::NullTelemetry;
+    let providers = crate::modules::pipeline::ProviderInputs::new(
+        crate::modules::artifact_store::DEFAULT_ARTIFACT_ROOT.to_string(),
+        Vec::new(),
+    );
+    let frontend = crate::modules::pipeline::compile_source_with_providers(
+        &mut t,
+        src.to_string(),
+        "enum_take_drop_split_input.fz".to_string(),
+        &providers,
+        &tel,
+    )
+    .unwrap_or_else(|err| panic!("frontend result: {err}"));
+    let checked = crate::modules::pipeline::checked_module_for_mode(
+        &mut t,
+        frontend,
+        &tel,
+        crate::modules::pipeline::CompileMode::Normal,
+    )
+    .unwrap_or_else(|err| panic!("checked module: {err}"));
+    let prepared = crate::modules::pipeline::prepare_execution_graph(
+        &mut t,
+        checked,
+        &providers,
+        &tel,
+        crate::modules::pipeline::CompileMode::Normal,
+    )
+    .unwrap_or_else(|err| panic!("execution graph: {err}"));
+    let module = prepared.module;
+    let plan = super::plan_module(&mut t, &module, &tel);
+
+    let take_positive = module
+        .fn_by_name("Enum.take_positive")
+        .expect("Enum.take_positive");
+    let block = &take_positive.blocks[0];
+    let crate::fz_ir::Term::Call {
+        ident, callee, args, ..
+    } = &block.terminator
+    else {
+        panic!("take_positive entry should call Enum.reduce_while");
+    };
+    let int = t.int();
+    let zero = t.int_lit(0);
+    let nonzero = t.difference(int, zero);
+    let specs = plan
+        .specs
+        .iter()
+        .filter(|(key, _)| {
+            key.fn_id == take_positive.id
+                && matches!(key.input.get(1), Some(Some(ty)) if t.is_equivalent(ty, &nonzero))
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        !specs.is_empty(),
+        "expected at least one take_positive nonzero-amount spec, got {:?}",
+        plan.specs
+            .keys()
+            .filter(|key| key.fn_id == take_positive.id)
+            .map(|key| key.input.iter().map(|slot| slot.as_ref().map(|ty| t.display(ty))).collect::<Vec<_>>())
+            .collect::<Vec<_>>()
+    );
+    let complete = plan.specs.keys().cloned().collect::<std::collections::HashSet<_>>();
+    for (spec_key, spec) in specs {
+        let env = super::reachable::env_at_terminator(&mut t, spec, block, &module);
+        let arg_tys = args
+            .iter()
+            .map(|arg| env.get(arg).cloned().unwrap_or_else(|| t.any()))
+            .collect::<Vec<_>>();
+        let slot0 = super::worklist::direct_call_slot0(
+            &mut t,
+            &module,
+            &std::collections::HashSet::new(),
+            spec_key.fn_id,
+            ident,
+            *callee,
+            &arg_tys,
+            &plan.effective_returns,
+            Some(&complete),
+            &super::fn_types::FixedPointSlotSummaries::new(),
+        );
+        match slot0 {
+            super::worklist::DirectCallSlot0::Known(ty) => {
+                let none = t.none();
+                assert!(
+                    !t.is_equivalent(&ty, &none),
+                    "direct_call_slot0 should not return bottom for take_positive -> reduce_while on input {:?}; got {}",
+                    spec_key
+                        .input
+                        .iter()
+                        .map(|slot| slot.as_ref().map(|ty| t.display(ty)))
+                        .collect::<Vec<_>>(),
+                    t.display(&ty)
+                );
+            }
+            super::worklist::DirectCallSlot0::Pending => {
+                panic!(
+                    "direct_call_slot0 should be known for take_positive -> reduce_while on input {:?}",
+                    spec_key
+                        .input
+                        .iter()
+                        .map(|slot| slot.as_ref().map(|ty| t.display(ty)))
+                        .collect::<Vec<_>>()
+                )
+            }
+        }
+    }
+}
+
+#[test]
+fn runtime_graph_reduce_helper_clause_carries_function_correspondence() {
+    let src = "defmodule Probe do\n\
+      @spec reduce_cont([a], b, (a, b) -> {:cont, b} | {:halt, b} | {:suspend, b}) :: {:done, b} | {:halted, b} | {:suspended, b, () -> any}\n\
+      fn reduce_cont([], acc, _reducer), do: {:done, acc}\n\
+      fn reduce_cont([head | tail], acc, reducer) do\n\
+        reduce_step(tail, reducer.(head, acc), reducer)\n\
+      end\n\
+      @spec reduce_step([a], {:cont, b} | {:halt, b} | {:suspend, b}, (a, b) -> {:cont, b} | {:halt, b} | {:suspend, b}) :: {:done, b} | {:halted, b} | {:suspended, b, () -> any}\n\
+      fn reduce_step(list, {:cont, acc}, reducer), do: reduce_cont(list, acc, reducer)\n\
+      fn reduce_step(_list, {:halt, acc}, _reducer), do: {:halted, acc}\n\
+      fn reduce_step(list, {:suspend, acc}, reducer) do\n\
+        {:suspended, acc, (fn () -> reduce_cont(list, acc, reducer) end)}\n\
+      end\n\
+    end";
+    let toks = crate::parser::lexer::Lexer::new(src).tokenize().expect("lex");
+    let prog = crate::parser::Parser::new(toks)
+        .parse_program()
+        .expect("parse");
+    let mut t = crate::types::ConcreteTypes;
+    let prog = crate::frontend::resolve::flatten_modules(&mut t, prog).expect("resolve");
+    let module = crate::ir_lower::lower_program(&mut t, &prog).expect("lower");
+    let matches = module
+        .fns
+        .iter()
+        .filter(|f| f.name == "fn_clause_1")
+        .map(|f| {
+            let params = f.block(f.entry).params.len();
+            let groups = module
+                .function_correspondence
+                .get(&f.id)
+                .cloned()
+                .unwrap_or_default();
+            (f.id, params, groups)
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        !matches.is_empty(),
+        "expected at least one fn_clause_1, got names {:?}",
+        module.fns.iter().map(|f| f.name.clone()).collect::<Vec<_>>()
+    );
+    assert!(
+        matches
+            .iter()
+            .any(|(_, params, groups)| *params == 5 && !groups.is_empty()),
+        "expected a 5-param fn_clause_1 with correspondence, got {:?}",
+        matches
     );
 }
 

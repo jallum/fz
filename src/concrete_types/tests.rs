@@ -887,6 +887,24 @@ fn closure_lit_preserves_captures_for_recursive_spec_key() {
     );
 }
 
+#[test]
+fn erase_closure_identity_preserves_callable_surface_shape() {
+    let lit = Descr::closure_lit(fid(3), vec![Descr::int_lit(10)], 2);
+    let erased = lit.erase_closure_identity();
+    assert!(
+        erased.as_closure_lit().is_none(),
+        "closure identity should be erased: {}",
+        erased
+    );
+    let mut t = ConcreteTypes;
+    let clauses = t
+        .callable_clauses(&ty_from_descr(erased))
+        .expect("erased closure should remain callable");
+    assert_eq!(clauses.len(), 1);
+    assert_eq!(clauses[0].args.len(), 2);
+    assert!(clauses[0].closure.is_none());
+}
+
 // ---- opaque type tests ----
 
 #[test]

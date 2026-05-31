@@ -28,6 +28,7 @@ pub mod diagnostics;
 pub(crate) mod effects;
 pub(crate) mod expr_types;
 pub mod fn_types;
+pub(crate) mod inventory;
 pub(crate) mod narrow;
 pub mod pretty;
 pub(crate) mod prim;

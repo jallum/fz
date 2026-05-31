@@ -14,6 +14,9 @@ pub(super) type FnMap = HashMap<(String, usize), FnId>;
 pub(super) enum ContinuationSeedKind {
     DirectCall { callee: FnId, args: Vec<Var> },
     ClosureCall { closure: Var, args: Vec<Var> },
+    MatcherBody {
+        bindings: Vec<(Var, crate::exec::matcher::SubjectRef)>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

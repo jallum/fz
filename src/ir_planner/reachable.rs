@@ -1,5 +1,5 @@
 use super::closures::resolve_closure_return;
-use super::fn_types::{ModulePlan, SpecKey, SpecPlan};
+use super::fn_types::{ModulePlan, SpecKey, SpecPlan, normalize_result_correspondence_key};
 use super::type_fn::type_stmts_into_env;
 use crate::fz_ir::{Block, Cont, FnId, Module, Prim, Stmt, Term, Var};
 use std::collections::{HashMap, HashSet};
@@ -53,13 +53,24 @@ pub fn cont_slot0_descr<
                 .iter()
                 .map(|av| env.get(av).cloned().unwrap_or_else(|| t.any()))
                 .collect();
-            // Direct call returns are resolved by the best registered
-            // effective-return spec that covers this call's argument types.
-            module_plan
+            let effective = module_plan
                 .effective_return_for_call_ty(t, *callee, &arg_tys)
                 .as_ref()
-                .cloned()
-                .unwrap_or_else(|| t.any())
+                .cloned();
+            let declared = declared_call_return(
+                t,
+                module,
+                *callee,
+                &arg_tys,
+            );
+            match (declared, effective) {
+                (Some(declared), Some(effective)) if t.is_subtype(&effective, &declared) => {
+                    effective
+                }
+                (Some(declared), _) => declared,
+                (None, Some(effective)) => effective,
+                (None, None) => t.any(),
+            }
         }
         // The closure type names the body's possible return shapes. For
         // singleton closure-lits, resolve against the registered body spec;
@@ -89,6 +100,30 @@ pub fn cont_slot0_descr<
         }
         _ => t.any(),
     }
+}
+
+fn declared_call_return<
+    T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
+>(
+    t: &mut T,
+    module: &Module,
+    callee: FnId,
+    arg_tys: &[crate::types::Ty],
+) -> Option<crate::types::Ty> {
+    let recursive_fns = HashSet::new();
+    let effective_returns = HashMap::new();
+    super::spec_witness::declared_return_fact(
+        t,
+        module,
+        &recursive_fns,
+        &super::fn_types::FixedPointSlotSummaries::new(),
+        callee,
+        callee,
+        arg_tys,
+        &effective_returns,
+        None,
+    )
+    .map(|fact| fact.ty)
 }
 
 /// Compute the set of SpecIds reachable at runtime from `main` (plus registered
@@ -371,7 +406,12 @@ pub fn cont_input_key<
     let any_t = t.any();
     let env = env_at_terminator(t, caller_ft, block, module);
     let slot0_ty = cont_slot0_descr(t, block, caller_ft, module, module_plan);
-    cont_key_from_slot0(&any_t, n_params, slot0_ty, &continuation.captured, &env)
+    normalize_result_correspondence_key(
+        t,
+        module,
+        continuation.fn_id,
+        cont_key_from_slot0(&any_t, n_params, slot0_ty, &continuation.captured, &env),
+    )
 }
 
 pub(crate) fn cont_key_from_slot0(

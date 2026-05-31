@@ -20,9 +20,13 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 pub(crate) struct CodegenEnv<'a> {
+    pub(super) telemetry: &'a dyn crate::telemetry::Telemetry,
     pub(super) runtime: &'a RuntimeRefs,
     pub(super) module: &'a crate::fz_ir::Module,
     pub(super) fn_types: &'a crate::ir_planner::SpecPlan,
+    pub(super) active_spec_id: u32,
+    pub(super) active_body_fn_id: crate::fz_ir::FnId,
+    pub(super) active_body_name: &'a str,
     pub(super) spec_registry: &'a SpecRegistry,
     pub(super) fn_ids: &'a HashMap<u32, FuncId>,
     pub(super) mid_flight_cont_tail_fn_ids: &'a HashMap<(u32, Vec<MidFlightArgShape>), FuncId>,

@@ -634,6 +634,10 @@ impl ClosureTypes for ConcreteTypes {
                 .collect(),
         )
     }
+
+    fn erase_closure_identity(&mut self, a: &Ty) -> Ty {
+        ty_from_descr(ty_descr(a).erase_closure_identity())
+    }
 }
 
 impl VisibilityTypes for ConcreteTypes {

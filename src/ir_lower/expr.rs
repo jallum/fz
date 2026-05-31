@@ -1139,7 +1139,7 @@ pub(super) fn lower_case(
         let saved_order_ref = &saved_order;
         let mut cb = |ctx: &mut LowerCtx,
                       body_id: BodyId,
-                      bindings: Vec<(String, Var)>,
+                      bindings: Vec<MatchedBinding>,
                       _preconds: Vec<(Var, crate::types::Ty)>,
                       guard: Option<crate::ast::Spanned<crate::ast::Expr>>,
                       fall_block: BlockId|
@@ -1148,8 +1148,8 @@ pub(super) fn lower_case(
             let clause = &clauses_ref[i];
             ctx.env = saved_env_ref.clone();
             ctx.env_order = saved_order_ref.clone();
-            for (name, var) in &bindings {
-                ctx.bind(name, *var);
+            for binding in &bindings {
+                ctx.bind(&binding.name, binding.var);
             }
             if let Some(g) = &guard {
                 let guard_var = lower_expr(ctx, g, false)?;
@@ -1167,6 +1167,17 @@ pub(super) fn lower_case(
                         clause.span,
                         crate::fz_ir::FnCategory::ControlFlowCont,
                     );
+                    ctx.record_continuation_seed(crate::ir_lower::ctx::ContinuationSeed {
+                        caller: ctx.cur_fn_id.expect("lower_case: missing current fn id"),
+                        continuation: cont.id,
+                        captured: cont.outer_captured.iter().map(|(_, var)| *var).collect(),
+                        kind: crate::ir_lower::ctx::ContinuationSeedKind::MatcherBody {
+                            bindings: bindings
+                                .iter()
+                                .map(|binding| (binding.var, binding.source.clone()))
+                                .collect(),
+                        },
+                    });
                     clause_conts_ref[i] = Some(cont.clone());
                     cont
                 }
@@ -1466,7 +1477,7 @@ pub(super) fn lower_with(
             let saved_fail_order_ref = &saved_fail_order;
             let mut cb = |ctx: &mut LowerCtx,
                           body_id: BodyId,
-                          bindings: Vec<(String, Var)>,
+                          bindings: Vec<MatchedBinding>,
                           _preconds: Vec<(Var, crate::types::Ty)>,
                           guard: Option<crate::ast::Spanned<crate::ast::Expr>>,
                           fall_block: BlockId|
@@ -1475,8 +1486,8 @@ pub(super) fn lower_with(
                 let clause = &else_clauses[i];
                 ctx.env = saved_fail_env_ref.clone();
                 ctx.env_order = saved_fail_order_ref.clone();
-                for (name, var) in &bindings {
-                    ctx.bind(name, *var);
+                for binding in &bindings {
+                    ctx.bind(&binding.name, binding.var);
                 }
                 if let Some(g) = &guard {
                     let guard_var = lower_expr(ctx, g, false)?;
@@ -1494,6 +1505,19 @@ pub(super) fn lower_with(
                             clause.span,
                             crate::fz_ir::FnCategory::ControlFlowCont,
                         );
+                        ctx.record_continuation_seed(crate::ir_lower::ctx::ContinuationSeed {
+                            caller: ctx
+                                .cur_fn_id
+                                .expect("lower_with else: missing current fn id"),
+                            continuation: cont.id,
+                            captured: cont.outer_captured.iter().map(|(_, var)| *var).collect(),
+                            kind: crate::ir_lower::ctx::ContinuationSeedKind::MatcherBody {
+                                bindings: bindings
+                                    .iter()
+                                    .map(|binding| (binding.var, binding.source.clone()))
+                                    .collect(),
+                            },
+                        });
                         else_conts_ref[i] = Some(cont.clone());
                         cont
                     }

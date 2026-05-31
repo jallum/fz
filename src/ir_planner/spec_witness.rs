@@ -1,4 +1,6 @@
-use super::fn_types::{ReturnDemand, SpecKey, SpecKeySet, recursive_direct_spec_key_for_arity};
+use super::fn_types::{
+    FixedPointSlotSummaries, ReturnDemand, SpecKey, SpecKeySet, fixed_point_spec_key_for_arity,
+};
 use crate::fz_ir::{FnId, Module};
 use crate::type_expr::{ResolvedSpec, ResolvedSpecSet};
 use crate::types::{
@@ -18,6 +20,7 @@ pub(crate) fn declared_return_fact<T>(
     t: &mut T,
     module: &Module,
     recursive_fns: &std::collections::HashSet<FnId>,
+    slot_summaries: &FixedPointSlotSummaries,
     caller: FnId,
     callee: FnId,
     arg_tys: &[Ty],
@@ -32,6 +35,7 @@ where
         t,
         module,
         recursive_fns,
+        slot_summaries,
         caller,
         spec_set,
         arg_tys,
@@ -44,6 +48,7 @@ pub(crate) fn declared_return_fact_from_set<T>(
     t: &mut T,
     module: &Module,
     recursive_fns: &std::collections::HashSet<FnId>,
+    slot_summaries: &FixedPointSlotSummaries,
     caller: FnId,
     spec_set: &ResolvedSpecSet,
     arg_tys: &[Ty],
@@ -63,6 +68,7 @@ where
             t,
             module,
             recursive_fns,
+            slot_summaries,
             caller,
             spec,
             arg_tys,
@@ -88,6 +94,7 @@ fn declared_return_fact_for_arrow<T>(
     t: &mut T,
     module: &Module,
     recursive_fns: &std::collections::HashSet<FnId>,
+    slot_summaries: &FixedPointSlotSummaries,
     caller: FnId,
     spec: &ResolvedSpec,
     arg_tys: &[Ty],
@@ -118,6 +125,7 @@ where
             t,
             module,
             recursive_fns,
+            slot_summaries,
             caller,
             pattern,
             matched_param,
@@ -160,6 +168,7 @@ fn higher_order_witness<T>(
     t: &mut T,
     module: &Module,
     recursive_fns: &std::collections::HashSet<FnId>,
+    slot_summaries: &FixedPointSlotSummaries,
     caller: FnId,
     pattern: &Ty,
     matched_param: &Ty,
@@ -196,10 +205,11 @@ where
             let n_params = target_fn.block(target_fn.entry).params.len();
             let mut full_key = captures.clone();
             full_key.extend(matched_clause.args.clone());
-            let key = recursive_direct_spec_key_for_arity(
+            let key = fixed_point_spec_key_for_arity(
                 t,
                 module,
                 recursive_fns,
+                slot_summaries,
                 caller,
                 fn_id,
                 full_key,

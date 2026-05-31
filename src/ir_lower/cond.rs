@@ -76,7 +76,7 @@ pub(crate) fn lower_multi_clause<T: crate::types::Types<Ty = crate::types::Ty>>(
         let clause_conts_ref = &mut clause_conts;
         let mut cb = |ctx: &mut LowerCtx,
                       body_id: BodyId,
-                      bindings: Vec<(String, Var)>,
+                      bindings: Vec<MatchedBinding>,
                       preconditions: Vec<(Var, crate::types::Ty)>,
                       guard: Option<crate::ast::Spanned<crate::ast::Expr>>,
                       fall_block: BlockId|
@@ -88,8 +88,8 @@ pub(crate) fn lower_multi_clause<T: crate::types::Types<Ty = crate::types::Ty>>(
             for (pv, pat) in param_vars_ref.iter().zip(&clause.params) {
                 bind_param_topname(ctx, *pv, pat);
             }
-            for (name, var) in &bindings {
-                ctx.bind(name, *var);
+            for binding in &bindings {
+                ctx.bind(&binding.name, binding.var);
             }
             for (pv, ty) in &preconditions {
                 let tt = ctx.let_(Prim::TypeTest(*pv, Box::new(ty.clone())));
@@ -116,6 +116,19 @@ pub(crate) fn lower_multi_clause<T: crate::types::Types<Ty = crate::types::Ty>>(
                     );
                     cont.owned_cons_captures
                         .extend(owned_cons_captures_for_bindings(ctx, &bindings));
+                    ctx.record_continuation_seed(crate::ir_lower::ctx::ContinuationSeed {
+                        caller: ctx
+                            .cur_fn_id
+                            .expect("lower_multi_clause: missing current fn id"),
+                        continuation: cont.id,
+                        captured: cont.outer_captured.iter().map(|(_, var)| *var).collect(),
+                        kind: crate::ir_lower::ctx::ContinuationSeedKind::MatcherBody {
+                            bindings: bindings
+                                .iter()
+                                .map(|binding| (binding.var, binding.source.clone()))
+                                .collect(),
+                        },
+                    });
                     clause_conts_ref[i] = Some(cont.clone());
                     cont
                 }
@@ -152,16 +165,16 @@ pub(crate) fn lower_multi_clause<T: crate::types::Types<Ty = crate::types::Ty>>(
 
 fn owned_cons_captures_for_bindings(
     ctx: &LowerCtx,
-    bindings: &[(String, Var)],
+    bindings: &[MatchedBinding],
 ) -> Vec<OwnedConsCapture> {
     let Some(cur) = ctx.cur.as_ref() else {
         return Vec::new();
     };
     bindings
         .iter()
-        .filter_map(|(name, head)| match cur.prim_for_var(*head) {
+        .filter_map(|binding| match cur.prim_for_var(binding.var) {
             Some(Prim::ListHead(source_cons)) => Some(OwnedConsCapture {
-                head_name: name.clone(),
+                head_name: binding.name.clone(),
                 source_cons: *source_cons,
             }),
             _ => None,

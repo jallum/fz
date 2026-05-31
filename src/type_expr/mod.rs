@@ -196,22 +196,7 @@ pub struct ResolvedSpecMatch {
     pub result: crate::types::Ty,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct HigherOrderInvariantGroup {
-    pub var: crate::types::TypeVarId,
-    pub occurrences: Vec<InvariantOccurrence>,
-}
-
-#[derive(
-    Debug,
-    Clone,
-    PartialEq,
-    Eq,
-    PartialOrd,
-    Ord,
-    serde::Serialize,
-    serde::Deserialize,
-)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
 pub struct StructuralCorrespondenceGroup {
     pub var: crate::types::TypeVarId,
     pub occurrences: Vec<StructuralOccurrence>,
@@ -257,19 +242,6 @@ pub enum ResolvedTypeShape {
     StructRecord {
         module: ModuleName,
         fields: Vec<ResolvedStructFieldShape>,
-    },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub enum InvariantOccurrence {
-    Param(usize),
-    Result,
-    CallbackArg {
-        param_index: usize,
-        arg_index: usize,
-    },
-    CallbackResult {
-        param_index: usize,
     },
 }
 
@@ -492,56 +464,6 @@ impl ResolvedSpec {
             })
             .collect()
     }
-
-    pub fn higher_order_invariant_groups<T>(&self, t: &mut T) -> Vec<HigherOrderInvariantGroup>
-    where
-        T: ClosureTypes<Ty = crate::types::Ty>,
-    {
-        let _ = t;
-        self.structural_correspondence_groups()
-            .into_iter()
-            .filter_map(|group| {
-                let projected = group
-                    .occurrences
-                    .iter()
-                    .filter_map(|occ| match occ {
-                        StructuralOccurrence::Param { param_index, path } if path.is_empty() => {
-                            Some(InvariantOccurrence::Param(*param_index))
-                        }
-                        StructuralOccurrence::Result { path } if path.is_empty() => {
-                            Some(InvariantOccurrence::Result)
-                        }
-                        StructuralOccurrence::CallbackArg {
-                            param_index,
-                            arg_index,
-                            path,
-                        } if path.is_empty() => Some(InvariantOccurrence::CallbackArg {
-                            param_index: *param_index,
-                            arg_index: *arg_index,
-                        }),
-                        StructuralOccurrence::CallbackResult { param_index, path }
-                            if path.is_empty() =>
-                        {
-                            Some(InvariantOccurrence::CallbackResult {
-                                param_index: *param_index,
-                            })
-                        }
-                        _ => None,
-                    })
-                    .collect::<Vec<_>>();
-                let has_callback_result = projected
-                    .iter()
-                    .any(|occ| matches!(occ, InvariantOccurrence::CallbackResult { .. }));
-                let has_outer = projected
-                    .iter()
-                    .any(|occ| matches!(occ, InvariantOccurrence::Param(_) | InvariantOccurrence::Result));
-                (has_callback_result && has_outer).then_some(HigherOrderInvariantGroup {
-                    var: group.var,
-                    occurrences: projected,
-                })
-            })
-            .collect()
-    }
 }
 
 fn instantiate_matching_arrow<T>(
@@ -641,9 +563,9 @@ where
 mod env;
 mod parser;
 
-pub use parser::parse_type_expr;
 #[cfg(test)]
 pub use parser::parse_struct_record_type;
+pub use parser::parse_type_expr;
 
 pub fn resolve_spec_decl<T>(
     t: &mut T,

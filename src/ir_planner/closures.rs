@@ -1,4 +1,6 @@
-use super::fn_types::{CapabilityPlan, SpecKey};
+use super::fn_types::{
+    CapabilityPlan, FixedPointSlotSummaries, ReturnDemand, SpecKey, fixed_point_spec_key_for_arity,
+};
 use crate::fz_ir::{FnId, Module, Prim, Stmt, Term, Var};
 use std::collections::{BTreeSet, HashMap, HashSet};
 
@@ -33,6 +35,50 @@ pub fn resolve_closure_return<
         })
         .collect();
     t.resolve_closure_return(closure_ty, &translated, arg_tys)
+}
+
+pub fn literal_closure_return_keys<
+    T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
+>(
+    t: &mut T,
+    module: &Module,
+    recursive_fns: &std::collections::HashSet<FnId>,
+    slot_summaries: &FixedPointSlotSummaries,
+    caller: FnId,
+    closure_ty: &crate::types::Ty,
+    arg_tys: &[crate::types::Ty],
+    demand: Option<ReturnDemand>,
+) -> Option<Vec<SpecKey>> {
+    let clauses = t.callable_clauses(closure_ty)?;
+    let mut keys = Vec::new();
+    for clause in clauses {
+        let crate::types::CallableClause {
+            args, closure: Some(closure), ..
+        } = clause
+        else {
+            return None;
+        };
+        if args.len() != arg_tys.len() {
+            continue;
+        }
+        let fn_id: FnId = closure.target.into();
+        let target_fn = module.fn_by_id(fn_id);
+        let n_params = target_fn.block(target_fn.entry).params.len();
+        let mut full_key = closure.captures;
+        full_key.extend_from_slice(arg_tys);
+        keys.push(fixed_point_spec_key_for_arity(
+            t,
+            module,
+            recursive_fns,
+            slot_summaries,
+            caller,
+            fn_id,
+            full_key,
+            n_params,
+            demand.clone(),
+        ));
+    }
+    Some(keys)
 }
 
 /// Rewrite `Term::CallClosure(v, args, cont)` to `Term::Call(F, args, cont)`

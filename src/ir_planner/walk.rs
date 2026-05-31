@@ -1,9 +1,11 @@
-use super::closures::resolve_closure_return;
+use super::closures::{literal_closure_return_keys, resolve_closure_return};
 use super::fn_types::{
     CallEdgePlan, CallEdgeTarget, CallableCapability, CallsiteCallableCapabilities, EmitterSite,
-    FnEffects, ReturnContextPlan, ReturnDemand, SpecKey, SpecPlan, WALK_CALLS,
-    forwarded_return_contract_for_target, padded_direct_input_tys, recursive_direct_spec_key,
-    recursive_direct_spec_key_for_arity, return_contract_for_target, spec_key_for_fn,
+    FixedPointSlotSummaries, FnEffects, ReturnContextPlan, ReturnDemand, SpecKey, SpecPlan,
+    WALK_CALLS,
+    fixed_point_spec_key_for_arity, forwarded_return_contract_for_target,
+    normalize_result_correspondence_key, padded_direct_input_tys, return_contract_for_target,
+    spec_key_for_fn,
 };
 use super::reachable::cont_key_from_slot0;
 use super::return_context::{
@@ -189,6 +191,7 @@ pub(crate) fn walk_spec_for_discovery<
     effective_returns: &HashMap<SpecKey, crate::types::Ty>,
     complete_returns: &HashSet<SpecKey>,
     recursive_fns: &std::collections::HashSet<FnId>,
+    slot_summaries: &FixedPointSlotSummaries,
     caller_spec_key: &SpecKey,
     callsite_callable_capabilities: &mut CallsiteCallableCapabilities,
     out: &mut WalkResult,
@@ -203,6 +206,7 @@ pub(crate) fn walk_spec_for_discovery<
         effective_returns,
         complete_returns,
         recursive_fns,
+        slot_summaries,
         caller_spec_key,
         callsite_callable_capabilities,
         out,
@@ -222,6 +226,7 @@ where
     effective_returns: &'a HashMap<SpecKey, crate::types::Ty>,
     complete_returns: &'a HashSet<SpecKey>,
     recursive_fns: &'a HashSet<FnId>,
+    slot_summaries: &'a FixedPointSlotSummaries,
     caller_spec_key: &'a SpecKey,
     callsite_callable_capabilities: &'a mut CallsiteCallableCapabilities,
     out: &'a mut WalkResult,
@@ -551,6 +556,7 @@ where
         let cont_fn = &self.m.fns[j];
         let n_params = cont_fn.block(cont_fn.entry).params.len();
         let mut key = cont_key_from_slot0(&self.any_ty, n_params, slot0, &cont.captured, env);
+        key = normalize_result_correspondence_key(self.t, self.m, cont.fn_id, key);
         if self.has_bottom_arg(&key) {
             return;
         }
@@ -597,50 +603,31 @@ where
     ) -> Option<Slot0Knowledge> {
         match *source {
             ContSource::Call { callee, args } => {
-                if self.external_target(term_ident, EmitSlot::Direct).is_some() {
-                    return self
-                        .external_call_return_slot0(callee, args, env)
-                        .map(Slot0Knowledge::Known);
-                }
+                let arg_tys = self.arg_tys(args, env);
+                let slot0 = super::worklist::direct_call_slot0(
+                    self.t,
+                    self.m,
+                    self.recursive_fns,
+                    self.caller_spec_key.fn_id,
+                    term_ident,
+                    callee,
+                    &arg_tys,
+                    self.effective_returns,
+                    Some(self.complete_returns),
+                    self.slot_summaries,
+                );
                 let callee_key = self.direct_return_key(term_ident, callee, args, env);
-                let callee_arg_tys = crate::types::key_slots_to_tys(self.t, &callee_key.input);
-                let declared = self.declared_call_return(callee, &callee_arg_tys);
-                self.out.return_reads.push(callee_key.clone());
-                let effective = self.effective_returns.get(&callee_key).cloned();
-                let none_ty = self.t.none();
-                let effective_is_pending_bottom = effective.as_ref().is_some_and(|ty| {
-                    !self.complete_returns.contains(&callee_key) && {
-                        self.t.is_equivalent(ty, &none_ty)
-                    }
-                });
-                match (declared, effective) {
-                    (Some(declared), Some(effective))
-                        if self.t.is_subtype(&effective, &declared) =>
-                    {
-                        Some(Slot0Knowledge::Known(effective))
-                    }
-                    (Some(declared), _) => Some(Slot0Knowledge::Known(declared)),
-                    (None, _) if effective_is_pending_bottom => Some(Slot0Knowledge::Pending),
-                    (None, Some(effective)) => Some(Slot0Knowledge::Known(effective)),
-                    (None, _) => Some(Slot0Knowledge::Pending),
+                self.out.return_reads.push(callee_key);
+                match slot0 {
+                    super::worklist::DirectCallSlot0::Known(ty) => Some(Slot0Knowledge::Known(ty)),
+                    super::worklist::DirectCallSlot0::Pending => Some(Slot0Knowledge::Pending),
                 }
             }
-            ContSource::CallClosure { closure, args } => self
-                .closure_return_slot0(closure, args, env)
-                .map(Slot0Knowledge::Known),
+            ContSource::CallClosure { closure, args } => {
+                self.closure_return_slot0(closure, args, env)
+            }
             ContSource::Receive => Some(Slot0Knowledge::Known(self.any_ty.clone())),
         }
-    }
-
-    fn external_call_return_slot0(
-        &mut self,
-        callee: FnId,
-        args: &[Var],
-        env: &HashMap<Var, crate::types::Ty>,
-    ) -> Option<crate::types::Ty> {
-        let arg_tys = self.arg_tys(args, env);
-        self.declared_call_return(callee, &arg_tys)
-            .or_else(|| Some(self.any_ty.clone()))
     }
 
     fn external_call_input(
@@ -689,14 +676,18 @@ where
             .and_then(CallEdgePlan::local_target)
             .cloned()
             .unwrap_or_else(|| {
-                let arg_tys = self.arg_tys(args, env);
-                recursive_direct_spec_key(
+                let target_fn = self.m.fn_by_id(callee);
+                let n_params = target_fn.block(target_fn.entry).params.len();
+                fixed_point_spec_key_for_arity(
                     self.t,
                     self.m,
                     self.recursive_fns,
+                    self.slot_summaries,
                     self.caller_spec_key.fn_id,
                     callee,
-                    arg_tys,
+                    self.arg_tys(args, env),
+                    n_params,
+                    None,
                 )
             })
     }
@@ -706,16 +697,47 @@ where
         closure: Var,
         args: &[Var],
         env: &HashMap<Var, crate::types::Ty>,
-    ) -> Option<crate::types::Ty> {
+    ) -> Option<Slot0Knowledge> {
         if let Some(target) = self.caller_ft.known_fn(&closure) {
-            return self.known_closure_return_slot0(target, args, env);
+            return self
+                .known_closure_return_slot0(target, args, env)
+                .map(Slot0Knowledge::Known);
         }
         let Some(cv_descr) = env.get(&closure) else {
-            return Some(self.any_ty.clone());
+            return Some(Slot0Knowledge::Known(self.any_ty.clone()));
         };
         let arg_tys = self.arg_tys(args, env);
-        self.record_closure_literal_return_reads(cv_descr, &arg_tys);
+        if let Some(keys) = literal_closure_return_keys(
+            self.t,
+            self.m,
+            self.recursive_fns,
+            self.slot_summaries,
+            self.caller_spec_key.fn_id,
+            cv_descr,
+            &arg_tys,
+            None,
+        ) {
+            let mut joined = self.t.none();
+            let mut complete = true;
+            for key in keys {
+                self.out.return_reads.push(key.clone());
+                let Some(ret) = self.effective_returns.get(&key).cloned() else {
+                    complete = false;
+                    continue;
+                };
+                if !self.complete_returns.contains(&key) {
+                    complete = false;
+                }
+                joined = self.t.union(joined, ret);
+            }
+            return Some(if complete {
+                Slot0Knowledge::Known(joined)
+            } else {
+                Slot0Knowledge::Pending
+            });
+        }
         resolve_closure_return(self.t, cv_descr, self.effective_returns, &arg_tys)
+            .map(Slot0Knowledge::Known)
     }
 
     fn known_closure_return_slot0(
@@ -726,10 +748,11 @@ where
     ) -> Option<crate::types::Ty> {
         let target_fn = self.m.fn_by_id(target);
         let n_params = target_fn.block(target_fn.entry).params.len();
-        let callee_key = recursive_direct_spec_key_for_arity(
+        let callee_key = fixed_point_spec_key_for_arity(
             self.t,
             self.m,
             self.recursive_fns,
+            self.slot_summaries,
             self.caller_spec_key.fn_id,
             target,
             self.arg_tys(args, env),
@@ -742,33 +765,6 @@ where
             self.out.return_reads.push(callee_key.clone());
         }
         declared.or_else(|| self.effective_returns.get(&callee_key).cloned())
-    }
-
-    fn record_closure_literal_return_reads(
-        &mut self,
-        cv_descr: &crate::types::Ty,
-        arg_tys: &[crate::types::Ty],
-    ) {
-        let Some(clauses) = self.t.callable_clauses(cv_descr) else {
-            return;
-        };
-        for clause in clauses {
-            if let Some(crate::types::ClosureLitInfo { target, captures }) = clause.closure
-                && clause.args.len() == arg_tys.len()
-            {
-                let mut full_key = captures.clone();
-                full_key.extend_from_slice(arg_tys);
-                let callee_key = recursive_direct_spec_key(
-                    self.t,
-                    self.m,
-                    self.recursive_fns,
-                    self.caller_spec_key.fn_id,
-                    target.into(),
-                    full_key,
-                );
-                self.out.return_reads.push(callee_key);
-            }
-        }
     }
 
     fn seed_receive_matched_outcomes(&mut self, term: &Term) {
@@ -809,10 +805,11 @@ where
         if self.has_bottom_arg(&dispatch_key) {
             return None;
         }
-        let key = recursive_direct_spec_key_for_arity(
+        let key = fixed_point_spec_key_for_arity(
             self.t,
             self.m,
             self.recursive_fns,
+            self.slot_summaries,
             self.caller_spec_key.fn_id,
             callee,
             dispatch_key,
@@ -886,10 +883,11 @@ where
         if self.has_bottom_arg(&dispatch_key) {
             return None;
         }
-        Some(recursive_direct_spec_key_for_arity(
+        Some(fixed_point_spec_key_for_arity(
             self.t,
             self.m,
             self.recursive_fns,
+            self.slot_summaries,
             self.caller_spec_key.fn_id,
             fn_id,
             dispatch_key,
@@ -951,6 +949,7 @@ where
             self.t,
             self.m,
             self.recursive_fns,
+            self.slot_summaries,
             self.caller_spec_key.fn_id,
             callee,
             arg_tys,

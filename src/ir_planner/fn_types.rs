@@ -910,11 +910,13 @@ pub type FnEffects = HashMap<FnId, EffectSummary>;
 /// Worklist-internal aliases for repeated index shapes.
 pub(crate) type SpecKeySet = std::collections::HashSet<SpecKey>;
 pub(crate) type ReturnReaders = HashMap<SpecKey, SpecKeySet>;
+pub(crate) type ReturnDepsByCaller = HashMap<SpecKey, SpecKeySet>;
 pub(crate) type CallsiteCallableCapabilities = HashMap<SpecKey, Vec<Option<CallableCapability>>>;
 pub(crate) type EmitterSiteSet = std::collections::HashSet<EmitterSite>;
 pub(crate) type HoldersMap = HashMap<SpecKey, EmitterSiteSet>;
 pub(crate) type EmitsByCaller = HashMap<SpecKey, EmitterSiteSet>;
 pub(crate) type ProducesMap = HashMap<EmitterSite, SpecKey>;
+pub(crate) type FixedPointSlotSummaries = HashMap<(FnId, usize), crate::types::Ty>;
 
 /// Termination tripwire. The proof above (see `plan_module`'s doc) shows the
 /// worklist terminates in O(|specs| · H · |edges|) pops. This bound is
@@ -949,18 +951,6 @@ pub(crate) fn normalize_recursive_direct_key<T: crate::types::Types<Ty = crate::
         .collect()
 }
 
-pub(crate) fn recursive_direct_spec_key<T: crate::types::Types<Ty = crate::types::Ty>>(
-    t: &mut T,
-    module: &Module,
-    recursive_fns: &std::collections::HashSet<FnId>,
-    caller: FnId,
-    callee: FnId,
-    key: Vec<crate::types::Ty>,
-) -> SpecKey {
-    let key = normalize_recursive_direct_key(t, recursive_fns, key, caller, callee, module);
-    spec_key_for_fn_id(module, callee, key)
-}
-
 pub(crate) fn padded_direct_input_tys<T: crate::types::Types<Ty = crate::types::Ty>>(
     t: &mut T,
     mut input_tys: Vec<crate::types::Ty>,
@@ -973,10 +963,60 @@ pub(crate) fn padded_direct_input_tys<T: crate::types::Types<Ty = crate::types::
     input_tys
 }
 
-pub(crate) fn recursive_direct_spec_key_for_arity<T: crate::types::Types<Ty = crate::types::Ty>>(
+pub(crate) fn normalize_result_correspondence_key<
+    T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
+>(
+    t: &mut T,
+    module: &Module,
+    fn_id: FnId,
+    mut key: Vec<crate::types::Ty>,
+) -> Vec<crate::types::Ty> {
+    let Some(groups) = module.function_correspondence.get(&fn_id) else {
+        return key;
+    };
+    let mut recursive_params = std::collections::BTreeSet::new();
+    let mut callback_params = std::collections::BTreeSet::new();
+    for group in groups {
+        let has_result = group
+            .occurrences
+            .iter()
+            .any(|occ| matches!(occ, crate::type_expr::StructuralOccurrence::Result { .. }));
+        if !has_result {
+            continue;
+        }
+        for occ in &group.occurrences {
+            match occ {
+                crate::type_expr::StructuralOccurrence::Param { param_index, .. } => {
+                    recursive_params.insert(*param_index);
+                }
+                crate::type_expr::StructuralOccurrence::CallbackArg { param_index, .. }
+                | crate::type_expr::StructuralOccurrence::CallbackResult { param_index, .. } => {
+                    callback_params.insert(*param_index);
+                }
+                crate::type_expr::StructuralOccurrence::Result { .. } => {}
+            }
+        }
+    }
+    for param_index in recursive_params {
+        if let Some(slot) = key.get_mut(param_index) {
+            *slot = t.widen_for_recursive_spec_key(slot);
+        }
+    }
+    for param_index in callback_params {
+        if let Some(slot) = key.get_mut(param_index) {
+            *slot = t.erase_closure_identity(slot);
+        }
+    }
+    key
+}
+
+pub(crate) fn fixed_point_spec_key_for_arity<
+    T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
+>(
     t: &mut T,
     module: &Module,
     recursive_fns: &std::collections::HashSet<FnId>,
+    slot_summaries: &FixedPointSlotSummaries,
     caller: FnId,
     callee: FnId,
     input_tys: Vec<crate::types::Ty>,
@@ -984,9 +1024,39 @@ pub(crate) fn recursive_direct_spec_key_for_arity<T: crate::types::Types<Ty = cr
     demand: Option<ReturnDemand>,
 ) -> SpecKey {
     let input_tys = padded_direct_input_tys(t, input_tys, arity);
-    let mut key = recursive_direct_spec_key(t, module, recursive_fns, caller, callee, input_tys);
+    let input_tys =
+        normalize_recursive_direct_key(t, recursive_fns, input_tys, caller, callee, module);
+    let input_tys = normalize_result_correspondence_key(t, module, callee, input_tys);
+    let input_tys = apply_fixed_point_slot_summaries(
+        t,
+        recursive_fns,
+        slot_summaries,
+        callee,
+        input_tys,
+    );
+    let mut key = spec_key_for_fn_id(module, callee, input_tys);
     if let Some(demand) = demand {
         key.demand = demand;
+    }
+    key
+}
+
+pub(crate) fn apply_fixed_point_slot_summaries<
+    T: crate::types::Types<Ty = crate::types::Ty>,
+>(
+    t: &mut T,
+    recursive_fns: &std::collections::HashSet<FnId>,
+    slot_summaries: &FixedPointSlotSummaries,
+    callee: FnId,
+    mut key: Vec<crate::types::Ty>,
+) -> Vec<crate::types::Ty> {
+    if !recursive_fns.contains(&callee) {
+        return key;
+    }
+    for (idx, slot) in key.iter_mut().enumerate() {
+        if let Some(summary) = slot_summaries.get(&(callee, idx)) {
+            *slot = t.union(summary.clone(), slot.clone());
+        }
     }
     key
 }

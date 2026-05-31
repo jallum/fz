@@ -81,7 +81,7 @@ reducer's `{:cont, b}` / `{:halt, b}` exits are another witness. The declared
 result must join both instead of freezing `b` to the initial accumulator shape.
 
 The declared scheme also names which callback positions participate in that
-fixed point. `ResolvedSpec::higher_order_invariant_groups` reports the type
+fixed point. `ResolvedSpec::structural_correspondence_groups` records the type
 variables whose occurrences cross from outer params/results into callback
 arg/result positions. For `reduce/3`, the loop-carried group is `b`:
 
@@ -102,12 +102,10 @@ integer) :: [a]` keep the shared `a` in their structural form even when the
 concrete `Ty` used for execution/planning no longer exposes that relation
 directly.
 
-Structural correspondence is modeled separately from the older callback-only
-view. `ResolvedSpec::structural_correspondence_groups` records every structural
-occurrence of each declared type variable across params/results/callbacks.
-`ResolvedSpec::higher_order_invariant_groups` is now a derived projection of
-that richer fact: it keeps only the top-level callback fixed-point slots that
-the planner currently normalizes.
+Structural correspondence is the model. `ResolvedSpec::structural_correspondence_groups`
+records every structural occurrence of each declared type variable across
+params/results/callbacks. Planner fixed-point keying consumes the subset of
+those groups that tie callback result flow back to outer params/results.
 
 Lowering now persists the declared source-function groups onto
 `Module.function_correspondence` keyed by `FnId`. This is the IR seam where the

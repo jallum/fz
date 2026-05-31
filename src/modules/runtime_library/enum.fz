@@ -337,6 +337,7 @@ defmodule Enum do
     if value, do: {:halt, value}, else: {:cont, default}
   end
 
+  @spec normalized_prefix_count(Enumerable.t(a), integer) :: integer
   fnp normalized_prefix_count(enumerable, amount), do: non_negative(count(enumerable) + amount)
   fnp non_negative(count) when count > 0, do: count
   fnp non_negative(_count), do: 0

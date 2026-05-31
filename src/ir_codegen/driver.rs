@@ -762,6 +762,7 @@ fn declared_return_for_spec_key<
         t,
         module,
         &recursive_fns,
+        &crate::ir_planner::fn_types::FixedPointSlotSummaries::new(),
         key.fn_id,
         key.fn_id,
         &arg_tys,
@@ -1993,12 +1994,23 @@ pub(crate) fn compile_with_backend_impl<
     mut backend: B,
     tel: &dyn crate::telemetry::Telemetry,
 ) -> Result<B::Output, CodegenError> {
+    use crate::telemetry::TelemetryExt as _;
+
     if let Some(edge) = module.external_call_edges.first() {
         return Err(CodegenError::new(format!(
             "unresolved external module call `{}`",
             edge.target
         )));
     }
+
+    let compile_nonce = crate::telemetry::next_compile_nonce();
+    let _compile_span = tel.span(
+        &["fz", "compile"],
+        crate::metadata! {
+            compile_nonce: compile_nonce,
+            module_path: module.module_path().to_owned(),
+        },
+    );
 
     let runtime = declare_runtime_symbols(backend.module_mut())?;
 
@@ -2338,10 +2350,30 @@ pub(crate) fn compile_with_backend_impl<
         if want_asm {
             ctx.set_disasm(true);
         }
+        #[cfg(debug_assertions)]
+        crate::ir_codegen::invariants::emit_and_assert_spec_dispatch_coverage(
+            tel,
+            f,
+            ft,
+            sid as u32,
+            &spec_keys[sid],
+        );
+        // Any-key SpecId.0 == FnId.0 (invariant); use the bare fn name so
+        // tests / `fz dump --emit clif` can refer to functions by source
+        // name. Narrow specs append `_s{sid}` to keep names distinct.
+        let display_name = if (sid as u32) == f.id.0 {
+            f.name.clone()
+        } else {
+            format!("{}_s{}", f.name, sid)
+        };
         let cg_env = CodegenEnv {
+            telemetry: tel,
             runtime: &runtime,
             module,
             fn_types: ft,
+            active_spec_id: sid as u32,
+            active_body_fn_id: f.id,
+            active_body_name: &display_name,
             spec_registry: &spec_registry,
             fn_ids: &fn_ids,
             mid_flight_cont_tail_fn_ids: &mid_flight_cont_tail_fn_ids,
@@ -2357,14 +2389,6 @@ pub(crate) fn compile_with_backend_impl<
             closure_n_captures: &closure_n_captures,
             cont_extras_count: &cont_extras_count,
             matcher_fn_ids: &matcher_fn_ids,
-        };
-        // Any-key SpecId.0 == FnId.0 (invariant); use the bare fn name so
-        // tests / `fz dump --emit clif` can refer to functions by source
-        // name. Narrow specs append `_s{sid}` to keep names distinct.
-        let display_name = if (sid as u32) == f.id.0 {
-            f.name.clone()
-        } else {
-            format!("{}_s{}", f.name, sid)
         };
         {
             use crate::telemetry::TelemetryExt as _;

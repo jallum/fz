@@ -47,6 +47,12 @@ pub trait ClosureTypes: Types {
     /// broad to drive closure-return narrowing.
     fn callable_clauses(&mut self, a: &Self::Ty) -> Option<Vec<CallableClause<Self::Ty>>>;
 
+    /// Erase concrete closure-literal identity (`fn_id` + captures) while
+    /// preserving the callable surface shape. Used for higher-order fixed-point
+    /// key slots whose behavior matters, but whose specific closure value
+    /// should not fork specialization.
+    fn erase_closure_identity(&mut self, a: &Self::Ty) -> Self::Ty;
+
     /// Resolve a closure-typed callee's return under the given arg
     /// witnesses and accumulated effective-return table.
     ///

@@ -18,7 +18,8 @@ where
     let mut param_shapes = Vec::with_capacity(decl.param_body_tokens.len());
     for body in &decl.param_body_tokens {
         let (ty, _consumed) = super::parser::parse_type_expr_with_vars(t, &body.0, env, &mut vars)?;
-        let (shape, _consumed) = super::parser::parse_type_shape_with_vars(&body.0, env, &mut vars)?;
+        let (shape, _consumed) =
+            super::parser::parse_type_shape_with_vars(&body.0, env, &mut vars)?;
         params.push(ty);
         param_shapes.push(shape);
     }

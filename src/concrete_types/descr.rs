@@ -707,6 +707,92 @@ impl Descr {
             .map_recursive_spec_key_inputs(&Descr::widen_for_recursive_spec_key)
     }
 
+    /// Erase closure-literal identity while preserving callable surface shape.
+    /// Unlike recursive-key widening, this deliberately drops `ClosureLit`
+    /// tags so higher-order fixed-point slots do not fork on wrapper identity.
+    pub(crate) fn erase_closure_identity(&self) -> Descr {
+        let map_tuple_sig = |s: TupleSig| TupleSig {
+            elems: s
+                .elems
+                .iter()
+                .map(Descr::erase_closure_identity)
+                .collect(),
+        };
+        let map_list_sig = |s: ListSig| ListSig {
+            empty: s.empty,
+            elem: s
+                .elem
+                .as_ref()
+                .map(|elem| Box::new(elem.erase_closure_identity())),
+        };
+        let map_resource_sig = |s: ResourceSig| ResourceSig {
+            payload: Box::new(s.payload.erase_closure_identity()),
+        };
+        let map_arrow_sig = |s: ArrowSig| ArrowSig {
+            args: s
+                .args
+                .iter()
+                .map(Descr::erase_closure_identity)
+                .collect(),
+            ret: Box::new(s.ret.erase_closure_identity()),
+            lit: None,
+        };
+        let map_map_sig = |s: MapSig| MapSig {
+            fields: s
+                .fields
+                .into_iter()
+                .map(|(k, v)| (k, v.erase_closure_identity()))
+                .collect(),
+        };
+        let mut out = self.clone();
+        out.tuples = out
+            .tuples
+            .iter()
+            .cloned()
+            .map(|conj| Conj {
+                pos: conj.pos.into_iter().map(&map_tuple_sig).collect(),
+                neg: conj.neg.into_iter().map(&map_tuple_sig).collect(),
+            })
+            .collect();
+        out.lists = out
+            .lists
+            .iter()
+            .cloned()
+            .map(|conj| Conj {
+                pos: conj.pos.into_iter().map(&map_list_sig).collect(),
+                neg: conj.neg.into_iter().map(&map_list_sig).collect(),
+            })
+            .collect();
+        out.resources = out
+            .resources
+            .iter()
+            .cloned()
+            .map(|conj| Conj {
+                pos: conj.pos.into_iter().map(&map_resource_sig).collect(),
+                neg: conj.neg.into_iter().map(&map_resource_sig).collect(),
+            })
+            .collect();
+        out.funcs = out
+            .funcs
+            .iter()
+            .cloned()
+            .map(|conj| Conj {
+                pos: conj.pos.into_iter().map(&map_arrow_sig).collect(),
+                neg: conj.neg.into_iter().map(&map_arrow_sig).collect(),
+            })
+            .collect();
+        out.maps = out
+            .maps
+            .iter()
+            .cloned()
+            .map(|conj| Conj {
+                pos: conj.pos.into_iter().map(&map_map_sig).collect(),
+                neg: conj.neg.into_iter().map(&map_map_sig).collect(),
+            })
+            .collect();
+        out
+    }
+
     /// Apply `f` to nested `Descr`s that are recursive input shape:
     /// tuple elements, list element, arrow args/ret, and map values.
     /// Closure-lit captures are kept intact because they identify the

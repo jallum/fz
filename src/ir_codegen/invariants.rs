@@ -8,7 +8,7 @@
 //! again after the final post-typer pass; every (FnId, CallShape) count
 //! in the post snapshot must be ≤ its pre snapshot count.
 
-use crate::fz_ir::{FnId, Module, Term};
+use crate::fz_ir::{CallsiteId, EmitSlot, FnId, Module, Term};
 use std::collections::HashMap;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -71,4 +71,91 @@ pub fn assert_no_new_call_shapes(m: &Module, pre: &CallShapeSnapshot) {
             );
         }
     }
+}
+
+pub fn emit_and_assert_spec_dispatch_coverage(
+    tel: &dyn crate::telemetry::Telemetry,
+    f: &crate::fz_ir::FnIr,
+    ft: &crate::ir_planner::SpecPlan,
+    sid: u32,
+    spec_key: &crate::ir_planner::fn_types::SpecKey,
+) {
+    let mut closure_call_dispatch_count = 0_u64;
+    let (body_counts, body_callsites) = crate::ir_planner::inventory::body_callsite_inventory(f);
+    let plan_call_edges = crate::ir_planner::inventory::plan_call_edge_inventory(ft, f.id);
+
+    for blk in &f.blocks {
+        let (ident, expected_slots, kind) = match &blk.terminator {
+            Term::Call { ident, .. } => (ident, &[EmitSlot::Direct, EmitSlot::Cont][..], "call"),
+            Term::CallClosure { ident, .. } => {
+                let closure_callsite = CallsiteId::new(f.id, ident, EmitSlot::ClosureCall);
+                if ft.local_call_target(&closure_callsite).is_some() {
+                    closure_call_dispatch_count += 1;
+                }
+                (ident, &[EmitSlot::Cont][..], "call_closure")
+            }
+            Term::Receive { ident, .. } => (ident, &[EmitSlot::Cont][..], "receive"),
+            _ => continue,
+        };
+
+        for slot in expected_slots {
+            let cid = CallsiteId::new(f.id, ident, *slot);
+            if ft.local_call_target(&cid).is_some() {
+                continue;
+            }
+            let available_slots = ft
+                .call_edges
+                .keys()
+                .filter(|candidate| candidate.caller == f.id && candidate.ident == *ident)
+                .map(|candidate| format!("{:?}", candidate.slot))
+                .collect::<Vec<_>>();
+            let available_call_edges = ft
+                .call_edges
+                .keys()
+                .map(|candidate| format!("{:?}", candidate))
+                .collect::<Vec<_>>();
+            let span = ident.span();
+            tel.execute(
+                &["fz", "codegen", "dispatch_missing"],
+                &crate::measurements! {},
+                &crate::metadata! {
+                    spec_id: sid as u64,
+                    body_fn_id: f.id.0 as u64,
+                    body_name: f.name.clone(),
+                    block_id: blk.id.0 as u64,
+                    term_kind: kind,
+                    slot: format!("{:?}", slot),
+                    callsite_span_start: span.start as u64,
+                    callsite_span_end: span.end as u64,
+                    available_slots: available_slots,
+                    available_call_edges: available_call_edges,
+                },
+            );
+            panic!(
+                "spec {} body {} missing {:?} dispatch for {:?}",
+                sid, f.name, slot, cid
+            );
+        }
+    }
+
+    tel.execute(
+        &["fz", "codegen", "spec_pair_inventory"],
+        &crate::measurements! {
+            non_tail_call_count: body_counts.non_tail_call_count,
+            non_tail_closure_call_count: body_counts.non_tail_closure_call_count,
+            tail_call_count: body_counts.tail_call_count,
+            tail_closure_call_count: body_counts.tail_closure_call_count,
+            closure_call_dispatch_count: closure_call_dispatch_count,
+            receive_count: body_counts.receive_count,
+            call_edge_count: ft.call_edges.len() as u64,
+        },
+        &crate::metadata! {
+            spec_id: sid as u64,
+            spec_key: format!("{:?}", spec_key),
+            body_fn_id: f.id.0 as u64,
+            body_name: f.name.clone(),
+            body_callsites: body_callsites,
+            plan_call_edges: plan_call_edges,
+        },
+    );
 }

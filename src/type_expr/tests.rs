@@ -768,9 +768,7 @@ fn resolved_spec_retains_structural_shape_for_container_parametricity() {
     );
     assert_eq!(
         resolved.result_shape,
-        ResolvedTypeShape::List(Box::new(ResolvedTypeShape::Var(
-            crate::types::TypeVarId(0)
-        )))
+        ResolvedTypeShape::List(Box::new(ResolvedTypeShape::Var(crate::types::TypeVarId(0))))
     );
 }
 
@@ -909,9 +907,7 @@ fn resolved_spec_reports_reduce_invariant_slot_correspondence() {
     let spec = ResolvedSpec {
         params: vec![enumerable_param, acc_var.clone(), reducer_param],
         param_shapes: vec![
-            ResolvedTypeShape::List(Box::new(ResolvedTypeShape::Var(
-                crate::types::TypeVarId(0),
-            ))),
+            ResolvedTypeShape::List(Box::new(ResolvedTypeShape::Var(crate::types::TypeVarId(0)))),
             ResolvedTypeShape::Var(crate::types::TypeVarId(1)),
             ResolvedTypeShape::Arrow {
                 params: vec![
@@ -926,21 +922,31 @@ fn resolved_spec_reports_reduce_invariant_slot_correspondence() {
         constraints: std::collections::HashMap::new(),
     };
 
-    let groups = spec.higher_order_invariant_groups(&mut ct);
+    let groups = spec.structural_correspondence_groups();
+    assert_eq!(groups.len(), 2);
     assert_eq!(
-        groups,
-        vec![HigherOrderInvariantGroup {
+        groups
+            .iter()
+            .find(|group| group.var == crate::types::TypeVarId(1)),
+        Some(&StructuralCorrespondenceGroup {
             var: crate::types::TypeVarId(1),
             occurrences: vec![
-                InvariantOccurrence::Param(1),
-                InvariantOccurrence::Result,
-                InvariantOccurrence::CallbackArg {
+                StructuralOccurrence::Param {
+                    param_index: 1,
+                    path: vec![],
+                },
+                StructuralOccurrence::Result { path: vec![] },
+                StructuralOccurrence::CallbackArg {
                     param_index: 2,
                     arg_index: 1,
+                    path: vec![],
                 },
-                InvariantOccurrence::CallbackResult { param_index: 2 },
+                StructuralOccurrence::CallbackResult {
+                    param_index: 2,
+                    path: vec![],
+                },
             ],
-        }]
+        })
     );
 }
 
@@ -1005,9 +1011,7 @@ fn resolved_spec_reports_reduce_while_invariant_slot_correspondence() {
             ct.arrow(&[entry_var, acc_var.clone()], reducer_ret),
         ],
         param_shapes: vec![
-            ResolvedTypeShape::List(Box::new(ResolvedTypeShape::Var(
-                crate::types::TypeVarId(0),
-            ))),
+            ResolvedTypeShape::List(Box::new(ResolvedTypeShape::Var(crate::types::TypeVarId(0)))),
             ResolvedTypeShape::Var(crate::types::TypeVarId(1)),
             ResolvedTypeShape::Arrow {
                 params: vec![
@@ -1031,21 +1035,41 @@ fn resolved_spec_reports_reduce_while_invariant_slot_correspondence() {
         constraints: std::collections::HashMap::new(),
     };
 
-    let groups = spec.higher_order_invariant_groups(&mut ct);
+    let groups = spec.structural_correspondence_groups();
+    assert_eq!(groups.len(), 2);
     assert_eq!(
-        groups,
-        vec![HigherOrderInvariantGroup {
+        groups
+            .iter()
+            .find(|group| group.var == crate::types::TypeVarId(1)),
+        Some(&StructuralCorrespondenceGroup {
             var: crate::types::TypeVarId(1),
             occurrences: vec![
-                InvariantOccurrence::Param(1),
-                InvariantOccurrence::Result,
-                InvariantOccurrence::CallbackArg {
+                StructuralOccurrence::Param {
+                    param_index: 1,
+                    path: vec![],
+                },
+                StructuralOccurrence::Result { path: vec![] },
+                StructuralOccurrence::CallbackArg {
                     param_index: 2,
                     arg_index: 1,
+                    path: vec![],
                 },
-                InvariantOccurrence::CallbackResult { param_index: 2 },
+                StructuralOccurrence::CallbackResult {
+                    param_index: 2,
+                    path: vec![
+                        StructuralPathStep::UnionMember(0),
+                        StructuralPathStep::TupleElem(1)
+                    ],
+                },
+                StructuralOccurrence::CallbackResult {
+                    param_index: 2,
+                    path: vec![
+                        StructuralPathStep::UnionMember(1),
+                        StructuralPathStep::TupleElem(1)
+                    ],
+                },
             ],
-        }]
+        })
     );
 }
 

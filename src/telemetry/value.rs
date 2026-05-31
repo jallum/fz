@@ -43,6 +43,7 @@ pub enum Value<'a> {
     F64(f64),
     Bool(bool),
     Str(Cow<'a, str>),
+    StrSeq(Arc<[String]>),
     Bytes(Arc<[u8]>),
     Opaque(OpaqueRef<'a>),
 }
@@ -67,6 +68,7 @@ impl<'a> Value<'a> {
             Value::F64(v) => Some(Value::F64(*v)),
             Value::Bool(v) => Some(Value::Bool(*v)),
             Value::Str(v) => Some(Value::Str(Cow::Owned(v.clone().into_owned()))),
+            Value::StrSeq(v) => Some(Value::StrSeq(v.clone())),
             Value::Bytes(v) => Some(Value::Bytes(v.clone())),
             Value::Opaque(_) => None,
         }
@@ -89,6 +91,7 @@ impl<'a> Value<'a> {
             Value::F64(_) => "f64",
             Value::Bool(_) => "bool",
             Value::Str(_) => "str",
+            Value::StrSeq(_) => "str_seq",
             Value::Bytes(_) => "bytes",
             Value::Opaque(_) => "opaque",
         }
@@ -154,6 +157,11 @@ impl From<String> for Value<'_> {
 impl<'a> From<Cow<'a, str>> for Value<'a> {
     fn from(v: Cow<'a, str>) -> Self {
         Value::Str(v)
+    }
+}
+impl From<Vec<String>> for Value<'_> {
+    fn from(v: Vec<String>) -> Self {
+        Value::StrSeq(Arc::from(v))
     }
 }
 impl From<Arc<[u8]>> for Value<'_> {
@@ -223,7 +231,16 @@ mod tests {
         assert_eq!(Value::F64(0.0).tag(), "f64");
         assert_eq!(Value::Bool(false).tag(), "bool");
         assert_eq!(Value::from("s").tag(), "str");
+        assert_eq!(Value::from(vec!["a".to_string()]).tag(), "str_seq");
         assert_eq!(Value::Bytes(Arc::from(vec![])).tag(), "bytes");
+    }
+
+    #[test]
+    fn string_sequence_from_vec_round_trips() {
+        match Value::from(vec!["a".to_string(), "b".to_string()]) {
+            Value::StrSeq(values) => assert_eq!(&*values, &["a".to_string(), "b".to_string()]),
+            other => panic!("expected string sequence, got {:?}", other),
+        }
     }
 
     #[test]

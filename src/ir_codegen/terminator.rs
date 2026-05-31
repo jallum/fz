@@ -38,6 +38,13 @@ fn resolve_cont_sid<T: crate::types::Types<Ty = crate::types::Ty> + crate::types
         slot: crate::fz_ir::EmitSlot::Cont,
     };
     let target = env.fn_types.local_call_target(&cid).unwrap_or_else(|| {
+        let available_slots = env
+            .fn_types
+            .call_edges
+            .keys()
+            .filter(|candidate| candidate.caller == caller_fn_id && candidate.ident == *term_ident)
+            .map(|candidate| format!("{:?}", candidate.slot))
+            .collect::<Vec<_>>();
         let mut available: Vec<String> = env
             .fn_types
             .call_edges
@@ -45,9 +52,35 @@ fn resolve_cont_sid<T: crate::types::Types<Ty = crate::types::Ty> + crate::types
             .map(|k| format!("{:?}", k))
             .collect();
         available.sort();
+        let term_kind = match &blk.terminator {
+            Term::Call { .. } => "call",
+            Term::CallClosure { .. } => "call_closure",
+            Term::Receive { .. } => "receive",
+            _ => "other",
+        };
+        let span = term_ident.span();
+        env.telemetry.execute(
+            &["fz", "codegen", "dispatch_missing"],
+            &crate::measurements! {},
+            &crate::metadata! {
+                spec_id: env.active_spec_id as u64,
+                body_fn_id: env.active_body_fn_id.0 as u64,
+                body_name: env.active_body_name,
+                caller_fn_id: caller_fn_id.0 as u64,
+                block_id: blk.id.0 as u64,
+                term_kind: term_kind,
+                slot: "Cont",
+                callsite_span_start: span.start as u64,
+                callsite_span_end: span.end as u64,
+                available_slots: available_slots,
+                available_call_edges: available.clone(),
+            },
+        );
         panic!(
-            "no dispatches entry for Cont at {:?} — typer-authoritative \
+            "no dispatches entry for Cont in spec {} body {} at {:?} — typer-authoritative \
              invariant violated; available dispatches: [{}]",
+            env.active_spec_id,
+            env.active_body_name,
             cid,
             available.join(", ")
         )
@@ -70,6 +103,7 @@ fn resolve_callee_sid<
     env: &CodegenEnv<'_>,
     caller_fn_id: crate::fz_ir::FnId,
     blk: &crate::fz_ir::Block,
+    slot: crate::fz_ir::EmitSlot,
 ) -> u32 {
     let term_ident = blk
         .terminator
@@ -78,13 +112,13 @@ fn resolve_callee_sid<
     let cid = crate::fz_ir::CallsiteId {
         caller: caller_fn_id,
         ident: term_ident.clone(),
-        slot: crate::fz_ir::EmitSlot::Direct,
+        slot,
     };
     let target = env.fn_types.local_call_target(&cid).unwrap_or_else(|| {
         panic!(
-            "no dispatches entry for Direct at {:?} — typer-authoritative \
+            "no dispatches entry for {:?} at {:?} — typer-authoritative \
              invariant violated",
-            cid
+            slot, cid
         )
     });
     env.spec_registry
@@ -676,7 +710,8 @@ fn emit_call_term<
             .map(|v| var_env.get(&v.0).expect("unbound captured val").value())
             .collect();
         mark_retained_call_args_as_published(body, var_env, args, &continuation.captured);
-        let callee_sid = resolve_callee_sid(t, env, caller_fn_id, blk);
+        let callee_sid =
+            resolve_callee_sid(t, env, caller_fn_id, blk, crate::fz_ir::EmitSlot::Direct);
         let mut cont_sid = resolve_cont_sid(t, env, caller_fn_id, blk);
         let this_demand = DemandAbi::new(&env.spec_keys[this_spec_id as usize]);
         let term_ident = blk
@@ -1072,7 +1107,8 @@ fn emit_tail_call_term<
 ) -> Result<(), CodegenError> {
     let _ = schemas;
     {
-        let callee_sid = resolve_callee_sid(t, env, caller_fn_id, blk);
+        let callee_sid =
+            resolve_callee_sid(t, env, caller_fn_id, blk, crate::fz_ir::EmitSlot::Direct);
         let term_ident = blk
             .terminator
             .ident()

@@ -43,6 +43,10 @@ pub mod sink;
 pub mod stats;
 pub mod value;
 
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static NEXT_COMPILE_NONCE: AtomicU64 = AtomicU64::new(1);
+
 pub use bus::ConfiguredTelemetry;
 #[cfg(test)]
 pub use capture::Capture;
@@ -55,3 +59,7 @@ pub use jsonl::JsonlBackend;
 pub use sink::{NullTelemetry, Telemetry, TelemetryExt};
 pub use stats::StatsHandler;
 pub use value::Value;
+
+pub(crate) fn next_compile_nonce() -> u64 {
+    NEXT_COMPILE_NONCE.fetch_add(1, Ordering::Relaxed)
+}
