@@ -28,7 +28,7 @@ use crate::ast::{Attribute, Item, Program};
 use crate::diag::{Diagnostic, Span, codes};
 use crate::fz_ir::FnId;
 use crate::ir_planner::ModulePlan;
-use crate::type_expr::{ModuleTypeEnv, resolve_spec_decl};
+use crate::type_expr::{ModuleTypeEnv, ResolvedSpec, ResolvedSpecSet, resolve_spec_decls};
 
 /// Validate every `@spec` in `program` against the corresponding
 /// inferred specs in `module_plan`. Returns a list of diagnostics
@@ -45,12 +45,17 @@ pub fn validate_specs<T: crate::types::Types<Ty = crate::types::Ty> + crate::typ
         let Item::Fn(fn_def) = &**item else {
             continue;
         };
-        let Some(spec) = fn_def.attrs.iter().find_map(|a| match a {
-            Attribute::Spec(s) => Some(s),
-            _ => None,
-        }) else {
+        let specs = fn_def
+            .attrs
+            .iter()
+            .filter_map(|a| match a {
+                Attribute::Spec(s) => Some(s),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        if specs.is_empty() {
             continue;
-        };
+        }
         // The module env is keyed by everything up to the last `.` in
         // the qualified fn name. Top-level fns use "" (empty env).
         let module_path: String = match fn_def.name.rfind('.') {
@@ -61,7 +66,7 @@ pub fn validate_specs<T: crate::types::Types<Ty = crate::types::Ty> + crate::typ
             .module_type_envs
             .get(&module_path)
             .unwrap_or(&empty_env);
-        let resolved = match resolve_spec_decl(t, spec, env) {
+        let resolved = match resolve_spec_decls(t, specs, env) {
             Ok(r) => r,
             Err(e) => {
                 diags.push(Diagnostic::error(
@@ -80,8 +85,7 @@ pub fn validate_specs<T: crate::types::Types<Ty = crate::types::Ty> + crate::typ
         let ir_fn_id = ir_fn.id;
         validate_one_fn(
             t,
-            &resolved.params,
-            &resolved.result,
+            &resolved,
             ir_fn_id,
             ir_fn,
             &fn_def.name,
@@ -95,8 +99,7 @@ pub fn validate_specs<T: crate::types::Types<Ty = crate::types::Ty> + crate::typ
 
 fn validate_one_fn<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::RenderTypes>(
     t: &mut T,
-    declared_param_tys: &[T::Ty],
-    declared_result_ty: &T::Ty,
+    declared_specs: &ResolvedSpecSet,
     fn_id: FnId,
     ir_fn: &crate::fz_ir::FnIr,
     user_name: &str,
@@ -104,18 +107,11 @@ fn validate_one_fn<T: crate::types::Types<Ty = crate::types::Ty> + crate::types:
     module_plan: &ModulePlan,
     diags: &mut Vec<Diagnostic>,
 ) {
-    let arity = declared_param_tys.len();
     let any = t.any();
-    let declared_param_displays: Vec<String> =
-        declared_param_tys.iter().map(|ty| t.display(ty)).collect();
-    let declared_result_display: String = t.display(declared_result_ty);
     for (key, ft) in &module_plan.specs {
         if key.fn_id != fn_id || !key.demand.is_value() {
             continue;
         }
-        if key.input.len() != arity {
-            continue;
-        } // should be impossible post-arity-check
         if key
             .input
             .iter()
@@ -123,65 +119,85 @@ fn validate_one_fn<T: crate::types::Types<Ty = crate::types::Ty> + crate::types:
         {
             continue;
         } // skip any-key per design
-        // Element-wise inferred ⊆ declared on each input.
-        let mut sigma = std::collections::HashMap::new();
-        for (declared, inferred) in declared_param_tys.iter().zip(key.input.iter()) {
-            if let Some(inferred) = inferred {
-                t.collect_instantiation_subst(declared, inferred, &mut sigma);
-            }
-        }
-        for (i, inferred) in key.input.iter().enumerate() {
-            let Some(inferred) = inferred else {
-                continue;
-            };
-            let declared_param_ty = t.instantiate(&declared_param_tys[i], &sigma);
-            if !t.is_subtype(inferred, &declared_param_ty) {
-                let inferred_display = t.display(inferred);
-                diags.push(Diagnostic::error(
-                    codes::SPEC_VIOLATION,
-                    format!(
-                        "@spec violation for `{}`: param {} inferred as `{}` \
-                         is not a subtype of declared `{}`",
-                        user_name, i, inferred_display, declared_param_displays[i],
-                    ),
-                    name_span,
-                ));
-            }
-        }
-        // Compute inferred return type: lub over each Term::Return val
-        // typed under this spec's SpecPlan. Local stays `T::Ty`-typed
-        // through the fold; only the boundary with `ft.vars` (still
-        // concrete-`Ty` keyed) goes through direct lookup.
-        let mut inferred_result: Option<T::Ty> = None;
-        for b in &ir_fn.blocks {
-            if let crate::fz_ir::Term::Return(rv) = &b.terminator {
-                let d_ty = match ft.vars.get(rv) {
-                    Some(d) => d.clone(),
-                    None => t.any(),
-                };
-                inferred_result = Some(match inferred_result {
-                    Some(prev) => t.union(prev, d_ty),
-                    None => d_ty,
-                });
-            }
-        }
-        let inferred_ty = inferred_result
+        let inferred_ty = inferred_result_ty(t, ir_fn, ft)
             .or_else(|| module_plan.effective_returns.get(key).cloned())
             .unwrap_or_else(|| t.any());
-        let declared_result_ty = t.instantiate(declared_result_ty, &sigma);
-        if !t.is_subtype(&inferred_ty, &declared_result_ty) {
-            let inferred_display = t.display(&inferred_ty);
+        if !declared_specs.arrows.iter().any(|declared| {
+            declared_arrow_covers_inferred_spec(t, declared, &key.input, &inferred_ty)
+        }) {
+            let inferred_inputs = key
+                .input
+                .iter()
+                .map(|slot| match slot {
+                    Some(ty) => t.display(ty),
+                    None => "_".to_string(),
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
             diags.push(Diagnostic::error(
                 codes::SPEC_VIOLATION,
                 format!(
-                    "@spec violation for `{}`: result inferred as `{}` \
-                     is not a subtype of declared `{}`",
-                    user_name, inferred_display, declared_result_display,
+                    "@spec violation for `{}`: inferred ({}) -> `{}` is not a subtype \
+                     of any declared @spec arrow",
+                    user_name,
+                    inferred_inputs,
+                    t.display(&inferred_ty),
                 ),
                 name_span,
             ));
         }
     }
+}
+
+fn inferred_result_ty<T: crate::types::Types<Ty = crate::types::Ty>>(
+    t: &mut T,
+    ir_fn: &crate::fz_ir::FnIr,
+    ft: &crate::ir_planner::fn_types::SpecPlan,
+) -> Option<T::Ty> {
+    let mut inferred_result: Option<T::Ty> = None;
+    for b in &ir_fn.blocks {
+        if let crate::fz_ir::Term::Return(rv) = &b.terminator {
+            let d_ty = match ft.vars.get(rv) {
+                Some(d) => d.clone(),
+                None => t.any(),
+            };
+            inferred_result = Some(match inferred_result {
+                Some(prev) => t.union(prev, d_ty),
+                None => d_ty,
+            });
+        }
+    }
+    inferred_result
+}
+
+fn declared_arrow_covers_inferred_spec<
+    T: crate::types::Types<Ty = crate::types::Ty> + crate::types::RenderTypes,
+>(
+    t: &mut T,
+    declared: &ResolvedSpec,
+    inferred_inputs: &[crate::types::KeySlot],
+    inferred_result: &T::Ty,
+) -> bool {
+    if declared.params.len() != inferred_inputs.len() {
+        return false;
+    }
+    let mut sigma = std::collections::HashMap::new();
+    for (declared, inferred) in declared.params.iter().zip(inferred_inputs.iter()) {
+        if let Some(inferred) = inferred {
+            t.collect_instantiation_subst(declared, inferred, &mut sigma);
+        }
+    }
+    for (declared, inferred) in declared.params.iter().zip(inferred_inputs.iter()) {
+        let Some(inferred) = inferred else {
+            continue;
+        };
+        let declared_param_ty = t.instantiate(declared, &sigma);
+        if !t.is_subtype(inferred, &declared_param_ty) {
+            return false;
+        }
+    }
+    let declared_result = t.instantiate(&declared.result, &sigma);
+    t.is_subtype(inferred_result, &declared_result)
 }
 
 #[cfg(test)]
@@ -268,6 +284,58 @@ fn main(), do: dbg(M.add1(41))
             "expected subtype-violation diag, got: {}",
             msg
         );
+    }
+
+    #[test]
+    fn multi_spec_overload_arrows_cover_each_inferred_shape() {
+        let mut ct = crate::types::ConcreteTypes;
+        let (prog, ir, mt) = pipeline(
+            &mut ct,
+            r#"
+defmodule M do
+  @spec echo(integer) :: integer
+  @spec echo(float) :: float
+  fn echo(x :: integer), do: x
+  fn echo(x :: float), do: x
+end
+fn main() do
+  dbg(M.echo(1))
+  dbg(M.echo(1.5))
+end
+"#,
+        );
+        let diags = validate_specs(&mut ct, &prog, &ir, &mt);
+        assert!(
+            diags.is_empty(),
+            "each inferred shape should be covered by one declared arrow; got: {:?}",
+            diags
+        );
+    }
+
+    #[test]
+    fn multi_spec_validation_preserves_param_result_correlation() {
+        let mut ct = crate::types::ConcreteTypes;
+        let (prog, ir, mt) = pipeline(
+            &mut ct,
+            r#"
+defmodule M do
+  @spec echo(integer) :: float
+  @spec echo(float) :: integer
+  fn echo(x :: integer), do: x
+  fn echo(x :: float), do: x
+end
+fn main() do
+  dbg(M.echo(1))
+  dbg(M.echo(1.5))
+end
+"#,
+        );
+        let diags = validate_specs(&mut ct, &prog, &ir, &mt);
+        assert!(
+            !diags.is_empty(),
+            "unioning inputs/results would pass this; correlated arrows must fail"
+        );
+        assert!(diags[0].message.contains("not a subtype"));
     }
 
     #[test]
