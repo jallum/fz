@@ -168,6 +168,11 @@ impl Types for ConcreteTypes {
     fn list_element_type(&mut self, a: &Ty) -> Ty {
         concrete_list_element_type(a)
     }
+    fn has_list_shape(&self, a: &Ty) -> bool {
+        ty_descr(a)
+            .components()
+            .any(|component| matches!(component, Component::Lists(_)))
+    }
     fn resource_payload_type(&mut self, a: &Ty) -> Option<Ty> {
         for component in ty_descr(a).components() {
             if let Component::Resources(view) = component {
@@ -206,6 +211,9 @@ impl Types for ConcreteTypes {
     }
     fn map_field_lookup(&mut self, a: &Ty, key: &MapKey) -> Option<Ty> {
         concrete_map_field_lookup(a, key)
+    }
+    fn map_known_keys(&self, a: &Ty) -> Vec<MapKey> {
+        concrete_map_known_keys(a)
     }
     fn widen_for_recursive_spec_key(&mut self, a: &Ty) -> Ty {
         ty_from_descr(ty_descr(a).widen_for_recursive_spec_key())
@@ -689,6 +697,21 @@ fn concrete_map_field_lookup(a: &Ty, key: &MapKey) -> Option<Ty> {
         }
     }
     None
+}
+
+fn concrete_map_known_keys(a: &Ty) -> Vec<MapKey> {
+    let mut keys = std::collections::BTreeSet::new();
+    for component in ty_descr(a).components() {
+        let Component::Maps(view) = component else {
+            continue;
+        };
+        for conj in view.inner {
+            for sig in &conj.pos {
+                keys.extend(sig.fields.keys().cloned());
+            }
+        }
+    }
+    keys.into_iter().collect()
 }
 
 fn concrete_refine_map_field(a: &Ty, key: &MapKey, v: &Ty) -> Ty {

@@ -184,6 +184,11 @@ pub trait Types {
     /// Project `a`'s list-axis element type. Returns `any` if `a` has
     /// no list axis or the list axis is unconstrained.
     fn list_element_type(&mut self, a: &Self::Ty) -> Self::Ty;
+
+    /// True iff `a` has a positive list axis. This keeps evidence-producing
+    /// callers from mistaking `list_element_type`'s runtime fallback for proof.
+    fn has_list_shape(&self, a: &Self::Ty) -> bool;
+
     fn resource_payload_type(&mut self, a: &Self::Ty) -> Option<Self::Ty>;
 
     /// Replace resource-shaped values with an opaque alias owned by `owner`
@@ -214,6 +219,11 @@ pub trait Types {
     /// Look up `key` in `a`'s map axis, returning the field's type
     /// if statically known.
     fn map_field_lookup(&mut self, a: &Self::Ty, key: &MapKey) -> Option<Self::Ty>;
+
+    /// Literal keys mentioned by `a`'s positive map clauses. This is an
+    /// introspection hook for structural scheme matching; callers still
+    /// use `map_field_lookup` to obtain the set-theoretic field type.
+    fn map_known_keys(&self, a: &Self::Ty) -> Vec<MapKey>;
 
     /// fz-rh5.6 — transform `a` for use as a recursive-call spec key.
     /// The planner owns the policy for when this is applied; the type
@@ -460,6 +470,15 @@ mod conformance_tests {
                     let int = t.int();
                     let projected = t.list_element_type(&int);
                     assert!(t.is_top(&projected));
+                }
+
+                #[test]
+                fn has_list_shape_distinguishes_list_axis_from_runtime_projection_fallback() {
+                    let mut t = $ctor;
+                    let int = t.int();
+                    let list = t.list(int.clone());
+                    assert!(t.has_list_shape(&list));
+                    assert!(!t.has_list_shape(&int));
                 }
 
                 #[test]

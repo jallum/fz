@@ -86,6 +86,24 @@ and callable arrows through their argument and result shapes. Ambiguous,
 negated, or unsupported shapes leave the result underconstrained or invalid;
 they must not be treated as known executable facts.
 
+The matcher keeps "witness evidence" separate from ordinary runtime projection
+types:
+
+```text
+Known       this position produced usable substitution evidence
+Unknown     this position produced no evidence; keep walking other positions
+Invalid     this position is incompatible with the declared shape
+```
+
+That distinction matters because some runtime projection helpers deliberately
+return top as a safe fallback. `ListHead(non_list)` can type as `any` for code
+generation, but a non-list witness for `list(a)` is not proof that `a := any`.
+Likewise, callback parameter positions are checked for compatibility but do not
+bind result variables: they are contravariant demand, not positive evidence.
+For `Enum.reduce_while/3`, the accumulator result is witnessed by the initial
+accumulator and by reducer `{:cont, b}` / `{:halt, b}` payloads, not by the
+reducer's accepted accumulator argument type.
+
 This is the same operation for `@spec foo(a, b) :: {a, b}` and for callable
 arrow clauses like `fn (a, b), do: {a, b}`. The shared API is
 `types::instantiate_scheme_result`, which reports:
