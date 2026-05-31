@@ -1802,24 +1802,23 @@ end
         !m.fns.iter().any(|f| f.name == "fz_spawn_thunk"),
         "spawn lowering must not synthesize fz_spawn_thunk"
     );
-    let lambda = m
-        .fns
-        .iter()
-        .find(|f| f.name.starts_with("lambda_"))
-        .expect("expected spawned lambda fn");
     // fz-try B1+B2 — MakeClosure now registers in ModulePlan.closure_handles,
     // not as a padded body spec. A handle entry with non-any captures
     // proves the spawned lambda's captures were typed.
-    let handles_for_lambda: Vec<&Vec<crate::types::Ty>> = mt
+    let handles_for_lambda: Vec<(FnId, &Vec<crate::types::Ty>)> = mt
         .closure_handles
         .iter()
-        .filter(|(fid, _)| *fid == lambda.id)
-        .map(|(_, caps)| caps)
-        .filter(|caps| !caps.is_empty() && !caps.iter().all(|d| t.is_top(d)))
+        .filter(|(fid, caps)| {
+            m.fn_by_id(*fid).name.starts_with("lambda_")
+                && !caps.is_empty()
+                && !caps.iter().all(|d| t.is_top(d))
+        })
+        .map(|(fid, caps)| (*fid, caps))
         .collect();
     assert!(
         !handles_for_lambda.is_empty(),
-        "expected at least one spawned-lambda handle with typed captures, got 0"
+        "expected at least one spawned-lambda handle with typed captures, got 0; all handles={:?}",
+        mt.closure_handles
     );
 }
 
@@ -1846,28 +1845,20 @@ end
 "#,
         &crate::telemetry::NullTelemetry,
     );
-    // Find the lambda FnId — it's the one fn whose name starts
-    // with "lambda_".
-    let lam = m
-        .fns
-        .iter()
-        .find(|f| f.name.starts_with("lambda_"))
-        .expect("expected a lambda fn");
     // fz-try B1+B2 — distinct capture types now produce distinct
     // closure-handle entries (not distinct body specs). The lambda has
     // one compiled body (any-key); the two handles describe the two
     // closure *values* (one captures int, one captures float).
-    let handles: Vec<&Vec<crate::types::Ty>> = mt
-        .closure_handles
-        .iter()
-        .filter(|(fid, _)| *fid == lam.id)
-        .map(|(_, caps)| caps)
-        .collect();
+    let mut handles_by_lambda: HashMap<FnId, Vec<&Vec<crate::types::Ty>>> = HashMap::new();
+    for (fid, caps) in &mt.closure_handles {
+        if m.fn_by_id(*fid).name.starts_with("lambda_") {
+            handles_by_lambda.entry(*fid).or_default().push(caps);
+        }
+    }
     assert!(
-        handles.len() >= 2,
-        "expected ≥2 closure-handle entries for the lambda, got {}: {:?}",
-        handles.len(),
-        handles
+        handles_by_lambda.values().any(|handles| handles.len() >= 2),
+        "expected ≥2 closure-handle entries for a lambda, got {:?}",
+        handles_by_lambda
     );
 }
 
@@ -3563,9 +3554,10 @@ fn rewrite_closures(src: &str) -> Module {
     working
 }
 
-fn count_make_closures(m: &Module) -> usize {
-    m.fns
+fn count_make_closures_in_fns(m: &Module, names: &[&str]) -> usize {
+    names
         .iter()
+        .filter_map(|name| m.fn_by_name(name))
         .flat_map(|f| f.blocks.iter())
         .flat_map(|b| b.stmts.iter())
         .filter(|Stmt::Let(_, prim)| matches!(prim, Prim::MakeClosure(_, _, _)))
@@ -3595,7 +3587,7 @@ fn rewrite_erases_threaded_constant_closure() {
                fn main(), do: merge([1, 3], [2, 4], fn (a, b) -> a <= b end)";
     let after = rewrite_closures(src);
     assert_eq!(
-        count_make_closures(&after),
+        count_make_closures_in_fns(&after, &["main", "merge"]),
         0,
         "the constant comparator's MakeClosure must be erased"
     );
@@ -3621,7 +3613,7 @@ fn rewrite_keeps_non_constant_closure() {
                end";
     let after = rewrite_closures(src);
     assert!(
-        count_make_closures(&after) >= 1,
+        count_make_closures_in_fns(&after, &["main"]) >= 1,
         "a non-constant closure value must survive the rewrite"
     );
     assert_eq!(
@@ -3646,7 +3638,7 @@ fn rewrite_keeps_known_fn_when_other_specs_have_captured_closure() {
                end";
     let after = rewrite_closures(src);
     assert!(
-        count_make_closures(&after) >= 1,
+        count_make_closures_in_fns(&after, &["via_capture"]) >= 1,
         "captured closure disagreement must keep a real closure value"
     );
     assert_eq!(
