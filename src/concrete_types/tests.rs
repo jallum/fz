@@ -2148,3 +2148,74 @@ fn components_int_singleton_extraction_works() {
         }
     }
 }
+
+// ---- fz-g58.65.2 — refinement-lattice widen ----
+// Intent: refine_widen is the finite-height binary LUB the specialization
+// worklist uses. It collapses literal axes to their base so a slot ascends a
+// bounded chain. Simplified lattice for now: int_lit ⊑ int ⊑ any,
+// float_lit ⊑ float ⊑ any (no `number` rung), [] ⊔ nonempty_list(a) = list(a).
+
+#[test]
+fn refine_widen_collapses_int_literals_to_int() {
+    let mut t = ConcreteTypes;
+    let one = t.int_lit(1);
+    let two = t.int_lit(2);
+    let int = t.int();
+    let w_lits = t.refine_widen(&one, &two);
+    let w_lit_base = t.refine_widen(&one, &int);
+    let w_base = t.refine_widen(&int, &int);
+    assert!(t.is_equivalent(&w_lits, &int));
+    assert!(t.is_equivalent(&w_lit_base, &int));
+    assert!(t.is_equivalent(&w_base, &int));
+}
+
+#[test]
+fn refine_widen_collapses_float_literals_to_float() {
+    let mut t = ConcreteTypes;
+    let a = t.float_lit(1.0);
+    let b = t.float_lit(2.0);
+    let float = t.float();
+    let w = t.refine_widen(&a, &b);
+    assert!(t.is_equivalent(&w, &float));
+}
+
+#[test]
+fn refine_widen_recurses_into_list_elements() {
+    // The fold's list slot: list(1) ⊔ list(2) must land at list(int), not
+    // list(1 | 2) — the literal collapse reaches nested structure.
+    let mut t = ConcreteTypes;
+    let one = t.int_lit(1);
+    let two = t.int_lit(2);
+    let int = t.int();
+    let l1 = t.list(one);
+    let l2 = t.list(two);
+    let lint = t.list(int);
+    let w = t.refine_widen(&l1, &l2);
+    assert!(t.is_equivalent(&w, &lint));
+}
+
+#[test]
+fn refine_widen_keeps_int_and_float_apart_no_number_rung() {
+    // Simplified lattice has no `number` between {int,float} and any. int ⊔
+    // float stays the exact union (finite: base kinds are bounded), it does NOT
+    // over-widen to any.
+    let mut t = ConcreteTypes;
+    let i = t.int_lit(1);
+    let f = t.float_lit(2.0);
+    let int = t.int();
+    let float = t.float();
+    let union = t.union(int, float);
+    let any = t.any();
+    let widened = t.refine_widen(&i, &f);
+    assert!(t.is_equivalent(&widened, &union));
+    assert!(!t.is_equivalent(&widened, &any));
+}
+
+#[test]
+fn refine_widen_any_absorbs() {
+    let mut t = ConcreteTypes;
+    let int = t.int();
+    let any = t.any();
+    let w = t.refine_widen(&int, &any);
+    assert!(t.is_equivalent(&w, &any));
+}

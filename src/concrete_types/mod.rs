@@ -221,6 +221,12 @@ impl Types for ConcreteTypes {
     fn structurally_widen(&mut self, a: &Ty, b: &Ty) -> Ty {
         ty_from_descr(ty_descr(a).structurally_widen(ty_descr(b)))
     }
+    fn refine_widen(&mut self, a: &Ty, b: &Ty) -> Ty {
+        // Exact join, then collapse literal axes to their base recursively so
+        // the result sits on a finite-height chain.
+        let joined = ty_descr(a).union(ty_descr(b));
+        ty_from_descr(joined.widen_for_recursive_spec_key())
+    }
     fn union(&mut self, a: Ty, b: Ty) -> Ty {
         ty_from_descr(ty_descr(&a).union(ty_descr(&b)))
     }

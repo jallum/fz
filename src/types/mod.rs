@@ -238,6 +238,18 @@ pub trait Types {
     /// values do not share a mergeable outer shape.
     fn structurally_widen(&mut self, a: &Self::Ty, b: &Self::Ty) -> Self::Ty;
 
+    /// Binary least-upper-bound in the **refinement lattice** — the
+    /// finite-height widening join the specialization worklist uses to settle a
+    /// recursive slot (`.agent/docs/type-specialization.md`). Distinct from
+    /// `union` (the exact set-theoretic join, infinite height): `refine_widen`
+    /// collapses literal axes to their base recursively, so a slot ascends only
+    /// a bounded chain — `int_lit(1) ⊔ int_lit(2) = int`, and structurally
+    /// `[] ⊔ nonempty_list(a) = list(a)`. Loop-invariant slots are their own LUB.
+    // The specialization worklist (the only production caller) lands in
+    // fz-g58.65.4; until then this is exercised only by unit tests.
+    #[allow(dead_code)]
+    fn refine_widen(&mut self, a: &Self::Ty, b: &Self::Ty) -> Self::Ty;
+
     // ---- lattice ops ---------------------------------------------------
 
     fn union(&mut self, a: Self::Ty, b: Self::Ty) -> Self::Ty;
