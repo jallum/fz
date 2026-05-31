@@ -947,15 +947,24 @@ where
         callee: FnId,
         arg_tys: &[crate::types::Ty],
     ) -> Option<crate::types::Ty> {
-        let ret = self
-            .m
-            .declared_specs
-            .get(&callee)?
-            .matching_result(self.t, arg_tys)?;
+        let fact = super::spec_witness::declared_return_fact(
+            self.t,
+            self.m,
+            self.recursive_fns,
+            self.caller_spec_key.fn_id,
+            callee,
+            arg_tys,
+            self.effective_returns,
+            Some(self.complete_returns),
+        )?;
+        self.out.return_reads.extend(fact.reads);
+        if !fact.complete {
+            return None;
+        }
         let owner = &self.m.fn_by_id(self.caller_spec_key.fn_id).owner_module;
         Some(
             self.t
-                .mint_owned_resource_aliases(ret, owner, &self.m.opaque_inners),
+                .mint_owned_resource_aliases(fact.ty, owner, &self.m.opaque_inners),
         )
     }
 

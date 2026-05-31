@@ -730,7 +730,7 @@ fn derive_return_tys<T: crate::types::Types<Ty = crate::types::Ty> + crate::type
             if spec_fnidx[sid].is_none() {
                 return any.clone();
             }
-            if let Some(ret) = declared_return_for_spec_key(t, module, key) {
+            if let Some(ret) = declared_return_for_spec_key(t, module, key, module_plan) {
                 return ret;
             }
             let ret = module_plan
@@ -753,14 +753,23 @@ fn declared_return_for_spec_key<
     t: &mut T,
     module: &crate::fz_ir::Module,
     key: &crate::ir_planner::fn_types::SpecKey,
+    module_plan: &crate::ir_planner::ModulePlan,
 ) -> Option<crate::types::Ty> {
     let arg_tys = crate::types::key_slots_to_tys(t, &key.input);
     let owner = &module.fn_by_id(key.fn_id).owner_module;
-    let result = module
-        .declared_specs
-        .get(&key.fn_id)?
-        .matching_result(t, &arg_tys)?;
-    Some(t.mint_owned_resource_aliases(result, owner, &module.opaque_inners))
+    let recursive_fns = std::collections::HashSet::new();
+    let fact = crate::ir_planner::spec_witness::declared_return_fact(
+        t,
+        module,
+        &recursive_fns,
+        key.fn_id,
+        key.fn_id,
+        &arg_tys,
+        &module_plan.effective_returns,
+        None,
+    )?;
+    fact.complete
+        .then(|| t.mint_owned_resource_aliases(fact.ty, owner, &module.opaque_inners))
 }
 
 /// Per-spec entry-param ArgReprs. Drives `build_fn_signature`

@@ -35,6 +35,7 @@ pub mod purity;
 pub mod reachable;
 pub(crate) mod return_context;
 pub(crate) mod scc;
+pub(crate) mod spec_witness;
 pub mod switch_dispatch;
 pub mod type_fn;
 pub(crate) mod walk;

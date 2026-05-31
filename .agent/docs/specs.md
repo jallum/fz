@@ -53,6 +53,33 @@ Known single-spec sites:
   arrows before reading params or results.
 - `src/exec/eval.rs`: REPL/help spec rendering formats one spec line.
 
+## Higher-Order Witnesses
+
+Declared spec instantiation is evidence-driven. For a first-order argument, the
+argument type itself is the witness. For a higher-order argument, a closure
+literal has two facts:
+
+- it is a closure value with target/capture identity;
+- when called at a particular argument key, the planner may know an effective
+  return for that target.
+
+Those are not the same fact. `src/ir_planner/spec_witness.rs` keeps them
+separate: it first instantiates the declared arrow from ordinary argument
+witnesses, then derives additional arrow evidence for closure-literal
+parameters from the closure target's effective return key. If that return key is
+not known yet, the caller records a return-read and the worklist revisits the
+caller when the closure return changes.
+
+This is what makes specs such as:
+
+```fz
+@spec reduce_while(Enumerable.t(a), b, (a, b) -> {:cont, b} | {:halt, b}) :: b
+```
+
+data-flow correctly. The initial accumulator is one witness for `b`; the
+reducer's `{:cont, b}` / `{:halt, b}` exits are another witness. The declared
+result must join both instead of freezing `b` to the initial accumulator shape.
+
 ## Correct Shape
 
 Add a first-class overload-set shape:

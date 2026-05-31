@@ -1297,6 +1297,97 @@ fn pipeline(
 }
 
 #[test]
+fn declared_reduce_while_return_uses_closure_return_witness() {
+    let mut t = crate::types::ConcreteTypes;
+    let entry_var = t.type_var(crate::types::TypeVarId(0));
+    let acc_var = t.type_var(crate::types::TypeVarId(1));
+    let cont = t.atom_lit("cont");
+    let halt = t.atom_lit("halt");
+    let reducer_ret = {
+        let cont_tuple = t.tuple(&[cont, acc_var.clone()]);
+        let halt_tuple = t.tuple(&[halt, acc_var.clone()]);
+        t.union(cont_tuple, halt_tuple)
+    };
+    let enumerable_param = t.list(entry_var.clone());
+    let reducer_param = t.arrow(&[entry_var, acc_var.clone()], reducer_ret);
+    let reduce_spec = crate::type_expr::ResolvedSpec {
+        params: vec![enumerable_param, acc_var.clone(), reducer_param],
+        result: acc_var,
+        constraints: HashMap::new(),
+    };
+
+    let reduce_id = FnId(1);
+    let lambda_id = FnId(9);
+    let mut reduce = FnBuilder::new(reduce_id, "reduce_while");
+    let reduce_entry = reduce.block(vec![]);
+    reduce.set_terminator(reduce_entry, Term::Return(Var(999)));
+    let mut lambda = FnBuilder::new(lambda_id, "lambda");
+    let lambda_entry = lambda.block(vec![Var(0), Var(1)]);
+    lambda.set_terminator(lambda_entry, Term::Return(Var(1)));
+    let mut m = build_module(vec![reduce.build(), lambda.build()]);
+    m.declared_specs.insert(
+        reduce_id,
+        crate::type_expr::ResolvedSpecSet {
+            arrows: vec![reduce_spec],
+        },
+    );
+
+    let not_found = t.atom_lit("not_found");
+    let found = t.atom_lit("found");
+    let initial_acc = {
+        let zero = t.int_lit(0);
+        t.tuple(&[not_found.clone(), zero])
+    };
+    let list_int = {
+        let int = t.int();
+        t.list(int)
+    };
+    let reducer = t.closure_lit(lambda_id.into(), Vec::new(), 2);
+    let arg_tys = vec![list_int, initial_acc.clone(), reducer];
+
+    let reducer_return = {
+        let int = t.int();
+        let not_found_int = t.tuple(&[not_found, int.clone()]);
+        let found_int = t.tuple(&[found.clone(), int]);
+        let cont_tuple = {
+            let cont = t.atom_lit("cont");
+            t.tuple(&[cont, not_found_int])
+        };
+        let halt_tuple = {
+            let halt = t.atom_lit("halt");
+            t.tuple(&[halt, found_int])
+        };
+        t.union(cont_tuple, halt_tuple)
+    };
+    let lambda_key = SpecKey {
+        fn_id: lambda_id,
+        input: crate::types::key_slots_from_tys(vec![t.int(), initial_acc]),
+        demand: super::fn_types::ReturnDemand::tuple_fields(2),
+    };
+    let effective_returns = HashMap::from([(lambda_key, reducer_return)]);
+    let recursive_fns = std::collections::HashSet::new();
+    let fact = super::spec_witness::declared_return_fact(
+        &mut t,
+        &m,
+        &recursive_fns,
+        reduce_id,
+        reduce_id,
+        &arg_tys,
+        &effective_returns,
+        None,
+    )
+    .expect("declared return fact");
+
+    let int = t.int();
+    let found_int = t.tuple(&[found, int]);
+    assert!(
+        t.is_subtype(&found_int, &fact.ty),
+        "reduce_while declared result should include reducer halt payload, got {}",
+        t.display(&fact.ty)
+    );
+}
+
+#[test]
 fn empty_list_call_only_reaches_empty_clause() {
     let (t, m, mt) = pipeline(
         r#"

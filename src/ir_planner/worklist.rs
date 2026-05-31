@@ -1197,9 +1197,18 @@ fn declared_call_return<
     arg_tys: &[crate::types::Ty],
     owner_module: &str,
 ) -> Option<crate::types::Ty> {
-    let ret = module
-        .declared_specs
-        .get(&callee)?
-        .matching_result(t, arg_tys)?;
+    let recursive_fns = std::collections::HashSet::new();
+    let effective_returns = HashMap::new();
+    let ret = super::spec_witness::declared_return_fact(
+        t,
+        module,
+        &recursive_fns,
+        callee,
+        callee,
+        arg_tys,
+        &effective_returns,
+        None,
+    )?
+    .ty;
     Some(t.mint_owned_resource_aliases(ret, owner_module, &module.opaque_inners))
 }

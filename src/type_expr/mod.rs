@@ -221,6 +221,7 @@ impl ResolvedSpecSet {
         }
     }
 
+    #[allow(dead_code)]
     pub fn matching_result<T>(
         &self,
         t: &mut T,
