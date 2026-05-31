@@ -940,32 +940,14 @@ fn compute_tagged_return_specs<
     set
 }
 
-/// Fn-id-level coarse view of `tagged_return_specs` for consumers that
-/// query by FnId. True iff ANY spec of the fn is tagged.
-fn derive_tagged_return_fns(
-    module: &Module,
-    spec_fnidx: &[Option<usize>],
-    tagged_return_specs: &std::collections::HashSet<u32>,
-) -> std::collections::HashSet<crate::fz_ir::FnId> {
-    let mut s = std::collections::HashSet::new();
-    for &sid in tagged_return_specs {
-        if let Some(idx) = spec_fnidx[sid as usize] {
-            s.insert(module.fns[idx].id);
-        }
-    }
-    s
-}
-
-/// Cont specs whose producer is ValueRef-returning (closure-target,
-/// or Receive / CallClosure with unknown target, or any fn in
-/// `tagged_return_fns`) must accept ValueRef at slot 0. The producer
-/// returns ValueRef and the cont's wire sig at the seam must agree.
+/// Cont specs whose producer delivers one boxed value lane must accept
+/// `ValueRef` at slot 0. Producers that deliver tuple fields do not use
+/// that slot-0 seam at all.
 ///
-/// Reads the producer→cont call-edge facts from
-/// `SpecPlan.call_edges[Cont]` instead of re-walking terminators and
-/// calling `cont_input_key` + `spec_registry.resolve`. The typer already
-/// named which `(cont_fn, cont_key)` each Cont site dispatches to
-/// (per spec).
+/// Reads the producer→cont call-edge facts from `SpecPlan.call_edges`
+/// rather than recovering them from payload typing. The direct edge's
+/// selected `SpecKey.demand` already says whether the producer delivers
+/// a boxed value or tuple fields.
 fn compute_tagged_slot0_cont_specs<T: crate::types::Types<Ty = crate::types::Ty>>(
     t: &mut T,
     module: &Module,
@@ -973,7 +955,6 @@ fn compute_tagged_slot0_cont_specs<T: crate::types::Types<Ty = crate::types::Ty>
     spec_fnidx: &[Option<usize>],
     spec_fn_types: &[Option<&crate::ir_planner::SpecPlan>],
     spec_registry: &SpecRegistry,
-    tagged_return_fns: &std::collections::HashSet<crate::fz_ir::FnId>,
 ) -> std::collections::HashSet<u32> {
     let mut tagged_slot0_cont_specs: std::collections::HashSet<u32> =
         std::collections::HashSet::new();
@@ -990,7 +971,16 @@ fn compute_tagged_slot0_cont_specs<T: crate::types::Types<Ty = crate::types::Ty>
                 continue;
             };
             let produces_tagged_slot0 = match &blk.terminator {
-                Term::Call { callee, .. } => tagged_return_fns.contains(callee),
+                Term::Call { .. } => {
+                    let cid = crate::fz_ir::CallsiteId {
+                        caller: caller.id,
+                        ident: term_ident.clone(),
+                        slot: crate::fz_ir::EmitSlot::Direct,
+                    };
+                    caller_ft
+                        .local_call_target(&cid)
+                        .is_some_and(|key| DemandAbi::new(key).delivered_value_repr().is_some())
+                }
                 Term::CallClosure { .. } | Term::Receive { .. } => true,
                 _ => false,
             };
@@ -1365,11 +1355,11 @@ fn refine_param_reprs_for_tagging(
 /// for every spec in `tagged_return_specs`. Closure-target spec bodies
 /// return ValueRef i64, matching the closure-target sig
 /// (cps-in-clif.md §8.2). This extends to every fn in
-/// `tagged_return_fns`: a fn whose only exit is `Term::TailCallClosure`
-/// (or which TailCalls into one) forwards the closure-target's ValueRef
-/// return bits through its own outer sig. Declaring that outer return as
-/// RawInt/RawF64 would let the caller read tag-shifted bits as a raw
-/// number (e.g. 42 → 337).
+/// `tagged_return_specs`: a spec whose reachable exits forward the
+/// closure-target/indirect ValueRef seam through its own outer sig must
+/// keep that outer return tagged as `ValueRef`. Declaring that outer
+/// return as RawInt/RawF64 would let the caller read tag-shifted bits as
+/// a raw number (e.g. 42 → 337).
 ///
 /// `tagged_return_specs` is the precise grain; specs whose
 /// `TailCallClosure` resolves via closure_lit keep their narrow return
@@ -2213,7 +2203,6 @@ pub(crate) fn compile_with_backend_impl<
         &spec_registry,
         &closure_target_fns,
     );
-    let tagged_return_fns = derive_tagged_return_fns(module, &spec_fnidx, &tagged_return_specs);
     let tagged_slot0_cont_specs = compute_tagged_slot0_cont_specs(
         t,
         module,
@@ -2221,7 +2210,6 @@ pub(crate) fn compile_with_backend_impl<
         &spec_fnidx,
         &spec_fn_types,
         &spec_registry,
-        &tagged_return_fns,
     );
     let param_reprs = refine_param_reprs_for_tagging(param_reprs, &tagged_slot0_cont_specs);
     let return_reprs = build_return_reprs(t, &return_tys, &tagged_return_specs);

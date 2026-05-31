@@ -765,6 +765,19 @@ end
 }
 
 #[test]
+fn runtime_enum_find_early_halt_keeps_value_delivery_boxed() {
+    let got = capture_main_with_runtime_graph(
+        r#"
+fn main() do
+  dbg(Enum.find([1, 2], :none, fn (x) -> if x == 1, do: true, else: panic("late find") end))
+end
+"#,
+    );
+
+    assert_eq!(got, vec!["1"]);
+}
+
+#[test]
 fn runtime_enum_sort_uses_stable_merge_sort_for_lists() {
     let got = capture_main_with_runtime_graph(
         r#"

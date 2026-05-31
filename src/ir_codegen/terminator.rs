@@ -212,7 +212,7 @@ impl ContinuationPlan {
         &self,
         body: &mut CodegenFn<'_, '_, '_, M>,
         runtime: &RuntimeRefs,
-        return_reprs: &[ArgRepr],
+        spec_keys: &[crate::ir_planner::fn_types::SpecKey],
         is_cont_fn: bool,
         cont_param: Option<ir::Value>,
         frame_ptr: Option<ir::Value>,
@@ -223,7 +223,7 @@ impl ContinuationPlan {
                 build_lazy_cont_descriptor(
                     body,
                     runtime,
-                    return_reprs,
+                    spec_keys,
                     is_cont_fn,
                     cont_param,
                     frame_ptr,
@@ -238,7 +238,7 @@ impl ContinuationPlan {
                 build_cont_closure(
                     body,
                     runtime,
-                    return_reprs,
+                    spec_keys,
                     is_cont_fn,
                     cont_param,
                     frame_ptr,
@@ -537,23 +537,11 @@ fn emit_return_term<
     cont_param: Option<ir::Value>,
     v: &crate::fz_ir::Var,
 ) -> Result<(), CodegenError> {
-    let return_reprs = env.return_reprs;
     let closure_n_captures = env.closure_n_captures;
     {
         if is_native {
-            let spec_demand = &env.spec_keys[this_spec_id as usize].demand;
-            let cont_return_demand;
-            let return_demand = if is_cont_fn && spec_demand.tuple_field_arity().is_some() {
-                cont_return_demand = match spec_demand.list_tail_ty() {
-                    Some(tail_ty) => ReturnDemand::list_tail(tail_ty.clone()),
-                    None => ReturnDemand::value(),
-                };
-                &cont_return_demand
-            } else {
-                spec_demand
-            };
-            let return_abi = DemandAbi::from_demand(return_demand);
-            if return_abi.delivers_list_tail_return()
+            let return_abi = DemandAbi::new(&env.spec_keys[this_spec_id as usize]);
+            if return_abi.returned_delivers_list_tail_return(is_cont_fn)
                 && let Some(elems) = body.cache.list_tail_return_elems.get(&v.0).cloned()
             {
                 let delivered =
@@ -575,7 +563,7 @@ fn emit_return_term<
                     .return_call_indirect(sigref, code, &[delivered, cont_val]);
                 return Ok(());
             }
-            if let Some(arity) = return_abi.tuple_field_arity()
+            if let Some(arity) = return_abi.returned_tuple_field_arity(is_cont_fn)
                 && let Some(fields) = body.cache.tuple_return_fields.get(&v.0)
             {
                 let fields = fields.clone();
@@ -619,7 +607,9 @@ fn emit_return_term<
             let my_return_repr = if is_closure_target_body {
                 ArgRepr::ValueRef
             } else {
-                return_reprs[this_spec_id as usize]
+                return_abi.returned_value_repr(is_cont_fn).expect(
+                    "native return must deliver one value lane outside tuple-field fast path",
+                )
             };
             let binding = *var_env.get(&v.0).expect("unbound return val");
             let cont_val = if is_cont_fn {
@@ -678,7 +668,6 @@ fn emit_call_term<
     let spec_registry = env.spec_registry;
     let fn_ids = env.fn_ids;
     let param_reprs = env.param_reprs;
-    let return_reprs = env.return_reprs;
     let module = env.module;
     {
         let cap_vals: Vec<ir::Value> = continuation
@@ -760,7 +749,7 @@ fn emit_call_term<
             let cont_arg = ContinuationPlan::lazy_native_descriptor(payload).emit_value(
                 body,
                 runtime,
-                return_reprs,
+                env.spec_keys,
                 is_cont_fn,
                 cont_param,
                 frame_ptr,
@@ -887,7 +876,6 @@ fn emit_native_call_with_cont<
     let fn_types = env.fn_types;
     let fn_ids = env.fn_ids;
     let param_reprs = env.param_reprs;
-    let return_reprs = env.return_reprs;
     let closure_n_captures = env.closure_n_captures;
     let module = env.module;
     // Coerce each arg from its current var repr to the
@@ -895,7 +883,6 @@ fn emit_native_call_with_cont<
     // return_repr; the cont is the any-key spec by invariant
     // (all-ValueRef param_reprs, AnyValue cont frame slot 1).
     let callee_param_reprs = &param_reprs[callee_sid as usize];
-    let callee_ret_repr = return_reprs[callee_sid as usize];
     let callee_fid = *fn_ids.get(&callee_sid).expect("callee fn_id missing");
     let callee_fref = body.jmod.declare_func_in_func(callee_fid, body.b.func);
     let mut native_args = body.coerce_call_args(args, callee_param_reprs, var_env);
@@ -945,7 +932,7 @@ fn emit_native_call_with_cont<
         plan.emit_value(
             body,
             runtime,
-            return_reprs,
+            env.spec_keys,
             is_cont_fn,
             cont_param,
             frame_ptr,
@@ -969,6 +956,9 @@ fn emit_native_call_with_cont<
             Some(c) => c,
             None => {
                 synth_halt_cont = true;
+                let callee_ret_repr = DemandAbi::new(&env.spec_keys[callee_sid as usize])
+                    .returned_value_repr(env.cont_fns.contains(callee))
+                    .expect("synthesized halt continuation requires one delivered value lane");
                 synthesize_halt_cont(body, runtime, callee_ret_repr)
             }
         }
@@ -1025,6 +1015,9 @@ fn emit_native_call_with_cont<
         // Result + captures are written into the cont's
         // typed entry slots. Native result already has an
         // ABI repr; captured vars come from var_env.
+        let callee_ret_repr = DemandAbi::new(&env.spec_keys[callee_sid as usize])
+            .returned_value_repr(env.cont_fns.contains(callee))
+            .expect("uniform continuation write-back requires one delivered value lane");
         let mut payload: Vec<(ir::Value, ArgRepr)> =
             Vec::with_capacity(continuation.captured.len() + 1);
         payload.push((result, callee_ret_repr));
@@ -1146,10 +1139,8 @@ fn emit_native_tail_call<M: cranelift_module::Module>(
     let runtime = env.runtime;
     let fn_ids = env.fn_ids;
     let param_reprs = env.param_reprs;
-    let return_reprs = env.return_reprs;
     let closure_n_captures = env.closure_n_captures;
     let callee_param_reprs = &param_reprs[callee_sid as usize];
-    let callee_ret_repr = return_reprs[callee_sid as usize];
     let callee_fid = *fn_ids.get(&callee_sid).expect("callee fn_id missing");
     let callee_fref = body.jmod.declare_func_in_func(callee_fid, body.b.func);
     let mut native_args =
@@ -1189,6 +1180,9 @@ fn emit_native_tail_call<M: cranelift_module::Module>(
             Some(c) => c,
             None => {
                 synth_halt_cont = true;
+                let callee_ret_repr = DemandAbi::new(&env.spec_keys[callee_sid as usize])
+                    .returned_value_repr(env.cont_fns.contains(callee))
+                    .expect("synthesized halt continuation requires one delivered value lane");
                 synthesize_halt_cont(body, runtime, callee_ret_repr)
             }
         }
@@ -1228,6 +1222,9 @@ fn emit_native_tail_call<M: cranelift_module::Module>(
         // into MY cont according to the continuation schema.
         let call_inst = body.b.ins().call(callee_fref, &native_args);
         let result = body.b.inst_results(call_inst)[0];
+        let callee_ret_repr = DemandAbi::new(&env.spec_keys[callee_sid as usize])
+            .returned_value_repr(env.cont_fns.contains(callee))
+            .expect("uniform native tail call requires one delivered value lane");
         let result_value = CodegenValue::from_abi_value(result, callee_ret_repr);
         let my_cont = body.b.ins().load(
             types::I64,
@@ -1399,7 +1396,6 @@ fn emit_call_closure<
     let spec_registry = env.spec_registry;
     let fn_ids = env.fn_ids;
     let param_reprs = env.param_reprs;
-    let return_reprs = env.return_reprs;
     let closure_n_captures = env.closure_n_captures;
     let module = env.module;
     {
@@ -1440,7 +1436,7 @@ fn emit_call_closure<
         let cf = continuation_plan.emit_value(
             body,
             runtime,
-            return_reprs,
+            env.spec_keys,
             is_cont_fn,
             cont_param,
             frame_ptr,
@@ -1665,7 +1661,6 @@ fn emit_receive<
     continuation: &crate::fz_ir::Cont,
 ) -> Result<(), CodegenError> {
     let runtime = env.runtime;
-    let return_reprs = env.return_reprs;
     {
         // See docs/cps-in-clif.md §4: build the cont closure (outer_cont
         // in env field 0), hand it to fz_receive_park which parks an
@@ -1681,7 +1676,7 @@ fn emit_receive<
         let cl_ptr = ContinuationPlan::heap_closure(payload).emit_value(
             body,
             runtime,
-            return_reprs,
+            env.spec_keys,
             is_cont_fn,
             cont_param,
             frame_ptr,
@@ -1793,7 +1788,6 @@ fn build_park_record<
 ) -> ir::Value {
     use cranelift_codegen::ir::{StackSlotData, StackSlotKind};
     let runtime = env.runtime;
-    let return_reprs = env.return_reprs;
 
     // Pinned snapshot: alloca [AnyValueRef; n_pinned], take base addr.
     let n_pinned = pinned.len();
@@ -1878,7 +1872,7 @@ fn build_park_record<
         let cl_ptr = ContinuationPlan::heap_closure(payload).emit_value(
             body,
             runtime,
-            return_reprs,
+            env.spec_keys,
             is_cont_fn,
             cont_param,
             frame_ptr,
@@ -1915,7 +1909,7 @@ fn build_park_record<
             let cl_ptr = ContinuationPlan::heap_closure(payload).emit_value(
                 body,
                 runtime,
-                return_reprs,
+                env.spec_keys,
                 is_cont_fn,
                 cont_param,
                 frame_ptr,
