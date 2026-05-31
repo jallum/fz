@@ -105,8 +105,8 @@ hold everywhere:
    checking each impl arrow against the protocol arrow set, not by picking one
    optional callback spec.
 
-6. REPL/help rendering: render all arrows, one per line, instead of silently
-   dropping all but the first.
+6. REPL/help rendering: `?<name>` renders every resolvable declared arrow, one
+   `@spec:` line per arrow, instead of silently dropping all but the first.
 
 7. Acceptance fixture: unblock `Enum.with_index/2`'s function overload by
    restoring the honest two-`@spec` form and adding the function-overload case

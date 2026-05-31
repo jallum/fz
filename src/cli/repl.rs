@@ -931,8 +931,13 @@ fn lookup_doc(interp: &CompileTimeEvaluator, name: &str) -> String {
     if let Some(Value::Closure(c)) = interp.globals.lookup(name) {
         let mut out = String::new();
         if let Some(s) = &c.spec_text {
-            out.push_str("@spec: ");
-            out.push_str(s);
+            for line in s.lines() {
+                if !out.is_empty() {
+                    out.push('\n');
+                }
+                out.push_str("@spec: ");
+                out.push_str(line);
+            }
         }
         if let Some(d) = &c.doc {
             if !out.is_empty() {
@@ -1651,6 +1656,33 @@ end
             !out.contains("no documentation"),
             "@spec alone counts as documentation; got: {}",
             out
+        );
+    }
+
+    #[test]
+    fn doc_query_surfaces_all_declared_specs() {
+        let interp = load(
+            r#"
+defmodule M do
+  @spec pick(integer) :: integer
+  @spec pick(float) :: float
+  fn pick(value), do: value
+end
+"#,
+        );
+        let out = lookup_doc(&interp, "M.pick");
+        assert_eq!(
+            out.lines()
+                .filter(|line| line.starts_with("@spec:"))
+                .count(),
+            2,
+            "should render every @spec arrow; got: {}",
+            out
+        );
+        assert!(out.contains("(int) -> int"), "missing integer spec: {out}");
+        assert!(
+            out.contains("(float) -> float"),
+            "missing float spec: {out}"
         );
     }
 

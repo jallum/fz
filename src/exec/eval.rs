@@ -18,16 +18,15 @@ use std::rc::Rc;
 
 pub type EvalResult = Result<Value, String>;
 
-/// fz-ul4.31.6 — Resolve and pretty-print a fn's `@spec` for REPL
-/// `?<name>` surfacing. Returns `None` when the fn has no `@spec` OR
-/// when the spec body fails to resolve (the validation pass surfaces
-/// that as a `spec/violation` diagnostic; the REPL renderer just skips
-/// the spec line).
+/// fz-ul4.31.6 — Resolve and pretty-print a fn's `@spec` arrows for REPL
+/// `?<name>` surfacing. Returns `None` when the fn has no resolvable `@spec`
+/// arrows. The validation pass surfaces bad specs as diagnostics; the REPL
+/// renderer just skips unresolved arrows.
 pub fn format_spec_text(def: &FnDef, prog: &Program) -> Option<String> {
-    let spec = def.attrs.iter().find_map(|a| match a {
+    let specs = def.attrs.iter().filter_map(|a| match a {
         Attribute::Spec(s) => Some(s),
         _ => None,
-    })?;
+    });
     let module_path: String = match def.name.rfind('.') {
         Some(i) => def.name[..i].to_string(),
         None => String::new(),
@@ -35,13 +34,18 @@ pub fn format_spec_text(def: &FnDef, prog: &Program) -> Option<String> {
     let empty = crate::type_expr::ModuleTypeEnv::new();
     let env = prog.module_type_envs.get(&module_path).unwrap_or(&empty);
     let mut ct = crate::types::ConcreteTypes;
-    let resolved = crate::type_expr::resolve_spec_decl(&mut ct, spec, env).ok()?;
-    let params: Vec<String> = resolved.params.iter().map(|ty| ct.display(ty)).collect();
-    Some(format!(
-        "({}) -> {}",
-        params.join(", "),
-        ct.display(&resolved.result)
-    ))
+    let mut lines = Vec::new();
+    for spec in specs {
+        if let Ok(resolved) = crate::type_expr::resolve_spec_decl(&mut ct, spec, env) {
+            let params: Vec<String> = resolved.params.iter().map(|ty| ct.display(ty)).collect();
+            lines.push(format!(
+                "({}) -> {}",
+                params.join(", "),
+                ct.display(&resolved.result)
+            ));
+        }
+    }
+    (!lines.is_empty()).then(|| lines.join("\n"))
 }
 
 /// Vestigial hook from the retired direct-style JIT tier-up policy (.11.9).
