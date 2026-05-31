@@ -1,0 +1,17 @@
+# Like enum_reduce.fz, but the reducer is a named-function reference
+# (`&Main.reducer/2`) rather than an inline lambda — the shape the real
+# `enum_reduce_suspend` / `enum_count_after_reduce` fixtures use. The reducer
+# returns an explicit `{:cont, _}` state.
+#
+# Expected: Enum.reduce(..., &reducer/2) : int ; settles (no none).
+
+defmodule Main do
+  fn reducer(entry, acc) do
+    {:cont, acc + entry}
+  end
+
+  fn main() do
+    Enum.reduce([1, 2, 3], 0, &Main.reducer/2)
+    |> dbg()
+  end
+end

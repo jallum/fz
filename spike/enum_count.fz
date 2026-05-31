@@ -1,0 +1,5 @@
+# Enum.count dispatches the `count` protocol callback (not reduce) to the List
+# impl. Expected: Enum.count([1,2,3]) : int ; settles.
+fn main() do
+  dbg(Enum.count([1, 2, 3]))
+end

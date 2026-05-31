@@ -734,6 +734,40 @@ mod tests {
     /// `Enumerable.List.reduce` settles to its concrete `{:done,_}|{:halted,_}`
     /// shape, and `Enum.reduce` unwraps it to `int` — no `none`. This is the
     /// fold_state_machine shape plus one protocol hop, end to end.
+    /// Protocol dispatch generalizes across callbacks and impls on the runtime
+    /// graph. The user-facing `Enum.*` result settles to a concrete `int` (no
+    /// `none`) for: a `List` reduce with an inline lambda; a `List` reduce with
+    /// a named-fn reference (`&Main.reducer/2`, the `enum_reduce_suspend`
+    /// fixture shape); `Enum.count` (the `count` callback, not `reduce`); and a
+    /// `Range` receiver (a different `Enumerable` impl than `List`).
+    #[test]
+    fn runtime_graph_enum_ops_settle_to_int() {
+        let cases = [
+            ("list lambda", "Enum.reduce", include_str!("../../spike/enum_reduce.fz")),
+            (
+                "named-fn ref",
+                "Enum.reduce",
+                include_str!("../../spike/enum_reduce_named_ref.fz"),
+            ),
+            ("count", "Enum.count", include_str!("../../spike/enum_count.fz")),
+            (
+                "range receiver",
+                "Enum.reduce",
+                include_str!("../../spike/enum_reduce_range.fz"),
+            ),
+        ];
+        let mut t = ConcreteTypes;
+        let int = t.int();
+        for (label, entry, src) in cases {
+            let module = linked(src);
+            let ret = infer_fn_via_main(&module, entry);
+            assert!(
+                t.is_equivalent(&ret, &int),
+                "{label}: {entry} should settle to int, got {ret:?}"
+            );
+        }
+    }
+
     #[test]
     fn enum_reduce_runtime_graph_settles() {
         let module = linked(include_str!("../../spike/enum_reduce.fz"));
