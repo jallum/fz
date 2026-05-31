@@ -1,5 +1,5 @@
 defprotocol Enumerable do
-  @spec reduce(t(a), b, (a, b) -> {:cont, b} | {:halt, b} | {:suspend, b}) :: any
+  @spec reduce(t(a), b, (a, b) -> {:cont, b} | {:halt, b} | {:suspend, b}) :: {:done, b} | {:halted, b} | {:suspended, b, () -> any}
   fn reduce(enumerable, acc, reducer)
 
   @spec count(t(a)) :: {:ok, integer} | {:error, any}

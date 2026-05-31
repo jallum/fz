@@ -16,7 +16,7 @@ defmodule List do
   fnp delete_first([head | tail], value), do: [head | delete_first(tail, value)]
 
   @doc "Enumerable.reduce/3 callback body for lists."
-  @spec reduce(any, any, any) :: any
+  @spec reduce([a], {:cont, b} | {:halt, b} | {:suspend, b}, (a, b) -> {:cont, b} | {:halt, b} | {:suspend, b}) :: {:done, b} | {:halted, b} | {:suspended, b, () -> any}
   fn reduce(list, {:cont, acc}, reducer), do: reduce_cont(list, acc, reducer)
   fn reduce(_list, {:halt, acc}, _reducer), do: {:halted, acc}
   fn reduce(list, {:suspend, acc}, reducer) do
@@ -38,11 +38,13 @@ defmodule List do
   fn reverse([], tail), do: tail
   fn reverse([head | tail], acc), do: reverse(tail, [head | acc])
 
+  @spec reduce_cont([a], b, (a, b) -> {:cont, b} | {:halt, b} | {:suspend, b}) :: {:done, b} | {:halted, b} | {:suspended, b, () -> any}
   fnp reduce_cont([], acc, _reducer), do: {:done, acc}
   fnp reduce_cont([head | tail], acc, reducer) do
     reduce_step(tail, reducer.(head, acc), reducer)
   end
 
+  @spec reduce_step([a], {:cont, b} | {:halt, b} | {:suspend, b}, (a, b) -> {:cont, b} | {:halt, b} | {:suspend, b}) :: {:done, b} | {:halted, b} | {:suspended, b, () -> any}
   fnp reduce_step(list, {:cont, acc}, reducer), do: reduce_cont(list, acc, reducer)
   fnp reduce_step(_list, {:halt, acc}, _reducer), do: {:halted, acc}
   fnp reduce_step(list, {:suspend, acc}, reducer) do

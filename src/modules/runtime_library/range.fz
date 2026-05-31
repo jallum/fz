@@ -10,7 +10,7 @@ defmodule Range do
   fn new(first, last, step), do: %Range{first: first, last: last, step: step}
 
   @doc "Enumerable.reduce/3 callback body for ranges."
-  @spec reduce(integer, integer, integer, any, (integer, any) -> any) :: any
+  @spec reduce(integer, integer, integer, {:cont, b} | {:halt, b} | {:suspend, b}, (integer, b) -> {:cont, b} | {:halt, b} | {:suspend, b}) :: {:done, b} | {:halted, b} | {:suspended, b, () -> any}
   fn reduce(first, last, step, {:cont, acc}, reducer), do: reduce_cont(first, last, step, first, acc, reducer)
   fn reduce(_first, _last, _step, {:halt, acc}, _reducer), do: {:halted, acc}
   fn reduce(first, last, step, {:suspend, acc}, reducer) do
@@ -47,6 +47,7 @@ defmodule Range do
     slice_from(last, step + stride - 1, first + (start * step), amount, [])
   end
 
+  @spec reduce_cont(integer, integer, integer, integer, b, (integer, b) -> {:cont, b} | {:halt, b} | {:suspend, b}) :: {:done, b} | {:halted, b} | {:suspended, b, () -> any}
   fnp reduce_cont(first, last, step, current, acc, reducer) do
     if done?(last, step, current) do
       {:done, acc}
@@ -55,6 +56,7 @@ defmodule Range do
     end
   end
 
+  @spec reduce_step(integer, integer, integer, integer, {:cont, b} | {:halt, b} | {:suspend, b}, (integer, b) -> {:cont, b} | {:halt, b} | {:suspend, b}) :: {:done, b} | {:halted, b} | {:suspended, b, () -> any}
   fnp reduce_step(first, last, step, current, {:cont, acc}, reducer), do: reduce_cont(first, last, step, current + step, acc, reducer)
   fnp reduce_step(_first, _last, _step, _current, {:halt, acc}, _reducer), do: {:halted, acc}
   fnp reduce_step(first, last, step, current, {:suspend, acc}, reducer) do
