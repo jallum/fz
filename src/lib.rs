@@ -36,6 +36,7 @@ mod pattern_matrix;
 mod reducer;
 mod telemetry;
 mod type_expr;
+mod type_infer;
 mod types;
 use crate::telemetry::Telemetry as _;
 use crate::types::Types;
