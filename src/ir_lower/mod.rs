@@ -1016,6 +1016,17 @@ end
             .count()
     }
 
+    fn count_prims_in_fn(f: &crate::fz_ir::FnIr, pred: impl Fn(&Prim) -> bool) -> usize {
+        f.blocks
+            .iter()
+            .flat_map(|b| &b.stmts)
+            .filter(|stmt| {
+                let crate::fz_ir::Stmt::Let(_, prim) = stmt;
+                pred(prim)
+            })
+            .count()
+    }
+
     fn first_make_closure(f: &crate::fz_ir::FnIr) -> (FnId, Vec<Var>) {
         f.blocks
             .iter()
@@ -1087,6 +1098,18 @@ end
     fn lower_program_returns_normalized_call_continuation_captures() {
         let (m, cap) =
             lower_src_with_capture("fn callee(x), do: x\nfn caller(x, y), do: callee(x) + x");
+        let caller = m.fn_by_name("caller").expect("caller fn missing");
+        let continuation = caller
+            .blocks
+            .iter()
+            .find_map(|b| {
+                if let Term::Call { continuation, .. } = &b.terminator {
+                    Some(continuation)
+                } else {
+                    None
+                }
+            })
+            .expect("caller should contain non-tail call");
         let ev = cap
             .find(&["fz", "ir", "capture_norm", "captures_pruned"])
             .into_iter()
@@ -1094,6 +1117,9 @@ end
                 matches!(
                     ev.metadata.get("producer"),
                     Some(crate::telemetry::Value::Str(s)) if s.as_ref() == "call_continuation"
+                ) && matches!(
+                    ev.measurements.get("fn_id"),
+                    Some(crate::telemetry::Value::U64(id)) if *id == continuation.fn_id.0 as u64
                 )
             })
             .expect("captures_pruned event");
@@ -1110,18 +1136,6 @@ end
             Some(crate::telemetry::Value::U64(1))
         ));
 
-        let caller = m.fn_by_name("caller").expect("caller fn missing");
-        let continuation = caller
-            .blocks
-            .iter()
-            .find_map(|b| {
-                if let Term::Call { continuation, .. } = &b.terminator {
-                    Some(continuation)
-                } else {
-                    None
-                }
-            })
-            .expect("caller should contain non-tail call");
         assert_eq!(
             continuation.captured.len(),
             1,
@@ -1319,6 +1333,54 @@ end
             "expected join fn for non-tail: {}",
             s
         );
+    }
+
+    #[test]
+    fn non_tail_if_call_arm_flows_through_join() {
+        // The branch body is not final tail position when the if has a join.
+        // Pre-fix, `fun(head)` returned directly from if_then and skipped the
+        // surrounding list construction.
+        let out = run_and_capture(
+            "fn map_every_list([], _nth, _index, _fun), do: []\n\
+             fn map_every_list([head | tail], nth, index, fun) do\n\
+               next = if (index % nth) == 0, do: fun(head), else: head\n\
+               [next | map_every_list(tail, nth, index + 1, fun)]\n\
+             end\n\
+             fn main() do\n\
+               dbg(map_every_list([1, 2, 3, 4], 2, 0, fn (x) -> x * 100 end))\n\
+             end",
+        );
+        assert_eq!(out, "[100, 2, 300, 4]");
+    }
+
+    #[test]
+    fn non_tail_case_call_arm_flows_through_join() {
+        let out = run_and_capture(
+            "fn pick(x, fun) do\n\
+               next = case x do\n\
+                 0 -> fun(x)\n\
+                 _ -> x\n\
+               end\n\
+               [next]\n\
+             end\n\
+             fn main() do dbg(pick(0, fn (x) -> x + 1 end)) end",
+        );
+        assert_eq!(out, "[1]");
+    }
+
+    #[test]
+    fn non_tail_cond_call_arm_flows_through_join() {
+        let out = run_and_capture(
+            "fn pick(x, fun) do\n\
+               next = cond do\n\
+                 x == 0 -> fun(x)\n\
+                 true -> x\n\
+               end\n\
+               [next]\n\
+             end\n\
+             fn main() do dbg(pick(0, fn (x) -> x + 1 end)) end",
+        );
+        assert_eq!(out, "[1]");
     }
 
     #[test]
@@ -1877,7 +1939,9 @@ end
              end",
         );
 
-        let field_1_count = count_prims(&m, |prim| matches!(prim, Prim::TupleField(_, 1)));
+        let classify = m.fn_by_name("classify").expect("classify fn");
+        let field_1_count =
+            count_prims_in_fn(classify, |prim| matches!(prim, Prim::TupleField(_, 1)));
         assert_eq!(
             field_1_count, 1,
             "tuple field used by guard and binding should materialize once:\n{}",
@@ -1897,7 +1961,8 @@ end
              end",
         );
 
-        let head_count = count_prims(&m, |prim| matches!(prim, Prim::ListHead(_)));
+        let classify = m.fn_by_name("classify").expect("classify fn");
+        let head_count = count_prims_in_fn(classify, |prim| matches!(prim, Prim::ListHead(_)));
         assert_eq!(
             head_count, 1,
             "list head used by guard and binding should materialize once:\n{}",

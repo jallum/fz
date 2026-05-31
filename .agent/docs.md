@@ -9,6 +9,7 @@ Read the one whose trigger matches what you are about to touch:
 
 - [agent-docs](docs/agent-docs.md) — writing or revising `.agent/docs` guidance.
 - [continuation-captures](docs/continuation-captures.md) — continuation ABI, closure captures, lambda captures, or capture pruning.
+- [control-flow-lowering](docs/control-flow-lowering.md) — `if` / `case` / `cond` / `with` / `receive` lowering, arm continuation functions, joins, or tailness across branch boundaries.
 - [destination-passing](docs/destination-passing.md) — destination planning/passing IR, erased init-token facts, tuple/list/map construction lowering, typed container field initialization, physical capabilities, or owned-cons reuse.
 - [dispatch-as-planner-output](docs/dispatch-as-planner-output.md) — planner-owned call-edge facts, `SpecPlan.call_edges`, `SpecKey` variants, callable capabilities, or ReturnDemand capability selection.
 - [single-authoritative-plan](docs/single-authoritative-plan.md) — the one `plan_module` codegen commits to, the `planner.planned` count, `plan_callable_capabilities` / `CapabilityPlan`, why destination lowering needs no re-plan, or why the capability pass keeps the return fixpoint.

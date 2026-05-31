@@ -1181,12 +1181,13 @@ pub(super) fn lower_case(
         result?;
     }
 
+    let arm_is_tail = join_opt.is_none();
     for (i, clause) in clauses.iter().enumerate() {
         let Some(cont) = clause_conts[i].clone() else {
             continue;
         };
         let _ = switch_to_cont_fn(ctx, &cont, 0);
-        let result = lower_expr(ctx, &clause.body, /* is_tail */ true)?;
+        let result = lower_expr(ctx, &clause.body, arm_is_tail)?;
         finalize_arm(ctx, result, join_opt.as_ref());
     }
 
@@ -1292,7 +1293,8 @@ pub(super) fn lower_cond(
         // body_b: lower the body inline, finalize.
         ctx.cur_block = Some(body_b);
         ctx.terminated = false;
-        let result = lower_expr(ctx, body, /* is_tail */ true)?;
+        let arm_is_tail = join_opt.is_none();
+        let result = lower_expr(ctx, body, arm_is_tail)?;
         finalize_arm(ctx, result, join_opt.as_ref());
     }
 
@@ -1405,7 +1407,8 @@ pub(super) fn lower_with(
     }
 
     // Main body lowered inline. Finalize via join_opt or Return.
-    let result = lower_expr(ctx, body, /* is_tail */ true)?;
+    let arm_is_tail = join_opt.is_none();
+    let result = lower_expr(ctx, body, arm_is_tail)?;
     finalize_arm(ctx, result, join_opt.as_ref());
 
     // -- Build with_fail_cont. Receives (unmatched_value, ...captures).
@@ -1511,7 +1514,7 @@ pub(super) fn lower_with(
                 continue;
             };
             let _ = switch_to_cont_fn(ctx, &cont, 0);
-            let result = lower_expr(ctx, &clause.body, /* is_tail */ true)?;
+            let result = lower_expr(ctx, &clause.body, arm_is_tail)?;
             finalize_arm(ctx, result, join_opt.as_ref());
         }
     }

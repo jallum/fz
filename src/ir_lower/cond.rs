@@ -187,9 +187,9 @@ pub(crate) fn lower_if(
     //   outer fn   : ... ; Term::If(cv, then_b, else_b)
     //   outer.then_b: TailCall(then_fn, [...captures])
     //   outer.else_b: TailCall(else_fn, [...captures])
-    //   then_fn     : lower(then_e, is_tail=true) ;
+    //   then_fn     : lower(then_e, is_tail=false) ;
     //                 finalize → TailCall(join_fn, [v, ...captures])
-    //   else_fn     : lower(else_e, is_tail=true) ;
+    //   else_fn     : lower(else_e, is_tail=false) ;
     //                 finalize → TailCall(join_fn, [v, ...captures])
     //   join_fn     : becomes ctx.cur. param `join_param` carries the
     //                 if's value. Surrounding code continues here.
@@ -256,15 +256,20 @@ pub(crate) fn lower_if(
         is_back_edge: false,
     });
 
+    // Arm expressions are truly tail only when the construct itself is in
+    // tail position. A non-tail construct owns a join continuation, so an arm
+    // call must produce a value for that join rather than return from the arm.
+    let arm_is_tail = join_opt.is_none();
+
     // Move to then_fn. Finalizes the outer fn (which is now fully populated).
     let _ = switch_to_cont_fn(ctx, &then_cont, 0);
-    let tv = lower_expr(ctx, then_e, /* is_tail */ true)?;
+    let tv = lower_expr(ctx, then_e, arm_is_tail)?;
     finalize_arm(ctx, tv, join_opt.as_ref());
 
     // Move to else_fn. Finalizes then_fn (or its CPS-split descendant).
     let _ = switch_to_cont_fn(ctx, &else_cont, 0);
     let ev = if let Some(else_e) = else_opt {
-        lower_expr(ctx, else_e, /* is_tail */ true)?
+        lower_expr(ctx, else_e, arm_is_tail)?
     } else {
         ctx.let_(Prim::Const(Const::Nil))
     };

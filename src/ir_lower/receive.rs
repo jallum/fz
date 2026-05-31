@@ -227,6 +227,7 @@ pub(crate) fn lower_receive(
     // cont_fn` finalises the previously-current fn and switches into the
     // newly-named one; calling it in sequence chains the build-finalise
     // pattern through every body fn.
+    let arm_is_tail = join_opt.is_none();
     let clauses_iter = clauses.iter().zip(clause_slots);
     for (clause, slot) in clauses_iter {
         if let Some(g_cont) = &slot.guard {
@@ -255,13 +256,13 @@ pub(crate) fn lower_receive(
         for (name, &v) in slot.bound_names.iter().zip(extras.iter()) {
             ctx.bind(name, v);
         }
-        let result = lower_expr(ctx, &clause.body, /* is_tail */ true)?;
+        let result = lower_expr(ctx, &clause.body, arm_is_tail)?;
         finalize_arm(ctx, result, join_opt.as_ref());
     }
 
     if let Some((cont, a)) = after_slot {
         let _extras = switch_to_cont_fn(ctx, &cont, 0);
-        let result = lower_expr(ctx, &a.body, /* is_tail */ true)?;
+        let result = lower_expr(ctx, &a.body, arm_is_tail)?;
         finalize_arm(ctx, result, join_opt.as_ref());
     }
 
