@@ -24,24 +24,6 @@ fn lower_resolved_src(src: &str) -> Module {
     lower_program(&mut t, &prog).expect("lower")
 }
 
-fn join_return_ty(
-    t: &mut crate::types::ConcreteTypes,
-    f: &crate::fz_ir::FnIr,
-    ft: &crate::ir_planner::SpecPlan,
-) -> crate::types::Ty {
-    let mut joined: Option<crate::types::Ty> = None;
-    for b in &f.blocks {
-        if let Term::Return(v) = &b.terminator {
-            let d = ft.vars.get(v).cloned().unwrap_or_else(|| t.any());
-            joined = Some(match joined {
-                Some(prev) => t.union(prev, d),
-                None => d,
-            });
-        }
-    }
-    joined.unwrap_or_else(|| t.any())
-}
-
 /// Every zero-capture `MakeClosure(f, [])` target gets one entry in
 /// `static_closure_targets`; multiple sites for the same `f` share a
 /// single entry (cl_sid keyed). See docs/cps-in-clif.md §8.2.
@@ -1936,17 +1918,8 @@ fn signature_uniform_when_not_native() {
     let add_idx = m.fns.iter().position(|f| f.name == "add").unwrap();
     let ft = mt.any_spec_for(m.fns[add_idx].id).expect("registered spec");
     let mut t = crate::types::ConcreteTypes;
-    let rd = join_return_ty(&mut t, &m.fns[add_idx], ft);
     let prs = build_param_reprs(&mut t, &m.fns[add_idx], ft);
-    let sig = build_fn_signature(
-        &prs,
-        ArgRepr::from_ty(&mut t, &rd),
-        false,
-        true,
-        None,
-        false,
-        None,
-    );
+    let sig = build_fn_signature(&prs, false, true, None, false, None);
     assert_eq!(sig.params.len(), 2);
     assert_eq!(sig.returns.len(), 1);
     assert_eq!(sig.params[0].value_type, types::I64);
@@ -2016,17 +1989,8 @@ fn signature_native_uses_typed_params_and_cont() {
     let add_idx = m.fns.iter().position(|f| f.name == "add").unwrap();
     let ft = mt.any_spec_for(m.fns[add_idx].id).expect("registered spec");
     let mut t = crate::types::ConcreteTypes;
-    let rd = join_return_ty(&mut t, &m.fns[add_idx], ft);
     let prs = build_param_reprs(&mut t, &m.fns[add_idx], ft);
-    let sig = build_fn_signature(
-        &prs,
-        ArgRepr::from_ty(&mut t, &rd),
-        true,
-        false,
-        None,
-        false,
-        None,
-    );
+    let sig = build_fn_signature(&prs, true, false, None, false, None);
     assert_eq!(sig.params.len(), 3);
     assert_eq!(sig.returns.len(), 1);
     assert_eq!(sig.params.last().unwrap().value_type, types::I64);
@@ -2050,17 +2014,8 @@ fn signature_native_arity_matches_entry_params_plus_cont() {
         .any_spec_for(m.fns[dist_idx].id)
         .expect("registered spec");
     let mut t = crate::types::ConcreteTypes;
-    let rd = join_return_ty(&mut t, &m.fns[dist_idx], ft);
     let prs = build_param_reprs(&mut t, &m.fns[dist_idx], ft);
-    let sig = build_fn_signature(
-        &prs,
-        ArgRepr::from_ty(&mut t, &rd),
-        true,
-        false,
-        None,
-        false,
-        None,
-    );
+    let sig = build_fn_signature(&prs, true, false, None, false, None);
     assert_eq!(sig.params.len(), 3);
     assert_eq!(sig.params[0].value_type, types::F64);
     assert_eq!(sig.params[1].value_type, types::F64);

@@ -180,6 +180,14 @@ Rendered capabilities are:
   carried list-tail destination for product contexts, rendered as
   `tuple_fields(N, list_tail(tail_ty))`.
 
+This delivery capability is not the same fact as the chain's terminal halt
+kind. `ReturnDemand` answers "how does this result cross the immediate seam?"
+while declared/effective return payloads answer "what values can eventually
+emerge if the chain halts?" A `Value`-demanded native spec therefore delivers a
+boxed value ref even when its reachable payload set is a singleton int or
+float. The halt side may still use a narrower kind when the reachable return
+chain proves one.
+
 Choosing a function variant, choosing a tuple-return ABI, and choosing a
 return-context body are the same kind of decision: a typed callsite capability
 selected before codegen.

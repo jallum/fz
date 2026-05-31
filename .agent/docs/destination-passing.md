@@ -69,6 +69,14 @@ the dispatch-selection rule are canonical in
 [`dispatch-as-planner-output`](dispatch-as-planner-output.md); this doc
 covers what each capability does to construction.
 
+That demand answers one compiler question only: how the callee must deliver its
+result to the immediate continuation. It does not answer the separate question
+"what payload values can flow to halt if this chain finishes?" The payload set
+comes from declared/effective returns; halt-kind selection joins that payload
+chain separately. Using declared/effective return types as if they were the
+delivery ABI is a modelling bug: a singleton payload like `1` still rides the
+ordinary `Value` delivery seam as a boxed value ref.
+
 The central invariant is that demand follows a specific return edge/result
 hole, not the whole caller spec. A caller spec can contain more than one call,
 and different calls in that spec can have different return uses. The durable

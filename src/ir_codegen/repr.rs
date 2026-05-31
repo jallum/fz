@@ -267,7 +267,6 @@ pub(crate) fn codegen_key_to_tys<T: crate::types::Types<Ty = crate::types::Ty>>(
 /// derives from `return_descr` the same way.
 pub(crate) fn build_fn_signature(
     param_reprs: &[ArgRepr],
-    ret_repr: ArgRepr,
     is_native: bool,
     is_cont_fn: bool,
     closure_target_n_caps: Option<usize>,
@@ -287,7 +286,6 @@ pub(crate) fn build_fn_signature(
     if let Some(n_caps) = closure_target_n_caps {
         return build_closure_target_sig(param_reprs, n_caps, has_list_tail_dest);
     }
-    let _ = ret_repr; // native return canonicalized to i64; ret_repr unused
     build_plain_native_sig(param_reprs, has_list_tail_dest)
 }
 

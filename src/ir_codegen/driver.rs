@@ -1022,7 +1022,7 @@ fn compute_tagged_slot0_cont_specs<T: crate::types::Types<Ty = crate::types::Ty>
 /// so halt_kind selection (fz_entry_thunk, halt-cont singletons) picks
 /// the right kind. Indirect closure dispatch uses the all-ValueRef seam
 /// ABI, so anything returning through it is ValueRef.
-fn compute_chain_repr<
+fn compute_halt_reprs<
     T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
 >(
     t: &mut T,
@@ -1124,12 +1124,12 @@ fn compute_chain_repr<
 }
 
 /// Per-fn halt-kind: looked up via the fn's any-key spec sid for the
-/// entry-time chain.
-fn derive_fn_halt_kinds(module: &Module, chain_repr: &[ArgRepr]) -> HashMap<u32, u32> {
+/// entry-time halt chain.
+fn derive_fn_halt_kinds(module: &Module, halt_reprs: &[ArgRepr]) -> HashMap<u32, u32> {
     let mut m: HashMap<u32, u32> = HashMap::new();
     for f in &module.fns {
         let sid = f.id.0 as usize;
-        if let Some(r) = chain_repr.get(sid).copied() {
+        if let Some(r) = halt_reprs.get(sid).copied() {
             m.insert(f.id.0, r.halt_kind());
         }
     }
@@ -1149,7 +1149,6 @@ fn build_fn_sigs(
     spec_fnidx: &[Option<usize>],
     spec_keys: &[crate::ir_planner::fn_types::SpecKey],
     param_reprs: &[Vec<ArgRepr>],
-    return_reprs: &[ArgRepr],
     natively_callable: &std::collections::HashSet<crate::fz_ir::FnId>,
     cont_fns: &std::collections::HashSet<crate::fz_ir::FnId>,
     closure_n_captures: &std::collections::HashMap<crate::fz_ir::FnId, usize>,
@@ -1163,7 +1162,6 @@ fn build_fn_sigs(
                 let demand_abi = DemandAbi::new(&spec_keys[sid]);
                 build_fn_signature(
                     &param_reprs[sid],
-                    return_reprs[sid],
                     is_native,
                     cont_fns.contains(&f.id),
                     if is_native {
@@ -2236,7 +2234,6 @@ pub(crate) fn compile_with_backend_impl<
         &spec_fnidx,
         &spec_keys,
         &param_reprs,
-        &return_reprs,
         &natively_callable,
         &cont_fns,
         &closure_n_captures,
@@ -2506,7 +2503,7 @@ pub(crate) fn compile_with_backend_impl<
         collect_static_closure_targets(&closure_shapes, &spec_keys, &fn_ids, &return_reprs);
 
     let diagnostics = crate::ir_planner::collect_diagnostics(t, module, &module_plan, tel);
-    let chain_repr = compute_chain_repr(
+    let halt_reprs = compute_halt_reprs(
         t,
         module,
         spec_count,
@@ -2515,7 +2512,7 @@ pub(crate) fn compile_with_backend_impl<
         &spec_registry,
         &return_reprs,
     );
-    let fn_halt_kinds = derive_fn_halt_kinds(module, &chain_repr);
+    let fn_halt_kinds = derive_fn_halt_kinds(module, &halt_reprs);
     emit_mid_flight_cont_bodies(
         backend.module_mut(),
         &mut fbctx,
