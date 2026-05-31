@@ -371,6 +371,12 @@ impl IrUnitLinker {
                 .iter()
                 .filter_map(|(fid, groups)| fn_map.get(fid).map(|new| (*new, groups.clone()))),
         );
+        self.linked.continuation_provenance.extend(
+            unit.code
+                .continuation_provenance
+                .iter()
+                .filter_map(|(fid, provenance)| fn_map.get(fid).map(|new| (*new, provenance.clone()))),
+        );
     }
 
     fn copy_planner_facts(&mut self, unit: &CompiledUnit, fn_map: &BTreeMap<FnId, FnId>) {

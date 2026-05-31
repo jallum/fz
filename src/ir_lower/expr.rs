@@ -1167,17 +1167,20 @@ pub(super) fn lower_case(
                         clause.span,
                         crate::fz_ir::FnCategory::ControlFlowCont,
                     );
-                    ctx.record_continuation_seed(crate::ir_lower::ctx::ContinuationSeed {
-                        caller: ctx.cur_fn_id.expect("lower_case: missing current fn id"),
-                        continuation: cont.id,
-                        captured: cont.outer_captured.iter().map(|(_, var)| *var).collect(),
-                        kind: crate::ir_lower::ctx::ContinuationSeedKind::MatcherBody {
-                            bindings: bindings
-                                .iter()
-                                .map(|binding| (binding.var, binding.source.clone()))
-                                .collect(),
+                    ctx.record_continuation_provenance(
+                        cont.id,
+                        crate::fz_ir::ContinuationProvenance {
+                            caller: ctx.cur_fn_id.expect("lower_case: missing current fn id"),
+                            captured: cont.outer_captured.iter().map(|(_, var)| *var).collect(),
+                            capture_param_offset: 0,
+                            kind: crate::fz_ir::ContinuationProvenanceKind::MatcherBody {
+                                bindings: bindings
+                                    .iter()
+                                    .map(|binding| (binding.var, binding.source.clone()))
+                                    .collect(),
+                            },
                         },
-                    });
+                    );
                     clause_conts_ref[i] = Some(cont.clone());
                     cont
                 }
@@ -1505,19 +1508,22 @@ pub(super) fn lower_with(
                             clause.span,
                             crate::fz_ir::FnCategory::ControlFlowCont,
                         );
-                        ctx.record_continuation_seed(crate::ir_lower::ctx::ContinuationSeed {
-                            caller: ctx
-                                .cur_fn_id
-                                .expect("lower_with else: missing current fn id"),
-                            continuation: cont.id,
-                            captured: cont.outer_captured.iter().map(|(_, var)| *var).collect(),
-                            kind: crate::ir_lower::ctx::ContinuationSeedKind::MatcherBody {
-                                bindings: bindings
-                                    .iter()
-                                    .map(|binding| (binding.var, binding.source.clone()))
-                                    .collect(),
+                        ctx.record_continuation_provenance(
+                            cont.id,
+                            crate::fz_ir::ContinuationProvenance {
+                                caller: ctx
+                                    .cur_fn_id
+                                    .expect("lower_with else: missing current fn id"),
+                                captured: cont.outer_captured.iter().map(|(_, var)| *var).collect(),
+                                capture_param_offset: 0,
+                                kind: crate::fz_ir::ContinuationProvenanceKind::MatcherBody {
+                                    bindings: bindings
+                                        .iter()
+                                        .map(|binding| (binding.var, binding.source.clone()))
+                                        .collect(),
+                                },
                             },
-                        });
+                        );
                         else_conts_ref[i] = Some(cont.clone());
                         cont
                     }

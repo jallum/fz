@@ -221,7 +221,9 @@ where
                 *complete = false;
                 t.none()
             });
-            if complete_returns.is_some_and(|done| !done.contains(&key)) {
+            if !effective_returns.contains_key(&key)
+                && complete_returns.is_some_and(|done| !done.contains(&key))
+            {
                 *complete = false;
             }
             let arrow = t.arrow(&matched_clause.args, ret);

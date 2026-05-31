@@ -2,30 +2,13 @@ use super::*;
 use crate::ast::FnDef;
 use crate::diag::Span;
 use crate::fz_ir::{
-    BlockId, CallsiteId, Const, EmitSlot, ExternArg, ExternDecl, ExternId, FnBuilder, FnId,
-    ModuleBuilder, Prim, ProtocolCallTarget, Term, Var,
+    BlockId, CallsiteId, Const, ContinuationProvenance, EmitSlot, ExternArg, ExternDecl,
+    ExternId, FnBuilder, FnId, ModuleBuilder, Prim, ProtocolCallTarget, Term, Var,
 };
 use std::collections::{HashMap, HashSet};
 
 /// Map of source-fn name -> primary FnId (the entry IR fn for a multi-clause source fn).
 pub(super) type FnMap = HashMap<(String, usize), FnId>;
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) enum ContinuationSeedKind {
-    DirectCall { callee: FnId, args: Vec<Var> },
-    ClosureCall { closure: Var, args: Vec<Var> },
-    MatcherBody {
-        bindings: Vec<(Var, crate::exec::matcher::SubjectRef)>,
-    },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct ContinuationSeed {
-    pub(super) caller: FnId,
-    pub(super) continuation: FnId,
-    pub(super) captured: Vec<Var>,
-    pub(super) kind: ContinuationSeedKind,
-}
 
 pub struct LowerCtx {
     pub atoms: AtomTable,
@@ -105,7 +88,7 @@ pub struct LowerCtx {
     pub(super) protocol_callbacks: HashMap<(String, usize), ProtocolCallTarget>,
     pub(super) protocol_stubs: HashMap<(String, usize), FnId>,
     pub(super) struct_schemas: std::collections::BTreeMap<String, Vec<String>>,
-    pub(super) continuation_seeds: Vec<ContinuationSeed>,
+    pub(super) continuation_provenance: HashMap<FnId, ContinuationProvenance>,
 }
 
 impl LowerCtx {
@@ -142,12 +125,16 @@ impl LowerCtx {
             protocol_callbacks: HashMap::new(),
             protocol_stubs: HashMap::new(),
             struct_schemas: Default::default(),
-            continuation_seeds: Vec::new(),
+            continuation_provenance: HashMap::new(),
         }
     }
 
-    pub(super) fn record_continuation_seed(&mut self, seed: ContinuationSeed) {
-        self.continuation_seeds.push(seed);
+    pub(super) fn record_continuation_provenance(
+        &mut self,
+        continuation: FnId,
+        provenance: ContinuationProvenance,
+    ) {
+        self.continuation_provenance.insert(continuation, provenance);
     }
 
     pub(super) fn resolve_prelude_import(&self, name: &str, arity: usize) -> Option<String> {

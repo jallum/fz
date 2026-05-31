@@ -233,6 +233,10 @@ pub trait Types {
     /// The planner owns the policy for when this is applied; the type
     /// implementation owns the concrete widening transform.
     fn widen_for_recursive_spec_key(&mut self, a: &Self::Ty) -> Self::Ty;
+    /// Structural widening for proven fixed-point slots. Prefer recursive
+    /// shape-preserving widening; fall back to ordinary union when the two
+    /// values do not share a mergeable outer shape.
+    fn structurally_widen(&mut self, a: &Self::Ty, b: &Self::Ty) -> Self::Ty;
 
     // ---- lattice ops ---------------------------------------------------
 

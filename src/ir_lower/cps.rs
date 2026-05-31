@@ -334,15 +334,18 @@ pub(crate) fn cps_split_call_closure(
         },
         call_span,
     );
-    ctx.record_continuation_seed(crate::ir_lower::ctx::ContinuationSeed {
-        caller,
-        continuation: cont_id,
-        captured: captured.iter().map(|(_, var)| *var).collect(),
-        kind: crate::ir_lower::ctx::ContinuationSeedKind::ClosureCall {
-            closure: closure_var,
-            args: arg_vars.clone(),
+    ctx.record_continuation_provenance(
+        cont_id,
+        crate::fz_ir::ContinuationProvenance {
+            caller,
+            captured: captured.iter().map(|(_, var)| *var).collect(),
+            capture_param_offset: 1,
+            kind: crate::fz_ir::ContinuationProvenanceKind::ClosureCall {
+                closure: closure_var,
+                args: arg_vars.clone(),
+            },
         },
-    });
+    );
 
     Ok(start_cps_cont_fn(
         ctx,
@@ -428,15 +431,18 @@ pub(crate) fn cps_split_call(
         },
         call_span,
     );
-    ctx.record_continuation_seed(crate::ir_lower::ctx::ContinuationSeed {
-        caller,
-        continuation: cont_id,
-        captured: captured.iter().map(|(_, var)| *var).collect(),
-        kind: crate::ir_lower::ctx::ContinuationSeedKind::DirectCall {
-            callee,
-            args: arg_vars.clone(),
+    ctx.record_continuation_provenance(
+        cont_id,
+        crate::fz_ir::ContinuationProvenance {
+            caller,
+            captured: captured.iter().map(|(_, var)| *var).collect(),
+            capture_param_offset: 1,
+            kind: crate::fz_ir::ContinuationProvenanceKind::DirectCall {
+                callee,
+                args: arg_vars.clone(),
+            },
         },
-    });
+    );
 
     Ok(start_cps_cont_fn(
         ctx,

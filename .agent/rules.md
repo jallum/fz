@@ -19,6 +19,7 @@
 - Documentation must be updated along with code. Before committing, consider the agent docs and guides that must be updated. All information presented must be provable fact, grounded in the code itself.
 - Refrain from even attempting to estimate time to accomplish work -- that is my concern.
 - If affordances/scaffolding are added on the fly, that's fine, but tickets to remove / collapse them *must be added* -- that's the price.
+- Find a _problem_? See something, say something. New issues deserve new tickets -- If they block us, we deal with them _first_. If they _don't_, then they go at the end of the epic so we don't lose them (like we would if we just dropped a comment in a place we'll never look again.)
 
 ## Tickets and Plans
 - Plans decompose into bw tickets (`bw --help`) that are executed in dependency order
@@ -32,9 +33,11 @@
 - Have descriptions that explain in eli5 _style_ (no need to _say it) why we're making the change, what we've changed, and how it works -- with examples.
 
 ## Best Practices
+- Data-model -> up, so that the problem is correct-by-construction.
 - Prefer short functions with crisp names over comments.
 - Modules should have a coherent focus.
 - Deeply nested code is a smell.
 - Data should be immutable where possible (esp. after construction).
 - Code should live in the right modules, modules should live in the right places.
 - Tests should observe telemetry wherever possible. Not available? Consider judiciously adding (or extending) events.
+- Tests should clearly state the _intent_ that they're capturing, and not just mechanically assert it.

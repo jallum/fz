@@ -918,6 +918,31 @@ pub(crate) type EmitsByCaller = HashMap<SpecKey, EmitterSiteSet>;
 pub(crate) type ProducesMap = HashMap<EmitterSite, SpecKey>;
 pub(crate) type FixedPointSlotSummaries = HashMap<(FnId, usize), crate::types::Ty>;
 
+pub(crate) fn result_linked_param_slots(
+    module: &Module,
+    fn_id: FnId,
+) -> std::collections::BTreeSet<usize> {
+    let Some(groups) = module.function_correspondence.get(&fn_id) else {
+        return std::collections::BTreeSet::new();
+    };
+    let mut params = std::collections::BTreeSet::new();
+    for group in groups {
+        if !group
+            .occurrences
+            .iter()
+            .any(|occ| matches!(occ, crate::type_expr::StructuralOccurrence::Result { .. }))
+        {
+            continue;
+        }
+        for occ in &group.occurrences {
+            if let crate::type_expr::StructuralOccurrence::Param { param_index, .. } = occ {
+                params.insert(*param_index);
+            }
+        }
+    }
+    params
+}
+
 /// Termination tripwire. The proof above (see `plan_module`'s doc) shows the
 /// worklist terminates in O(|specs| · H · |edges|) pops. This bound is
 /// intentionally loose; a hit indicates a violated monotonicity, equivalence,
@@ -971,29 +996,23 @@ pub(crate) fn normalize_result_correspondence_key<
     fn_id: FnId,
     mut key: Vec<crate::types::Ty>,
 ) -> Vec<crate::types::Ty> {
+    let recursive_params = result_linked_param_slots(module, fn_id);
+    if recursive_params.is_empty() {
+        return key;
+    }
     let Some(groups) = module.function_correspondence.get(&fn_id) else {
         return key;
     };
-    let mut recursive_params = std::collections::BTreeSet::new();
     let mut callback_params = std::collections::BTreeSet::new();
     for group in groups {
-        let has_result = group
-            .occurrences
-            .iter()
-            .any(|occ| matches!(occ, crate::type_expr::StructuralOccurrence::Result { .. }));
-        if !has_result {
-            continue;
-        }
         for occ in &group.occurrences {
             match occ {
-                crate::type_expr::StructuralOccurrence::Param { param_index, .. } => {
-                    recursive_params.insert(*param_index);
-                }
                 crate::type_expr::StructuralOccurrence::CallbackArg { param_index, .. }
                 | crate::type_expr::StructuralOccurrence::CallbackResult { param_index, .. } => {
                     callback_params.insert(*param_index);
                 }
-                crate::type_expr::StructuralOccurrence::Result { .. } => {}
+                crate::type_expr::StructuralOccurrence::Param { .. }
+                | crate::type_expr::StructuralOccurrence::Result { .. } => {}
             }
         }
     }
@@ -1044,7 +1063,7 @@ pub(crate) fn fixed_point_spec_key_for_arity<
 pub(crate) fn apply_fixed_point_slot_summaries<
     T: crate::types::Types<Ty = crate::types::Ty>,
 >(
-    t: &mut T,
+    _t: &mut T,
     recursive_fns: &std::collections::HashSet<FnId>,
     slot_summaries: &FixedPointSlotSummaries,
     callee: FnId,
@@ -1055,7 +1074,7 @@ pub(crate) fn apply_fixed_point_slot_summaries<
     }
     for (idx, slot) in key.iter_mut().enumerate() {
         if let Some(summary) = slot_summaries.get(&(callee, idx)) {
-            *slot = t.union(summary.clone(), slot.clone());
+            *slot = summary.clone();
         }
     }
     key

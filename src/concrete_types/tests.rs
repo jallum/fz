@@ -905,6 +905,66 @@ fn erase_closure_identity_preserves_callable_surface_shape() {
     assert!(clauses[0].closure.is_none());
 }
 
+#[test]
+fn structurally_widen_merges_lists_recursively() {
+    let widened = Descr::empty_list().structurally_widen(&Descr::non_empty_list_of(Descr::int()));
+    assert!(
+        widened.is_equiv(&Descr::list_of(Descr::int())),
+        "expected list(int), got {}",
+        widened
+    );
+}
+
+#[test]
+fn structurally_widen_merges_tuple_fields_recursively() {
+    let lhs = Descr::tuple_of([Descr::empty_list(), Descr::int_lit(2)]);
+    let rhs = Descr::tuple_of([Descr::non_empty_list_of(Descr::int()), Descr::int_lit(1)]);
+    let widened = lhs.structurally_widen(&rhs);
+    let expected = Descr::tuple_of([Descr::list_of(Descr::int()), Descr::int()]);
+    assert!(
+        widened.is_equiv(&expected),
+        "expected {}, got {}",
+        expected,
+        widened
+    );
+}
+
+#[test]
+fn structurally_widen_falls_back_to_union_for_incompatible_fields() {
+    let lhs = Descr::tuple_of([Descr::empty_list(), Descr::bool_t()]);
+    let rhs = Descr::tuple_of([Descr::empty_list(), Descr::int_lit(2)]);
+    let widened = lhs.structurally_widen(&rhs);
+    let expected = Descr::tuple_of([
+        Descr::empty_list(),
+        Descr::bool_t().union(&Descr::int_lit(2)).widen_for_recursive_spec_key(),
+    ]);
+    assert!(
+        widened.is_equiv(&expected),
+        "expected {}, got {}",
+        expected,
+        widened
+    );
+}
+
+#[test]
+fn structurally_widen_does_not_drop_cofinite_scalar_axes() {
+    let prev = Descr::int().union(&Descr::tuple_of([Descr::empty_list(), Descr::int()]));
+    let observed = Descr::tuple_of([Descr::empty_list(), Descr::int()]);
+    let widened = prev.structurally_widen(&observed);
+    assert!(
+        prev.is_subtype(&widened),
+        "structural widen must stay monotone: prev={} widened={}",
+        prev,
+        widened
+    );
+    assert!(
+        observed.is_subtype(&widened),
+        "structural widen must cover the new observation: observed={} widened={}",
+        observed,
+        widened
+    );
+}
+
 // ---- opaque type tests ----
 
 #[test]

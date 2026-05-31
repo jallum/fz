@@ -49,7 +49,6 @@ mod receive;
 
 pub use atom_table::AtomTable;
 pub use ctx::LowerCtx;
-use ctx::{ContinuationSeed, ContinuationSeedKind};
 pub use error::LowerError;
 pub use extern_table::ExternTable;
 
@@ -227,7 +226,10 @@ fn collect_runtime_prelude_import(
     }
 }
 
-fn synthesize_function_correspondence(module: &mut Module, seeds: &[ContinuationSeed]) {
+pub(crate) fn compute_current_function_correspondence(
+    module: &mut Module,
+    provenance: &std::collections::HashMap<FnId, crate::fz_ir::ContinuationProvenance>,
+) {
     use crate::type_expr::{
         StructuralCorrespondenceGroup, StructuralOccurrence, StructuralPathStep,
     };
@@ -281,15 +283,19 @@ fn synthesize_function_correspondence(module: &mut Module, seeds: &[Continuation
             .collect()
     }
 
-    fn continuation_capture_param_index(seed: &ContinuationSeed, var: Var) -> Option<usize> {
-        seed.captured
+    fn continuation_capture_param_index(
+        provenance: &crate::fz_ir::ContinuationProvenance,
+        var: Var,
+    ) -> Option<usize> {
+        provenance
+            .captured
             .iter()
             .position(|captured| *captured == var)
-            .map(|slot| slot + 1)
+            .map(|slot| slot + provenance.capture_param_offset)
     }
 
     fn rebase_caller_groups(
-        seed: &ContinuationSeed,
+        provenance: &crate::fz_ir::ContinuationProvenance,
         caller_params: &[Var],
         groups: &[StructuralCorrespondenceGroup],
     ) -> Vec<BTreeSet<StructuralOccurrence>> {
@@ -301,7 +307,8 @@ fn synthesize_function_correspondence(module: &mut Module, seeds: &[Continuation
                     match occ {
                         StructuralOccurrence::Param { param_index, path } => {
                             let caller_var = caller_params.get(*param_index).copied()?;
-                            let cont_param = continuation_capture_param_index(seed, caller_var)?;
+                            let cont_param =
+                                continuation_capture_param_index(provenance, caller_var)?;
                             out.insert(StructuralOccurrence::Param {
                                 param_index: cont_param,
                                 path: path.clone(),
@@ -310,7 +317,8 @@ fn synthesize_function_correspondence(module: &mut Module, seeds: &[Continuation
                         StructuralOccurrence::CallbackArg { param_index, .. }
                         | StructuralOccurrence::CallbackResult { param_index, .. } => {
                             let caller_var = caller_params.get(*param_index).copied()?;
-                            let cont_param = continuation_capture_param_index(seed, caller_var)?;
+                            let cont_param =
+                                continuation_capture_param_index(provenance, caller_var)?;
                             out.insert(StructuralOccurrence::Param {
                                 param_index: cont_param,
                                 path: vec![],
@@ -327,10 +335,76 @@ fn synthesize_function_correspondence(module: &mut Module, seeds: &[Continuation
     }
 
     fn project_direct_callee_groups(
-        seed: &ContinuationSeed,
+        provenance: &crate::fz_ir::ContinuationProvenance,
+        caller_fn: &crate::fz_ir::FnIr,
         args: &[Var],
         groups: &[StructuralCorrespondenceGroup],
     ) -> Vec<BTreeSet<StructuralOccurrence>> {
+        fn project_path_through_var(
+            f: &crate::fz_ir::FnIr,
+            var: Var,
+            path: &[StructuralPathStep],
+        ) -> Vec<(Var, Vec<StructuralPathStep>)> {
+            use crate::fz_ir::Prim;
+            let prim = f.blocks.iter().find_map(|block| {
+                block
+                    .stmts
+                    .iter()
+                    .find_map(|stmt| match stmt {
+                        crate::fz_ir::Stmt::Let(bound, prim) if *bound == var => Some(prim),
+                        _ => None,
+                    })
+            });
+            match prim {
+                Some(Prim::MakeTuple(args)) => {
+                    let Some(StructuralPathStep::TupleElem(index)) = path.first() else {
+                        return Vec::new();
+                    };
+                    args.get(*index)
+                        .map(|value| (*value, path[1..].to_vec()))
+                        .into_iter()
+                        .collect()
+                }
+                Some(Prim::MakeStruct { fields, .. }) => {
+                    let Some(StructuralPathStep::StructField(name)) = path.first() else {
+                        return Vec::new();
+                    };
+                    fields
+                        .iter()
+                        .find(|(field, _)| field == name)
+                        .map(|(_, value)| (*value, path[1..].to_vec()))
+                        .into_iter()
+                        .collect()
+                }
+                Some(Prim::MakeList(elems, _)) => {
+                    let Some(StructuralPathStep::ListElem) = path.first() else {
+                        return Vec::new();
+                    };
+                    elems.first()
+                        .map(|value| (*value, path[1..].to_vec()))
+                        .into_iter()
+                        .collect()
+                }
+                Some(Prim::TupleField(base, index)) => {
+                    let mut projected = vec![StructuralPathStep::TupleElem(*index as usize)];
+                    projected.extend_from_slice(path);
+                    vec![(*base, projected)]
+                }
+                Some(Prim::StructField(base, name)) => {
+                    let mut projected = vec![StructuralPathStep::StructField(name.clone())];
+                    projected.extend_from_slice(path);
+                    vec![(*base, projected)]
+                }
+                Some(Prim::ListHead(base)) => {
+                    let mut projected = vec![StructuralPathStep::ListElem];
+                    projected.extend_from_slice(path);
+                    vec![(*base, projected)]
+                }
+                Some(Prim::ListTail(base)) => vec![(*base, path.to_vec())],
+                _ => vec![(var, path.to_vec())],
+            }
+        }
+
         groups
             .iter()
             .filter_map(|group| {
@@ -339,16 +413,24 @@ fn synthesize_function_correspondence(module: &mut Module, seeds: &[Continuation
                     match occ {
                         StructuralOccurrence::Param { param_index, path } => {
                             let arg = args.get(*param_index).copied()?;
-                            let cont_param = continuation_capture_param_index(seed, arg)?;
-                            out.insert(StructuralOccurrence::Param {
-                                param_index: cont_param,
-                                path: path.clone(),
-                            });
+                            for (projected_var, projected_path) in
+                                project_path_through_var(caller_fn, arg, path)
+                            {
+                                let Some(cont_param) =
+                                    continuation_capture_param_index(provenance, projected_var)
+                                else {
+                                    continue;
+                                };
+                                out.insert(StructuralOccurrence::Param {
+                                    param_index: cont_param,
+                                    path: projected_path,
+                                });
+                            }
                         }
                         StructuralOccurrence::CallbackArg { param_index, .. }
                         | StructuralOccurrence::CallbackResult { param_index, .. } => {
                             let arg = args.get(*param_index).copied()?;
-                            let cont_param = continuation_capture_param_index(seed, arg)?;
+                            let cont_param = continuation_capture_param_index(provenance, arg)?;
                             out.insert(StructuralOccurrence::Param {
                                 param_index: cont_param,
                                 path: vec![],
@@ -368,7 +450,7 @@ fn synthesize_function_correspondence(module: &mut Module, seeds: &[Continuation
     }
 
     fn project_closure_call_groups(
-        seed: &ContinuationSeed,
+        provenance: &crate::fz_ir::ContinuationProvenance,
         caller_params: &[Var],
         closure: Var,
         args: &[Var],
@@ -386,7 +468,8 @@ fn synthesize_function_correspondence(module: &mut Module, seeds: &[Continuation
                     match occ {
                         StructuralOccurrence::Param { param_index, path } => {
                             let caller_var = caller_params.get(*param_index).copied()?;
-                            let cont_param = continuation_capture_param_index(seed, caller_var)?;
+                            let cont_param =
+                                continuation_capture_param_index(provenance, caller_var)?;
                             out.insert(StructuralOccurrence::Param {
                                 param_index: cont_param,
                                 path: path.clone(),
@@ -401,7 +484,7 @@ fn synthesize_function_correspondence(module: &mut Module, seeds: &[Continuation
                             path,
                         } if *param_index == caller_closure_param => {
                             let arg = args.get(*arg_index).copied()?;
-                            let cont_param = continuation_capture_param_index(seed, arg)?;
+                            let cont_param = continuation_capture_param_index(provenance, arg)?;
                             out.insert(StructuralOccurrence::Param {
                                 param_index: cont_param,
                                 path: path.clone(),
@@ -457,7 +540,7 @@ fn synthesize_function_correspondence(module: &mut Module, seeds: &[Continuation
     }
 
     fn project_matcher_binding_groups(
-        seed: &ContinuationSeed,
+        provenance: &crate::fz_ir::ContinuationProvenance,
         bindings: &[(Var, crate::exec::matcher::SubjectRef)],
         groups: &[StructuralCorrespondenceGroup],
     ) -> Vec<BTreeSet<StructuralOccurrence>> {
@@ -487,7 +570,7 @@ fn synthesize_function_correspondence(module: &mut Module, seeds: &[Continuation
                                     continue;
                                 }
                                 let Some(cont_param) =
-                                    continuation_capture_param_index(seed, *binding_var)
+                                    continuation_capture_param_index(provenance, *binding_var)
                                 else {
                                     continue;
                                 };
@@ -517,46 +600,51 @@ fn synthesize_function_correspondence(module: &mut Module, seeds: &[Continuation
     let mut changed = true;
     while changed {
         changed = false;
-        for seed in seeds {
-            let caller = module.fn_by_id(seed.caller);
-            let caller_params = caller.block(caller.entry).params.clone();
+        for (&continuation, provenance) in provenance {
+        let caller = module.fn_by_id(provenance.caller);
+        let caller_params = caller.block(caller.entry).params.clone();
             let caller_groups = module
                 .function_correspondence
-                .get(&seed.caller)
+                .get(&provenance.caller)
                 .cloned()
                 .unwrap_or_default();
 
             let mut sets = groups_to_sets(
                 module
                     .function_correspondence
-                    .get(&seed.continuation)
+                    .get(&continuation)
                     .cloned()
                     .unwrap_or_default()
                     .as_slice(),
             );
-            sets.extend(rebase_caller_groups(seed, &caller_params, &caller_groups));
+            sets.extend(rebase_caller_groups(provenance, &caller_params, &caller_groups));
 
-            match &seed.kind {
-                ContinuationSeedKind::DirectCall { callee, args } => {
+            match &provenance.kind {
+                crate::fz_ir::ContinuationProvenanceKind::DirectCall { callee, args } => {
                     let callee_groups = module
                         .function_correspondence
                         .get(callee)
                         .cloned()
                         .unwrap_or_default();
-                    sets.extend(project_direct_callee_groups(seed, args, &callee_groups));
+                    sets.extend(project_direct_callee_groups(
+                        provenance,
+                        caller,
+                        args,
+                        &callee_groups,
+                    ));
                 }
-                ContinuationSeedKind::ClosureCall { closure, args } => {
+                crate::fz_ir::ContinuationProvenanceKind::ClosureCall { closure, args } => {
                     sets.extend(project_closure_call_groups(
-                        seed,
+                        provenance,
                         &caller_params,
                         *closure,
                         args,
                         &caller_groups,
                     ));
                 }
-                ContinuationSeedKind::MatcherBody { bindings } => {
+                crate::fz_ir::ContinuationProvenanceKind::MatcherBody { bindings } => {
                     sets.extend(project_matcher_binding_groups(
-                        seed,
+                        provenance,
                         bindings,
                         &caller_groups,
                     ));
@@ -566,7 +654,7 @@ fn synthesize_function_correspondence(module: &mut Module, seeds: &[Continuation
             let new_groups = sets_to_groups(sets);
             let entry = module
                 .function_correspondence
-                .entry(seed.continuation)
+                .entry(continuation)
                 .or_default();
             if *entry != new_groups {
                 *entry = new_groups;
@@ -856,7 +944,9 @@ pub fn lower_program_full_with_telemetry<T: crate::types::Types<Ty = crate::type
             module.declared_specs.insert(fid, resolved);
         }
     }
-    synthesize_function_correspondence(&mut module, &ctx.continuation_seeds);
+    let continuation_provenance = ctx.continuation_provenance;
+    module.continuation_provenance = continuation_provenance.clone();
+    compute_current_function_correspondence(&mut module, &continuation_provenance);
     // fz-swt.8 — carry the resolver's opaque-inner-type map onto the
     // Module so the planner can resolve `handle.value` accesses to T.
     // Runtime built-in inners (utf8 brand, pid/ref opaques, ...) live in the
@@ -1601,6 +1691,43 @@ end
     }
 
     #[test]
+    fn lower_persists_direct_call_continuation_provenance() {
+        let m = lower_src(
+            "@spec id(a) :: a\n\
+             fn id(x), do: x\n\
+             fn pair_after_id(x) do\n\
+               y = id(x)\n\
+               {x, y}\n\
+             end",
+        );
+        let pair_after_id = m
+            .fn_by_name("pair_after_id")
+            .expect("pair_after_id fn missing");
+        let continuation = m
+            .fns
+            .iter()
+            .find(|f| f.name.starts_with("k_") && f.owner_module == pair_after_id.owner_module)
+            .expect("continuation fn missing");
+        let provenance = m
+            .continuation_provenance
+            .get(&continuation.id)
+            .expect("continuation provenance missing");
+        let id = m.fn_by_name("id").expect("id fn missing");
+        assert_eq!(
+            provenance,
+            &crate::fz_ir::ContinuationProvenance {
+                caller: pair_after_id.id,
+                captured: vec![pair_after_id.block(pair_after_id.entry).params[0]],
+                capture_param_offset: 1,
+                kind: crate::fz_ir::ContinuationProvenanceKind::DirectCall {
+                    callee: id.id,
+                    args: vec![pair_after_id.block(pair_after_id.entry).params[0]],
+                },
+            }
+        );
+    }
+
+    #[test]
     fn lower_synthesizes_closure_call_continuation_correspondence() {
         let m = lower_src(
             "@spec apply_pair((a) -> b, a) :: {a, b}\n\
@@ -1648,6 +1775,33 @@ end
                 },
             ]
         );
+    }
+
+    #[test]
+    fn lower_persists_matcher_body_continuation_provenance() {
+        let m = lower_src(
+            "fn f(x) do\n\
+               case x do\n\
+                 [head | tail] -> {head, tail}\n\
+               end\n\
+             end",
+        );
+        let continuation = m
+            .fns
+            .iter()
+            .find(|f| f.name.starts_with("case_clause_"))
+            .expect("matcher-body continuation missing");
+        let provenance = m
+            .continuation_provenance
+            .get(&continuation.id)
+            .expect("matcher-body provenance missing");
+        match &provenance.kind {
+            crate::fz_ir::ContinuationProvenanceKind::MatcherBody { bindings } => {
+                assert_eq!(provenance.capture_param_offset, 0);
+                assert_eq!(bindings.len(), 2, "expected head/tail bindings");
+            }
+            other => panic!("expected matcher-body provenance, got {:?}", other),
+        }
     }
 
     #[test]

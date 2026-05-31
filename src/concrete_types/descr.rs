@@ -707,6 +707,128 @@ impl Descr {
             .map_recursive_spec_key_inputs(&Descr::widen_for_recursive_spec_key)
     }
 
+    pub(crate) fn structurally_widen(&self, other: &Descr) -> Descr {
+        fn axis_free(d: &Descr) -> bool {
+            d.basic.is_empty()
+                && d.atoms.is_none()
+                && d.ints.is_none()
+                && d.floats.is_none()
+                && d.opaques.is_none()
+                && d.brands.is_none()
+                && d.vars.is_none()
+        }
+
+        fn single_positive<'a, T>(clauses: &'a [Conj<T>]) -> Option<&'a T> {
+            let [clause] = clauses else {
+                return None;
+            };
+            if !clause.neg.is_empty() {
+                return None;
+            }
+            let [sig] = clause.pos.as_slice() else {
+                return None;
+            };
+            Some(sig)
+        }
+
+        fn pure_tuple(d: &Descr) -> Option<&TupleSig> {
+            axis_free(d)
+                .then_some(())
+                .and_then(|_| single_positive(&d.tuples))
+                .filter(|_| d.lists.is_empty() && d.resources.is_empty() && d.funcs.is_empty() && d.maps.is_empty())
+        }
+
+        fn pure_list(d: &Descr) -> Option<&ListSig> {
+            axis_free(d)
+                .then_some(())
+                .and_then(|_| single_positive(&d.lists))
+                .filter(|_| d.tuples.is_empty() && d.resources.is_empty() && d.funcs.is_empty() && d.maps.is_empty())
+        }
+
+        fn pure_resource(d: &Descr) -> Option<&ResourceSig> {
+            axis_free(d)
+                .then_some(())
+                .and_then(|_| single_positive(&d.resources))
+                .filter(|_| d.tuples.is_empty() && d.lists.is_empty() && d.funcs.is_empty() && d.maps.is_empty())
+        }
+
+        fn pure_arrow(d: &Descr) -> Option<&ArrowSig> {
+            axis_free(d)
+                .then_some(())
+                .and_then(|_| single_positive(&d.funcs))
+                .filter(|_| d.tuples.is_empty() && d.lists.is_empty() && d.resources.is_empty() && d.maps.is_empty())
+        }
+
+        fn pure_map(d: &Descr) -> Option<&MapSig> {
+            axis_free(d)
+                .then_some(())
+                .and_then(|_| single_positive(&d.maps))
+                .filter(|_| d.tuples.is_empty() && d.lists.is_empty() && d.resources.is_empty() && d.funcs.is_empty())
+        }
+
+        if let (Some(lhs), Some(rhs)) = (pure_tuple(self), pure_tuple(other)) {
+            if lhs.elems.len() == rhs.elems.len() {
+                return Descr::tuple_of(
+                    lhs.elems
+                        .iter()
+                        .zip(rhs.elems.iter())
+                        .map(|(l, r)| l.structurally_widen(r)),
+                );
+            }
+        }
+
+        if let (Some(lhs), Some(rhs)) = (pure_list(self), pure_list(other)) {
+            let elem = match (&lhs.elem, &rhs.elem) {
+                (Some(l), Some(r)) => Some(Box::new(l.structurally_widen(r))),
+                (Some(l), None) => Some(l.clone()),
+                (None, Some(r)) => Some(r.clone()),
+                (None, None) => None,
+            };
+            return match elem {
+                Some(elem) => Descr {
+                    lists: vec![Conj::pos_of(ListSig {
+                        empty: lhs.empty || rhs.empty,
+                        elem: Some(elem),
+                    })],
+                    ..Descr::none()
+                },
+                None => Descr::empty_list(),
+            };
+        }
+
+        if let (Some(lhs), Some(rhs)) = (pure_resource(self), pure_resource(other)) {
+            return Descr::resource_of(lhs.payload.structurally_widen(&rhs.payload));
+        }
+
+        if let (Some(lhs), Some(rhs)) = (pure_arrow(self), pure_arrow(other)) {
+            if lhs.args.len() == rhs.args.len() {
+                return Descr::arrow(
+                    lhs.args
+                        .iter()
+                        .zip(rhs.args.iter())
+                        .map(|(l, r)| l.union(r)),
+                    lhs.ret.structurally_widen(&rhs.ret),
+                );
+            }
+        }
+
+        if let (Some(lhs), Some(rhs)) = (pure_map(self), pure_map(other)) {
+            let mut fields = lhs.fields.clone();
+            for (key, rv) in &rhs.fields {
+                fields
+                    .entry(key.clone())
+                    .and_modify(|lv| *lv = lv.structurally_widen(rv))
+                    .or_insert_with(|| rv.clone());
+            }
+            return Descr {
+                maps: vec![Conj::pos_of(MapSig { fields })],
+                ..Descr::none()
+            };
+        }
+
+        self.union(other).widen_for_recursive_spec_key()
+    }
+
     /// Erase closure-literal identity while preserving callable surface shape.
     /// Unlike recursive-key widening, this deliberately drops `ClosureLit`
     /// tags so higher-order fixed-point slots do not fork on wrapper identity.

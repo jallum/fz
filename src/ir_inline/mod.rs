@@ -123,6 +123,61 @@ fn closure_targets(m: &Module) -> HashSet<FnId> {
     set
 }
 
+fn remap_inlined_var(
+    entry_params: &[Var],
+    tail_args: &[Var],
+    var_shift: u32,
+    var: Var,
+) -> Var {
+    entry_params
+        .iter()
+        .position(|param| *param == var)
+        .map(|idx| tail_args[idx])
+        .unwrap_or_else(|| Var(var.0 + var_shift))
+}
+
+fn remap_continuation_provenance_after_inline(
+    m: &mut Module,
+    inlined_caller: FnId,
+    inlined_fn: &FnIr,
+    tail_args: &[Var],
+    var_shift: u32,
+) {
+    let entry_params = inlined_fn.block(inlined_fn.entry).params.clone();
+    for provenance in m.continuation_provenance.values_mut() {
+        if provenance.caller != inlined_fn.id {
+            continue;
+        }
+        provenance.caller = inlined_caller;
+        provenance.captured = provenance
+            .captured
+            .iter()
+            .map(|var| remap_inlined_var(&entry_params, tail_args, var_shift, *var))
+            .collect();
+        match &mut provenance.kind {
+            crate::fz_ir::ContinuationProvenanceKind::DirectCall { args, .. } => {
+                *args = args
+                    .iter()
+                    .map(|var| remap_inlined_var(&entry_params, tail_args, var_shift, *var))
+                    .collect();
+            }
+            crate::fz_ir::ContinuationProvenanceKind::ClosureCall { closure, args } => {
+                *closure = remap_inlined_var(&entry_params, tail_args, var_shift, *closure);
+                *args = args
+                    .iter()
+                    .map(|var| remap_inlined_var(&entry_params, tail_args, var_shift, *var))
+                    .collect();
+            }
+            crate::fz_ir::ContinuationProvenanceKind::MatcherBody { bindings } => {
+                for (binding_var, _) in bindings.iter_mut() {
+                    *binding_var =
+                        remap_inlined_var(&entry_params, tail_args, var_shift, *binding_var);
+                }
+            }
+        }
+    }
+}
+
 /// Fns whose closure values carry runtime state. These must keep their
 /// closure-target entry shape. `KnownFn` is intentionally absent: it is a
 /// state-free callable identity, so direct callsites may inline it without
@@ -1040,8 +1095,16 @@ pub fn inline_single_use_conts_once(m: &mut Module) -> usize {
             _ => continue,
         };
         let k_fn = m.fns[k_idx].clone();
+        let var_shift = max_var(&m.fns[caller_fi]) + 1;
         let renamed = alpha_rename(&k_fn, &m.fns[caller_fi]);
         absorb_callee(&mut m.fns[caller_fi], caller_bi, renamed, &tail_args);
+        remap_continuation_provenance_after_inline(
+            m,
+            m.fns[caller_fi].id,
+            &k_fn,
+            &tail_args,
+            var_shift,
+        );
 
         // Convert the Term::Call at the Cont site to TailCall.
         //
@@ -1085,6 +1148,9 @@ pub fn inline_single_use_conts_once(m: &mut Module) -> usize {
         for (i, f) in m.fns.iter().enumerate() {
             m.fn_idx.insert(f.id, i);
         }
+        m.prune_dead_fn_metadata();
+        let provenance = m.continuation_provenance.clone();
+        crate::ir_lower::compute_current_function_correspondence(m, &provenance);
 
         return 1; // restart — indices changed
     }
@@ -2080,6 +2146,36 @@ mod tests {
         crate::ir_lower::lower_program(&mut crate::types::ConcreteTypes, &prog).unwrap()
     }
 
+    fn assert_fn_keyed_metadata_matches_live_fns(m: &crate::fz_ir::Module) {
+        let live: std::collections::HashSet<_> = m.fns.iter().map(|f| f.id).collect();
+        assert!(
+            m.protocol_call_targets.keys().all(|fid| live.contains(fid)),
+            "protocol_call_targets contains dead FnId"
+        );
+        assert!(
+            m.boundary_fns.iter().all(|fid| live.contains(fid)),
+            "boundary_fns contains dead FnId"
+        );
+        assert!(
+            m.declared_specs.keys().all(|fid| live.contains(fid)),
+            "declared_specs contains dead FnId"
+        );
+        assert!(
+            m.function_correspondence.keys().all(|fid| live.contains(fid)),
+            "function_correspondence contains dead FnId"
+        );
+        assert!(
+            m.continuation_provenance.keys().all(|fid| live.contains(fid)),
+            "continuation_provenance contains dead FnId"
+        );
+        assert!(
+            m.continuation_provenance
+                .values()
+                .all(|provenance| live.contains(&provenance.caller)),
+            "continuation_provenance contains dead caller FnId"
+        );
+    }
+
     fn interp(m: &crate::fz_ir::Module) -> i64 {
         crate::ir_interp::run_main(&crate::telemetry::NullTelemetry, m).expect("interp failed")
     }
@@ -2208,6 +2304,119 @@ mod tests {
             !has_call_to_double,
             "expected no Call to double after inlining, but one remains"
         );
+    }
+
+    #[test]
+    fn inline_single_use_conts_prunes_dead_fn_metadata() {
+        let tailcaller_id = FnId(0);
+        let callee_id = FnId(1);
+        let k_id = FnId(2);
+        let callsite_fn_id = FnId(3);
+
+        let mut tailcaller = FnBuilder::new(tailcaller_id, "tailcaller");
+        let tailcaller_entry = tailcaller.block(vec![]);
+        let tail_arg = tailcaller.let_(tailcaller_entry, Prim::Const(Const::Int(7)));
+        tailcaller.set_terminator(
+            tailcaller_entry,
+            Term::TailCall {
+                ident: crate::fz_ir::CallsiteIdent::synthetic(),
+                callee: k_id,
+                args: vec![tail_arg],
+                is_back_edge: false,
+            },
+        );
+
+        let mut k = FnBuilder::new(k_id, "k");
+        let result = k.fresh_var();
+        let k_entry = k.block(vec![result]);
+        k.set_terminator(
+            k_entry,
+            Term::TailCall {
+                ident: crate::fz_ir::CallsiteIdent::synthetic(),
+                callee: callee_id,
+                args: vec![result],
+                is_back_edge: false,
+            },
+        );
+
+        let mut callee = FnBuilder::new(callee_id, "id");
+        let x = callee.fresh_var();
+        let callee_entry = callee.block(vec![x]);
+        callee.set_terminator(callee_entry, Term::Return(x));
+
+        let mut callsite_fn = FnBuilder::new(callsite_fn_id, "callsite_fn");
+        let callsite_entry = callsite_fn.block(vec![]);
+        let arg = callsite_fn.let_(callsite_entry, Prim::Const(Const::Int(1)));
+        callsite_fn.set_terminator(
+            callsite_entry,
+            Term::Call {
+                ident: crate::fz_ir::CallsiteIdent::synthetic(),
+                callee: callee_id,
+                args: vec![arg],
+                continuation: Cont {
+                    fn_id: k_id,
+                    captured: vec![],
+                },
+            },
+        );
+
+        let mut mb = ModuleBuilder::new();
+        mb.add_fn(tailcaller.build());
+        mb.add_fn(callee.build());
+        mb.add_fn(k.build());
+        mb.add_fn(callsite_fn.build());
+        let mut m = mb.build();
+        m.continuation_provenance.insert(
+            k_id,
+            crate::fz_ir::ContinuationProvenance {
+                caller: callsite_fn_id,
+                captured: vec![],
+                capture_param_offset: 1,
+                kind: crate::fz_ir::ContinuationProvenanceKind::DirectCall {
+                    callee: callee_id,
+                    args: vec![arg],
+                },
+            },
+        );
+        let continuation = k_id;
+        assert!(
+            m.continuation_provenance.contains_key(&continuation),
+            "test premise: continuation should start with provenance"
+        );
+
+        assert_eq!(
+            inline_single_use_conts_once(&mut m),
+            1,
+            "test premise: zero-capture continuation should inline"
+        );
+
+        assert!(
+            !m.fns.iter().any(|f| f.id == continuation),
+            "inlined continuation fn should be removed from the module"
+        );
+        assert!(
+            !m.continuation_provenance.contains_key(&continuation),
+            "dead continuation provenance must be pruned"
+        );
+        assert_fn_keyed_metadata_matches_live_fns(&m);
+    }
+
+    #[test]
+    fn inline_single_use_conts_keeps_fn_keyed_metadata_coherent() {
+        let src = "@spec id(a) :: a\n\
+                   fn id(x), do: x\n\
+                   fn build(x) do\n\
+                     y = id(x)\n\
+                     case y do\n\
+                       [head | tail] -> {head, tail}\n\
+                       _ -> {x, y}\n\
+                     end\n\
+                   end";
+        let mut m = lower_src(src);
+
+        inline_single_use_conts(&mut m);
+
+        assert_fn_keyed_metadata_matches_live_fns(&m);
     }
 
     // GC root invariant: no test-accessible GC trigger exists in the current

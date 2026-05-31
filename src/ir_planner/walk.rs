@@ -1,4 +1,3 @@
-use super::closures::{literal_closure_return_keys, resolve_closure_return};
 use super::fn_types::{
     CallEdgePlan, CallEdgeTarget, CallableCapability, CallsiteCallableCapabilities, EmitterSite,
     FixedPointSlotSummaries, FnEffects, ReturnContextPlan, ReturnDemand, SpecKey, SpecPlan,
@@ -604,7 +603,14 @@ where
         match *source {
             ContSource::Call { callee, args } => {
                 let arg_tys = self.arg_tys(args, env);
-                let slot0 = super::worklist::direct_call_slot0(
+                let direct_cid =
+                    WalkResult::callsite_id(self.caller_spec_key, term_ident, EmitSlot::Direct);
+                let target = self
+                    .out
+                    .call_edges
+                    .get(&direct_cid)
+                    .and_then(CallEdgePlan::local_target);
+                let knowledge = super::worklist::direct_call_result_knowledge(
                     self.t,
                     self.m,
                     self.recursive_fns,
@@ -615,12 +621,12 @@ where
                     self.effective_returns,
                     Some(self.complete_returns),
                     self.slot_summaries,
+                    target,
                 );
-                let callee_key = self.direct_return_key(term_ident, callee, args, env);
-                self.out.return_reads.push(callee_key);
-                match slot0 {
-                    super::worklist::DirectCallSlot0::Known(ty) => Some(Slot0Knowledge::Known(ty)),
-                    super::worklist::DirectCallSlot0::Pending => Some(Slot0Knowledge::Pending),
+                self.out.return_reads.extend(knowledge.return_reads);
+                match knowledge.slot0 {
+                    super::worklist::ResultSlot0::Known(ty) => Some(Slot0Knowledge::Known(ty)),
+                    super::worklist::ResultSlot0::Pending => Some(Slot0Knowledge::Pending),
                 }
             }
             ContSource::CallClosure { closure, args } => {
@@ -661,37 +667,6 @@ where
             .map(|edge| edge.target.clone())
     }
 
-    fn direct_return_key(
-        &mut self,
-        term_ident: &CallsiteIdent,
-        callee: FnId,
-        args: &[Var],
-        env: &HashMap<Var, crate::types::Ty>,
-    ) -> SpecKey {
-        let direct_cid =
-            WalkResult::callsite_id(self.caller_spec_key, term_ident, EmitSlot::Direct);
-        self.out
-            .call_edges
-            .get(&direct_cid)
-            .and_then(CallEdgePlan::local_target)
-            .cloned()
-            .unwrap_or_else(|| {
-                let target_fn = self.m.fn_by_id(callee);
-                let n_params = target_fn.block(target_fn.entry).params.len();
-                fixed_point_spec_key_for_arity(
-                    self.t,
-                    self.m,
-                    self.recursive_fns,
-                    self.slot_summaries,
-                    self.caller_spec_key.fn_id,
-                    callee,
-                    self.arg_tys(args, env),
-                    n_params,
-                    None,
-                )
-            })
-    }
-
     fn closure_return_slot0(
         &mut self,
         closure: Var,
@@ -699,72 +674,42 @@ where
         env: &HashMap<Var, crate::types::Ty>,
     ) -> Option<Slot0Knowledge> {
         if let Some(target) = self.caller_ft.known_fn(&closure) {
-            return self
-                .known_closure_return_slot0(target, args, env)
-                .map(Slot0Knowledge::Known);
+            let knowledge = super::worklist::known_closure_result_knowledge(
+                self.t,
+                self.m,
+                self.recursive_fns,
+                self.caller_spec_key.fn_id,
+                target,
+                &self.arg_tys(args, env),
+                self.effective_returns,
+                Some(self.complete_returns),
+                self.slot_summaries,
+            );
+            self.out.return_reads.extend(knowledge.return_reads);
+            return Some(match knowledge.slot0 {
+                super::worklist::ResultSlot0::Known(ty) => Slot0Knowledge::Known(ty),
+                super::worklist::ResultSlot0::Pending => Slot0Knowledge::Pending,
+            });
         }
         let Some(cv_descr) = env.get(&closure) else {
             return Some(Slot0Knowledge::Known(self.any_ty.clone()));
         };
-        let arg_tys = self.arg_tys(args, env);
-        if let Some(keys) = literal_closure_return_keys(
+        let knowledge = super::worklist::closure_value_result_knowledge(
             self.t,
             self.m,
             self.recursive_fns,
-            self.slot_summaries,
             self.caller_spec_key.fn_id,
             cv_descr,
-            &arg_tys,
-            None,
-        ) {
-            let mut joined = self.t.none();
-            let mut complete = true;
-            for key in keys {
-                self.out.return_reads.push(key.clone());
-                let Some(ret) = self.effective_returns.get(&key).cloned() else {
-                    complete = false;
-                    continue;
-                };
-                if !self.complete_returns.contains(&key) {
-                    complete = false;
-                }
-                joined = self.t.union(joined, ret);
-            }
-            return Some(if complete {
-                Slot0Knowledge::Known(joined)
-            } else {
-                Slot0Knowledge::Pending
-            });
-        }
-        resolve_closure_return(self.t, cv_descr, self.effective_returns, &arg_tys)
-            .map(Slot0Knowledge::Known)
-    }
-
-    fn known_closure_return_slot0(
-        &mut self,
-        target: FnId,
-        args: &[Var],
-        env: &HashMap<Var, crate::types::Ty>,
-    ) -> Option<crate::types::Ty> {
-        let target_fn = self.m.fn_by_id(target);
-        let n_params = target_fn.block(target_fn.entry).params.len();
-        let callee_key = fixed_point_spec_key_for_arity(
-            self.t,
-            self.m,
-            self.recursive_fns,
+            &self.arg_tys(args, env),
+            self.effective_returns,
+            self.complete_returns,
             self.slot_summaries,
-            self.caller_spec_key.fn_id,
-            target,
-            self.arg_tys(args, env),
-            n_params,
-            None,
         );
-        let callee_arg_tys = crate::types::key_slots_to_tys(self.t, &callee_key.input);
-        let declared = self.declared_call_return(target, &callee_arg_tys);
-        if declared.is_none() {
-            self.out.return_reads.push(callee_key.clone());
-        }
-        declared.or_else(|| self.effective_returns.get(&callee_key).cloned())
+        self.out.return_reads.extend(knowledge.return_reads);
+        Some(match knowledge.slot0 {
+            super::worklist::ResultSlot0::Known(ty) => Slot0Knowledge::Known(ty),
+            super::worklist::ResultSlot0::Pending => Slot0Knowledge::Pending,
+        })
     }
 
     fn seed_receive_matched_outcomes(&mut self, term: &Term) {
@@ -938,33 +883,6 @@ where
     fn has_bottom_arg(&mut self, key: &[crate::types::Ty]) -> bool {
         let none_ty = self.t.none();
         key.iter().any(|ty| self.t.is_equivalent(ty, &none_ty))
-    }
-
-    fn declared_call_return(
-        &mut self,
-        callee: FnId,
-        arg_tys: &[crate::types::Ty],
-    ) -> Option<crate::types::Ty> {
-        let fact = super::spec_witness::declared_return_fact(
-            self.t,
-            self.m,
-            self.recursive_fns,
-            self.slot_summaries,
-            self.caller_spec_key.fn_id,
-            callee,
-            arg_tys,
-            self.effective_returns,
-            Some(self.complete_returns),
-        )?;
-        self.out.return_reads.extend(fact.reads);
-        if !fact.complete {
-            return None;
-        }
-        let owner = &self.m.fn_by_id(self.caller_spec_key.fn_id).owner_module;
-        Some(
-            self.t
-                .mint_owned_resource_aliases(fact.ty, owner, &self.m.opaque_inners),
-        )
     }
 
     fn emit(&mut self, slot: EmitSlot, ident: CallsiteIdent, target: SpecKey) {

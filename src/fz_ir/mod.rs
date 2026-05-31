@@ -720,6 +720,29 @@ pub enum Term {
     },
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum ContinuationProvenanceKind {
+    DirectCall {
+        callee: FnId,
+        args: Vec<Var>,
+    },
+    ClosureCall {
+        closure: Var,
+        args: Vec<Var>,
+    },
+    MatcherBody {
+        bindings: Vec<(Var, crate::exec::matcher::SubjectRef)>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ContinuationProvenance {
+    pub caller: FnId,
+    pub captured: Vec<Var>,
+    pub capture_param_offset: usize,
+    pub kind: ContinuationProvenanceKind,
+}
+
 /// fz-yxs — one arm of a `Term::ReceiveMatched`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReceiveClause {
@@ -1327,6 +1350,12 @@ pub struct Module {
     #[serde(with = "fn_keyed_map")]
     pub function_correspondence:
         HashMap<FnId, Vec<crate::type_expr::StructuralCorrespondenceGroup>>,
+    /// Continuation provenance keyed by synthesized continuation FnId. This is
+    /// the durable IR-owned record of how lowering split a non-tail call or
+    /// matcher body, from which planner-facing correspondence can be derived
+    /// and re-derived after result-flow rewrites.
+    #[serde(with = "fn_keyed_map")]
+    pub continuation_provenance: HashMap<FnId, ContinuationProvenance>,
 }
 
 impl Module {
@@ -1337,6 +1366,21 @@ impl Module {
 
     pub fn module_path(&self) -> &str {
         &self.module_path
+    }
+
+    /// Remove fn-keyed metadata for any `FnId` no longer present in `fns`.
+    /// IR rewrites that delete functions must keep these side tables in sync
+    /// or later planning/codegen will observe stale facts about dead bodies.
+    pub fn prune_dead_fn_metadata(&mut self) {
+        let live: std::collections::HashSet<FnId> = self.fns.iter().map(|f| f.id).collect();
+        self.protocol_call_targets
+            .retain(|fid, _| live.contains(fid));
+        self.boundary_fns.retain(|fid| live.contains(fid));
+        self.declared_specs.retain(|fid, _| live.contains(fid));
+        self.function_correspondence
+            .retain(|fid, _| live.contains(fid));
+        self.continuation_provenance
+            .retain(|fid, _| live.contains(fid));
     }
 
     /// Repopulate the derived `fn_idx` / `extern_idx` lookup tables from `fns`
@@ -2002,6 +2046,7 @@ impl ModuleBuilder {
             struct_schemas: Default::default(),
             declared_specs: HashMap::new(),
             function_correspondence: HashMap::new(),
+            continuation_provenance: HashMap::new(),
         }
     }
 }
