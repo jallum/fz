@@ -72,6 +72,18 @@ delegates to the ordinary `List.reduce_cont/3` helper. Public `Enum` does not
 carry separate list shortcuts; the protocol dispatch fact is the single route to
 the implementation.
 
+The first map-family layer (`fixtures/enum_map_family`) composes on that
+tier-0 surface. Public functions such as `map/2`, `filter/2`,
+`map_reduce/3`, `scan/2,3`, `map_every/3`, `map_join/2,3`, and
+`map_intersperse/3` normalize the input through `to_list/1` and then call
+module-local private builders. That keeps the public API small while still
+exercising ordinary fz recursive list construction and return-demand lowering.
+`with_index/2` has both Elixir shapes: integer offset and
+`(entry, index) -> value` mapper; there is no public `with_index/3`. The mapper
+overload is expressed as its own `@spec` arrow so same-name/same-arity overloads
+preserve input/result correlation instead of collapsing those positions into
+unions (see [`specs`](specs.md)).
+
 ## Known vs Opaque Reducers
 
 The reducer threaded through the machine is a callable value, and the planner

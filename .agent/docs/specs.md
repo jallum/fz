@@ -108,6 +108,7 @@ hold everywhere:
 6. REPL/help rendering: `?<name>` renders every resolvable declared arrow, one
    `@spec:` line per arrow, instead of silently dropping all but the first.
 
-7. Acceptance fixture: unblock `Enum.with_index/2`'s function overload by
-   restoring the honest two-`@spec` form and adding the function-overload case
-   to `fixtures/enum_map_family`.
+7. Acceptance fixture: `Enum.with_index/2` uses the honest two-`@spec` form,
+   and `fixtures/enum_map_family` covers the function-mapper overload with
+   several result shapes so overload selection must preserve input/result
+   correlation.

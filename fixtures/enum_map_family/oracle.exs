@@ -1,0 +1,23 @@
+xs = [1, 2, 3, 4]
+words = ["a", "b", "c"]
+
+IO.inspect(Enum.map(xs, fn x -> x * 2 end))
+IO.inspect(Enum.filter(xs, fn x -> rem(x, 2) == 0 end))
+IO.inspect(Enum.reject(xs, fn x -> x < 3 end))
+IO.inspect(Enum.flat_map([1, 2, 3], fn x -> [x, x * 10] end))
+IO.inspect(Enum.map_reduce(xs, 0, fn x, acc -> {x + acc, acc + x} end))
+IO.inspect(Enum.scan(xs, fn x, acc -> x + acc end))
+IO.inspect(Enum.scan(xs, 10, fn x, acc -> x + acc end))
+IO.inspect(Enum.intersperse([1, 2, 3], 0))
+IO.inspect(Enum.with_index(["a", "b"]))
+IO.inspect(Enum.with_index(["a", "b"], 3))
+IO.inspect(Enum.with_index(["a", "b"], fn x, _index -> x <> "!" end))
+IO.inspect(Enum.with_index([10, 20], fn x, index -> x + index end))
+IO.inspect(Enum.with_index([:a, :b], fn x, index -> {index, x} end))
+IO.inspect(Enum.map_every(xs, 0, fn x -> x * 100 end))
+IO.inspect(Enum.map_every(xs, 1, fn x -> x * 100 end))
+IO.inspect(Enum.map_every(xs, 2, fn x -> x * 100 end))
+IO.inspect(Enum.map_join(words, fn x -> x <> "!" end))
+IO.inspect(Enum.map_join(words, "-", fn x -> x <> "!" end))
+IO.inspect(Enum.map_intersperse(xs, :sep, fn x -> x * 2 end))
+IO.inspect(Enum.map(1..7//2, fn x -> x + 1 end))
