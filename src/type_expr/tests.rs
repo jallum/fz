@@ -909,12 +909,20 @@ fn resolved_spec_reports_reduce_invariant_slot_correspondence() {
     let spec = ResolvedSpec {
         params: vec![enumerable_param, acc_var.clone(), reducer_param],
         param_shapes: vec![
-            ResolvedTypeShape::Any,
-            ResolvedTypeShape::Any,
-            ResolvedTypeShape::Any,
+            ResolvedTypeShape::List(Box::new(ResolvedTypeShape::Var(
+                crate::types::TypeVarId(0),
+            ))),
+            ResolvedTypeShape::Var(crate::types::TypeVarId(1)),
+            ResolvedTypeShape::Arrow {
+                params: vec![
+                    ResolvedTypeShape::Var(crate::types::TypeVarId(0)),
+                    ResolvedTypeShape::Var(crate::types::TypeVarId(1)),
+                ],
+                result: Box::new(ResolvedTypeShape::Var(crate::types::TypeVarId(1))),
+            },
         ],
         result: acc_var,
-        result_shape: ResolvedTypeShape::Any,
+        result_shape: ResolvedTypeShape::Var(crate::types::TypeVarId(1)),
         constraints: std::collections::HashMap::new(),
     };
 
@@ -931,6 +939,48 @@ fn resolved_spec_reports_reduce_invariant_slot_correspondence() {
                     arg_index: 1,
                 },
                 InvariantOccurrence::CallbackResult { param_index: 2 },
+            ],
+        }]
+    );
+}
+
+#[test]
+fn resolved_spec_reports_structural_container_correspondence() {
+    let toks = |src: &str| Lexer::new(src).tokenize().expect("lex");
+    let mut ct = ConcreteTypes;
+    let mut env = ModuleTypeEnv::new();
+    env.insert("Enumerable.t".to_string(), ct.any());
+    env.insert_param_alias(
+        "Enumerable.t".to_string(),
+        ParameterizedTypeAlias {
+            params: vec!["a".to_string()],
+            body_tokens: crate::ast::TypeExprBody(toks("a")),
+            span: crate::diag::Span::DUMMY,
+        },
+    );
+    let spec = crate::ast::SpecDecl {
+        name: "drop".to_string(),
+        param_body_tokens: vec![
+            crate::ast::TypeExprBody(toks("Enumerable.t(a)")),
+            crate::ast::TypeExprBody(toks("integer")),
+        ],
+        result_body_tokens: crate::ast::TypeExprBody(toks("[a]")),
+        constraints: vec![],
+    };
+
+    let resolved = resolve_spec_decl(&mut ct, &spec, &env).unwrap();
+    assert_eq!(
+        resolved.structural_correspondence_groups(),
+        vec![StructuralCorrespondenceGroup {
+            var: crate::types::TypeVarId(0),
+            occurrences: vec![
+                StructuralOccurrence::Param {
+                    param_index: 0,
+                    path: vec![StructuralPathStep::NamedArg(0)],
+                },
+                StructuralOccurrence::Result {
+                    path: vec![StructuralPathStep::ListElem],
+                },
             ],
         }]
     );
@@ -955,12 +1005,29 @@ fn resolved_spec_reports_reduce_while_invariant_slot_correspondence() {
             ct.arrow(&[entry_var, acc_var.clone()], reducer_ret),
         ],
         param_shapes: vec![
-            ResolvedTypeShape::Any,
-            ResolvedTypeShape::Any,
-            ResolvedTypeShape::Any,
+            ResolvedTypeShape::List(Box::new(ResolvedTypeShape::Var(
+                crate::types::TypeVarId(0),
+            ))),
+            ResolvedTypeShape::Var(crate::types::TypeVarId(1)),
+            ResolvedTypeShape::Arrow {
+                params: vec![
+                    ResolvedTypeShape::Var(crate::types::TypeVarId(0)),
+                    ResolvedTypeShape::Var(crate::types::TypeVarId(1)),
+                ],
+                result: Box::new(ResolvedTypeShape::Union(vec![
+                    ResolvedTypeShape::Tuple(vec![
+                        ResolvedTypeShape::AtomLit("cont".to_string()),
+                        ResolvedTypeShape::Var(crate::types::TypeVarId(1)),
+                    ]),
+                    ResolvedTypeShape::Tuple(vec![
+                        ResolvedTypeShape::AtomLit("halt".to_string()),
+                        ResolvedTypeShape::Var(crate::types::TypeVarId(1)),
+                    ]),
+                ])),
+            },
         ],
         result: acc_var,
-        result_shape: ResolvedTypeShape::Any,
+        result_shape: ResolvedTypeShape::Var(crate::types::TypeVarId(1)),
         constraints: std::collections::HashMap::new(),
     };
 

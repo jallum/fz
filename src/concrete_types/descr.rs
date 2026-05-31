@@ -188,46 +188,6 @@ impl Descr {
         tuple_any || list_any || resource_any || dnf_any(&self.funcs) || map_any
     }
 
-    pub(crate) fn mentioned_type_vars(&self) -> std::collections::BTreeSet<TypeVarId> {
-        let mut out = self.vars.set.clone();
-        let mut visit = |inner: &Descr| out.extend(inner.mentioned_type_vars());
-        for conj in &self.tuples {
-            for sig in conj.pos.iter().chain(conj.neg.iter()) {
-                for elem in &sig.elems {
-                    visit(elem);
-                }
-            }
-        }
-        for conj in &self.lists {
-            for sig in conj.pos.iter().chain(conj.neg.iter()) {
-                if let Some(elem) = &sig.elem {
-                    visit(elem);
-                }
-            }
-        }
-        for conj in &self.resources {
-            for sig in conj.pos.iter().chain(conj.neg.iter()) {
-                visit(&sig.payload);
-            }
-        }
-        for conj in &self.funcs {
-            for sig in conj.pos.iter().chain(conj.neg.iter()) {
-                for arg in &sig.args {
-                    visit(arg);
-                }
-                visit(&sig.ret);
-            }
-        }
-        for conj in &self.maps {
-            for sig in conj.pos.iter().chain(conj.neg.iter()) {
-                for field in sig.fields.values() {
-                    visit(field);
-                }
-            }
-        }
-        out
-    }
-
     /// fz-try.6 — call-site substitution. Walks the descriptor and replaces
     /// every occurrence of `Var(id)` in `self.vars` (or any nested Descr)
     /// with `σ[id]`. Vars not in σ pass through unchanged. The walk is

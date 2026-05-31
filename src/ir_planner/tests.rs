@@ -1313,12 +1313,29 @@ fn declared_reduce_while_return_uses_closure_return_witness() {
     let reduce_spec = crate::type_expr::ResolvedSpec {
         params: vec![enumerable_param, acc_var.clone(), reducer_param],
         param_shapes: vec![
-            crate::type_expr::ResolvedTypeShape::Any,
-            crate::type_expr::ResolvedTypeShape::Any,
-            crate::type_expr::ResolvedTypeShape::Any,
+            crate::type_expr::ResolvedTypeShape::List(Box::new(
+                crate::type_expr::ResolvedTypeShape::Var(crate::types::TypeVarId(0)),
+            )),
+            crate::type_expr::ResolvedTypeShape::Var(crate::types::TypeVarId(1)),
+            crate::type_expr::ResolvedTypeShape::Arrow {
+                params: vec![
+                    crate::type_expr::ResolvedTypeShape::Var(crate::types::TypeVarId(0)),
+                    crate::type_expr::ResolvedTypeShape::Var(crate::types::TypeVarId(1)),
+                ],
+                result: Box::new(crate::type_expr::ResolvedTypeShape::Union(vec![
+                    crate::type_expr::ResolvedTypeShape::Tuple(vec![
+                        crate::type_expr::ResolvedTypeShape::AtomLit("cont".to_string()),
+                        crate::type_expr::ResolvedTypeShape::Var(crate::types::TypeVarId(1)),
+                    ]),
+                    crate::type_expr::ResolvedTypeShape::Tuple(vec![
+                        crate::type_expr::ResolvedTypeShape::AtomLit("halt".to_string()),
+                        crate::type_expr::ResolvedTypeShape::Var(crate::types::TypeVarId(1)),
+                    ]),
+                ])),
+            },
         ],
         result: acc_var,
-        result_shape: crate::type_expr::ResolvedTypeShape::Any,
+        result_shape: crate::type_expr::ResolvedTypeShape::Var(crate::types::TypeVarId(1)),
         constraints: HashMap::new(),
     };
 

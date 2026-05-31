@@ -202,6 +202,12 @@ pub struct HigherOrderInvariantGroup {
     pub occurrences: Vec<InvariantOccurrence>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct StructuralCorrespondenceGroup {
+    pub var: crate::types::TypeVarId,
+    pub occurrences: Vec<StructuralOccurrence>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, Default)]
 pub struct ResolvedStructFieldShape {
     pub name: String,
@@ -258,6 +264,38 @@ pub enum InvariantOccurrence {
     },
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
+pub enum StructuralPathStep {
+    NamedArg(usize),
+    ResourceInner,
+    ListElem,
+    TupleElem(usize),
+    ArrowParam(usize),
+    ArrowResult,
+    UnionMember(usize),
+    StructField(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
+pub enum StructuralOccurrence {
+    Param {
+        param_index: usize,
+        path: Vec<StructuralPathStep>,
+    },
+    Result {
+        path: Vec<StructuralPathStep>,
+    },
+    CallbackArg {
+        param_index: usize,
+        arg_index: usize,
+        path: Vec<StructuralPathStep>,
+    },
+    CallbackResult {
+        param_index: usize,
+        path: Vec<StructuralPathStep>,
+    },
+}
+
 impl ResolvedSpecSet {
     pub fn matching_arrows<T>(
         &self,
@@ -308,58 +346,179 @@ impl ResolvedSpecSet {
 }
 
 impl ResolvedSpec {
-    pub fn higher_order_invariant_groups<T>(&self, t: &mut T) -> Vec<HigherOrderInvariantGroup>
-    where
-        T: ClosureTypes<Ty = crate::types::Ty>,
-    {
-        let mut groups: BTreeMap<crate::types::TypeVarId, BTreeSet<InvariantOccurrence>> =
-            BTreeMap::new();
-
-        for (param_index, param) in self.params.iter().enumerate() {
-            if t.callable_clauses(param).is_some() {
-                continue;
-            }
-            for var in t.mentioned_type_vars(param) {
-                groups.entry(var).or_default().insert(InvariantOccurrence::Param(param_index));
-            }
-        }
-        for var in t.mentioned_type_vars(&self.result) {
-            groups.entry(var).or_default().insert(InvariantOccurrence::Result);
-        }
-
-        for (param_index, param) in self.params.iter().enumerate() {
-            let Some(clauses) = t.callable_clauses(param) else {
-                continue;
-            };
-            for clause in clauses {
-                for (arg_index, arg) in clause.args.iter().enumerate() {
-                    for var in t.mentioned_type_vars(arg) {
-                        groups.entry(var).or_default().insert(InvariantOccurrence::CallbackArg {
-                            param_index,
-                            arg_index,
-                        });
+    pub fn structural_correspondence_groups(&self) -> Vec<StructuralCorrespondenceGroup> {
+        fn walk_shape(
+            shape: &ResolvedTypeShape,
+            path: &mut Vec<StructuralPathStep>,
+            emit: &mut impl FnMut(crate::types::TypeVarId, Vec<StructuralPathStep>),
+        ) {
+            match shape {
+                ResolvedTypeShape::Var(var) => emit(*var, path.clone()),
+                ResolvedTypeShape::Named { args, .. } => {
+                    for (idx, arg) in args.iter().enumerate() {
+                        path.push(StructuralPathStep::NamedArg(idx));
+                        walk_shape(arg, path, emit);
+                        path.pop();
                     }
                 }
-                for var in t.mentioned_type_vars(&clause.ret) {
-                    groups.entry(var)
-                        .or_default()
-                        .insert(InvariantOccurrence::CallbackResult { param_index });
+                ResolvedTypeShape::Resource(inner) => {
+                    path.push(StructuralPathStep::ResourceInner);
+                    walk_shape(inner, path, emit);
+                    path.pop();
                 }
+                ResolvedTypeShape::List(inner) => {
+                    path.push(StructuralPathStep::ListElem);
+                    walk_shape(inner, path, emit);
+                    path.pop();
+                }
+                ResolvedTypeShape::Tuple(elems) | ResolvedTypeShape::Union(elems) => {
+                    for (idx, elem) in elems.iter().enumerate() {
+                        path.push(match shape {
+                            ResolvedTypeShape::Tuple(_) => StructuralPathStep::TupleElem(idx),
+                            ResolvedTypeShape::Union(_) => StructuralPathStep::UnionMember(idx),
+                            _ => unreachable!(),
+                        });
+                        walk_shape(elem, path, emit);
+                        path.pop();
+                    }
+                }
+                ResolvedTypeShape::Arrow { params, result } => {
+                    for (idx, param) in params.iter().enumerate() {
+                        path.push(StructuralPathStep::ArrowParam(idx));
+                        walk_shape(param, path, emit);
+                        path.pop();
+                    }
+                    path.push(StructuralPathStep::ArrowResult);
+                    walk_shape(result, path, emit);
+                    path.pop();
+                }
+                ResolvedTypeShape::StructRecord { fields, .. } => {
+                    for field in fields {
+                        path.push(StructuralPathStep::StructField(field.name.clone()));
+                        walk_shape(&field.ty, path, emit);
+                        path.pop();
+                    }
+                }
+                ResolvedTypeShape::Any
+                | ResolvedTypeShape::Never
+                | ResolvedTypeShape::Nil
+                | ResolvedTypeShape::Bool
+                | ResolvedTypeShape::Integer
+                | ResolvedTypeShape::Float
+                | ResolvedTypeShape::CPointer
+                | ResolvedTypeShape::Binary
+                | ResolvedTypeShape::Atom
+                | ResolvedTypeShape::Utf8
+                | ResolvedTypeShape::Pid
+                | ResolvedTypeShape::Ref
+                | ResolvedTypeShape::AtomLit(_)
+                | ResolvedTypeShape::IntLit(_)
+                | ResolvedTypeShape::FloatLit(_) => {}
             }
         }
+
+        let mut groups: BTreeMap<crate::types::TypeVarId, BTreeSet<StructuralOccurrence>> =
+            BTreeMap::new();
+        let mut path = Vec::new();
+
+        for (param_index, shape) in self.param_shapes.iter().enumerate() {
+            match shape {
+                ResolvedTypeShape::Arrow { params, result } => {
+                    for (arg_index, arg) in params.iter().enumerate() {
+                        walk_shape(arg, &mut path, &mut |var, shape_path| {
+                            groups.entry(var).or_default().insert(
+                                StructuralOccurrence::CallbackArg {
+                                    param_index,
+                                    arg_index,
+                                    path: shape_path,
+                                },
+                            );
+                        });
+                    }
+                    walk_shape(result, &mut path, &mut |var, shape_path| {
+                        groups.entry(var).or_default().insert(
+                            StructuralOccurrence::CallbackResult {
+                                param_index,
+                                path: shape_path,
+                            },
+                        );
+                    });
+                }
+                _ => walk_shape(shape, &mut path, &mut |var, shape_path| {
+                    groups
+                        .entry(var)
+                        .or_default()
+                        .insert(StructuralOccurrence::Param {
+                            param_index,
+                            path: shape_path,
+                        });
+                }),
+            }
+        }
+
+        walk_shape(&self.result_shape, &mut path, &mut |var, shape_path| {
+            groups
+                .entry(var)
+                .or_default()
+                .insert(StructuralOccurrence::Result { path: shape_path });
+        });
 
         groups
             .into_iter()
             .filter_map(|(var, occurrences)| {
-                let has_callback_result = occurrences
-                    .iter()
-                    .any(|occ| matches!(occ, InvariantOccurrence::CallbackResult { .. }));
-                let has_outer = occurrences.iter().any(|occ| {
-                    matches!(occ, InvariantOccurrence::Param(_) | InvariantOccurrence::Result)
-                });
-                (has_callback_result && has_outer).then_some(HigherOrderInvariantGroup {
+                (occurrences.len() > 1).then_some(StructuralCorrespondenceGroup {
                     var,
                     occurrences: occurrences.into_iter().collect(),
+                })
+            })
+            .collect()
+    }
+
+    pub fn higher_order_invariant_groups<T>(&self, t: &mut T) -> Vec<HigherOrderInvariantGroup>
+    where
+        T: ClosureTypes<Ty = crate::types::Ty>,
+    {
+        let _ = t;
+        self.structural_correspondence_groups()
+            .into_iter()
+            .filter_map(|group| {
+                let projected = group
+                    .occurrences
+                    .iter()
+                    .filter_map(|occ| match occ {
+                        StructuralOccurrence::Param { param_index, path } if path.is_empty() => {
+                            Some(InvariantOccurrence::Param(*param_index))
+                        }
+                        StructuralOccurrence::Result { path } if path.is_empty() => {
+                            Some(InvariantOccurrence::Result)
+                        }
+                        StructuralOccurrence::CallbackArg {
+                            param_index,
+                            arg_index,
+                            path,
+                        } if path.is_empty() => Some(InvariantOccurrence::CallbackArg {
+                            param_index: *param_index,
+                            arg_index: *arg_index,
+                        }),
+                        StructuralOccurrence::CallbackResult { param_index, path }
+                            if path.is_empty() =>
+                        {
+                            Some(InvariantOccurrence::CallbackResult {
+                                param_index: *param_index,
+                            })
+                        }
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>();
+                let has_callback_result = projected
+                    .iter()
+                    .any(|occ| matches!(occ, InvariantOccurrence::CallbackResult { .. }));
+                let has_outer = projected
+                    .iter()
+                    .any(|occ| matches!(occ, InvariantOccurrence::Param(_) | InvariantOccurrence::Result));
+                (has_callback_result && has_outer).then_some(HigherOrderInvariantGroup {
+                    var: group.var,
+                    occurrences: projected,
                 })
             })
             .collect()

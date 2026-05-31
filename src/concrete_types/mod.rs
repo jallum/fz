@@ -359,9 +359,6 @@ impl Types for ConcreteTypes {
     fn has_vars(&self, a: &Ty) -> bool {
         ty_descr(a).has_vars()
     }
-    fn mentioned_type_vars(&self, a: &Ty) -> std::collections::BTreeSet<TypeVarId> {
-        ty_descr(a).mentioned_type_vars()
-    }
     fn is_strictly_smaller(&self, a: &Ty, p: &Ty) -> bool {
         if let (Some(ai), Some(pi)) = (self.as_int_singleton(a), self.as_int_singleton(p)) {
             if pi > 0 && ai >= 0 && ai < pi {

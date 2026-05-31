@@ -102,6 +102,13 @@ integer) :: [a]` keep the shared `a` in their structural form even when the
 concrete `Ty` used for execution/planning no longer exposes that relation
 directly.
 
+Structural correspondence is modeled separately from the older callback-only
+view. `ResolvedSpec::structural_correspondence_groups` records every structural
+occurrence of each declared type variable across params/results/callbacks.
+`ResolvedSpec::higher_order_invariant_groups` is now a derived projection of
+that richer fact: it keeps only the top-level callback fixed-point slots that
+the planner currently normalizes.
+
 ## Correct Shape
 
 Add a first-class overload-set shape:
