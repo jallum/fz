@@ -193,10 +193,71 @@ impl<'m> Solver<'m> {
         }
     }
 
-    /// `caller` applies `callee` to `args`: record the dependency, widen the
-    /// callee's inputs (scheduling it if they grew), and hand back the callee's
-    /// current return estimate (`Unknown` for a callee not yet processed).
+    /// `caller` applies `callee` to `args`. A protocol-dispatch stub is
+    /// devirtualized on its receiver (first arg) type before the call; an
+    /// ordinary callee passes straight through.
     fn call<T: Types<Ty = Ty>>(
+        &mut self,
+        t: &mut T,
+        caller: FnId,
+        callee: FnId,
+        args: Vec<Info>,
+    ) -> Info {
+        if self.module.protocol_call_targets.contains_key(&callee) {
+            // A protocol call resolves to a concrete impl chosen by the
+            // receiver type. Until the receiver is `Known`, we cannot pick an
+            // impl — stay `Unknown` and let a later fixpoint iteration retry
+            // (re-walking the caller once its receiver ascends).
+            return match self.resolve_protocol(t, callee, &args) {
+                Some(impl_fn) => self.call_direct(t, caller, impl_fn, args),
+                None => Info::Unknown,
+            };
+        }
+        self.call_direct(t, caller, callee, args)
+    }
+
+    /// Resolve a protocol-dispatch stub to the concrete implementation fn for
+    /// its receiver type, mirroring `ir_planner::walk::protocol_dispatch_key`:
+    /// the single impl whose target type the receiver is a subtype of. `None`
+    /// when the receiver is not yet `Known` or no impl matches.
+    fn resolve_protocol<T: Types<Ty = Ty>>(
+        &self,
+        t: &mut T,
+        callee: FnId,
+        args: &[Info],
+    ) -> Option<FnId> {
+        let target = self.module.protocol_call_targets.get(&callee)?;
+        let receiver_ty = match args.first()? {
+            Info::Known(ty) => ty.clone(),
+            Info::Unknown => return None,
+        };
+        let mut matches: Vec<_> = self
+            .module
+            .protocol_registry
+            .impls
+            .values()
+            .filter(|fact| fact.protocol == target.protocol)
+            .filter(|fact| {
+                let target_ty = crate::frontend::protocols::impl_target_type(t, &fact.target);
+                t.is_subtype(&receiver_ty, &target_ty)
+            })
+            .filter_map(|fact| {
+                fact.callbacks
+                    .get(&(target.callback.clone(), target.arity))
+                    .cloned()
+            })
+            .collect();
+        matches.sort();
+        matches.dedup();
+        let export = matches.into_iter().next()?;
+        let fn_name = format!("{}.{}", export.module, export.name);
+        self.module.fn_by_name(&fn_name).map(|f| f.id)
+    }
+
+    /// Record the dependency, widen the callee's inputs (scheduling it if they
+    /// grew), and hand back the callee's current return estimate (`Unknown` for
+    /// a callee not yet processed).
+    fn call_direct<T: Types<Ty = Ty>>(
         &mut self,
         t: &mut T,
         caller: FnId,
@@ -634,6 +695,74 @@ mod tests {
                 "{name}: reached fns left Unknown at fixpoint: {unknowns:?}"
             );
         }
+    }
+
+    /// Compile a program to its **LTO-linked** IR `Module` via the production
+    /// pipeline — the runtime graph where `Enum.reduce`, `List.reduce`,
+    /// `Enumerable.List.reduce`, and the `__protocol__.*` dispatch stubs are all
+    /// local fns. Mirrors `ir_codegen::tests::runtime_graph_module`: the runtime
+    /// library is embedded, so an empty provider list still links it.
+    fn linked(src: &str) -> Module {
+        use crate::modules::pipeline::{
+            checked_module_for_mode, compile_source_with_providers, prepare_execution_graph,
+            CompileMode, ProviderInputs,
+        };
+        let mut t = ConcreteTypes;
+        let tel = crate::telemetry::NullTelemetry;
+        let providers = ProviderInputs::new(
+            crate::modules::artifact_store::DEFAULT_ARTIFACT_ROOT.to_string(),
+            Vec::new(),
+        );
+        let frontend = compile_source_with_providers(
+            &mut t,
+            src.to_string(),
+            "spike.fz".to_string(),
+            &providers,
+            &tel,
+        )
+        .unwrap_or_else(|e| panic!("frontend: {e}"));
+        let checked = checked_module_for_mode(&mut t, frontend, &tel, CompileMode::Lto)
+            .unwrap_or_else(|e| panic!("checked: {e}"));
+        let graph = prepare_execution_graph(&mut t, checked, &providers, &tel, CompileMode::Lto)
+            .unwrap_or_else(|e| panic!("execution graph: {e}"));
+        graph.module
+    }
+
+    /// The real runtime graph: `Enum.reduce` dispatches through the
+    /// `Enumerable` protocol stub, which the engine devirtualizes on the
+    /// receiver type (`list(int)` -> the `List` impl). The protocol-resolved
+    /// `Enumerable.List.reduce` settles to its concrete `{:done,_}|{:halted,_}`
+    /// shape, and `Enum.reduce` unwraps it to `int` — no `none`. This is the
+    /// fold_state_machine shape plus one protocol hop, end to end.
+    #[test]
+    fn enum_reduce_runtime_graph_settles() {
+        let module = linked(include_str!("../../spike/enum_reduce.fz"));
+        let mut t = ConcreteTypes;
+        let int = t.int();
+
+        let reduce_ret = infer_fn_via_main(&module, "Enum.reduce");
+        assert!(
+            t.is_equivalent(&reduce_ret, &int),
+            "Enum.reduce([1,2,3],0,+) should settle to int, got {reduce_ret:?}"
+        );
+
+        // Enumerable.List.reduce : {:done, int} | {:halted, int}
+        let done = {
+            let a = t.atom_lit("done");
+            let i = t.int();
+            t.tuple(&[a, i])
+        };
+        let halted = {
+            let a = t.atom_lit("halted");
+            let i = t.int();
+            t.tuple(&[a, i])
+        };
+        let expected = t.union(done, halted);
+        let list_reduce_ret = infer_fn_via_main(&module, "Enumerable.List.reduce");
+        assert!(
+            t.is_equivalent(&list_reduce_ret, &expected),
+            "Enumerable.List.reduce should settle to {{:done,int}}|{{:halted,int}}, got {list_reduce_ret:?}"
+        );
     }
 
     #[test]
