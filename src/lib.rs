@@ -34,6 +34,7 @@ mod parking;
 mod parser;
 mod pattern_matrix;
 mod reducer;
+mod specs;
 mod telemetry;
 mod type_expr;
 mod type_infer;

@@ -2,7 +2,7 @@ use super::fn_types::{
     FixedPointSlotSummaries, ReturnDemand, SpecKey, SpecKeySet, fixed_point_spec_key_for_arity,
 };
 use crate::fz_ir::{FnId, Module};
-use crate::type_expr::{ResolvedSpec, ResolvedSpecSet};
+use crate::specs::{ResolvedSpec, ResolvedSpecSet};
 use crate::types::{
     ClosureLitInfo, ClosureTypes, SchemeInstantiation, SchemeMatch, Ty, Types,
     instantiate_scheme_match,

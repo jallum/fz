@@ -28,7 +28,8 @@ use crate::ast::{Attribute, Item, Program};
 use crate::diag::{Diagnostic, Span, codes};
 use crate::fz_ir::FnId;
 use crate::ir_planner::ModulePlan;
-use crate::type_expr::{ModuleTypeEnv, ResolvedSpec, ResolvedSpecSet, resolve_spec_decls};
+use crate::specs::{ResolvedSpec, ResolvedSpecSet};
+use crate::type_expr::{ModuleTypeEnv, resolve_spec_decls};
 use crate::types::{SchemeInstantiation, instantiate_scheme_match_with_slots};
 
 /// Validate every `@spec` in `program` against the corresponding

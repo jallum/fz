@@ -1357,32 +1357,32 @@ fn declared_reduce_while_return_uses_closure_return_witness() {
     };
     let enumerable_param = t.list(entry_var.clone());
     let reducer_param = t.arrow(&[entry_var, acc_var.clone()], reducer_ret);
-    let reduce_spec = crate::type_expr::ResolvedSpec {
+    let reduce_spec = crate::specs::ResolvedSpec {
         params: vec![enumerable_param, acc_var.clone(), reducer_param],
         param_shapes: vec![
-            crate::type_expr::ResolvedTypeShape::List(Box::new(
-                crate::type_expr::ResolvedTypeShape::Var(crate::types::TypeVarId(0)),
-            )),
-            crate::type_expr::ResolvedTypeShape::Var(crate::types::TypeVarId(1)),
-            crate::type_expr::ResolvedTypeShape::Arrow {
+            crate::specs::ResolvedTypeShape::List(Box::new(crate::specs::ResolvedTypeShape::Var(
+                crate::types::TypeVarId(0),
+            ))),
+            crate::specs::ResolvedTypeShape::Var(crate::types::TypeVarId(1)),
+            crate::specs::ResolvedTypeShape::Arrow {
                 params: vec![
-                    crate::type_expr::ResolvedTypeShape::Var(crate::types::TypeVarId(0)),
-                    crate::type_expr::ResolvedTypeShape::Var(crate::types::TypeVarId(1)),
+                    crate::specs::ResolvedTypeShape::Var(crate::types::TypeVarId(0)),
+                    crate::specs::ResolvedTypeShape::Var(crate::types::TypeVarId(1)),
                 ],
-                result: Box::new(crate::type_expr::ResolvedTypeShape::Union(vec![
-                    crate::type_expr::ResolvedTypeShape::Tuple(vec![
-                        crate::type_expr::ResolvedTypeShape::AtomLit("cont".to_string()),
-                        crate::type_expr::ResolvedTypeShape::Var(crate::types::TypeVarId(1)),
+                result: Box::new(crate::specs::ResolvedTypeShape::Union(vec![
+                    crate::specs::ResolvedTypeShape::Tuple(vec![
+                        crate::specs::ResolvedTypeShape::AtomLit("cont".to_string()),
+                        crate::specs::ResolvedTypeShape::Var(crate::types::TypeVarId(1)),
                     ]),
-                    crate::type_expr::ResolvedTypeShape::Tuple(vec![
-                        crate::type_expr::ResolvedTypeShape::AtomLit("halt".to_string()),
-                        crate::type_expr::ResolvedTypeShape::Var(crate::types::TypeVarId(1)),
+                    crate::specs::ResolvedTypeShape::Tuple(vec![
+                        crate::specs::ResolvedTypeShape::AtomLit("halt".to_string()),
+                        crate::specs::ResolvedTypeShape::Var(crate::types::TypeVarId(1)),
                     ]),
                 ])),
             },
         ],
         result: acc_var,
-        result_shape: crate::type_expr::ResolvedTypeShape::Var(crate::types::TypeVarId(1)),
+        result_shape: crate::specs::ResolvedTypeShape::Var(crate::types::TypeVarId(1)),
         constraints: HashMap::new(),
     };
 
@@ -1397,7 +1397,7 @@ fn declared_reduce_while_return_uses_closure_return_witness() {
     let mut m = build_module(vec![reduce.build(), lambda.build()]);
     m.declared_specs.insert(
         reduce_id,
-        crate::type_expr::ResolvedSpecSet {
+        crate::specs::ResolvedSpecSet {
             arrows: vec![reduce_spec],
         },
     );
@@ -3897,11 +3897,12 @@ fn runtime_graph_reduce_helper_clause_carries_function_correspondence() {
                     group.occurrences.iter().any(|occ| {
                         matches!(
                             occ,
-                            crate::type_expr::StructuralOccurrence::Param { param_index: 0, .. }
+                            crate::specs::StructuralOccurrence::Param { param_index: 0, .. }
                         )
-                    }) && group.occurrences.iter().any(|occ| {
-                        matches!(occ, crate::type_expr::StructuralOccurrence::Result { .. })
-                    })
+                    }) && group
+                        .occurrences
+                        .iter()
+                        .any(|occ| matches!(occ, crate::specs::StructuralOccurrence::Result { .. }))
                 })
         }),
         "expected a 5-param fn_clause_1 group to tie param 0 to result, got {:?}",

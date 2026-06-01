@@ -1,6 +1,7 @@
 use super::*;
 
 use crate::parser::lexer::Lexer;
+use crate::specs::{StructuralCorrespondenceGroup, StructuralOccurrence, StructuralPathStep};
 use crate::types::{ConcreteTypes, Ty, Types};
 
 fn parse_one<T: Types<Ty = Ty>>(t: &mut T, src: &str) -> Result<T::Ty, TypeExprError> {

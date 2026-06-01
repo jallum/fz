@@ -27,15 +27,42 @@ answers a different question: it permits the integer input arrow to return
 whole point of overload specs is preserving the relationship between one
 accepted input shape and its result shape.
 
-## Current Problem
+## Current Ownership
 
-Multiple adjacent `@spec` declarations now parse and lower into a
-`ResolvedSpecSet`, but each downstream consumer still has to preserve the
-arrow set. Any consumer that asks for “the one declared spec” is wrong for
-overloads because it either drops valid arrows or tempts callers into parameter
-and result unions that lose correlation.
+`src/type_expr/` parses type syntax and resolves `@spec` source bodies against a
+`ModuleTypeEnv`. It constructs the resolved spec model, but it does not own that
+model. The resolved data lives under `src/specs/model.rs` and is imported as
+`crate::specs::{ResolvedSpec, ResolvedSpecSet, ...}` by IR, frontend, planner,
+and tests.
 
-Known single-spec sites:
+The spec engine is being extracted to the same shape as `type_infer`: small
+crate-facing API, private internals by default, production callers receiving
+finished structured facts, and tests observing production APIs plus telemetry
+when useful diagnostics/warnings/errors are emitted. Do not add compatibility
+re-exports from `type_expr`; stale imports through `type_expr::Resolved*` are
+zombies.
+
+Current extraction state:
+
+- `src/specs/model.rs` owns the resolved data shapes and structural
+  correspondence metadata.
+- Scheme matching still lives in `src/types/scheme.rs`; `fz-hq4.2` moves that
+  policy into `src/specs/match.rs`.
+- Overload selection and result unioning still hang off `ResolvedSpecSet`;
+  `fz-hq4.3` moves that behavior into `src/specs/select.rs`.
+- Declared coverage checking still lives in `src/frontend/spec_check.rs`;
+  `fz-hq4.4` moves that behavior into `src/specs/validate.rs`.
+- Planner higher-order witness logic still lives in
+  `src/ir_planner/spec_witness.rs`; later tickets fold that into the shared
+  spec-application API consumed by inference and planner projection.
+
+Multiple adjacent `@spec` declarations parse and lower into a
+`ResolvedSpecSet`, and each downstream consumer must preserve the arrow set.
+Any consumer that asks for "the one declared spec" is wrong for overloads
+because it either drops valid arrows or tempts callers into parameter and result
+unions that lose correlation.
+
+Known remaining single-spec-sensitive sites:
 
 - `src/parser/items.rs`: accepts adjacent matching specs and attaches them in
   order to the following function.
@@ -47,7 +74,7 @@ Known single-spec sites:
   facts and impl callback-spec compatibility use one spec per `(name, arity)`.
 - `src/ir_lower/mod.rs`: `Module.declared_specs` stores resolved spec sets.
 - `src/fz_ir/mod.rs`: `Module.declared_specs` is
-  `HashMap<FnId, ResolvedSpecSet>`.
+  `HashMap<FnId, crate::specs::ResolvedSpecSet>`.
 - `src/ir_planner/walk.rs`, `src/ir_planner/worklist.rs`, and
   `src/ir_codegen/driver.rs`: declared-call typing must select compatible
   arrows before reading params or results.
@@ -81,9 +108,9 @@ reducer's `{:cont, b}` / `{:halt, b}` exits are another witness. The declared
 result must join both instead of freezing `b` to the initial accumulator shape.
 
 The declared scheme also names which callback positions participate in that
-fixed point. `ResolvedSpec::structural_correspondence_groups` records the type
-variables whose occurrences cross from outer params/results into callback
-arg/result positions. For `reduce/3`, the loop-carried group is `b`:
+fixed point. `src/specs/model.rs` records the type variables whose occurrences
+cross from outer params/results into callback arg/result positions. For
+`reduce/3`, the loop-carried group is `b`:
 
 ```text
 Param(1)          outer accumulator
@@ -102,10 +129,10 @@ integer) :: [a]` keep the shared `a` in their structural form even when the
 concrete `Ty` used for execution/planning no longer exposes that relation
 directly.
 
-Structural correspondence is the model. `ResolvedSpec::structural_correspondence_groups`
-records every structural occurrence of each declared type variable across
-params/results/callbacks. Planner fixed-point keying consumes the subset of
-those groups that tie callback result flow back to outer params/results.
+Structural correspondence is the model. The resolved spec model records every
+structural occurrence of each declared type variable across
+params/results/callbacks. Planner fixed-point keying consumes the subset of those
+groups that tie callback result flow back to outer params/results.
 
 Lowering now persists the declared source-function groups onto
 `Module.function_correspondence` keyed by `FnId`. This is the IR seam where the
@@ -128,7 +155,7 @@ normalizes overlapping occurrence sets into continuation-local groups.
 
 ## Correct Shape
 
-Add a first-class overload-set shape:
+Use a first-class overload-set shape:
 
 ```rust
 struct SpecSet {
@@ -156,9 +183,10 @@ hold everywhere:
    checks per spec. Replace the negative duplicate-spec test with a parse test
    that proves two specs attach in order.
 
-2. Type-expression layer: add helpers to resolve all specs on a `FnDef` into a
-   `ResolvedSpecSet`. Do not share type-variable substitutions across different
-   arrows.
+2. Type-expression layer: resolve all specs on a `FnDef` into
+   `crate::specs::ResolvedSpecSet`. Do not share type-variable substitutions
+   across different arrows. `type_expr` constructs the model but does not own or
+   re-export it.
 
 3. Spec validation: for each inferred narrow spec, find at least one declared
    arrow whose instantiated params accept the inferred inputs and whose

@@ -1,4 +1,5 @@
 use crate::fz_ir::{CallsiteId, EmitSlot, FnId, FnIr, Module, Var};
+use crate::specs::StructuralOccurrence;
 use std::collections::HashMap;
 
 #[derive(Debug, Clone, Default)]
@@ -930,12 +931,12 @@ pub(crate) fn result_linked_param_slots(
         if !group
             .occurrences
             .iter()
-            .any(|occ| matches!(occ, crate::type_expr::StructuralOccurrence::Result { .. }))
+            .any(|occ| matches!(occ, StructuralOccurrence::Result { .. }))
         {
             continue;
         }
         for occ in &group.occurrences {
-            if let crate::type_expr::StructuralOccurrence::Param { param_index, .. } = occ {
+            if let StructuralOccurrence::Param { param_index, .. } = occ {
                 params.insert(*param_index);
             }
         }
@@ -1007,12 +1008,11 @@ pub(crate) fn normalize_result_correspondence_key<
     for group in groups {
         for occ in &group.occurrences {
             match occ {
-                crate::type_expr::StructuralOccurrence::CallbackArg { param_index, .. }
-                | crate::type_expr::StructuralOccurrence::CallbackResult { param_index, .. } => {
+                StructuralOccurrence::CallbackArg { param_index, .. }
+                | StructuralOccurrence::CallbackResult { param_index, .. } => {
                     callback_params.insert(*param_index);
                 }
-                crate::type_expr::StructuralOccurrence::Param { .. }
-                | crate::type_expr::StructuralOccurrence::Result { .. } => {}
+                StructuralOccurrence::Param { .. } | StructuralOccurrence::Result { .. } => {}
             }
         }
     }

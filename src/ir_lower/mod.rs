@@ -230,9 +230,7 @@ pub(crate) fn compute_current_function_correspondence(
     module: &mut Module,
     provenance: &std::collections::HashMap<FnId, crate::fz_ir::ContinuationProvenance>,
 ) {
-    use crate::type_expr::{
-        StructuralCorrespondenceGroup, StructuralOccurrence, StructuralPathStep,
-    };
+    use crate::specs::{StructuralCorrespondenceGroup, StructuralOccurrence, StructuralPathStep};
     use std::collections::BTreeSet;
 
     fn groups_to_sets(
@@ -1630,15 +1628,15 @@ end
             .expect("function correspondence missing");
         assert_eq!(
             groups,
-            &vec![crate::type_expr::StructuralCorrespondenceGroup {
+            &vec![crate::specs::StructuralCorrespondenceGroup {
                 var: crate::types::TypeVarId(0),
                 occurrences: vec![
-                    crate::type_expr::StructuralOccurrence::Param {
+                    crate::specs::StructuralOccurrence::Param {
                         param_index: 0,
-                        path: vec![crate::type_expr::StructuralPathStep::NamedArg(0)],
+                        path: vec![crate::specs::StructuralPathStep::NamedArg(0)],
                     },
-                    crate::type_expr::StructuralOccurrence::Result {
-                        path: vec![crate::type_expr::StructuralPathStep::ListElem],
+                    crate::specs::StructuralOccurrence::Result {
+                        path: vec![crate::specs::StructuralPathStep::ListElem],
                     },
                 ],
             }]
@@ -1670,22 +1668,22 @@ end
             .expect("continuation correspondence missing");
         assert_eq!(
             groups,
-            &vec![crate::type_expr::StructuralCorrespondenceGroup {
+            &vec![crate::specs::StructuralCorrespondenceGroup {
                 var: crate::types::TypeVarId(0),
                 occurrences: vec![
-                    crate::type_expr::StructuralOccurrence::Param {
+                    crate::specs::StructuralOccurrence::Param {
                         param_index: 0,
                         path: vec![],
                     },
-                    crate::type_expr::StructuralOccurrence::Param {
+                    crate::specs::StructuralOccurrence::Param {
                         param_index: 1,
                         path: vec![],
                     },
-                    crate::type_expr::StructuralOccurrence::Result {
-                        path: vec![crate::type_expr::StructuralPathStep::TupleElem(0),],
+                    crate::specs::StructuralOccurrence::Result {
+                        path: vec![crate::specs::StructuralPathStep::TupleElem(0)],
                     },
-                    crate::type_expr::StructuralOccurrence::Result {
-                        path: vec![crate::type_expr::StructuralPathStep::TupleElem(1),],
+                    crate::specs::StructuralOccurrence::Result {
+                        path: vec![crate::specs::StructuralPathStep::TupleElem(1)],
                     },
                 ],
             }]
@@ -1751,27 +1749,27 @@ end
         assert_eq!(
             groups,
             &vec![
-                crate::type_expr::StructuralCorrespondenceGroup {
+                crate::specs::StructuralCorrespondenceGroup {
                     var: crate::types::TypeVarId(0),
                     occurrences: vec![
-                        crate::type_expr::StructuralOccurrence::Param {
+                        crate::specs::StructuralOccurrence::Param {
                             param_index: 0,
                             path: vec![],
                         },
-                        crate::type_expr::StructuralOccurrence::Result {
-                            path: vec![crate::type_expr::StructuralPathStep::TupleElem(1),],
+                        crate::specs::StructuralOccurrence::Result {
+                            path: vec![crate::specs::StructuralPathStep::TupleElem(1)],
                         },
                     ],
                 },
-                crate::type_expr::StructuralCorrespondenceGroup {
+                crate::specs::StructuralCorrespondenceGroup {
                     var: crate::types::TypeVarId(1),
                     occurrences: vec![
-                        crate::type_expr::StructuralOccurrence::Param {
+                        crate::specs::StructuralOccurrence::Param {
                             param_index: 2,
                             path: vec![],
                         },
-                        crate::type_expr::StructuralOccurrence::Result {
-                            path: vec![crate::type_expr::StructuralPathStep::TupleElem(0),],
+                        crate::specs::StructuralOccurrence::Result {
+                            path: vec![crate::specs::StructuralPathStep::TupleElem(0)],
                         },
                     ],
                 },

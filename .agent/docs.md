@@ -24,7 +24,7 @@ Read the one whose trigger matches what you are about to touch:
 - [repl-session](docs/repl-session.md) — REPL world/bindings/runtime layering, chunk synthesis, docs/help, or macro/runtime boundaries.
 - [reduction-yielding](docs/reduction-yielding.md) — reduction-driven scheduler yielding, the per-process budget, allocation-pressure expiration, the continuation reserve, or boundary maintenance.
 - [scheduler-zero-arg-closures](docs/scheduler-zero-arg-closures.md) — scheduler, receive, yield, spawn, timeout, or continuation re-entry.
-- [specs](docs/specs.md) — `@spec` parsing, validation, declared-call typing, interface/export specs, protocol callback specs, or multi-spec overload sets.
+- [specs](docs/specs.md) — `@spec` parsing, the `src/specs/` model/engine extraction, validation, declared-call typing, interface/export specs, protocol callback specs, or multi-spec overload sets.
 - [state-transitions](docs/state-transitions.md) — public `Enum.reduce` vs low-level `Enumerable.reduce` lowering, list reducer state machines, or known vs opaque reducers.
 - [any-value](docs/any-value.md) — `AnyValueRef`, `ValueRef`, raw scalar lanes, boxed scalars, pointer format, or GC-visible values.
 - [set-theoretic-types](docs/set-theoretic-types.md) — the type lattice (`Descr` axes, union/intersect/neg, emptiness/disjointness), brands & opaques as nominal refinements, brand erasure, and the two-model rule: runtime equality/matching is brand-blind (`is_value_disjoint`) while typing/dispatch/boundary is brand-aware (`is_disjoint`).

@@ -580,8 +580,8 @@ dump-budget mechanism — are explained in
 ## Repository map
 
 - `src/parser/`, `src/parser/lexer.rs`, `src/ast/` — read source code
-- `src/type_expr/`, `src/types/`, `src/ir_planner/` — types and
-  inference
+- `src/types/`, `src/type_expr/`, `src/specs/`, `src/type_infer/`,
+  `src/ir_planner/` — types, spec contracts, inference, and planning
 - `src/fz_ir/mod.rs`, `src/ir_lower/`, `src/ir_reducer/mod.rs` — build and
   simplify fz IR
 - `src/ir_codegen*.rs` — Cranelift codegen for JIT and AOT

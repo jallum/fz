@@ -1343,13 +1343,12 @@ pub struct Module {
     /// Resolved declared `@spec` overload sets keyed by IR function id. Used by
     /// call typing for source-level polymorphic contracts.
     #[serde(with = "fn_keyed_map")]
-    pub declared_specs: HashMap<FnId, crate::type_expr::ResolvedSpecSet>,
+    pub declared_specs: HashMap<FnId, crate::specs::ResolvedSpecSet>,
     /// Function correspondence keyed by IR function id. Declared source
     /// functions contribute structural groups directly from `@spec`; CPS
     /// continuations contribute synthesized groups from lowering provenance.
     #[serde(with = "fn_keyed_map")]
-    pub function_correspondence:
-        HashMap<FnId, Vec<crate::type_expr::StructuralCorrespondenceGroup>>,
+    pub function_correspondence: HashMap<FnId, Vec<crate::specs::StructuralCorrespondenceGroup>>,
     /// Continuation provenance keyed by synthesized continuation FnId. This is
     /// the durable IR-owned record of how lowering split a non-tail call or
     /// matcher body, from which planner-facing correspondence can be derived
