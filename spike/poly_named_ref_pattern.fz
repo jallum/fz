@@ -1,0 +1,14 @@
+# A named reference to a pattern-matched function should still feed the
+# activation's argument proof into the matcher decision tree.
+#
+# Expected: main() : {:one, :two}; the catch-all is source-total but dead for
+# the observed activations.
+
+fn pick(:left), do: :one
+fn pick(:right), do: :two
+fn pick(_), do: :other
+
+fn main() do
+  f = &pick/1
+  {f.(:left), f.(:right)}
+end

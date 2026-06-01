@@ -262,6 +262,46 @@ projects the matching field proof if it still fits that visible type. A struct
 with one proven field is not a proven aggregate; it is an aggregate whose one
 field can help the matcher or guard reducer choose a branch.
 
+## Elixir comparison: what to mine
+
+Elixir's local type checker (`../elixir/lib/elixir/lib/module/types/`) is a good
+shape reference, not a policy reference. It is module-local, AST-level, and
+gradual: unannotated inputs start as `dynamic()`, recursive uncertainty can fall
+back to `dynamic()`, and clause explosion is capped by widening to dynamic. Those
+choices are wrong for this engine's core invariant because they assert top where
+the truth is still `Pending` or `Unknown`.
+
+The useful pieces are data-model ideas:
+
+- **Arrow sets for callables.** Elixir represents multi-clause functions as sets
+  of arrows and applies them by selecting the arrows whose domains are inhabited
+  by the call arguments. This is the right model for direct functions, named
+  references, closures, and protocol callbacks.
+- **Pattern paths.** Elixir records refinements as paths from a root value
+  (`elem`, `key`, `head`, `tail`, etc.). That maps directly to `ValueProof`:
+  tuple/list/map/struct projections are proof-preserving model edits, while all
+  type math remains in `Types`.
+- **Previous-clause accounting.** Elixir subtracts previous clauses from the
+  current clause to find redundant or dead clauses. The transplant should turn
+  this into matcher telemetry/diagnostics: a proved-dead arm becomes
+  `NoReturn`, and a value-required `Known(none)` stops with a diagnostic.
+- **Strong vs inferred arrows.** Builtins and declared specs are strong inputs to
+  inference; body-derived arrows are inferred facts. Both are still applied by
+  the same strict arrow-selection rule.
+
+The pieces not to copy are also explicit:
+
+- No internal `dynamic()`/`any` fallback. `any` may appear only as an explicit
+  declared type, an earned value-lattice top, or final erasure of a residual
+  live unknown at a product boundary.
+- No recursive-cycle fallback to top. Recursion converges by monotone cells plus
+  finite-height widening, or it remains an analysis gap.
+- No reverse-arrow re-walk that "fixes" results after the fact. A transform must
+  update the model coherently when it edits it; re-running analysis is not a
+  substitute for maintaining invariants.
+- No clause-count cap that converts precision into top. If a supported program
+  explodes, that is a modeling/performance bug to measure and fix.
+
 ## Closures are functions with capture parameters
 
 A closure is an ordinary function whose first *k* parameters are **captures**,
@@ -290,6 +330,45 @@ same finite chains as everything else.
 A named-function reference (`&Mod.fn/2`) is the degenerate case: a closure with
 **no captures**. It is just another call edge, specialized by the argument types
 it is eventually applied with — nothing special, and nothing that grows.
+
+## Callable specs and call-targets
+
+A callable spec is an **arrow set**:
+
+```text
+Arrow    = { params: [ValueFact], ret: Info }
+ArrowSet = strong arrows from builtins/specs ∪ inferred arrows from activations
+```
+
+`FnId` remains the runtime body identity. A call target is the model object that
+gets from a value at a call site to a `FnId` plus the inference inputs for one
+activation:
+
+```text
+Direct(FnId, args)              -> activation(FnId, args)
+NamedRef(FnId, args)            -> activation(FnId, args)
+Closure(FnId, captures, args)   -> activation(FnId, captures ++ args)
+Protocol(receiver, callback)    -> resolve impl by receiver type, then activation(impl, args)
+```
+
+The closure's callable surface is still only its parameters. Capture facts are
+prepended only inside inference, because the lowered closure body has captures as
+leading parameters. After this phase, capture types are erased from the callable
+ABI and the closure is still applied by its ordinary arity.
+
+Polymorphism falls out of this model. The same `FnId` can have multiple arrows
+because it can have multiple activations. A direct call `id(1)` and a direct call
+`id(:ok)` are separate activation reads. The same must hold through call-target
+values: `f = &id/1; {f.(1), f.(:ok)}` creates two reads of the same zero-capture
+target, not one joined monomorphic function cell. A deliberate union-input call
+is different: one activation whose input fact is a union may select multiple
+pattern leaves and join their returns.
+
+Under normal circumstances the arrow selected for a call is exactly what the top
+of the matcher decision tree can process. A singleton or structural proof can
+drive the tree to one leaf; a live union may drive more than one; an impossible
+path contributes `NoReturn`; and a proved out-of-domain value produces
+`Known(none)` at the failing operation.
 
 ## Specialization is a worklist fixpoint
 
@@ -376,3 +455,35 @@ If instead the reducer returned `{:cont, x + a}` (the `Enumerable.reduce` /
 `{:cont, int} + int` — outside `+`'s domain ⇒ `none`. The accumulator settles at
 `int | {:cont, int}` and the `+` site is `none`: a *proved* contradiction, the
 seam for a located diagnostic, not a divergence.
+
+## Transplant boundary and removals
+
+The production planner should keep the codegen-facing contract machinery that
+describes compiled bodies and ABI shape (`SpecKey`, `ReturnDemand`,
+`ReturnContextPlan`) but stop using that machinery as the type-inference kernel.
+The new kernel owns activation discovery, call-target resolution, return
+convergence, proof propagation, and diagnostics for `Known(none)`.
+
+Machinery that should be marked dead during the arc and removed before final
+acceptance:
+
+- Planner-local body typing that duplicates `type_infer`'s activation walk
+  (`type_fn`, `walk`, `prim`, and the inference parts of `worklist`).
+- Result-linked callback correspondence as an inference heuristic
+  (`function_correspondence`, `normalize_result_correspondence_key`,
+  `fixed_point_spec_key_for_arity`'s correspondence normalization). If any of
+  this remains, it must be only a source-map/modeling aid, not a hidden widening
+  rule.
+- Fixed-point slot summaries that patch recursive parameter convergence from the
+  outside. Slot convergence belongs in the activation cell model.
+- Subsumption or any-key fallbacks that hide missing specs. A residual unknown is
+  consumed at the boundary explicitly; it is not repaired by selecting a wider
+  compiled body during inference.
+- Dead-branch consensus computed by re-analysis after planning. The matcher
+  proof pass should produce `NoReturn`/dead-arm telemetry as part of the same
+  model update that selected the arm.
+
+Zombie rule: a removed concept cannot be reintroduced under a new name. If a
+replacement still says "correspond callback result slots," "summarize recursive
+slots externally," or "fall back to any-key when precision is missing," it is the
+old concept in disguise and should be rejected.

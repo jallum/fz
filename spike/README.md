@@ -14,17 +14,20 @@ the planner's type inference, not runtime behavior, so they live outside
 | program | shape | inferred result | current planner |
 | --- | --- | --- | --- |
 | `add.fz` | `a + b` | `(number, number) -> number`; `add(1,2) : int` | settles ✓ |
-| `poly_id.fz` | same `FnId` called at `int` and `:ok` | `main() : {int, :ok}`; independent activations do not over-join | not pinned |
-| `match_atom_partition.fz` | same multi-clause `FnId` called with different atom literals | `main() : {:one, :two}`; matcher proof selects different leaves per activation | not pinned |
-| `match_list_partition.fz` | same multi-clause `FnId` called with `[]` and `[1]` | `main() : {:empty, :cons}`; list-shape proof selects empty vs cons leaves per activation | not pinned |
-| `match_list_binding.fz` | cons clause returns `[h | _]` binding | `main() : {:empty, int}`; matcher-produced bindings carry element type into the selected leaf | not pinned |
-| `match_tuple_binding.fz` | tuple clause returns `{:ok, x}` binding | `main() : {int, :error}`; tuple-shape proof and field projection carry payload type into the selected leaf | not pinned |
-| `match_nested_binding.fz` | tuple payload is a cons pattern returning `h` | `main() : {int, :error}`; composed tuple and list proof carries nested binding type into the selected leaf | not pinned |
-| `match_nested_partition.fz` | tuple payload partitions empty-list, cons-list, and atom leaves | `main() : {:empty, int, :error}`; nested sibling arms remain distinct per activation | not pinned |
-| `match_tuple_tag_partition.fz` | same-arity tuple clauses with different atom tags | `main() : {int, :bad}`; tag proof chooses the matching payload projection | not pinned |
-| `match_tuple_arity_partition.fz` | tuple clauses with different arities and a non-tuple arm | `main() : {int, {int, int}, :other}`; arity proof keeps impossible fields out of joins | not pinned |
-| `match_guard_partition.fz` | tuple pattern with a guard helper over the payload | `main() : {int, :fallback}`; literal proof selects the guarded arm without exposing singleton return types | not pinned |
-| `match_map_binding.fz` | map clause binds `%{id: x}` | `main() : {int, :none}`; matcher-map hit/miss proof carries the field value and skips the catch-all | not pinned |
+| `poly_id.fz` | same `FnId` called at `int` and `:ok` | `main() : {int, :ok}`; independent activations do not over-join | settles ✓ |
+| `poly_named_ref.fz` | same zero-capture call-target value applied at `int` and `:ok` | `main() : {int, :ok}`; named refs do not collapse activations into one monomorphic cell | target; not pinned |
+| `poly_named_ref_pattern.fz` | named ref to a source-total pattern fn applied at two atom literals | `main() : {:one, :two}`; call-target activation still drives matcher proof and keeps the catch-all dead | target; not pinned |
+| `poly_capture_ref.fz` | same captured closure value applied at `int` and `:right` | `main() : {{:ok, int}, {:ok, :right}}`; captures are inference inputs, not callable arity | target; not pinned |
+| `match_atom_partition.fz` | same multi-clause `FnId` called with different atom literals | `main() : {:one, :two}`; matcher proof selects different leaves per activation | settles ✓ |
+| `match_list_partition.fz` | same multi-clause `FnId` called with `[]` and `[1]` | `main() : {:empty, :cons}`; list-shape proof selects empty vs cons leaves per activation | settles ✓ |
+| `match_list_binding.fz` | cons clause returns `[h | _]` binding | `main() : {:empty, int}`; matcher-produced bindings carry element type into the selected leaf | settles ✓ |
+| `match_tuple_binding.fz` | tuple clause returns `{:ok, x}` binding | `main() : {int, :error}`; tuple-shape proof and field projection carry payload type into the selected leaf | settles ✓ |
+| `match_nested_binding.fz` | tuple payload is a cons pattern returning `h` | `main() : {int, :error}`; composed tuple and list proof carries nested binding type into the selected leaf | settles ✓ |
+| `match_nested_partition.fz` | tuple payload partitions empty-list, cons-list, and atom leaves | `main() : {:empty, int, :error}`; nested sibling arms remain distinct per activation | settles ✓ |
+| `match_tuple_tag_partition.fz` | same-arity tuple clauses with different atom tags | `main() : {int, :bad}`; tag proof chooses the matching payload projection | settles ✓ |
+| `match_tuple_arity_partition.fz` | tuple clauses with different arities and a non-tuple arm | `main() : {int, {int, int}, :other}`; arity proof keeps impossible fields out of joins | settles ✓ |
+| `match_guard_partition.fz` | tuple pattern with a guard helper over the payload | `main() : {int, :fallback}`; literal proof selects the guarded arm without exposing singleton return types | settles ✓ |
+| `match_map_binding.fz` | map clause binds `%{id: x}` | `main() : {int, :none}`; matcher-map hit/miss proof carries the field value and skips the catch-all | settles ✓ |
 | `enum_count.fz` | `Enum.count/1` over a List receiver | `Enum.count([1,2,3]) : int`; protocol dispatch reaches the List count callback | settles ✓ |
 | `enum_reduce.fz` | `Enum.reduce/3` over a List receiver with an inline reducer | `Enum.reduce([1,2,3], 0, +) : int`; public wrapper, protocol dispatch, and list loop converge | settles ✓ |
 | `enum_reduce_named_ref_ok.fz` | `Enum.reduce/3` over a List receiver with `&Main.reducer/2` | `Enum.reduce([1,2,3], 0, &Main.reducer/2) : int`; named reducer references converge like inline closures | settles ✓ |
@@ -43,6 +46,9 @@ Promote them one at a time so each commit isolates one missing capability.
 
 | program | target capability |
 | --- | --- |
+| `poly_named_ref.fz` | Treat a named reference as a zero-capture call target whose activations are keyed by call arguments. |
+| `poly_named_ref_pattern.fz` | Drive the matcher decision tree through a function value call target, not only through direct calls. |
+| `poly_capture_ref.fz` | Treat closure captures as inference-only leading inputs while preserving ordinary callable arity. |
 | `enum_reduce_named_ref.fz` | Stop on a proved invalid reducer accumulator and emit a diagnostic. |
 
 The discriminator is the captured value's type: an `int` capture (`&f[5]`) settles;
@@ -54,6 +60,22 @@ the bug these last two programs pin.
 the inference instance. The same `id` body is activated twice, once at `int` and
 once at `:ok`; callers read their own activation's return instead of a single
 joined `int | :ok` function cell.
+
+`poly_named_ref.fz` moves the same boundary through a call-target value:
+`&id/1` has no captures, but it is still a value whose two applications must read
+separate activations keyed by their arguments. The current production planner's
+body dump still shows the obsolete shape (`any` plus one narrow spec), which is
+why this remains a target rather than an assertion.
+
+`poly_named_ref_pattern.fz` adds the pattern matcher to that call-target path.
+The source is total via a catch-all, but the two observed activations should
+select only the `:left` and `:right` leaves; the catch-all is dead for this
+callsite and should not contribute `:other`.
+
+`poly_capture_ref.fz` proves captures are only inference inputs. The closure body
+receives `tag` as a leading lowered parameter, but the closure value is still
+callable with one explicit parameter; applying the same closure at `int` and
+`:right` should produce two activation reads with the same captured `:ok`.
 
 `match_atom_partition.fz` pins the pattern-dispatch boundary: the same lowered
 decision tree is evaluated under each activation's input facts. The case returns

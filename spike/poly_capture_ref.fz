@@ -1,0 +1,14 @@
+# A captured closure has captures as inference inputs, but its callable surface
+# is still just the explicit parameters. The same closure value can be applied at
+# different parameter facts without joining those activations together.
+#
+# Expected: main() : {{:ok, int}, {:ok, :right}}
+
+fn tagger(tag) do
+  fn (x) -> {tag, x} end
+end
+
+fn main() do
+  f = tagger(:ok)
+  {f.(1), f.(:right)}
+end

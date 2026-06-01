@@ -1,0 +1,12 @@
+# Polymorphic named-function-reference specialization. `&id/1` is a
+# zero-capture call target; applying the same value at two concrete types should
+# create two activation reads, not one joined monomorphic function cell.
+#
+# Expected: main() : {int, :ok}
+
+fn id(x), do: x
+
+fn main() do
+  f = &id/1
+  {f.(1), f.(:ok)}
+end
