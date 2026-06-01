@@ -19,6 +19,7 @@ the planner's type inference, not runtime behavior, so they live outside
 | `match_list_partition.fz` | same multi-clause `FnId` called with `[]` and `[1]` | `main() : {:empty, :cons}`; list-shape evidence selects empty vs cons leaves per activation | not pinned |
 | `match_list_binding.fz` | cons clause returns `[h | _]` binding | `main() : {:empty, int}`; matcher-produced bindings carry element type into the selected leaf | not pinned |
 | `match_tuple_binding.fz` | tuple clause returns `{:ok, x}` binding | `main() : {int, :error}`; tuple-shape evidence and field projection carry payload type into the selected leaf | not pinned |
+| `match_nested_binding.fz` | tuple payload is a cons pattern returning `h` | `main() : {int, :error}`; composed tuple and list evidence carries nested binding type into the selected leaf | not pinned |
 | `fold_tail.fz` | tail-recursive fold, empty-capture closure | `number` | settles ✓ |
 | `fold_nontail.fz` | non-tail wrapper over the fold | `number` | settles ✓ |
 | `fold_capture_int.fz` | threaded closure captures an `int` | `number` | settles ✓ |
@@ -54,3 +55,7 @@ over-joined value.
 tests. The lowered `type_test` and `tuple_field` evidence narrows `{:ok, int}`
 to the tuple leaf and projects the payload without letting the atom leaf or
 impossible tuple arities contribute.
+
+`match_nested_binding.fz` composes the tuple and list cases: `{:ok, [h | _]}`
+first narrows/project the tuple payload, then narrows that payload to a non-empty
+list so `head(payload)` flows `int` into the leaf.
