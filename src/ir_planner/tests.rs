@@ -3256,7 +3256,7 @@ fn declared_return_fact_handles_take_positive_reduce_while_in_runtime_graph() {
                 .map(|arrow| {
                     format!(
                         "{:?}",
-                        crate::types::instantiate_scheme_match(
+                        crate::specs::instantiate_match(
                             &mut t,
                             &arrow.params,
                             &arrow.result,

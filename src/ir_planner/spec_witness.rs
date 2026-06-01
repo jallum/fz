@@ -2,11 +2,10 @@ use super::fn_types::{
     FixedPointSlotSummaries, ReturnDemand, SpecKey, SpecKeySet, fixed_point_spec_key_for_arity,
 };
 use crate::fz_ir::{FnId, Module};
-use crate::specs::{ResolvedSpec, ResolvedSpecSet};
-use crate::types::{
-    ClosureLitInfo, ClosureTypes, SchemeInstantiation, SchemeMatch, Ty, Types,
-    instantiate_scheme_match,
+use crate::specs::{
+    ResolvedSpec, ResolvedSpecSet, SchemeInstantiation, SchemeMatch, instantiate_match,
 };
+use crate::types::{ClosureLitInfo, ClosureTypes, Ty, Types};
 use std::collections::HashMap;
 
 #[derive(Clone, Debug)]
@@ -104,12 +103,12 @@ fn declared_return_fact_for_arrow<T>(
 where
     T: Types<Ty = Ty> + ClosureTypes,
 {
-    let first =
-        match instantiate_scheme_match(t, &spec.params, &spec.result, &spec.constraints, arg_tys) {
-            SchemeInstantiation::Known(matched)
-            | SchemeInstantiation::Underconstrained(matched) => matched,
-            SchemeInstantiation::Invalid => return None,
-        };
+    let first = match instantiate_match(t, &spec.params, &spec.result, &spec.constraints, arg_tys) {
+        SchemeInstantiation::Known(matched) | SchemeInstantiation::Underconstrained(matched) => {
+            matched
+        }
+        SchemeInstantiation::Invalid => return None,
+    };
 
     let mut refined_witnesses = arg_tys.to_vec();
     let mut complete = true;
@@ -144,7 +143,7 @@ where
         refined_witnesses[slot] = t.union(witness.clone(), refined);
     }
 
-    let matched = match instantiate_scheme_match(
+    let matched = match instantiate_match(
         t,
         &spec.params,
         &spec.result,

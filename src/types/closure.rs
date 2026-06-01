@@ -1,5 +1,4 @@
-use crate::types::{SchemeInstantiation, Types, instantiate_scheme_result};
-use std::collections::HashMap;
+use crate::types::Types;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CallableClause<T> {
@@ -52,59 +51,4 @@ pub trait ClosureTypes: Types {
     /// key slots whose behavior matters, but whose specific closure value
     /// should not fork specialization.
     fn erase_closure_identity(&mut self, a: &Self::Ty) -> Self::Ty;
-
-    /// Resolve a closure-typed callee's return under the given arg
-    /// witnesses and accumulated effective-return table.
-    ///
-    /// Returns `None` when a closure-literal clause refers to a spec
-    /// whose return has not yet been registered, so callers can defer to
-    /// a later fixpoint iteration.
-    fn resolve_closure_return(
-        &mut self,
-        closure_ty: &Self::Ty,
-        effective_returns: &HashMap<(ClosureTarget, Vec<Self::Ty>), Self::Ty>,
-        arg_tys: &[Self::Ty],
-    ) -> Option<Self::Ty> {
-        let Some(clauses) = self.callable_clauses(closure_ty) else {
-            return Some(self.any());
-        };
-        let mut acc = self.none();
-        for clause in clauses {
-            match clause.closure {
-                None => {
-                    let contrib = if self.has_vars(&clause.ret)
-                        || clause.args.iter().any(|arg| self.has_vars(arg))
-                    {
-                        let constraints = HashMap::new();
-                        match instantiate_scheme_result(
-                            self,
-                            &clause.args,
-                            &clause.ret,
-                            &constraints,
-                            arg_tys,
-                        ) {
-                            SchemeInstantiation::Known(ty)
-                            | SchemeInstantiation::Underconstrained(ty) => ty,
-                            SchemeInstantiation::Invalid => return Some(self.any()),
-                        }
-                    } else {
-                        clause.ret
-                    };
-                    acc = self.union(acc, contrib);
-                }
-                Some(ClosureLitInfo { target, captures }) => {
-                    if clause.args.len() != arg_tys.len() {
-                        return Some(self.any());
-                    }
-                    let mut full_key = captures.clone();
-                    full_key.extend_from_slice(arg_tys);
-                    match effective_returns.get(&(target, full_key)) {
-                        Some(r) => acc = self.union(acc, r.clone()),
-                        None => return None,
-                    }
-                }
-            }
-        }
-        Some(acc)
-    }
 }

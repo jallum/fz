@@ -1,7 +1,9 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use crate::modules::identity::ModuleName;
-use crate::types::{ClosureTypes, SchemeInstantiation, SchemeMatch, instantiate_scheme_match};
+use crate::types::ClosureTypes;
+
+use super::{SchemeInstantiation, SchemeMatch, instantiate_match};
 
 /// Resolved form of a `SpecDecl` after type-expression lookup. The
 /// type-expression layer constructs this model; spec consumers own the
@@ -310,7 +312,7 @@ fn instantiate_matching_arrow<T>(
 where
     T: ClosureTypes<Ty = crate::types::Ty>,
 {
-    match instantiate_scheme_match(t, &spec.params, &spec.result, &spec.constraints, arg_tys) {
+    match instantiate_match(t, &spec.params, &spec.result, &spec.constraints, arg_tys) {
         SchemeInstantiation::Known(SchemeMatch { params, result }) => {
             Some(ResolvedSpecMatch { params, result })
         }

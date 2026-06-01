@@ -46,8 +46,10 @@ Current extraction state:
 
 - `src/specs/model.rs` owns the resolved data shapes and structural
   correspondence metadata.
-- Scheme matching still lives in `src/types/scheme.rs`; `fz-hq4.2` moves that
-  policy into `src/specs/match.rs`.
+- Scheme matching lives in `src/specs/match.rs`. It owns
+  `SchemeInstantiation`, `SchemeMatch`, structural witness collection, and
+  closure-arrow return resolution. `src/types/` only exposes the type algebra
+  and shape introspection primitives that matching consumes.
 - Overload selection and result unioning still hang off `ResolvedSpecSet`;
   `fz-hq4.3` moves that behavior into `src/specs/select.rs`.
 - Declared coverage checking still lives in `src/frontend/spec_check.rs`;

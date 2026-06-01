@@ -24,17 +24,11 @@ mod literal;
 mod map;
 mod poly;
 mod render;
-mod scheme;
 mod visibility;
 
 pub use closure::{CallableClause, ClosureLitInfo, ClosureTarget, ClosureTypes};
 pub use literal::{LiteralTypes, ScalarLiteral, TypeMatch};
 pub use map::MapKey;
-pub use scheme::{
-    SchemeInstantiation, SchemeMatch, instantiate_match as instantiate_scheme_match,
-    instantiate_match_with_slots as instantiate_scheme_match_with_slots,
-    instantiate_result as instantiate_scheme_result,
-};
 
 /// A borrowed view of a module's nominal environment: the brand- and
 /// opaque-tag inner-type maps. They are only ever consulted together — to
@@ -229,8 +223,8 @@ pub trait Types {
     fn map_field_lookup(&mut self, a: &Self::Ty, key: &MapKey) -> Option<Self::Ty>;
 
     /// Literal keys mentioned by `a`'s positive map clauses. This is an
-    /// introspection hook for structural scheme matching; callers still
-    /// use `map_field_lookup` to obtain the set-theoretic field type.
+    /// introspection hook for `src/specs` matching; callers still use
+    /// `map_field_lookup` to obtain the set-theoretic field type.
     fn map_known_keys(&self, a: &Self::Ty) -> Vec<MapKey>;
 
     /// fz-rh5.6 — transform `a` for use as a recursive-call spec key.

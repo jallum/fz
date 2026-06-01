@@ -43,10 +43,8 @@
 //! Activation facts, diagnostics, and dead matcher arms are emitted through
 //! telemetry so tests and operators observe the same production surface.
 use crate::fz_ir::{BinOp, BlockId, Const, DeadBranch, FnId, Module, Prim, Stmt, Term, UnOp, Var};
-use crate::types::{
-    ClosureTarget, ClosureTypes, MapKey, Nominals, RenderTypes, SchemeInstantiation, Ty, Types,
-    instantiate_scheme_match,
-};
+use crate::specs::{SchemeInstantiation, instantiate_match};
+use crate::types::{ClosureTarget, ClosureTypes, MapKey, Nominals, RenderTypes, Ty, Types};
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 
 type Env = HashMap<Var, Info>;
@@ -2010,7 +2008,7 @@ fn successful_spec_arrow_result<T: Types<Ty = Ty> + ClosureTypes>(
     constraints: &HashMap<crate::types::TypeVarId, Ty>,
     args: &[Ty],
 ) -> SpecArrowResult {
-    match instantiate_scheme_match(t, params, result, constraints, args) {
+    match instantiate_match(t, params, result, constraints, args) {
         SchemeInstantiation::Known(matched) => return SpecArrowResult::Known(matched.result),
         SchemeInstantiation::Underconstrained(matched) => {
             if !t.has_vars(&matched.result) {
@@ -2023,7 +2021,7 @@ fn successful_spec_arrow_result<T: Types<Ty = Ty> + ClosureTypes>(
     let Some(overlap_witnesses) = spec_param_overlap_witnesses(t, params, args) else {
         return SpecArrowResult::NoMatch;
     };
-    match instantiate_scheme_match(t, params, result, constraints, &overlap_witnesses) {
+    match instantiate_match(t, params, result, constraints, &overlap_witnesses) {
         SchemeInstantiation::Known(matched) => SpecArrowResult::Known(matched.result),
         SchemeInstantiation::Underconstrained(matched) if !t.has_vars(&matched.result) => {
             SpecArrowResult::Known(matched.result)

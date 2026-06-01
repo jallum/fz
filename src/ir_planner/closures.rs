@@ -7,7 +7,7 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 /// Resolve a closure call's return type for this call site's argument types.
 ///
 /// Translates value-demand `effective_returns` into the closure-target return
-/// table expected by `Types::resolve_closure_return`, then delegates.
+/// table expected by the specs matcher, then delegates.
 pub fn resolve_closure_return<
     T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
 >(
@@ -34,7 +34,7 @@ pub fn resolve_closure_return<
             ))
         })
         .collect();
-    t.resolve_closure_return(closure_ty, &translated, arg_tys)
+    crate::specs::resolve_closure_return(t, closure_ty, &translated, arg_tys)
 }
 
 pub fn literal_closure_return_keys<

@@ -1,15 +1,15 @@
-use crate::types::{ClosureTypes, Sigma, TypeVarId, Types};
+use crate::types::{ClosureLitInfo, ClosureTarget, ClosureTypes, Sigma, TypeVarId, Types};
 use std::collections::HashMap;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum SchemeInstantiation<T> {
+pub(crate) enum SchemeInstantiation<T> {
     Known(T),
     Underconstrained(T),
     Invalid,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct SchemeMatch<T> {
+pub(crate) struct SchemeMatch<T> {
     pub params: Vec<T>,
     pub result: T,
 }
@@ -31,7 +31,7 @@ impl Witness {
     }
 }
 
-pub fn instantiate_result<T: ClosureTypes + ?Sized>(
+fn instantiate_result<T: ClosureTypes + ?Sized>(
     t: &mut T,
     params: &[T::Ty],
     result: &T::Ty,
@@ -47,7 +47,7 @@ pub fn instantiate_result<T: ClosureTypes + ?Sized>(
     }
 }
 
-pub fn instantiate_match<T: ClosureTypes + ?Sized>(
+pub(crate) fn instantiate_match<T: ClosureTypes + ?Sized>(
     t: &mut T,
     params: &[T::Ty],
     result: &T::Ty,
@@ -58,7 +58,7 @@ pub fn instantiate_match<T: ClosureTypes + ?Sized>(
     instantiate_match_slots(t, params, result, constraints, &witness_slots)
 }
 
-pub fn instantiate_match_with_slots<T: ClosureTypes + ?Sized>(
+pub(crate) fn instantiate_match_with_slots<T: ClosureTypes + ?Sized>(
     t: &mut T,
     params: &[T::Ty],
     result: &T::Ty,
@@ -67,6 +67,49 @@ pub fn instantiate_match_with_slots<T: ClosureTypes + ?Sized>(
 ) -> SchemeInstantiation<SchemeMatch<T::Ty>> {
     let witness_slots: Vec<Option<&T::Ty>> = witnesses.iter().map(Option::as_ref).collect();
     instantiate_match_slots(t, params, result, constraints, &witness_slots)
+}
+
+pub(crate) fn resolve_closure_return<T: ClosureTypes + ?Sized>(
+    t: &mut T,
+    closure_ty: &T::Ty,
+    effective_returns: &HashMap<(ClosureTarget, Vec<T::Ty>), T::Ty>,
+    arg_tys: &[T::Ty],
+) -> Option<T::Ty> {
+    let Some(clauses) = t.callable_clauses(closure_ty) else {
+        return Some(t.any());
+    };
+    let mut acc = t.none();
+    for clause in clauses {
+        match clause.closure {
+            None => {
+                let contrib = if t.has_vars(&clause.ret)
+                    || clause.args.iter().any(|arg| t.has_vars(arg))
+                {
+                    let constraints = HashMap::new();
+                    match instantiate_result(t, &clause.args, &clause.ret, &constraints, arg_tys) {
+                        SchemeInstantiation::Known(ty)
+                        | SchemeInstantiation::Underconstrained(ty) => ty,
+                        SchemeInstantiation::Invalid => return Some(t.any()),
+                    }
+                } else {
+                    clause.ret
+                };
+                acc = t.union(acc, contrib);
+            }
+            Some(ClosureLitInfo { target, captures }) => {
+                if clause.args.len() != arg_tys.len() {
+                    return Some(t.any());
+                }
+                let mut full_key = captures.clone();
+                full_key.extend_from_slice(arg_tys);
+                match effective_returns.get(&(target, full_key)) {
+                    Some(r) => acc = t.union(acc, r.clone()),
+                    None => return None,
+                }
+            }
+        }
+    }
+    Some(acc)
 }
 
 fn instantiate_match_slots<T: ClosureTypes + ?Sized>(

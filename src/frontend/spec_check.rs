@@ -28,9 +28,10 @@ use crate::ast::{Attribute, Item, Program};
 use crate::diag::{Diagnostic, Span, codes};
 use crate::fz_ir::FnId;
 use crate::ir_planner::ModulePlan;
-use crate::specs::{ResolvedSpec, ResolvedSpecSet};
+use crate::specs::{
+    ResolvedSpec, ResolvedSpecSet, SchemeInstantiation, instantiate_match_with_slots,
+};
 use crate::type_expr::{ModuleTypeEnv, resolve_spec_decls};
-use crate::types::{SchemeInstantiation, instantiate_scheme_match_with_slots};
 
 /// Validate every `@spec` in `program` against the corresponding
 /// inferred specs in `module_plan`. Returns a list of diagnostics
@@ -184,7 +185,7 @@ fn declared_arrow_covers_inferred_spec<
     inferred_inputs: &[crate::types::KeySlot],
     inferred_result: &T::Ty,
 ) -> bool {
-    match instantiate_scheme_match_with_slots(
+    match instantiate_match_with_slots(
         t,
         &declared.params,
         &declared.result,

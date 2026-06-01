@@ -105,8 +105,10 @@ accumulator and by reducer `{:cont, b}` / `{:halt, b}` payloads, not by the
 reducer's accepted accumulator argument type.
 
 This is the same operation for `@spec foo(a, b) :: {a, b}` and for callable
-arrow clauses like `fn (a, b), do: {a, b}`. The shared API is
-`types::instantiate_scheme_result`, which reports:
+arrow clauses like `fn (a, b), do: {a, b}`. The matching policy lives in
+`src/specs/match.rs`; production callers use the narrow crate-facing
+`specs::instantiate_match` / `specs::instantiate_match_with_slots` API, which
+reports:
 
 ```text
 Known(T)             all result variables were determined by witnesses
