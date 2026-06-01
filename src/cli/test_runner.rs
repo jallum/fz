@@ -207,7 +207,7 @@ fn run_named_through(
     // AST evaluator (eval::CompileTimeEvaluator, which stays only for macro
     // expansion above) and runs on the same IR interpreter the fixture matrix
     // uses.
-    let module = crate::ir_lower::lower_program(&mut t, &prog)
+    let module = crate::ir_lower::lower_program(&mut t, &prog, &crate::telemetry::NullTelemetry)
         .map_err(|e| TestRunError(crate::diag::render_one_to_string(&sm, &e.to_diagnostic())))?;
     // Map test name → FnId once.
     let test_ids: Vec<(String, crate::fz_ir::FnId)> = tests

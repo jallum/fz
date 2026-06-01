@@ -453,7 +453,11 @@ warning[type/unreachable-arm]: the then branch is never reachable
         if let Err(e) = crate::frontend::macros::expand_program(&mut prog) {
             return render(&e.to_diagnostic(), sm);
         }
-        if let Err(e) = crate::ir_lower::lower_program(&mut crate::types::ConcreteTypes, &prog) {
+        if let Err(e) = crate::ir_lower::lower_program(
+            &mut crate::types::ConcreteTypes,
+            &prog,
+            &crate::telemetry::NullTelemetry,
+        ) {
             return render(&e.to_diagnostic(), sm);
         }
         panic!(

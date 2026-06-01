@@ -1451,7 +1451,8 @@ fn pipeline(
         .expect("parse");
     let mut t = crate::types::ConcreteTypes;
     let prog = crate::frontend::resolve::flatten_modules(&mut t, prog).expect("flatten");
-    let ir = crate::ir_lower::lower_program(&mut t, &prog).expect("lower");
+    let ir = crate::ir_lower::lower_program(&mut t, &prog, &crate::telemetry::NullTelemetry)
+        .expect("lower");
     let mt = plan_module(&mut t, &ir, tel);
     (t, ir, mt)
 }
@@ -2888,7 +2889,8 @@ fn main(), do: Collectable.id([1])
         .expect("parse");
     let mut t = crate::types::ConcreteTypes;
     let resolved = crate::frontend::resolve::flatten_modules(&mut t, parsed).expect("resolve");
-    let ir = crate::ir_lower::lower_program(&mut t, &resolved).expect("lower");
+    let ir = crate::ir_lower::lower_program(&mut t, &resolved, &crate::telemetry::NullTelemetry)
+        .expect("lower");
     let mt = plan_module(&mut t, &ir, &crate::telemetry::NullTelemetry);
 
     let main = ir.fn_by_name("main").expect("main");
@@ -3436,7 +3438,8 @@ fn runtime_graph_reduce_helper_clause_carries_function_correspondence() {
         .expect("parse");
     let mut t = crate::types::ConcreteTypes;
     let prog = crate::frontend::resolve::flatten_modules(&mut t, prog).expect("resolve");
-    let module = crate::ir_lower::lower_program(&mut t, &prog).expect("lower");
+    let module = crate::ir_lower::lower_program(&mut t, &prog, &crate::telemetry::NullTelemetry)
+        .expect("lower");
     let matches = module
         .fns
         .iter()
@@ -3571,7 +3574,8 @@ fn plan_protocol_src(
         .expect("parse");
     let mut t = crate::types::ConcreteTypes;
     let resolved = crate::frontend::resolve::flatten_modules(&mut t, parsed).expect("resolve");
-    let ir = crate::ir_lower::lower_program(&mut t, &resolved).expect("lower");
+    let ir = crate::ir_lower::lower_program(&mut t, &resolved, &crate::telemetry::NullTelemetry)
+        .expect("lower");
     let mt = plan_module(&mut t, &ir, &crate::telemetry::NullTelemetry);
     (t, ir, mt)
 }
@@ -4073,7 +4077,8 @@ fn string_literal_lowers_to_utf8_branded_bitstring() {
         .expect("parse");
     let mut ct = crate::types::ConcreteTypes;
     let prog = crate::frontend::resolve::flatten_modules(&mut ct, prog).expect("resolve");
-    let m = crate::ir_lower::lower_program(&mut ct, &prog).expect("lower");
+    let m = crate::ir_lower::lower_program(&mut ct, &prog, &crate::telemetry::NullTelemetry)
+        .expect("lower");
     let main = m.fn_by_name("main").expect("main");
     let mut saw_const_bs = false;
     for block in &main.blocks {

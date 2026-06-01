@@ -13,7 +13,12 @@ const FALSE_HALT: i64 = fz_runtime::any_value::FALSE_ATOM_ID as i64;
 fn lower_src(src: &str) -> Module {
     let toks = Lexer::new(src).tokenize().expect("lex");
     let prog = Parser::new(toks).parse_program().expect("parse");
-    lower_program(&mut crate::types::ConcreteTypes, &prog).expect("lower")
+    lower_program(
+        &mut crate::types::ConcreteTypes,
+        &prog,
+        &crate::telemetry::NullTelemetry,
+    )
+    .expect("lower")
 }
 
 fn lower_resolved_src(src: &str) -> Module {
@@ -21,7 +26,7 @@ fn lower_resolved_src(src: &str) -> Module {
     let prog = Parser::new(toks).parse_program().expect("parse");
     let mut t = crate::types::ConcreteTypes;
     let prog = crate::frontend::resolve::flatten_modules(&mut t, prog).expect("resolve");
-    lower_program(&mut t, &prog).expect("lower")
+    lower_program(&mut t, &prog, &crate::telemetry::NullTelemetry).expect("lower")
 }
 
 /// Every zero-capture `MakeClosure(f, [])` target gets one entry in

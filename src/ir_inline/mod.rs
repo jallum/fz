@@ -2138,7 +2138,12 @@ mod tests {
     fn lower_src(src: &str) -> crate::fz_ir::Module {
         let toks = crate::parser::lexer::Lexer::new(src).tokenize().unwrap();
         let prog = crate::parser::Parser::new(toks).parse_program().unwrap();
-        crate::ir_lower::lower_program(&mut crate::types::ConcreteTypes, &prog).unwrap()
+        crate::ir_lower::lower_program(
+            &mut crate::types::ConcreteTypes,
+            &prog,
+            &crate::telemetry::NullTelemetry,
+        )
+        .unwrap()
     }
 
     fn assert_fn_keyed_metadata_matches_live_fns(m: &crate::fz_ir::Module) {

@@ -8,7 +8,12 @@ use crate::fz_ir::Module;
 fn lower_src(src: &str) -> Module {
     let toks = Lexer::new(src).tokenize().expect("lex");
     let prog = Parser::new(toks).parse_program().expect("parse");
-    crate::ir_lower::lower_program(&mut crate::types::ConcreteTypes, &prog).expect("lower")
+    crate::ir_lower::lower_program(
+        &mut crate::types::ConcreteTypes,
+        &prog,
+        &crate::telemetry::NullTelemetry,
+    )
+    .expect("lower")
 }
 
 fn run(src: &str) -> i64 {

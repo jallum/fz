@@ -251,7 +251,7 @@ where
             program: crate::telemetry::value::opaque(&prog),
         },
     );
-    let mut module = match crate::ir_lower::lower_program_with_telemetry(t, &prog, tel) {
+    let mut module = match crate::ir_lower::lower_program(t, &prog, tel) {
         Ok(module) => module,
         Err(e) => return Err(fail(sm, e.to_diagnostic())),
     };

@@ -18,7 +18,12 @@ fn lower_src(src: &str) -> Module {
     let prog = crate::parser::Parser::new(toks)
         .parse_program()
         .expect("parse");
-    crate::ir_lower::lower_program(&mut crate::types::ConcreteTypes, &prog).expect("lower")
+    crate::ir_lower::lower_program(
+        &mut crate::types::ConcreteTypes,
+        &prog,
+        &crate::telemetry::NullTelemetry,
+    )
+    .expect("lower")
 }
 
 /// A telemetry sink that captures `dbg` lines, returned alongside the capture

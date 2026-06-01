@@ -764,7 +764,12 @@ mod tests {
     fn lower_src(src: &str) -> crate::fz_ir::Module {
         let toks = Lexer::new(src).tokenize().expect("lex");
         let prog = Parser::new(toks).parse_program().expect("parse");
-        lower_program(&mut crate::types::ConcreteTypes, &prog).expect("lower")
+        lower_program(
+            &mut crate::types::ConcreteTypes,
+            &prog,
+            &crate::telemetry::NullTelemetry,
+        )
+        .expect("lower")
     }
 
     fn force_reduction_yield(task: &mut Process) {
@@ -1256,7 +1261,8 @@ mod tests {
         let mut ct = crate::types::ConcreteTypes;
         let mut prog = crate::frontend::resolve::flatten_modules(&mut ct, prog).expect("resolve");
         crate::frontend::macros::expand_program(&mut prog).expect("expand");
-        let m = crate::ir_lower::lower_program(&mut ct, &prog).expect("lower");
+        let m = crate::ir_lower::lower_program(&mut ct, &prog, &crate::telemetry::NullTelemetry)
+            .expect("lower");
         let entry = m.fn_by_name("main").expect("main fn").id;
         let compiled = compile(&mut ct, &m, &crate::telemetry::NullTelemetry).expect("codegen");
 

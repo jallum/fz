@@ -192,7 +192,8 @@ mod tests {
         let toks = Lexer::new(src).tokenize().expect("lex");
         let prog = Parser::new(toks).parse_program().expect("parse");
         let prog = flatten_modules(t, prog).expect("flatten");
-        let ir = ir_lower::lower_program(t, &prog).expect("lower");
+        let ir =
+            ir_lower::lower_program(t, &prog, &crate::telemetry::NullTelemetry).expect("lower");
         let mt = plan_module(t, &ir, &crate::telemetry::NullTelemetry);
         (prog, ir, mt)
     }
