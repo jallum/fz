@@ -326,6 +326,39 @@ struct Spec {
     ret: Info,
 }
 
+/// The callable value at a call site before it has been resolved to activation
+/// arrows. Direct calls include protocol stubs; closure calls carry the
+/// environment needed to read the closure value.
+enum CallTarget<'a> {
+    Direct(FnId),
+    Closure { value: Var, env: &'a Env },
+}
+
+/// One callable arrow selected for a call site. Applying the arrow means
+/// activating `fn_id` with the full inference input vector. For closures that
+/// vector is `captures ++ args`; the closure's public callable arity is still
+/// only its explicit args.
+struct CallArrow {
+    fn_id: FnId,
+    inputs: Vec<Info>,
+}
+
+/// The set of arrows a call target may apply at this call site. Today all
+/// resolved call targets are singleton; keeping the set explicit makes union
+/// closure targets and overloaded callable specs a data-model extension instead
+/// of another call path.
+struct CallArrowSet {
+    arrows: Vec<CallArrow>,
+}
+
+impl CallArrowSet {
+    fn singleton(fn_id: FnId, inputs: Vec<Info>) -> Self {
+        Self {
+            arrows: vec![CallArrow { fn_id, inputs }],
+        }
+    }
+}
+
 /// The monotone worklist solver. Drives every reachable `(fn, inputs)` to a
 /// joint fixpoint of input- and return-type estimates.
 struct Solver<'m> {
@@ -391,32 +424,90 @@ impl<'m> Solver<'m> {
         self.enqueue(key);
     }
 
-    /// `caller` applies `callee` to `args`. A protocol-dispatch stub is
-    /// devirtualized on its receiver (first arg) type before the call; an
-    /// ordinary callee passes straight through.
-    fn call<T: Types<Ty = Ty>>(
+    /// `caller` applies `target` to `args`. The target first resolves to an
+    /// arrow set (direct fn, protocol impl, or closure body with captures
+    /// prepended), then every selected arrow activates through the same path.
+    fn call_target<T: Types<Ty = Ty> + ClosureTypes>(
         &mut self,
         t: &mut T,
         caller: &ActivationKey,
-        callee: FnId,
+        target: CallTarget<'_>,
         args: Vec<Info>,
     ) -> Info {
+        let arrows = match self.call_arrows(t, target, args) {
+            Ok(arrows) => arrows,
+            Err(info) => return info,
+        };
+        self.apply_arrows(t, caller, arrows)
+    }
+
+    fn call_arrows<T: Types<Ty = Ty> + ClosureTypes>(
+        &self,
+        t: &mut T,
+        target: CallTarget<'_>,
+        args: Vec<Info>,
+    ) -> Result<CallArrowSet, Info> {
+        match target {
+            CallTarget::Direct(callee) => self.direct_arrows(t, callee, args),
+            CallTarget::Closure { value, env } => self.closure_arrows(t, value, args, env),
+        }
+    }
+
+    /// Direct calls include protocol-dispatch stubs. A stub resolves to the
+    /// concrete impl selected by the receiver type; ordinary fns pass through.
+    fn direct_arrows<T: Types<Ty = Ty>>(
+        &self,
+        t: &mut T,
+        callee: FnId,
+        args: Vec<Info>,
+    ) -> Result<CallArrowSet, Info> {
         if self.module.protocol_call_targets.contains_key(&callee) {
             // A protocol call resolves to a concrete impl chosen by the
             // receiver type. A pending receiver waits for a later fixpoint
             // iteration; a live unknown receiver remains unknown.
             match args.first() {
-                Some(Info::Pending) => return Info::Pending,
-                Some(Info::Unknown) => return Info::Unknown,
-                Some(Info::NoReturn) | None => return Info::NoReturn,
+                Some(Info::Pending) => return Err(Info::Pending),
+                Some(Info::Unknown) => return Err(Info::Unknown),
+                Some(Info::NoReturn) | None => return Err(Info::NoReturn),
                 Some(Info::Known(_)) => {}
             }
-            return match self.resolve_protocol(t, callee, &args) {
-                Some(impl_fn) => self.call_direct(t, caller, impl_fn, args),
-                None => Info::Unknown,
-            };
+            return self
+                .resolve_protocol(t, callee, &args)
+                .map(|impl_fn| CallArrowSet::singleton(impl_fn, args))
+                .ok_or(Info::Unknown);
         }
-        self.call_direct(t, caller, callee, args)
+        Ok(CallArrowSet::singleton(callee, args))
+    }
+
+    /// Resolve a closure application to its body fn arrow. `Pending` waits;
+    /// `Unknown` stays `Unknown`; a known value that cannot be resolved to a
+    /// single closure target is still not proven callable, so it stays
+    /// `Unknown` until a final boundary decides how to erase it.
+    fn closure_arrows<T: Types<Ty = Ty> + ClosureTypes>(
+        &self,
+        t: &mut T,
+        closure: Var,
+        arg_infos: Vec<Info>,
+        env: &Env,
+    ) -> Result<CallArrowSet, Info> {
+        let clo = env.get(&closure).cloned().unwrap_or(Info::Pending);
+        let clo_ty = match clo {
+            Info::Pending => return Err(Info::Pending),
+            Info::Unknown => return Err(Info::Unknown),
+            Info::NoReturn => return Err(Info::NoReturn),
+            Info::Known(value) => value.ty,
+        };
+        match t.closure_lit_parts(&clo_ty) {
+            Some(parts) => {
+                let target: FnId = parts.target.into();
+                let mut inputs: Vec<Info> = parts.captures.into_iter().map(Info::known).collect();
+                inputs.extend(arg_infos);
+                Ok(CallArrowSet::singleton(target, inputs))
+            }
+            // Couldn't resolve a single closure target ⇒ undetermined, not
+            // `any` (which would assert "dynamic" as a fact). `any` is earned.
+            None => Err(Info::Unknown),
+        }
     }
 
     /// Resolve a protocol-dispatch stub to the concrete implementation fn for
@@ -457,18 +548,34 @@ impl<'m> Solver<'m> {
         self.module.fn_by_name(&fn_name).map(|f| f.id)
     }
 
-    /// Record the dependency, widen the callee's inputs (scheduling it if they
-    /// grew), and hand back the callee's current return estimate (`Pending` for
-    /// a callee not yet processed).
-    fn call_direct<T: Types<Ty = Ty>>(
+    fn apply_arrows<T: Types<Ty = Ty>>(
         &mut self,
         t: &mut T,
         caller: &ActivationKey,
-        callee: FnId,
-        args: Vec<Info>,
+        arrows: CallArrowSet,
     ) -> Info {
-        let Some(key) = activation_key(t, callee, &args) else {
-            return unresolved_inputs(&args);
+        let mut out = None;
+        for arrow in arrows.arrows {
+            let ret = self.activate_arrow(t, caller, arrow);
+            out = Some(match out {
+                Some(prev) => branch_join(t, prev, ret),
+                None => ret,
+            });
+        }
+        out.unwrap_or(Info::Unknown)
+    }
+
+    /// Record the dependency, ensure the arrow target activation exists, and
+    /// hand back its current return estimate (`Pending` for a callee not yet
+    /// processed).
+    fn activate_arrow<T: Types<Ty = Ty>>(
+        &mut self,
+        t: &mut T,
+        caller: &ActivationKey,
+        arrow: CallArrow,
+    ) -> Info {
+        let Some(key) = activation_key(t, arrow.fn_id, &arrow.inputs) else {
+            return unresolved_inputs(&arrow.inputs);
         };
         self.deps
             .entry(key.clone())
@@ -663,17 +770,17 @@ impl<'m> Solver<'m> {
                 ..
             } => {
                 let arg_infos = arg_infos_of(args, env);
-                let r = self.call(t, key, *callee, arg_infos);
+                let r = self.call_target(t, key, CallTarget::Direct(*callee), arg_infos);
                 if matches!(r, Info::NoReturn) {
                     return Info::NoReturn;
                 }
                 let cont_inputs = cont_inputs_of(r, &continuation.captured, env);
-                self.call(t, key, continuation.fn_id, cont_inputs)
+                self.call_target(t, key, CallTarget::Direct(continuation.fn_id), cont_inputs)
             }
             // A tail call forwards our own continuation, so its result is ours.
             Term::TailCall { callee, args, .. } => {
                 let arg_infos = arg_infos_of(args, env);
-                self.call(t, key, *callee, arg_infos)
+                self.call_target(t, key, CallTarget::Direct(*callee), arg_infos)
             }
             Term::CallClosure {
                 closure,
@@ -682,16 +789,32 @@ impl<'m> Solver<'m> {
                 ..
             } => {
                 let arg_infos = arg_infos_of(args, env);
-                let r = self.apply_closure(t, key, *closure, arg_infos, env);
+                let r = self.call_target(
+                    t,
+                    key,
+                    CallTarget::Closure {
+                        value: *closure,
+                        env,
+                    },
+                    arg_infos,
+                );
                 if matches!(r, Info::NoReturn) {
                     return Info::NoReturn;
                 }
                 let cont_inputs = cont_inputs_of(r, &continuation.captured, env);
-                self.call(t, key, continuation.fn_id, cont_inputs)
+                self.call_target(t, key, CallTarget::Direct(continuation.fn_id), cont_inputs)
             }
             Term::TailCallClosure { closure, args, .. } => {
                 let arg_infos = arg_infos_of(args, env);
-                self.apply_closure(t, key, *closure, arg_infos, env)
+                self.call_target(
+                    t,
+                    key,
+                    CallTarget::Closure {
+                        value: *closure,
+                        env,
+                    },
+                    arg_infos,
+                )
             }
             // Receive shapes are out of corpus scope (fz-g58.65.5).
             _ => Info::Unknown,
@@ -713,38 +836,6 @@ impl<'m> Solver<'m> {
         let mut predicates = predicates.clone();
         let mut visited = visited.clone();
         self.walk_block(t, key, block_id, &mut env, &mut predicates, &mut visited)
-    }
-
-    /// Resolve a closure application to a call on its body fn (captures ++
-    /// args). `Pending` waits; `Unknown` stays `Unknown`; a known value that
-    /// cannot be resolved to one closure target is still not proven callable, so
-    /// it also stays `Unknown` until a final boundary decides how to erase it.
-    fn apply_closure<T: Types<Ty = Ty> + ClosureTypes>(
-        &mut self,
-        t: &mut T,
-        caller: &ActivationKey,
-        closure: Var,
-        arg_infos: Vec<Info>,
-        env: &Env,
-    ) -> Info {
-        let clo = env.get(&closure).cloned().unwrap_or(Info::Pending);
-        let clo_ty = match clo {
-            Info::Pending => return Info::Pending,
-            Info::Unknown => return Info::Unknown,
-            Info::NoReturn => return Info::NoReturn,
-            Info::Known(value) => value.ty,
-        };
-        match t.closure_lit_parts(&clo_ty) {
-            Some(parts) => {
-                let target: FnId = parts.target.into();
-                let mut inputs: Vec<Info> = parts.captures.into_iter().map(Info::known).collect();
-                inputs.extend(arg_infos);
-                self.call(t, caller, target, inputs)
-            }
-            // Couldn't resolve a single closure target ⇒ undetermined, not
-            // `any` (which would assert "dynamic" as a fact). `any` is earned.
-            None => Info::Unknown,
-        }
     }
 
     fn type_prim<T: Types<Ty = Ty> + ClosureTypes>(
