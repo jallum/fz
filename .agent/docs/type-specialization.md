@@ -17,15 +17,29 @@ with fewer constraints to lean on.
 ## The cell: information vs value
 
 Each slot holds an `Info`, which separates *what we know* from *what the value
-is*:
+is*. A known value has two parts:
 
 ```text
-Info = Unknown        -- neutral: no determination yet
-     | Known(Ty)      -- a point in the value lattice
+Info      = Unknown                   -- neutral: no determination yet
+          | Known(ValueFact)
+
+ValueFact = { ty: Ty, proof: ValueProof }
+
+ValueProof = Unproven
+           | Exact(Ty)                -- exact witness in the existing type model
+           | TupleFields([ValueProof])
 ```
 
-These are two different axes, and conflating them is the classic bug. Three
-roles, only two of which live in the value ordering:
+`ty` is the visible type that flows out of inference. `proof` is temporary
+branch-selection proof used by the pattern matcher and guard tests. Proof is not
+the public type of the value and is erased by ordinary joins unless both inputs
+prove the same fact. `Exact(Ty)` is deliberately a witness in the existing
+`Types` model: the inference engine records it, but questions like "is this
+witness a singleton int?", "does it fit this refined type?", and "is it
+disjoint?" are delegated back to `Types`.
+
+These are separate axes, and conflating them is the classic bug. Three roles,
+only two of which live in the value ordering:
 
 - **`Unknown` is neutral** — the *identity* of the join, not a least element.
   `widen(Unknown, x) = x`: it contributes nothing and is *displaced* by the first
@@ -58,7 +72,10 @@ One operator does both the information-lift and the value-union, because
 ```text
 widen(Unknown, x)         = x                       -- first legal value lifts the slot
 widen(x, Unknown)         = x
-widen(Known(a), Known(b)) = Known(refine_widen(a, b))
+widen(Known(a), Known(b)) = Known({
+  ty: refine_widen(a.ty, b.ty),
+  proof: a.proof if a.proof == b.proof else Unproven
+})
 ```
 
 So a slot only ever ascends: `Unknown ⊑ Known(int) ⊑ Known(int | float) ⊑ …`. The
@@ -152,7 +169,7 @@ gap (a construct not yet modeled), and the distinction is exactly the
 `Unknown ≠ none ≠ any` separation above.
 
 A fallback, fail arm, or unresolved callee stays `Unknown` while the worklist is
-running. It becomes dead/inaccessible only after the fixpoint has enough evidence
+running. It becomes dead/inaccessible only after the fixpoint has enough proof
 to prove no live input reaches it. A declared-spec lookup follows the same rule:
 if the matcher cannot prove a matching arrow, the spike keeps the result
 `Unknown`; it does not invent `none` from an underconstrained or unsupported
@@ -161,13 +178,13 @@ scheme match.
 `any` follows the same discipline from the other end of the lattice. It is not a
 projection fallback. Reading a tuple field projects across feasible tuple clauses;
 clauses that are contradictory (for example, a conjunction that would require the
-same value to be both a 2-tuple and a 3-tuple) contribute no evidence. If no
+same value to be both a 2-tuple and a 3-tuple) contribute no proof. If no
 feasible tuple has the field, the projection is `none`; if the input is still
 unknown, the projection remains `Unknown`.
 
-## Pattern evidence
+## Pattern proof
 
-The pattern matcher is an evidence producer. Its lowered tests (`type_test`,
+The pattern matcher is a proof producer. Its lowered tests (`type_test`,
 `is_nil`, `is_list_cons`, equality against constants) attach facts to condition
 vars. An `if` over such a condition does not blindly walk both arms under the
 same environment: the true and false environments are refined by the predicate,
@@ -180,9 +197,25 @@ literal with at least one explicit element is `nonempty_list(T)`, not merely
 For a multi-clause function, each activation is processed against the same
 decision tree, but with that activation's input facts. A direct call
 `pick(:left)` and a direct call `pick(:right)` are two activations of the same
-`FnId`; the matcher evidence lets them select different leaves. A deliberate
+`FnId`; the matcher proof lets them select different leaves. A deliberate
 union-input activation, such as calling one function value at `:left | :right`,
 may still join both leaves and widen the result.
+
+Guards consume the same proof channel. Numeric literals are visible as
+`int`/`float` in `ty`, but retain an exact proof witness long enough for lowered guard
+predicates such as `x > 0` to become `true` or `false` when the matched payload
+came from a literal. Tuple construction stores proof per field. Each field is
+`Unproven` until that field has its own proof, so a tuple with one proven payload
+does not become a fully proven tuple literal. Projection carries the selected
+field's proof forward: a source value like `{:ok, 1}` has visible type
+`{:ok, int}`, while the projected payload still carries proof `1` for guard
+selection. Returning that payload still returns visible type `int`; proof is
+not reanimated as a public singleton type.
+
+The same field-wise rule applies when structs and maps are added: each declared
+field/key starts `Unproven` until that field/key has its own proof. An aggregate
+with one proven field is not a proven aggregate; it is an aggregate whose one
+field can help the matcher or guard reducer choose a branch.
 
 ## Closures are functions with capture parameters
 
@@ -221,12 +254,13 @@ is **not** the inference instance: one `FnId` may be called at several concrete
 input shapes without those callers sharing one joined return cell.
 
 An **activation** is the monomorphic inference instance for one reachable
-call-contract. It is keyed by `FnId` plus a canonical input tuple. For ordinary
-direct calls the tuple is the parameter types. For closure bodies the internal
-tuple is `capture-types ++ parameter-types`, because captures are leading entry
-parameters in the lowered body. That internal tuple is for inference only: the
-closure's callable surface remains its ordinary parameters, with captures loaded
-from the closure environment after this phase.
+call-contract. It is keyed by `FnId` plus a canonical input tuple of
+`ValueFact`s: widened visible type plus any still-live proof. For ordinary
+direct calls the tuple corresponds to the parameter values. For closure bodies
+the internal tuple is `capture-values ++ parameter-values`, because captures are
+leading entry parameters in the lowered body. That internal tuple is for
+inference only: the closure's callable surface remains its ordinary parameters,
+with captures loaded from the closure environment after this phase.
 
 The worklist holds activations whose return estimate may have changed:
 

@@ -15,14 +15,15 @@ the planner's type inference, not runtime behavior, so they live outside
 | --- | --- | --- | --- |
 | `add.fz` | `a + b` | `(number, number) -> number`; `add(1,2) : int` | settles ✓ |
 | `poly_id.fz` | same `FnId` called at `int` and `:ok` | `main() : {int, :ok}`; independent activations do not over-join | not pinned |
-| `match_atom_partition.fz` | same multi-clause `FnId` called with different atom literals | `main() : {:one, :two}`; matcher evidence selects different leaves per activation | not pinned |
-| `match_list_partition.fz` | same multi-clause `FnId` called with `[]` and `[1]` | `main() : {:empty, :cons}`; list-shape evidence selects empty vs cons leaves per activation | not pinned |
+| `match_atom_partition.fz` | same multi-clause `FnId` called with different atom literals | `main() : {:one, :two}`; matcher proof selects different leaves per activation | not pinned |
+| `match_list_partition.fz` | same multi-clause `FnId` called with `[]` and `[1]` | `main() : {:empty, :cons}`; list-shape proof selects empty vs cons leaves per activation | not pinned |
 | `match_list_binding.fz` | cons clause returns `[h | _]` binding | `main() : {:empty, int}`; matcher-produced bindings carry element type into the selected leaf | not pinned |
-| `match_tuple_binding.fz` | tuple clause returns `{:ok, x}` binding | `main() : {int, :error}`; tuple-shape evidence and field projection carry payload type into the selected leaf | not pinned |
-| `match_nested_binding.fz` | tuple payload is a cons pattern returning `h` | `main() : {int, :error}`; composed tuple and list evidence carries nested binding type into the selected leaf | not pinned |
+| `match_tuple_binding.fz` | tuple clause returns `{:ok, x}` binding | `main() : {int, :error}`; tuple-shape proof and field projection carry payload type into the selected leaf | not pinned |
+| `match_nested_binding.fz` | tuple payload is a cons pattern returning `h` | `main() : {int, :error}`; composed tuple and list proof carries nested binding type into the selected leaf | not pinned |
 | `match_nested_partition.fz` | tuple payload partitions empty-list, cons-list, and atom leaves | `main() : {:empty, int, :error}`; nested sibling arms remain distinct per activation | not pinned |
-| `match_tuple_tag_partition.fz` | same-arity tuple clauses with different atom tags | `main() : {int, :bad}`; tag evidence chooses the matching payload projection | not pinned |
-| `match_tuple_arity_partition.fz` | tuple clauses with different arities and a non-tuple arm | `main() : {int, {int, int}, :other}`; arity evidence keeps impossible fields out of joins | not pinned |
+| `match_tuple_tag_partition.fz` | same-arity tuple clauses with different atom tags | `main() : {int, :bad}`; tag proof chooses the matching payload projection | not pinned |
+| `match_tuple_arity_partition.fz` | tuple clauses with different arities and a non-tuple arm | `main() : {int, {int, int}, :other}`; arity proof keeps impossible fields out of joins | not pinned |
+| `match_guard_partition.fz` | tuple pattern with a guard helper over the payload | `main() : {int, :fallback}`; literal proof selects the guarded arm without exposing singleton return types | not pinned |
 | `enum_count.fz` | `Enum.count/1` over a List receiver | `Enum.count([1,2,3]) : int`; protocol dispatch reaches the List count callback | settles ✓ |
 | `enum_reduce.fz` | `Enum.reduce/3` over a List receiver with an inline reducer | `Enum.reduce([1,2,3], 0, +) : int`; public wrapper, protocol dispatch, and list loop converge | settles ✓ |
 | `enum_reduce_named_ref_ok.fz` | `Enum.reduce/3` over a List receiver with `&Main.reducer/2` | `Enum.reduce([1,2,3], 0, &Main.reducer/2) : int`; named reducer references converge like inline closures | settles ✓ |
@@ -41,7 +42,6 @@ Promote them one at a time so each commit isolates one missing capability.
 
 | program | target capability |
 | --- | --- |
-| `match_guard_partition.fz` | Treat guards as refinement evidence before selecting a clause body. |
 | `match_map_binding.fz` | Bind fields from map patterns while preserving the callable parameter surface. |
 | `enum_reduce_range.fz` | Devirtualize protocol dispatch through the Range receiver type. |
 | `enum_reduce_named_ref.fz` | Stop on a proved invalid reducer accumulator and emit a diagnostic. |
@@ -72,7 +72,7 @@ non-empty input list, so the leaf returns `int` rather than an unbound or
 over-joined value.
 
 `match_tuple_binding.fz` runs the same binding-flow check through tuple matcher
-tests. The lowered `type_test` and `tuple_field` evidence narrows `{:ok, int}`
+tests. The lowered `type_test` and `tuple_field` proof narrows `{:ok, int}`
 to the tuple leaf and projects the payload without letting the atom leaf or
 impossible tuple arities contribute.
 
@@ -94,3 +94,8 @@ tag, so the `:ok` activation returns `int` while the `:error` activation returns
 and two-field tuple arms project different payload shapes, while the atom arm
 stays disjoint; impossible tuple arities must not contribute `any` or extra
 fields to the result.
+
+`match_guard_partition.fz` adds guard selection without changing visible payload
+types. The tuple payload from `{:ok, 1}` is typed as `int`, but it still carries
+literal proof through tuple projection so `positive(x)` can prove the guard
+true; `{:ok, 0}` proves it false and reaches the fallback.

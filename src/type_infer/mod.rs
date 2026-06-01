@@ -46,6 +46,83 @@ use std::collections::{HashMap, HashSet, VecDeque};
 type Env = HashMap<Var, Info>;
 type PredicateFacts = HashMap<Var, PredicateFact>;
 
+/// Branch-selection proof carried alongside a value type.
+///
+/// This is not the public type of the value, and it is not a second type
+/// lattice. It is a witness in the existing type model that the matcher may use
+/// while walking lowered tests and guards. Proof is erased by ordinary type
+/// joins unless both sides prove the same fact.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+enum ValueProof {
+    /// No proof has been established for this value/field.
+    Unproven,
+    Exact(Ty),
+    /// Field-wise proof. A tuple may have some proven fields and some
+    /// `Unproven` fields; it is not a full tuple-literal proof unless every
+    /// field has proof.
+    TupleFields(Vec<ValueProof>),
+}
+
+impl ValueProof {
+    fn join(&self, other: &Self) -> Self {
+        if self == other {
+            self.clone()
+        } else {
+            Self::Unproven
+        }
+    }
+
+    fn tuple_field(&self, index: usize) -> Self {
+        match self {
+            Self::TupleFields(fields) => fields.get(index).cloned().unwrap_or(Self::Unproven),
+            _ => Self::Unproven,
+        }
+    }
+}
+
+/// A known value in the inference cell: the visible type plus proof usable by
+/// matcher guards. `ty` is what flows out of inference; `proof` is temporary
+/// branch-selection support.
+#[derive(Clone, Debug)]
+struct ValueFact {
+    ty: Ty,
+    proof: ValueProof,
+}
+
+impl ValueFact {
+    fn new(ty: Ty) -> Self {
+        Self {
+            ty,
+            proof: ValueProof::Unproven,
+        }
+    }
+
+    fn with_proof(ty: Ty, proof: ValueProof) -> Self {
+        Self { ty, proof }
+    }
+
+    fn widen<T: Types<Ty = Ty>>(&self, t: &mut T, other: &Self) -> Self {
+        Self {
+            ty: t.refine_widen(&self.ty, &other.ty),
+            proof: self.proof.join(&other.proof),
+        }
+    }
+
+    fn equiv<T: Types<Ty = Ty>>(&self, t: &T, other: &Self) -> bool {
+        t.is_equivalent(&self.ty, &other.ty) && self.proof == other.proof
+    }
+
+    fn map_ty(self, f: impl FnOnce(Ty) -> Ty) -> Self {
+        Self::new(f(self.ty))
+    }
+
+    fn tuple_field<T: Types<Ty = Ty>>(self, t: &mut T, index: usize) -> Self {
+        let ty = t.tuple_field_type(&self.ty, index);
+        let proof = self.proof.tuple_field(index);
+        Self { ty, proof }
+    }
+}
+
 /// A cell in the inference fixpoint.
 ///
 /// `Unknown` is ⊥ of the *information* lattice — "not yet determined", the
@@ -56,33 +133,41 @@ type PredicateFacts = HashMap<Var, PredicateFact>;
 #[derive(Clone)]
 enum Info {
     Unknown,
-    Known(Ty),
+    Known(ValueFact),
 }
 
 impl Info {
+    fn known(ty: Ty) -> Self {
+        Self::Known(ValueFact::new(ty))
+    }
+
+    fn known_with_proof(ty: Ty, proof: ValueProof) -> Self {
+        Self::Known(ValueFact::with_proof(ty, proof))
+    }
+
     /// Least upper bound in the information lattice: `Unknown` is the identity,
     /// two `Known`s join through the refinement-lattice widen.
     fn widen<T: Types<Ty = Ty>>(&self, t: &mut T, other: &Info) -> Info {
         match (self, other) {
             (Info::Unknown, x) | (x, Info::Unknown) => x.clone(),
-            (Info::Known(a), Info::Known(b)) => Info::Known(t.refine_widen(a, b)),
+            (Info::Known(a), Info::Known(b)) => Info::Known(a.widen(t, b)),
         }
     }
 
     fn equiv<T: Types<Ty = Ty>>(&self, t: &T, other: &Info) -> bool {
         match (self, other) {
             (Info::Unknown, Info::Unknown) => true,
-            (Info::Known(a), Info::Known(b)) => t.is_equivalent(a, b),
+            (Info::Known(a), Info::Known(b)) => a.equiv(t, b),
             _ => false,
         }
     }
 
     /// Map a known type through `f`; `Unknown` is preserved. The shape of
     /// projection: we cannot project what we do not yet know.
-    fn map_known(self, f: impl FnOnce(Ty) -> Ty) -> Info {
+    fn map_known(self, f: impl FnOnce(ValueFact) -> ValueFact) -> Info {
         match self {
             Info::Unknown => Info::Unknown,
-            Info::Known(ty) => Info::Known(f(ty)),
+            Info::Known(value) => Info::Known(f(value)),
         }
     }
 }
@@ -123,7 +208,19 @@ pub(crate) fn closure_apply_contract<T: Types<Ty = Ty> + ClosureTypes>(
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct ActivationKey {
     fn_id: FnId,
-    inputs: Vec<Ty>,
+    inputs: Vec<ValueKey>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct ValueKey {
+    ty: Ty,
+    proof: ValueProof,
+}
+
+impl ValueKey {
+    fn into_info(self) -> Info {
+        Info::Known(ValueFact::with_proof(self.ty, self.proof))
+    }
 }
 
 /// One function activation's current return estimate.
@@ -174,7 +271,10 @@ impl<'m> Solver<'m> {
             inputs: inputs
                 .iter()
                 .filter_map(|input| match input {
-                    Info::Known(ty) => Some(ty.clone()),
+                    Info::Known(value) => Some(ValueKey {
+                        ty: value.ty.clone(),
+                        proof: value.proof.clone(),
+                    }),
                     Info::Unknown => None,
                 })
                 .collect(),
@@ -229,7 +329,7 @@ impl<'m> Solver<'m> {
     ) -> Option<FnId> {
         let target = self.module.protocol_call_targets.get(&callee)?;
         let receiver_ty = match args.first()? {
-            Info::Known(ty) => ty.clone(),
+            Info::Known(value) => value.ty.clone(),
             Info::Unknown => return None,
         };
         let mut matches: Vec<_> = self
@@ -276,7 +376,12 @@ impl<'m> Solver<'m> {
             self.specs.insert(
                 key.clone(),
                 Spec {
-                    inputs: key.inputs.iter().cloned().map(Info::Known).collect(),
+                    inputs: key
+                        .inputs
+                        .iter()
+                        .cloned()
+                        .map(ValueKey::into_info)
+                        .collect(),
                     ret: Info::Unknown,
                 },
             );
@@ -296,7 +401,7 @@ impl<'m> Solver<'m> {
     /// `Known`, or the spec matcher cannot prove a matching arrow yet. "No
     /// match" is not `none` here: this API cannot distinguish contradiction
     /// from underconstrained polymorphism, so the solver must keep the cell
-    /// `Unknown` until body evidence or a stricter diagnostic pass proves
+    /// `Unknown` until body proof or a stricter diagnostic pass proves
     /// impossibility.
     fn declared_spec_ret<T: Types<Ty = Ty> + ClosureTypes>(
         &self,
@@ -308,7 +413,7 @@ impl<'m> Solver<'m> {
         let mut arg_tys = Vec::with_capacity(inputs.len());
         for i in inputs {
             match i {
-                Info::Known(ty) => arg_tys.push(ty.clone()),
+                Info::Known(value) => arg_tys.push(value.ty.clone()),
                 Info::Unknown => return None,
             }
         }
@@ -320,7 +425,7 @@ impl<'m> Solver<'m> {
         for m in matches {
             ret = t.union(ret, m.result);
         }
-        Some(Info::Known(ret))
+        Some(Info::known(ret))
     }
 
     fn run<T: Types<Ty = Ty> + ClosureTypes>(&mut self, t: &mut T) {
@@ -408,7 +513,7 @@ impl<'m> Solver<'m> {
             // spuriously degrade a sibling branch's precise type. `Unknown` is
             // the true identity (`widen` returns the other operand verbatim).
             //
-            // We still reach halt paths when the current evidence cannot prove
+            // We still reach halt paths when the current proof cannot prove
             // a matcher fail arm dead. Proved-impossible branches are skipped
             // by predicate narrowing; unresolved fail arms stay neutral until
             // the fixpoint can classify them.
@@ -518,12 +623,12 @@ impl<'m> Solver<'m> {
         let clo = env.get(&closure).cloned().unwrap_or(Info::Unknown);
         let clo_ty = match clo {
             Info::Unknown => return Info::Unknown,
-            Info::Known(ty) => ty,
+            Info::Known(value) => value.ty,
         };
         match t.closure_lit_parts(&clo_ty) {
             Some(parts) => {
                 let target: FnId = parts.target.into();
-                let mut inputs: Vec<Info> = parts.captures.into_iter().map(Info::Known).collect();
+                let mut inputs: Vec<Info> = parts.captures.into_iter().map(Info::known).collect();
                 inputs.extend(arg_infos);
                 self.call(t, caller, target, inputs)
             }
@@ -541,21 +646,37 @@ impl<'m> Solver<'m> {
     ) -> Info {
         let module = self.module;
         match prim {
-            Prim::Const(c) => Info::Known(match c {
-                Const::Int(n) => t.int_lit(*n),
-                Const::Float(x) => t.float_lit(*x),
-                Const::Nil => t.nil(),
-                Const::True => t.bool_lit(true),
-                Const::False => t.bool_lit(false),
+            Prim::Const(c) => match c {
+                Const::Int(n) => {
+                    let ty = t.int();
+                    let proof = ValueProof::Exact(t.int_lit(*n));
+                    Info::known_with_proof(ty, proof)
+                }
+                Const::Float(x) => {
+                    let ty = t.float();
+                    let proof = ValueProof::Exact(t.float_lit(*x));
+                    Info::known_with_proof(ty, proof)
+                }
+                Const::Nil => Info::known(t.nil()),
+                Const::True => {
+                    let ty = t.bool();
+                    let proof = ValueProof::Exact(t.bool_lit(true));
+                    Info::known_with_proof(ty, proof)
+                }
+                Const::False => {
+                    let ty = t.bool();
+                    let proof = ValueProof::Exact(t.bool_lit(false));
+                    Info::known_with_proof(ty, proof)
+                }
                 Const::Atom(id) => {
                     let name = module
                         .atom_names
                         .get(*id as usize)
                         .map(String::as_str)
                         .unwrap_or("");
-                    t.atom_lit(name)
+                    Info::known(t.atom_lit(name))
                 }
-            }),
+            },
             Prim::BinOp(op, a, b) => {
                 let lt = info_of(*a, env);
                 let rt = info_of(*b, env);
@@ -570,30 +691,36 @@ impl<'m> Solver<'m> {
                     // are integer-only — give them their own clause sets. Until
                     // then they ride the operands' refinement join.
                     BinOp::Div | BinOp::Mod => match (lt, rt) {
-                        (Info::Known(a), Info::Known(b)) => Info::Known(t.refine_widen(&a, &b)),
+                        (Info::Known(a), Info::Known(b)) => {
+                            Info::known(t.refine_widen(&a.ty, &b.ty))
+                        }
                         _ => Info::Unknown,
                     },
-                    // A comparison is `bool` whatever the operands turn out to be.
-                    _ => Info::Known(t.bool()),
+                    BinOp::Eq | BinOp::Neq | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => {
+                        comparison_binop(t, *op, lt, rt)
+                    }
+                    BinOp::And | BinOp::Or => logical_binop(t, *op, lt, rt),
                 }
             }
             Prim::UnOp(op, v) => match op {
-                UnOp::Neg => info_of(*v, env),
-                UnOp::Not => Info::Known(t.bool()),
+                UnOp::Neg => negate_info(t, info_of(*v, env)),
+                UnOp::Not => not_info(t, info_of(*v, env)),
             },
             Prim::IsEmptyList(_) | Prim::IsListCons(_) | Prim::TypeTest(_, _) => {
-                Info::Known(t.bool())
+                Info::known(t.bool())
             }
-            Prim::ListHead(v) => info_of(*v, env).map_known(|lt| t.list_element_type(&lt)),
+            Prim::ListHead(v) => {
+                info_of(*v, env).map_known(|value| value.map_ty(|ty| t.list_element_type(&ty)))
+            }
             Prim::ListTail(v) => info_of(*v, env).map_known(|lt| {
-                let elem = t.list_element_type(&lt);
-                t.list(elem)
+                let elem = t.list_element_type(&lt.ty);
+                ValueFact::new(t.list(elem))
             }),
             Prim::MakeList(elems, tail) => {
                 let mut elem = t.none();
                 for e in elems {
                     match info_of(*e, env) {
-                        Info::Known(et) => elem = t.refine_widen(&elem, &et),
+                        Info::Known(et) => elem = t.refine_widen(&elem, &et.ty),
                         Info::Unknown => return Info::Unknown,
                     }
                 }
@@ -601,14 +728,14 @@ impl<'m> Solver<'m> {
                 if let Some(tl) = tail {
                     match info_of(*tl, env) {
                         Info::Known(tt) => {
-                            let te = t.list_element_type(&tt);
+                            let te = t.list_element_type(&tt.ty);
                             elem = t.refine_widen(&elem, &te);
-                            tail_ty = Some(tt);
+                            tail_ty = Some(tt.ty);
                         }
                         Info::Unknown => return Info::Unknown,
                     }
                 }
-                Info::Known(if elems.is_empty() && tail.is_none() {
+                Info::known(if elems.is_empty() && tail.is_none() {
                     t.empty_list()
                 } else if elems.is_empty() {
                     tail_ty.unwrap_or_else(|| t.empty_list())
@@ -618,29 +745,33 @@ impl<'m> Solver<'m> {
             }
             Prim::MakeTuple(vars) => {
                 let mut tys = Vec::with_capacity(vars.len());
+                let mut proof = Vec::with_capacity(vars.len());
                 for v in vars {
                     match info_of(*v, env) {
-                        Info::Known(ty) => tys.push(ty),
+                        Info::Known(value) => {
+                            tys.push(value.ty);
+                            proof.push(value.proof);
+                        }
                         Info::Unknown => return Info::Unknown,
                     }
                 }
-                Info::Known(t.tuple(&tys))
+                Info::known_with_proof(t.tuple(&tys), ValueProof::TupleFields(proof))
             }
             Prim::TupleField(v, i) => {
-                info_of(*v, env).map_known(|tv| t.tuple_field_type(&tv, *i as usize))
+                info_of(*v, env).map_known(|value| value.tuple_field(t, *i as usize))
             }
             Prim::MakeClosure(_, target, caps) => {
                 let mut cap_tys = Vec::with_capacity(caps.len());
                 for c in caps {
                     match info_of(*c, env) {
-                        Info::Known(ty) => cap_tys.push(ty),
+                        Info::Known(value) => cap_tys.push(value.ty),
                         Info::Unknown => return Info::Unknown,
                     }
                 }
                 let tfn = module.fn_by_id(*target);
                 let entry_params = tfn.block(tfn.entry).params.len();
                 let n_args = entry_params.saturating_sub(cap_tys.len());
-                Info::Known(t.closure_lit(ClosureTarget::from(*target), cap_tys, n_args))
+                Info::known(t.closure_lit(ClosureTarget::from(*target), cap_tys, n_args))
             }
             // Prims not yet modeled (maps, bitstrings, externs, structs) are
             // `Unknown` — undetermined, not `any`. `any` is earned, never
@@ -662,10 +793,19 @@ fn predicate_fact(prim: &Prim) -> Option<PredicateFact> {
     }
 }
 
-fn bool_truth<T: Types<Ty = Ty>>(t: &T, info: &Info) -> Option<bool> {
-    let Info::Known(ty) = info else {
+fn bool_truth<T: Types<Ty = Ty>>(t: &mut T, info: &Info) -> Option<bool> {
+    let Info::Known(value) = info else {
         return None;
     };
+    if let Some(proof) = proof_ty(t, &value.proof)
+        && let Some(b) = bool_from_ty(t, &proof)
+    {
+        return Some(b);
+    }
+    bool_from_ty(t, &value.ty)
+}
+
+fn bool_from_ty<T: Types<Ty = Ty>>(t: &T, ty: &Ty) -> Option<bool> {
     match t.as_atom_singleton(ty)?.as_str() {
         "true" => Some(true),
         "false" => Some(false),
@@ -728,8 +868,10 @@ fn eq_truth<T: Types<Ty = Ty>>(
     if a == b {
         return Some(true);
     }
-    let a_ty = known_ty(a, env)?;
-    let b_ty = known_ty(b, env)?;
+    let a_value = known_value(a, env)?;
+    let b_value = known_value(b, env)?;
+    let a_ty = proof_ty(t, &a_value.proof).unwrap_or_else(|| a_value.ty.clone());
+    let b_ty = proof_ty(t, &b_value.proof).unwrap_or_else(|| b_value.ty.clone());
     if t.is_singleton_lit(&a_ty) && t.is_equivalent(&a_ty, &b_ty) {
         return Some(true);
     }
@@ -784,8 +926,8 @@ fn narrow_predicate<T: Types<Ty = Ty>>(
 }
 
 fn narrow_eq<T: Types<Ty = Ty>>(t: &mut T, env: &mut Env, a: Var, b: Var, truth: bool) -> bool {
-    let a_ty = known_ty(a, env);
-    let b_ty = known_ty(b, env);
+    let a_ty = known_value(a, env).and_then(|value| proof_ty(t, &value.proof));
+    let b_ty = known_value(b, env).and_then(|value| proof_ty(t, &value.proof));
     if let Some(a_ty) = a_ty.as_ref()
         && t.is_singleton_lit(a_ty)
         && !refine_against(t, env, b, a_ty, truth)
@@ -808,25 +950,193 @@ fn refine_against<T: Types<Ty = Ty>>(
     domain: &Ty,
     truth: bool,
 ) -> bool {
-    let Some(current) = known_ty(subject, env) else {
+    let Some(current) = known_value(subject, env) else {
         return true;
     };
+    if truth {
+        if !proof_fits(t, &current.proof, domain) {
+            return false;
+        }
+    } else if let Some(proof) = proof_ty(t, &current.proof) {
+        if t.is_subtype(&proof, domain) {
+            return false;
+        }
+    }
     let next = if truth {
-        t.intersect(current, domain.clone())
+        t.intersect(current.ty.clone(), domain.clone())
     } else {
-        t.difference(current, domain.clone())
+        t.difference(current.ty.clone(), domain.clone())
     };
     if t.is_empty(&next) {
         return false;
     }
-    env.insert(subject, Info::Known(next));
+    let proof = if proof_fits(t, &current.proof, &next) {
+        current.proof
+    } else {
+        ValueProof::Unproven
+    };
+    env.insert(subject, Info::Known(ValueFact::with_proof(next, proof)));
     true
 }
 
 fn known_ty(v: Var, env: &Env) -> Option<Ty> {
+    known_value(v, env).map(|value| value.ty)
+}
+
+fn known_value(v: Var, env: &Env) -> Option<ValueFact> {
     match env.get(&v)? {
-        Info::Known(ty) => Some(ty.clone()),
+        Info::Known(value) => Some(value.clone()),
         Info::Unknown => None,
+    }
+}
+
+fn proof_ty<T: Types<Ty = Ty>>(t: &mut T, proof: &ValueProof) -> Option<Ty> {
+    match proof {
+        ValueProof::Unproven => None,
+        ValueProof::Exact(ty) => Some(ty.clone()),
+        ValueProof::TupleFields(fields) => {
+            let mut tys = Vec::with_capacity(fields.len());
+            for field in fields {
+                tys.push(proof_ty(t, field)?);
+            }
+            Some(t.tuple(&tys))
+        }
+    }
+}
+
+fn proof_fits<T: Types<Ty = Ty>>(t: &mut T, proof: &ValueProof, ty: &Ty) -> bool {
+    if let ValueProof::TupleFields(fields) = proof {
+        for (index, field) in fields.iter().enumerate() {
+            if matches!(field, ValueProof::Unproven) {
+                continue;
+            }
+            let field_ty = t.tuple_field_type(ty, index);
+            if !proof_fits(t, field, &field_ty) {
+                return false;
+            }
+        }
+        return true;
+    }
+    let Some(proof) = proof_ty(t, proof) else {
+        return true;
+    };
+    t.is_subtype(&proof, ty)
+}
+
+fn comparison_binop<T: Types<Ty = Ty>>(t: &mut T, op: BinOp, left: Info, right: Info) -> Info {
+    let (Info::Known(a), Info::Known(b)) = (left, right) else {
+        return Info::Unknown;
+    };
+    if let Some(result) = fold_comparison(t, op, &a, &b) {
+        let ty = t.bool();
+        let proof = ValueProof::Exact(t.bool_lit(result));
+        return Info::known_with_proof(ty, proof);
+    }
+    Info::known(t.bool())
+}
+
+fn logical_binop<T: Types<Ty = Ty>>(t: &mut T, op: BinOp, left: Info, right: Info) -> Info {
+    let (Info::Known(a), Info::Known(b)) = (left, right) else {
+        return Info::Unknown;
+    };
+    let a_bool = bool_fact(t, &a);
+    let b_bool = bool_fact(t, &b);
+    let proof = match (op, a_bool, b_bool) {
+        (BinOp::And, Some(x), Some(y)) => ValueProof::Exact(t.bool_lit(x && y)),
+        (BinOp::Or, Some(x), Some(y)) => ValueProof::Exact(t.bool_lit(x || y)),
+        _ => ValueProof::Unproven,
+    };
+    Info::known_with_proof(t.bool(), proof)
+}
+
+fn negate_info<T: Types<Ty = Ty>>(t: &mut T, info: Info) -> Info {
+    let Info::Known(value) = info else {
+        return Info::Unknown;
+    };
+    let proof = if let Some(n) = exact_int(t, &value) {
+        n.checked_neg()
+            .map(|n| ValueProof::Exact(t.int_lit(n)))
+            .unwrap_or(ValueProof::Unproven)
+    } else if let Some(f) = exact_float(t, &value) {
+        ValueProof::Exact(t.float_lit(-f))
+    } else {
+        ValueProof::Unproven
+    };
+    Info::Known(ValueFact::with_proof(value.ty, proof))
+}
+
+fn not_info<T: Types<Ty = Ty>>(t: &mut T, info: Info) -> Info {
+    let Info::Known(value) = info else {
+        return Info::Unknown;
+    };
+    let proof = bool_fact(t, &value)
+        .map(|b| ValueProof::Exact(t.bool_lit(!b)))
+        .unwrap_or(ValueProof::Unproven);
+    Info::Known(ValueFact::with_proof(t.bool(), proof))
+}
+
+fn fold_comparison<T: Types<Ty = Ty>>(
+    t: &mut T,
+    op: BinOp,
+    a: &ValueFact,
+    b: &ValueFact,
+) -> Option<bool> {
+    use BinOp::*;
+    if let (Some(ai), Some(bi)) = (
+        exact_int(t, a).or_else(|| t.as_int_singleton(&a.ty)),
+        exact_int(t, b).or_else(|| t.as_int_singleton(&b.ty)),
+    ) {
+        return match op {
+            Eq => Some(ai == bi),
+            Neq => Some(ai != bi),
+            Lt => Some(ai < bi),
+            Le => Some(ai <= bi),
+            Gt => Some(ai > bi),
+            Ge => Some(ai >= bi),
+            _ => None,
+        };
+    }
+    if let (Some(af), Some(bf)) = (
+        exact_float(t, a).or_else(|| t.as_float_singleton(&a.ty)),
+        exact_float(t, b).or_else(|| t.as_float_singleton(&b.ty)),
+    ) {
+        return match op {
+            Eq => Some(af == bf),
+            Neq => Some(af != bf),
+            Lt => Some(af < bf),
+            Le => Some(af <= bf),
+            Gt => Some(af > bf),
+            Ge => Some(af >= bf),
+            _ => None,
+        };
+    }
+    if matches!(op, Eq | Neq) && t.is_singleton_lit(&a.ty) && t.is_singleton_lit(&b.ty) {
+        let same = t.is_equivalent(&a.ty, &b.ty);
+        return Some(matches!(op, Eq) == same);
+    }
+    None
+}
+
+fn bool_fact<T: Types<Ty = Ty>>(t: &mut T, value: &ValueFact) -> Option<bool> {
+    if let Some(proof) = proof_ty(t, &value.proof)
+        && let Some(b) = bool_from_ty(t, &proof)
+    {
+        return Some(b);
+    }
+    bool_from_ty(t, &value.ty)
+}
+
+fn exact_int<T: Types<Ty = Ty>>(t: &T, value: &ValueFact) -> Option<i64> {
+    match &value.proof {
+        ValueProof::Exact(ty) => t.as_int_singleton(ty),
+        _ => None,
+    }
+}
+
+fn exact_float<T: Types<Ty = Ty>>(t: &T, value: &ValueFact) -> Option<f64> {
+    match &value.proof {
+        ValueProof::Exact(ty) => t.as_float_singleton(ty),
+        _ => None,
     }
 }
 
@@ -859,18 +1169,18 @@ fn numeric_binop<T: Types<Ty = Ty>>(t: &mut T, lt: Info, rt: Info) -> Info {
     let any = t.any();
     let num = t.union(int.clone(), float.clone());
 
-    let a_dynamic = t.is_equivalent(&a, &any);
-    let b_dynamic = t.is_equivalent(&b, &any);
-    let a_ok = a_dynamic || t.is_subtype(&a, &num);
-    let b_ok = b_dynamic || t.is_subtype(&b, &num);
+    let a_dynamic = t.is_equivalent(&a.ty, &any);
+    let b_dynamic = t.is_equivalent(&b.ty, &any);
+    let a_ok = a_dynamic || t.is_subtype(&a.ty, &num);
+    let b_ok = b_dynamic || t.is_subtype(&b.ty, &num);
     if !a_ok || !b_ok {
-        return Info::Known(t.none());
+        return Info::known(t.none());
     }
 
-    let a_int = a_dynamic || ty_inhabits(t, &a, &int);
-    let a_float = a_dynamic || ty_inhabits(t, &a, &float);
-    let b_int = b_dynamic || ty_inhabits(t, &b, &int);
-    let b_float = b_dynamic || ty_inhabits(t, &b, &float);
+    let a_int = a_dynamic || ty_inhabits(t, &a.ty, &int);
+    let a_float = a_dynamic || ty_inhabits(t, &a.ty, &float);
+    let b_int = b_dynamic || ty_inhabits(t, &b.ty, &int);
+    let b_float = b_dynamic || ty_inhabits(t, &b.ty, &float);
 
     let mut result = t.none();
     if a_int && b_int {
@@ -879,7 +1189,7 @@ fn numeric_binop<T: Types<Ty = Ty>>(t: &mut T, lt: Info, rt: Info) -> Info {
     if a_float || b_float {
         result = t.union(result, float);
     }
-    Info::Known(result)
+    Info::known(result)
 }
 
 fn activation_key<T: Types<Ty = Ty>>(
@@ -890,7 +1200,10 @@ fn activation_key<T: Types<Ty = Ty>>(
     let mut key_inputs = Vec::with_capacity(inputs.len());
     for input in inputs {
         match input {
-            Info::Known(ty) => key_inputs.push(t.widen_for_recursive_spec_key(ty)),
+            Info::Known(value) => key_inputs.push(ValueKey {
+                ty: t.widen_for_recursive_spec_key(&value.ty),
+                proof: value.proof.clone(),
+            }),
             Info::Unknown => return None,
         }
     }
@@ -926,16 +1239,23 @@ pub(crate) fn infer_return<T: Types<Ty = Ty> + ClosureTypes>(
     fn_id: FnId,
     input_tys: &[Ty],
 ) -> Ty {
-    let inputs = input_tys.iter().cloned().map(Info::Known).collect();
+    let inputs = input_tys.iter().cloned().map(Info::known).collect();
     let mut solver = Solver::new(module);
     solver.seed(fn_id, inputs);
     solver.run(t);
     let key = ActivationKey {
         fn_id,
-        inputs: input_tys.to_vec(),
+        inputs: input_tys
+            .iter()
+            .cloned()
+            .map(|ty| ValueKey {
+                ty,
+                proof: ValueProof::Unproven,
+            })
+            .collect(),
     };
     match solver.specs.get(&key).map(|s| s.ret.clone()) {
-        Some(Info::Known(ty)) => ty,
+        Some(Info::Known(value)) => value.ty,
         _ => t.none(),
     }
 }
@@ -1038,8 +1358,8 @@ mod tests {
                 })
             })
             .fold(None, |acc, ret| match (acc, ret) {
-                (None, Info::Known(ty)) => Some(ty),
-                (Some(prev), Info::Known(ty)) => Some(t.union(prev, ty)),
+                (None, Info::Known(value)) => Some(value.ty),
+                (Some(prev), Info::Known(value)) => Some(t.union(prev, value.ty)),
                 (acc, Info::Unknown) => acc,
             })
             .unwrap_or_else(|| t.none())
@@ -1360,6 +1680,22 @@ mod tests {
         );
     }
 
+    #[test]
+    fn guard_partition_selects_refined_clause() {
+        let mut t = ConcreteTypes;
+        let module = lower(include_str!("../../spike/match_guard_partition.fz"));
+        let ret = infer_fn_via_main(&module, "main");
+        let expected = {
+            let int = t.int();
+            let fallback = t.atom_lit("fallback");
+            t.tuple(&[int, fallback])
+        };
+        assert!(
+            t.is_equivalent(&ret, &expected),
+            "guarded tuple clause should select by guard proof, got {ret:?}"
+        );
+    }
+
     /// Every corpus fold settles `myreduce` to `int` — including the two the
     /// old planner ran to the 4096 visit cap (`fold_capture_closure`,
     /// `fold_state_machine`). `int` is `number` in the simplified spike lattice
@@ -1447,34 +1783,34 @@ mod tests {
         let none = t.none();
 
         // Distinct cells.
-        assert!(!Info::Unknown.equiv(&t, &Info::Known(none.clone())));
+        assert!(!Info::Unknown.equiv(&t, &Info::known(none.clone())));
 
         // Join: both bottoms are the identity, so each yields `int`.
         assert!(
             Info::Unknown
-                .widen(&mut t, &Info::Known(int.clone()))
-                .equiv(&t, &Info::Known(int.clone()))
+                .widen(&mut t, &Info::known(int.clone()))
+                .equiv(&t, &Info::known(int.clone()))
         );
         assert!(
-            Info::Known(none.clone())
-                .widen(&mut t, &Info::Known(int.clone()))
-                .equiv(&t, &Info::Known(int.clone()))
+            Info::known(none.clone())
+                .widen(&mut t, &Info::known(int.clone()))
+                .equiv(&t, &Info::known(int.clone()))
         );
 
         // Projection: `Unknown` short-circuits — the mapping closure never runs.
         let mut ran = false;
-        let projected = Info::Unknown.map_known(|ty| {
+        let projected = Info::Unknown.map_known(|value| {
             ran = true;
-            ty
+            value
         });
         assert!(!ran, "projecting Unknown must not evaluate the projection");
         assert!(matches!(projected, Info::Unknown));
 
         // A `Known` value (even the empty type) *is* projected.
         let mut ran = false;
-        let _ = Info::Known(none).map_known(|ty| {
+        let _ = Info::known(none).map_known(|value| {
             ran = true;
-            ty
+            value
         });
         assert!(ran, "projecting a Known value evaluates the projection");
     }
