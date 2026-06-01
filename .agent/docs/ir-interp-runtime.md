@@ -34,12 +34,21 @@ must keep an `IrInterpRuntime` value and drive it again later.
 
 ## Code Images
 
-Every process runs against its own immutable `CodeImage`.
+Every process runs against its own immutable `CodeImage`. A code image contains
+the IR `Module` and the resolved `ModulePlan` for that exact module shape.
 
 `enqueue_entry(module, pid, fn_id, args)` creates a new image from `module` and
 assigns it to `pid` before enqueueing the entry. A spawned child inherits the
 spawning process's image. This matters because blocked continuations contain
 `FnId`s owned by the image they were compiled in.
+
+The CLI execution graph path passes its final prepared plan into the root code
+image. Ad hoc test/REPL entry points that only have a module may build an image
+from that module, but that planning happens at image construction. The
+scheduler must not call `plan_module` while running, yielding, resuming, or
+draining destructors. Replanning during execution is both slow and a model
+violation: it makes progress depend on recomputing facts instead of consuming
+the immutable executable image.
 
 Do not dispatch runnable processes through one ambient module. A persistent
 runtime may contain:
@@ -81,7 +90,7 @@ enqueue(pid, fn_id, args)
 while run queue has pid:
   load pid's CodeImage
   set current_proc = pid's process (+ heap owner, ExecCtx)
-  run_fn(..., pid_code_image.module)
+  run_fn_typed(..., pid_code_image.module, pid_code_image.module_plan)
   Done    -> drain task resources unless pid is keepalive
   Yielded -> store resume entry, run boundary maintenance, re-enqueue
   Blocked -> store resume entry, mark blocked

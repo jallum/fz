@@ -57,9 +57,14 @@ pub(crate) fn module_plan_stats(m: &Module, mt: &ModulePlan) -> ModulePlanStats 
     stats
 }
 
-/// For every `Term::If` in a registered-spec fn, publish a dead branch only
-/// when every value-demand spec for the enclosing fn proves the same side
-/// unreachable.
+/// For every `Term::If` in a registered-spec fn, publish only body-safe dead
+/// branches: facts proven by the fn's all-domain `any` key.
+///
+/// Narrow specs still carry their own `SpecPlan::dead_branches` for per-spec
+/// codegen folding. `ModulePlan::dead_branches` is different: consumers mutate
+/// the shared `FnIr`, so the fact must hold for every value the body can
+/// accept, not just every specialization currently discovered by one shaping
+/// pass.
 pub(crate) fn compute_dead_branches<
     T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
 >(
@@ -67,70 +72,45 @@ pub(crate) fn compute_dead_branches<
     m: &Module,
     mt: &ModulePlan,
 ) -> HashMap<(FnId, crate::fz_ir::BlockId), crate::fz_ir::DeadBranch> {
-    let mut specs_by_fn: HashMap<FnId, Vec<Vec<crate::types::KeySlot>>> = HashMap::new();
-    for key in mt.specs.keys() {
-        if !key.demand.is_value() {
-            continue;
-        }
-        specs_by_fn
-            .entry(key.fn_id)
-            .or_default()
-            .push(key.input.clone());
-    }
-
     let mut out: HashMap<(FnId, crate::fz_ir::BlockId), crate::fz_ir::DeadBranch> = HashMap::new();
 
     for f in &m.fns {
-        let Some(keys) = specs_by_fn.get(&f.id) else {
+        let Some(any_key) = mt.any_key_specs.get(&f.id) else {
             continue;
         };
-        let total = keys.len();
-        if total == 0 {
+        let Some(ft) = mt.specs.get(&SpecKey::value(f.id, any_key.clone())) else {
             continue;
-        }
+        };
         for b in &f.blocks {
             let Term::If { cond, .. } = b.terminator else {
                 continue;
             };
-            let mut dead_then = 0usize;
-            let mut dead_else = 0usize;
-            for key in keys {
-                let Some(ft) = mt.specs.get(&SpecKey::value(f.id, key.clone())) else {
-                    continue;
-                };
-                let mut env: HashMap<Var, crate::types::Ty> =
-                    ft.block_envs.get(&b.id).cloned().unwrap_or_default();
-                for stmt in &b.stmts {
-                    let Stmt::Let(v, prim) = stmt;
-                    let pt_ty = type_prim(t, prim, &env, m, &HashSet::new());
-                    env.insert(*v, pt_ty);
-                }
-                let (then_env, else_env) = narrow_for_if(t, &env, cond, &b.stmts);
-                let mut then_dead = find_emptied_var(t, &env, &then_env).is_some();
-                let mut else_dead = find_emptied_var(t, &env, &else_env).is_some();
-                // Fallback: when cond's own type is a singleton truthy/falsy
-                // value, the opposite branch is unreachable even if
-                // `narrow_for_if` found no predicate-specific narrowing.
-                let ct = env.get(&cond).cloned().unwrap_or_else(|| t.any());
-                let true_ty = t.atom_lit("true");
-                let false_ty = t.atom_lit("false");
-                let nil_ty = t.nil();
-                if t.is_subtype(&ct, &true_ty) {
-                    else_dead = true;
-                } else if t.is_subtype(&ct, &false_ty) || t.is_subtype(&ct, &nil_ty) {
-                    then_dead = true;
-                }
-                if then_dead {
-                    dead_then += 1;
-                }
-                if else_dead {
-                    dead_else += 1;
-                }
+            let mut env: HashMap<Var, crate::types::Ty> =
+                ft.block_envs.get(&b.id).cloned().unwrap_or_default();
+            for stmt in &b.stmts {
+                let Stmt::Let(v, prim) = stmt;
+                let pt_ty = type_prim(t, prim, &env, m, &HashSet::new());
+                env.insert(*v, pt_ty);
+            }
+            let (then_env, else_env) = narrow_for_if(t, &env, cond, &b.stmts);
+            let mut then_dead = find_emptied_var(t, &env, &then_env).is_some();
+            let mut else_dead = find_emptied_var(t, &env, &else_env).is_some();
+            // Fallback: when cond's own type is a singleton truthy/falsy
+            // value, the opposite branch is unreachable even if
+            // `narrow_for_if` found no predicate-specific narrowing.
+            let ct = env.get(&cond).cloned().unwrap_or_else(|| t.any());
+            let true_ty = t.atom_lit("true");
+            let false_ty = t.atom_lit("false");
+            let nil_ty = t.nil();
+            if t.is_subtype(&ct, &true_ty) {
+                else_dead = true;
+            } else if t.is_subtype(&ct, &false_ty) || t.is_subtype(&ct, &nil_ty) {
+                then_dead = true;
             }
             // Both-dead means the If itself is unreachable — leave to DCE.
-            if dead_then == total && dead_else < total {
+            if then_dead && !else_dead {
                 out.insert((f.id, b.id), crate::fz_ir::DeadBranch::Then);
-            } else if dead_else == total && dead_then < total {
+            } else if else_dead && !then_dead {
                 out.insert((f.id, b.id), crate::fz_ir::DeadBranch::Else);
             }
         }
@@ -684,6 +664,9 @@ fn collect_dead_binop_diagnostic<
     let span = spans
         .and_then(|s| s.get(sidx).copied())
         .unwrap_or(Span::DUMMY);
+    if span.is_dummy() {
+        return;
+    }
     let constant = if matches!(op, BinOp::Eq) {
         "false"
     } else {

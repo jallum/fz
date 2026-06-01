@@ -79,6 +79,7 @@ impl CheckedModule {
 pub(crate) struct PreparedExecutionGraph {
     pub(crate) units: Vec<CompiledUnit>,
     pub(crate) module: fz_ir::Module,
+    pub(crate) module_plan: ir_planner::ModulePlan,
     pub(crate) sm: diag::SourceMap,
 }
 
@@ -225,15 +226,15 @@ pub(crate) fn prepare_execution_graph(
     } else {
         units[0].code.clone()
     };
+    let _compile_span = tel.span(
+        &["fz", "compile"],
+        metadata! {
+            compile_nonce: crate::telemetry::next_compile_nonce(),
+            module_path: module.module_path().to_owned(),
+        },
+    );
+    let mut module_plan = ir_planner::plan_module(t, &module, tel);
     if !module.protocol_call_targets.is_empty() {
-        let _compile_span = tel.span(
-            &["fz", "compile"],
-            metadata! {
-                compile_nonce: crate::telemetry::next_compile_nonce(),
-                module_path: module.module_path().to_owned(),
-            },
-        );
-        let mut module_plan = ir_planner::plan_module(t, &module, tel);
         frontend::apply_planner_rewrites_to_fixed_point(t, &mut module, &mut module_plan);
     }
     // Codegen re-plans the linked working module itself (see
@@ -252,15 +253,18 @@ pub(crate) fn prepare_execution_graph(
         let linked =
             LtoLinkedProgram::validate(module.clone(), interfaces, tel, Some(&prepared.sm))?;
         let (module, _) = linked.erase_boundaries(tel)?;
+        let module_plan = ir_planner::plan_module(t, &module, tel);
         return Ok(PreparedExecutionGraph {
             units,
             module,
+            module_plan,
             sm: prepared.sm,
         });
     }
     Ok(PreparedExecutionGraph {
         units,
         module,
+        module_plan,
         sm: prepared.sm,
     })
 }

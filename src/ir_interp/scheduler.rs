@@ -194,10 +194,14 @@ impl IrInterpRuntime {
         child.state = ProcessState::Ready;
         self.insert_task(pid, child);
         let parent_ptr = self.current_proc;
-        let image = (!parent_ptr.is_null())
+        let image = if let Some(image) = (!parent_ptr.is_null())
             .then(|| unsafe { (*parent_ptr).pid })
             .and_then(|parent_pid| self.task_code_image(parent_pid))
-            .unwrap_or_else(|| std::rc::Rc::new(CodeImage::new(module)));
+        {
+            image
+        } else {
+            std::rc::Rc::new(CodeImage::from_module(module)?)
+        };
         self.set_task_code_image(pid, image);
         self.enqueue_resume(pid, (fn_id, args, vec![]));
         Ok(pid)

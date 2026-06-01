@@ -1,18 +1,17 @@
-//! fz-ul4.31.5 — Validate declared `@spec` against inferred types.
+//! Validate declared `@spec` overload sets against inferred planner facts.
 //!
-//! Option 1 semantics: the declared `@spec` is an upper bound on what
-//! the planner infers. Validation passes iff every narrow inferred spec
-//! is element-wise a subtype of the declared spec (both inputs and
-//! result). Narrower inferred is fine (success-typing: the user is
-//! claiming a wider domain than the body actually accepts). Wider or
-//! disjoint inferred is an error.
+//! A declared `@spec` is an upper bound on what the planner infers. Validation
+//! passes when every narrow inferred spec is covered by at least one declared
+//! arrow: inferred inputs must fit the declared inputs, and the inferred result
+//! must fit that same arrow's declared result. Narrower inferred behavior is
+//! accepted. Wider or disjoint inferred behavior is an error.
 //!
 //! Any-key inferred specs are SKIPPED in validation: they are
 //! planner-internal fallback entries with `any()` on every input,
 //! representing "what if all args are unknown." A user-written `@spec`
 //! is a claim about typed input domains; comparing it against the
 //! all-any any-key would produce category-error rejections for every
-//! reasonable declared spec. See `.29.10` for the broader story.
+//! reasonable declared spec.
 //!
 //! ## Pipeline position
 //!

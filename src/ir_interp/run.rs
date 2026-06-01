@@ -69,26 +69,7 @@ pub(super) fn try_match_clauses<T: Types<Ty = crate::types::Ty>>(
 /// Run an fz fn. Tail calls reuse this stack frame (O(1) Rust stack).
 /// Returns Done(val) on Halt/Return or Blocked(fn_id, cap_vals) when a
 /// Term::Receive fires on an empty mailbox.
-pub(super) fn run_fn<
-    T: Types<Ty = crate::types::Ty> + crate::types::ClosureTypes + crate::types::RenderTypes,
->(
-    runtime: &mut IrInterpRuntime,
-    t: &mut T,
-    module: &Module,
-    tel: &dyn crate::telemetry::Telemetry,
-    fn_id: FnId,
-    args: Vec<AnyValue>,
-) -> Result<InterpStep, String> {
-    let mut module_types =
-        crate::ir_planner::plan_module(t, module, &crate::telemetry::NullTelemetry);
-    let diagnostics = crate::ir_extern_marshal::resolve_module_types(t, module, &mut module_types);
-    if let Some(diagnostic) = diagnostics.into_iter().next() {
-        return Err(diagnostic.message);
-    }
-    run_fn_typed(runtime, t, module, tel, &module_types, fn_id, args)
-}
-
-fn run_fn_typed<
+pub(super) fn run_fn_typed<
     T: Types<Ty = crate::types::Ty> + crate::types::ClosureTypes + crate::types::RenderTypes,
 >(
     runtime: &mut IrInterpRuntime,
@@ -435,6 +416,7 @@ pub(super) fn drain_pending_dtors_interp<
     t: &mut T,
     module: &Module,
     tel: &dyn crate::telemetry::Telemetry,
+    module_types: &crate::ir_planner::ModulePlan,
 ) -> Result<(), String> {
     loop {
         let entry = {
@@ -468,7 +450,7 @@ pub(super) fn drain_pending_dtors_interp<
             payload_ref,
             "fz-4mk drain payload",
         )?);
-        match run_fn(runtime, t, module, tel, fn_id, args)? {
+        match run_fn_typed(runtime, t, module, tel, module_types, fn_id, args)? {
             InterpStep::Done(_) => {}
             InterpStep::Yielded { .. }
             | InterpStep::Blocked(_, _, _)

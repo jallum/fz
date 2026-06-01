@@ -845,6 +845,31 @@ end
 }
 
 #[test]
+fn runtime_enum_to_list_and_map_preserve_recursive_list_shape_native() {
+    let got = capture_main_with_runtime_graph(
+        r#"
+fn main() do
+  dbg(Enum.to_list([1, 2, 3]))
+  dbg(Enum.map([1, 2, 3, 4], fn x -> x * 2 end))
+end
+"#,
+    );
+
+    assert_eq!(got, vec!["[1, 2, 3]", "[2, 4, 6, 8]"]);
+}
+
+#[test]
+fn runtime_enum_tier0_fixture_runs_native() {
+    let got = capture_main_with_runtime_graph(include_str!("../../fixtures/enum_tier0/input.fz"));
+    let expected = include_str!("../../fixtures/enum_tier0/expected.txt")
+        .lines()
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+
+    assert_eq!(got, expected);
+}
+
+#[test]
 fn runtime_enumerable_list_reduce_reports_low_level_done_and_halt() {
     let got = capture_main_with_runtime_graph(
         r#"

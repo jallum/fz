@@ -36,7 +36,7 @@ impl JsonlBackend {
     pub fn new_file(path: &std::path::Path) -> std::io::Result<Self> {
         let f = std::fs::File::create(path)?;
         Ok(Self {
-            writer: RefCell::new(Box::new(std::io::BufWriter::new(f))),
+            writer: RefCell::new(Box::new(f)),
             start: std::time::Instant::now(),
         })
     }
@@ -56,7 +56,9 @@ impl Handler for JsonlBackend {
         let mut buf = String::with_capacity(128);
         write_event(&mut buf, ev, time_ns);
         buf.push('\n');
-        let _ = self.writer.borrow_mut().write_all(buf.as_bytes());
+        let mut writer = self.writer.borrow_mut();
+        let _ = writer.write_all(buf.as_bytes());
+        let _ = writer.flush();
     }
 }
 
@@ -447,5 +449,35 @@ mod tests {
         assert!(output.contains("\"token_count\":42"), "{}", output);
         // Exactly one line (newline-terminated)
         assert_eq!(output.lines().count(), 1);
+    }
+
+    #[test]
+    fn file_backend_flushes_each_event() {
+        let path = std::env::temp_dir().join(format!(
+            "fz_jsonl_flush_{}_{}.jsonl",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system clock before unix epoch")
+                .as_nanos()
+        ));
+        let tel = ConfiguredTelemetry::new();
+        tel.attach(
+            &[],
+            Box::new(JsonlBackend::new_file(&path).expect("open jsonl")),
+        );
+
+        tel.event(
+            &["fz", "diag", "error"],
+            crate::metadata! { code: "spec/violation" },
+        );
+
+        let output = std::fs::read_to_string(&path).expect("read live jsonl");
+        let _ = std::fs::remove_file(&path);
+        assert!(
+            output.contains("\"name\":[\"fz\",\"diag\",\"error\"]"),
+            "{output}"
+        );
+        assert!(output.contains("\"code\":\"spec/violation\""), "{output}");
     }
 }

@@ -131,7 +131,7 @@ pub fn run() {
                     eprintln!("fz repl --script <path>");
                     std::process::exit(2);
                 });
-                if let Err(e) = cli::repl::run_script(std::path::Path::new(&path)) {
+                if let Err(e) = cli::repl::run_script(std::path::Path::new(&path), &tel) {
                     eprintln!("repl: {}", e);
                     std::process::exit(1);
                 }
@@ -494,7 +494,7 @@ fn run_interp(tel: &telemetry::ConfiguredTelemetry, args: &[String]) {
     )
     .unwrap_or_else(|err| report_pipeline_error_or_exit("fz interp", tel, &sm_cell, err));
     notify_fixture_execution_start();
-    match ir_interp::run_main(tel, &graph.module) {
+    match ir_interp::run_main_with_plan(tel, &graph.module, graph.module_plan) {
         Ok(_halt) => {}
         Err(msg) => {
             eprintln!("fz interp: {}", msg);

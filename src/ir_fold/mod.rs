@@ -21,26 +21,14 @@ pub fn fold_module(m: &mut Module, types: &ModulePlan) {
     }
 }
 
-/// Return the best available SpecPlan for `f`.
+/// Return the only SpecPlan that can justify shared-body mutation for `f`.
 ///
-/// Prefers the any-key spec (most general). Falls back to the sole narrow spec
-/// when there is exactly one — common for continuation functions that are only
-/// ever called with one concrete type. Bails when multiple narrow specs exist,
-/// since picking one arbitrarily could mis-fold the others.
+/// `fold_module` rewrites the module's canonical `FnIr`, not a per-spec clone,
+/// so it may only use the all-domain `any` key. Narrow facts are still useful,
+/// but they belong in `fold_fn_with_types` on the codegen clone for that exact
+/// spec.
 fn best_fn_types<'a>(f: &FnIr, types: &'a ModulePlan) -> Option<&'a SpecPlan> {
-    if let Some(ft) = types.any_key_spec(f.id) {
-        return Some(ft);
-    }
-    let mut iter = types
-        .specs
-        .iter()
-        .filter(|(key, _)| key.fn_id == f.id && key.demand.is_value());
-    let first = iter.next()?.1;
-    if iter.next().is_none() {
-        Some(first)
-    } else {
-        None
-    }
+    types.any_key_spec(f.id)
 }
 
 fn fold_fn<T: Types<Ty = crate::types::Ty>>(t: &mut T, f: &mut FnIr, types: &ModulePlan) {

@@ -69,13 +69,46 @@ type InterpParked = (ParkRecord, Vec<(FnId, Vec<AnyValue>)>);
 #[derive(Clone)]
 pub(crate) struct CodeImage {
     module: Rc<Module>,
+    module_plan: Rc<crate::ir_planner::ModulePlan>,
 }
 
 impl CodeImage {
-    fn new(module: &Module) -> Self {
-        Self {
-            module: Rc::new(module.clone()),
+    fn planned(
+        module: &Module,
+        module_plan: crate::ir_planner::ModulePlan,
+    ) -> Result<Self, String> {
+        let mut t = crate::types::ConcreteTypes;
+        Self::from_plan(&mut t, module, module_plan)
+    }
+
+    fn from_module(module: &Module) -> Result<Self, String> {
+        let mut t = crate::types::ConcreteTypes;
+        let module_plan =
+            crate::ir_planner::plan_module(&mut t, module, &crate::telemetry::NullTelemetry);
+        Self::from_plan(&mut t, module, module_plan)
+    }
+
+    fn from_plan<T>(
+        t: &mut T,
+        module: &Module,
+        mut module_plan: crate::ir_planner::ModulePlan,
+    ) -> Result<Self, String>
+    where
+        T: crate::types::Types<Ty = crate::types::Ty> + crate::types::RenderTypes,
+    {
+        let diagnostics =
+            crate::ir_extern_marshal::resolve_module_types(t, module, &mut module_plan);
+        if let Some(diagnostic) = diagnostics.into_iter().next() {
+            return Err(diagnostic.message);
         }
+        Ok(Self {
+            module: Rc::new(module.clone()),
+            module_plan: Rc::new(module_plan),
+        })
+    }
+
+    fn module_plan(&self) -> &crate::ir_planner::ModulePlan {
+        &self.module_plan
     }
 
     fn module(&self) -> &Module {
@@ -157,7 +190,6 @@ impl IrInterpRuntime {
             fz_runtime::process::DEFAULT_REDUCTIONS_PER_QUANTUM,
         ));
         runtime.insert_task(1, process);
-        runtime.set_task_code_image(1, Rc::new(CodeImage::new(module)));
         runtime
     }
 
@@ -249,7 +281,19 @@ impl IrInterpRuntime {
         if !self.tasks.contains_key(&pid) {
             return Err(format!("enqueue_entry: unknown pid {}", pid));
         }
-        self.set_task_code_image(pid, Rc::new(CodeImage::new(module)));
+        self.set_task_code_image(pid, Rc::new(CodeImage::from_module(module)?));
+        self.enqueue_entry_with_image(pid, fn_id, args)
+    }
+
+    fn enqueue_entry_with_image(
+        &mut self,
+        pid: u32,
+        fn_id: FnId,
+        args: Vec<AnyValue>,
+    ) -> Result<(), String> {
+        if !self.tasks.contains_key(&pid) {
+            return Err(format!("enqueue_entry: unknown pid {}", pid));
+        }
         self.resume.insert(pid, (fn_id, args, vec![]));
         self.run_queue.push_back(pid);
         self.set_process_state(pid, fz_runtime::process::ProcessState::Ready);
@@ -289,6 +333,7 @@ impl IrInterpRuntime {
                 .task_code_image(pid)
                 .ok_or_else(|| format!("pid {} has no interpreter code image", pid))?;
             let module = image.module();
+            let module_types = image.module_plan();
             let (fn_id, args, mut after) = self
                 .take_resume(pid)
                 .expect("pid in run_queue with no resume entry");
@@ -304,7 +349,7 @@ impl IrInterpRuntime {
                 debug_assert!(!(*proc_ptr).ctx.is_null(), "interp ctx installed");
             };
             self.current_proc = proc_ptr;
-            let mut step = run_fn(self, &mut t, module, tel, fn_id, args);
+            let mut step = run_fn_typed(self, &mut t, module, tel, module_types, fn_id, args);
             loop {
                 match step {
                     Ok(InterpStep::Done(val)) => {
@@ -312,7 +357,15 @@ impl IrInterpRuntime {
                             after.remove(0);
                             let mut next_args = vec![val];
                             next_args.extend(next_caps);
-                            step = run_fn(self, &mut t, module, tel, next_fn, next_args);
+                            step = run_fn_typed(
+                                self,
+                                &mut t,
+                                module,
+                                tel,
+                                module_types,
+                                next_fn,
+                                next_args,
+                            );
                             continue;
                         }
 
@@ -325,7 +378,9 @@ impl IrInterpRuntime {
                         unsafe {
                             fz_runtime::procbin::mso_drop_all_deferred(&mut (*proc_ptr).heap);
                         }
-                        if let Err(e) = drain_pending_dtors_interp(self, &mut t, module, tel) {
+                        if let Err(e) =
+                            drain_pending_dtors_interp(self, &mut t, module, tel, module_types)
+                        {
                             tel.event(
                                 &["fz", "runtime", "dtor_drain_failed"],
                                 crate::metadata! { error: e },
@@ -466,8 +521,20 @@ fn gc_interp_scheduler_roots(
 /// Drives a cooperative run-queue loop: main starts at pid=1, spawned tasks
 /// are enqueued and run one quantum at a time in FIFO order. Tasks that block
 /// on receive park until a send wakes them. Loop exits when the queue is empty.
+#[cfg(test)]
 pub fn run_main(tel: &dyn crate::telemetry::Telemetry, module: &Module) -> Result<i64, String> {
-    run_main_inner(tel, module).map(|(halt, _runtime)| halt)
+    let mut t = crate::types::ConcreteTypes;
+    let module_plan =
+        crate::ir_planner::plan_module(&mut t, module, &crate::telemetry::NullTelemetry);
+    run_main_with_plan(tel, module, module_plan).map(|(halt, _runtime)| halt)
+}
+
+pub(crate) fn run_main_with_plan(
+    tel: &dyn crate::telemetry::Telemetry,
+    module: &Module,
+    module_plan: crate::ir_planner::ModulePlan,
+) -> Result<(i64, IrInterpRuntime), String> {
+    run_main_inner(tel, module, module_plan)
 }
 
 #[cfg(test)]
@@ -475,16 +542,21 @@ pub(crate) fn run_main_with_runtime(
     tel: &dyn crate::telemetry::Telemetry,
     module: &Module,
 ) -> Result<(i64, IrInterpRuntime), String> {
-    run_main_inner(tel, module)
+    let mut t = crate::types::ConcreteTypes;
+    let module_plan =
+        crate::ir_planner::plan_module(&mut t, module, &crate::telemetry::NullTelemetry);
+    run_main_inner(tel, module, module_plan)
 }
 
 fn run_main_inner(
     tel: &dyn crate::telemetry::Telemetry,
     module: &Module,
+    module_plan: crate::ir_planner::ModulePlan,
 ) -> Result<(i64, IrInterpRuntime), String> {
     let main_id = module.fn_by_name("main").ok_or("no `main/0` fn found")?.id;
     let mut runtime = IrInterpRuntime::fresh_with_root(module);
-    runtime.enqueue_entry(module, 1, main_id, vec![])?;
+    runtime.set_task_code_image(1, Rc::new(CodeImage::planned(module, module_plan)?));
+    runtime.enqueue_entry_with_image(1, main_id, vec![])?;
     let completions = runtime.drive_until_idle(tel, None)?;
     let halt_val = completions
         .iter()
@@ -524,14 +596,29 @@ pub fn run_test_fn(
     runtime.current_proc = task_ptr;
     unsafe { (*task_ptr).heap.set_owner(task_ptr) };
     let mut t = crate::types::ConcreteTypes;
-    let result = run_fn(&mut runtime, &mut t, module, tel, fn_id, Vec::new());
+    let mut module_plan =
+        crate::ir_planner::plan_module(&mut t, module, &crate::telemetry::NullTelemetry);
+    let diagnostics =
+        crate::ir_extern_marshal::resolve_module_types(&mut t, module, &mut module_plan);
+    if let Some(diagnostic) = diagnostics.into_iter().next() {
+        return Err(diagnostic.message);
+    }
+    let result = run_fn_typed(
+        &mut runtime,
+        &mut t,
+        module,
+        tel,
+        &module_plan,
+        fn_id,
+        Vec::new(),
+    );
     // fz-4mk — shutdown drain mirrors run_main's exit path: enqueue every
     // surviving resource's dtor and dispatch each as a real fz call. The dtor
     // helpers reach this task through `runtime.current_proc` (set above).
     unsafe {
         fz_runtime::procbin::mso_drop_all_deferred(&mut (*task_ptr).heap);
     }
-    if let Err(e) = drain_pending_dtors_interp(&mut runtime, &mut t, module, tel) {
+    if let Err(e) = drain_pending_dtors_interp(&mut runtime, &mut t, module, tel, &module_plan) {
         tel.event(
             &["fz", "runtime", "dtor_drain_failed"],
             crate::metadata! { error: e },

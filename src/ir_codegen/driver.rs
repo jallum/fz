@@ -16,8 +16,15 @@ use cranelift_module::{DataDescription, DataId, FuncId, Linkage, Module as ClMod
 use fz_runtime::heap::{FieldDescriptor, FieldKind, Schema};
 use std::collections::HashMap;
 
-fn prepare_codegen_body(module: &Module, fn_idx: usize) -> crate::fz_ir::FnIr {
-    module.fns[fn_idx].clone()
+fn prepare_codegen_body<T: crate::types::Types<Ty = crate::types::Ty>>(
+    t: &mut T,
+    module: &Module,
+    fn_idx: usize,
+    ft: &crate::ir_planner::SpecPlan,
+) -> crate::fz_ir::FnIr {
+    let mut f = module.fns[fn_idx].clone();
+    crate::ir_fold::fold_fn_with_types(t, &mut f, ft);
+    f
 }
 
 fn push_reachable_spec<T: crate::types::Types<Ty = crate::types::Ty>>(
@@ -700,15 +707,16 @@ fn build_per_spec_schemas<T: crate::types::Types<Ty = crate::types::Ty>>(
     schemas
 }
 
-/// Per-spec return ABI type comes first from an instantiated declared spec
-/// when the function has one, then from the typer's LFP
-/// (`module_plan.effective_returns`). The LFP walk filters by
+/// Per-spec return ABI type comes first from the typer's LFP
+/// (`module_plan.effective_returns`) when the concrete body was solved, then
+/// from an instantiated declared spec as a conservative fallback. The LFP
+/// walk filters by
 /// `reachable_blocks` AND propagates through every exit terminator
 /// including `Term::Call` / `Term::CallClosure` / `Term::Receive`
 /// with a continuation; the cont side (`cont_slot0_descr`) already
-/// reads declared returns before consulting the same map. Mirroring that
-/// precedence here means the producer ABI and the cont's slot-0 ABI agree
-/// by construction.
+/// consumes these solved returns. Using the solved body first keeps
+/// monomorphic protocol implementations from inheriting broad callback
+/// contracts at the native ABI seam.
 ///
 /// Halt-only specs converge to `none()` in the LFP; substitute
 /// `any` so `ArgRepr::from_descr` doesn't pick RawF64 (none is a
@@ -730,13 +738,11 @@ fn derive_return_tys<T: crate::types::Types<Ty = crate::types::Ty> + crate::type
             if spec_fnidx[sid].is_none() {
                 return any.clone();
             }
-            if let Some(ret) = declared_return_for_spec_key(t, module, key, module_plan) {
-                return ret;
-            }
             let ret = module_plan
                 .effective_returns
                 .get(key)
                 .cloned()
+                .or_else(|| declared_return_for_spec_key(t, module, key, module_plan))
                 .unwrap_or_else(|| any.clone());
             if t.is_subtype(&ret, &none) {
                 any.clone()
@@ -1007,14 +1013,13 @@ fn compute_tagged_return_specs<
     set
 }
 
-/// Cont specs whose producer delivers one boxed value lane must accept
+/// Cont specs whose producer delivers a `ValueRef` lane must accept
 /// `ValueRef` at slot 0. Producers that deliver tuple fields do not use
 /// that slot-0 seam at all.
 ///
 /// Reads the producer→cont call-edge facts from `SpecPlan.call_edges`
-/// rather than recovering them from payload typing. The direct edge's
-/// selected `SpecKey.demand` already says whether the producer delivers
-/// a boxed value or tuple fields.
+/// rather than recovering them from payload typing. The direct edge selects
+/// both the producer spec (for representation) and the return shape.
 fn compute_tagged_slot0_cont_specs<T: crate::types::Types<Ty = crate::types::Ty>>(
     t: &mut T,
     module: &Module,
@@ -1022,6 +1027,7 @@ fn compute_tagged_slot0_cont_specs<T: crate::types::Types<Ty = crate::types::Ty>
     spec_fnidx: &[Option<usize>],
     spec_fn_types: &[Option<&crate::ir_planner::SpecPlan>],
     spec_registry: &SpecRegistry,
+    return_reprs: &[ArgRepr],
 ) -> std::collections::HashSet<u32> {
     let mut tagged_slot0_cont_specs: std::collections::HashSet<u32> =
         std::collections::HashSet::new();
@@ -1044,9 +1050,14 @@ fn compute_tagged_slot0_cont_specs<T: crate::types::Types<Ty = crate::types::Ty>
                         ident: term_ident.clone(),
                         slot: crate::fz_ir::EmitSlot::Direct,
                     };
-                    caller_ft
-                        .local_call_target(&cid)
-                        .is_some_and(|key| DemandAbi::new(key).delivered_value_repr().is_some())
+                    caller_ft.local_call_target(&cid).is_some_and(|key| {
+                        if !DemandAbi::new(key).delivers_value_lane() {
+                            return false;
+                        }
+                        spec_registry
+                            .resolve_spec_key(t, key)
+                            .is_some_and(|sid| return_reprs[sid.0 as usize] == ArgRepr::ValueRef)
+                    })
                 }
                 Term::CallClosure { .. } | Term::Receive { .. } => true,
                 _ => false,
@@ -1380,7 +1391,8 @@ fn build_spec_index_tables<'a>(
 
 /// Build the per-SpecId codegen bodies. Non-sentinel specs get the
 /// authoritative post-plan module body; sentinel slots get `None`.
-fn prepare_codegen_bodies(
+fn prepare_codegen_bodies<T: crate::types::Types<Ty = crate::types::Ty>>(
+    t: &mut T,
     module: &Module,
     spec_count: usize,
     spec_fnidx: &[Option<usize>],
@@ -1390,8 +1402,7 @@ fn prepare_codegen_bodies(
     for sid in 0..spec_count {
         match (spec_fnidx[sid], spec_fn_types[sid]) {
             (Some(idx), Some(ft)) => {
-                let _ = ft;
-                codegen_bodies.push(Some(prepare_codegen_body(module, idx)));
+                codegen_bodies.push(Some(prepare_codegen_body(t, module, idx, ft)));
             }
             _ => codegen_bodies.push(None),
         }
@@ -2281,6 +2292,7 @@ pub(crate) fn compile_with_backend_impl<
         &spec_registry,
         &closure_target_fns,
     );
+    let return_reprs = build_return_reprs(t, &return_tys, &tagged_return_specs);
     let tagged_slot0_cont_specs = compute_tagged_slot0_cont_specs(
         t,
         module,
@@ -2288,9 +2300,9 @@ pub(crate) fn compile_with_backend_impl<
         &spec_fnidx,
         &spec_fn_types,
         &spec_registry,
+        &return_reprs,
     );
     let param_reprs = refine_param_reprs_for_tagging(param_reprs, &tagged_slot0_cont_specs);
-    let return_reprs = build_return_reprs(t, &return_tys, &tagged_return_specs);
 
     let cont_extras_count = collect_cont_extras_count(module);
 
@@ -2338,7 +2350,7 @@ pub(crate) fn compile_with_backend_impl<
     let bs_const_data: std::cell::RefCell<HashMap<Vec<u8>, BsConstSyms>> =
         std::cell::RefCell::new(HashMap::new());
 
-    let codegen_bodies = prepare_codegen_bodies(module, spec_count, &spec_fnidx, &spec_fn_types);
+    let codegen_bodies = prepare_codegen_bodies(t, module, spec_count, &spec_fnidx, &spec_fn_types);
 
     // Set of SpecIds reachable from main + closure-dispatched fns.
     // Specs not in this set get a trap-stub body instead of full

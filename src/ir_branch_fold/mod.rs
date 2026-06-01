@@ -1,8 +1,8 @@
-//! fz-fyq.4 — dead-branch fold.
+//! Body-safe dead-branch fold.
 //!
-//! Consumer of `ModulePlan::dead_branches` (fz-fyq.2). For each
-//! `Term::If` the planner proved one-sided-dead under cross-spec consensus,
-//! rewrite the terminator to a `Term::Goto` jumping to the live successor.
+//! Consumer of `ModulePlan::dead_branches`. For each `Term::If` the planner
+//! proved one-sided-dead for the all-domain `any` key, rewrite the terminator
+//! to a `Term::Goto` jumping to the live successor.
 //! Standard `ir_dce::dce_module` (which already runs after this in
 //! `ir_codegen::compile`) then removes the unused TypeTest stmt (its dest
 //! is no longer read) and the orphaned dead-side blocks.
@@ -14,8 +14,9 @@
 //! exactly what `find_emptied_var` detects when computing
 //! `dead_branches`.
 //!
-//! Soundness rests on the producer's cross-spec consensus rule. The
-//! rewrite is mechanical; no per-spec reasoning happens here.
+//! Soundness rests on the producer's body-safe rule: shared-body mutation only
+//! consumes facts proven for every value the function can accept. Narrow
+//! per-spec facts are folded later on cloned codegen bodies.
 
 use crate::fz_ir::{BlockId, DeadBranch, FnId, Module, Term};
 use crate::ir_planner::ModulePlan;
@@ -198,5 +199,60 @@ mod tests {
         // x : any — neither branch provably dead; If untouched.
         assert!(matches!(m.fns[0].block(entry).terminator, Term::If { .. }));
         let _ = Var(0);
+    }
+
+    #[test]
+    fn fold_does_not_use_sole_narrow_spec_to_mutate_shared_body() {
+        let mut f = FnBuilder::new(FnId(0), "f");
+        let xs = f.fresh_var();
+        let entry = f.block(vec![xs]);
+        let is_empty = f.let_(entry, Prim::IsEmptyList(xs));
+        let empty_b = f.block(vec![]);
+        let cons_b = f.block(vec![]);
+        f.set_terminator(entry, Term::if_user(is_empty, empty_b, cons_b));
+        f.set_terminator(empty_b, Term::Return(xs));
+        f.set_terminator(cons_b, Term::Return(xs));
+
+        let mut main = FnBuilder::new(FnId(1), "main");
+        let main_entry = main.block(vec![]);
+        let one = main.let_(main_entry, Prim::Const(Const::Int(1)));
+        let list = main.let_(main_entry, Prim::MakeList(vec![one], None));
+        main.set_terminator(
+            main_entry,
+            Term::TailCall {
+                ident: crate::fz_ir::CallsiteIdent::synthetic(),
+                callee: FnId(0),
+                args: vec![list],
+                is_back_edge: false,
+            },
+        );
+
+        let mut mb = ModuleBuilder::new();
+        mb.add_fn(f.build());
+        mb.add_fn(main.build());
+        let mut m = mb.build();
+        let mut ct = crate::types::ConcreteTypes;
+        let mt = crate::ir_planner::plan_module(&mut ct, &m, &crate::telemetry::NullTelemetry);
+        assert!(
+            mt.specs
+                .iter()
+                .any(|(key, spec)| key.fn_id == FnId(0) && !spec.dead_branches.is_empty()),
+            "the narrow f([1]) spec should know one branch is dead"
+        );
+        assert!(
+            !mt.dead_branches.keys().any(|(fid, _)| *fid == FnId(0)),
+            "shared-body dead branches must not be published without an any-key proof"
+        );
+
+        let tel = crate::telemetry::ConfiguredTelemetry::new();
+        let cap = crate::telemetry::Capture::new();
+        tel.attach(&[], cap.handler());
+        fold_module_with_telemetry(&mut m, &mt, &tel);
+
+        assert!(matches!(
+            m.fn_by_id(FnId(0)).block(entry).terminator,
+            Term::If { .. }
+        ));
+        assert_eq!(cap.count(&["fz", "ir", "fold", "branch_pruned"]), 0);
     }
 }

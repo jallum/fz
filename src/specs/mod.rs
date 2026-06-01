@@ -1,3 +1,11 @@
+//! Semantic engine for resolved `@spec` contracts.
+//!
+//! `type_expr` constructs the resolved model from source syntax. This module
+//! owns the operations over that model: scheme matching, overload-set
+//! application, structural correspondence, and declared-vs-inferred coverage.
+//! Callers receive structured outcomes and keep diagnostics at their own
+//! frontend/planner/codegen boundary.
+
 mod apply;
 mod r#match;
 mod model;

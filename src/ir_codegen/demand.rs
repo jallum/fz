@@ -1,6 +1,5 @@
 //! Codegen view of planner-selected return-demand ABI facts.
 
-use super::ArgRepr;
 use crate::ir_planner::fn_types::{ReturnDemand, SpecKey};
 
 #[derive(Clone, Copy)]
@@ -56,19 +55,15 @@ impl<'a> DemandAbi<'a> {
         }
     }
 
-    pub(crate) fn delivered_value_repr(self) -> Option<ArgRepr> {
-        if self.tuple_field_arity().is_some() {
-            None
-        } else {
-            Some(ArgRepr::ValueRef)
-        }
+    pub(crate) fn delivers_value_lane(self) -> bool {
+        self.tuple_field_arity().is_none()
     }
 
-    pub(crate) fn returned_value_repr(self, is_cont_fn: bool) -> Option<ArgRepr> {
+    pub(crate) fn returned_delivers_value_lane(self, is_cont_fn: bool) -> bool {
         if is_cont_fn && self.tuple_field_arity().is_some() {
-            Some(ArgRepr::ValueRef)
+            true
         } else {
-            self.delivered_value_repr()
+            self.delivers_value_lane()
         }
     }
 
@@ -83,26 +78,26 @@ mod tests {
     use crate::types::Types;
 
     #[test]
-    fn value_demand_delivers_boxed_value_ref() {
+    fn value_demand_delivers_one_value_lane() {
         let demand = ReturnDemand::value();
         let abi = DemandAbi::from_demand(&demand);
-        assert_eq!(abi.delivered_value_repr(), Some(ArgRepr::ValueRef));
+        assert!(abi.delivers_value_lane());
     }
 
     #[test]
-    fn list_tail_demand_still_delivers_a_boxed_value_lane() {
+    fn list_tail_demand_still_delivers_one_value_lane() {
         let mut t = crate::types::ConcreteTypes;
         let int = t.int();
         let demand = ReturnDemand::list_tail(t.list(int));
         let abi = DemandAbi::from_demand(&demand);
-        assert_eq!(abi.delivered_value_repr(), Some(ArgRepr::ValueRef));
+        assert!(abi.delivers_value_lane());
     }
 
     #[test]
     fn tuple_field_demand_has_no_single_value_lane() {
         let demand = ReturnDemand::tuple_fields(2);
         let abi = DemandAbi::from_demand(&demand);
-        assert_eq!(abi.delivered_value_repr(), None);
+        assert!(!abi.delivers_value_lane());
     }
 
     #[test]
@@ -111,14 +106,14 @@ mod tests {
         let int = t.int();
         let demand = ReturnDemand::tuple_fields_list_tail(2, t.list(int));
         let abi = DemandAbi::from_demand(&demand);
-        assert_eq!(abi.delivered_value_repr(), None);
+        assert!(!abi.delivers_value_lane());
     }
 
     #[test]
-    fn continuation_outer_return_collapses_tuple_fields_back_to_boxed_value() {
+    fn continuation_outer_return_collapses_tuple_fields_back_to_one_value_lane() {
         let demand = ReturnDemand::tuple_fields(2);
         let abi = DemandAbi::from_demand(&demand);
-        assert_eq!(abi.returned_value_repr(true), Some(ArgRepr::ValueRef));
+        assert!(abi.returned_delivers_value_lane(true));
     }
 
     #[test]

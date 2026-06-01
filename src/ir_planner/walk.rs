@@ -1,9 +1,9 @@
 use super::fn_types::{
     CallEdgePlan, CallEdgeTarget, CallableCapability, CallsiteCallableCapabilities, EmitterSite,
-    FixedPointSlotSummaries, FnEffects, ReturnContextPlan, ReturnDemand, SpecKey, SpecPlan,
-    WALK_CALLS, fixed_point_spec_key_for_arity, forwarded_return_contract_for_target,
-    normalize_result_correspondence_key, padded_direct_input_tys, return_contract_for_target,
-    spec_key_for_fn,
+    FixedPointInputObservation, FixedPointSlotSummaries, FnEffects, ReturnContextPlan,
+    ReturnDemand, SpecKey, SpecPlan, WALK_CALLS, fixed_point_input_tys_for_arity,
+    forwarded_return_contract_for_target, normalize_result_correspondence_key,
+    padded_direct_input_tys, return_contract_for_target, spec_key_for_fn, spec_key_for_fn_id,
 };
 use super::reachable::cont_key_from_slot0;
 use super::return_context::{
@@ -38,6 +38,10 @@ pub(crate) struct WalkResult {
     /// `(lambda FnId, capture-types)`. Driver folds into
     /// `ModulePlan.closure_handles`.
     pub(crate) closure_handles: HashSet<(FnId, Vec<crate::types::Ty>)>,
+    /// Recursive callee inputs observed before fixed-point summaries are applied.
+    /// The summaries are consumed by spec-key normalization, so normalized spec
+    /// keys cannot be the source of truth for widening them.
+    pub(crate) fixed_point_inputs: Vec<FixedPointInputObservation>,
 }
 
 impl WalkResult {
@@ -535,21 +539,13 @@ where
         let Some(slot0) = self.continuation_slot0(term_ident, env, &source) else {
             return;
         };
-        // Seed a pending recursive producer return with bottom, not top. The
-        // effective-return fixpoint must climb monotonically from bottom (see
-        // the `plan_module` termination proof): if a continuation whose
-        // producer return is still pending is seeded with `any`, the
-        // continuation's own return is computed from the top of the lattice and
-        // then recomputed downward once the producer settles — the answer keeps
-        // changing instead of only rising, so the fixpoint oscillates and never
-        // converges. Leaving slot0 at bottom makes `has_bottom_arg` below defer
-        // this edge; `return_reads`/`return_readers` re-enqueues the caller once
-        // the producer return refines to a concrete type. A producer whose
-        // return is *complete* and genuinely bottom leaves slot0 bottom too, and
-        // the continuation is correctly dropped as unreachable.
+        // Pending is an absence of proof, not an impossible return. Keep the
+        // continuation edge alive with an opaque slot while the return reader
+        // dependency waits for the producer to settle. A completed `none`
+        // still arrives as `Known(none)` and is dropped by `has_bottom_arg`.
         let slot0 = match slot0 {
             Slot0Knowledge::Known(ty) => ty,
-            Slot0Knowledge::Pending => self.t.none(),
+            Slot0Knowledge::Pending => self.any_ty.clone(),
         };
         let Some(&j) = self.m.fn_idx.get(&cont.fn_id) else {
             return;
@@ -755,7 +751,7 @@ where
         if self.has_bottom_arg(&dispatch_key) {
             return None;
         }
-        let key = fixed_point_spec_key_for_arity(
+        let (observed, input_tys) = fixed_point_input_tys_for_arity(
             self.t,
             self.m,
             self.recursive_fns,
@@ -764,8 +760,9 @@ where
             callee,
             dispatch_key,
             n_params,
-            None,
         );
+        self.record_fixed_point_input_observation(callee, observed);
+        let key = spec_key_for_fn_id(self.m, callee, input_tys);
         Some((key, n_params))
     }
 
@@ -833,7 +830,7 @@ where
         if self.has_bottom_arg(&dispatch_key) {
             return None;
         }
-        Some(fixed_point_spec_key_for_arity(
+        let (observed, input_tys) = fixed_point_input_tys_for_arity(
             self.t,
             self.m,
             self.recursive_fns,
@@ -842,8 +839,29 @@ where
             fn_id,
             dispatch_key,
             n_params,
-            None,
-        ))
+        );
+        self.record_fixed_point_input_observation(fn_id, observed);
+        Some(spec_key_for_fn_id(self.m, fn_id, input_tys))
+    }
+
+    fn record_fixed_point_input_observation(
+        &mut self,
+        fn_id: FnId,
+        input_tys: Vec<crate::types::Ty>,
+    ) {
+        if !self.recursive_fns.contains(&fn_id) {
+            return;
+        }
+        let f = self.m.fn_by_id(fn_id);
+        if f.category == crate::fz_ir::FnCategory::Matcher {
+            return;
+        }
+        if super::fn_types::result_linked_param_slots(self.m, fn_id).is_empty() {
+            return;
+        }
+        self.out
+            .fixed_point_inputs
+            .push(FixedPointInputObservation { fn_id, input_tys });
     }
 
     fn callable_capability_args(

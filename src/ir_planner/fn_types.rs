@@ -241,13 +241,13 @@ pub struct ModulePlan {
     /// back), so the destination-planning barrier reads one cached fact
     /// instead of re-walking bodies on demand.
     pub fn_effects: FnEffects,
-    /// Per-If dead-branch facts under cross-spec consensus.
+    /// Per-If dead-branch facts safe for shared-body mutation.
     /// Populated at the end of `plan_module` by `compute_dead_branches`.
     /// Keyed by `(FnId, BlockId)` where the block ends in a `Term::If`;
     /// value names which branch is provably never taken. Read by the
-    /// dead-branch fold and by `collect_diagnostics`. Only covers
-    /// registered-spec fns; diagnostics re-run ad-hoc analysis for fns with
-    /// no registered spec.
+    /// dead-branch fold and by `collect_diagnostics`. These facts are proven
+    /// by the fn's all-domain `any` key; narrower per-spec branch facts live
+    /// on `SpecPlan::dead_branches` and are consumed only on per-spec clones.
     pub dead_branches: HashMap<(FnId, crate::fz_ir::BlockId), crate::fz_ir::DeadBranch>,
     /// Closure-handle registry used by planner tests. Runtime codegen
     /// resolves closure bodies through the emitted any-key body specs.
@@ -919,6 +919,12 @@ pub(crate) type EmitsByCaller = HashMap<SpecKey, EmitterSiteSet>;
 pub(crate) type ProducesMap = HashMap<EmitterSite, SpecKey>;
 pub(crate) type FixedPointSlotSummaries = HashMap<(FnId, usize), crate::types::Ty>;
 
+#[derive(Clone, Debug)]
+pub(crate) struct FixedPointInputObservation {
+    pub(crate) fn_id: FnId,
+    pub(crate) input_tys: Vec<crate::types::Ty>,
+}
+
 pub(crate) fn result_linked_param_slots(
     module: &Module,
     fn_id: FnId,
@@ -1001,29 +1007,12 @@ pub(crate) fn normalize_result_correspondence_key<
     if recursive_params.is_empty() {
         return key;
     }
-    let Some(groups) = module.function_correspondence.get(&fn_id) else {
+    if !module.function_correspondence.contains_key(&fn_id) {
         return key;
-    };
-    let mut callback_params = std::collections::BTreeSet::new();
-    for group in groups {
-        for occ in &group.occurrences {
-            match occ {
-                StructuralOccurrence::CallbackArg { param_index, .. }
-                | StructuralOccurrence::CallbackResult { param_index, .. } => {
-                    callback_params.insert(*param_index);
-                }
-                StructuralOccurrence::Param { .. } | StructuralOccurrence::Result { .. } => {}
-            }
-        }
     }
     for param_index in recursive_params {
         if let Some(slot) = key.get_mut(param_index) {
             *slot = t.widen_for_recursive_spec_key(slot);
-        }
-    }
-    for param_index in callback_params {
-        if let Some(slot) = key.get_mut(param_index) {
-            *slot = t.erase_closure_identity(slot);
         }
     }
     key
@@ -1042,17 +1031,43 @@ pub(crate) fn fixed_point_spec_key_for_arity<
     arity: usize,
     demand: Option<ReturnDemand>,
 ) -> SpecKey {
-    let input_tys = padded_direct_input_tys(t, input_tys, arity);
-    let input_tys =
-        normalize_recursive_direct_key(t, recursive_fns, input_tys, caller, callee, module);
-    let input_tys = normalize_result_correspondence_key(t, module, callee, input_tys);
-    let input_tys =
-        apply_fixed_point_slot_summaries(t, recursive_fns, slot_summaries, callee, input_tys);
+    let (_, input_tys) = fixed_point_input_tys_for_arity(
+        t,
+        module,
+        recursive_fns,
+        slot_summaries,
+        caller,
+        callee,
+        input_tys,
+        arity,
+    );
     let mut key = spec_key_for_fn_id(module, callee, input_tys);
     if let Some(demand) = demand {
         key.demand = demand;
     }
     key
+}
+
+pub(crate) fn fixed_point_input_tys_for_arity<
+    T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
+>(
+    t: &mut T,
+    module: &Module,
+    recursive_fns: &std::collections::HashSet<FnId>,
+    slot_summaries: &FixedPointSlotSummaries,
+    caller: FnId,
+    callee: FnId,
+    input_tys: Vec<crate::types::Ty>,
+    arity: usize,
+) -> (Vec<crate::types::Ty>, Vec<crate::types::Ty>) {
+    let input_tys = padded_direct_input_tys(t, input_tys, arity);
+    let input_tys =
+        normalize_recursive_direct_key(t, recursive_fns, input_tys, caller, callee, module);
+    let input_tys = normalize_result_correspondence_key(t, module, callee, input_tys);
+    let observed = input_tys.clone();
+    let input_tys =
+        apply_fixed_point_slot_summaries(t, recursive_fns, slot_summaries, callee, input_tys);
+    (observed, input_tys)
 }
 
 pub(crate) fn apply_fixed_point_slot_summaries<T: crate::types::Types<Ty = crate::types::Ty>>(

@@ -151,13 +151,14 @@ impl rustyline::validate::Validator for ReplEditorHelper {
 
 impl rustyline::Helper for ReplEditorHelper {}
 
-/// fz-i67.1 — non-interactive driver: compile a file's contents, then call
-/// `main/0` through `ReplRuntime` if defined. Only program-side `dbg()`
-/// writes to stdout.
-pub fn run_script(path: &Path) -> io::Result<()> {
+/// Compile a file's contents, then call `main/0` through `ReplRuntime` if
+/// defined. Only program-side `dbg()` writes to stdout; diagnostics use the
+/// caller's telemetry bus.
+pub fn run_script(path: &Path, tel: &crate::telemetry::ConfiguredTelemetry) -> io::Result<()> {
     let src = std::fs::read_to_string(path)?;
     let source_name = path.display().to_string();
-    ReplSession::new().run_script_str(&src, source_name)
+    let diagnostics = attach_repl_diagnostic_renderer(tel);
+    ReplSession::new().run_script_str_with_telemetry(&src, source_name, tel, &diagnostics)
 }
 
 /// Underlying driver shared by `run_script` and tests. Returns Err on
@@ -233,9 +234,20 @@ impl ReplSession {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn run_script_str(&mut self, src: &str, source_name: String) -> io::Result<()> {
-        let mut t = crate::types::ConcreteTypes;
         let (tel, diagnostics) = repl_diagnostic_telemetry();
+        self.run_script_str_with_telemetry(src, source_name, &tel, &diagnostics)
+    }
+
+    fn run_script_str_with_telemetry(
+        &mut self,
+        src: &str,
+        source_name: String,
+        tel: &dyn crate::telemetry::Telemetry,
+        diagnostics: &Rc<RefCell<Vec<u8>>>,
+    ) -> io::Result<()> {
+        let mut t = crate::types::ConcreteTypes;
         let providers = crate::modules::pipeline::ProviderInputs::new(
             crate::modules::artifact_store::DEFAULT_ARTIFACT_ROOT.to_string(),
             Vec::new(),
@@ -245,26 +257,26 @@ impl ReplSession {
             src.to_string(),
             source_name,
             &providers,
-            &tel,
+            tel,
         ) {
             Ok(ok) => ok,
-            Err(err) => return Err(pipeline_error_to_io_error(err, &diagnostics)),
+            Err(err) => return Err(pipeline_error_to_io_error(err, diagnostics)),
         };
         let checked = crate::modules::pipeline::checked_module_for_mode(
             &mut t,
             frontend,
-            &tel,
+            tel,
             crate::modules::pipeline::CompileMode::Normal,
         )
-        .map_err(|err| pipeline_error_to_io_error(err, &diagnostics))?;
+        .map_err(|err| pipeline_error_to_io_error(err, diagnostics))?;
         let prepared = crate::modules::pipeline::prepare_execution_graph(
             &mut t,
             checked,
             &providers,
-            &tel,
+            tel,
             crate::modules::pipeline::CompileMode::Normal,
         )
-        .map_err(|err| pipeline_error_to_io_error(err, &diagnostics))?;
+        .map_err(|err| pipeline_error_to_io_error(err, diagnostics))?;
 
         let Some(main) = prepared.module.fn_by_name("main") else {
             return Ok(());
@@ -736,6 +748,13 @@ fn prepare_repl_frontend(
 
 fn repl_diagnostic_telemetry() -> (crate::telemetry::ConfiguredTelemetry, Rc<RefCell<Vec<u8>>>) {
     let tel = crate::telemetry::ConfiguredTelemetry::new();
+    let diagnostics = attach_repl_diagnostic_renderer(&tel);
+    (tel, diagnostics)
+}
+
+fn attach_repl_diagnostic_renderer(
+    tel: &crate::telemetry::ConfiguredTelemetry,
+) -> Rc<RefCell<Vec<u8>>> {
     let diagnostics = Rc::new(RefCell::new(Vec::new()));
     tel.attach(
         &["fz", "diag"],
@@ -745,7 +764,7 @@ fn repl_diagnostic_telemetry() -> (crate::telemetry::ConfiguredTelemetry, Rc<Ref
             crate::diag::style::ColorMode::Never,
         )),
     );
-    (tel, diagnostics)
+    diagnostics
 }
 
 struct ReplDiagnosticWriter(Rc<RefCell<Vec<u8>>>);

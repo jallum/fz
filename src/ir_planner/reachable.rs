@@ -108,9 +108,7 @@ fn declared_call_return<
     let spec_set = module.declared_specs.get(&callee)?;
     match crate::specs::apply_spec_set::<_, (), _>(t, spec_set, arg_tys, |_t, _query| None) {
         crate::specs::SpecApplicationOutcome::Known(application) => Some(application.result),
-        crate::specs::SpecApplicationOutcome::Underconstrained(application) => {
-            application.partial_result
-        }
+        crate::specs::SpecApplicationOutcome::Underconstrained(_) => None,
         crate::specs::SpecApplicationOutcome::NoMatch => None,
     }
 }

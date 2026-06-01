@@ -891,10 +891,16 @@ impl<'m> Solver<'m> {
         for (key, activation) in facts {
             let fn_name = self.module.fn_by_id(key.fn_id).name.clone();
             let return_ty = render_info(t, &activation.ret);
+            let input_tys = activation
+                .inputs
+                .iter()
+                .map(|input| render_info(t, input))
+                .collect::<Vec<_>>();
             let mut metadata = crate::metadata! {
                 fn_name: fn_name,
                 fn_id: key.fn_id.0 as u64,
                 input_count: key.inputs.len() as u64,
+                input_tys: input_tys,
                 state: info_state(&activation.ret),
                 return_ty: return_ty,
             };

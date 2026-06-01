@@ -56,15 +56,21 @@ During the activation-kernel transplant, `plan_module` reads structured
 `type_infer` activation return facts as production data and projects them into
 planner return facts. This is data flow, not telemetry scraping.
 `ActivationKey` and `SpecKey` are intentionally not the same concept:
-activation facts are matched to planner keys by `FnId` and compatible semantic
-input slots. `ReturnDemand` is a delivery capability, not a semantic return
-payload, so it does not split activation return facts. Compatibility accepts
-overlapping activation/planner input facts, erasing concrete closure identity
-only for this comparison so a concrete captured reducer can satisfy the
-planner's callable-capture slot without making closure identity an ABI fact. For
-polymorphic planner keys, compatibility may instantiate the requested type
-variables from a concrete activation witness through `Types`; that is still only
-a comparison step, not a `SpecKey` rewrite.
+activation facts are matched to planner keys by `FnId` and semantic input-slot
+coverage. `ReturnDemand` is a delivery capability, not a semantic return
+payload, so it does not split activation return facts. A known activation fact
+may serve a planner key only when the activation input domain covers the
+requested input domain. Concrete closure identity may be erased for this
+comparison so a concrete captured reducer can satisfy the planner's
+callable-capture slot without making closure identity an ABI fact.
+
+Unresolved activation facts are retained as overlap guards. A known fact is not
+projected for a requested key when any unresolved activation domain for the same
+`FnId` overlaps that requested domain. This is deliberately key-sensitive:
+unsettled `f(nonempty_list(int))` blocks a broad `f(list(int))` result, but it
+does not poison disjoint facts for the same function. The planner does not
+quarantine an entire `FnId` because one polymorphic call site is still
+unsettled.
 The `fz.planner.planned` event reports this bridge with
 `type_kernel: "activation"` plus activation return fact/key counts,
 entry completion/unresolved/invalid counts, known/unresolved/no-return counts,

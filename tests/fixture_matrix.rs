@@ -25,6 +25,7 @@
 //!     paths: [jit, interp, aot]
 //!     kind: run            # or `test`; defaults to run if `fn main` present
 //!     expect: success      # or `abort` (run-time) / `diagnostic` (compile-time)
+//!     diagnostic.code: spec/violation  # for telemetry-backed diagnostic fixtures
 //!     defer: rationale     # required iff `paths:` is empty
 //!     oracle: oracle.exs   # Elixir twin: its stdout owns expected.txt
 //!     timeout.interp_secs: 15  # path-specific timeout override
@@ -40,8 +41,9 @@
 //! never rewrites `expected.txt` for an oracle fixture.
 //!
 //! `expect: success` (the default) requires exit 0 with matching stdout/diagnostics.
-//! `expect: abort`/`diagnostic` flip the contract: the program must exit nonzero
-//! and its stderr must contain the `expected.stderr` golden as a substring.
+//! `expect: abort` flips the contract: the program must exit nonzero and its
+//! stderr must contain the `expected.stderr` golden as a substring. `expect:
+//! diagnostic` checks the emitted `[fz, diag, error]` telemetry code.
 //!
 //! Workflow: re-run with `BLESS=1 cargo test fixture_matrix` to rewrite
 //! `expected.txt` / `expected.<path>.txt` and `expected.diagnostics` from current output. On
@@ -528,9 +530,8 @@ enum Kind {
 /// goldens. The two failure modes pin *negative* claims — a program that must
 /// be rejected or must abort — which the matrix otherwise cannot express,
 /// because it scores any nonzero exit as a failure before comparing output.
-/// A failure fixture passes when the process exits nonzero **and** its stderr
-/// contains the `expected.stderr` golden as a substring (so per-path prefixes
-/// like `fz interp:` and absolute paths in diagnostics don't make it brittle).
+/// Abort fixtures pin stderr; diagnostic fixtures pin the telemetry diagnostic
+/// code so rendered wording can improve without changing the semantic oracle.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 enum Expect {
     /// Exit 0; stdout + diagnostics compared against goldens. The default.
@@ -551,6 +552,7 @@ struct Header {
     paths: Vec<String>,
     kind: Kind,
     expect: Expect,
+    diagnostic_code: Option<String>,
     defer: Option<String>,
     /// Relative path (within the fixture dir) to an Elixir twin whose stdout
     /// owns `expected.txt`. See `oracle_goldens_match_elixir`.
@@ -591,6 +593,7 @@ fn parse_header_from_dir(dir: &Path) -> Result<Header, String> {
     let mut paths: Option<Vec<String>> = None;
     let mut kind: Option<Kind> = None;
     let mut expect: Option<Expect> = None;
+    let mut diagnostic_code: Option<String> = None;
     let mut defer: Option<String> = None;
     let mut oracle: Option<String> = None;
     let mut dump_budget = DumpBudget::default();
@@ -646,6 +649,7 @@ fn parse_header_from_dir(dir: &Path) -> Result<Header, String> {
                     }
                 });
             }
+            "diagnostic.code" => diagnostic_code = Some(unquote(val).to_string()),
             "defer" => defer = Some(unquote(val).to_string()),
             "oracle" => oracle = Some(unquote(val).to_string()),
             key if key.starts_with("budget.") => {
@@ -682,6 +686,7 @@ fn parse_header_from_dir(dir: &Path) -> Result<Header, String> {
         paths,
         kind,
         expect: expect.unwrap_or_default(),
+        diagnostic_code,
         defer,
         oracle,
         dump_budget,
@@ -1076,8 +1081,8 @@ fn check(fixture: &Path, header: &Header, path: &str, bless: bool) -> CheckOutco
     };
     match header.expect {
         Expect::Success => check_success(fixture, path, bless, &ran, header.oracle.is_some()),
-        Expect::Abort => check_failure(fixture, "abort", path, bless, &ran),
-        Expect::Diagnostic => check_failure(fixture, "diagnostic", path, bless, &ran),
+        Expect::Abort => check_failure(fixture, header, "abort", path, bless, &ran),
+        Expect::Diagnostic => check_failure(fixture, header, "diagnostic", path, bless, &ran),
     }
 }
 
@@ -1156,18 +1161,29 @@ fn check_success(
     ))
 }
 
-/// `expect: abort` / `expect: diagnostic`: the program must exit nonzero, and
-/// its stderr must *contain* the `expected.stderr` golden as a substring. A
+/// `expect: abort`: the program must exit nonzero, and its stderr must
+/// *contain* the `expected.stderr` golden as a substring. A
 /// substring (not an exact match) is the right pin for a negative claim: the
 /// stable fact is "this message appears", while the surrounding text carries
 /// per-path prefixes (`fz interp:`, `repl:`) and absolute source paths that
 /// would make an exact golden brittle across the four paths.
 ///
+/// `expect: diagnostic` uses the same nonzero contract but, when the fixture
+/// declares `diagnostic.code`, asserts the `[fz, diag, error]` telemetry event
+/// instead of pinning rendered stderr.
+///
 /// BLESS seeds a missing `expected.stderr` with the full captured stderr so the
 /// author can trim it to the stable line; it never overwrites a curated golden.
 ///
 /// `kind` is `"abort"` or `"diagnostic"` — the failure mode named in messages.
-fn check_failure(fixture: &Path, kind: &str, path: &str, bless: bool, ran: &Ran) -> CheckOutcome {
+fn check_failure(
+    fixture: &Path,
+    header: &Header,
+    kind: &str,
+    path: &str,
+    bless: bool,
+    ran: &Ran,
+) -> CheckOutcome {
     let diagnostics = ran.diagnostics.as_str();
     if ran.success {
         return CheckOutcome::Fail(format!(
@@ -1176,6 +1192,11 @@ fn check_failure(fixture: &Path, kind: &str, path: &str, bless: bool, ran: &Ran)
             path,
             kind
         ));
+    }
+    if kind == "diagnostic"
+        && let Some(code) = &header.diagnostic_code
+    {
+        return check_diagnostic_telemetry(fixture, header, path, code);
     }
     let path_golden = fixture.join(format!("expected.{}.stderr", path));
     let golden_path = if path_golden.exists() {
@@ -1218,6 +1239,101 @@ fn check_failure(fixture: &Path, kind: &str, path: &str, bless: bool, ran: &Ran)
         needle,
         diagnostics.trim_end()
     ))
+}
+
+fn check_diagnostic_telemetry(
+    fixture: &Path,
+    header: &Header,
+    path: &str,
+    expected_code: &str,
+) -> CheckOutcome {
+    let telemetry_path = temp_telemetry_path(fixture, "diagnostic");
+    let out = match run_path_with_telemetry(fixture, header, path, &telemetry_path) {
+        Ok(out) => out,
+        Err(e) => return CheckOutcome::Fail(e),
+    };
+    let log = fs::read_to_string(&telemetry_path)
+        .unwrap_or_else(|e| panic!("read {}: {}", telemetry_path.display(), e));
+    let _ = fs::remove_file(&telemetry_path);
+    let code_needle = format!("\"code\":\"{}\"", expected_code);
+    let found = log.lines().any(|line| {
+        line.contains("\"name\":[\"fz\",\"diag\",\"error\"]") && line.contains(&code_needle)
+    });
+    if found {
+        let _ = fs::remove_file(fixture.join("actual.telemetry"));
+        let _ = fs::remove_file(fixture.join("actual.stderr"));
+        return CheckOutcome::Pass;
+    }
+    let actual_path = fixture.join("actual.telemetry");
+    let _ = fs::write(&actual_path, &log);
+    CheckOutcome::Fail(format!(
+        "{} via {}: diagnostic telemetry did not contain code `{}`; wrote {}\n--- stderr\n{}",
+        fixture.display(),
+        path,
+        expected_code,
+        actual_path.display(),
+        String::from_utf8_lossy(&out.stderr).trim_end()
+    ))
+}
+
+fn run_path_with_telemetry(
+    fixture: &Path,
+    header: &Header,
+    path: &str,
+    telemetry_path: &Path,
+) -> Result<Output, String> {
+    if path == "aot" {
+        let stem = fixture
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("fz_fixture");
+        let nonce = AOT_TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let out_path = std::env::temp_dir().join(format!(
+            "fz_matrix_diag_{}_{}_{}",
+            stem,
+            std::process::id(),
+            nonce
+        ));
+        let out = fixture_command_output(
+            Command::new(FZ_BIN)
+                .args(["--log-telemetry"])
+                .arg(telemetry_path)
+                .args(["build"])
+                .arg(fixture.join("input.fz"))
+                .args(["-o"])
+                .arg(&out_path),
+            "fz build --log-telemetry",
+            TimeoutStart::OnSpawn,
+            header.timeout_for_path(path),
+        );
+        let _ = fs::remove_file(&out_path);
+        let _ = fs::remove_file(out_path.with_extension("o"));
+        return out;
+    }
+    let input = fixture.join("input.fz");
+    let mut cmd = Command::new(FZ_BIN);
+    cmd.args(["--log-telemetry"]).arg(telemetry_path);
+    match (path, header.kind) {
+        ("jit", Kind::Run) => {
+            cmd.arg("run").arg(input);
+        }
+        ("jit", Kind::Test) => {
+            cmd.arg("test").arg(input);
+        }
+        ("interp", _) => {
+            cmd.arg("interp").arg(input);
+        }
+        ("repl", _) => {
+            cmd.args(["repl", "--script"]).arg(input);
+        }
+        _ => return Err(format!("unknown path `{}`", path)),
+    }
+    fixture_command_output(
+        &mut cmd,
+        "fz --log-telemetry",
+        TimeoutStart::OnExecutionReady,
+        header.timeout_for_path(path),
+    )
 }
 
 /// fz-g58.1 — Elixir oracle. For every fixture that declares `oracle: <file>.exs`,

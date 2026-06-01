@@ -944,6 +944,14 @@ pub fn lower_program_full_with_telemetry<T: crate::types::Types<Ty = crate::type
             module.declared_specs.insert(fid, resolved);
         }
     }
+    install_inherited_protocol_callback_specs(
+        t,
+        &mut module,
+        &ctx.fns,
+        &prog.module_type_envs,
+        &prelude.module_type_envs,
+        &ctx.combined_type_env,
+    );
     let continuation_provenance = ctx.continuation_provenance;
     module.continuation_provenance = continuation_provenance.clone();
     compute_current_function_correspondence(&mut module, &continuation_provenance);
@@ -986,6 +994,89 @@ pub fn lower_program_full_with_telemetry<T: crate::types::Types<Ty = crate::type
     // depends on. See `debug_assert_unique_conts` for the contract.
     debug_assert_unique_conts(&module);
     Ok((module, ctx.atoms))
+}
+
+fn install_inherited_protocol_callback_specs<T: crate::types::Types<Ty = crate::types::Ty>>(
+    t: &mut T,
+    module: &mut Module,
+    fns: &HashMap<(String, usize), FnId>,
+    prog_type_envs: &HashMap<String, crate::type_expr::ModuleTypeEnv>,
+    prelude_type_envs: &HashMap<String, crate::type_expr::ModuleTypeEnv>,
+    combined_type_env: &crate::type_expr::ModuleTypeEnv,
+) {
+    let impls = module
+        .protocol_registry
+        .impls
+        .values()
+        .cloned()
+        .collect::<Vec<_>>();
+    for implementation in impls {
+        let Some(protocol) = module
+            .protocol_registry
+            .protocols
+            .get(&implementation.protocol)
+            .cloned()
+        else {
+            continue;
+        };
+        for callback in protocol.callbacks {
+            if callback.specs.is_empty() {
+                continue;
+            }
+            let key = (callback.name.clone(), callback.arity);
+            let Some(export) = implementation.callbacks.get(&key) else {
+                continue;
+            };
+            let fn_name = format!("{}.{}", export.module, export.name);
+            let Some(&fid) = fns.get(&(fn_name, export.arity)) else {
+                continue;
+            };
+            if module.declared_specs.contains_key(&fid) {
+                continue;
+            }
+            let env = inherited_protocol_spec_env(
+                t,
+                &implementation,
+                prog_type_envs,
+                prelude_type_envs,
+                combined_type_env,
+            );
+            if let Ok(resolved) =
+                crate::type_expr::resolve_spec_decls(t, callback.specs.iter(), &env)
+            {
+                module
+                    .function_correspondence
+                    .insert(fid, crate::specs::spec_set_correspondence_groups(&resolved));
+                module.declared_specs.insert(fid, resolved);
+            }
+        }
+    }
+}
+
+fn inherited_protocol_spec_env<T: crate::types::Types<Ty = crate::types::Ty>>(
+    t: &mut T,
+    implementation: &crate::frontend::protocols::ProtocolImplFact,
+    prog_type_envs: &HashMap<String, crate::type_expr::ModuleTypeEnv>,
+    prelude_type_envs: &HashMap<String, crate::type_expr::ModuleTypeEnv>,
+    combined_type_env: &crate::type_expr::ModuleTypeEnv,
+) -> crate::type_expr::ModuleTypeEnv {
+    let mut env = prog_type_envs
+        .get(&implementation.protocol.dotted())
+        .or_else(|| prelude_type_envs.get(&implementation.protocol.dotted()))
+        .cloned()
+        .unwrap_or_else(|| combined_type_env.clone());
+    let target_ty = crate::frontend::protocols::impl_target_type(t, &implementation.target);
+    let element = t.type_var(crate::frontend::protocols::PROTOCOL_ELEM_VAR);
+    let target_template = crate::frontend::protocols::impl_target_type_with_element(
+        t,
+        &implementation.target,
+        element,
+    );
+    env.insert("t".to_string(), target_ty.clone());
+    env.insert(format!("{}.t", implementation.protocol), target_ty);
+    env.insert_protocol_domain("t".to_string(), target_template.clone());
+    env.insert_protocol_domain(format!("{}.t", implementation.protocol), target_template);
+    env
 }
 
 pub(crate) fn repl_output_frame_names(
@@ -2160,10 +2251,42 @@ end
         );
     }
 
-    /// fz-fyq.2 — `ModulePlan::dead_branches` publishes one entry per
-    /// provably-dead branch under cross-spec consensus. Recursive list
-    /// dispatch can publish dead branches too, because `[]` and `[_ | _]`
-    /// are now disjoint list shapes.
+    #[test]
+    fn generated_dead_binop_diagnostic_is_not_rendered() {
+        use crate::fz_ir::{BinOp, Const, FnBuilder, FnId, ModuleBuilder, Prim, Term};
+
+        let mut f = FnBuilder::new(FnId(0), "generated");
+        let entry = f.block(vec![]);
+        let one = f.let_(entry, Prim::Const(Const::Int(1)));
+        let atom = f.let_(entry, Prim::Const(Const::Atom(0)));
+        let eq = f.let_(entry, Prim::BinOp(BinOp::Eq, one, atom));
+        f.set_terminator(entry, Term::Return(eq));
+        let mut mb = ModuleBuilder::new();
+        mb.add_fn(f.build());
+        let m = mb.build();
+
+        let mut ct = crate::types::ConcreteTypes;
+        let mt = crate::ir_planner::plan_module(&mut ct, &m, &crate::telemetry::NullTelemetry);
+        let diags = crate::ir_planner::collect_diagnostics(
+            &mut ct,
+            &m,
+            &mt,
+            &crate::telemetry::NullTelemetry,
+        );
+
+        assert!(
+            !diags
+                .as_slice()
+                .iter()
+                .any(|d| d.code == crate::diag::codes::TYPE_DEAD_BINOP),
+            "generated comparisons without source spans must not render dead-binop diagnostics",
+        );
+    }
+
+    /// `ModulePlan::dead_branches` publishes only branch facts that are safe
+    /// for shared-body mutation. Narrow recursive list-dispatch facts stay on
+    /// the individual `SpecPlan`, because folding the canonical body with them
+    /// would make the body invalid for wider keys.
     #[test]
     fn dead_branches_published_for_destructure_and_recursive_list_dispatch() {
         use crate::fz_ir::DeadBranch;
@@ -2191,9 +2314,15 @@ end
         let mt2 = crate::ir_planner::plan_module(&mut ct, &m2, &crate::telemetry::NullTelemetry);
         let sum_fid = m2.fn_by_name("sum").expect("sum exists").id;
         assert!(
-            mt2.dead_branches.keys().any(|(fid, _bid)| *fid == sum_fid),
-            "sum/1 should publish dead clause-dispatch branches with explicit list shapes; got {:?}",
-            mt2.dead_branches,
+            mt2.specs
+                .iter()
+                .any(|(key, spec)| key.fn_id == sum_fid && !spec.dead_branches.is_empty()),
+            "sum/1 should keep per-spec dead clause-dispatch facts with explicit list shapes; got {:?}",
+            mt2.specs
+                .iter()
+                .filter(|(key, _)| key.fn_id == sum_fid)
+                .map(|(key, spec)| (key, &spec.dead_branches))
+                .collect::<Vec<_>>(),
         );
     }
 

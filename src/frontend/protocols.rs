@@ -104,7 +104,8 @@ pub struct ProtocolCallbackFact {
     pub name: String,
     pub arity: usize,
     #[serde(default)]
-    // Dispatch/type checking consumes callback specs in the next protocol tickets.
+    // Callback spec compatibility consumes the ordered overload set during
+    // protocol implementation validation.
     pub specs: Vec<crate::ast::SpecDecl>,
     #[allow(dead_code)] // Kept for callback-specific diagnostics as validation grows.
     pub span: Span,

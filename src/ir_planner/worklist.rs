@@ -3,11 +3,11 @@ use super::diagnostics::{compute_dead_branches, module_plan_stats};
 use super::effects::{prim_effect_summary, term_local_effect_summary};
 use super::fn_types::{
     CallsiteCallableCapabilities, CapabilityPlan, EffectSummary, EmitsByCaller, EmitterSiteSet,
-    FixedPointSlotSummaries, FnEffects, HoldersMap, ModulePlan, PLAN_MODULE_CALLS, ProducesMap,
-    ReturnDemand, ReturnDepsByCaller, ReturnReaders, SpecKey, SpecKeySet, SpecPlan, TYPE_FN_CALLS,
-    VISIT_HARD_BOUND, WALK_CALLS, WORKLIST_POPS, build_any_key_index,
-    fixed_point_spec_key_for_arity, key_precedence_order, normalize_result_correspondence_key,
-    spec_key_for_fn_id, spec_key_input_tys,
+    FixedPointInputObservation, FixedPointSlotSummaries, FnEffects, HoldersMap, ModulePlan,
+    PLAN_MODULE_CALLS, ProducesMap, ReturnDemand, ReturnDepsByCaller, ReturnReaders, SpecKey,
+    SpecKeySet, SpecPlan, TYPE_FN_CALLS, VISIT_HARD_BOUND, WALK_CALLS, WORKLIST_POPS,
+    build_any_key_index, fixed_point_spec_key_for_arity, key_precedence_order,
+    normalize_result_correspondence_key, spec_key_for_fn_id, spec_key_input_tys,
 };
 use super::reachable::{cont_key_from_slot0, env_at_terminator};
 use super::type_fn::type_fn;
@@ -30,12 +30,13 @@ pub(crate) struct CallResultKnowledge {
 
 #[derive(Clone, Debug)]
 struct DeclaredReturnFact {
-    ty: crate::types::Ty,
+    ty: Option<crate::types::Ty>,
     reads: Vec<SpecKey>,
 }
 
 pub(crate) struct ActivationReturnFacts {
     returns: HashMap<SpecKey, TypeInferReturnState>,
+    unsettled: HashMap<FnId, Vec<SpecKey>>,
     raw_fact_count: usize,
     complete_entry_count: usize,
     unresolved_entry_count: usize,
@@ -48,6 +49,7 @@ impl Default for ActivationReturnFacts {
     fn default() -> Self {
         Self {
             returns: HashMap::new(),
+            unsettled: HashMap::new(),
             raw_fact_count: 0,
             complete_entry_count: 0,
             unresolved_entry_count: 0,
@@ -103,7 +105,14 @@ impl ActivationReturnFacts {
             for activation in outcome.activations {
                 facts.raw_fact_count += 1;
                 let key = spec_key_for_fn_id(module, activation.fn_id, activation.input_tys);
-                facts.insert(t, key, activation.return_state);
+                match activation.return_state {
+                    TypeInferReturnState::Pending | TypeInferReturnState::Unknown => {
+                        facts.insert_unsettled(key);
+                    }
+                    TypeInferReturnState::Known(_) | TypeInferReturnState::NoReturn => {
+                        facts.insert(t, key, activation.return_state);
+                    }
+                }
             }
         }
         facts
@@ -121,6 +130,13 @@ impl ActivationReturnFacts {
                 *existing = merge_activation_return_state(t, existing, &state);
             })
             .or_insert(state);
+    }
+
+    fn insert_unsettled(&mut self, key: SpecKey) {
+        let keys = self.unsettled.entry(key.fn_id).or_default();
+        if !keys.contains(&key) {
+            keys.push(key);
+        }
     }
 
     fn return_for_call_result<
@@ -166,12 +182,15 @@ impl ActivationReturnFacts {
         t: &mut T,
         key: &SpecKey,
     ) -> Option<TypeInferReturnState> {
+        if self.request_overlaps_unsettled(t, key) {
+            return None;
+        }
         if let Some(exact) = self.returns.get(key) {
             return Some(exact.clone());
         }
         let mut joined = None;
         for (candidate, state) in &self.returns {
-            if activation_key_is_instance_of(t, candidate, key) {
+            if activation_key_covers_requested(t, candidate, key) {
                 joined = Some(match joined {
                     Some(prev) => merge_activation_return_state(t, &prev, state),
                     None => state.clone(),
@@ -179,6 +198,19 @@ impl ActivationReturnFacts {
             }
         }
         joined
+    }
+
+    fn request_overlaps_unsettled<
+        T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
+    >(
+        &self,
+        t: &mut T,
+        requested: &SpecKey,
+    ) -> bool {
+        self.unsettled.get(&requested.fn_id).is_some_and(|keys| {
+            keys.iter()
+                .any(|key| activation_keys_overlap(t, key, requested))
+        })
     }
 
     fn project_effective_returns<
@@ -225,6 +257,7 @@ impl ActivationReturnFacts {
                 TypeInferReturnState::NoReturn => stats.no_return_count += 1,
             }
         }
+        stats.unresolved_count += self.unsettled.values().map(Vec::len).sum::<usize>();
         for key in reachable {
             if self.return_state_for_key(t, key).is_none() {
                 stats.projection_gap_count += 1;
@@ -234,7 +267,44 @@ impl ActivationReturnFacts {
     }
 }
 
-fn activation_key_is_instance_of<
+fn activation_keys_overlap<
+    T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
+>(
+    t: &mut T,
+    left: &SpecKey,
+    right: &SpecKey,
+) -> bool {
+    if left.fn_id != right.fn_id {
+        return false;
+    }
+    if left.input.len() != right.input.len() {
+        return false;
+    }
+    left.input
+        .iter()
+        .zip(&right.input)
+        .all(|(left, right)| match (left, right) {
+            (Some(left), Some(right)) => activation_tys_overlap(t, left, right),
+            (None, _) | (_, None) => true,
+        })
+}
+
+fn activation_tys_overlap<
+    T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
+>(
+    t: &mut T,
+    left: &crate::types::Ty,
+    right: &crate::types::Ty,
+) -> bool {
+    if !t.is_disjoint(left, right) {
+        return true;
+    }
+    let left = t.erase_closure_identity(left);
+    let right = t.erase_closure_identity(right);
+    !t.is_disjoint(&left, &right)
+}
+
+fn activation_key_covers_requested<
     T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
 >(
     t: &mut T,
@@ -254,46 +324,31 @@ fn activation_key_is_instance_of<
         .all(|(candidate, requested)| match (candidate, requested) {
             (_, None) => true,
             (Some(candidate), Some(requested)) => {
-                activation_ty_is_instance_of(t, candidate, requested)
+                activation_ty_covers_requested(t, candidate, requested)
             }
             (None, Some(_)) => false,
         })
 }
 
-fn activation_ty_is_instance_of<
+fn activation_ty_covers_requested<
     T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
 >(
     t: &mut T,
     candidate: &crate::types::Ty,
     requested: &crate::types::Ty,
 ) -> bool {
-    // Activation facts may be either wider after recursive convergence
-    // (`bool` for a `true` call) or more concrete because they preserve closure
-    // identity. Any overlapping activation fact is a safe return contributor;
-    // erasing closure identity is only a comparison step, not an ABI fact.
-    if activation_tys_overlap(t, candidate, requested) {
+    // Activation facts are upper-bound return facts only for the activation
+    // keys they cover. A concrete fact for `list(int)` cannot justify a
+    // `list(any)` planner key. Recursive convergence may produce a wider fact
+    // (`bool` for a `true` request), and closure-literal identity may be more
+    // concrete than the planner key; erasing that identity is only a comparison
+    // step, not an ABI fact.
+    if t.is_subtype(requested, candidate) {
         return true;
     }
     let candidate = t.erase_closure_identity(candidate);
     let requested = t.erase_closure_identity(requested);
-    activation_tys_overlap(t, &candidate, &requested)
-}
-
-fn activation_tys_overlap<T: crate::types::Types<Ty = crate::types::Ty>>(
-    t: &mut T,
-    candidate: &crate::types::Ty,
-    requested: &crate::types::Ty,
-) -> bool {
-    if !t.is_disjoint(candidate, requested) {
-        return true;
-    }
-    if !t.has_vars(requested) {
-        return false;
-    }
-    let mut sigma = crate::types::Sigma::new();
-    t.collect_instantiation_subst(requested, candidate, &mut sigma);
-    let instantiated = t.instantiate(requested, &sigma);
-    !t.is_disjoint(candidate, &instantiated)
+    t.is_subtype(&requested, &candidate)
 }
 
 fn merge_activation_return_state<T: crate::types::Types<Ty = crate::types::Ty>>(
@@ -372,32 +427,35 @@ pub(crate) fn direct_call_result_knowledge<
         complete_returns,
         &module.fn_by_id(caller).owner_module,
     );
-    let declared = declared_fact.as_ref().map(|fact| fact.ty.clone());
-    if let Some(ret) = activation_returns.return_for_call_result(t, &target) {
-        return CallResultKnowledge {
-            slot0: ResultSlot0::Known(ret),
-            return_reads: vec![target],
-        };
-    }
-    let effective = effective_returns.get(&target).cloned();
+    let declared = declared_fact.as_ref().and_then(|fact| fact.ty.clone());
+    let activation = activation_returns.return_for_call_result(t, &target);
+    let effective = activation
+        .clone()
+        .or_else(|| effective_returns.get(&target).cloned());
+    let effective_is_incomplete =
+        activation.is_none() && complete_returns.is_some_and(|done| !done.contains(&target));
     let none_ty = t.none();
-    let effective_is_pending_bottom = effective_returns.get(&target).is_none()
-        || complete_returns.is_some_and(|done| {
-            !done.contains(&target)
-                && effective
-                    .as_ref()
-                    .is_some_and(|ty| t.is_equivalent(ty, &none_ty))
-        });
+    let effective_is_pending_bottom = activation.is_none()
+        && (effective_returns.get(&target).is_none()
+            || complete_returns.is_some_and(|done| {
+                !done.contains(&target)
+                    && effective
+                        .as_ref()
+                        .is_some_and(|ty| t.is_equivalent(ty, &none_ty))
+            }));
     let effective_is_bottom = effective
         .as_ref()
         .is_some_and(|ty| t.is_equivalent(ty, &none_ty));
     let slot0 = match (declared, effective) {
+        (Some(declared), _) if effective_is_incomplete => ResultSlot0::Known(declared),
+        (None, _) if effective_is_incomplete => ResultSlot0::Pending,
         (Some(declared), _) if effective_is_pending_bottom => ResultSlot0::Known(declared),
         (Some(declared), _) if effective_is_bottom => ResultSlot0::Known(declared),
         (Some(declared), Some(effective)) if t.is_subtype(&effective, &declared) => {
             ResultSlot0::Known(effective)
         }
         (Some(declared), _) => ResultSlot0::Known(declared),
+        (None, _) if declared_fact.is_some() && effective_is_bottom => ResultSlot0::Pending,
         (None, _) if effective_is_pending_bottom => ResultSlot0::Pending,
         (None, Some(effective)) => ResultSlot0::Known(effective),
         (None, None) => ResultSlot0::Pending,
@@ -447,32 +505,35 @@ pub(crate) fn known_closure_result_knowledge<
         complete_returns,
         &module.fn_by_id(caller).owner_module,
     );
-    let declared = declared_fact.as_ref().map(|fact| fact.ty.clone());
-    if let Some(ret) = activation_returns.return_for_call_result(t, &key) {
-        return CallResultKnowledge {
-            slot0: ResultSlot0::Known(ret),
-            return_reads: vec![key],
-        };
-    }
-    let effective = effective_returns.get(&key).cloned();
+    let declared = declared_fact.as_ref().and_then(|fact| fact.ty.clone());
+    let activation = activation_returns.return_for_call_result(t, &key);
+    let effective = activation
+        .clone()
+        .or_else(|| effective_returns.get(&key).cloned());
+    let effective_is_incomplete =
+        activation.is_none() && complete_returns.is_some_and(|done| !done.contains(&key));
     let none_ty = t.none();
-    let effective_is_pending_bottom = effective_returns.get(&key).is_none()
-        || complete_returns.is_some_and(|done| {
-            !done.contains(&key)
-                && effective
-                    .as_ref()
-                    .is_some_and(|ty| t.is_equivalent(ty, &none_ty))
-        });
+    let effective_is_pending_bottom = activation.is_none()
+        && (effective_returns.get(&key).is_none()
+            || complete_returns.is_some_and(|done| {
+                !done.contains(&key)
+                    && effective
+                        .as_ref()
+                        .is_some_and(|ty| t.is_equivalent(ty, &none_ty))
+            }));
     let effective_is_bottom = effective
         .as_ref()
         .is_some_and(|ty| t.is_equivalent(ty, &none_ty));
     let slot0 = match (declared, effective) {
+        (Some(declared), _) if effective_is_incomplete => ResultSlot0::Known(declared),
+        (None, _) if effective_is_incomplete => ResultSlot0::Pending,
         (Some(declared), _) if effective_is_pending_bottom => ResultSlot0::Known(declared),
         (Some(declared), _) if effective_is_bottom => ResultSlot0::Known(declared),
         (Some(declared), Some(effective)) if t.is_subtype(&effective, &declared) => {
             ResultSlot0::Known(effective)
         }
         (Some(declared), _) => ResultSlot0::Known(declared),
+        (None, _) if declared_fact.is_some() && effective_is_bottom => ResultSlot0::Pending,
         (None, _) if effective_is_pending_bottom => ResultSlot0::Pending,
         (None, Some(effective)) => ResultSlot0::Known(effective),
         (None, None) => ResultSlot0::Pending,
@@ -571,10 +632,9 @@ pub(crate) fn closure_value_result_knowledge<
 ///       which is monotone w.r.t. lattice inclusion. So
 ///       the compatibility return map is monotonically non-decreasing in
 ///       the product type lattice.
-///       A pending producer return is therefore seeded as bottom and deferred
-///       at continuation slot 0. Seeding a pending return with `any` would
-///       start that edge at the top of the lattice and later refine downward,
-///       violating the monotone-from-bottom invariant.
+///       A pending producer return keeps its continuation edge alive with an
+///       opaque slot, but the committed compatibility return still moves only
+///       upward because each recompute is joined with the previous map entry.
 ///
 ///   (b) The type lattice has finite height H, bounded by the
 ///       count of distinct type-axis values in the program
@@ -1081,6 +1141,7 @@ fn process_worklist<T: crate::types::Types<Ty = crate::types::Ty> + crate::types
             call_edges,
             return_reads,
             closure_handles: discovered_handles,
+            fixed_point_inputs,
         } = result;
         apply_emit_diff(
             &spec_key,
@@ -1117,8 +1178,7 @@ fn process_worklist<T: crate::types::Types<Ty = crate::types::Ty> + crate::types
             tel,
             recursive_fns,
             slot_summaries,
-            complete_returns,
-            &spec_key,
+            fixed_point_inputs,
             work,
             in_work,
             specs,
@@ -1132,78 +1192,102 @@ fn update_fixed_point_slot_summaries<T: crate::types::Types<Ty = crate::types::T
     tel: PlannerTelemetry<'_>,
     recursive_fns: &std::collections::HashSet<FnId>,
     slot_summaries: &mut FixedPointSlotSummaries,
-    complete_returns: &SpecKeySet,
-    spec_key: &SpecKey,
+    observations: Vec<FixedPointInputObservation>,
     work: &mut std::collections::VecDeque<SpecKey>,
     in_work: &mut SpecKeySet,
     specs: &HashMap<SpecKey, SpecPlan>,
 ) -> bool {
-    if !complete_returns.contains(spec_key) {
-        return false;
-    }
-    if !recursive_fns.contains(&spec_key.fn_id) {
-        return false;
-    }
-    let f = m.fn_by_id(spec_key.fn_id);
-    if f.category == crate::fz_ir::FnCategory::Matcher {
-        return false;
-    }
-
-    let result_linked = super::fn_types::result_linked_param_slots(m, spec_key.fn_id);
-    if result_linked.is_empty() {
-        return false;
-    }
-
     let mut changed = false;
-    for idx in result_linked {
-        let Some(Some(ty)) = spec_key.input.get(idx) else {
-            continue;
-        };
-        if t.has_vars(ty) {
-            continue;
-        }
-        let widened = t.widen_for_recursive_spec_key(ty);
-        match slot_summaries.get(&(spec_key.fn_id, idx)).cloned() {
-            Some(prev) => {
-                let merged = t.structurally_widen(&prev, &widened);
-                if !t.is_equivalent(&merged, &prev) {
-                    emit_fixed_point_slot_summary_update(
-                        tel,
-                        spec_key,
-                        m.fn_by_id(spec_key.fn_id),
-                        idx,
-                        Some(format!("{:?}", prev)),
-                        format!("{:?}", widened),
-                        format!("{:?}", merged),
-                        work.len(),
-                        specs.len(),
-                    );
-                    slot_summaries.insert((spec_key.fn_id, idx), merged);
-                    changed = true;
-                }
-            }
-            None => {
-                emit_fixed_point_slot_summary_update(
-                    tel,
-                    spec_key,
-                    m.fn_by_id(spec_key.fn_id),
-                    idx,
-                    None,
-                    format!("{:?}", widened),
-                    format!("{:?}", widened),
-                    work.len(),
-                    specs.len(),
-                );
-                slot_summaries.insert((spec_key.fn_id, idx), widened);
-                changed = true;
-            }
-        }
+    for observation in observations {
+        changed |= update_fixed_point_slot_summary_from_observation(
+            t,
+            m,
+            tel,
+            recursive_fns,
+            slot_summaries,
+            observation,
+            work.len(),
+            specs.len(),
+        );
     }
 
     if changed {
         for key in specs.keys() {
             if in_work.insert(key.clone()) {
                 work.push_back(key.clone());
+            }
+        }
+    }
+    changed
+}
+
+fn update_fixed_point_slot_summary_from_observation<
+    T: crate::types::Types<Ty = crate::types::Ty>,
+>(
+    t: &mut T,
+    m: &Module,
+    tel: PlannerTelemetry<'_>,
+    recursive_fns: &std::collections::HashSet<FnId>,
+    slot_summaries: &mut FixedPointSlotSummaries,
+    observation: FixedPointInputObservation,
+    queue_len: usize,
+    spec_count: usize,
+) -> bool {
+    if !recursive_fns.contains(&observation.fn_id) {
+        return false;
+    }
+    let f = m.fn_by_id(observation.fn_id);
+    if f.category == crate::fz_ir::FnCategory::Matcher {
+        return false;
+    }
+    let result_linked = super::fn_types::result_linked_param_slots(m, observation.fn_id);
+    if result_linked.is_empty() {
+        return false;
+    }
+
+    let observed_key = spec_key_for_fn_id(m, observation.fn_id, observation.input_tys.clone());
+    let mut changed = false;
+    for idx in result_linked {
+        let Some(ty) = observation.input_tys.get(idx) else {
+            continue;
+        };
+        if t.has_vars(ty) {
+            continue;
+        }
+        let widened = t.widen_for_recursive_spec_key(ty);
+        match slot_summaries.get(&(observation.fn_id, idx)).cloned() {
+            Some(prev) => {
+                let merged = t.structurally_widen(&prev, &widened);
+                if !t.is_equivalent(&merged, &prev) {
+                    emit_fixed_point_slot_summary_update(
+                        tel,
+                        &observed_key,
+                        f,
+                        idx,
+                        Some(format!("{:?}", prev)),
+                        format!("{:?}", widened),
+                        format!("{:?}", merged),
+                        queue_len,
+                        spec_count,
+                    );
+                    slot_summaries.insert((observation.fn_id, idx), merged);
+                    changed = true;
+                }
+            }
+            None => {
+                emit_fixed_point_slot_summary_update(
+                    tel,
+                    &observed_key,
+                    f,
+                    idx,
+                    None,
+                    format!("{:?}", widened),
+                    format!("{:?}", widened),
+                    queue_len,
+                    spec_count,
+                );
+                slot_summaries.insert((observation.fn_id, idx), widened);
+                changed = true;
             }
         }
     }
@@ -1414,7 +1498,7 @@ fn update_effective_return_and_enqueue_readers<
     let prev_complete = complete_returns.contains(spec_key);
     let walk_read_count = walk_return_reads.len();
     let mut compute_reads = Vec::new();
-    let (new_ret, complete) = compute_return_for_spec(
+    let (computed_ret, complete) = compute_return_for_spec(
         t,
         m,
         spec_key,
@@ -1426,6 +1510,10 @@ fn update_effective_return_and_enqueue_readers<
         &mut compute_reads,
         activation_returns,
     );
+    let new_ret = match prev_ret.clone() {
+        Some(prev) => t.union(prev, computed_ret),
+        None => computed_ret,
+    };
     let compute_read_count = compute_reads.len();
     sync_return_dependencies(
         spec_key,
@@ -2068,7 +2156,7 @@ fn lookup_return_read<
         .get(&key)
         .cloned()
         .unwrap_or_else(|| t.none());
-    let complete = effective_returns.contains_key(&key) || complete_returns.contains(&key);
+    let complete = complete_returns.contains(&key);
     reads.push(key);
     ReturnContribution { ty: dy, complete }
 }
@@ -2246,7 +2334,7 @@ fn declared_call_return<
         None,
         owner_module,
     )
-    .map(|fact| fact.ty)
+    .and_then(|fact| fact.ty)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2284,19 +2372,18 @@ fn declared_call_return_fact<
     );
     let mut fact = match application {
         crate::specs::SpecApplicationOutcome::Known(application) => DeclaredReturnFact {
-            ty: application.result,
+            ty: (!t.has_vars(&application.result)).then_some(application.result),
             reads: application.reads,
         },
-        crate::specs::SpecApplicationOutcome::Underconstrained(application) => {
-            let ty = application.partial_result?;
-            DeclaredReturnFact {
-                ty,
-                reads: application.reads,
-            }
-        }
+        crate::specs::SpecApplicationOutcome::Underconstrained(application) => DeclaredReturnFact {
+            ty: None,
+            reads: application.reads,
+        },
         crate::specs::SpecApplicationOutcome::NoMatch => return None,
     };
-    fact.ty = t.mint_owned_resource_aliases(fact.ty, owner_module, &module.opaque_inners);
+    if let Some(ty) = fact.ty.take() {
+        fact.ty = Some(t.mint_owned_resource_aliases(ty, owner_module, &module.opaque_inners));
+    }
     Some(fact)
 }
 

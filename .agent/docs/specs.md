@@ -1,13 +1,17 @@
 # Specs
 
-`@spec` declarations are function contracts. A single declaration is one arrow:
+`@spec` declarations are function contracts. The spec subsystem owns the
+resolved contract model and the operations that interpret it: scheme matching,
+overload selection, declared-call application, structural correspondence, and
+declared-vs-inferred coverage.
 
-```fz
-@spec f(integer) :: integer
-```
+`type_expr` resolves source syntax into this model. `types` supplies the
+set-theoretic algebra and structural queries. Consumers call `crate::specs`;
+they do not implement their own spec semantics.
 
-Some functions need an overload set: several arrows for the same name and arity,
-where each arrow preserves its own input-to-output correlation.
+## Overload Sets
+
+A function can have several spec arrows for the same name and arity:
 
 ```fz
 @spec with_index(Enumerable.t(a), integer) :: [{a, integer}]
@@ -15,217 +19,176 @@ where each arrow preserves its own input-to-output correlation.
 fn with_index(enumerable, fun_or_offset)
 ```
 
-Do not collapse that into parameter and result unions. This shape:
+Those arrows form one ordered `ResolvedSpecSet`:
+
+```rust
+pub(crate) struct ResolvedSpecSet {
+    pub arrows: Vec<ResolvedSpec>,
+}
+```
+
+Each arrow preserves its own parameter-to-result correlation. The equivalent
+union-shaped declaration answers a different question:
 
 ```fz
 @spec with_index(Enumerable.t(a), integer | ((a, integer) -> b)) ::
   [{a, integer}] | [b]
 ```
 
-answers a different question: it permits the integer input arrow to return
-`[b]`, and permits the function input arrow to return `[{a, integer}]`. The
-whole point of overload specs is preserving the relationship between one
-accepted input shape and its result shape.
+That shape permits the integer input arrow to return `[b]`, and permits the
+function input arrow to return `[{a, integer}]`. Spec application selects
+compatible arrows first and unions only their successful results.
 
-## Current Ownership
+## Resolved Model
 
-`src/type_expr/` parses type syntax and resolves `@spec` source bodies against a
-`ModuleTypeEnv`. It constructs the resolved spec model, but it does not own that
-model. The resolved data lives under `src/specs/model.rs` and is imported as
-`crate::specs::{ResolvedSpec, ResolvedSpecSet, ...}` by IR, frontend, planner,
-and tests.
+`src/specs/model.rs` owns the resolved shapes:
 
-The spec engine follows the same shape as `type_infer`: small crate-facing API,
-private internals by default, production callers receiving finished structured
-facts, and tests observing production APIs plus telemetry when useful
-diagnostics/warnings/errors are emitted. Do not add compatibility re-exports
-from `type_expr`; stale imports through `type_expr::Resolved*` are zombies.
+- `ResolvedSpecSet` is the ordered overload set.
+- `ResolvedSpec` stores concrete `params`, concrete `result`, structural
+  `param_shapes`, structural `result_shape`, and type-variable `constraints`.
+- `ResolvedTypeShape` is the non-lossy structural form used to recover where
+  declared type variables occur across params, results, nested containers,
+  structs, and callback arrows.
+- `StructuralCorrespondenceGroup` records repeated type-variable occurrences
+  as paths through the structural shapes.
 
-Current extraction state:
+The concrete `Ty` fields are the facts used for subtype and disjointness
+decisions. The structural shapes are the facts used for declared
+parametricity. A contract such as:
 
-- `src/specs/model.rs` owns the resolved data shapes and structural
-  correspondence metadata.
-- Scheme matching lives in `src/specs/match.rs`. It owns
-  `SchemeInstantiation`, `SchemeMatch`, structural witness collection, and
-  closure-arrow return resolution. `src/types/` only exposes the type algebra
-  and shape introspection primitives that matching consumes.
-- Overload selection, result unioning after arrow selection, and structural
-  correspondence queries live in `src/specs/select.rs`. The resolved model
-  stays data-only.
-- Spec application lives in `src/specs/apply.rs`. It applies an overload set to
-  argument facts, performs successful-overlap matching for broad inputs, returns
-  the successful return union only after arrow selection, and reports
-  underconstrained partial results instead of collapsing them to `none`.
-- Declared-vs-inferred coverage checking lives in `src/specs/validate.rs`.
-  The frontend spec check resolves source declarations, locates inferred
-  planner facts, and renders diagnostics; it does not own the semantic
-  coverage rule.
-- Higher-order callback witness refinement is part of spec application.
-  Planner callers invoke `crate::specs::apply_spec_set` and convert
-  callback-return queries into planner `SpecKey` reads at their own boundary.
+```fz
+@spec reduce(Enumerable.t(a), b, (a, b) -> b) :: b
+```
 
-Multiple adjacent `@spec` declarations parse and lower into a
-`ResolvedSpecSet`, and each downstream consumer must preserve the arrow set.
-Any consumer that asks for "the one declared spec" is wrong for overloads
-because it either drops valid arrows or tempts callers into parameter and result
-unions that lose correlation.
+keeps every occurrence of `a` and `b` visible even when a concrete execution
+type no longer exposes that relationship directly.
 
-Known remaining single-spec-sensitive sites:
+Lowering persists declared specs in `Module.declared_specs:
+HashMap<FnId, ResolvedSpecSet>`. It persists structural correspondence in
+`Module.function_correspondence`, keyed by the same `FnId`, so planner and CPS
+rewrites consume the spec-layer fact instead of rediscovering it.
 
-- `src/parser/items.rs`: accepts adjacent matching specs and attaches them in
-  order to the following function.
-- `src/frontend/spec_check.rs`: validates every inferred narrow spec against
-  the declared arrow set.
-- `src/modules/interface.rs`: `InterfaceFn.spec` and protocol callback
-  interface specs hold one `InterfaceSpec`.
-- `src/frontend/protocols.rs` and `src/frontend/resolve.rs`: protocol callback
-  facts and impl callback-spec compatibility use one spec per `(name, arity)`.
-- `src/ir_lower/mod.rs`: `Module.declared_specs` stores resolved spec sets.
-- `src/fz_ir/mod.rs`: `Module.declared_specs` is
-  `HashMap<FnId, crate::specs::ResolvedSpecSet>`.
-- `src/ir_planner/walk.rs`, `src/ir_planner/worklist.rs`, and
-  `src/ir_codegen/driver.rs`: declared-call typing must select compatible
-  arrows before reading params or results.
-- `src/exec/eval.rs`: REPL/help spec rendering formats one spec line.
+## Engine Pieces
 
-## Higher-Order Witnesses
+`src/specs/mod.rs` is the crate-facing API. The modules behind it are private
+implementation detail unless a production caller needs a named result type.
 
-Declared spec instantiation is evidence-driven. For a first-order argument, the
-argument type itself is the witness. For a higher-order argument, a closure
-literal has two facts:
+- `model.rs` defines resolved spec data and structural correspondence paths.
+- `match.rs` instantiates a scheme from witness types and returns
+  `Known`, `Underconstrained`, or `Invalid`.
+- `apply.rs` applies a `ResolvedSpecSet` to a call's argument facts and returns
+  `SpecApplicationOutcome`.
+- `select.rs` computes structural correspondence groups and, when exactly one
+  arrow matches, the instantiated parameter demand.
+- `validate.rs` checks whether a declared overload set covers one inferred
+  narrow behavior.
 
-- it is a closure value with target/capture identity;
-- when called at a particular argument key, the planner may know an effective
-  return for that target.
+`type_expr::resolve_spec_decls` is the construction seam from source syntax to
+`ResolvedSpecSet`. After construction, spec consumers use `crate::specs`
+operations.
 
-Those are not the same fact. `src/specs/apply.rs` keeps them separate: it first
-instantiates the declared arrow from ordinary argument witnesses, then asks the
-caller for callback-return facts only when a closure-literal argument can
-witness a type variable through the callback result. The planner adapter turns
-that query into a `SpecKey` read. If the return key is not known yet, the
-application remains underconstrained and carries both the partial result and
-the pending read; the worklist revisits the caller when the closure return
-changes.
+## Scheme Matching
 
-This is what makes specs such as:
+Scheme matching is evidence-driven. `instantiate_match` receives declared
+parameter patterns, a declared result pattern, constraints, and callsite
+witness types. It collects a type-variable substitution structurally, applies
+constraints, then instantiates params and result.
+
+The matcher distinguishes three outcomes:
+
+```text
+Known(T)             all result variables are determined by witnesses
+Underconstrained(T)  some variables remain after substitution
+Invalid              arity, shape, constraint, or subtype checks failed
+```
+
+Witness collection uses the positive evidence in tuples, lists, resources,
+maps, callable arrows, and direct variable occurrences. A positional hole in
+validation is unknown evidence, not an `any` witness. `any` is a value in the
+type lattice; the matcher does not invent it to cover missing proof.
+
+## Spec Application
+
+`apply_spec_set` is the declared-call typing seam. It takes a
+`ResolvedSpecSet`, argument facts, and a callback-return resolver supplied by
+the caller. It returns:
+
+```text
+Known(application)            selected arrows produced executable result facts
+Underconstrained(application) selected arrows exist, but proof is incomplete
+NoMatch                       arguments are proved incompatible with every arrow
+```
+
+For broad inputs, application uses successful overlap witnesses. For example,
+`any + integer` does not become `any`, and it does not become `none` unless no
+successful arrow exists. It selects the arrows with non-empty overlap and
+unions their successful returns. A proved contradiction returns `NoMatch`; an
+unresolved proof returns `Underconstrained`.
+
+Call-input demand is stricter than return selection. `unique_matching_params`
+returns instantiated parameter demand only when exactly one arrow matches.
+When several arrows match, the caller keeps the concrete call arguments as the
+demand so unrelated overload params do not collapse into a parameter union.
+
+## Higher-Order Evidence
+
+A closure argument has two separate facts:
+
+```text
+closure value      target plus captures
+callback return    effective return for that target at a demanded argument key
+```
+
+`apply_spec_set` keeps those facts separate. It instantiates each candidate
+arrow from ordinary argument witnesses first. If a higher-order parameter's
+declared callback result contains a type variable, it asks the caller for a
+`CallbackReturnFact` through `CallbackReturnQuery`.
+
+Planner callers translate that query into a `SpecKey` read. A known callback
+return refines the witness for the higher-order argument. A pending callback
+return records the read and marks the application incomplete, allowing the
+worklist to revisit the caller when the callback return settles.
+
+This is the load-bearing path for contracts such as:
 
 ```fz
 @spec reduce_while(Enumerable.t(a), b, (a, b) -> {:cont, b} | {:halt, b}) :: b
 ```
 
-data-flow correctly. The initial accumulator is one witness for `b`; the
-reducer's `{:cont, b}` / `{:halt, b}` exits are another witness. The declared
-result must join both instead of freezing `b` to the initial accumulator shape.
+The initial accumulator witnesses `b`, and the reducer's successful
+`{:cont, b}` / `{:halt, b}` returns also witness `b`. The result is the union
+of successful accumulator shapes, not the initial accumulator frozen at the
+first callsite.
 
-The declared scheme also names which callback positions participate in that
-fixed point. `src/specs/select.rs` derives the type variables whose occurrences
-cross from outer params/results into callback arg/result positions from the
-resolved model. For `reduce/3`, the loop-carried group is `b`:
+## Consumers
 
-```text
-Param(1)          outer accumulator
-Result            outer result
-CallbackArg(2, 1) reducer accumulator arg
-CallbackResult(2) reducer result
-```
+The frontend spec checker resolves source specs, finds inferred planner facts,
+and renders diagnostics. The semantic coverage rule lives in
+`declared_specs_cover_inferred_spec`.
 
-That correspondence is the planner-facing fact used to stabilize higher-order
-callback keying; it is not a post-hoc widening heuristic.
+The planner and codegen use `apply_spec_set` for declared-call return facts.
+Planner callback queries become `SpecKey` reads at the planner boundary.
+Codegen uses the same application result to choose ABI-facing return shapes.
 
-`ResolvedSpec` now also retains the resolved structural shape of each param and
-the result alongside the concrete `Ty`. This is the non-lossy source of truth
-for declared parametricity: contracts such as `@spec drop(Enumerable.t(a),
-integer) :: [a]` keep the shared `a` in their structural form even when the
-concrete `Ty` used for execution/planning no longer exposes that relation
-directly.
+IR walking uses `unique_matching_params` only for the selected-arrow case.
+Protocol callbacks and module interfaces store ordered spec lists, so
+overloaded public contracts survive `.fzi` artifacts and fingerprinting.
 
-Structural correspondence is the model. The resolved spec model records every
-structural occurrence of each declared type variable across
-params/results/callbacks. Planner fixed-point keying consumes the subset of those
-groups that tie callback result flow back to outer params/results.
+## Proof Gates
 
-Lowering now persists the declared source-function groups onto
-`Module.function_correspondence` keyed by `FnId`. This is the IR seam where the
-spec-layer fact becomes durable enough for later CPS remapping and planner
-consumption.
+Gate changes to this model with:
 
-Lowering also records explicit continuation provenance for non-tail direct and
-closure calls, then synthesizes continuation-local correspondence groups from
-that provenance. The continuation schema is expressed only in continuation
-terms:
+- `cargo check --lib`
+- `cargo test --lib specs -- --nocapture`
+- `cargo test --lib type_infer -- --nocapture`
+- `cargo test --lib frontend::spec_check -- --nocapture`
+- `cargo test --test fixture_matrix spec_`
+- `cargo test --test fixture_matrix enum_map_family`
+- `cargo test --test fixture_matrix multi_caller_spec_divergent`
+- `cargo test --test fixture_matrix closure_typed_captures`
 
-- `Param(0)` is the produced value,
-- `Param(1..)` are captured caller locals,
-- `Result` is the continuation's own result.
-
-Callback occurrences are a source-level spec concept, not a continuation ABI
-concept. When a closure call is CPS-split, lowering projects the caller's
-callback correspondence onto those continuation params/results and then
-normalizes overlapping occurrence sets into continuation-local groups.
-
-## Correct Shape
-
-Use a first-class overload-set shape:
-
-```rust
-struct SpecSet {
-    arrows: Vec<SpecDecl>,
-}
-
-struct ResolvedSpecSet {
-    arrows: Vec<ResolvedSpec>,
-}
-```
-
-The exact Rust names can follow local style, but the semantic invariant should
-hold everywhere:
-
-- one `FnDef` can carry several `@spec` arrows for the same name and arity;
-- each arrow resolves type variables and constraints independently;
-- validators and planners select or quantify over arrows without unioning
-  unrelated parameter and result positions;
-- interface and artifact formats preserve every arrow deterministically.
-
-## Plan
-
-1. Parser and AST: remove the duplicate-`@spec` rejection, keep all adjacent
-   matching `@spec`s attached to the following `FnDef`, and keep name/arity
-   checks per spec. Replace the negative duplicate-spec test with a parse test
-   that proves two specs attach in order.
-
-2. Type-expression layer: resolve all specs on a `FnDef` into
-   `crate::specs::ResolvedSpecSet`. Do not share type-variable substitutions
-   across different arrows. `type_expr` constructs the model but does not own or
-   re-export it.
-
-3. Spec validation: for each inferred narrow spec, find at least one declared
-   arrow whose instantiated params accept the inferred inputs and whose
-   instantiated result accepts the inferred result. Report a violation only when
-   no declared arrow covers that inferred behavior. Keep any-key inferred specs
-   skipped.
-
-4. Declared-call typing: `src/specs/apply.rs` owns spec application over a
-   `ResolvedSpecSet`. For return typing, instantiate and union successful
-   matched results only after arrow selection. Broad inputs use successful
-   overlap witnesses, so `any + integer` yields the union of successful `+`
-   returns instead of either `any` or `none`. Underconstrained applications
-   carry pending reads and partial results, but callers must not treat those as
-   complete executable facts. For call inputs, `src/specs/select.rs` still uses
-   a selected arrow's instantiated params only when the call picks a unique
-   arrow; otherwise it keeps the concrete call arguments as the demand.
-   Validation passes positional holes as unknown witness slots rather than
-   converting them to `any`.
-
-5. Interfaces and protocols: public function specs and protocol callback specs
-   carry ordered spec lists (`specs`), and interface fingerprints include every
-   arrow in source order. Protocol impl compatibility compares overload sets by
-   checking each impl arrow against the protocol arrow set, not by picking one
-   optional callback spec.
-
-6. REPL/help rendering: `?<name>` renders every resolvable declared arrow, one
-   `@spec:` line per arrow, instead of silently dropping all but the first.
-
-7. Acceptance fixture: `Enum.with_index/2` uses the honest two-`@spec` form,
-   and `fixtures/enum_map_family` covers the function-mapper overload with
-   several result shapes so overload selection must preserve input/result
-   correlation.
+The focused `specs` tests cover `Known`, `Underconstrained`, and `Invalid`
+matching, overload correlation, coverage holes, successful-overlap returns,
+proved no-match, and higher-order callback-return refinement. The fixture
+matrix proves the same contracts through production drivers and telemetry
+budgets where fixture shape is the observable signal.

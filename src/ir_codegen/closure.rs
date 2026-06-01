@@ -50,7 +50,7 @@ pub(crate) fn halt_cont_body_id_for(runtime: &RuntimeRefs, repr: ArgRepr) -> Fun
 pub(crate) fn resolve_outer_cont<M: cranelift_module::Module>(
     body: &mut CodegenFn<'_, '_, '_, M>,
     runtime: &RuntimeRefs,
-    spec_keys: &[crate::ir_planner::fn_types::SpecKey],
+    return_reprs: &[ArgRepr],
     is_cont_fn: bool,
     cont_param: Option<ir::Value>,
     frame_ptr: Option<ir::Value>,
@@ -88,9 +88,7 @@ pub(crate) fn resolve_outer_cont<M: cranelift_module::Module>(
                 body.b.seal_block(alloc_blk);
                 let dummy_fid = body.b.ins().iconst(types::I32, 0);
                 let n_caps0 = body.b.ins().iconst(types::I32, 0);
-                let hc_repr = DemandAbi::new(&spec_keys[cont_sid as usize])
-                    .returned_value_repr(true)
-                    .expect("continuation outer return must deliver one value lane");
+                let hc_repr = return_reprs[cont_sid as usize];
                 let hcb_addr = fn_addr(body.jmod, halt_cont_body_id_for(runtime, hc_repr), body.b);
                 let zero_hk = body.b.ins().iconst(types::I32, 0);
                 let halt_cl = body.alloc_closure(dummy_fid, n_caps0, zero_hk, hcb_addr);
@@ -112,7 +110,7 @@ pub(crate) fn resolve_outer_cont<M: cranelift_module::Module>(
 pub(crate) fn build_cont_closure<M: cranelift_module::Module>(
     body: &mut CodegenFn<'_, '_, '_, M>,
     runtime: &RuntimeRefs,
-    spec_keys: &[crate::ir_planner::fn_types::SpecKey],
+    return_reprs: &[ArgRepr],
     is_cont_fn: bool,
     cont_param: Option<ir::Value>,
     frame_ptr: Option<ir::Value>,
@@ -122,7 +120,13 @@ pub(crate) fn build_cont_closure<M: cranelift_module::Module>(
     extra_ref_captures: &[ir::Value],
 ) -> ir::Value {
     let my_outer_cont = resolve_outer_cont(
-        body, runtime, spec_keys, is_cont_fn, cont_param, frame_ptr, cont_sid,
+        body,
+        runtime,
+        return_reprs,
+        is_cont_fn,
+        cont_param,
+        frame_ptr,
+        cont_sid,
     );
     let cl_fid_v = body.b.ins().iconst(types::I32, cont_sid as i64);
     // +1 reserves env field 0 for the synthetic outer_cont; user captures follow.
@@ -181,7 +185,7 @@ const LAZY_CONT_KIND_F64: i64 = 2;
 pub(crate) fn build_lazy_cont_descriptor<M: cranelift_module::Module>(
     body: &mut CodegenFn<'_, '_, '_, M>,
     runtime: &RuntimeRefs,
-    spec_keys: &[crate::ir_planner::fn_types::SpecKey],
+    return_reprs: &[ArgRepr],
     is_cont_fn: bool,
     cont_param: Option<ir::Value>,
     frame_ptr: Option<ir::Value>,
@@ -191,7 +195,13 @@ pub(crate) fn build_lazy_cont_descriptor<M: cranelift_module::Module>(
     extra_ref_captures: &[ir::Value],
 ) -> ir::Value {
     let my_outer_cont = resolve_outer_cont(
-        body, runtime, spec_keys, is_cont_fn, cont_param, frame_ptr, cont_sid,
+        body,
+        runtime,
+        return_reprs,
+        is_cont_fn,
+        cont_param,
+        frame_ptr,
+        cont_sid,
     );
     let captured_count = cap_bindings.len() + extra_ref_captures.len() + 1;
     let raw_base = LAZY_CONT_HEADER_BYTES;

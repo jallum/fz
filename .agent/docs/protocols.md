@@ -78,9 +78,11 @@ identical.
 The callback surface is checked at implementation time. An implementation must
 define every required callback with the required arity, and must not provide
 callbacks the protocol never declared (`validate_protocol_impls`). Callback
-spec compatibility is not yet enforced: the declared callback `spec` is stored
-on `ProtocolCallbackFact` but currently carries `#[allow(dead_code)]` pending a
-later protocol ticket.
+specs are ordered overload sets. When both the protocol callback and the impl
+callback declare specs, compatibility is checked by comparing each impl arrow
+against the protocol arrow set after binding the protocol-domain `t` variable
+to the impl target type. The check rejects only proved set-theoretic
+incompatibility, so free variables and `any` do not create false positives.
 
 The domain type is checked at use sites and function boundaries. A spec that
 requires `P.t(...)` requires proof that the argument type is inside the
@@ -206,12 +208,9 @@ Protocol diagnostics are tied to the typed fact that failed. The resolver
 - unknown/extra callback: an impl that provides a callback the protocol never
   declared, named by protocol, target, and `name/arity`.
 
-The following diagnostics are intended but not yet implemented: a use-site
-"missing implementation" message naming the receiver type and known
-implementors; a dedicated callback-arity-mismatch message; a callback spec
-mismatch; and a protocol-domain spec mismatch naming the failing parameter or
-return position. A protocol-domain constraint that fails today surfaces only as
-the generic spec-check "not a subtype" diagnostic.
+Use-site protocol-domain failures surface through the generic spec-check "not a
+subtype" diagnostic. Callback spec mismatches are reported during impl
+validation.
 
 These are compiler diagnostics, not runtime surprises, whenever the receiver
 type is statically known enough to prove failure.

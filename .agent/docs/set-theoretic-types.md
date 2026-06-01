@@ -107,8 +107,8 @@ reducer's accepted accumulator argument type.
 This is the same operation for `@spec foo(a, b) :: {a, b}` and for callable
 arrow clauses like `fn (a, b), do: {a, b}`. The matching policy lives in
 `src/specs/match.rs`; production callers use the narrow crate-facing
-`specs::instantiate_match` API or higher-level spec application helpers, which
-report:
+`specs::instantiate_match` API or the higher-level `specs::apply_spec_set`
+helper, which reports:
 
 ```text
 Known(T)             all result variables were determined by witnesses
@@ -127,6 +127,11 @@ Complete executable/codegen facts may not.
 contains variables. That is not a complete return fact and must stay paired with
 its pending/underconstrained status until a caller either supplies more evidence
 or erases unresolved positions at an explicit boundary.
+
+`NoMatch` is different from underconstrained proof. It means the call arguments
+are proved disjoint from every declared arrow. A caller may turn that into
+`none()` or a diagnostic for an unreachable/dead arm. A caller must not use
+`none()` for a proof gap.
 
 A `Ty` with free variables is not executable knowledge. It can live in a
 declared spec, arrow clause, or underconstrained-instantiation result, but it
