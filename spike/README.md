@@ -24,6 +24,7 @@ the planner's type inference, not runtime behavior, so they live outside
 | `match_tuple_tag_partition.fz` | same-arity tuple clauses with different atom tags | `main() : {int, :bad}`; tag proof chooses the matching payload projection | not pinned |
 | `match_tuple_arity_partition.fz` | tuple clauses with different arities and a non-tuple arm | `main() : {int, {int, int}, :other}`; arity proof keeps impossible fields out of joins | not pinned |
 | `match_guard_partition.fz` | tuple pattern with a guard helper over the payload | `main() : {int, :fallback}`; literal proof selects the guarded arm without exposing singleton return types | not pinned |
+| `match_map_binding.fz` | map clause binds `%{id: x}` | `main() : {int, :none}`; matcher-map hit/miss proof carries the field value and skips the catch-all | not pinned |
 | `enum_count.fz` | `Enum.count/1` over a List receiver | `Enum.count([1,2,3]) : int`; protocol dispatch reaches the List count callback | settles ✓ |
 | `enum_reduce.fz` | `Enum.reduce/3` over a List receiver with an inline reducer | `Enum.reduce([1,2,3], 0, +) : int`; public wrapper, protocol dispatch, and list loop converge | settles ✓ |
 | `enum_reduce_named_ref_ok.fz` | `Enum.reduce/3` over a List receiver with `&Main.reducer/2` | `Enum.reduce([1,2,3], 0, &Main.reducer/2) : int`; named reducer references converge like inline closures | settles ✓ |
@@ -42,7 +43,6 @@ Promote them one at a time so each commit isolates one missing capability.
 
 | program | target capability |
 | --- | --- |
-| `match_map_binding.fz` | Bind fields from map patterns while preserving the callable parameter surface. |
 | `enum_reduce_range.fz` | Devirtualize protocol dispatch through the Range receiver type. |
 | `enum_reduce_named_ref.fz` | Stop on a proved invalid reducer accumulator and emit a diagnostic. |
 
@@ -99,3 +99,9 @@ fields to the result.
 types. The tuple payload from `{:ok, 1}` is typed as `int`, but it still carries
 literal proof through tuple projection so `positive(x)` can prove the guard
 true; `{:ok, 0}` proves it false and reaches the fallback.
+
+`match_map_binding.fz` takes the same proof channel through map-pattern lowering.
+The lowered matcher performs `matcher_map_get(map, :id)` and then
+`is_matcher_map_miss(value)`; static-key map construction proves the hit for
+`%{id: 1}`, carries the `id` value proof into the selected leaf, and lets `:none`
+take the atom clause without the catch-all contributing to `main/0`.

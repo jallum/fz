@@ -40,8 +40,8 @@
 #![allow(dead_code)]
 
 use crate::fz_ir::{BinOp, BlockId, Const, FnId, Module, Prim, Stmt, Term, UnOp, Var};
-use crate::types::{ClosureTarget, ClosureTypes, Nominals, Ty, Types};
-use std::collections::{HashMap, HashSet, VecDeque};
+use crate::types::{ClosureTarget, ClosureTypes, MapKey, Nominals, Ty, Types};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 
 type Env = HashMap<Var, Info>;
 type PredicateFacts = HashMap<Var, PredicateFact>;
@@ -52,7 +52,7 @@ type PredicateFacts = HashMap<Var, PredicateFact>;
 /// lattice. It is a witness in the existing type model that the matcher may use
 /// while walking lowered tests and guards. Proof is erased by ordinary type
 /// joins unless both sides prove the same fact.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, PartialEq, Eq, Hash)]
 enum ValueProof {
     /// No proof has been established for this value/field.
     Unproven,
@@ -61,6 +61,16 @@ enum ValueProof {
     /// `Unproven` fields; it is not a full tuple-literal proof unless every
     /// field has proof.
     TupleFields(Vec<ValueProof>),
+    /// Key-wise proof for maps. `complete` means the constructed map had only
+    /// these static keys, so an absent key can prove a matcher miss.
+    MapFields {
+        fields: BTreeMap<MapKey, ValueProof>,
+        complete: bool,
+    },
+    /// Private matcher-map sentinel state. This is control proof only: it is
+    /// not a public type, and `proof_ty` never turns it into one.
+    MatcherMapMiss,
+    MatcherMapHit(Box<ValueProof>),
 }
 
 impl ValueProof {
@@ -78,12 +88,33 @@ impl ValueProof {
             _ => Self::Unproven,
         }
     }
+
+    fn map_field(&self, key: &MapKey) -> MapFieldProof {
+        match self {
+            Self::MapFields { fields, complete } => {
+                if let Some(field) = fields.get(key) {
+                    MapFieldProof::Hit(field.clone())
+                } else if *complete {
+                    MapFieldProof::Miss
+                } else {
+                    MapFieldProof::Unknown
+                }
+            }
+            _ => MapFieldProof::Unknown,
+        }
+    }
+}
+
+enum MapFieldProof {
+    Hit(ValueProof),
+    Miss,
+    Unknown,
 }
 
 /// A known value in the inference cell: the visible type plus proof usable by
 /// matcher guards. `ty` is what flows out of inference; `proof` is temporary
 /// branch-selection support.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 struct ValueFact {
     ty: Ty,
     proof: ValueProof,
@@ -178,6 +209,7 @@ enum PredicateFact {
     Neq(Var, Var),
     IsEmptyList(Var),
     IsListCons(Var),
+    IsMatcherMapMiss(Var),
     TypeTest(Var, Ty),
 }
 
@@ -205,13 +237,13 @@ pub(crate) fn closure_apply_contract<T: Types<Ty = Ty> + ClosureTypes>(
 /// `FnId` remains the callable/body identity. The activation key is the
 /// inference instance: the same `FnId` can be activated at `int` and `:ok`
 /// without joining those callers' returns together.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, PartialEq, Eq, Hash)]
 struct ActivationKey {
     fn_id: FnId,
     inputs: Vec<ValueKey>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, PartialEq, Eq, Hash)]
 struct ValueKey {
     ty: Ty,
     proof: ValueProof,
@@ -760,6 +792,11 @@ impl<'m> Solver<'m> {
             Prim::TupleField(v, i) => {
                 info_of(*v, env).map_known(|value| value.tuple_field(t, *i as usize))
             }
+            Prim::MakeMap(entries) => type_make_map(t, entries, env),
+            Prim::MapUpdate(base, entries) => type_map_update(t, *base, entries, env),
+            Prim::MapGet(map, key) => type_map_get(t, *map, *key, env, false),
+            Prim::MatcherMapGet(map, key) => type_map_get(t, *map, *key, env, true),
+            Prim::IsMatcherMapMiss(v) => is_matcher_map_miss(t, info_of(*v, env)),
             Prim::MakeClosure(_, target, caps) => {
                 let mut cap_tys = Vec::with_capacity(caps.len());
                 for c in caps {
@@ -773,7 +810,7 @@ impl<'m> Solver<'m> {
                 let n_args = entry_params.saturating_sub(cap_tys.len());
                 Info::known(t.closure_lit(ClosureTarget::from(*target), cap_tys, n_args))
             }
-            // Prims not yet modeled (maps, bitstrings, externs, structs) are
+            // Prims not yet modeled (bitstrings, externs, structs) are
             // `Unknown` — undetermined, not `any`. `any` is earned, never
             // defaulted; a residual `Unknown` at the fixpoint is the signal that
             // the construct still needs modeling (or a spec).
@@ -788,6 +825,7 @@ fn predicate_fact(prim: &Prim) -> Option<PredicateFact> {
         Prim::BinOp(BinOp::Neq, a, b) => Some(PredicateFact::Neq(*a, *b)),
         Prim::IsEmptyList(v) => Some(PredicateFact::IsEmptyList(*v)),
         Prim::IsListCons(v) => Some(PredicateFact::IsListCons(*v)),
+        Prim::IsMatcherMapMiss(v) => Some(PredicateFact::IsMatcherMapMiss(*v)),
         Prim::TypeTest(v, ty) => Some(PredicateFact::TypeTest(*v, (**ty).clone())),
         _ => None,
     }
@@ -842,6 +880,10 @@ fn predicate_truth<T: Types<Ty = Ty>>(
             }
             let meet = t.intersect(current, cons);
             if t.is_empty(&meet) { Some(false) } else { None }
+        }
+        PredicateFact::IsMatcherMapMiss(v) => {
+            let current = known_value(*v, env)?;
+            matcher_map_miss_truth(&current)
         }
         PredicateFact::TypeTest(v, ty) => {
             let current = known_ty(*v, env)?;
@@ -916,6 +958,7 @@ fn narrow_predicate<T: Types<Ty = Ty>>(
                 return None;
             }
         }
+        PredicateFact::IsMatcherMapMiss(_) => {}
         PredicateFact::TypeTest(v, ty) => {
             if !refine_against(t, &mut out, *v, ty, truth) {
                 return None;
@@ -1001,6 +1044,8 @@ fn proof_ty<T: Types<Ty = Ty>>(t: &mut T, proof: &ValueProof) -> Option<Ty> {
             }
             Some(t.tuple(&tys))
         }
+        ValueProof::MapFields { .. } | ValueProof::MatcherMapMiss => None,
+        ValueProof::MatcherMapHit(value) => proof_ty(t, value),
     }
 }
 
@@ -1017,10 +1062,185 @@ fn proof_fits<T: Types<Ty = Ty>>(t: &mut T, proof: &ValueProof, ty: &Ty) -> bool
         }
         return true;
     }
+    if let ValueProof::MapFields { fields, .. } = proof {
+        let map_top = t.map_top();
+        let meet = t.intersect(ty.clone(), map_top);
+        if t.is_empty(&meet) {
+            return false;
+        }
+        for (key, field) in fields {
+            if matches!(field, ValueProof::Unproven) {
+                continue;
+            }
+            let Some(field_ty) = t.map_field_lookup(ty, key) else {
+                return false;
+            };
+            if !proof_fits(t, field, &field_ty) {
+                return false;
+            }
+        }
+        return true;
+    }
+    if let ValueProof::MatcherMapHit(value) = proof {
+        return proof_fits(t, value, ty);
+    }
     let Some(proof) = proof_ty(t, proof) else {
         return true;
     };
     t.is_subtype(&proof, ty)
+}
+
+fn map_key_of<T: Types<Ty = Ty>>(t: &mut T, value: &ValueFact) -> Option<MapKey> {
+    if let Some(proof) = proof_ty(t, &value.proof)
+        && let Some(key) = t.as_map_key(&proof)
+    {
+        return Some(key);
+    }
+    t.as_map_key(&value.ty)
+}
+
+fn type_make_map<T: Types<Ty = Ty>>(t: &mut T, entries: &[(Var, Var)], env: &Env) -> Info {
+    let mut fields = Vec::with_capacity(entries.len());
+    let mut proof_fields = BTreeMap::new();
+    for (key, value) in entries {
+        let key = match known_value(*key, env) {
+            Some(key) => key,
+            None => return Info::Unknown,
+        };
+        let value = match known_value(*value, env) {
+            Some(value) => value,
+            None => return Info::Unknown,
+        };
+        let Some(map_key) = map_key_of(t, &key) else {
+            return Info::known(t.map_top());
+        };
+        fields.push((map_key.clone(), value.ty));
+        proof_fields.insert(map_key, value.proof);
+    }
+    Info::known_with_proof(
+        t.map(&fields),
+        ValueProof::MapFields {
+            fields: proof_fields,
+            complete: true,
+        },
+    )
+}
+
+fn type_map_update<T: Types<Ty = Ty>>(
+    t: &mut T,
+    base: Var,
+    entries: &[(Var, Var)],
+    env: &Env,
+) -> Info {
+    let Some(mut current) = known_value(base, env) else {
+        return Info::Unknown;
+    };
+    let mut proof_fields = match std::mem::replace(&mut current.proof, ValueProof::Unproven) {
+        ValueProof::MapFields { fields, .. } => fields,
+        _ => BTreeMap::new(),
+    };
+    for (key, value) in entries {
+        let key = match known_value(*key, env) {
+            Some(key) => key,
+            None => return Info::Unknown,
+        };
+        let value = match known_value(*value, env) {
+            Some(value) => value,
+            None => return Info::Unknown,
+        };
+        if let Some(map_key) = map_key_of(t, &key) {
+            current.ty = t.refine_map_field(&current.ty, &map_key, &value.ty);
+            proof_fields.insert(map_key, value.proof);
+        } else {
+            current.ty = t.map_top();
+            current.proof = ValueProof::Unproven;
+            return Info::Known(current);
+        }
+    }
+    current.proof = ValueProof::MapFields {
+        fields: proof_fields,
+        complete: false,
+    };
+    Info::Known(current)
+}
+
+fn type_map_get<T: Types<Ty = Ty>>(
+    t: &mut T,
+    map: Var,
+    key: Var,
+    env: &Env,
+    matcher: bool,
+) -> Info {
+    let Some(map) = known_value(map, env) else {
+        return Info::Unknown;
+    };
+    let Some(key) = known_value(key, env) else {
+        return Info::Unknown;
+    };
+    let Some(map_key) = map_key_of(t, &key) else {
+        let any = t.any();
+        let nil = t.nil();
+        return Info::known(t.union(any, nil));
+    };
+    match (matcher, map.proof.map_field(&map_key)) {
+        (true, MapFieldProof::Miss) => {
+            return Info::known_with_proof(t.none(), ValueProof::MatcherMapMiss);
+        }
+        (true, MapFieldProof::Hit(proof)) => {
+            let ty = map_field_ty(t, &map.ty, &map_key);
+            let proof = if proof_fits(t, &proof, &ty) {
+                proof
+            } else {
+                ValueProof::Unproven
+            };
+            return Info::known_with_proof(ty, ValueProof::MatcherMapHit(Box::new(proof)));
+        }
+        _ => {}
+    }
+    let ty = map_field_ty(t, &map.ty, &map_key);
+    let proof = match map.proof.map_field(&map_key) {
+        MapFieldProof::Hit(proof) if proof_fits(t, &proof, &ty) => {
+            if matcher {
+                ValueProof::MatcherMapHit(Box::new(proof))
+            } else {
+                proof
+            }
+        }
+        _ if matcher && t.map_known_keys(&map.ty).contains(&map_key) => {
+            ValueProof::MatcherMapHit(Box::new(ValueProof::Unproven))
+        }
+        _ => ValueProof::Unproven,
+    };
+    Info::known_with_proof(ty, proof)
+}
+
+fn map_field_ty<T: Types<Ty = Ty>>(t: &mut T, map: &Ty, key: &MapKey) -> Ty {
+    t.map_field_lookup(map, key).unwrap_or_else(|| {
+        let any = t.any();
+        let nil = t.nil();
+        t.union(any, nil)
+    })
+}
+
+fn is_matcher_map_miss<T: Types<Ty = Ty>>(t: &mut T, info: Info) -> Info {
+    let Info::Known(value) = info else {
+        return Info::Unknown;
+    };
+    if let Some(miss) = matcher_map_miss_truth(&value) {
+        let ty = t.bool();
+        let proof = ValueProof::Exact(t.bool_lit(miss));
+        Info::known_with_proof(ty, proof)
+    } else {
+        Info::known(t.bool())
+    }
+}
+
+fn matcher_map_miss_truth(value: &ValueFact) -> Option<bool> {
+    match &value.proof {
+        ValueProof::MatcherMapMiss => Some(true),
+        ValueProof::MatcherMapHit(_) => Some(false),
+        _ => None,
+    }
 }
 
 fn comparison_binop<T: Types<Ty = Ty>>(t: &mut T, op: BinOp, left: Info, right: Info) -> Info {
@@ -1693,6 +1913,22 @@ mod tests {
         assert!(
             t.is_equivalent(&ret, &expected),
             "guarded tuple clause should select by guard proof, got {ret:?}"
+        );
+    }
+
+    #[test]
+    fn map_pattern_binding_flows_into_selected_leaf() {
+        let mut t = ConcreteTypes;
+        let module = lower(include_str!("../../spike/match_map_binding.fz"));
+        let ret = infer_fn_via_main(&module, "main");
+        let expected = {
+            let int = t.int();
+            let none = t.atom_lit("none");
+            t.tuple(&[int, none])
+        };
+        assert!(
+            t.is_equivalent(&ret, &expected),
+            "map leaf should bind the matched key value without reaching the catch-all, got {ret:?}"
         );
     }
 

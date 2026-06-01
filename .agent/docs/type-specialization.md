@@ -28,6 +28,9 @@ ValueFact = { ty: Ty, proof: ValueProof }
 ValueProof = Unproven
            | Exact(Ty)                -- exact witness in the existing type model
            | TupleFields([ValueProof])
+           | MapFields({key => ValueProof}, complete?)
+           | MatcherMapHit(ValueProof)
+           | MatcherMapMiss
 ```
 
 `ty` is the visible type that flows out of inference. `proof` is temporary
@@ -204,18 +207,28 @@ may still join both leaves and widen the result.
 Guards consume the same proof channel. Numeric literals are visible as
 `int`/`float` in `ty`, but retain an exact proof witness long enough for lowered guard
 predicates such as `x > 0` to become `true` or `false` when the matched payload
-came from a literal. Tuple construction stores proof per field. Each field is
-`Unproven` until that field has its own proof, so a tuple with one proven payload
-does not become a fully proven tuple literal. Projection carries the selected
-field's proof forward: a source value like `{:ok, 1}` has visible type
-`{:ok, int}`, while the projected payload still carries proof `1` for guard
-selection. Returning that payload still returns visible type `int`; proof is
-not reanimated as a public singleton type.
+came from a literal.
 
-The same field-wise rule applies when structs and maps are added: each declared
-field/key starts `Unproven` until that field/key has its own proof. An aggregate
-with one proven field is not a proven aggregate; it is an aggregate whose one
-field can help the matcher or guard reducer choose a branch.
+Tuple construction stores proof per field. Each field is `Unproven` until that
+field has its own proof, so a tuple with one proven payload does not become a
+fully proven tuple literal. Projection carries the selected field's proof
+forward: a source value like `{:ok, 1}` has visible type `{:ok, int}`, while the
+projected payload still carries proof `1` for guard selection. Returning that
+payload still returns visible type `int`; proof is not reanimated as a public
+singleton type.
+
+Map construction follows the same key-wise rule. A static-key map literal stores
+proof per key and marks the key set complete; map update preserves or replaces
+only the updated key proofs. The matcher-only `MatcherMapGet` consumes that key
+proof and produces either `MatcherMapHit(value-proof)` or `MatcherMapMiss`.
+`IsMatcherMapMiss` consumes that private control proof to select the decision
+tree arm. The miss sentinel is never a public type; ordinary field type and key
+semantics still come from `Types::map`, `map_field_lookup`, and `map_top`.
+
+Structs should use the same field-wise shape when added: each declared field
+starts `Unproven` until that field has its own proof. An aggregate with one
+proven field is not a proven aggregate; it is an aggregate whose one field can
+help the matcher or guard reducer choose a branch.
 
 ## Closures are functions with capture parameters
 
