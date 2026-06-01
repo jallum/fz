@@ -312,19 +312,6 @@ impl EffectSummary {
     }
 }
 
-impl From<crate::ir_effects::IrEffects> for EffectSummary {
-    fn from(effects: crate::ir_effects::IrEffects) -> Self {
-        Self {
-            allocates: effects.allocates,
-            observable: effects.externally_observable,
-            reads_allocation_stats: effects.observes_allocation,
-            scheduler_visible: effects.scheduler_boundary,
-            halts: effects.halts,
-            calls_opaque: effects.calls_opaque,
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::{

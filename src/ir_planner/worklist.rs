@@ -1,6 +1,6 @@
 use super::closures::{literal_closure_return_keys, resolve_closure_return};
 use super::diagnostics::{compute_dead_branches, module_plan_stats};
-use super::effects::{prim_effect_summary, term_local_effect_summary};
+use super::effects::{prim_effects, term_effects};
 use super::fn_types::{
     CallsiteCallableCapabilities, CapabilityPlan, EffectSummary, EmitsByCaller, EmitterSiteSet,
     FixedPointInputObservation, FixedPointSlotSummaries, FnEffects, HoldersMap, ModulePlan,
@@ -981,7 +981,7 @@ fn compute_fn_effects(m: &Module) -> FnEffects {
         let mut callees = Vec::new();
         for b in &f.blocks {
             for crate::fz_ir::Stmt::Let(_, prim) in &b.stmts {
-                local.union_with(prim_effect_summary(m, prim));
+                local.union_with(prim_effects(m, prim));
             }
             // A terminal `Halt` returns the process's final value to the
             // scheduler; nothing executes after it, so it cannot observe — or
@@ -991,7 +991,7 @@ fn compute_fn_effects(m: &Module) -> FnEffects {
             // other terminator contributes its local effects: closure calls
             // are opaque, receive is a scheduler boundary.
             if !matches!(b.terminator, Term::Halt(_)) {
-                local.union_with(term_local_effect_summary(&b.terminator));
+                local.union_with(term_effects(&b.terminator));
             }
             match &b.terminator {
                 Term::Call {

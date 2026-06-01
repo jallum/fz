@@ -2831,7 +2831,7 @@ fn physical_capability_model_and_signals_are_pinned() {
         "semantic values",
         "physical capabilities",
         "effect facts",
-        "src/ir_effects/mod.rs",
+        "src/ir_planner/effects.rs",
         "operation effect classification",
         "codegen consumes validated facts",
         "src/fz_ir/mod.rs",

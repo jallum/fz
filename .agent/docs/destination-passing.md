@@ -187,7 +187,7 @@ sorter-carrying continuations.
 
 Some facts the planner records are not about source values at all: they are
 object-local permissions on private runtime objects — chiefly owned-cons reuse.
-A physical capability must not affect semantic specialization. `src/ir_effects/mod.rs`
+A physical capability must not affect semantic specialization. `src/ir_planner/effects.rs`
 classifies operation effects — whether an operation allocates, observes
 allocation, is externally observable, reaches the scheduler, or halts — and
 planner return-context barriers and capability validation read that classifier
@@ -241,7 +241,7 @@ The model layers cleanly: **semantic values** carry program meaning;
 **physical capabilities** carry object-local permissions such as owned-cons
 reuse; **effect facts** say when an operation allocates, observes allocation, is
 externally observable, reaches the scheduler, or halts; and
-codegen consumes validated facts mechanically. `src/ir_effects/mod.rs` owns
+codegen consumes validated facts mechanically. `src/ir_planner/effects.rs` owns
 operation effect classification, so planner return-context barriers and
 capability validation read one classifier rather than re-deriving publication
 rules.

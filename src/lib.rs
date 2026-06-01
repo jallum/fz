@@ -23,7 +23,6 @@ mod ir_branch_fold;
 mod ir_brand_erase;
 mod ir_const_bs;
 mod ir_dce;
-mod ir_effects;
 mod ir_fold;
 mod ir_fuse;
 mod ir_inline;
