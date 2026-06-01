@@ -113,16 +113,16 @@ name, so protocol dispatch and nominal checks still flow through `Types`.
 
 ## Call Targets
 
-A call site first resolves its callable value to a `CallArrowSet`; applying an
-arrow activates the target `FnId` with its full inference inputs.
+A call site first resolves its callable value to an `ActivationRequestSet`;
+applying a request activates the target `FnId` with its full inference inputs.
 
 ```text
 CallTarget::Direct(FnId)
-  -> CallArrow { fn_id, inputs: args }
+  -> ActivationRequest { fn_id, inputs: args }
 
 CallTarget::Closure { value, env }
   -> read closure literal type
-  -> CallArrow { fn_id: closure target, inputs: captures ++ args }
+  -> ActivationRequest { fn_id: closure target, inputs: captures ++ args }
 ```
 
 Direct calls include protocol-dispatch stubs. For a protocol stub, the receiver
@@ -136,10 +136,10 @@ leading body parameters. The callable surface is still only the explicit
 parameters. Capture types are used to infer the closure body and are erased from
 the callable ABI after this phase.
 
-`CallArrowSet` is explicit even though current resolved targets are singleton.
+`ActivationRequestSet` is explicit even though current resolved targets are singleton.
 That is the model slot for overloaded callable specs, union closure targets, and
-polymorphic named references: one call site can select one or more arrows, and
-their returns join through the ordinary branch join.
+polymorphic named references: one call site can select one or more requests, and
+their returns join through the ordinary cell join.
 
 ## Specs
 
@@ -211,12 +211,12 @@ and still dead for a particular activation.
 
 `Solver` owns:
 
-- `specs`: activation keys mapped to current `Spec { inputs, ret }`.
+- `activations`: activation keys mapped to current `Activation { inputs, ret }`.
 - `deps`: callee activations mapped to callers that read their return.
 - `queue` and `queued`: activations scheduled for another body walk.
 - `dead_arms` and `dead_arm_sites`: matcher proof telemetry facts.
 
-Applying a call arrow records the caller dependency, creates the callee
+Applying an activation request records the caller dependency, creates the callee
 activation if needed, and returns the callee's current return estimate. When a
 callee return ascends, its readers are scheduled again.
 

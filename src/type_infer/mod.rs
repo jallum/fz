@@ -20,8 +20,8 @@
 //! terminators (`Call`/`TailCall`/`CallClosure`). So a function's body walk
 //! only ever touches its own blocks (a finite intra-fn graph) and makes `call`
 //! requests at its edges — every inter-fn edge, including every loop back-edge,
-//! flows through the spec table, never through the walk. The recursion fixpoint
-//! lives entirely in the worklist.
+//! flows through the activation table, never through the walk. The recursion
+//! fixpoint lives entirely in the worklist.
 //!
 //! ## Unknown is not `none`
 //!
@@ -39,8 +39,8 @@
 //! fixpoint, that edge may erase it to `any`; the solver itself must never use
 //! `any` as the placeholder for "not proven yet."
 //!
-//! The engine is wired into the planner at fz-g58.65.6; until then only its own
-//! tests exercise it, so the module is dead in non-test builds.
+//! Production planning has not switched to this module yet, so some entry points
+//! are exercised only by the type-inference tests.
 #![allow(dead_code)]
 
 use crate::fz_ir::{BinOp, BlockId, Const, DeadBranch, FnId, Module, Prim, Stmt, Term, UnOp, Var};
@@ -197,10 +197,10 @@ impl Info {
         Self::Known(ValueFact::with_proof(ty, proof))
     }
 
-    /// Activation-cell update: `Pending` is the not-yet-initialized return
+    /// Join two inference cells. `Pending` is the not-yet-initialized return
     /// estimate, `NoReturn` contributes no value, `Unknown` is live uncertainty,
     /// and two `Known`s join through the refinement-lattice widen.
-    fn widen<T: Types<Ty = Ty>>(&self, t: &mut T, other: &Info) -> Info {
+    fn join<T: Types<Ty = Ty>>(&self, t: &mut T, other: &Info) -> Info {
         match (self, other) {
             (Info::Pending, x) | (x, Info::Pending) => x.clone(),
             (Info::Unknown, _) | (_, Info::Unknown) => Info::Unknown,
@@ -228,15 +228,6 @@ impl Info {
             Info::NoReturn => Info::NoReturn,
             Info::Known(value) => Info::Known(f(value)),
         }
-    }
-}
-
-fn branch_join<T: Types<Ty = Ty>>(t: &mut T, a: Info, b: Info) -> Info {
-    match (a, b) {
-        (Info::Pending, x) | (x, Info::Pending) => x,
-        (Info::Unknown, _) | (_, Info::Unknown) => Info::Unknown,
-        (Info::NoReturn, x) | (x, Info::NoReturn) => x,
-        (Info::Known(a), Info::Known(b)) => Info::Known(a.widen(t, &b)),
     }
 }
 
@@ -308,6 +299,30 @@ struct ActivationKey {
     inputs: Vec<ValueKey>,
 }
 
+impl ActivationKey {
+    fn from_inputs<T: Types<Ty = Ty>>(t: &mut T, fn_id: FnId, inputs: &[Info]) -> Option<Self> {
+        let mut key_inputs = Vec::with_capacity(inputs.len());
+        for input in inputs {
+            let Info::Known(value) = input else {
+                return None;
+            };
+            key_inputs.push(ValueKey::from_fact(t, value));
+        }
+        Some(Self {
+            fn_id,
+            inputs: key_inputs,
+        })
+    }
+
+    fn input_infos(&self) -> Vec<Info> {
+        self.inputs
+            .iter()
+            .cloned()
+            .map(ValueKey::into_info)
+            .collect()
+    }
+}
+
 #[derive(Clone, PartialEq, Eq, Hash)]
 struct ValueKey {
     ty: Ty,
@@ -315,46 +330,53 @@ struct ValueKey {
 }
 
 impl ValueKey {
+    fn from_fact<T: Types<Ty = Ty>>(t: &mut T, value: &ValueFact) -> Self {
+        Self {
+            ty: t.widen_for_recursive_spec_key(&value.ty),
+            proof: value.proof.clone(),
+        }
+    }
+
     fn into_info(self) -> Info {
         Info::Known(ValueFact::with_proof(self.ty, self.proof))
     }
 }
 
 /// One function activation's current return estimate.
-struct Spec {
+struct Activation {
     inputs: Vec<Info>,
     ret: Info,
 }
 
 /// The callable value at a call site before it has been resolved to activation
-/// arrows. Direct calls include protocol stubs; closure calls carry the
+/// requests. Direct calls include protocol stubs; closure calls carry the
 /// environment needed to read the closure value.
 enum CallTarget<'a> {
     Direct(FnId),
     Closure { value: Var, env: &'a Env },
 }
 
-/// One callable arrow selected for a call site. Applying the arrow means
+/// One activation request selected for a call site. Applying the request means
 /// activating `fn_id` with the full inference input vector. For closures that
 /// vector is `captures ++ args`; the closure's public callable arity is still
 /// only its explicit args.
-struct CallArrow {
+struct ActivationRequest {
     fn_id: FnId,
     inputs: Vec<Info>,
 }
 
-/// The set of arrows a call target may apply at this call site. Today all
+/// The set of activations a call target may request at this call site. Today all
 /// resolved call targets are singleton; keeping the set explicit makes union
 /// closure targets and overloaded callable specs a data-model extension instead
 /// of another call path.
-struct CallArrowSet {
-    arrows: Vec<CallArrow>,
+struct ActivationRequestSet {
+    requests: Vec<ActivationRequest>,
 }
 
-impl CallArrowSet {
+impl ActivationRequestSet {
     fn singleton(fn_id: FnId, inputs: Vec<Info>) -> Self {
         Self {
-            arrows: vec![CallArrow { fn_id, inputs }],
+            requests: vec![ActivationRequest { fn_id, inputs }],
         }
     }
 }
@@ -446,7 +468,7 @@ impl DeadArmFact {
 /// joint fixpoint of input- and return-type estimates.
 struct Solver<'m> {
     module: &'m Module,
-    specs: HashMap<ActivationKey, Spec>,
+    activations: HashMap<ActivationKey, Activation>,
     /// `callee activation -> caller activations whose return estimate read
     /// callee's ret`. When a callee's ret ascends, its callers are re-enqueued.
     deps: HashMap<ActivationKey, HashSet<ActivationKey>>,
@@ -462,7 +484,7 @@ impl<'m> Solver<'m> {
     fn new(module: &'m Module) -> Self {
         Self {
             module,
-            specs: HashMap::new(),
+            activations: HashMap::new(),
             deps: HashMap::new(),
             queue: VecDeque::new(),
             queued: HashSet::new(),
@@ -499,38 +521,29 @@ impl<'m> Solver<'m> {
     }
 
     /// Seed an entry point with its known input types and schedule it.
-    fn seed(&mut self, fn_id: FnId, inputs: Vec<Info>) {
-        let key = ActivationKey {
-            fn_id,
-            inputs: inputs
-                .iter()
-                .filter_map(|input| match input {
-                    Info::Known(value) => Some(ValueKey {
-                        ty: value.ty.clone(),
-                        proof: value.proof.clone(),
-                    }),
-                    Info::Pending | Info::Unknown | Info::NoReturn => None,
-                })
-                .collect(),
-        };
-        assert_eq!(
-            key.inputs.len(),
-            inputs.len(),
-            "entry activations must be seeded with known inputs"
-        );
-        self.specs.insert(
+    fn seed<T: Types<Ty = Ty>>(
+        &mut self,
+        t: &mut T,
+        fn_id: FnId,
+        inputs: Vec<Info>,
+    ) -> ActivationKey {
+        let key = ActivationKey::from_inputs(t, fn_id, &inputs)
+            .expect("entry activations must be seeded with known inputs");
+        self.activations.insert(
             key.clone(),
-            Spec {
-                inputs,
+            Activation {
+                inputs: key.input_infos(),
                 ret: Info::Pending,
             },
         );
-        self.enqueue(key);
+        self.enqueue(key.clone());
+        key
     }
 
     /// `caller` applies `target` to `args`. The target first resolves to an
-    /// arrow set (direct fn, protocol impl, or closure body with captures
-    /// prepended), then every selected arrow activates through the same path.
+    /// activation request set (direct fn, protocol impl, or closure body with
+    /// captures prepended), then every selected request activates through the
+    /// same path.
     fn call_target<T: Types<Ty = Ty> + ClosureTypes>(
         &mut self,
         t: &mut T,
@@ -538,33 +551,33 @@ impl<'m> Solver<'m> {
         target: CallTarget<'_>,
         args: Vec<Info>,
     ) -> Info {
-        let arrows = match self.call_arrows(t, target, args) {
-            Ok(arrows) => arrows,
+        let requests = match self.activation_requests(t, target, args) {
+            Ok(requests) => requests,
             Err(info) => return info,
         };
-        self.apply_arrows(t, caller, arrows)
+        self.apply_requests(t, caller, requests)
     }
 
-    fn call_arrows<T: Types<Ty = Ty> + ClosureTypes>(
+    fn activation_requests<T: Types<Ty = Ty> + ClosureTypes>(
         &self,
         t: &mut T,
         target: CallTarget<'_>,
         args: Vec<Info>,
-    ) -> Result<CallArrowSet, Info> {
+    ) -> Result<ActivationRequestSet, Info> {
         match target {
-            CallTarget::Direct(callee) => self.direct_arrows(t, callee, args),
-            CallTarget::Closure { value, env } => self.closure_arrows(t, value, args, env),
+            CallTarget::Direct(callee) => self.direct_requests(t, callee, args),
+            CallTarget::Closure { value, env } => self.closure_requests(t, value, args, env),
         }
     }
 
     /// Direct calls include protocol-dispatch stubs. A stub resolves to the
     /// concrete impl selected by the receiver type; ordinary fns pass through.
-    fn direct_arrows<T: Types<Ty = Ty>>(
+    fn direct_requests<T: Types<Ty = Ty>>(
         &self,
         t: &mut T,
         callee: FnId,
         args: Vec<Info>,
-    ) -> Result<CallArrowSet, Info> {
+    ) -> Result<ActivationRequestSet, Info> {
         if self.module.protocol_call_targets.contains_key(&callee) {
             // A protocol call resolves to a concrete impl chosen by the
             // receiver type. A pending receiver waits for a later fixpoint
@@ -577,23 +590,23 @@ impl<'m> Solver<'m> {
             }
             return self
                 .resolve_protocol(t, callee, &args)
-                .map(|impl_fn| CallArrowSet::singleton(impl_fn, args))
+                .map(|impl_fn| ActivationRequestSet::singleton(impl_fn, args))
                 .ok_or(Info::Unknown);
         }
-        Ok(CallArrowSet::singleton(callee, args))
+        Ok(ActivationRequestSet::singleton(callee, args))
     }
 
-    /// Resolve a closure application to its body fn arrow. `Pending` waits;
+    /// Resolve a closure application to its body activation request. `Pending` waits;
     /// `Unknown` stays `Unknown`; a known value that cannot be resolved to a
     /// single closure target is still not proven callable, so it stays
     /// `Unknown` until a final boundary decides how to erase it.
-    fn closure_arrows<T: Types<Ty = Ty> + ClosureTypes>(
+    fn closure_requests<T: Types<Ty = Ty> + ClosureTypes>(
         &self,
         t: &mut T,
         closure: Var,
         arg_infos: Vec<Info>,
         env: &Env,
-    ) -> Result<CallArrowSet, Info> {
+    ) -> Result<ActivationRequestSet, Info> {
         let clo = env.get(&closure).cloned().unwrap_or(Info::Pending);
         let clo_ty = match clo {
             Info::Pending => return Err(Info::Pending),
@@ -606,7 +619,7 @@ impl<'m> Solver<'m> {
                 let target: FnId = parts.target.into();
                 let mut inputs: Vec<Info> = parts.captures.into_iter().map(Info::known).collect();
                 inputs.extend(arg_infos);
-                Ok(CallArrowSet::singleton(target, inputs))
+                Ok(ActivationRequestSet::singleton(target, inputs))
             }
             // Couldn't resolve a single closure target ⇒ undetermined, not
             // `any` (which would assert "dynamic" as a fact). `any` is earned.
@@ -652,55 +665,50 @@ impl<'m> Solver<'m> {
         self.module.fn_by_name(&fn_name).map(|f| f.id)
     }
 
-    fn apply_arrows<T: Types<Ty = Ty>>(
+    fn apply_requests<T: Types<Ty = Ty>>(
         &mut self,
         t: &mut T,
         caller: &ActivationKey,
-        arrows: CallArrowSet,
+        requests: ActivationRequestSet,
     ) -> Info {
-        let mut out = None;
-        for arrow in arrows.arrows {
-            let ret = self.activate_arrow(t, caller, arrow);
+        let mut out: Option<Info> = None;
+        for request in requests.requests {
+            let ret = self.activate_request(t, caller, request);
             out = Some(match out {
-                Some(prev) => branch_join(t, prev, ret),
+                Some(prev) => prev.join(t, &ret),
                 None => ret,
             });
         }
         out.unwrap_or(Info::Unknown)
     }
 
-    /// Record the dependency, ensure the arrow target activation exists, and
+    /// Record the dependency, ensure the request target activation exists, and
     /// hand back its current return estimate (`Pending` for a callee not yet
     /// processed).
-    fn activate_arrow<T: Types<Ty = Ty>>(
+    fn activate_request<T: Types<Ty = Ty>>(
         &mut self,
         t: &mut T,
         caller: &ActivationKey,
-        arrow: CallArrow,
+        request: ActivationRequest,
     ) -> Info {
-        let Some(key) = activation_key(t, arrow.fn_id, &arrow.inputs) else {
-            return unresolved_inputs(&arrow.inputs);
+        let Some(key) = ActivationKey::from_inputs(t, request.fn_id, &request.inputs) else {
+            return unresolved_inputs(&request.inputs);
         };
         self.deps
             .entry(key.clone())
             .or_default()
             .insert(caller.clone());
-        if !self.specs.contains_key(&key) {
-            self.specs.insert(
+        if !self.activations.contains_key(&key) {
+            self.activations.insert(
                 key.clone(),
-                Spec {
-                    inputs: key
-                        .inputs
-                        .iter()
-                        .cloned()
-                        .map(ValueKey::into_info)
-                        .collect(),
+                Activation {
+                    inputs: key.input_infos(),
                     ret: Info::Pending,
                 },
             );
             self.enqueue(key.clone());
         }
-        self.specs
+        self.activations
             .get(&key)
             .map(|s| s.ret.clone())
             .unwrap_or(Info::Pending)
@@ -743,7 +751,7 @@ impl<'m> Solver<'m> {
 
     fn run<T: Types<Ty = Ty> + ClosureTypes>(&mut self, t: &mut T) {
         while let Some(key) = self.pop() {
-            let inputs = self.specs[&key].inputs.clone();
+            let inputs = self.activations[&key].inputs.clone();
             let body_ret = self.walk_fn(t, &key, &inputs);
             // A declared `@spec` is a backstop for a body the engine cannot
             // infer (e.g. an extern-forwarding builtin like `dbg`/`Kernel.+`):
@@ -759,10 +767,10 @@ impl<'m> Solver<'m> {
                     .unwrap_or(Info::Unknown),
                 known => known,
             };
-            let old = self.specs[&key].ret.clone();
-            let new = old.widen(t, &ret);
+            let old = self.activations[&key].ret.clone();
+            let new = old.join(t, &ret);
             if !new.equiv(t, &old) {
-                self.specs.get_mut(&key).unwrap().ret = new;
+                self.activations.get_mut(&key).unwrap().ret = new;
                 if let Some(callers) = self.deps.get(&key).cloned() {
                     for c in callers {
                         self.enqueue(c);
@@ -874,7 +882,7 @@ impl<'m> Solver<'m> {
                     None => {
                         let a = self.walk_branch(t, key, then_b, then_env, predicates, visited);
                         let b = self.walk_branch(t, key, else_b, else_env, predicates, visited);
-                        branch_join(t, a, b)
+                        a.join(t, &b)
                     }
                 }
             }
@@ -1851,27 +1859,6 @@ fn numeric_binop<T: Types<Ty = Ty>>(t: &mut T, lt: Info, rt: Info) -> Info {
     Info::known(result)
 }
 
-fn activation_key<T: Types<Ty = Ty>>(
-    t: &mut T,
-    fn_id: FnId,
-    inputs: &[Info],
-) -> Option<ActivationKey> {
-    let mut key_inputs = Vec::with_capacity(inputs.len());
-    for input in inputs {
-        match input {
-            Info::Known(value) => key_inputs.push(ValueKey {
-                ty: t.widen_for_recursive_spec_key(&value.ty),
-                proof: value.proof.clone(),
-            }),
-            Info::Pending | Info::Unknown | Info::NoReturn => return None,
-        }
-    }
-    Some(ActivationKey {
-        fn_id,
-        inputs: key_inputs,
-    })
-}
-
 /// Look up a var's cell, defaulting to `Pending` for the not-yet-bound.
 fn info_of(v: Var, env: &HashMap<Var, Info>) -> Info {
     env.get(&v).cloned().unwrap_or(Info::Pending)
@@ -1900,20 +1887,9 @@ pub(crate) fn infer_return<T: Types<Ty = Ty> + ClosureTypes>(
 ) -> Ty {
     let inputs = input_tys.iter().cloned().map(Info::known).collect();
     let mut solver = Solver::new(module);
-    solver.seed(fn_id, inputs);
+    let key = solver.seed(t, fn_id, inputs);
     solver.run(t);
-    let key = ActivationKey {
-        fn_id,
-        inputs: input_tys
-            .iter()
-            .cloned()
-            .map(|ty| ValueKey {
-                ty,
-                proof: ValueProof::Unproven,
-            })
-            .collect(),
-    };
-    match solver.specs.get(&key).map(|s| s.ret.clone()) {
+    match solver.activations.get(&key).map(|s| s.ret.clone()) {
         Some(Info::Known(value)) => value.ty,
         _ => t.any(),
     }
@@ -1998,7 +1974,7 @@ mod tests {
             .expect("main fn")
             .id;
         let mut solver = Solver::new(module);
-        solver.seed(main_id, Vec::new());
+        solver.seed(&mut t, main_id, Vec::new());
         solver.run(&mut t);
         // A library fn name can carry several arities (e.g. `Enum.reduce/2` and
         // `Enum.reduce/3`); only the variant the program actually called is
@@ -2009,13 +1985,16 @@ mod tests {
             .iter()
             .filter(|f| f.name == fn_name)
             .flat_map(|f| {
-                solver.specs.iter().filter_map(move |(key, spec)| {
-                    if key.fn_id == f.id {
-                        Some(spec.ret.clone())
-                    } else {
-                        None
-                    }
-                })
+                solver
+                    .activations
+                    .iter()
+                    .filter_map(move |(key, activation)| {
+                        if key.fn_id == f.id {
+                            Some(activation.ret.clone())
+                        } else {
+                            None
+                        }
+                    })
             })
             .fold(None, |acc, ret| match (acc, ret) {
                 (None, Info::Known(value)) => Some(value.ty),
@@ -2034,7 +2013,7 @@ mod tests {
             .expect("main fn")
             .id;
         let mut solver = Solver::new(module);
-        solver.seed(main_id, Vec::new());
+        solver.seed(&mut t, main_id, Vec::new());
         solver.run(&mut t);
         (t, solver)
     }
@@ -2073,10 +2052,10 @@ mod tests {
             let mut t = ConcreteTypes;
             let main_id = module.fn_by_name("main").unwrap().id;
             let mut solver = Solver::new(&module);
-            solver.seed(main_id, Vec::new());
+            solver.seed(&mut t, main_id, Vec::new());
             solver.run(&mut t);
             let unsettled: Vec<&str> = solver
-                .specs
+                .activations
                 .iter()
                 .filter(|(_, s)| matches!(s.ret, Info::Pending | Info::Unknown))
                 .map(|(key, _)| module.fn_by_id(key.fn_id).name.as_str())
@@ -2622,6 +2601,33 @@ mod tests {
         assert!(closure_apply_contract(&t, &int, &[]).is_none());
     }
 
+    #[test]
+    fn seed_uses_canonical_activation_key() {
+        let module = ModuleBuilder::new().build();
+        let mut t = ConcreteTypes;
+        let one = t.int_lit(1);
+        let int = t.int();
+        let mut solver = Solver::new(&module);
+
+        let key = solver.seed(
+            &mut t,
+            FnId(0),
+            vec![Info::known_with_proof(
+                int.clone(),
+                ValueProof::Exact(one.clone()),
+            )],
+        );
+
+        assert!(t.is_equivalent(&key.inputs[0].ty, &int));
+        assert!(key.inputs[0].proof == ValueProof::Exact(one));
+        let activation = solver.activations.get(&key).expect("seeded activation");
+        let Info::Known(value) = &activation.inputs[0] else {
+            panic!("seeded activation input should be known");
+        };
+        assert!(t.is_equivalent(&value.ty, &int));
+        assert!(value.proof == key.inputs[0].proof);
+    }
+
     /// `Pending` (dependency not ready), `Unknown` (live value not proven), and
     /// `Known(none)` (the uninhabited type) are different states and must not be
     /// conflated. Only `Pending` is the activation-cell initialization identity;
@@ -2641,17 +2647,17 @@ mod tests {
         // `Unknown` remains unknown.
         assert!(
             Info::Pending
-                .widen(&mut t, &Info::known(int.clone()))
+                .join(&mut t, &Info::known(int.clone()))
                 .equiv(&t, &Info::known(int.clone()))
         );
         assert!(
             Info::Unknown
-                .widen(&mut t, &Info::known(int.clone()))
+                .join(&mut t, &Info::known(int.clone()))
                 .equiv(&t, &Info::Unknown)
         );
         assert!(
             Info::known(none.clone())
-                .widen(&mut t, &Info::known(int.clone()))
+                .join(&mut t, &Info::known(int.clone()))
                 .equiv(&t, &Info::known(int.clone()))
         );
 
