@@ -1,9 +1,10 @@
 use super::{
-    ResolvedSpec, ResolvedSpecSet, ResolvedTypeShape, SchemeInstantiation,
+    CallbackReturnDemand, CallbackReturnFact, ResolvedSpec, ResolvedSpecSet, ResolvedTypeShape,
+    SchemeInstantiation, SpecApplicationOutcome, apply_spec_set,
     declared_specs_cover_inferred_spec, instantiate_match, matching_result, resolve_closure_return,
     unique_matching_params,
 };
-use crate::types::{ConcreteTypes, MapKey, TypeVarId, Types};
+use crate::types::{ClosureTarget, ClosureTypes, ConcreteTypes, MapKey, TypeVarId, Types};
 
 fn resolved_spec(params: Vec<crate::types::Ty>, result: crate::types::Ty) -> ResolvedSpec {
     let param_shapes = vec![ResolvedTypeShape::Any; params.len()];
@@ -369,4 +370,187 @@ fn declared_spec_coverage_rejects_hole_that_leaves_result_underconstrained() {
         !declared_specs_cover_inferred_spec(&mut t, &set, &inferred_inputs, &inferred_result),
         "a positional hole is unknown evidence, not an `any` witness for a result variable"
     );
+}
+
+#[test]
+fn spec_application_unions_successful_overlap_returns() {
+    let mut t = ConcreteTypes;
+    let int = t.int();
+    let float = t.float();
+    let set = ResolvedSpecSet {
+        arrows: vec![
+            resolved_spec(vec![int.clone(), int.clone()], int.clone()),
+            resolved_spec(vec![float.clone(), int.clone()], float.clone()),
+        ],
+    };
+
+    let any = t.any();
+    let outcome = apply_spec_set::<_, (), _>(&mut t, &set, &[any, int], |_t, _query| None);
+    let SpecApplicationOutcome::Known(application) = outcome else {
+        panic!("expected successful application, got {outcome:?}");
+    };
+    let expected_int = t.int();
+    let expected_float = t.float();
+    let expected = t.union(expected_int, expected_float);
+    assert!(
+        t.is_equivalent(&application.result, &expected),
+        "successful overlap returns should union to {}, got {}",
+        t.display(&expected),
+        t.display(&application.result)
+    );
+    assert_eq!(application.matched_arrows.len(), 2);
+    assert!(application.complete);
+}
+
+#[test]
+fn spec_application_reports_no_match_for_proved_contradiction() {
+    let mut t = ConcreteTypes;
+    let int = t.int();
+    let set = ResolvedSpecSet {
+        arrows: vec![resolved_spec(vec![int.clone()], int)],
+    };
+
+    let float = t.float();
+    let outcome = apply_spec_set::<_, (), _>(&mut t, &set, &[float], |_t, _query| None);
+
+    assert!(
+        matches!(outcome, SpecApplicationOutcome::NoMatch),
+        "disjoint input should be a proved no-match, got {outcome:?}"
+    );
+}
+
+#[test]
+fn spec_application_reports_underconstrained_free_result() {
+    let mut t = ConcreteTypes;
+    let int = t.int();
+    let result = t.type_var(TypeVarId(0));
+    let set = ResolvedSpecSet {
+        arrows: vec![resolved_spec(vec![int.clone()], result)],
+    };
+
+    let outcome = apply_spec_set::<_, (), _>(&mut t, &set, &[int], |_t, _query| None);
+
+    let SpecApplicationOutcome::Underconstrained(application) = outcome else {
+        panic!("free result variable should remain underconstrained, got {outcome:?}");
+    };
+    assert!(
+        application
+            .partial_result
+            .as_ref()
+            .is_some_and(|result| t.has_vars(result)),
+        "underconstrained application should carry the partial result"
+    );
+}
+
+#[test]
+fn spec_application_tracks_pending_callback_return_reads() {
+    let mut t = ConcreteTypes;
+    let set = reduce_while_spec_set(&mut t);
+    let not_found = t.atom_lit("not_found");
+    let zero = t.int_lit(0);
+    let initial_acc = t.tuple(&[not_found, zero]);
+    let entry = t.int();
+    let list = t.list(entry);
+    let target = ClosureTarget(7);
+    let reducer = t.closure_lit(target, Vec::new(), 2);
+
+    let outcome = apply_spec_set(&mut t, &set, &[list, initial_acc, reducer], |_t, query| {
+        assert_eq!(query.target, target);
+        assert_eq!(query.demand, CallbackReturnDemand::TupleFields(2));
+        Some(CallbackReturnFact::Pending { read: "reducer" })
+    });
+
+    let SpecApplicationOutcome::Known(application) = outcome else {
+        panic!("initial accumulator should still prove a partial result, got {outcome:?}");
+    };
+    assert!(!application.complete);
+    assert_eq!(application.reads, vec!["reducer"]);
+}
+
+#[test]
+fn spec_application_refines_result_from_callback_return_witness() {
+    let mut t = ConcreteTypes;
+    let set = reduce_while_spec_set(&mut t);
+    let not_found = t.atom_lit("not_found");
+    let found = t.atom_lit("found");
+    let zero = t.int_lit(0);
+    let initial_acc = t.tuple(&[not_found.clone(), zero]);
+    let entry = t.int();
+    let list = t.list(entry);
+    let target = ClosureTarget(9);
+    let reducer = t.closure_lit(target, Vec::new(), 2);
+    let reducer_return = {
+        let int = t.int();
+        let not_found_int = t.tuple(&[not_found, int.clone()]);
+        let found_int = t.tuple(&[found.clone(), int]);
+        let cont_atom = t.atom_lit("cont");
+        let halt_atom = t.atom_lit("halt");
+        let cont = t.tuple(&[cont_atom, not_found_int]);
+        let halt = t.tuple(&[halt_atom, found_int]);
+        t.union(cont, halt)
+    };
+
+    let outcome = apply_spec_set(&mut t, &set, &[list, initial_acc, reducer], |_t, query| {
+        assert_eq!(query.target, target);
+        Some(CallbackReturnFact::Known {
+            result: reducer_return.clone(),
+            read: "reducer",
+            complete: true,
+        })
+    });
+
+    let SpecApplicationOutcome::Known(application) = outcome else {
+        panic!("callback return witness should produce a known result, got {outcome:?}");
+    };
+    let int = t.int();
+    let found_int = t.tuple(&[found, int]);
+    assert!(
+        t.is_subtype(&found_int, &application.result),
+        "callback halt payload should flow into reduce result, got {}",
+        t.display(&application.result)
+    );
+    assert!(application.complete);
+    assert_eq!(application.reads, vec!["reducer"]);
+}
+
+fn reduce_while_spec_set(t: &mut ConcreteTypes) -> ResolvedSpecSet {
+    let entry_var = t.type_var(TypeVarId(0));
+    let acc_var = t.type_var(TypeVarId(1));
+    let reducer_ret = {
+        let cont = t.atom_lit("cont");
+        let halt = t.atom_lit("halt");
+        let cont_tuple = t.tuple(&[cont, acc_var.clone()]);
+        let halt_tuple = t.tuple(&[halt, acc_var.clone()]);
+        t.union(cont_tuple, halt_tuple)
+    };
+    let enumerable_param = t.list(entry_var.clone());
+    let reducer_param = t.arrow(&[entry_var, acc_var.clone()], reducer_ret);
+    ResolvedSpecSet {
+        arrows: vec![ResolvedSpec {
+            params: vec![enumerable_param, acc_var.clone(), reducer_param],
+            param_shapes: vec![
+                ResolvedTypeShape::List(Box::new(ResolvedTypeShape::Var(TypeVarId(0)))),
+                ResolvedTypeShape::Var(TypeVarId(1)),
+                ResolvedTypeShape::Arrow {
+                    params: vec![
+                        ResolvedTypeShape::Var(TypeVarId(0)),
+                        ResolvedTypeShape::Var(TypeVarId(1)),
+                    ],
+                    result: Box::new(ResolvedTypeShape::Union(vec![
+                        ResolvedTypeShape::Tuple(vec![
+                            ResolvedTypeShape::AtomLit("cont".to_string()),
+                            ResolvedTypeShape::Var(TypeVarId(1)),
+                        ]),
+                        ResolvedTypeShape::Tuple(vec![
+                            ResolvedTypeShape::AtomLit("halt".to_string()),
+                            ResolvedTypeShape::Var(TypeVarId(1)),
+                        ]),
+                    ])),
+                },
+            ],
+            result: acc_var,
+            result_shape: ResolvedTypeShape::Var(TypeVarId(1)),
+            constraints: std::collections::HashMap::new(),
+        }],
+    }
 }

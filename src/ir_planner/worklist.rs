@@ -354,13 +354,19 @@ pub(crate) fn direct_call_result_knowledge<
             None,
         )
     });
-    let declared = declared_call_return(
+    let declared_fact = declared_call_return_fact(
         t,
         module,
+        recursive_fns,
+        slot_summaries,
+        caller,
         callee,
         arg_tys,
+        effective_returns,
+        complete_returns,
         &module.fn_by_id(caller).owner_module,
     );
+    let declared = declared_fact.as_ref().map(|fact| fact.ty.clone());
     if let Some(ret) = activation_returns.return_for_call_result(t, &target) {
         return CallResultKnowledge {
             slot0: ResultSlot0::Known(ret),
@@ -392,7 +398,7 @@ pub(crate) fn direct_call_result_knowledge<
     };
     CallResultKnowledge {
         slot0,
-        return_reads: vec![target],
+        return_reads: return_reads_with_declared(target, declared_fact.as_ref()),
     }
 }
 
@@ -423,13 +429,19 @@ pub(crate) fn known_closure_result_knowledge<
         n_params,
         None,
     );
-    let declared = declared_call_return(
+    let declared_fact = declared_call_return_fact(
         t,
         module,
+        recursive_fns,
+        slot_summaries,
+        caller,
         target,
         arg_tys,
+        effective_returns,
+        complete_returns,
         &module.fn_by_id(caller).owner_module,
     );
+    let declared = declared_fact.as_ref().map(|fact| fact.ty.clone());
     if let Some(ret) = activation_returns.return_for_call_result(t, &key) {
         return CallResultKnowledge {
             slot0: ResultSlot0::Known(ret),
@@ -461,7 +473,7 @@ pub(crate) fn known_closure_result_knowledge<
     };
     CallResultKnowledge {
         slot0,
-        return_reads: vec![key],
+        return_reads: return_reads_with_declared(key, declared_fact.as_ref()),
     }
 }
 
@@ -2216,19 +2228,58 @@ fn declared_call_return<
     arg_tys: &[crate::types::Ty],
     owner_module: &str,
 ) -> Option<crate::types::Ty> {
-    let recursive_fns = std::collections::HashSet::new();
-    let effective_returns = HashMap::new();
-    let ret = super::spec_witness::declared_return_fact(
+    declared_call_return_fact(
         t,
         module,
-        &recursive_fns,
+        &std::collections::HashSet::new(),
         &FixedPointSlotSummaries::new(),
         callee,
         callee,
         arg_tys,
-        &effective_returns,
+        &HashMap::new(),
         None,
-    )?
-    .ty;
-    Some(t.mint_owned_resource_aliases(ret, owner_module, &module.opaque_inners))
+        owner_module,
+    )
+    .map(|fact| fact.ty)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn declared_call_return_fact<
+    T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
+>(
+    t: &mut T,
+    module: &Module,
+    recursive_fns: &std::collections::HashSet<FnId>,
+    slot_summaries: &FixedPointSlotSummaries,
+    caller: FnId,
+    callee: FnId,
+    arg_tys: &[crate::types::Ty],
+    effective_returns: &HashMap<SpecKey, crate::types::Ty>,
+    complete_returns: Option<&SpecKeySet>,
+    owner_module: &str,
+) -> Option<super::spec_witness::DeclaredReturnFact> {
+    let mut fact = super::spec_witness::declared_return_fact(
+        t,
+        module,
+        recursive_fns,
+        slot_summaries,
+        caller,
+        callee,
+        arg_tys,
+        effective_returns,
+        complete_returns,
+    )?;
+    fact.ty = t.mint_owned_resource_aliases(fact.ty, owner_module, &module.opaque_inners);
+    Some(fact)
+}
+
+fn return_reads_with_declared(
+    target: SpecKey,
+    declared: Option<&super::spec_witness::DeclaredReturnFact>,
+) -> Vec<SpecKey> {
+    let mut reads = vec![target];
+    if let Some(declared) = declared {
+        reads.extend(declared.reads.iter().cloned());
+    }
+    reads
 }

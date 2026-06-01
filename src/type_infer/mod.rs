@@ -43,7 +43,7 @@
 //! Activation facts, diagnostics, and dead matcher arms are emitted through
 //! telemetry so tests and operators observe the same production surface.
 use crate::fz_ir::{BinOp, BlockId, Const, DeadBranch, FnId, Module, Prim, Stmt, Term, UnOp, Var};
-use crate::specs::{SchemeInstantiation, instantiate_match};
+use crate::specs::{SpecApplicationOutcome, apply_spec_set};
 use crate::types::{ClosureTarget, ClosureTypes, MapKey, Nominals, RenderTypes, Ty, Types};
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 
@@ -786,32 +786,11 @@ impl<'m> Solver<'m> {
             }
         }
         let has_underconstrained_args = arg_tys.iter().any(|ty| t.has_vars(ty));
-        let mut ret = None;
-        let mut underconstrained = false;
-        for spec in &spec_set.arrows {
-            match successful_spec_arrow_result(
-                t,
-                &spec.params,
-                &spec.result,
-                &spec.constraints,
-                &arg_tys,
-            ) {
-                SpecArrowResult::Known(result) => {
-                    ret = Some(match ret {
-                        Some(prev) => t.union(prev, result),
-                        None => result,
-                    });
-                }
-                SpecArrowResult::Underconstrained => underconstrained = true,
-                SpecArrowResult::NoMatch => {}
-            }
-        }
-        if let Some(ret) = ret {
-            Some(Info::known(ret))
-        } else if underconstrained || has_underconstrained_args {
-            Some(Info::Unknown)
-        } else {
-            Some(Info::known(t.none()))
+        match apply_spec_set::<_, (), _>(t, spec_set, &arg_tys, |_t, _query| None) {
+            SpecApplicationOutcome::Known(application) => Some(Info::known(application.result)),
+            SpecApplicationOutcome::Underconstrained(_) => Some(Info::Unknown),
+            SpecApplicationOutcome::NoMatch if has_underconstrained_args => Some(Info::Unknown),
+            SpecApplicationOutcome::NoMatch => Some(Info::known(t.none())),
         }
     }
 
@@ -1993,61 +1972,6 @@ fn invalid_operator_application(prim: &Prim, env: &Env) -> Option<TypeInferDiagn
         left,
         right,
     })
-}
-
-enum SpecArrowResult {
-    Known(Ty),
-    Underconstrained,
-    NoMatch,
-}
-
-fn successful_spec_arrow_result<T: Types<Ty = Ty> + ClosureTypes>(
-    t: &mut T,
-    params: &[Ty],
-    result: &Ty,
-    constraints: &HashMap<crate::types::TypeVarId, Ty>,
-    args: &[Ty],
-) -> SpecArrowResult {
-    match instantiate_match(t, params, result, constraints, args) {
-        SchemeInstantiation::Known(matched) => return SpecArrowResult::Known(matched.result),
-        SchemeInstantiation::Underconstrained(matched) => {
-            if !t.has_vars(&matched.result) {
-                return SpecArrowResult::Known(matched.result);
-            }
-        }
-        SchemeInstantiation::Invalid => {}
-    }
-
-    let Some(overlap_witnesses) = spec_param_overlap_witnesses(t, params, args) else {
-        return SpecArrowResult::NoMatch;
-    };
-    match instantiate_match(t, params, result, constraints, &overlap_witnesses) {
-        SchemeInstantiation::Known(matched) => SpecArrowResult::Known(matched.result),
-        SchemeInstantiation::Underconstrained(matched) if !t.has_vars(&matched.result) => {
-            SpecArrowResult::Known(matched.result)
-        }
-        SchemeInstantiation::Underconstrained(_) => SpecArrowResult::Underconstrained,
-        SchemeInstantiation::Invalid => SpecArrowResult::Underconstrained,
-    }
-}
-
-fn spec_param_overlap_witnesses<T: Types<Ty = Ty>>(
-    t: &mut T,
-    params: &[Ty],
-    args: &[Ty],
-) -> Option<Vec<Ty>> {
-    if params.len() != args.len() {
-        return None;
-    }
-    let mut witnesses = Vec::with_capacity(params.len());
-    for (param, arg) in params.iter().zip(args) {
-        let meet = t.intersect(param.clone(), arg.clone());
-        if t.is_empty(&meet) {
-            return None;
-        }
-        witnesses.push(meet);
-    }
-    Some(witnesses)
 }
 
 /// Look up a var's cell, defaulting to `Pending` for the not-yet-bound.

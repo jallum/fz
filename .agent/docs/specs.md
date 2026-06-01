@@ -53,13 +53,18 @@ Current extraction state:
 - Overload selection, result unioning after arrow selection, and structural
   correspondence queries live in `src/specs/select.rs`. The resolved model
   stays data-only.
+- Spec application lives in `src/specs/apply.rs`. It applies an overload set to
+  argument facts, performs successful-overlap matching for broad inputs, returns
+  the successful return union only after arrow selection, and reports
+  underconstrained partial results instead of collapsing them to `none`.
 - Declared-vs-inferred coverage checking lives in `src/specs/validate.rs`.
   The frontend spec check resolves source declarations, locates inferred
   planner facts, and renders diagnostics; it does not own the semantic
   coverage rule.
-- Planner higher-order witness logic still lives in
-  `src/ir_planner/spec_witness.rs`; later tickets fold that into the shared
-  spec-application API consumed by inference and planner projection.
+- Higher-order callback witness refinement is part of spec application. Planner
+  `src/ir_planner/spec_witness.rs` is now a compatibility adapter that converts
+  callback-return queries into planner `SpecKey` reads; `fz-hq4.6` removes the
+  stale planner-facing seam after callers migrate to the new API directly.
 
 Multiple adjacent `@spec` declarations parse and lower into a
 `ResolvedSpecSet`, and each downstream consumer must preserve the arrow set.
@@ -95,12 +100,14 @@ literal has two facts:
 - when called at a particular argument key, the planner may know an effective
   return for that target.
 
-Those are not the same fact. `src/ir_planner/spec_witness.rs` keeps them
-separate: it first instantiates the declared arrow from ordinary argument
-witnesses, then derives additional arrow evidence for closure-literal
-parameters from the closure target's effective return key. If that return key is
-not known yet, the caller records a return-read and the worklist revisits the
-caller when the closure return changes.
+Those are not the same fact. `src/specs/apply.rs` keeps them separate: it first
+instantiates the declared arrow from ordinary argument witnesses, then asks the
+caller for callback-return facts only when a closure-literal argument can
+witness a type variable through the callback result. The planner adapter turns
+that query into a `SpecKey` read. If the return key is not known yet, the
+application remains underconstrained and carries both the partial result and
+the pending read; the worklist revisits the caller when the closure return
+changes.
 
 This is what makes specs such as:
 
@@ -199,16 +206,15 @@ hold everywhere:
    no declared arrow covers that inferred behavior. Keep any-key inferred specs
    skipped.
 
-4. Declared-call typing: `src/specs/select.rs` owns arrow selection over a
-   `ResolvedSpecSet`. For call inputs, use a selected arrow's instantiated
-   params only when the call picks a unique arrow; otherwise keep the concrete
-   call arguments as the demand. For return typing, instantiate and union the
-   matched results only after arrow selection. Instantiation uses the shared
-   structural scheme matcher: variables can be witnessed by compatible nested
-   shapes such as higher-order callback arrows, and partial/underconstrained
-   results are not executable return facts. The matcher returns instantiated
-   params and result together so demand shaping, declared-call return typing,
-   and spec validation cannot drift into separate substitution stories.
+4. Declared-call typing: `src/specs/apply.rs` owns spec application over a
+   `ResolvedSpecSet`. For return typing, instantiate and union successful
+   matched results only after arrow selection. Broad inputs use successful
+   overlap witnesses, so `any + integer` yields the union of successful `+`
+   returns instead of either `any` or `none`. Underconstrained applications
+   carry pending reads and partial results, but callers must not treat those as
+   complete executable facts. For call inputs, `src/specs/select.rs` still uses
+   a selected arrow's instantiated params only when the call picks a unique
+   arrow; otherwise it keeps the concrete call arguments as the demand.
    Validation passes positional holes as unknown witness slots rather than
    converting them to `any`.
 

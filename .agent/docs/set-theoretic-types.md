@@ -120,8 +120,13 @@ The boundary rule is load-bearing:
 
 ```text
 Schemes may contain free variables.
-Concrete planner/codegen facts may not.
+Complete executable/codegen facts may not.
 ```
+
+`specs::apply_spec_set` may return an underconstrained partial result that still
+contains variables. That is not a complete return fact and must stay paired with
+its pending/underconstrained status until a caller either supplies more evidence
+or erases unresolved positions at an explicit boundary.
 
 A `Ty` with free variables is not executable knowledge. It can live in a
 declared spec, arrow clause, or underconstrained-instantiation result, but it
