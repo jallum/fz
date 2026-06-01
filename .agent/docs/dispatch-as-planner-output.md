@@ -67,8 +67,9 @@ variables from a concrete activation witness through `Types`; that is still only
 a comparison step, not a `SpecKey` rewrite.
 The `fz.planner.planned` event reports this bridge with
 `type_kernel: "activation"` plus activation return fact/key counts,
-known/unresolved/no-return counts, projected return count, projection-gap count,
-compatible-key lookup count, and legacy fallback count.
+entry completion/unresolved/invalid counts, known/unresolved/no-return counts,
+projected return count, projection-gap count, compatible-key lookup count, and
+legacy fallback count.
 
 Local direct, closure, and continuation call edges target a `SpecKey`, which
 names the callee function, its semantic input key, and its `ReturnDemand`.

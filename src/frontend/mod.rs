@@ -279,7 +279,7 @@ pub(crate) fn apply_planner_rewrites_to_fixed_point<T>(
     module: &mut Module,
     module_plan: &mut crate::ir_planner::ModulePlan,
 ) where
-    T: Types<Ty = crate::types::Ty> + ClosureTypes,
+    T: Types<Ty = crate::types::Ty> + ClosureTypes + RenderTypes,
 {
     // Protocol/direct-call rewrites can reveal later continuations. Iterate to
     // a fixed point so every newly reachable protocol call is planned and

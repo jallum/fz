@@ -42,8 +42,6 @@
 //! API entry points return boundary data and a coarse completion status.
 //! Activation facts, diagnostics, and dead matcher arms are emitted through
 //! telemetry so tests and operators observe the same production surface.
-#![allow(dead_code)]
-
 use crate::fz_ir::{BinOp, BlockId, Const, DeadBranch, FnId, Module, Prim, Stmt, Term, UnOp, Var};
 use crate::types::{ClosureTarget, ClosureTypes, MapKey, Nominals, RenderTypes, Ty, Types};
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
@@ -270,25 +268,6 @@ enum PredicateFact {
     TypeTest(Var, Ty),
 }
 
-/// The call contract for applying a closure value to `arg_tys`: its body
-/// function plus the full input vector `captures ++ args`.
-///
-/// Captures lead because lowering splices a closure's captured slots ahead of
-/// its call arguments. The captures come straight from the closure value's
-/// type, so a captured closure is carried at its own concrete type — a nested
-/// closure is a concrete capture, not a placeholder. `None` when `closure_ty`
-/// is not a single known closure (a union of targets is resolved later).
-pub(crate) fn closure_apply_contract<T: Types<Ty = Ty> + ClosureTypes>(
-    t: &T,
-    closure_ty: &Ty,
-    arg_tys: &[Ty],
-) -> Option<(FnId, Vec<Ty>)> {
-    let info = t.closure_lit_parts(closure_ty)?;
-    let mut inputs = info.captures;
-    inputs.extend_from_slice(arg_tys);
-    Some((info.target.into(), inputs))
-}
-
 /// One monomorphic activation of a function body under a concrete input tuple.
 ///
 /// `FnId` remains the callable/body identity. The activation key is the
@@ -478,7 +457,6 @@ pub(crate) enum TypeInferStatus {
 
 #[derive(Clone, Debug)]
 pub(crate) struct TypeInferOutcome {
-    pub(crate) entry_return: Ty,
     pub(crate) status: TypeInferStatus,
     pub(crate) activations: Vec<TypeInferActivationFact>,
 }
@@ -832,13 +810,6 @@ impl<'m> Solver<'m> {
         }
     }
 
-    fn boundary_return<T: Types<Ty = Ty>>(&self, t: &mut T, key: &ActivationKey) -> Ty {
-        match self.activations.get(key).map(|s| s.ret.clone()) {
-            Some(Info::Known(value)) => value.ty,
-            _ => t.any(),
-        }
-    }
-
     fn activation_facts(&self) -> Vec<TypeInferActivationFact> {
         let mut facts: Vec<_> = self
             .activations
@@ -859,9 +830,8 @@ impl<'m> Solver<'m> {
         facts
     }
 
-    fn outcome<T: Types<Ty = Ty>>(&self, t: &mut T, key: &ActivationKey) -> TypeInferOutcome {
+    fn outcome(&self) -> TypeInferOutcome {
         TypeInferOutcome {
-            entry_return: self.boundary_return(t, key),
             status: self.status(),
             activations: self.activation_facts(),
         }
@@ -2066,34 +2036,9 @@ fn cont_inputs_of(r: Info, captured: &[Var], env: &HashMap<Var, Info>) -> Vec<In
     inputs
 }
 
-/// Infer a function's return type from its body, given its input types,
-/// running the worklist to a fixpoint. This helper is a type-returning boundary:
-/// if the engine still has no return proof, expose `any` rather than inventing
-/// `none`. `none` is only returned when inference proved the value uninhabited.
-pub(crate) fn infer_return<T: Types<Ty = Ty> + ClosureTypes>(
-    t: &mut T,
-    module: &Module,
-    fn_id: FnId,
-    input_tys: &[Ty],
-) -> Ty {
-    let (solver, key) = solve_from_entry(t, module, fn_id, input_tys);
-    solver.boundary_return(t, &key)
-}
-
-pub(crate) fn infer_from_entry_data<T: Types<Ty = Ty> + ClosureTypes>(
-    t: &mut T,
-    module: &Module,
-    fn_id: FnId,
-    input_tys: &[Ty],
-) -> TypeInferOutcome {
-    let (solver, key) = solve_from_entry(t, module, fn_id, input_tys);
-    solver.outcome(t, &key)
-}
-
-/// Infer the reachable activation graph from an entry point. The returned
-/// outcome carries boundary data for the entry activation and a coarse status;
-/// detailed activation facts, diagnostics, and dead matcher arms are emitted
-/// through telemetry.
+/// Infer the reachable activation graph from an entry point. The outcome
+/// carries structured activation data and a coarse status; detailed activation
+/// facts, diagnostics, and dead matcher arms are emitted through telemetry.
 pub(crate) fn infer_from_entry<T: Types<Ty = Ty> + ClosureTypes + RenderTypes>(
     t: &mut T,
     module: &Module,
@@ -2101,8 +2046,8 @@ pub(crate) fn infer_from_entry<T: Types<Ty = Ty> + ClosureTypes + RenderTypes>(
     input_tys: &[Ty],
     tel: &dyn crate::telemetry::Telemetry,
 ) -> TypeInferOutcome {
-    let (solver, key) = solve_from_entry(t, module, fn_id, input_tys);
-    let outcome = solver.outcome(t, &key);
+    let (solver, _) = solve_from_entry(t, module, fn_id, input_tys);
+    let outcome = solver.outcome();
     solver.emit_telemetry(t, tel);
     outcome
 }

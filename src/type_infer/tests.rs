@@ -1,7 +1,4 @@
-use super::{
-    TypeInferOutcome, TypeInferReturnState, TypeInferStatus, closure_apply_contract,
-    infer_from_entry, infer_return,
-};
+use super::{TypeInferOutcome, TypeInferReturnState, TypeInferStatus, infer_from_entry};
 use crate::fz_ir::{Const, FnBuilder, FnId, Module, ModuleBuilder, Prim, Term};
 use crate::telemetry::{ConfiguredTelemetry, Handler, Value};
 use crate::types::{ClosureTarget, ClosureTypes, ConcreteTypes, Ty, Types};
@@ -97,6 +94,39 @@ fn main_id(module: &Module) -> FnId {
         .find(|f| f.name == "main" || f.name.ends_with(".main"))
         .expect("main fn")
         .id
+}
+
+/// Test boundary helper for one activation's return type. The production API
+/// returns activation facts; these focused tests need the entry activation's
+/// boundary-erased `Ty` directly.
+fn infer_return<T: Types<Ty = Ty> + ClosureTypes>(
+    t: &mut T,
+    module: &Module,
+    fn_id: FnId,
+    input_tys: &[Ty],
+) -> Ty {
+    let (solver, key) = super::solve_from_entry(t, module, fn_id, input_tys);
+    match solver
+        .activations
+        .get(&key)
+        .map(|activation| activation.ret.clone())
+    {
+        Some(super::Info::Known(value)) => value.ty,
+        _ => t.any(),
+    }
+}
+
+/// Test helper for closure-call shape: applying a closure activates its body
+/// with captures prepended to explicit call arguments.
+fn closure_apply_contract<T: Types<Ty = Ty> + ClosureTypes>(
+    t: &T,
+    closure_ty: &Ty,
+    arg_tys: &[Ty],
+) -> Option<(FnId, Vec<Ty>)> {
+    let info = t.closure_lit_parts(closure_ty)?;
+    let mut inputs = info.captures;
+    inputs.extend_from_slice(arg_tys);
+    Some((info.target.into(), inputs))
 }
 
 #[derive(Clone, Debug, Default)]
@@ -268,7 +298,7 @@ fn infer_fn_via_main(module: &Module, fn_name: &str) -> Ty {
 
 fn infer_entry_return_via_main(module: &Module) -> Ty {
     let mut t = ConcreteTypes;
-    infer_report_via_main(&mut t, module).outcome.entry_return
+    infer_return(&mut t, module, main_id(module), &[])
 }
 
 fn event_metadata_str(ev: &crate::telemetry::Event<'_, '_, '_>, key: &str) -> Option<String> {

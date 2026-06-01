@@ -1572,6 +1572,9 @@ fn planner_planned_reports_activation_return_kernel_telemetry() {
     };
     assert!(measurement("activation_return_fact_count") > 0);
     assert!(measurement("activation_return_key_count") > 0);
+    assert!(measurement("activation_return_complete_entry_count") > 0);
+    assert_eq!(measurement("activation_return_unresolved_entry_count"), 0);
+    assert_eq!(measurement("activation_return_invalid_entry_count"), 0);
     let spec_count = measurement("spec_count");
     measurement("activation_return_known_count");
     measurement("activation_return_unresolved_count");

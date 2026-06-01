@@ -204,7 +204,11 @@ mod tests {
     use crate::parser::Parser;
     use crate::parser::lexer::Lexer;
 
-    fn pipeline<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes>(
+    fn pipeline<
+        T: crate::types::Types<Ty = crate::types::Ty>
+            + crate::types::ClosureTypes
+            + crate::types::RenderTypes,
+    >(
         t: &mut T,
         src: &str,
     ) -> (Program, crate::fz_ir::Module, ModulePlan) {

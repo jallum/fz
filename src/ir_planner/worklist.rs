@@ -31,6 +31,9 @@ pub(crate) struct CallResultKnowledge {
 pub(crate) struct ActivationReturnFacts {
     returns: HashMap<SpecKey, TypeInferReturnState>,
     raw_fact_count: usize,
+    complete_entry_count: usize,
+    unresolved_entry_count: usize,
+    invalid_entry_count: usize,
     compatible_lookup_count: Cell<usize>,
     legacy_fallback_count: Cell<usize>,
 }
@@ -40,6 +43,9 @@ impl Default for ActivationReturnFacts {
         Self {
             returns: HashMap::new(),
             raw_fact_count: 0,
+            complete_entry_count: 0,
+            unresolved_entry_count: 0,
+            invalid_entry_count: 0,
             compatible_lookup_count: Cell::new(0),
             legacy_fallback_count: Cell::new(0),
         }
@@ -50,6 +56,9 @@ impl Default for ActivationReturnFacts {
 struct ActivationReturnTelemetry {
     fact_count: usize,
     key_count: usize,
+    complete_entry_count: usize,
+    unresolved_entry_count: usize,
+    invalid_entry_count: usize,
     known_count: usize,
     unresolved_count: usize,
     no_return_count: usize,
@@ -66,15 +75,25 @@ impl ActivationReturnFacts {
     }
 
     fn from_entry_seeds<
-        T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
+        T: crate::types::Types<Ty = crate::types::Ty>
+            + crate::types::ClosureTypes
+            + crate::types::RenderTypes,
     >(
         t: &mut T,
         module: &Module,
+        tel: &dyn crate::telemetry::Telemetry,
     ) -> Self {
         let seeds = entry_seeds(t, module);
         let mut facts = Self::default();
         for (entry, input_tys) in seeds {
-            let outcome = crate::type_infer::infer_from_entry_data(t, module, entry, &input_tys);
+            let outcome = crate::type_infer::infer_from_entry(t, module, entry, &input_tys, tel);
+            match outcome.status {
+                crate::type_infer::TypeInferStatus::Complete => facts.complete_entry_count += 1,
+                crate::type_infer::TypeInferStatus::Unresolved => {
+                    facts.unresolved_entry_count += 1;
+                }
+                crate::type_infer::TypeInferStatus::Invalid => facts.invalid_entry_count += 1,
+            }
             for activation in outcome.activations {
                 facts.raw_fact_count += 1;
                 let key = spec_key_for_fn_id(module, activation.fn_id, activation.input_tys);
@@ -183,6 +202,9 @@ impl ActivationReturnFacts {
         let mut stats = ActivationReturnTelemetry {
             fact_count: self.raw_fact_count,
             key_count: self.returns.len(),
+            complete_entry_count: self.complete_entry_count,
+            unresolved_entry_count: self.unresolved_entry_count,
+            invalid_entry_count: self.invalid_entry_count,
             projected_count: reachable.len(),
             compatible_lookup_count: self.compatible_lookup_count.get(),
             legacy_fallback_count: self.legacy_fallback_count.get(),
@@ -556,7 +578,11 @@ pub(crate) fn closure_value_result_knowledge<
 ///   O(|specs| · (1 + H · |return-edges per spec|))
 /// which is finite. `VISIT_HARD_BOUND` below is a debug-only
 /// tripwire for invariant violation, NOT a release safety net.
-pub fn plan_module<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes>(
+pub fn plan_module<
+    T: crate::types::Types<Ty = crate::types::Ty>
+        + crate::types::ClosureTypes
+        + crate::types::RenderTypes,
+>(
     t: &mut T,
     m: &Module,
     tel: &dyn crate::telemetry::Telemetry,
@@ -565,7 +591,9 @@ pub fn plan_module<T: crate::types::Types<Ty = crate::types::Ty> + crate::types:
 }
 
 pub fn plan_module_with_role<
-    T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
+    T: crate::types::Types<Ty = crate::types::Ty>
+        + crate::types::ClosureTypes
+        + crate::types::RenderTypes,
 >(
     t: &mut T,
     m: &Module,
@@ -618,6 +646,9 @@ pub fn plan_module_with_role<
                 receive_matched_count: stats.receive_matched_count as u64,
                 activation_return_fact_count: activation_return_telemetry.fact_count as u64,
                 activation_return_key_count: activation_return_telemetry.key_count as u64,
+                activation_return_complete_entry_count: activation_return_telemetry.complete_entry_count as u64,
+                activation_return_unresolved_entry_count: activation_return_telemetry.unresolved_entry_count as u64,
+                activation_return_invalid_entry_count: activation_return_telemetry.invalid_entry_count as u64,
                 activation_return_known_count: activation_return_telemetry.known_count as u64,
                 activation_return_unresolved_count: activation_return_telemetry.unresolved_count as u64,
                 activation_return_no_return_count: activation_return_telemetry.no_return_count as u64,
@@ -693,7 +724,9 @@ pub fn plan_module_with_role<
 /// interprocedural over the linked working module — the reason the pretyped
 /// frontend's shallow `_pre_types` cannot serve here.
 pub fn plan_callable_capabilities<
-    T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
+    T: crate::types::Types<Ty = crate::types::Ty>
+        + crate::types::ClosureTypes
+        + crate::types::RenderTypes,
 >(
     t: &mut T,
     m: &Module,
@@ -742,7 +775,11 @@ struct PlannerTelemetry<'a> {
 /// Drive the worklist to discover every reachable executable spec from the
 /// module's entry seeds, then prune orphans and project activation returns over
 /// the reachable set. Shared by `plan_module` and `plan_callable_capabilities`.
-fn discover_specs<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes>(
+fn discover_specs<
+    T: crate::types::Types<Ty = crate::types::Ty>
+        + crate::types::ClosureTypes
+        + crate::types::RenderTypes,
+>(
     t: &mut T,
     m: &Module,
     tel: PlannerTelemetry<'_>,
@@ -777,7 +814,7 @@ fn discover_specs<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::
         std::collections::HashSet::new();
 
     let fn_effects = compute_fn_effects(m);
-    let activation_returns = ActivationReturnFacts::from_entry_seeds(t, m);
+    let activation_returns = ActivationReturnFacts::from_entry_seeds(t, m, tel.tel);
 
     let mut work: std::collections::VecDeque<SpecKey> = entry_seeds(t, m)
         .into_iter()
