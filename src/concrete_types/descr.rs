@@ -735,35 +735,60 @@ impl Descr {
             axis_free(d)
                 .then_some(())
                 .and_then(|_| single_positive(&d.tuples))
-                .filter(|_| d.lists.is_empty() && d.resources.is_empty() && d.funcs.is_empty() && d.maps.is_empty())
+                .filter(|_| {
+                    d.lists.is_empty()
+                        && d.resources.is_empty()
+                        && d.funcs.is_empty()
+                        && d.maps.is_empty()
+                })
         }
 
         fn pure_list(d: &Descr) -> Option<&ListSig> {
             axis_free(d)
                 .then_some(())
                 .and_then(|_| single_positive(&d.lists))
-                .filter(|_| d.tuples.is_empty() && d.resources.is_empty() && d.funcs.is_empty() && d.maps.is_empty())
+                .filter(|_| {
+                    d.tuples.is_empty()
+                        && d.resources.is_empty()
+                        && d.funcs.is_empty()
+                        && d.maps.is_empty()
+                })
         }
 
         fn pure_resource(d: &Descr) -> Option<&ResourceSig> {
             axis_free(d)
                 .then_some(())
                 .and_then(|_| single_positive(&d.resources))
-                .filter(|_| d.tuples.is_empty() && d.lists.is_empty() && d.funcs.is_empty() && d.maps.is_empty())
+                .filter(|_| {
+                    d.tuples.is_empty()
+                        && d.lists.is_empty()
+                        && d.funcs.is_empty()
+                        && d.maps.is_empty()
+                })
         }
 
         fn pure_arrow(d: &Descr) -> Option<&ArrowSig> {
             axis_free(d)
                 .then_some(())
                 .and_then(|_| single_positive(&d.funcs))
-                .filter(|_| d.tuples.is_empty() && d.lists.is_empty() && d.resources.is_empty() && d.maps.is_empty())
+                .filter(|_| {
+                    d.tuples.is_empty()
+                        && d.lists.is_empty()
+                        && d.resources.is_empty()
+                        && d.maps.is_empty()
+                })
         }
 
         fn pure_map(d: &Descr) -> Option<&MapSig> {
             axis_free(d)
                 .then_some(())
                 .and_then(|_| single_positive(&d.maps))
-                .filter(|_| d.tuples.is_empty() && d.lists.is_empty() && d.resources.is_empty() && d.funcs.is_empty())
+                .filter(|_| {
+                    d.tuples.is_empty()
+                        && d.lists.is_empty()
+                        && d.resources.is_empty()
+                        && d.funcs.is_empty()
+                })
         }
 
         if let (Some(lhs), Some(rhs)) = (pure_tuple(self), pure_tuple(other)) {
@@ -834,11 +859,7 @@ impl Descr {
     /// tags so higher-order fixed-point slots do not fork on wrapper identity.
     pub(crate) fn erase_closure_identity(&self) -> Descr {
         let map_tuple_sig = |s: TupleSig| TupleSig {
-            elems: s
-                .elems
-                .iter()
-                .map(Descr::erase_closure_identity)
-                .collect(),
+            elems: s.elems.iter().map(Descr::erase_closure_identity).collect(),
         };
         let map_list_sig = |s: ListSig| ListSig {
             empty: s.empty,
@@ -851,11 +872,7 @@ impl Descr {
             payload: Box::new(s.payload.erase_closure_identity()),
         };
         let map_arrow_sig = |s: ArrowSig| ArrowSig {
-            args: s
-                .args
-                .iter()
-                .map(Descr::erase_closure_identity)
-                .collect(),
+            args: s.args.iter().map(Descr::erase_closure_identity).collect(),
             ret: Box::new(s.ret.erase_closure_identity()),
             lit: None,
         };

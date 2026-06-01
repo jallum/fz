@@ -123,12 +123,7 @@ fn closure_targets(m: &Module) -> HashSet<FnId> {
     set
 }
 
-fn remap_inlined_var(
-    entry_params: &[Var],
-    tail_args: &[Var],
-    var_shift: u32,
-    var: Var,
-) -> Var {
+fn remap_inlined_var(entry_params: &[Var], tail_args: &[Var], var_shift: u32, var: Var) -> Var {
     entry_params
         .iter()
         .position(|param| *param == var)
@@ -2161,11 +2156,15 @@ mod tests {
             "declared_specs contains dead FnId"
         );
         assert!(
-            m.function_correspondence.keys().all(|fid| live.contains(fid)),
+            m.function_correspondence
+                .keys()
+                .all(|fid| live.contains(fid)),
             "function_correspondence contains dead FnId"
         );
         assert!(
-            m.continuation_provenance.keys().all(|fid| live.contains(fid)),
+            m.continuation_provenance
+                .keys()
+                .all(|fid| live.contains(fid)),
             "continuation_provenance contains dead FnId"
         );
         assert!(

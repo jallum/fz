@@ -57,12 +57,7 @@ pub fn cont_slot0_descr<
                 .effective_return_for_call_ty(t, *callee, &arg_tys)
                 .as_ref()
                 .cloned();
-            let declared = declared_call_return(
-                t,
-                module,
-                *callee,
-                &arg_tys,
-            );
+            let declared = declared_call_return(t, module, *callee, &arg_tys);
             match (declared, effective) {
                 (Some(declared), Some(effective)) if t.is_subtype(&effective, &declared) => {
                     effective

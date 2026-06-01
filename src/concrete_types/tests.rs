@@ -936,7 +936,9 @@ fn structurally_widen_falls_back_to_union_for_incompatible_fields() {
     let widened = lhs.structurally_widen(&rhs);
     let expected = Descr::tuple_of([
         Descr::empty_list(),
-        Descr::bool_t().union(&Descr::int_lit(2)).widen_for_recursive_spec_key(),
+        Descr::bool_t()
+            .union(&Descr::int_lit(2))
+            .widen_for_recursive_spec_key(),
     ]);
     assert!(
         widened.is_equiv(&expected),

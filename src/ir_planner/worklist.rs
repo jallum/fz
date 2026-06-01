@@ -6,8 +6,8 @@ use super::fn_types::{
     FixedPointSlotSummaries, FnEffects, HoldersMap, ModulePlan, PLAN_MODULE_CALLS, ProducesMap,
     ReturnDepsByCaller, ReturnReaders, SpecKey, SpecKeySet, SpecPlan, TYPE_FN_CALLS,
     VISIT_HARD_BOUND, WALK_CALLS, WORKLIST_POPS, build_any_key_index,
-    fixed_point_spec_key_for_arity, key_precedence_order,
-    normalize_result_correspondence_key, spec_key_for_fn_id, spec_key_input_tys,
+    fixed_point_spec_key_for_arity, key_precedence_order, normalize_result_correspondence_key,
+    spec_key_for_fn_id, spec_key_input_tys,
 };
 use super::reachable::{cont_key_from_slot0, env_at_terminator};
 use super::type_fn::type_fn;
@@ -72,8 +72,13 @@ pub(crate) fn direct_call_result_knowledge<
             None,
         )
     });
-    let declared =
-        declared_call_return(t, module, callee, arg_tys, &module.fn_by_id(caller).owner_module);
+    let declared = declared_call_return(
+        t,
+        module,
+        callee,
+        arg_tys,
+        &module.fn_by_id(caller).owner_module,
+    );
     let effective = effective_returns.get(&target).cloned();
     let none_ty = t.none();
     let effective_is_pending_bottom = effective_returns.get(&target).is_none()
@@ -718,9 +723,7 @@ fn compute_fn_effects(m: &Module) -> FnEffects {
 ///   6. Recompute this spec's effective return. If changed, enqueue
 ///      every spec in `return_readers[spec]`.
 #[allow(clippy::too_many_arguments)]
-fn process_worklist<
-    T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
->(
+fn process_worklist<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes>(
     t: &mut T,
     m: &Module,
     tel: PlannerTelemetry<'_>,
@@ -812,9 +815,7 @@ fn process_worklist<
     }
 }
 
-fn update_fixed_point_slot_summaries<
-    T: crate::types::Types<Ty = crate::types::Ty>,
->(
+fn update_fixed_point_slot_summaries<T: crate::types::Types<Ty = crate::types::Ty>>(
     t: &mut T,
     m: &Module,
     tel: PlannerTelemetry<'_>,
@@ -1727,10 +1728,9 @@ pub(crate) fn cont_key_for_spec<
     let env = env_at_terminator(t, ft, block, module);
     let slot0: Ty = match &block.terminator {
         Term::Call { callee, args, .. } => {
-            let direct_cid = block
-                .terminator
-                .ident()
-                .map(|ident| crate::fz_ir::CallsiteId::new(caller, ident, crate::fz_ir::EmitSlot::Direct));
+            let direct_cid = block.terminator.ident().map(|ident| {
+                crate::fz_ir::CallsiteId::new(caller, ident, crate::fz_ir::EmitSlot::Direct)
+            });
             let arg_tys: Vec<Ty> = args
                 .iter()
                 .map(|av| env.get(av).cloned().unwrap_or_else(|| any_t.clone()))
@@ -1817,7 +1817,6 @@ pub(crate) fn cont_key_for_spec<
         cont_key_from_slot0(&any_t, n_params, slot0, &cont.captured, &env),
     ))
 }
-
 
 fn external_call_return_slot0_for_spec<
     T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,

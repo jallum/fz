@@ -2695,7 +2695,9 @@ fn runtime_graph_codegen_authoritative_plan_keeps_cont_dispatches_for_enum_take_
                 block.id,
                 block.terminator,
                 m.fn_idx.get(callee),
-                m.fn_idx.get(callee).map(|_| m.fn_by_id(*callee).name.clone()),
+                m.fn_idx
+                    .get(callee)
+                    .map(|_| m.fn_by_id(*callee).name.clone()),
                 spec.block_envs.get(&block.id).map(|env| {
                     let mut vars = env.iter().collect::<Vec<_>>();
                     vars.sort_by_key(|(var, _)| var.0);
@@ -2778,7 +2780,10 @@ fn compile_emits_spec_pair_inventory_telemetry() {
         !compile_spans.is_empty(),
         "frontend/codegen should publish compile spans"
     );
-    let compile_span_ids = compile_spans.iter().map(|ev| ev.span_id).collect::<Vec<_>>();
+    let compile_span_ids = compile_spans
+        .iter()
+        .map(|ev| ev.span_id)
+        .collect::<Vec<_>>();
     for ev in &compile_spans {
         assert!(
             matches!(ev.metadata.get("compile_nonce"), Some(Value::U64(n)) if *n > 0),
@@ -2788,7 +2793,10 @@ fn compile_emits_spec_pair_inventory_telemetry() {
     for ev in cap
         .find(&["fz", "planner", "spec_pair_inventory"])
         .into_iter()
-        .chain(cap.find(&["fz", "codegen", "spec_pair_inventory"]).into_iter())
+        .chain(
+            cap.find(&["fz", "codegen", "spec_pair_inventory"])
+                .into_iter(),
+        )
     {
         assert!(
             compile_span_ids.contains(&ev.span_id),

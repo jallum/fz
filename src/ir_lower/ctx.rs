@@ -2,8 +2,8 @@ use super::*;
 use crate::ast::FnDef;
 use crate::diag::Span;
 use crate::fz_ir::{
-    BlockId, CallsiteId, Const, ContinuationProvenance, EmitSlot, ExternArg, ExternDecl,
-    ExternId, FnBuilder, FnId, ModuleBuilder, Prim, ProtocolCallTarget, Term, Var,
+    BlockId, CallsiteId, Const, ContinuationProvenance, EmitSlot, ExternArg, ExternDecl, ExternId,
+    FnBuilder, FnId, ModuleBuilder, Prim, ProtocolCallTarget, Term, Var,
 };
 use std::collections::{HashMap, HashSet};
 
@@ -134,7 +134,8 @@ impl LowerCtx {
         continuation: FnId,
         provenance: ContinuationProvenance,
     ) {
-        self.continuation_provenance.insert(continuation, provenance);
+        self.continuation_provenance
+            .insert(continuation, provenance);
     }
 
     pub(super) fn resolve_prelude_import(&self, name: &str, arity: usize) -> Option<String> {

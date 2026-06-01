@@ -53,7 +53,9 @@ pub fn literal_closure_return_keys<
     let mut keys = Vec::new();
     for clause in clauses {
         let crate::types::CallableClause {
-            args, closure: Some(closure), ..
+            args,
+            closure: Some(closure),
+            ..
         } = clause
         else {
             return None;

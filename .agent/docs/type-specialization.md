@@ -179,9 +179,20 @@ it is eventually applied with — nothing special, and nothing that grows.
 
 ## Specialization is a worklist fixpoint
 
-A **spec** is keyed by a function and its input types, where inputs are
-`capture-types ++ parameter-types` — the full call-contract. The worklist holds
-specs whose inputs have changed:
+`FnId` is the body/callable identity. It owns the code being analyzed and remains
+the runtime target for direct calls, closure bodies, and protocol impl bodies. It
+is **not** the inference instance: one `FnId` may be called at several concrete
+input shapes without those callers sharing one joined return cell.
+
+An **activation** is the monomorphic inference instance for one reachable
+call-contract. It is keyed by `FnId` plus a canonical input tuple. For ordinary
+direct calls the tuple is the parameter types. For closure bodies the internal
+tuple is `capture-types ++ parameter-types`, because captures are leading entry
+parameters in the lowered body. That internal tuple is for inference only: the
+closure's callable surface remains its ordinary parameters, with captures loaded
+from the closure environment after this phase.
+
+The worklist holds activations whose return estimate may have changed:
 
 - A call instantiates the callee's signature against the incoming argument types
   and records a return-read dependency from caller to callee.
@@ -191,13 +202,13 @@ specs whose inputs have changed:
   never change (the accumulator's type, the reducer) stay put.
 - When a callee's return ascends, its readers are rescheduled. When a capture's
   type changes — because the engine learned more about the function that built the
-  closure — the closure's spec is rescheduled, and its readers with it.
+  closure — the closure activation is rescheduled, and its readers with it.
 - A protocol-dispatch stub is **devirtualized on its receiver's type** before the
   call: the single impl whose target type the receiver is a subtype of. Until the
   receiver is `Known`, the call yields `Unknown` and is retried as the receiver
   ascends.
 
-The fixpoint halts when no spec's inputs or return are still moving.
+The fixpoint halts when no activation's inputs or return are still moving.
 
 ## Why it terminates
 

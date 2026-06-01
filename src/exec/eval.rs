@@ -744,7 +744,9 @@ impl CompileTimeEvaluator {
                 }
                 Ok(quoted_node(&name, Value::List(Rc::new(arg_vs))))
             }
-            Expr::ClosureCall(_, _) => Err("quote: anonymous-function calls not yet supported".into()),
+            Expr::ClosureCall(_, _) => {
+                Err("quote: anonymous-function calls not yet supported".into())
+            }
             Expr::BinOp(op, l, r) => {
                 let lv = self.reify_with_unquotes(l, env)?;
                 let rv = self.reify_with_unquotes(r, env)?;
@@ -927,7 +929,9 @@ fn main() do {check(42), check(:foo)} end
         let prog = Parser::new(toks).parse_program().expect("parse");
         let interp = CompileTimeEvaluator::new();
         interp.load_program(&prog).expect("load");
-        let err = interp.call_named("main", vec![]).expect_err("expected named-call failure");
+        let err = interp
+            .call_named("main", vec![])
+            .expect_err("expected named-call failure");
         assert!(
             err.contains("undefined: count"),
             "expected undefined function error, got {err:?}"

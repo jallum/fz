@@ -375,7 +375,9 @@ impl IrUnitLinker {
             unit.code
                 .continuation_provenance
                 .iter()
-                .filter_map(|(fid, provenance)| fn_map.get(fid).map(|new| (*new, provenance.clone()))),
+                .filter_map(|(fid, provenance)| {
+                    fn_map.get(fid).map(|new| (*new, provenance.clone()))
+                }),
         );
     }
 

@@ -9,10 +9,11 @@
 //! ## Shape
 //!
 //! Specialization is a **monotone worklist fixpoint** over the CPS-lowered
-//! `Module`. Each reachable function gets one [`Spec`] — the running join of
-//! every input tuple it has been called with, plus its current return type.
-//! Both ascend a finite-height refinement lattice (via `refine_widen`), so the
-//! fixpoint terminates.
+//! `Module`. Each reachable call contract gets an activation cell keyed by its
+//! `FnId` plus canonical input tuple. `FnId` remains body/callable identity;
+//! activations are inference instances. Each activation's return ascends a
+//! finite-height refinement lattice (via `refine_widen`), so the fixpoint
+//! terminates.
 //!
 //! The CPS lowering is what makes this clean: recursion, continuations, and
 //! closure application are all *separate* `FnIr`s, reached through call-shape
@@ -102,8 +103,18 @@ pub(crate) fn closure_apply_contract<T: Types<Ty = Ty> + ClosureTypes>(
     Some((info.target.into(), inputs))
 }
 
-/// One function's specialization: the running join of every input tuple it has
-/// been called with, and its current return estimate. Both only ever ascend.
+/// One monomorphic activation of a function body under a concrete input tuple.
+///
+/// `FnId` remains the callable/body identity. The activation key is the
+/// inference instance: the same `FnId` can be activated at `int` and `:ok`
+/// without joining those callers' returns together.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct ActivationKey {
+    fn_id: FnId,
+    inputs: Vec<Ty>,
+}
+
+/// One function activation's current return estimate.
 struct Spec {
     inputs: Vec<Info>,
     ret: Info,
@@ -113,12 +124,12 @@ struct Spec {
 /// joint fixpoint of input- and return-type estimates.
 struct Solver<'m> {
     module: &'m Module,
-    specs: HashMap<FnId, Spec>,
-    /// `callee -> callers whose return estimate read callee's ret`. When a
-    /// callee's ret ascends, its callers are re-enqueued.
-    deps: HashMap<FnId, HashSet<FnId>>,
-    queue: VecDeque<FnId>,
-    queued: HashSet<FnId>,
+    specs: HashMap<ActivationKey, Spec>,
+    /// `callee activation -> caller activations whose return estimate read
+    /// callee's ret`. When a callee's ret ascends, its callers are re-enqueued.
+    deps: HashMap<ActivationKey, HashSet<ActivationKey>>,
+    queue: VecDeque<ActivationKey>,
+    queued: HashSet<ActivationKey>,
 }
 
 impl<'m> Solver<'m> {
@@ -132,65 +143,43 @@ impl<'m> Solver<'m> {
         }
     }
 
-    fn enqueue(&mut self, f: FnId) {
-        if self.queued.insert(f) {
-            self.queue.push_back(f);
+    fn enqueue(&mut self, key: ActivationKey) {
+        if self.queued.insert(key.clone()) {
+            self.queue.push_back(key);
         }
     }
 
-    fn pop(&mut self) -> Option<FnId> {
-        let f = self.queue.pop_front()?;
-        self.queued.remove(&f);
-        Some(f)
+    fn pop(&mut self) -> Option<ActivationKey> {
+        let key = self.queue.pop_front()?;
+        self.queued.remove(&key);
+        Some(key)
     }
 
     /// Seed an entry point with its known input types and schedule it.
     fn seed(&mut self, fn_id: FnId, inputs: Vec<Info>) {
-        self.specs.insert(
+        let key = ActivationKey {
             fn_id,
+            inputs: inputs
+                .iter()
+                .filter_map(|input| match input {
+                    Info::Known(ty) => Some(ty.clone()),
+                    Info::Unknown => None,
+                })
+                .collect(),
+        };
+        assert_eq!(
+            key.inputs.len(),
+            inputs.len(),
+            "entry activations must be seeded with known inputs"
+        );
+        self.specs.insert(
+            key.clone(),
             Spec {
                 inputs,
                 ret: Info::Unknown,
             },
         );
-        self.enqueue(fn_id);
-    }
-
-    /// Widen `callee`'s recorded input tuple by `args`. Returns whether the
-    /// stored inputs changed (a fresh callee always counts as changed).
-    fn widen_inputs<T: Types<Ty = Ty>>(&mut self, t: &mut T, callee: FnId, args: Vec<Info>) -> bool {
-        match self.specs.get(&callee) {
-            None => {
-                self.specs.insert(
-                    callee,
-                    Spec {
-                        inputs: args,
-                        ret: Info::Unknown,
-                    },
-                );
-                true
-            }
-            Some(spec) => {
-                let old = spec.inputs.clone();
-                if old.len() != args.len() {
-                    self.specs.get_mut(&callee).unwrap().inputs = args;
-                    return true;
-                }
-                let mut widened = Vec::with_capacity(old.len());
-                let mut changed = false;
-                for (o, a) in old.iter().zip(args.iter()) {
-                    let w = o.widen(t, a);
-                    if !w.equiv(t, o) {
-                        changed = true;
-                    }
-                    widened.push(w);
-                }
-                if changed {
-                    self.specs.get_mut(&callee).unwrap().inputs = widened;
-                }
-                changed
-            }
-        }
+        self.enqueue(key);
     }
 
     /// `caller` applies `callee` to `args`. A protocol-dispatch stub is
@@ -199,7 +188,7 @@ impl<'m> Solver<'m> {
     fn call<T: Types<Ty = Ty>>(
         &mut self,
         t: &mut T,
-        caller: FnId,
+        caller: &ActivationKey,
         callee: FnId,
         args: Vec<Info>,
     ) -> Info {
@@ -260,16 +249,29 @@ impl<'m> Solver<'m> {
     fn call_direct<T: Types<Ty = Ty>>(
         &mut self,
         t: &mut T,
-        caller: FnId,
+        caller: &ActivationKey,
         callee: FnId,
         args: Vec<Info>,
     ) -> Info {
-        self.deps.entry(callee).or_default().insert(caller);
-        if self.widen_inputs(t, callee, args) {
-            self.enqueue(callee);
+        let Some(key) = activation_key(t, callee, &args) else {
+            return Info::Unknown;
+        };
+        self.deps
+            .entry(key.clone())
+            .or_default()
+            .insert(caller.clone());
+        if !self.specs.contains_key(&key) {
+            self.specs.insert(
+                key.clone(),
+                Spec {
+                    inputs: key.inputs.iter().cloned().map(Info::Known).collect(),
+                    ret: Info::Unknown,
+                },
+            );
+            self.enqueue(key.clone());
         }
         self.specs
-            .get(&callee)
+            .get(&key)
             .map(|s| s.ret.clone())
             .unwrap_or(Info::Unknown)
     }
@@ -308,9 +310,9 @@ impl<'m> Solver<'m> {
     }
 
     fn run<T: Types<Ty = Ty> + ClosureTypes>(&mut self, t: &mut T) {
-        while let Some(f) = self.pop() {
-            let inputs = self.specs[&f].inputs.clone();
-            let body_ret = self.walk_fn(t, f, &inputs);
+        while let Some(key) = self.pop() {
+            let inputs = self.specs[&key].inputs.clone();
+            let body_ret = self.walk_fn(t, &key, &inputs);
             // A declared `@spec` is a backstop for a body the engine cannot
             // infer (e.g. an extern-forwarding builtin like `dbg`/`Kernel.+`):
             // only when body inference is `Unknown` do we fall back to the spec
@@ -321,15 +323,15 @@ impl<'m> Solver<'m> {
             // turn a precise body into `none`.
             let ret = match body_ret {
                 Info::Unknown => self
-                    .declared_spec_ret(t, f, &inputs)
+                    .declared_spec_ret(t, key.fn_id, &inputs)
                     .unwrap_or(Info::Unknown),
                 known => known,
             };
-            let old = self.specs[&f].ret.clone();
+            let old = self.specs[&key].ret.clone();
             let new = old.widen(t, &ret);
             if !new.equiv(t, &old) {
-                self.specs.get_mut(&f).unwrap().ret = new;
-                if let Some(callers) = self.deps.get(&f).cloned() {
+                self.specs.get_mut(&key).unwrap().ret = new;
+                if let Some(callers) = self.deps.get(&key).cloned() {
                     for c in callers {
                         self.enqueue(c);
                     }
@@ -342,16 +344,17 @@ impl<'m> Solver<'m> {
     fn walk_fn<T: Types<Ty = Ty> + ClosureTypes>(
         &mut self,
         t: &mut T,
-        f: FnId,
+        key: &ActivationKey,
         inputs: &[Info],
     ) -> Info {
+        let f = key.fn_id;
         let fnir = self.module.fn_by_id(f);
         let mut env: HashMap<Var, Info> = HashMap::new();
         for (param, info) in fnir.block(fnir.entry).params.iter().zip(inputs) {
             env.insert(*param, info.clone());
         }
         let mut visited = HashSet::new();
-        self.walk_block(t, f, fnir.entry, &mut env, &mut visited)
+        self.walk_block(t, key, fnir.entry, &mut env, &mut visited)
     }
 
     /// Walk one block of `f`. Intra-fn control (`Goto`/`If`) recurses here;
@@ -361,12 +364,13 @@ impl<'m> Solver<'m> {
     fn walk_block<T: Types<Ty = Ty> + ClosureTypes>(
         &mut self,
         t: &mut T,
-        f: FnId,
+        key: &ActivationKey,
         block_id: BlockId,
         env: &mut HashMap<Var, Info>,
         visited: &mut HashSet<BlockId>,
     ) -> Info {
         let module = self.module;
+        let f = key.fn_id;
         if !visited.insert(block_id) {
             return Info::Unknown;
         }
@@ -397,18 +401,16 @@ impl<'m> Solver<'m> {
                 for (param, info) in target_params.iter().zip(arg_infos) {
                     env.insert(*param, info);
                 }
-                self.walk_block(t, f, *target, env, visited)
+                self.walk_block(t, key, *target, env, visited)
             }
-            Term::If {
-                then_b, else_b, ..
-            } => {
+            Term::If { then_b, else_b, .. } => {
                 let (then_b, else_b) = (*then_b, *else_b);
                 let mut env_t = env.clone();
                 let mut vis_t = visited.clone();
-                let a = self.walk_block(t, f, then_b, &mut env_t, &mut vis_t);
+                let a = self.walk_block(t, key, then_b, &mut env_t, &mut vis_t);
                 let mut env_e = env.clone();
                 let mut vis_e = visited.clone();
-                let b = self.walk_block(t, f, else_b, &mut env_e, &mut vis_e);
+                let b = self.walk_block(t, key, else_b, &mut env_e, &mut vis_e);
                 a.widen(t, &b)
             }
             Term::Call {
@@ -418,14 +420,14 @@ impl<'m> Solver<'m> {
                 ..
             } => {
                 let arg_infos = arg_infos_of(args, env);
-                let r = self.call(t, f, *callee, arg_infos);
+                let r = self.call(t, key, *callee, arg_infos);
                 let cont_inputs = cont_inputs_of(r, &continuation.captured, env);
-                self.call(t, f, continuation.fn_id, cont_inputs)
+                self.call(t, key, continuation.fn_id, cont_inputs)
             }
             // A tail call forwards our own continuation, so its result is ours.
             Term::TailCall { callee, args, .. } => {
                 let arg_infos = arg_infos_of(args, env);
-                self.call(t, f, *callee, arg_infos)
+                self.call(t, key, *callee, arg_infos)
             }
             Term::CallClosure {
                 closure,
@@ -434,13 +436,13 @@ impl<'m> Solver<'m> {
                 ..
             } => {
                 let arg_infos = arg_infos_of(args, env);
-                let r = self.apply_closure(t, f, *closure, arg_infos, env);
+                let r = self.apply_closure(t, key, *closure, arg_infos, env);
                 let cont_inputs = cont_inputs_of(r, &continuation.captured, env);
-                self.call(t, f, continuation.fn_id, cont_inputs)
+                self.call(t, key, continuation.fn_id, cont_inputs)
             }
             Term::TailCallClosure { closure, args, .. } => {
                 let arg_infos = arg_infos_of(args, env);
-                self.apply_closure(t, f, *closure, arg_infos, env)
+                self.apply_closure(t, key, *closure, arg_infos, env)
             }
             // Receive shapes are out of corpus scope (fz-g58.65.5).
             _ => Info::Unknown,
@@ -453,7 +455,7 @@ impl<'m> Solver<'m> {
     fn apply_closure<T: Types<Ty = Ty> + ClosureTypes>(
         &mut self,
         t: &mut T,
-        f: FnId,
+        caller: &ActivationKey,
         closure: Var,
         arg_infos: Vec<Info>,
         env: &HashMap<Var, Info>,
@@ -468,7 +470,7 @@ impl<'m> Solver<'m> {
                 let target: FnId = parts.target.into();
                 let mut inputs: Vec<Info> = parts.captures.into_iter().map(Info::Known).collect();
                 inputs.extend(arg_infos);
-                self.call(t, f, target, inputs)
+                self.call(t, caller, target, inputs)
             }
             // Couldn't resolve a single closure target ⇒ undetermined, not
             // `any` (which would assert "dynamic" as a fact). `any` is earned.
@@ -644,6 +646,24 @@ fn numeric_binop<T: Types<Ty = Ty>>(t: &mut T, lt: Info, rt: Info) -> Info {
     Info::Known(result)
 }
 
+fn activation_key<T: Types<Ty = Ty>>(
+    t: &mut T,
+    fn_id: FnId,
+    inputs: &[Info],
+) -> Option<ActivationKey> {
+    let mut key_inputs = Vec::with_capacity(inputs.len());
+    for input in inputs {
+        match input {
+            Info::Known(ty) => key_inputs.push(t.widen_for_recursive_spec_key(ty)),
+            Info::Unknown => return None,
+        }
+    }
+    Some(ActivationKey {
+        fn_id,
+        inputs: key_inputs,
+    })
+}
+
 /// Look up a var's cell, defaulting to `Unknown` for the not-yet-bound.
 fn info_of(v: Var, env: &HashMap<Var, Info>) -> Info {
     env.get(&v).cloned().unwrap_or(Info::Unknown)
@@ -674,7 +694,11 @@ pub(crate) fn infer_return<T: Types<Ty = Ty> + ClosureTypes>(
     let mut solver = Solver::new(module);
     solver.seed(fn_id, inputs);
     solver.run(t);
-    match solver.specs.get(&fn_id).map(|s| s.ret.clone()) {
+    let key = ActivationKey {
+        fn_id,
+        inputs: input_tys.to_vec(),
+    };
+    match solver.specs.get(&key).map(|s| s.ret.clone()) {
         Some(Info::Known(ty)) => ty,
         _ => t.none(),
     }
@@ -768,9 +792,19 @@ mod tests {
             .fns
             .iter()
             .filter(|f| f.name == fn_name)
-            .find_map(|f| match solver.specs.get(&f.id).map(|s| s.ret.clone()) {
-                Some(Info::Known(ty)) => Some(ty),
-                _ => None,
+            .flat_map(|f| {
+                solver.specs.iter().filter_map(move |(key, spec)| {
+                    if key.fn_id == f.id {
+                        Some(spec.ret.clone())
+                    } else {
+                        None
+                    }
+                })
+            })
+            .fold(None, |acc, ret| match (acc, ret) {
+                (None, Info::Known(ty)) => Some(ty),
+                (Some(prev), Info::Known(ty)) => Some(t.union(prev, ty)),
+                (acc, Info::Unknown) => acc,
             })
             .unwrap_or_else(|| t.none())
     }
@@ -810,7 +844,7 @@ mod tests {
                 .specs
                 .iter()
                 .filter(|(_, s)| matches!(s.ret, Info::Unknown))
-                .map(|(id, _)| module.fn_by_id(*id).name.as_str())
+                .map(|(key, _)| module.fn_by_id(key.fn_id).name.as_str())
                 .collect();
             assert!(
                 unknowns.is_empty(),
@@ -826,8 +860,8 @@ mod tests {
     /// library is embedded, so an empty provider list still links it.
     fn linked(src: &str) -> Module {
         use crate::modules::pipeline::{
-            checked_module_for_mode, compile_source_with_providers, prepare_execution_graph,
-            CompileMode, ProviderInputs,
+            CompileMode, ProviderInputs, checked_module_for_mode, compile_source_with_providers,
+            prepare_execution_graph,
         };
         let mut t = ConcreteTypes;
         let tel = crate::telemetry::NullTelemetry;
@@ -868,13 +902,21 @@ mod tests {
     #[test]
     fn runtime_graph_enum_ops_settle_to_int() {
         let cases = [
-            ("list lambda", "Enum.reduce", include_str!("../../spike/enum_reduce.fz")),
+            (
+                "list lambda",
+                "Enum.reduce",
+                include_str!("../../spike/enum_reduce.fz"),
+            ),
             (
                 "named-fn ref",
                 "Enum.reduce",
                 include_str!("../../spike/enum_reduce_named_ref_ok.fz"),
             ),
-            ("count", "Enum.count", include_str!("../../spike/enum_count.fz")),
+            (
+                "count",
+                "Enum.count",
+                include_str!("../../spike/enum_count.fz"),
+            ),
         ];
         let mut t = ConcreteTypes;
         let int = t.int();
@@ -930,7 +972,26 @@ mod tests {
         let add_id = module.fn_by_name("add").expect("add fn").id;
         let int = t.int();
         let ret = infer_return(&mut t, &module, add_id, &[int.clone(), int.clone()]);
-        assert!(t.is_equivalent(&ret, &int), "add(int, int) should infer int");
+        assert!(
+            t.is_equivalent(&ret, &int),
+            "add(int, int) should infer int"
+        );
+    }
+
+    #[test]
+    fn direct_calls_instantiate_polymorphic_identity_per_callsite() {
+        let mut t = ConcreteTypes;
+        let module = lower(include_str!("../../spike/poly_id.fz"));
+        let ret = infer_fn_via_main(&module, "main");
+        let expected = {
+            let int = t.int();
+            let ok = t.atom_lit("ok");
+            t.tuple(&[int, ok])
+        };
+        assert!(
+            t.is_equivalent(&ret, &expected),
+            "main should keep id(1) and id(:ok) as separate instantiations, got {ret:?}"
+        );
     }
 
     /// Every corpus fold settles `myreduce` to `int` — including the two the
@@ -1023,7 +1084,11 @@ mod tests {
         assert!(!Info::Unknown.equiv(&t, &Info::Known(none.clone())));
 
         // Join: both bottoms are the identity, so each yields `int`.
-        assert!(Info::Unknown.widen(&mut t, &Info::Known(int.clone())).equiv(&t, &Info::Known(int.clone())));
+        assert!(
+            Info::Unknown
+                .widen(&mut t, &Info::Known(int.clone()))
+                .equiv(&t, &Info::Known(int.clone()))
+        );
         assert!(
             Info::Known(none.clone())
                 .widen(&mut t, &Info::Known(int.clone()))

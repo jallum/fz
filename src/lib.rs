@@ -1098,8 +1098,8 @@ fn dump_bodies_pipeline(
     source_name: String,
     mode: CompileMode,
 ) -> String {
-    use crate::telemetry::TelemetryExt as _;
     use crate::ir_planner::ModulePlan;
+    use crate::telemetry::TelemetryExt as _;
     let mut t = types::ConcreteTypes;
     let frontend_result = frontend::compile_source_with_types(&mut t, src, source_name, tel);
     let prepared = checked_module_or_exit("fz dump", &mut t, frontend_result, sm_cell, tel, mode);
@@ -1196,8 +1196,8 @@ fn dump_outcomes_pipeline(
     show_all: bool,
     mode: CompileMode,
 ) -> String {
-    use crate::telemetry::TelemetryExt as _;
     use crate::fz_ir::{CallsiteId, EmitSlot, FnId};
+    use crate::telemetry::TelemetryExt as _;
     let mut t = types::ConcreteTypes;
     let frontend_result =
         frontend::compile_source_with_types(&mut t, src, source_name.clone(), tel);

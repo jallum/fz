@@ -547,34 +547,33 @@ impl Parser {
         // `<p1> <op> <p2>` (e.g. `fn left + right`). Additive: a normal head is
         // `Ident (`, so existing clauses parse exactly as before; only an
         // operator in the head position selects the infix form.
-        let (name, params, param_annotations) = if matches!(self.peek(), Tok::Ident(_))
-            && matches!(self.peek_at(1), Tok::LParen)
-        {
-            let name = match self.bump() {
-                Tok::Ident(n) => n,
-                _ => unreachable!("guarded by peek"),
+        let (name, params, param_annotations) =
+            if matches!(self.peek(), Tok::Ident(_)) && matches!(self.peek_at(1), Tok::LParen) {
+                let name = match self.bump() {
+                    Tok::Ident(n) => n,
+                    _ => unreachable!("guarded by peek"),
+                };
+                self.expect(&Tok::LParen, "`(`")?;
+                let (params, anns) = self.parse_fn_params()?;
+                self.expect(&Tok::RParen, "`)`")?;
+                (name, params, anns)
+            } else {
+                let left = self.parse_pattern()?;
+                let name = match Self::operator_token_name(self.peek()) {
+                    Some(s) => {
+                        self.bump();
+                        s.to_string()
+                    }
+                    None => {
+                        return self.err(format!(
+                            "expected `name(` or an operator-headed `fn lhs <op> rhs`, got {:?}",
+                            self.peek()
+                        ));
+                    }
+                };
+                let right = self.parse_pattern()?;
+                (name, vec![left, right], vec![None, None])
             };
-            self.expect(&Tok::LParen, "`(`")?;
-            let (params, anns) = self.parse_fn_params()?;
-            self.expect(&Tok::RParen, "`)`")?;
-            (name, params, anns)
-        } else {
-            let left = self.parse_pattern()?;
-            let name = match Self::operator_token_name(self.peek()) {
-                Some(s) => {
-                    self.bump();
-                    s.to_string()
-                }
-                None => {
-                    return self.err(format!(
-                        "expected `name(` or an operator-headed `fn lhs <op> rhs`, got {:?}",
-                        self.peek()
-                    ));
-                }
-            };
-            let right = self.parse_pattern()?;
-            (name, vec![left, right], vec![None, None])
-        };
 
         let guard = if matches!(self.peek(), Tok::When) {
             self.bump();

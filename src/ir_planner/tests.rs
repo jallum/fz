@@ -3092,14 +3092,22 @@ fn declared_return_fact_handles_take_positive_reduce_while_in_runtime_graph() {
         plan.specs
             .keys()
             .filter(|key| key.fn_id == take_positive.id)
-            .map(|key| key.input.iter().map(|slot| slot.as_ref().map(|ty| t.display(ty))).collect::<Vec<_>>())
+            .map(|key| key
+                .input
+                .iter()
+                .map(|slot| slot.as_ref().map(|ty| t.display(ty)))
+                .collect::<Vec<_>>())
             .collect::<Vec<_>>()
     );
     let block = &take_positive.blocks[0];
     let crate::fz_ir::Term::Call { callee, args, .. } = &block.terminator else {
         panic!("take_positive entry should call Enum.reduce_while");
     };
-    let complete = plan.specs.keys().cloned().collect::<std::collections::HashSet<_>>();
+    let complete = plan
+        .specs
+        .keys()
+        .cloned()
+        .collect::<std::collections::HashSet<_>>();
     for (spec_key, spec) in specs {
         let env = super::diagnostics::env_after_block_stmts(&mut t, &module, spec, block);
         let arg_tys = args
@@ -3341,7 +3349,11 @@ fn cont_key_for_take_positive_reduce_while_is_not_bottom_in_runtime_graph() {
         plan.specs
             .keys()
             .filter(|key| key.fn_id == take_positive.id)
-            .map(|key| key.input.iter().map(|slot| slot.as_ref().map(|ty| t.display(ty))).collect::<Vec<_>>())
+            .map(|key| key
+                .input
+                .iter()
+                .map(|slot| slot.as_ref().map(|ty| t.display(ty)))
+                .collect::<Vec<_>>())
             .collect::<Vec<_>>()
     );
     for (spec_key, spec) in specs {
@@ -3426,7 +3438,11 @@ fn discovery_walk_publishes_take_positive_reduce_while_cont_with_final_returns()
         plan.specs
             .keys()
             .filter(|key| key.fn_id == take_positive.id)
-            .map(|key| key.input.iter().map(|slot| slot.as_ref().map(|ty| t.display(ty))).collect::<Vec<_>>())
+            .map(|key| key
+                .input
+                .iter()
+                .map(|slot| slot.as_ref().map(|ty| t.display(ty)))
+                .collect::<Vec<_>>())
             .collect::<Vec<_>>()
     );
     let mut capabilities = std::collections::HashMap::new();
@@ -3595,7 +3611,10 @@ fn direct_call_slot0_for_take_positive_reduce_while_is_known_with_final_returns(
         .expect("Enum.take_positive");
     let block = &take_positive.blocks[0];
     let crate::fz_ir::Term::Call {
-        ident, callee, args, ..
+        ident,
+        callee,
+        args,
+        ..
     } = &block.terminator
     else {
         panic!("take_positive entry should call Enum.reduce_while");
@@ -3617,10 +3636,18 @@ fn direct_call_slot0_for_take_positive_reduce_while_is_known_with_final_returns(
         plan.specs
             .keys()
             .filter(|key| key.fn_id == take_positive.id)
-            .map(|key| key.input.iter().map(|slot| slot.as_ref().map(|ty| t.display(ty))).collect::<Vec<_>>())
+            .map(|key| key
+                .input
+                .iter()
+                .map(|slot| slot.as_ref().map(|ty| t.display(ty)))
+                .collect::<Vec<_>>())
             .collect::<Vec<_>>()
     );
-    let complete = plan.specs.keys().cloned().collect::<std::collections::HashSet<_>>();
+    let complete = plan
+        .specs
+        .keys()
+        .cloned()
+        .collect::<std::collections::HashSet<_>>();
     for (spec_key, spec) in specs {
         let env = super::reachable::env_at_terminator(&mut t, spec, block, &module);
         let arg_tys = args
@@ -3683,7 +3710,9 @@ fn runtime_graph_reduce_helper_clause_carries_function_correspondence() {
         {:suspended, acc, (fn () -> reduce_cont(list, acc, reducer) end)}\n\
       end\n\
     end";
-    let toks = crate::parser::lexer::Lexer::new(src).tokenize().expect("lex");
+    let toks = crate::parser::lexer::Lexer::new(src)
+        .tokenize()
+        .expect("lex");
     let prog = crate::parser::Parser::new(toks)
         .parse_program()
         .expect("parse");
@@ -3707,7 +3736,11 @@ fn runtime_graph_reduce_helper_clause_carries_function_correspondence() {
     assert!(
         !matches.is_empty(),
         "expected at least one fn_clause_1, got names {:?}",
-        module.fns.iter().map(|f| f.name.clone()).collect::<Vec<_>>()
+        module
+            .fns
+            .iter()
+            .map(|f| f.name.clone())
+            .collect::<Vec<_>>()
     );
     assert!(
         matches
@@ -3723,10 +3756,7 @@ fn runtime_graph_reduce_helper_clause_carries_function_correspondence() {
                     group.occurrences.iter().any(|occ| {
                         matches!(
                             occ,
-                            crate::type_expr::StructuralOccurrence::Param {
-                                param_index: 0,
-                                ..
-                            }
+                            crate::type_expr::StructuralOccurrence::Param { param_index: 0, .. }
                         )
                     }) && group.occurrences.iter().any(|occ| {
                         matches!(occ, crate::type_expr::StructuralOccurrence::Result { .. })

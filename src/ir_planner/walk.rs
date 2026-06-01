@@ -1,8 +1,7 @@
 use super::fn_types::{
     CallEdgePlan, CallEdgeTarget, CallableCapability, CallsiteCallableCapabilities, EmitterSite,
     FixedPointSlotSummaries, FnEffects, ReturnContextPlan, ReturnDemand, SpecKey, SpecPlan,
-    WALK_CALLS,
-    fixed_point_spec_key_for_arity, forwarded_return_contract_for_target,
+    WALK_CALLS, fixed_point_spec_key_for_arity, forwarded_return_contract_for_target,
     normalize_result_correspondence_key, padded_direct_input_tys, return_contract_for_target,
     spec_key_for_fn,
 };

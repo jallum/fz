@@ -347,13 +347,10 @@ pub(crate) fn compute_current_function_correspondence(
         ) -> Vec<(Var, Vec<StructuralPathStep>)> {
             use crate::fz_ir::Prim;
             let prim = f.blocks.iter().find_map(|block| {
-                block
-                    .stmts
-                    .iter()
-                    .find_map(|stmt| match stmt {
-                        crate::fz_ir::Stmt::Let(bound, prim) if *bound == var => Some(prim),
-                        _ => None,
-                    })
+                block.stmts.iter().find_map(|stmt| match stmt {
+                    crate::fz_ir::Stmt::Let(bound, prim) if *bound == var => Some(prim),
+                    _ => None,
+                })
             });
             match prim {
                 Some(Prim::MakeTuple(args)) => {
@@ -380,7 +377,8 @@ pub(crate) fn compute_current_function_correspondence(
                     let Some(StructuralPathStep::ListElem) = path.first() else {
                         return Vec::new();
                     };
-                    elems.first()
+                    elems
+                        .first()
                         .map(|value| (*value, path[1..].to_vec()))
                         .into_iter()
                         .collect()
@@ -601,8 +599,8 @@ pub(crate) fn compute_current_function_correspondence(
     while changed {
         changed = false;
         for (&continuation, provenance) in provenance {
-        let caller = module.fn_by_id(provenance.caller);
-        let caller_params = caller.block(caller.entry).params.clone();
+            let caller = module.fn_by_id(provenance.caller);
+            let caller_params = caller.block(caller.entry).params.clone();
             let caller_groups = module
                 .function_correspondence
                 .get(&provenance.caller)
@@ -617,7 +615,11 @@ pub(crate) fn compute_current_function_correspondence(
                     .unwrap_or_default()
                     .as_slice(),
             );
-            sets.extend(rebase_caller_groups(provenance, &caller_params, &caller_groups));
+            sets.extend(rebase_caller_groups(
+                provenance,
+                &caller_params,
+                &caller_groups,
+            ));
 
             match &provenance.kind {
                 crate::fz_ir::ContinuationProvenanceKind::DirectCall { callee, args } => {

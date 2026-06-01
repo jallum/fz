@@ -1046,13 +1046,8 @@ pub(crate) fn fixed_point_spec_key_for_arity<
     let input_tys =
         normalize_recursive_direct_key(t, recursive_fns, input_tys, caller, callee, module);
     let input_tys = normalize_result_correspondence_key(t, module, callee, input_tys);
-    let input_tys = apply_fixed_point_slot_summaries(
-        t,
-        recursive_fns,
-        slot_summaries,
-        callee,
-        input_tys,
-    );
+    let input_tys =
+        apply_fixed_point_slot_summaries(t, recursive_fns, slot_summaries, callee, input_tys);
     let mut key = spec_key_for_fn_id(module, callee, input_tys);
     if let Some(demand) = demand {
         key.demand = demand;
@@ -1060,9 +1055,7 @@ pub(crate) fn fixed_point_spec_key_for_arity<
     key
 }
 
-pub(crate) fn apply_fixed_point_slot_summaries<
-    T: crate::types::Types<Ty = crate::types::Ty>,
->(
+pub(crate) fn apply_fixed_point_slot_summaries<T: crate::types::Types<Ty = crate::types::Ty>>(
     _t: &mut T,
     recursive_fns: &std::collections::HashSet<FnId>,
     slot_summaries: &FixedPointSlotSummaries,
