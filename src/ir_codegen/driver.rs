@@ -16,18 +16,6 @@ use cranelift_module::{DataDescription, DataId, FuncId, Linkage, Module as ClMod
 use fz_runtime::heap::{FieldDescriptor, FieldKind, Schema};
 use std::collections::HashMap;
 
-#[allow(dead_code)] // fz-0fb.4.1 removal target: codegen should read planned bodies, not fold clones.
-fn prepare_codegen_body<T: crate::types::Types<Ty = crate::types::Ty>>(
-    t: &mut T,
-    module: &Module,
-    fn_idx: usize,
-    ft: &crate::ir_planner::SpecPlan,
-) -> crate::fz_ir::FnIr {
-    let mut f = module.fns[fn_idx].clone();
-    crate::ir_fold::fold_fn_with_types(t, &mut f, ft);
-    f
-}
-
 fn push_reachable_spec<T: crate::types::Types<Ty = crate::types::Ty>>(
     t: &mut T,
     spec_registry: &crate::frontend::spec_registry::SpecRegistry,
@@ -78,7 +66,7 @@ fn augment_reachable_for_codegen_bodies<
     module: &Module,
     spec_registry: &crate::frontend::spec_registry::SpecRegistry,
     module_plan: &crate::ir_planner::ModulePlan,
-    codegen_bodies: &[Option<crate::fz_ir::FnIr>],
+    planned_program: &crate::ir_planner::PlannedProgram<'_>,
     reached: &mut std::collections::HashSet<u32>,
 ) {
     let spec_keys: Vec<_> = spec_registry.iter().map(|(_, key)| key.clone()).collect();
@@ -89,9 +77,8 @@ fn augment_reachable_for_codegen_bodies<
 
     let mut worklist: Vec<u32> = reached.iter().copied().collect();
     while let Some(sid) = worklist.pop() {
-        let Some(body) = codegen_bodies.get(sid as usize).and_then(Option::as_ref) else {
-            continue;
-        };
+        let planned_body = planned_program.executable_body(crate::fz_ir::SpecId(sid));
+        let body = &planned_body.body;
         let Some(ft) = ft_of(sid) else { continue };
 
         for blk in &body.blocks {
@@ -1181,133 +1168,6 @@ fn collect_static_closure_targets(
         .collect()
 }
 
-/// Build the SpecRegistry.
-///
-/// Register any-keys first, in FnId.0 order — this preserves the
-/// invariant `any-key SpecId.0 == FnId.0` so closure / Spawn / Receive
-/// paths (and any other "use any-key" path) can keep using fn_id.0
-/// directly as a schema_id / Cranelift func key. Narrow specs from
-/// `module_plan.specs` get SpecIds ≥ n_fns appended afterwards in a
-/// deterministic order (FnId.0, then descr-tuple bytes) so CLIF emission
-/// is reproducible across runs.
-fn build_spec_registry<T: crate::types::Types<Ty = crate::types::Ty>>(
-    t: &mut T,
-    module: &Module,
-    module_plan: &crate::ir_planner::ModulePlan,
-) -> SpecRegistry {
-    let mut spec_registry = SpecRegistry::new();
-    let mut fns_by_fnid: Vec<&crate::fz_ir::FnIr> = module.fns.iter().collect();
-    fns_by_fnid.sort_by_key(|f| f.id.0);
-    for f in &fns_by_fnid {
-        let n_params = f.block(f.entry).params.len();
-        let any_ty = t.any();
-        let any_key = f.semantic_key(vec![any_ty; n_params]);
-        // Skip registering F's any-key when the typer dropped it (every
-        // callsite of F has typed coverage). The next registration via
-        // `register_any_key_at` pads slot F.0 with a sentinel
-        // automatically, preserving the `SpecId.0 == FnId.0` invariant
-        // for the surviving any-keys.
-        let spec_key = crate::ir_planner::fn_types::SpecKey::value(f.id, any_key.clone());
-        if !module_plan.specs.contains_key(&spec_key) {
-            continue;
-        }
-        let precedence = *module_plan.spec_precedence.get(&spec_key).unwrap_or(&0);
-        let sid = spec_registry.register_any_key_at_with_precedence(t, f.id, any_key, precedence);
-        debug_assert_eq!(sid.0, f.id.0);
-    }
-    let any_ty = t.any();
-    let mut narrow_keys: Vec<crate::ir_planner::fn_types::SpecKey> = module_plan
-        .specs
-        .keys()
-        .filter(|spec_key| {
-            let Some(f) = module.fns.iter().find(|f| f.id == spec_key.fn_id) else {
-                return true;
-            };
-            let n_params = f.block(f.entry).params.len();
-            let any_key = f.semantic_key(vec![any_ty.clone(); n_params]);
-            // Filter the any-keys (already registered).
-            !(spec_key.demand.is_value() && spec_key.input == any_key)
-        })
-        .cloned()
-        .collect();
-    narrow_keys.sort_by(|a, b| {
-        a.fn_id
-            .0
-            .cmp(&b.fn_id.0)
-            .then_with(|| format!("{:?}", a.input).cmp(&format!("{:?}", b.input)))
-            .then_with(|| format!("{:?}", a.demand).cmp(&format!("{:?}", b.demand)))
-    });
-    for spec_key in narrow_keys {
-        let precedence = *module_plan.spec_precedence.get(&spec_key).unwrap_or(&0);
-        spec_registry.register_spec_key_with_precedence(t, spec_key, precedence);
-    }
-    spec_registry
-}
-
-/// Build the per-SpecId index tables: `spec_keys` mirrors registry order;
-/// `spec_fnidx` maps SpecId.0 → module.fns index (None when the SpecId
-/// is a sentinel slot for a missing FnId.0 — cps_split sparsity,
-/// pre-existing sentinel padding, or a dropped any-key); `spec_fn_types`
-/// borrows the matching SpecPlan from `module_plan.specs` for every
-/// non-sentinel slot. Codegen skips compilation for sentinel slots; no
-/// consumer can index into them because `resolve` only returns SpecIds
-/// with a real registration.
-fn build_spec_index_tables<'a>(
-    module: &Module,
-    spec_registry: &SpecRegistry,
-    module_plan: &'a crate::ir_planner::ModulePlan,
-) -> (
-    Vec<crate::ir_planner::fn_types::SpecKey>,
-    Vec<Option<usize>>,
-    Vec<Option<&'a crate::ir_planner::SpecPlan>>,
-) {
-    let spec_keys: Vec<crate::ir_planner::fn_types::SpecKey> =
-        spec_registry.iter().map(|(_, key)| key.clone()).collect();
-    let mut idx_of: HashMap<FnId, usize> = HashMap::new();
-    for (i, f) in module.fns.iter().enumerate() {
-        idx_of.insert(f.id, i);
-    }
-    let spec_fnidx: Vec<Option<usize>> = spec_keys
-        .iter()
-        .map(|key| {
-            if !module_plan.specs.contains_key(key) {
-                return None;
-            }
-            idx_of.get(&key.fn_id).copied()
-        })
-        .collect();
-    let spec_fn_types: Vec<Option<&crate::ir_planner::SpecPlan>> = spec_keys
-        .iter()
-        .enumerate()
-        .map(|(sid, key)| {
-            spec_fnidx[sid]?;
-            module_plan.specs.get(key)
-        })
-        .collect();
-    (spec_keys, spec_fnidx, spec_fn_types)
-}
-
-/// Build the per-SpecId codegen bodies. Non-sentinel specs get the
-/// authoritative post-plan module body; sentinel slots get `None`.
-fn prepare_codegen_bodies<T: crate::types::Types<Ty = crate::types::Ty>>(
-    t: &mut T,
-    module: &Module,
-    spec_count: usize,
-    spec_fnidx: &[Option<usize>],
-    spec_fn_types: &[Option<&crate::ir_planner::SpecPlan>],
-) -> Vec<Option<crate::fz_ir::FnIr>> {
-    let mut codegen_bodies: Vec<Option<crate::fz_ir::FnIr>> = Vec::with_capacity(spec_count);
-    for sid in 0..spec_count {
-        match (spec_fnidx[sid], spec_fn_types[sid]) {
-            (Some(idx), Some(ft)) => {
-                codegen_bodies.push(Some(prepare_codegen_body(t, module, idx, ft)));
-            }
-            _ => codegen_bodies.push(None),
-        }
-    }
-    codegen_bodies
-}
-
 /// Force slot 0 of every cont spec in `tagged_slot0_cont_specs` to
 /// ValueRef so the producer's ValueRef return matches the cont's wire
 /// sig at the seam.
@@ -2125,17 +1985,19 @@ pub(crate) fn compile_with_backend_impl<
     }
     let module = &working;
 
-    let spec_registry = build_spec_registry(t, module, &module_plan);
-    let spec_count = spec_registry.len();
-    let (spec_keys, spec_fnidx, spec_fn_types) =
-        build_spec_index_tables(module, &spec_registry, &module_plan);
+    let planned_program = crate::ir_planner::materialize_program(t, module, &module_plan, tel);
+    let spec_registry = planned_program.spec_registry();
+    let spec_count = planned_program.spec_count();
+    let spec_keys = planned_program.spec_keys();
+    let spec_fnidx = planned_program.spec_fn_indices();
+    let spec_fn_types = planned_program.spec_plans();
 
     let closure_shapes = build_closure_shapes(
         module,
         spec_count,
         &spec_fnidx,
         &spec_fn_types,
-        &spec_registry,
+        spec_registry,
     );
 
     // Native-callability analysis — already a fixed point (the analysis
@@ -2185,7 +2047,7 @@ pub(crate) fn compile_with_backend_impl<
         module,
         &spec_fnidx,
         &spec_fn_types,
-        &spec_registry,
+        spec_registry,
         &closure_target_fns,
     );
     let return_reprs = build_return_reprs(t, &return_tys, &tagged_return_specs);
@@ -2195,7 +2057,7 @@ pub(crate) fn compile_with_backend_impl<
         spec_count,
         &spec_fnidx,
         &spec_fn_types,
-        &spec_registry,
+        spec_registry,
         &return_reprs,
     );
     let param_reprs = refine_param_reprs_for_tagging(param_reprs, &tagged_slot0_cont_specs);
@@ -2205,8 +2067,8 @@ pub(crate) fn compile_with_backend_impl<
     let fn_sigs = build_fn_sigs(
         module,
         spec_count,
-        &spec_fnidx,
-        &spec_keys,
+        spec_fnidx,
+        spec_keys,
         &param_reprs,
         &natively_callable,
         &cont_fns,
@@ -2219,7 +2081,7 @@ pub(crate) fn compile_with_backend_impl<
         backend.module_mut(),
         linkage,
         spec_count,
-        &spec_fnidx,
+        spec_fnidx,
         &fn_sigs,
     )?;
 
@@ -2228,8 +2090,8 @@ pub(crate) fn compile_with_backend_impl<
         backend.module_mut(),
         module,
         &module_plan,
-        &spec_registry,
-        &spec_fnidx,
+        spec_registry,
+        spec_fnidx,
         &param_reprs,
         &natively_callable,
         &closure_n_captures,
@@ -2246,8 +2108,6 @@ pub(crate) fn compile_with_backend_impl<
     let bs_const_data: std::cell::RefCell<HashMap<Vec<u8>, BsConstSyms>> =
         std::cell::RefCell::new(HashMap::new());
 
-    let codegen_bodies = prepare_codegen_bodies(t, module, spec_count, &spec_fnidx, &spec_fn_types);
-
     // Set of SpecIds reachable from main + closure-dispatched fns.
     // Specs not in this set get a trap-stub body instead of full
     // codegen. Closure-target specs (those in `closure_shapes`) are seeded
@@ -2256,7 +2116,7 @@ pub(crate) fn compile_with_backend_impl<
     let mut reachable: std::collections::HashSet<u32> = crate::ir_planner::reachable_specs(
         t,
         module,
-        &spec_registry,
+        spec_registry,
         &module_plan,
         closure_shapes.keys().copied(),
     );
@@ -2267,9 +2127,9 @@ pub(crate) fn compile_with_backend_impl<
     augment_reachable_for_codegen_bodies(
         t,
         module,
-        &spec_registry,
+        spec_registry,
         &module_plan,
-        &codegen_bodies,
+        &planned_program,
         &mut reachable,
     );
 
@@ -2278,7 +2138,7 @@ pub(crate) fn compile_with_backend_impl<
     let verifier_isa = host_isa();
 
     for sid in 0..spec_count {
-        let Some(_idx) = spec_fnidx[sid] else {
+        let Some(fn_idx) = spec_fnidx[sid] else {
             continue;
         };
         let func_id = *fn_ids.get(&(sid as u32)).unwrap();
@@ -2316,9 +2176,12 @@ pub(crate) fn compile_with_backend_impl<
         // Reuses the precomputed body used by codegen reachability so the
         // emitted body and trap-stub pruning derive from the same call
         // graph.
-        let f = codegen_bodies[sid]
-            .as_ref()
-            .expect("reachable real spec must have a prepared body");
+        let planned_body = planned_program.executable_body(crate::fz_ir::SpecId(sid as u32));
+        let f = &planned_body.body;
+        debug_assert_eq!(planned_body.spec_id.0, sid as u32);
+        debug_assert_eq!(planned_body.fn_idx, fn_idx);
+        debug_assert_eq!(planned_body.fn_id, f.id);
+        debug_assert_eq!(&planned_body.spec_key, &spec_keys[sid]);
 
         let want_asm = ASM_RECORD.with(|c| c.borrow().is_some());
         if want_asm {
@@ -2329,26 +2192,26 @@ pub(crate) fn compile_with_backend_impl<
             tel,
             f,
             ft,
-            sid as u32,
-            &spec_keys[sid],
+            planned_body.spec_id.0,
+            &planned_body.spec_key,
         );
         // Any-key SpecId.0 == FnId.0 (invariant); use the bare fn name so
         // tests / `fz dump --emit clif` can refer to functions by source
         // name. Narrow specs append `_s{sid}` to keep names distinct.
-        let display_name = if (sid as u32) == f.id.0 {
+        let display_name = if planned_body.spec_id.0 == planned_body.fn_id.0 {
             f.name.clone()
         } else {
-            format!("{}_s{}", f.name, sid)
+            format!("{}_s{}", f.name, planned_body.spec_id.0)
         };
         let cg_env = CodegenEnv {
             telemetry: tel,
             runtime: &runtime,
             module,
             fn_types: ft,
-            active_spec_id: sid as u32,
-            active_body_fn_id: f.id,
+            active_spec_id: planned_body.spec_id.0,
+            active_body_fn_id: planned_body.fn_id,
             active_body_name: &display_name,
-            spec_registry: &spec_registry,
+            spec_registry,
             fn_ids: &fn_ids,
             mid_flight_cont_tail_fn_ids: &mid_flight_cont_tail_fn_ids,
             tuple_schema_ids: &tuple_schema_ids,
@@ -2356,7 +2219,7 @@ pub(crate) fn compile_with_backend_impl<
             bs_const_data: &bs_const_data,
             param_reprs: &param_reprs,
             return_reprs: &return_reprs,
-            spec_keys: &spec_keys,
+            spec_keys,
             natively_callable: &natively_callable,
             cont_target_fns: &cont_target_fns,
             cont_fns: &cont_fns,
@@ -2373,8 +2236,8 @@ pub(crate) fn compile_with_backend_impl<
                     body_kind: "fz_spec",
                     module_path: module.module_path().to_owned(),
                     fn_name: display_name.clone(),
-                    fn_id: f.id.0 as u64,
-                    spec_id: sid as u64,
+                    fn_id: planned_body.fn_id.0 as u64,
+                    spec_id: planned_body.spec_id.0 as u64,
                 },
             );
             compile_fn(
@@ -2385,15 +2248,15 @@ pub(crate) fn compile_with_backend_impl<
                 &cg_env,
                 &schemas,
                 f,
-                sid as u32,
+                planned_body.spec_id.0,
                 &module.source,
             )?;
             let (block_count, instruction_count) = cranelift_body_stats(&ctx.func);
             tel.execute(
                 &["fz", "codegen", "function_lowered"],
                 &crate::measurements! {
-                    fn_id: f.id.0 as u64,
-                    spec_id: sid as u64,
+                    fn_id: planned_body.fn_id.0 as u64,
+                    spec_id: planned_body.spec_id.0 as u64,
                     block_count: block_count as u64,
                     instruction_count: instruction_count as u64,
                     fz_block_count: f.blocks.len() as u64,

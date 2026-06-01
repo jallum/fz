@@ -14,6 +14,12 @@ planner output, and there is exactly one plan that owns it.
 - **`plan_module`** produces the authoritative `ModulePlan`. Every call emits a
   `planner.planned` telemetry event tagged `role: "authoritative"`. A pretyped
   single-module program runs two: the frontend plan and this codegen plan.
+- **`materialize_program`** consumes the authoritative `ModulePlan` plus the
+  settled `Module` and produces a `PlannedProgram`: stable `SpecId`
+  registration, per-spec plan lookup, and executable per-spec bodies. A
+  `PlannedBody` is always executable; reserved `SpecId` slots are slot metadata,
+  not optional bodies. The pass emits `fz.planner.materialized` with body and
+  fold counters.
 - **Frontend protocol rewrites** apply only static-single protocol callsites:
   the same physical `CallsiteId` must select the same local target in every
   reachable caller specialization. Conflicting protocol targets are left as
@@ -43,7 +49,9 @@ plan_module(role: "shaping")         # CFG simplification facts only
   → branch_fold, fold, const_bs, dce
 plan_module                         # THE authoritative codegen plan
   → lower_destinations              # maintains no plan facts
-resolve_module_types → codegen      # consumes the one plan
+resolve_module_types
+  → materialize_program             # executable projection from ModulePlan
+  → codegen                         # lowers planned bodies mechanically
 ```
 
 The shaping plan exists because branch folding and ordinary folding consume
@@ -100,10 +108,30 @@ only for the original element/key/value vars (`a`, `b`), never the holders. So
 the authoritative plan stays valid for everything codegen reads after lowering,
 and no post-destination re-plan is needed.
 
+## Planned Program Materialization
+
+`PlannedProgram` is the handoff between planner/fold and codegen. It preserves
+the registry invariant that any-key `SpecId.0 == FnId.0`, including reserved
+slots where needed, but exposes executable bodies as `PlannedBody` values rather
+than `Option<FnIr>`. If codegen is lowering a registered spec, the matching body
+exists by construction.
+
+Per-spec folds run while materializing the planned program, not ad hoc inside
+the Cranelift lowering loop. The telemetry event `fz.planner.materialized`
+reports:
+
+- `spec_slot_count`: every slot in the SpecId-indexed registry, including
+  reserved slots.
+- `planned_body_count`: executable bodies materialized for registered specs.
+- `sentinel_spec_count`: reserved slots with no executable spec.
+- `folded_prim_count` and `folded_branch_count`: per-spec folds applied while
+  building planned bodies.
+
 ## Gate this model with
 
 - `cargo test plan_module_called_once_for_shaping_once_for_codegen_in_pipeline --lib`
 - `cargo test frontend_to_codegen_pipeline_reports_planner_phase_events --lib`
+- `cargo test planned_program_materialization_reports_executable_body_folds --lib`
 - `cargo test --test fixture_matrix` — four-path legs plus the dump budgets,
   whose planner metrics key on the `role: "authoritative"` event
 - `cargo test --bin fz closure_call_rewritten_to_direct_call rewrite_erases_threaded_constant_closure`

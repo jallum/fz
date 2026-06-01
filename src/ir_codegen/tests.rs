@@ -2533,6 +2533,54 @@ fn frontend_to_codegen_pipeline_reports_planner_phase_events() {
 }
 
 #[test]
+fn planned_program_materialization_reports_executable_body_folds() {
+    use crate::telemetry::Value;
+
+    let src = "fn check(x :: integer) do :is_int end\n\
+               fn check(x) do :other end\n\
+               fn main(), do: dbg(check(42))\n";
+    let m = lower_src(src);
+    let tel = crate::telemetry::ConfiguredTelemetry::new();
+    let cap = crate::telemetry::Capture::new();
+    tel.attach(&["fz", "planner", "materialized"], cap.handler());
+    let mut t = crate::types::ConcreteTypes;
+    let module_plan = crate::ir_planner::plan_module(&mut t, &m, &crate::telemetry::NullTelemetry);
+    let _planned_program = crate::ir_planner::materialize_program(&mut t, &m, &module_plan, &tel);
+
+    let ev = cap
+        .last(&["fz", "planner", "materialized"])
+        .expect("planned-program materialization event");
+    assert!(matches!(
+        ev.metadata.get("role"),
+        Some(Value::Str(role)) if role == "authoritative"
+    ));
+    let measurement = |name| match ev.measurements.get(name) {
+        Some(Value::U64(n)) => *n,
+        other => panic!("{name} missing or wrong type: {other:?}"),
+    };
+    let spec_slot_count = measurement("spec_slot_count");
+    let planned_body_count = measurement("planned_body_count");
+    let folded_prim_count = measurement("folded_prim_count");
+    let folded_branch_count = measurement("folded_branch_count");
+    assert!(
+        planned_body_count > 0,
+        "materialization must own executable planned bodies"
+    );
+    assert!(
+        spec_slot_count >= planned_body_count,
+        "reserved SpecId slots are slot metadata, not optional planned bodies"
+    );
+    assert!(
+        folded_prim_count > 0,
+        "materialization must report per-spec prim folds: spec_slot_count={spec_slot_count} planned_body_count={planned_body_count} folded_prim_count={folded_prim_count} folded_branch_count={folded_branch_count}"
+    );
+    assert!(
+        folded_branch_count > 0,
+        "materialization must report per-spec branch folds: spec_slot_count={spec_slot_count} planned_body_count={planned_body_count} folded_prim_count={folded_prim_count} folded_branch_count={folded_branch_count}"
+    );
+}
+
+#[test]
 fn enum_take_drop_split_codegen_plan_reports_activation_projection_telemetry() {
     use crate::telemetry::{Capture, ConfiguredTelemetry, Value};
 

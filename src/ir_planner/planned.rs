@@ -1,0 +1,210 @@
+use crate::frontend::spec_registry::SpecRegistry;
+use crate::fz_ir::{FnId, FnIr, Module, SpecId};
+use crate::ir_planner::fn_types::{ModulePlan, SpecKey, SpecPlan};
+use crate::types::Types;
+use std::collections::HashMap;
+
+pub(crate) struct PlannedProgram<'plan> {
+    spec_registry: SpecRegistry,
+    spec_keys: Vec<SpecKey>,
+    spec_fn_indices: Vec<Option<usize>>,
+    spec_plans: Vec<Option<&'plan SpecPlan>>,
+    bodies: Vec<PlannedBody>,
+    body_index_by_spec_slot: Vec<Option<usize>>,
+}
+
+pub(crate) struct PlannedBody {
+    pub spec_id: SpecId,
+    pub spec_key: SpecKey,
+    pub fn_id: FnId,
+    pub fn_idx: usize,
+    pub body: FnIr,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct PlannedProgramStats {
+    pub spec_slot_count: usize,
+    pub planned_body_count: usize,
+    pub sentinel_spec_count: usize,
+    pub folded_prim_count: usize,
+    pub folded_branch_count: usize,
+}
+
+impl<'plan> PlannedProgram<'plan> {
+    pub(crate) fn spec_registry(&self) -> &SpecRegistry {
+        &self.spec_registry
+    }
+
+    pub(crate) fn spec_count(&self) -> usize {
+        self.spec_registry.len()
+    }
+
+    pub(crate) fn spec_keys(&self) -> &[SpecKey] {
+        &self.spec_keys
+    }
+
+    pub(crate) fn spec_fn_indices(&self) -> &[Option<usize>] {
+        &self.spec_fn_indices
+    }
+
+    pub(crate) fn spec_plans(&self) -> &[Option<&'plan SpecPlan>] {
+        &self.spec_plans
+    }
+
+    pub(crate) fn executable_body(&self, spec_id: SpecId) -> &PlannedBody {
+        let body_index = self
+            .body_index_by_spec_slot
+            .get(spec_id.0 as usize)
+            .and_then(|idx| *idx)
+            .expect("registered executable spec must have a planned body");
+        &self.bodies[body_index]
+    }
+}
+
+/// Materialize the executable projection of a canonical module and its
+/// authoritative plan.
+///
+/// `Module` remains the lowered source-shape IR. `ModulePlan` remains the
+/// semantic authority. `PlannedProgram` is the codegen-facing projection:
+/// stable `SpecId` registration, per-spec plan lookup, and exact folded bodies.
+pub(crate) fn materialize_program<'plan, T>(
+    t: &mut T,
+    module: &Module,
+    module_plan: &'plan ModulePlan,
+    tel: &dyn crate::telemetry::Telemetry,
+) -> PlannedProgram<'plan>
+where
+    T: Types<Ty = crate::types::Ty>,
+{
+    let spec_registry = build_spec_registry(t, module, module_plan);
+    let spec_keys: Vec<SpecKey> = spec_registry.iter().map(|(_, key)| key.clone()).collect();
+    let mut idx_of: HashMap<FnId, usize> = HashMap::new();
+    for (i, f) in module.fns.iter().enumerate() {
+        idx_of.insert(f.id, i);
+    }
+
+    let spec_fn_indices: Vec<Option<usize>> = spec_keys
+        .iter()
+        .map(|key| {
+            if !module_plan.specs.contains_key(key) {
+                return None;
+            }
+            idx_of.get(&key.fn_id).copied()
+        })
+        .collect();
+    let spec_plans: Vec<Option<&SpecPlan>> = spec_keys
+        .iter()
+        .enumerate()
+        .map(|(sid, key)| {
+            spec_fn_indices[sid]?;
+            module_plan.specs.get(key)
+        })
+        .collect();
+
+    let mut folded_prim_count = 0;
+    let mut folded_branch_count = 0;
+    let mut bodies = Vec::new();
+    let mut body_index_by_spec_slot = Vec::with_capacity(spec_registry.len());
+    for sid in 0..spec_registry.len() {
+        match (spec_fn_indices[sid], spec_plans[sid]) {
+            (Some(fn_idx), Some(spec_plan)) => {
+                let mut body = module.fns[fn_idx].clone();
+                let fold_stats =
+                    crate::ir_fold::fold_fn_with_types_counted(t, &mut body, spec_plan);
+                folded_prim_count += fold_stats.prim_count;
+                folded_branch_count += fold_stats.branch_count;
+                let body_index = bodies.len();
+                bodies.push(PlannedBody {
+                    spec_id: SpecId(sid as u32),
+                    spec_key: spec_keys[sid].clone(),
+                    fn_id: body.id,
+                    fn_idx,
+                    body,
+                });
+                body_index_by_spec_slot.push(Some(body_index));
+            }
+            _ => body_index_by_spec_slot.push(None),
+        }
+    }
+
+    let planned_body_count = bodies.len();
+    let stats = PlannedProgramStats {
+        spec_slot_count: spec_registry.len(),
+        planned_body_count,
+        sentinel_spec_count: spec_registry.len() - planned_body_count,
+        folded_prim_count,
+        folded_branch_count,
+    };
+    tel.execute(
+        &["fz", "planner", "materialized"],
+        &crate::measurements! {
+            spec_slot_count: stats.spec_slot_count as u64,
+            planned_body_count: stats.planned_body_count as u64,
+            sentinel_spec_count: stats.sentinel_spec_count as u64,
+            folded_prim_count: stats.folded_prim_count as u64,
+            folded_branch_count: stats.folded_branch_count as u64,
+        },
+        &crate::metadata! {
+            role: "authoritative",
+            module_path: module.module_path().to_owned(),
+        },
+    );
+
+    PlannedProgram {
+        spec_registry,
+        spec_keys,
+        spec_fn_indices,
+        spec_plans,
+        bodies,
+        body_index_by_spec_slot,
+    }
+}
+
+fn build_spec_registry<T: Types<Ty = crate::types::Ty>>(
+    t: &mut T,
+    module: &Module,
+    module_plan: &ModulePlan,
+) -> SpecRegistry {
+    let mut spec_registry = SpecRegistry::new();
+    let mut fns_by_fnid: Vec<&FnIr> = module.fns.iter().collect();
+    fns_by_fnid.sort_by_key(|f| f.id.0);
+    for f in &fns_by_fnid {
+        let n_params = f.block(f.entry).params.len();
+        let any_ty = t.any();
+        let any_key = f.semantic_key(vec![any_ty; n_params]);
+        let spec_key = SpecKey::value(f.id, any_key.clone());
+        if !module_plan.specs.contains_key(&spec_key) {
+            continue;
+        }
+        let precedence = *module_plan.spec_precedence.get(&spec_key).unwrap_or(&0);
+        let sid = spec_registry.register_any_key_at_with_precedence(t, f.id, any_key, precedence);
+        debug_assert_eq!(sid.0, f.id.0);
+    }
+
+    let any_ty = t.any();
+    let mut narrow_keys: Vec<SpecKey> = module_plan
+        .specs
+        .keys()
+        .filter(|spec_key| {
+            let Some(f) = module.fns.iter().find(|f| f.id == spec_key.fn_id) else {
+                return true;
+            };
+            let n_params = f.block(f.entry).params.len();
+            let any_key = f.semantic_key(vec![any_ty.clone(); n_params]);
+            !(spec_key.demand.is_value() && spec_key.input == any_key)
+        })
+        .cloned()
+        .collect();
+    narrow_keys.sort_by(|a, b| {
+        a.fn_id
+            .0
+            .cmp(&b.fn_id.0)
+            .then_with(|| format!("{:?}", a.input).cmp(&format!("{:?}", b.input)))
+            .then_with(|| format!("{:?}", a.demand).cmp(&format!("{:?}", b.demand)))
+    });
+    for spec_key in narrow_keys {
+        let precedence = *module_plan.spec_precedence.get(&spec_key).unwrap_or(&0);
+        spec_registry.register_spec_key_with_precedence(t, spec_key, precedence);
+    }
+    spec_registry
+}

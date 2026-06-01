@@ -14,12 +14,27 @@ use crate::ir_planner::{ModulePlan, SpecPlan};
 use crate::types::Types;
 use std::collections::HashMap;
 
-#[allow(dead_code)] // fz-0fb.4.1 removal target: plan-driven folds must not mutate canonical Module.
-pub fn fold_module(m: &mut Module, types: &ModulePlan) {
-    let mut t = crate::types::ConcreteTypes;
-    for f in &mut m.fns {
-        fold_fn(&mut t, f, types);
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct FoldStats {
+    pub prim_count: usize,
+    pub branch_count: usize,
+}
+
+impl FoldStats {
+    fn add(&mut self, other: FoldStats) {
+        self.prim_count += other.prim_count;
+        self.branch_count += other.branch_count;
     }
+}
+
+#[allow(dead_code)] // fz-0fb.4.1 removal target: plan-driven folds must not mutate canonical Module.
+pub fn fold_module(m: &mut Module, types: &ModulePlan) -> FoldStats {
+    let mut t = crate::types::ConcreteTypes;
+    let mut stats = FoldStats::default();
+    for f in &mut m.fns {
+        stats.add(fold_fn(&mut t, f, types));
+    }
+    stats
 }
 
 /// Return the only SpecPlan that can justify shared-body mutation for `f`.
@@ -32,11 +47,15 @@ fn best_fn_types<'a>(f: &FnIr, types: &'a ModulePlan) -> Option<&'a SpecPlan> {
     types.any_key_spec(f.id)
 }
 
-fn fold_fn<T: Types<Ty = crate::types::Ty>>(t: &mut T, f: &mut FnIr, types: &ModulePlan) {
+fn fold_fn<T: Types<Ty = crate::types::Ty>>(
+    t: &mut T,
+    f: &mut FnIr,
+    types: &ModulePlan,
+) -> FoldStats {
     let Some(fn_types) = best_fn_types(f, types) else {
-        return;
+        return FoldStats::default();
     };
-    fold_fn_with_types(t, f, fn_types);
+    fold_fn_with_types_counted(t, f, fn_types)
 }
 
 /// fz-ul4.43.B — per-spec fold entry point.
@@ -52,9 +71,18 @@ pub fn fold_fn_with_types<T: Types<Ty = crate::types::Ty>>(
     f: &mut FnIr,
     fn_types: &SpecPlan,
 ) {
+    let _ = fold_fn_with_types_counted(t, f, fn_types);
+}
+
+pub(crate) fn fold_fn_with_types_counted<T: Types<Ty = crate::types::Ty>>(
+    t: &mut T,
+    f: &mut FnIr,
+    fn_types: &SpecPlan,
+) -> FoldStats {
     let true_t = t.bool_lit(true);
     let false_t = t.bool_lit(false);
     let nil_t = t.nil();
+    let mut stats = FoldStats::default();
     for block in &mut f.blocks {
         for stmt in &mut block.stmts {
             let Stmt::Let(dest, prim) = stmt;
@@ -67,17 +95,22 @@ pub fn fold_fn_with_types<T: Types<Ty = crate::types::Ty>>(
             if let Prim::BinOp(..) = prim {
                 if let Some(n) = t.as_int_singleton(&d) {
                     *stmt = Stmt::Let(*dest, Prim::Const(Const::Int(n)));
+                    stats.prim_count += 1;
                 } else if t.is_subtype(&d, &true_t) {
                     // fz-ul4.43.D.1 — BinOp::Eq/Neq result narrowed to :true.
                     *stmt = Stmt::Let(*dest, Prim::Const(Const::True));
+                    stats.prim_count += 1;
                 } else if t.is_subtype(&d, &false_t) {
                     *stmt = Stmt::Let(*dest, Prim::Const(Const::False));
+                    stats.prim_count += 1;
                 }
             } else if let Prim::TypeTest(..) = prim {
                 if t.is_subtype(&d, &true_t) {
                     *stmt = Stmt::Let(*dest, Prim::Const(Const::True));
+                    stats.prim_count += 1;
                 } else if t.is_subtype(&d, &false_t) {
                     *stmt = Stmt::Let(*dest, Prim::Const(Const::False));
+                    stats.prim_count += 1;
                 }
             }
         }
@@ -114,8 +147,10 @@ pub fn fold_fn_with_types<T: Types<Ty = crate::types::Ty>>(
         };
         if let Some(t) = new_term {
             block.terminator = t;
+            stats.branch_count += 1;
         }
     }
+    stats
 }
 
 fn verified_dead_branch<T: Types<Ty = crate::types::Ty>>(

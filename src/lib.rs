@@ -18,7 +18,8 @@ mod ir_interp;
 // schema directly. See fz-ul4.11.30 (subsumed).
 mod cli;
 mod exec;
-#[allow(dead_code)] // fz-0fb.4.1 removal target: fold dead branches during planned-body materialization.
+// fz-0fb.4.1 removal target: fold dead branches during planned-body materialization.
+#[allow(dead_code)]
 mod ir_branch_fold;
 mod ir_brand_erase;
 mod ir_const_bs;
