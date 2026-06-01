@@ -15,9 +15,9 @@ the planner's type inference, not runtime behavior, so they live outside
 | --- | --- | --- | --- |
 | `add.fz` | `a + b` | `(number, number) -> number`; `add(1,2) : int` | settles ✓ |
 | `poly_id.fz` | same `FnId` called at `int` and `:ok` | `main() : {int, :ok}`; independent activations do not over-join | settles ✓ |
-| `poly_named_ref.fz` | same zero-capture call-target value applied at `int` and `:ok` | `main() : {int, :ok}`; named refs do not collapse activations into one monomorphic cell | target; not pinned |
-| `poly_named_ref_pattern.fz` | named ref to a source-total pattern fn applied at two atom literals | `main() : {:one, :two}`; call-target activation still drives matcher proof and keeps the catch-all dead | target; not pinned |
-| `poly_capture_ref.fz` | same captured closure value applied at `int` and `:right` | `main() : {{:ok, int}, {:ok, :right}}`; captures are inference inputs, not callable arity | target; not pinned |
+| `poly_named_ref.fz` | same zero-capture call-target value applied at `int` and `:ok` | `main() : {int, :ok}`; named refs do not collapse activations into one monomorphic cell | settles ✓ |
+| `poly_named_ref_pattern.fz` | named ref to a source-total pattern fn applied at two atom literals | `main() : {:one, :two}`; call-target activation still drives matcher proof and keeps the catch-all dead | settles ✓ |
+| `poly_capture_ref.fz` | same captured closure value applied at `int` and `:right` | `main() : {{:ok, int}, {:ok, :right}}`; captures are inference inputs, not callable arity | settles ✓ |
 | `match_atom_partition.fz` | same multi-clause `FnId` called with different atom literals | `main() : {:one, :two}`; matcher proof selects different leaves per activation | settles ✓ |
 | `match_list_partition.fz` | same multi-clause `FnId` called with `[]` and `[1]` | `main() : {:empty, :cons}`; list-shape proof selects empty vs cons leaves per activation | settles ✓ |
 | `match_list_binding.fz` | cons clause returns `[h | _]` binding | `main() : {:empty, int}`; matcher-produced bindings carry element type into the selected leaf | settles ✓ |
@@ -46,9 +46,6 @@ Promote them one at a time so each commit isolates one missing capability.
 
 | program | target capability |
 | --- | --- |
-| `poly_named_ref.fz` | Treat a named reference as a zero-capture call target whose activations are keyed by call arguments. |
-| `poly_named_ref_pattern.fz` | Drive the matcher decision tree through a function value call target, not only through direct calls. |
-| `poly_capture_ref.fz` | Treat closure captures as inference-only leading inputs while preserving ordinary callable arity. |
 | `enum_reduce_named_ref.fz` | Stop on a proved invalid reducer accumulator and emit a diagnostic. |
 
 The discriminator is the captured value's type: an `int` capture (`&f[5]`) settles;
@@ -64,8 +61,8 @@ joined `int | :ok` function cell.
 `poly_named_ref.fz` moves the same boundary through a call-target value:
 `&id/1` has no captures, but it is still a value whose two applications must read
 separate activations keyed by their arguments. The current production planner's
-body dump still shows the obsolete shape (`any` plus one narrow spec), which is
-why this remains a target rather than an assertion.
+body dump still shows the obsolete shape (`any` plus one narrow spec); the pinned
+side-engine assertion is the guardrail for the transplant.
 
 `poly_named_ref_pattern.fz` adds the pattern matcher to that call-target path.
 The source is total via a catch-all, but the two observed activations should

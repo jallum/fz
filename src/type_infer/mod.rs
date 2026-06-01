@@ -2017,6 +2017,57 @@ mod tests {
     }
 
     #[test]
+    fn named_refs_instantiate_polymorphic_identity_per_callsite() {
+        let mut t = ConcreteTypes;
+        let module = lower(include_str!("../../spike/poly_named_ref.fz"));
+        let ret = infer_fn_via_main(&module, "main");
+        let expected = {
+            let int = t.int();
+            let ok = t.atom_lit("ok");
+            t.tuple(&[int, ok])
+        };
+        assert!(
+            t.is_equivalent(&ret, &expected),
+            "&id/1 should create separate activation reads for int and :ok calls, got {ret:?}"
+        );
+    }
+
+    #[test]
+    fn named_refs_drive_pattern_dispatch_per_activation() {
+        let mut t = ConcreteTypes;
+        let module = lower(include_str!("../../spike/poly_named_ref_pattern.fz"));
+        let ret = infer_fn_via_main(&module, "main");
+        let expected = {
+            let one = t.atom_lit("one");
+            let two = t.atom_lit("two");
+            t.tuple(&[one, two])
+        };
+        assert!(
+            t.is_equivalent(&ret, &expected),
+            "&pick/1 should feed each call argument into matcher proof and keep the catch-all dead, got {ret:?}"
+        );
+    }
+
+    #[test]
+    fn captured_closure_refs_instantiate_by_capture_and_arg_facts() {
+        let mut t = ConcreteTypes;
+        let module = lower(include_str!("../../spike/poly_capture_ref.fz"));
+        let ret = infer_fn_via_main(&module, "main");
+        let expected = {
+            let ok = t.atom_lit("ok");
+            let int = t.int();
+            let right = t.atom_lit("right");
+            let int_pair = t.tuple(&[ok.clone(), int]);
+            let atom_pair = t.tuple(&[ok, right]);
+            t.tuple(&[int_pair, atom_pair])
+        };
+        assert!(
+            t.is_equivalent(&ret, &expected),
+            "captured closure should prepend capture facts inside inference while keeping call arity explicit, got {ret:?}"
+        );
+    }
+
+    #[test]
     fn direct_calls_specialize_atom_pattern_dispatch_by_input() {
         let mut t = ConcreteTypes;
         let module = lower(include_str!("../../spike/match_atom_partition.fz"));
