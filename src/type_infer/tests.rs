@@ -1,5 +1,6 @@
 use super::{
-    TypeInferOutcome, TypeInferStatus, closure_apply_contract, infer_from_entry, infer_return,
+    TypeInferOutcome, TypeInferReturnState, TypeInferStatus, closure_apply_contract,
+    infer_from_entry, infer_return,
 };
 use crate::fz_ir::{Const, FnBuilder, FnId, Module, ModuleBuilder, Prim, Term};
 use crate::telemetry::{ConfiguredTelemetry, Handler, Value};
@@ -157,8 +158,11 @@ struct FnReturnFact {
 
 #[derive(Clone, Debug)]
 struct ActivationFact {
+    fn_id: FnId,
     fn_name: String,
+    input_count: usize,
     state: String,
+    return_ty: Option<Ty>,
 }
 
 #[derive(Clone, Debug)]
@@ -202,11 +206,19 @@ impl Handler for TypeInferCapture {
                 }
             }
             ["fz", "type_infer", "activation"] => {
-                if let (Some(fn_name), Some(state)) = (
+                if let (Some(fn_name), Some(fn_id), Some(input_count), Some(state)) = (
                     event_metadata_str(ev, "fn_name"),
+                    event_metadata_u64(ev, "fn_id"),
+                    event_metadata_u64(ev, "input_count"),
                     event_metadata_str(ev, "state"),
                 ) {
-                    facts.activations.push(ActivationFact { fn_name, state });
+                    facts.activations.push(ActivationFact {
+                        fn_id: FnId(fn_id as u32),
+                        fn_name,
+                        input_count: input_count as usize,
+                        state,
+                        return_ty: event_metadata_ty(ev, "return_ty_data"),
+                    });
                 }
             }
             ["fz", "type_infer", "diagnostic"] => {
@@ -268,6 +280,22 @@ fn event_metadata_str(ev: &crate::telemetry::Event<'_, '_, '_>, key: &str) -> Op
 
 fn event_metadata_ty(ev: &crate::telemetry::Event<'_, '_, '_>, key: &str) -> Option<Ty> {
     ev.metadata.get(key)?.downcast_ref::<Ty>().cloned()
+}
+
+fn event_metadata_u64(ev: &crate::telemetry::Event<'_, '_, '_>, key: &str) -> Option<u64> {
+    match ev.metadata.get(key)? {
+        Value::U64(value) => Some(*value),
+        _ => None,
+    }
+}
+
+fn return_state_name(state: &TypeInferReturnState) -> &'static str {
+    match state {
+        TypeInferReturnState::Pending => "pending",
+        TypeInferReturnState::Unknown => "unknown",
+        TypeInferReturnState::NoReturn => "no_return",
+        TypeInferReturnState::Known(_) => "known",
+    }
 }
 
 /// At the fixpoint of a supported program, every reached function has a known
@@ -361,6 +389,74 @@ fn enum_reduce_runtime_graph_settles() {
     assert!(
         t.is_equivalent(&list_reduce_ret, &done),
         "Enumerable.List.reduce should settle to {{:done,int}} for an int-returning reducer, got {list_reduce_ret:?}"
+    );
+}
+
+#[test]
+fn outcome_exposes_activation_facts_as_production_data() {
+    let module = linked(include_str!("fixtures/enum_reduce.fz"));
+    let mut t = ConcreteTypes;
+    let int = t.int();
+    let report = infer_report_via_main(&mut t, &module);
+
+    assert_eq!(report.outcome.status, TypeInferStatus::Complete);
+    assert_eq!(
+        report.outcome.activations.len(),
+        report.facts.activations.len(),
+        "returned activation facts and activation telemetry should describe the same reached cells"
+    );
+
+    for fact in &report.outcome.activations {
+        assert!(
+            report.facts.activations.iter().any(|event| {
+                event.fn_id == fact.fn_id
+                    && event.input_count == fact.input_tys.len()
+                    && event.state == return_state_name(&fact.return_state)
+            }),
+            "activation fact should be observable through telemetry: {fact:?}"
+        );
+    }
+
+    let reduce_fact = report
+        .outcome
+        .activations
+        .iter()
+        .find(|fact| {
+            module.fn_by_id(fact.fn_id).name == "Enum.reduce"
+                && fact.input_tys.len() == 3
+                && matches!(
+                    &fact.return_state,
+                    TypeInferReturnState::Known(ret) if t.is_equivalent(ret, &int)
+                )
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "Enum.reduce activation should be returned as known int; got {:?}",
+                report
+                    .outcome
+                    .activations
+                    .iter()
+                    .filter(|fact| module.fn_by_id(fact.fn_id).name == "Enum.reduce")
+                    .collect::<Vec<_>>()
+            )
+        });
+
+    assert!(
+        t.is_equivalent(&reduce_fact.input_tys[1], &int),
+        "Enum.reduce activation should carry the concrete accumulator input, got {:?}",
+        reduce_fact.input_tys
+    );
+    assert!(
+        report.facts.activations.iter().any(|event| {
+            event.fn_id == reduce_fact.fn_id
+                && event.input_count == reduce_fact.input_tys.len()
+                && event.state == "known"
+                && event
+                    .return_ty
+                    .as_ref()
+                    .is_some_and(|ty| t.is_equivalent(ty, &int))
+        }),
+        "known activation return should be visible through telemetry too"
     );
 }
 

@@ -35,11 +35,19 @@ The crate-visible API is intentionally small:
 
 - `infer_return` runs one activation and returns its boundary-erased `Ty`.
 - `infer_from_entry` runs the reachable activation graph from an entry point and
-  returns `TypeInferOutcome { entry_return, status }`.
+  returns `TypeInferOutcome { entry_return, status, activations }`.
 - `TypeInferStatus` is the coarse API result: `Complete`, `Unresolved`, or
   `Invalid`.
+- `TypeInferActivationFact` is the production data boundary for reached cells:
+  `FnId`, canonical input `Ty`s, and `TypeInferReturnState`.
+- `TypeInferReturnState` mirrors the settled boundary state:
+  `Pending`, `Unknown`, `NoReturn`, or `Known(Ty)`. It is not the solver
+  lattice; private `Info` remains the refinement cell.
+  Matcher proof stays private and is erased at this boundary.
 
-Useful details are telemetry, not return payload. The engine emits:
+Production consumers read structured facts from the outcome. They must not
+scrape telemetry to build planner state. Telemetry remains the shared observable
+surface for tests and operators. The engine emits:
 
 - `fz.type_infer.activation` for every reached activation, including function
   identity, return state, rendered return type, and in-process `Ty` data when

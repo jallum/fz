@@ -322,6 +322,10 @@ impl ActivationKey {
             .map(ValueKey::into_info)
             .collect()
     }
+
+    fn input_tys(&self) -> Vec<Ty> {
+        self.inputs.iter().map(|input| input.ty.clone()).collect()
+    }
 }
 
 #[derive(Clone, PartialEq, Eq, Hash)]
@@ -476,6 +480,37 @@ pub(crate) enum TypeInferStatus {
 pub(crate) struct TypeInferOutcome {
     pub(crate) entry_return: Ty,
     pub(crate) status: TypeInferStatus,
+    pub(crate) activations: Vec<TypeInferActivationFact>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct TypeInferActivationFact {
+    pub(crate) fn_id: FnId,
+    pub(crate) input_tys: Vec<Ty>,
+    pub(crate) return_state: TypeInferReturnState,
+}
+
+/// Boundary return state for a reached activation.
+///
+/// This is a production data-transfer shape, not the solver lattice. The
+/// private [`Info`] cell remains the only place that owns refinement behavior.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum TypeInferReturnState {
+    Pending,
+    Unknown,
+    NoReturn,
+    Known(Ty),
+}
+
+impl TypeInferReturnState {
+    fn from_info(info: &Info) -> Self {
+        match info {
+            Info::Pending => Self::Pending,
+            Info::Unknown => Self::Unknown,
+            Info::NoReturn => Self::NoReturn,
+            Info::Known(value) => Self::Known(value.ty.clone()),
+        }
+    }
 }
 
 fn info_state(info: &Info) -> &'static str {
@@ -802,6 +837,26 @@ impl<'m> Solver<'m> {
             Some(Info::Known(value)) => value.ty,
             _ => t.any(),
         }
+    }
+
+    fn activation_facts(&self) -> Vec<TypeInferActivationFact> {
+        let mut facts: Vec<_> = self
+            .activations
+            .iter()
+            .map(|(key, activation)| TypeInferActivationFact {
+                fn_id: key.fn_id,
+                input_tys: key.input_tys(),
+                return_state: TypeInferReturnState::from_info(&activation.ret),
+            })
+            .collect();
+        facts.sort_by(|a, b| {
+            a.fn_id
+                .cmp(&b.fn_id)
+                .then_with(|| a.input_tys.len().cmp(&b.input_tys.len()))
+                .then_with(|| format!("{:?}", a.input_tys).cmp(&format!("{:?}", b.input_tys)))
+                .then_with(|| format!("{:?}", a.return_state).cmp(&format!("{:?}", b.return_state)))
+        });
+        facts
     }
 
     fn status(&self) -> TypeInferStatus {
@@ -2037,10 +2092,12 @@ pub(crate) fn infer_from_entry<T: Types<Ty = Ty> + ClosureTypes + RenderTypes>(
     solver.run(t);
     let entry_return = solver.boundary_return(t, &key);
     let status = solver.status();
+    let activations = solver.activation_facts();
     solver.emit_telemetry(t, tel);
     TypeInferOutcome {
         entry_return,
         status,
+        activations,
     }
 }
 
