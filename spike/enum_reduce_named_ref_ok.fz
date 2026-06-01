@@ -1,0 +1,21 @@
+# Well-typed named-function-reference reducer (the corrected counterpart to the
+# intentionally ill-typed enum_reduce_named_ref.fz).
+#
+# `Enum.reduce/3`'s reducer contract is `(element, acc) -> new_acc`: it returns
+# the *bare* new accumulator. Returning the bare int keeps `acc : int` across
+# every iteration, so the fixpoint settles. The named reference itself is just
+# another call edge — it specializes and converges exactly like an inline
+# lambda.
+#
+# Expected: Enum.reduce([1, 2, 3], 0, &Main.reducer/2) : int ; settles (no none).
+
+defmodule Main do
+  fn reducer(entry, acc) do
+    acc + entry
+  end
+
+  fn main() do
+    Enum.reduce([1, 2, 3], 0, &Main.reducer/2)
+    |> dbg()
+  end
+end

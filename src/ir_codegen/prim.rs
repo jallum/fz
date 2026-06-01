@@ -1033,6 +1033,27 @@ pub(crate) fn lower_prim<
             if decl.symbol == "fz_binary_concat" && args.len() == 2 {
                 return lower_extern_fz_binary_concat(body, var_env, &arg_vars, dest_var);
             }
+            // Arithmetic builtins backing `Kernel.+`'s clauses: each lowers to
+            // the same clif as `Prim::BinOp(Add)` — `iadd`/`fadd`, with the
+            // int↔float coercion for the mixed clauses — by reusing the
+            // arithmetic lowering. (Dead until call sites route through
+            // `Kernel.+`; for now they only need to codegen.)
+            if matches!(
+                decl.symbol.as_str(),
+                "fz_add_ii" | "fz_add_ff" | "fz_add_if" | "fz_add_fi"
+            ) && args.len() == 2
+            {
+                return lower_arith_binop(
+                    body,
+                    t,
+                    fn_types,
+                    var_env,
+                    runtime,
+                    BinOp::Add,
+                    arg_vars[0],
+                    arg_vars[1],
+                );
+            }
             if decl.variadic {
                 return emit_variadic_extern_call(
                     body,

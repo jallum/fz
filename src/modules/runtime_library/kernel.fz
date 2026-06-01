@@ -62,4 +62,21 @@ defmodule Kernel do
   @doc "Constructs a Range struct."
   @spec range(integer, integer, integer) :: any
   fn range(first, last, step), do: Range.new(first, last, step)
+
+  extern "C" fn fz_add_ii(integer, integer) :: integer
+  extern "C" fn fz_add_ff(float, float) :: float
+  extern "C" fn fz_add_if(integer, float) :: float
+  extern "C" fn fz_add_fi(float, integer) :: float
+
+  @spec integer + integer :: integer
+  fn left + right, do: fz_add_ii(left, right)
+
+  @spec float + float :: float
+  fn left + right, do: fz_add_ff(left, right)
+
+  @spec integer + float :: float
+  fn left + right, do: fz_add_if(left, right)
+
+  @spec float + integer :: float
+  fn left + right, do: fz_add_fi(left, right)
 end

@@ -95,6 +95,32 @@ impl Parser {
                         self.parse_fn_clause()?;
                     let arity = clause.params.len();
                     let key = (name.clone(), arity);
+                    // Take this clause's pending @spec/@doc attrs. fz, like
+                    // Elixir, associates specs with a function by name/arity —
+                    // so a `@spec` may precede *any* clause of a multi-clause
+                    // group (one spec per clause), not only the first. (Elixir
+                    // collects `@spec` independently via Kernel.Typespec; we
+                    // merge each clause's pending specs into the group.)
+                    let attrs = std::mem::take(&mut pending_fn_attrs);
+                    // fz-ul4.31.4 — @spec name + arity must match the clause.
+                    for a in &attrs {
+                        if let Attribute::Spec(s) = a {
+                            if s.name != name {
+                                return self.err(format!(
+                                    "@spec name `{}` doesn't match \
+                                     following fn `{}`",
+                                    s.name, name));
+                            }
+                            if s.param_body_tokens.len() != arity {
+                                return self.err(format!(
+                                    "@spec arity {} doesn't match fn \
+                                     `{}/{}`",
+                                    s.param_body_tokens.len(),
+                                    name,
+                                    arity));
+                            }
+                        }
+                    }
                     if let Some(def) = groups.get_mut(&key) {
                         if def.is_macro != is_macro {
                             return self.err(format!("`{}` declared as both fn and defmacro", name));
@@ -105,28 +131,8 @@ impl Parser {
                         // extend the def's span to cover this clause too
                         def.span = def.span.merge(clause.span);
                         def.clauses.push(clause);
+                        def.attrs.extend(attrs);
                     } else {
-                        let attrs = std::mem::take(&mut pending_fn_attrs);
-                        // fz-ul4.31.4 — @spec name + arity must match
-                        // the following fn's first clause.
-                        for a in &attrs {
-                            if let Attribute::Spec(s) = a {
-                                if s.name != name {
-                                    return self.err(format!(
-                                        "@spec name `{}` doesn't match \
-                                         following fn `{}`",
-                                        s.name, name));
-                                }
-                                if s.param_body_tokens.len() != arity {
-                                    return self.err(format!(
-                                        "@spec arity {} doesn't match fn \
-                                         `{}/{}`",
-                                        s.param_body_tokens.len(),
-                                        name,
-                                        arity));
-                                }
-                            }
-                        }
                         let clause_span = clause.span;
                         order.push(key.clone());
                         groups.insert(key, FnDef {
@@ -230,31 +236,63 @@ impl Parser {
                 // fz-ul4.31.4: `@spec name(T1, T2) :: R`. Bodies stored
                 // as raw tokens; `SpecDecl::resolve` lowers them to
                 // types against the module's ModuleTypeEnv in .31.5.
-                let spec_name = match self.bump() {
-                    Tok::Ident(n) => n,
-                    other => {
-                        return self
-                            .err(format!("expected fn name after `@spec`, got {:?}", other));
-                    }
-                };
-                self.expect(&Tok::LParen, "`(`")?;
-                let mut param_body_tokens: Vec<TypeExprBody> = Vec::new();
-                if !matches!(self.peek(), Tok::RParen) {
-                    loop {
-                        let toks = self.collect_spec_param_type_tokens();
-                        if toks.is_empty() {
-                            return self
-                                .err("expected type expression in @spec param list".to_string());
+                // `@spec name(T1, T2) :: R` (normal), or operator-headed infix
+                // `@spec T1 <op> T2 :: R` (e.g. `@spec integer + integer :: integer`).
+                let (spec_name, param_body_tokens): (String, Vec<TypeExprBody>) =
+                    if matches!(self.peek(), Tok::Ident(_))
+                        && matches!(self.peek_at(1), Tok::LParen)
+                    {
+                        let spec_name = match self.bump() {
+                            Tok::Ident(n) => n,
+                            _ => unreachable!("guarded by peek"),
+                        };
+                        self.expect(&Tok::LParen, "`(`")?;
+                        let mut params: Vec<TypeExprBody> = Vec::new();
+                        if !matches!(self.peek(), Tok::RParen) {
+                            loop {
+                                let toks = self.collect_spec_param_type_tokens();
+                                if toks.is_empty() {
+                                    return self.err(
+                                        "expected type expression in @spec param list".to_string(),
+                                    );
+                                }
+                                params.push(TypeExprBody(toks));
+                                if matches!(self.peek(), Tok::Comma) {
+                                    self.bump();
+                                    continue;
+                                }
+                                break;
+                            }
                         }
-                        param_body_tokens.push(TypeExprBody(toks));
-                        if matches!(self.peek(), Tok::Comma) {
-                            self.bump();
-                            continue;
+                        self.expect(&Tok::RParen, "`)`")?;
+                        (spec_name, params)
+                    } else {
+                        let t1 = self.collect_spec_infix_operand();
+                        if t1.is_empty() {
+                            return self.err(
+                                "expected type expression before operator in @spec".to_string(),
+                            );
                         }
-                        break;
-                    }
-                }
-                self.expect(&Tok::RParen, "`)`")?;
+                        let name = match Self::operator_token_name(self.peek()) {
+                            Some(s) => {
+                                self.bump();
+                                s.to_string()
+                            }
+                            None => {
+                                return self.err(format!(
+                                    "expected `@spec name(` or `@spec T1 <op> T2`, got {:?}",
+                                    self.peek()
+                                ));
+                            }
+                        };
+                        let t2 = self.collect_spec_infix_operand();
+                        if t2.is_empty() {
+                            return self.err(
+                                "expected type expression after operator in @spec".to_string(),
+                            );
+                        }
+                        (name, vec![TypeExprBody(t1), TypeExprBody(t2)])
+                    };
                 self.expect(&Tok::ColonColon, "`::`")?;
                 let result_body_tokens = self.collect_type_body_tokens();
                 if result_body_tokens.is_empty() {
@@ -353,6 +391,53 @@ impl Parser {
 
     pub(super) fn collect_spec_param_type_tokens(&mut self) -> Vec<Token> {
         self.collect_balanced_type_tokens(TypeTokenBoundary::SpecParam)
+    }
+
+    /// Canonical name for an operator token used as a `fn`/`@spec` head
+    /// (`fn left + right`, `@spec integer + integer :: integer`). `None` for a
+    /// non-operator token.
+    fn operator_token_name(t: &Tok) -> Option<&'static str> {
+        Some(match t {
+            Tok::Plus => "+",
+            Tok::Minus => "-",
+            Tok::Star => "*",
+            Tok::Slash => "/",
+            Tok::Percent => "%",
+            Tok::EqEq => "==",
+            Tok::NotEq => "!=",
+            Tok::Lt => "<",
+            Tok::LtEq => "<=",
+            Tok::Gt => ">",
+            Tok::GtEq => ">=",
+            _ => return None,
+        })
+    }
+
+    /// Collect one operand's type-expression tokens for an operator-headed
+    /// `@spec` (`T1 <op> T2 :: R`), stopping at depth 0 before the operator or
+    /// the `::`.
+    fn collect_spec_infix_operand(&mut self) -> Vec<Token> {
+        let mut out: Vec<Token> = Vec::new();
+        let mut depth: i32 = 0;
+        loop {
+            let stop = {
+                let p = self.peek();
+                depth == 0
+                    && (Self::operator_token_name(p).is_some()
+                        || matches!(p, Tok::ColonColon | Tok::Eof))
+            };
+            if stop {
+                break;
+            }
+            match self.peek() {
+                Tok::LParen | Tok::LBrack | Tok::LBrace => depth += 1,
+                Tok::RParen | Tok::RBrack | Tok::RBrace => depth -= 1,
+                _ => {}
+            }
+            out.push(self.toks[self.pos].clone());
+            self.pos += 1;
+        }
+        out
     }
 
     pub(super) fn collect_fn_param_type_tokens(&mut self) -> Vec<Token> {
@@ -458,13 +543,38 @@ impl Parser {
             }
         };
         let name_span = self.cur_span();
-        let name = match self.bump() {
-            Tok::Ident(n) => n,
-            other => return self.err(format!("expected function name, got {:?}", other)),
+        // Normal `name(params)` head, or an operator-headed infix clause
+        // `<p1> <op> <p2>` (e.g. `fn left + right`). Additive: a normal head is
+        // `Ident (`, so existing clauses parse exactly as before; only an
+        // operator in the head position selects the infix form.
+        let (name, params, param_annotations) = if matches!(self.peek(), Tok::Ident(_))
+            && matches!(self.peek_at(1), Tok::LParen)
+        {
+            let name = match self.bump() {
+                Tok::Ident(n) => n,
+                _ => unreachable!("guarded by peek"),
+            };
+            self.expect(&Tok::LParen, "`(`")?;
+            let (params, anns) = self.parse_fn_params()?;
+            self.expect(&Tok::RParen, "`)`")?;
+            (name, params, anns)
+        } else {
+            let left = self.parse_pattern()?;
+            let name = match Self::operator_token_name(self.peek()) {
+                Some(s) => {
+                    self.bump();
+                    s.to_string()
+                }
+                None => {
+                    return self.err(format!(
+                        "expected `name(` or an operator-headed `fn lhs <op> rhs`, got {:?}",
+                        self.peek()
+                    ));
+                }
+            };
+            let right = self.parse_pattern()?;
+            (name, vec![left, right], vec![None, None])
         };
-        self.expect(&Tok::LParen, "`(`")?;
-        let (params, param_annotations) = self.parse_fn_params()?;
-        self.expect(&Tok::RParen, "`)`")?;
 
         let guard = if matches!(self.peek(), Tok::When) {
             self.bump();
