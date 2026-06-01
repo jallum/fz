@@ -2997,6 +2997,84 @@ fn declared_return_fact_handles_enum_count_on_range_in_runtime_graph() {
 }
 
 #[test]
+fn runtime_graph_mixed_enum_take_calls_plan_range_specialization() {
+    let src = r#"
+fn main() do
+  xs = [1, 2, 3, 4, 5]
+  range = 1..5
+  dbg(Enum.take(xs, 3))
+  dbg(Enum.take(xs, 0))
+  dbg(Enum.take(xs, 9))
+  dbg(Enum.take(xs, -2))
+  dbg(Enum.take(range, -2))
+end
+"#;
+    let mut t = crate::types::ConcreteTypes;
+    let tel = crate::telemetry::NullTelemetry;
+    let providers = crate::modules::pipeline::ProviderInputs::new(
+        crate::modules::artifact_store::DEFAULT_ARTIFACT_ROOT.to_string(),
+        Vec::new(),
+    );
+    let frontend = crate::modules::pipeline::compile_source_with_providers(
+        &mut t,
+        src.to_string(),
+        "mixed_enum_take_input.fz".to_string(),
+        &providers,
+        &tel,
+    )
+    .unwrap_or_else(|err| panic!("frontend result: {err}"));
+    let checked = crate::modules::pipeline::checked_module_for_mode(
+        &mut t,
+        frontend,
+        &tel,
+        crate::modules::pipeline::CompileMode::Normal,
+    )
+    .unwrap_or_else(|err| panic!("checked module: {err}"));
+    let prepared = crate::modules::pipeline::prepare_execution_graph(
+        &mut t,
+        checked,
+        &providers,
+        &tel,
+        crate::modules::pipeline::CompileMode::Normal,
+    )
+    .unwrap_or_else(|err| panic!("execution graph: {err}"));
+    let module = prepared.module;
+    let plan = super::plan_module(&mut t, &module, &tel);
+    let take = module.fn_by_name("Enum.take").expect("Enum.take");
+    let range = t.opaque_of("impl-target::Range");
+
+    let matching_specs = plan
+        .specs
+        .keys()
+        .filter(|key| {
+            key.fn_id == take.id
+                && key
+                    .input
+                    .first()
+                    .and_then(|slot| slot.as_ref())
+                    .is_some_and(|ty| t.is_equivalent(ty, &range))
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        !matching_specs.is_empty(),
+        "mixed Enum.take calls must keep a range specialization; external_edges={:?}; Enum.take specs: {:?}; call edges: {:?}",
+        module.external_call_edges,
+        plan.specs
+            .keys()
+            .filter(|key| key.fn_id == take.id)
+            .collect::<Vec<_>>(),
+        plan.specs
+            .iter()
+            .flat_map(|(caller, spec)| spec
+                .call_edges
+                .values()
+                .filter_map(move |edge| edge.local_target().map(|target| (caller, target))))
+            .filter(|(_, target)| target.fn_id == take.id)
+            .collect::<Vec<_>>(),
+    );
+}
+
+#[test]
 fn declared_return_fact_handles_enum_reduce_with_runtime_graph_reducer() {
     let src = include_str!("../../fixtures/enum_take_drop_split/input.fz");
     let mut t = crate::types::ConcreteTypes;
@@ -3562,12 +3640,6 @@ fn discovery_walk_publishes_enum_reduce_cont_with_final_returns() {
         .iter()
         .find(|f| f.name == "Enum.reduce" && f.block(f.entry).params.len() == 3)
         .expect("Enum.reduce/3");
-    let block = &enum_reduce.blocks[0];
-    let crate::fz_ir::Term::Call { ident, .. } = &block.terminator else {
-        panic!("Enum.reduce entry should call Enumerable.reduce");
-    };
-    let cont_callsite =
-        crate::fz_ir::CallsiteId::new(enum_reduce.id, ident, crate::fz_ir::EmitSlot::Cont);
     let specs = plan
         .specs
         .iter()
@@ -3582,6 +3654,30 @@ fn discovery_walk_publishes_enum_reduce_cont_with_final_returns() {
             .collect::<Vec<_>>()
     );
     for (spec_key, spec) in specs {
+        let cont_callsites = enum_reduce
+            .blocks
+            .iter()
+            .filter(|block| spec.reachable_blocks.contains(&block.id))
+            .filter_map(|block| match &block.terminator {
+                crate::fz_ir::Term::Call { ident, .. } => Some(crate::fz_ir::CallsiteId::new(
+                    enum_reduce.id,
+                    ident,
+                    crate::fz_ir::EmitSlot::Cont,
+                )),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            !cont_callsites.is_empty(),
+            "Enum.reduce spec should reach at least one non-tail call; input {:?}; reachable={:?}; body:\n{}",
+            spec_key
+                .input
+                .iter()
+                .map(|slot| slot.as_ref().map(|ty| t.display(ty)))
+                .collect::<Vec<_>>(),
+            spec.reachable_blocks,
+            enum_reduce
+        );
         let mut capabilities = std::collections::HashMap::new();
         let mut out = super::walk::WalkResult::default();
         super::walk::walk_spec_for_discovery(
@@ -3599,16 +3695,19 @@ fn discovery_walk_publishes_enum_reduce_cont_with_final_returns() {
             &mut out,
             &super::worklist::ActivationReturnFacts::empty(),
         );
-        assert!(
-            out.call_edges.contains_key(&cont_callsite),
-            "discovery walk with final returns should publish Enum.reduce Cont edge for input {:?}; got {:?}",
-            spec_key
-                .input
-                .iter()
-                .map(|slot| slot.as_ref().map(|ty| t.display(ty)))
-                .collect::<Vec<_>>(),
-            out.call_edges.keys().collect::<Vec<_>>()
-        );
+        for cont_callsite in cont_callsites {
+            assert!(
+                out.call_edges.contains_key(&cont_callsite),
+                "discovery walk with final returns should publish Enum.reduce Cont edge {:?} for input {:?}; got {:?}",
+                cont_callsite,
+                spec_key
+                    .input
+                    .iter()
+                    .map(|slot| slot.as_ref().map(|ty| t.display(ty)))
+                    .collect::<Vec<_>>(),
+                out.call_edges.keys().collect::<Vec<_>>()
+            );
+        }
     }
 }
 

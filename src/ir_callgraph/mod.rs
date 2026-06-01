@@ -27,6 +27,24 @@ use std::collections::{HashMap, HashSet};
 /// edges, which mark every fn that could be reached through opaque
 /// dispatch).
 pub fn build_call_graph(m: &Module) -> HashMap<FnId, HashSet<FnId>> {
+    build_call_graph_with_return_continuations(m, true)
+}
+
+/// Build the graph used to identify true recursive function components.
+///
+/// This deliberately excludes the artificial callee -> continuation edge used
+/// by forward reachability. A non-tail call's continuation belongs to the
+/// caller's control flow, not to the callee's body. Including that edge makes
+/// sequential call chains look recursive and lets one call site's fixed-point
+/// facts pollute another call site.
+pub fn build_recursion_graph(m: &Module) -> HashMap<FnId, HashSet<FnId>> {
+    build_call_graph_with_return_continuations(m, false)
+}
+
+fn build_call_graph_with_return_continuations(
+    m: &Module,
+    include_callee_to_continuation: bool,
+) -> HashMap<FnId, HashSet<FnId>> {
     let mut g: HashMap<FnId, HashSet<FnId>> = HashMap::new();
     let mut extra_edges: Vec<(FnId, FnId)> = Vec::new();
     for f in &m.fns {
@@ -47,7 +65,9 @@ pub fn build_call_graph(m: &Module) -> HashMap<FnId, HashSet<FnId>> {
                 } => {
                     edges.insert(*callee);
                     edges.insert(continuation.fn_id);
-                    extra_edges.push((*callee, continuation.fn_id));
+                    if include_callee_to_continuation {
+                        extra_edges.push((*callee, continuation.fn_id));
+                    }
                 }
                 Term::TailCall { callee, .. } => {
                     edges.insert(*callee);

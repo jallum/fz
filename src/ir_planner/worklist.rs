@@ -13,7 +13,7 @@ use super::reachable::{cont_key_from_slot0, env_at_terminator};
 use super::type_fn::type_fn;
 use super::walk::{WalkResult, walk_spec_for_discovery};
 use crate::fz_ir::{Block, FnId, Module, Term};
-use crate::ir_callgraph::{build_call_graph, entry_seeds};
+use crate::ir_callgraph::{build_recursion_graph, entry_seeds};
 use crate::type_infer::TypeInferReturnState;
 use std::cell::Cell;
 use std::collections::HashMap;
@@ -784,7 +784,7 @@ fn discover_specs<
     m: &Module,
     tel: PlannerTelemetry<'_>,
 ) -> DiscoverOutput {
-    let call_graph = build_call_graph(m);
+    let call_graph = build_recursion_graph(m);
     let mut sccs = super::scc::tarjan_scc(&call_graph);
     sccs.reverse();
     let mut recursive_fns: std::collections::HashSet<FnId> = std::collections::HashSet::new();

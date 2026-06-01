@@ -79,4 +79,52 @@ defmodule Kernel do
 
   @spec float + integer :: float
   fn left + right, do: fz_add_fi(left, right)
+
+  @spec integer - integer :: integer
+  fnp left - right, do: left - right
+
+  @spec float - float :: float
+  fnp left - right, do: left - right
+
+  @spec integer - float :: float
+  fnp left - right, do: left - right
+
+  @spec float - integer :: float
+  fnp left - right, do: left - right
+
+  @spec integer * integer :: integer
+  fnp left * right, do: left * right
+
+  @spec float * float :: float
+  fnp left * right, do: left * right
+
+  @spec integer * float :: float
+  fnp left * right, do: left * right
+
+  @spec float * integer :: float
+  fnp left * right, do: left * right
+
+  @spec integer / integer :: integer
+  fnp left / right, do: left / right
+
+  @spec float / float :: float
+  fnp left / right, do: left / right
+
+  @spec integer / float :: float
+  fnp left / right, do: left / right
+
+  @spec float / integer :: float
+  fnp left / right, do: left / right
+
+  @spec integer % integer :: integer
+  fnp left % right, do: left % right
+
+  @spec float % float :: float
+  fnp left % right, do: left % right
+
+  @spec integer % float :: float
+  fnp left % right, do: left % right
+
+  @spec float % integer :: float
+  fnp left % right, do: left % right
 end

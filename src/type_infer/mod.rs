@@ -43,7 +43,10 @@
 //! Activation facts, diagnostics, and dead matcher arms are emitted through
 //! telemetry so tests and operators observe the same production surface.
 use crate::fz_ir::{BinOp, BlockId, Const, DeadBranch, FnId, Module, Prim, Stmt, Term, UnOp, Var};
-use crate::types::{ClosureTarget, ClosureTypes, MapKey, Nominals, RenderTypes, Ty, Types};
+use crate::types::{
+    ClosureTarget, ClosureTypes, MapKey, Nominals, RenderTypes, SchemeInstantiation, Ty, Types,
+    instantiate_scheme_match,
+};
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 
 type Env = HashMap<Var, Info>;
@@ -393,7 +396,7 @@ struct TypeInferDiagnostic {
 
 #[derive(Clone)]
 enum TypeInferDiagnosticKind {
-    InvalidNumericBinOp { op: BinOp, left: Ty, right: Ty },
+    InvalidOperator { op: BinOp, left: Ty, right: Ty },
 }
 
 impl TypeInferDiagnostic {
@@ -404,7 +407,7 @@ impl TypeInferDiagnostic {
         tel: &dyn crate::telemetry::Telemetry,
     ) {
         match &self.kind {
-            TypeInferDiagnosticKind::InvalidNumericBinOp { op, left, right } => {
+            TypeInferDiagnosticKind::InvalidOperator { op, left, right } => {
                 let fn_name = module.fn_by_id(self.fn_id).name.clone();
                 tel.event(
                     &["fz", "type_infer", "diagnostic"],
@@ -626,6 +629,25 @@ impl<'m> Solver<'m> {
         Ok(ActivationRequestSet::singleton(callee, args))
     }
 
+    fn operator_spec_result<T: Types<Ty = Ty> + ClosureTypes>(
+        &self,
+        t: &mut T,
+        op: BinOp,
+        inputs: &[Info],
+    ) -> Info {
+        let name = format!("Kernel.{}", binop_symbol(op));
+        let Some(f) = self
+            .module
+            .fns
+            .iter()
+            .find(|f| f.name == name && f.block(f.entry).params.len() == inputs.len())
+        else {
+            return unresolved_inputs(inputs);
+        };
+        self.declared_spec_result(t, f.id, inputs)
+            .unwrap_or_else(|| unresolved_inputs(inputs))
+    }
+
     /// Resolve a closure application to its body activation request. `Pending` waits;
     /// `Unknown` stays `Unknown`; a known value that cannot be resolved to a
     /// single closure target is still not proven callable, so it stays
@@ -744,17 +766,12 @@ impl<'m> Solver<'m> {
             .unwrap_or(Info::Pending)
     }
 
-    /// Run to fixpoint: repeatedly re-derive each scheduled function's return
-    /// type; when it ascends, re-schedule the callers that read it.
-    /// The return type a declared `@spec` assigns `f` for its current input
-    /// types: instantiate every arrow against the inputs and union the matching
-    /// results. `None` when `f` has no declared spec, its inputs aren't all
-    /// `Known`, or the spec matcher cannot prove a matching arrow yet. "No
-    /// match" is not `none` here: this API cannot distinguish contradiction
-    /// from underconstrained polymorphism, so the solver must keep the cell
-    /// `Unknown` until body proof or a stricter diagnostic pass proves
-    /// impossibility.
-    fn declared_spec_ret<T: Types<Ty = Ty> + ClosureTypes>(
+    /// Apply `f`'s declared arrow set to this concrete inference input.
+    ///
+    /// A known matching arrow is a fact. An underconstrained arrow is still
+    /// live uncertainty. Known inputs outside every arrow are a contradiction:
+    /// the declared callable cannot accept that activation.
+    fn declared_spec_result<T: Types<Ty = Ty> + ClosureTypes>(
         &self,
         t: &mut T,
         f: FnId,
@@ -765,18 +782,39 @@ impl<'m> Solver<'m> {
         for i in inputs {
             match i {
                 Info::Known(value) => arg_tys.push(value.ty.clone()),
-                Info::Pending | Info::Unknown | Info::NoReturn => return None,
+                Info::Pending | Info::Unknown | Info::NoReturn => {
+                    return Some(unresolved_inputs(inputs));
+                }
             }
         }
-        let matches = spec_set.matching_arrows(t, &arg_tys);
-        if matches.is_empty() {
-            return None;
+        let has_underconstrained_args = arg_tys.iter().any(|ty| t.has_vars(ty));
+        let mut ret = None;
+        let mut underconstrained = false;
+        for spec in &spec_set.arrows {
+            match successful_spec_arrow_result(
+                t,
+                &spec.params,
+                &spec.result,
+                &spec.constraints,
+                &arg_tys,
+            ) {
+                SpecArrowResult::Known(result) => {
+                    ret = Some(match ret {
+                        Some(prev) => t.union(prev, result),
+                        None => result,
+                    });
+                }
+                SpecArrowResult::Underconstrained => underconstrained = true,
+                SpecArrowResult::NoMatch => {}
+            }
         }
-        let mut ret = t.none();
-        for m in matches {
-            ret = t.union(ret, m.result);
+        if let Some(ret) = ret {
+            Some(Info::known(ret))
+        } else if underconstrained || has_underconstrained_args {
+            Some(Info::Unknown)
+        } else {
+            Some(Info::known(t.none()))
         }
-        Some(Info::known(ret))
     }
 
     fn run<T: Types<Ty = Ty> + ClosureTypes>(&mut self, t: &mut T) {
@@ -793,7 +831,7 @@ impl<'m> Solver<'m> {
             // turn a precise body into `none`.
             let ret = match body_ret {
                 Info::Unknown => self
-                    .declared_spec_ret(t, key.fn_id, &inputs)
+                    .declared_spec_result(t, key.fn_id, &inputs)
                     .unwrap_or(Info::Unknown),
                 known => known,
             };
@@ -1149,7 +1187,7 @@ impl<'m> Solver<'m> {
         if !t.is_empty(&value.ty) {
             return None;
         }
-        let Some(kind) = invalid_numeric_binop(prim, env) else {
+        let Some(kind) = invalid_operator_application(prim, env) else {
             return None;
         };
         if self.diagnostic_sites.insert((fn_id, block_id, stmt_index)) {
@@ -1206,23 +1244,9 @@ impl<'m> Solver<'m> {
                 let lt = info_of(*a, env);
                 let rt = info_of(*b, env);
                 match op {
-                    // `+`/`-`/`*` apply the four-clause numeric signature
-                    // strictly (see `numeric_binop`): in-domain operands yield
-                    // int/float per clause, an operand outside `int|float`
-                    // yields `none` (the diagnostic seam), and `Unknown` stays
-                    // `Unknown`.
-                    BinOp::Add | BinOp::Sub | BinOp::Mul => numeric_binop(t, lt, rt),
-                    // TODO(operator specs): `/` is float-only and `div`/`rem`
-                    // are integer-only — give them their own clause sets. Until
-                    // then they ride the operands' refinement join.
-                    BinOp::Div | BinOp::Mod => match (lt, rt) {
-                        (Info::Known(a), Info::Known(b)) => {
-                            Info::known(t.refine_widen(&a.ty, &b.ty))
-                        }
-                        (Info::Unknown, _) | (_, Info::Unknown) => Info::Unknown,
-                        (Info::NoReturn, _) | (_, Info::NoReturn) => Info::NoReturn,
-                        (Info::Pending, _) | (_, Info::Pending) => Info::Pending,
-                    },
+                    BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod => {
+                        self.operator_spec_result(t, *op, &[lt, rt])
+                    }
                     BinOp::Eq | BinOp::Neq | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => {
                         comparison_binop(t, *op, lt, rt)
                     }
@@ -1955,69 +1979,77 @@ fn exact_float<T: Types<Ty = Ty>>(t: &T, value: &ValueFact) -> Option<f64> {
     }
 }
 
-/// Whether `x`'s value set intersects `dom` (i.e. `x ⊓ dom` is inhabited).
-fn ty_inhabits<T: Types<Ty = Ty>>(t: &mut T, x: &Ty, dom: &Ty) -> bool {
-    let none = t.none();
-    let meet = t.intersect(x.clone(), dom.clone());
-    !t.is_equivalent(&meet, &none)
-}
-
-fn invalid_numeric_binop(prim: &Prim, env: &Env) -> Option<TypeInferDiagnosticKind> {
-    let Prim::BinOp(op @ (BinOp::Add | BinOp::Sub | BinOp::Mul), left, right) = prim else {
+fn invalid_operator_application(prim: &Prim, env: &Env) -> Option<TypeInferDiagnosticKind> {
+    let Prim::BinOp(
+        op @ (BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod),
+        left,
+        right,
+    ) = prim
+    else {
         return None;
     };
     let left = known_ty(*left, env)?;
     let right = known_ty(*right, env)?;
-    Some(TypeInferDiagnosticKind::InvalidNumericBinOp {
+    Some(TypeInferDiagnosticKind::InvalidOperator {
         op: *op,
         left,
         right,
     })
 }
 
-/// Apply the four-clause numeric signature of `+`/`-`/`*` to operand infos:
-///
-/// ```text
-/// (int, int) -> int | (int, float) -> float | (float, int) -> float | (float, float) -> float
-/// ```
-///
-/// `Unknown` operand ⇒ `Unknown` (undecided). Both operands in-domain
-/// (consistent-subtype of `int|float`, so a dynamic `any` is permitted) ⇒ the
-/// union of the returns of the clauses the operands hit: `int` only when both
-/// can be `int`, `float` as soon as either can be. An operand outside the
-/// domain (e.g. a tuple) matches no clause ⇒ `none` — the seam a diagnostic
-/// hangs off, never laundered into a partial result.
-fn numeric_binop<T: Types<Ty = Ty>>(t: &mut T, lt: Info, rt: Info) -> Info {
-    let (a, b) = match (lt, rt) {
-        (Info::Known(a), Info::Known(b)) => (a, b),
-        (a, b) => return non_known_pair(a, b),
+enum SpecArrowResult {
+    Known(Ty),
+    Underconstrained,
+    NoMatch,
+}
+
+fn successful_spec_arrow_result<T: Types<Ty = Ty> + ClosureTypes>(
+    t: &mut T,
+    params: &[Ty],
+    result: &Ty,
+    constraints: &HashMap<crate::types::TypeVarId, Ty>,
+    args: &[Ty],
+) -> SpecArrowResult {
+    match instantiate_scheme_match(t, params, result, constraints, args) {
+        SchemeInstantiation::Known(matched) => return SpecArrowResult::Known(matched.result),
+        SchemeInstantiation::Underconstrained(matched) => {
+            if !t.has_vars(&matched.result) {
+                return SpecArrowResult::Known(matched.result);
+            }
+        }
+        SchemeInstantiation::Invalid => {}
+    }
+
+    let Some(overlap_witnesses) = spec_param_overlap_witnesses(t, params, args) else {
+        return SpecArrowResult::NoMatch;
     };
-    let int = t.int();
-    let float = t.float();
-    let any = t.any();
-    let num = t.union(int.clone(), float.clone());
-
-    let a_dynamic = t.is_equivalent(&a.ty, &any);
-    let b_dynamic = t.is_equivalent(&b.ty, &any);
-    let a_ok = a_dynamic || t.is_subtype(&a.ty, &num);
-    let b_ok = b_dynamic || t.is_subtype(&b.ty, &num);
-    if !a_ok || !b_ok {
-        return Info::known(t.none());
+    match instantiate_scheme_match(t, params, result, constraints, &overlap_witnesses) {
+        SchemeInstantiation::Known(matched) => SpecArrowResult::Known(matched.result),
+        SchemeInstantiation::Underconstrained(matched) if !t.has_vars(&matched.result) => {
+            SpecArrowResult::Known(matched.result)
+        }
+        SchemeInstantiation::Underconstrained(_) => SpecArrowResult::Underconstrained,
+        SchemeInstantiation::Invalid => SpecArrowResult::Underconstrained,
     }
+}
 
-    let a_int = a_dynamic || ty_inhabits(t, &a.ty, &int);
-    let a_float = a_dynamic || ty_inhabits(t, &a.ty, &float);
-    let b_int = b_dynamic || ty_inhabits(t, &b.ty, &int);
-    let b_float = b_dynamic || ty_inhabits(t, &b.ty, &float);
-
-    let mut result = t.none();
-    if a_int && b_int {
-        result = t.union(result, int);
+fn spec_param_overlap_witnesses<T: Types<Ty = Ty>>(
+    t: &mut T,
+    params: &[Ty],
+    args: &[Ty],
+) -> Option<Vec<Ty>> {
+    if params.len() != args.len() {
+        return None;
     }
-    if a_float || b_float {
-        result = t.union(result, float);
+    let mut witnesses = Vec::with_capacity(params.len());
+    for (param, arg) in params.iter().zip(args) {
+        let meet = t.intersect(param.clone(), arg.clone());
+        if t.is_empty(&meet) {
+            return None;
+        }
+        witnesses.push(meet);
     }
-    Info::known(result)
+    Some(witnesses)
 }
 
 /// Look up a var's cell, defaulting to `Pending` for the not-yet-bound.

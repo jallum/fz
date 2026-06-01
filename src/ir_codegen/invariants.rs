@@ -85,6 +85,9 @@ pub fn emit_and_assert_spec_dispatch_coverage(
     let plan_call_edges = crate::ir_planner::inventory::plan_call_edge_inventory(ft, f.id);
 
     for blk in &f.blocks {
+        if !ft.reachable_blocks.contains(&blk.id) {
+            continue;
+        }
         let (ident, expected_slots, kind) = match &blk.terminator {
             Term::Call { ident, .. } => (ident, &[EmitSlot::Direct, EmitSlot::Cont][..], "call"),
             Term::CallClosure { ident, .. } => {
@@ -111,8 +114,8 @@ pub fn emit_and_assert_spec_dispatch_coverage(
                 .collect::<Vec<_>>();
             let available_call_edges = ft
                 .call_edges
-                .keys()
-                .map(|candidate| format!("{:?}", candidate))
+                .iter()
+                .map(|(candidate, edge)| format!("{:?} -> {:?}", candidate, edge.target))
                 .collect::<Vec<_>>();
             let span = ident.span();
             tel.execute(
@@ -127,13 +130,13 @@ pub fn emit_and_assert_spec_dispatch_coverage(
                     slot: format!("{:?}", slot),
                     callsite_span_start: span.start as u64,
                     callsite_span_end: span.end as u64,
-                    available_slots: available_slots,
-                    available_call_edges: available_call_edges,
+                    available_slots: available_slots.clone(),
+                    available_call_edges: available_call_edges.clone(),
                 },
             );
             panic!(
-                "spec {} body {} missing {:?} dispatch for {:?}",
-                sid, f.name, slot, cid
+                "spec {} body {} missing {:?} dispatch for {:?}; available slots: {:?}; call edges: {:?}",
+                sid, f.name, slot, cid, available_slots, available_call_edges
             );
         }
     }

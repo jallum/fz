@@ -399,6 +399,54 @@ fn runtime_graph_enum_ops_settle_to_int() {
 }
 
 #[test]
+fn mixed_enum_take_calls_preserve_list_and_range_activations() {
+    let module = linked(
+        r#"
+fn main() do
+  xs = [1, 2, 3, 4, 5]
+  range = 1..5
+  dbg(Enum.take(xs, 3))
+  dbg(Enum.take(xs, 0))
+  dbg(Enum.take(xs, 9))
+  dbg(Enum.take(xs, -2))
+  dbg(Enum.take(range, -2))
+end
+"#,
+    );
+    let mut t = ConcreteTypes;
+    let report = infer_report_via_main(&mut t, &module);
+    let range = t.opaque_of("impl-target::Range");
+    let int = t.int();
+    let list_int = t.list(int);
+
+    let take_facts = report
+        .facts
+        .activations
+        .iter()
+        .filter(|fact| fact.fn_name == "Enum.take")
+        .collect::<Vec<_>>();
+    assert!(
+        take_facts.iter().any(|fact| {
+            fact.return_ty
+                .as_ref()
+                .is_some_and(|ret| t.is_subtype(ret, &list_int))
+        }),
+        "mixed Enum.take calls should infer a successful list-returning activation: {take_facts:?}"
+    );
+    assert!(
+        report.outcome.activations.iter().any(|fact| {
+            module.fn_by_id(fact.fn_id).name == "Enum.take"
+                && fact
+                    .input_tys
+                    .first()
+                    .is_some_and(|ty| t.is_equivalent(ty, &range))
+        }),
+        "mixed Enum.take calls should activate the range call path: {:?}",
+        report.outcome.activations
+    );
+}
+
+#[test]
 fn enum_reduce_runtime_graph_settles() {
     let module = linked(include_str!("fixtures/enum_reduce.fz"));
     let mut t = ConcreteTypes;
@@ -500,6 +548,85 @@ fn invalid_named_reduce_reducer_emits_operator_diagnostic() {
         report.facts.has_invalid_operator_for("broken_reducer", "+"),
         "expected invalid + diagnostic for Main.broken_reducer/2, got {:?}",
         report.facts.diagnostics
+    );
+}
+
+#[test]
+fn kernel_declares_the_arithmetic_operator_surface() {
+    let module = lower("fn main(), do: 1 + 2");
+    let mut missing = Vec::new();
+    for name in ["Kernel.+", "Kernel.-", "Kernel.*", "Kernel./", "Kernel.%"] {
+        let Some(f) = module.fn_by_name(name) else {
+            missing.push(format!("{name}/2"));
+            continue;
+        };
+        match module.declared_specs.get(&f.id) {
+            Some(specs) if specs.arrows.len() == 4 => {}
+            Some(specs) => missing.push(format!("{name}/2 has {} arrows", specs.arrows.len())),
+            None => missing.push(format!("{name}/2 has no declared specs")),
+        }
+    }
+    assert!(
+        missing.is_empty(),
+        "Kernel arithmetic operators should expose the four concrete int/float arrows: {missing:?}"
+    );
+}
+
+#[test]
+fn arithmetic_binops_infer_from_kernel_operator_specs() {
+    let mut t = ConcreteTypes;
+    let module = lower(
+        "fn main() do\n  {1 + 2, 4 - 1, 2 * 3, 4 / 2, 5 % 2, 1 + 2.0, 4.0 - 1, 2 * 3.0}\nend",
+    );
+    let ret = infer_entry_return_via_main(&module);
+    let int = t.int();
+    let float = t.float();
+    let expected = t.tuple(&[
+        int.clone(),
+        int.clone(),
+        int.clone(),
+        int.clone(),
+        int,
+        float.clone(),
+        float.clone(),
+        float,
+    ]);
+    assert!(
+        t.is_equivalent(&ret, &expected),
+        "arithmetic operators should be typed by Kernel operator specs, got {ret:?}"
+    );
+}
+
+#[test]
+fn arithmetic_binops_union_successful_returns_for_any_operands() {
+    let module = lower("fn add(left, right), do: left + right");
+    let add_id = module.fn_by_name("add").expect("add fn").id;
+    let tel = ConfiguredTelemetry::new();
+    let cap = TypeInferCapture::new();
+    tel.attach(&["fz", "type_infer"], cap.handler());
+
+    let mut t = ConcreteTypes;
+    let any = t.any();
+    let int = t.int();
+    let float = t.float();
+    let success = t.union(int.clone(), float);
+    let outcome = infer_from_entry(&mut t, &module, add_id, &[any, int], &tel);
+
+    assert_eq!(outcome.status, TypeInferStatus::Complete);
+    assert!(
+        outcome.activations.iter().any(|fact| {
+            fact.fn_id == add_id
+                && matches!(
+                    &fact.return_state,
+                    TypeInferReturnState::Known(ret) if t.is_equivalent(ret, &success)
+                )
+        }),
+        "any + integer should infer the union of successful operator returns: {:?}",
+        outcome.activations
+    );
+    assert!(
+        !cap.snapshot().has_invalid_operator_for("add", "+"),
+        "broad but successful operator input should not be reported as impossible"
     );
 }
 

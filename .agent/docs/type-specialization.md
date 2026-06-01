@@ -24,7 +24,8 @@ instance. The same `FnId` can have separate activations for `id(1)` and
 Parameters do not own types and do not default to `any`. An activation supplies
 the input facts. A return cell starts as `Pending` and moves upward only when the
 body produces information. A declared `@spec` is a backstop for bodies the
-engine cannot infer, not the primary source of a function's type.
+engine cannot infer and the authoritative type source for declared
+opaque/builtin seams, including operator-headed kernel functions.
 
 The engine is implemented in `src/type_infer/mod.rs`, with model fixtures in
 `src/type_infer/fixtures`, and is exercised by `cargo test --lib type_infer`.
@@ -179,16 +180,29 @@ their returns join through the ordinary cell join.
 
 ## Specs
 
-Declared specs are arrow sets. `declared_spec_ret` instantiates matching arrows
-against known input types and unions their results. It is used only when body
-inference returns `Unknown`, which keeps inferable bodies from being blunted by
-broader declarations.
+Declared specs are arrow sets. `declared_spec_result` instantiates each arrow
+against the activation's known input types and unions the results of matching
+arrows. It is used when body inference returns `Unknown`, which keeps inferable
+bodies from being blunted by broader declarations. Arithmetic `Prim::BinOp`
+uses the same declared-spec path by looking up the corresponding
+operator-headed `Kernel` function.
 
-No matching declared arrow returns `None` from the spec lookup, not `none`. The
-lookup cannot prove whether the problem is an impossible call, an
-underconstrained polymorphic scheme, or an unsupported matcher shape. The
-activation therefore remains `Unknown` until body proof or a stricter diagnostic
-path proves a contradiction.
+Spec application distinguishes three cases:
+
+- A matching arrow yields a known result fact.
+- An underconstrained arrow yields `Unknown`, because the solver lacks enough
+  evidence to instantiate the scheme.
+- Known inputs that still contain free type variables also yield `Unknown` when
+  no arrow can be proven, because the solver has not proven an empty value set.
+- Known inputs that are disjoint from every arrow yield `Known(none)`, because
+  the declared callable cannot accept that activation.
+- Known but overly broad inputs that intersect one or more arrows yield the
+  union of those arrows' successful return types. Runtime values outside the
+  successful arrows are a separate non-returning/error path, not part of the
+  successful return.
+
+Inputs that are still `Pending`, `Unknown`, or `NoReturn` preserve that solver
+state. They are not coerced to `any` to make a spec match.
 
 Scheme variables are allowed inside declared specs and callable arrows. Concrete
 activation facts and codegen-driving facts may not publish free variables; they
@@ -196,8 +210,9 @@ must be known concrete types, boundary-erased dynamic values, or diagnostics.
 
 ## Operators
 
-Operators are strict signature applications. Numeric `+`, `-`, and `*` use the
-four concrete arrows:
+Operators are strict declared-signature applications. The runtime kernel
+declares arithmetic operators as ordinary operator-headed functions. Each
+operator has the four concrete arrows:
 
 ```text
 (int,   int)   -> int
@@ -206,18 +221,23 @@ four concrete arrows:
 (float, float) -> float
 ```
 
-Application is three-way:
+Application follows the same solver states as any spec edge:
 
 ```text
-Pending operand -> Pending
-Unknown operand -> Unknown
-in-domain types -> union of matching arrow returns
-out-of-domain   -> Known(none)
+Pending operand       -> Pending
+Unknown operand       -> Unknown
+matching arrow(s)     -> union of matching arrow returns
+overlapping arrow(s)  -> union of overlapping arrow returns
+no matching arrow     -> Known(none)
+underconstrained spec -> Unknown
 ```
 
-The engine does not collapse `int | float` to a hidden `number` rung and does
-not use `any` as an internal fallback. A known operand outside every operator
-domain is an illegal state. When such a value-required operation proves
+The engine does not collapse `int | float` to a hidden `number` rung, does not
+carry an internal numeric operator table, and does not treat `any` as numeric
+evidence. `any` can be an explicit top type at the boundary. Because it
+intersects the integer/float arrows, an `any` operand contributes the union of
+successful numeric returns while non-numeric runtime values leave through the
+operator's non-returning error path. When a value-required operator proves
 `Known(none)`, telemetry reports `fz.type_infer.diagnostic` with code
 `type/invalid-operator` and the activation path stops at that statement.
 

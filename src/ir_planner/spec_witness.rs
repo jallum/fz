@@ -217,14 +217,13 @@ where
                 Some(demand.clone()),
             );
             reads.push(key.clone());
-            let ret = effective_returns.get(&key).cloned().unwrap_or_else(|| {
+            let Some(ret) = effective_returns.get(&key).cloned() else {
                 *complete = false;
-                t.none()
-            });
-            if !effective_returns.contains_key(&key)
-                && complete_returns.is_some_and(|done| !done.contains(&key))
-            {
+                continue;
+            };
+            if complete_returns.is_some_and(|done| !done.contains(&key)) {
                 *complete = false;
+                continue;
             }
             let arrow = t.arrow(&matched_clause.args, ret);
             refined = t.union(refined, arrow);
