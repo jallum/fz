@@ -1,8 +1,20 @@
 use super::{
-    ResolvedSpec, ResolvedSpecSet, ResolvedTypeShape, SchemeInstantiation, instantiate_match,
-    matching_result, resolve_closure_return, unique_matching_params,
+    ResolvedSpec, ResolvedSpecSet, ResolvedTypeShape, SchemeInstantiation,
+    declared_specs_cover_inferred_spec, instantiate_match, matching_result, resolve_closure_return,
+    unique_matching_params,
 };
-use crate::types::{ConcreteTypes, MapKey, Types};
+use crate::types::{ConcreteTypes, MapKey, TypeVarId, Types};
+
+fn resolved_spec(params: Vec<crate::types::Ty>, result: crate::types::Ty) -> ResolvedSpec {
+    let param_shapes = vec![ResolvedTypeShape::Any; params.len()];
+    ResolvedSpec {
+        params,
+        param_shapes,
+        result,
+        result_shape: ResolvedTypeShape::Any,
+        constraints: std::collections::HashMap::new(),
+    }
+}
 
 #[test]
 fn scheme_result_instantiates_tuple_from_param_witnesses() {
@@ -275,5 +287,86 @@ fn resolved_spec_set_unions_results_only_after_arrow_selection() {
     assert!(
         params.is_none(),
         "input demand should stay with the concrete call when several arrows match"
+    );
+}
+
+#[test]
+fn declared_spec_coverage_accepts_matching_overload_arrow() {
+    let mut t = ConcreteTypes;
+    let int = t.int();
+    let float = t.float();
+    let set = ResolvedSpecSet {
+        arrows: vec![
+            resolved_spec(vec![int.clone()], int.clone()),
+            resolved_spec(vec![float.clone()], float.clone()),
+        ],
+    };
+
+    let inferred_inputs = vec![Some(t.float_lit(1.5))];
+    let inferred_result = t.float_lit(2.5);
+
+    assert!(declared_specs_cover_inferred_spec(
+        &mut t,
+        &set,
+        &inferred_inputs,
+        &inferred_result,
+    ));
+}
+
+#[test]
+fn declared_spec_coverage_preserves_overload_param_result_correlation() {
+    let mut t = ConcreteTypes;
+    let int = t.int();
+    let float = t.float();
+    let set = ResolvedSpecSet {
+        arrows: vec![
+            resolved_spec(vec![int.clone()], int),
+            resolved_spec(vec![float.clone()], float),
+        ],
+    };
+
+    let inferred_inputs = vec![Some(t.int_lit(1))];
+    let inferred_result = t.float_lit(2.5);
+
+    assert!(
+        !declared_specs_cover_inferred_spec(&mut t, &set, &inferred_inputs, &inferred_result),
+        "an int input must not borrow the float overload's result"
+    );
+}
+
+#[test]
+fn declared_spec_coverage_allows_hole_when_result_is_still_proven() {
+    let mut t = ConcreteTypes;
+    let int = t.int();
+    let set = ResolvedSpecSet {
+        arrows: vec![resolved_spec(vec![int.clone(), int.clone()], int)],
+    };
+
+    let inferred_inputs = vec![None, Some(t.int_lit(1))];
+    let inferred_result = t.int_lit(2);
+
+    assert!(declared_specs_cover_inferred_spec(
+        &mut t,
+        &set,
+        &inferred_inputs,
+        &inferred_result,
+    ));
+}
+
+#[test]
+fn declared_spec_coverage_rejects_hole_that_leaves_result_underconstrained() {
+    let mut t = ConcreteTypes;
+    let a = t.type_var(TypeVarId(0));
+    let int = t.int();
+    let set = ResolvedSpecSet {
+        arrows: vec![resolved_spec(vec![a.clone(), int], a)],
+    };
+
+    let inferred_inputs = vec![None, Some(t.int_lit(1))];
+    let inferred_result = t.int_lit(2);
+
+    assert!(
+        !declared_specs_cover_inferred_spec(&mut t, &set, &inferred_inputs, &inferred_result),
+        "a positional hole is unknown evidence, not an `any` witness for a result variable"
     );
 }

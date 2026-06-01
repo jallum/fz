@@ -53,8 +53,10 @@ Current extraction state:
 - Overload selection, result unioning after arrow selection, and structural
   correspondence queries live in `src/specs/select.rs`. The resolved model
   stays data-only.
-- Declared coverage checking still lives in `src/frontend/spec_check.rs`;
-  `fz-hq4.4` moves that behavior into `src/specs/validate.rs`.
+- Declared-vs-inferred coverage checking lives in `src/specs/validate.rs`.
+  The frontend spec check resolves source declarations, locates inferred
+  planner facts, and renders diagnostics; it does not own the semantic
+  coverage rule.
 - Planner higher-order witness logic still lives in
   `src/ir_planner/spec_witness.rs`; later tickets fold that into the shared
   spec-application API consumed by inference and planner projection.

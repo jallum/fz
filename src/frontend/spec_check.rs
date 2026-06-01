@@ -28,9 +28,7 @@ use crate::ast::{Attribute, Item, Program};
 use crate::diag::{Diagnostic, Span, codes};
 use crate::fz_ir::FnId;
 use crate::ir_planner::ModulePlan;
-use crate::specs::{
-    ResolvedSpec, ResolvedSpecSet, SchemeInstantiation, instantiate_match_with_slots,
-};
+use crate::specs::{ResolvedSpecSet, declared_specs_cover_inferred_spec};
 use crate::type_expr::{ModuleTypeEnv, resolve_spec_decls};
 
 /// Validate every `@spec` in `program` against the corresponding
@@ -129,9 +127,7 @@ fn validate_one_fn<
         let inferred_ty = inferred_result_ty(t, ir_fn, ft)
             .or_else(|| module_plan.effective_returns.get(key).cloned())
             .unwrap_or_else(|| t.any());
-        if !declared_specs.arrows.iter().any(|declared| {
-            declared_arrow_covers_inferred_spec(t, declared, &key.input, &inferred_ty)
-        }) {
+        if !declared_specs_cover_inferred_spec(t, declared_specs, &key.input, &inferred_ty) {
             let inferred_inputs = key
                 .input
                 .iter()
@@ -175,26 +171,6 @@ fn inferred_result_ty<T: crate::types::Types<Ty = crate::types::Ty>>(
         }
     }
     inferred_result
-}
-
-fn declared_arrow_covers_inferred_spec<
-    T: crate::types::ClosureTypes<Ty = crate::types::Ty> + crate::types::RenderTypes,
->(
-    t: &mut T,
-    declared: &ResolvedSpec,
-    inferred_inputs: &[crate::types::KeySlot],
-    inferred_result: &T::Ty,
-) -> bool {
-    match instantiate_match_with_slots(
-        t,
-        &declared.params,
-        &declared.result,
-        &declared.constraints,
-        inferred_inputs,
-    ) {
-        SchemeInstantiation::Known(matched) => t.is_subtype(inferred_result, &matched.result),
-        SchemeInstantiation::Underconstrained(_) | SchemeInstantiation::Invalid => false,
-    }
 }
 
 #[cfg(test)]

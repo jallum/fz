@@ -58,7 +58,7 @@ pub(crate) fn instantiate_match<T: ClosureTypes + ?Sized>(
     instantiate_match_slots(t, params, result, constraints, &witness_slots)
 }
 
-pub(crate) fn instantiate_match_with_slots<T: ClosureTypes + ?Sized>(
+pub(super) fn instantiate_match_with_slots<T: ClosureTypes + ?Sized>(
     t: &mut T,
     params: &[T::Ty],
     result: &T::Ty,
