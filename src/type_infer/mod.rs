@@ -1,10 +1,10 @@
-//! Type specialization — the inference engine
+//! Type inference and specialization over CPS IR
 //! (`.agent/docs/type-specialization.md`).
 //!
-//! Built off to the side; the planner is transplanted onto it in fz-g58.65.6.
-//! A closure is modeled as a function whose first parameters are its captures,
-//! bound at creation to known-typed values — so applying a closure is just a
-//! call to its body function with the captures prepended as leading arguments.
+//! The engine computes type facts for reachable function activations. A closure
+//! is modeled as a function whose first parameters are its captures, bound at
+//! creation to known-typed values, so applying a closure activates its body
+//! function with the captures prepended as leading arguments.
 //!
 //! ## Shape
 //!
@@ -39,8 +39,9 @@
 //! fixpoint, that edge may erase it to `any`; the solver itself must never use
 //! `any` as the placeholder for "not proven yet."
 //!
-//! Production planning has not switched to this module yet, so some entry points
-//! are exercised only by the type-inference tests.
+//! API entry points return boundary data and a coarse completion status.
+//! Activation facts, diagnostics, and dead matcher arms are emitted through
+//! telemetry so tests and operators observe the same production surface.
 #![allow(dead_code)]
 
 use crate::fz_ir::{BinOp, BlockId, Const, DeadBranch, FnId, Module, Prim, Stmt, Term, UnOp, Var};
@@ -464,6 +465,35 @@ impl DeadArmFact {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TypeInferStatus {
+    Complete,
+    Unresolved,
+    Invalid,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct TypeInferOutcome {
+    pub(crate) entry_return: Ty,
+    pub(crate) status: TypeInferStatus,
+}
+
+fn info_state(info: &Info) -> &'static str {
+    match info {
+        Info::Pending => "pending",
+        Info::Unknown => "unknown",
+        Info::NoReturn => "no_return",
+        Info::Known(_) => "known",
+    }
+}
+
+fn render_info<T: Types<Ty = Ty> + RenderTypes>(t: &mut T, info: &Info) -> String {
+    match info {
+        Info::Known(value) => t.display_for_diag(&value.ty),
+        Info::Pending | Info::Unknown | Info::NoReturn => String::new(),
+    }
+}
+
 /// The monotone worklist solver. Drives every reachable `(fn, inputs)` to a
 /// joint fixpoint of input- and return-type estimates.
 struct Solver<'m> {
@@ -764,6 +794,117 @@ impl<'m> Solver<'m> {
                     }
                 }
             }
+        }
+    }
+
+    fn boundary_return<T: Types<Ty = Ty>>(&self, t: &mut T, key: &ActivationKey) -> Ty {
+        match self.activations.get(key).map(|s| s.ret.clone()) {
+            Some(Info::Known(value)) => value.ty,
+            _ => t.any(),
+        }
+    }
+
+    fn status(&self) -> TypeInferStatus {
+        if !self.diagnostics.is_empty() {
+            return TypeInferStatus::Invalid;
+        }
+        if self
+            .activations
+            .values()
+            .any(|activation| matches!(activation.ret, Info::Pending | Info::Unknown))
+        {
+            return TypeInferStatus::Unresolved;
+        }
+        TypeInferStatus::Complete
+    }
+
+    fn emit_telemetry<T: Types<Ty = Ty> + RenderTypes>(
+        &self,
+        t: &mut T,
+        tel: &dyn crate::telemetry::Telemetry,
+    ) {
+        self.emit_activation_facts(t, tel);
+        self.emit_fn_return_facts(t, tel);
+        for diagnostic in &self.diagnostics {
+            diagnostic.emit(t, self.module, tel);
+        }
+        for dead_arm in &self.dead_arms {
+            dead_arm.emit(self.module, tel);
+        }
+    }
+
+    fn emit_activation_facts<T: Types<Ty = Ty> + RenderTypes>(
+        &self,
+        t: &mut T,
+        tel: &dyn crate::telemetry::Telemetry,
+    ) {
+        let mut facts: Vec<_> = self.activations.iter().collect();
+        facts.sort_by_key(|(key, _)| (key.fn_id, key.inputs.len()));
+        for (key, activation) in facts {
+            let fn_name = self.module.fn_by_id(key.fn_id).name.clone();
+            let return_ty = render_info(t, &activation.ret);
+            let mut metadata = crate::metadata! {
+                fn_name: fn_name,
+                fn_id: key.fn_id.0 as u64,
+                input_count: key.inputs.len() as u64,
+                state: info_state(&activation.ret),
+                return_ty: return_ty,
+            };
+            if let Info::Known(value) = &activation.ret {
+                metadata
+                    .0
+                    .push(("return_ty_data", crate::telemetry::Value::opaque(&value.ty)));
+            }
+            tel.event(&["fz", "type_infer", "activation"], metadata);
+        }
+    }
+
+    fn emit_fn_return_facts<T: Types<Ty = Ty> + RenderTypes>(
+        &self,
+        t: &mut T,
+        tel: &dyn crate::telemetry::Telemetry,
+    ) {
+        let mut by_fn: BTreeMap<FnId, (Option<Ty>, bool, bool)> = BTreeMap::new();
+        for (key, activation) in &self.activations {
+            let (known_ret, unsettled, no_return) = by_fn.entry(key.fn_id).or_default();
+            match &activation.ret {
+                Info::Known(value) => {
+                    *known_ret = Some(match known_ret.take() {
+                        Some(prev) => t.union(prev, value.ty.clone()),
+                        None => value.ty.clone(),
+                    });
+                }
+                Info::Pending | Info::Unknown => *unsettled = true,
+                Info::NoReturn => *no_return = true,
+            }
+        }
+        for (fn_id, (known_ret, unsettled, no_return)) in by_fn {
+            let fn_name = self.module.fn_by_id(fn_id).name.clone();
+            let state = if unsettled {
+                "unsettled"
+            } else if known_ret.is_some() {
+                "known"
+            } else if no_return {
+                "no_return"
+            } else {
+                "unreached"
+            };
+            let return_ty = known_ret
+                .as_ref()
+                .map(|ty| t.display_for_diag(ty))
+                .unwrap_or_default();
+            let mut metadata = crate::metadata! {
+                fn_name: fn_name,
+                fn_id: fn_id.0 as u64,
+                state: state,
+                return_ty: return_ty,
+            };
+            if let Some(ty) = &known_ret {
+                metadata
+                    .0
+                    .push(("return_ty_data", crate::telemetry::Value::opaque(ty)));
+            }
+            tel.event(&["fz", "type_infer", "fn_return"], metadata);
         }
     }
 
@@ -1147,76 +1288,6 @@ impl<'m> Solver<'m> {
             // `Unknown` to `any`, but the solver keeps the uncertainty visible.
             _ => Info::Unknown,
         }
-    }
-}
-
-pub(crate) struct TypeInferReport<'m> {
-    module: &'m Module,
-    activations: HashMap<ActivationKey, Activation>,
-    diagnostics: Vec<TypeInferDiagnostic>,
-    dead_arms: Vec<DeadArmFact>,
-}
-
-impl<'m> TypeInferReport<'m> {
-    fn from_solver(solver: Solver<'m>) -> Self {
-        let Solver {
-            module,
-            activations,
-            diagnostics,
-            dead_arms,
-            ..
-        } = solver;
-        Self {
-            module,
-            activations,
-            diagnostics,
-            dead_arms,
-        }
-    }
-
-    pub(crate) fn emit_telemetry<T: Types<Ty = Ty> + RenderTypes>(
-        &self,
-        t: &mut T,
-        tel: &dyn crate::telemetry::Telemetry,
-    ) {
-        for diagnostic in &self.diagnostics {
-            diagnostic.emit(t, self.module, tel);
-        }
-        for dead_arm in &self.dead_arms {
-            dead_arm.emit(self.module, tel);
-        }
-    }
-
-    pub(crate) fn return_for_fn_named<T: Types<Ty = Ty>>(&self, t: &mut T, fn_name: &str) -> Ty {
-        self.module
-            .fns
-            .iter()
-            .filter(|f| f.name == fn_name)
-            .flat_map(|f| {
-                self.activations
-                    .iter()
-                    .filter_map(move |(key, activation)| {
-                        if key.fn_id == f.id {
-                            Some(activation.ret.clone())
-                        } else {
-                            None
-                        }
-                    })
-            })
-            .fold(None, |acc, ret| match (acc, ret) {
-                (None, Info::Known(value)) => Some(value.ty),
-                (Some(prev), Info::Known(value)) => Some(t.union(prev, value.ty)),
-                (acc, Info::Pending | Info::Unknown | Info::NoReturn) => acc,
-            })
-            .unwrap_or_else(|| t.none())
-    }
-
-    pub(crate) fn unsettled_fn_names(&self) -> Vec<&str> {
-        self.activations
-            .iter()
-            .filter(|(_, activation)| matches!(activation.ret, Info::Pending | Info::Unknown))
-            .map(|(key, _)| self.module.fn_by_id(key.fn_id).name.as_str())
-            .collect()
     }
 }
 
@@ -1946,23 +2017,31 @@ pub(crate) fn infer_return<T: Types<Ty = Ty> + ClosureTypes>(
     let mut solver = Solver::new(module);
     let key = solver.seed(t, fn_id, inputs);
     solver.run(t);
-    match solver.activations.get(&key).map(|s| s.ret.clone()) {
-        Some(Info::Known(value)) => value.ty,
-        _ => t.any(),
-    }
+    solver.boundary_return(t, &key)
 }
 
-pub(crate) fn infer_from_entry<'m, T: Types<Ty = Ty> + ClosureTypes>(
+/// Infer the reachable activation graph from an entry point. The returned
+/// outcome carries boundary data for the entry activation and a coarse status;
+/// detailed activation facts, diagnostics, and dead matcher arms are emitted
+/// through telemetry.
+pub(crate) fn infer_from_entry<T: Types<Ty = Ty> + ClosureTypes + RenderTypes>(
     t: &mut T,
-    module: &'m Module,
+    module: &Module,
     fn_id: FnId,
     input_tys: &[Ty],
-) -> TypeInferReport<'m> {
+    tel: &dyn crate::telemetry::Telemetry,
+) -> TypeInferOutcome {
     let inputs = input_tys.iter().cloned().map(Info::known).collect();
     let mut solver = Solver::new(module);
-    solver.seed(t, fn_id, inputs);
+    let key = solver.seed(t, fn_id, inputs);
     solver.run(t);
-    TypeInferReport::from_solver(solver)
+    let entry_return = solver.boundary_return(t, &key);
+    let status = solver.status();
+    solver.emit_telemetry(t, tel);
+    TypeInferOutcome {
+        entry_return,
+        status,
+    }
 }
 
 #[cfg(test)]

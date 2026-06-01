@@ -1,17 +1,16 @@
-# Type-specialization corpus (spike)
+# Type Inference Fixtures
 
-The minimal programs the `fz-g58.65` inference engine is built against. Each is a
-*measuring stick* for `.agent/docs/type-specialization.md`: the program plus the
-type the model says it must infer. The engine is correct when every program here
-settles to its stated type.
+These programs are the executable acceptance corpus for `src/type_infer`. Each
+fixture is a small source program plus the type fact or diagnostic the engine
+must produce through the public inference API and telemetry.
 
-These are not fixtures (no `expected.txt`, no four-path matrix) — they exercise
-the planner's type inference, not runtime behavior, so they live outside
-`fixtures/`.
+They are colocated with the engine because they are model fixtures, not runtime
+matrix fixtures. Tests compile them through the production frontend or linked
+runtime graph, then observe type-inference facts through telemetry.
 
 ## The corpus and what the model infers
 
-| program | shape | inferred result | current planner |
+| program | shape | inferred result | current engine |
 | --- | --- | --- | --- |
 | `add.fz` | `a + b` | `(number, number) -> number`; `add(1,2) : int` | settles ✓ |
 | `poly_id.fz` | same `FnId` called at `int` and `:ok` | `main() : {int, :ok}`; independent activations do not over-join | settles ✓ |

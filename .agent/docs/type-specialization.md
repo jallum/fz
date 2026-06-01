@@ -1,13 +1,14 @@
 # Type Specialization
 
-Use this before touching `src/type_infer`, the spike corpus in `spike/`, or
-planner work that consumes inferred call/return facts.
+Use this before touching `src/type_infer`, the colocated fixture corpus in
+`src/type_infer/fixtures`, or planner work that consumes inferred call/return
+facts.
 
 ## Model
 
-Type specialization is a sidecar inference engine over the CPS-lowered
-`Module`. It infers reachable function returns by running a monotone worklist
-over call contracts:
+Type specialization is an inference engine over the CPS-lowered `Module`. It
+infers reachable function returns by running a monotone worklist over call
+contracts:
 
 ```text
 call contract = FnId + input ValueFacts
@@ -25,17 +26,28 @@ the input facts. A return cell starts as `Pending` and moves upward only when th
 body produces information. A declared `@spec` is a backstop for bodies the
 engine cannot infer, not the primary source of a function's type.
 
-The engine is implemented in `src/type_infer/mod.rs` and is exercised by
-`cargo test --lib type_infer`. Production planning still owns executable plan
-facts and codegen ABI shape.
+The engine is implemented in `src/type_infer/mod.rs`, with model fixtures in
+`src/type_infer/fixtures`, and is exercised by `cargo test --lib type_infer`.
+Production planning still owns executable plan facts and codegen ABI shape while
+this engine owns activation-based type flow.
 
 The crate-visible API is intentionally small:
 
 - `infer_return` runs one activation and returns its boundary-erased `Ty`.
 - `infer_from_entry` runs the reachable activation graph from an entry point and
-  returns a `TypeInferReport`.
-- `TypeInferReport` exposes inferred returns by function name, unsettled
-  activation names, and telemetry emission for diagnostics/dead arms.
+  returns `TypeInferOutcome { entry_return, status }`.
+- `TypeInferStatus` is the coarse API result: `Complete`, `Unresolved`, or
+  `Invalid`.
+
+Useful details are telemetry, not return payload. The engine emits:
+
+- `fz.type_infer.activation` for every reached activation, including function
+  identity, return state, rendered return type, and in-process `Ty` data when
+  known.
+- `fz.type_infer.fn_return` for each reached function, joining known activation
+  returns through `Types` and reporting whether any activation is unsettled.
+- `fz.type_infer.diagnostic` for located type errors.
+- `fz.type_infer.dead_arm` for matcher arms proved inaccessible.
 
 ## Cells
 
@@ -222,6 +234,8 @@ and still dead for a particular activation.
 - `activations`: activation keys mapped to current `Activation { inputs, ret }`.
 - `deps`: callee activations mapped to callers that read their return.
 - `queue` and `queued`: activations scheduled for another body walk.
+- `diagnostics` and `diagnostic_sites`: located type errors emitted through
+  telemetry after the fixpoint.
 - `dead_arms` and `dead_arm_sites`: matcher proof telemetry facts.
 
 Applying an activation request records the caller dependency, creates the callee
@@ -265,6 +279,6 @@ Gate this model with:
 - `cargo test --lib matcher_dead_arms_are_observable_via_telemetry`
 - `cargo test --lib fixpoint_leaves_no_reached_fn_unknown`
 
-When a change crosses from the spike into the production planner, add a
-production-pipeline test that lowers or links through the public API and asserts
-observable telemetry or executable return facts, not private solver internals.
+When a change crosses into production planning, add a production-pipeline test
+that lowers or links through the public API and asserts observable telemetry or
+executable return facts, not private solver internals.

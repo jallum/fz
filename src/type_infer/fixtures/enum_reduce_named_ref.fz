@@ -1,5 +1,5 @@
 # INTENTIONALLY ILL-TYPED — kept as the acceptance fixture for `Known(none)`
-# diagnostics in the type-specialization spike.
+# diagnostics in the type-specialization engine.
 #
 # An `Enum.reduce/3` reducer must return the *bare* new accumulator. This one
 # returns a tagged `{:cont, acc + entry}` instead — that is the contract of the

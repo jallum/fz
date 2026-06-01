@@ -1,7 +1,9 @@
-use super::{TypeInferReport, closure_apply_contract, infer_from_entry, infer_return};
+use super::{
+    TypeInferOutcome, TypeInferStatus, closure_apply_contract, infer_from_entry, infer_return,
+};
 use crate::fz_ir::{Const, FnBuilder, FnId, Module, ModuleBuilder, Prim, Term};
-use crate::telemetry::{Capture, ConfiguredTelemetry, Handler, Value};
-use crate::types::{ClosureTarget, ClosureTypes, ConcreteTypes, Types};
+use crate::telemetry::{ConfiguredTelemetry, Handler, Value};
+use crate::types::{ClosureTarget, ClosureTypes, ConcreteTypes, Ty, Types};
 use std::cell::RefCell;
 use std::panic::AssertUnwindSafe;
 use std::rc::Rc;
@@ -45,7 +47,7 @@ fn lower(src: &str) -> Module {
         let _ = crate::modules::pipeline::compile_source_with_providers(
             &mut t,
             src.to_string(),
-            "spike.fz".to_string(),
+            "type_infer_fixture.fz".to_string(),
             &providers,
             &tel,
         );
@@ -75,7 +77,7 @@ fn linked(src: &str) -> Module {
     let frontend = compile_source_with_providers(
         &mut t,
         src.to_string(),
-        "spike.fz".to_string(),
+        "type_infer_fixture.fz".to_string(),
         &providers,
         &tel,
     )
@@ -96,21 +98,176 @@ fn main_id(module: &Module) -> FnId {
         .id
 }
 
-fn infer_report_via_main<'m>(t: &mut ConcreteTypes, module: &'m Module) -> TypeInferReport<'m> {
-    infer_from_entry(t, module, main_id(module), &[])
+#[derive(Clone, Debug, Default)]
+struct TypeInferFacts {
+    fn_returns: Vec<FnReturnFact>,
+    activations: Vec<ActivationFact>,
+    diagnostics: Vec<DiagnosticFact>,
+    dead_arms: usize,
 }
 
-fn infer_fn_via_main(module: &Module, fn_name: &str) -> crate::types::Ty {
+impl TypeInferFacts {
+    fn return_for_fn_named(&self, fn_name: &str) -> Ty {
+        let matches: Vec<_> = self
+            .fn_returns
+            .iter()
+            .filter(|fact| fact.fn_name == fn_name && fact.state == "known")
+            .collect();
+        assert_eq!(
+            matches.len(),
+            1,
+            "expected one known fn_return event for {fn_name}, got {matches:?}"
+        );
+        matches[0]
+            .return_ty
+            .clone()
+            .expect("known fn_return carries return_ty_data")
+    }
+
+    fn unsettled_fn_names(&self) -> Vec<String> {
+        let mut names: Vec<_> = self
+            .activations
+            .iter()
+            .filter(|fact| fact.state == "pending" || fact.state == "unknown")
+            .map(|fact| fact.fn_name.clone())
+            .collect();
+        names.sort();
+        names.dedup();
+        names
+    }
+
+    fn has_invalid_operator_for(&self, fn_suffix: &str, op: &str) -> bool {
+        self.diagnostics.iter().any(|diagnostic| {
+            diagnostic.code == "type/invalid-operator"
+                && diagnostic.op.as_deref() == Some(op)
+                && diagnostic
+                    .fn_name
+                    .as_deref()
+                    .is_some_and(|name| name.ends_with(fn_suffix))
+        })
+    }
+}
+
+#[derive(Clone, Debug)]
+struct FnReturnFact {
+    fn_name: String,
+    state: String,
+    return_ty: Option<Ty>,
+}
+
+#[derive(Clone, Debug)]
+struct ActivationFact {
+    fn_name: String,
+    state: String,
+}
+
+#[derive(Clone, Debug)]
+struct DiagnosticFact {
+    code: String,
+    op: Option<String>,
+    fn_name: Option<String>,
+}
+
+#[derive(Clone)]
+struct TypeInferCapture(Rc<RefCell<TypeInferFacts>>);
+
+impl TypeInferCapture {
+    fn new() -> Self {
+        Self(Rc::new(RefCell::new(TypeInferFacts::default())))
+    }
+
+    fn handler(&self) -> Box<dyn Handler> {
+        Box::new(self.clone())
+    }
+
+    fn snapshot(&self) -> TypeInferFacts {
+        self.0.borrow().clone()
+    }
+}
+
+impl Handler for TypeInferCapture {
+    fn handle(&self, ev: &crate::telemetry::Event<'_, '_, '_>) {
+        let mut facts = self.0.borrow_mut();
+        match ev.name {
+            ["fz", "type_infer", "fn_return"] => {
+                if let (Some(fn_name), Some(state)) = (
+                    event_metadata_str(ev, "fn_name"),
+                    event_metadata_str(ev, "state"),
+                ) {
+                    facts.fn_returns.push(FnReturnFact {
+                        fn_name,
+                        state,
+                        return_ty: event_metadata_ty(ev, "return_ty_data"),
+                    });
+                }
+            }
+            ["fz", "type_infer", "activation"] => {
+                if let (Some(fn_name), Some(state)) = (
+                    event_metadata_str(ev, "fn_name"),
+                    event_metadata_str(ev, "state"),
+                ) {
+                    facts.activations.push(ActivationFact { fn_name, state });
+                }
+            }
+            ["fz", "type_infer", "diagnostic"] => {
+                if let Some(code) = event_metadata_str(ev, "code") {
+                    facts.diagnostics.push(DiagnosticFact {
+                        code,
+                        op: event_metadata_str(ev, "op"),
+                        fn_name: event_metadata_str(ev, "fn_name"),
+                    });
+                }
+            }
+            ["fz", "type_infer", "dead_arm"] => {
+                facts.dead_arms += 1;
+            }
+            _ => {}
+        }
+    }
+}
+
+struct TelemetryReport {
+    outcome: TypeInferOutcome,
+    facts: TypeInferFacts,
+}
+
+impl TelemetryReport {
+    fn unsettled_fn_names(&self) -> Vec<String> {
+        self.facts.unsettled_fn_names()
+    }
+}
+
+fn infer_report_via_main(t: &mut ConcreteTypes, module: &Module) -> TelemetryReport {
+    let tel = ConfiguredTelemetry::new();
+    let cap = TypeInferCapture::new();
+    tel.attach(&["fz", "type_infer"], cap.handler());
+    let outcome = infer_from_entry(t, module, main_id(module), &[], &tel);
+    TelemetryReport {
+        outcome,
+        facts: cap.snapshot(),
+    }
+}
+
+fn infer_fn_via_main(module: &Module, fn_name: &str) -> Ty {
     let mut t = ConcreteTypes;
     let report = infer_report_via_main(&mut t, module);
-    report.return_for_fn_named(&mut t, fn_name)
+    report.facts.return_for_fn_named(fn_name)
 }
 
-fn metadata_str(ev: &crate::telemetry::capture::OwnedEvent, key: &str) -> Option<String> {
+fn infer_entry_return_via_main(module: &Module) -> Ty {
+    let mut t = ConcreteTypes;
+    infer_report_via_main(&mut t, module).outcome.entry_return
+}
+
+fn event_metadata_str(ev: &crate::telemetry::Event<'_, '_, '_>, key: &str) -> Option<String> {
     match ev.metadata.get(key)? {
         Value::Str(value) => Some(value.to_string()),
         _ => None,
     }
+}
+
+fn event_metadata_ty(ev: &crate::telemetry::Event<'_, '_, '_>, key: &str) -> Option<Ty> {
+    ev.metadata.get(key)?.downcast_ref::<Ty>().cloned()
 }
 
 /// At the fixpoint of a supported program, every reached function has a known
@@ -119,25 +276,26 @@ fn metadata_str(ev: &crate::telemetry::capture::OwnedEvent, key: &str) -> Option
 #[test]
 fn fixpoint_leaves_no_reached_fn_unknown() {
     for (name, src) in [
-        ("add", include_str!("../../spike/add.fz")),
-        ("fold_tail", include_str!("../../spike/fold_tail.fz")),
-        ("fold_nontail", include_str!("../../spike/fold_nontail.fz")),
+        ("add", include_str!("fixtures/add.fz")),
+        ("fold_tail", include_str!("fixtures/fold_tail.fz")),
+        ("fold_nontail", include_str!("fixtures/fold_nontail.fz")),
         (
             "fold_capture_int",
-            include_str!("../../spike/fold_capture_int.fz"),
+            include_str!("fixtures/fold_capture_int.fz"),
         ),
         (
             "fold_capture_closure",
-            include_str!("../../spike/fold_capture_closure.fz"),
+            include_str!("fixtures/fold_capture_closure.fz"),
         ),
         (
             "fold_state_machine",
-            include_str!("../../spike/fold_state_machine.fz"),
+            include_str!("fixtures/fold_state_machine.fz"),
         ),
     ] {
         let module = lower(src);
         let mut t = ConcreteTypes;
         let report = infer_report_via_main(&mut t, &module);
+        assert_eq!(report.outcome.status, TypeInferStatus::Complete);
         let unsettled = report.unsettled_fn_names();
         assert!(
             unsettled.is_empty(),
@@ -152,22 +310,22 @@ fn runtime_graph_enum_ops_settle_to_int() {
         (
             "list lambda",
             "Enum.reduce",
-            include_str!("../../spike/enum_reduce.fz"),
+            include_str!("fixtures/enum_reduce.fz"),
         ),
         (
             "named-fn ref",
             "Enum.reduce",
-            include_str!("../../spike/enum_reduce_named_ref_ok.fz"),
+            include_str!("fixtures/enum_reduce_named_ref_ok.fz"),
         ),
         (
             "count",
             "Enum.count",
-            include_str!("../../spike/enum_count.fz"),
+            include_str!("fixtures/enum_count.fz"),
         ),
         (
             "range reduce",
             "Enum.reduce",
-            include_str!("../../spike/enum_reduce_range.fz"),
+            include_str!("fixtures/enum_reduce_range.fz"),
         ),
     ];
     let mut t = ConcreteTypes;
@@ -184,7 +342,7 @@ fn runtime_graph_enum_ops_settle_to_int() {
 
 #[test]
 fn enum_reduce_runtime_graph_settles() {
-    let module = linked(include_str!("../../spike/enum_reduce.fz"));
+    let module = linked(include_str!("fixtures/enum_reduce.fz"));
     let mut t = ConcreteTypes;
     let int = t.int();
 
@@ -208,30 +366,21 @@ fn enum_reduce_runtime_graph_settles() {
 
 #[test]
 fn invalid_named_reduce_reducer_emits_operator_diagnostic() {
-    let module = linked(include_str!("../../spike/enum_reduce_named_ref.fz"));
+    let module = linked(include_str!("fixtures/enum_reduce_named_ref.fz"));
     let mut t = ConcreteTypes;
     let report = infer_report_via_main(&mut t, &module);
-    let tel = ConfiguredTelemetry::new();
-    let cap = Capture::new();
-    tel.attach(&["fz", "type_infer"], cap.handler());
-
-    report.emit_telemetry(&mut t, &tel);
-
-    let diagnostics = cap.find(&["fz", "type_infer", "diagnostic"]);
+    assert_eq!(report.outcome.status, TypeInferStatus::Invalid);
     assert!(
-        diagnostics.iter().any(|ev| {
-            metadata_str(ev, "code").as_deref() == Some("type/invalid-operator")
-                && metadata_str(ev, "op").as_deref() == Some("+")
-                && metadata_str(ev, "fn_name").is_some_and(|name| name.ends_with("broken_reducer"))
-        }),
-        "expected invalid + diagnostic for Main.broken_reducer/2, got {diagnostics:?}"
+        report.facts.has_invalid_operator_for("broken_reducer", "+"),
+        "expected invalid + diagnostic for Main.broken_reducer/2, got {:?}",
+        report.facts.diagnostics
     );
 }
 
 #[test]
 fn add_infers_int_via_harness() {
     let mut t = ConcreteTypes;
-    let module = lower(include_str!("../../spike/add.fz"));
+    let module = lower(include_str!("fixtures/add.fz"));
     let add_id = module.fn_by_name("add").expect("add fn").id;
     let int = t.int();
     let ret = infer_return(&mut t, &module, add_id, &[int.clone(), int.clone()]);
@@ -257,7 +406,7 @@ fn infer_return_erases_residual_unknown_to_any_at_boundary() {
     let any = t.any();
     assert!(
         t.is_equivalent(&ret, &any),
-        "a live value the spike cannot prove should erase to any at the Ty boundary, got {ret:?}"
+        "a live value the engine cannot prove should erase to any at the Ty boundary, got {ret:?}"
     );
 }
 
@@ -318,8 +467,8 @@ fn halt_branch_contributes_no_return_value_to_control_join() {
 #[test]
 fn direct_calls_instantiate_polymorphic_identity_per_callsite() {
     let mut t = ConcreteTypes;
-    let module = lower(include_str!("../../spike/poly_id.fz"));
-    let ret = infer_fn_via_main(&module, "main");
+    let module = lower(include_str!("fixtures/poly_id.fz"));
+    let ret = infer_entry_return_via_main(&module);
     let expected = {
         let int = t.int();
         let ok = t.atom_lit("ok");
@@ -334,7 +483,7 @@ fn direct_calls_instantiate_polymorphic_identity_per_callsite() {
 #[test]
 fn named_refs_instantiate_polymorphic_identity_per_callsite() {
     let mut t = ConcreteTypes;
-    let module = lower(include_str!("../../spike/poly_named_ref.fz"));
+    let module = lower(include_str!("fixtures/poly_named_ref.fz"));
     let ret = infer_fn_via_main(&module, "main");
     let expected = {
         let int = t.int();
@@ -350,7 +499,7 @@ fn named_refs_instantiate_polymorphic_identity_per_callsite() {
 #[test]
 fn named_refs_drive_pattern_dispatch_per_activation() {
     let mut t = ConcreteTypes;
-    let module = lower(include_str!("../../spike/poly_named_ref_pattern.fz"));
+    let module = lower(include_str!("fixtures/poly_named_ref_pattern.fz"));
     let ret = infer_fn_via_main(&module, "main");
     let expected = {
         let one = t.atom_lit("one");
@@ -366,7 +515,7 @@ fn named_refs_drive_pattern_dispatch_per_activation() {
 #[test]
 fn captured_closure_refs_instantiate_by_capture_and_arg_facts() {
     let mut t = ConcreteTypes;
-    let module = lower(include_str!("../../spike/poly_capture_ref.fz"));
+    let module = lower(include_str!("fixtures/poly_capture_ref.fz"));
     let ret = infer_fn_via_main(&module, "main");
     let expected = {
         let ok = t.atom_lit("ok");
@@ -385,7 +534,7 @@ fn captured_closure_refs_instantiate_by_capture_and_arg_facts() {
 #[test]
 fn direct_calls_specialize_atom_pattern_dispatch_by_input() {
     let mut t = ConcreteTypes;
-    let module = lower(include_str!("../../spike/match_atom_partition.fz"));
+    let module = lower(include_str!("fixtures/match_atom_partition.fz"));
     let ret = infer_fn_via_main(&module, "main");
     let expected = {
         let one = t.atom_lit("one");
@@ -401,7 +550,7 @@ fn direct_calls_specialize_atom_pattern_dispatch_by_input() {
 #[test]
 fn direct_calls_specialize_list_pattern_dispatch_by_shape() {
     let mut t = ConcreteTypes;
-    let module = lower(include_str!("../../spike/match_list_partition.fz"));
+    let module = lower(include_str!("fixtures/match_list_partition.fz"));
     let ret = infer_fn_via_main(&module, "main");
     let expected = {
         let empty = t.atom_lit("empty");
@@ -417,7 +566,7 @@ fn direct_calls_specialize_list_pattern_dispatch_by_shape() {
 #[test]
 fn list_pattern_binding_flows_into_selected_leaf() {
     let mut t = ConcreteTypes;
-    let module = lower(include_str!("../../spike/match_list_binding.fz"));
+    let module = lower(include_str!("fixtures/match_list_binding.fz"));
     let ret = infer_fn_via_main(&module, "main");
     let expected = {
         let empty = t.atom_lit("empty");
@@ -433,7 +582,7 @@ fn list_pattern_binding_flows_into_selected_leaf() {
 #[test]
 fn tuple_pattern_binding_flows_into_selected_leaf() {
     let mut t = ConcreteTypes;
-    let module = lower(include_str!("../../spike/match_tuple_binding.fz"));
+    let module = lower(include_str!("fixtures/match_tuple_binding.fz"));
     let ret = infer_fn_via_main(&module, "main");
     let expected = {
         let int = t.int();
@@ -449,7 +598,7 @@ fn tuple_pattern_binding_flows_into_selected_leaf() {
 #[test]
 fn nested_pattern_binding_flows_into_selected_leaf() {
     let mut t = ConcreteTypes;
-    let module = lower(include_str!("../../spike/match_nested_binding.fz"));
+    let module = lower(include_str!("fixtures/match_nested_binding.fz"));
     let ret = infer_fn_via_main(&module, "main");
     let expected = {
         let int = t.int();
@@ -465,7 +614,7 @@ fn nested_pattern_binding_flows_into_selected_leaf() {
 #[test]
 fn nested_pattern_partition_selects_sibling_leaves() {
     let mut t = ConcreteTypes;
-    let module = lower(include_str!("../../spike/match_nested_partition.fz"));
+    let module = lower(include_str!("fixtures/match_nested_partition.fz"));
     let ret = infer_fn_via_main(&module, "main");
     let expected = {
         let empty = t.atom_lit("empty");
@@ -482,7 +631,7 @@ fn nested_pattern_partition_selects_sibling_leaves() {
 #[test]
 fn tuple_tag_partition_selects_matching_payloads() {
     let mut t = ConcreteTypes;
-    let module = lower(include_str!("../../spike/match_tuple_tag_partition.fz"));
+    let module = lower(include_str!("fixtures/match_tuple_tag_partition.fz"));
     let ret = infer_fn_via_main(&module, "main");
     let expected = {
         let int = t.int();
@@ -498,7 +647,7 @@ fn tuple_tag_partition_selects_matching_payloads() {
 #[test]
 fn tuple_arity_partition_selects_matching_shape() {
     let mut t = ConcreteTypes;
-    let module = lower(include_str!("../../spike/match_tuple_arity_partition.fz"));
+    let module = lower(include_str!("fixtures/match_tuple_arity_partition.fz"));
     let ret = infer_fn_via_main(&module, "main");
     let expected = {
         let int = t.int();
@@ -515,7 +664,7 @@ fn tuple_arity_partition_selects_matching_shape() {
 #[test]
 fn guard_partition_selects_refined_clause() {
     let mut t = ConcreteTypes;
-    let module = lower(include_str!("../../spike/match_guard_partition.fz"));
+    let module = lower(include_str!("fixtures/match_guard_partition.fz"));
     let ret = infer_fn_via_main(&module, "main");
     let expected = {
         let int = t.int();
@@ -531,7 +680,7 @@ fn guard_partition_selects_refined_clause() {
 #[test]
 fn map_pattern_binding_flows_into_selected_leaf() {
     let mut t = ConcreteTypes;
-    let module = lower(include_str!("../../spike/match_map_binding.fz"));
+    let module = lower(include_str!("fixtures/match_map_binding.fz"));
     let ret = infer_fn_via_main(&module, "main");
     let expected = {
         let int = t.int();
@@ -546,17 +695,12 @@ fn map_pattern_binding_flows_into_selected_leaf() {
 
 #[test]
 fn matcher_dead_arms_are_observable_via_telemetry() {
-    let module = lower(include_str!("../../spike/poly_named_ref_pattern.fz"));
+    let module = lower(include_str!("fixtures/poly_named_ref_pattern.fz"));
     let mut t = ConcreteTypes;
     let report = infer_report_via_main(&mut t, &module);
-    let tel = ConfiguredTelemetry::new();
-    let cap = Capture::new();
-    tel.attach(&["fz", "type_infer"], cap.handler());
-
-    report.emit_telemetry(&mut t, &tel);
 
     assert!(
-        cap.count(&["fz", "type_infer", "dead_arm"]) > 0,
+        report.facts.dead_arms > 0,
         "matcher proof should emit dead-arm telemetry for source-total catch-all dispatch"
     );
 }
@@ -564,19 +708,19 @@ fn matcher_dead_arms_are_observable_via_telemetry() {
 #[test]
 fn corpus_folds_settle_myreduce_to_int() {
     let corpus = [
-        ("fold_tail", include_str!("../../spike/fold_tail.fz")),
-        ("fold_nontail", include_str!("../../spike/fold_nontail.fz")),
+        ("fold_tail", include_str!("fixtures/fold_tail.fz")),
+        ("fold_nontail", include_str!("fixtures/fold_nontail.fz")),
         (
             "fold_capture_int",
-            include_str!("../../spike/fold_capture_int.fz"),
+            include_str!("fixtures/fold_capture_int.fz"),
         ),
         (
             "fold_capture_closure",
-            include_str!("../../spike/fold_capture_closure.fz"),
+            include_str!("fixtures/fold_capture_closure.fz"),
         ),
         (
             "fold_state_machine",
-            include_str!("../../spike/fold_state_machine.fz"),
+            include_str!("fixtures/fold_state_machine.fz"),
         ),
     ];
     let mut t = ConcreteTypes;
