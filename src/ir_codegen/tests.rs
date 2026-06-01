@@ -2542,10 +2542,10 @@ fn planned_program_materialization_reports_executable_body_folds() {
     let m = lower_src(src);
     let tel = crate::telemetry::ConfiguredTelemetry::new();
     let cap = crate::telemetry::Capture::new();
-    tel.attach(&["fz", "planner", "materialized"], cap.handler());
+    tel.attach(&["fz", "planner"], cap.handler());
     let mut t = crate::types::ConcreteTypes;
     let module_plan = crate::ir_planner::plan_module(&mut t, &m, &crate::telemetry::NullTelemetry);
-    let _planned_program = crate::ir_planner::materialize_program(&mut t, &m, &module_plan, &tel);
+    let planned_program = crate::ir_planner::materialize_program(&mut t, &m, &module_plan, &tel);
 
     let ev = cap
         .last(&["fz", "planner", "materialized"])
@@ -2578,6 +2578,57 @@ fn planned_program_materialization_reports_executable_body_folds() {
         folded_branch_count > 0,
         "materialization must report per-spec branch folds: spec_slot_count={spec_slot_count} planned_body_count={planned_body_count} folded_prim_count={folded_prim_count} folded_branch_count={folded_branch_count}"
     );
+
+    let folded_body_event = cap
+        .find(&["fz", "planner", "body_materialized"])
+        .into_iter()
+        .find(|ev| {
+            matches!(
+                ev.measurements.get("folded_prim_count"),
+                Some(Value::U64(n)) if *n > 0
+            ) && matches!(
+                ev.measurements.get("folded_branch_count"),
+                Some(Value::U64(n)) if *n > 0
+            )
+        })
+        .expect("a planned body with per-spec prim and branch folds");
+    let spec_id = match folded_body_event.measurements.get("spec_id") {
+        Some(Value::U64(n)) => *n as u32,
+        other => panic!("spec_id missing or wrong type: {other:?}"),
+    };
+    let planned_body = planned_program.executable_body(crate::fz_ir::SpecId(spec_id));
+    let original_body = &m.fns[planned_body.fn_idx];
+    assert!(
+        count_if_terminators(&planned_body.body) < count_if_terminators(original_body),
+        "planned body should not retain every branch from the source-shaped body"
+    );
+    assert!(
+        count_fold_candidate_prims(&planned_body.body) < count_fold_candidate_prims(original_body),
+        "planned body should not retain every singleton-foldable prim from the source-shaped body"
+    );
+}
+
+fn count_if_terminators(f: &crate::fz_ir::FnIr) -> usize {
+    f.blocks
+        .iter()
+        .filter(|block| matches!(block.terminator, crate::fz_ir::Term::If { .. }))
+        .count()
+}
+
+fn count_fold_candidate_prims(f: &crate::fz_ir::FnIr) -> usize {
+    f.blocks
+        .iter()
+        .flat_map(|block| block.stmts.iter())
+        .filter(|stmt| {
+            matches!(
+                stmt,
+                crate::fz_ir::Stmt::Let(
+                    _,
+                    crate::fz_ir::Prim::BinOp(..) | crate::fz_ir::Prim::TypeTest(..)
+                )
+            )
+        })
+        .count()
 }
 
 #[test]

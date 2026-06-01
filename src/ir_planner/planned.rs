@@ -109,11 +109,27 @@ where
         match (spec_fn_indices[sid], spec_plans[sid]) {
             (Some(fn_idx), Some(spec_plan)) => {
                 let mut body = module.fns[fn_idx].clone();
-                let fold_stats =
-                    crate::ir_fold::fold_fn_with_types_counted(t, &mut body, spec_plan);
+                let fold_stats = crate::ir_fold::fold_planned_body(t, &mut body, spec_plan);
                 folded_prim_count += fold_stats.prim_count;
                 folded_branch_count += fold_stats.branch_count;
                 let body_index = bodies.len();
+                tel.execute(
+                    &["fz", "planner", "body_materialized"],
+                    &crate::measurements! {
+                        spec_id: sid as u64,
+                        fn_id: body.id.0 as u64,
+                        fn_idx: fn_idx as u64,
+                        block_count: body.blocks.len() as u64,
+                        folded_prim_count: fold_stats.prim_count as u64,
+                        folded_branch_count: fold_stats.branch_count as u64,
+                    },
+                    &crate::metadata! {
+                        role: "authoritative",
+                        module_path: module.module_path().to_owned(),
+                        fn_name: body.name.clone(),
+                        spec_key: format!("{:?}", spec_keys[sid]),
+                    },
+                );
                 bodies.push(PlannedBody {
                     spec_id: SpecId(sid as u32),
                     spec_key: spec_keys[sid].clone(),

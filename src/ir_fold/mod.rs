@@ -41,7 +41,7 @@ pub fn fold_module(m: &mut Module, types: &ModulePlan) -> FoldStats {
 ///
 /// `fold_module` rewrites the module's canonical `FnIr`, not a per-spec clone,
 /// so it may only use the all-domain `any` key. Narrow facts are still useful,
-/// but they belong in `fold_fn_with_types` on the codegen clone for that exact
+/// but they belong in `fold_planned_body` on the planned body for that exact
 /// spec.
 fn best_fn_types<'a>(f: &FnIr, types: &'a ModulePlan) -> Option<&'a SpecPlan> {
     types.any_key_spec(f.id)
@@ -55,26 +55,16 @@ fn fold_fn<T: Types<Ty = crate::types::Ty>>(
     let Some(fn_types) = best_fn_types(f, types) else {
         return FoldStats::default();
     };
-    fold_fn_with_types_counted(t, f, fn_types)
+    fold_planned_body(t, f, fn_types)
 }
 
-/// fz-ul4.43.B — per-spec fold entry point.
+/// fz-ul4.43.B — per-spec planned-body fold entry point.
 ///
-/// Codegen calls this on a cloned FnIr per spec, passing that spec's
-/// SpecPlan directly, so each spec gets folded against its own narrowed
-/// env. Avoids `fold_fn`'s `best_fn_types` fallback which bails when
-/// multiple narrow specs exist — exactly the case where per-spec fold
-/// is most valuable.
-#[allow(dead_code)] // fz-0fb.4.1 removal target: per-spec folds belong in planned-body materialization.
-pub fn fold_fn_with_types<T: Types<Ty = crate::types::Ty>>(
-    t: &mut T,
-    f: &mut FnIr,
-    fn_types: &SpecPlan,
-) {
-    let _ = fold_fn_with_types_counted(t, f, fn_types);
-}
-
-pub(crate) fn fold_fn_with_types_counted<T: Types<Ty = crate::types::Ty>>(
+/// Planned-program materialization calls this on one cloned `FnIr` per spec,
+/// passing that spec's exact `SpecPlan`, so each body folds against its own
+/// narrowed env. Avoids `fold_fn`'s all-domain fallback, which is correct only
+/// for shared canonical-body mutation.
+pub(crate) fn fold_planned_body<T: Types<Ty = crate::types::Ty>>(
     t: &mut T,
     f: &mut FnIr,
     fn_types: &SpecPlan,

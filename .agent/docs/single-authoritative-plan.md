@@ -117,8 +117,10 @@ than `Option<FnIr>`. If codegen is lowering a registered spec, the matching body
 exists by construction.
 
 Per-spec folds run while materializing the planned program, not ad hoc inside
-the Cranelift lowering loop. The telemetry event `fz.planner.materialized`
-reports:
+the Cranelift lowering loop. Each body emits
+`fz.planner.body_materialized`, including its `spec_id`, `fn_id`,
+`folded_prim_count`, and `folded_branch_count`. The aggregate event
+`fz.planner.materialized` reports:
 
 - `spec_slot_count`: every slot in the SpecId-indexed registry, including
   reserved slots.
