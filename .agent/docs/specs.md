@@ -50,8 +50,9 @@ Current extraction state:
   `SchemeInstantiation`, `SchemeMatch`, structural witness collection, and
   closure-arrow return resolution. `src/types/` only exposes the type algebra
   and shape introspection primitives that matching consumes.
-- Overload selection and result unioning still hang off `ResolvedSpecSet`;
-  `fz-hq4.3` moves that behavior into `src/specs/select.rs`.
+- Overload selection, result unioning after arrow selection, and structural
+  correspondence queries live in `src/specs/select.rs`. The resolved model
+  stays data-only.
 - Declared coverage checking still lives in `src/frontend/spec_check.rs`;
   `fz-hq4.4` moves that behavior into `src/specs/validate.rs`.
 - Planner higher-order witness logic still lives in
@@ -110,9 +111,9 @@ reducer's `{:cont, b}` / `{:halt, b}` exits are another witness. The declared
 result must join both instead of freezing `b` to the initial accumulator shape.
 
 The declared scheme also names which callback positions participate in that
-fixed point. `src/specs/model.rs` records the type variables whose occurrences
-cross from outer params/results into callback arg/result positions. For
-`reduce/3`, the loop-carried group is `b`:
+fixed point. `src/specs/select.rs` derives the type variables whose occurrences
+cross from outer params/results into callback arg/result positions from the
+resolved model. For `reduce/3`, the loop-carried group is `b`:
 
 ```text
 Param(1)          outer accumulator
@@ -196,17 +197,18 @@ hold everywhere:
    no declared arrow covers that inferred behavior. Keep any-key inferred specs
    skipped.
 
-4. Declared-call typing: `ResolvedSpecSet` owns arrow selection. For call
-   inputs, use a selected arrow's instantiated params only when the call picks a
-   unique arrow; otherwise keep the concrete call arguments as the demand. For
-   return typing, instantiate and union the matched results only after arrow
-   selection. Instantiation uses the shared structural scheme matcher: variables
-   can be witnessed by compatible nested shapes such as higher-order callback
-   arrows, and partial/underconstrained results are not executable return facts.
-   The matcher returns instantiated params and result together so demand shaping,
-   declared-call return typing, and spec validation cannot drift into separate
-   substitution stories. Validation passes positional holes as unknown witness
-   slots rather than converting them to `any`.
+4. Declared-call typing: `src/specs/select.rs` owns arrow selection over a
+   `ResolvedSpecSet`. For call inputs, use a selected arrow's instantiated
+   params only when the call picks a unique arrow; otherwise keep the concrete
+   call arguments as the demand. For return typing, instantiate and union the
+   matched results only after arrow selection. Instantiation uses the shared
+   structural scheme matcher: variables can be witnessed by compatible nested
+   shapes such as higher-order callback arrows, and partial/underconstrained
+   results are not executable return facts. The matcher returns instantiated
+   params and result together so demand shaping, declared-call return typing,
+   and spec validation cannot drift into separate substitution stories.
+   Validation passes positional holes as unknown witness slots rather than
+   converting them to `any`.
 
 5. Interfaces and protocols: public function specs and protocol callback specs
    carry ordered spec lists (`specs`), and interface fingerprints include every

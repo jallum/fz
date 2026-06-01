@@ -649,7 +649,7 @@ where
         let arg_tys = self.arg_tys(args, env);
         if let Some(callee) = callee
             && let Some(spec_set) = self.m.declared_specs.get(&callee)
-            && let Some(params) = spec_set.unique_matching_params(self.t, &arg_tys)
+            && let Some(params) = crate::specs::unique_matching_params(self.t, spec_set, &arg_tys)
             && params.len() == arity
         {
             return crate::types::key_slots_from_tys(params);

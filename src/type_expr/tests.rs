@@ -1,7 +1,10 @@
 use super::*;
 
 use crate::parser::lexer::Lexer;
-use crate::specs::{StructuralCorrespondenceGroup, StructuralOccurrence, StructuralPathStep};
+use crate::specs::{
+    StructuralCorrespondenceGroup, StructuralOccurrence, StructuralPathStep,
+    spec_correspondence_groups,
+};
 use crate::types::{ConcreteTypes, Ty, Types};
 
 fn parse_one<T: Types<Ty = Ty>>(t: &mut T, src: &str) -> Result<T::Ty, TypeExprError> {
@@ -823,82 +826,6 @@ fn resolved_spec_retains_structural_shape_for_higher_order_parametricity() {
 }
 
 #[test]
-fn resolved_spec_set_selects_return_by_matching_arrow() {
-    let mut ct = ConcreteTypes;
-    let int = ct.int();
-    let float = ct.float();
-    let set = ResolvedSpecSet {
-        arrows: vec![
-            ResolvedSpec {
-                params: vec![int.clone()],
-                param_shapes: vec![ResolvedTypeShape::Any],
-                result: int.clone(),
-                result_shape: ResolvedTypeShape::Any,
-                constraints: std::collections::HashMap::new(),
-            },
-            ResolvedSpec {
-                params: vec![float.clone()],
-                param_shapes: vec![ResolvedTypeShape::Any],
-                result: float.clone(),
-                result_shape: ResolvedTypeShape::Any,
-                constraints: std::collections::HashMap::new(),
-            },
-        ],
-    };
-
-    let int_arg = ct.int_lit(1);
-    let int_result = set.matching_result(&mut ct, &[int_arg]).unwrap();
-    assert!(ct.is_equivalent(&int_result, &int));
-
-    let float_arg = ct.float_lit(1.5);
-    let float_result = set.matching_result(&mut ct, &[float_arg]).unwrap();
-    assert!(ct.is_equivalent(&float_result, &float));
-}
-
-#[test]
-fn resolved_spec_set_unions_results_only_after_arrow_selection() {
-    let mut ct = ConcreteTypes;
-    let int = ct.int();
-    let float = ct.float();
-    let set = ResolvedSpecSet {
-        arrows: vec![
-            ResolvedSpec {
-                params: vec![int.clone()],
-                param_shapes: vec![ResolvedTypeShape::Any],
-                result: int.clone(),
-                result_shape: ResolvedTypeShape::Any,
-                constraints: std::collections::HashMap::new(),
-            },
-            ResolvedSpec {
-                params: vec![float.clone()],
-                param_shapes: vec![ResolvedTypeShape::Any],
-                result: float.clone(),
-                result_shape: ResolvedTypeShape::Any,
-                constraints: std::collections::HashMap::new(),
-            },
-            ResolvedSpec {
-                params: vec![int.clone()],
-                param_shapes: vec![ResolvedTypeShape::Any],
-                result: float.clone(),
-                result_shape: ResolvedTypeShape::Any,
-                constraints: std::collections::HashMap::new(),
-            },
-        ],
-    };
-
-    let int_arg = ct.int_lit(1);
-    let int_result = set.matching_result(&mut ct, &[int_arg.clone()]).unwrap();
-    assert!(ct.is_subtype(&int, &int_result));
-    assert!(ct.is_subtype(&float, &int_result));
-
-    let params = set.unique_matching_params(&mut ct, &[int_arg]);
-    assert!(
-        params.is_none(),
-        "input demand should stay with the concrete call when several arrows match"
-    );
-}
-
-#[test]
 fn resolved_spec_reports_reduce_invariant_slot_correspondence() {
     let mut ct = ConcreteTypes;
     let entry_var = ct.type_var(crate::types::TypeVarId(0));
@@ -923,7 +850,7 @@ fn resolved_spec_reports_reduce_invariant_slot_correspondence() {
         constraints: std::collections::HashMap::new(),
     };
 
-    let groups = spec.structural_correspondence_groups();
+    let groups = spec_correspondence_groups(&spec);
     assert_eq!(groups.len(), 2);
     assert_eq!(
         groups
@@ -977,7 +904,7 @@ fn resolved_spec_reports_structural_container_correspondence() {
 
     let resolved = resolve_spec_decl(&mut ct, &spec, &env).unwrap();
     assert_eq!(
-        resolved.structural_correspondence_groups(),
+        spec_correspondence_groups(&resolved),
         vec![StructuralCorrespondenceGroup {
             var: crate::types::TypeVarId(0),
             occurrences: vec![
@@ -1036,7 +963,7 @@ fn resolved_spec_reports_reduce_while_invariant_slot_correspondence() {
         constraints: std::collections::HashMap::new(),
     };
 
-    let groups = spec.structural_correspondence_groups();
+    let groups = spec_correspondence_groups(&spec);
     assert_eq!(groups.len(), 2);
     assert_eq!(
         groups

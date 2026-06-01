@@ -1,4 +1,7 @@
-use super::{SchemeInstantiation, instantiate_match, resolve_closure_return};
+use super::{
+    ResolvedSpec, ResolvedSpecSet, ResolvedTypeShape, SchemeInstantiation, instantiate_match,
+    matching_result, resolve_closure_return, unique_matching_params,
+};
 use crate::types::{ConcreteTypes, MapKey, Types};
 
 #[test]
@@ -197,4 +200,80 @@ fn callable_scheme_result_instantiates_tuple_from_call_args() {
     };
     assert_eq!(t.as_int_singleton(&elems[0]), Some(1));
     assert_eq!(t.as_atom_singleton(&elems[1]).as_deref(), Some("ok"));
+}
+
+#[test]
+fn resolved_spec_set_selects_return_by_matching_arrow() {
+    let mut ct = ConcreteTypes;
+    let int = ct.int();
+    let float = ct.float();
+    let set = ResolvedSpecSet {
+        arrows: vec![
+            ResolvedSpec {
+                params: vec![int.clone()],
+                param_shapes: vec![ResolvedTypeShape::Any],
+                result: int.clone(),
+                result_shape: ResolvedTypeShape::Any,
+                constraints: std::collections::HashMap::new(),
+            },
+            ResolvedSpec {
+                params: vec![float.clone()],
+                param_shapes: vec![ResolvedTypeShape::Any],
+                result: float.clone(),
+                result_shape: ResolvedTypeShape::Any,
+                constraints: std::collections::HashMap::new(),
+            },
+        ],
+    };
+
+    let int_arg = ct.int_lit(1);
+    let int_result = matching_result(&mut ct, &set, &[int_arg]).unwrap();
+    assert!(ct.is_equivalent(&int_result, &int));
+
+    let float_arg = ct.float_lit(1.5);
+    let float_result = matching_result(&mut ct, &set, &[float_arg]).unwrap();
+    assert!(ct.is_equivalent(&float_result, &float));
+}
+
+#[test]
+fn resolved_spec_set_unions_results_only_after_arrow_selection() {
+    let mut ct = ConcreteTypes;
+    let int = ct.int();
+    let float = ct.float();
+    let set = ResolvedSpecSet {
+        arrows: vec![
+            ResolvedSpec {
+                params: vec![int.clone()],
+                param_shapes: vec![ResolvedTypeShape::Any],
+                result: int.clone(),
+                result_shape: ResolvedTypeShape::Any,
+                constraints: std::collections::HashMap::new(),
+            },
+            ResolvedSpec {
+                params: vec![float.clone()],
+                param_shapes: vec![ResolvedTypeShape::Any],
+                result: float.clone(),
+                result_shape: ResolvedTypeShape::Any,
+                constraints: std::collections::HashMap::new(),
+            },
+            ResolvedSpec {
+                params: vec![int.clone()],
+                param_shapes: vec![ResolvedTypeShape::Any],
+                result: float.clone(),
+                result_shape: ResolvedTypeShape::Any,
+                constraints: std::collections::HashMap::new(),
+            },
+        ],
+    };
+
+    let int_arg = ct.int_lit(1);
+    let int_result = matching_result(&mut ct, &set, &[int_arg.clone()]).unwrap();
+    assert!(ct.is_subtype(&int, &int_result));
+    assert!(ct.is_subtype(&float, &int_result));
+
+    let params = unique_matching_params(&mut ct, &set, &[int_arg]);
+    assert!(
+        params.is_none(),
+        "input demand should stay with the concrete call when several arrows match"
+    );
 }

@@ -940,7 +940,7 @@ pub fn lower_program_full_with_telemetry<T: crate::types::Types<Ty = crate::type
         if let Ok(resolved) = crate::type_expr::resolve_spec_decls(t, specs, env) {
             module
                 .function_correspondence
-                .insert(fid, resolved.structural_correspondence_groups());
+                .insert(fid, crate::specs::spec_set_correspondence_groups(&resolved));
             module.declared_specs.insert(fid, resolved);
         }
     }
