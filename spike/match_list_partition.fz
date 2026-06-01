@@ -1,0 +1,12 @@
+# Pattern-dispatch specialization over list shape. The same FnId is called at
+# exact empty-list and non-empty-list inputs; each activation should select the
+# matching decision-tree leaf.
+#
+# Expected: main() : {:empty, :cons}
+
+fn pick([]), do: :empty
+fn pick([_h | _t]), do: :cons
+
+fn main() do
+  {pick([]), pick([1])}
+end

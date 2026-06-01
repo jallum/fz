@@ -172,6 +172,10 @@ The pattern matcher is an evidence producer. Its lowered tests (`type_test`,
 vars. An `if` over such a condition does not blindly walk both arms under the
 same environment: the true and false environments are refined by the predicate,
 and a branch whose refinement is empty contributes no return information.
+Constructors must preserve the facts those tests consume: for example, a list
+literal with at least one explicit element is `nonempty_list(T)`, not merely
+`list(T)`, so the top of the decision tree can prove `is_nil` false and
+`is_list_cons` true.
 
 For a multi-clause function, each activation is processed against the same
 decision tree, but with that activation's input facts. A direct call

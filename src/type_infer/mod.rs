@@ -597,19 +597,23 @@ impl<'m> Solver<'m> {
                         Info::Unknown => return Info::Unknown,
                     }
                 }
+                let mut tail_ty = None;
                 if let Some(tl) = tail {
                     match info_of(*tl, env) {
                         Info::Known(tt) => {
                             let te = t.list_element_type(&tt);
                             elem = t.refine_widen(&elem, &te);
+                            tail_ty = Some(tt);
                         }
                         Info::Unknown => return Info::Unknown,
                     }
                 }
                 Info::Known(if elems.is_empty() && tail.is_none() {
                     t.empty_list()
+                } else if elems.is_empty() {
+                    tail_ty.unwrap_or_else(|| t.empty_list())
                 } else {
-                    t.list(elem)
+                    t.non_empty_list(elem)
                 })
             }
             Prim::MakeTuple(vars) => {
@@ -689,12 +693,15 @@ fn predicate_truth<T: Types<Ty = Ty>>(
         }
         PredicateFact::IsListCons(v) => {
             let current = known_ty(*v, env)?;
-            let empty = t.empty_list();
-            if t.is_subtype(&current, &empty) {
-                Some(false)
-            } else {
-                None
+            let cons = {
+                let any = t.any();
+                t.non_empty_list(any)
+            };
+            if t.is_subtype(&current, &cons) {
+                return Some(true);
             }
+            let meet = t.intersect(current, cons);
+            if t.is_empty(&meet) { Some(false) } else { None }
         }
         PredicateFact::TypeTest(v, ty) => {
             let current = known_ty(*v, env)?;
@@ -758,10 +765,15 @@ fn narrow_predicate<T: Types<Ty = Ty>>(
                 return None;
             }
         }
-        // `non_empty_list` currently defaults to the ordinary list axis for
-        // type implementations that do not distinguish cons-ness. Avoid
-        // pretending that a maybe-empty list is definitely a cons cell.
-        PredicateFact::IsListCons(_) => {}
+        PredicateFact::IsListCons(v) => {
+            let cons = {
+                let any = t.any();
+                t.non_empty_list(any)
+            };
+            if !refine_against(t, &mut out, *v, &cons, truth) {
+                return None;
+            }
+        }
         PredicateFact::TypeTest(v, ty) => {
             if !refine_against(t, &mut out, *v, ty, truth) {
                 return None;
@@ -1231,6 +1243,22 @@ mod tests {
         assert!(
             t.is_equivalent(&ret, &expected),
             "main should select distinct matcher leaves for :left and :right activations, got {ret:?}"
+        );
+    }
+
+    #[test]
+    fn direct_calls_specialize_list_pattern_dispatch_by_shape() {
+        let mut t = ConcreteTypes;
+        let module = lower(include_str!("../../spike/match_list_partition.fz"));
+        let ret = infer_fn_via_main(&module, "main");
+        let expected = {
+            let empty = t.atom_lit("empty");
+            let cons = t.atom_lit("cons");
+            t.tuple(&[empty, cons])
+        };
+        assert!(
+            t.is_equivalent(&ret, &expected),
+            "main should select empty-list and cons matcher leaves per activation, got {ret:?}"
         );
     }
 
