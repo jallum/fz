@@ -91,6 +91,14 @@ explicitly by a boundary decision. It may diagnose unsupported required
 knowledge or erase a still-live dynamic value to `any`; it must not silently
 turn uncertainty into `none`.
 
+The planner boundary uses this rule when projecting activation facts onto
+reachable `SpecKey`s. `ReturnDemand` is planner delivery shape, not a distinct
+semantic return, so value-return activation facts can satisfy non-value demand
+variants for the same `FnId` and compatible input tuple. If the planner key is
+polymorphic, compatibility is tested by instantiating the requested shape against
+the concrete activation witness through `Types`; inference facts are not
+rewritten into planner keys.
+
 ## Joins
 
 The engine uses the same shape for activation-cell updates and control-flow

@@ -708,6 +708,7 @@ where
             self.effective_returns,
             self.complete_returns,
             self.slot_summaries,
+            self.activation_returns,
         );
         self.out.return_reads.extend(knowledge.return_reads);
         Some(match knowledge.slot0 {

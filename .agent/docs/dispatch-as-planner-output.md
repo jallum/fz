@@ -54,17 +54,21 @@ edge.
 
 During the activation-kernel transplant, `plan_module` reads structured
 `type_infer` activation return facts as production data and projects them into
-value-demand planner return facts. This is data flow, not telemetry scraping.
+planner return facts. This is data flow, not telemetry scraping.
 `ActivationKey` and `SpecKey` are intentionally not the same concept:
-activation facts are matched to planner value keys by `FnId`, value
-`ReturnDemand`, and compatible semantic input slots. Compatibility accepts
+activation facts are matched to planner keys by `FnId` and compatible semantic
+input slots. `ReturnDemand` is a delivery capability, not a semantic return
+payload, so it does not split activation return facts. Compatibility accepts
 overlapping activation/planner input facts, erasing concrete closure identity
 only for this comparison so a concrete captured reducer can satisfy the
-planner's callable-capture slot without making closure identity an ABI fact.
+planner's callable-capture slot without making closure identity an ABI fact. For
+polymorphic planner keys, compatibility may instantiate the requested type
+variables from a concrete activation witness through `Types`; that is still only
+a comparison step, not a `SpecKey` rewrite.
 The `fz.planner.planned` event reports this bridge with
 `type_kernel: "activation"` plus activation return fact/key counts,
-known/unresolved/no-return counts, compatible-key lookup count, and legacy
-fallback count.
+known/unresolved/no-return counts, projected return count, projection-gap count,
+compatible-key lookup count, and legacy fallback count.
 
 Local direct, closure, and continuation call edges target a `SpecKey`, which
 names the callee function, its semantic input key, and its `ReturnDemand`.
@@ -245,12 +249,14 @@ can feed a different use. Codegen must therefore consume the `CallsiteId` facts
 the planner produced instead of reusing the caller spec's demand as a blanket
 property.
 
-Effective returns are a worklist fixpoint. Missing downstream return facts are
-pending, not a definite `none`; readers are indexed so they run again when the
-callee's return appears, widens, or completes. Once a provisional return exists,
-the planner may use it to build continuation keys and return joins. That is what
-lets recursive SCCs widen monotonically instead of waiting for themselves to be
-"complete" before contributing to the fixpoint.
+Effective returns in the committed `ModulePlan` are a projection/cache of
+activation facts over the reachable executable specs. `Known(T)` projects to
+`T`, `NoReturn` projects to `none`, and residual `Pending`/`Unknown` project to
+`any` only at this boundary. Specs that remain reachable without a compatible
+activation fact are reported as projection gaps; they are not silently justified
+by the legacy return fixpoint. While the compatibility map remains a total
+legacy API, those gaps are filled with `any`; zero projection gaps is the signal
+that the committed executable plan no longer depends on that fill.
 
 ## Why Not Re-Walk In Codegen
 

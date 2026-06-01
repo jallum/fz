@@ -2714,6 +2714,45 @@ fn runtime_graph_codegen_authoritative_plan_keeps_cont_dispatches_for_enum_take_
 }
 
 #[test]
+fn enum_take_drop_split_codegen_plan_has_activation_return_coverage() {
+    use crate::telemetry::{Capture, ConfiguredTelemetry, Value};
+
+    let src = include_str!("../../fixtures/enum_take_drop_split/input.fz");
+    let tel = ConfiguredTelemetry::new();
+    let cap = Capture::new();
+    tel.attach(&["fz", "planner", "planned"], cap.handler());
+    let mut t = crate::types::ConcreteTypes;
+    let module = runtime_graph_module(&mut t, src);
+    compile(&mut t, &module, &tel).expect("compile");
+
+    let ev = cap
+        .find(&["fz", "planner", "planned"])
+        .into_iter()
+        .filter(|ev| {
+            matches!(
+                ev.metadata.get("role"),
+                Some(Value::Str(role)) if role == "authoritative"
+            )
+        })
+        .last()
+        .expect("authoritative codegen planner event");
+    let measurement = |name| match ev.measurements.get(name) {
+        Some(Value::U64(n)) => *n,
+        other => panic!("{name} missing or wrong type: {other:?}"),
+    };
+    assert_eq!(
+        measurement("activation_return_projection_gap_count"),
+        0,
+        "every executable spec in the committed codegen plan must be covered by activation returns"
+    );
+    assert_eq!(
+        measurement("activation_return_legacy_fallback_count"),
+        0,
+        "committed codegen plan must not derive call results from legacy return fallback"
+    );
+}
+
+#[test]
 fn codegen_registry_view_keeps_cont_dispatches_for_enum_take_drop_split() {
     use crate::fz_ir::{CallsiteId, EmitSlot, Term};
 

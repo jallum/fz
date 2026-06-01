@@ -53,11 +53,14 @@ struct ActivationReturnTelemetry {
     known_count: usize,
     unresolved_count: usize,
     no_return_count: usize,
+    projected_count: usize,
+    projection_gap_count: usize,
     compatible_lookup_count: usize,
     legacy_fallback_count: usize,
 }
 
 impl ActivationReturnFacts {
+    #[cfg(test)]
     pub(crate) fn empty() -> Self {
         Self::default()
     }
@@ -95,7 +98,7 @@ impl ActivationReturnFacts {
             .or_insert(state);
     }
 
-    fn known_return_for_call_result<
+    fn return_for_call_result<
         T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
     >(
         &self,
@@ -103,7 +106,7 @@ impl ActivationReturnFacts {
         key: &SpecKey,
     ) -> Option<crate::types::Ty> {
         let exact = self.returns.contains_key(key);
-        let ret = self.known_return(t, key);
+        let ret = self.projected_return_for_key(t, key);
         if ret.is_none() {
             self.legacy_fallback_count
                 .set(self.legacy_fallback_count.get() + 1);
@@ -114,7 +117,12 @@ impl ActivationReturnFacts {
         ret
     }
 
-    fn known_return<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes>(
+    /// Project an activation return state into the planner's return map shape.
+    /// `type_infer` keeps unresolved facts as `Pending`/`Unknown`; `any` is only
+    /// introduced here at the planner boundary for still-reachable specs.
+    fn projected_return_for_key<
+        T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
+    >(
         &self,
         t: &mut T,
         key: &SpecKey,
@@ -122,7 +130,7 @@ impl ActivationReturnFacts {
         match self.return_state_for_key(t, key)? {
             TypeInferReturnState::Known(ty) => Some(ty.clone()),
             TypeInferReturnState::NoReturn => Some(t.none()),
-            TypeInferReturnState::Pending | TypeInferReturnState::Unknown => None,
+            TypeInferReturnState::Pending | TypeInferReturnState::Unknown => Some(t.any()),
         }
     }
 
@@ -148,7 +156,7 @@ impl ActivationReturnFacts {
         joined
     }
 
-    fn overlay_effective_returns<
+    fn project_effective_returns<
         T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
     >(
         &self,
@@ -156,17 +164,26 @@ impl ActivationReturnFacts {
         reachable: &SpecKeySet,
         effective_returns: &mut HashMap<SpecKey, crate::types::Ty>,
     ) {
+        effective_returns.clear();
         for key in reachable {
-            if let Some(ret) = self.known_return(t, key) {
-                effective_returns.insert(key.clone(), ret);
-            }
+            let ret = if let Some(ret) = self.projected_return_for_key(t, key) {
+                ret
+            } else {
+                t.any()
+            };
+            effective_returns.insert(key.clone(), ret);
         }
     }
 
-    fn telemetry(&self) -> ActivationReturnTelemetry {
+    fn telemetry<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes>(
+        &self,
+        t: &mut T,
+        reachable: &SpecKeySet,
+    ) -> ActivationReturnTelemetry {
         let mut stats = ActivationReturnTelemetry {
             fact_count: self.raw_fact_count,
             key_count: self.returns.len(),
+            projected_count: reachable.len(),
             compatible_lookup_count: self.compatible_lookup_count.get(),
             legacy_fallback_count: self.legacy_fallback_count.get(),
             ..ActivationReturnTelemetry::default()
@@ -180,6 +197,11 @@ impl ActivationReturnFacts {
                 TypeInferReturnState::NoReturn => stats.no_return_count += 1,
             }
         }
+        for key in reachable {
+            if self.return_state_for_key(t, key).is_none() {
+                stats.projection_gap_count += 1;
+            }
+        }
         stats
     }
 }
@@ -191,7 +213,7 @@ fn activation_key_is_instance_of<
     candidate: &SpecKey,
     requested: &SpecKey,
 ) -> bool {
-    if candidate.fn_id != requested.fn_id || candidate.demand != requested.demand {
+    if candidate.fn_id != requested.fn_id {
         return false;
     }
     if candidate.input.len() != requested.input.len() {
@@ -221,12 +243,29 @@ fn activation_ty_is_instance_of<
     // (`bool` for a `true` call) or more concrete because they preserve closure
     // identity. Any overlapping activation fact is a safe return contributor;
     // erasing closure identity is only a comparison step, not an ABI fact.
-    if !t.is_disjoint(candidate, requested) {
+    if activation_tys_overlap(t, candidate, requested) {
         return true;
     }
     let candidate = t.erase_closure_identity(candidate);
     let requested = t.erase_closure_identity(requested);
-    !t.is_disjoint(&candidate, &requested)
+    activation_tys_overlap(t, &candidate, &requested)
+}
+
+fn activation_tys_overlap<T: crate::types::Types<Ty = crate::types::Ty>>(
+    t: &mut T,
+    candidate: &crate::types::Ty,
+    requested: &crate::types::Ty,
+) -> bool {
+    if !t.is_disjoint(candidate, requested) {
+        return true;
+    }
+    if !t.has_vars(requested) {
+        return false;
+    }
+    let mut sigma = crate::types::Sigma::new();
+    t.collect_instantiation_subst(requested, candidate, &mut sigma);
+    let instantiated = t.instantiate(requested, &sigma);
+    !t.is_disjoint(candidate, &instantiated)
 }
 
 fn merge_activation_return_state<T: crate::types::Types<Ty = crate::types::Ty>>(
@@ -300,7 +339,7 @@ pub(crate) fn direct_call_result_knowledge<
         arg_tys,
         &module.fn_by_id(caller).owner_module,
     );
-    if let Some(ret) = activation_returns.known_return_for_call_result(t, &target) {
+    if let Some(ret) = activation_returns.return_for_call_result(t, &target) {
         return CallResultKnowledge {
             slot0: ResultSlot0::Known(ret),
             return_reads: vec![target],
@@ -369,7 +408,7 @@ pub(crate) fn known_closure_result_knowledge<
         arg_tys,
         &module.fn_by_id(caller).owner_module,
     );
-    if let Some(ret) = activation_returns.known_return_for_call_result(t, &key) {
+    if let Some(ret) = activation_returns.return_for_call_result(t, &key) {
         return CallResultKnowledge {
             slot0: ResultSlot0::Known(ret),
             return_reads: vec![key],
@@ -416,6 +455,7 @@ pub(crate) fn closure_value_result_knowledge<
     effective_returns: &HashMap<SpecKey, crate::types::Ty>,
     complete_returns: &SpecKeySet,
     slot_summaries: &FixedPointSlotSummaries,
+    activation_returns: &ActivationReturnFacts,
 ) -> CallResultKnowledge {
     if let Some(keys) = literal_closure_return_keys(
         t,
@@ -430,13 +470,18 @@ pub(crate) fn closure_value_result_knowledge<
         let mut joined = t.none();
         let mut complete = true;
         for key in &keys {
-            let Some(ret) = effective_returns.get(key).cloned() else {
-                complete = false;
-                continue;
+            let ret = if let Some(ret) = activation_returns.projected_return_for_key(t, key) {
+                ret
+            } else {
+                let Some(ret) = effective_returns.get(key).cloned() else {
+                    complete = false;
+                    continue;
+                };
+                if !complete_returns.contains(key) {
+                    complete = false;
+                }
+                ret
             };
-            if !effective_returns.contains_key(key) && !complete_returns.contains(key) {
-                complete = false;
-            }
             joined = t.union(joined, ret);
         }
         return CallResultKnowledge {
@@ -458,14 +503,16 @@ pub(crate) fn closure_value_result_knowledge<
 }
 
 /// Type a module via one worklist over `SpecKey`s. The worklist drives spec
-/// registration, body typing, and effective-return propagation as a single
-/// unified data-flow LFP.
+/// registration, body typing, executable call-edge discovery, and the temporary
+/// compatibility return recompute still used by capability/demand discovery.
+/// The committed `ModulePlan::effective_returns` is projected from activation
+/// facts after reachable executable specs settle.
 ///
 /// Two triggers add a spec back to the worklist:
 ///   1. The spec is freshly discovered (newly-emitted pending key).
-///   2. A callee whose effective return this spec reads has *changed*
-///      that return. Tracked via the `return_readers` reverse index
-///      populated during walks at every cont-site slot-0 lookup.
+///   2. A callee whose compatibility return this spec reads has changed.
+///      Tracked via the `return_readers` reverse index populated during walks
+///      at every cont-site slot-0 lookup. This is not final return authority.
 ///
 /// `type_fn` is pure in `(FnIr, entry_key)`; once a spec's `SpecPlan`
 /// is computed, it's cached and reused across worklist visits — only
@@ -480,9 +527,9 @@ pub(crate) fn closure_value_result_knowledge<
 ///
 /// The worklist terminates because:
 ///
-///   (a) `effective_returns` is updated only via `union`,
+///   (a) compatibility returns are updated only via `union`,
 ///       which is monotone w.r.t. lattice inclusion. So
-///       `effective_returns` is monotonically non-decreasing in
+///       the compatibility return map is monotonically non-decreasing in
 ///       the product type lattice.
 ///       A pending producer return is therefore seeded as bottom and deferred
 ///       at continuation slot 0. Seeding a pending return with `any` would
@@ -496,7 +543,7 @@ pub(crate) fn closure_value_result_knowledge<
 ///
 ///   (c) A spec is enqueued only on:
 ///         (i)   First emission — happens at most once per spec key.
-///         (ii)  A callee's effective return that this spec reads
+///         (ii)  A callee's compatibility return that this spec reads
 ///               has changed — happens at most H× per
 ///               (spec, return-edge) pair, by (a) and (b).
 ///
@@ -574,6 +621,8 @@ pub fn plan_module_with_role<
                 activation_return_known_count: activation_return_telemetry.known_count as u64,
                 activation_return_unresolved_count: activation_return_telemetry.unresolved_count as u64,
                 activation_return_no_return_count: activation_return_telemetry.no_return_count as u64,
+                activation_return_projected_count: activation_return_telemetry.projected_count as u64,
+                activation_return_projection_gap_count: activation_return_telemetry.projection_gap_count as u64,
                 activation_return_compatible_lookup_count: activation_return_telemetry.compatible_lookup_count as u64,
                 activation_return_legacy_fallback_count: activation_return_telemetry.legacy_fallback_count as u64,
             },
@@ -670,8 +719,8 @@ pub fn plan_callable_capabilities<
 }
 
 /// Outcome of the shared worklist core: the discovered specs (each carrying its
-/// callable capabilities, call edges, and types), their effective returns, the
-/// per-FnId effect summary, and the closure-handle registry. `plan_module`
+/// callable capabilities, call edges, and types), activation-projected returns,
+/// the per-FnId effect summary, and the closure-handle registry. `plan_module`
 /// finalizes this into a `ModulePlan` (any-key index, precedence, dead
 /// branches, telemetry); `plan_callable_capabilities` keeps only the
 /// per-spec capabilities.
@@ -690,9 +739,9 @@ struct PlannerTelemetry<'a> {
     role: &'static str,
 }
 
-/// Drive the worklist to discover every reachable spec from the module's entry
-/// seeds (running the effective-return fixpoint), then prune orphans. Shared by
-/// `plan_module` and `plan_callable_capabilities`.
+/// Drive the worklist to discover every reachable executable spec from the
+/// module's entry seeds, then prune orphans and project activation returns over
+/// the reachable set. Shared by `plan_module` and `plan_callable_capabilities`.
 fn discover_specs<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes>(
     t: &mut T,
     m: &Module,
@@ -778,26 +827,16 @@ fn discover_specs<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::
                 }
             }
         }
-        if let Some(reads) = return_deps_by_caller.get(&spec) {
-            for target in reads {
-                if reachable.insert(target.clone()) {
-                    bfs.push_back(target.clone());
-                }
-            }
-        }
     }
     specs.retain(|k, _| reachable.contains(k));
-    effective_returns.retain(|k, _| reachable.contains(k));
-    activation_returns.overlay_effective_returns(t, &reachable, &mut effective_returns);
-    let activation_return_telemetry = activation_returns.telemetry();
+    activation_returns.project_effective_returns(t, &reachable, &mut effective_returns);
+    let activation_return_telemetry = activation_returns.telemetry(t, &reachable);
     verify_closed_expectations(
         &reachable,
         &specs,
         &effective_returns,
-        &complete_returns,
         &emits_by_caller,
         &produces,
-        &return_deps_by_caller,
     );
 
     DiscoverOutput {
@@ -813,10 +852,8 @@ fn verify_closed_expectations(
     reachable: &SpecKeySet,
     specs: &HashMap<SpecKey, SpecPlan>,
     effective_returns: &HashMap<SpecKey, crate::types::Ty>,
-    complete_returns: &SpecKeySet,
     emits_by_caller: &EmitsByCaller,
     produces: &ProducesMap,
-    return_deps_by_caller: &ReturnDepsByCaller,
 ) {
     for spec in reachable {
         assert!(
@@ -827,11 +864,6 @@ fn verify_closed_expectations(
         assert!(
             effective_returns.contains_key(spec),
             "reachable spec {:?} has no effective return",
-            spec
-        );
-        assert!(
-            complete_returns.contains(spec),
-            "reachable spec {:?} has incomplete effective return",
             spec
         );
         if let Some(sites) = emits_by_caller.get(spec) {
@@ -855,35 +887,6 @@ fn verify_closed_expectations(
                     target,
                     spec,
                     site
-                );
-                assert!(
-                    complete_returns.contains(target),
-                    "reachable emit target {:?} from {:?} at {:?} has incomplete return",
-                    target,
-                    spec,
-                    site
-                );
-            }
-        }
-        if let Some(reads) = return_deps_by_caller.get(spec) {
-            for target in reads {
-                assert!(
-                    reachable.contains(target),
-                    "reachable spec {:?} has unresolved return dependency on unreachable {:?}",
-                    spec,
-                    target
-                );
-                assert!(
-                    specs.contains_key(target),
-                    "reachable spec {:?} has unresolved return dependency on untyped {:?}",
-                    spec,
-                    target
-                );
-                assert!(
-                    complete_returns.contains(target),
-                    "reachable spec {:?} depends on incomplete return {:?}",
-                    spec,
-                    target
                 );
             }
         }
@@ -969,8 +972,9 @@ fn compute_fn_effects(m: &Module) -> FnEffects {
 ///      `holders`. Enqueue new target specs.
 ///   4. Install call-edge plans.
 ///   5. Fold `result.closure_handles` into the module-level handle set.
-///   6. Recompute this spec's effective return. If changed, enqueue
-///      every spec in `return_readers[spec]`.
+///   6. Recompute this spec's compatibility return. If changed, enqueue
+///      every spec in `return_readers[spec]`. Final return authority is the
+///      activation projection after pruning.
 #[allow(clippy::too_many_arguments)]
 fn process_worklist<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes>(
     t: &mut T,
@@ -1050,6 +1054,7 @@ fn process_worklist<T: crate::types::Types<Ty = crate::types::Ty> + crate::types
             in_work,
             slot_summaries,
             return_reads,
+            activation_returns,
         );
         update_fixed_point_slot_summaries(
             t,
@@ -1348,6 +1353,7 @@ fn update_effective_return_and_enqueue_readers<
     in_work: &mut SpecKeySet,
     slot_summaries: &FixedPointSlotSummaries,
     walk_return_reads: Vec<SpecKey>,
+    activation_returns: &ActivationReturnFacts,
 ) {
     let prev_ret = effective_returns.get(spec_key).cloned();
     let prev_complete = complete_returns.contains(spec_key);
@@ -1363,6 +1369,7 @@ fn update_effective_return_and_enqueue_readers<
         complete_returns,
         slot_summaries,
         &mut compute_reads,
+        activation_returns,
     );
     let compute_read_count = compute_reads.len();
     sync_return_dependencies(
@@ -1527,7 +1534,7 @@ fn emit_return_fixpoint_step(
     );
 }
 
-/// Compute one spec's effective return by joining every reachable
+/// Compute one spec's compatibility return by joining every reachable
 /// return-producing terminator. A missing downstream return contributes
 /// `none()` as a provisional value and marks the contribution incomplete;
 /// an existing downstream return can still participate before it is complete,
@@ -1535,7 +1542,8 @@ fn emit_return_fixpoint_step(
 ///
 /// Every callee key whose return is consulted is pushed into `reads`; the
 /// worklist folds those into `return_readers` so callee-return changes
-/// re-enqueue this spec.
+/// re-enqueue this spec. The committed `ModulePlan` does not publish this as
+/// return authority; it publishes activation-projected returns.
 #[derive(Clone)]
 struct ReturnContribution {
     ty: crate::types::Ty,
@@ -1554,6 +1562,7 @@ pub(crate) fn compute_return_for_spec<
     complete_returns: &SpecKeySet,
     slot_summaries: &FixedPointSlotSummaries,
     reads: &mut Vec<SpecKey>,
+    activation_returns: &ActivationReturnFacts,
 ) -> (T::Ty, bool) {
     let Some(&j) = module.fn_idx.get(&spec_key.fn_id) else {
         return (t.none(), true);
@@ -1589,6 +1598,7 @@ pub(crate) fn compute_return_for_spec<
                 complete_returns,
                 slot_summaries,
                 reads,
+                activation_returns,
                 &term_env,
                 ident,
                 *callee,
@@ -1608,6 +1618,7 @@ pub(crate) fn compute_return_for_spec<
                 complete_returns,
                 slot_summaries,
                 reads,
+                activation_returns,
                 &term_env,
                 *closure,
                 args,
@@ -1627,6 +1638,7 @@ pub(crate) fn compute_return_for_spec<
                 complete_returns,
                 slot_summaries,
                 reads,
+                activation_returns,
                 b,
                 continuation,
             )),
@@ -1637,6 +1649,7 @@ pub(crate) fn compute_return_for_spec<
                     effective_returns,
                     complete_returns,
                     reads,
+                    activation_returns,
                     clauses,
                     after,
                 ))
@@ -1663,6 +1676,7 @@ fn direct_tail_return_contribution<
     complete_returns: &SpecKeySet,
     slot_summaries: &FixedPointSlotSummaries,
     reads: &mut Vec<SpecKey>,
+    activation_returns: &ActivationReturnFacts,
     term_env: &HashMap<crate::fz_ir::Var, crate::types::Ty>,
     ident: &crate::fz_ir::CallsiteIdent,
     callee: FnId,
@@ -1693,7 +1707,14 @@ fn direct_tail_return_contribution<
         n_params,
         Some(spec_key.demand.clone()),
     );
-    lookup_return_read(t, effective_returns, complete_returns, reads, key)
+    lookup_return_read(
+        t,
+        effective_returns,
+        complete_returns,
+        reads,
+        key,
+        activation_returns,
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1709,6 +1730,7 @@ fn tail_closure_return_contribution<
     complete_returns: &SpecKeySet,
     slot_summaries: &FixedPointSlotSummaries,
     reads: &mut Vec<SpecKey>,
+    activation_returns: &ActivationReturnFacts,
     term_env: &HashMap<crate::fz_ir::Var, crate::types::Ty>,
     closure: crate::fz_ir::Var,
     args: &[crate::fz_ir::Var],
@@ -1723,6 +1745,7 @@ fn tail_closure_return_contribution<
             complete_returns,
             slot_summaries,
             reads,
+            activation_returns,
             term_env,
             target,
             args,
@@ -1743,6 +1766,7 @@ fn tail_closure_return_contribution<
         complete_returns,
         slot_summaries,
         reads,
+        activation_returns,
         term_env,
         cv_ty,
         args,
@@ -1761,6 +1785,7 @@ fn known_tail_closure_return_contribution<
     complete_returns: &SpecKeySet,
     slot_summaries: &FixedPointSlotSummaries,
     reads: &mut Vec<SpecKey>,
+    activation_returns: &ActivationReturnFacts,
     term_env: &HashMap<crate::fz_ir::Var, crate::types::Ty>,
     target: FnId,
     args: &[crate::fz_ir::Var],
@@ -1779,7 +1804,14 @@ fn known_tail_closure_return_contribution<
         np,
         Some(spec_key.demand.clone()),
     );
-    lookup_return_read(t, effective_returns, complete_returns, reads, key)
+    lookup_return_read(
+        t,
+        effective_returns,
+        complete_returns,
+        reads,
+        key,
+        activation_returns,
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1794,6 +1826,7 @@ fn literal_tail_closure_return_contribution<
     complete_returns: &SpecKeySet,
     slot_summaries: &FixedPointSlotSummaries,
     reads: &mut Vec<SpecKey>,
+    activation_returns: &ActivationReturnFacts,
     term_env: &HashMap<crate::fz_ir::Var, crate::types::Ty>,
     cv_ty: &crate::types::Ty,
     args: &[crate::fz_ir::Var],
@@ -1814,7 +1847,14 @@ fn literal_tail_closure_return_contribution<
         Some(spec_key.demand.clone()),
     ) {
         for key in keys {
-            let dy = lookup_return_read(t, effective_returns, complete_returns, reads, key);
+            let dy = lookup_return_read(
+                t,
+                effective_returns,
+                complete_returns,
+                reads,
+                key,
+                activation_returns,
+            );
             complete &= dy.complete;
             acc = t.union(acc, dy.ty);
         }
@@ -1844,6 +1884,7 @@ fn continuation_return_contribution<
     complete_returns: &SpecKeySet,
     slot_summaries: &FixedPointSlotSummaries,
     reads: &mut Vec<SpecKey>,
+    activation_returns: &ActivationReturnFacts,
     block: &Block,
     continuation: &crate::fz_ir::Cont,
 ) -> ReturnContribution {
@@ -1867,6 +1908,7 @@ fn continuation_return_contribution<
             spec_key.fn_id,
             effective_returns,
             slot_summaries,
+            activation_returns,
         ) else {
             return ReturnContribution {
                 ty: t.none(),
@@ -1875,15 +1917,25 @@ fn continuation_return_contribution<
         };
         spec_key_for_fn_id(module, continuation.fn_id, cont_k)
     };
-    lookup_return_read(t, effective_returns, complete_returns, reads, key)
+    lookup_return_read(
+        t,
+        effective_returns,
+        complete_returns,
+        reads,
+        key,
+        activation_returns,
+    )
 }
 
-fn receive_matched_return_contribution<T: crate::types::Types<Ty = crate::types::Ty>>(
+fn receive_matched_return_contribution<
+    T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
+>(
     t: &mut T,
     module: &Module,
     effective_returns: &HashMap<SpecKey, crate::types::Ty>,
     complete_returns: &SpecKeySet,
     reads: &mut Vec<SpecKey>,
+    activation_returns: &ActivationReturnFacts,
     clauses: &[crate::fz_ir::ReceiveClause],
     after: &Option<crate::fz_ir::ReceiveAfter>,
 ) -> ReturnContribution {
@@ -1901,6 +1953,7 @@ fn receive_matched_return_contribution<T: crate::types::Types<Ty = crate::types:
             effective_returns,
             complete_returns,
             reads,
+            activation_returns,
             fid,
             &any,
         );
@@ -1913,12 +1966,15 @@ fn receive_matched_return_contribution<T: crate::types::Types<Ty = crate::types:
     }
 }
 
-fn receive_outcome_return_contribution<T: crate::types::Types<Ty = crate::types::Ty>>(
+fn receive_outcome_return_contribution<
+    T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
+>(
     t: &mut T,
     module: &Module,
     effective_returns: &HashMap<SpecKey, crate::types::Ty>,
     complete_returns: &SpecKeySet,
     reads: &mut Vec<SpecKey>,
+    activation_returns: &ActivationReturnFacts,
     fid: FnId,
     any: &crate::types::Ty,
 ) -> ReturnContribution {
@@ -1926,16 +1982,33 @@ fn receive_outcome_return_contribution<T: crate::types::Types<Ty = crate::types:
     let np = body_fn.block(body_fn.entry).params.len();
     let key = crate::fz_ir::receive_outcome_spec_key(any, np);
     let lookup_key = spec_key_for_fn_id(module, fid, key);
-    lookup_return_read(t, effective_returns, complete_returns, reads, lookup_key)
+    lookup_return_read(
+        t,
+        effective_returns,
+        complete_returns,
+        reads,
+        lookup_key,
+        activation_returns,
+    )
 }
 
-fn lookup_return_read<T: crate::types::Types<Ty = crate::types::Ty>>(
+fn lookup_return_read<
+    T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
+>(
     t: &mut T,
     effective_returns: &HashMap<SpecKey, crate::types::Ty>,
     complete_returns: &SpecKeySet,
     reads: &mut Vec<SpecKey>,
     key: SpecKey,
+    activation_returns: &ActivationReturnFacts,
 ) -> ReturnContribution {
+    if let Some(dy) = activation_returns.projected_return_for_key(t, &key) {
+        reads.push(key);
+        return ReturnContribution {
+            ty: dy,
+            complete: true,
+        };
+    }
     let dy = effective_returns
         .get(&key)
         .cloned()
@@ -1956,7 +2029,7 @@ fn arg_tys<T: crate::types::Types<Ty = crate::types::Ty>>(
 }
 
 /// Reconstruct the cont's input-type key at this block's terminator using
-/// current `effective_returns` for slot 0.
+/// activation return facts for slot 0.
 pub(crate) fn cont_key_for_spec<
     T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
 >(
@@ -1969,6 +2042,7 @@ pub(crate) fn cont_key_for_spec<
     caller: FnId,
     effective_returns: &HashMap<SpecKey, crate::types::Ty>,
     slot_summaries: &FixedPointSlotSummaries,
+    activation_returns: &ActivationReturnFacts,
 ) -> Option<Vec<crate::types::Ty>> {
     use crate::types::Ty;
     let Some(_) = module.fn_idx.get(&cont.fn_id) else {
@@ -1977,7 +2051,6 @@ pub(crate) fn cont_key_for_spec<
     let any_t = t.any();
     let cont_fn = module.fn_by_id(cont.fn_id);
     let n_params = cont_fn.block(cont_fn.entry).params.len();
-    let empty_activation_returns = ActivationReturnFacts::empty();
 
     let env = env_at_terminator(t, ft, block, module);
     let slot0: Ty = match &block.terminator {
@@ -2008,7 +2081,7 @@ pub(crate) fn cont_key_for_spec<
                 None,
                 slot_summaries,
                 target,
-                &empty_activation_returns,
+                activation_returns,
             )
             .slot0
             {
@@ -2032,7 +2105,7 @@ pub(crate) fn cont_key_for_spec<
                     effective_returns,
                     None,
                     slot_summaries,
-                    &empty_activation_returns,
+                    activation_returns,
                 )
                 .slot0
                 {
@@ -2054,6 +2127,7 @@ pub(crate) fn cont_key_for_spec<
                     effective_returns,
                     &SpecKeySet::new(),
                     slot_summaries,
+                    activation_returns,
                 )
                 .slot0
                 {

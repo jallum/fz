@@ -1572,11 +1572,14 @@ fn planner_planned_reports_activation_return_kernel_telemetry() {
     };
     assert!(measurement("activation_return_fact_count") > 0);
     assert!(measurement("activation_return_key_count") > 0);
+    let spec_count = measurement("spec_count");
     measurement("activation_return_known_count");
     measurement("activation_return_unresolved_count");
     measurement("activation_return_no_return_count");
+    assert_eq!(measurement("activation_return_projected_count"), spec_count);
+    assert_eq!(measurement("activation_return_projection_gap_count"), 0);
     measurement("activation_return_compatible_lookup_count");
-    measurement("activation_return_legacy_fallback_count");
+    assert_eq!(measurement("activation_return_legacy_fallback_count"), 0);
 }
 
 #[test]
@@ -3311,6 +3314,7 @@ fn cont_key_for_drop_positive_reduce_is_not_bottom_in_runtime_graph() {
         spec_key.fn_id,
         &plan.effective_returns,
         &super::fn_types::FixedPointSlotSummaries::new(),
+        &super::worklist::ActivationReturnFacts::empty(),
     )
     .expect("cont key should exist");
     let none = t.none();
@@ -3398,6 +3402,7 @@ fn cont_key_for_take_positive_reduce_while_is_not_bottom_in_runtime_graph() {
             spec_key.fn_id,
             &plan.effective_returns,
             &super::fn_types::FixedPointSlotSummaries::new(),
+            &super::worklist::ActivationReturnFacts::empty(),
         )
         .expect("cont key should exist");
         let none = t.none();

@@ -220,11 +220,11 @@ pub enum CallEdgeTarget {
 #[derive(Debug, Clone)]
 pub struct ModulePlan {
     pub specs: HashMap<SpecKey, SpecPlan>,
-    /// Kleene LFP of every spec's effective return type. Maintained
-    /// incrementally by the worklist: each spec's return is recomputed
-    /// after every visit, and changes re-enqueue its `return_readers`.
-    /// Continuation slot-0 typing and plan rendering read here instead of
-    /// recursing on demand.
+    /// Semantic return payloads projected from activation inference onto the
+    /// reachable planner specs. `SpecKey::demand` selects ABI/delivery shape;
+    /// it does not create a different value payload. During the transplant,
+    /// uncovered reachable specs are filled with `any` to keep the map total;
+    /// planner telemetry reports those as activation projection gaps.
     pub effective_returns: HashMap<SpecKey, crate::types::Ty>,
     /// Secondary index from FnId to its all-any key. Populated in
     /// `plan_module` from the final specs map so callers can find any-key
