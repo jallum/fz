@@ -1262,6 +1262,22 @@ mod tests {
         );
     }
 
+    #[test]
+    fn list_pattern_binding_flows_into_selected_leaf() {
+        let mut t = ConcreteTypes;
+        let module = lower(include_str!("../../spike/match_list_binding.fz"));
+        let ret = infer_fn_via_main(&module, "main");
+        let expected = {
+            let empty = t.atom_lit("empty");
+            let int = t.int();
+            t.tuple(&[empty, int])
+        };
+        assert!(
+            t.is_equivalent(&ret, &expected),
+            "cons leaf should return the matched head type, got {ret:?}"
+        );
+    }
+
     /// Every corpus fold settles `myreduce` to `int` — including the two the
     /// old planner ran to the 4096 visit cap (`fold_capture_closure`,
     /// `fold_state_machine`). `int` is `number` in the simplified spike lattice

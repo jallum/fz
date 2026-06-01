@@ -17,6 +17,7 @@ the planner's type inference, not runtime behavior, so they live outside
 | `poly_id.fz` | same `FnId` called at `int` and `:ok` | `main() : {int, :ok}`; independent activations do not over-join | not pinned |
 | `match_atom_partition.fz` | same multi-clause `FnId` called with different atom literals | `main() : {:one, :two}`; matcher evidence selects different leaves per activation | not pinned |
 | `match_list_partition.fz` | same multi-clause `FnId` called with `[]` and `[1]` | `main() : {:empty, :cons}`; list-shape evidence selects empty vs cons leaves per activation | not pinned |
+| `match_list_binding.fz` | cons clause returns `[h | _]` binding | `main() : {:empty, int}`; matcher-produced bindings carry element type into the selected leaf | not pinned |
 | `fold_tail.fz` | tail-recursive fold, empty-capture closure | `number` | settles ✓ |
 | `fold_nontail.fz` | non-tail wrapper over the fold | `number` | settles ✓ |
 | `fold_capture_int.fz` | threaded closure captures an `int` | `number` | settles ✓ |
@@ -42,3 +43,8 @@ literals to `int`.
 `match_list_partition.fz` takes the same boundary through structural list tests:
 non-empty list literals carry `nonempty_list(T)`, so `is_nil` and `is_list_cons`
 can prune the matcher tree to the empty or cons leaf without re-running analysis.
+
+`match_list_binding.fz` proves the selected cons leaf receives the pattern
+binding itself: the lowered `head(list)` primitive projects `int` from the
+non-empty input list, so the leaf returns `int` rather than an unbound or
+over-joined value.
