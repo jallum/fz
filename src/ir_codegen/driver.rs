@@ -756,21 +756,87 @@ fn declared_return_for_spec_key<
     module_plan: &crate::ir_planner::ModulePlan,
 ) -> Option<crate::types::Ty> {
     let arg_tys = crate::types::key_slots_to_tys(t, &key.input);
+    let spec_set = module.declared_specs.get(&key.fn_id)?;
     let owner = &module.fn_by_id(key.fn_id).owner_module;
     let recursive_fns = std::collections::HashSet::new();
-    let fact = crate::ir_planner::spec_witness::declared_return_fact(
+    let slot_summaries = crate::ir_planner::fn_types::FixedPointSlotSummaries::new();
+    let application = crate::specs::apply_spec_set(
+        t,
+        spec_set,
+        &arg_tys,
+        |t, query: crate::specs::CallbackReturnQuery<'_>| {
+            codegen_callback_return_fact(
+                t,
+                module,
+                &recursive_fns,
+                &slot_summaries,
+                key.fn_id,
+                &module_plan.effective_returns,
+                query,
+            )
+        },
+    );
+    match application {
+        crate::specs::SpecApplicationOutcome::Known(application) if application.complete => {
+            Some(t.mint_owned_resource_aliases(application.result, owner, &module.opaque_inners))
+        }
+        crate::specs::SpecApplicationOutcome::Known(_)
+        | crate::specs::SpecApplicationOutcome::Underconstrained(_)
+        | crate::specs::SpecApplicationOutcome::NoMatch => None,
+    }
+}
+
+fn codegen_callback_return_fact<
+    T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
+>(
+    t: &mut T,
+    module: &crate::fz_ir::Module,
+    recursive_fns: &std::collections::HashSet<crate::fz_ir::FnId>,
+    slot_summaries: &crate::ir_planner::fn_types::FixedPointSlotSummaries,
+    caller: crate::fz_ir::FnId,
+    effective_returns: &std::collections::HashMap<
+        crate::ir_planner::fn_types::SpecKey,
+        crate::types::Ty,
+    >,
+    query: crate::specs::CallbackReturnQuery<'_>,
+) -> Option<crate::specs::CallbackReturnFact<crate::ir_planner::fn_types::SpecKey>> {
+    let fn_id: crate::fz_ir::FnId = query.target.into();
+    let target_fn = module.fn_by_id(fn_id);
+    let n_params = target_fn.block(target_fn.entry).params.len();
+    let mut full_key = query.captures.to_vec();
+    full_key.extend_from_slice(query.args);
+    let key = crate::ir_planner::fn_types::fixed_point_spec_key_for_arity(
         t,
         module,
-        &recursive_fns,
-        &crate::ir_planner::fn_types::FixedPointSlotSummaries::new(),
-        key.fn_id,
-        key.fn_id,
-        &arg_tys,
-        &module_plan.effective_returns,
-        None,
-    )?;
-    fact.complete
-        .then(|| t.mint_owned_resource_aliases(fact.ty, owner, &module.opaque_inners))
+        recursive_fns,
+        slot_summaries,
+        caller,
+        fn_id,
+        full_key,
+        n_params,
+        Some(codegen_callback_return_demand(query.demand)),
+    );
+    let Some(ret) = effective_returns.get(&key).cloned() else {
+        return Some(crate::specs::CallbackReturnFact::Pending { read: key });
+    };
+    Some(crate::specs::CallbackReturnFact::Known {
+        result: ret,
+        read: key,
+        complete: true,
+    })
+}
+
+fn codegen_callback_return_demand(
+    demand: crate::specs::CallbackReturnDemand,
+) -> crate::ir_planner::fn_types::ReturnDemand {
+    match demand {
+        crate::specs::CallbackReturnDemand::Value => {
+            crate::ir_planner::fn_types::ReturnDemand::value()
+        }
+        crate::specs::CallbackReturnDemand::TupleFields(arity) => {
+            crate::ir_planner::fn_types::ReturnDemand::tuple_fields(arity)
+        }
+    }
 }
 
 /// Per-spec entry-param ArgReprs. Drives `build_fn_signature`

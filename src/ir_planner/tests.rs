@@ -30,6 +30,116 @@ fn build_module(fns: Vec<crate::fz_ir::FnIr>) -> Module {
     mb.build()
 }
 
+#[derive(Debug)]
+struct TestDeclaredReturnFact {
+    ty: crate::types::Ty,
+    complete: bool,
+    reads: Vec<SpecKey>,
+}
+
+fn declared_return_fact_for_test<T>(
+    t: &mut T,
+    module: &Module,
+    caller: FnId,
+    callee: FnId,
+    arg_tys: &[crate::types::Ty],
+    effective_returns: &HashMap<SpecKey, crate::types::Ty>,
+    complete_returns: Option<&super::fn_types::SpecKeySet>,
+) -> Option<TestDeclaredReturnFact>
+where
+    T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
+{
+    let spec_set = module.declared_specs.get(&callee)?;
+    let recursive_fns = std::collections::HashSet::new();
+    let slot_summaries = super::fn_types::FixedPointSlotSummaries::new();
+    let application = crate::specs::apply_spec_set(
+        t,
+        spec_set,
+        arg_tys,
+        |t, query: crate::specs::CallbackReturnQuery<'_>| {
+            test_callback_return_fact(
+                t,
+                module,
+                &recursive_fns,
+                &slot_summaries,
+                caller,
+                effective_returns,
+                complete_returns,
+                query,
+            )
+        },
+    );
+    match application {
+        crate::specs::SpecApplicationOutcome::Known(application) => Some(TestDeclaredReturnFact {
+            ty: application.result,
+            complete: application.complete,
+            reads: application.reads,
+        }),
+        crate::specs::SpecApplicationOutcome::Underconstrained(application) => {
+            application.partial_result.map(|ty| TestDeclaredReturnFact {
+                ty,
+                complete: false,
+                reads: application.reads,
+            })
+        }
+        crate::specs::SpecApplicationOutcome::NoMatch => None,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn test_callback_return_fact<T>(
+    t: &mut T,
+    module: &Module,
+    recursive_fns: &std::collections::HashSet<FnId>,
+    slot_summaries: &super::fn_types::FixedPointSlotSummaries,
+    caller: FnId,
+    effective_returns: &HashMap<SpecKey, crate::types::Ty>,
+    complete_returns: Option<&super::fn_types::SpecKeySet>,
+    query: crate::specs::CallbackReturnQuery<'_>,
+) -> Option<crate::specs::CallbackReturnFact<SpecKey>>
+where
+    T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
+{
+    let fn_id: FnId = query.target.into();
+    let target_fn = module.fn_by_id(fn_id);
+    let n_params = target_fn.block(target_fn.entry).params.len();
+    let mut full_key = query.captures.to_vec();
+    full_key.extend_from_slice(query.args);
+    let key = super::fn_types::fixed_point_spec_key_for_arity(
+        t,
+        module,
+        recursive_fns,
+        slot_summaries,
+        caller,
+        fn_id,
+        full_key,
+        n_params,
+        Some(test_callback_return_demand(query.demand)),
+    );
+    let Some(ret) = effective_returns.get(&key).cloned() else {
+        return Some(crate::specs::CallbackReturnFact::Pending { read: key });
+    };
+    if complete_returns.is_some_and(|done| !done.contains(&key)) {
+        return Some(crate::specs::CallbackReturnFact::Pending { read: key });
+    }
+    Some(crate::specs::CallbackReturnFact::Known {
+        result: ret,
+        read: key,
+        complete: true,
+    })
+}
+
+fn test_callback_return_demand(
+    demand: crate::specs::CallbackReturnDemand,
+) -> super::fn_types::ReturnDemand {
+    match demand {
+        crate::specs::CallbackReturnDemand::Value => super::fn_types::ReturnDemand::value(),
+        crate::specs::CallbackReturnDemand::TupleFields(arity) => {
+            super::fn_types::ReturnDemand::tuple_fields(arity)
+        }
+    }
+}
+
 fn extern_decl(
     t: &mut crate::types::ConcreteTypes,
     id: ExternId,
@@ -1435,12 +1545,9 @@ fn declared_reduce_while_return_uses_closure_return_witness() {
         demand: super::fn_types::ReturnDemand::tuple_fields(2),
     };
     let effective_returns = HashMap::from([(lambda_key, reducer_return)]);
-    let recursive_fns = std::collections::HashSet::new();
-    let fact = super::spec_witness::declared_return_fact(
+    let fact = declared_return_fact_for_test(
         &mut t,
         &m,
-        &recursive_fns,
-        &super::fn_types::FixedPointSlotSummaries::new(),
         reduce_id,
         reduce_id,
         &arg_tys,
@@ -2976,11 +3083,9 @@ fn declared_return_fact_handles_enum_count_on_range_in_runtime_graph() {
 
     let callee = module.fn_by_name("Enum.count").expect("Enum.count").id;
     let range = t.opaque_of("impl-target::Range");
-    let fact = super::spec_witness::declared_return_fact(
+    let fact = declared_return_fact_for_test(
         &mut t,
         &module,
-        &std::collections::HashSet::new(),
-        &super::fn_types::FixedPointSlotSummaries::new(),
         callee,
         callee,
         &[range],
@@ -3131,11 +3236,9 @@ fn declared_return_fact_handles_enum_reduce_with_runtime_graph_reducer() {
         .iter()
         .map(|arg| env.get(arg).cloned().unwrap_or_else(|| t.any()))
         .collect::<Vec<_>>();
-    let fact = super::spec_witness::declared_return_fact(
+    let fact = declared_return_fact_for_test(
         &mut t,
         &module,
-        &std::collections::HashSet::new(),
-        &super::fn_types::FixedPointSlotSummaries::new(),
         drop_positive.id,
         *callee,
         &arg_tys,
@@ -3229,11 +3332,9 @@ fn declared_return_fact_handles_take_positive_reduce_while_in_runtime_graph() {
             .iter()
             .map(|arg| env.get(arg).cloned().unwrap_or_else(|| t.any()))
             .collect::<Vec<_>>();
-        let fact = super::spec_witness::declared_return_fact(
+        let fact = declared_return_fact_for_test(
             &mut t,
             &module,
-            &std::collections::HashSet::new(),
-            &super::fn_types::FixedPointSlotSummaries::new(),
             take_positive.id,
             *callee,
             &arg_tys,

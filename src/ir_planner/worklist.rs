@@ -4,7 +4,7 @@ use super::effects::{prim_effect_summary, term_local_effect_summary};
 use super::fn_types::{
     CallsiteCallableCapabilities, CapabilityPlan, EffectSummary, EmitsByCaller, EmitterSiteSet,
     FixedPointSlotSummaries, FnEffects, HoldersMap, ModulePlan, PLAN_MODULE_CALLS, ProducesMap,
-    ReturnDepsByCaller, ReturnReaders, SpecKey, SpecKeySet, SpecPlan, TYPE_FN_CALLS,
+    ReturnDemand, ReturnDepsByCaller, ReturnReaders, SpecKey, SpecKeySet, SpecPlan, TYPE_FN_CALLS,
     VISIT_HARD_BOUND, WALK_CALLS, WORKLIST_POPS, build_any_key_index,
     fixed_point_spec_key_for_arity, key_precedence_order, normalize_result_correspondence_key,
     spec_key_for_fn_id, spec_key_input_tys,
@@ -26,6 +26,12 @@ pub(crate) enum ResultSlot0 {
 pub(crate) struct CallResultKnowledge {
     pub(crate) slot0: ResultSlot0,
     pub(crate) return_reads: Vec<SpecKey>,
+}
+
+#[derive(Clone, Debug)]
+struct DeclaredReturnFact {
+    ty: crate::types::Ty,
+    reads: Vec<SpecKey>,
 }
 
 pub(crate) struct ActivationReturnFacts {
@@ -2257,29 +2263,100 @@ fn declared_call_return_fact<
     effective_returns: &HashMap<SpecKey, crate::types::Ty>,
     complete_returns: Option<&SpecKeySet>,
     owner_module: &str,
-) -> Option<super::spec_witness::DeclaredReturnFact> {
-    let mut fact = super::spec_witness::declared_return_fact(
+) -> Option<DeclaredReturnFact> {
+    let spec_set = module.declared_specs.get(&callee)?;
+    let application = crate::specs::apply_spec_set(
         t,
-        module,
-        recursive_fns,
-        slot_summaries,
-        caller,
-        callee,
+        spec_set,
         arg_tys,
-        effective_returns,
-        complete_returns,
-    )?;
+        |t, query: crate::specs::CallbackReturnQuery<'_>| {
+            declared_callback_return_fact(
+                t,
+                module,
+                recursive_fns,
+                slot_summaries,
+                caller,
+                effective_returns,
+                complete_returns,
+                query,
+            )
+        },
+    );
+    let mut fact = match application {
+        crate::specs::SpecApplicationOutcome::Known(application) => DeclaredReturnFact {
+            ty: application.result,
+            reads: application.reads,
+        },
+        crate::specs::SpecApplicationOutcome::Underconstrained(application) => {
+            let ty = application.partial_result?;
+            DeclaredReturnFact {
+                ty,
+                reads: application.reads,
+            }
+        }
+        crate::specs::SpecApplicationOutcome::NoMatch => return None,
+    };
     fact.ty = t.mint_owned_resource_aliases(fact.ty, owner_module, &module.opaque_inners);
     Some(fact)
 }
 
 fn return_reads_with_declared(
     target: SpecKey,
-    declared: Option<&super::spec_witness::DeclaredReturnFact>,
+    declared: Option<&DeclaredReturnFact>,
 ) -> Vec<SpecKey> {
     let mut reads = vec![target];
     if let Some(declared) = declared {
         reads.extend(declared.reads.iter().cloned());
     }
     reads
+}
+
+#[allow(clippy::too_many_arguments)]
+fn declared_callback_return_fact<
+    T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
+>(
+    t: &mut T,
+    module: &Module,
+    recursive_fns: &std::collections::HashSet<FnId>,
+    slot_summaries: &FixedPointSlotSummaries,
+    caller: FnId,
+    effective_returns: &HashMap<SpecKey, crate::types::Ty>,
+    complete_returns: Option<&SpecKeySet>,
+    query: crate::specs::CallbackReturnQuery<'_>,
+) -> Option<crate::specs::CallbackReturnFact<SpecKey>> {
+    let fn_id: FnId = query.target.into();
+    let target_fn = module.fn_by_id(fn_id);
+    let n_params = target_fn.block(target_fn.entry).params.len();
+    let mut full_key = query.captures.to_vec();
+    full_key.extend_from_slice(query.args);
+    let key = fixed_point_spec_key_for_arity(
+        t,
+        module,
+        recursive_fns,
+        slot_summaries,
+        caller,
+        fn_id,
+        full_key,
+        n_params,
+        Some(callback_return_demand(query.demand)),
+    );
+
+    let Some(ret) = effective_returns.get(&key).cloned() else {
+        return Some(crate::specs::CallbackReturnFact::Pending { read: key });
+    };
+    if complete_returns.is_some_and(|done| !done.contains(&key)) {
+        return Some(crate::specs::CallbackReturnFact::Pending { read: key });
+    }
+    Some(crate::specs::CallbackReturnFact::Known {
+        result: ret,
+        read: key,
+        complete: true,
+    })
+}
+
+fn callback_return_demand(demand: crate::specs::CallbackReturnDemand) -> ReturnDemand {
+    match demand {
+        crate::specs::CallbackReturnDemand::Value => ReturnDemand::value(),
+        crate::specs::CallbackReturnDemand::TupleFields(arity) => ReturnDemand::tuple_fields(arity),
+    }
 }

@@ -35,12 +35,11 @@ model. The resolved data lives under `src/specs/model.rs` and is imported as
 `crate::specs::{ResolvedSpec, ResolvedSpecSet, ...}` by IR, frontend, planner,
 and tests.
 
-The spec engine is being extracted to the same shape as `type_infer`: small
-crate-facing API, private internals by default, production callers receiving
-finished structured facts, and tests observing production APIs plus telemetry
-when useful diagnostics/warnings/errors are emitted. Do not add compatibility
-re-exports from `type_expr`; stale imports through `type_expr::Resolved*` are
-zombies.
+The spec engine follows the same shape as `type_infer`: small crate-facing API,
+private internals by default, production callers receiving finished structured
+facts, and tests observing production APIs plus telemetry when useful
+diagnostics/warnings/errors are emitted. Do not add compatibility re-exports
+from `type_expr`; stale imports through `type_expr::Resolved*` are zombies.
 
 Current extraction state:
 
@@ -61,10 +60,9 @@ Current extraction state:
   The frontend spec check resolves source declarations, locates inferred
   planner facts, and renders diagnostics; it does not own the semantic
   coverage rule.
-- Higher-order callback witness refinement is part of spec application. Planner
-  `src/ir_planner/spec_witness.rs` is now a compatibility adapter that converts
-  callback-return queries into planner `SpecKey` reads; `fz-hq4.6` removes the
-  stale planner-facing seam after callers migrate to the new API directly.
+- Higher-order callback witness refinement is part of spec application.
+  Planner callers invoke `crate::specs::apply_spec_set` and convert
+  callback-return queries into planner `SpecKey` reads at their own boundary.
 
 Multiple adjacent `@spec` declarations parse and lower into a
 `ResolvedSpecSet`, and each downstream consumer must preserve the arrow set.

@@ -105,20 +105,14 @@ fn declared_call_return<
     callee: FnId,
     arg_tys: &[crate::types::Ty],
 ) -> Option<crate::types::Ty> {
-    let recursive_fns = HashSet::new();
-    let effective_returns = HashMap::new();
-    super::spec_witness::declared_return_fact(
-        t,
-        module,
-        &recursive_fns,
-        &super::fn_types::FixedPointSlotSummaries::new(),
-        callee,
-        callee,
-        arg_tys,
-        &effective_returns,
-        None,
-    )
-    .map(|fact| fact.ty)
+    let spec_set = module.declared_specs.get(&callee)?;
+    match crate::specs::apply_spec_set::<_, (), _>(t, spec_set, arg_tys, |_t, _query| None) {
+        crate::specs::SpecApplicationOutcome::Known(application) => Some(application.result),
+        crate::specs::SpecApplicationOutcome::Underconstrained(application) => {
+            application.partial_result
+        }
+        crate::specs::SpecApplicationOutcome::NoMatch => None,
+    }
 }
 
 /// Compute the set of SpecIds reachable at runtime from `main` (plus registered
