@@ -35,10 +35,10 @@ roles, only two of which live in the value ordering:
 - **`none` is the value-lattice bottom (⊥)** — the empty, uninhabited set. A
   *fact*: "no value, ever."
 - **`any` is the value-lattice top (⊤)** — every value (dynamic). Also a fact —
-  and one that must be **earned** (by a spec that declares it, or by a join of
-  real uses that genuinely reaches ⊤), **never defaulted**. Seeding an
-  undetermined slot at `any` is the same category error as seeding it at `none`:
-  both assert a fact where the truth is "not yet determined."
+  and one that must be **earned** (by a spec/type that explicitly declares top,
+  or by a join of real uses that genuinely reaches ⊤), **never defaulted**.
+  Seeding an undetermined slot at `any` is the same category error as seeding it
+  at `none`: both assert a fact where the truth is "not yet determined."
 
 ```text
                     Known(any)            ⊤  value top      (earned, never defaulted)
@@ -138,7 +138,10 @@ unions.** Both are needed for the fixpoint to settle.
 mean opposite things:
 
 - **`Known(none)` reached where a value is required** = a *proved* contradiction
-  (e.g. `+` on operands outside its domain). The program is ill-typed *there*.
+  (e.g. `+` on operands outside its domain, or projecting a tuple field no
+  feasible tuple value has). The program is ill-typed *there*. The production
+  transplant must surface this as a diagnostic stop; it must not be laundered
+  into a later wider result.
 - **`Unknown` at the settled fixpoint** = the engine *could not determine* a type:
   no constraint and no spec ever reached the slot. It is the absence of an answer.
 
@@ -147,6 +150,35 @@ product**. At a settled fixpoint every reachable slot must be `Known`; a survivi
 `Unknown` is either an under-specification (needs a spec) or an engine coverage
 gap (a construct not yet modeled), and the distinction is exactly the
 `Unknown ≠ none ≠ any` separation above.
+
+A fallback, fail arm, or unresolved callee stays `Unknown` while the worklist is
+running. It becomes dead/inaccessible only after the fixpoint has enough evidence
+to prove no live input reaches it. A declared-spec lookup follows the same rule:
+if the matcher cannot prove a matching arrow, the spike keeps the result
+`Unknown`; it does not invent `none` from an underconstrained or unsupported
+scheme match.
+
+`any` follows the same discipline from the other end of the lattice. It is not a
+projection fallback. Reading a tuple field projects across feasible tuple clauses;
+clauses that are contradictory (for example, a conjunction that would require the
+same value to be both a 2-tuple and a 3-tuple) contribute no evidence. If no
+feasible tuple has the field, the projection is `none`; if the input is still
+unknown, the projection remains `Unknown`.
+
+## Pattern evidence
+
+The pattern matcher is an evidence producer. Its lowered tests (`type_test`,
+`is_nil`, `is_list_cons`, equality against constants) attach facts to condition
+vars. An `if` over such a condition does not blindly walk both arms under the
+same environment: the true and false environments are refined by the predicate,
+and a branch whose refinement is empty contributes no return information.
+
+For a multi-clause function, each activation is processed against the same
+decision tree, but with that activation's input facts. A direct call
+`pick(:left)` and a direct call `pick(:right)` are two activations of the same
+`FnId`; the matcher evidence lets them select different leaves. A deliberate
+union-input activation, such as calling one function value at `:left | :right`,
+may still join both leaves and widen the result.
 
 ## Closures are functions with capture parameters
 

@@ -276,6 +276,48 @@ impl<'a> TupleView<'a> {
         }
         if found { Some(comps) } else { None }
     }
+
+    /// Project one field across feasible tuple clauses. A conjunction with
+    /// positive tuple sigs of different arities is empty, so it contributes no
+    /// field evidence; `project_all(max_arity)` cannot see that and may project
+    /// an impossible arm.
+    pub(crate) fn project_field(&self, index: usize) -> Descr {
+        let mut out = Descr::none();
+        let mut found = false;
+        for conj in self.inner {
+            if conj.pos.is_empty() {
+                return Descr::any();
+            }
+
+            let mut arity = None;
+            let mut clause_fields: Option<Vec<Descr>> = None;
+            let mut feasible = true;
+            for sig in &conj.pos {
+                if index >= sig.elems.len() || arity.is_some_and(|arity| arity != sig.elems.len()) {
+                    feasible = false;
+                    break;
+                }
+                arity = Some(sig.elems.len());
+                clause_fields = Some(match clause_fields {
+                    None => sig.elems.clone(),
+                    Some(prev) => prev
+                        .iter()
+                        .zip(sig.elems.iter())
+                        .map(|(p, s)| p.intersect(s))
+                        .collect(),
+                });
+            }
+            let Some(fields) = clause_fields else {
+                continue;
+            };
+            if !feasible || fields.iter().any(Descr::is_empty) {
+                continue;
+            }
+            out = out.union(&fields[index]);
+            found = true;
+        }
+        if found { out } else { Descr::none() }
+    }
 }
 
 #[derive(Clone, Copy)]

@@ -40,8 +40,11 @@
 #![allow(dead_code)]
 
 use crate::fz_ir::{BinOp, BlockId, Const, FnId, Module, Prim, Stmt, Term, UnOp, Var};
-use crate::types::{ClosureTarget, ClosureTypes, Ty, Types};
+use crate::types::{ClosureTarget, ClosureTypes, Nominals, Ty, Types};
 use std::collections::{HashMap, HashSet, VecDeque};
+
+type Env = HashMap<Var, Info>;
+type PredicateFacts = HashMap<Var, PredicateFact>;
 
 /// A cell in the inference fixpoint.
 ///
@@ -82,6 +85,15 @@ impl Info {
             Info::Known(ty) => Info::Known(f(ty)),
         }
     }
+}
+
+#[derive(Clone)]
+enum PredicateFact {
+    Eq(Var, Var),
+    Neq(Var, Var),
+    IsEmptyList(Var),
+    IsListCons(Var),
+    TypeTest(Var, Ty),
 }
 
 /// The call contract for applying a closure value to `arg_tys`: its body
@@ -280,10 +292,12 @@ impl<'m> Solver<'m> {
     /// type; when it ascends, re-schedule the callers that read it.
     /// The return type a declared `@spec` assigns `f` for its current input
     /// types: instantiate every arrow against the inputs and union the matching
-    /// results (`none` if none match — a proved contradiction). `None` when `f`
-    /// has no declared spec or its inputs aren't all `Known` yet. This is the
-    /// contract used to type bodies the engine cannot infer for itself
-    /// (extern-forwarding builtins such as `dbg` and `Kernel.+`).
+    /// results. `None` when `f` has no declared spec, its inputs aren't all
+    /// `Known`, or the spec matcher cannot prove a matching arrow yet. "No
+    /// match" is not `none` here: this API cannot distinguish contradiction
+    /// from underconstrained polymorphism, so the solver must keep the cell
+    /// `Unknown` until body evidence or a stricter diagnostic pass proves
+    /// impossibility.
     fn declared_spec_ret<T: Types<Ty = Ty> + ClosureTypes>(
         &self,
         t: &mut T,
@@ -300,7 +314,7 @@ impl<'m> Solver<'m> {
         }
         let matches = spec_set.matching_arrows(t, &arg_tys);
         if matches.is_empty() {
-            return Some(Info::Known(t.none()));
+            return None;
         }
         let mut ret = t.none();
         for m in matches {
@@ -349,12 +363,13 @@ impl<'m> Solver<'m> {
     ) -> Info {
         let f = key.fn_id;
         let fnir = self.module.fn_by_id(f);
-        let mut env: HashMap<Var, Info> = HashMap::new();
+        let mut env: Env = HashMap::new();
         for (param, info) in fnir.block(fnir.entry).params.iter().zip(inputs) {
             env.insert(*param, info.clone());
         }
+        let mut predicates = HashMap::new();
         let mut visited = HashSet::new();
-        self.walk_block(t, key, fnir.entry, &mut env, &mut visited)
+        self.walk_block(t, key, fnir.entry, &mut env, &mut predicates, &mut visited)
     }
 
     /// Walk one block of `f`. Intra-fn control (`Goto`/`If`) recurses here;
@@ -366,7 +381,8 @@ impl<'m> Solver<'m> {
         t: &mut T,
         key: &ActivationKey,
         block_id: BlockId,
-        env: &mut HashMap<Var, Info>,
+        env: &mut Env,
+        predicates: &mut PredicateFacts,
         visited: &mut HashSet<BlockId>,
     ) -> Info {
         let module = self.module;
@@ -378,6 +394,9 @@ impl<'m> Solver<'m> {
         for Stmt::Let(v, prim) in &block.stmts {
             let info = self.type_prim(t, prim, env);
             env.insert(*v, info);
+            if let Some(fact) = predicate_fact(prim) {
+                predicates.insert(*v, fact);
+            }
         }
         match &block.terminator {
             Term::Return(v) => env.get(v).cloned().unwrap_or(Info::Unknown),
@@ -389,11 +408,10 @@ impl<'m> Solver<'m> {
             // spuriously degrade a sibling branch's precise type. `Unknown` is
             // the true identity (`widen` returns the other operand verbatim).
             //
-            // We reach a halt path only because the walk is branch-blind: it
-            // traverses both arms of every `If`, including the synthesized
-            // "no clause matched → halt" arm that is statically dead. Pruning
-            // those arms by type is fz-g58.65.5; until then the identity keeps
-            // the dead arm from perturbing the result.
+            // We still reach halt paths when the current evidence cannot prove
+            // a matcher fail arm dead. Proved-impossible branches are skipped
+            // by predicate narrowing; unresolved fail arms stay neutral until
+            // the fixpoint can classify them.
             Term::Halt(_) => Info::Unknown,
             Term::Goto(target, args) => {
                 let arg_infos = arg_infos_of(args, env);
@@ -401,17 +419,37 @@ impl<'m> Solver<'m> {
                 for (param, info) in target_params.iter().zip(arg_infos) {
                     env.insert(*param, info);
                 }
-                self.walk_block(t, key, *target, env, visited)
+                self.walk_block(t, key, *target, env, predicates, visited)
             }
-            Term::If { then_b, else_b, .. } => {
+            Term::If {
+                cond,
+                then_b,
+                else_b,
+                ..
+            } => {
                 let (then_b, else_b) = (*then_b, *else_b);
-                let mut env_t = env.clone();
-                let mut vis_t = visited.clone();
-                let a = self.walk_block(t, key, then_b, &mut env_t, &mut vis_t);
-                let mut env_e = env.clone();
-                let mut vis_e = visited.clone();
-                let b = self.walk_block(t, key, else_b, &mut env_e, &mut vis_e);
-                a.widen(t, &b)
+                let fact = predicates.get(cond).cloned();
+                let truth = bool_truth(t, &info_of(*cond, env)).or_else(|| {
+                    fact.as_ref()
+                        .and_then(|p| predicate_truth(t, module, p, env))
+                });
+                let (then_env, else_env) = if let Some(fact) = fact.as_ref() {
+                    (
+                        narrow_predicate(t, env, fact, true),
+                        narrow_predicate(t, env, fact, false),
+                    )
+                } else {
+                    (Some(env.clone()), Some(env.clone()))
+                };
+                match truth {
+                    Some(true) => self.walk_branch(t, key, then_b, then_env, predicates, visited),
+                    Some(false) => self.walk_branch(t, key, else_b, else_env, predicates, visited),
+                    None => {
+                        let a = self.walk_branch(t, key, then_b, then_env, predicates, visited);
+                        let b = self.walk_branch(t, key, else_b, else_env, predicates, visited);
+                        a.widen(t, &b)
+                    }
+                }
             }
             Term::Call {
                 callee,
@@ -449,6 +487,23 @@ impl<'m> Solver<'m> {
         }
     }
 
+    fn walk_branch<T: Types<Ty = Ty> + ClosureTypes>(
+        &mut self,
+        t: &mut T,
+        key: &ActivationKey,
+        block_id: BlockId,
+        env: Option<Env>,
+        predicates: &PredicateFacts,
+        visited: &HashSet<BlockId>,
+    ) -> Info {
+        let Some(mut env) = env else {
+            return Info::Unknown;
+        };
+        let mut predicates = predicates.clone();
+        let mut visited = visited.clone();
+        self.walk_block(t, key, block_id, &mut env, &mut predicates, &mut visited)
+    }
+
     /// Resolve a closure application to a call on its body fn (captures ++
     /// args). `Unknown` operand stays `Unknown`; a known non-closure type
     /// (e.g. `any`) yields `any`.
@@ -458,7 +513,7 @@ impl<'m> Solver<'m> {
         caller: &ActivationKey,
         closure: Var,
         arg_infos: Vec<Info>,
-        env: &HashMap<Var, Info>,
+        env: &Env,
     ) -> Info {
         let clo = env.get(&closure).cloned().unwrap_or(Info::Unknown);
         let clo_ty = match clo {
@@ -482,7 +537,7 @@ impl<'m> Solver<'m> {
         &mut self,
         t: &mut T,
         prim: &Prim,
-        env: &HashMap<Var, Info>,
+        env: &Env,
     ) -> Info {
         let module = self.module;
         match prim {
@@ -567,11 +622,9 @@ impl<'m> Solver<'m> {
                 }
                 Info::Known(t.tuple(&tys))
             }
-            Prim::TupleField(v, i) => info_of(*v, env).map_known(|tv| {
-                let arity = t.max_tuple_arity(&tv);
-                let projs = t.tuple_projections(&tv, arity);
-                projs.get(*i as usize).cloned().unwrap_or_else(|| t.any())
-            }),
+            Prim::TupleField(v, i) => {
+                info_of(*v, env).map_known(|tv| t.tuple_field_type(&tv, *i as usize))
+            }
             Prim::MakeClosure(_, target, caps) => {
                 let mut cap_tys = Vec::with_capacity(caps.len());
                 for c in caps {
@@ -591,6 +644,177 @@ impl<'m> Solver<'m> {
             // the construct still needs modeling (or a spec).
             _ => Info::Unknown,
         }
+    }
+}
+
+fn predicate_fact(prim: &Prim) -> Option<PredicateFact> {
+    match prim {
+        Prim::BinOp(BinOp::Eq, a, b) => Some(PredicateFact::Eq(*a, *b)),
+        Prim::BinOp(BinOp::Neq, a, b) => Some(PredicateFact::Neq(*a, *b)),
+        Prim::IsEmptyList(v) => Some(PredicateFact::IsEmptyList(*v)),
+        Prim::IsListCons(v) => Some(PredicateFact::IsListCons(*v)),
+        Prim::TypeTest(v, ty) => Some(PredicateFact::TypeTest(*v, (**ty).clone())),
+        _ => None,
+    }
+}
+
+fn bool_truth<T: Types<Ty = Ty>>(t: &T, info: &Info) -> Option<bool> {
+    let Info::Known(ty) = info else {
+        return None;
+    };
+    match t.as_atom_singleton(ty)?.as_str() {
+        "true" => Some(true),
+        "false" => Some(false),
+        _ => None,
+    }
+}
+
+fn predicate_truth<T: Types<Ty = Ty>>(
+    t: &mut T,
+    module: &Module,
+    pred: &PredicateFact,
+    env: &Env,
+) -> Option<bool> {
+    match pred {
+        PredicateFact::Eq(a, b) => eq_truth(t, module, *a, *b, env),
+        PredicateFact::Neq(a, b) => eq_truth(t, module, *a, *b, env).map(|truth| !truth),
+        PredicateFact::IsEmptyList(v) => {
+            let current = known_ty(*v, env)?;
+            let empty = t.empty_list();
+            if t.is_subtype(&current, &empty) {
+                return Some(true);
+            }
+            let meet = t.intersect(current, empty);
+            if t.is_empty(&meet) { Some(false) } else { None }
+        }
+        PredicateFact::IsListCons(v) => {
+            let current = known_ty(*v, env)?;
+            let empty = t.empty_list();
+            if t.is_subtype(&current, &empty) {
+                Some(false)
+            } else {
+                None
+            }
+        }
+        PredicateFact::TypeTest(v, ty) => {
+            let current = known_ty(*v, env)?;
+            if t.is_subtype(&current, ty) {
+                return Some(true);
+            }
+            let nominals = Nominals::new(&module.brand_inners, &module.opaque_inners);
+            if t.is_value_disjoint(&current, ty, nominals) {
+                Some(false)
+            } else {
+                None
+            }
+        }
+    }
+}
+
+fn eq_truth<T: Types<Ty = Ty>>(
+    t: &mut T,
+    module: &Module,
+    a: Var,
+    b: Var,
+    env: &Env,
+) -> Option<bool> {
+    if a == b {
+        return Some(true);
+    }
+    let a_ty = known_ty(a, env)?;
+    let b_ty = known_ty(b, env)?;
+    if t.is_singleton_lit(&a_ty) && t.is_equivalent(&a_ty, &b_ty) {
+        return Some(true);
+    }
+    let nominals = Nominals::new(&module.brand_inners, &module.opaque_inners);
+    if t.is_value_disjoint(&a_ty, &b_ty, nominals) {
+        Some(false)
+    } else {
+        None
+    }
+}
+
+fn narrow_predicate<T: Types<Ty = Ty>>(
+    t: &mut T,
+    env: &Env,
+    pred: &PredicateFact,
+    truth: bool,
+) -> Option<Env> {
+    let mut out = env.clone();
+    match pred {
+        PredicateFact::Eq(a, b) => {
+            if !narrow_eq(t, &mut out, *a, *b, truth) {
+                return None;
+            }
+        }
+        PredicateFact::Neq(a, b) => {
+            if !narrow_eq(t, &mut out, *a, *b, !truth) {
+                return None;
+            }
+        }
+        PredicateFact::IsEmptyList(v) => {
+            let empty = t.empty_list();
+            if !refine_against(t, &mut out, *v, &empty, truth) {
+                return None;
+            }
+        }
+        // `non_empty_list` currently defaults to the ordinary list axis for
+        // type implementations that do not distinguish cons-ness. Avoid
+        // pretending that a maybe-empty list is definitely a cons cell.
+        PredicateFact::IsListCons(_) => {}
+        PredicateFact::TypeTest(v, ty) => {
+            if !refine_against(t, &mut out, *v, ty, truth) {
+                return None;
+            }
+        }
+    }
+    Some(out)
+}
+
+fn narrow_eq<T: Types<Ty = Ty>>(t: &mut T, env: &mut Env, a: Var, b: Var, truth: bool) -> bool {
+    let a_ty = known_ty(a, env);
+    let b_ty = known_ty(b, env);
+    if let Some(a_ty) = a_ty.as_ref()
+        && t.is_singleton_lit(a_ty)
+        && !refine_against(t, env, b, a_ty, truth)
+    {
+        return false;
+    }
+    if let Some(b_ty) = b_ty.as_ref()
+        && t.is_singleton_lit(b_ty)
+        && !refine_against(t, env, a, b_ty, truth)
+    {
+        return false;
+    }
+    true
+}
+
+fn refine_against<T: Types<Ty = Ty>>(
+    t: &mut T,
+    env: &mut Env,
+    subject: Var,
+    domain: &Ty,
+    truth: bool,
+) -> bool {
+    let Some(current) = known_ty(subject, env) else {
+        return true;
+    };
+    let next = if truth {
+        t.intersect(current, domain.clone())
+    } else {
+        t.difference(current, domain.clone())
+    };
+    if t.is_empty(&next) {
+        return false;
+    }
+    env.insert(subject, Info::Known(next));
+    true
+}
+
+fn known_ty(v: Var, env: &Env) -> Option<Ty> {
+    match env.get(&v)? {
+        Info::Known(ty) => Some(ty.clone()),
+        Info::Unknown => None,
     }
 }
 
@@ -991,6 +1215,22 @@ mod tests {
         assert!(
             t.is_equivalent(&ret, &expected),
             "main should keep id(1) and id(:ok) as separate instantiations, got {ret:?}"
+        );
+    }
+
+    #[test]
+    fn direct_calls_specialize_atom_pattern_dispatch_by_input() {
+        let mut t = ConcreteTypes;
+        let module = lower(include_str!("../../spike/match_atom_partition.fz"));
+        let ret = infer_fn_via_main(&module, "main");
+        let expected = {
+            let one = t.atom_lit("one");
+            let two = t.atom_lit("two");
+            t.tuple(&[one, two])
+        };
+        assert!(
+            t.is_equivalent(&ret, &expected),
+            "main should select distinct matcher leaves for :left and :right activations, got {ret:?}"
         );
     }
 

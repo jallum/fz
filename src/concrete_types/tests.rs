@@ -2009,6 +2009,47 @@ fn components_tuple_of_yields_only_tuples_with_correct_arity_and_projection() {
 }
 
 #[test]
+fn tuple_field_projection_skips_impossible_mixed_arity_conjunctions() {
+    let mut t = ConcreteTypes;
+    let done_tuple = {
+        let tag = t.atom_lit("done");
+        let payload = t.int();
+        t.tuple(&[tag, payload])
+    };
+    let halted_tuple = {
+        let tag = t.atom_lit("halted");
+        let payload = t.int();
+        t.tuple(&[tag, payload])
+    };
+    let suspended_tuple = {
+        let tag = t.atom_lit("suspended");
+        let payload = t.int();
+        let continuation = t.int();
+        t.tuple(&[tag, payload, continuation])
+    };
+    let outcomes = {
+        let two = t.union(done_tuple, halted_tuple);
+        t.union(two, suspended_tuple)
+    };
+    let two_tuple = {
+        let a = t.any();
+        let b = t.any();
+        t.tuple(&[a, b])
+    };
+    let narrowed = t.intersect(outcomes, two_tuple);
+    let first = t.tuple_field_type(&narrowed, 0);
+    let expected = {
+        let done = t.atom_lit("done");
+        let halted = t.atom_lit("halted");
+        t.union(done, halted)
+    };
+    assert!(
+        t.is_equivalent(&first, &expected),
+        "projecting a 2-tuple narrowing must ignore impossible 3-tuple conjunctions, got {first:?}"
+    );
+}
+
+#[test]
 fn components_list_of_yields_only_lists_with_joined_element_type() {
     let d = Descr::list_of(Descr::int());
     let mut seen = false;

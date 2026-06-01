@@ -212,6 +212,10 @@ pub trait Types {
     /// `any`.
     fn tuple_projections(&mut self, a: &Self::Ty, arity: usize) -> Vec<Self::Ty>;
 
+    /// Project field `index` across the feasible tuple clauses of `a`.
+    /// Returns `none` when no possible tuple value has that field.
+    fn tuple_field_type(&mut self, a: &Self::Ty, index: usize) -> Self::Ty;
+
     /// The widest arity present in `a`'s tuple-axis clauses, or 0 if
     /// `a` has no tuple axis.
     fn max_tuple_arity(&self, a: &Self::Ty) -> usize;

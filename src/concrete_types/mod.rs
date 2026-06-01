@@ -203,6 +203,9 @@ impl Types for ConcreteTypes {
     fn tuple_projections(&mut self, a: &Ty, arity: usize) -> Vec<Ty> {
         concrete_tuple_projections(a, arity)
     }
+    fn tuple_field_type(&mut self, a: &Ty, index: usize) -> Ty {
+        concrete_tuple_field_type(a, index)
+    }
     fn max_tuple_arity(&self, a: &Ty) -> usize {
         ty_descr(a).max_tuple_arity()
     }
@@ -701,6 +704,15 @@ fn concrete_tuple_projections(a: &Ty, arity: usize) -> Vec<Ty> {
         }
     }
     vec![ty_from_descr(Descr::any()); arity]
+}
+
+fn concrete_tuple_field_type(a: &Ty, index: usize) -> Ty {
+    for component in ty_descr(a).components() {
+        if let Component::Tuples(view) = component {
+            return ty_from_descr(view.project_field(index));
+        }
+    }
+    ty_from_descr(Descr::none())
 }
 
 fn concrete_map_field_lookup(a: &Ty, key: &MapKey) -> Option<Ty> {
