@@ -116,13 +116,9 @@ fn declared_call_return<
 /// Compute the set of SpecIds reachable at runtime from `main` (plus registered
 /// closure-target specs as a conservative catch).
 ///
-/// Codegen consults this to skip body emission for unreached specs: a
-/// trap stub goes out instead of the full body, dramatically shrinking
-/// the emitted binary and the golden CLIF for fixtures that have any
-/// per-callsite specialization fan-out the runtime never reaches
-/// (ast_eval is the canonical example — pre-prune it ships eval(any),
-/// eval(int), eval(2), eval(3), eval(4) bodies that no callsite ever
-/// resolves to).
+/// `PlannedProgram` consults this while materializing the codegen-facing plan.
+/// Codegen receives the finished reachable set from `PlannedProgram` and does
+/// not rediscover semantic reachability.
 ///
 /// Algorithm:
 ///   - Seed with main's spec id, every test/exported entry, and every
@@ -131,9 +127,9 @@ fn declared_call_return<
 ///     closure_lit resolution).
 ///   - BFS: for each reached spec, walk its reachable blocks, find
 ///     direct Call/TailCall + their conts and CallClosure/TailCallClosure
-///     resolvable via known callable capabilities. Use the same `SpecRegistry::resolve`
-///     subsumption search codegen uses, so a spec marked reachable here
-///     is exactly a spec codegen will look up.
+///     resolvable via known callable capabilities. Use `SpecRegistry::resolve`
+///     subsumption so a reached spec id names the same registered specialization
+///     later consumed by materialization and codegen.
 pub fn reachable_specs<
     T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
 >(

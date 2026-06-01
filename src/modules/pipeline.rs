@@ -237,10 +237,10 @@ pub(crate) fn prepare_execution_graph(
     if !module.protocol_call_targets.is_empty() {
         frontend::apply_planner_rewrites_to_fixed_point(t, &mut module, &mut module_plan);
     }
-    // Codegen re-plans the linked working module itself (see
-    // `compile_with_backend_impl`), so no plan is threaded out of here. LTO
-    // mode still runs boundary erasure for its module-mutating side effect
-    // (rewriting external calls to direct ones); its plan is discarded.
+    // Codegen plans the linked working module inside `compile_with_backend_impl`,
+    // so no plan is threaded out of here. LTO mode still runs boundary erasure
+    // for its module-mutating side effect (rewriting external calls to direct
+    // ones); its local plan is discarded.
     if mode.is_lto() {
         let interfaces = units
             .iter()
@@ -385,9 +385,9 @@ fn load_provider_units(
 /// WITHOUT recompiling from source: decode the serde `Module` plus its source
 /// files, merge those files into the consumer `SourceMap` (so provider spans
 /// render real diagnostics), remap the module's `FileId`s onto the interned
-/// consumer ids, rebuild the derived indices the serde form drops, and re-plan
-/// at load (the plan regenerates the protocol provider-boundary facts that link
-/// depends on).
+/// consumer ids, rebuild the derived indices the serde form drops, and plan the
+/// loaded unit (the plan regenerates the protocol provider-boundary facts that
+/// link depends on).
 fn materialize_ir_unit(
     t: &mut types::ConcreteTypes,
     object: crate::modules::artifact::FzoArtifact,

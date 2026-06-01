@@ -217,7 +217,7 @@ fn switch_arms<T: crate::types::Types<Ty = crate::types::Ty>>(
 /// The original block keeps its statements and becomes the cascade head. Each
 /// arm gets a fresh block that calls its impl directly with the original call's
 /// arguments and continuation; the receiver narrows to the arm's target type
-/// when the module is re-planned.
+/// when the planner processes the rewritten module.
 ///
 /// A fully-covered (closed-union) receiver tests every arm but the last, which
 /// is the final `else`. An open or erased receiver tests every arm and routes

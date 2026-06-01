@@ -153,7 +153,7 @@ Use these terms precisely:
   deserialize the `Module`, intern the shipped source files into the consumer
   `SourceMap` (deduped by name + content hash), remap the `Module`'s `FileId`s
   onto the interned ids, rebuild the derived indices the serde form drops, and
-  re-plan at load. The load-time plan is authoritative: it regenerates the
+  plan the loaded IR unit. The load-time plan is authoritative: it regenerates the
   cross-module/protocol call facts the linker needs. Source identity is portable,
   so a loaded provider's spans render real diagnostics against its own source. A
   payload integrity digest (`implementation_fingerprint_digest`) over the
@@ -491,16 +491,16 @@ local calls before JIT codegen sees the module.
 The linker carries provider planner facts forward on a best-effort basis:
 `IrUnitLinker::copy_planner_facts` remaps each unit's `module_plan` into an
 internal `linked_plan` and resolves the external call edges it can. That
-internal plan only needs to cover the edges it rewrites; codegen re-plans the
-linked working module afterwards regardless, so missing upstream planner facts
-are not a link error.
+internal plan only needs to cover the edges it rewrites; the compile pipeline
+plans the linked working module before codegen, so missing upstream planner
+facts are not a link error.
 
 `CompiledProgram::link_image_with_telemetry` is the single-unit JIT run path. It
 validates the unit through `link_ir_units`, links that unit's runtime metadata,
 and wraps the compiled machine-code module. Provider-backed run/build paths
 first call `modules::pipeline::prepare_execution_graph`, which materializes
-provider units and calls `link_ir_units`; codegen then re-plans the single
-linked IR module, which has no unresolved external edges.
+provider units and calls `link_ir_units`; the compile pipeline then plans the
+single linked IR module, which has no unresolved external edges.
 `CompiledImage::from_linked_with_telemetry` only wraps that
 already-linked machine-code module and emits link telemetry.
 `CompiledModule` remains the executable payload inside the image, not the
@@ -582,7 +582,8 @@ CLI LTO path:
 4. `erase_boundaries` calls `Module::rewrite_external_calls_for_lto`;
 5. `erase_boundaries` clears spec-boundary firewalls for loaded
    implementations and emits `fz.lto.boundaries_erased`;
-6. the caller re-plans/reduces/codegens with direct calls.
+6. the caller reduces and codegens the direct-call module through the ordinary
+   compile pipeline.
 
 `LtoLinkedProgram` is intentionally private to `modules::pipeline` and is the
 only input to boundary erasure there. That keeps boundary erasure behind

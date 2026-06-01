@@ -88,9 +88,9 @@ pub use fz_runtime::process::{PidId, Process, ProcessState};
 /// AOT both route through here; the backend's hooks pick the legit
 /// variation points (linkage, per-program metadata carriers, finalize).
 ///
-/// The pipeline re-plans the linked working module internally (see
-/// `compile_with_backend_impl`), so there is no caller-supplied pre-types
-/// plan to thread — a frontend plan cannot see linked provider bodies.
+/// The pipeline plans the linked working module internally (see
+/// `compile_with_backend_impl`), so there is no caller-supplied pre-types plan
+/// to thread — a frontend plan cannot see linked provider bodies.
 pub fn compile_with_backend<
     B: Backend,
     T: crate::types::Types<Ty = crate::types::Ty>

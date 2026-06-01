@@ -1674,8 +1674,8 @@ pub(crate) fn compile_with_backend_impl<
     // already typed by the authoritative plan above. Its only new SSA names are
     // dest holders and init tokens, which codegen lowers from runtime value
     // bindings, never from plan types. So the authoritative plan stays valid for
-    // everything codegen reads after lowering: no post-destination re-plan, and
-    // no reconciliation of a second plan against the first (fz-hfc.4 / inv1).
+    // everything codegen reads after lowering: no second planner pass, and no
+    // reconciliation of a second plan against the first.
     crate::ir_dest::lower_destinations(&mut working);
     crate::ir_dest::verify_module(&working).map_err(|errors| {
         CodegenError::new(format!(

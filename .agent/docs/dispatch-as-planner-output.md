@@ -25,7 +25,7 @@ The corollary is that there is exactly one such plan. See
 `compile_with_backend_impl` derives the authoritative plan once (no second plan
 to reconcile, no telemetry-silenced re-derivation), how the pre-plan transforms
 read a capability slice instead of a full plan, and why destination lowering
-needs no re-plan.
+preserves the plan facts codegen reads.
 
 ## Planner Vocabulary
 
@@ -39,6 +39,12 @@ are deliberately broader than type maps:
 - `ModulePlan` is one module's plan. It owns the specialization plans, effective
   returns, any-key indexes, precedence, effect summaries, cross-spec dead
   branches, and no test-only witness artifacts.
+- `PlannedProgram` is the codegen-facing projection of the authoritative
+  `ModulePlan` over the settled `Module`. It owns the `SpecRegistry`, spec
+  slots, per-slot `SpecPlan` references, executable `PlannedBody` values,
+  closure shapes, and the executable `reachable_specs` set. Codegen lowers
+  `PlannedBody.body` and reads the finished reachable set; semantic
+  reachability and per-spec folds are planner/materializer facts.
 
 Local type-inference vocabulary stays narrow where the code is literally type
 inference: `type_fn`, `Ty`, `vars`, block environments, and the narrowing and
@@ -291,12 +297,18 @@ from that call edge. Backend closure captures and CLIF parameter shapes are
 implementation details, not proof sources, and codegen must not construct
 alternate demanded `SpecKey`s.
 
-Native lowering also consumes `SpecPlan.reachable_blocks`. A native spec emits
+Native lowering consumes `SpecPlan.reachable_blocks`. A native spec emits
 only blocks reachable for that spec; an `If` whose other successor is
 spec-unreachable lowers as a direct jump to the live successor. This is still
 planner output, not a backend guess: the same branch narrowing that publishes
 reachable blocks is responsible for preserving non-list values on predicates
 such as `not IsEmptyList(x)`.
+
+Executable spec reachability belongs to `PlannedProgram`. Tests that prove a
+spec is semantically reachable live with planner/materializer coverage and
+observe `fz.planner.materialized` or `fz.planner.body_materialized` telemetry.
+Codegen tests assert mechanical lowering effects, such as the emitted CLIF or
+runtime behavior for a body the planned program already selected.
 
 For provider-boundary rewrites, the linked callsite must still be the same
 call: same caller, same callsite identity, and same target arity. The arity

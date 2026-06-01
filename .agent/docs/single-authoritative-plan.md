@@ -43,17 +43,17 @@ frontend plan                      # plan_module, authoritative
   → rewrite_known_target_closures   # devirtualize known closure calls
   → inline_module_with_plan         # then fuse, reduce, single-use-cont
   → const_bs, dce                   # plan-free canonicalization/cleanup
-plan_module                         # THE authoritative codegen plan
+plan_module                         # the authoritative codegen plan
   → lower_destinations              # maintains no plan facts
 resolve_module_types
   → materialize_program             # executable projection from ModulePlan
   → codegen                         # lowers planned bodies mechanically
 ```
 
-Codegen publishes no shaping plan. Planner-fact-driven folds happen only while
-materializing planned bodies from the authoritative `ModulePlan`, so no pass
-mutates the canonical module using planner facts and then asks the planner to
-explain the edited module again.
+The codegen pipeline emits one `planner.planned` event for the authoritative
+plan. Planner-fact-driven folds happen only while materializing planned bodies
+from that `ModulePlan`, so no pass mutates the canonical module using planner
+facts and then asks the planner to explain the edited module again.
 
 ## The pre-plan transforms read a capability slice
 
@@ -100,7 +100,7 @@ new SSA names are dest holders and init tokens.
 Codegen lowers the `Dest*` prims from runtime value bindings, reading plan types
 only for the original element/key/value vars (`a`, `b`), never the holders. So
 the authoritative plan stays valid for everything codegen reads after lowering,
-and no post-destination re-plan is needed.
+and destination lowering needs no second planner pass.
 
 ## Pre-Plan Canonicalization
 
@@ -142,6 +142,7 @@ the Cranelift lowering loop. Each body emits
 ## Gate this model with
 
 - `cargo test frontend_to_codegen_pipeline_reports_planner_phase_events --lib`
+- `cargo test planner_publishes_dispatches_for_closure_lit_call --lib`
 - `cargo test planned_program_materialization_reports_executable_body_folds --lib`
 - `cargo test --test fixture_matrix` — four-path legs plus the dump budgets,
   whose planner metrics key on the `role: "authoritative"` event

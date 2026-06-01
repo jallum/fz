@@ -384,7 +384,7 @@ impl IrUnitLinker {
     fn copy_planner_facts(&mut self, unit: &CompiledUnit, fn_map: &BTreeMap<FnId, FnId>) {
         // A unit without planner facts simply contributes none; the linker's
         // internal `linked_plan` only needs to cover the edges it resolves, and
-        // codegen re-plans the linked module afterwards regardless.
+        // the compile pipeline plans the linked module before codegen.
         if let Some(plan) = &unit.module_plan {
             merge_module_plan(&mut self.linked_plan, remap_module_plan(plan, fn_map));
         }

@@ -12,14 +12,14 @@ Read the one whose trigger matches what you are about to touch:
 - [control-flow-lowering](docs/control-flow-lowering.md) — `if` / `case` / `cond` / `with` / `receive` lowering, arm continuation functions, joins, or tailness across branch boundaries.
 - [destination-passing](docs/destination-passing.md) — destination planning/passing IR, erased init-token facts, tuple/list/map construction lowering, typed container field initialization, physical capabilities, or owned-cons reuse.
 - [dispatch-as-planner-output](docs/dispatch-as-planner-output.md) — planner-owned call-edge facts, `SpecPlan.call_edges`, `SpecKey` variants, callable capabilities, or ReturnDemand capability selection.
-- [single-authoritative-plan](docs/single-authoritative-plan.md) — the one `plan_module` codegen commits to, the `planner.planned` count, `plan_callable_capabilities` / `CapabilityPlan`, why destination lowering needs no re-plan, or why the capability pass keeps the return fixpoint.
+- [single-authoritative-plan](docs/single-authoritative-plan.md) — the one `plan_module` codegen commits to, the `planner.planned` count, `plan_callable_capabilities` / `CapabilityPlan`, destination-lowering plan preservation, or why the capability pass keeps the return fixpoint.
 - [externs](docs/externs.md) — `extern "C"` declarations, marshal classes, variadic calls, or extern codegen/interpreter behavior.
 - [fixtures](docs/fixtures.md) — authoring or changing a fixture, the four-path matrix, pass/fail rules, the four expressive media, or the dump-budget mechanism.
 - [guides](docs/guides.md) — writing or updating user-facing `guides/*.html`.
 - [ir-interp-runtime](docs/ir-interp-runtime.md) — IR interpreter runtime ownership, persistent drives, or REPL session execution.
 - [lazy-continuation-materialization](docs/lazy-continuation-materialization.md) — compiler-known native continuations, stack-backed continuation descriptors, closure materialization, or scheduler-boundary continuation roots.
 - [modules](docs/modules.md) — module identity, interfaces, `.fzi` / `.fzo` artifacts, compiled units/images, import resolution, link checks, runtime-library modules, or LTO boundary erasure.
-- [protocols](docs/protocols.md) — `defprotocol` / `defimpl`, protocol-domain types, implementation target identity, protocol dispatch, or no-replanning protocol/link rules.
+- [protocols](docs/protocols.md) — `defprotocol` / `defimpl`, protocol-domain types, implementation target identity, protocol dispatch, or plan-preserving protocol/link rules.
 - [pinned-process-register](docs/pinned-process-register.md) — Cranelift pinned register, compiled `Process*` base pointer, process ABI offsets, or the `CURRENT_PROCESS` dual invariant.
 - [repl-session](docs/repl-session.md) — REPL world/bindings/runtime layering, chunk synthesis, docs/help, or macro/runtime boundaries.
 - [reduction-yielding](docs/reduction-yielding.md) — reduction-driven scheduler yielding, the per-process budget, allocation-pressure expiration, the continuation reserve, or boundary maintenance.

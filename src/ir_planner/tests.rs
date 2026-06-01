@@ -2983,6 +2983,87 @@ fn planner_publishes_dispatches_for_direct_call() {
 }
 
 #[test]
+fn planner_publishes_dispatches_for_closure_lit_call() {
+    use crate::fz_ir::{CallsiteId, EmitSlot};
+
+    let src = r#"
+fn each(_, []), do: nil
+fn each(f, [h | t]) do
+  f.(h)
+  each(f, t)
+end
+
+fn main() do
+  k = 10
+  each(fn(x) -> dbg(x + k) end, [1, 2, 3])
+end
+"#;
+    let m = lower_src_for_plan(src);
+    let mut t = crate::types::ConcreteTypes;
+    let mt = plan_module(&mut t, &m, &crate::telemetry::NullTelemetry);
+    let mut saw_closure_lit_call = false;
+
+    for (caller_key, ft) in &mt.specs {
+        let caller = m.fn_by_id(caller_key.fn_id);
+        for blk in &caller.blocks {
+            let Term::CallClosure {
+                ident,
+                closure,
+                args: _,
+                ..
+            } = &blk.terminator
+            else {
+                continue;
+            };
+            let Some(closure_ty) = ft.vars.get(closure) else {
+                continue;
+            };
+            let Some(lit) = t.closure_lit_parts(closure_ty) else {
+                continue;
+            };
+
+            let callsite = CallsiteId::new(caller.id, ident, EmitSlot::ClosureCall);
+            let target = ft.local_call_target(&callsite).unwrap_or_else(|| {
+                panic!(
+                    "expected ClosureCall target for {:?}; available call_edges: {:?}",
+                    callsite,
+                    ft.call_edges.keys().collect::<Vec<_>>()
+                )
+            });
+            let body_fid: FnId = lit.target.into();
+            assert_eq!(target.fn_id, body_fid);
+            assert!(
+                m.fn_by_id(body_fid).name.starts_with("lambda_"),
+                "closure-literal call should target the synthesized lambda body, got {}",
+                m.fn_by_id(body_fid).name
+            );
+
+            let capture_ty =
+                target.input.first().and_then(slot_ty).unwrap_or_else(|| {
+                    panic!("target key should include capture slot: {target:?}")
+                });
+            assert_eq!(t.as_int_singleton(capture_ty), Some(10));
+            let arg_ty =
+                target.input.get(1).and_then(slot_ty).unwrap_or_else(|| {
+                    panic!("target key should include argument slot: {target:?}")
+                });
+            let int_ty = t.int();
+            assert!(
+                t.is_equivalent(arg_ty, &int_ty),
+                "recursive closure-call argument should widen to int, got {}",
+                t.display(arg_ty)
+            );
+            saw_closure_lit_call = true;
+        }
+    }
+
+    assert!(
+        saw_closure_lit_call,
+        "expected at least one typed CallClosure over a singleton closure literal"
+    );
+}
+
+#[test]
 fn planner_selects_static_protocol_impl_as_call_edge() {
     use crate::fz_ir::{CallsiteId, EmitSlot};
 
