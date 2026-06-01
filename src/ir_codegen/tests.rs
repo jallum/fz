@@ -29,6 +29,16 @@ fn lower_resolved_src(src: &str) -> Module {
     lower_program(&mut t, &prog, &crate::telemetry::NullTelemetry).expect("lower")
 }
 
+fn planner_roles(cap: &crate::telemetry::Capture) -> Vec<String> {
+    cap.find(&["fz", "planner", "planned"])
+        .into_iter()
+        .map(|ev| match ev.metadata.get("role") {
+            Some(crate::telemetry::Value::Str(role)) => role.to_string(),
+            other => panic!("planner.planned event missing role metadata: {:?}", other),
+        })
+        .collect()
+}
+
 /// Every zero-capture `MakeClosure(f, [])` target gets one entry in
 /// `static_closure_targets`; multiple sites for the same `f` share a
 /// single entry (cl_sid keyed). See docs/cps-in-clif.md §8.2.
@@ -2478,22 +2488,19 @@ fn const_nil_bool_atom_deduplicated_within_block() {
     );
 }
 
-/// plan_module is called twice in the codegen pipeline: one visible shaping
-/// plan that drives CFG simplification, then the authoritative plan derived
-/// after those structural transforms. Destination lowering still does not
-/// re-plan (fz-hfc.4).
 #[test]
-fn plan_module_called_once_for_shaping_once_for_codegen_in_pipeline() {
+fn codegen_pipeline_reports_only_one_authoritative_plan() {
     let src = "fn main(), do: dbg(42)";
     let m = lower_src(src);
     let tel = crate::telemetry::ConfiguredTelemetry::new();
     let cap = crate::telemetry::Capture::new();
     tel.attach(&["fz", "planner", "planned"], cap.handler());
     compile(&mut crate::types::ConcreteTypes, &m, &tel).expect("compile");
+    let roles = planner_roles(&cap);
     assert_eq!(
-        cap.count(&["fz", "planner", "planned"]),
-        2,
-        "compile path should report shaping and authoritative planner events"
+        roles,
+        vec!["authoritative".to_string()],
+        "codegen must produce one semantic plan and must not publish a shaping plan"
     );
 }
 
@@ -2517,14 +2524,11 @@ fn frontend_to_codegen_pipeline_reports_planner_phase_events() {
 
     compile(&mut t, &frontend.module, &tel).expect("compile");
 
-    // The pretyped path reports three planner.planned events: the frontend
-    // authoritative plan, the codegen shaping plan, and the codegen
-    // authoritative plan. The shaping plan is a real compiler phase and stays
-    // visible in telemetry.
+    let roles = planner_roles(&cap);
     assert_eq!(
-        cap.count(&["fz", "planner", "planned"]),
-        3,
-        "pretyped path reports frontend, shaping, and authoritative codegen planner events"
+        roles,
+        vec!["authoritative".to_string(), "authoritative".to_string()],
+        "pretyped pipeline should report only frontend and codegen authoritative plans"
     );
 }
 

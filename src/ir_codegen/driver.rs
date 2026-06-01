@@ -16,6 +16,7 @@ use cranelift_module::{DataDescription, DataId, FuncId, Linkage, Module as ClMod
 use fz_runtime::heap::{FieldDescriptor, FieldKind, Schema};
 use std::collections::HashMap;
 
+#[allow(dead_code)] // fz-0fb.4.1 removal target: codegen should read planned bodies, not fold clones.
 fn prepare_codegen_body<T: crate::types::Types<Ty = crate::types::Ty>>(
     t: &mut T,
     module: &Module,
@@ -69,6 +70,7 @@ fn push_dispatch_target<T: crate::types::Types<Ty = crate::types::Ty>>(
     }
 }
 
+#[allow(dead_code)] // fz-0fb.4.1 removal target: planned-program materialization should own executable reachability.
 fn augment_reachable_for_codegen_bodies<
     T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
 >(

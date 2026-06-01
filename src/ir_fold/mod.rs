@@ -14,6 +14,7 @@ use crate::ir_planner::{ModulePlan, SpecPlan};
 use crate::types::Types;
 use std::collections::HashMap;
 
+#[allow(dead_code)] // fz-0fb.4.1 removal target: plan-driven folds must not mutate canonical Module.
 pub fn fold_module(m: &mut Module, types: &ModulePlan) {
     let mut t = crate::types::ConcreteTypes;
     for f in &mut m.fns {
@@ -45,6 +46,7 @@ fn fold_fn<T: Types<Ty = crate::types::Ty>>(t: &mut T, f: &mut FnIr, types: &Mod
 /// env. Avoids `fold_fn`'s `best_fn_types` fallback which bails when
 /// multiple narrow specs exist — exactly the case where per-spec fold
 /// is most valuable.
+#[allow(dead_code)] // fz-0fb.4.1 removal target: per-spec folds belong in planned-body materialization.
 pub fn fold_fn_with_types<T: Types<Ty = crate::types::Ty>>(
     t: &mut T,
     f: &mut FnIr,
