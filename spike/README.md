@@ -18,6 +18,7 @@ the planner's type inference, not runtime behavior, so they live outside
 | `match_atom_partition.fz` | same multi-clause `FnId` called with different atom literals | `main() : {:one, :two}`; matcher evidence selects different leaves per activation | not pinned |
 | `match_list_partition.fz` | same multi-clause `FnId` called with `[]` and `[1]` | `main() : {:empty, :cons}`; list-shape evidence selects empty vs cons leaves per activation | not pinned |
 | `match_list_binding.fz` | cons clause returns `[h | _]` binding | `main() : {:empty, int}`; matcher-produced bindings carry element type into the selected leaf | not pinned |
+| `match_tuple_binding.fz` | tuple clause returns `{:ok, x}` binding | `main() : {int, :error}`; tuple-shape evidence and field projection carry payload type into the selected leaf | not pinned |
 | `fold_tail.fz` | tail-recursive fold, empty-capture closure | `number` | settles ✓ |
 | `fold_nontail.fz` | non-tail wrapper over the fold | `number` | settles ✓ |
 | `fold_capture_int.fz` | threaded closure captures an `int` | `number` | settles ✓ |
@@ -48,3 +49,8 @@ can prune the matcher tree to the empty or cons leaf without re-running analysis
 binding itself: the lowered `head(list)` primitive projects `int` from the
 non-empty input list, so the leaf returns `int` rather than an unbound or
 over-joined value.
+
+`match_tuple_binding.fz` runs the same binding-flow check through tuple matcher
+tests. The lowered `type_test` and `tuple_field` evidence narrows `{:ok, int}`
+to the tuple leaf and projects the payload without letting the atom leaf or
+impossible tuple arities contribute.

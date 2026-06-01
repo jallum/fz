@@ -1,0 +1,11 @@
+# Pattern-dispatch binding flow over tuple shape. The tuple leaf returns the
+# bound payload, while the atom leaf returns its own singleton.
+#
+# Expected: main() : {int, :error}
+
+fn pick({:ok, x}), do: x
+fn pick(:error), do: :error
+
+fn main() do
+  {pick({:ok, 1}), pick(:error)}
+end
