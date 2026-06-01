@@ -496,110 +496,6 @@ fn collect_cont_extras_count(module: &Module) -> HashMap<crate::fz_ir::FnId, usi
     cont_extras_count
 }
 
-/// Single combined fixed point over `natively_callable`. Each iter
-/// re-enforces every invariant so cascading removals don't leave an
-/// inconsistent set:
-///   (a) Term::Call's callee + cont both native.
-///   (b) Term::TailCall's callee native.
-///   (c) Cont validity: if f is used as cont in some Term::Call, the
-///       caller's callee at that site must be native (so the site
-///       picks the native-chain branch).
-fn shrink_natively_callable(
-    module: &Module,
-    natively_callable: &mut std::collections::HashSet<crate::fz_ir::FnId>,
-) {
-    loop {
-        let mut to_remove: Vec<crate::fz_ir::FnId> = Vec::new();
-        // (a) and (b): body invariants.
-        for f in module.fns.iter() {
-            if !natively_callable.contains(&f.id) {
-                continue;
-            }
-            let body_ok = f.blocks.iter().all(|b| match &b.terminator {
-                Term::Return(_) | Term::Halt(_) | Term::Goto(_, _) | Term::If { .. } => true,
-                Term::Call {
-                    ident: _,
-                    callee,
-                    continuation,
-                    ..
-                } => {
-                    natively_callable.contains(callee)
-                        && natively_callable.contains(&continuation.fn_id)
-                }
-                Term::TailCall { callee, .. } => natively_callable.contains(callee),
-                // Closure-call terminators admitted; bodies are Tail-CC
-                // with closure-target sig. Cont (if any) must also be
-                // native so the cont-return chain is unbroken.
-                Term::CallClosure { continuation, .. } => {
-                    natively_callable.contains(&continuation.fn_id)
-                }
-                Term::TailCallClosure { .. } => true,
-                Term::Receive {
-                    continuation,
-                    ident: _,
-                } => natively_callable.contains(&continuation.fn_id),
-                // ReceiveMatched is native iff every body / guard / after
-                // fn is native. Cont-stub seam bridges the Tail-CC body
-                // into the SystemV scheduler resume path so the
-                // enclosing fn's ABI is unconstrained.
-                Term::ReceiveMatched { clauses, after, .. } => {
-                    let body_ok = clauses.iter().all(|c| {
-                        natively_callable.contains(&c.body)
-                            && c.guard.is_none_or(|g| natively_callable.contains(&g))
-                    });
-                    let after_ok = after
-                        .as_ref()
-                        .is_none_or(|a| natively_callable.contains(&a.body));
-                    body_ok && after_ok
-                }
-            });
-            if !body_ok {
-                to_remove.push(f.id);
-            }
-        }
-        // (c) Cont validity: the caller's callee at every cont reach
-        // site must be native.
-        for f in &module.fns {
-            if !natively_callable.contains(&f.id) {
-                continue;
-            }
-            if to_remove.contains(&f.id) {
-                continue;
-            }
-            let mut cont_unsafe = false;
-            'outer: for caller in module.fns.iter() {
-                for b in &caller.blocks {
-                    let Term::Call {
-                        ident: _,
-                        callee,
-                        continuation,
-                        ..
-                    } = &b.terminator
-                    else {
-                        continue;
-                    };
-                    if continuation.fn_id != f.id {
-                        continue;
-                    }
-                    if !natively_callable.contains(callee) {
-                        cont_unsafe = true;
-                        break 'outer;
-                    }
-                }
-            }
-            if cont_unsafe {
-                to_remove.push(f.id);
-            }
-        }
-        if to_remove.is_empty() {
-            break;
-        }
-        for id in to_remove {
-            natively_callable.remove(&id);
-        }
-    }
-}
-
 /// Collect typed closure shapes keyed by the lambda's resolved narrow
 /// SpecId. Each `Prim::MakeClosure` site is inspected per *caller*
 /// spec (so closures built in different caller specializations with
@@ -2240,11 +2136,10 @@ pub(crate) fn compile_with_backend_impl<
         &spec_registry,
     );
 
-    // Parking + native-callability analyses. Consumed at declare-time
-    // below for per-fn sigs and at compile_fn / emit_call for ABI
-    // bifurcation.
-    let parking_reachable = crate::parking::parking_reachable(module);
-    let mut natively_callable = crate::parking::natively_callable(module, &parking_reachable);
+    // Native-callability analysis — already a fixed point (the analysis
+    // shrinks to convergence internally). Consumed at declare-time below
+    // for per-fn sigs and at compile_fn / emit_call for ABI bifurcation.
+    let natively_callable = super::native_callable::natively_callable(module);
 
     let cont_fns = collect_cont_fns(module);
     let _ = &cont_fns; // consumed by sig builder + entry harness below.
@@ -2259,7 +2154,6 @@ pub(crate) fn compile_with_backend_impl<
     // misread the result slot).
     let (closure_target_fns, closure_n_captures) = collect_closure_targets(module);
     let _ = (&closure_target_fns, &closure_n_captures);
-    shrink_natively_callable(module, &mut natively_callable);
 
     let cont_target_fns = collect_cont_target_fns(module);
 

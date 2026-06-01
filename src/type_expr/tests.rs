@@ -3,7 +3,7 @@ use super::*;
 use crate::parser::lexer::Lexer;
 use crate::specs::{
     StructuralCorrespondenceGroup, StructuralOccurrence, StructuralPathStep,
-    spec_correspondence_groups,
+    spec_set_correspondence_groups,
 };
 use crate::types::{ConcreteTypes, Ty, Types};
 
@@ -27,6 +27,14 @@ fn parse_one_with<T: Types<Ty = Ty>>(
         });
     }
     Ok(ty)
+}
+
+fn spec_correspondence_groups(
+    spec: &crate::specs::ResolvedSpec,
+) -> Vec<StructuralCorrespondenceGroup> {
+    spec_set_correspondence_groups(&crate::specs::ResolvedSpecSet {
+        arrows: vec![spec.clone()],
+    })
 }
 
 #[test]

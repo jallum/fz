@@ -1,5 +1,8 @@
+use super::closures::resolve_closure_return;
 use super::fn_types::CallableCapability;
 use super::fn_types::{EmitterSite, SpecKey};
+use super::narrow::narrow_for_cond;
+use super::reachable::cont_slot0_descr;
 use super::type_fn::type_fn;
 use super::*;
 use crate::fz_ir::{
@@ -20,6 +23,61 @@ fn value_spec_key(fid: FnId, input: Vec<KeySlot>) -> SpecKey {
 
 fn slot_ty(slot: &KeySlot) -> Option<&crate::types::Ty> {
     slot.as_ref()
+}
+
+fn module_plan_spec_ty<'a>(
+    mt: &'a ModulePlan,
+    fn_id: FnId,
+    input_tys: &[crate::types::Ty],
+) -> Option<&'a SpecPlan> {
+    let key = mt.specs.keys().find(|spec_key| {
+        spec_key.fn_id == fn_id
+            && spec_key.demand.is_value()
+            && spec_key.input.len() == input_tys.len()
+            && spec_key
+                .input
+                .iter()
+                .zip(input_tys.iter())
+                .all(|(slot, ty)| match slot {
+                    None => true,
+                    Some(k) => k == ty,
+                })
+    })?;
+    mt.specs.get(key)
+}
+
+fn emitter_site_callsite_id(site: &EmitterSite) -> crate::fz_ir::CallsiteId {
+    crate::fz_ir::CallsiteId::new(site.caller.fn_id, &site.ident, site.slot)
+}
+
+fn callsite_with_spec_key(cid: crate::fz_ir::CallsiteId, spec_key: SpecKey) -> EmitterSite {
+    assert_eq!(cid.caller, spec_key.fn_id);
+    EmitterSite {
+        caller: spec_key,
+        ident: cid.ident,
+        slot: cid.slot,
+    }
+}
+
+fn lambda_any_key_specs(
+    t: &mut crate::types::ConcreteTypes,
+    m: &Module,
+    mt: &ModulePlan,
+) -> Vec<SpecKey> {
+    mt.specs
+        .keys()
+        .filter(|key| {
+            let f = m.fn_by_id(key.fn_id);
+            f.name.starts_with("lambda_")
+                && key.demand.is_value()
+                && key.input.len() == f.block(f.entry).params.len()
+                && key
+                    .input
+                    .iter()
+                    .all(|slot| slot_ty(slot).is_some_and(|ty| t.is_top(ty)))
+        })
+        .cloned()
+        .collect()
 }
 
 fn build_module(fns: Vec<crate::fz_ir::FnIr>) -> Module {
@@ -1167,9 +1225,8 @@ fn closure_target_with_direct_caller_narrows_spec_and_keeps_any_key_body() {
     let mut t = crate::types::ConcreteTypes;
     let mt = plan_module(&mut t, &m, &crate::telemetry::NullTelemetry);
     // worker's narrow spec exists with n=int.
-    let narrow_spec = mt
-        .spec_ty(FnId(0), &[t.int_lit(42)])
-        .or_else(|| mt.spec_ty(FnId(0), &[t.int()]))
+    let narrow_spec = module_plan_spec_ty(&mt, FnId(0), &[t.int_lit(42)])
+        .or_else(|| module_plan_spec_ty(&mt, FnId(0), &[t.int()]))
         .expect("worker's narrow spec (from direct call) must be registered");
     let nt_narrow = narrow_spec.vars.get(&n).unwrap().clone();
     let int = t.int();
@@ -1182,19 +1239,13 @@ fn closure_target_with_direct_caller_narrows_spec_and_keeps_any_key_body() {
     // worker as a closure target, so its any-key body is the canonical
     // compiled body.
     assert!(
-        mt.spec_ty(FnId(0), &[t.any()]).is_some(),
+        module_plan_spec_ty(&mt, FnId(0), &[t.any()]).is_some(),
         "worker's any-key body must be registered (worker is a closure target); \
          specs: {:?}",
         mt.specs
             .keys()
             .filter(|key| key.fn_id == FnId(0))
             .collect::<Vec<_>>()
-    );
-    // handle entry: (worker, []) — zero-capture closure handle.
-    assert!(
-        mt.closure_handles.contains(&(FnId(0), vec![])),
-        "expected (worker, []) handle entry; handles: {:?}",
-        mt.closure_handles
     );
 }
 
@@ -1239,7 +1290,6 @@ fn reachable_specs_seeds_all_registered_specs_for_closure_targets() {
         spec_precedence: HashMap::new(),
         fn_effects: HashMap::new(),
         dead_branches: HashMap::new(),
-        closure_handles: std::collections::HashSet::new(),
     };
 
     let reachable = reachable_specs(&mut t, &m, &reg, &mt, []);
@@ -1289,18 +1339,18 @@ fn entry_points_keep_any_key_callees_with_typed_callsites_drop() {
     let mut t = crate::types::ConcreteTypes;
     let mt = plan_module(&mut t, &m, &crate::telemetry::NullTelemetry);
 
-    let main_any = mt.spec_ty(FnId(1), &[]);
+    let main_any = module_plan_spec_ty(&mt, FnId(1), &[]);
     assert!(
         main_any.is_some(),
         "main (entry-point) must keep its any-key"
     );
 
-    let add1_any = mt.spec_ty(FnId(0), &[t.any()]);
+    let add1_any = module_plan_spec_ty(&mt, FnId(0), &[t.any()]);
     assert!(
         add1_any.is_none(),
         "add1's any-key is dead (only caller passes int_lit(41)) → dropped"
     );
-    let add1_narrow = mt.spec_ty(FnId(0), &[t.int_lit(41)]);
+    let add1_narrow = module_plan_spec_ty(&mt, FnId(0), &[t.int_lit(41)]);
     assert!(
         add1_narrow.is_some(),
         "add1 must have its narrow callsite-driven spec"
@@ -1338,7 +1388,7 @@ fn specs_records_narrow_int_callsite() {
     // The callsite passes `int_lit(41)`, which is a subtype of int. The
     // spec key carries exactly that type.
     let int41 = t.int_lit(41);
-    let narrow = mt.spec_ty(FnId(0), std::slice::from_ref(&int41));
+    let narrow = module_plan_spec_ty(&mt, FnId(0), std::slice::from_ref(&int41));
     assert!(
         narrow.is_some(),
         "add1 must have a specialization keyed on [int_lit(41)]; \
@@ -1407,7 +1457,7 @@ fn pipeline(
 }
 
 #[test]
-fn normalize_result_correspondence_key_erases_result_linked_callback_identity() {
+fn normalize_result_correspondence_key_widens_result_linked_state() {
     let src = r#"
 @spec reducer(integer, integer) :: {:cont, integer}
 fn reducer(_entry, acc), do: {:cont, acc}
@@ -1447,8 +1497,8 @@ fn reduce_step(_list, {:suspend, acc}, _reducer), do: {:suspended, acc, (fn () -
         .expect("normalized reducer should remain callable");
     assert_eq!(clauses.len(), 1);
     assert!(
-        clauses[0].closure.is_none(),
-        "callback slot should erase closure identity: {}",
+        clauses[0].closure.is_some(),
+        "recursive spec-key widening preserves closure identity; erasure is a separate type operation: {}",
         t.display(&key[2])
     );
 }
@@ -1688,8 +1738,6 @@ fn planner_planned_reports_activation_return_kernel_telemetry() {
     measurement("activation_return_no_return_count");
     assert_eq!(measurement("activation_return_projected_count"), spec_count);
     assert_eq!(measurement("activation_return_projection_gap_count"), 0);
-    measurement("activation_return_compatible_lookup_count");
-    assert_eq!(measurement("activation_return_legacy_fallback_count"), 0);
 }
 
 #[test]
@@ -1801,53 +1849,6 @@ fn main(), do: dbg(sum([1, 2, 3, 4, 5]))
             t.display(d)
         );
     }
-}
-
-/// Helper output for a Call-site Cont must match a key the planner
-/// registered in `module_plan.specs` under `cont.fn_id`. This is
-/// the load-bearing invariant for fz-ul4.29.12.1's SpecRegistry
-/// resolve: if it ever fails, the resolve will panic.
-#[test]
-fn cont_input_key_matches_a_registered_spec_for_call() {
-    let (mut t, m, mt) = pipeline(
-        r#"
-fn id(x), do: x
-fn main() do
-  y = id(7)
-  dbg(y)
-end
-"#,
-        &crate::telemetry::NullTelemetry,
-    );
-    // Find the main fn, locate the Call site, and check the
-    // helper's output appears in `mt.specs` for the cont's fn_id.
-    let main = m.fns.iter().find(|f| f.name == "main").unwrap();
-    let caller_ft = mt.specs.get(&value_spec_key(main.id, vec![])).unwrap();
-    let mut found_any = false;
-    for blk in &main.blocks {
-        if let Term::Call { continuation, .. } = &blk.terminator {
-            let key = cont_input_key(&mut t, blk, continuation, caller_ft, &m, &mt);
-            let key = key_tys(key);
-            assert!(
-                mt.specs
-                    .contains_key(&value_spec_key(continuation.fn_id, key.clone())),
-                "helper key {:?} for cont fn_id {:?} not in specs; \
-                 registered keys for this cont: {:?}",
-                key,
-                continuation.fn_id,
-                mt.specs
-                    .iter()
-                    .filter(|(key, _)| key.fn_id == continuation.fn_id)
-                    .map(|(key, _)| crate::types::display_key_slots(&t, &key.input))
-                    .collect::<Vec<_>>(),
-            );
-            found_any = true;
-        }
-    }
-    assert!(
-        found_any,
-        "test premise: main should contain a Call with a Cont"
-    );
 }
 
 #[test]
@@ -1985,12 +1986,6 @@ end
             .filter(|key| key.fn_id == double.id)
             .collect::<Vec<_>>()
     );
-    // Handle entry from MakeClosure(double, []).
-    assert!(
-        mt.closure_handles.contains(&(double.id, vec![])),
-        "expected (double, []) handle entry; handles: {:?}",
-        mt.closure_handles
-    );
 }
 
 /// fz-ul4.29.12.6 — a fn whose every IR callsite has typed coverage
@@ -2121,13 +2116,13 @@ end
     );
 }
 
-/// fz-ul4.29.12.4 — spawn-with-captures registers a typed closure handle
-/// for the spawned user lambda. spawn/1 now lives in runtime.fz, so there
-/// is no compiler-synthesized fz_spawn_thunk between the wrapper and the
-/// user closure.
+/// fz-ul4.29.12.4 — spawn/1 now lives in runtime.fz, so there is no
+/// compiler-synthesized fz_spawn_thunk between the wrapper and the user
+/// closure. The spawned lambda is still reachable through the production
+/// planner fact: its any-key body spec.
 #[test]
-fn spawn_with_captures_registers_narrow_user_lambda_handle() {
-    let (t, m, mt) = pipeline(
+fn spawn_with_captures_keeps_user_lambda_body_reachable() {
+    let (mut t, m, mt) = pipeline(
         r#"
 fn parent(tag) do
   spawn(fn () -> send(1, tag) end)
@@ -2143,38 +2138,20 @@ end
         !m.fns.iter().any(|f| f.name == "fz_spawn_thunk"),
         "spawn lowering must not synthesize fz_spawn_thunk"
     );
-    // fz-try B1+B2 — MakeClosure now registers in ModulePlan.closure_handles,
-    // not as a padded body spec. A handle entry with non-any captures
-    // proves the spawned lambda's captures were typed.
-    let handles_for_lambda: Vec<(FnId, &Vec<crate::types::Ty>)> = mt
-        .closure_handles
-        .iter()
-        .filter(|(fid, caps)| {
-            m.fn_by_id(*fid).name.starts_with("lambda_")
-                && !caps.is_empty()
-                && !caps.iter().all(|d| t.is_top(d))
-        })
-        .map(|(fid, caps)| (*fid, caps))
-        .collect();
+    let lambda_body_specs = lambda_any_key_specs(&mut t, &m, &mt);
     assert!(
-        !handles_for_lambda.is_empty(),
-        "expected at least one spawned-lambda handle with typed captures, got 0; all handles={:?}",
-        mt.closure_handles
+        !lambda_body_specs.is_empty(),
+        "expected spawned lambda any-key body spec, got specs {:?}",
+        mt.specs.keys().collect::<Vec<_>>()
     );
 }
 
-/// fz-ul4.29.12.2 — two MakeClosure sites of the same lambda with
-/// different capture types must register two distinct narrow specs
-/// for the lambda. Codegen keys typed closure stubs off these
-/// SpecIds, so this is the load-bearing precondition for typed
-/// closure dispatch.
+/// fz-ul4.29.12.2 — closure construction makes the lambda body reachable once
+/// through its any-key spec. Capture-specific refinements are ordinary
+/// call-site specs, not a second closure-handle registry.
 #[test]
-fn make_closure_with_distinct_captures_registers_distinct_specs() {
-    // Two top-level fns each return a closure that captures a
-    // value of a different type. Both target the *same* lambda
-    // (well, two different lambdas — adjust below). To force "same
-    // lambda, different captures", we use a curried-style helper.
-    let (_t, m, mt) = pipeline(
+fn make_closure_with_distinct_captures_uses_lambda_specs_not_handles() {
+    let (mut t, m, mt) = pipeline(
         r#"
 fn add_to(x), do: fn (y) -> x + y end
 fn main() do
@@ -2186,20 +2163,26 @@ end
 "#,
         &crate::telemetry::NullTelemetry,
     );
-    // fz-try B1+B2 — distinct capture types now produce distinct
-    // closure-handle entries (not distinct body specs). The lambda has
-    // one compiled body (any-key); the two handles describe the two
-    // closure *values* (one captures int, one captures float).
-    let mut handles_by_lambda: HashMap<FnId, Vec<&Vec<crate::types::Ty>>> = HashMap::new();
-    for (fid, caps) in &mt.closure_handles {
-        if m.fn_by_id(*fid).name.starts_with("lambda_") {
-            handles_by_lambda.entry(*fid).or_default().push(caps);
-        }
-    }
+    let lambda_body_specs = lambda_any_key_specs(&mut t, &m, &mt);
     assert!(
-        handles_by_lambda.values().any(|handles| handles.len() >= 2),
-        "expected ≥2 closure-handle entries for a lambda, got {:?}",
-        handles_by_lambda
+        !lambda_body_specs.is_empty(),
+        "expected lambda any-key body spec, got specs {:?}",
+        mt.specs.keys().collect::<Vec<_>>()
+    );
+    assert!(
+        mt.specs
+            .keys()
+            .any(|key| m.fn_by_id(key.fn_id).name.starts_with("lambda_")
+                && key.demand.is_value()
+                && !key
+                    .input
+                    .iter()
+                    .all(|slot| slot_ty(slot).is_some_and(|ty| t.is_top(ty)))),
+        "expected at least one call-site lambda specialization, got lambda specs {:?}",
+        mt.specs
+            .keys()
+            .filter(|key| m.fn_by_id(key.fn_id).name.starts_with("lambda_"))
+            .collect::<Vec<_>>()
     );
 }
 
@@ -2207,13 +2190,12 @@ end
 /// via `closure_lit` (not a known callable capability), the continuation's slot 0
 /// must be the lambda's narrow return type — NOT `any()`.
 ///
-/// Pre-fz-5j5.3, `cont_key_for_spec` and `walk_spec_for_discovery`
-/// computed slot 0 via different code paths: the walker handled the
-/// closure_lit case via `resolve_closure_return`; the cont-key helper
-/// fell back to `any`. Under the old whole-graph-rebuild planner the
-/// disagreement was invisible (both functions ran under the same
-/// wrong logic at every iter); under fz-5j5.3's worklist + reachability
-/// sweep split, keys diverged and cont specs went stale.
+/// Pre-fz-5j5.3, continuation slot 0 and call-edge discovery computed
+/// closure-literal call results through different paths. One path kept the
+/// lambda's narrow return; the other fell back to `any`. Under the old
+/// whole-graph-rebuild planner the disagreement was invisible; under
+/// fz-5j5.3's worklist + reachability sweep split, keys diverged and cont
+/// specs went stale.
 ///
 /// This test pins the post-fix behavior: a cont after a CallClosure
 /// on a closure_lit-typed value has slot 0 = the lambda's narrow return.
@@ -2816,12 +2798,12 @@ fn callsite_id_round_trip() {
         slot: EmitSlot::ClosureCall,
     };
 
-    let cid: CallsiteId = site.callsite_id();
+    let cid: CallsiteId = emitter_site_callsite_id(&site);
     assert_eq!(cid.caller, FnId(7));
     assert_eq!(cid.ident, test_ident);
     assert_eq!(cid.slot, EmitSlot::ClosureCall);
 
-    let round = cid.with_spec_key(spec_key);
+    let round = callsite_with_spec_key(cid, spec_key);
     assert_eq!(round, site);
 }
 
@@ -3432,512 +3414,6 @@ fn declared_return_fact_handles_take_positive_reduce_while_in_runtime_graph() {
 }
 
 #[test]
-fn cont_key_for_drop_positive_reduce_is_not_bottom_in_runtime_graph() {
-    let src = include_str!("../../fixtures/enum_take_drop_split/input.fz");
-    let mut t = crate::types::ConcreteTypes;
-    let tel = crate::telemetry::NullTelemetry;
-    let providers = crate::modules::pipeline::ProviderInputs::new(
-        crate::modules::artifact_store::DEFAULT_ARTIFACT_ROOT.to_string(),
-        Vec::new(),
-    );
-    let frontend = crate::modules::pipeline::compile_source_with_providers(
-        &mut t,
-        src.to_string(),
-        "enum_take_drop_split_input.fz".to_string(),
-        &providers,
-        &tel,
-    )
-    .unwrap_or_else(|err| panic!("frontend result: {err}"));
-    let checked = crate::modules::pipeline::checked_module_for_mode(
-        &mut t,
-        frontend,
-        &tel,
-        crate::modules::pipeline::CompileMode::Normal,
-    )
-    .unwrap_or_else(|err| panic!("checked module: {err}"));
-    let prepared = crate::modules::pipeline::prepare_execution_graph(
-        &mut t,
-        checked,
-        &providers,
-        &tel,
-        crate::modules::pipeline::CompileMode::Normal,
-    )
-    .unwrap_or_else(|err| panic!("execution graph: {err}"));
-    let module = prepared.module;
-    let plan = super::plan_module(&mut t, &module, &tel);
-
-    let drop_positive = module
-        .fn_by_name("Enum.drop_positive")
-        .expect("Enum.drop_positive");
-    let range = t.opaque_of("impl-target::Range");
-    let int = t.int();
-    let zero = t.int_lit(0);
-    let nonzero = t.difference(int, zero);
-    let (spec_key, spec) = plan
-        .specs
-        .iter()
-        .find(|(key, _)| {
-            key.fn_id == drop_positive.id
-                && matches!(key.input.first(), Some(Some(ty)) if t.is_equivalent(ty, &range))
-                && matches!(key.input.get(1), Some(Some(ty)) if t.is_equivalent(ty, &nonzero))
-        })
-        .expect("drop_positive range/nonzero spec");
-    let block = &drop_positive.blocks[0];
-    let crate::fz_ir::Term::Call { continuation, .. } = &block.terminator else {
-        panic!("drop_positive entry should call Enum.reduce");
-    };
-    let key = super::worklist::cont_key_for_spec(
-        &mut t,
-        block,
-        continuation,
-        spec,
-        &module,
-        &std::collections::HashSet::new(),
-        spec_key.fn_id,
-        &plan.effective_returns,
-        &super::fn_types::FixedPointSlotSummaries::new(),
-        &super::worklist::ActivationReturnFacts::empty(),
-    )
-    .expect("cont key should exist");
-    let none = t.none();
-    assert!(
-        !key.iter().any(|ty| t.is_equivalent(ty, &none)),
-        "drop_positive reduce continuation key should not contain bottom, got {:?}",
-        key.iter().map(|ty| t.display(ty)).collect::<Vec<_>>()
-    );
-}
-
-#[test]
-fn cont_key_for_take_positive_reduce_while_is_not_bottom_in_runtime_graph() {
-    let src = include_str!("../../fixtures/enum_take_drop_split/input.fz");
-    let mut t = crate::types::ConcreteTypes;
-    let tel = crate::telemetry::NullTelemetry;
-    let providers = crate::modules::pipeline::ProviderInputs::new(
-        crate::modules::artifact_store::DEFAULT_ARTIFACT_ROOT.to_string(),
-        Vec::new(),
-    );
-    let frontend = crate::modules::pipeline::compile_source_with_providers(
-        &mut t,
-        src.to_string(),
-        "enum_take_drop_split_input.fz".to_string(),
-        &providers,
-        &tel,
-    )
-    .unwrap_or_else(|err| panic!("frontend result: {err}"));
-    let checked = crate::modules::pipeline::checked_module_for_mode(
-        &mut t,
-        frontend,
-        &tel,
-        crate::modules::pipeline::CompileMode::Normal,
-    )
-    .unwrap_or_else(|err| panic!("checked module: {err}"));
-    let prepared = crate::modules::pipeline::prepare_execution_graph(
-        &mut t,
-        checked,
-        &providers,
-        &tel,
-        crate::modules::pipeline::CompileMode::Normal,
-    )
-    .unwrap_or_else(|err| panic!("execution graph: {err}"));
-    let module = prepared.module;
-    let plan = super::plan_module(&mut t, &module, &tel);
-
-    let take_positive = module
-        .fn_by_name("Enum.take_positive")
-        .expect("Enum.take_positive");
-    let block = &take_positive.blocks[0];
-    let crate::fz_ir::Term::Call { continuation, .. } = &block.terminator else {
-        panic!("take_positive entry should call Enum.reduce_while");
-    };
-    let int = t.int();
-    let zero = t.int_lit(0);
-    let nonzero = t.difference(int, zero);
-    let specs = plan
-        .specs
-        .iter()
-        .filter(|(key, _)| {
-            key.fn_id == take_positive.id
-                && matches!(key.input.get(1), Some(Some(ty)) if t.is_equivalent(ty, &nonzero))
-        })
-        .collect::<Vec<_>>();
-    assert!(
-        !specs.is_empty(),
-        "expected at least one take_positive nonzero-amount spec, got {:?}",
-        plan.specs
-            .keys()
-            .filter(|key| key.fn_id == take_positive.id)
-            .map(|key| key
-                .input
-                .iter()
-                .map(|slot| slot.as_ref().map(|ty| t.display(ty)))
-                .collect::<Vec<_>>())
-            .collect::<Vec<_>>()
-    );
-    for (spec_key, spec) in specs {
-        let key = super::worklist::cont_key_for_spec(
-            &mut t,
-            block,
-            continuation,
-            spec,
-            &module,
-            &std::collections::HashSet::new(),
-            spec_key.fn_id,
-            &plan.effective_returns,
-            &super::fn_types::FixedPointSlotSummaries::new(),
-            &super::worklist::ActivationReturnFacts::empty(),
-        )
-        .expect("cont key should exist");
-        let none = t.none();
-        assert!(
-            !key.iter().any(|ty| t.is_equivalent(ty, &none)),
-            "take_positive reduce_while continuation key should not contain bottom for input {:?}, got {:?}",
-            spec_key
-                .input
-                .iter()
-                .map(|slot| slot.as_ref().map(|ty| t.display(ty)))
-                .collect::<Vec<_>>(),
-            key.iter().map(|ty| t.display(ty)).collect::<Vec<_>>()
-        );
-    }
-}
-
-#[test]
-fn discovery_walk_publishes_take_positive_reduce_while_cont_with_final_returns() {
-    let src = include_str!("../../fixtures/enum_take_drop_split/input.fz");
-    let mut t = crate::types::ConcreteTypes;
-    let tel = crate::telemetry::NullTelemetry;
-    let providers = crate::modules::pipeline::ProviderInputs::new(
-        crate::modules::artifact_store::DEFAULT_ARTIFACT_ROOT.to_string(),
-        Vec::new(),
-    );
-    let frontend = crate::modules::pipeline::compile_source_with_providers(
-        &mut t,
-        src.to_string(),
-        "enum_take_drop_split_input.fz".to_string(),
-        &providers,
-        &tel,
-    )
-    .unwrap_or_else(|err| panic!("frontend result: {err}"));
-    let checked = crate::modules::pipeline::checked_module_for_mode(
-        &mut t,
-        frontend,
-        &tel,
-        crate::modules::pipeline::CompileMode::Normal,
-    )
-    .unwrap_or_else(|err| panic!("checked module: {err}"));
-    let prepared = crate::modules::pipeline::prepare_execution_graph(
-        &mut t,
-        checked,
-        &providers,
-        &tel,
-        crate::modules::pipeline::CompileMode::Normal,
-    )
-    .unwrap_or_else(|err| panic!("execution graph: {err}"));
-    let module = prepared.module;
-    let plan = super::plan_module(&mut t, &module, &tel);
-
-    let take_positive = module
-        .fn_by_name("Enum.take_positive")
-        .expect("Enum.take_positive");
-    let int = t.int();
-    let zero = t.int_lit(0);
-    let nonzero = t.difference(int, zero);
-    let specs = plan
-        .specs
-        .iter()
-        .filter(|(key, _)| {
-            key.fn_id == take_positive.id
-                && matches!(key.input.get(1), Some(Some(ty)) if t.is_equivalent(ty, &nonzero))
-        })
-        .collect::<Vec<_>>();
-    assert!(
-        !specs.is_empty(),
-        "expected at least one take_positive nonzero-amount spec, got {:?}",
-        plan.specs
-            .keys()
-            .filter(|key| key.fn_id == take_positive.id)
-            .map(|key| key
-                .input
-                .iter()
-                .map(|slot| slot.as_ref().map(|ty| t.display(ty)))
-                .collect::<Vec<_>>())
-            .collect::<Vec<_>>()
-    );
-    let mut capabilities = std::collections::HashMap::new();
-    let block = &take_positive.blocks[0];
-    let crate::fz_ir::Term::Call { ident, .. } = &block.terminator else {
-        panic!("take_positive entry should call Enum.reduce_while");
-    };
-    let cont_callsite =
-        crate::fz_ir::CallsiteId::new(take_positive.id, ident, crate::fz_ir::EmitSlot::Cont);
-    for (spec_key, spec) in specs {
-        let mut out = super::walk::WalkResult::default();
-        super::walk::walk_spec_for_discovery(
-            &mut t,
-            take_positive,
-            spec,
-            &module,
-            &plan.fn_effects,
-            &plan.effective_returns,
-            &plan.specs.keys().cloned().collect(),
-            &std::collections::HashSet::new(),
-            &super::fn_types::FixedPointSlotSummaries::new(),
-            spec_key,
-            &mut capabilities,
-            &mut out,
-            &super::worklist::ActivationReturnFacts::empty(),
-        );
-        assert!(
-            out.call_edges.contains_key(&cont_callsite),
-            "discovery walk with final returns should publish Cont edge for {:?} on input {:?}; got {:?}",
-            cont_callsite,
-            spec_key
-                .input
-                .iter()
-                .map(|slot| slot.as_ref().map(|ty| t.display(ty)))
-                .collect::<Vec<_>>(),
-            out.call_edges.keys().collect::<Vec<_>>()
-        );
-    }
-}
-
-#[test]
-fn discovery_walk_publishes_enum_reduce_cont_with_final_returns() {
-    let src = include_str!("../../fixtures/enum_take_drop_split/input.fz");
-    let mut t = crate::types::ConcreteTypes;
-    let tel = crate::telemetry::NullTelemetry;
-    let providers = crate::modules::pipeline::ProviderInputs::new(
-        crate::modules::artifact_store::DEFAULT_ARTIFACT_ROOT.to_string(),
-        Vec::new(),
-    );
-    let frontend = crate::modules::pipeline::compile_source_with_providers(
-        &mut t,
-        src.to_string(),
-        "enum_take_drop_split_input.fz".to_string(),
-        &providers,
-        &tel,
-    )
-    .unwrap_or_else(|err| panic!("frontend result: {err}"));
-    let checked = crate::modules::pipeline::checked_module_for_mode(
-        &mut t,
-        frontend,
-        &tel,
-        crate::modules::pipeline::CompileMode::Normal,
-    )
-    .unwrap_or_else(|err| panic!("checked module: {err}"));
-    let prepared = crate::modules::pipeline::prepare_execution_graph(
-        &mut t,
-        checked,
-        &providers,
-        &tel,
-        crate::modules::pipeline::CompileMode::Normal,
-    )
-    .unwrap_or_else(|err| panic!("execution graph: {err}"));
-    let module = prepared.module;
-    let plan = super::plan_module(&mut t, &module, &tel);
-
-    let enum_reduce = module
-        .fns
-        .iter()
-        .find(|f| f.name == "Enum.reduce" && f.block(f.entry).params.len() == 3)
-        .expect("Enum.reduce/3");
-    let specs = plan
-        .specs
-        .iter()
-        .filter(|(key, _)| key.fn_id == enum_reduce.id)
-        .collect::<Vec<_>>();
-    assert!(
-        !specs.is_empty(),
-        "expected Enum.reduce specs, got {:?}",
-        plan.specs
-            .keys()
-            .map(|key| (module.fn_by_id(key.fn_id).name.clone(), key.input.clone()))
-            .collect::<Vec<_>>()
-    );
-    for (spec_key, spec) in specs {
-        let cont_callsites = enum_reduce
-            .blocks
-            .iter()
-            .filter(|block| spec.reachable_blocks.contains(&block.id))
-            .filter_map(|block| match &block.terminator {
-                crate::fz_ir::Term::Call { ident, .. } => Some(crate::fz_ir::CallsiteId::new(
-                    enum_reduce.id,
-                    ident,
-                    crate::fz_ir::EmitSlot::Cont,
-                )),
-                _ => None,
-            })
-            .collect::<Vec<_>>();
-        assert!(
-            !cont_callsites.is_empty(),
-            "Enum.reduce spec should reach at least one non-tail call; input {:?}; reachable={:?}; body:\n{}",
-            spec_key
-                .input
-                .iter()
-                .map(|slot| slot.as_ref().map(|ty| t.display(ty)))
-                .collect::<Vec<_>>(),
-            spec.reachable_blocks,
-            enum_reduce
-        );
-        let mut capabilities = std::collections::HashMap::new();
-        let mut out = super::walk::WalkResult::default();
-        super::walk::walk_spec_for_discovery(
-            &mut t,
-            enum_reduce,
-            spec,
-            &module,
-            &plan.fn_effects,
-            &plan.effective_returns,
-            &plan.specs.keys().cloned().collect(),
-            &std::collections::HashSet::new(),
-            &super::fn_types::FixedPointSlotSummaries::new(),
-            spec_key,
-            &mut capabilities,
-            &mut out,
-            &super::worklist::ActivationReturnFacts::empty(),
-        );
-        for cont_callsite in cont_callsites {
-            assert!(
-                out.call_edges.contains_key(&cont_callsite),
-                "discovery walk with final returns should publish Enum.reduce Cont edge {:?} for input {:?}; got {:?}",
-                cont_callsite,
-                spec_key
-                    .input
-                    .iter()
-                    .map(|slot| slot.as_ref().map(|ty| t.display(ty)))
-                    .collect::<Vec<_>>(),
-                out.call_edges.keys().collect::<Vec<_>>()
-            );
-        }
-    }
-}
-
-#[test]
-fn direct_call_slot0_for_take_positive_reduce_while_is_known_with_final_returns() {
-    let src = include_str!("../../fixtures/enum_take_drop_split/input.fz");
-    let mut t = crate::types::ConcreteTypes;
-    let tel = crate::telemetry::NullTelemetry;
-    let providers = crate::modules::pipeline::ProviderInputs::new(
-        crate::modules::artifact_store::DEFAULT_ARTIFACT_ROOT.to_string(),
-        Vec::new(),
-    );
-    let frontend = crate::modules::pipeline::compile_source_with_providers(
-        &mut t,
-        src.to_string(),
-        "enum_take_drop_split_input.fz".to_string(),
-        &providers,
-        &tel,
-    )
-    .unwrap_or_else(|err| panic!("frontend result: {err}"));
-    let checked = crate::modules::pipeline::checked_module_for_mode(
-        &mut t,
-        frontend,
-        &tel,
-        crate::modules::pipeline::CompileMode::Normal,
-    )
-    .unwrap_or_else(|err| panic!("checked module: {err}"));
-    let prepared = crate::modules::pipeline::prepare_execution_graph(
-        &mut t,
-        checked,
-        &providers,
-        &tel,
-        crate::modules::pipeline::CompileMode::Normal,
-    )
-    .unwrap_or_else(|err| panic!("execution graph: {err}"));
-    let module = prepared.module;
-    let plan = super::plan_module(&mut t, &module, &tel);
-
-    let take_positive = module
-        .fn_by_name("Enum.take_positive")
-        .expect("Enum.take_positive");
-    let block = &take_positive.blocks[0];
-    let crate::fz_ir::Term::Call {
-        ident,
-        callee,
-        args,
-        ..
-    } = &block.terminator
-    else {
-        panic!("take_positive entry should call Enum.reduce_while");
-    };
-    let int = t.int();
-    let zero = t.int_lit(0);
-    let nonzero = t.difference(int, zero);
-    let specs = plan
-        .specs
-        .iter()
-        .filter(|(key, _)| {
-            key.fn_id == take_positive.id
-                && matches!(key.input.get(1), Some(Some(ty)) if t.is_equivalent(ty, &nonzero))
-        })
-        .collect::<Vec<_>>();
-    assert!(
-        !specs.is_empty(),
-        "expected at least one take_positive nonzero-amount spec, got {:?}",
-        plan.specs
-            .keys()
-            .filter(|key| key.fn_id == take_positive.id)
-            .map(|key| key
-                .input
-                .iter()
-                .map(|slot| slot.as_ref().map(|ty| t.display(ty)))
-                .collect::<Vec<_>>())
-            .collect::<Vec<_>>()
-    );
-    let complete = plan
-        .specs
-        .keys()
-        .cloned()
-        .collect::<std::collections::HashSet<_>>();
-    for (spec_key, spec) in specs {
-        let env = super::reachable::env_at_terminator(&mut t, spec, block, &module);
-        let arg_tys = args
-            .iter()
-            .map(|arg| env.get(arg).cloned().unwrap_or_else(|| t.any()))
-            .collect::<Vec<_>>();
-        let slot0 = super::worklist::direct_call_result_knowledge(
-            &mut t,
-            &module,
-            &std::collections::HashSet::new(),
-            spec_key.fn_id,
-            ident,
-            *callee,
-            &arg_tys,
-            &plan.effective_returns,
-            Some(&complete),
-            &super::fn_types::FixedPointSlotSummaries::new(),
-            None,
-            &super::worklist::ActivationReturnFacts::empty(),
-        );
-        match slot0.slot0 {
-            super::worklist::ResultSlot0::Known(ty) => {
-                let none = t.none();
-                assert!(
-                    !t.is_equivalent(&ty, &none),
-                    "direct_call_slot0 should not return bottom for take_positive -> reduce_while on input {:?}; got {}",
-                    spec_key
-                        .input
-                        .iter()
-                        .map(|slot| slot.as_ref().map(|ty| t.display(ty)))
-                        .collect::<Vec<_>>(),
-                    t.display(&ty)
-                );
-            }
-            super::worklist::ResultSlot0::Pending => {
-                panic!(
-                    "direct_call_slot0 should be known for take_positive -> reduce_while on input {:?}",
-                    spec_key
-                        .input
-                        .iter()
-                        .map(|slot| slot.as_ref().map(|ty| t.display(ty)))
-                        .collect::<Vec<_>>()
-                )
-            }
-        }
-    }
-}
-
-#[test]
 fn runtime_graph_reduce_helper_clause_carries_function_correspondence() {
     let src = "defmodule Probe do\n\
       @spec reduce_cont([a], b, (a, b) -> {:cont, b} | {:halt, b} | {:suspend, b}) :: {:done, b} | {:halted, b} | {:suspended, b, () -> any}\n\
@@ -4009,46 +3485,6 @@ fn runtime_graph_reduce_helper_clause_carries_function_correspondence() {
         "expected a 5-param fn_clause_1 group to tie param 0 to result, got {:?}",
         matches
     );
-}
-
-#[test]
-fn declared_spec_tuple_result_instantiates_from_call_witnesses() {
-    let src = r#"
-@spec pair(a, b) :: {a, b}
-fn pair(a, b), do: {a, b}
-
-fn main(), do: pair(1, :ok)
-"#;
-    let toks = crate::parser::lexer::Lexer::new(src)
-        .tokenize()
-        .expect("lex");
-    let parsed = crate::parser::Parser::new(toks)
-        .parse_program()
-        .expect("parse");
-    let mut t = crate::types::ConcreteTypes;
-    let resolved = crate::frontend::resolve::flatten_modules(&mut t, parsed).expect("resolve");
-    let ir = crate::ir_lower::lower_program(&mut t, &resolved).expect("lower");
-    let mt = plan_module(&mut t, &ir, &crate::telemetry::NullTelemetry);
-
-    let pair = ir.fn_by_name("pair").expect("pair");
-    let one = t.int_lit(1);
-    let ok = t.atom_lit("ok");
-    let key = value_spec_key(pair.id, key_tys(vec![one, ok]));
-    let ret = mt
-        .effective_returns
-        .get(&key)
-        .unwrap_or_else(|| panic!("missing pair return for key {key:?}"))
-        .clone();
-    assert!(
-        !t.has_vars(&ret),
-        "instantiated @spec return must be concrete, got {}",
-        t.display(&ret)
-    );
-    let elems = t
-        .tuple_lit_elems(&ret)
-        .unwrap_or_else(|| panic!("expected tuple return, got {}", t.display(&ret)));
-    assert_eq!(t.as_int_singleton(&elems[0]), Some(1));
-    assert_eq!(t.as_atom_singleton(&elems[1]).as_deref(), Some("ok"));
 }
 
 // ---- fz-t1m.1.1 — protocol callback spec compatibility ----
@@ -4478,7 +3914,7 @@ fn struct_field_projects_declared_underlying_tuple_slot() {
         .insert("impl-target::Range".to_string(), inner);
 
     let arg = ct.opaque_of("impl-target::Range");
-    let ft = crate::ir_planner::type_fn(&mut ct, &m.fns[0], &m, Some(&[arg]));
+    let ft = type_fn(&mut ct, &m.fns[0], &m, Some(&[arg]));
     let got = ft.vars.get(&first).expect("StructField result type");
     let int = ct.int();
     assert!(
@@ -4486,54 +3922,6 @@ fn struct_field_projects_declared_underlying_tuple_slot() {
         "Range.first field should type as integer, got `{}`",
         ct.display(got)
     );
-}
-
-#[test]
-fn make_resource_mints_declaring_modules_opaque_resource_type() {
-    let src = r#"
-defmodule FileHandle do
-  @type t :: opaque resource(integer)
-
-  extern "C" fn libc::open(path :: cstring, flags :: integer, ...) :: integer
-  extern "C" fn libc::close(integer) :: nil
-  extern "C" fn libc::errno() :: integer
-
-  @spec open(binary, integer, integer) :: {:ok, t} | {:error, integer}
-  fn open(path, flags, mode) do
-    case libc::open(path, flags, mode) do
-      raw_fd when raw_fd >= 0 -> {:ok, make_resource(raw_fd, &libc::close/1)}
-      _error -> {:error, libc::errno()}
-    end
-  end
-end
-
-fn main() do
-  FileHandle.open("f", 0o1000, 0o644)
-end
-"#;
-    let toks = crate::parser::lexer::Lexer::new(src)
-        .tokenize()
-        .expect("lex");
-    let prog = crate::parser::Parser::new(toks)
-        .parse_program()
-        .expect("parse");
-    let mut t = crate::types::ConcreteTypes;
-    let prog = crate::frontend::resolve::flatten_modules(&mut t, prog).expect("flatten");
-    let ir = crate::ir_lower::lower_program(&mut t, &prog).expect("lower");
-    let mt = plan_module(&mut t, &ir, &crate::telemetry::NullTelemetry);
-    let open = ir.fn_by_name("FileHandle.open").expect("open");
-    let open_ret = mt
-        .effective_returns
-        .iter()
-        .find_map(|(key, ret)| (key.fn_id == open.id).then_some(ret.clone()))
-        .expect("open should have an effective return");
-    assert!(
-        t.display(&open_ret).contains("FileHandle::t"),
-        "open should return the owning opaque resource alias, got {}",
-        t.display(&open_ret)
-    );
-    let diags = crate::frontend::spec_check::validate_specs(&mut t, &prog, &ir, &mt);
-    assert!(diags.is_empty(), "unexpected spec diagnostics: {diags:?}");
 }
 
 /// Outside the declaring module, `handle.value` is rejected with a
@@ -4571,7 +3959,7 @@ fn value_accessor_outside_declaring_module_emits_diagnostic() {
 
     // Drive the planner under a narrow spec that pins `h` to A::t.
     let narrow_key_ty = vec![ct.opaque_of("A::t")];
-    let ft = crate::ir_planner::type_fn(&mut ct, &m.fns[0], &m, Some(&narrow_key_ty));
+    let ft = type_fn(&mut ct, &m.fns[0], &m, Some(&narrow_key_ty));
     // Register the spec so collect_diagnostics picks it up.
     let mut mt = crate::ir_planner::plan_module(&mut ct, &m, &crate::telemetry::NullTelemetry);
     mt.specs
@@ -4923,7 +4311,7 @@ fn rewrite_erases_threaded_constant_closure() {
     let src = "fn merge([], right, _s), do: right\n\
                fn merge(left, [], _s), do: left\n\
                fn merge([lh | lt], [rh | rt], s) do\n\
-                 if s(lh, rh) do\n\
+                 if s.(lh, rh) do\n\
                    [lh | merge(lt, [rh | rt], s)]\n\
                  else\n\
                    [rh | merge([lh | lt], rt, s)]\n\

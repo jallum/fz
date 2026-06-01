@@ -37,6 +37,7 @@ mod fn_ctx;
 mod function;
 #[cfg(debug_assertions)]
 mod invariants;
+mod native_callable;
 mod prim;
 mod receive;
 pub(crate) mod repr;

@@ -27,7 +27,4 @@ pub(crate) use select::{spec_set_correspondence_groups, unique_matching_params};
 pub(crate) use validate::declared_specs_cover_inferred_spec;
 
 #[cfg(test)]
-pub(crate) use select::{matching_result, spec_correspondence_groups};
-
-#[cfg(test)]
 mod tests;

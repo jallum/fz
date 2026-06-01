@@ -1,4 +1,4 @@
-use crate::fz_ir::{CallsiteId, EmitSlot, FnId, FnIr, Module, Var};
+use crate::fz_ir::{EmitSlot, FnId, FnIr, Module, Var};
 use crate::specs::StructuralOccurrence;
 use std::collections::HashMap;
 
@@ -249,10 +249,6 @@ pub struct ModulePlan {
     /// by the fn's all-domain `any` key; narrower per-spec branch facts live
     /// on `SpecPlan::dead_branches` and are consumed only on per-spec clones.
     pub dead_branches: HashMap<(FnId, crate::fz_ir::BlockId), crate::fz_ir::DeadBranch>,
-    /// Closure-handle registry used by planner tests. Runtime codegen
-    /// resolves closure bodies through the emitted any-key body specs.
-    #[cfg(test)]
-    pub closure_handles: std::collections::HashSet<(FnId, Vec<crate::types::Ty>)>,
 }
 
 /// Capability + effect facts for the pre-plan transforms (closure
@@ -438,24 +434,6 @@ mod tests {
 }
 
 impl ModulePlan {
-    #[cfg(test)]
-    pub fn spec_ty(&self, fn_id: FnId, input_tys: &[crate::types::Ty]) -> Option<&SpecPlan> {
-        let key = self.specs.keys().find(|spec_key| {
-            spec_key.fn_id == fn_id
-                && spec_key.demand.is_value()
-                && spec_key.input.len() == input_tys.len()
-                && spec_key
-                    .input
-                    .iter()
-                    .zip(input_tys.iter())
-                    .all(|(slot, ty)| match slot {
-                        None => true,
-                        Some(k) => k == ty,
-                    })
-        })?;
-        self.specs.get(key)
-    }
-
     /// Return the any-key spec for `fn_id` if registered. Direct-call-only
     /// fns have no any-key.
     pub fn any_key_spec(&self, fn_id: FnId) -> Option<&SpecPlan> {
@@ -575,7 +553,6 @@ pub(crate) fn build_any_key_index<T: crate::types::Types<Ty = crate::types::Ty>>
 }
 
 thread_local! {
-    pub static PLAN_MODULE_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
     /// Worklist pops in `process_worklist`. Each pop performs one discovery
     /// walk and one return recompute.
     pub static WORKLIST_POPS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
@@ -597,29 +574,6 @@ pub struct EmitterSite {
     pub caller: SpecKey,
     pub ident: crate::fz_ir::CallsiteIdent,
     pub slot: EmitSlot,
-}
-
-impl EmitterSite {
-    #[cfg(test)]
-    /// Project out the spec-aware `EmitterSite` to a spec-agnostic
-    /// `CallsiteId` by dropping the caller's input key.
-    pub fn callsite_id(&self) -> CallsiteId {
-        CallsiteId::new(self.caller.fn_id, &self.ident, self.slot)
-    }
-}
-
-impl CallsiteId {
-    #[cfg(test)]
-    /// Re-attach a spec key to recover the full `EmitterSite`. The new
-    /// site's FnId must match the `CallsiteId` caller.
-    pub fn with_spec_key(self, spec_key: SpecKey) -> EmitterSite {
-        debug_assert_eq!(self.caller, spec_key.fn_id);
-        EmitterSite {
-            caller: spec_key,
-            ident: self.ident,
-            slot: self.slot,
-        }
-    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]

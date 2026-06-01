@@ -528,8 +528,6 @@ fn merge_module_plan(
             existing.spec_precedence.extend(incoming.spec_precedence);
             existing.fn_effects.extend(incoming.fn_effects);
             existing.dead_branches.extend(incoming.dead_branches);
-            #[cfg(test)]
-            existing.closure_handles.extend(incoming.closure_handles);
         }
         None => *out = Some(incoming),
     }
@@ -569,12 +567,6 @@ fn remap_module_plan(
             .dead_branches
             .iter()
             .filter_map(|((fid, block), dead)| fn_map.get(fid).map(|new| ((*new, *block), *dead)))
-            .collect(),
-        #[cfg(test)]
-        closure_handles: plan
-            .closure_handles
-            .iter()
-            .filter_map(|(fid, captures)| fn_map.get(fid).map(|new| (*new, captures.clone())))
             .collect(),
     }
 }

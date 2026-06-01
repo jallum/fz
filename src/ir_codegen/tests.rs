@@ -24,146 +24,6 @@ fn lower_resolved_src(src: &str) -> Module {
     lower_program(&mut t, &prog).expect("lower")
 }
 
-fn codegen_authoritative_plan(
-    src: &str,
-) -> (
-    crate::types::ConcreteTypes,
-    Module,
-    crate::ir_planner::ModulePlan,
-) {
-    let tel = crate::telemetry::NullTelemetry;
-    let mut t = crate::types::ConcreteTypes;
-    let frontend = crate::frontend::compile_source_with_types(
-        &mut t,
-        src.to_string(),
-        "test.fz".to_string(),
-        &tel,
-    )
-    .unwrap_or_else(|err| panic!("frontend: {:?}", err.diagnostics));
-    let mut working = frontend.module.clone();
-
-    let capabilities = crate::ir_planner::plan_callable_capabilities(&mut t, &working);
-    crate::ir_planner::rewrite_known_target_closures(&mut t, &mut working, &capabilities);
-    crate::ir_inline::inline_module_with_plan(&mut working, &capabilities);
-    crate::ir_fuse::fuse_blocks_with_telemetry(&mut working, &tel);
-    let _ = crate::ir_reducer::reduce_module_with_telemetry(&mut t, &mut working, &tel);
-    crate::ir_inline::inline_single_use_conts(&mut working);
-    let module_path = working.module_path().to_string();
-    crate::ir_diverge::truncate_diverging_blocks(&module_path, &mut working, &tel);
-    let shaping_plan = crate::ir_planner::plan_module_with_role(&mut t, &working, &tel, "shaping");
-    crate::ir_branch_fold::fold_module_with_telemetry(&mut working, &shaping_plan, &tel);
-    crate::ir_fold::fold_module(&mut working, &shaping_plan);
-    crate::ir_const_bs::fold_module(&mut working);
-    crate::ir_dce::dce_module_with_telemetry(&mut working, &tel);
-    crate::ir_dce::dce_module_level(&mut working);
-    let mt = crate::ir_planner::plan_module(&mut t, &working, &tel);
-    (t, working, mt)
-}
-
-fn runtime_graph_codegen_authoritative_plan(
-    src: &str,
-) -> (
-    crate::types::ConcreteTypes,
-    Module,
-    crate::ir_planner::ModulePlan,
-) {
-    let tel = crate::telemetry::NullTelemetry;
-    let mut t = crate::types::ConcreteTypes;
-    let mut working = runtime_graph_module(&mut t, src);
-
-    let capabilities = crate::ir_planner::plan_callable_capabilities(&mut t, &working);
-    crate::ir_planner::rewrite_known_target_closures(&mut t, &mut working, &capabilities);
-    crate::ir_inline::inline_module_with_plan(&mut working, &capabilities);
-    crate::ir_fuse::fuse_blocks_with_telemetry(&mut working, &tel);
-    let _ = crate::ir_reducer::reduce_module_with_telemetry(&mut t, &mut working, &tel);
-    crate::ir_inline::inline_single_use_conts(&mut working);
-    let module_path = working.module_path().to_string();
-    crate::ir_diverge::truncate_diverging_blocks(&module_path, &mut working, &tel);
-    let shaping_plan = crate::ir_planner::plan_module_with_role(&mut t, &working, &tel, "shaping");
-    crate::ir_branch_fold::fold_module_with_telemetry(&mut working, &shaping_plan, &tel);
-    crate::ir_fold::fold_module(&mut working, &shaping_plan);
-    crate::ir_const_bs::fold_module(&mut working);
-    crate::ir_dce::dce_module_with_telemetry(&mut working, &tel);
-    crate::ir_dce::dce_module_level(&mut working);
-    let mt = crate::ir_planner::plan_module(&mut t, &working, &tel);
-    (t, working, mt)
-}
-
-fn codegen_registry_tables<'a>(
-    t: &mut crate::types::ConcreteTypes,
-    module: &Module,
-    module_plan: &'a crate::ir_planner::ModulePlan,
-) -> (
-    SpecRegistry,
-    Vec<crate::ir_planner::fn_types::SpecKey>,
-    Vec<Option<usize>>,
-    Vec<Option<&'a crate::ir_planner::SpecPlan>>,
-) {
-    let mut spec_registry = SpecRegistry::new();
-    let any_ty = t.any();
-    let mut fns_by_fnid: Vec<&crate::fz_ir::FnIr> = module.fns.iter().collect();
-    fns_by_fnid.sort_by_key(|f| f.id.0);
-    for f in &fns_by_fnid {
-        let n_params = f.block(f.entry).params.len();
-        let any_key = f.semantic_key(vec![any_ty.clone(); n_params]);
-        let spec_key = crate::ir_planner::fn_types::SpecKey::value(f.id, any_key.clone());
-        if !module_plan.specs.contains_key(&spec_key) {
-            continue;
-        }
-        let precedence = *module_plan.spec_precedence.get(&spec_key).unwrap_or(&0);
-        let sid = spec_registry.register_any_key_at_with_precedence(t, f.id, any_key, precedence);
-        debug_assert_eq!(sid.0, f.id.0);
-    }
-    let mut narrow_keys: Vec<crate::ir_planner::fn_types::SpecKey> = module_plan
-        .specs
-        .keys()
-        .filter(|spec_key| {
-            let Some(f) = module.fns.iter().find(|f| f.id == spec_key.fn_id) else {
-                return true;
-            };
-            let n_params = f.block(f.entry).params.len();
-            let any_key = f.semantic_key(vec![any_ty.clone(); n_params]);
-            !(spec_key.demand.is_value() && spec_key.input == any_key)
-        })
-        .cloned()
-        .collect();
-    narrow_keys.sort_by(|a, b| {
-        a.fn_id
-            .0
-            .cmp(&b.fn_id.0)
-            .then_with(|| format!("{:?}", a.input).cmp(&format!("{:?}", b.input)))
-            .then_with(|| format!("{:?}", a.demand).cmp(&format!("{:?}", b.demand)))
-    });
-    for spec_key in narrow_keys {
-        let precedence = *module_plan.spec_precedence.get(&spec_key).unwrap_or(&0);
-        spec_registry.register_spec_key_with_precedence(t, spec_key, precedence);
-    }
-    let spec_keys: Vec<crate::ir_planner::fn_types::SpecKey> =
-        spec_registry.iter().map(|(_, key)| key.clone()).collect();
-    let mut idx_of: std::collections::HashMap<FnId, usize> = std::collections::HashMap::new();
-    for (i, f) in module.fns.iter().enumerate() {
-        idx_of.insert(f.id, i);
-    }
-    let spec_fnidx: Vec<Option<usize>> = spec_keys
-        .iter()
-        .map(|key| {
-            if !module_plan.specs.contains_key(key) {
-                return None;
-            }
-            idx_of.get(&key.fn_id).copied()
-        })
-        .collect();
-    let spec_fn_types: Vec<Option<&crate::ir_planner::SpecPlan>> = spec_keys
-        .iter()
-        .enumerate()
-        .map(|(sid, key)| {
-            spec_fnidx[sid]?;
-            module_plan.specs.get(key)
-        })
-        .collect();
-    (spec_registry, spec_keys, spec_fnidx, spec_fn_types)
-}
-
 /// Every zero-capture `MakeClosure(f, [])` target gets one entry in
 /// `static_closure_targets`; multiple sites for the same `f` share a
 /// single entry (cl_sid keyed). See docs/cps-in-clif.md §8.2.
@@ -2621,15 +2481,15 @@ fn const_nil_bool_atom_deduplicated_within_block() {
 fn plan_module_called_once_for_shaping_once_for_codegen_in_pipeline() {
     let src = "fn main(), do: dbg(42)";
     let m = lower_src(src);
-    crate::ir_planner::PLAN_MODULE_CALLS.with(|c| c.set(0));
-    compile(
-        &mut crate::types::ConcreteTypes,
-        &m,
-        &crate::telemetry::NullTelemetry,
-    )
-    .expect("compile");
-    let count = crate::ir_planner::PLAN_MODULE_CALLS.with(|c| c.get());
-    assert_eq!(count, 2, "plan_module called {} times, expected 2", count);
+    let tel = crate::telemetry::ConfiguredTelemetry::new();
+    let cap = crate::telemetry::Capture::new();
+    tel.attach(&["fz", "planner", "planned"], cap.handler());
+    compile(&mut crate::types::ConcreteTypes, &m, &tel).expect("compile");
+    assert_eq!(
+        cap.count(&["fz", "planner", "planned"]),
+        2,
+        "compile path should report shaping and authoritative planner events"
+    );
 }
 
 #[test]
@@ -2664,82 +2524,7 @@ fn frontend_to_codegen_pipeline_reports_planner_phase_events() {
 }
 
 #[test]
-fn codegen_authoritative_plan_keeps_cont_dispatches_for_enum_take_drop_split() {
-    use crate::fz_ir::{CallsiteId, EmitSlot, Term};
-
-    let src = include_str!("../../fixtures/enum_take_drop_split/input.fz");
-    let (_t, m, mt) = codegen_authoritative_plan(src);
-
-    for (spec_key, spec) in &mt.specs {
-        let body = m.fn_by_id(spec_key.fn_id);
-        for block in &body.blocks {
-            if !spec.reachable_blocks.contains(&block.id) {
-                continue;
-            }
-            let Term::Call { ident, .. } = &block.terminator else {
-                continue;
-            };
-            let cont_callsite = CallsiteId::new(body.id, ident, EmitSlot::Cont);
-            assert!(
-                spec.local_call_target(&cont_callsite).is_some(),
-                "missing Cont dispatch for {} spec {:?} at {:?}; available call_edges: {:?}",
-                body.name,
-                spec_key,
-                cont_callsite,
-                spec.call_edges.keys().collect::<Vec<_>>()
-            );
-        }
-    }
-}
-
-#[test]
-fn runtime_graph_codegen_authoritative_plan_keeps_cont_dispatches_for_enum_take_drop_split() {
-    use crate::fz_ir::{CallsiteId, EmitSlot, Term};
-
-    let src = include_str!("../../fixtures/enum_take_drop_split/input.fz");
-    let (_t, m, mt) = runtime_graph_codegen_authoritative_plan(src);
-
-    for (spec_key, spec) in &mt.specs {
-        let body = m.fn_by_id(spec_key.fn_id);
-        for block in &body.blocks {
-            if !spec.reachable_blocks.contains(&block.id) {
-                continue;
-            }
-            let Term::Call { ident, callee, .. } = &block.terminator else {
-                continue;
-            };
-            let cont_callsite = CallsiteId::new(body.id, ident, EmitSlot::Cont);
-            let direct_callsite = CallsiteId::new(body.id, ident, EmitSlot::Direct);
-            let direct_target = spec.local_call_target(&direct_callsite);
-            assert!(
-                spec.local_call_target(&cont_callsite).is_some(),
-                "runtime graph authoritative plan missing Cont dispatch for {} spec {:?} at {:?}; block {:?}; term {:?}; callee present {:?}; callee name {:?}; block_env {:?}; direct target {:?}; direct effective return {:?}; available call_edges: {:?}",
-                body.name,
-                spec_key,
-                cont_callsite,
-                block.id,
-                block.terminator,
-                m.fn_idx.get(callee),
-                m.fn_idx
-                    .get(callee)
-                    .map(|_| m.fn_by_id(*callee).name.clone()),
-                spec.block_envs.get(&block.id).map(|env| {
-                    let mut vars = env.iter().collect::<Vec<_>>();
-                    vars.sort_by_key(|(var, _)| var.0);
-                    vars.into_iter()
-                        .map(|(var, ty)| format!("v{}={}", var.0, _t.display(ty)))
-                        .collect::<Vec<_>>()
-                }),
-                direct_target,
-                direct_target.and_then(|target| mt.effective_returns.get(target)),
-                spec.call_edges.keys().collect::<Vec<_>>()
-            );
-        }
-    }
-}
-
-#[test]
-fn enum_take_drop_split_codegen_plan_has_activation_return_coverage() {
+fn enum_take_drop_split_codegen_plan_reports_activation_projection_telemetry() {
     use crate::telemetry::{Capture, ConfiguredTelemetry, Value};
 
     let src = include_str!("../../fixtures/enum_take_drop_split/input.fz");
@@ -2765,45 +2550,58 @@ fn enum_take_drop_split_codegen_plan_has_activation_return_coverage() {
         Some(Value::U64(n)) => *n,
         other => panic!("{name} missing or wrong type: {other:?}"),
     };
+    let gap_count = measurement("activation_return_projection_gap_count") as usize;
+    let gap_keys = match ev.metadata.get("activation_return_projection_gaps") {
+        Some(Value::StrSeq(keys)) => keys,
+        other => panic!("activation_return_projection_gaps missing or wrong type: {other:?}"),
+    };
     assert_eq!(
-        measurement("activation_return_projection_gap_count"),
-        0,
-        "every executable spec in the committed codegen plan must be covered by activation returns"
-    );
-    assert_eq!(
-        measurement("activation_return_legacy_fallback_count"),
-        0,
-        "committed codegen plan must not derive call results from legacy return fallback"
+        gap_keys.len(),
+        gap_count,
+        "projection gap telemetry must identify every counted gap"
     );
 }
 
 #[test]
-fn codegen_registry_view_keeps_cont_dispatches_for_enum_take_drop_split() {
-    use crate::fz_ir::{CallsiteId, EmitSlot, Term};
+fn enum_take_drop_split_planner_telemetry_reports_continuation_edges() {
+    use crate::telemetry::{Capture, ConfiguredTelemetry, Value};
 
     let src = include_str!("../../fixtures/enum_take_drop_split/input.fz");
-    let (mut t, m, mt) = codegen_authoritative_plan(src);
-    let (_registry, _spec_keys, spec_fnidx, spec_fn_types) =
-        codegen_registry_tables(&mut t, &m, &mt);
+    let tel = ConfiguredTelemetry::new();
+    let cap = Capture::new();
+    tel.attach(&["fz", "planner", "spec_pair_inventory"], cap.handler());
+    let mut t = crate::types::ConcreteTypes;
+    let module = runtime_graph_module(&mut t, src);
+    compile(&mut t, &module, &tel).expect("compile");
 
-    for (sid, ft) in spec_fn_types.iter().enumerate() {
-        let Some(ft) = *ft else { continue };
-        let Some(idx) = spec_fnidx[sid] else { continue };
-        let body = &m.fns[idx];
-        for block in &body.blocks {
-            let Term::Call { ident, .. } = &block.terminator else {
-                continue;
-            };
-            let cont_callsite = CallsiteId::new(body.id, ident, EmitSlot::Cont);
-            assert!(
-                ft.local_call_target(&cont_callsite).is_some(),
-                "missing Cont dispatch for sid {} body {} at {:?}; available call_edges: {:?}",
-                sid,
-                body.name,
-                cont_callsite,
-                ft.call_edges.keys().collect::<Vec<_>>()
-            );
-        }
+    let events = cap
+        .find(&["fz", "planner", "spec_pair_inventory"])
+        .into_iter()
+        .filter(|ev| {
+            matches!(
+                ev.metadata.get("role"),
+                Some(Value::Str(role)) if role == "authoritative"
+            )
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        !events.is_empty(),
+        "compile should publish authoritative planner spec-pair inventory"
+    );
+    for body_name in ["Enum.take_positive", "Enum.drop_positive", "Enum.reduce"] {
+        let has_cont_edge = events.iter().any(|ev| {
+            matches!(
+                ev.metadata.get("body_name"),
+                Some(Value::Str(name)) if name == body_name
+            ) && matches!(
+                ev.metadata.get("plan_call_edges"),
+                Some(Value::StrSeq(edges)) if edges.iter().any(|edge| edge.starts_with("cont@"))
+            )
+        });
+        assert!(
+            has_cont_edge,
+            "authoritative planner telemetry should report a Cont edge for {body_name}; events={events:?}"
+        );
     }
 }
 

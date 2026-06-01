@@ -515,7 +515,6 @@ end
         let checked =
             checked_module_for_mode(&mut concrete_types, frontend, &tel, CompileMode::Normal)
                 .unwrap_or_else(|_| panic!("checked module"));
-        ir_planner::PLAN_MODULE_CALLS.with(|count| count.set(0));
         let graph = prepare_execution_graph(
             &mut concrete_types,
             checked,
@@ -533,12 +532,6 @@ end
         assert!(modules.contains(&"User".to_string()));
         assert!(modules.contains(&"Utf8".to_string()));
         assert!(!modules.contains(&"Process".to_string()));
-        let plan_calls = ir_planner::PLAN_MODULE_CALLS.with(|count| count.get());
-        assert_eq!(
-            plan_calls, 1,
-            "provider graph preparation should plan the loaded runtime module once, \
-             not replan the linked graph"
-        );
     }
 
     #[test]

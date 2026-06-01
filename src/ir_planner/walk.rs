@@ -34,10 +34,6 @@ pub(crate) struct WalkResult {
     /// into the `return_readers` reverse index so changes
     /// re-enqueue this caller.
     pub(crate) return_reads: Vec<SpecKey>,
-    /// Closure handles produced by `MakeClosure` in this walk, as
-    /// `(lambda FnId, capture-types)`. Driver folds into
-    /// `ModulePlan.closure_handles`.
-    pub(crate) closure_handles: HashSet<(FnId, Vec<crate::types::Ty>)>,
     /// Recursive callee inputs observed before fixed-point summaries are applied.
     /// The summaries are consumed by spec-key normalization, so normalized spec
     /// keys cannot be the source of truth for widening them.
@@ -170,9 +166,8 @@ enum ProtocolDispatch {
 ///   - `EmitSlot::MakeClosure` for the any-key body spec reachable through a
 ///     closure value.
 ///
-/// `Prim::MakeClosure` also records a closure value handle in
-/// `out.closure_handles`. Codegen resolves the lambda body directly through the
-/// any-key body spec.
+/// `Prim::MakeClosure` emits the lambda's any-key body spec. Closure values do
+/// not add a separate planner artifact.
 ///
 /// `recursive_fns`: calls into recursive functions are normalized
 /// immediately with `widen_for_recursive_spec_key`, including the first
@@ -197,7 +192,6 @@ pub(crate) fn walk_spec_for_discovery<
     caller_spec_key: &SpecKey,
     callsite_callable_capabilities: &mut CallsiteCallableCapabilities,
     out: &mut WalkResult,
-    activation_returns: &super::worklist::ActivationReturnFacts,
 ) {
     WALK_CALLS.with(|c| c.set(c.get() + 1));
     let any_ty = t.any();
@@ -213,7 +207,6 @@ pub(crate) fn walk_spec_for_discovery<
         caller_spec_key,
         callsite_callable_capabilities,
         out,
-        activation_returns,
         any_ty,
     }
     .walk_fn(f);
@@ -234,7 +227,6 @@ where
     caller_spec_key: &'a SpecKey,
     callsite_callable_capabilities: &'a mut CallsiteCallableCapabilities,
     out: &'a mut WalkResult,
-    activation_returns: &'a super::worklist::ActivationReturnFacts,
     any_ty: crate::types::Ty,
 }
 
@@ -266,7 +258,7 @@ where
     fn walk_statements(&mut self, stmts: &[Stmt], env: &mut HashMap<Var, crate::types::Ty>) {
         for stmt in stmts {
             let Stmt::Let(v, prim) = stmt;
-            self.record_make_closure_handle(prim, env);
+            self.record_make_closure_target(prim);
             let pt_ty = super::prim::type_prim(self.t, prim, env, self.m, &HashSet::new());
             env.insert(*v, pt_ty);
         }
@@ -288,8 +280,8 @@ where
         self.seed_receive_matched_outcomes(term);
     }
 
-    fn record_make_closure_handle(&mut self, prim: &Prim, env: &HashMap<Var, crate::types::Ty>) {
-        let Prim::MakeClosure(mk_ident, lam_fn_id, captured) = prim else {
+    fn record_make_closure_target(&mut self, prim: &Prim) {
+        let Prim::MakeClosure(mk_ident, lam_fn_id, _) = prim else {
             return;
         };
         let Some(&jj) = self.m.fn_idx.get(lam_fn_id) else {
@@ -297,15 +289,6 @@ where
         };
         let lam = &self.m.fns[jj];
         let n_params = lam.block(lam.entry).params.len();
-        let captures: Vec<crate::types::Ty> = captured
-            .iter()
-            .map(|cv| {
-                env.get(cv)
-                    .cloned()
-                    .expect("MakeClosure: captured var unbound")
-            })
-            .collect();
-        self.out.closure_handles.insert((*lam_fn_id, captures));
         let any_key = spec_key_for_fn(lam, vec![self.any_ty.clone(); n_params]);
         self.emit(EmitSlot::MakeClosure, mk_ident.clone(), any_key);
     }
@@ -620,7 +603,6 @@ where
                     Some(self.complete_returns),
                     self.slot_summaries,
                     target,
-                    self.activation_returns,
                 );
                 self.out.return_reads.extend(knowledge.return_reads);
                 match knowledge.slot0 {
@@ -683,7 +665,6 @@ where
                 self.effective_returns,
                 Some(self.complete_returns),
                 self.slot_summaries,
-                self.activation_returns,
             );
             self.out.return_reads.extend(knowledge.return_reads);
             return Some(match knowledge.slot0 {
@@ -704,7 +685,6 @@ where
             self.effective_returns,
             self.complete_returns,
             self.slot_summaries,
-            self.activation_returns,
         );
         self.out.return_reads.extend(knowledge.return_reads);
         Some(match knowledge.slot0 {

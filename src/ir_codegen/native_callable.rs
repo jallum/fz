@@ -1,35 +1,17 @@
-//! Parking-reachability analysis (fz-ul4.27.6.1).
+//! Native-ABI callability analysis (fz-ul4.27.6.2).
 //!
-//! A fn is *parking-reachable* if some path through it can suspend the task
-//! via `Term::Receive`. Callers of parking-reachable fns must keep their
-//! frames heap-resident so the scheduler can park them; callers of
-//! definitely-non-parking fns can use a native ABI with stack frames
-//! (VR.4.2 onward).
+//! `natively_callable` identifies the subset of fns that can use the typed
+//! native-Cranelift ABI rather than the uniform
+//! `(frame_ptr, host_ctx) -> frame_ptr` trampoline ABI. Native-call sites to
+//! such fns skip `fz_alloc_frame` for the callee and pass args by register.
 //!
-//! The analysis is a soundly-conservative call-graph closure:
-//!
-//!   parking_reachable := { f : f has a `Term::Receive` block }
-//!                      ∪ { f : f packs another fn into a closure
-//!                              (the closure could escape and be invoked
-//!                               at a parking site) }
-//!                      ∪ { f : f has a `Term::CallClosure` /
-//!                              `Term::TailCallClosure` terminator (the
-//!                              closure target is opaque — assume it parks) }
-//!
-//!   fixed point: + { f : f has Term::Call / TailCall to a parking-reachable fn }
-//!
-//! Closure calls and closure packing are both conservative — neither
-//! direction lets us trace the actual callee, so we widen.
-//!
-//! Companion analysis (fz-ul4.27.6.2): `natively_callable` identifies the
-//! subset of fns that can use the typed native-Cranelift ABI rather than
-//! the uniform `(frame_ptr, host_ctx) -> frame_ptr` trampoline ABI. A fn
-//! qualifies iff (a) it is not parking-reachable, (b) it is never used as
-//! a continuation (continuations are dispatched by the trampoline which
-//! requires the uniform ABI), and (c) it is not the program entry `main`
-//! (driven by aot_shim / runtime through the trampoline). Native-call
-//! sites to such fns skip `fz_alloc_frame` for the callee and pass args
-//! by register.
+//! A fn qualifies iff it is reachable as a native call target (directly
+//! called, used as a continuation, or used as a closure target — plus the
+//! program entry `main`, dispatched via the `fz_main_entry` shim per
+//! fz-cps.5) AND every terminator in its body lowers natively given the
+//! native set. The analysis seeds with all reachable candidates and shrinks
+//! to a fixed point, evicting any fn whose body would have to dispatch
+//! through the uniform ABI.
 
 use crate::fz_ir::{FnId, Module, Prim, Stmt, Term};
 use std::collections::HashSet;
@@ -50,17 +32,11 @@ use std::collections::HashSet;
 /// call args into the native callee's typed signature, and routes the
 /// callee's tagged-ref return through the cont (or halts on a null
 /// cont when invoked at the top of a task).
-pub fn natively_callable(m: &Module, parking: &HashSet<FnId>) -> HashSet<FnId> {
+pub(super) fn natively_callable(m: &Module) -> HashSet<FnId> {
     use std::collections::HashMap;
     let mut used_as_cont: HashSet<FnId> = HashSet::new();
     let mut used_as_closure_target: HashSet<FnId> = HashSet::new();
     let mut directly_called: HashSet<FnId> = HashSet::new();
-    // A cont can only be invoked natively from a Term::Call where the
-    // callee is also native (the chain in .6.3's emit_call). If a cont
-    // is used at a Term::CallClosure or Term::Receive site, it gets
-    // dispatched by the trampoline via the uniform ABI, so it must stay
-    // uniform. `cont_blocked` records these forbidden conts.
-    let cont_blocked: HashSet<FnId> = HashSet::new();
     // For each fn used as a Term::Call cont, the callees of those call
     // sites. The cont can be native only if every such callee is native
     // (so every call site picks the native-chain emit_call path).
@@ -144,9 +120,6 @@ pub fn natively_callable(m: &Module, parking: &HashSet<FnId>) -> HashSet<FnId> {
 
     // fz-cps.5 — main is admitted to natively_callable. The scheduler
     // calls into it via the SystemV→Tail-CC `fz_main_entry` shim.
-    // Parking-reachable exclusion is fully lifted; cont_blocked is
-    // empty (closure ops are body_ok per fz-cps.1.8).
-    let _ = (&parking, &cont_blocked);
     let mut set: HashSet<FnId> = HashSet::new();
     for f in &m.fns {
         if !reachable_as_native(&f.id) && Some(f.id) != main_id {
@@ -237,71 +210,10 @@ pub fn natively_callable(m: &Module, parking: &HashSet<FnId>) -> HashSet<FnId> {
     set
 }
 
-/// Returns the set of fn ids that are parking-reachable in `m`.
-pub fn parking_reachable(m: &Module) -> HashSet<FnId> {
-    let mut set: HashSet<FnId> = HashSet::new();
-
-    // Seed: any fn that directly contains a Term::Receive, packs a closure,
-    // or invokes one.
-    for f in &m.fns {
-        let mut seed = false;
-        for b in &f.blocks {
-            if matches!(
-                b.terminator,
-                Term::Receive { .. }
-                    | Term::ReceiveMatched { .. }
-                    | Term::CallClosure { .. }
-                    | Term::TailCallClosure { .. }
-            ) {
-                seed = true;
-                break;
-            }
-            for stmt in &b.stmts {
-                let Stmt::Let(_, prim) = stmt;
-                if matches!(prim, Prim::MakeClosure(_, _, _)) {
-                    seed = true;
-                    break;
-                }
-            }
-            if seed {
-                break;
-            }
-        }
-        if seed {
-            set.insert(f.id);
-        }
-    }
-
-    // Iterate: a fn becomes reachable if it directly calls (Call / TailCall)
-    // a reachable fn. Direct call edges only — closure calls were already
-    // accounted for above.
-    loop {
-        let mut changed = false;
-        for f in &m.fns {
-            if set.contains(&f.id) {
-                continue;
-            }
-            let calls_reachable = f.blocks.iter().any(|b| match &b.terminator {
-                Term::Call { callee, .. } | Term::TailCall { callee, .. } => set.contains(callee),
-                _ => false,
-            });
-            if calls_reachable {
-                set.insert(f.id);
-                changed = true;
-            }
-        }
-        if !changed {
-            break;
-        }
-    }
-
-    set
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fz_ir::{Cont, FnBuilder, FnId, ModuleBuilder, Term, Var};
+    use crate::fz_ir::{Cont, FnBuilder, FnId, ModuleBuilder, Term};
 
     fn build(fns: Vec<crate::fz_ir::FnIr>) -> Module {
         let mut mb = ModuleBuilder::new();
@@ -309,143 +221,6 @@ mod tests {
             mb.add_fn(f);
         }
         mb.build()
-    }
-
-    fn empty_cont(b: &mut FnBuilder) -> Var {
-        // Convenience: returns a fresh Var that callers can use as the
-        // sole arg of a Term::Halt to terminate the test fn.
-        b.fresh_var()
-    }
-
-    #[test]
-    fn fn_with_receive_is_parking_reachable() {
-        let mut b = FnBuilder::new(FnId(0), "rx");
-        let entry = b.block(vec![]);
-        b.set_terminator(
-            entry,
-            Term::Receive {
-                ident: crate::fz_ir::CallsiteIdent::synthetic(),
-                continuation: Cont {
-                    fn_id: FnId(0),
-                    captured: vec![],
-                },
-            },
-        );
-        let m = build(vec![b.build()]);
-        let s = parking_reachable(&m);
-        assert!(s.contains(&FnId(0)));
-    }
-
-    #[test]
-    fn pure_helper_is_not_parking_reachable() {
-        let mut b = FnBuilder::new(FnId(0), "pure");
-        let v = empty_cont(&mut b);
-        let entry = b.block(vec![v]);
-        b.set_terminator(entry, Term::Halt(v));
-        let m = build(vec![b.build()]);
-        let s = parking_reachable(&m);
-        assert!(!s.contains(&FnId(0)));
-    }
-
-    #[test]
-    fn caller_of_parking_fn_is_parking_reachable() {
-        // f calls g; g has Receive. Both should end up in the set.
-        let mut g = FnBuilder::new(FnId(0), "g");
-        let g_entry = g.block(vec![]);
-        g.set_terminator(
-            g_entry,
-            Term::Receive {
-                ident: crate::fz_ir::CallsiteIdent::synthetic(),
-                continuation: Cont {
-                    fn_id: FnId(2),
-                    captured: vec![],
-                },
-            },
-        );
-
-        let mut f = FnBuilder::new(FnId(1), "f");
-        let f_entry = f.block(vec![]);
-        f.set_terminator(
-            f_entry,
-            Term::TailCall {
-                ident: crate::fz_ir::CallsiteIdent::synthetic(),
-                callee: FnId(0),
-                args: vec![],
-                is_back_edge: false,
-            },
-        );
-
-        // Dummy cont to satisfy structural shape.
-        let mut k = FnBuilder::new(FnId(2), "k");
-        let v = empty_cont(&mut k);
-        let k_entry = k.block(vec![v]);
-        k.set_terminator(k_entry, Term::Halt(v));
-
-        let m = build(vec![g.build(), f.build(), k.build()]);
-        let s = parking_reachable(&m);
-        assert!(
-            s.contains(&FnId(0)),
-            "g (has Receive) should be parking-reachable"
-        );
-        assert!(
-            s.contains(&FnId(1)),
-            "f (calls g) should be parking-reachable"
-        );
-        // k is the continuation but contains no receive itself — it gets
-        // dispatched by the scheduler, so it's not in the parking set.
-        // (Continuations are independent fns; reachability is per-fn.)
-        assert!(
-            !s.contains(&FnId(2)),
-            "k (no receive) should not be parking-reachable"
-        );
-    }
-
-    #[test]
-    fn closure_packer_is_parking_reachable() {
-        // A fn that builds a closure value is conservatively in the set:
-        // the closure might be invoked at a parking-reachable site.
-        let mut b = FnBuilder::new(FnId(0), "packer");
-        let entry = b.block(vec![]);
-        let cl = b.let_(
-            entry,
-            Prim::MakeClosure(crate::fz_ir::CallsiteIdent::synthetic(), FnId(1), vec![]),
-        );
-        b.set_terminator(entry, Term::Halt(cl));
-        // Dummy target fn.
-        let mut t = FnBuilder::new(FnId(1), "target");
-        let v = empty_cont(&mut t);
-        let t_entry = t.block(vec![v]);
-        t.set_terminator(t_entry, Term::Halt(v));
-        let m = build(vec![b.build(), t.build()]);
-        let s = parking_reachable(&m);
-        assert!(s.contains(&FnId(0)), "packer should be parking-reachable");
-    }
-
-    #[test]
-    fn closure_invoker_is_parking_reachable() {
-        // A fn that calls a closure (CallClosure / TailCallClosure) is in
-        // the set — the closure target is opaque to this analysis.
-        let mut b = FnBuilder::new(FnId(0), "invoker");
-        let entry = b.block(vec![]);
-        let cl = b.let_(
-            entry,
-            Prim::MakeClosure(crate::fz_ir::CallsiteIdent::synthetic(), FnId(1), vec![]),
-        );
-        b.set_terminator(
-            entry,
-            Term::TailCallClosure {
-                ident: crate::fz_ir::CallsiteIdent::synthetic(),
-                closure: cl,
-                args: vec![],
-            },
-        );
-        let mut t = FnBuilder::new(FnId(1), "target");
-        let v = empty_cont(&mut t);
-        let t_entry = t.block(vec![v]);
-        t.set_terminator(t_entry, Term::Halt(v));
-        let m = build(vec![b.build(), t.build()]);
-        let s = parking_reachable(&m);
-        assert!(s.contains(&FnId(0)));
     }
 
     // --- natively_callable tests (fz-ul4.27.6.2) ---
@@ -476,8 +251,7 @@ mod tests {
 
         let helper = make_fn(1, "helper");
         let m = build(vec![main_b.build(), helper]);
-        let parking = parking_reachable(&m);
-        let nc = natively_callable(&m, &parking);
+        let nc = natively_callable(&m);
         assert!(nc.contains(&FnId(1)), "helper should be natively-callable");
         // fz-cps.5: main is now native — scheduler dispatches via
         // fz_main_entry SystemV→Tail-CC shim.
@@ -500,8 +274,7 @@ mod tests {
         );
         let k = make_fn(1, "k");
         let m = build(vec![rx.build(), k]);
-        let parking = parking_reachable(&m);
-        let nc = natively_callable(&m, &parking);
+        let nc = natively_callable(&m);
         assert!(
             !nc.contains(&FnId(0)),
             "rx is parking, not natively-callable"
@@ -543,8 +316,7 @@ mod tests {
             },
         );
         let m = build(vec![f.build(), helper, k, outer.build()]);
-        let parking = parking_reachable(&m);
-        let nc = natively_callable(&m, &parking);
+        let nc = natively_callable(&m);
         assert!(
             nc.contains(&FnId(1)),
             "helper is leaf-bodied and direct-called"
@@ -562,8 +334,7 @@ mod tests {
     fn natively_callable_includes_main() {
         let helper = make_fn(0, "main");
         let m = build(vec![helper]);
-        let parking = parking_reachable(&m);
-        let nc = natively_callable(&m, &parking);
+        let nc = natively_callable(&m);
         assert!(nc.contains(&FnId(0)));
     }
 
@@ -598,15 +369,12 @@ mod tests {
 
         let k = make_fn(2, "k");
         let m = build(vec![g.build(), f.build(), k]);
-        let parking = parking_reachable(&m);
-        let nc = natively_callable(&m, &parking);
-        // f isn't parking in the parking sense (it just forwards), but
-        // it's still parking-reachable because parking_reachable's fixed
-        // point promotes callers. So check explicitly that f is excluded
-        // from natively_callable for either reason.
+        let nc = natively_callable(&m);
+        // Nothing native-calls f, so the reachability gate keeps it out of
+        // natively_callable regardless of what it forwards to.
         assert!(
             !nc.contains(&FnId(1)),
-            "f TailCalls non-native g and must not be native"
+            "f is unreachable as a native target and must not be native"
         );
     }
 
@@ -631,8 +399,7 @@ mod tests {
         let helper = make_fn(1, "helper");
         let k = make_fn(2, "k");
         let m = build(vec![f.build(), helper, k]);
-        let parking = parking_reachable(&m);
-        let nc = natively_callable(&m, &parking);
+        let nc = natively_callable(&m);
         assert!(
             !nc.contains(&FnId(0)),
             "f has Term::Call, not native-eligible"

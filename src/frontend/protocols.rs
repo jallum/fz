@@ -107,8 +107,6 @@ pub struct ProtocolCallbackFact {
     // Callback spec compatibility consumes the ordered overload set during
     // protocol implementation validation.
     pub specs: Vec<crate::ast::SpecDecl>,
-    #[allow(dead_code)] // Kept for callback-specific diagnostics as validation grows.
-    pub span: Span,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -221,7 +219,6 @@ impl ProtocolRegistry {
                                 name: callback.name.clone(),
                                 arity: callback.arity,
                                 specs: Vec::new(),
-                                span: Span::DUMMY,
                             })
                             .collect(),
                         span: Span::DUMMY,

@@ -30,7 +30,6 @@ mod ir_lower;
 mod ir_planner;
 mod ir_reducer;
 mod modules;
-mod parking;
 mod parser;
 mod pattern_matrix;
 mod reducer;

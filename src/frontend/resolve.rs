@@ -165,27 +165,6 @@ impl std::fmt::Display for ResolveError {
 
 impl std::error::Error for ResolveError {}
 
-/// REPL helper: rewrite cross-module `Mod.fn(args)` calls in a single
-/// expression. No sibling-fn rewriting (the REPL has no enclosing
-/// module).
-#[allow(dead_code)]
-pub fn rewrite_expr_top_level(e: &mut Spanned<Expr>) {
-    let no_siblings: HashSet<String> = HashSet::new();
-    let mut intro: HashSet<String> = HashSet::new();
-    let no_paths: HashSet<String> = HashSet::new();
-    let no_aliases: HashMap<String, String> = HashMap::new();
-    let no_imports: ImportMap = HashMap::new();
-    rewrite_expr(
-        e,
-        "",
-        &no_siblings,
-        &mut intro,
-        &no_paths,
-        &no_aliases,
-        &no_imports,
-    );
-}
-
 pub fn flatten_modules<T: crate::types::Types<Ty = crate::types::Ty>>(
     t: &mut T,
     prog: Program,
@@ -1052,7 +1031,6 @@ fn protocol_decl<T: crate::types::Types<Ty = crate::types::Ty>>(
                     _ => None,
                 })
                 .collect(),
-            span: callback.span,
         });
     }
     callbacks.sort_by(|a, b| (&a.name, a.arity).cmp(&(&b.name, b.arity)));

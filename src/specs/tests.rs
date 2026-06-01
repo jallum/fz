@@ -1,7 +1,7 @@
 use super::{
     CallbackReturnDemand, CallbackReturnFact, ResolvedSpec, ResolvedSpecSet, ResolvedTypeShape,
     SchemeInstantiation, SpecApplicationOutcome, apply_spec_set,
-    declared_specs_cover_inferred_spec, instantiate_match, matching_result, resolve_closure_return,
+    declared_specs_cover_inferred_spec, instantiate_match, resolve_closure_return,
     unique_matching_params,
 };
 use crate::types::{ClosureTarget, ClosureTypes, ConcreteTypes, MapKey, TypeVarId, Types};
@@ -14,6 +14,17 @@ fn resolved_spec(params: Vec<crate::types::Ty>, result: crate::types::Ty) -> Res
         result,
         result_shape: ResolvedTypeShape::Any,
         constraints: std::collections::HashMap::new(),
+    }
+}
+
+fn matching_result(
+    t: &mut ConcreteTypes,
+    spec_set: &ResolvedSpecSet,
+    arg_tys: &[crate::types::Ty],
+) -> Option<crate::types::Ty> {
+    match apply_spec_set::<_, (), _>(t, spec_set, arg_tys, |_t, _query| None) {
+        SpecApplicationOutcome::Known(application) => Some(application.result),
+        SpecApplicationOutcome::Underconstrained(_) | SpecApplicationOutcome::NoMatch => None,
     }
 }
 

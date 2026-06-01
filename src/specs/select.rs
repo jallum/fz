@@ -166,25 +166,6 @@ where
     }
 }
 
-#[cfg(test)]
-pub(crate) fn matching_result<T>(
-    t: &mut T,
-    spec_set: &ResolvedSpecSet,
-    arg_tys: &[crate::types::Ty],
-) -> Option<crate::types::Ty>
-where
-    T: ClosureTypes<Ty = crate::types::Ty>,
-{
-    let mut result = None;
-    for matched in matching_arrows(t, spec_set, arg_tys) {
-        result = Some(match result {
-            Some(prev) => t.union(prev, matched.result),
-            None => matched.result,
-        });
-    }
-    result
-}
-
 fn matching_arrows<T>(
     t: &mut T,
     spec_set: &ResolvedSpecSet,
