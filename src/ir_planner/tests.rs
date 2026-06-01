@@ -1549,6 +1549,37 @@ fn observe_planner_work(src: &str) -> (usize, usize, usize, usize) {
 }
 
 #[test]
+fn planner_planned_reports_activation_return_kernel_telemetry() {
+    use crate::telemetry::{Capture, ConfiguredTelemetry, Value};
+
+    let tel = ConfiguredTelemetry::new();
+    let cap = Capture::new();
+    tel.attach(&[], cap.handler());
+
+    let _ = pipeline("fn id(x), do: x\nfn main(), do: id(1)", &tel);
+
+    let ev = cap
+        .last(&["fz", "planner", "planned"])
+        .expect("fz.planner.planned event not emitted");
+    assert!(matches!(
+        ev.metadata.get("type_kernel"),
+        Some(Value::Str(kernel)) if kernel == "activation"
+    ));
+
+    let measurement = |name| match ev.measurements.get(name) {
+        Some(Value::U64(n)) => *n,
+        other => panic!("{name} missing or wrong type: {other:?}"),
+    };
+    assert!(measurement("activation_return_fact_count") > 0);
+    assert!(measurement("activation_return_key_count") > 0);
+    measurement("activation_return_known_count");
+    measurement("activation_return_unresolved_count");
+    measurement("activation_return_no_return_count");
+    measurement("activation_return_compatible_lookup_count");
+    measurement("activation_return_legacy_fallback_count");
+}
+
+#[test]
 fn planner_emits_return_fixpoint_step_telemetry() {
     use crate::telemetry::{Capture, ConfiguredTelemetry};
 

@@ -15,6 +15,7 @@ use super::walk::{WalkResult, walk_spec_for_discovery};
 use crate::fz_ir::{Block, FnId, Module, Term};
 use crate::ir_callgraph::{build_call_graph, entry_seeds};
 use crate::type_infer::TypeInferReturnState;
+use std::cell::Cell;
 use std::collections::HashMap;
 
 pub(crate) enum ResultSlot0 {
@@ -27,9 +28,33 @@ pub(crate) struct CallResultKnowledge {
     pub(crate) return_reads: Vec<SpecKey>,
 }
 
-#[derive(Default)]
 pub(crate) struct ActivationReturnFacts {
     returns: HashMap<SpecKey, TypeInferReturnState>,
+    raw_fact_count: usize,
+    compatible_lookup_count: Cell<usize>,
+    legacy_fallback_count: Cell<usize>,
+}
+
+impl Default for ActivationReturnFacts {
+    fn default() -> Self {
+        Self {
+            returns: HashMap::new(),
+            raw_fact_count: 0,
+            compatible_lookup_count: Cell::new(0),
+            legacy_fallback_count: Cell::new(0),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Default)]
+struct ActivationReturnTelemetry {
+    fact_count: usize,
+    key_count: usize,
+    known_count: usize,
+    unresolved_count: usize,
+    no_return_count: usize,
+    compatible_lookup_count: usize,
+    legacy_fallback_count: usize,
 }
 
 impl ActivationReturnFacts {
@@ -48,6 +73,7 @@ impl ActivationReturnFacts {
         for (entry, input_tys) in seeds {
             let outcome = crate::type_infer::infer_from_entry_data(t, module, entry, &input_tys);
             for activation in outcome.activations {
+                facts.raw_fact_count += 1;
                 let key = spec_key_for_fn_id(module, activation.fn_id, activation.input_tys);
                 facts.insert(t, key, activation.return_state);
             }
@@ -67,6 +93,25 @@ impl ActivationReturnFacts {
                 *existing = merge_activation_return_state(t, existing, &state);
             })
             .or_insert(state);
+    }
+
+    fn known_return_for_call_result<
+        T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
+    >(
+        &self,
+        t: &mut T,
+        key: &SpecKey,
+    ) -> Option<crate::types::Ty> {
+        let exact = self.returns.contains_key(key);
+        let ret = self.known_return(t, key);
+        if ret.is_none() {
+            self.legacy_fallback_count
+                .set(self.legacy_fallback_count.get() + 1);
+        } else if !exact {
+            self.compatible_lookup_count
+                .set(self.compatible_lookup_count.get() + 1);
+        }
+        ret
     }
 
     fn known_return<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes>(
@@ -116,6 +161,26 @@ impl ActivationReturnFacts {
                 effective_returns.insert(key.clone(), ret);
             }
         }
+    }
+
+    fn telemetry(&self) -> ActivationReturnTelemetry {
+        let mut stats = ActivationReturnTelemetry {
+            fact_count: self.raw_fact_count,
+            key_count: self.returns.len(),
+            compatible_lookup_count: self.compatible_lookup_count.get(),
+            legacy_fallback_count: self.legacy_fallback_count.get(),
+            ..ActivationReturnTelemetry::default()
+        };
+        for state in self.returns.values() {
+            match state {
+                TypeInferReturnState::Known(_) => stats.known_count += 1,
+                TypeInferReturnState::Pending | TypeInferReturnState::Unknown => {
+                    stats.unresolved_count += 1;
+                }
+                TypeInferReturnState::NoReturn => stats.no_return_count += 1,
+            }
+        }
+        stats
     }
 }
 
@@ -235,7 +300,7 @@ pub(crate) fn direct_call_result_knowledge<
         arg_tys,
         &module.fn_by_id(caller).owner_module,
     );
-    if let Some(ret) = activation_returns.known_return(t, &target) {
+    if let Some(ret) = activation_returns.known_return_for_call_result(t, &target) {
         return CallResultKnowledge {
             slot0: ResultSlot0::Known(ret),
             return_reads: vec![target],
@@ -304,7 +369,7 @@ pub(crate) fn known_closure_result_knowledge<
         arg_tys,
         &module.fn_by_id(caller).owner_module,
     );
-    if let Some(ret) = activation_returns.known_return(t, &key) {
+    if let Some(ret) = activation_returns.known_return_for_call_result(t, &key) {
         return CallResultKnowledge {
             slot0: ResultSlot0::Known(ret),
             return_reads: vec![key],
@@ -469,6 +534,7 @@ pub fn plan_module_with_role<
 
     let any_key_specs = build_any_key_index(t, m, &out.specs);
     let spec_precedence = key_precedence_order(&out.specs, &any_key_specs);
+    let activation_return_telemetry = out.activation_return_telemetry;
 
     let mut mt = ModulePlan {
         specs: out.specs,
@@ -503,6 +569,13 @@ pub fn plan_module_with_role<
                 if_count: stats.if_count as u64,
                 receive_count: stats.receive_count as u64,
                 receive_matched_count: stats.receive_matched_count as u64,
+                activation_return_fact_count: activation_return_telemetry.fact_count as u64,
+                activation_return_key_count: activation_return_telemetry.key_count as u64,
+                activation_return_known_count: activation_return_telemetry.known_count as u64,
+                activation_return_unresolved_count: activation_return_telemetry.unresolved_count as u64,
+                activation_return_no_return_count: activation_return_telemetry.no_return_count as u64,
+                activation_return_compatible_lookup_count: activation_return_telemetry.compatible_lookup_count as u64,
+                activation_return_legacy_fallback_count: activation_return_telemetry.legacy_fallback_count as u64,
             },
             &crate::metadata! {
                 // The label is explicit so consumers can key the committed
@@ -511,6 +584,7 @@ pub fn plan_module_with_role<
                 // visible too, with their own role, rather than hidden behind
                 // NullTelemetry.
                 role: role,
+                type_kernel: "activation",
                 module_path: m.module_path().to_owned(),
                 module: crate::telemetry::value::opaque(m),
                 module_plan: crate::telemetry::value::opaque(&mt),
@@ -605,6 +679,7 @@ struct DiscoverOutput {
     specs: HashMap<SpecKey, SpecPlan>,
     effective_returns: HashMap<SpecKey, crate::types::Ty>,
     fn_effects: FnEffects,
+    activation_return_telemetry: ActivationReturnTelemetry,
     #[cfg_attr(not(test), allow(dead_code))]
     closure_handles: std::collections::HashSet<(FnId, Vec<crate::types::Ty>)>,
 }
@@ -714,6 +789,7 @@ fn discover_specs<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::
     specs.retain(|k, _| reachable.contains(k));
     effective_returns.retain(|k, _| reachable.contains(k));
     activation_returns.overlay_effective_returns(t, &reachable, &mut effective_returns);
+    let activation_return_telemetry = activation_returns.telemetry();
     verify_closed_expectations(
         &reachable,
         &specs,
@@ -728,6 +804,7 @@ fn discover_specs<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::
         specs,
         effective_returns,
         fn_effects,
+        activation_return_telemetry,
         closure_handles,
     }
 }

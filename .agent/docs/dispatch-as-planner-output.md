@@ -61,6 +61,10 @@ activation facts are matched to planner value keys by `FnId`, value
 overlapping activation/planner input facts, erasing concrete closure identity
 only for this comparison so a concrete captured reducer can satisfy the
 planner's callable-capture slot without making closure identity an ABI fact.
+The `fz.planner.planned` event reports this bridge with
+`type_kernel: "activation"` plus activation return fact/key counts,
+known/unresolved/no-return counts, compatible-key lookup count, and legacy
+fallback count.
 
 Local direct, closure, and continuation call edges target a `SpecKey`, which
 names the callee function, its semantic input key, and its `ReturnDemand`.
