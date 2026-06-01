@@ -22,6 +22,7 @@ the planner's type inference, not runtime behavior, so they live outside
 | `match_nested_binding.fz` | tuple payload is a cons pattern returning `h` | `main() : {int, :error}`; composed tuple and list evidence carries nested binding type into the selected leaf | not pinned |
 | `match_nested_partition.fz` | tuple payload partitions empty-list, cons-list, and atom leaves | `main() : {:empty, int, :error}`; nested sibling arms remain distinct per activation | not pinned |
 | `match_tuple_tag_partition.fz` | same-arity tuple clauses with different atom tags | `main() : {int, :bad}`; tag evidence chooses the matching payload projection | not pinned |
+| `match_tuple_arity_partition.fz` | tuple clauses with different arities and a non-tuple arm | `main() : {int, {int, int}, :other}`; arity evidence keeps impossible fields out of joins | not pinned |
 | `enum_count.fz` | `Enum.count/1` over a List receiver | `Enum.count([1,2,3]) : int`; protocol dispatch reaches the List count callback | settles ✓ |
 | `enum_reduce.fz` | `Enum.reduce/3` over a List receiver with an inline reducer | `Enum.reduce([1,2,3], 0, +) : int`; public wrapper, protocol dispatch, and list loop converge | settles ✓ |
 | `enum_reduce_named_ref_ok.fz` | `Enum.reduce/3` over a List receiver with `&Main.reducer/2` | `Enum.reduce([1,2,3], 0, &Main.reducer/2) : int`; named reducer references converge like inline closures | settles ✓ |
@@ -40,7 +41,6 @@ Promote them one at a time so each commit isolates one missing capability.
 
 | program | target capability |
 | --- | --- |
-| `match_tuple_arity_partition.fz` | Partition tuples by arity without leaking impossible fields into joins. |
 | `match_guard_partition.fz` | Treat guards as refinement evidence before selecting a clause body. |
 | `match_map_binding.fz` | Bind fields from map patterns while preserving the callable parameter surface. |
 | `enum_reduce_range.fz` | Devirtualize protocol dispatch through the Range receiver type. |
@@ -89,3 +89,8 @@ not contribute to the observed `main/0` return.
 first atom field. The selected clause projects the second field from the matching
 tag, so the `:ok` activation returns `int` while the `:error` activation returns
 `:bad`.
+
+`match_tuple_arity_partition.fz` varies tuple arity instead of tag. The one-field
+and two-field tuple arms project different payload shapes, while the atom arm
+stays disjoint; impossible tuple arities must not contribute `any` or extra
+fields to the result.

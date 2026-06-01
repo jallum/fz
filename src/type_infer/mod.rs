@@ -1343,6 +1343,23 @@ mod tests {
         );
     }
 
+    #[test]
+    fn tuple_arity_partition_selects_matching_shape() {
+        let mut t = ConcreteTypes;
+        let module = lower(include_str!("../../spike/match_tuple_arity_partition.fz"));
+        let ret = infer_fn_via_main(&module, "main");
+        let expected = {
+            let int = t.int();
+            let pair = t.tuple(&[int.clone(), int.clone()]);
+            let other = t.atom_lit("other");
+            t.tuple(&[int, pair, other])
+        };
+        assert!(
+            t.is_equivalent(&ret, &expected),
+            "tuple arity partition should select each matching shape, got {ret:?}"
+        );
+    }
+
     /// Every corpus fold settles `myreduce` to `int` — including the two the
     /// old planner ran to the 4096 visit cap (`fold_capture_closure`,
     /// `fold_state_machine`). `int` is `number` in the simplified spike lattice
