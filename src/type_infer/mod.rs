@@ -1310,6 +1310,23 @@ mod tests {
         );
     }
 
+    #[test]
+    fn nested_pattern_partition_selects_sibling_leaves() {
+        let mut t = ConcreteTypes;
+        let module = lower(include_str!("../../spike/match_nested_partition.fz"));
+        let ret = infer_fn_via_main(&module, "main");
+        let expected = {
+            let empty = t.atom_lit("empty");
+            let int = t.int();
+            let error = t.atom_lit("error");
+            t.tuple(&[empty, int, error])
+        };
+        assert!(
+            t.is_equivalent(&ret, &expected),
+            "nested tuple/list partition should select empty, cons, and error leaves, got {ret:?}"
+        );
+    }
+
     /// Every corpus fold settles `myreduce` to `int` — including the two the
     /// old planner ran to the 4096 visit cap (`fold_capture_closure`,
     /// `fold_state_machine`). `int` is `number` in the simplified spike lattice

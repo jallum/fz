@@ -20,6 +20,7 @@ the planner's type inference, not runtime behavior, so they live outside
 | `match_list_binding.fz` | cons clause returns `[h | _]` binding | `main() : {:empty, int}`; matcher-produced bindings carry element type into the selected leaf | not pinned |
 | `match_tuple_binding.fz` | tuple clause returns `{:ok, x}` binding | `main() : {int, :error}`; tuple-shape evidence and field projection carry payload type into the selected leaf | not pinned |
 | `match_nested_binding.fz` | tuple payload is a cons pattern returning `h` | `main() : {int, :error}`; composed tuple and list evidence carries nested binding type into the selected leaf | not pinned |
+| `match_nested_partition.fz` | tuple payload partitions empty-list, cons-list, and atom leaves | `main() : {:empty, int, :error}`; nested sibling arms remain distinct per activation | not pinned |
 | `enum_count.fz` | `Enum.count/1` over a List receiver | `Enum.count([1,2,3]) : int`; protocol dispatch reaches the List count callback | settles ✓ |
 | `enum_reduce.fz` | `Enum.reduce/3` over a List receiver with an inline reducer | `Enum.reduce([1,2,3], 0, +) : int`; public wrapper, protocol dispatch, and list loop converge | settles ✓ |
 | `enum_reduce_named_ref_ok.fz` | `Enum.reduce/3` over a List receiver with `&Main.reducer/2` | `Enum.reduce([1,2,3], 0, &Main.reducer/2) : int`; named reducer references converge like inline closures | settles ✓ |
@@ -38,7 +39,6 @@ Promote them one at a time so each commit isolates one missing capability.
 
 | program | target capability |
 | --- | --- |
-| `match_nested_partition.fz` | Preserve nested tuple/list partition evidence across sibling arms. |
 | `match_tuple_tag_partition.fz` | Partition same-arity tuples by atom tag and project the matching payload. |
 | `match_tuple_arity_partition.fz` | Partition tuples by arity without leaking impossible fields into joins. |
 | `match_guard_partition.fz` | Treat guards as refinement evidence before selecting a clause body. |
@@ -79,3 +79,8 @@ impossible tuple arities contribute.
 `match_nested_binding.fz` composes the tuple and list cases: `{:ok, [h | _]}`
 first narrows/project the tuple payload, then narrows that payload to a non-empty
 list so `head(payload)` flows `int` into the leaf.
+
+`match_nested_partition.fz` adds the sibling empty-list arm to the same nested
+shape. The empty payload, cons payload, and atom fallback are three distinct
+activations; the catch-all clause is present to keep the source total but should
+not contribute to the observed `main/0` return.
