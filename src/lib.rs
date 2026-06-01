@@ -108,6 +108,9 @@ pub fn run() {
     };
 
     match args.first().map(String::as_str) {
+        Some("help" | "--help" | "-h") => {
+            print_help();
+        }
         Some("build") => {
             run_build(&tel, &args[1..]);
         }
@@ -224,6 +227,59 @@ impl telemetry::Handler for ConsoleBuildHandler {
             _ => {}
         }
     }
+}
+
+/// `fz help` / `fz --help` / `fz -h` — a brief tour of the commands and the
+/// switches each accepts. Kept in lockstep with the subcommand parsers in this
+/// file and the dump `--emit` set in `run_dump`; the artifact-root default is
+/// read from the one constant both share so the two never drift.
+fn print_help() {
+    let root = modules::artifact_store::DEFAULT_ARTIFACT_ROOT;
+    print!(
+        "\
+fz — the fz compiler and runtime
+
+Usage:
+  fz <command> [options] <src.fz>
+  fz [options] < program.fz      read a program from stdin and JIT-run it
+  fz                             start the REPL (when stdin is a terminal)
+
+Commands:
+  run     <src.fz>   JIT-compile and run a program
+  build   <src.fz>   AOT-compile and link a native executable (needs -o)
+  interp  <src.fz>   run through the IR interpreter
+  dump    <src.fz>   inspect compiler output (CLIF, asm, specs, …)
+  test    <src.fz>   compile and run the program's tests
+  repl               start an interactive REPL
+  help               show this help (also --help, -h)
+
+Global options (placed before the command):
+  --log-telemetry <path>   append JSONL telemetry events to <path>
+  --emit=stats             print a stats summary on exit
+
+Compile options (run, build, dump):
+  --lto, --whole-program   whole-program mode: erase module boundaries
+  --interface <Module>     load a provider module's interface (repeatable)
+  --provider <Module>      alias for --interface (run, build)
+  --artifact-root <dir>    where .fzi/.fzo artifacts are read/written
+                           (default: {root})
+
+build options:
+  -o <out>                 output executable path (required)
+  --emit-fzi               also write .fzi interface artifacts
+  --emit-fzo               also write .fzo IR/object artifacts
+
+dump options:
+  --emit <what>            clif | asm | both | interfaces | specs |
+                           bodies | outcomes | stats   (default: clif)
+  --fn <name>              restrict a clif/asm dump to one function
+  --all                    include prelude / dead bodies (with --emit outcomes)
+  --strict-interfaces      validate public export specs (with --emit interfaces)
+
+repl options:
+  --script <path>          run a REPL script non-interactively
+"
+    );
 }
 
 fn run_build(tel: &telemetry::ConfiguredTelemetry, args: &[String]) {
