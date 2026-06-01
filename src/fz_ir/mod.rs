@@ -619,8 +619,8 @@ pub enum DeadBranch {
 /// - The unreachable-arm diagnostic (`collect_diagnostics`) fires only on
 ///   `User` — a synthesized check the planner proves dead is not noise the
 ///   programmer caused.
-/// - The dead-branch fold (`ir_branch_fold`, fz-fyq.4) acts on any origin
-///   once the planner publishes the branch as dead.
+/// - Planned-body materialization may fold any-origin dead branches once the
+///   planner publishes the branch as dead for that specialization.
 ///
 /// On the term itself, not in a side-table: `ir_inline::splice_callee_into_caller`
 /// renumbers BlockIds when splicing, so a `(FnId, BlockId)`-keyed side-table

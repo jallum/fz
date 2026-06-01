@@ -626,7 +626,7 @@ pub fn plan_module<
     plan_module_with_role(t, m, tel, "authoritative")
 }
 
-pub fn plan_module_with_role<
+fn plan_module_with_role<
     T: crate::types::Types<Ty = crate::types::Ty>
         + crate::types::ClosureTypes
         + crate::types::RenderTypes,

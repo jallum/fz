@@ -50,7 +50,7 @@ pub(crate) use planned::materialize_program;
 pub use pretty::pretty_module_plan;
 pub use reachable::reachable_specs;
 pub use switch_dispatch::rewrite_closed_union_protocol_dispatch;
-pub use worklist::{plan_callable_capabilities, plan_module, plan_module_with_role};
+pub use worklist::{plan_callable_capabilities, plan_module};
 
 // ----------------------------------------------------------------------
 // Tests

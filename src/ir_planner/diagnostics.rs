@@ -60,11 +60,10 @@ pub(crate) fn module_plan_stats(m: &Module, mt: &ModulePlan) -> ModulePlanStats 
 /// For every `Term::If` in a registered-spec fn, publish only body-safe dead
 /// branches: facts proven by the fn's all-domain `any` key.
 ///
-/// Narrow specs still carry their own `SpecPlan::dead_branches` for per-spec
-/// codegen folding. `ModulePlan::dead_branches` is different: consumers mutate
-/// the shared `FnIr`, so the fact must hold for every value the body can
-/// accept, not just every specialization currently discovered by one shaping
-/// pass.
+/// Narrow specs carry their own `SpecPlan::dead_branches` for planned-body
+/// folding. `ModulePlan::dead_branches` is the all-domain diagnostic view: the
+/// fact must hold for every value the body can accept, not just every
+/// specialization currently discovered by one plan.
 pub(crate) fn compute_dead_branches<
     T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
 >(

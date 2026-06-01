@@ -241,13 +241,13 @@ pub struct ModulePlan {
     /// back), so the destination-planning barrier reads one cached fact
     /// instead of re-walking bodies on demand.
     pub fn_effects: FnEffects,
-    /// Per-If dead-branch facts safe for shared-body mutation.
+    /// Per-If dead-branch facts safe to report at the module level.
     /// Populated at the end of `plan_module` by `compute_dead_branches`.
     /// Keyed by `(FnId, BlockId)` where the block ends in a `Term::If`;
     /// value names which branch is provably never taken. Read by the
-    /// dead-branch fold and by `collect_diagnostics`. These facts are proven
-    /// by the fn's all-domain `any` key; narrower per-spec branch facts live
-    /// on `SpecPlan::dead_branches` and are consumed only on per-spec clones.
+    /// `collect_diagnostics`. These facts are proven by the fn's all-domain
+    /// `any` key; narrower per-spec branch facts live on
+    /// `SpecPlan::dead_branches` and are consumed only on planned bodies.
     pub dead_branches: HashMap<(FnId, crate::fz_ir::BlockId), crate::fz_ir::DeadBranch>,
 }
 

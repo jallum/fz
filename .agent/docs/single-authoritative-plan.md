@@ -26,9 +26,6 @@ planner output, and there is exactly one plan that owns it.
   protocol stubs until closed-union switch dispatch rewrites them into
   `TypeTest` / `If` cascades. This preserves one shared IR body while still
   honoring per-spec protocol facts.
-- **The shaping plan** is a `ModulePlan` tagged `role: "shaping"` used only to
-  drive pre-authoritative CFG simplification (`branch_fold` and `fold`). Its
-  facts are discarded before codegen facts are published.
 - **`plan_callable_capabilities`** produces a `CapabilityPlan` — each discovered
   spec's `callable_capabilities` plus the per-FnId `fn_effects`, and nothing
   else (no types, call edges, returns, dead branches, or precedence). It emits
@@ -45,8 +42,7 @@ frontend plan                      # plan_module, authoritative
   → plan_callable_capabilities      # capability slice; no telemetry event
   → rewrite_known_target_closures   # devirtualize known closure calls
   → inline_module_with_plan         # then fuse, reduce, single-use-cont
-plan_module(role: "shaping")         # CFG simplification facts only
-  → branch_fold, fold, const_bs, dce
+  → const_bs, dce                   # plan-free canonicalization/cleanup
 plan_module                         # THE authoritative codegen plan
   → lower_destinations              # maintains no plan facts
 resolve_module_types
@@ -54,12 +50,10 @@ resolve_module_types
   → codegen                         # lowers planned bodies mechanically
 ```
 
-The shaping plan exists because branch folding and ordinary folding consume
-planner facts but change block topology. Those changes must happen before the
-authoritative codegen plan is built; otherwise `SpecPlan.reachable_blocks` and
-`SpecPlan.call_edges` would describe an older body. It still uses the caller's
-telemetry handle: production code does not construct `NullTelemetry` to hide
-compiler work.
+Codegen publishes no shaping plan. Planner-fact-driven folds happen only while
+materializing planned bodies from the authoritative `ModulePlan`, so no pass
+mutates the canonical module using planner facts and then asks the planner to
+explain the edited module again.
 
 ## The pre-plan transforms read a capability slice
 
@@ -108,6 +102,18 @@ only for the original element/key/value vars (`a`, `b`), never the holders. So
 the authoritative plan stays valid for everything codegen reads after lowering,
 and no post-destination re-plan is needed.
 
+## Pre-Plan Canonicalization
+
+The pre-plan rewrites that remain do not consume `ModulePlan` facts:
+
+- `ir_reducer` is partial evaluation over explicit IR constants and call
+  bodies; its log is for dumps, not codegen decisions.
+- `ir_const_bs` rewrites byte-literal bitstring construction to a constant
+  bitstring representation before DCE. It is plan-free canonicalization.
+- `ir_dce::dce_module_level` is structural cleanup after pre-plan inlining and
+  reducer rewrites. Executable spec reachability is later computed by
+  `materialize_program`, not by module-level DCE.
+
 ## Planned Program Materialization
 
 `PlannedProgram` is the handoff between planner/fold and codegen. It preserves
@@ -135,7 +141,6 @@ the Cranelift lowering loop. Each body emits
 
 ## Gate this model with
 
-- `cargo test plan_module_called_once_for_shaping_once_for_codegen_in_pipeline --lib`
 - `cargo test frontend_to_codegen_pipeline_reports_planner_phase_events --lib`
 - `cargo test planned_program_materialization_reports_executable_body_folds --lib`
 - `cargo test --test fixture_matrix` — four-path legs plus the dump budgets,

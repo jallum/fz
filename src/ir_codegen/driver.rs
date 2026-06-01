@@ -1656,13 +1656,6 @@ pub(crate) fn compile_with_backend_impl<
     // `assert`'s `panic` branch) so the single authoritative plan below — and
     // the codegen that reads it — never see a reachable ⊥-typed tail.
     crate::ir_diverge::truncate_diverging_blocks(module.module_path(), &mut working, tel);
-    let shaping_plan = crate::ir_planner::plan_module_with_role(t, &working, tel, "shaping");
-    // Fold one-sided-dead Ifs to Gotos and singleton prims before the
-    // authoritative plan. These rewrites change block topology, so codegen's
-    // dispatch facts must be produced from the settled body, not remapped after
-    // the fact.
-    crate::ir_branch_fold::fold_module_with_telemetry(&mut working, &shaping_plan, tel);
-    crate::ir_fold::fold_module(&mut working, &shaping_plan);
     // Fold byte-literal MakeBitstring into ConstBitstring before DCE so
     // the per-byte Const(Int) operand stmts go dead in the same pass.
     crate::ir_const_bs::fold_module(&mut working);
@@ -1860,13 +1853,9 @@ pub(crate) fn compile_with_backend_impl<
             continue;
         }
         let ft = spec_fn_types[sid].expect("non-sentinel spec must have SpecPlan");
-        // Per-spec fold + DCE + fuse: dead arms (TypeTests whose subject
-        // is provably inside/outside the test descr in THIS spec's env)
-        // collapse before codegen. The pre-codegen `fold_module` already
-        // folds the any-key case; this is the multi-spec case it bails on.
-        // Reuses the precomputed body used by codegen reachability so the
-        // emitted body and trap-stub pruning derive from the same call
-        // graph.
+        // PlannedProgram owns the exact per-spec folded body and executable
+        // reachability set, so trap-stub pruning and emitted code derive from
+        // the same planned graph.
         let planned_body = planned_program.executable_body(crate::fz_ir::SpecId(sid as u32));
         let f = &planned_body.body;
         debug_assert_eq!(planned_body.spec_id.0, sid as u32);
