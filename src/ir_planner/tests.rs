@@ -88,6 +88,36 @@ fn build_module(fns: Vec<crate::fz_ir::FnIr>) -> Module {
     mb.build()
 }
 
+fn lower_src_for_plan(src: &str) -> Module {
+    let toks = crate::parser::lexer::Lexer::new(src)
+        .tokenize()
+        .expect("lex");
+    let prog = crate::parser::Parser::new(toks)
+        .parse_program()
+        .expect("parse");
+    crate::ir_lower::lower_program(
+        &mut crate::types::ConcreteTypes,
+        &prog,
+        &crate::telemetry::NullTelemetry,
+    )
+    .expect("lower")
+}
+
+fn count_if_terminators(f: &crate::fz_ir::FnIr) -> usize {
+    f.blocks
+        .iter()
+        .filter(|block| matches!(block.terminator, Term::If { .. }))
+        .count()
+}
+
+fn count_fold_candidate_prims(f: &crate::fz_ir::FnIr) -> usize {
+    f.blocks
+        .iter()
+        .flat_map(|block| block.stmts.iter())
+        .filter(|stmt| matches!(stmt, Stmt::Let(_, Prim::BinOp(..) | Prim::TypeTest(..))))
+        .count()
+}
+
 #[derive(Debug)]
 struct TestDeclaredReturnFact {
     ty: crate::types::Ty,
@@ -1304,6 +1334,92 @@ fn reachable_specs_seeds_all_registered_specs_for_closure_targets() {
         "closure target narrow spec should be reachable; main_sid={:?}, reached={:?}",
         main_sid,
         reachable
+    );
+}
+
+#[test]
+fn planned_program_materialization_reports_executable_body_folds() {
+    use crate::telemetry::Value;
+
+    let src = "fn check(x :: integer) do :is_int end\n\
+               fn check(x) do :other end\n\
+               fn main(), do: dbg(check(42))\n";
+    let m = lower_src_for_plan(src);
+    let tel = crate::telemetry::ConfiguredTelemetry::new();
+    let cap = crate::telemetry::Capture::new();
+    tel.attach(&["fz", "planner"], cap.handler());
+    let mut t = crate::types::ConcreteTypes;
+    let module_plan = plan_module(&mut t, &m, &crate::telemetry::NullTelemetry);
+    let planned_program = materialize_program(&mut t, &m, &module_plan, &tel);
+
+    let ev = cap
+        .last(&["fz", "planner", "materialized"])
+        .expect("planned-program materialization event");
+    assert!(matches!(
+        ev.metadata.get("role"),
+        Some(Value::Str(role)) if role == "authoritative"
+    ));
+    let measurement = |name| match ev.measurements.get(name) {
+        Some(Value::U64(n)) => *n,
+        other => panic!("{name} missing or wrong type: {other:?}"),
+    };
+    let spec_slot_count = measurement("spec_slot_count");
+    let planned_body_count = measurement("planned_body_count");
+    let folded_prim_count = measurement("folded_prim_count");
+    let folded_branch_count = measurement("folded_branch_count");
+    let reachable_spec_count = measurement("reachable_spec_count");
+    let reachable_specs = match ev.metadata.get("reachable_specs") {
+        Some(Value::StrSeq(specs)) => specs,
+        other => panic!("reachable_specs missing or wrong type: {other:?}"),
+    };
+    assert!(
+        planned_body_count > 0,
+        "materialization must own executable planned bodies"
+    );
+    assert!(
+        spec_slot_count >= planned_body_count,
+        "reserved SpecId slots are slot metadata, not optional planned bodies"
+    );
+    assert!(
+        folded_prim_count > 0,
+        "materialization must report per-spec prim folds: spec_slot_count={spec_slot_count} planned_body_count={planned_body_count} folded_prim_count={folded_prim_count} folded_branch_count={folded_branch_count}"
+    );
+    assert!(
+        folded_branch_count > 0,
+        "materialization must report per-spec branch folds: spec_slot_count={spec_slot_count} planned_body_count={planned_body_count} folded_prim_count={folded_prim_count} folded_branch_count={folded_branch_count}"
+    );
+    assert_eq!(
+        reachable_specs.len(),
+        reachable_spec_count as usize,
+        "materialized reachable_specs metadata must identify every counted reachable spec"
+    );
+
+    let folded_body_event = cap
+        .find(&["fz", "planner", "body_materialized"])
+        .into_iter()
+        .find(|ev| {
+            matches!(
+                ev.measurements.get("folded_prim_count"),
+                Some(Value::U64(n)) if *n > 0
+            ) && matches!(
+                ev.measurements.get("folded_branch_count"),
+                Some(Value::U64(n)) if *n > 0
+            )
+        })
+        .expect("a planned body with per-spec prim and branch folds");
+    let spec_id = match folded_body_event.measurements.get("spec_id") {
+        Some(Value::U64(n)) => *n as u32,
+        other => panic!("spec_id missing or wrong type: {other:?}"),
+    };
+    let planned_body = planned_program.executable_body(crate::fz_ir::SpecId(spec_id));
+    let original_body = &m.fns[planned_body.fn_idx];
+    assert!(
+        count_if_terminators(&planned_body.body) < count_if_terminators(original_body),
+        "planned body should not retain every branch from the source-shaped body"
+    );
+    assert!(
+        count_fold_candidate_prims(&planned_body.body) < count_fold_candidate_prims(original_body),
+        "planned body should not retain every singleton-foldable prim from the source-shaped body"
     );
 }
 

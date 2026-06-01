@@ -2,7 +2,7 @@ use crate::frontend::spec_registry::SpecRegistry;
 use crate::fz_ir::{FnId, FnIr, Module, SpecId};
 use crate::ir_planner::fn_types::{ModulePlan, SpecKey, SpecPlan};
 use crate::types::Types;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 pub(crate) struct PlannedProgram<'plan> {
     spec_registry: SpecRegistry,
@@ -11,6 +11,8 @@ pub(crate) struct PlannedProgram<'plan> {
     spec_plans: Vec<Option<&'plan SpecPlan>>,
     bodies: Vec<PlannedBody>,
     body_index_by_spec_slot: Vec<Option<usize>>,
+    closure_shapes: BTreeMap<u32, usize>,
+    reachable_specs: HashSet<u32>,
 }
 
 pub(crate) struct PlannedBody {
@@ -51,6 +53,14 @@ impl<'plan> PlannedProgram<'plan> {
         &self.spec_plans
     }
 
+    pub(crate) fn closure_shapes(&self) -> &BTreeMap<u32, usize> {
+        &self.closure_shapes
+    }
+
+    pub(crate) fn reachable_specs(&self) -> &HashSet<u32> {
+        &self.reachable_specs
+    }
+
     pub(crate) fn executable_body(&self, spec_id: SpecId) -> &PlannedBody {
         let body_index = self
             .body_index_by_spec_slot
@@ -74,7 +84,7 @@ pub(crate) fn materialize_program<'plan, T>(
     tel: &dyn crate::telemetry::Telemetry,
 ) -> PlannedProgram<'plan>
 where
-    T: Types<Ty = crate::types::Ty>,
+    T: Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
 {
     let spec_registry = build_spec_registry(t, module, module_plan);
     let spec_keys: Vec<SpecKey> = spec_registry.iter().map(|(_, key)| key.clone()).collect();
@@ -100,6 +110,13 @@ where
             module_plan.specs.get(key)
         })
         .collect();
+    let closure_shapes = build_closure_shapes(
+        module,
+        spec_registry.len(),
+        &spec_fn_indices,
+        &spec_plans,
+        &spec_registry,
+    );
 
     let mut folded_prim_count = 0;
     let mut folded_branch_count = 0;
@@ -143,6 +160,18 @@ where
         }
     }
 
+    let (reachable_specs, reachable_before_body_fold_count, body_fold_reachable_added_count) =
+        compute_reachable_specs(
+            t,
+            module,
+            module_plan,
+            &spec_registry,
+            &spec_keys,
+            &bodies,
+            &body_index_by_spec_slot,
+            closure_shapes.keys().copied(),
+        );
+
     let planned_body_count = bodies.len();
     let stats = PlannedProgramStats {
         spec_slot_count: spec_registry.len(),
@@ -159,10 +188,14 @@ where
             sentinel_spec_count: stats.sentinel_spec_count as u64,
             folded_prim_count: stats.folded_prim_count as u64,
             folded_branch_count: stats.folded_branch_count as u64,
+            reachable_spec_count: reachable_specs.len() as u64,
+            reachable_spec_count_before_body_fold: reachable_before_body_fold_count as u64,
+            body_fold_reachable_added_count: body_fold_reachable_added_count as u64,
         },
         &crate::metadata! {
             role: "authoritative",
             module_path: module.module_path().to_owned(),
+            reachable_specs: display_spec_ids(&reachable_specs),
         },
     );
 
@@ -173,7 +206,302 @@ where
         spec_plans,
         bodies,
         body_index_by_spec_slot,
+        closure_shapes,
+        reachable_specs,
     }
+}
+
+fn compute_reachable_specs<T>(
+    t: &mut T,
+    module: &Module,
+    module_plan: &ModulePlan,
+    spec_registry: &SpecRegistry,
+    spec_keys: &[SpecKey],
+    bodies: &[PlannedBody],
+    body_index_by_spec_slot: &[Option<usize>],
+    closure_shape_seeds: impl IntoIterator<Item = u32>,
+) -> (HashSet<u32>, usize, usize)
+where
+    T: Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
+{
+    let mut reachable = crate::ir_planner::reachable_specs(
+        t,
+        module,
+        spec_registry,
+        module_plan,
+        closure_shape_seeds,
+    );
+    let is_executable = |sid: &u32| {
+        body_index_by_spec_slot
+            .get(*sid as usize)
+            .is_some_and(Option::is_some)
+    };
+    let before_body_fold = reachable.iter().filter(|sid| is_executable(sid)).count();
+    augment_reachable_from_planned_bodies(
+        t,
+        module,
+        module_plan,
+        spec_registry,
+        spec_keys,
+        bodies,
+        body_index_by_spec_slot,
+        &mut reachable,
+    );
+    reachable.retain(is_executable);
+    let added_by_body_fold = reachable.len().saturating_sub(before_body_fold);
+    (reachable, before_body_fold, added_by_body_fold)
+}
+
+fn augment_reachable_from_planned_bodies<
+    T: Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
+>(
+    t: &mut T,
+    module: &Module,
+    module_plan: &ModulePlan,
+    spec_registry: &SpecRegistry,
+    spec_keys: &[SpecKey],
+    bodies: &[PlannedBody],
+    body_index_by_spec_slot: &[Option<usize>],
+    reached: &mut HashSet<u32>,
+) {
+    let ft_of = |sid: u32| -> Option<&SpecPlan> {
+        let key = spec_keys.get(sid as usize)?;
+        module_plan.specs.get(key)
+    };
+
+    let mut worklist: Vec<u32> = reached.iter().copied().collect();
+    while let Some(sid) = worklist.pop() {
+        let Some(body_index) = body_index_by_spec_slot
+            .get(sid as usize)
+            .and_then(|idx| *idx)
+        else {
+            continue;
+        };
+        let body = &bodies[body_index].body;
+        let Some(ft) = ft_of(sid) else { continue };
+
+        for blk in &body.blocks {
+            if !ft.reachable_blocks.contains(&blk.id) {
+                continue;
+            }
+            let env = crate::ir_planner::reachable::env_at_terminator(t, ft, blk, module);
+            let any_ty = t.any();
+            let arg_tys = |args: &[crate::fz_ir::Var]| -> Vec<crate::types::Ty> {
+                args.iter()
+                    .map(|av| env.get(av).cloned().unwrap_or_else(|| any_ty.clone()))
+                    .collect()
+            };
+            let pad_to_arity = |callee: FnId, mut tys: Vec<crate::types::Ty>| {
+                if let Some(&j) = module.fn_idx.get(&callee) {
+                    let np = module.fns[j].block(module.fns[j].entry).params.len();
+                    while tys.len() < np {
+                        tys.push(any_ty.clone());
+                    }
+                    tys.truncate(np);
+                }
+                tys
+            };
+            match &blk.terminator {
+                crate::fz_ir::Term::Call { ident, .. } => {
+                    push_dispatch_target(
+                        t,
+                        spec_registry,
+                        reached,
+                        &mut worklist,
+                        body.id,
+                        ident,
+                        crate::fz_ir::EmitSlot::Direct,
+                        ft,
+                    );
+                    push_dispatch_target(
+                        t,
+                        spec_registry,
+                        reached,
+                        &mut worklist,
+                        body.id,
+                        ident,
+                        crate::fz_ir::EmitSlot::Cont,
+                        ft,
+                    );
+                }
+                crate::fz_ir::Term::TailCall { ident, .. } => {
+                    push_dispatch_target(
+                        t,
+                        spec_registry,
+                        reached,
+                        &mut worklist,
+                        body.id,
+                        ident,
+                        crate::fz_ir::EmitSlot::Direct,
+                        ft,
+                    );
+                }
+                crate::fz_ir::Term::CallClosure {
+                    ident,
+                    closure,
+                    args,
+                    ..
+                } => {
+                    if let Some(target) = ft.known_fn(closure) {
+                        push_reachable_spec(
+                            t,
+                            spec_registry,
+                            reached,
+                            &mut worklist,
+                            target,
+                            pad_to_arity(target, arg_tys(args)),
+                        );
+                    }
+                    push_dispatch_target(
+                        t,
+                        spec_registry,
+                        reached,
+                        &mut worklist,
+                        body.id,
+                        ident,
+                        crate::fz_ir::EmitSlot::Cont,
+                        ft,
+                    );
+                }
+                crate::fz_ir::Term::TailCallClosure { closure, args, .. } => {
+                    if let Some(target) = ft.known_fn(closure) {
+                        push_reachable_spec(
+                            t,
+                            spec_registry,
+                            reached,
+                            &mut worklist,
+                            target,
+                            pad_to_arity(target, arg_tys(args)),
+                        );
+                    }
+                }
+                crate::fz_ir::Term::Receive { ident, .. } => {
+                    push_dispatch_target(
+                        t,
+                        spec_registry,
+                        reached,
+                        &mut worklist,
+                        body.id,
+                        ident,
+                        crate::fz_ir::EmitSlot::Cont,
+                        ft,
+                    );
+                }
+                crate::fz_ir::Term::ReceiveMatched { clauses, after, .. } => {
+                    for c in clauses {
+                        let key =
+                            crate::fz_ir::receive_outcome_spec_key(&any_ty, c.bound_names.len());
+                        push_reachable_spec(t, spec_registry, reached, &mut worklist, c.body, key);
+                        if let Some(g) = c.guard {
+                            let key = crate::fz_ir::receive_outcome_spec_key(
+                                &any_ty,
+                                c.bound_names.len(),
+                            );
+                            push_reachable_spec(t, spec_registry, reached, &mut worklist, g, key);
+                        }
+                    }
+                    if let Some(a) = after {
+                        let key = crate::fz_ir::receive_outcome_spec_key(&any_ty, 0);
+                        push_reachable_spec(t, spec_registry, reached, &mut worklist, a.body, key);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+fn push_reachable_spec<T: Types<Ty = crate::types::Ty>>(
+    t: &mut T,
+    spec_registry: &SpecRegistry,
+    reached: &mut HashSet<u32>,
+    worklist: &mut Vec<u32>,
+    fid: FnId,
+    key: Vec<crate::types::Ty>,
+) {
+    let key = SpecKey::value(fid, crate::types::key_slots_from_tys(key));
+    if let Some(next) = spec_registry.resolve_spec_key(t, &key)
+        && reached.insert(next.0)
+    {
+        worklist.push(next.0);
+    }
+}
+
+fn push_dispatch_target<T: Types<Ty = crate::types::Ty>>(
+    t: &mut T,
+    spec_registry: &SpecRegistry,
+    reached: &mut HashSet<u32>,
+    worklist: &mut Vec<u32>,
+    caller: FnId,
+    ident: &crate::fz_ir::CallsiteIdent,
+    slot: crate::fz_ir::EmitSlot,
+    ft: &SpecPlan,
+) {
+    let cid = crate::fz_ir::CallsiteId {
+        caller,
+        ident: ident.clone(),
+        slot,
+    };
+    let Some(target) = ft.local_call_target(&cid) else {
+        return;
+    };
+    if let Some(next) = spec_registry.resolve_spec_key(t, target)
+        && reached.insert(next.0)
+    {
+        worklist.push(next.0);
+    }
+}
+
+fn display_spec_ids(reachable_specs: &HashSet<u32>) -> Vec<String> {
+    let mut ids: Vec<u32> = reachable_specs.iter().copied().collect();
+    ids.sort_unstable();
+    ids.into_iter().map(|sid| sid.to_string()).collect()
+}
+
+fn build_closure_shapes(
+    module: &Module,
+    spec_count: usize,
+    spec_fn_indices: &[Option<usize>],
+    spec_plans: &[Option<&SpecPlan>],
+    spec_registry: &SpecRegistry,
+) -> BTreeMap<u32, usize> {
+    let mut closure_shapes = BTreeMap::new();
+    for sid in 0..spec_count {
+        let Some(idx) = spec_fn_indices[sid] else {
+            continue;
+        };
+        let f = &module.fns[idx];
+        let Some(_) = spec_plans[sid] else {
+            continue;
+        };
+        for blk in &f.blocks {
+            for stmt in blk.stmts.iter() {
+                let crate::fz_ir::Stmt::Let(_, prim) = stmt;
+                if let crate::fz_ir::Prim::MakeClosure(_ident, lam_fn_id, captured) = prim {
+                    let cl_sid = if spec_fn_indices
+                        .get(lam_fn_id.0 as usize)
+                        .copied()
+                        .flatten()
+                        .is_some()
+                    {
+                        Some(lam_fn_id.0)
+                    } else {
+                        spec_registry
+                            .iter()
+                            .find(|(s, key)| {
+                                key.fn_id == *lam_fn_id && spec_fn_indices[s.0 as usize].is_some()
+                            })
+                            .map(|(s, _)| s.0)
+                    };
+                    let Some(cl_sid) = cl_sid else {
+                        continue;
+                    };
+                    closure_shapes.insert(cl_sid, captured.len());
+                }
+            }
+        }
+    }
+    closure_shapes
 }
 
 fn build_spec_registry<T: Types<Ty = crate::types::Ty>>(

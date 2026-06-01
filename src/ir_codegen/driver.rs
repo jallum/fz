@@ -16,222 +16,6 @@ use cranelift_module::{DataDescription, DataId, FuncId, Linkage, Module as ClMod
 use fz_runtime::heap::{FieldDescriptor, FieldKind, Schema};
 use std::collections::HashMap;
 
-fn push_reachable_spec<T: crate::types::Types<Ty = crate::types::Ty>>(
-    t: &mut T,
-    spec_registry: &crate::frontend::spec_registry::SpecRegistry,
-    reached: &mut std::collections::HashSet<u32>,
-    worklist: &mut Vec<u32>,
-    fid: FnId,
-    key: Vec<crate::types::Ty>,
-) {
-    let key =
-        crate::ir_planner::fn_types::SpecKey::value(fid, crate::types::key_slots_from_tys(key));
-    if let Some(next) = spec_registry.resolve_spec_key(t, &key)
-        && reached.insert(next.0)
-    {
-        worklist.push(next.0);
-    }
-}
-
-fn push_dispatch_target<T: crate::types::Types<Ty = crate::types::Ty>>(
-    t: &mut T,
-    spec_registry: &crate::frontend::spec_registry::SpecRegistry,
-    reached: &mut std::collections::HashSet<u32>,
-    worklist: &mut Vec<u32>,
-    caller: FnId,
-    ident: &crate::fz_ir::CallsiteIdent,
-    slot: crate::fz_ir::EmitSlot,
-    ft: &crate::ir_planner::SpecPlan,
-) {
-    let cid = crate::fz_ir::CallsiteId {
-        caller,
-        ident: ident.clone(),
-        slot,
-    };
-    let Some(target) = ft.local_call_target(&cid) else {
-        return;
-    };
-    if let Some(next) = spec_registry.resolve_spec_key(t, target)
-        && reached.insert(next.0)
-    {
-        worklist.push(next.0);
-    }
-}
-
-#[allow(dead_code)] // fz-0fb.4.1 removal target: planned-program materialization should own executable reachability.
-fn augment_reachable_for_codegen_bodies<
-    T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
->(
-    t: &mut T,
-    module: &Module,
-    spec_registry: &crate::frontend::spec_registry::SpecRegistry,
-    module_plan: &crate::ir_planner::ModulePlan,
-    planned_program: &crate::ir_planner::PlannedProgram<'_>,
-    reached: &mut std::collections::HashSet<u32>,
-) {
-    let spec_keys: Vec<_> = spec_registry.iter().map(|(_, key)| key.clone()).collect();
-    let ft_of = |sid: u32| -> Option<&crate::ir_planner::SpecPlan> {
-        let key = spec_keys.get(sid as usize)?;
-        module_plan.specs.get(key)
-    };
-
-    let mut worklist: Vec<u32> = reached.iter().copied().collect();
-    while let Some(sid) = worklist.pop() {
-        let planned_body = planned_program.executable_body(crate::fz_ir::SpecId(sid));
-        let body = &planned_body.body;
-        let Some(ft) = ft_of(sid) else { continue };
-
-        for blk in &body.blocks {
-            if !ft.reachable_blocks.contains(&blk.id) {
-                continue;
-            }
-            let env = crate::ir_planner::reachable::env_at_terminator(t, ft, blk, module);
-            let any_ty = t.any();
-            let arg_tys = |args: &[crate::fz_ir::Var]| -> Vec<crate::types::Ty> {
-                args.iter()
-                    .map(|av| env.get(av).cloned().unwrap_or_else(|| any_ty.clone()))
-                    .collect()
-            };
-            let pad_to_arity = |callee: FnId, mut tys: Vec<crate::types::Ty>| {
-                if let Some(&j) = module.fn_idx.get(&callee) {
-                    let np = module.fns[j].block(module.fns[j].entry).params.len();
-                    while tys.len() < np {
-                        tys.push(any_ty.clone());
-                    }
-                    tys.truncate(np);
-                }
-                tys
-            };
-            match &blk.terminator {
-                Term::Call {
-                    ident,
-                    callee,
-                    args,
-                    continuation,
-                    ..
-                } => {
-                    push_dispatch_target(
-                        t,
-                        spec_registry,
-                        reached,
-                        &mut worklist,
-                        body.id,
-                        ident,
-                        crate::fz_ir::EmitSlot::Direct,
-                        ft,
-                    );
-                    push_dispatch_target(
-                        t,
-                        spec_registry,
-                        reached,
-                        &mut worklist,
-                        body.id,
-                        ident,
-                        crate::fz_ir::EmitSlot::Cont,
-                        ft,
-                    );
-                    let _ = (callee, args, continuation);
-                }
-                Term::TailCall {
-                    ident,
-                    callee,
-                    args,
-                    ..
-                } => {
-                    push_dispatch_target(
-                        t,
-                        spec_registry,
-                        reached,
-                        &mut worklist,
-                        body.id,
-                        ident,
-                        crate::fz_ir::EmitSlot::Direct,
-                        ft,
-                    );
-                    let _ = (callee, args);
-                }
-                Term::CallClosure {
-                    ident,
-                    closure,
-                    args,
-                    continuation,
-                    ..
-                } => {
-                    if let Some(target) = ft.known_fn(closure) {
-                        push_reachable_spec(
-                            t,
-                            spec_registry,
-                            reached,
-                            &mut worklist,
-                            target,
-                            pad_to_arity(target, arg_tys(args)),
-                        );
-                    }
-                    push_dispatch_target(
-                        t,
-                        spec_registry,
-                        reached,
-                        &mut worklist,
-                        body.id,
-                        ident,
-                        crate::fz_ir::EmitSlot::Cont,
-                        ft,
-                    );
-                    let _ = continuation;
-                }
-                Term::TailCallClosure { closure, args, .. } => {
-                    if let Some(target) = ft.known_fn(closure) {
-                        push_reachable_spec(
-                            t,
-                            spec_registry,
-                            reached,
-                            &mut worklist,
-                            target,
-                            pad_to_arity(target, arg_tys(args)),
-                        );
-                    }
-                }
-                Term::Receive {
-                    continuation,
-                    ident,
-                    ..
-                } => {
-                    push_dispatch_target(
-                        t,
-                        spec_registry,
-                        reached,
-                        &mut worklist,
-                        body.id,
-                        ident,
-                        crate::fz_ir::EmitSlot::Cont,
-                        ft,
-                    );
-                    let _ = continuation;
-                }
-                Term::ReceiveMatched { clauses, after, .. } => {
-                    for c in clauses {
-                        let key =
-                            crate::fz_ir::receive_outcome_spec_key(&any_ty, c.bound_names.len());
-                        push_reachable_spec(t, spec_registry, reached, &mut worklist, c.body, key);
-                        if let Some(g) = c.guard {
-                            let key = crate::fz_ir::receive_outcome_spec_key(
-                                &any_ty,
-                                c.bound_names.len(),
-                            );
-                            push_reachable_spec(t, spec_registry, reached, &mut worklist, g, key);
-                        }
-                    }
-                    if let Some(a) = after {
-                        let key = crate::fz_ir::receive_outcome_spec_key(&any_ty, 0);
-                        push_reachable_spec(t, spec_registry, reached, &mut worklist, a.body, key);
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
-}
-
 /// Walk every fn body collecting tuple arities used by MakeTuple /
 /// DestTupleBegin / TypeTest descrs, detecting any bitstring prim, then
 /// registering a deterministic-id Schema per arity in `user_schemas`.
@@ -483,73 +267,6 @@ fn collect_cont_extras_count(module: &Module) -> HashMap<crate::fz_ir::FnId, usi
         }
     }
     cont_extras_count
-}
-
-/// Collect typed closure shapes keyed by the lambda's resolved narrow
-/// SpecId. Each `Prim::MakeClosure` site is inspected per *caller*
-/// spec (so closures built in different caller specializations with
-/// different capture types produce distinct lambda SpecIds → distinct
-/// stubs). The key fed to `spec_registry.resolve` is
-/// `[capture_descrs..., any, ...]` — padded to the lambda's full
-/// arity. The typer registers a narrow spec for every MakeClosure's
-/// capture-type tuple, so exact-match resolve succeeds; the any-key
-/// remains a subsumption backstop. Value = capture count
-/// (== `captured.len()`); needed to split entry params into
-/// `[captures..., args...]` at stub declaration / invocation.
-fn build_closure_shapes(
-    module: &Module,
-    spec_count: usize,
-    spec_fnidx: &[Option<usize>],
-    spec_fn_types: &[Option<&crate::ir_planner::SpecPlan>],
-    spec_registry: &SpecRegistry,
-) -> std::collections::BTreeMap<u32, usize> {
-    let mut closure_shapes: std::collections::BTreeMap<u32, usize> =
-        std::collections::BTreeMap::new();
-    for sid in 0..spec_count {
-        let Some(idx) = spec_fnidx[sid] else {
-            continue;
-        };
-        let f = &module.fns[idx];
-        let Some(_) = spec_fn_types[sid] else {
-            continue;
-        };
-        for blk in &f.blocks {
-            for stmt in blk.stmts.iter() {
-                let Stmt::Let(_, prim) = stmt;
-                if let Prim::MakeClosure(_ident, lam_fn_id, captured) = prim {
-                    // The lambda body is the any-key body spec
-                    // (SpecId.0 == FnId.0 via register_any_key_at).
-                    // MakeClosure is construction, not dispatch — look
-                    // up the body directly. When the any-key was
-                    // dropped, fall back to any registered narrow spec
-                    // for this FnId; if none, the closure value has no
-                    // live call target (every invocation got inlined to
-                    // direct Call) — skip; the null-stub path in
-                    // MakeClosure prim codegen handles allocation.
-                    let cl_sid = if spec_fnidx
-                        .get(lam_fn_id.0 as usize)
-                        .copied()
-                        .flatten()
-                        .is_some()
-                    {
-                        Some(lam_fn_id.0)
-                    } else {
-                        spec_registry
-                            .iter()
-                            .find(|(s, key)| {
-                                key.fn_id == *lam_fn_id && spec_fnidx[s.0 as usize].is_some()
-                            })
-                            .map(|(s, _)| s.0)
-                    };
-                    let Some(cl_sid) = cl_sid else {
-                        continue;
-                    };
-                    closure_shapes.insert(cl_sid, captured.len());
-                }
-            }
-        }
-    }
-    closure_shapes
 }
 
 /// Build per-SpecId frame schemas, refining entry-param kinds from each
@@ -1992,13 +1709,7 @@ pub(crate) fn compile_with_backend_impl<
     let spec_fnidx = planned_program.spec_fn_indices();
     let spec_fn_types = planned_program.spec_plans();
 
-    let closure_shapes = build_closure_shapes(
-        module,
-        spec_count,
-        &spec_fnidx,
-        &spec_fn_types,
-        spec_registry,
-    );
+    let closure_shapes = planned_program.closure_shapes();
 
     // Native-callability analysis — already a fixed point (the analysis
     // shrinks to convergence internally). Consumed at declare-time below
@@ -2108,30 +1819,10 @@ pub(crate) fn compile_with_backend_impl<
     let bs_const_data: std::cell::RefCell<HashMap<Vec<u8>, BsConstSyms>> =
         std::cell::RefCell::new(HashMap::new());
 
-    // Set of SpecIds reachable from main + closure-dispatched fns.
-    // Specs not in this set get a trap-stub body instead of full
-    // codegen. Closure-target specs (those in `closure_shapes`) are seeded
-    // explicitly because runtime closure dispatch through code pointers isn't
-    // visible to the IR-body BFS. See ir_planner::reachable_specs.
-    let mut reachable: std::collections::HashSet<u32> = crate::ir_planner::reachable_specs(
-        t,
-        module,
-        spec_registry,
-        &module_plan,
-        closure_shapes.keys().copied(),
-    );
-    // Per-spec folding can turn a reachable `Call + Cont` into a direct
-    // `TailCall` to the continuation spec. Augment from the exact folded
-    // bodies codegen will emit so dead-spec pruning cannot leave a trap stub
-    // behind a generated direct edge.
-    augment_reachable_for_codegen_bodies(
-        t,
-        module,
-        spec_registry,
-        &module_plan,
-        &planned_program,
-        &mut reachable,
-    );
+    // Specs not in the planned executable set get a trap-stub body instead of
+    // full codegen. The materializer owns this semantic reachability set,
+    // including closure-entry seeds and edges exposed by planned-body folding.
+    let reachable = planned_program.reachable_specs();
 
     let (matcher_fn_ids, receive_matched_sites) =
         declare_matcher_fns(backend.module_mut(), module, tel)?;
@@ -2349,7 +2040,7 @@ pub(crate) fn compile_with_backend_impl<
     let main_fn_id = module.fn_by_name("main").map(|f| f.id);
 
     let static_closure_targets =
-        collect_static_closure_targets(&closure_shapes, &spec_keys, &fn_ids, &return_reprs);
+        collect_static_closure_targets(closure_shapes, &spec_keys, &fn_ids, &return_reprs);
 
     let diagnostics = crate::ir_planner::collect_diagnostics(t, module, &module_plan, tel);
     let halt_reprs = compute_halt_reprs(

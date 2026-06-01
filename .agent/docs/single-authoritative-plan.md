@@ -114,7 +114,9 @@ and no post-destination re-plan is needed.
 the registry invariant that any-key `SpecId.0 == FnId.0`, including reserved
 slots where needed, but exposes executable bodies as `PlannedBody` values rather
 than `Option<FnIr>`. If codegen is lowering a registered spec, the matching body
-exists by construction.
+exists by construction. The planned program also owns the executable
+`reachable_specs` set; codegen reads that finished set when deciding whether a
+real spec gets a body or a trap stub.
 
 Per-spec folds run while materializing the planned program, not ad hoc inside
 the Cranelift lowering loop. Each body emits
@@ -128,6 +130,8 @@ the Cranelift lowering loop. Each body emits
 - `sentinel_spec_count`: reserved slots with no executable spec.
 - `folded_prim_count` and `folded_branch_count`: per-spec folds applied while
   building planned bodies.
+- `reachable_spec_count`: executable planned bodies reachable from the entry
+  seeds, closure-entry seeds, and edges exposed by planned-body folding.
 
 ## Gate this model with
 

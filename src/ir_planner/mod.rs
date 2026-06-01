@@ -46,7 +46,7 @@ pub use closures::rewrite_known_target_closures;
 pub use diagnostics::collect_diagnostics;
 pub use fn_types::{ModulePlan, SpecPlan};
 pub(crate) use narrow::{find_emptied_var, narrow_for_if};
-pub(crate) use planned::{PlannedProgram, materialize_program};
+pub(crate) use planned::materialize_program;
 pub use pretty::pretty_module_plan;
 pub use reachable::reachable_specs;
 pub use switch_dispatch::rewrite_closed_union_protocol_dispatch;
