@@ -28,7 +28,7 @@ the planner's type inference, not runtime behavior, so they live outside
 | `enum_count.fz` | `Enum.count/1` over a List receiver | `Enum.count([1,2,3]) : int`; protocol dispatch reaches the List count callback | settles ✓ |
 | `enum_reduce.fz` | `Enum.reduce/3` over a List receiver with an inline reducer | `Enum.reduce([1,2,3], 0, +) : int`; public wrapper, protocol dispatch, and list loop converge | settles ✓ |
 | `enum_reduce_named_ref_ok.fz` | `Enum.reduce/3` over a List receiver with `&Main.reducer/2` | `Enum.reduce([1,2,3], 0, &Main.reducer/2) : int`; named reducer references converge like inline closures | settles ✓ |
-| `enum_reduce_range.fz` | `Enum.reduce/3` over a Range receiver | `Enum.reduce(1..3, 0, +) : int`; protocol dispatch must target the Range impl | target; not pinned |
+| `enum_reduce_range.fz` | `Enum.reduce/3` over a Range receiver | `Enum.reduce(1..3, 0, +) : int`; struct receiver dispatches to the Range impl | settles ✓ |
 | `enum_reduce_named_ref.fz` | ill-typed named reducer returns protocol control tuples to public `Enum.reduce/3` | diagnostic: `+` is not defined for a tuple accumulator; no `Unknown`/`any` fallback | target; intentionally not pinned |
 | `fold_tail.fz` | tail-recursive fold, empty-capture closure | `number` | settles ✓ |
 | `fold_nontail.fz` | non-tail wrapper over the fold | `number` | settles ✓ |
@@ -43,7 +43,6 @@ Promote them one at a time so each commit isolates one missing capability.
 
 | program | target capability |
 | --- | --- |
-| `enum_reduce_range.fz` | Devirtualize protocol dispatch through the Range receiver type. |
 | `enum_reduce_named_ref.fz` | Stop on a proved invalid reducer accumulator and emit a diagnostic. |
 
 The discriminator is the captured value's type: an `int` capture (`&f[5]`) settles;
@@ -105,3 +104,10 @@ The lowered matcher performs `matcher_map_get(map, :id)` and then
 `is_matcher_map_miss(value)`; static-key map construction proves the hit for
 `%{id: 1}`, carries the `id` value proof into the selected leaf, and lets `:none`
 take the atom clause without the catch-all contributing to `main/0`.
+
+`enum_reduce_range.fz` extends protocol dispatch to schema-backed struct
+receivers. `1..3` lowers through `Range.new/3` to `%Range{...}`, which the engine
+types as the existing opaque `impl-target::Range` value while carrying
+field-wise proof for `first`, `last`, and `step`. Protocol devirtualization then
+chooses `Enumerable.Range.reduce/3`, and struct-field projection feeds the Range
+callback enough type information for public `Enum.reduce/3` to settle to `int`.

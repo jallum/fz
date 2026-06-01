@@ -1,8 +1,8 @@
 # Enum.reduce over a Range receiver dispatches Enumerable to the Range impl (a
 # different target type than List). Expected: int.
 #
-# Target status: not pinned yet. The spike engine does not currently model the
-# Range struct/nominal receiver enough to devirtualize `Enumerable.Range.reduce`.
+# Target status: pinned in type_infer. The engine models Range as the existing
+# opaque impl-target receiver with field-wise struct proof.
 fn main() do
   dbg(Enum.reduce(1..3, 0, fn (x, a) -> x + a end))
 end

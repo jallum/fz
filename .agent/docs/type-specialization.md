@@ -8,11 +8,12 @@ CPS-lowered IR. Argument types flow in, the body's operations propagate
 constraints, a return type flows out, and recursion converges by **widening** in a
 finite-height lattice.
 
-A parameter carries no type of its own. It does **not** start at `any`; it starts
-at **`Unknown`** — the absence of a determination — and the first legal value it
-receives lifts it into the value lattice. A `@spec` is an optional pin on that
-inference, not its source: the engine reaches the same types without one, just
-with fewer constraints to lean on.
+A parameter carries no type of its own. It does **not** start at `any`; an
+activation supplies its input fact. Return cells start at **`Pending`** — no
+callee result has been produced yet — and the first legal value lifts them into
+the value lattice. A `@spec` is an optional pin on that inference, not its source:
+the engine reaches the same types without one, just with fewer constraints to
+lean on.
 
 ## The cell: information vs value
 
@@ -20,7 +21,9 @@ Each slot holds an `Info`, which separates *what we know* from *what the value
 is*. A known value has two parts:
 
 ```text
-Info      = Unknown                   -- neutral: no determination yet
+Info      = Pending                   -- dependency has not produced a fact yet
+          | Unknown                   -- live value, no determination yet
+          | NoReturn                  -- path contributes no return value
           | Known(ValueFact)
 
 ValueFact = { ty: Ty, proof: ValueProof }
@@ -29,6 +32,7 @@ ValueProof = Unproven
            | Exact(Ty)                -- exact witness in the existing type model
            | TupleFields([ValueProof])
            | MapFields({key => ValueProof}, complete?)
+           | StructFields(module, {field => ValueProof})
            | MatcherMapHit(ValueProof)
            | MatcherMapMiss
 ```
@@ -41,19 +45,26 @@ prove the same fact. `Exact(Ty)` is deliberately a witness in the existing
 witness a singleton int?", "does it fit this refined type?", and "is it
 disjoint?" are delegated back to `Types`.
 
-These are separate axes, and conflating them is the classic bug. Three roles,
+These are separate axes, and conflating them is the classic bug. Five roles,
 only two of which live in the value ordering:
 
-- **`Unknown` is neutral** — the *identity* of the join, not a least element.
-  `widen(Unknown, x) = x`: it contributes nothing and is *displaced* by the first
-  legal value. It is not "in" the value ordering; it is the absence of a point in
-  it. (Pedantically it is the bottom of the *information* semilattice, but we say
-  "neutral" to refuse overloading "bottom" across two lattices.)
+- **`Pending` is worklist latency** — a dependency has not produced its first
+  fact yet. It is the activation-cell initialization identity and the recursive
+  seed that lets a base case lift a return cell before the back-edge settles.
+- **`Unknown` is live uncertainty** — a value may exist, but the engine has not
+  proved its type yet. It is not "in" the value ordering; it is the absence of a
+  point in it. In a control-flow join, a live `Unknown` arm must survive so the
+  product boundary can consume it explicitly.
+- **`NoReturn` is control-flow neutrality** — a path that produces no return value
+  (`Halt`, proved-dead matcher arm). It contributes nothing to a sibling return
+  arm, and if every path is `NoReturn`, the function boundary can report `none`.
 - **`none` is the value-lattice bottom (⊥)** — the empty, uninhabited set. A
   *fact*: "no value, ever."
 - **`any` is the value-lattice top (⊤)** — every value (dynamic). Also a fact —
   and one that must be **earned** (by a spec/type that explicitly declares top,
-  or by a join of real uses that genuinely reaches ⊤), **never defaulted**.
+  by a join of real uses that genuinely reaches ⊤, or by final erasure of a
+  residual `Pending`/`Unknown` at a product boundary), **never defaulted inside
+  inference**.
   Seeding an undetermined slot at `any` is the same category error as seeding it
   at `none`: both assert a fact where the truth is "not yet determined."
 
@@ -64,24 +75,32 @@ only two of which live in the value ordering:
                    \    |     /
                     Known(none)           ⊥  value bottom   (empty / uninhabited)
 
-       Unknown   ── neutral; off to the side, the join identity
+       Pending   ── worklist latency; activation-cell identity
+       Unknown   ── live uncertainty; off to the side
+       NoReturn  ── control-flow join identity; no produced value
 ```
 
 ## The join
 
-One operator does both the information-lift and the value-union, because
-`Unknown` is the value-join's identity:
+There are two joins, because "pending inference" and "this path does not return"
+are different:
 
 ```text
-widen(Unknown, x)         = x                       -- first legal value lifts the slot
-widen(x, Unknown)         = x
-widen(Known(a), Known(b)) = Known({
+cell_update(Pending, x)         = x                 -- first result initializes the cell
+cell_update(Unknown, x)         = Unknown           -- live uncertainty is sticky
+cell_update(NoReturn, x)        = x
+cell_update(Known(a), Known(b)) = Known({
   ty: refine_widen(a.ty, b.ty),
   proof: a.proof if a.proof == b.proof else Unproven
 })
+
+branch_join(Pending, x)         = x                 -- recursion seed / not ready yet
+branch_join(Unknown, x)         = Unknown           -- a live unknown arm is still live
+branch_join(NoReturn, x)        = x                 -- a non-returning arm contributes nothing
+branch_join(Known(a), Known(b)) = Known(a ⊔ b)
 ```
 
-So a slot only ever ascends: `Unknown ⊑ Known(int) ⊑ Known(int | float) ⊑ …`. The
+So a slot only ever ascends: `Pending ⊑ Known(int) ⊑ Known(int | float) ⊑ …`. The
 first value carries it *from the information-neutral up into the value lattice*;
 subsequent values union in.
 
@@ -131,13 +150,15 @@ Application is **strict** and three-way:
 
 ```text
 apply(+, a, b) =
-  Unknown                                         if a or b is Unknown
+  Pending                                         if a or b is Pending
+  Unknown                                         if a or b is live Unknown
   ⋃ { C.ret : clause C whose domains a, b inhabit }   if a, b are in-domain
   none                                            otherwise (an operand escapes)
 ```
 
-- **`Unknown` in ⇒ `Unknown` out.** You cannot pick a clause without the operand,
-  and you must not guess `any` or `none`; recompute when it arrives.
+- **`Pending` in ⇒ `Pending` out; `Unknown` in ⇒ `Unknown` out.** You cannot pick
+  a clause without the operand, and you must not guess `any` or `none`; recompute
+  when a pending dependency arrives, or carry live uncertainty to the boundary.
 - **In-domain ⇒ the union of the returns of the clauses the operands hit** — so
   `int + int = int`, `int + float = float`, and `(int | float) + int = int |
   float`. Precise, no `number` collapse.
@@ -152,38 +173,45 @@ structure forward and grow without bound. This is the second, complementary boun
 to slot-widening: **operators bound their returns; slots bound their accumulated
 unions.** Both are needed for the fixpoint to settle.
 
-## The two non-answers
+## The non-answers
 
-`none` and `Unknown` are the two results that are not a usable value, and they
-mean opposite things:
+`none`, `Pending`, `Unknown`, and `NoReturn` are not usable values, and they mean
+different things:
 
 - **`Known(none)` reached where a value is required** = a *proved* contradiction
   (e.g. `+` on operands outside its domain, or projecting a tuple field no
   feasible tuple value has). The program is ill-typed *there*. The production
   transplant must surface this as a diagnostic stop; it must not be laundered
   into a later wider result.
+- **`Pending` at the settled fixpoint** = a dependency cycle never produced a
+  first fact. That is an analysis gap for supported code.
 - **`Unknown` at the settled fixpoint** = the engine *could not determine* a type:
   no constraint and no spec ever reached the slot. It is the absence of an answer.
+- **`NoReturn` at a control-flow join** = a path that produces no value for the
+  current continuation. It is neutral beside a returning sibling, and only becomes
+  `none` at a function/product boundary if no returning path remains.
 
-`Unknown` is iteration scaffolding, never a result — so it **may not appear in a
-product**. At a settled fixpoint every reachable slot must be `Known`; a surviving
-`Unknown` is either an under-specification (needs a spec) or an engine coverage
-gap (a construct not yet modeled), and the distinction is exactly the
-`Unknown ≠ none ≠ any` separation above.
+`Pending` and `Unknown` are inference scaffolding, never public types. At a
+settled fixpoint a surviving `Unknown` is either under-specification (needs a
+spec), an engine coverage gap (a construct not yet modeled), or an intentionally
+dynamic edge that cannot be represented more tightly. The product boundary must
+consume it explicitly: diagnose/stop for unsupported required knowledge, mark a
+proven inaccessible path dead, or erase the still-live value to `any`. It must
+not silently become `none`; `none` requires proof that no value exists.
 
-A fallback, fail arm, or unresolved callee stays `Unknown` while the worklist is
-running. It becomes dead/inaccessible only after the fixpoint has enough proof
-to prove no live input reaches it. A declared-spec lookup follows the same rule:
-if the matcher cannot prove a matching arrow, the spike keeps the result
-`Unknown`; it does not invent `none` from an underconstrained or unsupported
-scheme match.
+A callee whose return has not been computed stays `Pending` while the worklist is
+running. A fallback or fail arm becomes `NoReturn` when proved unreachable; if it
+is still live but unsupported, it stays `Unknown`. A declared-spec lookup follows
+the same rule: if the matcher cannot prove a matching arrow, the spike keeps the
+result `Unknown`; it does not invent `none` from an underconstrained or
+unsupported scheme match.
 
 `any` follows the same discipline from the other end of the lattice. It is not a
 projection fallback. Reading a tuple field projects across feasible tuple clauses;
 clauses that are contradictory (for example, a conjunction that would require the
 same value to be both a 2-tuple and a 3-tuple) contribute no proof. If no
 feasible tuple has the field, the projection is `none`; if the input is still
-unknown, the projection remains `Unknown`.
+pending or live-unknown, the projection preserves that state.
 
 ## Pattern proof
 
@@ -225,10 +253,14 @@ proof and produces either `MatcherMapHit(value-proof)` or `MatcherMapMiss`.
 tree arm. The miss sentinel is never a public type; ordinary field type and key
 semantics still come from `Types::map`, `map_field_lookup`, and `map_top`.
 
-Structs should use the same field-wise shape when added: each declared field
-starts `Unproven` until that field has its own proof. An aggregate with one
-proven field is not a proven aggregate; it is an aggregate whose one field can
-help the matcher or guard reducer choose a branch.
+Schema-backed struct construction follows the same field-wise rule. The visible
+type is the existing opaque impl-target type (`impl-target::Range`, etc.), so
+protocol dispatch and nominal checks still go through `Types`; the proof stores
+only per-field facts keyed by the declared schema name. `StructField` projects
+the visible field type through `Module::struct_schemas` plus `opaque_inners`, and
+projects the matching field proof if it still fits that visible type. A struct
+with one proven field is not a proven aggregate; it is an aggregate whose one
+field can help the matcher or guard reducer choose a branch.
 
 ## Closures are functions with capture parameters
 
@@ -288,7 +320,7 @@ The worklist holds activations whose return estimate may have changed:
   closure — the closure activation is rescheduled, and its readers with it.
 - A protocol-dispatch stub is **devirtualized on its receiver's type** before the
   call: the single impl whose target type the receiver is a subtype of. Until the
-  receiver is `Known`, the call yields `Unknown` and is retried as the receiver
+  receiver is `Known`, the call yields `Pending` and is retried as the receiver
   ascends.
 
 The fixpoint halts when no activation's inputs or return are still moving.
@@ -297,7 +329,7 @@ The fixpoint halts when no activation's inputs or return are still moving.
 
 The worklist is a standard monotone fixpoint, and the premises hold:
 
-- **Monotone** — a slot's type only ascends (`Unknown ⊑ Known(t) ⊑ Known(t ⊔ t')`);
+- **Monotone** — a slot's type only ascends (`Pending ⊑ Known(t) ⊑ Known(t ⊔ t')`);
   it never oscillates down.
 - **Finite height (slots)** — every leaf rides a bounded refinement chain
   (`int_lit ⊑ int ⊑ any`), and recursive structure is bounded by

@@ -25,15 +25,19 @@
 //!
 //! ## Unknown is not `none`
 //!
-//! The fixpoint distinguishes two bottoms (see [`Info`]). The *type* `none` is
-//! ⊥ of the value lattice — the empty, uninhabited set ("returns nothing,
-//! ever"); it is a fact. [`Info::Unknown`] is ⊥ of the *information* lattice —
-//! the absence of a fact ("not yet determined"), which only ascends as the
-//! worklist learns. They share the join identity (`widen(⊥, x) = x`) but differ
-//! under projection: projecting `Unknown` is `Unknown` (we still know nothing),
-//! whereas projecting `Known(none)` is `Known(none)` (a field of an uninhabited
-//! value is itself uninhabited). Conflating them lets a not-yet-computed
-//! continuation argument project to `any` and poison the fixpoint forever.
+//! The fixpoint distinguishes three non-values (see [`Info`]). The *type* `none`
+//! is ⊥ of the value lattice — the empty, uninhabited set ("returns nothing,
+//! ever"); it is a fact. [`Info::Pending`] is a worklist dependency that has not
+//! produced its first fact yet. [`Info::Unknown`] is a live value the engine
+//! cannot prove. [`Info::NoReturn`] is the control-flow join identity for paths
+//! that do not produce a value (`Halt`, proved-dead matcher arms). Projecting
+//! `Unknown` is `Unknown` (we still know nothing), whereas projecting
+//! `Known(none)` is `Known(none)` (a field of an uninhabited value is itself
+//! uninhabited). Conflating them lets a not-yet-computed continuation argument
+//! project to `any` and poison the fixpoint forever.
+//! If a public, type-returning edge still has `Pending` or `Unknown` after the
+//! fixpoint, that edge may erase it to `any`; the solver itself must never use
+//! `any` as the placeholder for "not proven yet."
 //!
 //! The engine is wired into the planner at fz-g58.65.6; until then only its own
 //! tests exercise it, so the module is dead in non-test builds.
@@ -66,6 +70,12 @@ enum ValueProof {
     MapFields {
         fields: BTreeMap<MapKey, ValueProof>,
         complete: bool,
+    },
+    /// Field-wise proof for schema-backed structs. The visible type remains the
+    /// existing opaque impl-target type; fields are projected by schema name.
+    StructFields {
+        module: String,
+        fields: BTreeMap<String, ValueProof>,
     },
     /// Private matcher-map sentinel state. This is control proof only: it is
     /// not a public type, and `proof_ty` never turns it into one.
@@ -101,6 +111,15 @@ impl ValueProof {
                 }
             }
             _ => MapFieldProof::Unknown,
+        }
+    }
+
+    fn struct_field(&self, field: &str) -> Self {
+        match self {
+            Self::StructFields { fields, .. } => {
+                fields.get(field).cloned().unwrap_or(Self::Unproven)
+            }
+            _ => Self::Unproven,
         }
     }
 }
@@ -156,14 +175,16 @@ impl ValueFact {
 
 /// A cell in the inference fixpoint.
 ///
-/// `Unknown` is ⊥ of the *information* lattice — "not yet determined", the
-/// identity for [`Info::widen`]. It is distinct from the *type* `none` (the
-/// empty, uninhabited set): a function that provably never returns settles to
-/// `Known(none)`, which is information, not its absence. Projecting `Unknown`
-/// yields `Unknown`; projecting `Known(t)` yields `Known(proj t)`.
+/// `Pending` is a not-yet-produced dependency value, `Unknown` is a live value
+/// the engine cannot prove, and `NoReturn` is a path that contributes no value.
+/// All three are distinct from the *type* `none` (the empty, uninhabited set).
+/// Projecting `Unknown` yields `Unknown`; projecting `Known(t)` yields
+/// `Known(proj t)`.
 #[derive(Clone)]
 enum Info {
+    Pending,
     Unknown,
+    NoReturn,
     Known(ValueFact),
 }
 
@@ -176,18 +197,23 @@ impl Info {
         Self::Known(ValueFact::with_proof(ty, proof))
     }
 
-    /// Least upper bound in the information lattice: `Unknown` is the identity,
-    /// two `Known`s join through the refinement-lattice widen.
+    /// Activation-cell update: `Pending` is the not-yet-initialized return
+    /// estimate, `NoReturn` contributes no value, `Unknown` is live uncertainty,
+    /// and two `Known`s join through the refinement-lattice widen.
     fn widen<T: Types<Ty = Ty>>(&self, t: &mut T, other: &Info) -> Info {
         match (self, other) {
-            (Info::Unknown, x) | (x, Info::Unknown) => x.clone(),
+            (Info::Pending, x) | (x, Info::Pending) => x.clone(),
+            (Info::Unknown, _) | (_, Info::Unknown) => Info::Unknown,
+            (Info::NoReturn, x) | (x, Info::NoReturn) => x.clone(),
             (Info::Known(a), Info::Known(b)) => Info::Known(a.widen(t, b)),
         }
     }
 
     fn equiv<T: Types<Ty = Ty>>(&self, t: &T, other: &Info) -> bool {
         match (self, other) {
+            (Info::Pending, Info::Pending) => true,
             (Info::Unknown, Info::Unknown) => true,
+            (Info::NoReturn, Info::NoReturn) => true,
             (Info::Known(a), Info::Known(b)) => a.equiv(t, b),
             _ => false,
         }
@@ -197,9 +223,48 @@ impl Info {
     /// projection: we cannot project what we do not yet know.
     fn map_known(self, f: impl FnOnce(ValueFact) -> ValueFact) -> Info {
         match self {
+            Info::Pending => Info::Pending,
             Info::Unknown => Info::Unknown,
+            Info::NoReturn => Info::NoReturn,
             Info::Known(value) => Info::Known(f(value)),
         }
+    }
+}
+
+fn branch_join<T: Types<Ty = Ty>>(t: &mut T, a: Info, b: Info) -> Info {
+    match (a, b) {
+        (Info::Pending, x) | (x, Info::Pending) => x,
+        (Info::Unknown, _) | (_, Info::Unknown) => Info::Unknown,
+        (Info::NoReturn, x) | (x, Info::NoReturn) => x,
+        (Info::Known(a), Info::Known(b)) => Info::Known(a.widen(t, &b)),
+    }
+}
+
+fn unresolved_inputs(inputs: &[Info]) -> Info {
+    if inputs.iter().any(|input| matches!(input, Info::Unknown)) {
+        Info::Unknown
+    } else if inputs.iter().any(|input| matches!(input, Info::NoReturn)) {
+        Info::NoReturn
+    } else {
+        Info::Pending
+    }
+}
+
+fn non_known(info: Info) -> Info {
+    match info {
+        Info::Pending => Info::Pending,
+        Info::Unknown => Info::Unknown,
+        Info::NoReturn => Info::NoReturn,
+        Info::Known(_) => unreachable!("non_known called with Known"),
+    }
+}
+
+fn non_known_pair(a: Info, b: Info) -> Info {
+    match (a, b) {
+        (Info::Unknown, _) | (_, Info::Unknown) => Info::Unknown,
+        (Info::NoReturn, _) | (_, Info::NoReturn) => Info::NoReturn,
+        (Info::Pending, _) | (_, Info::Pending) => Info::Pending,
+        (Info::Known(_), Info::Known(_)) => unreachable!("non_known_pair called with two Known"),
     }
 }
 
@@ -307,7 +372,7 @@ impl<'m> Solver<'m> {
                         ty: value.ty.clone(),
                         proof: value.proof.clone(),
                     }),
-                    Info::Unknown => None,
+                    Info::Pending | Info::Unknown | Info::NoReturn => None,
                 })
                 .collect(),
         };
@@ -320,7 +385,7 @@ impl<'m> Solver<'m> {
             key.clone(),
             Spec {
                 inputs,
-                ret: Info::Unknown,
+                ret: Info::Pending,
             },
         );
         self.enqueue(key);
@@ -338,9 +403,14 @@ impl<'m> Solver<'m> {
     ) -> Info {
         if self.module.protocol_call_targets.contains_key(&callee) {
             // A protocol call resolves to a concrete impl chosen by the
-            // receiver type. Until the receiver is `Known`, we cannot pick an
-            // impl — stay `Unknown` and let a later fixpoint iteration retry
-            // (re-walking the caller once its receiver ascends).
+            // receiver type. A pending receiver waits for a later fixpoint
+            // iteration; a live unknown receiver remains unknown.
+            match args.first() {
+                Some(Info::Pending) => return Info::Pending,
+                Some(Info::Unknown) => return Info::Unknown,
+                Some(Info::NoReturn) | None => return Info::NoReturn,
+                Some(Info::Known(_)) => {}
+            }
             return match self.resolve_protocol(t, callee, &args) {
                 Some(impl_fn) => self.call_direct(t, caller, impl_fn, args),
                 None => Info::Unknown,
@@ -362,7 +432,7 @@ impl<'m> Solver<'m> {
         let target = self.module.protocol_call_targets.get(&callee)?;
         let receiver_ty = match args.first()? {
             Info::Known(value) => value.ty.clone(),
-            Info::Unknown => return None,
+            Info::Pending | Info::Unknown | Info::NoReturn => return None,
         };
         let mut matches: Vec<_> = self
             .module
@@ -388,7 +458,7 @@ impl<'m> Solver<'m> {
     }
 
     /// Record the dependency, widen the callee's inputs (scheduling it if they
-    /// grew), and hand back the callee's current return estimate (`Unknown` for
+    /// grew), and hand back the callee's current return estimate (`Pending` for
     /// a callee not yet processed).
     fn call_direct<T: Types<Ty = Ty>>(
         &mut self,
@@ -398,7 +468,7 @@ impl<'m> Solver<'m> {
         args: Vec<Info>,
     ) -> Info {
         let Some(key) = activation_key(t, callee, &args) else {
-            return Info::Unknown;
+            return unresolved_inputs(&args);
         };
         self.deps
             .entry(key.clone())
@@ -414,7 +484,7 @@ impl<'m> Solver<'m> {
                         .cloned()
                         .map(ValueKey::into_info)
                         .collect(),
-                    ret: Info::Unknown,
+                    ret: Info::Pending,
                 },
             );
             self.enqueue(key.clone());
@@ -422,7 +492,7 @@ impl<'m> Solver<'m> {
         self.specs
             .get(&key)
             .map(|s| s.ret.clone())
-            .unwrap_or(Info::Unknown)
+            .unwrap_or(Info::Pending)
     }
 
     /// Run to fixpoint: repeatedly re-derive each scheduled function's return
@@ -446,7 +516,7 @@ impl<'m> Solver<'m> {
         for i in inputs {
             match i {
                 Info::Known(value) => arg_tys.push(value.ty.clone()),
-                Info::Unknown => return None,
+                Info::Pending | Info::Unknown | Info::NoReturn => return None,
             }
         }
         let matches = spec_set.matching_arrows(t, &arg_tys);
@@ -511,8 +581,8 @@ impl<'m> Solver<'m> {
 
     /// Walk one block of `f`. Intra-fn control (`Goto`/`If`) recurses here;
     /// inter-fn edges route through [`Solver::call`]. Returns the value `f`
-    /// hands to its continuation along this path (`Unknown` for non-returning
-    /// `Halt` paths — they contribute no information to the join).
+    /// hands to its continuation along this path (`NoReturn` for non-returning
+    /// `Halt` paths — they contribute no value to the control-flow join).
     fn walk_block<T: Types<Ty = Ty> + ClosureTypes>(
         &mut self,
         t: &mut T,
@@ -525,7 +595,7 @@ impl<'m> Solver<'m> {
         let module = self.module;
         let f = key.fn_id;
         if !visited.insert(block_id) {
-            return Info::Unknown;
+            return Info::Pending;
         }
         let block = module.fn_by_id(f).block(block_id);
         for Stmt::Let(v, prim) in &block.stmts {
@@ -536,20 +606,18 @@ impl<'m> Solver<'m> {
             }
         }
         match &block.terminator {
-            Term::Return(v) => env.get(v).cloned().unwrap_or(Info::Unknown),
-            // A halt path adds no information to the caller's return type, so it
-            // contributes the join identity. That identity is `Unknown`, *not*
-            // `Known(none)`: our join is the lossy refinement-widen, and
-            // `refine_widen(none, X)` widens `X` (via `widen_for_recursive_spec_key`)
-            // rather than returning it untouched — so a `none` halt-path would
-            // spuriously degrade a sibling branch's precise type. `Unknown` is
-            // the true identity (`widen` returns the other operand verbatim).
+            Term::Return(v) => env.get(v).cloned().unwrap_or(Info::Pending),
+            // A halt path adds no value to the caller's return type, so it
+            // contributes the control-flow join identity. That identity is
+            // `NoReturn`, not `Unknown` and not `Known(none)`: `Unknown` is a
+            // live-but-unproven value, and `Known(none)` would erase sibling
+            // proof by flowing through the value-lattice widen.
             //
             // We still reach halt paths when the current proof cannot prove
             // a matcher fail arm dead. Proved-impossible branches are skipped
             // by predicate narrowing; unresolved fail arms stay neutral until
             // the fixpoint can classify them.
-            Term::Halt(_) => Info::Unknown,
+            Term::Halt(_) => Info::NoReturn,
             Term::Goto(target, args) => {
                 let arg_infos = arg_infos_of(args, env);
                 let target_params = module.fn_by_id(f).block(*target).params.clone();
@@ -584,7 +652,7 @@ impl<'m> Solver<'m> {
                     None => {
                         let a = self.walk_branch(t, key, then_b, then_env, predicates, visited);
                         let b = self.walk_branch(t, key, else_b, else_env, predicates, visited);
-                        a.widen(t, &b)
+                        branch_join(t, a, b)
                     }
                 }
             }
@@ -596,6 +664,9 @@ impl<'m> Solver<'m> {
             } => {
                 let arg_infos = arg_infos_of(args, env);
                 let r = self.call(t, key, *callee, arg_infos);
+                if matches!(r, Info::NoReturn) {
+                    return Info::NoReturn;
+                }
                 let cont_inputs = cont_inputs_of(r, &continuation.captured, env);
                 self.call(t, key, continuation.fn_id, cont_inputs)
             }
@@ -612,6 +683,9 @@ impl<'m> Solver<'m> {
             } => {
                 let arg_infos = arg_infos_of(args, env);
                 let r = self.apply_closure(t, key, *closure, arg_infos, env);
+                if matches!(r, Info::NoReturn) {
+                    return Info::NoReturn;
+                }
                 let cont_inputs = cont_inputs_of(r, &continuation.captured, env);
                 self.call(t, key, continuation.fn_id, cont_inputs)
             }
@@ -634,7 +708,7 @@ impl<'m> Solver<'m> {
         visited: &HashSet<BlockId>,
     ) -> Info {
         let Some(mut env) = env else {
-            return Info::Unknown;
+            return Info::NoReturn;
         };
         let mut predicates = predicates.clone();
         let mut visited = visited.clone();
@@ -642,8 +716,9 @@ impl<'m> Solver<'m> {
     }
 
     /// Resolve a closure application to a call on its body fn (captures ++
-    /// args). `Unknown` operand stays `Unknown`; a known non-closure type
-    /// (e.g. `any`) yields `any`.
+    /// args). `Pending` waits; `Unknown` stays `Unknown`; a known value that
+    /// cannot be resolved to one closure target is still not proven callable, so
+    /// it also stays `Unknown` until a final boundary decides how to erase it.
     fn apply_closure<T: Types<Ty = Ty> + ClosureTypes>(
         &mut self,
         t: &mut T,
@@ -652,9 +727,11 @@ impl<'m> Solver<'m> {
         arg_infos: Vec<Info>,
         env: &Env,
     ) -> Info {
-        let clo = env.get(&closure).cloned().unwrap_or(Info::Unknown);
+        let clo = env.get(&closure).cloned().unwrap_or(Info::Pending);
         let clo_ty = match clo {
+            Info::Pending => return Info::Pending,
             Info::Unknown => return Info::Unknown,
+            Info::NoReturn => return Info::NoReturn,
             Info::Known(value) => value.ty,
         };
         match t.closure_lit_parts(&clo_ty) {
@@ -726,7 +803,9 @@ impl<'m> Solver<'m> {
                         (Info::Known(a), Info::Known(b)) => {
                             Info::known(t.refine_widen(&a.ty, &b.ty))
                         }
-                        _ => Info::Unknown,
+                        (Info::Unknown, _) | (_, Info::Unknown) => Info::Unknown,
+                        (Info::NoReturn, _) | (_, Info::NoReturn) => Info::NoReturn,
+                        (Info::Pending, _) | (_, Info::Pending) => Info::Pending,
                     },
                     BinOp::Eq | BinOp::Neq | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => {
                         comparison_binop(t, *op, lt, rt)
@@ -753,7 +832,9 @@ impl<'m> Solver<'m> {
                 for e in elems {
                     match info_of(*e, env) {
                         Info::Known(et) => elem = t.refine_widen(&elem, &et.ty),
+                        Info::Pending => return Info::Pending,
                         Info::Unknown => return Info::Unknown,
+                        Info::NoReturn => return Info::NoReturn,
                     }
                 }
                 let mut tail_ty = None;
@@ -764,7 +845,9 @@ impl<'m> Solver<'m> {
                             elem = t.refine_widen(&elem, &te);
                             tail_ty = Some(tt.ty);
                         }
+                        Info::Pending => return Info::Pending,
                         Info::Unknown => return Info::Unknown,
+                        Info::NoReturn => return Info::NoReturn,
                     }
                 }
                 Info::known(if elems.is_empty() && tail.is_none() {
@@ -784,14 +867,18 @@ impl<'m> Solver<'m> {
                             tys.push(value.ty);
                             proof.push(value.proof);
                         }
+                        Info::Pending => return Info::Pending,
                         Info::Unknown => return Info::Unknown,
+                        Info::NoReturn => return Info::NoReturn,
                     }
                 }
                 Info::known_with_proof(t.tuple(&tys), ValueProof::TupleFields(proof))
             }
+            Prim::MakeStruct { module, fields } => type_make_struct(t, module, fields, env),
             Prim::TupleField(v, i) => {
                 info_of(*v, env).map_known(|value| value.tuple_field(t, *i as usize))
             }
+            Prim::StructField(v, field) => type_struct_field(t, module, *v, field, env),
             Prim::MakeMap(entries) => type_make_map(t, entries, env),
             Prim::MapUpdate(base, entries) => type_map_update(t, *base, entries, env),
             Prim::MapGet(map, key) => type_map_get(t, *map, *key, env, false),
@@ -802,7 +889,9 @@ impl<'m> Solver<'m> {
                 for c in caps {
                     match info_of(*c, env) {
                         Info::Known(value) => cap_tys.push(value.ty),
+                        Info::Pending => return Info::Pending,
                         Info::Unknown => return Info::Unknown,
+                        Info::NoReturn => return Info::NoReturn,
                     }
                 }
                 let tfn = module.fn_by_id(*target);
@@ -810,10 +899,10 @@ impl<'m> Solver<'m> {
                 let n_args = entry_params.saturating_sub(cap_tys.len());
                 Info::known(t.closure_lit(ClosureTarget::from(*target), cap_tys, n_args))
             }
-            // Prims not yet modeled (bitstrings, externs, structs) are
+            // Prims not yet modeled (bitstrings, externs) are
             // `Unknown` — undetermined, not `any`. `any` is earned, never
-            // defaulted; a residual `Unknown` at the fixpoint is the signal that
-            // the construct still needs modeling (or a spec).
+            // defaulted during inference; a final boundary may erase a residual
+            // `Unknown` to `any`, but the solver keeps the uncertainty visible.
             _ => Info::Unknown,
         }
     }
@@ -1029,7 +1118,14 @@ fn known_ty(v: Var, env: &Env) -> Option<Ty> {
 fn known_value(v: Var, env: &Env) -> Option<ValueFact> {
     match env.get(&v)? {
         Info::Known(value) => Some(value.clone()),
-        Info::Unknown => None,
+        Info::Pending | Info::Unknown | Info::NoReturn => None,
+    }
+}
+
+fn value_info(v: Var, env: &Env) -> Result<ValueFact, Info> {
+    match env.get(&v).cloned().unwrap_or(Info::Pending) {
+        Info::Known(value) => Ok(value),
+        other => Err(other),
     }
 }
 
@@ -1043,6 +1139,12 @@ fn proof_ty<T: Types<Ty = Ty>>(t: &mut T, proof: &ValueProof) -> Option<Ty> {
                 tys.push(proof_ty(t, field)?);
             }
             Some(t.tuple(&tys))
+        }
+        ValueProof::StructFields { module, .. } => {
+            Some(crate::frontend::protocols::struct_impl_target_type(
+                t,
+                module.rsplit('.').next().unwrap_or(module),
+            ))
         }
         ValueProof::MapFields { .. } | ValueProof::MatcherMapMiss => None,
         ValueProof::MatcherMapHit(value) => proof_ty(t, value),
@@ -1090,6 +1192,81 @@ fn proof_fits<T: Types<Ty = Ty>>(t: &mut T, proof: &ValueProof, ty: &Ty) -> bool
     t.is_subtype(&proof, ty)
 }
 
+fn type_make_struct<T: Types<Ty = Ty>>(
+    t: &mut T,
+    module: &str,
+    fields: &[(String, Var)],
+    env: &Env,
+) -> Info {
+    let mut proof_fields = BTreeMap::new();
+    for (field, value) in fields {
+        let value = match value_info(*value, env) {
+            Ok(value) => value,
+            Err(info) => return info,
+        };
+        proof_fields.insert(field.clone(), value.proof);
+    }
+    let ty = crate::frontend::protocols::struct_impl_target_type(
+        t,
+        module.rsplit('.').next().unwrap_or(module),
+    );
+    Info::known_with_proof(
+        ty,
+        ValueProof::StructFields {
+            module: module.to_string(),
+            fields: proof_fields,
+        },
+    )
+}
+
+fn type_struct_field<T: Types<Ty = Ty>>(
+    t: &mut T,
+    module: &Module,
+    subject: Var,
+    field: &str,
+    env: &Env,
+) -> Info {
+    let subject = match value_info(subject, env) {
+        Ok(subject) => subject,
+        Err(info) => return info,
+    };
+    let Some(ty) = struct_field_ty(t, module, &subject.ty, field) else {
+        return Info::Unknown;
+    };
+    let proof = subject.proof.struct_field(field);
+    let proof = if proof_fits(t, &proof, &ty) {
+        proof
+    } else {
+        ValueProof::Unproven
+    };
+    Info::known_with_proof(ty, proof)
+}
+
+fn struct_field_ty<T: Types<Ty = Ty>>(
+    t: &mut T,
+    module: &Module,
+    subject: &Ty,
+    field: &str,
+) -> Option<Ty> {
+    let tag = t.opaque_singleton(subject)?;
+    let order = struct_schema_for_impl_target(module, &tag)?;
+    let index = order.iter().position(|name| name == field)?;
+    let inner = module.opaque_inners.get(&tag).cloned()?;
+    let comps = t.tuple_projections(&inner, order.len());
+    comps.into_iter().nth(index)
+}
+
+fn struct_schema_for_impl_target<'a>(module: &'a Module, tag: &str) -> Option<&'a Vec<String>> {
+    let target = tag.strip_prefix("impl-target::")?;
+    let mut matches = module
+        .struct_schemas
+        .iter()
+        .filter(|(name, _fields)| name.rsplit('.').next().unwrap_or(name.as_str()) == target)
+        .map(|(_name, fields)| fields);
+    let fields = matches.next()?;
+    matches.next().is_none().then_some(fields)
+}
+
 fn map_key_of<T: Types<Ty = Ty>>(t: &mut T, value: &ValueFact) -> Option<MapKey> {
     if let Some(proof) = proof_ty(t, &value.proof)
         && let Some(key) = t.as_map_key(&proof)
@@ -1103,13 +1280,13 @@ fn type_make_map<T: Types<Ty = Ty>>(t: &mut T, entries: &[(Var, Var)], env: &Env
     let mut fields = Vec::with_capacity(entries.len());
     let mut proof_fields = BTreeMap::new();
     for (key, value) in entries {
-        let key = match known_value(*key, env) {
-            Some(key) => key,
-            None => return Info::Unknown,
+        let key = match value_info(*key, env) {
+            Ok(key) => key,
+            Err(info) => return info,
         };
-        let value = match known_value(*value, env) {
-            Some(value) => value,
-            None => return Info::Unknown,
+        let value = match value_info(*value, env) {
+            Ok(value) => value,
+            Err(info) => return info,
         };
         let Some(map_key) = map_key_of(t, &key) else {
             return Info::known(t.map_top());
@@ -1132,21 +1309,22 @@ fn type_map_update<T: Types<Ty = Ty>>(
     entries: &[(Var, Var)],
     env: &Env,
 ) -> Info {
-    let Some(mut current) = known_value(base, env) else {
-        return Info::Unknown;
+    let mut current = match value_info(base, env) {
+        Ok(current) => current,
+        Err(info) => return info,
     };
     let mut proof_fields = match std::mem::replace(&mut current.proof, ValueProof::Unproven) {
         ValueProof::MapFields { fields, .. } => fields,
         _ => BTreeMap::new(),
     };
     for (key, value) in entries {
-        let key = match known_value(*key, env) {
-            Some(key) => key,
-            None => return Info::Unknown,
+        let key = match value_info(*key, env) {
+            Ok(key) => key,
+            Err(info) => return info,
         };
-        let value = match known_value(*value, env) {
-            Some(value) => value,
-            None => return Info::Unknown,
+        let value = match value_info(*value, env) {
+            Ok(value) => value,
+            Err(info) => return info,
         };
         if let Some(map_key) = map_key_of(t, &key) {
             current.ty = t.refine_map_field(&current.ty, &map_key, &value.ty);
@@ -1171,23 +1349,23 @@ fn type_map_get<T: Types<Ty = Ty>>(
     env: &Env,
     matcher: bool,
 ) -> Info {
-    let Some(map) = known_value(map, env) else {
-        return Info::Unknown;
+    let map = match value_info(map, env) {
+        Ok(map) => map,
+        Err(info) => return info,
     };
-    let Some(key) = known_value(key, env) else {
-        return Info::Unknown;
+    let key = match value_info(key, env) {
+        Ok(key) => key,
+        Err(info) => return info,
     };
     let Some(map_key) = map_key_of(t, &key) else {
-        let any = t.any();
-        let nil = t.nil();
-        return Info::known(t.union(any, nil));
+        return Info::Unknown;
     };
     match (matcher, map.proof.map_field(&map_key)) {
         (true, MapFieldProof::Miss) => {
             return Info::known_with_proof(t.none(), ValueProof::MatcherMapMiss);
         }
         (true, MapFieldProof::Hit(proof)) => {
-            let ty = map_field_ty(t, &map.ty, &map_key);
+            let ty = map_field_ty(t, &map.ty, &map_key).unwrap_or_else(|| t.none());
             let proof = if proof_fits(t, &proof, &ty) {
                 proof
             } else {
@@ -1197,7 +1375,7 @@ fn type_map_get<T: Types<Ty = Ty>>(
         }
         _ => {}
     }
-    let ty = map_field_ty(t, &map.ty, &map_key);
+    let ty = map_field_ty(t, &map.ty, &map_key).unwrap_or_else(|| t.none());
     let proof = match map.proof.map_field(&map_key) {
         MapFieldProof::Hit(proof) if proof_fits(t, &proof, &ty) => {
             if matcher {
@@ -1214,17 +1392,14 @@ fn type_map_get<T: Types<Ty = Ty>>(
     Info::known_with_proof(ty, proof)
 }
 
-fn map_field_ty<T: Types<Ty = Ty>>(t: &mut T, map: &Ty, key: &MapKey) -> Ty {
-    t.map_field_lookup(map, key).unwrap_or_else(|| {
-        let any = t.any();
-        let nil = t.nil();
-        t.union(any, nil)
-    })
+fn map_field_ty<T: Types<Ty = Ty>>(t: &mut T, map: &Ty, key: &MapKey) -> Option<Ty> {
+    t.map_field_lookup(map, key)
 }
 
 fn is_matcher_map_miss<T: Types<Ty = Ty>>(t: &mut T, info: Info) -> Info {
-    let Info::Known(value) = info else {
-        return Info::Unknown;
+    let value = match info {
+        Info::Known(value) => value,
+        other => return non_known(other),
     };
     if let Some(miss) = matcher_map_miss_truth(&value) {
         let ty = t.bool();
@@ -1244,8 +1419,9 @@ fn matcher_map_miss_truth(value: &ValueFact) -> Option<bool> {
 }
 
 fn comparison_binop<T: Types<Ty = Ty>>(t: &mut T, op: BinOp, left: Info, right: Info) -> Info {
-    let (Info::Known(a), Info::Known(b)) = (left, right) else {
-        return Info::Unknown;
+    let (a, b) = match (left, right) {
+        (Info::Known(a), Info::Known(b)) => (a, b),
+        (a, b) => return non_known_pair(a, b),
     };
     if let Some(result) = fold_comparison(t, op, &a, &b) {
         let ty = t.bool();
@@ -1256,8 +1432,9 @@ fn comparison_binop<T: Types<Ty = Ty>>(t: &mut T, op: BinOp, left: Info, right: 
 }
 
 fn logical_binop<T: Types<Ty = Ty>>(t: &mut T, op: BinOp, left: Info, right: Info) -> Info {
-    let (Info::Known(a), Info::Known(b)) = (left, right) else {
-        return Info::Unknown;
+    let (a, b) = match (left, right) {
+        (Info::Known(a), Info::Known(b)) => (a, b),
+        (a, b) => return non_known_pair(a, b),
     };
     let a_bool = bool_fact(t, &a);
     let b_bool = bool_fact(t, &b);
@@ -1270,8 +1447,9 @@ fn logical_binop<T: Types<Ty = Ty>>(t: &mut T, op: BinOp, left: Info, right: Inf
 }
 
 fn negate_info<T: Types<Ty = Ty>>(t: &mut T, info: Info) -> Info {
-    let Info::Known(value) = info else {
-        return Info::Unknown;
+    let value = match info {
+        Info::Known(value) => value,
+        other => return non_known(other),
     };
     let proof = if let Some(n) = exact_int(t, &value) {
         n.checked_neg()
@@ -1286,8 +1464,9 @@ fn negate_info<T: Types<Ty = Ty>>(t: &mut T, info: Info) -> Info {
 }
 
 fn not_info<T: Types<Ty = Ty>>(t: &mut T, info: Info) -> Info {
-    let Info::Known(value) = info else {
-        return Info::Unknown;
+    let value = match info {
+        Info::Known(value) => value,
+        other => return non_known(other),
     };
     let proof = bool_fact(t, &value)
         .map(|b| ValueProof::Exact(t.bool_lit(!b)))
@@ -1382,7 +1561,7 @@ fn ty_inhabits<T: Types<Ty = Ty>>(t: &mut T, x: &Ty, dom: &Ty) -> bool {
 fn numeric_binop<T: Types<Ty = Ty>>(t: &mut T, lt: Info, rt: Info) -> Info {
     let (a, b) = match (lt, rt) {
         (Info::Known(a), Info::Known(b)) => (a, b),
-        _ => return Info::Unknown,
+        (a, b) => return non_known_pair(a, b),
     };
     let int = t.int();
     let float = t.float();
@@ -1424,7 +1603,7 @@ fn activation_key<T: Types<Ty = Ty>>(
                 ty: t.widen_for_recursive_spec_key(&value.ty),
                 proof: value.proof.clone(),
             }),
-            Info::Unknown => return None,
+            Info::Pending | Info::Unknown | Info::NoReturn => return None,
         }
     }
     Some(ActivationKey {
@@ -1433,9 +1612,9 @@ fn activation_key<T: Types<Ty = Ty>>(
     })
 }
 
-/// Look up a var's cell, defaulting to `Unknown` for the not-yet-bound.
+/// Look up a var's cell, defaulting to `Pending` for the not-yet-bound.
 fn info_of(v: Var, env: &HashMap<Var, Info>) -> Info {
-    env.get(&v).cloned().unwrap_or(Info::Unknown)
+    env.get(&v).cloned().unwrap_or(Info::Pending)
 }
 
 fn arg_infos_of(args: &[Var], env: &HashMap<Var, Info>) -> Vec<Info> {
@@ -1450,9 +1629,9 @@ fn cont_inputs_of(r: Info, captured: &[Var], env: &HashMap<Var, Info>) -> Vec<In
 }
 
 /// Infer a function's return type from its body, given its input types,
-/// running the worklist to a fixpoint. Returns `none` if the function is never
-/// determined to return (e.g. unreachable) — `Unknown` is an internal cell, not
-/// a result.
+/// running the worklist to a fixpoint. This helper is a type-returning boundary:
+/// if the engine still has no return proof, expose `any` rather than inventing
+/// `none`. `none` is only returned when inference proved the value uninhabited.
 pub(crate) fn infer_return<T: Types<Ty = Ty> + ClosureTypes>(
     t: &mut T,
     module: &Module,
@@ -1476,13 +1655,14 @@ pub(crate) fn infer_return<T: Types<Ty = Ty> + ClosureTypes>(
     };
     match solver.specs.get(&key).map(|s| s.ret.clone()) {
         Some(Info::Known(value)) => value.ty,
-        _ => t.none(),
+        _ => t.any(),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::fz_ir::{FnBuilder, ModuleBuilder};
     use crate::telemetry::{ConfiguredTelemetry, Handler};
     use crate::types::{ClosureTarget, ConcreteTypes};
     use std::cell::RefCell;
@@ -1580,17 +1760,15 @@ mod tests {
             .fold(None, |acc, ret| match (acc, ret) {
                 (None, Info::Known(value)) => Some(value.ty),
                 (Some(prev), Info::Known(value)) => Some(t.union(prev, value.ty)),
-                (acc, Info::Unknown) => acc,
+                (acc, Info::Pending | Info::Unknown | Info::NoReturn) => acc,
             })
             .unwrap_or_else(|| t.none())
     }
 
-    /// `Unknown` is iteration scaffolding, not an answer. At the fixpoint of a
-    /// well-formed program every *reached* function has been walked and its
-    /// callees resolved, so each settles to a `Known` type — even a path that
-    /// only halts settles to `Known(none)`. A surviving `Unknown` would mean a
-    /// function we reached but never propagated a return into: an analysis gap.
-    /// So when we're done, there are no unknowns.
+    /// `Pending` and `Unknown` are inference scaffolding, not answers. At the
+    /// fixpoint of a supported program every *reached* function has either a
+    /// `Known` return or `NoReturn`; a surviving pending/unknown return means a
+    /// dependency never settled or a live construct is still unmodeled.
     #[test]
     fn fixpoint_leaves_no_reached_fn_unknown() {
         for (name, src) in [
@@ -1616,15 +1794,15 @@ mod tests {
             let mut solver = Solver::new(&module);
             solver.seed(main_id, Vec::new());
             solver.run(&mut t);
-            let unknowns: Vec<&str> = solver
+            let unsettled: Vec<&str> = solver
                 .specs
                 .iter()
-                .filter(|(_, s)| matches!(s.ret, Info::Unknown))
+                .filter(|(_, s)| matches!(s.ret, Info::Pending | Info::Unknown))
                 .map(|(key, _)| module.fn_by_id(key.fn_id).name.as_str())
                 .collect();
             assert!(
-                unknowns.is_empty(),
-                "{name}: reached fns left Unknown at fixpoint: {unknowns:?}"
+                unsettled.is_empty(),
+                "{name}: reached fns left Pending/Unknown at fixpoint: {unsettled:?}"
             );
         }
     }
@@ -1672,9 +1850,6 @@ mod tests {
     /// a well-typed named-fn reference (`&Main.reducer/2`); and `Enum.count`
     /// (the `count` callback, not `reduce`).
     ///
-    /// A `Range` receiver is deferred to fz-z7z (the engine doesn't yet model
-    /// struct/Range nominal types, so the receiver can't devirtualize the
-    /// `Enumerable.Range` impl); re-add it here when that lands.
     #[test]
     fn runtime_graph_enum_ops_settle_to_int() {
         let cases = [
@@ -1692,6 +1867,11 @@ mod tests {
                 "count",
                 "Enum.count",
                 include_str!("../../spike/enum_count.fz"),
+            ),
+            (
+                "range reduce",
+                "Enum.reduce",
+                include_str!("../../spike/enum_reduce_range.fz"),
             ),
         ];
         let mut t = ConcreteTypes;
@@ -1718,26 +1898,18 @@ mod tests {
             "Enum.reduce([1,2,3],0,+) should settle to int, got {reduce_ret:?}"
         );
 
-        // Enumerable.List.reduce settles to a concrete reducer result whose
-        // terminal shapes are {:done, int} and {:halted, int}. The branch-blind
-        // walk also surfaces the protocol's {:suspended, _} arm — statically
-        // dead for an eager Enum.reduce, but present in List.reduce's body — so
-        // we assert the terminals are *present* (a sound over-approximation),
-        // not exact-equality. Pruning the dead suspend arm is fz-g58.65.5.1.
+        // The reducer returns an `int`, so the loop control is proved `:cont`
+        // all the way through; `:halted` and `:suspended` are dead for this
+        // callsite, not part of the settled callback result.
         let done = {
             let a = t.atom_lit("done");
             let i = t.int();
             t.tuple(&[a, i])
         };
-        let halted = {
-            let a = t.atom_lit("halted");
-            let i = t.int();
-            t.tuple(&[a, i])
-        };
         let list_reduce_ret = infer_fn_via_main(&module, "Enumerable.List.reduce");
         assert!(
-            t.is_subtype(&done, &list_reduce_ret) && t.is_subtype(&halted, &list_reduce_ret),
-            "Enumerable.List.reduce should include {{:done,int}} and {{:halted,int}} terminals, got {list_reduce_ret:?}"
+            t.is_equivalent(&list_reduce_ret, &done),
+            "Enumerable.List.reduce should settle to {{:done,int}} for an int-returning reducer, got {list_reduce_ret:?}"
         );
     }
 
@@ -1751,6 +1923,80 @@ mod tests {
         assert!(
             t.is_equivalent(&ret, &int),
             "add(int, int) should infer int"
+        );
+    }
+
+    #[test]
+    fn infer_return_erases_residual_unknown_to_any_at_boundary() {
+        let mut b = FnBuilder::new(FnId(0), "unknown_expr");
+        let entry = b.block(vec![]);
+        let value = b.let_(entry, Prim::MakeBitstring(vec![]));
+        b.set_terminator(entry, Term::Return(value));
+
+        let mut mb = ModuleBuilder::new();
+        mb.add_fn(b.build());
+        let module = mb.build();
+
+        let mut t = ConcreteTypes;
+        let ret = infer_return(&mut t, &module, FnId(0), &[]);
+        let any = t.any();
+        assert!(
+            t.is_equivalent(&ret, &any),
+            "a live value the spike cannot prove should erase to any at the Ty boundary, got {ret:?}"
+        );
+    }
+
+    #[test]
+    fn live_unknown_branch_survives_control_join_to_boundary() {
+        let mut b = FnBuilder::new(FnId(0), "branch_unknown");
+        let cond = b.fresh_var();
+        let entry = b.block(vec![cond]);
+        let unknown_b = b.block(vec![]);
+        let known_b = b.block(vec![]);
+        let unknown = b.let_(unknown_b, Prim::MakeBitstring(vec![]));
+        b.set_terminator(unknown_b, Term::Return(unknown));
+        let one = b.let_(known_b, Prim::Const(Const::Int(1)));
+        b.set_terminator(known_b, Term::Return(one));
+        b.set_terminator(entry, Term::if_user(cond, unknown_b, known_b));
+
+        let mut mb = ModuleBuilder::new();
+        mb.add_fn(b.build());
+        let module = mb.build();
+
+        let mut t = ConcreteTypes;
+        let bool_ty = t.bool();
+        let ret = infer_return(&mut t, &module, FnId(0), &[bool_ty]);
+        let any = t.any();
+        assert!(
+            t.is_equivalent(&ret, &any),
+            "a live unknown arm must not be displaced by a known sibling arm, got {ret:?}"
+        );
+    }
+
+    #[test]
+    fn halt_branch_contributes_no_return_value_to_control_join() {
+        let mut b = FnBuilder::new(FnId(0), "branch_halt");
+        let cond = b.fresh_var();
+        let entry = b.block(vec![cond]);
+        let halt_b = b.block(vec![]);
+        let return_b = b.block(vec![]);
+        let halted = b.let_(halt_b, Prim::Const(Const::Int(1)));
+        b.set_terminator(halt_b, Term::Halt(halted));
+        let returned = b.let_(return_b, Prim::Const(Const::Int(2)));
+        b.set_terminator(return_b, Term::Return(returned));
+        b.set_terminator(entry, Term::if_user(cond, halt_b, return_b));
+
+        let mut mb = ModuleBuilder::new();
+        mb.add_fn(b.build());
+        let module = mb.build();
+
+        let mut t = ConcreteTypes;
+        let bool_ty = t.bool();
+        let ret = infer_return(&mut t, &module, FnId(0), &[bool_ty]);
+        let int = t.int();
+        assert!(
+            t.is_equivalent(&ret, &int),
+            "a halt arm contributes no function return value; sibling return should remain int, got {ret:?}"
         );
     }
 
@@ -2006,12 +2252,11 @@ mod tests {
         assert!(closure_apply_contract(&t, &int, &[]).is_none());
     }
 
-    /// `Unknown` (no information yet) and `Known(none)` (the uninhabited type)
-    /// are different bottoms and must not be conflated. They share the join
-    /// identity but diverge under projection: projecting `Unknown` must *not*
-    /// evaluate the projection (it stays `Unknown`), which is what stops a
-    /// not-yet-computed value from projecting to `any` and poisoning the
-    /// fixpoint. `Known(none)` carries information and is projected normally.
+    /// `Pending` (dependency not ready), `Unknown` (live value not proven), and
+    /// `Known(none)` (the uninhabited type) are different states and must not be
+    /// conflated. Only `Pending` is the activation-cell initialization identity;
+    /// `Unknown` is sticky so live uncertainty survives to the final boundary.
+    /// `Known(none)` carries information and is projected normally.
     #[test]
     fn unknown_is_not_none() {
         let mut t = ConcreteTypes;
@@ -2019,13 +2264,20 @@ mod tests {
         let none = t.none();
 
         // Distinct cells.
+        assert!(!Info::Pending.equiv(&t, &Info::known(none.clone())));
         assert!(!Info::Unknown.equiv(&t, &Info::known(none.clone())));
 
-        // Join: both bottoms are the identity, so each yields `int`.
+        // Activation-cell update: `Pending` yields to the first fact, but a live
+        // `Unknown` remains unknown.
+        assert!(
+            Info::Pending
+                .widen(&mut t, &Info::known(int.clone()))
+                .equiv(&t, &Info::known(int.clone()))
+        );
         assert!(
             Info::Unknown
                 .widen(&mut t, &Info::known(int.clone()))
-                .equiv(&t, &Info::known(int.clone()))
+                .equiv(&t, &Info::Unknown)
         );
         assert!(
             Info::known(none.clone())
