@@ -34,8 +34,11 @@ this engine owns activation-based type flow.
 The crate-visible API is intentionally small:
 
 - `infer_return` runs one activation and returns its boundary-erased `Ty`.
+- `infer_from_entry_data` runs the reachable activation graph from an entry
+  point and returns data only, for production consumers such as the planner.
 - `infer_from_entry` runs the reachable activation graph from an entry point and
-  returns `TypeInferOutcome { entry_return, status, activations }`.
+  returns `TypeInferOutcome { entry_return, status, activations }` while also
+  emitting telemetry.
 - `TypeInferStatus` is the coarse API result: `Complete`, `Unresolved`, or
   `Invalid`.
 - `TypeInferActivationFact` is the production data boundary for reached cells:

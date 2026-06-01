@@ -3467,6 +3467,7 @@ fn discovery_walk_publishes_take_positive_reduce_while_cont_with_final_returns()
             spec_key,
             &mut capabilities,
             &mut out,
+            &super::worklist::ActivationReturnFacts::empty(),
         );
         assert!(
             out.call_edges.contains_key(&cont_callsite),
@@ -3557,6 +3558,7 @@ fn discovery_walk_publishes_enum_reduce_cont_with_final_returns() {
             spec_key,
             &mut capabilities,
             &mut out,
+            &super::worklist::ActivationReturnFacts::empty(),
         );
         assert!(
             out.call_edges.contains_key(&cont_callsite),
@@ -3666,6 +3668,7 @@ fn direct_call_slot0_for_take_positive_reduce_while_is_known_with_final_returns(
             Some(&complete),
             &super::fn_types::FixedPointSlotSummaries::new(),
             None,
+            &super::worklist::ActivationReturnFacts::empty(),
         );
         match slot0.slot0 {
             super::worklist::ResultSlot0::Known(ty) => {

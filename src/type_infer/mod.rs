@@ -859,6 +859,14 @@ impl<'m> Solver<'m> {
         facts
     }
 
+    fn outcome<T: Types<Ty = Ty>>(&self, t: &mut T, key: &ActivationKey) -> TypeInferOutcome {
+        TypeInferOutcome {
+            entry_return: self.boundary_return(t, key),
+            status: self.status(),
+            activations: self.activation_facts(),
+        }
+    }
+
     fn status(&self) -> TypeInferStatus {
         if !self.diagnostics.is_empty() {
             return TypeInferStatus::Invalid;
@@ -2068,11 +2076,18 @@ pub(crate) fn infer_return<T: Types<Ty = Ty> + ClosureTypes>(
     fn_id: FnId,
     input_tys: &[Ty],
 ) -> Ty {
-    let inputs = input_tys.iter().cloned().map(Info::known).collect();
-    let mut solver = Solver::new(module);
-    let key = solver.seed(t, fn_id, inputs);
-    solver.run(t);
+    let (solver, key) = solve_from_entry(t, module, fn_id, input_tys);
     solver.boundary_return(t, &key)
+}
+
+pub(crate) fn infer_from_entry_data<T: Types<Ty = Ty> + ClosureTypes>(
+    t: &mut T,
+    module: &Module,
+    fn_id: FnId,
+    input_tys: &[Ty],
+) -> TypeInferOutcome {
+    let (solver, key) = solve_from_entry(t, module, fn_id, input_tys);
+    solver.outcome(t, &key)
 }
 
 /// Infer the reachable activation graph from an entry point. The returned
@@ -2086,19 +2101,23 @@ pub(crate) fn infer_from_entry<T: Types<Ty = Ty> + ClosureTypes + RenderTypes>(
     input_tys: &[Ty],
     tel: &dyn crate::telemetry::Telemetry,
 ) -> TypeInferOutcome {
+    let (solver, key) = solve_from_entry(t, module, fn_id, input_tys);
+    let outcome = solver.outcome(t, &key);
+    solver.emit_telemetry(t, tel);
+    outcome
+}
+
+fn solve_from_entry<'m, T: Types<Ty = Ty> + ClosureTypes>(
+    t: &mut T,
+    module: &'m Module,
+    fn_id: FnId,
+    input_tys: &[Ty],
+) -> (Solver<'m>, ActivationKey) {
     let inputs = input_tys.iter().cloned().map(Info::known).collect();
     let mut solver = Solver::new(module);
     let key = solver.seed(t, fn_id, inputs);
     solver.run(t);
-    let entry_return = solver.boundary_return(t, &key);
-    let status = solver.status();
-    let activations = solver.activation_facts();
-    solver.emit_telemetry(t, tel);
-    TypeInferOutcome {
-        entry_return,
-        status,
-        activations,
-    }
+    (solver, key)
 }
 
 #[cfg(test)]

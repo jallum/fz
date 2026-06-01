@@ -52,6 +52,16 @@ CallsiteIdent, EmitSlot)`. The value is a `CallEdgePlan`, which names the
 selected target capability plus the return-use and return-context facts for that
 edge.
 
+During the activation-kernel transplant, `plan_module` reads structured
+`type_infer` activation return facts as production data and projects them into
+value-demand planner return facts. This is data flow, not telemetry scraping.
+`ActivationKey` and `SpecKey` are intentionally not the same concept:
+activation facts are matched to planner value keys by `FnId`, value
+`ReturnDemand`, and compatible semantic input slots. Compatibility accepts
+overlapping activation/planner input facts, erasing concrete closure identity
+only for this comparison so a concrete captured reducer can satisfy the
+planner's callable-capture slot without making closure identity an ABI fact.
+
 Local direct, closure, and continuation call edges target a `SpecKey`, which
 names the callee function, its semantic input key, and its `ReturnDemand`.
 Provider-boundary and protocol targets ride the same `CallEdgePlan` shape.

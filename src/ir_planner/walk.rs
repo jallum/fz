@@ -193,6 +193,7 @@ pub(crate) fn walk_spec_for_discovery<
     caller_spec_key: &SpecKey,
     callsite_callable_capabilities: &mut CallsiteCallableCapabilities,
     out: &mut WalkResult,
+    activation_returns: &super::worklist::ActivationReturnFacts,
 ) {
     WALK_CALLS.with(|c| c.set(c.get() + 1));
     let any_ty = t.any();
@@ -208,6 +209,7 @@ pub(crate) fn walk_spec_for_discovery<
         caller_spec_key,
         callsite_callable_capabilities,
         out,
+        activation_returns,
         any_ty,
     }
     .walk_fn(f);
@@ -228,6 +230,7 @@ where
     caller_spec_key: &'a SpecKey,
     callsite_callable_capabilities: &'a mut CallsiteCallableCapabilities,
     out: &'a mut WalkResult,
+    activation_returns: &'a super::worklist::ActivationReturnFacts,
     any_ty: crate::types::Ty,
 }
 
@@ -621,6 +624,7 @@ where
                     Some(self.complete_returns),
                     self.slot_summaries,
                     target,
+                    self.activation_returns,
                 );
                 self.out.return_reads.extend(knowledge.return_reads);
                 match knowledge.slot0 {
@@ -683,6 +687,7 @@ where
                 self.effective_returns,
                 Some(self.complete_returns),
                 self.slot_summaries,
+                self.activation_returns,
             );
             self.out.return_reads.extend(knowledge.return_reads);
             return Some(match knowledge.slot0 {
