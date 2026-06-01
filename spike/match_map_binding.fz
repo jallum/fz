@@ -1,0 +1,9 @@
+# Expected: main() : {int, :none}
+
+fn pick(%{id: x}), do: x
+fn pick(:none), do: :none
+fn pick(_), do: :unreachable
+
+fn main() do
+  {pick(%{id: 1}), pick(:none)}
+end

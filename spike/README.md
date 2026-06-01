@@ -20,11 +20,31 @@ the planner's type inference, not runtime behavior, so they live outside
 | `match_list_binding.fz` | cons clause returns `[h | _]` binding | `main() : {:empty, int}`; matcher-produced bindings carry element type into the selected leaf | not pinned |
 | `match_tuple_binding.fz` | tuple clause returns `{:ok, x}` binding | `main() : {int, :error}`; tuple-shape evidence and field projection carry payload type into the selected leaf | not pinned |
 | `match_nested_binding.fz` | tuple payload is a cons pattern returning `h` | `main() : {int, :error}`; composed tuple and list evidence carries nested binding type into the selected leaf | not pinned |
+| `enum_count.fz` | `Enum.count/1` over a List receiver | `Enum.count([1,2,3]) : int`; protocol dispatch reaches the List count callback | settles ✓ |
+| `enum_reduce.fz` | `Enum.reduce/3` over a List receiver with an inline reducer | `Enum.reduce([1,2,3], 0, +) : int`; public wrapper, protocol dispatch, and list loop converge | settles ✓ |
+| `enum_reduce_named_ref_ok.fz` | `Enum.reduce/3` over a List receiver with `&Main.reducer/2` | `Enum.reduce([1,2,3], 0, &Main.reducer/2) : int`; named reducer references converge like inline closures | settles ✓ |
+| `enum_reduce_range.fz` | `Enum.reduce/3` over a Range receiver | `Enum.reduce(1..3, 0, +) : int`; protocol dispatch must target the Range impl | target; not pinned |
+| `enum_reduce_named_ref.fz` | ill-typed named reducer returns protocol control tuples to public `Enum.reduce/3` | diagnostic: `+` is not defined for a tuple accumulator; no `Unknown`/`any` fallback | target; intentionally not pinned |
 | `fold_tail.fz` | tail-recursive fold, empty-capture closure | `number` | settles ✓ |
 | `fold_nontail.fz` | non-tail wrapper over the fold | `number` | settles ✓ |
 | `fold_capture_int.fz` | threaded closure captures an `int` | `number` | settles ✓ |
 | `fold_capture_closure.fz` | threaded closure captures **another closure** | `number` | **diverges (4096)** |
 | `fold_state_machine.fz` | `{:cont}\|{:halt}` state + nested closure (the `Enum.reduce` shape) | `number` | **diverges (4096)** |
+
+## Target Backlog
+
+These targets are committed source examples, not executable assertions yet.
+Promote them one at a time so each commit isolates one missing capability.
+
+| program | target capability |
+| --- | --- |
+| `match_nested_partition.fz` | Preserve nested tuple/list partition evidence across sibling arms. |
+| `match_tuple_tag_partition.fz` | Partition same-arity tuples by atom tag and project the matching payload. |
+| `match_tuple_arity_partition.fz` | Partition tuples by arity without leaking impossible fields into joins. |
+| `match_guard_partition.fz` | Treat guards as refinement evidence before selecting a clause body. |
+| `match_map_binding.fz` | Bind fields from map patterns while preserving the callable parameter surface. |
+| `enum_reduce_range.fz` | Devirtualize protocol dispatch through the Range receiver type. |
+| `enum_reduce_named_ref.fz` | Stop on a proved invalid reducer accumulator and emit a diagnostic. |
 
 The discriminator is the captured value's type: an `int` capture (`&f[5]`) settles;
 a closure capture (`&f[&g…]`) is the one the current planner can't reach a fixpoint

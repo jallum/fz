@@ -1,0 +1,8 @@
+# Expected: main() : {int, :bad}
+
+fn pick({:ok, x}), do: x
+fn pick({:error, reason}), do: reason
+
+fn main() do
+  {pick({:ok, 1}), pick({:error, :bad})}
+end

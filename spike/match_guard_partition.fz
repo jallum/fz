@@ -1,0 +1,10 @@
+# Expected: main() : {int, :fallback}
+
+fn positive(n), do: n > 0
+
+fn pick({:ok, x}) when positive(x), do: x
+fn pick({:ok, _}), do: :fallback
+
+fn main() do
+  {pick({:ok, 1}), pick({:ok, 0})}
+end
