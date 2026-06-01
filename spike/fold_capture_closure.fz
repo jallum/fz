@@ -1,9 +1,9 @@
-# THE BUG, minimal. The threaded closure captures ANOTHER closure `g`, giving the
-# nested capture type `&w[&g[]:(α,α)->α]:(α,α)->α`. The current planner cannot reach
-# a fixpoint on this and runs to the 4096 visit cap.
+# The threaded closure captures ANOTHER closure `g`, giving the nested capture
+# type `&w[&g[]:(α,α)->α]:(α,α)->α`.
 #
 # Under the model `g` has a body-inferred concrete type (number,number)->number, so
-# the capture is concrete — identical in kind to fold_capture_int's `5`.
+# the capture is concrete — identical in kind to fold_capture_int's `5`. The
+# captured value's kind should not determine whether the fixpoint converges.
 #
 # Expected: myreduce([1,2,3], 0, +) : number ; settles (no 4096).
 

@@ -1,5 +1,7 @@
 # A named reference to a pattern-matched function should still feed the
-# activation's argument proof into the matcher decision tree.
+# activation's argument proof into the matcher decision tree. The source is
+# total via a catch-all, but the two observed activations select only `:left`
+# and `:right`; the catch-all is dead and must not contribute `:other`.
 #
 # Expected: main() : {:one, :two}; the catch-all is source-total but dead for
 # the observed activations.

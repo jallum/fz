@@ -1,3 +1,7 @@
+# Nested tuple/list partition. Empty payload, cons payload, and atom fallback are
+# distinct activations; the catch-all keeps the source total but should not
+# contribute to the observed main/0 return.
+#
 # Expected: main() : {:empty, int, :error}
 
 fn pick({:ok, []}), do: :empty

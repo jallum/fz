@@ -1,3 +1,8 @@
+# Map-pattern proof flow. Lowering uses `matcher_map_get(map, :id)` and
+# `is_matcher_map_miss(value)`; static-key map construction proves the `%{id: 1}`
+# hit, carries the field proof into the selected leaf, and keeps the catch-all
+# from contributing to main/0.
+#
 # Expected: main() : {int, :none}
 
 fn pick(%{id: x}), do: x

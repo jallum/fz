@@ -1,5 +1,7 @@
 # The threaded closure captures a plain int `n`, giving capture type `&w[5]`.
 # A concrete capture rides the lattice like any value, so the fixpoint lands.
+# This is the control case for fold_capture_closure.fz: the captured value's
+# kind should not matter to convergence.
 #
 # Expected: myreduce([1,2,3], 0, 5) : number ; settles.
 

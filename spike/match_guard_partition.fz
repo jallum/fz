@@ -1,3 +1,7 @@
+# Guard selection without exposing singleton return types. `{:ok, 1}` has
+# visible payload type `int`, but carries literal proof through tuple projection
+# so `positive(x)` proves true; `{:ok, 0}` proves false and reaches fallback.
+#
 # Expected: main() : {int, :fallback}
 
 fn positive(n), do: n > 0

@@ -1,8 +1,8 @@
 # The real Enum.reduce shape, no protocol: a {:cont, acc} | {:halt, acc} state
 # threaded through the fold, a {:done, acc} | {:halted, acc} result, a `finish`
 # unwrap, and the wrapper closure `fn (e,i) -> {:cont, f.(e,i)}` capturing the
-# reducer. Same nested-closure fault as fold_capture_closure; the current planner
-# diverges (4096).
+# reducer. Same nested-closure shape as fold_capture_closure: the captured
+# reducer closure is just another concrete capture.
 #
 # Expected: myreduce([1,2,3], 0, +) : number ; settles.
 

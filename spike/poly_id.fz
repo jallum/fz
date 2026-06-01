@@ -1,6 +1,7 @@
 # Polymorphic direct-call specialization. The same FnId is called at two
 # different concrete types; callers should see their own instantiated returns,
 # not a joined `int | :ok` result in both tuple fields.
+# FnId is body/callable identity, not the inference instance.
 #
 # Expected: main() : {int, :ok}
 

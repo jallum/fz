@@ -1,3 +1,7 @@
+# Tuple partition by arity. The one-field and two-field tuple arms project
+# different payload shapes, while the atom arm stays disjoint; impossible arities
+# must not contribute `any` or extra fields.
+#
 # Expected: main() : {int, {int, int}, :other}
 
 fn pick({:one, x}), do: x

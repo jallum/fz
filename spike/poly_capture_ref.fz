@@ -1,6 +1,8 @@
 # A captured closure has captures as inference inputs, but its callable surface
 # is still just the explicit parameters. The same closure value can be applied at
 # different parameter facts without joining those activations together.
+# The lowered closure body receives `tag` as a leading parameter, but the closure
+# value remains callable with one explicit argument.
 #
 # Expected: main() : {{:ok, int}, {:ok, :right}}
 
