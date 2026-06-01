@@ -43,8 +43,8 @@
 //! tests exercise it, so the module is dead in non-test builds.
 #![allow(dead_code)]
 
-use crate::fz_ir::{BinOp, BlockId, Const, FnId, Module, Prim, Stmt, Term, UnOp, Var};
-use crate::types::{ClosureTarget, ClosureTypes, MapKey, Nominals, Ty, Types};
+use crate::fz_ir::{BinOp, BlockId, Const, DeadBranch, FnId, Module, Prim, Stmt, Term, UnOp, Var};
+use crate::types::{ClosureTarget, ClosureTypes, MapKey, Nominals, RenderTypes, Ty, Types};
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 
 type Env = HashMap<Var, Info>;
@@ -359,6 +359,89 @@ impl CallArrowSet {
     }
 }
 
+fn binop_symbol(op: BinOp) -> &'static str {
+    match op {
+        BinOp::Add => "+",
+        BinOp::Sub => "-",
+        BinOp::Mul => "*",
+        BinOp::Div => "/",
+        BinOp::Mod => "%",
+        BinOp::Eq => "==",
+        BinOp::Neq => "!=",
+        BinOp::Lt => "<",
+        BinOp::Le => "<=",
+        BinOp::Gt => ">",
+        BinOp::Ge => ">=",
+        BinOp::And => "and",
+        BinOp::Or => "or",
+    }
+}
+
+#[derive(Clone)]
+struct TypeInferDiagnostic {
+    fn_id: FnId,
+    block_id: BlockId,
+    stmt_index: usize,
+    kind: TypeInferDiagnosticKind,
+}
+
+#[derive(Clone)]
+enum TypeInferDiagnosticKind {
+    InvalidNumericBinOp { op: BinOp, left: Ty, right: Ty },
+}
+
+impl TypeInferDiagnostic {
+    fn emit<T: Types<Ty = Ty> + RenderTypes>(
+        &self,
+        t: &mut T,
+        module: &Module,
+        tel: &dyn crate::telemetry::Telemetry,
+    ) {
+        match &self.kind {
+            TypeInferDiagnosticKind::InvalidNumericBinOp { op, left, right } => {
+                let fn_name = module.fn_by_id(self.fn_id).name.clone();
+                tel.event(
+                    &["fz", "type_infer", "diagnostic"],
+                    crate::metadata! {
+                        code: "type/invalid-operator",
+                        fn_name: fn_name,
+                        block: self.block_id.0 as u64,
+                        stmt: self.stmt_index as u64,
+                        op: binop_symbol(*op),
+                        left: t.display_for_diag(left),
+                        right: t.display_for_diag(right),
+                    },
+                );
+            }
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+struct DeadArmFact {
+    fn_id: FnId,
+    block_id: BlockId,
+    branch: DeadBranch,
+}
+
+impl DeadArmFact {
+    fn emit(&self, module: &Module, tel: &dyn crate::telemetry::Telemetry) {
+        let fn_name = module.fn_by_id(self.fn_id).name.clone();
+        let branch = match self.branch {
+            DeadBranch::Then => "then",
+            DeadBranch::Else => "else",
+        };
+        tel.event(
+            &["fz", "type_infer", "dead_arm"],
+            crate::metadata! {
+                fn_name: fn_name,
+                block: self.block_id.0 as u64,
+                branch: branch,
+            },
+        );
+    }
+}
+
 /// The monotone worklist solver. Drives every reachable `(fn, inputs)` to a
 /// joint fixpoint of input- and return-type estimates.
 struct Solver<'m> {
@@ -369,6 +452,10 @@ struct Solver<'m> {
     deps: HashMap<ActivationKey, HashSet<ActivationKey>>,
     queue: VecDeque<ActivationKey>,
     queued: HashSet<ActivationKey>,
+    diagnostics: Vec<TypeInferDiagnostic>,
+    diagnostic_sites: HashSet<(FnId, BlockId, usize)>,
+    dead_arms: Vec<DeadArmFact>,
+    dead_arm_sites: HashSet<DeadArmFact>,
 }
 
 impl<'m> Solver<'m> {
@@ -379,6 +466,10 @@ impl<'m> Solver<'m> {
             deps: HashMap::new(),
             queue: VecDeque::new(),
             queued: HashSet::new(),
+            diagnostics: Vec::new(),
+            diagnostic_sites: HashSet::new(),
+            dead_arms: Vec::new(),
+            dead_arm_sites: HashSet::new(),
         }
     }
 
@@ -392,6 +483,19 @@ impl<'m> Solver<'m> {
         let key = self.queue.pop_front()?;
         self.queued.remove(&key);
         Some(key)
+    }
+
+    fn emit_telemetry<T: Types<Ty = Ty> + RenderTypes>(
+        &self,
+        t: &mut T,
+        tel: &dyn crate::telemetry::Telemetry,
+    ) {
+        for diagnostic in &self.diagnostics {
+            diagnostic.emit(t, self.module, tel);
+        }
+        for dead_arm in &self.dead_arms {
+            dead_arm.emit(self.module, tel);
+        }
     }
 
     /// Seed an entry point with its known input types and schedule it.
@@ -705,11 +809,16 @@ impl<'m> Solver<'m> {
             return Info::Pending;
         }
         let block = module.fn_by_id(f).block(block_id);
-        for Stmt::Let(v, prim) in &block.stmts {
+        for (stmt_index, Stmt::Let(v, prim)) in block.stmts.iter().enumerate() {
             let info = self.type_prim(t, prim, env);
+            let proved_none =
+                self.record_value_required_none(t, f, block_id, stmt_index, prim, &info, env);
             env.insert(*v, info);
             if let Some(fact) = predicate_fact(prim) {
                 predicates.insert(*v, fact);
+            }
+            if let Some(info) = proved_none {
+                return info;
             }
         }
         match &block.terminator {
@@ -753,6 +862,12 @@ impl<'m> Solver<'m> {
                 } else {
                     (Some(env.clone()), Some(env.clone()))
                 };
+                if matches!(truth, Some(false)) || then_env.is_none() {
+                    self.record_dead_arm(f, block_id, DeadBranch::Then);
+                }
+                if matches!(truth, Some(true)) || else_env.is_none() {
+                    self.record_dead_arm(f, block_id, DeadBranch::Else);
+                }
                 match truth {
                     Some(true) => self.walk_branch(t, key, then_b, then_env, predicates, visited),
                     Some(false) => self.walk_branch(t, key, else_b, else_env, predicates, visited),
@@ -836,6 +951,47 @@ impl<'m> Solver<'m> {
         let mut predicates = predicates.clone();
         let mut visited = visited.clone();
         self.walk_block(t, key, block_id, &mut env, &mut predicates, &mut visited)
+    }
+
+    fn record_dead_arm(&mut self, fn_id: FnId, block_id: BlockId, branch: DeadBranch) {
+        let fact = DeadArmFact {
+            fn_id,
+            block_id,
+            branch,
+        };
+        if self.dead_arm_sites.insert(fact) {
+            self.dead_arms.push(fact);
+        }
+    }
+
+    fn record_value_required_none<T: Types<Ty = Ty>>(
+        &mut self,
+        t: &mut T,
+        fn_id: FnId,
+        block_id: BlockId,
+        stmt_index: usize,
+        prim: &Prim,
+        info: &Info,
+        env: &Env,
+    ) -> Option<Info> {
+        let Info::Known(value) = info else {
+            return None;
+        };
+        if !t.is_empty(&value.ty) {
+            return None;
+        }
+        let Some(kind) = invalid_numeric_binop(prim, env) else {
+            return None;
+        };
+        if self.diagnostic_sites.insert((fn_id, block_id, stmt_index)) {
+            self.diagnostics.push(TypeInferDiagnostic {
+                fn_id,
+                block_id,
+                stmt_index,
+                kind,
+            });
+        }
+        Some(info.clone())
     }
 
     fn type_prim<T: Types<Ty = Ty> + ClosureTypes>(
@@ -1637,6 +1793,19 @@ fn ty_inhabits<T: Types<Ty = Ty>>(t: &mut T, x: &Ty, dom: &Ty) -> bool {
     !t.is_equivalent(&meet, &none)
 }
 
+fn invalid_numeric_binop(prim: &Prim, env: &Env) -> Option<TypeInferDiagnosticKind> {
+    let Prim::BinOp(op @ (BinOp::Add | BinOp::Sub | BinOp::Mul), left, right) = prim else {
+        return None;
+    };
+    let left = known_ty(*left, env)?;
+    let right = known_ty(*right, env)?;
+    Some(TypeInferDiagnosticKind::InvalidNumericBinOp {
+        op: *op,
+        left,
+        right,
+    })
+}
+
 /// Apply the four-clause numeric signature of `+`/`-`/`*` to operand infos:
 ///
 /// ```text
@@ -1754,7 +1923,7 @@ pub(crate) fn infer_return<T: Types<Ty = Ty> + ClosureTypes>(
 mod tests {
     use super::*;
     use crate::fz_ir::{FnBuilder, ModuleBuilder};
-    use crate::telemetry::{ConfiguredTelemetry, Handler};
+    use crate::telemetry::{Capture, ConfiguredTelemetry, Handler, Value};
     use crate::types::{ClosureTarget, ConcreteTypes};
     use std::cell::RefCell;
     use std::panic::AssertUnwindSafe;
@@ -1854,6 +2023,27 @@ mod tests {
                 (acc, Info::Pending | Info::Unknown | Info::NoReturn) => acc,
             })
             .unwrap_or_else(|| t.none())
+    }
+
+    fn solve_via_main(module: &Module) -> (ConcreteTypes, Solver<'_>) {
+        let mut t = ConcreteTypes;
+        let main_id = module
+            .fns
+            .iter()
+            .find(|f| f.name == "main" || f.name.ends_with(".main"))
+            .expect("main fn")
+            .id;
+        let mut solver = Solver::new(module);
+        solver.seed(main_id, Vec::new());
+        solver.run(&mut t);
+        (t, solver)
+    }
+
+    fn metadata_str(ev: &crate::telemetry::capture::OwnedEvent, key: &str) -> Option<String> {
+        match ev.metadata.get(key)? {
+            Value::Str(value) => Some(value.to_string()),
+            _ => None,
+        }
     }
 
     /// `Pending` and `Unknown` are inference scaffolding, not answers. At the
@@ -2001,6 +2191,28 @@ mod tests {
         assert!(
             t.is_equivalent(&list_reduce_ret, &done),
             "Enumerable.List.reduce should settle to {{:done,int}} for an int-returning reducer, got {list_reduce_ret:?}"
+        );
+    }
+
+    #[test]
+    fn invalid_named_reduce_reducer_emits_operator_diagnostic() {
+        let module = linked(include_str!("../../spike/enum_reduce_named_ref.fz"));
+        let (mut t, solver) = solve_via_main(&module);
+        let tel = ConfiguredTelemetry::new();
+        let cap = Capture::new();
+        tel.attach(&["fz", "type_infer"], cap.handler());
+
+        solver.emit_telemetry(&mut t, &tel);
+
+        let diagnostics = cap.find(&["fz", "type_infer", "diagnostic"]);
+        assert!(
+            diagnostics.iter().any(|ev| {
+                metadata_str(ev, "code").as_deref() == Some("type/invalid-operator")
+                    && metadata_str(ev, "op").as_deref() == Some("+")
+                    && metadata_str(ev, "fn_name")
+                        .is_some_and(|name| name.ends_with("broken_reducer"))
+            }),
+            "expected invalid + diagnostic for Main.broken_reducer/2, got {diagnostics:?}"
         );
     }
 
@@ -2317,6 +2529,22 @@ mod tests {
         assert!(
             t.is_equivalent(&ret, &expected),
             "map leaf should bind the matched key value without reaching the catch-all, got {ret:?}"
+        );
+    }
+
+    #[test]
+    fn matcher_dead_arms_are_observable_via_telemetry() {
+        let module = lower(include_str!("../../spike/poly_named_ref_pattern.fz"));
+        let (mut t, solver) = solve_via_main(&module);
+        let tel = ConfiguredTelemetry::new();
+        let cap = Capture::new();
+        tel.attach(&["fz", "type_infer"], cap.handler());
+
+        solver.emit_telemetry(&mut t, &tel);
+
+        assert!(
+            cap.count(&["fz", "type_infer", "dead_arm"]) > 0,
+            "matcher proof should emit dead-arm telemetry for source-total catch-all dispatch"
         );
     }
 

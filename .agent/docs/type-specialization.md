@@ -206,6 +206,13 @@ the same rule: if the matcher cannot prove a matching arrow, the spike keeps the
 result `Unknown`; it does not invent `none` from an underconstrained or
 unsupported scheme match.
 
+The spike makes these non-answers observable. When a value-required operation
+proves `Known(none)` (currently the strict numeric operator path), the solver
+records a `type/invalid-operator` event under `fz.type_infer.diagnostic` and
+stops the current activation path at that statement. When matcher proof proves a
+branch unreachable, the solver records `fz.type_infer.dead_arm`. Tests should
+assert those events instead of poking private solver state.
+
 `any` follows the same discipline from the other end of the lattice. It is not a
 projection fallback. Reading a tuple field projects across feasible tuple clauses;
 clauses that are contradictory (for example, a conjunction that would require the

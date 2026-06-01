@@ -1,5 +1,5 @@
-# INTENTIONALLY ILL-TYPED — kept as the acceptance fixture for the operator-spec
-# / diagnostics work (ticket: "operators as specced Kernel functions").
+# INTENTIONALLY ILL-TYPED — kept as the acceptance fixture for `Known(none)`
+# diagnostics in the type-specialization spike.
 #
 # An `Enum.reduce/3` reducer must return the *bare* new accumulator. This one
 # returns a tagged `{:cont, acc + entry}` instead — that is the contract of the
@@ -11,10 +11,10 @@
 # statically and emit a located diagnostic, e.g.:
 #   `+` is not defined for `({:cont, integer}, integer)` at Main.reducer/2.
 #
-# Until operators carry real signatures there is no clause to fail and no
-# finite-height bound on the self-nesting accumulator, so the engine DIVERGES on
-# this input — which is why this fixture is NOT wired into a running test. The
-# well-typed counterpart is enum_reduce_named_ref_ok.fz.
+# Target status: pinned in type_infer. The linked runtime graph emits a
+# `type/invalid-operator` telemetry diagnostic at Main.broken_reducer/2 instead
+# of falling back to Unknown/any. The well-typed counterpart is
+# enum_reduce_named_ref_ok.fz.
 
 defmodule Main do
   fn broken_reducer(entry, acc) do

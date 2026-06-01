@@ -32,26 +32,23 @@ the planner's type inference, not runtime behavior, so they live outside
 | `enum_reduce.fz` | `Enum.reduce/3` over a List receiver with an inline reducer | `Enum.reduce([1,2,3], 0, +) : int`; public wrapper, protocol dispatch, and list loop converge | settles ✓ |
 | `enum_reduce_named_ref_ok.fz` | `Enum.reduce/3` over a List receiver with `&Main.reducer/2` | `Enum.reduce([1,2,3], 0, &Main.reducer/2) : int`; named reducer references converge like inline closures | settles ✓ |
 | `enum_reduce_range.fz` | `Enum.reduce/3` over a Range receiver | `Enum.reduce(1..3, 0, +) : int`; struct receiver dispatches to the Range impl | settles ✓ |
-| `enum_reduce_named_ref.fz` | ill-typed named reducer returns protocol control tuples to public `Enum.reduce/3` | diagnostic: `+` is not defined for a tuple accumulator; no `Unknown`/`any` fallback | target; intentionally not pinned |
+| `enum_reduce_named_ref.fz` | ill-typed named reducer returns protocol control tuples to public `Enum.reduce/3` | diagnostic: `+` is not defined for a tuple accumulator; no `Unknown`/`any` fallback | diagnostic ✓ |
 | `fold_tail.fz` | tail-recursive fold, empty-capture closure | `number` | settles ✓ |
 | `fold_nontail.fz` | non-tail wrapper over the fold | `number` | settles ✓ |
 | `fold_capture_int.fz` | threaded closure captures an `int` | `number` | settles ✓ |
-| `fold_capture_closure.fz` | threaded closure captures **another closure** | `number` | **diverges (4096)** |
-| `fold_state_machine.fz` | `{:cont}\|{:halt}` state + nested closure (the `Enum.reduce` shape) | `number` | **diverges (4096)** |
+| `fold_capture_closure.fz` | threaded closure captures **another closure** | `number` | settles ✓ |
+| `fold_state_machine.fz` | `{:cont}\|{:halt}` state + nested closure (the `Enum.reduce` shape) | `number` | settles ✓ |
 
 ## Target Backlog
 
-These targets are committed source examples, not executable assertions yet.
-Promote them one at a time so each commit isolates one missing capability.
-
-| program | target capability |
-| --- | --- |
-| `enum_reduce_named_ref.fz` | Stop on a proved invalid reducer accumulator and emit a diagnostic. |
+No target-only spike programs are currently committed. Add source examples here
+first, then promote them one at a time so each commit isolates one missing
+capability.
 
 The discriminator is the captured value's type: an `int` capture (`&f[5]`) settles;
-a closure capture (`&f[&g…]`) is the one the current planner can't reach a fixpoint
-on. Under the model a captured closure is a concrete capture like any other — it is
-the bug these last two programs pin.
+a closure capture (`&f[&g…]`) is concrete in the same way. Under the model a
+captured closure is just another captured value, and the pinned fold tests keep
+that invariant from regressing.
 
 `poly_id.fz` pins the next model boundary: `FnId` is body/callable identity, not
 the inference instance. The same `id` body is activated twice, once at `int` and
