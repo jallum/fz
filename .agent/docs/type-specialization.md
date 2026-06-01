@@ -29,6 +29,14 @@ The engine is implemented in `src/type_infer/mod.rs` and is exercised by
 `cargo test --lib type_infer`. Production planning still owns executable plan
 facts and codegen ABI shape.
 
+The crate-visible API is intentionally small:
+
+- `infer_return` runs one activation and returns its boundary-erased `Ty`.
+- `infer_from_entry` runs the reachable activation graph from an entry point and
+  returns a `TypeInferReport`.
+- `TypeInferReport` exposes inferred returns by function name, unsettled
+  activation names, and telemetry emission for diagnostics/dead arms.
+
 ## Cells
 
 Every local slot and activation return is an `Info`:

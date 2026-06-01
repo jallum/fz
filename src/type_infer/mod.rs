@@ -507,19 +507,6 @@ impl<'m> Solver<'m> {
         Some(key)
     }
 
-    fn emit_telemetry<T: Types<Ty = Ty> + RenderTypes>(
-        &self,
-        t: &mut T,
-        tel: &dyn crate::telemetry::Telemetry,
-    ) {
-        for diagnostic in &self.diagnostics {
-            diagnostic.emit(t, self.module, tel);
-        }
-        for dead_arm in &self.dead_arms {
-            dead_arm.emit(self.module, tel);
-        }
-    }
-
     /// Seed an entry point with its known input types and schedule it.
     fn seed<T: Types<Ty = Ty>>(
         &mut self,
@@ -1160,6 +1147,76 @@ impl<'m> Solver<'m> {
             // `Unknown` to `any`, but the solver keeps the uncertainty visible.
             _ => Info::Unknown,
         }
+    }
+}
+
+pub(crate) struct TypeInferReport<'m> {
+    module: &'m Module,
+    activations: HashMap<ActivationKey, Activation>,
+    diagnostics: Vec<TypeInferDiagnostic>,
+    dead_arms: Vec<DeadArmFact>,
+}
+
+impl<'m> TypeInferReport<'m> {
+    fn from_solver(solver: Solver<'m>) -> Self {
+        let Solver {
+            module,
+            activations,
+            diagnostics,
+            dead_arms,
+            ..
+        } = solver;
+        Self {
+            module,
+            activations,
+            diagnostics,
+            dead_arms,
+        }
+    }
+
+    pub(crate) fn emit_telemetry<T: Types<Ty = Ty> + RenderTypes>(
+        &self,
+        t: &mut T,
+        tel: &dyn crate::telemetry::Telemetry,
+    ) {
+        for diagnostic in &self.diagnostics {
+            diagnostic.emit(t, self.module, tel);
+        }
+        for dead_arm in &self.dead_arms {
+            dead_arm.emit(self.module, tel);
+        }
+    }
+
+    pub(crate) fn return_for_fn_named<T: Types<Ty = Ty>>(&self, t: &mut T, fn_name: &str) -> Ty {
+        self.module
+            .fns
+            .iter()
+            .filter(|f| f.name == fn_name)
+            .flat_map(|f| {
+                self.activations
+                    .iter()
+                    .filter_map(move |(key, activation)| {
+                        if key.fn_id == f.id {
+                            Some(activation.ret.clone())
+                        } else {
+                            None
+                        }
+                    })
+            })
+            .fold(None, |acc, ret| match (acc, ret) {
+                (None, Info::Known(value)) => Some(value.ty),
+                (Some(prev), Info::Known(value)) => Some(t.union(prev, value.ty)),
+                (acc, Info::Pending | Info::Unknown | Info::NoReturn) => acc,
+            })
+            .unwrap_or_else(|| t.none())
+    }
+
+    pub(crate) fn unsettled_fn_names(&self) -> Vec<&str> {
+        self.activations
+            .iter()
+            .filter(|(_, activation)| matches!(activation.ret, Info::Pending | Info::Unknown))
+            .map(|(key, _)| self.module.fn_by_id(key.fn_id).name.as_str())
+            .collect()
     }
 }
 
@@ -1895,787 +1952,18 @@ pub(crate) fn infer_return<T: Types<Ty = Ty> + ClosureTypes>(
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::fz_ir::{FnBuilder, ModuleBuilder};
-    use crate::telemetry::{Capture, ConfiguredTelemetry, Handler, Value};
-    use crate::types::{ClosureTarget, ConcreteTypes};
-    use std::cell::RefCell;
-    use std::panic::AssertUnwindSafe;
-    use std::rc::Rc;
-
-    /// Captures the `Module` from the `fz.frontend.lowered` telemetry event —
-    /// the exact IR the planner consumes, emitted by the production frontend
-    /// just before planning.
-    struct LoweredCapture(Rc<RefCell<Option<Module>>>);
-
-    impl Handler for LoweredCapture {
-        fn handle(&self, ev: &crate::telemetry::Event<'_, '_, '_>) {
-            if let ["fz", "frontend", "lowered"] = ev.name {
-                if let Some(module) = ev
-                    .metadata
-                    .get("module")
-                    .and_then(|v| v.downcast_ref::<Module>())
-                {
-                    *self.0.borrow_mut() = Some(module.clone());
-                }
-            }
-        }
-    }
-
-    /// Lower a source program to its IR `Module` via the production frontend,
-    /// snapshotting the module from telemetry at the lowering stage. The corpus
-    /// runs the *whole* normal flow — including the old planner, which diverges
-    /// (4096 cap) on the nested-closure programs. The lowered event fires before
-    /// planning, so the snapshot lands first; the later panic is caught and
-    /// discarded. We process the captured IR with our own engine.
-    fn lower(src: &str) -> Module {
-        let captured = Rc::new(RefCell::new(None));
-        let tel = ConfiguredTelemetry::new();
-        tel.attach(&["fz"], Box::new(LoweredCapture(captured.clone())));
-
-        let prev_hook = std::panic::take_hook();
-        std::panic::set_hook(Box::new(|_| {}));
-        let _ = std::panic::catch_unwind(AssertUnwindSafe(|| {
-            let mut t = ConcreteTypes;
-            let providers = crate::modules::pipeline::ProviderInputs::new(
-                crate::modules::artifact_store::DEFAULT_ARTIFACT_ROOT.to_string(),
-                Vec::new(),
-            );
-            let _ = crate::modules::pipeline::compile_source_with_providers(
-                &mut t,
-                src.to_string(),
-                "spike.fz".to_string(),
-                &providers,
-                &tel,
-            );
-        }));
-        std::panic::set_hook(prev_hook);
-
-        captured
-            .borrow_mut()
-            .take()
-            .expect("frontend emitted no lowered module")
-    }
-
-    /// Drive the solver from `main` (no args) and read back the return type the
-    /// engine settled for `fn_name`. Seeding `main` lets the engine discover
-    /// every call's real argument types — including the closures `main`
-    /// constructs — exactly as the planner will.
-    fn infer_fn_via_main(module: &Module, fn_name: &str) -> Ty {
-        let mut t = ConcreteTypes;
-        // The entry point is `main` for a bare script, or `<Module>.main` when
-        // the program wraps it in a `defmodule` (e.g. the named-fn-ref spike).
-        let main_id = module
-            .fns
-            .iter()
-            .find(|f| f.name == "main" || f.name.ends_with(".main"))
-            .expect("main fn")
-            .id;
-        let mut solver = Solver::new(module);
-        solver.seed(&mut t, main_id, Vec::new());
-        solver.run(&mut t);
-        // A library fn name can carry several arities (e.g. `Enum.reduce/2` and
-        // `Enum.reduce/3`); only the variant the program actually called is
-        // reached and specialized. Read back that reached variant's settled
-        // return — not the first same-named fn, which may be an unreached arity.
-        module
-            .fns
-            .iter()
-            .filter(|f| f.name == fn_name)
-            .flat_map(|f| {
-                solver
-                    .activations
-                    .iter()
-                    .filter_map(move |(key, activation)| {
-                        if key.fn_id == f.id {
-                            Some(activation.ret.clone())
-                        } else {
-                            None
-                        }
-                    })
-            })
-            .fold(None, |acc, ret| match (acc, ret) {
-                (None, Info::Known(value)) => Some(value.ty),
-                (Some(prev), Info::Known(value)) => Some(t.union(prev, value.ty)),
-                (acc, Info::Pending | Info::Unknown | Info::NoReturn) => acc,
-            })
-            .unwrap_or_else(|| t.none())
-    }
-
-    fn solve_via_main(module: &Module) -> (ConcreteTypes, Solver<'_>) {
-        let mut t = ConcreteTypes;
-        let main_id = module
-            .fns
-            .iter()
-            .find(|f| f.name == "main" || f.name.ends_with(".main"))
-            .expect("main fn")
-            .id;
-        let mut solver = Solver::new(module);
-        solver.seed(&mut t, main_id, Vec::new());
-        solver.run(&mut t);
-        (t, solver)
-    }
-
-    fn metadata_str(ev: &crate::telemetry::capture::OwnedEvent, key: &str) -> Option<String> {
-        match ev.metadata.get(key)? {
-            Value::Str(value) => Some(value.to_string()),
-            _ => None,
-        }
-    }
-
-    /// `Pending` and `Unknown` are inference scaffolding, not answers. At the
-    /// fixpoint of a supported program every *reached* function has either a
-    /// `Known` return or `NoReturn`; a surviving pending/unknown return means a
-    /// dependency never settled or a live construct is still unmodeled.
-    #[test]
-    fn fixpoint_leaves_no_reached_fn_unknown() {
-        for (name, src) in [
-            ("add", include_str!("../../spike/add.fz")),
-            ("fold_tail", include_str!("../../spike/fold_tail.fz")),
-            ("fold_nontail", include_str!("../../spike/fold_nontail.fz")),
-            (
-                "fold_capture_int",
-                include_str!("../../spike/fold_capture_int.fz"),
-            ),
-            (
-                "fold_capture_closure",
-                include_str!("../../spike/fold_capture_closure.fz"),
-            ),
-            (
-                "fold_state_machine",
-                include_str!("../../spike/fold_state_machine.fz"),
-            ),
-        ] {
-            let module = lower(src);
-            let mut t = ConcreteTypes;
-            let main_id = module.fn_by_name("main").unwrap().id;
-            let mut solver = Solver::new(&module);
-            solver.seed(&mut t, main_id, Vec::new());
-            solver.run(&mut t);
-            let unsettled: Vec<&str> = solver
-                .activations
-                .iter()
-                .filter(|(_, s)| matches!(s.ret, Info::Pending | Info::Unknown))
-                .map(|(key, _)| module.fn_by_id(key.fn_id).name.as_str())
-                .collect();
-            assert!(
-                unsettled.is_empty(),
-                "{name}: reached fns left Pending/Unknown at fixpoint: {unsettled:?}"
-            );
-        }
-    }
-
-    /// Compile a program to its **LTO-linked** IR `Module` via the production
-    /// pipeline — the runtime graph where `Enum.reduce`, `List.reduce`,
-    /// `Enumerable.List.reduce`, and the `__protocol__.*` dispatch stubs are all
-    /// local fns. Mirrors `ir_codegen::tests::runtime_graph_module`: the runtime
-    /// library is embedded, so an empty provider list still links it.
-    fn linked(src: &str) -> Module {
-        use crate::modules::pipeline::{
-            CompileMode, ProviderInputs, checked_module_for_mode, compile_source_with_providers,
-            prepare_execution_graph,
-        };
-        let mut t = ConcreteTypes;
-        let tel = crate::telemetry::NullTelemetry;
-        let providers = ProviderInputs::new(
-            crate::modules::artifact_store::DEFAULT_ARTIFACT_ROOT.to_string(),
-            Vec::new(),
-        );
-        let frontend = compile_source_with_providers(
-            &mut t,
-            src.to_string(),
-            "spike.fz".to_string(),
-            &providers,
-            &tel,
-        )
-        .unwrap_or_else(|e| panic!("frontend: {e}"));
-        let checked = checked_module_for_mode(&mut t, frontend, &tel, CompileMode::Normal)
-            .unwrap_or_else(|e| panic!("checked: {e}"));
-        let graph = prepare_execution_graph(&mut t, checked, &providers, &tel, CompileMode::Normal)
-            .unwrap_or_else(|e| panic!("execution graph: {e}"));
-        graph.module
-    }
-
-    /// The real runtime graph: `Enum.reduce` dispatches through the
-    /// `Enumerable` protocol stub, which the engine devirtualizes on the
-    /// receiver type (`list(int)` -> the `List` impl). The protocol-resolved
-    /// `Enumerable.List.reduce` settles to its concrete `{:done,_}|{:halted,_}`
-    /// shape, and `Enum.reduce` unwraps it to `int` — no `none`. This is the
-    /// fold_state_machine shape plus one protocol hop, end to end.
-    /// Protocol dispatch generalizes across callbacks and impls on the runtime
-    /// graph. The user-facing `Enum.*` result settles to a concrete `int` (no
-    /// `none`) for: a `List` reduce with an inline lambda; a `List` reduce with
-    /// a well-typed named-fn reference (`&Main.reducer/2`); and `Enum.count`
-    /// (the `count` callback, not `reduce`).
-    ///
-    #[test]
-    fn runtime_graph_enum_ops_settle_to_int() {
-        let cases = [
-            (
-                "list lambda",
-                "Enum.reduce",
-                include_str!("../../spike/enum_reduce.fz"),
-            ),
-            (
-                "named-fn ref",
-                "Enum.reduce",
-                include_str!("../../spike/enum_reduce_named_ref_ok.fz"),
-            ),
-            (
-                "count",
-                "Enum.count",
-                include_str!("../../spike/enum_count.fz"),
-            ),
-            (
-                "range reduce",
-                "Enum.reduce",
-                include_str!("../../spike/enum_reduce_range.fz"),
-            ),
-        ];
-        let mut t = ConcreteTypes;
-        let int = t.int();
-        for (label, entry, src) in cases {
-            let module = linked(src);
-            let ret = infer_fn_via_main(&module, entry);
-            assert!(
-                t.is_equivalent(&ret, &int),
-                "{label}: {entry} should settle to int, got {ret:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn enum_reduce_runtime_graph_settles() {
-        let module = linked(include_str!("../../spike/enum_reduce.fz"));
-        let mut t = ConcreteTypes;
-        let int = t.int();
-
-        let reduce_ret = infer_fn_via_main(&module, "Enum.reduce");
-        assert!(
-            t.is_equivalent(&reduce_ret, &int),
-            "Enum.reduce([1,2,3],0,+) should settle to int, got {reduce_ret:?}"
-        );
-
-        // The reducer returns an `int`, so the loop control is proved `:cont`
-        // all the way through; `:halted` and `:suspended` are dead for this
-        // callsite, not part of the settled callback result.
-        let done = {
-            let a = t.atom_lit("done");
-            let i = t.int();
-            t.tuple(&[a, i])
-        };
-        let list_reduce_ret = infer_fn_via_main(&module, "Enumerable.List.reduce");
-        assert!(
-            t.is_equivalent(&list_reduce_ret, &done),
-            "Enumerable.List.reduce should settle to {{:done,int}} for an int-returning reducer, got {list_reduce_ret:?}"
-        );
-    }
-
-    #[test]
-    fn invalid_named_reduce_reducer_emits_operator_diagnostic() {
-        let module = linked(include_str!("../../spike/enum_reduce_named_ref.fz"));
-        let (mut t, solver) = solve_via_main(&module);
-        let tel = ConfiguredTelemetry::new();
-        let cap = Capture::new();
-        tel.attach(&["fz", "type_infer"], cap.handler());
-
-        solver.emit_telemetry(&mut t, &tel);
-
-        let diagnostics = cap.find(&["fz", "type_infer", "diagnostic"]);
-        assert!(
-            diagnostics.iter().any(|ev| {
-                metadata_str(ev, "code").as_deref() == Some("type/invalid-operator")
-                    && metadata_str(ev, "op").as_deref() == Some("+")
-                    && metadata_str(ev, "fn_name")
-                        .is_some_and(|name| name.ends_with("broken_reducer"))
-            }),
-            "expected invalid + diagnostic for Main.broken_reducer/2, got {diagnostics:?}"
-        );
-    }
-
-    #[test]
-    fn add_infers_int_via_harness() {
-        let mut t = ConcreteTypes;
-        let module = lower(include_str!("../../spike/add.fz"));
-        let add_id = module.fn_by_name("add").expect("add fn").id;
-        let int = t.int();
-        let ret = infer_return(&mut t, &module, add_id, &[int.clone(), int.clone()]);
-        assert!(
-            t.is_equivalent(&ret, &int),
-            "add(int, int) should infer int"
-        );
-    }
-
-    #[test]
-    fn infer_return_erases_residual_unknown_to_any_at_boundary() {
-        let mut b = FnBuilder::new(FnId(0), "unknown_expr");
-        let entry = b.block(vec![]);
-        let value = b.let_(entry, Prim::MakeBitstring(vec![]));
-        b.set_terminator(entry, Term::Return(value));
-
-        let mut mb = ModuleBuilder::new();
-        mb.add_fn(b.build());
-        let module = mb.build();
-
-        let mut t = ConcreteTypes;
-        let ret = infer_return(&mut t, &module, FnId(0), &[]);
-        let any = t.any();
-        assert!(
-            t.is_equivalent(&ret, &any),
-            "a live value the spike cannot prove should erase to any at the Ty boundary, got {ret:?}"
-        );
-    }
-
-    #[test]
-    fn live_unknown_branch_survives_control_join_to_boundary() {
-        let mut b = FnBuilder::new(FnId(0), "branch_unknown");
-        let cond = b.fresh_var();
-        let entry = b.block(vec![cond]);
-        let unknown_b = b.block(vec![]);
-        let known_b = b.block(vec![]);
-        let unknown = b.let_(unknown_b, Prim::MakeBitstring(vec![]));
-        b.set_terminator(unknown_b, Term::Return(unknown));
-        let one = b.let_(known_b, Prim::Const(Const::Int(1)));
-        b.set_terminator(known_b, Term::Return(one));
-        b.set_terminator(entry, Term::if_user(cond, unknown_b, known_b));
-
-        let mut mb = ModuleBuilder::new();
-        mb.add_fn(b.build());
-        let module = mb.build();
-
-        let mut t = ConcreteTypes;
-        let bool_ty = t.bool();
-        let ret = infer_return(&mut t, &module, FnId(0), &[bool_ty]);
-        let any = t.any();
-        assert!(
-            t.is_equivalent(&ret, &any),
-            "a live unknown arm must not be displaced by a known sibling arm, got {ret:?}"
-        );
-    }
-
-    #[test]
-    fn halt_branch_contributes_no_return_value_to_control_join() {
-        let mut b = FnBuilder::new(FnId(0), "branch_halt");
-        let cond = b.fresh_var();
-        let entry = b.block(vec![cond]);
-        let halt_b = b.block(vec![]);
-        let return_b = b.block(vec![]);
-        let halted = b.let_(halt_b, Prim::Const(Const::Int(1)));
-        b.set_terminator(halt_b, Term::Halt(halted));
-        let returned = b.let_(return_b, Prim::Const(Const::Int(2)));
-        b.set_terminator(return_b, Term::Return(returned));
-        b.set_terminator(entry, Term::if_user(cond, halt_b, return_b));
-
-        let mut mb = ModuleBuilder::new();
-        mb.add_fn(b.build());
-        let module = mb.build();
-
-        let mut t = ConcreteTypes;
-        let bool_ty = t.bool();
-        let ret = infer_return(&mut t, &module, FnId(0), &[bool_ty]);
-        let int = t.int();
-        assert!(
-            t.is_equivalent(&ret, &int),
-            "a halt arm contributes no function return value; sibling return should remain int, got {ret:?}"
-        );
-    }
-
-    #[test]
-    fn direct_calls_instantiate_polymorphic_identity_per_callsite() {
-        let mut t = ConcreteTypes;
-        let module = lower(include_str!("../../spike/poly_id.fz"));
-        let ret = infer_fn_via_main(&module, "main");
-        let expected = {
-            let int = t.int();
-            let ok = t.atom_lit("ok");
-            t.tuple(&[int, ok])
-        };
-        assert!(
-            t.is_equivalent(&ret, &expected),
-            "main should keep id(1) and id(:ok) as separate instantiations, got {ret:?}"
-        );
-    }
-
-    #[test]
-    fn named_refs_instantiate_polymorphic_identity_per_callsite() {
-        let mut t = ConcreteTypes;
-        let module = lower(include_str!("../../spike/poly_named_ref.fz"));
-        let ret = infer_fn_via_main(&module, "main");
-        let expected = {
-            let int = t.int();
-            let ok = t.atom_lit("ok");
-            t.tuple(&[int, ok])
-        };
-        assert!(
-            t.is_equivalent(&ret, &expected),
-            "&id/1 should create separate activation reads for int and :ok calls, got {ret:?}"
-        );
-    }
-
-    #[test]
-    fn named_refs_drive_pattern_dispatch_per_activation() {
-        let mut t = ConcreteTypes;
-        let module = lower(include_str!("../../spike/poly_named_ref_pattern.fz"));
-        let ret = infer_fn_via_main(&module, "main");
-        let expected = {
-            let one = t.atom_lit("one");
-            let two = t.atom_lit("two");
-            t.tuple(&[one, two])
-        };
-        assert!(
-            t.is_equivalent(&ret, &expected),
-            "&pick/1 should feed each call argument into matcher proof and keep the catch-all dead, got {ret:?}"
-        );
-    }
-
-    #[test]
-    fn captured_closure_refs_instantiate_by_capture_and_arg_facts() {
-        let mut t = ConcreteTypes;
-        let module = lower(include_str!("../../spike/poly_capture_ref.fz"));
-        let ret = infer_fn_via_main(&module, "main");
-        let expected = {
-            let ok = t.atom_lit("ok");
-            let int = t.int();
-            let right = t.atom_lit("right");
-            let int_pair = t.tuple(&[ok.clone(), int]);
-            let atom_pair = t.tuple(&[ok, right]);
-            t.tuple(&[int_pair, atom_pair])
-        };
-        assert!(
-            t.is_equivalent(&ret, &expected),
-            "captured closure should prepend capture facts inside inference while keeping call arity explicit, got {ret:?}"
-        );
-    }
-
-    #[test]
-    fn direct_calls_specialize_atom_pattern_dispatch_by_input() {
-        let mut t = ConcreteTypes;
-        let module = lower(include_str!("../../spike/match_atom_partition.fz"));
-        let ret = infer_fn_via_main(&module, "main");
-        let expected = {
-            let one = t.atom_lit("one");
-            let two = t.atom_lit("two");
-            t.tuple(&[one, two])
-        };
-        assert!(
-            t.is_equivalent(&ret, &expected),
-            "main should select distinct matcher leaves for :left and :right activations, got {ret:?}"
-        );
-    }
-
-    #[test]
-    fn direct_calls_specialize_list_pattern_dispatch_by_shape() {
-        let mut t = ConcreteTypes;
-        let module = lower(include_str!("../../spike/match_list_partition.fz"));
-        let ret = infer_fn_via_main(&module, "main");
-        let expected = {
-            let empty = t.atom_lit("empty");
-            let cons = t.atom_lit("cons");
-            t.tuple(&[empty, cons])
-        };
-        assert!(
-            t.is_equivalent(&ret, &expected),
-            "main should select empty-list and cons matcher leaves per activation, got {ret:?}"
-        );
-    }
-
-    #[test]
-    fn list_pattern_binding_flows_into_selected_leaf() {
-        let mut t = ConcreteTypes;
-        let module = lower(include_str!("../../spike/match_list_binding.fz"));
-        let ret = infer_fn_via_main(&module, "main");
-        let expected = {
-            let empty = t.atom_lit("empty");
-            let int = t.int();
-            t.tuple(&[empty, int])
-        };
-        assert!(
-            t.is_equivalent(&ret, &expected),
-            "cons leaf should return the matched head type, got {ret:?}"
-        );
-    }
-
-    #[test]
-    fn tuple_pattern_binding_flows_into_selected_leaf() {
-        let mut t = ConcreteTypes;
-        let module = lower(include_str!("../../spike/match_tuple_binding.fz"));
-        let ret = infer_fn_via_main(&module, "main");
-        let expected = {
-            let int = t.int();
-            let error = t.atom_lit("error");
-            t.tuple(&[int, error])
-        };
-        assert!(
-            t.is_equivalent(&ret, &expected),
-            "tuple leaf should return the matched payload type, got {ret:?}"
-        );
-    }
-
-    #[test]
-    fn nested_pattern_binding_flows_into_selected_leaf() {
-        let mut t = ConcreteTypes;
-        let module = lower(include_str!("../../spike/match_nested_binding.fz"));
-        let ret = infer_fn_via_main(&module, "main");
-        let expected = {
-            let int = t.int();
-            let error = t.atom_lit("error");
-            t.tuple(&[int, error])
-        };
-        assert!(
-            t.is_equivalent(&ret, &expected),
-            "nested tuple/list leaf should return the matched head type, got {ret:?}"
-        );
-    }
-
-    #[test]
-    fn nested_pattern_partition_selects_sibling_leaves() {
-        let mut t = ConcreteTypes;
-        let module = lower(include_str!("../../spike/match_nested_partition.fz"));
-        let ret = infer_fn_via_main(&module, "main");
-        let expected = {
-            let empty = t.atom_lit("empty");
-            let int = t.int();
-            let error = t.atom_lit("error");
-            t.tuple(&[empty, int, error])
-        };
-        assert!(
-            t.is_equivalent(&ret, &expected),
-            "nested tuple/list partition should select empty, cons, and error leaves, got {ret:?}"
-        );
-    }
-
-    #[test]
-    fn tuple_tag_partition_selects_matching_payloads() {
-        let mut t = ConcreteTypes;
-        let module = lower(include_str!("../../spike/match_tuple_tag_partition.fz"));
-        let ret = infer_fn_via_main(&module, "main");
-        let expected = {
-            let int = t.int();
-            let bad = t.atom_lit("bad");
-            t.tuple(&[int, bad])
-        };
-        assert!(
-            t.is_equivalent(&ret, &expected),
-            "same-arity tuple partition should select payloads by tag, got {ret:?}"
-        );
-    }
-
-    #[test]
-    fn tuple_arity_partition_selects_matching_shape() {
-        let mut t = ConcreteTypes;
-        let module = lower(include_str!("../../spike/match_tuple_arity_partition.fz"));
-        let ret = infer_fn_via_main(&module, "main");
-        let expected = {
-            let int = t.int();
-            let pair = t.tuple(&[int.clone(), int.clone()]);
-            let other = t.atom_lit("other");
-            t.tuple(&[int, pair, other])
-        };
-        assert!(
-            t.is_equivalent(&ret, &expected),
-            "tuple arity partition should select each matching shape, got {ret:?}"
-        );
-    }
-
-    #[test]
-    fn guard_partition_selects_refined_clause() {
-        let mut t = ConcreteTypes;
-        let module = lower(include_str!("../../spike/match_guard_partition.fz"));
-        let ret = infer_fn_via_main(&module, "main");
-        let expected = {
-            let int = t.int();
-            let fallback = t.atom_lit("fallback");
-            t.tuple(&[int, fallback])
-        };
-        assert!(
-            t.is_equivalent(&ret, &expected),
-            "guarded tuple clause should select by guard proof, got {ret:?}"
-        );
-    }
-
-    #[test]
-    fn map_pattern_binding_flows_into_selected_leaf() {
-        let mut t = ConcreteTypes;
-        let module = lower(include_str!("../../spike/match_map_binding.fz"));
-        let ret = infer_fn_via_main(&module, "main");
-        let expected = {
-            let int = t.int();
-            let none = t.atom_lit("none");
-            t.tuple(&[int, none])
-        };
-        assert!(
-            t.is_equivalent(&ret, &expected),
-            "map leaf should bind the matched key value without reaching the catch-all, got {ret:?}"
-        );
-    }
-
-    #[test]
-    fn matcher_dead_arms_are_observable_via_telemetry() {
-        let module = lower(include_str!("../../spike/poly_named_ref_pattern.fz"));
-        let (mut t, solver) = solve_via_main(&module);
-        let tel = ConfiguredTelemetry::new();
-        let cap = Capture::new();
-        tel.attach(&["fz", "type_infer"], cap.handler());
-
-        solver.emit_telemetry(&mut t, &tel);
-
-        assert!(
-            cap.count(&["fz", "type_infer", "dead_arm"]) > 0,
-            "matcher proof should emit dead-arm telemetry for source-total catch-all dispatch"
-        );
-    }
-
-    /// Every corpus fold settles `myreduce` to `int` — including the two the
-    /// old planner ran to the 4096 visit cap (`fold_capture_closure`,
-    /// `fold_state_machine`). `int` is `number` in the simplified spike lattice
-    /// (`1 -> integer -> any`).
-    #[test]
-    fn corpus_folds_settle_myreduce_to_int() {
-        let corpus = [
-            ("fold_tail", include_str!("../../spike/fold_tail.fz")),
-            ("fold_nontail", include_str!("../../spike/fold_nontail.fz")),
-            (
-                "fold_capture_int",
-                include_str!("../../spike/fold_capture_int.fz"),
-            ),
-            (
-                "fold_capture_closure",
-                include_str!("../../spike/fold_capture_closure.fz"),
-            ),
-            (
-                "fold_state_machine",
-                include_str!("../../spike/fold_state_machine.fz"),
-            ),
-        ];
-        let mut t = ConcreteTypes;
-        let int = t.int();
-        for (name, src) in corpus {
-            let module = lower(src);
-            let ret = infer_fn_via_main(&module, "myreduce");
-            assert!(
-                t.is_equivalent(&ret, &int),
-                "{name}: myreduce should settle to int, got {ret:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn closure_apply_prepends_captures_as_leading_params() {
-        // A closure over fn7 capturing one int, applied to (int, int), is a call
-        // to fn7 with inputs [int] ++ [int, int].
-        let mut t = ConcreteTypes;
-        let cap = t.int();
-        let clo = t.closure_lit(ClosureTarget(7), vec![cap], 2);
-        let a = t.int();
-        let b = t.int();
-        let (target, inputs) =
-            closure_apply_contract(&t, &clo, &[a, b]).expect("singleton closure");
-        assert_eq!(target, FnId(7));
-        assert_eq!(inputs.len(), 3, "captures ++ args");
-    }
-
-    #[test]
-    fn captured_closure_is_carried_concretely() {
-        // W captures U. Applying W must surface U as a concrete leading input —
-        // the nested-closure case the old planner could not settle.
-        let mut t = ConcreteTypes;
-        let inner = t.closure_lit(ClosureTarget(9), vec![], 2);
-        let outer = t.closure_lit(ClosureTarget(8), vec![inner], 2);
-        let a = t.int();
-        let b = t.int();
-        let (target, inputs) =
-            closure_apply_contract(&t, &outer, &[a, b]).expect("singleton closure");
-        assert_eq!(target, FnId(8));
-        let captured = t
-            .closure_lit_parts(&inputs[0])
-            .expect("leading input is the captured closure, concrete");
-        assert_eq!(FnId::from(captured.target), FnId(9));
-    }
-
-    #[test]
-    fn non_closure_has_no_apply_contract() {
-        let mut t = ConcreteTypes;
-        let int = t.int();
-        assert!(closure_apply_contract(&t, &int, &[]).is_none());
-    }
-
-    #[test]
-    fn seed_uses_canonical_activation_key() {
-        let module = ModuleBuilder::new().build();
-        let mut t = ConcreteTypes;
-        let one = t.int_lit(1);
-        let int = t.int();
-        let mut solver = Solver::new(&module);
-
-        let key = solver.seed(
-            &mut t,
-            FnId(0),
-            vec![Info::known_with_proof(
-                int.clone(),
-                ValueProof::Exact(one.clone()),
-            )],
-        );
-
-        assert!(t.is_equivalent(&key.inputs[0].ty, &int));
-        assert!(key.inputs[0].proof == ValueProof::Exact(one));
-        let activation = solver.activations.get(&key).expect("seeded activation");
-        let Info::Known(value) = &activation.inputs[0] else {
-            panic!("seeded activation input should be known");
-        };
-        assert!(t.is_equivalent(&value.ty, &int));
-        assert!(value.proof == key.inputs[0].proof);
-    }
-
-    /// `Pending` (dependency not ready), `Unknown` (live value not proven), and
-    /// `Known(none)` (the uninhabited type) are different states and must not be
-    /// conflated. Only `Pending` is the activation-cell initialization identity;
-    /// `Unknown` is sticky so live uncertainty survives to the final boundary.
-    /// `Known(none)` carries information and is projected normally.
-    #[test]
-    fn unknown_is_not_none() {
-        let mut t = ConcreteTypes;
-        let int = t.int();
-        let none = t.none();
-
-        // Distinct cells.
-        assert!(!Info::Pending.equiv(&t, &Info::known(none.clone())));
-        assert!(!Info::Unknown.equiv(&t, &Info::known(none.clone())));
-
-        // Activation-cell update: `Pending` yields to the first fact, but a live
-        // `Unknown` remains unknown.
-        assert!(
-            Info::Pending
-                .join(&mut t, &Info::known(int.clone()))
-                .equiv(&t, &Info::known(int.clone()))
-        );
-        assert!(
-            Info::Unknown
-                .join(&mut t, &Info::known(int.clone()))
-                .equiv(&t, &Info::Unknown)
-        );
-        assert!(
-            Info::known(none.clone())
-                .join(&mut t, &Info::known(int.clone()))
-                .equiv(&t, &Info::known(int.clone()))
-        );
-
-        // Projection: `Unknown` short-circuits — the mapping closure never runs.
-        let mut ran = false;
-        let projected = Info::Unknown.map_known(|value| {
-            ran = true;
-            value
-        });
-        assert!(!ran, "projecting Unknown must not evaluate the projection");
-        assert!(matches!(projected, Info::Unknown));
-
-        // A `Known` value (even the empty type) *is* projected.
-        let mut ran = false;
-        let _ = Info::known(none).map_known(|value| {
-            ran = true;
-            value
-        });
-        assert!(ran, "projecting a Known value evaluates the projection");
-    }
+pub(crate) fn infer_from_entry<'m, T: Types<Ty = Ty> + ClosureTypes>(
+    t: &mut T,
+    module: &'m Module,
+    fn_id: FnId,
+    input_tys: &[Ty],
+) -> TypeInferReport<'m> {
+    let inputs = input_tys.iter().cloned().map(Info::known).collect();
+    let mut solver = Solver::new(module);
+    solver.seed(t, fn_id, inputs);
+    solver.run(t);
+    TypeInferReport::from_solver(solver)
 }
+
+#[cfg(test)]
+mod tests;
