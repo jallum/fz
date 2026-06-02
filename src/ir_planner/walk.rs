@@ -1,5 +1,5 @@
 use super::fn_types::{
-    CallEdgePlan, CallEdgeTarget, CallableCapability, CallsiteCallableCapabilities, EmitterSite,
+    CallEdgePlan, CallEdgeTarget, CallableCapability, CallsiteCallableCapabilities,
     FixedPointInputObservation, FixedPointSlotSummaries, FnEffects, ReturnContextPlan,
     ReturnDemand, SpecKey, SpecPlan, WALK_CALLS, fixed_point_input_tys_for_arity,
     forwarded_return_contract_for_target, normalize_result_correspondence_key,
@@ -17,12 +17,6 @@ use std::collections::{HashMap, HashSet};
 /// Output of one discovery walk. The driver folds this into worklist state.
 #[derive(Default)]
 pub(crate) struct WalkResult {
-    /// Every `(site, target_spec_key)` this walk emits. The driver
-    /// diffs against `produces[site]` to detect transitions.
-    ///
-    /// Recursive direct calls are normalized before emission, so this key
-    /// agrees with the call-edge fact consumed by codegen.
-    pub(crate) emits: Vec<(EmitterSite, SpecKey)>,
     /// Per-callsite capability selected for this spec. Populated for `Direct`,
     /// `ClosureCall`, `Cont`, and `CallableBoundary` slots.
     pub(crate) call_edges: HashMap<crate::fz_ir::CallsiteId, CallEdgePlan>,
@@ -150,18 +144,11 @@ enum ProtocolDispatch {
     },
 }
 
-/// Discovery walk for one spec. Walks the spec's body and records every spec it
-/// currently emits into `out.emits`, tagged by `EmitterSite`. The driver diffs
-/// against the spec's previous emits and transitions provenance.
+/// Discovery walk for one spec. Walks the spec's body and records selected
+/// executable call edges, return reads, and recursive fixed-point observations.
 ///
-/// Emit kinds:
-///   - `EmitSlot::Direct` for `Term::Call` / `Term::TailCall`.
-///   - `EmitSlot::ClosureCall` for `Term::CallClosure` / `Term::TailCallClosure`
-///     callsites, whether the target comes from a known callable capability or
-///     a closure literal clause.
-///   - `EmitSlot::Cont` for the continuation of Call/CallClosure/Receive.
-///   - `EmitSlot::CallableBoundary` when a known local closure value crosses
-///     an external/provider boundary that may call it later.
+/// Local spec discovery is derived later from those selected call edges rather
+/// than from a parallel emit/provenance graph.
 /// `recursive_fns`: calls into recursive functions are normalized
 /// immediately with `widen_for_recursive_spec_key`, including the first
 /// external entry into the recursive component. The dispatch fact and
@@ -383,7 +370,6 @@ where
                 &entry_key,
                 per_arg,
             );
-            self.emit(slot, term_ident.clone(), entry_key);
             return;
         }
         let Some((mut entry_key, n_params)) = self.direct_call_key(callee, args, env) else {
@@ -436,7 +422,6 @@ where
             &entry_key,
             per_arg,
         );
-        self.emit(slot, term_ident.clone(), entry_key);
     }
 
     fn record_external_call(
@@ -480,7 +465,6 @@ where
                     EmitSlot::CallableBoundary,
                     key.clone(),
                 );
-                self.emit(EmitSlot::CallableBoundary, term_ident.clone(), key);
             }
         }
     }
@@ -557,7 +541,6 @@ where
             .canonical_public_key(self.t, target_key);
         self.out
             .record_dispatch(self.caller_spec_key, term_ident, slot, target_key.clone());
-        self.emit(slot, term_ident.clone(), target_key);
     }
 
     fn record_closure_literal_call(
@@ -579,7 +562,6 @@ where
             .canonical_public_key(self.t, target_key);
         self.out
             .record_dispatch(self.caller_spec_key, term_ident, slot, target_key.clone());
-        self.emit(slot, term_ident.clone(), target_key);
     }
 
     fn record_continuation(
@@ -607,9 +589,6 @@ where
         let demand = continuation_return_demand(self.m, self.caller_spec_key, &cont, &source);
         let mut entry_key = spec_key_for_fn(cont_fn, std::mem::take(&mut key));
         entry_key.demand = demand.clone();
-        entry_key = self
-            .activation_returns
-            .canonical_public_key(self.t, entry_key);
         let context_plan = continuation_empty_tail_plan(
             self.t,
             self.m,
@@ -634,11 +613,7 @@ where
             };
             self.out
                 .record_return_contract(&cid, contract_target.clone(), Some(plan));
-            if contract_target != entry_key {
-                self.emit(slot, term_ident.clone(), contract_target);
-            }
         }
-        self.emit(slot, term_ident.clone(), entry_key);
     }
 
     fn continuation_slot0(
@@ -780,7 +755,12 @@ where
         let body = &self.m.fns[j];
         let np = body.block(body.entry).params.len();
         let key = crate::fz_ir::receive_outcome_spec_key(&self.any_ty, np);
-        self.emit(EmitSlot::Cont, ident, spec_key_for_fn(body, key));
+        self.out.record_dispatch(
+            self.caller_spec_key,
+            &ident,
+            EmitSlot::Cont,
+            spec_key_for_fn(body, key),
+        );
     }
 
     fn direct_call_key(
@@ -955,17 +935,6 @@ where
     fn has_bottom_arg(&mut self, key: &[crate::types::Ty]) -> bool {
         let none_ty = self.t.none();
         key.iter().any(|ty| self.t.is_equivalent(ty, &none_ty))
-    }
-
-    fn emit(&mut self, slot: EmitSlot, ident: CallsiteIdent, target: SpecKey) {
-        self.out.emits.push((
-            EmitterSite {
-                caller: self.caller_spec_key.clone(),
-                ident,
-                slot,
-            },
-            target,
-        ));
     }
 }
 

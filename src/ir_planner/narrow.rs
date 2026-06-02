@@ -1,5 +1,140 @@
 use crate::fz_ir::{BinOp, BlockId, Prim, Stmt, Var};
+use crate::types::MapKey;
 use std::collections::HashMap;
+
+fn stmt_prim(stmts: &[Stmt], var: Var) -> Option<&Prim> {
+    stmts.iter().find_map(|stmt| {
+        let Stmt::Let(v, prim) = stmt;
+        (*v == var).then_some(prim)
+    })
+}
+
+fn bool_singleton_of_ty<T: crate::types::Types<Ty = crate::types::Ty>>(
+    t: &mut T,
+    ty: &crate::types::Ty,
+) -> Option<bool> {
+    let true_ty = t.bool_lit(true);
+    if t.is_subtype(ty, &true_ty) {
+        return Some(true);
+    }
+    let false_ty = t.bool_lit(false);
+    if t.is_subtype(ty, &false_ty) {
+        return Some(false);
+    }
+    None
+}
+
+fn known_bool_truth<T: crate::types::Types<Ty = crate::types::Ty>>(
+    t: &mut T,
+    env: &HashMap<Var, crate::types::Ty>,
+    stmts: &[Stmt],
+    var: Var,
+) -> Option<bool> {
+    if let Some(ty) = env.get(&var)
+        && let Some(value) = bool_singleton_of_ty(t, ty)
+    {
+        return Some(value);
+    }
+    match stmt_prim(stmts, var)? {
+        Prim::IsEmptyList(v) => {
+            let current_ty = env.get(v).cloned().unwrap_or_else(|| t.any());
+            let empty_list = t.empty_list();
+            if t.is_subtype(&current_ty, &empty_list) {
+                Some(true)
+            } else if t.is_disjoint(&current_ty, &empty_list) {
+                Some(false)
+            } else {
+                None
+            }
+        }
+        Prim::IsListCons(v) => {
+            let current_ty = env.get(v).cloned().unwrap_or_else(|| t.any());
+            let any = t.any();
+            let cons_ty = t.non_empty_list(any);
+            if t.is_subtype(&current_ty, &cons_ty) {
+                Some(true)
+            } else if t.is_disjoint(&current_ty, &cons_ty) {
+                Some(false)
+            } else {
+                None
+            }
+        }
+        Prim::IsMatcherMapMiss(v) => matcher_map_get_truth(t, env, stmts, *v),
+        Prim::TypeTest(v, descr) => {
+            let current_ty = env.get(v).cloned().unwrap_or_else(|| t.any());
+            if t.is_subtype(&current_ty, descr) {
+                Some(true)
+            } else if t.is_disjoint(&current_ty, descr) {
+                Some(false)
+            } else {
+                None
+            }
+        }
+        Prim::BinOp(BinOp::Eq, a, b) => {
+            let a_truth = known_bool_truth(t, env, stmts, *a);
+            let b_truth = known_bool_truth(t, env, stmts, *b);
+            match (a_truth, b_truth) {
+                (Some(a_truth), Some(b_truth)) => Some(a_truth == b_truth),
+                (Some(a_truth), None) => {
+                    let b_ty = env.get(b).cloned().unwrap_or_else(|| t.any());
+                    bool_singleton_of_ty(t, &b_ty).map(|b_truth| a_truth == b_truth)
+                }
+                (None, Some(b_truth)) => {
+                    let a_ty = env.get(a).cloned().unwrap_or_else(|| t.any());
+                    bool_singleton_of_ty(t, &a_ty).map(|a_truth| a_truth == b_truth)
+                }
+                (None, None) => None,
+            }
+        }
+        Prim::BinOp(BinOp::Neq, a, b) => {
+            let a_truth = known_bool_truth(t, env, stmts, *a);
+            let b_truth = known_bool_truth(t, env, stmts, *b);
+            match (a_truth, b_truth) {
+                (Some(a_truth), Some(b_truth)) => Some(a_truth != b_truth),
+                (Some(a_truth), None) => {
+                    let b_ty = env.get(b).cloned().unwrap_or_else(|| t.any());
+                    bool_singleton_of_ty(t, &b_ty).map(|b_truth| a_truth != b_truth)
+                }
+                (None, Some(b_truth)) => {
+                    let a_ty = env.get(a).cloned().unwrap_or_else(|| t.any());
+                    bool_singleton_of_ty(t, &a_ty).map(|a_truth| a_truth != b_truth)
+                }
+                (None, None) => None,
+            }
+        }
+        _ => None,
+    }
+}
+
+fn matcher_map_get_truth<T: crate::types::Types<Ty = crate::types::Ty>>(
+    t: &mut T,
+    env: &HashMap<Var, crate::types::Ty>,
+    stmts: &[Stmt],
+    miss_var: Var,
+) -> Option<bool> {
+    let Prim::MatcherMapGet(map, key_var) = stmt_prim(stmts, miss_var)? else {
+        return None;
+    };
+    let map_ty = env.get(map).cloned().unwrap_or_else(|| t.any());
+    let key_ty = env.get(key_var).cloned().unwrap_or_else(|| t.any());
+    let map_key: MapKey = t.as_map_key(&key_ty)?;
+
+    let map_overlap = {
+        let map_top = t.map_top();
+        let overlap = t.intersect(map_ty.clone(), map_top);
+        !t.is_empty(&overlap)
+    };
+    if !map_overlap {
+        return Some(true);
+    }
+
+    let known_keys = t.map_known_keys(&map_ty);
+    if known_keys.contains(&map_key) && t.map_field_lookup(&map_ty, &map_key).is_some() {
+        return Some(false);
+    }
+
+    None
+}
 
 /// Union `delta` into `block_envs[target]`. Returns true if anything changed.
 pub(crate) fn merge_into<T: crate::types::Types<Ty = crate::types::Ty>>(
@@ -58,6 +193,19 @@ pub(crate) fn narrow_for_cond<T: crate::types::Types<Ty = crate::types::Ty>>(
     let Some(prim) = prim else {
         return (then_env, else_env);
     };
+
+    if let Some(truth) = known_bool_truth(t, env, stmts, cond) {
+        let true_ty = t.bool_lit(true);
+        let false_ty = t.bool_lit(false);
+        if truth {
+            then_env.insert(cond, true_ty);
+            else_env.insert(cond, t.none());
+        } else {
+            then_env.insert(cond, t.none());
+            else_env.insert(cond, false_ty);
+        }
+        return (then_env, else_env);
+    }
 
     // Helper: env-lookup → T::Ty with `any` fallback.
     let lookup_ty = |t: &mut T, env: &HashMap<Var, crate::types::Ty>, v: &Var| -> T::Ty {
@@ -144,6 +292,15 @@ pub(crate) fn narrow_for_cond<T: crate::types::Types<Ty = crate::types::Ty>>(
             then_env.insert(*v, then_t);
             else_env.insert(*v, else_t);
         }
+        Prim::IsMatcherMapMiss(v) => match matcher_map_get_truth(t, env, stmts, *v) {
+            Some(true) => {
+                else_env.insert(*v, t.none());
+            }
+            Some(false) => {
+                then_env.insert(*v, t.none());
+            }
+            None => {}
+        },
         _ => {}
     }
 

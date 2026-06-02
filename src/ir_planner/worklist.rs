@@ -2,12 +2,12 @@ use super::closures::literal_closure_return_keys;
 use super::diagnostics::{compute_dead_branches, module_plan_stats};
 use super::effects::{prim_effects, term_effects};
 use super::fn_types::{
-    CallsiteCallableCapabilities, CapabilityPlan, EffectSummary, EmitsByCaller, EmitterSiteSet,
-    FixedPointInputObservation, FixedPointSlotSummaries, FnEffects, HoldersMap, ModulePlan,
-    ProducesMap, ReturnDemand, ReturnDepsByCaller, ReturnReaders, SpecKey, SpecKeySet, SpecPlan,
-    SpecReachabilityRole, TYPE_FN_CALLS, VISIT_HARD_BOUND, WALK_CALLS, WORKLIST_POPS,
-    build_any_key_index, fixed_point_spec_key_for_arity, key_precedence_order,
-    normalize_result_correspondence_key, spec_key_for_fn_id, spec_key_input_tys,
+    CallsiteCallableCapabilities, CapabilityPlan, EffectSummary, FixedPointInputObservation,
+    FixedPointSlotSummaries, FnEffects, ModulePlan, ReturnDemand, ReturnDepsByCaller,
+    ReturnReaders, SpecKey, SpecKeySet, SpecPlan, SpecReachabilityRole, TYPE_FN_CALLS,
+    VISIT_HARD_BOUND, WALK_CALLS, WORKLIST_POPS, build_any_key_index,
+    fixed_point_spec_key_for_arity, key_precedence_order, normalize_result_correspondence_key,
+    spec_key_for_fn_id, spec_key_input_tys,
 };
 use super::reachable::{cont_key_from_slot0, env_at_terminator};
 use super::type_fn::type_fn;
@@ -72,6 +72,7 @@ struct ActivationReturnTelemetry {
 enum ActivationProjectionKind {
     Exact,
     Union,
+    PlannerLocal,
     UnsettledOverlap,
     Uncovered,
 }
@@ -81,6 +82,7 @@ impl ActivationProjectionKind {
         match self {
             Self::Exact => "exact",
             Self::Union => "union",
+            Self::PlannerLocal => "planner_local",
             Self::UnsettledOverlap => "unsettled_overlap",
             Self::Uncovered => "uncovered",
         }
@@ -344,12 +346,17 @@ impl ActivationReturnFacts {
         &self,
         t: &mut T,
         reachable: &SpecKeySet,
+        complete_returns: &SpecKeySet,
         effective_returns: &mut HashMap<SpecKey, crate::types::Ty>,
     ) {
-        effective_returns.clear();
         for key in reachable {
             let ret = if let Some(ret) = self.projected_return_for_key(t, key) {
                 ret
+            } else if complete_returns.contains(key) {
+                effective_returns
+                    .get(key)
+                    .cloned()
+                    .unwrap_or_else(|| t.any())
             } else {
                 t.any()
             };
@@ -361,6 +368,8 @@ impl ActivationReturnFacts {
         &self,
         t: &mut T,
         reachable: &SpecKeySet,
+        effective_returns: &HashMap<SpecKey, crate::types::Ty>,
+        complete_returns: &SpecKeySet,
     ) -> ActivationReturnTelemetry {
         let mut stats = ActivationReturnTelemetry {
             fact_count: self.raw_fact_count,
@@ -387,7 +396,11 @@ impl ActivationReturnFacts {
             .filter(|key| !self.bucket_returns.contains_key(*key))
             .count();
         for key in reachable {
-            if self.return_state_for_key(t, key).is_none() {
+            if self
+                .projection_fact_for_key(t, key.clone(), effective_returns, complete_returns)
+                .projected_state
+                .is_none()
+            {
                 stats.projection_gap_count += 1;
             }
         }
@@ -401,10 +414,16 @@ impl ActivationReturnFacts {
         t: &mut T,
         module: &Module,
         reachable: &SpecKeySet,
+        effective_returns: &HashMap<SpecKey, crate::types::Ty>,
+        complete_returns: &SpecKeySet,
     ) -> Vec<String> {
         let mut gaps = Vec::new();
         for key in reachable {
-            if self.return_state_for_key(t, key).is_none() {
+            if self
+                .projection_fact_for_key(t, key.clone(), effective_returns, complete_returns)
+                .projected_state
+                .is_none()
+            {
                 let name = module.fn_by_id(key.fn_id).name.clone();
                 gaps.push(format!("{name} {key:?}"));
             }
@@ -419,11 +438,15 @@ impl ActivationReturnFacts {
         &self,
         t: &mut T,
         reachable: &SpecKeySet,
+        effective_returns: &HashMap<SpecKey, crate::types::Ty>,
+        complete_returns: &SpecKeySet,
     ) -> Vec<ActivationProjectionFact> {
         let mut facts: Vec<_> = reachable
             .iter()
             .cloned()
-            .map(|spec_key| self.projection_fact_for_key(t, spec_key))
+            .map(|spec_key| {
+                self.projection_fact_for_key(t, spec_key, effective_returns, complete_returns)
+            })
             .collect();
         facts.sort_by(|left, right| {
             format!("{:?}", left.spec_key).cmp(&format!("{:?}", right.spec_key))
@@ -437,8 +460,10 @@ impl ActivationReturnFacts {
         &self,
         t: &mut T,
         spec_key: SpecKey,
+        effective_returns: &HashMap<SpecKey, crate::types::Ty>,
+        complete_returns: &SpecKeySet,
     ) -> ActivationProjectionFact {
-        let (kind, covered_activations) = if self.bucket_returns.contains_key(&spec_key) {
+        let (mut kind, covered_activations) = if self.bucket_returns.contains_key(&spec_key) {
             (
                 ActivationProjectionKind::Exact,
                 self.covered_witnesses_for_public_key(&spec_key),
@@ -488,8 +513,18 @@ impl ActivationReturnFacts {
         projected_dead_arms.sort_by(|left, right| {
             dead_arm_inventory_entry(left).cmp(&dead_arm_inventory_entry(right))
         });
+        let projected_state = self.return_state_for_key(t, &spec_key).or_else(|| {
+            complete_returns
+                .contains(&spec_key)
+                .then(|| effective_returns.get(&spec_key).cloned())
+                .flatten()
+                .map(TypeInferReturnState::Known)
+        });
+        if projected_state.is_some() && covered_activations.is_empty() {
+            kind = ActivationProjectionKind::PlannerLocal;
+        }
         ActivationProjectionFact {
-            projected_state: self.return_state_for_key(t, &spec_key),
+            projected_state,
             spec_key,
             kind,
             covered_activations,
@@ -1392,9 +1427,6 @@ fn discover_specs<
     let mut return_deps_by_caller: ReturnDepsByCaller = HashMap::new();
     let mut visit_count: HashMap<SpecKey, usize> = HashMap::new();
 
-    let mut produces: ProducesMap = HashMap::new();
-    let mut holders: HoldersMap = HashMap::new();
-    let mut emits_by_caller: EmitsByCaller = HashMap::new();
     let mut slot_summaries: FixedPointSlotSummaries = HashMap::new();
     let fn_effects = compute_fn_effects(m);
     let activation_returns = ActivationReturnFacts::from_entry_seeds(t, m, tel.tel);
@@ -1421,46 +1453,30 @@ fn discover_specs<
         &mut return_readers,
         &mut return_deps_by_caller,
         &mut visit_count,
-        &mut produces,
-        &mut holders,
-        &mut emits_by_caller,
         &mut slot_summaries,
     );
 
-    // Forward reachability from entry_seeds via emits_by_caller +
-    // produces. Specs not reached are orphans — their holders chain
-    // ends in a spec that itself fell out of reach, or they form a
-    // recursive cycle without an entry_seed anchor.
-    let mut reachable: SpecKeySet = entry_seeds(t, m)
-        .into_iter()
-        .map(|(fid, key)| spec_key_for_fn_id(m, fid, key))
-        .collect();
-    let mut bfs: std::collections::VecDeque<SpecKey> = reachable.iter().cloned().collect();
-    while let Some(spec) = bfs.pop_front() {
-        if let Some(sites) = emits_by_caller.get(&spec) {
-            for site in sites {
-                if let Some(target) = produces.get(site).cloned()
-                    && reachable.insert(target.clone())
-                {
-                    bfs.push_back(target);
-                }
-            }
-        }
-    }
+    let reachable: SpecKeySet = reachable_specs_from_call_edges(t, m, &specs);
     specs.retain(|k, _| reachable.contains(k));
-    activation_returns.project_effective_returns(t, &reachable, &mut effective_returns);
-    let activation_projection_facts = activation_returns.projection_facts(t, &reachable);
-    let spec_roles = compute_spec_roles(t, m, &reachable, &holders, &activation_projection_facts);
-    let activation_return_telemetry = activation_returns.telemetry(t, &reachable);
-    let activation_return_projection_gaps =
-        activation_returns.projection_gap_keys(t, m, &reachable);
-    verify_closed_expectations(
+    activation_returns.project_effective_returns(
+        t,
         &reachable,
-        &specs,
-        &effective_returns,
-        &emits_by_caller,
-        &produces,
+        &complete_returns,
+        &mut effective_returns,
     );
+    let activation_projection_facts =
+        activation_returns.projection_facts(t, &reachable, &effective_returns, &complete_returns);
+    let spec_roles = compute_spec_roles(t, m, &reachable, &activation_projection_facts);
+    let activation_return_telemetry =
+        activation_returns.telemetry(t, &reachable, &effective_returns, &complete_returns);
+    let activation_return_projection_gaps = activation_returns.projection_gap_keys(
+        t,
+        m,
+        &reachable,
+        &effective_returns,
+        &complete_returns,
+    );
+    verify_closed_expectations(&reachable, &specs, &effective_returns);
 
     DiscoverOutput {
         specs,
@@ -1473,12 +1489,35 @@ fn discover_specs<
     }
 }
 
+fn reachable_specs_from_call_edges<
+    T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
+>(
+    t: &mut T,
+    m: &Module,
+    specs: &HashMap<SpecKey, SpecPlan>,
+) -> SpecKeySet {
+    let mut reachable: SpecKeySet = entry_seeds(t, m)
+        .into_iter()
+        .map(|(fid, key)| spec_key_for_fn_id(m, fid, key))
+        .collect();
+    let mut bfs: std::collections::VecDeque<SpecKey> = reachable.iter().cloned().collect();
+    while let Some(spec) = bfs.pop_front() {
+        let Some(plan) = specs.get(&spec) else {
+            continue;
+        };
+        for target in local_targets_from_call_edges(plan) {
+            if reachable.insert(target.clone()) {
+                bfs.push_back(target);
+            }
+        }
+    }
+    reachable
+}
+
 fn verify_closed_expectations(
     reachable: &SpecKeySet,
     specs: &HashMap<SpecKey, SpecPlan>,
     effective_returns: &HashMap<SpecKey, crate::types::Ty>,
-    emits_by_caller: &EmitsByCaller,
-    produces: &ProducesMap,
 ) {
     for spec in reachable {
         assert!(
@@ -1491,29 +1530,22 @@ fn verify_closed_expectations(
             "reachable spec {:?} has no effective return",
             spec
         );
-        if let Some(sites) = emits_by_caller.get(spec) {
-            for site in sites {
-                let target = produces.get(site).unwrap_or_else(|| {
-                    panic!(
-                        "reachable spec {:?} emits at {:?} without a produced target",
-                        spec, site
-                    )
-                });
-                assert!(
-                    reachable.contains(target),
-                    "reachable spec {:?} emits unreachable target {:?} at {:?}",
-                    spec,
-                    target,
-                    site
-                );
-                assert!(
-                    specs.contains_key(target),
-                    "reachable emit target {:?} from {:?} at {:?} has no typed body",
-                    target,
-                    spec,
-                    site
-                );
-            }
+        let plan = specs
+            .get(spec)
+            .unwrap_or_else(|| panic!("reachable spec {:?} has no typed body", spec));
+        for target in local_targets_from_call_edges(plan) {
+            assert!(
+                reachable.contains(&target),
+                "reachable spec {:?} reaches unreachable target {:?}",
+                spec,
+                target
+            );
+            assert!(
+                specs.contains_key(&target),
+                "reachable target {:?} from {:?} has no typed body",
+                target,
+                spec
+            );
         }
     }
 }
@@ -1524,7 +1556,6 @@ fn compute_spec_roles<
     t: &mut T,
     m: &Module,
     reachable: &SpecKeySet,
-    _holders: &HoldersMap,
     activation_projection_facts: &[ActivationProjectionFact],
 ) -> HashMap<SpecKey, SpecReachabilityRole> {
     let entry_specs: SpecKeySet = entry_seeds(t, m)
@@ -1620,16 +1651,13 @@ fn compute_fn_effects(m: &Module) -> FnEffects {
     facts
 }
 
-/// Worklist driver with provenance.
+/// Worklist driver over selected executable edges.
 ///
 /// Each pop:
 ///   1. type_fn the spec if new (cached by spec_key).
 ///   2. Walk for discovery → fills `WalkResult`.
-///   3. Diff `result.emits` against the spec's prior emits
-///      (`emits_by_caller[spec_key]`). Transition `produces` and
-///      `holders`. Enqueue new target specs.
-///   4. Install call-edge plans.
-///   5. Recompute this spec's fixed-point return. If changed, enqueue
+///   3. Install call-edge plans and enqueue newly discovered local targets.
+///   4. Recompute this spec's fixed-point return. If changed, enqueue
 ///      every spec in `return_readers[spec]`. Final return authority is the
 ///      activation projection after pruning.
 #[allow(clippy::too_many_arguments)]
@@ -1649,9 +1677,6 @@ fn process_worklist<T: crate::types::Types<Ty = crate::types::Ty> + crate::types
     return_readers: &mut ReturnReaders,
     return_deps_by_caller: &mut ReturnDepsByCaller,
     visit_count: &mut HashMap<SpecKey, usize>,
-    produces: &mut ProducesMap,
-    holders: &mut HoldersMap,
-    emits_by_caller: &mut EmitsByCaller,
     slot_summaries: &mut FixedPointSlotSummaries,
 ) {
     while let Some(spec_key) = work.pop_front() {
@@ -1676,22 +1701,12 @@ fn process_worklist<T: crate::types::Types<Ty = crate::types::Ty> + crate::types
             callsite_callable_capabilities,
         );
         let WalkResult {
-            emits,
             call_edges,
             return_reads,
             fixed_point_inputs,
         } = result;
-        apply_emit_diff(
-            &spec_key,
-            emits,
-            specs,
-            work,
-            in_work,
-            produces,
-            holders,
-            emits_by_caller,
-        );
         install_walk_result(specs, &spec_key, call_edges);
+        enqueue_discovered_local_targets(&spec_key, specs, work, in_work);
         update_effective_return_and_enqueue_readers(
             t,
             m,
@@ -1930,73 +1945,6 @@ fn discover_spec_outputs<
     result
 }
 
-#[allow(clippy::too_many_arguments)]
-fn apply_emit_diff(
-    spec_key: &SpecKey,
-    emits: Vec<(super::fn_types::EmitterSite, SpecKey)>,
-    specs: &HashMap<SpecKey, SpecPlan>,
-    work: &mut std::collections::VecDeque<SpecKey>,
-    in_work: &mut SpecKeySet,
-    produces: &mut ProducesMap,
-    holders: &mut HoldersMap,
-    emits_by_caller: &mut EmitsByCaller,
-) {
-    let prev_sites = emits_by_caller.remove(spec_key).unwrap_or_default();
-    let mut new_sites: EmitterSiteSet = std::collections::HashSet::new();
-    for (site, target) in emits {
-        new_sites.insert(site.clone());
-        transition_emit_site(produces, holders, site, target.clone());
-        if !specs.contains_key(&target) && in_work.insert(target.clone()) {
-            work.push_back(target);
-        }
-    }
-    remove_stale_emit_sites(produces, holders, &prev_sites, &new_sites);
-    emits_by_caller.insert(spec_key.clone(), new_sites);
-}
-
-fn transition_emit_site(
-    produces: &mut ProducesMap,
-    holders: &mut HoldersMap,
-    site: super::fn_types::EmitterSite,
-    target: SpecKey,
-) {
-    match produces.get(&site).cloned() {
-        Some(prev_target) if prev_target == target => {}
-        Some(prev_target) => {
-            if let Some(h) = holders.get_mut(&prev_target) {
-                h.remove(&site);
-            }
-            holders
-                .entry(target.clone())
-                .or_default()
-                .insert(site.clone());
-            produces.insert(site, target);
-        }
-        None => {
-            holders
-                .entry(target.clone())
-                .or_default()
-                .insert(site.clone());
-            produces.insert(site, target);
-        }
-    }
-}
-
-fn remove_stale_emit_sites(
-    produces: &mut ProducesMap,
-    holders: &mut HoldersMap,
-    prev_sites: &EmitterSiteSet,
-    new_sites: &EmitterSiteSet,
-) {
-    for site in prev_sites.difference(new_sites) {
-        if let Some(prev_target) = produces.remove(site)
-            && let Some(h) = holders.get_mut(&prev_target)
-        {
-            h.remove(site);
-        }
-    }
-}
-
 fn install_walk_result(
     specs: &mut HashMap<SpecKey, SpecPlan>,
     spec_key: &SpecKey,
@@ -2004,6 +1952,37 @@ fn install_walk_result(
 ) {
     if let Some(ft) = specs.get_mut(spec_key) {
         ft.install_call_edges(call_edges);
+    }
+}
+
+fn local_targets_from_call_edges(spec: &SpecPlan) -> Vec<SpecKey> {
+    let mut out = Vec::new();
+    for edge in spec.call_edges.values() {
+        if let Some(target) = edge.local_target() {
+            out.push(target.clone());
+        }
+        if let Some(contract) = edge.return_contract.as_ref()
+            && !out.contains(&contract.target)
+        {
+            out.push(contract.target.clone());
+        }
+    }
+    out
+}
+
+fn enqueue_discovered_local_targets(
+    spec_key: &SpecKey,
+    specs: &HashMap<SpecKey, SpecPlan>,
+    work: &mut std::collections::VecDeque<SpecKey>,
+    in_work: &mut SpecKeySet,
+) {
+    let Some(plan) = specs.get(spec_key) else {
+        return;
+    };
+    for target in local_targets_from_call_edges(plan) {
+        if !specs.contains_key(&target) && in_work.insert(target.clone()) {
+            work.push_back(target);
+        }
     }
 }
 

@@ -21,9 +21,9 @@
 //!
 //! The planner works data-model first:
 //!
-//!   * Discover specs from entry seeds, MakeClosure sites, direct calls,
-//!     closure calls, continuations, receive outcomes, and return-demand
-//!     variants.
+//!   * Discover specs from entry seeds and selected executable edges: direct
+//!     calls, closure calls, continuations, callable boundaries, receive
+//!     outcomes, and return-demand variants.
 //!   * Type each discovered body locally from its `SpecKey` input and carry
 //!     branch-narrowed environments for later facts.
 //!   * Select call-edge and return-contract facts from the caller spec's local

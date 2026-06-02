@@ -1,4 +1,4 @@
-use crate::fz_ir::{EmitSlot, FnId, FnIr, Module, Var};
+use crate::fz_ir::{FnId, FnIr, Module, Var};
 use crate::specs::StructuralOccurrence;
 use std::collections::HashMap;
 
@@ -575,19 +575,6 @@ thread_local! {
     pub static WALK_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
-/// Unique identity of a place that emits a spec.
-///
-/// Every spec in `specs` exists because at least one `EmitterSite` currently
-/// produces it. When a caller spec re-walks with different state, the driver
-/// diffs against `produces[E]`, transitions `holders`, and prunes orphan cycles
-/// with a forward BFS from `entry_seeds` through the emits graph.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct EmitterSite {
-    pub caller: SpecKey,
-    pub ident: crate::fz_ir::CallsiteIdent,
-    pub slot: EmitSlot,
-}
-
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum ReturnDelivery {
     Value,
@@ -879,10 +866,6 @@ pub(crate) type SpecKeySet = std::collections::HashSet<SpecKey>;
 pub(crate) type ReturnReaders = HashMap<SpecKey, SpecKeySet>;
 pub(crate) type ReturnDepsByCaller = HashMap<SpecKey, SpecKeySet>;
 pub(crate) type CallsiteCallableCapabilities = HashMap<SpecKey, Vec<Option<CallableCapability>>>;
-pub(crate) type EmitterSiteSet = std::collections::HashSet<EmitterSite>;
-pub(crate) type HoldersMap = HashMap<SpecKey, EmitterSiteSet>;
-pub(crate) type EmitsByCaller = HashMap<SpecKey, EmitterSiteSet>;
-pub(crate) type ProducesMap = HashMap<EmitterSite, SpecKey>;
 pub(crate) type FixedPointSlotSummaries = HashMap<(FnId, usize), crate::types::Ty>;
 
 #[derive(Clone, Debug)]

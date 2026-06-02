@@ -1,6 +1,6 @@
 use super::closures::resolve_closure_return;
 use super::fn_types::CallableCapability;
-use super::fn_types::{EmitterSite, SpecKey};
+use super::fn_types::SpecKey;
 use super::narrow::narrow_for_cond;
 use super::reachable::cont_slot0_descr;
 use super::type_fn::type_fn;
@@ -44,19 +44,6 @@ fn module_plan_spec_ty<'a>(
                 })
     })?;
     mt.specs.get(key)
-}
-
-fn emitter_site_callsite_id(site: &EmitterSite) -> crate::fz_ir::CallsiteId {
-    crate::fz_ir::CallsiteId::new(site.caller.fn_id, &site.ident, site.slot)
-}
-
-fn callsite_with_spec_key(cid: crate::fz_ir::CallsiteId, spec_key: SpecKey) -> EmitterSite {
-    assert_eq!(cid.caller, spec_key.fn_id);
-    EmitterSite {
-        caller: spec_key,
-        ident: cid.ident,
-        slot: cid.slot,
-    }
 }
 
 fn lambda_any_key_specs(
@@ -3209,7 +3196,7 @@ fn planner_projects_enum_reduce_operator_refs_through_kernel_specs() {
     let mut main_known_tuple = false;
     let mut enum_reduce_known_int = false;
     let mut list_reduce_known_done_int = false;
-    let mut kernel_plus_known_int = false;
+    let mut kernel_plus_visible = false;
 
     for event in &events {
         let body_name = match event.metadata.get("body_name") {
@@ -3257,8 +3244,8 @@ fn planner_projects_enum_reduce_operator_refs_through_kernel_specs() {
         if body_name == "Enumerable.List.reduce" && projected == "known({:done, int})" {
             list_reduce_known_done_int = true;
         }
-        if body_name == "Kernel.+" && projected == "known(int)" {
-            kernel_plus_known_int = true;
+        if body_name == "Kernel.+" {
+            kernel_plus_visible = true;
         }
     }
 
@@ -3275,8 +3262,8 @@ fn planner_projects_enum_reduce_operator_refs_through_kernel_specs() {
         "Enumerable.List.reduce should project {{:done, int}} for the operator-ref fixture: {events:?}"
     );
     assert!(
-        kernel_plus_known_int,
-        "Kernel.+ should survive only as the exact int reducer target in the operator-ref fixture: {events:?}"
+        !kernel_plus_visible,
+        "Kernel.+ should be fully internalized by the authoritative planner in the operator-ref fixture: {events:?}"
     );
 }
 
@@ -4595,35 +4582,6 @@ fn narrow_for_cond_and_narrows_both_operands_in_then_branch() {
     let y_else = else_env.get(&y).expect("else branch should retain y");
     assert!(!t.is_equivalent(x_else, &ok_ty));
     assert!(!t.is_equivalent(y_else, &one_ty));
-}
-
-/// fz-9pr.1 — EmitterSite ↔ CallsiteId round-trip. Drops then re-attaches
-/// a spec-key, recovering the original site exactly. Guards the
-/// projection used by reducer / ir_inline / planner to share one
-/// callsite vocabulary.
-#[test]
-fn callsite_id_round_trip() {
-    use crate::fz_ir::{BlockId, CallsiteId, EmitSlot};
-
-    let mut t = crate::types::ConcreteTypes;
-    let any = t.any();
-    let three = t.int_lit(3);
-    let spec_key = value_spec_key(FnId(7), key_tys(vec![any, three]));
-    let _ = BlockId(2); // older positional fixture data; ident is now intrinsic.
-    let test_ident = crate::fz_ir::CallsiteIdent::synthetic();
-    let site = EmitterSite {
-        caller: spec_key.clone(),
-        ident: test_ident.clone(),
-        slot: EmitSlot::ClosureCall,
-    };
-
-    let cid: CallsiteId = emitter_site_callsite_id(&site);
-    assert_eq!(cid.caller, FnId(7));
-    assert_eq!(cid.ident, test_ident);
-    assert_eq!(cid.slot, EmitSlot::ClosureCall);
-
-    let round = callsite_with_spec_key(cid, spec_key);
-    assert_eq!(round, site);
 }
 
 /// fz-uwq.3/.11 — `plan_module` populates `SpecPlan.call_edges` with
