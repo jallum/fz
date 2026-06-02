@@ -74,6 +74,16 @@ impl CompiledUnit {
             interface,
         }
     }
+
+    pub fn with_code_and_plan(
+        mut self,
+        code: Module,
+        module_plan: crate::ir_planner::ModulePlan,
+    ) -> Self {
+        self.code = code;
+        self.module_plan = Some(module_plan);
+        self
+    }
 }
 
 /// Linked runnable image: runtime-global JIT state plus execution entrypoints.

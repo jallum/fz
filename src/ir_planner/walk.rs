@@ -250,6 +250,9 @@ where
             let Stmt::Let(v, prim) = stmt;
             let pt_ty = super::prim::type_prim(self.t, prim, env, self.m, &HashSet::new());
             env.insert(*v, pt_ty);
+            if let Stmt::Let(_, crate::fz_ir::Prim::MakeClosure(ident, fn_id, captured)) = stmt {
+                self.record_make_closure(ident, *fn_id, captured, env);
+            }
         }
     }
 
@@ -862,6 +865,25 @@ where
             self.activation_returns
                 .canonical_public_key(self.t, spec_key_for_fn_id(self.m, fn_id, input_tys)),
         )
+    }
+
+    fn record_make_closure(
+        &mut self,
+        ident: &CallsiteIdent,
+        fn_id: FnId,
+        captured: &[Var],
+        env: &HashMap<Var, crate::types::Ty>,
+    ) {
+        // A surviving MakeClosure means codegen must materialize this callable
+        // target, even if no local callsite invokes it directly.
+        let captures = captured
+            .iter()
+            .map(|cv| env.get(cv).cloned().unwrap_or_else(|| self.any_ty.clone()))
+            .collect::<Vec<_>>();
+        let Some(key) = self.closure_lit_key(fn_id, captures, &[], env) else {
+            return;
+        };
+        self.emit(EmitSlot::MakeClosure, ident.clone(), key);
     }
 
     fn record_fixed_point_input_observation(

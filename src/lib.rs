@@ -420,10 +420,11 @@ fn run_build(tel: &telemetry::ConfiguredTelemetry, args: &[String]) {
         .and_then(|s| s.to_str())
         .unwrap_or("fz_program");
     let artifact =
-        ir_codegen::compile_aot(&mut t, &graph.module, obj_name, tel).unwrap_or_else(|e| {
-            diag::report_or_exit_through(tel, &[e.to_diagnostic()]);
-            std::process::exit(1);
-        });
+        ir_codegen::compile_aot_planned(&mut t, &graph.module, &graph.module_plan, obj_name, tel)
+            .unwrap_or_else(|e| {
+                diag::report_or_exit_through(tel, &[e.to_diagnostic()]);
+                std::process::exit(1);
+            });
 
     if artifact.main_symbol.is_none() {
         tel.emit(&["fz", "build", "no_main"]);
@@ -1527,10 +1528,11 @@ fn compile_pipeline(
     let graph = modules::pipeline::prepare_execution_graph(&mut t, prepared, providers, tel, mode)
         .unwrap_or_else(|err| report_pipeline_error_or_exit("fz run", tel, sm_cell, err));
     let main_fn = graph.module.fn_by_name("main").map(|f| f.id);
-    let executable = ir_codegen::compile(&mut t, &graph.module, tel).unwrap_or_else(|e| {
-        diag::report_or_exit_through(tel, &[e.to_diagnostic()]);
-        std::process::exit(1);
-    });
+    let executable = ir_codegen::compile_planned(&mut t, &graph.module, &graph.module_plan, tel)
+        .unwrap_or_else(|e| {
+            diag::report_or_exit_through(tel, &[e.to_diagnostic()]);
+            std::process::exit(1);
+        });
     tel.event(
         &["fz", "module", "unit_compiled"],
         metadata! {
@@ -1544,8 +1546,10 @@ fn compile_pipeline(
     // we continue; Severity::Error halts.
     diag::report_or_exit_through(tel, executable.diagnostics().as_slice());
     let image = if graph.units.len() == 1 {
-        ir_codegen::CompiledProgram::new(graph.units[0].clone(), executable)
-            .link_image_with_telemetry(tel)
+        let unit = graph.units[0]
+            .clone()
+            .with_code_and_plan(graph.module.clone(), graph.module_plan.clone());
+        ir_codegen::CompiledProgram::new(unit, executable).link_image_with_telemetry(tel)
     } else {
         Ok(ir_codegen::CompiledImage::from_linked_with_telemetry(
             tel,
@@ -1661,5 +1665,39 @@ fn main(), do: User.run()
         assert!(capture.contains(&["fz", "module", "interfaces_collected"]));
         assert!(capture.contains(&["fz", "lto", "interfaces_validated"]));
         assert!(capture.contains(&["fz", "lto", "boundaries_erased"]));
+    }
+
+    #[test]
+    fn compile_pipeline_runs_spawn_with_captures_through_single_plan_path() {
+        let tel = telemetry::ConfiguredTelemetry::new();
+        let exits = crate::exec::runtime::ProcessExitCapture::new();
+        tel.attach(&["fz", "runtime"], exits.handler());
+        let sm_cell = Rc::new(RefCell::new(diag::SourceMap::new()));
+
+        let compiled = compile_pipeline(
+            &tel,
+            &sm_cell,
+            include_str!("../fixtures/spawn_with_captures/input.fz").to_string(),
+            "fixtures/spawn_with_captures/input.fz".to_string(),
+            CompileMode::Normal,
+            &ProviderInputs::new(
+                modules::artifact_store::DEFAULT_ARTIFACT_ROOT.to_string(),
+                Vec::new(),
+            ),
+        );
+        let main_fn = compiled.main_fn.expect("main fn");
+        let mut rt = exec::runtime::Runtime::new(compiled.image.compiled_module(), 1)
+            .with_module(&compiled.module)
+            .with_telemetry(&tel);
+
+        let _ = rt.spawn(main_fn);
+        rt.run_until_idle();
+
+        let exit = exits.last().expect("process_exited telemetry");
+        assert_eq!(
+            exit.halt_value,
+            fz_runtime::any_value::NIL_ATOM_ID as i64,
+            "spawn_with_captures should complete successfully through compile_pipeline"
+        );
     }
 }

@@ -233,14 +233,16 @@ pub(crate) fn prepare_execution_graph(
             module_path: module.module_path().to_owned(),
         },
     );
+    module = ir_codegen::prepare_module_for_authoritative_plan(t, &module, tel);
     let mut module_plan = ir_planner::plan_module(t, &module, tel);
     if !module.protocol_call_targets.is_empty() {
         frontend::apply_planner_rewrites_to_fixed_point(t, &mut module, &mut module_plan);
     }
-    // Codegen plans the linked working module inside `compile_with_backend_impl`,
-    // so no plan is threaded out of here. LTO mode still runs boundary erasure
-    // for its module-mutating side effect (rewriting external calls to direct
-    // ones); its local plan is discarded.
+    // The execution graph now owns the linked working module after every
+    // pre-authoritative-plan transform. Downstream engines must consume this
+    // exact module + ModulePlan pair rather than replanning a divergent clone.
+    // LTO mode still runs boundary erasure for its module-mutating side effect
+    // (rewriting external calls to direct ones); its local plan is discarded.
     if mode.is_lto() {
         let interfaces = units
             .iter()
@@ -843,12 +845,62 @@ fn main(), do: User.run()
             .unwrap_or_else(|_| panic!("checked module"));
         let graph = prepare_execution_graph(&mut t, checked, &providers, &tel, CompileMode::Normal)
             .unwrap_or_else(|err| panic!("execution graph: {err:?}"));
-        let linked = if graph.units.len() > 1 {
-            ir_codegen::link_ir_units(&graph.units).expect("link ir units")
-        } else {
-            graph.units[0].code.clone()
-        };
-        let mt = ir_planner::plan_module(&mut t, &linked, &tel);
+        let linked = graph.module;
+        let mt = graph.module_plan;
+
+        for (spec_key, spec) in &mt.specs {
+            let body = linked.fn_by_id(spec_key.fn_id);
+            for block in &body.blocks {
+                let Term::Call { ident, .. } = &block.terminator else {
+                    continue;
+                };
+                let cont_callsite = CallsiteId::new(body.id, ident, EmitSlot::Cont);
+                let direct_callsite = CallsiteId::new(body.id, ident, EmitSlot::Direct);
+                let direct_target = spec.local_call_target(&direct_callsite);
+                assert!(
+                    spec.local_call_target(&cont_callsite).is_some(),
+                    "linked runtime graph missing Cont dispatch for {} spec {:?} at {:?}; direct target: {:?}; direct target body: {:?}; direct effective return: {:?}; available call_edges: {:?}",
+                    body.name,
+                    spec_key,
+                    cont_callsite,
+                    direct_target,
+                    direct_target.map(|target| linked.fn_by_id(target.fn_id).name.clone()),
+                    direct_target.and_then(|target| mt.effective_returns.get(target)),
+                    spec.call_edges.keys().collect::<Vec<_>>()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn linked_runtime_graph_keeps_cont_dispatches_for_spawn_with_captures() {
+        use crate::fz_ir::{CallsiteId, EmitSlot, Term};
+
+        let mut t = types::ConcreteTypes;
+        let tel = telemetry::NullTelemetry;
+        let providers = ProviderInputs::new(
+            std::env::temp_dir()
+                .join(format!("fz-spawn-linked-{}", std::process::id()))
+                .display()
+                .to_string(),
+            Vec::new(),
+        );
+        let source = include_str!("../../fixtures/spawn_with_captures/input.fz");
+
+        let frontend = compile_source_with_providers(
+            &mut t,
+            source.to_string(),
+            "spawn_with_captures_input.fz".to_string(),
+            &providers,
+            &tel,
+        )
+        .unwrap_or_else(|_| panic!("frontend result"));
+        let checked = checked_module_for_mode(&mut t, frontend, &tel, CompileMode::Normal)
+            .unwrap_or_else(|_| panic!("checked module"));
+        let graph = prepare_execution_graph(&mut t, checked, &providers, &tel, CompileMode::Normal)
+            .unwrap_or_else(|err| panic!("execution graph: {err:?}"));
+        let linked = graph.module;
+        let mt = graph.module_plan;
 
         for (spec_key, spec) in &mt.specs {
             let body = linked.fn_by_id(spec_key.fn_id);

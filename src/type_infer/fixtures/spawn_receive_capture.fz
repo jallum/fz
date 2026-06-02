@@ -1,0 +1,8 @@
+fn parent(tag) do
+  spawn(fn () -> send(1, tag) end)
+  receive()
+end
+
+fn main() do
+  assert(parent(99) == 99, "spawned closure captures tag and relays it back")
+end

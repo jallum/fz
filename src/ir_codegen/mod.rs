@@ -88,9 +88,11 @@ pub use fz_runtime::process::{PidId, Process, ProcessState};
 /// AOT both route through here; the backend's hooks pick the legit
 /// variation points (linkage, per-program metadata carriers, finalize).
 ///
-/// The pipeline plans the linked working module internally (see
-/// `compile_with_backend_impl`), so there is no caller-supplied pre-types plan
-/// to thread — a frontend plan cannot see linked provider bodies.
+/// This legacy entrypoint prepares and plans the module internally. Production
+/// pipeline callers should prefer the `*_planned` variants and thread the
+/// single authoritative `ModulePlan` they already computed for the execution
+/// graph.
+#[allow(dead_code)]
 pub fn compile_with_backend<
     B: Backend,
     T: crate::types::Types<Ty = crate::types::Ty>
@@ -107,6 +109,24 @@ pub fn compile_with_backend<
     compile_with_backend_impl(t, module, backend, tel)
 }
 
+pub(crate) fn compile_with_backend_planned<
+    B: Backend,
+    T: crate::types::Types<Ty = crate::types::Ty>
+        + crate::types::ClosureTypes
+        + crate::types::LiteralTypes
+        + crate::types::RenderTypes
+        + crate::types::VisibilityTypes,
+>(
+    t: &mut T,
+    module: &Module,
+    module_plan: &crate::ir_planner::ModulePlan,
+    backend: B,
+    tel: &dyn crate::telemetry::Telemetry,
+) -> Result<B::Output, CodegenError> {
+    driver::compile_with_backend_preplanned(t, module, module_plan, backend, tel)
+}
+
+#[allow(dead_code)]
 pub fn compile<
     T: crate::types::Types<Ty = crate::types::Ty>
         + crate::types::ClosureTypes
@@ -121,6 +141,22 @@ pub fn compile<
     compile_with_backend(t, module, JitBackend::new(), tel)
 }
 
+pub(crate) fn compile_planned<
+    T: crate::types::Types<Ty = crate::types::Ty>
+        + crate::types::ClosureTypes
+        + crate::types::LiteralTypes
+        + crate::types::RenderTypes
+        + crate::types::VisibilityTypes,
+>(
+    t: &mut T,
+    module: &Module,
+    module_plan: &crate::ir_planner::ModulePlan,
+    tel: &dyn crate::telemetry::Telemetry,
+) -> Result<CompiledModule, CodegenError> {
+    compile_with_backend_planned(t, module, module_plan, JitBackend::new(), tel)
+}
+
+#[allow(dead_code)]
 pub fn compile_aot<
     T: crate::types::Types<Ty = crate::types::Ty>
         + crate::types::ClosureTypes
@@ -134,6 +170,22 @@ pub fn compile_aot<
     tel: &dyn crate::telemetry::Telemetry,
 ) -> Result<AotArtifact, CodegenError> {
     compile_with_backend(t, module, AotBackend::new(obj_name), tel)
+}
+
+pub(crate) fn compile_aot_planned<
+    T: crate::types::Types<Ty = crate::types::Ty>
+        + crate::types::ClosureTypes
+        + crate::types::LiteralTypes
+        + crate::types::RenderTypes
+        + crate::types::VisibilityTypes,
+>(
+    t: &mut T,
+    module: &Module,
+    module_plan: &crate::ir_planner::ModulePlan,
+    obj_name: &str,
+    tel: &dyn crate::telemetry::Telemetry,
+) -> Result<AotArtifact, CodegenError> {
+    compile_with_backend_planned(t, module, module_plan, AotBackend::new(obj_name), tel)
 }
 
 #[cfg(test)]

@@ -1076,6 +1076,16 @@ fn capture_main_module(m: Module) -> Vec<String> {
     observe(&compiled, entry).output
 }
 
+fn run_runtime_graph_main_planned(src: &str) -> i64 {
+    let mut t = crate::types::ConcreteTypes;
+    let module = runtime_graph_module(&mut t, src);
+    let entry = module.fn_by_name("main").unwrap().id;
+    let plan = crate::ir_planner::plan_module(&mut t, &module, &crate::telemetry::NullTelemetry);
+    let compiled = compile_planned(&mut t, &module, &plan, &crate::telemetry::NullTelemetry)
+        .expect("compile planned");
+    observe(&compiled, entry).exit.halt_value
+}
+
 fn assert_direct_call_arities(m: &Module) {
     for f in &m.fns {
         for block in &f.blocks {
@@ -1167,6 +1177,118 @@ fn reserved_atom_ids_are_stable() {
     assert_eq!(run_main("fn main(), do: nil"), NIL_ATOM_ID as i64);
     assert_eq!(run_main("fn main(), do: true"), TRUE_ATOM_ID as i64);
     assert_eq!(run_main("fn main(), do: false"), FALSE_ATOM_ID as i64);
+}
+
+#[test]
+fn runtime_graph_spawn_with_captures_runs_via_planned_codegen_path() {
+    assert_eq!(
+        run_runtime_graph_main_planned(include_str!("../../fixtures/spawn_with_captures/input.fz")),
+        fz_runtime::any_value::NIL_ATOM_ID as i64
+    );
+}
+
+#[test]
+fn runtime_graph_plain_spawn_runs_via_planned_codegen_path() {
+    assert_eq!(
+        run_runtime_graph_main_planned("fn child(), do: nil\nfn main() do spawn(child) end"),
+        fz_runtime::any_value::NIL_ATOM_ID as i64
+    );
+}
+
+#[test]
+fn runtime_graph_spawn_then_receive_runs_via_planned_codegen_path() {
+    assert_eq!(
+        run_runtime_graph_main_planned(
+            "fn child(), do: send(1, 42)\nfn main() do spawn(child)\nreceive()\nend"
+        ),
+        42
+    );
+}
+
+#[test]
+fn runtime_graph_plain_spawn_make_closure_registers_zero_cap_target() {
+    let mut t = crate::types::ConcreteTypes;
+    let module = runtime_graph_module(&mut t, "fn child(), do: nil\nfn main() do spawn(child) end");
+    let child = module.fn_by_name("child").expect("child fn");
+    let child_make_closures = module
+        .fns
+        .iter()
+        .flat_map(|f| f.blocks.iter())
+        .flat_map(|block| block.stmts.iter())
+        .filter(|stmt| {
+            matches!(
+                stmt,
+                crate::fz_ir::Stmt::Let(_, crate::fz_ir::Prim::MakeClosure(_, fn_id, captured))
+                    if *fn_id == child.id && captured.is_empty()
+            )
+        })
+        .count();
+    let plan = crate::ir_planner::plan_module(&mut t, &module, &crate::telemetry::NullTelemetry);
+    let child_specs: Vec<_> = plan
+        .specs
+        .keys()
+        .filter(|key| key.fn_id == child.id)
+        .cloned()
+        .collect();
+
+    let child_target = plan
+        .specs
+        .keys()
+        .find(|key| key.fn_id == child.id && key.input.is_empty() && key.demand.is_value())
+        .cloned()
+        .unwrap_or_else(|| {
+            panic!(
+                "planned runtime graph should register a value spec for child/0; child_make_closures={child_make_closures}; child_specs={child_specs:?}"
+            )
+        });
+
+    let planned_program = crate::ir_planner::materialize_program(
+        &mut t,
+        &module,
+        &plan,
+        &crate::telemetry::NullTelemetry,
+    );
+    let child_sid = planned_program
+        .spec_registry()
+        .resolve_spec_key(&mut t, &child_target)
+        .expect("callable-boundary target spec must be registered")
+        .0;
+
+    assert_eq!(
+        planned_program.closure_shapes().get(&child_sid),
+        Some(&0),
+        "authoritative planned program must register child/0 as a zero-cap callable target when the prepared runtime graph still contains MakeClosure(child, []); child_make_closures={child_make_closures}"
+    );
+}
+
+#[test]
+fn runtime_graph_plain_spawn_finalizes_resume_addr() {
+    let mut t = crate::types::ConcreteTypes;
+    let module = runtime_graph_module(&mut t, "fn child(), do: nil\nfn main() do spawn(child) end");
+    let child_id = module.fn_by_name("child").expect("child fn").id.0;
+    let plan = crate::ir_planner::plan_module(&mut t, &module, &crate::telemetry::NullTelemetry);
+    let compiled = compile_planned(&mut t, &module, &plan, &crate::telemetry::NullTelemetry)
+        .expect("compile planned");
+    assert!(
+        !compiled.resume_addr.is_null(),
+        "runtime graph plain spawn should finalize fz_resume"
+    );
+    assert!(
+        compiled
+            .static_closure_targets()
+            .iter()
+            .any(|(_, fn_id, _, _)| *fn_id == child_id),
+        "runtime graph plain spawn should register child/0 as a static closure target: {:?}",
+        compiled.static_closure_targets()
+    );
+    assert!(
+        compiled
+            .static_closure_targets()
+            .iter()
+            .all(|(_, _, ptr, _)| !ptr.is_null()),
+        "runtime graph plain spawn should finalize non-null static closure targets: {:?}",
+        compiled.static_closure_targets()
+    );
 }
 
 /// Two Processes built from the same CompiledModule run independent

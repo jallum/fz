@@ -1403,8 +1403,28 @@ impl<'m> Solver<'m> {
                     arg_infos,
                 )
             }
-            // Receive shapes are out of corpus scope (fz-g58.65.5).
-            _ => Info::Unknown,
+            Term::Receive { continuation, .. } => {
+                let ident = block
+                    .terminator
+                    .ident()
+                    .expect("receive terminator should carry ident");
+                // The mailbox message arrives from the scheduler boundary. It
+                // is opaque here, but still a concrete value, so the receive
+                // continuation should be activated with `any`, not left
+                // unresolved.
+                let message = Info::known(t.any());
+                let cont_inputs = cont_inputs_of(message, &continuation.captured, env);
+                let cont_callsite = CallsiteId::new(key.fn_id, ident, EmitSlot::Cont);
+                self.call_target(
+                    t,
+                    key,
+                    cont_callsite,
+                    CallTarget::Direct(continuation.fn_id),
+                    cont_inputs,
+                )
+            }
+            // Selective receive has its own matcher/body activation model.
+            Term::ReceiveMatched { .. } => Info::Unknown,
         }
     }
 
@@ -1611,9 +1631,17 @@ impl<'m> Solver<'m> {
                 let n_args = entry_params.saturating_sub(cap_tys.len());
                 Info::known(t.closure_lit(ClosureTarget::from(*target), cap_tys, n_args))
             }
-            // Prims not yet modeled (bitstrings, externs) are
-            // `Unknown` — undetermined, not `any`. `any` is earned, never
-            // defaulted during inference; a final boundary may erase a residual
+            Prim::Extern(extern_id, _) => {
+                let ret = module
+                    .extern_idx
+                    .get(extern_id)
+                    .map(|&idx| module.externs[idx].ret_descr.clone())
+                    .unwrap_or_else(|| t.any());
+                Info::known(ret)
+            }
+            // Prims not yet modeled (bitstrings) are `Unknown` —
+            // undetermined, not `any`. `any` is earned, never defaulted
+            // during inference; a final boundary may erase a residual
             // `Unknown` to `any`, but the solver keeps the uncertainty visible.
             _ => Info::Unknown,
         }

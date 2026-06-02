@@ -516,6 +516,233 @@ end
 }
 
 #[test]
+fn receive_continuation_keeps_typed_capture_and_settles_caller_return() {
+    let module = linked(include_str!("fixtures/receive_cont_capture.fz"));
+    let mut t = ConcreteTypes;
+    let int = t.int();
+    let any = t.any();
+    let parent_ret = t.tuple(&[int.clone(), any.clone()]);
+    let main_ret = t.tuple(&[parent_ret.clone()]);
+    let report = infer_report_via_main(&mut t, &module);
+
+    assert_eq!(
+        report.outcome.status,
+        TypeInferStatus::Complete,
+        "plain receive should infer through its continuation instead of leaving the activation graph unresolved: activations={:?}",
+        report
+            .outcome
+            .activations
+            .iter()
+            .map(|fact| (
+                module.fn_by_id(fact.fn_id).name.as_str(),
+                fact.input_tys.clone(),
+                &fact.return_state
+            ))
+            .collect::<Vec<_>>()
+    );
+
+    let parent_fact = report
+        .outcome
+        .activations
+        .iter()
+        .find(|fact| {
+            module.fn_by_id(fact.fn_id).name == "parent"
+                && fact.input_tys.len() == 1
+                && matches!(
+                    &fact.return_state,
+                    TypeInferReturnState::Known(ret) if t.is_equivalent(ret, &parent_ret)
+                )
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "parent/1 should settle to {{int, any}} from the typed capture threaded through the receive continuation; got {:?}",
+                report
+                    .outcome
+                    .activations
+                    .iter()
+                    .filter(|fact| module.fn_by_id(fact.fn_id).name == "parent")
+                    .collect::<Vec<_>>()
+            )
+        });
+
+    let main_fact = report
+        .outcome
+        .activations
+        .iter()
+        .find(|fact| {
+            module.fn_by_id(fact.fn_id).name == "main"
+                && fact.input_tys.is_empty()
+                && matches!(
+                    &fact.return_state,
+                    TypeInferReturnState::Known(ret) if t.is_equivalent(ret, &main_ret)
+                )
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "main/0 should receive the known parent/1 return through its continuation, got {:?}",
+                report
+                    .outcome
+                    .activations
+                    .iter()
+                    .filter(|fact| module.fn_by_id(fact.fn_id).name == "main")
+                    .collect::<Vec<_>>()
+            )
+        });
+
+    assert!(
+        report.outcome.edges.iter().any(|edge| {
+            edge.caller_activation_id == parent_fact.activation_id
+                && edge.callsite.callsite.slot == EmitSlot::Cont
+                && module
+                    .fn_by_id(edge.callee_fn_id)
+                    .name
+                    .starts_with("k_receive_")
+        }),
+        "parent/1 should expose a Cont activation edge into the synthesized receive continuation; edges={:?}",
+        report
+            .outcome
+            .edges
+            .iter()
+            .map(|edge| (
+                module.fn_by_id(edge.caller_fn_id).name.as_str(),
+                module.fn_by_id(edge.callee_fn_id).name.as_str(),
+                edge.callsite.callsite.slot
+            ))
+            .collect::<Vec<_>>()
+    );
+
+    assert!(
+        report.outcome.edges.iter().any(|edge| {
+            edge.caller_activation_id == main_fact.activation_id
+                && edge.callsite.callsite.slot == EmitSlot::Cont
+                && module.fn_by_id(edge.callee_fn_id).name.starts_with("k_")
+        }),
+        "main/0 should keep the direct-call continuation that receives parent/1's return; edges={:?}",
+        report
+            .outcome
+            .edges
+            .iter()
+            .map(|edge| (
+                module.fn_by_id(edge.caller_fn_id).name.as_str(),
+                module.fn_by_id(edge.callee_fn_id).name.as_str(),
+                edge.callsite.callsite.slot
+            ))
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn linked_runtime_spawn_receive_converges_through_extern_return_contract() {
+    let module = linked(include_str!("fixtures/spawn_receive_capture.fz"));
+    let mut t = ConcreteTypes;
+    let any = t.any();
+    let report = infer_report_via_main(&mut t, &module);
+
+    assert_eq!(
+        report.outcome.status,
+        TypeInferStatus::Complete,
+        "linked runtime graph should still infer parent/1 through spawn + receive after pre-plan rewrites: activations={:?}; edges={:?}; parent=\n{}\nmain=\n{}",
+        report
+            .outcome
+            .activations
+            .iter()
+            .map(|fact| (
+                module.fn_by_id(fact.fn_id).name.as_str(),
+                fact.input_tys.clone(),
+                &fact.return_state
+            ))
+            .collect::<Vec<_>>(),
+        report
+            .outcome
+            .edges
+            .iter()
+            .map(|edge| (
+                module.fn_by_id(edge.caller_fn_id).name.as_str(),
+                module.fn_by_id(edge.callee_fn_id).name.as_str(),
+                edge.callsite.callsite.slot
+            ))
+            .collect::<Vec<_>>(),
+        module
+            .fns
+            .iter()
+            .find(|f| f.name == "parent")
+            .map(|f| format!("{f}"))
+            .unwrap_or_else(|| "<missing parent>".to_string()),
+        module
+            .fns
+            .iter()
+            .find(|f| f.name == "main")
+            .map(|f| format!("{f}"))
+            .unwrap_or_else(|| "<missing main>".to_string())
+    );
+
+    let parent_fact = report
+        .outcome
+        .activations
+        .iter()
+        .find(|fact| {
+            module.fn_by_id(fact.fn_id).name == "parent"
+                && fact.input_tys.len() == 1
+                && fact.input_tys.first().is_some_and(|ty| t.is_integer(ty))
+                && matches!(
+                    &fact.return_state,
+                    TypeInferReturnState::Known(ret) if t.is_equivalent(ret, &any)
+                )
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "parent/1 should settle to a known opaque receive result on the linked runtime graph, got {:?}",
+                report
+                    .outcome
+                    .activations
+                    .iter()
+                    .filter(|fact| module.fn_by_id(fact.fn_id).name == "parent")
+                    .collect::<Vec<_>>()
+            )
+        });
+
+    assert!(
+        report.outcome.edges.iter().any(|edge| {
+            edge.caller_activation_id == parent_fact.activation_id
+                && edge.callsite.callsite.slot == EmitSlot::Direct
+                && module.fn_by_id(edge.callee_fn_id).name.starts_with("k_")
+        }),
+        "parent/1 should tail-call the linked continuation carrier after pre-plan rewrites; edges={:?}",
+        report
+            .outcome
+            .edges
+            .iter()
+            .map(|edge| (
+                module.fn_by_id(edge.caller_fn_id).name.as_str(),
+                module.fn_by_id(edge.callee_fn_id).name.as_str(),
+                edge.callsite.callsite.slot
+            ))
+            .collect::<Vec<_>>()
+    );
+
+    assert!(
+        report.outcome.edges.iter().any(|edge| {
+            edge.callsite.callsite.slot == EmitSlot::Cont
+                && module
+                    .fn_by_id(edge.callee_fn_id)
+                    .name
+                    .starts_with("k_receive_")
+        }),
+        "linked runtime graph should keep the receive continuation edge alive after pre-plan rewrites; edges={:?}",
+        report
+            .outcome
+            .edges
+            .iter()
+            .map(|edge| (
+                module.fn_by_id(edge.caller_fn_id).name.as_str(),
+                module.fn_by_id(edge.callee_fn_id).name.as_str(),
+                edge.callsite.callsite.slot
+            ))
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
 fn enum_reduce_runtime_graph_settles() {
     let module = linked(include_str!("fixtures/enum_reduce.fz"));
     let mut t = ConcreteTypes;

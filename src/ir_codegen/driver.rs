@@ -1533,6 +1533,42 @@ fn declare_mid_flight_conts<
     Ok((mid_flight_cont_fn_ids, mid_flight_cont_tail_fn_ids))
 }
 
+pub(crate) fn prepare_module_for_authoritative_plan<
+    T: crate::types::Types<Ty = crate::types::Ty>
+        + crate::types::ClosureTypes
+        + crate::types::LiteralTypes
+        + crate::types::RenderTypes
+        + crate::types::VisibilityTypes,
+>(
+    t: &mut T,
+    module: &Module,
+    tel: &dyn crate::telemetry::Telemetry,
+) -> Module {
+    let mut working = module.clone();
+    let capabilities = crate::ir_planner::plan_callable_capabilities(t, &working);
+    crate::ir_planner::rewrite_known_target_closures(t, &mut working, &capabilities);
+    #[cfg(not(test))]
+    crate::ir_inline::inline_module_with_plan(&mut working, &capabilities);
+    #[cfg(test)]
+    if !INLINE_DISABLED.with(|d| d.get()) {
+        crate::ir_inline::inline_module_with_plan(&mut working, &capabilities);
+    }
+    crate::ir_fuse::fuse_blocks_with_telemetry(&mut working, tel);
+    #[cfg(not(test))]
+    let _ = crate::ir_reducer::reduce_module_with_telemetry(t, &mut working, tel);
+    #[cfg(test)]
+    if !REDUCER_DISABLED.with(|d| d.get()) {
+        let _ = crate::ir_reducer::reduce_module_with_telemetry(t, &mut working, tel);
+    }
+    crate::ir_inline::inline_single_use_conts(&mut working);
+    crate::ir_diverge::truncate_diverging_blocks(module.module_path(), &mut working, tel);
+    crate::ir_const_bs::fold_module(&mut working);
+    crate::ir_dce::dce_module_with_telemetry(&mut working, tel);
+    crate::ir_dce::dce_module_level(&mut working);
+    working
+}
+
+#[allow(dead_code)]
 pub(crate) fn compile_with_backend_impl<
     B: Backend,
     T: crate::types::Types<Ty = crate::types::Ty>
@@ -1543,12 +1579,54 @@ pub(crate) fn compile_with_backend_impl<
 >(
     t: &mut T,
     module: &Module,
+    backend: B,
+    tel: &dyn crate::telemetry::Telemetry,
+) -> Result<B::Output, CodegenError> {
+    if let Some(edge) = module.external_call_edges.first() {
+        return Err(CodegenError::new(format!(
+            "unresolved external module call `{}`",
+            edge.target
+        )));
+    }
+    let working = prepare_module_for_authoritative_plan(t, module, tel);
+    let module_plan = crate::ir_planner::plan_module(t, &working, tel);
+    compile_with_backend_preplanned_impl(t, working, module_plan, backend, tel)
+}
+
+pub(crate) fn compile_with_backend_preplanned<
+    B: Backend,
+    T: crate::types::Types<Ty = crate::types::Ty>
+        + crate::types::ClosureTypes
+        + crate::types::LiteralTypes
+        + crate::types::RenderTypes
+        + crate::types::VisibilityTypes,
+>(
+    t: &mut T,
+    module: &Module,
+    module_plan: &crate::ir_planner::ModulePlan,
+    backend: B,
+    tel: &dyn crate::telemetry::Telemetry,
+) -> Result<B::Output, CodegenError> {
+    compile_with_backend_preplanned_impl(t, module.clone(), module_plan.clone(), backend, tel)
+}
+
+fn compile_with_backend_preplanned_impl<
+    B: Backend,
+    T: crate::types::Types<Ty = crate::types::Ty>
+        + crate::types::ClosureTypes
+        + crate::types::LiteralTypes
+        + crate::types::RenderTypes
+        + crate::types::VisibilityTypes,
+>(
+    t: &mut T,
+    mut working: Module,
+    mut module_plan: crate::ir_planner::ModulePlan,
     mut backend: B,
     tel: &dyn crate::telemetry::Telemetry,
 ) -> Result<B::Output, CodegenError> {
     use crate::telemetry::TelemetryExt as _;
 
-    if let Some(edge) = module.external_call_edges.first() {
+    if let Some(edge) = working.external_call_edges.first() {
         return Err(CodegenError::new(format!(
             "unresolved external module call `{}`",
             edge.target
@@ -1560,7 +1638,7 @@ pub(crate) fn compile_with_backend_impl<
         &["fz", "compile"],
         crate::metadata! {
             compile_nonce: compile_nonce,
-            module_path: module.module_path().to_owned(),
+            module_path: working.module_path().to_owned(),
         },
     );
 
@@ -1573,25 +1651,16 @@ pub(crate) fn compile_with_backend_impl<
     emit_entry_thunk(backend.module_mut(), &mut fbctx, &runtime)?;
     emit_halt_cont_bodies(backend.module_mut(), &mut fbctx, &runtime)?;
 
-    // Register a heap Schema for every tuple arity used by MakeTuple, so the
-    // GC tracer can walk fields and so codegen can iconst the schema_id.
-    // Also detect any bitstring prim so we can pre-register arity-1 / arity-3
-    // schemas used by the reader / result tuples even if no MakeTuple uses
-    // those arities directly.
-    //
-    // BTreeSet so iteration order is deterministic. Schema ids are assigned
-    // by registration order; the AOT runtime registers in the same sorted
-    // order so its ids match what codegen baked into the CLIF.
     let user_schemas = std::rc::Rc::new(std::cell::RefCell::new(
         fz_runtime::heap::SchemaRegistry::new(),
     ));
     user_schemas.borrow_mut().closure_env(0);
     let (tuple_arities, tuple_schema_ids, bs_tuple_arity1_schema, bs_tuple_arity3_schema) =
-        collect_tuple_arities_and_register_schemas(module, &user_schemas);
+        collect_tuple_arities_and_register_schemas(&working, &user_schemas);
     let named_schema_ids = {
         let mut ids = HashMap::new();
         let mut reg = user_schemas.borrow_mut();
-        for (name, fields) in &module.struct_schemas {
+        for (name, fields) in &working.struct_schemas {
             let id = reg.register(fz_runtime::heap::Schema::named_struct(
                 name.clone(),
                 fields.clone(),
@@ -1601,81 +1670,8 @@ pub(crate) fn compile_with_backend_impl<
         ids
     };
 
-    // frame_sizes is computed after `schemas` is built (post-spec_registry).
-
-    // Run the typer ahead of codegen so per-fn Var->type info is
-    // available during lowering.
-    let mut working = module.clone();
-    // Lower known-target CallClosure / TailCallClosure to direct
-    // Call / TailCall, then erase any module-constant zero-capture closure
-    // that now survives only as a threaded value (its entry-param slots,
-    // matching call args, continuation captures, and the dead MakeClosure).
-    // After this, the final plan_module sees direct dispatch where the
-    // closure-stub used to live, and the erased lambda is no longer a
-    // closure-target — so the inliner below splices it and the lazy-cont
-    // gate sees a closure-free frame.
-    //
-    // Both transforms read only callable capabilities + per-fn effects — never
-    // effective returns, call edges, or dead branches — so this derives a
-    // capability-only plan, not a full specializing one. It is interprocedural
-    // over the linked working module (so provider-library entry params carry
-    // KnownFn capabilities the shallow pretyped `_pre_types` cannot see) but
-    // skips the return-type fixpoint, and emits no `planner.planned` event. The
-    // authoritative plan is derived once, below, after these transforms settle —
-    // there is no longer a second specializing plan here (fz-hfc.3 / inv1).
-    let capabilities = crate::ir_planner::plan_callable_capabilities(t, &working);
-    crate::ir_planner::rewrite_known_target_closures(t, &mut working, &capabilities);
-    #[cfg(not(test))]
-    crate::ir_inline::inline_module_with_plan(&mut working, &capabilities);
-    #[cfg(test)]
-    if !INLINE_DISABLED.with(|d| d.get()) {
-        crate::ir_inline::inline_module_with_plan(&mut working, &capabilities);
-    }
-    crate::ir_fuse::fuse_blocks_with_telemetry(&mut working, tel);
-    // Compile-time reducer pass. Folds calls whose return is statically
-    // known; reduces If-on-bool-literal to Goto. Runs after
-    // ir_inline + ir_fuse so it sees a cleaner call graph.
-    // See docs/bodies-are-boundaries.md.
-    //
-    // Reducer returns a ReducerLog consumed by the dump pipeline, not
-    // by codegen; codegen drives reduction only for its rewriting effect.
-    #[cfg(not(test))]
-    let _ = crate::ir_reducer::reduce_module_with_telemetry(t, &mut working, tel);
-    #[cfg(test)]
-    if !REDUCER_DISABLED.with(|d| d.get()) {
-        let _ = crate::ir_reducer::reduce_module_with_telemetry(t, &mut working, tel);
-    }
-    // Single-use cont collapse runs pre-planner, alongside the other
-    // call-shape mutations (`fuse_blocks`, `reduce_module`). The
-    // `debug_assert_unique_conts` check at the end of `ir_lower`
-    // guarantees this pass sees each continuation fn exactly once, so it
-    // can be applied before the planner commits to specs. See
-    // `.agent/docs/dispatch-as-planner-output.md` (Worry 1).
-    crate::ir_inline::inline_single_use_conts(&mut working);
-    // Honour `:: never`: cut dead tails after diverging calls (e.g. inlined
-    // `assert`'s `panic` branch) so the single authoritative plan below — and
-    // the codegen that reads it — never see a reachable ⊥-typed tail.
-    crate::ir_diverge::truncate_diverging_blocks(module.module_path(), &mut working, tel);
-    // Fold byte-literal MakeBitstring into ConstBitstring before DCE so
-    // the per-byte Const(Int) operand stmts go dead in the same pass.
-    crate::ir_const_bs::fold_module(&mut working);
-    crate::ir_dce::dce_module_with_telemetry(&mut working, tel);
-    // Sweep IR fns unreachable from main after inlining.
-    crate::ir_dce::dce_module_level(&mut working);
-    let mut module_plan = crate::ir_planner::plan_module(t, &working, tel);
-    // Snapshot per-fn call-shape multisets after the authoritative planner
-    // commits to specs. Later codegen-local rewrites may consume call shapes
-    // but must not invent new ones.
     #[cfg(debug_assertions)]
     let call_shapes_pre = super::invariants::snapshot_call_shapes(&working);
-    // Destination lowering desugars MakeTuple/MakeList/MakeMap/MapUpdate into
-    // token-linear Dest* sequences. It is intra-block, adds no blocks and no
-    // call edges, and preserves every original construction *result* var —
-    // already typed by the authoritative plan above. Its only new SSA names are
-    // dest holders and init tokens, which codegen lowers from runtime value
-    // bindings, never from plan types. So the authoritative plan stays valid for
-    // everything codegen reads after lowering: no second planner pass, and no
-    // reconciliation of a second plan against the first.
     crate::ir_dest::lower_destinations(&mut working);
     crate::ir_dest::verify_module(&working).map_err(|errors| {
         CodegenError::new(format!(
@@ -1703,37 +1699,18 @@ pub(crate) fn compile_with_backend_impl<
     let spec_fn_types = planned_program.spec_plans();
 
     let closure_shapes = planned_program.closure_shapes();
-
-    // Native-callability analysis — already a fixed point (the analysis
-    // shrinks to convergence internally). Consumed at declare-time below
-    // for per-fn sigs and at compile_fn / emit_call for ABI bifurcation.
     let natively_callable = super::native_callable::natively_callable(module);
-
     let cont_fns = collect_cont_fns(module);
-    let _ = &cont_fns; // consumed by sig builder + entry harness below.
-
-    // Set of fns appearing as a MakeClosure target. Per
-    // docs/cps-in-clif.md §2.1 these get sig `(args..., self:i64, cont:i64)
-    // tail` and their body projects captures from `self`. Disjoint
-    // from cont_fns by construction (conts are anonymous continuations
-    // synthesized by the lowerer; MakeClosure targets are user lambdas
-    // or top-level fns passed as values). If overlap occurs in some
-    // future fz-IR, cont-fn shape wins (Receive parking would otherwise
-    // misread the result slot).
+    let _ = &cont_fns;
     let (closure_target_fns, closure_n_captures) = collect_closure_targets(module);
     let _ = (&closure_target_fns, &closure_n_captures);
-
     let cont_target_fns = collect_cont_target_fns(module);
 
     let schemas = build_per_spec_schemas(t, module, spec_count, &spec_fnidx, &spec_fn_types);
-
-    // Per-spec frame sizes (consumed by `fz_alloc_frame_dyn` and the AOT
-    // frame-size dispatch fn). Indexed by SpecId.0.
     let frame_sizes: Vec<u32> = schemas
         .iter()
         .map(|s| s.allocation_payload_size() as u32)
         .collect();
-
     let return_tys = derive_return_tys(t, module, &spec_keys, &spec_fnidx, &module_plan);
 
     let param_reprs = derive_param_reprs(
@@ -1801,20 +1778,8 @@ pub(crate) fn compile_with_backend_impl<
         &closure_n_captures,
     )?;
 
-    // Per-module ConstBitstring symbol cache. Same byte payload across
-    // the whole module shares one set of symbols:
-    //   * `bytes_id`: the raw payload (Local, read-only).
-    //   * `sharedbin_id`: present only for above-threshold payloads — a
-    //     40-byte static SharedBin in `.data` with refcount=1 anchor, plus
-    //     two relocations (bytes_ptr and the noop destructor). Below-
-    //     threshold payloads have `None` here and continue to flow through
-    //     `fz_alloc_bitstring_const` for inline / runtime-decided storage.
     let bs_const_data: std::cell::RefCell<HashMap<Vec<u8>, BsConstSyms>> =
         std::cell::RefCell::new(HashMap::new());
-
-    // Specs not in the planned executable set get a trap-stub body instead of
-    // full codegen. The materializer owns this semantic reachability set,
-    // including closure-entry seeds and edges exposed by planned-body folding.
     let reachable = planned_program.reachable_specs();
 
     let (matcher_fn_ids, receive_matched_sites) =
@@ -1829,10 +1794,6 @@ pub(crate) fn compile_with_backend_impl<
         let mut ctx = backend.module_mut().make_context();
         ctx.func.signature = fn_sigs[sid].clone();
 
-        // Unreached spec: emit a trap stub so the symbol exists (other
-        // emitted code may name it via fz_fn_{sid}) but the body is a
-        // single unreachable trap. Skip the @spec header annotation,
-        // verifier, and any further per-spec analysis.
         if !reachable.contains(&(sid as u32)) {
             use cranelift_codegen::ir::TrapCode;
             use cranelift_frontend::FunctionBuilder;
@@ -1853,9 +1814,6 @@ pub(crate) fn compile_with_backend_impl<
             continue;
         }
         let ft = spec_fn_types[sid].expect("non-sentinel spec must have SpecPlan");
-        // PlannedProgram owns the exact per-spec folded body and executable
-        // reachability set, so trap-stub pruning and emitted code derive from
-        // the same planned graph.
         let planned_body = planned_program.executable_body(crate::fz_ir::SpecId(sid as u32));
         let f = &planned_body.body;
         debug_assert_eq!(planned_body.spec_id.0, sid as u32);
@@ -1875,9 +1833,6 @@ pub(crate) fn compile_with_backend_impl<
             planned_body.spec_id.0,
             &planned_body.spec_key,
         );
-        // Any-key SpecId.0 == FnId.0 (invariant); use the bare fn name so
-        // tests / `fz dump --emit clif` can refer to functions by source
-        // name. Narrow specs append `_s{sid}` to keep names distinct.
         let display_name = if planned_body.spec_id.0 == planned_body.fn_id.0 {
             f.name.clone()
         } else {
@@ -1908,8 +1863,6 @@ pub(crate) fn compile_with_backend_impl<
             matcher_fn_ids: &matcher_fn_ids,
         };
         {
-            use crate::telemetry::TelemetryExt as _;
-
             let _span = tel.span(
                 &["fz", "codegen", "lower_function"],
                 crate::metadata! {
@@ -1948,15 +1901,8 @@ pub(crate) fn compile_with_backend_impl<
                 },
             );
         }
-        // Annotate raw CLIF with IR types + ArgReprs so
-        // `fz dump --emit clif` shows what the typer decided, not just
-        // what was lowered.
         IR_TEXT_RECORD.with(|c| {
             if let Some(v) = c.borrow_mut().as_mut() {
-                // Pin func.name to the real FuncId so the banner
-                // `function u0:N(...)` carries the same id space as
-                // body refs; cranelift_module's define_function does
-                // this assignment anyway, we just need it before display().
                 ctx.func.name = ir::UserFuncName::user(0, func_id.as_u32());
                 let raw = ctx.func.display().to_string();
                 let key_tys = codegen_key_to_tys(t, &spec_keys[sid].input);
@@ -2080,10 +2026,6 @@ pub(crate) fn compile_with_backend_impl<
         resume_id,
     };
 
-    // Backend-specific metadata carriers (no-op for JIT; dispatch + main
-    // shim + atom blob for AOT) emit before finalize so any data /
-    // function declarations land in the same Module that finalize hands
-    // off.
     backend.emit_metadata_carriers(&mut fbctx, &metadata)?;
     backend.finalize(metadata)
 }
