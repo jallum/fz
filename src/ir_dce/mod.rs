@@ -22,7 +22,8 @@ use std::collections::HashSet;
 /// Remove IR functions unreachable from `main`.
 ///
 /// Walks from `main` via Term::Call/TailCall callee, Cont::fn_id, and
-/// Prim::MakeClosure. Keeps any fn transitively reachable. Sweeps the rest.
+/// `Prim::MakeClosure` closure targets in the current working module. Keeps
+/// any fn transitively reachable. Sweeps the rest.
 /// FnIds are NOT renumbered — the codegen schemas vec is indexed by FnId.0
 /// and renumbering would require updating every call/cont/closure reference.
 pub fn dce_module_level(m: &mut Module) {

@@ -167,8 +167,8 @@ capture order.
   identifies where the closure dispatch happens, while the call edge's target
   shapes what runs, whether that comes from a known callable capability or a
   closure literal clause.
-- `MakeClosure` names the body spec made reachable by constructing a closure
-  value.
+- `CallableBoundary` names a known local closure value crossing an
+  external/provider boundary that may invoke it later.
 
 ## Callable Capabilities
 

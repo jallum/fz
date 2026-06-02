@@ -157,10 +157,6 @@ pub enum EmitSlot {
     /// ("where") while the planner's dispatch target shapes the variation
     /// ("what").
     ClosureCall,
-    /// `Prim::MakeClosure` stmt. Per fz-kgk, the per-stmt index is no
-    /// longer needed — the `CallsiteIdent` on the Prim disambiguates
-    /// multiple MakeClosures in the same block.
-    MakeClosure,
     /// A known local closure value crosses an external/provider boundary that
     /// may call it later. This is not an in-IR dispatch site, but it is a
     /// real reachability obligation for the closure target body.

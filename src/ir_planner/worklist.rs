@@ -139,7 +139,6 @@ fn emit_slot_label(slot: crate::fz_ir::EmitSlot) -> &'static str {
         crate::fz_ir::EmitSlot::Direct => "direct",
         crate::fz_ir::EmitSlot::Cont => "cont",
         crate::fz_ir::EmitSlot::ClosureCall => "closure_call",
-        crate::fz_ir::EmitSlot::MakeClosure => "make_closure",
         crate::fz_ir::EmitSlot::CallableBoundary => "callable_boundary",
     }
 }

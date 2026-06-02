@@ -1284,7 +1284,6 @@ fn dump_outcomes_pipeline(
             EmitSlot::Direct => "Direct",
             EmitSlot::Cont => "Cont",
             EmitSlot::ClosureCall => "ClosureCall",
-            EmitSlot::MakeClosure => "MakeClosure",
             EmitSlot::CallableBoundary => "CallableBoundary",
         }
     };
@@ -1690,10 +1689,12 @@ fn main(), do: User.run()
             .with_module(&compiled.module)
             .with_telemetry(&tel);
 
-        let _ = rt.spawn(main_fn);
+        let root_pid = rt.spawn(main_fn);
         rt.run_until_idle();
 
-        let exit = exits.last().expect("process_exited telemetry");
+        let exit = exits
+            .by_pid(root_pid)
+            .expect("root process_exited telemetry");
         assert_eq!(
             exit.halt_value,
             fz_runtime::any_value::NIL_ATOM_ID as i64,

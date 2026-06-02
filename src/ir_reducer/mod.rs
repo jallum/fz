@@ -535,7 +535,6 @@ fn slot_name(slot: EmitSlot) -> &'static str {
         EmitSlot::Direct => "direct",
         EmitSlot::Cont => "cont",
         EmitSlot::ClosureCall => "closure_call",
-        EmitSlot::MakeClosure => "make_closure",
         EmitSlot::CallableBoundary => "callable_boundary",
     }
 }
