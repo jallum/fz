@@ -1694,6 +1694,7 @@ impl<'m> Solver<'m> {
             Prim::MapGet(map, key) => type_map_get(t, *map, *key, env, false),
             Prim::MatcherMapGet(map, key) => type_map_get(t, *map, *key, env, true),
             Prim::IsMatcherMapMiss(v) => is_matcher_map_miss(t, info_of(*v, env)),
+            Prim::MakeBitstring(_) | Prim::ConstBitstring(_, _) => Info::known(t.str_t()),
             Prim::MakeClosure(_, target, caps) => {
                 let mut cap_tys = Vec::with_capacity(caps.len());
                 for c in caps {
@@ -1717,10 +1718,10 @@ impl<'m> Solver<'m> {
                     .unwrap_or_else(|| t.any());
                 Info::known(ret)
             }
-            // Prims not yet modeled (bitstrings) are `Unknown` —
-            // undetermined, not `any`. `any` is earned, never defaulted
-            // during inference; a final boundary may erase a residual
-            // `Unknown` to `any`, but the solver keeps the uncertainty visible.
+            // Prims not yet modeled are `Unknown` — undetermined, not `any`.
+            // `any` is earned, never defaulted during inference; a final
+            // boundary may erase a residual `Unknown` to `any`, but the solver
+            // keeps the uncertainty visible.
             _ => Info::Unknown,
         }
     }

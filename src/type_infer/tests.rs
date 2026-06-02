@@ -636,11 +636,24 @@ fn linked_runtime_spawn_receive_converges_through_extern_return_contract() {
     let mut t = ConcreteTypes;
     let any = t.any();
     let report = infer_report_via_main(&mut t, &module);
+    let unsettled = report.unsettled_fn_names();
+    let unsettled_bodies = unsettled
+        .iter()
+        .map(|name| {
+            let body = module
+                .fns
+                .iter()
+                .find(|f| f.name == *name)
+                .map(|f| format!("{f}"))
+                .unwrap_or_else(|| "<missing>".to_string());
+            (name.clone(), body)
+        })
+        .collect::<Vec<_>>();
 
     assert_eq!(
         report.outcome.status,
         TypeInferStatus::Complete,
-        "linked runtime graph should still infer parent/1 through spawn + receive after pre-plan rewrites: activations={:?}; edges={:?}; parent=\n{}\nmain=\n{}",
+        "linked runtime graph should still infer parent/1 through spawn + receive after pre-plan rewrites: unsettled={unsettled:?}; unsettled_bodies={unsettled_bodies:?}; activations={:?}; edges={:?}; parent=\n{}\nmain=\n{}",
         report
             .outcome
             .activations
@@ -704,9 +717,28 @@ fn linked_runtime_spawn_receive_converges_through_extern_return_contract() {
         report.outcome.edges.iter().any(|edge| {
             edge.caller_activation_id == parent_fact.activation_id
                 && edge.callsite.callsite.slot == EmitSlot::Direct
+                && module.fn_by_id(edge.callee_fn_id).name == "Kernel.spawn"
+        }),
+        "parent/1 should still call Kernel.spawn/1 on the linked runtime graph; edges={:?}",
+        report
+            .outcome
+            .edges
+            .iter()
+            .map(|edge| (
+                module.fn_by_id(edge.caller_fn_id).name.as_str(),
+                module.fn_by_id(edge.callee_fn_id).name.as_str(),
+                edge.callsite.callsite.slot
+            ))
+            .collect::<Vec<_>>()
+    );
+
+    assert!(
+        report.outcome.edges.iter().any(|edge| {
+            edge.caller_activation_id == parent_fact.activation_id
+                && edge.callsite.callsite.slot == EmitSlot::Cont
                 && module.fn_by_id(edge.callee_fn_id).name.starts_with("k_")
         }),
-        "parent/1 should tail-call the linked continuation carrier after pre-plan rewrites; edges={:?}",
+        "parent/1 should keep the post-spawn continuation carrier alive after pre-plan rewrites; edges={:?}",
         report
             .outcome
             .edges
@@ -815,6 +847,47 @@ fn linked_runtime_plain_spawn_surfaces_callable_boundary_to_child() {
                 edge.callsite.callsite.slot
             ))
             .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn string_literal_argument_types_as_str_t() {
+    let module = lower("fn id(x), do: x\nfn main(), do: id(\"hi\")");
+    let mut t = ConcreteTypes;
+    let str_t = t.str_t();
+    let report = infer_report_via_main(&mut t, &module);
+
+    assert_eq!(
+        report.outcome.status,
+        TypeInferStatus::Complete,
+        "string-literal call should settle through const bitstring typing: activations={:?}; edges={:?}",
+        report
+            .outcome
+            .activations
+            .iter()
+            .map(|fact| (
+                module.fn_by_id(fact.fn_id).name.as_str(),
+                fact.input_tys.clone(),
+                &fact.return_state
+            ))
+            .collect::<Vec<_>>(),
+        report
+            .outcome
+            .edges
+            .iter()
+            .map(|edge| (
+                module.fn_by_id(edge.caller_fn_id).name.as_str(),
+                module.fn_by_id(edge.callee_fn_id).name.as_str(),
+                edge.callsite.callsite.slot
+            ))
+            .collect::<Vec<_>>()
+    );
+
+    let id_return = report.facts.return_for_fn_named("id");
+    assert!(
+        t.is_equivalent(&id_return, &str_t),
+        "string literal should flow through direct calls as str_t(); got {}",
+        t.display(&id_return)
     );
 }
 
