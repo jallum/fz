@@ -340,19 +340,13 @@ impl SpecRegistry {
 
     /// Resolve the executable body spec a surviving `MakeClosure` should target.
     ///
-    /// Post-plan transforms may already rewrite the closure literal to point at
-    /// a specialized executable body id. In that case, keep that body id
-    /// directly. Otherwise fall back to the first body-backed spec whose
-    /// semantic `fn_id` matches the closure literal.
+    /// `MakeClosure` stores a semantic `FnId`, not an executable `SpecId`.
+    /// Resolve by finding the body-backed spec in that semantic family.
     pub(crate) fn resolve_closure_body_spec(
         &self,
         fn_id: FnId,
         mut has_body: impl FnMut(SpecId) -> bool,
     ) -> Option<SpecId> {
-        let direct = SpecId(fn_id.0);
-        if (direct.0 as usize) < self.entries.len() && has_body(direct) {
-            return Some(direct);
-        }
         self.iter()
             .find(|(sid, key)| key.fn_id == fn_id && has_body(*sid))
             .map(|(sid, _)| sid)

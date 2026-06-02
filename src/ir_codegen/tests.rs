@@ -39,93 +39,6 @@ fn planner_roles(cap: &crate::telemetry::Capture) -> Vec<String> {
         .collect()
 }
 
-/// Every zero-capture `MakeClosure(f, [])` target gets one entry in
-/// `static_closure_targets`; multiple sites for the same `f` share a
-/// single entry (cl_sid keyed). See docs/cps-in-clif.md §8.2.
-#[test]
-fn static_closure_targets_registered_for_zero_cap_make_closure() {
-    // Reducer disabled: it would otherwise dissolve this program to
-    // constants and leave no MakeClosure for the codegen path to handle.
-    let src = "fn f(x), do: x + 1\n\
-               fn g(x), do: x * 2\n\
-               fn apply(h, x), do: h.(x)\n\
-               fn main() do\n\
-                 dbg(apply(f, 1))\n\
-                 dbg(apply(g, 2))\n\
-               end";
-    let m = lower_src(src);
-    let compiled = crate::ir_codegen::with_reducer_disabled(|| {
-        compile(
-            &mut crate::types::ConcreteTypes,
-            &m,
-            &crate::telemetry::NullTelemetry,
-        )
-        .expect("compile")
-    });
-    let targets = compiled.static_closure_targets();
-    assert!(
-        targets.len() >= 2,
-        "expected ≥2 static closure targets (f, g); got {}: {:?}",
-        targets.len(),
-        targets
-            .iter()
-            .map(|(s, f, _, _)| (s, f))
-            .collect::<Vec<_>>(),
-    );
-    let mut cl_sids: Vec<u32> = targets.iter().map(|(s, _, _, _)| *s).collect();
-    cl_sids.sort();
-    cl_sids.dedup();
-    assert_eq!(
-        cl_sids.len(),
-        targets.len(),
-        "cl_sids must be unique across static_closure_targets entries"
-    );
-    for (_, _, ptr, _) in targets {
-        assert!(
-            !ptr.is_null(),
-            "static-closure code pointer must be a resolved address"
-        );
-    }
-}
-
-/// `make_process` populates `Process.static_closures` from the compiled
-/// module's targets, and `fz_get_static_closure(cl_sid)` returns the
-/// singleton's pointer; two lookups return the same pointer.
-#[test]
-fn static_closure_lookup_returns_singleton_pointer() {
-    // Two distinct fns flow into `apply`'s `h`, so it is not a module-wide
-    // constant: `rewrite_known_target_closures` cannot devirtualize+erase the
-    // closure value, and the static-closure singletons survive for this
-    // runtime-lookup test. (A single `apply(f, 1)` would reduce to a direct
-    // `f(1)` and leave zero static closures — see
-    // `eliminate_constant_closure_values`.)
-    let src = "fn f(x), do: x + 1\n\
-               fn g(x), do: x * 2\n\
-               fn apply(h, x), do: h.(x)\n\
-               fn main() do\n\
-                 dbg(apply(f, 1))\n\
-                 dbg(apply(g, 2))\n\
-               end";
-    let m = lower_src(src);
-    // Reducer disabled — see sibling test above.
-    let compiled = crate::ir_codegen::with_reducer_disabled(|| {
-        compile(
-            &mut crate::types::ConcreteTypes,
-            &m,
-            &crate::telemetry::NullTelemetry,
-        )
-        .expect("compile")
-    });
-    let targets = compiled.static_closure_targets();
-    let (cl_sid, _, _, _) = *targets.first().expect("at least one static closure target");
-    let mut p = compiled.make_process();
-    let pp: *mut Process = &mut p;
-    let a = fz_runtime::ir_runtime::fz_get_static_closure(pp, cl_sid);
-    let b = fz_runtime::ir_runtime::fz_get_static_closure(pp, cl_sid);
-    assert_eq!(a, b, "static-closure lookup must return the same pointer");
-    assert_ne!(a, 0, "static-closure lookup must return non-null");
-}
-
 #[test]
 fn compiled_unit_carries_interface_contract_and_ir_code() {
     let m = lower_resolved_src(
@@ -746,17 +659,110 @@ fn runtime_enum_tier0_fixture_runs_native() {
 
 #[test]
 fn runtime_enumerable_list_reduce_reports_low_level_done_and_halt() {
-    let got = capture_main_with_runtime_graph(
-        r#"
+    use crate::telemetry::{Capture, ConfiguredTelemetry, Value};
+
+    let src = r#"
 fn main() do
   dbg({
     Enumerable.reduce([1, 2], {:cont, 0}, fn (x, acc) -> {:cont, acc + x} end),
     Enumerable.reduce([1, 2], {:halt, 7}, fn (x, acc) -> {:cont, acc + x} end)
   })
 end
-"#,
+"#;
+    let mut t = crate::types::ConcreteTypes;
+    let graph = runtime_graph(&mut t, src);
+    let module = graph.module;
+    let plan = graph.module_plan;
+    let planned_program = crate::ir_planner::materialize_program(
+        &mut t,
+        &module,
+        &plan,
+        &crate::telemetry::NullTelemetry,
+    );
+    let tel = ConfiguredTelemetry::new();
+    let cap = Capture::new();
+    tel.attach(&["fz", "codegen", "closure_call_lowered"], cap.handler());
+    tel.attach(&["fz", "codegen", "callable_entry_lowered"], cap.handler());
+    let compiled = compile_planned(&mut t, &module, &plan, &tel).expect("compile planned");
+    let expected_targets = planned_program
+        .callable_entries()
+        .keys()
+        .copied()
+        .collect::<std::collections::BTreeSet<_>>();
+    let actual_targets = compiled
+        .static_closure_targets()
+        .iter()
+        .map(|(sid, _, _, _)| *sid)
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        actual_targets, expected_targets,
+        "compiled static-closure singleton ids must match materialized zero-cap closure shapes"
+    );
+    let reducer_callable_entry = *expected_targets
+        .iter()
+        .next()
+        .expect("Enumerable.reduce fixture should materialize one reducer callable entry");
+
+    let closure_calls = cap
+        .find(&["fz", "codegen", "closure_call_lowered"])
+        .into_iter()
+        .map(|ev| {
+            let body_name = match ev.metadata.get("body_name") {
+                Some(Value::Str(name)) => name.clone(),
+                other => panic!("closure_call_lowered missing body_name: {other:?}"),
+            };
+            let call_kind = match ev.metadata.get("call_kind") {
+                Some(Value::Str(kind)) => kind.clone(),
+                other => panic!("closure_call_lowered missing call_kind: {other:?}"),
+            };
+            let dispatch_kind = match ev.metadata.get("dispatch_kind") {
+                Some(Value::Str(kind)) => kind.clone(),
+                other => panic!("closure_call_lowered missing dispatch_kind: {other:?}"),
+            };
+            let closure_binding_repr = match ev.metadata.get("closure_binding_repr") {
+                Some(Value::Str(repr)) => repr.clone(),
+                other => panic!("closure_call_lowered missing closure_binding_repr: {other:?}"),
+            };
+            (body_name, call_kind, dispatch_kind, closure_binding_repr)
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        closure_calls
+            .iter()
+            .any(|(_, _, dispatch_kind, closure_binding_repr)| {
+                dispatch_kind == "indirect" && closure_binding_repr == "ValueRef"
+            }),
+        "Enumerable.reduce should still lower its reducer through the indirect callable seam: {closure_calls:?}"
+    );
+    let callable_entries = cap
+        .find(&["fz", "codegen", "callable_entry_lowered"])
+        .into_iter()
+        .map(|ev| {
+            let spec_id = match ev.measurements.get("spec_id") {
+                Some(Value::U64(id)) => *id as u32,
+                other => panic!("callable_entry_lowered missing spec_id: {other:?}"),
+            };
+            let arg_count = match ev.measurements.get("arg_count") {
+                Some(Value::U64(count)) => *count as u32,
+                other => panic!("callable_entry_lowered missing arg_count: {other:?}"),
+            };
+            let capture_count = match ev.measurements.get("capture_count") {
+                Some(Value::U64(count)) => *count as u32,
+                other => panic!("callable_entry_lowered missing capture_count: {other:?}"),
+            };
+            (spec_id, arg_count, capture_count)
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        callable_entries
+            .iter()
+            .any(|(spec_id, arg_count, capture_count)| {
+                *spec_id == reducer_callable_entry && *arg_count == 2 && *capture_count == 0
+            }),
+        "compile should materialize a zero-cap callable entry for the reducer body: {callable_entries:?}"
     );
 
+    let got = capture_main_module_planned(module, plan);
     assert_eq!(got, vec!["{{:done, 3}, {:halted, 7}}"]);
 }
 
@@ -1322,8 +1328,11 @@ fn runtime_graph_plain_spawn_make_closure_registers_zero_cap_target() {
         .0;
 
     assert_eq!(
-        planned_program.closure_shapes().get(&child_sid),
-        Some(&0),
+        planned_program
+            .callable_entries()
+            .get(&child_sid)
+            .map(|entry| entry.capture_count),
+        Some(0),
         "authoritative planned program must register child/0 as a zero-cap callable target when the prepared runtime graph still contains MakeClosure(child, []); child_make_closures={child_make_closures}"
     );
 }
@@ -1356,70 +1365,6 @@ fn runtime_graph_plain_spawn_finalizes_resume_addr() {
             .all(|(_, _, ptr, _)| !ptr.is_null()),
         "runtime graph plain spawn should finalize non-null static closure targets: {:?}",
         compiled.static_closure_targets()
-    );
-}
-
-#[test]
-fn materialized_program_registers_surviving_zero_cap_make_closure_targets() {
-    let mut t = crate::types::ConcreteTypes;
-    let src = include_str!("../../fixtures/enum_take_drop_split/input.fz");
-    let graph = runtime_graph(&mut t, src);
-    let module = graph.module;
-    let plan = graph.module_plan;
-    let planned_program = crate::ir_planner::materialize_program(
-        &mut t,
-        &module,
-        &plan,
-        &crate::telemetry::NullTelemetry,
-    );
-
-    let has_body = |sid: crate::fz_ir::SpecId| {
-        planned_program.reachable_specs().contains(&sid.0)
-            && plan
-                .specs
-                .contains_key(&planned_program.spec_keys()[sid.0 as usize])
-    };
-
-    let mut expected_zero_cap_targets = std::collections::BTreeSet::new();
-    for sid in planned_program.reachable_specs() {
-        let body = &planned_program
-            .executable_body(crate::fz_ir::SpecId(*sid))
-            .body;
-        for block in &body.blocks {
-            for stmt in &block.stmts {
-                let crate::fz_ir::Stmt::Let(_, prim) = stmt;
-                let crate::fz_ir::Prim::MakeClosure(_, lam_fn_id, captured) = prim else {
-                    continue;
-                };
-                if !captured.is_empty() {
-                    continue;
-                }
-                let Some(target_sid) = planned_program
-                    .spec_registry()
-                    .resolve_closure_body_spec(*lam_fn_id, has_body)
-                    .map(|sid| sid.0)
-                else {
-                    continue;
-                };
-                expected_zero_cap_targets.insert(target_sid);
-            }
-        }
-    }
-
-    assert!(
-        !expected_zero_cap_targets.is_empty(),
-        "expected enum runtime graph to retain at least one zero-cap MakeClosure after materialization"
-    );
-
-    let missing: Vec<u32> = expected_zero_cap_targets
-        .iter()
-        .copied()
-        .filter(|sid| !planned_program.closure_shapes().contains_key(sid))
-        .collect();
-    assert!(
-        missing.is_empty(),
-        "materialized program must register closure shapes for every surviving zero-cap MakeClosure target; missing={missing:?}; closure_shapes={:?}; expected={expected_zero_cap_targets:?}",
-        planned_program.closure_shapes()
     );
 }
 
@@ -3039,14 +2984,7 @@ fn compile_emits_spec_pair_inventory_telemetry() {
             "compile span should carry a non-zero compile_nonce"
         );
     }
-    for ev in cap
-        .find(&["fz", "planner", "spec_pair_inventory"])
-        .into_iter()
-        .chain(
-            cap.find(&["fz", "codegen", "spec_pair_inventory"])
-                .into_iter(),
-        )
-    {
+    for ev in cap.find(&["fz", "codegen", "spec_pair_inventory"]) {
         assert!(
             compile_span_ids.contains(&ev.span_id),
             "spec-pair inventory {:?} should stay inside a compile span; compile spans={:?}, event_span={}",

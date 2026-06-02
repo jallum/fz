@@ -11,7 +11,7 @@ pub(crate) struct PlannedProgram<'plan> {
     spec_plans: Vec<Option<&'plan SpecPlan>>,
     bodies: Vec<PlannedBody>,
     body_index_by_spec_slot: Vec<Option<usize>>,
-    closure_shapes: BTreeMap<u32, usize>,
+    callable_entries: BTreeMap<u32, CallableEntryPlan>,
     reachable_specs: HashSet<u32>,
 }
 
@@ -30,6 +30,11 @@ pub(crate) struct PlannedProgramStats {
     pub sentinel_spec_count: usize,
     pub folded_prim_count: usize,
     pub folded_branch_count: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct CallableEntryPlan {
+    pub capture_count: usize,
 }
 
 impl<'plan> PlannedProgram<'plan> {
@@ -53,8 +58,8 @@ impl<'plan> PlannedProgram<'plan> {
         &self.spec_plans
     }
 
-    pub(crate) fn closure_shapes(&self) -> &BTreeMap<u32, usize> {
-        &self.closure_shapes
+    pub(crate) fn callable_entries(&self) -> &BTreeMap<u32, CallableEntryPlan> {
+        &self.callable_entries
     }
 
     pub(crate) fn reachable_specs(&self) -> &HashSet<u32> {
@@ -151,8 +156,6 @@ where
             _ => body_index_by_spec_slot.push(None),
         }
     }
-    let closure_shapes = build_closure_shapes(&bodies, &spec_registry, &body_index_by_spec_slot);
-
     let (reachable_specs, reachable_before_body_fold_count, body_fold_reachable_added_count) =
         compute_reachable_specs(
             t,
@@ -163,6 +166,12 @@ where
             &bodies,
             &body_index_by_spec_slot,
         );
+    let callable_entries = build_callable_entries(
+        &bodies,
+        &spec_registry,
+        &body_index_by_spec_slot,
+        &reachable_specs,
+    );
 
     let planned_body_count = bodies.len();
     let stats = PlannedProgramStats {
@@ -198,7 +207,7 @@ where
         spec_plans,
         bodies,
         body_index_by_spec_slot,
-        closure_shapes,
+        callable_entries,
         reachable_specs,
     }
 }
@@ -281,18 +290,22 @@ fn display_spec_ids(reachable_specs: &HashSet<u32>) -> Vec<String> {
     ids.into_iter().map(|sid| sid.to_string()).collect()
 }
 
-fn build_closure_shapes(
+fn build_callable_entries(
     bodies: &[PlannedBody],
     spec_registry: &SpecRegistry,
     body_index_by_spec_slot: &[Option<usize>],
-) -> BTreeMap<u32, usize> {
-    let mut closure_shapes = BTreeMap::new();
+    reachable_specs: &HashSet<u32>,
+) -> BTreeMap<u32, CallableEntryPlan> {
+    let mut callable_entries = BTreeMap::new();
     let has_body = |sid: SpecId| {
         body_index_by_spec_slot
             .get(sid.0 as usize)
             .is_some_and(Option::is_some)
     };
     for planned_body in bodies {
+        if !reachable_specs.contains(&planned_body.spec_id.0) {
+            continue;
+        }
         for blk in &planned_body.body.blocks {
             for stmt in blk.stmts.iter() {
                 let crate::fz_ir::Stmt::Let(_, prim) = stmt;
@@ -303,12 +316,17 @@ fn build_closure_shapes(
                     let Some(cl_sid) = cl_sid else {
                         continue;
                     };
-                    closure_shapes.insert(cl_sid, captured.len());
+                    callable_entries.insert(
+                        cl_sid,
+                        CallableEntryPlan {
+                            capture_count: captured.len(),
+                        },
+                    );
                 }
             }
         }
     }
-    closure_shapes
+    callable_entries
 }
 
 fn build_spec_registry<T: Types<Ty = crate::types::Ty>>(

@@ -124,6 +124,19 @@ exists by construction. The planned program also owns the executable
 `reachable_specs` set; codegen reads that finished set when deciding whether a
 real spec gets a body or a trap stub.
 
+`PlannedProgram` also owns the closure-call ABI contract. A semantic body spec
+and its public callable entry are distinct executable things:
+
+- the **planned body** is the direct typed entry for a reachable spec
+- the **callable entry** is the generic closure-call entry for that body
+
+Closures always store the callable entry, never the direct typed body address.
+Direct calls may still target the typed body entry when the planner selected
+that exact local target. This keeps one semantic body while making the
+executable boundary explicit: indirect closure calls always cross the callable
+`ValueRef` seam, while direct typed calls keep narrow raw-value ABIs where the
+planner proved them.
+
 Per-spec folds run while materializing the planned program, not ad hoc inside
 the Cranelift lowering loop. Each body emits
 `fz.planner.body_materialized`, including its `spec_id`, `fn_id`,

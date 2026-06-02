@@ -930,12 +930,7 @@ fn emit_native_call_with_cont<
     // build) means the body ignores self at runtime, so a
     // singleton with no captures is valid for any direct-call site.
     if closure_capture_counts.contains_key(&callee_fn_id) {
-        native_args.push(fetch_static_closure(
-            body.jmod,
-            body.b,
-            runtime,
-            callee_fn_id.0,
-        ));
+        native_args.push(fetch_static_closure(body.jmod, body.b, runtime, callee_sid));
     }
     if DemandAbi::new(&env.spec_keys[callee_sid as usize]).has_list_tail_context() {
         native_args.push(list_tail_destination_arg(body));
@@ -1202,7 +1197,7 @@ fn emit_native_tail_call<M: cranelift_module::Module>(
     // singleton as `self` before cont (mirror of Term::Call;
     // zero-cap invariant lets any singleton serve as self).
     if closure_capture_counts.contains_key(&callee_fn_id) {
-        let static_closure = fetch_static_closure(body.jmod, body.b, runtime, callee_fn_id.0);
+        let static_closure = fetch_static_closure(body.jmod, body.b, runtime, callee_sid);
         native_args.push(static_closure);
         mid_flight_arg_shapes.push(MidFlightArgShape::HeapRef);
     }

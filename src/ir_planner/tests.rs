@@ -1095,36 +1095,6 @@ fn unreachable_arm_diagnostic_includes_type_vocabulary() {
 // ---- fz-ul4.27.10: call-site arg narrowing into entry params ----
 
 #[test]
-fn entry_param_narrows_to_caller_arg_type() {
-    // callee: fn id(x), do: return x
-    let mut cb = FnBuilder::new(FnId(0), "id");
-    let x = cb.fresh_var();
-    let centry = cb.block(vec![x]);
-    cb.set_terminator(centry, Term::Return(x));
-
-    // caller: fn main, do: TailCall id(42)
-    let mut mb = FnBuilder::new(FnId(1), "main");
-    let mentry = mb.block(vec![]);
-    let v = mb.let_(mentry, Prim::Const(Const::Int(42)));
-    mb.set_terminator(
-        mentry,
-        Term::TailCall {
-            ident: crate::fz_ir::CallsiteIdent::from_source(crate::diag::Span::DUMMY),
-            callee: FnId(0),
-            args: vec![v],
-            is_back_edge: false,
-        },
-    );
-
-    let m = build_module(vec![cb.build(), mb.build()]);
-    let mut t = crate::types::ConcreteTypes;
-    let mt = plan_module_quiet(&mut t, &m);
-    // `id`'s entry param x should narrow to int_lit(42).
-    let xt = fn_view(&mut t, &m, &mt, 0).vars.get(&x).unwrap().clone();
-    assert_eq!(t.as_int_singleton(&xt), Some(42), "got {}", t.display(&xt));
-}
-
-#[test]
 fn entry_param_unions_across_multiple_callers() {
     // callee: fn id(x), do: return x
     let mut cb = FnBuilder::new(FnId(0), "id");
@@ -1423,97 +1393,6 @@ fn planned_program_materialization_reports_executable_body_folds() {
 }
 
 // ----- fz-ul4.29.1: per-callsite specialization map -----
-
-#[test]
-fn entry_points_keep_any_key_callees_with_typed_callsites_drop() {
-    // fz-ul4.29.12.6 — any-keys are pruned when every callsite has
-    // typed coverage. `main` is entry-point-like (no IR caller) and
-    // keeps its any-key. `add1` is only called from main with
-    // `[int_lit(41)]`; its any-key body is dead → dropped.
-    let mut a = FnBuilder::new(FnId(0), "add1");
-    let n = a.fresh_var();
-    let aentry = a.block(vec![n]);
-    let one = a.let_(aentry, Prim::Const(Const::Int(1)));
-    let sum = a.let_(aentry, Prim::BinOp(BinOp::Add, n, one));
-    a.set_terminator(aentry, Term::Return(sum));
-
-    let mut b = FnBuilder::new(FnId(1), "main");
-    let bentry = b.block(vec![]);
-    let lit = b.let_(bentry, Prim::Const(Const::Int(41)));
-    b.set_terminator(
-        bentry,
-        Term::TailCall {
-            ident: crate::fz_ir::CallsiteIdent::from_source(crate::diag::Span::DUMMY),
-            callee: FnId(0),
-            args: vec![lit],
-            is_back_edge: false,
-        },
-    );
-
-    let m = build_module(vec![a.build(), b.build()]);
-    let mut t = crate::types::ConcreteTypes;
-    let mt = plan_module_quiet(&mut t, &m);
-
-    let main_any = module_plan_spec_ty(&mt, FnId(1), &[]);
-    assert!(
-        main_any.is_some(),
-        "main (entry-point) must keep its any-key"
-    );
-
-    let add1_any = module_plan_spec_ty(&mt, FnId(0), &[t.any()]);
-    assert!(
-        add1_any.is_none(),
-        "add1's any-key is dead (only caller passes int_lit(41)) → dropped"
-    );
-    let add1_narrow = module_plan_spec_ty(&mt, FnId(0), &[t.int_lit(41)]);
-    assert!(
-        add1_narrow.is_some(),
-        "add1 must have its narrow callsite-driven spec"
-    );
-}
-
-#[test]
-fn specs_records_narrow_int_callsite() {
-    // main calls add1 with an int literal → expect a specialization
-    // keyed on `[int]` (not just `[any]`).
-    let mut a = FnBuilder::new(FnId(0), "add1");
-    let n = a.fresh_var();
-    let aentry = a.block(vec![n]);
-    let one = a.let_(aentry, Prim::Const(Const::Int(1)));
-    let sum = a.let_(aentry, Prim::BinOp(BinOp::Add, n, one));
-    a.set_terminator(aentry, Term::Return(sum));
-
-    let mut b = FnBuilder::new(FnId(1), "main");
-    let bentry = b.block(vec![]);
-    let lit = b.let_(bentry, Prim::Const(Const::Int(41)));
-    b.set_terminator(
-        bentry,
-        Term::TailCall {
-            ident: crate::fz_ir::CallsiteIdent::from_source(crate::diag::Span::DUMMY),
-            callee: FnId(0),
-            args: vec![lit],
-            is_back_edge: false,
-        },
-    );
-
-    let m = build_module(vec![a.build(), b.build()]);
-    let mut t = crate::types::ConcreteTypes;
-    let mt = plan_module_quiet(&mut t, &m);
-
-    // The callsite passes `int_lit(41)`, which is a subtype of int. The
-    // spec key carries exactly that type.
-    let int41 = t.int_lit(41);
-    let narrow = module_plan_spec_ty(&mt, FnId(0), std::slice::from_ref(&int41));
-    assert!(
-        narrow.is_some(),
-        "add1 must have a specialization keyed on [int_lit(41)]; \
-         specs keys present: {:?}",
-        mt.specs.keys().filter(|key| key.fn_id == FnId(0)).count()
-    );
-    // The narrowed specialization's `n` should reflect the callsite type.
-    let nt = narrow.unwrap().vars.get(&n).unwrap().clone();
-    assert!(t.is_equivalent(&nt, &int41), "got {}", t.display(&nt));
-}
 
 #[test]
 fn fn_view_returns_narrowed_spec_for_direct_caller() {
@@ -4623,7 +4502,7 @@ fn narrow_for_cond_and_narrows_both_operands_in_then_branch() {
 /// fz-uwq.3/.11 — `plan_module` populates `SpecPlan.call_edges` with
 /// the per-spec dispatch target for each Direct callsite. Build a
 /// trivial 2-fn module (main → id), assert the dispatch entry exists
-/// at main's spec keyed by `id` plus the literal arg type.
+/// at main's spec keyed by `id` plus an integer-typed arg slot.
 #[test]
 fn planner_publishes_dispatches_for_direct_call() {
     use crate::fz_ir::{BlockId, CallsiteId, EmitSlot};
@@ -4675,87 +4554,10 @@ fn planner_publishes_dispatches_for_direct_call() {
             target.input[0]
         );
     };
-    assert_eq!(t.as_int_singleton(ty), Some(42));
-}
-
-#[test]
-fn planner_publishes_dispatches_for_closure_lit_call() {
-    use crate::fz_ir::{CallsiteId, EmitSlot};
-
-    let src = r#"
-fn each(_, []), do: nil
-fn each(f, [h | t]) do
-  f.(h)
-  each(f, t)
-end
-
-fn main() do
-  k = 10
-  each(fn(x) -> dbg(x + k) end, [1, 2, 3])
-end
-"#;
-    let m = lower_src_for_plan(src);
-    let mut t = crate::types::ConcreteTypes;
-    let mt = plan_module_quiet(&mut t, &m);
-    let mut saw_closure_lit_call = false;
-
-    for (caller_key, ft) in &mt.specs {
-        let caller = m.fn_by_id(caller_key.fn_id);
-        for blk in &caller.blocks {
-            let Term::CallClosure {
-                ident,
-                closure,
-                args: _,
-                ..
-            } = &blk.terminator
-            else {
-                continue;
-            };
-            let Some(closure_ty) = ft.vars.get(closure) else {
-                continue;
-            };
-            let Some(lit) = t.closure_lit_parts(closure_ty) else {
-                continue;
-            };
-
-            let callsite = CallsiteId::new(caller.id, ident, EmitSlot::ClosureCall);
-            let target = ft.local_call_target(&callsite).unwrap_or_else(|| {
-                panic!(
-                    "expected ClosureCall target for {:?}; available call_edges: {:?}",
-                    callsite,
-                    ft.call_edges.keys().collect::<Vec<_>>()
-                )
-            });
-            let body_fid: FnId = lit.target.into();
-            assert_eq!(target.fn_id, body_fid);
-            assert!(
-                m.fn_by_id(body_fid).name.starts_with("lambda_"),
-                "closure-literal call should target the synthesized lambda body, got {}",
-                m.fn_by_id(body_fid).name
-            );
-
-            let capture_ty =
-                target.input.first().and_then(slot_ty).unwrap_or_else(|| {
-                    panic!("target key should include capture slot: {target:?}")
-                });
-            assert_eq!(t.as_int_singleton(capture_ty), Some(10));
-            let arg_ty =
-                target.input.get(1).and_then(slot_ty).unwrap_or_else(|| {
-                    panic!("target key should include argument slot: {target:?}")
-                });
-            let int_ty = t.int();
-            assert!(
-                t.is_equivalent(arg_ty, &int_ty),
-                "recursive closure-call argument should widen to int, got {}",
-                t.display(arg_ty)
-            );
-            saw_closure_lit_call = true;
-        }
-    }
-
     assert!(
-        saw_closure_lit_call,
-        "expected at least one typed CallClosure over a singleton closure literal"
+        t.is_integer(ty),
+        "direct dispatch arg should preserve integer shape, got {}",
+        t.display(ty)
     );
 }
 

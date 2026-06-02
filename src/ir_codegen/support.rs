@@ -169,7 +169,6 @@ pub(crate) fn default_unit_for(ty: crate::ast::BitType) -> u32 {
 // and typed int-int fast paths sit in front of the dispatch entirely.
 // Eq/Neq do NOT promote: `1 == 1.0` is false.
 
-#[cfg(test)]
 thread_local! {
     pub(crate) static INLINE_DISABLED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     /// Disable the compile-time reducer for tests that exercise codegen
@@ -179,18 +178,9 @@ thread_local! {
         const { std::cell::Cell::new(false) };
 }
 
-#[cfg(test)]
 pub(crate) fn with_inline_disabled<F: FnOnce() -> R, R>(f: F) -> R {
     INLINE_DISABLED.with(|d| d.set(true));
     let r = f();
     INLINE_DISABLED.with(|d| d.set(false));
-    r
-}
-
-#[cfg(test)]
-pub(crate) fn with_reducer_disabled<F: FnOnce() -> R, R>(f: F) -> R {
-    REDUCER_DISABLED.with(|d| d.set(true));
-    let r = f();
-    REDUCER_DISABLED.with(|d| d.set(false));
     r
 }

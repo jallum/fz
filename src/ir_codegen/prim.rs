@@ -905,7 +905,7 @@ pub(crate) fn lower_prim<
     let runtime = env.runtime;
     let fn_types = env.fn_types;
     let spec_registry = env.spec_registry;
-    let fn_ids = env.fn_ids;
+    let callable_entry_fn_ids = env.callable_entry_fn_ids;
     let param_reprs = env.param_reprs;
     let return_reprs = env.return_reprs;
     // Helper: every consumer site below that wants one-word ValueRef uses
@@ -1189,7 +1189,7 @@ pub(crate) fn lower_prim<
             body,
             runtime,
             var_env,
-            fn_ids,
+            callable_entry_fn_ids,
             spec_registry,
             param_reprs,
             return_reprs,
@@ -2056,7 +2056,7 @@ pub(crate) fn lower_make_closure<M: cranelift_module::Module>(
     body: &mut CodegenFn<'_, '_, '_, M>,
     runtime: &RuntimeRefs,
     var_env: &HashMap<u32, CodegenValue>,
-    fn_ids: &HashMap<u32, FuncId>,
+    callable_entry_fn_ids: &HashMap<u32, FuncId>,
     spec_registry: &SpecRegistry,
     param_reprs: &[Vec<ArgRepr>],
     return_reprs: &[ArgRepr],
@@ -2079,7 +2079,7 @@ pub(crate) fn lower_make_closure<M: cranelift_module::Module>(
     // constructable but unreachable as a call target).
     let _ = (block_id, stmt_idx, mk_ident);
     let cl_sid_opt = spec_registry
-        .resolve_closure_body_spec(fn_id, |sid| fn_ids.contains_key(&sid.0))
+        .resolve_closure_body_spec(fn_id, |sid| callable_entry_fn_ids.contains_key(&sid.0))
         .map(|sid| sid.0);
     let Some(cl_sid) = cl_sid_opt else {
         return Ok(LowerOut::ValueRef(emit_null_stub_closure(
@@ -2098,7 +2098,7 @@ pub(crate) fn lower_make_closure<M: cranelift_module::Module>(
     Ok(LowerOut::ValueRef(emit_capturing_closure(
         body,
         var_env,
-        fn_ids,
+        callable_entry_fn_ids,
         param_reprs,
         return_reprs,
         fn_id,
@@ -2129,7 +2129,7 @@ fn emit_null_stub_closure<M: cranelift_module::Module>(
 fn emit_capturing_closure<M: cranelift_module::Module>(
     body: &mut CodegenFn<'_, '_, '_, M>,
     var_env: &HashMap<u32, CodegenValue>,
-    fn_ids: &HashMap<u32, FuncId>,
+    callable_entry_fn_ids: &HashMap<u32, FuncId>,
     param_reprs: &[Vec<ArgRepr>],
     return_reprs: &[ArgRepr],
     fn_id: crate::fz_ir::FnId,
@@ -2137,9 +2137,9 @@ fn emit_capturing_closure<M: cranelift_module::Module>(
     captured: &[crate::fz_ir::Var],
 ) -> Result<ir::Value, CodegenError> {
     let n_caps = captured.len();
-    let body_func_id = *fn_ids.get(&cl_sid).ok_or_else(|| {
+    let body_func_id = *callable_entry_fn_ids.get(&cl_sid).ok_or_else(|| {
         CodegenError::new(format!(
-            "no body FuncId for closure SpecId({}) \
+            "no callable-entry FuncId for closure SpecId({}) \
              (FnId({}), {} captures)",
             cl_sid, fn_id.0, n_caps
         ))

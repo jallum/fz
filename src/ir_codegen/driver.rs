@@ -272,19 +272,16 @@ fn codegen_callback_return_demand(
 /// (AbiParam types) and call-site coerce (raw int / raw f64 vs one-word
 /// ValueRef). Sentinel slots get empty params; they're never declared.
 ///
-/// CAPTURE slots [0..n_caps) keep their per-spec narrow reprs. ARG slots
-/// honor build_param_reprs' typed output: closure_lit-typed MakeClosure
-/// combined with direct return_call dispatch means every closure-call
-/// site resolves to a single body spec whose ABI the caller targets
-/// exactly. Any concrete `SpecKey` input is authoritative for that entry
-/// slot's ABI; the entry var may still be generic while the selected spec
-/// is already concrete.
+/// CAPTURE slots [0..n_caps) keep their per-spec narrow reprs. Ordinary
+/// direct-entry arg slots honor the selected `SpecKey`'s typed input.
 ///
-/// The indirect fallback path in TailCallClosure still assumes
-/// all-ValueRef at the seam, so closures used polymorphically (union of
-/// closure_lits, opaque arrow) still go through the ValueRef path
-/// correctly: the body's narrow ABI on the direct path is compatible
-/// because each direct callsite coerces explicitly.
+/// Callable entries are different: closures store a public callable-entry
+/// code pointer, and that ABI is always the generic ValueRef seam. So for
+/// closure-target bodies we force ARG slots [n_caps..] to ValueRef here and
+/// let the separately-emitted callable-entry wrapper decode into the direct
+/// typed body entry when needed. That keeps one semantic body while making
+/// the executable contract explicit: direct typed calls stay narrow, indirect
+/// closure calls never guess.
 fn derive_param_reprs<T: crate::types::Types<Ty = crate::types::Ty>>(
     t: &mut T,
     module: &Module,
@@ -687,23 +684,134 @@ fn build_fn_sigs(
 /// Pack halt_kind so fz_entry_thunk can pick the matching halt-cont
 /// singleton at task launch.
 fn collect_static_closure_targets(
-    closure_shapes: &std::collections::BTreeMap<u32, usize>,
+    callable_entries: &std::collections::BTreeMap<
+        u32,
+        crate::ir_planner::planned::CallableEntryPlan,
+    >,
     spec_keys: &[crate::ir_planner::fn_types::SpecKey],
-    fn_ids: &HashMap<u32, FuncId>,
+    callable_entry_fn_ids: &HashMap<u32, FuncId>,
     return_reprs: &[ArgRepr],
 ) -> Vec<(u32, u32, FuncId, u32)> {
-    closure_shapes
+    callable_entries
         .iter()
-        .filter(|(_, n_caps)| **n_caps == 0)
+        .filter(|(_, entry)| entry.capture_count == 0)
         .map(|(cl_sid, _)| {
             let fn_id = spec_keys[*cl_sid as usize].fn_id;
-            let body_fid = *fn_ids
+            let body_fid = *callable_entry_fn_ids
                 .get(cl_sid)
-                .expect("zero-cap closure spec must have a body FuncId");
+                .expect("zero-cap closure spec must have a callable-entry FuncId");
             let halt_kind = return_reprs[*cl_sid as usize].halt_kind();
             (*cl_sid, fn_id.0, body_fid, halt_kind)
         })
         .collect()
+}
+
+fn build_callable_entry_signature(arg_count: usize) -> Signature {
+    let mut sig = Signature::new(CallConv::Tail);
+    for _ in 0..arg_count {
+        sig.params.push(AbiParam::new(types::I64));
+    }
+    sig.params.push(AbiParam::new(types::I64)); // self
+    sig.params.push(AbiParam::new(types::I64)); // cont
+    sig.returns.push(AbiParam::new(types::I64));
+    sig
+}
+
+fn declare_callable_entry_fns<M: cranelift_module::Module>(
+    m: &mut M,
+    callable_entries: &std::collections::BTreeMap<
+        u32,
+        crate::ir_planner::planned::CallableEntryPlan,
+    >,
+    param_reprs: &[Vec<ArgRepr>],
+    spec_keys: &[crate::ir_planner::fn_types::SpecKey],
+) -> Result<HashMap<u32, FuncId>, CodegenError> {
+    let mut callable_entry_fn_ids = HashMap::new();
+    for (&body_sid, entry) in callable_entries {
+        let arg_count = param_reprs[body_sid as usize]
+            .len()
+            .saturating_sub(entry.capture_count);
+        let sig = build_callable_entry_signature(arg_count);
+        let name = format!(
+            "fz_callable_entry_{}_s{}",
+            spec_keys[body_sid as usize].fn_id.0, body_sid
+        );
+        let func_id = m
+            .declare_function(&name, Linkage::Local, &sig)
+            .map_err(|e| CodegenError::new(format!("declare {name}: {e}")))?;
+        callable_entry_fn_ids.insert(body_sid, func_id);
+    }
+    Ok(callable_entry_fn_ids)
+}
+
+fn emit_callable_entry_bodies<M: cranelift_module::Module>(
+    m: &mut M,
+    fbctx: &mut FunctionBuilderContext,
+    runtime: &super::runtime_syms::RuntimeRefs,
+    fn_ids: &HashMap<u32, FuncId>,
+    callable_entry_fn_ids: &HashMap<u32, FuncId>,
+    callable_entries: &std::collections::BTreeMap<
+        u32,
+        crate::ir_planner::planned::CallableEntryPlan,
+    >,
+    param_reprs: &[Vec<ArgRepr>],
+    spec_keys: &[crate::ir_planner::fn_types::SpecKey],
+    tel: &dyn crate::telemetry::Telemetry,
+    module_path: &str,
+) -> Result<(), CodegenError> {
+    for (&body_sid, entry) in callable_entries {
+        let body_func_id = *fn_ids.get(&body_sid).ok_or_else(|| {
+            CodegenError::new(format!("missing direct body FuncId for spec {body_sid}"))
+        })?;
+        let callable_entry_id = *callable_entry_fn_ids.get(&body_sid).ok_or_else(|| {
+            CodegenError::new(format!("missing callable-entry FuncId for spec {body_sid}"))
+        })?;
+        let reprs = &param_reprs[body_sid as usize];
+        let arg_reprs = &reprs[entry.capture_count..];
+        let spec_key = &spec_keys[body_sid as usize];
+        if spec_key.demand.list_tail_ty().is_some() {
+            return Err(CodegenError::new(format!(
+                "callable entry for spec {body_sid} requires unsupported list-tail callable ABI: {spec_key:?}"
+            )));
+        }
+        let sig = build_callable_entry_signature(arg_reprs.len());
+        let entry_name = format!("callable_entry_s{body_sid}");
+        tel.execute(
+            &["fz", "codegen", "callable_entry_lowered"],
+            &crate::measurements! {
+                spec_id: body_sid as u64,
+                arg_count: arg_reprs.len() as u64,
+                capture_count: entry.capture_count as u64,
+            },
+            &crate::metadata! {
+                module_path: module_path.to_owned(),
+                fn_name: entry_name.clone(),
+                body_spec_key: format!("{spec_key:?}"),
+            },
+        );
+        emit_fn_body(m, fbctx, sig, callable_entry_id, |m, b| {
+            let entry_block = b.create_block();
+            b.append_block_params_for_function_params(entry_block);
+            b.switch_to_block(entry_block);
+            b.seal_block(entry_block);
+            let params = b.block_params(entry_block).to_vec();
+            let self_value = params[arg_reprs.len()];
+            let cont_value = params[arg_reprs.len() + 1];
+            let mut shim_cache = CodegenCache::default();
+            let mut cg = CodegenFn::for_runtime_shim(runtime, b, m, &mut shim_cache);
+            let body_fref = cg.func_ref(body_func_id);
+            let mut direct_args: Vec<ir::Value> = Vec::with_capacity(arg_reprs.len() + 2);
+            for (idx, repr) in arg_reprs.iter().copied().enumerate() {
+                let binding = CodegenValue::AnyRef(params[idx]);
+                cg.push_binding_as_abi_arg(&mut direct_args, binding, repr);
+            }
+            direct_args.push(self_value);
+            direct_args.push(cont_value);
+            cg.b.ins().return_call(body_fref, &direct_args);
+        })
+        .map_err(|e| CodegenError::new(format!("define {entry_name}: {e}")))?;
+    }
+    Ok(())
 }
 
 /// Force slot 0 of every cont spec in `tagged_slot0_cont_specs` to
@@ -1556,7 +1664,7 @@ fn compile_with_backend_preplanned_impl<
     let spec_fn_types = planned_program.spec_plans();
     let abi_facts = AbiFacts::derive(module, &planned_program);
 
-    let closure_shapes = planned_program.closure_shapes();
+    let callable_entries = planned_program.callable_entries();
 
     let schemas = build_per_spec_schemas(t, module, spec_count, &spec_fnidx, &spec_fn_types);
     let frame_sizes: Vec<u32> = schemas
@@ -1613,6 +1721,12 @@ fn compile_with_backend_preplanned_impl<
         spec_count,
         spec_fnidx,
         &fn_sigs,
+    )?;
+    let callable_entry_fn_ids = declare_callable_entry_fns(
+        backend.module_mut(),
+        callable_entries,
+        &param_reprs,
+        spec_keys,
     )?;
 
     let (mid_flight_cont_fn_ids, mid_flight_cont_tail_fn_ids) = declare_mid_flight_conts(
@@ -1697,6 +1811,7 @@ fn compile_with_backend_preplanned_impl<
             active_body_name: &display_name,
             spec_registry,
             fn_ids: &fn_ids,
+            callable_entry_fn_ids: &callable_entry_fn_ids,
             mid_flight_cont_tail_fn_ids: &mid_flight_cont_tail_fn_ids,
             tuple_schema_ids: &tuple_schema_ids,
             named_schema_ids: &named_schema_ids,
@@ -1823,8 +1938,12 @@ fn compile_with_backend_preplanned_impl<
 
     let main_fn_id = module.fn_by_name("main").map(|f| f.id);
 
-    let static_closure_targets =
-        collect_static_closure_targets(closure_shapes, &spec_keys, &fn_ids, &return_reprs);
+    let static_closure_targets = collect_static_closure_targets(
+        callable_entries,
+        &spec_keys,
+        &callable_entry_fn_ids,
+        &return_reprs,
+    );
 
     let diagnostics = crate::ir_planner::collect_diagnostics(t, module, &module_plan, tel);
     let halt_reprs = compute_halt_reprs(
@@ -1844,6 +1963,18 @@ fn compile_with_backend_preplanned_impl<
         &fn_ids,
         &mid_flight_cont_fn_ids,
         &mid_flight_cont_tail_fn_ids,
+    )?;
+    emit_callable_entry_bodies(
+        backend.module_mut(),
+        &mut fbctx,
+        &runtime,
+        &fn_ids,
+        &callable_entry_fn_ids,
+        callable_entries,
+        &param_reprs,
+        &spec_keys,
+        tel,
+        module.module_path(),
     )?;
     let resume_id = emit_resume(backend.module_mut(), &mut fbctx, &runtime)?;
 

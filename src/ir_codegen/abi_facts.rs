@@ -27,13 +27,13 @@ impl AbiFacts {
         let mut cont_extras_count: HashMap<FnId, usize> = HashMap::new();
 
         let mut closure_capture_counts: HashMap<FnId, usize> = HashMap::new();
-        for (&sid, &capture_count) in planned_program.closure_shapes() {
+        for (&sid, entry) in planned_program.callable_entries() {
             let fn_id = planned_program.spec_keys()[sid as usize].fn_id;
             closure_targets.insert(fn_id);
             cont_target_fns.insert(fn_id);
-            if let Some(previous) = closure_capture_counts.insert(fn_id, capture_count) {
+            if let Some(previous) = closure_capture_counts.insert(fn_id, entry.capture_count) {
                 debug_assert_eq!(
-                    previous, capture_count,
+                    previous, entry.capture_count,
                     "closure capture count mismatch for fn {}",
                     fn_id.0
                 );

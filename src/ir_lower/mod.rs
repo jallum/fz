@@ -299,6 +299,7 @@ pub(crate) fn compute_current_function_correspondence(
         provenance: &crate::fz_ir::ContinuationProvenance,
         caller_params: &[Var],
         groups: &[StructuralCorrespondenceGroup],
+        rebase_callback_occurrences: bool,
     ) -> Vec<BTreeSet<StructuralOccurrence>> {
         groups
             .iter()
@@ -316,7 +317,9 @@ pub(crate) fn compute_current_function_correspondence(
                             });
                         }
                         StructuralOccurrence::CallbackArg { param_index, .. }
-                        | StructuralOccurrence::CallbackResult { param_index, .. } => {
+                        | StructuralOccurrence::CallbackResult { param_index, .. }
+                            if rebase_callback_occurrences =>
+                        {
                             let caller_var = caller_params.get(*param_index).copied()?;
                             let cont_param =
                                 continuation_capture_param_index(provenance, caller_var)?;
@@ -325,6 +328,8 @@ pub(crate) fn compute_current_function_correspondence(
                                 path: vec![],
                             });
                         }
+                        StructuralOccurrence::CallbackArg { .. }
+                        | StructuralOccurrence::CallbackResult { .. } => {}
                         StructuralOccurrence::Result { path } => {
                             out.insert(StructuralOccurrence::Result { path: path.clone() });
                         }
@@ -616,14 +621,15 @@ pub(crate) fn compute_current_function_correspondence(
                     .unwrap_or_default()
                     .as_slice(),
             );
-            sets.extend(rebase_caller_groups(
-                provenance,
-                &caller_params,
-                &caller_groups,
-            ));
 
             match &provenance.kind {
                 crate::fz_ir::ContinuationProvenanceKind::DirectCall { callee, args } => {
+                    sets.extend(rebase_caller_groups(
+                        provenance,
+                        &caller_params,
+                        &caller_groups,
+                        true,
+                    ));
                     let callee_groups = module
                         .function_correspondence
                         .get(callee)
@@ -637,6 +643,12 @@ pub(crate) fn compute_current_function_correspondence(
                     ));
                 }
                 crate::fz_ir::ContinuationProvenanceKind::ClosureCall { closure, args } => {
+                    sets.extend(rebase_caller_groups(
+                        provenance,
+                        &caller_params,
+                        &caller_groups,
+                        false,
+                    ));
                     sets.extend(project_closure_call_groups(
                         provenance,
                         &caller_params,
@@ -646,6 +658,12 @@ pub(crate) fn compute_current_function_correspondence(
                     ));
                 }
                 crate::fz_ir::ContinuationProvenanceKind::MatcherBody { bindings } => {
+                    sets.extend(rebase_caller_groups(
+                        provenance,
+                        &caller_params,
+                        &caller_groups,
+                        true,
+                    ));
                     sets.extend(project_matcher_binding_groups(
                         provenance,
                         bindings,
