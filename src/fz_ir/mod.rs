@@ -161,6 +161,10 @@ pub enum EmitSlot {
     /// longer needed — the `CallsiteIdent` on the Prim disambiguates
     /// multiple MakeClosures in the same block.
     MakeClosure,
+    /// A known local closure value crosses an external/provider boundary that
+    /// may call it later. This is not an in-IR dispatch site, but it is a
+    /// real reachability obligation for the closure target body.
+    CallableBoundary,
 }
 
 /// fz-kgk — the identity of one callsite in the module.

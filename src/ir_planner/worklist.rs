@@ -140,6 +140,7 @@ fn emit_slot_label(slot: crate::fz_ir::EmitSlot) -> &'static str {
         crate::fz_ir::EmitSlot::Cont => "cont",
         crate::fz_ir::EmitSlot::ClosureCall => "closure_call",
         crate::fz_ir::EmitSlot::MakeClosure => "make_closure",
+        crate::fz_ir::EmitSlot::CallableBoundary => "callable_boundary",
     }
 }
 
@@ -991,9 +992,9 @@ fn call_result_slot0<T: crate::types::Types<Ty = crate::types::Ty>>(
 /// the walk + return-recompute re-run when triggered.
 ///
 /// Discovery walks emit direct calls, closure calls, continuations, receive
-/// outcomes, and any-key body specs reachable through `MakeClosure`. After the
-/// worklist drains, a forward reachability sweep prunes specs no longer rooted
-/// at an entry seed.
+/// outcomes, and callable-boundary obligations for known local closures that
+/// cross an external/provider boundary. After the worklist drains, a forward
+/// reachability sweep prunes specs no longer rooted at an entry seed.
 ///
 /// ## Termination
 ///
@@ -1483,7 +1484,7 @@ fn compute_spec_roles<
     t: &mut T,
     m: &Module,
     reachable: &SpecKeySet,
-    holders: &HoldersMap,
+    _holders: &HoldersMap,
     activation_projection_facts: &[ActivationProjectionFact],
 ) -> HashMap<SpecKey, SpecReachabilityRole> {
     let entry_specs: SpecKeySet = entry_seeds(t, m)
@@ -1502,12 +1503,6 @@ fn compute_spec_roles<
             SpecReachabilityRole::Entry
         } else if activation_covered.contains(spec) {
             SpecReachabilityRole::Activation
-        } else if holders.get(spec).is_some_and(|sites| {
-            sites
-                .iter()
-                .any(|site| site.slot == crate::fz_ir::EmitSlot::MakeClosure)
-        }) {
-            SpecReachabilityRole::CallableFallback
         } else {
             SpecReachabilityRole::ProjectionGap
         };

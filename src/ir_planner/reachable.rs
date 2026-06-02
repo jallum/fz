@@ -1,7 +1,7 @@
 use super::closures::resolve_closure_return;
 use super::fn_types::{ModulePlan, SpecKey, SpecPlan, normalize_result_correspondence_key};
 use super::type_fn::type_stmts_into_env;
-use crate::fz_ir::{Block, Cont, FnId, Module, Prim, Stmt, Term, Var};
+use crate::fz_ir::{Block, Cont, FnId, Module, Term, Var};
 use std::collections::{HashMap, HashSet};
 
 // Continuation input-type key helpers.
@@ -121,10 +121,8 @@ fn declared_call_return<
 /// not rediscover semantic reachability.
 ///
 /// Algorithm:
-///   - Seed with main's spec id, every test/exported entry, and every
-///     registered spec whose fn appears in a `MakeClosure` (conservatively
-///     covers opaque closure dispatch without needing per-site
-///     closure_lit resolution).
+///   - Seed with main's spec id and every extra reachable seed supplied by
+///     materialization.
 ///   - BFS: for each reached spec, walk its reachable blocks, find
 ///     direct Call/TailCall + their conts and CallClosure/TailCallClosure
 ///     resolvable via known callable capabilities. Use `SpecRegistry::resolve`
@@ -177,7 +175,6 @@ where
         let mut worklist = Vec::new();
         self.seed_main_spec(&mut worklist);
         worklist.extend(extra_seeds);
-        self.seed_closure_target_specs(&mut worklist);
         worklist
     }
 
@@ -189,30 +186,6 @@ where
         let any = self.t.any();
         let key = self.t.repeat(any, n_params);
         self.enqueue_value_key(main_fn.id, key, worklist);
-    }
-
-    fn seed_closure_target_specs(&self, worklist: &mut Vec<u32>) {
-        let closure_target_fns = self.collect_closure_target_fns();
-        for (sid, key) in self.spec_registry.iter() {
-            if closure_target_fns.contains(&key.fn_id) {
-                worklist.push(sid.0);
-            }
-        }
-    }
-
-    fn collect_closure_target_fns(&self) -> HashSet<FnId> {
-        let mut closure_target_fns = HashSet::new();
-        for f in &self.module.fns {
-            for blk in &f.blocks {
-                for stmt in &blk.stmts {
-                    let Stmt::Let(_, prim) = stmt;
-                    if let Prim::MakeClosure(_, lam_id, _) = prim {
-                        closure_target_fns.insert(*lam_id);
-                    }
-                }
-            }
-        }
-        closure_target_fns
     }
 
     fn enqueue_reachable_successors(&mut self, sid: u32, worklist: &mut Vec<u32>) {

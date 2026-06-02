@@ -62,6 +62,7 @@ pub fn plan_call_edge_inventory(ft: &crate::ir_planner::SpecPlan, caller: FnId) 
                 EmitSlot::Cont => "cont",
                 EmitSlot::ClosureCall => "closure_call",
                 EmitSlot::MakeClosure => "make_closure",
+                EmitSlot::CallableBoundary => "callable_boundary",
             };
             format!("{}@{}..{}", slot, span.start, span.end)
         })

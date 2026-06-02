@@ -51,7 +51,6 @@ pub struct SpecPlan {
 pub enum SpecReachabilityRole {
     Entry,
     Activation,
-    CallableFallback,
     ProjectionGap,
 }
 
@@ -60,7 +59,6 @@ impl SpecReachabilityRole {
         match self {
             Self::Entry => "entry",
             Self::Activation => "activation",
-            Self::CallableFallback => "callable_fallback",
             Self::ProjectionGap => "projection_gap",
         }
     }

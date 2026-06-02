@@ -99,9 +99,10 @@ It names the planner `SpecKey`, body, spec role, projection kind, projected
 return state, final effective return, covered witness inventory,
 activation-derived call edges, and activation-derived dead arms. `spec_role` is
 planner data retained on `ModulePlan`: `activation` specs are justified by
-solved activation facts, `callable_fallback` specs are retained because a
-constructed callable value may need the top callable body for indirect runtime
-inputs, and `projection_gap` marks reachable specs with neither justification.
+solved activation facts, and `projection_gap` marks reachable specs that are
+kept alive for some other contract reason (entry roots, callable-boundary
+obligations, or downstream body materialization requirements) but are not
+themselves activation-covered visible specs.
 `projection_kind: "exact"` means the visible spec is justified by one semantic
 bucket, either by identical key or by one semantic bucket covering the planner
 key. That bucket may still contain multiple witness activations. Witness
@@ -114,6 +115,13 @@ downstream codegen failures.
 Local direct, closure, and continuation call edges target a `SpecKey`, which
 names the callee function, its semantic input key, and its `ReturnDemand`.
 Provider-boundary and protocol targets ride the same `CallEdgePlan` shape.
+
+Callable values crossing an external/provider boundary are a separate planning
+fact from ordinary call edges. When a reachable spec passes a known local
+closure value outward, discovery records a callable-boundary obligation keyed
+by the closure value's own callable surface. That keeps the closure target body
+available without inventing a fake top callable fallback for every
+`MakeClosure`.
 
 Imported module calls use that provider-boundary shape. Before link, the
 IR carries an `ExternalCallEdge` and the call edge names the target `ExportKey`

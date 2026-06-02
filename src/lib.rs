@@ -1284,6 +1284,7 @@ fn dump_outcomes_pipeline(
             EmitSlot::Cont => "Cont",
             EmitSlot::ClosureCall => "ClosureCall",
             EmitSlot::MakeClosure => "MakeClosure",
+            EmitSlot::CallableBoundary => "CallableBoundary",
         }
     };
     let render_span = |sp: crate::diag::Span| -> String {

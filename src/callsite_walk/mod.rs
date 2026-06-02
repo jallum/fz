@@ -28,8 +28,7 @@
 //!
 //! - `MakeClosure(stmt_idx)` — stmt-level, handled separately because
 //!   it's a closure-value construction event, not a body-spec dispatch
-//!   site. The planner emits the lambda's any-key body spec; no
-//!   per-callsite slot fires for it.
+//!   site. No per-callsite slot fires for it.
 //! - Per-spec type keys — consumers build those from the structural
 //!   payload + their own env.
 //!

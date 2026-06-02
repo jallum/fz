@@ -11,9 +11,7 @@ use super::return_context::{
     tail_call_return_plan,
 };
 use crate::callsite_walk::{BlockCallsite, CallsiteKind, ContSource, block_callsites};
-use crate::fz_ir::{
-    CallsiteId, CallsiteIdent, EmitSlot, FnId, FnIr, Module, Prim, Stmt, Term, Var,
-};
+use crate::fz_ir::{CallsiteId, CallsiteIdent, EmitSlot, FnId, FnIr, Module, Stmt, Term, Var};
 use std::collections::{HashMap, HashSet};
 
 /// Output of one discovery walk. The driver folds this into worklist state.
@@ -26,8 +24,7 @@ pub(crate) struct WalkResult {
     /// agrees with the call-edge fact consumed by codegen.
     pub(crate) emits: Vec<(EmitterSite, SpecKey)>,
     /// Per-callsite capability selected for this spec. Populated for `Direct`,
-    /// `ClosureCall`, and `Cont` slots. `MakeClosure` emits an any-key body spec
-    /// but does not record a call edge.
+    /// `ClosureCall`, `Cont`, and `CallableBoundary` slots.
     pub(crate) call_edges: HashMap<crate::fz_ir::CallsiteId, CallEdgePlan>,
     /// `callee_key`s whose `effective_return` was consulted (for
     /// cont slot-0 keying or closure_lit return-join). Driver folds
@@ -163,12 +160,8 @@ enum ProtocolDispatch {
 ///     callsites, whether the target comes from a known callable capability or
 ///     a closure literal clause.
 ///   - `EmitSlot::Cont` for the continuation of Call/CallClosure/Receive.
-///   - `EmitSlot::MakeClosure` for the any-key body spec reachable through a
-///     closure value.
-///
-/// `Prim::MakeClosure` emits the lambda's any-key body spec. Closure values do
-/// not add a separate planner artifact.
-///
+///   - `EmitSlot::CallableBoundary` when a known local closure value crosses
+///     an external/provider boundary that may call it later.
 /// `recursive_fns`: calls into recursive functions are normalized
 /// immediately with `widen_for_recursive_spec_key`, including the first
 /// external entry into the recursive component. The dispatch fact and
@@ -255,7 +248,6 @@ where
     fn walk_statements(&mut self, stmts: &[Stmt], env: &mut HashMap<Var, crate::types::Ty>) {
         for stmt in stmts {
             let Stmt::Let(v, prim) = stmt;
-            self.record_make_closure_target(prim);
             let pt_ty = super::prim::type_prim(self.t, prim, env, self.m, &HashSet::new());
             env.insert(*v, pt_ty);
         }
@@ -275,19 +267,6 @@ where
             self.record_callsite(term, &term_ident, env, slot, kind);
         }
         self.seed_receive_matched_outcomes(term);
-    }
-
-    fn record_make_closure_target(&mut self, prim: &Prim) {
-        let Prim::MakeClosure(mk_ident, lam_fn_id, _) = prim else {
-            return;
-        };
-        let Some(&jj) = self.m.fn_idx.get(lam_fn_id) else {
-            return;
-        };
-        let lam = &self.m.fns[jj];
-        let n_params = lam.block(lam.entry).params.len();
-        let any_key = spec_key_for_fn(lam, vec![self.any_ty.clone(); n_params]);
-        self.emit(EmitSlot::MakeClosure, mk_ident.clone(), any_key);
     }
 
     fn record_callsite(
@@ -468,6 +447,73 @@ where
             input,
             demand.clone(),
         );
+        self.record_external_callable_targets(args, env, term_ident);
+    }
+
+    fn record_external_callable_targets(
+        &mut self,
+        args: &[Var],
+        env: &HashMap<Var, crate::types::Ty>,
+        term_ident: &CallsiteIdent,
+    ) {
+        for arg in args {
+            for key in self.callable_boundary_keys(*arg, env) {
+                self.emit(EmitSlot::CallableBoundary, term_ident.clone(), key);
+            }
+        }
+    }
+
+    fn callable_boundary_keys(
+        &mut self,
+        arg: Var,
+        env: &HashMap<Var, crate::types::Ty>,
+    ) -> Vec<SpecKey> {
+        use super::fn_types::CallableCapability;
+
+        let Some((fn_id, captures)) = (match self.caller_ft.callable_capabilities.get(&arg) {
+            Some(CallableCapability::KnownFn(fn_id)) => Some((*fn_id, Vec::new())),
+            Some(CallableCapability::KnownClosure { fn_id, captures }) => {
+                Some((*fn_id, captures.clone()))
+            }
+            Some(CallableCapability::OpaqueCallable) | None => None,
+        }) else {
+            return Vec::new();
+        };
+        let Some(value_ty) = env.get(&arg) else {
+            return Vec::new();
+        };
+        let Some(clauses) = self.t.callable_clauses(value_ty) else {
+            return Vec::new();
+        };
+        let Some(target_fn) = self.m.fn_idx.get(&fn_id).map(|j| &self.m.fns[*j]) else {
+            return Vec::new();
+        };
+        let n_params = target_fn.block(target_fn.entry).params.len();
+        let mut keys = Vec::new();
+        for clause in clauses {
+            let mut input_tys = captures.clone();
+            input_tys.extend(clause.args);
+            input_tys = padded_direct_input_tys(self.t, input_tys, n_params);
+            if self.has_bottom_arg(&input_tys) {
+                continue;
+            }
+            let (observed, input_tys) = fixed_point_input_tys_for_arity(
+                self.t,
+                self.m,
+                self.recursive_fns,
+                self.slot_summaries,
+                self.caller_spec_key.fn_id,
+                fn_id,
+                input_tys,
+                n_params,
+            );
+            self.record_fixed_point_input_observation(fn_id, observed);
+            keys.push(
+                self.activation_returns
+                    .canonical_public_key(self.t, spec_key_for_fn_id(self.m, fn_id, input_tys)),
+            );
+        }
+        keys
     }
 
     fn record_known_closure_call(

@@ -80,6 +80,17 @@ fn lambda_any_key_specs(
         .collect()
 }
 
+fn lambda_value_specs(m: &Module, mt: &ModulePlan) -> Vec<SpecKey> {
+    mt.specs
+        .keys()
+        .filter(|key| {
+            let f = m.fn_by_id(key.fn_id);
+            f.name.starts_with("lambda_") && key.demand.is_value()
+        })
+        .cloned()
+        .collect()
+}
+
 fn build_module(fns: Vec<crate::fz_ir::FnIr>) -> Module {
     let mut mb = ModuleBuilder::new();
     for f in fns {
@@ -1214,17 +1225,10 @@ fn closure_target_with_no_direct_callers_keeps_any_entry_params() {
 }
 
 #[test]
-fn closure_target_with_direct_caller_narrows_spec_and_keeps_any_key_body() {
+fn closure_target_with_direct_caller_registers_only_typed_callsite_specs() {
     // fz-ul4.29.3: a fn that's both a MakeClosure target and called
     // directly with a typed arg gets a narrow spec keyed by the
     // direct caller's arg types.
-    //
-    // fz-try B1+B2: under the new design, the closure-target lambda
-    // also has an any-key body — it IS the body, since the
-    // closure-target ABI seam speaks uniform ValueRef (fz-try.15) and
-    // doesn't synchronize via spec keys. The .29.10.3 "drop unused
-    // any-key" optimization is structurally subsumed: the any-key
-    // body is the canonical compiled body for the closure target.
     let mut wb = FnBuilder::new(FnId(0), "worker");
     let n = wb.fresh_var();
     let wentry = wb.block(vec![n]);
@@ -1265,12 +1269,9 @@ fn closure_target_with_direct_caller_narrows_spec_and_keeps_any_key_body() {
         "worker's narrow-spec n must narrow to int, got {}",
         t.display(&nt_narrow)
     );
-    // any-key body also exists: the MakeClosure(worker, []) registers
-    // worker as a closure target, so its any-key body is the canonical
-    // compiled body.
     assert!(
-        module_plan_spec_ty(&mt, FnId(0), &[t.any()]).is_some(),
-        "worker's any-key body must be registered (worker is a closure target); \
+        module_plan_spec_ty(&mt, FnId(0), &[t.any()]).is_none(),
+        "worker should not keep an any-key body when every callsite is typed; \
          specs: {:?}",
         mt.specs
             .keys()
@@ -1280,7 +1281,7 @@ fn closure_target_with_direct_caller_narrows_spec_and_keeps_any_key_body() {
 }
 
 #[test]
-fn reachable_specs_seeds_all_registered_specs_for_closure_targets() {
+fn reachable_specs_do_not_seed_uninvoked_closure_targets() {
     let mut wb = FnBuilder::new(FnId(0), "worker");
     let n = wb.fresh_var();
     let wentry = wb.block(vec![n]);
@@ -1325,14 +1326,14 @@ fn reachable_specs_seeds_all_registered_specs_for_closure_targets() {
 
     let reachable = reachable_specs(&mut t, &m, &reg, &mt, []);
     assert!(
-        reachable.contains(&worker_any_sid.0),
-        "closure target any-key spec should be reachable; main_sid={:?}, reached={:?}",
+        !reachable.contains(&worker_any_sid.0),
+        "uninvoked closure target any-key spec should not be reachable; main_sid={:?}, reached={:?}",
         main_sid,
         reachable
     );
     assert!(
-        reachable.contains(&worker_int_sid.0),
-        "closure target narrow spec should be reachable; main_sid={:?}, reached={:?}",
+        !reachable.contains(&worker_int_sid.0),
+        "uninvoked closure target narrow spec should not be reachable; main_sid={:?}, reached={:?}",
         main_sid,
         reachable
     );
@@ -1556,7 +1557,6 @@ fn fn_view_returns_narrowed_spec_for_direct_caller() {
 
 // ---- fz-ul4.29.12.1 helper tests ----
 
-#[allow(dead_code)]
 fn pipeline(
     src: &str,
     tel: &dyn crate::telemetry::Telemetry,
@@ -2032,8 +2032,8 @@ fn planner_projects_polymorphic_named_ref_activations_per_visible_spec() {
         .collect();
     assert_eq!(
         id_events.len(),
-        3,
-        "&id/1 should publish two activation projections plus one callable fallback: {id_events:?}"
+        2,
+        "&id/1 should publish only its two activation projections: {id_events:?}"
     );
 
     let mut projected_returns = Vec::new();
@@ -2042,20 +2042,9 @@ fn planner_projects_polymorphic_named_ref_activations_per_visible_spec() {
             Some(Value::Str(role)) => role.as_ref(),
             other => panic!("spec_role missing or wrong type: {other:?}"),
         };
-        if spec_role == "callable_fallback" {
-            assert!(matches!(
-                event.measurements.get("covered_activation_count"),
-                Some(Value::U64(0))
-            ));
-            assert!(matches!(
-                event.metadata.get("projection_kind"),
-                Some(Value::Str(kind)) if kind == "uncovered"
-            ));
-            continue;
-        }
         assert_eq!(
             spec_role, "activation",
-            "id projections should be activation-covered or callable fallback"
+            "id projections should be activation-covered"
         );
         let measurement = |name| match event.measurements.get(name) {
             Some(Value::U64(n)) => *n,
@@ -2081,21 +2070,49 @@ fn planner_projects_polymorphic_named_ref_activations_per_visible_spec() {
         vec!["known(:ok)".to_string(), "known(int)".to_string()],
         "named ref projections should preserve independent polymorphic returns"
     );
-    assert_eq!(
-        id_events
-            .iter()
-            .filter(|event| matches!(
+}
+
+#[test]
+fn compile_elides_named_ref_callable_fallback_when_calls_are_fully_resolved() {
+    use crate::telemetry::{Capture, ConfiguredTelemetry, Value};
+
+    let tel = ConfiguredTelemetry::new();
+    let cap = Capture::new();
+    tel.attach(&[], cap.handler());
+
+    let mut t = crate::types::ConcreteTypes;
+    let module = crate::test_support::lower_frontend_module(include_str!(
+        "../type_infer/fixtures/poly_named_ref.fz"
+    ));
+    let _ = crate::ir_codegen::compile(&mut t, &module, &tel).expect("compile");
+
+    let id_events: Vec<_> = cap
+        .find(&["fz", "planner", "activation_projection"])
+        .into_iter()
+        .filter(|event| {
+            matches!(
+                event.metadata.get("body_name"),
+                Some(Value::Str(name)) if name == "id"
+            ) && matches!(
+                event.metadata.get("role"),
+                Some(Value::Str(role)) if role == "authoritative"
+            )
+        })
+        .collect();
+
+    assert!(
+        id_events.iter().all(|event| {
+            !matches!(
                 event.metadata.get("spec_role"),
                 Some(Value::Str(role)) if role == "callable_fallback"
-            ))
-            .count(),
-        1,
-        "named ref should retain exactly one callable fallback id spec"
+            )
+        }),
+        "compile-time planner should not retain a callable fallback for a fully-resolved named ref: {id_events:?}"
     );
 }
 
 #[test]
-fn planner_projects_captured_closure_activations_and_callable_fallback() {
+fn planner_projects_captured_closure_activations_without_callable_fallback() {
     use crate::telemetry::{Capture, ConfiguredTelemetry, Value};
 
     let tel = ConfiguredTelemetry::new();
@@ -2119,32 +2136,19 @@ fn planner_projects_captured_closure_activations_and_callable_fallback() {
         .collect();
     assert_eq!(
         lambda_events.len(),
-        3,
-        "captured closure should publish two activation projections plus one callable fallback: {lambda_events:?}"
+        2,
+        "captured closure should publish only its two activation projections: {lambda_events:?}"
     );
 
     let mut projected_returns = Vec::new();
-    let mut fallback_count = 0;
     for event in &lambda_events {
         let spec_role = match event.metadata.get("spec_role") {
             Some(Value::Str(role)) => role.as_ref(),
             other => panic!("spec_role missing or wrong type: {other:?}"),
         };
-        if spec_role == "callable_fallback" {
-            fallback_count += 1;
-            assert!(matches!(
-                event.measurements.get("covered_activation_count"),
-                Some(Value::U64(0))
-            ));
-            assert!(matches!(
-                event.metadata.get("projection_kind"),
-                Some(Value::Str(kind)) if kind == "uncovered"
-            ));
-            continue;
-        }
         assert_eq!(
             spec_role, "activation",
-            "lambda projections should be activation-covered or callable fallback"
+            "lambda projections should be activation-covered"
         );
         let measurement = |name| match event.measurements.get(name) {
             Some(Value::U64(n)) => *n,
@@ -2173,10 +2177,6 @@ fn planner_projects_captured_closure_activations_and_callable_fallback() {
         ],
         "captured closure projections should preserve capture and argument facts"
     );
-    assert_eq!(
-        fallback_count, 1,
-        "captured closure should retain exactly one callable fallback lambda spec"
-    );
 }
 
 #[test]
@@ -2204,32 +2204,19 @@ fn planner_projects_named_ref_pattern_activations_and_dead_arms() {
         .collect();
     assert_eq!(
         pick_events.len(),
-        3,
-        "&pick/1 should publish two activation projections plus one callable fallback: {pick_events:?}"
+        2,
+        "&pick/1 should publish only its two activation projections: {pick_events:?}"
     );
 
     let mut projected_returns = Vec::new();
-    let mut fallback_count = 0;
     for event in &pick_events {
         let spec_role = match event.metadata.get("spec_role") {
             Some(Value::Str(role)) => role.as_ref(),
             other => panic!("spec_role missing or wrong type: {other:?}"),
         };
-        if spec_role == "callable_fallback" {
-            fallback_count += 1;
-            assert!(matches!(
-                event.measurements.get("covered_activation_count"),
-                Some(Value::U64(0))
-            ));
-            assert!(matches!(
-                event.metadata.get("projection_kind"),
-                Some(Value::Str(kind)) if kind == "uncovered"
-            ));
-            continue;
-        }
         assert_eq!(
             spec_role, "activation",
-            "pick projections should be activation-covered or callable fallback"
+            "pick projections should be activation-covered"
         );
         let measurement = |name| match event.measurements.get(name) {
             Some(Value::U64(n)) => *n,
@@ -2258,10 +2245,6 @@ fn planner_projects_named_ref_pattern_activations_and_dead_arms() {
         projected_returns,
         vec!["known(:one)".to_string(), "known(:two)".to_string()],
         "named ref pattern projections should preserve per-activation matcher returns"
-    );
-    assert_eq!(
-        fallback_count, 1,
-        "named ref pattern should retain exactly one callable fallback pick spec"
     );
 }
 
@@ -3474,14 +3457,8 @@ fn main(), do: dbg(add1(40) + 2)
 /// .29.10.2 registers double's narrow
 /// spec for the typed arg from apply2's CallClosure; the CallClosure
 /// is rewritten into a direct `Call(double, …)`.
-///
-/// fz-try B1+B2: under the new design, double also has an any-key
-/// body — it's a closure target (via `MakeClosure(double, [])`), so
-/// its any-key body is the canonical compiled body. The narrow spec
-/// for the direct-call path coexists. The handle entry
-/// `(double, [])` records the zero-capture closure value.
 #[test]
-fn higher_order_callee_registers_any_key_body_and_narrow_spec() {
+fn higher_order_callee_registers_narrow_spec_without_any_key_fallback() {
     let (mut t, m, mt) = pipeline(
         r#"
 fn double(x), do: x * 2
@@ -3495,9 +3472,9 @@ end
     let double = m.fns.iter().find(|f| f.name == "double").unwrap();
     let any_key = key_tys(vec![t.any()]);
     assert!(
-        mt.specs
+        !mt.specs
             .contains_key(&value_spec_key(double.id, any_key.clone())),
-        "expected double's any-key body to be registered (double is a closure target); \
+        "expected double's any-key body to be absent when every callsite is typed; \
          registered specs for double: {:?}",
         mt.specs
             .keys()
@@ -3658,37 +3635,43 @@ end
 
 /// fz-ul4.29.12.4 — spawn/1 now lives in runtime.fz, so there is no
 /// compiler-synthesized fz_spawn_thunk between the wrapper and the user
-/// closure. The spawned lambda is still reachable through the production
-/// planner fact: its any-key body spec.
+/// closure. The spawned lambda stays reachable through the wrapper's real
+/// closure call, not because `MakeClosure` invents an any-key body.
 #[test]
-fn spawn_with_captures_keeps_user_lambda_body_reachable() {
-    let (mut t, m, mt) = pipeline(
-        r#"
-fn parent(tag) do
-  spawn(fn () -> send(1, tag) end)
-  receive()
-end
-fn main() do
-  dbg(parent(99))
-end
-"#,
+fn spawn_wrapper_receives_known_closure_capability() {
+    let (_t, m, mt) = frontend_plan(
+        include_str!("../../fixtures/spawn_with_captures/input.fz"),
         &crate::telemetry::NullTelemetry,
     );
     assert!(
         !m.fns.iter().any(|f| f.name == "fz_spawn_thunk"),
         "spawn lowering must not synthesize fz_spawn_thunk"
     );
-    let lambda_body_specs = lambda_any_key_specs(&mut t, &m, &mt);
+    let spawn = m
+        .fns
+        .iter()
+        .find(|f| f.name == "Kernel.spawn" && f.block(f.entry).params.len() == 1)
+        .expect("Kernel.spawn/1 prelude fn missing");
+    let spawn_ft = mt
+        .specs
+        .iter()
+        .find(|(key, _)| key.fn_id == spawn.id)
+        .map(|(_, ft)| ft)
+        .expect("Kernel.spawn/1 spec exists");
+    let spawn_param = spawn.block(spawn.entry).params[0];
     assert!(
-        !lambda_body_specs.is_empty(),
-        "expected spawned lambda any-key body spec, got specs {:?}",
-        mt.specs.keys().collect::<Vec<_>>()
+        matches!(
+            spawn_ft.callable_capabilities.get(&spawn_param),
+            Some(super::fn_types::CallableCapability::KnownClosure { .. })
+        ),
+        "Kernel.spawn/1 should receive a KnownClosure capability: {:?}",
+        spawn_ft.callable_capabilities
     );
 }
 
-/// fz-ul4.29.12.2 — closure construction makes the lambda body reachable once
-/// through its any-key spec. Capture-specific refinements are ordinary
-/// call-site specs, not a second closure-handle registry.
+/// fz-ul4.29.12.2 — capture-specific refinements are ordinary call-site specs,
+/// not a second closure-handle registry. Constructing a closure does not keep
+/// an any-key body alive by itself.
 #[test]
 fn make_closure_with_distinct_captures_uses_lambda_specs_not_handles() {
     let (mut t, m, mt) = pipeline(
@@ -3703,11 +3686,16 @@ end
 "#,
         &crate::telemetry::NullTelemetry,
     );
-    let lambda_body_specs = lambda_any_key_specs(&mut t, &m, &mt);
+    let lambda_body_specs = lambda_value_specs(&m, &mt);
     assert!(
         !lambda_body_specs.is_empty(),
-        "expected lambda any-key body spec, got specs {:?}",
+        "expected lambda specs, got specs {:?}",
         mt.specs.keys().collect::<Vec<_>>()
+    );
+    assert!(
+        lambda_any_key_specs(&mut t, &m, &mt).is_empty(),
+        "expected no lambda any-key body specs, got {:?}",
+        lambda_body_specs
     );
     assert!(
         mt.specs
