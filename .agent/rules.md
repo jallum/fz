@@ -12,7 +12,7 @@
 - Don't commit until you're proud of the work.
 - Understand each task thoroughly before undertaking it. Do not guess; research and verify No hidden surprises.
 - Elegance, simplicity and "correct by construction" are what we push for.
-- Research material can be found in the .agent/docs.md (agent facing) and in the guides (user facing).
+- Research material can be found in the .agent/docs.md (agent facing), .agent/strategies.md (working loops), and in the guides (user facing).
 - TDD is the law. Prove things work the way you say they do. Tests must pass.
 - Deferrals and omissions **REQUIRE** prior authorization.
 - Warnings are _errors_ if it's something we control.
@@ -34,6 +34,7 @@
 
 ## Best Practices
 - Data-model -> up, so that the problem is correct-by-construction.
+- For semantic compiler bugs, use the strategy trigger in `.agent/strategies.md`.
 - Prefer short functions with crisp names over comments.
 - Modules should have a coherent focus.
 - Deeply nested code is a smell.
