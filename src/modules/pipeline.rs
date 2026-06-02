@@ -83,6 +83,11 @@ pub(crate) struct PreparedExecutionGraph {
     pub(crate) sm: diag::SourceMap,
 }
 
+pub(crate) struct LinkedExecutionModule {
+    pub(crate) units: Vec<CompiledUnit>,
+    pub(crate) module: fz_ir::Module,
+}
+
 #[derive(Debug)]
 pub(crate) enum PipelineError {
     FrontendFailed,
@@ -219,13 +224,8 @@ pub(crate) fn prepare_execution_graph(
 ) -> Result<PreparedExecutionGraph, PipelineError> {
     use crate::telemetry::TelemetryExt as _;
 
-    let units = load_provider_units(t, &mut prepared, providers, tel)?;
-    let linked_units = units.len() > 1;
-    let module = if linked_units {
-        ir_codegen::link_ir_units(&units).map_err(PipelineError::Link)?
-    } else {
-        units[0].code.clone()
-    };
+    let linked = link_execution_module(t, &mut prepared, providers, tel)?;
+    let LinkedExecutionModule { units, module } = linked;
     let _compile_span = tel.span(
         &["fz", "compile"],
         metadata! {
@@ -266,6 +266,21 @@ pub(crate) fn prepare_execution_graph(
         module_plan,
         sm: prepared.sm,
     })
+}
+
+pub(crate) fn link_execution_module(
+    t: &mut types::ConcreteTypes,
+    prepared: &mut CheckedModule,
+    providers: &ProviderInputs,
+    tel: &dyn telemetry::Telemetry,
+) -> Result<LinkedExecutionModule, PipelineError> {
+    let units = load_provider_units(t, prepared, providers, tel)?;
+    let module = if units.len() > 1 {
+        ir_codegen::link_ir_units(&units).map_err(PipelineError::Link)?
+    } else {
+        units[0].code.clone()
+    };
+    Ok(LinkedExecutionModule { units, module })
 }
 
 pub(crate) fn link_error_diagnostic(err: ImageLinkError) -> Diagnostic {

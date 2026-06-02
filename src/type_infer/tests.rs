@@ -2,7 +2,8 @@ use super::{TypeInferOutcome, TypeInferReturnState, TypeInferStatus, infer_from_
 use crate::fz_ir::{Const, EmitSlot, FnBuilder, FnId, Module, ModuleBuilder, Prim, Term};
 use crate::telemetry::{ConfiguredTelemetry, Handler, Value};
 use crate::test_support::{
-    entry_main_fn_id as main_id, linked_runtime_module as linked, lower_frontend_module as lower,
+    entry_main_fn_id as main_id, linked_runtime_module as linked,
+    linked_runtime_module_unplanned as linked_unplanned, lower_frontend_module as lower,
 };
 use crate::types::{ClosureTarget, ClosureTypes, ConcreteTypes, Ty, Types};
 use std::cell::RefCell;
@@ -1041,7 +1042,7 @@ fn outcome_exposes_activation_facts_as_production_data() {
 
 #[test]
 fn invalid_named_reduce_reducer_emits_operator_diagnostic() {
-    let module = linked(include_str!("fixtures/enum_reduce_named_ref.fz"));
+    let module = linked_unplanned(include_str!("fixtures/enum_reduce_named_ref.fz"));
     let mut t = ConcreteTypes;
     let report = infer_report_via_main(&mut t, &module);
     assert_eq!(report.outcome.status, TypeInferStatus::Invalid);
@@ -1148,7 +1149,10 @@ fn add_infers_int_via_harness() {
 fn infer_return_erases_residual_unknown_to_any_at_boundary() {
     let mut b = FnBuilder::new(FnId(0), "unknown_expr");
     let entry = b.block(vec![]);
-    let value = b.let_(entry, Prim::MakeBitstring(vec![]));
+    // Bitstrings are modeled as `str_t()` now; use an intentionally
+    // unmodeled reader init to keep the body result `Unknown`.
+    let bits = b.let_(entry, Prim::MakeBitstring(vec![]));
+    let value = b.let_(entry, Prim::BitReaderInit(bits));
     b.set_terminator(entry, Term::Return(value));
 
     let mut mb = ModuleBuilder::new();
@@ -1171,7 +1175,10 @@ fn live_unknown_branch_survives_control_join_to_boundary() {
     let entry = b.block(vec![cond]);
     let unknown_b = b.block(vec![]);
     let known_b = b.block(vec![]);
-    let unknown = b.let_(unknown_b, Prim::MakeBitstring(vec![]));
+    // The unknown arm must stay live through the join until the public
+    // boundary erases it, so use the same intentionally unmodeled prim.
+    let bits = b.let_(unknown_b, Prim::MakeBitstring(vec![]));
+    let unknown = b.let_(unknown_b, Prim::BitReaderInit(bits));
     b.set_terminator(unknown_b, Term::Return(unknown));
     let one = b.let_(known_b, Prim::Const(Const::Int(1)));
     b.set_terminator(known_b, Term::Return(one));

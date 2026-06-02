@@ -89,6 +89,44 @@ pub(crate) fn linked_runtime_graph(src: &str) -> crate::modules::pipeline::Prepa
     linked_runtime_graph_with_telemetry(&mut t, src, &crate::telemetry::NullTelemetry)
 }
 
+/// Compile through the production frontend/provider/link path and stop at the
+/// linked runtime module, without running the authoritative planner.
+pub(crate) fn linked_runtime_module_unplanned(src: &str) -> Module {
+    use crate::modules::pipeline::{
+        CompileMode, ProviderInputs, checked_module_for_mode, compile_source_with_providers,
+        link_execution_module,
+    };
+
+    let mut t = ConcreteTypes;
+    let providers = ProviderInputs::new(
+        crate::modules::artifact_store::DEFAULT_ARTIFACT_ROOT.to_string(),
+        Vec::new(),
+    );
+    let frontend = compile_source_with_providers(
+        &mut t,
+        src.to_string(),
+        "test_fixture.fz".to_string(),
+        &providers,
+        &crate::telemetry::NullTelemetry,
+    )
+    .unwrap_or_else(|err| panic!("frontend: {err}"));
+    let mut checked = checked_module_for_mode(
+        &mut t,
+        frontend,
+        &crate::telemetry::NullTelemetry,
+        CompileMode::Normal,
+    )
+    .unwrap_or_else(|err| panic!("checked: {err}"));
+    link_execution_module(
+        &mut t,
+        &mut checked,
+        &providers,
+        &crate::telemetry::NullTelemetry,
+    )
+    .unwrap_or_else(|err| panic!("linked runtime module: {err}"))
+    .module
+}
+
 /// Compile a program through the production pipeline to the linked runtime IR:
 /// protocol impls, runtime helpers, and execution-graph rewrites are local.
 pub(crate) fn linked_runtime_module(src: &str) -> Module {
