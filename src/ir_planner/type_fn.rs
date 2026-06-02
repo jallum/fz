@@ -464,27 +464,38 @@ fn collect_callable_capabilities<
         if capabilities.contains_key(&v) {
             continue;
         }
-        let Some(clauses) = t.callable_clauses(ty) else {
+        let Some(cap) = callable_capability_for_ty(t, ty) else {
             continue;
-        };
-        let mut closure_lits = clauses
-            .into_iter()
-            .filter_map(|clause| clause.closure)
-            .collect::<Vec<_>>();
-        closure_lits.sort_by_key(|lit| lit.target);
-        closure_lits.dedup();
-        let cap = match closure_lits.as_slice() {
-            [lit] if lit.captures.is_empty() => CallableCapability::KnownFn(lit.target.into()),
-            [lit] => CallableCapability::KnownClosure {
-                fn_id: lit.target.into(),
-                captures: lit.captures.clone(),
-            },
-            _ => CallableCapability::OpaqueCallable,
         };
         capabilities.insert(v, cap);
     }
 
     capabilities
+}
+
+pub(crate) fn callable_capability_for_ty<
+    T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
+>(
+    t: &mut T,
+    ty: &crate::types::Ty,
+) -> Option<super::fn_types::CallableCapability> {
+    use super::fn_types::CallableCapability;
+
+    let clauses = t.callable_clauses(ty)?;
+    let mut closure_lits = clauses
+        .into_iter()
+        .filter_map(|clause| clause.closure)
+        .collect::<Vec<_>>();
+    closure_lits.sort_by_key(|lit| lit.target);
+    closure_lits.dedup();
+    Some(match closure_lits.as_slice() {
+        [lit] if lit.captures.is_empty() => CallableCapability::KnownFn(lit.target.into()),
+        [lit] => CallableCapability::KnownClosure {
+            fn_id: lit.target.into(),
+            captures: lit.captures.clone(),
+        },
+        _ => CallableCapability::OpaqueCallable,
+    })
 }
 
 fn compute_reachable_blocks_and_dead_branches<

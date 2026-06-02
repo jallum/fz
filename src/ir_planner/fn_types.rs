@@ -865,7 +865,15 @@ pub type FnEffects = HashMap<FnId, EffectSummary>;
 pub(crate) type SpecKeySet = std::collections::HashSet<SpecKey>;
 pub(crate) type ReturnReaders = HashMap<SpecKey, SpecKeySet>;
 pub(crate) type ReturnDepsByCaller = HashMap<SpecKey, SpecKeySet>;
-pub(crate) type CallsiteCallableCapabilities = HashMap<SpecKey, Vec<Option<CallableCapability>>>;
+/// Per-target entry-param callable capability facts.
+///
+/// This is keyed by the selected target `SpecKey`, not by the syntactic
+/// caller-site alone, because multiple incoming edges can converge on the
+/// same public spec. The vector is indexed by entry param position. Direct
+/// calls populate explicit arg slots; continuations also use slot 0 for the
+/// returned value that flows into the continuation.
+pub(crate) type IncomingParamCallableCapabilities =
+    HashMap<SpecKey, Vec<Option<CallableCapability>>>;
 
 pub(crate) fn result_linked_param_slots(
     module: &Module,

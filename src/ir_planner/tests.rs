@@ -4232,6 +4232,46 @@ end
 }
 
 #[test]
+fn returned_captured_closure_capability_propagates_into_cont_slot0() {
+    let (_t, m, mt) = pipeline(
+        include_str!("../type_infer/fixtures/poly_capture_ref.fz"),
+        &crate::telemetry::NullTelemetry,
+    );
+
+    let mut saw_known_closure = false;
+    for (key, ft) in &mt.specs {
+        let f = m.fn_by_id(key.fn_id);
+        if !f.name.starts_with("k_") {
+            continue;
+        }
+        let Some(&slot0) = f.block(f.entry).params.first() else {
+            continue;
+        };
+        match ft.callable_capabilities.get(&slot0) {
+            Some(CallableCapability::KnownClosure { fn_id, captures }) => {
+                let lambda = m.fn_by_id(*fn_id);
+                if lambda.name.starts_with("lambda_") && !captures.is_empty() {
+                    saw_known_closure = true;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    assert!(
+        saw_known_closure,
+        "continuation slot 0 should retain KnownClosure capability for returned captured closure"
+    );
+
+    assert!(
+        mt.specs
+            .keys()
+            .any(|key| m.fn_by_id(key.fn_id).name.starts_with("lambda_")),
+        "returned captured closure should register a lambda spec once continuation slot 0 keeps KnownClosure"
+    );
+}
+
+#[test]
 fn callable_capability_opaque_for_multi_target_join() {
     let mut id_a = FnBuilder::new(FnId(1), "id_a");
     let a_x = id_a.fresh_var();
@@ -4841,6 +4881,94 @@ fn planner_keeps_external_module_calls_at_provider_boundary() {
             })
         }),
         "external boundary calls must not be planned through the synthetic stub body"
+    );
+}
+
+#[test]
+fn planner_keeps_provider_protocol_calls_at_external_boundary() {
+    use crate::fz_ir::{CallsiteId, EmitSlot, Term};
+    use crate::ir_planner::fn_types::CallEdgeTarget;
+
+    let mut t = crate::types::ConcreteTypes;
+    let tel = crate::telemetry::NullTelemetry;
+    let provider = crate::frontend::compile_source_with_types(
+        &mut t,
+        r#"
+defmodule Contracts do
+  defprotocol Collectable do
+    fn id(value)
+  end
+
+  defimpl Collectable, for: List do
+    fn id(value), do: 42
+  end
+end
+"#
+        .to_string(),
+        "contracts.fz".to_string(),
+        &tel,
+    )
+    .unwrap_or_else(|err| panic!("provider frontend: {:?}", err.diagnostics));
+    let contracts =
+        crate::modules::identity::ModuleName::from_segments(vec!["Contracts".to_string()]);
+    let contracts_interface = provider
+        ._prog
+        .module_interfaces
+        .get(&contracts)
+        .cloned()
+        .expect("Contracts interface");
+
+    let mut interfaces = crate::frontend::resolve::InterfaceTable::new();
+    interfaces.insert(contracts, contracts_interface);
+    let user = crate::frontend::compile_source_with_interface_table(
+        &mut t,
+        r#"
+defmodule User do
+  fn run(), do: Contracts.Collectable.id([1])
+end
+fn main(), do: User.run()
+"#
+        .to_string(),
+        "user.fz".to_string(),
+        interfaces,
+        &tel,
+    )
+    .unwrap_or_else(|err| panic!("user frontend: {:?}", err.diagnostics));
+
+    let run = user.module.fn_by_name("User.run").expect("User.run");
+    let Term::TailCall { ident, .. } = &run.block(run.entry).terminator else {
+        panic!("expected provider-boundary protocol call in tail position");
+    };
+    let direct_callsite = CallsiteId::new(run.id, ident, EmitSlot::Direct);
+
+    let run_spec = user
+        .module_plan
+        .specs
+        .values()
+        .find(|spec| spec.call_edges.contains_key(&direct_callsite))
+        .expect("User.run spec should carry the provider-boundary protocol edge");
+    let direct = run_spec
+        .call_edges
+        .get(&direct_callsite)
+        .expect("direct call edge");
+    match &direct.target {
+        CallEdgeTarget::External { target, .. } => {
+            assert_eq!(target.name, "id");
+        }
+        other => panic!("expected provider-boundary protocol edge, got {other:?}"),
+    }
+    assert!(
+        !run_spec.call_edges.values().any(|edge| {
+            edge.local_target()
+                .map(|target| {
+                    user.module
+                        .fn_by_id(target.fn_id)
+                        .name
+                        .starts_with("__protocol__.")
+                })
+                .unwrap_or(false)
+        }),
+        "provider-boundary protocol calls must not be planned through the local protocol stub body"
     );
 }
 

@@ -1,5 +1,5 @@
 use super::fn_types::{
-    CallEdgePlan, CallEdgeTarget, CallableCapability, CallsiteCallableCapabilities, FnEffects,
+    CallEdgePlan, CallEdgeTarget, CallableCapability, FnEffects, IncomingParamCallableCapabilities,
     ReturnContextPlan, ReturnDemand, SpecKey, SpecPlan, WALK_CALLS,
     fixed_point_input_tys_for_arity, forwarded_return_contract_for_target,
     normalize_result_correspondence_key, padded_direct_input_tys, return_contract_for_target,
@@ -25,6 +25,10 @@ pub(crate) struct WalkResult {
     /// into the `return_readers` reverse index so changes
     /// re-enqueue this caller.
     pub(crate) return_reads: Vec<SpecKey>,
+    /// Target specs whose incoming callable-capability facts changed while
+    /// walking this caller. Their cached `SpecPlan`s depend on those facts, so
+    /// the driver must revisit them.
+    pub(crate) capability_updates: Vec<SpecKey>,
 }
 
 impl WalkResult {
@@ -107,14 +111,15 @@ impl WalkResult {
     }
 }
 
-fn merge_callsite_callable_capabilities(
-    callsite_callable_capabilities: &mut CallsiteCallableCapabilities,
+fn merge_incoming_param_callable_capabilities(
+    incoming_param_callable_capabilities: &mut IncomingParamCallableCapabilities,
     key: &SpecKey,
     incoming: Vec<Option<CallableCapability>>,
-) {
-    match callsite_callable_capabilities.get(key) {
+) -> bool {
+    match incoming_param_callable_capabilities.get(key) {
         None => {
-            callsite_callable_capabilities.insert(key.clone(), incoming);
+            incoming_param_callable_capabilities.insert(key.clone(), incoming);
+            true
         }
         Some(prev) => {
             let merged: Vec<Option<CallableCapability>> = prev
@@ -126,9 +131,18 @@ fn merge_callsite_callable_capabilities(
                     _ => Some(CallableCapability::OpaqueCallable),
                 })
                 .collect();
-            callsite_callable_capabilities.insert(key.clone(), merged);
+            if *prev == merged {
+                return false;
+            }
+            incoming_param_callable_capabilities.insert(key.clone(), merged);
+            true
         }
     }
+}
+
+struct ContinuationSlot0 {
+    ty: crate::types::Ty,
+    capability: Option<CallableCapability>,
 }
 
 enum ProtocolDispatch {
@@ -164,7 +178,7 @@ pub(super) fn walk_spec_for_discovery<
     activation_returns: &super::worklist::ActivationReturnFacts,
     recursive_fns: &std::collections::HashSet<FnId>,
     caller_spec_key: &SpecKey,
-    callsite_callable_capabilities: &mut CallsiteCallableCapabilities,
+    incoming_param_callable_capabilities: &mut IncomingParamCallableCapabilities,
     out: &mut WalkResult,
 ) {
     WALK_CALLS.with(|c| c.set(c.get() + 1));
@@ -177,7 +191,7 @@ pub(super) fn walk_spec_for_discovery<
         activation_returns,
         recursive_fns,
         caller_spec_key,
-        callsite_callable_capabilities,
+        incoming_param_callable_capabilities,
         out,
         any_ty,
     }
@@ -195,7 +209,7 @@ where
     activation_returns: &'a super::worklist::ActivationReturnFacts,
     recursive_fns: &'a HashSet<FnId>,
     caller_spec_key: &'a SpecKey,
-    callsite_callable_capabilities: &'a mut CallsiteCallableCapabilities,
+    incoming_param_callable_capabilities: &'a mut IncomingParamCallableCapabilities,
     out: &'a mut WalkResult,
     any_ty: crate::types::Ty,
 }
@@ -241,13 +255,19 @@ where
         let Some(term_ident) = term.ident().cloned() else {
             return;
         };
-        let known_fns: HashMap<Var, FnId> = self
+        let known_closure_targets: HashMap<Var, FnId> = self
             .caller_ft
             .callable_capabilities
             .iter()
-            .filter_map(|(var, cap)| cap.known_fn().map(|fid| (*var, fid)))
+            .filter_map(|(var, cap)| match cap {
+                CallableCapability::KnownFn(fid) => Some((*var, *fid)),
+                CallableCapability::KnownClosure { fn_id, .. } => Some((*var, *fn_id)),
+                CallableCapability::OpaqueCallable => None,
+            })
             .collect();
-        for BlockCallsite { slot, kind } in block_callsites(self.t, term, env, &known_fns) {
+        for BlockCallsite { slot, kind } in
+            block_callsites(self.t, term, env, &known_closure_targets)
+        {
             self.record_callsite(term, &term_ident, env, slot, kind);
         }
         self.seed_receive_matched_outcomes(term);
@@ -265,8 +285,12 @@ where
             CallsiteKind::Direct { callee, args } => {
                 self.record_direct_call(term, term_ident, env, slot, callee, args);
             }
-            CallsiteKind::CallClosureKnown { target, args } => {
-                self.record_known_closure_call(term, term_ident, env, slot, target, args);
+            CallsiteKind::CallClosureKnown {
+                closure,
+                target,
+                args,
+            } => {
+                self.record_known_closure_call(term, term_ident, env, slot, closure, target, args);
             }
             CallsiteKind::ClosureLit {
                 fn_id,
@@ -358,11 +382,13 @@ where
                     .record_dispatch(self.caller_spec_key, term_ident, slot, entry_key.clone());
             }
             let per_arg = self.callable_capability_args(args, n_params);
-            merge_callsite_callable_capabilities(
-                self.callsite_callable_capabilities,
+            if merge_incoming_param_callable_capabilities(
+                self.incoming_param_callable_capabilities,
                 &entry_key,
                 per_arg,
-            );
+            ) {
+                self.out.capability_updates.push(entry_key.clone());
+            }
             return;
         }
         let Some((mut entry_key, n_params)) = self.direct_call_key(callee, args, env) else {
@@ -410,11 +436,13 @@ where
                 .record_dispatch(self.caller_spec_key, term_ident, slot, entry_key.clone());
         }
         let per_arg = self.callable_capability_args(args, n_params);
-        merge_callsite_callable_capabilities(
-            self.callsite_callable_capabilities,
+        if merge_incoming_param_callable_capabilities(
+            self.incoming_param_callable_capabilities,
             &entry_key,
             per_arg,
-        );
+        ) {
+            self.out.capability_updates.push(entry_key.clone());
+        }
     }
 
     fn record_external_call(
@@ -520,11 +548,19 @@ where
         term_ident: &CallsiteIdent,
         env: &HashMap<Var, crate::types::Ty>,
         slot: EmitSlot,
+        closure: Var,
         target: FnId,
         args: &[Var],
     ) {
-        let Some(mut target_key) = self.direct_call_key(target, args, env).map(|(key, _)| key)
-        else {
+        let Some(mut target_key) = (match self.caller_ft.callable_capabilities.get(&closure) {
+            Some(CallableCapability::KnownClosure { captures, .. }) => {
+                self.closure_lit_key(target, captures.clone(), args, env)
+            }
+            Some(CallableCapability::KnownFn(_)) => {
+                self.direct_call_key(target, args, env).map(|(key, _)| key)
+            }
+            Some(CallableCapability::OpaqueCallable) | None => None,
+        }) else {
             return;
         };
         self.inherit_tail_closure_demand(term, &mut target_key);
@@ -572,12 +608,13 @@ where
         };
         let cont_fn = &self.m.fns[j];
         let n_params = cont_fn.block(cont_fn.entry).params.len();
-        let mut key = cont_key_from_slot0(&self.any_ty, n_params, slot0, &cont.captured, env);
+        let mut key = cont_key_from_slot0(&self.any_ty, n_params, slot0.ty, &cont.captured, env);
         key = normalize_result_correspondence_key(self.t, self.m, cont.fn_id, key);
         if self.has_bottom_arg(&key) {
             return;
         }
-        let per_param_capabilities = self.continuation_callable_capabilities(&cont, n_params);
+        let per_param_capabilities =
+            self.continuation_callable_capabilities(&cont, n_params, slot0.capability);
         let demand = continuation_return_demand(self.m, self.caller_spec_key, &cont, &source);
         let mut entry_key = spec_key_for_fn(cont_fn, std::mem::take(&mut key));
         entry_key.demand = demand.clone();
@@ -593,11 +630,13 @@ where
             &demand,
             &entry_key,
         );
-        merge_callsite_callable_capabilities(
-            self.callsite_callable_capabilities,
+        if merge_incoming_param_callable_capabilities(
+            self.incoming_param_callable_capabilities,
             &entry_key,
             per_param_capabilities,
-        );
+        ) {
+            self.out.capability_updates.push(entry_key.clone());
+        }
         let cid =
             self.out
                 .record_dispatch(self.caller_spec_key, term_ident, slot, entry_key.clone());
@@ -616,17 +655,13 @@ where
         term_ident: &CallsiteIdent,
         env: &HashMap<Var, crate::types::Ty>,
         source: &ContSource,
-    ) -> Option<crate::types::Ty> {
+    ) -> Option<ContinuationSlot0> {
         match *source {
             ContSource::Call { callee, args } => {
                 let arg_tys = self.arg_tys(args, env);
                 let direct_cid =
                     WalkResult::callsite_id(self.caller_spec_key, term_ident, EmitSlot::Direct);
-                let target = self
-                    .out
-                    .call_edges
-                    .get(&direct_cid)
-                    .and_then(CallEdgePlan::local_target);
+                let selected_edge = self.out.call_edges.get(&direct_cid);
                 let knowledge = super::worklist::direct_call_result_knowledge(
                     self.t,
                     self.m,
@@ -636,19 +671,28 @@ where
                     callee,
                     &arg_tys,
                     self.activation_returns,
-                    target,
+                    selected_edge,
                 );
                 Some(match knowledge.slot0 {
-                    super::worklist::ResultSlot0::Known(ty) => ty,
+                    super::worklist::ResultSlot0::Known(ty) => ContinuationSlot0 {
+                        capability: super::type_fn::callable_capability_for_ty(self.t, &ty),
+                        ty,
+                    },
                     // Planner-visible continuations must stay coherent even when
                     // inference cannot yet prove a narrower slot-0 type.
-                    super::worklist::ResultSlot0::Pending => self.any_ty.clone(),
+                    super::worklist::ResultSlot0::Pending => ContinuationSlot0 {
+                        ty: self.any_ty.clone(),
+                        capability: None,
+                    },
                 })
             }
             ContSource::CallClosure { closure, args } => {
                 self.closure_return_slot0(term_ident, closure, args, env)
             }
-            ContSource::Receive => Some(self.any_ty.clone()),
+            ContSource::Receive => Some(ContinuationSlot0 {
+                ty: self.any_ty.clone(),
+                capability: None,
+            }),
         }
     }
 
@@ -689,7 +733,7 @@ where
         closure: Var,
         args: &[Var],
         env: &HashMap<Var, crate::types::Ty>,
-    ) -> Option<crate::types::Ty> {
+    ) -> Option<ContinuationSlot0> {
         let arg_tys = self.arg_tys(args, env);
         let selected_target = self
             .out
@@ -712,8 +756,14 @@ where
             env.get(&closure),
         );
         Some(match knowledge.slot0 {
-            super::worklist::ResultSlot0::Known(ty) => ty,
-            super::worklist::ResultSlot0::Pending => self.any_ty.clone(),
+            super::worklist::ResultSlot0::Known(ty) => ContinuationSlot0 {
+                capability: super::type_fn::callable_capability_for_ty(self.t, &ty),
+                ty,
+            },
+            super::worklist::ResultSlot0::Pending => ContinuationSlot0 {
+                ty: self.any_ty.clone(),
+                capability: None,
+            },
         })
     }
 
@@ -873,8 +923,12 @@ where
         &self,
         cont: &crate::fz_ir::Cont,
         n_params: usize,
+        slot0_capability: Option<CallableCapability>,
     ) -> Vec<Option<CallableCapability>> {
         let mut per_param = vec![None; n_params];
+        if let Some(slot0) = per_param.get_mut(0) {
+            *slot0 = slot0_capability;
+        }
         for (k, cvv) in cont.captured.iter().enumerate() {
             if let Some(p) = per_param.get_mut(k + 1) {
                 *p = self.caller_ft.callable_capabilities.get(cvv).cloned();

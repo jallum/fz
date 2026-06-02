@@ -212,10 +212,10 @@ pub(crate) fn runtime_graph_codegen_materialized_body_signals(
 
     let mut t = ConcreteTypes;
     let graph = linked_runtime_graph_with_telemetry(&mut t, src, &tel);
+    assert_authoritative_planner_consistent(&cap);
     cap.clear();
     crate::ir_codegen::compile_planned(&mut t, &graph.module, &graph.module_plan, &tel)
         .expect("compile planned");
-    assert_authoritative_planner_consistent(&cap);
 
     cap.find(&["fz", "planner", "body_materialized"])
         .into_iter()
@@ -258,10 +258,10 @@ pub(crate) fn runtime_graph_reachable_materialized_body_signals(
 
     let mut t = ConcreteTypes;
     let graph = linked_runtime_graph_with_telemetry(&mut t, src, &tel);
+    assert_authoritative_planner_consistent(&cap);
     cap.clear();
     crate::ir_codegen::compile_planned(&mut t, &graph.module, &graph.module_plan, &tel)
         .expect("compile planned");
-    assert_authoritative_planner_consistent(&cap);
 
     let materialized = cap
         .last(&["fz", "planner", "materialized"])

@@ -17,7 +17,7 @@
 //!
 //!   - `Direct` — callee `FnId`, arg `Var`s.
 //!   - `CallClosureKnown` — resolved target `FnId` (via callable capability),
-//!     arg `Var`s.
+//!     the closure `Var`, and arg `Var`s.
 //!   - `ClosureLit(c, s)` — target `FnId` from the lit, captures,
 //!     arg `Var`s.
 //!   - `Cont` — continuation `FnId` + captured `Var`s, plus a tag
@@ -64,10 +64,15 @@ pub enum CallsiteKind<'a> {
     /// `Term::Call` / `Term::TailCall`. `callee` is the static FnId.
     Direct { callee: FnId, args: &'a [Var] },
     /// `Term::CallClosure` / `Term::TailCallClosure` whose `closure`
-    /// Var resolved through callable capabilities to a static FnId. Distinct
-    /// from `Direct` because the same block can simultaneously emit a
-    /// `Cont` for the same Call.
-    CallClosureKnown { target: FnId, args: &'a [Var] },
+    /// Var resolved through callable capabilities to a static FnId. Carries
+    /// the closure Var too so downstream consumers can recover capture-state
+    /// facts from the caller spec's capability map instead of re-reading a
+    /// public key that may have erased closure identity.
+    CallClosureKnown {
+        closure: Var,
+        target: FnId,
+        args: &'a [Var],
+    },
     /// `Term::CallClosure` / `Term::TailCallClosure` whose `closure`
     /// Var has a closure-lit callable clause. Captures are spliced
     /// ahead of `args` when building the target key.
@@ -106,10 +111,10 @@ pub enum ContSource<'a> {
 /// `env` is the caller-side per-Var type env at the *end* of the
 /// block's stmt sequence; used to extract a `closure` Var's
 /// closure-literal callable clauses when the terminator is `CallClosure` /
-/// `TailCallClosure`. `known_fns` is the caller spec's resolved Var → FnId
-/// capability map (planner-side); the reducer passes an empty map and gets no
-/// `CallClosureKnown` entries — its closure-literal path comes from the seam
-/// query alone.
+/// `TailCallClosure`. `known_closure_targets` is the caller spec's resolved
+/// Var → target-FnId capability map (planner-side); the reducer passes an
+/// empty map and gets no `CallClosureKnown` entries — its closure-literal
+/// path comes from the seam query alone.
 ///
 /// Block-stmt callsites (`Prim::MakeClosure`) and per-stmt
 /// opaque-arity bookkeeping are *not* yielded — they're planner-specific
@@ -118,7 +123,7 @@ pub fn block_callsites<'a, T: Types<Ty = crate::types::Ty> + ClosureTypes>(
     t: &mut T,
     term: &'a Term,
     env: &'a HashMap<Var, crate::types::Ty>,
-    known_fns: &HashMap<Var, FnId>,
+    known_closure_targets: &HashMap<Var, FnId>,
 ) -> Vec<BlockCallsite<'a>> {
     let mut out: Vec<BlockCallsite<'a>> = Vec::new();
     match term {
@@ -161,7 +166,7 @@ pub fn block_callsites<'a, T: Types<Ty = crate::types::Ty> + ClosureTypes>(
             args,
             continuation,
         } => {
-            push_closure_call(t, &mut out, *closure, args, env, known_fns);
+            push_closure_call(t, &mut out, *closure, args, env, known_closure_targets);
             out.push(BlockCallsite {
                 slot: EmitSlot::Cont,
                 kind: CallsiteKind::Cont {
@@ -178,7 +183,7 @@ pub fn block_callsites<'a, T: Types<Ty = crate::types::Ty> + ClosureTypes>(
             args,
             ident: _,
         } => {
-            push_closure_call(t, &mut out, *closure, args, env, known_fns);
+            push_closure_call(t, &mut out, *closure, args, env, known_closure_targets);
         }
         Term::Receive {
             continuation,
@@ -209,16 +214,20 @@ fn push_closure_call<'a, T: Types<Ty = crate::types::Ty> + ClosureTypes>(
     closure: Var,
     args: &'a [Var],
     env: &'a HashMap<Var, crate::types::Ty>,
-    known_fns: &HashMap<Var, FnId>,
+    known_closure_targets: &HashMap<Var, FnId>,
 ) {
     // fz-try.11 — both known-capability and closure_lit paths share the same
     // structural slot `EmitSlot::ClosureCall`. Variation between
     // statically-resolvable (known capability) and runtime-resolved (lit)
     // dispatch lives on the Dispatch enum at row time, not on the slot.
-    if let Some(&target) = known_fns.get(&closure) {
+    if let Some(&target) = known_closure_targets.get(&closure) {
         out.push(BlockCallsite {
             slot: EmitSlot::ClosureCall,
-            kind: CallsiteKind::CallClosureKnown { target, args },
+            kind: CallsiteKind::CallClosureKnown {
+                closure,
+                target,
+                args,
+            },
         });
     }
     if let Some(cv_ty) = env.get(&closure)

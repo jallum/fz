@@ -2,7 +2,7 @@ use super::closures::literal_closure_return_keys;
 use super::diagnostics::{compute_dead_branches, module_plan_stats};
 use super::effects::{prim_effects, term_effects};
 use super::fn_types::{
-    CallsiteCallableCapabilities, CapabilityPlan, EffectSummary, FnEffects, ModulePlan,
+    CapabilityPlan, EffectSummary, FnEffects, IncomingParamCallableCapabilities, ModulePlan,
     ReturnDemand, ReturnDepsByCaller, ReturnReaders, SpecKey, SpecKeySet, SpecPlan,
     SpecReachabilityRole, TYPE_FN_CALLS, VISIT_HARD_BOUND, WALK_CALLS, WORKLIST_POPS,
     build_any_key_index, fixed_point_spec_key_for_arity, key_precedence_order,
@@ -879,17 +879,16 @@ pub(super) fn direct_call_result_knowledge<
     callee: FnId,
     arg_tys: &[crate::types::Ty],
     activation_returns: &ActivationReturnFacts,
-    direct_target: Option<&SpecKey>,
+    selected_edge: Option<&super::fn_types::CallEdgePlan>,
 ) -> CallResultKnowledge {
-    if let Some(slot0) = external_call_return_slot0_for_spec(
+    if let Some(slot0) = selected_external_call_return_slot0(
         t,
         module,
-        caller_spec_key.fn_id,
-        ident,
         callee,
         arg_tys,
         activation_returns,
         &module.fn_by_id(caller_spec_key.fn_id).owner_module,
+        selected_edge,
     ) {
         return CallResultKnowledge {
             slot0: ResultSlot0::Known(slot0),
@@ -904,18 +903,21 @@ pub(super) fn direct_call_result_knowledge<
 
     let target_fn = module.fn_by_id(callee);
     let n_params = target_fn.block(target_fn.entry).params.len();
-    let target = direct_target.cloned().unwrap_or_else(|| {
-        fixed_point_spec_key_for_arity(
-            t,
-            module,
-            recursive_fns,
-            caller_spec_key.fn_id,
-            callee,
-            arg_tys.to_vec(),
-            n_params,
-            None,
-        )
-    });
+    let target = selected_edge
+        .and_then(super::fn_types::CallEdgePlan::local_target)
+        .cloned()
+        .unwrap_or_else(|| {
+            fixed_point_spec_key_for_arity(
+                t,
+                module,
+                recursive_fns,
+                caller_spec_key.fn_id,
+                callee,
+                arg_tys.to_vec(),
+                n_params,
+                None,
+            )
+        });
     let declared_fact = declared_call_return_fact(
         t,
         module,
@@ -1387,7 +1389,8 @@ fn discover_specs<
     let mut specs: HashMap<SpecKey, SpecPlan> = HashMap::new();
     let mut effective_returns: HashMap<SpecKey, crate::types::Ty> = HashMap::new();
     let mut complete_returns: SpecKeySet = std::collections::HashSet::new();
-    let mut callsite_callable_capabilities: CallsiteCallableCapabilities = HashMap::new();
+    let mut incoming_param_callable_capabilities: IncomingParamCallableCapabilities =
+        HashMap::new();
     let mut return_readers: ReturnReaders = HashMap::new();
     let mut return_deps_by_caller: ReturnDepsByCaller = HashMap::new();
     let mut visit_count: HashMap<SpecKey, usize> = HashMap::new();
@@ -1412,7 +1415,7 @@ fn discover_specs<
         &mut effective_returns,
         &mut complete_returns,
         &activation_returns,
-        &mut callsite_callable_capabilities,
+        &mut incoming_param_callable_capabilities,
         &mut return_readers,
         &mut return_deps_by_caller,
         &mut visit_count,
@@ -1751,7 +1754,7 @@ fn process_worklist<T: crate::types::Types<Ty = crate::types::Ty> + crate::types
     effective_returns: &mut HashMap<SpecKey, crate::types::Ty>,
     complete_returns: &mut SpecKeySet,
     activation_returns: &ActivationReturnFacts,
-    callsite_callable_capabilities: &mut CallsiteCallableCapabilities,
+    incoming_param_callable_capabilities: &mut IncomingParamCallableCapabilities,
     return_readers: &mut ReturnReaders,
     return_deps_by_caller: &mut ReturnDepsByCaller,
     visit_count: &mut HashMap<SpecKey, usize>,
@@ -1763,7 +1766,14 @@ fn process_worklist<T: crate::types::Types<Ty = crate::types::Ty> + crate::types
         let Some(&j) = m.fn_idx.get(&spec_key.fn_id) else {
             continue;
         };
-        ensure_spec_typed(t, m, j, &spec_key, callsite_callable_capabilities, specs);
+        ensure_spec_typed(
+            t,
+            m,
+            j,
+            &spec_key,
+            incoming_param_callable_capabilities,
+            specs,
+        );
         check_visit_bound(&spec_key, visit_count);
         let result = discover_spec_outputs(
             t,
@@ -1774,13 +1784,15 @@ fn process_worklist<T: crate::types::Types<Ty = crate::types::Ty> + crate::types
             specs,
             activation_returns,
             recursive_fns,
-            callsite_callable_capabilities,
+            incoming_param_callable_capabilities,
         );
         let WalkResult {
             call_edges,
             return_reads,
+            capability_updates,
         } = result;
         install_walk_result(specs, &spec_key, call_edges);
+        enqueue_capability_updates(&capability_updates, work, in_work);
         enqueue_discovered_local_targets(&spec_key, specs, work, in_work);
         update_effective_return_and_enqueue_readers(
             t,
@@ -1806,16 +1818,23 @@ fn ensure_spec_typed<T: crate::types::Types<Ty = crate::types::Ty> + crate::type
     m: &Module,
     fn_idx: usize,
     spec_key: &SpecKey,
-    callsite_callable_capabilities: &CallsiteCallableCapabilities,
+    incoming_param_callable_capabilities: &IncomingParamCallableCapabilities,
     specs: &mut HashMap<SpecKey, SpecPlan>,
 ) {
-    if specs.contains_key(spec_key) {
+    if specs.get(spec_key).is_some_and(|ft| {
+        entry_callable_capabilities_match(
+            m,
+            fn_idx,
+            ft,
+            incoming_param_callable_capabilities.get(spec_key),
+        )
+    }) {
         return;
     }
     TYPE_FN_CALLS.with(|c| c.set(c.get() + 1));
     let input_tys = spec_key_input_tys(t, spec_key);
     let mut ft = type_fn(t, &m.fns[fn_idx], m, Some(&input_tys));
-    if let Some(arg_caps) = callsite_callable_capabilities.get(spec_key) {
+    if let Some(arg_caps) = incoming_param_callable_capabilities.get(spec_key) {
         let entry = m.fns[fn_idx].entry;
         let entry_params = &m.fns[fn_idx].block(entry).params;
         for (slot, p) in entry_params.iter().enumerate() {
@@ -1825,6 +1844,38 @@ fn ensure_spec_typed<T: crate::types::Types<Ty = crate::types::Ty> + crate::type
         }
     }
     specs.insert(spec_key.clone(), ft);
+}
+
+fn entry_callable_capabilities_match(
+    m: &Module,
+    fn_idx: usize,
+    ft: &SpecPlan,
+    incoming: Option<&Vec<Option<super::fn_types::CallableCapability>>>,
+) -> bool {
+    let entry = m.fns[fn_idx].entry;
+    let entry_params = &m.fns[fn_idx].block(entry).params;
+    for (slot, p) in entry_params.iter().enumerate() {
+        let expected = incoming
+            .and_then(|caps| caps.get(slot))
+            .and_then(|cap| cap.clone());
+        let actual = ft.callable_capabilities.get(p).cloned();
+        if actual != expected {
+            return false;
+        }
+    }
+    true
+}
+
+fn enqueue_capability_updates(
+    capability_updates: &[SpecKey],
+    work: &mut std::collections::VecDeque<SpecKey>,
+    in_work: &mut SpecKeySet,
+) {
+    for target in capability_updates {
+        if in_work.insert(target.clone()) {
+            work.push_back(target.clone());
+        }
+    }
 }
 
 fn check_visit_bound(spec_key: &SpecKey, visit_count: &mut HashMap<SpecKey, usize>) {
@@ -1849,7 +1900,7 @@ fn discover_spec_outputs<
     specs: &HashMap<SpecKey, SpecPlan>,
     activation_returns: &ActivationReturnFacts,
     recursive_fns: &std::collections::HashSet<FnId>,
-    callsite_callable_capabilities: &mut CallsiteCallableCapabilities,
+    incoming_param_callable_capabilities: &mut IncomingParamCallableCapabilities,
 ) -> WalkResult {
     let caller_ft = specs.get(spec_key).unwrap();
     let mut result = WalkResult::default();
@@ -1862,7 +1913,7 @@ fn discover_spec_outputs<
         activation_returns,
         recursive_fns,
         spec_key,
-        callsite_callable_capabilities,
+        incoming_param_callable_capabilities,
         &mut result,
     );
     result
@@ -2180,8 +2231,8 @@ fn compute_return_for_spec<
             )),
             Term::TailCallClosure {
                 ident,
-                closure: _,
-                args: _,
+                closure,
+                args,
             } => Some(tail_closure_return_contribution(
                 t,
                 module,
@@ -2189,8 +2240,13 @@ fn compute_return_for_spec<
                 ft,
                 effective_returns,
                 complete_returns,
+                activation_returns,
                 reads,
+                &term_env,
+                recursive_fns,
                 ident,
+                *closure,
+                args,
             )),
             Term::Call { continuation, .. }
             | Term::CallClosure { continuation, .. }
@@ -2248,28 +2304,34 @@ fn direct_tail_return_contribution<
     callee: FnId,
     args: &[crate::fz_ir::Var],
 ) -> ReturnContribution {
-    let arg_tys = arg_tys(t, term_env, args);
-    if let Some(target) = ft
-        .local_call_target(&crate::fz_ir::CallsiteId::new(
-            spec_key.fn_id,
-            ident,
-            crate::fz_ir::EmitSlot::Direct,
-        ))
-        .cloned()
-    {
-        return lookup_return_read(t, effective_returns, complete_returns, reads, target);
-    }
-    if let Some(ty) = external_call_return_slot0_for_spec(
-        t,
-        module,
-        spec_key.fn_id,
-        ident,
-        callee,
-        &arg_tys,
-        activation_returns,
-        &module.fn_by_id(spec_key.fn_id).owner_module,
-    ) {
-        return ReturnContribution { ty, complete: true };
+    let callsite =
+        crate::fz_ir::CallsiteId::new(spec_key.fn_id, ident, crate::fz_ir::EmitSlot::Direct);
+    if let Some(edge) = ft.call_edges.get(&callsite) {
+        match &edge.target {
+            super::fn_types::CallEdgeTarget::Local(target) => {
+                return lookup_return_read(
+                    t,
+                    effective_returns,
+                    complete_returns,
+                    reads,
+                    target.clone(),
+                );
+            }
+            super::fn_types::CallEdgeTarget::External { .. } => {
+                let arg_tys = arg_tys(t, term_env, args);
+                let ty = selected_external_call_return_slot0(
+                    t,
+                    module,
+                    callee,
+                    &arg_tys,
+                    activation_returns,
+                    &module.fn_by_id(spec_key.fn_id).owner_module,
+                    Some(edge),
+                )
+                .expect("selected external call edge must yield a declared return fact");
+                return ReturnContribution { ty, complete: true };
+            }
+        }
     }
     panic!(
         "reachable tail call must have a selected direct target or external return contract: caller={spec_key:?} callee={} ident={ident:?}",
@@ -2286,23 +2348,44 @@ fn tail_closure_return_contribution<
     ft: &SpecPlan,
     effective_returns: &HashMap<SpecKey, crate::types::Ty>,
     complete_returns: &SpecKeySet,
+    activation_returns: &ActivationReturnFacts,
     reads: &mut Vec<SpecKey>,
+    term_env: &HashMap<crate::fz_ir::Var, crate::types::Ty>,
+    recursive_fns: &std::collections::HashSet<FnId>,
     ident: &crate::fz_ir::CallsiteIdent,
+    closure: crate::fz_ir::Var,
+    args: &[crate::fz_ir::Var],
 ) -> ReturnContribution {
-    if let Some(target) = ft
+    let target = ft
         .local_call_target(&crate::fz_ir::CallsiteId::new(
             spec_key.fn_id,
             ident,
             crate::fz_ir::EmitSlot::ClosureCall,
         ))
-        .cloned()
-    {
+        .cloned();
+    if let Some(target) = target.clone() {
         return lookup_return_read(t, effective_returns, complete_returns, reads, target);
     }
-    panic!(
-        "reachable tail closure call must have a selected closure target: caller={spec_key:?} fn={} ident={ident:?}",
-        module.fn_by_id(spec_key.fn_id).name
+    let arg_tys = arg_tys(t, term_env, args);
+    match closure_call_result_knowledge(
+        t,
+        module,
+        recursive_fns,
+        spec_key,
+        ident,
+        &arg_tys,
+        activation_returns,
+        target.as_ref(),
+        term_env.get(&closure),
     )
+    .slot0
+    {
+        ResultSlot0::Known(ty) => ReturnContribution { ty, complete: true },
+        ResultSlot0::Pending => ReturnContribution {
+            ty: t.none(),
+            complete: false,
+        },
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2467,9 +2550,7 @@ fn cont_key_for_spec<T: crate::types::Types<Ty = crate::types::Ty> + crate::type
                 .iter()
                 .map(|av| env.get(av).cloned().unwrap_or_else(|| any_t.clone()))
                 .collect();
-            let target = direct_cid
-                .as_ref()
-                .and_then(|cid| ft.local_call_target(cid));
+            let selected_edge = direct_cid.as_ref().and_then(|cid| ft.call_edges.get(cid));
             let ident = block
                 .terminator
                 .ident()
@@ -2483,7 +2564,7 @@ fn cont_key_for_spec<T: crate::types::Types<Ty = crate::types::Ty> + crate::type
                 *callee,
                 &arg_tys,
                 activation_returns,
-                target,
+                selected_edge,
             )
             .slot0
             {
@@ -2532,37 +2613,35 @@ fn cont_key_for_spec<T: crate::types::Types<Ty = crate::types::Ty> + crate::type
     ))
 }
 
-fn external_call_return_slot0_for_spec<
+fn selected_external_call_return_slot0<
     T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
 >(
     t: &mut T,
     module: &Module,
-    caller: FnId,
-    ident: &crate::fz_ir::CallsiteIdent,
     callee: FnId,
     arg_tys: &[crate::types::Ty],
     activation_returns: &ActivationReturnFacts,
     owner_module: &str,
+    selected_edge: Option<&super::fn_types::CallEdgePlan>,
 ) -> Option<crate::types::Ty> {
-    let callsite = crate::fz_ir::CallsiteId::new(caller, ident, crate::fz_ir::EmitSlot::Direct);
-    module
-        .external_call_edges
-        .iter()
-        .any(|edge| edge.callsite == callsite)
-        .then(|| {
-            declared_call_return_fact(
-                t,
-                module,
-                &std::collections::HashSet::new(),
-                callee,
-                callee,
-                arg_tys,
-                activation_returns,
-                owner_module,
-            )
-            .and_then(|fact| fact.ty)
-            .unwrap_or_else(|| t.any())
-        })
+    matches!(
+        selected_edge.map(|edge| &edge.target),
+        Some(super::fn_types::CallEdgeTarget::External { .. })
+    )
+    .then(|| {
+        declared_call_return_fact(
+            t,
+            module,
+            &std::collections::HashSet::new(),
+            callee,
+            callee,
+            arg_tys,
+            activation_returns,
+            owner_module,
+        )
+        .and_then(|fact| fact.ty)
+        .unwrap_or_else(|| t.any())
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
