@@ -1,9 +1,9 @@
 use super::fn_types::{
-    CallEdgePlan, CallEdgeTarget, CallableCapability, CallsiteCallableCapabilities,
-    FixedPointInputObservation, FixedPointSlotSummaries, FnEffects, ReturnContextPlan,
-    ReturnDemand, SpecKey, SpecPlan, WALK_CALLS, fixed_point_input_tys_for_arity,
-    forwarded_return_contract_for_target, normalize_result_correspondence_key,
-    padded_direct_input_tys, return_contract_for_target, spec_key_for_fn, spec_key_for_fn_id,
+    CallEdgePlan, CallEdgeTarget, CallableCapability, CallsiteCallableCapabilities, FnEffects,
+    ReturnContextPlan, ReturnDemand, SpecKey, SpecPlan, WALK_CALLS,
+    fixed_point_input_tys_for_arity, forwarded_return_contract_for_target,
+    normalize_result_correspondence_key, padded_direct_input_tys, return_contract_for_target,
+    spec_key_for_fn, spec_key_for_fn_id,
 };
 use super::reachable::cont_key_from_slot0;
 use super::return_context::{
@@ -25,10 +25,6 @@ pub(crate) struct WalkResult {
     /// into the `return_readers` reverse index so changes
     /// re-enqueue this caller.
     pub(crate) return_reads: Vec<SpecKey>,
-    /// Recursive callee inputs observed before fixed-point summaries are applied.
-    /// The summaries are consumed by spec-key normalization, so normalized spec
-    /// keys cannot be the source of truth for widening them.
-    pub(crate) fixed_point_inputs: Vec<FixedPointInputObservation>,
 }
 
 impl WalkResult {
@@ -167,7 +163,6 @@ pub(super) fn walk_spec_for_discovery<
     fn_effects: &FnEffects,
     activation_returns: &super::worklist::ActivationReturnFacts,
     recursive_fns: &std::collections::HashSet<FnId>,
-    slot_summaries: &FixedPointSlotSummaries,
     caller_spec_key: &SpecKey,
     callsite_callable_capabilities: &mut CallsiteCallableCapabilities,
     out: &mut WalkResult,
@@ -181,7 +176,6 @@ pub(super) fn walk_spec_for_discovery<
         fn_effects,
         activation_returns,
         recursive_fns,
-        slot_summaries,
         caller_spec_key,
         callsite_callable_capabilities,
         out,
@@ -200,7 +194,6 @@ where
     fn_effects: &'a FnEffects,
     activation_returns: &'a super::worklist::ActivationReturnFacts,
     recursive_fns: &'a HashSet<FnId>,
-    slot_summaries: &'a FixedPointSlotSummaries,
     caller_spec_key: &'a SpecKey,
     callsite_callable_capabilities: &'a mut CallsiteCallableCapabilities,
     out: &'a mut WalkResult,
@@ -507,13 +500,12 @@ where
                 self.t,
                 self.m,
                 self.recursive_fns,
-                self.slot_summaries,
                 self.caller_spec_key.fn_id,
                 fn_id,
                 input_tys,
                 n_params,
             );
-            self.record_fixed_point_input_observation(fn_id, observed);
+            let _ = observed;
             keys.push(
                 self.activation_returns
                     .canonical_public_key(self.t, spec_key_for_fn_id(self.m, fn_id, input_tys)),
@@ -589,6 +581,9 @@ where
         let demand = continuation_return_demand(self.m, self.caller_spec_key, &cont, &source);
         let mut entry_key = spec_key_for_fn(cont_fn, std::mem::take(&mut key));
         entry_key.demand = demand.clone();
+        entry_key = self
+            .activation_returns
+            .canonical_public_key(self.t, entry_key);
         let context_plan = continuation_empty_tail_plan(
             self.t,
             self.m,
@@ -641,7 +636,6 @@ where
                     callee,
                     &arg_tys,
                     self.activation_returns,
-                    self.slot_summaries,
                     target,
                 );
                 Some(match knowledge.slot0 {
@@ -696,35 +690,26 @@ where
         args: &[Var],
         env: &HashMap<Var, crate::types::Ty>,
     ) -> Option<crate::types::Ty> {
-        if let Some(target) = self.caller_ft.known_fn(&closure) {
-            let knowledge = super::worklist::known_closure_result_knowledge(
-                self.t,
-                self.m,
-                self.recursive_fns,
+        let arg_tys = self.arg_tys(args, env);
+        let selected_target = self
+            .out
+            .call_edges
+            .get(&WalkResult::callsite_id(
                 self.caller_spec_key,
                 term_ident,
-                target,
-                &self.arg_tys(args, env),
-                self.activation_returns,
-                self.slot_summaries,
-            );
-            return Some(match knowledge.slot0 {
-                super::worklist::ResultSlot0::Known(ty) => ty,
-                super::worklist::ResultSlot0::Pending => self.any_ty.clone(),
-            });
-        }
-        let Some(cv_descr) = env.get(&closure) else {
-            return Some(self.any_ty.clone());
-        };
-        let knowledge = super::worklist::closure_value_result_knowledge(
+                EmitSlot::ClosureCall,
+            ))
+            .and_then(CallEdgePlan::local_target);
+        let knowledge = super::worklist::closure_call_result_knowledge(
             self.t,
             self.m,
             self.recursive_fns,
-            self.caller_spec_key.fn_id,
-            cv_descr,
-            &self.arg_tys(args, env),
+            self.caller_spec_key,
+            term_ident,
+            &arg_tys,
             self.activation_returns,
-            self.slot_summaries,
+            selected_target,
+            env.get(&closure),
         );
         Some(match knowledge.slot0 {
             super::worklist::ResultSlot0::Known(ty) => ty,
@@ -779,13 +764,12 @@ where
             self.t,
             self.m,
             self.recursive_fns,
-            self.slot_summaries,
             self.caller_spec_key.fn_id,
             callee,
             dispatch_key,
             n_params,
         );
-        self.record_fixed_point_input_observation(callee, observed);
+        let _ = observed;
         let key = self
             .activation_returns
             .canonical_public_key(self.t, spec_key_for_fn_id(self.m, callee, input_tys));
@@ -860,37 +844,16 @@ where
             self.t,
             self.m,
             self.recursive_fns,
-            self.slot_summaries,
             self.caller_spec_key.fn_id,
             fn_id,
             dispatch_key,
             n_params,
         );
-        self.record_fixed_point_input_observation(fn_id, observed);
+        let _ = observed;
         Some(
             self.activation_returns
                 .canonical_public_key(self.t, spec_key_for_fn_id(self.m, fn_id, input_tys)),
         )
-    }
-
-    fn record_fixed_point_input_observation(
-        &mut self,
-        fn_id: FnId,
-        input_tys: Vec<crate::types::Ty>,
-    ) {
-        if !self.recursive_fns.contains(&fn_id) {
-            return;
-        }
-        let f = self.m.fn_by_id(fn_id);
-        if f.category == crate::fz_ir::FnCategory::Matcher {
-            return;
-        }
-        if super::fn_types::result_linked_param_slots(self.m, fn_id).is_empty() {
-            return;
-        }
-        self.out
-            .fixed_point_inputs
-            .push(FixedPointInputObservation { fn_id, input_tys });
     }
 
     fn callable_capability_args(

@@ -2,12 +2,11 @@ use super::closures::literal_closure_return_keys;
 use super::diagnostics::{compute_dead_branches, module_plan_stats};
 use super::effects::{prim_effects, term_effects};
 use super::fn_types::{
-    CallsiteCallableCapabilities, CapabilityPlan, EffectSummary, FixedPointInputObservation,
-    FixedPointSlotSummaries, FnEffects, ModulePlan, ReturnDemand, ReturnDepsByCaller,
-    ReturnReaders, SpecKey, SpecKeySet, SpecPlan, SpecReachabilityRole, TYPE_FN_CALLS,
-    VISIT_HARD_BOUND, WALK_CALLS, WORKLIST_POPS, build_any_key_index,
-    fixed_point_spec_key_for_arity, key_precedence_order, normalize_result_correspondence_key,
-    spec_key_for_fn_id, spec_key_input_tys,
+    CallsiteCallableCapabilities, CapabilityPlan, EffectSummary, FnEffects, ModulePlan,
+    ReturnDemand, ReturnDepsByCaller, ReturnReaders, SpecKey, SpecKeySet, SpecPlan,
+    SpecReachabilityRole, TYPE_FN_CALLS, VISIT_HARD_BOUND, WALK_CALLS, WORKLIST_POPS,
+    build_any_key_index, fixed_point_spec_key_for_arity, key_precedence_order,
+    normalize_result_correspondence_key, spec_key_for_fn_id, spec_key_input_tys,
 };
 use super::reachable::{cont_key_from_slot0, env_at_terminator};
 use super::type_fn::type_fn;
@@ -880,7 +879,6 @@ pub(super) fn direct_call_result_knowledge<
     callee: FnId,
     arg_tys: &[crate::types::Ty],
     activation_returns: &ActivationReturnFacts,
-    slot_summaries: &FixedPointSlotSummaries,
     direct_target: Option<&SpecKey>,
 ) -> CallResultKnowledge {
     if let Some(slot0) = external_call_return_slot0_for_spec(
@@ -911,7 +909,6 @@ pub(super) fn direct_call_result_knowledge<
             t,
             module,
             recursive_fns,
-            slot_summaries,
             caller_spec_key.fn_id,
             callee,
             arg_tys.to_vec(),
@@ -923,7 +920,6 @@ pub(super) fn direct_call_result_knowledge<
         t,
         module,
         recursive_fns,
-        slot_summaries,
         caller_spec_key.fn_id,
         callee,
         arg_tys,
@@ -935,7 +931,7 @@ pub(super) fn direct_call_result_knowledge<
     CallResultKnowledge { slot0 }
 }
 
-pub(super) fn known_closure_result_knowledge<
+pub(super) fn closure_call_result_knowledge<
     T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
 >(
     t: &mut T,
@@ -943,10 +939,10 @@ pub(super) fn known_closure_result_knowledge<
     recursive_fns: &std::collections::HashSet<FnId>,
     caller_spec_key: &SpecKey,
     ident: &crate::fz_ir::CallsiteIdent,
-    target: FnId,
     arg_tys: &[crate::types::Ty],
     activation_returns: &ActivationReturnFacts,
-    slot_summaries: &FixedPointSlotSummaries,
+    selected_target: Option<&SpecKey>,
+    closure_ty: Option<&crate::types::Ty>,
 ) -> CallResultKnowledge {
     let callsite = crate::fz_ir::CallsiteId::new(
         caller_spec_key.fn_id,
@@ -957,53 +953,22 @@ pub(super) fn known_closure_result_knowledge<
         return CallResultKnowledge { slot0 };
     }
 
-    let target_fn = module.fn_by_id(target);
-    let n_params = target_fn.block(target_fn.entry).params.len();
-    let key = fixed_point_spec_key_for_arity(
-        t,
-        module,
-        recursive_fns,
-        slot_summaries,
-        caller_spec_key.fn_id,
-        target,
-        arg_tys.to_vec(),
-        n_params,
-        None,
-    );
-    let declared_fact = declared_call_return_fact(
-        t,
-        module,
-        recursive_fns,
-        slot_summaries,
-        caller_spec_key.fn_id,
-        target,
-        arg_tys,
-        activation_returns,
-        &module.fn_by_id(caller_spec_key.fn_id).owner_module,
-    );
-    let activation_slot0 = activation_returns.result_slot0_for_key(t, &key);
-    let slot0 = call_result_slot0(t, declared_fact.as_ref(), activation_slot0);
-    CallResultKnowledge { slot0 }
-}
+    if let Some(target) = selected_target {
+        let slot0 = activation_returns.result_slot0_for_key(t, target);
+        return CallResultKnowledge { slot0 };
+    }
 
-pub(super) fn closure_value_result_knowledge<
-    T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
->(
-    t: &mut T,
-    module: &Module,
-    recursive_fns: &std::collections::HashSet<FnId>,
-    caller: FnId,
-    closure_ty: &crate::types::Ty,
-    arg_tys: &[crate::types::Ty],
-    activation_returns: &ActivationReturnFacts,
-    slot_summaries: &FixedPointSlotSummaries,
-) -> CallResultKnowledge {
+    let Some(closure_ty) = closure_ty else {
+        return CallResultKnowledge {
+            slot0: ResultSlot0::Pending,
+        };
+    };
+
     if let Some(keys) = literal_closure_return_keys(
         t,
         module,
         recursive_fns,
-        slot_summaries,
-        caller,
+        caller_spec_key.fn_id,
         closure_ty,
         arg_tys,
         None,
@@ -1426,8 +1391,6 @@ fn discover_specs<
     let mut return_readers: ReturnReaders = HashMap::new();
     let mut return_deps_by_caller: ReturnDepsByCaller = HashMap::new();
     let mut visit_count: HashMap<SpecKey, usize> = HashMap::new();
-
-    let mut slot_summaries: FixedPointSlotSummaries = HashMap::new();
     let fn_effects = compute_fn_effects(m);
     let activation_returns = ActivationReturnFacts::from_entry_seeds(t, m, tel.tel);
 
@@ -1453,11 +1416,12 @@ fn discover_specs<
         &mut return_readers,
         &mut return_deps_by_caller,
         &mut visit_count,
-        &mut slot_summaries,
     );
 
     let reachable: SpecKeySet = reachable_specs_from_call_edges(t, m, &specs);
     specs.retain(|k, _| reachable.contains(k));
+    complete_returns =
+        finalize_return_completeness(&specs, &return_deps_by_caller, &effective_returns);
     activation_returns.project_effective_returns(
         t,
         &reachable,
@@ -1487,6 +1451,120 @@ fn discover_specs<
         activation_return_projection_gaps,
         activation_projection_facts,
     }
+}
+
+fn finalize_return_completeness(
+    specs: &HashMap<SpecKey, SpecPlan>,
+    return_deps_by_caller: &ReturnDepsByCaller,
+    effective_returns: &HashMap<SpecKey, crate::types::Ty>,
+) -> SpecKeySet {
+    let nodes = specs.keys().cloned().collect::<Vec<_>>();
+    let mut index_by_key = HashMap::new();
+    for (idx, key) in nodes.iter().enumerate() {
+        index_by_key.insert(key.clone(), idx);
+    }
+
+    let mut edges = vec![Vec::new(); nodes.len()];
+    for (caller, deps) in return_deps_by_caller {
+        let Some(&caller_idx) = index_by_key.get(caller) else {
+            continue;
+        };
+        for dep in deps {
+            if let Some(&dep_idx) = index_by_key.get(dep) {
+                edges[caller_idx].push(dep_idx);
+            }
+        }
+    }
+
+    let mut order = Vec::with_capacity(nodes.len());
+    let mut visited = vec![false; nodes.len()];
+    fn dfs(idx: usize, edges: &[Vec<usize>], visited: &mut [bool], order: &mut Vec<usize>) {
+        if std::mem::replace(&mut visited[idx], true) {
+            return;
+        }
+        for &next in &edges[idx] {
+            dfs(next, edges, visited, order);
+        }
+        order.push(idx);
+    }
+    for idx in 0..nodes.len() {
+        dfs(idx, &edges, &mut visited, &mut order);
+    }
+
+    let mut reverse = vec![Vec::new(); nodes.len()];
+    for (src, deps) in edges.iter().enumerate() {
+        for &dst in deps {
+            reverse[dst].push(src);
+        }
+    }
+
+    let mut component = vec![usize::MAX; nodes.len()];
+    let mut component_nodes: Vec<Vec<usize>> = Vec::new();
+    fn dfs_rev(
+        idx: usize,
+        comp_idx: usize,
+        reverse: &[Vec<usize>],
+        component: &mut [usize],
+        members: &mut Vec<usize>,
+    ) {
+        if component[idx] != usize::MAX {
+            return;
+        }
+        component[idx] = comp_idx;
+        members.push(idx);
+        for &next in &reverse[idx] {
+            dfs_rev(next, comp_idx, reverse, component, members);
+        }
+    }
+    while let Some(idx) = order.pop() {
+        if component[idx] != usize::MAX {
+            continue;
+        }
+        let comp_idx = component_nodes.len();
+        let mut members = Vec::new();
+        dfs_rev(idx, comp_idx, &reverse, &mut component, &mut members);
+        component_nodes.push(members);
+    }
+
+    let mut component_deps = vec![std::collections::BTreeSet::new(); component_nodes.len()];
+    for (src, deps) in edges.iter().enumerate() {
+        let src_comp = component[src];
+        for &dst in deps {
+            let dst_comp = component[dst];
+            if src_comp != dst_comp {
+                component_deps[src_comp].insert(dst_comp);
+            }
+        }
+    }
+
+    let mut complete_components = vec![false; component_nodes.len()];
+    let mut changed = true;
+    while changed {
+        changed = false;
+        for comp_idx in 0..component_nodes.len() {
+            if complete_components[comp_idx] {
+                continue;
+            }
+            let has_returns = component_nodes[comp_idx]
+                .iter()
+                .all(|&idx| effective_returns.contains_key(&nodes[idx]));
+            let deps_complete = component_deps[comp_idx]
+                .iter()
+                .all(|dep| complete_components[*dep]);
+            if has_returns && deps_complete {
+                complete_components[comp_idx] = true;
+                changed = true;
+            }
+        }
+    }
+
+    component_nodes
+        .into_iter()
+        .enumerate()
+        .filter(|(comp_idx, _)| complete_components[*comp_idx])
+        .flat_map(|(_, members)| members.into_iter())
+        .map(|idx| nodes[idx].clone())
+        .collect()
 }
 
 fn reachable_specs_from_call_edges<
@@ -1677,7 +1755,6 @@ fn process_worklist<T: crate::types::Types<Ty = crate::types::Ty> + crate::types
     return_readers: &mut ReturnReaders,
     return_deps_by_caller: &mut ReturnDepsByCaller,
     visit_count: &mut HashMap<SpecKey, usize>,
-    slot_summaries: &mut FixedPointSlotSummaries,
 ) {
     while let Some(spec_key) = work.pop_front() {
         in_work.remove(&spec_key);
@@ -1697,13 +1774,11 @@ fn process_worklist<T: crate::types::Types<Ty = crate::types::Ty> + crate::types
             specs,
             activation_returns,
             recursive_fns,
-            slot_summaries,
             callsite_callable_capabilities,
         );
         let WalkResult {
             call_edges,
             return_reads,
-            fixed_point_inputs,
         } = result;
         install_walk_result(specs, &spec_key, call_edges);
         enqueue_discovered_local_targets(&spec_key, specs, work, in_work);
@@ -1721,159 +1796,9 @@ fn process_worklist<T: crate::types::Types<Ty = crate::types::Ty> + crate::types
             return_deps_by_caller,
             work,
             in_work,
-            slot_summaries,
             return_reads,
         );
-        update_fixed_point_slot_summaries(
-            t,
-            m,
-            tel,
-            recursive_fns,
-            slot_summaries,
-            fixed_point_inputs,
-            work,
-            in_work,
-            specs,
-        );
     }
-}
-
-fn update_fixed_point_slot_summaries<T: crate::types::Types<Ty = crate::types::Ty>>(
-    t: &mut T,
-    m: &Module,
-    tel: PlannerTelemetry<'_>,
-    recursive_fns: &std::collections::HashSet<FnId>,
-    slot_summaries: &mut FixedPointSlotSummaries,
-    observations: Vec<FixedPointInputObservation>,
-    work: &mut std::collections::VecDeque<SpecKey>,
-    in_work: &mut SpecKeySet,
-    specs: &HashMap<SpecKey, SpecPlan>,
-) -> bool {
-    let mut changed = false;
-    for observation in observations {
-        changed |= update_fixed_point_slot_summary_from_observation(
-            t,
-            m,
-            tel,
-            recursive_fns,
-            slot_summaries,
-            observation,
-            work.len(),
-            specs.len(),
-        );
-    }
-
-    if changed {
-        for key in specs.keys() {
-            if in_work.insert(key.clone()) {
-                work.push_back(key.clone());
-            }
-        }
-    }
-    changed
-}
-
-fn update_fixed_point_slot_summary_from_observation<
-    T: crate::types::Types<Ty = crate::types::Ty>,
->(
-    t: &mut T,
-    m: &Module,
-    tel: PlannerTelemetry<'_>,
-    recursive_fns: &std::collections::HashSet<FnId>,
-    slot_summaries: &mut FixedPointSlotSummaries,
-    observation: FixedPointInputObservation,
-    queue_len: usize,
-    spec_count: usize,
-) -> bool {
-    if !recursive_fns.contains(&observation.fn_id) {
-        return false;
-    }
-    let f = m.fn_by_id(observation.fn_id);
-    if f.category == crate::fz_ir::FnCategory::Matcher {
-        return false;
-    }
-    let result_linked = super::fn_types::result_linked_param_slots(m, observation.fn_id);
-    if result_linked.is_empty() {
-        return false;
-    }
-
-    let observed_key = spec_key_for_fn_id(m, observation.fn_id, observation.input_tys.clone());
-    let mut changed = false;
-    for idx in result_linked {
-        let Some(ty) = observation.input_tys.get(idx) else {
-            continue;
-        };
-        if t.has_vars(ty) {
-            continue;
-        }
-        let widened = t.widen_for_recursive_spec_key(ty);
-        match slot_summaries.get(&(observation.fn_id, idx)).cloned() {
-            Some(prev) => {
-                let merged = t.refine_widen(&prev, &widened);
-                if !t.is_equivalent(&merged, &prev) {
-                    emit_fixed_point_slot_summary_update(
-                        tel,
-                        &observed_key,
-                        f,
-                        idx,
-                        Some(format!("{:?}", prev)),
-                        format!("{:?}", widened),
-                        format!("{:?}", merged),
-                        queue_len,
-                        spec_count,
-                    );
-                    slot_summaries.insert((observation.fn_id, idx), merged);
-                    changed = true;
-                }
-            }
-            None => {
-                emit_fixed_point_slot_summary_update(
-                    tel,
-                    &observed_key,
-                    f,
-                    idx,
-                    None,
-                    format!("{:?}", widened),
-                    format!("{:?}", widened),
-                    queue_len,
-                    spec_count,
-                );
-                slot_summaries.insert((observation.fn_id, idx), widened);
-                changed = true;
-            }
-        }
-    }
-    changed
-}
-
-fn emit_fixed_point_slot_summary_update(
-    tel: PlannerTelemetry<'_>,
-    spec_key: &SpecKey,
-    f: &crate::fz_ir::FnIr,
-    slot_index: usize,
-    prev: Option<String>,
-    observed: String,
-    merged: String,
-    queue_len: usize,
-    spec_count: usize,
-) {
-    tel.tel.execute(
-        &["fz", "planner", "fixed_point_slot_summary_update"],
-        &crate::measurements! {
-            slot_index: slot_index as u64,
-            queue_len: queue_len as u64,
-            spec_count: spec_count as u64,
-        },
-        &crate::metadata! {
-            role: tel.role,
-            spec_key: format!("{:?}", spec_key),
-            fn_id: spec_key.fn_id.0 as u64,
-            fn_name: f.name.clone(),
-            prev_summary: prev.unwrap_or_else(|| "<none>".to_string()),
-            observed_summary: observed,
-            merged_summary: merged,
-        },
-    );
 }
 
 fn ensure_spec_typed<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes>(
@@ -1924,7 +1849,6 @@ fn discover_spec_outputs<
     specs: &HashMap<SpecKey, SpecPlan>,
     activation_returns: &ActivationReturnFacts,
     recursive_fns: &std::collections::HashSet<FnId>,
-    slot_summaries: &FixedPointSlotSummaries,
     callsite_callable_capabilities: &mut CallsiteCallableCapabilities,
 ) -> WalkResult {
     let caller_ft = specs.get(spec_key).unwrap();
@@ -1937,7 +1861,6 @@ fn discover_spec_outputs<
         fn_effects,
         activation_returns,
         recursive_fns,
-        slot_summaries,
         spec_key,
         callsite_callable_capabilities,
         &mut result,
@@ -2003,7 +1926,6 @@ fn update_effective_return_and_enqueue_readers<
     return_deps_by_caller: &mut ReturnDepsByCaller,
     work: &mut std::collections::VecDeque<SpecKey>,
     in_work: &mut SpecKeySet,
-    slot_summaries: &FixedPointSlotSummaries,
     walk_return_reads: Vec<SpecKey>,
 ) {
     let prev_ret = effective_returns.get(spec_key).cloned();
@@ -2019,7 +1941,6 @@ fn update_effective_return_and_enqueue_readers<
         effective_returns,
         complete_returns,
         activation_returns,
-        slot_summaries,
         &mut compute_reads,
     );
     let new_ret = match prev_ret.clone() {
@@ -2216,7 +2137,6 @@ fn compute_return_for_spec<
     effective_returns: &HashMap<SpecKey, crate::types::Ty>,
     complete_returns: &SpecKeySet,
     activation_returns: &ActivationReturnFacts,
-    slot_summaries: &FixedPointSlotSummaries,
     reads: &mut Vec<SpecKey>,
 ) -> (T::Ty, bool) {
     let Some(&j) = module.fn_idx.get(&spec_key.fn_id) else {
@@ -2247,12 +2167,11 @@ fn compute_return_for_spec<
             } => Some(direct_tail_return_contribution(
                 t,
                 module,
-                recursive_fns,
                 spec_key,
+                ft,
                 effective_returns,
                 complete_returns,
                 activation_returns,
-                slot_summaries,
                 reads,
                 &term_env,
                 ident,
@@ -2260,22 +2179,18 @@ fn compute_return_for_spec<
                 args,
             )),
             Term::TailCallClosure {
-                closure,
-                args,
-                ident: _,
+                ident,
+                closure: _,
+                args: _,
             } => Some(tail_closure_return_contribution(
                 t,
                 module,
-                recursive_fns,
                 spec_key,
                 ft,
                 effective_returns,
                 complete_returns,
-                slot_summaries,
                 reads,
-                &term_env,
-                *closure,
-                args,
+                ident,
             )),
             Term::Call { continuation, .. }
             | Term::CallClosure { continuation, .. }
@@ -2291,7 +2206,6 @@ fn compute_return_for_spec<
                 effective_returns,
                 complete_returns,
                 activation_returns,
-                slot_summaries,
                 reads,
                 b,
                 continuation,
@@ -2323,12 +2237,11 @@ fn direct_tail_return_contribution<
 >(
     t: &mut T,
     module: &Module,
-    recursive_fns: &std::collections::HashSet<FnId>,
     spec_key: &SpecKey,
+    ft: &SpecPlan,
     effective_returns: &HashMap<SpecKey, crate::types::Ty>,
     complete_returns: &SpecKeySet,
     activation_returns: &ActivationReturnFacts,
-    slot_summaries: &FixedPointSlotSummaries,
     reads: &mut Vec<SpecKey>,
     term_env: &HashMap<crate::fz_ir::Var, crate::types::Ty>,
     ident: &crate::fz_ir::CallsiteIdent,
@@ -2336,6 +2249,16 @@ fn direct_tail_return_contribution<
     args: &[crate::fz_ir::Var],
 ) -> ReturnContribution {
     let arg_tys = arg_tys(t, term_env, args);
+    if let Some(target) = ft
+        .local_call_target(&crate::fz_ir::CallsiteId::new(
+            spec_key.fn_id,
+            ident,
+            crate::fz_ir::EmitSlot::Direct,
+        ))
+        .cloned()
+    {
+        return lookup_return_read(t, effective_returns, complete_returns, reads, target);
+    }
     if let Some(ty) = external_call_return_slot0_for_spec(
         t,
         module,
@@ -2348,155 +2271,38 @@ fn direct_tail_return_contribution<
     ) {
         return ReturnContribution { ty, complete: true };
     }
-    let target_fn = module.fn_by_id(callee);
-    let n_params = target_fn.block(target_fn.entry).params.len();
-    let key = fixed_point_spec_key_for_arity(
-        t,
-        module,
-        recursive_fns,
-        slot_summaries,
-        spec_key.fn_id,
-        callee,
-        arg_tys,
-        n_params,
-        Some(spec_key.demand.clone()),
-    );
-    lookup_return_read(t, effective_returns, complete_returns, reads, key)
+    panic!(
+        "reachable tail call must have a selected direct target or external return contract: caller={spec_key:?} callee={} ident={ident:?}",
+        module.fn_by_id(callee).name
+    )
 }
 
-#[allow(clippy::too_many_arguments)]
 fn tail_closure_return_contribution<
     T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
 >(
     t: &mut T,
     module: &Module,
-    recursive_fns: &std::collections::HashSet<FnId>,
     spec_key: &SpecKey,
     ft: &SpecPlan,
     effective_returns: &HashMap<SpecKey, crate::types::Ty>,
     complete_returns: &SpecKeySet,
-    slot_summaries: &FixedPointSlotSummaries,
     reads: &mut Vec<SpecKey>,
-    term_env: &HashMap<crate::fz_ir::Var, crate::types::Ty>,
-    closure: crate::fz_ir::Var,
-    args: &[crate::fz_ir::Var],
+    ident: &crate::fz_ir::CallsiteIdent,
 ) -> ReturnContribution {
-    if let Some(target) = ft.known_fn(&closure) {
-        return known_tail_closure_return_contribution(
-            t,
-            module,
-            recursive_fns,
-            spec_key,
-            effective_returns,
-            complete_returns,
-            slot_summaries,
-            reads,
-            term_env,
-            target,
-            args,
-        );
+    if let Some(target) = ft
+        .local_call_target(&crate::fz_ir::CallsiteId::new(
+            spec_key.fn_id,
+            ident,
+            crate::fz_ir::EmitSlot::ClosureCall,
+        ))
+        .cloned()
+    {
+        return lookup_return_read(t, effective_returns, complete_returns, reads, target);
     }
-    let Some(cv_ty) = term_env.get(&closure) else {
-        return ReturnContribution {
-            ty: t.any(),
-            complete: true,
-        };
-    };
-    literal_tail_closure_return_contribution(
-        t,
-        module,
-        recursive_fns,
-        spec_key,
-        effective_returns,
-        complete_returns,
-        slot_summaries,
-        reads,
-        term_env,
-        cv_ty,
-        args,
+    panic!(
+        "reachable tail closure call must have a selected closure target: caller={spec_key:?} fn={} ident={ident:?}",
+        module.fn_by_id(spec_key.fn_id).name
     )
-}
-
-#[allow(clippy::too_many_arguments)]
-fn known_tail_closure_return_contribution<
-    T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
->(
-    t: &mut T,
-    module: &Module,
-    recursive_fns: &std::collections::HashSet<FnId>,
-    spec_key: &SpecKey,
-    effective_returns: &HashMap<SpecKey, crate::types::Ty>,
-    complete_returns: &SpecKeySet,
-    slot_summaries: &FixedPointSlotSummaries,
-    reads: &mut Vec<SpecKey>,
-    term_env: &HashMap<crate::fz_ir::Var, crate::types::Ty>,
-    target: FnId,
-    args: &[crate::fz_ir::Var],
-) -> ReturnContribution {
-    let target_fn = module.fn_by_id(target);
-    let np = target_fn.block(target_fn.entry).params.len();
-    let ad = arg_tys(t, term_env, args);
-    let key = fixed_point_spec_key_for_arity(
-        t,
-        module,
-        recursive_fns,
-        slot_summaries,
-        spec_key.fn_id,
-        target,
-        ad,
-        np,
-        Some(spec_key.demand.clone()),
-    );
-    lookup_return_read(t, effective_returns, complete_returns, reads, key)
-}
-
-#[allow(clippy::too_many_arguments)]
-fn literal_tail_closure_return_contribution<
-    T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
->(
-    t: &mut T,
-    module: &Module,
-    recursive_fns: &std::collections::HashSet<FnId>,
-    spec_key: &SpecKey,
-    effective_returns: &HashMap<SpecKey, crate::types::Ty>,
-    complete_returns: &SpecKeySet,
-    slot_summaries: &FixedPointSlotSummaries,
-    reads: &mut Vec<SpecKey>,
-    term_env: &HashMap<crate::fz_ir::Var, crate::types::Ty>,
-    cv_ty: &crate::types::Ty,
-    args: &[crate::fz_ir::Var],
-) -> ReturnContribution {
-    let clauses = t.callable_clauses(cv_ty);
-    let mut all_lit = clauses.is_some();
-    let mut acc = t.none();
-    let mut complete = true;
-    let ad = arg_tys(t, term_env, args);
-    if let Some(keys) = literal_closure_return_keys(
-        t,
-        module,
-        recursive_fns,
-        slot_summaries,
-        spec_key.fn_id,
-        cv_ty,
-        &ad,
-        Some(spec_key.demand.clone()),
-    ) {
-        for key in keys {
-            let dy = lookup_return_read(t, effective_returns, complete_returns, reads, key);
-            complete &= dy.complete;
-            acc = t.union(acc, dy.ty);
-        }
-    } else if clauses.is_some() {
-        all_lit = false;
-    }
-    if all_lit {
-        ReturnContribution { ty: acc, complete }
-    } else {
-        ReturnContribution {
-            ty: t.any(),
-            complete: true,
-        }
-    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2511,7 +2317,6 @@ fn continuation_return_contribution<
     effective_returns: &HashMap<SpecKey, crate::types::Ty>,
     complete_returns: &SpecKeySet,
     activation_returns: &ActivationReturnFacts,
-    slot_summaries: &FixedPointSlotSummaries,
     reads: &mut Vec<SpecKey>,
     block: &Block,
     continuation: &crate::fz_ir::Cont,
@@ -2535,14 +2340,14 @@ fn continuation_return_contribution<
             recursive_fns,
             spec_key,
             activation_returns,
-            slot_summaries,
         ) else {
             return ReturnContribution {
                 ty: t.none(),
                 complete: false,
             };
         };
-        spec_key_for_fn_id(module, continuation.fn_id, cont_k)
+        activation_returns
+            .canonical_public_key(t, spec_key_for_fn_id(module, continuation.fn_id, cont_k))
     };
     lookup_return_read(t, effective_returns, complete_returns, reads, key)
 }
@@ -2639,7 +2444,6 @@ fn cont_key_for_spec<T: crate::types::Types<Ty = crate::types::Ty> + crate::type
     recursive_fns: &std::collections::HashSet<FnId>,
     caller_spec_key: &SpecKey,
     activation_returns: &ActivationReturnFacts,
-    slot_summaries: &FixedPointSlotSummaries,
 ) -> Option<Vec<crate::types::Ty>> {
     use crate::types::Ty;
     let Some(_) = module.fn_idx.get(&cont.fn_id) else {
@@ -2679,7 +2483,6 @@ fn cont_key_for_spec<T: crate::types::Types<Ty = crate::types::Ty> + crate::type
                 *callee,
                 &arg_tys,
                 activation_returns,
-                slot_summaries,
                 target,
             )
             .slot0
@@ -2693,49 +2496,30 @@ fn cont_key_for_spec<T: crate::types::Types<Ty = crate::types::Ty> + crate::type
                 .terminator
                 .ident()
                 .expect("closure call terminator should carry ident");
-            if let Some(target) = ft.known_fn(closure) {
-                let ad: Vec<Ty> = args
-                    .iter()
-                    .map(|av| env.get(av).cloned().unwrap_or_else(|| any_t.clone()))
-                    .collect();
-                match known_closure_result_knowledge(
-                    t,
-                    module,
-                    recursive_fns,
-                    caller_spec_key,
-                    &ident,
-                    target,
-                    &ad,
-                    activation_returns,
-                    slot_summaries,
-                )
-                .slot0
-                {
-                    ResultSlot0::Known(ty) => ty,
-                    ResultSlot0::Pending => return None,
-                }
-            } else if let Some(cv_descr) = env.get(closure) {
-                let arg_tys: Vec<Ty> = args
-                    .iter()
-                    .map(|av| env.get(av).cloned().unwrap_or_else(|| any_t.clone()))
-                    .collect();
-                match closure_value_result_knowledge(
-                    t,
-                    module,
-                    recursive_fns,
-                    caller_spec_key.fn_id,
-                    cv_descr,
-                    &arg_tys,
-                    activation_returns,
-                    slot_summaries,
-                )
-                .slot0
-                {
-                    ResultSlot0::Known(ty) => ty,
-                    ResultSlot0::Pending => return None,
-                }
-            } else {
-                any_t.clone()
+            let arg_tys: Vec<Ty> = args
+                .iter()
+                .map(|av| env.get(av).cloned().unwrap_or_else(|| any_t.clone()))
+                .collect();
+            let selected_target = ft.local_call_target(&crate::fz_ir::CallsiteId::new(
+                caller_spec_key.fn_id,
+                &ident,
+                crate::fz_ir::EmitSlot::ClosureCall,
+            ));
+            match closure_call_result_knowledge(
+                t,
+                module,
+                recursive_fns,
+                caller_spec_key,
+                &ident,
+                &arg_tys,
+                activation_returns,
+                selected_target,
+                env.get(closure),
+            )
+            .slot0
+            {
+                ResultSlot0::Known(ty) => ty,
+                ResultSlot0::Pending => return None,
             }
         }
         _ => any_t.clone(),
@@ -2770,7 +2554,6 @@ fn external_call_return_slot0_for_spec<
                 t,
                 module,
                 &std::collections::HashSet::new(),
-                &FixedPointSlotSummaries::new(),
                 callee,
                 callee,
                 arg_tys,
@@ -2789,7 +2572,6 @@ fn declared_call_return_fact<
     t: &mut T,
     module: &Module,
     recursive_fns: &std::collections::HashSet<FnId>,
-    slot_summaries: &FixedPointSlotSummaries,
     caller: FnId,
     callee: FnId,
     arg_tys: &[crate::types::Ty],
@@ -2806,7 +2588,6 @@ fn declared_call_return_fact<
                 t,
                 module,
                 recursive_fns,
-                slot_summaries,
                 caller,
                 activation_returns,
                 query,
@@ -2835,7 +2616,6 @@ fn declared_callback_return_fact<
     t: &mut T,
     module: &Module,
     recursive_fns: &std::collections::HashSet<FnId>,
-    slot_summaries: &FixedPointSlotSummaries,
     caller: FnId,
     activation_returns: &ActivationReturnFacts,
     query: crate::specs::CallbackReturnQuery<'_>,
@@ -2849,7 +2629,6 @@ fn declared_callback_return_fact<
         t,
         module,
         recursive_fns,
-        slot_summaries,
         caller,
         fn_id,
         full_key,

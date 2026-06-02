@@ -192,7 +192,6 @@ fn declared_return_for_spec_key<
     let spec_set = module.declared_specs.get(&key.fn_id)?;
     let owner = &module.fn_by_id(key.fn_id).owner_module;
     let recursive_fns = std::collections::HashSet::new();
-    let slot_summaries = crate::ir_planner::fn_types::FixedPointSlotSummaries::new();
     let application = crate::specs::apply_spec_set(
         t,
         spec_set,
@@ -202,7 +201,6 @@ fn declared_return_for_spec_key<
                 t,
                 module,
                 &recursive_fns,
-                &slot_summaries,
                 key.fn_id,
                 &module_plan.effective_returns,
                 query,
@@ -225,7 +223,6 @@ fn codegen_callback_return_fact<
     t: &mut T,
     module: &crate::fz_ir::Module,
     recursive_fns: &std::collections::HashSet<crate::fz_ir::FnId>,
-    slot_summaries: &crate::ir_planner::fn_types::FixedPointSlotSummaries,
     caller: crate::fz_ir::FnId,
     effective_returns: &std::collections::HashMap<
         crate::ir_planner::fn_types::SpecKey,
@@ -242,7 +239,6 @@ fn codegen_callback_return_fact<
         t,
         module,
         recursive_fns,
-        slot_summaries,
         caller,
         fn_id,
         full_key,

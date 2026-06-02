@@ -866,13 +866,6 @@ pub(crate) type SpecKeySet = std::collections::HashSet<SpecKey>;
 pub(crate) type ReturnReaders = HashMap<SpecKey, SpecKeySet>;
 pub(crate) type ReturnDepsByCaller = HashMap<SpecKey, SpecKeySet>;
 pub(crate) type CallsiteCallableCapabilities = HashMap<SpecKey, Vec<Option<CallableCapability>>>;
-pub(crate) type FixedPointSlotSummaries = HashMap<(FnId, usize), crate::types::Ty>;
-
-#[derive(Clone, Debug)]
-pub(crate) struct FixedPointInputObservation {
-    pub(crate) fn_id: FnId,
-    pub(crate) input_tys: Vec<crate::types::Ty>,
-}
 
 pub(crate) fn result_linked_param_slots(
     module: &Module,
@@ -973,23 +966,14 @@ pub(crate) fn fixed_point_spec_key_for_arity<
     t: &mut T,
     module: &Module,
     recursive_fns: &std::collections::HashSet<FnId>,
-    slot_summaries: &FixedPointSlotSummaries,
     caller: FnId,
     callee: FnId,
     input_tys: Vec<crate::types::Ty>,
     arity: usize,
     demand: Option<ReturnDemand>,
 ) -> SpecKey {
-    let (_, input_tys) = fixed_point_input_tys_for_arity(
-        t,
-        module,
-        recursive_fns,
-        slot_summaries,
-        caller,
-        callee,
-        input_tys,
-        arity,
-    );
+    let (_, input_tys) =
+        fixed_point_input_tys_for_arity(t, module, recursive_fns, caller, callee, input_tys, arity);
     let mut key = spec_key_for_fn_id(module, callee, input_tys);
     if let Some(demand) = demand {
         key.demand = demand;
@@ -1003,7 +987,6 @@ pub(crate) fn fixed_point_input_tys_for_arity<
     t: &mut T,
     module: &Module,
     recursive_fns: &std::collections::HashSet<FnId>,
-    slot_summaries: &FixedPointSlotSummaries,
     caller: FnId,
     callee: FnId,
     input_tys: Vec<crate::types::Ty>,
@@ -1014,25 +997,5 @@ pub(crate) fn fixed_point_input_tys_for_arity<
         normalize_recursive_direct_key(t, recursive_fns, input_tys, caller, callee, module);
     let input_tys = normalize_result_correspondence_key(t, module, callee, input_tys);
     let observed = input_tys.clone();
-    let input_tys =
-        apply_fixed_point_slot_summaries(t, recursive_fns, slot_summaries, callee, input_tys);
     (observed, input_tys)
-}
-
-pub(crate) fn apply_fixed_point_slot_summaries<T: crate::types::Types<Ty = crate::types::Ty>>(
-    _t: &mut T,
-    recursive_fns: &std::collections::HashSet<FnId>,
-    slot_summaries: &FixedPointSlotSummaries,
-    callee: FnId,
-    mut key: Vec<crate::types::Ty>,
-) -> Vec<crate::types::Ty> {
-    if !recursive_fns.contains(&callee) {
-        return key;
-    }
-    for (idx, slot) in key.iter_mut().enumerate() {
-        if let Some(summary) = slot_summaries.get(&(callee, idx)) {
-            *slot = summary.clone();
-        }
-    }
-    key
 }

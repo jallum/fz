@@ -137,7 +137,6 @@ where
 {
     let spec_set = module.declared_specs.get(&callee)?;
     let recursive_fns = std::collections::HashSet::new();
-    let slot_summaries = super::fn_types::FixedPointSlotSummaries::new();
     let application = crate::specs::apply_spec_set(
         t,
         spec_set,
@@ -147,7 +146,6 @@ where
                 t,
                 module,
                 &recursive_fns,
-                &slot_summaries,
                 caller,
                 effective_returns,
                 complete_returns,
@@ -177,7 +175,6 @@ fn test_callback_return_fact<T>(
     t: &mut T,
     module: &Module,
     recursive_fns: &std::collections::HashSet<FnId>,
-    slot_summaries: &super::fn_types::FixedPointSlotSummaries,
     caller: FnId,
     effective_returns: &HashMap<SpecKey, crate::types::Ty>,
     complete_returns: Option<&super::fn_types::SpecKeySet>,
@@ -195,7 +192,6 @@ where
         t,
         module,
         recursive_fns,
-        slot_summaries,
         caller,
         fn_id,
         full_key,
@@ -5223,7 +5219,6 @@ fn declared_return_fact_handles_take_positive_reduce_while_in_runtime_graph() {
                         &mut t,
                         &module,
                         &std::collections::HashSet::new(),
-                        &super::fn_types::FixedPointSlotSummaries::new(),
                         take_positive.id,
                         target_fn,
                         key,

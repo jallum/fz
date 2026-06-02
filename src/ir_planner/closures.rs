@@ -1,6 +1,4 @@
-use super::fn_types::{
-    CapabilityPlan, FixedPointSlotSummaries, ReturnDemand, SpecKey, fixed_point_spec_key_for_arity,
-};
+use super::fn_types::{CapabilityPlan, ReturnDemand, SpecKey, fixed_point_spec_key_for_arity};
 use crate::fz_ir::{FnId, Module, Prim, Stmt, Term, Var};
 use std::collections::{BTreeSet, HashMap, HashSet};
 
@@ -43,7 +41,6 @@ pub fn literal_closure_return_keys<
     t: &mut T,
     module: &Module,
     recursive_fns: &std::collections::HashSet<FnId>,
-    slot_summaries: &FixedPointSlotSummaries,
     caller: FnId,
     closure_ty: &crate::types::Ty,
     arg_tys: &[crate::types::Ty],
@@ -72,7 +69,6 @@ pub fn literal_closure_return_keys<
             t,
             module,
             recursive_fns,
-            slot_summaries,
             caller,
             fn_id,
             full_key,
