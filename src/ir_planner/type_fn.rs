@@ -207,7 +207,8 @@ pub fn type_fn<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::Clo
     m: &Module,
     entry_param_types: Option<&[crate::types::Ty]>,
 ) -> SpecPlan {
-    let (mut vars, mut block_envs) = initialize_block_envs(t, f, entry_param_types);
+    let (mut vars, mut block_envs) =
+        initialize_block_envs(t, f, m, &f.owner_module, entry_param_types);
     let topo = topo_order(f);
     run_type_fixed_point(t, f, m, &topo, &mut vars, &mut block_envs);
     let callable_capabilities = collect_callable_capabilities(t, f, &vars);
@@ -229,6 +230,8 @@ pub fn type_fn<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::Clo
 fn initialize_block_envs<T: crate::types::Types<Ty = crate::types::Ty>>(
     t: &mut T,
     f: &FnIr,
+    m: &Module,
+    owner: &str,
     entry_param_types: Option<&[crate::types::Ty]>,
 ) -> (
     HashMap<Var, crate::types::Ty>,
@@ -244,6 +247,7 @@ fn initialize_block_envs<T: crate::types::Types<Ty = crate::types::Ty>>(
                     .and_then(|ts| ts.get(i))
                     .cloned()
                     .unwrap_or_else(|| t.any());
+                let pt = t.mint_owned_resource_aliases(pt, owner, &m.opaque_inners);
                 env.insert(p, pt.clone());
                 vars.insert(p, pt);
             }
