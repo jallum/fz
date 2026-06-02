@@ -521,6 +521,7 @@ fn merge_module_plan(
     match out {
         Some(existing) => {
             existing.specs.extend(incoming.specs);
+            existing.spec_roles.extend(incoming.spec_roles);
             existing
                 .effective_returns
                 .extend(incoming.effective_returns);
@@ -542,6 +543,11 @@ fn remap_module_plan(
             .specs
             .iter()
             .map(|(key, spec)| (remap_spec_key(key, fn_map), remap_spec_plan(spec, fn_map)))
+            .collect(),
+        spec_roles: plan
+            .spec_roles
+            .iter()
+            .map(|(key, role)| (remap_spec_key(key, fn_map), *role))
             .collect(),
         effective_returns: plan
             .effective_returns

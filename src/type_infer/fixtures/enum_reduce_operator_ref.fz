@@ -6,11 +6,9 @@
 # Expected: main() : {int, int}; both reducers settle through Kernel.+/2's
 # declared overload set.
 
-defmodule Main do
-  fn main() do
-    {
-      Enum.reduce([1, 2, 3], 0, &Kernel.+/2),
-      Enum.reduce([1, 2, 3], 0, &+/2)
-    }
-  end
+fn main() do
+  {
+    Enum.reduce([1, 2, 3], 0, &Kernel.+/2),
+    Enum.reduce([1, 2, 3], 0, &+/2)
+  }
 end

@@ -58,33 +58,58 @@ CallsiteIdent, EmitSlot)`. The value is a `CallEdgePlan`, which names the
 selected target capability plus the return-use and return-context facts for that
 edge.
 
-`plan_module` reads structured `type_infer` activation return facts as
-production data and projects them into the committed planner return cache. This
-is data flow, not telemetry scraping.
+`plan_module` reads structured `type_infer` activation facts as production
+data and projects them into planner-visible semantic specs. This is data flow,
+not telemetry scraping.
 `ActivationKey` and `SpecKey` are intentionally not the same concept:
-activation facts are matched to planner keys by `FnId` and semantic input-slot
-coverage. `ReturnDemand` is a delivery capability, not a semantic return
-payload, so it does not split activation return facts. A known activation fact
-may serve a planner key only when the activation input domain covers the
-requested input domain. Concrete closure identity may be erased for this
-comparison so a concrete captured reducer can satisfy the planner's
-callable-capture slot without making closure identity an ABI fact.
+`type_infer` may reach multiple witness activations that share one public
+semantic domain, while the planner commits one visible `SpecKey` for that
+domain. The planner therefore keeps two layers:
+
+- witness activations, keyed by activation id, for callsite-local slot-0
+  precision, dead-arm proof, and edge inventory;
+- semantic buckets, keyed by `SpecKey`, for the executable contract handed to
+  interpreter/codegen.
+
+`ReturnDemand` is a delivery capability, not a semantic return payload, so it
+does not split activation return facts. A semantic bucket may serve a planner
+key only when the bucket input domain covers the requested input domain.
+Concrete closure identity may be erased for this comparison so a concrete
+captured reducer can satisfy the planner's callable-capture slot without making
+closure identity an ABI fact.
 
 Unresolved activation facts are retained both as exact boundary facts and as
-overlap guards. An exact unresolved fact can be projected at the final boundary
-(`Pending`/`Unknown` erase to `any` there), but a different known fact is not
-projected for a requested key when any unresolved activation domain for the same
-`FnId` overlaps that requested domain. This is deliberately key-sensitive:
-unsettled `f(nonempty_list(int))` blocks a broad `f(list(int))` result, but it
-does not poison disjoint facts for the same function. The planner does not
-quarantine an entire `FnId` because one polymorphic call site is still
-unsettled.
+overlap guards. An exact unresolved semantic bucket can be projected at the
+final boundary (`Pending`/`Unknown` erase to `any` there), but a different
+known fact is not projected for a requested key when any unresolved bucket for
+the same `FnId` overlaps that requested domain. This is deliberately
+key-sensitive: unsettled `f(nonempty_list(int))` blocks a broad `f(list(int))`
+result, but it does not poison disjoint facts for the same function. The
+planner does not quarantine an entire `FnId` because one polymorphic call site
+is still unsettled.
 The `fz.planner.planned` event reports this activation projection with
 `type_kernel: "activation"` plus activation return fact/key counts, entry
 completion/unresolved/invalid counts, known/unresolved/no-return counts,
 projected return count, projection-gap count, and the
 `activation_return_projection_gaps` key list for any reachable specs the
 activation facts cannot cover.
+
+`fz.planner.activation_projection` reports the same handoff per visible spec.
+It names the planner `SpecKey`, body, spec role, projection kind, projected
+return state, final effective return, covered witness inventory,
+activation-derived call edges, and activation-derived dead arms. `spec_role` is
+planner data retained on `ModulePlan`: `activation` specs are justified by
+solved activation facts, `callable_fallback` specs are retained because a
+constructed callable value may need the top callable body for indirect runtime
+inputs, and `projection_gap` marks reachable specs with neither justification.
+`projection_kind: "exact"` means the visible spec is justified by one semantic
+bucket, either by identical key or by one semantic bucket covering the planner
+key. That bucket may still contain multiple witness activations. Witness
+returns union to form the semantic bucket's return, witness dead-arm sets
+intersect, and witness edge sets union. `projection_kind: "union"` is reserved
+for a real merge of multiple covered semantic buckets. Tests for this boundary
+should consume this event instead of inferring projection behavior from
+downstream codegen failures.
 
 Local direct, closure, and continuation call edges target a `SpecKey`, which
 names the callee function, its semantic input key, and its `ReturnDemand`.
@@ -265,14 +290,14 @@ can feed a different use. Codegen must therefore consume the `CallsiteId` facts
 the planner produced instead of reusing the caller spec's demand as a blanket
 property.
 
-Effective returns in the committed `ModulePlan` are a projection/cache of
-activation facts over the reachable executable specs. `Known(T)` projects to
+Effective returns in the committed `ModulePlan` are a projection of semantic
+activation buckets over the reachable executable specs. `Known(T)` projects to
 `T`, `NoReturn` projects to `none`, and residual `Pending`/`Unknown` project to
 `any` only at this boundary. Specs that remain reachable without a compatible
-activation fact are reported as projection gaps; they are not silently justified
-by the planner's discovery-time return fixpoint. Zero projection gaps is the
-acceptance signal that the committed executable plan is covered by activation
-facts.
+activation fact are reported as projection gaps; they are not silently
+justified by an alternate planner-side return analysis. Zero projection gaps is
+the acceptance signal that the committed executable plan is covered by
+activation facts.
 
 ## Why Not Re-Walk In Codegen
 

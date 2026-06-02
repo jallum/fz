@@ -33,6 +33,8 @@ mod pattern_matrix;
 mod reducer;
 mod specs;
 mod telemetry;
+#[cfg(test)]
+mod test_support;
 mod type_expr;
 mod type_infer;
 mod types;

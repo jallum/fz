@@ -29,6 +29,7 @@ runtime graph, then observe type-inference facts through telemetry.
 | `match_map_binding.fz` | map clause binds `%{id: x}` | `main() : {int, :none}`; matcher-map hit/miss proof carries the field value and skips the catch-all | settles ✓ |
 | `enum_count.fz` | `Enum.count/1` over a List receiver | `Enum.count([1,2,3]) : int`; protocol dispatch reaches the List count callback | settles ✓ |
 | `enum_reduce.fz` | `Enum.reduce/3` over a List receiver with an inline reducer | `Enum.reduce([1,2,3], 0, +) : int`; public wrapper, protocol dispatch, and list loop converge | settles ✓ |
+| `enum_reduce_erased_list_operator_ref.fz` | declared `list(any)` wrapper over `Enum.reduce/3` with `&Kernel.+/2` | `test([1,2,3]) : int`; a broad surface spec does not erase the concrete caller witness that reaches `Kernel.+/2` | settles ✓ |
 | `enum_reduce_named_ref_ok.fz` | `Enum.reduce/3` over a List receiver with `&Main.reducer/2` | `Enum.reduce([1,2,3], 0, &Main.reducer/2) : int`; named reducer references converge like inline closures | settles ✓ |
 | `enum_reduce_range.fz` | `Enum.reduce/3` over a Range receiver | `Enum.reduce(1..3, 0, +) : int`; struct receiver dispatches to the Range impl | settles ✓ |
 | `enum_reduce_named_ref.fz` | ill-typed named reducer returns protocol control tuples to public `Enum.reduce/3` | diagnostic: `+` is not defined for a tuple accumulator; no `Unknown`/`any` fallback | diagnostic ✓ |

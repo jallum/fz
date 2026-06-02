@@ -200,12 +200,13 @@ fn merge_non_constant_callable(entry: &mut HashMap<Var, Option<FnId>>, var: Var)
 /// `v` holds the constant closure `fid` under *every* value-spec of `F` — it is
 /// the tainted-slot set, already computed. Elimination is correct by
 /// construction: a candidate is taken only when every occurrence of the value
-/// is a pure pass-through (entry param, zero-capture `MakeClosure` source, call
+/// is a pure pass-through (entry param, `MakeClosure` source/capture, call
 /// argument, or continuation capture). Any other use — inspected by a prim,
 /// returned, threaded through a `Goto` block parameter, or reaching an
 /// un-devirtualized `CallClosure` — bails the whole candidate, leaving the IR
-/// untouched. Captures with state are excluded up front (only all-zero-capture
-/// targets qualify), so no captured value is ever silently dropped.
+/// untouched. Captures with state are excluded up front only for the candidate
+/// closure itself; carrying the candidate through another closure's captured
+/// params is allowed when those target entry slots are also being vacated.
 fn eliminate_constant_closure_values(
     module: &mut Module,
     unified: &HashMap<FnId, HashMap<Var, Option<FnId>>>,
@@ -279,6 +280,23 @@ fn eliminate_constant_closure_values(
                     {
                         cand_makeclosure.insert((f.id, *out));
                         continue;
+                    }
+                    if let Prim::MakeClosure(_, g, caps) = prim {
+                        let captures_ok = caps.iter().enumerate().all(|(pos, captured)| {
+                            !tainted(f.id, *captured) || param_tainted(*g, pos)
+                        });
+                        if captures_ok {
+                            let mut observed = tainted(f.id, *out);
+                            crate::fz_ir::visit_prim_vars(prim, |v| {
+                                if caps.contains(&v) && tainted(f.id, v) {
+                                    return;
+                                }
+                                observed |= tainted(f.id, v);
+                            });
+                            if !observed {
+                                continue;
+                            }
+                        }
                     }
                     // The value flowing into any other prim, or a tainted var
                     // bound by a non-source prim, means the closure is observed
@@ -403,9 +421,18 @@ fn eliminate_constant_closure_values(
                 .retain(|v| !removed_vars.contains(v));
         }
         for b in &mut f.blocks {
-            b.stmts.retain(|Stmt::Let(out, prim)| {
-                !(matches!(prim, Prim::MakeClosure(_, _, _))
-                    && remove_makeclosure.contains(&(f.id, *out)))
+            b.stmts.retain_mut(|Stmt::Let(out, prim)| {
+                if matches!(prim, Prim::MakeClosure(_, _, _))
+                    && remove_makeclosure.contains(&(f.id, *out))
+                {
+                    return false;
+                }
+                if let Prim::MakeClosure(_, target, captured) = prim
+                    && let Some(positions) = remove_param_pos.get(target)
+                {
+                    retain_by_position(captured, positions);
+                }
+                true
             });
         }
     }

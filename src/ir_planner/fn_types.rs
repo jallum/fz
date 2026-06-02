@@ -47,6 +47,25 @@ pub struct SpecPlan {
     pub opaque_inners: HashMap<String, crate::types::Ty>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SpecReachabilityRole {
+    Entry,
+    Activation,
+    CallableFallback,
+    ProjectionGap,
+}
+
+impl SpecReachabilityRole {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Entry => "entry",
+            Self::Activation => "activation",
+            Self::CallableFallback => "callable_fallback",
+            Self::ProjectionGap => "projection_gap",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CallableCapability {
     KnownFn(FnId),
@@ -221,6 +240,14 @@ pub enum CallEdgeTarget {
 #[derive(Debug, Clone)]
 pub struct ModulePlan {
     pub specs: HashMap<SpecKey, SpecPlan>,
+    /// Why each reachable spec remains in the executable plan.
+    ///
+    /// Activation-backed specs are justified by solved `type_infer` facts.
+    /// Callable fallbacks are retained because constructing a closure value
+    /// makes the callable body available to indirect calls whose concrete input
+    /// may only be known at runtime. Later pruning passes can read this fact
+    /// instead of rediscovering provenance from callsites.
+    pub spec_roles: HashMap<SpecKey, SpecReachabilityRole>,
     /// Semantic return payloads projected from activation inference onto the
     /// reachable planner specs. `SpecKey::demand` selects ABI/delivery shape;
     /// it does not create a different value payload. During the transplant,

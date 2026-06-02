@@ -20,9 +20,9 @@ defmodule Main do
   fn broken_reducer(entry, acc) do
     {:cont, acc + entry}
   end
+end
 
-  fn main() do
-    Enum.reduce([1, 2, 3], 0, &Main.broken_reducer/2)
-    |> dbg()
-  end
+fn main() do
+  Enum.reduce([1, 2, 3], 0, &Main.broken_reducer/2)
+  |> dbg()
 end

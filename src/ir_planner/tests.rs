@@ -1315,6 +1315,7 @@ fn reachable_specs_seeds_all_registered_specs_for_closure_targets() {
     specs.insert(value_spec_key(FnId(1), main_key), SpecPlan::default());
     let mt = ModulePlan {
         specs,
+        spec_roles: HashMap::new(),
         effective_returns: HashMap::new(),
         any_key_specs: HashMap::new(),
         spec_precedence: HashMap::new(),
@@ -1555,6 +1556,7 @@ fn fn_view_returns_narrowed_spec_for_direct_caller() {
 
 // ---- fz-ul4.29.12.1 helper tests ----
 
+#[allow(dead_code)]
 fn pipeline(
     src: &str,
     tel: &dyn crate::telemetry::Telemetry,
@@ -1571,6 +1573,20 @@ fn pipeline(
         .expect("lower");
     let mt = plan_module(&mut t, &ir, tel);
     (t, ir, mt)
+}
+
+fn frontend_module(src: &str) -> Module {
+    crate::test_support::lower_frontend_module(src)
+}
+
+fn frontend_plan(
+    src: &str,
+    tel: &dyn crate::telemetry::Telemetry,
+) -> (crate::types::ConcreteTypes, Module, ModulePlan) {
+    let mut t = crate::types::ConcreteTypes;
+    let module = frontend_module(src);
+    let plan = plan_module(&mut t, &module, tel);
+    (t, module, plan)
 }
 
 #[test]
@@ -1830,7 +1846,7 @@ fn planner_planned_reports_activation_return_kernel_telemetry() {
     let cap = Capture::new();
     tel.attach(&[], cap.handler());
 
-    let _ = pipeline("fn id(x), do: x\nfn main(), do: id(1)", &tel);
+    let _ = frontend_plan("fn id(x), do: x\nfn main(), do: id(1)", &tel);
 
     let ev = cap
         .last(&["fz", "planner", "planned"])
@@ -1858,6 +1874,1413 @@ fn planner_planned_reports_activation_return_kernel_telemetry() {
 }
 
 #[test]
+fn planner_emits_activation_projection_telemetry_for_visible_specs() {
+    use crate::telemetry::{Capture, ConfiguredTelemetry, Value};
+
+    let tel = ConfiguredTelemetry::new();
+    let cap = Capture::new();
+    tel.attach(&[], cap.handler());
+
+    let _ = frontend_plan(
+        "fn choose(x), do: if true do x else 0 end\nfn main(), do: choose(1)",
+        &tel,
+    );
+
+    let projection_events = cap.find(&["fz", "planner", "activation_projection"]);
+    assert!(
+        !projection_events.is_empty(),
+        "planner must publish activation projection facts per visible spec"
+    );
+
+    let choose_events: Vec<_> = projection_events
+        .iter()
+        .filter(|event| {
+            matches!(
+                event.metadata.get("body_name"),
+                Some(Value::Str(name)) if name == "choose"
+            )
+        })
+        .collect();
+    assert!(
+        !choose_events.is_empty(),
+        "expected at least one choose activation projection event"
+    );
+    let choose_event = choose_events
+        .into_iter()
+        .find(|event| {
+            matches!(
+                event.measurements.get("projected_dead_arm_count"),
+                Some(Value::U64(1))
+            )
+        })
+        .expect("choose activation projection event with a surfaced dead arm");
+
+    let measurement = |name| match choose_event.measurements.get(name) {
+        Some(Value::U64(n)) => *n,
+        other => panic!("{name} missing or wrong type: {other:?}"),
+    };
+    assert_eq!(measurement("covered_activation_count"), 1);
+    assert_eq!(measurement("covered_known_count"), 1);
+    assert_eq!(measurement("exact_coverage"), 1);
+    assert_eq!(measurement("projection_gap"), 0);
+    assert_eq!(measurement("projected_dead_arm_count"), 1);
+
+    assert!(matches!(
+        choose_event.metadata.get("projection_kind"),
+        Some(Value::Str(kind)) if kind == "exact"
+    ));
+    assert!(matches!(
+        choose_event.metadata.get("projected_return_state"),
+        Some(Value::Str(state)) if state.starts_with("known(")
+    ));
+    let covered_activations = match choose_event.metadata.get("covered_activations") {
+        Some(Value::StrSeq(values)) => values,
+        other => panic!("covered_activations missing or wrong type: {other:?}"),
+    };
+    assert_eq!(covered_activations.len(), 1);
+    assert!(
+        covered_activations[0].contains("choose"),
+        "covered activation inventory should name the observed activation: {covered_activations:?}"
+    );
+    let projected_dead_arms = match choose_event.metadata.get("projected_dead_arms") {
+        Some(Value::StrSeq(values)) => values,
+        other => panic!("projected_dead_arms missing or wrong type: {other:?}"),
+    };
+    assert_eq!(
+        projected_dead_arms.as_ref(),
+        &["choose#b0:else".to_string()],
+        "projection must surface observed dead matcher arms"
+    );
+}
+
+#[test]
+fn planner_projects_polymorphic_direct_call_activations_per_visible_spec() {
+    use crate::telemetry::{Capture, ConfiguredTelemetry, Value};
+
+    let tel = ConfiguredTelemetry::new();
+    let cap = Capture::new();
+    tel.attach(&[], cap.handler());
+
+    let _ = frontend_plan(include_str!("../type_infer/fixtures/poly_id.fz"), &tel);
+
+    let id_events: Vec<_> = cap
+        .find(&["fz", "planner", "activation_projection"])
+        .into_iter()
+        .filter(|event| {
+            matches!(
+                event.metadata.get("body_name"),
+                Some(Value::Str(name)) if name == "id"
+            )
+        })
+        .collect();
+    assert_eq!(
+        id_events.len(),
+        2,
+        "poly_id should publish one visible id projection per concrete activation: {id_events:?}"
+    );
+
+    let mut projected_returns = Vec::new();
+    for event in &id_events {
+        let measurement = |name| match event.measurements.get(name) {
+            Some(Value::U64(n)) => *n,
+            other => panic!("{name} missing or wrong type: {other:?}"),
+        };
+        assert_eq!(measurement("covered_activation_count"), 1);
+        assert_eq!(measurement("covered_known_count"), 1);
+        assert_eq!(measurement("exact_coverage"), 1);
+        assert_eq!(measurement("projection_gap"), 0);
+        assert!(matches!(
+            event.metadata.get("projection_kind"),
+            Some(Value::Str(kind)) if kind == "exact"
+        ));
+        let projected = match event.metadata.get("projected_return_state") {
+            Some(Value::Str(state)) => state.to_string(),
+            other => panic!("projected_return_state missing or wrong type: {other:?}"),
+        };
+        projected_returns.push(projected);
+    }
+    projected_returns.sort();
+    assert_eq!(
+        projected_returns,
+        vec!["known(:ok)".to_string(), "known(int)".to_string()],
+        "id projections should preserve independent polymorphic returns"
+    );
+}
+
+#[test]
+fn planner_projects_polymorphic_named_ref_activations_per_visible_spec() {
+    use crate::telemetry::{Capture, ConfiguredTelemetry, Value};
+
+    let tel = ConfiguredTelemetry::new();
+    let cap = Capture::new();
+    tel.attach(&[], cap.handler());
+
+    let _ = frontend_plan(
+        include_str!("../type_infer/fixtures/poly_named_ref.fz"),
+        &tel,
+    );
+
+    let id_events: Vec<_> = cap
+        .find(&["fz", "planner", "activation_projection"])
+        .into_iter()
+        .filter(|event| {
+            matches!(
+                event.metadata.get("body_name"),
+                Some(Value::Str(name)) if name == "id"
+            )
+        })
+        .collect();
+    assert_eq!(
+        id_events.len(),
+        3,
+        "&id/1 should publish two activation projections plus one callable fallback: {id_events:?}"
+    );
+
+    let mut projected_returns = Vec::new();
+    for event in &id_events {
+        let spec_role = match event.metadata.get("spec_role") {
+            Some(Value::Str(role)) => role.as_ref(),
+            other => panic!("spec_role missing or wrong type: {other:?}"),
+        };
+        if spec_role == "callable_fallback" {
+            assert!(matches!(
+                event.measurements.get("covered_activation_count"),
+                Some(Value::U64(0))
+            ));
+            assert!(matches!(
+                event.metadata.get("projection_kind"),
+                Some(Value::Str(kind)) if kind == "uncovered"
+            ));
+            continue;
+        }
+        assert_eq!(
+            spec_role, "activation",
+            "id projections should be activation-covered or callable fallback"
+        );
+        let measurement = |name| match event.measurements.get(name) {
+            Some(Value::U64(n)) => *n,
+            other => panic!("{name} missing or wrong type: {other:?}"),
+        };
+        assert_eq!(measurement("covered_activation_count"), 1);
+        assert_eq!(measurement("covered_known_count"), 1);
+        assert_eq!(measurement("exact_coverage"), 1);
+        assert_eq!(measurement("projection_gap"), 0);
+        assert!(matches!(
+            event.metadata.get("projection_kind"),
+            Some(Value::Str(kind)) if kind == "exact"
+        ));
+        let projected = match event.metadata.get("projected_return_state") {
+            Some(Value::Str(state)) => state.to_string(),
+            other => panic!("projected_return_state missing or wrong type: {other:?}"),
+        };
+        projected_returns.push(projected);
+    }
+    projected_returns.sort();
+    assert_eq!(
+        projected_returns,
+        vec!["known(:ok)".to_string(), "known(int)".to_string()],
+        "named ref projections should preserve independent polymorphic returns"
+    );
+    assert_eq!(
+        id_events
+            .iter()
+            .filter(|event| matches!(
+                event.metadata.get("spec_role"),
+                Some(Value::Str(role)) if role == "callable_fallback"
+            ))
+            .count(),
+        1,
+        "named ref should retain exactly one callable fallback id spec"
+    );
+}
+
+#[test]
+fn planner_projects_captured_closure_activations_and_callable_fallback() {
+    use crate::telemetry::{Capture, ConfiguredTelemetry, Value};
+
+    let tel = ConfiguredTelemetry::new();
+    let cap = Capture::new();
+    tel.attach(&[], cap.handler());
+
+    let _ = frontend_plan(
+        include_str!("../type_infer/fixtures/poly_capture_ref.fz"),
+        &tel,
+    );
+
+    let lambda_events: Vec<_> = cap
+        .find(&["fz", "planner", "activation_projection"])
+        .into_iter()
+        .filter(|event| {
+            matches!(
+                event.metadata.get("body_name"),
+                Some(Value::Str(name)) if name.starts_with("lambda_")
+            )
+        })
+        .collect();
+    assert_eq!(
+        lambda_events.len(),
+        3,
+        "captured closure should publish two activation projections plus one callable fallback: {lambda_events:?}"
+    );
+
+    let mut projected_returns = Vec::new();
+    let mut fallback_count = 0;
+    for event in &lambda_events {
+        let spec_role = match event.metadata.get("spec_role") {
+            Some(Value::Str(role)) => role.as_ref(),
+            other => panic!("spec_role missing or wrong type: {other:?}"),
+        };
+        if spec_role == "callable_fallback" {
+            fallback_count += 1;
+            assert!(matches!(
+                event.measurements.get("covered_activation_count"),
+                Some(Value::U64(0))
+            ));
+            assert!(matches!(
+                event.metadata.get("projection_kind"),
+                Some(Value::Str(kind)) if kind == "uncovered"
+            ));
+            continue;
+        }
+        assert_eq!(
+            spec_role, "activation",
+            "lambda projections should be activation-covered or callable fallback"
+        );
+        let measurement = |name| match event.measurements.get(name) {
+            Some(Value::U64(n)) => *n,
+            other => panic!("{name} missing or wrong type: {other:?}"),
+        };
+        assert_eq!(measurement("covered_activation_count"), 1);
+        assert_eq!(measurement("covered_known_count"), 1);
+        assert_eq!(measurement("exact_coverage"), 1);
+        assert_eq!(measurement("projection_gap"), 0);
+        assert!(matches!(
+            event.metadata.get("projection_kind"),
+            Some(Value::Str(kind)) if kind == "exact"
+        ));
+        let projected = match event.metadata.get("projected_return_state") {
+            Some(Value::Str(state)) => state.to_string(),
+            other => panic!("projected_return_state missing or wrong type: {other:?}"),
+        };
+        projected_returns.push(projected);
+    }
+    projected_returns.sort();
+    assert_eq!(
+        projected_returns,
+        vec![
+            "known({:ok, :right})".to_string(),
+            "known({:ok, int})".to_string()
+        ],
+        "captured closure projections should preserve capture and argument facts"
+    );
+    assert_eq!(
+        fallback_count, 1,
+        "captured closure should retain exactly one callable fallback lambda spec"
+    );
+}
+
+#[test]
+fn planner_projects_named_ref_pattern_activations_and_dead_arms() {
+    use crate::telemetry::{Capture, ConfiguredTelemetry, Value};
+
+    let tel = ConfiguredTelemetry::new();
+    let cap = Capture::new();
+    tel.attach(&[], cap.handler());
+
+    let _ = frontend_plan(
+        include_str!("../type_infer/fixtures/poly_named_ref_pattern.fz"),
+        &tel,
+    );
+
+    let pick_events: Vec<_> = cap
+        .find(&["fz", "planner", "activation_projection"])
+        .into_iter()
+        .filter(|event| {
+            matches!(
+                event.metadata.get("body_name"),
+                Some(Value::Str(name)) if name == "pick"
+            )
+        })
+        .collect();
+    assert_eq!(
+        pick_events.len(),
+        3,
+        "&pick/1 should publish two activation projections plus one callable fallback: {pick_events:?}"
+    );
+
+    let mut projected_returns = Vec::new();
+    let mut fallback_count = 0;
+    for event in &pick_events {
+        let spec_role = match event.metadata.get("spec_role") {
+            Some(Value::Str(role)) => role.as_ref(),
+            other => panic!("spec_role missing or wrong type: {other:?}"),
+        };
+        if spec_role == "callable_fallback" {
+            fallback_count += 1;
+            assert!(matches!(
+                event.measurements.get("covered_activation_count"),
+                Some(Value::U64(0))
+            ));
+            assert!(matches!(
+                event.metadata.get("projection_kind"),
+                Some(Value::Str(kind)) if kind == "uncovered"
+            ));
+            continue;
+        }
+        assert_eq!(
+            spec_role, "activation",
+            "pick projections should be activation-covered or callable fallback"
+        );
+        let measurement = |name| match event.measurements.get(name) {
+            Some(Value::U64(n)) => *n,
+            other => panic!("{name} missing or wrong type: {other:?}"),
+        };
+        assert_eq!(measurement("covered_activation_count"), 1);
+        assert_eq!(measurement("covered_known_count"), 1);
+        assert_eq!(measurement("exact_coverage"), 1);
+        assert_eq!(measurement("projection_gap"), 0);
+        assert!(
+            measurement("projected_dead_arm_count") > 0,
+            "pattern activation should project dead-arm evidence: {event:?}"
+        );
+        assert!(matches!(
+            event.metadata.get("projection_kind"),
+            Some(Value::Str(kind)) if kind == "exact"
+        ));
+        let projected = match event.metadata.get("projected_return_state") {
+            Some(Value::Str(state)) => state.to_string(),
+            other => panic!("projected_return_state missing or wrong type: {other:?}"),
+        };
+        projected_returns.push(projected);
+    }
+    projected_returns.sort();
+    assert_eq!(
+        projected_returns,
+        vec!["known(:one)".to_string(), "known(:two)".to_string()],
+        "named ref pattern projections should preserve per-activation matcher returns"
+    );
+    assert_eq!(
+        fallback_count, 1,
+        "named ref pattern should retain exactly one callable fallback pick spec"
+    );
+}
+
+#[test]
+fn planner_projects_atom_pattern_dispatch_per_activation() {
+    use crate::telemetry::{Capture, ConfiguredTelemetry, Value};
+
+    let tel = ConfiguredTelemetry::new();
+    let cap = Capture::new();
+    tel.attach(&[], cap.handler());
+
+    let _ = frontend_plan(
+        include_str!("../type_infer/fixtures/match_atom_partition.fz"),
+        &tel,
+    );
+
+    let pick_events: Vec<_> = cap
+        .find(&["fz", "planner", "activation_projection"])
+        .into_iter()
+        .filter(|event| {
+            matches!(
+                event.metadata.get("body_name"),
+                Some(Value::Str(name)) if name == "pick"
+            )
+        })
+        .collect();
+    assert_eq!(
+        pick_events.len(),
+        2,
+        "direct atom calls should publish one visible pick projection per activation: {pick_events:?}"
+    );
+
+    let mut projected_returns = Vec::new();
+    for event in &pick_events {
+        let spec_role = match event.metadata.get("spec_role") {
+            Some(Value::Str(role)) => role.as_ref(),
+            other => panic!("spec_role missing or wrong type: {other:?}"),
+        };
+        assert_eq!(
+            spec_role, "activation",
+            "direct atom matcher projections should be activation-covered"
+        );
+        let measurement = |name| match event.measurements.get(name) {
+            Some(Value::U64(n)) => *n,
+            other => panic!("{name} missing or wrong type: {other:?}"),
+        };
+        assert_eq!(measurement("covered_activation_count"), 1);
+        assert_eq!(measurement("covered_known_count"), 1);
+        assert_eq!(measurement("exact_coverage"), 1);
+        assert_eq!(measurement("projection_gap"), 0);
+        assert!(
+            measurement("projected_dead_arm_count") > 0,
+            "matcher proof should surface dead-arm evidence per activation: {event:?}"
+        );
+        assert!(matches!(
+            event.metadata.get("projection_kind"),
+            Some(Value::Str(kind)) if kind == "exact"
+        ));
+        let projected = match event.metadata.get("projected_return_state") {
+            Some(Value::Str(state)) => state.to_string(),
+            other => panic!("projected_return_state missing or wrong type: {other:?}"),
+        };
+        projected_returns.push(projected);
+    }
+    projected_returns.sort();
+    assert_eq!(
+        projected_returns,
+        vec!["known(:one)".to_string(), "known(:two)".to_string()],
+        "direct atom matcher projections should preserve per-activation leaves"
+    );
+}
+
+#[test]
+fn planner_projects_list_pattern_dispatch_per_activation() {
+    use crate::telemetry::{Capture, ConfiguredTelemetry, Value};
+
+    let tel = ConfiguredTelemetry::new();
+    let cap = Capture::new();
+    tel.attach(&[], cap.handler());
+
+    let _ = frontend_plan(
+        include_str!("../type_infer/fixtures/match_list_partition.fz"),
+        &tel,
+    );
+
+    let pick_events: Vec<_> = cap
+        .find(&["fz", "planner", "activation_projection"])
+        .into_iter()
+        .filter(|event| {
+            matches!(
+                event.metadata.get("body_name"),
+                Some(Value::Str(name)) if name == "pick"
+            )
+        })
+        .collect();
+    assert_eq!(
+        pick_events.len(),
+        2,
+        "direct list calls should publish one visible pick projection per activation: {pick_events:?}"
+    );
+
+    let mut projected_returns = Vec::new();
+    for event in &pick_events {
+        let spec_role = match event.metadata.get("spec_role") {
+            Some(Value::Str(role)) => role.as_ref(),
+            other => panic!("spec_role missing or wrong type: {other:?}"),
+        };
+        assert_eq!(
+            spec_role, "activation",
+            "direct list matcher projections should be activation-covered"
+        );
+        let measurement = |name| match event.measurements.get(name) {
+            Some(Value::U64(n)) => *n,
+            other => panic!("{name} missing or wrong type: {other:?}"),
+        };
+        assert_eq!(measurement("covered_activation_count"), 1);
+        assert_eq!(measurement("covered_known_count"), 1);
+        assert_eq!(measurement("exact_coverage"), 1);
+        assert_eq!(measurement("projection_gap"), 0);
+        assert!(
+            measurement("projected_dead_arm_count") > 0,
+            "list matcher proof should surface dead-arm evidence per activation: {event:?}"
+        );
+        assert!(matches!(
+            event.metadata.get("projection_kind"),
+            Some(Value::Str(kind)) if kind == "exact"
+        ));
+        let projected = match event.metadata.get("projected_return_state") {
+            Some(Value::Str(state)) => state.to_string(),
+            other => panic!("projected_return_state missing or wrong type: {other:?}"),
+        };
+        projected_returns.push(projected);
+    }
+    projected_returns.sort();
+    assert_eq!(
+        projected_returns,
+        vec!["known(:cons)".to_string(), "known(:empty)".to_string()],
+        "direct list matcher projections should preserve per-activation leaves"
+    );
+}
+
+#[test]
+fn planner_projects_list_pattern_binding_per_activation() {
+    use crate::telemetry::{Capture, ConfiguredTelemetry, Value};
+
+    let tel = ConfiguredTelemetry::new();
+    let cap = Capture::new();
+    tel.attach(&[], cap.handler());
+
+    let _ = frontend_plan(
+        include_str!("../type_infer/fixtures/match_list_binding.fz"),
+        &tel,
+    );
+
+    let pick_events: Vec<_> = cap
+        .find(&["fz", "planner", "activation_projection"])
+        .into_iter()
+        .filter(|event| {
+            matches!(
+                event.metadata.get("body_name"),
+                Some(Value::Str(name)) if name == "pick"
+            )
+        })
+        .collect();
+    assert_eq!(
+        pick_events.len(),
+        2,
+        "list binding calls should publish one visible pick projection per activation: {pick_events:?}"
+    );
+
+    let mut projected_returns = Vec::new();
+    for event in &pick_events {
+        let spec_role = match event.metadata.get("spec_role") {
+            Some(Value::Str(role)) => role.as_ref(),
+            other => panic!("spec_role missing or wrong type: {other:?}"),
+        };
+        assert_eq!(
+            spec_role, "activation",
+            "list binding projections should be activation-covered"
+        );
+        let measurement = |name| match event.measurements.get(name) {
+            Some(Value::U64(n)) => *n,
+            other => panic!("{name} missing or wrong type: {other:?}"),
+        };
+        assert_eq!(measurement("covered_activation_count"), 1);
+        assert_eq!(measurement("covered_known_count"), 1);
+        assert_eq!(measurement("exact_coverage"), 1);
+        assert_eq!(measurement("projection_gap"), 0);
+        assert!(
+            measurement("projected_dead_arm_count") > 0,
+            "list binding matcher proof should surface dead-arm evidence per activation: {event:?}"
+        );
+        assert!(matches!(
+            event.metadata.get("projection_kind"),
+            Some(Value::Str(kind)) if kind == "exact"
+        ));
+        let projected = match event.metadata.get("projected_return_state") {
+            Some(Value::Str(state)) => state.to_string(),
+            other => panic!("projected_return_state missing or wrong type: {other:?}"),
+        };
+        projected_returns.push(projected);
+    }
+    projected_returns.sort();
+    assert_eq!(
+        projected_returns,
+        vec!["known(:empty)".to_string(), "known(int)".to_string()],
+        "list binding projections should preserve empty and head-bound returns"
+    );
+}
+
+#[test]
+fn planner_projects_tuple_pattern_binding_per_activation() {
+    use crate::telemetry::{Capture, ConfiguredTelemetry, Value};
+
+    let tel = ConfiguredTelemetry::new();
+    let cap = Capture::new();
+    tel.attach(&[], cap.handler());
+
+    let _ = frontend_plan(
+        include_str!("../type_infer/fixtures/match_tuple_binding.fz"),
+        &tel,
+    );
+
+    let pick_events: Vec<_> = cap
+        .find(&["fz", "planner", "activation_projection"])
+        .into_iter()
+        .filter(|event| {
+            matches!(
+                event.metadata.get("body_name"),
+                Some(Value::Str(name)) if name == "pick"
+            )
+        })
+        .collect();
+    assert_eq!(
+        pick_events.len(),
+        2,
+        "tuple binding calls should publish one visible pick projection per activation: {pick_events:?}"
+    );
+
+    let mut projected_returns = Vec::new();
+    for event in &pick_events {
+        let spec_role = match event.metadata.get("spec_role") {
+            Some(Value::Str(role)) => role.as_ref(),
+            other => panic!("spec_role missing or wrong type: {other:?}"),
+        };
+        assert_eq!(
+            spec_role, "activation",
+            "tuple binding projections should be activation-covered"
+        );
+        let measurement = |name| match event.measurements.get(name) {
+            Some(Value::U64(n)) => *n,
+            other => panic!("{name} missing or wrong type: {other:?}"),
+        };
+        assert_eq!(measurement("covered_activation_count"), 1);
+        assert_eq!(measurement("covered_known_count"), 1);
+        assert_eq!(measurement("exact_coverage"), 1);
+        assert_eq!(measurement("projection_gap"), 0);
+        assert!(
+            measurement("projected_dead_arm_count") > 0,
+            "tuple binding matcher proof should surface dead-arm evidence per activation: {event:?}"
+        );
+        assert!(matches!(
+            event.metadata.get("projection_kind"),
+            Some(Value::Str(kind)) if kind == "exact"
+        ));
+        let projected = match event.metadata.get("projected_return_state") {
+            Some(Value::Str(state)) => state.to_string(),
+            other => panic!("projected_return_state missing or wrong type: {other:?}"),
+        };
+        projected_returns.push(projected);
+    }
+    projected_returns.sort();
+    assert_eq!(
+        projected_returns,
+        vec!["known(:error)".to_string(), "known(int)".to_string()],
+        "tuple binding projections should preserve atom and payload-bound returns"
+    );
+}
+
+#[test]
+fn planner_projects_nested_pattern_binding_per_activation() {
+    use crate::telemetry::{Capture, ConfiguredTelemetry, Value};
+
+    let tel = ConfiguredTelemetry::new();
+    let cap = Capture::new();
+    tel.attach(&[], cap.handler());
+
+    let _ = frontend_plan(
+        include_str!("../type_infer/fixtures/match_nested_binding.fz"),
+        &tel,
+    );
+
+    let pick_events: Vec<_> = cap
+        .find(&["fz", "planner", "activation_projection"])
+        .into_iter()
+        .filter(|event| {
+            matches!(
+                event.metadata.get("body_name"),
+                Some(Value::Str(name)) if name == "pick"
+            )
+        })
+        .collect();
+    assert_eq!(
+        pick_events.len(),
+        2,
+        "nested binding calls should publish one visible pick projection per activation: {pick_events:?}"
+    );
+
+    let mut projected_returns = Vec::new();
+    for event in &pick_events {
+        let spec_role = match event.metadata.get("spec_role") {
+            Some(Value::Str(role)) => role.as_ref(),
+            other => panic!("spec_role missing or wrong type: {other:?}"),
+        };
+        assert_eq!(
+            spec_role, "activation",
+            "nested binding projections should be activation-covered"
+        );
+        let measurement = |name| match event.measurements.get(name) {
+            Some(Value::U64(n)) => *n,
+            other => panic!("{name} missing or wrong type: {other:?}"),
+        };
+        assert_eq!(measurement("covered_activation_count"), 1);
+        assert_eq!(measurement("covered_known_count"), 1);
+        assert_eq!(measurement("exact_coverage"), 1);
+        assert_eq!(measurement("projection_gap"), 0);
+        assert!(
+            measurement("projected_dead_arm_count") > 0,
+            "nested binding matcher proof should surface dead-arm evidence per activation: {event:?}"
+        );
+        assert!(matches!(
+            event.metadata.get("projection_kind"),
+            Some(Value::Str(kind)) if kind == "exact"
+        ));
+        let projected = match event.metadata.get("projected_return_state") {
+            Some(Value::Str(state)) => state.to_string(),
+            other => panic!("projected_return_state missing or wrong type: {other:?}"),
+        };
+        projected_returns.push(projected);
+    }
+    projected_returns.sort();
+    assert_eq!(
+        projected_returns,
+        vec!["known(:error)".to_string(), "known(int)".to_string()],
+        "nested binding projections should preserve atom and nested payload-bound returns"
+    );
+}
+
+#[test]
+fn planner_projects_nested_pattern_partition_per_activation() {
+    use crate::telemetry::{Capture, ConfiguredTelemetry, Value};
+
+    let tel = ConfiguredTelemetry::new();
+    let cap = Capture::new();
+    tel.attach(&[], cap.handler());
+
+    let _ = frontend_plan(
+        include_str!("../type_infer/fixtures/match_nested_partition.fz"),
+        &tel,
+    );
+
+    let pick_events: Vec<_> = cap
+        .find(&["fz", "planner", "activation_projection"])
+        .into_iter()
+        .filter(|event| {
+            matches!(
+                event.metadata.get("body_name"),
+                Some(Value::Str(name)) if name == "pick"
+            )
+        })
+        .collect();
+    assert_eq!(
+        pick_events.len(),
+        3,
+        "nested partition calls should publish one visible pick projection per activation: {pick_events:?}"
+    );
+
+    let mut projected_returns = Vec::new();
+    for event in &pick_events {
+        let spec_role = match event.metadata.get("spec_role") {
+            Some(Value::Str(role)) => role.as_ref(),
+            other => panic!("spec_role missing or wrong type: {other:?}"),
+        };
+        assert_eq!(
+            spec_role, "activation",
+            "nested partition projections should be activation-covered"
+        );
+        let measurement = |name| match event.measurements.get(name) {
+            Some(Value::U64(n)) => *n,
+            other => panic!("{name} missing or wrong type: {other:?}"),
+        };
+        assert_eq!(measurement("covered_activation_count"), 1);
+        assert_eq!(measurement("covered_known_count"), 1);
+        assert_eq!(measurement("exact_coverage"), 1);
+        assert_eq!(measurement("projection_gap"), 0);
+        assert!(
+            measurement("projected_dead_arm_count") > 0,
+            "nested partition matcher proof should surface dead-arm evidence per activation: {event:?}"
+        );
+        assert!(matches!(
+            event.metadata.get("projection_kind"),
+            Some(Value::Str(kind)) if kind == "exact"
+        ));
+        let projected = match event.metadata.get("projected_return_state") {
+            Some(Value::Str(state)) => state.to_string(),
+            other => panic!("projected_return_state missing or wrong type: {other:?}"),
+        };
+        projected_returns.push(projected);
+    }
+    projected_returns.sort();
+    assert_eq!(
+        projected_returns,
+        vec![
+            "known(:empty)".to_string(),
+            "known(:error)".to_string(),
+            "known(int)".to_string()
+        ],
+        "nested partition projections should preserve all sibling matcher leaves"
+    );
+}
+
+#[test]
+fn planner_projects_tuple_tag_partition_per_activation() {
+    use crate::telemetry::{Capture, ConfiguredTelemetry, Value};
+
+    let tel = ConfiguredTelemetry::new();
+    let cap = Capture::new();
+    tel.attach(&[], cap.handler());
+
+    let _ = frontend_plan(
+        include_str!("../type_infer/fixtures/match_tuple_tag_partition.fz"),
+        &tel,
+    );
+
+    let pick_events: Vec<_> = cap
+        .find(&["fz", "planner", "activation_projection"])
+        .into_iter()
+        .filter(|event| {
+            matches!(
+                event.metadata.get("body_name"),
+                Some(Value::Str(name)) if name == "pick"
+            )
+        })
+        .collect();
+    assert_eq!(
+        pick_events.len(),
+        2,
+        "tuple tag calls should publish one visible pick projection per activation: {pick_events:?}"
+    );
+
+    let mut projected_returns = Vec::new();
+    for event in &pick_events {
+        let spec_role = match event.metadata.get("spec_role") {
+            Some(Value::Str(role)) => role.as_ref(),
+            other => panic!("spec_role missing or wrong type: {other:?}"),
+        };
+        assert_eq!(
+            spec_role, "activation",
+            "tuple tag projections should be activation-covered"
+        );
+        let measurement = |name| match event.measurements.get(name) {
+            Some(Value::U64(n)) => *n,
+            other => panic!("{name} missing or wrong type: {other:?}"),
+        };
+        assert_eq!(measurement("covered_activation_count"), 1);
+        assert_eq!(measurement("covered_known_count"), 1);
+        assert_eq!(measurement("exact_coverage"), 1);
+        assert_eq!(measurement("projection_gap"), 0);
+        assert!(
+            measurement("projected_dead_arm_count") > 0,
+            "tuple tag matcher proof should surface dead-arm evidence per activation: {event:?}"
+        );
+        assert!(matches!(
+            event.metadata.get("projection_kind"),
+            Some(Value::Str(kind)) if kind == "exact"
+        ));
+        let projected = match event.metadata.get("projected_return_state") {
+            Some(Value::Str(state)) => state.to_string(),
+            other => panic!("projected_return_state missing or wrong type: {other:?}"),
+        };
+        projected_returns.push(projected);
+    }
+    projected_returns.sort();
+    assert_eq!(
+        projected_returns,
+        vec!["known(:bad)".to_string(), "known(int)".to_string()],
+        "tuple tag projections should preserve the matching payload returns"
+    );
+}
+
+#[test]
+fn planner_projects_tuple_arity_partition_per_activation() {
+    use crate::telemetry::{Capture, ConfiguredTelemetry, Value};
+
+    let tel = ConfiguredTelemetry::new();
+    let cap = Capture::new();
+    tel.attach(&[], cap.handler());
+
+    let _ = frontend_plan(
+        include_str!("../type_infer/fixtures/match_tuple_arity_partition.fz"),
+        &tel,
+    );
+
+    let pick_events: Vec<_> = cap
+        .find(&["fz", "planner", "activation_projection"])
+        .into_iter()
+        .filter(|event| {
+            matches!(
+                event.metadata.get("body_name"),
+                Some(Value::Str(name)) if name == "pick"
+            )
+        })
+        .collect();
+    assert_eq!(
+        pick_events.len(),
+        3,
+        "tuple arity calls should publish one visible pick projection per activation: {pick_events:?}"
+    );
+
+    let mut projected_returns = Vec::new();
+    for event in &pick_events {
+        let spec_role = match event.metadata.get("spec_role") {
+            Some(Value::Str(role)) => role.as_ref(),
+            other => panic!("spec_role missing or wrong type: {other:?}"),
+        };
+        assert_eq!(
+            spec_role, "activation",
+            "tuple arity projections should be activation-covered"
+        );
+        let measurement = |name| match event.measurements.get(name) {
+            Some(Value::U64(n)) => *n,
+            other => panic!("{name} missing or wrong type: {other:?}"),
+        };
+        assert_eq!(measurement("covered_activation_count"), 1);
+        assert_eq!(measurement("covered_known_count"), 1);
+        assert_eq!(measurement("exact_coverage"), 1);
+        assert_eq!(measurement("projection_gap"), 0);
+        assert!(
+            measurement("projected_dead_arm_count") > 0,
+            "tuple arity matcher proof should surface dead-arm evidence per activation: {event:?}"
+        );
+        assert!(matches!(
+            event.metadata.get("projection_kind"),
+            Some(Value::Str(kind)) if kind == "exact"
+        ));
+        let projected = match event.metadata.get("projected_return_state") {
+            Some(Value::Str(state)) => state.to_string(),
+            other => panic!("projected_return_state missing or wrong type: {other:?}"),
+        };
+        projected_returns.push(projected);
+    }
+    projected_returns.sort();
+    assert_eq!(
+        projected_returns,
+        vec![
+            "known(:other)".to_string(),
+            "known(int)".to_string(),
+            "known({int, int})".to_string()
+        ],
+        "tuple arity projections should preserve each matching shape"
+    );
+}
+
+#[test]
+fn planner_projects_guard_partition_per_activation() {
+    use crate::telemetry::{Capture, ConfiguredTelemetry, Value};
+
+    let tel = ConfiguredTelemetry::new();
+    let cap = Capture::new();
+    tel.attach(&[], cap.handler());
+
+    let _ = frontend_plan(
+        include_str!("../type_infer/fixtures/match_guard_partition.fz"),
+        &tel,
+    );
+
+    let pick_events: Vec<_> = cap
+        .find(&["fz", "planner", "activation_projection"])
+        .into_iter()
+        .filter(|event| {
+            matches!(
+                event.metadata.get("body_name"),
+                Some(Value::Str(name)) if name == "pick"
+            )
+        })
+        .collect();
+    assert_eq!(
+        pick_events.len(),
+        1,
+        "guarded calls should collapse witness activations into one semantic pick projection: {pick_events:?}"
+    );
+
+    let event = &pick_events[0];
+    let spec_role = match event.metadata.get("spec_role") {
+        Some(Value::Str(role)) => role.as_ref(),
+        other => panic!("spec_role missing or wrong type: {other:?}"),
+    };
+    assert_eq!(
+        spec_role, "activation",
+        "guarded projections should stay activation-covered"
+    );
+    let measurement = |name| match event.measurements.get(name) {
+        Some(Value::U64(n)) => *n,
+        other => panic!("{name} missing or wrong type: {other:?}"),
+    };
+    assert_eq!(measurement("covered_activation_count"), 2);
+    assert_eq!(measurement("covered_known_count"), 2);
+    assert_eq!(measurement("exact_coverage"), 1);
+    assert_eq!(measurement("projection_gap"), 0);
+    assert!(
+        measurement("projected_dead_arm_count") > 0,
+        "guard matcher proof should preserve shared dead-arm evidence on the semantic spec: {event:?}"
+    );
+    assert!(matches!(
+        event.metadata.get("projection_kind"),
+        Some(Value::Str(kind)) if kind == "exact"
+    ));
+    assert!(matches!(
+        event.metadata.get("projected_return_state"),
+        Some(Value::Str(state)) if state == "known(int | :fallback)"
+    ));
+    let covered_activations = match event.metadata.get("covered_activations") {
+        Some(Value::StrSeq(values)) => values,
+        other => panic!("covered_activations missing or wrong type: {other:?}"),
+    };
+    assert_eq!(
+        covered_activations.len(),
+        2,
+        "semantic guard projection should inventory both witness activations"
+    );
+    assert!(
+        covered_activations
+            .iter()
+            .any(|entry| entry.contains("=> known(int)")),
+        "expected refined witness return in the covered activation inventory: {covered_activations:?}"
+    );
+    assert!(
+        covered_activations
+            .iter()
+            .any(|entry| entry.contains("=> known(:fallback)")),
+        "expected fallback witness return in the covered activation inventory: {covered_activations:?}"
+    );
+}
+
+#[test]
+fn planner_projects_map_pattern_binding_per_activation() {
+    use crate::telemetry::{Capture, ConfiguredTelemetry, Value};
+
+    let tel = ConfiguredTelemetry::new();
+    let cap = Capture::new();
+    tel.attach(&[], cap.handler());
+
+    let _ = frontend_plan(
+        include_str!("../type_infer/fixtures/match_map_binding.fz"),
+        &tel,
+    );
+
+    let pick_events: Vec<_> = cap
+        .find(&["fz", "planner", "activation_projection"])
+        .into_iter()
+        .filter(|event| {
+            matches!(
+                event.metadata.get("body_name"),
+                Some(Value::Str(name)) if name == "pick"
+            )
+        })
+        .collect();
+    assert_eq!(
+        pick_events.len(),
+        2,
+        "map binding fixture should publish one visible pick projection per reachable semantic input: {pick_events:?}"
+    );
+
+    let mut projected_returns = Vec::new();
+    for event in &pick_events {
+        let spec_role = match event.metadata.get("spec_role") {
+            Some(Value::Str(role)) => role.as_ref(),
+            other => panic!("spec_role missing or wrong type: {other:?}"),
+        };
+        assert_eq!(
+            spec_role, "activation",
+            "map binding projections should be activation-covered"
+        );
+        let measurement = |name| match event.measurements.get(name) {
+            Some(Value::U64(n)) => *n,
+            other => panic!("{name} missing or wrong type: {other:?}"),
+        };
+        assert_eq!(measurement("covered_activation_count"), 1);
+        assert_eq!(measurement("covered_known_count"), 1);
+        assert_eq!(measurement("exact_coverage"), 1);
+        assert_eq!(measurement("projection_gap"), 0);
+        assert!(
+            measurement("projected_dead_arm_count") > 0,
+            "map binding matcher proof should surface dead-arm evidence per activation: {event:?}"
+        );
+        assert!(matches!(
+            event.metadata.get("projection_kind"),
+            Some(Value::Str(kind)) if kind == "exact"
+        ));
+        let projected = match event.metadata.get("projected_return_state") {
+            Some(Value::Str(state)) => state.to_string(),
+            other => panic!("projected_return_state missing or wrong type: {other:?}"),
+        };
+        projected_returns.push(projected);
+    }
+    projected_returns.sort();
+    assert_eq!(
+        projected_returns,
+        vec!["known(:none)".to_string(), "known(int)".to_string()],
+        "map binding projections should preserve the map-hit payload and the explicit atom arm"
+    );
+}
+
+#[test]
+fn planner_projects_fold_tail_entry_with_known_int_return() {
+    use crate::telemetry::{Capture, ConfiguredTelemetry, Value};
+
+    let tel = ConfiguredTelemetry::new();
+    let cap = Capture::new();
+    tel.attach(&[], cap.handler());
+
+    let _ = frontend_plan(include_str!("../type_infer/fixtures/fold_tail.fz"), &tel);
+
+    let myreduce_events: Vec<_> = cap
+        .find(&["fz", "planner", "activation_projection"])
+        .into_iter()
+        .filter(|event| {
+            matches!(
+                event.metadata.get("body_name"),
+                Some(Value::Str(name)) if name == "myreduce"
+            )
+        })
+        .collect();
+    assert_eq!(
+        myreduce_events.len(),
+        1,
+        "tail fold should produce one reachable semantic projection for myreduce: {myreduce_events:?}"
+    );
+
+    let event = &myreduce_events[0];
+    let measurement = |name| match event.measurements.get(name) {
+        Some(Value::U64(n)) => *n,
+        other => panic!("{name} missing or wrong type: {other:?}"),
+    };
+    assert_eq!(measurement("covered_activation_count"), 1);
+    assert_eq!(measurement("covered_known_count"), 1);
+    assert_eq!(measurement("exact_coverage"), 1);
+    assert_eq!(measurement("projection_gap"), 0);
+    assert!(matches!(
+        event.metadata.get("projected_return_state"),
+        Some(Value::Str(state)) if state == "known(int)"
+    ));
+}
+
+#[test]
+fn planner_projects_enum_reduce_runtime_graph_from_activation_facts() {
+    use crate::telemetry::{Capture, ConfiguredTelemetry, Value};
+
+    let tel = ConfiguredTelemetry::new();
+    let cap = Capture::new();
+    tel.attach(&[], cap.handler());
+
+    let mut t = crate::types::ConcreteTypes;
+    let module = crate::test_support::linked_runtime_module(include_str!(
+        "../type_infer/fixtures/enum_reduce.fz"
+    ));
+    let _ = plan_module(&mut t, &module, &tel);
+
+    let events = cap
+        .find(&["fz", "planner", "activation_projection"])
+        .into_iter()
+        .filter(|event| {
+            matches!(
+                event.metadata.get("body_name"),
+                Some(Value::Str(name)) if name == "Enum.reduce" || name == "Enumerable.List.reduce"
+            )
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        !events.is_empty(),
+        "linked Enum.reduce graph should publish projection facts for runtime reducers"
+    );
+
+    let mut enum_reduce_known_int = false;
+    let mut list_reduce_known_done_int = false;
+    for event in &events {
+        let body_name = match event.metadata.get("body_name") {
+            Some(Value::Str(name)) => name.as_ref(),
+            other => panic!("body_name missing or wrong type: {other:?}"),
+        };
+        let spec_role = match event.metadata.get("spec_role") {
+            Some(Value::Str(role)) => role.as_ref(),
+            other => panic!("spec_role missing or wrong type: {other:?}"),
+        };
+        if spec_role != "activation" {
+            continue;
+        }
+        let measurement = |name| match event.measurements.get(name) {
+            Some(Value::U64(n)) => *n,
+            other => panic!("{name} missing or wrong type: {other:?}"),
+        };
+        assert_eq!(measurement("covered_activation_count"), 1);
+        assert_eq!(measurement("covered_known_count"), 1);
+        assert_eq!(measurement("exact_coverage"), 1);
+        assert_eq!(measurement("projection_gap"), 0);
+        assert!(matches!(
+            event.metadata.get("projection_kind"),
+            Some(Value::Str(kind)) if kind == "exact"
+        ));
+        let projected = match event.metadata.get("projected_return_state") {
+            Some(Value::Str(state)) => state.as_ref(),
+            other => panic!("projected_return_state missing or wrong type: {other:?}"),
+        };
+        if body_name == "Enum.reduce" && projected == "known(int)" {
+            enum_reduce_known_int = true;
+        }
+        if body_name == "Enumerable.List.reduce" && projected == "known({:done, int})" {
+            list_reduce_known_done_int = true;
+        }
+    }
+
+    assert!(
+        enum_reduce_known_int,
+        "Enum.reduce should have an activation-covered known int projection: {events:?}"
+    );
+    assert!(
+        list_reduce_known_done_int,
+        "Enumerable.List.reduce should have an activation-covered {{:done, int}} projection: {events:?}"
+    );
+}
+
+#[test]
+fn planner_projects_enum_reduce_operator_refs_through_kernel_specs() {
+    use crate::telemetry::{Capture, ConfiguredTelemetry, Value};
+
+    let tel = ConfiguredTelemetry::new();
+    let cap = Capture::new();
+    tel.attach(&[], cap.handler());
+
+    let mut t = crate::types::ConcreteTypes;
+    let module = crate::test_support::linked_runtime_module(include_str!(
+        "../type_infer/fixtures/enum_reduce_operator_ref.fz"
+    ));
+    let _ = crate::ir_codegen::compile(&mut t, &module, &tel).expect("compile");
+
+    let events = cap
+        .find(&["fz", "planner", "activation_projection"])
+        .into_iter()
+        .filter(|event| {
+            matches!(
+                event.metadata.get("body_name"),
+                Some(Value::Str(name))
+                    if name == "main"
+                        || name == "Enum.reduce"
+                        || name == "Enumerable.List.reduce"
+                        || name == "Kernel.+"
+            ) && matches!(
+                event.metadata.get("role"),
+                Some(Value::Str(role)) if role == "authoritative"
+            )
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        !events.is_empty(),
+        "operator-ref Enum.reduce graph should publish projection facts for the entry, wrappers, and reducer target"
+    );
+
+    let mut main_known_tuple = false;
+    let mut enum_reduce_known_int = false;
+    let mut list_reduce_known_done_int = false;
+    let mut kernel_plus_projection_count = 0;
+
+    for event in &events {
+        let body_name = match event.metadata.get("body_name") {
+            Some(Value::Str(name)) => name.as_ref(),
+            other => panic!("body_name missing or wrong type: {other:?}"),
+        };
+        let spec_role = match event.metadata.get("spec_role") {
+            Some(Value::Str(role)) => role.as_ref(),
+            other => panic!("spec_role missing or wrong type: {other:?}"),
+        };
+        if spec_role == "callable_fallback" {
+            panic!(
+                "authoritative compile-time planner should not retain a callable fallback for the operator-ref reducer: {event:?}"
+            );
+        }
+        if spec_role != "activation" && spec_role != "entry" {
+            continue;
+        }
+        let measurement = |name| match event.measurements.get(name) {
+            Some(Value::U64(n)) => *n,
+            other => panic!("{name} missing or wrong type: {other:?}"),
+        };
+        if spec_role == "activation" {
+            assert_eq!(
+                measurement("covered_known_count"),
+                measurement("covered_activation_count")
+            );
+            assert_eq!(measurement("exact_coverage"), 1);
+            assert_eq!(measurement("projection_gap"), 0);
+        }
+        assert!(matches!(
+            event.metadata.get("projection_kind"),
+            Some(Value::Str(kind)) if kind == "exact"
+        ));
+        let projected = match event.metadata.get("projected_return_state") {
+            Some(Value::Str(state)) => state.as_ref(),
+            other => panic!("projected_return_state missing or wrong type: {other:?}"),
+        };
+        if body_name == "main" && projected == "known({int, int})" {
+            main_known_tuple = true;
+        }
+        if body_name == "Enum.reduce" && projected == "known(int)" {
+            enum_reduce_known_int = true;
+        }
+        if body_name == "Enumerable.List.reduce" && projected == "known({:done, int})" {
+            list_reduce_known_done_int = true;
+        }
+        if body_name == "Kernel.+" {
+            kernel_plus_projection_count += 1;
+        }
+    }
+
+    assert!(
+        main_known_tuple,
+        "main should project the tuple of both reduced ints: {events:?}"
+    );
+    assert!(
+        enum_reduce_known_int,
+        "Enum.reduce should have an activation-covered known int projection in the operator-ref fixture: {events:?}"
+    );
+    assert!(
+        list_reduce_known_done_int,
+        "Enumerable.List.reduce should project {{:done, int}} for the operator-ref fixture: {events:?}"
+    );
+    assert!(
+        kernel_plus_projection_count == 0,
+        "authoritative compile-time planner should erase the operator-ref closure target instead of retaining a projected Kernel.+ body: {events:?}"
+    );
+}
+
+#[test]
+fn planner_projects_enum_reduce_range_runtime_graph_from_activation_facts() {
+    use crate::telemetry::{Capture, ConfiguredTelemetry, Value};
+
+    let tel = ConfiguredTelemetry::new();
+    let cap = Capture::new();
+    tel.attach(&[], cap.handler());
+
+    let mut t = crate::types::ConcreteTypes;
+    let module = crate::test_support::linked_runtime_module(include_str!(
+        "../type_infer/fixtures/enum_reduce_range.fz"
+    ));
+    let _ = plan_module(&mut t, &module, &tel);
+
+    let events = cap
+        .find(&["fz", "planner", "activation_projection"])
+        .into_iter()
+        .filter(|event| {
+            matches!(
+                event.metadata.get("body_name"),
+                Some(Value::Str(name)) if name == "Enum.reduce" || name == "Enumerable.Range.reduce"
+            )
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        !events.is_empty(),
+        "linked Enum.reduce range graph should publish projection facts for runtime reducers"
+    );
+
+    let mut enum_reduce_known_int = false;
+    let mut range_reduce_known_done_int = false;
+    for event in &events {
+        let body_name = match event.metadata.get("body_name") {
+            Some(Value::Str(name)) => name.as_ref(),
+            other => panic!("body_name missing or wrong type: {other:?}"),
+        };
+        let spec_role = match event.metadata.get("spec_role") {
+            Some(Value::Str(role)) => role.as_ref(),
+            other => panic!("spec_role missing or wrong type: {other:?}"),
+        };
+        if spec_role != "activation" {
+            continue;
+        }
+        let measurement = |name| match event.measurements.get(name) {
+            Some(Value::U64(n)) => *n,
+            other => panic!("{name} missing or wrong type: {other:?}"),
+        };
+        assert_eq!(measurement("covered_activation_count"), 1);
+        assert_eq!(measurement("covered_known_count"), 1);
+        assert_eq!(measurement("exact_coverage"), 1);
+        assert_eq!(measurement("projection_gap"), 0);
+        assert!(matches!(
+            event.metadata.get("projection_kind"),
+            Some(Value::Str(kind)) if kind == "exact"
+        ));
+        let projected = match event.metadata.get("projected_return_state") {
+            Some(Value::Str(state)) => state.as_ref(),
+            other => panic!("projected_return_state missing or wrong type: {other:?}"),
+        };
+        if body_name == "Enum.reduce" && projected == "known(int)" {
+            enum_reduce_known_int = true;
+        }
+        if body_name == "Enumerable.Range.reduce" && projected == "known({:done, int})" {
+            range_reduce_known_done_int = true;
+        }
+    }
+
+    assert!(
+        enum_reduce_known_int,
+        "Enum.reduce over Range should have an activation-covered known int projection: {events:?}"
+    );
+    assert!(
+        range_reduce_known_done_int,
+        "Enumerable.Range.reduce should have an activation-covered {{:done, int}} projection: {events:?}"
+    );
+}
+
+#[test]
 fn planner_emits_return_fixpoint_step_telemetry() {
     use crate::telemetry::{Capture, ConfiguredTelemetry};
 
@@ -1865,7 +3288,7 @@ fn planner_emits_return_fixpoint_step_telemetry() {
     let cap = Capture::new();
     tel.attach(&[], cap.handler());
 
-    let _ = pipeline("fn main(), do: 1 + 1", &tel);
+    let _ = frontend_plan("fn main(), do: 1 + 1", &tel);
 
     let ev = cap
         .last(&["fz", "planner", "return_fixpoint_step"])

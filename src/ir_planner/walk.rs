@@ -588,7 +588,7 @@ where
                     self.t,
                     self.m,
                     self.recursive_fns,
-                    self.caller_spec_key.fn_id,
+                    self.caller_spec_key,
                     term_ident,
                     callee,
                     &arg_tys,
@@ -602,7 +602,7 @@ where
                 }
             }
             ContSource::CallClosure { closure, args } => {
-                self.closure_return_slot0(closure, args, env)
+                self.closure_return_slot0(term_ident, closure, args, env)
             }
             ContSource::Receive => Some(Slot0Knowledge::Known(self.any_ty.clone())),
         }
@@ -641,6 +641,7 @@ where
 
     fn closure_return_slot0(
         &mut self,
+        term_ident: &CallsiteIdent,
         closure: Var,
         args: &[Var],
         env: &HashMap<Var, crate::types::Ty>,
@@ -650,7 +651,8 @@ where
                 self.t,
                 self.m,
                 self.recursive_fns,
-                self.caller_spec_key.fn_id,
+                self.caller_spec_key,
+                term_ident,
                 target,
                 &self.arg_tys(args, env),
                 self.activation_returns,
@@ -729,7 +731,9 @@ where
             n_params,
         );
         self.record_fixed_point_input_observation(callee, observed);
-        let key = spec_key_for_fn_id(self.m, callee, input_tys);
+        let key = self
+            .activation_returns
+            .canonical_public_key(self.t, spec_key_for_fn_id(self.m, callee, input_tys));
         Some((key, n_params))
     }
 
@@ -808,7 +812,10 @@ where
             n_params,
         );
         self.record_fixed_point_input_observation(fn_id, observed);
-        Some(spec_key_for_fn_id(self.m, fn_id, input_tys))
+        Some(
+            self.activation_returns
+                .canonical_public_key(self.t, spec_key_for_fn_id(self.m, fn_id, input_tys)),
+        )
     }
 
     fn record_fixed_point_input_observation(

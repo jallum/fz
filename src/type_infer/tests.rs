@@ -1,100 +1,12 @@
 use super::{TypeInferOutcome, TypeInferReturnState, TypeInferStatus, infer_from_entry};
 use crate::fz_ir::{Const, EmitSlot, FnBuilder, FnId, Module, ModuleBuilder, Prim, Term};
 use crate::telemetry::{ConfiguredTelemetry, Handler, Value};
+use crate::test_support::{
+    entry_main_fn_id as main_id, linked_runtime_module as linked, lower_frontend_module as lower,
+};
 use crate::types::{ClosureTarget, ClosureTypes, ConcreteTypes, Ty, Types};
 use std::cell::RefCell;
-use std::panic::AssertUnwindSafe;
 use std::rc::Rc;
-
-/// Captures the `Module` from the `fz.frontend.lowered` telemetry event: the
-/// exact IR the planner consumes, emitted by the production frontend just before
-/// planning.
-struct LoweredCapture(Rc<RefCell<Option<Module>>>);
-
-impl Handler for LoweredCapture {
-    fn handle(&self, ev: &crate::telemetry::Event<'_, '_, '_>) {
-        if let ["fz", "frontend", "lowered"] = ev.name {
-            if let Some(module) = ev
-                .metadata
-                .get("module")
-                .and_then(|v| v.downcast_ref::<Module>())
-            {
-                *self.0.borrow_mut() = Some(module.clone());
-            }
-        }
-    }
-}
-
-/// Lower a source program to its IR `Module` via the production frontend,
-/// snapshotting the module from telemetry at the lowering stage. The corpus runs
-/// the normal flow, including the old planner; the lowered event fires before
-/// planning, so the snapshot lands first and any later panic is ignored.
-fn lower(src: &str) -> Module {
-    let captured = Rc::new(RefCell::new(None));
-    let tel = ConfiguredTelemetry::new();
-    tel.attach(&["fz"], Box::new(LoweredCapture(captured.clone())));
-
-    let prev_hook = std::panic::take_hook();
-    std::panic::set_hook(Box::new(|_| {}));
-    let _ = std::panic::catch_unwind(AssertUnwindSafe(|| {
-        let mut t = ConcreteTypes;
-        let providers = crate::modules::pipeline::ProviderInputs::new(
-            crate::modules::artifact_store::DEFAULT_ARTIFACT_ROOT.to_string(),
-            Vec::new(),
-        );
-        let _ = crate::modules::pipeline::compile_source_with_providers(
-            &mut t,
-            src.to_string(),
-            "type_infer_fixture.fz".to_string(),
-            &providers,
-            &tel,
-        );
-    }));
-    std::panic::set_hook(prev_hook);
-
-    captured
-        .borrow_mut()
-        .take()
-        .expect("frontend emitted no lowered module")
-}
-
-/// Compile a program to its LTO-linked IR `Module` via the production pipeline:
-/// the runtime graph where `Enum.reduce`, `List.reduce`,
-/// `Enumerable.List.reduce`, and protocol dispatch stubs are local fns.
-fn linked(src: &str) -> Module {
-    use crate::modules::pipeline::{
-        CompileMode, ProviderInputs, checked_module_for_mode, compile_source_with_providers,
-        prepare_execution_graph,
-    };
-    let mut t = ConcreteTypes;
-    let tel = crate::telemetry::NullTelemetry;
-    let providers = ProviderInputs::new(
-        crate::modules::artifact_store::DEFAULT_ARTIFACT_ROOT.to_string(),
-        Vec::new(),
-    );
-    let frontend = compile_source_with_providers(
-        &mut t,
-        src.to_string(),
-        "type_infer_fixture.fz".to_string(),
-        &providers,
-        &tel,
-    )
-    .unwrap_or_else(|e| panic!("frontend: {e}"));
-    let checked = checked_module_for_mode(&mut t, frontend, &tel, CompileMode::Normal)
-        .unwrap_or_else(|e| panic!("checked: {e}"));
-    let graph = prepare_execution_graph(&mut t, checked, &providers, &tel, CompileMode::Normal)
-        .unwrap_or_else(|e| panic!("execution graph: {e}"));
-    graph.module
-}
-
-fn main_id(module: &Module) -> FnId {
-    module
-        .fns
-        .iter()
-        .find(|f| f.name == "main" || f.name.ends_with(".main"))
-        .expect("main fn")
-        .id
-}
 
 /// Test boundary helper for one activation's return type. The production API
 /// returns activation facts; these focused tests need the entry activation's
@@ -494,10 +406,63 @@ fn enum_reduce_operator_refs_settle_through_kernel_specs() {
     let report = infer_report_via_main(&mut t, &module);
 
     assert_eq!(report.outcome.status, TypeInferStatus::Complete);
-    let ret = report.facts.return_for_fn_named("Main.main");
+    let ret = report.facts.return_for_fn_named("main");
     assert!(
         t.is_equivalent(&ret, &expected),
         "qualified and bare operator refs should both settle to int, got {ret:?}"
+    );
+}
+
+#[test]
+fn enum_reduce_erased_list_operator_ref_preserves_concrete_caller_witness() {
+    let module = linked(include_str!(
+        "fixtures/enum_reduce_erased_list_operator_ref.fz"
+    ));
+    let mut t = ConcreteTypes;
+    let int = t.int();
+    let non_empty_ints = t.non_empty_list(int.clone());
+    let report = infer_report_via_main(&mut t, &module);
+
+    assert_eq!(report.outcome.status, TypeInferStatus::Complete);
+    let main_ret = report.facts.return_for_fn_named("main");
+    assert!(
+        t.is_equivalent(&main_ret, &int),
+        "erased list surface type should still settle main to int from the concrete caller witness, got {main_ret:?}"
+    );
+
+    let test_ret = report.facts.return_for_fn_named("test");
+    assert!(
+        t.is_equivalent(&test_ret, &int),
+        "test/1 should settle to int despite the broad declared surface type, got {test_ret:?}"
+    );
+
+    let test_fact = report
+        .outcome
+        .activations
+        .iter()
+        .find(|fact| {
+            module.fn_by_id(fact.fn_id).name == "test"
+                && fact.input_tys.len() == 1
+                && matches!(
+                    &fact.return_state,
+                    TypeInferReturnState::Known(ret) if t.is_equivalent(ret, &int)
+                )
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "test/1 should have a known int activation from the concrete caller witness; got {:?}",
+                report
+                    .outcome
+                    .activations
+                    .iter()
+                    .filter(|fact| module.fn_by_id(fact.fn_id).name == "test")
+                    .collect::<Vec<_>>()
+            )
+        });
+    assert!(
+        t.is_subtype(&test_fact.input_tys[0], &non_empty_ints),
+        "test/1 activation should keep the concrete nonempty list(int) caller witness, got {:?}",
+        test_fact.input_tys
     );
 }
 
