@@ -1448,10 +1448,10 @@ fn emit_call_closure<
     {
         // Closure invocation is opaque to the caller: read code_ptr
         // through the runtime ABI and call it with args, self, and cont.
-        let cl_val = var_env
+        let closure_binding = *var_env
             .get(&closure.0)
-            .expect("unbound callclosure closure")
-            .value();
+            .expect("unbound callclosure closure");
+        let cl_val = closure_binding.value();
         let arg_vals: Vec<ir::Value> = args
             .iter()
             .map(|v| var_env.get(&v.0).expect("unbound callclosure arg").value())
@@ -1490,6 +1490,19 @@ fn emit_call_closure<
             is_cont_fn,
             cont_param,
             frame_ptr,
+        );
+        env.telemetry.execute(
+            &["fz", "codegen", "closure_call_lowered"],
+            &crate::measurements! {
+                spec_id: env.active_spec_id as u64,
+                closure_var: closure.0 as u64,
+            },
+            &crate::metadata! {
+                body_name: env.active_body_name,
+                call_kind: "call_closure",
+                closure_binding_repr: format!("{:?}", closure_binding.repr()),
+                dispatch_kind: if lit_resolved.is_some() { "direct" } else { "indirect" },
+            },
         );
         if let Some((body_sid, body_fid, n_caps)) = lit_resolved {
             let body_param_reprs = &param_reprs[body_sid as usize];
@@ -1589,10 +1602,10 @@ fn emit_tail_call_closure<
         // at [K..., arg_descrs...] and emit a direct return_call,
         // bypassing the runtime code-pointer read. Falls back to the
         // indirect path on union-of-lits, plain arrows, unresolved keys.
-        let cl_val = var_env
+        let closure_binding = *var_env
             .get(&closure.0)
-            .expect("unbound tailcallclosure closure")
-            .value();
+            .expect("unbound tailcallclosure closure");
+        let cl_val = closure_binding.value();
         let arg_vals: Vec<ir::Value> = args
             .iter()
             .map(|v| {
@@ -1627,6 +1640,19 @@ fn emit_tail_call_closure<
                 .unwrap_or(0);
             Some((body_sid, body_fid, n_caps))
         })();
+        env.telemetry.execute(
+            &["fz", "codegen", "closure_call_lowered"],
+            &crate::measurements! {
+                spec_id: env.active_spec_id as u64,
+                closure_var: closure.0 as u64,
+            },
+            &crate::metadata! {
+                body_name: env.active_body_name,
+                call_kind: "tail_call_closure",
+                closure_binding_repr: format!("{:?}", closure_binding.repr()),
+                dispatch_kind: if lit_resolved.is_some() { "direct" } else { "indirect" },
+            },
+        );
 
         if let Some((body_sid, body_fid, n_caps)) = lit_resolved {
             let body_param_reprs = &param_reprs[body_sid as usize];

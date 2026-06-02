@@ -151,12 +151,7 @@ where
             _ => body_index_by_spec_slot.push(None),
         }
     }
-    let closure_shapes = build_closure_shapes(
-        &bodies,
-        &spec_plans,
-        &spec_registry,
-        &body_index_by_spec_slot,
-    );
+    let closure_shapes = build_closure_shapes(&bodies, &spec_registry, &body_index_by_spec_slot);
 
     let (reachable_specs, reachable_before_body_fold_count, body_fold_reachable_added_count) =
         compute_reachable_specs(
@@ -288,30 +283,23 @@ fn display_spec_ids(reachable_specs: &HashSet<u32>) -> Vec<String> {
 
 fn build_closure_shapes(
     bodies: &[PlannedBody],
-    spec_plans: &[Option<&SpecPlan>],
     spec_registry: &SpecRegistry,
     body_index_by_spec_slot: &[Option<usize>],
 ) -> BTreeMap<u32, usize> {
     let mut closure_shapes = BTreeMap::new();
+    let has_body = |sid: SpecId| {
+        body_index_by_spec_slot
+            .get(sid.0 as usize)
+            .is_some_and(Option::is_some)
+    };
     for planned_body in bodies {
-        let sid = planned_body.spec_id.0 as usize;
-        let Some(ft) = spec_plans[sid] else {
-            continue;
-        };
         for blk in &planned_body.body.blocks {
-            if !ft.reachable_blocks.contains(&blk.id) {
-                continue;
-            }
             for stmt in blk.stmts.iter() {
                 let crate::fz_ir::Stmt::Let(_, prim) = stmt;
                 if let crate::fz_ir::Prim::MakeClosure(_ident, lam_fn_id, captured) = prim {
                     let cl_sid = spec_registry
-                        .iter()
-                        .find(|(s, key)| {
-                            key.fn_id == *lam_fn_id
-                                && body_index_by_spec_slot[s.0 as usize].is_some()
-                        })
-                        .map(|(s, _)| s.0);
+                        .resolve_closure_body_spec(*lam_fn_id, has_body)
+                        .map(|sid| sid.0);
                     let Some(cl_sid) = cl_sid else {
                         continue;
                     };

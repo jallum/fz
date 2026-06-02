@@ -232,6 +232,11 @@ pub trait Types {
     /// implementation owns the concrete widening transform.
     fn widen_for_recursive_spec_key(&mut self, a: &Self::Ty) -> Self::Ty;
 
+    /// Canonicalize named type-variable ids up to alpha-equivalence while
+    /// preserving their equality structure. Used when public specialization
+    /// keys should not fork on fresh-id accidents alone.
+    fn alpha_normalize_vars(&mut self, a: &Self::Ty) -> Self::Ty;
+
     /// Binary least-upper-bound in the **refinement lattice** — the
     /// finite-height widening join the specialization worklist uses to settle a
     /// recursive slot (`.agent/docs/type-specialization.md`). Distinct from
@@ -568,6 +573,59 @@ mod conformance_tests {
                     assert!(t.is_strictly_smaller(&minus_two, &minus_three));
                     assert!(!t.is_strictly_smaller(&three, &two));
                     assert!(!t.is_strictly_smaller(&minus_three, &minus_two));
+                }
+
+                #[test]
+                fn alpha_normalize_vars_collapses_alpha_equivalent_callable_shapes() {
+                    let mut t = $ctor;
+                    let lhs_a = t.type_var(TypeVarId(10));
+                    let lhs_b = t.type_var(TypeVarId(11));
+                    let lhs_ret = t.type_var(TypeVarId(12));
+                    let lhs = t.arrow(
+                        &[lhs_a.clone(), lhs_b, lhs_a],
+                        lhs_ret,
+                    );
+                    let rhs_a = t.type_var(TypeVarId(30));
+                    let rhs_b = t.type_var(TypeVarId(31));
+                    let rhs_ret = t.type_var(TypeVarId(32));
+                    let rhs = t.arrow(
+                        &[rhs_a.clone(), rhs_b, rhs_a],
+                        rhs_ret,
+                    );
+
+                    let lhs = t.alpha_normalize_vars(&lhs);
+                    let rhs = t.alpha_normalize_vars(&rhs);
+                    assert!(
+                        t.is_equivalent(&lhs, &rhs),
+                        "alpha-equivalent callable shapes should normalize to the same type: lhs={} rhs={}",
+                        t.display(&lhs),
+                        t.display(&rhs)
+                    );
+                }
+
+                #[test]
+                fn alpha_normalize_vars_preserves_shared_var_structure() {
+                    let mut t = $ctor;
+                    let repeated_var = t.type_var(TypeVarId(10));
+                    let repeated = t.arrow(
+                        &[repeated_var.clone(), repeated_var.clone()],
+                        repeated_var,
+                    );
+                    let distinct_a = t.type_var(TypeVarId(20));
+                    let distinct_b = t.type_var(TypeVarId(21));
+                    let distinct = t.arrow(
+                        &[distinct_a.clone(), distinct_b],
+                        distinct_a,
+                    );
+
+                    let repeated = t.alpha_normalize_vars(&repeated);
+                    let distinct = t.alpha_normalize_vars(&distinct);
+                    assert!(
+                        !t.is_equivalent(&repeated, &distinct),
+                        "alpha-normalization must preserve equality structure: repeated={} distinct={}",
+                        t.display(&repeated),
+                        t.display(&distinct)
+                    );
                 }
             }
         };

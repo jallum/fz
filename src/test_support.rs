@@ -196,6 +196,7 @@ pub(crate) fn runtime_graph_planner_activation_projection_signals(
     let graph = linked_runtime_graph_with_telemetry(&mut t, src, &tel);
     cap.clear();
     let _ = crate::ir_planner::plan_module(&mut t, &graph.module, &tel);
+    assert_authoritative_planner_gap_free(&cap);
     activation_projection_signals(&cap)
 }
 
@@ -214,6 +215,7 @@ pub(crate) fn runtime_graph_codegen_materialized_body_signals(
     cap.clear();
     crate::ir_codegen::compile_planned(&mut t, &graph.module, &graph.module_plan, &tel)
         .expect("compile planned");
+    assert_authoritative_planner_gap_free(&cap);
 
     cap.find(&["fz", "planner", "body_materialized"])
         .into_iter()
@@ -259,6 +261,7 @@ pub(crate) fn runtime_graph_reachable_materialized_body_signals(
     cap.clear();
     crate::ir_codegen::compile_planned(&mut t, &graph.module, &graph.module_plan, &tel)
         .expect("compile planned");
+    assert_authoritative_planner_gap_free(&cap);
 
     let materialized = cap
         .last(&["fz", "planner", "materialized"])
@@ -307,4 +310,49 @@ pub(crate) fn runtime_graph_reachable_materialized_body_signals(
             spec_key: signal.spec_key,
         })
         .collect()
+}
+
+#[cfg(test)]
+pub(crate) fn authoritative_planner_projection_gaps(
+    cap: &crate::telemetry::Capture,
+) -> Vec<String> {
+    use crate::telemetry::Value;
+
+    let ev = cap
+        .find(&["fz", "planner", "planned"])
+        .into_iter()
+        .filter(|ev| {
+            matches!(
+                ev.metadata.get("role"),
+                Some(Value::Str(role)) if role == "authoritative"
+            )
+        })
+        .last()
+        .expect("authoritative fz.planner.planned event");
+    let gap_count = match ev
+        .measurements
+        .get("activation_return_projection_gap_count")
+    {
+        Some(Value::U64(n)) => *n as usize,
+        other => panic!("activation_return_projection_gap_count missing or wrong type: {other:?}"),
+    };
+    let gap_keys = match ev.metadata.get("activation_return_projection_gaps") {
+        Some(Value::StrSeq(keys)) => keys.clone(),
+        other => panic!("activation_return_projection_gaps missing or wrong type: {other:?}"),
+    };
+    assert_eq!(
+        gap_keys.len(),
+        gap_count,
+        "projection gap telemetry must identify every counted gap"
+    );
+    gap_keys.to_vec()
+}
+
+#[cfg(test)]
+pub(crate) fn assert_authoritative_planner_gap_free(cap: &crate::telemetry::Capture) {
+    let gaps = authoritative_planner_projection_gaps(cap);
+    assert!(
+        gaps.is_empty(),
+        "authoritative planner model must be projection-gap free before tests inspect it: {gaps:?}"
+    );
 }

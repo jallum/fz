@@ -221,6 +221,9 @@ impl Types for ConcreteTypes {
     fn widen_for_recursive_spec_key(&mut self, a: &Ty) -> Ty {
         ty_from_descr(ty_descr(a).widen_for_recursive_spec_key())
     }
+    fn alpha_normalize_vars(&mut self, a: &Ty) -> Ty {
+        ty_from_descr(ty_descr(a).alpha_normalize_vars())
+    }
     fn refine_widen(&mut self, a: &Ty, b: &Ty) -> Ty {
         ty_from_descr(ty_descr(a).refine_widen(ty_descr(b)))
     }

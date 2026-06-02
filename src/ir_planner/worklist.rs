@@ -212,7 +212,7 @@ impl ActivationReturnFacts {
                 facts.record_activation(t, module, activation);
             }
             for edge in &outcome.edges {
-                facts.record_observed_edge(module, edge);
+                facts.record_observed_edge(t, module, edge);
             }
             for dead_arm in &outcome.dead_arms {
                 facts.record_observed_dead_arm(dead_arm);
@@ -221,14 +221,17 @@ impl ActivationReturnFacts {
         facts
     }
 
-    fn record_activation<T: crate::types::Types<Ty = crate::types::Ty>>(
+    fn record_activation<
+        T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
+    >(
         &mut self,
         t: &mut T,
         module: &Module,
         activation: TypeInferActivationFact,
     ) {
         let activation_id = activation.activation_id;
-        let public_key = spec_key_for_fn_id(module, activation.fn_id, activation.input_tys);
+        let public_key =
+            public_activation_spec_key(t, module, activation.fn_id, activation.input_tys);
         let state = activation.return_state;
         self.witness_returns.insert(activation_id, state.clone());
         self.witness_public_keys
@@ -544,8 +547,16 @@ impl ActivationReturnFacts {
         overlapping
     }
 
-    fn record_observed_edge(&mut self, module: &Module, edge: &TypeInferActivationEdgeFact) {
-        let callee = spec_key_for_fn_id(module, edge.callee_fn_id, edge.callee_input_tys.clone());
+    fn record_observed_edge<
+        T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
+    >(
+        &mut self,
+        t: &mut T,
+        module: &Module,
+        edge: &TypeInferActivationEdgeFact,
+    ) {
+        let callee =
+            public_activation_spec_key(t, module, edge.callee_fn_id, edge.callee_input_tys.clone());
         self.observed_edges_by_witness
             .entry(edge.caller_activation_id)
             .or_default()
@@ -556,7 +567,7 @@ impl ActivationReturnFacts {
                 span_end: edge.callsite.span_end,
             });
         let caller_public_key =
-            spec_key_for_fn_id(module, edge.caller_fn_id, edge.caller_input_tys.clone());
+            public_activation_spec_key(t, module, edge.caller_fn_id, edge.caller_input_tys.clone());
         self.callee_witnesses_by_caller_and_callsite
             .entry((caller_public_key, edge.callsite.callsite.clone()))
             .or_default()
@@ -608,6 +619,7 @@ impl ActivationReturnFacts {
         t: &mut T,
         requested: SpecKey,
     ) -> SpecKey {
+        let requested = erase_closure_identity_from_spec_key(t, requested);
         if self.bucket_returns.contains_key(&requested) {
             return requested;
         }
@@ -692,6 +704,32 @@ impl ActivationReturnFacts {
             }
         }
     }
+}
+
+fn public_activation_spec_key<
+    T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
+>(
+    t: &mut T,
+    module: &Module,
+    fn_id: FnId,
+    input_tys: Vec<crate::types::Ty>,
+) -> SpecKey {
+    erase_closure_identity_from_spec_key(t, spec_key_for_fn_id(module, fn_id, input_tys))
+}
+
+fn erase_closure_identity_from_spec_key<
+    T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
+>(
+    t: &mut T,
+    mut key: SpecKey,
+) -> SpecKey {
+    for slot in &mut key.input {
+        if let Some(ty) = slot.take() {
+            let erased = t.erase_closure_identity(&ty);
+            *slot = Some(t.alpha_normalize_vars(&erased));
+        }
+    }
+    key
 }
 
 fn activation_keys_overlap<

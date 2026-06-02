@@ -2078,14 +2078,9 @@ pub(crate) fn lower_make_closure<M: cranelift_module::Module>(
     // emit a null-stub closure when neither exists (value is
     // constructable but unreachable as a call target).
     let _ = (block_id, stmt_idx, mk_ident);
-    let cl_sid_opt = if fn_ids.contains_key(&fn_id.0) {
-        Some(fn_id.0)
-    } else {
-        spec_registry
-            .iter()
-            .find(|(s, key)| key.fn_id == fn_id && fn_ids.contains_key(&s.0))
-            .map(|(s, _)| s.0)
-    };
+    let cl_sid_opt = spec_registry
+        .resolve_closure_body_spec(fn_id, |sid| fn_ids.contains_key(&sid.0))
+        .map(|sid| sid.0);
     let Some(cl_sid) = cl_sid_opt else {
         return Ok(LowerOut::ValueRef(emit_null_stub_closure(
             body, fn_id, n_caps,

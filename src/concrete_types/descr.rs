@@ -932,6 +932,191 @@ impl Descr {
         out
     }
 
+    pub(crate) fn alpha_normalize_vars(&self) -> Descr {
+        fn mapped_id(
+            old: TypeVarId,
+            sigma: &mut std::collections::BTreeMap<TypeVarId, TypeVarId>,
+            next: &mut u32,
+        ) -> TypeVarId {
+            if let Some(mapped) = sigma.get(&old) {
+                return *mapped;
+            }
+            let fresh = TypeVarId(*next);
+            *next += 1;
+            sigma.insert(old, fresh);
+            fresh
+        }
+
+        fn map_tuple_sig(
+            s: TupleSig,
+            sigma: &mut std::collections::BTreeMap<TypeVarId, TypeVarId>,
+            next: &mut u32,
+        ) -> TupleSig {
+            TupleSig {
+                elems: s.elems.iter().map(|elem| go(elem, sigma, next)).collect(),
+            }
+        }
+
+        fn map_list_sig(
+            s: ListSig,
+            sigma: &mut std::collections::BTreeMap<TypeVarId, TypeVarId>,
+            next: &mut u32,
+        ) -> ListSig {
+            ListSig {
+                empty: s.empty,
+                elem: s.elem.as_ref().map(|elem| Box::new(go(elem, sigma, next))),
+            }
+        }
+
+        fn map_resource_sig(
+            s: ResourceSig,
+            sigma: &mut std::collections::BTreeMap<TypeVarId, TypeVarId>,
+            next: &mut u32,
+        ) -> ResourceSig {
+            ResourceSig {
+                payload: Box::new(go(&s.payload, sigma, next)),
+            }
+        }
+
+        fn map_arrow_sig(
+            s: ArrowSig,
+            sigma: &mut std::collections::BTreeMap<TypeVarId, TypeVarId>,
+            next: &mut u32,
+        ) -> ArrowSig {
+            ArrowSig {
+                args: s.args.iter().map(|arg| go(arg, sigma, next)).collect(),
+                ret: Box::new(go(&s.ret, sigma, next)),
+                lit: s.lit.map(|lit| ClosureLit {
+                    fn_id: lit.fn_id,
+                    captures: lit
+                        .captures
+                        .into_iter()
+                        .map(|capture| ty_from_descr(go(ty_descr(&capture), sigma, next)))
+                        .collect(),
+                }),
+            }
+        }
+
+        fn map_map_sig(
+            s: MapSig,
+            sigma: &mut std::collections::BTreeMap<TypeVarId, TypeVarId>,
+            next: &mut u32,
+        ) -> MapSig {
+            MapSig {
+                fields: s
+                    .fields
+                    .into_iter()
+                    .map(|(k, v)| (k, go(&v, sigma, next)))
+                    .collect(),
+            }
+        }
+
+        fn go(
+            d: &Descr,
+            sigma: &mut std::collections::BTreeMap<TypeVarId, TypeVarId>,
+            next: &mut u32,
+        ) -> Descr {
+            let mut out = d.clone();
+            if !out.vars.is_any() {
+                out.vars.set = out
+                    .vars
+                    .set
+                    .iter()
+                    .copied()
+                    .map(|id| mapped_id(id, sigma, next))
+                    .collect();
+            }
+            out.tuples = out
+                .tuples
+                .iter()
+                .cloned()
+                .map(|conj| Conj {
+                    pos: conj
+                        .pos
+                        .into_iter()
+                        .map(|sig| map_tuple_sig(sig, sigma, next))
+                        .collect(),
+                    neg: conj
+                        .neg
+                        .into_iter()
+                        .map(|sig| map_tuple_sig(sig, sigma, next))
+                        .collect(),
+                })
+                .collect();
+            out.lists = out
+                .lists
+                .iter()
+                .cloned()
+                .map(|conj| Conj {
+                    pos: conj
+                        .pos
+                        .into_iter()
+                        .map(|sig| map_list_sig(sig, sigma, next))
+                        .collect(),
+                    neg: conj
+                        .neg
+                        .into_iter()
+                        .map(|sig| map_list_sig(sig, sigma, next))
+                        .collect(),
+                })
+                .collect();
+            out.resources = out
+                .resources
+                .iter()
+                .cloned()
+                .map(|conj| Conj {
+                    pos: conj
+                        .pos
+                        .into_iter()
+                        .map(|sig| map_resource_sig(sig, sigma, next))
+                        .collect(),
+                    neg: conj
+                        .neg
+                        .into_iter()
+                        .map(|sig| map_resource_sig(sig, sigma, next))
+                        .collect(),
+                })
+                .collect();
+            out.funcs = out
+                .funcs
+                .iter()
+                .cloned()
+                .map(|conj| Conj {
+                    pos: conj
+                        .pos
+                        .into_iter()
+                        .map(|sig| map_arrow_sig(sig, sigma, next))
+                        .collect(),
+                    neg: conj
+                        .neg
+                        .into_iter()
+                        .map(|sig| map_arrow_sig(sig, sigma, next))
+                        .collect(),
+                })
+                .collect();
+            out.maps = out
+                .maps
+                .iter()
+                .cloned()
+                .map(|conj| Conj {
+                    pos: conj
+                        .pos
+                        .into_iter()
+                        .map(|sig| map_map_sig(sig, sigma, next))
+                        .collect(),
+                    neg: conj
+                        .neg
+                        .into_iter()
+                        .map(|sig| map_map_sig(sig, sigma, next))
+                        .collect(),
+                })
+                .collect();
+            out
+        }
+
+        go(self, &mut std::collections::BTreeMap::new(), &mut 0)
+    }
+
     /// Apply `f` to nested `Descr`s that are recursive input shape:
     /// tuple elements, list element, arrow args/ret, and map values.
     /// Closure-lit captures are kept intact because they identify the

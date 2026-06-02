@@ -92,34 +92,34 @@ impl AbiFacts {
                         );
                     }
                     Term::CallClosure { ident, closure, .. } => {
-                        let closure_target = local_target_fn_id(
+                        let cont =
+                            local_target_fn_id(plan, planned.fn_id, ident, EmitSlot::Cont, "Cont");
+                        cont_fns.insert(cont);
+                        cont_target_fns.insert(cont);
+                        if let Some(closure_target) = optional_local_target_fn_id(
                             plan,
                             planned.fn_id,
                             ident,
                             EmitSlot::ClosureCall,
-                            "ClosureCall",
-                        );
-                        let cont =
-                            local_target_fn_id(plan, planned.fn_id, ident, EmitSlot::Cont, "Cont");
-                        closure_targets.insert(closure_target);
-                        cont_fns.insert(cont);
-                        cont_target_fns.insert(closure_target);
-                        cont_target_fns.insert(cont);
+                        ) {
+                            closure_targets.insert(closure_target);
+                            cont_target_fns.insert(closure_target);
+                        }
                         record_callable_target(
                             plan.callable_capabilities.get(closure),
                             &mut closure_capture_counts,
                         );
                     }
                     Term::TailCallClosure { ident, closure, .. } => {
-                        let closure_target = local_target_fn_id(
+                        if let Some(closure_target) = optional_local_target_fn_id(
                             plan,
                             planned.fn_id,
                             ident,
                             EmitSlot::ClosureCall,
-                            "ClosureCall",
-                        );
-                        closure_targets.insert(closure_target);
-                        cont_target_fns.insert(closure_target);
+                        ) {
+                            closure_targets.insert(closure_target);
+                            cont_target_fns.insert(closure_target);
+                        }
                         record_callable_target(
                             plan.callable_capabilities.get(closure),
                             &mut closure_capture_counts,
@@ -212,29 +212,28 @@ impl AbiFacts {
                             "Direct",
                         )),
                         Term::CallClosure { ident, .. } => {
-                            native_fns.contains(&local_target_fn_id(
+                            optional_local_target_fn_id(
                                 plan,
                                 planned.fn_id,
                                 ident,
                                 EmitSlot::ClosureCall,
-                                "ClosureCall",
-                            )) && native_fns.contains(&local_target_fn_id(
-                                plan,
-                                planned.fn_id,
-                                ident,
-                                EmitSlot::Cont,
-                                "Cont",
-                            ))
+                            )
+                            .is_none_or(|target| native_fns.contains(&target))
+                                && native_fns.contains(&local_target_fn_id(
+                                    plan,
+                                    planned.fn_id,
+                                    ident,
+                                    EmitSlot::Cont,
+                                    "Cont",
+                                ))
                         }
-                        Term::TailCallClosure { ident, .. } => {
-                            native_fns.contains(&local_target_fn_id(
-                                plan,
-                                planned.fn_id,
-                                ident,
-                                EmitSlot::ClosureCall,
-                                "ClosureCall",
-                            ))
-                        }
+                        Term::TailCallClosure { ident, .. } => optional_local_target_fn_id(
+                            plan,
+                            planned.fn_id,
+                            ident,
+                            EmitSlot::ClosureCall,
+                        )
+                        .is_none_or(|target| native_fns.contains(&target)),
                         Term::Receive { ident, .. } => native_fns.contains(&local_target_fn_id(
                             plan,
                             planned.fn_id,
@@ -325,16 +324,14 @@ impl AbiFacts {
                             );
                         }
                         Term::CallClosure { ident, .. } => {
-                            add_target(
-                                local_target_fn_id(
-                                    plan,
-                                    planned.fn_id,
-                                    ident,
-                                    EmitSlot::ClosureCall,
-                                    "ClosureCall",
-                                ),
-                                &mut native_fns,
-                            );
+                            if let Some(target) = optional_local_target_fn_id(
+                                plan,
+                                planned.fn_id,
+                                ident,
+                                EmitSlot::ClosureCall,
+                            ) {
+                                add_target(target, &mut native_fns);
+                            }
                             add_target(
                                 local_target_fn_id(
                                     plan,
@@ -347,16 +344,14 @@ impl AbiFacts {
                             );
                         }
                         Term::TailCallClosure { ident, .. } => {
-                            add_target(
-                                local_target_fn_id(
-                                    plan,
-                                    planned.fn_id,
-                                    ident,
-                                    EmitSlot::ClosureCall,
-                                    "ClosureCall",
-                                ),
-                                &mut native_fns,
-                            );
+                            if let Some(target) = optional_local_target_fn_id(
+                                plan,
+                                planned.fn_id,
+                                ident,
+                                EmitSlot::ClosureCall,
+                            ) {
+                                add_target(target, &mut native_fns);
+                            }
                         }
                         Term::Receive { ident, .. } => {
                             add_target(
@@ -415,6 +410,16 @@ fn local_target_fn_id(
             )
         })
         .fn_id
+}
+
+fn optional_local_target_fn_id(
+    plan: &crate::ir_planner::SpecPlan,
+    caller: FnId,
+    ident: &crate::fz_ir::CallsiteIdent,
+    slot: EmitSlot,
+) -> Option<FnId> {
+    plan.local_call_target(&CallsiteId::new(caller, ident, slot))
+        .map(|target| target.fn_id)
 }
 
 fn record_callable_boundary_targets(

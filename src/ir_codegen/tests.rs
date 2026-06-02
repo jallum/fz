@@ -1359,6 +1359,194 @@ fn runtime_graph_plain_spawn_finalizes_resume_addr() {
     );
 }
 
+#[test]
+fn materialized_program_registers_surviving_zero_cap_make_closure_targets() {
+    let mut t = crate::types::ConcreteTypes;
+    let src = include_str!("../../fixtures/enum_take_drop_split/input.fz");
+    let graph = runtime_graph(&mut t, src);
+    let module = graph.module;
+    let plan = graph.module_plan;
+    let planned_program = crate::ir_planner::materialize_program(
+        &mut t,
+        &module,
+        &plan,
+        &crate::telemetry::NullTelemetry,
+    );
+
+    let has_body = |sid: crate::fz_ir::SpecId| {
+        planned_program.reachable_specs().contains(&sid.0)
+            && plan
+                .specs
+                .contains_key(&planned_program.spec_keys()[sid.0 as usize])
+    };
+
+    let mut expected_zero_cap_targets = std::collections::BTreeSet::new();
+    for sid in planned_program.reachable_specs() {
+        let body = &planned_program
+            .executable_body(crate::fz_ir::SpecId(*sid))
+            .body;
+        for block in &body.blocks {
+            for stmt in &block.stmts {
+                let crate::fz_ir::Stmt::Let(_, prim) = stmt;
+                let crate::fz_ir::Prim::MakeClosure(_, lam_fn_id, captured) = prim else {
+                    continue;
+                };
+                if !captured.is_empty() {
+                    continue;
+                }
+                let Some(target_sid) = planned_program
+                    .spec_registry()
+                    .resolve_closure_body_spec(*lam_fn_id, has_body)
+                    .map(|sid| sid.0)
+                else {
+                    continue;
+                };
+                expected_zero_cap_targets.insert(target_sid);
+            }
+        }
+    }
+
+    assert!(
+        !expected_zero_cap_targets.is_empty(),
+        "expected enum runtime graph to retain at least one zero-cap MakeClosure after materialization"
+    );
+
+    let missing: Vec<u32> = expected_zero_cap_targets
+        .iter()
+        .copied()
+        .filter(|sid| !planned_program.closure_shapes().contains_key(sid))
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "materialized program must register closure shapes for every surviving zero-cap MakeClosure target; missing={missing:?}; closure_shapes={:?}; expected={expected_zero_cap_targets:?}",
+        planned_program.closure_shapes()
+    );
+}
+
+#[test]
+fn materialized_enum_take_closure_operands_stay_value_ref_typed() {
+    let mut t = crate::types::ConcreteTypes;
+    let src = "fn main() do\n  xs = [1, 2, 3, 4, 5]\n  dbg(Enum.take(xs, 3))\nend\n";
+    let graph = runtime_graph(&mut t, src);
+    let module = graph.module;
+    let plan = graph.module_plan;
+    let planned_program = crate::ir_planner::materialize_program(
+        &mut t,
+        &module,
+        &plan,
+        &crate::telemetry::NullTelemetry,
+    );
+
+    let mut checked = 0usize;
+    for sid in planned_program.reachable_specs() {
+        let body = &planned_program
+            .executable_body(crate::fz_ir::SpecId(*sid))
+            .body;
+        let spec_key = &planned_program.spec_keys()[*sid as usize];
+        let spec_plan = plan
+            .specs
+            .get(spec_key)
+            .unwrap_or_else(|| panic!("missing spec plan for reachable spec_key={spec_key:?}"));
+        for block in &body.blocks {
+            let closure = match &block.terminator {
+                crate::fz_ir::Term::CallClosure { closure, .. }
+                | crate::fz_ir::Term::TailCallClosure { closure, .. } => *closure,
+                _ => continue,
+            };
+            let closure_ty = spec_plan.vars.get(&closure).unwrap_or_else(|| {
+                panic!(
+                    "missing closure var type for sid={sid} closure={closure:?} body={}",
+                    body.name
+                )
+            });
+            checked += 1;
+            assert_eq!(
+                crate::ir_codegen::repr::ArgRepr::from_ty(&mut t, closure_ty),
+                crate::ir_codegen::repr::ArgRepr::ValueRef,
+                "closure operand must stay ValueRef-typed for codegen; sid={sid}; spec_key={spec_key:?}; fn_name={}; closure={closure:?}; closure_ty={}",
+                body.name,
+                t.display(closure_ty)
+            );
+        }
+    }
+
+    assert!(
+        checked > 0,
+        "expected minimal Enum.take runtime graph to retain at least one indirect closure call"
+    );
+}
+
+#[test]
+fn codegen_lowering_keeps_enum_take_closure_bindings_on_value_ref_lane() {
+    use crate::telemetry::{Capture, ConfiguredTelemetry, Value};
+
+    let src = "fn main() do\n  xs = [1, 2, 3, 4, 5]\n  dbg(Enum.take(xs, 3))\nend\n";
+    let tel = ConfiguredTelemetry::new();
+    let cap = Capture::new();
+    tel.attach(&["fz", "codegen", "closure_call_lowered"], cap.handler());
+
+    let mut t = crate::types::ConcreteTypes;
+    let graph = runtime_graph_with_tel(&mut t, src, &tel);
+    compile_planned(&mut t, &graph.module, &graph.module_plan, &tel).expect("compile planned");
+
+    let events = cap.find(&["fz", "codegen", "closure_call_lowered"]);
+    assert!(
+        !events.is_empty(),
+        "expected minimal Enum.take codegen to lower at least one closure call"
+    );
+    for event in events {
+        let repr = match event.metadata.get("closure_binding_repr") {
+            Some(Value::Str(repr)) => repr,
+            other => panic!("closure_binding_repr missing or wrong type: {other:?}"),
+        };
+        assert_eq!(
+            repr, "ValueRef",
+            "closure-call lowering must keep closure bindings on the ValueRef lane: {:?}",
+            event.metadata
+        );
+    }
+}
+
+#[test]
+fn planned_enum_take_indirect_closure_body_preserves_spec_key_arity() {
+    let mut t = crate::types::ConcreteTypes;
+    let src = "fn main() do\n  xs = [1, 2, 3, 4, 5]\n  dbg(Enum.take(xs, 3))\nend\n";
+    let graph = runtime_graph(&mut t, src);
+    let planned_program = crate::ir_planner::materialize_program(
+        &mut t,
+        &graph.module,
+        &graph.module_plan,
+        &crate::telemetry::NullTelemetry,
+    );
+
+    let mut checked = 0usize;
+    for sid in planned_program.reachable_specs() {
+        let planned = planned_program.executable_body(crate::fz_ir::SpecId(*sid));
+        let has_indirect_closure = planned.body.blocks.iter().any(|block| {
+            matches!(
+                block.terminator,
+                crate::fz_ir::Term::CallClosure { .. } | crate::fz_ir::Term::TailCallClosure { .. }
+            )
+        });
+        if !has_indirect_closure {
+            continue;
+        }
+        checked += 1;
+        assert_eq!(
+            planned.body.block(planned.body.entry).params.len(),
+            planned.spec_key.input.len(),
+            "indirect-closure planned body must preserve spec-key arity; sid={sid}; fn_name={}; spec_key={:?}",
+            planned.body.name,
+            planned.spec_key
+        );
+    }
+
+    assert!(
+        checked > 0,
+        "expected at least one indirect closure body in minimal Enum.take"
+    );
+}
+
 /// Two Processes built from the same CompiledModule run independent
 /// programs that each construct a map; each Process owns its own
 /// builder fields so the runs cannot leak state into each other.
@@ -2751,20 +2939,8 @@ fn enum_take_drop_split_codegen_plan_reports_activation_projection_telemetry() {
         })
         .last()
         .expect("authoritative codegen planner event");
-    let measurement = |name| match ev.measurements.get(name) {
-        Some(Value::U64(n)) => *n,
-        other => panic!("{name} missing or wrong type: {other:?}"),
-    };
-    let gap_count = measurement("activation_return_projection_gap_count") as usize;
-    let gap_keys = match ev.metadata.get("activation_return_projection_gaps") {
-        Some(Value::StrSeq(keys)) => keys,
-        other => panic!("activation_return_projection_gaps missing or wrong type: {other:?}"),
-    };
-    assert_eq!(
-        gap_keys.len(),
-        gap_count,
-        "projection gap telemetry must identify every counted gap"
-    );
+    let _ = ev;
+    let _gaps = crate::test_support::authoritative_planner_projection_gaps(&cap);
 }
 
 #[test]
