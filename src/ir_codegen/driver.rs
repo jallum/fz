@@ -1365,6 +1365,19 @@ pub(crate) fn prepare_module_for_authoritative_plan<
     module: &Module,
     tel: &dyn crate::telemetry::Telemetry,
 ) -> Module {
+    #[cfg(test)]
+    fn assert_post_transform_planner_consistency<
+        T: crate::types::Types<Ty = crate::types::Ty>
+            + crate::types::ClosureTypes
+            + crate::types::RenderTypes,
+    >(
+        t: &mut T,
+        module: &Module,
+        context: &str,
+    ) {
+        crate::test_support::assert_module_planner_consistent(t, module, context);
+    }
+
     let mut working = module.clone();
     let capabilities = crate::ir_planner::plan_callable_capabilities(t, &working);
     crate::ir_planner::rewrite_known_target_closures(t, &mut working, &capabilities);
@@ -1373,6 +1386,11 @@ pub(crate) fn prepare_module_for_authoritative_plan<
     #[cfg(test)]
     if !INLINE_DISABLED.with(|d| d.get()) {
         crate::ir_inline::inline_module_with_plan(&mut working, &capabilities);
+        assert_post_transform_planner_consistency(
+            t,
+            &working,
+            "inline_module_with_plan in prepare_module_for_authoritative_plan",
+        );
     }
     crate::ir_fuse::fuse_blocks_with_telemetry(&mut working, tel);
     #[cfg(not(test))]
@@ -1382,10 +1400,28 @@ pub(crate) fn prepare_module_for_authoritative_plan<
         let _ = crate::ir_reducer::reduce_module_with_telemetry(t, &mut working, tel);
     }
     crate::ir_inline::inline_single_use_conts(&mut working);
+    #[cfg(test)]
+    assert_post_transform_planner_consistency(
+        t,
+        &working,
+        "inline_single_use_conts in prepare_module_for_authoritative_plan",
+    );
     crate::ir_diverge::truncate_diverging_blocks(module.module_path(), &mut working, tel);
     crate::ir_const_bs::fold_module(&mut working);
     crate::ir_dce::dce_module_with_telemetry(&mut working, tel);
+    #[cfg(test)]
+    assert_post_transform_planner_consistency(
+        t,
+        &working,
+        "dce_module_with_telemetry in prepare_module_for_authoritative_plan",
+    );
     crate::ir_dce::dce_module_level(&mut working);
+    #[cfg(test)]
+    assert_post_transform_planner_consistency(
+        t,
+        &working,
+        "dce_module_level in prepare_module_for_authoritative_plan",
+    );
     working
 }
 

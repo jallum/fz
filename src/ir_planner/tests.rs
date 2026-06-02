@@ -1562,7 +1562,7 @@ fn plan_module_prechecked(
     let cap = crate::telemetry::Capture::new();
     tel.attach(&[], cap.handler());
     let plan = plan_module(t, module, &tel);
-    crate::test_support::assert_authoritative_planner_gap_free(&cap);
+    crate::test_support::assert_authoritative_planner_consistent(&cap);
     (plan, cap)
 }
 
@@ -1571,12 +1571,12 @@ fn plan_module_quiet(t: &mut crate::types::ConcreteTypes, module: &Module) -> Mo
     plan
 }
 
-fn assert_module_plan_gap_free(module: &Module) {
+fn assert_module_plan_consistent(module: &Module) {
     let mut t = crate::types::ConcreteTypes;
     let (_plan, _cap) = plan_module_prechecked(&mut t, module);
 }
 
-fn assert_pipeline_gap_free(src: &str) {
+fn assert_pipeline_consistent(src: &str) {
     let toks = crate::parser::lexer::Lexer::new(src)
         .tokenize()
         .expect("lex");
@@ -1594,7 +1594,7 @@ fn pipeline(
     src: &str,
     tel: &dyn crate::telemetry::Telemetry,
 ) -> (crate::types::ConcreteTypes, Module, ModulePlan) {
-    assert_pipeline_gap_free(src);
+    assert_pipeline_consistent(src);
     let toks = crate::parser::lexer::Lexer::new(src)
         .tokenize()
         .expect("lex");
@@ -1908,7 +1908,7 @@ fn planner_planned_reports_activation_return_kernel_telemetry() {
     measurement("activation_return_unresolved_count");
     measurement("activation_return_no_return_count");
     assert_eq!(measurement("activation_return_projected_count"), spec_count);
-    crate::test_support::assert_authoritative_planner_gap_free(&cap);
+    crate::test_support::assert_authoritative_planner_consistent(&cap);
 }
 
 #[test]
@@ -3076,7 +3076,7 @@ fn planner_projects_enum_reduce_runtime_graph_from_activation_facts() {
     let module = crate::test_support::linked_runtime_module(include_str!(
         "../type_infer/fixtures/enum_reduce.fz"
     ));
-    assert_module_plan_gap_free(&module);
+    assert_module_plan_consistent(&module);
     let _ = plan_module(&mut t, &module, &tel);
 
     let events = cap
@@ -3275,7 +3275,7 @@ fn planner_projects_enum_reduce_range_runtime_graph_from_activation_facts() {
     let module = crate::test_support::linked_runtime_module(include_str!(
         "../type_infer/fixtures/enum_reduce_range.fz"
     ));
-    assert_module_plan_gap_free(&module);
+    assert_module_plan_consistent(&module);
     let _ = plan_module(&mut t, &module, &tel);
 
     let events = cap
@@ -4981,7 +4981,7 @@ end
     )
     .unwrap_or_else(|err| panic!("execution graph: {err}"));
     let module = prepared.module;
-    assert_module_plan_gap_free(&module);
+    assert_module_plan_consistent(&module);
     let plan = super::plan_module(&mut t, &module, &tel);
     let take = module.fn_by_name("Enum.take").expect("Enum.take");
     let range = t.opaque_of("impl-target::Range");
@@ -5050,7 +5050,7 @@ fn declared_return_fact_handles_enum_reduce_with_runtime_graph_reducer() {
     )
     .unwrap_or_else(|err| panic!("execution graph: {err}"));
     let module = prepared.module;
-    assert_module_plan_gap_free(&module);
+    assert_module_plan_consistent(&module);
     let plan = super::plan_module(&mut t, &module, &tel);
 
     let drop_positive = module
@@ -5127,7 +5127,7 @@ fn declared_return_fact_handles_take_positive_reduce_while_in_runtime_graph() {
     )
     .unwrap_or_else(|err| panic!("execution graph: {err}"));
     let module = prepared.module;
-    assert_module_plan_gap_free(&module);
+    assert_module_plan_consistent(&module);
     let plan = super::plan_module(&mut t, &module, &tel);
 
     let take_positive = module

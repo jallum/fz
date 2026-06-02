@@ -196,7 +196,7 @@ pub(crate) fn runtime_graph_planner_activation_projection_signals(
     let graph = linked_runtime_graph_with_telemetry(&mut t, src, &tel);
     cap.clear();
     let _ = crate::ir_planner::plan_module(&mut t, &graph.module, &tel);
-    assert_authoritative_planner_gap_free(&cap);
+    assert_authoritative_planner_consistent(&cap);
     activation_projection_signals(&cap)
 }
 
@@ -215,7 +215,7 @@ pub(crate) fn runtime_graph_codegen_materialized_body_signals(
     cap.clear();
     crate::ir_codegen::compile_planned(&mut t, &graph.module, &graph.module_plan, &tel)
         .expect("compile planned");
-    assert_authoritative_planner_gap_free(&cap);
+    assert_authoritative_planner_consistent(&cap);
 
     cap.find(&["fz", "planner", "body_materialized"])
         .into_iter()
@@ -261,7 +261,7 @@ pub(crate) fn runtime_graph_reachable_materialized_body_signals(
     cap.clear();
     crate::ir_codegen::compile_planned(&mut t, &graph.module, &graph.module_plan, &tel)
         .expect("compile planned");
-    assert_authoritative_planner_gap_free(&cap);
+    assert_authoritative_planner_consistent(&cap);
 
     let materialized = cap
         .last(&["fz", "planner", "materialized"])
@@ -313,7 +313,7 @@ pub(crate) fn runtime_graph_reachable_materialized_body_signals(
 }
 
 #[cfg(test)]
-pub(crate) fn authoritative_planner_projection_gaps(
+pub(crate) fn authoritative_planner_consistency_issues(
     cap: &crate::telemetry::Capture,
 ) -> Vec<String> {
     use crate::telemetry::Value;
@@ -349,10 +349,31 @@ pub(crate) fn authoritative_planner_projection_gaps(
 }
 
 #[cfg(test)]
-pub(crate) fn assert_authoritative_planner_gap_free(cap: &crate::telemetry::Capture) {
-    let gaps = authoritative_planner_projection_gaps(cap);
+pub(crate) fn assert_authoritative_planner_consistent(cap: &crate::telemetry::Capture) {
+    let gaps = authoritative_planner_consistency_issues(cap);
     assert!(
         gaps.is_empty(),
-        "authoritative planner model must be projection-gap free before tests inspect it: {gaps:?}"
+        "authoritative planner consistency check failed before tests inspected the model: {gaps:?}"
+    );
+}
+
+#[cfg(test)]
+pub(crate) fn assert_module_planner_consistent<
+    T: crate::types::Types<Ty = crate::types::Ty>
+        + crate::types::ClosureTypes
+        + crate::types::RenderTypes,
+>(
+    t: &mut T,
+    module: &Module,
+    context: &str,
+) {
+    let tel = crate::telemetry::ConfiguredTelemetry::new();
+    let cap = crate::telemetry::Capture::new();
+    tel.attach(&[], cap.handler());
+    let _ = crate::ir_planner::plan_module(t, module, &tel);
+    let issues = authoritative_planner_consistency_issues(&cap);
+    assert!(
+        issues.is_empty(),
+        "authoritative planner consistency check failed after {context}: {issues:?}"
     );
 }

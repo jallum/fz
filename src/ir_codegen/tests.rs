@@ -2940,7 +2940,7 @@ fn enum_take_drop_split_codegen_plan_reports_activation_projection_telemetry() {
         .last()
         .expect("authoritative codegen planner event");
     let _ = ev;
-    let _gaps = crate::test_support::authoritative_planner_projection_gaps(&cap);
+    crate::test_support::assert_authoritative_planner_consistent(&cap);
 }
 
 #[test]
