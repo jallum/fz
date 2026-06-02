@@ -10,8 +10,12 @@
 //! Block fusion: merges a block that ends with a parameterless Goto into its
 //! single-predecessor target. Runs after dead block elimination so that only
 //! reachable blocks remain. Fixed-point loop handles chains.
+//!
+//! Module-level DCE preserves spec-bearing Kernel operator functions referenced
+//! by surviving arithmetic `BinOp` prims. Until those prims are fully desugared
+//! to ordinary Kernel calls, type inference still reads those function specs.
 
-use crate::fz_ir::{BlockId, FnId, FnIr, Module, PhysicalCapability, Prim, Stmt, Term, Var};
+use crate::fz_ir::{BinOp, BlockId, FnId, FnIr, Module, PhysicalCapability, Prim, Stmt, Term, Var};
 use std::collections::HashMap;
 use std::collections::HashSet;
 
@@ -82,6 +86,11 @@ pub fn dce_module_level(m: &mut Module) {
             for stmt in &block.stmts {
                 match stmt {
                     Stmt::Let(_, Prim::MakeClosure(_, fid, _)) => queue.push(*fid),
+                    Stmt::Let(_, Prim::BinOp(op, _, _)) => {
+                        if let Some(fid) = kernel_fn_for_binop(m, *op) {
+                            queue.push(fid);
+                        }
+                    }
                     Stmt::Let(_, Prim::Extern(eid, _)) => {
                         reachable_externs.insert(*eid);
                     }
@@ -107,6 +116,25 @@ pub fn dce_module_level(m: &mut Module) {
     for (i, e) in m.externs.iter().enumerate() {
         m.extern_idx.insert(e.id, i);
     }
+}
+
+fn kernel_fn_for_binop(m: &Module, op: BinOp) -> Option<FnId> {
+    match op {
+        BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod => {}
+        BinOp::Eq
+        | BinOp::Neq
+        | BinOp::Lt
+        | BinOp::Le
+        | BinOp::Gt
+        | BinOp::Ge
+        | BinOp::And
+        | BinOp::Or => return None,
+    }
+    let name = format!("Kernel.{op}");
+    m.fns
+        .iter()
+        .find(|f| f.name == name && f.block(f.entry).params.len() == 2)
+        .map(|f| f.id)
 }
 
 pub fn dce_module_with_telemetry(m: &mut Module, tel: &dyn crate::telemetry::Telemetry) {
@@ -596,6 +624,39 @@ mod tests {
             "leaf unreachable must be removed"
         );
         assert_eq!(m.fns.len(), 1);
+    }
+
+    #[test]
+    fn dce_module_level_keeps_kernel_operator_specs_used_by_binop() {
+        let mut main = FnBuilder::new(FnId(0), "main");
+        let entry = main.block(vec![]);
+        let one = main.let_(entry, Prim::Const(Const::Int(1)));
+        let two = main.let_(entry, Prim::Const(Const::Int(2)));
+        let sum = main.let_(entry, Prim::BinOp(BinOp::Add, one, two));
+        main.set_terminator(entry, Term::Return(sum));
+
+        let mut add = FnBuilder::new(FnId(1), "Kernel.+");
+        let left = add.fresh_var();
+        let right = add.fresh_var();
+        let add_entry = add.block(vec![left, right]);
+        add.set_terminator(add_entry, Term::Return(left));
+
+        let mut unused = FnBuilder::new(FnId(2), "Kernel.-");
+        let left = unused.fresh_var();
+        let right = unused.fresh_var();
+        let unused_entry = unused.block(vec![left, right]);
+        unused.set_terminator(unused_entry, Term::Return(left));
+
+        let mut mb = ModuleBuilder::new();
+        mb.add_fn(main.build());
+        mb.add_fn(add.build());
+        mb.add_fn(unused.build());
+        let mut m = mb.build();
+
+        dce_module_level(&mut m);
+
+        assert!(m.fn_by_name("Kernel.+").is_some());
+        assert!(m.fn_by_name("Kernel.-").is_none());
     }
 
     #[test]

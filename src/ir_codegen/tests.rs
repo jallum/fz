@@ -2782,6 +2782,8 @@ end
 
 #[test]
 fn recursive_cons_function_clause_runs_in_interp_and_native() {
+    use crate::telemetry::{Capture, ConfiguredTelemetry, Value};
+
     const SRC: &str = r#"
 fn count([]), do: 0
 fn count([_head | tail]), do: count(tail) + 1
@@ -2792,7 +2794,9 @@ fn main() do
 end
 "#;
     let mut t = crate::types::ConcreteTypes;
-    let tel = crate::telemetry::NullTelemetry;
+    let tel = ConfiguredTelemetry::new();
+    let cap = Capture::new();
+    tel.attach(&[], cap.handler());
     let frontend = crate::frontend::compile_source_with_types(
         &mut t,
         SRC.to_string(),
@@ -2815,6 +2819,34 @@ end
         200,
         "native recursive function-clause dispatch"
     );
+    assert_eq!(
+        cap.count(&["fz", "codegen", "dispatch_missing"]),
+        0,
+        "recursive cons compile should not report missing dispatch"
+    );
+    let planned_events: Vec<_> = cap
+        .find(&["fz", "planner", "planned"])
+        .into_iter()
+        .filter(|ev| {
+            matches!(
+                ev.metadata.get("role"),
+                Some(Value::Str(role)) if role == "authoritative"
+            )
+        })
+        .collect();
+    assert_eq!(
+        planned_events.len(),
+        2,
+        "frontend + interpreter + native compile should publish only frontend and codegen planner events"
+    );
+    let planned = &planned_events[1];
+    match planned
+        .measurements
+        .get("activation_return_unresolved_entry_count")
+    {
+        Some(Value::U64(0)) => {}
+        other => panic!("final activation inference should be complete, got {other:?}"),
+    }
 }
 
 /// `dbg(nil)` and `dbg([])` render as distinct strings — codegen

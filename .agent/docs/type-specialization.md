@@ -187,6 +187,12 @@ bodies from being blunted by broader declarations. Arithmetic `Prim::BinOp`
 uses the same declared-spec path by looking up the corresponding
 operator-headed `Kernel` function.
 
+That lookup is a real data-model dependency. Any transform that leaves an
+arithmetic `Prim::BinOp` in a module must also preserve the matching
+`Kernel.<op>/2` function and its declared specs. Removing that function while
+keeping the primitive makes the post-transform module incoherent for
+activation inference.
+
 Spec application distinguishes three cases:
 
 - A matching arrow yields a known result fact.

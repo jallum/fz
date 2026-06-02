@@ -177,7 +177,7 @@ enum ProtocolDispatch {
 /// Cont keys are not normalized: they model dataflow from a concrete
 /// producer, not a recursive function-entry fixed point.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn walk_spec_for_discovery<
+pub(super) fn walk_spec_for_discovery<
     T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
 >(
     t: &mut T,
@@ -185,8 +185,7 @@ pub(crate) fn walk_spec_for_discovery<
     caller_ft: &SpecPlan,
     m: &Module,
     fn_effects: &FnEffects,
-    effective_returns: &HashMap<SpecKey, crate::types::Ty>,
-    complete_returns: &HashSet<SpecKey>,
+    activation_returns: &super::worklist::ActivationReturnFacts,
     recursive_fns: &std::collections::HashSet<FnId>,
     slot_summaries: &FixedPointSlotSummaries,
     caller_spec_key: &SpecKey,
@@ -200,8 +199,7 @@ pub(crate) fn walk_spec_for_discovery<
         caller_ft,
         m,
         fn_effects,
-        effective_returns,
-        complete_returns,
+        activation_returns,
         recursive_fns,
         slot_summaries,
         caller_spec_key,
@@ -220,8 +218,7 @@ where
     caller_ft: &'a SpecPlan,
     m: &'a Module,
     fn_effects: &'a FnEffects,
-    effective_returns: &'a HashMap<SpecKey, crate::types::Ty>,
-    complete_returns: &'a HashSet<SpecKey>,
+    activation_returns: &'a super::worklist::ActivationReturnFacts,
     recursive_fns: &'a HashSet<FnId>,
     slot_summaries: &'a FixedPointSlotSummaries,
     caller_spec_key: &'a SpecKey,
@@ -522,13 +519,9 @@ where
         let Some(slot0) = self.continuation_slot0(term_ident, env, &source) else {
             return;
         };
-        // Pending is an absence of proof, not an impossible return. Keep the
-        // continuation edge alive with an opaque slot while the return reader
-        // dependency waits for the producer to settle. A completed `none`
-        // still arrives as `Known(none)` and is dropped by `has_bottom_arg`.
         let slot0 = match slot0 {
             Slot0Knowledge::Known(ty) => ty,
-            Slot0Knowledge::Pending => self.any_ty.clone(),
+            Slot0Knowledge::Pending => return,
         };
         let Some(&j) = self.m.fn_idx.get(&cont.fn_id) else {
             return;
@@ -599,12 +592,10 @@ where
                     term_ident,
                     callee,
                     &arg_tys,
-                    self.effective_returns,
-                    Some(self.complete_returns),
+                    self.activation_returns,
                     self.slot_summaries,
                     target,
                 );
-                self.out.return_reads.extend(knowledge.return_reads);
                 match knowledge.slot0 {
                     super::worklist::ResultSlot0::Known(ty) => Some(Slot0Knowledge::Known(ty)),
                     super::worklist::ResultSlot0::Pending => Some(Slot0Knowledge::Pending),
@@ -662,11 +653,9 @@ where
                 self.caller_spec_key.fn_id,
                 target,
                 &self.arg_tys(args, env),
-                self.effective_returns,
-                Some(self.complete_returns),
+                self.activation_returns,
                 self.slot_summaries,
             );
-            self.out.return_reads.extend(knowledge.return_reads);
             return Some(match knowledge.slot0 {
                 super::worklist::ResultSlot0::Known(ty) => Slot0Knowledge::Known(ty),
                 super::worklist::ResultSlot0::Pending => Slot0Knowledge::Pending,
@@ -682,11 +671,9 @@ where
             self.caller_spec_key.fn_id,
             cv_descr,
             &self.arg_tys(args, env),
-            self.effective_returns,
-            self.complete_returns,
+            self.activation_returns,
             self.slot_summaries,
         );
-        self.out.return_reads.extend(knowledge.return_reads);
         Some(match knowledge.slot0 {
             super::worklist::ResultSlot0::Known(ty) => Slot0Knowledge::Known(ty),
             super::worklist::ResultSlot0::Pending => Slot0Knowledge::Pending,
