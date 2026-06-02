@@ -1,5 +1,5 @@
 use super::{TypeInferOutcome, TypeInferReturnState, TypeInferStatus, infer_from_entry};
-use crate::fz_ir::{Const, FnBuilder, FnId, Module, ModuleBuilder, Prim, Term};
+use crate::fz_ir::{Const, EmitSlot, FnBuilder, FnId, Module, ModuleBuilder, Prim, Term};
 use crate::telemetry::{ConfiguredTelemetry, Handler, Value};
 use crate::types::{ClosureTarget, ClosureTypes, ConcreteTypes, Ty, Types};
 use std::cell::RefCell;
@@ -133,8 +133,9 @@ fn closure_apply_contract<T: Types<Ty = Ty> + ClosureTypes>(
 struct TypeInferFacts {
     fn_returns: Vec<FnReturnFact>,
     activations: Vec<ActivationFact>,
+    activation_edges: Vec<ActivationEdgeFact>,
+    dead_arms: Vec<DeadArmFact>,
     diagnostics: Vec<DiagnosticFact>,
-    dead_arms: usize,
 }
 
 impl TypeInferFacts {
@@ -188,11 +189,33 @@ struct FnReturnFact {
 
 #[derive(Clone, Debug)]
 struct ActivationFact {
+    activation_id: u64,
     fn_id: FnId,
     fn_name: String,
     input_count: usize,
     state: String,
     return_ty: Option<Ty>,
+}
+
+#[derive(Clone, Debug)]
+struct ActivationEdgeFact {
+    caller_activation_id: u64,
+    caller_fn_id: FnId,
+    caller_fn_name: String,
+    callee_activation_id: u64,
+    callee_fn_id: FnId,
+    callee_fn_name: String,
+    callsite_slot: String,
+    callsite_span_start: u64,
+    callsite_span_end: u64,
+}
+
+#[derive(Clone, Debug)]
+struct DeadArmFact {
+    activation_id: u64,
+    fn_name: String,
+    block: u64,
+    branch: String,
 }
 
 #[derive(Clone, Debug)]
@@ -236,18 +259,61 @@ impl Handler for TypeInferCapture {
                 }
             }
             ["fz", "type_infer", "activation"] => {
-                if let (Some(fn_name), Some(fn_id), Some(input_count), Some(state)) = (
+                if let (
+                    Some(activation_id),
+                    Some(fn_name),
+                    Some(fn_id),
+                    Some(input_count),
+                    Some(state),
+                ) = (
+                    event_metadata_u64(ev, "activation_id"),
                     event_metadata_str(ev, "fn_name"),
                     event_metadata_u64(ev, "fn_id"),
                     event_metadata_u64(ev, "input_count"),
                     event_metadata_str(ev, "state"),
                 ) {
                     facts.activations.push(ActivationFact {
+                        activation_id,
                         fn_id: FnId(fn_id as u32),
                         fn_name,
                         input_count: input_count as usize,
                         state,
                         return_ty: event_metadata_ty(ev, "return_ty_data"),
+                    });
+                }
+            }
+            ["fz", "type_infer", "activation_edge"] => {
+                if let (
+                    Some(caller_activation_id),
+                    Some(caller_fn_name),
+                    Some(caller_fn_id),
+                    Some(callee_activation_id),
+                    Some(callee_fn_name),
+                    Some(callee_fn_id),
+                    Some(callsite_slot),
+                    Some(callsite_span_start),
+                    Some(callsite_span_end),
+                ) = (
+                    event_metadata_u64(ev, "caller_activation_id"),
+                    event_metadata_str(ev, "caller_fn_name"),
+                    event_metadata_u64(ev, "caller_fn_id"),
+                    event_metadata_u64(ev, "callee_activation_id"),
+                    event_metadata_str(ev, "callee_fn_name"),
+                    event_metadata_u64(ev, "callee_fn_id"),
+                    event_metadata_str(ev, "callsite_slot"),
+                    event_metadata_u64(ev, "callsite_span_start"),
+                    event_metadata_u64(ev, "callsite_span_end"),
+                ) {
+                    facts.activation_edges.push(ActivationEdgeFact {
+                        caller_activation_id,
+                        caller_fn_id: FnId(caller_fn_id as u32),
+                        caller_fn_name,
+                        callee_activation_id,
+                        callee_fn_id: FnId(callee_fn_id as u32),
+                        callee_fn_name,
+                        callsite_slot,
+                        callsite_span_start,
+                        callsite_span_end,
                     });
                 }
             }
@@ -261,7 +327,19 @@ impl Handler for TypeInferCapture {
                 }
             }
             ["fz", "type_infer", "dead_arm"] => {
-                facts.dead_arms += 1;
+                if let (Some(activation_id), Some(fn_name), Some(block), Some(branch)) = (
+                    event_metadata_u64(ev, "activation_id"),
+                    event_metadata_str(ev, "fn_name"),
+                    event_metadata_u64(ev, "block"),
+                    event_metadata_str(ev, "branch"),
+                ) {
+                    facts.dead_arms.push(DeadArmFact {
+                        activation_id,
+                        fn_name,
+                        block,
+                        branch,
+                    });
+                }
             }
             _ => {}
         }
@@ -316,6 +394,15 @@ fn event_metadata_u64(ev: &crate::telemetry::Event<'_, '_, '_>, key: &str) -> Op
     match ev.metadata.get(key)? {
         Value::U64(value) => Some(*value),
         _ => None,
+    }
+}
+
+fn emit_slot_name(slot: EmitSlot) -> &'static str {
+    match slot {
+        EmitSlot::Direct => "direct",
+        EmitSlot::Cont => "cont",
+        EmitSlot::ClosureCall => "closure_call",
+        EmitSlot::MakeClosure => "make_closure",
     }
 }
 
@@ -499,15 +586,37 @@ fn outcome_exposes_activation_facts_as_production_data() {
         report.facts.activations.len(),
         "returned activation facts and activation telemetry should describe the same reached cells"
     );
+    assert_eq!(
+        report.outcome.edges.len(),
+        report.facts.activation_edges.len(),
+        "returned activation edges and activation-edge telemetry should describe the same graph"
+    );
 
     for fact in &report.outcome.activations {
         assert!(
             report.facts.activations.iter().any(|event| {
-                event.fn_id == fact.fn_id
+                event.activation_id == fact.activation_id.0
+                    && event.fn_id == fact.fn_id
                     && event.input_count == fact.input_tys.len()
                     && event.state == return_state_name(&fact.return_state)
             }),
             "activation fact should be observable through telemetry: {fact:?}"
+        );
+    }
+    for edge in &report.outcome.edges {
+        assert!(
+            report.facts.activation_edges.iter().any(|event| {
+                event.caller_activation_id == edge.caller_activation_id.0
+                    && event.caller_fn_id == edge.caller_fn_id
+                    && event.callee_activation_id == edge.callee_activation_id.0
+                    && event.callee_fn_id == edge.callee_fn_id
+                    && event.callsite_slot == emit_slot_name(edge.callsite.callsite.slot)
+                    && event.callsite_span_start == edge.callsite.span_start
+                    && event.callsite_span_end == edge.callsite.span_end
+                    && !event.caller_fn_name.is_empty()
+                    && !event.callee_fn_name.is_empty()
+            }),
+            "activation edge should be observable through telemetry: {edge:?}"
         );
     }
 
@@ -542,7 +651,8 @@ fn outcome_exposes_activation_facts_as_production_data() {
     );
     assert!(
         report.facts.activations.iter().any(|event| {
-            event.fn_id == reduce_fact.fn_id
+            event.activation_id == reduce_fact.activation_id.0
+                && event.fn_id == reduce_fact.fn_id
                 && event.input_count == reduce_fact.input_tys.len()
                 && event.state == "known"
                 && event
@@ -551,6 +661,39 @@ fn outcome_exposes_activation_facts_as_production_data() {
                     .is_some_and(|ty| t.is_equivalent(ty, &int))
         }),
         "known activation return should be visible through telemetry too"
+    );
+    assert!(
+        report.outcome.edges.iter().any(|edge| {
+            module.fn_by_id(edge.caller_fn_id).name == "Enum.reduce"
+                && module.fn_by_id(edge.callee_fn_id).name == "Enumerable.List.reduce"
+                && edge.callsite.callsite.slot == EmitSlot::Direct
+        }),
+        "Enum.reduce should expose the activation edge it used to reach Enumerable.List.reduce; edges={:?}",
+        report
+            .outcome
+            .edges
+            .iter()
+            .map(|edge| (
+                module.fn_by_id(edge.caller_fn_id).name.as_str(),
+                module.fn_by_id(edge.callee_fn_id).name.as_str()
+            ))
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        report.outcome.dead_arms.iter().all(|dead_arm| {
+            report.facts.dead_arms.iter().any(|event| {
+                event.activation_id == dead_arm.activation_id.0
+                    && event.block == dead_arm.block_id.0 as u64
+                    && event.branch
+                        == match dead_arm.branch {
+                            crate::fz_ir::DeadBranch::Then => "then",
+                            crate::fz_ir::DeadBranch::Else => "else",
+                        }
+                    && !event.fn_name.is_empty()
+            })
+        }),
+        "dead-arm facts should also be observable through telemetry: {:?}",
+        report.outcome.dead_arms
     );
 }
 
@@ -969,8 +1112,12 @@ fn matcher_dead_arms_are_observable_via_telemetry() {
     let report = infer_report_via_main(&mut t, &module);
 
     assert!(
-        report.facts.dead_arms > 0,
+        !report.facts.dead_arms.is_empty(),
         "matcher proof should emit dead-arm telemetry for source-total catch-all dispatch"
+    );
+    assert!(
+        !report.outcome.dead_arms.is_empty(),
+        "dead-arm proof should also be returned in the production outcome"
     );
 }
 

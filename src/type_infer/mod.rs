@@ -40,9 +40,15 @@
 //! `any` as the placeholder for "not proven yet."
 //!
 //! API entry points return boundary data and a coarse completion status.
-//! Activation facts, diagnostics, and dead matcher arms are emitted through
-//! telemetry so tests and operators observe the same production surface.
-use crate::fz_ir::{BinOp, BlockId, Const, DeadBranch, FnId, Module, Prim, Stmt, Term, UnOp, Var};
+//! Activation ids are the production handoff identity: they name one solved
+//! activation within an outcome without exposing the private proof lattice.
+//! Activation facts, activation-edge callsites, diagnostics, and dead matcher
+//! arms are emitted through telemetry so tests and operators observe the same
+//! production surface.
+use crate::fz_ir::{
+    BinOp, BlockId, CallsiteId, Const, DeadBranch, EmitSlot, FnId, Module, Prim, Stmt, Term, UnOp,
+    Var,
+};
 use crate::specs::{SpecApplicationOutcome, apply_spec_set};
 use crate::types::{ClosureTarget, ClosureTypes, MapKey, Nominals, RenderTypes, Ty, Types};
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
@@ -333,6 +339,13 @@ struct Activation {
     ret: Info,
 }
 
+#[derive(Clone, PartialEq, Eq, Hash)]
+struct ActivationEdge {
+    caller: ActivationKey,
+    callee: ActivationKey,
+    callsite: CallsiteId,
+}
+
 /// The callable value at a call site before it has been resolved to activation
 /// requests. Direct calls include protocol stubs; closure calls carry the
 /// environment needed to read the closure value.
@@ -424,15 +437,21 @@ impl TypeInferDiagnostic {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Clone, PartialEq, Eq, Hash)]
 struct DeadArmFact {
+    activation: ActivationKey,
     fn_id: FnId,
     block_id: BlockId,
     branch: DeadBranch,
 }
 
 impl DeadArmFact {
-    fn emit(&self, module: &Module, tel: &dyn crate::telemetry::Telemetry) {
+    fn emit(
+        &self,
+        activation_ids: &HashMap<ActivationKey, TypeInferActivationId>,
+        module: &Module,
+        tel: &dyn crate::telemetry::Telemetry,
+    ) {
         let fn_name = module.fn_by_id(self.fn_id).name.clone();
         let branch = match self.branch {
             DeadBranch::Then => "then",
@@ -441,6 +460,10 @@ impl DeadArmFact {
         tel.event(
             &["fz", "type_infer", "dead_arm"],
             crate::metadata! {
+                activation_id: activation_ids
+                    .get(&self.activation)
+                    .expect("dead-arm activation id")
+                    .0,
                 fn_name: fn_name,
                 block: self.block_id.0 as u64,
                 branch: branch,
@@ -460,13 +483,45 @@ pub(crate) enum TypeInferStatus {
 pub(crate) struct TypeInferOutcome {
     pub(crate) status: TypeInferStatus,
     pub(crate) activations: Vec<TypeInferActivationFact>,
+    pub(crate) edges: Vec<TypeInferActivationEdgeFact>,
+    pub(crate) dead_arms: Vec<TypeInferDeadArmFact>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub(crate) struct TypeInferActivationId(pub(crate) u64);
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct TypeInferCallsiteFact {
+    pub(crate) callsite: CallsiteId,
+    pub(crate) span_start: u64,
+    pub(crate) span_end: u64,
 }
 
 #[derive(Clone, Debug)]
 pub(crate) struct TypeInferActivationFact {
+    pub(crate) activation_id: TypeInferActivationId,
     pub(crate) fn_id: FnId,
     pub(crate) input_tys: Vec<Ty>,
     pub(crate) return_state: TypeInferReturnState,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct TypeInferActivationEdgeFact {
+    pub(crate) caller_activation_id: TypeInferActivationId,
+    pub(crate) caller_fn_id: FnId,
+    pub(crate) caller_input_tys: Vec<Ty>,
+    pub(crate) callee_activation_id: TypeInferActivationId,
+    pub(crate) callee_fn_id: FnId,
+    pub(crate) callee_input_tys: Vec<Ty>,
+    pub(crate) callsite: TypeInferCallsiteFact,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct TypeInferDeadArmFact {
+    pub(crate) activation_id: TypeInferActivationId,
+    pub(crate) fn_id: FnId,
+    pub(crate) block_id: BlockId,
+    pub(crate) branch: DeadBranch,
 }
 
 /// Boundary return state for a reached activation.
@@ -501,6 +556,22 @@ fn info_state(info: &Info) -> &'static str {
     }
 }
 
+fn emit_slot_name(slot: EmitSlot) -> &'static str {
+    match slot {
+        EmitSlot::Direct => "direct",
+        EmitSlot::Cont => "cont",
+        EmitSlot::ClosureCall => "closure_call",
+        EmitSlot::MakeClosure => "make_closure",
+    }
+}
+
+fn dead_branch_name(branch: DeadBranch) -> &'static str {
+    match branch {
+        DeadBranch::Then => "then",
+        DeadBranch::Else => "else",
+    }
+}
+
 fn render_info<T: Types<Ty = Ty> + RenderTypes>(t: &mut T, info: &Info) -> String {
     match info {
         Info::Known(value) => t.display_for_diag(&value.ty),
@@ -516,6 +587,7 @@ struct Solver<'m> {
     /// `callee activation -> caller activations whose return estimate read
     /// callee's ret`. When a callee's ret ascends, its callers are re-enqueued.
     deps: HashMap<ActivationKey, HashSet<ActivationKey>>,
+    edges: HashSet<ActivationEdge>,
     queue: VecDeque<ActivationKey>,
     queued: HashSet<ActivationKey>,
     diagnostics: Vec<TypeInferDiagnostic>,
@@ -530,6 +602,7 @@ impl<'m> Solver<'m> {
             module,
             activations: HashMap::new(),
             deps: HashMap::new(),
+            edges: HashSet::new(),
             queue: VecDeque::new(),
             queued: HashSet::new(),
             diagnostics: Vec::new(),
@@ -579,6 +652,7 @@ impl<'m> Solver<'m> {
         &mut self,
         t: &mut T,
         caller: &ActivationKey,
+        callsite: CallsiteId,
         target: CallTarget<'_>,
         args: Vec<Info>,
     ) -> Info {
@@ -586,7 +660,7 @@ impl<'m> Solver<'m> {
             Ok(requests) => requests,
             Err(info) => return info,
         };
-        self.apply_requests(t, caller, requests)
+        self.apply_requests(t, caller, callsite, requests)
     }
 
     fn activation_requests<T: Types<Ty = Ty> + ClosureTypes>(
@@ -719,11 +793,12 @@ impl<'m> Solver<'m> {
         &mut self,
         t: &mut T,
         caller: &ActivationKey,
+        callsite: CallsiteId,
         requests: ActivationRequestSet,
     ) -> Info {
         let mut out: Option<Info> = None;
         for request in requests.requests {
-            let ret = self.activate_request(t, caller, request);
+            let ret = self.activate_request(t, caller, callsite.clone(), request);
             out = Some(match out {
                 Some(prev) => prev.join(t, &ret),
                 None => ret,
@@ -739,11 +814,17 @@ impl<'m> Solver<'m> {
         &mut self,
         t: &mut T,
         caller: &ActivationKey,
+        callsite: CallsiteId,
         request: ActivationRequest,
     ) -> Info {
         let Some(key) = ActivationKey::from_inputs(t, request.fn_id, &request.inputs) else {
             return unresolved_inputs(&request.inputs);
         };
+        self.edges.insert(ActivationEdge {
+            caller: caller.clone(),
+            callee: key.clone(),
+            callsite,
+        });
         self.deps
             .entry(key.clone())
             .or_default()
@@ -826,21 +907,104 @@ impl<'m> Solver<'m> {
     }
 
     fn activation_facts(&self) -> Vec<TypeInferActivationFact> {
+        let activation_ids = self.activation_ids();
         let mut facts: Vec<_> = self
             .activations
             .iter()
             .map(|(key, activation)| TypeInferActivationFact {
+                activation_id: *activation_ids.get(key).expect("activation id"),
                 fn_id: key.fn_id,
                 input_tys: key.input_tys(),
                 return_state: TypeInferReturnState::from_info(&activation.ret),
             })
             .collect();
         facts.sort_by(|a, b| {
+            a.activation_id.cmp(&b.activation_id).then_with(|| {
+                a.fn_id
+                    .cmp(&b.fn_id)
+                    .then_with(|| a.input_tys.len().cmp(&b.input_tys.len()))
+                    .then_with(|| format!("{:?}", a.input_tys).cmp(&format!("{:?}", b.input_tys)))
+                    .then_with(|| {
+                        format!("{:?}", a.return_state).cmp(&format!("{:?}", b.return_state))
+                    })
+            })
+        });
+        facts
+    }
+
+    fn activation_ids(&self) -> HashMap<ActivationKey, TypeInferActivationId> {
+        let mut keys: Vec<_> = self.activations.keys().cloned().collect();
+        keys.sort_by(|a, b| {
             a.fn_id
                 .cmp(&b.fn_id)
-                .then_with(|| a.input_tys.len().cmp(&b.input_tys.len()))
-                .then_with(|| format!("{:?}", a.input_tys).cmp(&format!("{:?}", b.input_tys)))
-                .then_with(|| format!("{:?}", a.return_state).cmp(&format!("{:?}", b.return_state)))
+                .then_with(|| a.inputs.len().cmp(&b.inputs.len()))
+                .then_with(|| format!("{:?}", a.input_tys()).cmp(&format!("{:?}", b.input_tys())))
+        });
+        keys.into_iter()
+            .enumerate()
+            .map(|(index, key)| (key, TypeInferActivationId(index as u64)))
+            .collect()
+    }
+
+    fn activation_edge_facts(&self) -> Vec<TypeInferActivationEdgeFact> {
+        let activation_ids = self.activation_ids();
+        let mut facts: Vec<_> = self
+            .edges
+            .iter()
+            .map(|edge| TypeInferActivationEdgeFact {
+                caller_activation_id: *activation_ids
+                    .get(&edge.caller)
+                    .expect("caller activation id"),
+                caller_fn_id: edge.caller.fn_id,
+                caller_input_tys: edge.caller.input_tys(),
+                callee_activation_id: *activation_ids
+                    .get(&edge.callee)
+                    .expect("callee activation id"),
+                callee_fn_id: edge.callee.fn_id,
+                callee_input_tys: edge.callee.input_tys(),
+                callsite: TypeInferCallsiteFact {
+                    callsite: edge.callsite.clone(),
+                    span_start: edge.callsite.ident.span().start as u64,
+                    span_end: edge.callsite.ident.span().end as u64,
+                },
+            })
+            .collect();
+        facts.sort_by(|a, b| {
+            a.caller_activation_id
+                .cmp(&b.caller_activation_id)
+                .then_with(|| a.callee_activation_id.cmp(&b.callee_activation_id))
+                .then_with(|| a.caller_fn_id.cmp(&b.caller_fn_id))
+                .then_with(|| a.callee_fn_id.cmp(&b.callee_fn_id))
+                .then_with(|| {
+                    format!("{:?}", a.caller_input_tys).cmp(&format!("{:?}", b.caller_input_tys))
+                })
+                .then_with(|| {
+                    format!("{:?}", a.callee_input_tys).cmp(&format!("{:?}", b.callee_input_tys))
+                })
+        });
+        facts
+    }
+
+    fn dead_arm_facts(&self) -> Vec<TypeInferDeadArmFact> {
+        let activation_ids = self.activation_ids();
+        let mut facts: Vec<_> = self
+            .dead_arms
+            .iter()
+            .map(|dead_arm| TypeInferDeadArmFact {
+                activation_id: *activation_ids
+                    .get(&dead_arm.activation)
+                    .expect("dead-arm activation id"),
+                fn_id: dead_arm.fn_id,
+                block_id: dead_arm.block_id,
+                branch: dead_arm.branch,
+            })
+            .collect();
+        facts.sort_by(|a, b| {
+            a.activation_id
+                .cmp(&b.activation_id)
+                .then_with(|| a.fn_id.cmp(&b.fn_id))
+                .then_with(|| a.block_id.0.cmp(&b.block_id.0))
+                .then_with(|| dead_branch_name(a.branch).cmp(dead_branch_name(b.branch)))
         });
         facts
     }
@@ -849,6 +1013,8 @@ impl<'m> Solver<'m> {
         TypeInferOutcome {
             status: self.status(),
             activations: self.activation_facts(),
+            edges: self.activation_edge_facts(),
+            dead_arms: self.dead_arm_facts(),
         }
     }
 
@@ -871,13 +1037,15 @@ impl<'m> Solver<'m> {
         t: &mut T,
         tel: &dyn crate::telemetry::Telemetry,
     ) {
+        let activation_ids = self.activation_ids();
         self.emit_activation_facts(t, tel);
+        self.emit_activation_edge_facts(t, tel);
         self.emit_fn_return_facts(t, tel);
         for diagnostic in &self.diagnostics {
             diagnostic.emit(t, self.module, tel);
         }
         for dead_arm in &self.dead_arms {
-            dead_arm.emit(self.module, tel);
+            dead_arm.emit(&activation_ids, self.module, tel);
         }
     }
 
@@ -888,6 +1056,7 @@ impl<'m> Solver<'m> {
     ) {
         let mut facts: Vec<_> = self.activations.iter().collect();
         facts.sort_by_key(|(key, _)| (key.fn_id, key.inputs.len()));
+        let activation_ids = self.activation_ids();
         for (key, activation) in facts {
             let fn_name = self.module.fn_by_id(key.fn_id).name.clone();
             let return_ty = render_info(t, &activation.ret);
@@ -897,6 +1066,7 @@ impl<'m> Solver<'m> {
                 .map(|input| render_info(t, input))
                 .collect::<Vec<_>>();
             let mut metadata = crate::metadata! {
+                activation_id: activation_ids.get(key).expect("activation id").0,
                 fn_name: fn_name,
                 fn_id: key.fn_id.0 as u64,
                 input_count: key.inputs.len() as u64,
@@ -910,6 +1080,69 @@ impl<'m> Solver<'m> {
                     .push(("return_ty_data", crate::telemetry::Value::opaque(&value.ty)));
             }
             tel.event(&["fz", "type_infer", "activation"], metadata);
+        }
+    }
+
+    fn emit_activation_edge_facts<T: Types<Ty = Ty> + RenderTypes>(
+        &self,
+        t: &mut T,
+        tel: &dyn crate::telemetry::Telemetry,
+    ) {
+        let mut facts: Vec<_> = self.edges.iter().collect();
+        facts.sort_by(|a, b| {
+            (
+                a.caller.fn_id,
+                a.callee.fn_id,
+                emit_slot_name(a.callsite.slot),
+                a.callsite.ident.span().start,
+                a.callsite.ident.span().end,
+            )
+                .cmp(&(
+                    b.caller.fn_id,
+                    b.callee.fn_id,
+                    emit_slot_name(b.callsite.slot),
+                    b.callsite.ident.span().start,
+                    b.callsite.ident.span().end,
+                ))
+        });
+        let activation_ids = self.activation_ids();
+        for edge in facts {
+            let caller_name = self.module.fn_by_id(edge.caller.fn_id).name.clone();
+            let callee_name = self.module.fn_by_id(edge.callee.fn_id).name.clone();
+            let caller_input_tys = edge
+                .caller
+                .input_tys()
+                .iter()
+                .map(|ty| t.display_for_diag(ty))
+                .collect::<Vec<_>>();
+            let callee_input_tys = edge
+                .callee
+                .input_tys()
+                .iter()
+                .map(|ty| t.display_for_diag(ty))
+                .collect::<Vec<_>>();
+            tel.event(
+                &["fz", "type_infer", "activation_edge"],
+                crate::metadata! {
+                    caller_activation_id: activation_ids
+                        .get(&edge.caller)
+                        .expect("caller activation id")
+                        .0,
+                    caller_fn_name: caller_name,
+                    caller_fn_id: edge.caller.fn_id.0 as u64,
+                    caller_input_tys: caller_input_tys,
+                    callee_activation_id: activation_ids
+                        .get(&edge.callee)
+                        .expect("callee activation id")
+                        .0,
+                    callee_fn_name: callee_name,
+                    callee_fn_id: edge.callee.fn_id.0 as u64,
+                    callee_input_tys: callee_input_tys,
+                    callsite_slot: emit_slot_name(edge.callsite.slot),
+                    callsite_span_start: edge.callsite.ident.span().start as u64,
+                    callsite_span_end: edge.callsite.ident.span().end as u64,
+                },
+            );
         }
     }
 
@@ -1053,10 +1286,10 @@ impl<'m> Solver<'m> {
                     (Some(env.clone()), Some(env.clone()))
                 };
                 if matches!(truth, Some(false)) || then_env.is_none() {
-                    self.record_dead_arm(f, block_id, DeadBranch::Then);
+                    self.record_dead_arm(key, f, block_id, DeadBranch::Then);
                 }
                 if matches!(truth, Some(true)) || else_env.is_none() {
-                    self.record_dead_arm(f, block_id, DeadBranch::Else);
+                    self.record_dead_arm(key, f, block_id, DeadBranch::Else);
                 }
                 match truth {
                     Some(true) => self.walk_branch(t, key, then_b, then_env, predicates, visited),
@@ -1075,17 +1308,46 @@ impl<'m> Solver<'m> {
                 ..
             } => {
                 let arg_infos = arg_infos_of(args, env);
-                let r = self.call_target(t, key, CallTarget::Direct(*callee), arg_infos);
+                let ident = block
+                    .terminator
+                    .ident()
+                    .expect("call terminator should carry ident");
+                let direct_callsite = CallsiteId::new(key.fn_id, ident, EmitSlot::Direct);
+                let r = self.call_target(
+                    t,
+                    key,
+                    direct_callsite,
+                    CallTarget::Direct(*callee),
+                    arg_infos,
+                );
                 if matches!(r, Info::NoReturn) {
                     return Info::NoReturn;
                 }
                 let cont_inputs = cont_inputs_of(r, &continuation.captured, env);
-                self.call_target(t, key, CallTarget::Direct(continuation.fn_id), cont_inputs)
+                let cont_callsite = CallsiteId::new(key.fn_id, ident, EmitSlot::Cont);
+                self.call_target(
+                    t,
+                    key,
+                    cont_callsite,
+                    CallTarget::Direct(continuation.fn_id),
+                    cont_inputs,
+                )
             }
             // A tail call forwards our own continuation, so its result is ours.
             Term::TailCall { callee, args, .. } => {
                 let arg_infos = arg_infos_of(args, env);
-                self.call_target(t, key, CallTarget::Direct(*callee), arg_infos)
+                let ident = block
+                    .terminator
+                    .ident()
+                    .expect("tail-call terminator should carry ident");
+                let direct_callsite = CallsiteId::new(key.fn_id, ident, EmitSlot::Direct);
+                self.call_target(
+                    t,
+                    key,
+                    direct_callsite,
+                    CallTarget::Direct(*callee),
+                    arg_infos,
+                )
             }
             Term::CallClosure {
                 closure,
@@ -1094,9 +1356,15 @@ impl<'m> Solver<'m> {
                 ..
             } => {
                 let arg_infos = arg_infos_of(args, env);
+                let ident = block
+                    .terminator
+                    .ident()
+                    .expect("closure-call terminator should carry ident");
+                let closure_callsite = CallsiteId::new(key.fn_id, ident, EmitSlot::ClosureCall);
                 let r = self.call_target(
                     t,
                     key,
+                    closure_callsite,
                     CallTarget::Closure {
                         value: *closure,
                         env,
@@ -1107,13 +1375,26 @@ impl<'m> Solver<'m> {
                     return Info::NoReturn;
                 }
                 let cont_inputs = cont_inputs_of(r, &continuation.captured, env);
-                self.call_target(t, key, CallTarget::Direct(continuation.fn_id), cont_inputs)
-            }
-            Term::TailCallClosure { closure, args, .. } => {
-                let arg_infos = arg_infos_of(args, env);
+                let cont_callsite = CallsiteId::new(key.fn_id, ident, EmitSlot::Cont);
                 self.call_target(
                     t,
                     key,
+                    cont_callsite,
+                    CallTarget::Direct(continuation.fn_id),
+                    cont_inputs,
+                )
+            }
+            Term::TailCallClosure { closure, args, .. } => {
+                let arg_infos = arg_infos_of(args, env);
+                let ident = block
+                    .terminator
+                    .ident()
+                    .expect("tail-closure-call terminator should carry ident");
+                let closure_callsite = CallsiteId::new(key.fn_id, ident, EmitSlot::ClosureCall);
+                self.call_target(
+                    t,
+                    key,
+                    closure_callsite,
                     CallTarget::Closure {
                         value: *closure,
                         env,
@@ -1143,13 +1424,20 @@ impl<'m> Solver<'m> {
         self.walk_block(t, key, block_id, &mut env, &mut predicates, &mut visited)
     }
 
-    fn record_dead_arm(&mut self, fn_id: FnId, block_id: BlockId, branch: DeadBranch) {
+    fn record_dead_arm(
+        &mut self,
+        activation: &ActivationKey,
+        fn_id: FnId,
+        block_id: BlockId,
+        branch: DeadBranch,
+    ) {
         let fact = DeadArmFact {
+            activation: activation.clone(),
             fn_id,
             block_id,
             branch,
         };
-        if self.dead_arm_sites.insert(fact) {
+        if self.dead_arm_sites.insert(fact.clone()) {
             self.dead_arms.push(fact);
         }
     }

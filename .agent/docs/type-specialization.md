@@ -35,12 +35,18 @@ this engine owns activation-based type flow.
 The crate-visible API is intentionally small:
 
 - `infer_from_entry` runs the reachable activation graph from an entry point and
-  returns `TypeInferOutcome { status, activations }` while also emitting
-  telemetry.
+  returns `TypeInferOutcome { status, activations, edges, dead_arms }` while
+  also emitting telemetry.
 - `TypeInferStatus` is the coarse API result: `Complete`, `Unresolved`, or
   `Invalid`.
 - `TypeInferActivationFact` is the production data boundary for reached cells:
-  `FnId`, canonical input `Ty`s, and `TypeInferReturnState`.
+  an opaque per-outcome activation id, `FnId`, canonical input `Ty`s, and
+  `TypeInferReturnState`.
+- `TypeInferActivationEdgeFact` connects solved caller/callee activations and
+  carries the structural `CallsiteId` plus callsite span metadata the planner
+  uses to line solved edges up with its own dispatch slots.
+- `TypeInferDeadArmFact` records matcher arms proved dead for a specific solved
+  activation. Dead-arm telemetry is not just `FnId`/block level.
 - `TypeInferReturnState` mirrors the settled boundary state:
   `Pending`, `Unknown`, `NoReturn`, or `Known(Ty)`. It is not the solver
   lattice; private `Info` remains the refinement cell.
@@ -51,12 +57,15 @@ scrape telemetry to build planner state. Telemetry remains the shared observable
 surface for tests and operators. The engine emits:
 
 - `fz.type_infer.activation` for every reached activation, including function
-  identity, return state, rendered return type, and in-process `Ty` data when
-  known.
+  identity, the opaque activation id, return state, rendered return type, and
+  in-process `Ty` data when known.
+- `fz.type_infer.activation_edge` for every solved activation-to-activation
+  edge, including caller/callee activation ids and callsite slot/span details.
 - `fz.type_infer.fn_return` for each reached function, joining known activation
   returns through `Types` and reporting whether any activation is unsettled.
 - `fz.type_infer.diagnostic` for located type errors.
-- `fz.type_infer.dead_arm` for matcher arms proved inaccessible.
+- `fz.type_infer.dead_arm` for matcher arms proved inaccessible, keyed by the
+  activation id that proved the branch dead.
 
 ## Cells
 
@@ -276,6 +285,7 @@ and still dead for a particular activation.
 
 - `activations`: activation keys mapped to current `Activation { inputs, ret }`.
 - `deps`: callee activations mapped to callers that read their return.
+- `edges`: solved caller/callee activation edges keyed by structural callsite.
 - `queue` and `queued`: activations scheduled for another body walk.
 - `diagnostics` and `diagnostic_sites`: located type errors emitted through
   telemetry after the fixpoint.
