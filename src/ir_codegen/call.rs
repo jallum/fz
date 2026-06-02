@@ -47,9 +47,9 @@ pub(crate) fn emit_halt_from_codegen_value<M: cranelift_module::Module>(
 /// Otherwise write `val` to cont_frame[24] (continuation's "result" slot —
 /// always entry param 0) and return cont_ptr.
 ///
-/// `frame_ptr` is `Option` because native fns don't have a frame; the
-/// natively_callable invariant guarantees this helper is never reached
-/// from a native fn body. Unwrapping with `.expect()` turns any future
+/// `frame_ptr` is `Option` because native-tier fns don't have a frame; the
+/// planned ABI facts guarantee this helper is never reached from a native fn
+/// body. Unwrapping with `.expect()` turns any future
 /// invariant break into a loud panic at codegen time rather than a
 /// silent load-from-zero.
 pub(crate) fn emit_return<M: cranelift_module::Module>(
@@ -58,7 +58,7 @@ pub(crate) fn emit_return<M: cranelift_module::Module>(
     value: CodegenValue,
 ) {
     let frame_ptr = frame_ptr
-        .expect("emit_return reached from native-fn body — natively_callable invariant violated");
+        .expect("emit_return reached from native-fn body — planned ABI invariant violated");
     let cont_ptr = body
         .b
         .ins()
@@ -115,8 +115,8 @@ pub(crate) fn emit_call<M: cranelift_module::Module>(
     args: &[CodegenValue],
     cont: Option<(u32, &[CodegenValue])>,
 ) {
-    let frame_ptr = frame_ptr
-        .expect("emit_call reached from native-fn body — natively_callable invariant violated");
+    let frame_ptr =
+        frame_ptr.expect("emit_call reached from native-fn body — planned ABI invariant violated");
     // Read my cont_ptr from current frame[16] — this becomes the cont frame's cont_ptr.
     let my_cont = body
         .b
@@ -173,9 +173,8 @@ pub(crate) fn emit_tail_call<M: cranelift_module::Module>(
     callee_id: u32,
     args: &[CodegenValue],
 ) {
-    let frame_ptr = frame_ptr.expect(
-        "emit_tail_call reached from native-fn body — natively_callable invariant violated",
-    );
+    let frame_ptr = frame_ptr
+        .expect("emit_tail_call reached from native-fn body — planned ABI invariant violated");
     let callee_schema = &schemas[callee_id as usize];
 
     if self_id == callee_id {

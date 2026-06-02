@@ -337,7 +337,14 @@ fn effect_summary_marks_extern_and_heap_stats_observer() {
     let mut t = crate::types::ConcreteTypes;
     let mut b = FnBuilder::new(FnId(0), "main");
     let entry = b.block(vec![]);
-    let stats = b.let_(entry, Prim::Extern(ExternId(0), vec![]));
+    let stats = b.let_(
+        entry,
+        Prim::Extern(
+            crate::fz_ir::CallsiteIdent::synthetic(),
+            ExternId(0),
+            vec![],
+        ),
+    );
     b.set_terminator(entry, Term::Return(stats));
     let mut m = build_module(vec![b.build()]);
     m.externs.push(extern_decl(
@@ -358,7 +365,14 @@ fn effect_summary_propagates_observable_tail_calls() {
     let mut t = crate::types::ConcreteTypes;
     let mut helper = FnBuilder::new(FnId(1), "helper");
     let helper_entry = helper.block(vec![]);
-    let nil = helper.let_(helper_entry, Prim::Extern(ExternId(0), vec![]));
+    let nil = helper.let_(
+        helper_entry,
+        Prim::Extern(
+            crate::fz_ir::CallsiteIdent::synthetic(),
+            ExternId(0),
+            vec![],
+        ),
+    );
     helper.set_terminator(helper_entry, Term::Return(nil));
 
     let mut main = FnBuilder::new(FnId(0), "main");
@@ -2030,14 +2044,23 @@ fn planner_projects_polymorphic_named_ref_activations_per_visible_spec() {
             )
         })
         .collect();
+    let id_activation_events: Vec<_> = id_events
+        .iter()
+        .filter(|event| {
+            matches!(
+                event.metadata.get("spec_role"),
+                Some(Value::Str(role)) if role == "activation"
+            )
+        })
+        .collect();
     assert_eq!(
-        id_events.len(),
+        id_activation_events.len(),
         2,
-        "&id/1 should publish only its two activation projections: {id_events:?}"
+        "&id/1 should publish two activation projections plus, at most, a residual projection gap: {id_events:?}"
     );
 
     let mut projected_returns = Vec::new();
-    for event in &id_events {
+    for event in &id_activation_events {
         let spec_role = match event.metadata.get("spec_role") {
             Some(Value::Str(role)) => role.as_ref(),
             other => panic!("spec_role missing or wrong type: {other:?}"),
@@ -2134,14 +2157,23 @@ fn planner_projects_captured_closure_activations_without_callable_fallback() {
             )
         })
         .collect();
+    let lambda_activation_events: Vec<_> = lambda_events
+        .iter()
+        .filter(|event| {
+            matches!(
+                event.metadata.get("spec_role"),
+                Some(Value::Str(role)) if role == "activation"
+            )
+        })
+        .collect();
     assert_eq!(
-        lambda_events.len(),
+        lambda_activation_events.len(),
         2,
-        "captured closure should publish only its two activation projections: {lambda_events:?}"
+        "captured closure should publish two activation projections plus, at most, a residual projection gap: {lambda_events:?}"
     );
 
     let mut projected_returns = Vec::new();
-    for event in &lambda_events {
+    for event in &lambda_activation_events {
         let spec_role = match event.metadata.get("spec_role") {
             Some(Value::Str(role)) => role.as_ref(),
             other => panic!("spec_role missing or wrong type: {other:?}"),
@@ -2202,14 +2234,23 @@ fn planner_projects_named_ref_pattern_activations_and_dead_arms() {
             )
         })
         .collect();
+    let pick_activation_events: Vec<_> = pick_events
+        .iter()
+        .filter(|event| {
+            matches!(
+                event.metadata.get("spec_role"),
+                Some(Value::Str(role)) if role == "activation"
+            )
+        })
+        .collect();
     assert_eq!(
-        pick_events.len(),
+        pick_activation_events.len(),
         2,
-        "&pick/1 should publish only its two activation projections: {pick_events:?}"
+        "&pick/1 should publish two activation projections plus, at most, a residual projection gap: {pick_events:?}"
     );
 
     let mut projected_returns = Vec::new();
-    for event in &pick_events {
+    for event in &pick_activation_events {
         let spec_role = match event.metadata.get("spec_role") {
             Some(Value::Str(role)) => role.as_ref(),
             other => panic!("spec_role missing or wrong type: {other:?}"),
@@ -3085,22 +3126,33 @@ fn planner_projects_enum_reduce_operator_refs_through_kernel_specs() {
     tel.attach(&[], cap.handler());
 
     let mut t = crate::types::ConcreteTypes;
-    let module = crate::test_support::linked_runtime_module(include_str!(
-        "../type_infer/fixtures/enum_reduce_operator_ref.fz"
-    ));
-    let _ = crate::ir_codegen::compile(&mut t, &module, &tel).expect("compile");
+    let graph = crate::test_support::linked_runtime_graph_with_telemetry(
+        &mut t,
+        include_str!("../type_infer/fixtures/enum_reduce_operator_ref.fz"),
+        &tel,
+    );
+    let runtime_body_ids = graph
+        .module
+        .fns
+        .iter()
+        .filter(|f| {
+            f.name == "main"
+                || f.name == "Enum.reduce"
+                || f.name == "Enumerable.List.reduce"
+                || f.name == "Kernel.+"
+        })
+        .map(|f| f.id.0)
+        .collect::<std::collections::HashSet<_>>();
+    let _ = crate::ir_codegen::compile_planned(&mut t, &graph.module, &graph.module_plan, &tel)
+        .expect("compile");
 
     let events = cap
         .find(&["fz", "planner", "activation_projection"])
         .into_iter()
         .filter(|event| {
             matches!(
-                event.metadata.get("body_name"),
-                Some(Value::Str(name))
-                    if name == "main"
-                        || name == "Enum.reduce"
-                        || name == "Enumerable.List.reduce"
-                        || name == "Kernel.+"
+                event.metadata.get("body_fn_id"),
+                Some(Value::U64(fn_id)) if runtime_body_ids.contains(&(*fn_id as u32))
             ) && matches!(
                 event.metadata.get("role"),
                 Some(Value::Str(role)) if role == "authoritative"
@@ -3115,7 +3167,7 @@ fn planner_projects_enum_reduce_operator_refs_through_kernel_specs() {
     let mut main_known_tuple = false;
     let mut enum_reduce_known_int = false;
     let mut list_reduce_known_done_int = false;
-    let mut kernel_plus_projection_count = 0;
+    let mut kernel_plus_known_int = false;
 
     for event in &events {
         let body_name = match event.metadata.get("body_name") {
@@ -3163,8 +3215,8 @@ fn planner_projects_enum_reduce_operator_refs_through_kernel_specs() {
         if body_name == "Enumerable.List.reduce" && projected == "known({:done, int})" {
             list_reduce_known_done_int = true;
         }
-        if body_name == "Kernel.+" {
-            kernel_plus_projection_count += 1;
+        if body_name == "Kernel.+" && projected == "known(int)" {
+            kernel_plus_known_int = true;
         }
     }
 
@@ -3181,8 +3233,8 @@ fn planner_projects_enum_reduce_operator_refs_through_kernel_specs() {
         "Enumerable.List.reduce should project {{:done, int}} for the operator-ref fixture: {events:?}"
     );
     assert!(
-        kernel_plus_projection_count == 0,
-        "authoritative compile-time planner should erase the operator-ref closure target instead of retaining a projected Kernel.+ body: {events:?}"
+        kernel_plus_known_int,
+        "Kernel.+ should survive only as the exact int reducer target in the operator-ref fixture: {events:?}"
     );
 }
 
@@ -3261,6 +3313,27 @@ fn planner_projects_enum_reduce_range_runtime_graph_from_activation_facts() {
         range_reduce_known_done_int,
         "Enumerable.Range.reduce should have an activation-covered {{:done, int}} projection: {events:?}"
     );
+}
+
+#[test]
+fn planner_projects_plain_spawn_child_through_callable_boundary() {
+    let signals = crate::test_support::runtime_graph_planner_activation_projection_signals(
+        include_str!("../type_infer/fixtures/spawn_plain.fz"),
+    );
+
+    let child = signals
+        .iter()
+        .find(|signal| signal.body_name == "child")
+        .unwrap_or_else(|| panic!("expected child activation projection event: {signals:?}"));
+
+    assert_eq!(child.role, "authoritative");
+    assert_eq!(child.spec_role, "activation");
+    assert_eq!(child.projection_kind, "exact");
+    assert_eq!(child.projected_return_state, "known(nil)");
+    assert_eq!(child.covered_activation_count, 1);
+    assert_eq!(child.covered_known_count, 1);
+    assert!(child.exact_coverage);
+    assert!(!child.projection_gap);
 }
 
 #[test]

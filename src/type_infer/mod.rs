@@ -664,6 +664,22 @@ impl<'m> Solver<'m> {
         self.apply_requests(t, caller, callsite, requests)
     }
 
+    fn seed_callable_boundary<T: Types<Ty = Ty> + ClosureTypes>(
+        &mut self,
+        t: &mut T,
+        caller: &ActivationKey,
+        callsite: CallsiteId,
+        callable: Var,
+        env: &Env,
+    ) {
+        let Some(requests) = self.boundary_requests(t, callable, env) else {
+            return;
+        };
+        for request in requests.requests {
+            self.activate_boundary_request(t, caller, callsite.clone(), request);
+        }
+    }
+
     fn activation_requests<T: Types<Ty = Ty> + ClosureTypes>(
         &self,
         t: &mut T,
@@ -749,6 +765,36 @@ impl<'m> Solver<'m> {
             // Couldn't resolve a single closure target ⇒ undetermined, not
             // `any` (which would assert "dynamic" as a fact). `any` is earned.
             None => Err(Info::Unknown),
+        }
+    }
+
+    fn boundary_requests<T: Types<Ty = Ty> + ClosureTypes>(
+        &self,
+        t: &mut T,
+        closure: Var,
+        env: &Env,
+    ) -> Option<ActivationRequestSet> {
+        let clo_ty = match env.get(&closure).cloned().unwrap_or(Info::Pending) {
+            Info::Known(value) => value.ty,
+            Info::Pending | Info::Unknown | Info::NoReturn => return None,
+        };
+        let clauses = t.callable_clauses(&clo_ty)?;
+        let mut requests = Vec::new();
+        for clause in clauses {
+            let Some(closure) = clause.closure else {
+                continue;
+            };
+            let mut inputs: Vec<Info> = closure.captures.into_iter().map(Info::known).collect();
+            inputs.extend(clause.args.into_iter().map(Info::known));
+            requests.push(ActivationRequest {
+                fn_id: closure.target.into(),
+                inputs,
+            });
+        }
+        if requests.is_empty() {
+            None
+        } else {
+            Some(ActivationRequestSet { requests })
         }
     }
 
@@ -844,6 +890,33 @@ impl<'m> Solver<'m> {
             .get(&key)
             .map(|s| s.ret.clone())
             .unwrap_or(Info::Pending)
+    }
+
+    fn activate_boundary_request<T: Types<Ty = Ty>>(
+        &mut self,
+        t: &mut T,
+        caller: &ActivationKey,
+        callsite: CallsiteId,
+        request: ActivationRequest,
+    ) {
+        let Some(key) = ActivationKey::from_inputs(t, request.fn_id, &request.inputs) else {
+            return;
+        };
+        self.edges.insert(ActivationEdge {
+            caller: caller.clone(),
+            callee: key.clone(),
+            callsite,
+        });
+        if !self.activations.contains_key(&key) {
+            self.activations.insert(
+                key.clone(),
+                Activation {
+                    inputs: key.input_infos(),
+                    ret: Info::Pending,
+                },
+            );
+            self.enqueue(key);
+        }
     }
 
     /// Apply `f`'s declared arrow set to this concrete inference input.
@@ -1238,6 +1311,12 @@ impl<'m> Solver<'m> {
             let proved_none =
                 self.record_value_required_none(t, f, block_id, stmt_index, prim, &info, env);
             env.insert(*v, info);
+            if let Prim::Extern(ident, _, args) = prim {
+                let callsite = CallsiteId::new(key.fn_id, ident, EmitSlot::CallableBoundary);
+                for arg in args {
+                    self.seed_callable_boundary(t, key, callsite.clone(), arg.var, env);
+                }
+            }
             if let Some(fact) = predicate_fact(prim) {
                 predicates.insert(*v, fact);
             }
@@ -1631,7 +1710,7 @@ impl<'m> Solver<'m> {
                 let n_args = entry_params.saturating_sub(cap_tys.len());
                 Info::known(t.closure_lit(ClosureTarget::from(*target), cap_tys, n_args))
             }
-            Prim::Extern(extern_id, _) => {
+            Prim::Extern(_, extern_id, _) => {
                 let ret = module
                     .extern_idx
                     .get(extern_id)

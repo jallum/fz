@@ -21,6 +21,7 @@
 pub(crate) use crate::frontend::spec_registry::SpecRegistry;
 use crate::fz_ir::Module;
 
+mod abi_facts;
 pub(crate) mod aot_main;
 pub(crate) mod backend;
 mod call;
@@ -37,7 +38,6 @@ mod fn_ctx;
 mod function;
 #[cfg(debug_assertions)]
 mod invariants;
-mod native_callable;
 mod prim;
 mod receive;
 pub(crate) mod repr;
@@ -50,6 +50,7 @@ mod value;
 
 // Glob re-exports keep cross-module references resolvable through
 // `use super::*;` in each submodule.
+pub(crate) use abi_facts::*;
 pub(crate) use aot_main::*;
 pub(crate) use backend::*;
 pub(crate) use call::*;

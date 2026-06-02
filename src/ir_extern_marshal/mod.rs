@@ -53,7 +53,7 @@ where
     for block in &f.blocks {
         let stmt_spans = module.source.stmt_spans.get(&(f.id, block.id));
         for (stmt_idx, stmt) in block.stmts.iter().enumerate() {
-            let Stmt::Let(_, Prim::Extern(eid, args)) = stmt else {
+            let Stmt::Let(_, Prim::Extern(_, eid, args)) = stmt else {
                 continue;
             };
             let decl = module.extern_by_id(*eid);
@@ -234,7 +234,7 @@ mod tests {
             .iter()
             .flat_map(|block| {
                 block.stmts.iter().enumerate().filter_map(move |(i, stmt)| {
-                    let crate::fz_ir::Stmt::Let(_, Prim::Extern(_, args)) = stmt else {
+                    let crate::fz_ir::Stmt::Let(_, Prim::Extern(_, _, args)) = stmt else {
                         return None;
                     };
                     Some((block.id, i, args))

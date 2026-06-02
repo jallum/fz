@@ -360,7 +360,7 @@ pub(crate) fn lower_expr(
                     lowered_args.into_iter().map(|a| a.ascription).collect(),
                     sp,
                 )?;
-                return Ok(ctx.let_at(Prim::Extern(eid, extern_args), sp));
+                return Ok(ctx.let_at(Prim::extern_call(sp, eid, extern_args), sp));
             }
             let local_callee =
                 local_callee.or_else(|| ctx.fns.get(&(callee_name.clone(), arity)).copied());

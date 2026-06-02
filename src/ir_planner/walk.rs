@@ -220,11 +220,6 @@ where
     any_ty: crate::types::Ty,
 }
 
-enum Slot0Knowledge {
-    Known(crate::types::Ty),
-    Pending,
-}
-
 impl<T> DiscoveryWalk<'_, T>
 where
     T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
@@ -240,18 +235,24 @@ where
                 .get(&b.id)
                 .cloned()
                 .unwrap_or_default();
-            self.walk_statements(&b.stmts, &mut env);
+            self.walk_statements(b.id, &b.stmts, &mut env);
             self.walk_terminator(&b.terminator, &env);
         }
     }
 
-    fn walk_statements(&mut self, stmts: &[Stmt], env: &mut HashMap<Var, crate::types::Ty>) {
+    fn walk_statements(
+        &mut self,
+        _block_id: crate::fz_ir::BlockId,
+        stmts: &[Stmt],
+        env: &mut HashMap<Var, crate::types::Ty>,
+    ) {
         for stmt in stmts {
             let Stmt::Let(v, prim) = stmt;
             let pt_ty = super::prim::type_prim(self.t, prim, env, self.m, &HashSet::new());
             env.insert(*v, pt_ty);
-            if let Stmt::Let(_, crate::fz_ir::Prim::MakeClosure(ident, fn_id, captured)) = stmt {
-                self.record_make_closure(ident, *fn_id, captured, env);
+            if let Stmt::Let(_, crate::fz_ir::Prim::Extern(ident, _, args)) = stmt {
+                let arg_vars = args.iter().map(|arg| arg.var).collect::<Vec<_>>();
+                self.record_external_callable_targets(&arg_vars, env, ident);
             }
         }
     }
@@ -348,6 +349,9 @@ where
                     continuation,
                 );
                 entry_key.demand = demand;
+                entry_key = self
+                    .activation_returns
+                    .canonical_public_key(self.t, entry_key);
                 self.out
                     .record_dispatch(self.caller_spec_key, term_ident, slot, entry_key.clone());
                 self.out
@@ -357,6 +361,9 @@ where
                 let (demand, context_plan) =
                     tail_call_return_plan(self.m, self.caller_spec_key, target_fn, args);
                 entry_key.demand = demand;
+                entry_key = self
+                    .activation_returns
+                    .canonical_public_key(self.t, entry_key);
                 self.out
                     .record_dispatch(self.caller_spec_key, term_ident, slot, entry_key.clone());
                 if let Some(context_plan) = context_plan {
@@ -396,6 +403,9 @@ where
                 continuation,
             );
             entry_key.demand = demand;
+            entry_key = self
+                .activation_returns
+                .canonical_public_key(self.t, entry_key);
             self.out
                 .record_dispatch(self.caller_spec_key, term_ident, slot, entry_key.clone());
             self.out
@@ -404,6 +414,9 @@ where
             let (demand, context_plan) =
                 tail_call_return_plan(self.m, self.caller_spec_key, callee, args);
             entry_key.demand = demand;
+            entry_key = self
+                .activation_returns
+                .canonical_public_key(self.t, entry_key);
             self.out
                 .record_dispatch(self.caller_spec_key, term_ident, slot, entry_key.clone());
             if let Some(context_plan) = context_plan {
@@ -533,6 +546,9 @@ where
             return;
         };
         self.inherit_tail_closure_demand(term, &mut target_key);
+        target_key = self
+            .activation_returns
+            .canonical_public_key(self.t, target_key);
         self.out
             .record_dispatch(self.caller_spec_key, term_ident, slot, target_key.clone());
         self.emit(slot, term_ident.clone(), target_key);
@@ -552,6 +568,9 @@ where
             return;
         };
         self.inherit_tail_closure_demand(term, &mut target_key);
+        target_key = self
+            .activation_returns
+            .canonical_public_key(self.t, target_key);
         self.out
             .record_dispatch(self.caller_spec_key, term_ident, slot, target_key.clone());
         self.emit(slot, term_ident.clone(), target_key);
@@ -568,10 +587,6 @@ where
         let Some(slot0) = self.continuation_slot0(term_ident, env, &source) else {
             return;
         };
-        let slot0 = match slot0 {
-            Slot0Knowledge::Known(ty) => ty,
-            Slot0Knowledge::Pending => return,
-        };
         let Some(&j) = self.m.fn_idx.get(&cont.fn_id) else {
             return;
         };
@@ -586,6 +601,9 @@ where
         let demand = continuation_return_demand(self.m, self.caller_spec_key, &cont, &source);
         let mut entry_key = spec_key_for_fn(cont_fn, std::mem::take(&mut key));
         entry_key.demand = demand.clone();
+        entry_key = self
+            .activation_returns
+            .canonical_public_key(self.t, entry_key);
         let context_plan = continuation_empty_tail_plan(
             self.t,
             self.m,
@@ -622,7 +640,7 @@ where
         term_ident: &CallsiteIdent,
         env: &HashMap<Var, crate::types::Ty>,
         source: &ContSource,
-    ) -> Option<Slot0Knowledge> {
+    ) -> Option<crate::types::Ty> {
         match *source {
             ContSource::Call { callee, args } => {
                 let arg_tys = self.arg_tys(args, env);
@@ -645,15 +663,17 @@ where
                     self.slot_summaries,
                     target,
                 );
-                match knowledge.slot0 {
-                    super::worklist::ResultSlot0::Known(ty) => Some(Slot0Knowledge::Known(ty)),
-                    super::worklist::ResultSlot0::Pending => Some(Slot0Knowledge::Pending),
-                }
+                Some(match knowledge.slot0 {
+                    super::worklist::ResultSlot0::Known(ty) => ty,
+                    // Planner-visible continuations must stay coherent even when
+                    // inference cannot yet prove a narrower slot-0 type.
+                    super::worklist::ResultSlot0::Pending => self.any_ty.clone(),
+                })
             }
             ContSource::CallClosure { closure, args } => {
                 self.closure_return_slot0(term_ident, closure, args, env)
             }
-            ContSource::Receive => Some(Slot0Knowledge::Known(self.any_ty.clone())),
+            ContSource::Receive => Some(self.any_ty.clone()),
         }
     }
 
@@ -694,7 +714,7 @@ where
         closure: Var,
         args: &[Var],
         env: &HashMap<Var, crate::types::Ty>,
-    ) -> Option<Slot0Knowledge> {
+    ) -> Option<crate::types::Ty> {
         if let Some(target) = self.caller_ft.known_fn(&closure) {
             let knowledge = super::worklist::known_closure_result_knowledge(
                 self.t,
@@ -708,12 +728,12 @@ where
                 self.slot_summaries,
             );
             return Some(match knowledge.slot0 {
-                super::worklist::ResultSlot0::Known(ty) => Slot0Knowledge::Known(ty),
-                super::worklist::ResultSlot0::Pending => Slot0Knowledge::Pending,
+                super::worklist::ResultSlot0::Known(ty) => ty,
+                super::worklist::ResultSlot0::Pending => self.any_ty.clone(),
             });
         }
         let Some(cv_descr) = env.get(&closure) else {
-            return Some(Slot0Knowledge::Known(self.any_ty.clone()));
+            return Some(self.any_ty.clone());
         };
         let knowledge = super::worklist::closure_value_result_knowledge(
             self.t,
@@ -726,8 +746,8 @@ where
             self.slot_summaries,
         );
         Some(match knowledge.slot0 {
-            super::worklist::ResultSlot0::Known(ty) => Slot0Knowledge::Known(ty),
-            super::worklist::ResultSlot0::Pending => Slot0Knowledge::Pending,
+            super::worklist::ResultSlot0::Known(ty) => ty,
+            super::worklist::ResultSlot0::Pending => self.any_ty.clone(),
         })
     }
 
@@ -865,25 +885,6 @@ where
             self.activation_returns
                 .canonical_public_key(self.t, spec_key_for_fn_id(self.m, fn_id, input_tys)),
         )
-    }
-
-    fn record_make_closure(
-        &mut self,
-        ident: &CallsiteIdent,
-        fn_id: FnId,
-        captured: &[Var],
-        env: &HashMap<Var, crate::types::Ty>,
-    ) {
-        // A surviving MakeClosure means codegen must materialize this callable
-        // target, even if no local callsite invokes it directly.
-        let captures = captured
-            .iter()
-            .map(|cv| env.get(cv).cloned().unwrap_or_else(|| self.any_ty.clone()))
-            .collect::<Vec<_>>();
-        let Some(key) = self.closure_lit_key(fn_id, captures, &[], env) else {
-            return;
-        };
-        self.emit(EmitSlot::MakeClosure, ident.clone(), key);
     }
 
     fn record_fixed_point_input_observation(

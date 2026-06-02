@@ -781,10 +781,11 @@ fn main() do
 end
 "#;
     let mut t = crate::types::ConcreteTypes;
-    let module = runtime_graph_module(&mut t, src);
+    let graph = runtime_graph(&mut t, src);
+    let module = graph.module;
 
     let collapsed = module.fn_by_name("collapsed").expect("collapsed");
-    let plan = crate::ir_planner::plan_module(&mut t, &module, &crate::telemetry::NullTelemetry);
+    let plan = graph.module_plan;
     let ret = plan
         .effective_returns
         .get(&crate::ir_planner::fn_types::SpecKey::value(
@@ -801,7 +802,11 @@ end
         t.display(ret)
     );
 
-    assert_eq!(capture_main_module(module), vec!["1"], "native result");
+    assert_eq!(
+        capture_main_module_planned(module, plan),
+        vec!["1"],
+        "native result"
+    );
 }
 
 #[test]
@@ -1029,11 +1034,22 @@ fn capture_main(src: &str) -> Vec<String> {
 
 fn capture_main_with_runtime_graph(src: &str) -> Vec<String> {
     let mut t = crate::types::ConcreteTypes;
-    capture_main_module(runtime_graph_module(&mut t, src))
+    let graph = runtime_graph(&mut t, src);
+    capture_main_module_planned(graph.module, graph.module_plan)
 }
 
-fn runtime_graph_module(t: &mut crate::types::ConcreteTypes, src: &str) -> Module {
-    let tel = crate::telemetry::NullTelemetry;
+fn runtime_graph(
+    t: &mut crate::types::ConcreteTypes,
+    src: &str,
+) -> crate::modules::pipeline::PreparedExecutionGraph {
+    runtime_graph_with_tel(t, src, &crate::telemetry::NullTelemetry)
+}
+
+fn runtime_graph_with_tel(
+    t: &mut crate::types::ConcreteTypes,
+    src: &str,
+    tel: &dyn crate::telemetry::Telemetry,
+) -> crate::modules::pipeline::PreparedExecutionGraph {
     let providers = crate::modules::pipeline::ProviderInputs::new(
         crate::modules::artifact_store::DEFAULT_ARTIFACT_ROOT.to_string(),
         Vec::new(),
@@ -1043,13 +1059,13 @@ fn runtime_graph_module(t: &mut crate::types::ConcreteTypes, src: &str) -> Modul
         src.to_string(),
         "test.fz".to_string(),
         &providers,
-        &tel,
+        tel,
     )
     .unwrap_or_else(|err| panic!("frontend result: {err}"));
     let checked = crate::modules::pipeline::checked_module_for_mode(
         t,
         frontend,
-        &tel,
+        tel,
         crate::modules::pipeline::CompileMode::Normal,
     )
     .unwrap_or_else(|err| panic!("checked module: {err}"));
@@ -1057,11 +1073,11 @@ fn runtime_graph_module(t: &mut crate::types::ConcreteTypes, src: &str) -> Modul
         t,
         checked,
         &providers,
-        &tel,
+        tel,
         crate::modules::pipeline::CompileMode::Normal,
     )
     .unwrap_or_else(|err| panic!("execution graph: {err}"));
-    prepared.module
+    prepared
 }
 
 fn capture_main_module(m: Module) -> Vec<String> {
@@ -1076,13 +1092,30 @@ fn capture_main_module(m: Module) -> Vec<String> {
     observe(&compiled, entry).output
 }
 
+fn capture_main_module_planned(m: Module, plan: crate::ir_planner::ModulePlan) -> Vec<String> {
+    let entry = m.fn_by_name("main").unwrap().id;
+    assert_direct_call_arities(&m);
+    let compiled = compile_planned(
+        &mut crate::types::ConcreteTypes,
+        &m,
+        &plan,
+        &crate::telemetry::NullTelemetry,
+    )
+    .expect("compile planned");
+    observe(&compiled, entry).output
+}
+
 fn run_runtime_graph_main_planned(src: &str) -> i64 {
     let mut t = crate::types::ConcreteTypes;
-    let module = runtime_graph_module(&mut t, src);
-    let entry = module.fn_by_name("main").unwrap().id;
-    let plan = crate::ir_planner::plan_module(&mut t, &module, &crate::telemetry::NullTelemetry);
-    let compiled = compile_planned(&mut t, &module, &plan, &crate::telemetry::NullTelemetry)
-        .expect("compile planned");
+    let graph = runtime_graph(&mut t, src);
+    let entry = graph.module.fn_by_name("main").unwrap().id;
+    let compiled = compile_planned(
+        &mut t,
+        &graph.module,
+        &graph.module_plan,
+        &crate::telemetry::NullTelemetry,
+    )
+    .expect("compile planned");
     observe(&compiled, entry).exit.halt_value
 }
 
@@ -1191,7 +1224,38 @@ fn runtime_graph_spawn_with_captures_runs_via_planned_codegen_path() {
 fn runtime_graph_plain_spawn_runs_via_planned_codegen_path() {
     assert_eq!(
         run_runtime_graph_main_planned("fn child(), do: nil\nfn main() do spawn(child) end"),
-        fz_runtime::any_value::NIL_ATOM_ID as i64
+        2
+    );
+}
+
+#[test]
+fn runtime_graph_plain_spawn_runs_via_planned_interp_path() {
+    let mut t = crate::types::ConcreteTypes;
+    let graph = runtime_graph(&mut t, "fn child(), do: nil\nfn main() do spawn(child) end");
+    let (halt, _) = crate::ir_interp::run_main_with_plan(
+        &crate::telemetry::NullTelemetry,
+        &graph.module,
+        graph.module_plan,
+    )
+    .expect("interp run");
+    assert_eq!(halt, 2);
+}
+
+#[test]
+fn codegen_materializes_plain_spawn_child_callable_boundary_target() {
+    let signals = crate::test_support::runtime_graph_codegen_materialized_body_signals(
+        include_str!("../type_infer/fixtures/spawn_plain.fz"),
+    );
+
+    let child = signals
+        .iter()
+        .find(|signal| signal.fn_name == "child")
+        .unwrap_or_else(|| panic!("expected child materialized body event: {signals:?}"));
+
+    assert_eq!(child.role, "authoritative");
+    assert!(
+        child.spec_key.contains("FnId"),
+        "materialized body event should carry the child spec key: {child:?}"
     );
 }
 
@@ -1208,7 +1272,8 @@ fn runtime_graph_spawn_then_receive_runs_via_planned_codegen_path() {
 #[test]
 fn runtime_graph_plain_spawn_make_closure_registers_zero_cap_target() {
     let mut t = crate::types::ConcreteTypes;
-    let module = runtime_graph_module(&mut t, "fn child(), do: nil\nfn main() do spawn(child) end");
+    let graph = runtime_graph(&mut t, "fn child(), do: nil\nfn main() do spawn(child) end");
+    let module = graph.module;
     let child = module.fn_by_name("child").expect("child fn");
     let child_make_closures = module
         .fns
@@ -1223,7 +1288,7 @@ fn runtime_graph_plain_spawn_make_closure_registers_zero_cap_target() {
             )
         })
         .count();
-    let plan = crate::ir_planner::plan_module(&mut t, &module, &crate::telemetry::NullTelemetry);
+    let plan = graph.module_plan;
     let child_specs: Vec<_> = plan
         .specs
         .keys()
@@ -1264,9 +1329,10 @@ fn runtime_graph_plain_spawn_make_closure_registers_zero_cap_target() {
 #[test]
 fn runtime_graph_plain_spawn_finalizes_resume_addr() {
     let mut t = crate::types::ConcreteTypes;
-    let module = runtime_graph_module(&mut t, "fn child(), do: nil\nfn main() do spawn(child) end");
+    let graph = runtime_graph(&mut t, "fn child(), do: nil\nfn main() do spawn(child) end");
+    let module = graph.module;
     let child_id = module.fn_by_name("child").expect("child fn").id.0;
-    let plan = crate::ir_planner::plan_module(&mut t, &module, &crate::telemetry::NullTelemetry);
+    let plan = graph.module_plan;
     let compiled = compile_planned(&mut t, &module, &plan, &crate::telemetry::NullTelemetry)
         .expect("compile planned");
     assert!(
@@ -2663,8 +2729,14 @@ fn enum_take_drop_split_codegen_plan_reports_activation_projection_telemetry() {
     let cap = Capture::new();
     tel.attach(&["fz", "planner", "planned"], cap.handler());
     let mut t = crate::types::ConcreteTypes;
-    let module = runtime_graph_module(&mut t, src);
-    compile(&mut t, &module, &tel).expect("compile");
+    let graph = runtime_graph_with_tel(&mut t, src, &tel);
+    compile_planned(
+        &mut t,
+        &graph.module,
+        &graph.module_plan,
+        &crate::telemetry::NullTelemetry,
+    )
+    .expect("compile");
 
     let ev = cap
         .find(&["fz", "planner", "planned"])
@@ -2702,8 +2774,14 @@ fn enum_take_drop_split_planner_telemetry_reports_continuation_edges() {
     let cap = Capture::new();
     tel.attach(&["fz", "planner", "spec_pair_inventory"], cap.handler());
     let mut t = crate::types::ConcreteTypes;
-    let module = runtime_graph_module(&mut t, src);
-    compile(&mut t, &module, &tel).expect("compile");
+    let graph = runtime_graph_with_tel(&mut t, src, &tel);
+    compile_planned(
+        &mut t,
+        &graph.module,
+        &graph.module_plan,
+        &crate::telemetry::NullTelemetry,
+    )
+    .expect("compile");
 
     let events = cap
         .find(&["fz", "planner", "spec_pair_inventory"])

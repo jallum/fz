@@ -51,7 +51,7 @@ pub(crate) fn build_entry_harness<M: cranelift_module::Module>(
     // (frame_ptr, host_ctx) are Some only for uniform fns (both from
     // entry block_params). Native fns have no frame; they reach halt via
     // fz_halt_implicit (TLS). Downstream consumers gate on `is_native`
-    // (or on a terminator type natively_callable excludes), so unwrapping
+    // (or on a terminator type the planned ABI facts exclude), so unwrapping
     // the Option panics loudly at codegen if any future path violates
     // the invariant. `cont_param` is the trailing i64 in the native-tier
     // signature.

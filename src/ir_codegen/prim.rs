@@ -990,7 +990,7 @@ pub(crate) fn lower_prim<
                 Ok(LowerOut::Strict(strict_bool(body.b, inv)))
             }
         },
-        Prim::Extern(eid, args) => {
+        Prim::Extern(_, eid, args) => {
             let decl = env.module.extern_by_id(*eid);
             let arg_vars: Vec<crate::fz_ir::Var> = args.iter().map(|arg| arg.var).collect();
             if decl.symbol == "fz_panic" && args.len() == 1 {

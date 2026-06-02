@@ -1322,7 +1322,11 @@ mod tests {
         assert!(
             fold_prim(
                 &mut ct(),
-                &Prim::Extern(ExternId(0), vec![]),
+                &Prim::Extern(
+                    crate::fz_ir::CallsiteIdent::synthetic(),
+                    ExternId(0),
+                    vec![]
+                ),
                 &env,
                 &[],
                 Nominals::empty(),

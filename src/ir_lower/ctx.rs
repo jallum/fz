@@ -288,7 +288,7 @@ impl LowerCtx {
     /// so the resulting closure has a real `FnId` and *zero captures* —
     /// `&name/arity` requires a top-level fn to point at, and only zero-cap
     /// closure targets get static-singleton allocation. The wrapper body
-    /// is just `Prim::Extern(eid, params); Return`.
+    /// is just `Prim::Extern(ident, eid, params); Return`.
     pub(super) fn ensure_extern_wrapper(&mut self, eid: ExternId) -> FnId {
         if let Some(id) = self.extern_wrappers.get(&eid) {
             return *id;
@@ -319,9 +319,23 @@ impl LowerCtx {
             crate::fz_ir::ExternTy::Unit | crate::fz_ir::ExternTy::Never
         );
         let ret_var = if returns_value {
-            tb.let_(entry, Prim::Extern(eid, extern_args.clone()))
+            tb.let_(
+                entry,
+                Prim::Extern(
+                    crate::fz_ir::CallsiteIdent::from_source(Span::DUMMY),
+                    eid,
+                    extern_args.clone(),
+                ),
+            )
         } else {
-            let _ = tb.let_(entry, Prim::Extern(eid, extern_args));
+            let _ = tb.let_(
+                entry,
+                Prim::Extern(
+                    crate::fz_ir::CallsiteIdent::from_source(Span::DUMMY),
+                    eid,
+                    extern_args,
+                ),
+            );
             tb.let_(entry, Prim::Const(Const::Nil))
         };
         tb.set_terminator(entry, Term::Return(ret_var));

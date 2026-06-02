@@ -27,8 +27,8 @@ use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::rc::Rc;
 
-/// fz-kgk — intrinsic identity for a callsite (call-shape terminator
-/// or `Prim::MakeClosure` stmt).
+/// fz-kgk — intrinsic identity for a callsite (call-shape terminator,
+/// `Prim::MakeClosure`, or `Prim::Extern` stmt).
 ///
 /// Carries the source `Span` for diagnostics. Identity is **pointer
 /// equality on the inner `Rc`**: two `CallsiteIdent` values are equal iff
@@ -171,7 +171,7 @@ pub enum EmitSlot {
 ///
 /// `(caller, ident, slot)` uniquely names a place that can produce a
 /// callee target. `ident` is the intrinsic identity carried on the
-/// `Term` (or `Prim::MakeClosure`); see [`CallsiteIdent`] for the
+/// `Term` (or callsite-bearing `Prim`); see [`CallsiteIdent`] for the
 /// fork-vs-inherit rules.
 ///
 /// Previously keyed by `(caller, block, slot)` where slot's MakeClosure
@@ -431,7 +431,7 @@ pub enum Prim {
     Const(Const),
     BinOp(BinOp, Var, Var),
     UnOp(UnOp, Var),
-    Extern(ExternId, Vec<ExternArg>),
+    Extern(CallsiteIdent, ExternId, Vec<ExternArg>),
     ListHead(Var),
     ListTail(Var),
     IsEmptyList(Var),
@@ -845,21 +845,27 @@ impl Term {
 }
 
 impl Prim {
-    /// fz-kgk — convenience constructor for the only Prim variant
-    /// that is a callsite.
+    /// fz-kgk — convenience constructor for callsite-bearing prims.
     pub fn make_closure(span: Span, fn_id: FnId, captured: Vec<Var>) -> Self {
         Prim::MakeClosure(CallsiteIdent::from_source(span), fn_id, captured)
     }
 
-    /// fz-rrh — overwrite the `CallsiteIdent` on a `MakeClosure` prim
+    pub fn extern_call(span: Span, extern_id: ExternId, args: Vec<ExternArg>) -> Self {
+        Prim::Extern(CallsiteIdent::from_source(span), extern_id, args)
+    }
+
+    /// fz-rrh — overwrite the `CallsiteIdent` on a callsite-bearing prim
     /// with a fresh one keyed by `span`. No-op for other prims and
     /// for DUMMY spans. Mirror of `Term::set_source_span`.
     pub fn set_source_span(&mut self, span: Span) {
         if span.is_dummy() {
             return;
         }
-        if let Prim::MakeClosure(ident, _, _) = self {
-            *ident = CallsiteIdent::from_source(span);
+        match self {
+            Prim::MakeClosure(ident, _, _) | Prim::Extern(ident, _, _) => {
+                *ident = CallsiteIdent::from_source(span);
+            }
+            _ => {}
         }
     }
 }
@@ -886,7 +892,7 @@ pub(crate) fn visit_prim_vars(prim: &Prim, mut visit: impl FnMut(Var)) {
         | Prim::BitReaderDone(v)
         | Prim::Brand(v, _)
         | Prim::TypeTest(v, _) => visit(*v),
-        Prim::Extern(_, args) => {
+        Prim::Extern(_, _, args) => {
             for arg in args {
                 visit(arg.var);
             }
@@ -1653,17 +1659,16 @@ fn remap_ident(ident: &mut CallsiteIdent, remap: &HashMap<FileId, FileId>) {
     *ident = CallsiteIdent::from_source(span);
 }
 
-/// Remap any span carried by a `Prim`. Only `MakeClosure` carries one; the
+/// Remap any span carried by a `Prim`. `MakeClosure` and `Extern` carry one; the
 /// `match` is exhaustive so a future span-carrying Prim variant fails to
 /// compile rather than being silently skipped.
 fn remap_prim_span(prim: &mut Prim, remap: &HashMap<FileId, FileId>) {
     match prim {
-        Prim::MakeClosure(ident, _, _) => remap_ident(ident, remap),
+        Prim::MakeClosure(ident, _, _) | Prim::Extern(ident, _, _) => remap_ident(ident, remap),
         // Span-free prims: explicit no-op arms keep the match exhaustive.
         Prim::Const(_)
         | Prim::BinOp(_, _, _)
         | Prim::UnOp(_, _)
-        | Prim::Extern(_, _)
         | Prim::ListHead(_)
         | Prim::ListTail(_)
         | Prim::IsEmptyList(_)
@@ -1730,16 +1735,15 @@ fn remap_term_span(term: &mut Term, remap: &HashMap<FileId, FileId>) {
 }
 
 /// Read-only twin of `remap_prim_span`: visits any span carried by a `Prim`.
-/// Only `MakeClosure` carries one; the `match` is exhaustive so a future
+/// `MakeClosure` and `Extern` carry one; the `match` is exhaustive so a future
 /// span-carrying Prim variant fails to compile rather than being skipped.
 fn visit_prim_span(prim: &Prim, f: &mut impl FnMut(Span)) {
     match prim {
-        Prim::MakeClosure(ident, _, _) => f(ident.span()),
+        Prim::MakeClosure(ident, _, _) | Prim::Extern(ident, _, _) => f(ident.span()),
         // Span-free prims: explicit no-op arms keep the match exhaustive.
         Prim::Const(_)
         | Prim::BinOp(_, _, _)
         | Prim::UnOp(_, _)
-        | Prim::Extern(_, _)
         | Prim::ListHead(_)
         | Prim::ListTail(_)
         | Prim::IsEmptyList(_)
@@ -2154,7 +2158,7 @@ impl fmt::Display for Prim {
             Prim::Const(c) => write!(f, "const({})", c),
             Prim::BinOp(op, a, b) => write!(f, "{} {} {}", a, op, b),
             Prim::UnOp(op, a) => write!(f, "{} {}", op, a),
-            Prim::Extern(e, args) => {
+            Prim::Extern(_, e, args) => {
                 write!(f, "extern#{}([{}])", e.0, fmt_extern_arg_list(args))
             }
             Prim::ListHead(l) => write!(f, "head({})", l),

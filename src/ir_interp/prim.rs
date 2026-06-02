@@ -137,7 +137,7 @@ pub(super) fn eval_prim<T: Types<Ty = crate::types::Ty>>(
             let av = env_get(env, *a)?;
             eval_unop(*op, av)?
         }
-        Prim::Extern(eid, args) => {
+        Prim::Extern(_, eid, args) => {
             let vars: Vec<_> = args.iter().map(|arg| arg.var).collect();
             let arg_vals = collect(env, &vars)?;
             call_extern(

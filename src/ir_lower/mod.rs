@@ -2499,9 +2499,41 @@ end
         assert!(
             spawn.blocks.iter().any(|b| b.stmts.iter().any(|stmt| {
                 let crate::fz_ir::Stmt::Let(_, prim) = stmt;
-                matches!(prim, Prim::Extern(_, _))
+                matches!(prim, Prim::Extern(_, _, _))
             })),
             "Kernel.spawn/1 must call its runtime extern"
+        );
+    }
+
+    #[test]
+    fn spawn_wrapper_extern_keeps_intrinsic_boundary_identity() {
+        let m = lower_src("fn child(), do: nil\nfn main() do spawn(child) end");
+        let spawn = m
+            .fns
+            .iter()
+            .find(|f| f.name == "Kernel.spawn" && f.block(f.entry).params.len() == 1)
+            .expect("Kernel.spawn/1 prelude fn missing");
+        let (ident, args) = spawn
+            .blocks
+            .iter()
+            .flat_map(|block| block.stmts.iter())
+            .find_map(|stmt| match stmt {
+                crate::fz_ir::Stmt::Let(_, Prim::Extern(ident, _, args)) => {
+                    Some((ident, args.as_slice()))
+                }
+                _ => None,
+            })
+            .expect("Kernel.spawn/1 must contain a runtime extern");
+
+        assert_eq!(
+            args.len(),
+            1,
+            "spawn wrapper should pass exactly one callable"
+        );
+        assert_ne!(
+            ident.span(),
+            Span::DUMMY,
+            "runtime extern boundary must carry an intrinsic callsite span"
         );
     }
 
@@ -2556,7 +2588,7 @@ end
         assert!(
             spawn.blocks.iter().any(|b| b.stmts.iter().any(|stmt| {
                 let crate::fz_ir::Stmt::Let(_, prim) = stmt;
-                matches!(prim, Prim::Extern(_, _))
+                matches!(prim, Prim::Extern(_, _, _))
             })),
             "Kernel.spawn/2 must call its runtime extern"
         );
@@ -3099,7 +3131,7 @@ fn main() do &libc::close/1 end
         let has_extern = wrap.blocks.iter().any(|b| {
             b.stmts
                 .iter()
-                .any(|s| matches!(s, Stmt::Let(_, Prim::Extern(_, _))))
+                .any(|s| matches!(s, Stmt::Let(_, Prim::Extern(_, _, _))))
         });
         assert!(
             has_extern,
@@ -3180,7 +3212,7 @@ fn main() do libc::open(\"x\", 0, 0o644 :: integer) end
             .iter()
             .flat_map(|b| b.stmts.iter())
             .find_map(|s| match s {
-                crate::fz_ir::Stmt::Let(_, Prim::Extern(_, args)) => Some(args),
+                crate::fz_ir::Stmt::Let(_, Prim::Extern(_, _, args)) => Some(args),
                 _ => None,
             })
             .expect("extern call missing");
@@ -3209,7 +3241,7 @@ fn main() do libc::printf(\"%d\", 7) end
             .iter()
             .flat_map(|b| b.stmts.iter())
             .find_map(|s| match s {
-                crate::fz_ir::Stmt::Let(_, Prim::Extern(_, args)) => Some(args),
+                crate::fz_ir::Stmt::Let(_, Prim::Extern(_, _, args)) => Some(args),
                 _ => None,
             })
             .expect("extern call missing");

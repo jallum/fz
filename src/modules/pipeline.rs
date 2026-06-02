@@ -221,7 +221,7 @@ pub(crate) fn prepare_execution_graph(
 
     let units = load_provider_units(t, &mut prepared, providers, tel)?;
     let linked_units = units.len() > 1;
-    let mut module = if linked_units {
+    let module = if linked_units {
         ir_codegen::link_ir_units(&units).map_err(PipelineError::Link)?
     } else {
         units[0].code.clone()
@@ -233,14 +233,11 @@ pub(crate) fn prepare_execution_graph(
             module_path: module.module_path().to_owned(),
         },
     );
-    module = ir_codegen::prepare_module_for_authoritative_plan(t, &module, tel);
-    let mut module_plan = ir_planner::plan_module(t, &module, tel);
-    if !module.protocol_call_targets.is_empty() {
-        frontend::apply_planner_rewrites_to_fixed_point(t, &mut module, &mut module_plan);
-    }
-    // The execution graph now owns the linked working module after every
-    // pre-authoritative-plan transform. Downstream engines must consume this
-    // exact module + ModulePlan pair rather than replanning a divergent clone.
+    let module_plan = ir_planner::plan_module(t, &module, tel);
+    // The execution graph hands downstream engines the real linked module and
+    // its one authoritative plan. Mutating IR transforms that change dispatch
+    // or reachability must not run here unless they also preserve that
+    // contract; otherwise they erase facts the planner still needs to observe.
     // LTO mode still runs boundary erasure for its module-mutating side effect
     // (rewriting external calls to direct ones); its local plan is discarded.
     if mode.is_lto() {

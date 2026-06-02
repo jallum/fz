@@ -94,181 +94,6 @@ fn collect_tuple_arities_and_register_schemas(
     )
 }
 
-/// The set of fns used as continuations. A cont fn has sig
-/// `(result:i64, self:i64) tail` per docs/cps-in-clif.md §2.1 —
-/// no host_ctx, no trailing cont param. Its body projects captures
-/// from `self`, and its "next k" is one of those captures.
-///
-/// Clause body / guard / after fns of Term::ReceiveMatched are also
-/// included: they get dispatched via cont stub into their Tail-CC entry,
-/// so they must wear the cont-fn sig shape. The companion
-/// `cont_extras_count` map sets receive outcome bodies to `(self) tail`;
-/// bound values and captures live inside the outcome closure env.
-fn collect_cont_fns(module: &Module) -> std::collections::HashSet<crate::fz_ir::FnId> {
-    let mut s = std::collections::HashSet::new();
-    for f in &module.fns {
-        for b in &f.blocks {
-            match &b.terminator {
-                Term::Call { continuation, .. }
-                | Term::CallClosure { continuation, .. }
-                | Term::Receive {
-                    continuation,
-                    ident: _,
-                } => {
-                    s.insert(continuation.fn_id);
-                }
-                Term::ReceiveMatched { clauses, after, .. } => {
-                    for c in clauses {
-                        s.insert(c.body);
-                        if let Some(g) = c.guard {
-                            s.insert(g);
-                        }
-                    }
-                    if let Some(a) = after {
-                        s.insert(a.body);
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
-    s
-}
-
-/// Set of fns appearing as a MakeClosure target and their capture counts.
-/// Per docs/cps-in-clif.md §2.1 these get sig
-/// `(args..., self:i64, cont:i64) tail` and their body projects captures
-/// from `self`. Disjoint from cont_fns by construction.
-///
-/// Closure-target sig is universal: every MakeClosure target gets
-/// `(args..., self, cont) tail` regardless of whether it is also
-/// direct-called. Direct callers load a per-Process static singleton and
-/// pass it as `self`. See docs/cps-in-clif.md §8.2.
-///
-/// Invariant: a closure-target fn that is also direct-called must have
-/// zero captures — direct callers have no captures to bind.
-fn collect_closure_targets(
-    module: &Module,
-) -> (
-    std::collections::HashSet<crate::fz_ir::FnId>,
-    std::collections::HashMap<crate::fz_ir::FnId, usize>,
-) {
-    let mut targets = std::collections::HashSet::new();
-    let mut counts: std::collections::HashMap<crate::fz_ir::FnId, usize> =
-        std::collections::HashMap::new();
-    let mut direct_called = std::collections::HashSet::new();
-    for f in &module.fns {
-        for b in &f.blocks {
-            match &b.terminator {
-                Term::Call { callee, .. } | Term::TailCall { callee, .. } => {
-                    direct_called.insert(*callee);
-                }
-                _ => {}
-            }
-            for stmt in &b.stmts {
-                let Stmt::Let(_, prim) = stmt;
-                if let Prim::MakeClosure(_, fid, captured) = prim {
-                    targets.insert(*fid);
-                    let n = captured.len();
-                    if let Some(prev) = counts.get(fid) {
-                        debug_assert_eq!(
-                            *prev, n,
-                            "MakeClosure n_captures mismatch for fn {}: \
-                             {} vs {}",
-                            fid.0, prev, n
-                        );
-                    }
-                    counts.insert(*fid, n);
-                }
-            }
-        }
-    }
-    for fid in &targets {
-        if direct_called.contains(fid) {
-            debug_assert_eq!(
-                counts[fid], 0,
-                "fn {} is both direct-called and a non-zero-cap \
-                 closure target — direct callers can't supply captures",
-                fid.0,
-            );
-        }
-    }
-    (targets, counts)
-}
-
-/// Per-FnId set: fns invoked from any fz IR site (as a direct callee,
-/// a continuation, or a closure target). A fn NOT in this set has no
-/// fz IR caller and can only enter via the trampoline entry (which
-/// writes null into the frame's slot 0). For such a fn, cont_ptr is
-/// statically null at runtime; emit_return can specialize to a
-/// halt-only path, skipping the runtime
-/// `load v0+16; icmp eq 0; brif` dispatch entirely.
-///
-/// The contained fns are exactly the "never specializable as halt-only"
-/// set.
-fn collect_cont_target_fns(module: &Module) -> std::collections::HashSet<crate::fz_ir::FnId> {
-    let mut cont_target_fns: std::collections::HashSet<crate::fz_ir::FnId> =
-        std::collections::HashSet::new();
-    for f in &module.fns {
-        for blk in &f.blocks {
-            match &blk.terminator {
-                Term::Call {
-                    ident: _,
-                    callee,
-                    continuation,
-                    ..
-                } => {
-                    cont_target_fns.insert(*callee);
-                    cont_target_fns.insert(continuation.fn_id);
-                }
-                Term::TailCall { callee, .. } => {
-                    cont_target_fns.insert(*callee);
-                }
-                Term::CallClosure { continuation, .. } | Term::Receive { continuation, .. } => {
-                    cont_target_fns.insert(continuation.fn_id);
-                }
-                _ => {}
-            }
-            for stmt in &blk.stmts {
-                let Stmt::Let(_, prim) = stmt;
-                if let Prim::MakeClosure(_, fid, _) = prim {
-                    cont_target_fns.insert(*fid);
-                }
-            }
-        }
-    }
-    cont_target_fns
-}
-
-/// Scheduler-resumed continuations receive only their closure `self`.
-/// Message values, pattern binds, and captures live in the closure env,
-/// so their Tail-CC sig has zero typed extras before `self`.
-fn collect_cont_extras_count(module: &Module) -> HashMap<crate::fz_ir::FnId, usize> {
-    let mut cont_extras_count: HashMap<crate::fz_ir::FnId, usize> = HashMap::new();
-    for f in &module.fns {
-        for blk in &f.blocks {
-            match &blk.terminator {
-                Term::Receive { continuation, .. } => {
-                    cont_extras_count.insert(continuation.fn_id, 0);
-                }
-                Term::ReceiveMatched { clauses, after, .. } => {
-                    for c in clauses {
-                        cont_extras_count.insert(c.body, 0);
-                        if let Some(g) = c.guard {
-                            cont_extras_count.insert(g, 0);
-                        }
-                    }
-                    if let Some(a) = after {
-                        cont_extras_count.insert(a.body, 0);
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
-    cont_extras_count
-}
-
 /// Build per-SpecId frame schemas, refining entry-param kinds from each
 /// spec's SpecPlan. The any-key SpecId for FnId K lands at index K
 /// (invariant) so any code path that uses fn_id.0 as a schema_id
@@ -513,7 +338,7 @@ fn compute_tagged_return_specs<
     spec_fnidx: &[Option<usize>],
     spec_fn_types: &[Option<&crate::ir_planner::SpecPlan>],
     spec_registry: &SpecRegistry,
-    closure_target_fns: &std::collections::HashSet<crate::fz_ir::FnId>,
+    closure_capture_counts: &std::collections::HashMap<crate::fz_ir::FnId, usize>,
 ) -> std::collections::HashSet<u32> {
     let mut set: std::collections::HashSet<u32> = std::collections::HashSet::new();
     let any_ty = t.any();
@@ -549,7 +374,7 @@ fn compute_tagged_return_specs<
             continue;
         };
         let fid = module.fns[idx].id;
-        if closure_target_fns.contains(&fid) {
+        if closure_capture_counts.contains_key(&fid) {
             set.insert(sid as u32);
         }
     }
@@ -819,23 +644,23 @@ fn build_fn_sigs(
     spec_fnidx: &[Option<usize>],
     spec_keys: &[crate::ir_planner::fn_types::SpecKey],
     param_reprs: &[Vec<ArgRepr>],
-    natively_callable: &std::collections::HashSet<crate::fz_ir::FnId>,
+    native_abi_fns: &std::collections::HashSet<crate::fz_ir::FnId>,
     cont_fns: &std::collections::HashSet<crate::fz_ir::FnId>,
-    closure_n_captures: &std::collections::HashMap<crate::fz_ir::FnId, usize>,
+    closure_capture_counts: &std::collections::HashMap<crate::fz_ir::FnId, usize>,
     cont_extras_count: &HashMap<crate::fz_ir::FnId, usize>,
 ) -> Vec<Signature> {
     (0..spec_count)
         .map(|sid| match spec_fnidx[sid] {
             Some(idx) => {
                 let f = &module.fns[idx];
-                let is_native = natively_callable.contains(&f.id);
+                let is_native = native_abi_fns.contains(&f.id);
                 let demand_abi = DemandAbi::new(&spec_keys[sid]);
                 build_fn_signature(
                     &param_reprs[sid],
                     is_native,
                     cont_fns.contains(&f.id),
                     if is_native {
-                        closure_n_captures.get(&f.id).copied()
+                        closure_capture_counts.get(&f.id).copied()
                     } else {
                         None
                     },
@@ -1452,8 +1277,8 @@ fn declare_mid_flight_conts<
     spec_registry: &SpecRegistry,
     spec_fnidx: &[Option<usize>],
     param_reprs: &[Vec<ArgRepr>],
-    natively_callable: &std::collections::HashSet<crate::fz_ir::FnId>,
-    closure_n_captures: &std::collections::HashMap<crate::fz_ir::FnId, usize>,
+    native_abi_fns: &std::collections::HashSet<crate::fz_ir::FnId>,
+    closure_capture_counts: &std::collections::HashMap<crate::fz_ir::FnId, usize>,
 ) -> Result<(MidFlightContFnIds, MidFlightContFnIds), CodegenError> {
     let mut mid_flight_cont_fn_ids: HashMap<(u32, Vec<MidFlightArgShape>), FuncId> = HashMap::new();
     let mut mid_flight_cont_tail_fn_ids: HashMap<(u32, Vec<MidFlightArgShape>), FuncId> =
@@ -1469,7 +1294,7 @@ fn declare_mid_flight_conts<
         for blk in &f.blocks {
             if let crate::fz_ir::Term::TailCall {
                 ident,
-                callee,
+                callee: _,
                 args,
                 is_back_edge: true,
                 ..
@@ -1478,9 +1303,6 @@ fn declare_mid_flight_conts<
                 if !fn_types.reachable_blocks.contains(&blk.id) {
                     continue;
                 };
-                if !natively_callable.contains(callee) {
-                    continue;
-                }
                 let cid = crate::fz_ir::CallsiteId {
                     caller: caller_key.fn_id,
                     ident: ident.clone(),
@@ -1489,6 +1311,9 @@ fn declare_mid_flight_conts<
                 let Some(target) = fn_types.local_call_target(&cid) else {
                     continue;
                 };
+                if !native_abi_fns.contains(&target.fn_id) {
+                    continue;
+                }
                 let Some(callee_sid) = spec_registry.resolve_spec_key(t, target) else {
                     continue;
                 };
@@ -1499,7 +1324,7 @@ fn declare_mid_flight_conts<
                     .copied()
                     .map(MidFlightArgShape::Value)
                     .collect();
-                if closure_n_captures.contains_key(callee) {
+                if closure_capture_counts.contains_key(&target.fn_id) {
                     arg_shapes.push(MidFlightArgShape::HeapRef);
                 }
                 arg_shapes.push(MidFlightArgShape::HeapRef);
@@ -1697,14 +1522,9 @@ fn compile_with_backend_preplanned_impl<
     let spec_keys = planned_program.spec_keys();
     let spec_fnidx = planned_program.spec_fn_indices();
     let spec_fn_types = planned_program.spec_plans();
+    let abi_facts = AbiFacts::derive(module, &planned_program);
 
     let closure_shapes = planned_program.closure_shapes();
-    let natively_callable = super::native_callable::natively_callable(module);
-    let cont_fns = collect_cont_fns(module);
-    let _ = &cont_fns;
-    let (closure_target_fns, closure_n_captures) = collect_closure_targets(module);
-    let _ = (&closure_target_fns, &closure_n_captures);
-    let cont_target_fns = collect_cont_target_fns(module);
 
     let schemas = build_per_spec_schemas(t, module, spec_count, &spec_fnidx, &spec_fn_types);
     let frame_sizes: Vec<u32> = schemas
@@ -1720,16 +1540,15 @@ fn compile_with_backend_preplanned_impl<
         &spec_fnidx,
         &spec_fn_types,
         &spec_keys,
-        &cont_fns,
+        &abi_facts.cont_fns,
     );
-    let _ = &closure_n_captures;
     let tagged_return_specs = compute_tagged_return_specs(
         t,
         module,
         &spec_fnidx,
         &spec_fn_types,
         spec_registry,
-        &closure_target_fns,
+        &abi_facts.closure_capture_counts,
     );
     let return_reprs = build_return_reprs(t, &return_tys, &tagged_return_specs);
     let tagged_slot0_cont_specs = compute_tagged_slot0_cont_specs(
@@ -1743,18 +1562,16 @@ fn compile_with_backend_preplanned_impl<
     );
     let param_reprs = refine_param_reprs_for_tagging(param_reprs, &tagged_slot0_cont_specs);
 
-    let cont_extras_count = collect_cont_extras_count(module);
-
     let fn_sigs = build_fn_sigs(
         module,
         spec_count,
         spec_fnidx,
         spec_keys,
         &param_reprs,
-        &natively_callable,
-        &cont_fns,
-        &closure_n_captures,
-        &cont_extras_count,
+        &abi_facts.native_fns,
+        &abi_facts.cont_fns,
+        &abi_facts.closure_capture_counts,
+        &abi_facts.cont_extras_count,
     );
 
     let linkage = backend.fn_linkage();
@@ -1774,8 +1591,8 @@ fn compile_with_backend_preplanned_impl<
         spec_registry,
         spec_fnidx,
         &param_reprs,
-        &natively_callable,
-        &closure_n_captures,
+        &abi_facts.native_fns,
+        &abi_facts.closure_capture_counts,
     )?;
 
     let bs_const_data: std::cell::RefCell<HashMap<Vec<u8>, BsConstSyms>> =
@@ -1855,11 +1672,11 @@ fn compile_with_backend_preplanned_impl<
             param_reprs: &param_reprs,
             return_reprs: &return_reprs,
             spec_keys,
-            natively_callable: &natively_callable,
-            cont_target_fns: &cont_target_fns,
-            cont_fns: &cont_fns,
-            closure_n_captures: &closure_n_captures,
-            cont_extras_count: &cont_extras_count,
+            native_abi_fns: &abi_facts.native_fns,
+            cont_target_fns: &abi_facts.cont_target_fns,
+            cont_fns: &abi_facts.cont_fns,
+            closure_capture_counts: &abi_facts.closure_capture_counts,
+            cont_extras_count: &abi_facts.cont_extras_count,
             matcher_fn_ids: &matcher_fn_ids,
         };
         {

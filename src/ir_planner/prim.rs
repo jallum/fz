@@ -90,7 +90,7 @@ pub(crate) fn type_prim<
 
         Prim::MakeClosure(_, fn_id, captured) => type_make_closure(t, env, m, *fn_id, captured),
 
-        Prim::Extern(eid, _) => {
+        Prim::Extern(_, eid, _) => {
             let ret_ty = m
                 .extern_idx
                 .get(eid)

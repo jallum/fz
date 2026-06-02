@@ -81,7 +81,7 @@ pub fn prim_is_pure(p: &crate::fz_ir::Prim) -> Result<(), ImpureKind> {
         MakeBitstring(_) => Err(ImpureKind::Allocates("MakeBitstring")),
         ConstBitstring(_, _) => Err(ImpureKind::Allocates("ConstBitstring")),
 
-        Extern(_, _) => Err(ImpureKind::Extern),
+        Extern(..) => Err(ImpureKind::Extern),
     }
 }
 
@@ -217,7 +217,11 @@ mod purity_tests {
     #[test]
     fn extern_rejected_even_if_harmless() {
         assert!(matches!(
-            check_pure_codegen(&[s(Prim::Extern(ExternId(0), vec![]))]),
+            check_pure_codegen(&[s(Prim::Extern(
+                crate::fz_ir::CallsiteIdent::synthetic(),
+                ExternId(0),
+                vec![],
+            ))]),
             Err(ImpureError::Stmt {
                 kind: ImpureKind::Extern,
                 ..
@@ -293,8 +297,14 @@ mod purity_tests {
 
     #[test]
     fn matcher_purity_rejects_extern_stmt() {
-        let module =
-            build_module_with_matcher(Some(Prim::Extern(ExternId(0), vec![])), Term::Return(v(0)));
+        let module = build_module_with_matcher(
+            Some(Prim::Extern(
+                crate::fz_ir::CallsiteIdent::synthetic(),
+                ExternId(0),
+                vec![],
+            )),
+            Term::Return(v(0)),
+        );
         let diags = crate::ir_planner::diagnostics::check_matcher_purity(&module);
         assert_eq!(diags.len(), 1);
         assert_eq!(diags[0].code, crate::diag::codes::TYPE_IMPURE_MATCHER);

@@ -123,6 +123,12 @@ by the closure value's own callable surface. That keeps the closure target body
 available without inventing a fake top callable fallback for every
 `MakeClosure`.
 
+Stmt-level extern boundaries are intrinsic IR callsites, not planner-recovered
+guesses. `Prim::Extern` carries its own `CallsiteIdent`, so lowering, type
+inference, planner discovery, and body materialization all talk about the same
+boundary fact. The planner must not recover stmt identity by matching spans,
+ordinals, or `external_call_edges`; those are lossy shadows of the IR fact.
+
 Imported module calls use that provider-boundary shape. Before link, the
 IR carries an `ExternalCallEdge` and the call edge names the target `ExportKey`
 plus the public input and demand selected upstream. `link_ir_units`

@@ -841,7 +841,7 @@ fn remap_prim(
 fn remap_fn_externs(f: &mut FnIr, extern_map: &HashMap<ExternId, ExternId>) {
     for block in &mut f.blocks {
         for Stmt::Let(_, prim) in &mut block.stmts {
-            if let Prim::Extern(id, _) = prim
+            if let Prim::Extern(_, id, _) = prim
                 && let Some(new_id) = extern_map.get(id)
             {
                 *id = *new_id;

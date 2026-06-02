@@ -155,7 +155,15 @@ fn return_contract_has_list_tail_context(contract: &ReturnContract) -> bool {
 }
 
 fn callee_is_native(env: &CodegenEnv<'_>, id: u32) -> bool {
-    env.natively_callable.contains(&crate::fz_ir::FnId(id))
+    env.native_abi_fns.contains(&crate::fz_ir::FnId(id))
+}
+
+fn spec_fn_id(env: &CodegenEnv<'_>, sid: u32) -> crate::fz_ir::FnId {
+    env.spec_keys[sid as usize].fn_id
+}
+
+fn spec_is_native(env: &CodegenEnv<'_>, sid: u32) -> bool {
+    callee_is_native(env, spec_fn_id(env, sid).0)
 }
 
 enum ContinuationPlan {
@@ -571,7 +579,7 @@ fn emit_return_term<
     cont_param: Option<ir::Value>,
     v: &crate::fz_ir::Var,
 ) -> Result<(), CodegenError> {
-    let closure_n_captures = env.closure_n_captures;
+    let closure_capture_counts = env.closure_capture_counts;
     {
         if is_native {
             let return_abi = DemandAbi::new(&env.spec_keys[this_spec_id as usize]);
@@ -635,7 +643,7 @@ fn emit_return_term<
             //
             // ReturnDemand selects the return shape; return_reprs selects
             // the wire representation for the single delivered lane.
-            let _ = (&closure_n_captures, caller_fn_id);
+            let _ = (&closure_capture_counts, caller_fn_id);
             assert!(
                 return_abi.returned_delivers_value_lane(is_cont_fn),
                 "native return must deliver one value lane outside tuple-field fast path"
@@ -689,7 +697,7 @@ fn emit_call_term<
     caller_fn_id: crate::fz_ir::FnId,
     frame_ptr: Option<ir::Value>,
     cont_param: Option<ir::Value>,
-    callee: &crate::fz_ir::FnId,
+    _callee: &crate::fz_ir::FnId,
     args: &[crate::fz_ir::Var],
     continuation: &crate::fz_ir::Cont,
 ) -> Result<(), CodegenError> {
@@ -753,8 +761,8 @@ fn emit_call_term<
         if this_demand.carries_list_tail_capture()
             && args.len() == 1
             && let Some((pivot_capture, tail_capture)) = cont_list_tail_bridge
-            && callee_is_native(env, callee.0)
-            && callee_is_native(env, continuation.fn_id.0)
+            && spec_is_native(env, callee_sid)
+            && spec_is_native(env, cont_sid)
             && DemandAbi::new(&env.spec_keys[callee_sid as usize]).has_list_tail_context()
             && cont_demand.has_list_tail_context()
         {
@@ -794,7 +802,7 @@ fn emit_call_term<
         if this_demand.delivers_list_tail_return()
             && args.len() == 1
             && let Some((pivot_capture, tail_capture)) = cons_then_direct
-            && callee_is_native(env, callee.0)
+            && spec_is_native(env, callee_sid)
         {
             let caller_fn = module.fn_by_id(caller_fn_id);
             let entry = caller_fn.block(caller_fn.entry);
@@ -834,7 +842,7 @@ fn emit_call_term<
                 return Ok(());
             }
         }
-        if callee_is_native(env, callee.0) {
+        if spec_is_native(env, callee_sid) {
             emit_native_call_with_cont(
                 body,
                 t,
@@ -847,7 +855,6 @@ fn emit_call_term<
                 caller_fn_id,
                 frame_ptr,
                 cont_param,
-                callee,
                 args,
                 continuation,
                 callee_sid,
@@ -896,7 +903,6 @@ fn emit_native_call_with_cont<
     caller_fn_id: crate::fz_ir::FnId,
     frame_ptr: Option<ir::Value>,
     cont_param: Option<ir::Value>,
-    callee: &crate::fz_ir::FnId,
     args: &[crate::fz_ir::Var],
     continuation: &crate::fz_ir::Cont,
     callee_sid: u32,
@@ -907,7 +913,8 @@ fn emit_native_call_with_cont<
     let fn_types = env.fn_types;
     let fn_ids = env.fn_ids;
     let param_reprs = env.param_reprs;
-    let closure_n_captures = env.closure_n_captures;
+    let closure_capture_counts = env.closure_capture_counts;
+    let callee_fn_id = spec_fn_id(env, callee_sid);
     let module = env.module;
     // Coerce each arg from its current var repr to the
     // callee's param_repr. Result rides back in the callee's
@@ -922,13 +929,18 @@ fn emit_native_call_with_cont<
     // The zero-cap invariant (asserted at closure_target_fns
     // build) means the body ignores self at runtime, so a
     // singleton with no captures is valid for any direct-call site.
-    if closure_n_captures.contains_key(callee) {
-        native_args.push(fetch_static_closure(body.jmod, body.b, runtime, callee.0));
+    if closure_capture_counts.contains_key(&callee_fn_id) {
+        native_args.push(fetch_static_closure(
+            body.jmod,
+            body.b,
+            runtime,
+            callee_fn_id.0,
+        ));
     }
     if DemandAbi::new(&env.spec_keys[callee_sid as usize]).has_list_tail_context() {
         native_args.push(list_tail_destination_arg(body));
     }
-    let cont_is_native = callee_is_native(env, continuation.fn_id.0);
+    let cont_is_native = spec_is_native(env, cont_sid);
     let cont_captures_callable = continuation.captured.iter().any(|cv| {
         let ty = block_env
             .and_then(|env| env.get(cv))
@@ -941,7 +953,7 @@ fn emit_native_call_with_cont<
         .iter()
         .flat_map(|block| block.params.iter())
         .any(|param| var_has_runtime_callable_state(t, fn_types, *param, fn_types.vars.get(param)));
-    let cont_can_use_lazy_descriptor = !closure_n_captures.contains_key(callee)
+    let cont_can_use_lazy_descriptor = !closure_capture_counts.contains_key(&callee_fn_id)
         && !cont_captures_callable
         && !caller_has_callable_state;
     let continuation_plan = if cont_is_native {
@@ -988,7 +1000,7 @@ fn emit_native_call_with_cont<
             None => {
                 synth_halt_cont = true;
                 let callee_ret_repr = DemandAbi::new(&env.spec_keys[callee_sid as usize])
-                    .returned_delivers_value_lane(env.cont_fns.contains(callee))
+                    .returned_delivers_value_lane(env.cont_fns.contains(&callee_fn_id))
                     .then_some(env.return_reprs[callee_sid as usize])
                     .expect("synthesized halt continuation requires one delivered value lane");
                 synthesize_halt_cont(body, runtime, callee_ret_repr)
@@ -1037,7 +1049,7 @@ fn emit_native_call_with_cont<
             MemFlags::trusted(),
             frame_ptr.expect(
                 "Term::Call uniform-cont write-back reached from \
-                 native-fn body — natively_callable invariant violated",
+                 native-fn body — planned ABI invariant violated",
             ),
             HEADER_SIZE,
         );
@@ -1048,7 +1060,7 @@ fn emit_native_call_with_cont<
         // typed entry slots. Native result already has an
         // ABI repr; captured vars come from var_env.
         let callee_ret_repr = DemandAbi::new(&env.spec_keys[callee_sid as usize])
-            .returned_delivers_value_lane(env.cont_fns.contains(callee))
+            .returned_delivers_value_lane(env.cont_fns.contains(&callee_fn_id))
             .then_some(env.return_reprs[callee_sid as usize])
             .expect("uniform continuation write-back requires one delivered value lane");
         let mut payload: Vec<(ir::Value, ArgRepr)> =
@@ -1099,7 +1111,7 @@ fn emit_tail_call_term<
     frame_ptr: Option<ir::Value>,
     host_ctx: Option<ir::Value>,
     cont_param: Option<ir::Value>,
-    callee: &crate::fz_ir::FnId,
+    _callee: &crate::fz_ir::FnId,
     args: &[crate::fz_ir::Var],
     is_back_edge: bool,
 ) -> Result<(), CodegenError> {
@@ -1117,7 +1129,7 @@ fn emit_tail_call_term<
             term_ident,
             crate::fz_ir::EmitSlot::Direct,
         );
-        if callee_is_native(env, callee.0) {
+        if spec_is_native(env, callee_sid) {
             emit_native_tail_call(
                 body,
                 env,
@@ -1128,7 +1140,6 @@ fn emit_tail_call_term<
                 frame_ptr,
                 host_ctx,
                 cont_param,
-                callee,
                 args,
                 is_back_edge,
                 callee_sid,
@@ -1151,8 +1162,8 @@ fn emit_tail_call_term<
     Ok(())
 }
 
-// Native-callee Term::TailCall ABI emission. The natively_callable
-// fixed point guarantees callee's return_repr matches mine, so
+// Native-callee Term::TailCall ABI emission. The planned ABI facts
+// guarantee callee's return_repr matches mine, so
 // return_call is ABI-compatible.
 #[allow(clippy::too_many_arguments)]
 fn emit_native_tail_call<M: cranelift_module::Module>(
@@ -1165,7 +1176,6 @@ fn emit_native_tail_call<M: cranelift_module::Module>(
     frame_ptr: Option<ir::Value>,
     host_ctx: Option<ir::Value>,
     cont_param: Option<ir::Value>,
-    callee: &crate::fz_ir::FnId,
     args: &[crate::fz_ir::Var],
     is_back_edge: bool,
     callee_sid: u32,
@@ -1173,7 +1183,8 @@ fn emit_native_tail_call<M: cranelift_module::Module>(
     let runtime = env.runtime;
     let fn_ids = env.fn_ids;
     let param_reprs = env.param_reprs;
-    let closure_n_captures = env.closure_n_captures;
+    let closure_capture_counts = env.closure_capture_counts;
+    let callee_fn_id = spec_fn_id(env, callee_sid);
     let callee_param_reprs = &param_reprs[callee_sid as usize];
     let callee_fid = *fn_ids.get(&callee_sid).expect("callee fn_id missing");
     let callee_fref = body.jmod.declare_func_in_func(callee_fid, body.b.func);
@@ -1190,8 +1201,8 @@ fn emit_native_tail_call<M: cranelift_module::Module>(
     // TailCall to a closure-target fn: insert static
     // singleton as `self` before cont (mirror of Term::Call;
     // zero-cap invariant lets any singleton serve as self).
-    if closure_n_captures.contains_key(callee) {
-        let static_closure = fetch_static_closure(body.jmod, body.b, runtime, callee.0);
+    if closure_capture_counts.contains_key(&callee_fn_id) {
+        let static_closure = fetch_static_closure(body.jmod, body.b, runtime, callee_fn_id.0);
         native_args.push(static_closure);
         mid_flight_arg_shapes.push(MidFlightArgShape::HeapRef);
     }
@@ -1215,7 +1226,7 @@ fn emit_native_tail_call<M: cranelift_module::Module>(
             None => {
                 synth_halt_cont = true;
                 let callee_ret_repr = DemandAbi::new(&env.spec_keys[callee_sid as usize])
-                    .returned_delivers_value_lane(env.cont_fns.contains(callee))
+                    .returned_delivers_value_lane(env.cont_fns.contains(&callee_fn_id))
                     .then_some(env.return_reprs[callee_sid as usize])
                     .expect("synthesized halt continuation requires one delivered value lane");
                 synthesize_halt_cont(body, runtime, callee_ret_repr)
@@ -1228,7 +1239,7 @@ fn emit_native_tail_call<M: cranelift_module::Module>(
         native_args.len(),
         expected_native_tail_arg_count(
             callee_param_reprs,
-            closure_n_captures.contains_key(callee),
+            closure_capture_counts.contains_key(&callee_fn_id),
             return_contract.is_some_and(return_contract_has_list_tail_context)
         ),
         "native tail-call arg lanes must match planner return contract"
@@ -1258,7 +1269,7 @@ fn emit_native_tail_call<M: cranelift_module::Module>(
         let call_inst = body.b.ins().call(callee_fref, &native_args);
         let result = body.b.inst_results(call_inst)[0];
         let callee_ret_repr = DemandAbi::new(&env.spec_keys[callee_sid as usize])
-            .returned_delivers_value_lane(env.cont_fns.contains(callee))
+            .returned_delivers_value_lane(env.cont_fns.contains(&callee_fn_id))
             .then_some(env.return_reprs[callee_sid as usize])
             .expect("uniform native tail call requires one delivered value lane");
         let result_value = CodegenValue::from_abi_value(result, callee_ret_repr);
@@ -1267,7 +1278,7 @@ fn emit_native_tail_call<M: cranelift_module::Module>(
             MemFlags::trusted(),
             frame_ptr.expect(
                 "Term::TailCall uniform-caller writeback reached from \
-                 native-fn body — natively_callable invariant violated",
+                 native-fn body — planned ABI invariant violated",
             ),
             HEADER_SIZE,
         );
@@ -1432,7 +1443,7 @@ fn emit_call_closure<
     let spec_registry = env.spec_registry;
     let fn_ids = env.fn_ids;
     let param_reprs = env.param_reprs;
-    let closure_n_captures = env.closure_n_captures;
+    let closure_capture_counts = env.closure_capture_counts;
     let module = env.module;
     {
         // Closure invocation is opaque to the caller: read code_ptr
@@ -1456,7 +1467,10 @@ fn emit_call_closure<
             let (body_fn_id, body_sid) =
                 resolve_tcc_body(t, closure, args, fn_types, module, spec_registry)?;
             let body_fid = *fn_ids.get(&body_sid)?;
-            let n_caps = closure_n_captures.get(&body_fn_id).copied().unwrap_or(0);
+            let n_caps = closure_capture_counts
+                .get(&body_fn_id)
+                .copied()
+                .unwrap_or(0);
             Some((body_sid, body_fid, n_caps))
         })();
         let cont_payload = ContinuationPayload::from_capture_vars(
@@ -1561,7 +1575,7 @@ fn emit_tail_call_closure<
     let spec_registry = env.spec_registry;
     let fn_ids = env.fn_ids;
     let param_reprs = env.param_reprs;
-    let closure_n_captures = env.closure_n_captures;
+    let closure_capture_counts = env.closure_capture_counts;
     let module = env.module;
     {
         // Tail-CC indirect-call through the closure code ptr with the
@@ -1607,7 +1621,10 @@ fn emit_tail_call_closure<
             let (body_fn_id, body_sid) =
                 resolve_tcc_body(t, closure, args, fn_types, module, spec_registry)?;
             let body_fid = *fn_ids.get(&body_sid)?;
-            let n_caps = closure_n_captures.get(&body_fn_id).copied().unwrap_or(0);
+            let n_caps = closure_capture_counts
+                .get(&body_fn_id)
+                .copied()
+                .unwrap_or(0);
             Some((body_sid, body_fid, n_caps))
         })();
 

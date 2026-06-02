@@ -39,10 +39,10 @@ pub(crate) struct CodegenEnv<'a> {
     pub(super) param_reprs: &'a [Vec<ArgRepr>],
     pub(super) return_reprs: &'a [ArgRepr],
     pub(super) spec_keys: &'a [crate::ir_planner::fn_types::SpecKey],
-    pub(super) natively_callable: &'a std::collections::HashSet<crate::fz_ir::FnId>,
+    pub(super) native_abi_fns: &'a std::collections::HashSet<crate::fz_ir::FnId>,
     pub(super) cont_target_fns: &'a std::collections::HashSet<crate::fz_ir::FnId>,
     pub(super) cont_fns: &'a std::collections::HashSet<crate::fz_ir::FnId>,
-    pub(super) closure_n_captures: &'a std::collections::HashMap<crate::fz_ir::FnId, usize>,
+    pub(super) closure_capture_counts: &'a std::collections::HashMap<crate::fz_ir::FnId, usize>,
     /// Number of Tail-CC "extra" params before the trailing `self` closure
     /// ptr. Scheduler-resumed receive continuations use zero extras because
     /// their values are closure-env slots. Unmapped call continuations keep

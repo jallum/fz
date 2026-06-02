@@ -7,7 +7,7 @@ use crate::fz_ir::{Module, Prim, Term};
 /// one classifier rather than carrying their own publication rules.
 pub(crate) fn prim_effects(module: &Module, prim: &Prim) -> EffectSummary {
     match prim {
-        Prim::Extern(eid, _) => {
+        Prim::Extern(_, eid, _) => {
             let decl = module.extern_by_id(*eid);
             let reads_allocation_stats = decl.symbol == "fz_process_heap_alloc_stats";
             let scheduler_visible = matches!(
@@ -115,6 +115,7 @@ mod tests {
         let effects = prim_effects(
             &module,
             &Prim::Extern(
+                crate::fz_ir::CallsiteIdent::synthetic(),
                 ExternId(0),
                 vec![crate::fz_ir::ExternArg::fixed(Var(0), ExternTy::Any)],
             ),
@@ -130,6 +131,7 @@ mod tests {
         let effects = prim_effects(
             &module,
             &Prim::Extern(
+                crate::fz_ir::CallsiteIdent::synthetic(),
                 ExternId(0),
                 vec![crate::fz_ir::ExternArg::fixed(Var(0), ExternTy::Any)],
             ),
@@ -142,7 +144,14 @@ mod tests {
     #[test]
     fn heap_stats_observes_allocation() {
         let module = module_with_extern("fz_process_heap_alloc_stats", ExternTy::Any);
-        let effects = prim_effects(&module, &Prim::Extern(ExternId(0), vec![]));
+        let effects = prim_effects(
+            &module,
+            &Prim::Extern(
+                crate::fz_ir::CallsiteIdent::synthetic(),
+                ExternId(0),
+                vec![],
+            ),
+        );
 
         assert!(effects.reads_allocation_stats);
         assert!(effects.observable);

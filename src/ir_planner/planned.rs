@@ -110,14 +110,6 @@ where
             module_plan.specs.get(key)
         })
         .collect();
-    let closure_shapes = build_closure_shapes(
-        module,
-        spec_registry.len(),
-        &spec_fn_indices,
-        &spec_plans,
-        &spec_registry,
-    );
-
     let mut folded_prim_count = 0;
     let mut folded_branch_count = 0;
     let mut bodies = Vec::new();
@@ -159,6 +151,12 @@ where
             _ => body_index_by_spec_slot.push(None),
         }
     }
+    let closure_shapes = build_closure_shapes(
+        &bodies,
+        &spec_plans,
+        &spec_registry,
+        &body_index_by_spec_slot,
+    );
 
     let (reachable_specs, reachable_before_body_fold_count, body_fold_reachable_added_count) =
         compute_reachable_specs(
@@ -169,7 +167,6 @@ where
             &spec_keys,
             &bodies,
             &body_index_by_spec_slot,
-            closure_shapes.keys().copied(),
         );
 
     let planned_body_count = bodies.len();
@@ -219,18 +216,12 @@ fn compute_reachable_specs<T>(
     spec_keys: &[SpecKey],
     bodies: &[PlannedBody],
     body_index_by_spec_slot: &[Option<usize>],
-    closure_shape_seeds: impl IntoIterator<Item = u32>,
 ) -> (HashSet<u32>, usize, usize)
 where
     T: Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
 {
-    let mut reachable = crate::ir_planner::reachable_specs(
-        t,
-        module,
-        spec_registry,
-        module_plan,
-        closure_shape_seeds,
-    );
+    let mut reachable =
+        crate::ir_planner::reachable_specs(t, module, spec_registry, module_plan, []);
     let is_executable = |sid: &u32| {
         body_index_by_spec_slot
             .get(*sid as usize)
@@ -323,6 +314,16 @@ fn augment_reachable_from_planned_bodies<
                         crate::fz_ir::EmitSlot::Cont,
                         ft,
                     );
+                    push_dispatch_target(
+                        t,
+                        spec_registry,
+                        reached,
+                        &mut worklist,
+                        body.id,
+                        ident,
+                        crate::fz_ir::EmitSlot::CallableBoundary,
+                        ft,
+                    );
                 }
                 crate::fz_ir::Term::TailCall { ident, .. } => {
                     push_dispatch_target(
@@ -333,6 +334,16 @@ fn augment_reachable_from_planned_bodies<
                         body.id,
                         ident,
                         crate::fz_ir::EmitSlot::Direct,
+                        ft,
+                    );
+                    push_dispatch_target(
+                        t,
+                        spec_registry,
+                        reached,
+                        &mut worklist,
+                        body.id,
+                        ident,
+                        crate::fz_ir::EmitSlot::CallableBoundary,
                         ft,
                     );
                 }
@@ -384,6 +395,16 @@ fn augment_reachable_from_planned_bodies<
                         body.id,
                         ident,
                         crate::fz_ir::EmitSlot::Cont,
+                        ft,
+                    );
+                    push_dispatch_target(
+                        t,
+                        spec_registry,
+                        reached,
+                        &mut worklist,
+                        body.id,
+                        ident,
+                        crate::fz_ir::EmitSlot::CallableBoundary,
                         ft,
                     );
                 }
@@ -459,40 +480,31 @@ fn display_spec_ids(reachable_specs: &HashSet<u32>) -> Vec<String> {
 }
 
 fn build_closure_shapes(
-    module: &Module,
-    spec_count: usize,
-    spec_fn_indices: &[Option<usize>],
+    bodies: &[PlannedBody],
     spec_plans: &[Option<&SpecPlan>],
     spec_registry: &SpecRegistry,
+    body_index_by_spec_slot: &[Option<usize>],
 ) -> BTreeMap<u32, usize> {
     let mut closure_shapes = BTreeMap::new();
-    for sid in 0..spec_count {
-        let Some(idx) = spec_fn_indices[sid] else {
+    for planned_body in bodies {
+        let sid = planned_body.spec_id.0 as usize;
+        let Some(ft) = spec_plans[sid] else {
             continue;
         };
-        let f = &module.fns[idx];
-        let Some(_) = spec_plans[sid] else {
-            continue;
-        };
-        for blk in &f.blocks {
+        for blk in &planned_body.body.blocks {
+            if !ft.reachable_blocks.contains(&blk.id) {
+                continue;
+            }
             for stmt in blk.stmts.iter() {
                 let crate::fz_ir::Stmt::Let(_, prim) = stmt;
                 if let crate::fz_ir::Prim::MakeClosure(_ident, lam_fn_id, captured) = prim {
-                    let cl_sid = if spec_fn_indices
-                        .get(lam_fn_id.0 as usize)
-                        .copied()
-                        .flatten()
-                        .is_some()
-                    {
-                        Some(lam_fn_id.0)
-                    } else {
-                        spec_registry
-                            .iter()
-                            .find(|(s, key)| {
-                                key.fn_id == *lam_fn_id && spec_fn_indices[s.0 as usize].is_some()
-                            })
-                            .map(|(s, _)| s.0)
-                    };
+                    let cl_sid = spec_registry
+                        .iter()
+                        .find(|(s, key)| {
+                            key.fn_id == *lam_fn_id
+                                && body_index_by_spec_slot[s.0 as usize].is_some()
+                        })
+                        .map(|(s, _)| s.0);
                     let Some(cl_sid) = cl_sid else {
                         continue;
                     };

@@ -33,7 +33,7 @@ pub fn truncate_diverging_blocks(
     for f in &mut m.fns {
         for b in &mut f.blocks {
             let cut = b.stmts.iter().position(
-                |Stmt::Let(_, prim)| matches!(prim, Prim::Extern(eid, _) if never.contains(eid)),
+                |Stmt::Let(_, prim)| matches!(prim, Prim::Extern(_, eid, _) if never.contains(eid)),
             );
             let Some(idx) = cut else { continue };
             let Stmt::Let(result, _) = b.stmts[idx];
@@ -117,7 +117,11 @@ mod tests {
         let arg = b.let_(entry, Prim::Const(crate::fz_ir::Const::Nil));
         let result = b.let_(
             entry,
-            Prim::Extern(panic_id, vec![ExternArg::fixed(arg, ExternTy::Any)]),
+            Prim::Extern(
+                crate::fz_ir::CallsiteIdent::synthetic(),
+                panic_id,
+                vec![ExternArg::fixed(arg, ExternTy::Any)],
+            ),
         );
         // Dead code after the diverging call: another const + a tail-call.
         let _dead = b.let_(entry, Prim::Const(crate::fz_ir::Const::Int(7)));
@@ -152,7 +156,11 @@ mod tests {
         let arg = b.let_(entry, Prim::Const(crate::fz_ir::Const::Nil));
         let result = b.let_(
             entry,
-            Prim::Extern(panic_id, vec![ExternArg::fixed(arg, ExternTy::Any)]),
+            Prim::Extern(
+                crate::fz_ir::CallsiteIdent::synthetic(),
+                panic_id,
+                vec![ExternArg::fixed(arg, ExternTy::Any)],
+            ),
         );
         b.set_terminator(entry, Term::Halt(result));
         let mut mb = ModuleBuilder::new();

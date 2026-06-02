@@ -26,17 +26,17 @@ pub(crate) fn compile_fn<
 ) -> Result<(), CodegenError> {
     let fn_types = env.fn_types;
     let param_reprs = env.param_reprs;
-    let natively_callable = env.natively_callable;
+    let native_abi_fns = env.native_abi_fns;
     let cont_target_fns = env.cont_target_fns;
     let cont_fns = env.cont_fns;
-    let closure_n_captures = env.closure_n_captures;
-    let is_native = natively_callable.contains(&f.id);
+    let closure_capture_counts = env.closure_capture_counts;
+    let is_native = native_abi_fns.contains(&f.id);
     let is_cont_fn = cont_fns.contains(&f.id);
     // Closure-target fn shape: `(args..., self, cont) tail`. Only takes
     // effect for native fns; uniform fns still go through the
     // closure-stub adapter.
     let closure_target_n_caps: Option<usize> = if is_native && !is_cont_fn {
-        closure_n_captures.get(&f.id).copied()
+        closure_capture_counts.get(&f.id).copied()
     } else {
         None
     };

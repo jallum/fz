@@ -743,6 +743,83 @@ fn linked_runtime_spawn_receive_converges_through_extern_return_contract() {
 }
 
 #[test]
+fn linked_runtime_plain_spawn_surfaces_callable_boundary_to_child() {
+    let module = linked(include_str!("fixtures/spawn_plain.fz"));
+    let mut t = ConcreteTypes;
+    let nil = t.nil();
+    let report = infer_report_via_main(&mut t, &module);
+
+    assert_eq!(
+        report.outcome.status,
+        TypeInferStatus::Complete,
+        "plain spawn should settle through the linked runtime graph: activations={:?}; edges={:?}",
+        report
+            .outcome
+            .activations
+            .iter()
+            .map(|fact| (
+                module.fn_by_id(fact.fn_id).name.as_str(),
+                fact.input_tys.clone(),
+                &fact.return_state
+            ))
+            .collect::<Vec<_>>(),
+        report
+            .outcome
+            .edges
+            .iter()
+            .map(|edge| (
+                module.fn_by_id(edge.caller_fn_id).name.as_str(),
+                module.fn_by_id(edge.callee_fn_id).name.as_str(),
+                edge.callsite.callsite.slot
+            ))
+            .collect::<Vec<_>>()
+    );
+
+    let child_fact = report
+        .outcome
+        .activations
+        .iter()
+        .find(|fact| {
+            module.fn_by_id(fact.fn_id).name == "child"
+                && fact.input_tys.is_empty()
+                && matches!(
+                    &fact.return_state,
+                    TypeInferReturnState::Known(ret) if t.is_equivalent(ret, &nil)
+                )
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "plain spawn should activate child/0 with known nil return, got {:?}",
+                report
+                    .outcome
+                    .activations
+                    .iter()
+                    .filter(|fact| module.fn_by_id(fact.fn_id).name == "child")
+                    .collect::<Vec<_>>()
+            )
+        });
+
+    assert!(
+        report.outcome.edges.iter().any(|edge| {
+            module.fn_by_id(edge.caller_fn_id).name == "Kernel.spawn"
+                && edge.callee_activation_id == child_fact.activation_id
+                && edge.callsite.callsite.slot == EmitSlot::CallableBoundary
+        }),
+        "plain spawn should surface a callable-boundary edge from Kernel.spawn/1 to child/0; edges={:?}",
+        report
+            .outcome
+            .edges
+            .iter()
+            .map(|edge| (
+                module.fn_by_id(edge.caller_fn_id).name.as_str(),
+                module.fn_by_id(edge.callee_fn_id).name.as_str(),
+                edge.callsite.callsite.slot
+            ))
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
 fn enum_reduce_runtime_graph_settles() {
     let module = linked(include_str!("fixtures/enum_reduce.fz"));
     let mut t = ConcreteTypes;

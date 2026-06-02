@@ -665,15 +665,18 @@ impl ActivationReturnFacts {
         index
     }
 
-    fn callsite_result_slot0<T: crate::types::Types<Ty = crate::types::Ty>>(
+    fn callsite_result_slot0<
+        T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
+    >(
         &self,
         t: &mut T,
         caller_public_key: &SpecKey,
         callsite: crate::fz_ir::CallsiteId,
     ) -> Option<ResultSlot0> {
+        let caller_public_key = self.canonical_public_key(t, caller_public_key.clone());
         let witness_ids = self
             .callee_witnesses_by_caller_and_callsite
-            .get(&(caller_public_key.clone(), callsite))?;
+            .get(&(caller_public_key, callsite))?;
         let mut joined = None;
         for witness_id in witness_ids {
             let state = self.witness_returns.get(witness_id)?;
@@ -1409,11 +1412,11 @@ fn discover_specs<
     }
     specs.retain(|k, _| reachable.contains(k));
     activation_returns.project_effective_returns(t, &reachable, &mut effective_returns);
+    let activation_projection_facts = activation_returns.projection_facts(t, &reachable);
+    let spec_roles = compute_spec_roles(t, m, &reachable, &holders, &activation_projection_facts);
     let activation_return_telemetry = activation_returns.telemetry(t, &reachable);
     let activation_return_projection_gaps =
         activation_returns.projection_gap_keys(t, m, &reachable);
-    let activation_projection_facts = activation_returns.projection_facts(t, &reachable);
-    let spec_roles = compute_spec_roles(t, m, &reachable, &holders, &activation_projection_facts);
     verify_closed_expectations(
         &reachable,
         &specs,

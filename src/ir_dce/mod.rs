@@ -91,7 +91,7 @@ pub fn dce_module_level(m: &mut Module) {
                             queue.push(fid);
                         }
                     }
-                    Stmt::Let(_, Prim::Extern(eid, _)) => {
+                    Stmt::Let(_, Prim::Extern(_, eid, _)) => {
                         reachable_externs.insert(*eid);
                     }
                     _ => {}
@@ -282,7 +282,7 @@ fn collect_prim_vars(p: &Prim, used: &mut HashSet<Var>) {
         Prim::UnOp(_, a) => {
             used.insert(*a);
         }
-        Prim::Extern(_, args) => {
+        Prim::Extern(_, _, args) => {
             for arg in args {
                 used.insert(arg.var);
             }
@@ -711,7 +711,11 @@ mod tests {
         let nil = b.let_(entry, Prim::Const(Const::Nil));
         let _ret = b.let_(
             entry,
-            Prim::Extern(used_id, vec![ExternArg::fixed(nil, ExternTy::Any)]),
+            Prim::Extern(
+                crate::fz_ir::CallsiteIdent::synthetic(),
+                used_id,
+                vec![ExternArg::fixed(nil, ExternTy::Any)],
+            ),
         );
         b.set_terminator(entry, Term::Return(nil));
         let mut mb = ModuleBuilder::new();
@@ -803,7 +807,11 @@ mod tests {
         // Extern(0) with nil as arg — dest is never used.
         let _extern_result = b.let_(
             entry,
-            Prim::Extern(ExternId(0), vec![ExternArg::fixed(nil_v, ExternTy::Any)]),
+            Prim::Extern(
+                crate::fz_ir::CallsiteIdent::synthetic(),
+                ExternId(0),
+                vec![ExternArg::fixed(nil_v, ExternTy::Any)],
+            ),
         );
         b.set_terminator(entry, Term::Return(nil_v));
         let f = b.build();
