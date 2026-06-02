@@ -247,7 +247,7 @@ fn augment_reachable_from_planned_bodies<
     T: Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
 >(
     t: &mut T,
-    module: &Module,
+    _module: &Module,
     module_plan: &ModulePlan,
     spec_registry: &SpecRegistry,
     spec_keys: &[SpecKey],
@@ -255,11 +255,6 @@ fn augment_reachable_from_planned_bodies<
     body_index_by_spec_slot: &[Option<usize>],
     reached: &mut HashSet<u32>,
 ) {
-    let ft_of = |sid: u32| -> Option<&SpecPlan> {
-        let key = spec_keys.get(sid as usize)?;
-        module_plan.specs.get(key)
-    };
-
     let mut worklist: Vec<u32> = reached.iter().copied().collect();
     while let Some(sid) = worklist.pop() {
         let Some(body_index) = body_index_by_spec_slot
@@ -269,207 +264,19 @@ fn augment_reachable_from_planned_bodies<
             continue;
         };
         let body = &bodies[body_index].body;
-        let Some(ft) = ft_of(sid) else { continue };
-
-        for blk in &body.blocks {
-            if !ft.reachable_blocks.contains(&blk.id) {
-                continue;
+        let Some(key) = spec_keys.get(sid as usize) else {
+            continue;
+        };
+        let Some(ft) = module_plan.specs.get(key) else {
+            continue;
+        };
+        crate::ir_planner::reachable::each_local_successor_key(body, ft, |target| {
+            if let Some(next) = spec_registry.resolve_spec_key(t, target)
+                && reached.insert(next.0)
+            {
+                worklist.push(next.0);
             }
-            let env = crate::ir_planner::reachable::env_at_terminator(t, ft, blk, module);
-            let any_ty = t.any();
-            let arg_tys = |args: &[crate::fz_ir::Var]| -> Vec<crate::types::Ty> {
-                args.iter()
-                    .map(|av| env.get(av).cloned().unwrap_or_else(|| any_ty.clone()))
-                    .collect()
-            };
-            let pad_to_arity = |callee: FnId, mut tys: Vec<crate::types::Ty>| {
-                if let Some(&j) = module.fn_idx.get(&callee) {
-                    let np = module.fns[j].block(module.fns[j].entry).params.len();
-                    while tys.len() < np {
-                        tys.push(any_ty.clone());
-                    }
-                    tys.truncate(np);
-                }
-                tys
-            };
-            match &blk.terminator {
-                crate::fz_ir::Term::Call { ident, .. } => {
-                    push_dispatch_target(
-                        t,
-                        spec_registry,
-                        reached,
-                        &mut worklist,
-                        body.id,
-                        ident,
-                        crate::fz_ir::EmitSlot::Direct,
-                        ft,
-                    );
-                    push_dispatch_target(
-                        t,
-                        spec_registry,
-                        reached,
-                        &mut worklist,
-                        body.id,
-                        ident,
-                        crate::fz_ir::EmitSlot::Cont,
-                        ft,
-                    );
-                    push_dispatch_target(
-                        t,
-                        spec_registry,
-                        reached,
-                        &mut worklist,
-                        body.id,
-                        ident,
-                        crate::fz_ir::EmitSlot::CallableBoundary,
-                        ft,
-                    );
-                }
-                crate::fz_ir::Term::TailCall { ident, .. } => {
-                    push_dispatch_target(
-                        t,
-                        spec_registry,
-                        reached,
-                        &mut worklist,
-                        body.id,
-                        ident,
-                        crate::fz_ir::EmitSlot::Direct,
-                        ft,
-                    );
-                    push_dispatch_target(
-                        t,
-                        spec_registry,
-                        reached,
-                        &mut worklist,
-                        body.id,
-                        ident,
-                        crate::fz_ir::EmitSlot::CallableBoundary,
-                        ft,
-                    );
-                }
-                crate::fz_ir::Term::CallClosure {
-                    ident,
-                    closure,
-                    args,
-                    ..
-                } => {
-                    if let Some(target) = ft.known_fn(closure) {
-                        push_reachable_spec(
-                            t,
-                            spec_registry,
-                            reached,
-                            &mut worklist,
-                            target,
-                            pad_to_arity(target, arg_tys(args)),
-                        );
-                    }
-                    push_dispatch_target(
-                        t,
-                        spec_registry,
-                        reached,
-                        &mut worklist,
-                        body.id,
-                        ident,
-                        crate::fz_ir::EmitSlot::Cont,
-                        ft,
-                    );
-                }
-                crate::fz_ir::Term::TailCallClosure { closure, args, .. } => {
-                    if let Some(target) = ft.known_fn(closure) {
-                        push_reachable_spec(
-                            t,
-                            spec_registry,
-                            reached,
-                            &mut worklist,
-                            target,
-                            pad_to_arity(target, arg_tys(args)),
-                        );
-                    }
-                }
-                crate::fz_ir::Term::Receive { ident, .. } => {
-                    push_dispatch_target(
-                        t,
-                        spec_registry,
-                        reached,
-                        &mut worklist,
-                        body.id,
-                        ident,
-                        crate::fz_ir::EmitSlot::Cont,
-                        ft,
-                    );
-                    push_dispatch_target(
-                        t,
-                        spec_registry,
-                        reached,
-                        &mut worklist,
-                        body.id,
-                        ident,
-                        crate::fz_ir::EmitSlot::CallableBoundary,
-                        ft,
-                    );
-                }
-                crate::fz_ir::Term::ReceiveMatched { clauses, after, .. } => {
-                    for c in clauses {
-                        let key =
-                            crate::fz_ir::receive_outcome_spec_key(&any_ty, c.bound_names.len());
-                        push_reachable_spec(t, spec_registry, reached, &mut worklist, c.body, key);
-                        if let Some(g) = c.guard {
-                            let key = crate::fz_ir::receive_outcome_spec_key(
-                                &any_ty,
-                                c.bound_names.len(),
-                            );
-                            push_reachable_spec(t, spec_registry, reached, &mut worklist, g, key);
-                        }
-                    }
-                    if let Some(a) = after {
-                        let key = crate::fz_ir::receive_outcome_spec_key(&any_ty, 0);
-                        push_reachable_spec(t, spec_registry, reached, &mut worklist, a.body, key);
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
-}
-
-fn push_reachable_spec<T: Types<Ty = crate::types::Ty>>(
-    t: &mut T,
-    spec_registry: &SpecRegistry,
-    reached: &mut HashSet<u32>,
-    worklist: &mut Vec<u32>,
-    fid: FnId,
-    key: Vec<crate::types::Ty>,
-) {
-    let key = SpecKey::value(fid, crate::types::key_slots_from_tys(key));
-    if let Some(next) = spec_registry.resolve_spec_key(t, &key)
-        && reached.insert(next.0)
-    {
-        worklist.push(next.0);
-    }
-}
-
-fn push_dispatch_target<T: Types<Ty = crate::types::Ty>>(
-    t: &mut T,
-    spec_registry: &SpecRegistry,
-    reached: &mut HashSet<u32>,
-    worklist: &mut Vec<u32>,
-    caller: FnId,
-    ident: &crate::fz_ir::CallsiteIdent,
-    slot: crate::fz_ir::EmitSlot,
-    ft: &SpecPlan,
-) {
-    let cid = crate::fz_ir::CallsiteId {
-        caller,
-        ident: ident.clone(),
-        slot,
-    };
-    let Some(target) = ft.local_call_target(&cid) else {
-        return;
-    };
-    if let Some(next) = spec_registry.resolve_spec_key(t, target)
-        && reached.insert(next.0)
-    {
-        worklist.push(next.0);
+        });
     }
 }
 

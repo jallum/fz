@@ -1497,21 +1497,23 @@ impl CompiledModule {
         &self.static_closure_targets
     }
 
-    /// Run `fn_id` to completion on a single-task Runtime and return its
-    /// halt value. The production scheduler is the only run path; this is
-    /// the test-ergonomic spelling of "spawn one task and drain it." Tests
-    /// that need to observe heap stats attach a telemetry `Capture` to their
-    /// own `Runtime` and read the `fz.runtime.task_exited` event instead.
+    /// Run `fn_id` as the root task through the production scheduler and
+    /// return that root task's halt value, even if the program spawns
+    /// additional tasks. Tests that need the full exit stream attach their own
+    /// telemetry capture and read `fz.runtime.process_exited` directly.
     pub fn run(&self, fn_id: FnId) -> i64 {
-        // Observe the result through the telemetry seam rather than reading
-        // task.halt_value off the Runtime — same path every other test uses.
+        // Observe the root task through the telemetry seam rather than reading
+        // Runtime internals directly.
         let tel = crate::telemetry::bus::ConfiguredTelemetry::new();
         let exits = crate::exec::runtime::ProcessExitCapture::new();
         tel.attach(&[], exits.handler());
         let mut rt = crate::exec::runtime::Runtime::new(self, 1).with_telemetry(&tel);
-        let _ = rt.spawn(fn_id);
+        let root_pid = rt.spawn(fn_id);
         rt.run_until_idle();
-        exits.last().expect("process_exited captured").halt_value
+        exits
+            .by_pid(root_pid)
+            .expect("root process_exited captured")
+            .halt_value
     }
 }
 

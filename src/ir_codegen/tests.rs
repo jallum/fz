@@ -993,11 +993,13 @@ fn observe(compiled: &CompiledModule, entry: FnId) -> Observation {
     tel.attach(&[], exits.handler());
     tel.attach(&[], out.handler());
     let mut rt = crate::exec::runtime::Runtime::new(compiled, 1).with_telemetry(&tel);
-    let _ = rt.spawn(entry);
+    let root_pid = rt.spawn(entry);
     rt.run_until_idle();
 
     Observation {
-        exit: exits.last().expect("process_exited captured"),
+        exit: exits
+            .by_pid(root_pid)
+            .expect("root process_exited captured"),
         output: out.lines(),
     }
 }

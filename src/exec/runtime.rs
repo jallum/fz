@@ -361,8 +361,8 @@ impl<'a> Runtime<'a> {
         }
     }
 
-    /// Attach an observability sink. The run loop emits a task-exit event
-    /// (`fz.runtime.task_exited`) carrying the halt value and heap stats.
+    /// Attach an observability sink. The run loop emits
+    /// `fz.runtime.process_exited` carrying the halt value and heap stats.
     /// The telemetry must outlive `run_until_idle`.
     pub fn with_telemetry(mut self, tel: &'a dyn crate::telemetry::Telemetry) -> Self {
         self.tel = tel;
@@ -667,6 +667,14 @@ impl ProcessExitCapture {
 
     pub fn last(&self) -> Option<ExitRecord> {
         self.records.borrow().last().copied()
+    }
+
+    pub fn by_pid(&self, pid: PidId) -> Option<ExitRecord> {
+        self.records
+            .borrow()
+            .iter()
+            .copied()
+            .find(|record| record.pid == pid)
     }
 }
 

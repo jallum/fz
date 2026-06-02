@@ -3337,6 +3337,23 @@ fn planner_projects_plain_spawn_child_through_callable_boundary() {
 }
 
 #[test]
+fn materialization_keeps_plain_spawn_child_reachable_through_callable_boundary() {
+    let signals = crate::test_support::runtime_graph_reachable_materialized_body_signals(
+        include_str!("../type_infer/fixtures/spawn_plain.fz"),
+    );
+
+    let child = signals
+        .iter()
+        .find(|signal| signal.fn_name == "child")
+        .unwrap_or_else(|| panic!("expected child reachable after materialization: {signals:?}"));
+
+    assert!(
+        child.spec_key.contains("fn_id: FnId(") && child.spec_key.contains("demand: ReturnDemand"),
+        "reachable child signal should report the planned spec key: {child:?}"
+    );
+}
+
+#[test]
 fn planner_emits_return_fixpoint_step_telemetry() {
     use crate::telemetry::{Capture, ConfiguredTelemetry};
 

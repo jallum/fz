@@ -1,7 +1,9 @@
 use super::closures::resolve_closure_return;
 use super::fn_types::{ModulePlan, SpecKey, SpecPlan, normalize_result_correspondence_key};
 use super::type_fn::type_stmts_into_env;
-use crate::fz_ir::{Block, Cont, FnId, Module, Term, Var};
+use crate::fz_ir::{
+    Block, CallsiteId, CallsiteIdent, Cont, EmitSlot, FnId, FnIr, Module, Prim, Stmt, Term, Var,
+};
 use std::collections::{HashMap, HashSet};
 
 // Continuation input-type key helpers.
@@ -113,8 +115,7 @@ fn declared_call_return<
     }
 }
 
-/// Compute the set of SpecIds reachable at runtime from `main` (plus registered
-/// closure-target specs as a conservative catch).
+/// Compute the set of SpecIds reachable at runtime from `main`.
 ///
 /// `PlannedProgram` consults this while materializing the codegen-facing plan.
 /// Codegen receives the finished reachable set from `PlannedProgram` and does
@@ -123,11 +124,11 @@ fn declared_call_return<
 /// Algorithm:
 ///   - Seed with main's spec id and every extra reachable seed supplied by
 ///     materialization.
-///   - BFS: for each reached spec, walk its reachable blocks, find
-///     direct Call/TailCall + their conts and CallClosure/TailCallClosure
-///     resolvable via known callable capabilities. Use `SpecRegistry::resolve`
-///     subsumption so a reached spec id names the same registered specialization
-///     later consumed by materialization and codegen.
+///   - BFS: for each reached spec, walk the surviving callsites in its live
+///     body and follow the already-solved local call-edge targets recorded on
+///     the `SpecPlan`. Use `SpecRegistry::resolve` subsumption so a reached
+///     spec id names the same registered specialization later consumed by
+///     materialization and codegen.
 pub fn reachable_specs<
     T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
 >(
@@ -198,118 +199,12 @@ where
         let Some(&j) = self.module.fn_idx.get(&key.fn_id) else {
             return;
         };
-        let blocks = self.module.fns[j].blocks.clone();
-        for blk in &blocks {
-            if ft.reachable_blocks.contains(&blk.id) {
-                self.enqueue_successors_for_block(&ft, blk, worklist);
-            }
-        }
-    }
-
-    fn enqueue_successors_for_block(
-        &mut self,
-        ft: &SpecPlan,
-        blk: &Block,
-        worklist: &mut Vec<u32>,
-    ) {
-        let env = env_at_terminator(self.t, ft, blk, self.module);
-        match &blk.terminator {
-            Term::Call {
-                callee,
-                args,
-                continuation,
-                ..
-            } => {
-                self.enqueue_direct_call(*callee, args, &env, worklist);
-                self.enqueue_continuation(blk, ft, continuation, worklist);
-            }
-            Term::TailCall { callee, args, .. } => {
-                self.enqueue_direct_call(*callee, args, &env, worklist);
-            }
-            Term::CallClosure {
-                closure,
-                args,
-                continuation,
-                ..
-            } => {
-                if let Some(target) = ft.known_fn(closure) {
-                    self.enqueue_direct_call(target, args, &env, worklist);
-                }
-                self.enqueue_continuation(blk, ft, continuation, worklist);
-            }
-            Term::TailCallClosure { closure, args, .. } => {
-                if let Some(target) = ft.known_fn(closure) {
-                    self.enqueue_direct_call(target, args, &env, worklist);
-                }
-            }
-            Term::Receive { continuation, .. } => {
-                self.enqueue_continuation(blk, ft, continuation, worklist);
-            }
-            Term::ReceiveMatched { clauses, after, .. } => {
-                self.enqueue_receive_matched_outcomes(clauses, after, worklist);
-            }
-            _ => {}
-        }
-    }
-
-    fn enqueue_direct_call(
-        &mut self,
-        callee: FnId,
-        args: &[Var],
-        env: &HashMap<Var, crate::types::Ty>,
-        worklist: &mut Vec<u32>,
-    ) {
-        let any = self.t.any();
-        let arg_tys = args
-            .iter()
-            .map(|av| env.get(av).cloned().unwrap_or_else(|| any.clone()))
-            .collect();
-        let key = self.pad_to_arity(callee, arg_tys, &any);
-        self.enqueue_value_key(callee, key, worklist);
-    }
-
-    fn enqueue_continuation(
-        &mut self,
-        blk: &Block,
-        ft: &SpecPlan,
-        continuation: &Cont,
-        worklist: &mut Vec<u32>,
-    ) {
-        let cont_key = cont_input_key(self.t, blk, continuation, ft, self.module, self.module_plan);
-        self.enqueue_value_key(continuation.fn_id, cont_key, worklist);
-    }
-
-    fn enqueue_receive_matched_outcomes(
-        &mut self,
-        clauses: &[crate::fz_ir::ReceiveClause],
-        after: &Option<crate::fz_ir::ReceiveAfter>,
-        worklist: &mut Vec<u32>,
-    ) {
-        let any = self.t.any();
-        for c in clauses {
-            self.enqueue_receive_outcome(c.body, &any, worklist);
-            if let Some(g) = c.guard {
-                self.enqueue_receive_outcome(g, &any, worklist);
-            }
-        }
-        if let Some(a) = after {
-            self.enqueue_receive_outcome(a.body, &any, worklist);
-        }
-    }
-
-    fn enqueue_receive_outcome(
-        &mut self,
-        fid: FnId,
-        any: &crate::types::Ty,
-        worklist: &mut Vec<u32>,
-    ) {
-        let Some(&j) = self.module.fn_idx.get(&fid) else {
-            return;
-        };
         let body = &self.module.fns[j];
-        let np = body.block(body.entry).params.len();
-        let key = crate::fz_ir::receive_outcome_spec_key(any, np);
-        self.enqueue_value_key(fid, key, worklist);
+        each_local_successor_key(body, &ft, |target| {
+            if let Some(sid) = self.spec_registry.resolve_spec_key(self.t, target) {
+                worklist.push(sid.0);
+            }
+        });
     }
 
     fn enqueue_value_key(
@@ -323,24 +218,66 @@ where
             worklist.push(sid.0);
         }
     }
+}
 
-    fn pad_to_arity(
-        &self,
-        callee: FnId,
-        mut tys: Vec<crate::types::Ty>,
-        any: &crate::types::Ty,
-    ) -> Vec<crate::types::Ty> {
-        if let Some(&j) = self.module.fn_idx.get(&callee) {
-            let np = self.module.fns[j]
-                .block(self.module.fns[j].entry)
-                .params
-                .len();
-            while tys.len() < np {
-                tys.push(any.clone());
-            }
-            tys.truncate(np);
+pub(crate) fn each_local_successor_key(
+    body: &FnIr,
+    ft: &SpecPlan,
+    mut visit: impl FnMut(&SpecKey),
+) {
+    let mut visit_slot = |ident: &CallsiteIdent, slot: EmitSlot| {
+        let callsite = CallsiteId::new(body.id, ident, slot);
+        if let Some(target) = ft.local_call_target(&callsite) {
+            visit(target);
         }
-        tys
+    };
+
+    for blk in &body.blocks {
+        if !ft.reachable_blocks.contains(&blk.id) {
+            continue;
+        }
+        for Stmt::Let(_, prim) in &blk.stmts {
+            if let Prim::Extern(ident, _, _) = prim {
+                visit_slot(ident, EmitSlot::CallableBoundary);
+            }
+        }
+
+        match &blk.terminator {
+            Term::Call { ident, .. } => {
+                visit_slot(ident, EmitSlot::Direct);
+                visit_slot(ident, EmitSlot::Cont);
+                visit_slot(ident, EmitSlot::CallableBoundary);
+            }
+            Term::TailCall { ident, .. } => {
+                visit_slot(ident, EmitSlot::Direct);
+                visit_slot(ident, EmitSlot::CallableBoundary);
+            }
+            Term::CallClosure { ident, .. } => {
+                visit_slot(ident, EmitSlot::ClosureCall);
+                visit_slot(ident, EmitSlot::Cont);
+            }
+            Term::TailCallClosure { ident, .. } => {
+                visit_slot(ident, EmitSlot::ClosureCall);
+            }
+            Term::Receive { ident, .. } => {
+                visit_slot(ident, EmitSlot::Cont);
+            }
+            Term::ReceiveMatched { clauses, after, .. } => {
+                for clause in clauses {
+                    let ident = CallsiteIdent::from_source(clause.span);
+                    visit_slot(&ident, EmitSlot::Cont);
+                    if clause.guard.is_some() {
+                        let ident = CallsiteIdent::from_source(clause.span);
+                        visit_slot(&ident, EmitSlot::Cont);
+                    }
+                }
+                if let Some(after) = after {
+                    let ident = CallsiteIdent::from_source(after.span);
+                    visit_slot(&ident, EmitSlot::Cont);
+                }
+            }
+            Term::Goto(_, _) | Term::Return(_) | Term::Halt(_) | Term::If { .. } => {}
+        }
     }
 }
 

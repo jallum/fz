@@ -474,6 +474,12 @@ where
     ) {
         for arg in args {
             for key in self.callable_boundary_keys(*arg, env) {
+                self.out.record_dispatch(
+                    self.caller_spec_key,
+                    term_ident,
+                    EmitSlot::CallableBoundary,
+                    key.clone(),
+                );
                 self.emit(EmitSlot::CallableBoundary, term_ident.clone(), key);
             }
         }

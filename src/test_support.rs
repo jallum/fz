@@ -122,7 +122,16 @@ pub(crate) struct ActivationProjectionSignal {
 #[cfg(test)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct MaterializedBodySignal {
+    pub spec_id: u32,
     pub role: String,
+    pub fn_name: String,
+    pub spec_key: String,
+}
+
+#[cfg(test)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ReachableMaterializedBodySignal {
+    pub spec_id: u32,
     pub fn_name: String,
     pub spec_key: String,
 }
@@ -213,6 +222,10 @@ pub(crate) fn runtime_graph_codegen_materialized_body_signals(
                 Some(Value::Str(role)) if role == "authoritative" => role.to_string(),
                 _ => return None,
             };
+            let spec_id = match event.measurements.get("spec_id") {
+                Some(Value::U64(id)) => *id as u32,
+                other => panic!("spec_id missing or wrong type: {other:?}"),
+            };
             let fn_name = match event.metadata.get("fn_name") {
                 Some(Value::Str(name)) => name.to_string(),
                 other => panic!("fn_name missing or wrong type: {other:?}"),
@@ -222,10 +235,76 @@ pub(crate) fn runtime_graph_codegen_materialized_body_signals(
                 other => panic!("spec_key missing or wrong type: {other:?}"),
             };
             Some(MaterializedBodySignal {
+                spec_id,
                 role,
                 fn_name,
                 spec_key,
             })
+        })
+        .collect()
+}
+
+#[cfg(test)]
+pub(crate) fn runtime_graph_reachable_materialized_body_signals(
+    src: &str,
+) -> Vec<ReachableMaterializedBodySignal> {
+    use crate::telemetry::Value;
+
+    let tel = crate::telemetry::ConfiguredTelemetry::new();
+    let cap = crate::telemetry::Capture::new();
+    tel.attach(&[], cap.handler());
+
+    let mut t = ConcreteTypes;
+    let graph = linked_runtime_graph_with_telemetry(&mut t, src, &tel);
+    cap.clear();
+    crate::ir_codegen::compile_planned(&mut t, &graph.module, &graph.module_plan, &tel)
+        .expect("compile planned");
+
+    let materialized = cap
+        .last(&["fz", "planner", "materialized"])
+        .expect("planner materialized event");
+    let reachable_spec_ids = match materialized.metadata.get("reachable_specs") {
+        Some(Value::StrSeq(specs)) => specs
+            .iter()
+            .map(|spec| spec.parse::<u32>().expect("reachable spec id"))
+            .collect::<std::collections::HashSet<_>>(),
+        other => panic!("reachable_specs missing or wrong type: {other:?}"),
+    };
+
+    cap.find(&["fz", "planner", "body_materialized"])
+        .into_iter()
+        .filter_map(|event| {
+            let role = match event.metadata.get("role") {
+                Some(Value::Str(role)) if role == "authoritative" => role,
+                _ => return None,
+            };
+            let _ = role;
+            let spec_id = match event.measurements.get("spec_id") {
+                Some(Value::U64(id)) => *id as u32,
+                other => panic!("spec_id missing or wrong type: {other:?}"),
+            };
+            let fn_name = match event.metadata.get("fn_name") {
+                Some(Value::Str(name)) => name.to_string(),
+                other => panic!("fn_name missing or wrong type: {other:?}"),
+            };
+            let spec_key = match event.metadata.get("spec_key") {
+                Some(Value::Str(key)) => key.to_string(),
+                other => panic!("spec_key missing or wrong type: {other:?}"),
+            };
+            Some(MaterializedBodySignal {
+                spec_id,
+                role: "authoritative".to_string(),
+                fn_name,
+                spec_key,
+            })
+        })
+        .collect::<Vec<_>>()
+        .into_iter()
+        .filter(|signal| reachable_spec_ids.contains(&signal.spec_id))
+        .map(|signal| ReachableMaterializedBodySignal {
+            spec_id: signal.spec_id,
+            fn_name: signal.fn_name,
+            spec_key: signal.spec_key,
         })
         .collect()
 }
