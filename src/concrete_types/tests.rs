@@ -905,68 +905,6 @@ fn erase_closure_identity_preserves_callable_surface_shape() {
     assert!(clauses[0].closure.is_none());
 }
 
-#[test]
-fn structurally_widen_merges_lists_recursively() {
-    let widened = Descr::empty_list().structurally_widen(&Descr::non_empty_list_of(Descr::int()));
-    assert!(
-        widened.is_equiv(&Descr::list_of(Descr::int())),
-        "expected list(int), got {}",
-        widened
-    );
-}
-
-#[test]
-fn structurally_widen_merges_tuple_fields_recursively() {
-    let lhs = Descr::tuple_of([Descr::empty_list(), Descr::int_lit(2)]);
-    let rhs = Descr::tuple_of([Descr::non_empty_list_of(Descr::int()), Descr::int_lit(1)]);
-    let widened = lhs.structurally_widen(&rhs);
-    let expected = Descr::tuple_of([Descr::list_of(Descr::int()), Descr::int()]);
-    assert!(
-        widened.is_equiv(&expected),
-        "expected {}, got {}",
-        expected,
-        widened
-    );
-}
-
-#[test]
-fn structurally_widen_falls_back_to_union_for_incompatible_fields() {
-    let lhs = Descr::tuple_of([Descr::empty_list(), Descr::bool_t()]);
-    let rhs = Descr::tuple_of([Descr::empty_list(), Descr::int_lit(2)]);
-    let widened = lhs.structurally_widen(&rhs);
-    let expected = Descr::tuple_of([
-        Descr::empty_list(),
-        Descr::bool_t()
-            .union(&Descr::int_lit(2))
-            .widen_for_recursive_spec_key(),
-    ]);
-    assert!(
-        widened.is_equiv(&expected),
-        "expected {}, got {}",
-        expected,
-        widened
-    );
-}
-
-#[test]
-fn structurally_widen_does_not_drop_cofinite_scalar_axes() {
-    let prev = Descr::int().union(&Descr::tuple_of([Descr::empty_list(), Descr::int()]));
-    let observed = Descr::tuple_of([Descr::empty_list(), Descr::int()]);
-    let widened = prev.structurally_widen(&observed);
-    assert!(
-        prev.is_subtype(&widened),
-        "structural widen must stay monotone: prev={} widened={}",
-        prev,
-        widened
-    );
-    assert!(
-        observed.is_subtype(&widened),
-        "structural widen must cover the new observation: observed={} widened={}",
-        observed,
-        widened
-    );
-}
-
 // ---- opaque type tests ----
 
 #[test]
@@ -2068,6 +2006,100 @@ fn refine_widen_recurses_into_list_elements() {
     let lint = t.list(int);
     let w = t.refine_widen(&l1, &l2);
     assert!(t.is_equivalent(&w, &lint));
+}
+
+#[test]
+fn refine_widen_merges_empty_and_non_empty_list_shapes() {
+    let mut t = ConcreteTypes;
+    let int = t.int();
+    let empty = t.empty_list();
+    let non_empty = t.non_empty_list(int.clone());
+    let expected = t.list(int);
+    let widened = t.refine_widen(&empty, &non_empty);
+    assert!(t.is_equivalent(&widened, &expected));
+}
+
+#[test]
+fn refine_widen_recurses_into_tuple_fields() {
+    let mut t = ConcreteTypes;
+    let empty = t.empty_list();
+    let int = t.int();
+    let non_empty = t.non_empty_list(int.clone());
+    let two = t.int_lit(2);
+    let one = t.int_lit(1);
+    let lhs = t.tuple(&[empty, two]);
+    let rhs = t.tuple(&[non_empty, one]);
+    let list_int = t.list(int.clone());
+    let expected = t.tuple(&[list_int, int]);
+    let widened = t.refine_widen(&lhs, &rhs);
+    assert!(t.is_equivalent(&widened, &expected));
+}
+
+#[test]
+fn refine_widen_recurses_into_resource_payloads() {
+    let mut t = ConcreteTypes;
+    let one = t.int_lit(1);
+    let two = t.int_lit(2);
+    let int = t.int();
+    let lhs = t.resource(one);
+    let rhs = t.resource(two);
+    let expected = t.resource(int);
+    let widened = t.refine_widen(&lhs, &rhs);
+    assert!(t.is_equivalent(&widened, &expected));
+}
+
+#[test]
+fn refine_widen_recurses_into_arrow_returns_and_unions_args() {
+    let mut t = ConcreteTypes;
+    let int = t.int();
+    let float = t.float();
+    let empty = t.empty_list();
+    let one = t.int_lit(1);
+    let lhs_ret = t.tuple(&[empty, one]);
+    let lhs = t.arrow(std::slice::from_ref(&int), lhs_ret);
+    let non_empty = t.non_empty_list(int.clone());
+    let two = t.int_lit(2);
+    let rhs_ret = t.tuple(&[non_empty, two]);
+    let rhs = t.arrow(std::slice::from_ref(&float), rhs_ret);
+    let union = t.union(int.clone(), float);
+    let list_int = t.list(int.clone());
+    let ret = t.tuple(&[list_int, int]);
+    let expected = t.arrow(std::slice::from_ref(&union), ret);
+    let widened = t.refine_widen(&lhs, &rhs);
+    assert!(t.is_equivalent(&widened, &expected));
+}
+
+#[test]
+fn refine_widen_recurses_into_map_fields() {
+    let mut t = ConcreteTypes;
+    let key = MapKey::Atom("value".to_string());
+    let int = t.int();
+    let empty = t.empty_list();
+    let one = t.int_lit(1);
+    let lhs_value = t.tuple(&[empty, one]);
+    let lhs = t.map(&[(key.clone(), lhs_value)]);
+    let non_empty = t.non_empty_list(int.clone());
+    let two = t.int_lit(2);
+    let rhs_value = t.tuple(&[non_empty, two]);
+    let rhs = t.map(&[(key.clone(), rhs_value)]);
+    let list_int = t.list(int.clone());
+    let expected_value = t.tuple(&[list_int, int]);
+    let expected = t.map(&[(key, expected_value)]);
+    let widened = t.refine_widen(&lhs, &rhs);
+    assert!(t.is_equivalent(&widened, &expected));
+}
+
+#[test]
+fn refine_widen_falls_back_to_union_for_incompatible_fields_monotonically() {
+    let mut t = ConcreteTypes;
+    let int = t.int();
+    let empty = t.empty_list();
+    let tuple = t.tuple(&[empty.clone(), int.clone()]);
+    let prev = t.union(int, tuple.clone());
+    let observed = tuple;
+    let widened = t.refine_widen(&prev, &observed);
+    assert!(t.is_subtype(&prev, &widened));
+    assert!(t.is_subtype(&observed, &widened));
 }
 
 #[test]

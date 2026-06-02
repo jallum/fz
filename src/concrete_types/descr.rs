@@ -707,7 +707,7 @@ impl Descr {
             .map_recursive_spec_key_inputs(&Descr::widen_for_recursive_spec_key)
     }
 
-    pub(crate) fn structurally_widen(&self, other: &Descr) -> Descr {
+    pub(crate) fn refine_widen(&self, other: &Descr) -> Descr {
         fn axis_free(d: &Descr) -> bool {
             d.basic.is_empty()
                 && d.atoms.is_none()
@@ -791,20 +791,20 @@ impl Descr {
                 })
         }
 
-        if let (Some(lhs), Some(rhs)) = (pure_tuple(self), pure_tuple(other)) {
-            if lhs.elems.len() == rhs.elems.len() {
-                return Descr::tuple_of(
-                    lhs.elems
-                        .iter()
-                        .zip(rhs.elems.iter())
-                        .map(|(l, r)| l.structurally_widen(r)),
-                );
-            }
+        if let (Some(lhs), Some(rhs)) = (pure_tuple(self), pure_tuple(other))
+            && lhs.elems.len() == rhs.elems.len()
+        {
+            return Descr::tuple_of(
+                lhs.elems
+                    .iter()
+                    .zip(rhs.elems.iter())
+                    .map(|(l, r)| l.refine_widen(r)),
+            );
         }
 
         if let (Some(lhs), Some(rhs)) = (pure_list(self), pure_list(other)) {
             let elem = match (&lhs.elem, &rhs.elem) {
-                (Some(l), Some(r)) => Some(Box::new(l.structurally_widen(r))),
+                (Some(l), Some(r)) => Some(Box::new(l.refine_widen(r))),
                 (Some(l), None) => Some(l.clone()),
                 (None, Some(r)) => Some(r.clone()),
                 (None, None) => None,
@@ -822,19 +822,19 @@ impl Descr {
         }
 
         if let (Some(lhs), Some(rhs)) = (pure_resource(self), pure_resource(other)) {
-            return Descr::resource_of(lhs.payload.structurally_widen(&rhs.payload));
+            return Descr::resource_of(lhs.payload.refine_widen(&rhs.payload));
         }
 
-        if let (Some(lhs), Some(rhs)) = (pure_arrow(self), pure_arrow(other)) {
-            if lhs.args.len() == rhs.args.len() {
-                return Descr::arrow(
-                    lhs.args
-                        .iter()
-                        .zip(rhs.args.iter())
-                        .map(|(l, r)| l.union(r)),
-                    lhs.ret.structurally_widen(&rhs.ret),
-                );
-            }
+        if let (Some(lhs), Some(rhs)) = (pure_arrow(self), pure_arrow(other))
+            && lhs.args.len() == rhs.args.len()
+        {
+            return Descr::arrow(
+                lhs.args
+                    .iter()
+                    .zip(rhs.args.iter())
+                    .map(|(l, r)| l.union(r)),
+                lhs.ret.refine_widen(&rhs.ret),
+            );
         }
 
         if let (Some(lhs), Some(rhs)) = (pure_map(self), pure_map(other)) {
@@ -842,7 +842,7 @@ impl Descr {
             for (key, rv) in &rhs.fields {
                 fields
                     .entry(key.clone())
-                    .and_modify(|lv| *lv = lv.structurally_widen(rv))
+                    .and_modify(|lv| *lv = lv.refine_widen(rv))
                     .or_insert_with(|| rv.clone());
             }
             return Descr {

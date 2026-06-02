@@ -121,6 +121,10 @@ join(Known(a), Known(b)) = Known(a.widen(b))
 `Known(a).widen(Known(b))` calls `Types::refine_widen` for the visible type and
 keeps proof only when both sides carry the same proof. This gives the worklist a
 finite ascending chain while preserving exact proof only where it is still valid.
+When both sides share one pure product outer shape, `refine_widen` performs the
+structural convergence there too: tuple fields, list emptiness/element slots,
+resource payloads, arrow returns, and map fields collapse recursively inside
+`Types`. There is no second structural-widen primitive.
 
 `Unknown` is sticky because a live unknown arm is still live. `NoReturn` is
 neutral because a non-returning path contributes no value. `Pending` is neutral
