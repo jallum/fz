@@ -1949,6 +1949,7 @@ mod tests {
 
     fn clause_meta(bound_names: Vec<&str>) -> ReceiveClause {
         ReceiveClause {
+            ident: crate::fz_ir::CallsiteIdent::synthetic(),
             bound_names: bound_names.into_iter().map(str::to_string).collect(),
             guard: None,
             body: FnId(0),

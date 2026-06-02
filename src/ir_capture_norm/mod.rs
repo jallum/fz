@@ -1076,6 +1076,7 @@ mod tests {
             Term::ReceiveMatched {
                 ident: crate::fz_ir::CallsiteIdent::from_source(crate::diag::Span::DUMMY),
                 clauses: vec![ReceiveClause {
+                    ident: crate::fz_ir::CallsiteIdent::synthetic(),
                     bound_names: vec!["msg".to_string()],
                     guard: None,
                     body: FnId(1),
@@ -1083,6 +1084,7 @@ mod tests {
                 }],
                 matcher: empty_matcher(),
                 after: Some(ReceiveAfter {
+                    ident: crate::fz_ir::CallsiteIdent::synthetic(),
                     timeout: Var(99),
                     body: FnId(2),
                     span: crate::diag::Span::DUMMY,

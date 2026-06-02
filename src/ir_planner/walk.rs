@@ -772,14 +772,13 @@ where
             return;
         };
         for c in clauses {
-            let ident = CallsiteIdent::from_source(c.span);
-            self.emit_receive_outcome(c.body, ident.clone());
+            self.emit_receive_outcome(c.body, c.ident.clone());
             if let Some(guard) = c.guard {
-                self.emit_receive_outcome(guard, ident);
+                self.emit_receive_outcome(guard, c.ident.clone());
             }
         }
         if let Some(a) = after {
-            self.emit_receive_outcome(a.body, CallsiteIdent::from_source(a.span));
+            self.emit_receive_outcome(a.body, a.ident.clone());
         }
     }
 

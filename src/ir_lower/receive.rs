@@ -156,6 +156,7 @@ pub(crate) fn lower_receive(
         .iter()
         .zip(clause_slots.iter())
         .map(|(c, slot)| crate::fz_ir::ReceiveClause {
+            ident: crate::fz_ir::CallsiteIdent::from_source(c.span),
             bound_names: slot.bound_names.clone(),
             guard: slot.guard.as_ref().map(|g| g.id),
             body: slot.body.id,
@@ -166,6 +167,7 @@ pub(crate) fn lower_receive(
     let ir_after = after_slot
         .as_ref()
         .map(|(cont, a)| crate::fz_ir::ReceiveAfter {
+            ident: crate::fz_ir::CallsiteIdent::from_source(a.span),
             timeout: timeout_var.expect("timeout lowered when after is Some"),
             body: cont.id,
             span: a.span,

@@ -607,9 +607,19 @@ pub fn alpha_rename(callee: &FnIr, caller: &FnIr) -> FnIr {
                 captures,
             } => Term::ReceiveMatched {
                 ident: fork(ident),
-                clauses: clauses.clone(),
+                clauses: clauses
+                    .iter()
+                    .map(|clause| crate::fz_ir::ReceiveClause {
+                        ident: fork(&clause.ident),
+                        bound_names: clause.bound_names.clone(),
+                        guard: clause.guard,
+                        body: clause.body,
+                        span: clause.span,
+                    })
+                    .collect(),
                 matcher: matcher.clone(),
                 after: after.as_ref().map(|a| crate::fz_ir::ReceiveAfter {
+                    ident: fork(&a.ident),
                     timeout: sv(a.timeout),
                     body: a.body,
                     span: a.span,

@@ -264,16 +264,13 @@ pub(crate) fn each_local_successor_key(
             }
             Term::ReceiveMatched { clauses, after, .. } => {
                 for clause in clauses {
-                    let ident = CallsiteIdent::from_source(clause.span);
-                    visit_slot(&ident, EmitSlot::Cont);
+                    visit_slot(&clause.ident, EmitSlot::Cont);
                     if clause.guard.is_some() {
-                        let ident = CallsiteIdent::from_source(clause.span);
-                        visit_slot(&ident, EmitSlot::Cont);
+                        visit_slot(&clause.ident, EmitSlot::Cont);
                     }
                 }
                 if let Some(after) = after {
-                    let ident = CallsiteIdent::from_source(after.span);
-                    visit_slot(&ident, EmitSlot::Cont);
+                    visit_slot(&after.ident, EmitSlot::Cont);
                 }
             }
             Term::Goto(_, _) | Term::Return(_) | Term::Halt(_) | Term::If { .. } => {}

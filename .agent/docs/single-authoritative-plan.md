@@ -124,6 +124,13 @@ exists by construction. The planned program also owns the executable
 `reachable_specs` set; codegen reads that finished set when deciding whether a
 real spec gets a body or a trap stub.
 
+Callsite identity remains intrinsic all the way down. `ReceiveMatched`
+clause/after outcomes carry their own `CallsiteIdent`s minted once at lowering,
+just like ordinary calls and extern boundaries. Planner discovery,
+reachability, and codegen must reuse those exact ids; reconstructing a fresh
+ident from the same span is a different callsite and will not hit the selected
+edge.
+
 `PlannedProgram` also owns the closure-call ABI contract. A semantic body spec
 and its public callable entry are distinct executable things:
 

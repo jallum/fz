@@ -1237,6 +1237,73 @@ fn runtime_graph_plain_spawn_runs_via_planned_codegen_path() {
 }
 
 #[test]
+fn planned_codegen_runs_raw_lowered_selective_receive() {
+    let src = "fn child(), do: send(1, 42)\n\
+               fn main() do\n\
+                 spawn(child)\n\
+                 dbg(receive do x -> x end)\n\
+               end";
+    let module = lower_src(src);
+    let entry = module.fn_by_name("main").expect("main fn").id;
+    let mut t = crate::types::ConcreteTypes;
+    let plan = crate::ir_planner::plan_module(&mut t, &module, &crate::telemetry::NullTelemetry);
+    let compiled = compile_planned(&mut t, &module, &plan, &crate::telemetry::NullTelemetry)
+        .expect("compile planned");
+    assert_eq!(observe(&compiled, entry).exit.halt_value, 42);
+}
+
+#[test]
+fn planned_codegen_runs_prepared_selective_receive() {
+    let src = "fn child(), do: send(1, 42)\n\
+               fn main() do\n\
+                 spawn(child)\n\
+                 dbg(receive do x -> x end)\n\
+               end";
+    let lowered = lower_src(src);
+    let mut t = crate::types::ConcreteTypes;
+    let prepared = crate::ir_codegen::prepare_module_for_authoritative_plan(
+        &mut t,
+        &lowered,
+        &crate::telemetry::NullTelemetry,
+    );
+    let entry = prepared.fn_by_name("main").expect("main fn").id;
+    let plan = crate::ir_planner::plan_module(&mut t, &prepared, &crate::telemetry::NullTelemetry);
+    let compiled = compile_planned(&mut t, &prepared, &plan, &crate::telemetry::NullTelemetry)
+        .expect("compile planned");
+    assert_eq!(observe(&compiled, entry).exit.halt_value, 42);
+}
+
+#[test]
+fn materialization_keeps_selective_receive_outcome_bodies_reachable() {
+    let src = "fn child(), do: send(1, 42)\n\
+               fn main() do\n\
+                 spawn(child)\n\
+                 dbg(receive do x -> x end)\n\
+               end";
+    let lowered = lower_src(src);
+    let mut t = crate::types::ConcreteTypes;
+    let prepared = crate::ir_codegen::prepare_module_for_authoritative_plan(
+        &mut t,
+        &lowered,
+        &crate::telemetry::NullTelemetry,
+    );
+    let plan = crate::ir_planner::plan_module(&mut t, &prepared, &crate::telemetry::NullTelemetry);
+    let reachable =
+        crate::test_support::module_reachable_materialized_body_signals(&mut t, &prepared, &plan);
+
+    assert!(
+        reachable
+            .iter()
+            .any(|body| body.fn_name == "rx_clause_0_body"),
+        "authoritative materialization must keep selective-receive outcome bodies reachable: {reachable:?}"
+    );
+    assert!(
+        reachable.iter().any(|body| body.fn_name == "k_185"),
+        "authoritative materialization must keep the receive continuation reachable: {reachable:?}"
+    );
+}
+
+#[test]
 fn runtime_graph_plain_spawn_runs_via_planned_interp_path() {
     let mut t = crate::types::ConcreteTypes;
     let graph = runtime_graph(&mut t, "fn child(), do: nil\nfn main() do spawn(child) end");

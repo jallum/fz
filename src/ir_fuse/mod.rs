@@ -419,6 +419,7 @@ pub(crate) fn subst_term(t: &Term, subst: &HashMap<Var, Var>) -> Term {
             clauses: clauses.clone(),
             matcher: matcher.clone(),
             after: after.as_ref().map(|a| crate::fz_ir::ReceiveAfter {
+                ident: a.ident.clone(),
                 timeout: sv(a.timeout),
                 body: a.body,
                 span: a.span,

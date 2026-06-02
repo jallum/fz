@@ -247,21 +247,17 @@ pub(crate) fn runtime_graph_codegen_materialized_body_signals(
 }
 
 #[cfg(test)]
-pub(crate) fn runtime_graph_reachable_materialized_body_signals(
-    src: &str,
+fn reachable_materialized_body_signals_from_planned_compile(
+    t: &mut ConcreteTypes,
+    module: &Module,
+    module_plan: &crate::ir_planner::ModulePlan,
+    tel: &crate::telemetry::ConfiguredTelemetry,
+    cap: &crate::telemetry::Capture,
 ) -> Vec<ReachableMaterializedBodySignal> {
     use crate::telemetry::Value;
 
-    let tel = crate::telemetry::ConfiguredTelemetry::new();
-    let cap = crate::telemetry::Capture::new();
-    tel.attach(&[], cap.handler());
-
-    let mut t = ConcreteTypes;
-    let graph = linked_runtime_graph_with_telemetry(&mut t, src, &tel);
-    assert_authoritative_planner_consistent(&cap);
     cap.clear();
-    crate::ir_codegen::compile_planned(&mut t, &graph.module, &graph.module_plan, &tel)
-        .expect("compile planned");
+    crate::ir_codegen::compile_planned(t, module, module_plan, tel).expect("compile planned");
 
     let materialized = cap
         .last(&["fz", "planner", "materialized"])
@@ -310,6 +306,38 @@ pub(crate) fn runtime_graph_reachable_materialized_body_signals(
             spec_key: signal.spec_key,
         })
         .collect()
+}
+
+#[cfg(test)]
+pub(crate) fn runtime_graph_reachable_materialized_body_signals(
+    src: &str,
+) -> Vec<ReachableMaterializedBodySignal> {
+    let tel = crate::telemetry::ConfiguredTelemetry::new();
+    let cap = crate::telemetry::Capture::new();
+    tel.attach(&[], cap.handler());
+
+    let mut t = ConcreteTypes;
+    let graph = linked_runtime_graph_with_telemetry(&mut t, src, &tel);
+    assert_authoritative_planner_consistent(&cap);
+    reachable_materialized_body_signals_from_planned_compile(
+        &mut t,
+        &graph.module,
+        &graph.module_plan,
+        &tel,
+        &cap,
+    )
+}
+
+#[cfg(test)]
+pub(crate) fn module_reachable_materialized_body_signals(
+    t: &mut ConcreteTypes,
+    module: &Module,
+    module_plan: &crate::ir_planner::ModulePlan,
+) -> Vec<ReachableMaterializedBodySignal> {
+    let tel = crate::telemetry::ConfiguredTelemetry::new();
+    let cap = crate::telemetry::Capture::new();
+    tel.attach(&[], cap.handler());
+    reachable_materialized_body_signals_from_planned_compile(t, module, module_plan, &tel, &cap)
 }
 
 #[cfg(test)]

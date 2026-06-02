@@ -746,6 +746,10 @@ pub struct ContinuationProvenance {
 /// fz-yxs — one arm of a `Term::ReceiveMatched`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReceiveClause {
+    /// Intrinsic identity for this clause outcome site. Planner discovery,
+    /// reachability, and codegen use this instead of reconstructing a fresh
+    /// ident from `span`.
+    pub ident: CallsiteIdent,
     /// Names of the pattern's bound vars in source order. The body
     /// and guard fns take these as their first `bound_names.len()`
     /// parameters; the rest of their params are the captures.
@@ -763,6 +767,8 @@ pub struct ReceiveClause {
 /// fz-yxs — optional `after timeout -> body` tail clause.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReceiveAfter {
+    /// Intrinsic identity for this after-outcome site.
+    pub ident: CallsiteIdent,
     /// Timeout value, computed into a Var before the ReceiveMatched
     /// term. Interpreted at runtime as milliseconds, or the atom
     /// `:infinity` for "no timer".
@@ -1718,9 +1724,11 @@ fn remap_term_span(term: &mut Term, remap: &HashMap<FileId, FileId>) {
         } => {
             remap_ident(ident, remap);
             for clause in clauses {
+                remap_ident(&mut clause.ident, remap);
                 remap_span(&mut clause.span, remap);
             }
             if let Some(after) = after {
+                remap_ident(&mut after.ident, remap);
                 remap_span(&mut after.span, remap);
             }
             std::sync::Arc::make_mut(matcher).remap_file_ids(remap);
@@ -1793,9 +1801,11 @@ fn visit_term_span(term: &Term, f: &mut impl FnMut(Span)) {
         } => {
             f(ident.span());
             for clause in clauses {
+                f(clause.ident.span());
                 f(clause.span);
             }
             if let Some(after) = after {
+                f(after.ident.span());
                 f(after.span);
             }
             matcher.visit_spans(f);
@@ -2593,6 +2603,7 @@ mod tests {
             Term::ReceiveMatched {
                 ident: CallsiteIdent::from_source(s7(60, 61)),
                 clauses: vec![ReceiveClause {
+                    ident: CallsiteIdent::from_source(s7(62, 63)),
                     bound_names: vec![],
                     guard: None,
                     body: FnId(0),
@@ -2600,6 +2611,7 @@ mod tests {
                 }],
                 matcher: Arc::new(matcher),
                 after: Some(ReceiveAfter {
+                    ident: CallsiteIdent::from_source(s7(64, 65)),
                     timeout: p,
                     body: FnId(0),
                     span: s7(64, 65),
