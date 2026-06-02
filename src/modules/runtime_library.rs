@@ -737,6 +737,21 @@ mod tests {
             assert!(enum_exports.contains(&export.to_string()));
         }
 
+        let kernel = interfaces
+            .get(&ModuleName::from_segments(vec!["Kernel".to_string()]))
+            .expect("Kernel interface");
+        let kernel_exports = kernel
+            .exports
+            .iter()
+            .map(|f| format!("{}/{}", f.name, f.arity))
+            .collect::<Vec<_>>();
+        for export in ["+/2", "-/2", "*/2", "//2", "%/2"] {
+            assert!(
+                kernel_exports.contains(&export.to_string()),
+                "Kernel should export arithmetic operator {export}; exports: {kernel_exports:?}"
+            );
+        }
+
         let list_exports = list_module
             .exports
             .iter()
@@ -799,10 +814,6 @@ mod tests {
         assert_eq!(
             primitive_contract_names(),
             vec![
-                "fz_add_ff/2",
-                "fz_add_fi/2",
-                "fz_add_if/2",
-                "fz_add_ii/2",
                 "fz_binary_concat/2",
                 "fz_bitstring_valid_utf8/1",
                 "fz_brand_bitstring_as_utf8/1",

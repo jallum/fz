@@ -399,6 +399,22 @@ fn runtime_graph_enum_ops_settle_to_int() {
 }
 
 #[test]
+fn enum_reduce_operator_refs_settle_through_kernel_specs() {
+    let module = linked(include_str!("fixtures/enum_reduce_operator_ref.fz"));
+    let mut t = ConcreteTypes;
+    let int = t.int();
+    let expected = t.tuple(&[int.clone(), int]);
+    let report = infer_report_via_main(&mut t, &module);
+
+    assert_eq!(report.outcome.status, TypeInferStatus::Complete);
+    let ret = report.facts.return_for_fn_named("Main.main");
+    assert!(
+        t.is_equivalent(&ret, &expected),
+        "qualified and bare operator refs should both settle to int, got {ret:?}"
+    );
+}
+
+#[test]
 fn mixed_enum_take_calls_preserve_list_and_range_activations() {
     let module = linked(
         r#"

@@ -545,6 +545,44 @@ fn spawn(fun, opts), do: fun.()
     }
 
     #[test]
+    fn fn_ref_bare_arithmetic_operators_parse() {
+        for (src, expected_name) in [
+            ("&+/2", "+"),
+            ("&-/2", "-"),
+            ("&*/2", "*"),
+            ("&//2", "/"),
+            ("&%/2", "%"),
+        ] {
+            match parse_fn_body(src) {
+                Expr::FnRef { name, arity } => {
+                    assert_eq!(name, expected_name);
+                    assert_eq!(arity, 2);
+                }
+                other => panic!("expected FnRef for {src}, got {:?}", other),
+            }
+        }
+    }
+
+    #[test]
+    fn fn_ref_module_qualified_arithmetic_operators_parse() {
+        for (src, expected_name) in [
+            ("&Kernel.+/2", "Kernel.+"),
+            ("&Kernel.-/2", "Kernel.-"),
+            ("&Kernel.*/2", "Kernel.*"),
+            ("&Kernel.//2", "Kernel./"),
+            ("&Kernel.%/2", "Kernel.%"),
+        ] {
+            match parse_fn_body(src) {
+                Expr::FnRef { name, arity } => {
+                    assert_eq!(name, expected_name);
+                    assert_eq!(arity, 2);
+                }
+                other => panic!("expected FnRef for {src}, got {:?}", other),
+            }
+        }
+    }
+
+    #[test]
     fn fn_ref_nested_module_qualified_parses() {
         let e = parse_fn_body("&A.B.run/3");
         match e {

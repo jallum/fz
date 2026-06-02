@@ -161,12 +161,16 @@ dispatch path.
 &N            => Expr::CaptureArg(N)      (an adjacent integer >= 1)
 &(...)        => Expr::Capture(body)      (a parenthesized body)
 &name/arity   => Expr::FnRef { name, arity }
+&+/2          => Expr::FnRef { name: "+", arity: 2 }
+&Kernel.+/2   => Expr::FnRef { name: "Kernel.+", arity: 2 }
 ```
 
 `&N` requires the integer to be adjacent (no space) so `&1` is a placeholder
 while `& 1` is not. `&(...)` parses its body as a fresh operand context, so the
 body's own `&N` placeholders and nested calls come along. The function-reference
-form (`&name/arity`, `&Mod.fun/n`, `&lib::extern/n`) is unchanged from fz-swt.5.
+form accepts ordinary names, dotted names, `lib::extern` names, and
+operator-headed functions. Division is spelled `&//2` or `&Kernel.//2` because
+the operator `/` is followed by the arity separator `/`.
 
 `CaptureArg` and `Capture` have no runtime meaning on their own. The
 macro/desugar pass rewrites `&(... &N ...)` into an ordinary `Lambda` with

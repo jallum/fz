@@ -464,37 +464,28 @@ impl Parser {
             // lookup the same way Call does.
             Tok::Amp => {
                 self.bump();
-                let mut name = match self.bump() {
-                    Tok::Ident(n) | Tok::Upper(n) => n,
-                    other => {
-                        return self.err(format!("expected name after `&`, got {:?}", other));
-                    }
-                };
+                let (mut name, slash_consumed) = self.parse_fn_ref_name_part("`&`")?;
                 // Either a dotted name (`&Mod.Sub.fun/n`) or a library-
                 // prefixed extern (`&libc::close/1`). Both join into a
                 // single string that matches the entry in `ctx.fns` or
                 // `ctx.externs` respectively.
-                loop {
+                let mut slash_consumed = slash_consumed;
+                while !slash_consumed {
                     let sep = match self.peek() {
                         Tok::Dot => ".",
                         Tok::ColonColon => "::",
                         _ => break,
                     };
                     self.bump();
-                    match self.bump() {
-                        Tok::Ident(n) | Tok::Upper(n) => {
-                            name.push_str(sep);
-                            name.push_str(&n);
-                        }
-                        other => {
-                            return self.err(format!(
-                                "expected name after `{}` in `&...`, got {:?}",
-                                sep, other
-                            ));
-                        }
-                    }
+                    let (part, part_slash_consumed) =
+                        self.parse_fn_ref_name_part(&format!("`{}` in `&...`", sep))?;
+                    name.push_str(sep);
+                    name.push_str(&part);
+                    slash_consumed = part_slash_consumed;
                 }
-                self.expect(&Tok::Slash, "`/` after name in `&name/arity`")?;
+                if !slash_consumed {
+                    self.expect(&Tok::Slash, "`/` after name in `&name/arity`")?;
+                }
                 let arity = match self.bump() {
                     Tok::Int(n) if n >= 0 => n as usize,
                     other => {
@@ -603,6 +594,19 @@ impl Parser {
             self.skip_newlines();
         }
         Ok(out)
+    }
+
+    fn parse_fn_ref_name_part(&mut self, context: &str) -> PR<(String, bool)> {
+        match self.bump() {
+            Tok::Ident(n) | Tok::Upper(n) => Ok((n, false)),
+            // `&//2` and `&Kernel.//2` are the division operator `/` followed
+            // by the arity separator `/`; the lexer sees that pair as `//`.
+            Tok::SlashSlash => Ok(("/".to_string(), true)),
+            other => match operator_token_name(&other) {
+                Some(op) => Ok((op.to_string(), false)),
+                None => self.err(format!("expected name after {}, got {:?}", context, other)),
+            },
+        }
     }
 
     fn parse_call_args(&mut self) -> PR<CallArgs> {

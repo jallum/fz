@@ -799,7 +799,7 @@ impl<'m> Solver<'m> {
             let inputs = self.activations[&key].inputs.clone();
             let body_ret = self.walk_fn(t, &key, &inputs);
             // A declared `@spec` is a backstop for a body the engine cannot
-            // infer (e.g. an extern-forwarding builtin like `dbg`/`Kernel.+`):
+            // infer (e.g. an extern-forwarding builtin like `dbg`):
             // only when body inference is `Unknown` do we fall back to the spec
             // instantiated against the inputs. An inferable body keeps its
             // inferred (usually tighter) type, so the spec never blunts a

@@ -1,0 +1,16 @@
+# Operator function references are ordinary zero-capture callable values.
+# The qualified `&Kernel.+/2` path proves operator-headed Kernel functions are
+# public named functions. The bare `&+/2` path proves prelude import resolution
+# reaches the same function value.
+#
+# Expected: main() : {int, int}; both reducers settle through Kernel.+/2's
+# declared overload set.
+
+defmodule Main do
+  fn main() do
+    {
+      Enum.reduce([1, 2, 3], 0, &Kernel.+/2),
+      Enum.reduce([1, 2, 3], 0, &+/2)
+    }
+  end
+end

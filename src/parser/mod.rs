@@ -110,6 +110,24 @@ const ITEMS_BUILT_NAME: &[&str] = &["fz", "parser", "items_built"];
 /// telemetry `DiagRenderer`; `warning` is the severity leaf.
 const DIAG_WARNING_NAME: &[&str] = &["fz", "diag", "warning"];
 
+/// Canonical name for operator-headed functions and specs.
+fn operator_token_name(t: &Tok) -> Option<&'static str> {
+    Some(match t {
+        Tok::Plus => "+",
+        Tok::Minus => "-",
+        Tok::Star => "*",
+        Tok::Slash => "/",
+        Tok::Percent => "%",
+        Tok::EqEq => "==",
+        Tok::NotEq => "!=",
+        Tok::Lt => "<",
+        Tok::LtEq => "<=",
+        Tok::Gt => ">",
+        Tok::GtEq => ">=",
+        _ => return None,
+    })
+}
+
 impl Parser {
     pub fn new(toks: Vec<Token>) -> Self {
         Self {

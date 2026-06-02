@@ -273,7 +273,7 @@ impl Parser {
                                 "expected type expression before operator in @spec".to_string(),
                             );
                         }
-                        let name = match Self::operator_token_name(self.peek()) {
+                        let name = match operator_token_name(self.peek()) {
                             Some(s) => {
                                 self.bump();
                                 s.to_string()
@@ -393,26 +393,6 @@ impl Parser {
         self.collect_balanced_type_tokens(TypeTokenBoundary::SpecParam)
     }
 
-    /// Canonical name for an operator token used as a `fn`/`@spec` head
-    /// (`fn left + right`, `@spec integer + integer :: integer`). `None` for a
-    /// non-operator token.
-    fn operator_token_name(t: &Tok) -> Option<&'static str> {
-        Some(match t {
-            Tok::Plus => "+",
-            Tok::Minus => "-",
-            Tok::Star => "*",
-            Tok::Slash => "/",
-            Tok::Percent => "%",
-            Tok::EqEq => "==",
-            Tok::NotEq => "!=",
-            Tok::Lt => "<",
-            Tok::LtEq => "<=",
-            Tok::Gt => ">",
-            Tok::GtEq => ">=",
-            _ => return None,
-        })
-    }
-
     /// Collect one operand's type-expression tokens for an operator-headed
     /// `@spec` (`T1 <op> T2 :: R`), stopping at depth 0 before the operator or
     /// the `::`.
@@ -423,8 +403,7 @@ impl Parser {
             let stop = {
                 let p = self.peek();
                 depth == 0
-                    && (Self::operator_token_name(p).is_some()
-                        || matches!(p, Tok::ColonColon | Tok::Eof))
+                    && (operator_token_name(p).is_some() || matches!(p, Tok::ColonColon | Tok::Eof))
             };
             if stop {
                 break;
@@ -559,7 +538,7 @@ impl Parser {
                 (name, params, anns)
             } else {
                 let left = self.parse_pattern()?;
-                let name = match Self::operator_token_name(self.peek()) {
+                let name = match operator_token_name(self.peek()) {
                     Some(s) => {
                         self.bump();
                         s.to_string()
@@ -871,14 +850,19 @@ impl Parser {
         self.skip_newlines();
         if !matches!(self.peek(), Tok::RBrack) {
             loop {
-                let name = match self.bump() {
-                    Tok::KwKey(k) => k,
-                    other => {
-                        return self.err(format!(
-                            "expected name: in import filter list, got {:?}",
-                            other
-                        ));
-                    }
+                let name = if let Tok::KwKey(k) = self.peek().clone() {
+                    self.bump();
+                    k
+                } else if let Some(op) = operator_token_name(self.peek()) {
+                    let name = op.to_string();
+                    self.bump();
+                    self.expect(&Tok::Colon, "`:` after operator in import filter list")?;
+                    name
+                } else {
+                    return self.err(format!(
+                        "expected name: in import filter list, got {:?}",
+                        self.peek()
+                    ));
                 };
                 let arity = match self.bump() {
                     Tok::Int(n) if n >= 0 => n as usize,

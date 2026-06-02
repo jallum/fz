@@ -211,8 +211,9 @@ must be known concrete types, boundary-erased dynamic values, or diagnostics.
 ## Operators
 
 Operators are strict declared-signature applications. The runtime kernel
-declares arithmetic operators as ordinary operator-headed functions. Each
-operator has the four concrete arrows:
+declares arithmetic operators as ordinary public operator-headed functions, so
+`&Kernel.+/2` and the prelude-imported `&+/2` resolve to the same callable
+surface. Each operator has one primitive body and four concrete arrows:
 
 ```text
 (int,   int)   -> int
