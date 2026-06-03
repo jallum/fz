@@ -4,7 +4,6 @@ mod concrete_types;
 mod diag;
 mod frontend;
 mod fz_ir;
-mod ir_callgraph;
 mod ir_capture_norm;
 mod ir_codegen;
 mod ir_dest;

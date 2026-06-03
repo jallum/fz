@@ -1,5 +1,5 @@
 // Tarjan SCC over the planner call graph. Call-graph construction and
-// entry-seed selection live in `crate::ir_callgraph`.
+// entry-seed selection live in `super::callgraph`.
 
 use crate::fz_ir::FnId;
 use std::collections::{HashMap, HashSet};

@@ -1,3 +1,4 @@
+use super::callgraph::{build_recursion_graph, entry_seeds};
 use super::closures::literal_closure_return_keys;
 use super::diagnostics::{compute_dead_branches, module_plan_stats};
 use super::effects::{prim_effects, term_effects};
@@ -12,7 +13,6 @@ use super::type_fn::type_fn;
 use super::walk::{WalkResult, walk_spec_for_discovery};
 use crate::concrete_types::ty_display;
 use crate::fz_ir::{BlockId, CallsiteId, CallsiteIdent, DeadBranch, EmitSlot, FnId, FnIr, Module, Prim, Stmt, Term};
-use crate::ir_callgraph::{build_recursion_graph, entry_seeds};
 use crate::ir_planner::inventory::{body_callsite_inventory, plan_call_edge_inventory};
 use crate::specs::{
     CallbackReturnDemand, CallbackReturnFact, CallbackReturnQuery, SpecApplicationOutcome, apply_spec_set,

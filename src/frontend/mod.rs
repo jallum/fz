@@ -10,12 +10,10 @@ use crate::ast::{Expr, FnClause, FnDef, Item, Pattern, Program, Spanned, TypeExp
 use crate::diag::codes;
 use crate::diag::{Diagnostic, Diagnostics, SourceMap, Span};
 use crate::fz_ir::{CallsiteId, EmitSlot, FnId, Module, rewrite_external_callsite_for_link};
-use crate::ir_callgraph::reachable_fns;
 use crate::ir_extern_marshal::resolve_module_types;
 use crate::ir_lower::{lower_program, repl_output_frame_names};
 use crate::ir_planner::fn_types::CallEdgeTarget;
 use crate::ir_planner::{ModulePlan, plan_module, rewrite_closed_union_protocol_dispatch};
-use crate::ir_reducer::reduce_module;
 use crate::measurements;
 use crate::metadata;
 use crate::parser::Parser;
@@ -64,14 +62,12 @@ pub fn check_patterns<T: Types<Ty = Ty> + ClosureTypes + LiteralTypes>(
     module: &Module,
     module_plan: &ModulePlan,
 ) -> Diagnostics {
-    let mut reduced = module.clone();
-    let _ = reduce_module(t, &mut reduced);
-    let reachable = reachable_fns(t, &reduced);
-    let survivors: HashSet<(String, usize)> = reachable
+    let survivors: HashSet<(String, usize)> = module_plan
+        .reachable_specs
         .iter()
-        .filter_map(|fid| {
-            let &idx = reduced.fn_idx.get(fid)?;
-            let f = &reduced.fns[idx];
+        .filter_map(|spec_key| {
+            let &idx = module.fn_idx.get(&spec_key.fn_id)?;
+            let f = &module.fns[idx];
             let arity = f.block(f.entry).params.len();
             Some((f.name.clone(), arity))
         })
@@ -657,6 +653,47 @@ fn main(), do: inc(41)
         };
         assert_eq!(parsed_out.module.fns.len(), source_out.module.fns.len());
         assert!(parsed_out.module.fn_by_name("main").is_some());
+    }
+
+    #[test]
+    fn pattern_checks_ignore_uncalled_named_ref_targets() {
+        let src = r#"
+fn hidden(0), do: :zero
+fn hidden(1), do: :one
+
+fn main() do
+  &hidden/1
+end
+"#;
+        let out = match compile_source(src.to_string(), "named-ref.fz".to_string()) {
+            Ok(out) => out,
+            Err(_) => panic!("frontend ok"),
+        };
+        let hidden = out.module.fn_by_name("hidden").expect("hidden fn");
+        assert!(
+            out.module_plan
+                .reachable_specs
+                .iter()
+                .all(|spec| spec.fn_id != hidden.id),
+            "uncalled named ref target should not remain semantically reachable: {:?}",
+            out.module_plan
+                .reachable_specs
+                .iter()
+                .filter(|spec| spec.fn_id == hidden.id)
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            !out.diagnostics
+                .as_slice()
+                .iter()
+                .any(|diag| diag.code == codes::TYPE_NO_MATCHING_CLAUSE),
+            "inexhaustive hidden/1 should be filtered out when it has no reachable spec: {:?}",
+            out.diagnostics
+                .as_slice()
+                .iter()
+                .map(|diag| (diag.code, diag.message.clone()))
+                .collect::<Vec<_>>()
+        );
     }
 
     #[test]

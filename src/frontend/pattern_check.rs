@@ -21,12 +21,12 @@ use std::collections::{HashMap, HashSet};
 /// Walk `prog` and return one `Diagnostic` per unreachable clause and
 /// per inexhaustive match. Empty when everything checks.
 ///
-/// `survivors` is the set of `(name, arity)` pairs for fns whose body
-/// is actually emitted by codegen — i.e. survives the reducer. Pattern
-/// concerns inside a fully-dissolved fn are dead-code questions: the
-/// `:function_clause` halt the inexhaustive warning worries about can
-/// only fire from a body that exists at runtime. Pass `None` to warn
-/// for every fn (used by unit tests that don't run the reducer).
+/// `survivors` is the set of `(name, arity)` pairs for fns whose body remains
+/// semantically reachable in the executable `ModulePlan`. Pattern concerns
+/// inside an unreachable fn are dead-code questions: the `:function_clause`
+/// halt the inexhaustive warning worries about can only fire from a body that
+/// still exists at runtime. Pass `None` to warn for every fn (used by unit
+/// tests that don't build a plan).
 pub fn check_program<T: Types>(
     _t: &mut T,
     prog: &Program,

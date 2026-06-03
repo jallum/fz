@@ -41,6 +41,7 @@
 //! whether a branch, call target, continuation, or return lane is live, the
 //! planner has failed to put the fact in the model.
 
+pub(crate) mod callgraph;
 pub mod closures;
 pub mod diagnostics;
 pub(crate) mod effects;
