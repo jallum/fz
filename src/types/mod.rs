@@ -227,6 +227,15 @@ pub trait Types {
     /// `[] ⊔ nonempty_list(a) = list(a)`. Loop-invariant slots are their own LUB.
     fn refine_widen(&mut self, a: &Self::Ty, b: &Self::Ty) -> Self::Ty;
 
+    /// The activation-identity class of `a` for non-dispatch-slot convergence
+    /// in type inference. Two values share an activation only when their
+    /// classes match; same-class slots then join via `refine_widen` in the
+    /// stored inputs. All pure list shapes share one class (so an
+    /// accumulator's emptiness/element type does not fork recursive
+    /// activations — the balloon), while disjoint families (`int` vs a tagged
+    /// tuple) keep distinct classes so their behaviour stays observable.
+    fn convergence_class(&mut self, a: &Self::Ty) -> Self::Ty;
+
     // ---- lattice ops ---------------------------------------------------
 
     fn union(&mut self, a: Self::Ty, b: Self::Ty) -> Self::Ty;

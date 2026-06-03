@@ -1933,6 +1933,30 @@ fn refine_widen_merges_empty_and_non_empty_list_shapes() {
 }
 
 #[test]
+fn convergence_class_unifies_all_list_shapes_but_separates_other_families() {
+    let mut t = ConcreteTypes;
+    let int = t.int();
+    // Every pure list shape collapses to one class, so a list accumulator's
+    // emptiness and element type stop forking recursive activations.
+    let empty = t.empty_list();
+    let nonempty = t.non_empty_list(int.clone());
+    let list = t.list(int.clone());
+    let empty_class = t.convergence_class(&empty);
+    let nonempty_class = t.convergence_class(&nonempty);
+    let list_class = t.convergence_class(&list);
+    assert!(t.is_equivalent(&empty_class, &nonempty_class));
+    assert!(t.is_equivalent(&nonempty_class, &list_class));
+    // A tuple is a different family: it keeps its own class so a shape-changing
+    // accumulator (and its type errors) stays observable.
+    let tagged = t.tuple(&[int.clone(), int.clone()]);
+    let tagged_class = t.convergence_class(&tagged);
+    assert!(!t.is_equivalent(&tagged_class, &list_class));
+    // Scalars are their own class too — distinct from the list class.
+    let int_class = t.convergence_class(&int);
+    assert!(!t.is_equivalent(&int_class, &list_class));
+}
+
+#[test]
 fn refine_widen_recurses_into_tuple_fields() {
     let mut t = ConcreteTypes;
     let empty = t.empty_list();

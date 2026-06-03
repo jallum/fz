@@ -1169,19 +1169,22 @@ impl FnIr {
         self.blocks.iter().find(|b| b.id == id).expect("unknown block")
     }
 
-    /// Per entry-param slot: `true` iff that param can influence which clause
-    /// or branch this body selects — i.e. it reaches the condition var of some
-    /// `Term::If` through the body's value graph. These "dispatch subjects"
-    /// must stay type-precise; the complement carries data the body never
-    /// branches on, so distinct activations that agree on every dispatch
-    /// subject are behaviourally identical up to those slots and may be joined.
+    /// Per entry-param slot: `true` iff that param can influence which code
+    /// this body runs — i.e. it reaches, through the body's value graph,
+    /// either the condition of a `Term::If` (which branch) or the invoked
+    /// value of a closure call (which callable identity, hence which body).
+    /// These "dispatch subjects" must stay type-precise; the complement carries
+    /// data the body neither branches on nor invokes, so distinct activations
+    /// that agree on every dispatch subject are behaviourally identical up to
+    /// those slots and may be joined.
     ///
     /// Sound by construction: the only intra-body binding edges are
     /// `Stmt::Let` (def reads its prim's operands) and `Term::Goto` (a target
     /// block param reads the matching call arg). A backward closure over both,
-    /// seeded from every `If` condition, therefore reaches every entry param a
-    /// branch can depend on — never fewer. Entry params not reached are safe
-    /// to widen because widening them cannot flip any branch in this body.
+    /// seeded from every branch condition and every invoked-closure operand,
+    /// reaches every entry param a control decision can depend on — never
+    /// fewer. Entry params not reached are safe to widen: widening them cannot
+    /// flip a branch or redirect a call in this body.
     pub fn dispatch_subject_slots(&self) -> Vec<bool> {
         let mut def_uses: HashMap<Var, Vec<Var>> = HashMap::new();
         let mut param_sources: HashMap<Var, Vec<Var>> = HashMap::new();
@@ -1194,6 +1197,7 @@ impl FnIr {
             }
             match &block.terminator {
                 Term::If { cond, .. } => work.push(*cond),
+                Term::CallClosure { closure, .. } | Term::TailCallClosure { closure, .. } => work.push(*closure),
                 Term::Goto(target, args) => {
                     for (param, arg) in self.block(*target).params.iter().zip(args) {
                         param_sources.entry(*param).or_default().push(*arg);
@@ -1431,6 +1435,72 @@ pub struct Module {
     pub continuation_provenance: HashMap<FnId, ContinuationProvenance>,
 }
 
+/// Tarjan strongly-connected components over a fn call graph. Returns SCCs in
+/// reverse-topological order (leaves first). Stable node iteration keeps the
+/// numbering deterministic across runs.
+fn tarjan_scc(graph: &HashMap<FnId, HashSet<FnId>>) -> Vec<Vec<FnId>> {
+    struct State<'a> {
+        graph: &'a HashMap<FnId, HashSet<FnId>>,
+        index_of: HashMap<FnId, u32>,
+        lowlink: HashMap<FnId, u32>,
+        on_stack: HashSet<FnId>,
+        stack: Vec<FnId>,
+        next_idx: u32,
+        sccs: Vec<Vec<FnId>>,
+    }
+    fn strong(s: &mut State, v: FnId) {
+        s.index_of.insert(v, s.next_idx);
+        s.lowlink.insert(v, s.next_idx);
+        s.next_idx += 1;
+        s.stack.push(v);
+        s.on_stack.insert(v);
+        if let Some(succs) = s.graph.get(&v) {
+            let succs: Vec<FnId> = succs.iter().copied().collect();
+            for w in succs {
+                if !s.index_of.contains_key(&w) {
+                    strong(s, w);
+                    let wl = *s.lowlink.get(&w).unwrap();
+                    let vl = *s.lowlink.get(&v).unwrap();
+                    s.lowlink.insert(v, vl.min(wl));
+                } else if s.on_stack.contains(&w) {
+                    let wi = *s.index_of.get(&w).unwrap();
+                    let vl = *s.lowlink.get(&v).unwrap();
+                    s.lowlink.insert(v, vl.min(wi));
+                }
+            }
+        }
+        if s.index_of.get(&v) == s.lowlink.get(&v) {
+            let mut comp = Vec::new();
+            loop {
+                let w = s.stack.pop().unwrap();
+                s.on_stack.remove(&w);
+                comp.push(w);
+                if w == v {
+                    break;
+                }
+            }
+            s.sccs.push(comp);
+        }
+    }
+    let mut s = State {
+        graph,
+        index_of: HashMap::new(),
+        lowlink: HashMap::new(),
+        on_stack: HashSet::new(),
+        stack: Vec::new(),
+        next_idx: 0,
+        sccs: Vec::new(),
+    };
+    let mut nodes: Vec<FnId> = graph.keys().copied().collect();
+    nodes.sort_by_key(|f| f.0);
+    for v in nodes {
+        if !s.index_of.contains_key(&v) {
+            strong(&mut s, v);
+        }
+    }
+    s.sccs
+}
+
 impl Module {
     #[cfg(test)]
     pub fn new() -> Self {
@@ -1565,6 +1635,79 @@ impl Module {
 
     pub fn fn_by_name(&self, name: &str) -> Option<&FnIr> {
         self.fns.iter().find(|f| f.name == name)
+    }
+
+    /// The set of fns that participate in recursion: every fn in a
+    /// strongly-connected component larger than one, plus self-recursive
+    /// singletons. The recursion call graph deliberately excludes the
+    /// callee->continuation edge — a non-tail call's continuation belongs to
+    /// the caller's control flow, not the callee's body, so including it would
+    /// make plain sequential chains look recursive.
+    ///
+    /// One source of truth for "recursive fn": the planner widens recursive
+    /// spec keys by this set, and type inference converges recursive
+    /// activations' non-dispatch slots by it — the two must agree.
+    pub fn recursive_fns(&self) -> HashSet<FnId> {
+        let graph = self.recursion_call_graph();
+        let mut recursive: HashSet<FnId> = HashSet::new();
+        for scc in tarjan_scc(&graph) {
+            if scc.len() > 1 {
+                recursive.extend(scc);
+            } else if let Some(fid) = scc.first()
+                && graph.get(fid).is_some_and(|succs| succs.contains(fid))
+            {
+                recursive.insert(*fid);
+            }
+        }
+        recursive
+    }
+
+    fn recursion_call_graph(&self) -> HashMap<FnId, HashSet<FnId>> {
+        let mut graph: HashMap<FnId, HashSet<FnId>> = HashMap::new();
+        for f in &self.fns {
+            let edges = graph.entry(f.id).or_default();
+            for block in &f.blocks {
+                for Stmt::Let(_, prim) in &block.stmts {
+                    if let Prim::MakeFnRef(_, target) | Prim::MakeClosure(_, target, _) = prim {
+                        edges.insert(*target);
+                    }
+                }
+                match &block.terminator {
+                    Term::Call {
+                        callee, continuation, ..
+                    } => {
+                        edges.insert(*callee);
+                        edges.insert(continuation.fn_id);
+                    }
+                    Term::TailCall { callee, .. } => {
+                        edges.insert(*callee);
+                    }
+                    Term::CallClosure { continuation, .. } => {
+                        edges.insert(continuation.fn_id);
+                    }
+                    Term::Receive { continuation, .. } => {
+                        edges.insert(continuation.fn_id);
+                    }
+                    Term::ReceiveMatched { clauses, after, .. } => {
+                        for clause in clauses {
+                            edges.insert(clause.body);
+                            if let Some(guard) = clause.guard {
+                                edges.insert(guard);
+                            }
+                        }
+                        if let Some(after) = after {
+                            edges.insert(after.body);
+                        }
+                    }
+                    Term::Goto(..)
+                    | Term::If { .. }
+                    | Term::TailCallClosure { .. }
+                    | Term::Return(_)
+                    | Term::Halt(_) => {}
+                }
+            }
+        }
+        graph
     }
 
     pub fn rewrite_external_calls_for_lto(

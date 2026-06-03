@@ -1580,3 +1580,4 @@ fn non_closure_has_no_apply_contract() {
     let int = t.int();
     assert!(closure_apply_contract(&t, &int, &[]).is_none());
 }
+

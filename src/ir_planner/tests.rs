@@ -1401,6 +1401,44 @@ fn pipeline(src: &str, tel: &dyn Telemetry) -> (ConcreteTypes, Module, ModulePla
     (t, ir, mt)
 }
 
+/// fz-y6w.3 — the accumulator balloon collapses. Before convergence,
+/// `partition/4` forked into four specs over the `{[], nonempty_list(int)}^2`
+/// cartesian product of its `lo`/`hi` accumulators. With recursive non-dispatch
+/// slots converged by `refine_widen`, the four agree on the dispatch subjects
+/// (pivot, matched list) and on the list family for the accumulators, so they
+/// fold into a single `[int, list(int), list(int), list(int)]` spec.
+#[test]
+fn quicksort_partition_accumulators_converge_to_one_spec() {
+    let module = linked_runtime_module(include_str!("../../fixtures/quicksort/input.fz"));
+    let mut t = ConcreteTypes;
+    let mt = plan_module(&mut t, &module, &NullTelemetry);
+    let partition_id = module.fn_by_name("partition").expect("quicksort defines partition").id;
+    let partition_specs: Vec<&SpecKey> = mt.specs.keys().filter(|k| k.fn_id == partition_id).collect();
+    assert_eq!(
+        partition_specs.len(),
+        1,
+        "partition/4 should converge to one spec, got {}: {:?}",
+        partition_specs.len(),
+        partition_specs.iter().map(|k| &k.input).collect::<Vec<_>>()
+    );
+    // The accumulators (slots 2, 3) are no longer the empty list: they widened
+    // to the same possibly-empty list as the matched subject (slot 1).
+    let key = partition_specs[0];
+    assert_eq!(key.input.len(), 4, "partition arity is preserved");
+    assert_eq!(
+        format!("{:?}", key.input[1]),
+        format!("{:?}", key.input[2]),
+        "lo accumulator converged to the matched-list type: {:?}",
+        key.input
+    );
+    assert_eq!(
+        format!("{:?}", key.input[2]),
+        format!("{:?}", key.input[3]),
+        "hi accumulator converged to the same list type: {:?}",
+        key.input
+    );
+}
+
 fn frontend_module(src: &str) -> Module {
     lower_frontend_module(src)
 }
@@ -5503,3 +5541,4 @@ fn plain_int_arithmetic_still_passes() {
             .collect::<Vec<_>>(),
     );
 }
+

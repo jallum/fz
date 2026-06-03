@@ -234,6 +234,20 @@ impl Info {
     }
 }
 
+/// The visible types of an activation's stored inputs. Stored inputs are
+/// always `Known` (an activation cannot form from an unresolved slot), so this
+/// yields the full arity vector — the public fact and telemetry read the
+/// activation's joined inputs, not the dispatch-only projection key.
+fn info_tys(inputs: &[Info]) -> Vec<Ty> {
+    inputs
+        .iter()
+        .filter_map(|info| match info {
+            Info::Known(value) => Some(value.ty.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
 fn unresolved_inputs(inputs: &[Info]) -> Info {
     if inputs.iter().any(|input| matches!(input, Info::Unknown)) {
         Info::Unknown
@@ -272,39 +286,24 @@ enum PredicateFact {
     TypeTest(Var, Ty),
 }
 
-/// One monomorphic activation of a function body under a concrete input tuple.
+/// One monomorphic activation of a function body, identified by its `FnId`
+/// plus a per-slot **identity class**: dispatch-subject slots
+/// (`FnIr::dispatch_subject_slots`) keep their exact value, while non-dispatch
+/// slots are coarsened to their `convergence_class`.
 ///
-/// `FnId` remains the callable/body identity. The activation key is the
-/// inference instance: the same `FnId` can be activated at `int` and `:ok`
-/// without joining those callers' returns together.
+/// `FnId` remains the callable/body identity. Two calls of the same recursive
+/// fn that agree on every dispatch subject and every non-dispatch *family*
+/// share one activation even when their non-dispatch slots differ within that
+/// family (e.g. `[]` and `nonempty_list(int)` — both the list class): those
+/// slots cannot change which clause runs, so they fold into the activation's
+/// joined `inputs` instead of forking a fresh instance. A dispatch subject
+/// (`int` vs `:ok`) or a cross-family non-dispatch difference (`int` vs
+/// `{:cont, int}`) still keeps activations apart. The class vector is built by
+/// `Solver::make_key`, which alone knows the per-fn mask.
 #[derive(Clone, PartialEq, Eq, Hash)]
 struct ActivationKey {
     fn_id: FnId,
-    inputs: Vec<ValueKey>,
-}
-
-impl ActivationKey {
-    fn from_inputs<T: Types<Ty = Ty>>(t: &mut T, fn_id: FnId, inputs: &[Info]) -> Option<Self> {
-        let mut key_inputs = Vec::with_capacity(inputs.len());
-        for input in inputs {
-            let Info::Known(value) = input else {
-                return None;
-            };
-            key_inputs.push(ValueKey::from_fact(t, value));
-        }
-        Some(Self {
-            fn_id,
-            inputs: key_inputs,
-        })
-    }
-
-    fn input_infos(&self) -> Vec<Info> {
-        self.inputs.iter().cloned().map(ValueKey::into_info).collect()
-    }
-
-    fn input_tys(&self) -> Vec<Ty> {
-        self.inputs.iter().map(|input| input.ty.clone()).collect()
-    }
+    class_inputs: Vec<ValueKey>,
 }
 
 #[derive(Clone, PartialEq, Eq, Hash)]
@@ -587,6 +586,11 @@ struct Solver<'m> {
     /// `make_key` keeps masked slots in the activation identity and folds the
     /// rest into a joined `Activation.inputs`.
     dispatch_masks: HashMap<FnId, Vec<bool>>,
+    /// Fns that participate in recursion. Non-dispatch slot convergence applies
+    /// only to these: the accumulator balloon is a recursive fixpoint artifact,
+    /// whereas a non-recursive fn's distinct call sites are genuine per-callsite
+    /// polymorphism that must keep separate activations (and returns).
+    recursive_fns: HashSet<FnId>,
 }
 
 impl<'m> Solver<'m> {
@@ -596,6 +600,7 @@ impl<'m> Solver<'m> {
             .iter()
             .map(|f| (f.id, f.dispatch_subject_slots()))
             .collect();
+        let recursive_fns = module.recursive_fns();
         Self {
             module,
             activations: HashMap::new(),
@@ -608,7 +613,84 @@ impl<'m> Solver<'m> {
             dead_arms: Vec::new(),
             dead_arm_sites: HashSet::new(),
             dispatch_masks,
+            recursive_fns,
         }
+    }
+
+    /// Whether entry-param `slot` of `fn_id` must stay precise in the
+    /// activation identity. Always precise for non-recursive fns (their call
+    /// sites are genuine per-callsite polymorphism). For recursive fns, precise
+    /// exactly on the dispatch-subject slots; the complement converges. Unknown
+    /// fns and out-of-range slots default to precise, so convergence is a
+    /// strict opt-in earned by both recursion and a proven mask.
+    fn is_dispatch_slot(&self, fn_id: FnId, slot: usize) -> bool {
+        if !self.recursive_fns.contains(&fn_id) {
+            return true;
+        }
+        self.dispatch_masks
+            .get(&fn_id)
+            .and_then(|mask| mask.get(slot).copied())
+            .unwrap_or(true)
+    }
+
+    /// Build the activation identity for a call and the full canonical input
+    /// vector to store on the activation. Returns `None` if any slot is not a
+    /// known value (an unresolved call cannot activate). Each key slot is the
+    /// canonicalized value for a dispatch subject and its `convergence_class`
+    /// otherwise; the returned `Vec<Info>` is every slot canonicalized exactly
+    /// (recursive-key widen per slot) so same-class non-dispatch slots fold
+    /// together via the `refine_widen` join of the stored inputs.
+    fn make_key<T: Types<Ty = Ty>>(
+        &self,
+        t: &mut T,
+        fn_id: FnId,
+        inputs: &[Info],
+    ) -> Option<(ActivationKey, Vec<Info>)> {
+        let mut full = Vec::with_capacity(inputs.len());
+        let mut class_inputs = Vec::with_capacity(inputs.len());
+        for (slot, input) in inputs.iter().enumerate() {
+            let Info::Known(value) = input else {
+                return None;
+            };
+            let canonical = ValueKey::from_fact(t, value);
+            class_inputs.push(if self.is_dispatch_slot(fn_id, slot) {
+                canonical.clone()
+            } else {
+                ValueKey {
+                    ty: t.convergence_class(&canonical.ty),
+                    proof: ValueProof::Unproven,
+                }
+            });
+            full.push(canonical.into_info());
+        }
+        Some((ActivationKey { fn_id, class_inputs }, full))
+    }
+
+    /// Fold a fresh call's canonical inputs into an existing activation's
+    /// stored inputs by joining slot-wise through the refinement lattice.
+    /// Dispatch slots are equal by construction (they keyed the same
+    /// activation), so only non-dispatch slots can widen. Returns the joined
+    /// vector and whether anything changed (which means the body must re-run).
+    fn join_inputs<T: Types<Ty = Ty>>(&self, t: &mut T, stored: &[Info], incoming: &[Info]) -> (Vec<Info>, bool) {
+        let mut changed = false;
+        let joined = stored
+            .iter()
+            .zip(incoming)
+            .map(|(old, new)| {
+                // Idempotent by construction: equal slots stay byte-identical.
+                // `refine_widen` does not preserve closure-literal identity even
+                // when both sides are the same closure (it reconstructs a bare
+                // arrow), so widening an unchanged callable slot would erase the
+                // identity its apply site needs. Only genuinely differing slots
+                // ascend the lattice.
+                if old.equiv(t, new) {
+                    return old.clone();
+                }
+                changed = true;
+                old.join(t, new)
+            })
+            .collect();
+        (joined, changed)
     }
 
     fn enqueue(&mut self, key: ActivationKey) {
@@ -625,12 +707,13 @@ impl<'m> Solver<'m> {
 
     /// Seed an entry point with its known input types and schedule it.
     fn seed<T: Types<Ty = Ty>>(&mut self, t: &mut T, fn_id: FnId, inputs: Vec<Info>) -> ActivationKey {
-        let key =
-            ActivationKey::from_inputs(t, fn_id, &inputs).expect("entry activations must be seeded with known inputs");
+        let (key, canonical) = self
+            .make_key(t, fn_id, &inputs)
+            .expect("entry activations must be seeded with known inputs");
         self.activations.insert(
             key.clone(),
             Activation {
-                inputs: key.input_infos(),
+                inputs: canonical,
                 ret: Info::Pending,
             },
         );
@@ -843,7 +926,7 @@ impl<'m> Solver<'m> {
         callsite: CallsiteId,
         request: ActivationRequest,
     ) -> Info {
-        let Some(key) = ActivationKey::from_inputs(t, request.fn_id, &request.inputs) else {
+        let Some((key, canonical)) = self.make_key(t, request.fn_id, &request.inputs) else {
             return unresolved_inputs(&request.inputs);
         };
         self.edges.insert(ActivationEdge {
@@ -852,20 +935,37 @@ impl<'m> Solver<'m> {
             callsite,
         });
         self.deps.entry(key.clone()).or_default().insert(caller.clone());
-        if !self.activations.contains_key(&key) {
-            self.activations.insert(
-                key.clone(),
-                Activation {
-                    inputs: key.input_infos(),
-                    ret: Info::Pending,
-                },
-            );
-            self.enqueue(key.clone());
-        }
+        self.merge_activation_inputs(t, &key, canonical);
         self.activations
             .get(&key)
             .map(|s| s.ret.clone())
             .unwrap_or(Info::Pending)
+    }
+
+    /// Create the activation if new, or fold the call's non-dispatch inputs
+    /// into the existing one. A widened input means the body must re-run with
+    /// the broader fact, so the activation is re-enqueued — the same monotone
+    /// re-evaluation the return-estimate fixpoint already relies on.
+    fn merge_activation_inputs<T: Types<Ty = Ty>>(&mut self, t: &mut T, key: &ActivationKey, canonical: Vec<Info>) {
+        match self.activations.get(key) {
+            None => {
+                self.activations.insert(
+                    key.clone(),
+                    Activation {
+                        inputs: canonical,
+                        ret: Info::Pending,
+                    },
+                );
+                self.enqueue(key.clone());
+            }
+            Some(existing) => {
+                let (joined, changed) = self.join_inputs(t, &existing.inputs, &canonical);
+                if changed {
+                    self.activations.get_mut(key).unwrap().inputs = joined;
+                    self.enqueue(key.clone());
+                }
+            }
+        }
     }
 
     fn activate_boundary_request<T: Types<Ty = Ty>>(
@@ -875,7 +975,7 @@ impl<'m> Solver<'m> {
         callsite: CallsiteId,
         request: ActivationRequest,
     ) {
-        let Some(key) = ActivationKey::from_inputs(t, request.fn_id, &request.inputs) else {
+        let Some((key, canonical)) = self.make_key(t, request.fn_id, &request.inputs) else {
             return;
         };
         self.edges.insert(ActivationEdge {
@@ -883,16 +983,7 @@ impl<'m> Solver<'m> {
             callee: key.clone(),
             callsite,
         });
-        if !self.activations.contains_key(&key) {
-            self.activations.insert(
-                key.clone(),
-                Activation {
-                    inputs: key.input_infos(),
-                    ret: Info::Pending,
-                },
-            );
-            self.enqueue(key);
-        }
+        self.merge_activation_inputs(t, &key, canonical);
     }
 
     /// Apply `f`'s declared arrow set to this concrete inference input.
@@ -964,7 +1055,7 @@ impl<'m> Solver<'m> {
             .map(|(key, activation)| TypeInferActivationFact {
                 activation_id: *activation_ids.get(key).expect("activation id"),
                 fn_id: key.fn_id,
-                input_tys: key.input_tys(),
+                input_tys: info_tys(&activation.inputs),
                 return_state: TypeInferReturnState::from_info(&activation.ret),
             })
             .collect();
@@ -981,12 +1072,14 @@ impl<'m> Solver<'m> {
     }
 
     fn activation_ids(&self) -> HashMap<ActivationKey, TypeInferActivationId> {
+        let input_tys = |key: &ActivationKey| self.activations.get(key).map(|a| info_tys(&a.inputs)).unwrap_or_default();
         let mut keys: Vec<_> = self.activations.keys().cloned().collect();
         keys.sort_by(|a, b| {
+            let (a_tys, b_tys) = (input_tys(a), input_tys(b));
             a.fn_id
                 .cmp(&b.fn_id)
-                .then_with(|| a.inputs.len().cmp(&b.inputs.len()))
-                .then_with(|| format!("{:?}", a.input_tys()).cmp(&format!("{:?}", b.input_tys())))
+                .then_with(|| a_tys.len().cmp(&b_tys.len()))
+                .then_with(|| format!("{a_tys:?}").cmp(&format!("{b_tys:?}")))
         });
         keys.into_iter()
             .enumerate()
@@ -996,16 +1089,17 @@ impl<'m> Solver<'m> {
 
     fn activation_edge_facts(&self) -> Vec<TypeInferActivationEdgeFact> {
         let activation_ids = self.activation_ids();
+        let input_tys = |key: &ActivationKey| self.activations.get(key).map(|a| info_tys(&a.inputs)).unwrap_or_default();
         let mut facts: Vec<_> = self
             .edges
             .iter()
             .map(|edge| TypeInferActivationEdgeFact {
                 caller_activation_id: *activation_ids.get(&edge.caller).expect("caller activation id"),
                 caller_fn_id: edge.caller.fn_id,
-                caller_input_tys: edge.caller.input_tys(),
+                caller_input_tys: input_tys(&edge.caller),
                 callee_activation_id: *activation_ids.get(&edge.callee).expect("callee activation id"),
                 callee_fn_id: edge.callee.fn_id,
-                callee_input_tys: edge.callee.input_tys(),
+                callee_input_tys: input_tys(&edge.callee),
                 callsite: TypeInferCallsiteFact {
                     callsite: edge.callsite.clone(),
                     span_start: edge.callsite.ident.span().start as u64,
@@ -1088,7 +1182,7 @@ impl<'m> Solver<'m> {
 
     fn emit_activation_facts<T: Types<Ty = Ty> + RenderTypes>(&self, t: &mut T, tel: &dyn Telemetry) {
         let mut facts: Vec<_> = self.activations.iter().collect();
-        facts.sort_by_key(|(key, _)| (key.fn_id, key.inputs.len()));
+        facts.sort_by_key(|(key, activation)| (key.fn_id, activation.inputs.len()));
         let activation_ids = self.activation_ids();
         for (key, activation) in facts {
             let fn_name = self.module.fn_by_id(key.fn_id).name.clone();
@@ -1102,7 +1196,7 @@ impl<'m> Solver<'m> {
                 activation_id: activation_ids.get(key).expect("activation id").0,
                 fn_name: fn_name,
                 fn_id: key.fn_id.0 as u64,
-                input_count: key.inputs.len() as u64,
+                input_count: activation.inputs.len() as u64,
                 input_tys: input_tys,
                 state: info_state(&activation.ret),
                 return_ty: return_ty,
@@ -1136,18 +1230,17 @@ impl<'m> Solver<'m> {
         for edge in facts {
             let caller_name = self.module.fn_by_id(edge.caller.fn_id).name.clone();
             let callee_name = self.module.fn_by_id(edge.callee.fn_id).name.clone();
-            let caller_input_tys = edge
-                .caller
-                .input_tys()
-                .iter()
-                .map(|ty| t.display_for_diag(ty))
-                .collect::<Vec<_>>();
-            let callee_input_tys = edge
-                .callee
-                .input_tys()
-                .iter()
-                .map(|ty| t.display_for_diag(ty))
-                .collect::<Vec<_>>();
+            let edge_input_tys = |key: &ActivationKey| {
+                self.activations
+                    .get(key)
+                    .map(|a| info_tys(&a.inputs))
+                    .unwrap_or_default()
+                    .iter()
+                    .map(|ty| t.display_for_diag(ty))
+                    .collect::<Vec<_>>()
+            };
+            let caller_input_tys = edge_input_tys(&edge.caller);
+            let callee_input_tys = edge_input_tys(&edge.callee);
             tel.event(
                 &["fz", "type_infer", "activation_edge"],
                 metadata! {

@@ -662,10 +662,7 @@ impl Descr {
         }
 
         fn pure_list(d: &Descr) -> Option<&ListSig> {
-            axis_free(d)
-                .then_some(())
-                .and_then(|_| single_positive(&d.lists))
-                .filter(|_| d.tuples.is_empty() && d.resources.is_empty() && d.funcs.is_empty() && d.maps.is_empty())
+            d.as_pure_list()
         }
 
         fn pure_resource(d: &Descr) -> Option<&ResourceSig> {
@@ -742,6 +739,49 @@ impl Descr {
         }
 
         self.union(other).widen_for_recursive_spec_key()
+    }
+
+    /// This Descr as a single positive list shape (empty, non-empty, or
+    /// possibly-empty), if it is exactly that and nothing else. Shared by
+    /// `refine_widen` (list-join compatibility) and `convergence_class`.
+    pub(crate) fn as_pure_list(&self) -> Option<&ListSig> {
+        let axis_free = self.basic.is_empty()
+            && self.atoms.is_none()
+            && self.ints.is_none()
+            && self.floats.is_none()
+            && self.opaques.is_none()
+            && self.brands.is_none()
+            && self.vars.is_none();
+        if !axis_free || !self.tuples.is_empty() || !self.resources.is_empty() || !self.funcs.is_empty() || !self.maps.is_empty()
+        {
+            return None;
+        }
+        let [clause] = self.lists.as_slice() else {
+            return None;
+        };
+        if !clause.neg.is_empty() {
+            return None;
+        }
+        let [sig] = clause.pos.as_slice() else {
+            return None;
+        };
+        Some(sig)
+    }
+
+    /// The activation-identity class of this type for non-dispatch-slot
+    /// convergence. All pure list shapes collapse to one class so an
+    /// accumulator's emptiness and element type do not fork recursive
+    /// activations — that emptiness×element cartesian product is precisely the
+    /// balloon. The exact element type is still recovered by the `refine_widen`
+    /// join of the stored inputs. Every other shape keeps its exact identity,
+    /// so cross-family values (e.g. `int` vs a tagged tuple `{:cont, int}`)
+    /// stay on separate activations and their type errors remain observable.
+    pub(crate) fn convergence_class(&self) -> Descr {
+        if self.as_pure_list().is_some() {
+            Descr::list_of(Descr::any())
+        } else {
+            self.clone()
+        }
     }
 
     /// Erase closure-literal identity while preserving callable surface shape.

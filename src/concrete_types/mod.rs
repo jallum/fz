@@ -219,6 +219,9 @@ impl Types for ConcreteTypes {
     fn refine_widen(&mut self, a: &Ty, b: &Ty) -> Ty {
         ty_from_descr(ty_descr(a).refine_widen(ty_descr(b)))
     }
+    fn convergence_class(&mut self, a: &Ty) -> Ty {
+        ty_from_descr(ty_descr(a).convergence_class())
+    }
     fn union(&mut self, a: Ty, b: Ty) -> Ty {
         ty_from_descr(ty_descr(&a).union(ty_descr(&b)))
     }

@@ -1,4 +1,4 @@
-use super::callgraph::{build_recursion_graph, entry_seeds};
+use super::callgraph::entry_seeds;
 use super::closures::literal_closure_return_keys;
 use super::diagnostics::{compute_dead_branches, module_plan_stats};
 use super::effects::{prim_effects, term_effects};
@@ -8,7 +8,6 @@ use super::fn_types::{
     TYPE_FN_CALLS, VISIT_HARD_BOUND, WALK_CALLS, WORKLIST_POPS, body_key_for_fn_id, build_any_key_index,
     fixed_point_spec_key_for_arity, key_precedence_order, spec_key_for_fn_id, spec_key_input_tys,
 };
-use super::scc::tarjan_scc;
 use super::type_fn::type_fn;
 use super::walk::{WalkResult, walk_spec_for_discovery};
 use crate::concrete_types::ty_display;
@@ -1222,19 +1221,7 @@ fn discover_specs<T: Types<Ty = Ty> + ClosureTypes + RenderTypes>(
     m: &Module,
     tel: &dyn Telemetry,
 ) -> DiscoverOutput {
-    let call_graph = build_recursion_graph(m);
-    let mut sccs = tarjan_scc(&call_graph);
-    sccs.reverse();
-    let mut recursive_fns: HashSet<FnId> = HashSet::new();
-    for scc in &sccs {
-        if scc.len() > 1 {
-            recursive_fns.extend(scc.iter().copied());
-        } else if let Some(fid) = scc.first()
-            && call_graph.get(fid).is_some_and(|succs| succs.contains(fid))
-        {
-            recursive_fns.insert(*fid);
-        }
-    }
+    let recursive_fns = m.recursive_fns();
 
     let mut specs: HashMap<SpecKey, SpecPlan> = HashMap::new();
     let mut incoming_param_callable_capabilities: IncomingParamCallableCapabilities = HashMap::new();
