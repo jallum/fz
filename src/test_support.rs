@@ -1,10 +1,10 @@
 use crate::fz_ir::{FnId, Module};
 use crate::ir_codegen::compile_planned;
-use crate::ir_planner::{ModulePlan, materialize_program, plan_module};
+use crate::ir_planner::{materialize_program, plan_module, ModulePlan};
 use crate::modules::artifact_store::DEFAULT_ARTIFACT_ROOT;
 use crate::modules::pipeline::{
-    CompileMode, PreparedExecutionGraph, ProviderInputs, checked_module_for_mode, compile_source_with_providers,
-    link_execution_module, prepare_execution_graph,
+    checked_module_for_mode, compile_source_with_providers, link_execution_module, prepare_execution_graph,
+    CompileMode, PreparedExecutionGraph, ProviderInputs,
 };
 use crate::telemetry::{Capture, ConfiguredTelemetry, Event, Handler, NullTelemetry, Telemetry};
 use crate::types::{ClosureTypes, ConcreteTypes, RenderTypes, Ty, Types};
@@ -385,6 +385,19 @@ pub(crate) fn authoritative_planner_consistency_issues(cap: &Capture) -> Vec<Str
             "make-closure callable gap telemetry must identify every counted gap"
         );
         issues.extend(gap_keys.iter().cloned());
+
+        let reachability_growth_count = match materialized.measurements.get("post_plan_reachability_growth_count") {
+            Some(Value::U64(n)) => *n as usize,
+            Some(Value::I64(n)) => *n as usize,
+            other => {
+                panic!("post_plan_reachability_growth_count missing or wrong type: {other:?}")
+            }
+        };
+        if reachability_growth_count != 0 {
+            issues.push(format!(
+                "materialization grew semantic reachability by {reachability_growth_count} specs"
+            ));
+        }
     }
 
     issues

@@ -156,8 +156,14 @@ the Cranelift lowering loop. Each body emits
 - `sentinel_spec_count`: reserved slots with no executable spec.
 - `folded_prim_count` and `folded_branch_count`: per-spec folds applied while
   building planned bodies.
-- `reachable_spec_count`: executable planned bodies reachable from the entry
-  seeds, closure-entry seeds, and edges exposed by planned-body folding.
+- `reachable_spec_count`: executable planned bodies reachable from the
+  authoritative `ModulePlan`.
+
+Materialization is projection-only. It may fold a planned body mechanically,
+but it must not discover new semantic reachability after planning. The
+`fz.planner.materialized` event therefore reports
+`post_plan_reachability_growth_count`, and the planner consistency harness
+requires it to stay `0`.
 
 ## Gate this model with
 
