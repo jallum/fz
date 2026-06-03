@@ -1095,11 +1095,23 @@ fn runtime_graph_spawn_then_receive_runs_via_planned_codegen_path() {
 }
 
 #[test]
-fn runtime_graph_plain_spawn_make_closure_registers_zero_cap_target() {
+fn runtime_graph_plain_spawn_make_fn_ref_registers_zero_cap_target() {
     let mut t = ConcreteTypes;
     let graph = runtime_graph(&mut t, "fn child(), do: nil\nfn main() do spawn(child) end");
     let module = graph.module;
     let child = module.fn_by_name("child").expect("child fn");
+    let child_fn_refs = module
+        .fns
+        .iter()
+        .flat_map(|f| f.blocks.iter())
+        .flat_map(|block| block.stmts.iter())
+        .filter(|stmt| {
+            matches!(
+                stmt,
+                Stmt::Let(_, Prim::MakeFnRef(_, fn_id)) if *fn_id == child.id
+            )
+        })
+        .count();
     let child_make_closures = module
         .fns
         .iter()
@@ -1113,6 +1125,14 @@ fn runtime_graph_plain_spawn_make_closure_registers_zero_cap_target() {
             )
         })
         .count();
+    assert!(
+        child_fn_refs > 0,
+        "runtime graph plain spawn should carry child/0 as a thin fn ref; child_fn_refs={child_fn_refs}"
+    );
+    assert_eq!(
+        child_make_closures, 0,
+        "runtime graph plain spawn should not recover child/0 as MakeClosure([], ...)"
+    );
     let plan = graph.module_plan;
     let child_specs: Vec<_> = plan.specs.keys().filter(|key| key.fn_id == child.id).cloned().collect();
 
@@ -1140,7 +1160,7 @@ fn runtime_graph_plain_spawn_make_closure_registers_zero_cap_target() {
             .get(&child_sid)
             .map(|entry| entry.capture_count),
         Some(0),
-        "authoritative planned program must register child/0 as a zero-cap callable target when the prepared runtime graph still contains MakeClosure(child, []); child_make_closures={child_make_closures}"
+        "authoritative planned program must register child/0 as a zero-cap callable target when the prepared runtime graph carries MakeFnRef(child); child_fn_refs={child_fn_refs}; child_make_closures={child_make_closures}"
     );
 }
 
@@ -1622,6 +1642,30 @@ fn main(), do: apply_f(double, 21)
 }
 
 #[test]
+fn thin_fn_refs_lower_through_static_callable_singletons_without_closure_alloc() {
+    let ir = compile_and_grab_all_ir(
+        r#"
+fn double(x), do: x * 2
+fn apply_f(f, n), do: f.(n)
+fn main(), do: apply_f(double, 21)
+"#,
+    );
+    assert!(
+        ir.iter().any(|(_, body)| body.contains("fz_get_static_closure")),
+        "thin callable values should lower through the static callable singleton path: {:?}",
+        ir.iter().map(|(name, _)| name).collect::<Vec<_>>()
+    );
+    assert!(
+        ir.iter().all(|(_, body)| !body.contains("fz_alloc_closure")),
+        "thin callable values should not allocate closure environments in codegen:\n{}",
+        ir.iter()
+            .map(|(name, body)| format!("-- {name} --\n{body}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+}
+
+#[test]
 fn closure_captures_local_value() {
     assert_eq!(
         run_main(
@@ -1634,6 +1678,27 @@ end
 "#
         ),
         15
+    );
+}
+
+#[test]
+fn captured_closures_still_emit_closure_allocations() {
+    let ir = compile_and_grab_all_ir(
+        r#"
+fn make_adder(k), do: fn(x) -> x + k end
+fn main() do
+  f = make_adder(10)
+  f.(5)
+end
+"#,
+    );
+    assert!(
+        ir.iter().any(|(_, body)| body.contains("fz_alloc_closure")),
+        "captured closures should still allocate closure environments in codegen:\n{}",
+        ir.iter()
+            .map(|(name, body)| format!("-- {name} --\n{body}"))
+            .collect::<Vec<_>>()
+            .join("\n")
     );
 }
 

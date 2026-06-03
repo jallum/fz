@@ -95,6 +95,8 @@ things:
 
 Closure values store callable entries for indirect calls. Direct calls may
 target typed planned bodies when the planner selected that exact local target.
+Codegen lowers `Prim::MakeFnRef` through that callable-entry contract directly;
+`Prim::MakeClosure` is now the env-carrying path only.
 
 Static closure singletons are keyed by the spec slot (`cl_sid`) that codegen
 passes to `fz_get_static_closure`. The singleton table must include every

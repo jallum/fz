@@ -695,11 +695,12 @@ pub extern "C" fn fz_get_halt_cont(process: *mut Process, halt_cont_body_addr: u
 }
 
 /// fz-cps.1.7 — return the per-Process static zero-capture singleton for
-/// the given closure spec id. Populated at `make_process` time from
-/// `CompiledModule::static_closure_targets`. Cheaper than
-/// `fz_alloc_closure(fid, 0, body_addr)` at every `Prim::MakeClosure(fid, [])`
-/// site. See docs/cps-in-clif.md §8.2 acceptance: "Module-init region produces
-/// double/neg static closures exactly once."
+/// the given callable-entry spec id. Populated at `make_process` time from
+/// `CompiledModule::static_closure_targets`. Used by thin `Prim::MakeFnRef`
+/// values and by any remaining zero-capture callable singleton sites, instead
+/// of allocating a fresh closure object per use. See docs/cps-in-clif.md §8.2
+/// acceptance: "Module-init region produces double/neg static closures exactly
+/// once."
 #[unsafe(no_mangle)]
 pub extern "C" fn fz_get_static_closure(process: *mut Process, cl_sid: u32) -> u64 {
     let p = unsafe { &mut *process };

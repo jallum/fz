@@ -1045,17 +1045,13 @@ pub(crate) fn lower_prim<M: cranelift_module::Module, T: Types<Ty = Ty>>(
         | Prim::MapGet(..)
         | Prim::MatcherMapGet(..)
         | Prim::IsMatcherMapMiss(..) => lower_collection_prim(body, t, env, var_env, prim, block_id, block_env),
-        Prim::MakeFnRef(mk_ident, fn_id) => lower_make_closure(
+        Prim::MakeFnRef(mk_ident, fn_id) => lower_make_fn_ref(
             body,
             runtime,
-            var_env,
             callable_entry_fn_ids,
             spec_registry,
-            param_reprs,
-            return_reprs,
             mk_ident,
             *fn_id,
-            &[],
             block_id,
             stmt_idx,
         ),
@@ -1889,14 +1885,60 @@ fn lower_extern_generic<M: cranelift_module::Module>(
     Ok(LowerOut::DeadUnit)
 }
 
-/// Lower a `Prim::MakeClosure`. Two code paths: zero-capture singleton
-/// and non-zero capture alloc+populate. Codegen consumes the planned
-/// callable-entry contract directly; if planning/materialization failed
-/// to register a callable entry for a surviving `MakeClosure`, that is
-/// a model error, not a codegen fallback case.
-pub(crate) fn lower_make_closure<M: cranelift_module::Module>(
+fn resolve_callable_entry_sid(
+    callable_entry_fn_ids: &HashMap<u32, FuncId>,
+    spec_registry: &SpecRegistry,
+    mk_ident: &CallsiteIdent,
+    fn_id: FnId,
+    capture_count: usize,
+    block_id: BlockId,
+    stmt_idx: usize,
+) -> Result<u32, CodegenError> {
+    let _ = (block_id, stmt_idx, mk_ident);
+    spec_registry
+        .resolve_closure_body_spec(fn_id, |sid| callable_entry_fn_ids.contains_key(&sid.0))
+        .map(|sid| sid.0)
+        .ok_or_else(|| {
+            CodegenError::new(format!(
+                "callable value for FnId({}) with {} captures survived planning without a callable entry",
+                fn_id.0, capture_count
+            ))
+        })
+}
+
+/// Lower a `Prim::MakeFnRef`. Thin callable values carry no env, so codegen
+/// materializes the planned callable-entry singleton directly instead of
+/// routing through closure allocation.
+pub(crate) fn lower_make_fn_ref<M: cranelift_module::Module>(
     body: &mut CodegenFn<'_, '_, '_, M>,
     runtime: &RuntimeRefs,
+    callable_entry_fn_ids: &HashMap<u32, FuncId>,
+    spec_registry: &SpecRegistry,
+    mk_ident: &CallsiteIdent,
+    fn_id: FnId,
+    block_id: BlockId,
+    stmt_idx: usize,
+) -> Result<LowerOut, CodegenError> {
+    let cl_sid = resolve_callable_entry_sid(
+        callable_entry_fn_ids,
+        spec_registry,
+        mk_ident,
+        fn_id,
+        0,
+        block_id,
+        stmt_idx,
+    )?;
+    Ok(LowerOut::ValueRef(fetch_static_closure(
+        body.jmod, body.b, runtime, cl_sid,
+    )))
+}
+
+/// Lower a `Prim::MakeClosure`. Env-carrying closures allocate a closure
+/// object, store the callable-entry code pointer, then write captures through
+/// the runtime's schema-backed accessor.
+pub(crate) fn lower_make_closure<M: cranelift_module::Module>(
+    body: &mut CodegenFn<'_, '_, '_, M>,
+    _runtime: &RuntimeRefs,
     var_env: &HashMap<u32, CodegenValue>,
     callable_entry_fn_ids: &HashMap<u32, FuncId>,
     spec_registry: &SpecRegistry,
@@ -1908,33 +1950,22 @@ pub(crate) fn lower_make_closure<M: cranelift_module::Module>(
     block_id: BlockId,
     stmt_idx: usize,
 ) -> Result<LowerOut, CodegenError> {
-    // Allocate a closure env, store the body code pointer, then
-    // write captures through the runtime's schema-backed accessor.
-    // Resolve the narrow SpecId via the lambda's full input-type
-    // key (captures from caller's `fn_types`, args = `any`) and
-    // pick the typed stub keyed by that SpecId.
-    let n_caps = captured.len();
-    // The lambda body is resolved to the executable callable-entry spec
-    // selected by planning/materialization for this semantic family.
-    let _ = (block_id, stmt_idx, mk_ident);
-    let cl_sid_opt = spec_registry
-        .resolve_closure_body_spec(fn_id, |sid| callable_entry_fn_ids.contains_key(&sid.0))
-        .map(|sid| sid.0);
-    let Some(cl_sid) = cl_sid_opt else {
-        return Err(CodegenError::new(format!(
-            "MakeClosure for FnId({}) with {} captures survived planning without a callable entry",
-            fn_id.0, n_caps
-        )));
-    };
-    // Zero-capture MakeClosure: look up the per-Process static
-    // singleton instead of allocating per call site. The
-    // singleton's code pointer holds the closure-target body
-    // address. See docs/cps-in-clif.md §8.2.
     if captured.is_empty() {
-        return Ok(LowerOut::ValueRef(fetch_static_closure(
-            body.jmod, body.b, runtime, cl_sid,
+        return Err(CodegenError::new(format!(
+            "MakeClosure for FnId({}) reached codegen with zero captures; thin callable values must lower as MakeFnRef",
+            fn_id.0
         )));
     }
+    let n_caps = captured.len();
+    let cl_sid = resolve_callable_entry_sid(
+        callable_entry_fn_ids,
+        spec_registry,
+        mk_ident,
+        fn_id,
+        n_caps,
+        block_id,
+        stmt_idx,
+    )?;
     Ok(LowerOut::ValueRef(emit_capturing_closure(
         body,
         var_env,
