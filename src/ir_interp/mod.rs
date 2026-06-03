@@ -362,7 +362,7 @@ impl IrInterpRuntime {
                         // the Process and emit the same process_exited event
                         // through the single shared emit site.
                         unsafe {
-                            (*proc_ptr).halt_value = value_to_halt(val);
+                            (*proc_ptr).halt_value = value_to_halt(proc_ptr, val);
                             ExitRecord::emit(tel, pid, &*proc_ptr);
                         }
                         self.set_process_state(pid, ProcessState::Exited);
@@ -457,11 +457,11 @@ fn gc_interp_scheduler_roots(
     let resume_len = resume_args.len();
     let mut roots: Vec<fz_runtime::any_value::AnyValue> = Vec::new();
     for value in resume_args.iter() {
-        roots.push(value.value()?);
+        roots.push(value.value(process as *mut Process)?);
     }
     for (_, caps) in after.iter() {
         for value in caps {
-            roots.push(value.value()?);
+            roots.push(value.value(process as *mut Process)?);
         }
     }
 
@@ -522,7 +522,14 @@ fn run_main_inner(
     let halt_val = completions
         .iter()
         .rev()
-        .find_map(|(pid, value)| (*pid == 1).then_some(value_to_halt(*value)))
+        .find_map(|(pid, value)| {
+            (*pid == 1).then(|| {
+                runtime
+                    .task(*pid)
+                    .map(|task| value_to_halt(task as *const Process as *mut Process, *value))
+            })
+        })
+        .flatten()
         .unwrap_or(0);
     Ok((halt_val, runtime))
 }
@@ -575,13 +582,14 @@ pub fn run_test_fn(tel: &dyn Telemetry, module: &Module, fn_id: FnId) -> Result<
     }
 }
 
-fn value_to_halt(v: AnyValue) -> i64 {
+fn value_to_halt(proc: *mut Process, v: AnyValue) -> i64 {
     match v {
         AnyValue::Null => 0,
         AnyValue::Int(i) => i,
         AnyValue::Float(f) => f.to_bits() as i64,
         AnyValue::Atom(v) => v as i64,
         AnyValue::EmptyList => 0,
+        AnyValue::FnRef(_) => v.value(proc).expect("materialize fn ref halt value").raw() as i64,
         AnyValue::Ref(v) => v.raw_word() as i64,
     }
 }

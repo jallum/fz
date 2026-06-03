@@ -30,7 +30,7 @@ pub(super) fn interp_list_cons(
         AnyValue::Int(value) => Ok::<u64, String>(fz_list_cons_int(proc, value, tail_ref)),
         AnyValue::Float(value) => Ok::<u64, String>(fz_list_cons_float(proc, value, tail_ref)),
         AnyValue::Atom(value) => Ok::<u64, String>(fz_list_cons_atom(proc, value as u64, tail_ref)),
-        AnyValue::Null | AnyValue::EmptyList | AnyValue::Ref(_) => {
+        AnyValue::Null | AnyValue::EmptyList | AnyValue::FnRef(_) | AnyValue::Ref(_) => {
             let head = head
                 .as_ref_word(proc)
                 .map_err(|err| format!("{context}: cannot create head ref: {err}"))?;
@@ -51,7 +51,7 @@ pub(super) fn interp_map_put(
         AnyValue::Int(value) => Ok::<u64, String>(fz_map_put_int(proc, map_bits, key_ref, value)),
         AnyValue::Float(value) => Ok::<u64, String>(fz_map_put_float(proc, map_bits, key_ref, value)),
         AnyValue::Atom(value) => Ok::<u64, String>(fz_map_put_atom(proc, map_bits, key_ref, value as u64)),
-        AnyValue::Null | AnyValue::EmptyList | AnyValue::Ref(_) => {
+        AnyValue::Null | AnyValue::EmptyList | AnyValue::FnRef(_) | AnyValue::Ref(_) => {
             let value_ref = value
                 .as_ref_word(proc)
                 .map_err(|err| format!("{context}: cannot create value ref: {err}"))?;
@@ -61,7 +61,7 @@ pub(super) fn interp_map_put(
 }
 
 pub(super) fn interp_list_head(proc: *mut Process, value: AnyValue) -> Result<AnyValue, String> {
-    let slot = value.value()?;
+    let slot = value.value(proc)?;
     if !interp_is_list_cons(slot) {
         return Err(format!("ListHead: subject is not a list cons ({:?})", slot));
     }
@@ -70,7 +70,7 @@ pub(super) fn interp_list_head(proc: *mut Process, value: AnyValue) -> Result<An
 }
 
 pub(super) fn interp_list_tail(proc: *mut Process, value: AnyValue) -> Result<AnyValue, String> {
-    let slot = value.value()?;
+    let slot = value.value(proc)?;
     if !interp_is_list_cons(slot) {
         return Err(format!("ListTail: subject is not a list cons ({:?})", slot));
     }
@@ -79,7 +79,7 @@ pub(super) fn interp_list_tail(proc: *mut Process, value: AnyValue) -> Result<An
 }
 
 pub(super) fn interp_map_get(proc: *mut Process, map: AnyValue, key: AnyValue) -> Result<AnyValue, String> {
-    let map_slot = map.value()?;
+    let map_slot = map.value(proc)?;
     if map_slot.kind() != ValueKind::RESOURCE && map_slot.kind() != ValueKind::STRUCT && !is_map_value(map_slot) {
         return Ok(interp_nil_value());
     }
@@ -190,14 +190,7 @@ pub(super) fn eval_prim<T: Types<Ty = Ty>>(
                 "ConstBitstring",
             )?
         }
-        Prim::MakeFnRef(_, fn_id) => {
-            let heap = &mut unsafe { &mut *runtime.cur_proc() }.heap;
-            let bits = heap.alloc_closure_slots(fn_id.0, 0, 0);
-            let p = closure_addr_from_tagged(bits).expect("new fn ref closure ptr");
-            unsafe { write(p.add(8) as *mut u64, fn_id.0 as u64) };
-            let closure_addr = closure_addr_from_tagged(bits).expect("fn ref closure bits");
-            AnyValue::Ref(AnyValueRef::from_heap_object(ValueKind::CLOSURE, closure_addr).expect("fn ref closure ref"))
-        }
+        Prim::MakeFnRef(_, fn_id) => AnyValue::FnRef(*fn_id),
         Prim::MakeClosure(_, fn_id, captured) => {
             let cap_vals: Vec<AnyValue> = collect(env, captured)?;
             let heap = &mut unsafe { &mut *runtime.cur_proc() }.heap;
@@ -205,7 +198,7 @@ pub(super) fn eval_prim<T: Types<Ty = Ty>>(
             let p = closure_addr_from_tagged(bits).expect("new closure ptr");
             unsafe { write(p.add(8) as *mut u64, fn_id.0 as u64) };
             for (i, value) in cap_vals.iter().enumerate() {
-                unsafe { heap.write_closure_capture_value(p, i, value.value()?) };
+                unsafe { heap.write_closure_capture_value(p, i, value.value(runtime.cur_proc())?) };
             }
             let closure_addr = closure_addr_from_tagged(bits).expect("closure bits");
             AnyValue::Ref(AnyValueRef::from_heap_object(ValueKind::CLOSURE, closure_addr).expect("closure ref"))
@@ -216,9 +209,11 @@ pub(super) fn eval_prim<T: Types<Ty = Ty>>(
             let p = unsafe { &mut *runtime.cur_proc() }.heap.alloc_struct(schema_id);
             for (i, v) in elems.iter().enumerate() {
                 let val = env_get(env, *v)?;
-                unsafe { &mut *runtime.cur_proc() }
-                    .heap
-                    .write_field_slot(p, (i * 8) as u32, val.value()?);
+                unsafe { &mut *runtime.cur_proc() }.heap.write_field_slot(
+                    p,
+                    (i * 8) as u32,
+                    val.value(runtime.cur_proc())?,
+                );
             }
             AnyValue::Ref(AnyValueRef::from_heap_object(ValueKind::STRUCT, p).expect("tuple ref"))
         }
@@ -237,9 +232,11 @@ pub(super) fn eval_prim<T: Types<Ty = Ty>>(
             let p = unsafe { &mut *runtime.cur_proc() }.heap.alloc_struct(schema_id);
             for (i, (_, v)) in fields.iter().enumerate() {
                 let val = env_get(env, *v)?;
-                unsafe { &mut *runtime.cur_proc() }
-                    .heap
-                    .write_field_slot(p, (i * 8) as u32, val.value()?);
+                unsafe { &mut *runtime.cur_proc() }.heap.write_field_slot(
+                    p,
+                    (i * 8) as u32,
+                    val.value(runtime.cur_proc())?,
+                );
             }
             AnyValue::Ref(AnyValueRef::from_heap_object(ValueKind::STRUCT, p).expect("struct ref"))
         }
@@ -250,14 +247,14 @@ pub(super) fn eval_prim<T: Types<Ty = Ty>>(
         }
         Prim::DestTupleSet { dest, index, value, .. } => {
             let dest = env_get(env, *dest)?;
-            let dest_value = dest.value()?;
+            let dest_value = dest.value(runtime.cur_proc())?;
             if dest_value.kind() != ValueKind::STRUCT {
                 return Err("DestTupleSet: destination is not a Struct".to_string());
             }
             let p = dest_value
                 .heap_addr()
                 .ok_or_else(|| "DestTupleSet: null destination".to_string())?;
-            let value = env_get(env, *value)?.value()?;
+            let value = env_get(env, *value)?.value(runtime.cur_proc())?;
             unsafe { &mut *runtime.cur_proc() }
                 .heap
                 .write_field_slot(p, index * 8, value);
@@ -266,7 +263,7 @@ pub(super) fn eval_prim<T: Types<Ty = Ty>>(
         Prim::DestFreeze { dest, .. } => env_get(env, *dest)?,
         Prim::TupleField(c, idx) => {
             let cv = env_get(env, *c)?;
-            let slot = cv.value()?;
+            let slot = cv.value(runtime.cur_proc())?;
             if slot.kind() != ValueKind::STRUCT {
                 return Err("TupleField: subject is not a Struct".to_string());
             }
@@ -277,7 +274,7 @@ pub(super) fn eval_prim<T: Types<Ty = Ty>>(
         }
         Prim::StructField(c, field) => {
             let cv = env_get(env, *c)?;
-            let slot = cv.value()?;
+            let slot = cv.value(runtime.cur_proc())?;
             if slot.kind() == ValueKind::MAP {
                 let atom_id = module
                     .atom_names
@@ -310,7 +307,7 @@ pub(super) fn eval_prim<T: Types<Ty = Ty>>(
             if matches!(val, AnyValue::Int(_)) {
                 return Ok(interp_bool_value(descr.type_test_has_ints()));
             }
-            let val = val.value()?;
+            let val = val.value(runtime.cur_proc())?;
             let mut matched = false;
             if descr.type_test_has_ints() {
                 matched |= val.kind() == ValueKind::INT;
@@ -390,7 +387,7 @@ pub(super) fn eval_prim<T: Types<Ty = Ty>>(
         }
         Prim::IsListCons(c) => {
             let cv = env_get(env, *c)?;
-            interp_bool_value(cv.value().ok().is_some_and(interp_is_list_cons))
+            interp_bool_value(cv.value(runtime.cur_proc()).ok().is_some_and(interp_is_list_cons))
         }
         Prim::MapGet(m, k) => {
             let mv = env_get(env, *m)?;
@@ -400,7 +397,7 @@ pub(super) fn eval_prim<T: Types<Ty = Ty>>(
         Prim::MatcherMapGet(m, k) => {
             let mv = env_get(env, *m)?;
             let kv = env_get(env, *k)?;
-            let map = mv.value()?;
+            let map = mv.value(runtime.cur_proc())?;
             if !is_map_value(map) {
                 return Err("MatcherMapGet expects a map".to_string());
             }
@@ -430,7 +427,7 @@ pub(super) fn eval_prim<T: Types<Ty = Ty>>(
         }
         Prim::MapUpdate(base, entries) => {
             let base = env_get(env, *base)?;
-            let mut map_bits = base.value()?.ref_word().raw_word();
+            let mut map_bits = base.value(runtime.cur_proc())?.ref_word().raw_word();
             for (kv, vv) in entries {
                 let k = env_get(env, *kv)?;
                 let v = env_get(env, *vv)?;
@@ -442,7 +439,11 @@ pub(super) fn eval_prim<T: Types<Ty = Ty>>(
             let map_bits = match base {
                 Some(base) => {
                     let base = env_get(env, *base)?;
-                    fz_map_dest_begin_update(runtime.cur_proc(), base.value()?.ref_word().raw_word(), *extra as u32)
+                    fz_map_dest_begin_update(
+                        runtime.cur_proc(),
+                        base.value(runtime.cur_proc())?.ref_word().raw_word(),
+                        *extra as u32,
+                    )
                 }
                 None => fz_map_dest_begin(runtime.cur_proc(), *extra as u32),
             };
@@ -452,11 +453,11 @@ pub(super) fn eval_prim<T: Types<Ty = Ty>>(
             let map = env_get(env, *map)?;
             let key = env_get(env, *key)?;
             let value = env_get(env, *value)?;
-            let key = key.value()?;
-            let value = value.value()?;
+            let key = key.value(runtime.cur_proc())?;
+            let value = value.value(runtime.cur_proc())?;
             fz_map_dest_put_parts(
                 runtime.cur_proc(),
-                map.value()?.ref_word().raw_word(),
+                map.value(runtime.cur_proc())?.ref_word().raw_word(),
                 key.raw(),
                 key.kind().tag() as u64,
                 value.raw(),
@@ -466,7 +467,7 @@ pub(super) fn eval_prim<T: Types<Ty = Ty>>(
         }
         Prim::DestMapFreeze { map, .. } => {
             let map = env_get(env, *map)?;
-            let map_bits = fz_map_dest_freeze(runtime.cur_proc(), map.value()?.ref_word().raw_word());
+            let map_bits = fz_map_dest_freeze(runtime.cur_proc(), map.value(runtime.cur_proc())?.ref_word().raw_word());
             interp_value_from_ref_word(map_bits, "DestMapFreeze")?
         }
         Prim::MakeList(elems, tail) => {

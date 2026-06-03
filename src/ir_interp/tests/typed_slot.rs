@@ -39,6 +39,15 @@ fn capture(src: &str) -> String {
     dbg.lines().join("\n")
 }
 
+fn checked_halt_and_closure_allocs(src: &str) -> (i64, u64) {
+    let frontend = compile_source(src.to_string(), "interp-test.fz".to_string())
+        .unwrap_or_else(|err| panic!("frontend: {:?}", err.diagnostics));
+    let (halt, runtime) = run_main_with_runtime(&NullTelemetry, &frontend.module).expect("interp run");
+    let task = runtime.task(1).expect("main task remains registered");
+    let closure_allocs = task.heap.alloc_stats_snapshot().closure.allocs;
+    (halt, closure_allocs)
+}
+
 #[test]
 fn interp_typed_int_arithmetic_full_i64() {
     assert_eq!(run("fn main(), do: 4611686018427387904 + 7"), 4611686018427387911);
@@ -72,6 +81,62 @@ fn interp_typed_float_raw() {
 #[test]
 fn interp_render_raw_float_in_container() {
     assert_eq!(capture("fn main(), do: dbg([1.5])"), "[1.5]");
+}
+
+#[test]
+fn interp_named_fn_ref_does_not_allocate_closure_object() {
+    let (halt, closure_allocs) = checked_halt_and_closure_allocs(
+        r#"
+        fn id(x), do: x
+        fn apply(f, x), do: f.(x)
+        fn main() do
+          f = &id/1
+          r = apply(f, 41)
+          r
+        end
+    "#,
+    );
+    assert_eq!(halt, 41);
+    assert_eq!(
+        closure_allocs, 0,
+        "thin named fn refs should not allocate closure objects in interp"
+    );
+}
+
+#[test]
+fn interp_zero_capture_lambda_does_not_allocate_closure_object() {
+    let (halt, closure_allocs) = checked_halt_and_closure_allocs(
+        r#"
+        fn apply(f, x), do: f.(x)
+        fn main() do
+          f = fn (x) -> x end
+          r = apply(f, 41)
+          r
+        end
+    "#,
+    );
+    assert_eq!(halt, 41);
+    assert_eq!(
+        closure_allocs, 0,
+        "zero-capture lambdas lower to thin fn refs and should not allocate closure objects in interp",
+    );
+}
+
+#[test]
+fn interp_captured_lambda_still_allocates_closure_object() {
+    let (halt, closure_allocs) = checked_halt_and_closure_allocs(
+        r#"
+        fn apply(f, x), do: f.(x)
+        fn main() do
+          k = 7
+          f = fn (x) -> x + k end
+          r = apply(f, 1)
+          r
+        end
+    "#,
+    );
+    assert_eq!(halt, 8);
+    assert_eq!(closure_allocs, 1, "captured lambdas remain heap closures in interp",);
 }
 
 #[test]

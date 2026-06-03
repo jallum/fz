@@ -218,7 +218,7 @@ pub(super) fn run_fn_typed<T: Types<Ty = Ty> + ClosureTypes + RenderTypes>(
                     continuation,
                 } => {
                     let cl = env_get(&env, *closure)?;
-                    let (lam_fn, mut clos_args) = unpack_closure(cl.value()?)?;
+                    let (lam_fn, mut clos_args) = unpack_callable(cl, runtime.cur_proc())?;
                     clos_args.extend(collect(&env, call_args)?);
                     let outer_cap_vals = collect(&env, &continuation.captured)?;
                     match run_fn_typed(runtime, t, module, tel, module_types, lam_fn, clos_args)? {
@@ -261,7 +261,7 @@ pub(super) fn run_fn_typed<T: Types<Ty = Ty> + ClosureTypes + RenderTypes>(
                     args: call_args,
                 } => {
                     let cl = env_get(&env, *closure)?;
-                    let (lam_fn, mut clos_args) = unpack_closure(cl.value()?)?;
+                    let (lam_fn, mut clos_args) = unpack_callable(cl, runtime.cur_proc())?;
                     clos_args.extend(collect(&env, call_args)?);
                     fn_id = lam_fn;
                     args = clos_args;

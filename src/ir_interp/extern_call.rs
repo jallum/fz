@@ -152,7 +152,7 @@ pub(super) fn call_extern<T: Types<Ty = Ty>>(
             }
             // args[0] is the zero-arg closure to run in the child task;
             // args[1] (fz_spawn_opt) is a min_heap_size hint — ignored here.
-            let (fn_id, captured) = unpack_closure(args[0].value()?)?;
+            let (fn_id, captured) = unpack_callable(args[0], runtime.cur_proc())?;
             let pid = runtime.spawn(module, fn_id, captured)?;
             return Ok(AnyValue::Int(pid as i64));
         }
@@ -185,8 +185,13 @@ pub(super) fn call_extern<T: Types<Ty = Ty>>(
             let payload = args[0]
                 .as_i64()
                 .ok_or_else(|| "make_resource/2: payload must be integer".to_string())?;
-            return super::make_resource_in_current_process(runtime.cur_proc(), module, payload, args[1].value()?)
-                .map(interp_value_from_slot);
+            return super::make_resource_in_current_process(
+                runtime.cur_proc(),
+                module,
+                payload,
+                args[1].value(runtime.cur_proc())?,
+            )
+            .map(interp_value_from_slot);
         }
         "fz_brand_bitstring_as_utf8" => {
             if args.len() != 1 {

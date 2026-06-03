@@ -221,7 +221,7 @@ pub(super) fn resolve_matcher_subject(
         SubjectRef::Input(id) => inputs.get(id.0 as usize).copied(),
         SubjectRef::TupleField { tuple, index } => {
             let parent = resolve_matcher_subject(proc, module, matcher, tuple, inputs, pinned, state)?;
-            let parent_slot = parent.value().ok()?;
+            let parent_slot = parent.value(proc).ok()?;
             if parent_slot.kind() != ValueKind::STRUCT {
                 return None;
             }
@@ -261,7 +261,7 @@ pub(super) fn matcher_test_hit(
     match test {
         MatcherTest::EqConst { subject, value } => {
             resolve_matcher_subject(runtime.cur_proc(), module, matcher, subject, inputs, pinned, state)
-                .is_some_and(|v| matcher_const_eq(module, v, value))
+                .is_some_and(|v| matcher_const_eq(runtime.cur_proc(), module, v, value))
         }
         MatcherTest::EqPinned {
             subject,
@@ -287,7 +287,7 @@ pub(super) fn matcher_test_hit(
         MatcherTest::TupleArity { subject, arity } => {
             resolve_matcher_subject(runtime.cur_proc(), module, matcher, subject, inputs, pinned, state).is_some_and(
                 |v| {
-                    v.value().ok().is_some_and(|v| {
+                    v.value(runtime.cur_proc()).ok().is_some_and(|v| {
                         v.kind() == ValueKind::STRUCT
                             && v.heap_addr().is_some_and(|p| {
                                 (unsafe { struct_schema_id(p) }) == interp_tuple_schema_id(runtime, *arity as usize)
@@ -298,11 +298,11 @@ pub(super) fn matcher_test_hit(
         }
         MatcherTest::ListCons { subject } => {
             resolve_matcher_subject(runtime.cur_proc(), module, matcher, subject, inputs, pinned, state)
-                .is_some_and(|v| v.value().ok().is_some_and(interp_is_list_cons))
+                .is_some_and(|v| v.value(runtime.cur_proc()).ok().is_some_and(interp_is_list_cons))
         }
         MatcherTest::MapKind { subject } => {
             resolve_matcher_subject(runtime.cur_proc(), module, matcher, subject, inputs, pinned, state)
-                .is_some_and(|v| v.value().ok().is_some_and(is_map_value))
+                .is_some_and(|v| v.value(runtime.cur_proc()).ok().is_some_and(is_map_value))
         }
         MatcherTest::MapHasKey { subject, key } => {
             let Some(v) = resolve_matcher_subject(runtime.cur_proc(), module, matcher, subject, inputs, pinned, state)
@@ -322,7 +322,7 @@ pub(super) fn matcher_test_hit(
                 return false;
             };
             value
-                .value()
+                .value(runtime.cur_proc())
                 .ok()
                 .is_some_and(|value| matcher_read_bitstring(runtime.cur_proc(), subject, value, fields, state))
         }
@@ -347,26 +347,29 @@ pub(super) fn matcher_switch_hit(
         (SwitchKind::Bool, SwitchKey::Bool(true)) => val.is_atom_id(TRUE_ATOM_ID),
         (SwitchKind::Bool, SwitchKey::Bool(false)) => val.is_false(),
         (SwitchKind::Nil, SwitchKey::Nil) => val.is_nil(),
-        (SwitchKind::TupleArity, SwitchKey::Arity(arity)) => val.value().ok().is_some_and(|val| {
+        (SwitchKind::TupleArity, SwitchKey::Arity(arity)) => val.value(runtime.cur_proc()).ok().is_some_and(|val| {
             val.kind() == ValueKind::STRUCT
                 && val.heap_addr().is_some_and(|p| {
                     (unsafe { struct_schema_id(p) }) == interp_tuple_schema_id(runtime, *arity as usize)
                 })
         }),
         (SwitchKind::Float, SwitchKey::FloatBits(bits)) => {
-            matcher_const_eq(module, val, &MatcherConst::FloatBits(*bits))
+            matcher_const_eq(runtime.cur_proc(), module, val, &MatcherConst::FloatBits(*bits))
         }
-        (SwitchKind::Binary, SwitchKey::Utf8Binary(bytes)) => {
-            matcher_const_eq(module, val, &MatcherConst::Utf8Binary(bytes.clone()))
-        }
+        (SwitchKind::Binary, SwitchKey::Utf8Binary(bytes)) => matcher_const_eq(
+            runtime.cur_proc(),
+            module,
+            val,
+            &MatcherConst::Utf8Binary(bytes.clone()),
+        ),
         (SwitchKind::ListCons, SwitchKey::Nil) => val.is_nil(),
         (SwitchKind::ListCons, SwitchKey::EmptyList) => val.is_empty_list(),
-        (SwitchKind::ListCons, SwitchKey::Cons) => val.value().ok().is_some_and(interp_is_list_cons),
+        (SwitchKind::ListCons, SwitchKey::Cons) => val.value(runtime.cur_proc()).ok().is_some_and(interp_is_list_cons),
         _ => false,
     }
 }
 
-pub(super) fn matcher_const_eq(module: &Module, val: AnyValue, value: &MatcherConst) -> bool {
+pub(super) fn matcher_const_eq(proc: *mut Process, module: &Module, val: AnyValue, value: &MatcherConst) -> bool {
     match value {
         MatcherConst::Int(n) => val.as_i64() == Some(*n),
         MatcherConst::FloatBits(bits) => {
@@ -381,20 +384,23 @@ pub(super) fn matcher_const_eq(module: &Module, val: AnyValue, value: &MatcherCo
         MatcherConst::Bool(false) => val.is_false(),
         MatcherConst::Nil => val.is_nil(),
         MatcherConst::EmptyList => val.is_empty_list(),
-        MatcherConst::Utf8Binary(bytes) => val.value().ok().is_some_and(|val| {
-            val.heap_object_word().and_then(bitstring_like_ptr).is_some_and(|p| {
-                if !unsafe { is_bitstring_like(p) } {
-                    return false;
-                }
-                let bit_len = unsafe { bitstring_bit_len(p) };
-                if bit_len != (bytes.len() as u64) * 8 {
-                    return false;
-                }
-                let ptr = unsafe { bitstring_byte_ptr(p) };
-                let slice = unsafe { from_raw_parts(ptr, bytes.len()) };
-                slice == bytes.as_slice()
-            })
-        }),
+        MatcherConst::Utf8Binary(bytes) => match val {
+            AnyValue::FnRef(_) => false,
+            other => other.value(proc).ok().is_some_and(|val| {
+                val.heap_object_word().and_then(bitstring_like_ptr).is_some_and(|p| {
+                    if !unsafe { is_bitstring_like(p) } {
+                        return false;
+                    }
+                    let bit_len = unsafe { bitstring_bit_len(p) };
+                    if bit_len != (bytes.len() as u64) * 8 {
+                        return false;
+                    }
+                    let ptr = unsafe { bitstring_byte_ptr(p) };
+                    let slice = unsafe { from_raw_parts(ptr, bytes.len()) };
+                    slice == bytes.as_slice()
+                })
+            }),
+        },
         MatcherConst::PreparedKey(_) => false,
     }
 }
@@ -407,7 +413,7 @@ pub(super) fn matcher_map_lookup(
     key: &MatcherConst,
     pinned: &HashMap<String, AnyValue>,
 ) -> Option<AnyValue> {
-    if !map.value().ok().is_some_and(is_map_value) {
+    if !map.value(proc).ok().is_some_and(is_map_value) {
         return None;
     }
     let key = matcher_const_key_value(matcher, module, key, pinned)?;
