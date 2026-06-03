@@ -30,6 +30,7 @@ pub(crate) fn emit_aot_c_main<M: ClModule>(
     c_main_id: FuncId,
     c_main_sig: &Signature,
     main_fz_func_id: FuncId,
+    main_halt_kind: u32,
     main_trampoline_id: FuncId,
     halt_cont_body_ids: [FuncId; 3],
     entry_thunk_id: FuncId,
@@ -148,10 +149,13 @@ pub(crate) fn emit_aot_c_main<M: ClModule>(
             b.ins().call(set_resume_fref, &[proc_v, resume_addr_v]);
         }
 
-        // fz_aot_run_main(proc, main_fp, main_trampoline_addr): wraps main_fp
-        // in a synthetic inner closure (via fz_main_trampoline) + entry thunk.
+        // fz_aot_run_main(proc, main_fp, main_trampoline_addr, main_halt_kind):
+        // wraps main_fp in a synthetic inner closure (via fz_main_trampoline)
+        // + entry thunk. The halt kind must match the entry fn's computed
+        // halt seam so the root task picks the right halt continuation body.
         let run_fref = jmod.declare_func_in_func(run_id, b.func);
-        let run_call = b.ins().call(run_fref, &[proc_v, main_fp, mt_addr]);
+        let main_halt_kind_v = b.ins().iconst(types::I32, main_halt_kind as i64);
+        let run_call = b.ins().call(run_fref, &[proc_v, main_fp, mt_addr, main_halt_kind_v]);
         let result = b.inst_results(run_call)[0];
         b.ins().return_(&[result]);
 

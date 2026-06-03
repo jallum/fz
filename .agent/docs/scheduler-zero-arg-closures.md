@@ -145,8 +145,10 @@ first resume it supplies the inner closure's halt continuation and tail-calls it
 The inner closure is a spawned user closure (for `spawn_closure`) or a synthetic
 closure for a main-style entry — a main fn has a raw `(cont)` body, so its inner
 closure carries the raw fn pointer in a raw-int capture and runs through the fixed
-`fz_main_trampoline` body. Either way the spawned task's `runnable` is just a
-closure, dispatched exactly like a resumed continuation.
+`fz_main_trampoline` body, with the closure header's `halt_kind` set from the
+entry fn's computed halt seam on both JIT and AOT paths. Either way the spawned
+task's `runnable` is just a closure, dispatched exactly like a resumed
+continuation.
 
 Every field resolves to the same scheduler action: resume the `runnable` closure
 through `fz_resume`. The continuation always carries its own state; the scheduler

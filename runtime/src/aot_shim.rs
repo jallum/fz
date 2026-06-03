@@ -7,7 +7,7 @@
 //!                            entry_thunk_addr)`
 //!   2. for each static closure target:
 //!      `fz_aot_register_static_closure(proc, cl_sid, fn_id, code_addr)`
-//!   3. `exit = fz_aot_run_main(proc, main_fp, main_trampoline_addr)`
+//!   3. `exit = fz_aot_run_main(proc, main_fp, main_trampoline_addr, main_halt_kind)`
 //!   4. `return exit`
 //!
 //! `fz_entry_thunk`, `fz_main_trampoline`, `fz_resume`, `fz_halt_cont_body`,
@@ -538,12 +538,18 @@ extern "C" fn aot_send_hook(sender_ptr: *mut Process, scheduler: *mut (), receiv
 /// tear down AOT scheduler state. Returns 0 on clean completion.
 /// # Safety
 /// `proc`, `main_fp`, `main_trampoline_addr` must be valid pointers produced
-/// by AOT codegen and `fz_aot_setup`. Called only from the AOT-emitted
+/// by AOT codegen and `fz_aot_setup`; `main_halt_kind` must match the entry
+/// fn's computed halt seam kind. Called only from the AOT-emitted
 /// C `main`; clippy's `not_unsafe_ptr_arg_deref` is silenced because
 /// the C ABI signature is fixed.
 #[unsafe(no_mangle)]
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
-pub extern "C" fn fz_aot_run_main(proc: *mut Process, main_fp: *const u8, main_trampoline_addr: *const u8) -> i32 {
+pub extern "C" fn fz_aot_run_main(
+    proc: *mut Process,
+    main_fp: *const u8,
+    main_trampoline_addr: *const u8,
+    main_halt_kind: u32,
+) -> i32 {
     assert!(!proc.is_null(), "fz_aot_run_main: null process");
     assert!(!main_fp.is_null(), "fz_aot_run_main: null main_fp");
     assert!(
@@ -556,15 +562,11 @@ pub extern "C" fn fz_aot_run_main(proc: *mut Process, main_fp: *const u8, main_t
 
     // Make main a closure: a synthetic inner closure carrying the raw `(cont)`
     // main fp (via `fz_main_trampoline`), wrapped in an entry thunk queued as
-    // `runnable`. AOT main has always used the strict (kind 0) halt-cont. The
-    // scheduler resumes it through the one `fz_resume` verb, like any task.
+    // `runnable`. The scheduler resumes it through the one `fz_resume` verb,
+    // like any task; the inner closure carries the entry fn's halt_kind so the
+    // thunk picks the matching halt continuation body.
     let process = unsafe { &mut *proc };
-    let inner = mint_main_inner(
-        &mut process.heap,
-        main_trampoline_addr,
-        main_fp,
-        /* halt_kind = strict */ 0,
-    );
+    let inner = mint_main_inner(&mut process.heap, main_trampoline_addr, main_fp, main_halt_kind as u16);
     let thunk = mint_entry_thunk(&mut process.heap, entry_thunk_addr, inner);
     process.set_runnable_closure(thunk);
     // Scaffolding is prepared before main runs; reset so alloc telemetry

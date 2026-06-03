@@ -454,7 +454,7 @@ impl Backend for AotBackend {
             .declare_function("fz_aot_register_static_closure", Linkage::Import, &reg_sig)
             .map_err(|e| CodegenError::new(format!("declare fz_aot_register_static_closure: {}", e)))?;
 
-        let run_sig = sig1(&[types::I64, types::I64, types::I64], &[types::I32]);
+        let run_sig = sig1(&[types::I64, types::I64, types::I64, types::I32], &[types::I32]);
         let run_id = self
             .omod
             .declare_function("fz_aot_run_main", Linkage::Import, &run_sig)
@@ -577,6 +577,7 @@ impl Backend for AotBackend {
             c_main_id,
             &c_main_sig,
             meta.fn_ids[&main_fn_id.0],
+            meta.fn_halt_kinds.get(&main_fn_id.0).copied().unwrap_or(0),
             meta.main_trampoline_id,
             meta.halt_cont_body_ids,
             meta.entry_thunk_id,
