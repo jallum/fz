@@ -236,10 +236,9 @@ tuple.
 ## Which Predicate, Where
 
 ```text
-== / != fold              reducer::fold_runtime_eq  (is_value_disjoint)   value
 codegen == lowering       descrs_value_disjoint     (is_value_disjoint)   value
-pattern-literal matching  lowers to the same equality fold                value
-guard == (when ...)       reducer::fold_runtime_eq                        value
+pattern-literal matching  lowers to codegen equality                      value
+guard == (when ...)       lowers to codegen equality                      value
 dead-binop lint           !kinds_overlap && is_value_disjoint             value
 parameter / arg checks    is_disjoint / is_subtype                        typing
 FFI extern marshalling    is_disjoint                                     typing
@@ -247,10 +246,10 @@ x is T  (fold_type_test)  is_disjoint / is_subtype                        typing
 ```
 
 There is one runtime-equality relation, `is_value_disjoint`, and every value
-site consults it. `reducer::fold_runtime_eq` is the shared compile-time
-`==`/`!=` decision the reducer and guards use; codegen reaches the same
-relation through `descrs_value_disjoint`. A value-equality or matchability site
-uses one of these, not the brand-aware `is_disjoint`.
+site consults it. Codegen reaches it through `descrs_value_disjoint` when
+lowering `==`/`!=`; pattern-literal matching and guard equality lower to that
+same codegen path. A value-equality or matchability site uses this, not the
+brand-aware `is_disjoint`.
 
 A runtime type test (`x is T`) asks the typing question, so it uses the
 brand-aware lattice: `x is utf8` distinguishes a branded value from a bare

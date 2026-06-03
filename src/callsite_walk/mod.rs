@@ -1,15 +1,14 @@
-//! fz-9pr.17 (fz-CO.D.0) — block-callsite enumerator shared by the
-//! reducer and the planner's discovery walk.
+//! fz-9pr.17 (fz-CO.D.0) — block-callsite enumerator for the planner's
+//! discovery walk.
 //!
-//! The reducer and `walk_spec_for_discovery` in ir_planner both need the
-//! mapping from a block's terminator to "which callsite slots does it
-//! contribute, and what does each one target." This module hosts that mapping
-//! once.
+//! `walk_spec_for_discovery` in ir_planner needs the mapping from a block's
+//! terminator to "which callsite slots does it contribute, and what does each
+//! one target." This module hosts that mapping once.
 //!
 //! ## What it yields
 //!
-//! Given a block and a per-Var type env (caller-side: planner uses
-//! `block_envs`, reducer uses its fold env), `block_callsites` produces
+//! Given a block and a per-Var type env (caller-side: the planner uses
+//! `block_envs`), `block_callsites` produces
 //! the *structural* list of callsite slots the block's terminator
 //! contributes. Each entry carries the `EmitSlot` plus the data the
 //! consumer needs to (a) look up / rewrite the actual term and
@@ -31,17 +30,6 @@
 //!   site. No per-callsite slot fires for it.
 //! - Per-spec type keys — consumers build those from the structural
 //!   payload + their own env.
-//!
-//! ## Why the reducer also calls it
-//!
-//! The reducer rewrites the terminator (which is per-Term, not
-//! per-callsite), so its `reduce_terminator` keeps the `match` on
-//! `Term`. But the "what slot would I record stalled/consumed against"
-//! decision is exactly `block_callsites`'s `slot` field — so the
-//! reducer asks the enumerator (via `slot_for_term`) for that one
-//! piece of vocabulary, killing the four duplicated `EmitSlot::Direct`
-//! / `EmitSlot::ClosureCall` literals scattered across the four
-//! arms of `reduce_terminator`.
 
 use crate::fz_ir::{Cont, EmitSlot, FnId, Term, Var};
 use crate::types::{ClosureLitInfo, ClosureTypes, Ty, Types};
@@ -229,21 +217,6 @@ fn push_closure_call<'a, T: Types<Ty = Ty> + ClosureTypes>(
     }
 }
 
-/// fz-9pr.17 — the canonical `EmitSlot` the reducer should record
-/// against when its fold attempt at a block's terminator succeeds or
-/// stalls. Returns `None` for non-call terminators.
-///
-/// Post-fz-try.11: closure-call terminators map to the uniform
-/// `EmitSlot::ClosureCall`; clause-fanout variation moves to the
-/// Dispatch enum at row time.
-pub fn slot_for_term(term: &Term) -> Option<EmitSlot> {
-    match term {
-        Term::Call { .. } | Term::TailCall { .. } => Some(EmitSlot::Direct),
-        Term::CallClosure { .. } | Term::TailCallClosure { .. } => Some(EmitSlot::ClosureCall),
-        _ => None,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -415,27 +388,5 @@ mod tests {
             } => {}
             _ => panic!("expected Receive source"),
         }
-    }
-
-    #[test]
-    fn slot_for_term_routes_each_kind() {
-        assert!(matches!(
-            slot_for_term(&Term::TailCall {
-                ident: CallsiteIdent::synthetic(),
-                callee: FnId(0),
-                args: vec![],
-                is_back_edge: false
-            }),
-            Some(EmitSlot::Direct)
-        ));
-        assert!(matches!(
-            slot_for_term(&Term::TailCallClosure {
-                ident: CallsiteIdent::synthetic(),
-                closure: Var(0),
-                args: vec![]
-            }),
-            Some(EmitSlot::ClosureCall)
-        ));
-        assert!(slot_for_term(&Term::Halt(Var(0))).is_none());
     }
 }

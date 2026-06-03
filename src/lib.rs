@@ -21,11 +21,9 @@ mod ir_fold;
 mod ir_fuse;
 mod ir_lower;
 mod ir_planner;
-mod ir_reducer;
 mod modules;
 mod parser;
 mod pattern_matrix;
-mod reducer;
 mod specs;
 mod telemetry;
 #[cfg(test)]
@@ -33,13 +31,12 @@ mod test_support;
 mod type_expr;
 mod type_infer;
 mod types;
-use crate::types::Types;
 use cli::repl::run_script;
 use diag::{Diagnostic, FileId, SourceMap, Span, codes::LOWER_UNBOUND, report_or_exit_through};
 use exec::runtime::Runtime;
 use frontend::resolve::InterfaceTable;
 use frontend::{FrontendOk, FrontendResult, compile_source_with_interface_table, compile_source_with_types};
-use fz_ir::{FnCategory, FnId, FnIr, Module, StalledReason};
+use fz_ir::{FnCategory, FnId, FnIr, Module};
 use ir_codegen::{
     CompiledImage, CompiledProgram, asm_record_enable, asm_record_take, compile_aot_planned, compile_planned,
     ir_text_record_enable, ir_text_record_take,
@@ -49,7 +46,6 @@ use ir_planner::{
     fn_types::{SpecKey, display_return_demand},
     plan_module, pretty_module_plan,
 };
-use ir_reducer::reduce_module_with_telemetry;
 use libc::{c_int, close, write};
 use modules::artifact::FzoArtifact;
 use modules::artifact_store::{ArtifactStore, DEFAULT_ARTIFACT_ROOT};
@@ -70,7 +66,7 @@ use std::rc::Rc;
 use telemetry::{
     ConfiguredTelemetry, DiagRenderer, Event, Handler, JsonlBackend, StatsHandler, Telemetry, next_compile_nonce,
 };
-use types::{ConcreteTypes, KeySlot, Ty, display_key_slots};
+use types::{ConcreteTypes, KeySlot, display_key_slots};
 
 const FZ_EXEC_READY_FD_ENV: &str = "FZ_EXEC_READY_FD";
 
@@ -780,9 +776,10 @@ fn run_dump(tel: &ConfiguredTelemetry, args: &[String]) {
     // fz-jg5.8 (RED.7) — user-facing diagnostic: list every emitted body
     // and (in v1) its source spec key. Boundary attribution per-call is a
     // follow-on; this v1 prints the spec set and a single-line summary so
-    // the user can see "0 user fns" for fully-reduced programs.
+    // the user can see "0 user fns" for programs with no surviving user
+    // functions in the plan.
     let emit_bodies = emit.as_str() == "bodies";
-    // fz-9pr.16 — `outcomes`: per-callsite reducer/planner verdict diary.
+    // fz-9pr.16 — `outcomes`: per-callsite planner verdict diary.
     let emit_outcomes = emit.as_str() == "outcomes";
     if !emit_clif && !emit_asm && !emit_specs && !emit_interfaces && !emit_bodies && !emit_outcomes && !emit_stats {
         eprintln!(
@@ -1052,13 +1049,13 @@ fn render_dispatch_target<F: Fn(FnId) -> String>(t: &mut ConcreteTypes, fn_name:
 }
 
 /// fz-jg5.8 (RED.7) — `fz dump --emit bodies`: print every user fn that
-/// survives the reducer with the spec keys codegen emits for it. A
-/// program that fully reduces shows `bodies emitted: 0 user functions
-/// (no boundaries — program fully reduces)`.
+/// survives planning with the spec keys codegen emits for it. A program
+/// with no surviving user functions shows `bodies emitted: 0 user
+/// functions (no user functions in the plan)`.
 ///
 /// Each entry is `<fn_name>: <N> spec(s) [<key_1>] [<key_2>] ...`. The
-/// dump runs the full compile pipeline (including the reducer); the
-/// surviving fns and their spec keys are read out of `ModulePlan`.
+/// dump runs the compile pipeline through `plan_module`; the surviving
+/// fns and their spec keys are read out of `ModulePlan`.
 fn dump_bodies_pipeline(
     tel: &dyn Telemetry,
     sm_cell: &Rc<RefCell<SourceMap>>,
@@ -1071,10 +1068,7 @@ fn dump_bodies_pipeline(
     let mut t = ConcreteTypes;
     let frontend_result = compile_source_with_types(&mut t, src, source_name, tel);
     let prepared = checked_module_or_exit("fz dump", &mut t, frontend_result, sm_cell, tel, mode);
-    let mut module = prepared.module;
-    // Run the reducer pass directly so the bodies dump reflects what
-    // codegen would see, without going all the way to JIT.
-    let _ = reduce_module_with_telemetry(&mut t, &mut module, tel);
+    let module = prepared.module;
     let _compile_span = tel.span(
         &["fz", "compile"],
         crate::metadata! {
@@ -1102,7 +1096,7 @@ fn dump_bodies_pipeline(
     let mut out = String::new();
     if by_name.is_empty() {
         out.push_str("bodies emitted: 0 user functions\n");
-        out.push_str("  (no boundaries — program fully reduces)\n");
+        out.push_str("  (no user functions in the plan)\n");
         return out;
     }
     out.push_str(&format!(
@@ -1127,28 +1121,27 @@ fn dump_bodies_pipeline(
 /// fz-9pr.16 — `fz dump --emit outcomes`: per-callsite verdict diary.
 ///
 /// Runs the codegen front half (lex → parse → resolve → macros →
-/// ir_lower → reduce_module → plan_module) and prints every call-edge
-/// entry in `mt.specs[*].call_edges` plus the reducer's
-/// Consumed / Stalled log entries, grouped by caller fn. Output shape:
+/// ir_lower → plan_module) and prints every call-edge entry in
+/// `mt.specs[*].call_edges`, grouped by caller fn. Output shape:
 ///
 /// ```text
 /// outcomes for <source>
 ///
 /// <caller_fn>:
-///   blk<id> <slot> -> <verdict>[ (<reason or target>)]
+///   blk<id> <slot> -> <verdict>[ (<target>)]
 ///   ...
 /// ```
 ///
-/// Use this to answer "why didn't X fold?" without a debugger — every
-/// `Stalled` carries a `StalledReason`, every `Emitted` shows the
-/// resolved spec key.
+/// Use this to see how each callsite dispatches — every row shows the
+/// resolved spec key (`Static` for Direct/Cont, `Indirect` for
+/// ClosureCall).
 ///
 /// fz-f88.7 — by default, two classes of caller are hidden so the
 /// signal stays focused on user-program code:
 ///   - callers whose `FnIr.category == Prelude` (print noise
 ///     that's the same in every fixture);
-///   - callers whose `FnId` no longer has any reachable spec after
-///     reduction (the body is dead-coded).
+///   - callers whose `FnId` has no reachable spec in the plan
+///     (the body is dead-coded).
 ///
 /// Pass `show_all=true` (CLI `--all`) to bypass both filters.
 fn dump_outcomes_pipeline(
@@ -1164,8 +1157,7 @@ fn dump_outcomes_pipeline(
     let mut t = ConcreteTypes;
     let frontend_result = compile_source_with_types(&mut t, src, source_name.clone(), tel);
     let prepared = checked_module_or_exit("fz dump", &mut t, frontend_result, sm_cell, tel, mode);
-    let mut module = prepared.module;
-    let reducer_log = reduce_module_with_telemetry(&mut t, &mut module, tel);
+    let module = prepared.module;
     let _compile_span = tel.span(
         &["fz", "compile"],
         crate::metadata! {
@@ -1206,22 +1198,18 @@ fn dump_outcomes_pipeline(
     // The Outcome enum separates the structural slot (where) from the
     // demand-aware dispatch outcome (what).
     enum Outcome {
-        Folded(Ty),
         Static(SpecKey),
         Indirect(SpecKey),
-        Stalled(StalledReason),
     }
 
     fn render_outcome<F: Fn(FnId) -> String>(t: &mut ConcreteTypes, fn_name: &F, outcome: &Outcome) -> String {
         match outcome {
-            Outcome::Folded(v) => format!("Folded({})", t.display(v)),
             Outcome::Static(target) => {
                 format!("Static({})", render_dispatch_target(t, fn_name, target))
             }
             Outcome::Indirect(target) => {
                 format!("Indirect({})", render_dispatch_target(t, fn_name, target))
             }
-            Outcome::Stalled(reason) => format!("Stalled({})", reason),
         }
     }
 
@@ -1230,16 +1218,6 @@ fn dump_outcomes_pipeline(
     type SortKey = (u32, String);
     type RowsBySpec = BTreeMap<SortKey, Section>;
     let mut rows_by_spec: RowsBySpec = BTreeMap::new();
-
-    // Pre-collect cids that any spec dispatched, so reducer Stalled rows
-    // at those cids are suppressed (their reason already rode through as
-    // a spec-side decision — no point double-reporting).
-    let mut spec_cids: HashSet<CallsiteId> = HashSet::new();
-    for ft in mt.specs.values() {
-        for cid in ft.call_edges.keys() {
-            spec_cids.insert(cid.clone());
-        }
-    }
 
     let push_row = |rows_by_spec: &mut RowsBySpec,
                     caller_fid: FnId,
@@ -1276,55 +1254,6 @@ fn dump_outcomes_pipeline(
         }
     }
 
-    // Reducer Folded rows. The reducer doesn't track which caller spec a
-    // fold attached to — folds happen on the IR before per-spec typing.
-    // Attach Folded rows to the any-key spec of the cid.caller (the body
-    // the reducer rewrote). This mirrors pre-fz-try.11 grouping by
-    // caller fn.
-    let any = t.any();
-    let any_key_for = |fid: FnId| -> Option<SpecKey> {
-        mt.specs
-            .keys()
-            .find(|key| {
-                key.fn_id == fid
-                    && key.demand.is_value()
-                    && key.input.iter().all(|key| key.is_none() || key == &Some(any.clone()))
-            })
-            .cloned()
-    };
-    for (cid, result) in &reducer_log.consumed {
-        let Some(key) = any_key_for(cid.caller) else {
-            continue;
-        };
-        let sort_key = render_spec_key(&mut t, &key);
-        push_row(
-            &mut rows_by_spec,
-            cid.caller,
-            &key,
-            cid.clone(),
-            Outcome::Folded(result.clone()),
-            sort_key,
-        );
-    }
-    // Reducer Stalled rows — only when no planner-spec dispatched the cid.
-    for (cid, reason) in &reducer_log.stalled {
-        if spec_cids.contains(cid) {
-            continue;
-        }
-        let Some(key) = any_key_for(cid.caller) else {
-            continue;
-        };
-        let sort_key = render_spec_key(&mut t, &key);
-        push_row(
-            &mut rows_by_spec,
-            cid.caller,
-            &key,
-            cid.clone(),
-            Outcome::Stalled(*reason),
-            sort_key,
-        );
-    }
-
     // Stable per-section row ordering: span_start, then slot, then
     // serialized dispatch (deterministic across runs).
     for (_, rows) in rows_by_spec.values_mut() {
@@ -1345,7 +1274,7 @@ fn dump_outcomes_pipeline(
         return out;
     }
     // fz-f88.7 — default filter: hide prelude callers and any caller
-    // whose body has no surviving spec post-reduction. `--all` bypasses.
+    // whose body has no surviving spec in the plan. `--all` bypasses.
     let reachable_fids: HashSet<FnId> = mt.specs.keys().map(|key| key.fn_id).collect();
     let should_show = |f: &FnIr| -> bool {
         if show_all {

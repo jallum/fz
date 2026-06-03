@@ -16,8 +16,6 @@
 use std::collections::HashMap;
 use std::hash::Hash;
 use std::sync::Arc;
-#[cfg(test)]
-use std::sync::LazyLock;
 
 pub use crate::concrete_types::ConcreteTypes;
 use crate::concrete_types::Descr;
@@ -30,15 +28,14 @@ mod render;
 mod visibility;
 
 pub use closure::{CallableClause, ClosureLitInfo, ClosureTarget, ClosureTypes};
-pub use literal::{LiteralTypes, ScalarLiteral, TypeMatch};
+pub use literal::LiteralTypes;
 pub use map::MapKey;
 
 /// A borrowed view of a module's nominal environment: the brand- and
 /// opaque-tag inner-type maps. They are only ever consulted together — to
 /// discharge a tag to its runtime representation — so they travel as one
 /// value rather than two parallel parameters. `Module::nominals` /
-/// `SpecPlan::nominals` mint a view over the owned maps; `Nominals::empty` is
-/// the no-declarations case.
+/// `SpecPlan::nominals` mint a view over the owned maps.
 pub struct Nominals<'a, T = Ty> {
     pub brand_inners: &'a HashMap<String, T>,
     pub opaque_inners: &'a HashMap<String, T>,
@@ -62,19 +59,6 @@ impl<'a, T> Nominals<'a, T> {
     }
 }
 
-#[cfg(test)]
-impl Nominals<'static, Ty> {
-    /// The empty nominal environment — no brands or opaques in scope. Shared
-    /// so a tag-free fold need not own a map. Only tests construct one
-    /// directly; production threads `Module::nominals` / `SpecPlan::nominals`.
-    pub fn empty() -> Self {
-        static EMPTY: LazyLock<HashMap<String, Ty>> = LazyLock::new(HashMap::new);
-        Self {
-            brand_inners: &EMPTY,
-            opaque_inners: &EMPTY,
-        }
-    }
-}
 pub use poly::TypeVarId;
 pub use render::RenderTypes;
 pub(crate) use visibility::check_brand_mint_visibility;
@@ -254,6 +238,7 @@ pub trait Types {
     // ---- predicates ----------------------------------------------------
 
     fn is_empty(&self, a: &Self::Ty) -> bool;
+    #[cfg(test)]
     fn is_top(&self, a: &Self::Ty) -> bool;
     fn is_subtype(&self, a: &Self::Ty, b: &Self::Ty) -> bool;
     /// Brand-AWARE disjointness — the typing/dispatch/boundary question.
@@ -336,6 +321,7 @@ pub trait Types {
     fn as_atom_singleton(&self, a: &Self::Ty) -> Option<String>;
 
     /// If `a` is a literal tuple, return its elements in order.
+    #[cfg(test)]
     fn tuple_lit_elems(&self, a: &Self::Ty) -> Option<Vec<Self::Ty>>;
 
     /// If `a` is a singleton literal suitable as a map key, return it.
@@ -347,9 +333,6 @@ pub trait Types {
 
     /// Join the return side of a callable type.
     fn arrow_join_return(&mut self, a: &Self::Ty) -> Self::Ty;
-
-    /// Exact match for the empty-list literal.
-    fn is_empty_list_lit(&self, a: &Self::Ty) -> bool;
 
     // ---- substitution --------------------------------------------------
 
@@ -372,12 +355,6 @@ pub trait Types {
     /// True iff `a` mentions any free type variable.
     /// Used by the planner to decide whether substitution is required.
     fn has_vars(&self, a: &Self::Ty) -> bool;
-
-    /// True iff `a` is a conservative structural-decrease step from `p`
-    /// for same-callee reducer recursion. Concrete implementations may
-    /// use representation-specific size metrics; callers should not need
-    /// to reason about those metrics directly.
-    fn is_strictly_smaller(&self, a: &Self::Ty, p: &Self::Ty) -> bool;
 }
 
 #[cfg(test)]
@@ -532,19 +509,6 @@ mod conformance_tests {
                     ));
                     assert!(matches!(t.as_map_key(&seven), Some(MapKey::Int(7))));
                     assert!(t.as_map_key(&wide).is_none());
-                }
-
-                #[test]
-                fn is_strictly_smaller_recognizes_toward_zero_ints() {
-                    let mut t = $ctor;
-                    let three = t.int_lit(3);
-                    let two = t.int_lit(2);
-                    let minus_three = t.int_lit(-3);
-                    let minus_two = t.int_lit(-2);
-                    assert!(t.is_strictly_smaller(&two, &three));
-                    assert!(t.is_strictly_smaller(&minus_two, &minus_three));
-                    assert!(!t.is_strictly_smaller(&three, &two));
-                    assert!(!t.is_strictly_smaller(&minus_three, &minus_two));
                 }
 
                 #[test]

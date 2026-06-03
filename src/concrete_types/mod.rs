@@ -235,6 +235,7 @@ impl Types for ConcreteTypes {
     fn is_empty(&self, a: &Ty) -> bool {
         ty_descr(a).is_empty()
     }
+    #[cfg(test)]
     fn is_top(&self, a: &Ty) -> bool {
         ty_descr(a).is_equiv(&Descr::any())
     }
@@ -327,14 +328,12 @@ impl Types for ConcreteTypes {
     fn arrow_join_return(&mut self, a: &Ty) -> Ty {
         ty_from_descr(ty_descr(a).arrow_join_return())
     }
+    #[cfg(test)]
     fn tuple_lit_elems(&self, a: &Ty) -> Option<Vec<Ty>> {
         concrete_tuple_lit_elems(a)
     }
     fn as_map_key(&self, a: &Ty) -> Option<MapKey> {
         ty_descr(a).as_map_key()
-    }
-    fn is_empty_list_lit(&self, a: &Ty) -> bool {
-        ty_descr(a).is_equiv(&Descr::empty_list())
     }
     fn is_integer(&self, a: &Ty) -> bool {
         ty_descr(a).is_subtype(&Descr::int())
@@ -355,17 +354,6 @@ impl Types for ConcreteTypes {
     }
     fn has_vars(&self, a: &Ty) -> bool {
         ty_descr(a).has_vars()
-    }
-    fn is_strictly_smaller(&self, a: &Ty, p: &Ty) -> bool {
-        if let (Some(ai), Some(pi)) = (self.as_int_singleton(a), self.as_int_singleton(p)) {
-            if pi > 0 && ai >= 0 && ai < pi {
-                return true;
-            }
-            if pi < 0 && ai <= 0 && ai > pi {
-                return true;
-            }
-        }
-        ty_descr(a).recursive_spec_depth() < ty_descr(p).recursive_spec_depth()
     }
     fn instantiate(&mut self, a: &Ty, sigma: &Sigma<Ty>) -> Ty {
         let inner: HashMap<TypeVarId, Descr> = sigma.iter().map(|(id, t)| (*id, ty_descr(t).clone())).collect();
@@ -684,12 +672,14 @@ fn concrete_refine_map_field(a: &Ty, key: &MapKey, v: &Ty) -> Ty {
     ty_from_descr(ty_descr(a).refine_map_field(key, ty_descr(v)))
 }
 
+#[cfg(test)]
 fn concrete_tuple_lit_elems(a: &Ty) -> Option<Vec<Ty>> {
     let elems = ty_descr(a).as_tuple_singleton()?;
     let elems: Vec<Ty> = elems.iter().cloned().map(ty_from_descr).collect();
     elems.iter().all(concrete_is_literal).then_some(elems)
 }
 
+#[cfg(test)]
 fn concrete_is_literal(a: &Ty) -> bool {
     ty_descr(a).is_singleton_literal()
         || ty_descr(a).is_equiv(&Descr::nil())

@@ -494,6 +494,7 @@ impl Descr {
     /// Single-shape tuple: exactly one positive clause with one positive sig
     /// and no negations, and no other axis populated. Returns the element
     /// Descr slice. Elements may be wide — caller decides if it cares.
+    #[cfg(test)]
     pub(crate) fn as_tuple_singleton(&self) -> Option<&[Descr]> {
         match self.single_component()? {
             Component::Tuples(_) => {
@@ -517,56 +518,6 @@ impl Descr {
         let mut it = self.components();
         let first = it.next()?;
         if it.next().is_some() { None } else { Some(first) }
-    }
-
-    /// Max depth of nested Descrs reachable through structural axes. A leaf
-    /// (basic, atoms, ints, floats, strs, opaques, vars) has depth 0; a
-    /// tuple/list adds 1 to its element depth; a closure_lit adds 1 to its
-    /// capture depths. Used by `ConcreteTypes::is_strictly_smaller`.
-    pub(crate) fn recursive_spec_depth(&self) -> usize {
-        let mut max_d = 0;
-        for c in self.components() {
-            match c {
-                Component::Tuples(view) => {
-                    for conj in view.inner {
-                        for sig in &conj.pos {
-                            for e in &sig.elems {
-                                max_d = max_d.max(1 + e.recursive_spec_depth());
-                            }
-                        }
-                    }
-                }
-                Component::Lists(view) => {
-                    for conj in view.inner {
-                        for sig in &conj.pos {
-                            if let Some(elem) = &sig.elem {
-                                max_d = max_d.max(1 + elem.recursive_spec_depth());
-                            }
-                        }
-                    }
-                }
-                Component::Resources(view) => {
-                    for conj in view.inner {
-                        for sig in &conj.pos {
-                            max_d = max_d.max(1 + sig.payload.recursive_spec_depth());
-                        }
-                    }
-                }
-                Component::Funcs(view) => {
-                    for conj in view.inner {
-                        for sig in &conj.pos {
-                            if let Some(lit) = &sig.lit {
-                                for cap in &lit.captures {
-                                    max_d = max_d.max(1 + ty_descr(cap).recursive_spec_depth());
-                                }
-                            }
-                        }
-                    }
-                }
-                _ => {}
-            }
-        }
-        max_d
     }
 
     /// True iff `self` and `other` share at least one axis on which both

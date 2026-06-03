@@ -219,65 +219,6 @@ impl CallsiteId {
     }
 }
 
-/// fz-9pr.16 — why the reducer left a callsite alone. Threaded through
-/// every None-returning branch of `try_reduce_call` / `walk_block` so
-/// `fz dump --emit outcomes` can answer "why didn't X fold?" without
-/// a debugger.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum StalledReason {
-    /// At least one argument type was not a literal — the reducer
-    /// can only fold under fully-concrete literal arg types. Specifically: the
-    /// arg is genuine `Any` (widening fixpoint, missing-info default,
-    /// etc.). Vars are surfaced as `UnresolvedTypeVar` instead.
-    OpaqueArg,
-    /// fz-try.10 — at least one argument type is a parametric type
-    /// variable. Distinct
-    /// from `OpaqueArg`: an unresolved type variable is a *parametric*
-    /// claim ("specialize me at a call site"), not a *widening* one
-    /// ("we don't know"). Surfaced separately so outcome rows can
-    /// distinguish "this fold needs a concrete witness" from "this fold
-    /// needs better type info."
-    UnresolvedTypeVar,
-    /// Per-top-level-callsite unroll budget hit before the recursive
-    /// walk could find a literal return.
-    BudgetExhausted,
-    /// Callee body contains a non-reducible prim (Extern, MakeMap,
-    /// MapUpdate, MakeBitstring, BitReader*, AllocStruct).
-    NonReduciblePrim,
-    /// Callee is in `module.boundary_fns` and the body isn't trivially
-    /// inlinable — `@spec`'d fns are reduction firewalls.
-    BoundaryFn,
-    /// `Term::(Tail)CallClosure`, but the closure operand's type
-    /// doesn't carry a `closure_lit` — no statically-known target.
-    NoClosureLitTarget,
-    /// Same-callee recursive call without provable structural
-    /// argument decrease — would risk non-termination if walked.
-    StructuralDecrease,
-    /// Callee body shape rejects the walk: `Term::Halt`, `Term::Receive`,
-    /// pathological Goto depth, parameter-arity mismatch, or a Return
-    /// of a non-scalar-literal type (tuple / list / closure_lit return).
-    CalleeBodyShape,
-    /// Catch-all for paths not yet classified. Should be rare; expand
-    /// the enum rather than reach for this.
-    Other,
-}
-
-impl fmt::Display for StalledReason {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(match self {
-            StalledReason::OpaqueArg => "OpaqueArg",
-            StalledReason::UnresolvedTypeVar => "UnresolvedTypeVar",
-            StalledReason::BudgetExhausted => "BudgetExhausted",
-            StalledReason::NonReduciblePrim => "NonReduciblePrim",
-            StalledReason::BoundaryFn => "BoundaryFn",
-            StalledReason::NoClosureLitTarget => "NoClosureLitTarget",
-            StalledReason::StructuralDecrease => "StructuralDecrease",
-            StalledReason::CalleeBodyShape => "CalleeBodyShape",
-            StalledReason::Other => "Other",
-        })
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct Var(pub u32);
 
