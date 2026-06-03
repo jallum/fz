@@ -1509,14 +1509,14 @@ fn ensure_spec_typed<T: Types<Ty = Ty> + ClosureTypes>(
     specs: &mut HashMap<SpecKey, SpecPlan>,
 ) {
     if specs.get(spec_key).is_some_and(|ft| {
-        entry_callable_capabilities_match(m, fn_idx, ft, incoming_param_callable_capabilities.get(spec_key))
+        entry_callable_capabilities_match(m, fn_idx, ft, incoming_param_callable_capabilities.get(&spec_key.body_key()))
     }) {
         return;
     }
     TYPE_FN_CALLS.with(|c| c.set(c.get() + 1));
     let input_tys = spec_key_input_tys(t, spec_key);
     let mut ft = type_fn(t, &m.fns[fn_idx], m, Some(&input_tys));
-    if let Some(arg_caps) = incoming_param_callable_capabilities.get(spec_key) {
+    if let Some(arg_caps) = incoming_param_callable_capabilities.get(&spec_key.body_key()) {
         let entry = m.fns[fn_idx].entry;
         let entry_params = &m.fns[fn_idx].block(entry).params;
         for (slot, p) in entry_params.iter().enumerate() {

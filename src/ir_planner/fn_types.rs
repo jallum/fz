@@ -576,7 +576,7 @@ pub(crate) type SpecKeySet = HashSet<SpecKey>;
 /// same public spec. The vector is indexed by entry param position. Direct
 /// calls populate explicit arg slots; continuations also use slot 0 for the
 /// returned value that flows into the continuation.
-pub(crate) type IncomingParamCallableCapabilities = HashMap<SpecKey, Vec<Option<CallableCapability>>>;
+pub(crate) type IncomingParamCallableCapabilities = HashMap<BodyKey, Vec<Option<CallableCapability>>>;
 
 pub(crate) fn result_linked_param_slots(module: &Module, fn_id: FnId) -> BTreeSet<usize> {
     let Some(groups) = module.function_correspondence.get(&fn_id) else {

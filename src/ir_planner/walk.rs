@@ -103,9 +103,13 @@ fn merge_incoming_param_callable_capabilities(
     key: &SpecKey,
     incoming: Vec<Option<CallableCapability>>,
 ) -> bool {
-    match incoming_param_callable_capabilities.get(key) {
+    // Incoming-param callable facts derive from the callsite args, not the
+    // return-delivery shape, so they are keyed by the body identity: demand
+    // siblings share one bucket.
+    let body_key = key.body_key();
+    match incoming_param_callable_capabilities.get(&body_key) {
         None => {
-            incoming_param_callable_capabilities.insert(key.clone(), incoming);
+            incoming_param_callable_capabilities.insert(body_key, incoming);
             true
         }
         Some(prev) => {
@@ -121,7 +125,7 @@ fn merge_incoming_param_callable_capabilities(
             if *prev == merged {
                 return false;
             }
-            incoming_param_callable_capabilities.insert(key.clone(), merged);
+            incoming_param_callable_capabilities.insert(body_key, merged);
             true
         }
     }
