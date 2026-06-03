@@ -124,7 +124,7 @@ pub(crate) fn build_entry_harness<M: ClModule>(
 ///   self+32 : user_cap[1]      -> fz_param[N+1]
 ///   ...
 ///
-/// extras_count defaults to 1 (single-input Receive cont) but
+/// extras_count defaults to 1 (single-input call continuation) but
 /// ReceiveMatched lowering overrides via `cont_extras_count`:
 /// body/guard fns set it to bound_arity; after-body sets 0.
 /// Cont sig matches my_param_reprs[i]'s Cranelift type directly;

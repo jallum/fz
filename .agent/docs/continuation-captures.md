@@ -27,7 +27,6 @@ until a scheduler boundary requires an ordinary heap closure. See
 
 - `Term::Call` continuations
 - `Term::CallClosure` continuations
-- `Term::Receive` continuations
 - tail-call continuation args
 - `Term::ReceiveMatched` shared captures
 

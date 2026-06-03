@@ -1694,11 +1694,12 @@ fn closure_typed_captures_matches_cps_in_clif_section_8_3() {
 }
 
 /// fz-siu.1.2 acceptance per docs/cps-in-clif.md §8.4.
-/// concurrency_ping_pong.fz's `main` spawns a child through the runtime
-/// prelude wrapper, then tail-calls the continuation that reaches receive.
+/// concurrency_ping_pong.fz's native `main` materializes the child callable,
+/// builds the lazy continuation descriptor for the post-spawn path, and calls
+/// the runtime prelude wrapper without tail-calling away the owning frame.
 /// The receive site builds a cont closure (alloc_closure with func_addr +
 /// store outer_cont as env field 0 + store user captures after it) and
-/// hands it to the receive park runtime.
+/// hands it to the selective receive park runtime.
 /// The scheduler-visible resume seam is the single `fz_resume` shim; the
 /// closure itself stores the Tail-CC continuation body directly.
 fn concurrency_ping_pong_matches_cps_in_clif_section_8_4() {
@@ -1721,19 +1722,34 @@ fn concurrency_ping_pong_matches_cps_in_clif_section_8_4() {
         stdout
     );
     assert!(
-        stdout.contains("fz_spawn_ref"),
-        "main must call the spawn runtime entry through spawn/1:\n{}",
+        stdout.contains("@fz_get_static_closure"),
+        "main must materialize the spawned child through the static callable path:\n{}",
         stdout
     );
     assert!(
-        stdout.contains("return_call"),
-        "main must tail-call the post-spawn continuation:\n{}",
+        stdout.contains("stack_addr.i64") && stdout.contains("bor_imm"),
+        "main must build a lazy stack descriptor for the post-spawn continuation:\n{}",
+        stdout
+    );
+    assert!(
+        stdout.contains(" call ") && stdout.contains("return "),
+        "main must preserve the owning frame with call-plus-return around spawn:\n{}",
+        stdout
+    );
+    assert!(
+        !stdout.contains("return_call"),
+        "main must not tail-call away the frame that owns the lazy descriptor:\n{}",
+        stdout
+    );
+    assert!(
+        !stdout.contains("fz_spawn_ref"),
+        "main should route through the spawn wrapper instead of naming the raw runtime symbol:\n{}",
         stdout
     );
     let clif = dump_fixture_clif("concurrency_ping_pong");
     assert!(
-        clif.contains("fz_receive_park"),
-        "fixture must call a receive park runtime entry:\n{}",
+        clif.contains("fz_receive_park_matched"),
+        "fixture must call the selective receive park runtime entry:\n{}",
         clif
     );
     // Receive site builds the cont closure through the closure allocation ABI.
@@ -3435,8 +3451,8 @@ fn continuation_materialization_boundaries_stay_explicit() {
         "runtime.yield_slow_path_begin_id",
         "runtime.yield_mid_flight_report_id",
         "materialize_cont",
-        "fn emit_receive",
-        "runtime.receive_park_id",
+        "fn emit_receive_matched",
+        "runtime.receive_park_matched_id",
     ] {
         assert!(
             source.contains(needle),

@@ -97,10 +97,9 @@ pub struct Process {
     /// here. v1 only writes this on halt (next_frame = null).
     pub next_frame: *mut u8,
     pub mailbox: VecDeque<AnyValueRef>,
-    /// Receive-wait snapshot: the process is blocked in `receive`. Plain
-    /// `receive()` installs an accept-any matcher; selective receive installs
-    /// its compiled matcher. Either way, a hit clears `wait` and moves the
-    /// outcome continuation into `runnable` for the scheduler to resume.
+    /// Receive-wait snapshot: the process is blocked in selective `receive`.
+    /// A matcher hit clears `wait` and moves the outcome continuation into
+    /// `runnable` for the scheduler to resume.
     pub wait: Option<Box<WaitState>>,
     /// The one re-entry verb: a `(self)`-callable closure the scheduler
     /// resumes via the single `fz_resume` shim. It is either a continuation

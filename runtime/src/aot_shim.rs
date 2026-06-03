@@ -20,9 +20,10 @@
 //!
 //! Concurrency: a cooperative run-queue scheduler (fz-sched.1/2). Spawned
 //! processes are enqueued and driven by `aot_run_queue_loop` in
-//! `fz_aot_run_main`. `fz_receive_park` parks a process (sets state =
-//! Blocked / Ready); `aot_send_hook` wakes Blocked receivers. This matches
-//! the JIT's `run_until_idle` semantics.
+//! `fz_aot_run_main`. `fz_receive_park_matched` parks a process (sets state =
+//! Blocked / Ready); `aot_send_hook` wakes blocked receivers through the
+//! selective-receive probe path. This matches the JIT's `run_until_idle`
+//! semantics.
 
 use crate::any_value::{AnyValue, AnyValueRef, ValueKind, closure_addr_from_tagged};
 use crate::exec_ctx::ExecCtx;
@@ -498,9 +499,8 @@ extern "C" fn aot_timer_cancel_hook(scheduler: *mut (), timer_id: u64) {
 }
 
 /// Send hook (fz-sched.2). Pushes a message into the receiver's mailbox.
-/// If the receiver was Blocked on non-selective `receive()`, flips it to Ready
-/// and enqueues — matching the JIT's send_via_current_runtime semantics.
-/// Selective-receive arrivals route through `sched::probe_sender`.
+/// Selective-receive arrivals route through `sched::probe_sender`, which
+/// flips a matched blocked receiver to Ready and enqueues it.
 extern "C" fn aot_send_hook(sender_ptr: *mut Process, scheduler: *mut (), receiver_pid: u32, msg_ref_word: u64) {
     let msg = AnyValueRef::from_raw_word(msg_ref_word).expect("aot_send message ref");
     assert!(!sender_ptr.is_null(), "aot_send_hook: no sender process");
@@ -660,7 +660,7 @@ fn dispatch_quantum(sched: *mut AotScheduler, pid: u32, addrs: &ShimAddrs) {
         abort();
     });
 
-    // Mark Running so a clean halt (no fz_receive_park call) is
+    // Mark Running so a clean halt (no selective-receive park call) is
     // distinguishable from Blocked/Ready after dispatch.
     unsafe {
         (*proc_ptr).state = ProcessState::Running;

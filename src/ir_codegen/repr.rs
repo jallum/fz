@@ -252,8 +252,8 @@ pub(crate) fn build_fn_signature(
     closure_target_n_caps: Option<usize>,
     // When the cont fn is a ReceiveMatched clause body / guard, override
     // the default 1-input shape with bound_arity. After-bodies set this
-    // to 0. `None` falls back to `(result, self)` for Term::Receive /
-    // Call / CallClosure continuations.
+    // to 0. `None` falls back to `(result, self)` for Call / CallClosure
+    // continuations.
     cont_extras_override: Option<usize>,
 ) -> Signature {
     if !is_native {

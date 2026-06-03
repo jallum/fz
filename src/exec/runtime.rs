@@ -538,8 +538,8 @@ impl<'a> Runtime<'a> {
                 // wake.
                 task.quiet_quanta = task.quiet_quanta.saturating_add(1);
             } else if task.state == ProcessState::Ready {
-                // fz_receive_park detected a pending message in our own
-                // mailbox (self-send → receive); it set state=Ready so
+                // Selective-receive park detected a pending message in our
+                // own mailbox (self-send → receive); it set state=Ready so
                 // the scheduler immediately re-runs the task through the
                 // receive initial-scan path.
                 task.quiet_quanta = task.quiet_quanta.saturating_add(1);
