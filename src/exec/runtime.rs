@@ -1057,7 +1057,9 @@ mod tests {
         let src = r#"
             fn main() do
               send(self(), 42)
-              receive()
+              receive do
+                x -> x
+              end
             end
         "#;
         let (compiled, _module, entry) = compile_src(src);
@@ -1070,18 +1072,20 @@ mod tests {
     }
 
     /// Receive blocks the task when no message is available, then resumes
-    /// when send delivers one. Parent spawns child; parent calls receive()
+    /// when send delivers one. Parent spawns child; parent calls a catch-all receive
     /// first (Blocks); child then sends; parent wakes and halts with the
     /// message. Tests the YIELD_PTR / Blocked / wake mechanism.
     #[test]
     fn receive_blocks_until_send_arrives() {
         // child(parent_pid) sends 99 to parent_pid then halts.
-        // main spawns child(self()) and then receive()s.
+        // main spawns child(self()) and then waits on a catch-all receive.
         let src = r#"
             fn child(parent), do: send(parent, 99)
             fn main() do
               child(self())
-              receive()
+              receive do
+                x -> x
+              end
             end
         "#;
         let (compiled, _module, entry) = compile_src(src);
@@ -1129,7 +1133,7 @@ mod tests {
         let main_task = rt.task(main_pid).expect("main task in registry");
         assert_eq!(
             main_task.halt_value, 42,
-            "parent halts with dbg(receive())'s returned value"
+            "parent halts with dbg(receive do x -> x end)'s returned value"
         );
         assert_eq!(main_task.state, ProcessState::Exited);
 
@@ -1146,7 +1150,9 @@ mod tests {
         let src = r#"
             fn main() do
               send(self(), [1, 2, 3])
-              receive()
+              receive do
+                x -> x
+              end
             end
         "#;
         let (compiled, _module, entry) = compile_src(src);

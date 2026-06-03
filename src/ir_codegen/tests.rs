@@ -1089,7 +1089,9 @@ fn codegen_materializes_plain_spawn_child_callable_boundary_target() {
 #[test]
 fn runtime_graph_spawn_then_receive_runs_via_planned_codegen_path() {
     assert_eq!(
-        run_runtime_graph_main_planned("fn child(), do: send(1, 42)\nfn main() do spawn(child)\nreceive()\nend"),
+        run_runtime_graph_main_planned(
+            "fn child(), do: send(1, 42)\nfn main() do spawn(child)\nreceive do x -> x end\nend"
+        ),
         42
     );
 }
@@ -2343,11 +2345,14 @@ fn hot_loop_native_continuations_allocate_no_heap_closures() {
 /// boundary before calling the mailbox runtime.
 #[test]
 fn typed_send_literal_boxes_message_at_kernel_boundary() {
-    let src = "fn relay(), do: send(1, receive() + 1)\n\
+    let src = "fn relay() do\n\
+                 msg = receive do x -> x end\n\
+                 send(1, msg + 1)\n\
+               end\n\
                fn main() do\n\
                  spawn(relay)\n\
                  send(2, 41)\n\
-                 dbg(receive())\n\
+                 dbg(receive do x -> x end)\n\
                end";
     let caller_ir = compiled_ir_body_matching(src, "raw literal send caller", |body| {
         body.contains("iconst.i64 41") && body.contains("call fn0(v2, v3")
@@ -2382,23 +2387,23 @@ fn mailbox_with_float_boxes_only_at_send_boundary() {
     );
 }
 
-/// Term::Receive with a natively-callable continuation must not emit a
-/// box→unbox roundtrip for raw-int captures: without the fix every raw
-/// var was retagged (ishl_imm+bor_imm) before fz_receive_park and the
-/// cont undid it with sshr_imm.
+/// Catch-all selective receive must not re-tag the arithmetic input on
+/// the relay side before forwarding it through `Kernel.send`.
 #[test]
 fn receive_native_cont_no_box_unbox_roundtrip() {
-    let src = "fn relay(), do: send(1, receive() + 1)\n\
+    let src = "fn relay() do\n\
+                 msg = receive do x -> x end\n\
+                 send(1, msg + 1)\n\
+               end\n\
                fn main() do\n\
                  spawn(relay)\n\
                  send(2, 41)\n\
-                 dbg(receive())\n\
+                 dbg(receive do x -> x end)\n\
                end";
     let relay_ir = compile_and_grab_ir(src, "relay");
     let relay_ir = relay_ir.as_str();
-    // The relay fn holds one raw-int capture; with the fix it is stored
-    // directly, so no ishl_imm appears in relay's block. (Arithmetic in
-    // the receive continuation lives in a different fn.)
+    // The catch-all receive path should keep the integer arithmetic unboxed
+    // through relay's block, so no spurious retagging appears here.
     assert!(
         !relay_ir.contains("ishl_imm"),
         "spurious box in relay CLIF — integer capture was re-tagged before Receive:\n{}",

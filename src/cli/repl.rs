@@ -1299,11 +1299,11 @@ fn add1(n), do: n + 1"#
         let mut session = ReplSession::new();
         assert_eq!(eval_session_i64(&mut session, "parent = self()"), Some(1));
         assert_eq!(
-            eval_session_i64(&mut session, "spawn(fn () -> send(parent, receive()) end)"),
+            eval_session_i64(&mut session, "spawn(fn () -> send(parent, receive do x -> x end) end)"),
             Some(2),
         );
         assert_eq!(eval_session_i64(&mut session, "send(2, 42)"), Some(42));
-        assert_eq!(eval_session_i64(&mut session, "receive()"), Some(42));
+        assert_eq!(eval_session_i64(&mut session, "receive do x -> x end"), Some(42));
     }
 
     #[test]
@@ -1311,7 +1311,7 @@ fn add1(n), do: n + 1"#
         let mut session = ReplSession::new();
         assert_eq!(eval_session_i64(&mut session, "parent = self()"), Some(1));
         assert_eq!(
-            eval_session_i64(&mut session, "spawn(fn () -> send(parent, receive()) end)"),
+            eval_session_i64(&mut session, "spawn(fn () -> send(parent, receive do x -> x end) end)"),
             Some(2),
         );
         assert!(matches!(
@@ -1320,12 +1320,12 @@ fn add1(n), do: n + 1"#
         ));
         assert_eq!(eval_session_i64(&mut session, "id(42)"), Some(42));
         assert_eq!(eval_session_i64(&mut session, "send(2, 7)"), Some(7));
-        assert_eq!(eval_session_i64(&mut session, "receive()"), Some(7));
+        assert_eq!(eval_session_i64(&mut session, "receive do x -> x end"), Some(7));
     }
 
     #[test]
     fn repl_round_trip_send_receive_self() {
-        let r = drive(&["send(self(), [1, 2.5, :a])", "receive()"]);
+        let r = drive(&["send(self(), [1, 2.5, :a])", "receive do x -> x end"]);
         assert_eq!(r[1].as_deref(), Ok("[1, 2.5, :a]"));
     }
 
@@ -1348,7 +1348,7 @@ fn add1(n), do: n + 1"#
         let r = drive(&[
             "parent = self()",
             "spawn(fn () -> send(parent, 42) end, 4096)",
-            "receive()",
+            "receive do x -> x end",
         ]);
         assert_eq!(r[2].as_deref(), Ok("42"));
     }

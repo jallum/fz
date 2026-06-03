@@ -1,6 +1,8 @@
 fn parent(tag) do
   spawn(fn () -> send(1, tag) end)
-  receive()
+  receive do
+    x -> x
+  end
 end
 
 fn main() do

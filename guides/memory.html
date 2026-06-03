@@ -533,9 +533,10 @@ the callee's native ABI and tail-calls the loop body.</p>
 
 <div class="box blue">
 <strong>Park-time GC roots</strong><br>
-<code>parked_matched</code> — the receive park record. Plain
-<code>receive()</code> uses an accept-any matcher; selective receive uses a
-compiled matcher. Clause-body closures are forwarded in place.<br><br>
+<code>parked_matched</code> — the receive park record. Every parked receive
+carries a compiled matcher; the catch-all form <code>receive do msg -&gt;
+msg end</code> is the accept-any shape. Clause-body closures are forwarded
+in place.<br><br>
 <code>process.mailbox</code> — messages already delivered to this process.
 Self-send can leave a matching message in the mailbox before the scheduler
 gets control again, so mailbox roots are always traced.

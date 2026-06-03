@@ -2394,7 +2394,7 @@ end
 
     #[test]
     fn lambda_tail_receive_does_not_terminate_enclosing_spawn_call() {
-        let m = lower_src("fn p(parent) do\nspawn(fn () -> send(parent, receive()) end)\nend");
+        let m = lower_src("fn p(parent) do\nspawn(fn () -> send(parent, receive do x -> x end) end)\nend");
         let p = m.fn_by_name("p").expect("p fn missing");
         let entry = p.block(p.entry);
         let spawn = m

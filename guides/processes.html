@@ -160,12 +160,16 @@ so the child can send back:</p>
 <span class="kw">fn</span> <span class="fn">main</span>() <span class="kw">do</span>
   home = <span class="fn">self</span>()
   <span class="fn">spawn</span>(<span class="kw">fn</span> () -&gt; <span class="fn">worker</span>(home))
-  <span class="fn">print</span>(<span class="fn">receive</span>())
+  reply = <span class="fn">receive</span> <span class="kw">do</span>
+    msg -&gt; msg
+  <span class="kw">end</span>
+  <span class="fn">print</span>(reply)
 <span class="kw">end</span></pre>
 
 <p><code>main</code> tells the child where to send the answer. The child
 runs, computes, sends, exits. <code>main</code> blocks on
-<code>receive()</code> until the answer arrives. Output: <code>42</code>.</p>
+that one-clause <code>receive</code> until the answer arrives. Output:
+<code>42</code>.</p>
 
 <!-- ─────────────────────────────── 4. SEND ─────────────────────────────── -->
 <h2 id="send">4. <code>send</code> — putting a message in someone's mailbox</h2>
@@ -200,17 +204,20 @@ the mechanism that lets two processes safely "share" a complex value.</p>
 <!-- ─────────────────────────────── 5. RECV ─────────────────────────────── -->
 <h2 id="recv">5. <code>receive</code> — taking it out</h2>
 
-<p>The simplest form is <code>receive()</code>: take the next message in
-my mailbox, block if there's nothing there yet, return whatever arrives.</p>
+<p>The simplest form is a one-clause <code>receive</code>: take the next
+message in my mailbox, block if there's nothing there yet, return whatever
+arrives.</p>
 
 <pre><span class="kw">fn</span> <span class="fn">main</span>() <span class="kw">do</span>
-  msg = <span class="fn">receive</span>()
+  msg = <span class="fn">receive</span> <span class="kw">do</span>
+    x -&gt; x
+  <span class="kw">end</span>
   <span class="fn">print</span>(msg)
 <span class="kw">end</span></pre>
 
 <p>If <code>main</code>'s mailbox is empty, the call blocks. As soon as
 <em>some</em> message arrives — from any sender, of any shape —
-<code>receive()</code> returns it.</p>
+that catch-all clause returns it.</p>
 
 <p>This is the right primitive when "I'm waiting for the next thing, and
 anything that comes is fine." Most real programs want more control:

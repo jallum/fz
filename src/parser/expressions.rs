@@ -528,17 +528,13 @@ impl Parser {
             Tok::Case => return self.parse_case(),
             Tok::Cond => return self.parse_cond(),
             Tok::With => return self.parse_with(),
-            // fz-5vj — contextual: `receive do …` parses the new form;
-            // `receive(...)` keeps working as a zero-arg function call
-            // by emitting Expr::Var("receive") and letting postfix do
-            // the call (lowering at src/ir_lower.rs:1111 still recognises
-            // the name). fz-recv.A2 removes the bare-call form.
+            // fz-5vj — `receive` is only the selective form.
             Tok::Receive => {
                 self.bump();
                 if matches!(self.peek(), Tok::Do) {
                     return self.parse_receive_do(start);
                 }
-                Expr::Var("receive".to_string())
+                return self.err("plain `receive()` has been removed; use `receive do ... end`");
             }
             Tok::Do => {
                 self.bump();

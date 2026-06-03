@@ -78,7 +78,9 @@ fn persistent_plain_receive_resumes_after_later_drive_send() {
     let m = lower_src(
         r#"
         fn wait_plain() do
-          receive()
+          receive do
+            x -> x
+          end
         end
 
         fn send_plain(pid) do
@@ -106,7 +108,9 @@ fn spawned_child_resumes_with_original_code_image_after_root_advances() {
     let first_image = lower_src(
         r#"
         fn child(parent) do
-          msg = receive()
+          msg = receive do
+            x -> x
+          end
           send(parent, msg)
         end
 
@@ -123,7 +127,9 @@ fn spawned_child_resumes_with_original_code_image_after_root_advances() {
         end
 
         fn receive_reply() do
-          receive()
+          receive do
+            x -> x
+          end
         end
     "#,
     );

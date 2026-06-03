@@ -339,7 +339,9 @@ fn persistent_runtime_drives_entries_without_resetting_mailbox() {
         end
 
         fn second() do
-          receive()
+          receive do
+            x -> x
+          end
         end
     "#,
     );
@@ -382,7 +384,9 @@ fn interp_reductions_yield_allocation_light_loops() {
           me = self()
           spawn(fn () -> child(me) end)
           count(5000, 0)
-          receive()
+          receive do
+            x -> x
+          end
         end
     "#,
     );
@@ -498,7 +502,9 @@ fn interp_typed_int_send_receive_boundary() {
         run(r#"
             fn main() do
               send(self(), 4611686018427387904)
-              receive()
+              receive do
+                x -> x
+              end
             end
             "#,),
         4611686018427387904
@@ -578,7 +584,9 @@ fn interp_typed_int_sender_wakes_blocked_receiver() {
             fn main() do
               me = self()
               spawn(fn () -> child(me) end)
-              receive()
+              receive do
+                x -> x
+              end
             end
         "#),
         4611686018427387904

@@ -47,9 +47,8 @@ pub enum Tok {
     Type,
     In,  // membership operator: `x in xs`
     Not, // boolean negation and `not in`
-    // fz-5vj — selective `receive do … after … end` syntax. `Receive`
-    // is contextual: bare `receive(...)` (postfix call) still parses
-    // through Expr::Var until fz-recv.A2 drops the bare-call form.
+    // fz-5vj — selective `receive do … after … end` syntax. Plain
+    // `receive()` has been removed; `receive` is a reserved keyword.
     Receive,
     After,
 

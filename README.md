@@ -202,19 +202,22 @@ A ring of processes, each adding 1 and passing the value on:
 
 ```elixir
 fn relay(0, home) do
-  send(home, receive() + 1)
+  value = receive do x -> x end
+  send(home, value + 1)
 end
 
 fn relay(n, home) do
   next = spawn(fn() -> relay(n - 1, home))
-  send(next, receive() + 1)
+  value = receive do x -> x end
+  send(next, value + 1)
 end
 
 fn main() do
   home = self()
   head = spawn(fn() -> relay(4, home))
   send(head, 0)
-  dbg(receive())   # 5
+  got = receive do x -> x end
+  dbg(got)   # 5
 end
 ```
 

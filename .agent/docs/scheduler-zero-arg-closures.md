@@ -56,10 +56,11 @@ receive:
   process becomes Blocked
 ```
 
-The waiting state is a `WaitState` in `Process.wait`. Plain `receive()`
-installs an accept-any matcher; selective receive installs its compiled matcher.
-When a message later matches, the matcher materializes a zero-arg outcome closure.
-Bound pattern values and any original continuation state are captures.
+The waiting state is a `WaitState` in `Process.wait`. Every parked receive
+installs a compiled matcher; the catch-all form `receive do msg -> msg end`
+is the accept-any shape. When a message later matches, the matcher
+materializes a zero-arg outcome closure. Bound pattern values and any
+original continuation state are captures.
 
 ```text
 message matches:

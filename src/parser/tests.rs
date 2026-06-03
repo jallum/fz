@@ -466,14 +466,15 @@ fn spawn(fun, opts), do: fun.()
     }
 
     #[test]
-    fn bare_receive_call_still_parses() {
-        // fz-5vj keeps the old `receive()` form working until fz-recv.A2.
-        let e = parse_fn_body("receive()");
-        let Expr::Call(callee, args) = e else {
-            panic!("expected Call, got {:?}", e);
-        };
-        assert!(matches!(callee.node, Expr::Var(ref n) if n == "receive"));
-        assert!(args.is_empty());
+    fn bare_receive_call_is_rejected() {
+        let wrapped = "fn _t() do receive() end";
+        let toks = Lexer::new(wrapped).tokenize().unwrap();
+        let err = Parser::new(toks).parse_program().unwrap_err();
+        assert!(
+            err.msg.contains("plain `receive()` has been removed"),
+            "unexpected parse error: {:?}",
+            err
+        );
     }
 
     /// case scrutinee, cond test, with binding source, and when-guard

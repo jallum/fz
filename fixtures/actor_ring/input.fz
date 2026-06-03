@@ -1,16 +1,24 @@
 fn relay(0, home) do
-  send(home, receive() + 1)
+  value = receive do
+    x -> x
+  end
+  send(home, value + 1)
 end
 
 fn relay(n, home) do
   next = spawn(fn() -> relay(n - 1, home) end)
-  send(next, receive() + 1)
+  value = receive do
+    x -> x
+  end
+  send(next, value + 1)
 end
 
 fn main() do
   home = self()
   head = spawn(fn() -> relay(4, home) end)
   send(head, 0)
-  got = receive()
+  got = receive do
+    x -> x
+  end
   assert(got == 5, "5-hop actor ring increments 0 once per hop")
 end

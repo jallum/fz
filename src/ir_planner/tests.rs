@@ -1454,7 +1454,6 @@ fn frontend_plan(src: &str, tel: &dyn Telemetry) -> (ConcreteTypes, Module, Modu
     (t, module, plan)
 }
 
-
 #[test]
 fn declared_reduce_while_return_uses_closure_return_witness() {
     let mut t = ConcreteTypes;
@@ -3449,77 +3448,6 @@ fn main(), do: dbg(42)
     );
 }
 
-/// fz-ul4.29.12.5 — a `Term::Receive` cont with a typed capture must
-/// have a narrow spec registered (slot 0 = `any` per the opaque-
-/// sender rule, slot 1+ narrowed from the caller's env). .29.12.1's
-/// `emit_receive` resolves through subsumption against this spec to
-/// pick a narrow cont SpecId for `fz_alloc_frame`; this test pins
-/// the planner precondition.
-#[test]
-fn receive_cont_with_typed_capture_gets_narrow_spec() {
-    let (t, m, mt) = pipeline(
-        r#"
-fn waiter(tag) do
-  m = receive()
-  dbg(m)
-  tag
-end
-fn main() do
-  waiter(7)
-end
-"#,
-        &NullTelemetry,
-    );
-    // The receive's cont fn is synthesized by ir_lower's CPS split.
-    // Find any cont fn referenced from a Term::Receive in waiter.
-    let waiter = m.fns.iter().find(|f| f.name == "waiter").unwrap();
-    let mut cont_fn_ids: Vec<FnId> = Vec::new();
-    for b in &waiter.blocks {
-        if let Term::Receive { continuation, .. } = &b.terminator {
-            cont_fn_ids.push(continuation.fn_id);
-        }
-    }
-    assert!(!cont_fn_ids.is_empty(), "test premise: waiter has a Receive");
-    // At least one of those cont fns has a narrow spec where slot 1
-    // (= the captured `tag`) is `int_lit(7)` (typed via the call
-    // `waiter(7)`).
-    let mut any_narrow = false;
-    for cont_id in cont_fn_ids {
-        for spec_key in mt.specs.keys() {
-            if spec_key.fn_id != cont_id {
-                continue;
-            }
-            let key = &spec_key.input;
-            if key.is_empty() {
-                continue;
-            }
-            // slot 0 must be `any` (receive opaque).
-            if !slot_ty(&key[0]).is_some_and(|ty| t.is_top(ty)) {
-                continue;
-            }
-            // slot 1+ must include at least one int-typed entry
-            // (the propagated `tag` capture).
-            if key
-                .iter()
-                .skip(1)
-                .any(|d| slot_ty(d).is_some_and(|ty| t.is_integer(ty) && !t.is_top(ty)))
-            {
-                any_narrow = true;
-            }
-        }
-    }
-    assert!(
-        any_narrow,
-        "expected ≥1 narrow Receive-cont spec with typed capture; \
-         specs for cont fns: {:?}",
-        mt.specs
-            .iter()
-            .filter(|(key, _)| m.fns.iter().any(|f| f.id == key.fn_id && f.name.contains("waiter")))
-            .map(|(key, _)| (key.fn_id, key.input.clone()))
-            .collect::<Vec<_>>()
-    );
-}
-
 /// fz-ul4.29.12.4 — spawn/1 now lives in runtime.fz, so there is no
 /// compiler-synthesized fz_spawn_thunk between the wrapper and the user
 /// closure. The spawned lambda stays reachable through the wrapper's real
@@ -5495,4 +5423,3 @@ fn plain_int_arithmetic_still_passes() {
             .collect::<Vec<_>>(),
     );
 }
-

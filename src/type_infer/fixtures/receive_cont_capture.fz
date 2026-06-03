@@ -1,5 +1,7 @@
 fn parent(tag) do
-  msg = receive()
+  msg = receive do
+    x -> x
+  end
   {tag, msg}
 end
 
