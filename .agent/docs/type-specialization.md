@@ -12,7 +12,7 @@ contracts:
 
 ```text
 call contract = FnId + input ValueFacts
-activation    = one inferred instance of that FnId at that input tuple
+activation    = one inferred instance of that FnId at an identity class
 return fact   = activation-local Info cell
 ```
 
@@ -20,6 +20,38 @@ return fact   = activation-local Info cell
 continuations, and protocol implementation bodies. It is not the inference
 instance. The same `FnId` can have separate activations for `id(1)` and
 `id(:ok)` without joining those callers into one monomorphic function cell.
+
+### Activation identity and convergence
+
+An activation is keyed by its `FnId` plus a per-slot **identity class**, not by
+the raw input tuple. For each entry-param slot the class is either:
+
+- the exact input value, for a **dispatch subject** — a slot that can change
+  which clause/branch the body selects or which callable it invokes; or
+- the slot's `convergence_class` otherwise (a non-dispatch slot).
+
+`FnIr::dispatch_subject_slots` computes the dispatch mask: a backward slice from
+every `Term::If` condition and every invoked-closure operand to the entry params,
+over the only intra-body binding edges (`Stmt::Let` operands and `Term::Goto`
+args). It is sound by construction — it reaches every entry param a control
+decision can depend on, never fewer.
+
+Convergence applies **only to recursive fns** (`Module::recursive_fns`, the same
+recursion notion the planner uses for recursive-key widening). For a recursive
+fn, two calls that agree on every dispatch subject and on the *family* of each
+non-dispatch slot share one activation; the exact non-dispatch types are then
+recovered by joining the stored inputs through `refine_widen`
+(`[] ⊔ nonempty_list(int) = list(int)`). `convergence_class` folds all pure list
+shapes into one class, so an accumulator's emptiness×element cartesian product
+stops forking activations — that product is the over-specialization balloon
+(see `quicksort`'s `partition/4`). Cross-family non-dispatch differences (`int`
+vs a tagged tuple `{:cont, int}`) keep distinct classes, so a shape-changing
+accumulator and its type errors stay observable; the input-join is idempotent so
+joining a callable slot with itself never erases its closure-literal identity.
+Non-recursive fns are never converged: their distinct call sites are genuine
+per-callsite polymorphism. The planner consumes the converged activations
+directly — its `canonical_public_key` maps each narrow spec request onto the
+single converged bucket, so no separate planner-side widening is needed.
 
 Parameters do not own types and do not default to `any`. An activation supplies
 the input facts. A return cell starts as `Pending` and moves upward only when the
@@ -66,6 +98,8 @@ surface for tests and operators. The engine emits:
 - `fz.type_infer.diagnostic` for located type errors.
 - `fz.type_infer.dead_arm` for matcher arms proved inaccessible, keyed by the
   activation id that proved the branch dead.
+- `fz.type_infer.dispatch_mask` for each activated fn: its arity and the entry
+  slots that drive dispatch (the precise slots; the complement converges).
 
 ## Cells
 

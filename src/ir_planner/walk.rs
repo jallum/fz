@@ -1,8 +1,7 @@
 use super::fn_types::{
     CallEdgePlan, CallEdgeTarget, CallableCapability, FnEffects, IncomingParamCallableCapabilities, ReturnDemand,
     SpecKey, SpecPlan, WALK_CALLS, fixed_point_input_tys_for_arity, forwarded_return_contract_for_target,
-    normalize_result_correspondence_key, padded_direct_input_tys, return_contract_for_target, spec_key_for_fn,
-    spec_key_for_fn_id,
+    padded_direct_input_tys, return_contract_for_target, spec_key_for_fn, spec_key_for_fn_id,
 };
 use super::prim::type_prim;
 use super::reachable::cont_key_from_slot0;
@@ -755,7 +754,6 @@ where
         let cont_fn = &self.m.fns[j];
         let n_params = cont_fn.block(cont_fn.entry).params.len();
         let mut key = cont_key_from_slot0(&self.any_ty, n_params, slot0.ty, &cont.captured, env);
-        key = normalize_result_correspondence_key(self.t, self.m, cont.fn_id, key);
         if self.has_bottom_arg(&key) {
             return;
         }

@@ -1,5 +1,5 @@
 use super::closures::resolve_closure_return;
-use super::fn_types::{ModulePlan, SpecPlan, normalize_result_correspondence_key};
+use super::fn_types::{ModulePlan, SpecPlan};
 use super::type_fn::type_stmts_into_env;
 use crate::frontend::spec_registry::SpecRegistry;
 use crate::fz_ir::{Block, Cont, FnId, Module, Term, Var};
@@ -135,12 +135,7 @@ pub fn cont_input_key<T: Types<Ty = Ty> + ClosureTypes>(
     let any_t = t.any();
     let env = env_at_terminator(t, caller_ft, block, module);
     let slot0_ty = cont_slot0_descr(t, block, caller_ft, module, module_plan);
-    normalize_result_correspondence_key(
-        t,
-        module,
-        continuation.fn_id,
-        cont_key_from_slot0(&any_t, n_params, slot0_ty, &continuation.captured, &env),
-    )
+    cont_key_from_slot0(&any_t, n_params, slot0_ty, &continuation.captured, &env)
 }
 
 pub(crate) fn cont_key_from_slot0(

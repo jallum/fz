@@ -2,7 +2,7 @@ use super::closures::resolve_closure_return;
 use super::diagnostics::env_after_block_stmts;
 use super::fn_types::{
     BodyKey, CallEdgeTarget, CallableCapability, EffectSummary, ReturnDemand, SpecKey, SpecReachabilityRole,
-    fixed_point_spec_key_for_arity, normalize_result_correspondence_key,
+    fixed_point_spec_key_for_arity,
 };
 use super::narrow::narrow_for_cond;
 use super::reachable::{cont_key_from_slot0, cont_slot0_descr, reachable_spec_ids};
@@ -1454,52 +1454,6 @@ fn frontend_plan(src: &str, tel: &dyn Telemetry) -> (ConcreteTypes, Module, Modu
     (t, module, plan)
 }
 
-#[test]
-fn normalize_result_correspondence_key_widens_result_linked_state() {
-    let src = r#"
-@spec reducer(integer, integer) :: {:cont, integer}
-fn reducer(_entry, acc), do: {:cont, acc}
-
-@spec reduce_step([a], {:cont, b} | {:halt, b} | {:suspend, b}, (a, b) -> {:cont, b} | {:halt, b} | {:suspend, b}) :: {:done, b} | {:halted, b} | {:suspended, b, () -> any}
-fn reduce_step(_list, {:cont, acc}, _reducer), do: {:done, acc}
-fn reduce_step(_list, {:halt, acc}, _reducer), do: {:halted, acc}
-fn reduce_step(_list, {:suspend, acc}, _reducer), do: {:suspended, acc, (fn () -> 0 end)}
-"#;
-    let (mut t, m, _mt) = pipeline(src, &NullTelemetry);
-    let reduce_step = m.fn_by_name("reduce_step").expect("reduce_step fn");
-    let reducer = m.fn_by_name("reducer").expect("reducer fn");
-    let reducer_lit = t.closure_lit(reducer.id.into(), vec![], 2);
-    let cont = t.atom_lit("cont");
-    let halt = t.atom_lit("halt");
-    let suspend = t.atom_lit("suspend");
-    let acc = t.int_lit(1);
-    let cont_state = t.tuple(&[cont.clone(), acc.clone()]);
-    let halt_state = t.tuple(&[halt, acc.clone()]);
-    let suspend_state = t.tuple(&[suspend, acc.clone()]);
-    let cont_or_halt = t.union(cont_state, halt_state);
-    let state = t.union(cont_or_halt, suspend_state);
-    let int_ty = t.int();
-    let list_int = t.list(int_ty);
-    let key = normalize_result_correspondence_key(
-        &mut t,
-        &m,
-        reduce_step.id,
-        vec![list_int, state.clone(), reducer_lit.clone()],
-    );
-    assert!(
-        !t.is_equivalent(&key[1], &state),
-        "state slot should widen under result-linked correspondence"
-    );
-    let clauses = t
-        .callable_clauses(&key[2])
-        .expect("normalized reducer should remain callable");
-    assert_eq!(clauses.len(), 1);
-    assert!(
-        clauses[0].closure.is_some(),
-        "recursive spec-key widening preserves closure identity; erasure is a separate type operation: {}",
-        t.display(&key[2])
-    );
-}
 
 #[test]
 fn declared_reduce_while_return_uses_closure_return_witness() {

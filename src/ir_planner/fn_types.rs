@@ -1,10 +1,9 @@
 use crate::frontend::spec_registry::{BestCoverCandidate, best_covering_candidate};
 use crate::fz_ir::{BlockId, CallsiteId, DeadBranch, ExternMarshalSite, ExternTy, FnCategory, FnId, FnIr, Module, Var};
 use crate::modules::identity::ExportKey;
-use crate::specs::StructuralOccurrence;
 use crate::types::{ClosureTypes, KeySlot, Nominals, RenderTypes, Ty, Types, key_slot_var_count, key_slots_to_tys};
 use std::cell::Cell;
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 
 #[derive(Debug, Clone, Default)]
 pub struct SpecPlan {
@@ -582,27 +581,6 @@ pub(crate) type SpecKeySet = HashSet<SpecKey>;
 /// returned value that flows into the continuation.
 pub(crate) type IncomingParamCallableCapabilities = HashMap<BodyKey, Vec<Option<CallableCapability>>>;
 
-pub(crate) fn result_linked_param_slots(module: &Module, fn_id: FnId) -> BTreeSet<usize> {
-    let Some(groups) = module.function_correspondence.get(&fn_id) else {
-        return BTreeSet::new();
-    };
-    let mut params = BTreeSet::new();
-    for group in groups {
-        if !group
-            .occurrences
-            .iter()
-            .any(|occ| matches!(occ, StructuralOccurrence::Result { .. }))
-        {
-            continue;
-        }
-        for occ in &group.occurrences {
-            if let StructuralOccurrence::Param { param_index, .. } = occ {
-                params.insert(*param_index);
-            }
-        }
-    }
-    params
-}
 
 /// Termination tripwire. The proof above (see `plan_module`'s doc) shows the
 /// worklist terminates in O(|specs| · H · |edges|) pops. This bound is
@@ -643,27 +621,6 @@ pub(crate) fn padded_direct_input_tys<T: Types<Ty = Ty>>(t: &mut T, mut input_ty
     input_tys
 }
 
-pub(crate) fn normalize_result_correspondence_key<T: Types<Ty = Ty> + ClosureTypes>(
-    t: &mut T,
-    module: &Module,
-    fn_id: FnId,
-    mut key: Vec<Ty>,
-) -> Vec<Ty> {
-    let recursive_params = result_linked_param_slots(module, fn_id);
-    if recursive_params.is_empty() {
-        return key;
-    }
-    if !module.function_correspondence.contains_key(&fn_id) {
-        return key;
-    }
-    for param_index in recursive_params {
-        if let Some(slot) = key.get_mut(param_index) {
-            *slot = t.widen_for_recursive_spec_key(slot);
-        }
-    }
-    key
-}
-
 pub(crate) fn fixed_point_spec_key_for_arity<T: Types<Ty = Ty> + ClosureTypes>(
     t: &mut T,
     module: &Module,
@@ -693,7 +650,6 @@ pub(crate) fn fixed_point_input_tys_for_arity<T: Types<Ty = Ty> + ClosureTypes>(
 ) -> (Vec<Ty>, Vec<Ty>) {
     let input_tys = padded_direct_input_tys(t, input_tys, arity);
     let input_tys = normalize_recursive_direct_key(t, recursive_fns, input_tys, caller, callee, module);
-    let input_tys = normalize_result_correspondence_key(t, module, callee, input_tys);
     let observed = input_tys.clone();
     (observed, input_tys)
 }
