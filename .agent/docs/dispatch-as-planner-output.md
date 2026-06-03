@@ -51,6 +51,17 @@ payload and does not justify a second executable body. A value-return activation
 fact covers every compatible demand for the same `BodyKey`; the planner must
 not run a separate return-type engine to fill demand siblings.
 
+When two `SpecKey` slots share a `BodyKey`, their `SpecPlan`s must be
+interchangeable: the body interior, the outgoing call edges, the closure-entry
+obligations, and the extern marshal classes are all body-level facts, not
+edge-ABI facts. `materialize_program` emits
+`fz.planner.body_plan_sibling_consistency` per shared-body comparison and rolls
+any divergence up onto `fz.planner.materialized`
+(`sibling_body_plan_divergence_count`); the authoritative consistency gate fails
+if any sibling diverges. In the current corpus the shared-body path is not
+exercised at all — demand siblings of one `BodyKey` do not arise in practice —
+so the gate holds vacuously and stands ready if that ever changes.
+
 ## Activation Projection
 
 `plan_module` reads structured `type_infer` activation facts as production
