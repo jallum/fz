@@ -709,7 +709,7 @@ fn remap_term(term: &mut Term, fn_map: &BTreeMap<FnId, FnId>) {
             remap_cont(continuation, fn_map);
         }
         Term::TailCall { callee, .. } => remap_fn_id(callee, fn_map),
-        Term::CallClosure { continuation, .. } | Term::Receive { continuation, .. } => {
+        Term::CallClosure { continuation, .. } => {
             remap_cont(continuation, fn_map);
         }
         Term::ReceiveMatched { clauses, after, .. } => {

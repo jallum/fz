@@ -185,7 +185,6 @@ fn max_var_in_term(term: &Term) -> u32 {
             visit(*closure);
             args.iter().for_each(|arg| visit(*arg));
         }
-        Term::Receive { continuation, .. } => continuation.captured.iter().for_each(|capture| visit(*capture)),
         Term::ReceiveMatched {
             pinned,
             captures,

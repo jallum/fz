@@ -311,9 +311,9 @@ fn compute_tagged_return_specs<T: Types<Ty = Ty> + ClosureTypes>(
                         None => true,
                     }
                 }
-                Term::Call { continuation, .. }
-                | Term::CallClosure { continuation, .. }
-                | Term::Receive { continuation, ident: _ } => set.contains(&continuation.fn_id.0),
+                Term::Call { continuation, .. } | Term::CallClosure { continuation, .. } => {
+                    set.contains(&continuation.fn_id.0)
+                }
                 _ => false,
             });
             if propagates {
@@ -373,7 +373,7 @@ fn compute_tagged_slot0_cont_specs<T: Types<Ty = Ty>>(
                             .is_some_and(|sid| return_reprs[sid.0 as usize] == ArgRepr::ValueRef)
                     })
                 }
-                Term::CallClosure { .. } | Term::Receive { .. } => true,
+                Term::CallClosure { .. } => true,
                 _ => false,
             };
             if !produces_tagged_slot0 {
@@ -444,9 +444,7 @@ fn compute_halt_reprs<T: Types<Ty = Ty> + ClosureTypes>(
                             contributions.push(c);
                         }
                     }
-                    Term::Call { continuation, .. }
-                    | Term::CallClosure { continuation, .. }
-                    | Term::Receive { continuation, ident: _ } => {
+                    Term::Call { continuation, .. } | Term::CallClosure { continuation, .. } => {
                         let cont_sid = continuation.fn_id.0;
                         if let Some(c) = chain.get(cont_sid as usize).and_then(|o| *o) {
                             contributions.push(c);

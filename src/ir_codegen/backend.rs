@@ -290,7 +290,6 @@ pub(crate) fn register_runtime_symbols(builder: &mut JITBuilder) {
         "fz_resource_test_print_dtor",
         resource::fz_resource_test_print_dtor as *const u8,
     );
-    builder.symbol("fz_receive_park", ir_runtime::fz_receive_park as *const u8);
     // Selective-receive park entry. Used by JIT codegen at the
     // Term::ReceiveMatched seam.
     builder.symbol(

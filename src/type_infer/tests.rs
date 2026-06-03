@@ -543,7 +543,7 @@ end
 }
 
 #[test]
-fn receive_continuation_keeps_typed_capture_and_settles_caller_return() {
+fn receive_clause_body_keeps_typed_capture_and_settles_caller_return() {
     let module = linked(include_str!("fixtures/receive_cont_capture.fz"));
     let mut t = ConcreteTypes;
     let int = t.int();
@@ -555,7 +555,7 @@ fn receive_continuation_keeps_typed_capture_and_settles_caller_return() {
     assert_eq!(
         report.outcome.status,
         TypeInferStatus::Complete,
-        "plain receive should infer through its continuation instead of leaving the activation graph unresolved: activations={:?}",
+        "catch-all selective receive should infer through its clause body instead of leaving the activation graph unresolved: activations={:?}",
         report
             .outcome
             .activations
@@ -582,7 +582,7 @@ fn receive_continuation_keeps_typed_capture_and_settles_caller_return() {
         })
         .unwrap_or_else(|| {
             panic!(
-                "parent/1 should settle to {{int, any}} from the typed capture threaded through the receive continuation; got {:?}",
+                "parent/1 should settle to {{int, any}} from the typed capture threaded through the receive clause body; got {:?}",
                 report
                     .outcome
                     .activations
@@ -620,9 +620,9 @@ fn receive_continuation_keeps_typed_capture_and_settles_caller_return() {
         report.outcome.edges.iter().any(|edge| {
             edge.caller_activation_id == parent_fact.activation_id
                 && edge.callsite.callsite.slot == EmitSlot::Cont
-                && module.fn_by_id(edge.callee_fn_id).name.starts_with("k_receive_")
+                && module.fn_by_id(edge.callee_fn_id).name == "rx_clause_0_body"
         }),
-        "parent/1 should expose a Cont activation edge into the synthesized receive continuation; edges={:?}",
+        "parent/1 should expose a Cont activation edge into the selective-receive clause body; edges={:?}",
         report
             .outcome
             .edges
@@ -779,9 +779,9 @@ fn linked_runtime_spawn_receive_converges_through_extern_return_contract() {
     assert!(
         report.outcome.edges.iter().any(|edge| {
             edge.callsite.callsite.slot == EmitSlot::Cont
-                && module.fn_by_id(edge.callee_fn_id).name.starts_with("k_receive_")
+                && module.fn_by_id(edge.callee_fn_id).name == "rx_clause_0_body"
         }),
-        "linked runtime graph should keep the receive continuation edge alive after pre-plan rewrites; edges={:?}",
+        "linked runtime graph should keep the selective-receive clause-body edge alive after pre-plan rewrites; edges={:?}",
         report
             .outcome
             .edges
@@ -1580,4 +1580,3 @@ fn non_closure_has_no_apply_contract() {
     let int = t.int();
     assert!(closure_apply_contract(&t, &int, &[]).is_none());
 }
-

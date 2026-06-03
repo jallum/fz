@@ -292,7 +292,6 @@ fn continuation_sites(module: &Module) -> Vec<ContinuationSite> {
                 Term::Call { continuation, .. } | Term::CallClosure { continuation, .. } => {
                     (continuation.clone(), "call_continuation")
                 }
-                Term::Receive { continuation, .. } => (continuation.clone(), "receive_continuation"),
                 _ => continue,
             };
             *counts.entry(cont.fn_id).or_insert(0) += 1;
@@ -712,14 +711,12 @@ fn apply_plan(module: &mut Module, site: ContinuationSite, plan: NormalizePlan) 
     dce_fn_with_telemetry("", cont_fn, &NullTelemetry);
 
     let term = &mut module.fns[site.caller_fn_idx].blocks[site.caller_block_idx].terminator;
-    match term {
-        Term::Call { continuation, .. }
-        | Term::CallClosure { continuation, .. }
-        | Term::Receive { continuation, .. } => {
-            continuation.captured = plan.new_captured;
+        match term {
+            Term::Call { continuation, .. } | Term::CallClosure { continuation, .. } => {
+                continuation.captured = plan.new_captured;
+            }
+            _ => unreachable!("captured site no longer points at a continuation term"),
         }
-        _ => unreachable!("captured site no longer points at a continuation term"),
-    }
 }
 
 fn apply_shared_continuation_plan(module: &mut Module, site: SharedContinuationSite, plan: SharedContinuationPlan) {
@@ -741,9 +738,7 @@ fn apply_shared_continuation_plan(module: &mut Module, site: SharedContinuationS
         let term = &mut module.fns[call_site.caller_fn_idx].blocks[call_site.caller_block_idx].terminator;
         let new_captured: Vec<Var> = plan.live_indices.iter().map(|&i| call_site.cont.captured[i]).collect();
         match term {
-            Term::Call { continuation, .. }
-            | Term::CallClosure { continuation, .. }
-            | Term::Receive { continuation, .. } => {
+            Term::Call { continuation, .. } | Term::CallClosure { continuation, .. } => {
                 continuation.captured = new_captured;
             }
             _ => unreachable!("shared captured site no longer points at a continuation term"),
@@ -848,36 +843,6 @@ mod tests {
         let mut cont = FnBuilder::new(cont_id, "k_1").with_category(FnCategory::CpsCont);
         let result = Var(0);
         let mut params = vec![result];
-        params.extend(captured_params);
-        let entry = cont.block(params);
-        cont.set_terminator(entry, Term::Return(used));
-
-        let mut mb = ModuleBuilder::new();
-        mb.add_fn(caller.build());
-        mb.add_fn(cont.build());
-        mb.build()
-    }
-
-    fn build_module_with_receive_cont(captured: Vec<Var>, captured_params: Vec<Var>, used: Var) -> Module {
-        let caller_id = FnId(0);
-        let cont_id = FnId(1);
-
-        let mut caller = FnBuilder::new(caller_id, "receiver");
-        let entry = caller.block(vec![]);
-        caller.set_terminator(
-            entry,
-            Term::Receive {
-                ident: CallsiteIdent::from_source(Span::DUMMY),
-                continuation: Cont {
-                    fn_id: cont_id,
-                    captured,
-                },
-            },
-        );
-
-        let mut cont = FnBuilder::new(cont_id, "k_receive_1").with_category(FnCategory::CpsCont);
-        let message = Var(0);
-        let mut params = vec![message];
         params.extend(captured_params);
         let entry = cont.block(params);
         cont.set_terminator(entry, Term::Return(used));
@@ -1106,23 +1071,6 @@ mod tests {
         let entry = cont.block(BlockId(0));
         assert_eq!(entry.params, vec![Var(0), Var(1)]);
         assert!(matches!(entry.terminator, Term::Return(Var(1))));
-    }
-
-    #[test]
-    fn normalizes_receive_continuation_captures() {
-        let mut module = build_module_with_receive_cont(vec![Var(10), Var(11)], vec![Var(1), Var(2)], Var(0));
-
-        let cap = normalize_with_capture(&mut module);
-        assert_pruned_event(&cap, "receive_continuation", 2, 0, 2);
-
-        let caller = module.fn_by_id(FnId(0));
-        let Term::Receive { continuation, .. } = &caller.block(BlockId(0)).terminator else {
-            panic!("expected receive terminator");
-        };
-        assert!(continuation.captured.is_empty());
-
-        let cont = module.fn_by_id(FnId(1));
-        assert_eq!(cont.block(BlockId(0)).params, vec![Var(0)]);
     }
 
     #[test]

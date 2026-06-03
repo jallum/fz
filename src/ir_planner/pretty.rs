@@ -226,9 +226,6 @@ fn render_terminator_exit<T: Types<Ty = Ty> + ClosureTypes + RenderTypes>(
         Term::TailCallClosure { closure, args, .. } => {
             render_tail_call_closure_exit(m, ft, b, *closure, args, out);
         }
-        Term::Receive { continuation, .. } => {
-            render_receive_exit(t, m, mt, ft, b, continuation, out);
-        }
         Term::ReceiveMatched {
             clauses,
             after,
@@ -352,27 +349,6 @@ fn render_tail_call_closure_exit(m: &Module, ft: &SpecPlan, b: &Block, closure: 
         arg_vars.join(", "),
         target_str
     ));
-}
-
-fn render_receive_exit<T: Types<Ty = Ty> + ClosureTypes + RenderTypes>(
-    t: &mut T,
-    m: &Module,
-    mt: &ModulePlan,
-    ft: &SpecPlan,
-    b: &Block,
-    continuation: &Cont,
-    out: &mut String,
-) {
-    let cap_vars = vars_str(&continuation.captured);
-    let ck = cont_input_key(t, b, continuation, ft, m, mt);
-    out.push_str(&format!(
-        ";     blk{} Receive cont {}#{} captured=[{}]\n",
-        b.id.0,
-        fn_name(m, continuation.fn_id),
-        continuation.fn_id.0,
-        cap_vars.join(", ")
-    ));
-    out.push_str(&format!(";              cont_key={}\n", tys_str(&*t, &ck)));
 }
 
 fn render_receive_matched_exit(

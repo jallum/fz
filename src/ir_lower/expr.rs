@@ -320,25 +320,6 @@ pub(crate) fn lower_expr(ctx: &mut LowerCtx, e: &Spanned<Expr>, is_tail: bool) -
                     });
                 }
             };
-            // fz-ul4.19.3: `receive(...)` is a Term, not a Prim — it's a
-            // scheduler-mediated yield point. After CPS-style splitting,
-            // it has the same continuation shape as Term::Call but no
-            // callee fn.
-            if callee_name == "receive" {
-                if !arg_vars.is_empty() {
-                    return Err(LowerError::Unsupported {
-                        span: sp,
-                        what: format!("receive/{} not supported (use receive/0)", arg_vars.len()),
-                    });
-                }
-                if is_tail {
-                    // Tail receive: the received message becomes the fn's
-                    // return value. Lower as receive into a synthetic
-                    // continuation that just Returns its arg.
-                    return cps_split_receive(ctx, sp, /* tail */ true);
-                }
-                return cps_split_receive(ctx, sp, /* tail */ false);
-            }
             let arity = arg_vars.len();
             let local_callee = ctx.fns.get(&(callee_name.clone(), arity)).copied();
             let callee_name = if local_callee.is_none() {

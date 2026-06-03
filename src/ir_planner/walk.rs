@@ -341,9 +341,6 @@ fn collect_term_vars(term: &Term, used: &mut HashSet<Var>) {
         Term::Return(value) | Term::Halt(value) => {
             used.insert(*value);
         }
-        Term::Receive { continuation, .. } => {
-            used.extend(continuation.captured.iter().copied());
-        }
         Term::ReceiveMatched {
             pinned,
             captures,
@@ -809,10 +806,6 @@ where
                 })
             }
             ContSource::CallClosure { closure, args } => self.closure_return_slot0(term_ident, closure, args, env),
-            ContSource::Receive => Some(ContinuationSlot0 {
-                ty: self.any_ty.clone(),
-                capability: None,
-            }),
         }
     }
 

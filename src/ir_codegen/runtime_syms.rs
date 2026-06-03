@@ -128,7 +128,6 @@ pub(crate) fn runtime_import_sig(name: &str) -> Signature {
         "fz_closure_set_capture_i64" => (&[I64, I64, I64, I64], &[]),
         "fz_closure_set_capture_f64" => (&[I64, I64, I64, F64], &[]),
         "fz_get_static_closure" => (&[I64, I32], &[I64]),
-        "fz_receive_park" => (&[I64, I64], &[I64]),
         "fz_receive_park_matched" => (&[I64, I64, I64, I64, I64, I64, I64, I32, I64, I64], &[I64]),
         "fz_get_halt_cont" => (&[I64, I64, I32], &[I64]),
         "fz_yield_mid_flight_report" => (&[I64, I64, I32, I32], &[I64]),
@@ -244,7 +243,6 @@ pub(crate) fn declare_runtime_symbols<M: ClModule>(jmod: &mut M) -> Result<Runti
         closure_set_capture_ref_id: closure.closure_set_capture_ref_id,
         closure_set_capture_i64_id: closure.closure_set_capture_i64_id,
         closure_set_capture_f64_id: closure.closure_set_capture_f64_id,
-        receive_park_id: receive.receive_park_id,
         receive_park_matched_id: receive.receive_park_matched_id,
         get_static_closure_id: closure.get_static_closure_id,
         get_halt_cont_id: halt_cont.get_halt_cont_id,
@@ -526,15 +524,11 @@ fn declare_closure_runtime<M: ClModule>(jmod: &mut M) -> Result<ClosureRefs, Cod
 }
 
 struct ReceiveRefs {
-    receive_park_id: FuncId,
     receive_park_matched_id: FuncId,
 }
 
-/// Selective-receive park FFI entries (accept-any and matched variants).
+/// Selective-receive park FFI entry.
 fn declare_receive_runtime<M: ClModule>(jmod: &mut M) -> Result<ReceiveRefs, CodegenError> {
-    // Receive: parks an accept-any matcher record on the cont closure;
-    // returns YIELD sentinel.
-    let receive_park_id = decl_import(jmod, "fz_receive_park")?;
     // Selective-receive park entry. Args:
     //   matcher_fn_bits (i64), pinned_ptr (i64), n_pinned (i64),
     //   clause_bodies_ptr (i64), n_clauses (i64),
@@ -542,10 +536,7 @@ fn declare_receive_runtime<M: ClModule>(jmod: &mut M) -> Result<ReceiveRefs, Cod
     //   after_deadline_or_neg1 (i64), after_cont_bits (i64).
     // Returns YIELD sentinel (i64).
     let receive_park_matched_id = decl_import(jmod, "fz_receive_park_matched")?;
-    Ok(ReceiveRefs {
-        receive_park_id,
-        receive_park_matched_id,
-    })
+    Ok(ReceiveRefs { receive_park_matched_id })
 }
 
 struct HaltContRefs {
@@ -737,7 +728,6 @@ pub(crate) struct RuntimeRefs {
     pub(super) closure_set_capture_ref_id: FuncId,
     pub(super) closure_set_capture_i64_id: FuncId,
     pub(super) closure_set_capture_f64_id: FuncId,
-    pub(super) receive_park_id: FuncId,
     /// fz_receive_park_matched FFI entry. Called from the
     /// Term::ReceiveMatched arm in compile_block_terminator.
     pub(super) receive_park_matched_id: FuncId,

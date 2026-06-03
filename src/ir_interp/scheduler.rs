@@ -20,17 +20,13 @@ use crate::types::{Ty, Types};
 //
 // Scheduling model (fz-sched.3): cooperative run-queue, BEAM-correct.
 // Builtin::Spawn enqueues the child and returns immediately; the parent
-// continues its own quantum. Term::Receive parks the task (InterpStep::Blocked)
-// if the mailbox is empty; the scheduler records the resume state and moves on.
-// interp_send flips a Blocked receiver to Ready, prepends the message to its
-// resume args, and re-enqueues it. run_main drives the loop until the queue
-// is empty.
-//
-// Limitation: Blocked propagates as an error through non-tail call sites
-// (Term::Call / Term::CallClosure). In practice all fixture receive sites are
-// in tail position inside spawned fns, so this doesn't matter yet.
+// continues its own quantum. Selective receive parks the task
+// (InterpStep::BlockedMatched) if no mailbox message matches; the scheduler
+// records the park record and moves on. `interp_send` probes a parked receiver
+// inline and wakes it on the first matcher hit. `run_main` drives the loop
+// until the queue is empty.
 
-/// Returned by run_fn to signal either completion or a receive-park.
+/// Returned by run_fn to signal either completion or a selective-receive park.
 pub(super) enum InterpStep {
     Done(AnyValue),
     Halt(AnyValue),
@@ -44,11 +40,6 @@ pub(super) enum InterpStep {
         remaining_reductions: i32,
         reason: u8,
     },
-    /// Task parked on receive. `resume_fn(msg, cap_vals...)` is called when
-    /// the message arrives. `after` is a chain of (fn_id, caps) continuations
-    /// to call in order with each successive return value — built up when
-    /// Blocked propagates through Term::Call frames.
-    Blocked(FnId, Vec<AnyValue>, Vec<(FnId, Vec<AnyValue>)>),
     /// fz-yxs/fz-2v3 — task parked on a selective `receive do … end`. The
     /// park record snapshots every clause's pattern + body / guard FnId
     /// plus the pinned ^name and capture AnyValues from the receive site

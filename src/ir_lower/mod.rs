@@ -18,8 +18,8 @@
 //! ## Unique-cont invariant (fz-uwq.1)
 //!
 //! "Fresh continuation per call site" is load-bearing, not just convenient.
-//! Every `Cont.fn_id` referenced by a `Term::Call` / `Term::CallClosure` /
-//! `Term::Receive` must be unique across the whole module — no two
+//! Every `Cont.fn_id` referenced by a `Term::Call` / `Term::CallClosure`
+//! must be unique across the whole module — no two
 //! call-shaped terminators may share a continuation fn. Continuation
 //! provenance, activation facts, and planned call edges all rely on each
 //! continuation naming one return edge. `debug_assert_unique_conts` at the
@@ -101,7 +101,7 @@ use brand_erase::erase_brands;
 use cond::{lower_if, lower_multi_clause};
 use cps::{
     ContFn, OwnedConsCapture, cont_call_args, cps_split_call, cps_split_call_closure, cps_split_external_call,
-    cps_split_receive, finalize_arm, mint_cont_fn, switch_to_cont_fn,
+    finalize_arm, mint_cont_fn, switch_to_cont_fn,
 };
 use ctx::LowerCtx;
 use expr::{bind_param_topname, lower_expr, lower_fn, lower_pattern_bind};
@@ -1037,7 +1037,7 @@ fn user_fn_category(fn_def: &FnDef) -> FnCategory {
 }
 
 /// fz-uwq.1 — verify the **unique-cont invariant**: every `Cont.fn_id`
-/// referenced by a `Term::Call` / `Term::CallClosure` / `Term::Receive`
+/// referenced by a `Term::Call` / `Term::CallClosure`
 /// appears as the continuation of **exactly one** such terminator across
 /// the whole module.
 ///
@@ -1110,9 +1110,7 @@ fn debug_assert_unique_conts(module: &Module) {
     for f in &module.fns {
         for b in &f.blocks {
             let cont_fn = match &b.terminator {
-                Term::Call { continuation, .. }
-                | Term::CallClosure { continuation, .. }
-                | Term::Receive { continuation, ident: _ } => continuation.fn_id,
+                Term::Call { continuation, .. } | Term::CallClosure { continuation, .. } => continuation.fn_id,
                 _ => continue,
             };
             if let Some(prev) = seen.insert(cont_fn, (f.id, b.id)) {
@@ -2408,8 +2406,8 @@ end
         };
         assert_eq!(callee, spawn.id);
         assert!(
-            !p.blocks.iter().any(|b| matches!(b.terminator, Term::Receive { .. })),
-            "lambda lowering must not leak tail-receive termination into the caller"
+            !p.blocks.iter().any(|b| matches!(b.terminator, Term::ReceiveMatched { .. })),
+            "lambda lowering must not leak receive termination into the caller"
         );
     }
 

@@ -88,12 +88,6 @@ impl AbiFacts {
                         }
                         record_callable_target(plan.callable_capabilities.get(closure), &mut closure_capture_counts);
                     }
-                    Term::Receive { ident, .. } => {
-                        let cont = local_target_fn_id(plan, planned.fn_id, ident, EmitSlot::Cont, "Cont");
-                        cont_fns.insert(cont);
-                        cont_target_fns.insert(cont);
-                        cont_extras_count.insert(cont, 0);
-                    }
                     Term::ReceiveMatched { clauses, after, .. } => {
                         for clause in clauses {
                             cont_fns.insert(clause.body);
@@ -186,9 +180,6 @@ impl AbiFacts {
                             optional_local_target_fn_id(plan, planned.fn_id, ident, EmitSlot::ClosureCall)
                                 .is_none_or(|target| native_fns.contains(&target))
                         }
-                        Term::Receive { ident, .. } => {
-                            native_fns.contains(&local_target_fn_id(plan, planned.fn_id, ident, EmitSlot::Cont, "Cont"))
-                        }
                         Term::ReceiveMatched { clauses, after, .. } => {
                             let clauses_ok = clauses.iter().all(|clause| {
                                 native_fns.contains(&clause.body)
@@ -268,12 +259,6 @@ impl AbiFacts {
                             {
                                 add_target(target, &mut native_fns);
                             }
-                        }
-                        Term::Receive { ident, .. } => {
-                            add_target(
-                                local_target_fn_id(plan, planned.fn_id, ident, EmitSlot::Cont, "Cont"),
-                                &mut native_fns,
-                            );
                         }
                         Term::ReceiveMatched { clauses, after, .. } => {
                             for clause in clauses {

@@ -331,49 +331,6 @@ pub(crate) fn cps_split_call_closure(
     ))
 }
 
-/// fz-ul4.19.3: lower a source-level `receive()` into Term::Receive,
-/// mirroring cps_split_call's continuation-building. The continuation
-/// receives one arg (the message) plus captured Vars.
-///
-/// For tail position (the source `receive()` is the last expression in a
-/// fn), the cont synthesizes `Return(msg)` so the message becomes the
-/// fn's return value. Otherwise the cont becomes a normal continuation
-/// that's resumed with the message bound to a Var.
-pub(crate) fn cps_split_receive(ctx: &mut LowerCtx, call_span: Span, is_tail: bool) -> Result<Var, LowerError> {
-    let captured = ctx.visible_locals();
-    let owned_cons_captures = owned_cons_captures_for_visible_locals(ctx, &captured);
-    let captured_vars = capture_call_args(&captured, &owned_cons_captures);
-    let cont_id = ctx.mb.fresh_fn_id();
-
-    // Terminate current block with Term::Receive.
-    ctx.set_term_at(
-        Term::Receive {
-            ident: CallsiteIdent::from_source(Span::DUMMY),
-            continuation: Cont {
-                fn_id: cont_id,
-                captured: captured_vars.clone(),
-            },
-        },
-        call_span,
-    );
-
-    let result_param = start_cps_cont_fn(
-        ctx,
-        cont_id,
-        format!("k_receive_{}", cont_id.0),
-        call_span,
-        captured,
-        owned_cons_captures,
-    );
-    if is_tail {
-        // Tail receive: synthesize `Return(msg)` immediately. The cont
-        // fn IS the post-receive fn for the parent; in tail position we
-        // just return the message.
-        ctx.set_term_at(Term::Return(result_param), call_span);
-        ctx.terminated = true;
-    }
-    Ok(result_param)
-}
 pub(crate) fn cps_split_call(
     ctx: &mut LowerCtx,
     callee: FnId,

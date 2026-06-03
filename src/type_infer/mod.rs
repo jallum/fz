@@ -1517,25 +1517,53 @@ impl<'m> Solver<'m> {
                     arg_infos,
                 )
             }
-            Term::Receive { continuation, .. } => {
-                let ident = block.terminator.ident().expect("receive terminator should carry ident");
-                // The mailbox message arrives from the scheduler boundary. It
-                // is opaque here, but still a concrete value, so the receive
-                // continuation should be activated with `any`, not left
-                // unresolved.
-                let message = Info::known(t.any());
-                let cont_inputs = cont_inputs_of(message, &continuation.captured, env);
-                let cont_callsite = CallsiteId::new(key.fn_id, ident, EmitSlot::Cont);
-                self.call_target(
-                    t,
-                    key,
-                    cont_callsite,
-                    CallTarget::Direct(continuation.fn_id),
-                    cont_inputs,
-                )
+            // Selective receive activates each reachable guard/body/after
+            // outcome with opaque message bindings and joins their returns.
+            Term::ReceiveMatched {
+                clauses,
+                after,
+                captures,
+                ..
+            } => {
+                let mut out: Option<Info> = None;
+                for clause in clauses {
+                    let mut bound_inputs = vec![Info::known(t.any()); clause.bound_names.len()];
+                    let capture_inputs = arg_infos_of(captures, env);
+                    bound_inputs.extend(capture_inputs.clone());
+                    if let Some(guard) = clause.guard {
+                        let guard_callsite = CallsiteId::new(key.fn_id, &clause.ident, EmitSlot::Cont);
+                        let _ = self.call_target(
+                            t,
+                            key,
+                            guard_callsite,
+                            CallTarget::Direct(guard),
+                            bound_inputs.clone(),
+                        );
+                    }
+                    let body_callsite = CallsiteId::new(key.fn_id, &clause.ident, EmitSlot::Cont);
+                    let body_ret =
+                        self.call_target(t, key, body_callsite, CallTarget::Direct(clause.body), bound_inputs);
+                    out = Some(match out {
+                        Some(prev) => prev.join(t, &body_ret),
+                        None => body_ret,
+                    });
+                }
+                if let Some(after) = after {
+                    let after_callsite = CallsiteId::new(key.fn_id, &after.ident, EmitSlot::Cont);
+                    let after_ret = self.call_target(
+                        t,
+                        key,
+                        after_callsite,
+                        CallTarget::Direct(after.body),
+                        arg_infos_of(captures, env),
+                    );
+                    out = Some(match out {
+                        Some(prev) => prev.join(t, &after_ret),
+                        None => after_ret,
+                    });
+                }
+                out.unwrap_or(Info::Unknown)
             }
-            // Selective receive has its own matcher/body activation model.
-            Term::ReceiveMatched { .. } => Info::Unknown,
         }
     }
 

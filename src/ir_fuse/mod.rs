@@ -215,10 +215,6 @@ pub(crate) fn subst_term(t: &Term, subst: &HashMap<Var, Var>) -> Term {
         },
         Term::Return(a) => Term::Return(sv(*a)),
         Term::Halt(a) => Term::Halt(sv(*a)),
-        Term::Receive { continuation, ident } => Term::Receive {
-            ident: ident.clone(),
-            continuation: subst_cont(continuation, subst),
-        },
         // fz-yxs — pinned/captures Vars are substituted; the timeout Var
         // (if present on an after clause) is substituted too. Clause and
         // after body/guard FnIds are not Vars and pass through unchanged.

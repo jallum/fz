@@ -32,7 +32,6 @@ pub(crate) fn env_at_terminator<T: Types<Ty = Ty> + ClosureTypes>(
 ///   * `Term::CallClosure`: closure return resolved from the closure type and
 ///     registered effective returns, falling back to the structural arrow
 ///     return.
-///   * `Term::Receive`: `any()`.
 ///   * Anything else: not a Cont-producing terminator, returns `any`.
 pub fn cont_slot0_descr<T: Types<Ty = Ty> + ClosureTypes>(
     t: &mut T,

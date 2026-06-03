@@ -20,8 +20,7 @@
 //!   - `ClosureLit(c, s)` — target `FnId` from the lit, captures,
 //!     arg `Var`s.
 //!   - `Cont` — continuation `FnId` + captured `Var`s, plus a tag
-//!     that names the slot-0 source (callee return / closure return
-//!     / receive).
+//!     that names the slot-0 source (callee return / closure return).
 //!
 //! ## What it does NOT yield
 //!
@@ -69,9 +68,8 @@ pub enum CallsiteKind<'a> {
         captures: Vec<Ty>,
         args: &'a [Var],
     },
-    /// Continuation of `Term::Call` / `Term::CallClosure` /
-    /// `Term::Receive`. Slot 0 of the cont's key is the value flowing
-    /// in (callee return, closure return, or the received message);
+    /// Continuation of `Term::Call` / `Term::CallClosure`. Slot 0 of the
+    /// cont's key is the value flowing in (callee return or closure return);
     /// `cont.captured[i]` lands at param slot `i + 1`.
     Cont { cont: &'a Cont, source: ContSource<'a> },
 }
@@ -87,8 +85,6 @@ pub enum ContSource<'a> {
     /// target (known capability path) OR resolved via closure-lit lattice.
     /// Both paths use `closure`/`args`.
     CallClosure { closure: Var, args: &'a [Var] },
-    /// `Term::Receive`: slot 0 is opaque (`any`).
-    Receive,
 }
 
 /// fz-9pr.17 — enumerate the terminator-derived callsites of `block`.
@@ -160,15 +156,6 @@ pub fn block_callsites<'a, T: Types<Ty = Ty> + ClosureTypes>(
             ident: _,
         } => {
             push_closure_call(t, &mut out, *closure, args, env, known_closure_targets);
-        }
-        Term::Receive { continuation, ident: _ } => {
-            out.push(BlockCallsite {
-                slot: EmitSlot::Cont,
-                kind: CallsiteKind::Cont {
-                    cont: continuation,
-                    source: ContSource::Receive,
-                },
-            });
         }
         // fz-yxs — ReceiveMatched's clause/after bodies are FnId fields, not
         // call-shaped continuations; they're reached via callgraph_edges.
@@ -367,26 +354,4 @@ mod tests {
         assert!(matches!(cs[0].slot, EmitSlot::Cont));
     }
 
-    #[test]
-    fn receive_yields_cont_with_receive_source() {
-        let mut ct = ConcreteTypes;
-        let term = Term::Receive {
-            ident: CallsiteIdent::synthetic(),
-            continuation: Cont {
-                fn_id: FnId(9),
-                captured: vec![],
-            },
-        };
-        let env = empty_env();
-        let fc = empty_fc();
-        let cs = block_callsites(&mut ct, &term, &env, &fc);
-        assert_eq!(cs.len(), 1);
-        match &cs[0].kind {
-            CallsiteKind::Cont {
-                source: ContSource::Receive,
-                ..
-            } => {}
-            _ => panic!("expected Receive source"),
-        }
-    }
 }

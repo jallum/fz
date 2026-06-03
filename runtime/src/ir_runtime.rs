@@ -41,7 +41,7 @@ use crate::heap::{
     AllocStat, FieldKind, HeapAllocKind, SHARED_BIN_THRESHOLD_BYTES, closure_capture_ref, list_head_ref, list_tail_ref,
     map_entry_refs,
 };
-use crate::park::{MatcherFn, ParkRecord, match_any_message};
+use crate::park::{MatcherFn, ParkRecord};
 use crate::procbin::{
     SharedBin, SharedBinHandle, alloc_procbin, bitstring_bit_len, bitstring_byte_ptr, bitstring_like_eq,
     is_bitstring_like,
@@ -453,31 +453,6 @@ pub extern "C" fn fz_send_ref(process: *mut Process, receiver_pid_bits: u64, msg
     msg_ref_word
 }
 
-/// Plain `receive()` park entry. Caller has already built the continuation
-/// closure template. We install it as a one-clause ParkRecord with an
-/// accept-any matcher, so the scheduler wakes it through the same
-/// `runnable_closure` path as selective receive.
-#[unsafe(no_mangle)]
-pub extern "C" fn fz_receive_park(process: *mut Process, cont_closure_bits: u64) -> *mut u8 {
-    let p = unsafe { &mut *process };
-    p.wait = Some(Box::new(ParkRecord {
-        matcher_fn: match_any_message,
-        pinned: Vec::new(),
-        clause_bodies: vec![closure_addr_from_ref_word(cont_closure_bits, "fz_receive_park cont")],
-        clause_bound_counts: vec![1],
-        bound_arity: 1,
-        after_deadline_ms: None,
-        after_cont: null_mut(),
-        after_timer_id: None,
-    }));
-    p.state = if p.mailbox.is_empty() {
-        ProcessState::Blocked
-    } else {
-        ProcessState::Ready
-    };
-    YIELD_PTR as *mut u8
-}
-
 /// fz-yxs/fz-st5 — selective receive park entry. Called by JIT/AOT
 /// codegen at the `Term::ReceiveMatched` seam after the matcher fn,
 /// pinned snapshot, clause-body table, and (optional) after-cont
@@ -571,10 +546,10 @@ pub extern "C" fn fz_receive_park_matched(
     };
 
     p.wait = Some(Box::new(park));
-    // Symmetric to fz_receive_park: if any message is already in the
-    // mailbox we mark Ready so the scheduler runs an initial scan via
-    // the matcher path. The actual scan happens in the scheduler when
-    // it sees wait.is_some() on a Ready task.
+    // If any message is already in the mailbox we mark Ready so the
+    // scheduler runs an initial scan via the matcher path. The actual
+    // scan happens in the scheduler when it sees wait.is_some() on a
+    // Ready task.
     p.state = if p.mailbox.is_empty() {
         ProcessState::Blocked
     } else {

@@ -70,7 +70,7 @@ pub(crate) fn term_effects(term: &Term) -> EffectSummary {
             calls_opaque: true,
             ..EffectSummary::default()
         },
-        Term::Receive { .. } | Term::ReceiveMatched { .. } => EffectSummary {
+        Term::ReceiveMatched { .. } => EffectSummary {
             scheduler_visible: true,
             observable: true,
             ..EffectSummary::default()

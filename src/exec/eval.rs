@@ -172,7 +172,7 @@ impl CompileTimeEvaluator {
                 unreachable!("make_ref/0 handled by CompileTimeEvaluator::apply")
             }),
             ("receive", 0, |_, _| {
-                unreachable!("receive/0 handled by CompileTimeEvaluator::apply")
+                unreachable!("receive is handled by Expr::Receive")
             }),
         ];
         for (name, arity, func) in builtins {
@@ -323,20 +323,8 @@ impl CompileTimeEvaluator {
                 };
                 Ok(Some(Value::Ref(id)))
             }
-            "receive" => Ok(Some(self.receive_next()?)),
             _ => Ok(None),
         }
-    }
-
-    fn receive_next(&self) -> EvalResult {
-        let pid = self.runtime.borrow().current_pid;
-        self.runtime
-            .borrow_mut()
-            .mailboxes
-            .entry(pid)
-            .or_default()
-            .pop_front()
-            .ok_or_else(|| "receive/0 would block on an empty mailbox".to_string())
     }
 
     fn receive_match(&self, clauses: &[MatchClause], after: &Option<Box<AfterClause>>, env: &Env) -> EvalResult {

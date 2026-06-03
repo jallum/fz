@@ -139,8 +139,8 @@ pub struct BlockId(pub u32);
 pub enum EmitSlot {
     /// `Term::Call` / `Term::TailCall` callee.
     Direct,
-    /// The continuation of `Term::Call` / `Term::CallClosure` /
-    /// `Term::Receive` — i.e., (cont.fn_id, [slot0, captures...]).
+    /// The continuation of `Term::Call` / `Term::CallClosure` — i.e.,
+    /// (cont.fn_id, [slot0, captures...]).
     Cont,
     /// fz-try.11: `Term::CallClosure` / `Term::TailCallClosure` callsite.
     /// Purely structural — identifies *where* in the IR the closure
@@ -730,21 +730,6 @@ pub enum Term {
     },
     Return(Var),
     Halt(Var),
-    /// fz-ul4.19.3: receive next mailbox message; fire continuation with it
-    /// when one is available. If the mailbox is empty at the point of
-    /// Receive, the running task suspends (state = Blocked); the scheduler
-    /// resumes the task when a `send` delivers a message. On resume the
-    /// trampoline re-enters this same Term — fz_receive_attempt re-checks
-    /// the mailbox, now finds the message, and fires the continuation.
-    ///
-    /// The continuation receives one argument (the message) followed by
-    /// the captured Vars — exactly like Term::Call's continuation. No
-    /// `callee` field because receive has no source-language callee; it's
-    /// a scheduler-mediated rendezvous point.
-    Receive {
-        ident: CallsiteIdent,
-        continuation: Cont,
-    },
     /// fz-yxs — selective `receive do … after … end` (see
     /// `docs/receive-matched.md §7`). The cached Matcher is the executable
     /// route. Clause bodies receive bound pattern vars (source order)
@@ -857,7 +842,6 @@ impl Term {
             | Term::TailCall { ident, .. }
             | Term::CallClosure { ident, .. }
             | Term::TailCallClosure { ident, .. }
-            | Term::Receive { ident, .. }
             | Term::ReceiveMatched { ident, .. } => Some(ident),
             _ => None,
         }
@@ -881,7 +865,6 @@ impl Term {
             | Term::TailCall { ident, .. }
             | Term::CallClosure { ident, .. }
             | Term::TailCallClosure { ident, .. }
-            | Term::Receive { ident, .. }
             | Term::ReceiveMatched { ident, .. } => *ident = new_ident,
             _ => {}
         }
@@ -1035,11 +1018,6 @@ pub(crate) fn visit_term_vars(term: &Term, mut visit: impl FnMut(Var)) {
                 visit(*v);
             }
         }
-        Term::Receive { continuation, .. } => {
-            for v in &continuation.captured {
-                visit(*v);
-            }
-        }
         Term::ReceiveMatched {
             after,
             pinned,
@@ -1084,7 +1062,7 @@ pub enum FnCategory {
     MultiClauseCont,
     /// `lambda_N` — top-level body of a lifted closure.
     LambdaLift,
-    /// CPS continuation: `k_N` or `k_receive_N`.
+    /// CPS continuation: `k_N`.
     CpsCont,
     /// Internal matcher router. These fns are compiler-owned
     /// dispatch thunks: they test subjects, then tail-call leaf/fail
@@ -1685,9 +1663,6 @@ impl Module {
                     Term::CallClosure { continuation, .. } => {
                         edges.insert(continuation.fn_id);
                     }
-                    Term::Receive { continuation, .. } => {
-                        edges.insert(continuation.fn_id);
-                    }
                     Term::ReceiveMatched { clauses, after, .. } => {
                         for clause in clauses {
                             edges.insert(clause.body);
@@ -1874,8 +1849,7 @@ fn remap_term_span(term: &mut Term, remap: &HashMap<FileId, FileId>) {
         Term::Call { ident, .. }
         | Term::TailCall { ident, .. }
         | Term::CallClosure { ident, .. }
-        | Term::TailCallClosure { ident, .. }
-        | Term::Receive { ident, .. } => remap_ident(ident, remap),
+        | Term::TailCallClosure { ident, .. } => remap_ident(ident, remap),
         Term::ReceiveMatched {
             ident,
             clauses,
@@ -1952,8 +1926,7 @@ fn visit_term_span(term: &Term, f: &mut impl FnMut(Span)) {
         Term::Call { ident, .. }
         | Term::TailCall { ident, .. }
         | Term::CallClosure { ident, .. }
-        | Term::TailCallClosure { ident, .. }
-        | Term::Receive { ident, .. } => f(ident.span()),
+        | Term::TailCallClosure { ident, .. } => f(ident.span()),
         Term::ReceiveMatched {
             ident,
             clauses,
@@ -2466,7 +2439,6 @@ impl fmt::Display for Term {
             }
             Term::Return(v) => write!(f, "return {}", v),
             Term::Halt(v) => write!(f, "halt {}", v),
-            Term::Receive { continuation, .. } => write!(f, "receive -> {}", continuation),
             Term::ReceiveMatched {
                 clauses,
                 after,

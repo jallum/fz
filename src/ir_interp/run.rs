@@ -73,8 +73,7 @@ pub(super) fn try_match_clauses<T: Types<Ty = Ty>>(
 }
 
 /// Run an fz fn. Tail calls reuse this stack frame (O(1) Rust stack).
-/// Returns Done(val) on Halt/Return or Blocked(fn_id, cap_vals) when a
-/// Term::Receive fires on an empty mailbox.
+/// Returns Done/Halt/Yielded/BlockedMatched for interpreter execution.
 pub(super) fn run_fn_typed<T: Types<Ty = Ty> + ClosureTypes + RenderTypes>(
     runtime: &mut IrInterpRuntime,
     t: &mut T,
@@ -187,12 +186,6 @@ pub(super) fn run_fn_typed<T: Types<Ty = Ty> + ClosureTypes + RenderTypes>(
                             continue 'tail;
                         }
                         InterpStep::Halt(val) => return Ok(InterpStep::Halt(val)),
-                        InterpStep::Blocked(rf, cv, mut inner_after) => {
-                            // Append our continuation to the chain so the
-                            // scheduler calls it after the blocked task resumes.
-                            inner_after.push((continuation.fn_id, outer_cap_vals));
-                            return Ok(InterpStep::Blocked(rf, cv, inner_after));
-                        }
                         InterpStep::BlockedMatched(park, mut inner_after) => {
                             inner_after.push((continuation.fn_id, outer_cap_vals));
                             return Ok(InterpStep::BlockedMatched(park, inner_after));
@@ -287,10 +280,6 @@ pub(super) fn run_fn_typed<T: Types<Ty = Ty> + ClosureTypes + RenderTypes>(
                             continue 'tail;
                         }
                         InterpStep::Halt(val) => return Ok(InterpStep::Halt(val)),
-                        InterpStep::Blocked(rf, cv, mut inner_after) => {
-                            inner_after.push((continuation.fn_id, outer_cap_vals));
-                            return Ok(InterpStep::Blocked(rf, cv, inner_after));
-                        }
                         InterpStep::BlockedMatched(park, mut inner_after) => {
                             inner_after.push((continuation.fn_id, outer_cap_vals));
                             return Ok(InterpStep::BlockedMatched(park, inner_after));
@@ -331,23 +320,6 @@ pub(super) fn run_fn_typed<T: Types<Ty = Ty> + ClosureTypes + RenderTypes>(
                 }
                 Term::Return(v) => return Ok(InterpStep::Done(env_get(&env, *v)?)),
                 Term::Halt(v) => return Ok(InterpStep::Halt(env_get(&env, *v)?)),
-                Term::Receive { continuation, ident: _ } => {
-                    let cap_vals = collect(&env, &continuation.captured)?;
-                    match unsafe { &mut *runtime.cur_proc() }.mailbox.pop_front() {
-                        Some(msg) => {
-                            let msg = AnyValue::from_any_value_ref(msg)?;
-                            let mut cont_args = vec![msg];
-                            cont_args.extend(cap_vals);
-                            fn_id = continuation.fn_id;
-                            args = cont_args;
-                            selected_spec = None;
-                            continue 'tail;
-                        }
-                        None => {
-                            return Ok(InterpStep::Blocked(continuation.fn_id, cap_vals, vec![]));
-                        }
-                    }
-                }
                 // fz-yxs/fz-2v3 — selective receive. Walk the mailbox
                 // head-to-tail trying each clause in order; first match
                 // wins. On miss, return BlockedMatched so the scheduler
@@ -499,8 +471,8 @@ pub(super) fn drain_pending_dtors_interp<T: Types<Ty = Ty> + ClosureTypes + Rend
                     value.render(runtime.cur_proc())
                 ));
             }
-            InterpStep::Yielded { .. } | InterpStep::Blocked(_, _, _) | InterpStep::BlockedMatched(_, _) => {
-                return Err("fz-4mk drain: dtor blocked on receive (unsupported in v1)".into());
+            InterpStep::Yielded { .. } | InterpStep::BlockedMatched(_, _) => {
+                return Err("fz-4mk drain: dtor blocked on selective receive (unsupported in v1)".into());
             }
         }
     }

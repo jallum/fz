@@ -1047,7 +1047,6 @@ fn plan_module_with_role<T: Types<Ty = Ty> + ClosureTypes + RenderTypes>(
                 direct_call_count: stats.direct_call_count as u64,
                 tail_call_count: stats.tail_call_count as u64,
                 if_count: stats.if_count as u64,
-                receive_count: stats.receive_count as u64,
                 receive_matched_count: stats.receive_matched_count as u64,
                 activation_return_fact_count: activation_return_telemetry.fact_count as u64,
                 activation_return_key_count: activation_return_telemetry.key_count as u64,
@@ -1085,7 +1084,6 @@ fn plan_module_with_role<T: Types<Ty = Ty> + ClosureTypes + RenderTypes>(
                     non_tail_closure_call_count: body_counts.non_tail_closure_call_count,
                     tail_call_count: body_counts.tail_call_count,
                     tail_closure_call_count: body_counts.tail_closure_call_count,
-                    receive_count: body_counts.receive_count,
                     call_edge_count: ft.call_edges.len() as u64,
                 },
                 &crate::metadata! {

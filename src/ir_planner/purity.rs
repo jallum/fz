@@ -105,7 +105,7 @@ pub fn check_pure_term(term: &Term) -> Result<(), ImpureError> {
         Call { .. } | TailCall { .. } | CallClosure { .. } | TailCallClosure { .. } => {
             Err(ImpureError::Term(ImpureTerm::Call))
         }
-        Receive { .. } | ReceiveMatched { .. } => Err(ImpureError::Term(ImpureTerm::Receive)),
+        ReceiveMatched { .. } => Err(ImpureError::Term(ImpureTerm::Receive)),
         Halt(_) => Err(ImpureError::Term(ImpureTerm::Halt)),
     }
 }

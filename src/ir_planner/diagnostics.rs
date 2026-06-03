@@ -26,7 +26,6 @@ pub(crate) struct ModulePlanStats {
     pub(crate) direct_call_count: usize,
     pub(crate) tail_call_count: usize,
     pub(crate) if_count: usize,
-    pub(crate) receive_count: usize,
     pub(crate) receive_matched_count: usize,
 }
 
@@ -52,7 +51,6 @@ pub(crate) fn module_plan_stats(m: &Module, mt: &ModulePlan) -> ModulePlanStats 
                 Term::Call { .. } => stats.direct_call_count += 1,
                 Term::TailCall { .. } => stats.tail_call_count += 1,
                 Term::If { .. } => stats.if_count += 1,
-                Term::Receive { .. } => stats.receive_count += 1,
                 Term::ReceiveMatched { .. } => stats.receive_matched_count += 1,
                 Term::Goto(..)
                 | Term::CallClosure { .. }
@@ -737,7 +735,7 @@ pub fn check_matcher_purity(module: &Module) -> Vec<Diagnostic> {
                     reason = Some("matcher fn body invokes a function via Call/CallClosure".into());
                     break;
                 }
-                Term::Receive { .. } | Term::ReceiveMatched { .. } => {
+                Term::ReceiveMatched { .. } => {
                     reason = Some("matcher fn body contains a `receive`".into());
                     break;
                 }

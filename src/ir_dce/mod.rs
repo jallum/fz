@@ -193,11 +193,6 @@ fn collect_term_vars(t: &Term, used: &mut HashSet<Var>) {
         Term::Return(a) | Term::Halt(a) => {
             used.insert(*a);
         }
-        Term::Receive { continuation, ident: _ } => {
-            for v in &continuation.captured {
-                used.insert(*v);
-            }
-        }
         // fz-yxs — Vars referenced by ReceiveMatched: pinned and captures
         // are live (passed to matcher / clause-body fns), as is the
         // computed timeout Var if there's an after clause.

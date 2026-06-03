@@ -405,12 +405,6 @@ impl IrInterpRuntime {
                         self.run_queue.push_back(pid);
                         continue 'sched;
                     }
-                    Ok(InterpStep::Blocked(resume_fn, cap_vals, mut new_after)) => {
-                        new_after.extend(after);
-                        self.set_process_state(pid, ProcessState::Blocked);
-                        self.resume.insert(pid, (resume_fn, cap_vals, new_after));
-                        continue 'sched;
-                    }
                     Ok(InterpStep::BlockedMatched(park, mut new_after)) => {
                         new_after.extend(after);
                         self.set_process_state(pid, ProcessState::Blocked);
@@ -600,8 +594,8 @@ pub fn run_test_fn(tel: &dyn Telemetry, module: &Module, fn_id: FnId) -> Result<
         Ok(InterpStep::Done(_)) => Ok(()),
         Ok(InterpStep::Halt(value)) => Err(format!("test fn halted with {}", value.render(task_ptr))),
         Ok(InterpStep::Yielded { .. }) => Err("test fn yielded outside scheduler drive".to_string()),
-        Ok(InterpStep::Blocked(..)) | Ok(InterpStep::BlockedMatched(..)) => {
-            Err("test fn blocked on receive with empty mailbox".to_string())
+        Ok(InterpStep::BlockedMatched(..)) => {
+            Err("test fn blocked on selective receive with empty mailbox".to_string())
         }
         Err(e) => Err(e),
     }

@@ -22,7 +22,6 @@ pub enum CallShape {
     TailCall,
     CallClosure,
     TailCallClosure,
-    Receive,
 }
 
 fn shape_of(t: &Term) -> Option<CallShape> {
@@ -31,7 +30,6 @@ fn shape_of(t: &Term) -> Option<CallShape> {
         Term::TailCall { .. } => Some(CallShape::TailCall),
         Term::CallClosure { .. } => Some(CallShape::CallClosure),
         Term::TailCallClosure { .. } => Some(CallShape::TailCallClosure),
-        Term::Receive { .. } => Some(CallShape::Receive),
         _ => None,
     }
 }
@@ -102,7 +100,6 @@ pub fn emit_and_assert_spec_dispatch_coverage(
                 }
                 (ident, &[EmitSlot::Cont][..], "call_closure")
             }
-            Term::Receive { ident, .. } => (ident, &[EmitSlot::Cont][..], "receive"),
             _ => continue,
         };
 
@@ -154,7 +151,6 @@ pub fn emit_and_assert_spec_dispatch_coverage(
             tail_call_count: body_counts.tail_call_count,
             tail_closure_call_count: body_counts.tail_closure_call_count,
             closure_call_dispatch_count: closure_call_dispatch_count,
-            receive_count: body_counts.receive_count,
             call_edge_count: ft.call_edges.len() as u64,
         },
         &metadata! {

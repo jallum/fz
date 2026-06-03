@@ -37,24 +37,6 @@ use std::ptr::{read, write};
 pub type MatcherFn =
     extern "C" fn(process: *mut Process, msg_ref: u64, pinned: *const AnyValueRef, out: *mut AnyValueRef) -> u32;
 
-/// Matcher for plain `receive()`: accept the first mailbox message and bind
-/// it as the single outcome value.
-pub(crate) extern "C" fn match_any_message(
-    _process: *mut Process,
-    msg_ref: u64,
-    _pinned: *const AnyValueRef,
-    out: *mut AnyValueRef,
-) -> u32 {
-    write_match_out(out, AnyValueRef::from_raw_word(msg_ref).expect("receive message ref"));
-    1
-}
-
-fn write_match_out(out: *mut AnyValueRef, value: AnyValueRef) {
-    unsafe {
-        *out = value;
-    }
-}
-
 /// Park record stashed on `Process::wait` while a task is
 /// blocked on a selective receive. Cleared on a matcher hit (sender-
 /// probe or after-timer fire); persists across mailbox arrivals that

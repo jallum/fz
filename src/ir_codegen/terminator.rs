@@ -53,7 +53,6 @@ fn resolve_cont_sid<T: Types<Ty = Ty> + ClosureTypes>(
         let term_kind = match &blk.terminator {
             Term::Call { .. } => "call",
             Term::CallClosure { .. } => "call_closure",
-            Term::Receive { .. } => "receive",
             _ => "other",
         };
         let span = term_ident.span();
@@ -379,18 +378,6 @@ pub(crate) fn emit_terminator<M: cranelift_module::Module, T: Types<Ty = Ty> + C
             ident: _,
         } => emit_tail_call_closure(
             body, t, env, var_env, is_native, is_cont_fn, frame_ptr, host_ctx, cont_param, closure, args,
-        ),
-        Term::Receive { continuation, ident: _ } => emit_receive(
-            body,
-            t,
-            env,
-            var_env,
-            blk,
-            is_cont_fn,
-            caller_fn_id,
-            frame_ptr,
-            cont_param,
-            continuation,
         ),
         Term::ReceiveMatched {
             clauses,
@@ -1354,48 +1341,6 @@ fn emit_tail_call_closure<M: cranelift_module::Module, T: Types<Ty = Ty> + Closu
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
-fn emit_receive<M: cranelift_module::Module, T: Types<Ty = Ty> + ClosureTypes>(
-    body: &mut CodegenFn<'_, '_, '_, M>,
-    t: &mut T,
-    env: &CodegenEnv<'_>,
-    var_env: &HashMap<u32, CodegenValue>,
-    blk: &fz_ir::Block,
-    is_cont_fn: bool,
-    caller_fn_id: FnId,
-    frame_ptr: Option<ir::Value>,
-    cont_param: Option<ir::Value>,
-    continuation: &Cont,
-) -> Result<(), CodegenError> {
-    let runtime = env.runtime;
-    {
-        // See docs/cps-in-clif.md §4: build the cont closure (outer_cont
-        // in env field 0), hand it to fz_receive_park which parks an
-        // accept-any matcher record and returns the YIELD sentinel.
-        let cont_sid = resolve_cont_sid(t, env, caller_fn_id, blk);
-        let payload = ContinuationPayload::from_capture_vars(body, env, var_env, cont_sid, &continuation.captured);
-        let cl_ptr = ContinuationPlan::heap_closure(payload).emit_value(
-            body,
-            runtime,
-            env.return_reprs,
-            is_cont_fn,
-            cont_param,
-            frame_ptr,
-        );
-
-        // fz_receive_park(cl_ptr) — stash + yield.
-        let park_fref = body.jmod.declare_func_in_func(runtime.receive_park_id, body.b.func);
-        let process = body.process_arg();
-        let park_inst = body.b.ins().call(park_fref, &[process, cl_ptr]);
-        let yield_sentinel = body.b.inst_results(park_inst)[0];
-        // Both native and uniform paths return the YIELD sentinel;
-        // native returns i64, uniform returns next_frame ptr (which
-        // the trampoline interprets as park).
-        body.b.ins().return_(&[yield_sentinel]);
-    }
-    Ok(())
-}
-
 // Selective-receive park-site CLIF.
 //
 // Layout, mirroring fz_runtime::park::ParkRecord:
@@ -1453,8 +1398,8 @@ fn emit_receive_matched<M: cranelift_module::Module, T: Types<Ty = Ty> + Closure
         captures,
         matcher_addr,
     );
-    // Both native and uniform bodies return the YIELD
-    // sentinel so the trampoline parks (same as Term::Receive).
+    // Both native and uniform bodies return the YIELD sentinel so the
+    // trampoline parks.
     body.b.ins().return_(&[yield_sentinel]);
     Ok(())
 }

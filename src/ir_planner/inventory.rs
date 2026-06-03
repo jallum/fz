@@ -7,7 +7,6 @@ pub struct BodyCallsiteCounts {
     pub non_tail_closure_call_count: u64,
     pub tail_call_count: u64,
     pub tail_closure_call_count: u64,
-    pub receive_count: u64,
 }
 
 pub fn body_callsite_inventory(f: &FnIr) -> (BodyCallsiteCounts, Vec<String>) {
@@ -34,10 +33,6 @@ pub fn body_callsite_inventory(f: &FnIr) -> (BodyCallsiteCounts, Vec<String>) {
             Term::TailCallClosure { .. } => {
                 counts.tail_closure_call_count += 1;
                 "tail_call_closure"
-            }
-            Term::Receive { .. } => {
-                counts.receive_count += 1;
-                "receive"
             }
             Term::ReceiveMatched { .. } => "receive_matched",
             _ => continue,
