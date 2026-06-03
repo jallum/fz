@@ -66,9 +66,7 @@ pub fn cont_slot0_descr<T: Types<Ty = Ty> + ClosureTypes>(
         Term::CallClosure { closure, args, .. } => {
             let env = env_at_terminator(t, caller_ft, block, module);
             let closure_d = env.get(closure).cloned().unwrap_or_else(|| t.any());
-            if t.closure_lit_parts(&closure_d)
-                .is_some_and(|lit| !lit.captures.is_empty())
-            {
+            if t.closure_lit_parts(&closure_d).is_some() {
                 let arg_tys: Vec<Ty> = args
                     .iter()
                     .map(|av| env.get(av).cloned().unwrap_or_else(|| t.any()))

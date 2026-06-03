@@ -252,7 +252,7 @@ fn type_make_closure<T: Types<Ty = Ty> + ClosureTypes>(
 fn type_make_fn_ref<T: Types<Ty = Ty> + ClosureTypes>(t: &mut T, m: &Module, fn_id: FnId) -> Ty {
     let callee = m.fn_by_id(fn_id);
     let entry = callee.block(callee.entry);
-    t.closure_lit(fn_id.into(), vec![], entry.params.len())
+    t.fn_ref_lit(fn_id.into(), entry.params.len())
 }
 
 fn type_type_test<T: Types<Ty = Ty>>(t: &mut T, env: &HashMap<Var, Ty>, v: Var, descr: &Ty) -> Ty {

@@ -3725,11 +3725,11 @@ end
 
 // ---- fz-ul4.29.10.1 — callable capability propagation ----
 
-/// A zero-capture `MakeClosure(F, [])` (synthesized by ir_lower when
-/// a bare top-level fn name is used as a value) populates
+/// A `MakeFnRef(F)` (synthesized by ir_lower for named refs and zero-capture
+/// lambdas) populates
 /// `callable_capabilities[v] = KnownFn(F)` on the Let-bound var.
 #[test]
-fn known_fn_capability_from_makeclosure_zero_captures() {
+fn known_fn_capability_from_make_fn_ref() {
     let (_t, m, mt) = pipeline(
         r#"
 fn double(x), do: x * 2
@@ -3742,20 +3742,19 @@ end
     );
     let main = m.fns.iter().find(|f| f.name == "main").unwrap();
     let double = m.fns.iter().find(|f| f.name == "double").unwrap();
-    // Find the Var bound to MakeClosure(double, []) in main.
-    let mut closure_var: Option<Var> = None;
+    // Find the Var bound to MakeFnRef(double) in main.
+    let mut callable_var: Option<Var> = None;
     for b in &main.blocks {
         for stmt in &b.stmts {
             let Stmt::Let(v, prim) = stmt;
-            if let Prim::MakeClosure(_, fid, captured) = prim
+            if let Prim::MakeFnRef(_, fid) = prim
                 && *fid == double.id
-                && captured.is_empty()
             {
-                closure_var = Some(*v);
+                callable_var = Some(*v);
             }
         }
     }
-    let v = closure_var.expect("test premise: main has MakeClosure(double, [])");
+    let v = callable_var.expect("test premise: main has MakeFnRef(double)");
     let main_ft = mt
         .specs
         .iter()
@@ -3765,7 +3764,7 @@ end
     assert_eq!(
         main_ft.callable_capabilities.get(&v),
         Some(&CallableCapability::KnownFn(double.id)),
-        "zero-capture MakeClosure should populate KnownFn capability"
+        "MakeFnRef should populate KnownFn capability"
     );
 }
 
@@ -3911,9 +3910,9 @@ fn callable_capability_opaque_for_multi_target_join() {
     let else_b = main.block(vec![]);
     let join = main.fresh_var();
     let join_b = main.block(vec![join]);
-    let a = main.let_(then_b, Prim::MakeClosure(CallsiteIdent::synthetic(), FnId(1), vec![]));
+    let a = main.let_(then_b, Prim::MakeFnRef(CallsiteIdent::synthetic(), FnId(1)));
     main.set_terminator(then_b, Term::Goto(join_b, vec![a]));
-    let b = main.let_(else_b, Prim::MakeClosure(CallsiteIdent::synthetic(), FnId(2), vec![]));
+    let b = main.let_(else_b, Prim::MakeFnRef(CallsiteIdent::synthetic(), FnId(2)));
     main.set_terminator(else_b, Term::Goto(join_b, vec![b]));
     main.set_terminator(entry, Term::if_user(cond, then_b, else_b));
     main.set_terminator(join_b, Term::Return(join));

@@ -15,9 +15,9 @@ pub struct SpecPlan {
     /// Entry env per block, with branch narrowing applied at If terminators.
     pub block_envs: HashMap<BlockId, HashMap<Var, Ty>>,
     /// Vars known to hold callable values, separated by capability instead of
-    /// representation. A zero-capture closure is callable as a known fn, while
-    /// captured or opaque callables still carry runtime-state/boundary facts for
-    /// later consumers.
+    /// representation. Thin function refs become `KnownFn`; env-carrying
+    /// closures and opaque callable joins retain runtime-state/boundary facts
+    /// for later consumers.
     pub callable_capabilities: HashMap<Var, CallableCapability>,
     /// Blocks provably reachable from the entry under the inferred types.
     /// If terminators whose condition is a singleton bool prune the dead

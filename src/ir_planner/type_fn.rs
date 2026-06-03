@@ -7,7 +7,7 @@ use crate::ir_dest::{
     TokenState, TupleDestState, begin_tuple_dest, consume_init_token, define_init_token, freeze_tuple_dest,
     set_tuple_dest_field,
 };
-use crate::types::{ClosureTypes, Ty, Types};
+use crate::types::{CallableValueKind, ClosureTypes, Ty, Types};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::slice::from_ref;
 
@@ -455,22 +455,24 @@ pub(crate) fn callable_capability_for_ty<T: Types<Ty = Ty> + ClosureTypes>(
     ty: &Ty,
 ) -> Option<CallableCapability> {
     let clauses = t.callable_clauses(ty)?;
-    let mut closure_lits = clauses
-        .into_iter()
-        .filter_map(|clause| clause.closure)
-        .collect::<Vec<_>>();
-    closure_lits.sort_by_key(|lit| lit.target);
-    closure_lits.dedup();
+    let mut closure_lits = Vec::new();
+    for lit in clauses.into_iter().filter_map(|clause| clause.closure) {
+        if !closure_lits.contains(&lit) {
+            closure_lits.push(lit);
+        }
+    }
     Some(match closure_lits.as_slice() {
-        [lit] if lit.captures.is_empty() => CallableCapability::KnownFn(lit.target.into()),
-        [lit] => CallableCapability::KnownClosure {
-            fn_id: lit.target.into(),
-            captures: lit.captures.clone(),
-            capture_capabilities: lit
-                .captures
-                .iter()
-                .map(|capture| callable_capability_for_ty(t, capture))
-                .collect(),
+        [lit] => match lit.kind {
+            CallableValueKind::FnRef => CallableCapability::KnownFn(lit.target.into()),
+            CallableValueKind::Closure => CallableCapability::KnownClosure {
+                fn_id: lit.target.into(),
+                captures: lit.captures.clone(),
+                capture_capabilities: lit
+                    .captures
+                    .iter()
+                    .map(|capture| callable_capability_for_ty(t, capture))
+                    .collect(),
+            },
         },
         _ => CallableCapability::OpaqueCallable,
     })
