@@ -57,9 +57,9 @@ use crate::any_value::{TAG_RESOURCE, object_size, resource_addr_from_tagged};
 use crate::heap::{Heap, HeapAllocKind};
 use crate::sync::{AtomicUsize, Ordering, fence};
 use std::mem::{forget, size_of};
-use std::ptr::{NonNull, addr_of, read, write};
 #[cfg(test)]
 use std::ptr::null_mut;
+use std::ptr::{NonNull, addr_of, read, write};
 
 pub(crate) const RESOURCE_STUB_MAGIC: u64 = 0xF75E_5012_CE57_0B0B;
 

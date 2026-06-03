@@ -1,10 +1,10 @@
 use crate::fz_ir::{FnId, Module};
 use crate::ir_codegen::compile_planned;
-use crate::ir_planner::{materialize_program, plan_module, ModulePlan};
+use crate::ir_planner::{ModulePlan, materialize_program, plan_module};
 use crate::modules::artifact_store::DEFAULT_ARTIFACT_ROOT;
 use crate::modules::pipeline::{
-    checked_module_for_mode, compile_source_with_providers, link_execution_module, prepare_execution_graph,
-    CompileMode, PreparedExecutionGraph, ProviderInputs,
+    CompileMode, PreparedExecutionGraph, ProviderInputs, checked_module_for_mode, compile_source_with_providers,
+    link_execution_module, prepare_execution_graph,
 };
 use crate::telemetry::{Capture, ConfiguredTelemetry, Event, Handler, NullTelemetry, Telemetry};
 use crate::types::{ClosureTypes, ConcreteTypes, RenderTypes, Ty, Types};
