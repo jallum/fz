@@ -119,7 +119,7 @@ fn validate_one_fn<T: ClosureTypes<Ty = Ty> + RenderTypes>(
             continue;
         } // skip any-key per design
         let inferred_ty = inferred_result_ty(t, ir_fn, ft)
-            .or_else(|| module_plan.effective_returns.get(key).cloned())
+            .or_else(|| module_plan.effective_returns.get(&key.body_key()).cloned())
             .unwrap_or_else(|| t.any());
         if !declared_specs_cover_inferred_spec(t, declared_specs, &key.input, &inferred_ty) {
             let inferred_inputs = key

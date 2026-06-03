@@ -182,6 +182,7 @@ thread_local! {
         const { Cell::new(false) };
 }
 
+#[cfg(test)]
 pub(crate) fn with_inline_disabled<F: FnOnce() -> R, R>(f: F) -> R {
     INLINE_DISABLED.with(|d| d.set(true));
     let r = f();

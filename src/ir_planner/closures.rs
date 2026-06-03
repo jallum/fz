@@ -1,4 +1,4 @@
-use super::fn_types::{CapabilityPlan, ReturnDemand, SpecKey, fixed_point_spec_key_for_arity};
+use super::fn_types::{BodyKey, CapabilityPlan, ReturnDemand, SpecKey, fixed_point_spec_key_for_arity};
 use crate::diag::Span;
 use crate::fz_ir::{CallsiteIdent, Cont, FnId, Module, Prim, Stmt, Term, Var, visit_prim_vars};
 use crate::types::{CallableClause, ClosureTarget, ClosureTypes, Ty, Types, key_slots_observed};
@@ -11,13 +11,13 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 pub fn resolve_closure_return<T: Types<Ty = Ty> + ClosureTypes>(
     t: &mut T,
     closure_ty: &Ty,
-    effective_returns: &HashMap<SpecKey, Ty>,
+    effective_returns: &HashMap<BodyKey, Ty>,
     arg_tys: &[Ty],
 ) -> Option<T::Ty> {
     let translated: HashMap<(ClosureTarget, Vec<Ty>), Ty> = effective_returns
         .iter()
         .filter_map(|(key, ty)| {
-            if !key.demand.is_value() || key.input.iter().any(Option::is_none) {
+            if key.input.iter().any(Option::is_none) {
                 return None;
             }
             Some(((key.fn_id.into(), key_slots_observed(&key.input)), ty.clone()))

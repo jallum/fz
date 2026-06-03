@@ -1,8 +1,8 @@
 use super::closures::resolve_closure_return;
 use super::diagnostics::env_after_block_stmts;
 use super::fn_types::{
-    CallEdgeTarget, CallableCapability, EffectSummary, ReturnDemand, SpecKey, SpecKeySet, SpecReachabilityRole,
-    fixed_point_spec_key_for_arity, normalize_result_correspondence_key,
+    BodyKey, CallEdgeTarget, CallableCapability, EffectSummary, ReturnDemand, SpecKey, SpecKeySet,
+    SpecReachabilityRole, fixed_point_spec_key_for_arity, normalize_result_correspondence_key,
 };
 use super::narrow::narrow_for_cond;
 use super::reachable::{cont_key_from_slot0, cont_slot0_descr};
@@ -139,7 +139,7 @@ fn declared_return_fact_for_test<T>(
     caller: FnId,
     callee: FnId,
     arg_tys: &[Ty],
-    effective_returns: &HashMap<SpecKey, Ty>,
+    effective_returns: &HashMap<BodyKey, Ty>,
     complete_returns: Option<&SpecKeySet>,
 ) -> Option<TestDeclaredReturnFact>
 where
@@ -181,7 +181,7 @@ fn test_callback_return_fact<T>(
     module: &Module,
     recursive_fns: &HashSet<FnId>,
     caller: FnId,
-    effective_returns: &HashMap<SpecKey, Ty>,
+    effective_returns: &HashMap<BodyKey, Ty>,
     complete_returns: Option<&SpecKeySet>,
     query: CallbackReturnQuery<'_>,
 ) -> Option<CallbackReturnFact<SpecKey>>
@@ -203,7 +203,7 @@ where
         n_params,
         Some(test_callback_return_demand(query.demand)),
     );
-    let Some(ret) = effective_returns.get(&key).cloned() else {
+    let Some(ret) = effective_returns.get(&key.body_key()).cloned() else {
         return Some(CallbackReturnFact::Pending { read: key });
     };
     if complete_returns.is_some_and(|done| !done.contains(&key)) {
@@ -1528,7 +1528,7 @@ fn declared_reduce_while_return_uses_closure_return_witness() {
         input: key_slots_from_tys(vec![t.int(), initial_acc]),
         demand: ReturnDemand::tuple_fields(2),
     };
-    let effective_returns = HashMap::from([(lambda_key, reducer_return)]);
+    let effective_returns = HashMap::from([(lambda_key.body_key(), reducer_return)]);
     let fact = declared_return_fact_for_test(&mut t, &m, reduce_id, reduce_id, &arg_tys, &effective_returns, None)
         .expect("declared return fact");
 
@@ -4049,10 +4049,10 @@ fn resolve_closure_return_singleton_lookup_hits() {
     // (7, [int_lit(21)]) -> int. Helper returns Some(int).
     let mut t = ConcreteTypes;
     let closure = t.closure_lit(fid(7).into(), vec![], 1);
-    let mut er: HashMap<SpecKey, Ty> = HashMap::new();
+    let mut er: HashMap<BodyKey, Ty> = HashMap::new();
     let key = vec![t.int_lit(21)];
     let int = t.int();
-    er.insert(value_spec_key(fid(7), key_tys(key)), int.clone());
+    er.insert(value_spec_key(fid(7), key_tys(key)).body_key(), int.clone());
     let arg_tys = [t.int_lit(21)];
     let r = resolve_closure_return(&mut t, &closure, &er, &arg_tys).unwrap();
     assert!(t.is_equivalent(&r, &int));
@@ -4061,7 +4061,7 @@ fn resolve_closure_return_singleton_lookup_hits() {
 #[test]
 fn resolve_closure_return_singleton_miss_returns_none() {
     // Singleton with no matching effective_returns entry → None (defer).
-    let er: HashMap<SpecKey, Ty> = HashMap::new();
+    let er: HashMap<BodyKey, Ty> = HashMap::new();
     let mut t = ConcreteTypes;
     let closure = t.closure_lit(fid(7).into(), vec![], 1);
     let arg_tys = [t.int_lit(21)];
@@ -4077,10 +4077,10 @@ fn resolve_closure_return_singleton_with_captures() {
     let cap0 = t.int_lit(10);
     let cap1 = t.int_lit(20);
     let closure = t.closure_lit(fid(8).into(), vec![cap0, cap1], 1);
-    let mut er: HashMap<SpecKey, Ty> = HashMap::new();
+    let mut er: HashMap<BodyKey, Ty> = HashMap::new();
     let key = vec![t.int_lit(10), t.int_lit(20), t.int_lit(12)];
     let int42 = t.int_lit(42);
-    er.insert(value_spec_key(fid(8), key_tys(key)), int42);
+    er.insert(value_spec_key(fid(8), key_tys(key)).body_key(), int42);
     let arg_tys = [t.int_lit(12)];
     let r = resolve_closure_return(&mut t, &closure, &er, &arg_tys).unwrap();
     assert_eq!(t.as_int_singleton(&r), Some(42));
@@ -4090,7 +4090,7 @@ fn resolve_closure_return_singleton_with_captures() {
 fn resolve_closure_return_plain_arrow_uses_sig_ret() {
     // Lit-free arrow: ret comes straight from sig.ret (matches
     // arrow_join_return).
-    let er: HashMap<SpecKey, Ty> = HashMap::new();
+    let er: HashMap<BodyKey, Ty> = HashMap::new();
     let mut t = ConcreteTypes;
     let any = t.any();
     let int = t.int();
@@ -4111,12 +4111,12 @@ fn resolve_closure_return_union_of_singletons_joins() {
     let closure = t.union(a, b);
     let n_clauses = t.callable_clauses(&closure).map(|c| c.len()).unwrap_or(0);
     assert_eq!(n_clauses, 2, "expect two clauses: {}", t.display(&closure));
-    let mut er: HashMap<SpecKey, Ty> = HashMap::new();
+    let mut er: HashMap<BodyKey, Ty> = HashMap::new();
     let key = vec![t.int_lit(21)];
     let int = t.int();
     let ok = t.atom_lit("ok");
-    er.insert(value_spec_key(fid(7), key_tys(key.clone())), int.clone());
-    er.insert(value_spec_key(fid(8), key_tys(key)), ok.clone());
+    er.insert(value_spec_key(fid(7), key_tys(key.clone())).body_key(), int.clone());
+    er.insert(value_spec_key(fid(8), key_tys(key)).body_key(), ok.clone());
     let arg_tys = [t.int_lit(21)];
     let r = resolve_closure_return(&mut t, &closure, &er, &arg_tys).unwrap();
     let expected = t.union(int, ok);
@@ -4132,10 +4132,10 @@ fn resolve_closure_return_union_one_miss_defers() {
     let a = t.closure_lit(fid(7).into(), vec![], 1);
     let b = t.closure_lit(fid(8).into(), vec![], 1);
     let closure = t.union(a, b);
-    let mut er: HashMap<SpecKey, Ty> = HashMap::new();
+    let mut er: HashMap<BodyKey, Ty> = HashMap::new();
     let key = t.int_lit(21);
     let int = t.int();
-    er.insert(value_spec_key(fid(7), key_tys(vec![key])), int);
+    er.insert(value_spec_key(fid(7), key_tys(vec![key])).body_key(), int);
     // No entry for (8, _) → defer.
     let arg_tys = [t.int_lit(21)];
     let r = resolve_closure_return(&mut t, &closure, &er, &arg_tys);
@@ -4145,7 +4145,7 @@ fn resolve_closure_return_union_one_miss_defers() {
 #[test]
 fn resolve_closure_return_empty_funcs_is_any() {
     // Type with no funcs at all: arrow_join_return-style any default.
-    let er: HashMap<SpecKey, Ty> = HashMap::new();
+    let er: HashMap<BodyKey, Ty> = HashMap::new();
     let mut t = ConcreteTypes;
     let closure = t.none();
     let r = resolve_closure_return(&mut t, &closure, &er, &[]).unwrap();
@@ -4156,7 +4156,7 @@ fn resolve_closure_return_empty_funcs_is_any() {
 #[test]
 fn resolve_closure_return_saturated_arrow_is_any() {
     // `any()` has funcs = [Conj::top()] — pos empty, no narrowing.
-    let er: HashMap<SpecKey, Ty> = HashMap::new();
+    let er: HashMap<BodyKey, Ty> = HashMap::new();
     let mut t = ConcreteTypes;
     let closure = t.any();
     let arg_tys = [t.int_lit(21)];
@@ -4753,7 +4753,7 @@ fn declared_return_fact_handles_take_positive_reduce_while_in_runtime_graph() {
                             .map(|slot| slot.as_ref().map(|ty| t.display(ty)))
                             .collect::<Vec<_>>(),
                         plan.effective_returns
-                            .get(&spec_key)
+                            .get(&spec_key.body_key())
                             .map(|ty| t.display(ty))
                             .unwrap_or_else(|| "<missing>".to_string())
                     )

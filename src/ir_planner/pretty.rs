@@ -79,7 +79,7 @@ fn render_spec_header<T: Types<Ty = Ty> + RenderTypes>(
     out.push_str(&format!("; spec {}({}) #fn={}\n", f.name, arity, spec_key.fn_id.0));
     out.push_str(&format!(";   key:    {}\n", display_key_slots(t, &spec_key.input)));
     out.push_str(&format!(";   demand: {}\n", display_return_demand(t, &spec_key.demand)));
-    let ret = mt.effective_returns.get(spec_key);
+    let ret = mt.effective_returns.get(&spec_key.body_key());
     out.push_str(&format!(
         ";   return: {}\n",
         ret.map(|ty| t.display(ty)).unwrap_or_else(|| t.display(any_ty))

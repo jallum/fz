@@ -13,7 +13,7 @@ use crate::ir_diverge::truncate_diverging_blocks;
 use crate::ir_extern_marshal::resolve_module_types;
 use crate::ir_fuse::fuse_blocks_with_telemetry;
 use crate::ir_inline::{inline_module_with_plan, inline_single_use_conts};
-use crate::ir_planner::fn_types::{ReturnDemand, SpecKey, fixed_point_spec_key_for_arity};
+use crate::ir_planner::fn_types::{BodyKey, ReturnDemand, SpecKey, fixed_point_spec_key_for_arity};
 use crate::ir_planner::planned::CallableEntryPlan;
 use crate::ir_planner::{
     ModulePlan, SpecPlan, collect_diagnostics, materialize_program, plan_callable_capabilities, plan_module,
@@ -187,7 +187,7 @@ fn derive_return_tys<T: Types<Ty = Ty> + ClosureTypes>(
             }
             let ret = module_plan
                 .effective_returns
-                .get(key)
+                .get(&key.body_key())
                 .cloned()
                 .or_else(|| declared_return_for_spec_key(t, module, key, module_plan))
                 .unwrap_or_else(|| any.clone());
@@ -231,7 +231,7 @@ fn codegen_callback_return_fact<T: Types<Ty = Ty> + ClosureTypes>(
     module: &Module,
     recursive_fns: &HashSet<FnId>,
     caller: FnId,
-    effective_returns: &HashMap<SpecKey, Ty>,
+    effective_returns: &HashMap<BodyKey, Ty>,
     query: CallbackReturnQuery<'_>,
 ) -> Option<CallbackReturnFact<SpecKey>> {
     let fn_id: FnId = query.target.into();
@@ -249,7 +249,7 @@ fn codegen_callback_return_fact<T: Types<Ty = Ty> + ClosureTypes>(
         n_params,
         Some(codegen_callback_return_demand(query.demand)),
     );
-    let Some(ret) = effective_returns.get(&key).cloned() else {
+    let Some(ret) = effective_returns.get(&key.body_key()).cloned() else {
         return Some(CallbackReturnFact::Pending { read: key });
     };
     Some(CallbackReturnFact::Known {

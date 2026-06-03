@@ -741,7 +741,7 @@ end
     let plan = graph.module_plan;
     let ret = plan
         .effective_returns
-        .get(&SpecKey::value(collapsed.id, Vec::new()))
+        .get(&SpecKey::value(collapsed.id, Vec::new()).body_key())
         .unwrap_or_else(|| panic!("missing collapsed return"));
     let found = t.atom_lit("found");
     let int = t.int();

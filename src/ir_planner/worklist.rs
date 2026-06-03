@@ -2,11 +2,11 @@ use super::closures::literal_closure_return_keys;
 use super::diagnostics::{compute_dead_branches, module_plan_stats};
 use super::effects::{prim_effects, term_effects};
 use super::fn_types::{
-    CallEdgePlan, CallEdgeTarget, CallableCapability, CapabilityPlan, EffectSummary, FnEffects,
+    BodyKey, CallEdgePlan, CallEdgeTarget, CallableCapability, CapabilityPlan, EffectSummary, FnEffects,
     IncomingParamCallableCapabilities, ModulePlan, ReturnDemand, ReturnDepsByCaller, ReturnReaders, SpecKey,
     SpecKeySet, SpecPlan, SpecReachabilityRole, TYPE_FN_CALLS, VISIT_HARD_BOUND, WALK_CALLS, WORKLIST_POPS,
-    build_any_key_index, fixed_point_spec_key_for_arity, key_precedence_order, normalize_result_correspondence_key,
-    spec_key_for_fn_id, spec_key_input_tys,
+    body_key_for_fn_id, build_any_key_index, fixed_point_spec_key_for_arity, key_precedence_order,
+    normalize_result_correspondence_key, spec_key_for_fn_id, spec_key_input_tys,
 };
 use super::reachable::{cont_key_from_slot0, env_at_terminator};
 use super::scc::tarjan_scc;
@@ -48,14 +48,14 @@ struct DeclaredReturnFact {
 }
 
 pub(super) struct ActivationReturnFacts {
-    bucket_returns: HashMap<SpecKey, TypeInferReturnState>,
+    bucket_returns: HashMap<BodyKey, TypeInferReturnState>,
     witness_returns: HashMap<TypeInferActivationId, TypeInferReturnState>,
-    witness_public_keys: HashMap<TypeInferActivationId, SpecKey>,
-    witness_ids_by_public_key: HashMap<SpecKey, Vec<TypeInferActivationId>>,
+    witness_public_keys: HashMap<TypeInferActivationId, BodyKey>,
+    witness_ids_by_public_key: HashMap<BodyKey, Vec<TypeInferActivationId>>,
     observed_edges_by_witness: HashMap<TypeInferActivationId, HashSet<ObservedActivationEdge>>,
     observed_dead_arms_by_witness: HashMap<TypeInferActivationId, HashSet<ObservedDeadArm>>,
-    callee_witnesses_by_caller_and_callsite: HashMap<(SpecKey, CallsiteId), HashSet<TypeInferActivationId>>,
-    unsettled_buckets: HashMap<FnId, Vec<SpecKey>>,
+    callee_witnesses_by_caller_and_callsite: HashMap<(BodyKey, CallsiteId), HashSet<TypeInferActivationId>>,
+    unsettled_buckets: HashMap<FnId, Vec<BodyKey>>,
     raw_fact_count: usize,
     complete_entry_count: usize,
     unresolved_entry_count: usize,
@@ -99,7 +99,7 @@ impl ActivationProjectionKind {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct ActivationProjectionFact {
-    spec_key: SpecKey,
+    spec_key: BodyKey,
     kind: ActivationProjectionKind,
     projected_state: Option<TypeInferReturnState>,
     covered_activations: Vec<CoveredActivation>,
@@ -110,13 +110,13 @@ struct ActivationProjectionFact {
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct CoveredActivation {
     activation_id: TypeInferActivationId,
-    public_key: SpecKey,
+    public_key: BodyKey,
     state: TypeInferReturnState,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct ObservedActivationEdge {
-    callee: SpecKey,
+    callee: BodyKey,
     slot: EmitSlot,
     span_start: u64,
     span_end: u64,
@@ -232,7 +232,7 @@ impl ActivationReturnFacts {
         activation: TypeInferActivationFact,
     ) {
         let activation_id = activation.activation_id;
-        let public_key = public_activation_spec_key(t, module, activation.fn_id, activation.input_tys);
+        let public_key = public_activation_body_key(t, module, activation.fn_id, activation.input_tys);
         let state = activation.return_state;
         self.witness_returns.insert(activation_id, state.clone());
         self.witness_public_keys.insert(activation_id, public_key.clone());
@@ -254,7 +254,7 @@ impl ActivationReturnFacts {
         }
     }
 
-    fn insert_unsettled(&mut self, key: SpecKey) {
+    fn insert_unsettled(&mut self, key: BodyKey) {
         let keys = self.unsettled_buckets.entry(key.fn_id).or_default();
         if !keys.contains(&key) {
             keys.push(key);
@@ -277,7 +277,8 @@ impl ActivationReturnFacts {
         t: &mut T,
         key: &SpecKey,
     ) -> Option<TypeInferReturnState> {
-        if let Some(exact) = self.bucket_returns.get(key) {
+        let body_key = key.body_key();
+        if let Some(exact) = self.bucket_returns.get(&body_key) {
             return Some(exact.clone());
         }
         if self.request_overlaps_unsettled(t, key) {
@@ -287,9 +288,9 @@ impl ActivationReturnFacts {
         for (candidate, state) in self
             .bucket_returns
             .iter()
-            .filter(|(candidate, _)| candidate.fn_id == key.fn_id)
+            .filter(|(candidate, _)| candidate.fn_id == body_key.fn_id)
         {
-            if activation_key_covers_requested(t, candidate, key) {
+            if activation_key_covers_requested(t, candidate, &body_key) {
                 joined = Some(match joined {
                     Some(prev) => merge_activation_return_state(t, &prev, state),
                     None => state.clone(),
@@ -312,9 +313,10 @@ impl ActivationReturnFacts {
     }
 
     fn request_overlaps_unsettled<T: Types<Ty = Ty> + ClosureTypes>(&self, t: &mut T, requested: &SpecKey) -> bool {
+        let requested = requested.body_key();
         self.unsettled_buckets
             .get(&requested.fn_id)
-            .is_some_and(|keys| keys.iter().any(|key| activation_keys_overlap(t, key, requested)))
+            .is_some_and(|keys| keys.iter().any(|key| activation_keys_overlap(t, key, &requested)))
     }
 
     fn project_effective_returns<T: Types<Ty = Ty> + ClosureTypes>(
@@ -322,17 +324,20 @@ impl ActivationReturnFacts {
         t: &mut T,
         reachable: &SpecKeySet,
         complete_returns: &SpecKeySet,
-        effective_returns: &mut HashMap<SpecKey, Ty>,
+        effective_returns: &mut HashMap<BodyKey, Ty>,
     ) {
         for key in reachable {
             let ret = if let Some(ret) = self.projected_return_for_key(t, key) {
                 ret
             } else if complete_returns.contains(key) {
-                effective_returns.get(key).cloned().unwrap_or_else(|| t.any())
+                effective_returns
+                    .get(&key.body_key())
+                    .cloned()
+                    .unwrap_or_else(|| t.any())
             } else {
                 t.any()
             };
-            effective_returns.insert(key.clone(), ret);
+            effective_returns.insert(key.body_key(), ret);
         }
     }
 
@@ -341,7 +346,7 @@ impl ActivationReturnFacts {
         t: &mut T,
         reachable: &SpecKeySet,
         callable_entry_specs: &SpecKeySet,
-        effective_returns: &HashMap<SpecKey, Ty>,
+        effective_returns: &HashMap<BodyKey, Ty>,
         complete_returns: &SpecKeySet,
     ) -> ActivationReturnTelemetry {
         let mut stats = ActivationReturnTelemetry {
@@ -389,7 +394,7 @@ impl ActivationReturnFacts {
         module: &Module,
         reachable: &SpecKeySet,
         callable_entry_specs: &SpecKeySet,
-        effective_returns: &HashMap<SpecKey, Ty>,
+        effective_returns: &HashMap<BodyKey, Ty>,
         complete_returns: &SpecKeySet,
     ) -> Vec<String> {
         let mut gaps = Vec::new();
@@ -414,7 +419,7 @@ impl ActivationReturnFacts {
         &self,
         t: &mut T,
         reachable: &SpecKeySet,
-        effective_returns: &HashMap<SpecKey, Ty>,
+        effective_returns: &HashMap<BodyKey, Ty>,
         complete_returns: &SpecKeySet,
     ) -> Vec<ActivationProjectionFact> {
         let mut facts: Vec<_> = reachable
@@ -430,16 +435,17 @@ impl ActivationReturnFacts {
         &self,
         t: &mut T,
         spec_key: SpecKey,
-        effective_returns: &HashMap<SpecKey, Ty>,
+        effective_returns: &HashMap<BodyKey, Ty>,
         complete_returns: &SpecKeySet,
     ) -> ActivationProjectionFact {
-        let (mut kind, covered_activations) = if self.bucket_returns.contains_key(&spec_key) {
+        let body_key = spec_key.body_key();
+        let (mut kind, covered_activations) = if self.bucket_returns.contains_key(&body_key) {
             (
                 ActivationProjectionKind::Exact,
-                self.covered_witnesses_for_public_key(&spec_key),
+                self.covered_witnesses_for_public_key(&body_key),
             )
         } else {
-            let covering = self.covered_activation_states_for_request(t, &spec_key);
+            let covering = self.covered_activation_states_for_request(t, &body_key);
             if !covering.is_empty() {
                 let kind = if covering.len() == 1 {
                     ActivationProjectionKind::Exact
@@ -448,7 +454,7 @@ impl ActivationReturnFacts {
                 };
                 (kind, covering)
             } else {
-                let unsettled = self.overlapping_unsettled_activation_states(t, &spec_key);
+                let unsettled = self.overlapping_unsettled_activation_states(t, &body_key);
                 if unsettled.is_empty() {
                     (ActivationProjectionKind::Uncovered, Vec::new())
                 } else {
@@ -480,7 +486,7 @@ impl ActivationReturnFacts {
         let projected_state = self.return_state_for_key(t, &spec_key).or_else(|| {
             complete_returns
                 .contains(&spec_key)
-                .then(|| effective_returns.get(&spec_key).cloned())
+                .then(|| effective_returns.get(&body_key).cloned())
                 .flatten()
                 .map(TypeInferReturnState::Known)
         });
@@ -489,7 +495,7 @@ impl ActivationReturnFacts {
         }
         ActivationProjectionFact {
             projected_state,
-            spec_key,
+            spec_key: body_key,
             kind,
             covered_activations,
             projected_call_edges,
@@ -500,7 +506,7 @@ impl ActivationReturnFacts {
     fn covered_activation_states_for_request<T: Types<Ty = Ty> + ClosureTypes>(
         &self,
         t: &mut T,
-        requested: &SpecKey,
+        requested: &BodyKey,
     ) -> Vec<CoveredActivation> {
         let mut covered = Vec::new();
         for (candidate, _) in self
@@ -522,7 +528,7 @@ impl ActivationReturnFacts {
     fn overlapping_unsettled_activation_states<T: Types<Ty = Ty> + ClosureTypes>(
         &self,
         t: &mut T,
-        requested: &SpecKey,
+        requested: &BodyKey,
     ) -> Vec<CoveredActivation> {
         let Some(keys) = self.unsettled_buckets.get(&requested.fn_id) else {
             return Vec::new();
@@ -545,7 +551,7 @@ impl ActivationReturnFacts {
         module: &Module,
         edge: &TypeInferActivationEdgeFact,
     ) {
-        let callee = public_activation_spec_key(t, module, edge.callee_fn_id, edge.callee_input_tys.clone());
+        let callee = public_activation_body_key(t, module, edge.callee_fn_id, edge.callee_input_tys.clone());
         self.observed_edges_by_witness
             .entry(edge.caller_activation_id)
             .or_default()
@@ -555,7 +561,8 @@ impl ActivationReturnFacts {
                 span_start: edge.callsite.span_start,
                 span_end: edge.callsite.span_end,
             });
-        let caller_public_key = public_activation_spec_key(t, module, edge.caller_fn_id, edge.caller_input_tys.clone());
+        let caller_public_key =
+            public_activation_body_key(t, module, edge.caller_fn_id, edge.caller_input_tys.clone());
         self.callee_witnesses_by_caller_and_callsite
             .entry((caller_public_key, edge.callsite.callsite.clone()))
             .or_default()
@@ -576,7 +583,7 @@ impl ActivationReturnFacts {
             });
     }
 
-    fn covered_witnesses_for_public_key(&self, public_key: &SpecKey) -> Vec<CoveredActivation> {
+    fn covered_witnesses_for_public_key(&self, public_key: &BodyKey) -> Vec<CoveredActivation> {
         let mut covered = self
             .witness_ids_by_public_key
             .get(public_key)
@@ -603,17 +610,16 @@ impl ActivationReturnFacts {
         requested: SpecKey,
     ) -> SpecKey {
         let requested = erase_closure_identity_from_spec_key(t, requested);
-        if self.bucket_returns.contains_key(&requested) {
+        let requested_body = requested.body_key();
+        if self.bucket_returns.contains_key(&requested_body) {
             return requested;
         }
         let covering = self
             .bucket_returns
             .iter()
             .map(|(candidate, _)| candidate)
-            .filter(|candidate| candidate.fn_id == requested.fn_id)
-            .filter(|candidate| {
-                candidate.demand == requested.demand && activation_key_covers_requested(t, candidate, &requested)
-            })
+            .filter(|candidate| candidate.fn_id == requested_body.fn_id)
+            .filter(|candidate| activation_key_covers_requested(t, candidate, &requested_body))
             .collect::<Vec<_>>();
         let mut most_specific = covering
             .iter()
@@ -628,7 +634,11 @@ impl ActivationReturnFacts {
             .collect::<Vec<_>>();
         most_specific.sort_by(|left, right| format!("{left:?}").cmp(&format!("{right:?}")));
         if most_specific.len() == 1 {
-            return most_specific[0].clone();
+            return SpecKey {
+                fn_id: most_specific[0].fn_id,
+                input: most_specific[0].input.clone(),
+                demand: requested.demand,
+            };
         }
         requested
     }
@@ -636,7 +646,7 @@ impl ActivationReturnFacts {
     fn closure_return_map<T: Types<Ty = Ty>>(&self, t: &mut T) -> HashMap<(ClosureTarget, Vec<Ty>), Ty> {
         let mut index = HashMap::new();
         for (key, state) in &self.bucket_returns {
-            if !key.demand.is_value() || key.input.iter().any(Option::is_none) {
+            if key.input.iter().any(Option::is_none) {
                 continue;
             }
             let ret = match state {
@@ -655,7 +665,7 @@ impl ActivationReturnFacts {
         caller_public_key: &SpecKey,
         callsite: CallsiteId,
     ) -> Option<ResultSlot0> {
-        let caller_public_key = self.canonical_public_key(t, caller_public_key.clone());
+        let caller_public_key = self.canonical_public_key(t, caller_public_key.clone()).body_key();
         let witness_ids = self
             .callee_witnesses_by_caller_and_callsite
             .get(&(caller_public_key, callsite))?;
@@ -675,13 +685,13 @@ impl ActivationReturnFacts {
     }
 }
 
-fn public_activation_spec_key<T: Types<Ty = Ty> + ClosureTypes>(
+fn public_activation_body_key<T: Types<Ty = Ty> + ClosureTypes>(
     t: &mut T,
     module: &Module,
     fn_id: FnId,
     input_tys: Vec<Ty>,
-) -> SpecKey {
-    erase_closure_identity_from_spec_key(t, spec_key_for_fn_id(module, fn_id, input_tys))
+) -> BodyKey {
+    erase_closure_identity_from_body_key(t, body_key_for_fn_id(module, fn_id, input_tys))
 }
 
 fn erase_closure_identity_from_spec_key<T: Types<Ty = Ty> + ClosureTypes>(t: &mut T, mut key: SpecKey) -> SpecKey {
@@ -694,7 +704,20 @@ fn erase_closure_identity_from_spec_key<T: Types<Ty = Ty> + ClosureTypes>(t: &mu
     key
 }
 
-fn activation_keys_overlap<T: Types<Ty = Ty> + ClosureTypes>(t: &mut T, left: &SpecKey, right: &SpecKey) -> bool {
+fn erase_closure_identity_from_body_key<T: Types<Ty = Ty> + ClosureTypes>(
+    t: &mut T,
+    mut key: BodyKey,
+) -> BodyKey {
+    for slot in &mut key.input {
+        if let Some(ty) = slot.take() {
+            let erased = t.erase_closure_identity(&ty);
+            *slot = Some(t.alpha_normalize_vars(&erased));
+        }
+    }
+    key
+}
+
+fn activation_keys_overlap<T: Types<Ty = Ty> + ClosureTypes>(t: &mut T, left: &BodyKey, right: &BodyKey) -> bool {
     if left.fn_id != right.fn_id {
         return false;
     }
@@ -719,11 +742,7 @@ fn activation_tys_overlap<T: Types<Ty = Ty> + ClosureTypes>(t: &mut T, left: &Ty
     !t.is_disjoint(&left, &right)
 }
 
-fn activation_key_covers_requested<T: Types<Ty = Ty> + ClosureTypes>(
-    t: &mut T,
-    candidate: &SpecKey,
-    requested: &SpecKey,
-) -> bool {
+fn activation_key_covers_requested<T: Types<Ty = Ty> + ClosureTypes>(t: &mut T, candidate: &BodyKey, requested: &BodyKey) -> bool {
     if candidate.fn_id != requested.fn_id {
         return false;
     }
@@ -1109,8 +1128,8 @@ fn plan_module_with_role<T: Types<Ty = Ty> + ClosureTypes + RenderTypes>(
                     spec_key: format!("{:?}", fact.spec_key),
                     spec_role: mt
                         .spec_roles
-                        .get(&fact.spec_key)
-                        .copied()
+                        .iter()
+                        .find_map(|(key, role)| (key.body_key() == fact.spec_key).then_some(*role))
                         .map(SpecReachabilityRole::as_str)
                         .unwrap_or("unknown"),
                     body_fn_id: body.id.0 as u64,
@@ -1226,7 +1245,7 @@ pub fn plan_callable_capabilities<T: Types<Ty = Ty> + ClosureTypes + RenderTypes
 struct DiscoverOutput {
     specs: HashMap<SpecKey, SpecPlan>,
     spec_roles: HashMap<SpecKey, SpecReachabilityRole>,
-    effective_returns: HashMap<SpecKey, Ty>,
+    effective_returns: HashMap<BodyKey, Ty>,
     fn_effects: FnEffects,
     activation_return_telemetry: ActivationReturnTelemetry,
     activation_return_projection_gaps: Vec<String>,
@@ -1262,7 +1281,7 @@ fn discover_specs<T: Types<Ty = Ty> + ClosureTypes + RenderTypes>(
     }
 
     let mut specs: HashMap<SpecKey, SpecPlan> = HashMap::new();
-    let mut effective_returns: HashMap<SpecKey, Ty> = HashMap::new();
+    let mut effective_returns: HashMap<BodyKey, Ty> = HashMap::new();
     let mut complete_returns: SpecKeySet = HashSet::new();
     let mut incoming_param_callable_capabilities: IncomingParamCallableCapabilities = HashMap::new();
     let mut return_readers: ReturnReaders = HashMap::new();
@@ -1338,7 +1357,7 @@ fn discover_specs<T: Types<Ty = Ty> + ClosureTypes + RenderTypes>(
 fn finalize_return_completeness(
     specs: &HashMap<SpecKey, SpecPlan>,
     return_deps_by_caller: &ReturnDepsByCaller,
-    effective_returns: &HashMap<SpecKey, Ty>,
+    effective_returns: &HashMap<BodyKey, Ty>,
 ) -> SpecKeySet {
     let nodes = specs.keys().cloned().collect::<Vec<_>>();
     let mut index_by_key = HashMap::new();
@@ -1423,7 +1442,7 @@ fn finalize_return_completeness(
             }
             let has_returns = component_nodes[comp_idx]
                 .iter()
-                .all(|&idx| effective_returns.contains_key(&nodes[idx]));
+                .all(|&idx| effective_returns.contains_key(&nodes[idx].body_key()));
             let deps_complete = component_deps[comp_idx].iter().all(|dep| complete_components[*dep]);
             if has_returns && deps_complete {
                 complete_components[comp_idx] = true;
@@ -1467,12 +1486,12 @@ fn reachable_specs_from_call_edges<T: Types<Ty = Ty> + ClosureTypes>(
 fn verify_closed_expectations(
     reachable: &SpecKeySet,
     specs: &HashMap<SpecKey, SpecPlan>,
-    effective_returns: &HashMap<SpecKey, Ty>,
+    effective_returns: &HashMap<BodyKey, Ty>,
 ) {
     for spec in reachable {
         assert!(specs.contains_key(spec), "reachable spec {:?} has no typed body", spec);
         assert!(
-            effective_returns.contains_key(spec),
+            effective_returns.contains_key(&spec.body_key()),
             "reachable spec {:?} has no effective return",
             spec
         );
@@ -1507,7 +1526,7 @@ fn compute_spec_roles<T: Types<Ty = Ty> + ClosureTypes>(
         .into_iter()
         .map(|(fid, key)| spec_key_for_fn_id(m, fid, key))
         .collect();
-    let activation_covered: SpecKeySet = activation_projection_facts
+    let activation_covered: HashSet<BodyKey> = activation_projection_facts
         .iter()
         .filter(|fact| !fact.covered_activations.is_empty())
         .map(|fact| fact.spec_key.clone())
@@ -1517,7 +1536,7 @@ fn compute_spec_roles<T: Types<Ty = Ty> + ClosureTypes>(
     for spec in reachable {
         let role = if entry_specs.contains(spec) {
             SpecReachabilityRole::Entry
-        } else if activation_covered.contains(spec) {
+        } else if activation_covered.contains(&spec.body_key()) {
             SpecReachabilityRole::Activation
         } else if callable_entry_specs.contains(spec) {
             SpecReachabilityRole::CallableEntry
@@ -1615,7 +1634,7 @@ fn process_worklist<T: Types<Ty = Ty> + ClosureTypes>(
     work: &mut VecDeque<SpecKey>,
     in_work: &mut SpecKeySet,
     specs: &mut HashMap<SpecKey, SpecPlan>,
-    effective_returns: &mut HashMap<SpecKey, Ty>,
+    effective_returns: &mut HashMap<BodyKey, Ty>,
     complete_returns: &mut SpecKeySet,
     activation_returns: &ActivationReturnFacts,
     incoming_param_callable_capabilities: &mut IncomingParamCallableCapabilities,
@@ -1843,7 +1862,7 @@ fn update_effective_return_and_enqueue_readers<T: Types<Ty = Ty> + ClosureTypes>
     spec_key: &SpecKey,
     recursive_fns: &HashSet<FnId>,
     specs: &HashMap<SpecKey, SpecPlan>,
-    effective_returns: &mut HashMap<SpecKey, Ty>,
+    effective_returns: &mut HashMap<BodyKey, Ty>,
     complete_returns: &mut SpecKeySet,
     activation_returns: &ActivationReturnFacts,
     return_readers: &mut ReturnReaders,
@@ -1852,7 +1871,7 @@ fn update_effective_return_and_enqueue_readers<T: Types<Ty = Ty> + ClosureTypes>
     in_work: &mut SpecKeySet,
     walk_return_reads: Vec<SpecKey>,
 ) {
-    let prev_ret = effective_returns.get(spec_key).cloned();
+    let prev_ret = effective_returns.get(&spec_key.body_key()).cloned();
     let prev_complete = complete_returns.contains(spec_key);
     let walk_read_count = walk_return_reads.len();
     let mut compute_reads = Vec::new();
@@ -1883,11 +1902,11 @@ fn update_effective_return_and_enqueue_readers<T: Types<Ty = Ty> + ClosureTypes>
         in_work,
     );
     let ret_changed = effective_returns
-        .get(spec_key)
+        .get(&spec_key.body_key())
         .is_none_or(|prev| !t.is_equivalent(&new_ret, prev));
     let complete_changed = complete_returns.contains(spec_key) != complete;
     if ret_changed {
-        effective_returns.insert(spec_key.clone(), new_ret.clone());
+        effective_returns.insert(spec_key.body_key(), new_ret.clone());
     }
     if complete {
         complete_returns.insert(spec_key.clone());
@@ -1975,7 +1994,7 @@ fn emit_return_fixpoint_step(
     tel: PlannerTelemetry<'_>,
     spec_key: &SpecKey,
     specs: &HashMap<SpecKey, SpecPlan>,
-    effective_returns: &HashMap<SpecKey, Ty>,
+    effective_returns: &HashMap<BodyKey, Ty>,
     complete_returns: &SpecKeySet,
     return_deps_by_caller: &ReturnDepsByCaller,
     work: &VecDeque<SpecKey>,
@@ -1993,7 +2012,10 @@ fn emit_return_fixpoint_step(
     let deps = return_deps_by_caller.get(spec_key).cloned().unwrap_or_default();
     let dep_keys: Vec<String> = deps.iter().map(|key| format!("{:?}", key)).collect();
     let missing_specs = deps.iter().filter(|key| !specs.contains_key(*key)).count() as u64;
-    let missing_returns = deps.iter().filter(|key| !effective_returns.contains_key(*key)).count() as u64;
+    let missing_returns = deps
+        .iter()
+        .filter(|key| !effective_returns.contains_key(&key.body_key()))
+        .count() as u64;
     let incomplete_deps = deps.iter().filter(|key| !complete_returns.contains(*key)).count() as u64;
     let body_name = m.fn_by_id(spec_key.fn_id).name.clone();
     tel.execute(
@@ -2047,7 +2069,7 @@ fn compute_return_for_spec<T: Types<Ty = Ty> + ClosureTypes>(
     spec_key: &SpecKey,
     recursive_fns: &HashSet<FnId>,
     specs: &HashMap<SpecKey, SpecPlan>,
-    effective_returns: &HashMap<SpecKey, Ty>,
+    effective_returns: &HashMap<BodyKey, Ty>,
     complete_returns: &SpecKeySet,
     activation_returns: &ActivationReturnFacts,
     reads: &mut Vec<SpecKey>,
@@ -2143,7 +2165,7 @@ fn direct_tail_return_contribution<T: Types<Ty = Ty> + ClosureTypes>(
     module: &Module,
     spec_key: &SpecKey,
     ft: &SpecPlan,
-    effective_returns: &HashMap<SpecKey, Ty>,
+    effective_returns: &HashMap<BodyKey, Ty>,
     complete_returns: &SpecKeySet,
     activation_returns: &ActivationReturnFacts,
     reads: &mut Vec<SpecKey>,
@@ -2185,7 +2207,7 @@ fn tail_closure_return_contribution<T: Types<Ty = Ty> + ClosureTypes>(
     module: &Module,
     spec_key: &SpecKey,
     ft: &SpecPlan,
-    effective_returns: &HashMap<SpecKey, Ty>,
+    effective_returns: &HashMap<BodyKey, Ty>,
     complete_returns: &SpecKeySet,
     activation_returns: &ActivationReturnFacts,
     reads: &mut Vec<SpecKey>,
@@ -2230,7 +2252,7 @@ fn continuation_return_contribution<T: Types<Ty = Ty> + ClosureTypes>(
     recursive_fns: &HashSet<FnId>,
     spec_key: &SpecKey,
     ft: &SpecPlan,
-    effective_returns: &HashMap<SpecKey, Ty>,
+    effective_returns: &HashMap<BodyKey, Ty>,
     complete_returns: &SpecKeySet,
     activation_returns: &ActivationReturnFacts,
     reads: &mut Vec<SpecKey>,
@@ -2266,7 +2288,7 @@ fn continuation_return_contribution<T: Types<Ty = Ty> + ClosureTypes>(
 fn receive_matched_return_contribution<T: Types<Ty = Ty> + ClosureTypes>(
     t: &mut T,
     module: &Module,
-    effective_returns: &HashMap<SpecKey, Ty>,
+    effective_returns: &HashMap<BodyKey, Ty>,
     complete_returns: &SpecKeySet,
     reads: &mut Vec<SpecKey>,
     clauses: &[ReceiveClause],
@@ -2286,7 +2308,7 @@ fn receive_matched_return_contribution<T: Types<Ty = Ty> + ClosureTypes>(
 fn receive_outcome_return_contribution<T: Types<Ty = Ty> + ClosureTypes>(
     t: &mut T,
     module: &Module,
-    effective_returns: &HashMap<SpecKey, Ty>,
+    effective_returns: &HashMap<BodyKey, Ty>,
     complete_returns: &SpecKeySet,
     reads: &mut Vec<SpecKey>,
     fid: FnId,
@@ -2301,12 +2323,15 @@ fn receive_outcome_return_contribution<T: Types<Ty = Ty> + ClosureTypes>(
 
 fn lookup_return_read<T: Types<Ty = Ty>>(
     t: &mut T,
-    effective_returns: &HashMap<SpecKey, Ty>,
+    effective_returns: &HashMap<BodyKey, Ty>,
     complete_returns: &SpecKeySet,
     reads: &mut Vec<SpecKey>,
     key: SpecKey,
 ) -> ReturnContribution {
-    let dy = effective_returns.get(&key).cloned().unwrap_or_else(|| t.none());
+    let dy = effective_returns
+        .get(&key.body_key())
+        .cloned()
+        .unwrap_or_else(|| t.none());
     let complete = complete_returns.contains(&key);
     reads.push(key);
     ReturnContribution { ty: dy, complete }

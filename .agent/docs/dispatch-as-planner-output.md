@@ -68,12 +68,15 @@ domain. The planner therefore keeps two layers:
 
 - witness activations, keyed by activation id, for callsite-local slot-0
   precision, dead-arm proof, and edge inventory;
-- semantic buckets, keyed by `SpecKey`, for the executable contract handed to
-  interpreter/codegen.
+- semantic return buckets, keyed by `BodyKey` (`FnId + semantic input`), for
+  the executable contract handed to interpreter/codegen.
+- executable entries, keyed by `SpecKey`, for delivery shape and call-edge
+  contracts.
 
 `ReturnDemand` is a delivery capability, not a semantic return payload, so it
-does not split activation return facts. A semantic bucket may serve a planner
-key only when the bucket input domain covers the requested input domain.
+does not split activation return facts. A semantic body bucket may serve a
+planner entry key only when the bucket input domain covers the requested input
+domain.
 Concrete closure identity may be erased for this comparison so a concrete
 captured reducer can satisfy the planner's callable-capture slot without making
 closure identity an ABI fact.

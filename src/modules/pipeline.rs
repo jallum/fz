@@ -821,7 +821,7 @@ fn main(), do: User.run()
                     cont_callsite,
                     direct_target,
                     direct_target.map(|target| linked.fn_by_id(target.fn_id).name.clone()),
-                    direct_target.and_then(|target| mt.effective_returns.get(target)),
+                    direct_target.and_then(|target| mt.effective_returns.get(&target.body_key())),
                     spec.call_edges.keys().collect::<Vec<_>>()
                 );
             }
@@ -875,7 +875,7 @@ fn main(), do: User.run()
                     cont_callsite,
                     direct_target,
                     direct_target.map(|target| linked.fn_by_id(target.fn_id).name.clone()),
-                    direct_target.and_then(|target| mt.effective_returns.get(target)),
+                    direct_target.and_then(|target| mt.effective_returns.get(&target.body_key())),
                     spec.call_edges.keys().collect::<Vec<_>>()
                 );
             }

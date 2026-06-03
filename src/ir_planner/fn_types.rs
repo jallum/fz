@@ -251,7 +251,7 @@ pub struct ModulePlan {
     /// it does not create a different value payload. During the transplant,
     /// uncovered reachable specs are filled with `any` to keep the map total;
     /// planner telemetry reports those as activation projection gaps.
-    pub effective_returns: HashMap<SpecKey, Ty>,
+    pub effective_returns: HashMap<BodyKey, Ty>,
     /// Secondary index from FnId to its all-any key. Populated in
     /// `plan_module` from the final specs map so callers can find any-key
     /// specs without scanning the whole spec map.
@@ -474,20 +474,31 @@ impl ModulePlan {
         callee: FnId,
         arg_tys: &[Ty],
     ) -> Option<Ty> {
-        let candidates: Vec<BestCoverCandidate<'_, &SpecKey>> = self
+        let candidates: Vec<BestCoverCandidate<'_, &BodyKey>> = self
             .effective_returns
             .keys()
-            .filter(|key| key.fn_id == callee && key.demand.is_value())
+            .filter(|key| key.fn_id == callee)
             .map(|key| BestCoverCandidate {
                 id: key,
                 key: key.input.as_slice(),
                 key_var_count: key_slot_var_count(t, key.input.as_slice()),
-                precedence: *self.spec_precedence.get(key).unwrap_or(&u32::MAX),
+                precedence: *self
+                    .spec_precedence
+                    .get(&key.value_spec())
+                    .unwrap_or(&u32::MAX),
             })
             .collect();
         let best = best_covering_candidate(t, arg_tys, candidates)?;
         self.effective_returns.get(best).cloned()
     }
+}
+
+pub(crate) fn body_key_for_fn(f: &FnIr, input_tys: Vec<Ty>) -> BodyKey {
+    BodyKey::value(f.id, f.semantic_key(input_tys))
+}
+
+pub(crate) fn body_key_for_fn_id(m: &Module, fid: FnId, input_tys: Vec<Ty>) -> BodyKey {
+    body_key_for_fn(m.fn_by_id(fid), input_tys)
 }
 
 pub(crate) fn spec_key_for_fn(f: &FnIr, input_tys: Vec<Ty>) -> SpecKey {
@@ -716,6 +727,35 @@ impl SpecKey {
             input,
             demand: ReturnDemand::value(),
         }
+    }
+
+    pub fn body_key(&self) -> BodyKey {
+        BodyKey {
+            fn_id: self.fn_id,
+            input: self.input.clone(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct BodyKey {
+    pub fn_id: FnId,
+    pub input: Vec<KeySlot>,
+}
+
+impl BodyKey {
+    pub fn value(fn_id: FnId, input: Vec<KeySlot>) -> Self {
+        Self { fn_id, input }
+    }
+
+    pub fn value_spec(&self) -> SpecKey {
+        SpecKey::value(self.fn_id, self.input.clone())
+    }
+}
+
+impl From<&SpecKey> for BodyKey {
+    fn from(value: &SpecKey) -> Self {
+        value.body_key()
     }
 }
 

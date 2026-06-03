@@ -9,7 +9,8 @@ use crate::fz_ir::{
     Stmt, Term, UnOp, rewrite_external_callsite_for_link,
 };
 use crate::ir_planner::fn_types::{
-    CallEdgePlan, CallEdgeTarget, CallableCapability, ReturnContextPlan, ReturnContract, ReturnStrategy, SpecKey,
+    BodyKey, CallEdgePlan, CallEdgeTarget, CallableCapability, ReturnContextPlan, ReturnContract, ReturnStrategy,
+    SpecKey,
 };
 use crate::ir_planner::{ModulePlan, SpecPlan};
 use crate::modules::identity::{ExportKey, ModuleName};
@@ -512,7 +513,7 @@ fn remap_module_plan(plan: &ModulePlan, fn_map: &BTreeMap<FnId, FnId>) -> Module
         effective_returns: plan
             .effective_returns
             .iter()
-            .map(|(key, ty)| (remap_spec_key(key, fn_map), ty.clone()))
+            .map(|(key, ty)| (remap_body_key(key, fn_map), ty.clone()))
             .collect(),
         any_key_specs: plan
             .any_key_specs
@@ -693,6 +694,12 @@ fn remap_return_context_plan(plan: &ReturnContextPlan, fn_map: &BTreeMap<FnId, F
 }
 
 fn remap_spec_key(key: &SpecKey, fn_map: &BTreeMap<FnId, FnId>) -> SpecKey {
+    let mut out = key.clone();
+    out.fn_id = remapped_fn_id(out.fn_id, fn_map);
+    out
+}
+
+fn remap_body_key(key: &BodyKey, fn_map: &BTreeMap<FnId, FnId>) -> BodyKey {
     let mut out = key.clone();
     out.fn_id = remapped_fn_id(out.fn_id, fn_map);
     out
