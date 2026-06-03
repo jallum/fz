@@ -9,6 +9,9 @@
 //! per-specialization `SpecPlan`s, selected call edges, return contracts,
 //! effective returns projected from activation facts, callable
 //! capabilities, effect summaries, precedence, and dead-branch facts.
+//! Callable-entry specs that have no concrete activation project their
+//! successful declared return contract explicitly; codegen never invents that
+//! fallback.
 //! `materialize_program` then projects that plan into executable
 //! `PlannedBody`s keyed by semantic `BodyKey` plus stable `SpecId`
 //! registration for codegen.

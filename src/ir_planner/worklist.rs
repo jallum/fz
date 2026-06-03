@@ -3,20 +3,15 @@ use super::diagnostics::{compute_dead_branches, module_plan_stats};
 use super::effects::{prim_effects, term_effects};
 use super::fn_types::{
     BodyKey, CallEdgePlan, CallEdgeTarget, CallableCapability, CapabilityPlan, EffectSummary, FnEffects,
-    IncomingParamCallableCapabilities, ModulePlan, ReturnDemand, ReturnDepsByCaller, ReturnReaders, SpecKey,
-    SpecKeySet, SpecPlan, SpecReachabilityRole, TYPE_FN_CALLS, VISIT_HARD_BOUND, WALK_CALLS, WORKLIST_POPS,
-    body_key_for_fn_id, build_any_key_index, fixed_point_spec_key_for_arity, key_precedence_order,
-    normalize_result_correspondence_key, spec_key_for_fn_id, spec_key_input_tys,
+    IncomingParamCallableCapabilities, ModulePlan, ReturnDemand, SpecKey, SpecKeySet, SpecPlan, SpecReachabilityRole,
+    TYPE_FN_CALLS, VISIT_HARD_BOUND, WALK_CALLS, WORKLIST_POPS, body_key_for_fn_id, build_any_key_index,
+    fixed_point_spec_key_for_arity, key_precedence_order, spec_key_for_fn_id, spec_key_input_tys,
 };
-use super::reachable::{cont_key_from_slot0, env_at_terminator};
 use super::scc::tarjan_scc;
 use super::type_fn::type_fn;
 use super::walk::{WalkResult, walk_spec_for_discovery};
 use crate::concrete_types::ty_display;
-use crate::fz_ir::{
-    Block, BlockId, CallsiteId, CallsiteIdent, Cont, DeadBranch, EmitSlot, FnId, FnIr, Module, Prim, ReceiveAfter,
-    ReceiveClause, Stmt, Term, Var, receive_outcome_spec_key,
-};
+use crate::fz_ir::{BlockId, CallsiteId, CallsiteIdent, DeadBranch, EmitSlot, FnId, FnIr, Module, Prim, Stmt, Term};
 use crate::ir_callgraph::{build_recursion_graph, entry_seeds};
 use crate::ir_planner::inventory::{body_callsite_inventory, plan_call_edge_inventory};
 use crate::specs::{
@@ -30,8 +25,7 @@ use crate::type_infer::{
     TypeInferReturnState, TypeInferStatus, infer_from_entry,
 };
 use crate::types::{ClosureTarget, ClosureTypes, RenderTypes, Ty, Types, key_slots_observed};
-use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
-use std::mem::replace;
+use std::collections::{HashMap, HashSet, VecDeque};
 
 pub(crate) enum ResultSlot0 {
     Known(Ty),
@@ -80,7 +74,7 @@ struct ActivationReturnTelemetry {
 enum ActivationProjectionKind {
     Exact,
     Union,
-    PlannerLocal,
+    DeclaredCallableEntry,
     UnsettledOverlap,
     Uncovered,
 }
@@ -90,7 +84,7 @@ impl ActivationProjectionKind {
         match self {
             Self::Exact => "exact",
             Self::Union => "union",
-            Self::PlannerLocal => "planner_local",
+            Self::DeclaredCallableEntry => "declared_callable_entry",
             Self::UnsettledOverlap => "unsettled_overlap",
             Self::Uncovered => "uncovered",
         }
@@ -264,11 +258,27 @@ impl ActivationReturnFacts {
     /// Project an activation return state into the planner's return map shape.
     /// `type_infer` keeps unresolved facts as `Pending`/`Unknown`; `any` is only
     /// introduced here at the planner boundary for still-reachable specs.
-    fn projected_return_for_key<T: Types<Ty = Ty> + ClosureTypes>(&self, t: &mut T, key: &SpecKey) -> Option<Ty> {
-        match self.return_state_for_key(t, key)? {
-            TypeInferReturnState::Known(ty) => Some(ty.clone()),
-            TypeInferReturnState::NoReturn => Some(t.none()),
-            TypeInferReturnState::Pending | TypeInferReturnState::Unknown => Some(t.any()),
+    fn projected_return_for_key<T: Types<Ty = Ty> + ClosureTypes>(
+        &self,
+        t: &mut T,
+        module: &Module,
+        recursive_fns: &HashSet<FnId>,
+        callable_entry_specs: &SpecKeySet,
+        key: &SpecKey,
+    ) -> Ty {
+        let state = self
+            .return_state_for_key(t, key)
+            .or_else(|| {
+                callable_entry_specs
+                    .contains(key)
+                    .then(|| self.declared_callable_entry_return_state(t, module, recursive_fns, key))
+                    .flatten()
+            })
+            .unwrap_or(TypeInferReturnState::Unknown);
+        match state {
+            TypeInferReturnState::Known(ty) => ty,
+            TypeInferReturnState::NoReturn => t.none(),
+            TypeInferReturnState::Pending | TypeInferReturnState::Unknown => t.any(),
         }
     }
 
@@ -322,21 +332,14 @@ impl ActivationReturnFacts {
     fn project_effective_returns<T: Types<Ty = Ty> + ClosureTypes>(
         &self,
         t: &mut T,
+        module: &Module,
+        recursive_fns: &HashSet<FnId>,
         reachable: &SpecKeySet,
-        complete_returns: &SpecKeySet,
+        callable_entry_specs: &SpecKeySet,
         effective_returns: &mut HashMap<BodyKey, Ty>,
     ) {
         for key in reachable {
-            let ret = if let Some(ret) = self.projected_return_for_key(t, key) {
-                ret
-            } else if complete_returns.contains(key) {
-                effective_returns
-                    .get(&key.body_key())
-                    .cloned()
-                    .unwrap_or_else(|| t.any())
-            } else {
-                t.any()
-            };
+            let ret = self.projected_return_for_key(t, module, recursive_fns, callable_entry_specs, key);
             effective_returns.insert(key.body_key(), ret);
         }
     }
@@ -344,10 +347,10 @@ impl ActivationReturnFacts {
     fn telemetry<T: Types<Ty = Ty> + ClosureTypes>(
         &self,
         t: &mut T,
+        module: &Module,
+        recursive_fns: &HashSet<FnId>,
         reachable: &SpecKeySet,
         callable_entry_specs: &SpecKeySet,
-        effective_returns: &HashMap<BodyKey, Ty>,
-        complete_returns: &SpecKeySet,
     ) -> ActivationReturnTelemetry {
         let mut stats = ActivationReturnTelemetry {
             fact_count: self.raw_fact_count,
@@ -378,7 +381,7 @@ impl ActivationReturnFacts {
                 continue;
             }
             if self
-                .projection_fact_for_key(t, key.clone(), effective_returns, complete_returns)
+                .projection_fact_for_key(t, module, recursive_fns, callable_entry_specs, key.clone())
                 .projected_state
                 .is_none()
             {
@@ -392,10 +395,9 @@ impl ActivationReturnFacts {
         &self,
         t: &mut T,
         module: &Module,
+        recursive_fns: &HashSet<FnId>,
         reachable: &SpecKeySet,
         callable_entry_specs: &SpecKeySet,
-        effective_returns: &HashMap<BodyKey, Ty>,
-        complete_returns: &SpecKeySet,
     ) -> Vec<String> {
         let mut gaps = Vec::new();
         for key in reachable {
@@ -403,7 +405,7 @@ impl ActivationReturnFacts {
                 continue;
             }
             if self
-                .projection_fact_for_key(t, key.clone(), effective_returns, complete_returns)
+                .projection_fact_for_key(t, module, recursive_fns, callable_entry_specs, key.clone())
                 .projected_state
                 .is_none()
             {
@@ -418,14 +420,15 @@ impl ActivationReturnFacts {
     fn projection_facts<T: Types<Ty = Ty> + ClosureTypes>(
         &self,
         t: &mut T,
+        module: &Module,
+        recursive_fns: &HashSet<FnId>,
         reachable: &SpecKeySet,
-        effective_returns: &HashMap<BodyKey, Ty>,
-        complete_returns: &SpecKeySet,
+        callable_entry_specs: &SpecKeySet,
     ) -> Vec<ActivationProjectionFact> {
         let mut facts: Vec<_> = reachable
             .iter()
             .cloned()
-            .map(|spec_key| self.projection_fact_for_key(t, spec_key, effective_returns, complete_returns))
+            .map(|spec_key| self.projection_fact_for_key(t, module, recursive_fns, callable_entry_specs, spec_key))
             .collect();
         facts.sort_by(|left, right| format!("{:?}", left.spec_key).cmp(&format!("{:?}", right.spec_key)));
         facts
@@ -434,9 +437,10 @@ impl ActivationReturnFacts {
     fn projection_fact_for_key<T: Types<Ty = Ty> + ClosureTypes>(
         &self,
         t: &mut T,
+        module: &Module,
+        recursive_fns: &HashSet<FnId>,
+        callable_entry_specs: &SpecKeySet,
         spec_key: SpecKey,
-        effective_returns: &HashMap<BodyKey, Ty>,
-        complete_returns: &SpecKeySet,
     ) -> ActivationProjectionFact {
         let body_key = spec_key.body_key();
         let (mut kind, covered_activations) = if self.bucket_returns.contains_key(&body_key) {
@@ -483,15 +487,18 @@ impl ActivationReturnFacts {
             .sort_by(|left, right| activation_edge_inventory_entry(left).cmp(&activation_edge_inventory_entry(right)));
         let mut projected_dead_arms: Vec<_> = projected_dead_arms.unwrap_or_default().into_iter().collect();
         projected_dead_arms.sort_by(|left, right| dead_arm_inventory_entry(left).cmp(&dead_arm_inventory_entry(right)));
-        let projected_state = self.return_state_for_key(t, &spec_key).or_else(|| {
-            complete_returns
-                .contains(&spec_key)
-                .then(|| effective_returns.get(&body_key).cloned())
-                .flatten()
-                .map(TypeInferReturnState::Known)
-        });
-        if projected_state.is_some() && covered_activations.is_empty() {
-            kind = ActivationProjectionKind::PlannerLocal;
+        let mut projected_state = self.return_state_for_key(t, &spec_key);
+        if projected_state.is_none()
+            && callable_entry_specs.contains(&spec_key)
+            && let Some(declared) = self.declared_callable_entry_return_state(t, module, recursive_fns, &spec_key)
+        {
+            projected_state = Some(declared);
+            if covered_activations.is_empty() {
+                kind = ActivationProjectionKind::DeclaredCallableEntry;
+            }
+        }
+        if projected_state.is_none() {
+            projected_state = Some(TypeInferReturnState::Unknown);
         }
         ActivationProjectionFact {
             projected_state,
@@ -501,6 +508,20 @@ impl ActivationReturnFacts {
             projected_call_edges,
             projected_dead_arms,
         }
+    }
+
+    fn declared_callable_entry_return_state<T: Types<Ty = Ty> + ClosureTypes>(
+        &self,
+        t: &mut T,
+        module: &Module,
+        recursive_fns: &HashSet<FnId>,
+        key: &SpecKey,
+    ) -> Option<TypeInferReturnState> {
+        let arg_tys = spec_key_input_tys(t, key);
+        let owner = &module.fn_by_id(key.fn_id).owner_module;
+        declared_call_return_fact(t, module, recursive_fns, key.fn_id, key.fn_id, &arg_tys, self, owner)
+            .and_then(|fact| fact.ty)
+            .map(TypeInferReturnState::Known)
     }
 
     fn covered_activation_states_for_request<T: Types<Ty = Ty> + ClosureTypes>(
@@ -929,21 +950,20 @@ fn call_result_slot0<T: Types<Ty = Ty>>(
 }
 
 /// Type a module via one worklist over `SpecKey`s. The worklist drives spec
-/// registration, body typing, executable call-edge discovery, and recursive
-/// key-slot convergence. Continuation slot-0 facts come from activation
-/// witness edges plus semantic activation buckets, not from a second planner
-/// return engine. The committed `ModulePlan::effective_returns` is projected
-/// from activation facts after reachable executable specs settle.
+/// registration, body typing, executable call-edge discovery, and incoming
+/// callable-capability refinement. Continuation slot-0 facts come from
+/// activation witness edges plus semantic activation buckets, not from a
+/// second planner return engine. The committed
+/// `ModulePlan::effective_returns` is projected from activation facts after
+/// reachable executable specs settle.
 ///
 /// Two triggers add a spec back to the worklist:
 ///   1. The spec is freshly discovered (newly-emitted pending key).
-///   2. A recursive slot summary changes.
-///      Activation-projected returns are final return authority; unresolved
-///      activation returns do not keep edges alive by inventing `any`.
+///   2. Incoming callable-capability facts for an existing spec change.
 ///
 /// `type_fn` is pure in `(FnIr, entry_key)`; once a spec's `SpecPlan`
-/// is computed, it's cached and reused across worklist visits — only
-/// the walk + return-recompute re-run when triggered.
+/// is computed, it's cached and reused across worklist visits unless the
+/// spec's incoming callable capabilities change.
 ///
 /// Discovery walks emit direct calls, closure calls, continuations, receive
 /// outcomes, and callable-boundary obligations for known local closures that
@@ -954,33 +974,22 @@ fn call_result_slot0<T: Types<Ty = Ty>>(
 ///
 /// The worklist terminates because:
 ///
-///   (a) fixed-point returns are updated only via `union`,
-///       which is monotone w.r.t. lattice inclusion. So recursive
-///       slot summaries are monotonically non-decreasing in the
-///       product type lattice.
-///       Discovery never turns a pending activation return into an opaque
-///       continuation slot; pending stops that edge until the activation
-///       authority has a fact.
+///   (a) Spec keys are finite for a closed module under recursive key
+///       normalization. Numeric literal chains collapse at recursive
+///       boundaries instead of depending on traversal timing.
 ///
-///   (b) The type lattice has finite height H, bounded by the
-///       count of distinct type-axis values in the program
-///       (atoms, ints, floats, tuple shapes, list shapes, etc —
-///       all finite for a closed program).
+///   (b) Incoming callable-capability facts move monotonically from
+///       unknown to a concrete capability or `OpaqueCallable`, and never
+///       split once merged.
 ///
 ///   (c) A spec is enqueued only on:
 ///         (i)   First emission — happens at most once per spec key.
-///         (ii)  A recursive slot summary changes, each monotonically bounded
-///               by (a) and (b).
-///
-///   (d) SCC-internal recursive direct-call spec keys are normalized
-///       immediately via recursive spec-key widening. Numeric literal
-///       chains therefore collapse at the recursive boundary instead of
-///       depending on traversal timing.
+///         (ii)  A callable-capability merge changes an entry param.
 ///
 /// Therefore total worklist pops is bounded by
-///   O(|specs| · (1 + H · |return-edges per spec|))
-/// which is finite. `VISIT_HARD_BOUND` below is a debug-only
-/// tripwire for invariant violation, NOT a release safety net.
+///   O(|specs| * |entry params|)
+/// up to the finite capability lattice. `VISIT_HARD_BOUND` below is a
+/// debug-only tripwire for invariant violation, NOT a release safety net.
 pub fn plan_module<T: Types<Ty = Ty> + ClosureTypes + RenderTypes>(
     t: &mut T,
     m: &Module,
@@ -999,7 +1008,7 @@ fn plan_module_with_role<T: Types<Ty = Ty> + ClosureTypes + RenderTypes>(
     TYPE_FN_CALLS.with(|c| c.set(0));
     WALK_CALLS.with(|c| c.set(0));
 
-    let out = discover_specs(t, m, PlannerTelemetry { tel, role });
+    let out = discover_specs(t, m, tel);
 
     let any_key_specs = build_any_key_index(t, m, &out.specs);
     let spec_precedence = key_precedence_order(&out.specs, &any_key_specs);
@@ -1201,32 +1210,21 @@ fn plan_module_with_role<T: Types<Ty = Ty> + ClosureTypes + RenderTypes>(
 /// not a codegen plan. It emits no `planner.planned` event, because the one
 /// authoritative plan is derived once, later, by `plan_module`.
 ///
-/// The worklist (including activation projection and recursive slot-summary
-/// convergence) is reused rather than replaced by a one-shot pass: capability
-/// precision is load-bearing. A var's callable capability narrows as its type
-/// narrows under activation-backed return refinement, and the consensus
-/// `KnownFn` that drives a devirtualization can be lost if returns stay coarse
-/// — empirically, dropping that convergence
-/// regresses `apply2`, `enum_sort`, `higher_order`, and
-/// `multi_caller_spec_divergent`. The redundancy removed is run A's
+/// The worklist is reused rather than replaced by a one-shot pass because
+/// capability precision is load-bearing. A var's callable capability can
+/// depend on activation-backed call result facts and on callable capabilities
+/// flowing into discovered specs. The redundancy removed is run A's
 /// authoritative-plan *shape* (the full `ModulePlan` with dead-branch and
-/// precedence finalization, and its `planner.planned` event), not the
-/// worklist compute, which the capabilities genuinely require. The analysis is
-/// interprocedural over the linked working module — the reason the pretyped
-/// frontend's shallow `_pre_types` cannot serve here.
+/// precedence finalization, and its `planner.planned` event), not the graph
+/// discovery compute that the capability slice genuinely requires. The
+/// analysis is interprocedural over the linked working module — the reason the
+/// pretyped frontend's shallow `_pre_types` cannot serve here.
 pub fn plan_callable_capabilities<T: Types<Ty = Ty> + ClosureTypes + RenderTypes>(
     t: &mut T,
     m: &Module,
 ) -> CapabilityPlan {
     let null_tel = NullTelemetry;
-    let out = discover_specs(
-        t,
-        m,
-        PlannerTelemetry {
-            tel: &null_tel,
-            role: "capabilities",
-        },
-    );
+    let out = discover_specs(t, m, &null_tel);
     let spec_capabilities = out
         .specs
         .into_iter()
@@ -1254,19 +1252,13 @@ struct DiscoverOutput {
     activation_projection_facts: Vec<ActivationProjectionFact>,
 }
 
-#[derive(Clone, Copy)]
-struct PlannerTelemetry<'a> {
-    tel: &'a dyn Telemetry,
-    role: &'static str,
-}
-
 /// Drive the worklist to discover every reachable executable spec from the
 /// module's entry seeds, then prune orphans and project activation returns over
 /// the reachable set. Shared by `plan_module` and `plan_callable_capabilities`.
 fn discover_specs<T: Types<Ty = Ty> + ClosureTypes + RenderTypes>(
     t: &mut T,
     m: &Module,
-    tel: PlannerTelemetry<'_>,
+    tel: &dyn Telemetry,
 ) -> DiscoverOutput {
     let call_graph = build_recursion_graph(m);
     let mut sccs = tarjan_scc(&call_graph);
@@ -1283,14 +1275,10 @@ fn discover_specs<T: Types<Ty = Ty> + ClosureTypes + RenderTypes>(
     }
 
     let mut specs: HashMap<SpecKey, SpecPlan> = HashMap::new();
-    let mut effective_returns: HashMap<BodyKey, Ty> = HashMap::new();
-    let mut complete_returns: SpecKeySet = HashSet::new();
     let mut incoming_param_callable_capabilities: IncomingParamCallableCapabilities = HashMap::new();
-    let mut return_readers: ReturnReaders = HashMap::new();
-    let mut return_deps_by_caller: ReturnDepsByCaller = HashMap::new();
     let mut visit_count: HashMap<SpecKey, usize> = HashMap::new();
     let fn_effects = compute_fn_effects(m);
-    let activation_returns = ActivationReturnFacts::from_entry_seeds(t, m, tel.tel);
+    let activation_returns = ActivationReturnFacts::from_entry_seeds(t, m, tel);
 
     let mut work: VecDeque<SpecKey> = entry_seeds(t, m)
         .into_iter()
@@ -1301,18 +1289,13 @@ fn discover_specs<T: Types<Ty = Ty> + ClosureTypes + RenderTypes>(
     process_worklist(
         t,
         m,
-        tel,
         &fn_effects,
         &recursive_fns,
         &mut work,
         &mut in_work,
         &mut specs,
-        &mut effective_returns,
-        &mut complete_returns,
         &activation_returns,
         &mut incoming_param_callable_capabilities,
-        &mut return_readers,
-        &mut return_deps_by_caller,
         &mut visit_count,
     );
 
@@ -1323,26 +1306,22 @@ fn discover_specs<T: Types<Ty = Ty> + ClosureTypes + RenderTypes>(
         .cloned()
         .collect();
     specs.retain(|k, _| reachable.contains(k));
-    complete_returns = finalize_return_completeness(&specs, &return_deps_by_caller, &effective_returns);
-    activation_returns.project_effective_returns(t, &reachable, &complete_returns, &mut effective_returns);
-    let activation_projection_facts =
-        activation_returns.projection_facts(t, &reachable, &effective_returns, &complete_returns);
-    let spec_roles = compute_spec_roles(t, m, &reachable, &callable_entry_specs, &activation_projection_facts);
-    let activation_return_telemetry = activation_returns.telemetry(
-        t,
-        &reachable,
-        &callable_entry_specs,
-        &effective_returns,
-        &complete_returns,
-    );
-    let activation_return_projection_gaps = activation_returns.projection_gap_keys(
+    let mut effective_returns: HashMap<BodyKey, Ty> = HashMap::new();
+    activation_returns.project_effective_returns(
         t,
         m,
+        &recursive_fns,
         &reachable,
         &callable_entry_specs,
-        &effective_returns,
-        &complete_returns,
+        &mut effective_returns,
     );
+    let activation_projection_facts =
+        activation_returns.projection_facts(t, m, &recursive_fns, &reachable, &callable_entry_specs);
+    let spec_roles = compute_spec_roles(t, m, &reachable, &callable_entry_specs, &activation_projection_facts);
+    let activation_return_telemetry =
+        activation_returns.telemetry(t, m, &recursive_fns, &reachable, &callable_entry_specs);
+    let activation_return_projection_gaps =
+        activation_returns.projection_gap_keys(t, m, &recursive_fns, &reachable, &callable_entry_specs);
     verify_closed_expectations(&reachable, &specs, &effective_returns);
 
     DiscoverOutput {
@@ -1355,112 +1334,6 @@ fn discover_specs<T: Types<Ty = Ty> + ClosureTypes + RenderTypes>(
         activation_return_projection_gaps,
         activation_projection_facts,
     }
-}
-
-fn finalize_return_completeness(
-    specs: &HashMap<SpecKey, SpecPlan>,
-    return_deps_by_caller: &ReturnDepsByCaller,
-    effective_returns: &HashMap<BodyKey, Ty>,
-) -> SpecKeySet {
-    let nodes = specs.keys().cloned().collect::<Vec<_>>();
-    let mut index_by_key = HashMap::new();
-    for (idx, key) in nodes.iter().enumerate() {
-        index_by_key.insert(key.clone(), idx);
-    }
-
-    let mut edges = vec![Vec::new(); nodes.len()];
-    for (caller, deps) in return_deps_by_caller {
-        let Some(&caller_idx) = index_by_key.get(caller) else {
-            continue;
-        };
-        for dep in deps {
-            if let Some(&dep_idx) = index_by_key.get(dep) {
-                edges[caller_idx].push(dep_idx);
-            }
-        }
-    }
-
-    let mut order = Vec::with_capacity(nodes.len());
-    let mut visited = vec![false; nodes.len()];
-    fn dfs(idx: usize, edges: &[Vec<usize>], visited: &mut [bool], order: &mut Vec<usize>) {
-        if replace(&mut visited[idx], true) {
-            return;
-        }
-        for &next in &edges[idx] {
-            dfs(next, edges, visited, order);
-        }
-        order.push(idx);
-    }
-    for idx in 0..nodes.len() {
-        dfs(idx, &edges, &mut visited, &mut order);
-    }
-
-    let mut reverse = vec![Vec::new(); nodes.len()];
-    for (src, deps) in edges.iter().enumerate() {
-        for &dst in deps {
-            reverse[dst].push(src);
-        }
-    }
-
-    let mut component = vec![usize::MAX; nodes.len()];
-    let mut component_nodes: Vec<Vec<usize>> = Vec::new();
-    fn dfs_rev(idx: usize, comp_idx: usize, reverse: &[Vec<usize>], component: &mut [usize], members: &mut Vec<usize>) {
-        if component[idx] != usize::MAX {
-            return;
-        }
-        component[idx] = comp_idx;
-        members.push(idx);
-        for &next in &reverse[idx] {
-            dfs_rev(next, comp_idx, reverse, component, members);
-        }
-    }
-    while let Some(idx) = order.pop() {
-        if component[idx] != usize::MAX {
-            continue;
-        }
-        let comp_idx = component_nodes.len();
-        let mut members = Vec::new();
-        dfs_rev(idx, comp_idx, &reverse, &mut component, &mut members);
-        component_nodes.push(members);
-    }
-
-    let mut component_deps = vec![BTreeSet::new(); component_nodes.len()];
-    for (src, deps) in edges.iter().enumerate() {
-        let src_comp = component[src];
-        for &dst in deps {
-            let dst_comp = component[dst];
-            if src_comp != dst_comp {
-                component_deps[src_comp].insert(dst_comp);
-            }
-        }
-    }
-
-    let mut complete_components = vec![false; component_nodes.len()];
-    let mut changed = true;
-    while changed {
-        changed = false;
-        for comp_idx in 0..component_nodes.len() {
-            if complete_components[comp_idx] {
-                continue;
-            }
-            let has_returns = component_nodes[comp_idx]
-                .iter()
-                .all(|&idx| effective_returns.contains_key(&nodes[idx].body_key()));
-            let deps_complete = component_deps[comp_idx].iter().all(|dep| complete_components[*dep]);
-            if has_returns && deps_complete {
-                complete_components[comp_idx] = true;
-                changed = true;
-            }
-        }
-    }
-
-    component_nodes
-        .into_iter()
-        .enumerate()
-        .filter(|(comp_idx, _)| complete_components[*comp_idx])
-        .flat_map(|(_, members)| members.into_iter())
-        .map(|idx| nodes[idx].clone())
-        .collect()
 }
 
 fn reachable_specs_from_call_edges<T: Types<Ty = Ty> + ClosureTypes>(
@@ -1621,25 +1494,17 @@ fn compute_fn_effects(m: &Module) -> FnEffects {
 ///   1. type_fn the spec if new (cached by spec_key).
 ///   2. Walk for discovery → fills `WalkResult`.
 ///   3. Install call-edge plans and enqueue newly discovered local targets.
-///   4. Recompute this spec's fixed-point return. If changed, enqueue
-///      every spec in `return_readers[spec]`. Final return authority is the
-///      activation projection after pruning.
 #[allow(clippy::too_many_arguments)]
 fn process_worklist<T: Types<Ty = Ty> + ClosureTypes>(
     t: &mut T,
     m: &Module,
-    tel: PlannerTelemetry<'_>,
     fn_effects: &FnEffects,
     recursive_fns: &HashSet<FnId>,
     work: &mut VecDeque<SpecKey>,
     in_work: &mut SpecKeySet,
     specs: &mut HashMap<SpecKey, SpecPlan>,
-    effective_returns: &mut HashMap<BodyKey, Ty>,
-    complete_returns: &mut SpecKeySet,
     activation_returns: &ActivationReturnFacts,
     incoming_param_callable_capabilities: &mut IncomingParamCallableCapabilities,
-    return_readers: &mut ReturnReaders,
-    return_deps_by_caller: &mut ReturnDepsByCaller,
     visit_count: &mut HashMap<SpecKey, usize>,
 ) {
     while let Some(spec_key) = work.pop_front() {
@@ -1664,29 +1529,12 @@ fn process_worklist<T: Types<Ty = Ty> + ClosureTypes>(
         );
         let WalkResult {
             call_edges,
-            return_reads,
             capability_updates,
             callable_entry_targets,
         } = result;
         install_walk_result(specs, &spec_key, call_edges, callable_entry_targets);
         enqueue_capability_updates(&capability_updates, work, in_work);
         enqueue_discovered_local_targets(&spec_key, specs, work, in_work);
-        update_effective_return_and_enqueue_readers(
-            t,
-            m,
-            tel,
-            &spec_key,
-            recursive_fns,
-            specs,
-            effective_returns,
-            complete_returns,
-            activation_returns,
-            return_readers,
-            return_deps_by_caller,
-            work,
-            in_work,
-            return_reads,
-        );
     }
 }
 
@@ -1852,582 +1700,6 @@ fn enqueue_discovered_local_targets(
             work.push_back(target);
         }
     }
-}
-
-#[allow(clippy::too_many_arguments)]
-fn update_effective_return_and_enqueue_readers<T: Types<Ty = Ty> + ClosureTypes>(
-    t: &mut T,
-    m: &Module,
-    tel: PlannerTelemetry<'_>,
-    spec_key: &SpecKey,
-    recursive_fns: &HashSet<FnId>,
-    specs: &HashMap<SpecKey, SpecPlan>,
-    effective_returns: &mut HashMap<BodyKey, Ty>,
-    complete_returns: &mut SpecKeySet,
-    activation_returns: &ActivationReturnFacts,
-    return_readers: &mut ReturnReaders,
-    return_deps_by_caller: &mut ReturnDepsByCaller,
-    work: &mut VecDeque<SpecKey>,
-    in_work: &mut SpecKeySet,
-    walk_return_reads: Vec<SpecKey>,
-) {
-    let prev_ret = effective_returns.get(&spec_key.body_key()).cloned();
-    let prev_complete = complete_returns.contains(spec_key);
-    let walk_read_count = walk_return_reads.len();
-    let mut compute_reads = Vec::new();
-    let (computed_ret, complete) = compute_return_for_spec(
-        t,
-        m,
-        spec_key,
-        recursive_fns,
-        specs,
-        effective_returns,
-        complete_returns,
-        activation_returns,
-        &mut compute_reads,
-    );
-    let new_ret = match prev_ret.clone() {
-        Some(prev) => t.union(prev, computed_ret),
-        None => computed_ret,
-    };
-    let compute_read_count = compute_reads.len();
-    sync_return_dependencies(
-        spec_key,
-        walk_return_reads,
-        compute_reads,
-        specs,
-        return_readers,
-        return_deps_by_caller,
-        work,
-        in_work,
-    );
-    let ret_changed = effective_returns
-        .get(&spec_key.body_key())
-        .is_none_or(|prev| !t.is_equivalent(&new_ret, prev));
-    let complete_changed = complete_returns.contains(spec_key) != complete;
-    if ret_changed {
-        effective_returns.insert(spec_key.body_key(), new_ret.clone());
-    }
-    if complete {
-        complete_returns.insert(spec_key.clone());
-    } else {
-        complete_returns.remove(spec_key);
-    }
-    if ret_changed || complete_changed {
-        enqueue_return_readers(spec_key, specs, return_readers, work, in_work);
-    }
-    emit_return_fixpoint_step(
-        m,
-        tel,
-        spec_key,
-        specs,
-        effective_returns,
-        complete_returns,
-        return_deps_by_caller,
-        work,
-        prev_ret.as_ref(),
-        &new_ret,
-        prev_complete,
-        complete,
-        ret_changed,
-        complete_changed,
-        walk_read_count,
-        compute_read_count,
-    );
-}
-
-fn sync_return_dependencies(
-    spec_key: &SpecKey,
-    walk_return_reads: Vec<SpecKey>,
-    compute_reads: Vec<SpecKey>,
-    specs: &HashMap<SpecKey, SpecPlan>,
-    return_readers: &mut ReturnReaders,
-    return_deps_by_caller: &mut ReturnDepsByCaller,
-    work: &mut VecDeque<SpecKey>,
-    in_work: &mut SpecKeySet,
-) {
-    let new_reads: SpecKeySet = walk_return_reads.into_iter().chain(compute_reads).collect();
-    let prev_reads = return_deps_by_caller.remove(spec_key).unwrap_or_default();
-
-    for stale in prev_reads.difference(&new_reads) {
-        if let Some(readers) = return_readers.get_mut(stale) {
-            readers.remove(spec_key);
-            if readers.is_empty() {
-                return_readers.remove(stale);
-            }
-        }
-    }
-
-    for callee_key in &new_reads {
-        return_readers
-            .entry(callee_key.clone())
-            .or_default()
-            .insert(spec_key.clone());
-        if !specs.contains_key(callee_key) && in_work.insert(callee_key.clone()) {
-            work.push_back(callee_key.clone());
-        }
-    }
-
-    return_deps_by_caller.insert(spec_key.clone(), new_reads);
-}
-
-fn enqueue_return_readers(
-    spec_key: &SpecKey,
-    specs: &HashMap<SpecKey, SpecPlan>,
-    return_readers: &ReturnReaders,
-    work: &mut VecDeque<SpecKey>,
-    in_work: &mut SpecKeySet,
-) {
-    let Some(readers) = return_readers.get(spec_key).cloned() else {
-        return;
-    };
-    for reader in readers {
-        if specs.contains_key(&reader) && in_work.insert(reader.clone()) {
-            work.push_back(reader);
-        }
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-fn emit_return_fixpoint_step(
-    m: &Module,
-    tel: PlannerTelemetry<'_>,
-    spec_key: &SpecKey,
-    specs: &HashMap<SpecKey, SpecPlan>,
-    effective_returns: &HashMap<BodyKey, Ty>,
-    complete_returns: &SpecKeySet,
-    return_deps_by_caller: &ReturnDepsByCaller,
-    work: &VecDeque<SpecKey>,
-    prev_ret: Option<&Ty>,
-    new_ret: &Ty,
-    prev_complete: bool,
-    complete: bool,
-    ret_changed: bool,
-    complete_changed: bool,
-    walk_read_count: usize,
-    compute_read_count: usize,
-) {
-    let PlannerTelemetry { tel, role } = tel;
-    let visit = WORKLIST_POPS.with(|c| c.get()) as u64;
-    let deps = return_deps_by_caller.get(spec_key).cloned().unwrap_or_default();
-    let dep_keys: Vec<String> = deps.iter().map(|key| format!("{:?}", key)).collect();
-    let missing_specs = deps.iter().filter(|key| !specs.contains_key(*key)).count() as u64;
-    let missing_returns = deps
-        .iter()
-        .filter(|key| !effective_returns.contains_key(&key.body_key()))
-        .count() as u64;
-    let incomplete_deps = deps.iter().filter(|key| !complete_returns.contains(*key)).count() as u64;
-    let body_name = m.fn_by_id(spec_key.fn_id).name.clone();
-    tel.execute(
-        &["fz", "planner", "return_fixpoint_step"],
-        &crate::measurements! {
-            visit: visit,
-            queue_len: work.len() as u64,
-            spec_count: specs.len() as u64,
-            walk_read_count: walk_read_count as u64,
-            compute_read_count: compute_read_count as u64,
-            dep_count: deps.len() as u64,
-            missing_specs: missing_specs,
-            missing_returns: missing_returns,
-            incomplete_deps: incomplete_deps,
-        },
-        &crate::metadata! {
-            role: role,
-            spec_key: format!("{:?}", spec_key),
-            fn_id: spec_key.fn_id.0 as u64,
-            fn_name: body_name,
-            ret_changed: ret_changed,
-            complete_changed: complete_changed,
-            prev_complete: prev_complete,
-            complete: complete,
-            prev_ret: prev_ret.map(ty_display).unwrap_or_else(|| "<none>".to_string()),
-            new_ret: ty_display(new_ret),
-            deps: dep_keys,
-        },
-    );
-}
-
-/// Compute one spec's fixed-point return by joining every reachable
-/// return-producing terminator. A missing downstream return contributes
-/// `none()` as a provisional value and marks the contribution incomplete;
-/// an existing downstream return can still participate before it is complete,
-/// so recursive SCCs can widen to their fixed point.
-///
-/// Every callee key whose return is consulted is pushed into `reads`; the
-/// worklist folds those into `return_readers` so callee-return changes
-/// re-enqueue this spec. The committed `ModulePlan` does not publish this as
-/// return authority; it publishes activation-projected returns.
-#[derive(Clone)]
-struct ReturnContribution {
-    ty: Ty,
-    complete: bool,
-}
-
-fn compute_return_for_spec<T: Types<Ty = Ty> + ClosureTypes>(
-    t: &mut T,
-    module: &Module,
-    spec_key: &SpecKey,
-    recursive_fns: &HashSet<FnId>,
-    specs: &HashMap<SpecKey, SpecPlan>,
-    effective_returns: &HashMap<BodyKey, Ty>,
-    complete_returns: &SpecKeySet,
-    activation_returns: &ActivationReturnFacts,
-    reads: &mut Vec<SpecKey>,
-) -> (T::Ty, bool) {
-    let Some(&j) = module.fn_idx.get(&spec_key.fn_id) else {
-        return (t.none(), true);
-    };
-    let Some(ft) = specs.get(spec_key) else {
-        return (t.none(), false);
-    };
-    let f = &module.fns[j];
-
-    let mut joined = t.none();
-    let mut complete = true;
-    for b in &f.blocks {
-        if !ft.reachable_blocks.contains(&b.id) {
-            continue;
-        }
-        let term_env = env_at_terminator(t, ft, b, module);
-        let contribution = match &b.terminator {
-            Term::Return(rv) => Some(ReturnContribution {
-                ty: term_env.get(rv).cloned().unwrap_or_else(|| t.any()),
-                complete: true,
-            }),
-            Term::TailCall {
-                callee, args, ident, ..
-            } => Some(direct_tail_return_contribution(
-                t,
-                module,
-                spec_key,
-                ft,
-                effective_returns,
-                complete_returns,
-                activation_returns,
-                reads,
-                &term_env,
-                ident,
-                *callee,
-                args,
-            )),
-            Term::TailCallClosure { ident, closure, args } => Some(tail_closure_return_contribution(
-                t,
-                module,
-                spec_key,
-                ft,
-                effective_returns,
-                complete_returns,
-                activation_returns,
-                reads,
-                &term_env,
-                recursive_fns,
-                ident,
-                *closure,
-                args,
-            )),
-            Term::Call { continuation, .. }
-            | Term::CallClosure { continuation, .. }
-            | Term::Receive { continuation, ident: _ } => Some(continuation_return_contribution(
-                t,
-                module,
-                recursive_fns,
-                spec_key,
-                ft,
-                effective_returns,
-                complete_returns,
-                activation_returns,
-                reads,
-                b,
-                continuation,
-            )),
-            Term::ReceiveMatched { clauses, after, .. } => Some(receive_matched_return_contribution(
-                t,
-                module,
-                effective_returns,
-                complete_returns,
-                reads,
-                clauses,
-                after,
-            )),
-            Term::Halt(_) | Term::Goto(_, _) | Term::If { .. } => None,
-        };
-        if let Some(contribution) = contribution {
-            complete &= contribution.complete;
-            joined = t.union(joined, contribution.ty);
-        }
-    }
-    (joined, complete)
-}
-
-#[allow(clippy::too_many_arguments)]
-fn direct_tail_return_contribution<T: Types<Ty = Ty> + ClosureTypes>(
-    t: &mut T,
-    module: &Module,
-    spec_key: &SpecKey,
-    ft: &SpecPlan,
-    effective_returns: &HashMap<BodyKey, Ty>,
-    complete_returns: &SpecKeySet,
-    activation_returns: &ActivationReturnFacts,
-    reads: &mut Vec<SpecKey>,
-    term_env: &HashMap<Var, Ty>,
-    ident: &CallsiteIdent,
-    callee: FnId,
-    args: &[Var],
-) -> ReturnContribution {
-    let callsite = CallsiteId::new(spec_key.fn_id, ident, EmitSlot::Direct);
-    if let Some(edge) = ft.call_edges.get(&callsite) {
-        match &edge.target {
-            CallEdgeTarget::Local(target) => {
-                return lookup_return_read(t, effective_returns, complete_returns, reads, target.clone());
-            }
-            CallEdgeTarget::External { .. } => {
-                let arg_tys = arg_tys(t, term_env, args);
-                let ty = selected_external_call_return_slot0(
-                    t,
-                    module,
-                    callee,
-                    &arg_tys,
-                    activation_returns,
-                    &module.fn_by_id(spec_key.fn_id).owner_module,
-                    Some(edge),
-                )
-                .expect("selected external call edge must yield a declared return fact");
-                return ReturnContribution { ty, complete: true };
-            }
-        }
-    }
-    panic!(
-        "reachable tail call must have a selected direct target or external return contract: caller={spec_key:?} callee={} ident={ident:?}",
-        module.fn_by_id(callee).name
-    )
-}
-
-fn tail_closure_return_contribution<T: Types<Ty = Ty> + ClosureTypes>(
-    t: &mut T,
-    module: &Module,
-    spec_key: &SpecKey,
-    ft: &SpecPlan,
-    effective_returns: &HashMap<BodyKey, Ty>,
-    complete_returns: &SpecKeySet,
-    activation_returns: &ActivationReturnFacts,
-    reads: &mut Vec<SpecKey>,
-    term_env: &HashMap<Var, Ty>,
-    recursive_fns: &HashSet<FnId>,
-    ident: &CallsiteIdent,
-    closure: Var,
-    args: &[Var],
-) -> ReturnContribution {
-    let target = ft
-        .local_call_target(&CallsiteId::new(spec_key.fn_id, ident, EmitSlot::ClosureCall))
-        .cloned();
-    if let Some(target) = target.clone() {
-        return lookup_return_read(t, effective_returns, complete_returns, reads, target);
-    }
-    let arg_tys = arg_tys(t, term_env, args);
-    match closure_call_result_knowledge(
-        t,
-        module,
-        recursive_fns,
-        spec_key,
-        ident,
-        &arg_tys,
-        activation_returns,
-        target.as_ref(),
-        term_env.get(&closure),
-    )
-    .slot0
-    {
-        ResultSlot0::Known(ty) => ReturnContribution { ty, complete: true },
-        ResultSlot0::Pending => ReturnContribution {
-            ty: t.none(),
-            complete: false,
-        },
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-fn continuation_return_contribution<T: Types<Ty = Ty> + ClosureTypes>(
-    t: &mut T,
-    module: &Module,
-    recursive_fns: &HashSet<FnId>,
-    spec_key: &SpecKey,
-    ft: &SpecPlan,
-    effective_returns: &HashMap<BodyKey, Ty>,
-    complete_returns: &SpecKeySet,
-    activation_returns: &ActivationReturnFacts,
-    reads: &mut Vec<SpecKey>,
-    block: &Block,
-    continuation: &Cont,
-) -> ReturnContribution {
-    let key = if let Some(key) = block.terminator.ident().and_then(|ident| {
-        ft.local_call_target(&CallsiteId::new(spec_key.fn_id, ident, EmitSlot::Cont))
-            .cloned()
-    }) {
-        key
-    } else {
-        let Some(cont_k) = cont_key_for_spec(
-            t,
-            block,
-            continuation,
-            ft,
-            module,
-            recursive_fns,
-            spec_key,
-            activation_returns,
-        ) else {
-            return ReturnContribution {
-                ty: t.none(),
-                complete: false,
-            };
-        };
-        activation_returns.canonical_public_key(t, spec_key_for_fn_id(module, continuation.fn_id, cont_k))
-    };
-    lookup_return_read(t, effective_returns, complete_returns, reads, key)
-}
-
-fn receive_matched_return_contribution<T: Types<Ty = Ty> + ClosureTypes>(
-    t: &mut T,
-    module: &Module,
-    effective_returns: &HashMap<BodyKey, Ty>,
-    complete_returns: &SpecKeySet,
-    reads: &mut Vec<SpecKey>,
-    clauses: &[ReceiveClause],
-    after: &Option<ReceiveAfter>,
-) -> ReturnContribution {
-    let any = t.any();
-    let mut joined = t.none();
-    let mut complete = true;
-    for fid in clauses.iter().map(|c| c.body).chain(after.iter().map(|a| a.body)) {
-        let dy = receive_outcome_return_contribution(t, module, effective_returns, complete_returns, reads, fid, &any);
-        complete &= dy.complete;
-        joined = t.union(joined, dy.ty);
-    }
-    ReturnContribution { ty: joined, complete }
-}
-
-fn receive_outcome_return_contribution<T: Types<Ty = Ty> + ClosureTypes>(
-    t: &mut T,
-    module: &Module,
-    effective_returns: &HashMap<BodyKey, Ty>,
-    complete_returns: &SpecKeySet,
-    reads: &mut Vec<SpecKey>,
-    fid: FnId,
-    any: &Ty,
-) -> ReturnContribution {
-    let body_fn = module.fn_by_id(fid);
-    let np = body_fn.block(body_fn.entry).params.len();
-    let key = receive_outcome_spec_key(any, np);
-    let lookup_key = spec_key_for_fn_id(module, fid, key);
-    lookup_return_read(t, effective_returns, complete_returns, reads, lookup_key)
-}
-
-fn lookup_return_read<T: Types<Ty = Ty>>(
-    t: &mut T,
-    effective_returns: &HashMap<BodyKey, Ty>,
-    complete_returns: &SpecKeySet,
-    reads: &mut Vec<SpecKey>,
-    key: SpecKey,
-) -> ReturnContribution {
-    let dy = effective_returns
-        .get(&key.body_key())
-        .cloned()
-        .unwrap_or_else(|| t.none());
-    let complete = complete_returns.contains(&key);
-    reads.push(key);
-    ReturnContribution { ty: dy, complete }
-}
-
-fn arg_tys<T: Types<Ty = Ty>>(t: &mut T, term_env: &HashMap<Var, Ty>, args: &[Var]) -> Vec<Ty> {
-    args.iter()
-        .map(|av| term_env.get(av).cloned().unwrap_or_else(|| t.any()))
-        .collect()
-}
-
-/// Reconstruct the cont's input-type key at this block's terminator using
-/// activation-projected return facts for slot 0.
-fn cont_key_for_spec<T: Types<Ty = Ty> + ClosureTypes>(
-    t: &mut T,
-    block: &Block,
-    cont: &Cont,
-    ft: &SpecPlan,
-    module: &Module,
-    recursive_fns: &HashSet<FnId>,
-    caller_spec_key: &SpecKey,
-    activation_returns: &ActivationReturnFacts,
-) -> Option<Vec<Ty>> {
-    let Some(_) = module.fn_idx.get(&cont.fn_id) else {
-        return Some(vec![]);
-    };
-    let any_t = t.any();
-    let cont_fn = module.fn_by_id(cont.fn_id);
-    let n_params = cont_fn.block(cont_fn.entry).params.len();
-
-    let env = env_at_terminator(t, ft, block, module);
-    let slot0: Ty = match &block.terminator {
-        Term::Call { callee, args, .. } => {
-            let direct_cid = block
-                .terminator
-                .ident()
-                .map(|ident| CallsiteId::new(caller_spec_key.fn_id, ident, EmitSlot::Direct));
-            let arg_tys: Vec<Ty> = args
-                .iter()
-                .map(|av| env.get(av).cloned().unwrap_or_else(|| any_t.clone()))
-                .collect();
-            let selected_edge = direct_cid.as_ref().and_then(|cid| ft.call_edges.get(cid));
-            let ident = block.terminator.ident().expect("call terminator should carry ident");
-            match direct_call_result_knowledge(
-                t,
-                module,
-                recursive_fns,
-                caller_spec_key,
-                ident,
-                *callee,
-                &arg_tys,
-                activation_returns,
-                selected_edge,
-            )
-            .slot0
-            {
-                ResultSlot0::Known(ty) => ty,
-                ResultSlot0::Pending => return None,
-            }
-        }
-        Term::CallClosure { closure, args, .. } => {
-            let ident = block
-                .terminator
-                .ident()
-                .expect("closure call terminator should carry ident");
-            let arg_tys: Vec<Ty> = args
-                .iter()
-                .map(|av| env.get(av).cloned().unwrap_or_else(|| any_t.clone()))
-                .collect();
-            let selected_target =
-                ft.local_call_target(&CallsiteId::new(caller_spec_key.fn_id, &ident, EmitSlot::ClosureCall));
-            match closure_call_result_knowledge(
-                t,
-                module,
-                recursive_fns,
-                caller_spec_key,
-                &ident,
-                &arg_tys,
-                activation_returns,
-                selected_target,
-                env.get(closure),
-            )
-            .slot0
-            {
-                ResultSlot0::Known(ty) => ty,
-                ResultSlot0::Pending => return None,
-            }
-        }
-        _ => any_t.clone(),
-    };
-    Some(normalize_result_correspondence_key(
-        t,
-        module,
-        cont.fn_id,
-        cont_key_from_slot0(&any_t, n_params, slot0, &cont.captured, &env),
-    ))
 }
 
 fn selected_external_call_return_slot0<T: Types<Ty = Ty> + ClosureTypes>(

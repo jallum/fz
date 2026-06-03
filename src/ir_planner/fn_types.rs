@@ -21,8 +21,7 @@ pub struct SpecPlan {
     pub callable_capabilities: HashMap<Var, CallableCapability>,
     /// Blocks provably reachable from the entry under the inferred types.
     /// If terminators whose condition is a singleton bool prune the dead
-    /// branch. Used by `compute_return_for_spec` to ignore returns that
-    /// can never execute.
+    /// branch and materialization to remove unreachable arms.
     pub reachable_blocks: HashSet<BlockId>,
     /// Per-spec branch facts used by per-spec codegen folding. These are
     /// stricter than `ModulePlan::dead_branches`: a branch can be dead for
@@ -456,7 +455,7 @@ pub(crate) fn build_any_key_index<T: Types<Ty = Ty>>(
 
 thread_local! {
     /// Worklist pops in `process_worklist`. Each pop performs one discovery
-    /// walk and one return recompute.
+    /// walk after ensuring the spec has a typed body.
     pub static WORKLIST_POPS: Cell<usize> = const { Cell::new(0) };
     /// Calls to `type_fn` from the worklist. Since type_fn results are cached
     /// one-per-spec, this equals the number of unique typed specs.
@@ -588,8 +587,6 @@ pub type FnEffects = HashMap<FnId, EffectSummary>;
 
 /// Worklist-internal aliases for repeated index shapes.
 pub(crate) type SpecKeySet = HashSet<SpecKey>;
-pub(crate) type ReturnReaders = HashMap<SpecKey, SpecKeySet>;
-pub(crate) type ReturnDepsByCaller = HashMap<SpecKey, SpecKeySet>;
 /// Per-target entry-param callable capability facts.
 ///
 /// This is keyed by the selected target `SpecKey`, not by the syntactic

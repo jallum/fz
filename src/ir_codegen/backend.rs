@@ -653,8 +653,8 @@ pub struct AotArtifact {
 /// Resolve a TailCallClosure edge to its body's (FnId, SpecId raw u32).
 /// Returns None when the closure var isn't typed as a singleton closure_lit
 /// or when no covering spec is registered for the resolved key.
-/// Shared by the return-type fixpoint, tagged-return seeding, halt_kind
-/// analysis, and TailCallClosure codegen — all four had identical inline copies.
+/// Shared by tagged-return seeding, halt_kind analysis, and TailCallClosure
+/// codegen.
 pub(crate) fn resolve_tcc_body<T: Types<Ty = Ty> + ClosureTypes>(
     t: &mut T,
     closure: &Var,

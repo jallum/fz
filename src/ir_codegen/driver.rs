@@ -13,16 +13,13 @@ use crate::ir_diverge::truncate_diverging_blocks;
 use crate::ir_extern_marshal::resolve_module_types;
 use crate::ir_fuse::fuse_blocks_with_telemetry;
 use crate::ir_inline::{inline_module_with_plan, inline_single_use_conts};
-use crate::ir_planner::fn_types::{BodyKey, ReturnDemand, SpecKey, fixed_point_spec_key_for_arity};
+use crate::ir_planner::fn_types::SpecKey;
 use crate::ir_planner::planned::CallableEntryPlan;
 use crate::ir_planner::{
     ModulePlan, SpecPlan, collect_diagnostics, materialize_program, plan_callable_capabilities, plan_module,
     rewrite_known_target_closures,
 };
 use crate::ir_reducer::reduce_module_with_telemetry;
-use crate::specs::{
-    CallbackReturnDemand, CallbackReturnFact, CallbackReturnQuery, SpecApplicationOutcome, apply_spec_set,
-};
 use crate::telemetry::value::opaque;
 use crate::telemetry::{Telemetry, TelemetryExt as _, next_compile_nonce};
 #[cfg(test)]
@@ -154,24 +151,17 @@ fn build_per_spec_schemas<T: Types<Ty = Ty>>(
     schemas
 }
 
-/// Per-spec return ABI type comes first from the typer's LFP
-/// (`module_plan.effective_returns`) when the concrete body was solved, then
-/// from an instantiated declared spec as a conservative fallback. The LFP
-/// walk filters by
-/// `reachable_blocks` AND propagates through every exit terminator
-/// including `Term::Call` / `Term::CallClosure` / `Term::Receive`
-/// with a continuation; the cont side (`cont_slot0_descr`) already
-/// consumes these solved returns. Using the solved body first keeps
-/// monomorphic protocol implementations from inheriting broad callback
-/// contracts at the native ABI seam.
+/// Per-spec return ABI type comes from the planner's finished
+/// `module_plan.effective_returns`. Planner projection is total for
+/// executable specs, including callable-entry declared contracts. Codegen does
+/// not instantiate declared specs as a fallback.
 ///
-/// Halt-only specs converge to `none()` in the LFP; substitute
-/// `any` so `ArgRepr::from_descr` doesn't pick RawF64 (none is a
-/// subtype of every set, including float). The value never reaches
-/// anyone for a halt-only spec, but the ABI must still be valid.
+/// Halt-only specs project to `none()`; substitute `any` so
+/// `ArgRepr::from_descr` doesn't pick RawF64 (none is a subtype of every set,
+/// including float). The value never reaches anyone for a halt-only spec, but
+/// the ABI must still be valid.
 fn derive_return_tys<T: Types<Ty = Ty> + ClosureTypes>(
     t: &mut T,
-    module: &Module,
     spec_keys: &[SpecKey],
     spec_fnidx: &[Option<usize>],
     module_plan: &ModulePlan,
@@ -189,81 +179,10 @@ fn derive_return_tys<T: Types<Ty = Ty> + ClosureTypes>(
                 .effective_returns
                 .get(&key.body_key())
                 .cloned()
-                .or_else(|| declared_return_for_spec_key(t, module, key, module_plan))
-                .unwrap_or_else(|| any.clone());
+                .unwrap_or_else(|| panic!("planned spec {:?} missing effective return", key));
             if t.is_subtype(&ret, &none) { any.clone() } else { ret }
         })
         .collect()
-}
-
-fn declared_return_for_spec_key<T: Types<Ty = Ty> + ClosureTypes>(
-    t: &mut T,
-    module: &Module,
-    key: &SpecKey,
-    module_plan: &ModulePlan,
-) -> Option<Ty> {
-    let arg_tys = key_slots_to_tys(t, &key.input);
-    let spec_set = module.declared_specs.get(&key.fn_id)?;
-    let owner = &module.fn_by_id(key.fn_id).owner_module;
-    let recursive_fns = HashSet::new();
-    let application = apply_spec_set(t, spec_set, &arg_tys, |t, query: CallbackReturnQuery<'_>| {
-        codegen_callback_return_fact(
-            t,
-            module,
-            &recursive_fns,
-            key.fn_id,
-            &module_plan.effective_returns,
-            query,
-        )
-    });
-    match application {
-        SpecApplicationOutcome::Known(application) if application.complete => {
-            Some(t.mint_owned_resource_aliases(application.result, owner, &module.opaque_inners))
-        }
-        SpecApplicationOutcome::Known(_)
-        | SpecApplicationOutcome::Underconstrained(_)
-        | SpecApplicationOutcome::NoMatch => None,
-    }
-}
-
-fn codegen_callback_return_fact<T: Types<Ty = Ty> + ClosureTypes>(
-    t: &mut T,
-    module: &Module,
-    recursive_fns: &HashSet<FnId>,
-    caller: FnId,
-    effective_returns: &HashMap<BodyKey, Ty>,
-    query: CallbackReturnQuery<'_>,
-) -> Option<CallbackReturnFact<SpecKey>> {
-    let fn_id: FnId = query.target.into();
-    let target_fn = module.fn_by_id(fn_id);
-    let n_params = target_fn.block(target_fn.entry).params.len();
-    let mut full_key = query.captures.to_vec();
-    full_key.extend_from_slice(query.args);
-    let key = fixed_point_spec_key_for_arity(
-        t,
-        module,
-        recursive_fns,
-        caller,
-        fn_id,
-        full_key,
-        n_params,
-        Some(codegen_callback_return_demand(query.demand)),
-    );
-    let Some(ret) = effective_returns.get(&key.body_key()).cloned() else {
-        return Some(CallbackReturnFact::Pending { read: key });
-    };
-    Some(CallbackReturnFact::Known {
-        result: ret,
-        read: key,
-        complete: true,
-    })
-}
-
-fn codegen_callback_return_demand(demand: CallbackReturnDemand) -> ReturnDemand {
-    match demand {
-        CallbackReturnDemand::Value => ReturnDemand::value(),
-        CallbackReturnDemand::TupleFields(arity) => ReturnDemand::tuple_fields(arity),
-    }
 }
 
 /// Per-spec entry-param ArgReprs. Drives `build_fn_signature`
@@ -1568,7 +1487,7 @@ fn compile_with_backend_preplanned_impl<
 
     let schemas = build_per_spec_schemas(t, module, spec_count, &spec_fnidx, &spec_fn_types);
     let frame_sizes: Vec<u32> = schemas.iter().map(|s| s.allocation_payload_size() as u32).collect();
-    let return_tys = derive_return_tys(t, module, &spec_keys, &spec_fnidx, &module_plan);
+    let return_tys = derive_return_tys(t, &spec_keys, &spec_fnidx, &module_plan);
 
     let param_reprs = derive_param_reprs(
         t,

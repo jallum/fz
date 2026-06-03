@@ -1,8 +1,8 @@
 use super::closures::resolve_closure_return;
 use super::diagnostics::env_after_block_stmts;
 use super::fn_types::{
-    BodyKey, CallEdgeTarget, CallableCapability, EffectSummary, ReturnDemand, SpecKey, SpecKeySet,
-    SpecReachabilityRole, fixed_point_spec_key_for_arity, normalize_result_correspondence_key,
+    BodyKey, CallEdgeTarget, CallableCapability, EffectSummary, ReturnDemand, SpecKey, SpecReachabilityRole,
+    fixed_point_spec_key_for_arity, normalize_result_correspondence_key,
 };
 use super::narrow::narrow_for_cond;
 use super::reachable::{cont_key_from_slot0, cont_slot0_descr, reachable_spec_ids};
@@ -140,7 +140,6 @@ fn declared_return_fact_for_test<T>(
     callee: FnId,
     arg_tys: &[Ty],
     effective_returns: &HashMap<BodyKey, Ty>,
-    complete_returns: Option<&SpecKeySet>,
 ) -> Option<TestDeclaredReturnFact>
 where
     T: Types<Ty = Ty> + ClosureTypes,
@@ -148,15 +147,7 @@ where
     let spec_set = module.declared_specs.get(&callee)?;
     let recursive_fns = HashSet::new();
     let application = apply_spec_set(t, spec_set, arg_tys, |t, query: CallbackReturnQuery<'_>| {
-        test_callback_return_fact(
-            t,
-            module,
-            &recursive_fns,
-            caller,
-            effective_returns,
-            complete_returns,
-            query,
-        )
+        test_callback_return_fact(t, module, &recursive_fns, caller, effective_returns, query)
     });
     match application {
         SpecApplicationOutcome::Known(application) => Some(TestDeclaredReturnFact {
@@ -182,7 +173,6 @@ fn test_callback_return_fact<T>(
     recursive_fns: &HashSet<FnId>,
     caller: FnId,
     effective_returns: &HashMap<BodyKey, Ty>,
-    complete_returns: Option<&SpecKeySet>,
     query: CallbackReturnQuery<'_>,
 ) -> Option<CallbackReturnFact<SpecKey>>
 where
@@ -206,9 +196,6 @@ where
     let Some(ret) = effective_returns.get(&key.body_key()).cloned() else {
         return Some(CallbackReturnFact::Pending { read: key });
     };
-    if complete_returns.is_some_and(|done| !done.contains(&key)) {
-        return Some(CallbackReturnFact::Pending { read: key });
-    }
     Some(CallbackReturnFact::Known {
         result: ret,
         read: key,
@@ -1566,7 +1553,7 @@ fn declared_reduce_while_return_uses_closure_return_witness() {
         demand: ReturnDemand::tuple_fields(2),
     };
     let effective_returns = HashMap::from([(lambda_key.body_key(), reducer_return)]);
-    let fact = declared_return_fact_for_test(&mut t, &m, reduce_id, reduce_id, &arg_tys, &effective_returns, None)
+    let fact = declared_return_fact_for_test(&mut t, &m, reduce_id, reduce_id, &arg_tys, &effective_returns)
         .expect("declared return fact");
 
     let int = t.int();
@@ -2948,7 +2935,7 @@ fn planner_projects_enum_reduce_operator_refs_through_kernel_specs() {
                     );
                     assert!(matches!(
                         event.metadata.get("projection_kind"),
-                        Some(Value::Str(kind)) if kind == "planner_local"
+                        Some(Value::Str(kind)) if kind == "declared_callable_entry"
                     ));
                 }
                 other => panic!("unexpected Kernel.+ spec_role {other}: {events:?}"),
@@ -3222,21 +3209,17 @@ fn materialization_keeps_plain_spawn_child_reachable_through_callable_boundary()
 }
 
 #[test]
-fn planner_emits_return_fixpoint_step_telemetry() {
+fn planner_does_not_emit_return_fixpoint_step_telemetry() {
     let tel = ConfiguredTelemetry::new();
     let cap = Capture::new();
     tel.attach(&[], cap.handler());
 
     let _ = frontend_plan("fn main(), do: 1 + 1", &tel);
 
-    let ev = cap
-        .last(&["fz", "planner", "return_fixpoint_step"])
-        .expect("fz.planner.return_fixpoint_step event not emitted");
-    assert!(matches!(ev.measurements.get("visit"), Some(Value::U64(_))));
-    assert!(matches!(ev.measurements.get("dep_count"), Some(Value::U64(_))));
-    assert!(matches!(ev.metadata.get("spec_key"), Some(Value::Str(_))));
-    assert!(matches!(ev.metadata.get("deps"), Some(Value::StrSeq(_))));
-    assert!(matches!(ev.metadata.get("new_ret"), Some(Value::Str(_))));
+    assert!(
+        cap.find(&["fz", "planner", "return_fixpoint_step"]).is_empty(),
+        "planner return-fixpoint telemetry is obsolete; activation projection is the return authority"
+    );
 }
 
 #[test]
@@ -3262,9 +3245,9 @@ fn planner_work_bounds_fib_tailrec() {
     assert!(specs < 60, "fib_tailrec spec count regressed: {}", specs);
 }
 
-/// fz-2yw.1 — recursive sum's effective return must be the LFP
-/// (`int`, joined from base case 0 plus recursive case h + sum(t))
-/// — NOT just the base case (0) which is what cycle-cut would give.
+/// fz-2yw.1 — recursive sum's effective return must come from the activation
+/// fixpoint (`int`, joined from base case 0 plus recursive case h + sum(t)) —
+/// NOT just the base case (0) which is what cycle-cut would give.
 #[test]
 fn effective_return_lfp_for_recursive_sum() {
     let (mut t, m, mt) = pipeline(
@@ -3299,7 +3282,7 @@ fn main(), do: dbg(sum([1, 2, 3, 4, 5]))
         let zero = t.int_lit(0);
         assert!(
             !t.is_equivalent(d, &zero),
-            "sum spec return must NOT be just int_lit(0); LFP should \
+            "sum spec return must NOT be just int_lit(0); activation fixpoint should \
              lift recursive contribution. Got: {}",
             t.display(d)
         );
@@ -4544,7 +4527,7 @@ fn declared_return_fact_handles_enum_count_on_range_in_runtime_graph() {
 
     let callee = module.fn_by_name("Enum.count").expect("Enum.count").id;
     let range = t.opaque_of("impl-target::Range");
-    let fact = declared_return_fact_for_test(&mut t, &module, callee, callee, &[range], &HashMap::new(), None)
+    let fact = declared_return_fact_for_test(&mut t, &module, callee, callee, &[range], &HashMap::new())
         .expect("declared return fact for Enum.count(range)");
     let int = t.int();
     assert!(
@@ -4662,7 +4645,6 @@ fn declared_return_fact_handles_enum_reduce_with_runtime_graph_reducer() {
         *callee,
         &arg_tys,
         &plan.effective_returns,
-        None,
     )
     .expect("declared return fact for Enum.reduce in drop_positive");
     let none = t.none();
@@ -4722,7 +4704,6 @@ fn declared_return_fact_handles_take_positive_reduce_while_in_runtime_graph() {
     let Term::Call { callee, args, .. } = &block.terminator else {
         panic!("take_positive entry should call Enum.reduce_while");
     };
-    let complete = plan.specs.keys().cloned().collect::<HashSet<_>>();
     for (spec_key, spec) in specs {
         let env = env_after_block_stmts(&mut t, &module, spec, block);
         let arg_tys = args
@@ -4736,7 +4717,6 @@ fn declared_return_fact_handles_take_positive_reduce_while_in_runtime_graph() {
             *callee,
             &arg_tys,
             &plan.effective_returns,
-            Some(&complete),
         )
         .unwrap_or_else(|| {
             let callee_fn = module.fn_by_id(*callee);

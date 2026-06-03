@@ -54,7 +54,7 @@ pub(crate) fn build_typer_header<T: Types<Ty = Ty> + RenderTypes>(
         .collect();
     // `@spec` reports the same effective return that drives `@abi` and
     // the cont's slot-0 keying (`module_plan.effective_returns`).
-    // Halt-only specs converge to `none` in the LFP; render those as `_`.
+    // Halt-only specs project to `none`; render those as `_`.
     let none = t.none();
     let return_str = if t.is_subtype(effective_return, &none) {
         "_".to_string()

@@ -14,6 +14,9 @@ planner output, and there is exactly one plan that owns it.
 - **`plan_module`** produces the authoritative `ModulePlan`. Every call emits a
   `planner.planned` telemetry event tagged `role: "authoritative"`. A pretyped
   single-module program runs two: the frontend plan and this codegen plan.
+  Effective returns come from solved activation facts, with declared
+  callable-entry contracts projected explicitly for generic closure-call
+  entries that have no concrete activation.
 - **`materialize_program`** consumes the authoritative `ModulePlan` plus the
   settled `Module` and produces a `PlannedProgram`: stable `SpecId`
   registration, per-spec plan lookup, and executable bodies shared by
@@ -33,7 +36,8 @@ planner output, and there is exactly one plan that owns it.
   no `planner.planned` event, and the type carries no codegen facts, so it
   cannot stand in for a `ModulePlan`.
 - **`discover_specs`** is the shared worklist core: it discovers every reachable
-  spec from the entry seeds and runs the effective-return fixpoint. Both
+  spec from the entry seeds, selects executable call edges, propagates incoming
+  callable capabilities, and projects solved activation returns. Both
   `plan_module` and `plan_callable_capabilities` build on it.
 
 ## Pipeline
@@ -70,17 +74,16 @@ They read only a capability slice:
 
 So they take a `CapabilityPlan`, not a `ModulePlan`.
 
-Capability precision depends on the return-type fixpoint: a var's callable
-capability narrows as its type narrows under return refinement, and the
-consensus `KnownFn` that licenses devirtualization holds only when returns are
-sharp. So `plan_callable_capabilities` runs the full `discover_specs` worklist
-and keeps the capability slice rather than approximating with a cheaper
-fixpoint-free pass. What it drops relative to a `ModulePlan` is the module-level
-finalization (dead-branch consensus, precedence, the any-key index) and the
-telemetry event — facts these transforms do not read. The pass is
-interprocedural over the linked working module, which the frontend's per-entry
-`_pre_types` is not: `_pre_types` cannot see linked-provider bodies, so a
-provider entry param's `KnownFn` capability is visible only here.
+Capability precision depends on the same graph discovery and activation facts
+that the authoritative plan uses: a var's callable capability can depend on a
+call result and on callable capabilities flowing into newly discovered specs.
+So `plan_callable_capabilities` runs the full `discover_specs` worklist and
+keeps the capability slice. What it drops relative to a `ModulePlan` is the
+module-level finalization (dead-branch consensus, precedence, the any-key
+index) and the telemetry event — facts these transforms do not read. The pass
+is interprocedural over the linked working module, which the frontend's
+per-entry `_pre_types` is not: `_pre_types` cannot see linked-provider bodies,
+so a provider entry param's `KnownFn` capability is visible only here.
 
 ## Destination lowering maintains no plan facts
 
@@ -145,7 +148,10 @@ Direct calls may still target the typed body entry when the planner selected
 that exact local target. This keeps one semantic body while making the
 executable boundary explicit: indirect closure calls always cross the callable
 `ValueRef` seam, while direct typed calls keep narrow raw-value ABIs where the
-planner proved them.
+planner proved them. The callable entry's return ABI is also explicit planner
+data: if activation facts do not cover that generic entry, the planner projects
+the function's successful declared return contract instead of asking codegen to
+guess.
 
 Per-spec folds run while materializing the planned program, not ad hoc inside
 the Cranelift lowering loop. Each body emits

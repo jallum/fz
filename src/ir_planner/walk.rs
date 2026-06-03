@@ -29,11 +29,6 @@ pub(crate) struct WalkResult {
     /// Per-callsite capability selected for this spec. Populated for `Direct`,
     /// `ClosureCall`, `Cont`, and `CallableBoundary` slots.
     pub(crate) call_edges: HashMap<CallsiteId, CallEdgePlan>,
-    /// `callee_key`s whose `effective_return` was consulted (for
-    /// cont slot-0 keying or closure_lit return-join). Driver folds
-    /// into the `return_readers` reverse index so changes
-    /// re-enqueue this caller.
-    pub(crate) return_reads: Vec<SpecKey>,
     /// Target specs whose incoming callable-capability facts changed while
     /// walking this caller. Their cached `SpecPlan`s depend on those facts, so
     /// the driver must revisit them.
