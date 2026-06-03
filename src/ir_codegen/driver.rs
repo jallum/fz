@@ -628,7 +628,6 @@ fn build_fn_sigs(
                     } else {
                         None
                     },
-                    demand_abi.has_list_tail_native_param(is_native, cont_fns.contains(&f.id)),
                     demand_abi
                         .tuple_field_arity()
                         .or_else(|| cont_extras_count.get(&f.id).copied()),
@@ -729,11 +728,6 @@ fn emit_callable_entry_bodies<M: cranelift_module::Module>(
         let reprs = &param_reprs[body_sid as usize];
         let arg_reprs = &reprs[entry.capture_count..];
         let spec_key = &spec_keys[body_sid as usize];
-        if spec_key.demand.list_tail_ty().is_some() {
-            return Err(CodegenError::new(format!(
-                "callable entry for spec {body_sid} requires unsupported list-tail callable ABI: {spec_key:?}"
-            )));
-        }
         let sig = build_callable_entry_signature(arg_reprs.len());
         let entry_name = format!("callable_entry_s{body_sid}");
         tel.execute(

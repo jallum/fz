@@ -3,8 +3,8 @@ use crate::fz_ir::{ExternTy, Module, Prim, Term};
 
 /// Classifies the local effects of a single primitive: whether it allocates,
 /// observes allocation, is externally observable, reaches the scheduler, or
-/// halts. Planner return-context barriers and capability validation read this
-/// one classifier rather than carrying their own publication rules.
+/// halts. Planner capability validation reads this one classifier rather than
+/// carrying parallel publication rules.
 pub(crate) fn prim_effects(module: &Module, prim: &Prim) -> EffectSummary {
     match prim {
         Prim::Extern(_, eid, _) => {

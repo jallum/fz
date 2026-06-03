@@ -165,7 +165,7 @@ non-implementing shape; no runtime lookup table is emitted.
 
 Static direct dispatch does not require heap boxing of scalar receivers. The
 selected callback ABI and the caller's argument shape cooperate the same way
-direct-call variants and return-demand variants do.
+direct-call variants and planner-authored return contracts do.
 
 ## No-Replanning Rule
 
@@ -177,7 +177,7 @@ Provider-backed execution should therefore preserve codegen-required planner
 facts through the unit boundary:
 
 - call-edge dispatch facts;
-- return demand and return-context plans;
+- return contracts;
 - function constant facts;
 - extern marshal facts;
 - protocol implementation edge facts.
@@ -267,8 +267,9 @@ subsystem:
   such as raw integers.
 - [`dispatch-as-planner-output.md`](dispatch-as-planner-output.md) defines planner-owned dispatch facts.
 - `SpecPlan.call_edges` is keyed by `CallsiteId` and stores selected call-edge
-  capabilities.
-- `ReturnDemand` is already a call-edge capability selected before codegen.
+  capabilities and return contracts.
+- `ReturnDemand` is part of planner entry keys and call-edge contracts, but
+  semantic returns and executable bodies are keyed by `BodyKey`.
 - `ExternalCallEdge` represents known provider-boundary calls before link.
 - `ModuleInterface` and `.fzi` artifacts carry public contract facts without
   provider bodies.

@@ -101,15 +101,6 @@ pub(crate) struct CodegenCache {
     /// Return var -> field vars for TupleFields(N) specs whose returned tuple
     /// can be delivered to the continuation without materializing a struct.
     pub(super) tuple_return_fields: HashMap<u32, Vec<Var>>,
-    /// Hidden destination tail parameter for ReturnDemand::ListTail specs.
-    /// This is a physical ABI value, not a logical fz entry parameter.
-    pub(super) list_tail_param: Option<ir::Value>,
-    /// Return var -> element vars for ListTail specs whose returned list
-    /// literal can be rebuilt directly in front of the hidden tail.
-    pub(super) list_tail_return_elems: HashMap<u32, Vec<Var>>,
-    /// MakeList return vars whose normal lowering is skipped because
-    /// Term::Return rebuilds them onto the ListTail destination.
-    pub(super) skipped_list_tail_return_vars: HashSet<u32>,
     /// Head Var -> source cons Var facts for total owned-cons reuse attempts.
     pub(super) owned_cons_reuse_sources: HashMap<u32, Var>,
 }

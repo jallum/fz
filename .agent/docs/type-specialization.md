@@ -99,14 +99,13 @@ knowledge or erase a still-live dynamic value to `any`; it must not silently
 turn uncertainty into `none`.
 
 The planner boundary uses this rule when projecting activation facts onto
-reachable executable entries. Semantic return truth is keyed by `BodyKey`
-(`FnId + semantic input`), while `SpecKey` remains the entry/delivery key. So
-`ReturnDemand` is planner delivery shape, not a distinct semantic return:
-value-return activation facts can satisfy non-value demand variants for the
-same `FnId` and compatible input tuple. If the planner key is polymorphic,
-compatibility is tested by instantiating the requested shape against the
-concrete activation witness through `Types`; inference facts are not rewritten
-into planner keys.
+reachable executable entries. Semantic return truth and materialized executable
+bodies are keyed by `BodyKey` (`FnId + semantic input`), while `SpecKey`
+remains the planner entry key (`BodyKey + ReturnDemand`). `ReturnDemand` may
+describe an edge ABI, but it is not a distinct semantic return and does not
+create another body. If the planner key is polymorphic, compatibility is tested
+by instantiating the requested shape against the concrete activation witness
+through `Types`; inference facts are not rewritten into planner keys.
 
 ## Joins
 

@@ -250,7 +250,6 @@ pub(crate) fn build_fn_signature(
     is_native: bool,
     is_cont_fn: bool,
     closure_target_n_caps: Option<usize>,
-    has_list_tail_dest: bool,
     // When the cont fn is a ReceiveMatched clause body / guard, override
     // the default 1-input shape with bound_arity. After-bodies set this
     // to 0. `None` falls back to `(result, self)` for Term::Receive /
@@ -264,9 +263,9 @@ pub(crate) fn build_fn_signature(
         return build_cont_sig(param_reprs, cont_extras_override);
     }
     if let Some(n_caps) = closure_target_n_caps {
-        return build_closure_target_sig(param_reprs, n_caps, has_list_tail_dest);
+        return build_closure_target_sig(param_reprs, n_caps);
     }
-    build_plain_native_sig(param_reprs, has_list_tail_dest)
+    build_plain_native_sig(param_reprs)
 }
 
 /// Uniform (trampoline) signature: `(frame_ptr: i64, host_ctx: i64) -> i64`.
@@ -311,7 +310,7 @@ fn build_cont_sig(param_reprs: &[ArgRepr], cont_extras_override: Option<usize>) 
     sig
 }
 
-/// Closure-target fn signature: `(args..., self:i64, [list_tail,] cont:i64) tail`.
+/// Closure-target fn signature: `(args..., self:i64, cont:i64) tail`.
 ///
 /// Captures (param_reprs[0..n_caps]) are NOT Cranelift params; the body
 /// projects them from `self`. Args are param_reprs[n_caps..].
@@ -322,21 +321,18 @@ fn build_cont_sig(param_reprs: &[ArgRepr], cont_extras_override: Option<usize>) 
 /// Closure-target ABI is structurally uniform ValueRef. The
 /// indirect-dispatch seam can't carry typed return info to its caller;
 /// the body coerces its narrow return to ValueRef at Term::Return.
-fn build_closure_target_sig(param_reprs: &[ArgRepr], n_caps: usize, has_list_tail_dest: bool) -> Signature {
+fn build_closure_target_sig(param_reprs: &[ArgRepr], n_caps: usize) -> Signature {
     let mut sig = Signature::new(CallConv::Tail);
     for r in &param_reprs[n_caps..] {
         push_repr_param(&mut sig, *r);
     }
     sig.params.push(AbiParam::new(types::I64)); // self
-    if has_list_tail_dest {
-        sig.params.push(AbiParam::new(types::I64)); // list tail destination
-    }
     sig.params.push(AbiParam::new(types::I64)); // cont
     sig.returns.push(AbiParam::new(types::I64));
     sig
 }
 
-/// Plain native fn signature: `(args..., [list_tail,] cont:i64) tail`,
+/// Plain native fn signature: `(args..., cont:i64) tail`,
 /// return canonicalized to i64.
 ///
 /// Uses the `Tail` calling convention so that recursive tail calls can
@@ -346,13 +342,10 @@ fn build_closure_target_sig(param_reprs: &[ArgRepr], n_caps: usize, has_list_tai
 /// Native fn return canonicalized to i64 regardless of ret_repr.
 /// Term::Return is `return_call_indirect sig(i64,i64)->i64 tail`;
 /// coercion happens at the return site.
-fn build_plain_native_sig(param_reprs: &[ArgRepr], has_list_tail_dest: bool) -> Signature {
+fn build_plain_native_sig(param_reprs: &[ArgRepr]) -> Signature {
     let mut sig = Signature::new(CallConv::Tail);
     for r in param_reprs {
         push_repr_param(&mut sig, *r);
-    }
-    if has_list_tail_dest {
-        sig.params.push(AbiParam::new(types::I64)); // list tail destination
     }
     sig.params.push(AbiParam::new(types::I64)); // cont
     sig.returns.push(AbiParam::new(types::I64));

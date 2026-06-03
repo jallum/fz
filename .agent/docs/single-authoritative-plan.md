@@ -16,10 +16,11 @@ planner output, and there is exactly one plan that owns it.
   single-module program runs two: the frontend plan and this codegen plan.
 - **`materialize_program`** consumes the authoritative `ModulePlan` plus the
   settled `Module` and produces a `PlannedProgram`: stable `SpecId`
-  registration, per-spec plan lookup, and executable per-spec bodies. A
-  `PlannedBody` is always executable; reserved `SpecId` slots are slot metadata,
-  not optional bodies. The pass emits `fz.planner.materialized` with body and
-  fold counters.
+  registration, per-spec plan lookup, and executable bodies shared by
+  semantic `BodyKey`. A `PlannedBody` is always executable; reserved `SpecId`
+  slots are slot metadata, not optional bodies, and multiple compatible
+  `SpecKey` slots may resolve to the same `PlannedBody`. The pass emits
+  `fz.planner.materialized` with body and fold counters.
 - **Frontend protocol rewrites** apply only static-single protocol callsites:
   the same physical `CallsiteId` must select the same local target in every
   reachable caller specialization. Conflicting protocol targets are left as
@@ -118,11 +119,12 @@ The pre-plan rewrites that remain do not consume `ModulePlan` facts:
 
 `PlannedProgram` is the handoff between planner/fold and codegen. It preserves
 the registry invariant that any-key `SpecId.0 == FnId.0`, including reserved
-slots where needed, but exposes executable bodies as `PlannedBody` values rather
-than `Option<FnIr>`. If codegen is lowering a registered spec, the matching body
-exists by construction. The planned program also owns the executable
-`reachable_specs` set; codegen reads that finished set when deciding whether a
-real spec gets a body or a trap stub.
+slots where needed, but exposes executable bodies as `PlannedBody` values keyed
+by semantic `BodyKey` rather than one body per `SpecKey` slot. If codegen is
+lowering a registered executable spec, the matching body exists by construction.
+The planned program also owns the executable `reachable_specs` set; codegen
+reads that finished set when deciding whether a real spec gets a body or a trap
+stub.
 
 Callsite identity remains intrinsic all the way down. `ReceiveMatched`
 clause/after outcomes carry their own `CallsiteIdent`s minted once at lowering,
@@ -134,7 +136,8 @@ edge.
 `PlannedProgram` also owns the closure-call ABI contract. A semantic body spec
 and its public callable entry are distinct executable things:
 
-- the **planned body** is the direct typed entry for a reachable spec
+- the **planned body** is the direct typed entry for a reachable semantic
+  `BodyKey`
 - the **callable entry** is the generic closure-call entry for that body
 
 Closures always store the callable entry, never the direct typed body address.

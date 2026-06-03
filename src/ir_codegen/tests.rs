@@ -2050,7 +2050,7 @@ fn signature_uniform_when_not_native() {
     let ft = mt.any_spec_for(m.fns[add_idx].id).expect("registered spec");
     let mut t = ConcreteTypes;
     let prs = build_param_reprs(&mut t, &m.fns[add_idx], ft);
-    let sig = build_fn_signature(&prs, false, true, None, false, None);
+    let sig = build_fn_signature(&prs, false, true, None, None);
     assert_eq!(sig.params.len(), 2);
     assert_eq!(sig.returns.len(), 1);
     assert_eq!(sig.params[0].value_type, types::I64);
@@ -2105,6 +2105,37 @@ fn tuple_field_return_demand_does_not_rewrite_plain_function_params() {
 }
 
 #[test]
+fn codegen_lowers_one_native_body_for_materialized_demand_siblings() {
+    let src = "fn pair(x), do: {x, x}\n\
+               fn main() do\n\
+                 {a, b} = pair(1)\n\
+                 dbg({a, b, pair(2)})\n\
+               end\n";
+    let module = lower_src(src);
+    let mut t = ConcreteTypes;
+    let plan = plan_module(&mut t, &module, &NullTelemetry);
+    let tel = ConfiguredTelemetry::new();
+    let cap = Capture::new();
+    tel.attach(&["fz", "codegen", "function_lowered"], cap.handler());
+
+    compile_planned(&mut t, &module, &plan, &tel).expect("compile planned");
+
+    let pair_lowered: Vec<_> = cap
+        .find(&["fz", "codegen", "function_lowered"])
+        .into_iter()
+        .filter(|event| {
+            matches!(event.metadata.get("body_kind"), Some(Value::Str(kind)) if kind == "fz_spec")
+                && matches!(event.metadata.get("fn_name"), Some(Value::Str(name)) if name.starts_with("pair"))
+        })
+        .collect();
+    assert_eq!(
+        pair_lowered.len(),
+        1,
+        "demand siblings for one materialized body should not lower duplicate native bodies: {pair_lowered:#?}"
+    );
+}
+
+#[test]
 fn signature_native_uses_typed_params_and_cont() {
     // Same `add`, but call-site narrowing has typed both params as int.
     // Native sig is `(i64, i64, cont: i64) -> i64` (cont trailing).
@@ -2114,7 +2145,7 @@ fn signature_native_uses_typed_params_and_cont() {
     let ft = mt.any_spec_for(m.fns[add_idx].id).expect("registered spec");
     let mut t = ConcreteTypes;
     let prs = build_param_reprs(&mut t, &m.fns[add_idx], ft);
-    let sig = build_fn_signature(&prs, true, false, None, false, None);
+    let sig = build_fn_signature(&prs, true, false, None, None);
     assert_eq!(sig.params.len(), 3);
     assert_eq!(sig.returns.len(), 1);
     assert_eq!(sig.params.last().unwrap().value_type, types::I64);
@@ -2133,7 +2164,7 @@ fn signature_native_arity_matches_entry_params_plus_cont() {
     let ft = mt.any_spec_for(m.fns[dist_idx].id).expect("registered spec");
     let mut t = ConcreteTypes;
     let prs = build_param_reprs(&mut t, &m.fns[dist_idx], ft);
-    let sig = build_fn_signature(&prs, true, false, None, false, None);
+    let sig = build_fn_signature(&prs, true, false, None, None);
     assert_eq!(sig.params.len(), 3);
     assert_eq!(sig.params[0].value_type, types::F64);
     assert_eq!(sig.params[1].value_type, types::F64);

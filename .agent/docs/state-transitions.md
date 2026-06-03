@@ -8,8 +8,8 @@ that carries only the list, accumulator, and reducer.
 
 This is one application of the planner's general model: source calls, closure
 calls, continuation hops, back edges, and suspension are all state transitions
-over recorded facts — call edges, return contexts, and callable capabilities —
-read rather than reconstructed in codegen. See
+over recorded facts — call edges, return contracts, and callable capabilities
+— read rather than reconstructed in codegen. See
 [`dispatch-as-planner-output`](dispatch-as-planner-output.md) for those
 facts, and [`lazy-continuation-materialization`](lazy-continuation-materialization.md)
 for when a continuation in this machine becomes a heap closure.
@@ -77,7 +77,7 @@ tier-0 surface. Public functions such as `map/2`, `filter/2`,
 `map_reduce/3`, `scan/2,3`, `map_every/3`, `map_join/2,3`, and
 `map_intersperse/3` normalize the input through `to_list/1` and then call
 module-local private builders. That keeps the public API small while still
-exercising ordinary fz recursive list construction and return-demand lowering.
+exercising ordinary fz recursive list construction and planned return delivery.
 `with_index/2` has both Elixir shapes: integer offset and
 `(entry, index) -> value` mapper; there is no public `with_index/3`. The mapper
 overload is expressed as its own `@spec` arrow so same-name/same-arity overloads

@@ -9,8 +9,7 @@ use crate::fz_ir::{
     Stmt, Term, UnOp, rewrite_external_callsite_for_link,
 };
 use crate::ir_planner::fn_types::{
-    BodyKey, CallEdgePlan, CallEdgeTarget, CallableCapability, ReturnContextPlan, ReturnContract, ReturnStrategy,
-    SpecKey,
+    BodyKey, CallEdgePlan, CallEdgeTarget, CallableCapability, ReturnContract, ReturnStrategy, SpecKey,
 };
 use crate::ir_planner::{ModulePlan, SpecPlan};
 use crate::modules::identity::{ExportKey, ModuleName};
@@ -626,76 +625,15 @@ fn remap_call_edge_plan(edge: &CallEdgePlan, fn_map: &BTreeMap<FnId, FnId>) -> C
 fn remap_return_contract(contract: &ReturnContract, fn_map: &BTreeMap<FnId, FnId>) -> ReturnContract {
     ReturnContract::new(
         remap_spec_key(&contract.target, fn_map),
-        remap_return_strategy(&contract.strategy, fn_map),
+        remap_return_strategy(&contract.strategy),
     )
 }
 
-fn remap_return_strategy(strategy: &ReturnStrategy, fn_map: &BTreeMap<FnId, FnId>) -> ReturnStrategy {
+fn remap_return_strategy(strategy: &ReturnStrategy) -> ReturnStrategy {
     match strategy {
         ReturnStrategy::Value => ReturnStrategy::Value,
         ReturnStrategy::TupleFields(arity) => ReturnStrategy::TupleFields(*arity),
         ReturnStrategy::ForwardedDemand(demand) => ReturnStrategy::ForwardedDemand(demand.clone()),
-        ReturnStrategy::ListTail(plan) => ReturnStrategy::ListTail(remap_return_context_plan(plan, fn_map)),
-        ReturnStrategy::TupleFieldsListTail { arity, plan } => ReturnStrategy::TupleFieldsListTail {
-            arity: *arity,
-            plan: remap_return_context_plan(plan, fn_map),
-        },
-    }
-}
-
-fn remap_return_context_plan(plan: &ReturnContextPlan, fn_map: &BTreeMap<FnId, FnId>) -> ReturnContextPlan {
-    match plan {
-        ReturnContextPlan::DirectContinuation {
-            continuation,
-            result_param,
-            tail_ty,
-        } => ReturnContextPlan::DirectContinuation {
-            continuation: remapped_fn_id(*continuation, fn_map),
-            result_param: *result_param,
-            tail_ty: tail_ty.clone(),
-        },
-        ReturnContextPlan::ConsThenDirect {
-            continuation,
-            pivot,
-            tail,
-            tail_ty,
-        } => ReturnContextPlan::ConsThenDirect {
-            continuation: remapped_fn_id(*continuation, fn_map),
-            pivot: *pivot,
-            tail: *tail,
-            tail_ty: tail_ty.clone(),
-        },
-        ReturnContextPlan::ContinuationListTailBridge {
-            continuation,
-            pivot,
-            tail,
-            tail_ty,
-        } => ReturnContextPlan::ContinuationListTailBridge {
-            continuation: remapped_fn_id(*continuation, fn_map),
-            pivot: *pivot,
-            tail: *tail,
-            tail_ty: tail_ty.clone(),
-        },
-        ReturnContextPlan::ContinuationEmptyTail {
-            continuation,
-            target,
-            tail_ty,
-        } => ReturnContextPlan::ContinuationEmptyTail {
-            continuation: remapped_fn_id(*continuation, fn_map),
-            target: remap_spec_key(target, fn_map),
-            tail_ty: tail_ty.clone(),
-        },
-        ReturnContextPlan::TailCallDestination {
-            callee,
-            source,
-            tail,
-            tail_ty,
-        } => ReturnContextPlan::TailCallDestination {
-            callee: remapped_fn_id(*callee, fn_map),
-            source: *source,
-            tail: *tail,
-            tail_ty: tail_ty.clone(),
-        },
     }
 }
 

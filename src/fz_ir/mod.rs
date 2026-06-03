@@ -967,12 +967,6 @@ pub(crate) fn visit_prim_vars(prim: &Prim, mut visit: impl FnMut(Var)) {
     }
 }
 
-pub(crate) fn prim_uses_var(prim: &Prim, needle: Var) -> bool {
-    let mut found = false;
-    visit_prim_vars(prim, |v| found |= v == needle);
-    found
-}
-
 pub(crate) fn visit_term_vars(term: &Term, mut visit: impl FnMut(Var)) {
     match term {
         Term::Goto(_, args) | Term::TailCall { args, .. } | Term::TailCallClosure { args, .. } => {
@@ -1011,12 +1005,6 @@ pub(crate) fn visit_term_vars(term: &Term, mut visit: impl FnMut(Var)) {
             }
         }
     }
-}
-
-pub(crate) fn term_uses_var(term: &Term, needle: Var) -> bool {
-    let mut found = false;
-    visit_term_vars(term, |v| found |= v == needle);
-    found
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

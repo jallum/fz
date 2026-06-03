@@ -1,6 +1,4 @@
-use super::fn_types::{
-    ModulePlan, SpecKey, SpecPlan, display_return_context_plan, display_return_demand, display_return_strategy,
-};
+use super::fn_types::{ModulePlan, SpecKey, SpecPlan, display_return_demand, display_return_strategy};
 use super::reachable::cont_input_key;
 use crate::fz_ir::{
     Block, CallsiteId, CallsiteIdent, Cont, EmitSlot, FnId, FnIr, Module, PhysicalCapability, ReceiveAfter,
@@ -284,7 +282,6 @@ fn render_tail_call_exit<T: Types<Ty = Ty> + RenderTypes>(
     ));
     out.push_str(&format!(";              callee_key={}\n", tys_str(t, &arg_tys)));
     render_return_use(t, spec_key, ft, ident, EmitSlot::Direct, out);
-    render_list_tail_plan(t, spec_key, ft, ident, EmitSlot::Direct, out);
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -315,7 +312,6 @@ fn render_call_exit<T: Types<Ty = Ty> + ClosureTypes + RenderTypes>(
     ));
     out.push_str(&format!(";              callee_key={}\n", tys_str(&*t, &arg_tys)));
     render_return_use(&*t, spec_key, ft, ident, EmitSlot::Direct, out);
-    render_list_tail_plan(&*t, spec_key, ft, ident, EmitSlot::Direct, out);
     render_cont_lines(&*t, m, continuation, &cap_vars, &ck, out);
 }
 
@@ -456,23 +452,6 @@ fn render_return_use<T: Types<Ty = Ty> + RenderTypes>(
             ";              return_contract={} target_demand={}\n",
             display_return_strategy(t, &contract.strategy),
             display_return_demand(t, &contract.target.demand)
-        ));
-    }
-}
-
-fn render_list_tail_plan<T: Types<Ty = Ty> + RenderTypes>(
-    t: &T,
-    spec_key: &SpecKey,
-    ft: &SpecPlan,
-    ident: &CallsiteIdent,
-    slot: EmitSlot,
-    out: &mut String,
-) {
-    let cid = CallsiteId::new(spec_key.fn_id, ident, slot);
-    if let Some(plan) = ft.return_context_plan(&cid) {
-        out.push_str(&format!(
-            ";              list_tail_plan={}\n",
-            display_return_context_plan(t, plan)
         ));
     }
 }

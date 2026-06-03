@@ -6,9 +6,7 @@ use crate::fz_ir::{
     receive_outcome_spec_key,
 };
 use crate::ir_planner::SpecPlan;
-use crate::ir_planner::fn_types::{
-    CallableCapability, ReturnContextPlan, ReturnContract, ReturnDemand, ReturnStrategy, SpecKey,
-};
+use crate::ir_planner::fn_types::{CallableCapability, ReturnDemand, SpecKey};
 use crate::types::{ClosureTypes, Ty, Types, key_slots_from_tys};
 use crate::{measurements, metadata};
 use cranelift_codegen::ir::{self, AbiParam, BlockArg, InstBuilder, MemFlags, Signature, condcodes::IntCC, types};
@@ -120,28 +118,6 @@ fn resolve_callee_sid<T: Types<Ty = Ty> + ClosureTypes>(
         .unwrap_or_else(|| panic!("dispatches[{:?}] = {:?} but no SpecId registered", cid, target))
 }
 
-fn callsite_return_contract<'a>(
-    fn_types: &'a SpecPlan,
-    caller: FnId,
-    ident: &CallsiteIdent,
-    slot: EmitSlot,
-) -> Option<&'a ReturnContract> {
-    let cid = CallsiteId {
-        caller,
-        ident: ident.clone(),
-        slot,
-    };
-    fn_types.return_contract(&cid)
-}
-
-fn return_contract_context_plan(contract: &ReturnContract) -> Option<&ReturnContextPlan> {
-    contract.strategy.context_plan()
-}
-
-fn return_contract_has_list_tail_context(contract: &ReturnContract) -> bool {
-    contract.strategy.demand().list_tail_ty().is_some()
-}
-
 fn callee_is_native(env: &CodegenEnv<'_>, id: u32) -> bool {
     env.native_abi_fns.contains(&FnId(id))
 }
@@ -206,8 +182,7 @@ impl ContinuationPayload {
                 closure_capture_for_var_as(body, var_env, cv.0, repr)
             })
             .collect();
-        let extra_ref_captures = cont_extra_ref_captures(body, cont_key);
-        Self::from_parts(env, cont_sid, cap_bindings, vec![], extra_ref_captures)
+        Self::from_parts(env, cont_sid, cap_bindings, vec![], vec![])
     }
 
     fn ref_captures(&self) -> Vec<ir::Value> {
@@ -531,7 +506,7 @@ fn emit_return_term<M: cranelift_module::Module, T: Types<Ty = Ty> + ClosureType
     env: &CodegenEnv<'_>,
     var_env: &HashMap<u32, CodegenValue>,
     var_types: &HashMap<Var, Ty>,
-    block_env: Option<&HashMap<Var, Ty>>,
+    _block_env: Option<&HashMap<Var, Ty>>,
     is_native: bool,
     is_cont_fn: bool,
     this_spec_id: u32,
@@ -545,25 +520,6 @@ fn emit_return_term<M: cranelift_module::Module, T: Types<Ty = Ty> + ClosureType
     {
         if is_native {
             let return_abi = DemandAbi::new(&env.spec_keys[this_spec_id as usize]);
-            if return_abi.returned_delivers_list_tail_return(is_cont_fn)
-                && let Some(elems) = body.cache.list_tail_return_elems.get(&v.0).cloned()
-            {
-                let delivered = emit_list_tail_return_value(body, t, env, var_env, block_env, &elems);
-                let cont_val = if is_cont_fn {
-                    let self_val = cont_param.expect("cont fn binds self via cont_param");
-                    body.outer_cont_ref(self_val)
-                } else {
-                    cont_param.expect("non-cont native fn has cont_param")
-                };
-                let code = body.closure_code_ref(cont_val);
-                let mut sig = Signature::new(CallConv::Tail);
-                sig.params.push(AbiParam::new(types::I64));
-                sig.params.push(AbiParam::new(types::I64));
-                sig.returns.push(AbiParam::new(types::I64));
-                let sigref = body.b.import_signature(sig);
-                body.b.ins().return_call_indirect(sigref, code, &[delivered, cont_val]);
-                return Ok(());
-            }
             if let Some(arity) = return_abi.returned_tuple_field_arity(is_cont_fn)
                 && let Some(fields) = body.cache.tuple_return_fields.get(&v.0)
             {
@@ -649,7 +605,7 @@ fn emit_call_term<M: cranelift_module::Module, T: Types<Ty = Ty> + ClosureTypes>
     block_env: Option<&HashMap<Var, Ty>>,
     is_native: bool,
     is_cont_fn: bool,
-    this_spec_id: u32,
+    _this_spec_id: u32,
     caller_fn_id: FnId,
     frame_ptr: Option<ir::Value>,
     cont_param: Option<ir::Value>,
@@ -657,12 +613,6 @@ fn emit_call_term<M: cranelift_module::Module, T: Types<Ty = Ty> + ClosureTypes>
     args: &[Var],
     continuation: &Cont,
 ) -> Result<(), CodegenError> {
-    let runtime = env.runtime;
-    let fn_types = env.fn_types;
-    let spec_registry = env.spec_registry;
-    let fn_ids = env.fn_ids;
-    let param_reprs = env.param_reprs;
-    let module = env.module;
     {
         let cap_vals: Vec<ir::Value> = continuation
             .captured
@@ -671,109 +621,7 @@ fn emit_call_term<M: cranelift_module::Module, T: Types<Ty = Ty> + ClosureTypes>
             .collect();
         mark_retained_call_args_as_published(body, var_env, args, &continuation.captured);
         let callee_sid = resolve_callee_sid(t, env, caller_fn_id, blk, EmitSlot::Direct);
-        let mut cont_sid = resolve_cont_sid(t, env, caller_fn_id, blk);
-        let this_demand = DemandAbi::new(&env.spec_keys[this_spec_id as usize]);
-        let term_ident = blk
-            .terminator
-            .ident()
-            .expect("Term::Call must carry callsite ident")
-            .clone();
-        let direct_contract = callsite_return_contract(fn_types, caller_fn_id, &term_ident, EmitSlot::Direct);
-        let cont_contract = callsite_return_contract(fn_types, caller_fn_id, &term_ident, EmitSlot::Cont);
-        let cons_then_direct = match direct_contract.and_then(return_contract_context_plan) {
-            Some(ReturnContextPlan::ConsThenDirect { pivot, tail, .. }) => Some((*pivot, *tail)),
-            _ => None,
-        };
-        let cont_list_tail_bridge = match direct_contract.and_then(return_contract_context_plan) {
-            Some(ReturnContextPlan::ContinuationListTailBridge { pivot, tail, .. }) => Some((*pivot, *tail)),
-            _ => None,
-        };
-        if env.spec_keys[this_spec_id as usize].demand.is_value()
-            && let Some(contract) = cont_contract
-            && matches!(
-                contract.strategy,
-                ReturnStrategy::TupleFieldsListTail { .. } | ReturnStrategy::ListTail(_)
-            )
-            && let Some(ReturnContextPlan::ContinuationEmptyTail { target, .. }) =
-                return_contract_context_plan(contract)
-            && let Some(sid) = spec_registry.resolve_spec_key(t, target)
-        {
-            cont_sid = sid.0;
-        }
-        let cont_demand = DemandAbi::new(&env.spec_keys[cont_sid as usize]);
-        if this_demand.carries_list_tail_capture()
-            && args.len() == 1
-            && let Some((pivot_capture, tail_capture)) = cont_list_tail_bridge
-            && spec_is_native(env, callee_sid)
-            && spec_is_native(env, cont_sid)
-            && DemandAbi::new(&env.spec_keys[callee_sid as usize]).has_list_tail_context()
-            && cont_demand.has_list_tail_context()
-        {
-            let hi_arg = [tail_capture];
-            let callee_param_reprs = &param_reprs[callee_sid as usize];
-            let callee_fid = *fn_ids.get(&callee_sid).expect("callee fn_id missing");
-            let callee_fref = body.jmod.declare_func_in_func(callee_fid, body.b.func);
-            let mut native_args = body.coerce_call_args(&hi_arg, callee_param_reprs, var_env);
-            native_args.push(list_tail_destination_arg(body));
-            let cap_bindings = vec![
-                closure_capture_for_var(body, var_env, pivot_capture.0),
-                closure_capture_for_var(body, var_env, args[0].0),
-            ];
-            let physical_ref_captures = owned_cons_physical_ref_captures(body, var_env, pivot_capture);
-            let payload = ContinuationPayload::from_parts(env, cont_sid, cap_bindings, physical_ref_captures, vec![]);
-            let cont_arg = ContinuationPlan::lazy_native_descriptor(payload).emit_value(
-                body,
-                runtime,
-                env.return_reprs,
-                is_cont_fn,
-                cont_param,
-                frame_ptr,
-            );
-            native_args.push(cont_arg);
-            let inst = body.b.ins().call(callee_fref, &native_args);
-            let result = body.b.inst_results(inst)[0];
-            body.b.ins().return_(&[result]);
-            return Ok(());
-        }
-        if this_demand.delivers_list_tail_return()
-            && args.len() == 1
-            && let Some((pivot_capture, tail_capture)) = cons_then_direct
-            && spec_is_native(env, callee_sid)
-        {
-            let caller_fn = module.fn_by_id(caller_fn_id);
-            let entry = caller_fn.block(caller_fn.entry);
-            if entry.params.first().copied() == Some(tail_capture) {
-                let tail_bits = body.any_ref_for_var(var_env, tail_capture.0);
-                let reused =
-                    emit_owned_cons_reuse_or_alloc(body, var_env, pivot_capture, ListTailBits::ValueRef(tail_bits));
-                let pivot_tail = if let Some(reused) = reused {
-                    reused
-                } else {
-                    emit_list_cons_bif(
-                        body,
-                        env,
-                        var_env,
-                        pivot_capture,
-                        expected_runtime_value_kind(t, fn_types, block_env, pivot_capture),
-                        ListTailBits::ValueRef(tail_bits),
-                    )
-                };
-                let callee_param_reprs = &param_reprs[callee_sid as usize];
-                let callee_fid = *fn_ids.get(&callee_sid).expect("callee fn_id missing");
-                let callee_fref = body.jmod.declare_func_in_func(callee_fid, body.b.func);
-                let mut native_args = body.coerce_call_args(args, callee_param_reprs, var_env);
-                native_args.push(pivot_tail);
-                let tail_cont_arg = if is_cont_fn {
-                    let self_val = cont_param.expect("cont fn binds self via cont_param");
-                    body.outer_cont_ref(self_val)
-                } else {
-                    cont_param.expect("non-cont native fn has cont_param")
-                };
-                native_args.push(tail_cont_arg);
-                body.b.ins().return_call(callee_fref, &native_args);
-                return Ok(());
-            }
-        }
+        let cont_sid = resolve_cont_sid(t, env, caller_fn_id, blk);
         if spec_is_native(env, callee_sid) {
             emit_native_call_with_cont(
                 body,
@@ -860,9 +708,6 @@ fn emit_native_call_with_cont<M: cranelift_module::Module, T: Types<Ty = Ty> + C
     // singleton with no captures is valid for any direct-call site.
     if closure_capture_counts.contains_key(&callee_fn_id) {
         native_args.push(fetch_static_closure(body.jmod, body.b, runtime, callee_sid));
-    }
-    if DemandAbi::new(&env.spec_keys[callee_sid as usize]).has_list_tail_context() {
-        native_args.push(list_tail_destination_arg(body));
     }
     let cont_is_native = spec_is_native(env, cont_sid);
     let cont_captures_callable = continuation.captured.iter().any(|cv| {
@@ -1013,17 +858,11 @@ fn emit_tail_call_term<M: cranelift_module::Module, T: Types<Ty = Ty> + ClosureT
     let _ = schemas;
     {
         let callee_sid = resolve_callee_sid(t, env, caller_fn_id, blk, EmitSlot::Direct);
-        let term_ident = blk
-            .terminator
-            .ident()
-            .expect("Term::TailCall must carry callsite ident");
-        let return_contract = callsite_return_contract(env.fn_types, caller_fn_id, term_ident, EmitSlot::Direct);
         if spec_is_native(env, callee_sid) {
             emit_native_tail_call(
                 body,
                 env,
                 var_env,
-                return_contract,
                 is_native,
                 is_cont_fn,
                 frame_ptr,
@@ -1052,7 +891,6 @@ fn emit_native_tail_call<M: cranelift_module::Module>(
     body: &mut CodegenFn<'_, '_, '_, M>,
     env: &CodegenEnv<'_>,
     var_env: &HashMap<u32, CodegenValue>,
-    return_contract: Option<&ReturnContract>,
     is_native: bool,
     is_cont_fn: bool,
     frame_ptr: Option<ir::Value>,
@@ -1086,10 +924,6 @@ fn emit_native_tail_call<M: cranelift_module::Module>(
         native_args.push(static_closure);
         mid_flight_arg_shapes.push(MidFlightArgShape::HeapRef);
     }
-    if return_contract.is_some_and(return_contract_has_list_tail_context) {
-        native_args.push(list_tail_destination_arg(body));
-        mid_flight_arg_shapes.push(MidFlightArgShape::HeapRef);
-    }
     // Trailing cont arg (docs/cps-in-clif.md §2.1). Build a
     // halt-cont closure inline when a uniform-tier caller
     // (cont_param=None) tail-calls a native callee, so the
@@ -1117,11 +951,7 @@ fn emit_native_tail_call<M: cranelift_module::Module>(
     mid_flight_arg_shapes.push(MidFlightArgShape::HeapRef);
     assert_eq!(
         native_args.len(),
-        expected_native_tail_arg_count(
-            callee_param_reprs,
-            closure_capture_counts.contains_key(&callee_fn_id),
-            return_contract.is_some_and(return_contract_has_list_tail_context)
-        ),
+        expected_native_tail_arg_count(callee_param_reprs, closure_capture_counts.contains_key(&callee_fn_id),),
         "native tail-call arg lanes must match planner return contract"
     );
     if is_native {
@@ -1182,15 +1012,8 @@ fn emit_native_tail_call<M: cranelift_module::Module>(
     }
 }
 
-fn expected_native_tail_arg_count(
-    callee_param_reprs: &[ArgRepr],
-    has_static_self: bool,
-    has_list_tail_dest: bool,
-) -> usize {
-    callee_param_reprs.iter().map(ArgRepr::abi_arity).sum::<usize>()
-        + usize::from(has_static_self)
-        + usize::from(has_list_tail_dest)
-        + 1
+fn expected_native_tail_arg_count(callee_param_reprs: &[ArgRepr], has_static_self: bool) -> usize {
+    callee_param_reprs.iter().map(ArgRepr::abi_arity).sum::<usize>() + usize::from(has_static_self) + 1
 }
 
 // Cooperative back-edge yield check: spend one reduction from the
@@ -1800,58 +1623,4 @@ fn build_park_record<M: cranelift_module::Module, T: Types<Ty = Ty> + ClosureTyp
         ],
     );
     body.b.inst_results(park_inst)[0]
-}
-
-fn list_tail_destination_arg<M: cranelift_module::Module>(body: &mut CodegenFn<'_, '_, '_, M>) -> ir::Value {
-    body.cache
-        .list_tail_param
-        .unwrap_or_else(|| emit_empty_list_value_ref_word(body.b, body.cache))
-}
-
-fn cont_extra_ref_captures<M: cranelift_module::Module>(
-    body: &mut CodegenFn<'_, '_, '_, M>,
-    cont_key: &SpecKey,
-) -> Vec<ir::Value> {
-    if DemandAbi::new(cont_key).carries_list_tail_capture() {
-        vec![list_tail_destination_arg(body)]
-    } else {
-        Vec::new()
-    }
-}
-
-fn owned_cons_physical_ref_captures<M: cranelift_module::Module>(
-    body: &mut CodegenFn<'_, '_, '_, M>,
-    var_env: &HashMap<u32, CodegenValue>,
-    head: Var,
-) -> Vec<ir::Value> {
-    let Some(source_cons) = body.owned_cons_reuse_source(head) else {
-        return Vec::new();
-    };
-    vec![body.any_ref_for_var(var_env, source_cons.0)]
-}
-
-fn emit_list_tail_return_value<M: cranelift_module::Module, T: Types<Ty = Ty>>(
-    body: &mut CodegenFn<'_, '_, '_, M>,
-    t: &mut T,
-    env: &CodegenEnv<'_>,
-    var_env: &HashMap<u32, CodegenValue>,
-    block_env: Option<&HashMap<Var, Ty>>,
-    elems: &[Var],
-) -> ir::Value {
-    let mut acc = ListTailBits::ValueRef(list_tail_destination_arg(body));
-    for elem in elems.iter().rev() {
-        let cons = emit_list_cons_bif(
-            body,
-            env,
-            var_env,
-            *elem,
-            expected_runtime_value_kind(t, env.fn_types, block_env, *elem),
-            acc,
-        );
-        acc = ListTailBits::NonEmptyValueRef(cons);
-    }
-    match acc {
-        ListTailBits::ValueRef(bits) | ListTailBits::NonEmptyValueRef(bits) => bits,
-        ListTailBits::Empty => emit_empty_list_value_ref_word(body.b, body.cache),
-    }
 }

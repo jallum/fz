@@ -1553,10 +1553,9 @@ fn compute_spec_roles<T: Types<Ty = Ty> + ClosureTypes>(
 
 /// One per-FnId effect fact over the static call graph.
 ///
-/// A function's effects are independent of any caller's return demand, so this
-/// is computed once — before the worklist — and read by the destination-
-/// planning barrier as a cached fact (replacing an on-demand body re-walk) and
-/// stored on `ModulePlan` for downstream passes.
+/// A function's effects are independent of any caller's return delivery, so
+/// this is computed once — before the worklist — and stored on `ModulePlan` for
+/// downstream effect-sensitive passes.
 ///
 /// The fact is the least fixed point of: each function's local effects (every
 /// block, no reachability pruning — a barrier must be conservative across all
@@ -1577,12 +1576,10 @@ fn compute_fn_effects(m: &Module) -> FnEffects {
                 local.union_with(prim_effects(m, prim));
             }
             // A terminal `Halt` returns the process's final value to the
-            // scheduler; nothing executes after it, so it cannot observe — or
-            // be disturbed by — relocating an allocation that builds the
-            // returned value. It is transparent to the return-context-motion
-            // barrier (fz-w34.2 generalizes this to position-scoping). Every
-            // other terminator contributes its local effects: closure calls
-            // are opaque, receive is a scheduler boundary.
+            // scheduler; nothing executes after it, so it contributes no
+            // downstream observation point. Every other terminator contributes
+            // its local effects: closure calls are opaque, receive is a
+            // scheduler boundary.
             if !matches!(b.terminator, Term::Halt(_)) {
                 local.union_with(term_effects(&b.terminator));
             }

@@ -31,7 +31,7 @@ pub struct SpecPlan {
     /// Per-callsite call-edge capability selected for this spec.
     ///
     /// This is the typed handoff codegen should consume. It keeps the selected
-    /// target, result-hole demand, and executable return-context plan on one
+    /// target, result-hole demand, and executable return contract on one
     /// edge, so future provider-boundary and protocol dispatch facts can extend
     /// the same shape instead of adding side tables.
     pub call_edges: HashMap<CallsiteId, CallEdgePlan>,
@@ -129,13 +129,6 @@ impl SpecPlan {
         })
     }
 
-    pub fn return_context_plan(&self, callsite: &CallsiteId) -> Option<&ReturnContextPlan> {
-        self.call_edges
-            .get(callsite)
-            .and_then(|edge| edge.return_contract.as_ref())
-            .and_then(|contract| contract.strategy.context_plan())
-    }
-
     pub(crate) fn install_call_edges(&mut self, call_edges: HashMap<CallsiteId, CallEdgePlan>) {
         self.call_edges = call_edges;
     }
@@ -182,8 +175,6 @@ pub enum ReturnStrategy {
     Value,
     TupleFields(usize),
     ForwardedDemand(ReturnDemand),
-    ListTail(ReturnContextPlan),
-    TupleFieldsListTail { arity: usize, plan: ReturnContextPlan },
 }
 
 impl ReturnStrategy {
@@ -192,29 +183,6 @@ impl ReturnStrategy {
             ReturnStrategy::Value => ReturnDemand::value(),
             ReturnStrategy::TupleFields(arity) => ReturnDemand::tuple_fields(*arity),
             ReturnStrategy::ForwardedDemand(demand) => demand.clone(),
-            ReturnStrategy::ListTail(plan) => {
-                let tail_ty = plan
-                    .demand()
-                    .list_tail_ty()
-                    .expect("list-tail strategies require a list-tail context")
-                    .clone();
-                ReturnDemand::list_tail(tail_ty)
-            }
-            ReturnStrategy::TupleFieldsListTail { arity, plan } => {
-                let tail_ty = plan
-                    .demand()
-                    .list_tail_ty()
-                    .expect("tuple-fields list-tail strategies require a list-tail context")
-                    .clone();
-                ReturnDemand::tuple_fields_list_tail(*arity, tail_ty)
-            }
-        }
-    }
-
-    pub fn context_plan(&self) -> Option<&ReturnContextPlan> {
-        match self {
-            ReturnStrategy::Value | ReturnStrategy::TupleFields(_) | ReturnStrategy::ForwardedDemand(_) => None,
-            ReturnStrategy::ListTail(plan) | ReturnStrategy::TupleFieldsListTail { plan, .. } => Some(plan),
         }
     }
 }
@@ -232,9 +200,9 @@ pub enum CallEdgeTarget {
 /// Per-module type information.
 ///
 /// `specs` is the registered specialization map, keyed by `SpecKey`
-/// (`FnId`, input-type tuple, and return demand). Specs are produced by direct
-/// calls, closure calls, continuations, receive outcomes, entry seeds, and
-/// callable-boundary reachability.
+/// (`FnId`, input-type tuple, and return delivery). Specs are produced by
+/// direct calls, closure calls, continuations, receive outcomes, entry seeds,
+/// and callable-boundary reachability.
 #[derive(Debug, Clone)]
 pub struct ModulePlan {
     pub specs: HashMap<SpecKey, SpecPlan>,
@@ -264,13 +232,11 @@ pub struct ModulePlan {
     pub any_key_specs: HashMap<FnId, Vec<KeySlot>>,
     /// Stable per-family precedence for specialization selection.
     pub spec_precedence: HashMap<SpecKey, u32>,
-    /// Per-FnId summary of effects relevant to return-demand scheduling.
+    /// Per-FnId summary of effects relevant to effect-sensitive rewrites.
     /// Allocation is tracked separately from externally observable barriers
-    /// so demand selection can move allocation only when no runtime-visible
-    /// operation can observe the move. Computed once over the static call
-    /// graph (a function's effects do not depend on what the caller wants
-    /// back), so the destination-planning barrier reads one cached fact
-    /// instead of re-walking bodies on demand.
+    /// so planner-owned transforms can preserve observable behavior. Computed
+    /// once over the static call graph, so later consumers read one cached fact
+    /// instead of re-walking bodies.
     pub fn_effects: FnEffects,
     /// Per-If dead-branch facts safe to report at the module level.
     /// Populated at the end of `plan_module` by `compute_dead_branches`.
@@ -315,18 +281,12 @@ pub struct EffectSummary {
     pub scheduler_visible: bool,
     /// May halt/abort instead of returning normally.
     pub halts: bool,
-    /// Reaches a call through a value whose target is not statically known
-    /// (a closure call). Conservatively a barrier: the callee's effects are
-    /// invisible, so return-context motion across it is unsafe until the
-    /// target is resolved (see fz-w34.2).
+    /// Reaches a call through a value whose target is not statically known.
+    /// The callee's effects are not visible to the local plan.
     pub calls_opaque: bool,
 }
 
 impl EffectSummary {
-    pub fn blocks_return_context_motion(self) -> bool {
-        self.observable || self.reads_allocation_stats || self.scheduler_visible || self.halts || self.calls_opaque
-    }
-
     pub fn union_with(&mut self, other: EffectSummary) -> bool {
         let before = *self;
         self.allocates |= other.allocates;
@@ -342,79 +302,14 @@ impl EffectSummary {
 #[cfg(test)]
 mod tests {
     use super::{
-        EffectSummary, ReturnContextPlan, ReturnDemand, ReturnStrategy, SpecKey, forwarded_return_contract_for_target,
-        return_contract_for_target,
+        ReturnDemand, ReturnStrategy, SpecKey, forwarded_return_contract_for_target, return_contract_for_target,
     };
-    use crate::fz_ir::{FnId, Var};
-    use crate::types::{ConcreteTypes, Types};
-
-    #[test]
-    fn return_context_motion_barrier_uses_effect_summary_predicate() {
-        assert!(
-            !EffectSummary {
-                allocates: true,
-                ..EffectSummary::default()
-            }
-            .blocks_return_context_motion()
-        );
-
-        for summary in [
-            EffectSummary {
-                observable: true,
-                ..EffectSummary::default()
-            },
-            EffectSummary {
-                reads_allocation_stats: true,
-                ..EffectSummary::default()
-            },
-            EffectSummary {
-                scheduler_visible: true,
-                ..EffectSummary::default()
-            },
-            EffectSummary {
-                halts: true,
-                ..EffectSummary::default()
-            },
-        ] {
-            assert!(summary.blocks_return_context_motion());
-        }
-    }
-
-    #[test]
-    fn return_contract_pairs_non_value_demand_with_matching_strategy() {
-        let mut t = ConcreteTypes;
-        let tail_ty = t.int();
-        let target = SpecKey {
-            fn_id: FnId(7),
-            input: Vec::new(),
-            demand: ReturnDemand::list_tail(tail_ty.clone()),
-        };
-
-        assert!(return_contract_for_target(target.clone(), None).is_none());
-
-        let mismatched_plan = ReturnContextPlan::DirectContinuation {
-            continuation: FnId(8),
-            result_param: Var(0),
-            tail_ty: t.any(),
-        };
-        assert!(return_contract_for_target(target.clone(), Some(mismatched_plan)).is_none());
-
-        let matching_plan = ReturnContextPlan::DirectContinuation {
-            continuation: FnId(8),
-            result_param: Var(0),
-            tail_ty,
-        };
-        let contract = return_contract_for_target(target.clone(), Some(matching_plan.clone()))
-            .expect("matching context plan should produce a return contract");
-        assert_eq!(contract.target, target);
-        assert_eq!(contract.strategy, ReturnStrategy::ListTail(matching_plan));
-    }
+    use crate::fz_ir::FnId;
 
     #[test]
     fn non_context_return_contracts_need_no_context_plan() {
         let target = SpecKey::value(FnId(7), Vec::new());
-        let contract = return_contract_for_target(target.clone(), None)
-            .expect("plain value returns need no executable context plan");
+        let contract = return_contract_for_target(target.clone());
         assert_eq!(contract.target, target);
         assert_eq!(contract.strategy, ReturnStrategy::Value);
 
@@ -423,20 +318,17 @@ mod tests {
             input: Vec::new(),
             demand: ReturnDemand::tuple_fields(2),
         };
-        let contract = return_contract_for_target(target.clone(), None)
-            .expect("tuple-field returns are executable without a context plan");
+        let contract = return_contract_for_target(target.clone());
         assert_eq!(contract.target, target);
         assert_eq!(contract.strategy, ReturnStrategy::TupleFields(2));
     }
 
     #[test]
     fn forwarded_return_contract_pairs_tail_call_target_and_strategy() {
-        let mut t = ConcreteTypes;
-        let any = t.any();
         let target = SpecKey {
             fn_id: FnId(7),
             input: Vec::new(),
-            demand: ReturnDemand::list_tail(t.list(any)),
+            demand: ReturnDemand::tuple_fields(2),
         };
         let contract = forwarded_return_contract_for_target(target.clone());
         assert_eq!(contract.target, target.clone());
@@ -580,80 +472,25 @@ pub enum ReturnDelivery {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub enum ReturnContext {
-    None,
-    ListTail(Ty),
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct ReturnDemand {
     pub delivery: ReturnDelivery,
-    pub context: ReturnContext,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub enum ReturnContextPlan {
-    DirectContinuation {
-        continuation: FnId,
-        result_param: Var,
-        tail_ty: Ty,
-    },
-    ConsThenDirect {
-        continuation: FnId,
-        pivot: Var,
-        tail: Var,
-        tail_ty: Ty,
-    },
-    ContinuationListTailBridge {
-        continuation: FnId,
-        pivot: Var,
-        tail: Var,
-        tail_ty: Ty,
-    },
-    ContinuationEmptyTail {
-        continuation: FnId,
-        target: SpecKey,
-        tail_ty: Ty,
-    },
-    TailCallDestination {
-        callee: FnId,
-        source: Var,
-        tail: Var,
-        tail_ty: Ty,
-    },
 }
 
 impl ReturnDemand {
     pub fn value() -> Self {
         Self {
             delivery: ReturnDelivery::Value,
-            context: ReturnContext::None,
         }
     }
 
     pub fn tuple_fields(arity: usize) -> Self {
         Self {
             delivery: ReturnDelivery::TupleFields(arity),
-            context: ReturnContext::None,
-        }
-    }
-
-    pub fn list_tail(tail_ty: Ty) -> Self {
-        Self {
-            delivery: ReturnDelivery::Value,
-            context: ReturnContext::ListTail(tail_ty),
-        }
-    }
-
-    pub fn tuple_fields_list_tail(arity: usize, tail_ty: Ty) -> Self {
-        Self {
-            delivery: ReturnDelivery::TupleFields(arity),
-            context: ReturnContext::ListTail(tail_ty),
         }
     }
 
     pub fn is_value(&self) -> bool {
-        self.delivery == ReturnDelivery::Value && self.context == ReturnContext::None
+        self.delivery == ReturnDelivery::Value
     }
 
     pub fn tuple_field_arity(&self) -> Option<usize> {
@@ -662,54 +499,18 @@ impl ReturnDemand {
             ReturnDelivery::Value => None,
         }
     }
+}
 
-    pub fn list_tail_ty(&self) -> Option<&Ty> {
-        match &self.context {
-            ReturnContext::ListTail(ty) => Some(ty),
-            ReturnContext::None => None,
-        }
+pub(crate) fn return_strategy_for_demand(demand: ReturnDemand) -> ReturnStrategy {
+    match demand.delivery {
+        ReturnDelivery::Value => ReturnStrategy::Value,
+        ReturnDelivery::TupleFields(arity) => ReturnStrategy::TupleFields(arity),
     }
 }
 
-impl ReturnContextPlan {
-    pub fn demand(&self) -> ReturnDemand {
-        match self {
-            ReturnContextPlan::DirectContinuation { tail_ty, .. }
-            | ReturnContextPlan::ConsThenDirect { tail_ty, .. }
-            | ReturnContextPlan::ContinuationListTailBridge { tail_ty, .. }
-            | ReturnContextPlan::TailCallDestination { tail_ty, .. } => ReturnDemand::list_tail(tail_ty.clone()),
-            ReturnContextPlan::ContinuationEmptyTail { target, .. } => target.demand.clone(),
-        }
-    }
-}
-
-pub(crate) fn return_strategy_for_demand(
-    demand: ReturnDemand,
-    plan: Option<ReturnContextPlan>,
-) -> Option<ReturnStrategy> {
-    match (&demand.delivery, &demand.context) {
-        (ReturnDelivery::Value, ReturnContext::None) => Some(ReturnStrategy::Value),
-        (ReturnDelivery::TupleFields(arity), ReturnContext::None) => Some(ReturnStrategy::TupleFields(*arity)),
-        (ReturnDelivery::Value, ReturnContext::ListTail(tail_ty)) => {
-            let plan = plan?;
-            plan_has_list_tail(&plan, tail_ty).then_some(ReturnStrategy::ListTail(plan))
-        }
-        (ReturnDelivery::TupleFields(arity), ReturnContext::ListTail(tail_ty)) => {
-            let plan = plan?;
-            plan_has_list_tail(&plan, tail_ty).then_some(ReturnStrategy::TupleFieldsListTail { arity: *arity, plan })
-        }
-    }
-}
-
-fn plan_has_list_tail(plan: &ReturnContextPlan, expected_tail_ty: &Ty) -> bool {
-    plan.demand()
-        .list_tail_ty()
-        .is_some_and(|actual_tail_ty| actual_tail_ty == expected_tail_ty)
-}
-
-pub(crate) fn return_contract_for_target(target: SpecKey, plan: Option<ReturnContextPlan>) -> Option<ReturnContract> {
-    let strategy = return_strategy_for_demand(target.demand.clone(), plan)?;
-    Some(ReturnContract::new(target, strategy))
+pub(crate) fn return_contract_for_target(target: SpecKey) -> ReturnContract {
+    let strategy = return_strategy_for_demand(target.demand.clone());
+    ReturnContract::new(target, strategy)
 }
 
 pub(crate) fn forwarded_return_contract_for_target(target: SpecKey) -> ReturnContract {
@@ -762,77 +563,10 @@ impl From<&SpecKey> for BodyKey {
     }
 }
 
-pub(crate) fn display_return_demand<T: RenderTypes + Types<Ty = Ty>>(t: &T, demand: &ReturnDemand) -> String {
-    match (&demand.delivery, &demand.context) {
-        (ReturnDelivery::Value, ReturnContext::None) => "value".to_string(),
-        (ReturnDelivery::TupleFields(n), ReturnContext::None) => format!("tuple_fields({})", n),
-        (ReturnDelivery::TupleFields(n), ReturnContext::ListTail(ty)) => {
-            format!("tuple_fields({}, list_tail({}))", n, t.display(ty))
-        }
-        (ReturnDelivery::Value, ReturnContext::ListTail(ty)) => {
-            format!("list_tail({})", t.display(ty))
-        }
-    }
-}
-
-pub(crate) fn display_return_context_plan<T: RenderTypes + Types<Ty = Ty>>(t: &T, plan: &ReturnContextPlan) -> String {
-    match plan {
-        ReturnContextPlan::DirectContinuation {
-            continuation,
-            result_param,
-            tail_ty,
-        } => format!(
-            "direct_cont(cont=#{} result=Var({}) tail_ty={})",
-            continuation.0,
-            result_param.0,
-            t.display(tail_ty)
-        ),
-        ReturnContextPlan::ConsThenDirect {
-            continuation,
-            pivot,
-            tail,
-            tail_ty,
-        } => format!(
-            "cons_then_direct(cont=#{} pivot=Var({}) tail=Var({}) tail_ty={})",
-            continuation.0,
-            pivot.0,
-            tail.0,
-            t.display(tail_ty)
-        ),
-        ReturnContextPlan::ContinuationListTailBridge {
-            continuation,
-            pivot,
-            tail,
-            tail_ty,
-        } => format!(
-            "cont_list_tail_bridge(cont=#{} pivot=Var({}) tail=Var({}) tail_ty={})",
-            continuation.0,
-            pivot.0,
-            tail.0,
-            t.display(tail_ty)
-        ),
-        ReturnContextPlan::ContinuationEmptyTail {
-            continuation,
-            target,
-            tail_ty,
-        } => format!(
-            "empty_tail_cont(cont=#{} target_demand={} tail_ty={})",
-            continuation.0,
-            display_return_demand(t, &target.demand),
-            t.display(tail_ty)
-        ),
-        ReturnContextPlan::TailCallDestination {
-            callee,
-            source,
-            tail,
-            tail_ty,
-        } => format!(
-            "tail_call_dest(callee=#{} source=Var({}) tail=Var({}) tail_ty={})",
-            callee.0,
-            source.0,
-            tail.0,
-            t.display(tail_ty)
-        ),
+pub(crate) fn display_return_demand<T: RenderTypes + Types<Ty = Ty>>(_t: &T, demand: &ReturnDemand) -> String {
+    match &demand.delivery {
+        ReturnDelivery::Value => "value".to_string(),
+        ReturnDelivery::TupleFields(n) => format!("tuple_fields({})", n),
     }
 }
 
@@ -842,10 +576,6 @@ pub(crate) fn display_return_strategy<T: RenderTypes + Types<Ty = Ty>>(t: &T, st
         ReturnStrategy::TupleFields(arity) => format!("tuple_fields({})", arity),
         ReturnStrategy::ForwardedDemand(demand) => {
             format!("forwarded({})", display_return_demand(t, demand))
-        }
-        ReturnStrategy::ListTail(plan) => display_return_context_plan(t, plan),
-        ReturnStrategy::TupleFieldsListTail { arity, plan } => {
-            format!("tuple_fields({}, {})", arity, display_return_context_plan(t, plan))
         }
     }
 }

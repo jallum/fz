@@ -28,7 +28,6 @@ pub(crate) struct EntryHarnessOut {
     /// Some for native fns (trailing cont SSA); None for uniform.
     pub(super) cont_param: Option<ir::Value>,
     pub(super) tuple_field_params: HashMap<(u32, u32), CodegenValue>,
-    pub(super) list_tail_param: Option<ir::Value>,
 }
 
 pub(crate) fn build_entry_harness<M: ClModule>(
@@ -56,13 +55,7 @@ pub(crate) fn build_entry_harness<M: ClModule>(
     // the invariant. `cont_param` is the trailing i64 in the native-tier
     // signature.
     let demand_abi = DemandAbi::new(&env.spec_keys[this_spec_id as usize]);
-    let has_list_tail_dest = demand_abi.has_list_tail_native_param(is_native, is_cont_fn);
-    let (frame_ptr, host_ctx, cont_param, list_tail_param): (
-        Option<ir::Value>,
-        Option<ir::Value>,
-        Option<ir::Value>,
-        Option<ir::Value>,
-    ) = if is_native {
+    let (frame_ptr, host_ctx, cont_param): (Option<ir::Value>, Option<ir::Value>, Option<ir::Value>) = if is_native {
         let params: Vec<ir::Value> = body.b.block_params(entry_cl).to_vec();
         let my_param_reprs = &param_reprs[this_spec_id as usize];
         if is_cont_fn {
@@ -78,24 +71,9 @@ pub(crate) fn build_entry_harness<M: ClModule>(
                 &mut tuple_field_params,
             )
         } else if let Some(n_caps) = closure_target_n_caps {
-            harness_closure_target(
-                body,
-                entry_blk,
-                &params,
-                my_param_reprs,
-                n_caps,
-                has_list_tail_dest,
-                &mut var_env,
-            )
+            harness_closure_target(body, entry_blk, &params, my_param_reprs, n_caps, &mut var_env)
         } else {
-            harness_plain_native(
-                body.b,
-                entry_blk,
-                &params,
-                my_param_reprs,
-                has_list_tail_dest,
-                &mut var_env,
-            )
+            harness_plain_native(body.b, entry_blk, &params, my_param_reprs, &mut var_env)
         }
     } else {
         let frame_ptr = body.b.block_params(entry_cl)[0];
@@ -125,7 +103,7 @@ pub(crate) fn build_entry_harness<M: ClModule>(
         }
         // Uniform fns do not have a cont SSA value; the cont lives in
         // slot 0 of `frame_ptr`.
-        (Some(frame_ptr), Some(host_ctx), None, None)
+        (Some(frame_ptr), Some(host_ctx), None)
     };
     EntryHarnessOut {
         var_env,
@@ -133,7 +111,6 @@ pub(crate) fn build_entry_harness<M: ClModule>(
         host_ctx,
         cont_param,
         tuple_field_params,
-        list_tail_param,
     }
 }
 
@@ -154,7 +131,7 @@ pub(crate) fn build_entry_harness<M: ClModule>(
 /// producer's Term::Return uses the same sig, so no coerce at
 /// entry.
 ///
-/// Returns (frame_ptr, host_ctx, cont_param, list_tail_param).
+/// Returns (frame_ptr, host_ctx, cont_param).
 fn harness_cont_fn<M: ClModule>(
     body: &mut CodegenFn<'_, '_, '_, M>,
     env: &CodegenEnv<'_>,
@@ -165,12 +142,7 @@ fn harness_cont_fn<M: ClModule>(
     demand_abi: &DemandAbi,
     var_env: &mut HashMap<u32, CodegenValue>,
     tuple_field_params: &mut HashMap<(u32, u32), CodegenValue>,
-) -> (
-    Option<ir::Value>,
-    Option<ir::Value>,
-    Option<ir::Value>,
-    Option<ir::Value>,
-) {
+) -> (Option<ir::Value>, Option<ir::Value>, Option<ir::Value>) {
     let tuple_fields = demand_abi.tuple_field_arity();
     let extras_count = tuple_fields.unwrap_or_else(|| env.cont_extras_count.get(&f.id).copied().unwrap_or(1));
     let mut param_cursor = 0;
@@ -188,8 +160,6 @@ fn harness_cont_fn<M: ClModule>(
     }
     let self_val = params[param_cursor];
     let first_capture_param = if tuple_fields.is_some() { 1 } else { extras_count };
-    let has_appended_list_tail = demand_abi.carries_list_tail_capture();
-    let user_captures = entry_blk.params.len().saturating_sub(first_capture_param);
     for (i, p) in entry_blk.params.iter().enumerate().skip(first_capture_param) {
         let capture_idx = 1 + i - first_capture_param;
         let repr_idx = if tuple_fields.is_some() {
@@ -200,13 +170,7 @@ fn harness_cont_fn<M: ClModule>(
         let binding = body.closure_capture_as_binding(self_val, capture_idx, my_param_reprs[repr_idx]);
         var_env.insert(p.0, binding);
     }
-    let list_tail_val = if has_appended_list_tail {
-        let idx = 1 + user_captures;
-        Some(body.closure_capture_ref_at(self_val, idx))
-    } else {
-        None
-    };
-    (None, None, Some(self_val), list_tail_val)
+    (None, None, Some(self_val))
 }
 
 /// Closure-target fn entry harness.
@@ -222,21 +186,15 @@ fn harness_cont_fn<M: ClModule>(
 /// reads each capture as an opaque ref and coerces to its narrow
 /// capture repr internally.
 ///
-/// Returns (frame_ptr, host_ctx, cont_param, list_tail_param).
+/// Returns (frame_ptr, host_ctx, cont_param).
 fn harness_closure_target<M: ClModule>(
     body: &mut CodegenFn<'_, '_, '_, M>,
     entry_blk: &crate::fz_ir::Block,
     params: &[ir::Value],
     my_param_reprs: &[ArgRepr],
     n_caps: usize,
-    has_list_tail_dest: bool,
     var_env: &mut HashMap<u32, CodegenValue>,
-) -> (
-    Option<ir::Value>,
-    Option<ir::Value>,
-    Option<ir::Value>,
-    Option<ir::Value>,
-) {
+) -> (Option<ir::Value>, Option<ir::Value>, Option<ir::Value>) {
     let _n_args = entry_blk.params.len().saturating_sub(n_caps);
     let mut param_cursor = 0;
     for (j, p) in entry_blk.params.iter().enumerate().skip(n_caps) {
@@ -244,12 +202,7 @@ fn harness_closure_target<M: ClModule>(
         var_env.insert(p.0, take_param_binding(body.b, params, &mut param_cursor, repr));
     }
     let self_val = params[param_cursor];
-    let list_tail_val = if has_list_tail_dest {
-        Some(params[param_cursor + 1])
-    } else {
-        None
-    };
-    let cont_val = params[param_cursor + 1 + usize::from(has_list_tail_dest)];
+    let cont_val = params[param_cursor + 1];
     for (k, p) in entry_blk.params.iter().enumerate().take(n_caps) {
         let binding = body.closure_capture_as_binding(self_val, k, my_param_reprs[k]);
         var_env.insert(p.0, binding);
@@ -259,40 +212,27 @@ fn harness_closure_target<M: ClModule>(
         my_param_reprs[n_caps..].iter().map(ArgRepr::abi_arity).sum::<usize>()
     );
     let _ = self_val;
-    (None, None, Some(cont_val), list_tail_val)
+    (None, None, Some(cont_val))
 }
 
 /// Plain native fn entry harness.
-/// Cranelift sig: `(args..., [list_tail], cont) tail`.
+/// Cranelift sig: `(args..., cont) tail`.
 /// All entry block params map 1:1 to leading Cranelift params via
-/// each ArgRepr's abi_arity; the trailing slots carry the optional
-/// list-tail destination then the cont SSA.
+/// each ArgRepr's abi_arity; the trailing slot carries the cont SSA.
 ///
-/// Returns (frame_ptr, host_ctx, cont_param, list_tail_param).
+/// Returns (frame_ptr, host_ctx, cont_param).
 fn harness_plain_native(
     b: &mut FunctionBuilder<'_>,
     entry_blk: &crate::fz_ir::Block,
     params: &[ir::Value],
     my_param_reprs: &[ArgRepr],
-    has_list_tail_dest: bool,
     var_env: &mut HashMap<u32, CodegenValue>,
-) -> (
-    Option<ir::Value>,
-    Option<ir::Value>,
-    Option<ir::Value>,
-    Option<ir::Value>,
-) {
+) -> (Option<ir::Value>, Option<ir::Value>, Option<ir::Value>) {
     let mut param_cursor = 0;
     for (i, p) in entry_blk.params.iter().enumerate() {
         let repr = my_param_reprs[i];
         var_env.insert(p.0, take_param_binding(b, params, &mut param_cursor, repr));
     }
     let cont_idx = param_cursor;
-    let list_tail_val = if has_list_tail_dest {
-        Some(params[cont_idx])
-    } else {
-        None
-    };
-    let cont_idx = cont_idx + usize::from(has_list_tail_dest);
-    (None, None, Some(params[cont_idx]), list_tail_val)
+    (None, None, Some(params[cont_idx]))
 }

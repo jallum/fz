@@ -42,7 +42,6 @@ pub(crate) fn compile_fn<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
         None
     };
     let demand_abi = DemandAbi::new(&env.spec_keys[this_spec_id as usize]);
-    let has_list_tail_dest = demand_abi.has_list_tail_native_param(is_native, is_cont_fn);
     // When this fn is never invoked from any fz IR site (not a direct
     // callee, not a continuation, not a closure target), it can only
     // enter via the trampoline entry, which writes null into the frame's
@@ -99,16 +98,10 @@ pub(crate) fn compile_fn<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
                 append_block_param_for_repr(&mut b, entry_cl, *r);
             }
             b.append_block_param(entry_cl, types::I64); // self
-            if has_list_tail_dest {
-                b.append_block_param(entry_cl, types::I64); // list tail destination
-            }
             b.append_block_param(entry_cl, types::I64); // cont
         } else {
             for r in my_param_reprs {
                 append_block_param_for_repr(&mut b, entry_cl, *r);
-            }
-            if has_list_tail_dest {
-                b.append_block_param(entry_cl, types::I64); // list tail destination
             }
             b.append_block_param(entry_cl, types::I64); // cont
         }
@@ -134,9 +127,9 @@ pub(crate) fn compile_fn<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
     b.seal_block(entry_cl);
 
     // One machine for the whole function. Its cache starts empty: the entry
-    // harness never reads the cache -- it produces the inputs (tuple-field
-    // params, list-tail param) the cache is then populated from. Builder,
-    // module, cache, and import table are bound once, here.
+    // harness never reads the cache -- it produces the inputs the cache is then
+    // populated from. Builder, module, cache, and import table are bound once,
+    // here.
     let mut cache = CodegenCache::default();
     let mut body = CodegenFn::new(env, &mut b, jmod, &mut cache);
     let EntryHarnessOut {
@@ -145,7 +138,6 @@ pub(crate) fn compile_fn<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
         host_ctx,
         cont_param,
         tuple_field_params,
-        list_tail_param,
     } = build_entry_harness(
         &mut body,
         env,
@@ -162,16 +154,11 @@ pub(crate) fn compile_fn<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
         let (if_only, all_used) = classify_var_uses(f);
         let (tuple_return_fields, skipped_tuple_return_vars) =
             tuple_return_delivery_plan(f, &env.spec_keys[this_spec_id as usize], is_cont_fn);
-        let (list_tail_return_elems, skipped_list_tail_return_vars) =
-            list_tail_delivery_plan(f, &env.spec_keys[this_spec_id as usize]);
         body.cache.if_only_conds = if_only.into_iter().map(|v| v.0).collect();
         body.cache.used_vars = all_used.into_iter().map(|v| v.0).collect();
         body.cache.tuple_field_params = tuple_field_params;
         body.cache.skipped_tuple_return_vars = skipped_tuple_return_vars;
         body.cache.tuple_return_fields = tuple_return_fields;
-        body.cache.list_tail_param = list_tail_param;
-        body.cache.list_tail_return_elems = list_tail_return_elems;
-        body.cache.skipped_list_tail_return_vars = skipped_list_tail_return_vars;
         body.cache.owned_cons_reuse_sources = owned_cons_reuse_sources(f);
     }
     // Walk blocks in declared order with entry first. Unreachable
@@ -346,30 +333,6 @@ fn tuple_return_delivery_plan(
         } else if let Some(fields) = tuple_make_for_return(blk, *ret, arity) {
             plans.insert(ret.0, fields);
             skipped.insert(ret.0);
-        }
-    }
-    (plans, skipped)
-}
-
-fn list_tail_delivery_plan(f: &FnIr, spec_key: &SpecKey) -> (HashMap<u32, Vec<Var>>, HashSet<u32>) {
-    if !DemandAbi::new(spec_key).delivers_list_tail_return() {
-        return (HashMap::new(), HashSet::new());
-    }
-    let mut plans = HashMap::new();
-    let mut skipped = HashSet::new();
-    for blk in &f.blocks {
-        let Term::Return(ret) = &blk.terminator else {
-            continue;
-        };
-        for Stmt::Let(v, prim) in blk.stmts.iter().rev() {
-            if *v != *ret {
-                continue;
-            }
-            if let Prim::MakeList(elems, None) = prim {
-                plans.insert(ret.0, elems.clone());
-                skipped.insert(ret.0);
-            }
-            break;
         }
     }
     (plans, skipped)

@@ -1,14 +1,12 @@
 use super::fn_types::{
-    CallEdgePlan, CallEdgeTarget, CallableCapability, FnEffects, IncomingParamCallableCapabilities, ReturnContextPlan,
-    ReturnDemand, SpecKey, SpecPlan, WALK_CALLS, fixed_point_input_tys_for_arity, forwarded_return_contract_for_target,
+    CallEdgePlan, CallEdgeTarget, CallableCapability, FnEffects, IncomingParamCallableCapabilities, ReturnDemand,
+    SpecKey, SpecPlan, WALK_CALLS, fixed_point_input_tys_for_arity, forwarded_return_contract_for_target,
     normalize_result_correspondence_key, padded_direct_input_tys, return_contract_for_target, spec_key_for_fn,
     spec_key_for_fn_id,
 };
 use super::prim::type_prim;
 use super::reachable::cont_key_from_slot0;
-use super::return_context::{
-    continuation_empty_tail_plan, continuation_return_demand, direct_call_return_plan, tail_call_return_plan,
-};
+use super::return_context::{continuation_return_demand, direct_call_return_plan, tail_call_return_plan};
 use super::type_fn::callable_capability_for_ty;
 use super::worklist::{
     ActivationReturnFacts, ResultSlot0, closure_call_result_knowledge, direct_call_result_knowledge,
@@ -88,19 +86,12 @@ impl WalkResult {
         cid
     }
 
-    fn record_return_contract(&mut self, callsite: &CallsiteId, target: SpecKey, plan: Option<ReturnContextPlan>) {
+    fn record_return_contract(&mut self, callsite: &CallsiteId, target: SpecKey) {
         let edge = self
             .call_edges
             .get_mut(callsite)
             .expect("return contracts require an existing call edge");
-        edge.return_contract = Some(
-            return_contract_for_target(target.clone(), plan.clone()).unwrap_or_else(|| {
-                panic!(
-                    "return demand {:?} for {:?} requires a matching executable return strategy; plan={:?}",
-                    target.demand, callsite, plan
-                )
-            }),
-        );
+        edge.return_contract = Some(return_contract_for_target(target));
     }
 
     fn record_forwarded_return_contract(&mut self, callsite: &CallsiteId, target: SpecKey) {
@@ -489,7 +480,7 @@ where
             let cid = WalkResult::callsite_id(self.caller_spec_key, term_ident, slot);
             if let Term::Call { continuation, .. } = term {
                 let target_fn = entry_key.fn_id;
-                let (demand, context_plan) = direct_call_return_plan(
+                let demand = direct_call_return_plan(
                     self.t,
                     self.m,
                     self.fn_effects,
@@ -503,20 +494,15 @@ where
                 entry_key = self.activation_returns.canonical_public_key(self.t, entry_key);
                 self.out
                     .record_dispatch(self.caller_spec_key, term_ident, slot, entry_key.clone());
-                self.out.record_return_contract(&cid, entry_key.clone(), context_plan);
+                self.out.record_return_contract(&cid, entry_key.clone());
             } else if matches!(term, Term::TailCall { .. }) {
                 let target_fn = entry_key.fn_id;
-                let (demand, context_plan) = tail_call_return_plan(self.m, self.caller_spec_key, target_fn, args);
+                let demand = tail_call_return_plan(self.m, self.caller_spec_key, target_fn, args);
                 entry_key.demand = demand;
                 entry_key = self.activation_returns.canonical_public_key(self.t, entry_key);
                 self.out
                     .record_dispatch(self.caller_spec_key, term_ident, slot, entry_key.clone());
-                if let Some(context_plan) = context_plan {
-                    self.out
-                        .record_return_contract(&cid, entry_key.clone(), Some(context_plan));
-                } else {
-                    self.out.record_forwarded_return_contract(&cid, entry_key.clone());
-                }
+                self.out.record_forwarded_return_contract(&cid, entry_key.clone());
             } else {
                 self.out
                     .record_dispatch(self.caller_spec_key, term_ident, slot, entry_key.clone());
@@ -537,7 +523,7 @@ where
         };
         let cid = WalkResult::callsite_id(self.caller_spec_key, term_ident, slot);
         if let Term::Call { continuation, .. } = term {
-            let (demand, context_plan) = direct_call_return_plan(
+            let demand = direct_call_return_plan(
                 self.t,
                 self.m,
                 self.fn_effects,
@@ -551,19 +537,14 @@ where
             entry_key = self.activation_returns.canonical_public_key(self.t, entry_key);
             self.out
                 .record_dispatch(self.caller_spec_key, term_ident, slot, entry_key.clone());
-            self.out.record_return_contract(&cid, entry_key.clone(), context_plan);
+            self.out.record_return_contract(&cid, entry_key.clone());
         } else if matches!(term, Term::TailCall { .. }) {
-            let (demand, context_plan) = tail_call_return_plan(self.m, self.caller_spec_key, callee, args);
+            let demand = tail_call_return_plan(self.m, self.caller_spec_key, callee, args);
             entry_key.demand = demand;
             entry_key = self.activation_returns.canonical_public_key(self.t, entry_key);
             self.out
                 .record_dispatch(self.caller_spec_key, term_ident, slot, entry_key.clone());
-            if let Some(context_plan) = context_plan {
-                self.out
-                    .record_return_contract(&cid, entry_key.clone(), Some(context_plan));
-            } else {
-                self.out.record_forwarded_return_contract(&cid, entry_key.clone());
-            }
+            self.out.record_forwarded_return_contract(&cid, entry_key.clone());
         } else {
             self.out
                 .record_dispatch(self.caller_spec_key, term_ident, slot, entry_key.clone());
@@ -780,15 +761,6 @@ where
         let mut entry_key = spec_key_for_fn(cont_fn, take(&mut key));
         entry_key.demand = demand.clone();
         entry_key = self.activation_returns.canonical_public_key(self.t, entry_key);
-        let context_plan = continuation_empty_tail_plan(
-            self.t,
-            self.m,
-            self.caller_spec_key,
-            &cont,
-            &source,
-            &demand,
-            &entry_key,
-        );
         if merge_incoming_param_callable_capabilities(
             self.incoming_param_callable_capabilities,
             &entry_key,
@@ -796,17 +768,8 @@ where
         ) {
             self.out.capability_updates.push(entry_key.clone());
         }
-        let cid = self
-            .out
+        self.out
             .record_dispatch(self.caller_spec_key, term_ident, slot, entry_key.clone());
-        if let Some(plan) = context_plan {
-            let contract_target = match &plan {
-                ReturnContextPlan::ContinuationEmptyTail { target, .. } => target.clone(),
-                _ => entry_key.clone(),
-            };
-            self.out
-                .record_return_contract(&cid, contract_target.clone(), Some(plan));
-        }
     }
 
     fn continuation_slot0(

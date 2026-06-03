@@ -5,7 +5,7 @@ use super::fn_types::{
     SpecReachabilityRole, fixed_point_spec_key_for_arity, normalize_result_correspondence_key,
 };
 use super::narrow::narrow_for_cond;
-use super::reachable::{cont_key_from_slot0, cont_slot0_descr};
+use super::reachable::{cont_key_from_slot0, cont_slot0_descr, reachable_spec_ids};
 use super::type_fn::type_fn;
 use super::*;
 use crate::diag::{Span, codes};
@@ -1298,7 +1298,7 @@ fn planned_program_materialization_reports_executable_body_folds() {
 }
 
 #[test]
-fn materialization_reuses_one_planned_body_for_demand_siblings() {
+fn planner_uses_one_value_spec_for_tuple_destructure_and_value_callers() {
     let src = "fn pair(x), do: {x, x}\n\
                fn main() do\n\
                  {a, b} = pair(1)\n\
@@ -1310,41 +1310,27 @@ fn materialization_reuses_one_planned_body_for_demand_siblings() {
     let planned_program = materialize_program(&mut t, &m, &module_plan, &NullTelemetry);
     let pair = m.fns.iter().find(|f| f.name == "pair").expect("pair fn");
 
-    let mut sibling_keys: Vec<SpecKey> = module_plan
+    let pair_keys: Vec<SpecKey> = module_plan
         .specs
         .keys()
         .filter(|key| key.fn_id == pair.id)
         .cloned()
         .collect();
-    sibling_keys.sort_by(|a, b| format!("{:?}", a.demand).cmp(&format!("{:?}", b.demand)));
-    let shared_body_keys: Vec<SpecKey> = sibling_keys
-        .iter()
-        .filter(|key| sibling_keys.iter().filter(|other| other.body_key() == key.body_key()).count() > 1)
-        .cloned()
-        .collect();
-    assert!(
-        shared_body_keys.len() >= 2,
-        "expected at least two pair specs sharing one body key, got {:?}",
-        sibling_keys
+    assert_eq!(
+        pair_keys.len(),
+        1,
+        "pair should not grow demand-specialized sibling specs"
     );
-
-    let sid_a = planned_program
-        .spec_registry()
-        .resolve_spec_key(&t, &shared_body_keys[0])
-        .expect("first demand sibling registered");
-    let sid_b = planned_program
-        .spec_registry()
-        .resolve_spec_key(&t, &shared_body_keys[1])
-        .expect("second demand sibling registered");
     assert!(
-        std::ptr::eq(
-            planned_program.executable_body(sid_a),
-            planned_program.executable_body(sid_b)
-        ),
-        "demand siblings should resolve to one planned body: {:?} vs {:?}",
-        shared_body_keys[0],
-        shared_body_keys[1]
+        pair_keys[0].demand.is_value(),
+        "tuple destructuring should consume pair's value result, not produce a tuple-fields body demand"
     );
+    let sid = planned_program
+        .spec_registry()
+        .resolve_spec_key(&t, &pair_keys[0])
+        .expect("pair spec registered");
+    let body = planned_program.executable_body(sid);
+    assert_eq!(body.body_key, pair_keys[0].body_key());
 }
 
 // ----- fz-ul4.29.1: per-callsite specialization map -----

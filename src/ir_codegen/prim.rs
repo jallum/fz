@@ -800,9 +800,7 @@ pub(crate) fn lower_prim<M: cranelift_module::Module, T: Types<Ty = Ty>>(
     stmt_idx: usize,
     block_env: Option<&HashMap<Var, Ty>>,
 ) -> Result<LowerOut, CodegenError> {
-    if body.cache.skipped_tuple_return_vars.contains(&dest_var.0)
-        || body.cache.skipped_list_tail_return_vars.contains(&dest_var.0)
-    {
+    if body.cache.skipped_tuple_return_vars.contains(&dest_var.0) {
         return Ok(LowerOut::DeadUnit);
     }
     let runtime = env.runtime;
