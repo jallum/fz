@@ -683,7 +683,7 @@ fn remap_prim(prim: &mut Prim, fn_map: &BTreeMap<FnId, FnId>, linked_atoms: &mut
         Prim::StructField(_, field) => {
             intern_linked_atom(linked_atoms, field);
         }
-        Prim::MakeClosure(_, fid, _) => remap_fn_id(fid, fn_map),
+        Prim::MakeFnRef(_, fid) | Prim::MakeClosure(_, fid, _) => remap_fn_id(fid, fn_map),
         _ => {}
     }
 }

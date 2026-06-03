@@ -190,6 +190,14 @@ pub(super) fn eval_prim<T: Types<Ty = Ty>>(
                 "ConstBitstring",
             )?
         }
+        Prim::MakeFnRef(_, fn_id) => {
+            let heap = &mut unsafe { &mut *runtime.cur_proc() }.heap;
+            let bits = heap.alloc_closure_slots(fn_id.0, 0, 0);
+            let p = closure_addr_from_tagged(bits).expect("new fn ref closure ptr");
+            unsafe { write(p.add(8) as *mut u64, fn_id.0 as u64) };
+            let closure_addr = closure_addr_from_tagged(bits).expect("fn ref closure bits");
+            AnyValue::Ref(AnyValueRef::from_heap_object(ValueKind::CLOSURE, closure_addr).expect("fn ref closure ref"))
+        }
         Prim::MakeClosure(_, fn_id, captured) => {
             let cap_vals: Vec<AnyValue> = collect(env, captured)?;
             let heap = &mut unsafe { &mut *runtime.cur_proc() }.heap;

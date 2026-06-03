@@ -83,6 +83,7 @@ pub(crate) fn type_prim<T: Types<Ty = Ty> + ClosureTypes>(
         Prim::MakeBitstring(_) => t.str_t(),
         Prim::ConstBitstring(_, _) => t.str_t(),
 
+        Prim::MakeFnRef(_, fn_id) => type_make_fn_ref(t, m, *fn_id),
         Prim::MakeClosure(_, fn_id, captured) => type_make_closure(t, env, m, *fn_id, captured),
 
         Prim::Extern(_, eid, _) => {
@@ -246,6 +247,12 @@ fn type_make_closure<T: Types<Ty = Ty> + ClosureTypes>(
         .map(|cv| env.get(cv).cloned().unwrap_or_else(|| t.any()))
         .collect();
     t.closure_lit(fn_id.into(), captures, n_args)
+}
+
+fn type_make_fn_ref<T: Types<Ty = Ty> + ClosureTypes>(t: &mut T, m: &Module, fn_id: FnId) -> Ty {
+    let callee = m.fn_by_id(fn_id);
+    let entry = callee.block(callee.entry);
+    t.closure_lit(fn_id.into(), vec![], entry.params.len())
 }
 
 fn type_type_test<T: Types<Ty = Ty>>(t: &mut T, env: &HashMap<Var, Ty>, v: Var, descr: &Ty) -> Ty {

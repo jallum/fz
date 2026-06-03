@@ -41,6 +41,7 @@ pub(crate) fn prim_effects(module: &Module, prim: &Prim) -> EffectSummary {
             ..EffectSummary::default()
         },
         Prim::Const(_)
+        | Prim::MakeFnRef(_, _)
         | Prim::BinOp(_, _, _)
         | Prim::UnOp(_, _)
         | Prim::ListHead(_)

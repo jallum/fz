@@ -167,6 +167,13 @@ object must be built:
 - `OpaqueCallable` is a callable boundary whose concrete target is not a
   single known function in this plan.
 
+Lowering is the semantic source of that distinction. `ir_lower` now emits
+`Prim::MakeFnRef` for named function values and zero-capture lambdas, and
+`Prim::MakeClosure` only for env-carrying lambdas. Downstream phases may still
+choose a compatible runtime representation, but they must not recover
+`KnownFn` by reinterpreting `MakeClosure(..., [])` as a thin callable because
+that IR shape is no longer the source truth.
+
 Call-edge facts consume callable capabilities alongside the return contract:
 the target says what code may run, and the return contract says how that edge
 returns. The same facts gate lazy continuation representation; see

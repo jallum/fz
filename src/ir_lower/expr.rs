@@ -155,9 +155,9 @@ pub(crate) fn lower_expr(ctx: &mut LowerCtx, e: &Spanned<Expr>, is_tail: bool) -
             if let Some(v) = ctx.lookup(name) {
                 return Ok(v);
             }
-            // Fall back: bare top-level fn name used as a value -> 0-captured
-            // closure pointing at the fn's IR id. With no explicit arity in
-            // the bare-name form, picks the first matching name (overloads
+            // Fall back: bare top-level fn name used as a value -> thin fn ref
+            // pointing at the fn's IR id. With no explicit arity in the
+            // bare-name form, picks the first matching name (overloads
             // disambiguate via the explicit `&name/arity` form — see the
             // `Expr::FnRef` arm).
             if let Some((_, fn_id)) = ctx
@@ -166,10 +166,10 @@ pub(crate) fn lower_expr(ctx: &mut LowerCtx, e: &Spanned<Expr>, is_tail: bool) -
                 .find(|((n, _), _)| n == name)
                 .map(|(k, v)| (k.clone(), *v))
             {
-                return Ok(ctx.let_at(Prim::make_closure(sp, fn_id, vec![]), sp));
+                return Ok(ctx.let_at(Prim::make_fn_ref(sp, fn_id), sp));
             }
             if let Some((_qualified, fn_id)) = ctx.unique_imported_fn_value_target(name) {
-                return Ok(ctx.let_at(Prim::make_closure(sp, fn_id, vec![]), sp));
+                return Ok(ctx.let_at(Prim::make_fn_ref(sp, fn_id), sp));
             }
             Err(LowerError::Unbound {
                 span: sp,
@@ -188,16 +188,16 @@ pub(crate) fn lower_expr(ctx: &mut LowerCtx, e: &Spanned<Expr>, is_tail: bool) -
         }),
         Expr::FnRef { name, arity } => {
             if let Some(&fn_id) = ctx.fns.get(&(name.clone(), *arity)) {
-                return Ok(ctx.let_at(Prim::make_closure(sp, fn_id, vec![]), sp));
+                return Ok(ctx.let_at(Prim::make_fn_ref(sp, fn_id), sp));
             }
             if let Some(imported) = ctx.resolve_prelude_import(name, *arity)
                 && let Some(&fn_id) = ctx.fns.get(&(imported, *arity))
             {
-                return Ok(ctx.let_at(Prim::make_closure(sp, fn_id, vec![]), sp));
+                return Ok(ctx.let_at(Prim::make_fn_ref(sp, fn_id), sp));
             }
             // fz-eol — `&libc::close/1`: synthesize (and cache) a top-level
             // wrapper fn that forwards its args to the named extern, then
-            // return a closure pointing at that wrapper.
+            // return a thin fn ref pointing at that wrapper.
             if let Some(eid) = ctx.externs.lookup(name) {
                 let decl = ctx
                     .extern_decls
@@ -206,7 +206,7 @@ pub(crate) fn lower_expr(ctx: &mut LowerCtx, e: &Spanned<Expr>, is_tail: bool) -
                     .expect("extern table out of sync with extern_decls");
                 if decl.params.len() == *arity {
                     let fn_id = ctx.ensure_extern_wrapper(eid);
-                    return Ok(ctx.let_at(Prim::make_closure(sp, fn_id, vec![]), sp));
+                    return Ok(ctx.let_at(Prim::make_fn_ref(sp, fn_id), sp));
                 }
             }
             Err(LowerError::Unbound {

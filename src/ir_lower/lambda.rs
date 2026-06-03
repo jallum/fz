@@ -82,7 +82,11 @@ pub(crate) fn lower_lambda(
     ctx.terminated = saved_terminated;
     ctx.branch_origin = saved_branch_origin;
 
-    Ok(ctx.let_at(Prim::make_closure(span, lam_id, captured_vars), span))
+    Ok(if captured_vars.is_empty() {
+        ctx.let_at(Prim::make_fn_ref(span, lam_id), span)
+    } else {
+        ctx.let_at(Prim::make_closure(span, lam_id, captured_vars), span)
+    })
 }
 pub(super) fn lambda_free_names(params: &[Spanned<Pattern>], body: &Spanned<Expr>) -> HashSet<String> {
     let mut bound = HashSet::new();

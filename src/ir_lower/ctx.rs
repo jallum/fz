@@ -361,7 +361,8 @@ impl LowerCtx {
     /// `name_var(v, name, name_span)`.
     pub(super) fn let_at(&mut self, mut prim: Prim, span: Span) -> Var {
         // fz-rrh — same pattern as set_term_at: hoist the source span
-        // into the prim's intrinsic ident (only `Prim::MakeClosure`
+        // into the prim's intrinsic ident (only `Prim::MakeFnRef`,
+        // `Prim::MakeClosure`,
         // is a callsite; other prims are no-op).
         prim.set_source_span(span);
         let blk = self.cur_block();

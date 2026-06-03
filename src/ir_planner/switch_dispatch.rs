@@ -88,7 +88,11 @@ fn max_var_in_prim(prim: &Prim) -> u32 {
     let mut max = 0;
     let mut visit = |var: Var| max = max.max(var.0);
     match prim {
-        Prim::Const(_) | Prim::DestTupleBegin { .. } | Prim::DestListBegin { .. } | Prim::ConstBitstring(_, _) => {}
+        Prim::Const(_)
+        | Prim::MakeFnRef(_, _)
+        | Prim::DestTupleBegin { .. }
+        | Prim::DestListBegin { .. }
+        | Prim::ConstBitstring(_, _) => {}
         Prim::BinOp(_, lhs, rhs) | Prim::MapGet(lhs, rhs) | Prim::MatcherMapGet(lhs, rhs) => {
             visit(*lhs);
             visit(*rhs);

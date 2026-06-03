@@ -42,7 +42,7 @@ fn build_call_graph_with_return_continuations(
         for b in &f.blocks {
             for stmt in &b.stmts {
                 let Stmt::Let(_, prim) = stmt;
-                if let Prim::MakeClosure(_, lam_fn_id, _) = prim {
+                if let Prim::MakeFnRef(_, lam_fn_id) | Prim::MakeClosure(_, lam_fn_id, _) = prim {
                     edges.insert(*lam_fn_id);
                 }
             }

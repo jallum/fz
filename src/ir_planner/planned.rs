@@ -242,29 +242,28 @@ fn make_closure_callable_gap_issues(
         for blk in &planned_body.body.blocks {
             for stmt in &blk.stmts {
                 let Stmt::Let(dest, prim) = stmt;
-                let Prim::MakeClosure(_, lam_fn_id, captured) = prim else {
-                    continue;
+                let (lam_fn_id, capture_count) = match prim {
+                    Prim::MakeFnRef(_, lam_fn_id) => (*lam_fn_id, 0),
+                    Prim::MakeClosure(_, lam_fn_id, captured) => (*lam_fn_id, captured.len()),
+                    _ => continue,
                 };
                 if !used_vars.contains(dest) {
                     continue;
                 }
                 let resolved =
-                    spec_registry.resolve_closure_body_spec(*lam_fn_id, |sid| callable_entries.contains_key(&sid.0));
+                    spec_registry.resolve_closure_body_spec(lam_fn_id, |sid| callable_entries.contains_key(&sid.0));
                 if resolved.is_some() {
                     continue;
                 }
                 let lam_name = module
                     .fns
                     .iter()
-                    .find(|f| f.id == *lam_fn_id)
+                    .find(|f| f.id == lam_fn_id)
                     .map(|f| f.name.clone())
                     .unwrap_or_else(|| format!("FnId({})", lam_fn_id.0));
                 gaps.push(format!(
                     "{} spec_id={} missing callable entry for {} (captures={})",
-                    planned_body.body.name,
-                    planned_body.spec_id.0,
-                    lam_name,
-                    captured.len()
+                    planned_body.body.name, planned_body.spec_id.0, lam_name, capture_count
                 ));
             }
         }
@@ -332,23 +331,21 @@ fn build_callable_entries(
         for blk in &planned_body.body.blocks {
             for stmt in blk.stmts.iter() {
                 let Stmt::Let(dest, prim) = stmt;
-                if let Prim::MakeClosure(_ident, lam_fn_id, captured) = prim {
-                    if !used_vars.contains(dest) {
-                        continue;
-                    }
-                    let cl_sid = spec_registry
-                        .resolve_closure_body_spec(*lam_fn_id, has_body)
-                        .map(|sid| sid.0);
-                    let Some(cl_sid) = cl_sid else {
-                        continue;
-                    };
-                    callable_entries.insert(
-                        cl_sid,
-                        CallableEntryPlan {
-                            capture_count: captured.len(),
-                        },
-                    );
+                let (lam_fn_id, capture_count) = match prim {
+                    Prim::MakeFnRef(_ident, lam_fn_id) => (*lam_fn_id, 0),
+                    Prim::MakeClosure(_ident, lam_fn_id, captured) => (*lam_fn_id, captured.len()),
+                    _ => continue,
+                };
+                if !used_vars.contains(dest) {
+                    continue;
                 }
+                let cl_sid = spec_registry
+                    .resolve_closure_body_spec(lam_fn_id, has_body)
+                    .map(|sid| sid.0);
+                let Some(cl_sid) = cl_sid else {
+                    continue;
+                };
+                callable_entries.insert(cl_sid, CallableEntryPlan { capture_count });
             }
         }
     }

@@ -70,9 +70,9 @@ pub enum Expr {
     Var(String),
 
     /// Explicit function reference: `&name/arity` (fz-swt.5).
-    /// `name` may be dotted (`Mod.fun`). Lowers to a zero-capture
-    /// `Prim::MakeClosure` over the fn matching `(name, arity)` exactly,
-    /// rather than the bare-name path's "first defined wins".
+    /// `name` may be dotted (`Mod.fun`). Lowers to a thin `Prim::MakeFnRef`
+    /// over the fn matching `(name, arity)` exactly, rather than the bare-name
+    /// path's "first defined wins".
     FnRef {
         name: String,
         arity: usize,

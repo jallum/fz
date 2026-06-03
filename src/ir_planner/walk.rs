@@ -203,7 +203,7 @@ fn collect_prim_vars(prim: &Prim, used: &mut HashSet<Var>) {
     use crate::fz_ir::BitSizeIr;
 
     match prim {
-        Prim::Const(_) => {}
+        Prim::Const(_) | Prim::MakeFnRef(_, _) => {}
         Prim::BinOp(_, a, b) => {
             used.insert(*a);
             used.insert(*b);
@@ -395,10 +395,14 @@ where
             let Stmt::Let(v, prim) = stmt;
             let pt_ty = type_prim(self.t, prim, env, self.m, &HashSet::new());
             env.insert(*v, pt_ty);
-            if self.reachable_used_vars.contains(v)
-                && let Stmt::Let(_, Prim::MakeClosure(_, fn_id, captured)) = stmt
-            {
-                self.record_make_closure_target(*fn_id, captured, env);
+            if self.reachable_used_vars.contains(v) {
+                match stmt {
+                    Stmt::Let(_, Prim::MakeFnRef(_, fn_id)) => self.record_make_closure_target(*fn_id, &[], env),
+                    Stmt::Let(_, Prim::MakeClosure(_, fn_id, captured)) => {
+                        self.record_make_closure_target(*fn_id, captured, env);
+                    }
+                    _ => {}
+                }
             }
             if let Stmt::Let(_, Prim::Extern(ident, _, args)) = stmt {
                 let arg_vars = args.iter().map(|arg| arg.var).collect::<Vec<_>>();

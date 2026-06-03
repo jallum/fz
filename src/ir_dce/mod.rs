@@ -132,7 +132,7 @@ fn prune_dead_owned_cons_capabilities(f: &mut FnIr) {
 
 fn collect_prim_vars(p: &Prim, used: &mut HashSet<Var>) {
     match p {
-        Prim::Const(_) => {}
+        Prim::Const(_) | Prim::MakeFnRef(_, _) => {}
         Prim::BinOp(_, a, b) => {
             used.insert(*a);
             used.insert(*b);

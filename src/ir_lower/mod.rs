@@ -1486,6 +1486,21 @@ end
             .expect("expected closure construction")
     }
 
+    fn first_make_fn_ref(f: &FnIr) -> FnId {
+        f.blocks
+            .iter()
+            .flat_map(|block| &block.stmts)
+            .find_map(|stmt| {
+                let Stmt::Let(_, prim) = stmt;
+                if let Prim::MakeFnRef(_, fn_id) = prim {
+                    Some(*fn_id)
+                } else {
+                    None
+                }
+            })
+            .expect("expected fn ref construction")
+    }
+
     #[test]
     fn lower_const_int_returns_in_entry_block() {
         let m = lower_src("fn f() do 42 end");
@@ -2244,6 +2259,26 @@ end
     }
 
     #[test]
+    fn lower_named_fn_ref_emits_thin_fn_ref_prim() {
+        let m = lower_src("fn id(x), do: x\nfn main(), do: &id/1");
+        let main = m.fn_by_name("main").expect("main fn missing");
+        let fn_id = first_make_fn_ref(main);
+
+        assert_eq!(m.fn_by_id(fn_id).name, "id");
+        assert_eq!(count_prims_in_fn(main, |prim| matches!(prim, Prim::MakeClosure(..))), 0);
+    }
+
+    #[test]
+    fn lower_bare_top_level_fn_value_emits_thin_fn_ref_prim() {
+        let m = lower_src("fn id(x), do: x\nfn main(), do: id");
+        let main = m.fn_by_name("main").expect("main fn missing");
+        let fn_id = first_make_fn_ref(main);
+
+        assert_eq!(m.fn_by_id(fn_id).name, "id");
+        assert_eq!(count_prims_in_fn(main, |prim| matches!(prim, Prim::MakeClosure(..))), 0);
+    }
+
+    #[test]
     fn lower_lambda_captures_only_referenced_outer_names() {
         let m = lower_src("fn mk(x, y), do: fn(z) -> x + z end");
         let mk = m.fn_by_name("mk").expect("mk fn missing");
@@ -2267,11 +2302,12 @@ end
     fn lower_lambda_with_no_outer_reads_has_no_captures() {
         let m = lower_src("fn mk(x), do: fn(y) -> y + 1 end");
         let mk = m.fn_by_name("mk").expect("mk fn missing");
-        let (lambda_id, captured) = first_make_closure(mk);
+        let lambda_id = first_make_fn_ref(mk);
 
-        assert!(
-            captured.is_empty(),
-            "lambda body reads no outer names, so closure should be zero-capture"
+        assert_eq!(
+            count_prims_in_fn(mk, |prim| matches!(prim, Prim::MakeClosure(..))),
+            0,
+            "lambda body reads no outer names, so it should lower as a thin fn ref"
         );
 
         let lambda = m.fn_by_id(lambda_id);

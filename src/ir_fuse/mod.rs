@@ -15,6 +15,7 @@ pub(crate) fn subst_prim(p: &Prim, subst: &HashMap<Var, Var>) -> Prim {
     let sv = |v: Var| subst_var(v, subst);
     match p {
         Prim::Const(c) => Prim::Const(c.clone()),
+        Prim::MakeFnRef(ident, fid) => Prim::MakeFnRef(ident.clone(), *fid),
         Prim::BinOp(op, a, b) => Prim::BinOp(*op, sv(*a), sv(*b)),
         Prim::UnOp(op, a) => Prim::UnOp(*op, sv(*a)),
         Prim::Extern(ident, eid, args) => Prim::Extern(
@@ -71,8 +72,8 @@ pub(crate) fn subst_prim(p: &Prim, subst: &HashMap<Var, Var>) -> Prim {
         Prim::TupleField(a, i) => Prim::TupleField(sv(*a), *i),
         Prim::StructField(a, name) => Prim::StructField(sv(*a), name.clone()),
         Prim::MakeList(els, tail) => Prim::MakeList(els.iter().map(|x| sv(*x)).collect(), tail.map(sv)),
-        // fz-kgk — subst_prim rewrites Var operands only; the MakeClosure
-        // callsite identity stays.
+        // fz-kgk — subst_prim rewrites Var operands only; callable identities
+        // stay.
         Prim::MakeClosure(ident, fid, caps) => {
             Prim::MakeClosure(ident.clone(), *fid, caps.iter().map(|x| sv(*x)).collect())
         }

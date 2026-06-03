@@ -1045,6 +1045,20 @@ pub(crate) fn lower_prim<M: cranelift_module::Module, T: Types<Ty = Ty>>(
         | Prim::MapGet(..)
         | Prim::MatcherMapGet(..)
         | Prim::IsMatcherMapMiss(..) => lower_collection_prim(body, t, env, var_env, prim, block_id, block_env),
+        Prim::MakeFnRef(mk_ident, fn_id) => lower_make_closure(
+            body,
+            runtime,
+            var_env,
+            callable_entry_fn_ids,
+            spec_registry,
+            param_reprs,
+            return_reprs,
+            mk_ident,
+            *fn_id,
+            &[],
+            block_id,
+            stmt_idx,
+        ),
         Prim::MakeClosure(mk_ident, fn_id, captured) => lower_make_closure(
             body,
             runtime,

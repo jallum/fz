@@ -421,8 +421,11 @@ pub enum Prim {
         list: Var,
         token: InitTokenId,
     },
-    /// Allocate a closure: a struct holding the IR fn id of the lambda body
-    /// plus the captured environment locals.
+    /// Build a thin function reference: callable code identity with no
+    /// environment payload.
+    MakeFnRef(CallsiteIdent, FnId),
+    /// Allocate a closure: callable code identity plus the captured
+    /// environment locals.
     MakeClosure(CallsiteIdent, FnId, Vec<Var>),
     /// Build a map from (key, value) pairs in insertion order.
     MakeMap(Vec<(Var, Var)>),
@@ -767,6 +770,10 @@ impl Term {
 
 impl Prim {
     /// fz-kgk — convenience constructor for callsite-bearing prims.
+    pub fn make_fn_ref(span: Span, fn_id: FnId) -> Self {
+        Prim::MakeFnRef(CallsiteIdent::from_source(span), fn_id)
+    }
+
     pub fn make_closure(span: Span, fn_id: FnId, captured: Vec<Var>) -> Self {
         Prim::MakeClosure(CallsiteIdent::from_source(span), fn_id, captured)
     }
@@ -783,7 +790,7 @@ impl Prim {
             return;
         }
         match self {
-            Prim::MakeClosure(ident, _, _) | Prim::Extern(ident, _, _) => {
+            Prim::MakeFnRef(ident, _) | Prim::MakeClosure(ident, _, _) | Prim::Extern(ident, _, _) => {
                 *ident = CallsiteIdent::from_source(span);
             }
             _ => {}
@@ -856,6 +863,7 @@ pub(crate) fn visit_prim_vars(prim: &Prim, mut visit: impl FnMut(Var)) {
                 visit(*tail);
             }
         }
+        Prim::MakeFnRef(_, _) => {}
         Prim::MakeClosure(_, _, caps) => {
             for v in caps {
                 visit(*v);
@@ -1496,12 +1504,15 @@ fn remap_ident(ident: &mut CallsiteIdent, remap: &HashMap<FileId, FileId>) {
     *ident = CallsiteIdent::from_source(span);
 }
 
-/// Remap any span carried by a `Prim`. `MakeClosure` and `Extern` carry one; the
+/// Remap any span carried by a `Prim`. `MakeFnRef`, `MakeClosure`, and `Extern`
+/// carry one; the
 /// `match` is exhaustive so a future span-carrying Prim variant fails to
 /// compile rather than being silently skipped.
 fn remap_prim_span(prim: &mut Prim, remap: &HashMap<FileId, FileId>) {
     match prim {
-        Prim::MakeClosure(ident, _, _) | Prim::Extern(ident, _, _) => remap_ident(ident, remap),
+        Prim::MakeFnRef(ident, _) | Prim::MakeClosure(ident, _, _) | Prim::Extern(ident, _, _) => {
+            remap_ident(ident, remap)
+        }
         // Span-free prims: explicit no-op arms keep the match exhaustive.
         Prim::Const(_)
         | Prim::BinOp(_, _, _)
@@ -1574,11 +1585,12 @@ fn remap_term_span(term: &mut Term, remap: &HashMap<FileId, FileId>) {
 }
 
 /// Read-only twin of `remap_prim_span`: visits any span carried by a `Prim`.
-/// `MakeClosure` and `Extern` carry one; the `match` is exhaustive so a future
-/// span-carrying Prim variant fails to compile rather than being skipped.
+/// `MakeFnRef`, `MakeClosure`, and `Extern` carry one; the `match` is
+/// exhaustive so a future span-carrying Prim variant fails to compile rather
+/// than being skipped.
 fn visit_prim_span(prim: &Prim, f: &mut impl FnMut(Span)) {
     match prim {
-        Prim::MakeClosure(ident, _, _) | Prim::Extern(ident, _, _) => f(ident.span()),
+        Prim::MakeFnRef(ident, _) | Prim::MakeClosure(ident, _, _) | Prim::Extern(ident, _, _) => f(ident.span()),
         // Span-free prims: explicit no-op arms keep the match exhaustive.
         Prim::Const(_)
         | Prim::BinOp(_, _, _)
@@ -2044,6 +2056,7 @@ impl fmt::Display for Prim {
             Prim::DestListFreeze { list, token } => {
                 write!(f, "dest_list_freeze({}, {})", list, token)
             }
+            Prim::MakeFnRef(_ident, fid) => write!(f, "fn_ref({})", fid),
             Prim::MakeClosure(_ident, fid, captured) => {
                 write!(f, "closure({}, captured=[{}])", fid, fmt_var_list(captured))
             }

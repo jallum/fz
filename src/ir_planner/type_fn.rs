@@ -413,22 +413,26 @@ fn collect_callable_capabilities<T: Types<Ty = Ty> + ClosureTypes>(
     for b in &f.blocks {
         for stmt in &b.stmts {
             let Stmt::Let(v, prim) = stmt;
-            if let Prim::MakeClosure(_, fid, captured) = prim {
-                let cap = if captured.is_empty() {
-                    CallableCapability::KnownFn(*fid)
-                } else {
+            match prim {
+                Prim::MakeFnRef(_, fid) => {
+                    capabilities.insert(*v, CallableCapability::KnownFn(*fid));
+                }
+                Prim::MakeClosure(_, fid, captured) => {
                     let captures = captured.iter().filter_map(|cv| vars.get(cv).cloned()).collect();
                     let capture_capabilities = captured
                         .iter()
                         .map(|cv| vars.get(cv).and_then(|ty| callable_capability_for_ty(t, ty)))
                         .collect();
-                    CallableCapability::KnownClosure {
-                        fn_id: *fid,
-                        captures,
-                        capture_capabilities,
-                    }
-                };
-                capabilities.insert(*v, cap);
+                    capabilities.insert(
+                        *v,
+                        CallableCapability::KnownClosure {
+                            fn_id: *fid,
+                            captures,
+                            capture_capabilities,
+                        },
+                    );
+                }
+                _ => {}
             }
         }
     }
