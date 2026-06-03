@@ -306,7 +306,7 @@ where
     let mut reads = Vec::new();
     for matched_clause in matched_clauses {
         let demand = demand_for_callable_result(t, &matched_clause.ret);
-        for ClosureLitInfo { target, captures } in &closure_lits {
+        for ClosureLitInfo { target, captures, .. } in &closure_lits {
             let query = CallbackReturnQuery {
                 target: *target,
                 captures,

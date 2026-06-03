@@ -203,7 +203,7 @@ fn push_closure_call<'a, T: Types<Ty = Ty> + ClosureTypes>(
         && let Some(clauses) = t.callable_clauses(cv_ty)
     {
         for clause in clauses {
-            if let Some(ClosureLitInfo { target, captures }) = clause.closure {
+            if let Some(ClosureLitInfo { target, captures, .. }) = clause.closure {
                 out.push(BlockCallsite {
                     slot: EmitSlot::ClosureCall,
                     kind: CallsiteKind::ClosureLit {

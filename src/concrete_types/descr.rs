@@ -1,7 +1,7 @@
 //! The `Descr` set-theoretic type descriptor — its fields and inherent impls.
 
 use crate::fz_ir::FnId;
-use crate::types::{MapKey, Nominals, TypeVarId};
+use crate::types::{CallableValueKind, MapKey, Nominals, TypeVarId};
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::mem::replace;
@@ -854,6 +854,7 @@ impl Descr {
                 args: s.args.iter().map(|arg| go(arg, sigma, next)).collect(),
                 ret: Box::new(go(&s.ret, sigma, next)),
                 lit: s.lit.map(|lit| ClosureLit {
+                    kind: lit.kind,
                     fn_id: lit.fn_id,
                     captures: lit
                         .captures
@@ -979,6 +980,7 @@ impl Descr {
             args: s.args.iter().map(f).collect(),
             ret: Box::new(f(&s.ret)),
             lit: s.lit.map(|l| ClosureLit {
+                kind: l.kind,
                 fn_id: l.fn_id,
                 captures: l.captures,
             }),
@@ -1097,8 +1099,8 @@ impl Descr {
         d
     }
 
-    /// fz-ul4.27.22.8 — closure-literal singleton: the specific closure
-    /// constructed by `MakeClosure(fn_id, [vars typed as `captures`])`.
+    /// fz-ul4.27.22.8 — callable-literal singleton for one env-carrying
+    /// closure constructed by `MakeClosure(fn_id, [vars typed as `captures`])`.
     /// `n_args` is the post-capture apparent arity (i.e., the closure's
     /// remaining param count once captures are bound). The arrow's `args`
     /// and `ret` start as `any` placeholders; consumers refine them by
@@ -1125,8 +1127,27 @@ impl Descr {
             args: (0..n_args).map(arg_var).collect(),
             ret: Box::new(ret_var),
             lit: Some(ClosureLit {
+                kind: CallableValueKind::Closure,
                 fn_id,
                 captures: captures.into_iter().map(ty_from_descr).collect(),
+            }),
+        };
+        let mut d = Self::none();
+        d.funcs.push(Conj::pos_of(sig));
+        d
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn fn_ref_lit(fn_id: FnId, n_args: usize) -> Self {
+        let arg_var = |pos: usize| Descr::var(closure_var_id(fn_id, pos));
+        let ret_var = Descr::var(closure_ret_var_id(fn_id));
+        let sig = ArrowSig {
+            args: (0..n_args).map(arg_var).collect(),
+            ret: Box::new(ret_var),
+            lit: Some(ClosureLit {
+                kind: CallableValueKind::FnRef,
+                fn_id,
+                captures: Vec::new(),
             }),
         };
         let mut d = Self::none();

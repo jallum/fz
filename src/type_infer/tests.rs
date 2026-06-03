@@ -5,7 +5,7 @@ use crate::test_support::{
     entry_main_fn_id as main_id, linked_runtime_module as linked, linked_runtime_module_unplanned as linked_unplanned,
     lower_frontend_module as lower,
 };
-use crate::types::{ClosureTarget, ClosureTypes, ConcreteTypes, Ty, Types};
+use crate::types::{CallableValueKind, ClosureTarget, ClosureTypes, ConcreteTypes, Ty, Types};
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -31,6 +31,10 @@ fn closure_apply_contract<T: Types<Ty = Ty> + ClosureTypes>(
     let mut inputs = info.captures;
     inputs.extend_from_slice(arg_tys);
     Some((FnId(info.target.0), inputs))
+}
+
+fn callable_kind<T: Types<Ty = Ty> + ClosureTypes>(t: &T, callable_ty: &Ty) -> Option<CallableValueKind> {
+    t.closure_lit_parts(callable_ty).map(|info| info.kind)
 }
 
 #[derive(Clone, Debug, Default)]
@@ -1204,6 +1208,48 @@ fn named_refs_instantiate_polymorphic_identity_per_callsite() {
 }
 
 #[test]
+fn named_ref_return_preserves_thin_callable_kind() {
+    let mut t = ConcreteTypes;
+    let module = lower("fn id(x), do: x\nfn main(), do: &id/1");
+    let ret = infer_return(&mut t, &module, main_id(&module), &[]);
+
+    assert_eq!(callable_kind(&t, &ret), Some(CallableValueKind::FnRef));
+    assert_eq!(
+        t.closure_lit_parts(&ret).map(|info| info.captures.len()),
+        Some(0),
+        "thin fn refs should carry no capture payload in inference"
+    );
+}
+
+#[test]
+fn zero_capture_lambda_return_preserves_thin_callable_kind() {
+    let mut t = ConcreteTypes;
+    let module = lower("fn main(), do: fn(x) -> x end");
+    let ret = infer_return(&mut t, &module, main_id(&module), &[]);
+
+    assert_eq!(callable_kind(&t, &ret), Some(CallableValueKind::FnRef));
+    assert_eq!(
+        t.closure_lit_parts(&ret).map(|info| info.captures.len()),
+        Some(0),
+        "zero-capture lambdas should infer as thin callable values"
+    );
+}
+
+#[test]
+fn captured_lambda_return_preserves_closure_kind() {
+    let mut t = ConcreteTypes;
+    let module = lower("fn mk(x), do: fn(y) -> x + y end\nfn main(), do: mk(1)");
+    let ret = infer_return(&mut t, &module, main_id(&module), &[]);
+
+    assert_eq!(callable_kind(&t, &ret), Some(CallableValueKind::Closure));
+    assert_eq!(
+        t.closure_lit_parts(&ret).map(|info| info.captures.len()),
+        Some(1),
+        "captured lambdas should preserve capture payload in inference"
+    );
+}
+
+#[test]
 fn named_refs_drive_pattern_dispatch_per_activation() {
     let mut t = ConcreteTypes;
     let module = lower(include_str!("fixtures/poly_named_ref_pattern.fz"));
@@ -1462,6 +1508,7 @@ fn captured_closure_is_carried_concretely() {
         .closure_lit_parts(&inputs[0])
         .expect("leading input is the captured closure, concrete");
     assert_eq!(captured.target, ClosureTarget(9));
+    assert_eq!(captured.kind, CallableValueKind::Closure);
 }
 
 #[test]

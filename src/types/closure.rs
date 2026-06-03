@@ -8,6 +8,12 @@ pub struct CallableClause<T> {
     pub closure: Option<ClosureLitInfo<T>>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub enum CallableValueKind {
+    FnRef,
+    Closure,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct ClosureTarget(pub u32);
 
@@ -27,13 +33,16 @@ impl From<ClosureTarget> for FnId {
 pub struct ClosureLitInfo<T> {
     pub target: ClosureTarget,
     pub captures: Vec<T>,
+    pub kind: CallableValueKind,
 }
 
 pub trait ClosureTypes: Types {
+    fn fn_ref_lit(&mut self, target: ClosureTarget, n_args: usize) -> Self::Ty;
+
     fn closure_lit(&mut self, target: ClosureTarget, captures: Vec<Self::Ty>, n_args: usize) -> Self::Ty;
 
     /// If `a` is a singleton closure literal, return the callee target
-    /// and captured literal values.
+    /// and captured literal values plus callable kind.
     fn closure_lit_parts(&self, a: &Self::Ty) -> Option<ClosureLitInfo<Self::Ty>>;
 
     /// If `a` has only pure positive callable clauses, return each

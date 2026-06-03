@@ -663,7 +663,7 @@ pub(crate) fn resolve_tcc_body<T: Types<Ty = Ty> + ClosureTypes>(
     module: &Module,
     spec_registry: &SpecRegistry,
 ) -> Option<(FnId, u32)> {
-    let ClosureLitInfo { target, captures } = t.closure_lit_parts(ft.vars.get(closure)?)?;
+    let ClosureLitInfo { target, captures, .. } = t.closure_lit_parts(ft.vars.get(closure)?)?;
     let fn_id = FnId::from(target);
     let body_fn = module.fn_by_id(fn_id);
     let np = body_fn.block(body_fn.entry).params.len();

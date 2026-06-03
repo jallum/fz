@@ -4,7 +4,7 @@
 use std::collections::BTreeMap;
 
 use crate::fz_ir::FnId;
-use crate::types::{MapKey, Ty};
+use crate::types::{CallableValueKind, MapKey, Ty};
 
 use super::descr::Descr;
 use super::{ty_descr, ty_from_descr};
@@ -69,21 +69,28 @@ impl ListSig {
 }
 
 /// fz-ul4.27.22.8 — closure-literal tag attached to an arrow clause.
-/// When `ArrowSig::lit = Some(ClosureLit { fn_id, captures })`, the clause
-/// represents the *specific* closure produced by `MakeClosure(fn_id,
-/// vars_typed_as_captures)` rather than the saturated arrow `(args)→ret`.
+/// When `ArrowSig::lit = Some(ClosureLit { kind, fn_id, captures })`, the
+/// clause represents one specific callable value rather than only the
+/// saturated arrow `(args)→ret`.
 ///
-/// Captures are stored as a vector aligned with the first N entry params of
-/// `fn_id`'s body (N = `captures.len()`). The arrow's `args` field carries
-/// the apparent post-capture arity (vector of `Descr::any()` until 22.9's
-/// `resolve_closure_return` refines per spec lookup).
+/// `kind = FnRef` means the value is a thin function reference with no
+/// environment payload. `captures` must be empty in that case.
 ///
-/// Two `ClosureLit`s are equal iff `fn_id` and elementwise `captures`
-/// match. Lit-bearing clauses do not collapse with lit-free clauses under
-/// union — `closure_lit(F, K) ⊆ arrow(any..., any)` semantically, but
-/// the union keeps both to preserve singleton precision downstream.
+/// `kind = Closure` means the value is an env-carrying closure produced by
+/// `MakeClosure(fn_id, vars_typed_as_captures)`. Captures are stored as a
+/// vector aligned with the first N entry params of `fn_id`'s body.
+///
+/// The arrow's `args` field carries the apparent post-capture arity (vector of
+/// `Descr::any()` until 22.9's `resolve_closure_return` refines per spec
+/// lookup).
+///
+/// Two `ClosureLit`s are equal iff `kind`, `fn_id`, and elementwise
+/// `captures` match. Lit-bearing clauses do not collapse with lit-free clauses
+/// under union — callable singletons are stricter than plain arrows, and the
+/// union keeps both to preserve singleton precision downstream.
 #[derive(Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub(crate) struct ClosureLit {
+    pub kind: CallableValueKind,
     pub fn_id: FnId,
     pub captures: Vec<Ty>,
 }
@@ -209,6 +216,9 @@ impl MergeSig for ArrowSig {
                 if la.fn_id != lb.fn_id {
                     return None;
                 }
+                if la.kind != lb.kind {
+                    return None;
+                }
                 if la.captures.len() != lb.captures.len() {
                     return None;
                 }
@@ -219,6 +229,7 @@ impl MergeSig for ArrowSig {
                     .map(|(x, y)| ty_from_descr(ty_descr(x).intersect(ty_descr(y))))
                     .collect();
                 Some(ClosureLit {
+                    kind: la.kind,
                     fn_id: la.fn_id,
                     captures: caps,
                 })

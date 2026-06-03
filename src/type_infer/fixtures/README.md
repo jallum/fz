@@ -14,9 +14,9 @@ runtime graph, then observe type-inference facts through telemetry.
 | --- | --- | --- | --- |
 | `add.fz` | `a + b` | `(number, number) -> number`; `add(1,2) : int` | settles ✓ |
 | `poly_id.fz` | same `FnId` called at `int` and `:ok` | `main() : {int, :ok}`; independent activations do not over-join | settles ✓ |
-| `poly_named_ref.fz` | same zero-capture call-target value applied at `int` and `:ok` | `main() : {int, :ok}`; named refs do not collapse activations into one monomorphic cell | settles ✓ |
+| `poly_named_ref.fz` | same thin function-reference value applied at `int` and `:ok` | `main() : {int, :ok}`; named refs do not collapse activations into one monomorphic cell | settles ✓ |
 | `poly_named_ref_pattern.fz` | named ref to a source-total pattern fn applied at two atom literals | `main() : {:one, :two}`; call-target activation still drives matcher proof and keeps the catch-all dead | settles ✓ |
-| `poly_capture_ref.fz` | same captured closure value applied at `int` and `:right` | `main() : {{:ok, int}, {:ok, :right}}`; captures are inference inputs, not callable arity | settles ✓ |
+| `poly_capture_ref.fz` | same captured closure value applied at `int` and `:right` | `main() : {{:ok, int}, {:ok, :right}}`; captures are inference inputs, and captured closures stay distinct from thin refs | settles ✓ |
 | `match_atom_partition.fz` | same multi-clause `FnId` called with different atom literals | `main() : {:one, :two}`; matcher proof selects different leaves per activation | settles ✓ |
 | `match_list_partition.fz` | same multi-clause `FnId` called with `[]` and `[1]` | `main() : {:empty, :cons}`; list-shape proof selects empty vs cons leaves per activation | settles ✓ |
 | `match_list_binding.fz` | cons clause returns `[h | _]` binding | `main() : {:empty, int}`; matcher-produced bindings carry element type into the selected leaf | settles ✓ |

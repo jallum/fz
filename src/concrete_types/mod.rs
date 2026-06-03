@@ -484,6 +484,7 @@ fn mint_arrow_conj(c: Conj<ArrowSig>, candidates: &[(String, Descr)]) -> Conj<Ar
                     .collect(),
                 ret: Box::new(mint_owned_resource_aliases_descr(&sig.ret, candidates)),
                 lit: sig.lit.map(|lit| ClosureLit {
+                    kind: lit.kind,
                     fn_id: lit.fn_id,
                     captures: lit
                         .captures
@@ -504,6 +505,7 @@ fn mint_arrow_conj(c: Conj<ArrowSig>, candidates: &[(String, Descr)]) -> Conj<Ar
                     .collect(),
                 ret: Box::new(mint_owned_resource_aliases_descr(&sig.ret, candidates)),
                 lit: sig.lit.map(|lit| ClosureLit {
+                    kind: lit.kind,
                     fn_id: lit.fn_id,
                     captures: lit
                         .captures
@@ -544,6 +546,10 @@ fn mint_map_conj(c: Conj<MapSig>, candidates: &[(String, Descr)]) -> Conj<MapSig
 }
 
 impl ClosureTypes for ConcreteTypes {
+    fn fn_ref_lit(&mut self, target: ClosureTarget, n_args: usize) -> Ty {
+        ty_from_descr(Descr::fn_ref_lit(target.into(), n_args))
+    }
+
     fn closure_lit(&mut self, target: ClosureTarget, captures: Vec<Ty>, n_args: usize) -> Ty {
         let capture_descrs: Vec<Descr> = captures.into_iter().map(|c| ty_descr(&c).clone()).collect();
         ty_from_descr(Descr::closure_lit(target.into(), capture_descrs, n_args))
@@ -554,6 +560,7 @@ impl ClosureTypes for ConcreteTypes {
         Some(ClosureLitInfo {
             target: lit.fn_id.into(),
             captures: lit.captures.clone(),
+            kind: lit.kind,
         })
     }
 
@@ -574,6 +581,7 @@ impl ClosureTypes for ConcreteTypes {
                     closure: arrow.closure_lit().map(|lit| ClosureLitInfo {
                         target: lit.fn_id.into(),
                         captures: lit.captures.clone(),
+                        kind: lit.kind,
                     }),
                 })
                 .collect(),

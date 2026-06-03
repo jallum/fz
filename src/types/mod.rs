@@ -27,7 +27,7 @@ mod poly;
 mod render;
 mod visibility;
 
-pub use closure::{CallableClause, ClosureLitInfo, ClosureTarget, ClosureTypes};
+pub use closure::{CallableClause, CallableValueKind, ClosureLitInfo, ClosureTarget, ClosureTypes};
 pub use literal::LiteralTypes;
 pub use map::MapKey;
 

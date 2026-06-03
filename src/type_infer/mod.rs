@@ -340,8 +340,8 @@ struct ActivationEdge {
 }
 
 /// The callable value at a call site before it has been resolved to activation
-/// requests. Direct calls include protocol stubs; closure calls carry the
-/// environment needed to read the closure value.
+/// requests. Direct calls include protocol stubs; indirect callable values may
+/// be thin function refs or env-carrying closures.
 enum CallTarget<'a> {
     Direct(FnId),
     Closure { value: Var, env: &'a Env },
@@ -1572,6 +1572,11 @@ impl<'m> Solver<'m> {
             Prim::MatcherMapGet(map, key) => type_map_get(t, *map, *key, env, true),
             Prim::IsMatcherMapMiss(v) => is_matcher_map_miss(t, info_of(*v, env)),
             Prim::MakeBitstring(_) | Prim::ConstBitstring(_, _) => Info::known(t.str_t()),
+            Prim::MakeFnRef(_, target) => {
+                let tfn = module.fn_by_id(*target);
+                let n_args = tfn.block(tfn.entry).params.len();
+                Info::known(t.fn_ref_lit(ClosureTarget::from(*target), n_args))
+            }
             Prim::MakeClosure(_, target, caps) => {
                 let mut cap_tys = Vec::with_capacity(caps.len());
                 for c in caps {

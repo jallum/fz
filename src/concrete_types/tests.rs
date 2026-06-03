@@ -1418,6 +1418,7 @@ fn instantiate_walks_into_arrow_args_and_ret() {
 #[test]
 fn instantiate_preserves_lit_tag_on_arrow() {
     let lit = ClosureLit {
+        kind: crate::types::CallableValueKind::Closure,
         fn_id: FnId(42),
         captures: vec![],
     };

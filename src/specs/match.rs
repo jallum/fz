@@ -91,7 +91,7 @@ pub(crate) fn resolve_closure_return<T: ClosureTypes + ?Sized>(
                 };
                 acc = t.union(acc, contrib);
             }
-            Some(ClosureLitInfo { target, captures }) => {
+            Some(ClosureLitInfo { target, captures, .. }) => {
                 if clause.args.len() != arg_tys.len() {
                     return Some(t.any());
                 }
