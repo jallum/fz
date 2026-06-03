@@ -528,7 +528,7 @@ fn remap_module_plan(plan: &ModulePlan, fn_map: &BTreeMap<FnId, FnId>) -> Module
         spec_precedence: plan
             .spec_precedence
             .iter()
-            .map(|(key, value)| (remap_spec_key(key, fn_map), *value))
+            .map(|(key, value)| (remap_body_key(key, fn_map), *value))
             .collect(),
         fn_effects: plan
             .fn_effects

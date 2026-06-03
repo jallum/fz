@@ -364,7 +364,7 @@ fn build_spec_registry<T: Types<Ty = Ty>>(t: &mut T, module: &Module, module_pla
         if !module_plan.specs.contains_key(&spec_key) {
             continue;
         }
-        let precedence = *module_plan.spec_precedence.get(&spec_key).unwrap_or(&0);
+        let precedence = *module_plan.spec_precedence.get(&spec_key.body_key()).unwrap_or(&0);
         let sid = spec_registry.register_any_key_at_with_precedence(t, f.id, any_key, precedence);
         debug_assert_eq!(sid.0, f.id.0);
     }
@@ -391,7 +391,7 @@ fn build_spec_registry<T: Types<Ty = Ty>>(t: &mut T, module: &Module, module_pla
             .then_with(|| format!("{:?}", a.demand).cmp(&format!("{:?}", b.demand)))
     });
     for spec_key in narrow_keys {
-        let precedence = *module_plan.spec_precedence.get(&spec_key).unwrap_or(&0);
+        let precedence = *module_plan.spec_precedence.get(&spec_key.body_key()).unwrap_or(&0);
         spec_registry.register_spec_key_with_precedence(t, spec_key, precedence);
     }
     spec_registry

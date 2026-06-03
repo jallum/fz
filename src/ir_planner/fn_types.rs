@@ -229,8 +229,10 @@ pub struct ModulePlan {
     /// `plan_module` from the final specs map so callers can find any-key
     /// specs without scanning the whole spec map.
     pub any_key_specs: HashMap<FnId, Vec<KeySlot>>,
-    /// Stable per-family precedence for specialization selection.
-    pub spec_precedence: HashMap<SpecKey, u32>,
+    /// Stable per-family precedence for specialization selection. Keyed by
+    /// `BodyKey`: precedence is a property of the `(FnId, input)` family and is
+    /// invariant across `ReturnDemand` siblings, so demand never participates.
+    pub spec_precedence: HashMap<BodyKey, u32>,
     /// Per-FnId summary of effects relevant to effect-sensitive rewrites.
     /// Allocation is tracked separately from externally observable barriers
     /// so planner-owned transforms can preserve observable behavior. Computed
@@ -338,7 +340,7 @@ impl ModulePlan {
             if key.fn_id != fn_id || !key.demand.is_value() {
                 continue;
             }
-            let precedence = *self.spec_precedence.get(key).unwrap_or(&u32::MAX);
+            let precedence = *self.spec_precedence.get(&key.body_key()).unwrap_or(&u32::MAX);
             match &best {
                 None => best = Some((precedence, ft)),
                 Some((bp, _)) if precedence < *bp => best = Some((precedence, ft)),
@@ -362,7 +364,7 @@ impl ModulePlan {
                 id: key,
                 key: key.input.as_slice(),
                 key_var_count: key_slot_var_count(t, key.input.as_slice()),
-                precedence: *self.spec_precedence.get(&key.value_spec()).unwrap_or(&u32::MAX),
+                precedence: *self.spec_precedence.get(key).unwrap_or(&u32::MAX),
             })
             .collect();
         let best = best_covering_candidate(t, arg_tys, candidates)?;
@@ -393,16 +395,20 @@ pub(crate) fn spec_key_input_tys<T: Types<Ty = Ty>>(t: &mut T, key: &SpecKey) ->
 pub(crate) fn key_precedence_order(
     specs: &HashMap<SpecKey, SpecPlan>,
     any_key_specs: &HashMap<FnId, Vec<KeySlot>>,
-) -> HashMap<SpecKey, u32> {
-    let mut keys_by_fn: HashMap<FnId, Vec<SpecKey>> = HashMap::new();
+) -> HashMap<BodyKey, u32> {
+    let mut keys_by_fn: HashMap<FnId, Vec<BodyKey>> = HashMap::new();
     for key in specs.keys() {
-        keys_by_fn.entry(key.fn_id).or_default().push(key.clone());
+        let body_key = key.body_key();
+        let bucket = keys_by_fn.entry(key.fn_id).or_default();
+        if !bucket.contains(&body_key) {
+            bucket.push(body_key);
+        }
     }
     let mut precedence = HashMap::new();
     for (fid, mut keys) in keys_by_fn {
         keys.sort_by(|a, b| {
-            let a_is_any = a.demand.is_value() && any_key_specs.get(&fid) == Some(&a.input);
-            let b_is_any = b.demand.is_value() && any_key_specs.get(&fid) == Some(&b.input);
+            let a_is_any = any_key_specs.get(&fid) == Some(&a.input);
+            let b_is_any = any_key_specs.get(&fid) == Some(&b.input);
             b_is_any
                 .cmp(&a_is_any)
                 .then_with(|| format!("{:?}", a).cmp(&format!("{:?}", b)))
@@ -422,9 +428,6 @@ pub(crate) fn build_any_key_index<T: Types<Ty = Ty>>(
     let any = t.any();
     let mut idx: HashMap<FnId, Vec<KeySlot>> = HashMap::new();
     for key in specs.keys() {
-        if !key.demand.is_value() {
-            continue;
-        }
         let Some(&j) = m.fn_idx.get(&key.fn_id) else {
             continue;
         };
@@ -532,10 +535,6 @@ pub struct BodyKey {
 impl BodyKey {
     pub fn value(fn_id: FnId, input: Vec<KeySlot>) -> Self {
         Self { fn_id, input }
-    }
-
-    pub fn value_spec(&self) -> SpecKey {
-        SpecKey::value(self.fn_id, self.input.clone())
     }
 }
 
