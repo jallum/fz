@@ -6,6 +6,7 @@ use crate::parser::Parser;
 use crate::parser::lexer::Lexer;
 use crate::telemetry::NullTelemetry;
 use crate::telemetry::bus::ConfiguredTelemetry;
+use crate::test_support::linked_runtime_graph;
 use crate::types::ConcreteTypes;
 use fz_runtime::any_value::ListCons;
 use fz_runtime::any_value::ValueKind;
@@ -28,6 +29,12 @@ fn run_checked(src: &str) -> i64 {
     let frontend = compile_source(src.to_string(), "interp-test.fz".to_string())
         .unwrap_or_else(|err| panic!("frontend: {:?}", err.diagnostics));
     run_main(&NullTelemetry, &frontend.module).expect("interp run")
+}
+
+fn run_runtime_graph(src: &str) -> i64 {
+    let graph = linked_runtime_graph(src);
+    let (halt, _) = run_main_with_plan(&NullTelemetry, &graph.module, graph.module_plan).expect("interp run");
+    halt
 }
 
 fn capture(src: &str) -> String {
@@ -137,6 +144,66 @@ fn interp_captured_lambda_still_allocates_closure_object() {
     );
     assert_eq!(halt, 8);
     assert_eq!(closure_allocs, 1, "captured lambdas remain heap closures in interp",);
+}
+
+#[test]
+fn interp_checked_joined_thin_fn_refs_remain_callable_locally() {
+    assert_eq!(
+        run_checked(
+            r#"
+fn add_a(x, acc), do: acc + x
+fn add_b(x, acc), do: acc + x
+
+fn main() do
+  xs = [1, 2, 3]
+  stats0 = Process.heap_alloc_stats()
+  reducer = case stats0[:allocs] == 0 do
+    true -> add_a
+    _ -> add_b
+  end
+  reducer.(1, 0)
+end
+"#,
+        ),
+        1
+    );
+}
+
+#[test]
+fn interp_runtime_graph_enum_reduce_wrapper_runs() {
+    assert_eq!(
+        run_runtime_graph(
+            r#"
+fn main() do
+  Enum.reduce([1, 2, 3], 0, fn (x, acc) -> acc + x end)
+end
+"#,
+        ),
+        6
+    );
+}
+
+#[test]
+fn interp_runtime_graph_joined_thin_fn_refs_remain_callable_across_enum_reduce() {
+    assert_eq!(
+        run_runtime_graph(
+            r#"
+fn add_a(x, acc), do: acc + x
+fn add_b(x, acc), do: acc + x
+
+fn main() do
+  xs = [1, 2, 3]
+  stats0 = Process.heap_alloc_stats()
+  reducer = case stats0[:allocs] == 0 do
+    true -> add_a
+    _ -> add_b
+  end
+  Enum.reduce(xs, 0, reducer)
+end
+"#,
+        ),
+        6
+    );
 }
 
 #[test]

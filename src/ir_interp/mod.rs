@@ -334,7 +334,7 @@ impl IrInterpRuntime {
                 debug_assert!(!(*proc_ptr).ctx.is_null(), "interp ctx installed");
             };
             self.current_proc = proc_ptr;
-            let mut step = run_fn_typed(self, &mut t, module, tel, module_types, fn_id, args);
+            let mut step = run_fn_typed(self, &mut t, module, tel, module_types, fn_id, args, None);
             loop {
                 match step {
                     Ok(InterpStep::Done(val)) => {
@@ -342,7 +342,7 @@ impl IrInterpRuntime {
                             after.remove(0);
                             let mut next_args = vec![val];
                             next_args.extend(next_caps);
-                            step = run_fn_typed(self, &mut t, module, tel, module_types, next_fn, next_args);
+                            step = run_fn_typed(self, &mut t, module, tel, module_types, next_fn, next_args, None);
                             continue;
                         }
 
@@ -409,12 +409,16 @@ impl IrInterpRuntime {
 
     #[cfg(test)]
     pub(crate) fn task(&self, pid: u32) -> Option<&Process> {
-        self.tasks.get(&pid).map(Box::as_ref)
+        self.process_ref(pid)
     }
 
     #[cfg(test)]
     pub(crate) fn task_mut(&mut self, pid: u32) -> Option<&mut Process> {
         self.tasks.get_mut(&pid).map(Box::as_mut)
+    }
+
+    fn process_ref(&self, pid: u32) -> Option<&Process> {
+        self.tasks.get(&pid).map(Box::as_ref)
     }
 
     pub(crate) fn read_tuple_fields(&self, pid: u32, value: AnyValue, arity: usize) -> Result<Vec<AnyValue>, String> {
@@ -525,7 +529,7 @@ fn run_main_inner(
         .find_map(|(pid, value)| {
             (*pid == 1).then(|| {
                 runtime
-                    .task(*pid)
+                    .process_ref(*pid)
                     .map(|task| value_to_halt(task as *const Process as *mut Process, *value))
             })
         })
@@ -562,7 +566,7 @@ pub fn run_test_fn(tel: &dyn Telemetry, module: &Module, fn_id: FnId) -> Result<
     if let Some(diagnostic) = diagnostics.into_iter().next() {
         return Err(diagnostic.message);
     }
-    let result = run_fn_typed(&mut runtime, &mut t, module, tel, &module_plan, fn_id, Vec::new());
+    let result = run_fn_typed(&mut runtime, &mut t, module, tel, &module_plan, fn_id, Vec::new(), None);
     // fz-4mk — shutdown drain mirrors run_main's exit path: enqueue every
     // surviving resource's dtor and dispatch each as a real fz call. The dtor
     // helpers reach this task through `runtime.current_proc` (set above).

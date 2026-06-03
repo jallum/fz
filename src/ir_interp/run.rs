@@ -2,10 +2,11 @@ use std::collections::HashMap;
 
 use super::*;
 use crate::exec::matcher::Matcher;
-use crate::fz_ir::{FnId, Module, Stmt, Term, Var};
+use crate::fz_ir::{CallsiteId, EmitSlot, FnId, Module, Stmt, Term, Var};
 use crate::ir_extern_marshal::resolve_fn_types;
-use crate::ir_planner::ModulePlan;
+use crate::ir_planner::fn_types::SpecKey;
 use crate::ir_planner::type_fn::type_fn;
+use crate::ir_planner::{ModulePlan, SpecPlan};
 use crate::measurements;
 use crate::metadata;
 use crate::telemetry::{Metadata, Telemetry};
@@ -82,20 +83,45 @@ pub(super) fn run_fn_typed<T: Types<Ty = Ty> + ClosureTypes + RenderTypes>(
     module_types: &ModulePlan,
     mut fn_id: FnId,
     mut args: Vec<AnyValue>,
+    mut selected_spec: Option<SpecKey>,
 ) -> Result<InterpStep, String> {
+    fn resolve_spec_plan<'a, T: Types<Ty = Ty> + ClosureTypes + RenderTypes>(
+        t: &mut T,
+        module: &'a Module,
+        module_types: &'a ModulePlan,
+        fn_id: FnId,
+        selected: Option<&SpecKey>,
+        fallback: &'a mut Option<SpecPlan>,
+    ) -> Result<&'a SpecPlan, String> {
+        if let Some(key) = selected
+            && let Some(fn_types) = module_types.specs.get(key)
+        {
+            return Ok(fn_types);
+        }
+        if let Some(fn_types) = module_types.any_spec_for(fn_id) {
+            return Ok(fn_types);
+        }
+        let fn_ir = module.fn_by_id(fn_id);
+        let mut inferred = type_fn(t, fn_ir, module, None);
+        let diagnostics = resolve_fn_types(t, module, fn_id, &mut inferred);
+        if let Some(diagnostic) = diagnostics.into_iter().next() {
+            return Err(diagnostic.message);
+        }
+        *fallback = Some(inferred);
+        Ok(fallback.as_ref().expect("fallback spec inserted"))
+    }
+
     'tail: loop {
         let fn_ir = module.fn_by_id(fn_id);
-        let mut fallback_fn_types;
-        let fn_types = if let Some(fn_types) = module_types.any_spec_for(fn_id) {
-            fn_types
-        } else {
-            fallback_fn_types = type_fn(t, fn_ir, module, None);
-            let diagnostics = resolve_fn_types(t, module, fn_id, &mut fallback_fn_types);
-            if let Some(diagnostic) = diagnostics.into_iter().next() {
-                return Err(diagnostic.message);
-            }
-            &fallback_fn_types
-        };
+        let mut fallback_fn_types = None;
+        let fn_types = resolve_spec_plan(
+            t,
+            module,
+            module_types,
+            fn_id,
+            selected_spec.as_ref(),
+            &mut fallback_fn_types,
+        )?;
         let mut env: HashMap<Var, AnyValue> = HashMap::new();
         let entry = fn_ir.block(fn_ir.entry);
         if entry.params.len() != args.len() {
@@ -132,19 +158,32 @@ pub(super) fn run_fn_typed<T: Types<Ty = Ty> + ClosureTypes + RenderTypes>(
                     cur = if is_truthy(cv) { *then_b } else { *else_b };
                 }
                 Term::Call {
-                    ident: _,
+                    ident,
                     callee,
                     args: call_args,
                     continuation,
                 } => {
+                    let selected_target = fn_types
+                        .local_call_target(&CallsiteId::new(fn_id, ident, EmitSlot::Direct))
+                        .cloned();
                     let arg_vals = collect(&env, call_args)?;
                     let outer_cap_vals = collect(&env, &continuation.captured)?;
-                    match run_fn_typed(runtime, t, module, tel, module_types, *callee, arg_vals)? {
+                    match run_fn_typed(
+                        runtime,
+                        t,
+                        module,
+                        tel,
+                        module_types,
+                        selected_target.as_ref().map_or(*callee, |target| target.fn_id),
+                        arg_vals,
+                        selected_target.clone(),
+                    )? {
                         InterpStep::Done(val) => {
                             let mut cont_args = vec![val];
                             cont_args.extend(outer_cap_vals);
                             fn_id = continuation.fn_id;
                             args = cont_args;
+                            selected_spec = None;
                             continue 'tail;
                         }
                         InterpStep::Blocked(rf, cv, mut inner_after) => {
@@ -176,11 +215,14 @@ pub(super) fn run_fn_typed<T: Types<Ty = Ty> + ClosureTypes + RenderTypes>(
                     }
                 }
                 Term::TailCall {
-                    ident: _,
+                    ident,
                     callee,
                     args: call_args,
                     is_back_edge,
                 } => {
+                    let selected_target = fn_types
+                        .local_call_target(&CallsiteId::new(fn_id, ident, EmitSlot::Direct))
+                        .cloned();
                     let arg_vals = collect(&env, call_args)?;
                     // fz-02r.6 — interpreter back-edge cooperative GC.
                     // The interpreter runs synchronously, so a pressured
@@ -199,7 +241,7 @@ pub(super) fn run_fn_typed<T: Types<Ty = Ty> + ClosureTypes + RenderTypes>(
                         // by the scheduler-boundary `finish_yield_report`.
                         if budget_exhausted {
                             return Ok(InterpStep::Yielded {
-                                resume_fn: *callee,
+                                resume_fn: selected_target.as_ref().map_or(*callee, |target| target.fn_id),
                                 resume_args: arg_vals,
                                 after: vec![],
                                 remaining_reductions,
@@ -207,26 +249,40 @@ pub(super) fn run_fn_typed<T: Types<Ty = Ty> + ClosureTypes + RenderTypes>(
                             });
                         }
                     }
-                    fn_id = *callee;
+                    fn_id = selected_target.as_ref().map_or(*callee, |target| target.fn_id);
                     args = arg_vals;
+                    selected_spec = selected_target;
                     continue 'tail;
                 }
                 Term::CallClosure {
-                    ident: _,
+                    ident,
                     closure,
                     args: call_args,
                     continuation,
                 } => {
+                    let selected_target = fn_types
+                        .local_call_target(&CallsiteId::new(fn_id, ident, EmitSlot::ClosureCall))
+                        .cloned();
                     let cl = env_get(&env, *closure)?;
                     let (lam_fn, mut clos_args) = unpack_callable(cl, runtime.cur_proc())?;
                     clos_args.extend(collect(&env, call_args)?);
                     let outer_cap_vals = collect(&env, &continuation.captured)?;
-                    match run_fn_typed(runtime, t, module, tel, module_types, lam_fn, clos_args)? {
+                    match run_fn_typed(
+                        runtime,
+                        t,
+                        module,
+                        tel,
+                        module_types,
+                        selected_target.as_ref().map_or(lam_fn, |target| target.fn_id),
+                        clos_args,
+                        selected_target.clone(),
+                    )? {
                         InterpStep::Done(val) => {
                             let mut cont_args = vec![val];
                             cont_args.extend(outer_cap_vals);
                             fn_id = continuation.fn_id;
                             args = cont_args;
+                            selected_spec = None;
                             continue 'tail;
                         }
                         InterpStep::Blocked(rf, cv, mut inner_after) => {
@@ -256,15 +312,19 @@ pub(super) fn run_fn_typed<T: Types<Ty = Ty> + ClosureTypes + RenderTypes>(
                     }
                 }
                 Term::TailCallClosure {
-                    ident: _,
+                    ident,
                     closure,
                     args: call_args,
                 } => {
+                    let selected_target = fn_types
+                        .local_call_target(&CallsiteId::new(fn_id, ident, EmitSlot::ClosureCall))
+                        .cloned();
                     let cl = env_get(&env, *closure)?;
                     let (lam_fn, mut clos_args) = unpack_callable(cl, runtime.cur_proc())?;
                     clos_args.extend(collect(&env, call_args)?);
-                    fn_id = lam_fn;
+                    fn_id = selected_target.as_ref().map_or(lam_fn, |target| target.fn_id);
                     args = clos_args;
+                    selected_spec = selected_target;
                     continue 'tail;
                 }
                 Term::Return(v) => return Ok(InterpStep::Done(env_get(&env, *v)?)),
@@ -278,6 +338,7 @@ pub(super) fn run_fn_typed<T: Types<Ty = Ty> + ClosureTypes + RenderTypes>(
                             cont_args.extend(cap_vals);
                             fn_id = continuation.fn_id;
                             args = cont_args;
+                            selected_spec = None;
                             continue 'tail;
                         }
                         None => {
@@ -344,6 +405,7 @@ pub(super) fn run_fn_typed<T: Types<Ty = Ty> + ClosureTypes + RenderTypes>(
                         new_args.extend(capture_vals);
                         fn_id = body;
                         args = new_args;
+                        selected_spec = None;
                         continue 'tail;
                     }
 
@@ -356,6 +418,7 @@ pub(super) fn run_fn_typed<T: Types<Ty = Ty> + ClosureTypes + RenderTypes>(
                         if timeout_val.as_i64() == Some(0) {
                             fn_id = a.body;
                             args = capture_vals;
+                            selected_spec = None;
                             continue 'tail;
                         }
                     }
@@ -426,7 +489,7 @@ pub(super) fn drain_pending_dtors_interp<T: Types<Ty = Ty> + ClosureTypes + Rend
         };
         let mut args = captured;
         args.push(interp_value_from_ref_word(payload_ref, "fz-4mk drain payload")?);
-        match run_fn_typed(runtime, t, module, tel, module_types, fn_id, args)? {
+        match run_fn_typed(runtime, t, module, tel, module_types, fn_id, args, None)? {
             InterpStep::Done(_) => {}
             InterpStep::Yielded { .. } | InterpStep::Blocked(_, _, _) | InterpStep::BlockedMatched(_, _) => {
                 return Err("fz-4mk drain: dtor blocked on receive (unsupported in v1)".into());

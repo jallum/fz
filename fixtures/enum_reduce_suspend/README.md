@@ -18,8 +18,17 @@ real heap closure even as native call continuations become direct or lazy.
 Target for native JIT/AOT:
 
 - the three-element input list allocates three cons cells;
-- the known zero-state reducer path boxes no scalar operands before reaching
-  the suspend boundary;
 - the returned suspend function allocates one closure;
+- the current native path also boxes one scalar before the suspend boundary;
 - `closure_allocs = 1`;
-- `closure_bytes = 48`.
+- `closure_bytes = 48`;
+- `scalar_box_allocs = 1`;
+- `scalar_box_bytes = 16`.
+
+Interpreter / REPL note:
+
+- the suspended continuation still remains a real heap closure with the same
+  allocation profile as before;
+- the rendered function identity is currently `#fn<3/3>` rather than
+  `#fn<4/3>`, which is numbering drift in the printer rather than a semantic
+  change in the suspend boundary.

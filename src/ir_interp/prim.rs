@@ -8,7 +8,7 @@ use crate::concrete_types::ty_descr;
 use crate::fz_ir::{BitSizeIr, BlockId, Module, Prim, Var};
 use crate::ir_planner::SpecPlan;
 use crate::telemetry::Telemetry;
-use crate::types::{Ty, Types};
+use crate::types::{ClosureTypes, Ty, Types};
 use fz_runtime::any_value::{AnyValueRef, NIL_ATOM_ID, ValueKind, closure_addr_from_tagged, struct_schema_id};
 use fz_runtime::heap::Schema;
 use fz_runtime::ir_runtime::{
@@ -91,7 +91,7 @@ pub(super) fn interp_map_get(proc: *mut Process, map: AnyValue, key: AnyValue) -
     .and_then(|ref_word| interp_value_from_ref_word(ref_word, "MapGet"))
 }
 
-pub(super) fn eval_prim<T: Types<Ty = Ty>>(
+pub(super) fn eval_prim<T: Types<Ty = Ty> + ClosureTypes>(
     runtime: &mut IrInterpRuntime,
     t: &mut T,
     module: &Module,
@@ -299,7 +299,8 @@ pub(super) fn eval_prim<T: Types<Ty = Ty>>(
             .and_then(|ref_word| interp_value_from_ref_word(ref_word, "StructField"))?
         }
         Prim::TypeTest(v, descr) => {
-            let descr = ty_descr(descr.as_ref());
+            let descr_ty = descr.as_ref();
+            let descr = ty_descr(descr_ty);
             let val = env_get(env, *v)?;
             if matches!(val, AnyValue::Float(_)) {
                 return Ok(interp_bool_value(descr.type_test_has_floats()));
@@ -341,6 +342,9 @@ pub(super) fn eval_prim<T: Types<Ty = Ty>>(
             }
             if descr.type_test_has_binaries() {
                 matched |= val.kind() == ValueKind::BITSTRING;
+            }
+            if t.callable_clauses(descr_ty).is_some() {
+                matched |= val.kind() == ValueKind::CLOSURE;
             }
             assert!(
                 !descr.type_test_tuple_has_negations(),

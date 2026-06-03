@@ -1645,8 +1645,9 @@ fn tail_recursion_count_matches_cps_in_clif_section_8_1() {
 /// inner cont closure via `fz_alloc_closure` exactly once, stores
 /// fz-siu.1.2 acceptance per docs/cps-in-clif.md §8.3.
 /// closure_typed_captures.fz's `add_to(x,y) = fn(z) -> x+y+z` returns
-/// the lambda. `add_to` must call `fz_alloc_closure` exactly once (the
-/// lambda escape); the lambda body must call `fz_alloc_*` zero times.
+/// the lambda. The escaping lambda allocation still belongs to `add_to`,
+/// but `main`'s own CPS continuation may now remain a lazy stack descriptor
+/// instead of materializing through `fz_alloc_closure`.
 fn closure_typed_captures_matches_cps_in_clif_section_8_3() {
     let out = Command::new(FZ_BIN)
         .args(["dump", "fixtures/closure_typed_captures/input.fz", "--emit", "clif"])
@@ -1655,28 +1656,40 @@ fn closure_typed_captures_matches_cps_in_clif_section_8_3() {
     assert!(out.status.success(), "fz dump exited {}", out.status);
     let stdout = String::from_utf8_lossy(&out.stdout);
 
-    // fz-ul4.11.15: add_to is inlined into main — check main's CLIF.
+    // fz-ul4.11.15: add_to is inlined into main, so main now shows the
+    // caller-side lazy continuation seam while add_to_s* still owns the
+    // source closure allocation.
     let main_start = stdout.find("; fn main").expect("missing main banner");
     let main_rest = &stdout[main_start..];
     let main_end = main_rest[1..].find("; fn ").map(|i| i + 1).unwrap_or(main_rest.len());
     let main_body = &main_rest[..main_end];
-    // fz-cps.1.8 — the body pointer is materialized, then handed to
-    // fz_alloc_closure as an argument. Generated CLIF must not dereference
-    // the tagged closure ref to store at +8.
     assert!(
         main_body.contains("func_addr.i64"),
-        "main must materialize the lambda's code_ptr via func_addr (add_to inlined):\n{}",
+        "main must materialize the lazy continuation code pointer via func_addr (add_to inlined):\n{}",
         main_body
     );
     assert!(
-        main_body.contains("@fz_alloc_closure"),
-        "main must allocate the lambda through the closure ABI (add_to inlined):\n{}",
+        main_body.contains("stack_store") && main_body.contains("bor_imm v8, 0x0800_0000_0000_0000"),
+        "main must keep the caller continuation as a lazy stack descriptor (add_to inlined):\n{}",
         main_body
     );
     assert!(
-        !main_body.contains("v7+8"),
-        "main must not poke the lambda code_ptr slot directly (add_to inlined):\n{}",
+        !main_body.contains("@fz_alloc_closure"),
+        "main must not heap-allocate the caller continuation closure in this fixture:\n{}",
         main_body
+    );
+
+    let add_to_start = stdout.find("; fn add_to_s").expect("missing add_to_s banner");
+    let add_to_rest = &stdout[add_to_start..];
+    let add_to_end = add_to_rest[1..]
+        .find("; fn ")
+        .map(|i| i + 1)
+        .unwrap_or(add_to_rest.len());
+    let add_to_body = &add_to_rest[..add_to_end];
+    assert!(
+        add_to_body.contains("@fz_alloc_closure"),
+        "add_to must still allocate the escaping source closure through the closure ABI:\n{}",
+        add_to_body
     );
 }
 

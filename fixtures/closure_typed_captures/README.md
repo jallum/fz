@@ -34,6 +34,12 @@ fz-cps.1.12: closure stubs deleted. The lambda body is invoked
 directly via Tail-CC `return_call_indirect` through cl+8 — no stub
 fn exists to assert about. Tracked by §8.3 acceptance test.
 
+fz-wgo.1.6: the source closure allocation still happens in `add_to`,
+but `main` now shows the caller continuation as a lazy stack descriptor
+instead of a heap-allocated closure. The acceptance test must assert
+that split directly rather than treating the caller continuation seam as
+the user closure allocation site.
+
 A closure capturing two ints + invoked. Under .29.5, the closure heap
 object stores code pointer at payload offset 8; MakeClosure computes its
 address via func_addr; CallClosure loads code pointer and call_indirect-s
