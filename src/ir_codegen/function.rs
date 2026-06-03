@@ -1,7 +1,11 @@
 //! Per-function Cranelift body emission.
 
 use super::*;
-use crate::fz_ir::{Stmt, Term};
+use crate::diag::Span;
+use crate::fz_ir::{Block, FnIr, PhysicalCapability, Prim, SourceInfo, Stmt, Term, Var};
+use crate::ir_dce::classify_var_uses;
+use crate::ir_planner::fn_types::SpecKey;
+use crate::types::{ClosureTypes, Ty, Types};
 use cranelift_codegen::{
     Context,
     ir::{self, InstBuilder, types},
@@ -10,19 +14,16 @@ use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use fz_runtime::heap::Schema;
 use std::collections::{HashMap, HashSet};
 
-pub(crate) fn compile_fn<
-    M: cranelift_module::Module,
-    T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
->(
+pub(crate) fn compile_fn<M: cranelift_module::Module, T: Types<Ty = Ty> + ClosureTypes>(
     jmod: &mut M,
     t: &mut T,
     ctx: &mut Context,
     fbctx: &mut FunctionBuilderContext,
     env: &CodegenEnv<'_>,
     schemas: &[Schema],
-    f: &crate::fz_ir::FnIr,
+    f: &FnIr,
     this_spec_id: u32,
-    source: &crate::fz_ir::SourceInfo,
+    source: &SourceInfo,
 ) -> Result<(), CodegenError> {
     let fn_types = env.fn_types;
     let param_reprs = env.param_reprs;
@@ -52,8 +53,7 @@ pub(crate) fn compile_fn<
     let cont_ptr_known_null = !cont_target_fns.contains(&f.id);
     let mut b = FunctionBuilder::new(&mut ctx.func, fbctx);
 
-    let reachable_fz_blocks: HashSet<u32> =
-        fn_types.reachable_blocks.iter().map(|id| id.0).collect();
+    let reachable_fz_blocks: HashSet<u32> = fn_types.reachable_blocks.iter().map(|id| id.0).collect();
     if !reachable_fz_blocks.contains(&f.entry.0) {
         return Err(CodegenError::new(format!(
             "spec for {}#{} does not include entry block {:?}",
@@ -85,8 +85,7 @@ pub(crate) fn compile_fn<
             // one-result input shape via `cont_extras_count`: their bound
             // values and captures are loaded from the closure env, leaving
             // only `self` in the Tail-CC signature.
-            let extras_count =
-                demand_abi.continuation_extras(env.cont_extras_count.get(&f.id).copied());
+            let extras_count = demand_abi.continuation_extras(env.cont_extras_count.get(&f.id).copied());
             for (i, r) in my_param_reprs[..extras_count].iter().enumerate() {
                 let _ = i;
                 append_block_param_for_repr(&mut b, entry_cl, *r);
@@ -160,7 +159,7 @@ pub(crate) fn compile_fn<
     );
 
     {
-        let (if_only, all_used) = crate::ir_dce::classify_var_uses(f);
+        let (if_only, all_used) = classify_var_uses(f);
         let (tuple_return_fields, skipped_tuple_return_vars) =
             tuple_return_delivery_plan(f, &env.spec_keys[this_spec_id as usize], is_cont_fn);
         let (list_tail_return_elems, skipped_list_tail_return_vars) =
@@ -177,7 +176,7 @@ pub(crate) fn compile_fn<
     }
     // Walk blocks in declared order with entry first. Unreachable
     // fz_ir blocks are filtered out — they have no Cranelift counterpart.
-    let mut order: Vec<&crate::fz_ir::Block> = Vec::with_capacity(f.blocks.len());
+    let mut order: Vec<&Block> = Vec::with_capacity(f.blocks.len());
     if let Some(eb) = f.blocks.iter().find(|b| b.id == f.entry) {
         order.push(eb);
     }
@@ -198,14 +197,8 @@ pub(crate) fn compile_fn<
             let mut param_cursor = 0;
             for p in &blk.params {
                 let fallback = t.any();
-                let repr = ArgRepr::for_block_param_ty(
-                    t,
-                    &fn_types.vars.get(p).cloned().unwrap_or(fallback),
-                );
-                var_env.insert(
-                    p.0,
-                    take_param_binding(body.b, &params, &mut param_cursor, repr),
-                );
+                let repr = ArgRepr::for_block_param_ty(t, &fn_types.vars.get(p).cloned().unwrap_or(fallback));
+                var_env.insert(p.0, take_param_binding(body.b, &params, &mut param_cursor, repr));
             }
         }
 
@@ -215,15 +208,10 @@ pub(crate) fn compile_fn<
         let stmt_spans = source.stmt_spans.get(&(f.id, blk.id));
         let block_env = fn_types.block_envs.get(&blk.id);
         for (idx, stmt) in blk.stmts.iter().enumerate() {
-            let span = stmt_spans
-                .and_then(|v| v.get(idx))
-                .copied()
-                .unwrap_or(crate::diag::Span::DUMMY);
+            let span = stmt_spans.and_then(|v| v.get(idx)).copied().unwrap_or(Span::DUMMY);
             body.b.set_srcloc(span_to_srcloc(span));
             let Stmt::Let(v, prim) = stmt;
-            let out = lower_prim(
-                &mut body, t, env, &var_env, prim, *v, f.id, blk.id, idx, block_env,
-            )?;
+            let out = lower_prim(&mut body, t, env, &var_env, prim, *v, f.id, blk.id, idx, block_env)?;
             if !matches!(out, LowerOut::DeadUnit) {
                 let binding = match out {
                     LowerOut::StrictConst(value) => {
@@ -251,11 +239,7 @@ pub(crate) fn compile_fn<
         }
         // Terminator gets its own srcloc (often the same as the last
         // stmt for Return blocks; distinct for Call/Goto).
-        let term_span = source
-            .term_span
-            .get(&(f.id, blk.id))
-            .copied()
-            .unwrap_or(crate::diag::Span::DUMMY);
+        let term_span = source.term_span.get(&(f.id, blk.id)).copied().unwrap_or(Span::DUMMY);
         body.b.set_srcloc(span_to_srcloc(term_span));
 
         // Repr-aware Goto coercion. Mirrors coerce_call_args but for
@@ -272,10 +256,7 @@ pub(crate) fn compile_fn<
             }
             for (param, arg) in f.block(*target).params.iter().zip(args.iter()) {
                 let fallback = t.any();
-                let want = ArgRepr::for_block_param_ty(
-                    t,
-                    &fn_types.vars.get(param).cloned().unwrap_or(fallback),
-                );
+                let want = ArgRepr::for_block_param_ty(t, &fn_types.vars.get(param).cloned().unwrap_or(fallback));
                 let vb = *var_env.get(&arg.0).expect("unbound goto arg");
                 if let Some(coerced) = body.coerce_goto_arg(vb, want) {
                     var_env.insert(arg.0, coerced);
@@ -322,7 +303,7 @@ pub(crate) fn compile_fn<
         if let Some(map) = c.borrow_mut().as_mut() {
             map.clear();
             for (var_id, vb) in &var_env {
-                if let Some(d) = fn_types.vars.get(&crate::fz_ir::Var(*var_id)) {
+                if let Some(d) = fn_types.vars.get(&Var(*var_id)) {
                     map.insert(vb.value().as_u32(), d.clone());
                 }
             }
@@ -331,32 +312,29 @@ pub(crate) fn compile_fn<
     Ok(())
 }
 
-fn owned_cons_reuse_sources(f: &crate::fz_ir::FnIr) -> HashMap<u32, crate::fz_ir::Var> {
+fn owned_cons_reuse_sources(f: &FnIr) -> HashMap<u32, Var> {
     f.physical_capabilities
         .iter()
         .map(|fact| match fact.capability {
-            crate::fz_ir::PhysicalCapability::OwnedConsReuse { head } => (head.0, fact.source),
+            PhysicalCapability::OwnedConsReuse { head } => (head.0, fact.source),
         })
         .collect()
 }
 
 fn tuple_return_delivery_plan(
-    f: &crate::fz_ir::FnIr,
-    spec_key: &crate::ir_planner::fn_types::SpecKey,
+    f: &FnIr,
+    spec_key: &SpecKey,
     is_cont_fn: bool,
-) -> (
-    HashMap<u32, Vec<crate::fz_ir::Var>>,
-    std::collections::HashSet<u32>,
-) {
+) -> (HashMap<u32, Vec<Var>>, HashSet<u32>) {
     if is_cont_fn && spec_key.demand.tuple_field_arity().is_some() {
-        return (HashMap::new(), std::collections::HashSet::new());
+        return (HashMap::new(), HashSet::new());
     }
     let arity = match DemandAbi::new(spec_key).tuple_field_arity() {
         Some(arity) => arity,
-        None => return (HashMap::new(), std::collections::HashSet::new()),
+        None => return (HashMap::new(), HashSet::new()),
     };
     let mut plans = HashMap::new();
-    let mut skipped = std::collections::HashSet::new();
+    let mut skipped = HashSet::new();
     for blk in &f.blocks {
         let Term::Return(ret) = &blk.terminator else {
             continue;
@@ -373,27 +351,21 @@ fn tuple_return_delivery_plan(
     (plans, skipped)
 }
 
-fn list_tail_delivery_plan(
-    f: &crate::fz_ir::FnIr,
-    spec_key: &crate::ir_planner::fn_types::SpecKey,
-) -> (
-    HashMap<u32, Vec<crate::fz_ir::Var>>,
-    std::collections::HashSet<u32>,
-) {
+fn list_tail_delivery_plan(f: &FnIr, spec_key: &SpecKey) -> (HashMap<u32, Vec<Var>>, HashSet<u32>) {
     if !DemandAbi::new(spec_key).delivers_list_tail_return() {
-        return (HashMap::new(), std::collections::HashSet::new());
+        return (HashMap::new(), HashSet::new());
     }
     let mut plans = HashMap::new();
-    let mut skipped = std::collections::HashSet::new();
+    let mut skipped = HashSet::new();
     for blk in &f.blocks {
         let Term::Return(ret) = &blk.terminator else {
             continue;
         };
-        for crate::fz_ir::Stmt::Let(v, prim) in blk.stmts.iter().rev() {
+        for Stmt::Let(v, prim) in blk.stmts.iter().rev() {
             if *v != *ret {
                 continue;
             }
-            if let crate::fz_ir::Prim::MakeList(elems, None) = prim {
+            if let Prim::MakeList(elems, None) = prim {
                 plans.insert(ret.0, elems.clone());
                 skipped.insert(ret.0);
             }
@@ -403,14 +375,10 @@ fn list_tail_delivery_plan(
     (plans, skipped)
 }
 
-fn tuple_make_for_return(
-    blk: &crate::fz_ir::Block,
-    ret: crate::fz_ir::Var,
-    arity: usize,
-) -> Option<Vec<crate::fz_ir::Var>> {
-    for crate::fz_ir::Stmt::Let(v, prim) in &blk.stmts {
+fn tuple_make_for_return(blk: &Block, ret: Var, arity: usize) -> Option<Vec<Var>> {
+    for Stmt::Let(v, prim) in &blk.stmts {
         if *v == ret
-            && let crate::fz_ir::Prim::MakeTuple(fields) = prim
+            && let Prim::MakeTuple(fields) = prim
             && fields.len() == arity
         {
             return Some(fields.clone());
@@ -419,19 +387,11 @@ fn tuple_make_for_return(
     None
 }
 
-fn tuple_dest_chain_for_return(
-    blk: &crate::fz_ir::Block,
-    ret: crate::fz_ir::Var,
-    arity: usize,
-) -> Option<(
-    crate::fz_ir::Var,
-    Vec<crate::fz_ir::Var>,
-    std::collections::HashSet<u32>,
-)> {
+fn tuple_dest_chain_for_return(blk: &Block, ret: Var, arity: usize) -> Option<(Var, Vec<Var>, HashSet<u32>)> {
     let mut freeze_dest = None;
-    for crate::fz_ir::Stmt::Let(v, prim) in &blk.stmts {
+    for Stmt::Let(v, prim) in &blk.stmts {
         if *v == ret
-            && let crate::fz_ir::Prim::DestFreeze { dest, .. } = prim
+            && let Prim::DestFreeze { dest, .. } = prim
         {
             freeze_dest = Some(*dest);
             break;
@@ -439,20 +399,17 @@ fn tuple_dest_chain_for_return(
     }
     let dest = freeze_dest?;
     let mut saw_begin = None;
-    let mut fields: Vec<Option<crate::fz_ir::Var>> = vec![None; arity];
-    let mut skipped = std::collections::HashSet::new();
+    let mut fields: Vec<Option<Var>> = vec![None; arity];
+    let mut skipped = HashSet::new();
     skipped.insert(ret.0);
-    for crate::fz_ir::Stmt::Let(v, prim) in &blk.stmts {
+    for Stmt::Let(v, prim) in &blk.stmts {
         match prim {
-            crate::fz_ir::Prim::DestTupleBegin { arity: a, .. } if *v == dest && *a == arity => {
+            Prim::DestTupleBegin { arity: a, .. } if *v == dest && *a == arity => {
                 saw_begin = Some(*v);
                 skipped.insert(v.0);
             }
-            crate::fz_ir::Prim::DestTupleSet {
-                dest: d,
-                index,
-                value,
-                ..
+            Prim::DestTupleSet {
+                dest: d, index, value, ..
             } if *d == dest && (*index as usize) < arity => {
                 fields[*index as usize] = Some(*value);
                 skipped.insert(v.0);

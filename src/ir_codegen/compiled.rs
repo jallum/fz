@@ -1,10 +1,21 @@
 #![allow(unused_imports)]
 
 use super::*;
+use crate::diag::Diagnostics;
+#[cfg(test)]
+use crate::exec::runtime::{ProcessExitCapture, Runtime};
 use crate::fz_ir::{
-    BinOp, Const, Cont, ExternId, FnId, FnIr, Module, Prim, ReceiveAfter, ReceiveClause, Stmt,
-    Term, UnOp,
+    BinOp, CallsiteId, Const, Cont, ExternId, ExternalLinkError, FnId, FnIr, Module, Prim, ReceiveAfter, ReceiveClause,
+    Stmt, Term, UnOp, rewrite_external_callsite_for_link,
 };
+use crate::ir_planner::fn_types::{
+    CallEdgePlan, CallEdgeTarget, CallableCapability, ReturnContextPlan, ReturnContract, ReturnStrategy, SpecKey,
+};
+use crate::ir_planner::{ModulePlan, SpecPlan};
+use crate::modules::identity::{ExportKey, ModuleName};
+use crate::modules::interface::{InterfaceFn, ModuleInterface};
+use crate::telemetry::Telemetry;
+use crate::telemetry::bus::ConfiguredTelemetry;
 use cranelift_codegen::Context;
 use cranelift_codegen::ir::{
     self, AbiParam, BlockArg, InstBuilder, MemFlags, Signature,
@@ -16,8 +27,18 @@ use cranelift_codegen::settings::{self, Configurable};
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{DataDescription, DataId, FuncId, Linkage, Module as ClModule};
-use fz_runtime::heap::{FieldDescriptor, FieldKind, Schema};
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use fz_runtime::any_value::{AnyValue, AnyValueRef, ValueKind};
+use fz_runtime::heap::{FieldDescriptor, FieldKind, Schema, SchemaRegistry};
+use fz_runtime::pinned_abi::call1;
+use fz_runtime::process::{CompiledModuleConsts, DEFAULT_REDUCTIONS_PER_QUANTUM, Node};
+use fz_runtime::sched::{ScanOutcome, initial_scan};
+use std::cell::RefCell;
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::error::Error;
+use std::fmt;
+use std::ptr::null_mut;
+use std::rc::Rc;
+use std::slice::from_ref;
 use std::sync::Arc;
 
 /// One separately compiled source module before link-time/runtime-global
@@ -27,36 +48,30 @@ use std::sync::Arc;
 /// contract facts the linker validates before a runnable image exists.
 #[derive(Debug, Clone)]
 pub struct CompiledUnit {
-    pub module: Option<crate::modules::identity::ModuleName>,
+    pub module: Option<ModuleName>,
     pub code: Module,
-    pub module_plan: Option<crate::ir_planner::ModulePlan>,
-    pub exports: Vec<crate::modules::interface::InterfaceFn>,
+    pub module_plan: Option<ModulePlan>,
+    pub exports: Vec<InterfaceFn>,
     pub interface_fingerprint: Vec<String>,
-    pub interface: Option<crate::modules::interface::ModuleInterface>,
+    pub interface: Option<ModuleInterface>,
 }
 
 impl CompiledUnit {
     #[cfg(test)]
-    pub fn from_ir_module(
-        code: Module,
-        interface: Option<crate::modules::interface::ModuleInterface>,
-        _diagnostics: crate::diag::Diagnostics,
-    ) -> Self {
+    pub fn from_ir_module(code: Module, interface: Option<ModuleInterface>, _diagnostics: Diagnostics) -> Self {
         Self::from_ir_module_with_plan(code, None, interface, _diagnostics)
     }
 
     pub fn from_ir_module_with_plan(
         code: Module,
-        module_plan: Option<crate::ir_planner::ModulePlan>,
-        interface: Option<crate::modules::interface::ModuleInterface>,
-        _diagnostics: crate::diag::Diagnostics,
+        module_plan: Option<ModulePlan>,
+        interface: Option<ModuleInterface>,
+        _diagnostics: Diagnostics,
     ) -> Self {
         let module = interface
             .as_ref()
             .map(|interface| interface.name.clone())
-            .or_else(|| {
-                crate::modules::identity::ModuleName::parse_dotted(code.module_path()).ok()
-            });
+            .or_else(|| ModuleName::parse_dotted(code.module_path()).ok());
         let exports = interface
             .as_ref()
             .map(|interface| interface.exports.clone())
@@ -75,11 +90,7 @@ impl CompiledUnit {
         }
     }
 
-    pub fn with_code_and_plan(
-        mut self,
-        code: Module,
-        module_plan: crate::ir_planner::ModulePlan,
-    ) -> Self {
+    pub fn with_code_and_plan(mut self, code: Module, module_plan: ModulePlan) -> Self {
         self.code = code;
         self.module_plan = Some(module_plan);
         self
@@ -100,8 +111,7 @@ pub struct CompiledProgram {
 
 impl CompiledProgram {
     pub fn new(unit: CompiledUnit, executable: CompiledModule) -> Self {
-        let runtime =
-            RuntimeUnitMetadata::from_compiled_module(unit.module.clone(), &unit, &executable);
+        let runtime = RuntimeUnitMetadata::from_compiled_module(unit.module.clone(), &unit, &executable);
         Self {
             executable,
             unit,
@@ -109,29 +119,23 @@ impl CompiledProgram {
         }
     }
 
-    pub fn link_image_with_telemetry(
-        self,
-        tel: &dyn crate::telemetry::Telemetry,
-    ) -> Result<CompiledImage, ImageLinkError> {
+    pub fn link_image_with_telemetry(self, tel: &dyn Telemetry) -> Result<CompiledImage, ImageLinkError> {
         match self.link_image() {
             Ok(image) => {
                 tel.event(&["fz", "link", "succeeded"], crate::metadata! { units: 1 });
                 Ok(image)
             }
             Err(err) => {
-                tel.event(
-                    &["fz", "link", "failed"],
-                    crate::metadata! { error: err.to_string() },
-                );
+                tel.event(&["fz", "link", "failed"], crate::metadata! { error: err.to_string() });
                 Err(err)
             }
         }
     }
 
     fn link_image(self) -> Result<CompiledImage, ImageLinkError> {
-        let _linked_ir = link_ir_units(std::slice::from_ref(&self.unit))?;
-        let metadata = RuntimeImageMetadata::link_units(std::slice::from_ref(&self.runtime))
-            .map_err(ImageLinkError::RuntimeMetadata)?;
+        let _linked_ir = link_ir_units(from_ref(&self.unit))?;
+        let metadata =
+            RuntimeImageMetadata::link_units(from_ref(&self.runtime)).map_err(ImageLinkError::RuntimeMetadata)?;
         Ok(CompiledImage {
             inner: self.executable,
             metadata: Some(metadata),
@@ -147,15 +151,8 @@ impl CompiledImage {
         }
     }
 
-    pub fn from_linked_with_telemetry(
-        tel: &dyn crate::telemetry::Telemetry,
-        units: usize,
-        linked: CompiledModule,
-    ) -> Self {
-        tel.event(
-            &["fz", "link", "succeeded"],
-            crate::metadata! { units: units as i64 },
-        );
+    pub fn from_linked_with_telemetry(tel: &dyn Telemetry, units: usize, linked: CompiledModule) -> Self {
+        tel.event(&["fz", "link", "succeeded"], crate::metadata! { units: units as i64 });
         Self::from_linked(linked)
     }
 
@@ -173,23 +170,23 @@ unsafe impl Send for CompiledImage {}
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ImageLinkError {
     InterfaceFingerprintMismatch {
-        module: Option<crate::modules::identity::ModuleName>,
+        module: Option<ModuleName>,
     },
     UnresolvedExternalCalls {
-        module: Option<crate::modules::identity::ModuleName>,
+        module: Option<ModuleName>,
     },
     MissingImport {
-        requester: Option<crate::modules::identity::ModuleName>,
-        import: crate::modules::identity::ExportKey,
+        requester: Option<ModuleName>,
+        import: ExportKey,
     },
     DuplicateProvider {
-        import: crate::modules::identity::ExportKey,
+        import: ExportKey,
     },
     RuntimeMetadata(RuntimeMetadataLinkError),
 }
 
-impl std::fmt::Display for ImageLinkError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Display for ImageLinkError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::InterfaceFingerprintMismatch { module } => write!(
                 f,
@@ -224,7 +221,7 @@ impl std::fmt::Display for ImageLinkError {
     }
 }
 
-impl std::error::Error for ImageLinkError {}
+impl Error for ImageLinkError {}
 
 pub fn link_ir_units(units: &[CompiledUnit]) -> Result<Module, ImageLinkError> {
     let mut linker = IrUnitLinker::new();
@@ -237,18 +234,17 @@ pub fn link_ir_units(units: &[CompiledUnit]) -> Result<Module, ImageLinkError> {
 #[derive(Default)]
 struct IrUnitLinker {
     linked: Module,
-    linked_plan: Option<crate::ir_planner::ModulePlan>,
-    export_map: BTreeMap<crate::modules::identity::ExportKey, FnId>,
+    linked_plan: Option<ModulePlan>,
+    export_map: BTreeMap<ExportKey, FnId>,
 }
 
 impl IrUnitLinker {
     fn new() -> Self {
         let mut linker = Self::default();
-        linker.linked.atom_names.extend([
-            "nil".to_string(),
-            "true".to_string(),
-            "false".to_string(),
-        ]);
+        linker
+            .linked
+            .atom_names
+            .extend(["nil".to_string(), "true".to_string(), "false".to_string()]);
         linker
     }
 
@@ -279,7 +275,7 @@ impl IrUnitLinker {
         self.resolve_external_call_edges_in_plan();
         match self.linked.rewrite_external_calls_for_lto(&self.export_map) {
             Ok(_) => Ok(()),
-            Err(crate::fz_ir::ExternalLinkError::MissingTarget(import)) => {
+            Err(ExternalLinkError::MissingTarget(import)) => {
                 let requester = self
                     .linked
                     .external_call_edges
@@ -288,7 +284,7 @@ impl IrUnitLinker {
                     .and_then(|edge| module_for_linked_fn(&self.linked, edge.callsite.caller));
                 Err(ImageLinkError::MissingImport { requester, import })
             }
-            Err(crate::fz_ir::ExternalLinkError::MissingCallsite(callsite)) => {
+            Err(ExternalLinkError::MissingCallsite(callsite)) => {
                 let module = module_for_linked_fn(&self.linked, callsite.caller);
                 Err(ImageLinkError::UnresolvedExternalCalls { module })
             }
@@ -327,9 +323,7 @@ impl IrUnitLinker {
             extern_map.insert(ext.id, new_id);
             let mut copied = ext.clone();
             copied.id = new_id;
-            self.linked
-                .extern_idx
-                .insert(copied.id, self.linked.externs.len());
+            self.linked.extern_idx.insert(copied.id, self.linked.externs.len());
             self.linked.externs.push(copied);
         }
         if !extern_map.is_empty() {
@@ -385,9 +379,7 @@ impl IrUnitLinker {
             unit.code
                 .continuation_provenance
                 .iter()
-                .filter_map(|(fid, provenance)| {
-                    fn_map.get(fid).map(|new| (*new, provenance.clone()))
-                }),
+                .filter_map(|(fid, provenance)| fn_map.get(fid).map(|new| (*new, provenance.clone()))),
         );
     }
 
@@ -401,74 +393,47 @@ impl IrUnitLinker {
     }
 
     fn resolve_external_call_edges_in_plan(&mut self) {
-        let structural_edges: std::collections::HashSet<_> = self
+        let structural_edges: HashSet<_> = self
             .linked
             .external_call_edges
             .iter()
             .map(|edge| edge.callsite.clone())
             .collect();
-        let mut rewritten_plan_edges = std::collections::HashSet::new();
+        let mut rewritten_plan_edges = HashSet::new();
         let Some(plan) = &mut self.linked_plan else {
             return;
         };
         for spec in plan.specs.values_mut() {
             for (callsite, edge_plan) in &mut spec.call_edges {
-                let crate::ir_planner::fn_types::CallEdgeTarget::External {
-                    target,
-                    input,
-                    demand,
-                } = &edge_plan.target
-                else {
+                let CallEdgeTarget::External { target, input, demand } = &edge_plan.target else {
                     continue;
                 };
                 if let Some(fn_id) = self.export_map.get(target).copied() {
-                    if !structural_edges.contains(callsite)
-                        && rewritten_plan_edges.insert(callsite.clone())
-                    {
-                        let _ = crate::fz_ir::rewrite_external_callsite_for_link(
-                            &mut self.linked,
-                            callsite,
-                            fn_id,
-                        );
+                    if !structural_edges.contains(callsite) && rewritten_plan_edges.insert(callsite.clone()) {
+                        let _ = rewrite_external_callsite_for_link(&mut self.linked, callsite, fn_id);
                     }
-                    edge_plan.target = crate::ir_planner::fn_types::CallEdgeTarget::Local(
-                        crate::ir_planner::fn_types::SpecKey {
-                            fn_id,
-                            input: input.clone(),
-                            demand: demand.clone(),
-                        },
-                    );
+                    edge_plan.target = CallEdgeTarget::Local(SpecKey {
+                        fn_id,
+                        input: input.clone(),
+                        demand: demand.clone(),
+                    });
                 }
             }
         }
     }
 
     fn copy_type_facts(&mut self, unit: &CompiledUnit) {
-        self.linked
-            .opaque_inners
-            .extend(unit.code.opaque_inners.clone());
-        self.linked
-            .brand_inners
-            .extend(unit.code.brand_inners.clone());
-        self.linked
-            .struct_schemas
-            .extend(unit.code.struct_schemas.clone());
+        self.linked.opaque_inners.extend(unit.code.opaque_inners.clone());
+        self.linked.brand_inners.extend(unit.code.brand_inners.clone());
+        self.linked.struct_schemas.extend(unit.code.struct_schemas.clone());
     }
 
-    fn copy_exports(
-        &mut self,
-        unit: &CompiledUnit,
-        fn_map: &BTreeMap<FnId, FnId>,
-    ) -> Result<(), ImageLinkError> {
+    fn copy_exports(&mut self, unit: &CompiledUnit, fn_map: &BTreeMap<FnId, FnId>) -> Result<(), ImageLinkError> {
         let Some(module) = &unit.module else {
             return Ok(());
         };
         for export in &unit.exports {
-            let key = crate::modules::identity::ExportKey::new(
-                module.clone(),
-                export.name.clone(),
-                export.arity,
-            );
+            let key = ExportKey::new(module.clone(), export.name.clone(), export.arity);
             let qualified = format!("{}.{}", module, export.name);
             let target = unit
                 .code
@@ -490,9 +455,7 @@ impl IrUnitLinker {
                         .code
                         .fns
                         .iter()
-                        .find(|f| {
-                            f.name == qualified && f.block(f.entry).params.len() == callback.arity
-                        })
+                        .find(|f| f.name == qualified && f.block(f.entry).params.len() == callback.arity)
                         .and_then(|f| fn_map.get(&f.id).copied());
                     if let Some(target) = target
                         && self.export_map.insert(callback.clone(), target).is_some()
@@ -507,12 +470,7 @@ impl IrUnitLinker {
         Ok(())
     }
 
-    fn remap_fn(
-        &mut self,
-        mut f: FnIr,
-        fn_map: &BTreeMap<FnId, FnId>,
-        atom_names: &[String],
-    ) -> FnIr {
+    fn remap_fn(&mut self, mut f: FnIr, fn_map: &BTreeMap<FnId, FnId>, atom_names: &[String]) -> FnIr {
         f.id = fn_map[&f.id];
         for block in &mut f.blocks {
             for stmt in &mut block.stmts {
@@ -524,17 +482,12 @@ impl IrUnitLinker {
     }
 }
 
-fn merge_module_plan(
-    out: &mut Option<crate::ir_planner::ModulePlan>,
-    incoming: crate::ir_planner::ModulePlan,
-) {
+fn merge_module_plan(out: &mut Option<ModulePlan>, incoming: ModulePlan) {
     match out {
         Some(existing) => {
             existing.specs.extend(incoming.specs);
             existing.spec_roles.extend(incoming.spec_roles);
-            existing
-                .effective_returns
-                .extend(incoming.effective_returns);
+            existing.effective_returns.extend(incoming.effective_returns);
             existing.any_key_specs.extend(incoming.any_key_specs);
             existing.spec_precedence.extend(incoming.spec_precedence);
             existing.fn_effects.extend(incoming.fn_effects);
@@ -544,11 +497,8 @@ fn merge_module_plan(
     }
 }
 
-fn remap_module_plan(
-    plan: &crate::ir_planner::ModulePlan,
-    fn_map: &BTreeMap<FnId, FnId>,
-) -> crate::ir_planner::ModulePlan {
-    crate::ir_planner::ModulePlan {
+fn remap_module_plan(plan: &ModulePlan, fn_map: &BTreeMap<FnId, FnId>) -> ModulePlan {
+    ModulePlan {
         specs: plan
             .specs
             .iter()
@@ -587,11 +537,8 @@ fn remap_module_plan(
     }
 }
 
-fn remap_spec_plan(
-    spec: &crate::ir_planner::SpecPlan,
-    fn_map: &BTreeMap<FnId, FnId>,
-) -> crate::ir_planner::SpecPlan {
-    crate::ir_planner::SpecPlan {
+fn remap_spec_plan(spec: &SpecPlan, fn_map: &BTreeMap<FnId, FnId>) -> SpecPlan {
+    SpecPlan {
         vars: spec.vars.clone(),
         block_envs: spec.block_envs.clone(),
         callable_capabilities: spec
@@ -606,12 +553,7 @@ fn remap_spec_plan(
         call_edges: spec
             .call_edges
             .iter()
-            .map(|(callsite, edge)| {
-                (
-                    remap_callsite(callsite, fn_map),
-                    remap_call_edge_plan(edge, fn_map),
-                )
-            })
+            .map(|(callsite, edge)| (remap_callsite(callsite, fn_map), remap_call_edge_plan(edge, fn_map)))
             .collect(),
         callable_entry_targets: spec.callable_entry_targets.clone(),
         extern_marshals: spec.extern_marshals.clone(),
@@ -621,44 +563,35 @@ fn remap_spec_plan(
 }
 
 fn remap_callable_capability(
-    capability: &crate::ir_planner::fn_types::CallableCapability,
+    capability: &CallableCapability,
     fn_map: &BTreeMap<FnId, FnId>,
-) -> Option<crate::ir_planner::fn_types::CallableCapability> {
-    use crate::ir_planner::fn_types::CallableCapability;
-
+) -> Option<CallableCapability> {
     match capability {
-        CallableCapability::KnownFn(fid) => {
-            fn_map.get(fid).copied().map(CallableCapability::KnownFn)
-        }
+        CallableCapability::KnownFn(fid) => fn_map.get(fid).copied().map(CallableCapability::KnownFn),
         CallableCapability::KnownClosure {
             fn_id,
             captures,
             capture_capabilities,
-        } => {
-            fn_map
-                .get(fn_id)
-                .copied()
-                .map(|fn_id| CallableCapability::KnownClosure {
-                    fn_id,
-                    captures: captures.clone(),
-                    capture_capabilities: capture_capabilities
-                        .iter()
-                        .map(|capability| {
-                            capability
-                                .as_ref()
-                                .and_then(|capability| remap_callable_capability(capability, fn_map))
-                        })
-                        .collect(),
-                })
-        }
+        } => fn_map
+            .get(fn_id)
+            .copied()
+            .map(|fn_id| CallableCapability::KnownClosure {
+                fn_id,
+                captures: captures.clone(),
+                capture_capabilities: capture_capabilities
+                    .iter()
+                    .map(|capability| {
+                        capability
+                            .as_ref()
+                            .and_then(|capability| remap_callable_capability(capability, fn_map))
+                    })
+                    .collect(),
+            }),
         CallableCapability::OpaqueCallable => Some(CallableCapability::OpaqueCallable),
     }
 }
 
-fn remap_callsite(
-    callsite: &crate::fz_ir::CallsiteId,
-    fn_map: &BTreeMap<FnId, FnId>,
-) -> crate::fz_ir::CallsiteId {
+fn remap_callsite(callsite: &CallsiteId, fn_map: &BTreeMap<FnId, FnId>) -> CallsiteId {
     let mut out = callsite.clone();
     if let Some(caller) = fn_map.get(&out.caller) {
         out.caller = *caller;
@@ -666,20 +599,11 @@ fn remap_callsite(
     out
 }
 
-fn remap_call_edge_plan(
-    edge: &crate::ir_planner::fn_types::CallEdgePlan,
-    fn_map: &BTreeMap<FnId, FnId>,
-) -> crate::ir_planner::fn_types::CallEdgePlan {
-    crate::ir_planner::fn_types::CallEdgePlan {
+fn remap_call_edge_plan(edge: &CallEdgePlan, fn_map: &BTreeMap<FnId, FnId>) -> CallEdgePlan {
+    CallEdgePlan {
         target: match &edge.target {
-            crate::ir_planner::fn_types::CallEdgeTarget::Local(key) => {
-                crate::ir_planner::fn_types::CallEdgeTarget::Local(remap_spec_key(key, fn_map))
-            }
-            crate::ir_planner::fn_types::CallEdgeTarget::External {
-                target,
-                input,
-                demand,
-            } => crate::ir_planner::fn_types::CallEdgeTarget::External {
+            CallEdgeTarget::Local(key) => CallEdgeTarget::Local(remap_spec_key(key, fn_map)),
+            CallEdgeTarget::External { target, input, demand } => CallEdgeTarget::External {
                 target: target.clone(),
                 input: input.clone(),
                 demand: demand.clone(),
@@ -692,49 +616,27 @@ fn remap_call_edge_plan(
     }
 }
 
-fn remap_return_contract(
-    contract: &crate::ir_planner::fn_types::ReturnContract,
-    fn_map: &BTreeMap<FnId, FnId>,
-) -> crate::ir_planner::fn_types::ReturnContract {
-    crate::ir_planner::fn_types::ReturnContract::new(
+fn remap_return_contract(contract: &ReturnContract, fn_map: &BTreeMap<FnId, FnId>) -> ReturnContract {
+    ReturnContract::new(
         remap_spec_key(&contract.target, fn_map),
         remap_return_strategy(&contract.strategy, fn_map),
     )
 }
 
-fn remap_return_strategy(
-    strategy: &crate::ir_planner::fn_types::ReturnStrategy,
-    fn_map: &BTreeMap<FnId, FnId>,
-) -> crate::ir_planner::fn_types::ReturnStrategy {
+fn remap_return_strategy(strategy: &ReturnStrategy, fn_map: &BTreeMap<FnId, FnId>) -> ReturnStrategy {
     match strategy {
-        crate::ir_planner::fn_types::ReturnStrategy::Value => {
-            crate::ir_planner::fn_types::ReturnStrategy::Value
-        }
-        crate::ir_planner::fn_types::ReturnStrategy::TupleFields(arity) => {
-            crate::ir_planner::fn_types::ReturnStrategy::TupleFields(*arity)
-        }
-        crate::ir_planner::fn_types::ReturnStrategy::ForwardedDemand(demand) => {
-            crate::ir_planner::fn_types::ReturnStrategy::ForwardedDemand(demand.clone())
-        }
-        crate::ir_planner::fn_types::ReturnStrategy::ListTail(plan) => {
-            crate::ir_planner::fn_types::ReturnStrategy::ListTail(remap_return_context_plan(
-                plan, fn_map,
-            ))
-        }
-        crate::ir_planner::fn_types::ReturnStrategy::TupleFieldsListTail { arity, plan } => {
-            crate::ir_planner::fn_types::ReturnStrategy::TupleFieldsListTail {
-                arity: *arity,
-                plan: remap_return_context_plan(plan, fn_map),
-            }
-        }
+        ReturnStrategy::Value => ReturnStrategy::Value,
+        ReturnStrategy::TupleFields(arity) => ReturnStrategy::TupleFields(*arity),
+        ReturnStrategy::ForwardedDemand(demand) => ReturnStrategy::ForwardedDemand(demand.clone()),
+        ReturnStrategy::ListTail(plan) => ReturnStrategy::ListTail(remap_return_context_plan(plan, fn_map)),
+        ReturnStrategy::TupleFieldsListTail { arity, plan } => ReturnStrategy::TupleFieldsListTail {
+            arity: *arity,
+            plan: remap_return_context_plan(plan, fn_map),
+        },
     }
 }
 
-fn remap_return_context_plan(
-    plan: &crate::ir_planner::fn_types::ReturnContextPlan,
-    fn_map: &BTreeMap<FnId, FnId>,
-) -> crate::ir_planner::fn_types::ReturnContextPlan {
-    use crate::ir_planner::fn_types::ReturnContextPlan;
+fn remap_return_context_plan(plan: &ReturnContextPlan, fn_map: &BTreeMap<FnId, FnId>) -> ReturnContextPlan {
     match plan {
         ReturnContextPlan::DirectContinuation {
             continuation,
@@ -790,10 +692,7 @@ fn remap_return_context_plan(
     }
 }
 
-fn remap_spec_key(
-    key: &crate::ir_planner::fn_types::SpecKey,
-    fn_map: &BTreeMap<FnId, FnId>,
-) -> crate::ir_planner::fn_types::SpecKey {
+fn remap_spec_key(key: &SpecKey, fn_map: &BTreeMap<FnId, FnId>) -> SpecKey {
     let mut out = key.clone();
     out.fn_id = remapped_fn_id(out.fn_id, fn_map);
     out
@@ -803,10 +702,7 @@ fn remapped_fn_id(fid: FnId, fn_map: &BTreeMap<FnId, FnId>) -> FnId {
     fn_map.get(&fid).copied().unwrap_or(fid)
 }
 
-fn module_for_linked_fn(
-    module: &Module,
-    fn_id: FnId,
-) -> Option<crate::modules::identity::ModuleName> {
+fn module_for_linked_fn(module: &Module, fn_id: FnId) -> Option<ModuleName> {
     module
         .fn_idx
         .get(&fn_id)
@@ -815,27 +711,17 @@ fn module_for_linked_fn(
             if f.owner_module.is_empty() {
                 None
             } else {
-                crate::modules::identity::ModuleName::parse_dotted(&f.owner_module).ok()
+                ModuleName::parse_dotted(&f.owner_module).ok()
             }
         })
 }
 
-fn remap_stmt(
-    stmt: &mut Stmt,
-    fn_map: &BTreeMap<FnId, FnId>,
-    linked_atoms: &mut Vec<String>,
-    unit_atoms: &[String],
-) {
+fn remap_stmt(stmt: &mut Stmt, fn_map: &BTreeMap<FnId, FnId>, linked_atoms: &mut Vec<String>, unit_atoms: &[String]) {
     let Stmt::Let(_, prim) = stmt;
     remap_prim(prim, fn_map, linked_atoms, unit_atoms);
 }
 
-fn remap_prim(
-    prim: &mut Prim,
-    fn_map: &BTreeMap<FnId, FnId>,
-    linked_atoms: &mut Vec<String>,
-    unit_atoms: &[String],
-) {
+fn remap_prim(prim: &mut Prim, fn_map: &BTreeMap<FnId, FnId>, linked_atoms: &mut Vec<String>, unit_atoms: &[String]) {
     match prim {
         Prim::Const(Const::Atom(id)) => {
             if let Some(name) = unit_atoms.get(*id as usize) {
@@ -866,9 +752,7 @@ fn remap_fn_externs(f: &mut FnIr, extern_map: &HashMap<ExternId, ExternId>) {
 fn remap_term(term: &mut Term, fn_map: &BTreeMap<FnId, FnId>) {
     match term {
         Term::Call {
-            callee,
-            continuation,
-            ..
+            callee, continuation, ..
         } => {
             remap_fn_id(callee, fn_map);
             remap_cont(continuation, fn_map);
@@ -885,11 +769,7 @@ fn remap_term(term: &mut Term, fn_map: &BTreeMap<FnId, FnId>) {
                 remap_receive_after(after, fn_map);
             }
         }
-        Term::Goto(_, _)
-        | Term::If { .. }
-        | Term::TailCallClosure { .. }
-        | Term::Return(_)
-        | Term::Halt(_) => {}
+        Term::Goto(_, _) | Term::If { .. } | Term::TailCallClosure { .. } | Term::Return(_) | Term::Halt(_) => {}
     }
 }
 
@@ -941,12 +821,12 @@ pub struct RuntimeStaticClosure {
 
 #[derive(Debug, Clone)]
 pub struct RuntimeUnitMetadata {
-    pub module: Option<crate::modules::identity::ModuleName>,
+    pub module: Option<ModuleName>,
     pub atoms: Vec<String>,
     pub schemas: Vec<Schema>,
     pub frame_sizes: Vec<u32>,
     pub exported_symbols: BTreeMap<String, u32>,
-    pub imported_refs: Vec<crate::modules::identity::ExportKey>,
+    pub imported_refs: Vec<ExportKey>,
     pub static_closures: Vec<RuntimeStaticClosure>,
     pub halt_kinds: BTreeMap<u32, u32>,
     pub entrypoints: RuntimeEntrypoints,
@@ -954,37 +834,24 @@ pub struct RuntimeUnitMetadata {
 
 impl RuntimeUnitMetadata {
     #[cfg(test)]
-    pub fn from_ir_module(
-        module: Option<crate::modules::identity::ModuleName>,
-        ir: &Module,
-    ) -> Self {
+    pub fn from_ir_module(module: Option<ModuleName>, ir: &Module) -> Self {
         Self {
             module,
             atoms: ir.atom_names.clone(),
             schemas: ir.schemas.clone(),
             frame_sizes: Vec::new(),
             exported_symbols: BTreeMap::new(),
-            imported_refs: ir
-                .external_call_edges
-                .iter()
-                .map(|edge| edge.target.clone())
-                .collect(),
+            imported_refs: ir.external_call_edges.iter().map(|edge| edge.target.clone()).collect(),
             static_closures: Vec::new(),
             halt_kinds: BTreeMap::new(),
             entrypoints: RuntimeEntrypoints::default(),
         }
     }
 
-    pub fn from_compiled_module(
-        module: Option<crate::modules::identity::ModuleName>,
-        unit: &CompiledUnit,
-        compiled: &CompiledModule,
-    ) -> Self {
+    pub fn from_compiled_module(module: Option<ModuleName>, unit: &CompiledUnit, compiled: &CompiledModule) -> Self {
         let schemas = {
             let registry = compiled.user_schemas.borrow();
-            (0..registry.len())
-                .map(|id| registry.get(id as u32).clone())
-                .collect()
+            (0..registry.len()).map(|id| registry.get(id as u32).clone()).collect()
         };
         let exported_symbols = unit
             .module
@@ -993,12 +860,7 @@ impl RuntimeUnitMetadata {
                 unit.exports
                     .iter()
                     .enumerate()
-                    .map(|(idx, export)| {
-                        (
-                            format!("{}.{}/{}", module, export.name, export.arity),
-                            idx as u32,
-                        )
-                    })
+                    .map(|(idx, export)| (format!("{}.{}/{}", module, export.name, export.arity), idx as u32))
                     .collect()
             })
             .unwrap_or_default();
@@ -1017,13 +879,11 @@ impl RuntimeUnitMetadata {
             static_closures: compiled
                 .static_closure_targets
                 .iter()
-                .map(
-                    |(closure_schema_id, fn_id, _, halt_kind)| RuntimeStaticClosure {
-                        closure_schema_id: *closure_schema_id,
-                        fn_id: *fn_id,
-                        halt_kind: *halt_kind,
-                    },
-                )
+                .map(|(closure_schema_id, fn_id, _, halt_kind)| RuntimeStaticClosure {
+                    closure_schema_id: *closure_schema_id,
+                    fn_id: *fn_id,
+                    halt_kind: *halt_kind,
+                })
                 .collect(),
             halt_kinds: compiled
                 .fn_halt_kinds
@@ -1054,7 +914,7 @@ pub struct RuntimeImageMetadata {
     pub schemas: Vec<Schema>,
     pub frame_sizes: Vec<u32>,
     pub exported_symbols: BTreeMap<String, u32>,
-    pub imported_refs: Vec<crate::modules::identity::ExportKey>,
+    pub imported_refs: Vec<ExportKey>,
     pub static_closures: Vec<(usize, RuntimeStaticClosure)>,
     pub halt_kinds: BTreeMap<u32, u32>,
     pub entrypoints: RuntimeEntrypoints,
@@ -1063,12 +923,12 @@ pub struct RuntimeImageMetadata {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RuntimeMetadataLinkError {
-    DuplicateModule(crate::modules::identity::ModuleName),
+    DuplicateModule(ModuleName),
     DuplicateExport(String),
 }
 
-impl std::fmt::Display for RuntimeMetadataLinkError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Display for RuntimeMetadataLinkError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::DuplicateModule(module) => {
                 write!(f, "runtime metadata for module `{}` appears twice", module)
@@ -1080,7 +940,7 @@ impl std::fmt::Display for RuntimeMetadataLinkError {
     }
 }
 
-impl std::error::Error for RuntimeMetadataLinkError {}
+impl Error for RuntimeMetadataLinkError {}
 
 impl RuntimeImageMetadata {
     pub fn link_units(units: &[RuntimeUnitMetadata]) -> Result<Self, RuntimeMetadataLinkError> {
@@ -1093,10 +953,7 @@ impl RuntimeImageMetadata {
             }
         }
 
-        let atom_keys: BTreeSet<String> = units
-            .iter()
-            .flat_map(|unit| unit.atoms.iter().cloned())
-            .collect();
+        let atom_keys: BTreeSet<String> = units.iter().flat_map(|unit| unit.atoms.iter().cloned()).collect();
         let atoms: Vec<String> = atom_keys.into_iter().collect();
         let atom_ids: BTreeMap<String, u32> = atoms
             .iter()
@@ -1132,11 +989,7 @@ impl RuntimeImageMetadata {
 
         for input_index in unit_order {
             let unit = &units[input_index];
-            let atom_relocs = unit
-                .atoms
-                .iter()
-                .map(|atom| atom_ids[atom])
-                .collect::<Vec<_>>();
+            let atom_relocs = unit.atoms.iter().map(|atom| atom_ids[atom]).collect::<Vec<_>>();
             let schema_relocs = unit
                 .schemas
                 .iter()
@@ -1153,10 +1006,7 @@ impl RuntimeImageMetadata {
                 }
             }
             for (symbol, fn_id) in &unit.exported_symbols {
-                if exported_symbols
-                    .insert(symbol.clone(), frame_base + *fn_id)
-                    .is_some()
-                {
+                if exported_symbols.insert(symbol.clone(), frame_base + *fn_id).is_some() {
                     return Err(RuntimeMetadataLinkError::DuplicateExport(symbol.clone()));
                 }
             }
@@ -1202,11 +1052,7 @@ impl RuntimeImageMetadata {
         lines.push(format!("atoms={}", self.atoms.join(",")));
         lines.push(format!(
             "schemas={}",
-            self.schemas
-                .iter()
-                .map(schema_key)
-                .collect::<Vec<_>>()
-                .join(",")
+            self.schemas.iter().map(schema_key).collect::<Vec<_>>().join(",")
         ));
         lines.push(format!(
             "frames={}",
@@ -1263,7 +1109,7 @@ pub struct CompiledModule {
     pub(super) fn_ptrs: HashMap<u32, *const u8>,
     /// User-data SchemaRegistry. Shared with every Process built by
     /// `make_process()` through its Heap.
-    pub(crate) user_schemas: std::rc::Rc<std::cell::RefCell<fz_runtime::heap::SchemaRegistry>>,
+    pub(crate) user_schemas: Rc<RefCell<SchemaRegistry>>,
     /// Per-fn frame size (bytes), indexed by FnId.0. Consumed by
     /// `fz_alloc_frame_dyn` for fns whose id is only known dynamically
     /// (closure invocation).
@@ -1279,8 +1125,8 @@ pub struct CompiledModule {
     /// `make_process` builds, by `Rc` clone — so spawning copies a pointer,
     /// not the tables, and runtime-interned atoms are consistent across the
     /// module's processes.
-    pub(crate) node: std::rc::Rc<fz_runtime::process::Node>,
-    pub(crate) diagnostics: crate::diag::Diagnostics,
+    pub(crate) node: Rc<Node>,
+    pub(crate) diagnostics: Diagnostics,
     /// Zero-capture closure-target spec singletons resolved to code
     /// addresses at JIT-finalize time. `make_process` allocates one
     /// 24-byte off-heap closure per entry into `Process.static_closures`.
@@ -1322,7 +1168,7 @@ impl CompiledModule {
     /// Typer-side diagnostics collected during `compile`. Includes both
     /// warnings and errors; drivers must route through
     /// `diag::report_or_exit` so error-severity entries actually halt.
-    pub fn diagnostics(&self) -> &crate::diag::Diagnostics {
+    pub fn diagnostics(&self) -> &Diagnostics {
         &self.diagnostics
     }
 }
@@ -1349,18 +1195,18 @@ impl CompiledModule {
         // field defaults identical; this path adds only the per-module
         // compile-time tables (see docs/cps-in-clif.md §8.2) and the
         // alloc-stats reset the compiled path wants on a fresh process.
-        let consts = fz_runtime::process::CompiledModuleConsts {
+        let consts = CompiledModuleConsts {
             bs_tuple_arity1_schema: self.bs_tuple_arity1_schema,
             bs_tuple_arity3_schema: self.bs_tuple_arity3_schema,
             static_closure_targets: self.static_closure_targets.clone(),
             halt_cont_body_addrs: self.halt_cont_body_addrs,
         };
         let mut p = Process::from_consts(
-            std::rc::Rc::clone(&self.node),
-            std::rc::Rc::clone(&self.user_schemas),
+            Rc::clone(&self.node),
+            Rc::clone(&self.user_schemas),
             &consts,
             0,
-            fz_runtime::process::DEFAULT_REDUCTIONS_PER_QUANTUM,
+            DEFAULT_REDUCTIONS_PER_QUANTUM,
         );
         p.heap.reset_alloc_stats();
         p
@@ -1384,33 +1230,25 @@ impl CompiledModule {
                 return;
             }
 
-            fn closure_root(ptr: *mut u8) -> fz_runtime::any_value::AnyValue {
+            fn closure_root(ptr: *mut u8) -> AnyValue {
                 if ptr.is_null() {
-                    fz_runtime::any_value::AnyValue::null()
-                } else if let Some(value) =
-                    fz_runtime::any_value::AnyValue::decode_tagged_heap_bits(ptr as u64)
-                {
+                    AnyValue::null()
+                } else if let Some(value) = AnyValue::decode_tagged_heap_bits(ptr as u64) {
                     value
                 } else {
-                    fz_runtime::any_value::AnyValue::heap_ptr(
-                        ptr,
-                        fz_runtime::any_value::ValueKind::CLOSURE,
-                    )
+                    AnyValue::heap_ptr(ptr, ValueKind::CLOSURE)
                 }
             }
 
-            fn closure_bits(value: fz_runtime::any_value::AnyValue) -> *mut u8 {
-                if value.kind() == fz_runtime::any_value::ValueKind::NULL {
-                    std::ptr::null_mut()
+            fn closure_bits(value: AnyValue) -> *mut u8 {
+                if value.kind() == ValueKind::NULL {
+                    null_mut()
                 } else {
                     value.heap_addr().expect("scheduler closure root")
                 }
             }
 
-            fn push_closure_root(
-                roots: &mut Vec<fz_runtime::any_value::AnyValue>,
-                ptr: *mut u8,
-            ) -> Option<usize> {
+            fn push_closure_root(roots: &mut Vec<AnyValue>, ptr: *mut u8) -> Option<usize> {
                 if ptr.is_null() {
                     None
                 } else {
@@ -1420,11 +1258,10 @@ impl CompiledModule {
                 }
             }
 
-            let mut mailbox_roots: Vec<fz_runtime::any_value::AnyValueRef> =
-                process.mailbox.iter().copied().collect();
+            let mut mailbox_roots: Vec<AnyValueRef> = process.mailbox.iter().copied().collect();
 
             let parked_clause_start = 0usize;
-            let mut roots: Vec<fz_runtime::any_value::AnyValue> = Vec::new();
+            let mut roots: Vec<AnyValue> = Vec::new();
             if let Some(park) = process.wait.as_ref() {
                 roots.extend(park.clause_bodies.iter().map(|&p| closure_root(p)));
                 roots.push(closure_root(park.after_cont));
@@ -1436,12 +1273,10 @@ impl CompiledModule {
             // separate pending-entry root is needed.
             let runnable_idx = push_closure_root(&mut roots, process.runnable_ptr());
 
-            let mut null_root = std::ptr::null_mut();
-            process.heap.gc_with_value_and_any_value_ref_roots(
-                &mut null_root,
-                &mut roots,
-                &mut mailbox_roots,
-            );
+            let mut null_root = null_mut();
+            process
+                .heap
+                .gc_with_value_and_any_value_ref_roots(&mut null_root, &mut roots, &mut mailbox_roots);
 
             process.mailbox.clear();
             process.mailbox.extend(mailbox_roots);
@@ -1465,25 +1300,22 @@ impl CompiledModule {
         // Selective-receive initial scan. Hit moves the outcome into `runnable` and
         // cancels the after-timer via the scheduler hook; Miss blocks the
         // task; NotApplicable is a no-op.
-        match fz_runtime::sched::initial_scan(process) {
-            fz_runtime::sched::ScanOutcome::Hit => {
+        match initial_scan(process) {
+            ScanOutcome::Hit => {
                 // Fall through to the dispatch branch below.
             }
-            fz_runtime::sched::ScanOutcome::Miss => {
-                process.next_frame = std::ptr::null_mut();
+            ScanOutcome::Miss => {
+                process.next_frame = null_mut();
                 return;
             }
-            fz_runtime::sched::ScanOutcome::NotApplicable => {}
+            ScanOutcome::NotApplicable => {}
         }
         fn run_scheduler_closure(resume_addr: *const u8, process: &mut Process, closure: *mut u8) {
-            let closure = fz_runtime::any_value::AnyValueRef::from_heap_object(
-                fz_runtime::any_value::ValueKind::CLOSURE,
-                closure as *const u8,
-            )
-            .expect("scheduler closure ref")
-            .raw_word();
+            let closure = AnyValueRef::from_heap_object(ValueKind::CLOSURE, closure as *const u8)
+                .expect("scheduler closure ref")
+                .raw_word();
             let process_ptr = process as *mut Process;
-            let _ = unsafe { fz_runtime::pinned_abi::call1(resume_addr, process_ptr, closure) };
+            let _ = unsafe { call1(resume_addr, process_ptr, closure) };
         }
 
         // One re-entry verb. `runnable` is the only thing the scheduler
@@ -1495,10 +1327,10 @@ impl CompiledModule {
         // runnable is the no-work fallthrough.
         if let Some(closure) = process.take_runnable_closure() {
             run_scheduler_closure(self.resume_addr, process, closure);
-            process.next_frame = std::ptr::null_mut();
+            process.next_frame = null_mut();
             park_time_gc(process);
         } else {
-            process.next_frame = std::ptr::null_mut();
+            process.next_frame = null_mut();
         }
     }
 }
@@ -1517,16 +1349,13 @@ impl CompiledModule {
     pub fn run(&self, fn_id: FnId) -> i64 {
         // Observe the root task through the telemetry seam rather than reading
         // Runtime internals directly.
-        let tel = crate::telemetry::bus::ConfiguredTelemetry::new();
-        let exits = crate::exec::runtime::ProcessExitCapture::new();
+        let tel = ConfiguredTelemetry::new();
+        let exits = ProcessExitCapture::new();
         tel.attach(&[], exits.handler());
-        let mut rt = crate::exec::runtime::Runtime::new(self, 1).with_telemetry(&tel);
+        let mut rt = Runtime::new(self, 1).with_telemetry(&tel);
         let root_pid = rt.spawn(fn_id);
         rt.run_until_idle();
-        exits
-            .by_pid(root_pid)
-            .expect("root process_exited captured")
-            .halt_value
+        exits.by_pid(root_pid).expect("root process_exited captured").halt_value
     }
 }
 
@@ -1545,7 +1374,7 @@ impl CompiledImage {
 /// already seen the module while declaring fns and compiling bodies.
 pub struct CompiledMetadata {
     pub fn_ids: HashMap<u32, FuncId>,
-    pub user_schemas: std::rc::Rc<std::cell::RefCell<fz_runtime::heap::SchemaRegistry>>,
+    pub user_schemas: Rc<RefCell<SchemaRegistry>>,
     pub frame_sizes: Vec<u32>,
     pub atom_names: Vec<String>,
     pub bs_tuple_arity1_schema: Option<u32>,
@@ -1558,7 +1387,7 @@ pub struct CompiledMetadata {
     /// Named source `defstruct` schemas in registration order. AOT bakes
     /// this into a data table so schema ids match the ids iconst'd into CLIF.
     pub named_schemas: Vec<(String, Vec<String>)>,
-    pub diagnostics: crate::diag::Diagnostics,
+    pub diagnostics: Diagnostics,
     /// FnId of fz user `main`, if present. AOT needs it to wire the C
     /// `main` shim; JIT keeps it as a convenience for the run path.
     pub main_fn_id: Option<FnId>,

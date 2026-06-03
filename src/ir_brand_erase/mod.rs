@@ -18,7 +18,8 @@
 //! Substitutions chase transitively: a chain
 //! `b = Brand(a, _); c = Brand(b, _);` collapses to `c → a`.
 
-use crate::fz_ir::{Module, Prim, Stmt, Var};
+use crate::fz_ir::{FnIr, Module, Prim, Stmt, Var};
+use crate::ir_fuse::{subst_prim, subst_term};
 use std::collections::HashMap;
 
 /// Erase `Prim::Brand` from every fn in `module`. Returns the number of
@@ -31,7 +32,7 @@ pub fn erase_brands(module: &mut Module) -> usize {
     removed
 }
 
-fn erase_in_fn(f: &mut crate::fz_ir::FnIr) -> usize {
+fn erase_in_fn(f: &mut FnIr) -> usize {
     // Two-pass within the fn:
     // 1. Walk all blocks, building the substitution map. Drop the Brand
     //    stmts in place.
@@ -63,9 +64,9 @@ fn erase_in_fn(f: &mut crate::fz_ir::FnIr) -> usize {
     for block in &mut f.blocks {
         for stmt in &mut block.stmts {
             let Stmt::Let(_, prim) = stmt;
-            *prim = crate::ir_fuse::subst_prim(prim, &subst);
+            *prim = subst_prim(prim, &subst);
         }
-        block.terminator = crate::ir_fuse::subst_term(&block.terminator, &subst);
+        block.terminator = subst_term(&block.terminator, &subst);
     }
 
     removed
@@ -74,9 +75,9 @@ fn erase_in_fn(f: &mut crate::fz_ir::FnIr) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fz_ir::{Const, FnBuilder, FnId, ModuleBuilder, Prim, Term};
+    use crate::fz_ir::{BinOp, Const, FnBuilder, FnId, FnIr, ModuleBuilder, Prim, Term};
 
-    fn build_module(fns: Vec<crate::fz_ir::FnIr>) -> Module {
+    fn build_module(fns: Vec<FnIr>) -> Module {
         let mut mb = ModuleBuilder::new();
         for f in fns {
             mb.add_fn(f);
@@ -149,7 +150,7 @@ mod tests {
         let a = b.let_(entry, Prim::Const(Const::Int(1)));
         let _branded = b.let_(entry, Prim::Brand(a, "X".to_string()));
         // Build BinOp referring to the brand
-        let sum = b.let_(entry, Prim::BinOp(crate::fz_ir::BinOp::Add, a, _branded));
+        let sum = b.let_(entry, Prim::BinOp(BinOp::Add, a, _branded));
         b.set_terminator(entry, Term::Halt(sum));
         let mut m = build_module(vec![b.build()]);
         let n = erase_brands(&mut m);

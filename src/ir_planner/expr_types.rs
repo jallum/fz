@@ -1,20 +1,13 @@
 use crate::fz_ir::{BinOp, Const, Var};
-use crate::types::MapKey;
+use crate::types::{MapKey, Ty, Types};
 use std::collections::HashMap;
 
-pub(crate) fn type_const<T: crate::types::Types<Ty = crate::types::Ty>>(
-    t: &mut T,
-    c: &Const,
-    atom_names: &[String],
-) -> T::Ty {
+pub(crate) fn type_const<T: Types<Ty = Ty>>(t: &mut T, c: &Const, atom_names: &[String]) -> T::Ty {
     match c {
         Const::Int(n) => t.int_lit(*n),
         Const::Float(f) => t.float_lit(*f),
         Const::Atom(id) => {
-            let name = atom_names
-                .get(*id as usize)
-                .map(String::as_str)
-                .unwrap_or("?");
+            let name = atom_names.get(*id as usize).map(String::as_str).unwrap_or("?");
             t.atom_lit(name)
         }
         Const::Nil => t.nil(),
@@ -23,13 +16,7 @@ pub(crate) fn type_const<T: crate::types::Types<Ty = crate::types::Ty>>(
     }
 }
 
-pub(crate) fn type_binop<T: crate::types::Types<Ty = crate::types::Ty>>(
-    t: &mut T,
-    op: BinOp,
-    a: &T::Ty,
-    b: &T::Ty,
-    fold: bool,
-) -> T::Ty {
+pub(crate) fn type_binop<T: Types<Ty = Ty>>(t: &mut T, op: BinOp, a: &T::Ty, b: &T::Ty, fold: bool) -> T::Ty {
     use BinOp::*;
     match op {
         Add | Sub | Mul | Div | Mod => {
@@ -44,12 +31,7 @@ pub(crate) fn type_binop<T: crate::types::Types<Ty = crate::types::Ty>>(
     }
 }
 
-pub(crate) fn compare_result<T: crate::types::Types<Ty = crate::types::Ty>>(
-    t: &mut T,
-    op: BinOp,
-    a: &T::Ty,
-    b: &T::Ty,
-) -> T::Ty {
+pub(crate) fn compare_result<T: Types<Ty = Ty>>(t: &mut T, op: BinOp, a: &T::Ty, b: &T::Ty) -> T::Ty {
     use BinOp::*;
     if let (Some(ai), Some(bi)) = (t.as_int_singleton(a), t.as_int_singleton(b)) {
         let result = match op {
@@ -86,11 +68,7 @@ pub(crate) fn compare_result<T: crate::types::Types<Ty = crate::types::Ty>>(
     t.bool()
 }
 
-pub(crate) fn numeric_result<T: crate::types::Types<Ty = crate::types::Ty>>(
-    t: &mut T,
-    a: &T::Ty,
-    b: &T::Ty,
-) -> T::Ty {
+pub(crate) fn numeric_result<T: Types<Ty = Ty>>(t: &mut T, a: &T::Ty, b: &T::Ty) -> T::Ty {
     let int_ty = t.int();
     let float_ty = t.float();
     let both_int = t.is_subtype(a, &int_ty) && t.is_subtype(b, &int_ty);
@@ -107,12 +85,7 @@ pub(crate) fn numeric_result<T: crate::types::Types<Ty = crate::types::Ty>>(
 /// Like `numeric_result` but folds singleton operands to a literal result.
 /// Called only when operands are literal-known, including synthetic literals
 /// used to type unary negation.
-pub(crate) fn numeric_result_fold<T: crate::types::Types<Ty = crate::types::Ty>>(
-    t: &mut T,
-    op: BinOp,
-    a: &T::Ty,
-    b: &T::Ty,
-) -> T::Ty {
+pub(crate) fn numeric_result_fold<T: Types<Ty = Ty>>(t: &mut T, op: BinOp, a: &T::Ty, b: &T::Ty) -> T::Ty {
     use BinOp::*;
     if let (Some(ai), Some(bi)) = (t.as_int_singleton(a), t.as_int_singleton(b)) {
         let result = match op {
@@ -155,18 +128,10 @@ pub(crate) fn numeric_result_fold<T: crate::types::Types<Ty = crate::types::Ty>>
     numeric_result(t, a, b)
 }
 
-pub(crate) fn lookup<T: crate::types::Types<Ty = crate::types::Ty>>(
-    t: &mut T,
-    env: &HashMap<Var, crate::types::Ty>,
-    v: Var,
-) -> T::Ty {
+pub(crate) fn lookup<T: Types<Ty = Ty>>(t: &mut T, env: &HashMap<Var, Ty>, v: Var) -> T::Ty {
     env.get(&v).cloned().unwrap_or_else(|| t.any())
 }
 
-pub(crate) fn var_as_map_key<T: crate::types::Types<Ty = crate::types::Ty>>(
-    t: &T,
-    v: Var,
-    env: &HashMap<Var, crate::types::Ty>,
-) -> Option<MapKey> {
+pub(crate) fn var_as_map_key<T: Types<Ty = Ty>>(t: &T, v: Var, env: &HashMap<Var, Ty>) -> Option<MapKey> {
     env.get(&v).and_then(|ty| t.as_map_key(ty))
 }

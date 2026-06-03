@@ -12,7 +12,10 @@
 //! (Map, Bitstring, Pinned) lower as sequential Matcher tests.
 
 use crate::ast::{Expr, Pattern, Spanned};
+use crate::diag::Span;
+use crate::exec::matcher::{GuardExpr, InputId, Matcher, MatcherInput, PinnedId, PinnedInput};
 use crate::fz_ir::Var;
+use crate::types::Ty;
 
 pub(crate) mod analysis;
 pub(crate) mod builder;
@@ -22,6 +25,9 @@ pub(crate) mod pattern_ops;
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+use std::cell::Cell;
 
 #[cfg(test)]
 pub use analysis::is_inexhaustive;
@@ -49,7 +55,7 @@ pub struct Row {
     /// `@spec` annotation tests evaluated at leaf-resolution time, before
     /// the guard. Each (var, descr) emits `TypeTest(var, descr)`; on fail,
     /// the PatternMatrix falls through to the next row.
-    pub preconditions: Vec<(Var, crate::types::Ty)>,
+    pub preconditions: Vec<(Var, Ty)>,
     /// Bindings already proven while specialization removed or expanded
     /// columns. Remaining column bindings are collected when the leaf forms.
     pub bindings: Vec<(String, SubjectRef)>,
@@ -96,29 +102,20 @@ pub enum PatternMatrixCompileError {
 
 /// Compile a PatternMatrix into the AST-free `Matcher`
 /// representation.
-pub fn compile_pattern_matrix(
-    pattern_matrix: PatternMatrix,
-) -> Result<crate::exec::matcher::Matcher, PatternMatrixCompileError> {
+pub fn compile_pattern_matrix(pattern_matrix: PatternMatrix) -> Result<Matcher, PatternMatrixCompileError> {
     let mut resolver = |_name: &str,
                         _arity: usize,
-                        _args: Vec<crate::exec::matcher::GuardExpr>|
-     -> Result<
-        Option<crate::exec::matcher::GuardExpr>,
-        PatternMatrixCompileError,
-    > { Ok(None) };
+                        _args: Vec<GuardExpr>|
+     -> Result<Option<GuardExpr>, PatternMatrixCompileError> { Ok(None) };
     compile_pattern_matrix_with_guard_resolver(pattern_matrix, &mut resolver)
 }
 
 pub fn compile_pattern_matrix_with_guard_resolver<F>(
     pattern_matrix: PatternMatrix,
     guard_call_resolver: &mut F,
-) -> Result<crate::exec::matcher::Matcher, PatternMatrixCompileError>
+) -> Result<Matcher, PatternMatrixCompileError>
 where
-    F: FnMut(
-        &str,
-        usize,
-        Vec<crate::exec::matcher::GuardExpr>,
-    ) -> Result<Option<crate::exec::matcher::GuardExpr>, PatternMatrixCompileError>,
+    F: FnMut(&str, usize, Vec<GuardExpr>) -> Result<Option<GuardExpr>, PatternMatrixCompileError>,
 {
     use std::collections::HashMap;
 
@@ -128,31 +125,31 @@ where
 
     let input_vars = pattern_matrix.subjects.clone();
     let pinned_names = collect_pinned_names(&pattern_matrix);
-    let inputs: Vec<crate::exec::matcher::MatcherInput> = input_vars
+    let inputs: Vec<MatcherInput> = input_vars
         .iter()
         .copied()
-        .map(|v| crate::exec::matcher::MatcherInput {
+        .map(|v| MatcherInput {
             var: Some(v),
-            span: crate::diag::Span::DUMMY,
+            span: Span::DUMMY,
         })
         .collect();
-    let input_by_var: HashMap<Var, crate::exec::matcher::InputId> = input_vars
+    let input_by_var: HashMap<Var, InputId> = input_vars
         .into_iter()
         .enumerate()
-        .map(|(i, v)| (v, crate::exec::matcher::InputId(i as u32)))
+        .map(|(i, v)| (v, InputId(i as u32)))
         .collect();
-    let pinned: Vec<crate::exec::matcher::PinnedInput> = pinned_names
+    let pinned: Vec<PinnedInput> = pinned_names
         .iter()
-        .map(|name| crate::exec::matcher::PinnedInput {
+        .map(|name| PinnedInput {
             name: name.clone(),
             var: None,
-            span: crate::diag::Span::DUMMY,
+            span: Span::DUMMY,
         })
         .collect();
-    let pinned_by_name: HashMap<String, crate::exec::matcher::PinnedId> = pinned_names
+    let pinned_by_name: HashMap<String, PinnedId> = pinned_names
         .into_iter()
         .enumerate()
-        .map(|(i, name)| (name, crate::exec::matcher::PinnedId(i as u32)))
+        .map(|(i, name)| (name, PinnedId(i as u32)))
         .collect();
 
     let mut builder = MatcherBuilder {
@@ -163,14 +160,10 @@ where
         guard_call_resolver,
     };
     let root = builder.compile_inner(CompilePatternMatrix {
-        subjects: pattern_matrix
-            .subjects
-            .into_iter()
-            .map(SubjectRef::Var)
-            .collect(),
+        subjects: pattern_matrix.subjects.into_iter().map(SubjectRef::Var).collect(),
         rows: pattern_matrix.rows,
     })?;
-    Ok(crate::exec::matcher::Matcher {
+    Ok(Matcher {
         inputs,
         pinned,
         prepared_keys: builder.prepared_keys,
@@ -192,7 +185,7 @@ fn validate_source_order(pattern_matrix: &PatternMatrix) -> Result<(), PatternMa
 
 #[cfg(test)]
 thread_local! {
-    pub(crate) static COMPILE_COUNT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    pub(crate) static COMPILE_COUNT: Cell<usize> = const { Cell::new(0) };
 }
 
 #[cfg(test)]
@@ -202,5 +195,5 @@ pub fn reset_compile_count() {
 
 #[cfg(test)]
 pub fn compile_count() -> usize {
-    COMPILE_COUNT.with(std::cell::Cell::get)
+    COMPILE_COUNT.with(Cell::get)
 }

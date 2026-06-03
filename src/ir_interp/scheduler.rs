@@ -1,8 +1,15 @@
 use std::collections::HashMap;
+use std::rc::Rc;
+use std::sync::Arc;
+
+use fz_runtime::heap::{Heap, deep_copy_any_value_ref};
+use fz_runtime::process::{CompiledModuleConsts, DEFAULT_REDUCTIONS_PER_QUANTUM, ProcessState};
 
 use super::*;
+use crate::exec::matcher::Matcher;
 use crate::fz_ir::{FnId, Module};
-use crate::types::Types;
+use crate::telemetry::Telemetry;
+use crate::types::{Ty, Types};
 
 // ===== Interp-internal scheduler (fz-ul4.23.5.8 / fz-sched.3) =====
 //
@@ -58,7 +65,7 @@ pub(super) enum InterpStep {
 #[derive(Clone)]
 pub(super) struct ParkRecord {
     pub(super) clauses: Vec<MatchedClause>,
-    pub(super) matcher: std::sync::Arc<crate::exec::matcher::Matcher>,
+    pub(super) matcher: Arc<Matcher>,
     pub(super) pinned: HashMap<String, AnyValue>,
     pub(super) captures: Vec<AnyValue>,
 }
@@ -77,16 +84,15 @@ impl IrInterpRuntime {
         pid
     }
 
-    pub(super) fn send<T: Types<Ty = crate::types::Ty>>(
+    pub(super) fn send<T: Types<Ty = Ty>>(
         &mut self,
         t: &mut T,
         module: &Module,
-        tel: &dyn crate::telemetry::Telemetry,
+        tel: &dyn Telemetry,
         receiver_pid: u32,
         msg: AnyValue,
     ) -> Result<(), String> {
-        use fz_runtime::process::ProcessState;
-        let sender_heap = &unsafe { &*self.cur_proc() }.heap as *const fz_runtime::heap::Heap;
+        let sender_heap = &unsafe { &*self.cur_proc() }.heap as *const Heap;
         // fz-yxs/fz-2v3 — sender-side probe for selective receive. If the
         // receiver is parked on a Term::ReceiveMatched, run the parked
         // matcher inline against the new message; on a hit, set up the
@@ -120,13 +126,9 @@ impl IrInterpRuntime {
                     self.parked.insert(receiver_pid, (park, after_chain));
                     let msg_ref = msg.as_any_value_ref(self.cur_proc())?;
                     if let Some(task) = self.tasks.get_mut(&receiver_pid) {
-                        let mut forwarding = std::collections::HashMap::new();
-                        let copied = fz_runtime::heap::deep_copy_any_value_ref(
-                            msg_ref,
-                            unsafe { &*sender_heap },
-                            &mut task.heap,
-                            &mut forwarding,
-                        );
+                        let mut forwarding = HashMap::new();
+                        let copied =
+                            deep_copy_any_value_ref(msg_ref, unsafe { &*sender_heap }, &mut task.heap, &mut forwarding);
                         task.mailbox.push_back(copied);
                     } else {
                         tel.event(
@@ -148,16 +150,10 @@ impl IrInterpRuntime {
             return Ok(());
         };
 
-        let mut forwarding = std::collections::HashMap::new();
-        let copied = fz_runtime::heap::deep_copy_any_value_ref(
-            msg_ref,
-            unsafe { &*sender_heap },
-            &mut task.heap,
-            &mut forwarding,
-        );
+        let mut forwarding = HashMap::new();
+        let copied = deep_copy_any_value_ref(msg_ref, unsafe { &*sender_heap }, &mut task.heap, &mut forwarding);
         if task.state == ProcessState::Blocked {
-            let copied_msg =
-                AnyValue::from_any_value_ref(copied).expect("copied interpreter message ref");
+            let copied_msg = AnyValue::from_any_value_ref(copied).expect("copied interpreter message ref");
             if let Some(entry) = self.resume.get_mut(&receiver_pid) {
                 entry.1.insert(0, copied_msg);
             }
@@ -171,24 +167,18 @@ impl IrInterpRuntime {
 
     /// Spawn a new task: enqueue it and return its pid immediately.
     /// The child runs in a later scheduler quantum, not in the parent's.
-    pub(crate) fn spawn(
-        &mut self,
-        module: &Module,
-        fn_id: FnId,
-        args: Vec<AnyValue>,
-    ) -> Result<u32, String> {
-        use fz_runtime::process::ProcessState;
+    pub(crate) fn spawn(&mut self, module: &Module, fn_id: FnId, args: Vec<AnyValue>) -> Result<u32, String> {
         let pid = self.next_pid();
         let user_schemas = self.schemas();
         // Child shares the interpreter's node (same atom table) by Rc clone.
-        let node = std::rc::Rc::clone(&self.node);
-        let consts = fz_runtime::process::CompiledModuleConsts::empty();
+        let node = Rc::clone(&self.node);
+        let consts = CompiledModuleConsts::empty();
         let mut child = Box::new(Process::from_consts(
             node,
             user_schemas,
             &consts,
             pid,
-            fz_runtime::process::DEFAULT_REDUCTIONS_PER_QUANTUM,
+            DEFAULT_REDUCTIONS_PER_QUANTUM,
         ));
         // Per-spawn scheduler state: enqueued ready to run in a later quantum.
         child.state = ProcessState::Ready;
@@ -200,7 +190,7 @@ impl IrInterpRuntime {
         {
             image
         } else {
-            std::rc::Rc::new(CodeImage::from_module(module)?)
+            Rc::new(CodeImage::from_module(module)?)
         };
         self.set_task_code_image(pid, image);
         self.enqueue_resume(pid, (fn_id, args, vec![]));

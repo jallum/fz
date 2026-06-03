@@ -1,15 +1,13 @@
 use super::*;
 use crate::modules::identity::ModuleName;
+use std::collections::HashMap;
+use std::mem;
 
 impl Parser {
-    pub(super) fn parse_items_until(
-        &mut self,
-        terminators: &[Tok],
-    ) -> PR<(Vec<Rc<Item>>, Vec<Attribute>)> {
+    pub(super) fn parse_items_until(&mut self, terminators: &[Tok]) -> PR<(Vec<Rc<Item>>, Vec<Attribute>)> {
         let mut items: Vec<Rc<Item>> = Vec::new();
         let mut order: Vec<(String, usize)> = Vec::new();
-        let mut groups: std::collections::HashMap<(String, usize), FnDef> =
-            std::collections::HashMap::new();
+        let mut groups: HashMap<(String, usize), FnDef> = HashMap::new();
         // fz-ul4.31.2 — `moduledoc_attr` and `pending_fn_attrs` accumulate
         // structured `Attribute`s. The single-string `doc`/`moduledoc`
         // model is gone; .31.3/.31.4 extend the Attribute enum.
@@ -84,7 +82,7 @@ impl Parser {
                 }
                 Tok::Extern => {
                     flush_fn_groups(&mut items, &mut order, &mut groups);
-                    let _attrs = std::mem::take(&mut pending_fn_attrs);
+                    let _attrs = mem::take(&mut pending_fn_attrs);
                     self.bump(); // consume `extern`
                     let def = self.parse_extern_item()?;
                     items.push(Rc::new(Item::Fn(def)));
@@ -101,7 +99,7 @@ impl Parser {
                     // group (one spec per clause), not only the first. (Elixir
                     // collects `@spec` independently via Kernel.Typespec; we
                     // merge each clause's pending specs into the group.)
-                    let attrs = std::mem::take(&mut pending_fn_attrs);
+                    let attrs = mem::take(&mut pending_fn_attrs);
                     // fz-ul4.31.4 — @spec name + arity must match the clause.
                     for a in &attrs {
                         if let Attribute::Spec(s) = a {
@@ -204,10 +202,7 @@ impl Parser {
             // era), so allow it here for `@type` to lex.
             Tok::Type => "type".to_string(),
             other => {
-                return self.err(format!(
-                    "expected attribute name after `@`, got {:?}",
-                    other
-                ));
+                return self.err(format!("expected attribute name after `@`, got {:?}", other));
             }
         };
         match name.as_str() {
@@ -220,10 +215,7 @@ impl Parser {
                         }
                     },
                     other => {
-                        return self.err(format!(
-                            "expected string value after `@{}`, got {:?}",
-                            name, other
-                        ));
+                        return self.err(format!("expected string value after `@{}`, got {:?}", name, other));
                     }
                 };
                 if name == "doc" {
@@ -239,9 +231,7 @@ impl Parser {
                 // `@spec name(T1, T2) :: R` (normal), or operator-headed infix
                 // `@spec T1 <op> T2 :: R` (e.g. `@spec integer + integer :: integer`).
                 let (spec_name, param_body_tokens): (String, Vec<TypeExprBody>) =
-                    if matches!(self.peek(), Tok::Ident(_))
-                        && matches!(self.peek_at(1), Tok::LParen)
-                    {
+                    if matches!(self.peek(), Tok::Ident(_)) && matches!(self.peek_at(1), Tok::LParen) {
                         let spec_name = match self.bump() {
                             Tok::Ident(n) => n,
                             _ => unreachable!("guarded by peek"),
@@ -252,9 +242,7 @@ impl Parser {
                             loop {
                                 let toks = self.collect_spec_param_type_tokens();
                                 if toks.is_empty() {
-                                    return self.err(
-                                        "expected type expression in @spec param list".to_string(),
-                                    );
+                                    return self.err("expected type expression in @spec param list".to_string());
                                 }
                                 params.push(TypeExprBody(toks));
                                 if matches!(self.peek(), Tok::Comma) {
@@ -269,9 +257,7 @@ impl Parser {
                     } else {
                         let t1 = self.collect_spec_infix_operand();
                         if t1.is_empty() {
-                            return self.err(
-                                "expected type expression before operator in @spec".to_string(),
-                            );
+                            return self.err("expected type expression before operator in @spec".to_string());
                         }
                         let name = match operator_token_name(self.peek()) {
                             Some(s) => {
@@ -287,17 +273,14 @@ impl Parser {
                         };
                         let t2 = self.collect_spec_infix_operand();
                         if t2.is_empty() {
-                            return self.err(
-                                "expected type expression after operator in @spec".to_string(),
-                            );
+                            return self.err("expected type expression after operator in @spec".to_string());
                         }
                         (name, vec![TypeExprBody(t1), TypeExprBody(t2)])
                     };
                 self.expect(&Tok::ColonColon, "`::`")?;
                 let result_body_tokens = self.collect_type_body_tokens();
                 if result_body_tokens.is_empty() {
-                    return self
-                        .err("expected result type expression after `::` in @spec".to_string());
+                    return self.err("expected result type expression after `::` in @spec".to_string());
                 }
                 let mut constraints = Vec::new();
                 if self.eat(&Tok::When) {
@@ -305,10 +288,7 @@ impl Parser {
                         let var = match self.bump() {
                             Tok::Ident(n) | Tok::KwKey(n) => n,
                             other => {
-                                return self.err(format!(
-                                    "expected type variable after `when`, got {:?}",
-                                    other
-                                ));
+                                return self.err(format!("expected type variable after `when`, got {:?}", other));
                             }
                         };
                         if !matches!(self.toks[self.pos - 1].tok, Tok::KwKey(_)) {
@@ -316,10 +296,7 @@ impl Parser {
                         }
                         let toks = self.collect_spec_param_type_tokens();
                         if toks.is_empty() {
-                            return self.err(format!(
-                                "expected constraint type expression after `{}:`",
-                                var
-                            ));
+                            return self.err(format!("expected constraint type expression after `{}:`", var));
                         }
                         constraints.push((var, TypeExprBody(toks)));
                         if !self.eat(&Tok::Comma) {
@@ -343,10 +320,7 @@ impl Parser {
                 let alias_name = match self.bump() {
                     Tok::Upper(n) | Tok::Ident(n) => n,
                     other => {
-                        return self.err(format!(
-                            "expected type-alias name after `@type`, got {:?}",
-                            other
-                        ));
+                        return self.err(format!("expected type-alias name after `@type`, got {:?}", other));
                     }
                 };
                 let mut params = Vec::new();
@@ -356,10 +330,8 @@ impl Parser {
                             let param = match self.bump() {
                                 Tok::Ident(n) => n,
                                 other => {
-                                    return self.err(format!(
-                                        "expected type parameter name in @type head, got {:?}",
-                                        other
-                                    ));
+                                    return self
+                                        .err(format!("expected type parameter name in @type head, got {:?}", other));
                                 }
                             };
                             params.push(param);
@@ -402,8 +374,7 @@ impl Parser {
         loop {
             let stop = {
                 let p = self.peek();
-                depth == 0
-                    && (operator_token_name(p).is_some() || matches!(p, Tok::ColonColon | Tok::Eof))
+                depth == 0 && (operator_token_name(p).is_some() || matches!(p, Tok::ColonColon | Tok::Eof))
             };
             if stop {
                 break;
@@ -426,9 +397,7 @@ impl Parser {
     /// Parse function parameter list with optional type annotations (`x :: T`).
     /// Returns (patterns, per-param type token vecs). Called from `parse_fn_clause`.
     #[allow(clippy::type_complexity)]
-    pub(super) fn parse_fn_params(
-        &mut self,
-    ) -> PR<(Vec<Spanned<Pattern>>, Vec<Option<TypeExprBody>>)> {
+    pub(super) fn parse_fn_params(&mut self) -> PR<(Vec<Spanned<Pattern>>, Vec<Option<TypeExprBody>>)> {
         let mut patterns = Vec::new();
         let mut types: Vec<Option<TypeExprBody>> = Vec::new();
         self.skip_newlines();
@@ -494,7 +463,7 @@ impl Parser {
     pub(super) fn peek_in(&self, terminators: &[Tok]) -> bool {
         terminators
             .iter()
-            .any(|t| std::mem::discriminant(self.peek()) == std::mem::discriminant(t))
+            .any(|t| mem::discriminant(self.peek()) == mem::discriminant(t))
     }
 
     /// Parse one fn, fnp, or defmacro clause.
@@ -515,10 +484,7 @@ impl Parser {
                 (false, true)
             }
             _ => {
-                return self.err(format!(
-                    "expected `fn`, `fnp`, or `defmacro`, got {:?}",
-                    self.peek()
-                ));
+                return self.err(format!("expected `fn`, `fnp`, or `defmacro`, got {:?}", self.peek()));
             }
         };
         let name_span = self.cur_span();
@@ -561,9 +527,7 @@ impl Parser {
             None
         };
 
-        let body = if matches!(self.peek(), Tok::Comma)
-            && matches!(self.peek_at(1), Tok::KwKey(s) if s == "do")
-        {
+        let body = if matches!(self.peek(), Tok::Comma) && matches!(self.peek_at(1), Tok::KwKey(s) if s == "do") {
             self.bump();
             self.bump();
             self.parse_expr()?
@@ -607,10 +571,7 @@ impl Parser {
                 }
             },
             other => {
-                return self.err(format!(
-                    "expected ABI string after `extern`, got {:?}",
-                    other
-                ));
+                return self.err(format!("expected ABI string after `extern`, got {:?}", other));
             }
         };
         self.expect(&Tok::Fn, "`fn` after extern ABI string")?;
@@ -749,10 +710,7 @@ impl Parser {
         match self.bump() {
             Tok::Upper(n) => path.push(n),
             other => {
-                return self.err(format!(
-                    "expected uppercase module path after `alias`, got {:?}",
-                    other
-                ));
+                return self.err(format!("expected uppercase module path after `alias`, got {:?}", other));
             }
         }
         while matches!(self.peek(), Tok::Dot) {
@@ -767,19 +725,14 @@ impl Parser {
                 }
             }
         }
-        let module_name = crate::modules::identity::ModuleName::from_segments(path);
-        let as_name = if matches!(self.peek(), Tok::Comma)
-            && matches!(self.peek_at(1), Tok::KwKey(s) if s == "as")
-        {
+        let module_name = ModuleName::from_segments(path);
+        let as_name = if matches!(self.peek(), Tok::Comma) && matches!(self.peek_at(1), Tok::KwKey(s) if s == "as") {
             self.bump(); // ,
             self.bump(); // as:
             match self.bump() {
                 Tok::Upper(n) => n,
                 other => {
-                    return self.err(format!(
-                        "expected uppercase nickname after `as:`, got {:?}",
-                        other
-                    ));
+                    return self.err(format!("expected uppercase nickname after `as:`, got {:?}", other));
                 }
             }
         } else {
@@ -811,10 +764,7 @@ impl Parser {
             match self.bump() {
                 Tok::Upper(n) => path.push(n),
                 other => {
-                    return self.err(format!(
-                        "expected uppercase segment after `.`, got {:?}",
-                        other
-                    ));
+                    return self.err(format!("expected uppercase segment after `.`, got {:?}", other));
                 }
             }
         }
@@ -837,7 +787,7 @@ impl Parser {
             }
         }
         Ok(Item::Import {
-            path: crate::modules::identity::ModuleName::from_segments(path),
+            path: ModuleName::from_segments(path),
             only,
             except,
             span: self.finish(start),
@@ -859,10 +809,7 @@ impl Parser {
                     self.expect(&Tok::Colon, "`:` after operator in import filter list")?;
                     name
                 } else {
-                    return self.err(format!(
-                        "expected name: in import filter list, got {:?}",
-                        self.peek()
-                    ));
+                    return self.err(format!("expected name: in import filter list, got {:?}", self.peek()));
                 };
                 let arity = match self.bump() {
                     Tok::Int(n) if n >= 0 => n as usize,
@@ -891,10 +838,7 @@ impl Parser {
         match self.bump() {
             Tok::Upper(n) => path.push(n),
             other => {
-                return self.err(format!(
-                    "expected uppercase {} path, got {:?}",
-                    context, other
-                ));
+                return self.err(format!("expected uppercase {} path, got {:?}", context, other));
             }
         }
         while matches!(self.peek(), Tok::Dot) {
@@ -932,8 +876,7 @@ impl Parser {
                     }
                 }
                 Tok::Fn => {
-                    let callback =
-                        self.parse_protocol_callback(std::mem::take(&mut pending_attrs))?;
+                    let callback = self.parse_protocol_callback(mem::take(&mut pending_attrs))?;
                     callbacks.push(callback);
                 }
                 other => {
@@ -969,8 +912,7 @@ impl Parser {
                 let field = match self.bump() {
                     Tok::Atom(name) | Tok::Ident(name) | Tok::KwKey(name) => name,
                     other => {
-                        return self
-                            .err(format!("expected field atom in defstruct, got {:?}", other));
+                        return self.err(format!("expected field atom in defstruct, got {:?}", other));
                     }
                 };
                 fields.push(field);
@@ -1004,8 +946,7 @@ impl Parser {
             return self.err("protocol callback declarations cannot have guards");
         }
         if matches!(self.peek(), Tok::Do)
-            || (matches!(self.peek(), Tok::Comma)
-                && matches!(self.peek_at(1), Tok::KwKey(s) if s == "do"))
+            || (matches!(self.peek(), Tok::Comma) && matches!(self.peek_at(1), Tok::KwKey(s) if s == "do"))
         {
             return self.err("protocol callback declarations cannot have bodies");
         }
@@ -1098,16 +1039,14 @@ impl TypeTokenBoundary {
     fn stops_before(self, tok: &Tok, depth: i32) -> bool {
         match self {
             Self::SpecParam => {
-                matches!(tok, Tok::Eof | Tok::Newline)
-                    || (depth == 0 && matches!(tok, Tok::Comma | Tok::RParen))
+                matches!(tok, Tok::Eof | Tok::Newline) || (depth == 0 && matches!(tok, Tok::Comma | Tok::RParen))
             }
             Self::FnParam => {
                 matches!(tok, Tok::Eof | Tok::End | Tok::Newline)
                     || (depth == 0 && matches!(tok, Tok::Comma | Tok::RParen))
             }
             Self::TypeBody => {
-                matches!(tok, Tok::Eof | Tok::End)
-                    || (depth == 0 && matches!(tok, Tok::Newline | Tok::When))
+                matches!(tok, Tok::Eof | Tok::End) || (depth == 0 && matches!(tok, Tok::Newline | Tok::When))
             }
         }
     }

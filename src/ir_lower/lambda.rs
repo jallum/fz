@@ -1,8 +1,9 @@
 use super::*;
 use crate::ast::{BitSize as AstBitSize, Expr, MatchClause, Pattern, Spanned, WithBinding};
 use crate::diag::Span;
-use crate::fz_ir::{Const, FnBuilder, Prim, Term, Var};
+use crate::fz_ir::{Const, FnBuilder, FnCategory, Prim, Term, Var};
 use std::collections::HashSet;
+use std::mem;
 
 pub(crate) fn lower_lambda(
     ctx: &mut LowerCtx,
@@ -25,13 +26,13 @@ pub(crate) fn lower_lambda(
     let saved_cur = ctx.cur.take();
     let saved_cur_fn_id = ctx.cur_fn_id;
     let saved_block = ctx.cur_block.take();
-    let saved_env = std::mem::take(&mut ctx.env);
-    let saved_order = std::mem::take(&mut ctx.env_order);
+    let saved_env = mem::take(&mut ctx.env);
+    let saved_order = mem::take(&mut ctx.env_order);
     let saved_terminated = ctx.terminated;
     let saved_branch_origin = ctx.branch_origin;
 
     let mut lam_builder = FnBuilder::new(lam_id, format!("lambda_{}", lam_id.0))
-        .with_category(crate::fz_ir::FnCategory::LambdaLift)
+        .with_category(FnCategory::LambdaLift)
         .with_owner_module(ctx.current_owner_module.clone());
     // Entry params = captured + lambda params.
     let cap_params: Vec<Var> = captured.iter().map(|_| lam_builder.fresh_var()).collect();
@@ -83,10 +84,7 @@ pub(crate) fn lower_lambda(
 
     Ok(ctx.let_at(Prim::make_closure(span, lam_id, captured_vars), span))
 }
-pub(super) fn lambda_free_names(
-    params: &[Spanned<Pattern>],
-    body: &Spanned<Expr>,
-) -> HashSet<String> {
+pub(super) fn lambda_free_names(params: &[Spanned<Pattern>], body: &Spanned<Expr>) -> HashSet<String> {
     let mut bound = HashSet::new();
     for param in params {
         bind_pattern_names(&param.node, &mut bound);
@@ -96,11 +94,7 @@ pub(super) fn lambda_free_names(
     free
 }
 
-pub(super) fn collect_expr_free_names(
-    expr: &Expr,
-    bound: &mut HashSet<String>,
-    free: &mut HashSet<String>,
-) {
+pub(super) fn collect_expr_free_names(expr: &Expr, bound: &mut HashSet<String>, free: &mut HashSet<String>) {
     match expr {
         Expr::Int(_)
         | Expr::Float(_)
@@ -265,11 +259,7 @@ pub(super) fn collect_expr_free_names_in_nested_scope(
     collect_expr_free_names(expr, &mut nested, free);
 }
 
-pub(super) fn collect_pattern_free_names(
-    pattern: &Pattern,
-    bound: &HashSet<String>,
-    free: &mut HashSet<String>,
-) {
+pub(super) fn collect_pattern_free_names(pattern: &Pattern, bound: &HashSet<String>, free: &mut HashSet<String>) {
     match pattern {
         Pattern::Pinned(name) => record_free_name(name, bound, free),
         Pattern::Tuple(items) => {

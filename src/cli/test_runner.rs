@@ -26,11 +26,23 @@
 //! error on failure; the runner catches the error.
 
 use crate::ast::Item;
-use crate::diag::SourceMap;
+use crate::diag::{SourceMap, render_one_to_string};
 use crate::frontend::macros::expand_program;
 use crate::frontend::resolve::flatten_modules;
+use crate::fz_ir::FnId;
+use crate::ir_interp::run_test_fn;
+use crate::ir_lower::lower_program;
+use crate::measurements;
+use crate::metadata;
+use crate::notify_fixture_execution_start;
 use crate::parser::Parser;
 use crate::parser::lexer::{Lexer, Tok, Token};
+use crate::telemetry::{ConfiguredTelemetry, Event, Handler, Metadata, NullTelemetry, Telemetry};
+use crate::types::ConcreteTypes;
+use std::borrow::Cow;
+use std::error::Error;
+use std::fmt::{self, Display, Formatter};
+use std::fs::read_to_string;
 use std::path::Path;
 
 const PRELUDE: &str = r#"
@@ -41,12 +53,12 @@ end
 
 #[derive(Debug)]
 pub struct TestRunError(pub String);
-impl std::fmt::Display for TestRunError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl Display for TestRunError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         write!(f, "fz test: {}", self.0)
     }
 }
-impl std::error::Error for TestRunError {}
+impl Error for TestRunError {}
 
 /// Concatenate two token streams, dropping the prelude's trailing Eof so
 /// the parser sees one stream. The user stream's Eof is kept as the real
@@ -60,8 +72,7 @@ fn splice_token_streams(mut prelude: Vec<Token>, user: Vec<Token>) -> Vec<Token>
 }
 
 pub fn run(path: &Path) -> Result<(), TestRunError> {
-    let user_src = std::fs::read_to_string(path)
-        .map_err(|e| TestRunError(format!("reading {}: {}", path.display(), e)))?;
+    let user_src = read_to_string(path).map_err(|e| TestRunError(format!("reading {}: {}", path.display(), e)))?;
     let tel = build_console_telemetry();
     run_named_through(&tel, &user_src, &path.display().to_string())
 }
@@ -76,12 +87,12 @@ pub fn run_str(user_src: &str) -> Result<(), TestRunError> {
 /// when the caller already has a bus configured (e.g. for capture-based
 /// assertions in tests, or for piping the event stream to a custom sink).
 #[cfg(test)]
-pub fn run_through(tel: &dyn crate::telemetry::Telemetry, src: &str) -> Result<(), TestRunError> {
+pub fn run_through(tel: &dyn Telemetry, src: &str) -> Result<(), TestRunError> {
     run_named_through(tel, src, "<input>")
 }
 
-fn build_console_telemetry() -> crate::telemetry::ConfiguredTelemetry {
-    let tel = crate::telemetry::ConfiguredTelemetry::new();
+fn build_console_telemetry() -> ConfiguredTelemetry {
+    let tel = ConfiguredTelemetry::new();
     tel.attach(&["fz", "test"], Box::new(ConsoleTestHandler));
     tel
 }
@@ -91,14 +102,12 @@ fn build_console_telemetry() -> crate::telemetry::ConfiguredTelemetry {
 /// summary count.
 struct ConsoleTestHandler;
 
-impl crate::telemetry::Handler for ConsoleTestHandler {
-    fn handle(&self, ev: &crate::telemetry::Event<'_, '_, '_>) {
+impl Handler for ConsoleTestHandler {
+    fn handle(&self, ev: &Event<'_, '_, '_>) {
         use crate::telemetry::Value;
         match ev.name {
             n if n == ["fz", "test", "no_tests_found"] => {
-                println!(
-                    "No tests found (define `fn test_*()` or use `test :test_name do ... end`)."
-                );
+                println!("No tests found (define `fn test_*()` or use `test :test_name do ... end`).");
             }
             n if n == ["fz", "test", "run_starting"] => {
                 let count = match ev.measurements.get("count") {
@@ -123,7 +132,7 @@ impl crate::telemetry::Handler for ConsoleTestHandler {
                 };
                 let msg = match ev.metadata.get("message") {
                     Some(Value::Str(s)) => s.clone(),
-                    _ => std::borrow::Cow::Borrowed(""),
+                    _ => Cow::Borrowed(""),
                 };
                 println!("  FAIL  {}", name);
                 println!("        {}", msg);
@@ -147,12 +156,8 @@ impl crate::telemetry::Handler for ConsoleTestHandler {
     }
 }
 
-fn run_named_through(
-    tel: &dyn crate::telemetry::Telemetry,
-    user_src: &str,
-    user_name: &str,
-) -> Result<(), TestRunError> {
-    let mut t = crate::types::ConcreteTypes;
+fn run_named_through(tel: &dyn Telemetry, user_src: &str, user_name: &str) -> Result<(), TestRunError> {
+    let mut t = ConcreteTypes;
     // Lex prelude and user source separately into their own FileIds. Token
     // spans then point at the *real* offsets in their respective files, so
     // later stages render user-facing locations against the user's file
@@ -167,19 +172,18 @@ fn run_named_through(
     // test output is a future ticket.
     let prelude_toks = Lexer::with_file(PRELUDE, prelude_id)
         .tokenize()
-        .map_err(|e| TestRunError(crate::diag::render_one_to_string(&sm, &e.to_diagnostic())))?;
+        .map_err(|e| TestRunError(render_one_to_string(&sm, &e.to_diagnostic())))?;
     let user_toks = Lexer::with_file(user_src, user_id)
         .tokenize()
-        .map_err(|e| TestRunError(crate::diag::render_one_to_string(&sm, &e.to_diagnostic())))?;
+        .map_err(|e| TestRunError(render_one_to_string(&sm, &e.to_diagnostic())))?;
     let toks = splice_token_streams(prelude_toks, user_toks);
     let prog = Parser::new(toks)
         .parse_program()
-        .map_err(|e| TestRunError(crate::diag::render_one_to_string(&sm, &e.to_diagnostic())))?;
-    let prog = flatten_modules(&mut t, prog)
-        .map_err(|e| TestRunError(crate::diag::render_one_to_string(&sm, &e.to_diagnostic())))?;
+        .map_err(|e| TestRunError(render_one_to_string(&sm, &e.to_diagnostic())))?;
+    let prog =
+        flatten_modules(&mut t, prog).map_err(|e| TestRunError(render_one_to_string(&sm, &e.to_diagnostic())))?;
     let mut prog = prog;
-    expand_program(&mut prog)
-        .map_err(|e| TestRunError(crate::diag::render_one_to_string(&sm, &e.to_diagnostic())))?;
+    expand_program(&mut prog).map_err(|e| TestRunError(render_one_to_string(&sm, &e.to_diagnostic())))?;
 
     // Discover tests: post-expansion Item::Fn whose final segment starts
     // with "test_".
@@ -207,10 +211,10 @@ fn run_named_through(
     // AST evaluator (eval::CompileTimeEvaluator, which stays only for macro
     // expansion above) and runs on the same IR interpreter the fixture matrix
     // uses.
-    let module = crate::ir_lower::lower_program(&mut t, &prog, &crate::telemetry::NullTelemetry)
-        .map_err(|e| TestRunError(crate::diag::render_one_to_string(&sm, &e.to_diagnostic())))?;
+    let module = lower_program(&mut t, &prog, &NullTelemetry)
+        .map_err(|e| TestRunError(render_one_to_string(&sm, &e.to_diagnostic())))?;
     // Map test name → FnId once.
-    let test_ids: Vec<(String, crate::fz_ir::FnId)> = tests
+    let test_ids: Vec<(String, FnId)> = tests
         .iter()
         .map(|name| {
             module
@@ -224,26 +228,23 @@ fn run_named_through(
     let mut failed: Vec<(String, String)> = Vec::new();
     tel.execute(
         &["fz", "test", "run_starting"],
-        &crate::measurements! { count: total },
-        &crate::telemetry::Metadata::new(),
+        &measurements! { count: total },
+        &Metadata::new(),
     );
-    crate::notify_fixture_execution_start();
+    notify_fixture_execution_start();
     for (name, fn_id) in &test_ids {
         // Each test runs in a fresh Process so heap/mailbox state from
         // one test doesn't leak into the next. ir_interp::run_main isn't
         // quite right (it expects a `main` fn); we call the test fn
         // directly through the IR interp on a temporary task.
-        match crate::ir_interp::run_test_fn(tel, &module, *fn_id) {
+        match run_test_fn(tel, &module, *fn_id) {
             Ok(()) => {
-                tel.event(
-                    &["fz", "test", "passed"],
-                    crate::metadata! { name: name.clone() },
-                );
+                tel.event(&["fz", "test", "passed"], metadata! { name: name.clone() });
             }
             Err(msg) => {
                 tel.event(
                     &["fz", "test", "failed"],
-                    crate::metadata! { name: name.clone(), message: msg.clone() },
+                    metadata! { name: name.clone(), message: msg.clone() },
                 );
                 failed.push((name.clone(), msg));
             }
@@ -251,8 +252,8 @@ fn run_named_through(
     }
     tel.execute(
         &["fz", "test", "summary"],
-        &crate::measurements! { total: total, failures: failed.len() },
-        &crate::telemetry::Metadata::new(),
+        &measurements! { total: total, failures: failed.len() },
+        &Metadata::new(),
     );
 
     if !failed.is_empty() {
@@ -345,14 +346,8 @@ end
         assert_eq!(cap.count(&["fz", "test", "passed"]), 2);
         assert_eq!(cap.count(&["fz", "test", "failed"]), 0);
         let summary = cap.last(&["fz", "test", "summary"]).unwrap();
-        assert!(matches!(
-            summary.measurements.get("total"),
-            Some(Value::U64(2))
-        ));
-        assert!(matches!(
-            summary.measurements.get("failures"),
-            Some(Value::U64(0))
-        ));
+        assert!(matches!(summary.measurements.get("total"), Some(Value::U64(2))));
+        assert!(matches!(summary.measurements.get("failures"), Some(Value::U64(0))));
     }
 
     #[test]
@@ -376,10 +371,7 @@ end
         assert_eq!(cap.count(&["fz", "test", "failed"]), 1);
         let failure = cap.last(&["fz", "test", "failed"]).unwrap();
         assert!(matches!(failure.metadata.get("name"), Some(Value::Str(_))));
-        assert!(matches!(
-            failure.metadata.get("message"),
-            Some(Value::Str(_))
-        ));
+        assert!(matches!(failure.metadata.get("message"), Some(Value::Str(_))));
     }
 
     #[test]

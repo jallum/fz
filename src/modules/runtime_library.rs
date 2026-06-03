@@ -11,12 +11,32 @@
 //! facts a user library would provide.
 use crate::ast::{Attribute, Expr, Item, ModuleDef, Program, ProtocolDef, Spanned, WithBinding};
 #[cfg(test)]
-use crate::frontend::resolve::InterfaceTable;
-use crate::modules::artifact::{FziArtifact, FzoArtifact, FzoUnitPayload};
-use crate::modules::identity::{ExportKey, ModuleName};
-use crate::modules::interface::ModuleInterface;
-use std::collections::BTreeMap;
+use crate::frontend::compile_source_with_interface_table;
 #[cfg(test)]
+use crate::frontend::resolve::InterfaceTable;
+use crate::modules::artifact::{
+    FZ_ARTIFACT_ABI_VERSION, FZ_RUNTIME_ARTIFACT_ABI_VERSION, FziArtifact, FzoArtifact, FzoUnitPayload, payload_digest,
+};
+#[cfg(test)]
+use crate::modules::artifact_store::ArtifactStore;
+use crate::modules::identity::{ExportKey, ModuleName};
+use crate::modules::interface::{ModuleInterface, collect_from_program, fingerprint_digest};
+use crate::parser::Parser;
+use crate::parser::lexer::Lexer;
+#[cfg(test)]
+use crate::telemetry::{Capture, ConfiguredTelemetry, NullTelemetry};
+use crate::type_expr::{
+    BrandInnerTypes, ModuleTypeEnv, OpaqueInnerTypes, build_module_type_env_for_with_base, builtin_brand_inners,
+    builtin_opaque_inners, builtin_type_env,
+};
+#[cfg(test)]
+use crate::types::ConcreteTypes;
+use crate::types::{Ty, Types};
+use std::collections::{BTreeMap, BTreeSet};
+#[cfg(test)]
+use std::env::temp_dir;
+#[cfg(test)]
+use std::fs::remove_dir_all;
 use std::rc::Rc;
 
 const RUNTIME_PRELUDE_FZ: &str = include_str!("runtime_library/runtime.fz");
@@ -85,36 +105,33 @@ pub struct RuntimeLibraryModuleArtifact {
 }
 
 pub struct RuntimeRootTypes {
-    pub env: crate::type_expr::ModuleTypeEnv,
-    pub opaque_inners: crate::type_expr::OpaqueInnerTypes,
-    pub brand_inners: crate::type_expr::BrandInnerTypes,
+    pub env: ModuleTypeEnv,
+    pub opaque_inners: OpaqueInnerTypes,
+    pub brand_inners: BrandInnerTypes,
 }
 
 pub fn prelude_source() -> &'static str {
     RUNTIME_PRELUDE_FZ
 }
 
-pub fn root_type_env<T: crate::types::Types<Ty = crate::types::Ty>>(t: &mut T) -> RuntimeRootTypes {
-    let toks = crate::parser::lexer::Lexer::new(prelude_source())
+pub fn root_type_env<T: Types<Ty = Ty>>(t: &mut T) -> RuntimeRootTypes {
+    let toks = Lexer::new(prelude_source())
         .tokenize()
         .expect("runtime.fz lex error (bug in built-in prelude)");
-    let (_items, attrs) = crate::parser::Parser::new(toks)
+    let (_items, attrs) = Parser::new(toks)
         .parse_prelude()
         .expect("runtime.fz parse error (bug in built-in prelude)");
     root_type_env_from_attrs(t, &attrs)
 }
 
-pub fn root_type_env_from_attrs<T: crate::types::Types<Ty = crate::types::Ty>>(
-    t: &mut T,
-    attrs: &[Attribute],
-) -> RuntimeRootTypes {
-    let builtin_env = crate::type_expr::builtin_type_env(t);
+pub fn root_type_env_from_attrs<T: Types<Ty = Ty>>(t: &mut T, attrs: &[Attribute]) -> RuntimeRootTypes {
+    let builtin_env = builtin_type_env(t);
     let (env, declared_opaque_inners, declared_brand_inners) =
-        crate::type_expr::build_module_type_env_for_with_base(t, attrs, "", &builtin_env)
+        build_module_type_env_for_with_base(t, attrs, "", &builtin_env)
             .expect("runtime.fz @type error (bug in built-in prelude)");
-    let mut opaque_inners = crate::type_expr::builtin_opaque_inners(t);
+    let mut opaque_inners = builtin_opaque_inners(t);
     opaque_inners.extend(declared_opaque_inners);
-    let mut brand_inners = crate::type_expr::builtin_brand_inners(t);
+    let mut brand_inners = builtin_brand_inners(t);
     brand_inners.extend(declared_brand_inners);
     RuntimeRootTypes {
         env,
@@ -131,9 +148,9 @@ pub fn core_prelude_module_sources() -> impl Iterator<Item = (&'static str, &'st
 }
 
 pub fn is_core_prelude_module(module: &ModuleName) -> bool {
-    RUNTIME_MODULE_SOURCES.iter().any(|source| {
-        source.role == RuntimeModuleRole::CorePrelude && source.name == module.dotted()
-    })
+    RUNTIME_MODULE_SOURCES
+        .iter()
+        .any(|source| source.role == RuntimeModuleRole::CorePrelude && source.name == module.dotted())
 }
 
 pub fn prelude_required_modules() -> Vec<ModuleName> {
@@ -141,7 +158,7 @@ pub fn prelude_required_modules() -> Vec<ModuleName> {
         .iter()
         .filter(|source| source.role == RuntimeModuleRole::CorePrelude)
         .map(|source| ModuleName::from_segments(vec![source.name.to_string()]))
-        .collect::<std::collections::BTreeSet<_>>();
+        .collect::<BTreeSet<_>>();
     primitive_prelude_program()
         .items
         .iter()
@@ -155,22 +172,15 @@ pub fn prelude_required_modules() -> Vec<ModuleName> {
 pub fn parsed_program() -> Program {
     let mut items = Vec::new();
     for module_source in RUNTIME_MODULE_SOURCES {
-        let toks = crate::parser::lexer::Lexer::new(module_source.source)
+        let toks = Lexer::new(module_source.source)
             .tokenize()
-            .unwrap_or_else(|_| {
-                panic!(
-                    "{}.fz lex error (bug in built-in runtime library)",
-                    module_source.name
-                )
-            });
-        let (mut parsed_items, _attrs) = crate::parser::Parser::new(toks)
-            .parse_prelude()
-            .unwrap_or_else(|err| {
-                panic!(
-                    "{}.fz parse error (bug in built-in runtime library): {} at {:?}",
-                    module_source.name, err, err.span
-                )
-            });
+            .unwrap_or_else(|_| panic!("{}.fz lex error (bug in built-in runtime library)", module_source.name));
+        let (mut parsed_items, _attrs) = Parser::new(toks).parse_prelude().unwrap_or_else(|err| {
+            panic!(
+                "{}.fz parse error (bug in built-in runtime library): {} at {:?}",
+                module_source.name, err, err.span
+            )
+        });
         items.append(&mut parsed_items);
     }
     Program {
@@ -210,38 +220,32 @@ pub fn implementation_dependencies(module: &ModuleName) -> Vec<ModuleName> {
     let Some(source) = runtime_module_source(module) else {
         return Vec::new();
     };
-    let toks = crate::parser::lexer::Lexer::new(source)
+    let toks = Lexer::new(source)
         .tokenize()
         .unwrap_or_else(|_| panic!("{}.fz lex error (bug in built-in runtime library)", module));
-    let (items, _attrs) = crate::parser::Parser::new(toks)
-        .parse_prelude()
-        .unwrap_or_else(|err| {
-            panic!(
-                "{}.fz parse error (bug in built-in runtime library): {} at {:?}",
-                module, err, err.span
-            )
-        });
-    let mut deps = std::collections::BTreeSet::new();
+    let (items, _attrs) = Parser::new(toks).parse_prelude().unwrap_or_else(|err| {
+        panic!(
+            "{}.fz parse error (bug in built-in runtime library): {} at {:?}",
+            module, err, err.span
+        )
+    });
+    let mut deps = BTreeSet::new();
     collect_runtime_implementation_dependencies(&items, &mut deps);
     deps.remove(module);
     deps.into_iter().collect()
 }
 
 pub fn artifact(module: &ModuleName) -> Option<RuntimeLibraryModuleArtifact> {
-    artifacts()
-        .into_iter()
-        .find(|artifact| artifact.module == *module)
+    artifacts().into_iter().find(|artifact| artifact.module == *module)
 }
 
 pub fn artifacts() -> Vec<RuntimeLibraryModuleArtifact> {
     let prog = parsed_program();
-    let interfaces = crate::modules::interface::collect_from_program(&prog);
+    let interfaces = collect_from_program(&prog);
     let mut out = Vec::new();
     for item in &prog.items {
         match &**item {
-            Item::Module(module) => {
-                collect_artifacts_recursive(module, None, &interfaces, &mut out)
-            }
+            Item::Module(module) => collect_artifacts_recursive(module, None, &interfaces, &mut out),
             Item::Protocol(protocol) => collect_protocol_artifact(protocol, &interfaces, &mut out),
             _ => {}
         }
@@ -249,16 +253,10 @@ pub fn artifacts() -> Vec<RuntimeLibraryModuleArtifact> {
     out
 }
 
-fn collect_runtime_implementation_dependencies(
-    items: &[std::rc::Rc<Item>],
-    out: &mut std::collections::BTreeSet<ModuleName>,
-) {
+fn collect_runtime_implementation_dependencies(items: &[Rc<Item>], out: &mut BTreeSet<ModuleName>) {
     for item in items {
         match &**item {
-            Item::Import { path, .. }
-            | Item::Alias {
-                full_path: path, ..
-            } => {
+            Item::Import { path, .. } | Item::Alias { full_path: path, .. } => {
                 out.insert(path.clone());
             }
             Item::Fn(def) => {
@@ -277,10 +275,7 @@ fn collect_runtime_implementation_dependencies(
     }
 }
 
-fn collect_expr_dependencies(
-    expr: &Spanned<Expr>,
-    out: &mut std::collections::BTreeSet<ModuleName>,
-) {
+fn collect_expr_dependencies(expr: &Spanned<Expr>, out: &mut BTreeSet<ModuleName>) {
     match &expr.node {
         Expr::Call(callee, args) | Expr::ClosureCall(callee, args) => {
             if let Some(module) = qualified_callee_module(callee) {
@@ -407,13 +402,7 @@ fn collect_expr_dependencies(
                 collect_expr_dependencies(&clause.body, out);
             }
         }
-        Expr::Var(_)
-        | Expr::Int(_)
-        | Expr::Float(_)
-        | Expr::Binary(_)
-        | Expr::Atom(_)
-        | Expr::Bool(_)
-        | Expr::Nil => {}
+        Expr::Var(_) | Expr::Int(_) | Expr::Float(_) | Expr::Binary(_) | Expr::Atom(_) | Expr::Bool(_) | Expr::Nil => {}
     }
 }
 
@@ -450,10 +439,7 @@ fn qualified_callee_module(callee: &Spanned<Expr>) -> Option<ModuleName> {
 }
 
 fn is_upper(s: &str) -> bool {
-    s.chars()
-        .next()
-        .map(|c| c.is_ascii_uppercase())
-        .unwrap_or(false)
+    s.chars().next().map(|c| c.is_ascii_uppercase()).unwrap_or(false)
 }
 
 fn collect_protocol_artifact(
@@ -467,10 +453,7 @@ fn collect_protocol_artifact(
         let fzo = runtime_unit_fzo(
             &name,
             interface,
-            vec![
-                "kind=runtime-library-protocol".to_string(),
-                format!("module={}", name),
-            ],
+            vec!["kind=runtime-library-protocol".to_string(), format!("module={}", name)],
         );
         out.push(RuntimeLibraryModuleArtifact {
             module: name,
@@ -509,16 +492,8 @@ fn collect_artifacts_recursive(
     }
 }
 
-fn runtime_module_fzo(
-    module: &ModuleDef,
-    name: &ModuleName,
-    interface: &ModuleInterface,
-) -> FzoArtifact {
-    runtime_unit_fzo(
-        name,
-        interface,
-        runtime_implementation_fingerprint(name, module),
-    )
+fn runtime_module_fzo(module: &ModuleDef, name: &ModuleName, interface: &ModuleInterface) -> FzoArtifact {
+    runtime_unit_fzo(name, interface, runtime_implementation_fingerprint(name, module))
 }
 
 fn runtime_unit_fzo(
@@ -527,21 +502,18 @@ fn runtime_unit_fzo(
     implementation_fingerprint: Vec<String>,
 ) -> FzoArtifact {
     let interface_fingerprint = interface.fingerprint_inputs.clone();
-    let unit_payload = FzoUnitPayload::runtime_module(
-        runtime_module_source(name).expect("runtime module source is registered"),
-    );
-    let implementation_fingerprint_digest = crate::modules::artifact::payload_digest(&unit_payload);
+    let unit_payload =
+        FzoUnitPayload::runtime_module(runtime_module_source(name).expect("runtime module source is registered"));
+    let implementation_fingerprint_digest = payload_digest(&unit_payload);
     FzoArtifact {
-        compiler_abi_version: crate::modules::artifact::FZ_ARTIFACT_ABI_VERSION,
-        runtime_abi_version: crate::modules::artifact::FZ_RUNTIME_ARTIFACT_ABI_VERSION,
+        compiler_abi_version: FZ_ARTIFACT_ABI_VERSION,
+        runtime_abi_version: FZ_RUNTIME_ARTIFACT_ABI_VERSION,
         module: Some(name.clone()),
         unit_payload,
         required_imports: interface_imports(interface),
         implementation_fingerprint,
         implementation_fingerprint_digest,
-        interface_fingerprint_digest: crate::modules::interface::fingerprint_digest(
-            &interface_fingerprint,
-        ),
+        interface_fingerprint_digest: fingerprint_digest(&interface_fingerprint),
         interface_fingerprint,
     }
 }
@@ -561,18 +533,11 @@ fn interface_imports(interface: &ModuleInterface) -> Vec<ExportKey> {
 }
 
 fn runtime_implementation_fingerprint(name: &ModuleName, module: &ModuleDef) -> Vec<String> {
-    let mut out = vec![
-        "kind=runtime-library-module".to_string(),
-        format!("module={}", name),
-    ];
+    let mut out = vec!["kind=runtime-library-module".to_string(), format!("module={}", name)];
     for item in &module.items {
         if let Item::Fn(def) = &**item {
             let arity = def.clauses.first().map(|c| c.params.len()).unwrap_or(0);
-            let kind = if def.extern_abi.is_some() {
-                "primitive"
-            } else {
-                "fz"
-            };
+            let kind = if def.extern_abi.is_some() { "primitive" } else { "fz" };
             out.push(format!("fn={}/{}:{}", def.name, arity, kind));
         }
     }
@@ -587,10 +552,10 @@ fn runtime_module_source(name: &ModuleName) -> Option<&'static str> {
 }
 
 pub fn primitive_prelude_program() -> Program {
-    let toks = crate::parser::lexer::Lexer::new(RUNTIME_PRELUDE_FZ)
+    let toks = Lexer::new(RUNTIME_PRELUDE_FZ)
         .tokenize()
         .expect("runtime.fz lex error (bug in built-in prelude)");
-    let (items, _attrs) = crate::parser::Parser::new(toks)
+    let (items, _attrs) = Parser::new(toks)
         .parse_prelude()
         .expect("runtime.fz parse error (bug in built-in prelude)");
     Program {
@@ -651,10 +616,7 @@ mod tests {
             .iter()
             .map(|f| format!("{}/{}", f.name, f.arity))
             .collect::<Vec<_>>();
-        assert_eq!(
-            exports,
-            vec!["from_bytes/1", "from_bytes!/1", "to_bytes/1", "valid?/1"]
-        );
+        assert_eq!(exports, vec!["from_bytes/1", "from_bytes!/1", "to_bytes/1", "valid?/1"]);
         assert!(!exports.iter().any(|name| name.starts_with("fz_")));
 
         let enumerable = interfaces
@@ -707,8 +669,7 @@ mod tests {
                 .any(|module| module.dotted() == "Enumerable.Enumerable")
         );
         let enumerable_artifact =
-            artifact(&ModuleName::from_segments(vec!["Enumerable".to_string()]))
-                .expect("Enumerable artifact");
+            artifact(&ModuleName::from_segments(vec!["Enumerable".to_string()])).expect("Enumerable artifact");
         assert!(
             enumerable_artifact
                 .fzo
@@ -726,14 +687,7 @@ mod tests {
             .iter()
             .map(|f| format!("{}/{}", f.name, f.arity))
             .collect::<Vec<_>>();
-        for export in [
-            "count/1",
-            "member?/2",
-            "reduce/3",
-            "slice/1",
-            "sort/1",
-            "sort/2",
-        ] {
+        for export in ["count/1", "member?/2", "reduce/3", "slice/1", "sort/1", "sort/2"] {
             assert!(enum_exports.contains(&export.to_string()));
         }
 
@@ -841,7 +795,7 @@ mod tests {
         for artifact in artifacts {
             let fzi_text = artifact.fzi.serialize();
             let fzi = FziArtifact::deserialize(
-                &crate::telemetry::NullTelemetry,
+                &NullTelemetry,
                 None,
                 &fzi_text,
                 Some(&artifact.interface.fingerprint_inputs),
@@ -866,30 +820,24 @@ mod tests {
 
             let fzo_text = artifact.fzo.serialize();
             let fzo = FzoArtifact::deserialize(
-                &crate::telemetry::NullTelemetry,
+                &NullTelemetry,
                 None,
                 &fzo_text,
                 Some(&artifact.fzo.interface_fingerprint),
             )
             .expect("fzo roundtrip");
             assert_eq!(fzo.module, Some(artifact.module));
-            assert_eq!(
-                fzo.interface_fingerprint,
-                artifact.interface.fingerprint_inputs
-            );
+            assert_eq!(fzo.interface_fingerprint, artifact.interface.fingerprint_inputs);
         }
     }
 
     #[test]
     fn runtime_library_artifacts_write_load_and_import_like_user_artifacts() {
-        let root = std::env::temp_dir().join(format!(
-            "fz-runtime-artifacts-{}-write-load",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_dir_all(&root);
-        let store = crate::modules::artifact_store::ArtifactStore::new(&root);
-        let tel = crate::telemetry::ConfiguredTelemetry::new();
-        let capture = crate::telemetry::Capture::new();
+        let root = temp_dir().join(format!("fz-runtime-artifacts-{}-write-load", std::process::id()));
+        let _ = remove_dir_all(&root);
+        let store = ArtifactStore::new(&root);
+        let tel = ConfiguredTelemetry::new();
+        let capture = Capture::new();
         tel.attach(&["fz", "module"], capture.handler());
         let artifacts = artifacts();
         let interfaces = artifacts
@@ -897,9 +845,7 @@ mod tests {
             .map(|artifact| (artifact.module.clone(), artifact.interface.clone()))
             .collect::<BTreeMap<_, _>>();
 
-        let fzi_paths = store
-            .write_fzi_artifacts(&tel, &interfaces)
-            .expect("write fzi");
+        let fzi_paths = store.write_fzi_artifacts(&tel, &interfaces).expect("write fzi");
         let fzo_paths = store
             .write_fzo_artifacts(&tel, artifacts.iter().map(|artifact| &artifact.fzo))
             .expect("write fzo");
@@ -908,20 +854,19 @@ mod tests {
 
         let utf8 = ModuleName::from_segments(vec!["Utf8".to_string()]);
         let loaded_interfaces = store.load_interface_table(&tel, [&utf8]).expect("load fzi");
-        assert!(loaded_interfaces[&utf8].exports.iter().any(|export| {
-            export.name == "valid?" && export.arity == 1 && !export.specs.is_empty()
-        }));
+        assert!(
+            loaded_interfaces[&utf8]
+                .exports
+                .iter()
+                .any(|export| { export.name == "valid?" && export.arity == 1 && !export.specs.is_empty() })
+        );
         let loaded_fzo = store
-            .load_fzo_artifact(
-                &tel,
-                &utf8,
-                Some(&loaded_interfaces[&utf8].fingerprint_inputs),
-            )
+            .load_fzo_artifact(&tel, &utf8, Some(&loaded_interfaces[&utf8].fingerprint_inputs))
             .expect("load fzo");
         assert_eq!(loaded_fzo.module, Some(utf8));
         assert_eq!(loaded_fzo.unit_payload.format, "fz-runtime-module-v1");
 
-        let mut t = crate::types::ConcreteTypes;
+        let mut t = ConcreteTypes;
         let consumer = r#"
 defmodule User do
   import Utf8, only: [valid?: 1]
@@ -929,12 +874,12 @@ defmodule User do
   fn accepts(bytes), do: valid?(bytes)
 end
 "#;
-        match crate::frontend::compile_source_with_interface_table(
+        match compile_source_with_interface_table(
             &mut t,
             consumer.to_string(),
             "consumer.fz".to_string(),
             loaded_interfaces,
-            &crate::telemetry::NullTelemetry,
+            &NullTelemetry,
         ) {
             Ok(_) => {}
             Err(_) => panic!("runtime artifact interface resolves like a user artifact"),
@@ -944,22 +889,18 @@ end
         assert!(capture.contains(&["fz", "module", "fzi_loaded"]));
         assert!(capture.contains(&["fz", "module", "fzo_loaded"]));
 
-        let _ = std::fs::remove_dir_all(&root);
+        let _ = remove_dir_all(&root);
     }
 
     #[test]
     fn primitive_prelude_imports_kernel_without_defmodule_body() {
         let prelude = primitive_prelude_program();
+        assert!(prelude.items.iter().all(|item| !matches!(&**item, Item::Module(_))));
         assert!(
             prelude
                 .items
                 .iter()
-                .all(|item| !matches!(&**item, Item::Module(_)))
-        );
-        assert!(
-            prelude.items.iter().any(
-                |item| matches!(&**item, Item::Import { path, .. } if path.dotted() == "Kernel")
-            )
+                .any(|item| matches!(&**item, Item::Import { path, .. } if path.dotted() == "Kernel"))
         );
     }
 }

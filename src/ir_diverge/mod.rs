@@ -13,14 +13,11 @@
 //! never reaches the planner or codegen.
 
 use crate::fz_ir::{ExternId, ExternTy, Module, Prim, Stmt, Term};
+use crate::telemetry::Telemetry;
 use std::collections::HashSet;
 
 /// Truncate every block at its first `:: never` extern call.
-pub fn truncate_diverging_blocks(
-    module_path: &str,
-    m: &mut Module,
-    tel: &dyn crate::telemetry::Telemetry,
-) {
+pub fn truncate_diverging_blocks(module_path: &str, m: &mut Module, tel: &dyn Telemetry) {
     let never: HashSet<ExternId> = m
         .externs
         .iter()
@@ -32,16 +29,16 @@ pub fn truncate_diverging_blocks(
     }
     for f in &mut m.fns {
         for b in &mut f.blocks {
-            let cut = b.stmts.iter().position(
-                |Stmt::Let(_, prim)| matches!(prim, Prim::Extern(_, eid, _) if never.contains(eid)),
-            );
+            let cut = b
+                .stmts
+                .iter()
+                .position(|Stmt::Let(_, prim)| matches!(prim, Prim::Extern(_, eid, _) if never.contains(eid)));
             let Some(idx) = cut else { continue };
             let Stmt::Let(result, _) = b.stmts[idx];
             // No dead tail: the diverging call is already the block's last
             // statement and the block halts on its result. There is nothing to
             // cut, so skip it rather than report a truncation that didn't happen.
-            let nothing_to_cut =
-                idx + 1 == b.stmts.len() && matches!(b.terminator, Term::Halt(v) if v == result);
+            let nothing_to_cut = idx + 1 == b.stmts.len() && matches!(b.terminator, Term::Halt(v) if v == result);
             if nothing_to_cut {
                 continue;
             }
@@ -65,16 +62,19 @@ pub fn truncate_diverging_blocks(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::diag::Span;
     use crate::fz_ir::{
-        ExternArg, ExternDecl, ExternId, FnBuilder, FnId, ModuleBuilder, Term, Var,
+        CallsiteIdent, Const, ExternArg, ExternDecl, ExternId, FnBuilder, FnId, ModuleBuilder, Term, Var,
     };
+    use crate::telemetry::{Capture, ConfiguredTelemetry};
+    use crate::types::{ConcreteTypes, Types};
 
     const TRUNCATED: &[&str] = &["fz", "ir", "diverge", "block_truncated"];
 
     /// Declare `fz_panic :: never` as extern 0 on the module.
     fn push_panic_extern(m: &mut Module, panic_id: ExternId) {
-        let mut ct = crate::types::ConcreteTypes;
-        let any = crate::types::Types::any(&mut ct);
+        let mut ct = ConcreteTypes;
+        let any = Types::any(&mut ct);
         m.externs.push(ExternDecl {
             id: panic_id,
             fz_name: "fz_panic".into(),
@@ -89,7 +89,7 @@ mod tests {
 
     fn tail_call(callee: FnId, args: Vec<Var>) -> Term {
         Term::TailCall {
-            ident: crate::fz_ir::CallsiteIdent::from_source(crate::diag::Span::DUMMY),
+            ident: CallsiteIdent::from_source(Span::DUMMY),
             callee,
             args,
             is_back_edge: false,
@@ -98,9 +98,9 @@ mod tests {
 
     /// Run the pass under a capturing telemetry so tests can read the
     /// `block_truncated` signal as well as the resulting IR.
-    fn run(m: &mut Module) -> crate::telemetry::Capture {
-        let tel = crate::telemetry::ConfiguredTelemetry::new();
-        let cap = crate::telemetry::Capture::new();
+    fn run(m: &mut Module) -> Capture {
+        let tel = ConfiguredTelemetry::new();
+        let cap = Capture::new();
         tel.attach(&[], cap.handler());
         truncate_diverging_blocks("test", m, &tel);
         cap
@@ -114,17 +114,17 @@ mod tests {
         let panic_id = ExternId(0);
         let mut b = FnBuilder::new(FnId(0), "caller");
         let entry = b.block(vec![]);
-        let arg = b.let_(entry, Prim::Const(crate::fz_ir::Const::Nil));
+        let arg = b.let_(entry, Prim::Const(Const::Nil));
         let result = b.let_(
             entry,
             Prim::Extern(
-                crate::fz_ir::CallsiteIdent::synthetic(),
+                CallsiteIdent::synthetic(),
                 panic_id,
                 vec![ExternArg::fixed(arg, ExternTy::Any)],
             ),
         );
         // Dead code after the diverging call: another const + a tail-call.
-        let _dead = b.let_(entry, Prim::Const(crate::fz_ir::Const::Int(7)));
+        let _dead = b.let_(entry, Prim::Const(Const::Int(7)));
         b.set_terminator(entry, tail_call(FnId(1), vec![result]));
         let mut mb = ModuleBuilder::new();
         mb.add_fn(b.build());
@@ -153,11 +153,11 @@ mod tests {
         let panic_id = ExternId(0);
         let mut b = FnBuilder::new(FnId(0), "caller");
         let entry = b.block(vec![]);
-        let arg = b.let_(entry, Prim::Const(crate::fz_ir::Const::Nil));
+        let arg = b.let_(entry, Prim::Const(Const::Nil));
         let result = b.let_(
             entry,
             Prim::Extern(
-                crate::fz_ir::CallsiteIdent::synthetic(),
+                CallsiteIdent::synthetic(),
                 panic_id,
                 vec![ExternArg::fixed(arg, ExternTy::Any)],
             ),
@@ -185,7 +185,7 @@ mod tests {
     fn leaves_ordinary_blocks_alone() {
         let mut b = FnBuilder::new(FnId(0), "caller");
         let entry = b.block(vec![]);
-        let v = b.let_(entry, Prim::Const(crate::fz_ir::Const::Int(1)));
+        let v = b.let_(entry, Prim::Const(Const::Int(1)));
         b.set_terminator(entry, tail_call(FnId(1), vec![v]));
         let mut mb = ModuleBuilder::new();
         mb.add_fn(b.build());
@@ -194,13 +194,7 @@ mod tests {
         let cap = run(&mut m);
 
         let entry_block = m.fns[0].block(m.fns[0].entry);
-        assert!(matches!(
-            entry_block.terminator,
-            Term::TailCall {
-                callee: FnId(1),
-                ..
-            }
-        ));
+        assert!(matches!(entry_block.terminator, Term::TailCall { callee: FnId(1), .. }));
         assert_eq!(cap.count(TRUNCATED), 0);
     }
 }

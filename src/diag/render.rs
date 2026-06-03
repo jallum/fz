@@ -17,7 +17,9 @@
 //! offsets to file/line/col/snippet), and a `ColorMode`. Output is byte
 //! stream — caller chooses stderr/stdout/buffer.
 
+use std::cmp::{max, min};
 use std::io::{self, Write};
+use std::iter::repeat_n;
 
 use super::diagnostic::{Diagnostic, Severity, SpanLabel};
 use super::source_map::SourceMap;
@@ -109,7 +111,7 @@ impl<'a> Renderer<'a> {
         for s in &d.secondaries {
             consider(s.span);
         }
-        std::cmp::max(2, line_digit_count(max_line))
+        max(2, line_digit_count(max_line))
     }
 
     fn header(&self, d: &Diagnostic, out: &mut dyn Write) -> io::Result<()> {
@@ -148,13 +150,7 @@ impl<'a> Renderer<'a> {
         writeln!(out, "  --> {}:{}:{}", file, loc.line, loc.col)
     }
 
-    fn snippet_block(
-        &self,
-        sl: &SpanLabel,
-        gutter: usize,
-        primary: bool,
-        out: &mut dyn Write,
-    ) -> io::Result<()> {
+    fn snippet_block(&self, sl: &SpanLabel, gutter: usize, primary: bool, out: &mut dyn Write) -> io::Result<()> {
         if sl.span.is_dummy() {
             // No snippet, but emit a "(generated)" marker so the label
             // still has somewhere to attach.
@@ -185,17 +181,16 @@ impl<'a> Renderer<'a> {
         // Underline. Compute start/end column in expanded coords.
         let local_start = (sl.span.start.saturating_sub(loc.line_start)) as usize;
         // If span spans into next lines, clamp to end of current line.
-        let local_end_byte =
-            std::cmp::min(sl.span.end, loc.line_end) as usize - loc.line_start as usize;
+        let local_end_byte = min(sl.span.end, loc.line_end) as usize - loc.line_start as usize;
         let start_col = byte_to_col.get(local_start).copied().unwrap_or(0);
         let end_col = byte_to_col
             .get(local_end_byte)
             .copied()
             .unwrap_or(expanded_line.chars().count());
         let pad_before = " ".repeat(start_col);
-        let underline_len = std::cmp::max(1, end_col.saturating_sub(start_col));
+        let underline_len = max(1, end_col.saturating_sub(start_col));
         let glyph = if primary { '^' } else { '-' };
-        let underline: String = std::iter::repeat_n(glyph, underline_len).collect();
+        let underline: String = repeat_n(glyph, underline_len).collect();
 
         let (color_pre, color_post) = if self.use_color {
             let c = if primary { style::RED } else { style::CYAN };
@@ -233,13 +228,7 @@ impl<'a> Renderer<'a> {
         Ok(())
     }
 
-    fn trailer(
-        &self,
-        kind: &str,
-        text: &str,
-        gutter: usize,
-        out: &mut dyn Write,
-    ) -> io::Result<()> {
+    fn trailer(&self, kind: &str, text: &str, gutter: usize, out: &mut dyn Write) -> io::Result<()> {
         let (color_pre, color_post) = if self.use_color {
             let c = match kind {
                 "note" => style::CYAN,
@@ -310,6 +299,11 @@ mod tests {
     use super::*;
     use crate::diag::codes::{LEX_UNEXPECTED_CHAR, TYPE_UNREACHABLE_ARM};
     use crate::diag::span::FileId;
+    use crate::frontend::macros::expand_program;
+    use crate::frontend::resolve::flatten_modules;
+    use crate::ir_lower::lower_program;
+    use crate::telemetry::NullTelemetry;
+    use crate::types::ConcreteTypes;
 
     fn rebuild(src: &str) -> (SourceMap, FileId) {
         let mut sm = SourceMap::new();
@@ -319,10 +313,7 @@ mod tests {
 
     fn render(diag: &Diagnostic, sm: &SourceMap) -> String {
         let mut buf: Vec<u8> = Vec::new();
-        Renderer::new(sm)
-            .with_color_disabled()
-            .emit(diag, &mut buf)
-            .unwrap();
+        Renderer::new(sm).with_color_disabled().emit(diag, &mut buf).unwrap();
         String::from_utf8(buf).unwrap()
     }
 
@@ -332,12 +323,8 @@ mod tests {
         let (sm, f) = rebuild(src);
         // Underline the `x == 1` part.
         let span = Span::new(f, 18, 24);
-        let d = Diagnostic::warning(
-            TYPE_UNREACHABLE_ARM,
-            "the then branch is never reachable",
-            span,
-        )
-        .with_label("in fn `main`");
+        let d = Diagnostic::warning(TYPE_UNREACHABLE_ARM, "the then branch is never reachable", span)
+            .with_label("in fn `main`");
         let out = render(&d, &sm);
         let expected = "\
 warning[type/unreachable-arm]: the then branch is never reachable
@@ -354,8 +341,7 @@ warning[type/unreachable-arm]: the then branch is never reachable
     #[test]
     fn dummy_span_emits_generated_marker() {
         let (sm, _) = rebuild("");
-        let d = Diagnostic::warning(TYPE_UNREACHABLE_ARM, "synthesized", Span::DUMMY)
-            .with_note("background context");
+        let d = Diagnostic::warning(TYPE_UNREACHABLE_ARM, "synthesized", Span::DUMMY).with_note("background context");
         let out = render(&d, &sm);
         assert!(out.contains("--> <generated>"));
         assert!(out.contains("note: background context"));
@@ -419,22 +405,14 @@ warning[type/unreachable-arm]: the then branch is never reachable
         let (sm, f) = rebuild(src);
         let d = Diagnostic::error(LEX_UNEXPECTED_CHAR, "x", Span::new(f, 0, 1));
         let out = render(&d, &sm);
-        assert!(
-            !out.contains("\x1b["),
-            "no ANSI escapes when color disabled"
-        );
+        assert!(!out.contains("\x1b["), "no ANSI escapes when color disabled");
     }
 
     /// Drive a fixture through lex → parse → resolve → macros → lower
     /// and return the rendered first-error diagnostic. Panics if the
     /// pipeline completes without an error (the fixture must exercise
     /// one of these stages).
-    fn run_pipeline_for_fixture(
-        src: &str,
-        id: super::super::FileId,
-        sm: &SourceMap,
-        rel: &str,
-    ) -> String {
+    fn run_pipeline_for_fixture(src: &str, id: FileId, sm: &SourceMap, rel: &str) -> String {
         use crate::parser::Parser;
         use crate::parser::lexer::Lexer;
         let toks = match Lexer::with_file(src, id).tokenize() {
@@ -445,25 +423,18 @@ warning[type/unreachable-arm]: the then branch is never reachable
             Err(e) => return render(&e.to_diagnostic(), sm),
             Ok(p) => p,
         };
-        let mut ct = crate::types::ConcreteTypes;
-        let mut prog = match crate::frontend::resolve::flatten_modules(&mut ct, prog) {
+        let mut ct = ConcreteTypes;
+        let mut prog = match flatten_modules(&mut ct, prog) {
             Err(e) => return render(&e.to_diagnostic(), sm),
             Ok(p) => p,
         };
-        if let Err(e) = crate::frontend::macros::expand_program(&mut prog) {
+        if let Err(e) = expand_program(&mut prog) {
             return render(&e.to_diagnostic(), sm);
         }
-        if let Err(e) = crate::ir_lower::lower_program(
-            &mut crate::types::ConcreteTypes,
-            &prog,
-            &crate::telemetry::NullTelemetry,
-        ) {
+        if let Err(e) = lower_program(&mut ConcreteTypes, &prog, &NullTelemetry) {
             return render(&e.to_diagnostic(), sm);
         }
-        panic!(
-            "fixture {} completed pipeline successfully — expected an error",
-            rel
-        );
+        panic!("fixture {} completed pipeline successfully — expected an error", rel);
     }
 
     /// Golden-file fixtures: any directory under `fixtures/errors/` with
@@ -476,9 +447,7 @@ warning[type/unreachable-arm]: the then branch is never reachable
         use std::fs;
         use std::path::Path;
 
-        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("fixtures")
-            .join("errors");
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures").join("errors");
         let mut compared = 0;
         for entry in fs::read_dir(&root).expect("read fixtures/errors") {
             let entry = entry.expect("entry");
@@ -524,9 +493,6 @@ warning[type/unreachable-arm]: the then branch is never reachable
             );
             compared += 1;
         }
-        assert!(
-            compared >= 1,
-            "expected at least one fixture with expected.txt"
-        );
+        assert!(compared >= 1, "expected at least one fixture with expected.txt");
     }
 }

@@ -1,4 +1,6 @@
-use crate::diag::Span;
+use crate::diag::{Diagnostic, Span};
+use std::error::Error;
+use std::fmt;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum LowerError {
@@ -30,14 +32,12 @@ pub enum LowerError {
 }
 
 impl LowerError {
-    pub fn to_diagnostic(&self) -> crate::diag::Diagnostic {
-        use crate::diag::{Diagnostic, codes};
+    pub fn to_diagnostic(&self) -> Diagnostic {
+        use crate::diag::codes;
         match self {
-            LowerError::Unsupported { span, what } => Diagnostic::error(
-                codes::LOWER_UNSUPPORTED,
-                format!("unsupported: {}", what),
-                *span,
-            ),
+            LowerError::Unsupported { span, what } => {
+                Diagnostic::error(codes::LOWER_UNSUPPORTED, format!("unsupported: {}", what), *span)
+            }
             LowerError::Unbound { span, name } => {
                 Diagnostic::error(codes::LOWER_UNBOUND, format!("unbound: {}", name), *span)
             }
@@ -70,10 +70,10 @@ impl LowerError {
     }
 }
 
-impl std::fmt::Display for LowerError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Display for LowerError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.to_diagnostic().message)
     }
 }
 
-impl std::error::Error for LowerError {}
+impl Error for LowerError {}

@@ -4,6 +4,8 @@
 //! pipeline produces. The renderer (.20.6) consumes it; .20.7 wires every
 //! existing error site through this type.
 
+use std::fmt::{self, Display, Formatter};
+
 use super::span::Span;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -19,8 +21,8 @@ pub enum Severity {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct DiagCode(pub &'static str);
 
-impl std::fmt::Display for DiagCode {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl Display for DiagCode {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.write_str(self.0)
     }
 }

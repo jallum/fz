@@ -31,15 +31,16 @@ mod stats;
 mod tests;
 
 use self::fragment::Fragment;
+use crate::process::Process;
 use std::cell::RefCell;
+use std::collections::VecDeque;
 use std::rc::Rc;
+use std::sync::atomic::AtomicBool;
 
 pub use self::block_pool::{SIZE_TABLE, pick_size_class};
 #[cfg(test)]
 pub use self::block_pool::{pool_drain_for_test, pool_total_cached_blocks};
-pub use self::deep_copy::{
-    deep_copy_any_value, deep_copy_any_value_ref, deep_copy_slot, deep_copy_tagged_bits,
-};
+pub use self::deep_copy::{deep_copy_any_value, deep_copy_any_value_ref, deep_copy_slot, deep_copy_tagged_bits};
 pub use self::imp::{closure_capture_ref, list_head_ref, list_tail_ref};
 pub(crate) use self::ref_io::map_entry_refs;
 pub use self::schema::{FieldDescriptor, FieldKind, Schema, SchemaRegistry};
@@ -82,7 +83,7 @@ pub struct Heap {
     /// AtomicBool: the libdispatch worker pool may observe this from a
     /// thread other than the one that set it (one task per worker at a
     /// time, but the flag is read at scheduler boundaries).
-    pressure: std::sync::atomic::AtomicBool,
+    pressure: AtomicBool,
     pub gc_threshold_bytes: usize,
     /// Count of GC invocations. Stub in fz-siu.7; real body lands in .8.
     pub gc_run_count: u64,
@@ -107,7 +108,7 @@ pub struct Heap {
     /// fz code from inside the GC pause), we enqueue
     /// `(closure_bits, payload)` here and the scheduler drains the queue
     /// at the next quantum boundary. See ticket fz-4mk.
-    pub pending_dtors: std::collections::VecDeque<(u64, u64)>,
+    pub pending_dtors: VecDeque<(u64, u64)>,
     /// fz-q8d.4 — fragment list. Oversized allocations (above the
     /// largest size_class) live here as their own system-allocator
     /// backed singletons. GC marks them via the `mark` bit; survivors
@@ -118,5 +119,5 @@ pub struct Heap {
     /// expires this process's reduction budget directly through it — per
     /// process, not via an ambient thread-local, so two schedulers can be live
     /// at once. Null outside a quantum (the cross is then a no-op).
-    pub(crate) owner: *mut crate::process::Process,
+    pub(crate) owner: *mut Process,
 }

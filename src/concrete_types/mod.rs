@@ -33,21 +33,23 @@ mod lit_set;
 mod sigs;
 mod views;
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
+use std::sync::Arc;
 
+use crate::type_expr::opaque_owner_module;
 use crate::types::{
-    CallableClause, ClosureLitInfo, ClosureTarget, ClosureTypes, MapKey, OpaqueVisibilityError,
-    RenderTypes, Sigma, Ty, TypeVarId, Types, VisibilityTypes,
+    CallableClause, ClosureLitInfo, ClosureTarget, ClosureTypes, MapKey, Nominals, OpaqueVisibilityError, RenderTypes,
+    Sigma, Ty, TypeVarId, Types, VisibilityTypes,
 };
 
 use conj::Conj;
 pub(crate) use descr::Descr;
 pub(crate) use lit_set::LiteralSet;
-use sigs::{ArrowSig, ListSig, MapSig, ResourceSig, TupleSig};
+use sigs::{ArrowSig, ClosureLit, ListSig, MapSig, ResourceSig, TupleSig};
 pub(crate) use views::Component;
 
 pub(crate) fn ty_from_descr(d: Descr) -> Ty {
-    Ty(std::sync::Arc::new(d))
+    Ty(Arc::new(d))
 }
 
 pub(crate) fn ty_descr(t: &Ty) -> &Descr {
@@ -58,9 +60,7 @@ pub(crate) fn ty_descr(t: &Ty) -> &Descr {
 /// `Descr`-keyed form `Descr::erase_nominal` consumes. The maps are tiny
 /// (one entry per declared brand/opaque), so the per-call clone is cheap.
 fn descr_inner_map(m: &HashMap<String, Ty>) -> HashMap<String, Descr> {
-    m.iter()
-        .map(|(k, v)| (k.clone(), ty_descr(v).clone()))
-        .collect()
+    m.iter().map(|(k, v)| (k.clone(), ty_descr(v).clone())).collect()
 }
 
 pub(crate) fn ty_display(t: &Ty) -> String {
@@ -142,10 +142,7 @@ impl Types for ConcreteTypes {
         ty_from_descr(Descr::non_empty_list_of(ty_descr(&elem).clone()))
     }
     fn map(&mut self, fields: &[(MapKey, Ty)]) -> Ty {
-        let fields: Vec<(MapKey, Descr)> = fields
-            .iter()
-            .map(|(k, t)| (k.clone(), ty_descr(t).clone()))
-            .collect();
+        let fields: Vec<(MapKey, Descr)> = fields.iter().map(|(k, t)| (k.clone(), ty_descr(t).clone())).collect();
         ty_from_descr(Descr::map_of(fields))
     }
     fn str_t(&mut self) -> Ty {
@@ -181,17 +178,12 @@ impl Types for ConcreteTypes {
         }
         None
     }
-    fn mint_owned_resource_aliases(
-        &mut self,
-        a: Ty,
-        owner: &str,
-        opaque_inners: &HashMap<String, Ty>,
-    ) -> Ty {
+    fn mint_owned_resource_aliases(&mut self, a: Ty, owner: &str, opaque_inners: &HashMap<String, Ty>) -> Ty {
         let _top_level_resource = self.resource_payload_type(&a);
         let candidates = opaque_inners
             .iter()
             .filter_map(|(tag, inner)| {
-                let tag_owner = crate::type_expr::opaque_owner_module(tag)?;
+                let tag_owner = opaque_owner_module(tag)?;
                 (tag_owner == owner).then(|| (tag.clone(), ty_descr(inner).clone()))
             })
             .collect::<Vec<_>>();
@@ -252,10 +244,10 @@ impl Types for ConcreteTypes {
     fn is_disjoint(&self, a: &Ty, b: &Ty) -> bool {
         ty_descr(a).intersect(ty_descr(b)).is_empty()
     }
-    fn is_value_disjoint(&self, a: &Ty, b: &Ty, nominals: crate::types::Nominals<'_, Ty>) -> bool {
+    fn is_value_disjoint(&self, a: &Ty, b: &Ty, nominals: Nominals<'_, Ty>) -> bool {
         let bi = descr_inner_map(nominals.brand_inners);
         let oi = descr_inner_map(nominals.opaque_inners);
-        ty_descr(a).value_disjoint(ty_descr(b), crate::types::Nominals::new(&bi, &oi))
+        ty_descr(a).value_disjoint(ty_descr(b), Nominals::new(&bi, &oi))
     }
     fn is_equivalent(&self, a: &Ty, b: &Ty) -> bool {
         ty_descr(a).is_equiv(ty_descr(b))
@@ -283,11 +275,7 @@ impl Types for ConcreteTypes {
             match only {
                 Component::Vars(view) => {
                     let finite: Vec<TypeVarId> = view.finite()?.collect();
-                    if finite.is_empty() {
-                        None
-                    } else {
-                        Some(finite)
-                    }
+                    if finite.is_empty() { None } else { Some(finite) }
                 }
                 _ => None,
             }
@@ -380,22 +368,13 @@ impl Types for ConcreteTypes {
         ty_descr(a).recursive_spec_depth() < ty_descr(p).recursive_spec_depth()
     }
     fn instantiate(&mut self, a: &Ty, sigma: &Sigma<Ty>) -> Ty {
-        let inner: HashMap<TypeVarId, Descr> = sigma
-            .iter()
-            .map(|(id, t)| (*id, ty_descr(t).clone()))
-            .collect();
+        let inner: HashMap<TypeVarId, Descr> = sigma.iter().map(|(id, t)| (*id, ty_descr(t).clone())).collect();
         ty_from_descr(ty_descr(a).instantiate(&inner))
     }
     fn collect_instantiation_subst(&mut self, pattern: &Ty, witness: &Ty, sigma: &mut Sigma<Ty>) {
-        let mut inner: HashMap<TypeVarId, Descr> = sigma
-            .iter()
-            .map(|(id, t)| (*id, ty_descr(t).clone()))
-            .collect();
+        let mut inner: HashMap<TypeVarId, Descr> = sigma.iter().map(|(id, t)| (*id, ty_descr(t).clone())).collect();
         Descr::collect_subst_into(ty_descr(pattern), ty_descr(witness), &mut inner);
-        *sigma = inner
-            .into_iter()
-            .map(|(id, d)| (id, ty_from_descr(d)))
-            .collect();
+        *sigma = inner.into_iter().map(|(id, d)| (id, ty_from_descr(d))).collect();
     }
 }
 
@@ -407,31 +386,15 @@ fn mint_owned_resource_aliases_descr(d: &Descr, candidates: &[(String, Descr)]) 
     }
 
     let mut out = d.clone();
-    out.tuples = out
-        .tuples
-        .into_iter()
-        .map(|c| mint_tuple_conj(c, candidates))
-        .collect();
-    out.lists = out
-        .lists
-        .into_iter()
-        .map(|c| mint_list_conj(c, candidates))
-        .collect();
+    out.tuples = out.tuples.into_iter().map(|c| mint_tuple_conj(c, candidates)).collect();
+    out.lists = out.lists.into_iter().map(|c| mint_list_conj(c, candidates)).collect();
     out.resources = out
         .resources
         .into_iter()
         .map(|c| mint_resource_conj(c, candidates))
         .collect();
-    out.funcs = out
-        .funcs
-        .into_iter()
-        .map(|c| mint_arrow_conj(c, candidates))
-        .collect();
-    out.maps = out
-        .maps
-        .into_iter()
-        .map(|c| mint_map_conj(c, candidates))
-        .collect();
+    out.funcs = out.funcs.into_iter().map(|c| mint_arrow_conj(c, candidates)).collect();
+    out.maps = out.maps.into_iter().map(|c| mint_map_conj(c, candidates)).collect();
     out
 }
 
@@ -532,17 +495,12 @@ fn mint_arrow_conj(c: Conj<ArrowSig>, candidates: &[(String, Descr)]) -> Conj<Ar
                     .map(|arg| mint_owned_resource_aliases_descr(arg, candidates))
                     .collect(),
                 ret: Box::new(mint_owned_resource_aliases_descr(&sig.ret, candidates)),
-                lit: sig.lit.map(|lit| sigs::ClosureLit {
+                lit: sig.lit.map(|lit| ClosureLit {
                     fn_id: lit.fn_id,
                     captures: lit
                         .captures
                         .into_iter()
-                        .map(|capture| {
-                            ty_from_descr(mint_owned_resource_aliases_descr(
-                                ty_descr(&capture),
-                                candidates,
-                            ))
-                        })
+                        .map(|capture| ty_from_descr(mint_owned_resource_aliases_descr(ty_descr(&capture), candidates)))
                         .collect(),
                 }),
             })
@@ -557,17 +515,12 @@ fn mint_arrow_conj(c: Conj<ArrowSig>, candidates: &[(String, Descr)]) -> Conj<Ar
                     .map(|arg| mint_owned_resource_aliases_descr(arg, candidates))
                     .collect(),
                 ret: Box::new(mint_owned_resource_aliases_descr(&sig.ret, candidates)),
-                lit: sig.lit.map(|lit| sigs::ClosureLit {
+                lit: sig.lit.map(|lit| ClosureLit {
                     fn_id: lit.fn_id,
                     captures: lit
                         .captures
                         .into_iter()
-                        .map(|capture| {
-                            ty_from_descr(mint_owned_resource_aliases_descr(
-                                ty_descr(&capture),
-                                candidates,
-                            ))
-                        })
+                        .map(|capture| ty_from_descr(mint_owned_resource_aliases_descr(ty_descr(&capture), candidates)))
                         .collect(),
                 }),
             })
@@ -584,9 +537,7 @@ fn mint_map_conj(c: Conj<MapSig>, candidates: &[(String, Descr)]) -> Conj<MapSig
                 fields: sig
                     .fields
                     .into_iter()
-                    .map(|(key, value)| {
-                        (key, mint_owned_resource_aliases_descr(&value, candidates))
-                    })
+                    .map(|(key, value)| (key, mint_owned_resource_aliases_descr(&value, candidates)))
                     .collect(),
             })
             .collect(),
@@ -597,9 +548,7 @@ fn mint_map_conj(c: Conj<MapSig>, candidates: &[(String, Descr)]) -> Conj<MapSig
                 fields: sig
                     .fields
                     .into_iter()
-                    .map(|(key, value)| {
-                        (key, mint_owned_resource_aliases_descr(&value, candidates))
-                    })
+                    .map(|(key, value)| (key, mint_owned_resource_aliases_descr(&value, candidates)))
                     .collect(),
             })
             .collect(),
@@ -608,8 +557,7 @@ fn mint_map_conj(c: Conj<MapSig>, candidates: &[(String, Descr)]) -> Conj<MapSig
 
 impl ClosureTypes for ConcreteTypes {
     fn closure_lit(&mut self, target: ClosureTarget, captures: Vec<Ty>, n_args: usize) -> Ty {
-        let capture_descrs: Vec<Descr> =
-            captures.into_iter().map(|c| ty_descr(&c).clone()).collect();
+        let capture_descrs: Vec<Descr> = captures.into_iter().map(|c| ty_descr(&c).clone()).collect();
         ty_from_descr(Descr::closure_lit(target.into(), capture_descrs, n_args))
     }
 
@@ -650,15 +598,11 @@ impl ClosureTypes for ConcreteTypes {
 }
 
 impl VisibilityTypes for ConcreteTypes {
-    fn check_opaque_visibility(
-        &self,
-        a: &Ty,
-        using_module: &str,
-    ) -> Result<(), OpaqueVisibilityError> {
+    fn check_opaque_visibility(&self, a: &Ty, using_module: &str) -> Result<(), OpaqueVisibilityError> {
         let Some(tag) = ty_descr(a).as_opaque_singleton() else {
             return Ok(());
         };
-        let Some(owner) = crate::type_expr::opaque_owner_module(tag) else {
+        let Some(owner) = opaque_owner_module(tag) else {
             return Ok(());
         };
         if owner == using_module {
@@ -722,7 +666,7 @@ fn concrete_map_field_lookup(a: &Ty, key: &MapKey) -> Option<Ty> {
 }
 
 fn concrete_map_known_keys(a: &Ty) -> Vec<MapKey> {
-    let mut keys = std::collections::BTreeSet::new();
+    let mut keys = BTreeSet::new();
     for component in ty_descr(a).components() {
         let Component::Maps(view) = component else {
             continue;

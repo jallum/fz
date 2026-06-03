@@ -25,20 +25,20 @@
 
 use crate::ast::{Attribute, Item, Program};
 use crate::diag::{Diagnostic, Span, codes};
-use crate::fz_ir::FnId;
+use crate::fz_ir::{FnId, FnIr, Module, Term};
 use crate::ir_planner::ModulePlan;
+use crate::ir_planner::fn_types::SpecPlan;
 use crate::specs::{ResolvedSpecSet, declared_specs_cover_inferred_spec};
 use crate::type_expr::{ModuleTypeEnv, resolve_spec_decls};
+use crate::types::{ClosureTypes, RenderTypes, Ty, Types};
 
 /// Validate every `@spec` in `program` against the corresponding
 /// inferred specs in `module_plan`. Returns a list of diagnostics
 /// (empty when all specs hold).
-pub fn validate_specs<
-    T: crate::types::ClosureTypes<Ty = crate::types::Ty> + crate::types::RenderTypes,
->(
+pub fn validate_specs<T: ClosureTypes<Ty = Ty> + RenderTypes>(
     t: &mut T,
     program: &Program,
-    ir_module: &crate::fz_ir::Module,
+    ir_module: &Module,
     module_plan: &ModulePlan,
 ) -> Vec<Diagnostic> {
     let mut diags: Vec<Diagnostic> = Vec::new();
@@ -64,10 +64,7 @@ pub fn validate_specs<
             Some(i) => fn_def.name[..i].to_string(),
             None => String::new(),
         };
-        let env: &ModuleTypeEnv = program
-            .module_type_envs
-            .get(&module_path)
-            .unwrap_or(&empty_env);
+        let env: &ModuleTypeEnv = program.module_type_envs.get(&module_path).unwrap_or(&empty_env);
         let resolved = match resolve_spec_decls(t, specs, env) {
             Ok(r) => r,
             Err(e) => {
@@ -99,13 +96,11 @@ pub fn validate_specs<
     diags
 }
 
-fn validate_one_fn<
-    T: crate::types::ClosureTypes<Ty = crate::types::Ty> + crate::types::RenderTypes,
->(
+fn validate_one_fn<T: ClosureTypes<Ty = Ty> + RenderTypes>(
     t: &mut T,
     declared_specs: &ResolvedSpecSet,
     fn_id: FnId,
-    ir_fn: &crate::fz_ir::FnIr,
+    ir_fn: &FnIr,
     user_name: &str,
     name_span: Span,
     module_plan: &ModulePlan,
@@ -151,14 +146,10 @@ fn validate_one_fn<
     }
 }
 
-fn inferred_result_ty<T: crate::types::Types<Ty = crate::types::Ty>>(
-    t: &mut T,
-    ir_fn: &crate::fz_ir::FnIr,
-    ft: &crate::ir_planner::fn_types::SpecPlan,
-) -> Option<T::Ty> {
+fn inferred_result_ty<T: Types<Ty = Ty>>(t: &mut T, ir_fn: &FnIr, ft: &SpecPlan) -> Option<T::Ty> {
     let mut inferred_result: Option<T::Ty> = None;
     for b in &ir_fn.blocks {
-        if let crate::fz_ir::Term::Return(rv) = &b.terminator {
+        if let Term::Return(rv) = &b.terminator {
             let d_ty = match ft.vars.get(rv) {
                 Some(d) => d.clone(),
                 None => t.any(),
@@ -180,27 +171,21 @@ mod tests {
     use crate::ir_planner::plan_module;
     use crate::parser::Parser;
     use crate::parser::lexer::Lexer;
+    use crate::telemetry::NullTelemetry;
+    use crate::types::ConcreteTypes;
 
-    fn pipeline<
-        T: crate::types::Types<Ty = crate::types::Ty>
-            + crate::types::ClosureTypes
-            + crate::types::RenderTypes,
-    >(
-        t: &mut T,
-        src: &str,
-    ) -> (Program, crate::fz_ir::Module, ModulePlan) {
+    fn pipeline<T: Types<Ty = Ty> + ClosureTypes + RenderTypes>(t: &mut T, src: &str) -> (Program, Module, ModulePlan) {
         let toks = Lexer::new(src).tokenize().expect("lex");
         let prog = Parser::new(toks).parse_program().expect("parse");
         let prog = flatten_modules(t, prog).expect("flatten");
-        let ir =
-            ir_lower::lower_program(t, &prog, &crate::telemetry::NullTelemetry).expect("lower");
-        let mt = plan_module(t, &ir, &crate::telemetry::NullTelemetry);
+        let ir = ir_lower::lower_program(t, &prog, &NullTelemetry).expect("lower");
+        let mt = plan_module(t, &ir, &NullTelemetry);
         (prog, ir, mt)
     }
 
     #[test]
     fn spec_matching_inferred_passes() {
-        let mut ct = crate::types::ConcreteTypes;
+        let mut ct = ConcreteTypes;
         let (prog, ir, mt) = pipeline(
             &mut ct,
             r#"
@@ -219,7 +204,7 @@ fn main(), do: dbg(M.add1(41))
     fn spec_wider_than_inferred_passes_success_typing_style() {
         // Declared spec accepts `integer`; inferred is the narrower
         // `int_lit(41)`. int_lit(41) ⊆ integer, so this passes.
-        let mut ct = crate::types::ConcreteTypes;
+        let mut ct = ConcreteTypes;
         let (prog, ir, mt) = pipeline(
             &mut ct,
             r#"
@@ -242,7 +227,7 @@ fn main(), do: dbg(M.add1(41))
     fn spec_disjoint_from_inferred_fails() {
         // Declared accepts `float`; inferred from callsite is int.
         // int ⊄ float, so this fails.
-        let mut ct = crate::types::ConcreteTypes;
+        let mut ct = ConcreteTypes;
         let (prog, ir, mt) = pipeline(
             &mut ct,
             r#"
@@ -265,7 +250,7 @@ fn main(), do: dbg(M.add1(41))
 
     #[test]
     fn multi_spec_overload_arrows_cover_each_inferred_shape() {
-        let mut ct = crate::types::ConcreteTypes;
+        let mut ct = ConcreteTypes;
         let (prog, ir, mt) = pipeline(
             &mut ct,
             r#"
@@ -291,7 +276,7 @@ end
 
     #[test]
     fn multi_spec_validation_preserves_param_result_correlation() {
-        let mut ct = crate::types::ConcreteTypes;
+        let mut ct = ConcreteTypes;
         let (prog, ir, mt) = pipeline(
             &mut ct,
             r#"
@@ -317,7 +302,7 @@ end
 
     #[test]
     fn spec_resolves_against_module_type_env() {
-        let mut ct = crate::types::ConcreteTypes;
+        let mut ct = ConcreteTypes;
         let (prog, ir, mt) = pipeline(
             &mut ct,
             r#"
@@ -339,7 +324,7 @@ fn main(), do: dbg(M.lookup(7))
 
     #[test]
     fn protocol_domain_spec_accepts_known_impl_target() {
-        let mut ct = crate::types::ConcreteTypes;
+        let mut ct = ConcreteTypes;
         let (prog, ir, mt) = pipeline(
             &mut ct,
             r#"
@@ -368,7 +353,7 @@ fn main(), do: dbg(M.use([1]))
 
     #[test]
     fn protocol_domain_spec_rejects_disjoint_target_without_impl() {
-        let mut ct = crate::types::ConcreteTypes;
+        let mut ct = ConcreteTypes;
         let (prog, ir, mt) = pipeline(
             &mut ct,
             r#"
@@ -394,7 +379,7 @@ fn main(), do: dbg(M.use(1))
 
     #[test]
     fn spec_with_unknown_alias_fails_at_validation() {
-        let mut ct = crate::types::ConcreteTypes;
+        let mut ct = ConcreteTypes;
         let (prog, ir, mt) = pipeline(
             &mut ct,
             r#"
@@ -424,7 +409,7 @@ fn main(), do: dbg(M.one(0))
         // covers both scenarios via a fn that *does* keep its any-key
         // because it's also reachable via a closure/cont path with a
         // narrow capture but `any` slot 0.
-        let mut ct = crate::types::ConcreteTypes;
+        let mut ct = ConcreteTypes;
         let (prog, ir, mt) = pipeline(
             &mut ct,
             r#"
@@ -447,7 +432,7 @@ fn main(), do: dbg(M.add1(41))
 
     #[test]
     fn fn_without_spec_is_not_validated() {
-        let mut ct = crate::types::ConcreteTypes;
+        let mut ct = ConcreteTypes;
         let (prog, ir, mt) = pipeline(
             &mut ct,
             r#"
@@ -467,7 +452,7 @@ fn main(), do: dbg(M.double(7))
 
     #[test]
     fn spec_on_top_level_fn_uses_empty_env() {
-        let mut ct = crate::types::ConcreteTypes;
+        let mut ct = ConcreteTypes;
         let (prog, ir, mt) = pipeline(
             &mut ct,
             r#"

@@ -3,7 +3,10 @@ use super::conj::Conj;
 use super::dnf::is_dnf_top;
 use super::sigs::{ArrowSig, ClosureLit};
 use super::*;
+use crate::fz_ir::FnId;
 use crate::types::{ClosureTypes, MapKey, Nominals, Types};
+use std::collections::{BTreeMap, HashMap};
+use std::slice::from_ref;
 
 // (`str_t` was promoted to a public Descr constructor by fz-ul4.31.1.)
 impl BasicBits {
@@ -147,12 +150,7 @@ fn union_idempotent_on_repeated_list_descrs() {
         acc.lists.len(),
         acc
     );
-    assert!(
-        acc.is_equiv(&lst),
-        "self-union must equal original: {} vs {}",
-        acc,
-        lst
-    );
+    assert!(acc.is_equiv(&lst), "self-union must equal original: {} vs {}", acc, lst);
 }
 
 /// Distinct list-element types must remain distinct under dedup
@@ -379,11 +377,7 @@ fn empty_basics() {
 fn subtype_basics() {
     assert!(Descr::int().is_subtype(&Descr::int()));
     assert!(Descr::int().is_subtype(&Descr::int().union(&Descr::float())));
-    assert!(
-        !Descr::int()
-            .union(&Descr::float())
-            .is_subtype(&Descr::int())
-    );
+    assert!(!Descr::int().union(&Descr::float()).is_subtype(&Descr::int()));
     assert!(!Descr::int().is_subtype(&Descr::atom_top()));
     assert!(Descr::none().is_subtype(&Descr::int()));
     assert!(Descr::int().is_subtype(&Descr::any()));
@@ -449,8 +443,7 @@ fn tuple_covariance_in_components() {
 fn tuple_union_distributes_over_components() {
     // {int|float, str} <: {int, str} ∪ {float, str}
     let lhs = Descr::tuple_of([Descr::int().union(&Descr::float()), Descr::str_t()]);
-    let rhs = Descr::tuple_of([Descr::int(), Descr::str_t()])
-        .union(&Descr::tuple_of([Descr::float(), Descr::str_t()]));
+    let rhs = Descr::tuple_of([Descr::int(), Descr::str_t()]).union(&Descr::tuple_of([Descr::float(), Descr::str_t()]));
     assert!(lhs.is_subtype(&rhs));
     assert!(rhs.is_subtype(&lhs));
     assert!(lhs.is_equiv(&rhs));
@@ -475,11 +468,7 @@ fn empty_list_is_subtype_of_any_possibly_empty_list() {
     let empty_list = Descr::empty_list();
     assert!(empty_list.is_subtype(&Descr::list_of(Descr::int())));
     assert!(empty_list.is_subtype(&Descr::list_of(Descr::atom_top())));
-    assert!(
-        empty_list
-            .intersect(&Descr::non_empty_list_of(Descr::any()))
-            .is_empty()
-    );
+    assert!(empty_list.intersect(&Descr::non_empty_list_of(Descr::any())).is_empty());
 }
 
 #[test]
@@ -489,10 +478,7 @@ fn list_union_does_not_distribute_homogeneously() {
     // have to live in one of the homogeneous types, but it doesn't.
     let mixed = Descr::list_of(Descr::atom_lit("a").union(&Descr::atom_lit("b")));
     let parts = Descr::list_of(Descr::atom_lit("a")).union(&Descr::list_of(Descr::atom_lit("b")));
-    assert!(
-        !mixed.is_subtype(&parts),
-        "homogeneous lists do not cover mixed"
-    );
+    assert!(!mixed.is_subtype(&parts), "homogeneous lists do not cover mixed");
     // But the reverse holds:
     assert!(parts.is_subtype(&mixed));
 }
@@ -552,8 +538,7 @@ fn arrow_intersection_is_multiclause() {
     // (int -> int) ∩ (str -> str)  <:  (int|str) -> (int|str)
     // — the multi-clause function semantics. NOT equivalent because the
     // intersection knows which return type matches which input.
-    let multi = Descr::arrow([Descr::int()], Descr::int())
-        .intersect(&Descr::arrow([Descr::str_t()], Descr::str_t()));
+    let multi = Descr::arrow([Descr::int()], Descr::int()).intersect(&Descr::arrow([Descr::str_t()], Descr::str_t()));
     let combined = Descr::arrow(
         [Descr::int().union(&Descr::str_t())],
         Descr::int().union(&Descr::str_t()),
@@ -589,11 +574,8 @@ fn intersection_with_disjoint_is_empty() {
 fn ok_or_error_result_subtype() {
     // Result(int, atom) = {:ok, int} ∪ {:error, atom}
     // {:ok, int} <: Result(int, atom)
-    let result_t =
-        Descr::tuple_of([Descr::atom_lit("ok"), Descr::int()]).union(&Descr::tuple_of([
-            Descr::atom_lit("error"),
-            Descr::atom_top(),
-        ]));
+    let result_t = Descr::tuple_of([Descr::atom_lit("ok"), Descr::int()])
+        .union(&Descr::tuple_of([Descr::atom_lit("error"), Descr::atom_top()]));
     let an_ok = Descr::tuple_of([Descr::atom_lit("ok"), Descr::int()]);
     assert!(an_ok.is_subtype(&result_t));
     // {:ok, str} </: Result(int, atom)
@@ -648,10 +630,7 @@ fn singleton_in_tuple() {
 #[test]
 fn display_int_singleton() {
     assert_eq!(Descr::int_lit(42).to_string(), "42");
-    assert_eq!(
-        Descr::int_lit(0).union(&Descr::int_lit(1)).to_string(),
-        "0 | 1"
-    );
+    assert_eq!(Descr::int_lit(0).union(&Descr::int_lit(1)).to_string(), "0 | 1");
 }
 
 // ---- maps ----
@@ -706,13 +685,7 @@ fn basic_bits_flags_are_disjoint() {
     let bits = [BasicBits::BINARY];
     for (i, a) in bits.iter().enumerate() {
         for b in &bits[i + 1..] {
-            assert_eq!(
-                a.raw() & b.raw(),
-                0,
-                "bits should be disjoint: {:?} vs {:?}",
-                a,
-                b
-            );
+            assert_eq!(a.raw() & b.raw(), 0, "bits should be disjoint: {:?} vs {:?}", a, b);
         }
     }
     // ALL covers exactly those bits and nothing else.
@@ -733,11 +706,7 @@ fn display_for_diag_caps_finite_literal_sets() {
     let s = d.display_for_diag();
     // Exactly five comma-separated int values + an ellipsis.
     let pipe_parts: Vec<&str> = s.split(" | ").collect();
-    assert!(
-        pipe_parts.len() == 6,
-        "expected 5 ints + ellipsis, got: {}",
-        s
-    );
+    assert!(pipe_parts.len() == 6, "expected 5 ints + ellipsis, got: {}", s);
     assert!(s.contains("(+5 more)"), "expected ellipsis, got: {}", s);
 }
 
@@ -772,8 +741,8 @@ fn display_for_diag_short_set_renders_untruncated() {
 
 // ---- fz-ul4.27.22.8 closure_lit tests ----
 
-fn fid(n: u32) -> crate::fz_ir::FnId {
-    crate::fz_ir::FnId(n)
+fn fid(n: u32) -> FnId {
+    FnId(n)
 }
 
 #[test]
@@ -851,9 +820,7 @@ fn closure_lit_intersect_same_fn_narrows_captures() {
     let a = Descr::closure_lit(fid(3), vec![Descr::int()], 1);
     let b = Descr::closure_lit(fid(3), vec![Descr::int_lit(10)], 1);
     let i = a.intersect(&b);
-    let tag = i
-        .as_closure_lit()
-        .expect("expected singleton after intersect");
+    let tag = i.as_closure_lit().expect("expected singleton after intersect");
     assert_eq!(tag.fn_id, fid(3));
     assert_eq!(ty_descr(&tag.captures[0]), &Descr::int_lit(10));
 }
@@ -917,20 +884,14 @@ fn opaque_renders_name() {
 fn opaque_is_not_subtype_of_underlying() {
     let pid = Descr::opaque_of("pid");
     let int = Descr::int();
-    assert!(
-        !pid.is_subtype(&int),
-        "pid should NOT be a subtype of integer"
-    );
+    assert!(!pid.is_subtype(&int), "pid should NOT be a subtype of integer");
 }
 
 #[test]
 fn underlying_is_not_subtype_of_opaque() {
     let pid = Descr::opaque_of("pid");
     let int = Descr::int();
-    assert!(
-        !int.is_subtype(&pid),
-        "integer should NOT be a subtype of pid"
-    );
+    assert!(!int.is_subtype(&pid), "integer should NOT be a subtype of pid");
 }
 
 #[test]
@@ -952,10 +913,7 @@ fn brand_of_is_non_empty_and_distinguishable() {
     assert!(utf8.basic.is_empty());
     assert!(utf8.atoms.is_none());
     assert!(utf8.ints.is_none());
-    assert!(
-        utf8.opaques.is_none(),
-        "brands and opaques are distinct axes"
-    );
+    assert!(utf8.opaques.is_none(), "brands and opaques are distinct axes");
     assert!(utf8.vars.is_none());
     assert!(!utf8.brands.is_none(), "brands axis must carry the tag");
 }
@@ -1018,16 +976,8 @@ fn brand_singleton_extracts_the_tag() {
     let utf8 = Descr::brand_of("utf8");
     assert_eq!(utf8.as_brand_singleton(), Some("utf8"));
     let two = utf8.union(&Descr::brand_of("ascii"));
-    assert_eq!(
-        two.as_brand_singleton(),
-        None,
-        "multi-tag set has no singleton"
-    );
-    assert_eq!(
-        Descr::any().as_brand_singleton(),
-        None,
-        "cofinite has no singleton"
-    );
+    assert_eq!(two.as_brand_singleton(), None, "multi-tag set has no singleton");
+    assert_eq!(Descr::any().as_brand_singleton(), None, "cofinite has no singleton");
     assert_eq!(
         Descr::int().as_brand_singleton(),
         None,
@@ -1039,15 +989,12 @@ fn brand_singleton_extracts_the_tag() {
 // (brands={B} ∧ structural T) is a subtype of T when brand_inners
 // ratifies that B's inner is structurally T.
 
-fn brand_inners(items: &[(&str, Descr)]) -> std::collections::HashMap<String, Descr> {
-    items
-        .iter()
-        .map(|(n, d)| (n.to_string(), d.clone()))
-        .collect()
+fn brand_inners(items: &[(&str, Descr)]) -> HashMap<String, Descr> {
+    items.iter().map(|(n, d)| (n.to_string(), d.clone())).collect()
 }
 
-fn no_inners() -> std::collections::HashMap<String, Descr> {
-    std::collections::HashMap::new()
+fn no_inners() -> HashMap<String, Descr> {
+    HashMap::new()
 }
 
 // fz-bsx.1 — brand-erased (runtime representation) disjointness.
@@ -1117,10 +1064,7 @@ fn value_disjoint_distinct_atoms_is_true() {
     // Structural disjointness survives erasure (erasure only neutralises
     // the nominal axes): :ok vs :error is still definitely unequal.
     assert!(
-        Descr::atom_lit("ok").value_disjoint(
-            &Descr::atom_lit("error"),
-            Nominals::new(&no_inners(), &no_inners()),
-        ),
+        Descr::atom_lit("ok").value_disjoint(&Descr::atom_lit("error"), Nominals::new(&no_inners(), &no_inners()),),
         ":ok vs :error remains value-disjoint",
     );
 }
@@ -1133,10 +1077,7 @@ fn differs_only_nominally_holds_for_brand_vs_unbranded() {
     let utf8 = Descr::brand_of("utf8");
     let aware_disjoint = utf8.intersect(&Descr::str_t()).is_empty();
     let value_disjoint = utf8.value_disjoint(&Descr::str_t(), Nominals::new(&inners, &no_inners()));
-    assert!(
-        aware_disjoint && !value_disjoint,
-        "this is the delta the fold broke"
-    );
+    assert!(aware_disjoint && !value_disjoint, "this is the delta the fold broke");
 }
 
 // fz-bsx.6 — soundness backstop for value-disjointness. The eq-fold and the
@@ -1177,19 +1118,9 @@ fn value_disjoint_soundness_table() {
         // Same runtime representation once brands are erased: NOT foldable —
         // these values can be equal, `==` must run.
         (&utf8, &bin, false, "utf8 vs unbranded binary"),
-        (
-            &ascii,
-            &utf8,
-            false,
-            "ascii vs utf8 — distinct brands, same bytes",
-        ),
+        (&ascii, &utf8, false, "ascii vs utf8 — distinct brands, same bytes"),
         (&utf8, &utf8, false, "utf8 vs utf8"),
-        (
-            &ok_utf8,
-            &ok_bin,
-            false,
-            "{:ok,utf8} vs {:ok,binary} — nested brand",
-        ),
+        (&ok_utf8, &ok_bin, false, "{:ok,utf8} vs {:ok,binary} — nested brand"),
     ];
     for (a, b, expect, why) in cases {
         assert_eq!(
@@ -1373,10 +1304,7 @@ fn var_union_with_any_becomes_any() {
 fn any_contains_all_vars() {
     // Descr::any() includes the entire vars axis (cofinite empty).
     let any = Descr::any();
-    assert!(
-        any.vars.is_any(),
-        "Descr::any().vars must be the full universe"
-    );
+    assert!(any.vars.is_any(), "Descr::any().vars must be the full universe");
     let a = Descr::var(TypeVarId(0));
     assert!(a.is_subtype(&any), "α ⊆ any");
 }
@@ -1411,11 +1339,8 @@ fn var_is_not_opaque() {
 // fz-try.6 — instantiation and σ-collection
 // ------------------------------------------------------------------
 
-fn sigma_of(bindings: &[(u32, Descr)]) -> std::collections::HashMap<TypeVarId, Descr> {
-    bindings
-        .iter()
-        .map(|(id, d)| (TypeVarId(*id), d.clone()))
-        .collect()
+fn sigma_of(bindings: &[(u32, Descr)]) -> HashMap<TypeVarId, Descr> {
+    bindings.iter().map(|(id, d)| (TypeVarId(*id), d.clone())).collect()
 }
 
 #[test]
@@ -1432,11 +1357,7 @@ fn has_vars_distinguishes_concrete_from_polymorphic() {
 fn instantiate_replaces_top_level_var() {
     let pattern = Descr::var(TypeVarId(0));
     let result = pattern.instantiate(&sigma_of(&[(0, Descr::int())]));
-    assert!(
-        result.is_equiv(&Descr::int()),
-        "α[α→int] = int, got {}",
-        result
-    );
+    assert!(result.is_equiv(&Descr::int()), "α[α→int] = int, got {}", result);
 }
 
 #[test]
@@ -1497,7 +1418,7 @@ fn instantiate_walks_into_arrow_args_and_ret() {
 #[test]
 fn instantiate_preserves_lit_tag_on_arrow() {
     let lit = ClosureLit {
-        fn_id: crate::fz_ir::FnId(42),
+        fn_id: FnId(42),
         captures: vec![],
     };
     let arrow = Descr {
@@ -1519,7 +1440,7 @@ fn instantiate_preserves_lit_tag_on_arrow() {
 
 #[test]
 fn collect_subst_binds_top_level_var_to_witness() {
-    let mut sigma = std::collections::HashMap::new();
+    let mut sigma = HashMap::new();
     Descr::collect_subst_into(&Descr::var(TypeVarId(0)), &Descr::int(), &mut sigma);
     assert_eq!(sigma.len(), 1);
     assert!(sigma[&TypeVarId(0)].is_equiv(&Descr::int()));
@@ -1527,7 +1448,7 @@ fn collect_subst_binds_top_level_var_to_witness() {
 
 #[test]
 fn collect_subst_is_noop_on_concrete_pattern() {
-    let mut sigma = std::collections::HashMap::new();
+    let mut sigma = HashMap::new();
     Descr::collect_subst_into(&Descr::int(), &Descr::int(), &mut sigma);
     assert!(sigma.is_empty(), "no vars in pattern means no bindings");
 }
@@ -1540,7 +1461,7 @@ fn collect_subst_then_instantiate_is_identity_on_concrete_args() {
     let pat_arg = Descr::var(TypeVarId(0));
     let pat_ret = Descr::var(TypeVarId(0));
     let witness = Descr::int();
-    let mut sigma = std::collections::HashMap::new();
+    let mut sigma = HashMap::new();
     Descr::collect_subst_into(&pat_arg, &witness, &mut sigma);
     let resolved_ret = pat_ret.instantiate(&sigma);
     assert!(resolved_ret.is_equiv(&Descr::int()));
@@ -1549,7 +1470,7 @@ fn collect_subst_then_instantiate_is_identity_on_concrete_args() {
 #[test]
 fn collect_subst_distinct_vars_bind_independently() {
     // (α, β) ⇄ (int, bool) ⇒ σ = {α→int, β→bool}.
-    let mut sigma = std::collections::HashMap::new();
+    let mut sigma = HashMap::new();
     Descr::collect_subst_into(&Descr::var(TypeVarId(0)), &Descr::int(), &mut sigma);
     Descr::collect_subst_into(&Descr::var(TypeVarId(1)), &Descr::bool_t(), &mut sigma);
     assert_eq!(sigma.len(), 2);
@@ -1576,10 +1497,7 @@ fn algebra_audit_union_with_var_is_componentwise() {
     let a = Descr::var(TypeVarId(0));
     let u = a.union(&Descr::int());
     assert!(!u.vars.is_none(), "var axis must survive union");
-    assert!(
-        u.ints.is_any() || !u.ints.is_none(),
-        "int axis must survive union"
-    );
+    assert!(u.ints.is_any() || !u.ints.is_none(), "int axis must survive union");
     // Subtypes both witnesses.
     assert!(a.is_subtype(&u));
     assert!(Descr::int().is_subtype(&u));
@@ -1672,12 +1590,9 @@ fn algebra_audit_instantiate_then_union_distributes() {
     // instantiate(d2, σ). Verified on a representative case.
     let d1 = Descr::var(TypeVarId(0));
     let d2 = Descr::var(TypeVarId(1));
-    let sigma: std::collections::HashMap<TypeVarId, Descr> = [
-        (TypeVarId(0), Descr::int()),
-        (TypeVarId(1), Descr::bool_t()),
-    ]
-    .into_iter()
-    .collect();
+    let sigma: HashMap<TypeVarId, Descr> = [(TypeVarId(0), Descr::int()), (TypeVarId(1), Descr::bool_t())]
+        .into_iter()
+        .collect();
     let lhs = d1.union(&d2).instantiate(&sigma);
     let rhs = d1.instantiate(&sigma).union(&d2.instantiate(&sigma));
     assert!(lhs.is_equiv(&rhs), "{} ≢ {}", lhs, rhs);
@@ -1693,10 +1608,7 @@ fn algebra_audit_no_var_axis_pollution_in_concrete_round_trip() {
     let u = i.union(&s);
     assert!(u.vars.is_none(), "union of concrete descrs has no vars");
     let int_ = i.intersect(&s);
-    assert!(
-        int_.vars.is_none(),
-        "intersect of concrete descrs has no vars"
-    );
+    assert!(int_.vars.is_none(), "intersect of concrete descrs has no vars");
     let n = i.neg();
     // ¬int has saturated vars (cofinite) — that's correct; "not int"
     // includes vars in the universe. But has_vars() reports false
@@ -1933,7 +1845,7 @@ fn components_binary_surfaces_as_basic_with_bits() {
 #[test]
 fn components_map_field_lookup_joins_across_clauses() {
     // Single-clause map: open_map with one field. field() returns the value.
-    let mut fields = std::collections::BTreeMap::new();
+    let mut fields = BTreeMap::new();
     fields.insert(MapKey::Atom("k".into()), Descr::int_lit(1));
     let m = Descr::map_of(fields);
     for c in m.components() {
@@ -2056,15 +1968,15 @@ fn refine_widen_recurses_into_arrow_returns_and_unions_args() {
     let empty = t.empty_list();
     let one = t.int_lit(1);
     let lhs_ret = t.tuple(&[empty, one]);
-    let lhs = t.arrow(std::slice::from_ref(&int), lhs_ret);
+    let lhs = t.arrow(from_ref(&int), lhs_ret);
     let non_empty = t.non_empty_list(int.clone());
     let two = t.int_lit(2);
     let rhs_ret = t.tuple(&[non_empty, two]);
-    let rhs = t.arrow(std::slice::from_ref(&float), rhs_ret);
+    let rhs = t.arrow(from_ref(&float), rhs_ret);
     let union = t.union(int.clone(), float);
     let list_int = t.list(int.clone());
     let ret = t.tuple(&[list_int, int]);
-    let expected = t.arrow(std::slice::from_ref(&union), ret);
+    let expected = t.arrow(from_ref(&union), ret);
     let widened = t.refine_widen(&lhs, &rhs);
     assert!(t.is_equivalent(&widened, &expected));
 }

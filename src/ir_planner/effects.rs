@@ -1,5 +1,5 @@
 use super::fn_types::EffectSummary;
-use crate::fz_ir::{Module, Prim, Term};
+use crate::fz_ir::{ExternTy, Module, Prim, Term};
 
 /// Classifies the local effects of a single primitive: whether it allocates,
 /// observes allocation, is externally observable, reaches the scheduler, or
@@ -10,15 +10,12 @@ pub(crate) fn prim_effects(module: &Module, prim: &Prim) -> EffectSummary {
         Prim::Extern(_, eid, _) => {
             let decl = module.extern_by_id(*eid);
             let reads_allocation_stats = decl.symbol == "fz_process_heap_alloc_stats";
-            let scheduler_visible = matches!(
-                decl.symbol.as_str(),
-                "fz_send" | "fz_spawn" | "fz_spawn_opt"
-            );
+            let scheduler_visible = matches!(decl.symbol.as_str(), "fz_send" | "fz_spawn" | "fz_spawn_opt");
             EffectSummary {
                 reads_allocation_stats,
                 scheduler_visible,
                 observable: true,
-                halts: decl.ret == crate::fz_ir::ExternTy::Never,
+                halts: decl.ret == ExternTy::Never,
                 ..EffectSummary::default()
             }
         }
@@ -90,13 +87,13 @@ pub(crate) fn term_effects(term: &Term) -> EffectSummary {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fz_ir::{ExternDecl, ExternId, ExternTy, Var};
-    use crate::types::Types;
+    use crate::fz_ir::{CallsiteIdent, ExternArg, ExternDecl, ExternId, ExternTy, Var};
+    use crate::types::{ConcreteTypes, Types};
 
     fn module_with_extern(symbol: &str, ret: ExternTy) -> Module {
         let mut module = Module::new();
         module.extern_idx.insert(ExternId(0), 0);
-        let mut types = crate::types::ConcreteTypes;
+        let mut types = ConcreteTypes;
         module.externs.push(ExternDecl {
             id: ExternId(0),
             fz_name: symbol.to_owned(),
@@ -115,9 +112,9 @@ mod tests {
         let effects = prim_effects(
             &module,
             &Prim::Extern(
-                crate::fz_ir::CallsiteIdent::synthetic(),
+                CallsiteIdent::synthetic(),
                 ExternId(0),
-                vec![crate::fz_ir::ExternArg::fixed(Var(0), ExternTy::Any)],
+                vec![ExternArg::fixed(Var(0), ExternTy::Any)],
             ),
         );
 
@@ -131,9 +128,9 @@ mod tests {
         let effects = prim_effects(
             &module,
             &Prim::Extern(
-                crate::fz_ir::CallsiteIdent::synthetic(),
+                CallsiteIdent::synthetic(),
                 ExternId(0),
-                vec![crate::fz_ir::ExternArg::fixed(Var(0), ExternTy::Any)],
+                vec![ExternArg::fixed(Var(0), ExternTy::Any)],
             ),
         );
 
@@ -144,14 +141,7 @@ mod tests {
     #[test]
     fn heap_stats_observes_allocation() {
         let module = module_with_extern("fz_process_heap_alloc_stats", ExternTy::Any);
-        let effects = prim_effects(
-            &module,
-            &Prim::Extern(
-                crate::fz_ir::CallsiteIdent::synthetic(),
-                ExternId(0),
-                vec![],
-            ),
-        );
+        let effects = prim_effects(&module, &Prim::Extern(CallsiteIdent::synthetic(), ExternId(0), vec![]));
 
         assert!(effects.reads_allocation_stats);
         assert!(effects.observable);

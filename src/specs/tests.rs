@@ -1,27 +1,24 @@
-use super::{
-    CallbackReturnDemand, CallbackReturnFact, ResolvedSpec, ResolvedSpecSet, ResolvedTypeShape,
-    SchemeInstantiation, SpecApplicationOutcome, apply_spec_set,
-    declared_specs_cover_inferred_spec, instantiate_match, resolve_closure_return,
-    unique_matching_params,
-};
-use crate::types::{ClosureTarget, ClosureTypes, ConcreteTypes, MapKey, TypeVarId, Types};
+use std::collections::HashMap;
 
-fn resolved_spec(params: Vec<crate::types::Ty>, result: crate::types::Ty) -> ResolvedSpec {
+use super::{
+    CallbackReturnDemand, CallbackReturnFact, ResolvedSpec, ResolvedSpecSet, ResolvedTypeShape, SchemeInstantiation,
+    SpecApplicationOutcome, apply_spec_set, declared_specs_cover_inferred_spec, instantiate_match,
+    resolve_closure_return, unique_matching_params,
+};
+use crate::types::{ClosureTarget, ClosureTypes, ConcreteTypes, MapKey, Ty, TypeVarId, Types};
+
+fn resolved_spec(params: Vec<Ty>, result: Ty) -> ResolvedSpec {
     let param_shapes = vec![ResolvedTypeShape::Any; params.len()];
     ResolvedSpec {
         params,
         param_shapes,
         result,
         result_shape: ResolvedTypeShape::Any,
-        constraints: std::collections::HashMap::new(),
+        constraints: HashMap::new(),
     }
 }
 
-fn matching_result(
-    t: &mut ConcreteTypes,
-    spec_set: &ResolvedSpecSet,
-    arg_tys: &[crate::types::Ty],
-) -> Option<crate::types::Ty> {
+fn matching_result(t: &mut ConcreteTypes, spec_set: &ResolvedSpecSet, arg_tys: &[Ty]) -> Option<Ty> {
     match apply_spec_set::<_, (), _>(t, spec_set, arg_tys, |_t, _query| None) {
         SpecApplicationOutcome::Known(application) => Some(application.result),
         SpecApplicationOutcome::Underconstrained(_) | SpecApplicationOutcome::NoMatch => None,
@@ -31,13 +28,13 @@ fn matching_result(
 #[test]
 fn scheme_result_instantiates_tuple_from_param_witnesses() {
     let mut t = ConcreteTypes;
-    let a = t.type_var(crate::types::TypeVarId(0));
-    let b = t.type_var(crate::types::TypeVarId(1));
+    let a = t.type_var(TypeVarId(0));
+    let b = t.type_var(TypeVarId(1));
     let result = t.tuple(&[a.clone(), b.clone()]);
     let one = t.int_lit(1);
     let ok = t.atom_lit("ok");
 
-    let constraints = std::collections::HashMap::new();
+    let constraints = HashMap::new();
     let instantiated = instantiate_match(&mut t, &[a, b], &result, &constraints, &[one, ok]);
 
     let SchemeInstantiation::Known(matched) = instantiated else {
@@ -54,13 +51,13 @@ fn scheme_result_instantiates_tuple_from_param_witnesses() {
 #[test]
 fn scheme_result_instantiates_list_element_witness() {
     let mut t = ConcreteTypes;
-    let a = t.type_var(crate::types::TypeVarId(0));
+    let a = t.type_var(TypeVarId(0));
     let param = t.list(a.clone());
     let result = a;
     let witness_elem = t.int_lit(7);
     let witness = t.list(witness_elem);
 
-    let constraints = std::collections::HashMap::new();
+    let constraints = HashMap::new();
     let instantiated = instantiate_match(&mut t, &[param], &result, &constraints, &[witness]);
 
     let SchemeInstantiation::Known(matched) = instantiated else {
@@ -73,13 +70,13 @@ fn scheme_result_instantiates_list_element_witness() {
 #[test]
 fn scheme_result_instantiates_resource_payload_witness() {
     let mut t = ConcreteTypes;
-    let a = t.type_var(crate::types::TypeVarId(0));
+    let a = t.type_var(TypeVarId(0));
     let param = t.resource(a.clone());
     let result = a;
     let witness_payload = t.atom_lit("socket");
     let witness = t.resource(witness_payload);
 
-    let constraints = std::collections::HashMap::new();
+    let constraints = HashMap::new();
     let instantiated = instantiate_match(&mut t, &[param], &result, &constraints, &[witness]);
 
     let SchemeInstantiation::Known(matched) = instantiated else {
@@ -93,10 +90,10 @@ fn scheme_result_instantiates_resource_payload_witness() {
 fn scheme_result_reports_underconstrained_free_result_var() {
     let mut t = ConcreteTypes;
     let param = t.int();
-    let result = t.type_var(crate::types::TypeVarId(9));
+    let result = t.type_var(TypeVarId(9));
     let witness = t.int_lit(1);
 
-    let constraints = std::collections::HashMap::new();
+    let constraints = HashMap::new();
     let instantiated = instantiate_match(&mut t, &[param], &result, &constraints, &[witness]);
 
     assert!(
@@ -108,8 +105,8 @@ fn scheme_result_reports_underconstrained_free_result_var() {
 #[test]
 fn scheme_result_widens_reduce_while_accumulator_from_reducer_exits() {
     let mut t = ConcreteTypes;
-    let entry_var = t.type_var(crate::types::TypeVarId(0));
-    let acc_var = t.type_var(crate::types::TypeVarId(1));
+    let entry_var = t.type_var(TypeVarId(0));
+    let acc_var = t.type_var(TypeVarId(1));
     let reducer_result = {
         let cont = t.atom_lit("cont");
         let halt = t.atom_lit("halt");
@@ -135,12 +132,9 @@ fn scheme_result_widens_reduce_while_accumulator_from_reducer_exits() {
     };
     let reducer_entry_arg = t.any();
     let reducer_acc_arg = t.any();
-    let reducer_witness = t.arrow(
-        &[reducer_entry_arg, reducer_acc_arg],
-        reducer_witness_result,
-    );
+    let reducer_witness = t.arrow(&[reducer_entry_arg, reducer_acc_arg], reducer_witness_result);
 
-    let constraints = std::collections::HashMap::new();
+    let constraints = HashMap::new();
     let instantiated = instantiate_match(
         &mut t,
         &[acc_var.clone(), reducer_pattern],
@@ -165,11 +159,11 @@ fn scheme_result_widens_reduce_while_accumulator_from_reducer_exits() {
 #[test]
 fn scheme_result_rejects_structural_witness_mismatch() {
     let mut t = ConcreteTypes;
-    let a = t.type_var(crate::types::TypeVarId(0));
+    let a = t.type_var(TypeVarId(0));
     let param = t.tuple(&[a.clone()]);
     let witness = t.int_lit(1);
 
-    let constraints = std::collections::HashMap::new();
+    let constraints = HashMap::new();
     let instantiated = instantiate_match(&mut t, &[param], &a, &constraints, &[witness]);
 
     assert!(
@@ -181,14 +175,14 @@ fn scheme_result_rejects_structural_witness_mismatch() {
 #[test]
 fn scheme_result_instantiates_map_field_witness() {
     let mut t = ConcreteTypes;
-    let a = t.type_var(crate::types::TypeVarId(0));
+    let a = t.type_var(TypeVarId(0));
     let key = MapKey::Atom("value".to_string());
     let param = t.map(&[(key.clone(), a.clone())]);
     let result = t.tuple(&[a]);
     let witness_field = t.int_lit(42);
     let witness = t.map(&[(key, witness_field)]);
 
-    let constraints = std::collections::HashMap::new();
+    let constraints = HashMap::new();
     let instantiated = instantiate_match(&mut t, &[param], &result, &constraints, &[witness]);
 
     let SchemeInstantiation::Known(matched) = instantiated else {
@@ -204,20 +198,15 @@ fn scheme_result_instantiates_map_field_witness() {
 #[test]
 fn callable_scheme_result_instantiates_tuple_from_call_args() {
     let mut t = ConcreteTypes;
-    let a = t.type_var(crate::types::TypeVarId(0));
-    let b = t.type_var(crate::types::TypeVarId(1));
+    let a = t.type_var(TypeVarId(0));
+    let b = t.type_var(TypeVarId(1));
     let ret = t.tuple(&[a.clone(), b.clone()]);
     let closure = t.arrow(&[a, b], ret);
     let one = t.int_lit(1);
     let ok = t.atom_lit("ok");
 
-    let result = resolve_closure_return(
-        &mut t,
-        &closure,
-        &std::collections::HashMap::new(),
-        &[one, ok],
-    )
-    .expect("plain callable clause should resolve immediately");
+    let result = resolve_closure_return(&mut t, &closure, &HashMap::new(), &[one, ok])
+        .expect("plain callable clause should resolve immediately");
 
     let Some(elems) = t.tuple_lit_elems(&result) else {
         panic!("expected tuple return, got {}", t.display(&result));
@@ -238,14 +227,14 @@ fn resolved_spec_set_selects_return_by_matching_arrow() {
                 param_shapes: vec![ResolvedTypeShape::Any],
                 result: int.clone(),
                 result_shape: ResolvedTypeShape::Any,
-                constraints: std::collections::HashMap::new(),
+                constraints: HashMap::new(),
             },
             ResolvedSpec {
                 params: vec![float.clone()],
                 param_shapes: vec![ResolvedTypeShape::Any],
                 result: float.clone(),
                 result_shape: ResolvedTypeShape::Any,
-                constraints: std::collections::HashMap::new(),
+                constraints: HashMap::new(),
             },
         ],
     };
@@ -271,21 +260,21 @@ fn resolved_spec_set_unions_results_only_after_arrow_selection() {
                 param_shapes: vec![ResolvedTypeShape::Any],
                 result: int.clone(),
                 result_shape: ResolvedTypeShape::Any,
-                constraints: std::collections::HashMap::new(),
+                constraints: HashMap::new(),
             },
             ResolvedSpec {
                 params: vec![float.clone()],
                 param_shapes: vec![ResolvedTypeShape::Any],
                 result: float.clone(),
                 result_shape: ResolvedTypeShape::Any,
-                constraints: std::collections::HashMap::new(),
+                constraints: HashMap::new(),
             },
             ResolvedSpec {
                 params: vec![int.clone()],
                 param_shapes: vec![ResolvedTypeShape::Any],
                 result: float.clone(),
                 result_shape: ResolvedTypeShape::Any,
-                constraints: std::collections::HashMap::new(),
+                constraints: HashMap::new(),
             },
         ],
     };
@@ -561,7 +550,7 @@ fn reduce_while_spec_set(t: &mut ConcreteTypes) -> ResolvedSpecSet {
             ],
             result: acc_var,
             result_shape: ResolvedTypeShape::Var(TypeVarId(1)),
-            constraints: std::collections::HashMap::new(),
+            constraints: HashMap::new(),
         }],
     }
 }

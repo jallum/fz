@@ -1,13 +1,15 @@
 use super::expr_types::{lookup, var_as_map_key};
-use super::fn_types::SpecPlan;
+use super::fn_types::{CallableCapability, SpecPlan};
 use super::narrow::{find_emptied_var, merge_into, narrow_for_if};
 use super::prim::type_prim;
-use crate::fz_ir::{BlockId, FnIr, InitTokenId, Module, Prim, Stmt, Term, Var};
+use crate::fz_ir::{Block, BlockId, DeadBranch, FnIr, InitTokenId, Module, Prim, Stmt, Term, Var};
 use crate::ir_dest::{
-    TokenState, TupleDestState, begin_tuple_dest, consume_init_token, define_init_token,
-    freeze_tuple_dest, set_tuple_dest_field,
+    TokenState, TupleDestState, begin_tuple_dest, consume_init_token, define_init_token, freeze_tuple_dest,
+    set_tuple_dest_field,
 };
-use std::collections::{HashMap, HashSet};
+use crate::types::{ClosureTypes, Ty, Types};
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::slice::from_ref;
 
 /// BFS from entry in discovery order. Already-visited successors are skipped;
 /// the outer fixpoint in `type_fn` handles joins, cycles, and order imprecision.
@@ -16,7 +18,7 @@ use std::collections::{HashMap, HashSet};
 pub(crate) fn topo_order(f: &FnIr) -> Vec<BlockId> {
     let mut visited: HashSet<BlockId> = HashSet::new();
     let mut order: Vec<BlockId> = Vec::with_capacity(f.blocks.len());
-    let mut queue: std::collections::VecDeque<BlockId> = std::collections::VecDeque::new();
+    let mut queue: VecDeque<BlockId> = VecDeque::new();
     queue.push_back(f.entry);
     visited.insert(f.entry);
     while let Some(bid) = queue.pop_front() {
@@ -24,7 +26,7 @@ pub(crate) fn topo_order(f: &FnIr) -> Vec<BlockId> {
         let b = f.block(bid);
         let if_pair;
         let succs: &[BlockId] = match &b.terminator {
-            Term::Goto(t, _) => std::slice::from_ref(t),
+            Term::Goto(t, _) => from_ref(t),
             Term::If { then_b, else_b, .. } => {
                 if_pair = [*then_b, *else_b];
                 &if_pair
@@ -46,20 +48,18 @@ pub(crate) fn topo_order(f: &FnIr) -> Vec<BlockId> {
     order
 }
 
-fn type_let_with_init_facts<
-    T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
->(
+fn type_let_with_init_facts<T: Types<Ty = Ty> + ClosureTypes>(
     t: &mut T,
     result: Var,
     prim: &Prim,
-    env: &HashMap<Var, crate::types::Ty>,
+    env: &HashMap<Var, Ty>,
     m: &Module,
     const_vars: &HashSet<Var>,
     init_tokens: &mut HashMap<InitTokenId, TokenState>,
-    tuple_dests: &mut HashMap<Var, TupleDestState<crate::types::Ty>>,
-    list_builders: &mut HashMap<InitTokenId, crate::types::Ty>,
-    map_dests: &mut HashMap<InitTokenId, crate::types::Ty>,
-) -> crate::types::Ty {
+    tuple_dests: &mut HashMap<Var, TupleDestState<Ty>>,
+    list_builders: &mut HashMap<InitTokenId, Ty>,
+    map_dests: &mut HashMap<InitTokenId, Ty>,
+) -> Ty {
     match prim {
         Prim::DestTupleBegin { token, arity } => {
             let _ = define_init_token(init_tokens, *token);
@@ -110,9 +110,7 @@ fn type_let_with_init_facts<
                 elem = t.union(elem, tail_elem);
             }
             let cons_ty = t.non_empty_list(elem);
-            if consume_init_token(init_tokens, *token).is_ok()
-                && define_init_token(init_tokens, *next).is_ok()
-            {
+            if consume_init_token(init_tokens, *token).is_ok() && define_init_token(init_tokens, *next).is_ok() {
                 list_builders.insert(*next, cons_ty.clone());
             }
             cons_ty
@@ -142,19 +140,14 @@ fn type_let_with_init_facts<
             value,
             next,
         } => {
-            let current = map_dests
-                .get(token)
-                .cloned()
-                .unwrap_or_else(|| lookup(t, env, *map));
+            let current = map_dests.get(token).cloned().unwrap_or_else(|| lookup(t, env, *map));
             let value_ty = lookup(t, env, *value);
             let updated = if let Some(mk) = var_as_map_key(t, *key, env) {
                 t.refine_map_field(&current, &mk, &value_ty)
             } else {
                 t.map_top()
             };
-            if consume_init_token(init_tokens, *token).is_ok()
-                && define_init_token(init_tokens, *next).is_ok()
-            {
+            if consume_init_token(init_tokens, *token).is_ok() && define_init_token(init_tokens, *next).is_ok() {
                 map_dests.insert(*next, updated);
             }
             t.nil()
@@ -171,18 +164,16 @@ fn type_let_with_init_facts<
     }
 }
 
-pub(crate) fn type_stmts_into_env<
-    T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
->(
+pub(crate) fn type_stmts_into_env<T: Types<Ty = Ty> + ClosureTypes>(
     t: &mut T,
-    env: &mut HashMap<Var, crate::types::Ty>,
+    env: &mut HashMap<Var, Ty>,
     stmts: &[Stmt],
     m: &Module,
 ) {
     let mut init_tokens: HashMap<InitTokenId, TokenState> = HashMap::new();
-    let mut tuple_dests: HashMap<Var, TupleDestState<crate::types::Ty>> = HashMap::new();
-    let mut list_builders: HashMap<InitTokenId, crate::types::Ty> = HashMap::new();
-    let mut map_dests: HashMap<InitTokenId, crate::types::Ty> = HashMap::new();
+    let mut tuple_dests: HashMap<Var, TupleDestState<Ty>> = HashMap::new();
+    let mut list_builders: HashMap<InitTokenId, Ty> = HashMap::new();
+    let mut map_dests: HashMap<InitTokenId, Ty> = HashMap::new();
     for stmt in stmts {
         let Stmt::Let(v, prim) = stmt;
         let pt_ty = type_let_with_init_facts(
@@ -201,19 +192,17 @@ pub(crate) fn type_stmts_into_env<
     }
 }
 
-pub fn type_fn<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes>(
+pub fn type_fn<T: Types<Ty = Ty> + ClosureTypes>(
     t: &mut T,
     f: &FnIr,
     m: &Module,
-    entry_param_types: Option<&[crate::types::Ty]>,
+    entry_param_types: Option<&[Ty]>,
 ) -> SpecPlan {
-    let (mut vars, mut block_envs) =
-        initialize_block_envs(t, f, m, &f.owner_module, entry_param_types);
+    let (mut vars, mut block_envs) = initialize_block_envs(t, f, m, &f.owner_module, entry_param_types);
     let topo = topo_order(f);
     run_type_fixed_point(t, f, m, &topo, &mut vars, &mut block_envs);
     let callable_capabilities = collect_callable_capabilities(t, f, &vars);
-    let (reachable_blocks, dead_branches) =
-        compute_reachable_blocks_and_dead_branches(t, f, m, &block_envs);
+    let (reachable_blocks, dead_branches) = compute_reachable_blocks_and_dead_branches(t, f, m, &block_envs);
     SpecPlan {
         vars,
         block_envs,
@@ -228,16 +217,13 @@ pub fn type_fn<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::Clo
     }
 }
 
-fn initialize_block_envs<T: crate::types::Types<Ty = crate::types::Ty>>(
+fn initialize_block_envs<T: Types<Ty = Ty>>(
     t: &mut T,
     f: &FnIr,
     m: &Module,
     owner: &str,
-    entry_param_types: Option<&[crate::types::Ty]>,
-) -> (
-    HashMap<Var, crate::types::Ty>,
-    HashMap<BlockId, HashMap<Var, crate::types::Ty>>,
-) {
+    entry_param_types: Option<&[Ty]>,
+) -> (HashMap<Var, Ty>, HashMap<BlockId, HashMap<Var, Ty>>) {
     let mut vars = HashMap::new();
     let mut block_envs = HashMap::new();
     for b in &f.blocks {
@@ -258,15 +244,13 @@ fn initialize_block_envs<T: crate::types::Types<Ty = crate::types::Ty>>(
     (vars, block_envs)
 }
 
-fn run_type_fixed_point<
-    T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
->(
+fn run_type_fixed_point<T: Types<Ty = Ty> + ClosureTypes>(
     t: &mut T,
     f: &FnIr,
     m: &Module,
     topo: &[BlockId],
-    vars: &mut HashMap<Var, crate::types::Ty>,
-    block_envs: &mut HashMap<BlockId, HashMap<Var, crate::types::Ty>>,
+    vars: &mut HashMap<Var, Ty>,
+    block_envs: &mut HashMap<BlockId, HashMap<Var, Ty>>,
 ) {
     loop {
         let mut changed = false;
@@ -279,15 +263,13 @@ fn run_type_fixed_point<
     }
 }
 
-fn type_block_iteration<
-    T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
->(
+fn type_block_iteration<T: Types<Ty = Ty> + ClosureTypes>(
     t: &mut T,
     f: &FnIr,
     m: &Module,
     bid: BlockId,
-    vars: &mut HashMap<Var, crate::types::Ty>,
-    block_envs: &mut HashMap<BlockId, HashMap<Var, crate::types::Ty>>,
+    vars: &mut HashMap<Var, Ty>,
+    block_envs: &mut HashMap<BlockId, HashMap<Var, Ty>>,
 ) -> bool {
     let b = f.block(bid);
     let mut env = block_envs[&b.id].clone();
@@ -296,22 +278,20 @@ fn type_block_iteration<
     changed
 }
 
-fn type_stmts_for_fixed_point<
-    T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
->(
+fn type_stmts_for_fixed_point<T: Types<Ty = Ty> + ClosureTypes>(
     t: &mut T,
     m: &Module,
     owner: &str,
-    env: &mut HashMap<Var, crate::types::Ty>,
+    env: &mut HashMap<Var, Ty>,
     stmts: &[Stmt],
-    vars: &mut HashMap<Var, crate::types::Ty>,
+    vars: &mut HashMap<Var, Ty>,
 ) -> bool {
     let mut changed = false;
     let mut const_vars: HashSet<Var> = HashSet::new();
     let mut init_tokens: HashMap<InitTokenId, TokenState> = HashMap::new();
-    let mut tuple_dests: HashMap<Var, TupleDestState<crate::types::Ty>> = HashMap::new();
-    let mut list_builders: HashMap<InitTokenId, crate::types::Ty> = HashMap::new();
-    let mut map_dests: HashMap<InitTokenId, crate::types::Ty> = HashMap::new();
+    let mut tuple_dests: HashMap<Var, TupleDestState<Ty>> = HashMap::new();
+    let mut list_builders: HashMap<InitTokenId, Ty> = HashMap::new();
+    let mut map_dests: HashMap<InitTokenId, Ty> = HashMap::new();
     for stmt in stmts {
         let Stmt::Let(v, prim) = stmt;
         let pt_ty = type_let_with_init_facts(
@@ -353,21 +333,18 @@ fn record_const_derivation(v: Var, prim: &Prim, const_vars: &mut HashSet<Var>) {
     }
 }
 
-fn propagate_successors<T: crate::types::Types<Ty = crate::types::Ty>>(
+fn propagate_successors<T: Types<Ty = Ty>>(
     t: &mut T,
     f: &FnIr,
-    b: &crate::fz_ir::Block,
-    env: &HashMap<Var, crate::types::Ty>,
-    vars: &mut HashMap<Var, crate::types::Ty>,
-    block_envs: &mut HashMap<BlockId, HashMap<Var, crate::types::Ty>>,
+    b: &Block,
+    env: &HashMap<Var, Ty>,
+    vars: &mut HashMap<Var, Ty>,
+    block_envs: &mut HashMap<BlockId, HashMap<Var, Ty>>,
 ) -> bool {
     match &b.terminator {
         Term::Goto(target, args) => propagate_goto(t, f, env, vars, block_envs, *target, args),
         Term::If {
-            cond,
-            then_b,
-            else_b,
-            ..
+            cond, then_b, else_b, ..
         } => propagate_if(t, b, env, block_envs, *cond, *then_b, *else_b),
         Term::Call { .. }
         | Term::TailCall { .. }
@@ -380,18 +357,18 @@ fn propagate_successors<T: crate::types::Types<Ty = crate::types::Ty>>(
     }
 }
 
-fn propagate_goto<T: crate::types::Types<Ty = crate::types::Ty>>(
+fn propagate_goto<T: Types<Ty = Ty>>(
     t: &mut T,
     f: &FnIr,
-    env: &HashMap<Var, crate::types::Ty>,
-    vars: &mut HashMap<Var, crate::types::Ty>,
-    block_envs: &mut HashMap<BlockId, HashMap<Var, crate::types::Ty>>,
+    env: &HashMap<Var, Ty>,
+    vars: &mut HashMap<Var, Ty>,
+    block_envs: &mut HashMap<BlockId, HashMap<Var, Ty>>,
     target: BlockId,
     args: &[Var],
 ) -> bool {
     let target_b = f.block(target);
     let mut delta = env.clone();
-    let arg_ts: Vec<crate::types::Ty> = args
+    let arg_ts: Vec<Ty> = args
         .iter()
         .map(|a| env.get(a).cloned().unwrap_or_else(|| t.any()))
         .collect();
@@ -402,10 +379,7 @@ fn propagate_goto<T: crate::types::Types<Ty = crate::types::Ty>>(
     }
     let mut changed = merge_into(t, block_envs, target, &delta);
     for &p in target_b.params.iter() {
-        let from_env = block_envs[&target]
-            .get(&p)
-            .cloned()
-            .unwrap_or_else(|| t.none());
+        let from_env = block_envs[&target].get(&p).cloned().unwrap_or_else(|| t.none());
         let prev_ty = vars.get(&p).cloned().unwrap_or_else(|| t.none());
         if !t.is_equivalent(&from_env, &prev_ty) {
             vars.insert(p, from_env);
@@ -415,11 +389,11 @@ fn propagate_goto<T: crate::types::Types<Ty = crate::types::Ty>>(
     changed
 }
 
-fn propagate_if<T: crate::types::Types<Ty = crate::types::Ty>>(
+fn propagate_if<T: Types<Ty = Ty>>(
     t: &mut T,
-    b: &crate::fz_ir::Block,
-    env: &HashMap<Var, crate::types::Ty>,
-    block_envs: &mut HashMap<BlockId, HashMap<Var, crate::types::Ty>>,
+    b: &Block,
+    env: &HashMap<Var, Ty>,
+    block_envs: &mut HashMap<BlockId, HashMap<Var, Ty>>,
     cond: Var,
     then_b: BlockId,
     else_b: BlockId,
@@ -430,15 +404,11 @@ fn propagate_if<T: crate::types::Types<Ty = crate::types::Ty>>(
     then_changed || else_changed
 }
 
-fn collect_callable_capabilities<
-    T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
->(
+fn collect_callable_capabilities<T: Types<Ty = Ty> + ClosureTypes>(
     t: &mut T,
     f: &FnIr,
-    vars: &HashMap<Var, crate::types::Ty>,
-) -> HashMap<Var, super::fn_types::CallableCapability> {
-    use super::fn_types::CallableCapability;
-
+    vars: &HashMap<Var, Ty>,
+) -> HashMap<Var, CallableCapability> {
     let mut capabilities = HashMap::new();
     for b in &f.blocks {
         for stmt in &b.stmts {
@@ -447,16 +417,10 @@ fn collect_callable_capabilities<
                 let cap = if captured.is_empty() {
                     CallableCapability::KnownFn(*fid)
                 } else {
-                    let captures = captured
-                        .iter()
-                        .filter_map(|cv| vars.get(cv).cloned())
-                        .collect();
+                    let captures = captured.iter().filter_map(|cv| vars.get(cv).cloned()).collect();
                     let capture_capabilities = captured
                         .iter()
-                        .map(|cv| {
-                            vars.get(cv)
-                                .and_then(|ty| callable_capability_for_ty(t, ty))
-                        })
+                        .map(|cv| vars.get(cv).and_then(|ty| callable_capability_for_ty(t, ty)))
                         .collect();
                     CallableCapability::KnownClosure {
                         fn_id: *fid,
@@ -482,14 +446,10 @@ fn collect_callable_capabilities<
     capabilities
 }
 
-pub(crate) fn callable_capability_for_ty<
-    T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
->(
+pub(crate) fn callable_capability_for_ty<T: Types<Ty = Ty> + ClosureTypes>(
     t: &mut T,
-    ty: &crate::types::Ty,
-) -> Option<super::fn_types::CallableCapability> {
-    use super::fn_types::CallableCapability;
-
+    ty: &Ty,
+) -> Option<CallableCapability> {
     let clauses = t.callable_clauses(ty)?;
     let mut closure_lits = clauses
         .into_iter()
@@ -512,14 +472,12 @@ pub(crate) fn callable_capability_for_ty<
     })
 }
 
-fn compute_reachable_blocks_and_dead_branches<
-    T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
->(
+fn compute_reachable_blocks_and_dead_branches<T: Types<Ty = Ty> + ClosureTypes>(
     t: &mut T,
     f: &FnIr,
     m: &Module,
-    block_envs: &HashMap<BlockId, HashMap<Var, crate::types::Ty>>,
-) -> (HashSet<BlockId>, HashMap<BlockId, crate::fz_ir::DeadBranch>) {
+    block_envs: &HashMap<BlockId, HashMap<Var, Ty>>,
+) -> (HashSet<BlockId>, HashMap<BlockId, DeadBranch>) {
     let mut reachable_blocks = HashSet::new();
     let mut dead_branches = HashMap::new();
     let mut worklist = vec![f.entry];
@@ -531,16 +489,13 @@ fn compute_reachable_blocks_and_dead_branches<
         match &b.terminator {
             Term::Goto(target, _) => worklist.push(*target),
             Term::If {
-                cond,
-                then_b,
-                else_b,
-                ..
+                cond, then_b, else_b, ..
             } => {
                 let (then_dead, else_dead) = branch_deadness(t, m, block_envs, b, bid, *cond);
                 if then_dead && !else_dead {
-                    dead_branches.insert(bid, crate::fz_ir::DeadBranch::Then);
+                    dead_branches.insert(bid, DeadBranch::Then);
                 } else if else_dead && !then_dead {
-                    dead_branches.insert(bid, crate::fz_ir::DeadBranch::Else);
+                    dead_branches.insert(bid, DeadBranch::Else);
                 }
                 if !then_dead {
                     worklist.push(*then_b);
@@ -555,11 +510,11 @@ fn compute_reachable_blocks_and_dead_branches<
     (reachable_blocks, dead_branches)
 }
 
-fn branch_deadness<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes>(
+fn branch_deadness<T: Types<Ty = Ty> + ClosureTypes>(
     t: &mut T,
     m: &Module,
-    block_envs: &HashMap<BlockId, HashMap<Var, crate::types::Ty>>,
-    b: &crate::fz_ir::Block,
+    block_envs: &HashMap<BlockId, HashMap<Var, Ty>>,
+    b: &Block,
     bid: BlockId,
     cond: Var,
 ) -> (bool, bool) {

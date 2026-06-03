@@ -1,3 +1,4 @@
+use crate::fz_ir::FnId;
 use crate::types::Types;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -10,13 +11,13 @@ pub struct CallableClause<T> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct ClosureTarget(pub u32);
 
-impl From<crate::fz_ir::FnId> for ClosureTarget {
-    fn from(value: crate::fz_ir::FnId) -> Self {
+impl From<FnId> for ClosureTarget {
+    fn from(value: FnId) -> Self {
         Self(value.0)
     }
 }
 
-impl From<ClosureTarget> for crate::fz_ir::FnId {
+impl From<ClosureTarget> for FnId {
     fn from(value: ClosureTarget) -> Self {
         Self(value.0)
     }
@@ -29,12 +30,7 @@ pub struct ClosureLitInfo<T> {
 }
 
 pub trait ClosureTypes: Types {
-    fn closure_lit(
-        &mut self,
-        target: ClosureTarget,
-        captures: Vec<Self::Ty>,
-        n_args: usize,
-    ) -> Self::Ty;
+    fn closure_lit(&mut self, target: ClosureTarget, captures: Vec<Self::Ty>, n_args: usize) -> Self::Ty;
 
     /// If `a` is a singleton closure literal, return the callee target
     /// and captured literal values.

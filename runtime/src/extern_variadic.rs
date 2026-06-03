@@ -11,7 +11,11 @@
 
 use std::collections::HashMap;
 use std::ffi::{CStr, c_char};
+use std::mem::transmute;
+use std::process::abort;
 use std::sync::{Mutex, OnceLock};
+
+use libc::{RTLD_DEFAULT, c_int, c_longlong, c_uint, dlsym};
 
 type SymbolCache = HashMap<Vec<u8>, usize>;
 
@@ -44,7 +48,7 @@ pub unsafe extern "C" fn fz_extern_symbol_addr(name: *const c_char) -> usize {
 
 #[cfg(unix)]
 fn resolve_symbol_addr(name: *const c_char) -> usize {
-    let ptr = unsafe { libc::dlsym(libc::RTLD_DEFAULT, name) };
+    let ptr = unsafe { dlsym(RTLD_DEFAULT, name) };
     ptr as usize
 }
 
@@ -55,7 +59,7 @@ fn resolve_symbol_addr(_name: *const c_char) -> usize {
 
 fn abort_null_fn_ptr(dispatcher: &str) -> ! {
     eprintln!("fz panic: {} received null C function pointer", dispatcher);
-    std::process::abort();
+    abort();
 }
 
 /// Call a C function shaped like `int f(const char*, int, ...)` with one
@@ -74,9 +78,9 @@ pub unsafe extern "C" fn fz_call_var_i64_cstring_i64_i64_to_i64(
     if fn_ptr == 0 {
         abort_null_fn_ptr("fz_call_var_i64_cstring_i64_i64_to_i64");
     }
-    type FnPtr = unsafe extern "C" fn(*const c_char, libc::c_int, ...) -> libc::c_int;
-    let f: FnPtr = unsafe { std::mem::transmute(fn_ptr) };
-    unsafe { f(path, fixed0 as libc::c_int, var0 as libc::c_uint) as i64 }
+    type FnPtr = unsafe extern "C" fn(*const c_char, c_int, ...) -> c_int;
+    let f: FnPtr = unsafe { transmute(fn_ptr) };
+    unsafe { f(path, fixed0 as c_int, var0 as c_uint) as i64 }
 }
 
 /// Call a C function shaped like `int f(const char*, ...)` with one integer
@@ -86,23 +90,25 @@ pub unsafe extern "C" fn fz_call_var_i64_cstring_i64_i64_to_i64(
 /// `fn_ptr` must point to a C function with this ABI shape, and `fmt` must
 /// satisfy that function's pointer contract.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn fz_call_var_i64_cstring_i64_to_i64(
-    fn_ptr: usize,
-    fmt: *const c_char,
-    var0: i64,
-) -> i64 {
+pub unsafe extern "C" fn fz_call_var_i64_cstring_i64_to_i64(fn_ptr: usize, fmt: *const c_char, var0: i64) -> i64 {
     if fn_ptr == 0 {
         abort_null_fn_ptr("fz_call_var_i64_cstring_i64_to_i64");
     }
-    type FnPtr = unsafe extern "C" fn(*const c_char, ...) -> libc::c_int;
-    let f: FnPtr = unsafe { std::mem::transmute(fn_ptr) };
-    unsafe { f(fmt, var0 as libc::c_longlong) as i64 }
+    type FnPtr = unsafe extern "C" fn(*const c_char, ...) -> c_int;
+    let f: FnPtr = unsafe { transmute(fn_ptr) };
+    unsafe { f(fmt, var0 as c_longlong) as i64 }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::env::temp_dir;
     use std::ffi::CString;
+    use std::fs::{metadata, remove_file};
+    use std::io::Error;
+    use std::process::id;
+
+    use libc::{O_CREAT, O_EXCL, O_RDWR, c_int, close, mode_t};
 
     #[cfg(unix)]
     #[test]
@@ -135,21 +141,17 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .expect("system time")
             .as_nanos();
-        let path = std::env::temp_dir().join(format!(
-            "fz-variadic-open-{}-{}",
-            std::process::id(),
-            unique
-        ));
+        let path = temp_dir().join(format!("fz-variadic-open-{}-{}", id(), unique));
         let c_path = CString::new(path.as_os_str().as_encoded_bytes()).expect("path cstring");
 
-        let requested: libc::mode_t = 0o764;
-        let umask: libc::mode_t = 0o027;
+        let requested: mode_t = 0o764;
+        let umask: mode_t = 0o027;
         let old_umask = unsafe { libc::umask(umask) };
         let fd = unsafe {
             fz_call_var_i64_cstring_i64_i64_to_i64(
                 open_addr,
                 c_path.as_ptr(),
-                (libc::O_CREAT | libc::O_EXCL | libc::O_RDWR) as i64,
+                (O_CREAT | O_EXCL | O_RDWR) as i64,
                 requested as i64,
             )
         };
@@ -157,16 +159,12 @@ mod tests {
             libc::umask(old_umask);
         }
 
-        assert!(fd >= 0, "open failed: {}", std::io::Error::last_os_error());
-        let close_rc = unsafe { libc::close(fd as libc::c_int) };
+        assert!(fd >= 0, "open failed: {}", Error::last_os_error());
+        let close_rc = unsafe { close(fd as c_int) };
         assert_eq!(close_rc, 0, "close failed");
 
-        let mode = std::fs::metadata(&path)
-            .expect("created file metadata")
-            .permissions()
-            .mode()
-            & 0o777;
-        let _ = std::fs::remove_file(&path);
+        let mode = metadata(&path).expect("created file metadata").permissions().mode() & 0o777;
+        let _ = remove_file(&path);
         assert_eq!(mode, (requested as u32) & !(umask as u32) & 0o777);
     }
 }

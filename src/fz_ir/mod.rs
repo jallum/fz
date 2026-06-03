@@ -18,14 +18,23 @@
 //! If-else continuations in this IR.
 
 use crate::ast::{BitType, Endian};
+use crate::concrete_types::ty_display;
 use crate::diag::{FileId, Span};
+use crate::exec::matcher::{Matcher, SubjectRef};
+use crate::frontend::protocols::ProtocolRegistry;
 use crate::modules::identity::{ExportKey, ModuleName};
+use crate::modules::interface::ModuleInterface;
+use crate::specs::{ResolvedSpecSet, StructuralCorrespondenceGroup};
+use crate::types::{KeySlot, Nominals, Ty};
 use fz_runtime::heap::Schema;
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::error::Error;
 use std::fmt;
 use std::hash::{Hash, Hasher};
+use std::mem::take;
 use std::rc::Rc;
+use std::sync::Arc;
 
 /// fz-kgk — intrinsic identity for a callsite (call-shape terminator,
 /// `Prim::MakeClosure`, or `Prim::Extern` stmt).
@@ -86,9 +95,7 @@ impl CallsiteIdent {
     }
 
     pub fn fork_inlined(parent: &Self, _into_fn: FnId) -> Self {
-        Self(Rc::new(CallsiteIdentInner {
-            span: parent.0.span,
-        }))
+        Self(Rc::new(CallsiteIdentInner { span: parent.0.span }))
     }
 
     pub fn synthesize_from_return(_call_parent: &Self, span: Span) -> Self {
@@ -208,17 +215,13 @@ impl fmt::Display for ExternalLinkError {
                 write!(f, "missing external call target `{}`", target)
             }
             Self::MissingCallsite(callsite) => {
-                write!(
-                    f,
-                    "missing external callsite for caller {}",
-                    callsite.caller
-                )
+                write!(f, "missing external callsite for caller {}", callsite.caller)
             }
         }
     }
 }
 
-impl std::error::Error for ExternalLinkError {}
+impl Error for ExternalLinkError {}
 
 impl CallsiteId {
     pub fn new(caller: FnId, ident: &CallsiteIdent, slot: EmitSlot) -> Self {
@@ -273,8 +276,8 @@ pub enum StalledReason {
     Other,
 }
 
-impl std::fmt::Display for StalledReason {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Display for StalledReason {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
             StalledReason::OpaqueArg => "OpaqueArg",
             StalledReason::UnresolvedTypeVar => "UnresolvedTypeVar",
@@ -386,7 +389,7 @@ pub struct ExternDecl {
     /// Semantic return type for the type system. Used by ir_planner to give
     /// `Prim::Extern` calls their declared return type instead of `any`.
     /// Defaults to the `any` Ty when no return type is declared.
-    pub ret_descr: crate::types::Ty,
+    pub ret_descr: Ty,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -563,7 +566,7 @@ pub enum Prim {
     /// tag check. For opaque types, the check is resolved to a constant by
     /// the planner (opaque types have no runtime tag) — the branch is then
     /// eliminated by DCE.
-    TypeTest(Var, Box<crate::types::Ty>),
+    TypeTest(Var, Box<Ty>),
 
     /// fz-axu.4 (K3) — brand-mint. Tags the source value with the
     /// nominal brand `name` (resolved against `Module.brand_inners` to
@@ -709,7 +712,7 @@ pub enum Term {
         ident: CallsiteIdent,
         clauses: Vec<ReceiveClause>,
         /// Cached AST-free matcher for interpreter and native receive probes.
-        matcher: std::sync::Arc<crate::exec::matcher::Matcher>,
+        matcher: Arc<Matcher>,
         after: Option<ReceiveAfter>,
         /// Outer-scope vars referenced by `^name` patterns across all
         /// clauses, paired with their source names so backends can
@@ -722,17 +725,9 @@ pub enum Term {
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ContinuationProvenanceKind {
-    DirectCall {
-        callee: FnId,
-        args: Vec<Var>,
-    },
-    ClosureCall {
-        closure: Var,
-        args: Vec<Var>,
-    },
-    MatcherBody {
-        bindings: Vec<(Var, crate::exec::matcher::SubjectRef)>,
-    },
+    DirectCall { callee: FnId, args: Vec<Var> },
+    ClosureCall { closure: Var, args: Vec<Var> },
+    MatcherBody { bindings: Vec<(Var, SubjectRef)> },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -874,10 +869,7 @@ impl Prim {
 
 pub(crate) fn visit_prim_vars(prim: &Prim, mut visit: impl FnMut(Var)) {
     match prim {
-        Prim::Const(_)
-        | Prim::DestTupleBegin { .. }
-        | Prim::DestListBegin { .. }
-        | Prim::ConstBitstring(_, _) => {}
+        Prim::Const(_) | Prim::DestTupleBegin { .. } | Prim::DestListBegin { .. } | Prim::ConstBitstring(_, _) => {}
         Prim::BinOp(_, a, b) | Prim::MapGet(a, b) | Prim::MatcherMapGet(a, b) => {
             visit(*a);
             visit(*b);
@@ -926,9 +918,7 @@ pub(crate) fn visit_prim_vars(prim: &Prim, mut visit: impl FnMut(Var)) {
                 visit(*base);
             }
         }
-        Prim::DestMapPut {
-            map, key, value, ..
-        } => {
+        Prim::DestMapPut { map, key, value, .. } => {
             visit(*map);
             visit(*key);
             visit(*value);
@@ -991,12 +981,7 @@ pub(crate) fn visit_term_vars(term: &Term, mut visit: impl FnMut(Var)) {
             }
         }
         Term::If { cond, .. } | Term::Return(cond) | Term::Halt(cond) => visit(*cond),
-        Term::Call {
-            args, continuation, ..
-        }
-        | Term::CallClosure {
-            args, continuation, ..
-        } => {
+        Term::Call { args, continuation, .. } | Term::CallClosure { args, continuation, .. } => {
             for v in args {
                 visit(*v);
             }
@@ -1099,7 +1084,7 @@ pub struct FnIr {
 }
 
 impl FnIr {
-    pub fn semantic_key(&self, input_tys: Vec<crate::types::Ty>) -> Vec<crate::types::KeySlot> {
+    pub fn semantic_key(&self, input_tys: Vec<Ty>) -> Vec<KeySlot> {
         let entry_params = &self.block(self.entry).params;
         input_tys
             .into_iter()
@@ -1135,18 +1120,13 @@ impl FnIr {
 
     pub fn dedup_physical_facts(&mut self) {
         let mut entry_seen = HashSet::new();
-        self.physical_entry_params
-            .retain(|param| entry_seen.insert(*param));
+        self.physical_entry_params.retain(|param| entry_seen.insert(*param));
         let mut capability_seen = HashSet::new();
-        self.physical_capabilities
-            .retain(|fact| capability_seen.insert(*fact));
+        self.physical_capabilities.retain(|fact| capability_seen.insert(*fact));
     }
 
     pub fn block(&self, id: BlockId) -> &Block {
-        self.blocks
-            .iter()
-            .find(|b| b.id == id)
-            .expect("unknown block")
+        self.blocks.iter().find(|b| b.id == id).expect("unknown block")
     }
 }
 
@@ -1173,9 +1153,7 @@ pub enum PhysicalCapability {
 impl PhysicalCapability {
     pub fn map_vars(self, mut map: impl FnMut(Var) -> Var) -> Self {
         match self {
-            PhysicalCapability::OwnedConsReuse { head } => {
-                PhysicalCapability::OwnedConsReuse { head: map(head) }
-            }
+            PhysicalCapability::OwnedConsReuse { head } => PhysicalCapability::OwnedConsReuse { head: map(head) },
         }
     }
 }
@@ -1202,9 +1180,7 @@ mod tuple_keyed_map {
         D: Deserializer<'de>,
         V: Deserialize<'de>,
     {
-        Ok(Vec::<((FnId, BlockId), V)>::deserialize(d)?
-            .into_iter()
-            .collect())
+        Ok(Vec::<((FnId, BlockId), V)>::deserialize(d)?.into_iter().collect())
     }
 }
 
@@ -1282,17 +1258,11 @@ impl SourceInfo {
     }
 
     pub fn var_span_of(&self, v: Var) -> Span {
-        self.var_span
-            .get(v.0 as usize)
-            .copied()
-            .unwrap_or(Span::DUMMY)
+        self.var_span.get(v.0 as usize).copied().unwrap_or(Span::DUMMY)
     }
 
     pub fn fn_span_of(&self, f: FnId) -> Span {
-        self.fn_span
-            .get(f.0 as usize)
-            .copied()
-            .unwrap_or(Span::DUMMY)
+        self.fn_span.get(f.0 as usize).copied().unwrap_or(Span::DUMMY)
     }
 }
 
@@ -1328,7 +1298,7 @@ pub struct Module {
     pub external_call_edges: Vec<ExternalCallEdge>,
     #[serde(with = "fn_keyed_map")]
     pub protocol_call_targets: HashMap<FnId, ProtocolCallTarget>,
-    pub protocol_registry: crate::frontend::protocols::ProtocolRegistry,
+    pub protocol_registry: ProtocolRegistry,
     /// fz-jg5.12 (RED.9) — Fns marked as reduction boundaries. Populated
     /// by ir_lower from `@spec` declarations. The reducer treats these as
     /// firewalls: a declared spec is the user's signed contract that the
@@ -1343,24 +1313,24 @@ pub struct Module {
     /// `T` instead of falling back to the generic map-lookup result.
     /// Populated by `ir_lower::lower_program_full` from the resolved
     /// `Program.opaque_inners`.
-    pub opaque_inners: HashMap<String, crate::types::Ty>,
+    pub opaque_inners: HashMap<String, Ty>,
     /// fz-axu.2 (K1) — Inner-type map for `refines` brand declarations,
     /// parallel to `opaque_inners`. Keyed by the qualified brand tag
     /// (as stored on the brand type token); value is the parsed body
     /// `T` following the `refines` keyword. Populated by
     /// `ir_lower::lower_program_full` from the resolved
     /// `Program.brand_inners`.
-    pub brand_inners: HashMap<String, crate::types::Ty>,
-    pub struct_schemas: std::collections::BTreeMap<String, Vec<String>>,
+    pub brand_inners: HashMap<String, Ty>,
+    pub struct_schemas: BTreeMap<String, Vec<String>>,
     /// Resolved declared `@spec` overload sets keyed by IR function id. Used by
     /// call typing for source-level polymorphic contracts.
     #[serde(with = "fn_keyed_map")]
-    pub declared_specs: HashMap<FnId, crate::specs::ResolvedSpecSet>,
+    pub declared_specs: HashMap<FnId, ResolvedSpecSet>,
     /// Function correspondence keyed by IR function id. Declared source
     /// functions contribute structural groups directly from `@spec`; CPS
     /// continuations contribute synthesized groups from lowering provenance.
     #[serde(with = "fn_keyed_map")]
-    pub function_correspondence: HashMap<FnId, Vec<crate::specs::StructuralCorrespondenceGroup>>,
+    pub function_correspondence: HashMap<FnId, Vec<StructuralCorrespondenceGroup>>,
     /// Continuation provenance keyed by synthesized continuation FnId. This is
     /// the durable IR-owned record of how lowering split a non-tail call or
     /// matcher body, from which planner-facing correspondence can be derived
@@ -1383,15 +1353,12 @@ impl Module {
     /// IR rewrites that delete functions must keep these side tables in sync
     /// or later planning/codegen will observe stale facts about dead bodies.
     pub fn prune_dead_fn_metadata(&mut self) {
-        let live: std::collections::HashSet<FnId> = self.fns.iter().map(|f| f.id).collect();
-        self.protocol_call_targets
-            .retain(|fid, _| live.contains(fid));
+        let live: HashSet<FnId> = self.fns.iter().map(|f| f.id).collect();
+        self.protocol_call_targets.retain(|fid, _| live.contains(fid));
         self.boundary_fns.retain(|fid| live.contains(fid));
         self.declared_specs.retain(|fid, _| live.contains(fid));
-        self.function_correspondence
-            .retain(|fid, _| live.contains(fid));
-        self.continuation_provenance
-            .retain(|fid, _| live.contains(fid));
+        self.function_correspondence.retain(|fid, _| live.contains(fid));
+        self.continuation_provenance.retain(|fid, _| live.contains(fid));
     }
 
     /// Repopulate the derived `fn_idx` / `extern_idx` lookup tables from `fns`
@@ -1401,18 +1368,8 @@ impl Module {
     /// (FnId → position in `fns`) and `extern_by_id`'s (ExternId → position
     /// in `externs`).
     pub fn rebuild_indices(&mut self) {
-        self.fn_idx = self
-            .fns
-            .iter()
-            .enumerate()
-            .map(|(idx, f)| (f.id, idx))
-            .collect();
-        self.extern_idx = self
-            .externs
-            .iter()
-            .enumerate()
-            .map(|(idx, e)| (e.id, idx))
-            .collect();
+        self.fn_idx = self.fns.iter().enumerate().map(|(idx, f)| (f.id, idx)).collect();
+        self.extern_idx = self.externs.iter().enumerate().map(|(idx, e)| (e.id, idx)).collect();
     }
 
     /// Rewrite the `file` of every `Span` reachable from this module through
@@ -1502,8 +1459,8 @@ impl Module {
     /// Every distinct, non-`NONE` `FileId` referenced by the module's spans.
     /// `DUMMY`/`FileId::NONE` spans are excluded. This is the source-file set a
     /// portable IR unit must carry so a later loader can relocate the module.
-    pub fn referenced_files(&self) -> std::collections::BTreeSet<FileId> {
-        let mut files = std::collections::BTreeSet::new();
+    pub fn referenced_files(&self) -> BTreeSet<FileId> {
+        let mut files = BTreeSet::new();
         self.visit_spans(&mut |span| {
             if span.file != FileId::NONE {
                 files.insert(span.file);
@@ -1514,8 +1471,8 @@ impl Module {
 
     /// A borrowed view of this module's brand/opaque inner-type maps, for the
     /// brand-blind value-equality decisions (`is_value_disjoint`).
-    pub fn nominals(&self) -> crate::types::Nominals<'_> {
-        crate::types::Nominals::new(&self.brand_inners, &self.opaque_inners)
+    pub fn nominals(&self) -> Nominals<'_> {
+        Nominals::new(&self.brand_inners, &self.opaque_inners)
     }
 
     pub fn extern_by_id(&self, eid: ExternId) -> &ExternDecl {
@@ -1534,7 +1491,7 @@ impl Module {
         &mut self,
         exports: &BTreeMap<ExportKey, FnId>,
     ) -> Result<usize, ExternalLinkError> {
-        let edges = std::mem::take(&mut self.external_call_edges);
+        let edges = take(&mut self.external_call_edges);
         let mut rewritten = 0;
         for edge in edges {
             let Some(target) = exports.get(&edge.target).copied() else {
@@ -1552,7 +1509,7 @@ impl Module {
 
     pub fn interface_export_map(
         &self,
-        interfaces: &BTreeMap<ModuleName, crate::modules::interface::ModuleInterface>,
+        interfaces: &BTreeMap<ModuleName, ModuleInterface>,
     ) -> BTreeMap<ExportKey, FnId> {
         let mut out = BTreeMap::new();
         for (module, interface) in interfaces {
@@ -1563,10 +1520,7 @@ impl Module {
                     .iter()
                     .find(|f| f.name == name && f.block(f.entry).params.len() == export.arity)
                 {
-                    out.insert(
-                        ExportKey::new(module.clone(), export.name.clone(), export.arity),
-                        f.id,
-                    );
+                    out.insert(ExportKey::new(module.clone(), export.name.clone(), export.arity), f.id);
                 }
             }
             for protocol_impl in &interface.protocol_impls {
@@ -1593,21 +1547,12 @@ fn rewrite_external_callsite(m: &mut Module, callsite: &CallsiteId, target: FnId
     let Some(target_idx) = m.fn_idx.get(&target).copied() else {
         return false;
     };
-    let target_arity = m.fns[target_idx]
-        .block(m.fns[target_idx].entry)
-        .params
-        .len();
+    let target_arity = m.fns[target_idx].block(m.fns[target_idx].entry).params.len();
     for block in &mut m.fns[fn_idx].blocks {
         match &mut block.terminator {
             Term::Call {
-                ident,
-                callee,
-                args,
-                ..
-            } if callsite.slot == EmitSlot::Direct
-                && *ident == callsite.ident
-                && args.len() == target_arity =>
-            {
+                ident, callee, args, ..
+            } if callsite.slot == EmitSlot::Direct && *ident == callsite.ident && args.len() == target_arity => {
                 if *callee == target {
                     return false;
                 }
@@ -1615,14 +1560,8 @@ fn rewrite_external_callsite(m: &mut Module, callsite: &CallsiteId, target: FnId
                 return true;
             }
             Term::TailCall {
-                ident,
-                callee,
-                args,
-                ..
-            } if callsite.slot == EmitSlot::Direct
-                && *ident == callsite.ident
-                && args.len() == target_arity =>
-            {
+                ident, callee, args, ..
+            } if callsite.slot == EmitSlot::Direct && *ident == callsite.ident && args.len() == target_arity => {
                 if *callee == target {
                     return false;
                 }
@@ -1635,11 +1574,7 @@ fn rewrite_external_callsite(m: &mut Module, callsite: &CallsiteId, target: FnId
     false
 }
 
-pub(crate) fn rewrite_external_callsite_for_link(
-    m: &mut Module,
-    callsite: &CallsiteId,
-    target: FnId,
-) -> bool {
+pub(crate) fn rewrite_external_callsite_for_link(m: &mut Module, callsite: &CallsiteId, target: FnId) -> bool {
     rewrite_external_callsite(m, callsite, target)
 }
 
@@ -1731,7 +1666,7 @@ fn remap_term_span(term: &mut Term, remap: &HashMap<FileId, FileId>) {
                 remap_ident(&mut after.ident, remap);
                 remap_span(&mut after.span, remap);
             }
-            std::sync::Arc::make_mut(matcher).remap_file_ids(remap);
+            Arc::make_mut(matcher).remap_file_ids(remap);
         }
         // Span-free terminators: explicit no-op arms keep the match exhaustive.
         Term::Goto(_, _) | Term::If { .. } | Term::Return(_) | Term::Halt(_) => {}
@@ -1829,7 +1764,7 @@ pub struct FnBuilder {
     entry: Option<BlockId>,
     category: FnCategory,
     owner_module: String,
-    ignored_params: std::collections::HashSet<Var>,
+    ignored_params: HashSet<Var>,
     physical_entry_params: Vec<Var>,
     physical_capabilities: Vec<PhysicalCapabilityFact>,
 }
@@ -1845,7 +1780,7 @@ impl FnBuilder {
             entry: None,
             category: FnCategory::User,
             owner_module: String::new(),
-            ignored_params: std::collections::HashSet::new(),
+            ignored_params: HashSet::new(),
             physical_entry_params: Vec::new(),
             physical_capabilities: Vec::new(),
         }
@@ -1892,9 +1827,11 @@ impl FnBuilder {
         if self.is_entry_param(source_cons) {
             self.record_physical_entry_param(source_cons);
         }
-        if let Some(fact) = self.physical_capabilities.iter_mut().find(|fact| {
-            matches!(fact.capability, PhysicalCapability::OwnedConsReuse { head: h } if h == head)
-        }) {
+        if let Some(fact) = self
+            .physical_capabilities
+            .iter_mut()
+            .find(|fact| matches!(fact.capability, PhysicalCapability::OwnedConsReuse { head: h } if h == head))
+        {
             fact.source = source_cons;
             return;
         }
@@ -1940,10 +1877,7 @@ impl FnBuilder {
     }
 
     fn block_mut(&mut self, id: BlockId) -> &mut Block {
-        self.blocks
-            .iter_mut()
-            .find(|b| b.id == id)
-            .expect("unknown block")
+        self.blocks.iter_mut().find(|b| b.id == id).expect("unknown block")
     }
 
     /// Append `let v = prim` to the given block; returns the bound var.
@@ -1963,12 +1897,7 @@ impl FnBuilder {
             .blocks
             .iter()
             .find(|b| b.id == entry)
-            .map(|b| {
-                b.params
-                    .iter()
-                    .map(|p| self.ignored_params.contains(p))
-                    .collect()
-            })
+            .map(|b| b.params.iter().map(|p| self.ignored_params.contains(p)).collect())
             .unwrap_or_default();
         let mut f = FnIr {
             id: self.id,
@@ -2052,7 +1981,7 @@ impl ModuleBuilder {
             extern_idx: HashMap::new(),
             external_call_edges: self.external_call_edges,
             protocol_call_targets: self.protocol_call_targets,
-            protocol_registry: crate::frontend::protocols::ProtocolRegistry::default(),
+            protocol_registry: ProtocolRegistry::default(),
             boundary_fns: HashSet::new(),
             opaque_inners: HashMap::new(),
             brand_inners: HashMap::new(),
@@ -2141,10 +2070,7 @@ impl fmt::Display for UnOp {
 }
 
 fn fmt_var_list(vars: &[Var]) -> String {
-    vars.iter()
-        .map(|v| v.to_string())
-        .collect::<Vec<_>>()
-        .join(", ")
+    vars.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(", ")
 }
 
 fn fmt_extern_arg_list(args: &[ExternArg]) -> String {
@@ -2213,11 +2139,7 @@ impl fmt::Display for Prim {
                     "dest_list_cons({}, head={}, tail={}, next={})",
                     token, head, tail, next
                 ),
-                None => write!(
-                    f,
-                    "dest_list_cons({}, head={}, tail=[], next={})",
-                    token, head, next
-                ),
+                None => write!(f, "dest_list_cons({}, head={}, tail=[], next={})", token, head, next),
             },
             Prim::DestListFreeze { list, token } => {
                 write!(f, "dest_list_freeze({}, {})", list, token)
@@ -2242,11 +2164,7 @@ impl fmt::Display for Prim {
                 write!(f, "map_update({}, {{{}}})", base, s)
             }
             Prim::DestMapBegin { token, base, extra } => match base {
-                Some(base) => write!(
-                    f,
-                    "dest_map_begin(token={}, base={}, extra={})",
-                    token, base, extra
-                ),
+                Some(base) => write!(f, "dest_map_begin(token={}, base={}, extra={})", token, base, extra),
                 None => write!(f, "dest_map_begin(token={}, extra={})", token, extra),
             },
             Prim::DestMapPut {
@@ -2268,23 +2186,13 @@ impl fmt::Display for Prim {
                 write!(f, "bitstring([{}])", fields.len())
             }
             Prim::ConstBitstring(bytes, bit_len) => {
-                write!(
-                    f,
-                    "const_bitstring(byte_len={}, bit_len={})",
-                    bytes.len(),
-                    bit_len
-                )
+                write!(f, "const_bitstring(byte_len={}, bit_len={})", bytes.len(), bit_len)
             }
             Prim::BitReaderInit(v) => write!(f, "bit_reader_init({})", v),
             Prim::BitReadField { reader, .. } => write!(f, "bit_read_field({})", reader),
             Prim::BitReaderDone(v) => write!(f, "bit_reader_done({})", v),
             Prim::TypeTest(v, d) => {
-                write!(
-                    f,
-                    "type_test({}, {})",
-                    v,
-                    crate::concrete_types::ty_display(d)
-                )
+                write!(f, "type_test({}, {})", v, ty_display(d))
             }
             Prim::Brand(v, name) => write!(f, "brand({}, {})", v, name),
         }
@@ -2293,12 +2201,7 @@ impl fmt::Display for Prim {
 
 impl fmt::Display for Cont {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "cont({}, captured=[{}])",
-            self.fn_id,
-            fmt_var_list(&self.captured)
-        )
+        write!(f, "cont({}, captured=[{}])", self.fn_id, fmt_var_list(&self.captured))
     }
 }
 
@@ -2307,23 +2210,14 @@ impl fmt::Display for Term {
         match self {
             Term::Goto(b, args) => write!(f, "goto {}({})", b, fmt_var_list(args)),
             Term::If {
-                cond,
-                then_b,
-                else_b,
-                ..
+                cond, then_b, else_b, ..
             } => write!(f, "if {} then {} else {}", cond, then_b, else_b),
             Term::Call {
                 callee,
                 args,
                 continuation,
                 ..
-            } => write!(
-                f,
-                "call {}([{}]) -> {}",
-                callee,
-                fmt_var_list(args),
-                continuation
-            ),
+            } => write!(f, "call {}([{}]) -> {}", callee, fmt_var_list(args), continuation),
             Term::TailCall { callee, args, .. } => {
                 write!(f, "tail_call {}([{}])", callee, fmt_var_list(args))
             }
@@ -2352,10 +2246,7 @@ impl fmt::Display for Term {
                 captures,
                 ..
             } => {
-                let pin_strs: Vec<String> = pinned
-                    .iter()
-                    .map(|(n, v)| format!("^{}={}", n, v))
-                    .collect();
+                let pin_strs: Vec<String> = pinned.iter().map(|(n, v)| format!("^{}={}", n, v)).collect();
                 write!(
                     f,
                     "receive_matched [{} clauses] pinned=[{}] caps=[{}]",
@@ -2394,11 +2285,7 @@ impl fmt::Display for FnIr {
         if !self.physical_entry_params.is_empty() {
             let mut params = self.physical_entry_params.clone();
             params.sort_by_key(|param| param.0);
-            writeln!(
-                f,
-                "  semantic_params=[{}]",
-                fmt_var_list(&self.semantic_entry_params())
-            )?;
+            writeln!(f, "  semantic_params=[{}]", fmt_var_list(&self.semantic_entry_params()))?;
             for param in params {
                 writeln!(f, "  physical_param {}", param)?;
             }
@@ -2447,6 +2334,9 @@ impl fmt::Display for Module {
 mod tests {
     use super::*;
     use crate::diag::FileId;
+    use crate::modules::identity::ModuleName;
+    use crate::modules::interface::{FZ_INTERFACE_ABI_VERSION, InterfaceFn, InterfaceSpec, ModuleInterface};
+    use crate::types::ConcreteTypes;
 
     /// fz-t1m.3.1.1 — a compiled `Module` round-trips losslessly through
     /// serde_json. Builds a non-trivial module (two fns, a Call term, an If, a
@@ -2509,9 +2399,7 @@ mod tests {
         m.atom_names = vec!["a0".into(), "a1".into(), "a2".into(), "ok".into()];
         // Populate the tuple-keyed span side-tables to exercise their
         // sequence-based serialization.
-        m.source
-            .stmt_spans
-            .insert((FnId(1), BlockId(2)), vec![span(30, 40)]);
+        m.source.stmt_spans.insert((FnId(1), BlockId(2)), vec![span(30, 40)]);
         m.source.term_span.insert((FnId(1), BlockId(0)), span(0, 5));
 
         // Canonical, order-independent round-trip (serde_json::Value sorts
@@ -2630,23 +2518,13 @@ mod tests {
         // Slot 0 = f7, slot 1 = f9 (unmapped), slot 2 = DUMMY.
         m.source.var_span = vec![s7(0, 1), Span::new(f9, 2, 3), Span::DUMMY];
         m.source.fn_span = vec![s7(4, 5)];
-        m.source
-            .stmt_spans
-            .insert((FnId(0), BlockId(0)), vec![s7(6, 7)]);
+        m.source.stmt_spans.insert((FnId(0), BlockId(0)), vec![s7(6, 7)]);
         m.source.term_span.insert((FnId(0), BlockId(1)), s7(8, 9));
 
         // external_call_edge whose callsite ident span is non-DUMMY (f7).
-        let export = ExportKey::new(
-            crate::modules::identity::ModuleName::from_segments(vec!["A".to_string()]),
-            "f",
-            0,
-        );
+        let export = ExportKey::new(ModuleName::from_segments(vec!["A".to_string()]), "f", 0);
         m.external_call_edges.push(ExternalCallEdge {
-            callsite: CallsiteId::new(
-                FnId(0),
-                &CallsiteIdent::from_source(s7(70, 71)),
-                EmitSlot::Direct,
-            ),
+            callsite: CallsiteId::new(FnId(0), &CallsiteIdent::from_source(s7(70, 71)), EmitSlot::Direct),
             target: export,
         });
 
@@ -2659,16 +2537,8 @@ mod tests {
         assert_eq!(m.source.var_span[1].file, f9, "var_span f9 untouched");
         assert!(m.source.var_span[2].is_dummy(), "var_span DUMMY untouched");
         assert_eq!(m.source.fn_span[0].file, f3, "fn_span f7");
-        assert_eq!(
-            m.source.stmt_spans[&(FnId(0), BlockId(0))][0].file,
-            f3,
-            "stmt_span f7"
-        );
-        assert_eq!(
-            m.source.term_span[&(FnId(0), BlockId(1))].file,
-            f3,
-            "term_span f7"
-        );
+        assert_eq!(m.source.stmt_spans[&(FnId(0), BlockId(0))][0].file, f3, "stmt_span f7");
+        assert_eq!(m.source.term_span[&(FnId(0), BlockId(1))].file, f3, "term_span f7");
 
         // Per-fn spans.
         let host = m.fn_by_name("host").unwrap();
@@ -2742,9 +2612,7 @@ mod tests {
         let files = m.referenced_files();
         assert_eq!(
             files,
-            [f7, f9]
-                .into_iter()
-                .collect::<std::collections::BTreeSet<_>>(),
+            [f7, f9].into_iter().collect::<BTreeSet<_>>(),
             "referenced_files returns exactly the non-DUMMY files"
         );
     }
@@ -2832,7 +2700,7 @@ mod tests {
         );
         assert_eq!(fn_ir.semantic_entry_params(), vec![value]);
 
-        let mut t = crate::types::ConcreteTypes;
+        let mut t = ConcreteTypes;
         let key = fn_ir.semantic_key(vec![t.any(), t.int()]);
         assert!(key[0].is_none());
         assert!(key[1].is_some());
@@ -2903,11 +2771,7 @@ mod tests {
         mb.add_fn(caller.build());
         mb.add_fn(target.build());
         let mut module = mb.build();
-        let export = ExportKey::new(
-            crate::modules::identity::ModuleName::from_segments(vec!["A".to_string()]),
-            "f",
-            0,
-        );
+        let export = ExportKey::new(ModuleName::from_segments(vec!["A".to_string()]), "f", 0);
         module.external_call_edges.push(ExternalCallEdge {
             callsite: CallsiteId::new(FnId(0), &ident, EmitSlot::Direct),
             target: export.clone(),
@@ -2939,11 +2803,7 @@ mod tests {
         let mut mb = ModuleBuilder::new();
         mb.add_fn(caller.build());
         let mut module = mb.build();
-        let export = ExportKey::new(
-            crate::modules::identity::ModuleName::from_segments(vec!["Missing".to_string()]),
-            "f",
-            0,
-        );
+        let export = ExportKey::new(ModuleName::from_segments(vec!["Missing".to_string()]), "f", 0);
         module.external_call_edges.push(ExternalCallEdge {
             callsite: CallsiteId::new(FnId(0), &ident, EmitSlot::Direct),
             target: export.clone(),
@@ -2966,22 +2826,19 @@ mod tests {
         mb.add_fn(target.build());
         let module = mb.build();
 
-        let math = crate::modules::identity::ModuleName::from_segments(vec!["Math".to_string()]);
+        let math = ModuleName::from_segments(vec!["Math".to_string()]);
         let mut interfaces = BTreeMap::new();
         interfaces.insert(
             math.clone(),
-            crate::modules::interface::ModuleInterface {
+            ModuleInterface {
                 name: math.clone(),
-                abi_version: crate::modules::interface::FZ_INTERFACE_ABI_VERSION,
+                abi_version: FZ_INTERFACE_ABI_VERSION,
                 imports: Vec::new(),
-                exports: vec![crate::modules::interface::InterfaceFn {
+                exports: vec![InterfaceFn {
                     name: "add".to_string(),
                     arity: 2,
-                    specs: vec![crate::modules::interface::InterfaceSpec {
-                        params: vec![
-                            "Ident(\"integer\")".to_string(),
-                            "Ident(\"integer\")".to_string(),
-                        ],
+                    specs: vec![InterfaceSpec {
+                        params: vec!["Ident(\"integer\")".to_string(), "Ident(\"integer\")".to_string()],
                         result: "Ident(\"integer\")".to_string(),
                     }],
                     name_span: Span::DUMMY,
@@ -2995,10 +2852,7 @@ mod tests {
         );
 
         let key = ExportKey::new(math, "add", 2);
-        assert_eq!(
-            module.interface_export_map(&interfaces).get(&key),
-            Some(&FnId(7))
-        );
+        assert_eq!(module.interface_export_map(&interfaces).get(&key), Some(&FnId(7)));
     }
 
     #[test]

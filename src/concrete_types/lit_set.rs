@@ -2,6 +2,7 @@
 
 use std::collections::BTreeSet;
 
+use crate::fz_ir::FnId;
 use crate::types::TypeVarId;
 
 use super::bits::F64Bits;
@@ -137,7 +138,7 @@ pub(crate) type VarSet = LiteralSet<TypeVarId>;
 /// arg positions.
 const MAX_CLOSURE_ARG_VAR: u32 = 63;
 const VAR_STRIDE_PER_FN: u32 = MAX_CLOSURE_ARG_VAR + 1;
-pub(crate) fn closure_var_id(fn_id: crate::fz_ir::FnId, position: usize) -> TypeVarId {
+pub(crate) fn closure_var_id(fn_id: FnId, position: usize) -> TypeVarId {
     let pos = position as u32;
     assert!(
         pos < VAR_STRIDE_PER_FN,
@@ -152,6 +153,6 @@ pub(crate) fn closure_var_id(fn_id: crate::fz_ir::FnId, position: usize) -> Type
 /// Reserved at position `MAX_CLOSURE_ARG_VAR` so it does not alias arg
 /// positions when the same closure is rendered at different apparent
 /// arities (value-form vs called-form).
-pub(crate) fn closure_ret_var_id(fn_id: crate::fz_ir::FnId) -> TypeVarId {
+pub(crate) fn closure_ret_var_id(fn_id: FnId) -> TypeVarId {
     TypeVarId(fn_id.0 * VAR_STRIDE_PER_FN + MAX_CLOSURE_ARG_VAR)
 }

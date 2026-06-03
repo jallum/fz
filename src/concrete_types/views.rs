@@ -20,6 +20,8 @@
 // unused until fz-68x.{3..7} migrate consumers. Allow dead_code only
 // on this section; do not propagate the allow upward.
 
+use std::collections::BTreeSet;
+
 use crate::types::{MapKey, TypeVarId};
 
 use super::bits::{BasicBits, F64Bits};
@@ -237,7 +239,7 @@ impl<'a> TupleView<'a> {
     /// Distinct arities admitted by any positive clause. Empty iterator
     /// if the only clauses are negations-of-top.
     pub(crate) fn arities(&self) -> impl Iterator<Item = usize> {
-        let mut seen = std::collections::BTreeSet::new();
+        let mut seen = BTreeSet::new();
         for conj in self.inner {
             for sig in &conj.pos {
                 seen.insert(sig.elems.len());
@@ -260,11 +262,7 @@ impl<'a> TupleView<'a> {
                 }
                 clause_comps = Some(match clause_comps {
                     None => sig.elems.clone(),
-                    Some(prev) => prev
-                        .iter()
-                        .zip(sig.elems.iter())
-                        .map(|(p, s)| p.intersect(s))
-                        .collect(),
+                    Some(prev) => prev.iter().zip(sig.elems.iter()).map(|(p, s)| p.intersect(s)).collect(),
                 });
             }
             if let Some(cs) = clause_comps {
@@ -300,11 +298,7 @@ impl<'a> TupleView<'a> {
                 arity = Some(sig.elems.len());
                 clause_fields = Some(match clause_fields {
                     None => sig.elems.clone(),
-                    Some(prev) => prev
-                        .iter()
-                        .zip(sig.elems.iter())
-                        .map(|(p, s)| p.intersect(s))
-                        .collect(),
+                    Some(prev) => prev.iter().zip(sig.elems.iter()).map(|(p, s)| p.intersect(s)).collect(),
                 });
             }
             let Some(fields) = clause_fields else {
@@ -394,7 +388,7 @@ impl<'a> FuncView<'a> {
     /// Distinct arities admitted by positive clauses.
     #[allow(dead_code)]
     pub(crate) fn arities(&self) -> impl Iterator<Item = usize> {
-        let mut seen = std::collections::BTreeSet::new();
+        let mut seen = BTreeSet::new();
         for conj in self.inner {
             for sig in &conj.pos {
                 seen.insert(sig.args.len());

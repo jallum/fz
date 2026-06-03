@@ -69,12 +69,16 @@
 //! behaviour and spec set unchanged.
 
 use crate::callsite_walk::slot_for_term;
+use crate::diag::Span;
 use crate::fz_ir::{
-    Block, BlockId, CallsiteId, Const, EmitSlot, FnId, FnIr, Module, Prim, StalledReason, Stmt,
+    Block, BlockId, CallsiteId, CallsiteIdent, Const, Cont, EmitSlot, FnId, FnIr, Module, Prim, StalledReason, Stmt,
     Term, Var,
 };
 use crate::reducer::fold_prim;
+use crate::telemetry::{NullTelemetry, Telemetry, value::opaque};
+use crate::types::{ClosureLitInfo, LiteralTypes, ScalarLiteral, Ty, Types};
 use std::collections::HashMap;
+use std::collections::hash_map::Entry;
 
 /// fz-uwq.9 — per-pass diagnostic record of what the reducer did at
 /// each callsite. Returned from [`reduce_module`] alongside the
@@ -93,7 +97,7 @@ use std::collections::HashMap;
 /// log and the planner's per-spec call-edge plans.
 #[derive(Debug, Default, Clone)]
 pub struct ReducerLog {
-    pub consumed: HashMap<CallsiteId, crate::types::Ty>,
+    pub consumed: HashMap<CallsiteId, Ty>,
     pub stalled: HashMap<CallsiteId, StalledReason>,
 }
 
@@ -101,10 +105,7 @@ pub struct ReducerLog {
 /// `block(&self)` but not the mutable variant — fz_ir's `block_mut` is
 /// private to `FnBuilder`. Inline the lookup here.
 fn block_mut(f: &mut FnIr, id: BlockId) -> &mut Block {
-    f.blocks
-        .iter_mut()
-        .find(|b| b.id == id)
-        .expect("unknown block")
+    f.blocks.iter_mut().find(|b| b.id == id).expect("unknown block")
 }
 
 /// Allocate a fresh `Var` for `f` whose id exceeds every existing Var in
@@ -129,19 +130,14 @@ fn fresh_var(f: &FnIr) -> Var {
 /// fz-uwq.9 — returns a [`ReducerLog`] of every Consumed / Stalled
 /// fact. Callers that want the diagnostic pass the log to the dump
 /// pipeline; codegen drops it.
-pub fn reduce_module<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::LiteralTypes>(
-    t: &mut T,
-    m: &mut Module,
-) -> ReducerLog {
-    reduce_module_with_telemetry(t, m, &crate::telemetry::NullTelemetry)
+pub fn reduce_module<T: Types<Ty = Ty> + LiteralTypes>(t: &mut T, m: &mut Module) -> ReducerLog {
+    reduce_module_with_telemetry(t, m, &NullTelemetry)
 }
 
-pub fn reduce_module_with_telemetry<
-    T: crate::types::Types<Ty = crate::types::Ty> + crate::types::LiteralTypes,
->(
+pub fn reduce_module_with_telemetry<T: Types<Ty = Ty> + LiteralTypes>(
     t: &mut T,
     m: &mut Module,
-    tel: &dyn crate::telemetry::Telemetry,
+    tel: &dyn Telemetry,
 ) -> ReducerLog {
     let mut log = ReducerLog::default();
     let fn_ids: Vec<FnId> = m.fns.iter().map(|f| f.id).collect();
@@ -193,12 +189,12 @@ fn assert_every_surviving_call_in_log(m: &Module, log: &ReducerLog) {
     }
 }
 
-fn reduce_fn<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::LiteralTypes>(
+fn reduce_fn<T: Types<Ty = Ty> + LiteralTypes>(
     t: &mut T,
     m: &mut Module,
     fid: FnId,
     log: &mut ReducerLog,
-    tel: &dyn crate::telemetry::Telemetry,
+    tel: &dyn Telemetry,
 ) {
     let Some(&fn_idx) = m.fn_idx.get(&fid) else {
         return;
@@ -209,13 +205,13 @@ fn reduce_fn<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::Liter
     }
 }
 
-fn reduce_block<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::LiteralTypes>(
+fn reduce_block<T: Types<Ty = Ty> + LiteralTypes>(
     t: &mut T,
     m: &mut Module,
     fn_idx: usize,
     bid: BlockId,
     log: &mut ReducerLog,
-    tel: &dyn crate::telemetry::Telemetry,
+    tel: &dyn Telemetry,
 ) {
     // Build a per-block env of Var → literal type by folding each stmt.
     let mut env: HashMap<Var, T::Ty> = HashMap::new();
@@ -238,7 +234,7 @@ fn reduce_block<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::Li
     }
 }
 
-fn reduce_terminator<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::LiteralTypes>(
+fn reduce_terminator<T: Types<Ty = Ty> + LiteralTypes>(
     t: &mut T,
     m: &mut Module,
     fn_idx: usize,
@@ -246,7 +242,7 @@ fn reduce_terminator<T: crate::types::Types<Ty = crate::types::Ty> + crate::type
     term: &Term,
     env: &HashMap<Var, T::Ty>,
     log: &mut ReducerLog,
-    tel: &dyn crate::telemetry::Telemetry,
+    tel: &dyn Telemetry,
 ) -> Option<Term> {
     // fz-9pr.17 — slot vocabulary lives in callsite_walk::slot_for_term;
     // every record_* call below routes through this single source of
@@ -256,20 +252,14 @@ fn reduce_terminator<T: crate::types::Types<Ty = crate::types::Ty> + crate::type
     match term {
         // fz-jg5.4: if-fold (named explicit rule per FINDINGS.md).
         Term::If {
-            cond,
-            then_b,
-            else_b,
-            ..
+            cond, then_b, else_b, ..
         } => {
             let cd = env.get(cond)?;
             let b = t.as_bool_lit(cd)?;
             Some(Term::Goto(if b { *then_b } else { *else_b }, vec![]))
         }
         Term::TailCall {
-            ident,
-            callee,
-            args,
-            ..
+            ident, callee, args, ..
         } => {
             // fz-jg5.5: each top-level callsite gets a fresh ReduceCtx
             // with full budget. All-or-nothing: if try_reduce_call returns
@@ -282,15 +272,7 @@ fn reduce_terminator<T: crate::types::Types<Ty = crate::types::Ty> + crate::type
                 return None;
             };
             let Some(new_var) = ty_to_materialize(t, &lit, m, fn_idx, bid, ident.span()) else {
-                record_stalled(
-                    m,
-                    fn_idx,
-                    ident,
-                    slot,
-                    StalledReason::CalleeBodyShape,
-                    log,
-                    tel,
-                );
+                record_stalled(m, fn_idx, ident, slot, StalledReason::CalleeBodyShape, log, tel);
                 return None;
             };
             record_consumed(t, m, fn_idx, ident, slot, &lit, log, tel);
@@ -310,15 +292,7 @@ fn reduce_terminator<T: crate::types::Types<Ty = crate::types::Ty> + crate::type
                 return None;
             };
             let Some(new_var) = ty_to_materialize(t, &lit, m, fn_idx, bid, ident.span()) else {
-                record_stalled(
-                    m,
-                    fn_idx,
-                    ident,
-                    slot,
-                    StalledReason::CalleeBodyShape,
-                    log,
-                    tel,
-                );
+                record_stalled(m, fn_idx, ident, slot, StalledReason::CalleeBodyShape, log, tel);
                 return None;
             };
             record_consumed(t, m, fn_idx, ident, slot, &lit, log, tel);
@@ -334,26 +308,14 @@ fn reduce_terminator<T: crate::types::Types<Ty = crate::types::Ty> + crate::type
             })
         }
         // fz-jg5.6: top-level closure-call reduction (mirror of walk_block).
-        Term::TailCallClosure {
-            ident,
-            closure,
-            args,
-        } => {
+        Term::TailCallClosure { ident, closure, args } => {
             let slot = slot.unwrap();
-            let Some(crate::types::ClosureLitInfo {
+            let Some(ClosureLitInfo {
                 target: closure_target,
                 captures: closure_captures,
             }) = env.get(closure).and_then(|ty| t.closure_lit_parts(ty))
             else {
-                record_stalled(
-                    m,
-                    fn_idx,
-                    ident,
-                    slot,
-                    StalledReason::NoClosureLitTarget,
-                    log,
-                    tel,
-                );
+                record_stalled(m, fn_idx, ident, slot, StalledReason::NoClosureLitTarget, log, tel);
                 return None;
             };
             let mut all_tys = closure_captures;
@@ -365,22 +327,13 @@ fn reduce_terminator<T: crate::types::Types<Ty = crate::types::Ty> + crate::type
                 all_tys.push(ty);
             }
             let mut ctx = fresh_ctx(m, t);
-            let Some(lit) = try_reduce_call_with_tys(&mut ctx, closure_target.into(), &all_tys)
-            else {
+            let Some(lit) = try_reduce_call_with_tys(&mut ctx, closure_target.into(), &all_tys) else {
                 let reason = ctx.last_reason.unwrap_or(StalledReason::Other);
                 record_stalled(m, fn_idx, ident, slot, reason, log, tel);
                 return None;
             };
             let Some(new_var) = ty_to_materialize(t, &lit, m, fn_idx, bid, ident.span()) else {
-                record_stalled(
-                    m,
-                    fn_idx,
-                    ident,
-                    slot,
-                    StalledReason::CalleeBodyShape,
-                    log,
-                    tel,
-                );
+                record_stalled(m, fn_idx, ident, slot, StalledReason::CalleeBodyShape, log, tel);
                 return None;
             };
             record_consumed(t, m, fn_idx, ident, slot, &lit, log, tel);
@@ -393,20 +346,12 @@ fn reduce_terminator<T: crate::types::Types<Ty = crate::types::Ty> + crate::type
             continuation,
         } => {
             let slot = slot.unwrap();
-            let Some(crate::types::ClosureLitInfo {
+            let Some(ClosureLitInfo {
                 target: closure_target,
                 captures: closure_captures,
             }) = env.get(closure).and_then(|ty| t.closure_lit_parts(ty))
             else {
-                record_stalled(
-                    m,
-                    fn_idx,
-                    ident,
-                    slot,
-                    StalledReason::NoClosureLitTarget,
-                    log,
-                    tel,
-                );
+                record_stalled(m, fn_idx, ident, slot, StalledReason::NoClosureLitTarget, log, tel);
                 return None;
             };
             let mut all_tys = closure_captures;
@@ -418,22 +363,13 @@ fn reduce_terminator<T: crate::types::Types<Ty = crate::types::Ty> + crate::type
                 all_tys.push(ty);
             }
             let mut ctx = fresh_ctx(m, t);
-            let Some(lit) = try_reduce_call_with_tys(&mut ctx, closure_target.into(), &all_tys)
-            else {
+            let Some(lit) = try_reduce_call_with_tys(&mut ctx, closure_target.into(), &all_tys) else {
                 let reason = ctx.last_reason.unwrap_or(StalledReason::Other);
                 record_stalled(m, fn_idx, ident, slot, reason, log, tel);
                 return None;
             };
             let Some(new_var) = ty_to_materialize(t, &lit, m, fn_idx, bid, ident.span()) else {
-                record_stalled(
-                    m,
-                    fn_idx,
-                    ident,
-                    slot,
-                    StalledReason::CalleeBodyShape,
-                    log,
-                    tel,
-                );
+                record_stalled(m, fn_idx, ident, slot, StalledReason::CalleeBodyShape, log, tel);
                 return None;
             };
             record_consumed(t, m, fn_idx, ident, slot, &lit, log, tel);
@@ -441,15 +377,7 @@ fn reduce_terminator<T: crate::types::Types<Ty = crate::types::Ty> + crate::type
             tail_args.extend(continuation.captured.iter().copied());
             // fz-kgk — INHERIT the CallClosure's ident on the new
             // TailCall; same callsite, transformed terminator shape.
-            record_stalled(
-                m,
-                fn_idx,
-                ident,
-                EmitSlot::Direct,
-                StalledReason::Other,
-                log,
-                tel,
-            );
+            record_stalled(m, fn_idx, ident, EmitSlot::Direct, StalledReason::Other, log, tel);
             Some(Term::TailCall {
                 ident: ident.clone(),
                 callee: continuation.fn_id,
@@ -468,11 +396,11 @@ fn reduce_terminator<T: crate::types::Types<Ty = crate::types::Ty> + crate::type
 fn record_stalled(
     m: &Module,
     fn_idx: usize,
-    ident: &crate::fz_ir::CallsiteIdent,
+    ident: &CallsiteIdent,
     slot: EmitSlot,
     reason: StalledReason,
     log: &mut ReducerLog,
-    tel: &dyn crate::telemetry::Telemetry,
+    tel: &dyn Telemetry,
 ) {
     let caller = m.fns[fn_idx].id;
     let cid = CallsiteId {
@@ -484,7 +412,7 @@ fn record_stalled(
     // that would lose lineage. In practice the Stalled writers all
     // early-return before any Consumed write within the same pass,
     // so this is defence in depth.
-    if let std::collections::hash_map::Entry::Vacant(entry) = log.stalled.entry(cid) {
+    if let Entry::Vacant(entry) = log.stalled.entry(cid) {
         let cid = entry.key();
         tel.event(
             &["fz", "reducer", "stalled"],
@@ -492,7 +420,7 @@ fn record_stalled(
                 caller_fn_id: cid.caller.0 as u64,
                 slot: slot_name(cid.slot),
                 reason: reason.to_string(),
-                stalled_reason: crate::telemetry::value::opaque(&reason),
+                stalled_reason: opaque(&reason),
             },
         );
         entry.insert(reason);
@@ -503,15 +431,15 @@ fn record_stalled(
 /// in the [`ReducerLog`]. Diagnostic-only; codegen no longer reads
 /// these (it reads `SpecPlan.call_edges` for `Emitted` decisions and
 /// computes its own arg / cont keys at call sites).
-fn record_consumed<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::LiteralTypes>(
+fn record_consumed<T: Types<Ty = Ty> + LiteralTypes>(
     _t: &T,
     m: &Module,
     fn_idx: usize,
-    ident: &crate::fz_ir::CallsiteIdent,
+    ident: &CallsiteIdent,
     slot: EmitSlot,
     result: &T::Ty,
     log: &mut ReducerLog,
-    tel: &dyn crate::telemetry::Telemetry,
+    tel: &dyn Telemetry,
 ) {
     let caller = m.fns[fn_idx].id;
     let cid = CallsiteId {
@@ -524,7 +452,7 @@ fn record_consumed<T: crate::types::Types<Ty = crate::types::Ty> + crate::types:
         crate::metadata! {
             caller_fn_id: caller.0 as u64,
             slot: slot_name(slot),
-            result: crate::telemetry::value::opaque(result),
+            result: opaque(result),
         },
     );
     log.consumed.insert(cid, result.clone());
@@ -548,7 +476,7 @@ pub const UNROLL_BUDGET_DEFAULT: u32 = 32;
 /// top-level callsite; the all-or-nothing rule is enforced by
 /// `reduce_terminator` discarding the rewrite when `try_reduce_call`
 /// returns `None`.
-struct ReduceCtx<'m, T: crate::types::Types> {
+struct ReduceCtx<'m, T: Types> {
     module: &'m Module,
     /// Remaining budget. Decrements on each `try_reduce_call` entry.
     budget: u32,
@@ -566,7 +494,7 @@ struct ReduceCtx<'m, T: crate::types::Types> {
     t: &'m mut T,
 }
 
-impl<'m, T: crate::types::Types> ReduceCtx<'m, T> {
+impl<'m, T: Types> ReduceCtx<'m, T> {
     fn note(&mut self, r: StalledReason) {
         if self.last_reason.is_none() {
             self.last_reason = Some(r);
@@ -576,7 +504,7 @@ impl<'m, T: crate::types::Types> ReduceCtx<'m, T> {
 
 /// Build a fresh `ReduceCtx` at top-level callsite entry. Centralises
 /// the boilerplate that used to live in each `reduce_terminator` arm.
-fn fresh_ctx<'m, T: crate::types::Types>(m: &'m Module, t: &'m mut T) -> ReduceCtx<'m, T> {
+fn fresh_ctx<'m, T: Types>(m: &'m Module, t: &'m mut T) -> ReduceCtx<'m, T> {
     ReduceCtx {
         module: m,
         budget: UNROLL_BUDGET_DEFAULT,
@@ -595,7 +523,7 @@ fn fresh_ctx<'m, T: crate::types::Types>(m: &'m Module, t: &'m mut T) -> ReduceC
 /// - The unroll budget is non-zero.
 /// - For same-callee re-entry, the args are strictly structurally smaller
 ///   than the parent's (literal-int magnitude OR type depth).
-fn try_reduce_call<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::LiteralTypes>(
+fn try_reduce_call<T: Types<Ty = Ty> + LiteralTypes>(
     ctx: &mut ReduceCtx<'_, T>,
     callee: FnId,
     args: &[Var],
@@ -612,7 +540,7 @@ fn try_reduce_call<T: crate::types::Types<Ty = crate::types::Ty> + crate::types:
     try_reduce_call_with_tys(ctx, callee, &arg_tys)
 }
 
-fn stall_reason_for_non_literal_ty<T: crate::types::Types>(t: &T, d: &T::Ty) -> StalledReason {
+fn stall_reason_for_non_literal_ty<T: Types>(t: &T, d: &T::Ty) -> StalledReason {
     if t.has_vars(d) {
         StalledReason::UnresolvedTypeVar
     } else {
@@ -620,9 +548,7 @@ fn stall_reason_for_non_literal_ty<T: crate::types::Types>(t: &T, d: &T::Ty) -> 
     }
 }
 
-fn try_reduce_call_with_tys<
-    T: crate::types::Types<Ty = crate::types::Ty> + crate::types::LiteralTypes,
->(
+fn try_reduce_call_with_tys<T: Types<Ty = Ty> + LiteralTypes>(
     ctx: &mut ReduceCtx<'_, T>,
     callee: FnId,
     arg_tys: &[T::Ty],
@@ -661,7 +587,7 @@ fn try_reduce_call_with_tys<
     result
 }
 
-fn walk_fn_body<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::LiteralTypes>(
+fn walk_fn_body<T: Types<Ty = Ty> + LiteralTypes>(
     ctx: &mut ReduceCtx<'_, T>,
     callee: FnId,
     arg_tys: &[T::Ty],
@@ -683,7 +609,7 @@ fn walk_fn_body<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::Li
 /// `goto_depth` caps inter-block transitions within one fn body to a sane
 /// number (prevents infinite Goto chains; topo guarantees terminate, but
 /// belt-and-braces).
-fn walk_block<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::LiteralTypes>(
+fn walk_block<T: Types<Ty = Ty> + LiteralTypes>(
     ctx: &mut ReduceCtx<'_, T>,
     f: &FnIr,
     bid: BlockId,
@@ -706,13 +632,7 @@ fn walk_block<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::Lite
     // Fold stmts.
     for stmt in &block.stmts {
         let Stmt::Let(v, prim) = stmt;
-        let Some(d) = fold_prim(
-            ctx.t,
-            prim,
-            &env,
-            &ctx.module.atom_names,
-            ctx.module.nominals(),
-        ) else {
+        let Some(d) = fold_prim(ctx.t, prim, &env, &ctx.module.atom_names, ctx.module.nominals()) else {
             ctx.note(StalledReason::OpaqueArg);
             return None;
         };
@@ -748,10 +668,7 @@ fn walk_block<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::Lite
             walk_block(ctx, f, *target, next_env, goto_depth + 1)
         }
         Term::If {
-            cond,
-            then_b,
-            else_b,
-            ..
+            cond, then_b, else_b, ..
         } => {
             let Some(cd) = env.get(cond) else {
                 ctx.note(StalledReason::OpaqueArg);
@@ -761,13 +678,7 @@ fn walk_block<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::Lite
                 ctx.note(stall_reason_for_non_literal_ty(ctx.t, cd));
                 return None;
             };
-            walk_block(
-                ctx,
-                f,
-                if b { *then_b } else { *else_b },
-                env,
-                goto_depth + 1,
-            )
+            walk_block(ctx, f, if b { *then_b } else { *else_b }, env, goto_depth + 1)
         }
         Term::TailCall {
             ident: _,
@@ -795,7 +706,7 @@ fn walk_block<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::Lite
             args,
             ident: _,
         } => {
-            let Some(crate::types::ClosureLitInfo {
+            let Some(ClosureLitInfo {
                 target: closure_target,
                 captures: closure_captures,
             }) = env.get(closure).and_then(|ty| ctx.t.closure_lit_parts(ty))
@@ -819,7 +730,7 @@ fn walk_block<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::Lite
             args,
             continuation,
         } => {
-            let Some(crate::types::ClosureLitInfo {
+            let Some(ClosureLitInfo {
                 target: closure_target,
                 captures: closure_captures,
             }) = env.get(closure).and_then(|ty| ctx.t.closure_lit_parts(ty))
@@ -847,9 +758,9 @@ fn walk_block<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::Lite
 
 /// Build the cont's input types `[result, ...captures]` and reduce
 /// through it. Shared by Term::Call and Term::CallClosure.
-fn feed_cont<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::LiteralTypes>(
+fn feed_cont<T: Types<Ty = Ty> + LiteralTypes>(
     ctx: &mut ReduceCtx<'_, T>,
-    continuation: &crate::fz_ir::Cont,
+    continuation: &Cont,
     result: T::Ty,
     env: &HashMap<Var, T::Ty>,
 ) -> Option<T::Ty> {
@@ -910,7 +821,7 @@ fn prim_is_reducible(p: &Prim) -> bool {
 /// True iff `a` is strictly structurally smaller than `parent`. Per fz-jg5
 /// FINDINGS: any literal-int magnitude decrease OR type-depth decrease
 /// qualifies; both axes are conservative.
-fn strictly_smaller_args<T: crate::types::Types>(t: &T, a: &[T::Ty], parent: &[T::Ty]) -> bool {
+fn strictly_smaller_args<T: Types>(t: &T, a: &[T::Ty], parent: &[T::Ty]) -> bool {
     if a.len() != parent.len() {
         return false;
     }
@@ -935,13 +846,13 @@ fn strictly_smaller_args<T: crate::types::Types>(t: &T, a: &[T::Ty], parent: &[T
 ///
 /// Non-empty list literal folding stays out of scope (L1 follow-up
 /// fz-4lo): the `list_of(elem)` lattice loses length info.
-fn ty_to_materialize<T: crate::types::Types + crate::types::LiteralTypes>(
+fn ty_to_materialize<T: Types + LiteralTypes>(
     t: &T,
     d: &T::Ty,
     m: &mut Module,
     fn_idx: usize,
     bid: BlockId,
-    at_span: crate::diag::Span,
+    at_span: Span,
 ) -> Option<Var> {
     if let Some(scalar_lit) = t.scalar_literal(d) {
         let const_val = scalar_literal_to_const(scalar_lit, m);
@@ -951,7 +862,7 @@ fn ty_to_materialize<T: crate::types::Types + crate::types::LiteralTypes>(
             .push(Stmt::Let(v, Prim::Const(const_val)));
         return Some(v);
     }
-    if let Some(crate::types::ClosureLitInfo {
+    if let Some(ClosureLitInfo {
         target: closure_target,
         captures: closure_captures,
     }) = t.closure_lit_parts(d)
@@ -966,10 +877,9 @@ fn ty_to_materialize<T: crate::types::Types + crate::types::LiteralTypes>(
         // folded by the reducer. Tag the ident with the triggering
         // callsite's span so the dump points at where the reduction
         // fired.
-        block_mut(&mut m.fns[fn_idx], bid).stmts.push(Stmt::Let(
-            v,
-            Prim::make_closure(at_span, closure_fn_id, cap_vars),
-        ));
+        block_mut(&mut m.fns[fn_idx], bid)
+            .stmts
+            .push(Stmt::Let(v, Prim::make_closure(at_span, closure_fn_id, cap_vars)));
         return Some(v);
     }
     if let Some(elems) = t.tuple_lit_elems(d) {
@@ -995,19 +905,19 @@ fn ty_to_materialize<T: crate::types::Types + crate::types::LiteralTypes>(
 
 /// Convert a seam-owned scalar literal back to a `Const`. Atoms are
 /// interned in `m.atom_names`, allocating a new slot if necessary.
-fn scalar_literal_to_const(lit: crate::types::ScalarLiteral, m: &mut Module) -> Const {
+fn scalar_literal_to_const(lit: ScalarLiteral, m: &mut Module) -> Const {
     match lit {
-        crate::types::ScalarLiteral::Int(n) => Const::Int(n),
-        crate::types::ScalarLiteral::Float(f) => Const::Float(f),
-        crate::types::ScalarLiteral::Nil => Const::Nil,
-        crate::types::ScalarLiteral::Bool(b) => {
+        ScalarLiteral::Int(n) => Const::Int(n),
+        ScalarLiteral::Float(f) => Const::Float(f),
+        ScalarLiteral::Nil => Const::Nil,
+        ScalarLiteral::Bool(b) => {
             if b {
                 Const::True
             } else {
                 Const::False
             }
         }
-        crate::types::ScalarLiteral::Atom(name) => {
+        ScalarLiteral::Atom(name) => {
             let id = match m.atom_names.iter().position(|n| *n == name) {
                 Some(i) => i as u32,
                 None => {
@@ -1028,8 +938,11 @@ fn scalar_literal_to_const(lit: crate::types::ScalarLiteral, m: &mut Module) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::diag::Span;
     use crate::fz_ir::{BinOp, Const, Cont, FnBuilder, FnId, ModuleBuilder, Prim, Term};
+    use crate::telemetry::{Capture, ConfiguredTelemetry, Value};
     use crate::types::Types;
+    use crate::types::{ConcreteTypes, TypeVarId};
 
     /// Build `fn id(x), do: x` and a `main()` that calls `id(42)`.
     /// After reduction, the TailCall in main should become a Return of 42.
@@ -1046,7 +959,7 @@ mod tests {
         main_b.set_terminator(
             m_entry,
             Term::TailCall {
-                ident: crate::fz_ir::CallsiteIdent::synthetic(),
+                ident: CallsiteIdent::synthetic(),
                 callee: FnId(0),
                 args: vec![c42],
                 is_back_edge: false,
@@ -1057,7 +970,7 @@ mod tests {
         mb.add_fn(id_b.build());
         mb.add_fn(main_b.build());
         let mut m = mb.build();
-        reduce_module(&mut crate::types::ConcreteTypes, &mut m);
+        reduce_module(&mut ConcreteTypes, &mut m);
 
         // main's terminator should now be Return of a freshly bound int_lit(42).
         let main_fn = m.fns.iter().find(|f| f.name == "main").unwrap();
@@ -1095,7 +1008,7 @@ mod tests {
         main_b.set_terminator(
             m_entry,
             Term::TailCall {
-                ident: crate::fz_ir::CallsiteIdent::synthetic(),
+                ident: CallsiteIdent::synthetic(),
                 callee: FnId(0),
                 args: vec![c21],
                 is_back_edge: false,
@@ -1106,7 +1019,7 @@ mod tests {
         mb.add_fn(d_b.build());
         mb.add_fn(main_b.build());
         let mut m = mb.build();
-        reduce_module(&mut crate::types::ConcreteTypes, &mut m);
+        reduce_module(&mut ConcreteTypes, &mut m);
 
         let main_fn = m.fns.iter().find(|f| f.name == "main").unwrap();
         let block = &main_fn.blocks[0];
@@ -1139,7 +1052,7 @@ mod tests {
         main_b.set_terminator(
             m_entry,
             Term::TailCall {
-                ident: crate::fz_ir::CallsiteIdent::synthetic(),
+                ident: CallsiteIdent::synthetic(),
                 callee: FnId(0),
                 args: vec![p],
                 is_back_edge: false,
@@ -1150,7 +1063,7 @@ mod tests {
         mb.add_fn(id_b.build());
         mb.add_fn(main_b.build());
         let mut m = mb.build();
-        reduce_module(&mut crate::types::ConcreteTypes, &mut m);
+        reduce_module(&mut ConcreteTypes, &mut m);
 
         let main_fn = m.fns.iter().find(|f| f.name == "main").unwrap();
         match &main_fn.blocks[0].terminator {
@@ -1176,7 +1089,7 @@ mod tests {
         let mut mb = ModuleBuilder::new();
         mb.add_fn(b.build());
         let mut m = mb.build();
-        reduce_module(&mut crate::types::ConcreteTypes, &mut m);
+        reduce_module(&mut ConcreteTypes, &mut m);
 
         match &m.fns[0].block(entry).terminator {
             Term::Goto(tgt, args) if *tgt == t_blk && args.is_empty() => {}
@@ -1228,7 +1141,7 @@ mod tests {
         b.set_terminator(
             recur,
             Term::TailCall {
-                ident: crate::fz_ir::CallsiteIdent::synthetic(),
+                ident: CallsiteIdent::synthetic(),
                 callee: FnId(0),
                 args: vec![dec],
                 is_back_edge: false,
@@ -1241,7 +1154,7 @@ mod tests {
         main_b.set_terminator(
             m_entry,
             Term::TailCall {
-                ident: crate::fz_ir::CallsiteIdent::synthetic(),
+                ident: CallsiteIdent::synthetic(),
                 callee: FnId(0),
                 args: vec![c5],
                 is_back_edge: false,
@@ -1252,18 +1165,17 @@ mod tests {
         mb.add_fn(b.build());
         mb.add_fn(main_b.build());
         let mut m = mb.build();
-        reduce_module(&mut crate::types::ConcreteTypes, &mut m);
+        reduce_module(&mut ConcreteTypes, &mut m);
 
         // main's terminator should now Return a literal 0 — count(5)→count(4)→...→count(0)=0.
         let main_fn = m.fns.iter().find(|f| f.name == "main").unwrap();
         let blk = &main_fn.blocks[0];
         match &blk.terminator {
             Term::Return(v) => {
-                let bound = blk.stmts.iter().find_map(
-                    |Stmt::Let(bv, prim)| {
-                        if bv == v { Some(prim) } else { None }
-                    },
-                );
+                let bound = blk
+                    .stmts
+                    .iter()
+                    .find_map(|Stmt::Let(bv, prim)| if bv == v { Some(prim) } else { None });
                 match bound {
                     Some(Prim::Const(Const::Int(n))) => assert_eq!(*n, 0),
                     other => panic!("expected Const(Int(0)), got {:?}", other),
@@ -1291,7 +1203,7 @@ mod tests {
         b.set_terminator(
             recur,
             Term::TailCall {
-                ident: crate::fz_ir::CallsiteIdent::synthetic(),
+                ident: CallsiteIdent::synthetic(),
                 callee: FnId(0),
                 args: vec![dec],
                 is_back_edge: false,
@@ -1304,7 +1216,7 @@ mod tests {
         main_b.set_terminator(
             m_entry,
             Term::TailCall {
-                ident: crate::fz_ir::CallsiteIdent::synthetic(),
+                ident: CallsiteIdent::synthetic(),
                 callee: FnId(0),
                 args: vec![c100k],
                 is_back_edge: false,
@@ -1315,7 +1227,7 @@ mod tests {
         mb.add_fn(b.build());
         mb.add_fn(main_b.build());
         let mut m = mb.build();
-        reduce_module(&mut crate::types::ConcreteTypes, &mut m);
+        reduce_module(&mut ConcreteTypes, &mut m);
 
         // main should still TailCall count.
         let main_fn = m.fns.iter().find(|f| f.name == "main").unwrap();
@@ -1352,7 +1264,7 @@ mod tests {
         e.set_terminator(
             e_odd,
             Term::TailCall {
-                ident: crate::fz_ir::CallsiteIdent::synthetic(),
+                ident: CallsiteIdent::synthetic(),
                 callee: FnId(1),
                 args: vec![dec_e],
                 is_back_edge: false,
@@ -1375,7 +1287,7 @@ mod tests {
         o.set_terminator(
             o_even,
             Term::TailCall {
-                ident: crate::fz_ir::CallsiteIdent::synthetic(),
+                ident: CallsiteIdent::synthetic(),
                 callee: FnId(0),
                 args: vec![dec_o],
                 is_back_edge: false,
@@ -1388,7 +1300,7 @@ mod tests {
         main_b.set_terminator(
             m_entry,
             Term::TailCall {
-                ident: crate::fz_ir::CallsiteIdent::synthetic(),
+                ident: CallsiteIdent::synthetic(),
                 callee: FnId(0),
                 args: vec![c4],
                 is_back_edge: false,
@@ -1400,17 +1312,16 @@ mod tests {
         mb.add_fn(o.build());
         mb.add_fn(main_b.build());
         let mut m = mb.build();
-        reduce_module(&mut crate::types::ConcreteTypes, &mut m);
+        reduce_module(&mut ConcreteTypes, &mut m);
 
         let main_fn = m.fns.iter().find(|f| f.name == "main").unwrap();
         let blk = &main_fn.blocks[0];
         match &blk.terminator {
             Term::Return(v) => {
-                let bound = blk.stmts.iter().find_map(
-                    |Stmt::Let(bv, prim)| {
-                        if bv == v { Some(prim) } else { None }
-                    },
-                );
+                let bound = blk
+                    .stmts
+                    .iter()
+                    .find_map(|Stmt::Let(bv, prim)| if bv == v { Some(prim) } else { None });
                 match bound {
                     // is_even(4) → is_odd(3) → is_even(2) → is_odd(1) → is_even(0) → true.
                     Some(Prim::Const(Const::True)) => {}
@@ -1440,7 +1351,7 @@ mod tests {
         f_b.set_terminator(
             f_entry,
             Term::TailCall {
-                ident: crate::fz_ir::CallsiteIdent::synthetic(),
+                ident: CallsiteIdent::synthetic(),
                 callee: FnId(0),
                 args: vec![x_f],
                 is_back_edge: false,
@@ -1453,7 +1364,7 @@ mod tests {
         main_b.set_terminator(
             m_entry,
             Term::TailCall {
-                ident: crate::fz_ir::CallsiteIdent::synthetic(),
+                ident: CallsiteIdent::synthetic(),
                 callee: FnId(1),
                 args: vec![c5],
                 is_back_edge: false,
@@ -1465,18 +1376,17 @@ mod tests {
         mb.add_fn(f_b.build());
         mb.add_fn(main_b.build());
         let mut m = mb.build();
-        reduce_module(&mut crate::types::ConcreteTypes, &mut m);
+        reduce_module(&mut ConcreteTypes, &mut m);
 
         // main should now Return Const(Int(5)) — fully reduced.
         let main_fn = m.fns.iter().find(|f| f.name == "main").unwrap();
         let blk = &main_fn.blocks[0];
         match &blk.terminator {
             Term::Return(v) => {
-                let bound = blk.stmts.iter().find_map(
-                    |Stmt::Let(bv, prim)| {
-                        if bv == v { Some(prim) } else { None }
-                    },
-                );
+                let bound = blk
+                    .stmts
+                    .iter()
+                    .find_map(|Stmt::Let(bv, prim)| if bv == v { Some(prim) } else { None });
                 match bound {
                     Some(Prim::Const(Const::Int(5))) => {}
                     other => panic!("expected Const(Int(5)), got {:?}", other),
@@ -1501,7 +1411,7 @@ mod tests {
         let mut main_b = FnBuilder::new(FnId(1), "main");
         let x_main = main_b.fresh_var();
         let m_entry = main_b.block(vec![x_main]);
-        let stall_ident = crate::fz_ir::CallsiteIdent::synthetic();
+        let stall_ident = CallsiteIdent::synthetic();
         main_b.set_terminator(
             m_entry,
             Term::TailCall {
@@ -1516,10 +1426,10 @@ mod tests {
         mb.add_fn(id_b.build());
         mb.add_fn(main_b.build());
         let mut m = mb.build();
-        let tel = crate::telemetry::ConfiguredTelemetry::new();
-        let cap = crate::telemetry::Capture::new();
+        let tel = ConfiguredTelemetry::new();
+        let cap = Capture::new();
         tel.attach(&["fz", "reducer"], cap.handler());
-        let log = reduce_module_with_telemetry(&mut crate::types::ConcreteTypes, &mut m, &tel);
+        let log = reduce_module_with_telemetry(&mut ConcreteTypes, &mut m, &tel);
 
         let cid = CallsiteId {
             caller: FnId(1),
@@ -1529,17 +1439,11 @@ mod tests {
         assert!(log.stalled.contains_key(&cid));
         assert_eq!(cap.count(&["fz", "reducer", "stalled"]), 1);
         let ev = cap.last(&["fz", "reducer", "stalled"]).unwrap();
-        assert!(matches!(
-            ev.metadata.get("reason"),
-            Some(crate::telemetry::Value::Str(_))
-        ));
+        assert!(matches!(ev.metadata.get("reason"), Some(Value::Str(_))));
 
         // And main's terminator should be unchanged (still TailCall).
         let main_fn = m.fns.iter().find(|f| f.name == "main").unwrap();
-        assert!(matches!(
-            main_fn.blocks[0].terminator,
-            Term::TailCall { .. }
-        ));
+        assert!(matches!(main_fn.blocks[0].terminator, Term::TailCall { .. }));
     }
 
     /// fz-9pr.3 — every successful reducer rewrite must publish a
@@ -1557,7 +1461,7 @@ mod tests {
         let mut main_b = FnBuilder::new(FnId(1), "main");
         let m_entry = main_b.block(vec![]);
         let c42 = main_b.let_(m_entry, Prim::Const(Const::Int(42)));
-        let consumed_ident = crate::fz_ir::CallsiteIdent::synthetic();
+        let consumed_ident = CallsiteIdent::synthetic();
         main_b.set_terminator(
             m_entry,
             Term::TailCall {
@@ -1572,17 +1476,17 @@ mod tests {
         mb.add_fn(id_b.build());
         mb.add_fn(main_b.build());
         let mut m = mb.build();
-        let tel = crate::telemetry::ConfiguredTelemetry::new();
-        let cap = crate::telemetry::Capture::new();
+        let tel = ConfiguredTelemetry::new();
+        let cap = Capture::new();
         tel.attach(&["fz", "reducer"], cap.handler());
-        let log = reduce_module_with_telemetry(&mut crate::types::ConcreteTypes, &mut m, &tel);
+        let log = reduce_module_with_telemetry(&mut ConcreteTypes, &mut m, &tel);
 
         let cid = CallsiteId {
             caller: FnId(1),
             ident: consumed_ident,
             slot: EmitSlot::Direct,
         };
-        let mut t = crate::types::ConcreteTypes;
+        let mut t = ConcreteTypes;
         match log.consumed.get(&cid) {
             Some(result) => {
                 assert_eq!(*result, t.int_lit(42));
@@ -1606,12 +1510,9 @@ mod tests {
 
         let mut main_b = FnBuilder::new(FnId(2), "main");
         let main_entry = main_b.block(vec![]);
-        let closure = main_b.let_(
-            main_entry,
-            Prim::make_closure(crate::diag::Span::DUMMY, FnId(0), vec![]),
-        );
+        let closure = main_b.let_(main_entry, Prim::make_closure(Span::DUMMY, FnId(0), vec![]));
         let c42 = main_b.let_(main_entry, Prim::Const(Const::Int(42)));
-        let ident = crate::fz_ir::CallsiteIdent::synthetic();
+        let ident = CallsiteIdent::synthetic();
         main_b.set_terminator(
             main_entry,
             Term::CallClosure {
@@ -1630,7 +1531,7 @@ mod tests {
         mb.add_fn(cont_b.build());
         mb.add_fn(main_b.build());
         let mut m = mb.build();
-        let log = reduce_module(&mut crate::types::ConcreteTypes, &mut m);
+        let log = reduce_module(&mut ConcreteTypes, &mut m);
 
         let closure_cid = CallsiteId {
             caller: FnId(2),
@@ -1649,10 +1550,7 @@ mod tests {
         let main_fn = m.fns.iter().find(|f| f.name == "main").unwrap();
         assert!(matches!(
             main_fn.blocks[0].terminator,
-            Term::TailCall {
-                callee: FnId(1),
-                ..
-            }
+            Term::TailCall { callee: FnId(1), .. }
         ));
     }
 
@@ -1675,7 +1573,7 @@ mod tests {
         main_b.set_terminator(
             m_entry,
             Term::TailCall {
-                ident: crate::fz_ir::CallsiteIdent::synthetic(),
+                ident: CallsiteIdent::synthetic(),
                 callee: FnId(0),
                 args: vec![c1, c2],
                 is_back_edge: false,
@@ -1686,7 +1584,7 @@ mod tests {
         mb.add_fn(pair_b.build());
         mb.add_fn(main_b.build());
         let mut m = mb.build();
-        reduce_module(&mut crate::types::ConcreteTypes, &mut m);
+        reduce_module(&mut ConcreteTypes, &mut m);
 
         let main_fn = m.fns.iter().find(|f| f.name == "main").unwrap();
         let blk = &main_fn.blocks[0];
@@ -1703,11 +1601,9 @@ mod tests {
             Prim::MakeTuple(elems) => {
                 assert_eq!(elems.len(), 2);
                 let lookup = |v: Var| -> Option<&Prim> {
-                    blk.stmts.iter().find_map(
-                        |Stmt::Let(bv, prim)| {
-                            if *bv == v { Some(prim) } else { None }
-                        },
-                    )
+                    blk.stmts
+                        .iter()
+                        .find_map(|Stmt::Let(bv, prim)| if *bv == v { Some(prim) } else { None })
                 };
                 assert!(matches!(lookup(elems[0]), Some(Prim::Const(Const::Int(1)))));
                 assert!(matches!(lookup(elems[1]), Some(Prim::Const(Const::Int(2)))));
@@ -1730,7 +1626,7 @@ mod tests {
         main_b.set_terminator(
             m_entry,
             Term::TailCall {
-                ident: crate::fz_ir::CallsiteIdent::synthetic(),
+                ident: CallsiteIdent::synthetic(),
                 callee: FnId(0),
                 args: vec![],
                 is_back_edge: false,
@@ -1741,7 +1637,7 @@ mod tests {
         mb.add_fn(e_b.build());
         mb.add_fn(main_b.build());
         let mut m = mb.build();
-        reduce_module(&mut crate::types::ConcreteTypes, &mut m);
+        reduce_module(&mut ConcreteTypes, &mut m);
 
         let main_fn = m.fns.iter().find(|f| f.name == "main").unwrap();
         let blk = &main_fn.blocks[0];
@@ -1771,8 +1667,8 @@ mod tests {
     fn stall_reason_for_var_ty_is_unresolved_type_var() {
         // A pure-var Ty surfaces as UnresolvedTypeVar — a parametric
         // claim, not a widening one.
-        let mut t = crate::types::ConcreteTypes;
-        let v = t.type_var(crate::types::TypeVarId(7));
+        let mut t = ConcreteTypes;
+        let v = t.type_var(TypeVarId(7));
         let r = stall_reason_for_non_literal_ty(&t, &v);
         assert_eq!(r, StalledReason::UnresolvedTypeVar);
     }
@@ -1782,9 +1678,9 @@ mod tests {
         // A type with both concrete and var content is still an
         // unresolved type variable case — the var blocks the fold; the
         // concrete part alone would have folded.
-        let mut t = crate::types::ConcreteTypes;
+        let mut t = ConcreteTypes;
         let int = t.int();
-        let var = t.type_var(crate::types::TypeVarId(7));
+        let var = t.type_var(TypeVarId(7));
         let mixed = t.union(int, var);
         let r = stall_reason_for_non_literal_ty(&t, &mixed);
         assert_eq!(r, StalledReason::UnresolvedTypeVar);
@@ -1793,7 +1689,7 @@ mod tests {
     #[test]
     fn stall_reason_for_any_ty_is_opaque_arg() {
         // Genuine `any` (no info, widening fixpoint) surfaces as OpaqueArg.
-        let mut t = crate::types::ConcreteTypes;
+        let mut t = ConcreteTypes;
         let any = t.any();
         let r = stall_reason_for_non_literal_ty(&t, &any);
         assert_eq!(r, StalledReason::OpaqueArg);
@@ -1804,7 +1700,7 @@ mod tests {
         // A concrete-but-non-singleton type (e.g., `int` as a top
         // type, not an int_lit) is OpaqueArg — we lack precision, not
         // parametricity.
-        let mut t = crate::types::ConcreteTypes;
+        let mut t = ConcreteTypes;
         let int = t.int();
         let r = stall_reason_for_non_literal_ty(&t, &int);
         assert_eq!(r, StalledReason::OpaqueArg);
@@ -1814,10 +1710,7 @@ mod tests {
     fn unresolved_type_var_renders_distinctly() {
         // Display impl exists and renders distinctly from OpaqueArg so
         // outcome rows can tell them apart.
-        assert_eq!(
-            format!("{}", StalledReason::UnresolvedTypeVar),
-            "UnresolvedTypeVar"
-        );
+        assert_eq!(format!("{}", StalledReason::UnresolvedTypeVar), "UnresolvedTypeVar");
         assert_eq!(format!("{}", StalledReason::OpaqueArg), "OpaqueArg");
         assert_ne!(
             format!("{}", StalledReason::UnresolvedTypeVar),

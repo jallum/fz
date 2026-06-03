@@ -1,23 +1,24 @@
 use std::collections::HashMap;
 
 use crate::modules::identity::ModuleName;
+use crate::types::{Ty, TypeVarId};
 
 /// Resolved form of a `SpecDecl` after type-expression lookup. The
 /// type-expression layer constructs this model; spec consumers own the
 /// semantic operations over it.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) struct ResolvedSpec {
-    pub params: Vec<crate::types::Ty>,
+    pub params: Vec<Ty>,
     #[serde(default)]
     pub param_shapes: Vec<ResolvedTypeShape>,
-    pub result: crate::types::Ty,
+    pub result: Ty,
     #[serde(default)]
     pub result_shape: ResolvedTypeShape,
     /// `TypeVarId` is a `u32` newtype, which serde_json renders as a number,
     /// not a valid object key, so this map serializes as a sequence of
     /// `(TypeVarId, Ty)` entries.
     #[serde(with = "constraints_as_seq")]
-    pub constraints: HashMap<crate::types::TypeVarId, crate::types::Ty>,
+    pub constraints: HashMap<TypeVarId, Ty>,
 }
 
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
@@ -27,13 +28,13 @@ pub(crate) struct ResolvedSpecSet {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ResolvedSpecMatch {
-    pub params: Vec<crate::types::Ty>,
-    pub result: crate::types::Ty,
+    pub params: Vec<Ty>,
+    pub result: Ty,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
 pub(crate) struct StructuralCorrespondenceGroup {
-    pub var: crate::types::TypeVarId,
+    pub var: TypeVarId,
     pub occurrences: Vec<StructuralOccurrence>,
 }
 
@@ -58,7 +59,7 @@ pub(crate) enum ResolvedTypeShape {
     Utf8,
     Pid,
     Ref,
-    Var(crate::types::TypeVarId),
+    Var(TypeVarId),
     AtomLit(String),
     IntLit(i64),
     FloatLit(u64),
@@ -118,17 +119,15 @@ mod constraints_as_seq {
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
     use std::collections::HashMap;
 
-    type Constraints = HashMap<crate::types::TypeVarId, crate::types::Ty>;
+    use crate::types::{Ty, TypeVarId};
+
+    type Constraints = HashMap<TypeVarId, Ty>;
 
     pub fn serialize<S: Serializer>(map: &Constraints, s: S) -> Result<S::Ok, S::Error> {
         map.iter().collect::<Vec<_>>().serialize(s)
     }
 
     pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Constraints, D::Error> {
-        Ok(
-            Vec::<(crate::types::TypeVarId, crate::types::Ty)>::deserialize(d)?
-                .into_iter()
-                .collect(),
-        )
+        Ok(Vec::<(TypeVarId, Ty)>::deserialize(d)?.into_iter().collect())
     }
 }

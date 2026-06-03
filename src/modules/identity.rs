@@ -5,6 +5,7 @@
 //! boundary: module paths and exported functions are assembled from parsed
 //! segments, not recovered by repeatedly splitting display text.
 
+use std::error::Error;
 use std::fmt;
 
 use serde::{Deserialize, Serialize};
@@ -21,10 +22,7 @@ pub struct ModuleNameParseError {
 
 impl ModuleName {
     pub fn from_segments(segments: Vec<String>) -> Self {
-        assert!(
-            !segments.is_empty(),
-            "ModuleName must have at least one segment"
-        );
+        assert!(!segments.is_empty(), "ModuleName must have at least one segment");
         assert!(
             segments.iter().all(|s| !s.is_empty()),
             "ModuleName segments must be non-empty"
@@ -35,9 +33,7 @@ impl ModuleName {
     pub fn parse_dotted(text: &str) -> Result<Self, ModuleNameParseError> {
         let segments = text.split('.').map(str::to_string).collect::<Vec<_>>();
         if segments.is_empty() || segments.iter().any(|segment| segment.is_empty()) {
-            Err(ModuleNameParseError {
-                text: text.to_string(),
-            })
+            Err(ModuleNameParseError { text: text.to_string() })
         } else {
             Ok(Self { segments })
         }
@@ -56,9 +52,7 @@ impl ModuleName {
     }
 
     pub fn last_segment(&self) -> &str {
-        self.segments
-            .last()
-            .expect("ModuleName invariant: non-empty")
+        self.segments.last().expect("ModuleName invariant: non-empty")
     }
 
     /// Display spelling used by current IR/debug output. Do not use this as
@@ -80,7 +74,7 @@ impl fmt::Display for ModuleNameParseError {
     }
 }
 
-impl std::error::Error for ModuleNameParseError {}
+impl Error for ModuleNameParseError {}
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct QualifiedName {

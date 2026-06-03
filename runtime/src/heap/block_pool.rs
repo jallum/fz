@@ -2,6 +2,7 @@
 
 use std::alloc::{Layout, alloc_zeroed, dealloc};
 use std::cell::RefCell;
+use std::ptr::write_bytes;
 
 /// Preset block sizes (bytes). Fibonacci-shape at the low end (§6.3) then
 /// geometric tail (~×1.2, ceiling-rounded to 16 alignment). Cheney picks the
@@ -68,7 +69,7 @@ impl BlockPool {
             // Recycled blocks: zero before returning. Cheney + Heap::new
             // expect zero pages.
             unsafe {
-                std::ptr::write_bytes(p, 0, size);
+                write_bytes(p, 0, size);
             }
             return p;
         }

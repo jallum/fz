@@ -9,6 +9,8 @@
 
 use std::cell::{Cell, RefCell};
 
+use crate::measurements;
+
 use super::event::{Measurements, Metadata};
 use super::handler::{Event, EventKind, Handler, HandlerId};
 use super::sink::Telemetry;
@@ -119,14 +121,7 @@ impl Default for ConfiguredTelemetry {
 impl Telemetry for ConfiguredTelemetry {
     fn execute(&self, name: &[&'static str], measurements: &Measurements, metadata: &Metadata) {
         let (span_id, parent_span_id) = self.current_span_ids();
-        self.dispatch(
-            name,
-            EventKind::Event,
-            measurements,
-            metadata,
-            span_id,
-            parent_span_id,
-        );
+        self.dispatch(name, EventKind::Event, measurements, metadata, span_id, parent_span_id);
     }
 
     fn span_start(&self, name: &[&'static str], metadata: &Metadata) -> u64 {
@@ -165,7 +160,7 @@ impl ConfiguredTelemetry {
             let pos = s.iter().rposition(|&x| x == span_id);
             pos.and_then(|i| (i > 0).then(|| s[i - 1])).unwrap_or(0)
         };
-        let m = crate::measurements! { elapsed_ns: elapsed_ns };
+        let m = measurements! { elapsed_ns: elapsed_ns };
         self.dispatch(name, kind, &m, &Metadata::new(), span_id, parent_id);
         // Pop after dispatch so within-handler peeks at the stack still
         // see the span as "open." Bind the position first so the
@@ -179,6 +174,10 @@ impl ConfiguredTelemetry {
 
 #[cfg(test)]
 mod tests {
+    use std::panic::{AssertUnwindSafe, catch_unwind};
+    use std::thread::sleep;
+    use std::time::Duration;
+
     use super::*;
     use crate::telemetry::capture::Capture;
     use crate::telemetry::sink::TelemetryExt;
@@ -322,7 +321,7 @@ mod tests {
         t.attach(&[], cap.handler());
         {
             let _s = t.span(&["fz", "x"], Metadata::new());
-            std::thread::sleep(std::time::Duration::from_micros(50));
+            sleep(Duration::from_micros(50));
         }
         let evs = cap.events();
         let stop = evs
@@ -341,7 +340,7 @@ mod tests {
         let t = ConfiguredTelemetry::new();
         let cap = Capture::new();
         t.attach(&[], cap.handler());
-        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let r = catch_unwind(AssertUnwindSafe(|| {
             let _s = t.span(&["fz", "boom"], Metadata::new());
             panic!("planned");
         }));

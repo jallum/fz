@@ -1,3 +1,5 @@
+use fz::run;
+
 fn main() {
-    fz::run();
+    run();
 }

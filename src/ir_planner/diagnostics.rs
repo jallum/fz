@@ -4,8 +4,16 @@ use super::narrow::{find_emptied_var, narrow_for_if};
 use super::prim::type_prim;
 use super::purity::{ImpureError, ImpureKind, ImpureTerm, check_pure_codegen, check_pure_term};
 use super::type_fn::type_fn;
-use crate::fz_ir::{BinOp, FnId, Module, Prim, Stmt, Term, Var};
-use crate::types::MapKey;
+use crate::diag::{Diagnostic, Diagnostics, Span, codes};
+use crate::frontend::protocols::{impl_target_type, protocol_domain_tag};
+use crate::fz_ir::{
+    BinOp, Block, BlockId, BranchOrigin, DeadBranch, FnCategory, FnId, FnIr, Module, Prim, ProtocolCallTarget, Stmt,
+    Term, Var,
+};
+use crate::metadata;
+use crate::modules::identity::ModuleName;
+use crate::telemetry::Telemetry;
+use crate::types::{ClosureTypes, KeySlot, MapKey, Nominals, RenderTypes, Ty, Types, VisibilityTypes};
 use std::collections::{HashMap, HashSet};
 
 #[derive(Default)]
@@ -29,7 +37,7 @@ pub(crate) fn module_plan_stats(m: &Module, mt: &ModulePlan) -> ModulePlanStats 
             continue;
         }
         let f = m.fn_by_id(key.fn_id);
-        if matches!(f.category, crate::fz_ir::FnCategory::Matcher) {
+        if matches!(f.category, FnCategory::Matcher) {
             stats.matcher_spec_count += 1;
         }
         stats.spec_var_count += ft.vars.len();
@@ -64,14 +72,12 @@ pub(crate) fn module_plan_stats(m: &Module, mt: &ModulePlan) -> ModulePlanStats 
 /// folding. `ModulePlan::dead_branches` is the all-domain diagnostic view: the
 /// fact must hold for every value the body can accept, not just every
 /// specialization currently discovered by one plan.
-pub(crate) fn compute_dead_branches<
-    T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
->(
+pub(crate) fn compute_dead_branches<T: Types<Ty = Ty> + ClosureTypes>(
     t: &mut T,
     m: &Module,
     mt: &ModulePlan,
-) -> HashMap<(FnId, crate::fz_ir::BlockId), crate::fz_ir::DeadBranch> {
-    let mut out: HashMap<(FnId, crate::fz_ir::BlockId), crate::fz_ir::DeadBranch> = HashMap::new();
+) -> HashMap<(FnId, BlockId), DeadBranch> {
+    let mut out: HashMap<(FnId, BlockId), DeadBranch> = HashMap::new();
 
     for f in &m.fns {
         let Some(any_key) = mt.any_key_specs.get(&f.id) else {
@@ -84,8 +90,7 @@ pub(crate) fn compute_dead_branches<
             let Term::If { cond, .. } = b.terminator else {
                 continue;
             };
-            let mut env: HashMap<Var, crate::types::Ty> =
-                ft.block_envs.get(&b.id).cloned().unwrap_or_default();
+            let mut env: HashMap<Var, Ty> = ft.block_envs.get(&b.id).cloned().unwrap_or_default();
             for stmt in &b.stmts {
                 let Stmt::Let(v, prim) = stmt;
                 let pt_ty = type_prim(t, prim, &env, m, &HashSet::new());
@@ -108,9 +113,9 @@ pub(crate) fn compute_dead_branches<
             }
             // Both-dead means the If itself is unreachable — leave to DCE.
             if then_dead && !else_dead {
-                out.insert((f.id, b.id), crate::fz_ir::DeadBranch::Then);
+                out.insert((f.id, b.id), DeadBranch::Then);
             } else if else_dead && !then_dead {
-                out.insert((f.id, b.id), crate::fz_ir::DeadBranch::Else);
+                out.insert((f.id, b.id), DeadBranch::Else);
             }
         }
     }
@@ -120,16 +125,15 @@ pub(crate) fn compute_dead_branches<
 /// Build the unreachable-arm diagnostic from per-spec dead-var records. The
 /// label uses the lowest-id emptied var, and the type note joins that var's
 /// pre-narrowing types across contributing specs.
-fn emit_unreachable<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::RenderTypes>(
+fn emit_unreachable<T: Types<Ty = Ty> + RenderTypes>(
     t: &mut T,
     module: &Module,
     fn_name: &str,
-    term_span: crate::diag::Span,
+    term_span: Span,
     tag: &str,
-    bb_id: crate::fz_ir::BlockId,
-    dead_records: &[(crate::fz_ir::Var, T::Ty, T::Ty)],
-) -> crate::diag::Diagnostic {
-    use crate::diag::{Diagnostic, codes::TYPE_UNREACHABLE_ARM};
+    bb_id: BlockId,
+    dead_records: &[(Var, T::Ty, T::Ty)],
+) -> Diagnostic {
     // Pick the lowest-id Var across all records for label attribution
     // (stable, matches old single-spec behavior when only one spec).
     let pick = dead_records.iter().min_by_key(|(v, _, _)| v.0).unwrap();
@@ -150,18 +154,14 @@ fn emit_unreachable<T: crate::types::Types<Ty = crate::types::Ty> + crate::types
     let var_span = module.source.var_span_of(*v);
 
     let message = format!("the {} branch is never reachable", tag);
-    let type_note = format!(
-        "{} here has type `{}`",
-        label_subject,
-        t.display_for_diag(&joined_old),
-    );
+    let type_note = format!("{} here has type `{}`", label_subject, t.display_for_diag(&joined_old),);
     let narrow_note = format!(
         "narrowing for this branch would need `none`, but that intersection \
          is uninhabited (unreachable arm at bb{})",
         bb_id.0,
     );
 
-    let mut d = Diagnostic::warning(TYPE_UNREACHABLE_ARM, message, term_span)
+    let mut d = Diagnostic::warning(codes::TYPE_UNREACHABLE_ARM, message, term_span)
         .with_label(format!("in fn `{}`", fn_name))
         .with_note(type_note)
         .with_note(narrow_note);
@@ -172,18 +172,12 @@ fn emit_unreachable<T: crate::types::Types<Ty = crate::types::Ty> + crate::types
 }
 
 /// Collect planner diagnostics in stable source order.
-pub fn collect_diagnostics<
-    T: crate::types::Types<Ty = crate::types::Ty>
-        + crate::types::ClosureTypes
-        + crate::types::RenderTypes
-        + crate::types::VisibilityTypes,
->(
+pub fn collect_diagnostics<T: Types<Ty = Ty> + ClosureTypes + RenderTypes + VisibilityTypes>(
     t: &mut T,
     module: &Module,
     types: &ModulePlan,
-    tel: &dyn crate::telemetry::Telemetry,
-) -> crate::diag::Diagnostics {
-    use crate::diag::Diagnostics;
+    tel: &dyn Telemetry,
+) -> Diagnostics {
     let mut out = Diagnostics::new();
     collect_unreachable_arm_diagnostics(t, module, types, &mut out);
     collect_stmt_type_diagnostics(t, module, types, &mut out, tel);
@@ -195,17 +189,12 @@ pub fn collect_diagnostics<
     out
 }
 
-fn collect_unreachable_arm_diagnostics<
-    T: crate::types::Types<Ty = crate::types::Ty>
-        + crate::types::ClosureTypes
-        + crate::types::RenderTypes,
->(
+fn collect_unreachable_arm_diagnostics<T: Types<Ty = Ty> + ClosureTypes + RenderTypes>(
     t: &mut T,
     module: &Module,
     types: &ModulePlan,
-    out: &mut crate::diag::Diagnostics,
+    out: &mut Diagnostics,
 ) {
-    use crate::diag::Span;
     let mut specs_by_fn = value_specs_by_fn(types);
     let adhoc_specs = add_adhoc_specs_for_unregistered_fns(t, module, &mut specs_by_fn);
     for f in sorted_fns(module) {
@@ -231,7 +220,7 @@ fn collect_unreachable_arm_diagnostics<
             // Only warn on user-authored Ifs. Synthesized dispatch
             // (pattern-bind, fn-clause selection, param guards) is lowering
             // scaffolding, not a source-level bug.
-            if !matches!(origin, crate::fz_ir::BranchOrigin::User) {
+            if !matches!(origin, BranchOrigin::User) {
                 continue;
             }
             let term_span = module
@@ -240,8 +229,8 @@ fn collect_unreachable_arm_diagnostics<
                 .get(&(f.id, b.id))
                 .copied()
                 .unwrap_or(Span::DUMMY);
-            let mut dead_then: Vec<(crate::fz_ir::Var, T::Ty, T::Ty)> = Vec::new();
-            let mut dead_else: Vec<(crate::fz_ir::Var, T::Ty, T::Ty)> = Vec::new();
+            let mut dead_then: Vec<(Var, T::Ty, T::Ty)> = Vec::new();
+            let mut dead_else: Vec<(Var, T::Ty, T::Ty)> = Vec::new();
             for key in keys {
                 let ft = spec_for_diag(types, &adhoc_specs, f.id, key);
                 let env = env_after_block_stmts(t, module, ft, b);
@@ -267,17 +256,12 @@ fn collect_unreachable_arm_diagnostics<
     }
 }
 
-fn collect_stmt_type_diagnostics<
-    T: crate::types::Types<Ty = crate::types::Ty>
-        + crate::types::ClosureTypes
-        + crate::types::RenderTypes
-        + crate::types::VisibilityTypes,
->(
+fn collect_stmt_type_diagnostics<T: Types<Ty = Ty> + ClosureTypes + RenderTypes + VisibilityTypes>(
     t: &mut T,
     module: &Module,
     types: &ModulePlan,
-    out: &mut crate::diag::Diagnostics,
-    tel: &dyn crate::telemetry::Telemetry,
+    out: &mut Diagnostics,
+    tel: &dyn Telemetry,
 ) {
     for f in module.fns.iter() {
         let ft_owned = fallback_any_spec(t, module, types, f);
@@ -287,26 +271,13 @@ fn collect_stmt_type_diagnostics<
                 .expect("fallback exists when no registered spec exists")
         });
         for b in sorted_blocks(f) {
-            let mut env: HashMap<Var, crate::types::Ty> =
-                ft.block_envs.get(&b.id).cloned().unwrap_or_default();
+            let mut env: HashMap<Var, Ty> = ft.block_envs.get(&b.id).cloned().unwrap_or_default();
             let spans = module.source.stmt_spans.get(&(f.id, b.id));
             for (sidx, stmt) in b.stmts.iter().enumerate() {
                 let Stmt::Let(v, prim) = stmt;
-                collect_dead_binop_diagnostic(
-                    t,
-                    &f.name,
-                    spans,
-                    sidx,
-                    prim,
-                    &env,
-                    out,
-                    module.nominals(),
-                    tel,
-                );
+                collect_dead_binop_diagnostic(t, &f.name, spans, sidx, prim, &env, out, module.nominals(), tel);
                 collect_opaque_arithmetic_diagnostic(t, &f.name, spans, sidx, prim, &env, out);
-                collect_opaque_visibility_diagnostic(
-                    t, module, &f.name, spans, sidx, prim, &env, out,
-                );
+                collect_opaque_visibility_diagnostic(t, module, &f.name, spans, sidx, prim, &env, out);
                 let pt_ty = type_prim(t, prim, &env, module, &HashSet::new());
                 env.insert(*v, pt_ty);
             }
@@ -325,20 +296,16 @@ fn collect_stmt_type_diagnostics<
 /// clearer. The disjointness trigger is sound: a receiver that is `any`, a free
 /// variable, or the protocol's own domain type overlaps the domain and never
 /// fires; only a receiver wholly outside the domain does.
-fn collect_protocol_no_impl_diagnostics<
-    T: crate::types::Types<Ty = crate::types::Ty>
-        + crate::types::ClosureTypes
-        + crate::types::RenderTypes,
->(
+fn collect_protocol_no_impl_diagnostics<T: Types<Ty = Ty> + ClosureTypes + RenderTypes>(
     t: &mut T,
     module: &Module,
     types: &ModulePlan,
-    out: &mut crate::diag::Diagnostics,
+    out: &mut Diagnostics,
 ) {
     if module.protocol_call_targets.is_empty() {
         return;
     }
-    let mut reported: HashSet<(FnId, crate::fz_ir::BlockId)> = HashSet::new();
+    let mut reported: HashSet<(FnId, BlockId)> = HashSet::new();
     for (key, ft) in &types.specs {
         if !key.demand.is_value() {
             continue;
@@ -346,9 +313,7 @@ fn collect_protocol_no_impl_diagnostics<
         let f = module.fn_by_id(key.fn_id);
         for b in sorted_blocks(f) {
             let (callee, args) = match &b.terminator {
-                Term::Call { callee, args, .. } | Term::TailCall { callee, args, .. } => {
-                    (*callee, args)
-                }
+                Term::Call { callee, args, .. } | Term::TailCall { callee, args, .. } => (*callee, args),
                 _ => continue,
             };
             let Some(target) = module.protocol_call_targets.get(&callee) else {
@@ -375,7 +340,7 @@ fn collect_protocol_no_impl_diagnostics<
                 .term_span
                 .get(&(f.id, b.id))
                 .copied()
-                .unwrap_or(crate::diag::Span::DUMMY);
+                .unwrap_or(Span::DUMMY);
             out.push(protocol_no_impl_diagnostic(
                 t,
                 module,
@@ -392,35 +357,28 @@ fn collect_protocol_no_impl_diagnostics<
 /// with each implementing target's type. Mirrors `resolve::protocol_domain_type`
 /// so a receiver typed as the domain overlaps it (and never trips the no-impl
 /// check) while a receiver outside every target is disjoint from it.
-fn protocol_domain_ty<T: crate::types::Types<Ty = crate::types::Ty>>(
-    t: &mut T,
-    module: &Module,
-    protocol: &crate::modules::identity::ModuleName,
-) -> crate::types::Ty {
-    let mut domain = t.opaque_of(&crate::frontend::protocols::protocol_domain_tag(protocol));
+fn protocol_domain_ty<T: Types<Ty = Ty>>(t: &mut T, module: &Module, protocol: &ModuleName) -> Ty {
+    let mut domain = t.opaque_of(&protocol_domain_tag(protocol));
     for fact in module
         .protocol_registry
         .impls
         .values()
         .filter(|fact| fact.protocol == *protocol)
     {
-        let target_ty = crate::frontend::protocols::impl_target_type(t, &fact.target);
+        let target_ty = impl_target_type(t, &fact.target);
         domain = t.union(domain, target_ty);
     }
     domain
 }
 
-fn protocol_no_impl_diagnostic<
-    T: crate::types::Types<Ty = crate::types::Ty> + crate::types::RenderTypes,
->(
+fn protocol_no_impl_diagnostic<T: Types<Ty = Ty> + RenderTypes>(
     t: &mut T,
     module: &Module,
     fn_name: &str,
-    target: &crate::fz_ir::ProtocolCallTarget,
-    receiver_ty: &crate::types::Ty,
-    term_span: crate::diag::Span,
-) -> crate::diag::Diagnostic {
-    use crate::diag::{Diagnostic, codes::TYPE_PROTOCOL_NO_IMPL};
+    target: &ProtocolCallTarget,
+    receiver_ty: &Ty,
+    term_span: Span,
+) -> Diagnostic {
     let mut implementors: Vec<String> = module
         .protocol_registry
         .impls
@@ -440,7 +398,7 @@ fn protocol_no_impl_diagnostic<
         target.protocol,
         t.display_for_diag(receiver_ty),
     );
-    Diagnostic::error(TYPE_PROTOCOL_NO_IMPL, message, term_span)
+    Diagnostic::error(codes::TYPE_PROTOCOL_NO_IMPL, message, term_span)
         .with_label(format!("in fn `{}`", fn_name))
         .with_note(format!(
             "`{}.{}/{}` dispatches on its first argument's type",
@@ -449,8 +407,7 @@ fn protocol_no_impl_diagnostic<
         .with_note(implementor_note)
 }
 
-fn collect_receive_guard_diagnostics(module: &Module, out: &mut crate::diag::Diagnostics) {
-    use crate::diag::Diagnostic;
+fn collect_receive_guard_diagnostics(module: &Module, out: &mut Diagnostics) {
     for f in &module.fns {
         for b in &f.blocks {
             let Term::ReceiveMatched { clauses, .. } = &b.terminator else {
@@ -459,17 +416,13 @@ fn collect_receive_guard_diagnostics(module: &Module, out: &mut crate::diag::Dia
             for c in clauses {
                 let Some(g_fid) = c.guard else { continue };
                 if let Some(reason) = receive_guard_impurity(module.fn_by_id(g_fid)) {
-                    let d = Diagnostic::error(
-                        crate::diag::codes::TYPE_IMPURE_RECEIVE_GUARD,
-                        reason,
-                        c.span,
-                    )
-                    .with_label(format!("in fn `{}`", f.name))
-                    .with_note(
-                        "guards in `receive` must stay in the pure-codegen subset: \
+                    let d = Diagnostic::error(codes::TYPE_IMPURE_RECEIVE_GUARD, reason, c.span)
+                        .with_label(format!("in fn `{}`", f.name))
+                        .with_note(
+                            "guards in `receive` must stay in the pure-codegen subset: \
                          constants, comparisons, type tests, and accessors — \
                          no function calls or allocations",
-                    );
+                        );
                     out.push(d);
                 }
             }
@@ -477,7 +430,7 @@ fn collect_receive_guard_diagnostics(module: &Module, out: &mut crate::diag::Dia
     }
 }
 
-fn receive_guard_impurity(g_fn: &crate::fz_ir::FnIr) -> Option<String> {
+fn receive_guard_impurity(g_fn: &FnIr) -> Option<String> {
     for gb in &g_fn.blocks {
         if let Err(e) = check_pure_codegen(&gb.stmts) {
             return Some(receive_guard_stmt_impurity(e));
@@ -501,36 +454,27 @@ fn receive_guard_stmt_impurity(e: ImpureError) -> String {
 
 fn receive_guard_term_impurity(e: ImpureError) -> String {
     match e {
-        ImpureError::Term(ImpureTerm::Call) => {
-            "guard expression invokes a function (calls are not allowed)".into()
-        }
-        ImpureError::Term(ImpureTerm::Receive) => {
-            "guard expression contains a `receive` (not allowed)".into()
-        }
+        ImpureError::Term(ImpureTerm::Call) => "guard expression invokes a function (calls are not allowed)".into(),
+        ImpureError::Term(ImpureTerm::Receive) => "guard expression contains a `receive` (not allowed)".into(),
         ImpureError::Term(ImpureTerm::Halt) => "guard expression halts (not allowed)".into(),
         ImpureError::Stmt { .. } => unreachable!(),
     }
 }
 
-fn value_specs_by_fn(types: &ModulePlan) -> HashMap<FnId, Vec<Vec<crate::types::KeySlot>>> {
-    let mut specs_by_fn: HashMap<FnId, Vec<Vec<crate::types::KeySlot>>> = HashMap::new();
+fn value_specs_by_fn(types: &ModulePlan) -> HashMap<FnId, Vec<Vec<KeySlot>>> {
+    let mut specs_by_fn: HashMap<FnId, Vec<Vec<KeySlot>>> = HashMap::new();
     for key in types.specs.keys() {
         if key.demand.is_value() {
-            specs_by_fn
-                .entry(key.fn_id)
-                .or_default()
-                .push(key.input.clone());
+            specs_by_fn.entry(key.fn_id).or_default().push(key.input.clone());
         }
     }
     specs_by_fn
 }
 
-fn add_adhoc_specs_for_unregistered_fns<
-    T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
->(
+fn add_adhoc_specs_for_unregistered_fns<T: Types<Ty = Ty> + ClosureTypes>(
     t: &mut T,
     module: &Module,
-    specs_by_fn: &mut HashMap<FnId, Vec<Vec<crate::types::KeySlot>>>,
+    specs_by_fn: &mut HashMap<FnId, Vec<Vec<KeySlot>>>,
 ) -> HashMap<FnId, SpecPlan> {
     let mut adhoc_specs = HashMap::new();
     for f in &module.fns {
@@ -548,11 +492,11 @@ fn add_adhoc_specs_for_unregistered_fns<
     adhoc_specs
 }
 
-fn fallback_any_spec<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes>(
+fn fallback_any_spec<T: Types<Ty = Ty> + ClosureTypes>(
     t: &mut T,
     module: &Module,
     types: &ModulePlan,
-    f: &crate::fz_ir::FnIr,
+    f: &FnIr,
 ) -> Option<SpecPlan> {
     if types.any_spec_for(f.id).is_some() {
         return None;
@@ -561,10 +505,7 @@ fn fallback_any_spec<T: crate::types::Types<Ty = crate::types::Ty> + crate::type
     Some(type_fn(t, f, module, Some(&any_key)))
 }
 
-fn any_key_for_fn<T: crate::types::Types<Ty = crate::types::Ty>>(
-    t: &mut T,
-    f: &crate::fz_ir::FnIr,
-) -> Vec<crate::types::Ty> {
+fn any_key_for_fn<T: Types<Ty = Ty>>(t: &mut T, f: &FnIr) -> Vec<Ty> {
     let n_params = f.block(f.entry).params.len();
     let any = t.any();
     t.repeat(any, n_params)
@@ -574,7 +515,7 @@ fn spec_for_diag<'a>(
     types: &'a ModulePlan,
     adhoc_specs: &'a HashMap<FnId, SpecPlan>,
     fn_id: FnId,
-    key: &[crate::types::KeySlot],
+    key: &[KeySlot],
 ) -> &'a SpecPlan {
     types
         .specs
@@ -583,16 +524,13 @@ fn spec_for_diag<'a>(
         .expect("diagnostic spec key must have a registered or ad-hoc plan")
 }
 
-pub(crate) fn env_after_block_stmts<
-    T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
->(
+pub(crate) fn env_after_block_stmts<T: Types<Ty = Ty> + ClosureTypes>(
     t: &mut T,
     module: &Module,
     ft: &SpecPlan,
-    b: &crate::fz_ir::Block,
-) -> HashMap<Var, crate::types::Ty> {
-    let mut env: HashMap<Var, crate::types::Ty> =
-        ft.block_envs.get(&b.id).cloned().unwrap_or_default();
+    b: &Block,
+) -> HashMap<Var, Ty> {
+    let mut env: HashMap<Var, Ty> = ft.block_envs.get(&b.id).cloned().unwrap_or_default();
     for stmt in &b.stmts {
         let Stmt::Let(v, prim) = stmt;
         let pt_ty = type_prim(t, prim, &env, module, &HashSet::new());
@@ -601,33 +539,30 @@ pub(crate) fn env_after_block_stmts<
     env
 }
 
-fn sorted_fns(module: &Module) -> Vec<&crate::fz_ir::FnIr> {
-    let mut fns: Vec<&crate::fz_ir::FnIr> = module.fns.iter().collect();
+fn sorted_fns(module: &Module) -> Vec<&FnIr> {
+    let mut fns: Vec<&FnIr> = module.fns.iter().collect();
     fns.sort_by_key(|f| f.id.0);
     fns
 }
 
-fn sorted_blocks(f: &crate::fz_ir::FnIr) -> Vec<&crate::fz_ir::Block> {
-    let mut blocks: Vec<&crate::fz_ir::Block> = f.blocks.iter().collect();
+fn sorted_blocks(f: &FnIr) -> Vec<&Block> {
+    let mut blocks: Vec<&Block> = f.blocks.iter().collect();
     blocks.sort_by_key(|b| b.id.0);
     blocks
 }
 
 #[allow(clippy::too_many_arguments)]
-fn collect_dead_binop_diagnostic<
-    T: crate::types::Types<Ty = crate::types::Ty> + crate::types::RenderTypes,
->(
+fn collect_dead_binop_diagnostic<T: Types<Ty = Ty> + RenderTypes>(
     t: &mut T,
     fn_name: &str,
-    spans: Option<&Vec<crate::diag::Span>>,
+    spans: Option<&Vec<Span>>,
     sidx: usize,
     prim: &Prim,
-    env: &HashMap<Var, crate::types::Ty>,
-    out: &mut crate::diag::Diagnostics,
-    nominals: crate::types::Nominals<'_>,
-    tel: &dyn crate::telemetry::Telemetry,
+    env: &HashMap<Var, Ty>,
+    out: &mut Diagnostics,
+    nominals: Nominals<'_>,
+    tel: &dyn Telemetry,
 ) {
-    use crate::diag::{Diagnostic, Span, codes::TYPE_DEAD_BINOP};
     let Prim::BinOp(op, lhs, rhs) = prim else {
         return;
     };
@@ -653,60 +588,42 @@ fn collect_dead_binop_diagnostic<
         // of an erased brand/opaque, emit a telemetry signal and let it sail
         // — the runtime comparison is real and brand-blind (fz-bsx).
         if t.differs_only_nominally(&ta_ty, &tb_ty, nominals) {
-            tel.event(
-                &["fz", "type", "brand_blind_eq"],
-                crate::metadata! { units: 1u64 },
-            );
+            tel.event(&["fz", "type", "brand_blind_eq"], metadata! { units: 1u64 });
         }
         return;
     }
-    let span = spans
-        .and_then(|s| s.get(sidx).copied())
-        .unwrap_or(Span::DUMMY);
+    let span = spans.and_then(|s| s.get(sidx).copied()).unwrap_or(Span::DUMMY);
     if span.is_dummy() {
         return;
     }
-    let constant = if matches!(op, BinOp::Eq) {
-        "false"
-    } else {
-        "true"
-    };
+    let constant = if matches!(op, BinOp::Eq) { "false" } else { "true" };
     let opname = if matches!(op, BinOp::Eq) { "==" } else { "!=" };
-    let message = format!(
-        "`{}` is always {}: operand types do not overlap",
-        opname, constant,
-    );
+    let message = format!("`{}` is always {}: operand types do not overlap", opname, constant,);
     let note = format!(
         "left has type `{}`; right has type `{}`",
         t.display_for_diag(&ta_ty),
         t.display_for_diag(&tb_ty),
     );
     out.push(
-        Diagnostic::warning(TYPE_DEAD_BINOP, message, span)
+        Diagnostic::warning(codes::TYPE_DEAD_BINOP, message, span)
             .with_label(format!("in fn `{}`", fn_name))
             .with_note(note),
     );
 }
 
-fn collect_opaque_arithmetic_diagnostic<
-    T: crate::types::Types<Ty = crate::types::Ty> + crate::types::RenderTypes,
->(
+fn collect_opaque_arithmetic_diagnostic<T: Types<Ty = Ty> + RenderTypes>(
     t: &mut T,
     fn_name: &str,
-    spans: Option<&Vec<crate::diag::Span>>,
+    spans: Option<&Vec<Span>>,
     sidx: usize,
     prim: &Prim,
-    env: &HashMap<Var, crate::types::Ty>,
-    out: &mut crate::diag::Diagnostics,
+    env: &HashMap<Var, Ty>,
+    out: &mut Diagnostics,
 ) {
-    use crate::diag::{Diagnostic, Span};
     let Prim::BinOp(op, lhs, rhs) = prim else {
         return;
     };
-    if !matches!(
-        op,
-        BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod
-    ) {
+    if !matches!(op, BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod) {
         return;
     }
     let ta_ty = env.get(lhs).cloned().unwrap_or_else(|| t.none());
@@ -716,14 +633,9 @@ fn collect_opaque_arithmetic_diagnostic<
     let Some((which, tag)) = opaque_operand_label(&lhs_opaque, &rhs_opaque) else {
         return;
     };
-    let span = spans
-        .and_then(|s| s.get(sidx).copied())
-        .unwrap_or(Span::DUMMY);
+    let span = spans.and_then(|s| s.get(sidx).copied()).unwrap_or(Span::DUMMY);
     let opname = arithmetic_op_name(*op);
-    let message = format!(
-        "arithmetic `{}` is not defined for opaque type `{}`",
-        opname, tag
-    );
+    let message = format!("arithmetic `{}` is not defined for opaque type `{}`", opname, tag);
     let note = format!(
         "{} operand has type `{}`; opaque types are nominally \
          disjoint from `int` and `float`. Use `==` / `!=` for \
@@ -732,25 +644,22 @@ fn collect_opaque_arithmetic_diagnostic<
         t.display_for_diag(if which == "left" { &ta_ty } else { &tb_ty }),
     );
     out.push(
-        Diagnostic::error(crate::diag::codes::TYPE_OPAQUE_ARITHMETIC, message, span)
+        Diagnostic::error(codes::TYPE_OPAQUE_ARITHMETIC, message, span)
             .with_label(format!("in fn `{}`", fn_name))
             .with_note(note),
     );
 }
 
-fn collect_opaque_visibility_diagnostic<
-    T: crate::types::Types<Ty = crate::types::Ty> + crate::types::VisibilityTypes,
->(
+fn collect_opaque_visibility_diagnostic<T: Types<Ty = Ty> + VisibilityTypes>(
     t: &mut T,
     module: &Module,
     fn_name: &str,
-    spans: Option<&Vec<crate::diag::Span>>,
+    spans: Option<&Vec<Span>>,
     sidx: usize,
     prim: &Prim,
-    env: &HashMap<Var, crate::types::Ty>,
-    out: &mut crate::diag::Diagnostics,
+    env: &HashMap<Var, Ty>,
+    out: &mut Diagnostics,
 ) {
-    use crate::diag::{Diagnostic, Span};
     let Prim::MapGet(map_v, key_v) = prim else {
         return;
     };
@@ -766,16 +675,10 @@ fn collect_opaque_visibility_diagnostic<
     let Err(err) = t.check_opaque_visibility(&mt_ty, fn_module_of(fn_name)) else {
         return;
     };
-    let span = spans
-        .and_then(|s| s.get(sidx).copied())
-        .unwrap_or(Span::DUMMY);
+    let span = spans.and_then(|s| s.get(sidx).copied()).unwrap_or(Span::DUMMY);
     out.push(
-        Diagnostic::error(
-            crate::diag::codes::TYPE_OPAQUE_VISIBILITY,
-            format!("{}", err),
-            span,
-        )
-        .with_label(format!("in fn `{}`", fn_name)),
+        Diagnostic::error(codes::TYPE_OPAQUE_VISIBILITY, format!("{}", err), span)
+            .with_label(format!("in fn `{}`", fn_name)),
     );
 }
 
@@ -807,10 +710,7 @@ fn arithmetic_op_name(op: BinOp) -> &'static str {
 /// receive guards: TailCall / Goto / If / Halt / Return are allowed, while
 /// Call / CallClosure / TailCallClosure / Receive / ReceiveMatched are
 /// forbidden because they introduce side effects or allocate continuations.
-pub fn check_matcher_purity(module: &Module) -> Vec<crate::diag::Diagnostic> {
-    use crate::diag::{Diagnostic, Span};
-    use crate::fz_ir::{FnCategory, Term};
-
+pub fn check_matcher_purity(module: &Module) -> Vec<Diagnostic> {
     let mut out: Vec<Diagnostic> = Vec::new();
     for f in &module.fns {
         if f.category != FnCategory::Matcher {
@@ -841,15 +741,11 @@ pub fn check_matcher_purity(module: &Module) -> Vec<crate::diag::Diagnostic> {
                     reason = Some("matcher fn body contains a `receive`".into());
                     break;
                 }
-                Term::Goto(..)
-                | Term::If { .. }
-                | Term::TailCall { .. }
-                | Term::Halt(_)
-                | Term::Return(_) => {}
+                Term::Goto(..) | Term::If { .. } | Term::TailCall { .. } | Term::Halt(_) | Term::Return(_) => {}
             }
         }
         if let Some(msg) = reason {
-            let d = Diagnostic::error(crate::diag::codes::TYPE_IMPURE_MATCHER, msg, Span::DUMMY)
+            let d = Diagnostic::error(codes::TYPE_IMPURE_MATCHER, msg, Span::DUMMY)
                 .with_label(format!("in matcher fn `{}`", f.name))
                 .with_note(
                     "Matcher fns own matcher dispatch and must stay pure: no allocation, \

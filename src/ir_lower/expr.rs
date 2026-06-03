@@ -1,20 +1,25 @@
+use super::extern_table::extern_ty_from_name;
 use super::*;
 use crate::ast::{
-    BinOp as AstBinOp, BitField as AstBitField, BitSize as AstBitSize, Expr, FnDef, MatchClause,
-    Pattern, Spanned, UnOp as AstUnOp, WithBinding,
+    BinOp as AstBinOp, BitField as AstBitField, BitSize as AstBitSize, Expr, FnDef, MatchClause, Pattern, Spanned,
+    TypeExprBody, UnOp as AstUnOp, WithBinding, lambda_direct_clause,
 };
 use crate::diag::Span;
 use crate::fz_ir::{
-    BinOp, BitFieldIr, BitSizeIr, BlockId, Const, ExternArg, ExternTy, FnBuilder, Prim, Term, UnOp,
-    Var,
+    BinOp, BitFieldIr, BitSizeIr, BlockId, BranchOrigin, CallsiteIdent, Const, ContinuationProvenance,
+    ContinuationProvenanceKind, ExternArg, ExternTy, FnBuilder, FnCategory, Prim, Term, UnOp, Var,
 };
-
+use crate::modules::identity::ModuleName;
+use crate::parser::lexer::Tok;
 use crate::pattern_matrix::{BodyId, PatternMatrix, Row};
-pub(crate) fn lower_fn<T: crate::types::Types<Ty = crate::types::Ty>>(
+use crate::types::{Ty, Types};
+use std::collections::HashMap;
+use std::mem::discriminant;
+pub(crate) fn lower_fn<T: Types<Ty = Ty>>(
     ctx: &mut LowerCtx,
     t: &mut T,
     fn_def: &FnDef,
-    category: crate::fz_ir::FnCategory,
+    category: FnCategory,
 ) -> Result<(), LowerError> {
     if fn_def.is_macro {
         // Macros are consumed by expansion before lowering.
@@ -83,16 +88,16 @@ pub(crate) fn lower_fn<T: crate::types::Types<Ty = crate::types::Ty>>(
         ctx.cur_block = Some(entry);
 
         let prev_origin = ctx.branch_origin;
-        ctx.branch_origin = crate::fz_ir::BranchOrigin::ClauseDispatch;
+        ctx.branch_origin = BranchOrigin::ClauseDispatch;
         for (pv, pat) in param_vars.iter().zip(&clause.params) {
             lower_pattern_bind(ctx, *pv, pat, fail_block)?;
             // Record the pattern's span on the param Var if not yet named
             // by the pattern walker (e.g. tuple-destructured params).
             ctx.name_var(*pv, "", pat.span);
         }
-        ctx.branch_origin = crate::fz_ir::BranchOrigin::ParamGuard;
+        ctx.branch_origin = BranchOrigin::ParamGuard;
         emit_param_type_guards(ctx, t, clause, &param_vars, fail_block)?;
-        ctx.branch_origin = crate::fz_ir::BranchOrigin::ClauseDispatch;
+        ctx.branch_origin = BranchOrigin::ClauseDispatch;
         if let Some(g) = &clause.guard {
             let guard_var = lower_expr(ctx, g, false)?;
             let body_b = ctx.cur_mut().block(vec![]);
@@ -124,11 +129,7 @@ pub(crate) fn bind_param_topname(ctx: &mut LowerCtx, pv: Var, pat: &Spanned<Patt
         ctx.bind(name, pv);
     }
 }
-pub(crate) fn lower_expr(
-    ctx: &mut LowerCtx,
-    e: &Spanned<Expr>,
-    is_tail: bool,
-) -> Result<Var, LowerError> {
+pub(crate) fn lower_expr(ctx: &mut LowerCtx, e: &Spanned<Expr>, is_tail: bool) -> Result<Var, LowerError> {
     let sp = e.span;
     match &e.node {
         Expr::Int(n) => Ok(ctx.let_at(Prim::Const(Const::Int(*n)), sp)),
@@ -262,7 +263,7 @@ pub(crate) fn lower_expr(
             let v = lower_expr(ctx, expr, false)?;
             let fail_block = ctx.cur_mut().block(vec![]);
             let prev_origin = ctx.branch_origin;
-            ctx.branch_origin = crate::fz_ir::BranchOrigin::PatternBind;
+            ctx.branch_origin = BranchOrigin::PatternBind;
             let res = lower_pattern_bind(ctx, v, pat, fail_block);
             ctx.branch_origin = prev_origin;
             res?;
@@ -341,8 +342,7 @@ pub(crate) fn lower_expr(
             let arity = arg_vars.len();
             let local_callee = ctx.fns.get(&(callee_name.clone(), arity)).copied();
             let callee_name = if local_callee.is_none() {
-                ctx.resolve_prelude_import(&callee_name, arity)
-                    .unwrap_or(callee_name)
+                ctx.resolve_prelude_import(&callee_name, arity).unwrap_or(callee_name)
             } else {
                 callee_name
             };
@@ -362,8 +362,7 @@ pub(crate) fn lower_expr(
                 )?;
                 return Ok(ctx.let_at(Prim::extern_call(sp, eid, extern_args), sp));
             }
-            let local_callee =
-                local_callee.or_else(|| ctx.fns.get(&(callee_name.clone(), arity)).copied());
+            let local_callee = local_callee.or_else(|| ctx.fns.get(&(callee_name.clone(), arity)).copied());
             let external_callee = if local_callee.is_none() {
                 ctx.external_callee(&callee_name, arity)
             } else {
@@ -383,7 +382,7 @@ pub(crate) fn lower_expr(
                 })?;
             if is_tail {
                 let term = Term::TailCall {
-                    ident: crate::fz_ir::CallsiteIdent::from_source(sp),
+                    ident: CallsiteIdent::from_source(sp),
                     callee,
                     args: arg_vars,
                     is_back_edge: false, // annotate_back_edges fills this in post-lowering
@@ -411,7 +410,7 @@ pub(crate) fn lower_expr(
             if is_tail {
                 ctx.set_term_at(
                     Term::TailCallClosure {
-                        ident: crate::fz_ir::CallsiteIdent::from_source(sp),
+                        ident: CallsiteIdent::from_source(sp),
                         closure: closure_var,
                         args: arg_vars,
                     },
@@ -429,12 +428,11 @@ pub(crate) fn lower_expr(
             // clause lowers today. Multi-clause/guarded lambdas desugar to a
             // pattern-matrix lambda in fz-g58.15 (Arc 3); until then both paths
             // reject them identically (three-path parity).
-            match crate::ast::lambda_direct_clause(clauses) {
+            match lambda_direct_clause(clauses) {
                 Some(clause) => lower_lambda(ctx, &clause.params, &clause.body, sp),
                 None => Err(LowerError::Unsupported {
                     span: sp,
-                    what: "multi-clause or guarded `fn` requires desugaring (fz-g58.15)"
-                        .to_string(),
+                    what: "multi-clause or guarded `fn` requires desugaring (fz-g58.15)".to_string(),
                 }),
             }
         }
@@ -445,14 +443,10 @@ pub(crate) fn lower_expr(
             what: "headless case must appear on the right side of a pipe".into(),
         }),
         Expr::Cond(arms) => lower_cond(ctx, arms, is_tail, sp),
-        Expr::With(bindings, body, else_clauses) => {
-            lower_with(ctx, bindings, body, else_clauses, is_tail, sp)
-        }
+        Expr::With(bindings, body, else_clauses) => lower_with(ctx, bindings, body, else_clauses, is_tail, sp),
         // fz-yxs — selective receive: lower into Term::ReceiveMatched with
         // per-clause body/guard fns and an optional after body fn.
-        Expr::Receive { clauses, after } => {
-            lower_receive(ctx, clauses, after.as_deref(), is_tail, sp)
-        }
+        Expr::Receive { clauses, after } => lower_receive(ctx, clauses, after.as_deref(), is_tail, sp),
         Expr::Map(entries) => lower_map(ctx, entries),
         Expr::MapUpdate(base, entries) => lower_map_update(ctx, base, entries),
         Expr::Index(map, key) => lower_index(ctx, map, key),
@@ -473,10 +467,7 @@ pub(crate) fn lower_expr(
 /// Lower a sequence of subexpressions, parking each result in env so that any
 /// CPS-split triggered by a later element rebinds the earlier results into the
 /// continuation. Caller unparks/unbinds.
-pub(crate) fn lower_seq(
-    ctx: &mut LowerCtx,
-    exprs: &[Spanned<Expr>],
-) -> Result<Vec<String>, LowerError> {
+pub(crate) fn lower_seq(ctx: &mut LowerCtx, exprs: &[Spanned<Expr>]) -> Result<Vec<String>, LowerError> {
     let mut parks = Vec::with_capacity(exprs.len());
     for e in exprs {
         let v = lower_expr(ctx, e, false)?;
@@ -487,13 +478,10 @@ pub(crate) fn lower_seq(
 
 struct LoweredCallArg {
     var: Var,
-    ascription: Option<crate::ast::TypeExprBody>,
+    ascription: Option<TypeExprBody>,
 }
 
-fn lower_call_args(
-    ctx: &mut LowerCtx,
-    args: &[Spanned<Expr>],
-) -> Result<Vec<LoweredCallArg>, LowerError> {
+fn lower_call_args(ctx: &mut LowerCtx, args: &[Spanned<Expr>]) -> Result<Vec<LoweredCallArg>, LowerError> {
     let mut parks = Vec::with_capacity(args.len());
     let mut ascriptions = Vec::with_capacity(args.len());
     for arg in args {
@@ -522,7 +510,7 @@ fn extern_args_for_call(
     decl: &ExternDecl,
     callee_name: &str,
     arg_vars: Vec<Var>,
-    ascriptions: Vec<Option<crate::ast::TypeExprBody>>,
+    ascriptions: Vec<Option<TypeExprBody>>,
     span: Span,
 ) -> Result<Vec<ExternArg>, LowerError> {
     let fixed = decl.params.len();
@@ -566,10 +554,7 @@ fn extern_args_for_call(
                 }
                 Ok(ExternArg::fixed(var, fixed_ty))
             } else if let Some(body) = ascription {
-                Ok(ExternArg::ascribed(
-                    var,
-                    extern_ty_from_ascription(&body, span)?,
-                ))
+                Ok(ExternArg::ascribed(var, extern_ty_from_ascription(&body, span)?))
             } else {
                 Ok(ExternArg::auto(var))
             }
@@ -577,10 +562,7 @@ fn extern_args_for_call(
         .collect()
 }
 
-fn extern_ty_from_ascription(
-    body: &crate::ast::TypeExprBody,
-    span: Span,
-) -> Result<ExternTy, LowerError> {
+fn extern_ty_from_ascription(body: &TypeExprBody, span: Span) -> Result<ExternTy, LowerError> {
     let Some(tok) = body.0.first().map(|t| &t.tok) else {
         return Err(LowerError::Unsupported {
             span,
@@ -588,10 +570,8 @@ fn extern_ty_from_ascription(
         });
     };
     let name = match tok {
-        crate::parser::lexer::Tok::Ident(name) | crate::parser::lexer::Tok::Upper(name) => {
-            name.as_str()
-        }
-        crate::parser::lexer::Tok::Nil => "nil",
+        Tok::Ident(name) | Tok::Upper(name) => name.as_str(),
+        Tok::Nil => "nil",
         _ => {
             return Err(LowerError::Unsupported {
                 span,
@@ -599,7 +579,7 @@ fn extern_ty_from_ascription(
             });
         }
     };
-    super::extern_table::extern_ty_from_name(name).ok_or_else(|| LowerError::Unsupported {
+    extern_ty_from_name(name).ok_or_else(|| LowerError::Unsupported {
         span,
         what: format!("unknown extern call-arg ascription `{}`", name),
     })
@@ -707,9 +687,7 @@ pub(crate) fn lower_pattern_bind(
         Pattern::Tuple(elems) => match_tuple(ctx, subject, elems, fail_block),
         Pattern::List(elems, tail) => match_list(ctx, subject, elems, tail.as_deref(), fail_block),
         Pattern::Map(entries) => match_map(ctx, subject, entries, fail_block),
-        Pattern::Struct { module, fields } => {
-            match_struct(ctx, subject, module, fields, fail_block)
-        }
+        Pattern::Struct { module, fields } => match_struct(ctx, subject, module, fields, fail_block),
         Pattern::Bitstring(fields) => match_bitstring(ctx, subject, fields, fail_block),
     }
 }
@@ -797,7 +775,7 @@ pub(super) fn match_map(
 pub(super) fn match_struct(
     ctx: &mut LowerCtx,
     subject: Var,
-    _module: &crate::modules::identity::ModuleName,
+    _module: &ModuleName,
     fields: &[(String, Spanned<Pattern>)],
     fail_block: BlockId,
 ) -> Result<(), LowerError> {
@@ -855,10 +833,7 @@ pub(super) fn match_bitstring(
 
 /// Lower a Pattern that represents a map key. Map keys in patterns are
 /// constants (atoms, ints, strings, ...) — no var-binding allowed.
-pub(super) fn lower_pattern_as_key_expr(
-    ctx: &mut LowerCtx,
-    sp: &Spanned<Pattern>,
-) -> Result<Var, LowerError> {
+pub(super) fn lower_pattern_as_key_expr(ctx: &mut LowerCtx, sp: &Spanned<Pattern>) -> Result<Var, LowerError> {
     Ok(match &sp.node {
         Pattern::Int(n) => ctx.let_(Prim::Const(Const::Int(*n))),
         Pattern::Float(x) => ctx.let_(Prim::Const(Const::Float(*x))),
@@ -880,10 +855,7 @@ pub(super) fn lower_pattern_as_key_expr(
         other => {
             return Err(LowerError::Unsupported {
                 span: sp.span,
-                what: format!(
-                    "map-pattern keys must be constants, got {:?}",
-                    std::mem::discriminant(other)
-                ),
+                what: format!("map-pattern keys must be constants, got {:?}", discriminant(other)),
             });
         }
     })
@@ -925,10 +897,7 @@ pub(super) fn emit_eq_check(
 // Expression lowerings added in fz-ul4.11.17
 // ----------------------------------------------------------------------
 
-pub(super) fn lower_map(
-    ctx: &mut LowerCtx,
-    entries: &[(Spanned<Expr>, Spanned<Expr>)],
-) -> Result<Var, LowerError> {
+pub(super) fn lower_map(ctx: &mut LowerCtx, entries: &[(Spanned<Expr>, Spanned<Expr>)]) -> Result<Var, LowerError> {
     let mut key_parks = Vec::with_capacity(entries.len());
     let mut val_parks = Vec::with_capacity(entries.len());
     for (k, v) in entries {
@@ -982,11 +951,7 @@ pub(super) fn lower_map_update(
     Ok(ctx.let_(Prim::MapUpdate(base_v, pairs)))
 }
 
-pub(super) fn lower_index(
-    ctx: &mut LowerCtx,
-    m: &Spanned<Expr>,
-    k: &Spanned<Expr>,
-) -> Result<Var, LowerError> {
+pub(super) fn lower_index(ctx: &mut LowerCtx, m: &Spanned<Expr>, k: &Spanned<Expr>) -> Result<Var, LowerError> {
     let mv = lower_expr(ctx, m, false)?;
     let m_park = ctx.park(mv);
     let kv = lower_expr(ctx, k, false)?;
@@ -997,7 +962,7 @@ pub(super) fn lower_index(
 
 pub(super) fn lower_struct(
     ctx: &mut LowerCtx,
-    module: &crate::modules::identity::ModuleName,
+    module: &ModuleName,
     fields: &[(String, Spanned<Expr>)],
     span: Span,
 ) -> Result<Var, LowerError> {
@@ -1011,7 +976,7 @@ pub(super) fn lower_struct(
     let by_name = fields
         .iter()
         .map(|(name, expr)| (name.clone(), expr))
-        .collect::<std::collections::HashMap<_, _>>();
+        .collect::<HashMap<_, _>>();
     let mut lowered = Vec::with_capacity(order.len());
     for name in order {
         let value = if let Some(expr) = by_name.get(&name) {
@@ -1090,12 +1055,7 @@ pub(super) fn lower_case(
     let join_opt = if is_tail {
         None
     } else {
-        Some(mint_cont_fn(
-            ctx,
-            "case_join",
-            case_span,
-            crate::fz_ir::FnCategory::ControlFlowCont,
-        ))
+        Some(mint_cont_fn(ctx, "case_join", case_span, FnCategory::ControlFlowCont))
     };
 
     let fail_block = ctx.cur_mut().block(vec![]);
@@ -1131,7 +1091,7 @@ pub(super) fn lower_case(
 
     let mut clause_conts: Vec<Option<ContFn>> = (0..clauses.len()).map(|_| None).collect();
     let prev_origin = ctx.branch_origin;
-    ctx.branch_origin = crate::fz_ir::BranchOrigin::ClauseDispatch;
+    ctx.branch_origin = BranchOrigin::ClauseDispatch;
     {
         let clauses_ref = clauses;
         let clause_conts_ref = &mut clause_conts;
@@ -1140,8 +1100,8 @@ pub(super) fn lower_case(
         let mut cb = |ctx: &mut LowerCtx,
                       body_id: BodyId,
                       bindings: Vec<MatchedBinding>,
-                      _preconds: Vec<(Var, crate::types::Ty)>,
-                      guard: Option<crate::ast::Spanned<crate::ast::Expr>>,
+                      _preconds: Vec<(Var, Ty)>,
+                      guard: Option<Spanned<Expr>>,
                       fall_block: BlockId|
          -> Result<(), LowerError> {
             let i = body_id as usize;
@@ -1165,15 +1125,15 @@ pub(super) fn lower_case(
                         ctx,
                         format!("case_clause_{}", i),
                         clause.span,
-                        crate::fz_ir::FnCategory::ControlFlowCont,
+                        FnCategory::ControlFlowCont,
                     );
                     ctx.record_continuation_provenance(
                         cont.id,
-                        crate::fz_ir::ContinuationProvenance {
+                        ContinuationProvenance {
                             caller: ctx.cur_fn_id.expect("lower_case: missing current fn id"),
                             captured: cont.outer_captured.iter().map(|(_, var)| *var).collect(),
                             capture_param_offset: 0,
-                            kind: crate::fz_ir::ContinuationProvenanceKind::MatcherBody {
+                            kind: ContinuationProvenanceKind::MatcherBody {
                                 bindings: bindings
                                     .iter()
                                     .map(|binding| (binding.var, binding.source.clone()))
@@ -1187,7 +1147,7 @@ pub(super) fn lower_case(
             };
             let capture_vars = cont_call_args(ctx, &clause_cont);
             ctx.set_term(Term::TailCall {
-                ident: crate::fz_ir::CallsiteIdent::from_source(clause.span),
+                ident: CallsiteIdent::from_source(clause.span),
                 callee: clause_cont.id,
                 args: capture_vars,
                 is_back_edge: false,
@@ -1245,12 +1205,7 @@ pub(super) fn lower_cond(
     let join_opt = if is_tail {
         None
     } else {
-        Some(mint_cont_fn(
-            ctx,
-            "cond_join",
-            cond_span,
-            crate::fz_ir::FnCategory::ControlFlowCont,
-        ))
+        Some(mint_cont_fn(ctx, "cond_join", cond_span, FnCategory::ControlFlowCont))
     };
 
     // Per-arm cont fns + fail cont.
@@ -1260,22 +1215,17 @@ pub(super) fn lower_cond(
                 ctx,
                 format!("cond_arm_{}", i),
                 arms[i].0.span,
-                crate::fz_ir::FnCategory::ControlFlowCont,
+                FnCategory::ControlFlowCont,
             )
         })
         .collect();
-    let fail_cont = mint_cont_fn(
-        ctx,
-        "cond_fail",
-        cond_span,
-        crate::fz_ir::FnCategory::ControlFlowCont,
-    );
+    let fail_cont = mint_cont_fn(ctx, "cond_fail", cond_span, FnCategory::ControlFlowCont);
 
     // Outer fn: TailCall first arm.
     let captures = ctx.visible_locals();
     let capture_vars: Vec<Var> = captures.iter().map(|(_, v)| *v).collect();
     ctx.set_term(Term::TailCall {
-        ident: crate::fz_ir::CallsiteIdent::from_source(Span::DUMMY),
+        ident: CallsiteIdent::from_source(Span::DUMMY),
         callee: arm_conts[0].id,
         args: capture_vars,
         is_back_edge: false,
@@ -1292,7 +1242,7 @@ pub(super) fn lower_cond(
         let body_b = ctx.cur_mut().block(vec![]);
         let fall_b = ctx.cur_mut().block(vec![]);
         let prev_origin = ctx.branch_origin;
-        ctx.branch_origin = crate::fz_ir::BranchOrigin::ClauseDispatch;
+        ctx.branch_origin = BranchOrigin::ClauseDispatch;
         ctx.set_if_term(cv, body_b, fall_b);
         ctx.branch_origin = prev_origin;
 
@@ -1303,7 +1253,7 @@ pub(super) fn lower_cond(
         let fall_capture_vars: Vec<Var> = fall_captures.iter().map(|(_, v)| *v).collect();
         ctx.cur_block = Some(fall_b);
         ctx.set_term(Term::TailCall {
-            ident: crate::fz_ir::CallsiteIdent::from_source(Span::DUMMY),
+            ident: CallsiteIdent::from_source(Span::DUMMY),
             callee: next_id,
             args: fall_capture_vars,
             is_back_edge: false,
@@ -1360,23 +1310,13 @@ pub(super) fn lower_with(
     let join_opt = if is_tail {
         None
     } else {
-        Some(mint_cont_fn(
-            ctx,
-            "with_join",
-            with_span,
-            crate::fz_ir::FnCategory::ControlFlowCont,
-        ))
+        Some(mint_cont_fn(ctx, "with_join", with_span, FnCategory::ControlFlowCont))
     };
 
     // with_fail_cont: a continuation fn that receives (unmatched_value,
     // ...outer_captures). Minted now so we know its FnId before walking
     // bindings.
-    let with_fail_cont = mint_cont_fn(
-        ctx,
-        "with_fail",
-        with_span,
-        crate::fz_ir::FnCategory::ControlFlowCont,
-    );
+    let with_fail_cont = mint_cont_fn(ctx, "with_fail", with_span, FnCategory::ControlFlowCont);
 
     // -- Main path: walk bindings.
     for binding in bindings {
@@ -1399,16 +1339,15 @@ pub(super) fn lower_with(
                 let mut args = Vec::with_capacity(1 + with_fail_cont.outer_captured.len());
                 args.push(v_in_mismatch);
                 for (name, _) in &with_fail_cont.outer_captured {
-                    let cv = ctx.env.get(name).copied().unwrap_or_else(|| {
-                        panic!(
-                            "lower_with: captured name `{}` not in env at mismatch",
-                            name
-                        )
-                    });
+                    let cv = ctx
+                        .env
+                        .get(name)
+                        .copied()
+                        .unwrap_or_else(|| panic!("lower_with: captured name `{}` not in env at mismatch", name));
                     args.push(cv);
                 }
                 ctx.set_term(Term::TailCall {
-                    ident: crate::fz_ir::CallsiteIdent::from_source(Span::DUMMY),
+                    ident: CallsiteIdent::from_source(Span::DUMMY),
                     callee: with_fail_cont.id,
                     args,
                     is_back_edge: false,
@@ -1417,7 +1356,7 @@ pub(super) fn lower_with(
                 let v_resolved = ctx.unpark(&v_park);
                 ctx.unbind(&v_park);
                 let prev_origin = ctx.branch_origin;
-                ctx.branch_origin = crate::fz_ir::BranchOrigin::PatternBind;
+                ctx.branch_origin = BranchOrigin::PatternBind;
                 let res = lower_pattern_bind(ctx, v_resolved, pat, mismatch_b);
                 ctx.branch_origin = prev_origin;
                 res?;
@@ -1473,7 +1412,7 @@ pub(super) fn lower_with(
 
         let mut else_conts: Vec<Option<ContFn>> = (0..else_clauses.len()).map(|_| None).collect();
         let prev_origin = ctx.branch_origin;
-        ctx.branch_origin = crate::fz_ir::BranchOrigin::ClauseDispatch;
+        ctx.branch_origin = BranchOrigin::ClauseDispatch;
         {
             let else_conts_ref = &mut else_conts;
             let saved_fail_env_ref = &saved_fail_env;
@@ -1481,8 +1420,8 @@ pub(super) fn lower_with(
             let mut cb = |ctx: &mut LowerCtx,
                           body_id: BodyId,
                           bindings: Vec<MatchedBinding>,
-                          _preconds: Vec<(Var, crate::types::Ty)>,
-                          guard: Option<crate::ast::Spanned<crate::ast::Expr>>,
+                          _preconds: Vec<(Var, Ty)>,
+                          guard: Option<Spanned<Expr>>,
                           fall_block: BlockId|
              -> Result<(), LowerError> {
                 let i = body_id as usize;
@@ -1506,17 +1445,15 @@ pub(super) fn lower_with(
                             ctx,
                             format!("with_else_{}", i),
                             clause.span,
-                            crate::fz_ir::FnCategory::ControlFlowCont,
+                            FnCategory::ControlFlowCont,
                         );
                         ctx.record_continuation_provenance(
                             cont.id,
-                            crate::fz_ir::ContinuationProvenance {
-                                caller: ctx
-                                    .cur_fn_id
-                                    .expect("lower_with else: missing current fn id"),
+                            ContinuationProvenance {
+                                caller: ctx.cur_fn_id.expect("lower_with else: missing current fn id"),
                                 captured: cont.outer_captured.iter().map(|(_, var)| *var).collect(),
                                 capture_param_offset: 0,
-                                kind: crate::fz_ir::ContinuationProvenanceKind::MatcherBody {
+                                kind: ContinuationProvenanceKind::MatcherBody {
                                     bindings: bindings
                                         .iter()
                                         .map(|binding| (binding.var, binding.source.clone()))
@@ -1530,7 +1467,7 @@ pub(super) fn lower_with(
                 };
                 let capture_vars = cont_call_args(ctx, &cont);
                 ctx.set_term(Term::TailCall {
-                    ident: crate::fz_ir::CallsiteIdent::from_source(clause.span),
+                    ident: CallsiteIdent::from_source(clause.span),
                     callee: cont.id,
                     args: capture_vars,
                     is_back_edge: false,
@@ -1538,8 +1475,7 @@ pub(super) fn lower_with(
                 ctx.terminated = true;
                 Ok(())
             };
-            let result =
-                lower_pattern_matrix_to_current_fn(ctx, pattern_matrix, fail_block, &mut cb);
+            let result = lower_pattern_matrix_to_current_fn(ctx, pattern_matrix, fail_block, &mut cb);
             ctx.branch_origin = prev_origin;
             result?;
         }

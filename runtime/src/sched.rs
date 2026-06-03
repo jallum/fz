@@ -11,11 +11,14 @@
 //! `scheduler_hooks::dispatch_timer_cancel`, which dispatches to
 //! whichever wheel the caller installed.
 
-use crate::any_value::{self, AnyValue, ValueKind};
+use crate::any_value::{self, AnyValue, AnyValueRef, ValueKind};
+use crate::exec_ctx::timer_cancel;
 use crate::heap::Heap;
 use crate::park::materialize_outcome_closure;
 use crate::process::{Process, ProcessState};
 use crate::timer::TimerId;
+use std::collections::VecDeque;
+use std::ptr::write;
 
 /// Mint a fresh-task entry thunk on `heap`: a one-capture closure whose code
 /// is `fz_entry_thunk` and whose capture[0] is `inner` (the task's inner
@@ -32,11 +35,10 @@ pub fn mint_entry_thunk(heap: &mut Heap, entry_thunk_addr: *const u8, inner: *mu
     let bits = heap.alloc_closure_slots_with_schema(SCAFFOLDING_SCHEMA_ID, 1, 0);
     let p = any_value::closure_addr_from_tagged(bits).expect("entry thunk closure ptr");
     let inner_av = AnyValue::HeapRef(
-        any_value::AnyValueRef::from_heap_object(ValueKind::CLOSURE, inner as *const u8)
-            .expect("entry thunk inner closure ref"),
+        AnyValueRef::from_heap_object(ValueKind::CLOSURE, inner as *const u8).expect("entry thunk inner closure ref"),
     );
     unsafe {
-        std::ptr::write(p.add(8) as *mut u64, entry_thunk_addr as u64);
+        write(p.add(8) as *mut u64, entry_thunk_addr as u64);
         any_value::closure_capture_set(p, 0, inner_av);
     }
     p
@@ -60,7 +62,7 @@ pub fn mint_main_inner(
     let bits = heap.alloc_closure_slots_with_schema(SCAFFOLDING_SCHEMA_ID, 1, halt_kind);
     let p = any_value::closure_addr_from_tagged(bits).expect("main inner closure ptr");
     unsafe {
-        std::ptr::write(p.add(8) as *mut u64, main_trampoline_addr as u64);
+        write(p.add(8) as *mut u64, main_trampoline_addr as u64);
         any_value::closure_capture_set(p, 0, AnyValue::Int(main_fp as i64));
     }
     p
@@ -88,7 +90,7 @@ pub enum ProbeOutcome {
 ///
 /// If not parked: push msg to mailbox. Returns Miss; caller may apply
 /// the non-selective wake rule itself.
-pub fn probe_sender(task: &mut Process, msg: crate::any_value::AnyValueRef) -> ProbeOutcome {
+pub fn probe_sender(task: &mut Process, msg: AnyValueRef) -> ProbeOutcome {
     let task_ptr: *mut Process = task;
     if let Some(park) = task.wait.as_ref() {
         match park.try_match(task_ptr, msg) {
@@ -100,7 +102,7 @@ pub fn probe_sender(task: &mut Process, msg: crate::any_value::AnyValueRef) -> P
                 let cont = materialize_outcome_closure(&mut task.heap, template, &bound_vals);
                 task.wait = None;
                 if let Some(id) = timer_id {
-                    crate::exec_ctx::timer_cancel(task, id);
+                    timer_cancel(task, id);
                 }
                 task.set_runnable_closure(cont);
                 task.state = ProcessState::Ready;
@@ -143,9 +145,8 @@ pub fn initial_scan(task: &mut Process) -> ScanOutcome {
     }
     let task_ptr: *mut Process = task;
 
-    let mut hit: Option<(usize, Vec<crate::any_value::AnyValueRef>)> = None;
-    let mut scanned: std::collections::VecDeque<crate::any_value::AnyValueRef> =
-        std::collections::VecDeque::new();
+    let mut hit: Option<(usize, Vec<AnyValueRef>)> = None;
+    let mut scanned: VecDeque<AnyValueRef> = VecDeque::new();
     while let Some(msg) = task.mailbox.pop_front() {
         let park = task.wait.as_ref().expect("checked above");
         match park.try_match(task_ptr, msg) {
@@ -169,7 +170,7 @@ pub fn initial_scan(task: &mut Process) -> ScanOutcome {
             let cont = materialize_outcome_closure(&mut task.heap, template, &bound_vals);
             task.wait = None;
             if let Some(id) = timer_id {
-                crate::exec_ctx::timer_cancel(task, id);
+                timer_cancel(task, id);
             }
             task.set_runnable_closure(cont);
             ScanOutcome::Hit
@@ -211,6 +212,7 @@ mod tests {
     use crate::heap::SchemaRegistry;
     use crate::park::ParkRecord;
     use std::cell::RefCell;
+    use std::ptr::{read, write};
     use std::rc::Rc;
 
     extern "C" fn match_42(
@@ -242,10 +244,10 @@ mod tests {
 
     fn template_closure(task: &mut Process, stub: usize) -> *mut u8 {
         let bits = task.heap.alloc_closure_slots(0, 1, 0);
-        let p = crate::any_value::closure_addr_from_tagged(bits).expect("template closure ptr");
+        let p = any_value::closure_addr_from_tagged(bits).expect("template closure ptr");
         unsafe {
-            std::ptr::write(p.add(8) as *mut u64, stub as u64);
-            crate::any_value::closure_capture_set(p, 0, crate::any_value::AnyValue::null());
+            write(p.add(8) as *mut u64, stub as u64);
+            any_value::closure_capture_set(p, 0, AnyValue::null());
         }
         bits as *mut u8
     }
@@ -275,15 +277,10 @@ mod tests {
         let runnable = task.runnable_ptr();
         assert!(!runnable.is_null());
         unsafe {
-            assert_eq!(
-                std::ptr::read((runnable as *const u8).add(8) as *const u64),
-                0xdead_beef
-            );
+            assert_eq!(read((runnable as *const u8).add(8) as *const u64), 0xdead_beef);
             let cont_addr = runnable;
-            let capture_ref = crate::any_value::AnyValueRef::from_raw_word(
-                crate::any_value::closure_capture_ref_word(cont_addr, 1),
-            )
-            .expect("capture ref");
+            let capture_ref =
+                AnyValueRef::from_raw_word(any_value::closure_capture_ref_word(cont_addr, 1)).expect("capture ref");
             assert_eq!(capture_ref.load_int().expect("capture int ref"), 42);
         }
         assert!(task.mailbox.is_empty());

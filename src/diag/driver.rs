@@ -7,7 +7,9 @@ use super::diagnostic::{Diagnostic, Severity};
 use super::render::Renderer;
 use super::source_map::SourceMap;
 use crate::telemetry::Telemetry;
+use crate::telemetry::value::opaque;
 use crate::telemetry::{Metadata, Value};
+use std::process::exit;
 
 /// Render one diagnostic into a deterministic, color-free string.
 pub fn render_one_to_string(sm: &SourceMap, d: &Diagnostic) -> String {
@@ -32,10 +34,10 @@ pub fn emit_through(tel: &dyn Telemetry, sm: Option<&SourceMap>, diags: &[Diagno
             ("severity", Value::from(severity)),
             ("code", Value::from(d.code.0)),
             ("message", Value::from(d.message.as_str())),
-            ("diagnostic", crate::telemetry::value::opaque(d)),
+            ("diagnostic", opaque(d)),
         ];
         if let Some(sm) = sm {
-            metadata.push(("source_map", crate::telemetry::value::opaque(sm)));
+            metadata.push(("source_map", opaque(sm)));
         }
         tel.event(name, Metadata::from_pairs(metadata));
     }
@@ -51,7 +53,7 @@ pub fn report_or_exit_through(tel: &dyn Telemetry, diags: &[Diagnostic]) {
     }
     emit_through(tel, None, diags);
     if diags.iter().any(|d| d.severity == Severity::Error) {
-        std::process::exit(1);
+        exit(1);
     }
 }
 
@@ -61,6 +63,7 @@ mod tests {
     use crate::diag::Diagnostics;
     use crate::diag::diagnostic::DiagCode;
     use crate::diag::span::Span;
+    use crate::telemetry::capture::vec_writer;
     use std::cell::RefCell;
     use std::rc::Rc;
 
@@ -107,19 +110,12 @@ mod tests {
         let mut sm = SourceMap::new();
         let fid = sm.add_file("t.fz", "fn main(), do: :ok\n");
         let mut ds = Diagnostics::new();
-        ds.push(
-            Diagnostic::warning(DiagCode("test/w"), "headline", Span::new(fid, 0, 2))
-                .with_label("here"),
-        );
-        ds.push(Diagnostic::error(
-            DiagCode("test/e"),
-            "boom",
-            Span::new(fid, 3, 5),
-        ));
+        ds.push(Diagnostic::warning(DiagCode("test/w"), "headline", Span::new(fid, 0, 2)).with_label("here"));
+        ds.push(Diagnostic::error(DiagCode("test/e"), "boom", Span::new(fid, 3, 5)));
 
         let expected = render_diagnostics_to_string(&sm, ds.as_slice());
 
-        let (buf, w) = crate::telemetry::capture::vec_writer();
+        let (buf, w) = vec_writer();
         let sm_shared = Rc::new(RefCell::new(sm.clone()));
         let tel = ConfiguredTelemetry::new();
         tel.attach(

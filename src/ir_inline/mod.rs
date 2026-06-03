@@ -1,7 +1,9 @@
 use crate::fz_ir::{
-    BitSizeIr, Block, BlockId, Cont, FnCategory, FnId, FnIr, Module, Prim, Stmt, Term, Var,
+    BitFieldIr, BitSizeIr, Block, BlockId, CallsiteIdent, Cont, ContinuationProvenanceKind, ExternArg, FnCategory,
+    FnId, FnIr, Module, Prim, ReceiveAfter, ReceiveClause, Stmt, Term, Var,
 };
 use crate::ir_fuse::{subst_stmt, subst_term};
+use crate::ir_lower::compute_current_function_correspondence;
 use crate::ir_planner::fn_types::{CallableCapability, CapabilityPlan};
 use std::collections::{HashMap, HashSet};
 
@@ -66,11 +68,7 @@ pub fn is_matcher_router(f: &FnIr) -> bool {
         && f.blocks.iter().all(|b| {
             matches!(
                 b.terminator,
-                Term::Goto(..)
-                    | Term::If { .. }
-                    | Term::TailCall { .. }
-                    | Term::Halt(_)
-                    | Term::Return(_)
+                Term::Goto(..) | Term::If { .. } | Term::TailCall { .. } | Term::Halt(_) | Term::Return(_)
             )
         })
 }
@@ -91,10 +89,7 @@ pub fn is_pure_tail_caller(f: &FnIr) -> bool {
         return false;
     }
     let b = &f.blocks[0];
-    if !matches!(
-        b.terminator,
-        Term::TailCall { .. } | Term::TailCallClosure { .. }
-    ) {
+    if !matches!(b.terminator, Term::TailCall { .. } | Term::TailCallClosure { .. }) {
         return false;
     }
     if stmt_count(f) > INLINE_BUDGET {
@@ -150,23 +145,22 @@ fn remap_continuation_provenance_after_inline(
             .map(|var| remap_inlined_var(&entry_params, tail_args, var_shift, *var))
             .collect();
         match &mut provenance.kind {
-            crate::fz_ir::ContinuationProvenanceKind::DirectCall { args, .. } => {
+            ContinuationProvenanceKind::DirectCall { args, .. } => {
                 *args = args
                     .iter()
                     .map(|var| remap_inlined_var(&entry_params, tail_args, var_shift, *var))
                     .collect();
             }
-            crate::fz_ir::ContinuationProvenanceKind::ClosureCall { closure, args } => {
+            ContinuationProvenanceKind::ClosureCall { closure, args } => {
                 *closure = remap_inlined_var(&entry_params, tail_args, var_shift, *closure);
                 *args = args
                     .iter()
                     .map(|var| remap_inlined_var(&entry_params, tail_args, var_shift, *var))
                     .collect();
             }
-            crate::fz_ir::ContinuationProvenanceKind::MatcherBody { bindings } => {
+            ContinuationProvenanceKind::MatcherBody { bindings } => {
                 for (binding_var, _) in bindings.iter_mut() {
-                    *binding_var =
-                        remap_inlined_var(&entry_params, tail_args, var_shift, *binding_var);
+                    *binding_var = remap_inlined_var(&entry_params, tail_args, var_shift, *binding_var);
                 }
             }
         }
@@ -263,9 +257,7 @@ fn max_var_in_prim(p: &Prim) -> u32 {
                 v(*base);
             }
         }
-        Prim::DestMapPut {
-            map, key, value, ..
-        } => {
+        Prim::DestMapPut { map, key, value, .. } => {
             v(*map);
             v(*key);
             v(*value);
@@ -331,10 +323,7 @@ fn max_var_in_term(t: &Term) -> u32 {
             args.iter().for_each(|x| v(*x));
         }
         Term::Return(a) | Term::Halt(a) => v(*a),
-        Term::Receive {
-            continuation,
-            ident: _,
-        } => continuation.captured.iter().for_each(|x| v(*x)),
+        Term::Receive { continuation, ident: _ } => continuation.captured.iter().for_each(|x| v(*x)),
         Term::ReceiveMatched {
             pinned,
             captures,
@@ -366,9 +355,7 @@ pub fn alpha_rename(callee: &FnIr, caller: &FnIr) -> FnIr {
     // call-shape Term and every MakeClosure stmt gets a FRESH ident via
     // `fork_inlined`. Same source span, new identity. The cloned
     // callsite is a distinct dispatch in the caller's per-spec view.
-    let fork = |parent: &crate::fz_ir::CallsiteIdent| -> crate::fz_ir::CallsiteIdent {
-        crate::fz_ir::CallsiteIdent::fork_inlined(parent, into_fn)
-    };
+    let fork = |parent: &CallsiteIdent| -> CallsiteIdent { CallsiteIdent::fork_inlined(parent, into_fn) };
 
     let rename_prim = |p: &Prim| -> Prim {
         let sv = |v: Var| Var(v.0 + var_shift);
@@ -379,12 +366,7 @@ pub fn alpha_rename(callee: &FnIr, caller: &FnIr) -> FnIr {
             Prim::Extern(ident, eid, args) => Prim::Extern(
                 ident.clone(),
                 *eid,
-                args.iter()
-                    .map(|x| crate::fz_ir::ExternArg {
-                        var: sv(x.var),
-                        ..*x
-                    })
-                    .collect(),
+                args.iter().map(|x| ExternArg { var: sv(x.var), ..*x }).collect(),
             ),
             Prim::ListHead(a) => Prim::ListHead(sv(*a)),
             Prim::ListTail(a) => Prim::ListTail(sv(*a)),
@@ -393,10 +375,7 @@ pub fn alpha_rename(callee: &FnIr, caller: &FnIr) -> FnIr {
             Prim::MakeTuple(args) => Prim::MakeTuple(args.iter().map(|x| sv(*x)).collect()),
             Prim::MakeStruct { module, fields } => Prim::MakeStruct {
                 module: module.clone(),
-                fields: fields
-                    .iter()
-                    .map(|(name, v)| (name.clone(), sv(*v)))
-                    .collect(),
+                fields: fields.iter().map(|(name, v)| (name.clone(), sv(*v))).collect(),
             },
             Prim::DestTupleBegin { token, arity } => Prim::DestTupleBegin {
                 token: *token,
@@ -437,19 +416,14 @@ pub fn alpha_rename(callee: &FnIr, caller: &FnIr) -> FnIr {
             },
             Prim::TupleField(a, i) => Prim::TupleField(sv(*a), *i),
             Prim::StructField(a, name) => Prim::StructField(sv(*a), name.clone()),
-            Prim::MakeList(els, tail) => {
-                Prim::MakeList(els.iter().map(|x| sv(*x)).collect(), tail.map(sv))
-            }
+            Prim::MakeList(els, tail) => Prim::MakeList(els.iter().map(|x| sv(*x)).collect(), tail.map(sv)),
             Prim::MakeClosure(ident, fid, caps) => {
                 Prim::MakeClosure(fork(ident), *fid, caps.iter().map(|x| sv(*x)).collect())
             }
-            Prim::MakeMap(entries) => {
-                Prim::MakeMap(entries.iter().map(|(k, v)| (sv(*k), sv(*v))).collect())
+            Prim::MakeMap(entries) => Prim::MakeMap(entries.iter().map(|(k, v)| (sv(*k), sv(*v))).collect()),
+            Prim::MapUpdate(base, entries) => {
+                Prim::MapUpdate(sv(*base), entries.iter().map(|(k, v)| (sv(*k), sv(*v))).collect())
             }
-            Prim::MapUpdate(base, entries) => Prim::MapUpdate(
-                sv(*base),
-                entries.iter().map(|(k, v)| (sv(*k), sv(*v))).collect(),
-            ),
             Prim::DestMapBegin { token, base, extra } => Prim::DestMapBegin {
                 token: *token,
                 base: base.map(sv),
@@ -479,7 +453,7 @@ pub fn alpha_rename(callee: &FnIr, caller: &FnIr) -> FnIr {
             Prim::MakeBitstring(fields) => Prim::MakeBitstring(
                 fields
                     .iter()
-                    .map(|f| crate::fz_ir::BitFieldIr {
+                    .map(|f| BitFieldIr {
                         value: sv(f.value),
                         ty: f.ty,
                         size: f.size.as_ref().map(|s| match s {
@@ -575,21 +549,14 @@ pub fn alpha_rename(callee: &FnIr, caller: &FnIr) -> FnIr {
                 args: args.iter().map(|x| sv(*x)).collect(),
                 continuation: rename_cont(continuation),
             },
-            Term::TailCallClosure {
-                closure,
-                args,
-                ident,
-            } => Term::TailCallClosure {
+            Term::TailCallClosure { closure, args, ident } => Term::TailCallClosure {
                 ident: fork(ident),
                 closure: sv(*closure),
                 args: args.iter().map(|x| sv(*x)).collect(),
             },
             Term::Return(a) => Term::Return(sv(*a)),
             Term::Halt(a) => Term::Halt(sv(*a)),
-            Term::Receive {
-                continuation,
-                ident,
-            } => Term::Receive {
+            Term::Receive { continuation, ident } => Term::Receive {
                 ident: fork(ident),
                 continuation: rename_cont(continuation),
             },
@@ -609,7 +576,7 @@ pub fn alpha_rename(callee: &FnIr, caller: &FnIr) -> FnIr {
                 ident: fork(ident),
                 clauses: clauses
                     .iter()
-                    .map(|clause| crate::fz_ir::ReceiveClause {
+                    .map(|clause| ReceiveClause {
                         ident: fork(&clause.ident),
                         bound_names: clause.bound_names.clone(),
                         guard: clause.guard,
@@ -618,7 +585,7 @@ pub fn alpha_rename(callee: &FnIr, caller: &FnIr) -> FnIr {
                     })
                     .collect(),
                 matcher: matcher.clone(),
-                after: after.as_ref().map(|a| crate::fz_ir::ReceiveAfter {
+                after: after.as_ref().map(|a| ReceiveAfter {
                     ident: fork(&a.ident),
                     timeout: sv(a.timeout),
                     body: a.body,
@@ -721,9 +688,7 @@ pub fn absorb_callee(caller: &mut FnIr, bi: usize, mut callee: FnIr, args: &[Var
     caller.blocks[bi].stmts.extend(entry_block.stmts);
     caller.blocks[bi].terminator = entry_block.terminator;
     caller.blocks.extend(callee.blocks);
-    caller
-        .physical_capabilities
-        .extend(callee.physical_capabilities);
+    caller.physical_capabilities.extend(callee.physical_capabilities);
     caller.dedup_physical_facts();
 }
 
@@ -801,7 +766,7 @@ pub fn inline_tail_calls_once(m: &mut Module) -> usize {
 /// Returns the number of inlinings performed.
 /// True when `v` is bound in `caller` to a value the reducer can evaluate: a
 /// scalar `Const` or a zero-capture `MakeClosure` (a bare function identity).
-fn is_reducer_literal(caller: &crate::fz_ir::FnIr, v: Var) -> bool {
+fn is_reducer_literal(caller: &FnIr, v: Var) -> bool {
     caller.blocks.iter().any(|b| {
         b.stmts.iter().any(|Stmt::Let(bound, prim)| {
             *bound == v
@@ -826,13 +791,13 @@ fn is_reducer_literal(caller: &crate::fz_ir::FnIr, v: Var) -> bool {
 /// Plain constant calls (`fib(5)`, a boxed-int fold) keep inlining as before —
 /// inlining then folding is what makes *those* collapse — and calls with a
 /// non-literal argument (`map(double, list)`) inline normally.
-fn call_is_higher_order_constant(caller: &crate::fz_ir::FnIr, args: &[Var]) -> bool {
+fn call_is_higher_order_constant(caller: &FnIr, args: &[Var]) -> bool {
     !args.is_empty()
         && args.iter().all(|a| is_reducer_literal(caller, *a))
         && args.iter().any(|a| is_zero_capture_closure(caller, *a))
 }
 
-fn is_zero_capture_closure(caller: &crate::fz_ir::FnIr, v: Var) -> bool {
+fn is_zero_capture_closure(caller: &FnIr, v: Var) -> bool {
     caller.blocks.iter().any(|b| {
         b.stmts.iter().any(|Stmt::Let(bound, prim)| {
             *bound == v && matches!(prim, Prim::MakeClosure(_, _, caps) if caps.is_empty())
@@ -840,22 +805,10 @@ fn is_zero_capture_closure(caller: &crate::fz_ir::FnIr, v: Var) -> bool {
     })
 }
 
-fn inline_calls_once_protecting(
-    m: &mut Module,
-    protected_fns: &HashSet<FnId>,
-    fold_skip: &HashSet<FnId>,
-) -> usize {
+fn inline_calls_once_protecting(m: &mut Module, protected_fns: &HashSet<FnId>, fold_skip: &HashSet<FnId>) -> usize {
     let mut count = 0;
 
-    type InlineWorkItem = (
-        usize,
-        usize,
-        FnId,
-        Vec<Var>,
-        FnId,
-        Vec<Var>,
-        crate::fz_ir::CallsiteIdent,
-    );
+    type InlineWorkItem = (usize, usize, FnId, Vec<Var>, FnId, Vec<Var>, CallsiteIdent);
     let work: Vec<InlineWorkItem> = m
         .fns
         .iter()
@@ -932,10 +885,7 @@ fn inline_calls_once_protecting(
                 let mut tail_args = vec![ret_val];
                 tail_args.extend_from_slice(&cont_captured);
                 b.terminator = Term::TailCall {
-                    ident: crate::fz_ir::CallsiteIdent::synthesize_from_return(
-                        &call_ident,
-                        call_ident.span(),
-                    ),
+                    ident: CallsiteIdent::synthesize_from_return(&call_ident, call_ident.span()),
                     callee: cont_fn,
                     args: tail_args,
                     is_back_edge: false,
@@ -972,7 +922,6 @@ pub fn inline_calls_once(m: &mut Module) -> usize {
 /// `Term::If` becomes `Term::Goto`: the surviving single-path continuation
 /// chain collapses into one function.
 pub fn inline_single_use_conts_once(m: &mut Module) -> usize {
-    use std::collections::HashMap;
     let closure_fns = closure_targets(m);
 
     // Count non-back-edge TailCall sites per FnId.
@@ -1017,10 +966,7 @@ pub fn inline_single_use_conts_once(m: &mut Module) -> usize {
                     Some(continuation.fn_id)
                 }
                 Term::CallClosure { continuation, .. } => Some(continuation.fn_id),
-                Term::Receive {
-                    continuation,
-                    ident: _,
-                } => Some(continuation.fn_id),
+                Term::Receive { continuation, ident: _ } => Some(continuation.fn_id),
                 _ => None,
             };
             if let Some(kid) = k {
@@ -1060,12 +1006,11 @@ pub fn inline_single_use_conts_once(m: &mut Module) -> usize {
         // layout is fixed at the park site; absorbing that continuation into
         // its caller can leave the resumed body expecting a different outcome
         // closure shape.
-        if m.fns[k_idx].blocks.iter().any(|b| {
-            matches!(
-                b.terminator,
-                Term::Receive { .. } | Term::ReceiveMatched { .. }
-            )
-        }) {
+        if m.fns[k_idx]
+            .blocks
+            .iter()
+            .any(|b| matches!(b.terminator, Term::Receive { .. } | Term::ReceiveMatched { .. }))
+        {
             continue;
         }
         // No self-references inside k — inlining removes k from the module,
@@ -1104,13 +1049,7 @@ pub fn inline_single_use_conts_once(m: &mut Module) -> usize {
         let var_shift = max_var(&m.fns[caller_fi]) + 1;
         let renamed = alpha_rename(&k_fn, &m.fns[caller_fi]);
         absorb_callee(&mut m.fns[caller_fi], caller_bi, renamed, &tail_args);
-        remap_continuation_provenance_after_inline(
-            m,
-            m.fns[caller_fi].id,
-            &k_fn,
-            &tail_args,
-            var_shift,
-        );
+        remap_continuation_provenance_after_inline(m, m.fns[caller_fi].id, &k_fn, &tail_args, var_shift);
 
         // Convert the Term::Call at the Cont site to TailCall.
         //
@@ -1121,10 +1060,7 @@ pub fn inline_single_use_conts_once(m: &mut Module) -> usize {
         if let Some((m_fi, m_bi)) = cont_site {
             let new_term = match &m.fns[m_fi].blocks[m_bi].terminator {
                 Term::Call {
-                    ident,
-                    callee,
-                    args,
-                    ..
+                    ident, callee, args, ..
                 } => Some(Term::TailCall {
                     ident: ident.clone(),
                     callee: *callee,
@@ -1132,10 +1068,7 @@ pub fn inline_single_use_conts_once(m: &mut Module) -> usize {
                     is_back_edge: false,
                 }),
                 Term::CallClosure {
-                    ident,
-                    closure,
-                    args,
-                    ..
+                    ident, closure, args, ..
                 } => Some(Term::TailCallClosure {
                     ident: ident.clone(),
                     closure: *closure,
@@ -1156,7 +1089,7 @@ pub fn inline_single_use_conts_once(m: &mut Module) -> usize {
         }
         m.prune_dead_fn_metadata();
         let provenance = m.continuation_provenance.clone();
-        crate::ir_lower::compute_current_function_correspondence(m, &provenance);
+        compute_current_function_correspondence(m, &provenance);
 
         return 1; // restart — indices changed
     }
@@ -1197,19 +1130,13 @@ pub fn inline_module_with_plan(m: &mut Module, types: &CapabilityPlan) -> usize 
     let fold_skip: HashSet<FnId> = types
         .fn_effects
         .iter()
-        .filter(|(_, eff)| {
-            !eff.observable && !eff.scheduler_visible && !eff.halts && !eff.reads_allocation_stats
-        })
+        .filter(|(_, eff)| !eff.observable && !eff.scheduler_visible && !eff.halts && !eff.reads_allocation_stats)
         .map(|(fid, _)| *fid)
         .collect();
     inline_module_protecting(m, &stateful_closure_targets(types), &fold_skip)
 }
 
-fn inline_module_protecting(
-    m: &mut Module,
-    protected_fns: &HashSet<FnId>,
-    fold_skip: &HashSet<FnId>,
-) -> usize {
+fn inline_module_protecting(m: &mut Module, protected_fns: &HashSet<FnId>, fold_skip: &HashSet<FnId>) -> usize {
     let base_stmts: usize = m.fns.iter().map(stmt_count).sum();
     let cap = base_stmts * GROWTH_CAP + 1;
     let mut total = 0;
@@ -1235,11 +1162,22 @@ fn inline_module_protecting(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::diag::Span;
+    use crate::exec::matcher::{Matcher, MatcherNode, NodeId};
     use crate::fz_ir::{
-        BinOp, BranchOrigin, Const, FnBuilder, FnCategory, FnId, FnIr, ModuleBuilder, Prim, Stmt,
-        Term, Var,
+        BinOp, BranchOrigin, CallsiteIdent, Const, ContinuationProvenance, ContinuationProvenanceKind, FnBuilder,
+        FnCategory, FnId, FnIr, Module, ModuleBuilder, Prim, Stmt, Term, Var,
     };
-    use crate::types::Types;
+    use crate::ir_dce::dce_module_level;
+    use crate::ir_interp::run_main;
+    use crate::ir_lower::lower_program;
+    use crate::ir_planner::plan_callable_capabilities;
+    use crate::parser::{Parser, lexer::Lexer};
+    use crate::telemetry::NullTelemetry;
+    use crate::types::{ConcreteTypes, Types};
+    use std::collections::HashSet;
+    use std::slice::from_ref;
+    use std::sync::Arc;
 
     fn make_leaf_add1() -> FnIr {
         // fn add1(x) { let one = 1; let s = x+one; return s }
@@ -1260,7 +1198,7 @@ mod tests {
         b.set_terminator(
             entry,
             Term::TailCall {
-                ident: crate::fz_ir::CallsiteIdent::synthetic(),
+                ident: CallsiteIdent::synthetic(),
                 callee,
                 args: vec![y],
                 is_back_edge: false,
@@ -1278,7 +1216,7 @@ mod tests {
         b.set_terminator(
             entry,
             Term::Call {
-                ident: crate::fz_ir::CallsiteIdent::synthetic(),
+                ident: CallsiteIdent::synthetic(),
                 callee,
                 args: vec![y],
                 continuation: Cont {
@@ -1297,7 +1235,7 @@ mod tests {
         b.set_terminator(
             entry,
             Term::TailCall {
-                ident: crate::fz_ir::CallsiteIdent::synthetic(),
+                ident: CallsiteIdent::synthetic(),
                 callee,
                 args: vec![msg],
                 is_back_edge: false,
@@ -1326,7 +1264,7 @@ mod tests {
         b.set_terminator(
             then_b,
             Term::TailCall {
-                ident: crate::fz_ir::CallsiteIdent::synthetic(),
+                ident: CallsiteIdent::synthetic(),
                 callee: then_callee,
                 args: vec![msg],
                 is_back_edge: false,
@@ -1335,7 +1273,7 @@ mod tests {
         b.set_terminator(
             else_b,
             Term::TailCall {
-                ident: crate::fz_ir::CallsiteIdent::synthetic(),
+                ident: CallsiteIdent::synthetic(),
                 callee: else_callee,
                 args: vec![msg],
                 is_back_edge: false,
@@ -1353,9 +1291,9 @@ mod tests {
         let arity_2_b = b.block(vec![]);
         let fallback_b = b.block(vec![]);
 
-        let mut types = crate::types::ConcreteTypes;
+        let mut types = ConcreteTypes;
         let any = types.any();
-        let tuple_1 = types.tuple(std::slice::from_ref(&any));
+        let tuple_1 = types.tuple(from_ref(&any));
         let tuple_2 = types.tuple(&[any.clone(), any]);
 
         let is_arity_1 = b.let_(entry, Prim::TypeTest(msg, Box::new(tuple_1)));
@@ -1378,15 +1316,11 @@ mod tests {
                 origin: BranchOrigin::ClauseDispatch,
             },
         );
-        for (block, callee) in [
-            (arity_1_b, arity_1),
-            (arity_2_b, arity_2),
-            (fallback_b, fallback),
-        ] {
+        for (block, callee) in [(arity_1_b, arity_1), (arity_2_b, arity_2), (fallback_b, fallback)] {
             b.set_terminator(
                 block,
                 Term::TailCall {
-                    ident: crate::fz_ir::CallsiteIdent::synthetic(),
+                    ident: CallsiteIdent::synthetic(),
                     callee,
                     args: vec![msg],
                     is_back_edge: false,
@@ -1426,7 +1360,7 @@ mod tests {
             b.set_terminator(
                 block,
                 Term::TailCall {
-                    ident: crate::fz_ir::CallsiteIdent::synthetic(),
+                    ident: CallsiteIdent::synthetic(),
                     callee,
                     args: vec![msg],
                     is_back_edge: false,
@@ -1462,7 +1396,7 @@ mod tests {
         b.set_terminator(
             entry,
             Term::Receive {
-                ident: crate::fz_ir::CallsiteIdent::synthetic(),
+                ident: CallsiteIdent::synthetic(),
                 continuation: Cont {
                     fn_id: FnId(7),
                     captured: vec![],
@@ -1476,21 +1410,19 @@ mod tests {
     fn is_leaf_receive_matched_is_not_leaf() {
         let mut b = FnBuilder::new(FnId(0), "recv_matched");
         let entry = b.block(vec![]);
-        let matcher = crate::exec::matcher::Matcher {
+        let matcher = Matcher {
             inputs: Vec::new(),
             pinned: Vec::new(),
             prepared_keys: Vec::new(),
-            nodes: vec![crate::exec::matcher::MatcherNode::Fail {
-                span: crate::diag::Span::DUMMY,
-            }],
-            root: crate::exec::matcher::NodeId(0),
+            nodes: vec![MatcherNode::Fail { span: Span::DUMMY }],
+            root: NodeId(0),
         };
         b.set_terminator(
             entry,
             Term::ReceiveMatched {
-                ident: crate::fz_ir::CallsiteIdent::synthetic(),
+                ident: CallsiteIdent::synthetic(),
                 clauses: Vec::new(),
-                matcher: std::sync::Arc::new(matcher),
+                matcher: Arc::new(matcher),
                 after: None,
                 pinned: Vec::new(),
                 captures: Vec::new(),
@@ -1507,7 +1439,7 @@ mod tests {
         b.set_terminator(
             entry,
             Term::CallClosure {
-                ident: crate::fz_ir::CallsiteIdent::synthetic(),
+                ident: CallsiteIdent::synthetic(),
                 closure: cl,
                 args: vec![],
                 continuation: Cont {
@@ -1527,7 +1459,7 @@ mod tests {
         b.set_terminator(
             entry,
             Term::TailCallClosure {
-                ident: crate::fz_ir::CallsiteIdent::synthetic(),
+                ident: CallsiteIdent::synthetic(),
                 closure: cl,
                 args: vec![],
             },
@@ -1606,7 +1538,7 @@ mod tests {
         let caller = make_caller_tail(FnId(1));
         let renamed = alpha_rename(&callee, &caller);
 
-        let caller_vars: std::collections::HashSet<u32> = caller
+        let caller_vars: HashSet<u32> = caller
             .blocks
             .iter()
             .flat_map(|b| b.params.iter().map(|v| v.0))
@@ -1624,11 +1556,7 @@ mod tests {
         let caller = make_caller_tail(FnId(1)); // max_var = 0 → shift = 1
         let renamed = alpha_rename(&callee, &caller);
 
-        let entry = renamed
-            .blocks
-            .iter()
-            .find(|b| b.id == renamed.entry)
-            .unwrap();
+        let entry = renamed.blocks.iter().find(|b| b.id == renamed.entry).unwrap();
         // stmts[1] should be BinOp(Add, v1, v2) after shift-by-1 from v0,v1
         match &entry.stmts[1] {
             Stmt::Let(_, Prim::BinOp(BinOp::Add, a, b)) => {
@@ -1651,11 +1579,7 @@ mod tests {
 
         let caller = make_caller_tail(FnId(1)); // max_var = 0 → shift = 1
         let renamed = alpha_rename(&callee, &caller);
-        let eb = renamed
-            .blocks
-            .iter()
-            .find(|b| b.id == renamed.entry)
-            .unwrap();
+        let eb = renamed.blocks.iter().find(|b| b.id == renamed.entry).unwrap();
         match &eb.stmts[0] {
             Stmt::Let(_, Prim::MakeList(els, Some(tail))) => {
                 assert_eq!(els[0].0, 1);
@@ -1684,11 +1608,7 @@ mod tests {
         absorb_callee(&mut caller_mut, 0, renamed, &[y]);
 
         // The entry block must NOT be a Goto with args.
-        let entry = caller_mut
-            .blocks
-            .iter()
-            .find(|b| b.id == caller_mut.entry)
-            .unwrap();
+        let entry = caller_mut.blocks.iter().find(|b| b.id == caller_mut.entry).unwrap();
         if let Term::Goto(_, args) = &entry.terminator {
             assert!(
                 args.is_empty(),
@@ -1749,7 +1669,7 @@ mod tests {
         b.set_terminator(
             entry,
             Term::TailCall {
-                ident: crate::fz_ir::CallsiteIdent::synthetic(),
+                ident: CallsiteIdent::synthetic(),
                 callee: target,
                 args: vec![v],
                 is_back_edge: false,
@@ -1784,15 +1704,11 @@ mod tests {
 
     fn assert_no_tail_call_to(m: &Module, callee_id: FnId) {
         let has_tail_call = m.fns.iter().any(|f| {
-            f.blocks.iter().any(
-                |b| matches!(&b.terminator, Term::TailCall { callee, .. } if *callee == callee_id),
-            )
+            f.blocks
+                .iter()
+                .any(|b| matches!(&b.terminator, Term::TailCall { callee, .. } if *callee == callee_id))
         });
-        assert!(
-            !has_tail_call,
-            "expected no TailCall to {:?} after inlining",
-            callee_id
-        );
+        assert!(!has_tail_call, "expected no TailCall to {:?} after inlining", callee_id);
     }
 
     #[test]
@@ -1822,10 +1738,7 @@ mod tests {
 
         let caller = m.fns.iter().find(|f| f.name == "caller").unwrap();
         assert!(
-            caller
-                .blocks
-                .iter()
-                .any(|b| matches!(b.terminator, Term::If { .. })),
+            caller.blocks.iter().any(|b| matches!(b.terminator, Term::If { .. })),
             "inlined caller should contain the matcher branch"
         );
     }
@@ -1864,9 +1777,10 @@ mod tests {
 
         let caller = m.fns.iter().find(|f| f.name == "caller").unwrap();
         assert!(
-            caller.blocks.iter().any(
-                |b| matches!(&b.terminator, Term::TailCall { callee, .. } if *callee == matcher_id)
-            ),
+            caller
+                .blocks
+                .iter()
+                .any(|b| matches!(&b.terminator, Term::TailCall { callee, .. } if *callee == matcher_id)),
             "caller should retain its TailCall to the large matcher"
         );
     }
@@ -1895,9 +1809,10 @@ mod tests {
 
         let caller = m.fns.iter().find(|f| f.name == "caller").unwrap();
         assert!(
-            caller.blocks.iter().any(
-                |b| matches!(&b.terminator, Term::TailCall { callee, .. } if *callee == leaf_id)
-            ),
+            caller
+                .blocks
+                .iter()
+                .any(|b| matches!(&b.terminator, Term::TailCall { callee, .. } if *callee == leaf_id)),
             "caller should branch through the inlined matcher shell and still tail-call the leaf"
         );
         assert!(
@@ -1943,7 +1858,7 @@ mod tests {
         b.set_terminator(
             entry,
             Term::Call {
-                ident: crate::fz_ir::CallsiteIdent::synthetic(),
+                ident: CallsiteIdent::synthetic(),
                 callee: FnId(1),
                 args: vec![y],
                 continuation: Cont {
@@ -1998,14 +1913,11 @@ mod tests {
         let mut caller = FnBuilder::new(FnId(0), "main");
         let y = caller.fresh_var();
         let entry = caller.block(vec![y]);
-        let _closure = caller.let_(
-            entry,
-            Prim::MakeClosure(crate::fz_ir::CallsiteIdent::synthetic(), FnId(1), vec![]),
-        );
+        let _closure = caller.let_(entry, Prim::MakeClosure(CallsiteIdent::synthetic(), FnId(1), vec![]));
         caller.set_terminator(
             entry,
             Term::TailCall {
-                ident: crate::fz_ir::CallsiteIdent::synthetic(),
+                ident: CallsiteIdent::synthetic(),
                 callee: FnId(1),
                 args: vec![y],
                 is_back_edge: false,
@@ -2016,19 +1928,15 @@ mod tests {
         mb.add_fn(caller.build());
         mb.add_fn(make_leaf_add1());
         let mut m = mb.build();
-        let plan =
-            crate::ir_planner::plan_callable_capabilities(&mut crate::types::ConcreteTypes, &m);
+        let plan = plan_callable_capabilities(&mut ConcreteTypes, &m);
 
         assert_eq!(inline_module_with_plan(&mut m, &plan), 1);
         let caller = m.fns.iter().find(|f| f.name == "main").unwrap();
         assert!(
-            !caller.blocks.iter().any(|b| matches!(
-                b.terminator,
-                Term::TailCall {
-                    callee: FnId(1),
-                    ..
-                }
-            )),
+            !caller
+                .blocks
+                .iter()
+                .any(|b| matches!(b.terminator, Term::TailCall { callee: FnId(1), .. })),
             "KnownFn direct call should inline even while its closure value exists"
         );
     }
@@ -2039,14 +1947,11 @@ mod tests {
         let cap = caller.fresh_var();
         let y = caller.fresh_var();
         let entry = caller.block(vec![cap, y]);
-        let _closure = caller.let_(
-            entry,
-            Prim::MakeClosure(crate::fz_ir::CallsiteIdent::synthetic(), FnId(1), vec![cap]),
-        );
+        let _closure = caller.let_(entry, Prim::MakeClosure(CallsiteIdent::synthetic(), FnId(1), vec![cap]));
         caller.set_terminator(
             entry,
             Term::TailCall {
-                ident: crate::fz_ir::CallsiteIdent::synthetic(),
+                ident: CallsiteIdent::synthetic(),
                 callee: FnId(1),
                 args: vec![y],
                 is_back_edge: false,
@@ -2057,8 +1962,7 @@ mod tests {
         mb.add_fn(caller.build());
         mb.add_fn(make_leaf_add1());
         let mut m = mb.build();
-        let plan =
-            crate::ir_planner::plan_callable_capabilities(&mut crate::types::ConcreteTypes, &m);
+        let plan = plan_callable_capabilities(&mut ConcreteTypes, &m);
 
         assert!(
             stateful_closure_targets(&plan).contains(&FnId(1)),
@@ -2067,13 +1971,10 @@ mod tests {
         assert_eq!(inline_module_with_plan(&mut m, &plan), 0);
         let caller = m.fns.iter().find(|f| f.name == "main").unwrap();
         assert!(
-            caller.blocks.iter().any(|b| matches!(
-                b.terminator,
-                Term::TailCall {
-                    callee: FnId(1),
-                    ..
-                }
-            )),
+            caller
+                .blocks
+                .iter()
+                .any(|b| matches!(b.terminator, Term::TailCall { callee: FnId(1), .. })),
             "KnownClosure target carries state and must remain callable"
         );
     }
@@ -2088,7 +1989,7 @@ mod tests {
         ab.set_terminator(
             ae,
             Term::TailCallClosure {
-                ident: crate::fz_ir::CallsiteIdent::synthetic(),
+                ident: CallsiteIdent::synthetic(),
                 closure: f,
                 args: vec![x],
             },
@@ -2099,15 +2000,12 @@ mod tests {
         // not inlined into an uncollapsible chain.
         let mut mainb = FnBuilder::new(FnId(0), "main");
         let e0 = mainb.block(vec![]);
-        let clo = mainb.let_(
-            e0,
-            Prim::MakeClosure(crate::fz_ir::CallsiteIdent::synthetic(), FnId(1), vec![]),
-        );
+        let clo = mainb.let_(e0, Prim::MakeClosure(CallsiteIdent::synthetic(), FnId(1), vec![]));
         let c = mainb.let_(e0, Prim::Const(Const::Int(5)));
         mainb.set_terminator(
             e0,
             Term::Call {
-                ident: crate::fz_ir::CallsiteIdent::synthetic(),
+                ident: CallsiteIdent::synthetic(),
                 callee: FnId(2),
                 args: vec![clo, c],
                 continuation: Cont {
@@ -2129,8 +2027,7 @@ mod tests {
         mb.add_fn(ab.build());
         mb.add_fn(kb.build());
         let mut m = mb.build();
-        let plan =
-            crate::ir_planner::plan_callable_capabilities(&mut crate::types::ConcreteTypes, &m);
+        let plan = plan_callable_capabilities(&mut ConcreteTypes, &m);
 
         inline_module_with_plan(&mut m, &plan);
         let main = m.fns.iter().find(|f| f.name == "main").unwrap();
@@ -2146,19 +2043,14 @@ mod tests {
 
     // --- ir_interp parity: semantics preserved across inline ---
 
-    fn lower_src(src: &str) -> crate::fz_ir::Module {
-        let toks = crate::parser::lexer::Lexer::new(src).tokenize().unwrap();
-        let prog = crate::parser::Parser::new(toks).parse_program().unwrap();
-        crate::ir_lower::lower_program(
-            &mut crate::types::ConcreteTypes,
-            &prog,
-            &crate::telemetry::NullTelemetry,
-        )
-        .unwrap()
+    fn lower_src(src: &str) -> Module {
+        let toks = Lexer::new(src).tokenize().unwrap();
+        let prog = Parser::new(toks).parse_program().unwrap();
+        lower_program(&mut ConcreteTypes, &prog, &NullTelemetry).unwrap()
     }
 
-    fn assert_fn_keyed_metadata_matches_live_fns(m: &crate::fz_ir::Module) {
-        let live: std::collections::HashSet<_> = m.fns.iter().map(|f| f.id).collect();
+    fn assert_fn_keyed_metadata_matches_live_fns(m: &Module) {
+        let live: HashSet<_> = m.fns.iter().map(|f| f.id).collect();
         assert!(
             m.protocol_call_targets.keys().all(|fid| live.contains(fid)),
             "protocol_call_targets contains dead FnId"
@@ -2172,15 +2064,11 @@ mod tests {
             "declared_specs contains dead FnId"
         );
         assert!(
-            m.function_correspondence
-                .keys()
-                .all(|fid| live.contains(fid)),
+            m.function_correspondence.keys().all(|fid| live.contains(fid)),
             "function_correspondence contains dead FnId"
         );
         assert!(
-            m.continuation_provenance
-                .keys()
-                .all(|fid| live.contains(fid)),
+            m.continuation_provenance.keys().all(|fid| live.contains(fid)),
             "continuation_provenance contains dead FnId"
         );
         assert!(
@@ -2191,8 +2079,8 @@ mod tests {
         );
     }
 
-    fn interp(m: &crate::fz_ir::Module) -> i64 {
-        crate::ir_interp::run_main(&crate::telemetry::NullTelemetry, m).expect("interp failed")
+    fn interp(m: &Module) -> i64 {
+        run_main(&NullTelemetry, m).expect("interp failed")
     }
 
     fn parity(src: &str) {
@@ -2290,9 +2178,9 @@ mod tests {
         inline_module(&mut inlined);
 
         let has_tail_call_to_add1 = inlined.fns.iter().any(|f| {
-            f.blocks.iter().any(
-                |b| matches!(&b.terminator, Term::TailCall { callee, .. } if *callee == add1_id),
-            )
+            f.blocks
+                .iter()
+                .any(|b| matches!(&b.terminator, Term::TailCall { callee, .. } if *callee == add1_id))
         });
         assert!(
             !has_tail_call_to_add1,
@@ -2334,7 +2222,7 @@ mod tests {
         tailcaller.set_terminator(
             tailcaller_entry,
             Term::TailCall {
-                ident: crate::fz_ir::CallsiteIdent::synthetic(),
+                ident: CallsiteIdent::synthetic(),
                 callee: k_id,
                 args: vec![tail_arg],
                 is_back_edge: false,
@@ -2347,7 +2235,7 @@ mod tests {
         k.set_terminator(
             k_entry,
             Term::TailCall {
-                ident: crate::fz_ir::CallsiteIdent::synthetic(),
+                ident: CallsiteIdent::synthetic(),
                 callee: callee_id,
                 args: vec![result],
                 is_back_edge: false,
@@ -2365,7 +2253,7 @@ mod tests {
         callsite_fn.set_terminator(
             callsite_entry,
             Term::Call {
-                ident: crate::fz_ir::CallsiteIdent::synthetic(),
+                ident: CallsiteIdent::synthetic(),
                 callee: callee_id,
                 args: vec![arg],
                 continuation: Cont {
@@ -2383,11 +2271,11 @@ mod tests {
         let mut m = mb.build();
         m.continuation_provenance.insert(
             k_id,
-            crate::fz_ir::ContinuationProvenance {
+            ContinuationProvenance {
                 caller: callsite_fn_id,
                 captured: vec![],
                 capture_param_offset: 1,
-                kind: crate::fz_ir::ContinuationProvenanceKind::DirectCall {
+                kind: ContinuationProvenanceKind::DirectCall {
                     callee: callee_id,
                     args: vec![arg],
                 },
@@ -2464,16 +2352,14 @@ mod tests {
         let src = "fn pos(x), do: if x > 0, do: 1, else: -1\n\
                    fn main(), do: dbg(pos(5))";
         let mut m = lower_src(src);
-        crate::ir_inline::inline_module(&mut m);
-        crate::ir_dce::dce_module_level(&mut m);
+        inline_module(&mut m);
+        dce_module_level(&mut m);
 
         let leftover: Vec<&str> = m
             .fns
             .iter()
             .map(|f| f.name.as_str())
-            .filter(|n| {
-                n.starts_with("if_then") || n.starts_with("if_else") || n.starts_with("if_join")
-            })
+            .filter(|n| n.starts_with("if_then") || n.starts_with("if_else") || n.starts_with("if_join"))
             .collect();
 
         assert!(

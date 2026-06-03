@@ -1,9 +1,9 @@
-use super::{TypeInferOutcome, TypeInferReturnState, TypeInferStatus, infer_from_entry};
-use crate::fz_ir::{Const, EmitSlot, FnBuilder, FnId, Module, ModuleBuilder, Prim, Term};
-use crate::telemetry::{ConfiguredTelemetry, Handler, Value};
+use super::{Info, TypeInferOutcome, TypeInferReturnState, TypeInferStatus, infer_from_entry, solve_from_entry};
+use crate::fz_ir::{Const, DeadBranch, EmitSlot, FnBuilder, FnId, Module, ModuleBuilder, Prim, Term};
+use crate::telemetry::{ConfiguredTelemetry, Event, Handler, Value};
 use crate::test_support::{
-    entry_main_fn_id as main_id, linked_runtime_module as linked,
-    linked_runtime_module_unplanned as linked_unplanned, lower_frontend_module as lower,
+    entry_main_fn_id as main_id, linked_runtime_module as linked, linked_runtime_module_unplanned as linked_unplanned,
+    lower_frontend_module as lower,
 };
 use crate::types::{ClosureTarget, ClosureTypes, ConcreteTypes, Ty, Types};
 use std::cell::RefCell;
@@ -12,19 +12,10 @@ use std::rc::Rc;
 /// Test boundary helper for one activation's return type. The production API
 /// returns activation facts; these focused tests need the entry activation's
 /// boundary-erased `Ty` directly.
-fn infer_return<T: Types<Ty = Ty> + ClosureTypes>(
-    t: &mut T,
-    module: &Module,
-    fn_id: FnId,
-    input_tys: &[Ty],
-) -> Ty {
-    let (solver, key) = super::solve_from_entry(t, module, fn_id, input_tys);
-    match solver
-        .activations
-        .get(&key)
-        .map(|activation| activation.ret.clone())
-    {
-        Some(super::Info::Known(value)) => value.ty,
+fn infer_return<T: Types<Ty = Ty> + ClosureTypes>(t: &mut T, module: &Module, fn_id: FnId, input_tys: &[Ty]) -> Ty {
+    let (solver, key) = solve_from_entry(t, module, fn_id, input_tys);
+    match solver.activations.get(&key).map(|activation| activation.ret.clone()) {
+        Some(Info::Known(value)) => value.ty,
         _ => t.any(),
     }
 }
@@ -39,7 +30,7 @@ fn closure_apply_contract<T: Types<Ty = Ty> + ClosureTypes>(
     let info = t.closure_lit_parts(closure_ty)?;
     let mut inputs = info.captures;
     inputs.extend_from_slice(arg_tys);
-    Some((info.target.into(), inputs))
+    Some((FnId(info.target.0), inputs))
 }
 
 #[derive(Clone, Debug, Default)]
@@ -156,14 +147,13 @@ impl TypeInferCapture {
 }
 
 impl Handler for TypeInferCapture {
-    fn handle(&self, ev: &crate::telemetry::Event<'_, '_, '_>) {
+    fn handle(&self, ev: &Event<'_, '_, '_>) {
         let mut facts = self.0.borrow_mut();
         match ev.name {
             ["fz", "type_infer", "fn_return"] => {
-                if let (Some(fn_name), Some(state)) = (
-                    event_metadata_str(ev, "fn_name"),
-                    event_metadata_str(ev, "state"),
-                ) {
+                if let (Some(fn_name), Some(state)) =
+                    (event_metadata_str(ev, "fn_name"), event_metadata_str(ev, "state"))
+                {
                     facts.fn_returns.push(FnReturnFact {
                         fn_name,
                         state,
@@ -172,13 +162,7 @@ impl Handler for TypeInferCapture {
                 }
             }
             ["fz", "type_infer", "activation"] => {
-                if let (
-                    Some(activation_id),
-                    Some(fn_name),
-                    Some(fn_id),
-                    Some(input_count),
-                    Some(state),
-                ) = (
+                if let (Some(activation_id), Some(fn_name), Some(fn_id), Some(input_count), Some(state)) = (
                     event_metadata_u64(ev, "activation_id"),
                     event_metadata_str(ev, "fn_name"),
                     event_metadata_u64(ev, "fn_id"),
@@ -292,18 +276,18 @@ fn infer_entry_return_via_main(module: &Module) -> Ty {
     infer_return(&mut t, module, main_id(module), &[])
 }
 
-fn event_metadata_str(ev: &crate::telemetry::Event<'_, '_, '_>, key: &str) -> Option<String> {
+fn event_metadata_str(ev: &Event<'_, '_, '_>, key: &str) -> Option<String> {
     match ev.metadata.get(key)? {
         Value::Str(value) => Some(value.to_string()),
         _ => None,
     }
 }
 
-fn event_metadata_ty(ev: &crate::telemetry::Event<'_, '_, '_>, key: &str) -> Option<Ty> {
+fn event_metadata_ty(ev: &Event<'_, '_, '_>, key: &str) -> Option<Ty> {
     ev.metadata.get(key)?.downcast_ref::<Ty>().cloned()
 }
 
-fn event_metadata_u64(ev: &crate::telemetry::Event<'_, '_, '_>, key: &str) -> Option<u64> {
+fn event_metadata_u64(ev: &Event<'_, '_, '_>, key: &str) -> Option<u64> {
     match ev.metadata.get(key)? {
         Value::U64(value) => Some(*value),
         _ => None,
@@ -337,18 +321,9 @@ fn fixpoint_leaves_no_reached_fn_unknown() {
         ("add", include_str!("fixtures/add.fz")),
         ("fold_tail", include_str!("fixtures/fold_tail.fz")),
         ("fold_nontail", include_str!("fixtures/fold_nontail.fz")),
-        (
-            "fold_capture_int",
-            include_str!("fixtures/fold_capture_int.fz"),
-        ),
-        (
-            "fold_capture_closure",
-            include_str!("fixtures/fold_capture_closure.fz"),
-        ),
-        (
-            "fold_state_machine",
-            include_str!("fixtures/fold_state_machine.fz"),
-        ),
+        ("fold_capture_int", include_str!("fixtures/fold_capture_int.fz")),
+        ("fold_capture_closure", include_str!("fixtures/fold_capture_closure.fz")),
+        ("fold_state_machine", include_str!("fixtures/fold_state_machine.fz")),
     ] {
         let module = lower(src);
         let mut t = ConcreteTypes;
@@ -365,21 +340,13 @@ fn fixpoint_leaves_no_reached_fn_unknown() {
 #[test]
 fn runtime_graph_enum_ops_settle_to_int() {
     let cases = [
-        (
-            "list lambda",
-            "Enum.reduce",
-            include_str!("fixtures/enum_reduce.fz"),
-        ),
+        ("list lambda", "Enum.reduce", include_str!("fixtures/enum_reduce.fz")),
         (
             "named-fn ref",
             "Enum.reduce",
             include_str!("fixtures/enum_reduce_named_ref_ok.fz"),
         ),
-        (
-            "count",
-            "Enum.count",
-            include_str!("fixtures/enum_count.fz"),
-        ),
+        ("count", "Enum.count", include_str!("fixtures/enum_count.fz")),
         (
             "range reduce",
             "Enum.reduce",
@@ -416,9 +383,7 @@ fn enum_reduce_operator_refs_settle_through_kernel_specs() {
 
 #[test]
 fn enum_reduce_erased_list_operator_ref_preserves_concrete_caller_witness() {
-    let module = linked(include_str!(
-        "fixtures/enum_reduce_erased_list_operator_ref.fz"
-    ));
+    let module = linked(include_str!("fixtures/enum_reduce_erased_list_operator_ref.fz"));
     let mut t = ConcreteTypes;
     let int = t.int();
     let non_empty_ints = t.non_empty_list(int.clone());
@@ -495,20 +460,15 @@ end
         .filter(|fact| fact.fn_name == "Enum.take")
         .collect::<Vec<_>>();
     assert!(
-        take_facts.iter().any(|fact| {
-            fact.return_ty
-                .as_ref()
-                .is_some_and(|ret| t.is_subtype(ret, &list_int))
-        }),
+        take_facts
+            .iter()
+            .any(|fact| { fact.return_ty.as_ref().is_some_and(|ret| t.is_subtype(ret, &list_int)) }),
         "mixed Enum.take calls should infer a successful list-returning activation: {take_facts:?}"
     );
     assert!(
         report.outcome.activations.iter().any(|fact| {
             module.fn_by_id(fact.fn_id).name == "Enum.take"
-                && fact
-                    .input_tys
-                    .first()
-                    .is_some_and(|ty| t.is_equivalent(ty, &range))
+                && fact.input_tys.first().is_some_and(|ty| t.is_equivalent(ty, &range))
         }),
         "mixed Enum.take calls should activate the range call path: {:?}",
         report.outcome.activations
@@ -593,10 +553,7 @@ fn receive_continuation_keeps_typed_capture_and_settles_caller_return() {
         report.outcome.edges.iter().any(|edge| {
             edge.caller_activation_id == parent_fact.activation_id
                 && edge.callsite.callsite.slot == EmitSlot::Cont
-                && module
-                    .fn_by_id(edge.callee_fn_id)
-                    .name
-                    .starts_with("k_receive_")
+                && module.fn_by_id(edge.callee_fn_id).name.starts_with("k_receive_")
         }),
         "parent/1 should expose a Cont activation edge into the synthesized receive continuation; edges={:?}",
         report
@@ -755,10 +712,7 @@ fn linked_runtime_spawn_receive_converges_through_extern_return_contract() {
     assert!(
         report.outcome.edges.iter().any(|edge| {
             edge.callsite.callsite.slot == EmitSlot::Cont
-                && module
-                    .fn_by_id(edge.callee_fn_id)
-                    .name
-                    .starts_with("k_receive_")
+                && module.fn_by_id(edge.callee_fn_id).name.starts_with("k_receive_")
         }),
         "linked runtime graph should keep the receive continuation edge alive after pre-plan rewrites; edges={:?}",
         report
@@ -998,10 +952,7 @@ fn outcome_exposes_activation_facts_as_production_data() {
                 && event.fn_id == reduce_fact.fn_id
                 && event.input_count == reduce_fact.input_tys.len()
                 && event.state == "known"
-                && event
-                    .return_ty
-                    .as_ref()
-                    .is_some_and(|ty| t.is_equivalent(ty, &int))
+                && event.return_ty.as_ref().is_some_and(|ty| t.is_equivalent(ty, &int))
         }),
         "known activation return should be visible through telemetry too"
     );
@@ -1029,8 +980,8 @@ fn outcome_exposes_activation_facts_as_production_data() {
                     && event.block == dead_arm.block_id.0 as u64
                     && event.branch
                         == match dead_arm.branch {
-                            crate::fz_ir::DeadBranch::Then => "then",
-                            crate::fz_ir::DeadBranch::Else => "else",
+                            DeadBranch::Then => "then",
+                            DeadBranch::Else => "else",
                         }
                     && !event.fn_name.is_empty()
             })
@@ -1077,9 +1028,7 @@ fn kernel_declares_the_arithmetic_operator_surface() {
 #[test]
 fn arithmetic_binops_infer_from_kernel_operator_specs() {
     let mut t = ConcreteTypes;
-    let module = lower(
-        "fn main() do\n  {1 + 2, 4 - 1, 2 * 3, 4 / 2, 5 % 2, 1 + 2.0, 4.0 - 1, 2 * 3.0}\nend",
-    );
+    let module = lower("fn main() do\n  {1 + 2, 4 - 1, 2 * 3, 4 / 2, 5 % 2, 1 + 2.0, 4.0 - 1, 2 * 3.0}\nend");
     let ret = infer_entry_return_via_main(&module);
     let int = t.int();
     let float = t.float();
@@ -1139,10 +1088,7 @@ fn add_infers_int_via_harness() {
     let add_id = module.fn_by_name("add").expect("add fn").id;
     let int = t.int();
     let ret = infer_return(&mut t, &module, add_id, &[int.clone(), int.clone()]);
-    assert!(
-        t.is_equivalent(&ret, &int),
-        "add(int, int) should infer int"
-    );
+    assert!(t.is_equivalent(&ret, &int), "add(int, int) should infer int");
 }
 
 #[test]
@@ -1475,18 +1421,9 @@ fn corpus_folds_settle_myreduce_to_int() {
     let corpus = [
         ("fold_tail", include_str!("fixtures/fold_tail.fz")),
         ("fold_nontail", include_str!("fixtures/fold_nontail.fz")),
-        (
-            "fold_capture_int",
-            include_str!("fixtures/fold_capture_int.fz"),
-        ),
-        (
-            "fold_capture_closure",
-            include_str!("fixtures/fold_capture_closure.fz"),
-        ),
-        (
-            "fold_state_machine",
-            include_str!("fixtures/fold_state_machine.fz"),
-        ),
+        ("fold_capture_int", include_str!("fixtures/fold_capture_int.fz")),
+        ("fold_capture_closure", include_str!("fixtures/fold_capture_closure.fz")),
+        ("fold_state_machine", include_str!("fixtures/fold_state_machine.fz")),
     ];
     let mut t = ConcreteTypes;
     let int = t.int();
@@ -1524,7 +1461,7 @@ fn captured_closure_is_carried_concretely() {
     let captured = t
         .closure_lit_parts(&inputs[0])
         .expect("leading input is the captured closure, concrete");
-    assert_eq!(FnId::from(captured.target), FnId(9));
+    assert_eq!(captured.target, ClosureTarget(9));
 }
 
 #[test]

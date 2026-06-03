@@ -3,7 +3,10 @@
 #![allow(unused_imports)]
 
 use super::*;
-use crate::fz_ir::{BinOp, Const, FnId, Module, Prim, Stmt, Term, UnOp};
+use crate::fz_ir::{BinOp, Const, FnId, FnIr, Module, Prim, Stmt, Term, UnOp};
+use crate::ir_planner::SpecPlan;
+use crate::ir_planner::fn_types::SpecKey;
+use crate::types::{KeySlot, Ty, Types, key_slots_to_tys};
 use cranelift_codegen::Context;
 use cranelift_codegen::ir::{
     self, AbiParam, BlockArg, InstBuilder, MemFlags, Signature,
@@ -41,10 +44,7 @@ pub(crate) enum ArgRepr {
 }
 
 impl ArgRepr {
-    pub(crate) fn from_ty<T: crate::types::Types<Ty = crate::types::Ty>>(
-        t: &mut T,
-        d: &crate::types::Ty,
-    ) -> ArgRepr {
+    pub(crate) fn from_ty<T: Types<Ty = Ty>>(t: &mut T, d: &Ty) -> ArgRepr {
         if t.is_floating(d) {
             ArgRepr::RawF64
         } else if t.is_integer(d) {
@@ -58,10 +58,7 @@ impl ArgRepr {
     // CLIF value) cannot cross a block-param boundary without a type error.
     // At block edges, only integers benefit from repr narrowing; floats must
     // remain in the generic ValueRef word across block params.
-    pub(crate) fn for_block_param_ty<T: crate::types::Types<Ty = crate::types::Ty>>(
-        t: &mut T,
-        d: &crate::types::Ty,
-    ) -> ArgRepr {
+    pub(crate) fn for_block_param_ty<T: Types<Ty = Ty>>(t: &mut T, d: &Ty) -> ArgRepr {
         match Self::from_ty(t, d) {
             ArgRepr::RawInt => ArgRepr::RawInt,
             _ => ArgRepr::ValueRef,
@@ -120,9 +117,7 @@ impl MidFlightArgShape {
         value_index: usize,
     ) -> CodegenValue {
         match self {
-            MidFlightArgShape::Value(repr) => {
-                CodegenValue::from_abi_value(args[value_index], *repr)
-            }
+            MidFlightArgShape::Value(repr) => CodegenValue::from_abi_value(args[value_index], *repr),
             MidFlightArgShape::HeapRef => CodegenValue::AnyRef(args[value_index]),
         }
     }
@@ -153,19 +148,11 @@ pub(crate) fn push_repr_param(sig: &mut Signature, repr: ArgRepr) {
     sig.params.push(AbiParam::new(repr.cl_type()));
 }
 
-pub(crate) fn append_block_param_for_repr(
-    b: &mut FunctionBuilder<'_>,
-    block: ir::Block,
-    repr: ArgRepr,
-) {
+pub(crate) fn append_block_param_for_repr(b: &mut FunctionBuilder<'_>, block: ir::Block, repr: ArgRepr) {
     b.append_block_param(block, repr.cl_type());
 }
 
-pub(crate) fn take_repr_param(
-    params: &[ir::Value],
-    cursor: &mut usize,
-    repr: ArgRepr,
-) -> ir::Value {
+pub(crate) fn take_repr_param(params: &[ir::Value], cursor: &mut usize, repr: ArgRepr) -> ir::Value {
     let value = params[*cursor];
     *cursor += repr.abi_arity();
     value
@@ -187,11 +174,7 @@ pub(crate) fn take_param_binding(
 
 /// Per-spec entry-param ArgReprs. Length matches the spec's entry block's
 /// param count.
-pub(crate) fn build_param_reprs<T: crate::types::Types<Ty = crate::types::Ty>>(
-    t: &mut T,
-    f: &crate::fz_ir::FnIr,
-    ft: &crate::ir_planner::SpecPlan,
-) -> Vec<ArgRepr> {
+pub(crate) fn build_param_reprs<T: Types<Ty = Ty>>(t: &mut T, f: &FnIr, ft: &SpecPlan) -> Vec<ArgRepr> {
     let entry = f.blocks.iter().find(|b| b.id == f.entry).unwrap();
     entry
         .params
@@ -203,11 +186,11 @@ pub(crate) fn build_param_reprs<T: crate::types::Types<Ty = crate::types::Ty>>(
         .collect()
 }
 
-pub(crate) fn build_param_reprs_for_spec<T: crate::types::Types<Ty = crate::types::Ty>>(
+pub(crate) fn build_param_reprs_for_spec<T: Types<Ty = Ty>>(
     t: &mut T,
-    f: &crate::fz_ir::FnIr,
-    ft: &crate::ir_planner::SpecPlan,
-    spec_key: &crate::ir_planner::fn_types::SpecKey,
+    f: &FnIr,
+    ft: &SpecPlan,
+    spec_key: &SpecKey,
     is_cont_fn: bool,
 ) -> Vec<ArgRepr> {
     if is_cont_fn && let Some(arity) = DemandAbi::new(spec_key).tuple_field_arity() {
@@ -247,11 +230,8 @@ pub(crate) fn build_param_reprs_for_spec<T: crate::types::Types<Ty = crate::type
     }
 }
 
-pub(crate) fn codegen_key_to_tys<T: crate::types::Types<Ty = crate::types::Ty>>(
-    t: &mut T,
-    key: &[crate::types::KeySlot],
-) -> Vec<crate::types::Ty> {
-    crate::types::key_slots_to_tys(t, key)
+pub(crate) fn codegen_key_to_tys<T: Types<Ty = Ty>>(t: &mut T, key: &[KeySlot]) -> Vec<Ty> {
+    key_slots_to_tys(t, key)
 }
 
 /// Per-fn Cranelift Signature.
@@ -342,11 +322,7 @@ fn build_cont_sig(param_reprs: &[ArgRepr], cont_extras_override: Option<usize>) 
 /// Closure-target ABI is structurally uniform ValueRef. The
 /// indirect-dispatch seam can't carry typed return info to its caller;
 /// the body coerces its narrow return to ValueRef at Term::Return.
-fn build_closure_target_sig(
-    param_reprs: &[ArgRepr],
-    n_caps: usize,
-    has_list_tail_dest: bool,
-) -> Signature {
+fn build_closure_target_sig(param_reprs: &[ArgRepr], n_caps: usize, has_list_tail_dest: bool) -> Signature {
     let mut sig = Signature::new(CallConv::Tail);
     for r in &param_reprs[n_caps..] {
         push_repr_param(&mut sig, *r);

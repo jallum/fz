@@ -1,127 +1,103 @@
 use std::collections::HashMap;
+use std::mem::discriminant;
+use std::ptr::write;
 
 use super::*;
-use crate::fz_ir::{Module, Prim, Var};
-use crate::types::Types;
-use fz_runtime::any_value::AnyValueRef;
-use fz_runtime::any_value::ValueKind;
+use crate::ast::{BitType as AstBitType, Endian};
+use crate::concrete_types::ty_descr;
+use crate::fz_ir::{BitSizeIr, BlockId, Module, Prim, Var};
+use crate::ir_planner::SpecPlan;
+use crate::telemetry::Telemetry;
+use crate::types::{Ty, Types};
+use fz_runtime::any_value::{AnyValueRef, NIL_ATOM_ID, ValueKind, closure_addr_from_tagged, struct_schema_id};
+use fz_runtime::heap::Schema;
+use fz_runtime::ir_runtime::{
+    fz_alloc_bitstring_const, fz_bs_begin, fz_bs_finalize, fz_bs_write_field_ref, fz_list_cons_atom,
+    fz_list_cons_float, fz_list_cons_int, fz_list_cons_ref, fz_list_head_ref, fz_list_tail_ref, fz_map_dest_begin,
+    fz_map_dest_begin_update, fz_map_dest_freeze, fz_map_dest_put_parts, fz_map_empty, fz_map_get_atom_key_ref,
+    fz_map_get_ref, fz_map_put_atom, fz_map_put_float, fz_map_put_int, fz_map_put_ref, fz_matcher_map_get_ref,
+    fz_struct_get_field_ref,
+};
+use fz_runtime::process::Process;
 
 pub(super) fn interp_list_cons(
-    proc: *mut fz_runtime::process::Process,
+    proc: *mut Process,
     head: AnyValue,
     tail: AnyValue,
     context: &str,
 ) -> Result<AnyValue, String> {
     let bits = with_value_ref(proc, tail, context, |tail_ref| match head {
-        AnyValue::Int(value) => Ok::<u64, String>(fz_runtime::ir_runtime::fz_list_cons_int(
-            proc, value, tail_ref,
-        )),
-        AnyValue::Float(value) => Ok::<u64, String>(fz_runtime::ir_runtime::fz_list_cons_float(
-            proc, value, tail_ref,
-        )),
-        AnyValue::Atom(value) => Ok::<u64, String>(fz_runtime::ir_runtime::fz_list_cons_atom(
-            proc,
-            value as u64,
-            tail_ref,
-        )),
+        AnyValue::Int(value) => Ok::<u64, String>(fz_list_cons_int(proc, value, tail_ref)),
+        AnyValue::Float(value) => Ok::<u64, String>(fz_list_cons_float(proc, value, tail_ref)),
+        AnyValue::Atom(value) => Ok::<u64, String>(fz_list_cons_atom(proc, value as u64, tail_ref)),
         AnyValue::Null | AnyValue::EmptyList | AnyValue::Ref(_) => {
             let head = head
                 .as_ref_word(proc)
                 .map_err(|err| format!("{context}: cannot create head ref: {err}"))?;
-            Ok(fz_runtime::ir_runtime::fz_list_cons_ref(
-                proc, head, tail_ref,
-            ))
+            Ok(fz_list_cons_ref(proc, head, tail_ref))
         }
     })??;
     interp_value_from_ref_word(bits, context)
 }
 
 pub(super) fn interp_map_put(
-    proc: *mut fz_runtime::process::Process,
+    proc: *mut Process,
     map_bits: u64,
     key: AnyValue,
     value: AnyValue,
     context: &str,
 ) -> Result<u64, String> {
     with_value_ref(proc, key, context, |key_ref| match value {
-        AnyValue::Int(value) => Ok::<u64, String>(fz_runtime::ir_runtime::fz_map_put_int(
-            proc, map_bits, key_ref, value,
-        )),
-        AnyValue::Float(value) => Ok::<u64, String>(fz_runtime::ir_runtime::fz_map_put_float(
-            proc, map_bits, key_ref, value,
-        )),
-        AnyValue::Atom(value) => Ok::<u64, String>(fz_runtime::ir_runtime::fz_map_put_atom(
-            proc,
-            map_bits,
-            key_ref,
-            value as u64,
-        )),
+        AnyValue::Int(value) => Ok::<u64, String>(fz_map_put_int(proc, map_bits, key_ref, value)),
+        AnyValue::Float(value) => Ok::<u64, String>(fz_map_put_float(proc, map_bits, key_ref, value)),
+        AnyValue::Atom(value) => Ok::<u64, String>(fz_map_put_atom(proc, map_bits, key_ref, value as u64)),
         AnyValue::Null | AnyValue::EmptyList | AnyValue::Ref(_) => {
             let value_ref = value
                 .as_ref_word(proc)
                 .map_err(|err| format!("{context}: cannot create value ref: {err}"))?;
-            Ok(fz_runtime::ir_runtime::fz_map_put_ref(
-                proc, map_bits, key_ref, value_ref,
-            ))
+            Ok(fz_map_put_ref(proc, map_bits, key_ref, value_ref))
         }
     })?
 }
 
-pub(super) fn interp_list_head(
-    proc: *mut fz_runtime::process::Process,
-    value: AnyValue,
-) -> Result<AnyValue, String> {
+pub(super) fn interp_list_head(proc: *mut Process, value: AnyValue) -> Result<AnyValue, String> {
     let slot = value.value()?;
     if !interp_is_list_cons(slot) {
         return Err(format!("ListHead: subject is not a list cons ({:?})", slot));
     }
-    with_value_ref(proc, value, "ListHead", |list_ref| {
-        fz_runtime::ir_runtime::fz_list_head_ref(list_ref)
-    })
-    .and_then(|ref_word| interp_value_from_ref_word(ref_word, "ListHead"))
+    with_value_ref(proc, value, "ListHead", |list_ref| fz_list_head_ref(list_ref))
+        .and_then(|ref_word| interp_value_from_ref_word(ref_word, "ListHead"))
 }
 
-pub(super) fn interp_list_tail(
-    proc: *mut fz_runtime::process::Process,
-    value: AnyValue,
-) -> Result<AnyValue, String> {
+pub(super) fn interp_list_tail(proc: *mut Process, value: AnyValue) -> Result<AnyValue, String> {
     let slot = value.value()?;
     if !interp_is_list_cons(slot) {
         return Err(format!("ListTail: subject is not a list cons ({:?})", slot));
     }
-    with_value_ref(proc, value, "ListTail", |list_ref| {
-        fz_runtime::ir_runtime::fz_list_tail_ref(list_ref)
-    })
-    .and_then(|ref_word| interp_value_from_ref_word(ref_word, "ListTail"))
+    with_value_ref(proc, value, "ListTail", |list_ref| fz_list_tail_ref(list_ref))
+        .and_then(|ref_word| interp_value_from_ref_word(ref_word, "ListTail"))
 }
 
-pub(super) fn interp_map_get(
-    proc: *mut fz_runtime::process::Process,
-    map: AnyValue,
-    key: AnyValue,
-) -> Result<AnyValue, String> {
+pub(super) fn interp_map_get(proc: *mut Process, map: AnyValue, key: AnyValue) -> Result<AnyValue, String> {
     let map_slot = map.value()?;
-    if map_slot.kind() != ValueKind::RESOURCE
-        && map_slot.kind() != ValueKind::STRUCT
-        && !is_map_value(map_slot)
-    {
+    if map_slot.kind() != ValueKind::RESOURCE && map_slot.kind() != ValueKind::STRUCT && !is_map_value(map_slot) {
         return Ok(interp_nil_value());
     }
     with_value_ref(proc, map, "MapGet map", |map_ref| {
         with_value_ref(proc, key, "MapGet key", |key_ref| {
-            fz_runtime::ir_runtime::fz_map_get_ref(proc, map_ref, key_ref)
+            fz_map_get_ref(proc, map_ref, key_ref)
         })
     })?
     .and_then(|ref_word| interp_value_from_ref_word(ref_word, "MapGet"))
 }
 
-pub(super) fn eval_prim<T: Types<Ty = crate::types::Ty>>(
+pub(super) fn eval_prim<T: Types<Ty = Ty>>(
     runtime: &mut IrInterpRuntime,
     t: &mut T,
     module: &Module,
-    tel: &dyn crate::telemetry::Telemetry,
-    fn_types: &crate::ir_planner::SpecPlan,
-    block_id: crate::fz_ir::BlockId,
+    tel: &dyn Telemetry,
+    fn_types: &SpecPlan,
+    block_id: BlockId,
     stmt_idx: usize,
     prim: &Prim,
     env: &HashMap<Var, AnyValue>,
@@ -149,8 +125,6 @@ pub(super) fn eval_prim<T: Types<Ty = crate::types::Ty>>(
             // same runtime BitWriter through the same extern "C" calls the JIT
             // and AOT paths use, so all three paths funnel through the shared
             // bitstring substrate.
-            use crate::ast::BitType as AstBitType;
-            use crate::fz_ir::BitSizeIr;
             fn encode_bit_type(t: AstBitType) -> u32 {
                 match t {
                     AstBitType::Integer => 0,
@@ -162,8 +136,7 @@ pub(super) fn eval_prim<T: Types<Ty = crate::types::Ty>>(
                     AstBitType::Utf32 => 6,
                 }
             }
-            fn encode_endian(e: crate::ast::Endian) -> u32 {
-                use crate::ast::Endian;
+            fn encode_endian(e: Endian) -> u32 {
                 match e {
                     Endian::Big => 0,
                     Endian::Little => 1,
@@ -177,7 +150,7 @@ pub(super) fn eval_prim<T: Types<Ty = crate::types::Ty>>(
                     AstBitType::Utf8 | AstBitType::Utf16 | AstBitType::Utf32 => 1,
                 }
             }
-            fz_runtime::ir_runtime::fz_bs_begin(runtime.cur_proc());
+            fz_bs_begin(runtime.cur_proc());
             for f in fields {
                 let value_v = env_get(env, f.value)?;
                 let ty_tag = encode_bit_type(f.ty);
@@ -195,7 +168,7 @@ pub(super) fn eval_prim<T: Types<Ty = crate::types::Ty>>(
                         (1, n as u32)
                     }
                 };
-                fz_runtime::ir_runtime::fz_bs_write_field_ref(
+                fz_bs_write_field_ref(
                     runtime.cur_proc(),
                     value_v.as_ref_word(runtime.cur_proc())?,
                     ty_tag,
@@ -206,22 +179,14 @@ pub(super) fn eval_prim<T: Types<Ty = crate::types::Ty>>(
                     signed,
                 );
             }
-            interp_value_from_ref_word(
-                fz_runtime::ir_runtime::fz_bs_finalize(runtime.cur_proc()),
-                "MakeBitstring",
-            )?
+            interp_value_from_ref_word(fz_bs_finalize(runtime.cur_proc()), "MakeBitstring")?
         }
         Prim::ConstBitstring(bytes, bit_len) => {
             // fz-cty.8 — bytes are owned by the Module (and live as long as
             // the interp run), so it's safe to alloc straight from them via
             // the shared runtime FFI; identical to the JIT/AOT lowering.
             interp_value_from_ref_word(
-                fz_runtime::ir_runtime::fz_alloc_bitstring_const(
-                    runtime.cur_proc(),
-                    bytes.as_ptr() as u64,
-                    bytes.len() as u64,
-                    *bit_len,
-                ),
+                fz_alloc_bitstring_const(runtime.cur_proc(), bytes.as_ptr() as u64, bytes.len() as u64, *bit_len),
                 "ConstBitstring",
             )?
         }
@@ -229,31 +194,23 @@ pub(super) fn eval_prim<T: Types<Ty = crate::types::Ty>>(
             let cap_vals: Vec<AnyValue> = collect(env, captured)?;
             let heap = &mut unsafe { &mut *runtime.cur_proc() }.heap;
             let bits = heap.alloc_closure_slots(fn_id.0, cap_vals.len(), 0);
-            let p = fz_runtime::any_value::closure_addr_from_tagged(bits).expect("new closure ptr");
-            unsafe { std::ptr::write(p.add(8) as *mut u64, fn_id.0 as u64) };
+            let p = closure_addr_from_tagged(bits).expect("new closure ptr");
+            unsafe { write(p.add(8) as *mut u64, fn_id.0 as u64) };
             for (i, value) in cap_vals.iter().enumerate() {
                 unsafe { heap.write_closure_capture_value(p, i, value.value()?) };
             }
-            let closure_addr =
-                fz_runtime::any_value::closure_addr_from_tagged(bits).expect("closure bits");
-            AnyValue::Ref(
-                AnyValueRef::from_heap_object(ValueKind::CLOSURE, closure_addr)
-                    .expect("closure ref"),
-            )
+            let closure_addr = closure_addr_from_tagged(bits).expect("closure bits");
+            AnyValue::Ref(AnyValueRef::from_heap_object(ValueKind::CLOSURE, closure_addr).expect("closure ref"))
         }
         Prim::MakeTuple(elems) => {
             let arity = elems.len();
             let schema_id = interp_tuple_schema_id(runtime, arity);
-            let p = unsafe { &mut *runtime.cur_proc() }
-                .heap
-                .alloc_struct(schema_id);
+            let p = unsafe { &mut *runtime.cur_proc() }.heap.alloc_struct(schema_id);
             for (i, v) in elems.iter().enumerate() {
                 let val = env_get(env, *v)?;
-                unsafe { &mut *runtime.cur_proc() }.heap.write_field_slot(
-                    p,
-                    (i * 8) as u32,
-                    val.value()?,
-                );
+                unsafe { &mut *runtime.cur_proc() }
+                    .heap
+                    .write_field_slot(p, (i * 8) as u32, val.value()?);
             }
             AnyValue::Ref(AnyValueRef::from_heap_object(ValueKind::STRUCT, p).expect("tuple ref"))
         }
@@ -266,32 +223,24 @@ pub(super) fn eval_prim<T: Types<Ty = crate::types::Ty>>(
                 .get(module_name)
                 .cloned()
                 .ok_or_else(|| format!("MakeStruct: unknown struct `{}`", module_name))?;
-            let schema_id = unsafe { &mut *runtime.cur_proc() }.heap.register_schema(
-                fz_runtime::heap::Schema::named_struct(module_name.clone(), schema),
-            );
-            let p = unsafe { &mut *runtime.cur_proc() }
+            let schema_id = unsafe { &mut *runtime.cur_proc() }
                 .heap
-                .alloc_struct(schema_id);
+                .register_schema(Schema::named_struct(module_name.clone(), schema));
+            let p = unsafe { &mut *runtime.cur_proc() }.heap.alloc_struct(schema_id);
             for (i, (_, v)) in fields.iter().enumerate() {
                 let val = env_get(env, *v)?;
-                unsafe { &mut *runtime.cur_proc() }.heap.write_field_slot(
-                    p,
-                    (i * 8) as u32,
-                    val.value()?,
-                );
+                unsafe { &mut *runtime.cur_proc() }
+                    .heap
+                    .write_field_slot(p, (i * 8) as u32, val.value()?);
             }
             AnyValue::Ref(AnyValueRef::from_heap_object(ValueKind::STRUCT, p).expect("struct ref"))
         }
         Prim::DestTupleBegin { arity, .. } => {
             let schema_id = interp_tuple_schema_id(runtime, *arity);
-            let p = unsafe { &mut *runtime.cur_proc() }
-                .heap
-                .alloc_struct(schema_id);
+            let p = unsafe { &mut *runtime.cur_proc() }.heap.alloc_struct(schema_id);
             AnyValue::Ref(AnyValueRef::from_heap_object(ValueKind::STRUCT, p).expect("tuple ref"))
         }
-        Prim::DestTupleSet {
-            dest, index, value, ..
-        } => {
+        Prim::DestTupleSet { dest, index, value, .. } => {
             let dest = env_get(env, *dest)?;
             let dest_value = dest.value()?;
             if dest_value.kind() != ValueKind::STRUCT {
@@ -304,7 +253,7 @@ pub(super) fn eval_prim<T: Types<Ty = crate::types::Ty>>(
             unsafe { &mut *runtime.cur_proc() }
                 .heap
                 .write_field_slot(p, index * 8, value);
-            AnyValue::Atom(fz_runtime::any_value::NIL_ATOM_ID)
+            AnyValue::Atom(NIL_ATOM_ID)
         }
         Prim::DestFreeze { dest, .. } => env_get(env, *dest)?,
         Prim::TupleField(c, idx) => {
@@ -314,11 +263,7 @@ pub(super) fn eval_prim<T: Types<Ty = crate::types::Ty>>(
                 return Err("TupleField: subject is not a Struct".to_string());
             }
             with_value_ref(runtime.cur_proc(), cv, "TupleField", |struct_ref| {
-                fz_runtime::ir_runtime::fz_struct_get_field_ref(
-                    runtime.cur_proc(),
-                    struct_ref,
-                    idx * 8,
-                )
+                fz_struct_get_field_ref(runtime.cur_proc(), struct_ref, idx * 8)
             })
             .and_then(|ref_word| interp_value_from_ref_word(ref_word, "TupleField"))?
         }
@@ -332,19 +277,14 @@ pub(super) fn eval_prim<T: Types<Ty = crate::types::Ty>>(
                     .position(|name| name == field)
                     .ok_or_else(|| format!("field atom `{}` not interned", field))?;
                 let map = cv.extern_arg_ref_word(runtime.cur_proc())?;
-                let out = fz_runtime::ir_runtime::fz_map_get_atom_key_ref(
-                    runtime.cur_proc(),
-                    map,
-                    atom_id as u64,
-                );
+                let out = fz_map_get_atom_key_ref(runtime.cur_proc(), map, atom_id as u64);
                 return interp_value_from_ref_word(out, "StructField");
             }
             if slot.kind() != ValueKind::STRUCT {
                 return Err("StructField: subject is not a map or Struct".to_string());
             }
             with_value_ref(runtime.cur_proc(), cv, "StructField", |struct_ref_word| {
-                let struct_ref = fz_runtime::any_value::AnyValueRef::from_raw_word(struct_ref_word)
-                    .expect("StructField ref");
+                let struct_ref = AnyValueRef::from_raw_word(struct_ref_word).expect("StructField ref");
                 unsafe { &*runtime.cur_proc() }
                     .heap
                     .read_struct_named_field_ref(struct_ref, field)
@@ -354,7 +294,7 @@ pub(super) fn eval_prim<T: Types<Ty = crate::types::Ty>>(
             .and_then(|ref_word| interp_value_from_ref_word(ref_word, "StructField"))?
         }
         Prim::TypeTest(v, descr) => {
-            let descr = crate::concrete_types::ty_descr(descr.as_ref());
+            let descr = ty_descr(descr.as_ref());
             let val = env_get(env, *v)?;
             if matches!(val, AnyValue::Float(_)) {
                 return Ok(interp_bool_value(descr.type_test_has_floats()));
@@ -370,9 +310,7 @@ pub(super) fn eval_prim<T: Types<Ty = crate::types::Ty>>(
             if descr.type_test_atom_is_any() {
                 matched |= val.kind() == ValueKind::ATOM;
             } else if descr.type_test_atom_is_cofinite() {
-                return Err(
-                    "TypeTest: cofinite atom literal sets not yet supported in interpreter".into(),
-                );
+                return Err("TypeTest: cofinite atom literal sets not yet supported in interpreter".into());
             } else {
                 let names = descr.type_test_atom_literals();
                 if !names.is_empty() {
@@ -407,8 +345,7 @@ pub(super) fn eval_prim<T: Types<Ty = crate::types::Ty>>(
             if val.kind() == ValueKind::STRUCT
                 && let Some(sp) = val.heap_addr()
             {
-                let actual_schema =
-                    unsafe { fz_runtime::any_value::struct_schema_id(sp as *const u8) };
+                let actual_schema = unsafe { struct_schema_id(sp as *const u8) };
                 for arity in descr.type_test_tuple_arities() {
                     let want_schema = interp_tuple_schema_id(runtime, arity);
                     if actual_schema == want_schema {
@@ -422,7 +359,7 @@ pub(super) fn eval_prim<T: Types<Ty = crate::types::Ty>>(
                     };
                     let want_schema = unsafe { &mut *runtime.cur_proc() }
                         .heap
-                        .register_schema(fz_runtime::heap::Schema::named_struct(name, fields));
+                        .register_schema(Schema::named_struct(name, fields));
                     if actual_schema == want_schema {
                         matched = true;
                         break;
@@ -461,11 +398,7 @@ pub(super) fn eval_prim<T: Types<Ty = crate::types::Ty>>(
             }
             let value = with_value_ref(runtime.cur_proc(), mv, "MatcherMapGet map", |map_ref| {
                 with_value_ref(runtime.cur_proc(), kv, "MatcherMapGet key", |key_ref| {
-                    fz_runtime::ir_runtime::fz_matcher_map_get_ref(
-                        runtime.cur_proc(),
-                        map_ref,
-                        key_ref,
-                    )
+                    fz_matcher_map_get_ref(runtime.cur_proc(), map_ref, key_ref)
                 })
             })??;
             interp_value_from_ref_word(value, "MatcherMapGet")?
@@ -476,7 +409,7 @@ pub(super) fn eval_prim<T: Types<Ty = crate::types::Ty>>(
         }
         Prim::MakeMap(entries) => {
             let mut map_bits = if entries.is_empty() {
-                fz_runtime::ir_runtime::fz_map_empty(runtime.cur_proc())
+                fz_map_empty(runtime.cur_proc())
             } else {
                 0
             };
@@ -501,27 +434,19 @@ pub(super) fn eval_prim<T: Types<Ty = crate::types::Ty>>(
             let map_bits = match base {
                 Some(base) => {
                     let base = env_get(env, *base)?;
-                    fz_runtime::ir_runtime::fz_map_dest_begin_update(
-                        runtime.cur_proc(),
-                        base.value()?.ref_word().raw_word(),
-                        *extra as u32,
-                    )
+                    fz_map_dest_begin_update(runtime.cur_proc(), base.value()?.ref_word().raw_word(), *extra as u32)
                 }
-                None => {
-                    fz_runtime::ir_runtime::fz_map_dest_begin(runtime.cur_proc(), *extra as u32)
-                }
+                None => fz_map_dest_begin(runtime.cur_proc(), *extra as u32),
             };
             interp_value_from_ref_word(map_bits, "DestMapBegin")?
         }
-        Prim::DestMapPut {
-            map, key, value, ..
-        } => {
+        Prim::DestMapPut { map, key, value, .. } => {
             let map = env_get(env, *map)?;
             let key = env_get(env, *key)?;
             let value = env_get(env, *value)?;
             let key = key.value()?;
             let value = value.value()?;
-            fz_runtime::ir_runtime::fz_map_dest_put_parts(
+            fz_map_dest_put_parts(
                 runtime.cur_proc(),
                 map.value()?.ref_word().raw_word(),
                 key.raw(),
@@ -529,14 +454,11 @@ pub(super) fn eval_prim<T: Types<Ty = crate::types::Ty>>(
                 value.raw(),
                 value.kind().tag() as u64,
             );
-            AnyValue::Atom(fz_runtime::any_value::NIL_ATOM_ID)
+            AnyValue::Atom(NIL_ATOM_ID)
         }
         Prim::DestMapFreeze { map, .. } => {
             let map = env_get(env, *map)?;
-            let map_bits = fz_runtime::ir_runtime::fz_map_dest_freeze(
-                runtime.cur_proc(),
-                map.value()?.ref_word().raw_word(),
-            );
+            let map_bits = fz_map_dest_freeze(runtime.cur_proc(), map.value()?.ref_word().raw_word());
             interp_value_from_ref_word(map_bits, "DestMapFreeze")?
         }
         Prim::MakeList(elems, tail) => {
@@ -552,7 +474,7 @@ pub(super) fn eval_prim<T: Types<Ty = crate::types::Ty>>(
             }
             acc
         }
-        Prim::DestListBegin { .. } => AnyValue::Atom(fz_runtime::any_value::NIL_ATOM_ID),
+        Prim::DestListBegin { .. } => AnyValue::Atom(NIL_ATOM_ID),
         Prim::DestListCons { head, tail, .. } => {
             let head = env_get(env, *head)?;
             let tail = match tail {
@@ -565,13 +487,11 @@ pub(super) fn eval_prim<T: Types<Ty = crate::types::Ty>>(
         // fz-axu.23 (M2) — lower_program_full erases Prim::Brand
         // before the interp sees the module. Surface a stray Brand
         // instead of silently aliasing.
-        Prim::Brand(_, _) => unreachable!(
-            "Prim::Brand reached interp — erasure should run inside lower_program_full"
-        ),
+        Prim::Brand(_, _) => unreachable!("Prim::Brand reached interp — erasure should run inside lower_program_full"),
         _ => {
             return Err(format!(
                 "interp .5.2: prim {:?} not yet supported (lands in fz-ul4.23.5.3+)",
-                std::mem::discriminant(prim)
+                discriminant(prim)
             ));
         }
     })

@@ -45,13 +45,16 @@
 //! Activation facts, activation-edge callsites, diagnostics, and dead matcher
 //! arms are emitted through telemetry so tests and operators observe the same
 //! production surface.
+use crate::frontend::protocols::{impl_target_type, struct_impl_target_type};
 use crate::fz_ir::{
-    BinOp, BlockId, CallsiteId, Const, DeadBranch, EmitSlot, FnId, Module, Prim, Stmt, Term, UnOp,
-    Var,
+    BinOp, BlockId, CallsiteId, Const, DeadBranch, EmitSlot, FnId, Module, Prim, Stmt, Term, UnOp, Var,
 };
+use crate::metadata;
 use crate::specs::{SpecApplicationOutcome, apply_spec_set};
+use crate::telemetry::{Telemetry, Value};
 use crate::types::{ClosureTarget, ClosureTypes, MapKey, Nominals, RenderTypes, Ty, Types};
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::mem::replace;
 
 type Env = HashMap<Var, Info>;
 type PredicateFacts = HashMap<Var, PredicateFact>;
@@ -91,11 +94,7 @@ enum ValueProof {
 
 impl ValueProof {
     fn join(&self, other: &Self) -> Self {
-        if self == other {
-            self.clone()
-        } else {
-            Self::Unproven
-        }
+        if self == other { self.clone() } else { Self::Unproven }
     }
 
     fn tuple_field(&self, index: usize) -> Self {
@@ -122,9 +121,7 @@ impl ValueProof {
 
     fn struct_field(&self, field: &str) -> Self {
         match self {
-            Self::StructFields { fields, .. } => {
-                fields.get(field).cloned().unwrap_or(Self::Unproven)
-            }
+            Self::StructFields { fields, .. } => fields.get(field).cloned().unwrap_or(Self::Unproven),
             _ => Self::Unproven,
         }
     }
@@ -302,11 +299,7 @@ impl ActivationKey {
     }
 
     fn input_infos(&self) -> Vec<Info> {
-        self.inputs
-            .iter()
-            .cloned()
-            .map(ValueKey::into_info)
-            .collect()
+        self.inputs.iter().cloned().map(ValueKey::into_info).collect()
     }
 
     fn input_tys(&self) -> Vec<Ty> {
@@ -411,18 +404,13 @@ enum TypeInferDiagnosticKind {
 }
 
 impl TypeInferDiagnostic {
-    fn emit<T: Types<Ty = Ty> + RenderTypes>(
-        &self,
-        t: &mut T,
-        module: &Module,
-        tel: &dyn crate::telemetry::Telemetry,
-    ) {
+    fn emit<T: Types<Ty = Ty> + RenderTypes>(&self, t: &mut T, module: &Module, tel: &dyn Telemetry) {
         match &self.kind {
             TypeInferDiagnosticKind::InvalidOperator { op, left, right } => {
                 let fn_name = module.fn_by_id(self.fn_id).name.clone();
                 tel.event(
                     &["fz", "type_infer", "diagnostic"],
-                    crate::metadata! {
+                    metadata! {
                         code: "type/invalid-operator",
                         fn_name: fn_name,
                         block: self.block_id.0 as u64,
@@ -450,7 +438,7 @@ impl DeadArmFact {
         &self,
         activation_ids: &HashMap<ActivationKey, TypeInferActivationId>,
         module: &Module,
-        tel: &dyn crate::telemetry::Telemetry,
+        tel: &dyn Telemetry,
     ) {
         let fn_name = module.fn_by_id(self.fn_id).name.clone();
         let branch = match self.branch {
@@ -459,7 +447,7 @@ impl DeadArmFact {
         };
         tel.event(
             &["fz", "type_infer", "dead_arm"],
-            crate::metadata! {
+            metadata! {
                 activation_id: activation_ids
                     .get(&self.activation)
                     .expect("dead-arm activation id")
@@ -625,14 +613,9 @@ impl<'m> Solver<'m> {
     }
 
     /// Seed an entry point with its known input types and schedule it.
-    fn seed<T: Types<Ty = Ty>>(
-        &mut self,
-        t: &mut T,
-        fn_id: FnId,
-        inputs: Vec<Info>,
-    ) -> ActivationKey {
-        let key = ActivationKey::from_inputs(t, fn_id, &inputs)
-            .expect("entry activations must be seeded with known inputs");
+    fn seed<T: Types<Ty = Ty>>(&mut self, t: &mut T, fn_id: FnId, inputs: Vec<Info>) -> ActivationKey {
+        let key =
+            ActivationKey::from_inputs(t, fn_id, &inputs).expect("entry activations must be seeded with known inputs");
         self.activations.insert(
             key.clone(),
             Activation {
@@ -717,12 +700,7 @@ impl<'m> Solver<'m> {
         Ok(ActivationRequestSet::singleton(callee, args))
     }
 
-    fn operator_spec_result<T: Types<Ty = Ty> + ClosureTypes>(
-        &self,
-        t: &mut T,
-        op: BinOp,
-        inputs: &[Info],
-    ) -> Info {
+    fn operator_spec_result<T: Types<Ty = Ty> + ClosureTypes>(&self, t: &mut T, op: BinOp, inputs: &[Info]) -> Info {
         let name = format!("Kernel.{}", binop_symbol(op));
         let Some(f) = self
             .module
@@ -801,12 +779,7 @@ impl<'m> Solver<'m> {
     /// its receiver type, mirroring `ir_planner::walk::protocol_dispatch_key`:
     /// the single impl whose target type the receiver is a subtype of. `None`
     /// when the receiver is not yet `Known` or no impl matches.
-    fn resolve_protocol<T: Types<Ty = Ty>>(
-        &self,
-        t: &mut T,
-        callee: FnId,
-        args: &[Info],
-    ) -> Option<FnId> {
+    fn resolve_protocol<T: Types<Ty = Ty>>(&self, t: &mut T, callee: FnId, args: &[Info]) -> Option<FnId> {
         let target = self.module.protocol_call_targets.get(&callee)?;
         let receiver_ty = match args.first()? {
             Info::Known(value) => value.ty.clone(),
@@ -819,14 +792,10 @@ impl<'m> Solver<'m> {
             .values()
             .filter(|fact| fact.protocol == target.protocol)
             .filter(|fact| {
-                let target_ty = crate::frontend::protocols::impl_target_type(t, &fact.target);
+                let target_ty = impl_target_type(t, &fact.target);
                 t.is_subtype(&receiver_ty, &target_ty)
             })
-            .filter_map(|fact| {
-                fact.callbacks
-                    .get(&(target.callback.clone(), target.arity))
-                    .cloned()
-            })
+            .filter_map(|fact| fact.callbacks.get(&(target.callback.clone(), target.arity)).cloned())
             .collect();
         matches.sort();
         matches.dedup();
@@ -871,10 +840,7 @@ impl<'m> Solver<'m> {
             callee: key.clone(),
             callsite,
         });
-        self.deps
-            .entry(key.clone())
-            .or_default()
-            .insert(caller.clone());
+        self.deps.entry(key.clone()).or_default().insert(caller.clone());
         if !self.activations.contains_key(&key) {
             self.activations.insert(
                 key.clone(),
@@ -997,9 +963,7 @@ impl<'m> Solver<'m> {
                     .cmp(&b.fn_id)
                     .then_with(|| a.input_tys.len().cmp(&b.input_tys.len()))
                     .then_with(|| format!("{:?}", a.input_tys).cmp(&format!("{:?}", b.input_tys)))
-                    .then_with(|| {
-                        format!("{:?}", a.return_state).cmp(&format!("{:?}", b.return_state))
-                    })
+                    .then_with(|| format!("{:?}", a.return_state).cmp(&format!("{:?}", b.return_state)))
             })
         });
         facts
@@ -1025,14 +989,10 @@ impl<'m> Solver<'m> {
             .edges
             .iter()
             .map(|edge| TypeInferActivationEdgeFact {
-                caller_activation_id: *activation_ids
-                    .get(&edge.caller)
-                    .expect("caller activation id"),
+                caller_activation_id: *activation_ids.get(&edge.caller).expect("caller activation id"),
                 caller_fn_id: edge.caller.fn_id,
                 caller_input_tys: edge.caller.input_tys(),
-                callee_activation_id: *activation_ids
-                    .get(&edge.callee)
-                    .expect("callee activation id"),
+                callee_activation_id: *activation_ids.get(&edge.callee).expect("callee activation id"),
                 callee_fn_id: edge.callee.fn_id,
                 callee_input_tys: edge.callee.input_tys(),
                 callsite: TypeInferCallsiteFact {
@@ -1048,12 +1008,8 @@ impl<'m> Solver<'m> {
                 .then_with(|| a.callee_activation_id.cmp(&b.callee_activation_id))
                 .then_with(|| a.caller_fn_id.cmp(&b.caller_fn_id))
                 .then_with(|| a.callee_fn_id.cmp(&b.callee_fn_id))
-                .then_with(|| {
-                    format!("{:?}", a.caller_input_tys).cmp(&format!("{:?}", b.caller_input_tys))
-                })
-                .then_with(|| {
-                    format!("{:?}", a.callee_input_tys).cmp(&format!("{:?}", b.callee_input_tys))
-                })
+                .then_with(|| format!("{:?}", a.caller_input_tys).cmp(&format!("{:?}", b.caller_input_tys)))
+                .then_with(|| format!("{:?}", a.callee_input_tys).cmp(&format!("{:?}", b.callee_input_tys)))
         });
         facts
     }
@@ -1105,11 +1061,7 @@ impl<'m> Solver<'m> {
         TypeInferStatus::Complete
     }
 
-    fn emit_telemetry<T: Types<Ty = Ty> + RenderTypes>(
-        &self,
-        t: &mut T,
-        tel: &dyn crate::telemetry::Telemetry,
-    ) {
+    fn emit_telemetry<T: Types<Ty = Ty> + RenderTypes>(&self, t: &mut T, tel: &dyn Telemetry) {
         let activation_ids = self.activation_ids();
         self.emit_activation_facts(t, tel);
         self.emit_activation_edge_facts(t, tel);
@@ -1122,11 +1074,7 @@ impl<'m> Solver<'m> {
         }
     }
 
-    fn emit_activation_facts<T: Types<Ty = Ty> + RenderTypes>(
-        &self,
-        t: &mut T,
-        tel: &dyn crate::telemetry::Telemetry,
-    ) {
+    fn emit_activation_facts<T: Types<Ty = Ty> + RenderTypes>(&self, t: &mut T, tel: &dyn Telemetry) {
         let mut facts: Vec<_> = self.activations.iter().collect();
         facts.sort_by_key(|(key, _)| (key.fn_id, key.inputs.len()));
         let activation_ids = self.activation_ids();
@@ -1138,7 +1086,7 @@ impl<'m> Solver<'m> {
                 .iter()
                 .map(|input| render_info(t, input))
                 .collect::<Vec<_>>();
-            let mut metadata = crate::metadata! {
+            let mut metadata = metadata! {
                 activation_id: activation_ids.get(key).expect("activation id").0,
                 fn_name: fn_name,
                 fn_id: key.fn_id.0 as u64,
@@ -1148,19 +1096,13 @@ impl<'m> Solver<'m> {
                 return_ty: return_ty,
             };
             if let Info::Known(value) = &activation.ret {
-                metadata
-                    .0
-                    .push(("return_ty_data", crate::telemetry::Value::opaque(&value.ty)));
+                metadata.0.push(("return_ty_data", Value::opaque(&value.ty)));
             }
             tel.event(&["fz", "type_infer", "activation"], metadata);
         }
     }
 
-    fn emit_activation_edge_facts<T: Types<Ty = Ty> + RenderTypes>(
-        &self,
-        t: &mut T,
-        tel: &dyn crate::telemetry::Telemetry,
-    ) {
+    fn emit_activation_edge_facts<T: Types<Ty = Ty> + RenderTypes>(&self, t: &mut T, tel: &dyn Telemetry) {
         let mut facts: Vec<_> = self.edges.iter().collect();
         facts.sort_by(|a, b| {
             (
@@ -1196,7 +1138,7 @@ impl<'m> Solver<'m> {
                 .collect::<Vec<_>>();
             tel.event(
                 &["fz", "type_infer", "activation_edge"],
-                crate::metadata! {
+                metadata! {
                     caller_activation_id: activation_ids
                         .get(&edge.caller)
                         .expect("caller activation id")
@@ -1219,11 +1161,7 @@ impl<'m> Solver<'m> {
         }
     }
 
-    fn emit_fn_return_facts<T: Types<Ty = Ty> + RenderTypes>(
-        &self,
-        t: &mut T,
-        tel: &dyn crate::telemetry::Telemetry,
-    ) {
+    fn emit_fn_return_facts<T: Types<Ty = Ty> + RenderTypes>(&self, t: &mut T, tel: &dyn Telemetry) {
         let mut by_fn: BTreeMap<FnId, (Option<Ty>, bool, bool)> = BTreeMap::new();
         for (key, activation) in &self.activations {
             let (known_ret, unsettled, no_return) = by_fn.entry(key.fn_id).or_default();
@@ -1249,32 +1187,22 @@ impl<'m> Solver<'m> {
             } else {
                 "unreached"
             };
-            let return_ty = known_ret
-                .as_ref()
-                .map(|ty| t.display_for_diag(ty))
-                .unwrap_or_default();
-            let mut metadata = crate::metadata! {
+            let return_ty = known_ret.as_ref().map(|ty| t.display_for_diag(ty)).unwrap_or_default();
+            let mut metadata = metadata! {
                 fn_name: fn_name,
                 fn_id: fn_id.0 as u64,
                 state: state,
                 return_ty: return_ty,
             };
             if let Some(ty) = &known_ret {
-                metadata
-                    .0
-                    .push(("return_ty_data", crate::telemetry::Value::opaque(ty)));
+                metadata.0.push(("return_ty_data", Value::opaque(ty)));
             }
             tel.event(&["fz", "type_infer", "fn_return"], metadata);
         }
     }
 
     /// The return estimate `f` hands to its continuation, given its inputs.
-    fn walk_fn<T: Types<Ty = Ty> + ClosureTypes>(
-        &mut self,
-        t: &mut T,
-        key: &ActivationKey,
-        inputs: &[Info],
-    ) -> Info {
+    fn walk_fn<T: Types<Ty = Ty> + ClosureTypes>(&mut self, t: &mut T, key: &ActivationKey, inputs: &[Info]) -> Info {
         let f = key.fn_id;
         let fnir = self.module.fn_by_id(f);
         let mut env: Env = HashMap::new();
@@ -1307,8 +1235,7 @@ impl<'m> Solver<'m> {
         let block = module.fn_by_id(f).block(block_id);
         for (stmt_index, Stmt::Let(v, prim)) in block.stmts.iter().enumerate() {
             let info = self.type_prim(t, prim, env);
-            let proved_none =
-                self.record_value_required_none(t, f, block_id, stmt_index, prim, &info, env);
+            let proved_none = self.record_value_required_none(t, f, block_id, stmt_index, prim, &info, env);
             env.insert(*v, info);
             if let Prim::Extern(ident, _, args) = prim {
                 let callsite = CallsiteId::new(key.fn_id, ident, EmitSlot::CallableBoundary);
@@ -1345,17 +1272,12 @@ impl<'m> Solver<'m> {
                 self.walk_block(t, key, *target, env, predicates, visited)
             }
             Term::If {
-                cond,
-                then_b,
-                else_b,
-                ..
+                cond, then_b, else_b, ..
             } => {
                 let (then_b, else_b) = (*then_b, *else_b);
                 let fact = predicates.get(cond).cloned();
-                let truth = bool_truth(t, &info_of(*cond, env)).or_else(|| {
-                    fact.as_ref()
-                        .and_then(|p| predicate_truth(t, module, p, env))
-                });
+                let truth = bool_truth(t, &info_of(*cond, env))
+                    .or_else(|| fact.as_ref().and_then(|p| predicate_truth(t, module, p, env)));
                 let (then_env, else_env) = if let Some(fact) = fact.as_ref() {
                     (
                         narrow_predicate(t, env, fact, true),
@@ -1387,18 +1309,9 @@ impl<'m> Solver<'m> {
                 ..
             } => {
                 let arg_infos = arg_infos_of(args, env);
-                let ident = block
-                    .terminator
-                    .ident()
-                    .expect("call terminator should carry ident");
+                let ident = block.terminator.ident().expect("call terminator should carry ident");
                 let direct_callsite = CallsiteId::new(key.fn_id, ident, EmitSlot::Direct);
-                let r = self.call_target(
-                    t,
-                    key,
-                    direct_callsite,
-                    CallTarget::Direct(*callee),
-                    arg_infos,
-                );
+                let r = self.call_target(t, key, direct_callsite, CallTarget::Direct(*callee), arg_infos);
                 if matches!(r, Info::NoReturn) {
                     return Info::NoReturn;
                 }
@@ -1420,13 +1333,7 @@ impl<'m> Solver<'m> {
                     .ident()
                     .expect("tail-call terminator should carry ident");
                 let direct_callsite = CallsiteId::new(key.fn_id, ident, EmitSlot::Direct);
-                self.call_target(
-                    t,
-                    key,
-                    direct_callsite,
-                    CallTarget::Direct(*callee),
-                    arg_infos,
-                )
+                self.call_target(t, key, direct_callsite, CallTarget::Direct(*callee), arg_infos)
             }
             Term::CallClosure {
                 closure,
@@ -1444,10 +1351,7 @@ impl<'m> Solver<'m> {
                     t,
                     key,
                     closure_callsite,
-                    CallTarget::Closure {
-                        value: *closure,
-                        env,
-                    },
+                    CallTarget::Closure { value: *closure, env },
                     arg_infos,
                 );
                 if matches!(r, Info::NoReturn) {
@@ -1474,18 +1378,12 @@ impl<'m> Solver<'m> {
                     t,
                     key,
                     closure_callsite,
-                    CallTarget::Closure {
-                        value: *closure,
-                        env,
-                    },
+                    CallTarget::Closure { value: *closure, env },
                     arg_infos,
                 )
             }
             Term::Receive { continuation, .. } => {
-                let ident = block
-                    .terminator
-                    .ident()
-                    .expect("receive terminator should carry ident");
+                let ident = block.terminator.ident().expect("receive terminator should carry ident");
                 // The mailbox message arrives from the scheduler boundary. It
                 // is opaque here, but still a concrete value, so the receive
                 // continuation should be activated with `any`, not left
@@ -1523,13 +1421,7 @@ impl<'m> Solver<'m> {
         self.walk_block(t, key, block_id, &mut env, &mut predicates, &mut visited)
     }
 
-    fn record_dead_arm(
-        &mut self,
-        activation: &ActivationKey,
-        fn_id: FnId,
-        block_id: BlockId,
-        branch: DeadBranch,
-    ) {
+    fn record_dead_arm(&mut self, activation: &ActivationKey, fn_id: FnId, block_id: BlockId, branch: DeadBranch) {
         let fact = DeadArmFact {
             activation: activation.clone(),
             fn_id,
@@ -1571,12 +1463,7 @@ impl<'m> Solver<'m> {
         Some(info.clone())
     }
 
-    fn type_prim<T: Types<Ty = Ty> + ClosureTypes>(
-        &mut self,
-        t: &mut T,
-        prim: &Prim,
-        env: &Env,
-    ) -> Info {
+    fn type_prim<T: Types<Ty = Ty> + ClosureTypes>(&mut self, t: &mut T, prim: &Prim, env: &Env) -> Info {
         let module = self.module;
         match prim {
             Prim::Const(c) => match c {
@@ -1602,11 +1489,7 @@ impl<'m> Solver<'m> {
                     Info::known_with_proof(ty, proof)
                 }
                 Const::Atom(id) => {
-                    let name = module
-                        .atom_names
-                        .get(*id as usize)
-                        .map(String::as_str)
-                        .unwrap_or("");
+                    let name = module.atom_names.get(*id as usize).map(String::as_str).unwrap_or("");
                     Info::known(t.atom_lit(name))
                 }
             },
@@ -1627,12 +1510,8 @@ impl<'m> Solver<'m> {
                 UnOp::Neg => negate_info(t, info_of(*v, env)),
                 UnOp::Not => not_info(t, info_of(*v, env)),
             },
-            Prim::IsEmptyList(_) | Prim::IsListCons(_) | Prim::TypeTest(_, _) => {
-                Info::known(t.bool())
-            }
-            Prim::ListHead(v) => {
-                info_of(*v, env).map_known(|value| value.map_ty(|ty| t.list_element_type(&ty)))
-            }
+            Prim::IsEmptyList(_) | Prim::IsListCons(_) | Prim::TypeTest(_, _) => Info::known(t.bool()),
+            Prim::ListHead(v) => info_of(*v, env).map_known(|value| value.map_ty(|ty| t.list_element_type(&ty))),
             Prim::ListTail(v) => info_of(*v, env).map_known(|lt| {
                 let elem = t.list_element_type(&lt.ty);
                 ValueFact::new(t.list(elem))
@@ -1685,9 +1564,7 @@ impl<'m> Solver<'m> {
                 Info::known_with_proof(t.tuple(&tys), ValueProof::TupleFields(proof))
             }
             Prim::MakeStruct { module, fields } => type_make_struct(t, module, fields, env),
-            Prim::TupleField(v, i) => {
-                info_of(*v, env).map_known(|value| value.tuple_field(t, *i as usize))
-            }
+            Prim::TupleField(v, i) => info_of(*v, env).map_known(|value| value.tuple_field(t, *i as usize)),
             Prim::StructField(v, field) => type_struct_field(t, module, *v, field, env),
             Prim::MakeMap(entries) => type_make_map(t, entries, env),
             Prim::MapUpdate(base, entries) => type_map_update(t, *base, entries, env),
@@ -1759,12 +1636,7 @@ fn bool_from_ty<T: Types<Ty = Ty>>(t: &T, ty: &Ty) -> Option<bool> {
     }
 }
 
-fn predicate_truth<T: Types<Ty = Ty>>(
-    t: &mut T,
-    module: &Module,
-    pred: &PredicateFact,
-    env: &Env,
-) -> Option<bool> {
+fn predicate_truth<T: Types<Ty = Ty>>(t: &mut T, module: &Module, pred: &PredicateFact, env: &Env) -> Option<bool> {
     match pred {
         PredicateFact::Eq(a, b) => eq_truth(t, module, *a, *b, env),
         PredicateFact::Neq(a, b) => eq_truth(t, module, *a, *b, env).map(|truth| !truth),
@@ -1808,13 +1680,7 @@ fn predicate_truth<T: Types<Ty = Ty>>(
     }
 }
 
-fn eq_truth<T: Types<Ty = Ty>>(
-    t: &mut T,
-    module: &Module,
-    a: Var,
-    b: Var,
-    env: &Env,
-) -> Option<bool> {
+fn eq_truth<T: Types<Ty = Ty>>(t: &mut T, module: &Module, a: Var, b: Var, env: &Env) -> Option<bool> {
     if a == b {
         return Some(true);
     }
@@ -1833,12 +1699,7 @@ fn eq_truth<T: Types<Ty = Ty>>(
     }
 }
 
-fn narrow_predicate<T: Types<Ty = Ty>>(
-    t: &mut T,
-    env: &Env,
-    pred: &PredicateFact,
-    truth: bool,
-) -> Option<Env> {
+fn narrow_predicate<T: Types<Ty = Ty>>(t: &mut T, env: &Env, pred: &PredicateFact, truth: bool) -> Option<Env> {
     let mut out = env.clone();
     match pred {
         PredicateFact::Eq(a, b) => {
@@ -1894,13 +1755,7 @@ fn narrow_eq<T: Types<Ty = Ty>>(t: &mut T, env: &mut Env, a: Var, b: Var, truth:
     true
 }
 
-fn refine_against<T: Types<Ty = Ty>>(
-    t: &mut T,
-    env: &mut Env,
-    subject: Var,
-    domain: &Ty,
-    truth: bool,
-) -> bool {
+fn refine_against<T: Types<Ty = Ty>>(t: &mut T, env: &mut Env, subject: Var, domain: &Ty, truth: bool) -> bool {
     let Some(current) = known_value(subject, env) else {
         return true;
     };
@@ -1960,10 +1815,7 @@ fn proof_ty<T: Types<Ty = Ty>>(t: &mut T, proof: &ValueProof) -> Option<Ty> {
             Some(t.tuple(&tys))
         }
         ValueProof::StructFields { module, .. } => {
-            Some(crate::frontend::protocols::struct_impl_target_type(
-                t,
-                module.rsplit('.').next().unwrap_or(module),
-            ))
+            Some(struct_impl_target_type(t, module.rsplit('.').next().unwrap_or(module)))
         }
         ValueProof::MapFields { .. } | ValueProof::MatcherMapMiss => None,
         ValueProof::MatcherMapHit(value) => proof_ty(t, value),
@@ -2011,12 +1863,7 @@ fn proof_fits<T: Types<Ty = Ty>>(t: &mut T, proof: &ValueProof, ty: &Ty) -> bool
     t.is_subtype(&proof, ty)
 }
 
-fn type_make_struct<T: Types<Ty = Ty>>(
-    t: &mut T,
-    module: &str,
-    fields: &[(String, Var)],
-    env: &Env,
-) -> Info {
+fn type_make_struct<T: Types<Ty = Ty>>(t: &mut T, module: &str, fields: &[(String, Var)], env: &Env) -> Info {
     let mut proof_fields = BTreeMap::new();
     for (field, value) in fields {
         let value = match value_info(*value, env) {
@@ -2025,10 +1872,7 @@ fn type_make_struct<T: Types<Ty = Ty>>(
         };
         proof_fields.insert(field.clone(), value.proof);
     }
-    let ty = crate::frontend::protocols::struct_impl_target_type(
-        t,
-        module.rsplit('.').next().unwrap_or(module),
-    );
+    let ty = struct_impl_target_type(t, module.rsplit('.').next().unwrap_or(module));
     Info::known_with_proof(
         ty,
         ValueProof::StructFields {
@@ -2038,13 +1882,7 @@ fn type_make_struct<T: Types<Ty = Ty>>(
     )
 }
 
-fn type_struct_field<T: Types<Ty = Ty>>(
-    t: &mut T,
-    module: &Module,
-    subject: Var,
-    field: &str,
-    env: &Env,
-) -> Info {
+fn type_struct_field<T: Types<Ty = Ty>>(t: &mut T, module: &Module, subject: Var, field: &str, env: &Env) -> Info {
     let subject = match value_info(subject, env) {
         Ok(subject) => subject,
         Err(info) => return info,
@@ -2061,12 +1899,7 @@ fn type_struct_field<T: Types<Ty = Ty>>(
     Info::known_with_proof(ty, proof)
 }
 
-fn struct_field_ty<T: Types<Ty = Ty>>(
-    t: &mut T,
-    module: &Module,
-    subject: &Ty,
-    field: &str,
-) -> Option<Ty> {
+fn struct_field_ty<T: Types<Ty = Ty>>(t: &mut T, module: &Module, subject: &Ty, field: &str) -> Option<Ty> {
     let tag = t.opaque_singleton(subject)?;
     let order = struct_schema_for_impl_target(module, &tag)?;
     let index = order.iter().position(|name| name == field)?;
@@ -2122,17 +1955,12 @@ fn type_make_map<T: Types<Ty = Ty>>(t: &mut T, entries: &[(Var, Var)], env: &Env
     )
 }
 
-fn type_map_update<T: Types<Ty = Ty>>(
-    t: &mut T,
-    base: Var,
-    entries: &[(Var, Var)],
-    env: &Env,
-) -> Info {
+fn type_map_update<T: Types<Ty = Ty>>(t: &mut T, base: Var, entries: &[(Var, Var)], env: &Env) -> Info {
     let mut current = match value_info(base, env) {
         Ok(current) => current,
         Err(info) => return info,
     };
-    let mut proof_fields = match std::mem::replace(&mut current.proof, ValueProof::Unproven) {
+    let mut proof_fields = match replace(&mut current.proof, ValueProof::Unproven) {
         ValueProof::MapFields { fields, .. } => fields,
         _ => BTreeMap::new(),
     };
@@ -2161,13 +1989,7 @@ fn type_map_update<T: Types<Ty = Ty>>(
     Info::Known(current)
 }
 
-fn type_map_get<T: Types<Ty = Ty>>(
-    t: &mut T,
-    map: Var,
-    key: Var,
-    env: &Env,
-    matcher: bool,
-) -> Info {
+fn type_map_get<T: Types<Ty = Ty>>(t: &mut T, map: Var, key: Var, env: &Env, matcher: bool) -> Info {
     let map = match value_info(map, env) {
         Ok(map) => map,
         Err(info) => return info,
@@ -2293,12 +2115,7 @@ fn not_info<T: Types<Ty = Ty>>(t: &mut T, info: Info) -> Info {
     Info::Known(ValueFact::with_proof(t.bool(), proof))
 }
 
-fn fold_comparison<T: Types<Ty = Ty>>(
-    t: &mut T,
-    op: BinOp,
-    a: &ValueFact,
-    b: &ValueFact,
-) -> Option<bool> {
+fn fold_comparison<T: Types<Ty = Ty>>(t: &mut T, op: BinOp, a: &ValueFact, b: &ValueFact) -> Option<bool> {
     use BinOp::*;
     if let (Some(ai), Some(bi)) = (
         exact_int(t, a).or_else(|| t.as_int_singleton(&a.ty)),
@@ -2359,21 +2176,12 @@ fn exact_float<T: Types<Ty = Ty>>(t: &T, value: &ValueFact) -> Option<f64> {
 }
 
 fn invalid_operator_application(prim: &Prim, env: &Env) -> Option<TypeInferDiagnosticKind> {
-    let Prim::BinOp(
-        op @ (BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod),
-        left,
-        right,
-    ) = prim
-    else {
+    let Prim::BinOp(op @ (BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod), left, right) = prim else {
         return None;
     };
     let left = known_ty(*left, env)?;
     let right = known_ty(*right, env)?;
-    Some(TypeInferDiagnosticKind::InvalidOperator {
-        op: *op,
-        left,
-        right,
-    })
+    Some(TypeInferDiagnosticKind::InvalidOperator { op: *op, left, right })
 }
 
 /// Look up a var's cell, defaulting to `Pending` for the not-yet-bound.
@@ -2400,7 +2208,7 @@ pub(crate) fn infer_from_entry<T: Types<Ty = Ty> + ClosureTypes + RenderTypes>(
     module: &Module,
     fn_id: FnId,
     input_tys: &[Ty],
-    tel: &dyn crate::telemetry::Telemetry,
+    tel: &dyn Telemetry,
 ) -> TypeInferOutcome {
     let (solver, _) = solve_from_entry(t, module, fn_id, input_tys);
     let outcome = solver.outcome();

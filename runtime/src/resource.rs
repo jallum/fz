@@ -51,8 +51,15 @@
 //! within a process collapse to a single 1→0 transition — the dtor
 //! fires exactly once per `make_resource` call, regardless of aliasing.
 
+use crate::any_value::{AnyValue, TAG_MASK, ValueKind, heap_object_word};
+#[cfg(test)]
+use crate::any_value::{TAG_RESOURCE, object_size, resource_addr_from_tagged};
+use crate::heap::{Heap, HeapAllocKind};
 use crate::sync::{AtomicUsize, Ordering, fence};
-use std::ptr::NonNull;
+use std::mem::{forget, size_of};
+use std::ptr::{NonNull, addr_of, read, write};
+#[cfg(test)]
+use std::ptr::null_mut;
 
 pub(crate) const RESOURCE_STUB_MAGIC: u64 = 0xF75E_5012_CE57_0B0B;
 
@@ -69,7 +76,7 @@ pub struct Resource {
 }
 
 const _: () = {
-    assert!(std::mem::size_of::<Resource>() == 24);
+    assert!(size_of::<Resource>() == 24);
 };
 
 // Safety: refcount is atomic; payload is an opaque u64 chosen by the host
@@ -113,7 +120,7 @@ pub fn resource_alloc(payload: u64, dtor: unsafe extern "C" fn(u64)) -> *mut Res
         destructor: dtor,
         payload,
     });
-    LIVE_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    LIVE_COUNT.fetch_add(1, Ordering::Relaxed);
     Box::into_raw(r)
 }
 
@@ -151,7 +158,7 @@ pub unsafe extern "C" fn fz_resource_release(p: *mut Resource) {
         let _wrapper = unsafe { Box::from_raw(p) };
         unsafe { dtor(payload) };
         #[cfg(not(loom))]
-        LIVE_COUNT.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+        LIVE_COUNT.fetch_sub(1, Ordering::Relaxed);
     }
 }
 
@@ -177,7 +184,7 @@ pub unsafe fn fz_resource_release_deferred(p: *mut Resource) -> Option<u64> {
         let payload = r.payload;
         let _wrapper = unsafe { Box::from_raw(p) };
         #[cfg(not(loom))]
-        LIVE_COUNT.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+        LIVE_COUNT.fetch_sub(1, Ordering::Relaxed);
         Some(payload)
     } else {
         None
@@ -186,12 +193,12 @@ pub unsafe fn fz_resource_release_deferred(p: *mut Resource) -> Option<u64> {
 
 // ===== Live-count gauge =====================================================
 
-static LIVE_COUNT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+static LIVE_COUNT: AtomicUsize = AtomicUsize::new(0);
 
 /// Number of currently-live heap-allocated Resource objects.
 #[cfg(test)]
 pub(crate) fn live_count() -> usize {
-    LIVE_COUNT.load(std::sync::atomic::Ordering::Relaxed)
+    LIVE_COUNT.load(Ordering::Relaxed)
 }
 
 // ===== ResourceHandle =======================================================
@@ -233,7 +240,7 @@ impl ResourceHandle {
     /// refcount edge represented by the returned pointer.
     pub fn into_raw(self) -> *mut Resource {
         let p = self.0.as_ptr();
-        std::mem::forget(self);
+        forget(self);
         p
     }
 }
@@ -284,55 +291,42 @@ impl ResourceStub {
     }
 
     pub fn shared_raw(&self) -> *mut Resource {
-        unsafe { std::ptr::read(self.as_raw() as *const *mut Resource) }
+        unsafe { read(self.as_raw() as *const *mut Resource) }
     }
 
     fn shared_raw_set(&self, p: *mut Resource) {
         unsafe {
-            std::ptr::write(self.as_raw() as *mut *mut Resource, p);
+            write(self.as_raw() as *mut *mut Resource, p);
         }
     }
 
     /// fz-4mk — the dtor closure value. Filled in by `alloc_resource` and
     /// traced by Cheney like any other heap edge.
-    pub fn closure_value(&self) -> crate::any_value::AnyValue {
-        let raw = unsafe {
-            std::ptr::read(self.as_raw().add(RESOURCE_STUB_CLOSURE_RAW_OFFSET) as *const u64)
-        };
-        let kind = unsafe {
-            std::ptr::read(self.as_raw().add(RESOURCE_STUB_CLOSURE_KIND_OFFSET) as *const u8)
-        };
-        crate::any_value::AnyValue::decode_parts(raw, kind).expect("resource closure kind")
+    pub fn closure_value(&self) -> AnyValue {
+        let raw = unsafe { read(self.as_raw().add(RESOURCE_STUB_CLOSURE_RAW_OFFSET) as *const u64) };
+        let kind = unsafe { read(self.as_raw().add(RESOURCE_STUB_CLOSURE_KIND_OFFSET) as *const u8) };
+        AnyValue::decode_parts(raw, kind).expect("resource closure kind")
     }
 
-    pub(crate) fn closure_value_set(&self, value: crate::any_value::AnyValue) {
+    pub(crate) fn closure_value_set(&self, value: AnyValue) {
         let raw = if value.kind().is_heap() {
-            value.raw() & !crate::any_value::TAG_MASK
+            value.raw() & !TAG_MASK
         } else {
             value.raw()
         };
         unsafe {
-            std::ptr::write(
-                self.as_raw().add(RESOURCE_STUB_CLOSURE_RAW_OFFSET) as *mut u64,
-                raw,
-            );
-            std::ptr::write(
-                self.as_raw().add(RESOURCE_STUB_CLOSURE_KIND_OFFSET),
-                value.kind().tag(),
-            );
+            write(self.as_raw().add(RESOURCE_STUB_CLOSURE_RAW_OFFSET) as *mut u64, raw);
+            write(self.as_raw().add(RESOURCE_STUB_CLOSURE_KIND_OFFSET), value.kind().tag());
         }
     }
 
     pub fn mso_next(&self) -> u64 {
-        unsafe { std::ptr::read(self.as_raw().add(RESOURCE_STUB_MSO_NEXT_OFFSET) as *const u64) }
+        unsafe { read(self.as_raw().add(RESOURCE_STUB_MSO_NEXT_OFFSET) as *const u64) }
     }
 
     pub(crate) fn mso_next_set(&self, next: u64) {
         unsafe {
-            std::ptr::write(
-                self.as_raw().add(RESOURCE_STUB_MSO_NEXT_OFFSET) as *mut u64,
-                next,
-            );
+            write(self.as_raw().add(RESOURCE_STUB_MSO_NEXT_OFFSET) as *mut u64, next);
         }
     }
 
@@ -341,11 +335,11 @@ impl ResourceStub {
     }
 
     pub fn payload_slot(&self) -> *const u64 {
-        unsafe { std::ptr::addr_of!((*self.shared_raw()).payload) }
+        unsafe { addr_of!((*self.shared_raw()).payload) }
     }
 
-    pub fn payload_value(&self) -> crate::any_value::AnyValue {
-        crate::any_value::AnyValue::int(self.payload() as i64)
+    pub fn payload_value(&self) -> AnyValue {
+        AnyValue::int(self.payload() as i64)
     }
 
     pub fn destructor(&self) -> unsafe extern "C" fn(u64) {
@@ -359,29 +353,20 @@ impl ResourceStub {
 
 // ===== Allocation on a per-process heap =====================================
 
-use crate::heap::Heap;
-
 /// Allocate a strict 48-byte Resource stub on `heap`, taking ownership of the
 /// Resource reference encapsulated in `handle`. `closure` is the dtor
 /// closure value — recorded for fz-4mk's deferred fz-side dispatch. The
 /// new stub is pushed onto `heap.mso_head` as the new chain head.
-pub fn alloc_resource(
-    heap: &mut Heap,
-    handle: ResourceHandle,
-    closure: crate::any_value::AnyValue,
-) -> ResourceStub {
-    let p = heap.alloc_kind(crate::heap::HeapAllocKind::Resource, RESOURCE_STUB_SIZE);
+pub fn alloc_resource(heap: &mut Heap, handle: ResourceHandle, closure: AnyValue) -> ResourceStub {
+    let p = heap.alloc_kind(HeapAllocKind::Resource, RESOURCE_STUB_SIZE);
     let rs = unsafe { ResourceStub::from_raw(p) };
     rs.shared_raw_set(handle.into_raw());
     unsafe {
-        std::ptr::write(
-            p.add(RESOURCE_STUB_MAGIC_OFFSET) as *mut u64,
-            RESOURCE_STUB_MAGIC,
-        );
+        write(p.add(RESOURCE_STUB_MAGIC_OFFSET) as *mut u64, RESOURCE_STUB_MAGIC);
     }
     rs.closure_value_set(closure);
     rs.mso_next_set(heap.mso_head);
-    heap.mso_head = crate::any_value::heap_object_word(p, crate::any_value::ValueKind::RESOURCE);
+    heap.mso_head = heap_object_word(p, ValueKind::RESOURCE);
     rs
 }
 
@@ -393,6 +378,7 @@ mod tests {
     use crate::heap::{Heap, SIZE_TABLE, SchemaRegistry};
     use std::cell::RefCell;
     use std::rc::Rc;
+    use std::sync::atomic::AtomicU64;
 
     fn empty_registry() -> Rc<RefCell<SchemaRegistry>> {
         Rc::new(RefCell::new(SchemaRegistry::new()))
@@ -403,9 +389,7 @@ mod tests {
     }
     impl LiveCountGuard {
         pub(crate) fn snap() -> Self {
-            Self {
-                baseline: live_count(),
-            }
+            Self { baseline: live_count() }
         }
         pub(crate) fn baseline(&self) -> usize {
             self.baseline
@@ -421,22 +405,22 @@ mod tests {
         }
     }
 
-    static DTOR_FIRED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-    static DTOR_LAST_PAYLOAD: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    static DTOR_FIRED: AtomicUsize = AtomicUsize::new(0);
+    static DTOR_LAST_PAYLOAD: AtomicU64 = AtomicU64::new(0);
 
     unsafe extern "C" fn counting_dtor(payload: u64) {
-        DTOR_FIRED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        DTOR_LAST_PAYLOAD.store(payload, std::sync::atomic::Ordering::Relaxed);
+        DTOR_FIRED.fetch_add(1, Ordering::Relaxed);
+        DTOR_LAST_PAYLOAD.store(payload, Ordering::Relaxed);
     }
 
     fn reset_counters() {
-        DTOR_FIRED.store(0, std::sync::atomic::Ordering::Relaxed);
-        DTOR_LAST_PAYLOAD.store(0, std::sync::atomic::Ordering::Relaxed);
+        DTOR_FIRED.store(0, Ordering::Relaxed);
+        DTOR_LAST_PAYLOAD.store(0, Ordering::Relaxed);
     }
 
     #[test]
     fn resource_is_24_bytes() {
-        assert_eq!(std::mem::size_of::<Resource>(), 24);
+        assert_eq!(size_of::<Resource>(), 24);
     }
 
     #[test]
@@ -452,14 +436,11 @@ mod tests {
             fz_resource_release(p);
             fz_resource_release(p);
             assert_eq!((*p).refcount.load(Ordering::Relaxed), 1);
-            assert_eq!(DTOR_FIRED.load(std::sync::atomic::Ordering::Relaxed), 0);
+            assert_eq!(DTOR_FIRED.load(Ordering::Relaxed), 0);
             fz_resource_release(p);
         }
-        assert_eq!(DTOR_FIRED.load(std::sync::atomic::Ordering::Relaxed), 1);
-        assert_eq!(
-            DTOR_LAST_PAYLOAD.load(std::sync::atomic::Ordering::Relaxed),
-            42
-        );
+        assert_eq!(DTOR_FIRED.load(Ordering::Relaxed), 1);
+        assert_eq!(DTOR_LAST_PAYLOAD.load(Ordering::Relaxed), 42);
     }
 
     #[test]
@@ -469,11 +450,8 @@ mod tests {
         reset_counters();
         let p = resource_alloc(0xdeadbeef, counting_dtor);
         unsafe { fz_resource_release(p) };
-        assert_eq!(DTOR_FIRED.load(std::sync::atomic::Ordering::Relaxed), 1);
-        assert_eq!(
-            DTOR_LAST_PAYLOAD.load(std::sync::atomic::Ordering::Relaxed),
-            0xdeadbeef
-        );
+        assert_eq!(DTOR_FIRED.load(Ordering::Relaxed), 1);
+        assert_eq!(DTOR_LAST_PAYLOAD.load(Ordering::Relaxed), 0xdeadbeef);
     }
 
     #[test]
@@ -483,13 +461,10 @@ mod tests {
         reset_counters();
         {
             let _h = ResourceHandle::new(99, counting_dtor);
-            assert_eq!(DTOR_FIRED.load(std::sync::atomic::Ordering::Relaxed), 0);
+            assert_eq!(DTOR_FIRED.load(Ordering::Relaxed), 0);
         }
-        assert_eq!(DTOR_FIRED.load(std::sync::atomic::Ordering::Relaxed), 1);
-        assert_eq!(
-            DTOR_LAST_PAYLOAD.load(std::sync::atomic::Ordering::Relaxed),
-            99
-        );
+        assert_eq!(DTOR_FIRED.load(Ordering::Relaxed), 1);
+        assert_eq!(DTOR_LAST_PAYLOAD.load(Ordering::Relaxed), 99);
     }
 
     #[test]
@@ -501,13 +476,10 @@ mod tests {
         let h2 = h.clone();
         assert_eq!(unsafe { (*h.as_raw()).refcount.load(Ordering::Relaxed) }, 2);
         drop(h);
-        assert_eq!(DTOR_FIRED.load(std::sync::atomic::Ordering::Relaxed), 0);
+        assert_eq!(DTOR_FIRED.load(Ordering::Relaxed), 0);
         drop(h2);
-        assert_eq!(DTOR_FIRED.load(std::sync::atomic::Ordering::Relaxed), 1);
-        assert_eq!(
-            DTOR_LAST_PAYLOAD.load(std::sync::atomic::Ordering::Relaxed),
-            7
-        );
+        assert_eq!(DTOR_FIRED.load(Ordering::Relaxed), 1);
+        assert_eq!(DTOR_LAST_PAYLOAD.load(Ordering::Relaxed), 7);
     }
 
     #[test]
@@ -526,16 +498,10 @@ mod tests {
         {
             let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
             let handle = ResourceHandle::new(0xabcd, counting_dtor);
-            let rs = alloc_resource(&mut h, handle, crate::any_value::AnyValue::nil_atom());
-            let tagged = crate::any_value::heap_object_word(
-                rs.as_raw() as *const u8,
-                crate::any_value::ValueKind::RESOURCE,
-            );
-            assert_eq!(
-                tagged & crate::any_value::TAG_MASK,
-                crate::any_value::TAG_RESOURCE
-            );
-            assert_eq!(crate::any_value::object_size(tagged), RESOURCE_STUB_SIZE);
+            let rs = alloc_resource(&mut h, handle, AnyValue::nil_atom());
+            let tagged = heap_object_word(rs.as_raw() as *const u8, ValueKind::RESOURCE);
+            assert_eq!(tagged & TAG_MASK, TAG_RESOURCE);
+            assert_eq!(object_size(tagged), RESOURCE_STUB_SIZE);
             assert_eq!(h.mso_head, tagged);
             assert_eq!(rs.mso_next(), 0);
             assert_eq!(rs.payload(), 0xabcd);
@@ -543,11 +509,8 @@ mod tests {
             assert_eq!(live_count(), g.baseline() + 1);
         }
         // Heap::drop -> mso_drop_all -> fz_resource_release -> dtor fires.
-        assert_eq!(DTOR_FIRED.load(std::sync::atomic::Ordering::Relaxed), 1);
-        assert_eq!(
-            DTOR_LAST_PAYLOAD.load(std::sync::atomic::Ordering::Relaxed),
-            0xabcd
-        );
+        assert_eq!(DTOR_FIRED.load(Ordering::Relaxed), 1);
+        assert_eq!(DTOR_LAST_PAYLOAD.load(Ordering::Relaxed), 0xabcd);
     }
 
     /// Force a GC with no root: the Resource stub becomes unreachable;
@@ -558,19 +521,12 @@ mod tests {
         let _g = LiveCountGuard::snap();
         reset_counters();
         let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
-        let _ = alloc_resource(
-            &mut h,
-            ResourceHandle::new(0x55, counting_dtor),
-            crate::any_value::AnyValue::nil_atom(),
-        );
-        let mut root: *mut u8 = std::ptr::null_mut();
+        let _ = alloc_resource(&mut h, ResourceHandle::new(0x55, counting_dtor), AnyValue::nil_atom());
+        let mut root: *mut u8 = null_mut();
         h.gc(&mut root);
         assert_eq!(h.mso_head, 0, "dead Resource swept from MSO");
-        assert_eq!(DTOR_FIRED.load(std::sync::atomic::Ordering::Relaxed), 1);
-        assert_eq!(
-            DTOR_LAST_PAYLOAD.load(std::sync::atomic::Ordering::Relaxed),
-            0x55
-        );
+        assert_eq!(DTOR_FIRED.load(Ordering::Relaxed), 1);
+        assert_eq!(DTOR_LAST_PAYLOAD.load(Ordering::Relaxed), 0x55);
     }
 
     /// A rooted strict Resource survives Cheney and rewrites the MSO chain to
@@ -581,34 +537,18 @@ mod tests {
         let _g = LiveCountGuard::snap();
         reset_counters();
         let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
-        let rs = alloc_resource(
-            &mut h,
-            ResourceHandle::new(0x66, counting_dtor),
-            crate::any_value::AnyValue::nil_atom(),
-        );
+        let rs = alloc_resource(&mut h, ResourceHandle::new(0x66, counting_dtor), AnyValue::nil_atom());
         let from = rs.as_raw();
-        let mut root = crate::any_value::heap_object_word(
-            from as *const u8,
-            crate::any_value::ValueKind::RESOURCE,
-        ) as *mut u8;
+        let mut root = heap_object_word(from as *const u8, ValueKind::RESOURCE) as *mut u8;
         h.gc(&mut root);
 
-        let to = crate::any_value::resource_addr_from_tagged(root as u64).unwrap();
+        let to = resource_addr_from_tagged(root as u64).unwrap();
         assert_ne!(to, from);
-        assert_eq!(
-            h.mso_head,
-            crate::any_value::heap_object_word(
-                to as *const u8,
-                crate::any_value::ValueKind::RESOURCE
-            )
-        );
-        assert_eq!(DTOR_FIRED.load(std::sync::atomic::Ordering::Relaxed), 0);
+        assert_eq!(h.mso_head, heap_object_word(to as *const u8, ValueKind::RESOURCE));
+        assert_eq!(DTOR_FIRED.load(Ordering::Relaxed), 0);
         drop(h);
-        assert_eq!(DTOR_FIRED.load(std::sync::atomic::Ordering::Relaxed), 1);
-        assert_eq!(
-            DTOR_LAST_PAYLOAD.load(std::sync::atomic::Ordering::Relaxed),
-            0x66
-        );
+        assert_eq!(DTOR_FIRED.load(Ordering::Relaxed), 1);
+        assert_eq!(DTOR_LAST_PAYLOAD.load(Ordering::Relaxed), 0x66);
     }
 
     /// Mixed chain: ProcBin and Resource on the same heap. Both kinds
@@ -622,44 +562,21 @@ mod tests {
         {
             let mut h = Heap::new(SIZE_TABLE[0], empty_registry());
             let pb1 = alloc_procbin(&mut h, SharedBinHandle::from_bytes(&[1, 2, 3], 24));
-            let rs1 = alloc_resource(
-                &mut h,
-                ResourceHandle::new(0xfeed, counting_dtor),
-                crate::any_value::AnyValue::nil_atom(),
-            );
+            let rs1 = alloc_resource(&mut h, ResourceHandle::new(0xfeed, counting_dtor), AnyValue::nil_atom());
             let pb2 = alloc_procbin(&mut h, SharedBinHandle::from_bytes(&[4, 5], 16));
-            let rs2 = alloc_resource(
-                &mut h,
-                ResourceHandle::new(0xbeef, counting_dtor),
-                crate::any_value::AnyValue::nil_atom(),
-            );
-            let rs2_bits = crate::any_value::heap_object_word(
-                rs2.as_raw() as *const u8,
-                crate::any_value::ValueKind::RESOURCE,
-            );
-            let pb2_bits = crate::any_value::heap_object_word(
-                pb2.as_raw() as *const u8,
-                crate::any_value::ValueKind::PROCBIN,
-            );
-            let pb1_bits = crate::any_value::heap_object_word(
-                pb1.as_raw() as *const u8,
-                crate::any_value::ValueKind::PROCBIN,
-            );
-            let rs1_bits = crate::any_value::heap_object_word(
-                rs1.as_raw() as *const u8,
-                crate::any_value::ValueKind::RESOURCE,
-            );
+            let rs2 = alloc_resource(&mut h, ResourceHandle::new(0xbeef, counting_dtor), AnyValue::nil_atom());
+            let rs2_bits = heap_object_word(rs2.as_raw() as *const u8, ValueKind::RESOURCE);
+            let pb2_bits = heap_object_word(pb2.as_raw() as *const u8, ValueKind::PROCBIN);
+            let pb1_bits = heap_object_word(pb1.as_raw() as *const u8, ValueKind::PROCBIN);
+            let rs1_bits = heap_object_word(rs1.as_raw() as *const u8, ValueKind::RESOURCE);
             assert_eq!(h.mso_head, rs2_bits);
             assert_eq!(rs2.mso_next(), pb2_bits);
             assert_eq!(pb2.mso_next(), rs1_bits);
             assert_eq!(rs1.mso_next(), pb1_bits);
-            assert_eq!(
-                pb2.mso_next() & crate::any_value::TAG_MASK,
-                crate::any_value::TAG_RESOURCE
-            );
+            assert_eq!(pb2.mso_next() & TAG_MASK, TAG_RESOURCE);
             assert_eq!(pb1.mso_next(), 0);
         }
         // Both resources fired their dtors exactly once each.
-        assert_eq!(DTOR_FIRED.load(std::sync::atomic::Ordering::Relaxed), 2);
+        assert_eq!(DTOR_FIRED.load(Ordering::Relaxed), 2);
     }
 }

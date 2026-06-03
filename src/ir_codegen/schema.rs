@@ -13,7 +13,7 @@ use cranelift_codegen::settings::{self, Configurable};
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{DataDescription, DataId, FuncId, Linkage, Module as ClModule};
-use fz_runtime::heap::{FieldDescriptor, FieldKind, Schema};
+use fz_runtime::heap::{FieldDescriptor, FieldKind, FieldKind::AnyValue, Schema};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -24,7 +24,7 @@ pub(crate) fn build_frame_schema(name: &str, param_kinds: &[FieldKind]) -> Schem
     let mut fields = Vec::with_capacity(n_fields);
     fields.push(FieldDescriptor {
         offset: 0,
-        kind: FieldKind::AnyValue,
+        kind: AnyValue,
         name: None,
     });
     for (i, k) in param_kinds.iter().enumerate() {

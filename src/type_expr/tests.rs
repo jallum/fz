@@ -1,21 +1,22 @@
 use super::*;
 
+use std::collections::HashMap;
+use std::slice::from_ref;
+
+use crate::ast::{Attribute, SpecDecl, TypeAliasDecl, TypeExprBody};
+use crate::diag::Span;
 use crate::parser::lexer::Lexer;
 use crate::specs::{
-    StructuralCorrespondenceGroup, StructuralOccurrence, StructuralPathStep,
+    ResolvedSpec, ResolvedSpecSet, StructuralCorrespondenceGroup, StructuralOccurrence, StructuralPathStep,
     spec_set_correspondence_groups,
 };
-use crate::types::{ConcreteTypes, Ty, Types};
+use crate::types::{ConcreteTypes, Ty, TypeVarId, Types};
 
 fn parse_one<T: Types<Ty = Ty>>(t: &mut T, src: &str) -> Result<T::Ty, TypeExprError> {
     parse_one_with(t, src, &ModuleTypeEnv::new())
 }
 
-fn parse_one_with<T: Types<Ty = Ty>>(
-    t: &mut T,
-    src: &str,
-    env: &ModuleTypeEnv,
-) -> Result<T::Ty, TypeExprError> {
+fn parse_one_with<T: Types<Ty = Ty>>(t: &mut T, src: &str, env: &ModuleTypeEnv) -> Result<T::Ty, TypeExprError> {
     let toks = Lexer::new(src).tokenize().expect("lex");
     let (ty, consumed) = parse_type_expr(t, &toks, env)?;
     // Allow trailing Eof.
@@ -29,10 +30,8 @@ fn parse_one_with<T: Types<Ty = Ty>>(
     Ok(ty)
 }
 
-fn spec_correspondence_groups(
-    spec: &crate::specs::ResolvedSpec,
-) -> Vec<StructuralCorrespondenceGroup> {
-    spec_set_correspondence_groups(&crate::specs::ResolvedSpecSet {
+fn spec_correspondence_groups(spec: &ResolvedSpec) -> Vec<StructuralCorrespondenceGroup> {
+    spec_set_correspondence_groups(&ResolvedSpecSet {
         arrows: vec![spec.clone()],
     })
 }
@@ -166,7 +165,7 @@ fn arrow_one_arg() {
     let mut ct = ConcreteTypes;
     let int = ct.int();
     let arg = int.clone();
-    let expected = ct.arrow(std::slice::from_ref(&arg), int);
+    let expected = ct.arrow(from_ref(&arg), int);
     let actual = parse_one(&mut ct, "(integer) -> integer").unwrap();
     assert!(ct.is_equivalent(&actual, &expected));
 }
@@ -204,10 +203,7 @@ fn paren_grouping_with_union() {
 fn paren_multi_without_arrow_errors() {
     let mut ct = ConcreteTypes;
     let r = parse_one(&mut ct, "(integer, float)");
-    assert!(
-        r.is_err(),
-        "multi-element paren without `->` must error; got ok",
-    );
+    assert!(r.is_err(), "multi-element paren without `->` must error; got ok",);
 }
 
 #[test]
@@ -269,7 +265,7 @@ fn arrow_taking_arrow_argument() {
     let mut ct = ConcreteTypes;
     let int = ct.int();
     let arg = int.clone();
-    let f = ct.arrow(std::slice::from_ref(&arg), int.clone());
+    let f = ct.arrow(from_ref(&arg), int.clone());
     let l = ct.list(int);
     let expected = ct.arrow(&[f, l.clone()], l);
     let actual = parse_one(&mut ct, "((integer) -> integer, [integer]) -> [integer]").unwrap();
@@ -293,7 +289,7 @@ fn named_ref_used_in_arrow_via_env() {
     let mut env = ModuleTypeEnv::new();
     env.insert("id".to_string(), int.clone());
     let arg = int.clone();
-    let expected = ct.arrow(std::slice::from_ref(&arg), int);
+    let expected = ct.arrow(from_ref(&arg), int);
     let actual = parse_one_with(&mut ct, "(id) -> id", &env).unwrap();
     assert!(ct.is_equivalent(&actual, &expected));
 }
@@ -372,50 +368,33 @@ fn struct_record_type_parses_field_types() {
         vec!["first", "last", "step"]
     );
     let int = ct.int();
-    assert!(
-        record
-            .fields
-            .iter()
-            .all(|field| ct.is_equivalent(&field.ty, &int))
-    );
-    assert_eq!(
-        ct.opaque_singleton(&ty).as_deref(),
-        Some("impl-target::Range")
-    );
+    assert!(record.fields.iter().all(|field| ct.is_equivalent(&field.ty, &int)));
+    assert_eq!(ct.opaque_singleton(&ty).as_deref(), Some("impl-target::Range"));
     assert_eq!(toks.len() - consumed, 1, "only trailing Eof remains");
 }
 
 // ----- fz-ul4.31.3: build_module_type_env -----
 
-fn type_alias_attr(name: &str, body_src: &str) -> crate::ast::Attribute {
+fn type_alias_attr(name: &str, body_src: &str) -> Attribute {
     type_alias_attr_with_params(name, &[], body_src)
 }
 
-fn type_alias_attr_with_params(
-    name: &str,
-    params: &[&str],
-    body_src: &str,
-) -> crate::ast::Attribute {
-    use crate::ast::{Attribute, TypeAliasDecl};
-    use crate::diag::Span;
+fn type_alias_attr_with_params(name: &str, params: &[&str], body_src: &str) -> Attribute {
     let toks = Lexer::new(body_src).tokenize().expect("lex body");
     // Drop trailing Eof to match parser behavior.
-    let body_tokens: Vec<_> = toks
-        .into_iter()
-        .filter(|t| !matches!(t.tok, Tok::Eof))
-        .collect();
+    let body_tokens: Vec<_> = toks.into_iter().filter(|t| !matches!(t.tok, Tok::Eof)).collect();
     Attribute::TypeAlias(TypeAliasDecl {
         name: name.to_string(),
         name_span: Span::DUMMY,
         params: params.iter().map(|param| param.to_string()).collect(),
-        body_tokens: crate::ast::TypeExprBody(body_tokens),
+        body_tokens: TypeExprBody(body_tokens),
         span: Span::DUMMY,
     })
 }
 
 fn build_module_type_env_for_test(
-    t: &mut crate::types::ConcreteTypes,
-    attrs: &[crate::ast::Attribute],
+    t: &mut ConcreteTypes,
+    attrs: &[Attribute],
     module_path: &str,
 ) -> Result<(ModuleTypeEnv, OpaqueInnerTypes, BrandInnerTypes), TypeExprError> {
     build_module_type_env_for_with_base(t, attrs, module_path, &ModuleTypeEnv::new())
@@ -424,7 +403,7 @@ fn build_module_type_env_for_test(
 #[test]
 fn build_env_resolves_simple_alias() {
     let attrs = vec![type_alias_attr("id", "integer")];
-    let mut ct = crate::types::ConcreteTypes;
+    let mut ct = ConcreteTypes;
     let env = build_module_type_env(&mut ct, &attrs).unwrap();
     let int = ct.int();
     assert!(ct.is_equivalent(env.get("id").unwrap(), &int));
@@ -436,29 +415,21 @@ fn build_env_records_struct_field_types_from_type_alias() {
         "t",
         "%Range{first: integer, last: integer, step: integer}",
     )];
-    let mut ct = crate::types::ConcreteTypes;
+    let mut ct = ConcreteTypes;
     let env = build_module_type_env(&mut ct, &attrs).unwrap();
     let alias_ty = env.get("t").expect("t alias");
-    assert_eq!(
-        ct.opaque_singleton(alias_ty).as_deref(),
-        Some("impl-target::Range")
-    );
+    assert_eq!(ct.opaque_singleton(alias_ty).as_deref(), Some("impl-target::Range"));
     let record = env.struct_record("t").expect("struct record");
     assert_eq!(record.module.dotted(), "Range");
     let int = ct.int();
-    assert!(
-        record
-            .fields
-            .iter()
-            .all(|field| ct.is_equivalent(&field.ty, &int))
-    );
+    assert!(record.fields.iter().all(|field| ct.is_equivalent(&field.ty, &int)));
 }
 
 #[test]
 fn build_env_resolves_alias_of_alias_in_either_order() {
     // Declare in forward order: a refs b, b is plain.
     let attrs = vec![type_alias_attr("a", "b"), type_alias_attr("b", "integer")];
-    let mut ct = crate::types::ConcreteTypes;
+    let mut ct = ConcreteTypes;
     let env = build_module_type_env(&mut ct, &attrs).unwrap();
     let int = ct.int();
     assert!(ct.is_equivalent(env.get("a").unwrap(), &int));
@@ -468,11 +439,8 @@ fn build_env_resolves_alias_of_alias_in_either_order() {
 #[test]
 fn build_env_resolves_composite_alias() {
     // pair := {id, id}; id := integer.
-    let attrs = vec![
-        type_alias_attr("pair", "{id, id}"),
-        type_alias_attr("id", "integer"),
-    ];
-    let mut ct = crate::types::ConcreteTypes;
+    let attrs = vec![type_alias_attr("pair", "{id, id}"), type_alias_attr("id", "integer")];
+    let mut ct = ConcreteTypes;
     let env = build_module_type_env(&mut ct, &attrs).unwrap();
     let int = ct.int();
     let expected = ct.tuple(&[int.clone(), int]);
@@ -482,13 +450,9 @@ fn build_env_resolves_composite_alias() {
 #[test]
 fn build_env_detects_simple_cycle() {
     let attrs = vec![type_alias_attr("a", "b"), type_alias_attr("b", "a")];
-    let mut ct = crate::types::ConcreteTypes;
+    let mut ct = ConcreteTypes;
     let err = build_module_type_env(&mut ct, &attrs).unwrap_err();
-    assert!(
-        err.msg.contains("cycle"),
-        "expected cycle diag, got: {}",
-        err.msg
-    );
+    assert!(err.msg.contains("cycle"), "expected cycle diag, got: {}", err.msg);
 }
 
 #[test]
@@ -498,19 +462,15 @@ fn build_env_detects_three_way_cycle() {
         type_alias_attr("b", "c"),
         type_alias_attr("c", "a"),
     ];
-    let mut ct = crate::types::ConcreteTypes;
+    let mut ct = ConcreteTypes;
     let err = build_module_type_env(&mut ct, &attrs).unwrap_err();
-    assert!(
-        err.msg.contains("cycle"),
-        "expected cycle diag, got: {}",
-        err.msg
-    );
+    assert!(err.msg.contains("cycle"), "expected cycle diag, got: {}", err.msg);
 }
 
 #[test]
 fn build_env_rejects_unknown_reference() {
     let attrs = vec![type_alias_attr("foo", "nonesuch")];
-    let mut ct = crate::types::ConcreteTypes;
+    let mut ct = ConcreteTypes;
     let err = build_module_type_env(&mut ct, &attrs).unwrap_err();
     assert!(
         err.msg.contains("unknown type name"),
@@ -521,11 +481,8 @@ fn build_env_rejects_unknown_reference() {
 
 #[test]
 fn build_env_rejects_duplicate_alias() {
-    let attrs = vec![
-        type_alias_attr("id", "integer"),
-        type_alias_attr("id", "float"),
-    ];
-    let mut ct = crate::types::ConcreteTypes;
+    let attrs = vec![type_alias_attr("id", "integer"), type_alias_attr("id", "float")];
+    let mut ct = ConcreteTypes;
     let err = build_module_type_env(&mut ct, &attrs).unwrap_err();
     assert!(
         err.msg.contains("duplicate"),
@@ -536,13 +493,12 @@ fn build_env_rejects_duplicate_alias() {
 
 #[test]
 fn build_env_ignores_non_type_alias_attributes() {
-    use crate::ast::Attribute;
     let attrs = vec![
         Attribute::ModuleDoc("hello".to_string()),
         type_alias_attr("id", "integer"),
         Attribute::Doc("a doc".to_string()),
     ];
-    let mut ct = crate::types::ConcreteTypes;
+    let mut ct = ConcreteTypes;
     let env = build_module_type_env(&mut ct, &attrs).unwrap();
     assert_eq!(env.len(), 1);
     let int = ct.int();
@@ -551,30 +507,27 @@ fn build_env_ignores_non_type_alias_attributes() {
 
 #[test]
 fn build_env_empty_for_module_without_aliases() {
-    let attrs: Vec<crate::ast::Attribute> = vec![];
-    let mut ct = crate::types::ConcreteTypes;
+    let attrs: Vec<Attribute> = vec![];
+    let mut ct = ConcreteTypes;
     let env = build_module_type_env(&mut ct, &attrs).unwrap();
     assert!(env.is_empty());
 }
 
 #[test]
 fn build_env_resolves_arrow_using_alias() {
-    let attrs = vec![
-        type_alias_attr("id", "integer"),
-        type_alias_attr("idfn", "(id) -> id"),
-    ];
-    let mut ct = crate::types::ConcreteTypes;
+    let attrs = vec![type_alias_attr("id", "integer"), type_alias_attr("idfn", "(id) -> id")];
+    let mut ct = ConcreteTypes;
     let env = build_module_type_env(&mut ct, &attrs).unwrap();
     let int = ct.int();
     let arg = int.clone();
-    let expected = ct.arrow(std::slice::from_ref(&arg), int);
+    let expected = ct.arrow(from_ref(&arg), int);
     assert!(ct.is_equivalent(env.get("idfn").unwrap(), &expected));
 }
 
 #[test]
 fn build_env_parameterized_alias_substitutes_args() {
     let attrs = vec![type_alias_attr_with_params("pair", &["a", "b"], "{a, b}")];
-    let mut ct = crate::types::ConcreteTypes;
+    let mut ct = ConcreteTypes;
     let env = build_module_type_env(&mut ct, &attrs).unwrap();
     let actual = parse_one_with(&mut ct, "pair(integer, atom)", &env).unwrap();
     let int = ct.int();
@@ -589,7 +542,7 @@ fn build_env_allows_same_alias_name_with_different_arities() {
         type_alias_attr("keyword", "[{atom, any}]"),
         type_alias_attr_with_params("keyword", &["t"], "[{atom, t}]"),
     ];
-    let mut ct = crate::types::ConcreteTypes;
+    let mut ct = ConcreteTypes;
     let env = build_module_type_env(&mut ct, &attrs).unwrap();
 
     let mono = env.get("keyword").expect("keyword/0");
@@ -614,7 +567,7 @@ fn build_env_parameterized_aliases_compose() {
         type_alias_attr_with_params("result", &["ok", "err"], "{:ok, ok} | {:error, err}"),
         type_alias_attr_with_params("api_result", &["t"], "result(t, utf8)"),
     ];
-    let mut ct = crate::types::ConcreteTypes;
+    let mut ct = ConcreteTypes;
     let env = build_module_type_env(&mut ct, &attrs).unwrap();
     let actual = parse_one_with(&mut ct, "api_result(integer)", &env).unwrap();
     let ok = ct.atom_lit("ok");
@@ -630,7 +583,7 @@ fn build_env_parameterized_aliases_compose() {
 #[test]
 fn parameterized_alias_application_checks_arity() {
     let attrs = vec![type_alias_attr_with_params("pair", &["a", "b"], "{a, b}")];
-    let mut ct = crate::types::ConcreteTypes;
+    let mut ct = ConcreteTypes;
     let env = build_module_type_env(&mut ct, &attrs).unwrap();
     let err = parse_one_with(&mut ct, "pair(integer)", &env).unwrap_err();
     assert!(
@@ -643,13 +596,9 @@ fn parameterized_alias_application_checks_arity() {
 #[test]
 fn parameterized_alias_cycle_is_rejected() {
     let attrs = vec![type_alias_attr_with_params("loop", &["t"], "loop(t)")];
-    let mut ct = crate::types::ConcreteTypes;
+    let mut ct = ConcreteTypes;
     let err = build_module_type_env(&mut ct, &attrs).unwrap_err();
-    assert!(
-        err.msg.contains("cycle"),
-        "expected cycle error, got: {}",
-        err.msg
-    );
+    assert!(err.msg.contains("cycle"), "expected cycle error, got: {}", err.msg);
 }
 
 #[test]
@@ -671,7 +620,7 @@ fn consumed_count_reports_correct_position() {
 #[test]
 fn build_env_opaque_alias_creates_nominal_type() {
     let attrs = vec![type_alias_attr("pid", "opaque integer")];
-    let mut ct = crate::types::ConcreteTypes;
+    let mut ct = ConcreteTypes;
     let env = build_module_type_env(&mut ct, &attrs).unwrap();
     let pid = env.get("pid").unwrap();
     let expected = ct.opaque_of("pid");
@@ -685,18 +634,12 @@ fn build_env_opaque_alias_creates_nominal_type() {
 #[test]
 fn build_env_opaque_alias_is_disjoint_from_underlying() {
     let attrs = vec![type_alias_attr("pid", "opaque integer")];
-    let mut ct = crate::types::ConcreteTypes;
+    let mut ct = ConcreteTypes;
     let env = build_module_type_env(&mut ct, &attrs).unwrap();
     let pid = env.get("pid").unwrap();
     let int = ct.int();
-    assert!(
-        !ct.is_subtype(pid, &int),
-        "pid should NOT be a subtype of integer"
-    );
-    assert!(
-        !ct.is_subtype(&int, pid),
-        "integer should NOT be a subtype of pid"
-    );
+    assert!(!ct.is_subtype(pid, &int), "pid should NOT be a subtype of integer");
+    assert!(!ct.is_subtype(&int, pid), "integer should NOT be a subtype of pid");
 }
 
 // ---- resource(T) (fz-swt.6) ----
@@ -725,17 +668,11 @@ fn resource_inner_type_is_validated() {
 fn constrained_polymorphic_spec_resolves_vars_and_bounds() {
     let toks = |src: &str| Lexer::new(src).tokenize().expect("lex");
     let mut ct = ConcreteTypes;
-    let spec = crate::ast::SpecDecl {
+    let spec = SpecDecl {
         name: "make_resource".to_string(),
-        param_body_tokens: vec![
-            crate::ast::TypeExprBody(toks("t")),
-            crate::ast::TypeExprBody(toks("(t) -> nil")),
-        ],
-        result_body_tokens: crate::ast::TypeExprBody(toks("resource(t)")),
-        constraints: vec![(
-            "t".to_string(),
-            crate::ast::TypeExprBody(toks("integer | cpointer")),
-        )],
+        param_body_tokens: vec![TypeExprBody(toks("t")), TypeExprBody(toks("(t) -> nil"))],
+        result_body_tokens: TypeExprBody(toks("resource(t)")),
+        constraints: vec![("t".to_string(), TypeExprBody(toks("integer | cpointer")))],
     };
     let resolved = resolve_spec_decl(&mut ct, &spec, &ModuleTypeEnv::new()).unwrap();
     assert_eq!(resolved.constraints.len(), 1);
@@ -753,17 +690,14 @@ fn resolved_spec_retains_structural_shape_for_container_parametricity() {
         "Enumerable.t".to_string(),
         ParameterizedTypeAlias {
             params: vec!["a".to_string()],
-            body_tokens: crate::ast::TypeExprBody(toks("a")),
-            span: crate::diag::Span::DUMMY,
+            body_tokens: TypeExprBody(toks("a")),
+            span: Span::DUMMY,
         },
     );
-    let spec = crate::ast::SpecDecl {
+    let spec = SpecDecl {
         name: "drop".to_string(),
-        param_body_tokens: vec![
-            crate::ast::TypeExprBody(toks("Enumerable.t(a)")),
-            crate::ast::TypeExprBody(toks("integer")),
-        ],
-        result_body_tokens: crate::ast::TypeExprBody(toks("[a]")),
+        param_body_tokens: vec![TypeExprBody(toks("Enumerable.t(a)")), TypeExprBody(toks("integer"))],
+        result_body_tokens: TypeExprBody(toks("[a]")),
         constraints: vec![],
     };
 
@@ -773,14 +707,14 @@ fn resolved_spec_retains_structural_shape_for_container_parametricity() {
         vec![
             ResolvedTypeShape::Named {
                 name: "Enumerable.t".to_string(),
-                args: vec![ResolvedTypeShape::Var(crate::types::TypeVarId(0))],
+                args: vec![ResolvedTypeShape::Var(TypeVarId(0))],
             },
             ResolvedTypeShape::Integer,
         ]
     );
     assert_eq!(
         resolved.result_shape,
-        ResolvedTypeShape::List(Box::new(ResolvedTypeShape::Var(crate::types::TypeVarId(0))))
+        ResolvedTypeShape::List(Box::new(ResolvedTypeShape::Var(TypeVarId(0))))
     );
 }
 
@@ -794,18 +728,18 @@ fn resolved_spec_retains_structural_shape_for_higher_order_parametricity() {
         "Enumerable.t".to_string(),
         ParameterizedTypeAlias {
             params: vec!["a".to_string()],
-            body_tokens: crate::ast::TypeExprBody(toks("a")),
-            span: crate::diag::Span::DUMMY,
+            body_tokens: TypeExprBody(toks("a")),
+            span: Span::DUMMY,
         },
     );
-    let spec = crate::ast::SpecDecl {
+    let spec = SpecDecl {
         name: "reduce".to_string(),
         param_body_tokens: vec![
-            crate::ast::TypeExprBody(toks("Enumerable.t(a)")),
-            crate::ast::TypeExprBody(toks("b")),
-            crate::ast::TypeExprBody(toks("(a, b) -> b")),
+            TypeExprBody(toks("Enumerable.t(a)")),
+            TypeExprBody(toks("b")),
+            TypeExprBody(toks("(a, b) -> b")),
         ],
-        result_body_tokens: crate::ast::TypeExprBody(toks("b")),
+        result_body_tokens: TypeExprBody(toks("b")),
         constraints: vec![],
     };
 
@@ -815,57 +749,52 @@ fn resolved_spec_retains_structural_shape_for_higher_order_parametricity() {
         vec![
             ResolvedTypeShape::Named {
                 name: "Enumerable.t".to_string(),
-                args: vec![ResolvedTypeShape::Var(crate::types::TypeVarId(0))],
+                args: vec![ResolvedTypeShape::Var(TypeVarId(0))],
             },
-            ResolvedTypeShape::Var(crate::types::TypeVarId(1)),
+            ResolvedTypeShape::Var(TypeVarId(1)),
             ResolvedTypeShape::Arrow {
                 params: vec![
-                    ResolvedTypeShape::Var(crate::types::TypeVarId(0)),
-                    ResolvedTypeShape::Var(crate::types::TypeVarId(1)),
+                    ResolvedTypeShape::Var(TypeVarId(0)),
+                    ResolvedTypeShape::Var(TypeVarId(1)),
                 ],
-                result: Box::new(ResolvedTypeShape::Var(crate::types::TypeVarId(1))),
+                result: Box::new(ResolvedTypeShape::Var(TypeVarId(1))),
             },
         ]
     );
-    assert_eq!(
-        resolved.result_shape,
-        ResolvedTypeShape::Var(crate::types::TypeVarId(1))
-    );
+    assert_eq!(resolved.result_shape, ResolvedTypeShape::Var(TypeVarId(1)));
 }
 
 #[test]
 fn resolved_spec_reports_reduce_invariant_slot_correspondence() {
     let mut ct = ConcreteTypes;
-    let entry_var = ct.type_var(crate::types::TypeVarId(0));
-    let acc_var = ct.type_var(crate::types::TypeVarId(1));
+    let entry_var = ct.type_var(TypeVarId(0));
+    let acc_var = ct.type_var(TypeVarId(1));
     let enumerable_param = ct.list(entry_var.clone());
     let reducer_param = ct.arrow(&[entry_var, acc_var.clone()], acc_var.clone());
     let spec = ResolvedSpec {
         params: vec![enumerable_param, acc_var.clone(), reducer_param],
         param_shapes: vec![
-            ResolvedTypeShape::List(Box::new(ResolvedTypeShape::Var(crate::types::TypeVarId(0)))),
-            ResolvedTypeShape::Var(crate::types::TypeVarId(1)),
+            ResolvedTypeShape::List(Box::new(ResolvedTypeShape::Var(TypeVarId(0)))),
+            ResolvedTypeShape::Var(TypeVarId(1)),
             ResolvedTypeShape::Arrow {
                 params: vec![
-                    ResolvedTypeShape::Var(crate::types::TypeVarId(0)),
-                    ResolvedTypeShape::Var(crate::types::TypeVarId(1)),
+                    ResolvedTypeShape::Var(TypeVarId(0)),
+                    ResolvedTypeShape::Var(TypeVarId(1)),
                 ],
-                result: Box::new(ResolvedTypeShape::Var(crate::types::TypeVarId(1))),
+                result: Box::new(ResolvedTypeShape::Var(TypeVarId(1))),
             },
         ],
         result: acc_var,
-        result_shape: ResolvedTypeShape::Var(crate::types::TypeVarId(1)),
-        constraints: std::collections::HashMap::new(),
+        result_shape: ResolvedTypeShape::Var(TypeVarId(1)),
+        constraints: HashMap::new(),
     };
 
     let groups = spec_correspondence_groups(&spec);
     assert_eq!(groups.len(), 2);
     assert_eq!(
-        groups
-            .iter()
-            .find(|group| group.var == crate::types::TypeVarId(1)),
+        groups.iter().find(|group| group.var == TypeVarId(1)),
         Some(&StructuralCorrespondenceGroup {
-            var: crate::types::TypeVarId(1),
+            var: TypeVarId(1),
             occurrences: vec![
                 StructuralOccurrence::Param {
                     param_index: 1,
@@ -896,17 +825,14 @@ fn resolved_spec_reports_structural_container_correspondence() {
         "Enumerable.t".to_string(),
         ParameterizedTypeAlias {
             params: vec!["a".to_string()],
-            body_tokens: crate::ast::TypeExprBody(toks("a")),
-            span: crate::diag::Span::DUMMY,
+            body_tokens: TypeExprBody(toks("a")),
+            span: Span::DUMMY,
         },
     );
-    let spec = crate::ast::SpecDecl {
+    let spec = SpecDecl {
         name: "drop".to_string(),
-        param_body_tokens: vec![
-            crate::ast::TypeExprBody(toks("Enumerable.t(a)")),
-            crate::ast::TypeExprBody(toks("integer")),
-        ],
-        result_body_tokens: crate::ast::TypeExprBody(toks("[a]")),
+        param_body_tokens: vec![TypeExprBody(toks("Enumerable.t(a)")), TypeExprBody(toks("integer"))],
+        result_body_tokens: TypeExprBody(toks("[a]")),
         constraints: vec![],
     };
 
@@ -914,7 +840,7 @@ fn resolved_spec_reports_structural_container_correspondence() {
     assert_eq!(
         spec_correspondence_groups(&resolved),
         vec![StructuralCorrespondenceGroup {
-            var: crate::types::TypeVarId(0),
+            var: TypeVarId(0),
             occurrences: vec![
                 StructuralOccurrence::Param {
                     param_index: 0,
@@ -931,8 +857,8 @@ fn resolved_spec_reports_structural_container_correspondence() {
 #[test]
 fn resolved_spec_reports_reduce_while_invariant_slot_correspondence() {
     let mut ct = ConcreteTypes;
-    let entry_var = ct.type_var(crate::types::TypeVarId(0));
-    let acc_var = ct.type_var(crate::types::TypeVarId(1));
+    let entry_var = ct.type_var(TypeVarId(0));
+    let acc_var = ct.type_var(TypeVarId(1));
     let cont = ct.atom_lit("cont");
     let halt = ct.atom_lit("halt");
     let reducer_ret = {
@@ -947,38 +873,36 @@ fn resolved_spec_reports_reduce_while_invariant_slot_correspondence() {
             ct.arrow(&[entry_var, acc_var.clone()], reducer_ret),
         ],
         param_shapes: vec![
-            ResolvedTypeShape::List(Box::new(ResolvedTypeShape::Var(crate::types::TypeVarId(0)))),
-            ResolvedTypeShape::Var(crate::types::TypeVarId(1)),
+            ResolvedTypeShape::List(Box::new(ResolvedTypeShape::Var(TypeVarId(0)))),
+            ResolvedTypeShape::Var(TypeVarId(1)),
             ResolvedTypeShape::Arrow {
                 params: vec![
-                    ResolvedTypeShape::Var(crate::types::TypeVarId(0)),
-                    ResolvedTypeShape::Var(crate::types::TypeVarId(1)),
+                    ResolvedTypeShape::Var(TypeVarId(0)),
+                    ResolvedTypeShape::Var(TypeVarId(1)),
                 ],
                 result: Box::new(ResolvedTypeShape::Union(vec![
                     ResolvedTypeShape::Tuple(vec![
                         ResolvedTypeShape::AtomLit("cont".to_string()),
-                        ResolvedTypeShape::Var(crate::types::TypeVarId(1)),
+                        ResolvedTypeShape::Var(TypeVarId(1)),
                     ]),
                     ResolvedTypeShape::Tuple(vec![
                         ResolvedTypeShape::AtomLit("halt".to_string()),
-                        ResolvedTypeShape::Var(crate::types::TypeVarId(1)),
+                        ResolvedTypeShape::Var(TypeVarId(1)),
                     ]),
                 ])),
             },
         ],
         result: acc_var,
-        result_shape: ResolvedTypeShape::Var(crate::types::TypeVarId(1)),
-        constraints: std::collections::HashMap::new(),
+        result_shape: ResolvedTypeShape::Var(TypeVarId(1)),
+        constraints: HashMap::new(),
     };
 
     let groups = spec_correspondence_groups(&spec);
     assert_eq!(groups.len(), 2);
     assert_eq!(
-        groups
-            .iter()
-            .find(|group| group.var == crate::types::TypeVarId(1)),
+        groups.iter().find(|group| group.var == TypeVarId(1)),
         Some(&StructuralCorrespondenceGroup {
-            var: crate::types::TypeVarId(1),
+            var: TypeVarId(1),
             occurrences: vec![
                 StructuralOccurrence::Param {
                     param_index: 1,
@@ -992,17 +916,11 @@ fn resolved_spec_reports_reduce_while_invariant_slot_correspondence() {
                 },
                 StructuralOccurrence::CallbackResult {
                     param_index: 2,
-                    path: vec![
-                        StructuralPathStep::UnionMember(0),
-                        StructuralPathStep::TupleElem(1)
-                    ],
+                    path: vec![StructuralPathStep::UnionMember(0), StructuralPathStep::TupleElem(1)],
                 },
                 StructuralOccurrence::CallbackResult {
                     param_index: 2,
-                    path: vec![
-                        StructuralPathStep::UnionMember(1),
-                        StructuralPathStep::TupleElem(1)
-                    ],
+                    path: vec![StructuralPathStep::UnionMember(1), StructuralPathStep::TupleElem(1)],
                 },
             ],
         })
@@ -1015,9 +933,9 @@ fn build_env_opaque_resource_alias_qualifies_with_module() {
     // Built under module "File", the alias should carry the
     // qualified tag `"File::t"`.
     let attrs = vec![type_alias_attr("t", "opaque resource(integer)")];
-    let mut ct = crate::types::ConcreteTypes;
+    let mut ct = ConcreteTypes;
     let (env, _o, _b) = build_module_type_env_for_test(&mut ct, &attrs, "File").unwrap();
-    let ct = crate::types::ConcreteTypes;
+    let ct = ConcreteTypes;
     let t = env.get("t").expect("alias resolved");
     assert_eq!(ct.opaque_singleton(t).as_deref(), Some("File::t"));
 }
@@ -1027,9 +945,9 @@ fn build_env_opaque_alias_unqualified_at_top_level() {
     // Top-level (no enclosing module) preserves the historical
     // unqualified tag — these opaques have no owner.
     let attrs = vec![type_alias_attr("pid", "opaque integer")];
-    let mut ct = crate::types::ConcreteTypes;
+    let mut ct = ConcreteTypes;
     let env = build_module_type_env(&mut ct, &attrs).unwrap();
-    let ct = crate::types::ConcreteTypes;
+    let ct = ConcreteTypes;
     let pid = env.get("pid").unwrap();
     assert_eq!(ct.opaque_singleton(pid).as_deref(), Some("pid"));
 }
@@ -1038,7 +956,7 @@ fn build_env_opaque_alias_unqualified_at_top_level() {
 fn build_env_opaque_alias_rejects_bad_body() {
     // `opaque <body>` parses the body; an unknown name surfaces.
     let attrs = vec![type_alias_attr("t", "opaque nonesuch")];
-    let mut ct = crate::types::ConcreteTypes;
+    let mut ct = ConcreteTypes;
     let err = build_module_type_env_for_test(&mut ct, &attrs, "M").unwrap_err();
     assert!(
         err.msg.contains("unknown type name"),
@@ -1053,7 +971,7 @@ fn build_env_two_opaque_aliases_are_distinct() {
         type_alias_attr("pid", "opaque integer"),
         type_alias_attr("timestamp", "opaque integer"),
     ];
-    let mut ct = crate::types::ConcreteTypes;
+    let mut ct = ConcreteTypes;
     let env = build_module_type_env(&mut ct, &attrs).unwrap();
     let pid = env.get("pid").unwrap();
     let ts = env.get("timestamp").unwrap();
@@ -1070,7 +988,7 @@ fn build_env_two_opaque_aliases_are_distinct() {
 #[test]
 fn build_env_refines_alias_creates_brand_descr() {
     let attrs = vec![type_alias_attr("utf8", "refines binary")];
-    let mut ct = crate::types::ConcreteTypes;
+    let mut ct = ConcreteTypes;
     let (env, _o, brand_inners) = build_module_type_env_for_test(&mut ct, &attrs, "").unwrap();
     let utf8 = env.get("utf8").unwrap();
     assert_eq!(
@@ -1079,9 +997,7 @@ fn build_env_refines_alias_creates_brand_descr() {
         "alias resolves to brand-of(name): got {}",
         ct.display(utf8),
     );
-    let inner = brand_inners
-        .get("utf8")
-        .expect("brand_inners records the inner type");
+    let inner = brand_inners.get("utf8").expect("brand_inners records the inner type");
     let str_t = ct.str_t();
     assert!(
         ct.is_equivalent(inner, &str_t),
@@ -1093,9 +1009,9 @@ fn build_env_refines_alias_creates_brand_descr() {
 #[test]
 fn build_env_refines_alias_qualifies_with_module() {
     let attrs = vec![type_alias_attr("email", "refines binary")];
-    let mut ct = crate::types::ConcreteTypes;
+    let mut ct = ConcreteTypes;
     let (env, _o, brand_inners) = build_module_type_env_for_test(&mut ct, &attrs, "Email").unwrap();
-    let ct = crate::types::ConcreteTypes;
+    let ct = ConcreteTypes;
     let email = env.get("email").unwrap();
     assert_eq!(ct.brand_singleton(email).as_deref(), Some("Email::email"));
     assert!(brand_inners.contains_key("Email::email"));
@@ -1104,7 +1020,7 @@ fn build_env_refines_alias_qualifies_with_module() {
 #[test]
 fn build_env_refines_alias_rejects_empty_body() {
     let attrs = vec![type_alias_attr("bad", "refines")];
-    let mut ct = crate::types::ConcreteTypes;
+    let mut ct = ConcreteTypes;
     let err = build_module_type_env_for_test(&mut ct, &attrs, "M").unwrap_err();
     assert!(
         err.msg.contains("requires an inner type"),
@@ -1116,7 +1032,7 @@ fn build_env_refines_alias_rejects_empty_body() {
 #[test]
 fn build_env_refines_alias_rejects_bad_inner() {
     let attrs = vec![type_alias_attr("bad", "refines nonesuch")];
-    let mut ct = crate::types::ConcreteTypes;
+    let mut ct = ConcreteTypes;
     let err = build_module_type_env_for_test(&mut ct, &attrs, "M").unwrap_err();
     assert!(
         err.msg.contains("unknown type name"),
@@ -1132,7 +1048,7 @@ fn refines_distinct_from_opaque_with_same_name() {
     // different axes, so they are lattice-disjoint.
     let m_attrs = vec![type_alias_attr("B", "refines integer")];
     let n_attrs = vec![type_alias_attr("B", "opaque integer")];
-    let mut ct = crate::types::ConcreteTypes;
+    let mut ct = ConcreteTypes;
     let (m_env, _, _) = build_module_type_env_for_test(&mut ct, &m_attrs, "M").unwrap();
     let (n_env, _, _) = build_module_type_env_for_test(&mut ct, &n_attrs, "N").unwrap();
     let b_brand = m_env.get("B").unwrap();

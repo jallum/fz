@@ -13,8 +13,7 @@ pub const LEX_UNEXPECTED_CHAR: DiagCode = DiagCode("lex/unexpected-char");
 // ----- parser -----
 
 pub const PARSE_EXPECTED_TOKEN: DiagCode = DiagCode("parse/expected-token");
-pub const PARSE_AMBIGUOUS_NO_PARENS_KEYWORD: DiagCode =
-    DiagCode("parse/ambiguous-no-parens-keyword");
+pub const PARSE_AMBIGUOUS_NO_PARENS_KEYWORD: DiagCode = DiagCode("parse/ambiguous-no-parens-keyword");
 
 // ----- resolver -----
 
@@ -84,8 +83,7 @@ pub const ARTIFACT_INVALID: DiagCode = DiagCode("artifact/invalid");
 
 // ----- internal (compiler invariants) -----
 
-pub const INTERNAL_POST_RESOLUTION_LEFTOVER: DiagCode =
-    DiagCode("internal/post-resolution-leftover");
+pub const INTERNAL_POST_RESOLUTION_LEFTOVER: DiagCode = DiagCode("internal/post-resolution-leftover");
 
 #[cfg(test)]
 mod tests {

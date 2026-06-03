@@ -10,9 +10,9 @@
 //!   - Term::If cond  :: :true           → Term::Goto(then_b, [])
 //!   - Term::If cond  :: :false | nil    → Term::Goto(else_b, [])
 
-use crate::fz_ir::{Const, DeadBranch, FnIr, Prim, Stmt, Term};
-use crate::ir_planner::SpecPlan;
-use crate::types::Types;
+use crate::fz_ir::{Block, Const, DeadBranch, FnIr, Prim, Stmt, Term, Var};
+use crate::ir_planner::{SpecPlan, find_emptied_var, narrow_for_if};
+use crate::types::{Ty, Types};
 use std::collections::HashMap;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -26,11 +26,7 @@ pub(crate) struct FoldStats {
 /// Planned-program materialization calls this on one cloned `FnIr` per spec,
 /// passing that spec's exact `SpecPlan`, so each body folds against its own
 /// narrowed env. Avoids shared canonical-body mutation.
-pub(crate) fn fold_planned_body<T: Types<Ty = crate::types::Ty>>(
-    t: &mut T,
-    f: &mut FnIr,
-    fn_types: &SpecPlan,
-) -> FoldStats {
+pub(crate) fn fold_planned_body<T: Types<Ty = Ty>>(t: &mut T, f: &mut FnIr, fn_types: &SpecPlan) -> FoldStats {
     let true_t = t.bool_lit(true);
     let false_t = t.bool_lit(false);
     let nil_t = t.nil();
@@ -39,9 +35,7 @@ pub(crate) fn fold_planned_body<T: Types<Ty = crate::types::Ty>>(
         for stmt in &mut block.stmts {
             let Stmt::Let(dest, prim) = stmt;
             let d = match prim {
-                Prim::BinOp(..) | Prim::TypeTest(..) => {
-                    fn_types.vars.get(dest).cloned().unwrap_or_else(|| t.any())
-                }
+                Prim::BinOp(..) | Prim::TypeTest(..) => fn_types.vars.get(dest).cloned().unwrap_or_else(|| t.any()),
                 _ => continue,
             };
             if let Prim::BinOp(..) = prim {
@@ -67,10 +61,7 @@ pub(crate) fn fold_planned_body<T: Types<Ty = crate::types::Ty>>(
         }
 
         let new_term = if let Term::If {
-            cond,
-            then_b,
-            else_b,
-            ..
+            cond, then_b, else_b, ..
         } = &block.terminator
         {
             match verified_dead_branch(t, block, fn_types) {
@@ -98,11 +89,7 @@ pub(crate) fn fold_planned_body<T: Types<Ty = crate::types::Ty>>(
     stats
 }
 
-fn verified_dead_branch<T: Types<Ty = crate::types::Ty>>(
-    t: &mut T,
-    block: &crate::fz_ir::Block,
-    fn_types: &SpecPlan,
-) -> Option<DeadBranch> {
+fn verified_dead_branch<T: Types<Ty = Ty>>(t: &mut T, block: &Block, fn_types: &SpecPlan) -> Option<DeadBranch> {
     let Term::If { cond, .. } = block.terminator else {
         return None;
     };
@@ -110,11 +97,7 @@ fn verified_dead_branch<T: Types<Ty = crate::types::Ty>>(
         return None;
     }
 
-    let mut env: HashMap<crate::fz_ir::Var, crate::types::Ty> = fn_types
-        .block_envs
-        .get(&block.id)
-        .cloned()
-        .unwrap_or_default();
+    let mut env: HashMap<Var, Ty> = fn_types.block_envs.get(&block.id).cloned().unwrap_or_default();
     for stmt in &block.stmts {
         let Stmt::Let(v, _) = stmt;
         if let Some(ty) = fn_types.vars.get(v).cloned() {
@@ -122,9 +105,9 @@ fn verified_dead_branch<T: Types<Ty = crate::types::Ty>>(
         }
     }
 
-    let (then_env, else_env) = crate::ir_planner::narrow_for_if(t, &env, cond, &block.stmts);
-    let mut then_dead = crate::ir_planner::find_emptied_var(t, &env, &then_env).is_some();
-    let mut else_dead = crate::ir_planner::find_emptied_var(t, &env, &else_env).is_some();
+    let (then_env, else_env) = narrow_for_if(t, &env, cond, &block.stmts);
+    let mut then_dead = find_emptied_var(t, &env, &then_env).is_some();
+    let mut else_dead = find_emptied_var(t, &env, &else_env).is_some();
 
     let ct = env.get(&cond).cloned().unwrap_or_else(|| t.any());
     let true_t = t.bool_lit(true);

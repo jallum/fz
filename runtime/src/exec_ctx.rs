@@ -19,10 +19,11 @@
 //! what lets two schedulers be live at once on one worker without clobbering
 //! each other.
 
+use crate::process::Process;
 use crate::scheduler_hooks::{
-    MakeResourceHook, OutputHook, SendHook, SpawnHook, SpawnOptHook, TimerCancelHook,
-    TimerScheduleHook,
+    MakeResourceHook, OutputHook, SendHook, SpawnHook, SpawnOptHook, TimerCancelHook, TimerScheduleHook,
 };
+use std::ptr::{null, null_mut};
 
 /// The execution-context dispatch table for a running task. See module docs.
 ///
@@ -54,9 +55,9 @@ impl ExecCtx {
     /// inert default before a scheduler installs a real one.
     pub const fn empty() -> Self {
         Self {
-            scheduler: std::ptr::null_mut(),
-            tel: std::ptr::null(),
-            module: std::ptr::null(),
+            scheduler: null_mut(),
+            tel: null(),
+            module: null(),
             spawn: None,
             spawn_opt: None,
             send: None,
@@ -77,7 +78,7 @@ impl Default for ExecCtx {
 /// Schedule an after-timer through a process's execution context. Returns the
 /// new `TimerId`, or `None` when the context wires no timer (e.g. a test that
 /// doesn't stand up a scheduler) — the caller treats that as an indefinite park.
-pub fn timer_schedule(process: &crate::process::Process, pid: u32, after_ms: u64) -> Option<u64> {
+pub fn timer_schedule(process: &Process, pid: u32, after_ms: u64) -> Option<u64> {
     if process.ctx.is_null() {
         return None;
     }
@@ -87,7 +88,7 @@ pub fn timer_schedule(process: &crate::process::Process, pid: u32, after_ms: u64
 
 /// Cancel a previously scheduled after-timer through a process's context.
 /// No-op when the context wires no timer.
-pub fn timer_cancel(process: &crate::process::Process, timer_id: u64) {
+pub fn timer_cancel(process: &Process, timer_id: u64) {
     if process.ctx.is_null() {
         return;
     }
@@ -101,13 +102,7 @@ pub fn timer_cancel(process: &crate::process::Process, timer_id: u64) {
 mod tests {
     use super::*;
 
-    extern "C" fn sample_send(
-        _sender: *mut crate::process::Process,
-        _scheduler: *mut (),
-        _pid: u32,
-        _msg: u64,
-    ) {
-    }
+    extern "C" fn sample_send(_sender: *mut Process, _scheduler: *mut (), _pid: u32, _msg: u64) {}
 
     #[test]
     fn empty_ctx_has_null_handles_and_no_callbacks() {

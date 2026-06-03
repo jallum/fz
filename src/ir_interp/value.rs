@@ -1,6 +1,11 @@
 use super::*;
-use fz_runtime::any_value::AnyValueRef;
-use fz_runtime::any_value::{AnyValue as RuntimeAnyValue, ValueKind};
+use fz_runtime::any_value::debug::render_value;
+use fz_runtime::any_value::{
+    AnyValue as RuntimeAnyValue, AnyValueRef, FALSE_ATOM_ID, NIL_ATOM_ID, TAG_BITSTRING, TAG_MASK, TAG_PROCBIN,
+    TRUE_ATOM_ID, ValueKind,
+};
+use fz_runtime::ir_runtime::{fz_box_atom_for_any, fz_box_float_for_any, fz_box_int_for_any, fz_struct_get_field_ref};
+use fz_runtime::process::Process;
 
 #[derive(Clone, Copy, Debug)]
 /// Interpreter/REPL convenience view only. Keep runtime ABI, heap storage,
@@ -23,15 +28,13 @@ impl AnyValue {
             AnyValue::Float(value) => RuntimeAnyValue::float(value),
             AnyValue::Atom(value) => RuntimeAnyValue::atom(value),
             AnyValue::EmptyList => RuntimeAnyValue::empty_list(),
-            AnyValue::Ref(value) => RuntimeAnyValue::from_ref(value)
-                .map_err(|err| format!("interpreter ref storage view: {err:?}"))?,
+            AnyValue::Ref(value) => {
+                RuntimeAnyValue::from_ref(value).map_err(|err| format!("interpreter ref storage view: {err:?}"))?
+            }
         })
     }
 
-    pub(super) fn extern_arg_ref_word(
-        self,
-        proc: *mut fz_runtime::process::Process,
-    ) -> Result<u64, String> {
+    pub(super) fn extern_arg_ref_word(self, proc: *mut Process) -> Result<u64, String> {
         self.as_ref_word(proc)
     }
 
@@ -42,27 +45,18 @@ impl AnyValue {
     /// Box this value into a heap ref word. Scalar arms allocate a ScalarBox
     /// on `proc`'s heap (`proc` must be the running process); Ref/EmptyList/Null
     /// arms are allocation-free and ignore it.
-    pub(super) fn as_ref_word(
-        self,
-        proc: *mut fz_runtime::process::Process,
-    ) -> Result<u64, String> {
+    pub(super) fn as_ref_word(self, proc: *mut Process) -> Result<u64, String> {
         match self {
             AnyValue::Null => Ok(AnyValueRef::null().raw_word()),
-            AnyValue::Int(value) => Ok(fz_runtime::ir_runtime::fz_box_int_for_any(proc, value)),
-            AnyValue::Float(value) => Ok(fz_runtime::ir_runtime::fz_box_float_for_any(proc, value)),
-            AnyValue::Atom(value) => Ok(fz_runtime::ir_runtime::fz_box_atom_for_any(
-                proc,
-                value as u64,
-            )),
+            AnyValue::Int(value) => Ok(fz_box_int_for_any(proc, value)),
+            AnyValue::Float(value) => Ok(fz_box_float_for_any(proc, value)),
+            AnyValue::Atom(value) => Ok(fz_box_atom_for_any(proc, value as u64)),
             AnyValue::EmptyList => Ok(AnyValueRef::empty_list().raw_word()),
             AnyValue::Ref(value) => Ok(value.raw_word()),
         }
     }
 
-    pub(super) fn as_any_value_ref(
-        self,
-        proc: *mut fz_runtime::process::Process,
-    ) -> Result<AnyValueRef, String> {
+    pub(super) fn as_any_value_ref(self, proc: *mut Process) -> Result<AnyValueRef, String> {
         match self {
             AnyValue::Null => Ok(AnyValueRef::null()),
             AnyValue::EmptyList => Ok(AnyValueRef::empty_list()),
@@ -96,38 +90,31 @@ impl AnyValue {
 
     pub(super) fn is_truthy(self) -> bool {
         match self {
-            AnyValue::Atom(value) => !matches!(
-                value,
-                fz_runtime::any_value::FALSE_ATOM_ID | fz_runtime::any_value::NIL_ATOM_ID
-            ),
+            AnyValue::Atom(value) => !matches!(value, FALSE_ATOM_ID | NIL_ATOM_ID),
             _ => true,
         }
     }
 
     pub(crate) fn is_nil(self) -> bool {
-        matches!(self, AnyValue::Atom(fz_runtime::any_value::NIL_ATOM_ID))
+        matches!(self, AnyValue::Atom(NIL_ATOM_ID))
     }
 
     pub(super) fn is_false(self) -> bool {
-        matches!(self, AnyValue::Atom(fz_runtime::any_value::FALSE_ATOM_ID))
+        matches!(self, AnyValue::Atom(FALSE_ATOM_ID))
     }
 
     pub(super) fn is_atom_id(self, atom_id: u32) -> bool {
         matches!(self, AnyValue::Atom(value) if value == atom_id)
     }
 
-    pub(crate) fn render(self, proc: *mut fz_runtime::process::Process) -> String {
+    pub(crate) fn render(self, proc: *mut Process) -> String {
         match self {
             AnyValue::Null => "null".to_string(),
             AnyValue::Int(value) => value.to_string(),
             AnyValue::Float(value) => value.to_string(),
-            AnyValue::Atom(value) => {
-                fz_runtime::any_value::debug::render_value(proc, RuntimeAnyValue::atom(value))
-            }
-            AnyValue::EmptyList => {
-                fz_runtime::any_value::debug::render_value(proc, RuntimeAnyValue::empty_list())
-            }
-            AnyValue::Ref(value) => fz_runtime::any_value::debug::render_value(
+            AnyValue::Atom(value) => render_value(proc, RuntimeAnyValue::atom(value)),
+            AnyValue::EmptyList => render_value(proc, RuntimeAnyValue::empty_list()),
+            AnyValue::Ref(value) => render_value(
                 proc,
                 RuntimeAnyValue::from_ref(value).unwrap_or(RuntimeAnyValue::null()),
             ),
@@ -136,10 +123,7 @@ impl AnyValue {
 }
 
 pub(super) fn bitstring_like_ptr(bits: u64) -> Option<*mut u8> {
-    if matches!(
-        bits & fz_runtime::any_value::TAG_MASK,
-        fz_runtime::any_value::TAG_BITSTRING | fz_runtime::any_value::TAG_PROCBIN
-    ) {
+    if matches!(bits & TAG_MASK, TAG_BITSTRING | TAG_PROCBIN) {
         Some(bits as *mut u8)
     } else {
         None
@@ -175,24 +159,22 @@ pub(super) fn interp_value_from_ref(value: AnyValueRef, context: &str) -> Result
     }
     Ok(match value.tag() {
         ValueKind::NULL => AnyValue::Null,
-        ValueKind::INT => AnyValue::Int(value.load_int().map_err(|err| {
-            format!(
-                "{context}: invalid int ref {:#x}: {err:?}",
-                value.raw_word()
-            )
-        })?),
-        ValueKind::FLOAT => AnyValue::Float(value.load_float().map_err(|err| {
-            format!(
-                "{context}: invalid float ref {:#x}: {err:?}",
-                value.raw_word()
-            )
-        })?),
-        ValueKind::ATOM => AnyValue::Atom(value.load_atom().map_err(|err| {
-            format!(
-                "{context}: invalid atom ref {:#x}: {err:?}",
-                value.raw_word()
-            )
-        })? as u32),
+        ValueKind::INT => AnyValue::Int(
+            value
+                .load_int()
+                .map_err(|err| format!("{context}: invalid int ref {:#x}: {err:?}", value.raw_word()))?,
+        ),
+        ValueKind::FLOAT => AnyValue::Float(
+            value
+                .load_float()
+                .map_err(|err| format!("{context}: invalid float ref {:#x}: {err:?}", value.raw_word()))?,
+        ),
+        ValueKind::ATOM => AnyValue::Atom(
+            value
+                .load_atom()
+                .map_err(|err| format!("{context}: invalid atom ref {:#x}: {err:?}", value.raw_word()))?
+                as u32,
+        ),
         ValueKind::LIST
         | ValueKind::MAP
         | ValueKind::STRUCT
@@ -205,7 +187,7 @@ pub(super) fn interp_value_from_ref(value: AnyValueRef, context: &str) -> Result
 }
 
 pub(super) fn with_value_ref<T>(
-    proc: *mut fz_runtime::process::Process,
+    proc: *mut Process,
     value: AnyValue,
     context: &str,
     f: impl FnOnce(u64) -> T,
@@ -217,14 +199,14 @@ pub(super) fn with_value_ref<T>(
 }
 
 pub(super) fn interp_struct_field_from_tagged_bits(
-    proc: *mut fz_runtime::process::Process,
+    proc: *mut Process,
     bits: u64,
     field_offset: u32,
     context: &str,
 ) -> Result<AnyValue, String> {
     let value = interp_value_from_ref_word(bits, context)?;
     with_value_ref(proc, value, context, |struct_ref| {
-        fz_runtime::ir_runtime::fz_struct_get_field_ref(proc, struct_ref, field_offset)
+        fz_struct_get_field_ref(proc, struct_ref, field_offset)
     })
     .and_then(|ref_word| interp_value_from_ref_word(ref_word, context))
 }
@@ -238,15 +220,11 @@ pub(super) fn guard_int(v: AnyValue) -> Option<i64> {
 }
 
 pub(super) fn interp_bool_value(b: bool) -> AnyValue {
-    AnyValue::Atom(if b {
-        fz_runtime::any_value::TRUE_ATOM_ID
-    } else {
-        fz_runtime::any_value::FALSE_ATOM_ID
-    })
+    AnyValue::Atom(if b { TRUE_ATOM_ID } else { FALSE_ATOM_ID })
 }
 
 pub(super) fn interp_nil_value() -> AnyValue {
-    AnyValue::Atom(fz_runtime::any_value::NIL_ATOM_ID)
+    AnyValue::Atom(NIL_ATOM_ID)
 }
 
 pub(super) fn interp_empty_list_value() -> AnyValue {
@@ -261,13 +239,13 @@ pub(super) fn is_map_value(val: RuntimeAnyValue) -> bool {
     val.kind() == ValueKind::MAP && val.heap_addr().is_some_and(|p| !p.is_null())
 }
 
-pub(super) fn interp_value_from_slot(value: fz_runtime::any_value::AnyValue) -> AnyValue {
+pub(super) fn interp_value_from_slot(value: RuntimeAnyValue) -> AnyValue {
     match value.kind() {
-        fz_runtime::any_value::ValueKind::NULL => AnyValue::Null,
-        fz_runtime::any_value::ValueKind::FLOAT => AnyValue::Float(f64::from_bits(value.raw())),
-        fz_runtime::any_value::ValueKind::INT => AnyValue::Int(value.raw() as i64),
-        fz_runtime::any_value::ValueKind::ATOM => AnyValue::Atom(value.raw() as u32),
-        fz_runtime::any_value::ValueKind::LIST if value.raw() == 0 => AnyValue::EmptyList,
+        ValueKind::NULL => AnyValue::Null,
+        ValueKind::FLOAT => AnyValue::Float(f64::from_bits(value.raw())),
+        ValueKind::INT => AnyValue::Int(value.raw() as i64),
+        ValueKind::ATOM => AnyValue::Atom(value.raw() as u32),
+        ValueKind::LIST if value.raw() == 0 => AnyValue::EmptyList,
         _ => AnyValue::Ref(value.ref_word()),
     }
 }

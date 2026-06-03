@@ -7,6 +7,7 @@
 
 use crate::diag::{FileId, Span};
 use crate::fz_ir::Var;
+use crate::types::Ty;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -308,7 +309,7 @@ pub enum MatcherTest {
     },
     Type {
         subject: SubjectRef,
-        ty: crate::types::Ty,
+        ty: Ty,
     },
 }
 

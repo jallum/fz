@@ -1,7 +1,10 @@
 //! Structural signatures: `TupleSig`, `ListSig`, `ArrowSig`, `MapSig`,
 //! the `ClosureLit` tag, and the `MergeSig` trait + per-sig impls.
 
-use crate::types::MapKey;
+use std::collections::BTreeMap;
+
+use crate::fz_ir::FnId;
+use crate::types::{MapKey, Ty};
 
 use super::descr::Descr;
 use super::{ty_descr, ty_from_descr};
@@ -81,8 +84,8 @@ impl ListSig {
 /// the union keeps both to preserve singleton precision downstream.
 #[derive(Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub(crate) struct ClosureLit {
-    pub fn_id: crate::fz_ir::FnId,
-    pub captures: Vec<crate::types::Ty>,
+    pub fn_id: FnId,
+    pub captures: Vec<Ty>,
 }
 
 #[derive(Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
@@ -105,7 +108,7 @@ pub(crate) struct MapSig {
     /// enum, and serde_json rejects non-string map keys, so the map cannot
     /// round-trip as a JSON object.
     #[serde(with = "map_sig_fields")]
-    pub fields: std::collections::BTreeMap<MapKey, Descr>,
+    pub fields: BTreeMap<MapKey, Descr>,
 }
 
 /// (De)serialize `BTreeMap<MapKey, Descr>` as a `Vec<(MapKey, Descr)>` so the
@@ -115,19 +118,12 @@ mod map_sig_fields {
     use serde::{Deserialize, Deserializer, Serialize, Serializer};
     use std::collections::BTreeMap;
 
-    pub fn serialize<S: Serializer>(
-        fields: &BTreeMap<MapKey, Descr>,
-        s: S,
-    ) -> Result<S::Ok, S::Error> {
+    pub fn serialize<S: Serializer>(fields: &BTreeMap<MapKey, Descr>, s: S) -> Result<S::Ok, S::Error> {
         fields.iter().collect::<Vec<_>>().serialize(s)
     }
 
-    pub fn deserialize<'de, D: Deserializer<'de>>(
-        d: D,
-    ) -> Result<BTreeMap<MapKey, Descr>, D::Error> {
-        Ok(Vec::<(MapKey, Descr)>::deserialize(d)?
-            .into_iter()
-            .collect())
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<BTreeMap<MapKey, Descr>, D::Error> {
+        Ok(Vec::<(MapKey, Descr)>::deserialize(d)?.into_iter().collect())
     }
 }
 
@@ -153,11 +149,7 @@ impl MergeSig for ListSig {
         let elem = match (&a.elem, &b.elem) {
             (Some(a), Some(b)) => {
                 let elem = a.intersect(b);
-                if elem.is_empty() {
-                    None
-                } else {
-                    Some(Box::new(elem))
-                }
+                if elem.is_empty() { None } else { Some(Box::new(elem)) }
             }
             _ => None,
         };
@@ -220,7 +212,7 @@ impl MergeSig for ArrowSig {
                 if la.captures.len() != lb.captures.len() {
                     return None;
                 }
-                let caps: Vec<crate::types::Ty> = la
+                let caps: Vec<Ty> = la
                     .captures
                     .iter()
                     .zip(lb.captures.iter())
@@ -237,12 +229,7 @@ impl MergeSig for ArrowSig {
         };
         // Arrow contravariant on args (union to widen accepted input),
         // covariant on return (intersect to narrow accepted output).
-        let args = a
-            .args
-            .iter()
-            .zip(b.args.iter())
-            .map(|(x, y)| x.union(y))
-            .collect();
+        let args = a.args.iter().zip(b.args.iter()).map(|(x, y)| x.union(y)).collect();
         let ret = a.ret.intersect(&b.ret);
         Some(ArrowSig {
             args,

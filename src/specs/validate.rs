@@ -8,9 +8,10 @@ pub(crate) fn declared_specs_cover_inferred_spec<T: ClosureTypes<Ty = Ty> + ?Siz
     inferred_inputs: &[KeySlot],
     inferred_result: &Ty,
 ) -> bool {
-    declared_specs.arrows.iter().any(|declared| {
-        declared_arrow_covers_inferred_spec(t, declared, inferred_inputs, inferred_result)
-    })
+    declared_specs
+        .arrows
+        .iter()
+        .any(|declared| declared_arrow_covers_inferred_spec(t, declared, inferred_inputs, inferred_result))
 }
 
 fn declared_arrow_covers_inferred_spec<T: ClosureTypes<Ty = Ty> + ?Sized>(

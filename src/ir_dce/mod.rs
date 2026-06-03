@@ -15,7 +15,10 @@
 //! by surviving arithmetic `BinOp` prims. Until those prims are fully desugared
 //! to ordinary Kernel calls, type inference still reads those function specs.
 
-use crate::fz_ir::{BinOp, BlockId, FnId, FnIr, Module, PhysicalCapability, Prim, Stmt, Term, Var};
+use crate::fz_ir::{
+    BinOp, BitSizeIr, BlockId, ExternId, FnId, FnIr, Module, PhysicalCapability, Prim, Stmt, Term, Var,
+};
+use crate::telemetry::Telemetry;
 use std::collections::HashMap;
 use std::collections::HashSet;
 
@@ -27,8 +30,6 @@ use std::collections::HashSet;
 /// FnIds are NOT renumbered — the codegen schemas vec is indexed by FnId.0
 /// and renumbering would require updating every call/cont/closure reference.
 pub fn dce_module_level(m: &mut Module) {
-    use crate::fz_ir::ExternId;
-
     let Some(entry) = m.fn_by_name("main") else {
         return;
     };
@@ -62,10 +63,7 @@ pub fn dce_module_level(m: &mut Module) {
                 Term::CallClosure { continuation, .. } => {
                     queue.push(continuation.fn_id);
                 }
-                Term::Receive {
-                    continuation,
-                    ident: _,
-                } => {
+                Term::Receive { continuation, ident: _ } => {
                     queue.push(continuation.fn_id);
                 }
                 // fz-yxs — module-level DCE: enqueue every body/guard/after
@@ -103,8 +101,7 @@ pub fn dce_module_level(m: &mut Module) {
 
     m.fns.retain(|f| reachable.contains(&f.id));
     m.boundary_fns.retain(|fid| reachable.contains(fid));
-    m.protocol_call_targets
-        .retain(|fid, _target| reachable.contains(fid));
+    m.protocol_call_targets.retain(|fid, _target| reachable.contains(fid));
     m.external_call_edges
         .retain(|edge| reachable.contains(&edge.callsite.caller));
     m.fn_idx.clear();
@@ -122,14 +119,7 @@ pub fn dce_module_level(m: &mut Module) {
 fn kernel_fn_for_binop(m: &Module, op: BinOp) -> Option<FnId> {
     match op {
         BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod => {}
-        BinOp::Eq
-        | BinOp::Neq
-        | BinOp::Lt
-        | BinOp::Le
-        | BinOp::Gt
-        | BinOp::Ge
-        | BinOp::And
-        | BinOp::Or => return None,
+        BinOp::Eq | BinOp::Neq | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge | BinOp::And | BinOp::Or => return None,
     }
     let name = format!("Kernel.{op}");
     m.fns
@@ -138,7 +128,7 @@ fn kernel_fn_for_binop(m: &Module, op: BinOp) -> Option<FnId> {
         .map(|f| f.id)
 }
 
-pub fn dce_module_with_telemetry(m: &mut Module, tel: &dyn crate::telemetry::Telemetry) {
+pub fn dce_module_with_telemetry(m: &mut Module, tel: &dyn Telemetry) {
     let module_path = m.module_path.clone();
     for f in &mut m.fns {
         dce_fn_with_telemetry(&module_path, f, tel);
@@ -146,11 +136,7 @@ pub fn dce_module_with_telemetry(m: &mut Module, tel: &dyn crate::telemetry::Tel
     }
 }
 
-pub fn dce_fn_with_telemetry(
-    module_path: &str,
-    f: &mut FnIr,
-    tel: &dyn crate::telemetry::Telemetry,
-) {
+pub fn dce_fn_with_telemetry(module_path: &str, f: &mut FnIr, tel: &dyn Telemetry) {
     loop {
         let used = collect_used(f);
         let mut changed = false;
@@ -235,10 +221,7 @@ pub fn classify_var_uses(f: &FnIr) -> (HashSet<Var>, HashSet<Var>) {
     }
     let mut all_used = other_uses.clone();
     all_used.extend(if_conds.iter().cloned());
-    let if_only_conds: HashSet<Var> = if_conds
-        .into_iter()
-        .filter(|v| !other_uses.contains(v))
-        .collect();
+    let if_only_conds: HashSet<Var> = if_conds.into_iter().filter(|v| !other_uses.contains(v)).collect();
     (if_only_conds, all_used)
 }
 
@@ -258,15 +241,10 @@ pub fn collect_used(f: &FnIr) -> HashSet<Var> {
 
 fn prune_dead_owned_cons_capabilities(f: &mut FnIr) {
     let semantic_used = classify_var_uses(f).1;
-    f.physical_capabilities
-        .retain(|fact| match fact.capability {
-            PhysicalCapability::OwnedConsReuse { head } => semantic_used.contains(&head),
-        });
-    let live_sources: HashSet<Var> = f
-        .physical_capabilities
-        .iter()
-        .map(|fact| fact.source)
-        .collect();
+    f.physical_capabilities.retain(|fact| match fact.capability {
+        PhysicalCapability::OwnedConsReuse { head } => semantic_used.contains(&head),
+    });
+    let live_sources: HashSet<Var> = f.physical_capabilities.iter().map(|fact| fact.source).collect();
     let entry_params: HashSet<Var> = f.block(f.entry).params.iter().copied().collect();
     f.physical_entry_params
         .retain(|param| entry_params.contains(param) && live_sources.contains(param));
@@ -353,9 +331,7 @@ fn collect_prim_vars(p: &Prim, used: &mut HashSet<Var>) {
                 used.insert(*base);
             }
         }
-        Prim::DestMapPut {
-            map, key, value, ..
-        } => {
+        Prim::DestMapPut { map, key, value, .. } => {
             used.insert(*map);
             used.insert(*key);
             used.insert(*value);
@@ -371,7 +347,6 @@ fn collect_prim_vars(p: &Prim, used: &mut HashSet<Var>) {
             used.insert(*v);
         }
         Prim::MakeBitstring(fields) => {
-            use crate::fz_ir::BitSizeIr;
             for f in fields {
                 used.insert(f.value);
                 if let Some(BitSizeIr::Var(sv)) = &f.size {
@@ -388,7 +363,7 @@ fn collect_prim_vars(p: &Prim, used: &mut HashSet<Var>) {
         }
         Prim::BitReadField { reader, size, .. } => {
             used.insert(*reader);
-            if let Some(crate::fz_ir::BitSizeIr::Var(sv)) = size {
+            if let Some(BitSizeIr::Var(sv)) = size {
                 used.insert(*sv);
             }
         }
@@ -456,10 +431,7 @@ fn collect_term_vars(t: &Term, used: &mut HashSet<Var>) {
         Term::Return(a) | Term::Halt(a) => {
             used.insert(*a);
         }
-        Term::Receive {
-            continuation,
-            ident: _,
-        } => {
+        Term::Receive { continuation, ident: _ } => {
             for v in &continuation.captured {
                 used.insert(*v);
             }
@@ -507,7 +479,7 @@ fn is_impure(p: &Prim) -> bool {
 
 /// Merge a block that ends with a parameterless Goto into its single-predecessor
 /// target. Repeat until no more fusions are possible.
-fn fuse_fn(module_path: &str, f: &mut FnIr, tel: &dyn crate::telemetry::Telemetry) {
+fn fuse_fn(module_path: &str, f: &mut FnIr, tel: &dyn Telemetry) {
     loop {
         let mut in_degree: HashMap<BlockId, usize> = f.blocks.iter().map(|b| (b.id, 0)).collect();
         for block in &f.blocks {
@@ -560,10 +532,15 @@ fn fuse_fn(module_path: &str, f: &mut FnIr, tel: &dyn crate::telemetry::Telemetr
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fz_ir::{BinOp, Const, Cont, FnBuilder, FnId, ModuleBuilder, Prim, Term};
-    use crate::telemetry::Value;
+    use crate::fz_ir::{
+        BinOp, CallsiteId, CallsiteIdent, Const, Cont, EmitSlot, ExternArg, ExternDecl, ExternTy, ExternalCallEdge,
+        FnBuilder, FnId, ModuleBuilder, Prim, ProtocolCallTarget, Term,
+    };
+    use crate::modules::identity::{ExportKey, ModuleName};
+    use crate::telemetry::{Capture, ConfiguredTelemetry, NullTelemetry, Value};
+    use crate::types::{ConcreteTypes, Types};
 
-    fn build_two_fn_module(main_calls_leaf: bool) -> crate::fz_ir::Module {
+    fn build_two_fn_module(main_calls_leaf: bool) -> Module {
         let leaf_id = FnId(1);
         let main_id = FnId(0);
 
@@ -579,7 +556,7 @@ mod tests {
             bm.set_terminator(
                 entry,
                 Term::Call {
-                    ident: crate::fz_ir::CallsiteIdent::synthetic(),
+                    ident: CallsiteIdent::synthetic(),
                     callee: leaf_id,
                     args: vec![nil_v],
                     continuation: cont,
@@ -667,22 +644,16 @@ mod tests {
         m.boundary_fns.insert(dead);
         m.protocol_call_targets.insert(
             dead,
-            crate::fz_ir::ProtocolCallTarget {
-                protocol: crate::modules::identity::ModuleName::from_segments(vec![
-                    "Enumerable".to_string(),
-                ]),
+            ProtocolCallTarget {
+                protocol: ModuleName::from_segments(vec!["Enumerable".to_string()]),
                 callback: "reduce".to_string(),
                 arity: 3,
             },
         );
-        m.external_call_edges.push(crate::fz_ir::ExternalCallEdge {
-            callsite: crate::fz_ir::CallsiteId::new(
-                dead,
-                &crate::fz_ir::CallsiteIdent::synthetic(),
-                crate::fz_ir::EmitSlot::Direct,
-            ),
-            target: crate::modules::identity::ExportKey::new(
-                crate::modules::identity::ModuleName::from_segments(vec!["Dead".to_string()]),
+        m.external_call_edges.push(ExternalCallEdge {
+            callsite: CallsiteId::new(dead, &CallsiteIdent::synthetic(), EmitSlot::Direct),
+            target: ExportKey::new(
+                ModuleName::from_segments(vec!["Dead".to_string()]),
                 "call".to_string(),
                 0,
             ),
@@ -693,16 +664,11 @@ mod tests {
         assert!(!m.fn_idx.contains_key(&dead));
         assert!(!m.boundary_fns.contains(&dead));
         assert!(!m.protocol_call_targets.contains_key(&dead));
-        assert!(
-            !m.external_call_edges
-                .iter()
-                .any(|edge| edge.callsite.caller == dead)
-        );
+        assert!(!m.external_call_edges.iter().any(|edge| edge.callsite.caller == dead));
     }
 
     #[test]
     fn dce_module_level_sweeps_unreachable_externs() {
-        use crate::fz_ir::{ExternArg, ExternDecl, ExternId, ExternTy};
         // Build a module with two externs: used_ext (called from main) and dead_ext (never called).
         let used_id = ExternId(0);
         let dead_id = ExternId(1);
@@ -713,7 +679,7 @@ mod tests {
         let _ret = b.let_(
             entry,
             Prim::Extern(
-                crate::fz_ir::CallsiteIdent::synthetic(),
+                CallsiteIdent::synthetic(),
                 used_id,
                 vec![ExternArg::fixed(nil, ExternTy::Any)],
             ),
@@ -722,8 +688,8 @@ mod tests {
         let mut mb = ModuleBuilder::new();
         mb.add_fn(b.build());
         let mut m = mb.build();
-        let mut ct = crate::types::ConcreteTypes;
-        let dead_descr = crate::types::Types::any(&mut ct);
+        let mut ct = ConcreteTypes;
+        let dead_descr = Types::any(&mut ct);
         m.externs.push(ExternDecl {
             id: used_id,
             fz_name: "used_ext".into(),
@@ -785,7 +751,7 @@ mod tests {
         mb.add_fn(f);
         let mut m = mb.build();
 
-        dce_module_with_telemetry(&mut m, &crate::telemetry::NullTelemetry);
+        dce_module_with_telemetry(&mut m, &NullTelemetry);
 
         let block = m.fns[0].block(m.fns[0].entry);
         assert_eq!(block.stmts.len(), 1, "dead const should be removed");
@@ -801,7 +767,6 @@ mod tests {
     /// DCE must keep it because Extern is impure.
     #[test]
     fn impure_extern_kept_even_if_unused() {
-        use crate::fz_ir::{ExternArg, ExternId, ExternTy};
         let mut b = FnBuilder::new(FnId(0), "main");
         let entry = b.block(vec![]);
         let nil_v = b.let_(entry, Prim::Const(Const::Nil)); // arg for extern call
@@ -809,7 +774,7 @@ mod tests {
         let _extern_result = b.let_(
             entry,
             Prim::Extern(
-                crate::fz_ir::CallsiteIdent::synthetic(),
+                CallsiteIdent::synthetic(),
                 ExternId(0),
                 vec![ExternArg::fixed(nil_v, ExternTy::Any)],
             ),
@@ -821,7 +786,7 @@ mod tests {
         mb.add_fn(f);
         let mut m = mb.build();
 
-        dce_module_with_telemetry(&mut m, &crate::telemetry::NullTelemetry);
+        dce_module_with_telemetry(&mut m, &NullTelemetry);
 
         let block = m.fns[0].block(m.fns[0].entry);
         // The Extern stmt must remain (impure). nil_v is used by both Extern and Return.
@@ -859,7 +824,7 @@ mod tests {
         mb.add_fn(f);
         let mut m = mb.build();
 
-        dce_module_with_telemetry(&mut m, &crate::telemetry::NullTelemetry);
+        dce_module_with_telemetry(&mut m, &NullTelemetry);
 
         let block = m.fns[0].block(m.fns[0].entry);
         // Only nil_v should remain.
@@ -885,7 +850,7 @@ mod tests {
         b.set_terminator(
             entry,
             Term::Call {
-                ident: crate::fz_ir::CallsiteIdent::synthetic(),
+                ident: CallsiteIdent::synthetic(),
                 callee: cont_fn,
                 args: vec![live],
                 continuation: Cont {
@@ -900,7 +865,7 @@ mod tests {
         mb.add_fn(f);
         let mut m = mb.build();
 
-        dce_module_with_telemetry(&mut m, &crate::telemetry::NullTelemetry);
+        dce_module_with_telemetry(&mut m, &NullTelemetry);
 
         let block = m.fns[0].block(m.fns[0].entry);
         assert_eq!(
@@ -933,7 +898,7 @@ mod tests {
         let mut m = mb.build();
 
         assert_eq!(m.fns[0].blocks.len(), 2, "should start with 2 blocks");
-        dce_module_with_telemetry(&mut m, &crate::telemetry::NullTelemetry);
+        dce_module_with_telemetry(&mut m, &NullTelemetry);
         assert_eq!(m.fns[0].blocks.len(), 1, "orphan block should be removed");
         assert_eq!(m.fns[0].blocks[0].id, entry);
     }
@@ -958,7 +923,7 @@ mod tests {
         assert_eq!(f.physical_entry_params, vec![source]);
         assert_eq!(f.physical_capabilities.len(), 1);
 
-        dce_fn_with_telemetry("", &mut f, &crate::telemetry::NullTelemetry);
+        dce_fn_with_telemetry("", &mut f, &NullTelemetry);
 
         assert_eq!(f.blocks.len(), 1, "orphan block should be removed");
         assert!(f.physical_entry_params.is_empty());
@@ -967,8 +932,8 @@ mod tests {
 
     #[test]
     fn telemetry_reports_pruned_block_identity() {
-        let tel = crate::telemetry::ConfiguredTelemetry::new();
-        let cap = crate::telemetry::Capture::new();
+        let tel = ConfiguredTelemetry::new();
+        let cap = Capture::new();
         tel.attach(&[], cap.handler());
 
         let mut b = FnBuilder::new(FnId(0), "main");
@@ -1017,7 +982,7 @@ mod tests {
         let mut mb = ModuleBuilder::new();
         mb.add_fn(b.build());
         let mut m = mb.build();
-        dce_module_with_telemetry(&mut m, &crate::telemetry::NullTelemetry);
+        dce_module_with_telemetry(&mut m, &NullTelemetry);
         assert_eq!(m.fns[0].blocks.len(), 1);
         assert_eq!(m.fns[0].blocks[0].id, entry);
     }
@@ -1038,7 +1003,7 @@ mod tests {
         let mut mb = ModuleBuilder::new();
         mb.add_fn(b.build());
         let mut m = mb.build();
-        dce_module_with_telemetry(&mut m, &crate::telemetry::NullTelemetry);
+        dce_module_with_telemetry(&mut m, &NullTelemetry);
         assert_eq!(m.fns[0].blocks.len(), 3, "both If branches must be kept");
     }
 
@@ -1060,13 +1025,9 @@ mod tests {
         let mut m = mb.build();
 
         assert_eq!(m.fns[0].blocks.len(), 3, "should start with 3 blocks");
-        dce_module_with_telemetry(&mut m, &crate::telemetry::NullTelemetry);
+        dce_module_with_telemetry(&mut m, &NullTelemetry);
         // else_b removed by dead block elimination; entry fused with then_b.
-        assert_eq!(
-            m.fns[0].blocks.len(),
-            1,
-            "else_b removed and entry+then_b fused"
-        );
+        assert_eq!(m.fns[0].blocks.len(), 1, "else_b removed and entry+then_b fused");
         assert_eq!(m.fns[0].blocks[0].id, entry);
         assert!(matches!(m.fns[0].blocks[0].terminator, Term::Return(_)));
     }
@@ -1082,8 +1043,8 @@ mod tests {
     ///   c ∈ all_used but c ∉ if_only_conds (dual-use)
     #[test]
     fn classify_var_uses_separates_pure_branch_from_dual_use() {
-        let mut ct = crate::types::ConcreteTypes;
-        let int_ty = crate::types::Types::int(&mut ct);
+        let mut ct = ConcreteTypes;
+        let int_ty = Types::int(&mut ct);
         // --- pure-branch case ---
         let mut bm = FnBuilder::new(FnId(0), "pure");
         let x = bm.fresh_var();
@@ -1099,18 +1060,12 @@ mod tests {
         let pure_fn = bm.build();
 
         let (if_only, all_used) = classify_var_uses(&pure_fn);
-        assert!(
-            if_only.contains(&c),
-            "pure-branch condition should be in if_only_conds"
-        );
+        assert!(if_only.contains(&c), "pure-branch condition should be in if_only_conds");
         assert!(
             all_used.contains(&c),
             "pure-branch condition should still be in all_used"
         );
-        assert!(
-            all_used.contains(&x),
-            "TypeTest operand x should be in all_used"
-        );
+        assert!(all_used.contains(&x), "TypeTest operand x should be in all_used");
 
         // --- dual-use case ---
         let mut bm2 = FnBuilder::new(FnId(1), "dual");
@@ -1147,7 +1102,7 @@ mod tests {
         b.set_terminator(entry, Term::Return(result));
         let mut f = b.build();
 
-        dce_fn_with_telemetry("", &mut f, &crate::telemetry::NullTelemetry);
+        dce_fn_with_telemetry("", &mut f, &NullTelemetry);
 
         assert_eq!(f.physical_entry_params.len(), 1);
         assert_eq!(f.physical_capabilities.len(), 1);
@@ -1168,7 +1123,7 @@ mod tests {
         b.set_terminator(entry, Term::Return(nil));
         let mut f = b.build();
 
-        dce_fn_with_telemetry("", &mut f, &crate::telemetry::NullTelemetry);
+        dce_fn_with_telemetry("", &mut f, &NullTelemetry);
 
         assert!(f.physical_entry_params.is_empty());
         assert!(f.physical_capabilities.is_empty());

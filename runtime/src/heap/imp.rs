@@ -3,8 +3,8 @@
 use super::block_pool::{SIZE_TABLE, pick_size_class, pool_alloc, pool_free};
 use super::fragment::{CopiedObject, FRAGMENT_THRESHOLD, Fragment, classify_fragment};
 use super::gc::{
-    cheney_forward_strict_bits, cheney_trace_closure, cheney_trace_list, cheney_trace_map,
-    cheney_trace_resource, cheney_trace_struct, forward_any_value_ref_root,
+    cheney_forward_strict_bits, cheney_trace_closure, cheney_trace_list, cheney_trace_map, cheney_trace_resource,
+    cheney_trace_struct, forward_any_value_ref_root,
 };
 use super::key_cmp::{map_key_cmp_any, map_key_cmp_refs, same_any_value, same_value_ref};
 use super::ref_io::{
@@ -14,12 +14,24 @@ use super::ref_io::{
 use super::schema::{Schema, SchemaRegistry};
 use super::stats::GcStats;
 use super::{Heap, HeapAllocKind, HeapAllocStats, SHARED_BIN_THRESHOLD_BYTES};
-use crate::any_value::{AnyValue, ListCons, ValueKind};
-use crate::any_value::{AnyValueRef, AnyValueRefError};
+use crate::any_value::{
+    AnyValue, AnyValueRef, AnyValueRefError, CLOSURE_FLAGS_CAPTURED_MASK, ListCons, TAG_BITSTRING, TAG_CLOSURE,
+    TAG_LIST, TAG_MAP, TAG_MASK, TAG_PROCBIN, TAG_RESOURCE, TAG_STRUCT, ValueKind, bitstring_size_for_bit_len,
+    closure_addr_from_tagged, closure_capture_kind_slot, closure_capture_raw_slot, closure_capture_set,
+    closure_capture_value, closure_flags_pack, closure_size_for_count, heap_kind_from_tagged, heap_object_word,
+    list_addr_from_tagged, map_addr_from_tagged, map_count, map_entry, map_entry_raw_kinds, map_key_kind, map_keys_ptr,
+    map_pack_tag, map_size_for_count, map_tag_bytes_len, map_tag_ptr, map_values_ptr, struct_field_kind_slot,
+    struct_field_raw_slot, struct_schema_id, struct_size_for_payload,
+};
 use crate::procbin::{SharedBinHandle, alloc_procbin, mso_drop_all, mso_sweep};
+use crate::process::{Process, YIELD_REASON_ALLOCATION_PRESSURE};
 use std::alloc::{Layout, alloc_zeroed, dealloc};
 use std::cell::RefCell;
+use std::collections::VecDeque;
+use std::mem::size_of;
+use std::ptr::{copy_nonoverlapping, null_mut, read, write, write_bytes};
 use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 // fz-vdt.16 — pure reads that need no heap state. Reading a list head/tail or a
 // closure capture is a dereference of the self-describing value pointer, so these
@@ -44,14 +56,11 @@ pub fn list_tail_ref(list: AnyValueRef) -> Result<AnyValueRef, AnyValueRefError>
     }
 }
 
-pub fn closure_capture_ref(
-    closure: AnyValueRef,
-    idx: usize,
-) -> Result<AnyValueRef, AnyValueRefError> {
+pub fn closure_capture_ref(closure: AnyValueRef, idx: usize) -> Result<AnyValueRef, AnyValueRefError> {
     let addr = closure.closure_addr()?;
-    let raw_slot = unsafe { crate::any_value::closure_capture_raw_slot(addr as *const u8, idx) };
-    let kind_slot = unsafe { crate::any_value::closure_capture_kind_slot(addr as *const u8, idx) };
-    let kind = unsafe { std::ptr::read(kind_slot) };
+    let raw_slot = unsafe { closure_capture_raw_slot(addr as *const u8, idx) };
+    let kind_slot = unsafe { closure_capture_kind_slot(addr as *const u8, idx) };
+    let kind = unsafe { read(kind_slot) };
     any_value_ref_from_storage(
         raw_slot as *const u64,
         ValueKind::new(kind).expect("closure capture kind"),
@@ -79,7 +88,7 @@ impl Heap {
             last_gc_stats: GcStats::default(),
             abandoned_blocks: Vec::new(),
             schemas,
-            pressure: std::sync::atomic::AtomicBool::new(false),
+            pressure: AtomicBool::new(false),
             // Default: half the block. Tunable per-Process for tests that
             // want to force the park-time GC hook to fire.
             gc_threshold_bytes: block_size / 2,
@@ -87,31 +96,29 @@ impl Heap {
             alloc_count: 0,
             alloc_stats: HeapAllocStats::default(),
             mso_head: 0,
-            pending_dtors: std::collections::VecDeque::new(),
+            pending_dtors: VecDeque::new(),
             fragments: Vec::new(),
-            owner: std::ptr::null_mut(),
+            owner: null_mut(),
         }
     }
 
     /// Install the owning process for allocation-pressure budget expiry.
     /// Called per quantum at scheduler entry (alongside `Process.ctx`).
-    pub fn set_owner(&mut self, owner: *mut crate::process::Process) {
+    pub fn set_owner(&mut self, owner: *mut Process) {
         self.owner = owner;
     }
 
     pub fn should_gc(&self) -> bool {
-        self.pressure.load(std::sync::atomic::Ordering::Relaxed)
+        self.pressure.load(Ordering::Relaxed)
     }
 
     pub fn clear_should_gc_flag(&self) {
-        self.pressure
-            .store(false, std::sync::atomic::Ordering::Relaxed);
+        self.pressure.store(false, Ordering::Relaxed);
     }
 
     fn note_alloc_pressure(&self) {
         if self.bytes_used() >= self.gc_threshold_bytes {
-            self.pressure
-                .store(true, std::sync::atomic::Ordering::Relaxed);
+            self.pressure.store(true, Ordering::Relaxed);
         }
     }
 
@@ -131,10 +138,7 @@ impl Heap {
 
     pub fn alloc_kind(&mut self, kind: HeapAllocKind, size: usize) -> *mut u8 {
         let size = (size + 15) & !15;
-        assert!(
-            size >= 16,
-            "alloc must reserve at least one 16-byte object slot"
-        );
+        assert!(size >= 16, "alloc must reserve at least one 16-byte object slot");
         self.alloc_stats.record(kind, size as u64);
         // Oversize allocations route through the fragment path.
         if size > FRAGMENT_THRESHOLD {
@@ -157,14 +161,10 @@ impl Heap {
             // `size`. Allocate via the pool; abandon the current block
             // for Cheney/Drop to return.
             let want_for_alloc = pick_size_class(size);
-            let bumped = self
-                .size_class
-                .saturating_add(1)
-                .min((SIZE_TABLE.len() - 1) as u8);
+            let bumped = self.size_class.saturating_add(1).min((SIZE_TABLE.len() - 1) as u8);
             let new_class = want_for_alloc.max(bumped);
             let new_size = SIZE_TABLE[new_class as usize];
-            self.abandoned_blocks
-                .push((self.block_start, self.size_class));
+            self.abandoned_blocks.push((self.block_start, self.size_class));
             let new_block = pool_alloc(new_class);
             self.block_start = new_block;
             self.bump_top = new_block;
@@ -185,7 +185,7 @@ impl Heap {
             // before the watermark cross are banked into `reductions_executed`
             // exactly once; `finish_yield_report` depends on this invariant.
             let owner = unsafe { &mut *self.owner };
-            owner.expire_budget(crate::process::YIELD_REASON_ALLOCATION_PRESSURE);
+            owner.expire_budget(YIELD_REASON_ALLOCATION_PRESSURE);
         }
         p
     }
@@ -204,18 +204,14 @@ impl Heap {
     }
 
     pub fn alloc_struct(&mut self, schema_id: u32) -> *mut u8 {
-        let payload_size = self
-            .schemas
-            .borrow()
-            .get(schema_id)
-            .allocation_payload_size();
-        let total = crate::any_value::struct_size_for_payload(payload_size);
+        let payload_size = self.schemas.borrow().get(schema_id).allocation_payload_size();
+        let total = struct_size_for_payload(payload_size);
         let p = self.alloc_kind(HeapAllocKind::Struct, total);
         unsafe {
-            std::ptr::write(p as *mut u32, schema_id);
-            std::ptr::write(p.add(4) as *mut u32, 0);
+            write(p as *mut u32, schema_id);
+            write(p.add(4) as *mut u32, 0);
             // Zero payload.
-            std::ptr::write_bytes(p.add(8), 0, total - 8);
+            write_bytes(p.add(8), 0, total - 8);
         }
         p
     }
@@ -226,7 +222,7 @@ impl Heap {
 
     pub fn range_fields(&self, range: AnyValueRef) -> Result<(i64, i64, i64), AnyValueRefError> {
         let p = range.struct_addr()?;
-        let schema_id = unsafe { crate::any_value::struct_schema_id(p.cast_const()) };
+        let schema_id = unsafe { struct_schema_id(p.cast_const()) };
         let reg = self.schemas.borrow();
         assert_eq!(
             reg.get(schema_id).name.as_str(),
@@ -234,22 +230,16 @@ impl Heap {
             "expected Range schema"
         );
         drop(reg);
-        let first = self
-            .read_struct_named_field_ref(range, "first")?
-            .load_int()?;
-        let last = self
-            .read_struct_named_field_ref(range, "last")?
-            .load_int()?;
-        let step = self
-            .read_struct_named_field_ref(range, "step")?
-            .load_int()?;
+        let first = self.read_struct_named_field_ref(range, "first")?.load_int()?;
+        let last = self.read_struct_named_field_ref(range, "last")?.load_int()?;
+        let step = self.read_struct_named_field_ref(range, "step")?.load_int()?;
         Ok((first, last, step))
     }
 
     fn alloc_list_cons_value(&mut self, head: AnyValueRef, tail_bits: u64) -> u64 {
         let p = self.alloc_kind(HeapAllocKind::ListCons, 16);
         unsafe {
-            std::ptr::write(
+            write(
                 p as *mut ListCons,
                 ListCons::new(
                     head.storage_raw().expect("list head storage raw"),
@@ -258,37 +248,25 @@ impl Heap {
                 ),
             );
         }
-        crate::any_value::heap_object_word(p, crate::any_value::ValueKind::LIST)
+        heap_object_word(p, ValueKind::LIST)
     }
 
     pub fn alloc_list_cons_slot(&mut self, head: AnyValue, tail_bits: u64) -> u64 {
         self.alloc_list_cons_raw_kind(head.raw(), head.kind(), tail_bits)
     }
 
-    fn alloc_list_cons_raw_kind(
-        &mut self,
-        head_raw: u64,
-        head_kind: ValueKind,
-        tail_bits: u64,
-    ) -> u64 {
+    fn alloc_list_cons_raw_kind(&mut self, head_raw: u64, head_kind: ValueKind, tail_bits: u64) -> u64 {
         let p = self.alloc_kind(HeapAllocKind::ListCons, 16);
         unsafe {
-            std::ptr::write(
-                p as *mut ListCons,
-                ListCons::new(head_raw, head_kind, tail_bits),
-            );
+            write(p as *mut ListCons, ListCons::new(head_raw, head_kind, tail_bits));
         }
-        crate::any_value::heap_object_word(p, crate::any_value::ValueKind::LIST)
+        heap_object_word(p, ValueKind::LIST)
     }
 
-    pub fn alloc_list_cons_any(
-        &mut self,
-        head: AnyValue,
-        tail: AnyValueRef,
-    ) -> Result<AnyValueRef, AnyValueRefError> {
+    pub fn alloc_list_cons_any(&mut self, head: AnyValue, tail: AnyValueRef) -> Result<AnyValueRef, AnyValueRefError> {
         let tail_bits = list_tail_bits_from_ref(tail)?;
         let list_bits = self.alloc_list_cons_slot(head, tail_bits);
-        let list_addr = crate::any_value::list_addr_from_tagged(list_bits).expect("new list addr");
+        let list_addr = list_addr_from_tagged(list_bits).expect("new list addr");
         AnyValueRef::from_heap_object(ValueKind::LIST, list_addr)
     }
 
@@ -298,30 +276,25 @@ impl Heap {
             AnyValue::EmptyList => AnyValueRef::empty_list(),
             AnyValue::HeapRef(value) => value,
             AnyValue::Int(value) => {
-                let slot = self.alloc_kind(HeapAllocKind::ScalarBox, std::mem::size_of::<u64>())
-                    as *mut u64;
+                let slot = self.alloc_kind(HeapAllocKind::ScalarBox, size_of::<u64>()) as *mut u64;
                 unsafe {
-                    std::ptr::write(slot, value as u64);
+                    write(slot, value as u64);
                 }
                 AnyValueRef::from_scalar_slot(ValueKind::INT, slot as *const u64).expect("int ref")
             }
             AnyValue::Float(bits) => {
-                let slot = self.alloc_kind(HeapAllocKind::ScalarBox, std::mem::size_of::<u64>())
-                    as *mut u64;
+                let slot = self.alloc_kind(HeapAllocKind::ScalarBox, size_of::<u64>()) as *mut u64;
                 unsafe {
-                    std::ptr::write(slot, bits);
+                    write(slot, bits);
                 }
-                AnyValueRef::from_scalar_slot(ValueKind::FLOAT, slot as *const u64)
-                    .expect("float ref")
+                AnyValueRef::from_scalar_slot(ValueKind::FLOAT, slot as *const u64).expect("float ref")
             }
             AnyValue::Atom(atom_id) => {
-                let slot = self.alloc_kind(HeapAllocKind::ScalarBox, std::mem::size_of::<u64>())
-                    as *mut u64;
+                let slot = self.alloc_kind(HeapAllocKind::ScalarBox, size_of::<u64>()) as *mut u64;
                 unsafe {
-                    std::ptr::write(slot, atom_id as u64);
+                    write(slot, atom_id as u64);
                 }
-                AnyValueRef::from_scalar_slot(ValueKind::ATOM, slot as *const u64)
-                    .expect("atom ref")
+                AnyValueRef::from_scalar_slot(ValueKind::ATOM, slot as *const u64).expect("atom ref")
             }
         }
     }
@@ -334,46 +307,34 @@ impl Heap {
         reject_scalar_ref_write("alloc_list_cons_ref head", head);
         let tail_bits = list_tail_bits_from_ref(tail)?;
         let list_bits = self.alloc_list_cons_value(head, tail_bits);
-        let list_addr = crate::any_value::list_addr_from_tagged(list_bits).expect("new list addr");
+        let list_addr = list_addr_from_tagged(list_bits).expect("new list addr");
         AnyValueRef::from_heap_object(ValueKind::LIST, list_addr)
     }
 
-    pub fn alloc_list_cons_int(
-        &mut self,
-        head: i64,
-        tail: AnyValueRef,
-    ) -> Result<AnyValueRef, AnyValueRefError> {
+    pub fn alloc_list_cons_int(&mut self, head: i64, tail: AnyValueRef) -> Result<AnyValueRef, AnyValueRefError> {
         let tail_bits = list_tail_bits_from_ref(tail)?;
         let list_bits = self.alloc_list_cons_slot(AnyValue::int(head), tail_bits);
-        let list_addr = crate::any_value::list_addr_from_tagged(list_bits).expect("new list addr");
+        let list_addr = list_addr_from_tagged(list_bits).expect("new list addr");
         AnyValueRef::from_heap_object(ValueKind::LIST, list_addr)
     }
 
-    pub fn alloc_list_cons_float(
-        &mut self,
-        head: f64,
-        tail: AnyValueRef,
-    ) -> Result<AnyValueRef, AnyValueRefError> {
+    pub fn alloc_list_cons_float(&mut self, head: f64, tail: AnyValueRef) -> Result<AnyValueRef, AnyValueRefError> {
         let tail_bits = list_tail_bits_from_ref(tail)?;
         let list_bits = self.alloc_list_cons_slot(AnyValue::float(head), tail_bits);
-        let list_addr = crate::any_value::list_addr_from_tagged(list_bits).expect("new list addr");
+        let list_addr = list_addr_from_tagged(list_bits).expect("new list addr");
         AnyValueRef::from_heap_object(ValueKind::LIST, list_addr)
     }
 
-    pub fn alloc_list_cons_atom(
-        &mut self,
-        atom_id: u32,
-        tail: AnyValueRef,
-    ) -> Result<AnyValueRef, AnyValueRefError> {
+    pub fn alloc_list_cons_atom(&mut self, atom_id: u32, tail: AnyValueRef) -> Result<AnyValueRef, AnyValueRefError> {
         let tail_bits = list_tail_bits_from_ref(tail)?;
         let list_bits = self.alloc_list_cons_slot(AnyValue::atom(atom_id), tail_bits);
-        let list_addr = crate::any_value::list_addr_from_tagged(list_bits).expect("new list addr");
+        let list_addr = list_addr_from_tagged(list_bits).expect("new list addr");
         AnyValueRef::from_heap_object(ValueKind::LIST, list_addr)
     }
 
     pub fn current_heap_tagged_addr(&self, bits: u64) -> Option<(ValueKind, *mut u8)> {
-        let kind = crate::any_value::heap_kind_from_tagged(bits)?;
-        let p = (bits & !crate::any_value::TAG_MASK) as *mut u8;
+        let kind = heap_kind_from_tagged(bits)?;
+        let p = (bits & !TAG_MASK) as *mut u8;
         (!p.is_null() && self.contains_heap_addr(p)).then_some((kind, p))
     }
 
@@ -394,47 +355,41 @@ impl Heap {
     /// Map layout: count, padded tag bytes, raw keys, raw values. Caller
     /// supplies canonically-sorted typed entries; this performs the heap copy.
     pub fn alloc_map_refs_bits(&mut self, entries: &[(AnyValueRef, AnyValueRef)]) -> u64 {
-        let total = crate::any_value::map_size_for_count(entries.len());
+        let total = map_size_for_count(entries.len());
         let p = self.alloc_kind(HeapAllocKind::Map, total);
         unsafe {
-            std::ptr::write(p as *mut u64, entries.len() as u64);
-            let tag_p = crate::any_value::map_tag_ptr(p);
-            std::ptr::write_bytes(tag_p, 0, crate::any_value::map_tag_bytes_len(entries.len()));
-            let keys = crate::any_value::map_keys_ptr(p, entries.len());
-            let values = crate::any_value::map_values_ptr(p, entries.len());
+            write(p as *mut u64, entries.len() as u64);
+            let tag_p = map_tag_ptr(p);
+            write_bytes(tag_p, 0, map_tag_bytes_len(entries.len()));
+            let keys = map_keys_ptr(p, entries.len());
+            let values = map_values_ptr(p, entries.len());
             for (i, (key, value)) in entries.iter().copied().enumerate() {
                 let key_kind = key.tag();
                 let value_kind = value.tag();
-                std::ptr::write(
-                    tag_p.add(i),
-                    crate::any_value::map_pack_tag(key_kind, value_kind),
-                );
+                write(tag_p.add(i), map_pack_tag(key_kind, value_kind));
                 write_ref_to_storage(keys.add(i), None, key);
                 write_ref_to_storage(values.add(i), None, value);
             }
         }
-        crate::any_value::heap_object_word(p, crate::any_value::ValueKind::MAP)
+        heap_object_word(p, ValueKind::MAP)
     }
 
     pub fn alloc_map_slots(&mut self, entries: &[(AnyValue, AnyValue)]) -> u64 {
-        let total = crate::any_value::map_size_for_count(entries.len());
+        let total = map_size_for_count(entries.len());
         let p = self.alloc_kind(HeapAllocKind::Map, total);
         unsafe {
-            std::ptr::write(p as *mut u64, entries.len() as u64);
-            let tag_p = crate::any_value::map_tag_ptr(p);
-            std::ptr::write_bytes(tag_p, 0, crate::any_value::map_tag_bytes_len(entries.len()));
-            let keys = crate::any_value::map_keys_ptr(p, entries.len());
-            let values = crate::any_value::map_values_ptr(p, entries.len());
+            write(p as *mut u64, entries.len() as u64);
+            let tag_p = map_tag_ptr(p);
+            write_bytes(tag_p, 0, map_tag_bytes_len(entries.len()));
+            let keys = map_keys_ptr(p, entries.len());
+            let values = map_values_ptr(p, entries.len());
             for (i, (key, value)) in entries.iter().copied().enumerate() {
-                std::ptr::write(
-                    tag_p.add(i),
-                    crate::any_value::map_pack_tag(key.kind(), value.kind()),
-                );
+                write(tag_p.add(i), map_pack_tag(key.kind(), value.kind()));
                 write_any_value_to_storage(keys.add(i), None, key);
                 write_any_value_to_storage(values.add(i), None, value);
             }
         }
-        crate::any_value::heap_object_word(p, crate::any_value::ValueKind::MAP)
+        heap_object_word(p, ValueKind::MAP)
     }
 
     pub fn alloc_map_destination(&mut self, base: Option<AnyValueRef>, extra: usize) -> u64 {
@@ -445,46 +400,40 @@ impl Heap {
                 None
             }
         });
-        let base_count = base_addr.map_or(0, |addr| unsafe {
-            crate::any_value::map_count(addr as *const u8)
-        });
+        let base_count = base_addr.map_or(0, |addr| unsafe { map_count(addr as *const u8) });
         let count = base_count + extra;
-        let total = crate::any_value::map_size_for_count(count);
+        let total = map_size_for_count(count);
         let p = self.alloc(total);
         unsafe {
-            std::ptr::write(p as *mut u64, count as u64);
-            let tag_p = crate::any_value::map_tag_ptr(p);
-            std::ptr::write_bytes(tag_p, 0, crate::any_value::map_tag_bytes_len(count));
-            let keys = crate::any_value::map_keys_ptr(p, count);
-            let values = crate::any_value::map_values_ptr(p, count);
+            write(p as *mut u64, count as u64);
+            let tag_p = map_tag_ptr(p);
+            write_bytes(tag_p, 0, map_tag_bytes_len(count));
+            let keys = map_keys_ptr(p, count);
+            let values = map_values_ptr(p, count);
             if let Some(base_addr) = base_addr {
-                let base_tags = crate::any_value::map_tag_ptr(base_addr);
-                let base_keys = crate::any_value::map_keys_ptr(base_addr, base_count);
-                let base_values = crate::any_value::map_values_ptr(base_addr, base_count);
+                let base_tags = map_tag_ptr(base_addr);
+                let base_keys = map_keys_ptr(base_addr, base_count);
+                let base_values = map_values_ptr(base_addr, base_count);
                 for i in 0..base_count {
-                    std::ptr::write(tag_p.add(i), std::ptr::read(base_tags.add(i)));
-                    std::ptr::write(keys.add(i), std::ptr::read(base_keys.add(i)));
-                    std::ptr::write(values.add(i), std::ptr::read(base_values.add(i)));
+                    write(tag_p.add(i), read(base_tags.add(i)));
+                    write(keys.add(i), read(base_keys.add(i)));
+                    write(values.add(i), read(base_values.add(i)));
                 }
             }
         }
-        crate::any_value::heap_object_word(p, crate::any_value::ValueKind::MAP)
+        heap_object_word(p, ValueKind::MAP)
     }
 
     pub fn map_destination_put(&mut self, dest_bits: u64, key: AnyValue, value: AnyValue) {
-        let dest =
-            crate::any_value::map_addr_from_tagged(dest_bits).expect("map_destination_put dest");
-        let count = unsafe { crate::any_value::map_count(dest as *const u8) };
+        let dest = map_addr_from_tagged(dest_bits).expect("map_destination_put dest");
+        let count = unsafe { map_count(dest as *const u8) };
         unsafe {
-            let tag_p = crate::any_value::map_tag_ptr(dest);
-            let keys = crate::any_value::map_keys_ptr(dest, count);
-            let values = crate::any_value::map_values_ptr(dest, count);
+            let tag_p = map_tag_ptr(dest);
+            let keys = map_keys_ptr(dest, count);
+            let values = map_values_ptr(dest, count);
             for i in 0..count {
-                if crate::any_value::map_key_kind(std::ptr::read(tag_p.add(i))) == ValueKind::NULL {
-                    std::ptr::write(
-                        tag_p.add(i),
-                        crate::any_value::map_pack_tag(key.kind(), value.kind()),
-                    );
+                if map_key_kind(read(tag_p.add(i))) == ValueKind::NULL {
+                    write(tag_p.add(i), map_pack_tag(key.kind(), value.kind()));
                     write_any_value_to_storage(keys.add(i), None, key);
                     write_any_value_to_storage(values.add(i), None, value);
                     return;
@@ -495,13 +444,11 @@ impl Heap {
     }
 
     pub fn map_destination_freeze(&mut self, dest_bits: u64) -> u64 {
-        let dest =
-            crate::any_value::map_addr_from_tagged(dest_bits).expect("map_destination_freeze dest");
-        let count = unsafe { crate::any_value::map_count(dest as *const u8) };
+        let dest = map_addr_from_tagged(dest_bits).expect("map_destination_freeze dest");
+        let count = unsafe { map_count(dest as *const u8) };
         let mut entries = Vec::with_capacity(count);
         for i in 0..count {
-            let (key_raw, key_kind, value_raw, value_kind) =
-                unsafe { crate::any_value::map_entry_raw_kinds(dest as *const u8, i) };
+            let (key_raw, key_kind, value_raw, value_kind) = unsafe { map_entry_raw_kinds(dest as *const u8, i) };
             if key_kind == ValueKind::NULL {
                 continue;
             }
@@ -523,14 +470,11 @@ impl Heap {
         }
         if deduped.len() == count {
             unsafe {
-                let tag_p = crate::any_value::map_tag_ptr(dest);
-                let keys = crate::any_value::map_keys_ptr(dest, count);
-                let values = crate::any_value::map_values_ptr(dest, count);
+                let tag_p = map_tag_ptr(dest);
+                let keys = map_keys_ptr(dest, count);
+                let values = map_values_ptr(dest, count);
                 for (i, (key, value)) in deduped.iter().copied().enumerate() {
-                    std::ptr::write(
-                        tag_p.add(i),
-                        crate::any_value::map_pack_tag(key.kind(), value.kind()),
-                    );
+                    write(tag_p.add(i), map_pack_tag(key.kind(), value.kind()));
                     write_any_value_to_storage(keys.add(i), None, key);
                     write_any_value_to_storage(values.add(i), None, value);
                 }
@@ -540,12 +484,9 @@ impl Heap {
         self.alloc_map_slots(&deduped)
     }
 
-    pub fn alloc_map_refs(
-        &mut self,
-        entries: &[(AnyValueRef, AnyValueRef)],
-    ) -> Result<AnyValueRef, AnyValueRefError> {
+    pub fn alloc_map_refs(&mut self, entries: &[(AnyValueRef, AnyValueRef)]) -> Result<AnyValueRef, AnyValueRefError> {
         let map_bits = self.alloc_map_refs_bits(entries);
-        let map_addr = crate::any_value::map_addr_from_tagged(map_bits).expect("new map addr");
+        let map_addr = map_addr_from_tagged(map_bits).expect("new map addr");
         AnyValueRef::from_heap_object(ValueKind::MAP, map_addr)
     }
 
@@ -600,17 +541,12 @@ impl Heap {
     ) -> Result<AnyValueRef, AnyValueRefError> {
         let map_addr = map.map_addr()?;
         let map_bits = self.map_put_value_bits(map_addr, key, value);
-        let map_addr = crate::any_value::map_addr_from_tagged(map_bits).expect("new map addr");
+        let map_addr = map_addr_from_tagged(map_bits).expect("new map addr");
         AnyValueRef::from_heap_object(ValueKind::MAP, map_addr)
     }
 
-    fn map_put_value_bits(
-        &mut self,
-        map_addr: *mut u8,
-        key: AnyValueRef,
-        value: AnyValueRef,
-    ) -> u64 {
-        let count = unsafe { crate::any_value::map_count(map_addr) };
+    fn map_put_value_bits(&mut self, map_addr: *mut u8, key: AnyValueRef, value: AnyValueRef) -> u64 {
+        let count = unsafe { map_count(map_addr) };
         let mut entries = Vec::with_capacity(count + 1);
         let mut replaced = false;
 
@@ -632,13 +568,13 @@ impl Heap {
     }
 
     pub fn map_put_slot_bits(&mut self, map_bits: u64, key: AnyValue, value: AnyValue) -> u64 {
-        let map_addr = crate::any_value::map_addr_from_tagged(map_bits);
-        let count = map_addr.map_or(0, |addr| unsafe { crate::any_value::map_count(addr) });
+        let map_addr = map_addr_from_tagged(map_bits);
+        let count = map_addr.map_or(0, |addr| unsafe { map_count(addr) });
         let mut entries = Vec::with_capacity(count + 1);
         let mut replaced = false;
         if let Some(map_addr) = map_addr {
             for i in 0..count {
-                let (entry_key, entry_value) = unsafe { crate::any_value::map_entry(map_addr, i) };
+                let (entry_key, entry_value) = unsafe { map_entry(map_addr, i) };
                 if !replaced && same_any_value(entry_key, key) {
                     entries.push((key, value));
                     replaced = true;
@@ -671,17 +607,17 @@ impl Heap {
         // fz-wu9 — reserve at least 1 byte past the payload for the
         // invisible trailing NUL. The pad-zeroing below guarantees it reads
         // as 0; bytes_len / bit_len are unchanged.
-        let total = crate::any_value::bitstring_size_for_bit_len(bit_len);
+        let total = bitstring_size_for_bit_len(bit_len);
         let p = self.alloc_kind(HeapAllocKind::Bitstring, total);
         unsafe {
             let bit_len_p = p as *mut u64;
-            std::ptr::write(bit_len_p, bit_len);
+            write(bit_len_p, bit_len);
             let bytes_p = p.add(8);
-            std::ptr::copy_nonoverlapping(bytes.as_ptr(), bytes_p, bytes.len());
+            copy_nonoverlapping(bytes.as_ptr(), bytes_p, bytes.len());
             // Zero the trailing padding so renders / debug aren't garbage.
             let pad_start = 8 + bytes.len();
             if pad_start < total {
-                std::ptr::write_bytes(p.add(pad_start), 0, total - pad_start);
+                write_bytes(p.add(pad_start), 0, total - pad_start);
             }
         }
         p
@@ -689,12 +625,7 @@ impl Heap {
 
     /// Closure layout: `schema_id`, `flags`, raw code pointer, then
     /// schema-backed capture fields.
-    pub fn alloc_closure_slots(
-        &mut self,
-        _target_id: u32,
-        captured_count: usize,
-        halt_kind: u16,
-    ) -> u64 {
+    pub fn alloc_closure_slots(&mut self, _target_id: u32, captured_count: usize, halt_kind: u16) -> u64 {
         let schema_id = self.closure_schema_id(captured_count);
         self.alloc_closure_slots_with_schema(schema_id, captured_count, halt_kind)
     }
@@ -708,30 +639,25 @@ impl Heap {
     /// the schema-id space the AOT runtime must keep identical to compile time
     /// (and the schema ids interpreter and codegen render). Scaffolding mints
     /// pass a placeholder `schema_id`.
-    pub fn alloc_closure_slots_with_schema(
-        &mut self,
-        schema_id: u32,
-        captured_count: usize,
-        halt_kind: u16,
-    ) -> u64 {
+    pub fn alloc_closure_slots_with_schema(&mut self, schema_id: u32, captured_count: usize, halt_kind: u16) -> u64 {
         assert!(
-            captured_count <= crate::any_value::CLOSURE_FLAGS_CAPTURED_MASK as usize,
+            captured_count <= CLOSURE_FLAGS_CAPTURED_MASK as usize,
             "closure captured count overflow"
         );
-        let total = crate::any_value::closure_size_for_count(captured_count);
+        let total = closure_size_for_count(captured_count);
         let p = self.alloc_kind(HeapAllocKind::Closure, total);
         unsafe {
-            std::ptr::write(p as *mut u32, schema_id);
-            std::ptr::write(
+            write(p as *mut u32, schema_id);
+            write(
                 p.add(4) as *mut u32,
-                crate::any_value::closure_flags_pack(captured_count as u16, halt_kind) as u32,
+                closure_flags_pack(captured_count as u16, halt_kind) as u32,
             );
-            std::ptr::write(p.add(8) as *mut u64, 0);
+            write(p.add(8) as *mut u64, 0);
             if total > 16 {
-                std::ptr::write_bytes(p.add(16), 0, total - 16);
+                write_bytes(p.add(16), 0, total - 16);
             }
         }
-        crate::any_value::heap_object_word(p, crate::any_value::ValueKind::CLOSURE)
+        heap_object_word(p, ValueKind::CLOSURE)
     }
 
     pub fn alloc_closure(
@@ -742,16 +668,13 @@ impl Heap {
         fn_ptr: u64,
         captures: &[AnyValue],
     ) -> u64 {
-        assert!(
-            captures.len() <= captured_count,
-            "too many closure captures"
-        );
+        assert!(captures.len() <= captured_count, "too many closure captures");
         let bits = self.alloc_closure_slots(schema_id, captured_count, halt_kind);
-        let p = crate::any_value::closure_addr_from_tagged(bits).expect("new closure ptr");
+        let p = closure_addr_from_tagged(bits).expect("new closure ptr");
         unsafe {
-            std::ptr::write(p.add(8) as *mut u64, fn_ptr);
+            write(p.add(8) as *mut u64, fn_ptr);
             for (i, capture) in captures.iter().enumerate() {
-                crate::any_value::closure_capture_set(p, i, *capture);
+                closure_capture_set(p, i, *capture);
             }
         }
         bits
@@ -761,13 +684,8 @@ impl Heap {
     ///
     /// `closure_addr` must point to a live closure allocation with a capture
     /// slot at `idx`.
-    pub unsafe fn write_closure_capture_value(
-        &mut self,
-        closure_addr: *mut u8,
-        idx: usize,
-        value: AnyValue,
-    ) {
-        unsafe { crate::any_value::closure_capture_set(closure_addr, idx, value) };
+    pub unsafe fn write_closure_capture_value(&mut self, closure_addr: *mut u8, idx: usize, value: AnyValue) {
+        unsafe { closure_capture_set(closure_addr, idx, value) };
     }
 
     pub fn write_closure_capture_ref(
@@ -777,7 +695,7 @@ impl Heap {
         value: AnyValueRef,
     ) -> Result<(), AnyValueRefError> {
         let closure = closure.closure_addr()?;
-        unsafe { crate::any_value::closure_capture_set(closure, idx, AnyValue::from_ref(value)?) };
+        unsafe { closure_capture_set(closure, idx, AnyValue::from_ref(value)?) };
         Ok(())
     }
 
@@ -785,12 +703,8 @@ impl Heap {
     ///
     /// `closure_addr` must point to a live closure allocation with a capture
     /// slot at `idx`.
-    pub unsafe fn read_closure_capture_value(
-        &self,
-        closure_addr: *const u8,
-        idx: usize,
-    ) -> AnyValue {
-        unsafe { crate::any_value::closure_capture_value(closure_addr, idx) }
+    pub unsafe fn read_closure_capture_value(&self, closure_addr: *const u8, idx: usize) -> AnyValue {
+        unsafe { closure_capture_value(closure_addr, idx) }
     }
 
     /// Write a canonical value into a Struct's generic payload slot.
@@ -810,17 +724,14 @@ impl Heap {
     }
 
     fn write_struct_field_value(&self, obj: *mut u8, field_offset: u32, value: AnyValue) {
-        let schema_id = unsafe { crate::any_value::struct_schema_id(obj as *const u8) };
+        let schema_id = unsafe { struct_schema_id(obj as *const u8) };
         let schema = self.schemas.borrow();
         let kind_offset = schema.get(schema_id).value_field_kind_offset(field_offset);
         let raw = value.raw();
         unsafe {
-            std::ptr::write(
-                crate::any_value::struct_field_raw_slot(obj as *const u8, field_offset),
-                raw,
-            );
-            std::ptr::write(
-                crate::any_value::struct_field_kind_slot(obj as *const u8, kind_offset),
+            write(struct_field_raw_slot(obj as *const u8, field_offset), raw);
+            write(
+                struct_field_kind_slot(obj as *const u8, kind_offset),
                 value.kind().tag(),
             );
         }
@@ -828,18 +739,12 @@ impl Heap {
 
     /// Read a canonical value from a Struct's generic payload slot.
     pub fn read_field_slot(&self, obj: *mut u8, field_offset: u32) -> AnyValue {
-        let schema_id = unsafe { crate::any_value::struct_schema_id(obj as *const u8) };
+        let schema_id = unsafe { struct_schema_id(obj as *const u8) };
         let schema = self.schemas.borrow();
         let kind_offset = schema.get(schema_id).value_field_kind_offset(field_offset);
         unsafe {
-            let raw = std::ptr::read(crate::any_value::struct_field_raw_slot(
-                obj as *const u8,
-                field_offset,
-            ));
-            let kind = std::ptr::read(crate::any_value::struct_field_kind_slot(
-                obj as *const u8,
-                kind_offset,
-            ));
+            let raw = read(struct_field_raw_slot(obj as *const u8, field_offset));
+            let kind = read(struct_field_kind_slot(obj as *const u8, kind_offset));
             AnyValue::decode_parts(raw, kind).expect("struct field kind")
         }
     }
@@ -852,20 +757,14 @@ impl Heap {
         list_tail_ref(list)
     }
 
-    pub fn mark_list_cons_aliased(
-        &mut self,
-        list: AnyValueRef,
-    ) -> Result<AnyValueRef, AnyValueRefError> {
+    pub fn mark_list_cons_aliased(&mut self, list: AnyValueRef) -> Result<AnyValueRef, AnyValueRefError> {
         let addr = nonempty_list_addr(list)?;
         let cons = unsafe { &mut *(addr as *mut ListCons) };
         cons.mark_aliased();
         Ok(list)
     }
 
-    pub fn mark_published_ref_aliased(
-        &mut self,
-        value: AnyValueRef,
-    ) -> Result<AnyValueRef, AnyValueRefError> {
+    pub fn mark_published_ref_aliased(&mut self, value: AnyValueRef) -> Result<AnyValueRef, AnyValueRefError> {
         if value.tag() != ValueKind::LIST || value.is_empty_list() {
             return Ok(value);
         }
@@ -907,7 +806,7 @@ impl Heap {
         }
         let (head_raw, head_kind) = cons.head_raw_kind();
         let fresh = self.alloc_list_cons_raw_kind(head_raw, head_kind, tail_bits);
-        let addr = crate::any_value::list_addr_from_tagged(fresh).expect("fresh list cons");
+        let addr = list_addr_from_tagged(fresh).expect("fresh list cons");
         AnyValueRef::from_heap_object(ValueKind::LIST, addr)
     }
 
@@ -925,7 +824,7 @@ impl Heap {
         addr: *mut u8,
         key: AnyValueRef,
     ) -> Result<Option<AnyValueRef>, AnyValueRefError> {
-        let count = unsafe { crate::any_value::map_count(addr) };
+        let count = unsafe { map_count(addr) };
 
         for i in 0..count {
             let (entry_key, entry_value) = unsafe { map_entry_refs(addr, i) };
@@ -943,9 +842,9 @@ impl Heap {
         key: AnyValue,
     ) -> Result<Option<AnyValueRef>, AnyValueRefError> {
         let addr = map.map_addr()?;
-        let count = unsafe { crate::any_value::map_count(addr) };
+        let count = unsafe { map_count(addr) };
         for i in 0..count {
-            let (entry_key, _) = unsafe { crate::any_value::map_entry(addr, i) };
+            let (entry_key, _) = unsafe { map_entry(addr, i) };
             if !same_any_value(entry_key, key) {
                 continue;
             }
@@ -955,27 +854,14 @@ impl Heap {
         Ok(None)
     }
 
-    pub fn read_struct_field_ref(
-        &self,
-        obj: AnyValueRef,
-        field_offset: u32,
-    ) -> Result<AnyValueRef, AnyValueRefError> {
+    pub fn read_struct_field_ref(&self, obj: AnyValueRef, field_offset: u32) -> Result<AnyValueRef, AnyValueRefError> {
         let addr = obj.struct_addr()?;
-        let schema_id = unsafe { crate::any_value::struct_schema_id(addr as *const u8) };
+        let schema_id = unsafe { struct_schema_id(addr as *const u8) };
         let schema = self.schemas.borrow();
         let kind_offset = schema.get(schema_id).value_field_kind_offset(field_offset);
-        let raw_slot =
-            unsafe { crate::any_value::struct_field_raw_slot(addr as *const u8, field_offset) };
-        let kind = unsafe {
-            std::ptr::read(crate::any_value::struct_field_kind_slot(
-                addr as *const u8,
-                kind_offset,
-            ))
-        };
-        any_value_ref_from_storage(
-            raw_slot as *const u64,
-            ValueKind::new(kind).expect("struct field kind"),
-        )
+        let raw_slot = unsafe { struct_field_raw_slot(addr as *const u8, field_offset) };
+        let kind = unsafe { read(struct_field_kind_slot(addr as *const u8, kind_offset)) };
+        any_value_ref_from_storage(raw_slot as *const u64, ValueKind::new(kind).expect("struct field kind"))
     }
 
     pub fn read_struct_named_field_ref(
@@ -984,7 +870,7 @@ impl Heap {
         field_name: &str,
     ) -> Result<AnyValueRef, AnyValueRefError> {
         let addr = obj.struct_addr()?;
-        let schema_id = unsafe { crate::any_value::struct_schema_id(addr as *const u8) };
+        let schema_id = unsafe { struct_schema_id(addr as *const u8) };
         let field_offset = {
             let schemas = self.schemas.borrow();
             let schema = schemas.get(schema_id);
@@ -992,19 +878,13 @@ impl Heap {
                 .fields
                 .iter()
                 .find(|field| field.name.as_deref() == Some(field_name))
-                .unwrap_or_else(|| {
-                    panic!("schema {} has no field named {}", schema.name, field_name)
-                })
+                .unwrap_or_else(|| panic!("schema {} has no field named {}", schema.name, field_name))
                 .offset
         };
         self.read_struct_field_ref(obj, field_offset)
     }
 
-    pub fn read_closure_capture_ref(
-        &self,
-        closure: AnyValueRef,
-        idx: usize,
-    ) -> Result<AnyValueRef, AnyValueRefError> {
+    pub fn read_closure_capture_ref(&self, closure: AnyValueRef, idx: usize) -> Result<AnyValueRef, AnyValueRefError> {
         closure_capture_ref(closure, idx)
     }
 
@@ -1070,19 +950,11 @@ impl Heap {
 
     /// Cheney GC with an optional slice of extra typed roots. Each element is
     /// forwarded in-place.
-    pub fn gc_with_extra_root_slots(
-        &mut self,
-        root_slot: &mut *mut u8,
-        extra_roots: &mut [AnyValue],
-    ) -> GcStats {
+    pub fn gc_with_extra_root_slots(&mut self, root_slot: &mut *mut u8, extra_roots: &mut [AnyValue]) -> GcStats {
         self.gc_with_extra_roots(root_slot, extra_roots, &mut [])
     }
 
-    pub fn gc_with_any_value_ref_roots(
-        &mut self,
-        root_slot: &mut *mut u8,
-        ref_roots: &mut [AnyValueRef],
-    ) -> GcStats {
+    pub fn gc_with_any_value_ref_roots(&mut self, root_slot: &mut *mut u8, ref_roots: &mut [AnyValueRef]) -> GcStats {
         self.gc_with_extra_roots(root_slot, &mut [], ref_roots)
     }
 
@@ -1102,8 +974,7 @@ impl Heap {
         ref_roots: &mut [AnyValueRef],
     ) -> GcStats {
         // Snapshot from-space block ranges before we allocate to-space.
-        let mut from_ranges: Vec<(*mut u8, *mut u8)> =
-            Vec::with_capacity(1 + self.abandoned_blocks.len());
+        let mut from_ranges: Vec<(*mut u8, *mut u8)> = Vec::with_capacity(1 + self.abandoned_blocks.len());
         from_ranges.push((self.block_start, self.block_end));
         for &(p, sc) in &self.abandoned_blocks {
             from_ranges.push((p, unsafe { p.add(SIZE_TABLE[sc as usize]) }));
@@ -1147,8 +1018,7 @@ impl Heap {
         //            go back to reduction-driven and the pressure clears.
         //   SHRINK — live has fallen to <=25% of the heap; refit to ~50%.
         //   KEEP   — live sits in the 25%–75% dead zone; hold the current size.
-        let was_pressured =
-            !self.abandoned_blocks.is_empty() || self.bump_top >= self.allocation_watermark;
+        let was_pressured = !self.abandoned_blocks.is_empty() || self.bump_top >= self.allocation_watermark;
         let target_bytes = if was_pressured {
             let footprint = self.bytes_used().saturating_sub(fragment_bytes);
             fit_to_live.max(footprint.saturating_mul(2))
@@ -1159,10 +1029,7 @@ impl Heap {
         };
         let mut size_class = pick_size_class(target_bytes.max(SIZE_TABLE[0]));
         if was_pressured {
-            let grown = self
-                .size_class
-                .saturating_add(1)
-                .min((SIZE_TABLE.len() - 1) as u8);
+            let grown = self.size_class.saturating_add(1).min((SIZE_TABLE.len() - 1) as u8);
             size_class = size_class.max(grown);
         }
         let to_size = SIZE_TABLE[size_class as usize];
@@ -1217,10 +1084,7 @@ impl Heap {
                 &mut copied_objects,
                 &mut stats,
             ) {
-                *value = AnyValue::heap_ptr(
-                    (new_bits & !crate::any_value::TAG_MASK) as *mut u8,
-                    value.kind(),
-                );
+                *value = AnyValue::heap_ptr((new_bits & !TAG_MASK) as *mut u8, value.kind());
             }
         }
 
@@ -1250,7 +1114,7 @@ impl Heap {
                 let copied = copied_objects[scan_idx];
                 scan_idx += 1;
                 match copied.tag {
-                    crate::any_value::TAG_LIST => cheney_trace_list(
+                    TAG_LIST => cheney_trace_list(
                         copied.ptr as *mut ListCons,
                         &from_ranges,
                         &mut self.fragments,
@@ -1261,7 +1125,7 @@ impl Heap {
                         &mut copied_objects,
                         &mut stats,
                     ),
-                    crate::any_value::TAG_MAP => cheney_trace_map(
+                    TAG_MAP => cheney_trace_map(
                         copied.ptr,
                         &from_ranges,
                         &mut self.fragments,
@@ -1272,7 +1136,7 @@ impl Heap {
                         &mut copied_objects,
                         &mut stats,
                     ),
-                    crate::any_value::TAG_CLOSURE => cheney_trace_closure(
+                    TAG_CLOSURE => cheney_trace_closure(
                         copied.ptr,
                         &from_ranges,
                         &mut self.fragments,
@@ -1283,7 +1147,7 @@ impl Heap {
                         &mut copied_objects,
                         &mut stats,
                     ),
-                    crate::any_value::TAG_STRUCT => cheney_trace_struct(
+                    TAG_STRUCT => cheney_trace_struct(
                         copied.ptr,
                         &from_ranges,
                         &mut self.fragments,
@@ -1294,8 +1158,8 @@ impl Heap {
                         &mut copied_objects,
                         &mut stats,
                     ),
-                    crate::any_value::TAG_BITSTRING | crate::any_value::TAG_PROCBIN => {}
-                    crate::any_value::TAG_RESOURCE => cheney_trace_resource(
+                    TAG_BITSTRING | TAG_PROCBIN => {}
+                    TAG_RESOURCE => cheney_trace_resource(
                         copied.ptr,
                         &from_ranges,
                         &mut self.fragments,
@@ -1315,7 +1179,7 @@ impl Heap {
             // fragment (re-pushes to frag_queue).
             if let Some(frag) = frag_queue.pop() {
                 match frag.tag {
-                    crate::any_value::TAG_LIST => cheney_trace_list(
+                    TAG_LIST => cheney_trace_list(
                         frag.ptr as *mut ListCons,
                         &from_ranges,
                         &mut self.fragments,
@@ -1326,7 +1190,7 @@ impl Heap {
                         &mut copied_objects,
                         &mut stats,
                     ),
-                    crate::any_value::TAG_MAP => cheney_trace_map(
+                    TAG_MAP => cheney_trace_map(
                         frag.ptr,
                         &from_ranges,
                         &mut self.fragments,
@@ -1337,7 +1201,7 @@ impl Heap {
                         &mut copied_objects,
                         &mut stats,
                     ),
-                    crate::any_value::TAG_CLOSURE => cheney_trace_closure(
+                    TAG_CLOSURE => cheney_trace_closure(
                         frag.ptr,
                         &from_ranges,
                         &mut self.fragments,
@@ -1348,7 +1212,7 @@ impl Heap {
                         &mut copied_objects,
                         &mut stats,
                     ),
-                    crate::any_value::TAG_STRUCT => cheney_trace_struct(
+                    TAG_STRUCT => cheney_trace_struct(
                         frag.ptr,
                         &from_ranges,
                         &mut self.fragments,
@@ -1359,8 +1223,8 @@ impl Heap {
                         &mut copied_objects,
                         &mut stats,
                     ),
-                    crate::any_value::TAG_BITSTRING | crate::any_value::TAG_PROCBIN => {}
-                    crate::any_value::TAG_RESOURCE => cheney_trace_resource(
+                    TAG_BITSTRING | TAG_PROCBIN => {}
+                    TAG_RESOURCE => cheney_trace_resource(
                         frag.ptr,
                         &from_ranges,
                         &mut self.fragments,
@@ -1433,27 +1297,19 @@ impl Heap {
     /// process roots. This is the closure-shaped mid-flight path: the
     /// continuation closure captures the live loop state, while mailbox
     /// entries remain process-owned roots until consumed.
-    pub fn gc_process_roots(
-        &mut self,
-        primary_root: &mut *mut u8,
-        mailbox: &mut std::collections::VecDeque<AnyValueRef>,
-    ) -> GcStats {
+    pub fn gc_process_roots(&mut self, primary_root: &mut *mut u8, mailbox: &mut VecDeque<AnyValueRef>) -> GcStats {
         let mut primary_root_bits = if primary_root.is_null() {
-            std::ptr::null_mut()
+            null_mut()
         } else {
-            crate::any_value::heap_object_word(
-                *primary_root as *const u8,
-                crate::any_value::ValueKind::CLOSURE,
-            ) as *mut u8
+            heap_object_word(*primary_root as *const u8, ValueKind::CLOSURE) as *mut u8
         };
         let mut mb_roots: Vec<AnyValueRef> = mailbox.drain(..).collect();
         let stats = self.gc_with_extra_roots(&mut primary_root_bits, &mut [], &mut mb_roots);
 
         *primary_root = if primary_root_bits.is_null() {
-            std::ptr::null_mut()
+            null_mut()
         } else {
-            crate::any_value::closure_addr_from_tagged(primary_root_bits as u64)
-                .expect("forwarded process closure root")
+            closure_addr_from_tagged(primary_root_bits as u64).expect("forwarded process closure root")
         };
         for v in mb_roots {
             mailbox.push_back(v);
@@ -1468,9 +1324,9 @@ impl Heap {
     pub fn gc_any_value_roots_with_process_roots(
         &mut self,
         roots: &mut [AnyValue],
-        mailbox: &mut std::collections::VecDeque<AnyValueRef>,
+        mailbox: &mut VecDeque<AnyValueRef>,
     ) -> GcStats {
-        let mut null_root: *mut u8 = std::ptr::null_mut();
+        let mut null_root: *mut u8 = null_mut();
         let mut mb_roots: Vec<AnyValueRef> = mailbox.drain(..).collect();
         let mut all_extras: Vec<AnyValue> = roots.to_vec();
 

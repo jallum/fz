@@ -15,6 +15,10 @@ use crate::diag::{Diagnostic, Span, SpanOrigin, codes};
 use crate::exec::ast_value::{expr_to_value, value_to_expr};
 use crate::exec::eval::CompileTimeEvaluator;
 use crate::exec::value::Value;
+use std::collections::{HashMap, HashSet};
+use std::error::Error;
+use std::fmt;
+use std::rc::Rc;
 
 const MAX_EXPANSION_DEPTH: usize = 200;
 
@@ -115,10 +119,7 @@ impl MacroError {
             }
             Self::ExpansionLoop { span, max_depth } => Diagnostic::error(
                 codes::MACRO_EXPANSION_LOOP,
-                format!(
-                    "macro expansion exceeded {} levels (likely a runaway macro)",
-                    max_depth
-                ),
+                format!("macro expansion exceeded {} levels (likely a runaway macro)", max_depth),
                 *span,
             ),
             Self::PostResolutionLeftover { span } => Diagnostic::error(
@@ -136,13 +137,13 @@ impl MacroError {
     }
 }
 
-impl std::fmt::Display for MacroError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Display for MacroError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.to_diagnostic().message)
     }
 }
 
-impl std::error::Error for MacroError {}
+impl Error for MacroError {}
 
 /// Expand all macro calls in `prog` in place. Builds a scratch interp from
 /// the program (so macros can call other macros and regular fns), then
@@ -174,18 +175,18 @@ pub fn expand_program(prog: &mut Program) -> Result<(), Box<MacroError>> {
 fn expand_items(
     prog: &mut Program,
     interp: &CompileTimeEvaluator,
-    macros: &std::collections::HashSet<String>,
+    macros: &HashSet<String>,
 ) -> Result<(), Box<MacroError>> {
     prog.items = expand_item_list(prog.items.clone(), interp, macros)?;
     Ok(())
 }
 
 fn expand_item_list(
-    items: Vec<std::rc::Rc<Item>>,
+    items: Vec<Rc<Item>>,
     interp: &CompileTimeEvaluator,
-    macros: &std::collections::HashSet<String>,
-) -> Result<Vec<std::rc::Rc<Item>>, Box<MacroError>> {
-    let mut out: Vec<std::rc::Rc<Item>> = Vec::new();
+    macros: &HashSet<String>,
+) -> Result<Vec<Rc<Item>>, Box<MacroError>> {
+    let mut out: Vec<Rc<Item>> = Vec::new();
     for item in items {
         match &*item {
             Item::MacroCall {
@@ -216,7 +217,7 @@ fn expand_item_list(
                         })
                     })?;
                 let prev = interp.gensym_table.borrow_mut().take();
-                *interp.gensym_table.borrow_mut() = Some(std::collections::HashMap::new());
+                *interp.gensym_table.borrow_mut() = Some(HashMap::new());
                 let ret = interp.call_named(name, arg_vs);
                 *interp.gensym_table.borrow_mut() = prev;
                 let ret = ret.map_err(|e| {
@@ -260,12 +261,12 @@ fn expand_item_list(
                     }
                 }
                 for it in items {
-                    out.push(std::rc::Rc::new(it));
+                    out.push(Rc::new(it));
                 }
             }
             Item::Module(m) => {
                 let new_items = expand_item_list(m.items.clone(), interp, macros)?;
-                out.push(std::rc::Rc::new(Item::Module(ModuleDef {
+                out.push(Rc::new(Item::Module(ModuleDef {
                     name: m.name.clone(),
                     name_span: m.name_span,
                     items: new_items,
@@ -302,7 +303,7 @@ pub fn value_to_items(v: &Value) -> Result<Vec<Item>, String> {
                         _ => return Err(":fn_def expects an atom name".into()),
                     };
                     let body = value_to_expr(&t[2])?;
-                    let span = crate::diag::Span::DUMMY;
+                    let span = Span::DUMMY;
                     Ok(vec![Item::Fn(FnDef {
                         name,
                         name_span: span,
@@ -345,12 +346,12 @@ pub fn value_to_items(v: &Value) -> Result<Vec<Item>, String> {
 pub fn expand_with(
     prog: &mut Program,
     interp: &CompileTimeEvaluator,
-    macros: &std::collections::HashSet<String>,
+    macros: &HashSet<String>,
 ) -> Result<(), Box<MacroError>> {
     for item in &mut prog.items {
         // We Rc::make_mut to get an exclusive ref. At this point in the
         // pipeline the program has just been parsed and isn't shared.
-        let item_mut = std::rc::Rc::make_mut(item);
+        let item_mut = Rc::make_mut(item);
         match item_mut {
             Item::Fn(def) => {
                 if def.is_macro {
@@ -364,19 +365,13 @@ pub fn expand_with(
                 }
             }
             Item::Module(m) => {
-                return Err(Box::new(MacroError::PostResolutionLeftover {
-                    span: m.span,
-                }));
+                return Err(Box::new(MacroError::PostResolutionLeftover { span: m.span }));
             }
             Item::Protocol(p) => {
-                return Err(Box::new(MacroError::PostResolutionLeftover {
-                    span: p.span,
-                }));
+                return Err(Box::new(MacroError::PostResolutionLeftover { span: p.span }));
             }
             Item::ProtocolImpl(i) => {
-                return Err(Box::new(MacroError::PostResolutionLeftover {
-                    span: i.span,
-                }));
+                return Err(Box::new(MacroError::PostResolutionLeftover { span: i.span }));
             }
             Item::Struct(_) => {}
             Item::Alias { span, .. } | Item::Import { span, .. } | Item::MacroCall { span, .. } => {
@@ -390,8 +385,8 @@ pub fn expand_with(
 /// Collect names of all macros defined in `prog`. Also exposed for the
 /// REPL, which needs to know the live macro set without re-walking the
 /// program every input.
-pub fn collect_macros(prog: &Program) -> std::collections::HashSet<String> {
-    let mut out = std::collections::HashSet::new();
+pub fn collect_macros(prog: &Program) -> HashSet<String> {
+    let mut out = HashSet::new();
     for item in &prog.items {
         match &**item {
             Item::Fn(def) => {
@@ -417,7 +412,7 @@ pub fn collect_macros(prog: &Program) -> std::collections::HashSet<String> {
 pub fn expand_expr(
     e: &mut Spanned<Expr>,
     interp: &CompileTimeEvaluator,
-    macros: &std::collections::HashSet<String>,
+    macros: &HashSet<String>,
     depth: usize,
 ) -> Result<(), Box<MacroError>> {
     expand_expr_inner(e, interp, macros, depth, false)
@@ -426,7 +421,7 @@ pub fn expand_expr(
 fn expand_expr_inner(
     e: &mut Spanned<Expr>,
     interp: &CompileTimeEvaluator,
-    macros: &std::collections::HashSet<String>,
+    macros: &HashSet<String>,
     depth: usize,
     in_capture: bool,
 ) -> Result<(), Box<MacroError>> {
@@ -458,7 +453,7 @@ fn expand_expr_inner(
                 })
             })?;
         let prev = interp.gensym_table.borrow_mut().take();
-        *interp.gensym_table.borrow_mut() = Some(std::collections::HashMap::new());
+        *interp.gensym_table.borrow_mut() = Some(HashMap::new());
         let ret_res = interp.call_named(name, arg_vs);
         *interp.gensym_table.borrow_mut() = prev;
         let ret = ret_res.map_err(|inner| {
@@ -745,7 +740,7 @@ fn desugar_lambda_sugars(e: &mut Spanned<Expr>, in_capture: bool) {
             replace_capture_args(body);
             e.node = capture_lambda(arity, (**body).clone(), e.span);
         }
-        Expr::Lambda(clauses) if crate::ast::lambda_direct_clause(clauses).is_none() => {
+        Expr::Lambda(clauses) if lambda_direct_clause(clauses).is_none() => {
             if let Some(rewritten) = desugar_multi_clause_lambda(clauses, e.span) {
                 e.node = rewritten;
             }
@@ -1045,9 +1040,7 @@ fn visit_expr_mut(e: &mut Spanned<Expr>, f: &mut impl FnMut(&mut Expr, Span)) {
         Expr::With(bindings, body, else_clauses) => {
             for binding in bindings {
                 match binding {
-                    WithBinding::Match(_, expr) | WithBinding::Bare(expr) => {
-                        visit_expr_mut(expr, f)
-                    }
+                    WithBinding::Match(_, expr) | WithBinding::Bare(expr) => visit_expr_mut(expr, f),
                 }
             }
             visit_expr_mut(body, f);
@@ -1099,10 +1092,7 @@ fn visit_expr_mut(e: &mut Spanned<Expr>, f: &mut impl FnMut(&mut Expr, Span)) {
 /// the v2 case where Values carry their own spans through quote round-trip;
 /// in v1 every decoded node is DUMMY so nothing is preserved yet.
 fn stamp_expanded(e: &mut Spanned<Expr>, macro_call: Span, definition: Option<Span>) {
-    let origin = SpanOrigin::Expanded {
-        macro_call,
-        definition,
-    };
+    let origin = SpanOrigin::Expanded { macro_call, definition };
     e.origin = origin;
     if e.span.is_dummy() {
         e.span = macro_call;
@@ -1248,10 +1238,7 @@ fn stamp_expanded(e: &mut Spanned<Expr>, macro_call: Span, definition: Option<Sp
 }
 
 fn stamp_pattern(p: &mut Spanned<Pattern>, macro_call: Span, definition: Option<Span>) {
-    let origin = SpanOrigin::Expanded {
-        macro_call,
-        definition,
-    };
+    let origin = SpanOrigin::Expanded { macro_call, definition };
     p.origin = origin;
     if p.span.is_dummy() {
         p.span = macro_call;
@@ -1302,8 +1289,10 @@ fn stamp_pattern(p: &mut Spanned<Pattern>, macro_call: Span, definition: Option<
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::frontend::resolve::flatten_modules;
     use crate::parser::Parser;
     use crate::parser::lexer::Lexer;
+    use crate::types::ConcreteTypes;
 
     fn parse(src: &str) -> Program {
         let toks = Lexer::new(src).tokenize().expect("lex");
@@ -1312,10 +1301,10 @@ mod tests {
 
     /// Run the full pipeline (parse → flatten → expand → eval main) and
     /// return main's return value.
-    fn run(src: &str) -> crate::exec::value::Value {
+    fn run(src: &str) -> Value {
         let prog = parse(src);
-        let mut ct = crate::types::ConcreteTypes;
-        let mut prog = crate::frontend::resolve::flatten_modules(&mut ct, prog).expect("flatten");
+        let mut ct = ConcreteTypes;
+        let mut prog = flatten_modules(&mut ct, prog).expect("flatten");
         expand_program(&mut prog).expect("expand");
         let interp = CompileTimeEvaluator::new();
         interp.load_program(&prog).expect("load");
@@ -1344,7 +1333,7 @@ fn main() do
   plus_one(41)
 end
 "#;
-        assert!(matches!(run(src), crate::exec::value::Value::Int(42)));
+        assert!(matches!(run(src), Value::Int(42)));
     }
 
     #[test]
@@ -1360,7 +1349,7 @@ fn run() do
 end
 fn main() do run() end
 "#;
-        assert!(matches!(run(src), crate::exec::value::Value::Int(60)));
+        assert!(matches!(run(src), Value::Int(60)));
     }
 
     #[test]
@@ -1373,7 +1362,7 @@ defmacro use_helper(x) do
 end
 fn main() do use_helper(7) end
 "#;
-        assert!(matches!(run(src), crate::exec::value::Value::Int(21)));
+        assert!(matches!(run(src), Value::Int(21)));
     }
 
     #[test]
@@ -1384,7 +1373,7 @@ defmacro m1(x) do quote do: unquote(x) + 1 end
 defmacro m2(x) do quote do: m1(unquote(x)) end
 fn main() do m2(40) end
 "#;
-        assert!(matches!(run(src), crate::exec::value::Value::Int(41)));
+        assert!(matches!(run(src), Value::Int(41)));
     }
 
     #[test]
@@ -1399,7 +1388,7 @@ defmacro m1(x) do quote do: unquote(x) + 1 end
 defmacro m2(x) do quote do: unquote(x) + 5 end
 fn main() do m2(m1(0)) end
 "#;
-        assert!(matches!(run(src), crate::exec::value::Value::Int(6)));
+        assert!(matches!(run(src), Value::Int(6)));
     }
 
     #[test]
@@ -1438,7 +1427,7 @@ end
 "#;
         let v = run(src);
         assert!(
-            matches!(v, crate::exec::value::Value::Int(1)),
+            matches!(v, Value::Int(1)),
             "expected caller's t (1) to survive, got {:?}",
             v
         );
@@ -1458,7 +1447,7 @@ fn main() do
   emit(x)
 end
 "#;
-        assert!(matches!(run(src), crate::exec::value::Value::Int(8)));
+        assert!(matches!(run(src), Value::Int(8)));
     }
 
     #[test]
@@ -1479,7 +1468,7 @@ end
 "#;
         // Macro returns Block([t__hyg_N = 21, t__hyg_N + t__hyg_N]) → 42.
         // Caller's t stays at 100; macro's t__hyg_N is 21+21.
-        assert!(matches!(run(src), crate::exec::value::Value::Int(42)));
+        assert!(matches!(run(src), Value::Int(42)));
     }
 
     #[test]
@@ -1502,11 +1491,7 @@ fn main() do User.run() end
 "#;
         // M.bump expands at compile time into M.helper(7) (a fully
         // qualified call), so the result is 107.
-        assert!(
-            matches!(run(src), crate::exec::value::Value::Int(107)),
-            "expected 107, got {:?}",
-            run(src)
-        );
+        assert!(matches!(run(src), Value::Int(107)), "expected 107, got {:?}", run(src));
     }
 
     #[test]
@@ -1521,7 +1506,7 @@ defmodule User do
 end
 fn main() do User.run() end
 "#;
-        assert!(matches!(run(src), crate::exec::value::Value::Int(42)));
+        assert!(matches!(run(src), Value::Int(42)));
     }
 
     #[test]
@@ -1543,11 +1528,7 @@ fn main() do
   answer()
 end
 "#;
-        assert!(
-            matches!(run(src), crate::exec::value::Value::Int(42)),
-            "expected 42, got {:?}",
-            run(src)
-        );
+        assert!(matches!(run(src), Value::Int(42)), "expected 42, got {:?}", run(src));
     }
 
     #[test]
@@ -1567,7 +1548,7 @@ fn main() do
   first() + second()
 end
 "#;
-        assert!(matches!(run(src), crate::exec::value::Value::Int(30)));
+        assert!(matches!(run(src), Value::Int(30)));
     }
 
     #[test]
@@ -1587,11 +1568,7 @@ fn main() do
   Constants.pi_ish()
 end
 "#;
-        assert!(
-            matches!(run(src), crate::exec::value::Value::Int(314)),
-            "expected 314, got {:?}",
-            run(src)
-        );
+        assert!(matches!(run(src), Value::Int(314)), "expected 314, got {:?}", run(src));
     }
 
     #[test]
@@ -1603,13 +1580,13 @@ end
         let interp = CompileTimeEvaluator::new();
         interp.load_program(&prog).expect("load");
         let v = interp.call_named("main", vec![]).expect("eval");
-        assert!(matches!(v, crate::exec::value::Value::Int(3)));
+        assert!(matches!(v, Value::Int(3)));
     }
 
     #[test]
     fn pipe_into_call_rewrites_during_expansion() {
         let src = "fn add2(x), do: x + 2\nfn main(), do: 1 |> add2()";
-        assert!(matches!(run(src), crate::exec::value::Value::Int(3)));
+        assert!(matches!(run(src), Value::Int(3)));
     }
 
     #[test]
@@ -1652,10 +1629,7 @@ end"#,
 
         assert_call_name(&values[0], "Enum.member?", 2);
         let Expr::UnOp(UnOp::Not, inner) = &values[1].node else {
-            panic!(
-                "expected not wrapping Enum.member?, got {:?}",
-                values[1].node
-            );
+            panic!("expected not wrapping Enum.member?, got {:?}", values[1].node);
         };
         assert_call_name(inner, "Enum.member?", 2);
     }
@@ -1674,13 +1648,13 @@ end"#,
     #[test]
     fn capture_shorthand_desugars_to_runnable_lambda() {
         let src = "fn main() do\n  f = &(&1 + &2)\n  f.(20, 22)\nend";
-        assert!(matches!(run(src), crate::exec::value::Value::Int(42)));
+        assert!(matches!(run(src), Value::Int(42)));
     }
 
     #[test]
     fn bare_capture_arg_desugars_to_identity_lambda() {
         let src = "fn main() do\n  f = &1\n  f.(42)\nend";
-        assert!(matches!(run(src), crate::exec::value::Value::Int(42)));
+        assert!(matches!(run(src), Value::Int(42)));
     }
 
     #[test]
@@ -1709,11 +1683,9 @@ end
         let src = "fn main(), do: 1 + 2";
         let mut prog = parse(src);
         expand_program(&mut prog).expect("expand");
-        let Item::Fn(def) = &*prog.items[0] else {
-            panic!()
-        };
+        let Item::Fn(def) = &*prog.items[0] else { panic!() };
         let body = &def.clauses[0].body;
-        assert!(matches!(body.origin, crate::diag::SpanOrigin::Source));
+        assert!(matches!(body.origin, SpanOrigin::Source));
     }
 
     /// After a macro expands, the synthesized body carries
@@ -1765,10 +1737,7 @@ fn main() do plus_one(41) end
         // Expanded lineage pointing at the original call site, plus a
         // definition span pointing at the defmacro declaration.
         let (macro_call, definition) = match body.origin {
-            crate::diag::SpanOrigin::Expanded {
-                macro_call,
-                definition,
-            } => (macro_call, definition),
+            SpanOrigin::Expanded { macro_call, definition } => (macro_call, definition),
             other => panic!("expected Expanded lineage, got {:?}", other),
         };
         assert_eq!(
@@ -1819,12 +1788,12 @@ fn main() do plus_one(41) end
             panic!("expected BinOp, got {:?}", body.node);
         };
         assert!(
-            matches!(lhs.origin, crate::diag::SpanOrigin::Expanded { .. }),
+            matches!(lhs.origin, SpanOrigin::Expanded { .. }),
             "lhs should carry Expanded lineage, got {:?}",
             lhs.origin
         );
         assert!(
-            matches!(rhs.origin, crate::diag::SpanOrigin::Expanded { .. }),
+            matches!(rhs.origin, SpanOrigin::Expanded { .. }),
             "rhs should carry Expanded lineage, got {:?}",
             rhs.origin
         );
@@ -1872,7 +1841,7 @@ fn main() do m2(40) end
         };
         let body = &def.clauses[0].body;
         match body.origin {
-            crate::diag::SpanOrigin::Expanded { macro_call, .. } => {
+            SpanOrigin::Expanded { macro_call, .. } => {
                 assert_eq!(
                     macro_call, outer_call_span,
                     "outermost call site should win for nested macros"
@@ -1924,10 +1893,7 @@ fn main(), do: answer()
         };
         let body = &answer.clauses[0].body;
         match body.origin {
-            crate::diag::SpanOrigin::Expanded {
-                macro_call,
-                definition,
-            } => {
+            SpanOrigin::Expanded { macro_call, definition } => {
                 assert_eq!(
                     macro_call, macro_call_span,
                     "spliced fn's body should point at the make_const(...) call"
@@ -1959,11 +1925,7 @@ fn main() do loop_m(0) end
         let mut prog = parse(src);
         let err = expand_program(&mut prog).unwrap_err();
         let d = err.to_diagnostic();
-        assert_ne!(
-            d.primary.span,
-            Span::DUMMY,
-            "ExpansionLoop should carry a real span"
-        );
+        assert_ne!(d.primary.span, Span::DUMMY, "ExpansionLoop should carry a real span");
         assert_eq!(d.code, codes::MACRO_EXPANSION_LOOP);
     }
 
@@ -1983,15 +1945,9 @@ fn main() do bad() end
         let err = expand_program(&mut prog).unwrap_err();
         match *err {
             MacroError::BodyFailed {
-                call_span,
-                def_span,
-                ..
+                call_span, def_span, ..
             } => {
-                assert_ne!(
-                    call_span,
-                    Span::DUMMY,
-                    "BodyFailed should carry a real call_span"
-                );
+                assert_ne!(call_span, Span::DUMMY, "BodyFailed should carry a real call_span");
                 let ds = def_span.expect("def_span should be populated");
                 let def_text = &src[ds.start as usize..ds.end as usize];
                 assert!(
@@ -2012,16 +1968,13 @@ fn main() do bad() end
     /// errors out earlier today, but the lineage path stays safe.)
     #[test]
     fn missing_def_span_falls_back_to_none() {
-        use crate::diag::Span;
+        use crate::diag::{FileId, Span};
         // Build a tree manually and stamp with no definition.
         let mut e = Spanned::dummy(Expr::Int(42));
-        let call_span = Span::new(crate::diag::FileId(0), 10, 20);
+        let call_span = Span::new(FileId(0), 10, 20);
         super::stamp_expanded(&mut e, call_span, None);
         match e.origin {
-            crate::diag::SpanOrigin::Expanded {
-                macro_call,
-                definition,
-            } => {
+            SpanOrigin::Expanded { macro_call, definition } => {
                 assert_eq!(macro_call, call_span);
                 assert_eq!(definition, None);
             }

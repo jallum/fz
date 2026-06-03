@@ -4,7 +4,7 @@
 //! `bytes` directly; `locate(span)` computes line/col on demand from a
 //! lazily-built line-offset index.
 
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use serde::{Deserialize, Serialize};
 
@@ -35,7 +35,7 @@ pub struct SourceFile {
     content_hash: u64,
     /// Lazily computed on first `locate` for this file. Each entry is the
     /// byte offset of the start of a line; line 1 starts at byte 0.
-    line_starts: std::sync::OnceLock<Vec<u32>>,
+    line_starts: OnceLock<Vec<u32>>,
 }
 
 impl SourceFile {
@@ -45,7 +45,7 @@ impl SourceFile {
             name,
             bytes,
             content_hash,
-            line_starts: std::sync::OnceLock::new(),
+            line_starts: OnceLock::new(),
         }
     }
 
@@ -132,11 +132,7 @@ impl SourceMap {
         let name = name.into();
         let bytes = bytes.into();
         let hash = content_hash(&bytes);
-        if let Some(i) = self
-            .files
-            .iter()
-            .position(|f| f.name == name && f.content_hash == hash)
-        {
+        if let Some(i) = self.files.iter().position(|f| f.name == name && f.content_hash == hash) {
             return FileId(i as u32);
         }
         let id = FileId(self.files.len() as u32);
@@ -170,9 +166,7 @@ impl SourceMap {
         // draw an empty next-line. `line_end` here points at the '\n' itself
         // (or EOF). The renderer will read line_start..line_end inclusive of
         // any '\r' but exclusive of '\n', which is what we want.
-        let line_end = if line_end > line_start
-            && f.bytes.as_bytes().get((line_end - 1) as usize) == Some(&b'\n')
-        {
+        let line_end = if line_end > line_start && f.bytes.as_bytes().get((line_end - 1) as usize) == Some(&b'\n') {
             line_end - 1
         } else {
             line_end

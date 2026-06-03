@@ -134,15 +134,10 @@ impl Schema {
                 index += 1;
             }
         }
-        panic!(
-            "schema {} has no AnyValue field at offset {}",
-            self.name, field_offset
-        );
+        panic!("schema {} has no AnyValue field at offset {}", self.name, field_offset);
     }
 
-    pub fn any_value_fields_with_kind_offsets(
-        &self,
-    ) -> impl Iterator<Item = (&FieldDescriptor, u32)> {
+    pub fn any_value_fields_with_kind_offsets(&self) -> impl Iterator<Item = (&FieldDescriptor, u32)> {
         let mut index = 0u32;
         self.fields.iter().filter_map(move |field| {
             if field.kind != FieldKind::AnyValue {
@@ -161,9 +156,7 @@ pub struct SchemaRegistry {
 
 impl SchemaRegistry {
     pub fn new() -> Self {
-        Self {
-            schemas: Vec::new(),
-        }
+        Self { schemas: Vec::new() }
     }
 
     pub fn register(&mut self, schema: Schema) -> u32 {
@@ -182,12 +175,7 @@ impl SchemaRegistry {
 
     pub fn closure_env(&mut self, captures: usize) -> u32 {
         let name = format!("ClosureEnv{}", captures);
-        if let Some((id, _)) = self
-            .schemas
-            .iter()
-            .enumerate()
-            .find(|(_, schema)| schema.name == name)
-        {
+        if let Some((id, _)) = self.schemas.iter().enumerate().find(|(_, schema)| schema.name == name) {
             return id as u32;
         }
         self.register(Schema::closure_env(captures))

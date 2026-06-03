@@ -1,7 +1,12 @@
 use crate::frontend::spec_registry::SpecRegistry;
-use crate::fz_ir::{FnId, FnIr, Module, SpecId};
+use crate::fz_ir::{FnId, FnIr, Module, Prim, SpecId, Stmt};
+use crate::ir_dce::collect_used;
+use crate::ir_fold::fold_planned_body;
 use crate::ir_planner::fn_types::{ModulePlan, SpecKey, SpecPlan};
-use crate::types::Types;
+use crate::ir_planner::reachable::each_local_successor_key;
+use crate::ir_planner::reachable_specs;
+use crate::telemetry::Telemetry;
+use crate::types::{ClosureTypes, Ty, Types};
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 pub(crate) struct PlannedProgram<'plan> {
@@ -86,10 +91,10 @@ pub(crate) fn materialize_program<'plan, T>(
     t: &mut T,
     module: &Module,
     module_plan: &'plan ModulePlan,
-    tel: &dyn crate::telemetry::Telemetry,
+    tel: &dyn Telemetry,
 ) -> PlannedProgram<'plan>
 where
-    T: Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
+    T: Types<Ty = Ty> + ClosureTypes,
 {
     let spec_registry = build_spec_registry(t, module, module_plan);
     let spec_keys: Vec<SpecKey> = spec_registry.iter().map(|(_, key)| key.clone()).collect();
@@ -123,7 +128,7 @@ where
         match (spec_fn_indices[sid], spec_plans[sid]) {
             (Some(fn_idx), Some(spec_plan)) => {
                 let mut body = module.fns[fn_idx].clone();
-                let fold_stats = crate::ir_fold::fold_planned_body(t, &mut body, spec_plan);
+                let fold_stats = fold_planned_body(t, &mut body, spec_plan);
                 folded_prim_count += fold_stats.prim_count;
                 folded_branch_count += fold_stats.branch_count;
                 let body_index = bodies.len();
@@ -156,29 +161,18 @@ where
             _ => body_index_by_spec_slot.push(None),
         }
     }
-    let (reachable_specs, reachable_before_body_fold_count, body_fold_reachable_added_count) =
-        compute_reachable_specs(
-            t,
-            module,
-            module_plan,
-            &spec_registry,
-            &spec_keys,
-            &bodies,
-            &body_index_by_spec_slot,
-        );
-    let callable_entries = build_callable_entries(
-        &bodies,
-        &spec_registry,
-        &body_index_by_spec_slot,
-        &reachable_specs,
-    );
-    let make_closure_callable_gaps = make_closure_callable_gap_issues(
+    let (reachable_specs, reachable_before_body_fold_count, body_fold_reachable_added_count) = compute_reachable_specs(
+        t,
         module,
-        &bodies,
+        module_plan,
         &spec_registry,
-        &callable_entries,
-        &reachable_specs,
+        &spec_keys,
+        &bodies,
+        &body_index_by_spec_slot,
     );
+    let callable_entries = build_callable_entries(&bodies, &spec_registry, &body_index_by_spec_slot, &reachable_specs);
+    let make_closure_callable_gaps =
+        make_closure_callable_gap_issues(module, &bodies, &spec_registry, &callable_entries, &reachable_specs);
 
     let planned_body_count = bodies.len();
     let stats = PlannedProgramStats {
@@ -233,19 +227,18 @@ fn make_closure_callable_gap_issues(
         if !reachable_specs.contains(&planned_body.spec_id.0) {
             continue;
         }
-        let used_vars = crate::ir_dce::collect_used(&planned_body.body);
+        let used_vars = collect_used(&planned_body.body);
         for blk in &planned_body.body.blocks {
             for stmt in &blk.stmts {
-                let crate::fz_ir::Stmt::Let(dest, prim) = stmt;
-                let crate::fz_ir::Prim::MakeClosure(_, lam_fn_id, captured) = prim else {
+                let Stmt::Let(dest, prim) = stmt;
+                let Prim::MakeClosure(_, lam_fn_id, captured) = prim else {
                     continue;
                 };
                 if !used_vars.contains(dest) {
                     continue;
                 }
-                let resolved = spec_registry.resolve_closure_body_spec(*lam_fn_id, |sid| {
-                    callable_entries.contains_key(&sid.0)
-                });
+                let resolved =
+                    spec_registry.resolve_closure_body_spec(*lam_fn_id, |sid| callable_entries.contains_key(&sid.0));
                 if resolved.is_some() {
                     continue;
                 }
@@ -278,15 +271,10 @@ fn compute_reachable_specs<T>(
     body_index_by_spec_slot: &[Option<usize>],
 ) -> (HashSet<u32>, usize, usize)
 where
-    T: Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
+    T: Types<Ty = Ty> + ClosureTypes,
 {
-    let mut reachable =
-        crate::ir_planner::reachable_specs(t, module, spec_registry, module_plan, []);
-    let is_executable = |sid: &u32| {
-        body_index_by_spec_slot
-            .get(*sid as usize)
-            .is_some_and(Option::is_some)
-    };
+    let mut reachable = reachable_specs(t, module, spec_registry, module_plan, []);
+    let is_executable = |sid: &u32| body_index_by_spec_slot.get(*sid as usize).is_some_and(Option::is_some);
     let before_body_fold = reachable.iter().filter(|sid| is_executable(sid)).count();
     augment_reachable_from_planned_bodies(
         t,
@@ -303,9 +291,7 @@ where
     (reachable, before_body_fold, added_by_body_fold)
 }
 
-fn augment_reachable_from_planned_bodies<
-    T: Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
->(
+fn augment_reachable_from_planned_bodies<T: Types<Ty = Ty> + ClosureTypes>(
     t: &mut T,
     _module: &Module,
     module_plan: &ModulePlan,
@@ -317,10 +303,7 @@ fn augment_reachable_from_planned_bodies<
 ) {
     let mut worklist: Vec<u32> = reached.iter().copied().collect();
     while let Some(sid) = worklist.pop() {
-        let Some(body_index) = body_index_by_spec_slot
-            .get(sid as usize)
-            .and_then(|idx| *idx)
-        else {
+        let Some(body_index) = body_index_by_spec_slot.get(sid as usize).and_then(|idx| *idx) else {
             continue;
         };
         let body = &bodies[body_index].body;
@@ -330,8 +313,8 @@ fn augment_reachable_from_planned_bodies<
         let Some(ft) = module_plan.specs.get(key) else {
             continue;
         };
-        let used_vars = crate::ir_dce::collect_used(body);
-        crate::ir_planner::reachable::each_local_successor_key(body, ft, |target| {
+        let used_vars = collect_used(body);
+        each_local_successor_key(body, ft, |target| {
             if let Some(next) = spec_registry.resolve_spec_key(t, target)
                 && reached.insert(next.0)
             {
@@ -340,17 +323,15 @@ fn augment_reachable_from_planned_bodies<
         });
         for blk in &body.blocks {
             for stmt in &blk.stmts {
-                let crate::fz_ir::Stmt::Let(dest, prim) = stmt;
-                let crate::fz_ir::Prim::MakeClosure(_, lam_fn_id, _) = prim else {
+                let Stmt::Let(dest, prim) = stmt;
+                let Prim::MakeClosure(_, lam_fn_id, _) = prim else {
                     continue;
                 };
                 if !used_vars.contains(dest) {
                     continue;
                 }
                 let Some(next) = spec_registry.resolve_closure_body_spec(*lam_fn_id, |sid| {
-                    body_index_by_spec_slot
-                        .get(sid.0 as usize)
-                        .is_some_and(Option::is_some)
+                    body_index_by_spec_slot.get(sid.0 as usize).is_some_and(Option::is_some)
                 }) else {
                     continue;
                 };
@@ -375,20 +356,16 @@ fn build_callable_entries(
     reachable_specs: &HashSet<u32>,
 ) -> BTreeMap<u32, CallableEntryPlan> {
     let mut callable_entries = BTreeMap::new();
-    let has_body = |sid: SpecId| {
-        body_index_by_spec_slot
-            .get(sid.0 as usize)
-            .is_some_and(Option::is_some)
-    };
+    let has_body = |sid: SpecId| body_index_by_spec_slot.get(sid.0 as usize).is_some_and(Option::is_some);
     for planned_body in bodies {
         if !reachable_specs.contains(&planned_body.spec_id.0) {
             continue;
         }
-        let used_vars = crate::ir_dce::collect_used(&planned_body.body);
+        let used_vars = collect_used(&planned_body.body);
         for blk in &planned_body.body.blocks {
             for stmt in blk.stmts.iter() {
-                let crate::fz_ir::Stmt::Let(dest, prim) = stmt;
-                if let crate::fz_ir::Prim::MakeClosure(_ident, lam_fn_id, captured) = prim {
+                let Stmt::Let(dest, prim) = stmt;
+                if let Prim::MakeClosure(_ident, lam_fn_id, captured) = prim {
                     if !used_vars.contains(dest) {
                         continue;
                     }
@@ -411,11 +388,7 @@ fn build_callable_entries(
     callable_entries
 }
 
-fn build_spec_registry<T: Types<Ty = crate::types::Ty>>(
-    t: &mut T,
-    module: &Module,
-    module_plan: &ModulePlan,
-) -> SpecRegistry {
+fn build_spec_registry<T: Types<Ty = Ty>>(t: &mut T, module: &Module, module_plan: &ModulePlan) -> SpecRegistry {
     let mut spec_registry = SpecRegistry::new();
     let mut fns_by_fnid: Vec<&FnIr> = module.fns.iter().collect();
     fns_by_fnid.sort_by_key(|f| f.id.0);

@@ -1,4 +1,6 @@
+use crate::type_expr::opaque_owner_module;
 use crate::types::Types;
+use std::fmt::{self, Display, Formatter};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OpaqueVisibilityError {
@@ -7,8 +9,8 @@ pub struct OpaqueVisibilityError {
     pub using_module: String,
 }
 
-impl std::fmt::Display for OpaqueVisibilityError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl Display for OpaqueVisibilityError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         write!(
             f,
             "field of opaque type `{}` is not accessible from module `{}` \
@@ -18,11 +20,8 @@ impl std::fmt::Display for OpaqueVisibilityError {
     }
 }
 
-pub(crate) fn check_brand_mint_visibility(
-    brand_tag: &str,
-    using_module: &str,
-) -> Result<(), OpaqueVisibilityError> {
-    let Some(owner) = crate::type_expr::opaque_owner_module(brand_tag) else {
+pub(crate) fn check_brand_mint_visibility(brand_tag: &str, using_module: &str) -> Result<(), OpaqueVisibilityError> {
+    let Some(owner) = opaque_owner_module(brand_tag) else {
         return Ok(());
     };
     if owner == using_module {
@@ -41,31 +40,24 @@ pub trait VisibilityTypes: Types {
     /// visible from `using_module`. If `a` is not a pure opaque, or is
     /// a built-in opaque with no owner module, the check trivially
     /// succeeds.
-    fn check_opaque_visibility(
-        &self,
-        a: &Self::Ty,
-        using_module: &str,
-    ) -> Result<(), OpaqueVisibilityError>;
+    fn check_opaque_visibility(&self, a: &Self::Ty, using_module: &str) -> Result<(), OpaqueVisibilityError>;
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ast::Attribute;
     use crate::type_expr::{
-        ModuleTypeEnv, build_module_type_env_for_with_base, opaque_owner_module,
-        qualify_opaque_name,
+        ModuleTypeEnv, build_module_type_env_for_with_base, opaque_owner_module, qualify_opaque_name,
     };
     use crate::types::{ConcreteTypes, Types};
 
-    fn alias_attr(name: &str, body_src: &str) -> crate::ast::Attribute {
+    fn alias_attr(name: &str, body_src: &str) -> Attribute {
         use crate::ast::{Attribute, TypeAliasDecl, TypeExprBody};
         use crate::diag::Span;
         use crate::parser::lexer::{Lexer, Tok};
         let toks = Lexer::new(body_src).tokenize().expect("lex body");
-        let body_tokens: Vec<_> = toks
-            .into_iter()
-            .filter(|t| !matches!(t.tok, Tok::Eof))
-            .collect();
+        let body_tokens: Vec<_> = toks.into_iter().filter(|t| !matches!(t.tok, Tok::Eof)).collect();
         Attribute::TypeAlias(TypeAliasDecl {
             name: name.to_string(),
             name_span: Span::DUMMY,
@@ -75,7 +67,7 @@ mod tests {
         })
     }
 
-    fn env_for(module: &str, attrs: &[crate::ast::Attribute]) -> ModuleTypeEnv {
+    fn env_for(module: &str, attrs: &[Attribute]) -> ModuleTypeEnv {
         let mut ct = ConcreteTypes;
         build_module_type_env_for_with_base(&mut ct, attrs, module, &ModuleTypeEnv::new())
             .expect("build env")
@@ -120,9 +112,7 @@ mod tests {
         let env = env_for("File", &attrs);
         let ct = ConcreteTypes;
         let t = env.get("t").unwrap();
-        let err = ct
-            .check_opaque_visibility(t, "Other")
-            .expect_err("must reject");
+        let err = ct.check_opaque_visibility(t, "Other").expect_err("must reject");
         assert_eq!(err.opaque, "File::t");
         assert_eq!(err.owner_module, "File");
         assert_eq!(err.using_module, "Other");

@@ -14,7 +14,10 @@
 //! so the plan survives compaction).
 
 use std::collections::HashMap;
+use std::hash::Hash;
 use std::sync::Arc;
+#[cfg(test)]
+use std::sync::LazyLock;
 
 pub use crate::concrete_types::ConcreteTypes;
 use crate::concrete_types::Descr;
@@ -51,10 +54,7 @@ impl<T> Clone for Nominals<'_, T> {
 impl<T> Copy for Nominals<'_, T> {}
 
 impl<'a, T> Nominals<'a, T> {
-    pub fn new(
-        brand_inners: &'a HashMap<String, T>,
-        opaque_inners: &'a HashMap<String, T>,
-    ) -> Self {
+    pub fn new(brand_inners: &'a HashMap<String, T>, opaque_inners: &'a HashMap<String, T>) -> Self {
         Self {
             brand_inners,
             opaque_inners,
@@ -68,8 +68,7 @@ impl Nominals<'static, Ty> {
     /// so a tag-free fold need not own a map. Only tests construct one
     /// directly; production threads `Module::nominals` / `SpecPlan::nominals`.
     pub fn empty() -> Self {
-        static EMPTY: std::sync::LazyLock<HashMap<String, Ty>> =
-            std::sync::LazyLock::new(HashMap::new);
+        static EMPTY: LazyLock<HashMap<String, Ty>> = LazyLock::new(HashMap::new);
         Self {
             brand_inners: &EMPTY,
             opaque_inners: &EMPTY,
@@ -106,9 +105,7 @@ pub fn key_slot_var_count<T: Types<Ty = Ty>>(t: &T, key: &[KeySlot]) -> usize {
 }
 
 pub fn key_slots_to_tys<T: Types<Ty = Ty>>(t: &mut T, key: &[KeySlot]) -> Vec<Ty> {
-    key.iter()
-        .map(|slot| slot.clone().unwrap_or_else(|| t.any()))
-        .collect()
+    key.iter().map(|slot| slot.clone().unwrap_or_else(|| t.any())).collect()
 }
 
 pub fn display_key_slots<T: RenderTypes<Ty = Ty>>(t: &T, key: &[KeySlot]) -> String {
@@ -133,7 +130,7 @@ pub type Sigma<T> = HashMap<TypeVarId, T>;
 /// memoization) populate state on construction calls and read it on
 /// queries.
 pub trait Types {
-    type Ty: Clone + Eq + std::hash::Hash;
+    type Ty: Clone + Eq + Hash;
 
     // ---- constructors --------------------------------------------------
 
@@ -267,22 +264,12 @@ pub trait Types {
     /// no two runtime values of `a`/`b` can ever be equal / match. The ONLY
     /// disjointness that may authorize folding `==`/`!=` or pruning a pattern
     /// arm. Tags are discharged through `nominals`.
-    fn is_value_disjoint(
-        &self,
-        a: &Self::Ty,
-        b: &Self::Ty,
-        nominals: Nominals<'_, Self::Ty>,
-    ) -> bool;
+    fn is_value_disjoint(&self, a: &Self::Ty, b: &Self::Ty, nominals: Nominals<'_, Self::Ty>) -> bool;
     /// True iff `a`/`b` are brand-AWARE disjoint yet NOT value-disjoint: they
     /// differ only by a brand/opaque the runtime erases. This is exactly the
     /// set of comparisons the old brand-aware fold broke; consumers emit a
     /// telemetry signal on it.
-    fn differs_only_nominally(
-        &self,
-        a: &Self::Ty,
-        b: &Self::Ty,
-        nominals: Nominals<'_, Self::Ty>,
-    ) -> bool {
+    fn differs_only_nominally(&self, a: &Self::Ty, b: &Self::Ty, nominals: Nominals<'_, Self::Ty>) -> bool {
         self.is_disjoint(a, b) && !self.is_value_disjoint(a, b, nominals)
     }
     fn is_equivalent(&self, a: &Self::Ty, b: &Self::Ty) -> bool;
@@ -292,12 +279,7 @@ pub trait Types {
     fn key_var_count(&self, key: &[Self::Ty]) -> usize;
 
     /// Query-key subsumption with positional type-var binding for spec lookup.
-    fn key_subsumes_with(
-        &self,
-        query: &Self::Ty,
-        key: &Self::Ty,
-        sigma: &mut Sigma<Self::Ty>,
-    ) -> bool;
+    fn key_subsumes_with(&self, query: &Self::Ty, key: &Self::Ty, sigma: &mut Sigma<Self::Ty>) -> bool;
 
     /// True iff `lhs` is strictly more specific than `rhs` positionwise:
     /// every element of `lhs` is a subtype of the corresponding element
@@ -308,10 +290,7 @@ pub trait Types {
                 .iter()
                 .zip(rhs.iter())
                 .fold((true, false), |(all_le, any_strict), (l, r)| {
-                    (
-                        all_le && self.is_subtype(l, r),
-                        any_strict || !self.is_subtype(r, l),
-                    )
+                    (all_le && self.is_subtype(l, r), any_strict || !self.is_subtype(r, l))
                 })
                 == (true, true)
     }
@@ -375,12 +354,7 @@ pub trait Types {
     // ---- substitution --------------------------------------------------
 
     fn instantiate(&mut self, a: &Self::Ty, sigma: &Sigma<Self::Ty>) -> Self::Ty;
-    fn collect_instantiation_subst(
-        &mut self,
-        pattern: &Self::Ty,
-        witness: &Self::Ty,
-        sigma: &mut Sigma<Self::Ty>,
-    );
+    fn collect_instantiation_subst(&mut self, pattern: &Self::Ty, witness: &Self::Ty, sigma: &mut Sigma<Self::Ty>);
 
     // ---- adoption-ease predicates -------------------------------------
 
@@ -452,14 +426,12 @@ mod conformance_tests {
                     let mut t = $ctor;
                     let int = t.int();
                     let int_lit = t.int_lit(7);
-                    assert!(t.key_is_strictly_more_specific(
-                        std::slice::from_ref(&int_lit),
-                        std::slice::from_ref(&int)
-                    ));
-                    assert!(!t.key_is_strictly_more_specific(
-                        std::slice::from_ref(&int),
-                        std::slice::from_ref(&int_lit)
-                    ));
+                    assert!(
+                        t.key_is_strictly_more_specific(std::slice::from_ref(&int_lit), std::slice::from_ref(&int))
+                    );
+                    assert!(
+                        !t.key_is_strictly_more_specific(std::slice::from_ref(&int), std::slice::from_ref(&int_lit))
+                    );
                 }
             }
         };
@@ -644,6 +616,7 @@ mod conformance_tests {
 #[cfg(test)]
 mod smoke {
     use super::*;
+    use std::slice::from_ref;
 
     pub(super) fn smoke_primitives_distinct<T: Types>(t: &mut T) {
         let i = t.int();
@@ -727,7 +700,7 @@ mod smoke {
         let i = t.int();
         let wide = t.arrow(&[any], i.clone());
         let arg = i.clone();
-        let narrow = t.arrow(std::slice::from_ref(&arg), i);
+        let narrow = t.arrow(from_ref(&arg), i);
         assert!(t.is_subtype(&wide, &narrow));
     }
 

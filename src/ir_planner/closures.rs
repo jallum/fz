@@ -1,55 +1,44 @@
 use super::fn_types::{CapabilityPlan, ReturnDemand, SpecKey, fixed_point_spec_key_for_arity};
-use crate::fz_ir::{FnId, Module, Prim, Stmt, Term, Var};
+use crate::diag::Span;
+use crate::fz_ir::{CallsiteIdent, Cont, FnId, Module, Prim, Stmt, Term, Var, visit_prim_vars};
+use crate::types::{CallableClause, ClosureTarget, ClosureTypes, Ty, Types, key_slots_observed};
 use std::collections::{BTreeSet, HashMap, HashSet};
 
 /// Resolve a closure call's return type for this call site's argument types.
 ///
 /// Translates value-demand `effective_returns` into the closure-target return
 /// table expected by the specs matcher, then delegates.
-pub fn resolve_closure_return<
-    T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
->(
+pub fn resolve_closure_return<T: Types<Ty = Ty> + ClosureTypes>(
     t: &mut T,
-    closure_ty: &crate::types::Ty,
-    effective_returns: &HashMap<SpecKey, crate::types::Ty>,
-    arg_tys: &[crate::types::Ty],
+    closure_ty: &Ty,
+    effective_returns: &HashMap<SpecKey, Ty>,
+    arg_tys: &[Ty],
 ) -> Option<T::Ty> {
-    let translated: HashMap<
-        (crate::types::ClosureTarget, Vec<crate::types::Ty>),
-        crate::types::Ty,
-    > = effective_returns
+    let translated: HashMap<(ClosureTarget, Vec<Ty>), Ty> = effective_returns
         .iter()
         .filter_map(|(key, ty)| {
             if !key.demand.is_value() || key.input.iter().any(Option::is_none) {
                 return None;
             }
-            Some((
-                (
-                    key.fn_id.into(),
-                    crate::types::key_slots_observed(&key.input),
-                ),
-                ty.clone(),
-            ))
+            Some(((key.fn_id.into(), key_slots_observed(&key.input)), ty.clone()))
         })
         .collect();
     crate::specs::resolve_closure_return(t, closure_ty, &translated, arg_tys)
 }
 
-pub fn literal_closure_return_keys<
-    T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
->(
+pub fn literal_closure_return_keys<T: Types<Ty = Ty> + ClosureTypes>(
     t: &mut T,
     module: &Module,
-    recursive_fns: &std::collections::HashSet<FnId>,
+    recursive_fns: &HashSet<FnId>,
     caller: FnId,
-    closure_ty: &crate::types::Ty,
-    arg_tys: &[crate::types::Ty],
+    closure_ty: &Ty,
+    arg_tys: &[Ty],
     demand: Option<ReturnDemand>,
 ) -> Option<Vec<SpecKey>> {
     let clauses = t.callable_clauses(closure_ty)?;
     let mut keys = Vec::new();
     for clause in clauses {
-        let crate::types::CallableClause {
+        let CallableClause {
             args,
             closure: Some(closure),
             ..
@@ -86,9 +75,7 @@ pub fn literal_closure_return_keys<
 ///
 /// Module mutation only; callers re-run `plan_module` afterwards to
 /// refresh `ModulePlan` against the rewritten IR.
-pub fn rewrite_known_target_closures<
-    T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
->(
+pub fn rewrite_known_target_closures<T: Types<Ty = Ty> + ClosureTypes>(
     _t: &mut T,
     module: &mut Module,
     types: &CapabilityPlan,
@@ -117,9 +104,7 @@ pub fn rewrite_known_target_closures<
                 } => {
                     if let Some(Some(target)) = map.get(closure).copied() {
                         Some(Term::Call {
-                            ident: crate::fz_ir::CallsiteIdent::from_source(
-                                crate::diag::Span::DUMMY,
-                            ),
+                            ident: CallsiteIdent::from_source(Span::DUMMY),
                             callee: target,
                             args: args.clone(),
                             continuation: continuation.clone(),
@@ -135,9 +120,7 @@ pub fn rewrite_known_target_closures<
                 } => {
                     if let Some(Some(target)) = map.get(closure).copied() {
                         Some(Term::TailCall {
-                            ident: crate::fz_ir::CallsiteIdent::from_source(
-                                crate::diag::Span::DUMMY,
-                            ),
+                            ident: CallsiteIdent::from_source(Span::DUMMY),
                             callee: target,
                             args: args.clone(),
                             is_back_edge: false,
@@ -203,10 +186,7 @@ fn merge_non_constant_callable(entry: &mut HashMap<Var, Option<FnId>>, var: Var)
 /// untouched. Captures with state are excluded up front only for the candidate
 /// closure itself; carrying the candidate through another closure's captured
 /// params is allowed when those target entry slots are also being vacated.
-fn eliminate_constant_closure_values(
-    module: &mut Module,
-    unified: &HashMap<FnId, HashMap<Var, Option<FnId>>>,
-) {
+fn eliminate_constant_closure_values(module: &mut Module, unified: &HashMap<FnId, HashMap<Var, Option<FnId>>>) {
     // A lambda is a candidate only if *every* MakeClosure that targets it is
     // zero-capture (a bare function pointer). A captured-state site for the
     // same lambda would lose state if we deleted it, so one such site
@@ -246,9 +226,8 @@ fn eliminate_constant_closure_values(
     let mut remove_makeclosure: HashSet<(FnId, Var)> = HashSet::new();
 
     'candidate: for fid in candidates {
-        let tainted = |fn_id: FnId, v: Var| -> bool {
-            unified.get(&fn_id).and_then(|m| m.get(&v)).copied() == Some(Some(fid))
-        };
+        let tainted =
+            |fn_id: FnId, v: Var| -> bool { unified.get(&fn_id).and_then(|m| m.get(&v)).copied() == Some(Some(fid)) };
 
         // Tainted entry-parameter positions per fn: the slots this candidate
         // would vacate. Drives the call-site/capture consistency checks below.
@@ -260,9 +239,8 @@ fn eliminate_constant_closure_values(
                 }
             }
         }
-        let param_tainted = |fn_id: FnId, pos: usize| -> bool {
-            tainted_params.get(&fn_id).is_some_and(|s| s.contains(&pos))
-        };
+        let param_tainted =
+            |fn_id: FnId, pos: usize| -> bool { tainted_params.get(&fn_id).is_some_and(|s| s.contains(&pos)) };
 
         let mut cand_makeclosure: HashSet<(FnId, Var)> = HashSet::new();
 
@@ -278,12 +256,13 @@ fn eliminate_constant_closure_values(
                         continue;
                     }
                     if let Prim::MakeClosure(_, g, caps) = prim {
-                        let captures_ok = caps.iter().enumerate().all(|(pos, captured)| {
-                            !tainted(f.id, *captured) || param_tainted(*g, pos)
-                        });
+                        let captures_ok = caps
+                            .iter()
+                            .enumerate()
+                            .all(|(pos, captured)| !tainted(f.id, *captured) || param_tainted(*g, pos));
                         if captures_ok {
                             let mut observed = tainted(f.id, *out);
-                            crate::fz_ir::visit_prim_vars(prim, |v| {
+                            visit_prim_vars(prim, |v| {
                                 if caps.contains(&v) && tainted(f.id, v) {
                                     return;
                                 }
@@ -298,7 +277,7 @@ fn eliminate_constant_closure_values(
                     // bound by a non-source prim, means the closure is observed
                     // as data — not a pure pass-through. Bail.
                     let mut observed = tainted(f.id, *out);
-                    crate::fz_ir::visit_prim_vars(prim, |v| observed |= tainted(f.id, v));
+                    visit_prim_vars(prim, |v| observed |= tainted(f.id, v));
                     if observed {
                         continue 'candidate;
                     }
@@ -331,13 +310,7 @@ fn eliminate_constant_closure_values(
                                 continue 'candidate;
                             }
                         }
-                        if !cont_captures_consistent(
-                            continuation,
-                            f.id,
-                            &orig_param_count,
-                            &tainted,
-                            &param_tainted,
-                        ) {
+                        if !cont_captures_consistent(continuation, f.id, &orig_param_count, &tainted, &param_tainted) {
                             continue 'candidate;
                         }
                     }
@@ -371,12 +344,8 @@ fn eliminate_constant_closure_values(
                             continue 'candidate;
                         }
                     }
-                    Term::ReceiveMatched {
-                        pinned, captures, ..
-                    } => {
-                        if pinned.iter().any(|(_, v)| tainted(f.id, *v))
-                            || captures.iter().any(|v| tainted(f.id, *v))
-                        {
+                    Term::ReceiveMatched { pinned, captures, .. } => {
+                        if pinned.iter().any(|(_, v)| tainted(f.id, *v)) || captures.iter().any(|v| tainted(f.id, *v)) {
                             continue 'candidate;
                         }
                     }
@@ -413,14 +382,11 @@ fn eliminate_constant_closure_values(
             if !f.ignored_entry_params.is_empty() {
                 retain_by_position(&mut f.ignored_entry_params, positions);
             }
-            f.physical_entry_params
-                .retain(|v| !removed_vars.contains(v));
+            f.physical_entry_params.retain(|v| !removed_vars.contains(v));
         }
         for b in &mut f.blocks {
             b.stmts.retain_mut(|Stmt::Let(out, prim)| {
-                if matches!(prim, Prim::MakeClosure(_, _, _))
-                    && remove_makeclosure.contains(&(f.id, *out))
-                {
+                if matches!(prim, Prim::MakeClosure(_, _, _)) && remove_makeclosure.contains(&(f.id, *out)) {
                     return false;
                 }
                 if let Prim::MakeClosure(_, target, captured) = prim
@@ -466,7 +432,7 @@ fn eliminate_constant_closure_values(
 /// Validate that every tainted continuation capture lands on a param slot we
 /// will vacate — so dropping the capture and the param stay in lockstep.
 fn cont_captures_consistent(
-    continuation: &crate::fz_ir::Cont,
+    continuation: &Cont,
     caller: FnId,
     orig_param_count: &HashMap<FnId, usize>,
     tainted: &impl Fn(FnId, Var) -> bool,
@@ -488,17 +454,14 @@ fn cont_captures_consistent(
 
 /// Drop the continuation captures whose target param slot is being vacated.
 fn drop_cont_captures(
-    continuation: &mut crate::fz_ir::Cont,
+    continuation: &mut Cont,
     remove_param_pos: &HashMap<FnId, BTreeSet<usize>>,
     orig_param_count: &HashMap<FnId, usize>,
 ) {
     let Some(positions) = remove_param_pos.get(&continuation.fn_id) else {
         return;
     };
-    let kcount = orig_param_count
-        .get(&continuation.fn_id)
-        .copied()
-        .unwrap_or(0);
+    let kcount = orig_param_count.get(&continuation.fn_id).copied().unwrap_or(0);
     let offset = kcount - continuation.captured.len();
     let mut i = 0;
     continuation.captured.retain(|_| {

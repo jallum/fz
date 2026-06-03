@@ -1,30 +1,28 @@
 use super::*;
 
+use crate::ast::{Attribute, SpecDecl, TypeAliasDecl};
+use crate::types::{Ty, TypeVarId};
+use std::collections::HashSet;
+
 /// fz-ul4.31.4 — Lower a `SpecDecl`'s body tokens into concrete types
 /// against the module's type env. Surfaces unknown-name errors from
 /// `parse_type_expr` directly. Caller is responsible for arity / name
 /// validation against the target fn (the parser already enforces this
 /// at parse time).
-pub fn resolve_spec_decl<T>(
-    t: &mut T,
-    decl: &crate::ast::SpecDecl,
-    env: &ModuleTypeEnv,
-) -> Result<ResolvedSpec, TypeExprError>
+pub fn resolve_spec_decl<T>(t: &mut T, decl: &SpecDecl, env: &ModuleTypeEnv) -> Result<ResolvedSpec, TypeExprError>
 where
-    T: Types<Ty = crate::types::Ty>,
+    T: Types<Ty = Ty>,
 {
-    let mut vars: HashMap<String, crate::types::TypeVarId> = HashMap::new();
+    let mut vars: HashMap<String, TypeVarId> = HashMap::new();
     let mut params = Vec::with_capacity(decl.param_body_tokens.len());
     let mut param_shapes = Vec::with_capacity(decl.param_body_tokens.len());
     for body in &decl.param_body_tokens {
         let (ty, _consumed) = super::parser::parse_type_expr_with_vars(t, &body.0, env, &mut vars)?;
-        let (shape, _consumed) =
-            super::parser::parse_type_shape_with_vars(&body.0, env, &mut vars)?;
+        let (shape, _consumed) = super::parser::parse_type_shape_with_vars(&body.0, env, &mut vars)?;
         params.push(ty);
         param_shapes.push(shape);
     }
-    let (result, _consumed) =
-        super::parser::parse_type_expr_with_vars(t, &decl.result_body_tokens.0, env, &mut vars)?;
+    let (result, _consumed) = super::parser::parse_type_expr_with_vars(t, &decl.result_body_tokens.0, env, &mut vars)?;
     let (result_shape, _consumed) =
         super::parser::parse_type_shape_with_vars(&decl.result_body_tokens.0, env, &mut vars)?;
     let mut constraints = HashMap::new();
@@ -32,11 +30,7 @@ where
         let Some(id) = vars.get(name).copied() else {
             return Err(TypeExprError {
                 msg: format!("constraint references unknown type variable `{}`", name),
-                span: body
-                    .0
-                    .first()
-                    .map(|tok| tok.span)
-                    .unwrap_or(crate::diag::Span::DUMMY),
+                span: body.0.first().map(|tok| tok.span).unwrap_or(Span::DUMMY),
             });
         };
         let (bound, _consumed) = parse_type_expr(t, &body.0, env)?;
@@ -57,15 +51,11 @@ where
 /// Used by protocol callback-spec compatibility checking, where a domain-applied
 /// position (`t(a)`) may not resolve yet while the result and other params still
 /// can.
-pub fn resolve_spec_decl_positions<T>(
-    t: &mut T,
-    decl: &crate::ast::SpecDecl,
-    env: &ModuleTypeEnv,
-) -> (Vec<Option<crate::types::Ty>>, Option<crate::types::Ty>)
+pub fn resolve_spec_decl_positions<T>(t: &mut T, decl: &SpecDecl, env: &ModuleTypeEnv) -> (Vec<Option<Ty>>, Option<Ty>)
 where
-    T: Types<Ty = crate::types::Ty>,
+    T: Types<Ty = Ty>,
 {
-    let mut vars: HashMap<String, crate::types::TypeVarId> = HashMap::new();
+    let mut vars: HashMap<String, TypeVarId> = HashMap::new();
     let params = decl
         .param_body_tokens
         .iter()
@@ -75,10 +65,9 @@ where
                 .map(|(ty, _consumed)| ty)
         })
         .collect();
-    let result =
-        super::parser::parse_type_expr_with_vars(t, &decl.result_body_tokens.0, env, &mut vars)
-            .ok()
-            .map(|(ty, _consumed)| ty);
+    let result = super::parser::parse_type_expr_with_vars(t, &decl.result_body_tokens.0, env, &mut vars)
+        .ok()
+        .map(|(ty, _consumed)| ty);
     (params, result)
 }
 
@@ -97,15 +86,11 @@ where
 /// Opaque names declared via the empty path are unqualified, which means
 /// they have no module owner for visibility purposes (see fz-swt.6).
 #[cfg(test)]
-pub fn build_module_type_env<T>(
-    t: &mut T,
-    attrs: &[crate::ast::Attribute],
-) -> Result<ModuleTypeEnv, TypeExprError>
+pub fn build_module_type_env<T>(t: &mut T, attrs: &[Attribute]) -> Result<ModuleTypeEnv, TypeExprError>
 where
-    T: Types<Ty = crate::types::Ty>,
+    T: Types<Ty = Ty>,
 {
-    build_module_type_env_for_with_base(t, attrs, "", &ModuleTypeEnv::new())
-        .map(|(env, _o, _b)| env)
+    build_module_type_env_for_with_base(t, attrs, "", &ModuleTypeEnv::new()).map(|(env, _o, _b)| env)
 }
 
 /// fz-swt.6 — like `build_module_type_env`, but threads the enclosing
@@ -119,28 +104,23 @@ where
 /// module against the using module.
 pub fn build_module_type_env_for_with_base<T>(
     t: &mut T,
-    attrs: &[crate::ast::Attribute],
+    attrs: &[Attribute],
     module_path: &str,
     base_env: &ModuleTypeEnv,
 ) -> Result<(ModuleTypeEnv, OpaqueInnerTypes, BrandInnerTypes), TypeExprError>
 where
-    T: Types<Ty = crate::types::Ty>,
+    T: Types<Ty = Ty>,
 {
-    use crate::ast::Attribute;
-    let mut pending: HashMap<String, &crate::ast::TypeAliasDecl> = HashMap::new();
+    let mut pending: HashMap<String, &TypeAliasDecl> = HashMap::new();
     let mut order: Vec<String> = Vec::new();
-    let mut seen: HashMap<(String, usize), crate::diag::Span> = HashMap::new();
+    let mut seen: HashMap<(String, usize), Span> = HashMap::new();
     let mut param_aliases = Vec::new();
     for a in attrs {
         if let Attribute::TypeAlias(decl) = a {
             let key = (decl.name.clone(), decl.params.len());
             if seen.insert(key.clone(), decl.name_span).is_some() {
                 return Err(TypeExprError {
-                    msg: format!(
-                        "duplicate @type alias `{}/{}`",
-                        decl.name,
-                        decl.params.len()
-                    ),
+                    msg: format!("duplicate @type alias `{}/{}`", decl.name, decl.params.len()),
                     span: decl.name_span,
                 });
             }
@@ -154,14 +134,10 @@ where
         }
     }
     if pending.is_empty() && param_aliases.is_empty() {
-        return Ok((
-            base_env.clone(),
-            OpaqueInnerTypes::new(),
-            BrandInnerTypes::new(),
-        ));
+        return Ok((base_env.clone(), OpaqueInnerTypes::new(), BrandInnerTypes::new()));
     }
     let mut env: ModuleTypeEnv = base_env.clone();
-    let mut resolved: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut resolved: HashSet<String> = HashSet::new();
     for decl in param_aliases {
         env.insert_param_alias(
             decl.name.clone(),
@@ -225,10 +201,7 @@ where
                     }
                     Ok((_record, _ty, _consumed)) => {
                         return Err(TypeExprError {
-                            msg: format!(
-                                "unexpected trailing tokens in struct record type alias `{}`",
-                                name
-                            ),
+                            msg: format!("unexpected trailing tokens in struct record type alias `{}`", name),
                             span: decl.span,
                         });
                     }
@@ -344,10 +317,7 @@ where
             }
             if let Some(partner) = cycle_partner {
                 return Err(TypeExprError {
-                    msg: format!(
-                        "type-alias cycle: `{}` and `{}` depend on each other",
-                        name, partner
-                    ),
+                    msg: format!("type-alias cycle: `{}` and `{}` depend on each other", name, partner),
                     span: decl.span,
                 });
             }
@@ -362,8 +332,8 @@ where
     Ok((env, opaque_inners, brand_inners))
 }
 
-fn validate_type_alias_params(decl: &crate::ast::TypeAliasDecl) -> Result<(), TypeExprError> {
-    let mut seen = std::collections::HashSet::new();
+fn validate_type_alias_params(decl: &TypeAliasDecl) -> Result<(), TypeExprError> {
+    let mut seen = HashSet::new();
     for param in &decl.params {
         if is_reserved_type_name(param) {
             return Err(TypeExprError {
@@ -381,26 +351,14 @@ fn validate_type_alias_params(decl: &crate::ast::TypeAliasDecl) -> Result<(), Ty
     Ok(())
 }
 
-fn validate_param_aliases<T: crate::types::Types<Ty = crate::types::Ty>>(
-    t: &mut T,
-    env: &ModuleTypeEnv,
-) -> Result<(), TypeExprError> {
+fn validate_param_aliases<T: Types<Ty = Ty>>(t: &mut T, env: &ModuleTypeEnv) -> Result<(), TypeExprError> {
     for ((name, arity), alias) in env.param_aliases() {
         let mut local = env.clone();
         for (idx, param) in alias.params.iter().enumerate() {
-            local.insert(
-                param.clone(),
-                t.type_var(crate::types::TypeVarId(idx as u32)),
-            );
+            local.insert(param.clone(), t.type_var(TypeVarId(idx as u32)));
         }
         let stack = vec![(name.clone(), *arity)];
-        let (.., consumed) = super::parser::parse_type_expr_with_stack(
-            t,
-            &alias.body_tokens.0,
-            &local,
-            None,
-            stack,
-        )?;
+        let (.., consumed) = super::parser::parse_type_expr_with_stack(t, &alias.body_tokens.0, &local, None, stack)?;
         if consumed != alias.body_tokens.0.len() {
             return Err(TypeExprError {
                 msg: "unexpected trailing tokens in parameterized type alias body".to_string(),
@@ -434,14 +392,10 @@ pub fn qualify_opaque_name(module_path: &str, alias: &str) -> String {
 /// can extract the payload type T rather than the wrapper opaque tag.
 /// Pure tokenwise match; semantic resolution still goes through
 /// `parse_resource_payload_type` below.
-fn starts_with_resource_constructor(toks: &[crate::parser::lexer::Token]) -> bool {
-    use crate::parser::lexer::Tok;
+fn starts_with_resource_constructor(toks: &[Token]) -> bool {
     matches!(toks.first().map(|t| &t.tok), Some(Tok::Ident(n)) if n == "resource")
         && matches!(toks.get(1).map(|t| &t.tok), Some(Tok::LParen))
-        && toks
-            .last()
-            .map(|t| matches!(&t.tok, Tok::RParen))
-            .unwrap_or(false)
+        && toks.last().map(|t| matches!(&t.tok, Tok::RParen)).unwrap_or(false)
 }
 
 /// fz-swt.8 — parse the `(T)` payload from a `resource(T)` body.
@@ -449,9 +403,9 @@ fn starts_with_resource_constructor(toks: &[crate::parser::lexer::Token]) -> boo
 /// the per-program `opaque_inners` side map so the planner's `.value`
 /// accessor sees the user's intended payload type rather than the
 /// unqualified built-in `"resource"` opaque.
-fn parse_resource_payload_type<T: crate::types::Types<Ty = crate::types::Ty>>(
+fn parse_resource_payload_type<T: Types<Ty = Ty>>(
     t: &mut T,
-    toks: &[crate::parser::lexer::Token],
+    toks: &[Token],
     env: &ModuleTypeEnv,
 ) -> Result<T::Ty, TypeExprError> {
     // Drop the leading `resource (` and the trailing `)`. Caller has
@@ -463,10 +417,7 @@ fn parse_resource_payload_type<T: crate::types::Types<Ty = crate::types::Ty>>(
     if consumed != inner_toks.len() {
         return Err(TypeExprError {
             msg: "unexpected trailing tokens in resource(T)".to_string(),
-            span: inner_toks
-                .get(consumed)
-                .map(|tok| tok.span)
-                .unwrap_or(crate::diag::Span::DUMMY),
+            span: inner_toks.get(consumed).map(|tok| tok.span).unwrap_or(Span::DUMMY),
         });
     }
     Ok(ty)
@@ -483,8 +434,7 @@ pub fn opaque_owner_module(qualified: &str) -> Option<&str> {
 /// Scan `tokens` and return the user-visible names referenced (any
 /// Ident / Upper that isn't a built-in scalar). Used by
 /// `build_module_type_env` to detect cycles vs unknown-name errors.
-fn referenced_user_type_names(tokens: &[crate::parser::lexer::Token]) -> Vec<String> {
-    use crate::parser::lexer::Tok;
+fn referenced_user_type_names(tokens: &[Token]) -> Vec<String> {
     tokens
         .iter()
         .filter_map(|t| match &t.tok {

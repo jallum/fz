@@ -10,11 +10,18 @@
 //! removable once the test suite is audited for any remaining consumers.
 
 use crate::ast::*;
+use crate::diag::Span;
+use crate::exec::ast_value::{binop_atom, expr_to_value, unop_atom};
 use crate::exec::bitstr::*;
 use crate::exec::value::*;
+use crate::parser::lexer::Tok;
+use crate::type_expr::{ModuleTypeEnv, resolve_spec_decl};
+use crate::types::ConcreteTypes;
 use std::cell::RefCell;
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::rc::Rc;
+use std::str::from_utf8;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 pub type EvalResult = Result<Value, String>;
 
@@ -31,18 +38,14 @@ pub fn format_spec_text(def: &FnDef, prog: &Program) -> Option<String> {
         Some(i) => def.name[..i].to_string(),
         None => String::new(),
     };
-    let empty = crate::type_expr::ModuleTypeEnv::new();
+    let empty = ModuleTypeEnv::new();
     let env = prog.module_type_envs.get(&module_path).unwrap_or(&empty);
-    let mut ct = crate::types::ConcreteTypes;
+    let mut ct = ConcreteTypes;
     let mut lines = Vec::new();
     for spec in specs {
-        if let Ok(resolved) = crate::type_expr::resolve_spec_decl(&mut ct, spec, env) {
+        if let Ok(resolved) = resolve_spec_decl(&mut ct, spec, env) {
             let params: Vec<String> = resolved.params.iter().map(|ty| ct.display(ty)).collect();
-            lines.push(format!(
-                "({}) -> {}",
-                params.join(", "),
-                ct.display(&resolved.result)
-            ));
+            lines.push(format!("({}) -> {}", params.join(", "), ct.display(&resolved.result)));
         }
     }
     (!lines.is_empty()).then(|| lines.join("\n"))
@@ -60,22 +63,22 @@ pub struct CompileTimeEvaluator {
     /// Names of fns flagged `defmacro` in the loaded program(s). Used by
     /// the macro expansion pass; persists across REPL inputs so a macro
     /// defined on one line is callable from later inputs.
-    pub macro_names: RefCell<std::collections::HashSet<String>>,
+    pub macro_names: RefCell<HashSet<String>>,
     /// Spans of each defmacro's full definition (FnDef.span). Looked up
     /// during expansion to populate `SpanOrigin::Expanded { definition }`
     /// on synthesized nodes, so a diagnostic can render
     /// "expanded from `Foo`, defined at <file>:<line>:<col>".
-    pub macro_def_spans: RefCell<std::collections::HashMap<String, crate::diag::Span>>,
+    pub macro_def_spans: RefCell<HashMap<String, Span>>,
     /// Per-invocation hygiene table set by the macro expander before
     /// running a macro body. When `Some`, `reify_with_unquotes` renames
     /// Var/Match-lhs names through this map (lazily filling in fresh
     /// gensyms) so the caller's locals can't collide with the macro's.
     /// `None` outside of macro expansion — quote then preserves names
     /// literally.
-    pub gensym_table: RefCell<Option<std::collections::HashMap<String, String>>>,
+    pub gensym_table: RefCell<Option<HashMap<String, String>>>,
     /// Qualified-module-path → `@moduledoc` text. Populated by
     /// `load_program` (and the REPL load path) so `?M` can find the doc.
-    pub module_docs: RefCell<std::collections::HashMap<String, String>>,
+    pub module_docs: RefCell<HashMap<String, String>>,
 }
 
 #[derive(Debug)]
@@ -106,10 +109,10 @@ impl CompileTimeEvaluator {
             globals,
             on_user_call: RefCell::new(None),
             runtime: RefCell::new(EvalRuntime::new()),
-            macro_names: RefCell::new(std::collections::HashSet::new()),
-            macro_def_spans: RefCell::new(std::collections::HashMap::new()),
+            macro_names: RefCell::new(HashSet::new()),
+            macro_def_spans: RefCell::new(HashMap::new()),
             gensym_table: RefCell::new(None),
-            module_docs: RefCell::new(std::collections::HashMap::new()),
+            module_docs: RefCell::new(HashMap::new()),
         };
         me.install_builtins();
         me
@@ -141,16 +144,14 @@ impl CompileTimeEvaluator {
             }),
             ("Utf8.valid?", 1, |args, _| {
                 Ok(Value::Bool(
-                    utf8_bytes(&args[0]).is_some_and(|bytes| std::str::from_utf8(&bytes).is_ok()),
+                    utf8_bytes(&args[0]).is_some_and(|bytes| from_utf8(&bytes).is_ok()),
                 ))
             }),
             ("Utf8.from_bytes", 1, |args, _| match utf8_bytes(&args[0]) {
-                Some(bytes) if std::str::from_utf8(&bytes).is_ok() => {
-                    Ok(Value::Tuple(Rc::new(vec![
-                        Value::Atom(Rc::from("ok")),
-                        args[0].clone(),
-                    ])))
-                }
+                Some(bytes) if from_utf8(&bytes).is_ok() => Ok(Value::Tuple(Rc::new(vec![
+                    Value::Atom(Rc::from("ok")),
+                    args[0].clone(),
+                ]))),
                 _ => Ok(Value::Tuple(Rc::new(vec![
                     Value::Atom(Rc::from("error")),
                     Value::Atom(Rc::from("invalid_utf8")),
@@ -191,9 +192,7 @@ impl CompileTimeEvaluator {
         // overwrite earlier ones for the same path (REPL re-defining a
         // module replaces its @moduledoc).
         for (path, doc) in &prog.module_docs {
-            self.module_docs
-                .borrow_mut()
-                .insert(path.clone(), doc.clone());
+            self.module_docs.borrow_mut().insert(path.clone(), doc.clone());
         }
         // Two-pass-ish: bind names first so clauses can be mutually recursive,
         // but since each FnDef is a single Closure value capturing self.globals,
@@ -204,9 +203,7 @@ impl CompileTimeEvaluator {
                 Item::Fn(def) => {
                     if def.is_macro {
                         self.macro_names.borrow_mut().insert(def.name.clone());
-                        self.macro_def_spans
-                            .borrow_mut()
-                            .insert(def.name.clone(), def.span);
+                        self.macro_def_spans.borrow_mut().insert(def.name.clone(), def.span);
                     }
                     // Macros load alongside regular fns so the expansion pass
                     // can dispatch them by name through the same interp.
@@ -257,12 +254,7 @@ impl CompileTimeEvaluator {
         match callee {
             Value::Builtin(b) => {
                 if args.len() != b.arity && !runtime_builtin_accepts_arity(b.name, args.len()) {
-                    return Err(format!(
-                        "{}/{} called with {} args",
-                        b.name,
-                        b.arity,
-                        args.len()
-                    ));
+                    return Err(format!("{}/{} called with {} args", b.name, b.arity, args.len()));
                 }
                 if let Some(value) = self.apply_runtime_builtin(b.name, &args)? {
                     return Ok(value);
@@ -347,12 +339,7 @@ impl CompileTimeEvaluator {
             .ok_or_else(|| "receive/0 would block on an empty mailbox".to_string())
     }
 
-    fn receive_match(
-        &self,
-        clauses: &[MatchClause],
-        after: &Option<Box<AfterClause>>,
-        env: &Env,
-    ) -> EvalResult {
+    fn receive_match(&self, clauses: &[MatchClause], after: &Option<Box<AfterClause>>, env: &Env) -> EvalResult {
         let pid = self.runtime.borrow().current_pid;
         let messages: Vec<Value> = self
             .runtime
@@ -394,10 +381,7 @@ impl CompileTimeEvaluator {
                 Value::Atom(ref atom) if atom.as_ref() == "infinity" => {
                     Err("receive would block on an empty mailbox".into())
                 }
-                other => Err(format!(
-                    "receive after {} is not supported by the AST evaluator",
-                    other
-                )),
+                other => Err(format!("receive after {} is not supported by the AST evaluator", other)),
             }
         } else {
             Err("receive would block on an empty mailbox".into())
@@ -440,10 +424,7 @@ impl CompileTimeEvaluator {
             "no clause matched in {}/{} with args [{}]",
             c.name.as_deref().unwrap_or("anon"),
             c.clauses.first().map(|cl| cl.params.len()).unwrap_or(0),
-            args.iter()
-                .map(|v| format!("{}", v))
-                .collect::<Vec<_>>()
-                .join(", "),
+            args.iter().map(|v| format!("{}", v)).collect::<Vec<_>>().join(", "),
         ))
     }
 
@@ -459,9 +440,7 @@ impl CompileTimeEvaluator {
             // fz-swt.5: explicit fn reference resolves through the same
             // global-name lookup as a bare name. The arity check lives in
             // call-site dispatch on the resulting Closure.
-            Expr::FnRef { name, arity: _ } => env
-                .lookup(name)
-                .ok_or_else(|| format!("undefined: {}", name)),
+            Expr::FnRef { name, arity: _ } => env.lookup(name).ok_or_else(|| format!("undefined: {}", name)),
             // fz-g58.2.6 — `&(...)` / `&N` desugar to a Lambda in fz-g58.15
             // (Arc 3); until then they have no runtime meaning.
             Expr::Capture(_) | Expr::CaptureArg(_) => {
@@ -557,19 +536,11 @@ impl CompileTimeEvaluator {
                 }
                 if *op == BinOp::And {
                     let lv = self.eval(l, env)?;
-                    return if is_truthy(&lv) {
-                        self.eval(r, env)
-                    } else {
-                        Ok(lv)
-                    };
+                    return if is_truthy(&lv) { self.eval(r, env) } else { Ok(lv) };
                 }
                 if *op == BinOp::Or {
                     let lv = self.eval(l, env)?;
-                    return if is_truthy(&lv) {
-                        Ok(lv)
-                    } else {
-                        self.eval(r, env)
-                    };
+                    return if is_truthy(&lv) { Ok(lv) } else { self.eval(r, env) };
                 }
                 let lv = self.eval(l, env)?;
                 let rv = self.eval(r, env)?;
@@ -667,9 +638,8 @@ impl CompileTimeEvaluator {
                 // clause/guarded lambdas are desugared in fz-g58.15 (Arc 3).
                 // Gating both execution paths on the same predicate keeps the
                 // interpreter and IR lowering in lockstep (three-path parity).
-                let clause = crate::ast::lambda_direct_clause(clauses).ok_or_else(|| {
-                    "multi-clause or guarded `fn` requires desugaring (fz-g58.15)".to_string()
-                })?;
+                let clause = lambda_direct_clause(clauses)
+                    .ok_or_else(|| "multi-clause or guarded `fn` requires desugaring (fz-g58.15)".to_string())?;
                 Ok(Value::Closure(Rc::new(Closure {
                     name: None,
                     clauses: vec![FnClause {
@@ -693,7 +663,6 @@ impl CompileTimeEvaluator {
     /// `Expr::Unquote(e)` is encountered, eval `e` in `env` and splice the
     /// resulting Value into the reified output.
     fn reify_with_unquotes(&self, e: &Spanned<Expr>, env: &Env) -> EvalResult {
-        use crate::exec::ast_value::expr_to_value;
         match &e.node {
             Expr::Unquote(inner) => self.eval(inner, env),
             Expr::Ascribe(inner, _) => self.reify_with_unquotes(inner, env),
@@ -701,7 +670,6 @@ impl CompileTimeEvaluator {
             Expr::Var(name) => Ok(reified_var(self.hygiene_rename(name))),
 
             Expr::Match(pat, rhs) => {
-                use crate::ast::Pattern;
                 let lhs_name = match &pat.node {
                     Pattern::Var(n) => n.clone(),
                     _ => return Err("quote: only Pattern::Var on lhs of `=` in v1".into()),
@@ -744,23 +712,15 @@ impl CompileTimeEvaluator {
                 }
                 Ok(quoted_node(&name, Value::List(Rc::new(arg_vs))))
             }
-            Expr::ClosureCall(_, _) => {
-                Err("quote: anonymous-function calls not yet supported".into())
-            }
+            Expr::ClosureCall(_, _) => Err("quote: anonymous-function calls not yet supported".into()),
             Expr::BinOp(op, l, r) => {
                 let lv = self.reify_with_unquotes(l, env)?;
                 let rv = self.reify_with_unquotes(r, env)?;
-                Ok(quoted_node(
-                    crate::exec::ast_value::binop_atom(*op),
-                    Value::List(Rc::new(vec![lv, rv])),
-                ))
+                Ok(quoted_node(binop_atom(*op), Value::List(Rc::new(vec![lv, rv]))))
             }
             Expr::UnOp(op, x) => {
                 let xv = self.reify_with_unquotes(x, env)?;
-                Ok(quoted_node(
-                    crate::exec::ast_value::unop_atom(*op),
-                    Value::List(Rc::new(vec![xv])),
-                ))
+                Ok(quoted_node(unop_atom(*op), Value::List(Rc::new(vec![xv]))))
             }
             Expr::Block(xs) => {
                 let mut out = Vec::with_capacity(xs.len());
@@ -864,11 +824,7 @@ mod quote_tests {
         let interp = CompileTimeEvaluator::new();
         interp.load_program(&prog).unwrap();
         let res = interp.call_named("main", vec![]);
-        assert!(
-            res.is_err(),
-            "expected unquote-outside-quote error, got {:?}",
-            res
-        );
+        assert!(res.is_err(), "expected unquote-outside-quote error, got {:?}", res);
         assert!(
             res.as_ref().unwrap_err().contains("unquote"),
             "expected message to mention unquote, got {:?}",
@@ -958,7 +914,6 @@ impl CompileTimeEvaluator {
 }
 
 fn next_gensym_id() -> u64 {
-    use std::sync::atomic::{AtomicU64, Ordering};
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     COUNTER.fetch_add(1, Ordering::Relaxed)
 }
@@ -966,7 +921,7 @@ fn next_gensym_id() -> u64 {
 fn reified_var(name: String) -> Value {
     Value::Tuple(Rc::new(vec![
         Value::Atom(Rc::from(name.as_str())),
-        Value::Map(Rc::new(crate::exec::value::FzMap::new())),
+        Value::Map(Rc::new(FzMap::new())),
         Value::Atom(Rc::from("user")),
     ]))
 }
@@ -974,7 +929,7 @@ fn reified_var(name: String) -> Value {
 fn quoted_node(name: &str, args: Value) -> Value {
     Value::Tuple(Rc::new(vec![
         Value::Atom(Rc::from(name)),
-        Value::Map(Rc::new(crate::exec::value::FzMap::new())),
+        Value::Map(Rc::new(FzMap::new())),
         args,
     ]))
 }
@@ -990,9 +945,7 @@ fn is_truthy(v: &Value) -> bool {
 fn utf8_bytes(value: &Value) -> Option<Vec<u8>> {
     match value {
         Value::Binary(bytes) => Some(bytes.to_vec()),
-        Value::BitStr(bs) if bs.bit_len.is_multiple_of(8) => {
-            Some(bs.bytes[..bs.bit_len / 8].to_vec())
-        }
+        Value::BitStr(bs) if bs.bit_len.is_multiple_of(8) => Some(bs.bytes[..bs.bit_len / 8].to_vec()),
         _ => None,
     }
 }
@@ -1008,7 +961,7 @@ fn param_annotation_matches(annotation: Option<&TypeExprBody>, value: &Value) ->
     let [tok] = annotation.0.as_slice() else {
         return true;
     };
-    let crate::parser::lexer::Tok::Ident(name) = &tok.tok else {
+    let Tok::Ident(name) = &tok.tok else {
         return true;
     };
     match name.as_str() {

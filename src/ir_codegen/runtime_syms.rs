@@ -139,10 +139,7 @@ pub(crate) fn runtime_import_sig(name: &str) -> Signature {
 }
 
 /// Declare a SystemV runtime FFI fn as an Import in `jmod`.
-fn decl_import<M: cranelift_module::Module>(
-    jmod: &mut M,
-    name: &str,
-) -> Result<FuncId, CodegenError> {
+fn decl_import<M: ClModule>(jmod: &mut M, name: &str) -> Result<FuncId, CodegenError> {
     let sig = runtime_import_sig(name);
     jmod.declare_function(name, Linkage::Import, &sig)
         .map_err(|e| CodegenError::new(format!("declare {}: {}", name, e)))
@@ -154,9 +151,7 @@ fn decl_import<M: cranelift_module::Module>(
 /// Generic on `M: cranelift_module::Module` so JIT and AOT share one
 /// declaration site — the declarations don't care whether the underlying
 /// symbol resolves via JIT-installed Rust fn pointers or via a linker.
-pub(crate) fn declare_runtime_symbols<M: cranelift_module::Module>(
-    jmod: &mut M,
-) -> Result<RuntimeRefs, CodegenError> {
+pub(crate) fn declare_runtime_symbols<M: ClModule>(jmod: &mut M) -> Result<RuntimeRefs, CodegenError> {
     let halt = declare_halt_runtime(jmod)?;
     let list = declare_list_runtime(jmod)?;
     let strct = declare_struct_runtime(jmod)?;
@@ -268,9 +263,7 @@ struct HaltRefs {
 }
 
 /// Implicit-halt FFI entries (one per return repr).
-fn declare_halt_runtime<M: cranelift_module::Module>(
-    jmod: &mut M,
-) -> Result<HaltRefs, CodegenError> {
+fn declare_halt_runtime<M: ClModule>(jmod: &mut M) -> Result<HaltRefs, CodegenError> {
     Ok(HaltRefs {
         halt_implicit_ref_id: decl_import(jmod, "fz_halt_implicit_ref")?,
         halt_implicit_i64_id: decl_import(jmod, "fz_halt_implicit_i64")?,
@@ -293,9 +286,7 @@ struct ListRefs {
 }
 
 /// Cons-cell list FFI entries.
-fn declare_list_runtime<M: cranelift_module::Module>(
-    jmod: &mut M,
-) -> Result<ListRefs, CodegenError> {
+fn declare_list_runtime<M: ClModule>(jmod: &mut M) -> Result<ListRefs, CodegenError> {
     Ok(ListRefs {
         list_cons_any_id: decl_import(jmod, "fz_list_cons_any")?,
         list_cons_int_id: decl_import(jmod, "fz_list_cons_int")?,
@@ -322,9 +313,7 @@ struct StructRefs {
 }
 
 /// Struct allocation and field accessor FFI entries.
-fn declare_struct_runtime<M: cranelift_module::Module>(
-    jmod: &mut M,
-) -> Result<StructRefs, CodegenError> {
+fn declare_struct_runtime<M: ClModule>(jmod: &mut M) -> Result<StructRefs, CodegenError> {
     Ok(StructRefs {
         alloc_struct_id: decl_import(jmod, "fz_alloc_struct")?,
         struct_get_field_id: decl_import(jmod, "fz_struct_get_field_ref")?,
@@ -354,9 +343,7 @@ struct BitstringRefs {
 }
 
 /// Bitstring/binary builder + reader FFI entries.
-fn declare_bitstring_runtime<M: cranelift_module::Module>(
-    jmod: &mut M,
-) -> Result<BitstringRefs, CodegenError> {
+fn declare_bitstring_runtime<M: ClModule>(jmod: &mut M) -> Result<BitstringRefs, CodegenError> {
     let bs_begin_id = decl_import(jmod, "fz_bs_begin")?;
     let bs_write_ref_id = decl_import(jmod, "fz_bs_write_field_ref")?;
     let bs_finalize_id = decl_import(jmod, "fz_bs_finalize")?;
@@ -372,10 +359,8 @@ fn declare_bitstring_runtime<M: cranelift_module::Module>(
     let binary_as_ptr_id = decl_import(jmod, "fz_binary_as_ptr")?;
     let binary_as_cstring_id = decl_import(jmod, "fz_binary_as_cstring")?;
     let extern_symbol_addr_id = decl_import(jmod, "fz_extern_symbol_addr")?;
-    let extern_var_i64_cstring_i64_i64_to_i64_id =
-        decl_import(jmod, "fz_call_var_i64_cstring_i64_i64_to_i64")?;
-    let extern_var_i64_cstring_i64_to_i64_id =
-        decl_import(jmod, "fz_call_var_i64_cstring_i64_to_i64")?;
+    let extern_var_i64_cstring_i64_i64_to_i64_id = decl_import(jmod, "fz_call_var_i64_cstring_i64_i64_to_i64")?;
+    let extern_var_i64_cstring_i64_to_i64_id = decl_import(jmod, "fz_call_var_i64_cstring_i64_to_i64")?;
     let bs_reader_init_ref_id = decl_import(jmod, "fz_bs_reader_init_ref")?;
     let bs_read_field_ref_id = decl_import(jmod, "fz_bs_read_field_ref")?;
     let bs_reader_done_ref_id = decl_import(jmod, "fz_bs_reader_done_ref")?;
@@ -410,7 +395,7 @@ struct MapRefs {
 }
 
 /// Map construction, mutation and lookup FFI entries.
-fn declare_map_runtime<M: cranelift_module::Module>(jmod: &mut M) -> Result<MapRefs, CodegenError> {
+fn declare_map_runtime<M: ClModule>(jmod: &mut M) -> Result<MapRefs, CodegenError> {
     Ok(MapRefs {
         map_dest_begin_id: decl_import(jmod, "fz_map_dest_begin")?,
         map_dest_begin_update_id: decl_import(jmod, "fz_map_dest_begin_update")?,
@@ -441,9 +426,7 @@ struct ValueRefs {
 }
 
 /// Tagged-value introspection: ref-load, type-of, unbox, box-for-Any, truthy.
-fn declare_value_runtime<M: cranelift_module::Module>(
-    jmod: &mut M,
-) -> Result<ValueRefs, CodegenError> {
+fn declare_value_runtime<M: ClModule>(jmod: &mut M) -> Result<ValueRefs, CodegenError> {
     Ok(ValueRefs {
         ref_load_int_id: decl_import(jmod, "fz_ref_load_int")?,
         ref_load_float_id: decl_import(jmod, "fz_ref_load_float")?,
@@ -470,15 +453,10 @@ struct ArithRefs {
 /// Mixed-type arithmetic and value-equality slow-path helpers. Mixed-type
 /// arith/cmp slow paths are inlined in JIT. `fz_promote_f64` does the
 /// tag-aware Int|Float -> f64 conversion (panics on non-numeric).
-fn declare_arith_runtime<M: cranelift_module::Module>(
-    jmod: &mut M,
-) -> Result<ArithRefs, CodegenError> {
+fn declare_arith_runtime<M: ClModule>(jmod: &mut M) -> Result<ArithRefs, CodegenError> {
     Ok(ArithRefs {
         promote_f64_id: decl_import(jmod, "fz_promote_f64")?,
-        dynamic_float_arith_unsupported_id: decl_import(
-            jmod,
-            "fz_dynamic_float_arith_unsupported",
-        )?,
+        dynamic_float_arith_unsupported_id: decl_import(jmod, "fz_dynamic_float_arith_unsupported")?,
         value_eq_ref_id: decl_import(jmod, "fz_value_eq_ref")?,
     })
 }
@@ -490,9 +468,7 @@ struct MatcherRefs {
 }
 
 /// Selective-receive matcher helpers (binary-literal compare + map-key lookup).
-fn declare_matcher_runtime<M: cranelift_module::Module>(
-    jmod: &mut M,
-) -> Result<MatcherRefs, CodegenError> {
+fn declare_matcher_runtime<M: ClModule>(jmod: &mut M) -> Result<MatcherRefs, CodegenError> {
     // Receive matcher binary-literal comparison.
     let matcher_eq_bytes_id = decl_import(jmod, "fz_matcher_eq_bytes")?;
     // Receive matcher map-key lookup. Returns matcher miss sentinel on miss.
@@ -520,9 +496,7 @@ struct ClosureRefs {
 }
 
 /// Closure allocation, capture access, and static-singleton lookup.
-fn declare_closure_runtime<M: cranelift_module::Module>(
-    jmod: &mut M,
-) -> Result<ClosureRefs, CodegenError> {
+fn declare_closure_runtime<M: ClModule>(jmod: &mut M) -> Result<ClosureRefs, CodegenError> {
     let alloc_closure_id = decl_import(jmod, "fz_alloc_closure")?;
     let closure_code_ref_id = decl_import(jmod, "fz_closure_code_ref")?;
     let closure_halt_kind_ref_id = decl_import(jmod, "fz_closure_halt_kind_ref")?;
@@ -557,9 +531,7 @@ struct ReceiveRefs {
 }
 
 /// Selective-receive park FFI entries (accept-any and matched variants).
-fn declare_receive_runtime<M: cranelift_module::Module>(
-    jmod: &mut M,
-) -> Result<ReceiveRefs, CodegenError> {
+fn declare_receive_runtime<M: ClModule>(jmod: &mut M) -> Result<ReceiveRefs, CodegenError> {
     // Receive: parks an accept-any matcher record on the cont closure;
     // returns YIELD sentinel.
     let receive_park_id = decl_import(jmod, "fz_receive_park")?;
@@ -584,9 +556,7 @@ struct HaltContRefs {
 }
 
 /// Halt-cont singleton lookup plus the three LOCAL Tail-CC body declarations.
-fn declare_halt_cont_runtime<M: cranelift_module::Module>(
-    jmod: &mut M,
-) -> Result<HaltContRefs, CodegenError> {
+fn declare_halt_cont_runtime<M: ClModule>(jmod: &mut M) -> Result<HaltContRefs, CodegenError> {
     // Halt-cont singleton lookup. `(addr, kind)`: kind selects among 3
     // Process singletons (0=ValueRef, 1=RawInt, 2=RawF64). Lazily
     // initialized using the supplied halt_cont_body addr (JIT pre-populates
@@ -631,9 +601,7 @@ struct SchedulerRefs {
 }
 
 /// Scheduler-facing LOCAL entry shims and the mid-flight yield helper.
-fn declare_scheduler_runtime<M: cranelift_module::Module>(
-    jmod: &mut M,
-) -> Result<SchedulerRefs, CodegenError> {
+fn declare_scheduler_runtime<M: ClModule>(jmod: &mut M) -> Result<SchedulerRefs, CodegenError> {
     let yield_mid_flight_report_id = decl_import(jmod, "fz_yield_mid_flight_report")?;
     let yield_slow_path_begin_id = decl_import(jmod, "fz_yield_slow_path_begin")?;
     // fz_entry_thunk: the uniform first-entry wrapper. A fresh task's

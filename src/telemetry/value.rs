@@ -4,7 +4,7 @@
 //! strings for identifiers, first-class slots for diagnostics and opaque byte
 //! blobs, plus event-scoped opaque references for in-process handlers.
 
-use std::any::Any;
+use std::any::{Any, type_name};
 use std::borrow::Cow;
 use std::fmt;
 use std::sync::Arc;
@@ -18,7 +18,7 @@ pub struct OpaqueRef<'a> {
 impl<'a> OpaqueRef<'a> {
     pub fn new<T: Any>(value: &'a T) -> Self {
         Self {
-            type_name: std::any::type_name::<T>(),
+            type_name: type_name::<T>(),
             value,
         }
     }

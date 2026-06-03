@@ -4,6 +4,8 @@ use super::*;
 mod do_block_sugar_tests {
     use super::*;
     use crate::parser::lexer::Lexer;
+    use Attribute::{Doc, Spec};
+    use BinOp::And;
 
     fn parse_fn_body(src: &str) -> Expr {
         let wrapped = format!("fn _t() do {} end", src);
@@ -43,9 +45,7 @@ mod do_block_sugar_tests {
     #[test]
     fn comma_do_kw_appended_as_keyword_arg() {
         let e = parse_fn_body(r#"f("x"), do: 42"#);
-        let Expr::Call(_, args) = e else {
-            panic!("not a call")
-        };
+        let Expr::Call(_, args) = e else { panic!("not a call") };
         assert_eq!(args.len(), 2);
         assert_keyword_list(&args[1], &[("do", "int")]);
     }
@@ -59,9 +59,7 @@ mod do_block_sugar_tests {
     #[test]
     fn call_keywords_are_single_trailing_list_arg() {
         let e = parse_expr("f(1, a: 2, b: 3)");
-        let Expr::Call(_, args) = e else {
-            panic!("not a call")
-        };
+        let Expr::Call(_, args) = e else { panic!("not a call") };
         assert_eq!(args.len(), 2);
         assert!(matches!(args[0].node, Expr::Int(1)));
         assert_keyword_list(&args[1], &[("a", "int"), ("b", "int")]);
@@ -70,9 +68,7 @@ mod do_block_sugar_tests {
     #[test]
     fn trailing_do_merges_with_existing_keyword_arg() {
         let e = parse_expr("f(1, timeout: 10) do 42 end");
-        let Expr::Call(_, args) = e else {
-            panic!("not a call")
-        };
+        let Expr::Call(_, args) = e else { panic!("not a call") };
         assert_eq!(args.len(), 2);
         assert_keyword_list(&args[1], &[("timeout", "int"), ("do", "int")]);
     }
@@ -80,9 +76,7 @@ mod do_block_sugar_tests {
     #[test]
     fn trailing_do_does_not_merge_with_explicit_atom_pair_list() {
         let e = parse_expr("f([{:timeout, 10}]) do 42 end");
-        let Expr::Call(_, args) = e else {
-            panic!("not a call")
-        };
+        let Expr::Call(_, args) = e else { panic!("not a call") };
         assert_eq!(args.len(), 2);
         let Expr::List(items, None) = &args[0].node else {
             panic!("expected explicit list arg")
@@ -100,10 +94,7 @@ mod do_block_sugar_tests {
         let Item::Fn(def) = &*prog.items[0] else {
             panic!("expected fn")
         };
-        assert_keyword_pattern(
-            &def.clauses[0].params[0],
-            &[("do", "body"), ("else", "fallback")],
-        );
+        assert_keyword_pattern(&def.clauses[0].params[0], &[("do", "body"), ("else", "fallback")]);
     }
 
     #[test]
@@ -189,11 +180,7 @@ end
                 _ => None,
             })
             .unwrap();
-        assert!(
-            m.items
-                .iter()
-                .any(|it| matches!(&**it, Item::MacroCall { .. }))
-        );
+        assert!(m.items.iter().any(|it| matches!(&**it, Item::MacroCall { .. })));
     }
 
     #[test]
@@ -217,18 +204,8 @@ end
         assert_eq!(protocol.callbacks.len(), 1);
         assert_eq!(protocol.callbacks[0].name, "reduce");
         assert_eq!(protocol.callbacks[0].arity, 3);
-        assert!(
-            protocol.callbacks[0]
-                .attrs
-                .iter()
-                .any(|attr| matches!(attr, Attribute::Doc(_)))
-        );
-        assert!(
-            protocol.callbacks[0]
-                .attrs
-                .iter()
-                .any(|attr| matches!(attr, Attribute::Spec(_)))
-        );
+        assert!(protocol.callbacks[0].attrs.iter().any(|attr| matches!(attr, Doc(_))));
+        assert!(protocol.callbacks[0].attrs.iter().any(|attr| matches!(attr, Spec(_))));
     }
 
     #[test]
@@ -264,11 +241,7 @@ end
         .tokenize()
         .unwrap();
         let err = Parser::new(toks).parse_program().unwrap_err();
-        assert!(
-            err.msg.contains("cannot have bodies"),
-            "unexpected error: {:?}",
-            err
-        );
+        assert!(err.msg.contains("cannot have bodies"), "unexpected error: {:?}", err);
     }
 
     #[test]
@@ -609,7 +582,7 @@ fn spawn(fun, opts), do: fun.()
         // Defensive: adding bare `&` to the lexer must not break `&&`.
         let e = parse_fn_body("true && false");
         let Expr::BinOp(op, _, _) = e else { panic!() };
-        assert!(matches!(op, BinOp::And));
+        assert!(matches!(op, And));
     }
 
     #[test]
@@ -673,9 +646,7 @@ mod extern_parse_tests {
 
     #[test]
     fn extern_fn_variadic_marker() {
-        let d = parse_extern(
-            "extern \"C\" fn libc::open(path :: cstring, flags :: integer, ...) :: integer\n",
-        );
+        let d = parse_extern("extern \"C\" fn libc::open(path :: cstring, flags :: integer, ...) :: integer\n");
         assert_eq!(d.name, "libc::open");
         assert_eq!(d.extern_params, vec!["cstring", "integer"]);
         assert!(d.variadic);
@@ -707,9 +678,7 @@ mod extern_parse_tests {
             panic!("expected ascribed call arg");
         };
         assert!(matches!(inner.node, Expr::Var(ref name) if name == "mode"));
-        assert!(
-            matches!(ty.0.first().map(|t| &t.tok), Some(Tok::Ident(name)) if name == "integer")
-        );
+        assert!(matches!(ty.0.first().map(|t| &t.tok), Some(Tok::Ident(name)) if name == "integer"));
     }
 }
 
@@ -721,6 +690,8 @@ mod telemetry_tests {
     #[test]
     fn telemetry_emits_pass_span_and_item_count() {
         use crate::telemetry::{Capture, ConfiguredTelemetry, EventKind, Value};
+        use EventKind::{SpanStart, SpanStop};
+        use Value::U64;
 
         let tel = ConfiguredTelemetry::new();
         let cap = Capture::new();
@@ -729,17 +700,15 @@ mod telemetry_tests {
         let toks = Lexer::new("fn id(x), do: x\nfn main(), do: id(1)\n")
             .tokenize()
             .expect("lex");
-        let prog = Parser::new(toks)
-            .parse_program_with_telemetry(&tel)
-            .expect("parse");
+        let prog = Parser::new(toks).parse_program_with_telemetry(&tel).expect("parse");
 
-        assert_eq!(cap.count_by_kind(EventKind::SpanStart), 1);
-        assert_eq!(cap.count_by_kind(EventKind::SpanStop), 1);
+        assert_eq!(cap.count_by_kind(SpanStart), 1);
+        assert_eq!(cap.count_by_kind(SpanStop), 1);
         assert_eq!(cap.count(PARSE_PASS_NAME), 2);
 
         let built = cap.last(ITEMS_BUILT_NAME).unwrap();
         match built.measurements.get("count") {
-            Some(Value::U64(n)) => assert_eq!(*n as usize, prog.items.len()),
+            Some(U64(n)) => assert_eq!(*n as usize, prog.items.len()),
             other => panic!("expected U64 count, got {:?}", other),
         }
     }
@@ -747,20 +716,19 @@ mod telemetry_tests {
     #[test]
     fn telemetry_user_event_inherits_span_id() {
         use crate::telemetry::{Capture, ConfiguredTelemetry, EventKind};
+        use EventKind::SpanStart;
 
         let tel = ConfiguredTelemetry::new();
         let cap = Capture::new();
         tel.attach(&[], cap.handler());
 
         let toks = Lexer::new("fn main(), do: :ok").tokenize().expect("lex");
-        let _ = Parser::new(toks)
-            .parse_program_with_telemetry(&tel)
-            .expect("parse");
+        let _ = Parser::new(toks).parse_program_with_telemetry(&tel).expect("parse");
 
         let start = cap
             .find(PARSE_PASS_NAME)
             .into_iter()
-            .find(|e| e.kind == EventKind::SpanStart)
+            .find(|e| e.kind == SpanStart)
             .unwrap();
         let built = cap.last(ITEMS_BUILT_NAME).unwrap();
         assert_eq!(start.span_id, built.span_id);
@@ -783,6 +751,8 @@ mod telemetry_tests {
 mod elixir_operator_precedence_tests {
     use super::*;
     use crate::parser::lexer::Lexer;
+    use BinOp::{Add, BinConcat, Eq, In, ListConcat, ListSubtract, Mul, NotIn, Pipe, Range, RangeStep};
+    use UnOp::{Neg, Not};
 
     fn parse(src: &str) -> Expr {
         let toks = Lexer::new(src).tokenize().unwrap();
@@ -800,33 +770,21 @@ mod elixir_operator_precedence_tests {
 
     #[test]
     fn new_operators_parse_to_their_binops() {
-        assert!(matches!(
-            parse("a ++ b"),
-            Expr::BinOp(BinOp::ListConcat, _, _)
-        ));
-        assert!(matches!(
-            parse("a -- b"),
-            Expr::BinOp(BinOp::ListSubtract, _, _)
-        ));
-        assert!(matches!(
-            parse("a <> b"),
-            Expr::BinOp(BinOp::BinConcat, _, _)
-        ));
-        assert!(matches!(parse("a .. b"), Expr::BinOp(BinOp::Range, _, _)));
-        assert!(matches!(parse("a in b"), Expr::BinOp(BinOp::In, _, _)));
-        assert!(matches!(
-            parse("a not in b"),
-            Expr::BinOp(BinOp::NotIn, _, _)
-        ));
+        assert!(matches!(parse("a ++ b"), Expr::BinOp(ListConcat, _, _)));
+        assert!(matches!(parse("a -- b"), Expr::BinOp(ListSubtract, _, _)));
+        assert!(matches!(parse("a <> b"), Expr::BinOp(BinConcat, _, _)));
+        assert!(matches!(parse("a .. b"), Expr::BinOp(Range, _, _)));
+        assert!(matches!(parse("a in b"), Expr::BinOp(In, _, _)));
+        assert!(matches!(parse("a not in b"), Expr::BinOp(NotIn, _, _)));
     }
 
     #[test]
     fn concat_is_right_associative() {
         // a ++ b ++ c  =>  a ++ (b ++ c)
         let (op, _a, rhs) = binop("a ++ b ++ c");
-        assert_eq!(op, BinOp::ListConcat);
+        assert_eq!(op, ListConcat);
         assert!(
-            matches!(rhs, Expr::BinOp(BinOp::ListConcat, _, _)),
+            matches!(rhs, Expr::BinOp(ListConcat, _, _)),
             "++ must be right-associative"
         );
     }
@@ -835,45 +793,45 @@ mod elixir_operator_precedence_tests {
     fn arithmetic_binds_tighter_than_concat() {
         // a ++ b + c  =>  a ++ (b + c)
         let (op, _a, rhs) = binop("a ++ b + c");
-        assert_eq!(op, BinOp::ListConcat);
-        assert!(matches!(rhs, Expr::BinOp(BinOp::Add, _, _)));
+        assert_eq!(op, ListConcat);
+        assert!(matches!(rhs, Expr::BinOp(Add, _, _)));
     }
 
     #[test]
     fn stepped_range_groups_as_range_then_step() {
         // 1..10//2  =>  (1..10) // 2
         let (op, lhs, _step) = binop("1..10//2");
-        assert_eq!(op, BinOp::RangeStep);
-        assert!(matches!(lhs, Expr::BinOp(BinOp::Range, _, _)));
+        assert_eq!(op, RangeStep);
+        assert!(matches!(lhs, Expr::BinOp(Range, _, _)));
     }
 
     #[test]
     fn unary_binds_tighter_than_multiplication() {
         // -a * b  =>  (-a) * b
         let (op, lhs, _b) = binop("-a * b");
-        assert_eq!(op, BinOp::Mul);
-        assert!(matches!(lhs, Expr::UnOp(UnOp::Neg, _)));
+        assert_eq!(op, Mul);
+        assert!(matches!(lhs, Expr::UnOp(Neg, _)));
     }
 
     #[test]
     fn prefix_not_parses_as_unop_not() {
-        assert!(matches!(parse("not x"), Expr::UnOp(UnOp::Not, _)));
+        assert!(matches!(parse("not x"), Expr::UnOp(Not, _)));
     }
 
     #[test]
     fn pipe_binds_tighter_than_comparison() {
         // a |> f() == b  =>  (a |> f()) == b
         let (op, lhs, _b) = binop("a |> f() == b");
-        assert_eq!(op, BinOp::Eq);
-        assert!(matches!(lhs, Expr::BinOp(BinOp::Pipe, _, _)));
+        assert_eq!(op, Eq);
+        assert!(matches!(lhs, Expr::BinOp(Pipe, _, _)));
     }
 
     #[test]
     fn membership_is_looser_than_arithmetic() {
         // 1 + 2 in xs  =>  (1 + 2) in xs
         let (op, lhs, _b) = binop("1 + 2 in xs");
-        assert_eq!(op, BinOp::In);
-        assert!(matches!(lhs, Expr::BinOp(BinOp::Add, _, _)));
+        assert_eq!(op, In);
+        assert!(matches!(lhs, Expr::BinOp(Add, _, _)));
     }
 }
 
@@ -881,6 +839,8 @@ mod elixir_operator_precedence_tests {
 mod no_parens_call_tests {
     use super::*;
     use crate::parser::lexer::Lexer;
+    use BinOp::{Add, Sub};
+    use UnOp::Neg;
 
     fn parse(src: &str) -> Expr {
         let toks = Lexer::new(src).tokenize().unwrap();
@@ -922,7 +882,7 @@ mod no_parens_call_tests {
         // foo a + b  =>  foo(a + b)
         let (_c, args) = call("foo a + b");
         assert_eq!(args.len(), 1);
-        assert!(matches!(args[0], Expr::BinOp(BinOp::Add, _, _)));
+        assert!(matches!(args[0], Expr::BinOp(Add, _, _)));
     }
 
     #[test]
@@ -950,7 +910,7 @@ mod no_parens_call_tests {
     #[test]
     fn recognized_in_operand_position() {
         // 1 + foo a  =>  1 + foo(a)
-        let Expr::BinOp(BinOp::Add, _l, r) = parse("1 + foo a") else {
+        let Expr::BinOp(Add, _l, r) = parse("1 + foo a") else {
             panic!("not an addition")
         };
         assert!(matches!(&r.node, Expr::Call(c, a)
@@ -963,9 +923,9 @@ mod no_parens_call_tests {
         let (c, args) = call("foo -1");
         assert_eq!(var(&c), "foo");
         assert_eq!(args.len(), 1);
-        assert!(matches!(args[0], Expr::UnOp(UnOp::Neg, _)));
+        assert!(matches!(args[0], Expr::UnOp(Neg, _)));
         // foo - 1  =>  binary subtraction, not a call
-        assert!(matches!(parse("foo - 1"), Expr::BinOp(BinOp::Sub, _, _)));
+        assert!(matches!(parse("foo - 1"), Expr::BinOp(Sub, _, _)));
     }
 
     #[test]
@@ -992,7 +952,7 @@ mod no_parens_call_tests {
     #[test]
     fn bare_var_is_not_a_call() {
         assert!(matches!(parse("foo"), Expr::Var(_)));
-        assert!(matches!(parse("foo + 1"), Expr::BinOp(BinOp::Add, _, _)));
+        assert!(matches!(parse("foo + 1"), Expr::BinOp(Add, _, _)));
     }
 
     #[test]
@@ -1082,9 +1042,7 @@ mod no_parens_keyword_ambiguity_tests {
         let capture = Capture::new();
         let tel = ConfiguredTelemetry::new();
         tel.attach(&["fz", "diag"], capture.handler());
-        Parser::new(toks)
-            .parse_program_with_telemetry(&tel)
-            .expect("parse");
+        Parser::new(toks).parse_program_with_telemetry(&tel).expect("parse");
         capture.count(WARNING)
     }
 
@@ -1161,8 +1119,7 @@ mod lambda_tests {
 
     #[test]
     fn multi_clause_fn_collects_every_clause() {
-        let Expr::Lambda(clauses) = body("fn _t() do\n  fn 0 -> :zero\n     n -> n end\nend\n")
-        else {
+        let Expr::Lambda(clauses) = body("fn _t() do\n  fn 0 -> :zero\n     n -> n end\nend\n") else {
             panic!("expected lambda");
         };
         assert_eq!(clauses.len(), 2);
@@ -1172,9 +1129,7 @@ mod lambda_tests {
 
     #[test]
     fn guard_is_captured_on_the_clause() {
-        let Expr::Lambda(clauses) =
-            body("fn _t() do\n  fn x when x > 0 -> x\n     _ -> 0 end\nend\n")
-        else {
+        let Expr::Lambda(clauses) = body("fn _t() do\n  fn x when x > 0 -> x\n     _ -> 0 end\nend\n") else {
             panic!("expected lambda");
         };
         assert_eq!(clauses.len(), 2);
@@ -1197,9 +1152,7 @@ mod lambda_tests {
     fn missing_end_is_a_parse_error() {
         // Without `end`, the lambda swallows the enclosing `end`; the fn item
         // never closes, so parsing fails.
-        let toks = Lexer::new("fn _t() do\n  fn x -> x + 1\nend\n")
-            .tokenize()
-            .unwrap();
+        let toks = Lexer::new("fn _t() do\n  fn x -> x + 1\nend\n").tokenize().unwrap();
         assert!(Parser::new(toks).parse_program().is_err());
     }
 
@@ -1237,6 +1190,7 @@ mod lambda_tests {
 mod capture_tests {
     use super::*;
     use crate::parser::lexer::Lexer;
+    use BinOp::Add;
 
     fn expr(src: &str) -> Expr {
         let toks = Lexer::new(src).tokenize().unwrap();
@@ -1255,7 +1209,7 @@ mod capture_tests {
         let Expr::Capture(body) = expr("&(&1 + 1)") else {
             panic!("expected capture");
         };
-        let Expr::BinOp(BinOp::Add, lhs, rhs) = &body.node else {
+        let Expr::BinOp(Add, lhs, rhs) = &body.node else {
             panic!("expected binop body, got {:?}", body.node);
         };
         assert!(matches!(lhs.node, Expr::CaptureArg(1)));
@@ -1267,7 +1221,7 @@ mod capture_tests {
         let Expr::Capture(body) = expr("&(&1 + &2)") else {
             panic!("expected capture");
         };
-        let Expr::BinOp(BinOp::Add, lhs, rhs) = &body.node else {
+        let Expr::BinOp(Add, lhs, rhs) = &body.node else {
             panic!("expected binop body");
         };
         assert!(matches!(lhs.node, Expr::CaptureArg(1)));

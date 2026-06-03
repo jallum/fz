@@ -1,36 +1,39 @@
+use crate::exec::runtime::DbgCapture;
+use crate::frontend::compile_source;
 use crate::ir_interp::*;
+use crate::ir_lower::lower_program;
 use crate::parser::Parser;
 use crate::parser::lexer::Lexer;
+use crate::telemetry::NullTelemetry;
+use crate::telemetry::bus::ConfiguredTelemetry;
+use crate::types::ConcreteTypes;
+use fz_runtime::any_value::ListCons;
 use fz_runtime::any_value::ValueKind;
+use std::ptr::null_mut;
 
 use crate::fz_ir::Module;
 
 fn lower_src(src: &str) -> Module {
     let toks = Lexer::new(src).tokenize().expect("lex");
     let prog = Parser::new(toks).parse_program().expect("parse");
-    crate::ir_lower::lower_program(
-        &mut crate::types::ConcreteTypes,
-        &prog,
-        &crate::telemetry::NullTelemetry,
-    )
-    .expect("lower")
+    lower_program(&mut ConcreteTypes, &prog, &NullTelemetry).expect("lower")
 }
 
 fn run(src: &str) -> i64 {
     let m = lower_src(src);
-    run_main(&crate::telemetry::NullTelemetry, &m).expect("interp run")
+    run_main(&NullTelemetry, &m).expect("interp run")
 }
 
 fn run_checked(src: &str) -> i64 {
-    let frontend = crate::frontend::compile_source(src.to_string(), "interp-test.fz".to_string())
+    let frontend = compile_source(src.to_string(), "interp-test.fz".to_string())
         .unwrap_or_else(|err| panic!("frontend: {:?}", err.diagnostics));
-    run_main(&crate::telemetry::NullTelemetry, &frontend.module).expect("interp run")
+    run_main(&NullTelemetry, &frontend.module).expect("interp run")
 }
 
 fn capture(src: &str) -> String {
     let m = lower_src(src);
-    let tel = crate::telemetry::bus::ConfiguredTelemetry::new();
-    let dbg = crate::exec::runtime::DbgCapture::new();
+    let tel = ConfiguredTelemetry::new();
+    let dbg = DbgCapture::new();
     tel.attach(&[], dbg.handler());
     run_main(&tel, &m).expect("interp run");
     dbg.lines().join("\n")
@@ -38,10 +41,7 @@ fn capture(src: &str) -> String {
 
 #[test]
 fn interp_typed_int_arithmetic_full_i64() {
-    assert_eq!(
-        run("fn main(), do: 4611686018427387904 + 7"),
-        4611686018427387911
-    );
+    assert_eq!(run("fn main(), do: 4611686018427387904 + 7"), 4611686018427387911);
 }
 
 #[test]
@@ -104,15 +104,14 @@ fn interp_deep_copy_float_in_container_preserves_raw_slot() {
         end
     "#,
     );
-    let (_, runtime) =
-        run_main_with_runtime(&crate::telemetry::NullTelemetry, &m).expect("interp run");
+    let (_, runtime) = run_main_with_runtime(&NullTelemetry, &m).expect("interp run");
 
     let task = runtime.task(1).expect("main task remains registered");
     let any_ref = task.mailbox.front().expect("self-send remains queued");
     assert_eq!(any_ref.tag(), ValueKind::LIST);
     let list = any_ref.list_addr().expect("mailbox keeps tagged list ref");
-    let head = unsafe { (*(list as *const fz_runtime::any_value::ListCons)).head_value() };
-    assert_eq!(head.kind(), fz_runtime::any_value::ValueKind::FLOAT);
+    let head = unsafe { (*(list as *const ListCons)).head_value() };
+    assert_eq!(head.kind(), ValueKind::FLOAT);
     assert_eq!(f64::from_bits(head.raw()), 2.5);
 }
 
@@ -134,12 +133,8 @@ fn persistent_runtime_drives_entries_without_resetting_mailbox() {
     let second = m.fn_by_name("second").expect("second fn").id;
     let mut runtime = IrInterpRuntime::fresh_with_root(&m);
 
-    runtime
-        .enqueue_entry(&m, 1, first, vec![])
-        .expect("enqueue first");
-    let first_done = runtime
-        .drive_until_idle(&crate::telemetry::NullTelemetry, Some(1))
-        .expect("drive first");
+    runtime.enqueue_entry(&m, 1, first, vec![]).expect("enqueue first");
+    let first_done = runtime.drive_until_idle(&NullTelemetry, Some(1)).expect("drive first");
     assert_eq!(first_done.len(), 1);
     assert_eq!(
         runtime.task(1).expect("root task").mailbox.len(),
@@ -147,16 +142,9 @@ fn persistent_runtime_drives_entries_without_resetting_mailbox() {
         "first drive leaves self-sent message in persistent mailbox",
     );
 
-    runtime
-        .enqueue_entry(&m, 1, second, vec![])
-        .expect("enqueue second");
-    let second_done = runtime
-        .drive_until_idle(&crate::telemetry::NullTelemetry, Some(1))
-        .expect("drive second");
-    assert_eq!(
-        second_done.last().and_then(|(_, value)| value.as_i64()),
-        Some(41),
-    );
+    runtime.enqueue_entry(&m, 1, second, vec![]).expect("enqueue second");
+    let second_done = runtime.drive_until_idle(&NullTelemetry, Some(1)).expect("drive second");
+    assert_eq!(second_done.last().and_then(|(_, value)| value.as_i64()), Some(41),);
     assert_eq!(
         runtime.task(1).expect("root task").mailbox.len(),
         0,
@@ -185,8 +173,7 @@ fn interp_reductions_yield_allocation_light_loops() {
     "#,
     );
 
-    let (halt, runtime) =
-        run_main_with_runtime(&crate::telemetry::NullTelemetry, &m).expect("interp run");
+    let (halt, runtime) = run_main_with_runtime(&NullTelemetry, &m).expect("interp run");
 
     assert_eq!(halt, 99);
     let main = runtime.task(1).expect("main task remains registered");
@@ -201,14 +188,8 @@ fn interp_reductions_yield_allocation_light_loops() {
     );
     assert_eq!(main.allocation_pressure_yields, 0);
     assert_eq!(child.allocation_pressure_yields, 0);
-    assert_eq!(
-        main.interpreter_yields, 0,
-        "test should be allocation-light"
-    );
-    assert_eq!(
-        child.interpreter_yields, 0,
-        "test should be allocation-light"
-    );
+    assert_eq!(main.interpreter_yields, 0, "test should be allocation-light");
+    assert_eq!(child.interpreter_yields, 0, "test should be allocation-light");
 }
 
 #[test]
@@ -222,17 +203,10 @@ fn interp_quiet_quanta_moves_only_at_scheduler_boundaries() {
     );
     let main = m.fn_by_name("main").expect("main").id;
     let mut runtime = IrInterpRuntime::fresh_with_root(&m);
-    runtime
-        .enqueue_entry(&m, 1, main, vec![])
-        .expect("enqueue main");
-    runtime
-        .task_mut(1)
-        .expect("main task")
-        .reductions_per_quantum = 100;
+    runtime.enqueue_entry(&m, 1, main, vec![]).expect("enqueue main");
+    runtime.task_mut(1).expect("main task").reductions_per_quantum = 100;
 
-    let completions = runtime
-        .drive_until_idle(&crate::telemetry::NullTelemetry, None)
-        .expect("drive interp");
+    let completions = runtime.drive_until_idle(&NullTelemetry, None).expect("drive interp");
     let halt = completions
         .iter()
         .rev()
@@ -260,18 +234,14 @@ fn interp_allocation_pressure_yields_before_budget_exhaustion() {
     );
     let main = m.fn_by_name("main").expect("main").id;
     let mut runtime = IrInterpRuntime::fresh_with_root(&m);
-    runtime
-        .enqueue_entry(&m, 1, main, vec![])
-        .expect("enqueue main");
+    runtime.enqueue_entry(&m, 1, main, vec![]).expect("enqueue main");
     {
         let task = runtime.task_mut(1).expect("main task");
         task.reductions_per_quantum = 1000;
-        task.heap.allocation_watermark = std::ptr::null_mut();
+        task.heap.allocation_watermark = null_mut();
     }
 
-    let completions = runtime
-        .drive_until_idle(&crate::telemetry::NullTelemetry, None)
-        .expect("drive interp");
+    let completions = runtime.drive_until_idle(&NullTelemetry, None).expect("drive interp");
     let halt = completions
         .iter()
         .rev()

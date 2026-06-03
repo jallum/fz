@@ -40,11 +40,7 @@ impl<'a> DemandAbi<'a> {
     }
 
     pub(crate) fn returned_tuple_field_arity(self, is_cont_fn: bool) -> Option<usize> {
-        if is_cont_fn {
-            None
-        } else {
-            self.tuple_field_arity()
-        }
+        if is_cont_fn { None } else { self.tuple_field_arity() }
     }
 
     pub(crate) fn returned_delivers_list_tail_return(self, is_cont_fn: bool) -> bool {
@@ -75,6 +71,7 @@ impl<'a> DemandAbi<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::ConcreteTypes;
     use crate::types::Types;
 
     #[test]
@@ -86,7 +83,7 @@ mod tests {
 
     #[test]
     fn list_tail_demand_still_delivers_one_value_lane() {
-        let mut t = crate::types::ConcreteTypes;
+        let mut t = ConcreteTypes;
         let int = t.int();
         let demand = ReturnDemand::list_tail(t.list(int));
         let abi = DemandAbi::from_demand(&demand);
@@ -102,7 +99,7 @@ mod tests {
 
     #[test]
     fn tuple_field_list_tail_demand_has_no_single_value_lane() {
-        let mut t = crate::types::ConcreteTypes;
+        let mut t = ConcreteTypes;
         let int = t.int();
         let demand = ReturnDemand::tuple_fields_list_tail(2, t.list(int));
         let abi = DemandAbi::from_demand(&demand);
@@ -118,7 +115,7 @@ mod tests {
 
     #[test]
     fn continuation_outer_return_preserves_list_tail_when_tuple_fields_carried_it() {
-        let mut t = crate::types::ConcreteTypes;
+        let mut t = ConcreteTypes;
         let int = t.int();
         let demand = ReturnDemand::tuple_fields_list_tail(2, t.list(int));
         let abi = DemandAbi::from_demand(&demand);

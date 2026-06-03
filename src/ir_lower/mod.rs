@@ -28,11 +28,51 @@
 //! in this file (or a future corner case) panics in debug rather than
 //! corrupting downstream passes.
 
-use crate::ast::{FnDef, Item, Program};
+#[cfg(test)]
+use crate::ast::MatchClause;
+use crate::ast::{Attribute, Expr, FnDef, Item, Program, Spanned};
 use crate::diag::Span;
-use crate::fz_ir::{BlockId, ExternDecl, ExternId, ExternTy, FnId, Module, SourceInfo, Term, Var};
+#[cfg(test)]
+use crate::diag::{codes, emit_through};
+use crate::exec::matcher::SubjectRef;
+#[cfg(test)]
+use crate::exec::matcher::{GuardExpr, Matcher, MatcherConst, MatcherNode};
+#[cfg(test)]
+use crate::exec::runtime::{DbgCapture, Runtime};
+use crate::frontend::protocols::{
+    PROTOCOL_ELEM_VAR, ProtocolImplFact, impl_target_type, impl_target_type_with_element,
+};
+use crate::frontend::resolve::flatten_modules;
+#[cfg(test)]
+use crate::fz_ir::{BinOp, BranchOrigin, Const, DeadBranch, ExternMarshal, FnBuilder, ModuleBuilder};
+use crate::fz_ir::{
+    BlockId, ContinuationProvenance, ContinuationProvenanceKind, ExternDecl, ExternId, ExternTy, FnCategory, FnId,
+    FnIr, Module, Prim, SourceInfo, Stmt, Term, Var,
+};
+use crate::ir_brand_erase::erase_brands;
+use crate::ir_capture_norm::normalize_continuation_captures_with_telemetry;
+#[cfg(test)]
+use crate::ir_codegen::compile;
+#[cfg(test)]
+use crate::ir_planner::{collect_diagnostics, plan_module};
 use crate::modules::identity::ModuleName;
-use std::collections::HashMap;
+use crate::modules::runtime_library::{
+    core_prelude_module_sources, interface, prelude_source, root_type_env_from_attrs,
+};
+use crate::parser::Parser;
+use crate::parser::lexer::{Lexer, Tok};
+#[cfg(test)]
+use crate::pattern_matrix::BodyId;
+use crate::specs::{
+    StructuralCorrespondenceGroup, StructuralOccurrence, StructuralPathStep, spec_set_correspondence_groups,
+};
+use crate::telemetry::Telemetry;
+#[cfg(test)]
+use crate::telemetry::{Capture, ConfiguredTelemetry, NullTelemetry, Value, bus};
+use crate::type_expr::{ModuleTypeEnv, parse_type_expr, resolve_spec_decls};
+use crate::types::{ConcreteTypes, Ty, TypeVarId, Types, check_brand_mint_visibility};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::mem::take;
 use std::rc::Rc;
 
 mod atom_table;
@@ -56,8 +96,8 @@ pub use error::LowerError;
 use atom_table::AtomTable;
 use cond::{lower_if, lower_multi_clause};
 use cps::{
-    ContFn, OwnedConsCapture, cont_call_args, cps_split_call, cps_split_call_closure,
-    cps_split_external_call, cps_split_receive, finalize_arm, mint_cont_fn, switch_to_cont_fn,
+    ContFn, OwnedConsCapture, cont_call_args, cps_split_call, cps_split_call_closure, cps_split_external_call,
+    cps_split_receive, finalize_arm, mint_cont_fn, switch_to_cont_fn,
 };
 use ctx::LowerCtx;
 use expr::{bind_param_topname, lower_expr, lower_fn, lower_pattern_bind};
@@ -77,19 +117,17 @@ pub(crate) const REPL_ENTRY_PREFIX: &str = "__repl_eval_";
 /// Return the prelude as a flat `Program` whose `module_type_envs[""]`,
 /// `opaque_inners`, and `brand_inners` include compiler-known runtime
 /// types plus any root declarations still present in `runtime.fz`.
-fn parse_runtime_prelude<T: crate::types::Types<Ty = crate::types::Ty>>(
-    t: &mut T,
-) -> (Program, HashMap<(String, usize), String>) {
-    let runtime_fz = crate::modules::runtime_library::prelude_source();
+fn parse_runtime_prelude<T: Types<Ty = Ty>>(t: &mut T) -> (Program, HashMap<(String, usize), String>) {
+    let runtime_fz = prelude_source();
     let (items, attrs) = parse_runtime_source_items(runtime_fz, "runtime.fz");
-    let root_types = crate::modules::runtime_library::root_type_env_from_attrs(t, &attrs);
+    let root_types = root_type_env_from_attrs(t, &attrs);
     let prelude_imports = collect_runtime_prelude_imports(&items);
     let mut items = items;
-    for (name, source) in crate::modules::runtime_library::core_prelude_module_sources() {
+    for (name, source) in core_prelude_module_sources() {
         let (mut module_items, _module_attrs) = parse_runtime_source_items(source, name);
         items.append(&mut module_items);
     }
-    let staged = crate::ast::Program {
+    let staged = Program {
         items,
         module_interfaces: Default::default(),
         external_module_interfaces: Default::default(),
@@ -101,8 +139,7 @@ fn parse_runtime_prelude<T: crate::types::Types<Ty = crate::types::Ty>>(
         structs: Default::default(),
         struct_field_types: Default::default(),
     };
-    let mut flat = crate::frontend::resolve::flatten_modules(t, staged)
-        .expect("runtime.fz module flatten error (bug in built-in prelude)");
+    let mut flat = flatten_modules(t, staged).expect("runtime.fz module flatten error (bug in built-in prelude)");
     // Merge compiler-known runtime types and any root declarations into the
     // flattened prelude program.
     flat.module_type_envs
@@ -114,14 +151,11 @@ fn parse_runtime_prelude<T: crate::types::Types<Ty = crate::types::Ty>>(
     (flat, prelude_imports)
 }
 
-fn parse_runtime_source_items(
-    src: &str,
-    label: &str,
-) -> (Vec<Rc<Item>>, Vec<crate::ast::Attribute>) {
-    let toks = crate::parser::lexer::Lexer::new(src)
+fn parse_runtime_source_items(src: &str, label: &str) -> (Vec<Rc<Item>>, Vec<Attribute>) {
+    let toks = Lexer::new(src)
         .tokenize()
         .unwrap_or_else(|_| panic!("{label} lex error (bug in built-in prelude)"));
-    crate::parser::Parser::new(toks)
+    Parser::new(toks)
         .parse_prelude()
         .unwrap_or_else(|_| panic!("{label} parse error (bug in built-in prelude)"))
 }
@@ -135,13 +169,7 @@ fn collect_runtime_prelude_imports(items: &[Rc<Item>]) -> HashMap<(String, usize
                 only,
                 except,
                 span,
-            } => collect_runtime_prelude_import(
-                &mut out,
-                path,
-                only.as_deref(),
-                except.as_deref(),
-                *span,
-            ),
+            } => collect_runtime_prelude_import(&mut out, path, only.as_deref(), except.as_deref(), *span),
             Item::Alias { .. } => {
                 panic!("runtime.fz prelude aliases are not supported; use import")
             }
@@ -151,11 +179,11 @@ fn collect_runtime_prelude_imports(items: &[Rc<Item>]) -> HashMap<(String, usize
     out
 }
 
-fn struct_opaque_inners<T: crate::types::Types<Ty = crate::types::Ty>>(
+fn struct_opaque_inners<T: Types<Ty = Ty>>(
     t: &mut T,
-    structs: &std::collections::BTreeMap<ModuleName, Vec<String>>,
-    struct_field_types: &std::collections::BTreeMap<ModuleName, Vec<(String, crate::types::Ty)>>,
-) -> HashMap<String, crate::types::Ty> {
+    structs: &BTreeMap<ModuleName, Vec<String>>,
+    struct_field_types: &BTreeMap<ModuleName, Vec<(String, Ty)>>,
+) -> HashMap<String, Ty> {
     let mut out = HashMap::new();
     for (module, order) in structs {
         let Some(fields) = struct_field_types.get(module) else {
@@ -168,18 +196,13 @@ fn struct_opaque_inners<T: crate::types::Types<Ty = crate::types::Ty>>(
         let ordered = order
             .iter()
             .map(|field| {
-                by_name.get(field.as_str()).cloned().unwrap_or_else(|| {
-                    panic!(
-                        "struct field type invariant violated: `{}` lacks `{}`",
-                        module, field
-                    )
-                })
+                by_name
+                    .get(field.as_str())
+                    .cloned()
+                    .unwrap_or_else(|| panic!("struct field type invariant violated: `{}` lacks `{}`", module, field))
             })
             .collect::<Vec<_>>();
-        out.insert(
-            format!("impl-target::{}", module.last_segment()),
-            t.tuple(&ordered),
-        );
+        out.insert(format!("impl-target::{}", module.last_segment()), t.tuple(&ordered));
     }
     out
 }
@@ -191,12 +214,8 @@ fn collect_runtime_prelude_import(
     except: Option<&[(String, usize)]>,
     span: Span,
 ) {
-    let interface = crate::modules::runtime_library::interface(module).unwrap_or_else(|| {
-        panic!(
-            "runtime.fz imports unknown built-in runtime module `{}`",
-            module
-        )
-    });
+    let interface =
+        interface(module).unwrap_or_else(|| panic!("runtime.fz imports unknown built-in runtime module `{}`", module));
     let mut exports = interface
         .exports
         .iter()
@@ -231,23 +250,16 @@ fn collect_runtime_prelude_import(
 
 pub(crate) fn compute_current_function_correspondence(
     module: &mut Module,
-    provenance: &std::collections::HashMap<FnId, crate::fz_ir::ContinuationProvenance>,
+    provenance: &HashMap<FnId, ContinuationProvenance>,
 ) {
-    use crate::specs::{StructuralCorrespondenceGroup, StructuralOccurrence, StructuralPathStep};
-    use std::collections::BTreeSet;
-
-    fn groups_to_sets(
-        groups: &[StructuralCorrespondenceGroup],
-    ) -> Vec<BTreeSet<StructuralOccurrence>> {
+    fn groups_to_sets(groups: &[StructuralCorrespondenceGroup]) -> Vec<BTreeSet<StructuralOccurrence>> {
         groups
             .iter()
             .map(|group| group.occurrences.iter().cloned().collect())
             .collect()
     }
 
-    fn normalize_sets(
-        mut sets: Vec<BTreeSet<StructuralOccurrence>>,
-    ) -> Vec<BTreeSet<StructuralOccurrence>> {
+    fn normalize_sets(mut sets: Vec<BTreeSet<StructuralOccurrence>>) -> Vec<BTreeSet<StructuralOccurrence>> {
         sets.retain(|set| set.len() > 1);
         let mut changed = true;
         while changed {
@@ -271,23 +283,18 @@ pub(crate) fn compute_current_function_correspondence(
         sets
     }
 
-    fn sets_to_groups(
-        sets: Vec<BTreeSet<StructuralOccurrence>>,
-    ) -> Vec<StructuralCorrespondenceGroup> {
+    fn sets_to_groups(sets: Vec<BTreeSet<StructuralOccurrence>>) -> Vec<StructuralCorrespondenceGroup> {
         normalize_sets(sets)
             .into_iter()
             .enumerate()
             .map(|(idx, occurrences)| StructuralCorrespondenceGroup {
-                var: crate::types::TypeVarId(idx as u32),
+                var: TypeVarId(idx as u32),
                 occurrences: occurrences.into_iter().collect(),
             })
             .collect()
     }
 
-    fn continuation_capture_param_index(
-        provenance: &crate::fz_ir::ContinuationProvenance,
-        var: Var,
-    ) -> Option<usize> {
+    fn continuation_capture_param_index(provenance: &ContinuationProvenance, var: Var) -> Option<usize> {
         provenance
             .captured
             .iter()
@@ -296,7 +303,7 @@ pub(crate) fn compute_current_function_correspondence(
     }
 
     fn rebase_caller_groups(
-        provenance: &crate::fz_ir::ContinuationProvenance,
+        provenance: &ContinuationProvenance,
         caller_params: &[Var],
         groups: &[StructuralCorrespondenceGroup],
         rebase_callback_occurrences: bool,
@@ -309,8 +316,7 @@ pub(crate) fn compute_current_function_correspondence(
                     match occ {
                         StructuralOccurrence::Param { param_index, path } => {
                             let caller_var = caller_params.get(*param_index).copied()?;
-                            let cont_param =
-                                continuation_capture_param_index(provenance, caller_var)?;
+                            let cont_param = continuation_capture_param_index(provenance, caller_var)?;
                             out.insert(StructuralOccurrence::Param {
                                 param_index: cont_param,
                                 path: path.clone(),
@@ -321,15 +327,13 @@ pub(crate) fn compute_current_function_correspondence(
                             if rebase_callback_occurrences =>
                         {
                             let caller_var = caller_params.get(*param_index).copied()?;
-                            let cont_param =
-                                continuation_capture_param_index(provenance, caller_var)?;
+                            let cont_param = continuation_capture_param_index(provenance, caller_var)?;
                             out.insert(StructuralOccurrence::Param {
                                 param_index: cont_param,
                                 path: vec![],
                             });
                         }
-                        StructuralOccurrence::CallbackArg { .. }
-                        | StructuralOccurrence::CallbackResult { .. } => {}
+                        StructuralOccurrence::CallbackArg { .. } | StructuralOccurrence::CallbackResult { .. } => {}
                         StructuralOccurrence::Result { path } => {
                             out.insert(StructuralOccurrence::Result { path: path.clone() });
                         }
@@ -341,20 +345,19 @@ pub(crate) fn compute_current_function_correspondence(
     }
 
     fn project_direct_callee_groups(
-        provenance: &crate::fz_ir::ContinuationProvenance,
-        caller_fn: &crate::fz_ir::FnIr,
+        provenance: &ContinuationProvenance,
+        caller_fn: &FnIr,
         args: &[Var],
         groups: &[StructuralCorrespondenceGroup],
     ) -> Vec<BTreeSet<StructuralOccurrence>> {
         fn project_path_through_var(
-            f: &crate::fz_ir::FnIr,
+            f: &FnIr,
             var: Var,
             path: &[StructuralPathStep],
         ) -> Vec<(Var, Vec<StructuralPathStep>)> {
-            use crate::fz_ir::Prim;
             let prim = f.blocks.iter().find_map(|block| {
                 block.stmts.iter().find_map(|stmt| match stmt {
-                    crate::fz_ir::Stmt::Let(bound, prim) if *bound == var => Some(prim),
+                    Stmt::Let(bound, prim) if *bound == var => Some(prim),
                     _ => None,
                 })
             });
@@ -417,11 +420,8 @@ pub(crate) fn compute_current_function_correspondence(
                     match occ {
                         StructuralOccurrence::Param { param_index, path } => {
                             let arg = args.get(*param_index).copied()?;
-                            for (projected_var, projected_path) in
-                                project_path_through_var(caller_fn, arg, path)
-                            {
-                                let Some(cont_param) =
-                                    continuation_capture_param_index(provenance, projected_var)
+                            for (projected_var, projected_path) in project_path_through_var(caller_fn, arg, path) {
+                                let Some(cont_param) = continuation_capture_param_index(provenance, projected_var)
                                 else {
                                     continue;
                                 };
@@ -454,14 +454,13 @@ pub(crate) fn compute_current_function_correspondence(
     }
 
     fn project_closure_call_groups(
-        provenance: &crate::fz_ir::ContinuationProvenance,
+        provenance: &ContinuationProvenance,
         caller_params: &[Var],
         closure: Var,
         args: &[Var],
         groups: &[StructuralCorrespondenceGroup],
     ) -> Vec<BTreeSet<StructuralOccurrence>> {
-        let Some(caller_closure_param) = caller_params.iter().position(|param| *param == closure)
-        else {
+        let Some(caller_closure_param) = caller_params.iter().position(|param| *param == closure) else {
             return Vec::new();
         };
         groups
@@ -472,8 +471,7 @@ pub(crate) fn compute_current_function_correspondence(
                     match occ {
                         StructuralOccurrence::Param { param_index, path } => {
                             let caller_var = caller_params.get(*param_index).copied()?;
-                            let cont_param =
-                                continuation_capture_param_index(provenance, caller_var)?;
+                            let cont_param = continuation_capture_param_index(provenance, caller_var)?;
                             out.insert(StructuralOccurrence::Param {
                                 param_index: cont_param,
                                 path: path.clone(),
@@ -512,7 +510,7 @@ pub(crate) fn compute_current_function_correspondence(
 
     fn project_path_through_matcher_subject(
         path: &[StructuralPathStep],
-        subject: &crate::exec::matcher::SubjectRef,
+        subject: &SubjectRef,
     ) -> Option<Vec<StructuralPathStep>> {
         fn strip_after_union_prefix(
             path: &[StructuralPathStep],
@@ -526,36 +524,32 @@ pub(crate) fn compute_current_function_correspondence(
         }
 
         match subject {
-            crate::exec::matcher::SubjectRef::Input(_) => Some(path.to_vec()),
-            crate::exec::matcher::SubjectRef::TupleField { tuple, index } => {
+            SubjectRef::Input(_) => Some(path.to_vec()),
+            SubjectRef::TupleField { tuple, index } => {
                 let inner = project_path_through_matcher_subject(path, tuple)?;
                 strip_after_union_prefix(&inner, StructuralPathStep::TupleElem(*index as usize))
             }
-            crate::exec::matcher::SubjectRef::ListHead(list) => {
+            SubjectRef::ListHead(list) => {
                 let inner = project_path_through_matcher_subject(path, list)?;
                 strip_after_union_prefix(&inner, StructuralPathStep::ListElem)
             }
-            crate::exec::matcher::SubjectRef::ListTail(list) => {
-                project_path_through_matcher_subject(path, list)
-            }
-            crate::exec::matcher::SubjectRef::MapValue { .. }
-            | crate::exec::matcher::SubjectRef::BitstringField { .. } => None,
+            SubjectRef::ListTail(list) => project_path_through_matcher_subject(path, list),
+            SubjectRef::MapValue { .. } | SubjectRef::BitstringField { .. } => None,
         }
     }
 
     fn project_matcher_binding_groups(
-        provenance: &crate::fz_ir::ContinuationProvenance,
-        bindings: &[(Var, crate::exec::matcher::SubjectRef)],
+        provenance: &ContinuationProvenance,
+        bindings: &[(Var, SubjectRef)],
         groups: &[StructuralCorrespondenceGroup],
     ) -> Vec<BTreeSet<StructuralOccurrence>> {
-        fn binding_input_id(source: &crate::exec::matcher::SubjectRef) -> Option<u32> {
+        fn binding_input_id(source: &SubjectRef) -> Option<u32> {
             match source {
-                crate::exec::matcher::SubjectRef::Input(input_id) => Some(input_id.0),
-                crate::exec::matcher::SubjectRef::TupleField { tuple, .. }
-                | crate::exec::matcher::SubjectRef::ListHead(tuple)
-                | crate::exec::matcher::SubjectRef::ListTail(tuple) => binding_input_id(tuple),
-                crate::exec::matcher::SubjectRef::MapValue { .. }
-                | crate::exec::matcher::SubjectRef::BitstringField { .. } => None,
+                SubjectRef::Input(input_id) => Some(input_id.0),
+                SubjectRef::TupleField { tuple, .. } | SubjectRef::ListHead(tuple) | SubjectRef::ListTail(tuple) => {
+                    binding_input_id(tuple)
+                }
+                SubjectRef::MapValue { .. } | SubjectRef::BitstringField { .. } => None,
             }
         }
 
@@ -573,14 +567,11 @@ pub(crate) fn compute_current_function_correspondence(
                                 if *param_index != input_id as usize {
                                     continue;
                                 }
-                                let Some(cont_param) =
-                                    continuation_capture_param_index(provenance, *binding_var)
+                                let Some(cont_param) = continuation_capture_param_index(provenance, *binding_var)
                                 else {
                                     continue;
                                 };
-                                let Some(projected_path) =
-                                    project_path_through_matcher_subject(path, source)
-                                else {
+                                let Some(projected_path) = project_path_through_matcher_subject(path, source) else {
                                     continue;
                                 };
                                 out.insert(StructuralOccurrence::Param {
@@ -592,8 +583,7 @@ pub(crate) fn compute_current_function_correspondence(
                         StructuralOccurrence::Result { path } => {
                             out.insert(StructuralOccurrence::Result { path: path.clone() });
                         }
-                        StructuralOccurrence::CallbackArg { .. }
-                        | StructuralOccurrence::CallbackResult { .. } => {}
+                        StructuralOccurrence::CallbackArg { .. } | StructuralOccurrence::CallbackResult { .. } => {}
                     }
                 }
                 (out.len() > 1).then_some(out)
@@ -623,32 +613,13 @@ pub(crate) fn compute_current_function_correspondence(
             );
 
             match &provenance.kind {
-                crate::fz_ir::ContinuationProvenanceKind::DirectCall { callee, args } => {
-                    sets.extend(rebase_caller_groups(
-                        provenance,
-                        &caller_params,
-                        &caller_groups,
-                        true,
-                    ));
-                    let callee_groups = module
-                        .function_correspondence
-                        .get(callee)
-                        .cloned()
-                        .unwrap_or_default();
-                    sets.extend(project_direct_callee_groups(
-                        provenance,
-                        caller,
-                        args,
-                        &callee_groups,
-                    ));
+                ContinuationProvenanceKind::DirectCall { callee, args } => {
+                    sets.extend(rebase_caller_groups(provenance, &caller_params, &caller_groups, true));
+                    let callee_groups = module.function_correspondence.get(callee).cloned().unwrap_or_default();
+                    sets.extend(project_direct_callee_groups(provenance, caller, args, &callee_groups));
                 }
-                crate::fz_ir::ContinuationProvenanceKind::ClosureCall { closure, args } => {
-                    sets.extend(rebase_caller_groups(
-                        provenance,
-                        &caller_params,
-                        &caller_groups,
-                        false,
-                    ));
+                ContinuationProvenanceKind::ClosureCall { closure, args } => {
+                    sets.extend(rebase_caller_groups(provenance, &caller_params, &caller_groups, false));
                     sets.extend(project_closure_call_groups(
                         provenance,
                         &caller_params,
@@ -657,26 +628,14 @@ pub(crate) fn compute_current_function_correspondence(
                         &caller_groups,
                     ));
                 }
-                crate::fz_ir::ContinuationProvenanceKind::MatcherBody { bindings } => {
-                    sets.extend(rebase_caller_groups(
-                        provenance,
-                        &caller_params,
-                        &caller_groups,
-                        true,
-                    ));
-                    sets.extend(project_matcher_binding_groups(
-                        provenance,
-                        bindings,
-                        &caller_groups,
-                    ));
+                ContinuationProvenanceKind::MatcherBody { bindings } => {
+                    sets.extend(rebase_caller_groups(provenance, &caller_params, &caller_groups, true));
+                    sets.extend(project_matcher_binding_groups(provenance, bindings, &caller_groups));
                 }
             }
 
             let new_groups = sets_to_groups(sets);
-            let entry = module
-                .function_correspondence
-                .entry(continuation)
-                .or_default();
+            let entry = module.function_correspondence.entry(continuation).or_default();
             if *entry != new_groups {
                 *entry = new_groups;
                 changed = true;
@@ -691,11 +650,7 @@ pub(crate) fn compute_current_function_correspondence(
 /// operators observe the same lowering surface; pass `NullTelemetry` to silence
 /// it. The atom table built during lowering is folded into `module.atom_names`,
 /// so the `Module` is the complete result — there is no second return value.
-pub fn lower_program<T: crate::types::Types<Ty = crate::types::Ty>>(
-    t: &mut T,
-    prog: &Program,
-    tel: &dyn crate::telemetry::Telemetry,
-) -> Result<Module, LowerError> {
+pub fn lower_program<T: Types<Ty = Ty>>(t: &mut T, prog: &Program, tel: &dyn Telemetry) -> Result<Module, LowerError> {
     let mut ctx = LowerCtx::new();
     ctx.struct_schemas.extend(
         prog.structs
@@ -719,11 +674,7 @@ pub fn lower_program<T: crate::types::Types<Ty = crate::types::Ty>>(
     );
     ctx.register_protocol_registry(&prelude.protocol_registry);
     ctx.register_external_interfaces(&prelude.external_module_interfaces);
-    let prelude_type_env = prelude
-        .module_type_envs
-        .get("")
-        .cloned()
-        .unwrap_or_default();
+    let prelude_type_env = prelude.module_type_envs.get("").cloned().unwrap_or_default();
     ctx.prelude_type_env = prelude_type_env.clone();
     // Build the combined type env: prelude aliases + all user-module aliases.
     let mut combined = prelude_type_env;
@@ -797,7 +748,7 @@ pub fn lower_program<T: crate::types::Types<Ty = crate::types::Ty>>(
         if let Item::Fn(fn_def) = item.as_ref()
             && fn_def.extern_abi.is_none()
         {
-            lower_fn(&mut ctx, t, fn_def, crate::fz_ir::FnCategory::Prelude)?;
+            lower_fn(&mut ctx, t, fn_def, FnCategory::Prelude)?;
         }
     }
     ctx.prelude_fn_id_cutoff = ctx.mb.next_fn_id();
@@ -830,11 +781,7 @@ pub fn lower_program<T: crate::types::Types<Ty = crate::types::Ty>>(
                     ctx.fns.insert((fn_def.name.clone(), arity), id);
                     // fz-jg5.12 (RED.9): a user fn with an @spec is a
                     // reduction boundary — the spec is a signed contract.
-                    if fn_def
-                        .attrs
-                        .iter()
-                        .any(|a| matches!(a, crate::ast::Attribute::Spec(_)))
-                    {
+                    if fn_def.attrs.iter().any(|a| matches!(a, Attribute::Spec(_))) {
                         ctx.boundary_fns.insert(id);
                     }
                 }
@@ -854,8 +801,7 @@ pub fn lower_program<T: crate::types::Types<Ty = crate::types::Ty>>(
             Item::ProtocolImpl(i) => {
                 return Err(LowerError::Unsupported {
                     span: i.span,
-                    what: "protocol implementations are not lowered before protocol resolution"
-                        .into(),
+                    what: "protocol implementations are not lowered before protocol resolution".into(),
                 });
             }
             Item::Struct(_) => {}
@@ -887,7 +833,7 @@ pub fn lower_program<T: crate::types::Types<Ty = crate::types::Ty>>(
 
     // Take the module out first; `ctx.mb` is moved but `ctx` itself is
     // still usable for source-info collection.
-    let mb = std::mem::take(&mut ctx.mb);
+    let mb = take(&mut ctx.mb);
     let mut module = mb.build();
     module.protocol_registry = prog.protocol_registry.clone();
     module
@@ -903,12 +849,12 @@ pub fn lower_program<T: crate::types::Types<Ty = crate::types::Ty>>(
         .extend_interfaces(&prog.external_module_interfaces);
     module.source = build_source_info(&module, &ctx);
     module.atom_names = ctx.atoms.names();
-    module.externs = std::mem::take(&mut ctx.extern_decls);
+    module.externs = take(&mut ctx.extern_decls);
     for (i, e) in module.externs.iter().enumerate() {
         module.extern_idx.insert(e.id, i);
     }
-    module.boundary_fns = std::mem::take(&mut ctx.boundary_fns);
-    let empty_env = crate::type_expr::ModuleTypeEnv::new();
+    module.boundary_fns = take(&mut ctx.boundary_fns);
+    let empty_env = ModuleTypeEnv::new();
     for item in &all_items {
         let Item::Fn(fn_def) = item.as_ref() else {
             continue;
@@ -917,7 +863,7 @@ pub fn lower_program<T: crate::types::Types<Ty = crate::types::Ty>>(
             .attrs
             .iter()
             .filter_map(|a| match a {
-                crate::ast::Attribute::Spec(spec) => Some(spec),
+                Attribute::Spec(spec) => Some(spec),
                 _ => None,
             })
             .collect::<Vec<_>>();
@@ -940,10 +886,10 @@ pub fn lower_program<T: crate::types::Types<Ty = crate::types::Ty>>(
                 .get(&module_path)
                 .unwrap_or(&ctx.combined_type_env)
         };
-        if let Ok(resolved) = crate::type_expr::resolve_spec_decls(t, specs, env) {
+        if let Ok(resolved) = resolve_spec_decls(t, specs, env) {
             module
                 .function_correspondence
-                .insert(fid, crate::specs::spec_set_correspondence_groups(&resolved));
+                .insert(fid, spec_set_correspondence_groups(&resolved));
             module.declared_specs.insert(fid, resolved);
         }
     }
@@ -964,16 +910,12 @@ pub fn lower_program<T: crate::types::Types<Ty = crate::types::Ty>>(
     // flat-prelude Program, merged here alongside user inners.
     module.opaque_inners = prog.opaque_inners.clone();
     module.opaque_inners.extend(prelude.opaque_inners.clone());
-    module.opaque_inners.extend(struct_opaque_inners(
-        t,
-        &prog.structs,
-        &prog.struct_field_types,
-    ));
-    module.opaque_inners.extend(struct_opaque_inners(
-        t,
-        &prelude.structs,
-        &prelude.struct_field_types,
-    ));
+    module
+        .opaque_inners
+        .extend(struct_opaque_inners(t, &prog.structs, &prog.struct_field_types));
+    module
+        .opaque_inners
+        .extend(struct_opaque_inners(t, &prelude.structs, &prelude.struct_field_types));
     module.brand_inners = prog.brand_inners.clone();
     module.brand_inners.extend(prelude.brand_inners.clone());
     module.struct_schemas = ctx.struct_schemas.clone();
@@ -991,28 +933,23 @@ pub fn lower_program<T: crate::types::Types<Ty = crate::types::Ty>>(
     // reducer, codegen, interp, DCE) can treat that as a precondition,
     // and their Brand match arms become `unreachable!()` rather than
     // silent identity-fallbacks.
-    crate::ir_brand_erase::erase_brands(&mut module);
-    crate::ir_capture_norm::normalize_continuation_captures_with_telemetry(&mut module, tel);
+    erase_brands(&mut module);
+    normalize_continuation_captures_with_telemetry(&mut module, tel);
     // fz-uwq.1 — verify the unique-cont invariant the post-type pipeline
     // depends on. See `debug_assert_unique_conts` for the contract.
     debug_assert_unique_conts(&module);
     Ok(module)
 }
 
-fn install_inherited_protocol_callback_specs<T: crate::types::Types<Ty = crate::types::Ty>>(
+fn install_inherited_protocol_callback_specs<T: Types<Ty = Ty>>(
     t: &mut T,
     module: &mut Module,
     fns: &HashMap<(String, usize), FnId>,
-    prog_type_envs: &HashMap<String, crate::type_expr::ModuleTypeEnv>,
-    prelude_type_envs: &HashMap<String, crate::type_expr::ModuleTypeEnv>,
-    combined_type_env: &crate::type_expr::ModuleTypeEnv,
+    prog_type_envs: &HashMap<String, ModuleTypeEnv>,
+    prelude_type_envs: &HashMap<String, ModuleTypeEnv>,
+    combined_type_env: &ModuleTypeEnv,
 ) {
-    let impls = module
-        .protocol_registry
-        .impls
-        .values()
-        .cloned()
-        .collect::<Vec<_>>();
+    let impls = module.protocol_registry.impls.values().cloned().collect::<Vec<_>>();
     for implementation in impls {
         let Some(protocol) = module
             .protocol_registry
@@ -1037,44 +974,33 @@ fn install_inherited_protocol_callback_specs<T: crate::types::Types<Ty = crate::
             if module.declared_specs.contains_key(&fid) {
                 continue;
             }
-            let env = inherited_protocol_spec_env(
-                t,
-                &implementation,
-                prog_type_envs,
-                prelude_type_envs,
-                combined_type_env,
-            );
-            if let Ok(resolved) =
-                crate::type_expr::resolve_spec_decls(t, callback.specs.iter(), &env)
-            {
+            let env =
+                inherited_protocol_spec_env(t, &implementation, prog_type_envs, prelude_type_envs, combined_type_env);
+            if let Ok(resolved) = resolve_spec_decls(t, callback.specs.iter(), &env) {
                 module
                     .function_correspondence
-                    .insert(fid, crate::specs::spec_set_correspondence_groups(&resolved));
+                    .insert(fid, spec_set_correspondence_groups(&resolved));
                 module.declared_specs.insert(fid, resolved);
             }
         }
     }
 }
 
-fn inherited_protocol_spec_env<T: crate::types::Types<Ty = crate::types::Ty>>(
+fn inherited_protocol_spec_env<T: Types<Ty = Ty>>(
     t: &mut T,
-    implementation: &crate::frontend::protocols::ProtocolImplFact,
-    prog_type_envs: &HashMap<String, crate::type_expr::ModuleTypeEnv>,
-    prelude_type_envs: &HashMap<String, crate::type_expr::ModuleTypeEnv>,
-    combined_type_env: &crate::type_expr::ModuleTypeEnv,
-) -> crate::type_expr::ModuleTypeEnv {
+    implementation: &ProtocolImplFact,
+    prog_type_envs: &HashMap<String, ModuleTypeEnv>,
+    prelude_type_envs: &HashMap<String, ModuleTypeEnv>,
+    combined_type_env: &ModuleTypeEnv,
+) -> ModuleTypeEnv {
     let mut env = prog_type_envs
         .get(&implementation.protocol.dotted())
         .or_else(|| prelude_type_envs.get(&implementation.protocol.dotted()))
         .cloned()
         .unwrap_or_else(|| combined_type_env.clone());
-    let target_ty = crate::frontend::protocols::impl_target_type(t, &implementation.target);
-    let element = t.type_var(crate::frontend::protocols::PROTOCOL_ELEM_VAR);
-    let target_template = crate::frontend::protocols::impl_target_type_with_element(
-        t,
-        &implementation.target,
-        element,
-    );
+    let target_ty = impl_target_type(t, &implementation.target);
+    let element = t.type_var(PROTOCOL_ELEM_VAR);
+    let target_template = impl_target_type_with_element(t, &implementation.target, element);
     env.insert("t".to_string(), target_ty.clone());
     env.insert(format!("{}.t", implementation.protocol), target_ty);
     env.insert_protocol_domain("t".to_string(), target_template.clone());
@@ -1082,13 +1008,10 @@ fn inherited_protocol_spec_env<T: crate::types::Types<Ty = crate::types::Ty>>(
     env
 }
 
-pub(crate) fn repl_output_frame_names(
-    input_frame: &[String],
-    expr: &crate::ast::Spanned<crate::ast::Expr>,
-) -> Vec<String> {
+pub(crate) fn repl_output_frame_names(input_frame: &[String], expr: &Spanned<Expr>) -> Vec<String> {
     let mut out = input_frame.to_vec();
     let mut new_names = Vec::new();
-    if let crate::ast::Expr::Match(pattern, _) = &expr.node {
+    if let Expr::Match(pattern, _) = &expr.node {
         lambda::collect_pattern_bound_names(&pattern.node, &mut new_names);
     }
     new_names.sort();
@@ -1101,11 +1024,11 @@ pub(crate) fn repl_output_frame_names(
     out
 }
 
-fn user_fn_category(fn_def: &crate::ast::FnDef) -> crate::fz_ir::FnCategory {
+fn user_fn_category(fn_def: &FnDef) -> FnCategory {
     if fn_def.name.starts_with(REPL_ENTRY_PREFIX) {
-        crate::fz_ir::FnCategory::ReplEntry
+        FnCategory::ReplEntry
     } else {
-        crate::fz_ir::FnCategory::User
+        FnCategory::User
     }
 }
 
@@ -1145,7 +1068,7 @@ fn user_fn_category(fn_def: &crate::ast::FnDef) -> crate::fz_ir::FnCategory {
 ///
 /// Runs between annotate_back_edges and erase_brands — must see Brand
 /// prims, which erase_brands removes.
-fn check_brand_visibility<T: crate::types::Types>(
+fn check_brand_visibility<T: Types>(
     _t: &mut T,
     module: &Module,
     stmt_spans: &HashMap<(FnId, BlockId), Vec<Span>>,
@@ -1156,15 +1079,14 @@ fn check_brand_visibility<T: crate::types::Types>(
         for block in &f.blocks {
             let spans = stmt_spans.get(&(f.id, block.id));
             for (i, stmt) in block.stmts.iter().enumerate() {
-                let crate::fz_ir::Stmt::Let(_, prim) = stmt;
-                if let crate::fz_ir::Prim::Brand(_, brand_tag) = prim
-                    && let Err(e) =
-                        crate::types::check_brand_mint_visibility(brand_tag, using_module)
+                let Stmt::Let(_, prim) = stmt;
+                if let Prim::Brand(_, brand_tag) = prim
+                    && let Err(e) = check_brand_mint_visibility(brand_tag, using_module)
                 {
                     let span = spans
                         .and_then(|v| v.get(i).copied())
                         .or_else(|| fn_spans.get(&f.id).copied())
-                        .unwrap_or(crate::diag::Span::DUMMY);
+                        .unwrap_or(Span::DUMMY);
                     return Err(LowerError::BrandMintVisibility {
                         span,
                         brand: e.opaque,
@@ -1182,17 +1104,13 @@ fn debug_assert_unique_conts(module: &Module) {
     if !cfg!(debug_assertions) {
         return;
     }
-    use crate::fz_ir::FnId;
     let mut seen: HashMap<FnId, (FnId, BlockId)> = HashMap::new();
     for f in &module.fns {
         for b in &f.blocks {
             let cont_fn = match &b.terminator {
                 Term::Call { continuation, .. }
                 | Term::CallClosure { continuation, .. }
-                | Term::Receive {
-                    continuation,
-                    ident: _,
-                } => continuation.fn_id,
+                | Term::Receive { continuation, ident: _ } => continuation.fn_id,
                 _ => continue,
             };
             if let Some(prev) = seen.insert(cont_fn, (f.id, b.id)) {
@@ -1211,17 +1129,16 @@ fn debug_assert_unique_conts(module: &Module) {
 /// (semantic type for the type system).
 ///
 /// `type_env` is consulted for named type references (e.g. `pid`).
-pub(super) fn lower_extern_ret_ty<T: crate::types::Types<Ty = crate::types::Ty>>(
+pub(super) fn lower_extern_ret_ty<T: Types<Ty = Ty>>(
     t: &mut T,
     fn_def: &FnDef,
-    type_env: &crate::type_expr::ModuleTypeEnv,
-) -> Result<(ExternTy, crate::types::Ty), LowerError> {
-    use crate::parser::lexer::Tok;
+    type_env: &ModuleTypeEnv,
+) -> Result<(ExternTy, Ty), LowerError> {
     let tokens = &fn_def.extern_ret_tokens.0;
 
     // Try to resolve via parse_type_expr first (handles named types like `pid`).
     if !tokens.is_empty()
-        && let Ok((ty, _)) = crate::type_expr::parse_type_expr(t, tokens, type_env)
+        && let Ok((ty, _)) = parse_type_expr(t, tokens, type_env)
     {
         let wire = ty_to_extern_ty(t, &ty);
         return Ok((wire, ty));
@@ -1236,14 +1153,13 @@ pub(super) fn lower_extern_ret_ty<T: crate::types::Types<Ty = crate::types::Ty>>
         Tok::Ident(n) | Tok::Upper(n) => extern_ty_from_name(n.as_str()),
         _ => None,
     });
-    ty.map(|wire| (wire, t.any()))
-        .ok_or_else(|| LowerError::Unsupported {
-            span: fn_def.name_span,
-            what: format!(
-                "unrecognised return type in `extern fn {}` (expected any/nil/never/float/pid/…)",
-                fn_def.name
-            ),
-        })
+    ty.map(|wire| (wire, t.any())).ok_or_else(|| LowerError::Unsupported {
+        span: fn_def.name_span,
+        what: format!(
+            "unrecognised return type in `extern fn {}` (expected any/nil/never/float/pid/…)",
+            fn_def.name
+        ),
+    })
 }
 
 /// Derive a coarse C-ABI wire type from a semantic Ty.
@@ -1251,7 +1167,7 @@ pub(super) fn lower_extern_ret_ty<T: crate::types::Types<Ty = crate::types::Ty>>
 /// Opaque types erase to Any (they are fz tagged values at runtime).
 /// Float-only types get the F64 wire. Nil-only → Unit. Never → Never.
 /// Everything else → Any (opaque u64 fz value).
-pub(super) fn ty_to_extern_ty<T: crate::types::Types>(t: &mut T, d: &T::Ty) -> ExternTy {
+pub(super) fn ty_to_extern_ty<T: Types>(t: &mut T, d: &T::Ty) -> ExternTy {
     if t.is_empty(d) {
         return ExternTy::Never;
     }
@@ -1267,32 +1183,23 @@ pub(super) fn ty_to_extern_ty<T: crate::types::Types>(t: &mut T, d: &T::Ty) -> E
     ExternTy::Any
 }
 
-pub(super) fn concrete_any_tuple(arity: usize) -> crate::types::Ty {
-    use crate::types::Types;
-
-    let mut t = crate::types::ConcreteTypes;
-    let elems: Vec<crate::types::Ty> = (0..arity).map(|_| t.any()).collect();
+pub(super) fn concrete_any_tuple(arity: usize) -> Ty {
+    let mut t = ConcreteTypes;
+    let elems: Vec<Ty> = (0..arity).map(|_| t.any()).collect();
     t.tuple(&elems)
 }
 
-pub(super) fn concrete_any_map() -> crate::types::Ty {
-    use crate::types::Types;
-
-    let mut t = crate::types::ConcreteTypes;
+pub(super) fn concrete_any_map() -> Ty {
+    let mut t = ConcreteTypes;
     t.map_top()
 }
 
 /// Post-lowering pass: compute the SCC of the fn-level call graph and set
 /// `is_back_edge` on every `Term::TailCall` whose callee is in the same SCC
 /// as the caller (i.e., the call is on a loop back-edge).
-fn annotate_back_edges(
-    module: &mut Module,
-    _fn_spans: &HashMap<FnId, crate::diag::Span>,
-) -> Result<(), LowerError> {
-    use std::collections::{HashMap as HM, HashSet};
-
+fn annotate_back_edges(module: &mut Module, _fn_spans: &HashMap<FnId, Span>) -> Result<(), LowerError> {
     // Build call graph: FnId → set of FnIds it tail-calls.
-    let mut graph: HM<FnId, HashSet<FnId>> = HM::new();
+    let mut graph: HashMap<FnId, HashSet<FnId>> = HashMap::new();
     for f in &module.fns {
         let entry = graph.entry(f.id).or_default();
         for block in &f.blocks {
@@ -1307,21 +1214,21 @@ fn annotate_back_edges(
         let mut index_counter = 0usize;
         let mut stack: Vec<FnId> = Vec::new();
         let mut on_stack: HashSet<FnId> = HashSet::new();
-        let mut index: HM<FnId, usize> = HM::new();
-        let mut lowlink: HM<FnId, usize> = HM::new();
-        let mut scc_of: HM<FnId, usize> = HM::new();
+        let mut index: HashMap<FnId, usize> = HashMap::new();
+        let mut lowlink: HashMap<FnId, usize> = HashMap::new();
+        let mut scc_of: HashMap<FnId, usize> = HashMap::new();
         let mut scc_count = 0usize;
         let all_fns: Vec<FnId> = module.fns.iter().map(|f| f.id).collect();
 
         fn strongconnect(
             v: FnId,
-            graph: &HM<FnId, HashSet<FnId>>,
+            graph: &HashMap<FnId, HashSet<FnId>>,
             index_counter: &mut usize,
             stack: &mut Vec<FnId>,
             on_stack: &mut HashSet<FnId>,
-            index: &mut HM<FnId, usize>,
-            lowlink: &mut HM<FnId, usize>,
-            scc_of: &mut HM<FnId, usize>,
+            index: &mut HashMap<FnId, usize>,
+            lowlink: &mut HashMap<FnId, usize>,
+            scc_of: &mut HashMap<FnId, usize>,
             scc_count: &mut usize,
         ) {
             let v_index = *index_counter;
@@ -1467,52 +1374,36 @@ fn build_source_info(module: &Module, ctx: &LowerCtx) -> SourceInfo {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fz_ir::{Const, ExternMarshal, FnId, Prim, Var};
-    use crate::parser::Parser;
-    use crate::parser::lexer::Lexer;
-    use crate::types::Types;
 
     fn lower_src(src: &str) -> Module {
         let toks = Lexer::new(src).tokenize().expect("lex");
         let prog = Parser::new(toks).parse_program().expect("parse");
-        lower_program(
-            &mut crate::types::ConcreteTypes,
-            &prog,
-            &crate::telemetry::NullTelemetry,
-        )
-        .expect("lower failed")
+        lower_program(&mut ConcreteTypes, &prog, &NullTelemetry).expect("lower failed")
     }
 
-    fn lower_flat_src(src: &str) -> (crate::types::ConcreteTypes, Module) {
+    fn lower_flat_src(src: &str) -> (ConcreteTypes, Module) {
         let toks = Lexer::new(src).tokenize().expect("lex");
         let prog = Parser::new(toks).parse_program().expect("parse");
-        let mut ct = crate::types::ConcreteTypes;
-        let prog = crate::frontend::resolve::flatten_modules(&mut ct, prog).expect("flatten");
-        let module =
-            lower_program(&mut ct, &prog, &crate::telemetry::NullTelemetry).expect("lower failed");
+        let mut ct = ConcreteTypes;
+        let prog = flatten_modules(&mut ct, prog).expect("flatten");
+        let module = lower_program(&mut ct, &prog, &NullTelemetry).expect("lower failed");
         (ct, module)
     }
 
-    fn lower_src_with_capture(src: &str) -> (Module, crate::telemetry::Capture) {
-        let tel = crate::telemetry::ConfiguredTelemetry::new();
-        let cap = crate::telemetry::Capture::new();
+    fn lower_src_with_capture(src: &str) -> (Module, Capture) {
+        let tel = ConfiguredTelemetry::new();
+        let cap = Capture::new();
         tel.attach(&[], cap.handler());
         let toks = Lexer::new(src).tokenize().expect("lex");
         let prog = Parser::new(toks).parse_program().expect("parse");
-        let module =
-            lower_program(&mut crate::types::ConcreteTypes, &prog, &tel).expect("lower failed");
+        let module = lower_program(&mut ConcreteTypes, &prog, &tel).expect("lower failed");
         (module, cap)
     }
 
     fn lower_src_err(src: &str) -> LowerError {
         let toks = Lexer::new(src).tokenize().expect("lex");
         let prog = Parser::new(toks).parse_program().expect("parse");
-        lower_program(
-            &mut crate::types::ConcreteTypes,
-            &prog,
-            &crate::telemetry::NullTelemetry,
-        )
-        .expect_err("expected lower error")
+        lower_program(&mut ConcreteTypes, &prog, &NullTelemetry).expect_err("expected lower error")
     }
 
     #[test]
@@ -1543,16 +1434,11 @@ end
     fn run_and_capture(src: &str) -> String {
         let m = lower_src(src);
         let entry = m.fn_by_name("main").expect("no main fn").id;
-        let compiled = crate::ir_codegen::compile(
-            &mut crate::types::ConcreteTypes,
-            &m,
-            &crate::telemetry::NullTelemetry,
-        )
-        .unwrap();
-        let tel = crate::telemetry::bus::ConfiguredTelemetry::new();
-        let dbg = crate::exec::runtime::DbgCapture::new();
+        let compiled = compile(&mut ConcreteTypes, &m, &NullTelemetry).unwrap();
+        let tel = bus::ConfiguredTelemetry::new();
+        let dbg = DbgCapture::new();
         tel.attach(&[], dbg.handler());
-        let mut rt = crate::exec::runtime::Runtime::new(&compiled, 1).with_telemetry(&tel);
+        let mut rt = Runtime::new(&compiled, 1).with_telemetry(&tel);
         let _ = rt.spawn(entry);
         rt.run_until_idle();
         dbg.lines().join("\n")
@@ -1564,29 +1450,29 @@ end
             .flat_map(|f| &f.blocks)
             .flat_map(|b| &b.stmts)
             .filter(|stmt| {
-                let crate::fz_ir::Stmt::Let(_, prim) = stmt;
+                let Stmt::Let(_, prim) = stmt;
                 pred(prim)
             })
             .count()
     }
 
-    fn count_prims_in_fn(f: &crate::fz_ir::FnIr, pred: impl Fn(&Prim) -> bool) -> usize {
+    fn count_prims_in_fn(f: &FnIr, pred: impl Fn(&Prim) -> bool) -> usize {
         f.blocks
             .iter()
             .flat_map(|b| &b.stmts)
             .filter(|stmt| {
-                let crate::fz_ir::Stmt::Let(_, prim) = stmt;
+                let Stmt::Let(_, prim) = stmt;
                 pred(prim)
             })
             .count()
     }
 
-    fn first_make_closure(f: &crate::fz_ir::FnIr) -> (FnId, Vec<Var>) {
+    fn first_make_closure(f: &FnIr) -> (FnId, Vec<Var>) {
         f.blocks
             .iter()
             .flat_map(|block| &block.stmts)
             .find_map(|stmt| {
-                let crate::fz_ir::Stmt::Let(_, prim) = stmt;
+                let Stmt::Let(_, prim) = stmt;
                 if let Prim::MakeClosure(_, lambda_id, captured) = prim {
                     Some((*lambda_id, captured.clone()))
                 } else {
@@ -1650,8 +1536,7 @@ end
 
     #[test]
     fn lower_program_returns_normalized_call_continuation_captures() {
-        let (m, cap) =
-            lower_src_with_capture("fn callee(x), do: x\nfn caller(x, y), do: callee(x) + x");
+        let (m, cap) = lower_src_with_capture("fn callee(x), do: x\nfn caller(x, y), do: callee(x) + x");
         let caller = m.fn_by_name("caller").expect("caller fn missing");
         let continuation = caller
             .blocks
@@ -1670,25 +1555,16 @@ end
             .find(|ev| {
                 matches!(
                     ev.metadata.get("producer"),
-                    Some(crate::telemetry::Value::Str(s)) if s.as_ref() == "call_continuation"
+                    Some(Value::Str(s)) if s.as_ref() == "call_continuation"
                 ) && matches!(
                     ev.measurements.get("fn_id"),
-                    Some(crate::telemetry::Value::U64(id)) if *id == continuation.fn_id.0 as u64
+                    Some(Value::U64(id)) if *id == continuation.fn_id.0 as u64
                 )
             })
             .expect("captures_pruned event");
-        assert!(matches!(
-            ev.measurements.get("before_captures"),
-            Some(crate::telemetry::Value::U64(2))
-        ));
-        assert!(matches!(
-            ev.measurements.get("after_captures"),
-            Some(crate::telemetry::Value::U64(1))
-        ));
-        assert!(matches!(
-            ev.measurements.get("pruned_captures"),
-            Some(crate::telemetry::Value::U64(1))
-        ));
+        assert!(matches!(ev.measurements.get("before_captures"), Some(Value::U64(2))));
+        assert!(matches!(ev.measurements.get("after_captures"), Some(Value::U64(1))));
+        assert!(matches!(ev.measurements.get("pruned_captures"), Some(Value::U64(1))));
 
         assert_eq!(
             continuation.captured.len(),
@@ -1713,10 +1589,7 @@ end
              fn pick(x), do: x",
         );
         let pick = m.fn_by_name("pick").expect("pick fn missing");
-        let specs = m
-            .declared_specs
-            .get(&pick.id)
-            .expect("declared specs missing");
+        let specs = m.declared_specs.get(&pick.id).expect("declared specs missing");
         assert_eq!(specs.arrows.len(), 2);
     }
 
@@ -1733,15 +1606,15 @@ end
             .expect("function correspondence missing");
         assert_eq!(
             groups,
-            &vec![crate::specs::StructuralCorrespondenceGroup {
-                var: crate::types::TypeVarId(0),
+            &vec![StructuralCorrespondenceGroup {
+                var: TypeVarId(0),
                 occurrences: vec![
-                    crate::specs::StructuralOccurrence::Param {
+                    StructuralOccurrence::Param {
                         param_index: 0,
-                        path: vec![crate::specs::StructuralPathStep::NamedArg(0)],
+                        path: vec![StructuralPathStep::NamedArg(0)],
                     },
-                    crate::specs::StructuralOccurrence::Result {
-                        path: vec![crate::specs::StructuralPathStep::ListElem],
+                    StructuralOccurrence::Result {
+                        path: vec![StructuralPathStep::ListElem],
                     },
                 ],
             }]
@@ -1759,9 +1632,7 @@ end
                {x, y}\n\
              end",
         );
-        let pair_after_id = m
-            .fn_by_name("pair_after_id")
-            .expect("pair_after_id fn missing");
+        let pair_after_id = m.fn_by_name("pair_after_id").expect("pair_after_id fn missing");
         let continuation = m
             .fns
             .iter()
@@ -1773,22 +1644,22 @@ end
             .expect("continuation correspondence missing");
         assert_eq!(
             groups,
-            &vec![crate::specs::StructuralCorrespondenceGroup {
-                var: crate::types::TypeVarId(0),
+            &vec![StructuralCorrespondenceGroup {
+                var: TypeVarId(0),
                 occurrences: vec![
-                    crate::specs::StructuralOccurrence::Param {
+                    StructuralOccurrence::Param {
                         param_index: 0,
                         path: vec![],
                     },
-                    crate::specs::StructuralOccurrence::Param {
+                    StructuralOccurrence::Param {
                         param_index: 1,
                         path: vec![],
                     },
-                    crate::specs::StructuralOccurrence::Result {
-                        path: vec![crate::specs::StructuralPathStep::TupleElem(0)],
+                    StructuralOccurrence::Result {
+                        path: vec![StructuralPathStep::TupleElem(0)],
                     },
-                    crate::specs::StructuralOccurrence::Result {
-                        path: vec![crate::specs::StructuralPathStep::TupleElem(1)],
+                    StructuralOccurrence::Result {
+                        path: vec![StructuralPathStep::TupleElem(1)],
                     },
                 ],
             }]
@@ -1805,9 +1676,7 @@ end
                {x, y}\n\
              end",
         );
-        let pair_after_id = m
-            .fn_by_name("pair_after_id")
-            .expect("pair_after_id fn missing");
+        let pair_after_id = m.fn_by_name("pair_after_id").expect("pair_after_id fn missing");
         let continuation = m
             .fns
             .iter()
@@ -1820,11 +1689,11 @@ end
         let id = m.fn_by_name("id").expect("id fn missing");
         assert_eq!(
             provenance,
-            &crate::fz_ir::ContinuationProvenance {
+            &ContinuationProvenance {
                 caller: pair_after_id.id,
                 captured: vec![pair_after_id.block(pair_after_id.entry).params[0]],
                 capture_param_offset: 1,
-                kind: crate::fz_ir::ContinuationProvenanceKind::DirectCall {
+                kind: ContinuationProvenanceKind::DirectCall {
                     callee: id.id,
                     args: vec![pair_after_id.block(pair_after_id.entry).params[0]],
                 },
@@ -1854,27 +1723,27 @@ end
         assert_eq!(
             groups,
             &vec![
-                crate::specs::StructuralCorrespondenceGroup {
-                    var: crate::types::TypeVarId(0),
+                StructuralCorrespondenceGroup {
+                    var: TypeVarId(0),
                     occurrences: vec![
-                        crate::specs::StructuralOccurrence::Param {
+                        StructuralOccurrence::Param {
                             param_index: 0,
                             path: vec![],
                         },
-                        crate::specs::StructuralOccurrence::Result {
-                            path: vec![crate::specs::StructuralPathStep::TupleElem(1)],
+                        StructuralOccurrence::Result {
+                            path: vec![StructuralPathStep::TupleElem(1)],
                         },
                     ],
                 },
-                crate::specs::StructuralCorrespondenceGroup {
-                    var: crate::types::TypeVarId(1),
+                StructuralCorrespondenceGroup {
+                    var: TypeVarId(1),
                     occurrences: vec![
-                        crate::specs::StructuralOccurrence::Param {
+                        StructuralOccurrence::Param {
                             param_index: 2,
                             path: vec![],
                         },
-                        crate::specs::StructuralOccurrence::Result {
-                            path: vec![crate::specs::StructuralPathStep::TupleElem(0)],
+                        StructuralOccurrence::Result {
+                            path: vec![StructuralPathStep::TupleElem(0)],
                         },
                     ],
                 },
@@ -1901,7 +1770,7 @@ end
             .get(&continuation.id)
             .expect("matcher-body provenance missing");
         match &provenance.kind {
-            crate::fz_ir::ContinuationProvenanceKind::MatcherBody { bindings } => {
+            ContinuationProvenanceKind::MatcherBody { bindings } => {
                 assert_eq!(provenance.capture_param_offset, 0);
                 assert_eq!(bindings.len(), 2, "expected head/tail bindings");
             }
@@ -1919,11 +1788,7 @@ end
         assert!(s.contains("if v"), "expected If terminator: {}", s);
         assert!(s.contains("if_then"), "expected if_then arm fn: {}", s);
         assert!(s.contains("if_else"), "expected if_else arm fn: {}", s);
-        assert!(
-            s.contains("tail_call"),
-            "expected TailCall from arm block: {}",
-            s
-        );
+        assert!(s.contains("tail_call"), "expected TailCall from arm block: {}", s);
         // Tail-position if: no join fn (arms self-Return).
         assert!(
             !s.contains("if_join"),
@@ -2018,11 +1883,7 @@ end
         );
         let s = format!("{}", m);
         assert!(s.contains("with_fail"), "expected with_fail cont: {}", s);
-        assert!(
-            s.contains("with_else_0"),
-            "expected else clause cont: {}",
-            s
-        );
+        assert!(s.contains("with_else_0"), "expected else clause cont: {}", s);
     }
 
     #[test]
@@ -2086,11 +1947,7 @@ end
         let s = format!("{}", m);
         assert!(s.contains("if_then"), "{}", s);
         assert!(s.contains("if_else"), "{}", s);
-        assert!(
-            s.contains("if_join"),
-            "expected join fn for non-tail: {}",
-            s
-        );
+        assert!(s.contains("if_join"), "expected join fn for non-tail: {}", s);
     }
 
     #[test]
@@ -2156,22 +2013,14 @@ end
         let m = lower_src("fn l(), do: [1, 2]");
         let s = format!("{}", m);
         assert!(s.contains("list(["), "{}", s);
-        assert!(
-            !s.contains("list([] |"),
-            "no-tail list shouldn't have | sep: {}",
-            s
-        );
+        assert!(!s.contains("list([] |"), "no-tail list shouldn't have | sep: {}", s);
     }
 
     #[test]
     fn lower_list_with_tail() {
         let m = lower_src("fn l(t), do: [1 | t]");
         let s = format!("{}", m);
-        assert!(
-            s.contains("] | v0)"),
-            "expected list with v0 (param t) tail: {}",
-            s
-        );
+        assert!(s.contains("] | v0)"), "expected list with v0 (param t) tail: {}", s);
     }
 
     #[test]
@@ -2212,18 +2061,13 @@ end
             "  fst(a + b)\n",
             "end\n",
         ));
-        let mut ct = crate::types::ConcreteTypes;
-        let mt = crate::ir_planner::plan_module(&mut ct, &m, &crate::telemetry::NullTelemetry);
-        let diags = crate::ir_planner::collect_diagnostics(
-            &mut ct,
-            &m,
-            &mt,
-            &crate::telemetry::NullTelemetry,
-        );
+        let mut ct = ConcreteTypes;
+        let mt = plan_module(&mut ct, &m, &NullTelemetry);
+        let diags = collect_diagnostics(&mut ct, &m, &mt, &NullTelemetry);
         let unreachable: Vec<_> = diags
             .as_slice()
             .iter()
-            .filter(|d| d.code == crate::diag::codes::TYPE_UNREACHABLE_ARM)
+            .filter(|d| d.code == codes::TYPE_UNREACHABLE_ARM)
             .collect();
         assert!(
             unreachable.is_empty(),
@@ -2238,37 +2082,27 @@ end
     #[test]
     fn dead_binop_diagnostic_observable_via_telemetry() {
         let m = lower_src("fn main() do\n  dbg(1 == :ok)\nend\n");
-        let mut ct = crate::types::ConcreteTypes;
-        let mt = crate::ir_planner::plan_module(&mut ct, &m, &crate::telemetry::NullTelemetry);
-        let diags = crate::ir_planner::collect_diagnostics(
-            &mut ct,
-            &m,
-            &mt,
-            &crate::telemetry::NullTelemetry,
-        );
+        let mut ct = ConcreteTypes;
+        let mt = plan_module(&mut ct, &m, &NullTelemetry);
+        let diags = collect_diagnostics(&mut ct, &m, &mt, &NullTelemetry);
 
-        let tel = crate::telemetry::ConfiguredTelemetry::new();
-        let cap = crate::telemetry::Capture::new();
+        let tel = ConfiguredTelemetry::new();
+        let cap = Capture::new();
         tel.attach(&["fz", "diag"], cap.handler());
-        crate::diag::emit_through(&tel, None, diags.as_slice());
+        emit_through(&tel, None, diags.as_slice());
 
         assert!(
             cap.count(&["fz", "diag", "warning"]) >= 1,
             "dead-binop warning must surface on the telemetry bus",
         );
         assert!(
-            diags
-                .as_slice()
-                .iter()
-                .any(|d| d.code == crate::diag::codes::TYPE_DEAD_BINOP),
+            diags.as_slice().iter().any(|d| d.code == codes::TYPE_DEAD_BINOP),
             "the surfaced warning carries the type/dead-binop code",
         );
     }
 
     #[test]
     fn generated_dead_binop_diagnostic_is_not_rendered() {
-        use crate::fz_ir::{BinOp, Const, FnBuilder, FnId, ModuleBuilder, Prim, Term};
-
         let mut f = FnBuilder::new(FnId(0), "generated");
         let entry = f.block(vec![]);
         let one = f.let_(entry, Prim::Const(Const::Int(1)));
@@ -2279,20 +2113,12 @@ end
         mb.add_fn(f.build());
         let m = mb.build();
 
-        let mut ct = crate::types::ConcreteTypes;
-        let mt = crate::ir_planner::plan_module(&mut ct, &m, &crate::telemetry::NullTelemetry);
-        let diags = crate::ir_planner::collect_diagnostics(
-            &mut ct,
-            &m,
-            &mt,
-            &crate::telemetry::NullTelemetry,
-        );
+        let mut ct = ConcreteTypes;
+        let mt = plan_module(&mut ct, &m, &NullTelemetry);
+        let diags = collect_diagnostics(&mut ct, &m, &mt, &NullTelemetry);
 
         assert!(
-            !diags
-                .as_slice()
-                .iter()
-                .any(|d| d.code == crate::diag::codes::TYPE_DEAD_BINOP),
+            !diags.as_slice().iter().any(|d| d.code == codes::TYPE_DEAD_BINOP),
             "generated comparisons without source spans must not render dead-binop diagnostics",
         );
     }
@@ -2303,16 +2129,13 @@ end
     /// would make the body invalid for wider keys.
     #[test]
     fn dead_branches_published_for_destructure_and_recursive_list_dispatch() {
-        use crate::fz_ir::DeadBranch;
         // Irrefutable destructure on a known-2-tuple — the planner proves
         // the synthesized fail edge dead under the one live spec.
         let m = lower_src("fn main() do\n  {a, b} = {1, 2}\n  a + b\nend\n");
-        let mut ct = crate::types::ConcreteTypes;
-        let mt = crate::ir_planner::plan_module(&mut ct, &m, &crate::telemetry::NullTelemetry);
+        let mut ct = ConcreteTypes;
+        let mt = plan_module(&mut ct, &m, &NullTelemetry);
         assert!(
-            mt.dead_branches
-                .values()
-                .any(|d| matches!(d, DeadBranch::Else)),
+            mt.dead_branches.values().any(|d| matches!(d, DeadBranch::Else)),
             "expected an Else dead branch for {{a,b}} = {{1,2}}; got {:?}",
             mt.dead_branches,
         );
@@ -2325,7 +2148,7 @@ end
             "fn sum([h | t]), do: h + sum(t)\n",
             "fn main(), do: sum([1, 2, 3])\n",
         ));
-        let mt2 = crate::ir_planner::plan_module(&mut ct, &m2, &crate::telemetry::NullTelemetry);
+        let mt2 = plan_module(&mut ct, &m2, &NullTelemetry);
         let sum_fid = m2.fn_by_name("sum").expect("sum exists").id;
         assert!(
             mt2.specs
@@ -2345,7 +2168,6 @@ end
     /// each origin and assert the right set appears in the lowered module.
     #[test]
     fn branch_origin_tagged_per_lowering_path() {
-        use crate::fz_ir::BranchOrigin;
         let m = lower_src(concat!(
             // ParamGuard: typed param synthesizes a TypeTest If.
             "fn f(x :: integer), do: x\n",
@@ -2360,19 +2182,15 @@ end
             // User: hand-written `if`.
             "fn i(n), do: if n > 0, do: 1, else: 0\n",
         ));
-        let mut seen: std::collections::HashSet<BranchOrigin> = std::collections::HashSet::new();
+        let mut seen: HashSet<BranchOrigin> = HashSet::new();
         for f in &m.fns {
             for b in &f.blocks {
-                if let crate::fz_ir::Term::If { origin, .. } = &b.terminator {
+                if let Term::If { origin, .. } = &b.terminator {
                     seen.insert(*origin);
                 }
             }
         }
-        assert!(
-            seen.contains(&BranchOrigin::User),
-            "missing User: {:?}",
-            seen
-        );
+        assert!(seen.contains(&BranchOrigin::User), "missing User: {:?}", seen);
         assert!(
             seen.contains(&BranchOrigin::PatternBind),
             "missing PatternBind: {:?}",
@@ -2397,29 +2215,17 @@ end
         // spec-producing matcher fn.
         let m = lower_src("fn fact(0), do: 1\nfn fact(n), do: n * fact(n - 1)");
         let s = format!("{}", m);
-        assert!(
-            !s.contains("fact_matcher_"),
-            "did not expect fact_matcher_N fn: {}",
-            s
-        );
+        assert!(!s.contains("fact_matcher_"), "did not expect fact_matcher_N fn: {}", s);
         assert!(s.contains("if v"), "expected pattern test If: {}", s);
         assert!(s.contains("halt v"), "expected halt in fail block:\n{}", s);
-        assert!(
-            s.contains(":atom_"),
-            "expected interned atom in fail block:\n{}",
-            s
-        );
+        assert!(s.contains(":atom_"), "expected interned atom in fail block:\n{}", s);
     }
 
     #[test]
     fn lower_lambda_creates_separate_fn_and_closure() {
         let m = lower_src("fn mk(x), do: fn(y) -> x + y end");
         let s = format!("{}", m);
-        assert!(
-            s.contains("closure(fn"),
-            "expected closure prim, got:\n{}",
-            s
-        );
+        assert!(s.contains("closure(fn"), "expected closure prim, got:\n{}", s);
         assert!(s.contains("lambda_"), "expected lambda fn name: {}", s);
         assert!(
             m.fns.len() >= 2,
@@ -2508,15 +2314,12 @@ end
         let p = m.fn_by_name("p").expect("p fn missing");
         let entry = p.block(p.entry);
         let Term::TailCall { callee, .. } = entry.terminator else {
-            panic!(
-                "expected p to tail-call spawn/1, got {:?}",
-                entry.terminator
-            );
+            panic!("expected p to tail-call spawn/1, got {:?}", entry.terminator);
         };
         assert_eq!(callee, spawn.id);
         assert!(
             spawn.blocks.iter().any(|b| b.stmts.iter().any(|stmt| {
-                let crate::fz_ir::Stmt::Let(_, prim) = stmt;
+                let Stmt::Let(_, prim) = stmt;
                 matches!(prim, Prim::Extern(_, _, _))
             })),
             "Kernel.spawn/1 must call its runtime extern"
@@ -2536,18 +2339,12 @@ end
             .iter()
             .flat_map(|block| block.stmts.iter())
             .find_map(|stmt| match stmt {
-                crate::fz_ir::Stmt::Let(_, Prim::Extern(ident, _, args)) => {
-                    Some((ident, args.as_slice()))
-                }
+                Stmt::Let(_, Prim::Extern(ident, _, args)) => Some((ident, args.as_slice())),
                 _ => None,
             })
             .expect("Kernel.spawn/1 must contain a runtime extern");
 
-        assert_eq!(
-            args.len(),
-            1,
-            "spawn wrapper should pass exactly one callable"
-        );
+        assert_eq!(args.len(), 1, "spawn wrapper should pass exactly one callable");
         assert_ne!(
             ident.span(),
             Span::DUMMY,
@@ -2567,16 +2364,11 @@ end
             .expect("Kernel.spawn/1 prelude fn missing");
         let callee = match entry.terminator {
             Term::TailCall { callee, .. } => callee,
-            ref other => panic!(
-                "expected enclosing fn to tail-call spawn/1, got {:?}",
-                other
-            ),
+            ref other => panic!("expected enclosing fn to tail-call spawn/1, got {:?}", other),
         };
         assert_eq!(callee, spawn.id);
         assert!(
-            !p.blocks
-                .iter()
-                .any(|b| matches!(b.terminator, Term::Receive { .. })),
+            !p.blocks.iter().any(|b| matches!(b.terminator, Term::Receive { .. })),
             "lambda lowering must not leak tail-receive termination into the caller"
         );
     }
@@ -2597,15 +2389,12 @@ end
         let p = m.fn_by_name("p").expect("p fn missing");
         let entry = p.block(p.entry);
         let Term::TailCall { callee, .. } = entry.terminator else {
-            panic!(
-                "expected p to tail-call spawn/2, got {:?}",
-                entry.terminator
-            );
+            panic!("expected p to tail-call spawn/2, got {:?}", entry.terminator);
         };
         assert_eq!(callee, spawn.id);
         assert!(
             spawn.blocks.iter().any(|b| b.stmts.iter().any(|stmt| {
-                let crate::fz_ir::Stmt::Let(_, prim) = stmt;
+                let Stmt::Let(_, prim) = stmt;
                 matches!(prim, Prim::Extern(_, _, _))
             })),
             "Kernel.spawn/2 must call its runtime extern"
@@ -2639,7 +2428,7 @@ end
             Span::DUMMY,
             "lower diagnostic should carry the unbound Var's span"
         );
-        assert_eq!(d.code, crate::diag::codes::LOWER_UNBOUND);
+        assert_eq!(d.code, codes::LOWER_UNBOUND);
     }
 
     #[test]
@@ -2702,16 +2491,8 @@ end
             "did not expect case_matcher_N fn in module dump: {}",
             s
         );
-        assert!(
-            s.contains("if v"),
-            "expected if for inline pattern check: {}",
-            s
-        );
-        assert!(
-            s.contains("tail_call"),
-            "expected tail_call to clause cont fns: {}",
-            s
-        );
+        assert!(s.contains("if v"), "expected if for inline pattern check: {}", s);
+        assert!(s.contains("tail_call"), "expected tail_call to clause cont fns: {}", s);
     }
 
     #[test]
@@ -2741,11 +2522,7 @@ end
 "#,
         );
         let s = format!("{}", m);
-        assert!(
-            s.contains("tuple_field"),
-            "expected pattern projection: {}",
-            s
-        );
+        assert!(s.contains("tuple_field"), "expected pattern projection: {}", s);
     }
 
     #[test]
@@ -2768,8 +2545,7 @@ end
         );
 
         let classify = m.fn_by_name("classify").expect("classify fn");
-        let field_1_count =
-            count_prims_in_fn(classify, |prim| matches!(prim, Prim::TupleField(_, 1)));
+        let field_1_count = count_prims_in_fn(classify, |prim| matches!(prim, Prim::TupleField(_, 1)));
         assert_eq!(
             field_1_count, 1,
             "tuple field used by guard and binding should materialize once:\n{}",
@@ -2879,12 +2655,7 @@ end
         let src = "fn double(x), do: x * 2";
         let toks = Lexer::new(src).tokenize().expect("lex");
         let prog = Parser::new(toks).parse_program().expect("parse");
-        let m = lower_program(
-            &mut crate::types::ConcreteTypes,
-            &prog,
-            &crate::telemetry::NullTelemetry,
-        )
-        .expect("lower");
+        let m = lower_program(&mut ConcreteTypes, &prog, &NullTelemetry).expect("lower");
         let f = m.fn_by_name("double").unwrap();
         let param = f.blocks[0].params[0];
         assert_eq!(m.source.var_name_of(param), Some("x"));
@@ -2901,12 +2672,7 @@ end
         let src = "fn alpha(), do: 1\nfn beta(), do: 2";
         let toks = Lexer::new(src).tokenize().expect("lex");
         let prog = Parser::new(toks).parse_program().expect("parse");
-        let m = lower_program(
-            &mut crate::types::ConcreteTypes,
-            &prog,
-            &crate::telemetry::NullTelemetry,
-        )
-        .expect("lower");
+        let m = lower_program(&mut ConcreteTypes, &prog, &NullTelemetry).expect("lower");
         let beta = m.fn_by_name("beta").unwrap();
         let sp = m.source.fn_span_of(beta.id);
         let txt = &src[sp.start as usize..sp.end as usize];
@@ -2923,12 +2689,7 @@ end
         let src = "fn callee(y), do: y\nfn caller(x), do: callee(x) + 1";
         let toks = Lexer::new(src).tokenize().expect("lex");
         let prog = Parser::new(toks).parse_program().expect("parse");
-        let m = lower_program(
-            &mut crate::types::ConcreteTypes,
-            &prog,
-            &crate::telemetry::NullTelemetry,
-        )
-        .expect("lower");
+        let m = lower_program(&mut ConcreteTypes, &prog, &NullTelemetry).expect("lower");
         let caller = m.fn_by_name("caller").unwrap();
         // The continuation fn is the one whose name starts with "k_".
         // Filter out continuations from the runtime.fz prelude (e.g.
@@ -2936,11 +2697,7 @@ end
         let k = m
             .fns
             .iter()
-            .find(|f| {
-                f.name.starts_with("k_")
-                    && f.category == crate::fz_ir::FnCategory::CpsCont
-                    && f.id.0 >= caller.id.0
-            })
+            .find(|f| f.name.starts_with("k_") && f.category == FnCategory::CpsCont && f.id.0 >= caller.id.0)
             .expect("expected a continuation fn in user code");
         let cont_span = m.source.fn_span_of(k.id);
         assert!(!cont_span.is_dummy());
@@ -2972,18 +2729,13 @@ end
         let src = "fn add_one(x), do: x + 1";
         let toks = Lexer::new(src).tokenize().expect("lex");
         let prog = Parser::new(toks).parse_program().expect("parse");
-        let m = lower_program(
-            &mut crate::types::ConcreteTypes,
-            &prog,
-            &crate::telemetry::NullTelemetry,
-        )
-        .expect("lower");
+        let m = lower_program(&mut ConcreteTypes, &prog, &NullTelemetry).expect("lower");
         let f = m.fn_by_name("add_one").unwrap();
         // Find a Var bound to `Const(Int(1))`.
         let mut const1_var: Option<Var> = None;
         for blk in &f.blocks {
             for s in &blk.stmts {
-                let crate::fz_ir::Stmt::Let(v, prim) = s;
+                let Stmt::Let(v, prim) = s;
                 if matches!(prim, Prim::Const(Const::Int(1))) {
                     const1_var = Some(*v);
                 }
@@ -3023,11 +2775,7 @@ end
                 }
             })
             .expect("no TailCall in loop");
-        assert!(
-            is_back_edge,
-            "self-recursion must be a back-edge; callee={:?}",
-            callee
-        );
+        assert!(is_back_edge, "self-recursion must be a back-edge; callee={:?}", callee);
     }
 
     #[test]
@@ -3053,15 +2801,8 @@ end
         let toks = Lexer::new("extern \"C\" fn fz_nop(any) :: nil\nfn main() do fz_nop(1) end\n")
             .tokenize()
             .expect("lex");
-        let prog = crate::parser::Parser::new(toks)
-            .parse_program()
-            .expect("parse");
-        let module = lower_program(
-            &mut crate::types::ConcreteTypes,
-            &prog,
-            &crate::telemetry::NullTelemetry,
-        )
-        .expect("lower");
+        let prog = Parser::new(toks).parse_program().expect("parse");
+        let module = lower_program(&mut ConcreteTypes, &prog, &NullTelemetry).expect("lower");
         // fz_nop is at the end (user externs follow runtime.fz externs).
         let nop = module
             .externs
@@ -3090,15 +2831,8 @@ extern \"C\" fn fz_write(integer, binary, integer) :: integer
 fn main() do fz_open(\"x\", 0) end
 ";
         let toks = Lexer::new(src).tokenize().expect("lex");
-        let prog = crate::parser::Parser::new(toks)
-            .parse_program()
-            .expect("parse");
-        let module = lower_program(
-            &mut crate::types::ConcreteTypes,
-            &prog,
-            &crate::telemetry::NullTelemetry,
-        )
-        .expect("lower");
+        let prog = Parser::new(toks).parse_program().expect("parse");
+        let module = lower_program(&mut ConcreteTypes, &prog, &NullTelemetry).expect("lower");
         let open = module
             .externs
             .iter()
@@ -3110,10 +2844,7 @@ fn main() do fz_open(\"x\", 0) end
             .iter()
             .find(|e| e.fz_name == "fz_write")
             .expect("fz_write missing");
-        assert_eq!(
-            write.params,
-            vec![ExternTy::I64, ExternTy::Binary, ExternTy::I64]
-        );
+        assert_eq!(write.params, vec![ExternTy::I64, ExternTy::Binary, ExternTy::I64]);
         // Sanity: previous `binary` → ExternTy::Any mapping is gone.
         assert_ne!(write.params[1], ExternTy::Any);
     }
@@ -3126,31 +2857,22 @@ fn main() do fz_open(\"x\", 0) end
     /// table accepts it.
     #[test]
     fn fn_ref_to_extern_synthesizes_wrapper() {
-        use crate::fz_ir::{Prim, Stmt};
         let src = "\
 extern \"C\" fn libc::close(integer) :: integer
 fn main() do &libc::close/1 end
 ";
         let toks = Lexer::new(src).tokenize().expect("lex");
-        let prog = crate::parser::Parser::new(toks)
-            .parse_program()
-            .expect("parse");
-        let module = lower_program(
-            &mut crate::types::ConcreteTypes,
-            &prog,
-            &crate::telemetry::NullTelemetry,
-        )
-        .expect("lower");
+        let prog = Parser::new(toks).parse_program().expect("parse");
+        let module = lower_program(&mut ConcreteTypes, &prog, &NullTelemetry).expect("lower");
         let wrap = module
             .fns
             .iter()
             .find(|f| f.name.contains("libc::close"))
             .expect("synthesized wrapper not found");
-        let has_extern = wrap.blocks.iter().any(|b| {
-            b.stmts
-                .iter()
-                .any(|s| matches!(s, Stmt::Let(_, Prim::Extern(_, _, _))))
-        });
+        let has_extern = wrap
+            .blocks
+            .iter()
+            .any(|b| b.stmts.iter().any(|s| matches!(s, Stmt::Let(_, Prim::Extern(_, _, _)))));
         assert!(
             has_extern,
             "wrapper fn must contain a Prim::Extern statement; got: {}",
@@ -3169,15 +2891,8 @@ extern \"C\" fn libc::open(path :: cstring, integer) :: integer
 fn main() do libc::open(\"x\", 0) end
 ";
         let toks = Lexer::new(src).tokenize().expect("lex");
-        let prog = crate::parser::Parser::new(toks)
-            .parse_program()
-            .expect("parse");
-        let module = lower_program(
-            &mut crate::types::ConcreteTypes,
-            &prog,
-            &crate::telemetry::NullTelemetry,
-        )
-        .expect("lower");
+        let prog = Parser::new(toks).parse_program().expect("parse");
+        let module = lower_program(&mut ConcreteTypes, &prog, &NullTelemetry).expect("lower");
         let open = module
             .externs
             .iter()
@@ -3230,20 +2945,14 @@ fn main() do libc::open(\"x\", 0, 0o644 :: integer) end
             .iter()
             .flat_map(|b| b.stmts.iter())
             .find_map(|s| match s {
-                crate::fz_ir::Stmt::Let(_, Prim::Extern(_, _, args)) => Some(args),
+                Stmt::Let(_, Prim::Extern(_, _, args)) => Some(args),
                 _ => None,
             })
             .expect("extern call missing");
         assert_eq!(extern_args.len(), 3);
-        assert_eq!(
-            extern_args[0].marshal,
-            ExternMarshal::Fixed(ExternTy::CString)
-        );
+        assert_eq!(extern_args[0].marshal, ExternMarshal::Fixed(ExternTy::CString));
         assert_eq!(extern_args[1].marshal, ExternMarshal::Fixed(ExternTy::I64));
-        assert_eq!(
-            extern_args[2].marshal,
-            ExternMarshal::Ascribed(ExternTy::I64)
-        );
+        assert_eq!(extern_args[2].marshal, ExternMarshal::Ascribed(ExternTy::I64));
     }
 
     #[test]
@@ -3259,7 +2968,7 @@ fn main() do libc::printf(\"%d\", 7) end
             .iter()
             .flat_map(|b| b.stmts.iter())
             .find_map(|s| match s {
-                crate::fz_ir::Stmt::Let(_, Prim::Extern(_, _, args)) => Some(args),
+                Stmt::Let(_, Prim::Extern(_, _, args)) => Some(args),
                 _ => None,
             })
             .expect("extern call missing");
@@ -3290,24 +2999,13 @@ fn main() do libc::open(\"x\") end
         let toks = Lexer::new("extern \"C\" fn fz_nop(any) :: nil\nfn main() do fz_nop(1) end\n")
             .tokenize()
             .expect("lex");
-        let prog = crate::parser::Parser::new(toks)
-            .parse_program()
-            .expect("parse");
-        let module = lower_program(
-            &mut crate::types::ConcreteTypes,
-            &prog,
-            &crate::telemetry::NullTelemetry,
-        )
-        .expect("lower");
+        let prog = Parser::new(toks).parse_program().expect("parse");
+        let module = lower_program(&mut ConcreteTypes, &prog, &NullTelemetry).expect("lower");
         // extern_idx must have an entry for every extern.
         assert_eq!(module.extern_idx.len(), module.externs.len());
         // Each extern's id field must resolve via extern_by_id to itself.
         for (i, e) in module.externs.iter().enumerate() {
-            assert_eq!(
-                module.extern_idx[&e.id], i,
-                "extern_idx out of sync at index {}",
-                i
-            );
+            assert_eq!(module.extern_idx[&e.id], i, "extern_idx out of sync at index {}", i);
             assert_eq!(module.extern_by_id(e.id).fz_name, e.fz_name);
         }
         // ExternIds are monotonically increasing (counter-based, not len()-based).
@@ -3326,7 +3024,6 @@ fn main() do libc::open(\"x\") end
     /// variants based on name prefix.
     #[test]
     fn fn_category_tags_match_origin() {
-        use crate::fz_ir::FnCategory;
         // Mix user fns covering: multi-clause dispatch (-> MultiClauseCont),
         // CPS-split via non-tail call (-> CpsCont), and lambda lifting
         // (-> LambdaLift).
@@ -3342,15 +3039,8 @@ fn main() do
 end
 ";
         let toks = Lexer::new(src).tokenize().expect("lex");
-        let prog = crate::parser::Parser::new(toks)
-            .parse_program()
-            .expect("parse");
-        let module = lower_program(
-            &mut crate::types::ConcreteTypes,
-            &prog,
-            &crate::telemetry::NullTelemetry,
-        )
-        .expect("lower");
+        let prog = Parser::new(toks).parse_program().expect("parse");
+        let module = lower_program(&mut ConcreteTypes, &prog, &NullTelemetry).expect("lower");
 
         let user_names = ["id", "pick", "make_adder", "main"];
         for f in &module.fns {
@@ -3391,20 +3081,18 @@ end
 
     // ----- fz-puj.36 (H7) — PatternMatrix construction from receive clauses -----
 
-    fn parse_receive_clauses(src: &str) -> Vec<crate::ast::MatchClause> {
+    fn parse_receive_clauses(src: &str) -> Vec<MatchClause> {
         let toks = Lexer::new(src).tokenize().expect("lex");
-        let prog = crate::parser::Parser::new(toks)
-            .parse_program()
-            .expect("parse");
-        fn find_receive(e: &crate::ast::Expr) -> Option<&Vec<crate::ast::MatchClause>> {
+        let prog = Parser::new(toks).parse_program().expect("parse");
+        fn find_receive(e: &Expr) -> Option<&Vec<MatchClause>> {
             match e {
-                crate::ast::Expr::Receive { clauses, .. } => Some(clauses),
-                crate::ast::Expr::Block(es) => es.iter().find_map(|s| find_receive(&s.node)),
+                Expr::Receive { clauses, .. } => Some(clauses),
+                Expr::Block(es) => es.iter().find_map(|s| find_receive(&s.node)),
                 _ => None,
             }
         }
         for item in &prog.items {
-            if let crate::ast::Item::Fn(fd) = item.as_ref() {
+            if let Item::Fn(fd) = item.as_ref() {
                 for clause in &fd.clauses {
                     if let Some(rxs) = find_receive(&clause.body.node) {
                         return rxs.clone();
@@ -3440,7 +3128,7 @@ end
         assert_eq!(pattern_matrix.subjects, vec![Var(7)]);
         assert_eq!(pattern_matrix.rows.len(), 3);
         for (i, row) in pattern_matrix.rows.iter().enumerate() {
-            assert_eq!(row.body_id, i as crate::pattern_matrix::BodyId);
+            assert_eq!(row.body_id, i as BodyId);
             assert_eq!(row.patterns.len(), 1);
             assert!(row.preconditions.is_empty());
         }
@@ -3530,11 +3218,7 @@ end
             end";
         let m = lower_src(src);
         let s = format!("{}", m);
-        assert!(
-            s.contains("rx_after_body"),
-            "expected after body fn, got:\n{}",
-            s
-        );
+        assert!(s.contains("rx_after_body"), "expected after body fn, got:\n{}", s);
         assert!(
             s.contains("after("),
             "expected after annotation on terminator, got:\n{}",
@@ -3587,19 +3271,14 @@ end
         // Typing must not panic and must produce a ModulePlan for the
         // module. We don't pin the return type — that depends on the
         // body return type which the bodies set to const ints.
-        let mut ct = crate::types::ConcreteTypes;
-        let mt = crate::ir_planner::plan_module(&mut ct, &m, &crate::telemetry::NullTelemetry);
+        let mut ct = ConcreteTypes;
+        let mt = plan_module(&mut ct, &m, &NullTelemetry);
         // No diagnostics from the pure-guard / pure-pattern pass either.
-        let diags = crate::ir_planner::collect_diagnostics(
-            &mut ct,
-            &m,
-            &mt,
-            &crate::telemetry::NullTelemetry,
-        );
+        let diags = collect_diagnostics(&mut ct, &m, &mt, &NullTelemetry);
         let impure: Vec<_> = diags
             .as_slice()
             .iter()
-            .filter(|d| d.code == crate::diag::codes::TYPE_IMPURE_RECEIVE_GUARD)
+            .filter(|d| d.code == codes::TYPE_IMPURE_RECEIVE_GUARD)
             .collect();
         assert!(impure.is_empty(), "unexpected purity diags: {:?}", impure);
     }
@@ -3622,7 +3301,7 @@ end
         );
     }
 
-    fn first_receive_matcher(m: &Module) -> Option<&crate::exec::matcher::Matcher> {
+    fn first_receive_matcher(m: &Module) -> Option<&Matcher> {
         for f in &m.fns {
             for b in &f.blocks {
                 if let Term::ReceiveMatched { matcher, .. } = &b.terminator {
@@ -3633,23 +3312,19 @@ end
         None
     }
 
-    fn matcher_has_guard_dispatch(matcher: &crate::exec::matcher::Matcher) -> bool {
-        fn expr_has_dispatch(expr: &crate::exec::matcher::GuardExpr) -> bool {
+    fn matcher_has_guard_dispatch(matcher: &Matcher) -> bool {
+        fn expr_has_dispatch(expr: &GuardExpr) -> bool {
             match expr {
-                crate::exec::matcher::GuardExpr::Dispatch { .. } => true,
-                crate::exec::matcher::GuardExpr::Unary { expr, .. } => expr_has_dispatch(expr),
-                crate::exec::matcher::GuardExpr::Binary { lhs, rhs, .. } => {
-                    expr_has_dispatch(lhs) || expr_has_dispatch(rhs)
-                }
-                crate::exec::matcher::GuardExpr::Const(_)
-                | crate::exec::matcher::GuardExpr::Subject(_)
-                | crate::exec::matcher::GuardExpr::Pinned(_) => false,
+                GuardExpr::Dispatch { .. } => true,
+                GuardExpr::Unary { expr, .. } => expr_has_dispatch(expr),
+                GuardExpr::Binary { lhs, rhs, .. } => expr_has_dispatch(lhs) || expr_has_dispatch(rhs),
+                GuardExpr::Const(_) | GuardExpr::Subject(_) | GuardExpr::Pinned(_) => false,
             }
         }
         matcher.nodes.iter().any(|node| {
             matches!(
                 node,
-                crate::exec::matcher::MatcherNode::Guard { expr, .. } if expr_has_dispatch(expr)
+                MatcherNode::Guard { expr, .. } if expr_has_dispatch(expr)
             )
         })
     }
@@ -3669,7 +3344,7 @@ end
             matcher
                 .nodes
                 .iter()
-                .any(|node| matches!(node, crate::exec::matcher::MatcherNode::Guard { .. })),
+                .any(|node| matches!(node, MatcherNode::Guard { .. })),
             "expected inlined helper guard in Matcher: {:#?}",
             matcher
         );
@@ -3709,7 +3384,7 @@ end
             matcher
                 .nodes
                 .iter()
-                .any(|node| matches!(node, crate::exec::matcher::MatcherNode::Guard { .. })),
+                .any(|node| matches!(node, MatcherNode::Guard { .. })),
             "expected transitive helper guard in Matcher: {:#?}",
             matcher
         );
@@ -3763,12 +3438,7 @@ end
             end";
         let m = lower_src(src);
         let matcher = first_receive_matcher(&m).expect("receive matcher");
-        assert_eq!(
-            matcher.prepared_keys,
-            vec![crate::exec::matcher::MatcherConst::Utf8Binary(
-                b"id".to_vec()
-            )]
-        );
+        assert_eq!(matcher.prepared_keys, vec![MatcherConst::Utf8Binary(b"id".to_vec())]);
         let s = format!("{}", m);
         assert!(
             s.contains("pinned=[^__matcher_key_0="),
@@ -3781,14 +3451,7 @@ end
     // fz-axu.24 (M3) — brand-mint visibility gate
     // ----------------------------------------------------------------
 
-    fn module_with_brand_in_fn(
-        fn_name: &str,
-        brand_tag: &str,
-    ) -> (
-        Module,
-        HashMap<(crate::fz_ir::FnId, crate::fz_ir::BlockId), Vec<Span>>,
-    ) {
-        use crate::fz_ir::{FnBuilder, FnId, ModuleBuilder, Prim, Term};
+    fn module_with_brand_in_fn(fn_name: &str, brand_tag: &str) -> (Module, HashMap<(FnId, BlockId), Vec<Span>>) {
         let mut b = FnBuilder::new(FnId(0), fn_name);
         let entry = b.block(vec![]);
         let bs = b.let_(entry, Prim::ConstBitstring(vec![104], 8));
@@ -3805,8 +3468,7 @@ end
         // from any fn — even a user module — is allowed.
         let (m, spans) = module_with_brand_in_fn("Mail.send", "utf8");
         let fn_spans = HashMap::new();
-        check_brand_visibility(&mut crate::types::ConcreteTypes, &m, &spans, &fn_spans)
-            .expect("utf8 mint must be allowed");
+        check_brand_visibility(&mut ConcreteTypes, &m, &spans, &fn_spans).expect("utf8 mint must be allowed");
     }
 
     #[test]
@@ -3815,8 +3477,7 @@ end
         // = "Mail") is fine — same owner.
         let (m, spans) = module_with_brand_in_fn("Mail.send", "Mail::Email");
         let fn_spans = HashMap::new();
-        check_brand_visibility(&mut crate::types::ConcreteTypes, &m, &spans, &fn_spans)
-            .expect("same-module mint must be allowed");
+        check_brand_visibility(&mut ConcreteTypes, &m, &spans, &fn_spans).expect("same-module mint must be allowed");
     }
 
     #[test]
@@ -3825,7 +3486,7 @@ end
         // (using_module = "Other") must be rejected.
         let (m, spans) = module_with_brand_in_fn("Other.handler", "Mail::Email");
         let fn_spans = HashMap::new();
-        let err = check_brand_visibility(&mut crate::types::ConcreteTypes, &m, &spans, &fn_spans)
+        let err = check_brand_visibility(&mut ConcreteTypes, &m, &spans, &fn_spans)
             .expect_err("cross-module mint must be rejected");
         match err {
             LowerError::BrandMintVisibility {
@@ -3848,7 +3509,7 @@ end
         // module-owned brand is also rejected.
         let (m, spans) = module_with_brand_in_fn("main", "Mail::Email");
         let fn_spans = HashMap::new();
-        let err = check_brand_visibility(&mut crate::types::ConcreteTypes, &m, &spans, &fn_spans)
+        let err = check_brand_visibility(&mut ConcreteTypes, &m, &spans, &fn_spans)
             .expect_err("top-level mint of owned brand must be rejected");
         let diag = err.to_diagnostic();
         assert!(

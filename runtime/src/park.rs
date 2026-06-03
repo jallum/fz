@@ -7,7 +7,14 @@
 //!
 //! See `docs/receive-matched.md §2.5` / §2.6 for the design rationale.
 
-use crate::any_value::AnyValueRef;
+use crate::any_value::{
+    AnyValueRef, closure_addr_from_tagged, closure_capture_copy, closure_capture_set_ref_word, closure_flags,
+    closure_flags_captured, closure_flags_halt_kind, closure_schema_id,
+};
+use crate::heap::Heap;
+use crate::process::Process;
+use crate::timer::TimerId;
+use std::ptr::{read, write};
 
 /// fz-yxs/fz-st5 — matcher ABI.
 ///
@@ -27,25 +34,18 @@ use crate::any_value::AnyValueRef;
 ///
 /// Return: `k = 0` on miss; `k > 0` is the 1-based clause index the
 /// caller's clause-body table indexes into via `cont = bodies[k-1]`.
-pub type MatcherFn = extern "C" fn(
-    process: *mut crate::process::Process,
-    msg_ref: u64,
-    pinned: *const AnyValueRef,
-    out: *mut AnyValueRef,
-) -> u32;
+pub type MatcherFn =
+    extern "C" fn(process: *mut Process, msg_ref: u64, pinned: *const AnyValueRef, out: *mut AnyValueRef) -> u32;
 
 /// Matcher for plain `receive()`: accept the first mailbox message and bind
 /// it as the single outcome value.
 pub(crate) extern "C" fn match_any_message(
-    _process: *mut crate::process::Process,
+    _process: *mut Process,
     msg_ref: u64,
     _pinned: *const AnyValueRef,
     out: *mut AnyValueRef,
 ) -> u32 {
-    write_match_out(
-        out,
-        AnyValueRef::from_raw_word(msg_ref).expect("receive message ref"),
-    );
+    write_match_out(out, AnyValueRef::from_raw_word(msg_ref).expect("receive message ref"));
     1
 }
 
@@ -79,25 +79,16 @@ pub struct ParkRecord {
     pub after_cont: *mut u8,
     /// Timer wheel id, if a timer was scheduled. The scheduler clears
     /// this when the timer fires or when a matcher-hit cancels.
-    pub after_timer_id: Option<crate::timer::TimerId>,
+    pub after_timer_id: Option<TimerId>,
 }
 
 impl ParkRecord {
     /// Try the registered matcher against `msg`. On a hit, returns
     /// `Some((clause_idx, bound_vals))` where `bound_vals.len()` is the
     /// winning clause's own bound-variable count. On a miss, returns `None`.
-    pub fn try_match(
-        &self,
-        process: *mut crate::process::Process,
-        msg: AnyValueRef,
-    ) -> Option<(usize, Vec<AnyValueRef>)> {
+    pub fn try_match(&self, process: *mut Process, msg: AnyValueRef) -> Option<(usize, Vec<AnyValueRef>)> {
         let mut out_buf: Vec<AnyValueRef> = vec![AnyValueRef::null(); self.bound_arity as usize];
-        let k = (self.matcher_fn)(
-            process,
-            msg.raw_word(),
-            self.pinned.as_ptr(),
-            out_buf.as_mut_ptr(),
-        );
+        let k = (self.matcher_fn)(process, msg.raw_word(), self.pinned.as_ptr(), out_buf.as_mut_ptr());
         if k == 0 {
             None
         } else {
@@ -121,28 +112,16 @@ impl ParkRecord {
     /// template env: [outer_cont, cap0, cap1, ...]
     /// outcome  env: [outer_cont, bound0, ..., cap0, cap1, ...]
     /// ```
-    pub fn outcome_closure(
-        &self,
-        heap: &mut crate::heap::Heap,
-        clause_idx: usize,
-        bound_vals: &[AnyValueRef],
-    ) -> *mut u8 {
+    pub fn outcome_closure(&self, heap: &mut Heap, clause_idx: usize, bound_vals: &[AnyValueRef]) -> *mut u8 {
         let template = self.clause_bodies[clause_idx];
         materialize_outcome_closure(heap, template, bound_vals)
     }
 }
 
-pub fn materialize_outcome_closure(
-    heap: &mut crate::heap::Heap,
-    template: *mut u8,
-    bound_vals: &[AnyValueRef],
-) -> *mut u8 {
-    use crate::any_value::{closure_flags_captured, closure_flags_halt_kind};
-
+pub fn materialize_outcome_closure(heap: &mut Heap, template: *mut u8, bound_vals: &[AnyValueRef]) -> *mut u8 {
     let template_bits = template as u64;
-    let template_addr =
-        crate::any_value::closure_addr_from_tagged(template_bits).unwrap_or(template);
-    let flags = unsafe { crate::any_value::closure_flags(template_addr as *const u8) };
+    let template_addr = closure_addr_from_tagged(template_bits).unwrap_or(template);
+    let flags = unsafe { closure_flags(template_addr as *const u8) };
     let template_slots = closure_flags_captured(flags) as usize;
     assert!(
         template_slots >= 1,
@@ -150,33 +129,27 @@ pub fn materialize_outcome_closure(
     );
     let outcome_slots = template_slots + bound_vals.len();
     let outcome_bits = heap.alloc_closure_slots(
-        unsafe { crate::any_value::closure_schema_id(template_addr as *const u8) },
+        unsafe { closure_schema_id(template_addr as *const u8) },
         outcome_slots,
         closure_flags_halt_kind(flags),
     );
-    let outcome =
-        crate::any_value::closure_addr_from_tagged(outcome_bits).expect("materialized closure ptr");
+    let outcome = closure_addr_from_tagged(outcome_bits).expect("materialized closure ptr");
 
     unsafe {
         let template_u8 = template_addr as *const u8;
         let outcome_u8 = outcome;
-        let code_ptr = std::ptr::read(template_u8.add(8) as *const u64);
-        std::ptr::write(outcome_u8.add(8) as *mut u64, code_ptr);
+        let code_ptr = read(template_u8.add(8) as *const u64);
+        write(outcome_u8.add(8) as *mut u64, code_ptr);
 
-        crate::any_value::closure_capture_copy(template_u8, 0, outcome_u8, 0);
+        closure_capture_copy(template_u8, 0, outcome_u8, 0);
 
         for (i, v) in bound_vals.iter().enumerate() {
-            crate::any_value::closure_capture_set_ref_word(outcome_u8, i + 1, v.raw_word());
+            closure_capture_set_ref_word(outcome_u8, i + 1, v.raw_word());
         }
 
         let template_caps = template_slots - 1;
         for i in 0..template_caps {
-            crate::any_value::closure_capture_copy(
-                template_u8,
-                i + 1,
-                outcome_u8,
-                1 + bound_vals.len() + i,
-            );
+            closure_capture_copy(template_u8, i + 1, outcome_u8, 1 + bound_vals.len() + i);
         }
     }
 
@@ -187,6 +160,7 @@ pub fn materialize_outcome_closure(
 mod tests {
     use super::*;
     use crate::any_value::ValueKind;
+    use std::ptr::null_mut;
 
     static INT_42: u64 = 42;
     static INT_99: u64 = 99;
@@ -202,7 +176,7 @@ mod tests {
     ///   out[0]: matched int value.
     /// Returns 1 if `msg == pinned[0]`, else 0.
     extern "C" fn mock_eq_matcher(
-        _process: *mut crate::process::Process,
+        _process: *mut Process,
         msg: u64,
         pinned: *const AnyValueRef,
         out: *mut AnyValueRef,
@@ -223,11 +197,11 @@ mod tests {
         let p = ParkRecord {
             matcher_fn: mock_eq_matcher,
             pinned: vec![int_ref(&INT_42)],
-            clause_bodies: vec![std::ptr::null_mut()],
+            clause_bodies: vec![null_mut()],
             clause_bound_counts: vec![1],
             bound_arity: 1,
             after_deadline_ms: None,
-            after_cont: std::ptr::null_mut(),
+            after_cont: null_mut(),
             after_timer_id: None,
         };
         assert_eq!(p.pinned, vec![int_ref(&INT_42)]);
@@ -240,14 +214,14 @@ mod tests {
         let p = ParkRecord {
             matcher_fn: mock_eq_matcher,
             pinned: vec![int_ref(&INT_99)],
-            clause_bodies: vec![std::ptr::null_mut()],
+            clause_bodies: vec![null_mut()],
             clause_bound_counts: vec![1],
             bound_arity: 1,
             after_deadline_ms: None,
-            after_cont: std::ptr::null_mut(),
+            after_cont: null_mut(),
             after_timer_id: None,
         };
-        let hit = p.try_match(std::ptr::null_mut(), int_ref(&INT_99));
+        let hit = p.try_match(null_mut(), int_ref(&INT_99));
         assert!(hit.is_some());
         let (idx, vals) = hit.unwrap();
         assert_eq!(idx, 0);
@@ -258,7 +232,7 @@ mod tests {
     #[test]
     fn try_match_trims_scratch_to_winning_clause_bound_count() {
         extern "C" fn second_clause(
-            _process: *mut crate::process::Process,
+            _process: *mut Process,
             _msg: u64,
             _pinned: *const AnyValueRef,
             out: *mut AnyValueRef,
@@ -271,16 +245,14 @@ mod tests {
         let p = ParkRecord {
             matcher_fn: second_clause,
             pinned: vec![],
-            clause_bodies: vec![std::ptr::null_mut(), std::ptr::null_mut()],
+            clause_bodies: vec![null_mut(), null_mut()],
             clause_bound_counts: vec![1, 0],
             bound_arity: 1,
             after_deadline_ms: None,
-            after_cont: std::ptr::null_mut(),
+            after_cont: null_mut(),
             after_timer_id: None,
         };
-        let (idx, vals) = p
-            .try_match(std::ptr::null_mut(), int_ref(&INT_99))
-            .expect("match");
+        let (idx, vals) = p.try_match(null_mut(), int_ref(&INT_99)).expect("match");
         assert_eq!(idx, 1);
         assert!(vals.is_empty());
     }
@@ -290,16 +262,13 @@ mod tests {
         let p = ParkRecord {
             matcher_fn: mock_eq_matcher,
             pinned: vec![int_ref(&INT_99)],
-            clause_bodies: vec![std::ptr::null_mut()],
+            clause_bodies: vec![null_mut()],
             clause_bound_counts: vec![1],
             bound_arity: 1,
             after_deadline_ms: None,
-            after_cont: std::ptr::null_mut(),
+            after_cont: null_mut(),
             after_timer_id: None,
         };
-        assert!(
-            p.try_match(std::ptr::null_mut(), int_ref(&INT_100))
-                .is_none()
-        );
+        assert!(p.try_match(null_mut(), int_ref(&INT_100)).is_none());
     }
 }

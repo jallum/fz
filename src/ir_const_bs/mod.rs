@@ -16,8 +16,8 @@
 //! out-of-range float size) are left untouched — codegen keeps the
 //! per-field path for them.
 
-use crate::ast::BitType;
-use crate::fz_ir::{BitSizeIr, Const, FnIr, Module, Prim, Stmt, Var};
+use crate::ast::{BitType, Endian};
+use crate::fz_ir::{BitFieldIr, BitSizeIr, Const, FnIr, Module, Prim, Stmt, Var};
 use fz_runtime::bitstr::{BitWriter, Endian as RtEndian, apply_endian_for_write};
 use std::collections::HashMap;
 
@@ -60,7 +60,7 @@ fn fold_fn(f: &mut FnIr) {
 }
 
 /// Map the AST endian enum (used by `BitFieldIr`) to the runtime's `Endian`.
-fn map_endian(e: crate::ast::Endian) -> RtEndian {
+fn map_endian(e: Endian) -> RtEndian {
     use crate::ast::Endian as A;
     match e {
         A::Big => RtEndian::Big,
@@ -74,7 +74,7 @@ fn map_endian(e: crate::ast::Endian) -> RtEndian {
 /// bit length. Otherwise return `None` and leave the per-field codegen
 /// path in place.
 fn try_fold(
-    fields: &[crate::fz_ir::BitFieldIr],
+    fields: &[BitFieldIr],
     int_const: &HashMap<Var, i64>,
     float_const: &HashMap<Var, f64>,
 ) -> Option<(Vec<u8>, u64)> {
@@ -137,17 +137,9 @@ fn try_fold(
 mod tests {
     use super::*;
     use crate::ast::{BitType, Endian};
-    use crate::fz_ir::{
-        BitFieldIr, BitSizeIr, Const, FnBuilder, FnId, ModuleBuilder, Prim, Term, Var,
-    };
+    use crate::fz_ir::{BitFieldIr, BitSizeIr, Const, FnBuilder, FnId, ModuleBuilder, Prim, Term, Var};
 
-    fn field(
-        value: Var,
-        ty: BitType,
-        size: Option<u32>,
-        endian: Endian,
-        signed: bool,
-    ) -> BitFieldIr {
+    fn field(value: Var, ty: BitType, size: Option<u32>, endian: Endian, signed: bool) -> BitFieldIr {
         BitFieldIr {
             value,
             ty,
@@ -165,10 +157,7 @@ mod tests {
     /// Build a module with a single fn whose body is exactly the supplied
     /// fields wrapped in a MakeBitstring; fold and return any
     /// `ConstBitstring` produced.
-    fn fold_and_find_const(
-        consts: &[(Var, Const)],
-        fields: Vec<BitFieldIr>,
-    ) -> Option<(Vec<u8>, u64)> {
+    fn fold_and_find_const(consts: &[(Var, Const)], fields: Vec<BitFieldIr>) -> Option<(Vec<u8>, u64)> {
         let mut b = FnBuilder::new(FnId(0), "main");
         let entry = b.block(vec![]);
         // Declare each const with a let_; we ignore the returned Var
@@ -202,11 +191,7 @@ mod tests {
         let v1 = Var(1);
         let v2 = Var(2);
         let got = fold_and_find_const(
-            &[
-                (v0, Const::Int(1)),
-                (v1, Const::Int(2)),
-                (v2, Const::Int(255)),
-            ],
+            &[(v0, Const::Int(1)), (v1, Const::Int(2)), (v2, Const::Int(255))],
             vec![byte_field(v0), byte_field(v1), byte_field(v2)],
         )
         .expect("expected ConstBitstring");
@@ -310,10 +295,7 @@ mod tests {
         let param = b.fresh_var();
         let entry = b.block(vec![param]);
         let c2 = b.let_(entry, Prim::Const(Const::Int(2)));
-        let bs = b.let_(
-            entry,
-            Prim::MakeBitstring(vec![byte_field(param), byte_field(c2)]),
-        );
+        let bs = b.let_(entry, Prim::MakeBitstring(vec![byte_field(param), byte_field(c2)]));
         b.set_terminator(entry, Term::Return(bs));
         let f = b.build();
         let mut mb = ModuleBuilder::new();

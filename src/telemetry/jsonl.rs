@@ -22,22 +22,25 @@
 //! `"<N bytes>"`; `Value::StrSeq` is rendered as a JSON string array.
 
 use std::cell::RefCell;
+use std::fs::File;
 use std::io::Write;
+use std::path::Path;
+use std::time::Instant;
 
 use super::handler::{Event, EventKind, Handler};
 use super::value::Value;
 
 pub struct JsonlBackend {
     writer: RefCell<Box<dyn Write>>,
-    start: std::time::Instant,
+    start: Instant,
 }
 
 impl JsonlBackend {
-    pub fn new_file(path: &std::path::Path) -> std::io::Result<Self> {
-        let f = std::fs::File::create(path)?;
+    pub fn new_file(path: &Path) -> std::io::Result<Self> {
+        let f = File::create(path)?;
         Ok(Self {
             writer: RefCell::new(Box::new(f)),
-            start: std::time::Instant::now(),
+            start: Instant::now(),
         })
     }
 
@@ -45,7 +48,7 @@ impl JsonlBackend {
     pub fn new_writer(w: impl Write + 'static) -> Self {
         Self {
             writer: RefCell::new(Box::new(w)),
-            start: std::time::Instant::now(),
+            start: Instant::now(),
         }
     }
 }
@@ -112,10 +115,7 @@ fn write_name(out: &mut String, name: &[&'static str]) {
     out.push(']');
 }
 
-fn write_kv<'a, 'v: 'a>(
-    out: &mut String,
-    iter: impl Iterator<Item = &'a (&'static str, Value<'v>)>,
-) {
+fn write_kv<'a, 'v: 'a>(out: &mut String, iter: impl Iterator<Item = &'a (&'static str, Value<'v>)>) {
     out.push('{');
     let mut first = true;
     for (k, v) in iter {
@@ -242,10 +242,19 @@ fn hex_digit(n: u8) -> char {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use std::env::temp_dir;
+    use std::fs::{read_to_string, remove_file};
+    use std::process::id as process_id;
+    use std::thread::sleep;
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+    use crate::telemetry::capture::vec_writer;
     use crate::telemetry::event::{Measurements, Metadata};
     use crate::telemetry::handler::{Event, EventKind};
+    use crate::telemetry::value::opaque;
     use crate::telemetry::{ConfiguredTelemetry, Telemetry as _};
+
+    use super::*;
 
     fn make_event<'ev, 'meas, 'meta>(
         name: &'ev [&'static str],
@@ -264,7 +273,7 @@ mod tests {
     }
 
     fn capture_jsonl(ev: &Event<'_, '_, '_>) -> String {
-        let (buf, w) = crate::telemetry::capture::vec_writer();
+        let (buf, w) = vec_writer();
         let backend = JsonlBackend::new_writer(w);
         backend.handle(ev);
         String::from_utf8(buf.borrow().clone()).unwrap()
@@ -295,19 +304,12 @@ mod tests {
         let ev = make_event(&["x"], EventKind::Event, &m, &md);
         let line = capture_jsonl(&ev);
         assert!(line.contains("\"count\":7"), "count not found: {}", line);
-        assert!(
-            line.contains("\"label\":\"hello\""),
-            "label not found: {}",
-            line
-        );
+        assert!(line.contains("\"label\":\"hello\""), "label not found: {}", line);
     }
 
     #[test]
     fn span_stop_has_elapsed_ns() {
-        let (m, md) = (
-            crate::measurements! { elapsed_ns: 9999u64 },
-            Metadata::new(),
-        );
+        let (m, md) = (crate::measurements! { elapsed_ns: 9999u64 }, Metadata::new());
         let ev = Event {
             name: &["fz", "span"],
             kind: EventKind::SpanStop,
@@ -322,10 +324,7 @@ mod tests {
 
     #[test]
     fn numeric_values_correct() {
-        let (m, md) = (
-            crate::measurements! { a: -5i64, b: 0u64, c: 2.5f64 },
-            Metadata::new(),
-        );
+        let (m, md) = (crate::measurements! { a: -5i64, b: 0u64, c: 2.5f64 }, Metadata::new());
         let ev = make_event(&["x"], EventKind::Event, &m, &md);
         let line = capture_jsonl(&ev);
         assert!(line.contains("\"a\":-5"), "{}", line);
@@ -335,10 +334,7 @@ mod tests {
 
     #[test]
     fn bytes_value_renders_as_length_tag() {
-        let (m, md) = (
-            Measurements::new(),
-            crate::metadata! { blob: vec![1u8, 2, 3] },
-        );
+        let (m, md) = (Measurements::new(), crate::metadata! { blob: vec![1u8, 2, 3] });
         let ev = make_event(&["x"], EventKind::Event, &m, &md);
         let line = capture_jsonl(&ev);
         assert!(line.contains("\"blob\":\"<3 bytes>\""), "{}", line);
@@ -352,11 +348,7 @@ mod tests {
         );
         let ev = make_event(&["x"], EventKind::Event, &m, &md);
         let line = capture_jsonl(&ev);
-        assert!(
-            line.contains("\"call_edges\":[\"Direct\",\"Cont\"]"),
-            "{}",
-            line
-        );
+        assert!(line.contains("\"call_edges\":[\"Direct\",\"Cont\"]"), "{}", line);
     }
 
     #[test]
@@ -365,7 +357,7 @@ mod tests {
         let m = Measurements::new();
         let md = crate::metadata! {
             keep: "yes",
-            payload: crate::telemetry::value::opaque(&payload),
+            payload: opaque(&payload),
         };
         let ev = make_event(&["x"], EventKind::Event, &m, &md);
         let line = capture_jsonl(&ev);
@@ -375,10 +367,7 @@ mod tests {
 
     #[test]
     fn string_escaping_handles_special_chars() {
-        let (m, md) = (
-            Measurements::new(),
-            crate::metadata! { msg: "hello\nworld\t\"end\"" },
-        );
+        let (m, md) = (Measurements::new(), crate::metadata! { msg: "hello\nworld\t\"end\"" });
         let ev = make_event(&["x"], EventKind::Event, &m, &md);
         let line = capture_jsonl(&ev);
         assert!(line.contains("\\n"), "newline not escaped: {}", line);
@@ -400,13 +389,13 @@ mod tests {
 
     #[test]
     fn time_ns_increases_across_events() {
-        let (buf, w) = crate::telemetry::capture::vec_writer();
+        let (buf, w) = vec_writer();
         let backend = JsonlBackend::new_writer(w);
         let (m, md) = (Measurements::new(), Metadata::new());
         let ev = make_event(&["x"], EventKind::Event, &m, &md);
         backend.handle(&ev);
         // Burn a small but reliable amount of time.
-        std::thread::sleep(std::time::Duration::from_micros(50));
+        sleep(Duration::from_micros(50));
         backend.handle(&ev);
         let output = String::from_utf8(buf.borrow().clone()).unwrap();
         let times: Vec<u64> = output
@@ -432,7 +421,7 @@ mod tests {
 
     #[test]
     fn through_configured_telemetry_roundtrips() {
-        let (buf, w) = crate::telemetry::capture::vec_writer();
+        let (buf, w) = vec_writer();
         let tel = ConfiguredTelemetry::new();
         tel.attach(&[], Box::new(JsonlBackend::new_writer(w)));
 
@@ -453,31 +442,22 @@ mod tests {
 
     #[test]
     fn file_backend_flushes_each_event() {
-        let path = std::env::temp_dir().join(format!(
+        let path = temp_dir().join(format!(
             "fz_jsonl_flush_{}_{}.jsonl",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
+            process_id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
                 .expect("system clock before unix epoch")
                 .as_nanos()
         ));
         let tel = ConfiguredTelemetry::new();
-        tel.attach(
-            &[],
-            Box::new(JsonlBackend::new_file(&path).expect("open jsonl")),
-        );
+        tel.attach(&[], Box::new(JsonlBackend::new_file(&path).expect("open jsonl")));
 
-        tel.event(
-            &["fz", "diag", "error"],
-            crate::metadata! { code: "spec/violation" },
-        );
+        tel.event(&["fz", "diag", "error"], crate::metadata! { code: "spec/violation" });
 
-        let output = std::fs::read_to_string(&path).expect("read live jsonl");
-        let _ = std::fs::remove_file(&path);
-        assert!(
-            output.contains("\"name\":[\"fz\",\"diag\",\"error\"]"),
-            "{output}"
-        );
+        let output = read_to_string(&path).expect("read live jsonl");
+        let _ = remove_file(&path);
+        assert!(output.contains("\"name\":[\"fz\",\"diag\",\"error\"]"), "{output}");
         assert!(output.contains("\"code\":\"spec/violation\""), "{output}");
     }
 }

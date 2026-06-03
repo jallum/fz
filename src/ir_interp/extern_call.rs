@@ -1,6 +1,27 @@
 use super::*;
-use crate::fz_ir::{ExternArg, ExternId, ExternMarshalSite, ExternTy, Module};
-use crate::types::Types;
+use crate::fz_ir::{BlockId, ExternArg, ExternId, ExternMarshalSite, ExternTy, Module};
+use crate::ir_planner::SpecPlan;
+use crate::telemetry::Telemetry;
+use crate::types::{Ty, Types};
+use fz_runtime::extern_binary::{fz_binary_as_cstring, fz_binary_as_ptr};
+use fz_runtime::extern_variadic::{
+    fz_call_var_i64_cstring_i64_i64_to_i64, fz_call_var_i64_cstring_i64_to_i64, fz_extern_symbol_addr,
+};
+use fz_runtime::ir_runtime::{
+    fz_binary_concat, fz_bitstring_valid_utf8, fz_brand_bitstring_as_utf8, fz_dbg_value, fz_make_ref_raw, fz_map_count,
+    fz_map_entry_key, fz_map_entry_value, fz_process_heap_alloc_stats,
+};
+use fz_runtime::resource::fz_resource_test_print_dtor;
+#[cfg(not(unix))]
+use std::ffi::c_void;
+use std::ffi::{CString, c_char};
+use std::mem::transmute;
+#[cfg(not(unix))]
+use std::ptr::null_mut;
+#[cfg(test)]
+use std::sync::Mutex;
+#[cfg(test)]
+use std::sync::atomic::Ordering;
 
 fn format_extern_shape(ret: ExternTy, fixed: &[ExternTy], variadic: &[ExternTy]) -> String {
     let fixed = fixed
@@ -16,45 +37,29 @@ fn format_extern_shape(ret: ExternTy, fixed: &[ExternTy], variadic: &[ExternTy])
     format!("ret={:?} fixed=[{}] variadic=[{}]", ret, fixed, variadic)
 }
 
-fn marshal_arg(
-    proc: *mut fz_runtime::process::Process,
-    value: AnyValue,
-    ty: ExternTy,
-) -> Result<u64, String> {
+fn marshal_arg(proc: *mut Process, value: AnyValue, ty: ExternTy) -> Result<u64, String> {
     Ok(match ty {
         ExternTy::I64 => value
             .as_i64()
-            .ok_or_else(|| "extern integer arg must be Int".to_string())?
-            as u64,
+            .ok_or_else(|| "extern integer arg must be Int".to_string())? as u64,
         ExternTy::F64 => value
             .as_float()
             .ok_or_else(|| "extern float arg must be Float".to_string())?
             .to_bits(),
-        ExternTy::Binary => {
-            (unsafe {
-                fz_runtime::extern_binary::fz_binary_as_ptr(value.extern_arg_ref_word(proc)?)
-            }) as u64
-        }
-        ExternTy::CString => {
-            (unsafe {
-                fz_runtime::extern_binary::fz_binary_as_cstring(value.extern_arg_ref_word(proc)?)
-            }) as u64
-        }
+        ExternTy::Binary => (unsafe { fz_binary_as_ptr(value.extern_arg_ref_word(proc)?) }) as u64,
+        ExternTy::CString => (unsafe { fz_binary_as_cstring(value.extern_arg_ref_word(proc)?) }) as u64,
         ExternTy::Any => value.extern_arg_ref_word(proc)?,
         ExternTy::Unit | ExternTy::Never => {
-            return Err(format!(
-                "{:?} is not a valid extern argument marshal class",
-                ty
-            ));
+            return Err(format!("{:?} is not a valid extern argument marshal class", ty));
         }
     })
 }
 
 fn call_variadic_extern(
-    proc: *mut fz_runtime::process::Process,
+    proc: *mut Process,
     module: &Module,
-    fn_types: &crate::ir_planner::SpecPlan,
-    block_id: crate::fz_ir::BlockId,
+    fn_types: &SpecPlan,
+    block_id: BlockId,
     stmt_idx: usize,
     eid: ExternId,
     extern_args: &[ExternArg],
@@ -80,9 +85,8 @@ fn call_variadic_extern(
     let fixed = &arg_tys[..fixed_count];
     let variadic = &arg_tys[fixed_count..];
 
-    let cname = std::ffi::CString::new(decl.symbol.as_str())
-        .map_err(|e| format!("bad symbol name: {e}"))?;
-    let fp = unsafe { fz_runtime::extern_variadic::fz_extern_symbol_addr(cname.as_ptr()) };
+    let cname = CString::new(decl.symbol.as_str()).map_err(|e| format!("bad symbol name: {e}"))?;
+    let fp = unsafe { fz_extern_symbol_addr(cname.as_ptr()) };
     if fp == 0 {
         return Err(format!("dlsym: symbol `{}` not found", decl.symbol));
     }
@@ -95,19 +99,15 @@ fn call_variadic_extern(
 
     match (decl.ret, fixed, variadic) {
         (ExternTy::I64, [ExternTy::CString, ExternTy::I64], [ExternTy::I64]) => Ok(unsafe {
-            fz_runtime::extern_variadic::fz_call_var_i64_cstring_i64_i64_to_i64(
+            fz_call_var_i64_cstring_i64_i64_to_i64(
                 fp,
-                raw_args[0] as *const std::ffi::c_char,
+                raw_args[0] as *const c_char,
                 raw_args[1] as i64,
                 raw_args[2] as i64,
             ) as u64
         }),
         (ExternTy::I64, [ExternTy::CString], [ExternTy::I64]) => Ok(unsafe {
-            fz_runtime::extern_variadic::fz_call_var_i64_cstring_i64_to_i64(
-                fp,
-                raw_args[0] as *const std::ffi::c_char,
-                raw_args[1] as i64,
-            ) as u64
+            fz_call_var_i64_cstring_i64_to_i64(fp, raw_args[0] as *const c_char, raw_args[1] as i64) as u64
         }),
         _ => Err(format!(
             "unsupported variadic extern shape: {}",
@@ -117,13 +117,13 @@ fn call_variadic_extern(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(super) fn call_extern<T: Types<Ty = crate::types::Ty>>(
+pub(super) fn call_extern<T: Types<Ty = Ty>>(
     runtime: &mut IrInterpRuntime,
     t: &mut T,
     module: &Module,
-    tel: &dyn crate::telemetry::Telemetry,
-    fn_types: &crate::ir_planner::SpecPlan,
-    block_id: crate::fz_ir::BlockId,
+    tel: &dyn Telemetry,
+    fn_types: &SpecPlan,
+    block_id: BlockId,
     stmt_idx: usize,
     eid: ExternId,
     extern_args: &[ExternArg],
@@ -139,14 +139,9 @@ pub(super) fn call_extern<T: Types<Ty = crate::types::Ty>>(
         }
         "fz_process_heap_alloc_stats" => {
             if !args.is_empty() {
-                return Err(format!(
-                    "fz_process_heap_alloc_stats/0 got {} args",
-                    args.len()
-                ));
+                return Err(format!("fz_process_heap_alloc_stats/0 got {} args", args.len()));
             }
-            return interp_value_from_extern_ref_word(
-                fz_runtime::ir_runtime::fz_process_heap_alloc_stats(runtime.cur_proc()),
-            );
+            return interp_value_from_extern_ref_word(fz_process_heap_alloc_stats(runtime.cur_proc()));
         }
         // Spawn/send/self need the interpreter's own scheduler — the C
         // implementations require a Runtime spawn hook which is only
@@ -168,17 +163,14 @@ pub(super) fn call_extern<T: Types<Ty = crate::types::Ty>>(
             // fz-ht5 — route through the runtime FFI so interp and JIT
             // share the same counter; otherwise an interp run followed
             // by a JIT run in the same process could collide.
-            let id = fz_runtime::ir_runtime::fz_make_ref_raw();
+            let id = fz_make_ref_raw();
             return Ok(AnyValue::Int(id as i64));
         }
         "fz_send" => {
             if args.len() != 2 {
                 return Err(format!("fz_send/2 got {} args", args.len()));
             }
-            let receiver = args[0]
-                .as_i64()
-                .ok_or_else(|| "send/2: pid must be Int".to_string())?
-                as u32;
+            let receiver = args[0].as_i64().ok_or_else(|| "send/2: pid must be Int".to_string())? as u32;
             runtime.send(t, module, tel, receiver, args[1])?;
             return Ok(args[1]);
         }
@@ -193,20 +185,12 @@ pub(super) fn call_extern<T: Types<Ty = crate::types::Ty>>(
             let payload = args[0]
                 .as_i64()
                 .ok_or_else(|| "make_resource/2: payload must be integer".to_string())?;
-            return super::make_resource_in_current_process(
-                runtime.cur_proc(),
-                module,
-                payload,
-                args[1].value()?,
-            )
-            .map(interp_value_from_slot);
+            return super::make_resource_in_current_process(runtime.cur_proc(), module, payload, args[1].value()?)
+                .map(interp_value_from_slot);
         }
         "fz_brand_bitstring_as_utf8" => {
             if args.len() != 1 {
-                return Err(format!(
-                    "fz_brand_bitstring_as_utf8/1 got {} args",
-                    args.len()
-                ));
+                return Err(format!("fz_brand_bitstring_as_utf8/1 got {} args", args.len()));
             }
             return Ok(args[0]);
         }
@@ -220,7 +204,7 @@ pub(super) fn call_extern<T: Types<Ty = crate::types::Ty>>(
                 return Err(format!("fz_dbg_value/1 got {} args", args.len()));
             }
             let ref_word = args[0].extern_arg_ref_word(runtime.cur_proc())?;
-            let out = fz_runtime::ir_runtime::fz_dbg_value(runtime.cur_proc(), ref_word);
+            let out = fz_dbg_value(runtime.cur_proc(), ref_word);
             return interp_value_from_extern_ref_word(out);
         }
         "fz_binary_concat" => {
@@ -229,20 +213,14 @@ pub(super) fn call_extern<T: Types<Ty = crate::types::Ty>>(
             }
             let left_ref = args[0].extern_arg_ref_word(runtime.cur_proc())?;
             let right_ref = args[1].extern_arg_ref_word(runtime.cur_proc())?;
-            return interp_value_from_extern_ref_word(fz_runtime::ir_runtime::fz_binary_concat(
-                runtime.cur_proc(),
-                left_ref,
-                right_ref,
-            ));
+            return interp_value_from_extern_ref_word(fz_binary_concat(runtime.cur_proc(), left_ref, right_ref));
         }
         "fz_map_count" => {
             if args.len() != 1 {
                 return Err(format!("fz_map_count/1 got {} args", args.len()));
             }
             let ref_word = args[0].extern_arg_ref_word(runtime.cur_proc())?;
-            return Ok(AnyValue::Int(fz_runtime::ir_runtime::fz_map_count(
-                ref_word,
-            )));
+            return Ok(AnyValue::Int(fz_map_count(ref_word)));
         }
         "fz_map_entry_key" => {
             if args.len() != 2 {
@@ -252,9 +230,7 @@ pub(super) fn call_extern<T: Types<Ty = crate::types::Ty>>(
             let index = args[1]
                 .as_i64()
                 .ok_or_else(|| "fz_map_entry_key/2 index must be integer".to_string())?;
-            return interp_value_from_extern_ref_word(fz_runtime::ir_runtime::fz_map_entry_key(
-                map_ref, index,
-            ));
+            return interp_value_from_extern_ref_word(fz_map_entry_key(map_ref, index));
         }
         "fz_map_entry_value" => {
             if args.len() != 2 {
@@ -264,9 +240,7 @@ pub(super) fn call_extern<T: Types<Ty = crate::types::Ty>>(
             let index = args[1]
                 .as_i64()
                 .ok_or_else(|| "fz_map_entry_value/2 index must be integer".to_string())?;
-            return interp_value_from_extern_ref_word(fz_runtime::ir_runtime::fz_map_entry_value(
-                map_ref, index,
-            ));
+            return interp_value_from_extern_ref_word(fz_map_entry_value(map_ref, index));
         }
         _ => {}
     }
@@ -284,9 +258,7 @@ pub(super) fn call_extern<T: Types<Ty = crate::types::Ty>>(
         return match decl.ret {
             ExternTy::I64 => Ok(AnyValue::Int(ret as i64)),
             ExternTy::F64 => Ok(AnyValue::Float(f64::from_bits(ret))),
-            ExternTy::Any | ExternTy::Binary | ExternTy::CString => {
-                interp_value_from_extern_ref_word(ret)
-            }
+            ExternTy::Any | ExternTy::Binary | ExternTy::CString => interp_value_from_extern_ref_word(ret),
             ExternTy::Unit | ExternTy::Never => Ok(interp_nil_value()),
         };
     }
@@ -309,9 +281,7 @@ pub(super) fn call_extern<T: Types<Ty = crate::types::Ty>>(
     match decl.ret {
         ExternTy::I64 => Ok(AnyValue::Int(ret as i64)),
         ExternTy::F64 => Ok(AnyValue::Float(f64::from_bits(ret))),
-        ExternTy::Any | ExternTy::Binary | ExternTy::CString => {
-            interp_value_from_extern_ref_word(ret)
-        }
+        ExternTy::Any | ExternTy::Binary | ExternTy::CString => interp_value_from_extern_ref_word(ret),
         ExternTy::Unit | ExternTy::Never => Ok(interp_nil_value()),
     }
 }
@@ -339,35 +309,28 @@ pub(super) fn resolve_symbol(name: &str) -> Result<*const (), String> {
         // Bound here so interp-leg invocations of fixtures using this
         // symbol (e.g. when `fz interp` is run by hand on the AOT-only
         // fixture) reach the same Rust fn the AOT-linked binary uses.
-        "fz_resource_test_print_dtor" => {
-            Some(fz_runtime::resource::fz_resource_test_print_dtor as *const ())
-        }
+        "fz_resource_test_print_dtor" => Some(fz_resource_test_print_dtor as *const ()),
         // fz-axu.14 (R1) — utf8 runtime support. Bound here so the
         // interp leg of the matrix can resolve them without relying on
         // dlsym; statically-linked rlibs don't expose these via
         // RTLD_DEFAULT on Linux.
-        "fz_bitstring_valid_utf8" => {
-            Some(fz_runtime::ir_runtime::fz_bitstring_valid_utf8 as *const ())
-        }
-        "fz_brand_bitstring_as_utf8" => {
-            Some(fz_runtime::ir_runtime::fz_brand_bitstring_as_utf8 as *const ())
-        }
-        "fz_binary_concat" => Some(fz_runtime::ir_runtime::fz_binary_concat as *const ()),
-        "fz_map_count" => Some(fz_runtime::ir_runtime::fz_map_count as *const ()),
-        "fz_map_entry_key" => Some(fz_runtime::ir_runtime::fz_map_entry_key as *const ()),
-        "fz_map_entry_value" => Some(fz_runtime::ir_runtime::fz_map_entry_value as *const ()),
+        "fz_bitstring_valid_utf8" => Some(fz_bitstring_valid_utf8 as *const ()),
+        "fz_brand_bitstring_as_utf8" => Some(fz_brand_bitstring_as_utf8 as *const ()),
+        "fz_binary_concat" => Some(fz_binary_concat as *const ()),
+        "fz_map_count" => Some(fz_map_count as *const ()),
+        "fz_map_entry_key" => Some(fz_map_entry_key as *const ()),
+        "fz_map_entry_value" => Some(fz_map_entry_value as *const ()),
         _ => None,
     };
     if let Some(fp) = native {
         return Ok(fp);
     }
     // Fallback: dlsym for user-declared externs not in the native table.
-    use std::ffi::CString;
     let cname = CString::new(name).map_err(|e| format!("bad symbol name: {}", e))?;
     #[cfg(unix)]
     let ptr = unsafe { libc::dlsym(libc::RTLD_DEFAULT, cname.as_ptr()) };
     #[cfg(not(unix))]
-    let ptr: *mut std::ffi::c_void = std::ptr::null_mut();
+    let ptr: *mut c_void = null_mut();
     if ptr.is_null() {
         return Err(format!("dlsym: symbol `{}` not found", name));
     }
@@ -377,23 +340,23 @@ pub(super) fn resolve_symbol(name: &str) -> Result<*const (), String> {
 unsafe fn dispatch_fn_returning(fp: *const (), args: &[u64]) -> u64 {
     match args.len() {
         0 => unsafe {
-            let f: unsafe extern "C" fn() -> u64 = std::mem::transmute(fp);
+            let f: unsafe extern "C" fn() -> u64 = transmute(fp);
             f()
         },
         1 => unsafe {
-            let f: unsafe extern "C" fn(u64) -> u64 = std::mem::transmute(fp);
+            let f: unsafe extern "C" fn(u64) -> u64 = transmute(fp);
             f(args[0])
         },
         2 => unsafe {
-            let f: unsafe extern "C" fn(u64, u64) -> u64 = std::mem::transmute(fp);
+            let f: unsafe extern "C" fn(u64, u64) -> u64 = transmute(fp);
             f(args[0], args[1])
         },
         3 => unsafe {
-            let f: unsafe extern "C" fn(u64, u64, u64) -> u64 = std::mem::transmute(fp);
+            let f: unsafe extern "C" fn(u64, u64, u64) -> u64 = transmute(fp);
             f(args[0], args[1], args[2])
         },
         4 => unsafe {
-            let f: unsafe extern "C" fn(u64, u64, u64, u64) -> u64 = std::mem::transmute(fp);
+            let f: unsafe extern "C" fn(u64, u64, u64, u64) -> u64 = transmute(fp);
             f(args[0], args[1], args[2], args[3])
         },
         n => panic!("extern arity {} not supported (max 4)", n),
@@ -403,23 +366,23 @@ unsafe fn dispatch_fn_returning(fp: *const (), args: &[u64]) -> u64 {
 unsafe fn dispatch_fn_void(fp: *const (), args: &[u64]) {
     match args.len() {
         0 => unsafe {
-            let f: unsafe extern "C" fn() = std::mem::transmute(fp);
+            let f: unsafe extern "C" fn() = transmute(fp);
             f()
         },
         1 => unsafe {
-            let f: unsafe extern "C" fn(u64) = std::mem::transmute(fp);
+            let f: unsafe extern "C" fn(u64) = transmute(fp);
             f(args[0])
         },
         2 => unsafe {
-            let f: unsafe extern "C" fn(u64, u64) = std::mem::transmute(fp);
+            let f: unsafe extern "C" fn(u64, u64) = transmute(fp);
             f(args[0], args[1])
         },
         3 => unsafe {
-            let f: unsafe extern "C" fn(u64, u64, u64) = std::mem::transmute(fp);
+            let f: unsafe extern "C" fn(u64, u64, u64) = transmute(fp);
             f(args[0], args[1], args[2])
         },
         4 => unsafe {
-            let f: unsafe extern "C" fn(u64, u64, u64, u64) = std::mem::transmute(fp);
+            let f: unsafe extern "C" fn(u64, u64, u64, u64) = transmute(fp);
             f(args[0], args[1], args[2], args[3])
         },
         n => panic!("extern arity {} not supported (max 4)", n),
@@ -442,26 +405,25 @@ pub(crate) fn tests_support_test_dtor_addr() -> *const u8 {
 /// `ir_codegen::tests`.
 #[cfg(test)]
 pub(crate) fn tests_support_dtor_reset() {
-    use std::sync::atomic::Ordering;
     tests_support::DTOR_FIRED.store(0, Ordering::Relaxed);
     tests_support::DTOR_LAST_PAYLOAD.store(0, Ordering::Relaxed);
 }
 
 #[cfg(test)]
 pub(crate) fn tests_support_dtor_fired() -> usize {
-    tests_support::DTOR_FIRED.load(std::sync::atomic::Ordering::Relaxed)
+    tests_support::DTOR_FIRED.load(Ordering::Relaxed)
 }
 
 #[cfg(test)]
 pub(crate) fn tests_support_dtor_last_payload() -> u64 {
-    tests_support::DTOR_LAST_PAYLOAD.load(std::sync::atomic::Ordering::Relaxed)
+    tests_support::DTOR_LAST_PAYLOAD.load(Ordering::Relaxed)
 }
 
 /// fz-swt.10 — shared lock so JIT-leg and interp-leg resource tests
 /// don't race on the static `DTOR_*` counters.
 #[cfg(test)]
-pub(crate) fn tests_support_lock() -> &'static std::sync::Mutex<()> {
-    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+pub(crate) fn tests_support_lock() -> &'static Mutex<()> {
+    static LOCK: Mutex<()> = Mutex::new(());
     &LOCK
 }
 

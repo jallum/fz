@@ -24,13 +24,20 @@
 use crate::ast::*;
 use crate::diag::{Diagnostic, Span, codes};
 use crate::frontend::protocols::{
-    ImplTarget, ProtocolCallbackFact, ProtocolDecl, ProtocolImplFact, ProtocolImplKey,
-    ProtocolRegistry,
+    ImplTarget, PROTOCOL_ELEM_VAR, ProtocolCallbackFact, ProtocolDecl, ProtocolImplFact, ProtocolImplKey,
+    ProtocolRegistry, impl_target_type, impl_target_type_with_element, protocol_domain_tag,
 };
 use crate::modules::identity::{ExportKey, ModuleName, QualifiedName};
-use crate::modules::interface::ModuleInterface;
+use crate::modules::interface::{ModuleInterface, collect_from_program};
+use crate::modules::runtime_library::{interface, root_type_env};
+use crate::type_expr::{
+    ModuleTypeEnv, build_module_type_env_for_with_base, builtin_type_env, resolve_spec_decl_positions,
+};
+use crate::types::{Ty, Types};
 use std::collections::{BTreeMap, BTreeSet};
 use std::collections::{HashMap, HashSet};
+use std::error::Error;
+use std::fmt;
 use std::rc::Rc;
 
 /// Errors produced by `flatten_modules`. Each variant carries the source
@@ -114,7 +121,10 @@ impl ResolveError {
             ),
             Self::UnknownImport { export, span } => Diagnostic::error(
                 codes::RESOLVE_UNKNOWN_IMPORT,
-                format!("module `{}` does not export `{}/{}`", export.module, export.name, export.arity),
+                format!(
+                    "module `{}` does not export `{}/{}`",
+                    export.module, export.name, export.arity
+                ),
                 *span,
             ),
             Self::ConflictingImport {
@@ -133,12 +143,8 @@ impl ResolveError {
                 *second_span,
             )
             .with_secondary(*first_span, "first import here"),
-            Self::TypeAliasError { msg, span } => {
-                Diagnostic::error(codes::RESOLVE_TYPE_ALIAS, msg.clone(), *span)
-            }
-            Self::ProtocolError { msg, span } => {
-                Diagnostic::error(codes::RESOLVE_PROTOCOL, msg.clone(), *span)
-            }
+            Self::TypeAliasError { msg, span } => Diagnostic::error(codes::RESOLVE_TYPE_ALIAS, msg.clone(), *span),
+            Self::ProtocolError { msg, span } => Diagnostic::error(codes::RESOLVE_PROTOCOL, msg.clone(), *span),
             Self::DuplicateProtocolImpl {
                 protocol,
                 target,
@@ -146,10 +152,7 @@ impl ResolveError {
                 duplicate_span,
             } => Diagnostic::error(
                 codes::RESOLVE_PROTOCOL,
-                format!(
-                    "protocol `{}` already has an implementation for `{}`",
-                    protocol, target
-                ),
+                format!("protocol `{}` already has an implementation for `{}`", protocol, target),
                 *duplicate_span,
             )
             .with_secondary(*first_span, "first implementation here"),
@@ -157,18 +160,15 @@ impl ResolveError {
     }
 }
 
-impl std::fmt::Display for ResolveError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Display for ResolveError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.to_diagnostic().message)
     }
 }
 
-impl std::error::Error for ResolveError {}
+impl Error for ResolveError {}
 
-pub fn flatten_modules<T: crate::types::Types<Ty = crate::types::Ty>>(
-    t: &mut T,
-    prog: Program,
-) -> Result<Program, ResolveError> {
+pub fn flatten_modules<T: Types<Ty = Ty>>(t: &mut T, prog: Program) -> Result<Program, ResolveError> {
     flatten_modules_with_options(t, prog, BTreeMap::new())
 }
 
@@ -243,14 +243,11 @@ fn build_module_info_fn(m: &ModuleDef) -> Option<FnDef> {
         param_annotations: vec![None],
         guard: None,
         body,
-        span: crate::diag::Span::DUMMY,
+        span: Span::DUMMY,
     };
 
     let clauses = vec![
-        clause(
-            Pattern::Atom("functions".to_string()),
-            pair_list(&functions),
-        ),
+        clause(Pattern::Atom("functions".to_string()), pair_list(&functions)),
         clause(Pattern::Atom("macros".to_string()), pair_list(&macros)),
         clause(
             Pattern::Atom("module".to_string()),
@@ -261,7 +258,7 @@ fn build_module_info_fn(m: &ModuleDef) -> Option<FnDef> {
 
     Some(FnDef {
         name: "__info__".to_string(),
-        name_span: crate::diag::Span::DUMMY,
+        name_span: Span::DUMMY,
         clauses,
         is_macro: false,
         is_private: false,
@@ -270,11 +267,11 @@ fn build_module_info_fn(m: &ModuleDef) -> Option<FnDef> {
         extern_ret_tokens: TypeExprBody(vec![]),
         variadic: false,
         attrs: vec![],
-        span: crate::diag::Span::DUMMY,
+        span: Span::DUMMY,
     })
 }
 
-pub fn flatten_modules_with_interface_table<T: crate::types::Types<Ty = crate::types::Ty>>(
+pub fn flatten_modules_with_interface_table<T: Types<Ty = Ty>>(
     t: &mut T,
     prog: Program,
     interface_table: InterfaceTable,
@@ -282,7 +279,7 @@ pub fn flatten_modules_with_interface_table<T: crate::types::Types<Ty = crate::t
     flatten_modules_with_options(t, prog, interface_table)
 }
 
-fn flatten_modules_with_options<T: crate::types::Types<Ty = crate::types::Ty>>(
+fn flatten_modules_with_options<T: Types<Ty = Ty>>(
     t: &mut T,
     prog: Program,
     mut interface_table: InterfaceTable,
@@ -290,7 +287,7 @@ fn flatten_modules_with_options<T: crate::types::Types<Ty = crate::types::Ty>>(
     let prog = inject_module_info(prog);
     collect_module_fns(&prog)?;
     let module_macros = collect_module_macros(&prog);
-    let module_interfaces = crate::modules::interface::collect_from_program(&prog);
+    let module_interfaces = collect_from_program(&prog);
     add_requested_runtime_interfaces(&prog, &module_interfaces, &mut interface_table);
     let external_module_interfaces = interface_table
         .iter()
@@ -308,12 +305,12 @@ fn flatten_modules_with_options<T: crate::types::Types<Ty = crate::types::Ty>>(
     // runtime primitive types plus root aliases from the always-loaded
     // prelude, so module specs and aliases can name standard aliases such as
     // keyword/0 and keyword/1.
-    let mut module_type_envs: HashMap<String, crate::type_expr::ModuleTypeEnv> = HashMap::new();
-    let root_types = crate::modules::runtime_library::root_type_env(t);
+    let mut module_type_envs: HashMap<String, ModuleTypeEnv> = HashMap::new();
+    let root_types = root_type_env(t);
     let root_type_env = root_types.env.clone();
     module_type_envs.insert(String::new(), root_type_env.clone());
-    let mut opaque_inners: HashMap<String, crate::types::Ty> = root_types.opaque_inners;
-    let mut brand_inners: HashMap<String, crate::types::Ty> = root_types.brand_inners;
+    let mut opaque_inners: HashMap<String, Ty> = root_types.opaque_inners;
+    let mut brand_inners: HashMap<String, Ty> = root_types.brand_inners;
     collect_module_type_envs(
         t,
         &prog,
@@ -323,11 +320,9 @@ fn flatten_modules_with_options<T: crate::types::Types<Ty = crate::types::Ty>>(
         &mut opaque_inners,
         &mut brand_inners,
     )?;
-    let protocol_registry =
-        collect_protocol_registry(t, &prog, &external_module_interfaces, &mut module_type_envs)?;
+    let protocol_registry = collect_protocol_registry(t, &prog, &external_module_interfaces, &mut module_type_envs)?;
     let mut structs = BTreeMap::new();
-    let (root_aliases, root_imports) =
-        collect_import_scope(&prog.items, &interface_table, &module_macros)?;
+    let (root_aliases, root_imports) = collect_import_scope(&prog.items, &interface_table, &module_macros)?;
     for item in &prog.items {
         match &**item {
             Item::Fn(def) => {
@@ -428,9 +423,9 @@ fn flatten_modules_with_options<T: crate::types::Types<Ty = crate::types::Ty>>(
 }
 
 fn collect_struct_field_types(
-    module_type_envs: &HashMap<String, crate::type_expr::ModuleTypeEnv>,
+    module_type_envs: &HashMap<String, ModuleTypeEnv>,
     structs: &BTreeMap<ModuleName, Vec<String>>,
-) -> Result<BTreeMap<ModuleName, Vec<(String, crate::types::Ty)>>, ResolveError> {
+) -> Result<BTreeMap<ModuleName, Vec<(String, Ty)>>, ResolveError> {
     let mut out = BTreeMap::new();
     for env in module_type_envs.values() {
         for (_alias, record) in env.struct_records() {
@@ -462,10 +457,7 @@ fn collect_struct_field_types(
             for field in schema {
                 if !seen.contains(field) {
                     return Err(ResolveError::TypeAliasError {
-                        msg: format!(
-                            "struct type for `{}` is missing field `{}`",
-                            record.module, field
-                        ),
+                        msg: format!("struct type for `{}` is missing field `{}`", record.module, field),
                         span: record.span,
                     });
                 }
@@ -502,7 +494,7 @@ fn add_requested_runtime_interfaces(
         if local_interfaces.contains_key(&module) || interface_table.contains_key(&module) {
             continue;
         }
-        if let Some(interface) = crate::modules::runtime_library::interface(&module) {
+        if let Some(interface) = interface(&module) {
             enqueue_runtime_interface_dependencies(&interface, &mut requested);
             interface_table.insert(module, interface);
         }
@@ -513,12 +505,10 @@ pub(crate) fn add_macro_requested_runtime_interfaces(prog: &mut Program) {
     let mut requested = Vec::new();
     collect_requested_external_modules(prog, &mut requested);
     while let Some(module) = requested.pop() {
-        if prog.module_interfaces.contains_key(&module)
-            || prog.external_module_interfaces.contains_key(&module)
-        {
+        if prog.module_interfaces.contains_key(&module) || prog.external_module_interfaces.contains_key(&module) {
             continue;
         }
-        if let Some(interface) = crate::modules::runtime_library::interface(&module) {
+        if let Some(interface) = interface(&module) {
             enqueue_runtime_interface_dependencies(&interface, &mut requested);
             prog.external_module_interfaces.insert(module, interface);
         }
@@ -638,10 +628,7 @@ fn collect_top_level_qualified_calls(expr: &Spanned<Expr>, out: &mut Vec<ModuleN
             collect_top_level_qualified_calls(left, out);
             collect_top_level_qualified_calls(right, out);
         }
-        Expr::UnOp(_, inner)
-        | Expr::Ascribe(inner, _)
-        | Expr::Quote(inner)
-        | Expr::Unquote(inner) => {
+        Expr::UnOp(_, inner) | Expr::Ascribe(inner, _) | Expr::Quote(inner) | Expr::Unquote(inner) => {
             collect_top_level_qualified_calls(inner, out);
         }
         Expr::If(cond, then_expr, else_expr) => {
@@ -705,13 +692,7 @@ fn collect_top_level_qualified_calls(expr: &Spanned<Expr>, out: &mut Vec<ModuleN
                 collect_top_level_qualified_calls(&after.body, out);
             }
         }
-        Expr::Var(_)
-        | Expr::Int(_)
-        | Expr::Float(_)
-        | Expr::Binary(_)
-        | Expr::Atom(_)
-        | Expr::Bool(_)
-        | Expr::Nil => {}
+        Expr::Var(_) | Expr::Int(_) | Expr::Float(_) | Expr::Binary(_) | Expr::Atom(_) | Expr::Bool(_) | Expr::Nil => {}
     }
 }
 
@@ -757,14 +738,14 @@ fn qualified_callee_module(callee: &Spanned<Expr>) -> Option<ModuleName> {
 /// (e.g. `"Mod::t"`) so cross-module collisions cannot happen except
 /// for the unqualified built-in `"resource"` tag, which carries no
 /// inner type at this layer.
-fn collect_module_type_envs<T: crate::types::Types<Ty = crate::types::Ty>>(
+fn collect_module_type_envs<T: Types<Ty = Ty>>(
     t: &mut T,
     prog: &Program,
     parent: &str,
-    base_env: &crate::type_expr::ModuleTypeEnv,
-    out: &mut HashMap<String, crate::type_expr::ModuleTypeEnv>,
-    o_inners: &mut HashMap<String, crate::types::Ty>,
-    b_inners: &mut HashMap<String, crate::types::Ty>,
+    base_env: &ModuleTypeEnv,
+    out: &mut HashMap<String, ModuleTypeEnv>,
+    o_inners: &mut HashMap<String, Ty>,
+    b_inners: &mut HashMap<String, Ty>,
 ) -> Result<(), ResolveError> {
     for item in &prog.items {
         if let Item::Module(m) = &**item {
@@ -774,26 +755,25 @@ fn collect_module_type_envs<T: crate::types::Types<Ty = crate::types::Ty>>(
     Ok(())
 }
 
-fn collect_module_type_envs_recursive<T: crate::types::Types<Ty = crate::types::Ty>>(
+fn collect_module_type_envs_recursive<T: Types<Ty = Ty>>(
     t: &mut T,
     m: &ModuleDef,
     parent: &str,
-    base_env: &crate::type_expr::ModuleTypeEnv,
-    out: &mut HashMap<String, crate::type_expr::ModuleTypeEnv>,
-    o_inners: &mut HashMap<String, crate::types::Ty>,
-    b_inners: &mut HashMap<String, crate::types::Ty>,
+    base_env: &ModuleTypeEnv,
+    out: &mut HashMap<String, ModuleTypeEnv>,
+    o_inners: &mut HashMap<String, Ty>,
+    b_inners: &mut HashMap<String, Ty>,
 ) -> Result<(), ResolveError> {
     let path = if parent.is_empty() {
         m.name.clone()
     } else {
         format!("{}.{}", parent, m.name)
     };
-    let (env, opaque_inners, brand_inners) =
-        crate::type_expr::build_module_type_env_for_with_base(t, &m.attrs, &path, base_env)
-            .map_err(|e| ResolveError::TypeAliasError {
-                msg: format!("module `{}`: {}", path, e.msg),
-                span: e.span,
-            })?;
+    let (env, opaque_inners, brand_inners) = build_module_type_env_for_with_base(t, &m.attrs, &path, base_env)
+        .map_err(|e| ResolveError::TypeAliasError {
+            msg: format!("module `{}`: {}", path, e.msg),
+            span: e.span,
+        })?;
     out.insert(path.clone(), env);
     o_inners.extend(opaque_inners);
     b_inners.extend(brand_inners);
@@ -829,11 +809,11 @@ fn collect_module_docs_recursive(m: &ModuleDef, parent: &str, out: &mut HashMap<
     }
 }
 
-fn collect_protocol_registry<T: crate::types::Types<Ty = crate::types::Ty>>(
+fn collect_protocol_registry<T: Types<Ty = Ty>>(
     t: &mut T,
     prog: &Program,
     external_module_interfaces: &InterfaceTable,
-    module_type_envs: &mut HashMap<String, crate::type_expr::ModuleTypeEnv>,
+    module_type_envs: &mut HashMap<String, ModuleTypeEnv>,
 ) -> Result<ProtocolRegistry, ResolveError> {
     let mut registry = ProtocolRegistry::default();
     collect_protocol_declarations(t, &prog.items, None, module_type_envs, &mut registry)?;
@@ -846,7 +826,7 @@ fn collect_protocol_registry<T: crate::types::Types<Ty = crate::types::Ty>>(
         // PROTOCOL_ELEM_VAR with `elem`, so a `List` target refines from
         // `list(any)` to `list(elem)`. The bare `Protocol.t` (arity 0) stays
         // the `element = any` domain above.
-        let element = t.type_var(crate::frontend::protocols::PROTOCOL_ELEM_VAR);
+        let element = t.type_var(PROTOCOL_ELEM_VAR);
         let template = protocol_domain_template(t, protocol, &registry, element);
         for env in module_type_envs.values_mut() {
             env.insert(format!("{}.t", protocol), ty.clone());
@@ -861,11 +841,7 @@ fn collect_protocol_registry<T: crate::types::Types<Ty = crate::types::Ty>>(
     Ok(registry)
 }
 
-fn protocol_domain_type<T: crate::types::Types<Ty = crate::types::Ty>>(
-    t: &mut T,
-    protocol: &ModuleName,
-    registry: &ProtocolRegistry,
-) -> crate::types::Ty {
+fn protocol_domain_type<T: Types<Ty = Ty>>(t: &mut T, protocol: &ModuleName, registry: &ProtocolRegistry) -> Ty {
     let any = t.any();
     protocol_domain_template(t, protocol, registry, any)
 }
@@ -874,33 +850,25 @@ fn protocol_domain_type<T: crate::types::Types<Ty = crate::types::Ty>>(
 /// target's type — with `element` threaded into element-parametric targets.
 /// `protocol_domain_type` is the `element = any` case; the registration loop
 /// passes `PROTOCOL_ELEM_VAR` to build the refining template.
-fn protocol_domain_template<T: crate::types::Types<Ty = crate::types::Ty>>(
+fn protocol_domain_template<T: Types<Ty = Ty>>(
     t: &mut T,
     protocol: &ModuleName,
     registry: &ProtocolRegistry,
-    element: crate::types::Ty,
-) -> crate::types::Ty {
-    let mut domain = t.opaque_of(&crate::frontend::protocols::protocol_domain_tag(protocol));
-    for fact in registry
-        .impls
-        .values()
-        .filter(|fact| fact.protocol == *protocol)
-    {
-        let target_ty = crate::frontend::protocols::impl_target_type_with_element(
-            t,
-            &fact.target,
-            element.clone(),
-        );
+    element: Ty,
+) -> Ty {
+    let mut domain = t.opaque_of(&protocol_domain_tag(protocol));
+    for fact in registry.impls.values().filter(|fact| fact.protocol == *protocol) {
+        let target_ty = impl_target_type_with_element(t, &fact.target, element.clone());
         domain = t.union(domain, target_ty);
     }
     domain
 }
 
-fn collect_protocol_declarations<T: crate::types::Types<Ty = crate::types::Ty>>(
+fn collect_protocol_declarations<T: Types<Ty = Ty>>(
     t: &mut T,
     items: &[Rc<Item>],
     parent: Option<&ModuleName>,
-    module_type_envs: &mut HashMap<String, crate::type_expr::ModuleTypeEnv>,
+    module_type_envs: &mut HashMap<String, ModuleTypeEnv>,
     registry: &mut ProtocolRegistry,
 ) -> Result<(), ResolveError> {
     for item in items {
@@ -908,11 +876,7 @@ fn collect_protocol_declarations<T: crate::types::Types<Ty = crate::types::Ty>>(
             Item::Protocol(protocol) => {
                 let name = qualify_protocol_name(parent, &protocol.name);
                 let decl = protocol_decl(t, &name, protocol, module_type_envs)?;
-                if registry
-                    .protocols
-                    .insert(name.clone(), decl.clone())
-                    .is_some()
-                {
+                if registry.protocols.insert(name.clone(), decl.clone()).is_some() {
                     return Err(ResolveError::ProtocolError {
                         msg: format!("protocol `{}` is defined more than once", name),
                         span: decl.span,
@@ -928,13 +892,7 @@ fn collect_protocol_declarations<T: crate::types::Types<Ty = crate::types::Ty>>(
                 } else {
                     ModuleName::from_segments(vec![module.name.clone()])
                 };
-                collect_protocol_declarations(
-                    t,
-                    &module.items,
-                    Some(&name),
-                    module_type_envs,
-                    registry,
-                )?;
+                collect_protocol_declarations(t, &module.items, Some(&name), module_type_envs, registry)?;
             }
             _ => {}
         }
@@ -951,13 +909,11 @@ fn collect_protocol_implementations(
     for item in items {
         match &**item {
             Item::ProtocolImpl(protocol_impl) => {
-                let protocol =
-                    resolve_impl_protocol_name(parent, &protocol_impl.protocol, registry);
+                let protocol = resolve_impl_protocol_name(parent, &protocol_impl.protocol, registry);
                 let target_module = qualify_module_child(parent, &protocol_impl.target.path);
                 let target = ImplTarget::module(target_module.clone());
                 let impl_module = protocol_impl_module(&protocol, &target_module);
-                let (callbacks, callback_specs) =
-                    protocol_impl_callbacks(&impl_module, protocol_impl)?;
+                let (callbacks, callback_specs) = protocol_impl_callbacks(&impl_module, protocol_impl)?;
                 let fact = ProtocolImplFact {
                     protocol: protocol.clone(),
                     target: target.clone(),
@@ -990,21 +946,15 @@ fn collect_protocol_implementations(
     Ok(())
 }
 
-fn protocol_decl<T: crate::types::Types<Ty = crate::types::Ty>>(
+fn protocol_decl<T: Types<Ty = Ty>>(
     t: &mut T,
     name: &ModuleName,
     protocol: &ProtocolDef,
-    module_type_envs: &mut HashMap<String, crate::type_expr::ModuleTypeEnv>,
+    module_type_envs: &mut HashMap<String, ModuleTypeEnv>,
 ) -> Result<ProtocolDecl, ResolveError> {
-    let mut env = crate::type_expr::ModuleTypeEnv::new();
-    env.insert(
-        "t".to_string(),
-        t.opaque_of(&crate::frontend::protocols::protocol_domain_tag(name)),
-    );
-    env.insert(
-        format!("{}.t", name),
-        t.opaque_of(&crate::frontend::protocols::protocol_domain_tag(name)),
-    );
+    let mut env = ModuleTypeEnv::new();
+    env.insert("t".to_string(), t.opaque_of(&protocol_domain_tag(name)));
+    env.insert(format!("{}.t", name), t.opaque_of(&protocol_domain_tag(name)));
     module_type_envs.insert(name.dotted(), env);
 
     let mut seen = HashMap::new();
@@ -1042,7 +992,7 @@ fn protocol_decl<T: crate::types::Types<Ty = crate::types::Ty>>(
 
 type ProtocolImplCallbacks = (
     BTreeMap<(String, usize), ExportKey>,
-    BTreeMap<(String, usize), Vec<crate::ast::SpecDecl>>,
+    BTreeMap<(String, usize), Vec<SpecDecl>>,
 );
 
 fn protocol_impl_callbacks(
@@ -1106,10 +1056,7 @@ fn validate_protocol_impls(registry: &ProtocolRegistry) -> Result<(), ResolveErr
             });
         };
         for callback in &protocol.callbacks {
-            if fact
-                .callbacks
-                .contains_key(&(callback.name.clone(), callback.arity))
-            {
+            if fact.callbacks.contains_key(&(callback.name.clone(), callback.arity)) {
                 continue;
             }
             // The protocol declares `name/arity` but the impl does not provide it
@@ -1126,12 +1073,7 @@ fn validate_protocol_impls(registry: &ProtocolRegistry) -> Result<(), ResolveErr
                 msg: match provided_arity {
                     Some(provided) => format!(
                         "implementation for protocol `{}` on `{}` implements callback `{}` at arity {} but the protocol declares `{}/{}`",
-                        fact.protocol,
-                        fact.target,
-                        callback.name,
-                        provided,
-                        callback.name,
-                        callback.arity
+                        fact.protocol, fact.target, callback.name, provided, callback.name, callback.arity
                     ),
                     None => format!(
                         "implementation for protocol `{}` on `{}` is missing callback `{}/{}`",
@@ -1145,11 +1087,7 @@ fn validate_protocol_impls(registry: &ProtocolRegistry) -> Result<(), ResolveErr
             // A name the protocol does not declare at all is unknown. A name the
             // protocol declares only at another arity is already reported above
             // as an arity mismatch, so it is not re-reported here.
-            if protocol
-                .callbacks
-                .iter()
-                .any(|callback| callback.name == *name)
-            {
+            if protocol.callbacks.iter().any(|callback| callback.name == *name) {
                 continue;
             }
             return Err(ResolveError::ProtocolError {
@@ -1171,10 +1109,10 @@ fn validate_protocol_impls(registry: &ProtocolRegistry) -> Result<(), ResolveErr
 /// set-theoretically disjoint (empty intersection), so free type variables and
 /// `any` never produce a false positive. Callbacks without a declared spec on
 /// either side are not checked.
-fn validate_protocol_callback_specs<T: crate::types::Types<Ty = crate::types::Ty>>(
+fn validate_protocol_callback_specs<T: Types<Ty = Ty>>(
     t: &mut T,
     registry: &ProtocolRegistry,
-    module_type_envs: &HashMap<String, crate::type_expr::ModuleTypeEnv>,
+    module_type_envs: &HashMap<String, ModuleTypeEnv>,
 ) -> Result<(), ResolveError> {
     for fact in registry.impls.values() {
         if fact.callback_specs.is_empty() {
@@ -1183,11 +1121,11 @@ fn validate_protocol_callback_specs<T: crate::types::Types<Ty = crate::types::Ty
         let Some(protocol) = registry.protocols.get(&fact.protocol) else {
             continue;
         };
-        let target_ty = crate::frontend::protocols::impl_target_type(t, &fact.target);
+        let target_ty = impl_target_type(t, &fact.target);
         let mut proto_env = module_type_envs
             .get(&fact.protocol.dotted())
             .cloned()
-            .unwrap_or_else(|| crate::type_expr::builtin_type_env(t));
+            .unwrap_or_else(|| builtin_type_env(t));
         proto_env.insert("t".to_string(), target_ty.clone());
         proto_env.insert(format!("{}.t", fact.protocol), target_ty);
         for callback in &protocol.callbacks {
@@ -1203,13 +1141,11 @@ fn validate_protocol_callback_specs<T: crate::types::Types<Ty = crate::types::Ty
                 .get(&key)
                 .and_then(|export| module_type_envs.get(&export.module.dotted()))
                 .cloned()
-                .unwrap_or_else(|| crate::type_expr::builtin_type_env(t));
+                .unwrap_or_else(|| builtin_type_env(t));
             let incompatible = impl_specs.iter().find_map(|impl_spec| {
                 let mut first_incompatibility = None;
                 for proto_spec in &callback.specs {
-                    match protocol_spec_pair_incompatibility(
-                        t, proto_spec, &proto_env, impl_spec, &impl_env,
-                    ) {
+                    match protocol_spec_pair_incompatibility(t, proto_spec, &proto_env, impl_spec, &impl_env) {
                         None => return None,
                         Some(position) if first_incompatibility.is_none() => {
                             first_incompatibility = Some(position);
@@ -1233,19 +1169,17 @@ fn validate_protocol_callback_specs<T: crate::types::Types<Ty = crate::types::Ty
     Ok(())
 }
 
-fn protocol_spec_pair_incompatibility<T: crate::types::Types<Ty = crate::types::Ty>>(
+fn protocol_spec_pair_incompatibility<T: Types<Ty = Ty>>(
     t: &mut T,
-    proto_spec: &crate::ast::SpecDecl,
-    proto_env: &crate::type_expr::ModuleTypeEnv,
-    impl_spec: &crate::ast::SpecDecl,
-    impl_env: &crate::type_expr::ModuleTypeEnv,
+    proto_spec: &SpecDecl,
+    proto_env: &ModuleTypeEnv,
+    impl_spec: &SpecDecl,
+    impl_env: &ModuleTypeEnv,
 ) -> Option<String> {
     // Per-position so a domain-applied position (`t(a)`) that does not
     // resolve yet does not mask the result and other params.
-    let (proto_params, proto_result) =
-        crate::type_expr::resolve_spec_decl_positions(t, proto_spec, proto_env);
-    let (impl_params, impl_result) =
-        crate::type_expr::resolve_spec_decl_positions(t, impl_spec, impl_env);
+    let (proto_params, proto_result) = resolve_spec_decl_positions(t, proto_spec, proto_env);
+    let (impl_params, impl_result) = resolve_spec_decl_positions(t, impl_spec, impl_env);
     if proto_params.len() != impl_params.len() {
         return None;
     }
@@ -1330,12 +1264,7 @@ fn collect_visible_module_paths(prog: &Program, interfaces: &InterfaceTable) -> 
     }
     out.extend(interfaces.keys().map(ModuleName::dotted));
     for interface in interfaces.values() {
-        out.extend(
-            interface
-                .protocols
-                .iter()
-                .map(|protocol| protocol.name.dotted()),
-        );
+        out.extend(interface.protocols.iter().map(|protocol| protocol.name.dotted()));
     }
     out
 }
@@ -1553,11 +1482,7 @@ fn collect_module_macros(prog: &Program) -> ModuleMacroExports {
     out
 }
 
-fn collect_module_macros_recursive(
-    m: &ModuleDef,
-    parent: Option<&ModuleName>,
-    out: &mut ModuleMacroExports,
-) {
+fn collect_module_macros_recursive(m: &ModuleDef, parent: Option<&ModuleName>, out: &mut ModuleMacroExports) {
     let path = if let Some(parent) = parent {
         parent.child(m.name.clone())
     } else {
@@ -1671,19 +1596,14 @@ fn flatten_module(
                     );
                 }
             }
-            Item::Module(_)
-            | Item::Struct(_)
-            | Item::Protocol(_)
-            | Item::ProtocolImpl(_)
-            | Item::MacroCall { .. } => {}
+            Item::Module(_) | Item::Struct(_) | Item::Protocol(_) | Item::ProtocolImpl(_) | Item::MacroCall { .. } => {}
         }
     }
 
     for item in &m.items {
         match &**item {
             Item::Fn(def) => {
-                let qualified_name =
-                    QualifiedName::in_module(module_name.clone(), def.name.clone()).dotted();
+                let qualified_name = QualifiedName::in_module(module_name.clone(), def.name.clone()).dotted();
                 let mut new_def = def.clone();
                 new_def.name = qualified_name;
                 for clause in &mut new_def.clauses {
@@ -1698,15 +1618,7 @@ fn flatten_module(
                         &imports,
                     );
                     if let Some(g) = &mut clause.guard {
-                        rewrite_expr(
-                            g,
-                            &module_path,
-                            &siblings,
-                            &mut intro,
-                            module_paths,
-                            &aliases,
-                            &imports,
-                        );
+                        rewrite_expr(g, &module_path, &siblings, &mut intro, module_paths, &aliases, &imports);
                     }
                 }
                 out.push(Rc::new(Item::Fn(new_def)));
@@ -1739,15 +1651,7 @@ fn flatten_module(
                 let mut new_args: Vec<Spanned<Expr>> = args.clone();
                 for a in &mut new_args {
                     let mut intro: HashSet<String> = HashSet::new();
-                    rewrite_expr(
-                        a,
-                        &module_path,
-                        &siblings,
-                        &mut intro,
-                        module_paths,
-                        &aliases,
-                        &imports,
-                    );
+                    rewrite_expr(a, &module_path, &siblings, &mut intro, module_paths, &aliases, &imports);
                 }
                 out.push(Rc::new(Item::MacroCall {
                     name: name.clone(),
@@ -1781,8 +1685,7 @@ fn flatten_protocol_impl(
     imports: &ImportMap,
     local_protocols: &HashSet<String>,
 ) -> Result<(), ResolveError> {
-    let protocol =
-        qualify_impl_protocol_name(parent_path, &protocol_impl.protocol, local_protocols);
+    let protocol = qualify_impl_protocol_name(parent_path, &protocol_impl.protocol, local_protocols);
     let target_module = qualify_module_child(parent_path, &protocol_impl.target.path);
     let impl_module = protocol_impl_module(&protocol, &target_module);
     let module_path = impl_module.dotted();
@@ -1796,8 +1699,7 @@ fn flatten_protocol_impl(
         .collect::<HashSet<_>>();
     for item in &protocol_impl.items {
         if let Item::Fn(def) = &**item {
-            let qualified_name =
-                QualifiedName::in_module(impl_module.clone(), def.name.clone()).dotted();
+            let qualified_name = QualifiedName::in_module(impl_module.clone(), def.name.clone()).dotted();
             let mut new_def = def.clone();
             new_def.name = qualified_name;
             for clause in &mut new_def.clauses {
@@ -1812,15 +1714,7 @@ fn flatten_protocol_impl(
                     imports,
                 );
                 if let Some(g) = &mut clause.guard {
-                    rewrite_expr(
-                        g,
-                        &module_path,
-                        &siblings,
-                        &mut intro,
-                        module_paths,
-                        aliases,
-                        imports,
-                    );
+                    rewrite_expr(g, &module_path, &siblings, &mut intro, module_paths, aliases, imports);
                 }
             }
             out.push(Rc::new(Item::Fn(new_def)));
@@ -1838,8 +1732,7 @@ fn qualify_impl_protocol_name(
         return name.clone();
     }
     if let Some(parent) = parent
-        && (name.last_segment() == parent.last_segment()
-            || local_protocols.contains(name.last_segment()))
+        && (name.last_segment() == parent.last_segment() || local_protocols.contains(name.last_segment()))
     {
         return qualify_protocol_name(Some(parent), name);
     }
@@ -1940,15 +1833,7 @@ fn rewrite_expr(
         }
         // fz-g58.2.6 — sibling/import rewriting recurses into the `&(...)`
         // body; `&N` is a leaf with no name to resolve.
-        Expr::Capture(body) => rewrite_expr(
-            body,
-            module_path,
-            siblings,
-            intro,
-            module_paths,
-            aliases,
-            imports,
-        ),
+        Expr::Capture(body) => rewrite_expr(body, module_path, siblings, intro, module_paths, aliases, imports),
         Expr::CaptureArg(_) => {}
         // fz-swt.5: `&name/arity` follows the same name-resolution rules
         // as a bare call target — sibling rewriting, then import
@@ -1988,84 +1873,28 @@ fn rewrite_expr(
             {
                 callee.node = Expr::Var(format!("{}.{}", target.module, n));
             }
-            rewrite_expr(
-                callee,
-                module_path,
-                siblings,
-                intro,
-                module_paths,
-                aliases,
-                imports,
-            );
+            rewrite_expr(callee, module_path, siblings, intro, module_paths, aliases, imports);
             for a in args {
-                rewrite_expr(
-                    a,
-                    module_path,
-                    siblings,
-                    intro,
-                    module_paths,
-                    aliases,
-                    imports,
-                );
+                rewrite_expr(a, module_path, siblings, intro, module_paths, aliases, imports);
             }
         }
         Expr::ClosureCall(callee, args) => {
-            rewrite_expr(
-                callee,
-                module_path,
-                siblings,
-                intro,
-                module_paths,
-                aliases,
-                imports,
-            );
+            rewrite_expr(callee, module_path, siblings, intro, module_paths, aliases, imports);
             for a in args {
-                rewrite_expr(
-                    a,
-                    module_path,
-                    siblings,
-                    intro,
-                    module_paths,
-                    aliases,
-                    imports,
-                );
+                rewrite_expr(a, module_path, siblings, intro, module_paths, aliases, imports);
             }
         }
         Expr::List(xs, tail) => {
             for x in xs {
-                rewrite_expr(
-                    x,
-                    module_path,
-                    siblings,
-                    intro,
-                    module_paths,
-                    aliases,
-                    imports,
-                );
+                rewrite_expr(x, module_path, siblings, intro, module_paths, aliases, imports);
             }
             if let Some(t) = tail {
-                rewrite_expr(
-                    t,
-                    module_path,
-                    siblings,
-                    intro,
-                    module_paths,
-                    aliases,
-                    imports,
-                );
+                rewrite_expr(t, module_path, siblings, intro, module_paths, aliases, imports);
             }
         }
         Expr::Tuple(xs) | Expr::Block(xs) => {
             for x in xs {
-                rewrite_expr(
-                    x,
-                    module_path,
-                    siblings,
-                    intro,
-                    module_paths,
-                    aliases,
-                    imports,
-                );
+                rewrite_expr(x, module_path, siblings, intro, module_paths, aliases, imports);
             }
         }
         Expr::Bitstring(fields) => {
@@ -2083,175 +1912,49 @@ fn rewrite_expr(
         }
         Expr::Map(pairs) => {
             for (k, v) in pairs {
-                rewrite_expr(
-                    k,
-                    module_path,
-                    siblings,
-                    intro,
-                    module_paths,
-                    aliases,
-                    imports,
-                );
-                rewrite_expr(
-                    v,
-                    module_path,
-                    siblings,
-                    intro,
-                    module_paths,
-                    aliases,
-                    imports,
-                );
+                rewrite_expr(k, module_path, siblings, intro, module_paths, aliases, imports);
+                rewrite_expr(v, module_path, siblings, intro, module_paths, aliases, imports);
             }
         }
         Expr::MapUpdate(m, pairs) => {
-            rewrite_expr(
-                m,
-                module_path,
-                siblings,
-                intro,
-                module_paths,
-                aliases,
-                imports,
-            );
+            rewrite_expr(m, module_path, siblings, intro, module_paths, aliases, imports);
             for (k, v) in pairs {
-                rewrite_expr(
-                    k,
-                    module_path,
-                    siblings,
-                    intro,
-                    module_paths,
-                    aliases,
-                    imports,
-                );
-                rewrite_expr(
-                    v,
-                    module_path,
-                    siblings,
-                    intro,
-                    module_paths,
-                    aliases,
-                    imports,
-                );
+                rewrite_expr(k, module_path, siblings, intro, module_paths, aliases, imports);
+                rewrite_expr(v, module_path, siblings, intro, module_paths, aliases, imports);
             }
         }
         Expr::Struct { fields, .. } => {
             for (_, v) in fields {
-                rewrite_expr(
-                    v,
-                    module_path,
-                    siblings,
-                    intro,
-                    module_paths,
-                    aliases,
-                    imports,
-                );
+                rewrite_expr(v, module_path, siblings, intro, module_paths, aliases, imports);
             }
         }
         Expr::Index(o, i) => {
-            rewrite_expr(
-                o,
-                module_path,
-                siblings,
-                intro,
-                module_paths,
-                aliases,
-                imports,
-            );
-            rewrite_expr(
-                i,
-                module_path,
-                siblings,
-                intro,
-                module_paths,
-                aliases,
-                imports,
-            );
+            rewrite_expr(o, module_path, siblings, intro, module_paths, aliases, imports);
+            rewrite_expr(i, module_path, siblings, intro, module_paths, aliases, imports);
         }
         Expr::BinOp(_, l, r) => {
-            rewrite_expr(
-                l,
-                module_path,
-                siblings,
-                intro,
-                module_paths,
-                aliases,
-                imports,
-            );
-            rewrite_expr(
-                r,
-                module_path,
-                siblings,
-                intro,
-                module_paths,
-                aliases,
-                imports,
-            );
+            rewrite_expr(l, module_path, siblings, intro, module_paths, aliases, imports);
+            rewrite_expr(r, module_path, siblings, intro, module_paths, aliases, imports);
         }
-        Expr::UnOp(_, x) | Expr::Ascribe(x, _) => rewrite_expr(
-            x,
-            module_path,
-            siblings,
-            intro,
-            module_paths,
-            aliases,
-            imports,
-        ),
+        Expr::UnOp(_, x) | Expr::Ascribe(x, _) => {
+            rewrite_expr(x, module_path, siblings, intro, module_paths, aliases, imports)
+        }
         Expr::If(c, t, els) => {
-            rewrite_expr(
-                c,
-                module_path,
-                siblings,
-                intro,
-                module_paths,
-                aliases,
-                imports,
-            );
-            rewrite_expr(
-                t,
-                module_path,
-                siblings,
-                intro,
-                module_paths,
-                aliases,
-                imports,
-            );
+            rewrite_expr(c, module_path, siblings, intro, module_paths, aliases, imports);
+            rewrite_expr(t, module_path, siblings, intro, module_paths, aliases, imports);
             if let Some(e) = els {
-                rewrite_expr(
-                    e,
-                    module_path,
-                    siblings,
-                    intro,
-                    module_paths,
-                    aliases,
-                    imports,
-                );
+                rewrite_expr(e, module_path, siblings, intro, module_paths, aliases, imports);
             }
         }
         Expr::Case(scr, arms) => {
             if let Some(scr) = scr {
-                rewrite_expr(
-                    scr,
-                    module_path,
-                    siblings,
-                    intro,
-                    module_paths,
-                    aliases,
-                    imports,
-                );
+                rewrite_expr(scr, module_path, siblings, intro, module_paths, aliases, imports);
             }
             for arm in arms {
                 let mut nested = intro.clone();
                 collect_pattern_vars(&arm.pattern.node, &mut nested);
                 if let Some(g) = &mut arm.guard {
-                    rewrite_expr(
-                        g,
-                        module_path,
-                        siblings,
-                        &mut nested,
-                        module_paths,
-                        aliases,
-                        imports,
-                    );
+                    rewrite_expr(g, module_path, siblings, &mut nested, module_paths, aliases, imports);
                 }
                 rewrite_expr(
                     &mut arm.body,
@@ -2266,24 +1969,8 @@ fn rewrite_expr(
         }
         Expr::Cond(pairs) => {
             for (c, b) in pairs {
-                rewrite_expr(
-                    c,
-                    module_path,
-                    siblings,
-                    intro,
-                    module_paths,
-                    aliases,
-                    imports,
-                );
-                rewrite_expr(
-                    b,
-                    module_path,
-                    siblings,
-                    intro,
-                    module_paths,
-                    aliases,
-                    imports,
-                );
+                rewrite_expr(c, module_path, siblings, intro, module_paths, aliases, imports);
+                rewrite_expr(b, module_path, siblings, intro, module_paths, aliases, imports);
             }
         }
         Expr::With(bindings, body, else_clauses) => {
@@ -2291,50 +1978,20 @@ fn rewrite_expr(
             for b in bindings {
                 match b {
                     WithBinding::Match(p, e) => {
-                        rewrite_expr(
-                            e,
-                            module_path,
-                            siblings,
-                            &mut nested,
-                            module_paths,
-                            aliases,
-                            imports,
-                        );
+                        rewrite_expr(e, module_path, siblings, &mut nested, module_paths, aliases, imports);
                         collect_pattern_vars(&p.node, &mut nested);
                     }
-                    WithBinding::Bare(e) => rewrite_expr(
-                        e,
-                        module_path,
-                        siblings,
-                        &mut nested,
-                        module_paths,
-                        aliases,
-                        imports,
-                    ),
+                    WithBinding::Bare(e) => {
+                        rewrite_expr(e, module_path, siblings, &mut nested, module_paths, aliases, imports)
+                    }
                 }
             }
-            rewrite_expr(
-                body,
-                module_path,
-                siblings,
-                &mut nested,
-                module_paths,
-                aliases,
-                imports,
-            );
+            rewrite_expr(body, module_path, siblings, &mut nested, module_paths, aliases, imports);
             for arm in else_clauses {
                 let mut a_intro = intro.clone();
                 collect_pattern_vars(&arm.pattern.node, &mut a_intro);
                 if let Some(g) = &mut arm.guard {
-                    rewrite_expr(
-                        g,
-                        module_path,
-                        siblings,
-                        &mut a_intro,
-                        module_paths,
-                        aliases,
-                        imports,
-                    );
+                    rewrite_expr(g, module_path, siblings, &mut a_intro, module_paths, aliases, imports);
                 }
                 rewrite_expr(
                     &mut arm.body,
@@ -2348,15 +2005,7 @@ fn rewrite_expr(
             }
         }
         Expr::Match(pat, rhs) => {
-            rewrite_expr(
-                rhs,
-                module_path,
-                siblings,
-                intro,
-                module_paths,
-                aliases,
-                imports,
-            );
+            rewrite_expr(rhs, module_path, siblings, intro, module_paths, aliases, imports);
             collect_pattern_vars(&pat.node, intro);
         }
         Expr::Lambda(clauses) => {
@@ -2387,24 +2036,8 @@ fn rewrite_expr(
                 );
             }
         }
-        Expr::Quote(inner) => rewrite_expr(
-            inner,
-            module_path,
-            siblings,
-            intro,
-            module_paths,
-            aliases,
-            imports,
-        ),
-        Expr::Unquote(inner) => rewrite_expr(
-            inner,
-            module_path,
-            siblings,
-            intro,
-            module_paths,
-            aliases,
-            imports,
-        ),
+        Expr::Quote(inner) => rewrite_expr(inner, module_path, siblings, intro, module_paths, aliases, imports),
+        Expr::Unquote(inner) => rewrite_expr(inner, module_path, siblings, intro, module_paths, aliases, imports),
         // fz-5vj — receive: each clause introduces pattern vars into a
         // nested scope (bound names from the pattern, including the names
         // shadowed by `^name` pins which are *not* binding sites — they
@@ -2415,15 +2048,7 @@ fn rewrite_expr(
                 let mut nested = intro.clone();
                 collect_pattern_vars(&arm.pattern.node, &mut nested);
                 if let Some(g) = &mut arm.guard {
-                    rewrite_expr(
-                        g,
-                        module_path,
-                        siblings,
-                        &mut nested,
-                        module_paths,
-                        aliases,
-                        imports,
-                    );
+                    rewrite_expr(g, module_path, siblings, &mut nested, module_paths, aliases, imports);
                 }
                 rewrite_expr(
                     &mut arm.body,
@@ -2456,12 +2081,7 @@ fn rewrite_expr(
                 );
             }
         }
-        Expr::Int(_)
-        | Expr::Float(_)
-        | Expr::Binary(_)
-        | Expr::Atom(_)
-        | Expr::Bool(_)
-        | Expr::Nil => {}
+        Expr::Int(_) | Expr::Float(_) | Expr::Binary(_) | Expr::Atom(_) | Expr::Bool(_) | Expr::Nil => {}
     }
 }
 
@@ -2518,18 +2138,17 @@ fn qualify_callee(
 }
 
 fn is_upper(s: &str) -> bool {
-    s.chars()
-        .next()
-        .map(|c| c.is_ascii_uppercase())
-        .unwrap_or(false)
+    s.chars().next().map(|c| c.is_ascii_uppercase()).unwrap_or(false)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::modules::interface::{FZ_INTERFACE_ABI_VERSION, InterfaceFn};
     use crate::parser::Parser;
     use crate::parser::lexer::Lexer;
-    use crate::types::Types;
+    use crate::type_expr::{build_module_type_env, parse_type_expr, resolve_spec_decl};
+    use crate::types::ConcreteTypes;
 
     fn parse(src: &str) -> Program {
         let toks = Lexer::new(src).tokenize().expect("lex");
@@ -2537,7 +2156,7 @@ mod tests {
     }
 
     fn flatten(src: &str) -> Program {
-        let mut ct = crate::types::ConcreteTypes;
+        let mut ct = ConcreteTypes;
         flatten_modules(&mut ct, parse(src)).expect("flatten")
     }
 
@@ -2823,7 +2442,7 @@ end
 
     #[test]
     fn import_unknown_module_errors() {
-        let mut ct = crate::types::ConcreteTypes;
+        let mut ct = ConcreteTypes;
         let err = flatten_modules(
             &mut ct,
             parse(
@@ -2844,7 +2463,7 @@ end
 
     #[test]
     fn alias_unknown_module_errors() {
-        let mut ct = crate::types::ConcreteTypes;
+        let mut ct = ConcreteTypes;
         let err = flatten_modules(
             &mut ct,
             parse(
@@ -2864,7 +2483,7 @@ end
 
     #[test]
     fn import_unknown_arity_errors() {
-        let mut ct = crate::types::ConcreteTypes;
+        let mut ct = ConcreteTypes;
         let err = flatten_modules(
             &mut ct,
             parse(
@@ -2887,7 +2506,7 @@ end
 
     #[test]
     fn import_except_unknown_arity_errors() {
-        let mut ct = crate::types::ConcreteTypes;
+        let mut ct = ConcreteTypes;
         let err = flatten_modules(
             &mut ct,
             parse(
@@ -2910,16 +2529,16 @@ end
 
     #[test]
     fn import_resolves_from_external_interface_table() {
-        let mut ct = crate::types::ConcreteTypes;
+        let mut ct = ConcreteTypes;
         let math = ModuleName::from_segments(vec!["Math".to_string()]);
         let mut interfaces = InterfaceTable::new();
         interfaces.insert(
             math.clone(),
             ModuleInterface {
                 name: math,
-                abi_version: crate::modules::interface::FZ_INTERFACE_ABI_VERSION,
+                abi_version: FZ_INTERFACE_ABI_VERSION,
                 imports: Vec::new(),
-                exports: vec![crate::modules::interface::InterfaceFn {
+                exports: vec![InterfaceFn {
                     name: "add".to_string(),
                     arity: 2,
                     specs: Vec::new(),
@@ -2958,7 +2577,7 @@ end
 
     #[test]
     fn import_resolves_from_runtime_library_interfaces_by_default() {
-        let mut ct = crate::types::ConcreteTypes;
+        let mut ct = ConcreteTypes;
         let p = flatten_modules(
             &mut ct,
             parse(
@@ -2989,7 +2608,7 @@ end
 
     #[test]
     fn alias_resolves_from_runtime_library_interfaces_on_demand() {
-        let mut ct = crate::types::ConcreteTypes;
+        let mut ct = ConcreteTypes;
         let p = flatten_modules(
             &mut ct,
             parse(
@@ -3075,7 +2694,7 @@ end
 
     #[test]
     fn import_non_exported_name_errors() {
-        let mut ct = crate::types::ConcreteTypes;
+        let mut ct = ConcreteTypes;
         let err = flatten_modules(
             &mut ct,
             parse(
@@ -3098,7 +2717,7 @@ end
 
     #[test]
     fn conflicting_imports_error() {
-        let mut ct = crate::types::ConcreteTypes;
+        let mut ct = ConcreteTypes;
         let err = flatten_modules(
             &mut ct,
             parse(
@@ -3200,7 +2819,7 @@ fn main(), do: I.value()
 
     #[test]
     fn duplicate_module_diag_has_primary_and_first_definition_spans() {
-        let mut ct = crate::types::ConcreteTypes;
+        let mut ct = ConcreteTypes;
         let err = flatten_modules(
             &mut ct,
             parse(
@@ -3242,10 +2861,7 @@ fn g(y), do: y
         let module = ModuleDef {
             name: "M".to_string(),
             name_span: Span::DUMMY,
-            items: vec![
-                Rc::new(Item::Fn(defs[0].clone())),
-                Rc::new(Item::Fn(defs[1].clone())),
-            ],
+            items: vec![Rc::new(Item::Fn(defs[0].clone())), Rc::new(Item::Fn(defs[1].clone()))],
             attrs: Vec::new(),
             span: Span::DUMMY,
         };
@@ -3254,7 +2870,7 @@ fn g(y), do: y
             module_interfaces: Default::default(),
             ..Program::default()
         };
-        let mut ct = crate::types::ConcreteTypes;
+        let mut ct = ConcreteTypes;
         let err = flatten_modules(&mut ct, prog).unwrap_err();
         let d = err.to_diagnostic();
         assert_eq!(d.code, codes::RESOLVE_DUPLICATE_EXPORT);
@@ -3337,21 +2953,15 @@ end
             .unwrap();
         assert_eq!(keyword.params, vec!["t"]);
         // Build env and verify resolution end-to-end.
-        let mut ct = crate::types::ConcreteTypes;
-        let env = crate::type_expr::build_module_type_env(&mut ct, &m.attrs).unwrap();
+        let mut ct = ConcreteTypes;
+        let env = build_module_type_env(&mut ct, &m.attrs).unwrap();
         let int = ct.int();
         assert!(ct.is_equivalent(env.get("id").unwrap(), &int));
         let expected = ct.tuple(&[int.clone(), int]);
         assert!(ct.is_equivalent(env.get("pair").unwrap(), &expected));
-        let keyword_int = crate::type_expr::parse_type_expr(
-            &mut ct,
-            &crate::parser::lexer::Lexer::new("keyword(integer)")
-                .tokenize()
-                .unwrap(),
-            &env,
-        )
-        .unwrap()
-        .0;
+        let keyword_int = parse_type_expr(&mut ct, &Lexer::new("keyword(integer)").tokenize().unwrap(), &env)
+            .unwrap()
+            .0;
         let atom = ct.atom();
         let int = ct.int();
         let pair = ct.tuple(&[atom, int]);
@@ -3370,7 +2980,7 @@ defmodule M do
 end
 "#,
         );
-        let mut ct = crate::types::ConcreteTypes;
+        let mut ct = ConcreteTypes;
         let flat = flatten_modules(&mut ct, prog).expect("flatten");
         let env = flat.module_type_envs.get("M").expect("module env");
         let opts = env.get("opts").expect("opts alias");
@@ -3391,18 +3001,12 @@ defmodule Range do
 end
 "#,
         );
-        let mut ct = crate::types::ConcreteTypes;
+        let mut ct = ConcreteTypes;
         let flat = flatten_modules(&mut ct, prog).expect("flatten");
         let range = ModuleName::from_segments(vec!["Range".to_string()]);
-        let fields = flat
-            .struct_field_types
-            .get(&range)
-            .expect("Range field types");
+        let fields = flat.struct_field_types.get(&range).expect("Range field types");
         assert_eq!(
-            fields
-                .iter()
-                .map(|(name, _ty)| name.as_str())
-                .collect::<Vec<_>>(),
+            fields.iter().map(|(name, _ty)| name.as_str()).collect::<Vec<_>>(),
             vec!["first", "last", "step"]
         );
         let int = ct.int();
@@ -3419,7 +3023,7 @@ defmodule Range do
 end
 "#,
         );
-        let mut ct = crate::types::ConcreteTypes;
+        let mut ct = ConcreteTypes;
         let err = flatten_modules(&mut ct, prog).expect_err("expected schema mismatch");
         match err {
             ResolveError::TypeAliasError { msg, span } => {
@@ -3440,7 +3044,7 @@ defmodule M do
 end
 "#,
         );
-        let mut ct = crate::types::ConcreteTypes;
+        let mut ct = ConcreteTypes;
         let flat = flatten_modules(&mut ct, prog).expect("flatten");
         let def = flat
             .items
@@ -3459,8 +3063,7 @@ end
             })
             .expect("spec");
         let env = flat.module_type_envs.get("M").expect("module env");
-        let resolved =
-            crate::type_expr::resolve_spec_decl(&mut ct, spec, env).expect("resolve spec");
+        let resolved = resolve_spec_decl(&mut ct, spec, env).expect("resolve spec");
         let atom = ct.atom();
         let int = ct.int();
         let pair = ct.tuple(&[atom, int]);
@@ -3507,10 +3110,9 @@ end
         assert_eq!(spec.name, "add1");
         assert_eq!(spec.param_body_tokens.len(), 1);
         // Resolve and verify types.
-        let env = crate::type_expr::ModuleTypeEnv::new();
-        use crate::types::Types;
-        let mut ct = crate::types::ConcreteTypes;
-        let resolved = crate::type_expr::resolve_spec_decl(&mut ct, spec, &env).unwrap();
+        let env = ModuleTypeEnv::new();
+        let mut ct = ConcreteTypes;
+        let resolved = resolve_spec_decl(&mut ct, spec, &env).unwrap();
         let int = ct.int();
         assert!(ct.is_equivalent(&resolved.params[0], &int));
         assert!(ct.is_equivalent(&resolved.result, &int));
@@ -3555,7 +3157,7 @@ end
 
     #[test]
     fn spec_arity_mismatch_errors_at_parse_time() {
-        let toks = crate::parser::lexer::Lexer::new(
+        let toks = Lexer::new(
             "defmodule M do\n\
               @spec add1(integer, integer) :: integer\n\
               fn add1(n), do: n + 1\n\
@@ -3571,7 +3173,7 @@ end
 
     #[test]
     fn spec_name_mismatch_errors_at_parse_time() {
-        let toks = crate::parser::lexer::Lexer::new(
+        let toks = Lexer::new(
             "defmodule M do\n\
               @spec other(integer) :: integer\n\
               fn add1(n), do: n + 1\n\
@@ -3592,7 +3194,7 @@ end
     #[test]
     fn spec_without_following_fn_errors() {
         // @spec at the end of a module with no fn following it.
-        let toks = crate::parser::lexer::Lexer::new(
+        let toks = Lexer::new(
             "defmodule M do\n\
               @spec lonely(integer) :: integer\n\
             end\n",
@@ -3605,7 +3207,7 @@ end
 
     #[test]
     fn multiple_specs_on_one_fn_attach_in_order() {
-        let toks = crate::parser::lexer::Lexer::new(
+        let toks = Lexer::new(
             "defmodule M do\n\
               @spec add1(integer) :: integer\n\
               @spec add1(float) :: float\n\
@@ -3680,9 +3282,9 @@ end
                 _ => None,
             })
             .expect("@spec parsed");
-        let mut ct = crate::types::ConcreteTypes;
-        let env = crate::type_expr::build_module_type_env(&mut ct, &m.attrs).unwrap();
-        let r = crate::type_expr::resolve_spec_decl(&mut ct, spec, &env);
+        let mut ct = ConcreteTypes;
+        let env = build_module_type_env(&mut ct, &m.attrs).unwrap();
+        let r = resolve_spec_decl(&mut ct, spec, &env);
         assert!(r.is_err(), "unknown type must error on resolve");
         let e = r.unwrap_err();
         assert!(
@@ -3727,10 +3329,9 @@ end
                 _ => None,
             })
             .expect("@spec parsed");
-        use crate::types::Types;
-        let mut ct = crate::types::ConcreteTypes;
-        let env = crate::type_expr::build_module_type_env(&mut ct, &m.attrs).unwrap();
-        let resolved = crate::type_expr::resolve_spec_decl(&mut ct, spec, &env).unwrap();
+        let mut ct = ConcreteTypes;
+        let env = build_module_type_env(&mut ct, &m.attrs).unwrap();
+        let resolved = resolve_spec_decl(&mut ct, spec, &env).unwrap();
         let int = ct.int();
         assert!(ct.is_equivalent(&resolved.params[0], &int));
         assert!(ct.is_equivalent(&resolved.result, &int));
@@ -3738,7 +3339,7 @@ end
 
     #[test]
     fn type_alias_at_top_level_errors() {
-        let toks = crate::parser::lexer::Lexer::new("@type id :: integer\nfn main(), do: nil")
+        let toks = Lexer::new("@type id :: integer\nfn main(), do: nil")
             .tokenize()
             .unwrap();
         let r = Parser::new(toks).parse_program();
@@ -3747,18 +3348,14 @@ end
 
     #[test]
     fn unknown_attribute_errors() {
-        let toks = crate::parser::lexer::Lexer::new("@bogus \"x\"\nfn main(), do: nil")
-            .tokenize()
-            .unwrap();
+        let toks = Lexer::new("@bogus \"x\"\nfn main(), do: nil").tokenize().unwrap();
         let r = Parser::new(toks).parse_program();
         assert!(r.is_err());
     }
 
     #[test]
     fn moduledoc_at_top_level_errors() {
-        let toks = crate::parser::lexer::Lexer::new("@moduledoc \"x\"\nfn main(), do: nil")
-            .tokenize()
-            .unwrap();
+        let toks = Lexer::new("@moduledoc \"x\"\nfn main(), do: nil").tokenize().unwrap();
         let r = Parser::new(toks).parse_program();
         assert!(r.is_err());
     }
@@ -3823,9 +3420,7 @@ end
 
         // Find the `f` inside `g`'s body BEFORE flattening.
         let pre_span = {
-            let Item::Module(m) = &*pre.items[0] else {
-                panic!()
-            };
+            let Item::Module(m) = &*pre.items[0] else { panic!() };
             let Item::Fn(g) = &*m
                 .items
                 .iter()
@@ -3839,13 +3434,11 @@ end
             };
             // body is Call(callee=Var("f"), [Var("x")])
             let body = &g.clauses[0].body;
-            let Expr::Call(callee, _) = &body.node else {
-                panic!()
-            };
+            let Expr::Call(callee, _) = &body.node else { panic!() };
             callee.span
         };
 
-        let mut ct = crate::types::ConcreteTypes;
+        let mut ct = ConcreteTypes;
         let post = flatten_modules(&mut ct, pre).expect("flatten");
         let g = post
             .items
@@ -3910,7 +3503,7 @@ end
             callee.span
         };
 
-        let mut ct = crate::types::ConcreteTypes;
+        let mut ct = ConcreteTypes;
         let post = flatten_modules(&mut ct, pre).expect("flatten");
         let u = post
             .items
@@ -3935,7 +3528,7 @@ end
 
     #[test]
     fn protocol_registry_records_declarations_impls_and_domain_types() {
-        let mut ct = crate::types::ConcreteTypes;
+        let mut ct = ConcreteTypes;
         let p = flatten_modules(
             &mut ct,
             parse(
@@ -3989,7 +3582,7 @@ end
 
     #[test]
     fn protocol_domain_refines_concrete_element_parameter() {
-        let mut ct = crate::types::ConcreteTypes;
+        let mut ct = ConcreteTypes;
         let p = flatten_modules(
             &mut ct,
             parse(
@@ -4011,11 +3604,9 @@ end
         .expect("flatten");
 
         let env = &p.module_type_envs["Consumer"];
-        let parse_dom = |ct: &mut crate::types::ConcreteTypes, src: &str| {
-            let toks = crate::parser::lexer::Lexer::new(src)
-                .tokenize()
-                .expect("lex");
-            let (ty, _) = crate::type_expr::parse_type_expr(ct, &toks, env).expect("parse");
+        let parse_dom = |ct: &mut ConcreteTypes, src: &str| {
+            let toks = Lexer::new(src).tokenize().expect("lex");
+            let (ty, _) = parse_type_expr(ct, &toks, env).expect("parse");
             ty
         };
         let refined = parse_dom(&mut ct, "Enumerable.t(integer)");
@@ -4039,7 +3630,7 @@ end
 
     #[test]
     fn protocol_impl_must_cover_declared_callbacks() {
-        let mut ct = crate::types::ConcreteTypes;
+        let mut ct = ConcreteTypes;
         let err = flatten_modules(
             &mut ct,
             parse(
@@ -4063,7 +3654,7 @@ end
 
     #[test]
     fn duplicate_protocol_impls_are_rejected() {
-        let mut ct = crate::types::ConcreteTypes;
+        let mut ct = ConcreteTypes;
         let err = flatten_modules(
             &mut ct,
             parse(
@@ -4094,7 +3685,7 @@ end
 
     #[test]
     fn protocol_impl_wrong_arity_is_an_arity_mismatch_not_missing() {
-        let mut ct = crate::types::ConcreteTypes;
+        let mut ct = ConcreteTypes;
         let err = flatten_modules(
             &mut ct,
             parse(
@@ -4127,7 +3718,7 @@ end
 
     #[test]
     fn protocol_callback_validation_preserves_overload_sets() {
-        let mut ct = crate::types::ConcreteTypes;
+        let mut ct = ConcreteTypes;
         let p = flatten_modules(
             &mut ct,
             parse(
@@ -4157,15 +3748,12 @@ end
             .values()
             .find(|fact| fact.protocol == protocol)
             .expect("impl fact");
-        assert_eq!(
-            implementation.callback_specs[&("pick".to_string(), 1)].len(),
-            2
-        );
+        assert_eq!(implementation.callback_specs[&("pick".to_string(), 1)].len(), 2);
     }
 
     #[test]
     fn protocol_callback_validation_rejects_uncovered_impl_overload() {
-        let mut ct = crate::types::ConcreteTypes;
+        let mut ct = ConcreteTypes;
         let err = flatten_modules(
             &mut ct,
             parse(
@@ -4187,9 +3775,6 @@ end
 
         let d = err.to_diagnostic();
         assert_eq!(d.code, codes::RESOLVE_PROTOCOL);
-        assert!(
-            d.message
-                .contains("callback `pick/1` parameter 1 is incompatible")
-        );
+        assert!(d.message.contains("callback `pick/1` parameter 1 is incompatible"));
     }
 }

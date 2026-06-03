@@ -1,4 +1,6 @@
 use crate::types::ClosureTypes;
+use ScalarLiteral::{Atom, Bool, Float, Int, Nil};
+use TypeMatch::{No, Opaque, Yes};
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum ScalarLiteral {
@@ -46,11 +48,11 @@ pub trait LiteralTypes: ClosureTypes {
     /// If `a` is a scalar literal representable as an IR `Const`, return it.
     fn scalar_literal(&self, a: &Self::Ty) -> Option<ScalarLiteral> {
         self.as_int_singleton(a)
-            .map(ScalarLiteral::Int)
-            .or_else(|| self.as_float_singleton(a).map(ScalarLiteral::Float))
-            .or_else(|| self.is_nil(a).then_some(ScalarLiteral::Nil))
-            .or_else(|| self.as_bool_lit(a).map(ScalarLiteral::Bool))
-            .or_else(|| self.as_atom_singleton(a).map(ScalarLiteral::Atom))
+            .map(Int)
+            .or_else(|| self.as_float_singleton(a).map(Float))
+            .or_else(|| self.is_nil(a).then_some(Nil))
+            .or_else(|| self.as_bool_lit(a).map(Bool))
+            .or_else(|| self.as_atom_singleton(a).map(Atom))
     }
 
     /// True iff `a` can be reconstructed by the reducer as a literal value:
@@ -58,11 +60,9 @@ pub trait LiteralTypes: ClosureTypes {
     /// tuple with materializable elements, or the empty-list literal.
     fn is_materializable(&self, a: &Self::Ty) -> bool {
         self.scalar_literal(a).is_some()
-            || self.closure_lit_parts(a).is_some_and(|lit| {
-                lit.captures
-                    .iter()
-                    .all(|capture| self.is_materializable(capture))
-            })
+            || self
+                .closure_lit_parts(a)
+                .is_some_and(|lit| lit.captures.iter().all(|capture| self.is_materializable(capture)))
             || self
                 .tuple_lit_elems(a)
                 .is_some_and(|elems| elems.iter().all(|elem| self.is_materializable(elem)))
@@ -75,23 +75,19 @@ pub trait LiteralTypes: ClosureTypes {
     fn match_literal_ty(&mut self, subject: &Self::Ty, expected: &Self::Ty) -> TypeMatch {
         if self.is_literal(subject) {
             if self.is_equivalent(subject, expected) {
-                TypeMatch::Yes
+                Yes
             } else {
                 let overlap = self.intersect(subject.clone(), expected.clone());
-                if self.is_empty(&overlap) {
-                    TypeMatch::No
-                } else {
-                    TypeMatch::Opaque
-                }
+                if self.is_empty(&overlap) { No } else { Opaque }
             }
         } else {
             let overlap = self.intersect(subject.clone(), expected.clone());
             if self.is_empty(&overlap) {
-                TypeMatch::No
+                No
             } else if self.is_subtype(subject, expected) {
-                TypeMatch::Yes
+                Yes
             } else {
-                TypeMatch::Opaque
+                Opaque
             }
         }
     }
@@ -119,16 +115,10 @@ mod conformance_tests {
                     let ok = t.atom_lit("ok");
                     let int = t.int();
                     assert_eq!(t.scalar_literal(&int_lit), Some(ScalarLiteral::Int(7)));
-                    assert_eq!(
-                        t.scalar_literal(&float_lit),
-                        Some(ScalarLiteral::Float(3.5))
-                    );
+                    assert_eq!(t.scalar_literal(&float_lit), Some(ScalarLiteral::Float(3.5)));
                     assert_eq!(t.scalar_literal(&nil), Some(ScalarLiteral::Nil));
                     assert_eq!(t.scalar_literal(&tru), Some(ScalarLiteral::Bool(true)));
-                    assert_eq!(
-                        t.scalar_literal(&ok),
-                        Some(ScalarLiteral::Atom("ok".to_string()))
-                    );
+                    assert_eq!(t.scalar_literal(&ok), Some(ScalarLiteral::Atom("ok".to_string())));
                     assert_eq!(t.scalar_literal(&int), None);
                 }
 

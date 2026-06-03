@@ -91,6 +91,7 @@ macro_rules! metadata {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::telemetry::value::opaque;
 
     #[test]
     fn measurements_macro_empty() {
@@ -131,11 +132,7 @@ mod tests {
 
     #[test]
     fn from_pairs_preserves_order() {
-        let m = Measurements::from_pairs([
-            ("a", Value::I64(1)),
-            ("b", Value::I64(2)),
-            ("c", Value::I64(3)),
-        ]);
+        let m = Measurements::from_pairs([("a", Value::I64(1)), ("b", Value::I64(2)), ("c", Value::I64(3))]);
         let keys: Vec<_> = m.iter().map(|(k, _)| *k).collect();
         assert_eq!(keys, vec!["a", "b", "c"]);
     }
@@ -157,8 +154,7 @@ mod tests {
     #[test]
     fn durable_owned_skips_opaque_values() {
         let module_like = 7usize;
-        let md =
-            metadata! { name: "lowered", module: crate::telemetry::value::opaque(&module_like) };
+        let md = metadata! { name: "lowered", module: opaque(&module_like) };
         let owned = md.durable_owned();
         assert!(matches!(owned.get("name"), Some(Value::Str(_))));
         assert!(owned.get("module").is_none());

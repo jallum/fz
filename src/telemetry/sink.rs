@@ -9,6 +9,9 @@
 //! Span semantics — start/stop/exception events, elapsed_ns, parent linkage —
 //! land in fz-ndf.4.
 
+use std::thread::panicking;
+use std::time::Instant;
+
 use super::event::{Measurements, Metadata};
 
 /// The compiler's observability bus. Every observable thing the compiler
@@ -84,7 +87,7 @@ pub struct Span<'a> {
     tel: &'a dyn Telemetry,
     name: Box<[&'static str]>,
     span_id: u64,
-    start: std::time::Instant,
+    start: Instant,
 }
 
 impl<'a> Span<'a> {
@@ -93,7 +96,7 @@ impl<'a> Span<'a> {
             tel,
             name: Box::from(name),
             span_id,
-            start: std::time::Instant::now(),
+            start: Instant::now(),
         }
     }
 
@@ -114,9 +117,8 @@ impl<'a> Span<'a> {
 impl Drop for Span<'_> {
     fn drop(&mut self) {
         let elapsed_ns = self.start.elapsed().as_nanos().min(u64::MAX as u128) as u64;
-        if std::thread::panicking() {
-            self.tel
-                .span_exception(&self.name, self.span_id, elapsed_ns);
+        if panicking() {
+            self.tel.span_exception(&self.name, self.span_id, elapsed_ns);
         } else {
             self.tel.span_stop(&self.name, self.span_id, elapsed_ns);
         }
@@ -152,6 +154,11 @@ impl TelemetryExt for dyn Telemetry + '_ {
 
 #[cfg(test)]
 mod tests {
+    use std::cell::{Cell, RefCell};
+    use std::panic::{AssertUnwindSafe, catch_unwind};
+    use std::thread::sleep;
+    use std::time::Duration;
+
     use super::*;
     use crate::{measurements, metadata};
 
@@ -200,10 +207,10 @@ mod tests {
     /// in fz-ndf.4 onward — here it just demonstrates the trait is
     /// straightforwardly implementable.
     struct CountingMock {
-        executes: std::cell::Cell<u32>,
-        starts: std::cell::Cell<u32>,
-        stops: std::cell::Cell<u32>,
-        exceptions: std::cell::Cell<u32>,
+        executes: Cell<u32>,
+        starts: Cell<u32>,
+        stops: Cell<u32>,
+        exceptions: Cell<u32>,
     }
 
     impl CountingMock {
@@ -254,8 +261,8 @@ mod tests {
 
     // Richer recording mock for verifying Span's Drop semantics.
     struct RecordingMock {
-        next_id: std::cell::Cell<u64>,
-        records: std::cell::RefCell<Vec<SpanRec>>,
+        next_id: Cell<u64>,
+        records: RefCell<Vec<SpanRec>>,
     }
 
     #[derive(Debug, Clone, PartialEq, Eq)]
@@ -314,7 +321,7 @@ mod tests {
     #[test]
     fn span_drop_emits_exception_when_unwinding() {
         let m = RecordingMock::new();
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let result = catch_unwind(AssertUnwindSafe(|| {
             let _s = m.span(&["fz", "x", "pass"], Metadata::new());
             panic!("boom");
         }));
@@ -347,7 +354,7 @@ mod tests {
     fn span_drop_reports_nonzero_elapsed_ns() {
         // Capture elapsed via a custom mock that grabs the duration.
         struct Capture {
-            elapsed: std::cell::Cell<u64>,
+            elapsed: Cell<u64>,
         }
         impl Telemetry for Capture {
             fn execute(&self, _: &[&'static str], _: &Measurements, _: &Metadata) {}
@@ -364,7 +371,7 @@ mod tests {
         {
             let _s = c.span(&["fz", "x"], Metadata::new());
             // Burn a small but reliable amount of time so elapsed > 0.
-            std::thread::sleep(std::time::Duration::from_micros(50));
+            sleep(Duration::from_micros(50));
         }
         assert!(c.elapsed.get() > 0, "expected nonzero elapsed_ns");
     }

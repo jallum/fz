@@ -16,8 +16,8 @@
 //! first-class literal type.
 
 use crate::ast::{self, Pattern, Spanned};
-use crate::fz_ir::{BinOp, Const, Prim, UnOp, Var};
-use crate::types::{LiteralTypes, Nominals, Types};
+use crate::fz_ir::{BinOp, Const, FnId, Prim, UnOp, Var};
+use crate::types::{LiteralTypes, Nominals, Ty, TypeMatch, Types};
 use std::collections::HashMap;
 
 // ---------------------------------------------------------------------------
@@ -30,7 +30,7 @@ use std::collections::HashMap;
 /// `atom_names` is the module's atom interner; `Const::Atom(id)` resolves
 /// to `atom_lit(atom_names[id])`. Pass `&[]` if unused (Const::Atom will
 /// return None).
-pub fn fold_prim<T: Types<Ty = crate::types::Ty> + LiteralTypes>(
+pub fn fold_prim<T: Types<Ty = Ty> + LiteralTypes>(
     t: &mut T,
     prim: &Prim,
     env: &HashMap<Var, T::Ty>,
@@ -53,9 +53,7 @@ pub fn fold_prim<T: Types<Ty = crate::types::Ty> + LiteralTypes>(
         Prim::IsListCons(v) => fold_list_is_cons(t, *v, env),
         // fz-f88.3 — empty list literal folds to the explicit `[]` type.
         // Non-empty MakeList still loses length info (L1 follow-up fz-4lo).
-        Prim::MakeList(elems, tail_v) if elems.is_empty() && tail_v.is_none() => {
-            Some(t.empty_list())
-        }
+        Prim::MakeList(elems, tail_v) if elems.is_empty() && tail_v.is_none() => Some(t.empty_list()),
         // fz-jg5.6: closure_lit fold — when MakeClosure's captures are
         // all literal, the closure Var has a closure_lit(F, captures) type.
         // The reducer's walk_block uses this to dispatch CallClosure /
@@ -88,9 +86,7 @@ pub fn fold_prim<T: Types<Ty = crate::types::Ty> + LiteralTypes>(
         // fz-axu.23 (M2) — lower_program_full erases Prim::Brand
         // before the reducer runs. Surface a stray Brand instead of
         // silently re-introducing brand-transparent fold logic.
-        Prim::Brand(_, _) => unreachable!(
-            "Prim::Brand reached reducer — erasure should run inside lower_program_full"
-        ),
+        Prim::Brand(_, _) => unreachable!("Prim::Brand reached reducer — erasure should run inside lower_program_full"),
     }
 }
 
@@ -108,7 +104,7 @@ fn fold_const<T: Types>(t: &mut T, c: &Const, atom_names: &[String]) -> Option<T
     })
 }
 
-fn fold_binop<T: Types<Ty = crate::types::Ty> + LiteralTypes>(
+fn fold_binop<T: Types<Ty = Ty> + LiteralTypes>(
     t: &mut T,
     op: BinOp,
     a: Var,
@@ -178,7 +174,7 @@ fn fold_arith<T: Types>(t: &mut T, op: BinOp, ad: &T::Ty, bd: &T::Ty) -> Option<
 /// arm is unchanged: a minted brand is a pure tag, never a singleton, so it
 /// never reaches `is_literal`, and `is_equivalent` only sees brand-free
 /// literals there.
-fn fold_runtime_eq<T: Types<Ty = crate::types::Ty> + LiteralTypes>(
+fn fold_runtime_eq<T: Types<Ty = Ty> + LiteralTypes>(
     t: &T,
     op: BinOp,
     ad: &T::Ty,
@@ -225,12 +221,7 @@ fn fold_cmp<T: Types>(t: &mut T, op: BinOp, ad: &T::Ty, bd: &T::Ty) -> Option<T:
     None
 }
 
-fn fold_logical<T: Types + LiteralTypes>(
-    t: &mut T,
-    op: BinOp,
-    ad: &T::Ty,
-    bd: &T::Ty,
-) -> Option<T::Ty> {
+fn fold_logical<T: Types + LiteralTypes>(t: &mut T, op: BinOp, ad: &T::Ty, bd: &T::Ty) -> Option<T::Ty> {
     let ab = t.as_bool_lit(ad)?;
     let bb = t.as_bool_lit(bd)?;
     let r = match op {
@@ -241,12 +232,7 @@ fn fold_logical<T: Types + LiteralTypes>(
     Some(t.bool_lit(r))
 }
 
-fn fold_unop<T: Types + LiteralTypes>(
-    t: &mut T,
-    op: UnOp,
-    v: Var,
-    env: &HashMap<Var, T::Ty>,
-) -> Option<T::Ty> {
+fn fold_unop<T: Types + LiteralTypes>(t: &mut T, op: UnOp, v: Var, env: &HashMap<Var, T::Ty>) -> Option<T::Ty> {
     let d = env.get(&v)?;
     match op {
         UnOp::Neg => {
@@ -260,11 +246,7 @@ fn fold_unop<T: Types + LiteralTypes>(
     }
 }
 
-fn fold_make_tuple<T: Types + LiteralTypes>(
-    t: &mut T,
-    vs: &[Var],
-    env: &HashMap<Var, T::Ty>,
-) -> Option<T::Ty> {
+fn fold_make_tuple<T: Types + LiteralTypes>(t: &mut T, vs: &[Var], env: &HashMap<Var, T::Ty>) -> Option<T::Ty> {
     let mut elems: Vec<T::Ty> = Vec::with_capacity(vs.len());
     for v in vs {
         let ty = env.get(v)?;
@@ -276,12 +258,7 @@ fn fold_make_tuple<T: Types + LiteralTypes>(
     Some(t.tuple(&elems))
 }
 
-fn fold_tuple_field<T: Types + LiteralTypes>(
-    t: &mut T,
-    v: Var,
-    i: usize,
-    env: &HashMap<Var, T::Ty>,
-) -> Option<T::Ty> {
+fn fold_tuple_field<T: Types + LiteralTypes>(t: &mut T, v: Var, i: usize, env: &HashMap<Var, T::Ty>) -> Option<T::Ty> {
     let d = env.get(&v)?;
     let arity = t.max_tuple_arity(d);
     if !t.is_literal(d) || arity <= i {
@@ -290,12 +267,7 @@ fn fold_tuple_field<T: Types + LiteralTypes>(
     t.tuple_projections(d, arity).get(i).cloned()
 }
 
-fn fold_type_test<T: Types<Ty = crate::types::Ty>>(
-    t: &mut T,
-    v: Var,
-    descr: &crate::types::Ty,
-    env: &HashMap<Var, T::Ty>,
-) -> Option<T::Ty> {
+fn fold_type_test<T: Types<Ty = Ty>>(t: &mut T, v: Var, descr: &Ty, env: &HashMap<Var, T::Ty>) -> Option<T::Ty> {
     let vd = env.get(&v)?;
     if t.is_subtype(vd, descr) {
         Some(t.bool_lit(true))
@@ -311,7 +283,7 @@ fn fold_type_test<T: Types<Ty = crate::types::Ty>>(
 /// dispatches calls through this closure to `F` directly.
 fn fold_make_closure<T: Types + LiteralTypes>(
     t: &mut T,
-    fn_id: crate::fz_ir::FnId,
+    fn_id: FnId,
     captured: &[Var],
     env: &HashMap<Var, T::Ty>,
 ) -> Option<T::Ty> {
@@ -412,7 +384,7 @@ pub enum Dispatch<T: Types> {
 ///   later rows would be unsound since this row might match at runtime.
 /// - If every row is skipped (NoMatch), return NoMatch.
 #[allow(dead_code)] // wired by RED.4+.
-pub fn dispatch_clauses<T: Types<Ty = crate::types::Ty> + LiteralTypes>(
+pub fn dispatch_clauses<T: Types<Ty = Ty> + LiteralTypes>(
     t: &mut T,
     clauses: &[Clause<'_>],
     subject_tys: &[T::Ty],
@@ -450,21 +422,15 @@ pub fn dispatch_clauses<T: Types<Ty = crate::types::Ty> + LiteralTypes>(
             match fold_expr(t, &guard.node, &bindings, atom_names, nominals) {
                 Some(d) => match t.as_bool_lit(&d) {
                     Some(true) => {
-                        return Dispatch::MatchedRow {
-                            row_idx: idx,
-                            bindings,
-                        };
+                        return Dispatch::MatchedRow { row_idx: idx, bindings };
                     }
-                    Some(false) => continue, // guard rejects row; try next
+                    Some(false) => continue,         // guard rejects row; try next
                     None => return Dispatch::Opaque, // guard folded but not to bool — give up
                 },
                 None => return Dispatch::Opaque, // guard didn't fold
             }
         }
-        return Dispatch::MatchedRow {
-            row_idx: idx,
-            bindings,
-        };
+        return Dispatch::MatchedRow { row_idx: idx, bindings };
     }
     Dispatch::NoMatch
 }
@@ -545,9 +511,9 @@ fn match_pattern<T: Types + LiteralTypes>(
 #[allow(dead_code)]
 fn match_literal<T: Types + LiteralTypes>(t: &mut T, d: &T::Ty, expected: &T::Ty) -> Match {
     match t.match_literal_ty(d, expected) {
-        crate::types::TypeMatch::Yes => Match::Yes,
-        crate::types::TypeMatch::No => Match::No,
-        crate::types::TypeMatch::Opaque => Match::Opaque,
+        TypeMatch::Yes => Match::Yes,
+        TypeMatch::No => Match::No,
+        TypeMatch::Opaque => Match::Opaque,
     }
 }
 
@@ -561,11 +527,7 @@ fn match_tuple_pattern<T: Types + LiteralTypes>(
 ) -> Match {
     let tuple_arity = t.max_tuple_arity(d);
     if tuple_arity == 0 {
-        return if t.is_top(d) {
-            Match::Opaque
-        } else {
-            Match::No
-        };
+        return if t.is_top(d) { Match::Opaque } else { Match::No };
     }
     if tuple_arity != elems.len() {
         let any_elems: Vec<T::Ty> = (0..elems.len()).map(|_| t.any()).collect();
@@ -588,11 +550,7 @@ fn match_tuple_pattern<T: Types + LiteralTypes>(
             Match::Opaque => saw_opaque = true,
         }
     }
-    if saw_opaque {
-        Match::Opaque
-    } else {
-        Match::Yes
-    }
+    if saw_opaque { Match::Opaque } else { Match::Yes }
 }
 
 /// Fold an AST `Expr` to a literal type under `bindings`. Used for guards.
@@ -601,7 +559,7 @@ fn match_tuple_pattern<T: Types + LiteralTypes>(
 #[allow(dead_code)]
 // pub for fz-jg5.3's dispatcher; called by fold_expr; main bin's call graph doesn't reach it yet (RED.3+).
 #[allow(clippy::only_used_in_recursion)] // atom_names threaded for API symmetry with siblings; future Expr arms may consult it.
-pub fn fold_expr<T: Types<Ty = crate::types::Ty> + LiteralTypes>(
+pub fn fold_expr<T: Types<Ty = Ty> + LiteralTypes>(
     t: &mut T,
     expr: &ast::Expr,
     bindings: &HashMap<String, T::Ty>,
@@ -637,7 +595,7 @@ pub fn fold_expr<T: Types<Ty = crate::types::Ty> + LiteralTypes>(
 }
 
 #[allow(dead_code)] // used via fold_expr; cf. RED.3+ wiring.
-fn ast_binop_fold<T: Types<Ty = crate::types::Ty> + LiteralTypes>(
+fn ast_binop_fold<T: Types<Ty = Ty> + LiteralTypes>(
     t: &mut T,
     op: ast::BinOp,
     ad: &T::Ty,
@@ -666,13 +624,9 @@ fn ast_binop_fold<T: Types<Ty = crate::types::Ty> + LiteralTypes>(
         }
     };
     match ir_op {
-        BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod => {
-            fold_arith(t, ir_op, ad, bd)
-        }
+        BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod => fold_arith(t, ir_op, ad, bd),
         // Brand-blind, like every other == site (fz-bsx).
-        BinOp::Eq | BinOp::Neq => {
-            fold_runtime_eq(t, ir_op, ad, bd, nominals).map(|b| t.bool_lit(b))
-        }
+        BinOp::Eq | BinOp::Neq => fold_runtime_eq(t, ir_op, ad, bd, nominals).map(|b| t.bool_lit(b)),
         BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => fold_cmp(t, ir_op, ad, bd),
         BinOp::And | BinOp::Or => fold_logical(t, ir_op, ad, bd),
     }
@@ -715,38 +669,38 @@ mod tests {
         Var(n)
     }
 
-    fn env(pairs: &[(u32, crate::types::Ty)]) -> HashMap<Var, crate::types::Ty> {
+    fn env(pairs: &[(u32, Ty)]) -> HashMap<Var, Ty> {
         pairs.iter().map(|(i, ty)| (Var(*i), ty.clone())).collect()
     }
 
-    fn tys(ts: &[crate::types::Ty]) -> Vec<crate::types::Ty> {
+    fn tys(ts: &[Ty]) -> Vec<Ty> {
         ts.to_vec()
     }
 
-    fn assert_int_ty(t: &ConcreteTypes, ty: &crate::types::Ty, n: i64) {
+    fn assert_int_ty(t: &ConcreteTypes, ty: &Ty, n: i64) {
         assert_eq!(t.as_int_singleton(ty), Some(n));
     }
 
-    fn assert_bool_ty(t: &ConcreteTypes, ty: &crate::types::Ty, b: bool) {
+    fn assert_bool_ty(t: &ConcreteTypes, ty: &Ty, b: bool) {
         assert_eq!(t.as_bool_lit(ty), Some(b));
     }
 
-    fn assert_atom_ty(t: &ConcreteTypes, ty: &crate::types::Ty, atom: &str) {
+    fn assert_atom_ty(t: &ConcreteTypes, ty: &Ty, atom: &str) {
         assert_eq!(t.as_atom_singleton(ty).as_deref(), Some(atom));
     }
 
-    fn assert_nil_ty(t: &ConcreteTypes, ty: &crate::types::Ty) {
+    fn assert_nil_ty(t: &ConcreteTypes, ty: &Ty) {
         assert!(t.is_nil(ty));
     }
 
-    fn assert_num_tuple_ty(t: &ConcreteTypes, ty: &crate::types::Ty, n: i64) {
+    fn assert_num_tuple_ty(t: &ConcreteTypes, ty: &Ty, n: i64) {
         let elems = t.tuple_lit_elems(ty).expect("expected literal tuple");
         assert_eq!(elems.len(), 2);
         assert_atom_ty(t, &elems[0], "num");
         assert_int_ty(t, &elems[1], n);
     }
 
-    fn num_tuple_ty(t: &mut ConcreteTypes, n: i64) -> crate::types::Ty {
+    fn num_tuple_ty(t: &mut ConcreteTypes, n: i64) -> Ty {
         let num = t.atom_lit("num");
         let value = t.int_lit(n);
         t.tuple(&[num, value])
@@ -1045,8 +999,7 @@ mod tests {
         let utf8 = ty_from_descr(Descr::brand_of("utf8"));
         let binary = ty_from_descr(Descr::str_t());
         let int = ty_from_descr(Descr::int());
-        let inners: HashMap<String, crate::types::Ty> =
-            [("utf8".to_string(), binary.clone())].into_iter().collect();
+        let inners: HashMap<String, Ty> = [("utf8".to_string(), binary.clone())].into_iter().collect();
         let empty = HashMap::new();
         let nominals = Nominals::new(&inners, &empty);
 
@@ -1089,7 +1042,7 @@ mod tests {
         assert_bool_ty(&t, &r, true);
     }
 
-    fn env_with_true(t: &mut ConcreteTypes) -> HashMap<Var, crate::types::Ty> {
+    fn env_with_true(t: &mut ConcreteTypes) -> HashMap<Var, Ty> {
         env(&[(0, t.bool_lit(true)), (1, t.bool_lit(false))])
     }
 
@@ -1099,14 +1052,7 @@ mod tests {
     fn fold_neg_int() {
         let mut t = ct();
         let env = env(&[(0, t.int_lit(5))]);
-        let r = fold_prim(
-            &mut t,
-            &Prim::UnOp(UnOp::Neg, v(0)),
-            &env,
-            &[],
-            Nominals::empty(),
-        )
-        .unwrap();
+        let r = fold_prim(&mut t, &Prim::UnOp(UnOp::Neg, v(0)), &env, &[], Nominals::empty()).unwrap();
         assert_int_ty(&t, &r, -5);
     }
 
@@ -1114,14 +1060,7 @@ mod tests {
     fn fold_not_bool() {
         let mut t = ct();
         let env = env(&[(0, t.bool_lit(true))]);
-        let r = fold_prim(
-            &mut t,
-            &Prim::UnOp(UnOp::Not, v(0)),
-            &env,
-            &[],
-            Nominals::empty(),
-        )
-        .unwrap();
+        let r = fold_prim(&mut t, &Prim::UnOp(UnOp::Not, v(0)), &env, &[], Nominals::empty()).unwrap();
         assert_bool_ty(&t, &r, false);
     }
 
@@ -1131,14 +1070,7 @@ mod tests {
     fn fold_make_tuple_of_literals() {
         let mut t = ct();
         let env = env(&[(0, t.atom_lit("num")), (1, t.int_lit(42))]);
-        let r = fold_prim(
-            &mut t,
-            &Prim::MakeTuple(vec![v(0), v(1)]),
-            &env,
-            &[],
-            Nominals::empty(),
-        )
-        .unwrap();
+        let r = fold_prim(&mut t, &Prim::MakeTuple(vec![v(0), v(1)]), &env, &[], Nominals::empty()).unwrap();
         let elems = t.tuple_lit_elems(&r).unwrap();
         assert_eq!(elems.len(), 2);
         assert_atom_ty(&t, &elems[0], "num");
@@ -1149,16 +1081,7 @@ mod tests {
     fn fold_make_tuple_with_wide_element_is_none() {
         let mut t = ct();
         let env = env(&[(0, t.atom_lit("num")), (1, t.int())]);
-        assert!(
-            fold_prim(
-                &mut t,
-                &Prim::MakeTuple(vec![v(0), v(1)]),
-                &env,
-                &[],
-                Nominals::empty()
-            )
-            .is_none()
-        );
+        assert!(fold_prim(&mut t, &Prim::MakeTuple(vec![v(0), v(1)]), &env, &[], Nominals::empty()).is_none());
     }
 
     #[test]
@@ -1166,23 +1089,9 @@ mod tests {
         let mut t = ct();
         let tup = num_tuple_ty(&mut t, 42);
         let env = env(&[(0, tup)]);
-        let r = fold_prim(
-            &mut t,
-            &Prim::TupleField(v(0), 1),
-            &env,
-            &[],
-            Nominals::empty(),
-        )
-        .unwrap();
+        let r = fold_prim(&mut t, &Prim::TupleField(v(0), 1), &env, &[], Nominals::empty()).unwrap();
         assert_int_ty(&t, &r, 42);
-        let r = fold_prim(
-            &mut t,
-            &Prim::TupleField(v(0), 0),
-            &env,
-            &[],
-            Nominals::empty(),
-        )
-        .unwrap();
+        let r = fold_prim(&mut t, &Prim::TupleField(v(0), 0), &env, &[], Nominals::empty()).unwrap();
         assert_atom_ty(&t, &r, "num");
     }
 
@@ -1191,16 +1100,7 @@ mod tests {
         let mut t = ct();
         let tup = num_tuple_ty(&mut t, 42);
         let env = env(&[(0, tup)]);
-        assert!(
-            fold_prim(
-                &mut t,
-                &Prim::TupleField(v(0), 7),
-                &env,
-                &[],
-                Nominals::empty()
-            )
-            .is_none()
-        );
+        assert!(fold_prim(&mut t, &Prim::TupleField(v(0), 7), &env, &[], Nominals::empty()).is_none());
     }
 
     // ---- type test ----
@@ -1262,14 +1162,7 @@ mod tests {
         // NOT the empty-list sentinel, so IsEmptyList folds to `false`.
         let mut t = ct();
         let env = env(&[(0, t.nil())]);
-        let r = fold_prim(
-            &mut t,
-            &Prim::IsEmptyList(v(0)),
-            &env,
-            &[],
-            Nominals::empty(),
-        )
-        .unwrap();
+        let r = fold_prim(&mut t, &Prim::IsEmptyList(v(0)), &env, &[], Nominals::empty()).unwrap();
         assert_bool_ty(&t, &r, false);
     }
 
@@ -1280,16 +1173,7 @@ mod tests {
         let mut t = ct();
         let elem = t.int_lit(1);
         let env = env(&[(0, t.list(elem))]);
-        assert!(
-            fold_prim(
-                &mut t,
-                &Prim::IsEmptyList(v(0)),
-                &env,
-                &[],
-                Nominals::empty()
-            )
-            .is_none()
-        );
+        assert!(fold_prim(&mut t, &Prim::IsEmptyList(v(0)), &env, &[], Nominals::empty()).is_none());
     }
 
     #[test]
@@ -1301,32 +1185,19 @@ mod tests {
         let nil = t.nil();
         let maybe_empty = t.union(list, nil);
         let env = env(&[(0, maybe_empty)]);
-        assert!(
-            fold_prim(
-                &mut t,
-                &Prim::IsEmptyList(v(0)),
-                &env,
-                &[],
-                Nominals::empty()
-            )
-            .is_none()
-        );
+        assert!(fold_prim(&mut t, &Prim::IsEmptyList(v(0)), &env, &[], Nominals::empty()).is_none());
     }
 
     // ---- non-foldable prims explicitly return None ----
 
     #[test]
     fn fold_extern_returns_none() {
-        use crate::fz_ir::ExternId;
+        use crate::fz_ir::{CallsiteIdent, ExternId};
         let env = HashMap::new();
         assert!(
             fold_prim(
                 &mut ct(),
-                &Prim::Extern(
-                    crate::fz_ir::CallsiteIdent::synthetic(),
-                    ExternId(0),
-                    vec![]
-                ),
+                &Prim::Extern(CallsiteIdent::synthetic(), ExternId(0), vec![]),
                 &env,
                 &[],
                 Nominals::empty(),
@@ -1396,10 +1267,7 @@ mod tests {
         let subject = tys(&[t.int_lit(42)]);
         let result = dispatch_clauses(&mut t, &clauses, &subject, &[], Nominals::empty());
         match result {
-            Dispatch::MatchedRow {
-                row_idx: 0,
-                bindings,
-            } => {
+            Dispatch::MatchedRow { row_idx: 0, bindings } => {
                 assert_int_ty(&t, bindings.get("n").unwrap(), 42);
             }
             other => panic!("expected MatchedRow, got {:?}", other),

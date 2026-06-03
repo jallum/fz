@@ -8,7 +8,12 @@
 //! again after the final post-typer pass; every (FnId, CallShape) count
 //! in the post snapshot must be ≤ its pre snapshot count.
 
-use crate::fz_ir::{CallsiteId, EmitSlot, FnId, Module, Term};
+use crate::fz_ir::{CallsiteId, EmitSlot, FnId, FnIr, Module, Term};
+use crate::ir_planner::SpecPlan;
+use crate::ir_planner::fn_types::SpecKey;
+use crate::ir_planner::inventory::{body_callsite_inventory, plan_call_edge_inventory};
+use crate::telemetry::Telemetry;
+use crate::{measurements, metadata};
 use std::collections::HashMap;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -74,15 +79,15 @@ pub fn assert_no_new_call_shapes(m: &Module, pre: &CallShapeSnapshot) {
 }
 
 pub fn emit_and_assert_spec_dispatch_coverage(
-    tel: &dyn crate::telemetry::Telemetry,
-    f: &crate::fz_ir::FnIr,
-    ft: &crate::ir_planner::SpecPlan,
+    tel: &dyn Telemetry,
+    f: &FnIr,
+    ft: &SpecPlan,
     sid: u32,
-    spec_key: &crate::ir_planner::fn_types::SpecKey,
+    spec_key: &SpecKey,
 ) {
     let mut closure_call_dispatch_count = 0_u64;
-    let (body_counts, body_callsites) = crate::ir_planner::inventory::body_callsite_inventory(f);
-    let plan_call_edges = crate::ir_planner::inventory::plan_call_edge_inventory(ft, f.id);
+    let (body_counts, body_callsites) = body_callsite_inventory(f);
+    let plan_call_edges = plan_call_edge_inventory(ft, f.id);
 
     for blk in &f.blocks {
         if !ft.reachable_blocks.contains(&blk.id) {
@@ -120,8 +125,8 @@ pub fn emit_and_assert_spec_dispatch_coverage(
             let span = ident.span();
             tel.execute(
                 &["fz", "codegen", "dispatch_missing"],
-                &crate::measurements! {},
-                &crate::metadata! {
+                &measurements! {},
+                &metadata! {
                     spec_id: sid as u64,
                     body_fn_id: f.id.0 as u64,
                     body_name: f.name.clone(),
@@ -143,7 +148,7 @@ pub fn emit_and_assert_spec_dispatch_coverage(
 
     tel.execute(
         &["fz", "codegen", "spec_pair_inventory"],
-        &crate::measurements! {
+        &measurements! {
             non_tail_call_count: body_counts.non_tail_call_count,
             non_tail_closure_call_count: body_counts.non_tail_closure_call_count,
             tail_call_count: body_counts.tail_call_count,
@@ -152,7 +157,7 @@ pub fn emit_and_assert_spec_dispatch_coverage(
             receive_count: body_counts.receive_count,
             call_edge_count: ft.call_edges.len() as u64,
         },
-        &crate::metadata! {
+        &metadata! {
             spec_id: sid as u64,
             spec_key: format!("{:?}", spec_key),
             body_fn_id: f.id.0 as u64,

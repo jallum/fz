@@ -6,6 +6,7 @@
 //! register.
 
 use crate::process::Process;
+use std::arch::asm;
 
 /// # Safety
 /// `func` must point to a finalized generated function with the matching
@@ -16,7 +17,7 @@ use crate::process::Process;
 pub unsafe fn call1(func: *const u8, process: *mut Process, a0: u64) -> i64 {
     let ret: i64;
     unsafe {
-        std::arch::asm!(
+        asm!(
             "str x21, [sp, #-16]!",
             "mov x21, {process}",
             "blr {func}",
@@ -39,7 +40,7 @@ pub unsafe fn call1(func: *const u8, process: *mut Process, a0: u64) -> i64 {
 pub unsafe fn call2(func: *const u8, process: *mut Process, a0: u64, a1: u64) -> i64 {
     let ret: i64;
     unsafe {
-        std::arch::asm!(
+        asm!(
             "str x21, [sp, #-16]!",
             "mov x21, {process}",
             "blr {func}",
@@ -63,7 +64,7 @@ pub unsafe fn call2(func: *const u8, process: *mut Process, a0: u64, a1: u64) ->
 pub unsafe fn call1(func: *const u8, process: *mut Process, a0: u64) -> i64 {
     let ret: i64;
     unsafe {
-        std::arch::asm!(
+        asm!(
             "sub rsp, 16",
             "mov [rsp], r15",
             "mov r15, {process}",
@@ -89,7 +90,7 @@ pub unsafe fn call1(func: *const u8, process: *mut Process, a0: u64) -> i64 {
 pub unsafe fn call2(func: *const u8, process: *mut Process, a0: u64, a1: u64) -> i64 {
     let ret: i64;
     unsafe {
-        std::arch::asm!(
+        asm!(
             "sub rsp, 16",
             "mov [rsp], r15",
             "mov r15, {process}",
@@ -113,7 +114,8 @@ pub unsafe fn call2(func: *const u8, process: *mut Process, a0: u64, a1: u64) ->
 /// callers that depend on the pinned register are unsupported on this arch.
 #[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
 pub unsafe fn call1(func: *const u8, _process: *mut Process, a0: u64) -> i64 {
-    let f: extern "C" fn(u64) -> i64 = unsafe { std::mem::transmute(func) };
+    use std::mem::transmute;
+    let f: extern "C" fn(u64) -> i64 = unsafe { transmute(func) };
     f(a0)
 }
 
@@ -123,6 +125,7 @@ pub unsafe fn call1(func: *const u8, _process: *mut Process, a0: u64) -> i64 {
 /// callers that depend on the pinned register are unsupported on this arch.
 #[cfg(not(any(target_arch = "aarch64", target_arch = "x86_64")))]
 pub unsafe fn call2(func: *const u8, _process: *mut Process, a0: u64, a1: u64) -> i64 {
-    let f: extern "C" fn(u64, u64) -> i64 = unsafe { std::mem::transmute(func) };
+    use std::mem::transmute;
+    let f: extern "C" fn(u64, u64) -> i64 = unsafe { transmute(func) };
     f(a0, a1)
 }

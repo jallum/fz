@@ -76,10 +76,7 @@ fn build_call_graph_with_return_continuations(
                     edges.insert(continuation.fn_id);
                 }
                 Term::TailCallClosure { .. } => {}
-                Term::Receive {
-                    continuation,
-                    ident: _,
-                } => {
+                Term::Receive { continuation, ident: _ } => {
                     edges.insert(continuation.fn_id);
                 }
                 // fz-70q.3 — clause body / guard / after fns reached via
@@ -155,7 +152,8 @@ pub fn reachable_fns<T: Types<Ty = Ty>>(t: &mut T, m: &Module) -> HashSet<FnId> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fz_ir::{Cont, FnBuilder, FnId, Module, Prim, Term, Var};
+    use crate::fz_ir::{CallsiteIdent, Cont, FnBuilder, FnId, Module, Prim, Term, Var};
+    use crate::types::ConcreteTypes;
 
     fn finish(builders: Vec<FnBuilder>) -> Module {
         let mut m = Module::new();
@@ -186,7 +184,7 @@ mod tests {
         b.set_terminator(
             entry,
             Term::TailCall {
-                ident: crate::fz_ir::CallsiteIdent::synthetic(),
+                ident: CallsiteIdent::synthetic(),
                 callee: FnId(target),
                 args: vec![],
                 is_back_edge: false,
@@ -196,7 +194,7 @@ mod tests {
     }
 
     fn reach(m: &Module) -> HashSet<FnId> {
-        let mut t = crate::types::ConcreteTypes;
+        let mut t = ConcreteTypes;
         reachable_fns(&mut t, m)
     }
 
@@ -231,7 +229,7 @@ mod tests {
         main_b.set_terminator(
             entry,
             Term::Call {
-                ident: crate::fz_ir::CallsiteIdent::synthetic(),
+                ident: CallsiteIdent::synthetic(),
                 callee: FnId(1),
                 args: vec![],
                 continuation: Cont {
@@ -250,10 +248,7 @@ mod tests {
     fn make_closure_edge_followed() {
         let mut main_b = FnBuilder::new(FnId(0), "main");
         let entry = main_b.block(vec![]);
-        main_b.let_(
-            entry,
-            Prim::MakeClosure(crate::fz_ir::CallsiteIdent::synthetic(), FnId(1), vec![]),
-        );
+        main_b.let_(entry, Prim::MakeClosure(CallsiteIdent::synthetic(), FnId(1), vec![]));
         main_b.set_terminator(entry, Term::Halt(Var(0)));
         let m = finish(vec![main_b, fn_halting(1, "lambda")]);
         let r = reach(&m);
@@ -262,10 +257,7 @@ mod tests {
 
     #[test]
     fn recursive_cycle_terminates() {
-        let m = finish(vec![
-            fn_tail_calling(0, "main", 1),
-            fn_tail_calling(1, "a", 0),
-        ]);
+        let m = finish(vec![fn_tail_calling(0, "main", 1), fn_tail_calling(1, "a", 0)]);
         let r = reach(&m);
         assert_eq!(r.len(), 2);
         assert!(r.contains(&FnId(0)));

@@ -1,11 +1,16 @@
 use super::*;
 use crate::ast::FnDef;
 use crate::diag::Span;
+use crate::frontend::protocols::ProtocolRegistry;
 use crate::fz_ir::{
-    BlockId, CallsiteId, Const, ContinuationProvenance, EmitSlot, ExternArg, ExternDecl, ExternId,
-    FnBuilder, FnId, ModuleBuilder, Prim, ProtocolCallTarget, Term, Var,
+    BlockId, BranchOrigin, CallsiteId, CallsiteIdent, Const, ContinuationProvenance, EmitSlot, ExternArg, ExternDecl,
+    ExternId, ExternTy, ExternalCallEdge, FnBuilder, FnCategory, FnId, ModuleBuilder, Prim, ProtocolCallTarget, Term,
+    Var,
 };
-use std::collections::{HashMap, HashSet};
+use crate::modules::identity::{ExportKey, ModuleName};
+use crate::modules::interface::ModuleInterface;
+use crate::type_expr::ModuleTypeEnv;
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 /// Map of source-fn name -> primary FnId (the entry IR fn for a multi-clause source fn).
 pub(super) type FnMap = HashMap<(String, usize), FnId>;
@@ -57,22 +62,22 @@ pub struct LowerCtx {
     /// Type env for compiler-known runtime types plus any root aliases still
     /// declared by the prelude. Downstream passes use it to resolve runtime
     /// names such as `pid`, `ref`, and `utf8`.
-    pub prelude_type_env: crate::type_expr::ModuleTypeEnv,
+    pub prelude_type_env: ModuleTypeEnv,
     /// fz-ty1.9 — Merged type env: prelude + all user-module @type aliases.
     /// Used by `emit_param_type_guards` to resolve annotation tokens in
     /// `fn f(x :: T)` parameter heads.
-    pub combined_type_env: crate::type_expr::ModuleTypeEnv,
+    pub combined_type_env: ModuleTypeEnv,
     /// fz-jg5.12 (RED.9) — FnIds of user fns that carry an `@spec`. Copied
     /// into `Module.boundary_fns` after build. The reducer treats these as
     /// firewalls so a declared spec is honored as a contract.
-    pub boundary_fns: HashSet<crate::fz_ir::FnId>,
+    pub boundary_fns: HashSet<FnId>,
     /// fz-fyq.1 — `BranchOrigin` tag for any `Term::If` synthesized in the
     /// current lowering scope. Defaults to `User`; entry points that
     /// initiate generated dispatch (fn-clause selection, pattern-bind,
     /// param guards) save the previous value, set their origin for the
     /// scope, and restore on exit. PatternMatrix helpers and `lower_pattern_bind`
     /// read this when emitting their Ifs.
-    pub branch_origin: crate::fz_ir::BranchOrigin,
+    pub branch_origin: BranchOrigin,
     /// fz-puj.49 (X1A) — snapshot of user FnDefs by (name, arity) for
     /// AST-level β-reduction in guards. Populated at lower_program entry
     /// before any clause is lowered. Holds clones to avoid threading
@@ -83,11 +88,11 @@ pub struct LowerCtx {
     /// can explain *why* a particular call wasn't inlined.
     pub fn_defs_by_arity: HashMap<(String, usize), FnDef>,
     pub(super) prelude_imports: HashMap<(String, usize), String>,
-    pub(super) external_exports: HashMap<(String, usize), crate::modules::identity::ExportKey>,
-    pub(super) external_stubs: HashMap<crate::modules::identity::ExportKey, FnId>,
+    pub(super) external_exports: HashMap<(String, usize), ExportKey>,
+    pub(super) external_stubs: HashMap<ExportKey, FnId>,
     pub(super) protocol_callbacks: HashMap<(String, usize), ProtocolCallTarget>,
     pub(super) protocol_stubs: HashMap<(String, usize), FnId>,
-    pub(super) struct_schemas: std::collections::BTreeMap<String, Vec<String>>,
+    pub(super) struct_schemas: BTreeMap<String, Vec<String>>,
     pub(super) continuation_provenance: HashMap<FnId, ContinuationProvenance>,
 }
 
@@ -114,10 +119,10 @@ impl LowerCtx {
             fn_spans: HashMap::new(),
             extern_wrappers: HashMap::new(),
             prelude_fn_id_cutoff: 0,
-            prelude_type_env: crate::type_expr::ModuleTypeEnv::new(),
-            combined_type_env: crate::type_expr::ModuleTypeEnv::new(),
+            prelude_type_env: ModuleTypeEnv::new(),
+            combined_type_env: ModuleTypeEnv::new(),
             boundary_fns: HashSet::new(),
-            branch_origin: crate::fz_ir::BranchOrigin::User,
+            branch_origin: BranchOrigin::User,
             fn_defs_by_arity: HashMap::new(),
             prelude_imports: HashMap::new(),
             external_exports: HashMap::new(),
@@ -129,19 +134,12 @@ impl LowerCtx {
         }
     }
 
-    pub(super) fn record_continuation_provenance(
-        &mut self,
-        continuation: FnId,
-        provenance: ContinuationProvenance,
-    ) {
-        self.continuation_provenance
-            .insert(continuation, provenance);
+    pub(super) fn record_continuation_provenance(&mut self, continuation: FnId, provenance: ContinuationProvenance) {
+        self.continuation_provenance.insert(continuation, provenance);
     }
 
     pub(super) fn resolve_prelude_import(&self, name: &str, arity: usize) -> Option<String> {
-        self.prelude_imports
-            .get(&(name.to_string(), arity))
-            .cloned()
+        self.prelude_imports.get(&(name.to_string(), arity)).cloned()
     }
 
     pub(super) fn unique_imported_fn_value_target(&self, name: &str) -> Option<(String, FnId)> {
@@ -158,31 +156,18 @@ impl LowerCtx {
         Some((qualified, fn_id))
     }
 
-    pub(super) fn register_external_interfaces(
-        &mut self,
-        interfaces: &std::collections::BTreeMap<
-            crate::modules::identity::ModuleName,
-            crate::modules::interface::ModuleInterface,
-        >,
-    ) {
+    pub(super) fn register_external_interfaces(&mut self, interfaces: &BTreeMap<ModuleName, ModuleInterface>) {
         for (module, interface) in interfaces {
             for export in &interface.exports {
                 self.external_exports.insert(
                     (format!("{}.{}", module, export.name), export.arity),
-                    crate::modules::identity::ExportKey::new(
-                        module.clone(),
-                        export.name.clone(),
-                        export.arity,
-                    ),
+                    ExportKey::new(module.clone(), export.name.clone(), export.arity),
                 );
             }
         }
     }
 
-    pub(super) fn register_protocol_registry(
-        &mut self,
-        registry: &crate::frontend::protocols::ProtocolRegistry,
-    ) {
+    pub(super) fn register_protocol_registry(&mut self, registry: &ProtocolRegistry) {
         for (protocol, decl) in &registry.protocols {
             for callback in &decl.callbacks {
                 self.protocol_callbacks.insert(
@@ -197,21 +182,12 @@ impl LowerCtx {
         }
     }
 
-    pub(super) fn register_interface_protocols(
-        &mut self,
-        interfaces: &std::collections::BTreeMap<
-            crate::modules::identity::ModuleName,
-            crate::modules::interface::ModuleInterface,
-        >,
-    ) {
+    pub(super) fn register_interface_protocols(&mut self, interfaces: &BTreeMap<ModuleName, ModuleInterface>) {
         for interface in interfaces.values() {
             for protocol in &interface.protocols {
                 for callback in &protocol.callbacks {
                     self.protocol_callbacks.insert(
-                        (
-                            format!("{}.{}", protocol.name, callback.name),
-                            callback.arity,
-                        ),
+                        (format!("{}.{}", protocol.name, callback.name), callback.arity),
                         ProtocolCallTarget {
                             protocol: protocol.name.clone(),
                             callback: callback.name.clone(),
@@ -242,21 +218,13 @@ impl LowerCtx {
         Some(fn_id)
     }
 
-    pub(super) fn external_callee(
-        &mut self,
-        name: &str,
-        arity: usize,
-    ) -> Option<(FnId, crate::modules::identity::ExportKey)> {
-        let target = self
-            .external_exports
-            .get(&(name.to_string(), arity))?
-            .clone();
+    pub(super) fn external_callee(&mut self, name: &str, arity: usize) -> Option<(FnId, ExportKey)> {
+        let target = self.external_exports.get(&(name.to_string(), arity))?.clone();
         let fn_id = if let Some(fn_id) = self.external_stubs.get(&target) {
             *fn_id
         } else {
             let fn_id = self.mb.fresh_fn_id();
-            let mut stub = FnBuilder::new(fn_id, format!("__external__.{}", target))
-                .with_category(crate::fz_ir::FnCategory::User);
+            let mut stub = FnBuilder::new(fn_id, format!("__external__.{}", target)).with_category(FnCategory::User);
             let params = (0..arity).map(|_| stub.fresh_var()).collect::<Vec<_>>();
             let entry = stub.block(params);
             let atom = self.atoms.intern("external_module_unlinked");
@@ -273,9 +241,9 @@ impl LowerCtx {
     /// `branch_origin`. Lowering paths that synthesize Ifs use this rather
     /// than constructing `Term::If` directly, so origin propagation is
     /// uniform.
-    pub fn set_if_term(&mut self, cond: crate::fz_ir::Var, then_b: BlockId, else_b: BlockId) {
+    pub fn set_if_term(&mut self, cond: Var, then_b: BlockId, else_b: BlockId) {
         let origin = self.branch_origin;
-        self.set_term(crate::fz_ir::Term::If {
+        self.set_term(Term::If {
             cond,
             then_b,
             else_b,
@@ -304,7 +272,7 @@ impl LowerCtx {
         // dumps render `&libc::close/1` recognisably.
         let name = format!("__extern_wrap__{}", decl.fz_name);
         let mut tb = FnBuilder::new(id, name)
-            .with_category(crate::fz_ir::FnCategory::Prelude)
+            .with_category(FnCategory::Prelude)
             .with_owner_module(self.current_owner_module.clone());
         let params: Vec<Var> = (0..decl.params.len()).map(|_| tb.fresh_var()).collect();
         let extern_args: Vec<ExternArg> = params
@@ -314,27 +282,16 @@ impl LowerCtx {
             .map(|(var, ty)| ExternArg::fixed(var, ty))
             .collect();
         let entry = tb.block(params);
-        let returns_value = !matches!(
-            decl.ret,
-            crate::fz_ir::ExternTy::Unit | crate::fz_ir::ExternTy::Never
-        );
+        let returns_value = !matches!(decl.ret, ExternTy::Unit | ExternTy::Never);
         let ret_var = if returns_value {
             tb.let_(
                 entry,
-                Prim::Extern(
-                    crate::fz_ir::CallsiteIdent::from_source(Span::DUMMY),
-                    eid,
-                    extern_args.clone(),
-                ),
+                Prim::Extern(CallsiteIdent::from_source(Span::DUMMY), eid, extern_args.clone()),
             )
         } else {
             let _ = tb.let_(
                 entry,
-                Prim::Extern(
-                    crate::fz_ir::CallsiteIdent::from_source(Span::DUMMY),
-                    eid,
-                    extern_args,
-                ),
+                Prim::Extern(CallsiteIdent::from_source(Span::DUMMY), eid, extern_args),
             );
             tb.let_(entry, Prim::Const(Const::Nil))
         };
@@ -423,10 +380,7 @@ impl LowerCtx {
     /// the var's defining-site info.
     pub(super) fn name_var(&mut self, v: Var, name: &str, span: Span) {
         let fn_id = self.cur_fn_id.expect("no current fn");
-        let entry = self
-            .var_meta
-            .entry((fn_id, v))
-            .or_insert((Span::DUMMY, String::new()));
+        let entry = self.var_meta.entry((fn_id, v)).or_insert((Span::DUMMY, String::new()));
         if entry.0.is_dummy() {
             entry.0 = span;
         }
@@ -455,12 +409,7 @@ impl LowerCtx {
         }
     }
 
-    pub(super) fn set_external_direct_term_at(
-        &mut self,
-        mut term: Term,
-        span: Span,
-        target: crate::modules::identity::ExportKey,
-    ) {
+    pub(super) fn set_external_direct_term_at(&mut self, mut term: Term, span: Span, target: ExportKey) {
         term.set_source_span(span);
         let ident = term
             .ident()
@@ -471,12 +420,10 @@ impl LowerCtx {
         if !span.is_dummy() {
             self.term_spans.insert((caller, self.cur_block()), span);
         }
-        self.mb
-            .external_call_edges
-            .push(crate::fz_ir::ExternalCallEdge {
-                callsite: CallsiteId::new(caller, &ident, EmitSlot::Direct),
-                target,
-            });
+        self.mb.external_call_edges.push(ExternalCallEdge {
+            callsite: CallsiteId::new(caller, &ident, EmitSlot::Direct),
+            target,
+        });
     }
 }
 

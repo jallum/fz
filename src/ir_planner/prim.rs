@@ -1,16 +1,14 @@
-use super::expr_types::{
-    lookup, numeric_result, numeric_result_fold, type_binop, type_const, var_as_map_key,
-};
-use crate::fz_ir::{BinOp, Module, Prim, UnOp, Var};
-use crate::types::MapKey;
+use super::expr_types::{lookup, numeric_result, numeric_result_fold, type_binop, type_const, var_as_map_key};
+use crate::ast::BitType;
+use crate::frontend::protocols::struct_impl_target_type;
+use crate::fz_ir::{BinOp, FnId, Module, Prim, UnOp, Var};
+use crate::types::{ClosureTypes, MapKey, Ty, Types};
 use std::collections::{HashMap, HashSet};
 
-pub(crate) fn type_prim<
-    T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
->(
+pub(crate) fn type_prim<T: Types<Ty = Ty> + ClosureTypes>(
     t: &mut T,
     prim: &Prim,
-    env: &HashMap<Var, crate::types::Ty>,
+    env: &HashMap<Var, Ty>,
     m: &Module,
     const_vars: &HashSet<Var>,
 ) -> T::Ty {
@@ -42,10 +40,7 @@ pub(crate) fn type_prim<
             let elem_tys: Vec<T::Ty> = vs.iter().map(|v| lookup(t, env, *v)).collect();
             t.tuple(&elem_tys)
         }
-        Prim::MakeStruct { module, .. } => crate::frontend::protocols::struct_impl_target_type(
-            t,
-            module.rsplit('.').next().unwrap_or(module),
-        ),
+        Prim::MakeStruct { module, .. } => struct_impl_target_type(t, module.rsplit('.').next().unwrap_or(module)),
         Prim::DestTupleBegin { .. } => t.any(),
         Prim::DestTupleSet { .. } => t.nil(),
         Prim::DestFreeze { dest, .. } => lookup(t, env, *dest),
@@ -91,10 +86,7 @@ pub(crate) fn type_prim<
         Prim::MakeClosure(_, fn_id, captured) => type_make_closure(t, env, m, *fn_id, captured),
 
         Prim::Extern(_, eid, _) => {
-            let ret_ty = m
-                .extern_idx
-                .get(eid)
-                .map(|&i| m.externs[i].ret_descr.clone());
+            let ret_ty = m.extern_idx.get(eid).map(|&i| m.externs[i].ret_descr.clone());
             ret_ty.unwrap_or_else(|| t.any())
         }
 
@@ -112,12 +104,7 @@ pub(crate) fn type_prim<
     }
 }
 
-fn type_tuple_field<T: crate::types::Types<Ty = crate::types::Ty>>(
-    t: &mut T,
-    env: &HashMap<Var, crate::types::Ty>,
-    v: Var,
-    i: u32,
-) -> crate::types::Ty {
+fn type_tuple_field<T: Types<Ty = Ty>>(t: &mut T, env: &HashMap<Var, Ty>, v: Var, i: u32) -> Ty {
     let vt = lookup(t, env, v);
     let max_arity = t.max_tuple_arity(&vt);
     if (i as usize) < max_arity {
@@ -128,13 +115,7 @@ fn type_tuple_field<T: crate::types::Types<Ty = crate::types::Ty>>(
     }
 }
 
-fn type_struct_field<T: crate::types::Types<Ty = crate::types::Ty>>(
-    t: &mut T,
-    env: &HashMap<Var, crate::types::Ty>,
-    m: &Module,
-    v: Var,
-    field: &str,
-) -> crate::types::Ty {
+fn type_struct_field<T: Types<Ty = Ty>>(t: &mut T, env: &HashMap<Var, Ty>, m: &Module, v: Var, field: &str) -> Ty {
     let vt = lookup(t, env, v);
     let Some(tag) = t.opaque_singleton(&vt) else {
         return t.any();
@@ -163,12 +144,7 @@ fn struct_schema_for_impl_target<'a>(m: &'a Module, tag: &str) -> Option<&'a Vec
     matches.next().is_none().then_some(fields)
 }
 
-fn type_make_list<T: crate::types::Types<Ty = crate::types::Ty>>(
-    t: &mut T,
-    env: &HashMap<Var, crate::types::Ty>,
-    els: &[Var],
-    tail: Option<Var>,
-) -> crate::types::Ty {
+fn type_make_list<T: Types<Ty = Ty>>(t: &mut T, env: &HashMap<Var, Ty>, els: &[Var], tail: Option<Var>) -> Ty {
     let mut elem = t.none();
     for v in els {
         let vy = lookup(t, env, *v);
@@ -186,12 +162,7 @@ fn type_make_list<T: crate::types::Types<Ty = crate::types::Ty>>(
     }
 }
 
-fn type_dest_list_cons<T: crate::types::Types<Ty = crate::types::Ty>>(
-    t: &mut T,
-    env: &HashMap<Var, crate::types::Ty>,
-    head: Var,
-    tail: Option<Var>,
-) -> crate::types::Ty {
+fn type_dest_list_cons<T: Types<Ty = Ty>>(t: &mut T, env: &HashMap<Var, Ty>, head: Var, tail: Option<Var>) -> Ty {
     let mut elem = lookup(t, env, head);
     if let Some(tl) = tail {
         let tt = lookup(t, env, tl);
@@ -201,11 +172,7 @@ fn type_dest_list_cons<T: crate::types::Types<Ty = crate::types::Ty>>(
     t.non_empty_list(elem)
 }
 
-fn type_make_map<T: crate::types::Types<Ty = crate::types::Ty>>(
-    t: &mut T,
-    env: &HashMap<Var, crate::types::Ty>,
-    entries: &[(Var, Var)],
-) -> crate::types::Ty {
+fn type_make_map<T: Types<Ty = Ty>>(t: &mut T, env: &HashMap<Var, Ty>, entries: &[(Var, Var)]) -> Ty {
     let mut fields: Vec<(MapKey, T::Ty)> = Vec::new();
     for (k, v) in entries {
         let Some(mk) = var_as_map_key(t, *k, env) else {
@@ -217,12 +184,7 @@ fn type_make_map<T: crate::types::Types<Ty = crate::types::Ty>>(
     t.map(&fields)
 }
 
-fn type_map_update<T: crate::types::Types<Ty = crate::types::Ty>>(
-    t: &mut T,
-    env: &HashMap<Var, crate::types::Ty>,
-    base: Var,
-    entries: &[(Var, Var)],
-) -> crate::types::Ty {
+fn type_map_update<T: Types<Ty = Ty>>(t: &mut T, env: &HashMap<Var, Ty>, base: Var, entries: &[(Var, Var)]) -> Ty {
     let mut dy = lookup(t, env, base);
     for (k, v) in entries {
         let vt_ty = lookup(t, env, *v);
@@ -233,14 +195,14 @@ fn type_map_update<T: crate::types::Types<Ty = crate::types::Ty>>(
     dy
 }
 
-fn type_map_get<T: crate::types::Types<Ty = crate::types::Ty>>(
+fn type_map_get<T: Types<Ty = Ty>>(
     t: &mut T,
-    env: &HashMap<Var, crate::types::Ty>,
+    env: &HashMap<Var, Ty>,
     m: &Module,
     map: Var,
     key_v: Var,
     allow_opaque_value: bool,
-) -> crate::types::Ty {
+) -> Ty {
     let mt = lookup(t, env, map);
     if allow_opaque_value && let Some(inner) = opaque_value_inner(t, env, m, &mt, key_v) {
         return inner;
@@ -255,29 +217,27 @@ fn type_map_get<T: crate::types::Types<Ty = crate::types::Ty>>(
     }
 }
 
-fn opaque_value_inner<T: crate::types::Types<Ty = crate::types::Ty>>(
+fn opaque_value_inner<T: Types<Ty = Ty>>(
     t: &mut T,
-    env: &HashMap<Var, crate::types::Ty>,
+    env: &HashMap<Var, Ty>,
     m: &Module,
-    mt: &crate::types::Ty,
+    mt: &Ty,
     key_v: Var,
-) -> Option<crate::types::Ty> {
+) -> Option<Ty> {
     let tag = t.opaque_singleton(mt)?;
     let Some(MapKey::Atom(key)) = var_as_map_key(t, key_v, env) else {
         return None;
     };
-    (key == "value")
-        .then(|| m.opaque_inners.get(&tag).cloned())
-        .flatten()
+    (key == "value").then(|| m.opaque_inners.get(&tag).cloned()).flatten()
 }
 
-fn type_make_closure<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes>(
+fn type_make_closure<T: Types<Ty = Ty> + ClosureTypes>(
     t: &mut T,
-    env: &HashMap<Var, crate::types::Ty>,
+    env: &HashMap<Var, Ty>,
     m: &Module,
-    fn_id: crate::fz_ir::FnId,
+    fn_id: FnId,
     captured: &[Var],
-) -> crate::types::Ty {
+) -> Ty {
     let callee = m.fn_by_id(fn_id);
     let entry = callee.block(callee.entry);
     let n_args = entry.params.len().saturating_sub(captured.len());
@@ -288,12 +248,7 @@ fn type_make_closure<T: crate::types::Types<Ty = crate::types::Ty> + crate::type
     t.closure_lit(fn_id.into(), captures, n_args)
 }
 
-fn type_type_test<T: crate::types::Types<Ty = crate::types::Ty>>(
-    t: &mut T,
-    env: &HashMap<Var, crate::types::Ty>,
-    v: Var,
-    descr: &crate::types::Ty,
-) -> crate::types::Ty {
+fn type_type_test<T: Types<Ty = Ty>>(t: &mut T, env: &HashMap<Var, Ty>, v: Var, descr: &Ty) -> Ty {
     let vy = lookup(t, env, v);
     if t.is_subtype(&vy, descr) {
         return t.atom_lit("true");
@@ -306,11 +261,7 @@ fn type_type_test<T: crate::types::Types<Ty = crate::types::Ty>>(
     }
 }
 
-fn type_bit_read_field<T: crate::types::Types<Ty = crate::types::Ty>>(
-    t: &mut T,
-    ty: &crate::ast::BitType,
-) -> crate::types::Ty {
-    use crate::ast::BitType;
+fn type_bit_read_field<T: Types<Ty = Ty>>(t: &mut T, ty: &BitType) -> Ty {
     let value_t = match ty {
         BitType::Integer | BitType::Utf8 | BitType::Utf16 | BitType::Utf32 => t.int(),
         BitType::Float => t.float(),

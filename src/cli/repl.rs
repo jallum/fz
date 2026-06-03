@@ -17,11 +17,34 @@
 //! program-side `dbg()` reaches stdout, so a fixture's REPL-leg output is
 //! exact-comparable to the other legs' golden.
 
-use crate::ast::{Item, Program};
-use crate::exec::eval::CompileTimeEvaluator;
-use crate::exec::value::Value;
+use crate::ast::{Expr, FnDef, Item, Program, Spanned};
+use crate::diag::diagnostic::Severity;
+use crate::diag::style::ColorMode;
+use crate::diag::{Diagnostic, SourceMap, render_one_to_string};
+use crate::exec::eval::{CompileTimeEvaluator, format_spec_text};
+use crate::exec::value::{Closure, Value};
+use crate::frontend::macros::expand_with;
+use crate::frontend::resolve::flatten_modules;
+use crate::frontend::{FrontendOk, compile_program_with_types, compile_repl_expr_with_types};
+use crate::fz_ir::{FnId, Module};
+use crate::ir_interp::{AnyValue, IrInterpRuntime};
+use crate::modules::artifact_store::DEFAULT_ARTIFACT_ROOT;
+use crate::modules::pipeline::{
+    CompileMode, PipelineError, PreparedExecutionGraph, ProviderInputs, checked_module_for_mode,
+    compile_source_with_providers, prepare_execution_graph,
+};
+use crate::notify_fixture_execution_start;
 use crate::parser::Parser;
-use crate::parser::lexer::Lexer;
+use crate::parser::lexer::{Lexer, Tok};
+use crate::telemetry::{ConfiguredTelemetry, DiagRenderer, NullTelemetry, Telemetry};
+use crate::types::ConcreteTypes;
+use rustyline::completion::Completer;
+use rustyline::error::ReadlineError;
+use rustyline::highlight::Highlighter;
+use rustyline::hint::Hinter;
+use rustyline::history::DefaultHistory;
+use rustyline::validate::{ValidationContext, ValidationResult, Validator};
+use rustyline::{Editor, Helper};
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::io::{self, Write};
@@ -79,14 +102,12 @@ trait ReplLineEditor {
 }
 
 struct RustylineReplLineEditor {
-    editor: rustyline::Editor<ReplEditorHelper, rustyline::history::DefaultHistory>,
+    editor: Editor<ReplEditorHelper, DefaultHistory>,
 }
 
 impl RustylineReplLineEditor {
     fn new() -> io::Result<Self> {
-        let mut editor =
-            rustyline::Editor::<ReplEditorHelper, rustyline::history::DefaultHistory>::new()
-                .map_err(rustyline_to_io_error)?;
+        let mut editor = Editor::<ReplEditorHelper, DefaultHistory>::new().map_err(rustyline_to_io_error)?;
         editor.set_helper(Some(ReplEditorHelper));
         Ok(Self { editor })
     }
@@ -96,8 +117,8 @@ impl ReplLineEditor for RustylineReplLineEditor {
     fn read_line(&mut self, prompt: &str) -> io::Result<ReplLine> {
         match self.editor.readline(prompt) {
             Ok(line) => Ok(ReplLine::Line(line)),
-            Err(rustyline::error::ReadlineError::Eof) => Ok(ReplLine::Eof),
-            Err(rustyline::error::ReadlineError::Interrupted) => Ok(ReplLine::Interrupted),
+            Err(ReadlineError::Eof) => Ok(ReplLine::Eof),
+            Err(ReadlineError::Interrupted) => Ok(ReplLine::Interrupted),
             Err(err) => Err(rustyline_to_io_error(err)),
         }
     }
@@ -110,16 +131,14 @@ impl ReplLineEditor for RustylineReplLineEditor {
     }
 }
 
-fn rustyline_to_io_error(err: rustyline::error::ReadlineError) -> io::Error {
+fn rustyline_to_io_error(err: ReadlineError) -> io::Error {
     io::Error::other(err)
 }
 
 struct ReplEditorHelper;
 
 impl ReplEditorHelper {
-    fn validation_result_for(input: &str) -> rustyline::validate::ValidationResult {
-        use rustyline::validate::ValidationResult;
-
+    fn validation_result_for(input: &str) -> ValidationResult {
         if ReplComposer::is_immediate_input(input) {
             return ValidationResult::Valid(None);
         }
@@ -130,31 +149,28 @@ impl ReplEditorHelper {
     }
 }
 
-impl rustyline::completion::Completer for ReplEditorHelper {
+impl Completer for ReplEditorHelper {
     type Candidate = String;
 }
 
-impl rustyline::hint::Hinter for ReplEditorHelper {
+impl Hinter for ReplEditorHelper {
     type Hint = String;
 }
 
-impl rustyline::highlight::Highlighter for ReplEditorHelper {}
+impl Highlighter for ReplEditorHelper {}
 
-impl rustyline::validate::Validator for ReplEditorHelper {
-    fn validate(
-        &self,
-        ctx: &mut rustyline::validate::ValidationContext<'_>,
-    ) -> rustyline::Result<rustyline::validate::ValidationResult> {
+impl Validator for ReplEditorHelper {
+    fn validate(&self, ctx: &mut ValidationContext<'_>) -> rustyline::Result<ValidationResult> {
         Ok(Self::validation_result_for(ctx.input()))
     }
 }
 
-impl rustyline::Helper for ReplEditorHelper {}
+impl Helper for ReplEditorHelper {}
 
 /// Compile a file's contents, then call `main/0` through `ReplRuntime` if
 /// defined. Only program-side `dbg()` writes to stdout; diagnostics use the
 /// caller's telemetry bus.
-pub fn run_script(path: &Path, tel: &crate::telemetry::ConfiguredTelemetry) -> io::Result<()> {
+pub fn run_script(path: &Path, tel: &ConfiguredTelemetry) -> io::Result<()> {
     let src = std::fs::read_to_string(path)?;
     let source_name = path.display().to_string();
     let diagnostics = attach_repl_diagnostic_renderer(tel);
@@ -207,9 +223,7 @@ impl ReplComposer {
 
         match ReplWorld::parse_source_chunk(buffer) {
             Ok(_) => ReplComposerEvent::Complete(buffer.to_string()),
-            Err(ReplWorldParse::Incomplete) => {
-                ReplComposerEvent::Diagnostic("incomplete repl input".to_string())
-            }
+            Err(ReplWorldParse::Incomplete) => ReplComposerEvent::Diagnostic("incomplete repl input".to_string()),
             Err(ReplWorldParse::Err(msg)) => ReplComposerEvent::Diagnostic(msg),
         }
     }
@@ -244,39 +258,19 @@ impl ReplSession {
         &mut self,
         src: &str,
         source_name: String,
-        tel: &dyn crate::telemetry::Telemetry,
+        tel: &dyn Telemetry,
         diagnostics: &Rc<RefCell<Vec<u8>>>,
     ) -> io::Result<()> {
-        let mut t = crate::types::ConcreteTypes;
-        let providers = crate::modules::pipeline::ProviderInputs::new(
-            crate::modules::artifact_store::DEFAULT_ARTIFACT_ROOT.to_string(),
-            Vec::new(),
-        );
-        let frontend = match crate::modules::pipeline::compile_source_with_providers(
-            &mut t,
-            src.to_string(),
-            source_name,
-            &providers,
-            tel,
-        ) {
+        let mut t = ConcreteTypes;
+        let providers = ProviderInputs::new(DEFAULT_ARTIFACT_ROOT.to_string(), Vec::new());
+        let frontend = match compile_source_with_providers(&mut t, src.to_string(), source_name, &providers, tel) {
             Ok(ok) => ok,
             Err(err) => return Err(pipeline_error_to_io_error(err, diagnostics)),
         };
-        let checked = crate::modules::pipeline::checked_module_for_mode(
-            &mut t,
-            frontend,
-            tel,
-            crate::modules::pipeline::CompileMode::Normal,
-        )
-        .map_err(|err| pipeline_error_to_io_error(err, diagnostics))?;
-        let prepared = crate::modules::pipeline::prepare_execution_graph(
-            &mut t,
-            checked,
-            &providers,
-            tel,
-            crate::modules::pipeline::CompileMode::Normal,
-        )
-        .map_err(|err| pipeline_error_to_io_error(err, diagnostics))?;
+        let checked = checked_module_for_mode(&mut t, frontend, tel, CompileMode::Normal)
+            .map_err(|err| pipeline_error_to_io_error(err, diagnostics))?;
+        let prepared = prepare_execution_graph(&mut t, checked, &providers, tel, CompileMode::Normal)
+            .map_err(|err| pipeline_error_to_io_error(err, diagnostics))?;
 
         let Some(main) = prepared.module.fn_by_name("main") else {
             return Ok(());
@@ -285,7 +279,7 @@ impl ReplSession {
             return Ok(());
         }
 
-        crate::notify_fixture_execution_start();
+        notify_fixture_execution_start();
         ReplRuntime::run_script_main(&prepared.module, main.id)
     }
 
@@ -296,30 +290,20 @@ impl ReplSession {
                 Err(e) => ReplChunkOutcome::Err(e),
             },
             Ok(ReplWorldChunk::Expr { expr, sm }) => self.eval_expr_chunk(src, expr, sm),
-            Err(ReplWorldParse::Incomplete) => ReplChunkOutcome::Err(
-                "incomplete repl input must be composed before execution".to_string(),
-            ),
+            Err(ReplWorldParse::Incomplete) => {
+                ReplChunkOutcome::Err("incomplete repl input must be composed before execution".to_string())
+            }
             Err(ReplWorldParse::Err(msg)) => ReplChunkOutcome::Err(msg),
         }
     }
 
-    fn eval_expr_chunk(
-        &mut self,
-        _src: &str,
-        expr: crate::ast::Spanned<crate::ast::Expr>,
-        sm: crate::diag::SourceMap,
-    ) -> ReplChunkOutcome {
+    fn eval_expr_chunk(&mut self, _src: &str, expr: Spanned<Expr>, sm: SourceMap) -> ReplChunkOutcome {
         let eval_name = format!("__repl_eval_{}", self.next_eval);
-        let compiled = match self
-            .world
-            .compile_repl_expr(expr, self.frame.names(), eval_name, sm)
-        {
+        let compiled = match self.world.compile_repl_expr(expr, self.frame.names(), eval_name, sm) {
             Ok(compiled) => compiled,
             Err(e) => return ReplChunkOutcome::Err(e.to_string()),
         };
-        let runtime = self
-            .runtime
-            .get_or_insert_with(|| ReplRuntime::new(&compiled.module));
+        let runtime = self.runtime.get_or_insert_with(|| ReplRuntime::new(&compiled.module));
         let args = match self.frame.values_for(&compiled.input_frame) {
             Ok(args) => args,
             Err(e) => return ReplChunkOutcome::Err(e),
@@ -332,10 +316,7 @@ impl ReplSession {
             Ok(fields) => fields,
             Err(e) => {
                 let rendered = runtime.render_value(value).unwrap_or(e);
-                return ReplChunkOutcome::Err(format!(
-                    "repl expression did not return frame tuple: {}",
-                    rendered
-                ));
+                return ReplChunkOutcome::Err(format!("repl expression did not return frame tuple: {}", rendered));
             }
         };
         let Some((display, frame_values)) = fields.split_first() else {
@@ -353,7 +334,7 @@ impl ReplSession {
         self.world.lookup_doc(name)
     }
 
-    fn render_value(&self, value: crate::ir_interp::AnyValue) -> String {
+    fn render_value(&self, value: AnyValue) -> String {
         self.runtime
             .as_ref()
             .and_then(|runtime| runtime.render_value(value).ok())
@@ -362,44 +343,33 @@ impl ReplSession {
 }
 
 struct ReplRuntime {
-    interp: crate::ir_interp::IrInterpRuntime,
+    interp: IrInterpRuntime,
     evaluator_pid: u32,
-    current_module: crate::fz_ir::Module,
+    current_module: Module,
 }
 
 impl ReplRuntime {
-    fn new(module: &crate::fz_ir::Module) -> Self {
+    fn new(module: &Module) -> Self {
         Self {
-            interp: crate::ir_interp::IrInterpRuntime::fresh_with_root(module),
+            interp: IrInterpRuntime::fresh_with_root(module),
             evaluator_pid: 1,
             current_module: module.clone(),
         }
     }
 
-    fn run_script_main(
-        module: &crate::fz_ir::Module,
-        main_id: crate::fz_ir::FnId,
-    ) -> io::Result<()> {
+    fn run_script_main(module: &Module, main_id: FnId) -> io::Result<()> {
         let mut runtime = Self::new(module);
         let completions = runtime
             .enqueue_and_drive(module, main_id, vec![], /*keepalive=*/ false)
             .map_err(io::Error::other)?;
-        if completions
-            .iter()
-            .any(|(pid, _)| *pid == runtime.evaluator_pid)
-        {
+        if completions.iter().any(|(pid, _)| *pid == runtime.evaluator_pid) {
             Ok(())
         } else {
             Err(io::Error::other("script main/0 blocked with idle runtime"))
         }
     }
 
-    fn eval_entry(
-        &mut self,
-        module: &crate::fz_ir::Module,
-        fn_id: crate::fz_ir::FnId,
-        args: Vec<crate::ir_interp::AnyValue>,
-    ) -> Result<crate::ir_interp::AnyValue, String> {
+    fn eval_entry(&mut self, module: &Module, fn_id: FnId, args: Vec<AnyValue>) -> Result<AnyValue, String> {
         let completions = self.enqueue_and_drive(module, fn_id, args, /*keepalive=*/ true)?;
         completions
             .into_iter()
@@ -410,35 +380,28 @@ impl ReplRuntime {
 
     fn enqueue_and_drive(
         &mut self,
-        module: &crate::fz_ir::Module,
-        fn_id: crate::fz_ir::FnId,
-        args: Vec<crate::ir_interp::AnyValue>,
+        module: &Module,
+        fn_id: FnId,
+        args: Vec<AnyValue>,
         keepalive: bool,
-    ) -> Result<Vec<(u32, crate::ir_interp::AnyValue)>, String> {
+    ) -> Result<Vec<(u32, AnyValue)>, String> {
         self.current_module = module.clone();
-        self.interp
-            .enqueue_entry(module, self.evaluator_pid, fn_id, args)?;
+        self.interp.enqueue_entry(module, self.evaluator_pid, fn_id, args)?;
         let keepalive_pid = keepalive.then_some(self.evaluator_pid);
-        self.interp
-            .drive_until_idle(&crate::telemetry::NullTelemetry, keepalive_pid)
+        self.interp.drive_until_idle(&NullTelemetry, keepalive_pid)
     }
 
-    fn read_tuple_fields(
-        &self,
-        value: crate::ir_interp::AnyValue,
-        arity: usize,
-    ) -> Result<Vec<crate::ir_interp::AnyValue>, String> {
-        self.interp
-            .read_tuple_fields(self.evaluator_pid, value, arity)
+    fn read_tuple_fields(&self, value: AnyValue, arity: usize) -> Result<Vec<AnyValue>, String> {
+        self.interp.read_tuple_fields(self.evaluator_pid, value, arity)
     }
 
-    fn render_value(&self, value: crate::ir_interp::AnyValue) -> Result<String, String> {
+    fn render_value(&self, value: AnyValue) -> Result<String, String> {
         self.interp.render_value(self.evaluator_pid, value)
     }
 }
 
 struct ReplFrame {
-    values: BTreeMap<String, crate::ir_interp::AnyValue>,
+    values: BTreeMap<String, AnyValue>,
 }
 
 impl ReplFrame {
@@ -452,7 +415,7 @@ impl ReplFrame {
         self.values.keys().cloned().collect()
     }
 
-    fn values_for(&self, names: &[String]) -> Result<Vec<crate::ir_interp::AnyValue>, String> {
+    fn values_for(&self, names: &[String]) -> Result<Vec<AnyValue>, String> {
         names
             .iter()
             .map(|name| {
@@ -464,11 +427,7 @@ impl ReplFrame {
             .collect()
     }
 
-    fn replace(
-        &mut self,
-        names: Vec<String>,
-        values: &[crate::ir_interp::AnyValue],
-    ) -> Result<(), String> {
+    fn replace(&mut self, names: Vec<String>, values: &[AnyValue]) -> Result<(), String> {
         if names.len() != values.len() {
             return Err(format!(
                 "repl frame expected {} values, got {}",
@@ -493,8 +452,8 @@ struct ReplItemChunk {
 }
 
 struct ReplCompiledEntry {
-    module: crate::fz_ir::Module,
-    fn_id: crate::fz_ir::FnId,
+    module: Module,
+    fn_id: FnId,
     input_frame: Vec<String>,
     output_frame: Vec<String>,
     entry_program: Program,
@@ -502,10 +461,7 @@ struct ReplCompiledEntry {
 
 enum ReplWorldChunk {
     Items(Program),
-    Expr {
-        expr: crate::ast::Spanned<crate::ast::Expr>,
-        sm: crate::diag::SourceMap,
-    },
+    Expr { expr: Spanned<Expr>, sm: SourceMap },
 }
 
 #[derive(Debug)]
@@ -528,7 +484,7 @@ impl ReplWorld {
     }
 
     fn parse_source_chunk(src: &str) -> Result<ReplWorldChunk, ReplWorldParse> {
-        let mut sm = crate::diag::SourceMap::new();
+        let mut sm = SourceMap::new();
         let file_id = sm.add_file("<repl-chunk>".to_string(), src.to_string());
         let toks = Lexer::with_file(src, file_id)
             .tokenize()
@@ -536,22 +492,11 @@ impl ReplWorld {
         let starts_with_item = toks
             .iter()
             .map(|t| &t.tok)
-            .find(|t| {
-                !matches!(
-                    t,
-                    crate::parser::lexer::Tok::Newline | crate::parser::lexer::Tok::Semi
-                )
-            })
+            .find(|t| !matches!(t, Tok::Newline | Tok::Semi))
             .map(|t| {
                 matches!(
                     t,
-                    crate::parser::lexer::Tok::At
-                        | crate::parser::lexer::Tok::Fn
-                        | crate::parser::lexer::Tok::Extern
-                        | crate::parser::lexer::Tok::Defmacro
-                        | crate::parser::lexer::Tok::Defmodule
-                        | crate::parser::lexer::Tok::Alias
-                        | crate::parser::lexer::Tok::Import
+                    Tok::At | Tok::Fn | Tok::Extern | Tok::Defmacro | Tok::Defmodule | Tok::Alias | Tok::Import
                 )
             })
             .unwrap_or(false);
@@ -573,7 +518,7 @@ impl ReplWorld {
         }
     }
 
-    fn apply_items(&mut self, _src: &str, prog: Program) -> Result<crate::fz_ir::Module, String> {
+    fn apply_items(&mut self, _src: &str, prog: Program) -> Result<Module, String> {
         let fns = item_fn_shapes(&prog);
         self.load_docs_and_macros(prog.clone())?;
         self.item_chunks.retain(|existing| {
@@ -591,20 +536,20 @@ impl ReplWorld {
 
     fn compile_repl_expr(
         &self,
-        expr: crate::ast::Spanned<crate::ast::Expr>,
+        expr: Spanned<Expr>,
         input_frame: Vec<String>,
         entry_name: String,
-        sm: crate::diag::SourceMap,
+        sm: SourceMap,
     ) -> io::Result<ReplCompiledEntry> {
-        let mut t = crate::types::ConcreteTypes;
-        let out = match crate::frontend::compile_repl_expr_with_types(
+        let mut t = ConcreteTypes;
+        let out = match compile_repl_expr_with_types(
             &mut t,
             self.session_program(),
             expr,
             input_frame,
             entry_name.clone(),
             sm,
-            &crate::telemetry::NullTelemetry,
+            &NullTelemetry,
         ) {
             Ok(out) => out,
             Err(err) => {
@@ -616,7 +561,7 @@ impl ReplWorld {
             .diagnostics
             .as_slice()
             .iter()
-            .any(|d| d.severity == crate::diag::diagnostic::Severity::Error)
+            .any(|d| d.severity == Severity::Error)
         {
             return Err(diagnostics_to_io_error(
                 &out.frontend.sm,
@@ -625,10 +570,7 @@ impl ReplWorld {
         }
         let graph = prepare_repl_frontend(&mut t, out.frontend)?;
         let Some(entry_fn) = graph.module.fn_by_name(&entry_name).map(|f| f.id) else {
-            return Err(io::Error::other(format!(
-                "repl entry `{}` not lowered",
-                entry_name
-            )));
+            return Err(io::Error::other(format!("repl entry `{}` not lowered", entry_name)));
         };
         let mut entry_program = Program::default();
         entry_program.items.push(out.entry_item);
@@ -649,7 +591,7 @@ impl ReplWorld {
         lookup_doc(&self.compile_time, name)
     }
 
-    fn compile_session_module(&self) -> io::Result<crate::fz_ir::Module> {
+    fn compile_session_module(&self) -> io::Result<Module> {
         compile_parsed_program_module(self.session_program())
     }
 
@@ -665,9 +607,8 @@ impl ReplWorld {
     }
 
     fn load_docs_and_macros(&mut self, prog: Program) -> Result<(), String> {
-        let mut ct = crate::types::ConcreteTypes;
-        let mut prog = crate::frontend::resolve::flatten_modules(&mut ct, prog)
-            .map_err(|e| format!("module: {}", e))?;
+        let mut ct = ConcreteTypes;
+        let mut prog = flatten_modules(&mut ct, prog).map_err(|e| format!("module: {}", e))?;
         for (path, doc) in &prog.module_docs {
             self.compile_time
                 .module_docs
@@ -678,7 +619,7 @@ impl ReplWorld {
             return Err(format!("load macros: {}", e));
         }
         let live = self.compile_time.macro_names.borrow().clone();
-        if let Err(e) = crate::frontend::macros::expand_with(&mut prog, &self.compile_time, &live) {
+        if let Err(e) = expand_with(&mut prog, &self.compile_time, &live) {
             return Err(format!("macro: {}", e));
         }
         if let Err(e) = load_items_filtered(&self.compile_time, &prog, /*macros=*/ false) {
@@ -689,18 +630,13 @@ impl ReplWorld {
 }
 
 pub(crate) enum ReplChunkOutcome {
-    Ok(Option<crate::ir_interp::AnyValue>),
+    Ok(Option<AnyValue>),
     Err(String),
 }
 
-fn compile_parsed_program_module(prog: Program) -> io::Result<crate::fz_ir::Module> {
-    let mut t = crate::types::ConcreteTypes;
-    let frontend = match crate::frontend::compile_program_with_types(
-        &mut t,
-        prog,
-        crate::diag::SourceMap::new(),
-        &crate::telemetry::NullTelemetry,
-    ) {
+fn compile_parsed_program_module(prog: Program) -> io::Result<Module> {
+    let mut t = ConcreteTypes;
+    let frontend = match compile_program_with_types(&mut t, prog, SourceMap::new(), &NullTelemetry) {
         Ok(ok) => ok,
         Err(err) => {
             return Err(diagnostics_to_io_error(&err.sm, err.diagnostics.as_slice()));
@@ -710,58 +646,36 @@ fn compile_parsed_program_module(prog: Program) -> io::Result<crate::fz_ir::Modu
         .diagnostics
         .as_slice()
         .iter()
-        .any(|d| d.severity == crate::diag::diagnostic::Severity::Error)
+        .any(|d| d.severity == Severity::Error)
     {
-        return Err(diagnostics_to_io_error(
-            &frontend.sm,
-            frontend.diagnostics.as_slice(),
-        ));
+        return Err(diagnostics_to_io_error(&frontend.sm, frontend.diagnostics.as_slice()));
     }
     Ok(prepare_repl_frontend(&mut t, frontend)?.module)
 }
 
-fn prepare_repl_frontend(
-    t: &mut crate::types::ConcreteTypes,
-    frontend: crate::frontend::FrontendOk,
-) -> io::Result<crate::modules::pipeline::PreparedExecutionGraph> {
+fn prepare_repl_frontend(t: &mut ConcreteTypes, frontend: FrontendOk) -> io::Result<PreparedExecutionGraph> {
     let (tel, diagnostics) = repl_diagnostic_telemetry();
-    let providers = crate::modules::pipeline::ProviderInputs::new(
-        crate::modules::artifact_store::DEFAULT_ARTIFACT_ROOT.to_string(),
-        Vec::new(),
-    );
-    let checked = crate::modules::pipeline::checked_module_for_mode(
-        t,
-        Ok(frontend),
-        &tel,
-        crate::modules::pipeline::CompileMode::Normal,
-    )
-    .map_err(|err| pipeline_error_to_io_error(err, &diagnostics))?;
-    crate::modules::pipeline::prepare_execution_graph(
-        t,
-        checked,
-        &providers,
-        &tel,
-        crate::modules::pipeline::CompileMode::Normal,
-    )
-    .map_err(|err| pipeline_error_to_io_error(err, &diagnostics))
+    let providers = ProviderInputs::new(DEFAULT_ARTIFACT_ROOT.to_string(), Vec::new());
+    let checked = checked_module_for_mode(t, Ok(frontend), &tel, CompileMode::Normal)
+        .map_err(|err| pipeline_error_to_io_error(err, &diagnostics))?;
+    prepare_execution_graph(t, checked, &providers, &tel, CompileMode::Normal)
+        .map_err(|err| pipeline_error_to_io_error(err, &diagnostics))
 }
 
-fn repl_diagnostic_telemetry() -> (crate::telemetry::ConfiguredTelemetry, Rc<RefCell<Vec<u8>>>) {
-    let tel = crate::telemetry::ConfiguredTelemetry::new();
+fn repl_diagnostic_telemetry() -> (ConfiguredTelemetry, Rc<RefCell<Vec<u8>>>) {
+    let tel = ConfiguredTelemetry::new();
     let diagnostics = attach_repl_diagnostic_renderer(&tel);
     (tel, diagnostics)
 }
 
-fn attach_repl_diagnostic_renderer(
-    tel: &crate::telemetry::ConfiguredTelemetry,
-) -> Rc<RefCell<Vec<u8>>> {
+fn attach_repl_diagnostic_renderer(tel: &ConfiguredTelemetry) -> Rc<RefCell<Vec<u8>>> {
     let diagnostics = Rc::new(RefCell::new(Vec::new()));
     tel.attach(
         &["fz", "diag"],
-        Box::new(crate::telemetry::DiagRenderer::new_to_writer(
-            Rc::new(RefCell::new(crate::diag::SourceMap::new())),
+        Box::new(DiagRenderer::new_to_writer(
+            Rc::new(RefCell::new(SourceMap::new())),
             ReplDiagnosticWriter(diagnostics.clone()),
-            crate::diag::style::ColorMode::Never,
+            ColorMode::Never,
         )),
     );
     diagnostics
@@ -786,10 +700,7 @@ fn item_fn_shapes(prog: &Program) -> Vec<(String, usize)> {
         .filter_map(|item| match &**item {
             Item::Fn(def) => Some((
                 def.name.clone(),
-                def.clauses
-                    .first()
-                    .map(|clause| clause.params.len())
-                    .unwrap_or(0),
+                def.clauses.first().map(|clause| clause.params.len()).unwrap_or(0),
             )),
             _ => None,
         })
@@ -798,7 +709,7 @@ fn item_fn_shapes(prog: &Program) -> Vec<(String, usize)> {
 
 fn append_items_grouping_fn_clauses<I>(prog: &mut Program, items: I)
 where
-    I: IntoIterator<Item = std::rc::Rc<Item>>,
+    I: IntoIterator<Item = Rc<Item>>,
 {
     for item in items {
         let Item::Fn(new_def) = item.as_ref() else {
@@ -829,41 +740,32 @@ where
         if merged.attrs.is_empty() {
             merged.attrs = new_def.attrs.clone();
         }
-        *existing = std::rc::Rc::new(Item::Fn(merged));
+        *existing = Rc::new(Item::Fn(merged));
     }
 }
 
-fn fn_def_arity(def: &crate::ast::FnDef) -> usize {
-    def.clauses
-        .first()
-        .map(|clause| clause.params.len())
-        .unwrap_or(0)
+fn fn_def_arity(def: &FnDef) -> usize {
+    def.clauses.first().map(|clause| clause.params.len()).unwrap_or(0)
 }
 
-fn diagnostics_to_io_error(
-    sm: &crate::diag::SourceMap,
-    diags: &[crate::diag::Diagnostic],
-) -> io::Error {
+fn diagnostics_to_io_error(sm: &SourceMap, diags: &[Diagnostic]) -> io::Error {
     let rendered = diags
         .iter()
-        .map(|d| crate::diag::render_one_to_string(sm, d))
+        .map(|d| render_one_to_string(sm, d))
         .collect::<Vec<_>>()
         .join("");
     io::Error::other(rendered)
 }
 
-fn pipeline_error_to_io_error(
-    err: crate::modules::pipeline::PipelineError,
-    diagnostics: &Rc<RefCell<Vec<u8>>>,
-) -> io::Error {
+fn pipeline_error_to_io_error(err: PipelineError, diagnostics: &Rc<RefCell<Vec<u8>>>) -> io::Error {
     let rendered = diagnostics.borrow();
     if !rendered.is_empty() {
         return io::Error::other(String::from_utf8_lossy(&rendered).into_owned());
     }
     drop(rendered);
     match err {
-        crate::modules::pipeline::PipelineError::Artifact(err) => io::Error::other(err.to_string()),
-        crate::modules::pipeline::PipelineError::Link(err) => io::Error::other(err.to_string()),
+        PipelineError::Artifact(err) => io::Error::other(err.to_string()),
+        PipelineError::Link(err) => io::Error::other(err.to_string()),
         err => io::Error::other(err.to_string()),
     }
 }
@@ -871,12 +773,7 @@ fn pipeline_error_to_io_error(
 /// `which == true` loads only macros; `which == false` loads only non-macros.
 /// Splitting the two phases lets the REPL register macros before running
 /// expansion on fn bodies that may call them.
-fn load_items_filtered(
-    interp: &CompileTimeEvaluator,
-    prog: &Program,
-    macros_only: bool,
-) -> Result<(), String> {
-    use std::rc::Rc;
+fn load_items_filtered(interp: &CompileTimeEvaluator, prog: &Program, macros_only: bool) -> Result<(), String> {
     for item in &prog.items {
         match &**item {
             Item::Module(_)
@@ -894,10 +791,7 @@ fn load_items_filtered(
                 }
                 if def.is_macro {
                     interp.macro_names.borrow_mut().insert(def.name.clone());
-                    interp
-                        .macro_def_spans
-                        .borrow_mut()
-                        .insert(def.name.clone(), def.span);
+                    interp.macro_def_spans.borrow_mut().insert(def.name.clone(), def.span);
                 }
                 // If a closure already exists under this name *and* the new
                 // clauses match arity, append. Otherwise replace. Matches
@@ -906,10 +800,10 @@ fn load_items_filtered(
                 let existing = interp.globals.lookup(&def.name);
                 let mut clauses = def.clauses.clone();
                 let mut doc = def.doc().map(String::from);
-                let mut spec_text = crate::exec::eval::format_spec_text(def, prog);
+                let mut spec_text = format_spec_text(def, prog);
                 if let Some(Value::Closure(c)) = existing {
-                    let same_arity = c.clauses.first().map(|cl| cl.params.len())
-                        == clauses.first().map(|cl| cl.params.len());
+                    let same_arity =
+                        c.clauses.first().map(|cl| cl.params.len()) == clauses.first().map(|cl| cl.params.len());
                     if same_arity && c.name.as_deref() == Some(def.name.as_str()) {
                         let mut combined = c.clauses.clone();
                         combined.append(&mut clauses);
@@ -923,7 +817,7 @@ fn load_items_filtered(
                         }
                     }
                 }
-                let closure = Value::Closure(Rc::new(crate::exec::value::Closure {
+                let closure = Value::Closure(Rc::new(Closure {
                     name: Some(def.name.clone()),
                     clauses,
                     env: interp.globals.clone(),
@@ -1090,10 +984,7 @@ end
             session.eval_chunk("import Utf8, only: [valid?: 1]"),
             ReplChunkOutcome::Ok(None)
         ));
-        assert_eq!(
-            eval_session_render(&mut session, "valid?(<<104, 105>>)"),
-            "true"
-        );
+        assert_eq!(eval_session_render(&mut session, "valid?(<<104, 105>>)"), "true");
     }
 
     #[test]
@@ -1103,21 +994,14 @@ end
             session.eval_chunk("alias Utf8, as: U"),
             ReplChunkOutcome::Ok(None)
         ));
-        assert_eq!(
-            eval_session_render(&mut session, "U.valid?(<<0xff, 0xff>>)"),
-            "false"
-        );
+        assert_eq!(eval_session_render(&mut session, "U.valid?(<<0xff, 0xff>>)"), "false");
     }
 
     fn eval_session_i64(session: &mut ReplSession, src: &str) -> Option<i64> {
         match session.eval_chunk(src) {
             ReplChunkOutcome::Ok(Some(value)) => value.as_i64(),
             ReplChunkOutcome::Err(err) => panic!("expected value from `{}`; got err: {}", src, err),
-            other => panic!(
-                "expected value from `{}`; got {:?}",
-                src,
-                outcome_name(&other)
-            ),
+            other => panic!("expected value from `{}`; got {:?}", src, outcome_name(&other)),
         }
     }
 
@@ -1125,11 +1009,7 @@ end
         match session.eval_chunk(src) {
             ReplChunkOutcome::Ok(Some(value)) => session.render_value(value),
             ReplChunkOutcome::Err(err) => panic!("expected value from `{}`; got err: {}", src, err),
-            other => panic!(
-                "expected value from `{}`; got {:?}",
-                src,
-                outcome_name(&other)
-            ),
+            other => panic!("expected value from `{}`; got {:?}", src, outcome_name(&other)),
         }
     }
 
@@ -1157,23 +1037,23 @@ end
     fn line_editor_validator_continues_only_parser_incomplete_input() {
         assert!(matches!(
             ReplEditorHelper::validation_result_for("do\n  1"),
-            rustyline::validate::ValidationResult::Incomplete
+            ValidationResult::Incomplete
         ));
         assert!(matches!(
             ReplEditorHelper::validation_result_for("do\n  1\nend"),
-            rustyline::validate::ValidationResult::Valid(None)
+            ValidationResult::Valid(None)
         ));
         assert!(matches!(
             ReplEditorHelper::validation_result_for("1 2"),
-            rustyline::validate::ValidationResult::Valid(None)
+            ValidationResult::Valid(None)
         ));
         assert!(matches!(
             ReplEditorHelper::validation_result_for(":q"),
-            rustyline::validate::ValidationResult::Valid(None)
+            ValidationResult::Valid(None)
         ));
         assert!(matches!(
             ReplEditorHelper::validation_result_for("   "),
-            rustyline::validate::ValidationResult::Valid(None)
+            ValidationResult::Valid(None)
         ));
     }
 
@@ -1284,10 +1164,7 @@ fn add1(n), do: n + 1"#
                 "expected composition boundary error, got: {}",
                 msg
             ),
-            other => panic!(
-                "expected composition boundary error, got {:?}",
-                outcome_name(&other)
-            ),
+            other => panic!("expected composition boundary error, got {:?}", outcome_name(&other)),
         }
     }
 
@@ -1321,10 +1198,7 @@ fn add1(n), do: n + 1"#
     #[test]
     fn repl_session_destructuring_binding_persists_across_chunks() {
         let mut session = ReplSession::new();
-        assert_eq!(
-            eval_session_render(&mut session, "{a, b} = {1, 2}"),
-            "{1, 2}"
-        );
+        assert_eq!(eval_session_render(&mut session, "{a, b} = {1, 2}"), "{1, 2}");
         assert_eq!(eval_session_i64(&mut session, "a + b"), Some(3));
     }
 
@@ -1488,20 +1362,13 @@ fn add1(n), do: n + 1"#
 
     #[test]
     fn appends_clauses_to_existing_fn() {
-        let r = drive(&[
-            "fn fact(0), do: 1",
-            "fn fact(n), do: n * fact(n - 1)",
-            "fact(6)",
-        ]);
+        let r = drive(&["fn fact(0), do: 1", "fn fact(n), do: n * fact(n - 1)", "fact(6)"]);
         assert!(r[2].as_deref() == Ok("720"), "expected 720, got {:?}", r[2]);
     }
 
     #[test]
     fn accepts_multiline_do_end_from_editor_buffer() {
-        let r = drive(&[
-            "fn double_plus(x) do\n  y = x + 1\n  y * 2\nend",
-            "double_plus(20)",
-        ]);
+        let r = drive(&["fn double_plus(x) do\n  y = x + 1\n  y * 2\nend", "double_plus(20)"]);
         let last = r.last().unwrap();
         assert_eq!(last.as_deref(), Ok("42"), "got {:?}", last);
     }
@@ -1513,13 +1380,10 @@ fn add1(n), do: n + 1"#
         let interp = CompileTimeEvaluator::new();
         let toks = Lexer::new(src).tokenize().expect("lex");
         let prog = Parser::new(toks).parse_program().expect("parse");
-        let mut ct = crate::types::ConcreteTypes;
-        let prog = crate::frontend::resolve::flatten_modules(&mut ct, prog).expect("resolve");
+        let mut ct = ConcreteTypes;
+        let prog = flatten_modules(&mut ct, prog).expect("resolve");
         for (path, doc) in &prog.module_docs {
-            interp
-                .module_docs
-                .borrow_mut()
-                .insert(path.clone(), doc.clone());
+            interp.module_docs.borrow_mut().insert(path.clone(), doc.clone());
         }
         load_program_test(&interp, &prog).expect("load");
         interp
@@ -1534,16 +1398,8 @@ fn add1(n), do: n + 1"#
         }
     }
 
-    fn parse_world_expr(
-        src: &str,
-    ) -> (
-        crate::ast::Spanned<crate::ast::Expr>,
-        crate::diag::SourceMap,
-    ) {
-        match ReplWorld::new()
-            .parse_chunk(src)
-            .expect("parse world chunk")
-        {
+    fn parse_world_expr(src: &str) -> (Spanned<Expr>, SourceMap) {
+        match ReplWorld::new().parse_chunk(src).expect("parse world chunk") {
             ReplWorldChunk::Expr { expr, sm } => (expr, sm),
             ReplWorldChunk::Items(_) => panic!("expected expression chunk"),
         }
@@ -1636,16 +1492,8 @@ end
 "#,
         );
         let out = lookup_doc(&interp, "M.add1");
-        assert!(
-            out.contains("@spec"),
-            "should render @spec line; got: {}",
-            out
-        );
-        assert!(
-            out.contains("@doc"),
-            "should render @doc line; got: {}",
-            out
-        );
+        assert!(out.contains("@spec"), "should render @spec line; got: {}", out);
+        assert!(out.contains("@doc"), "should render @doc line; got: {}", out);
         // Type display renders integer as `int` (the lattice's name).
         assert!(
             out.contains("(int) -> int"),
@@ -1666,11 +1514,7 @@ end
 "#,
         );
         let out = lookup_doc(&interp, "M.add1");
-        assert!(
-            out.contains("@spec"),
-            "should render @spec line; got: {}",
-            out
-        );
+        assert!(out.contains("@spec"), "should render @spec line; got: {}", out);
         assert!(
             !out.contains("no documentation"),
             "@spec alone counts as documentation; got: {}",
@@ -1691,18 +1535,13 @@ end
         );
         let out = lookup_doc(&interp, "M.pick");
         assert_eq!(
-            out.lines()
-                .filter(|line| line.starts_with("@spec:"))
-                .count(),
+            out.lines().filter(|line| line.starts_with("@spec:")).count(),
             2,
             "should render every @spec arrow; got: {}",
             out
         );
         assert!(out.contains("(int) -> int"), "missing integer spec: {out}");
-        assert!(
-            out.contains("(float) -> float"),
-            "missing float spec: {out}"
-        );
+        assert!(out.contains("(float) -> float"), "missing float spec: {out}");
     }
 
     #[test]

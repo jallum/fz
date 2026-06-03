@@ -1,24 +1,28 @@
 //! The `Descr` set-theoretic type descriptor — its fields and inherent impls.
 
-use crate::types::{MapKey, TypeVarId};
+use crate::fz_ir::FnId;
+use crate::types::{MapKey, Nominals, TypeVarId};
 
-use super::bits::{BasicBits, F64Bits};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::mem::replace;
+
+use super::bits::{BASIC_NAMES, BasicBits, F64Bits};
 use super::conj::Conj;
 use super::dnf::{
-    dnf_intersect, dnf_neg, dnf_union, is_dnf_top, normalize_empty_nonempty_list_unions,
-    subsumption_dedup,
+    dnf_intersect, dnf_neg, dnf_union, is_dnf_top, normalize_empty_nonempty_list_unions, subsumption_dedup,
 };
 use super::emptiness::{
-    Memo, func_clause_empty, list_clause_empty, map_clause_empty, resource_clause_empty,
-    tuple_clause_empty,
+    Memo, func_clause_empty, list_clause_empty, map_clause_empty, resource_clause_empty, tuple_clause_empty,
 };
-use super::lit_set::{
-    AtomSet, FloatSet, IntSet, LiteralSet, VarSet, closure_ret_var_id, closure_var_id,
+use super::format::{
+    format_arrow_clause, format_list_clause, format_lit_set_capped, format_map_clause, format_resource_clause,
+    format_tuple_clause, render_reserved_atom_set,
 };
+use super::lit_set::{AtomSet, FloatSet, IntSet, LiteralSet, VarSet, closure_ret_var_id, closure_var_id};
 use super::sigs::{ArrowSig, ClosureLit, ListSig, MapSig, ResourceSig, TupleSig};
 use super::views::{
-    AtomTypeTest, AtomView, BrandView, Component, FloatView, FuncView, IntView, ListView, MapView,
-    OpaqueView, ResourceView, TupleView, VarView,
+    AtomTypeTest, AtomView, BrandView, Component, FloatView, FuncView, IntView, ListView, MapView, OpaqueView,
+    ResourceView, TupleView, VarView,
 };
 use super::{ty_descr, ty_from_descr};
 
@@ -173,12 +177,10 @@ impl Descr {
                 .chain(c.neg.iter())
                 .any(|sig| sig.elem.as_ref().is_some_and(|elem| elem.has_vars()))
         });
-        let resource_any = self.resources.iter().any(|c| {
-            c.pos
-                .iter()
-                .chain(c.neg.iter())
-                .any(|sig| sig.payload.has_vars())
-        });
+        let resource_any = self
+            .resources
+            .iter()
+            .any(|c| c.pos.iter().chain(c.neg.iter()).any(|sig| sig.payload.has_vars()));
         let map_any = self.maps.iter().any(|c| {
             c.pos
                 .iter()
@@ -199,7 +201,7 @@ impl Descr {
     /// operational. The lattice does not know which of its names
     /// substitute — that's a property of the caller. This walk is the
     /// caller.
-    pub(crate) fn instantiate(&self, sigma: &std::collections::HashMap<TypeVarId, Descr>) -> Descr {
+    pub(crate) fn instantiate(&self, sigma: &HashMap<TypeVarId, Descr>) -> Descr {
         if !self.has_vars() {
             return self.clone();
         }
@@ -208,7 +210,7 @@ impl Descr {
         let mut passthrough_vars = self.vars.clone();
         if !self.vars.cofinite {
             // Finite set of explicit var ids — substitute each that σ covers.
-            let mut new_set = std::collections::BTreeSet::new();
+            let mut new_set = BTreeSet::new();
             for id in &self.vars.set {
                 match sigma.get(id) {
                     Some(replacement) => {
@@ -256,10 +258,7 @@ impl Descr {
                     .iter()
                     .map(|sig| ListSig {
                         empty: sig.empty,
-                        elem: sig
-                            .elem
-                            .as_ref()
-                            .map(|elem| Box::new(elem.instantiate(sigma))),
+                        elem: sig.elem.as_ref().map(|elem| Box::new(elem.instantiate(sigma))),
                     })
                     .collect(),
                 neg: c
@@ -267,10 +266,7 @@ impl Descr {
                     .iter()
                     .map(|sig| ListSig {
                         empty: sig.empty,
-                        elem: sig
-                            .elem
-                            .as_ref()
-                            .map(|elem| Box::new(elem.instantiate(sigma))),
+                        elem: sig.elem.as_ref().map(|elem| Box::new(elem.instantiate(sigma))),
                     })
                     .collect(),
             })
@@ -375,11 +371,7 @@ impl Descr {
     /// If σ would bind the same id to incompatible witnesses, later bindings
     /// win — call sites supplying inconsistent witnesses are caller bugs,
     /// surfaced by the planner's downstream emptiness checks.
-    pub(crate) fn collect_subst_into(
-        pattern: &Descr,
-        witness: &Descr,
-        sigma: &mut std::collections::HashMap<TypeVarId, Descr>,
-    ) {
+    pub(crate) fn collect_subst_into(pattern: &Descr, witness: &Descr, sigma: &mut HashMap<TypeVarId, Descr>) {
         if pattern.vars.cofinite {
             // pattern.vars is "any var" — meaningless as a binding source;
             // skip. (This shape arises only from Descr::any() patterns.)
@@ -462,11 +454,7 @@ impl Descr {
             Component::Atoms(v) => {
                 let mut it = v.finite()?;
                 let first = it.next()?;
-                if it.next().is_none() {
-                    Some(first)
-                } else {
-                    None
-                }
+                if it.next().is_none() { Some(first) } else { None }
             }
             _ => None,
         }
@@ -528,11 +516,7 @@ impl Descr {
     fn single_component(&self) -> Option<Component<'_>> {
         let mut it = self.components();
         let first = it.next()?;
-        if it.next().is_some() {
-            None
-        } else {
-            Some(first)
-        }
+        if it.next().is_some() { None } else { Some(first) }
     }
 
     /// Max depth of nested Descrs reachable through structural axes. A leaf
@@ -602,23 +586,13 @@ impl Descr {
                 Component::Basic(_) => false, // handled above
                 Component::Atoms(_) => other.components().any(|d| matches!(d, Component::Atoms(_))),
                 Component::Ints(_) => other.components().any(|d| matches!(d, Component::Ints(_))),
-                Component::Floats(_) => other
-                    .components()
-                    .any(|d| matches!(d, Component::Floats(_))),
-                Component::Opaques(_) => other
-                    .components()
-                    .any(|d| matches!(d, Component::Opaques(_))),
-                Component::Brands(_) => other
-                    .components()
-                    .any(|d| matches!(d, Component::Brands(_))),
+                Component::Floats(_) => other.components().any(|d| matches!(d, Component::Floats(_))),
+                Component::Opaques(_) => other.components().any(|d| matches!(d, Component::Opaques(_))),
+                Component::Brands(_) => other.components().any(|d| matches!(d, Component::Brands(_))),
                 Component::Vars(_) => other.components().any(|d| matches!(d, Component::Vars(_))),
-                Component::Tuples(_) => other
-                    .components()
-                    .any(|d| matches!(d, Component::Tuples(_))),
+                Component::Tuples(_) => other.components().any(|d| matches!(d, Component::Tuples(_))),
                 Component::Lists(_) => other.components().any(|d| matches!(d, Component::Lists(_))),
-                Component::Resources(_) => other
-                    .components()
-                    .any(|d| matches!(d, Component::Resources(_))),
+                Component::Resources(_) => other.components().any(|d| matches!(d, Component::Resources(_))),
                 Component::Funcs(_) => other.components().any(|d| matches!(d, Component::Funcs(_))),
                 Component::Maps(_) => other.components().any(|d| matches!(d, Component::Maps(_))),
             };
@@ -644,9 +618,7 @@ impl Descr {
     /// True iff this descriptor extracts to a singleton literal on some
     /// scalar axis (int, atom, float).
     pub(crate) fn is_singleton_literal(&self) -> bool {
-        self.as_int_singleton().is_some()
-            || self.as_atom_singleton().is_some()
-            || self.as_float_singleton().is_some()
+        self.as_int_singleton().is_some() || self.as_atom_singleton().is_some() || self.as_float_singleton().is_some()
     }
 
     /// If this descriptor is a singleton scalar that can serve as a
@@ -735,71 +707,41 @@ impl Descr {
             axis_free(d)
                 .then_some(())
                 .and_then(|_| single_positive(&d.tuples))
-                .filter(|_| {
-                    d.lists.is_empty()
-                        && d.resources.is_empty()
-                        && d.funcs.is_empty()
-                        && d.maps.is_empty()
-                })
+                .filter(|_| d.lists.is_empty() && d.resources.is_empty() && d.funcs.is_empty() && d.maps.is_empty())
         }
 
         fn pure_list(d: &Descr) -> Option<&ListSig> {
             axis_free(d)
                 .then_some(())
                 .and_then(|_| single_positive(&d.lists))
-                .filter(|_| {
-                    d.tuples.is_empty()
-                        && d.resources.is_empty()
-                        && d.funcs.is_empty()
-                        && d.maps.is_empty()
-                })
+                .filter(|_| d.tuples.is_empty() && d.resources.is_empty() && d.funcs.is_empty() && d.maps.is_empty())
         }
 
         fn pure_resource(d: &Descr) -> Option<&ResourceSig> {
             axis_free(d)
                 .then_some(())
                 .and_then(|_| single_positive(&d.resources))
-                .filter(|_| {
-                    d.tuples.is_empty()
-                        && d.lists.is_empty()
-                        && d.funcs.is_empty()
-                        && d.maps.is_empty()
-                })
+                .filter(|_| d.tuples.is_empty() && d.lists.is_empty() && d.funcs.is_empty() && d.maps.is_empty())
         }
 
         fn pure_arrow(d: &Descr) -> Option<&ArrowSig> {
             axis_free(d)
                 .then_some(())
                 .and_then(|_| single_positive(&d.funcs))
-                .filter(|_| {
-                    d.tuples.is_empty()
-                        && d.lists.is_empty()
-                        && d.resources.is_empty()
-                        && d.maps.is_empty()
-                })
+                .filter(|_| d.tuples.is_empty() && d.lists.is_empty() && d.resources.is_empty() && d.maps.is_empty())
         }
 
         fn pure_map(d: &Descr) -> Option<&MapSig> {
             axis_free(d)
                 .then_some(())
                 .and_then(|_| single_positive(&d.maps))
-                .filter(|_| {
-                    d.tuples.is_empty()
-                        && d.lists.is_empty()
-                        && d.resources.is_empty()
-                        && d.funcs.is_empty()
-                })
+                .filter(|_| d.tuples.is_empty() && d.lists.is_empty() && d.resources.is_empty() && d.funcs.is_empty())
         }
 
         if let (Some(lhs), Some(rhs)) = (pure_tuple(self), pure_tuple(other))
             && lhs.elems.len() == rhs.elems.len()
         {
-            return Descr::tuple_of(
-                lhs.elems
-                    .iter()
-                    .zip(rhs.elems.iter())
-                    .map(|(l, r)| l.refine_widen(r)),
-            );
+            return Descr::tuple_of(lhs.elems.iter().zip(rhs.elems.iter()).map(|(l, r)| l.refine_widen(r)));
         }
 
         if let (Some(lhs), Some(rhs)) = (pure_list(self), pure_list(other)) {
@@ -829,10 +771,7 @@ impl Descr {
             && lhs.args.len() == rhs.args.len()
         {
             return Descr::arrow(
-                lhs.args
-                    .iter()
-                    .zip(rhs.args.iter())
-                    .map(|(l, r)| l.union(r)),
+                lhs.args.iter().zip(rhs.args.iter()).map(|(l, r)| l.union(r)),
                 lhs.ret.refine_widen(&rhs.ret),
             );
         }
@@ -863,10 +802,7 @@ impl Descr {
         };
         let map_list_sig = |s: ListSig| ListSig {
             empty: s.empty,
-            elem: s
-                .elem
-                .as_ref()
-                .map(|elem| Box::new(elem.erase_closure_identity())),
+            elem: s.elem.as_ref().map(|elem| Box::new(elem.erase_closure_identity())),
         };
         let map_resource_sig = |s: ResourceSig| ResourceSig {
             payload: Box::new(s.payload.erase_closure_identity()),
@@ -933,11 +869,7 @@ impl Descr {
     }
 
     pub(crate) fn alpha_normalize_vars(&self) -> Descr {
-        fn mapped_id(
-            old: TypeVarId,
-            sigma: &mut std::collections::BTreeMap<TypeVarId, TypeVarId>,
-            next: &mut u32,
-        ) -> TypeVarId {
+        fn mapped_id(old: TypeVarId, sigma: &mut BTreeMap<TypeVarId, TypeVarId>, next: &mut u32) -> TypeVarId {
             if let Some(mapped) = sigma.get(&old) {
                 return *mapped;
             }
@@ -947,42 +879,26 @@ impl Descr {
             fresh
         }
 
-        fn map_tuple_sig(
-            s: TupleSig,
-            sigma: &mut std::collections::BTreeMap<TypeVarId, TypeVarId>,
-            next: &mut u32,
-        ) -> TupleSig {
+        fn map_tuple_sig(s: TupleSig, sigma: &mut BTreeMap<TypeVarId, TypeVarId>, next: &mut u32) -> TupleSig {
             TupleSig {
                 elems: s.elems.iter().map(|elem| go(elem, sigma, next)).collect(),
             }
         }
 
-        fn map_list_sig(
-            s: ListSig,
-            sigma: &mut std::collections::BTreeMap<TypeVarId, TypeVarId>,
-            next: &mut u32,
-        ) -> ListSig {
+        fn map_list_sig(s: ListSig, sigma: &mut BTreeMap<TypeVarId, TypeVarId>, next: &mut u32) -> ListSig {
             ListSig {
                 empty: s.empty,
                 elem: s.elem.as_ref().map(|elem| Box::new(go(elem, sigma, next))),
             }
         }
 
-        fn map_resource_sig(
-            s: ResourceSig,
-            sigma: &mut std::collections::BTreeMap<TypeVarId, TypeVarId>,
-            next: &mut u32,
-        ) -> ResourceSig {
+        fn map_resource_sig(s: ResourceSig, sigma: &mut BTreeMap<TypeVarId, TypeVarId>, next: &mut u32) -> ResourceSig {
             ResourceSig {
                 payload: Box::new(go(&s.payload, sigma, next)),
             }
         }
 
-        fn map_arrow_sig(
-            s: ArrowSig,
-            sigma: &mut std::collections::BTreeMap<TypeVarId, TypeVarId>,
-            next: &mut u32,
-        ) -> ArrowSig {
+        fn map_arrow_sig(s: ArrowSig, sigma: &mut BTreeMap<TypeVarId, TypeVarId>, next: &mut u32) -> ArrowSig {
             ArrowSig {
                 args: s.args.iter().map(|arg| go(arg, sigma, next)).collect(),
                 ret: Box::new(go(&s.ret, sigma, next)),
@@ -997,25 +913,13 @@ impl Descr {
             }
         }
 
-        fn map_map_sig(
-            s: MapSig,
-            sigma: &mut std::collections::BTreeMap<TypeVarId, TypeVarId>,
-            next: &mut u32,
-        ) -> MapSig {
+        fn map_map_sig(s: MapSig, sigma: &mut BTreeMap<TypeVarId, TypeVarId>, next: &mut u32) -> MapSig {
             MapSig {
-                fields: s
-                    .fields
-                    .into_iter()
-                    .map(|(k, v)| (k, go(&v, sigma, next)))
-                    .collect(),
+                fields: s.fields.into_iter().map(|(k, v)| (k, go(&v, sigma, next))).collect(),
             }
         }
 
-        fn go(
-            d: &Descr,
-            sigma: &mut std::collections::BTreeMap<TypeVarId, TypeVarId>,
-            next: &mut u32,
-        ) -> Descr {
+        fn go(d: &Descr, sigma: &mut BTreeMap<TypeVarId, TypeVarId>, next: &mut u32) -> Descr {
             let mut out = d.clone();
             if !out.vars.is_any() {
                 out.vars.set = out
@@ -1048,16 +952,8 @@ impl Descr {
                 .iter()
                 .cloned()
                 .map(|conj| Conj {
-                    pos: conj
-                        .pos
-                        .into_iter()
-                        .map(|sig| map_list_sig(sig, sigma, next))
-                        .collect(),
-                    neg: conj
-                        .neg
-                        .into_iter()
-                        .map(|sig| map_list_sig(sig, sigma, next))
-                        .collect(),
+                    pos: conj.pos.into_iter().map(|sig| map_list_sig(sig, sigma, next)).collect(),
+                    neg: conj.neg.into_iter().map(|sig| map_list_sig(sig, sigma, next)).collect(),
                 })
                 .collect();
             out.resources = out
@@ -1099,22 +995,14 @@ impl Descr {
                 .iter()
                 .cloned()
                 .map(|conj| Conj {
-                    pos: conj
-                        .pos
-                        .into_iter()
-                        .map(|sig| map_map_sig(sig, sigma, next))
-                        .collect(),
-                    neg: conj
-                        .neg
-                        .into_iter()
-                        .map(|sig| map_map_sig(sig, sigma, next))
-                        .collect(),
+                    pos: conj.pos.into_iter().map(|sig| map_map_sig(sig, sigma, next)).collect(),
+                    neg: conj.neg.into_iter().map(|sig| map_map_sig(sig, sigma, next)).collect(),
                 })
                 .collect();
             out
         }
 
-        go(self, &mut std::collections::BTreeMap::new(), &mut 0)
+        go(self, &mut BTreeMap::new(), &mut 0)
     }
 
     /// Apply `f` to nested `Descr`s that are recursive input shape:
@@ -1266,11 +1154,7 @@ impl Descr {
     /// looking up `fn_id`'s spec at the matching key (see 22.9's
     /// `resolve_closure_return`).
     #[allow(dead_code)] // Used by unit tests now; production callers land in fz-ul4.27.22.10.
-    pub(crate) fn closure_lit(
-        fn_id: crate::fz_ir::FnId,
-        captures: Vec<Descr>,
-        n_args: usize,
-    ) -> Self {
+    pub(crate) fn closure_lit(fn_id: FnId, captures: Vec<Descr>, n_args: usize) -> Self {
         // fz-try.7 — type variables at the closure's surface signature
         // instead of `Descr::any()` stubs. The arrow becomes `(α₀, …, αₙ₋₁) -> β`
         // where each αᵢ and β are *deterministic* ids derived from `fn_id`
@@ -1509,11 +1393,7 @@ impl Descr {
     /// as a hard axis, so the value-fully-tagged ⊆ untagged-type case
     /// returns false. Use `is_subtype_under` whenever a Module context
     /// is available (the planner, codegen, spec dispatch).
-    pub(crate) fn is_subtype_under(
-        &self,
-        other: &Descr,
-        brand_inners: &std::collections::HashMap<String, Descr>,
-    ) -> bool {
+    pub(crate) fn is_subtype_under(&self, other: &Descr, brand_inners: &HashMap<String, Descr>) -> bool {
         // Rule (i): if `other` names specific brand tags as required,
         // `self` must already carry one. A bare-structural value
         // (`brands=none`) cannot satisfy a brand-restricted target —
@@ -1546,14 +1426,8 @@ impl Descr {
 
     /// fz-axu.5 (K4) — brand-aware equivalence: mutual `is_subtype_under`.
     #[allow(dead_code)] // wiring lands in downstream tickets that use it.
-    pub(crate) fn is_equiv_under(
-        &self,
-        other: &Descr,
-        brand_inners: &std::collections::HashMap<String, Descr>,
-    ) -> bool {
-        self == other
-            || (self.is_subtype_under(other, brand_inners)
-                && other.is_subtype_under(self, brand_inners))
+    pub(crate) fn is_equiv_under(&self, other: &Descr, brand_inners: &HashMap<String, Descr>) -> bool {
+        self == other || (self.is_subtype_under(other, brand_inners) && other.is_subtype_under(self, brand_inners))
     }
 
     /// Mutual subtyping.
@@ -1583,14 +1457,11 @@ impl Descr {
     /// `none`. Unknown tags and cofinite ("any brand") axes over-approximate
     /// to `any()`, so the erased set is never too small; `value_disjoint`
     /// then errs toward "not disjoint" and never folds a comparison unsoundly.
-    pub(crate) fn erase_nominal(&self, nominals: crate::types::Nominals<'_, Descr>) -> Descr {
+    pub(crate) fn erase_nominal(&self, nominals: Nominals<'_, Descr>) -> Descr {
         let mut d = self.clone();
-        let brands = std::mem::replace(&mut d.brands, LiteralSet::none());
-        let opaques = std::mem::replace(&mut d.opaques, LiteralSet::none());
-        for (tags, inners) in [
-            (&brands, nominals.brand_inners),
-            (&opaques, nominals.opaque_inners),
-        ] {
+        let brands = replace(&mut d.brands, LiteralSet::none());
+        let opaques = replace(&mut d.opaques, LiteralSet::none());
+        for (tags, inners) in [(&brands, nominals.brand_inners), (&opaques, nominals.opaque_inners)] {
             if tags.is_none() {
                 continue;
             }
@@ -1621,11 +1492,7 @@ impl Descr {
     /// This is the ONLY disjointness that may authorize folding `==`/`!=` to a
     /// constant or pruning a pattern arm. Contrast `intersect(..).is_empty()`
     /// (brand-aware) used for typing decisions.
-    pub(crate) fn value_disjoint(
-        &self,
-        other: &Descr,
-        nominals: crate::types::Nominals<'_, Descr>,
-    ) -> bool {
+    pub(crate) fn value_disjoint(&self, other: &Descr, nominals: Nominals<'_, Descr>) -> bool {
         self.erase_nominal(nominals)
             .intersect(&other.erase_nominal(nominals))
             .is_empty()
@@ -1649,10 +1516,7 @@ impl Descr {
             && self.vars.is_none()
             && self.tuples.iter().all(|c| tuple_clause_empty(c, memo))
             && self.lists.iter().all(|c| list_clause_empty(c, memo))
-            && self
-                .resources
-                .iter()
-                .all(|c| resource_clause_empty(c, memo))
+            && self.resources.iter().all(|c| resource_clause_empty(c, memo))
             && self.funcs.iter().all(|c| func_clause_empty(c, memo))
             && self.maps.iter().all(|c| map_clause_empty(c, memo));
 
@@ -1681,47 +1545,37 @@ impl Descr {
 
         let mut parts: Vec<String> = Vec::new();
 
-        for (bit, name) in super::bits::BASIC_NAMES {
+        for (bit, name) in BASIC_NAMES {
             if self.basic.contains_all(*bit) {
                 parts.push((*name).to_string());
             }
         }
 
-        super::format::format_lit_set_capped(&mut parts, &self.ints, "int", CAP, |n| {
-            format!("{}", n)
-        });
-        super::format::format_lit_set_capped(&mut parts, &self.floats, "float", CAP, |f| {
-            format!("{}", f.get())
-        });
-        if let Some(s) = super::format::render_reserved_atom_set(&self.atoms) {
+        format_lit_set_capped(&mut parts, &self.ints, "int", CAP, |n| format!("{}", n));
+        format_lit_set_capped(&mut parts, &self.floats, "float", CAP, |f| format!("{}", f.get()));
+        if let Some(s) = render_reserved_atom_set(&self.atoms) {
             parts.push(s);
         } else {
-            super::format::format_lit_set_capped(&mut parts, &self.atoms, "atom", CAP, |a| {
-                format!(":{}", a)
-            });
+            format_lit_set_capped(&mut parts, &self.atoms, "atom", CAP, |a| format!(":{}", a));
         }
-        super::format::format_lit_set_capped(&mut parts, &self.opaques, "opaque", CAP, |n| {
-            n.clone()
-        });
-        super::format::format_lit_set_capped(&mut parts, &self.brands, "brand", CAP, |n| n.clone());
-        super::format::format_lit_set_capped(&mut parts, &self.vars, "var", CAP, |v| {
-            format!("{}", v)
-        });
+        format_lit_set_capped(&mut parts, &self.opaques, "opaque", CAP, |n| n.clone());
+        format_lit_set_capped(&mut parts, &self.brands, "brand", CAP, |n| n.clone());
+        format_lit_set_capped(&mut parts, &self.vars, "var", CAP, |v| format!("{}", v));
 
         for c in &self.tuples {
-            parts.push(super::format::format_tuple_clause(c));
+            parts.push(format_tuple_clause(c));
         }
         for c in &self.lists {
-            parts.push(super::format::format_list_clause(c));
+            parts.push(format_list_clause(c));
         }
         for c in &self.resources {
-            parts.push(super::format::format_resource_clause(c));
+            parts.push(format_resource_clause(c));
         }
         for c in &self.funcs {
-            parts.push(super::format::format_arrow_clause(c));
+            parts.push(format_arrow_clause(c));
         }
         for c in &self.maps {
-            parts.push(super::format::format_map_clause(c));
+            parts.push(format_map_clause(c));
         }
 
         parts.join(" | ")
@@ -1742,35 +1596,20 @@ impl Descr {
     /// `match` rather than rely on order.
     pub(crate) fn components(&self) -> impl Iterator<Item = Component<'_>> + '_ {
         let basic = (!self.basic.is_empty()).then_some(Component::Basic(self.basic));
-        let atoms =
-            (!self.atoms.is_none()).then_some(Component::Atoms(AtomView { inner: &self.atoms }));
+        let atoms = (!self.atoms.is_none()).then_some(Component::Atoms(AtomView { inner: &self.atoms }));
         let ints = (!self.ints.is_none()).then_some(Component::Ints(IntView { inner: &self.ints }));
-        let floats = (!self.floats.is_none()).then_some(Component::Floats(FloatView {
-            inner: &self.floats,
-        }));
-        let opaques = (!self.opaques.is_none()).then_some(Component::Opaques(OpaqueView {
-            inner: &self.opaques,
-        }));
-        let brands = (!self.brands.is_none()).then_some(Component::Brands(BrandView {
-            inner: &self.brands,
-        }));
+        let floats = (!self.floats.is_none()).then_some(Component::Floats(FloatView { inner: &self.floats }));
+        let opaques = (!self.opaques.is_none()).then_some(Component::Opaques(OpaqueView { inner: &self.opaques }));
+        let brands = (!self.brands.is_none()).then_some(Component::Brands(BrandView { inner: &self.brands }));
         let vars = (!self.vars.is_none()).then_some(Component::Vars(VarView { inner: &self.vars }));
-        let tuples = (!self.tuples.is_empty()).then_some(Component::Tuples(TupleView {
-            inner: &self.tuples,
-        }));
-        let lists =
-            (!self.lists.is_empty()).then_some(Component::Lists(ListView { inner: &self.lists }));
+        let tuples = (!self.tuples.is_empty()).then_some(Component::Tuples(TupleView { inner: &self.tuples }));
+        let lists = (!self.lists.is_empty()).then_some(Component::Lists(ListView { inner: &self.lists }));
         let resources =
-            (!self.resources.is_empty()).then_some(Component::Resources(ResourceView {
-                inner: &self.resources,
-            }));
-        let funcs =
-            (!self.funcs.is_empty()).then_some(Component::Funcs(FuncView { inner: &self.funcs }));
-        let maps =
-            (!self.maps.is_empty()).then_some(Component::Maps(MapView { inner: &self.maps }));
+            (!self.resources.is_empty()).then_some(Component::Resources(ResourceView { inner: &self.resources }));
+        let funcs = (!self.funcs.is_empty()).then_some(Component::Funcs(FuncView { inner: &self.funcs }));
+        let maps = (!self.maps.is_empty()).then_some(Component::Maps(MapView { inner: &self.maps }));
         [
-            basic, atoms, ints, floats, opaques, brands, vars, tuples, lists, resources, funcs,
-            maps,
+            basic, atoms, ints, floats, opaques, brands, vars, tuples, lists, resources, funcs, maps,
         ]
         .into_iter()
         .flatten()

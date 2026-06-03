@@ -4,9 +4,7 @@
 //! The SourceMap holds the bytes; the renderer resolves spans to display
 //! line/col on demand. This keeps the AST/IR cheap to copy.
 
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
-)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize)]
 pub struct FileId(pub u32);
 
 impl FileId {
@@ -33,10 +31,7 @@ pub struct Span {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum SpanOrigin {
     Source,
-    Expanded {
-        macro_call: Span,
-        definition: Option<Span>,
-    },
+    Expanded { macro_call: Span, definition: Option<Span> },
 }
 
 impl Span {
@@ -84,6 +79,7 @@ impl Span {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::mem::size_of;
 
     #[test]
     fn dummy_is_dummy() {
@@ -116,7 +112,7 @@ mod tests {
 
     #[test]
     fn span_is_copy_12_bytes() {
-        assert_eq!(std::mem::size_of::<Span>(), 12);
+        assert_eq!(size_of::<Span>(), 12);
         let a = Span::new(FileId(0), 1, 2);
         let _b = a; // moves are copies
         let _c = a;

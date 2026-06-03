@@ -3,7 +3,7 @@
 #![allow(unused_imports)]
 
 use super::*;
-use crate::fz_ir::{BinOp, Const, FnId, Module, Prim, Stmt, Term, UnOp};
+use crate::fz_ir::{BinOp, Const, FnId, FnIr, Module, Prim, Stmt, Term, UnOp};
 use cranelift_codegen::Context;
 use cranelift_codegen::ir::{
     self, AbiParam, BlockArg, InstBuilder, MemFlags, Signature,
@@ -31,11 +31,11 @@ pub(crate) struct EntryHarnessOut {
     pub(super) list_tail_param: Option<ir::Value>,
 }
 
-pub(crate) fn build_entry_harness<M: cranelift_module::Module>(
+pub(crate) fn build_entry_harness<M: ClModule>(
     body: &mut CodegenFn<'_, '_, '_, M>,
     env: &CodegenEnv<'_>,
     schemas: &[Schema],
-    f: &crate::fz_ir::FnIr,
+    f: &FnIr,
     this_spec_id: u32,
     is_native: bool,
     is_cont_fn: bool,
@@ -109,24 +109,15 @@ pub(crate) fn build_entry_harness<M: cranelift_module::Module>(
             let slot_kind = &my_schema.fields[i + 1].kind;
             let binding = match slot_kind {
                 FieldKind::RawF64 => {
-                    let f = body
-                        .b
-                        .ins()
-                        .load(types::F64, MemFlags::trusted(), frame_ptr, off);
+                    let f = body.b.ins().load(types::F64, MemFlags::trusted(), frame_ptr, off);
                     CodegenValue::from_abi_value(f, ArgRepr::RawF64)
                 }
                 FieldKind::RawI64 => {
-                    let n = body
-                        .b
-                        .ins()
-                        .load(types::I64, MemFlags::trusted(), frame_ptr, off);
+                    let n = body.b.ins().load(types::I64, MemFlags::trusted(), frame_ptr, off);
                     CodegenValue::from_abi_value(n, ArgRepr::RawInt)
                 }
                 _ => {
-                    let value_ref =
-                        body.b
-                            .ins()
-                            .load(types::I64, MemFlags::trusted(), frame_ptr, off);
+                    let value_ref = body.b.ins().load(types::I64, MemFlags::trusted(), frame_ptr, off);
                     CodegenValue::any_ref(value_ref)
                 }
             };
@@ -164,10 +155,10 @@ pub(crate) fn build_entry_harness<M: cranelift_module::Module>(
 /// entry.
 ///
 /// Returns (frame_ptr, host_ctx, cont_param, list_tail_param).
-fn harness_cont_fn<M: cranelift_module::Module>(
+fn harness_cont_fn<M: ClModule>(
     body: &mut CodegenFn<'_, '_, '_, M>,
     env: &CodegenEnv<'_>,
-    f: &crate::fz_ir::FnIr,
+    f: &FnIr,
     entry_blk: &crate::fz_ir::Block,
     params: &[ir::Value],
     my_param_reprs: &[ArgRepr],
@@ -181,14 +172,10 @@ fn harness_cont_fn<M: cranelift_module::Module>(
     Option<ir::Value>,
 ) {
     let tuple_fields = demand_abi.tuple_field_arity();
-    let extras_count =
-        tuple_fields.unwrap_or_else(|| env.cont_extras_count.get(&f.id).copied().unwrap_or(1));
+    let extras_count = tuple_fields.unwrap_or_else(|| env.cont_extras_count.get(&f.id).copied().unwrap_or(1));
     let mut param_cursor = 0;
     if let Some(field_count) = tuple_fields {
-        let tuple_param = entry_blk
-            .params
-            .first()
-            .expect("TupleFields cont requires tuple slot0");
+        let tuple_param = entry_blk.params.first().expect("TupleFields cont requires tuple slot0");
         for (i, repr) in my_param_reprs.iter().copied().enumerate().take(field_count) {
             let binding = take_param_binding(body.b, params, &mut param_cursor, repr);
             tuple_field_params.insert((tuple_param.0, i as u32), binding);
@@ -196,34 +183,21 @@ fn harness_cont_fn<M: cranelift_module::Module>(
     } else {
         for (i, p) in entry_blk.params.iter().take(extras_count).enumerate() {
             let repr = my_param_reprs[i];
-            var_env.insert(
-                p.0,
-                take_param_binding(body.b, params, &mut param_cursor, repr),
-            );
+            var_env.insert(p.0, take_param_binding(body.b, params, &mut param_cursor, repr));
         }
     }
     let self_val = params[param_cursor];
-    let first_capture_param = if tuple_fields.is_some() {
-        1
-    } else {
-        extras_count
-    };
+    let first_capture_param = if tuple_fields.is_some() { 1 } else { extras_count };
     let has_appended_list_tail = demand_abi.carries_list_tail_capture();
     let user_captures = entry_blk.params.len().saturating_sub(first_capture_param);
-    for (i, p) in entry_blk
-        .params
-        .iter()
-        .enumerate()
-        .skip(first_capture_param)
-    {
+    for (i, p) in entry_blk.params.iter().enumerate().skip(first_capture_param) {
         let capture_idx = 1 + i - first_capture_param;
         let repr_idx = if tuple_fields.is_some() {
             extras_count + i - first_capture_param
         } else {
             i
         };
-        let binding =
-            body.closure_capture_as_binding(self_val, capture_idx, my_param_reprs[repr_idx]);
+        let binding = body.closure_capture_as_binding(self_val, capture_idx, my_param_reprs[repr_idx]);
         var_env.insert(p.0, binding);
     }
     let list_tail_val = if has_appended_list_tail {
@@ -249,7 +223,7 @@ fn harness_cont_fn<M: cranelift_module::Module>(
 /// capture repr internally.
 ///
 /// Returns (frame_ptr, host_ctx, cont_param, list_tail_param).
-fn harness_closure_target<M: cranelift_module::Module>(
+fn harness_closure_target<M: ClModule>(
     body: &mut CodegenFn<'_, '_, '_, M>,
     entry_blk: &crate::fz_ir::Block,
     params: &[ir::Value],
@@ -267,10 +241,7 @@ fn harness_closure_target<M: cranelift_module::Module>(
     let mut param_cursor = 0;
     for (j, p) in entry_blk.params.iter().enumerate().skip(n_caps) {
         let repr = my_param_reprs[j];
-        var_env.insert(
-            p.0,
-            take_param_binding(body.b, params, &mut param_cursor, repr),
-        );
+        var_env.insert(p.0, take_param_binding(body.b, params, &mut param_cursor, repr));
     }
     let self_val = params[param_cursor];
     let list_tail_val = if has_list_tail_dest {
@@ -285,10 +256,7 @@ fn harness_closure_target<M: cranelift_module::Module>(
     }
     debug_assert_eq!(
         param_cursor,
-        my_param_reprs[n_caps..]
-            .iter()
-            .map(ArgRepr::abi_arity)
-            .sum::<usize>()
+        my_param_reprs[n_caps..].iter().map(ArgRepr::abi_arity).sum::<usize>()
     );
     let _ = self_val;
     (None, None, Some(cont_val), list_tail_val)

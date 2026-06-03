@@ -57,8 +57,7 @@ pub(crate) fn emit_return<M: cranelift_module::Module>(
     frame_ptr: Option<ir::Value>,
     value: CodegenValue,
 ) {
-    let frame_ptr = frame_ptr
-        .expect("emit_return reached from native-fn body — planned ABI invariant violated");
+    let frame_ptr = frame_ptr.expect("emit_return reached from native-fn body — planned ABI invariant violated");
     let cont_ptr = body
         .b
         .ins()
@@ -71,9 +70,7 @@ pub(crate) fn emit_return<M: cranelift_module::Module>(
     let halt_blk = body.b.create_block();
     let invoke_blk = body.b.create_block();
     let no_args: Vec<BlockArg> = Vec::new();
-    body.b
-        .ins()
-        .brif(is_null, halt_blk, &no_args, invoke_blk, &no_args);
+    body.b.ins().brif(is_null, halt_blk, &no_args, invoke_blk, &no_args);
 
     // halt: record the strict value and return null (reusing `zero`).
     body.b.switch_to_block(halt_blk);
@@ -115,8 +112,7 @@ pub(crate) fn emit_call<M: cranelift_module::Module>(
     args: &[CodegenValue],
     cont: Option<(u32, &[CodegenValue])>,
 ) {
-    let frame_ptr =
-        frame_ptr.expect("emit_call reached from native-fn body — planned ABI invariant violated");
+    let frame_ptr = frame_ptr.expect("emit_call reached from native-fn body — planned ABI invariant violated");
     // Read my cont_ptr from current frame[16] — this becomes the cont frame's cont_ptr.
     let my_cont = body
         .b
@@ -173,8 +169,7 @@ pub(crate) fn emit_tail_call<M: cranelift_module::Module>(
     callee_id: u32,
     args: &[CodegenValue],
 ) {
-    let frame_ptr = frame_ptr
-        .expect("emit_tail_call reached from native-fn body — planned ABI invariant violated");
+    let frame_ptr = frame_ptr.expect("emit_tail_call reached from native-fn body — planned ABI invariant violated");
     let callee_schema = &schemas[callee_id as usize];
 
     if self_id == callee_id {

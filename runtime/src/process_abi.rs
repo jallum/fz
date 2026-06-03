@@ -4,19 +4,20 @@
 //! intentionally part of the runtime/codegen ABI.
 
 use crate::process::Process;
+use std::mem::offset_of;
 
-pub const PROCESS_REDUCTIONS_REMAINING_OFFSET: i32 =
-    std::mem::offset_of!(Process, reductions_remaining) as i32;
-pub const PROCESS_YIELD_REASONS_OFFSET: i32 = std::mem::offset_of!(Process, yield_reasons) as i32;
+pub const PROCESS_REDUCTIONS_REMAINING_OFFSET: i32 = offset_of!(Process, reductions_remaining) as i32;
+pub const PROCESS_YIELD_REASONS_OFFSET: i32 = offset_of!(Process, yield_reasons) as i32;
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::heap::SchemaRegistry;
     use std::cell::RefCell;
     use std::rc::Rc;
 
     fn process() -> Process {
-        let schemas = Rc::new(RefCell::new(crate::heap::SchemaRegistry::new()));
+        let schemas = Rc::new(RefCell::new(SchemaRegistry::new()));
         Process::new(schemas)
     }
 

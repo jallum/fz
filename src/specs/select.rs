@@ -1,16 +1,14 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::types::ClosureTypes;
+use crate::types::{ClosureTypes, Ty, TypeVarId};
 
 use super::model::ResolvedSpecMatch;
 use super::{
-    ResolvedSpec, ResolvedSpecSet, ResolvedTypeShape, SchemeInstantiation, SchemeMatch,
-    StructuralCorrespondenceGroup, StructuralOccurrence, StructuralPathStep, instantiate_match,
+    ResolvedSpec, ResolvedSpecSet, ResolvedTypeShape, SchemeInstantiation, SchemeMatch, StructuralCorrespondenceGroup,
+    StructuralOccurrence, StructuralPathStep, instantiate_match,
 };
 
-pub(crate) fn spec_set_correspondence_groups(
-    spec_set: &ResolvedSpecSet,
-) -> Vec<StructuralCorrespondenceGroup> {
+pub(crate) fn spec_set_correspondence_groups(spec_set: &ResolvedSpecSet) -> Vec<StructuralCorrespondenceGroup> {
     let mut groups = BTreeSet::new();
     for spec in &spec_set.arrows {
         for group in spec_correspondence_groups(spec) {
@@ -20,13 +18,11 @@ pub(crate) fn spec_set_correspondence_groups(
     groups.into_iter().collect()
 }
 
-pub(crate) fn spec_correspondence_groups(
-    spec: &ResolvedSpec,
-) -> Vec<StructuralCorrespondenceGroup> {
+pub(crate) fn spec_correspondence_groups(spec: &ResolvedSpec) -> Vec<StructuralCorrespondenceGroup> {
     fn walk_shape(
         shape: &ResolvedTypeShape,
         path: &mut Vec<StructuralPathStep>,
-        emit: &mut impl FnMut(crate::types::TypeVarId, Vec<StructuralPathStep>),
+        emit: &mut impl FnMut(TypeVarId, Vec<StructuralPathStep>),
     ) {
         match shape {
             ResolvedTypeShape::Var(var) => emit(*var, path.clone()),
@@ -93,8 +89,7 @@ pub(crate) fn spec_correspondence_groups(
         }
     }
 
-    let mut groups: BTreeMap<crate::types::TypeVarId, BTreeSet<StructuralOccurrence>> =
-        BTreeMap::new();
+    let mut groups: BTreeMap<TypeVarId, BTreeSet<StructuralOccurrence>> = BTreeMap::new();
     let mut path = Vec::new();
 
     for (param_index, shape) in spec.param_shapes.iter().enumerate() {
@@ -123,13 +118,10 @@ pub(crate) fn spec_correspondence_groups(
                 });
             }
             _ => walk_shape(shape, &mut path, &mut |var, shape_path| {
-                groups
-                    .entry(var)
-                    .or_default()
-                    .insert(StructuralOccurrence::Param {
-                        param_index,
-                        path: shape_path,
-                    });
+                groups.entry(var).or_default().insert(StructuralOccurrence::Param {
+                    param_index,
+                    path: shape_path,
+                });
             }),
         }
     }
@@ -152,13 +144,9 @@ pub(crate) fn spec_correspondence_groups(
         .collect()
 }
 
-pub(crate) fn unique_matching_params<T>(
-    t: &mut T,
-    spec_set: &ResolvedSpecSet,
-    arg_tys: &[crate::types::Ty],
-) -> Option<Vec<crate::types::Ty>>
+pub(crate) fn unique_matching_params<T>(t: &mut T, spec_set: &ResolvedSpecSet, arg_tys: &[Ty]) -> Option<Vec<Ty>>
 where
-    T: ClosureTypes<Ty = crate::types::Ty>,
+    T: ClosureTypes<Ty = Ty>,
 {
     match matching_arrows(t, spec_set, arg_tys).as_slice() {
         [matched] => Some(matched.params.clone()),
@@ -166,13 +154,9 @@ where
     }
 }
 
-fn matching_arrows<T>(
-    t: &mut T,
-    spec_set: &ResolvedSpecSet,
-    arg_tys: &[crate::types::Ty],
-) -> Vec<ResolvedSpecMatch>
+fn matching_arrows<T>(t: &mut T, spec_set: &ResolvedSpecSet, arg_tys: &[Ty]) -> Vec<ResolvedSpecMatch>
 where
-    T: ClosureTypes<Ty = crate::types::Ty>,
+    T: ClosureTypes<Ty = Ty>,
 {
     spec_set
         .arrows
@@ -181,18 +165,12 @@ where
         .collect()
 }
 
-fn instantiate_matching_arrow<T>(
-    t: &mut T,
-    spec: &ResolvedSpec,
-    arg_tys: &[crate::types::Ty],
-) -> Option<ResolvedSpecMatch>
+fn instantiate_matching_arrow<T>(t: &mut T, spec: &ResolvedSpec, arg_tys: &[Ty]) -> Option<ResolvedSpecMatch>
 where
-    T: ClosureTypes<Ty = crate::types::Ty>,
+    T: ClosureTypes<Ty = Ty>,
 {
     match instantiate_match(t, &spec.params, &spec.result, &spec.constraints, arg_tys) {
-        SchemeInstantiation::Known(SchemeMatch { params, result }) => {
-            Some(ResolvedSpecMatch { params, result })
-        }
+        SchemeInstantiation::Known(SchemeMatch { params, result }) => Some(ResolvedSpecMatch { params, result }),
         SchemeInstantiation::Underconstrained(_) | SchemeInstantiation::Invalid => None,
     }
 }

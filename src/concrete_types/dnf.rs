@@ -35,9 +35,7 @@ pub(crate) fn dnf_union<T: Clone + PartialEq>(a: &[Conj<T>], b: &[Conj<T>]) -> V
     out
 }
 
-pub(crate) fn normalize_empty_nonempty_list_unions(
-    clauses: Vec<Conj<ListSig>>,
-) -> Vec<Conj<ListSig>> {
+pub(crate) fn normalize_empty_nonempty_list_unions(clauses: Vec<Conj<ListSig>>) -> Vec<Conj<ListSig>> {
     let has_empty_list = clauses
         .iter()
         .any(|c| c.neg.is_empty() && c.pos.len() == 1 && c.pos[0].is_exact_empty());
@@ -86,10 +84,7 @@ pub(crate) fn normalize_empty_nonempty_list_unions(
 /// Exact-equal clauses do not appear (dnf_union already dedups them
 /// structurally), but mutual subtypes are handled: the later index
 /// is dropped because the earlier survives in `keep[j]`.
-pub(crate) fn subsumption_dedup<T: Clone, F: Fn(&Conj<T>) -> Descr>(
-    clauses: Vec<Conj<T>>,
-    single: F,
-) -> Vec<Conj<T>> {
+pub(crate) fn subsumption_dedup<T: Clone, F: Fn(&Conj<T>) -> Descr>(clauses: Vec<Conj<T>>, single: F) -> Vec<Conj<T>> {
     let n = clauses.len();
     if n < 2 {
         return clauses;

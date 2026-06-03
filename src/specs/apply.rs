@@ -150,8 +150,7 @@ where
         .zip(arg_tys.iter())
         .enumerate()
     {
-        let refinement =
-            higher_order_refinement(t, pattern, matched_param, witness, callback_returns);
+        let refinement = higher_order_refinement(t, pattern, matched_param, witness, callback_returns);
         complete &= refinement.complete;
         reads.extend(refinement.reads);
         if let Some(refined) = refinement.ty {
@@ -160,15 +159,13 @@ where
     }
 
     match instantiate_match(t, &spec.params, &spec.result, &spec.constraints, &witnesses) {
-        SchemeInstantiation::Known(SchemeMatch { params, result }) => {
-            ArrowApplication::Matched(AppliedSpecArrow {
-                params,
-                result,
-                status: AppliedSpecArrowStatus::Known,
-                complete,
-                reads,
-            })
-        }
+        SchemeInstantiation::Known(SchemeMatch { params, result }) => ArrowApplication::Matched(AppliedSpecArrow {
+            params,
+            result,
+            status: AppliedSpecArrowStatus::Known,
+            complete,
+            reads,
+        }),
         SchemeInstantiation::Underconstrained(SchemeMatch { params, result }) => {
             let status = if t.has_vars(&result) {
                 AppliedSpecArrowStatus::Underconstrained

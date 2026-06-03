@@ -15,6 +15,7 @@
 //! peeking into pass internals.
 
 use std::cell::{Ref, RefCell};
+use std::io::Write;
 use std::rc::Rc;
 
 use super::event::{Measurements, Metadata};
@@ -90,11 +91,7 @@ impl Capture {
 
     /// Number of events whose name matches `name` exactly.
     pub fn count(&self, name: &[&str]) -> usize {
-        self.events
-            .borrow()
-            .iter()
-            .filter(|ev| ev.name == name)
-            .count()
+        self.events.borrow().iter().filter(|ev| ev.name == name).count()
     }
 
     /// Owned snapshots of events whose name starts with `prefix`. The
@@ -110,12 +107,7 @@ impl Capture {
 
     /// The most recently captured event with the given exact name.
     pub fn last(&self, name: &[&str]) -> Option<OwnedEvent> {
-        self.events
-            .borrow()
-            .iter()
-            .rev()
-            .find(|ev| ev.name == name)
-            .cloned()
+        self.events.borrow().iter().rev().find(|ev| ev.name == name).cloned()
     }
 
     /// True if any captured event matches `name`.
@@ -125,11 +117,7 @@ impl Capture {
 
     /// Count events by `kind`. Useful for "no errors emitted" assertions.
     pub fn count_by_kind(&self, kind: EventKind) -> usize {
-        self.events
-            .borrow()
-            .iter()
-            .filter(|ev| ev.kind == kind)
-            .count()
+        self.events.borrow().iter().filter(|ev| ev.kind == kind).count()
     }
 }
 
@@ -152,10 +140,10 @@ impl Handler for CaptureHandler {
 /// Shared test utility: returns a `(buf, writer)` pair where `writer` is a
 /// `Box<dyn Write + 'static>` that appends to `buf`. Use wherever tests need
 /// a capturable `Write` sink (JsonlBackend, DiagRenderer, etc.).
-pub fn vec_writer() -> (Rc<RefCell<Vec<u8>>>, Box<dyn std::io::Write>) {
+pub fn vec_writer() -> (Rc<RefCell<Vec<u8>>>, Box<dyn Write>) {
     let buf: Rc<RefCell<Vec<u8>>> = Rc::new(RefCell::new(Vec::new()));
     struct W(Rc<RefCell<Vec<u8>>>);
-    impl std::io::Write for W {
+    impl Write for W {
         fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
             self.0.borrow_mut().extend_from_slice(data);
             Ok(data.len())

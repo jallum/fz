@@ -4,10 +4,15 @@
 //! `.fzo` live?" It also owns the small `.fzi` read/write helpers that use
 //! that path policy.
 
+use crate::metadata;
 use crate::modules::artifact::{ArtifactFormatError, FziArtifact, FzoArtifact};
 use crate::modules::identity::ModuleName;
 use crate::modules::interface::ModuleInterface;
+use crate::telemetry::Telemetry;
 use std::collections::BTreeMap;
+use std::error::Error;
+use std::fmt;
+use std::fs::{create_dir_all, read_to_string, write};
 use std::path::{Path, PathBuf};
 
 pub const DEFAULT_ARTIFACT_ROOT: &str = "build/fz";
@@ -62,16 +67,9 @@ impl ArtifactStore {
         self.path_for(ArtifactKind::Object, module)
     }
 
-    pub fn path_for(
-        &self,
-        kind: ArtifactKind,
-        module: &ModuleName,
-    ) -> Result<PathBuf, ArtifactPathError> {
+    pub fn path_for(&self, kind: ArtifactKind, module: &ModuleName) -> Result<PathBuf, ArtifactPathError> {
         let mut path = self.root.join(kind.directory());
-        let (last, parents) = module
-            .segments()
-            .split_last()
-            .expect("ModuleName invariant: non-empty");
+        let (last, parents) = module.segments().split_last().expect("ModuleName invariant: non-empty");
         for segment in parents {
             validate_path_segment(segment)?;
             path.push(segment);
@@ -83,7 +81,7 @@ impl ArtifactStore {
 
     pub fn write_fzi_artifacts(
         &self,
-        tel: &dyn crate::telemetry::Telemetry,
+        tel: &dyn Telemetry,
         interfaces: &BTreeMap<ModuleName, ModuleInterface>,
     ) -> Result<Vec<PathBuf>, ArtifactStoreError> {
         let mut written = Vec::new();
@@ -91,29 +89,27 @@ impl ArtifactStore {
             let artifact = FziArtifact::new(interface.clone());
             let path = self.interface_path(&interface.name)?;
             if let Some(parent) = path.parent() {
-                std::fs::create_dir_all(parent).map_err(|source| ArtifactStoreError::Io {
+                create_dir_all(parent).map_err(|source| ArtifactStoreError::Io {
                     path: parent.to_path_buf(),
                     source: source.to_string(),
                 })?;
             }
-            std::fs::write(&path, artifact.serialize()).map_err(|source| {
-                ArtifactStoreError::Io {
-                    path: path.clone(),
-                    source: source.to_string(),
-                }
+            write(&path, artifact.serialize()).map_err(|source| ArtifactStoreError::Io {
+                path: path.clone(),
+                source: source.to_string(),
             })?;
             written.push(path);
         }
         tel.event(
             &["fz", "module", "fzi_written"],
-            crate::metadata! { modules: written.len() as i64 },
+            metadata! { modules: written.len() as i64 },
         );
         Ok(written)
     }
 
     pub fn write_fzo_artifacts<'a>(
         &self,
-        tel: &dyn crate::telemetry::Telemetry,
+        tel: &dyn Telemetry,
         artifacts: impl IntoIterator<Item = &'a FzoArtifact>,
     ) -> Result<Vec<PathBuf>, ArtifactStoreError> {
         let mut written = Vec::new();
@@ -129,19 +125,19 @@ impl ArtifactStore {
         }
         tel.event(
             &["fz", "module", "fzo_written"],
-            crate::metadata! { modules: written.len() as i64 },
+            metadata! { modules: written.len() as i64 },
         );
         Ok(written)
     }
 
     pub fn load_fzi_artifact(
         &self,
-        tel: &dyn crate::telemetry::Telemetry,
+        tel: &dyn Telemetry,
         module: &ModuleName,
         expected_fingerprint: Option<&[String]>,
     ) -> Result<FziArtifact, ArtifactStoreError> {
         let path = self.interface_path(module)?;
-        let text = std::fs::read_to_string(&path).map_err(|source| ArtifactStoreError::Io {
+        let text = read_to_string(&path).map_err(|source| ArtifactStoreError::Io {
             path: path.clone(),
             source: source.to_string(),
         })?;
@@ -151,7 +147,7 @@ impl ArtifactStore {
 
     pub fn load_interface_table<'a>(
         &self,
-        tel: &dyn crate::telemetry::Telemetry,
+        tel: &dyn Telemetry,
         modules: impl IntoIterator<Item = &'a ModuleName>,
     ) -> Result<BTreeMap<ModuleName, ModuleInterface>, ArtifactStoreError> {
         let modules = modules.into_iter().collect::<Vec<_>>();
@@ -163,7 +159,7 @@ impl ArtifactStore {
         if !modules.is_empty() {
             tel.event(
                 &["fz", "module", "fzi_loaded"],
-                crate::metadata! { modules: modules.len() as i64 },
+                metadata! { modules: modules.len() as i64 },
             );
         }
         Ok(table)
@@ -171,22 +167,18 @@ impl ArtifactStore {
 
     pub fn load_fzo_artifact(
         &self,
-        tel: &dyn crate::telemetry::Telemetry,
+        tel: &dyn Telemetry,
         module: &ModuleName,
         expected_interface_fingerprint: Option<&[String]>,
     ) -> Result<FzoArtifact, ArtifactStoreError> {
         let path = self.object_path(module)?;
-        let text = std::fs::read_to_string(&path).map_err(|source| ArtifactStoreError::Io {
+        let text = read_to_string(&path).map_err(|source| ArtifactStoreError::Io {
             path: path.clone(),
             source: source.to_string(),
         })?;
-        let artifact =
-            FzoArtifact::deserialize(tel, Some(&path), &text, expected_interface_fingerprint)
-                .map_err(|error| ArtifactStoreError::InvalidArtifact { path, error })?;
-        tel.event(
-            &["fz", "module", "fzo_loaded"],
-            crate::metadata! { modules: 1i64 },
-        );
+        let artifact = FzoArtifact::deserialize(tel, Some(&path), &text, expected_interface_fingerprint)
+            .map_err(|error| ArtifactStoreError::InvalidArtifact { path, error })?;
+        tel.event(&["fz", "module", "fzo_loaded"], metadata! { modules: 1i64 });
         Ok(artifact)
     }
 }
@@ -203,8 +195,8 @@ impl ArtifactPathError {
     }
 }
 
-impl std::fmt::Display for ArtifactPathError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Display for ArtifactPathError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
             "module artifact path segment `{}` is not filesystem-safe",
@@ -213,26 +205,18 @@ impl std::fmt::Display for ArtifactPathError {
     }
 }
 
-impl std::error::Error for ArtifactPathError {}
+impl Error for ArtifactPathError {}
 
 #[derive(Debug, Clone)]
 pub enum ArtifactStoreError {
     Path(ArtifactPathError),
-    MissingModuleIdentity {
-        kind: ArtifactKind,
-    },
-    Io {
-        path: PathBuf,
-        source: String,
-    },
-    InvalidArtifact {
-        path: PathBuf,
-        error: ArtifactFormatError,
-    },
+    MissingModuleIdentity { kind: ArtifactKind },
+    Io { path: PathBuf, source: String },
+    InvalidArtifact { path: PathBuf, error: ArtifactFormatError },
 }
 
-impl std::fmt::Display for ArtifactStoreError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Display for ArtifactStoreError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Path(err) => write!(f, "{err}"),
             Self::MissingModuleIdentity { kind } => {
@@ -246,7 +230,7 @@ impl std::fmt::Display for ArtifactStoreError {
     }
 }
 
-impl std::error::Error for ArtifactStoreError {}
+impl Error for ArtifactStoreError {}
 
 impl ArtifactStoreError {
     pub fn diagnostics_emitted(&self) -> bool {
@@ -262,12 +246,12 @@ impl From<ArtifactPathError> for ArtifactStoreError {
 
 fn write_artifact_text(path: &Path, text: String) -> Result<(), ArtifactStoreError> {
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|source| ArtifactStoreError::Io {
+        create_dir_all(parent).map_err(|source| ArtifactStoreError::Io {
             path: parent.to_path_buf(),
             source: source.to_string(),
         })?;
     }
-    std::fs::write(path, text).map_err(|source| ArtifactStoreError::Io {
+    write(path, text).map_err(|source| ArtifactStoreError::Io {
         path: path.to_path_buf(),
         source: source.to_string(),
     })
@@ -277,9 +261,7 @@ fn validate_path_segment(segment: &str) -> Result<(), ArtifactPathError> {
     let valid = !segment.is_empty()
         && segment != "."
         && segment != ".."
-        && segment
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'_');
+        && segment.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_');
     if valid {
         Ok(())
     } else {
@@ -292,6 +274,12 @@ fn validate_path_segment(segment: &str) -> Result<(), ArtifactPathError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::diag::Span;
+    use crate::modules::interface::{FZ_INTERFACE_ABI_VERSION, InterfaceFn};
+    use crate::telemetry::NullTelemetry;
+    use std::env::temp_dir;
+    use std::fs::remove_dir_all;
+    use std::process::id as process_id;
 
     fn module(segments: &[&str]) -> ModuleName {
         ModuleName::from_segments(segments.iter().map(|s| s.to_string()).collect())
@@ -311,10 +299,7 @@ mod tests {
             store.interface_path(&name).unwrap(),
             PathBuf::from("out/interfaces/Utf8.fzi")
         );
-        assert_eq!(
-            store.object_path(&name).unwrap(),
-            PathBuf::from("out/objects/Utf8.fzo")
-        );
+        assert_eq!(store.object_path(&name).unwrap(), PathBuf::from("out/objects/Utf8.fzo"));
     }
 
     #[test]
@@ -343,22 +328,19 @@ mod tests {
 
     #[test]
     fn writes_and_loads_fzi_artifacts_without_provider_source() {
-        let root = std::env::temp_dir().join(format!(
-            "fz-artifacts-{}-writes-and-loads-fzi",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_dir_all(&root);
+        let root = temp_dir().join(format!("fz-artifacts-{}-writes-and-loads-fzi", process_id()));
+        let _ = remove_dir_all(&root);
         let store = ArtifactStore::new(&root);
         let name = module(&["Provider"]);
         let interface = ModuleInterface {
             name: name.clone(),
-            abi_version: crate::modules::interface::FZ_INTERFACE_ABI_VERSION,
+            abi_version: FZ_INTERFACE_ABI_VERSION,
             imports: Vec::new(),
-            exports: vec![crate::modules::interface::InterfaceFn {
+            exports: vec![InterfaceFn {
                 name: "id".to_string(),
                 arity: 1,
                 specs: Vec::new(),
-                name_span: crate::diag::Span::DUMMY,
+                name_span: Span::DUMMY,
             }],
             types: Vec::new(),
             protocols: Vec::new(),
@@ -373,16 +355,12 @@ mod tests {
         let mut interfaces = BTreeMap::new();
         interfaces.insert(name.clone(), interface.clone());
 
-        let written = store
-            .write_fzi_artifacts(&crate::telemetry::NullTelemetry, &interfaces)
-            .unwrap();
+        let written = store.write_fzi_artifacts(&NullTelemetry, &interfaces).unwrap();
         assert_eq!(written, vec![root.join("interfaces/Provider.fzi")]);
 
-        let loaded = store
-            .load_interface_table(&crate::telemetry::NullTelemetry, [&name])
-            .unwrap();
+        let loaded = store.load_interface_table(&NullTelemetry, [&name]).unwrap();
         assert_eq!(loaded.get(&name), Some(&interface));
 
-        let _ = std::fs::remove_dir_all(&root);
+        let _ = remove_dir_all(&root);
     }
 }

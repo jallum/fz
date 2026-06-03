@@ -17,21 +17,22 @@
 //!   3. Remove marked blocks.
 //!   4. Repeat until no blocks were removed.
 
-use crate::fz_ir::{BitSizeIr, BlockId, Cont, FnIr, Module, Prim, Stmt, Term, Var};
+use crate::fz_ir::{
+    BitFieldIr, BitSizeIr, BlockId, Cont, ExternArg, FnIr, Module, Prim, ReceiveAfter, Stmt, Term, Var,
+};
+use crate::measurements;
+use crate::metadata;
+use crate::telemetry::Telemetry;
 use std::collections::HashMap;
 
-pub fn fuse_blocks_with_telemetry(module: &mut Module, tel: &dyn crate::telemetry::Telemetry) {
+pub fn fuse_blocks_with_telemetry(module: &mut Module, tel: &dyn Telemetry) {
     let module_path = module.module_path.clone();
     for f in &mut module.fns {
         fuse_fn_with_telemetry(&module_path, f, tel);
     }
 }
 
-pub fn fuse_fn_with_telemetry(
-    module_path: &str,
-    f: &mut FnIr,
-    tel: &dyn crate::telemetry::Telemetry,
-) {
+pub fn fuse_fn_with_telemetry(module_path: &str, f: &mut FnIr, tel: &dyn Telemetry) {
     loop {
         let removed = fuse_one_pass(module_path, f, tel);
         if !removed {
@@ -42,7 +43,7 @@ pub fn fuse_fn_with_telemetry(
 
 /// One pass: scan for single-predecessor Goto-targeted blocks, fuse them.
 /// Returns true if at least one block was fused (caller should loop again).
-fn fuse_one_pass(module_path: &str, f: &mut FnIr, tel: &dyn crate::telemetry::Telemetry) -> bool {
+fn fuse_one_pass(module_path: &str, f: &mut FnIr, tel: &dyn Telemetry) -> bool {
     // Build predecessor count for every block.
     let mut pred_count: HashMap<BlockId, usize> = HashMap::new();
     for b in &f.blocks {
@@ -159,12 +160,12 @@ fn fuse_one_pass(module_path: &str, f: &mut FnIr, tel: &dyn crate::telemetry::Te
     f.blocks.retain(|b| b.id != target_id);
     tel.execute(
         &["fz", "ir", "fuse", "block_fused"],
-        &crate::measurements! {
+        &measurements! {
             fn_id: f.id.0 as u64,
             pred_block_id: pred_id.0 as u64,
             fused_block_id: target_id.0 as u64,
         },
-        &crate::metadata! {
+        &metadata! {
             module_path: module_path.to_owned(),
             fn_name: f.name.clone(),
         },
@@ -186,12 +187,7 @@ pub(crate) fn subst_prim(p: &Prim, subst: &HashMap<Var, Var>) -> Prim {
         Prim::Extern(ident, eid, args) => Prim::Extern(
             ident.clone(),
             *eid,
-            args.iter()
-                .map(|x| crate::fz_ir::ExternArg {
-                    var: sv(x.var),
-                    ..*x
-                })
-                .collect(),
+            args.iter().map(|x| ExternArg { var: sv(x.var), ..*x }).collect(),
         ),
         Prim::ListHead(a) => Prim::ListHead(sv(*a)),
         Prim::ListTail(a) => Prim::ListTail(sv(*a)),
@@ -200,10 +196,7 @@ pub(crate) fn subst_prim(p: &Prim, subst: &HashMap<Var, Var>) -> Prim {
         Prim::MakeTuple(args) => Prim::MakeTuple(args.iter().map(|x| sv(*x)).collect()),
         Prim::MakeStruct { module, fields } => Prim::MakeStruct {
             module: module.clone(),
-            fields: fields
-                .iter()
-                .map(|(name, v)| (name.clone(), sv(*v)))
-                .collect(),
+            fields: fields.iter().map(|(name, v)| (name.clone(), sv(*v))).collect(),
         },
         Prim::DestTupleBegin { token, arity } => Prim::DestTupleBegin {
             token: *token,
@@ -244,21 +237,16 @@ pub(crate) fn subst_prim(p: &Prim, subst: &HashMap<Var, Var>) -> Prim {
         },
         Prim::TupleField(a, i) => Prim::TupleField(sv(*a), *i),
         Prim::StructField(a, name) => Prim::StructField(sv(*a), name.clone()),
-        Prim::MakeList(els, tail) => {
-            Prim::MakeList(els.iter().map(|x| sv(*x)).collect(), tail.map(sv))
-        }
+        Prim::MakeList(els, tail) => Prim::MakeList(els.iter().map(|x| sv(*x)).collect(), tail.map(sv)),
         // fz-kgk — subst_prim rewrites Var operands only; the MakeClosure
         // callsite identity stays.
         Prim::MakeClosure(ident, fid, caps) => {
             Prim::MakeClosure(ident.clone(), *fid, caps.iter().map(|x| sv(*x)).collect())
         }
-        Prim::MakeMap(entries) => {
-            Prim::MakeMap(entries.iter().map(|(k, v)| (sv(*k), sv(*v))).collect())
+        Prim::MakeMap(entries) => Prim::MakeMap(entries.iter().map(|(k, v)| (sv(*k), sv(*v))).collect()),
+        Prim::MapUpdate(base, entries) => {
+            Prim::MapUpdate(sv(*base), entries.iter().map(|(k, v)| (sv(*k), sv(*v))).collect())
         }
-        Prim::MapUpdate(base, entries) => Prim::MapUpdate(
-            sv(*base),
-            entries.iter().map(|(k, v)| (sv(*k), sv(*v))).collect(),
-        ),
         Prim::DestMapBegin { token, base, extra } => Prim::DestMapBegin {
             token: *token,
             base: base.map(sv),
@@ -288,7 +276,7 @@ pub(crate) fn subst_prim(p: &Prim, subst: &HashMap<Var, Var>) -> Prim {
         Prim::MakeBitstring(fields) => Prim::MakeBitstring(
             fields
                 .iter()
-                .map(|f| crate::fz_ir::BitFieldIr {
+                .map(|f| BitFieldIr {
                     value: sv(f.value),
                     ty: f.ty,
                     size: f.size.as_ref().map(|s| match s {
@@ -386,21 +374,14 @@ pub(crate) fn subst_term(t: &Term, subst: &HashMap<Var, Var>) -> Term {
             args: args.iter().map(|x| sv(*x)).collect(),
             continuation: subst_cont(continuation, subst),
         },
-        Term::TailCallClosure {
-            closure,
-            args,
-            ident,
-        } => Term::TailCallClosure {
+        Term::TailCallClosure { closure, args, ident } => Term::TailCallClosure {
             ident: ident.clone(),
             closure: sv(*closure),
             args: args.iter().map(|x| sv(*x)).collect(),
         },
         Term::Return(a) => Term::Return(sv(*a)),
         Term::Halt(a) => Term::Halt(sv(*a)),
-        Term::Receive {
-            continuation,
-            ident,
-        } => Term::Receive {
+        Term::Receive { continuation, ident } => Term::Receive {
             ident: ident.clone(),
             continuation: subst_cont(continuation, subst),
         },
@@ -418,7 +399,7 @@ pub(crate) fn subst_term(t: &Term, subst: &HashMap<Var, Var>) -> Term {
             ident: ident.clone(),
             clauses: clauses.clone(),
             matcher: matcher.clone(),
-            after: after.as_ref().map(|a| crate::fz_ir::ReceiveAfter {
+            after: after.as_ref().map(|a| ReceiveAfter {
                 ident: a.ident.clone(),
                 timeout: sv(a.timeout),
                 body: a.body,
@@ -441,7 +422,7 @@ pub(crate) fn subst_stmt(s: &Stmt, subst: &HashMap<Var, Var>) -> Stmt {
 mod tests {
     use super::*;
     use crate::fz_ir::{BinOp, Const, FnBuilder, FnId, ModuleBuilder, Prim, Term};
-    use crate::telemetry::Value;
+    use crate::telemetry::{Capture, ConfiguredTelemetry, NullTelemetry, Value};
 
     /// Build helper: single-entry fn A → B (A ends with Goto(B, [x])).
     /// B has one param `p`, one stmt `let r = p + const(1)`, returns r.
@@ -468,7 +449,7 @@ mod tests {
     fn fuse_single_predecessor_block() {
         let mut f = build_a_to_b();
         assert_eq!(f.blocks.len(), 2);
-        fuse_fn_with_telemetry("", &mut f, &crate::telemetry::NullTelemetry);
+        fuse_fn_with_telemetry("", &mut f, &NullTelemetry);
         assert_eq!(f.blocks.len(), 1, "B should be fused into A");
         let entry = f.block(f.entry);
         // A should have A's original stmt (const 41) + B's stmts (const 1, add)
@@ -477,8 +458,8 @@ mod tests {
 
     #[test]
     fn telemetry_reports_fused_block_identity() {
-        let tel = crate::telemetry::ConfiguredTelemetry::new();
-        let cap = crate::telemetry::Capture::new();
+        let tel = ConfiguredTelemetry::new();
+        let cap = Capture::new();
         tel.attach(&[], cap.handler());
 
         let mut mb = ModuleBuilder::new().with_module_path("Sort");
@@ -491,14 +472,8 @@ mod tests {
             .last(&["fz", "ir", "fuse", "block_fused"])
             .expect("block_fused event");
         assert!(matches!(ev.measurements.get("fn_id"), Some(Value::U64(0))));
-        assert!(matches!(
-            ev.measurements.get("pred_block_id"),
-            Some(Value::U64(0))
-        ));
-        assert!(matches!(
-            ev.measurements.get("fused_block_id"),
-            Some(Value::U64(1))
-        ));
+        assert!(matches!(ev.measurements.get("pred_block_id"), Some(Value::U64(0))));
+        assert!(matches!(ev.measurements.get("fused_block_id"), Some(Value::U64(1))));
         assert!(matches!(
             ev.metadata.get("module_path"),
             Some(Value::Str(s)) if s.as_ref() == "Sort"
@@ -534,7 +509,7 @@ mod tests {
         // The predecessor count is what matters. B still contributes a pred
         // edge to C via its terminator. Let's keep as-is: 3 blocks, C has 2 preds.
         assert_eq!(f.blocks.len(), 3);
-        fuse_fn_with_telemetry("", &mut f, &crate::telemetry::NullTelemetry);
+        fuse_fn_with_telemetry("", &mut f, &NullTelemetry);
         // C has 2 preds → must NOT be fused. B has 0 preds from A, but the
         // algorithm counts raw terminator edges, so B remains.
         assert_eq!(f.blocks.len(), 3, "C must not be fused (2 predecessors)");
@@ -562,7 +537,7 @@ mod tests {
 
         let mut f = fb.build();
         assert_eq!(f.blocks.len(), 3);
-        fuse_fn_with_telemetry("", &mut f, &crate::telemetry::NullTelemetry);
+        fuse_fn_with_telemetry("", &mut f, &NullTelemetry);
         assert_eq!(f.blocks.len(), 3, "If-targeted blocks must not be fused");
     }
 
@@ -589,7 +564,7 @@ mod tests {
 
         let mut f = fb.build();
         assert_eq!(f.blocks.len(), 3);
-        fuse_fn_with_telemetry("", &mut f, &crate::telemetry::NullTelemetry);
+        fuse_fn_with_telemetry("", &mut f, &NullTelemetry);
         assert_eq!(f.blocks.len(), 1, "A→B→C chain should fuse to 1 block");
     }
 
@@ -611,7 +586,7 @@ mod tests {
         fb.set_terminator(b_blk, Term::Return(p));
 
         let mut f = fb.build();
-        fuse_fn_with_telemetry("", &mut f, &crate::telemetry::NullTelemetry);
+        fuse_fn_with_telemetry("", &mut f, &NullTelemetry);
         assert_eq!(f.blocks.len(), 1);
         let entry_blk = f.block(f.entry);
         // Return terminator should reference c (v1), not p (v0)
@@ -639,7 +614,7 @@ mod tests {
 
         let mut f = fb.build();
         assert_eq!(f.blocks.len(), 2);
-        fuse_fn_with_telemetry("", &mut f, &crate::telemetry::NullTelemetry);
+        fuse_fn_with_telemetry("", &mut f, &NullTelemetry);
         assert_eq!(f.blocks.len(), 1, "B should be absorbed into entry A");
         // Entry block should now contain B's stmts (const 1, add).
         let entry_blk = f.block(f.entry);

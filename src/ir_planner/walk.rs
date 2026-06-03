@@ -1,25 +1,36 @@
 use super::fn_types::{
-    CallEdgePlan, CallEdgeTarget, CallableCapability, FnEffects, IncomingParamCallableCapabilities,
-    ReturnContextPlan, ReturnDemand, SpecKey, SpecPlan, WALK_CALLS,
-    fixed_point_input_tys_for_arity, forwarded_return_contract_for_target,
-    normalize_result_correspondence_key, padded_direct_input_tys, return_contract_for_target,
-    spec_key_for_fn, spec_key_for_fn_id,
+    CallEdgePlan, CallEdgeTarget, CallableCapability, FnEffects, IncomingParamCallableCapabilities, ReturnContextPlan,
+    ReturnDemand, SpecKey, SpecPlan, WALK_CALLS, fixed_point_input_tys_for_arity, forwarded_return_contract_for_target,
+    normalize_result_correspondence_key, padded_direct_input_tys, return_contract_for_target, spec_key_for_fn,
+    spec_key_for_fn_id,
 };
+use super::prim::type_prim;
 use super::reachable::cont_key_from_slot0;
 use super::return_context::{
-    continuation_empty_tail_plan, continuation_return_demand, direct_call_return_plan,
-    tail_call_return_plan,
+    continuation_empty_tail_plan, continuation_return_demand, direct_call_return_plan, tail_call_return_plan,
+};
+use super::type_fn::callable_capability_for_ty;
+use super::worklist::{
+    ActivationReturnFacts, ResultSlot0, closure_call_result_knowledge, direct_call_result_knowledge,
 };
 use crate::callsite_walk::{BlockCallsite, CallsiteKind, ContSource, block_callsites};
-use crate::fz_ir::{CallsiteId, CallsiteIdent, EmitSlot, FnId, FnIr, Module, Stmt, Term, Var};
+use crate::frontend::protocols::impl_target_type;
+use crate::fz_ir::{
+    BlockId, CallsiteId, CallsiteIdent, Cont, EmitSlot, FnId, FnIr, Module, Prim, Stmt, Term, Var,
+    receive_outcome_spec_key,
+};
+use crate::modules::identity::ExportKey;
+use crate::specs::unique_matching_params;
+use crate::types::{ClosureTypes, KeySlot, Ty, Types, key_slots_from_tys};
 use std::collections::{HashMap, HashSet};
+use std::mem::take;
 
 /// Output of one discovery walk. The driver folds this into worklist state.
 #[derive(Default)]
 pub(crate) struct WalkResult {
     /// Per-callsite capability selected for this spec. Populated for `Direct`,
     /// `ClosureCall`, `Cont`, and `CallableBoundary` slots.
-    pub(crate) call_edges: HashMap<crate::fz_ir::CallsiteId, CallEdgePlan>,
+    pub(crate) call_edges: HashMap<CallsiteId, CallEdgePlan>,
     /// `callee_key`s whose `effective_return` was consulted (for
     /// cont slot-0 keying or closure_lit return-join). Driver folds
     /// into the `return_readers` reverse index so changes
@@ -35,18 +46,14 @@ pub(crate) struct WalkResult {
 }
 
 impl WalkResult {
-    fn callsite_id(
-        caller: &SpecKey,
-        ident: &crate::fz_ir::CallsiteIdent,
-        slot: EmitSlot,
-    ) -> CallsiteId {
+    fn callsite_id(caller: &SpecKey, ident: &CallsiteIdent, slot: EmitSlot) -> CallsiteId {
         CallsiteId::new(caller.fn_id, ident, slot)
     }
 
     fn record_dispatch(
         &mut self,
         caller: &SpecKey,
-        ident: &crate::fz_ir::CallsiteIdent,
+        ident: &CallsiteIdent,
         slot: EmitSlot,
         target: SpecKey,
     ) -> CallsiteId {
@@ -64,33 +71,24 @@ impl WalkResult {
     fn record_external_dispatch(
         &mut self,
         caller: &SpecKey,
-        ident: &crate::fz_ir::CallsiteIdent,
+        ident: &CallsiteIdent,
         slot: EmitSlot,
-        target: crate::modules::identity::ExportKey,
-        input: Vec<crate::types::KeySlot>,
+        target: ExportKey,
+        input: Vec<KeySlot>,
         demand: ReturnDemand,
     ) -> CallsiteId {
         let cid = Self::callsite_id(caller, ident, slot);
         self.call_edges.insert(
             cid.clone(),
             CallEdgePlan {
-                target: CallEdgeTarget::External {
-                    target,
-                    input,
-                    demand,
-                },
+                target: CallEdgeTarget::External { target, input, demand },
                 return_contract: None,
             },
         );
         cid
     }
 
-    fn record_return_contract(
-        &mut self,
-        callsite: &CallsiteId,
-        target: SpecKey,
-        plan: Option<ReturnContextPlan>,
-    ) {
+    fn record_return_contract(&mut self, callsite: &CallsiteId, target: SpecKey, plan: Option<ReturnContextPlan>) {
         let edge = self
             .call_edges
             .get_mut(callsite)
@@ -144,15 +142,15 @@ fn merge_incoming_param_callable_capabilities(
 }
 
 struct ContinuationSlot0 {
-    ty: crate::types::Ty,
+    ty: Ty,
     capability: Option<CallableCapability>,
 }
 
 enum ProtocolDispatch {
     Local(SpecKey, usize),
     External {
-        target: crate::modules::identity::ExportKey,
-        input: Vec<crate::types::KeySlot>,
+        target: ExportKey,
+        input: Vec<KeySlot>,
         demand: ReturnDemand,
     },
 }
@@ -170,16 +168,14 @@ enum ProtocolDispatch {
 /// Cont keys are not normalized: they model dataflow from a concrete
 /// producer, not a recursive function-entry fixed point.
 #[allow(clippy::too_many_arguments)]
-pub(super) fn walk_spec_for_discovery<
-    T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
->(
+pub(super) fn walk_spec_for_discovery<T: Types<Ty = Ty> + ClosureTypes>(
     t: &mut T,
     f: &FnIr,
     caller_ft: &SpecPlan,
     m: &Module,
     fn_effects: &FnEffects,
-    activation_returns: &super::worklist::ActivationReturnFacts,
-    recursive_fns: &std::collections::HashSet<FnId>,
+    activation_returns: &ActivationReturnFacts,
+    recursive_fns: &HashSet<FnId>,
     caller_spec_key: &SpecKey,
     incoming_param_callable_capabilities: &mut IncomingParamCallableCapabilities,
     out: &mut WalkResult,
@@ -202,10 +198,7 @@ pub(super) fn walk_spec_for_discovery<
     .walk_fn(f);
 }
 
-fn collect_reachable_used_vars(
-    f: &FnIr,
-    reachable_blocks: &HashSet<crate::fz_ir::BlockId>,
-) -> HashSet<Var> {
+fn collect_reachable_used_vars(f: &FnIr, reachable_blocks: &HashSet<BlockId>) -> HashSet<Var> {
     let mut used = HashSet::new();
     for block in &f.blocks {
         if !reachable_blocks.contains(&block.id) {
@@ -220,8 +213,8 @@ fn collect_reachable_used_vars(
     used
 }
 
-fn collect_prim_vars(prim: &crate::fz_ir::Prim, used: &mut HashSet<Var>) {
-    use crate::fz_ir::{BitSizeIr, Prim};
+fn collect_prim_vars(prim: &Prim, used: &mut HashSet<Var>) {
+    use crate::fz_ir::BitSizeIr;
 
     match prim {
         Prim::Const(_) => {}
@@ -338,11 +331,7 @@ fn collect_term_vars(term: &Term, used: &mut HashSet<Var>) {
         Term::If { cond, .. } => {
             used.insert(*cond);
         }
-        Term::Call {
-            args,
-            continuation,
-            ..
-        } => {
+        Term::Call { args, continuation, .. } => {
             used.extend(args.iter().copied());
             used.extend(continuation.captured.iter().copied());
         }
@@ -385,64 +374,54 @@ fn collect_term_vars(term: &Term, used: &mut HashSet<Var>) {
 
 struct DiscoveryWalk<'a, T>
 where
-    T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
+    T: Types<Ty = Ty> + ClosureTypes,
 {
     t: &'a mut T,
     caller_ft: &'a SpecPlan,
     m: &'a Module,
     fn_effects: &'a FnEffects,
-    activation_returns: &'a super::worklist::ActivationReturnFacts,
+    activation_returns: &'a ActivationReturnFacts,
     recursive_fns: &'a HashSet<FnId>,
     caller_spec_key: &'a SpecKey,
     incoming_param_callable_capabilities: &'a mut IncomingParamCallableCapabilities,
     out: &'a mut WalkResult,
-    any_ty: crate::types::Ty,
+    any_ty: Ty,
     reachable_used_vars: HashSet<Var>,
 }
 
 impl<T> DiscoveryWalk<'_, T>
 where
-    T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
+    T: Types<Ty = Ty> + ClosureTypes,
 {
     fn walk_fn(&mut self, f: &FnIr) {
         for b in &f.blocks {
             if !self.caller_ft.reachable_blocks.contains(&b.id) {
                 continue;
             }
-            let mut env: HashMap<Var, crate::types::Ty> = self
-                .caller_ft
-                .block_envs
-                .get(&b.id)
-                .cloned()
-                .unwrap_or_default();
+            let mut env: HashMap<Var, Ty> = self.caller_ft.block_envs.get(&b.id).cloned().unwrap_or_default();
             self.walk_statements(b.id, &b.stmts, &mut env);
             self.walk_terminator(&b.terminator, &env);
         }
     }
 
-    fn walk_statements(
-        &mut self,
-        _block_id: crate::fz_ir::BlockId,
-        stmts: &[Stmt],
-        env: &mut HashMap<Var, crate::types::Ty>,
-    ) {
+    fn walk_statements(&mut self, _block_id: BlockId, stmts: &[Stmt], env: &mut HashMap<Var, Ty>) {
         for stmt in stmts {
             let Stmt::Let(v, prim) = stmt;
-            let pt_ty = super::prim::type_prim(self.t, prim, env, self.m, &HashSet::new());
+            let pt_ty = type_prim(self.t, prim, env, self.m, &HashSet::new());
             env.insert(*v, pt_ty);
             if self.reachable_used_vars.contains(v)
-                && let Stmt::Let(_, crate::fz_ir::Prim::MakeClosure(_, fn_id, captured)) = stmt
+                && let Stmt::Let(_, Prim::MakeClosure(_, fn_id, captured)) = stmt
             {
                 self.record_make_closure_target(*fn_id, captured, env);
             }
-            if let Stmt::Let(_, crate::fz_ir::Prim::Extern(ident, _, args)) = stmt {
+            if let Stmt::Let(_, Prim::Extern(ident, _, args)) = stmt {
                 let arg_vars = args.iter().map(|arg| arg.var).collect::<Vec<_>>();
                 self.record_external_callable_targets(&arg_vars, env, ident);
             }
         }
     }
 
-    fn walk_terminator(&mut self, term: &Term, env: &HashMap<Var, crate::types::Ty>) {
+    fn walk_terminator(&mut self, term: &Term, env: &HashMap<Var, Ty>) {
         let Some(term_ident) = term.ident().cloned() else {
             return;
         };
@@ -456,9 +435,7 @@ where
                 CallableCapability::OpaqueCallable => None,
             })
             .collect();
-        for BlockCallsite { slot, kind } in
-            block_callsites(self.t, term, env, &known_closure_targets)
-        {
+        for BlockCallsite { slot, kind } in block_callsites(self.t, term, env, &known_closure_targets) {
             self.record_callsite(term, &term_ident, env, slot, kind);
         }
         self.seed_receive_matched_outcomes(term);
@@ -468,7 +445,7 @@ where
         &mut self,
         term: &Term,
         term_ident: &CallsiteIdent,
-        env: &HashMap<Var, crate::types::Ty>,
+        env: &HashMap<Var, Ty>,
         slot: EmitSlot,
         kind: CallsiteKind,
     ) {
@@ -476,21 +453,11 @@ where
             CallsiteKind::Direct { callee, args } => {
                 self.record_direct_call(term, term_ident, env, slot, callee, args);
             }
-            CallsiteKind::CallClosureKnown {
-                closure,
-                target,
-                args,
-            } => {
+            CallsiteKind::CallClosureKnown { closure, target, args } => {
                 self.record_known_closure_call(term, term_ident, env, slot, closure, target, args);
             }
-            CallsiteKind::ClosureLit {
-                fn_id,
-                captures,
-                args,
-            } => {
-                self.record_closure_literal_call(
-                    term, term_ident, env, slot, fn_id, captures, args,
-                );
+            CallsiteKind::ClosureLit { fn_id, captures, args } => {
+                self.record_closure_literal_call(term, term_ident, env, slot, fn_id, captures, args);
             }
             CallsiteKind::Cont { cont, source } => {
                 self.record_continuation(term_ident, env, slot, cont.clone(), source);
@@ -502,7 +469,7 @@ where
         &mut self,
         term: &Term,
         term_ident: &CallsiteIdent,
-        env: &HashMap<Var, crate::types::Ty>,
+        env: &HashMap<Var, Ty>,
         slot: EmitSlot,
         callee: FnId,
         args: &[Var],
@@ -513,20 +480,9 @@ where
         }
         if let Some(dispatch) = self.protocol_dispatch_key(callee, args, env) {
             let ProtocolDispatch::Local(mut entry_key, n_params) = dispatch else {
-                if let ProtocolDispatch::External {
-                    target,
-                    input,
-                    demand,
-                } = dispatch
-                {
-                    self.out.record_external_dispatch(
-                        self.caller_spec_key,
-                        term_ident,
-                        slot,
-                        target,
-                        input,
-                        demand,
-                    );
+                if let ProtocolDispatch::External { target, input, demand } = dispatch {
+                    self.out
+                        .record_external_dispatch(self.caller_spec_key, term_ident, slot, target, input, demand);
                 }
                 return;
             };
@@ -544,29 +500,22 @@ where
                     continuation,
                 );
                 entry_key.demand = demand;
-                entry_key = self
-                    .activation_returns
-                    .canonical_public_key(self.t, entry_key);
+                entry_key = self.activation_returns.canonical_public_key(self.t, entry_key);
                 self.out
                     .record_dispatch(self.caller_spec_key, term_ident, slot, entry_key.clone());
-                self.out
-                    .record_return_contract(&cid, entry_key.clone(), context_plan);
+                self.out.record_return_contract(&cid, entry_key.clone(), context_plan);
             } else if matches!(term, Term::TailCall { .. }) {
                 let target_fn = entry_key.fn_id;
-                let (demand, context_plan) =
-                    tail_call_return_plan(self.m, self.caller_spec_key, target_fn, args);
+                let (demand, context_plan) = tail_call_return_plan(self.m, self.caller_spec_key, target_fn, args);
                 entry_key.demand = demand;
-                entry_key = self
-                    .activation_returns
-                    .canonical_public_key(self.t, entry_key);
+                entry_key = self.activation_returns.canonical_public_key(self.t, entry_key);
                 self.out
                     .record_dispatch(self.caller_spec_key, term_ident, slot, entry_key.clone());
                 if let Some(context_plan) = context_plan {
                     self.out
                         .record_return_contract(&cid, entry_key.clone(), Some(context_plan));
                 } else {
-                    self.out
-                        .record_forwarded_return_contract(&cid, entry_key.clone());
+                    self.out.record_forwarded_return_contract(&cid, entry_key.clone());
                 }
             } else {
                 self.out
@@ -599,39 +548,28 @@ where
                 continuation,
             );
             entry_key.demand = demand;
-            entry_key = self
-                .activation_returns
-                .canonical_public_key(self.t, entry_key);
+            entry_key = self.activation_returns.canonical_public_key(self.t, entry_key);
             self.out
                 .record_dispatch(self.caller_spec_key, term_ident, slot, entry_key.clone());
-            self.out
-                .record_return_contract(&cid, entry_key.clone(), context_plan);
+            self.out.record_return_contract(&cid, entry_key.clone(), context_plan);
         } else if matches!(term, Term::TailCall { .. }) {
-            let (demand, context_plan) =
-                tail_call_return_plan(self.m, self.caller_spec_key, callee, args);
+            let (demand, context_plan) = tail_call_return_plan(self.m, self.caller_spec_key, callee, args);
             entry_key.demand = demand;
-            entry_key = self
-                .activation_returns
-                .canonical_public_key(self.t, entry_key);
+            entry_key = self.activation_returns.canonical_public_key(self.t, entry_key);
             self.out
                 .record_dispatch(self.caller_spec_key, term_ident, slot, entry_key.clone());
             if let Some(context_plan) = context_plan {
                 self.out
                     .record_return_contract(&cid, entry_key.clone(), Some(context_plan));
             } else {
-                self.out
-                    .record_forwarded_return_contract(&cid, entry_key.clone());
+                self.out.record_forwarded_return_contract(&cid, entry_key.clone());
             }
         } else {
             self.out
                 .record_dispatch(self.caller_spec_key, term_ident, slot, entry_key.clone());
         }
         let per_arg = self.callable_capability_args(args, n_params);
-        if merge_incoming_param_callable_capabilities(
-            self.incoming_param_callable_capabilities,
-            &entry_key,
-            per_arg,
-        ) {
+        if merge_incoming_param_callable_capabilities(self.incoming_param_callable_capabilities, &entry_key, per_arg) {
             self.out.capability_updates.push(entry_key.clone());
         }
     }
@@ -640,7 +578,7 @@ where
         &mut self,
         term: &Term,
         term_ident: &CallsiteIdent,
-        env: &HashMap<Var, crate::types::Ty>,
+        env: &HashMap<Var, Ty>,
         slot: EmitSlot,
         args: &[Var],
     ) {
@@ -652,23 +590,12 @@ where
             Term::TailCall { .. } => self.caller_spec_key.demand.clone(),
             _ => ReturnDemand::value(),
         };
-        self.out.record_external_dispatch(
-            self.caller_spec_key,
-            term_ident,
-            slot,
-            target,
-            input,
-            demand.clone(),
-        );
+        self.out
+            .record_external_dispatch(self.caller_spec_key, term_ident, slot, target, input, demand.clone());
         self.record_external_callable_targets(args, env, term_ident);
     }
 
-    fn record_external_callable_targets(
-        &mut self,
-        args: &[Var],
-        env: &HashMap<Var, crate::types::Ty>,
-        term_ident: &CallsiteIdent,
-    ) {
+    fn record_external_callable_targets(&mut self, args: &[Var], env: &HashMap<Var, Ty>, term_ident: &CallsiteIdent) {
         for arg in args {
             for key in self.callable_boundary_keys(*arg, env) {
                 self.out.record_dispatch(
@@ -681,12 +608,7 @@ where
         }
     }
 
-    fn record_make_closure_target(
-        &mut self,
-        fn_id: FnId,
-        captured: &[Var],
-        env: &HashMap<Var, crate::types::Ty>,
-    ) {
+    fn record_make_closure_target(&mut self, fn_id: FnId, captured: &[Var], env: &HashMap<Var, Ty>) {
         let Some(target_fn) = self.m.fn_idx.get(&fn_id).map(|j| &self.m.fns[*j]) else {
             return;
         };
@@ -705,27 +627,16 @@ where
             .map(|var| self.caller_ft.callable_capabilities.get(var).cloned())
             .collect::<Vec<_>>();
         pad_and_truncate(&mut per_param, n_params, &None);
-        if merge_incoming_param_callable_capabilities(
-            self.incoming_param_callable_capabilities,
-            &target_key,
-            per_param,
-        ) {
+        if merge_incoming_param_callable_capabilities(self.incoming_param_callable_capabilities, &target_key, per_param)
+        {
             self.out.capability_updates.push(target_key);
         }
     }
 
-    fn callable_boundary_keys(
-        &mut self,
-        arg: Var,
-        env: &HashMap<Var, crate::types::Ty>,
-    ) -> Vec<SpecKey> {
-        use super::fn_types::CallableCapability;
-
+    fn callable_boundary_keys(&mut self, arg: Var, env: &HashMap<Var, Ty>) -> Vec<SpecKey> {
         let Some((fn_id, captures)) = (match self.caller_ft.callable_capabilities.get(&arg) {
             Some(CallableCapability::KnownFn(fn_id)) => Some((*fn_id, Vec::new())),
-            Some(CallableCapability::KnownClosure { fn_id, captures, .. }) => {
-                Some((*fn_id, captures.clone()))
-            }
+            Some(CallableCapability::KnownClosure { fn_id, captures, .. }) => Some((*fn_id, captures.clone())),
             Some(CallableCapability::OpaqueCallable) | None => None,
         }) else {
             return Vec::new();
@@ -770,7 +681,7 @@ where
         &mut self,
         term: &Term,
         term_ident: &CallsiteIdent,
-        env: &HashMap<Var, crate::types::Ty>,
+        env: &HashMap<Var, Ty>,
         slot: EmitSlot,
         closure: Var,
         target: FnId,
@@ -782,37 +693,30 @@ where
                 capture_capabilities,
                 ..
             }) => {
-                let Some((key, n_params)) =
-                    self.closure_lit_key(target, captures.clone(), args, env)
-                else {
+                let Some((key, n_params)) = self.closure_lit_key(target, captures.clone(), args, env) else {
                     return;
                 };
                 let mut per_param = capture_capabilities.clone();
-                per_param.extend(args.iter().map(|arg| {
-                    self.caller_ft.callable_capabilities.get(arg).cloned()
-                }));
+                per_param.extend(
+                    args.iter()
+                        .map(|arg| self.caller_ft.callable_capabilities.get(arg).cloned()),
+                );
                 pad_and_truncate(&mut per_param, n_params, &None);
                 Some((key, per_param))
             }
-            Some(CallableCapability::KnownFn(_)) => {
-                self.direct_call_key(target, args, env)
-                    .map(|(key, n_params)| (key, self.callable_capability_args(args, n_params)))
-            }
+            Some(CallableCapability::KnownFn(_)) => self
+                .direct_call_key(target, args, env)
+                .map(|(key, n_params)| (key, self.callable_capability_args(args, n_params))),
             Some(CallableCapability::OpaqueCallable) | None => None,
         }) else {
             return;
         };
         self.inherit_tail_closure_demand(term, &mut target_key);
-        target_key = self
-            .activation_returns
-            .canonical_public_key(self.t, target_key);
+        target_key = self.activation_returns.canonical_public_key(self.t, target_key);
         self.out
             .record_dispatch(self.caller_spec_key, term_ident, slot, target_key.clone());
-        if merge_incoming_param_callable_capabilities(
-            self.incoming_param_callable_capabilities,
-            &target_key,
-            per_param,
-        ) {
+        if merge_incoming_param_callable_capabilities(self.incoming_param_callable_capabilities, &target_key, per_param)
+        {
             self.out.capability_updates.push(target_key.clone());
         }
     }
@@ -821,24 +725,21 @@ where
         &mut self,
         term: &Term,
         term_ident: &CallsiteIdent,
-        env: &HashMap<Var, crate::types::Ty>,
+        env: &HashMap<Var, Ty>,
         slot: EmitSlot,
         fn_id: FnId,
-        captures: Vec<crate::types::Ty>,
+        captures: Vec<Ty>,
         args: &[Var],
     ) {
         let capture_capabilities = captures
             .iter()
-            .map(|capture| super::type_fn::callable_capability_for_ty(self.t, capture))
+            .map(|capture| callable_capability_for_ty(self.t, capture))
             .collect::<Vec<_>>();
-        let Some((mut target_key, n_params)) = self.closure_lit_key(fn_id, captures, args, env)
-        else {
+        let Some((mut target_key, n_params)) = self.closure_lit_key(fn_id, captures, args, env) else {
             return;
         };
         self.inherit_tail_closure_demand(term, &mut target_key);
-        target_key = self
-            .activation_returns
-            .canonical_public_key(self.t, target_key);
+        target_key = self.activation_returns.canonical_public_key(self.t, target_key);
         self.out
             .record_dispatch(self.caller_spec_key, term_ident, slot, target_key.clone());
         let mut per_param = capture_capabilities;
@@ -847,11 +748,8 @@ where
                 .map(|arg| self.caller_ft.callable_capabilities.get(arg).cloned()),
         );
         pad_and_truncate(&mut per_param, n_params, &None);
-        if merge_incoming_param_callable_capabilities(
-            self.incoming_param_callable_capabilities,
-            &target_key,
-            per_param,
-        ) {
+        if merge_incoming_param_callable_capabilities(self.incoming_param_callable_capabilities, &target_key, per_param)
+        {
             self.out.capability_updates.push(target_key.clone());
         }
     }
@@ -859,9 +757,9 @@ where
     fn record_continuation(
         &mut self,
         term_ident: &CallsiteIdent,
-        env: &HashMap<Var, crate::types::Ty>,
+        env: &HashMap<Var, Ty>,
         slot: EmitSlot,
-        cont: crate::fz_ir::Cont,
+        cont: Cont,
         source: ContSource,
     ) {
         let Some(slot0) = self.continuation_slot0(term_ident, env, &source) else {
@@ -877,14 +775,11 @@ where
         if self.has_bottom_arg(&key) {
             return;
         }
-        let per_param_capabilities =
-            self.continuation_callable_capabilities(&cont, n_params, slot0.capability);
+        let per_param_capabilities = self.continuation_callable_capabilities(&cont, n_params, slot0.capability);
         let demand = continuation_return_demand(self.m, self.caller_spec_key, &cont, &source);
-        let mut entry_key = spec_key_for_fn(cont_fn, std::mem::take(&mut key));
+        let mut entry_key = spec_key_for_fn(cont_fn, take(&mut key));
         entry_key.demand = demand.clone();
-        entry_key = self
-            .activation_returns
-            .canonical_public_key(self.t, entry_key);
+        entry_key = self.activation_returns.canonical_public_key(self.t, entry_key);
         let context_plan = continuation_empty_tail_plan(
             self.t,
             self.m,
@@ -901,9 +796,9 @@ where
         ) {
             self.out.capability_updates.push(entry_key.clone());
         }
-        let cid =
-            self.out
-                .record_dispatch(self.caller_spec_key, term_ident, slot, entry_key.clone());
+        let cid = self
+            .out
+            .record_dispatch(self.caller_spec_key, term_ident, slot, entry_key.clone());
         if let Some(plan) = context_plan {
             let contract_target = match &plan {
                 ReturnContextPlan::ContinuationEmptyTail { target, .. } => target.clone(),
@@ -917,16 +812,15 @@ where
     fn continuation_slot0(
         &mut self,
         term_ident: &CallsiteIdent,
-        env: &HashMap<Var, crate::types::Ty>,
+        env: &HashMap<Var, Ty>,
         source: &ContSource,
     ) -> Option<ContinuationSlot0> {
         match *source {
             ContSource::Call { callee, args } => {
                 let arg_tys = self.arg_tys(args, env);
-                let direct_cid =
-                    WalkResult::callsite_id(self.caller_spec_key, term_ident, EmitSlot::Direct);
+                let direct_cid = WalkResult::callsite_id(self.caller_spec_key, term_ident, EmitSlot::Direct);
                 let selected_edge = self.out.call_edges.get(&direct_cid);
-                let knowledge = super::worklist::direct_call_result_knowledge(
+                let knowledge = direct_call_result_knowledge(
                     self.t,
                     self.m,
                     self.recursive_fns,
@@ -938,21 +832,19 @@ where
                     selected_edge,
                 );
                 Some(match knowledge.slot0 {
-                    super::worklist::ResultSlot0::Known(ty) => ContinuationSlot0 {
-                        capability: super::type_fn::callable_capability_for_ty(self.t, &ty),
+                    ResultSlot0::Known(ty) => ContinuationSlot0 {
+                        capability: callable_capability_for_ty(self.t, &ty),
                         ty,
                     },
                     // Planner-visible continuations must stay coherent even when
                     // inference cannot yet prove a narrower slot-0 type.
-                    super::worklist::ResultSlot0::Pending => ContinuationSlot0 {
+                    ResultSlot0::Pending => ContinuationSlot0 {
                         ty: self.any_ty.clone(),
                         capability: None,
                     },
                 })
             }
-            ContSource::CallClosure { closure, args } => {
-                self.closure_return_slot0(term_ident, closure, args, env)
-            }
+            ContSource::CallClosure { closure, args } => self.closure_return_slot0(term_ident, closure, args, env),
             ContSource::Receive => Some(ContinuationSlot0 {
                 ty: self.any_ty.clone(),
                 capability: None,
@@ -964,25 +856,21 @@ where
         &mut self,
         callee: Option<FnId>,
         args: &[Var],
-        env: &HashMap<Var, crate::types::Ty>,
+        env: &HashMap<Var, Ty>,
         arity: usize,
-    ) -> Vec<crate::types::KeySlot> {
+    ) -> Vec<KeySlot> {
         let arg_tys = self.arg_tys(args, env);
         if let Some(callee) = callee
             && let Some(spec_set) = self.m.declared_specs.get(&callee)
-            && let Some(params) = crate::specs::unique_matching_params(self.t, spec_set, &arg_tys)
+            && let Some(params) = unique_matching_params(self.t, spec_set, &arg_tys)
             && params.len() == arity
         {
-            return crate::types::key_slots_from_tys(params);
+            return key_slots_from_tys(params);
         }
-        crate::types::key_slots_from_tys(padded_direct_input_tys(self.t, arg_tys, arity))
+        key_slots_from_tys(padded_direct_input_tys(self.t, arg_tys, arity))
     }
 
-    fn external_target(
-        &self,
-        term_ident: &CallsiteIdent,
-        slot: EmitSlot,
-    ) -> Option<crate::modules::identity::ExportKey> {
+    fn external_target(&self, term_ident: &CallsiteIdent, slot: EmitSlot) -> Option<ExportKey> {
         let cid = WalkResult::callsite_id(self.caller_spec_key, term_ident, slot);
         self.m
             .external_call_edges
@@ -996,7 +884,7 @@ where
         term_ident: &CallsiteIdent,
         closure: Var,
         args: &[Var],
-        env: &HashMap<Var, crate::types::Ty>,
+        env: &HashMap<Var, Ty>,
     ) -> Option<ContinuationSlot0> {
         let arg_tys = self.arg_tys(args, env);
         let selected_target = self
@@ -1008,7 +896,7 @@ where
                 EmitSlot::ClosureCall,
             ))
             .and_then(CallEdgePlan::local_target);
-        let knowledge = super::worklist::closure_call_result_knowledge(
+        let knowledge = closure_call_result_knowledge(
             self.t,
             self.m,
             self.recursive_fns,
@@ -1020,11 +908,11 @@ where
             env.get(&closure),
         );
         Some(match knowledge.slot0 {
-            super::worklist::ResultSlot0::Known(ty) => ContinuationSlot0 {
-                capability: super::type_fn::callable_capability_for_ty(self.t, &ty),
+            ResultSlot0::Known(ty) => ContinuationSlot0 {
+                capability: callable_capability_for_ty(self.t, &ty),
                 ty,
             },
-            super::worklist::ResultSlot0::Pending => ContinuationSlot0 {
+            ResultSlot0::Pending => ContinuationSlot0 {
                 ty: self.any_ty.clone(),
                 capability: None,
             },
@@ -1052,21 +940,12 @@ where
         };
         let body = &self.m.fns[j];
         let np = body.block(body.entry).params.len();
-        let key = crate::fz_ir::receive_outcome_spec_key(&self.any_ty, np);
-        self.out.record_dispatch(
-            self.caller_spec_key,
-            &ident,
-            EmitSlot::Cont,
-            spec_key_for_fn(body, key),
-        );
+        let key = receive_outcome_spec_key(&self.any_ty, np);
+        self.out
+            .record_dispatch(self.caller_spec_key, &ident, EmitSlot::Cont, spec_key_for_fn(body, key));
     }
 
-    fn direct_call_key(
-        &mut self,
-        callee: FnId,
-        args: &[Var],
-        env: &HashMap<Var, crate::types::Ty>,
-    ) -> Option<(SpecKey, usize)> {
+    fn direct_call_key(&mut self, callee: FnId, args: &[Var], env: &HashMap<Var, Ty>) -> Option<(SpecKey, usize)> {
         let callee_fn = self.m.fn_idx.get(&callee).map(|j| &self.m.fns[*j])?;
         let n_params = callee_fn.block(callee_fn.entry).params.len();
         let dispatch_key = padded_direct_input_tys(self.t, self.arg_tys(args, env), n_params);
@@ -1093,7 +972,7 @@ where
         &mut self,
         callee: FnId,
         args: &[Var],
-        env: &HashMap<Var, crate::types::Ty>,
+        env: &HashMap<Var, Ty>,
     ) -> Option<ProtocolDispatch> {
         let target = self.m.protocol_call_targets.get(&callee)?.clone();
         let receiver_ty = args
@@ -1108,14 +987,10 @@ where
             .values()
             .filter(|fact| fact.protocol == target.protocol)
             .filter(|fact| {
-                let target_ty = crate::frontend::protocols::impl_target_type(self.t, &fact.target);
+                let target_ty = impl_target_type(self.t, &fact.target);
                 self.t.is_subtype(&receiver_ty, &target_ty)
             })
-            .filter_map(|fact| {
-                fact.callbacks
-                    .get(&(target.callback.clone(), target.arity))
-                    .cloned()
-            })
+            .filter_map(|fact| fact.callbacks.get(&(target.callback.clone(), target.arity)).cloned())
             .collect::<Vec<_>>();
         matches.sort();
         matches.dedup();
@@ -1126,11 +1001,7 @@ where
                 .direct_call_key(impl_fn, args, env)
                 .map(|(key, n_params)| ProtocolDispatch::Local(key, n_params));
         }
-        let input = crate::types::key_slots_from_tys(padded_direct_input_tys(
-            self.t,
-            self.arg_tys(args, env),
-            export.arity,
-        ));
+        let input = key_slots_from_tys(padded_direct_input_tys(self.t, self.arg_tys(args, env), export.arity));
         Some(ProtocolDispatch::External {
             target: export,
             input,
@@ -1141,9 +1012,9 @@ where
     fn closure_lit_key(
         &mut self,
         fn_id: FnId,
-        captures: Vec<crate::types::Ty>,
+        captures: Vec<Ty>,
         args: &[Var],
-        env: &HashMap<Var, crate::types::Ty>,
+        env: &HashMap<Var, Ty>,
     ) -> Option<(SpecKey, usize)> {
         let target_fn = self.m.fn_idx.get(&fn_id).map(|j| &self.m.fns[*j])?;
         let n_params = target_fn.block(target_fn.entry).params.len();
@@ -1170,11 +1041,7 @@ where
         ))
     }
 
-    fn callable_capability_args(
-        &self,
-        args: &[Var],
-        n_params: usize,
-    ) -> Vec<Option<CallableCapability>> {
+    fn callable_capability_args(&self, args: &[Var], n_params: usize) -> Vec<Option<CallableCapability>> {
         let mut per_arg: Vec<Option<CallableCapability>> = args
             .iter()
             .map(|av| self.caller_ft.callable_capabilities.get(av).cloned())
@@ -1185,7 +1052,7 @@ where
 
     fn continuation_callable_capabilities(
         &self,
-        cont: &crate::fz_ir::Cont,
+        cont: &Cont,
         n_params: usize,
         slot0_capability: Option<CallableCapability>,
     ) -> Vec<Option<CallableCapability>> {
@@ -1201,7 +1068,7 @@ where
         per_param
     }
 
-    fn arg_tys(&self, args: &[Var], env: &HashMap<Var, crate::types::Ty>) -> Vec<crate::types::Ty> {
+    fn arg_tys(&self, args: &[Var], env: &HashMap<Var, Ty>) -> Vec<Ty> {
         args.iter()
             .map(|av| env.get(av).cloned().unwrap_or_else(|| self.any_ty.clone()))
             .collect()
@@ -1213,7 +1080,7 @@ where
         }
     }
 
-    fn has_bottom_arg(&mut self, key: &[crate::types::Ty]) -> bool {
+    fn has_bottom_arg(&mut self, key: &[Ty]) -> bool {
         let none_ty = self.t.none();
         key.iter().any(|ty| self.t.is_equivalent(ty, &none_ty))
     }

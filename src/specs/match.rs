@@ -40,9 +40,7 @@ fn instantiate_result<T: ClosureTypes + ?Sized>(
 ) -> SchemeInstantiation<T::Ty> {
     match instantiate_match(t, params, result, constraints, witnesses) {
         SchemeInstantiation::Known(matched) => SchemeInstantiation::Known(matched.result),
-        SchemeInstantiation::Underconstrained(matched) => {
-            SchemeInstantiation::Underconstrained(matched.result)
-        }
+        SchemeInstantiation::Underconstrained(matched) => SchemeInstantiation::Underconstrained(matched.result),
         SchemeInstantiation::Invalid => SchemeInstantiation::Invalid,
     }
 }
@@ -82,13 +80,10 @@ pub(crate) fn resolve_closure_return<T: ClosureTypes + ?Sized>(
     for clause in clauses {
         match clause.closure {
             None => {
-                let contrib = if t.has_vars(&clause.ret)
-                    || clause.args.iter().any(|arg| t.has_vars(arg))
-                {
+                let contrib = if t.has_vars(&clause.ret) || clause.args.iter().any(|arg| t.has_vars(arg)) {
                     let constraints = HashMap::new();
                     match instantiate_result(t, &clause.args, &clause.ret, &constraints, arg_tys) {
-                        SchemeInstantiation::Known(ty)
-                        | SchemeInstantiation::Underconstrained(ty) => ty,
+                        SchemeInstantiation::Known(ty) | SchemeInstantiation::Underconstrained(ty) => ty,
                         SchemeInstantiation::Invalid => return Some(t.any()),
                     }
                 } else {
@@ -135,9 +130,7 @@ fn instantiate_match_slots<T: ClosureTypes + ?Sized>(
 
     for (var, bound) in constraints {
         let Some(actual) = sigma.get(var) else {
-            return SchemeInstantiation::Underconstrained(instantiated_match(
-                t, params, result, &sigma,
-            ));
+            return SchemeInstantiation::Underconstrained(instantiated_match(t, params, result, &sigma));
         };
         if !t.is_subtype(actual, bound) {
             return SchemeInstantiation::Invalid;
@@ -230,12 +223,7 @@ fn collect_tuple_subst<T: ClosureTypes + ?Sized>(
     let witness_fields = t.tuple_projections(witness, arity);
     let mut outcome = Witness::Unknown;
     for (pattern_field, witness_field) in pattern_fields.iter().zip(witness_fields.iter()) {
-        outcome = outcome.merge(collect_structural_subst(
-            t,
-            pattern_field,
-            witness_field,
-            sigma,
-        ));
+        outcome = outcome.merge(collect_structural_subst(t, pattern_field, witness_field, sigma));
     }
     outcome
 }
@@ -308,12 +296,7 @@ fn collect_map_subst<T: ClosureTypes + ?Sized>(
             continue;
         }
         if let Some(witness_field) = t.map_field_lookup(witness, &key) {
-            outcome = outcome.merge(collect_structural_subst(
-                t,
-                &pattern_field,
-                &witness_field,
-                sigma,
-            ));
+            outcome = outcome.merge(collect_structural_subst(t, &pattern_field, &witness_field, sigma));
         }
     }
     outcome

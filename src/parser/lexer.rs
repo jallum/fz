@@ -1,6 +1,11 @@
 use std::fmt;
+use std::str::from_utf8;
 
+use crate::diag::Diagnostic;
+use crate::diag::codes::LEX_UNEXPECTED_CHAR;
 use crate::diag::{FileId, Span};
+use crate::measurements;
+use crate::telemetry::{Metadata, NullTelemetry, Telemetry};
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum Tok {
@@ -146,14 +151,10 @@ impl fmt::Display for LexError {
 impl LexError {
     /// Promote a lex-time error into a structured Diagnostic. The headline
     /// is the lexer's message; the primary span is the offending byte.
-    pub fn to_diagnostic(&self) -> crate::diag::Diagnostic {
+    pub fn to_diagnostic(&self) -> Diagnostic {
         // The lexer currently reports every lex-time failure with the
         // same code and a specific message/span.
-        crate::diag::Diagnostic::error(
-            crate::diag::codes::LEX_UNEXPECTED_CHAR,
-            self.msg.clone(),
-            self.span,
-        )
+        Diagnostic::error(LEX_UNEXPECTED_CHAR, self.msg.clone(), self.span)
     }
 }
 
@@ -222,9 +223,7 @@ impl<'a> Lexer<'a> {
         let start = self.pos;
         self.bump();
         self.eat_while(Self::ident_cont);
-        std::str::from_utf8(&self.src[start..self.pos])
-            .unwrap()
-            .to_string()
+        from_utf8(&self.src[start..self.pos]).unwrap().to_string()
     }
 
     fn read_number(&mut self) -> Result<Tok, LexError> {
@@ -236,7 +235,7 @@ impl<'a> Lexer<'a> {
                     self.bump();
                     let s = self.pos;
                     self.eat_while(|c| c.is_ascii_hexdigit() || c == b'_');
-                    let raw: String = std::str::from_utf8(&self.src[s..self.pos])
+                    let raw: String = from_utf8(&self.src[s..self.pos])
                         .unwrap()
                         .chars()
                         .filter(|c| *c != '_')
@@ -250,7 +249,7 @@ impl<'a> Lexer<'a> {
                     self.bump();
                     let s = self.pos;
                     self.eat_while(|c| c == b'0' || c == b'1' || c == b'_');
-                    let raw: String = std::str::from_utf8(&self.src[s..self.pos])
+                    let raw: String = from_utf8(&self.src[s..self.pos])
                         .unwrap()
                         .chars()
                         .filter(|c| *c != '_')
@@ -264,7 +263,7 @@ impl<'a> Lexer<'a> {
                     self.bump();
                     let s = self.pos;
                     self.eat_while(|c| (b'0'..=b'7').contains(&c) || c == b'_');
-                    let raw: String = std::str::from_utf8(&self.src[s..self.pos])
+                    let raw: String = from_utf8(&self.src[s..self.pos])
                         .unwrap()
                         .chars()
                         .filter(|c| *c != '_')
@@ -284,7 +283,7 @@ impl<'a> Lexer<'a> {
             self.bump();
             self.eat_while(|c| c.is_ascii_digit() || c == b'_');
         }
-        let raw = std::str::from_utf8(&self.src[start..self.pos]).unwrap();
+        let raw = from_utf8(&self.src[start..self.pos]).unwrap();
         let cleaned: String = raw.chars().filter(|c| *c != '_').collect();
         if is_float {
             cleaned
@@ -325,10 +324,7 @@ impl<'a> Lexer<'a> {
                     Some(b'\\') => bytes.push(b'\\'),
                     Some(b'"') => bytes.push(b'"'),
                     Some(c) => {
-                        return Err(self.err(format!(
-                            "unknown escape `\\{}` in string literal",
-                            c as char
-                        )));
+                        return Err(self.err(format!("unknown escape `\\{}` in string literal", c as char)));
                     }
                     None => return Err(self.err("unterminated escape".into())),
                 },
@@ -355,11 +351,7 @@ impl<'a> Lexer<'a> {
         // so back up by one to underline the character itself rather than
         // the position after it. At EOF (`pos == src.len()`), span is empty.
         let end = self.pos as u32;
-        let start = if self.pos == 0 {
-            0
-        } else {
-            end.saturating_sub(1)
-        };
+        let start = if self.pos == 0 { 0 } else { end.saturating_sub(1) };
         LexError {
             msg,
             span: Span::new(self.file, start, end),
@@ -686,30 +678,23 @@ impl<'a> Lexer<'a> {
     }
 
     pub fn tokenize(self) -> Result<Vec<Token>, LexError> {
-        self.tokenize_with_telemetry(&crate::telemetry::NullTelemetry)
+        self.tokenize_with_telemetry(&NullTelemetry)
     }
 
     /// Same as `tokenize` but opens a `[fz, lexer, pass]` span and emits
     /// a `[fz, lexer, tokens_built]` event with the final token count on
     /// success. The span's stop event records elapsed_ns. Callers that
     /// don't want observability can use `tokenize()` (NullTelemetry).
-    pub fn tokenize_with_telemetry(
-        mut self,
-        tel: &dyn crate::telemetry::Telemetry,
-    ) -> Result<Vec<Token>, LexError> {
+    pub fn tokenize_with_telemetry(mut self, tel: &dyn Telemetry) -> Result<Vec<Token>, LexError> {
         use crate::telemetry::TelemetryExt;
-        let _span = tel.span(LEX_PASS_NAME, crate::telemetry::Metadata::new());
+        let _span = tel.span(LEX_PASS_NAME, Metadata::new());
         let mut out = Vec::new();
         loop {
             let t = self.next_token()?;
             let done = matches!(t.tok, Tok::Eof);
             out.push(t);
             if done {
-                tel.execute(
-                    TOKENS_BUILT_NAME,
-                    &crate::measurements! { count: out.len() },
-                    &crate::telemetry::Metadata::new(),
-                );
+                tel.execute(TOKENS_BUILT_NAME, &measurements! { count: out.len() }, &Metadata::new());
                 return Ok(out);
             }
         }
@@ -849,8 +834,7 @@ mod tests {
             let toks = Lexer::new(src).tokenize().expect("lex");
             match &toks[0].tok {
                 Tok::Binary(bytes) => {
-                    std::str::from_utf8(bytes)
-                        .unwrap_or_else(|_| panic!("Tok::Binary must be UTF-8 for {}", src));
+                    from_utf8(bytes).unwrap_or_else(|_| panic!("Tok::Binary must be UTF-8 for {}", src));
                 }
                 _ => panic!("expected Tok::Binary for {}", src),
             }
@@ -880,20 +864,11 @@ mod tests {
     #[test]
     fn lexes_range_and_step() {
         // `..` is its own token, distinct from `.` and `...`.
-        assert_eq!(
-            toks_of("1..10"),
-            vec![Tok::Int(1), Tok::DotDot, Tok::Int(10)]
-        );
+        assert_eq!(toks_of("1..10"), vec![Tok::Int(1), Tok::DotDot, Tok::Int(10)]);
         // `first..last//step` lexes as `..` then `//`.
         assert_eq!(
             toks_of("1..10//2"),
-            vec![
-                Tok::Int(1),
-                Tok::DotDot,
-                Tok::Int(10),
-                Tok::SlashSlash,
-                Tok::Int(2)
-            ]
+            vec![Tok::Int(1), Tok::DotDot, Tok::Int(10), Tok::SlashSlash, Tok::Int(2)]
         );
     }
 
@@ -904,10 +879,7 @@ mod tests {
         // A decimal point with a following digit is still a float.
         assert_eq!(toks_of("1.5"), vec![Tok::Float(1.5)]);
         // A range over floats: `1.0..2.0`.
-        assert_eq!(
-            toks_of("1.0..2.0"),
-            vec![Tok::Float(1.0), Tok::DotDot, Tok::Float(2.0)]
-        );
+        assert_eq!(toks_of("1.0..2.0"), vec![Tok::Float(1.0), Tok::DotDot, Tok::Float(2.0)]);
     }
 
     #[test]
@@ -926,10 +898,7 @@ mod tests {
     #[test]
     fn lexes_membership_keywords() {
         assert_eq!(toks_of("x in xs"), vec![id("x"), Tok::In, id("xs")]);
-        assert_eq!(
-            toks_of("x not in xs"),
-            vec![id("x"), Tok::Not, Tok::In, id("xs")]
-        );
+        assert_eq!(toks_of("x not in xs"), vec![id("x"), Tok::Not, Tok::In, id("xs")]);
     }
 
     fn id(s: &str) -> Tok {
@@ -989,16 +958,10 @@ mod tests {
     fn adjacency_visible_for_call_and_access_heads() {
         // `foo(` — no space before `(` marks a call head; `foo (` has space.
         let call = spacing_of("foo(x)");
-        let lp = call
-            .iter()
-            .position(|(t, _)| matches!(t, Tok::LParen))
-            .unwrap();
+        let lp = call.iter().position(|(t, _)| matches!(t, Tok::LParen)).unwrap();
         assert!(!call[lp].1, "call-head `(` is adjacent to the identifier");
         let spaced = spacing_of("foo (x)");
-        let lp2 = spaced
-            .iter()
-            .position(|(t, _)| matches!(t, Tok::LParen))
-            .unwrap();
+        let lp2 = spaced.iter().position(|(t, _)| matches!(t, Tok::LParen)).unwrap();
         assert!(spaced[lp2].1, "spaced `(` is not a call head");
     }
 
@@ -1007,11 +970,7 @@ mod tests {
         let src = "fn `";
         let err = Lexer::new(src).tokenize().expect_err("should fail");
         // Backtick is at offset 3; err span points at it (or just after).
-        assert!(
-            err.span.start <= 3 && err.span.end >= 3,
-            "span={:?}",
-            err.span
-        );
+        assert!(err.span.start <= 3 && err.span.end >= 3, "span={:?}", err.span);
         assert_eq!(err.span.file, FileId(0));
     }
 
@@ -1067,7 +1026,6 @@ mod tests {
 
     #[test]
     fn null_telemetry_is_a_silent_no_op() {
-        use crate::telemetry::NullTelemetry;
         // Same call path; just verifies the null impl compiles + runs.
         let toks = Lexer::new("fn x(), do: :ok")
             .tokenize_with_telemetry(&NullTelemetry)

@@ -12,11 +12,7 @@ fn help_lists_every_command_on_stdout() {
             .arg(flag)
             .output()
             .unwrap_or_else(|e| panic!("spawn fz {flag}: {e}"));
-        assert!(
-            out.status.success(),
-            "fz {flag} should exit 0, got {:?}",
-            out.status
-        );
+        assert!(out.status.success(), "fz {flag} should exit 0, got {:?}", out.status);
         let stdout = String::from_utf8(out.stdout).expect("help is utf-8");
         for command in ["run", "build", "interp", "dump", "test", "repl"] {
             assert!(

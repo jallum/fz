@@ -1,10 +1,15 @@
 use super::*;
 use crate::ast::{Expr, FnDef, Spanned};
 use crate::diag::Span;
-use crate::fz_ir::{BlockId, Const, Prim, Term, Var};
-
+use crate::fz_ir::{
+    BlockId, BranchOrigin, CallsiteIdent, Const, ContinuationProvenance, ContinuationProvenanceKind, FnCategory, Prim,
+    Term, Var,
+};
 use crate::pattern_matrix::{BodyId, PatternMatrix, Row};
-pub(crate) fn lower_multi_clause<T: crate::types::Types<Ty = crate::types::Ty>>(
+use crate::type_expr::parse_type_expr;
+use crate::types::{Ty, Types};
+
+pub(crate) fn lower_multi_clause<T: Types<Ty = Ty>>(
     ctx: &mut LowerCtx,
     t: &mut T,
     fn_def: &FnDef,
@@ -38,18 +43,16 @@ pub(crate) fn lower_multi_clause<T: crate::types::Types<Ty = crate::types::Ty>>(
     ctx.set_term(Term::Halt(v));
 
     let matrix_entry = ctx.cur_mut().block(vec![]);
-    ctx.cur_mut()
-        .set_terminator(entry, Term::Goto(matrix_entry, vec![]));
+    ctx.cur_mut().set_terminator(entry, Term::Goto(matrix_entry, vec![]));
     ctx.cur_block = Some(matrix_entry);
     ctx.terminated = false;
 
     let mut rows: Vec<Row> = Vec::with_capacity(fn_def.clauses.len());
     for (i, c) in fn_def.clauses.iter().enumerate() {
-        let mut preconditions: Vec<(Var, crate::types::Ty)> = Vec::new();
+        let mut preconditions: Vec<(Var, Ty)> = Vec::new();
         for (pv, tok_opt) in param_vars.iter().zip(&c.param_annotations) {
             if let Some(toks) = tok_opt
-                && let Ok((ty, _)) =
-                    crate::type_expr::parse_type_expr(t, &toks.0, &ctx.combined_type_env)
+                && let Ok((ty, _)) = parse_type_expr(t, &toks.0, &ctx.combined_type_env)
             {
                 preconditions.push((*pv, ty));
             }
@@ -69,7 +72,7 @@ pub(crate) fn lower_multi_clause<T: crate::types::Types<Ty = crate::types::Ty>>(
 
     let mut clause_conts: Vec<Option<ContFn>> = (0..fn_def.clauses.len()).map(|_| None).collect();
     let prev_origin = ctx.branch_origin;
-    ctx.branch_origin = crate::fz_ir::BranchOrigin::ClauseDispatch;
+    ctx.branch_origin = BranchOrigin::ClauseDispatch;
     {
         let fn_def_ref = fn_def;
         let param_vars_ref = param_vars;
@@ -77,8 +80,8 @@ pub(crate) fn lower_multi_clause<T: crate::types::Types<Ty = crate::types::Ty>>(
         let mut cb = |ctx: &mut LowerCtx,
                       body_id: BodyId,
                       bindings: Vec<MatchedBinding>,
-                      preconditions: Vec<(Var, crate::types::Ty)>,
-                      guard: Option<crate::ast::Spanned<crate::ast::Expr>>,
+                      preconditions: Vec<(Var, Ty)>,
+                      guard: Option<Spanned<Expr>>,
                       fall_block: BlockId|
          -> Result<(), LowerError> {
             let i = body_id as usize;
@@ -112,19 +115,17 @@ pub(crate) fn lower_multi_clause<T: crate::types::Types<Ty = crate::types::Ty>>(
                         ctx,
                         format!("fn_clause_{}", i),
                         clause.span,
-                        crate::fz_ir::FnCategory::MultiClauseCont,
+                        FnCategory::MultiClauseCont,
                     );
                     cont.owned_cons_captures
                         .extend(owned_cons_captures_for_bindings(ctx, &bindings));
                     ctx.record_continuation_provenance(
                         cont.id,
-                        crate::fz_ir::ContinuationProvenance {
-                            caller: ctx
-                                .cur_fn_id
-                                .expect("lower_multi_clause: missing current fn id"),
+                        ContinuationProvenance {
+                            caller: ctx.cur_fn_id.expect("lower_multi_clause: missing current fn id"),
                             captured: cont.outer_captured.iter().map(|(_, var)| *var).collect(),
                             capture_param_offset: 0,
-                            kind: crate::fz_ir::ContinuationProvenanceKind::MatcherBody {
+                            kind: ContinuationProvenanceKind::MatcherBody {
                                 bindings: bindings
                                     .iter()
                                     .map(|binding| (binding.var, binding.source.clone()))
@@ -138,7 +139,7 @@ pub(crate) fn lower_multi_clause<T: crate::types::Types<Ty = crate::types::Ty>>(
             };
             let capture_vars = cont_call_args(ctx, &cont);
             ctx.set_term(Term::TailCall {
-                ident: crate::fz_ir::CallsiteIdent::from_source(clause.span),
+                ident: CallsiteIdent::from_source(clause.span),
                 callee: cont.id,
                 args: capture_vars,
                 is_back_edge: false,
@@ -166,10 +167,7 @@ pub(crate) fn lower_multi_clause<T: crate::types::Types<Ty = crate::types::Ty>>(
     Ok(())
 }
 
-fn owned_cons_captures_for_bindings(
-    ctx: &LowerCtx,
-    bindings: &[MatchedBinding],
-) -> Vec<OwnedConsCapture> {
+fn owned_cons_captures_for_bindings(ctx: &LowerCtx, bindings: &[MatchedBinding]) -> Vec<OwnedConsCapture> {
     let Some(cur) = ctx.cur.as_ref() else {
         return Vec::new();
     };
@@ -222,27 +220,12 @@ pub(crate) fn lower_if(
 
     let cv = lower_expr(ctx, cond, false)?;
 
-    let then_cont = mint_cont_fn(
-        ctx,
-        "if_then",
-        if_span,
-        crate::fz_ir::FnCategory::ControlFlowCont,
-    );
-    let else_cont = mint_cont_fn(
-        ctx,
-        "if_else",
-        if_span,
-        crate::fz_ir::FnCategory::ControlFlowCont,
-    );
+    let then_cont = mint_cont_fn(ctx, "if_then", if_span, FnCategory::ControlFlowCont);
+    let else_cont = mint_cont_fn(ctx, "if_else", if_span, FnCategory::ControlFlowCont);
     let join_opt = if is_tail {
         None
     } else {
-        Some(mint_cont_fn(
-            ctx,
-            "if_join",
-            if_span,
-            crate::fz_ir::FnCategory::ControlFlowCont,
-        ))
+        Some(mint_cont_fn(ctx, "if_join", if_span, FnCategory::ControlFlowCont))
     };
 
     // Allocate arm blocks in the outer (current) fn.
@@ -259,14 +242,14 @@ pub(crate) fn lower_if(
 
     ctx.cur_block = Some(then_b);
     ctx.set_term(Term::TailCall {
-        ident: crate::fz_ir::CallsiteIdent::from_source(Span::DUMMY),
+        ident: CallsiteIdent::from_source(Span::DUMMY),
         callee: then_cont.id,
         args: then_capture_vars,
         is_back_edge: false,
     });
     ctx.cur_block = Some(else_b);
     ctx.set_term(Term::TailCall {
-        ident: crate::fz_ir::CallsiteIdent::from_source(Span::DUMMY),
+        ident: CallsiteIdent::from_source(Span::DUMMY),
         callee: else_cont.id,
         args: else_capture_vars,
         is_back_edge: false,

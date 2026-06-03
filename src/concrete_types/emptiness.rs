@@ -1,6 +1,6 @@
 //! Per-axis emptiness algorithms for DNF clauses.
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 
 use crate::types::MapKey;
 
@@ -117,11 +117,7 @@ pub(crate) fn list_clause_empty(c: &Conj<ListSig>, memo: &mut Memo) -> bool {
                 (Some(prev), None) => Some(prev),
                 (Some(prev), Some(elem)) => {
                     let next = prev.intersect(elem);
-                    if next.is_empty_memo(memo) {
-                        None
-                    } else {
-                        Some(next)
-                    }
+                    if next.is_empty_memo(memo) { None } else { Some(next) }
                 }
             };
         }
@@ -134,11 +130,8 @@ pub(crate) fn list_clause_empty(c: &Conj<ListSig>, memo: &mut Memo) -> bool {
         return false;
     }
     let neg_covers_empty = |n: &ListSig| n.empty;
-    let neg_covers_non_empty = |n: &ListSig, t: &Descr, memo: &mut Memo| {
-        n.elem
-            .as_ref()
-            .is_some_and(|elem| t.diff(elem).is_empty_memo(memo))
-    };
+    let neg_covers_non_empty =
+        |n: &ListSig, t: &Descr, memo: &mut Memo| n.elem.as_ref().is_some_and(|elem| t.diff(elem).is_empty_memo(memo));
     let empty_covered = !empty || c.neg.iter().any(neg_covers_empty);
     let non_empty_covered = match t {
         None => true,
@@ -163,9 +156,7 @@ pub(crate) fn resource_clause_empty(c: &Conj<ResourceSig>, memo: &mut Memo) -> b
     if c.neg.is_empty() {
         return false;
     }
-    c.neg
-        .iter()
-        .any(|n| payload.diff(&n.payload).is_empty_memo(memo))
+    c.neg.iter().any(|n| payload.diff(&n.payload).is_empty_memo(memo))
 }
 
 // ----------------------------------------------------------------------
@@ -275,11 +266,7 @@ pub(crate) fn func_clause_empty(c: &Conj<ArrowSig>, memo: &mut Memo) -> bool {
     // here without returning, none of them subsumes via lit reasoning;
     // drop them all from the structural check so any-args / any-ret
     // placeholders on lit clauses can't falsely subsume.
-    let filtered_negs: Vec<ArrowSig> = n
-        .iter()
-        .filter(|negj| negj.lit.is_none())
-        .cloned()
-        .collect();
+    let filtered_negs: Vec<ArrowSig> = n.iter().filter(|negj| negj.lit.is_none()).cloned().collect();
     let n = &filtered_negs;
 
     if n.is_empty() {
@@ -352,7 +339,7 @@ pub(crate) fn map_clause_empty(c: &Conj<MapSig>, memo: &mut Memo) -> bool {
         return false;
     }
     // Merge positives.
-    let mut merged: std::collections::BTreeMap<MapKey, Descr> = c.pos[0].fields.clone();
+    let mut merged: BTreeMap<MapKey, Descr> = c.pos[0].fields.clone();
     for p in &c.pos[1..] {
         for (k, v) in &p.fields {
             merged
@@ -371,12 +358,10 @@ pub(crate) fn map_clause_empty(c: &Conj<MapSig>, memo: &mut Memo) -> bool {
         if !n_keys_subset {
             continue;
         }
-        let value_refines = n.fields.iter().all(|(k, nv)| {
-            merged
-                .get(k)
-                .map(|pv| pv.diff(nv).is_empty_memo(memo))
-                .unwrap_or(false)
-        });
+        let value_refines = n
+            .fields
+            .iter()
+            .all(|(k, nv)| merged.get(k).map(|pv| pv.diff(nv).is_empty_memo(memo)).unwrap_or(false));
         if value_refines {
             return true;
         }

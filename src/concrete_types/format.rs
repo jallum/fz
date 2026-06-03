@@ -1,6 +1,6 @@
 //! `Display`/`Debug` for `Descr` and the per-clause/per-sig formatter helpers.
 
-use std::fmt;
+use std::fmt::{self, Debug, Display, Formatter};
 
 use crate::types::MapKey;
 
@@ -11,8 +11,8 @@ use super::lit_set::{AtomSet, LiteralSet};
 use super::sigs::{ArrowSig, ListSig, MapSig, ResourceSig, TupleSig};
 use super::ty_descr;
 
-impl fmt::Display for Descr {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl Display for Descr {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         if self.looks_full() {
             return write!(f, "any");
         }
@@ -106,8 +106,8 @@ pub(crate) fn format_lit_set_capped<T: Ord + Clone>(
     }
 }
 
-impl fmt::Debug for Descr {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+impl Debug for Descr {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self)
     }
 }
@@ -175,38 +175,22 @@ pub(crate) fn format_lit_set<T: Ord + Clone>(
 
 pub(crate) fn format_tuple_clause(c: &Conj<TupleSig>) -> String {
     let pos: Vec<String> = c.pos.iter().map(format_tuple).collect();
-    let neg: Vec<String> = c
-        .neg
-        .iter()
-        .map(|t| format!("¬{}", format_tuple(t)))
-        .collect();
+    let neg: Vec<String> = c.neg.iter().map(|t| format!("¬{}", format_tuple(t))).collect();
     join_clause(&pos, &neg, "tuple")
 }
 pub(crate) fn format_list_clause(c: &Conj<ListSig>) -> String {
     let pos: Vec<String> = c.pos.iter().map(format_list).collect();
-    let neg: Vec<String> = c
-        .neg
-        .iter()
-        .map(|t| format!("¬{}", format_list(t)))
-        .collect();
+    let neg: Vec<String> = c.neg.iter().map(|t| format!("¬{}", format_list(t))).collect();
     join_clause(&pos, &neg, "list")
 }
 pub(crate) fn format_resource_clause(c: &Conj<ResourceSig>) -> String {
     let pos: Vec<String> = c.pos.iter().map(format_resource).collect();
-    let neg: Vec<String> = c
-        .neg
-        .iter()
-        .map(|t| format!("¬{}", format_resource(t)))
-        .collect();
+    let neg: Vec<String> = c.neg.iter().map(|t| format!("¬{}", format_resource(t))).collect();
     join_clause(&pos, &neg, "resource(any)")
 }
 pub(crate) fn format_arrow_clause(c: &Conj<ArrowSig>) -> String {
     let pos: Vec<String> = c.pos.iter().map(format_arrow).collect();
-    let neg: Vec<String> = c
-        .neg
-        .iter()
-        .map(|t| format!("¬{}", format_arrow(t)))
-        .collect();
+    let neg: Vec<String> = c.neg.iter().map(|t| format!("¬{}", format_arrow(t))).collect();
     join_clause(&pos, &neg, "fn")
 }
 fn format_tuple(t: &TupleSig) -> String {
@@ -230,22 +214,14 @@ fn format_arrow(t: &ArrowSig) -> String {
     match &t.lit {
         None => body,
         Some(l) => {
-            let caps: Vec<String> = l
-                .captures
-                .iter()
-                .map(|d| format!("{}", ty_descr(d)))
-                .collect();
+            let caps: Vec<String> = l.captures.iter().map(|d| format!("{}", ty_descr(d))).collect();
             format!("&fn{}[{}]:{}", l.fn_id.0, caps.join(", "), body)
         }
     }
 }
 pub(crate) fn format_map_clause(c: &Conj<MapSig>) -> String {
     let pos: Vec<String> = c.pos.iter().map(format_map).collect();
-    let neg: Vec<String> = c
-        .neg
-        .iter()
-        .map(|m| format!("¬{}", format_map(m)))
-        .collect();
+    let neg: Vec<String> = c.neg.iter().map(|m| format!("¬{}", format_map(m))).collect();
     join_clause(&pos, &neg, "map")
 }
 fn format_map(m: &MapSig) -> String {

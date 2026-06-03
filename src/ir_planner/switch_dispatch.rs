@@ -35,15 +35,19 @@
 
 use super::diagnostics::env_after_block_stmts;
 use super::fn_types::{ModulePlan, SpecPlan};
+use crate::diag::Span;
+use crate::frontend::protocols::impl_target_type;
 use crate::fz_ir::{
-    Block, BlockId, BranchOrigin, CallsiteIdent, FnId, Module, Prim, Stmt, Term, Var,
+    Block, BlockId, BranchOrigin, CallsiteIdent, FnId, Module, Prim, ProtocolCallTarget, Stmt, Term, Var,
 };
+use crate::ir_inline::{max_block, max_var};
+use crate::types::{ClosureTypes, Ty, Types};
 use std::collections::HashMap;
 
 /// One arm of a switch: the runtime type to test the receiver against and the
 /// local impl fn to call when it matches.
 struct SwitchArm {
-    target_ty: crate::types::Ty,
+    target_ty: Ty,
     impl_fn: FnId,
 }
 
@@ -67,9 +71,7 @@ struct BlockRewrite {
 /// cascade of per-target direct calls. Module mutation only; returns `true` if
 /// anything was rewritten so the caller can refresh its `ModulePlan` against
 /// the new IR.
-pub fn rewrite_closed_union_protocol_dispatch<
-    T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
->(
+pub fn rewrite_closed_union_protocol_dispatch<T: Types<Ty = Ty> + ClosureTypes>(
     t: &mut T,
     module: &mut Module,
     plan: &ModulePlan,
@@ -86,9 +88,7 @@ pub fn rewrite_closed_union_protocol_dispatch<
 }
 
 /// Decide which blocks to rewrite. Read-only over `module` + `plan`.
-fn collect_block_rewrites<
-    T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
->(
+fn collect_block_rewrites<T: Types<Ty = Ty> + ClosureTypes>(
     t: &mut T,
     module: &Module,
     plan: &ModulePlan,
@@ -101,9 +101,7 @@ fn collect_block_rewrites<
         };
         for b in &f.blocks {
             let (callee, args) = match &b.terminator {
-                Term::Call { callee, args, .. } | Term::TailCall { callee, args, .. } => {
-                    (*callee, args)
-                }
+                Term::Call { callee, args, .. } | Term::TailCall { callee, args, .. } => (*callee, args),
                 _ => continue,
             };
             let Some(target) = module.protocol_call_targets.get(&callee) else {
@@ -130,15 +128,13 @@ fn collect_block_rewrites<
 /// the enclosing fn. Mirrors `rewrite_known_target_closures`' "consider every
 /// spec" discipline: the rewrite must be sound for all specializations that
 /// reach this block, so we test against their union.
-fn merged_receiver_ty<
-    T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
->(
+fn merged_receiver_ty<T: Types<Ty = Ty> + ClosureTypes>(
     t: &mut T,
     module: &Module,
     specs: &[&SpecPlan],
     block: &Block,
     receiver_var: Var,
-) -> crate::types::Ty {
+) -> Ty {
     let mut merged = t.none();
     for ft in specs {
         if !ft.reachable_blocks.contains(&block.id) {
@@ -163,11 +159,11 @@ fn merged_receiver_ty<
 /// (a provider not yet linked) makes the receiver not fully covered here — its
 /// part of the receiver becomes residual handled by the fallthrough, the same
 /// boundary `protocol_dispatch_key` draws between local and external dispatch.
-fn switch_arms<T: crate::types::Types<Ty = crate::types::Ty>>(
+fn switch_arms<T: Types<Ty = Ty>>(
     t: &mut T,
     module: &Module,
-    target: &crate::fz_ir::ProtocolCallTarget,
-    receiver_ty: &crate::types::Ty,
+    target: &ProtocolCallTarget,
+    receiver_ty: &Ty,
 ) -> Option<(Vec<SwitchArm>, bool)> {
     if t.is_empty(receiver_ty) {
         return None;
@@ -180,7 +176,7 @@ fn switch_arms<T: crate::types::Types<Ty = crate::types::Ty>>(
         .values()
         .filter(|fact| fact.protocol == target.protocol)
     {
-        let target_ty = crate::frontend::protocols::impl_target_type(t, &fact.target);
+        let target_ty = impl_target_type(t, &fact.target);
         let overlap = t.intersect(receiver_ty.clone(), target_ty.clone());
         if t.is_empty(&overlap) {
             continue;
@@ -240,16 +236,9 @@ fn apply_block_rewrite(module: &mut Module, rewrite: BlockRewrite) {
     // for an open receiver, becomes the no-match fallthrough verbatim.
     let original = f.blocks[head_idx].terminator.clone();
     let (args, continuation, is_tail, is_back_edge) = match &original {
-        Term::Call {
-            args, continuation, ..
-        } => (args.clone(), Some(continuation.clone()), false, false),
-        Term::TailCall {
-            args, is_back_edge, ..
-        } => (args.clone(), None, true, *is_back_edge),
-        other => unreachable!(
-            "rewrite block terminator is a protocol call, got {:?}",
-            other
-        ),
+        Term::Call { args, continuation, .. } => (args.clone(), Some(continuation.clone()), false, false),
+        Term::TailCall { args, is_back_edge, .. } => (args.clone(), None, true, *is_back_edge),
+        other => unreachable!("rewrite block terminator is a protocol call, got {:?}", other),
     };
     let receiver = args[0];
     let n = rewrite.arms.len();
@@ -257,8 +246,8 @@ fn apply_block_rewrite(module: &mut Module, rewrite: BlockRewrite) {
     // (the final `else`); an open receiver tests them all.
     let num_tests = if rewrite.fully_covered { n - 1 } else { n };
 
-    let var_base = crate::ir_inline::max_var(f) + 1;
-    let block_base = crate::ir_inline::max_block(f) + 1;
+    let var_base = max_var(f) + 1;
+    let block_base = max_block(f) + 1;
     // Block id layout: arm blocks [0, n), then (open only) the fallthrough
     // block, then the intermediate test blocks (tests 1..num_tests; test 0 is
     // the head block).
@@ -279,7 +268,7 @@ fn apply_block_rewrite(module: &mut Module, rewrite: BlockRewrite) {
     };
 
     let arm_terminator = |impl_fn: FnId| -> Term {
-        let ident = CallsiteIdent::from_source(crate::diag::Span::DUMMY);
+        let ident = CallsiteIdent::from_source(Span::DUMMY);
         if is_tail {
             Term::TailCall {
                 ident,
@@ -292,9 +281,7 @@ fn apply_block_rewrite(module: &mut Module, rewrite: BlockRewrite) {
                 ident,
                 callee: impl_fn,
                 args: args.clone(),
-                continuation: continuation
-                    .clone()
-                    .expect("non-tail call has a continuation"),
+                continuation: continuation.clone().expect("non-tail call has a continuation"),
             }
         }
     };

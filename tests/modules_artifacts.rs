@@ -1,6 +1,8 @@
+use std::env::temp_dir;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Output, id};
+use std::thread::current;
 
 const FZ_BIN: &str = env!("CARGO_BIN_EXE_fz");
 
@@ -19,10 +21,10 @@ defmodule User do
   fn calc(x, y), do: add(x, y)
 end
 "#;
-    let path = std::env::temp_dir().join(format!(
+    let path = temp_dir().join(format!(
         "fz-interface-dump-{}-{}.fz",
-        std::process::id(),
-        std::thread::current().name().unwrap_or("test")
+        id(),
+        current().name().unwrap_or("test")
     ));
     fs::write(&path, src).unwrap_or_else(|e| panic!("write {}: {}", path.display(), e));
     let out = Command::new(FZ_BIN)
@@ -83,7 +85,7 @@ end
 
 fn main(), do: Math.id(1)
 "#;
-    let root = std::env::temp_dir().join(format!("fz-build-fzi-{}", std::process::id()));
+    let root = temp_dir().join(format!("fz-build-fzi-{}", id()));
     let _ = fs::remove_dir_all(&root);
     fs::create_dir_all(&root).unwrap_or_else(|e| panic!("mkdir {}: {}", root.display(), e));
     let input = root.join("input.fz");
@@ -107,15 +109,11 @@ fn main(), do: Math.id(1)
     );
 
     let fzi_path = artifact_root.join("interfaces/Math.fzi");
-    let fzi = fs::read_to_string(&fzi_path)
-        .unwrap_or_else(|e| panic!("read {}: {}", fzi_path.display(), e));
+    let fzi = fs::read_to_string(&fzi_path).unwrap_or_else(|e| panic!("read {}: {}", fzi_path.display(), e));
     assert!(fzi.starts_with("fzi\n"), "{fzi}");
     assert!(fzi.contains("\"Math\""), "{fzi}");
     assert!(fzi.contains("\"interface_fingerprint_digest\""), "{fzi}");
-    assert!(
-        fzi.contains("\"id\"") && fzi.contains("\"arity\": 1"),
-        "{fzi}"
-    );
+    assert!(fzi.contains("\"id\"") && fzi.contains("\"arity\": 1"), "{fzi}");
 
     let _ = fs::remove_dir_all(&root);
 }
@@ -130,7 +128,7 @@ end
 
 fn main(), do: Math.id(1)
 "#;
-    let root = std::env::temp_dir().join(format!("fz-build-fzo-{}", std::process::id()));
+    let root = temp_dir().join(format!("fz-build-fzo-{}", id()));
     let _ = fs::remove_dir_all(&root);
     fs::create_dir_all(&root).unwrap_or_else(|e| panic!("mkdir {}: {}", root.display(), e));
     let input = root.join("input.fz");
@@ -154,8 +152,7 @@ fn main(), do: Math.id(1)
     );
 
     let fzo_path = artifact_root.join("objects/Math.fzo");
-    let fzo = fs::read_to_string(&fzo_path)
-        .unwrap_or_else(|e| panic!("read {}: {}", fzo_path.display(), e));
+    let fzo = fs::read_to_string(&fzo_path).unwrap_or_else(|e| panic!("read {}: {}", fzo_path.display(), e));
     assert!(fzo.starts_with("fzo\n"), "{fzo}");
     assert!(fzo.contains("\"Math\""), "{fzo}");
     assert!(fzo.contains("\"format\": \"fz-ir-unit-v1\""), "{fzo}");
@@ -185,10 +182,8 @@ fn main(), do: dbg(User.run())
     let provider_path = root.join("provider.fz");
     let consumer_path = root.join("consumer.fz");
     let artifact_root = root.join("artifacts");
-    fs::write(&provider_path, provider)
-        .unwrap_or_else(|e| panic!("write {}: {}", provider_path.display(), e));
-    fs::write(&consumer_path, consumer)
-        .unwrap_or_else(|e| panic!("write {}: {}", consumer_path.display(), e));
+    fs::write(&provider_path, provider).unwrap_or_else(|e| panic!("write {}: {}", provider_path.display(), e));
+    fs::write(&consumer_path, consumer).unwrap_or_else(|e| panic!("write {}: {}", consumer_path.display(), e));
     (provider_path, consumer_path, artifact_root)
 }
 
@@ -211,13 +206,12 @@ fn build_provider_artifacts(provider_path: &Path, artifact_root: &Path, out_path
 
 #[test]
 fn fz_run_loads_reachable_fzo_after_provider_source_removed() {
-    let root = std::env::temp_dir().join(format!("fz-run-load-fzo-{}", std::process::id()));
+    let root = temp_dir().join(format!("fz-run-load-fzo-{}", id()));
     let _ = fs::remove_dir_all(&root);
     fs::create_dir_all(&root).unwrap_or_else(|e| panic!("mkdir {}: {}", root.display(), e));
     let (provider_path, consumer_path, artifact_root) = write_provider_consumer(&root);
     build_provider_artifacts(&provider_path, &artifact_root, &root.join("provider-app"));
-    fs::remove_file(&provider_path)
-        .unwrap_or_else(|e| panic!("remove {}: {}", provider_path.display(), e));
+    fs::remove_file(&provider_path).unwrap_or_else(|e| panic!("remove {}: {}", provider_path.display(), e));
 
     let out = Command::new(FZ_BIN)
         .args(["run", "--interface", "Math", "--artifact-root"])
@@ -238,13 +232,12 @@ fn fz_run_loads_reachable_fzo_after_provider_source_removed() {
 
 #[test]
 fn fz_build_loads_reachable_fzo_after_provider_source_removed() {
-    let root = std::env::temp_dir().join(format!("fz-build-load-fzo-{}", std::process::id()));
+    let root = temp_dir().join(format!("fz-build-load-fzo-{}", id()));
     let _ = fs::remove_dir_all(&root);
     fs::create_dir_all(&root).unwrap_or_else(|e| panic!("mkdir {}: {}", root.display(), e));
     let (provider_path, consumer_path, artifact_root) = write_provider_consumer(&root);
     build_provider_artifacts(&provider_path, &artifact_root, &root.join("provider-app"));
-    fs::remove_file(&provider_path)
-        .unwrap_or_else(|e| panic!("remove {}: {}", provider_path.display(), e));
+    fs::remove_file(&provider_path).unwrap_or_else(|e| panic!("remove {}: {}", provider_path.display(), e));
 
     let app = root.join("consumer-app");
     let build = Command::new(FZ_BIN)
@@ -278,10 +271,7 @@ fn fz_build_loads_reachable_fzo_after_provider_source_removed() {
         .arg(&consumer_path)
         .output()
         .expect("spawn missing-fzo consumer run");
-    assert!(
-        !missing.status.success(),
-        "missing fzo run unexpectedly succeeded"
-    );
+    assert!(!missing.status.success(), "missing fzo run unexpectedly succeeded");
     assert!(
         String::from_utf8_lossy(&missing.stderr).contains("Math.fzo"),
         "{}",
@@ -311,16 +301,14 @@ end
 
 fn main(), do: dbg(User.run())
 "#;
-    let root = std::env::temp_dir().join(format!("fz-build-imported-fzo-{}", std::process::id()));
+    let root = temp_dir().join(format!("fz-build-imported-fzo-{}", id()));
     let _ = fs::remove_dir_all(&root);
     fs::create_dir_all(&root).unwrap_or_else(|e| panic!("mkdir {}: {}", root.display(), e));
     let provider_path = root.join("provider.fz");
     let consumer_path = root.join("consumer.fz");
     let artifact_root = root.join("artifacts");
-    fs::write(&provider_path, provider)
-        .unwrap_or_else(|e| panic!("write {}: {}", provider_path.display(), e));
-    fs::write(&consumer_path, consumer)
-        .unwrap_or_else(|e| panic!("write {}: {}", consumer_path.display(), e));
+    fs::write(&provider_path, provider).unwrap_or_else(|e| panic!("write {}: {}", provider_path.display(), e));
+    fs::write(&consumer_path, consumer).unwrap_or_else(|e| panic!("write {}: {}", consumer_path.display(), e));
     build_provider_artifacts(&provider_path, &artifact_root, &root.join("provider-app"));
 
     let out = Command::new(FZ_BIN)
@@ -346,27 +334,22 @@ fn main(), do: dbg(User.run())
     );
 
     let fzo_path = artifact_root.join("objects/User.fzo");
-    let fzo = fs::read_to_string(&fzo_path)
-        .unwrap_or_else(|e| panic!("read {}: {}", fzo_path.display(), e));
+    let fzo = fs::read_to_string(&fzo_path).unwrap_or_else(|e| panic!("read {}: {}", fzo_path.display(), e));
     assert!(fzo.contains("\"User\""), "{fzo}");
     assert!(fzo.contains("\"format\": \"fz-ir-unit-v1\""), "{fzo}");
-    assert!(
-        fzo.contains("\"add\"") && fzo.contains("\"arity\": 2"),
-        "{fzo}"
-    );
+    assert!(fzo.contains("\"add\"") && fzo.contains("\"arity\": 2"), "{fzo}");
 
     let _ = fs::remove_dir_all(&root);
 }
 
 #[test]
 fn fz_repl_script_keeps_module_artifacts_out_of_session() {
-    let root = std::env::temp_dir().join(format!("fz-repl-no-artifacts-{}", std::process::id()));
+    let root = temp_dir().join(format!("fz-repl-no-artifacts-{}", id()));
     let _ = fs::remove_dir_all(&root);
     fs::create_dir_all(&root).unwrap_or_else(|e| panic!("mkdir {}: {}", root.display(), e));
     let (provider_path, consumer_path, artifact_root) = write_provider_consumer(&root);
     build_provider_artifacts(&provider_path, &artifact_root, &root.join("provider-app"));
-    fs::remove_file(&provider_path)
-        .unwrap_or_else(|e| panic!("remove {}: {}", provider_path.display(), e));
+    fs::remove_file(&provider_path).unwrap_or_else(|e| panic!("remove {}: {}", provider_path.display(), e));
 
     let out = Command::new(FZ_BIN)
         .args(["repl", "--script"])
@@ -379,8 +362,7 @@ fn fz_repl_script_keeps_module_artifacts_out_of_session() {
     );
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(
-        stderr.contains("resolve/unknown-module")
-            && stderr.contains("module `Math` is not defined"),
+        stderr.contains("resolve/unknown-module") && stderr.contains("module `Math` is not defined"),
         "unexpected repl script stderr: {stderr}"
     );
 
@@ -396,7 +378,7 @@ end
 
 fn main(), do: Public.missing(1)
 "#;
-    let root = std::env::temp_dir().join(format!("fz-build-fzi-strict-{}", std::process::id()));
+    let root = temp_dir().join(format!("fz-build-fzi-strict-{}", id()));
     let _ = fs::remove_dir_all(&root);
     fs::create_dir_all(&root).unwrap_or_else(|e| panic!("mkdir {}: {}", root.display(), e));
     let input = root.join("input.fz");
@@ -440,17 +422,15 @@ defmodule User do
   fn run(x, y), do: x + y
 end
 "#;
-    let root = std::env::temp_dir().join(format!("fz-dump-load-fzi-{}", std::process::id()));
+    let root = temp_dir().join(format!("fz-dump-load-fzi-{}", id()));
     let _ = fs::remove_dir_all(&root);
     fs::create_dir_all(&root).unwrap_or_else(|e| panic!("mkdir {}: {}", root.display(), e));
     let provider_path = root.join("provider.fz");
     let consumer_path = root.join("consumer.fz");
     let out_path = root.join("provider-app");
     let artifact_root = root.join("artifacts");
-    fs::write(&provider_path, provider)
-        .unwrap_or_else(|e| panic!("write {}: {}", provider_path.display(), e));
-    fs::write(&consumer_path, consumer)
-        .unwrap_or_else(|e| panic!("write {}: {}", consumer_path.display(), e));
+    fs::write(&provider_path, provider).unwrap_or_else(|e| panic!("write {}: {}", provider_path.display(), e));
+    fs::write(&consumer_path, consumer).unwrap_or_else(|e| panic!("write {}: {}", consumer_path.display(), e));
 
     let build = Command::new(FZ_BIN)
         .args(["build", "--emit-fzi", "--artifact-root"])
@@ -466,18 +446,10 @@ end
         build.status,
         String::from_utf8_lossy(&build.stderr)
     );
-    fs::remove_file(&provider_path)
-        .unwrap_or_else(|e| panic!("remove {}: {}", provider_path.display(), e));
+    fs::remove_file(&provider_path).unwrap_or_else(|e| panic!("remove {}: {}", provider_path.display(), e));
 
     let dump = Command::new(FZ_BIN)
-        .args([
-            "dump",
-            "--emit",
-            "interfaces",
-            "--interface",
-            "Math",
-            "--artifact-root",
-        ])
+        .args(["dump", "--emit", "interfaces", "--interface", "Math", "--artifact-root"])
         .arg(&artifact_root)
         .arg(&consumer_path)
         .output()
@@ -589,22 +561,13 @@ fn main(), do: Math.add(20, 22)
 }
 
 fn write_temp_fz(prefix: &str, src: &str) -> PathBuf {
-    let path = std::env::temp_dir().join(format!(
-        "{}-{}-{}.fz",
-        prefix,
-        std::process::id(),
-        std::thread::current().name().unwrap_or("test")
-    ));
+    let path = temp_dir().join(format!("{}-{}-{}.fz", prefix, id(), current().name().unwrap_or("test")));
     fs::write(&path, src).unwrap_or_else(|e| panic!("write {}: {}", path.display(), e));
     path
 }
 
-fn dump_interfaces_for_source(src: &str, strict: bool) -> std::process::Output {
-    let path = std::env::temp_dir().join(format!(
-        "fz-interface-dump-{}-{}.fz",
-        std::process::id(),
-        strict
-    ));
+fn dump_interfaces_for_source(src: &str, strict: bool) -> Output {
+    let path = temp_dir().join(format!("fz-interface-dump-{}-{}.fz", id(), strict));
     fs::write(&path, src).unwrap_or_else(|e| panic!("write {}: {}", path.display(), e));
     let mut cmd = Command::new(FZ_BIN);
     cmd.args(["dump", "--emit", "interfaces"]);

@@ -176,17 +176,13 @@ fn value_to_expr_inner(v: &Value) -> Result<Expr, String> {
         Value::Binary(s) => Ok(Expr::Binary(s.to_vec())),
 
         Value::List(xs) => {
-            let exprs = xs
-                .iter()
-                .map(value_to_expr)
-                .collect::<Result<Vec<_>, _>>()?;
+            let exprs = xs.iter().map(value_to_expr).collect::<Result<Vec<_>, _>>()?;
             Ok(Expr::List(exprs, None))
         }
 
-        Value::Tuple(elems) if elems.len() == 2 => Ok(Expr::Tuple(vec![
-            value_to_expr(&elems[0])?,
-            value_to_expr(&elems[1])?,
-        ])),
+        Value::Tuple(elems) if elems.len() == 2 => {
+            Ok(Expr::Tuple(vec![value_to_expr(&elems[0])?, value_to_expr(&elems[1])?]))
+        }
 
         Value::Tuple(elems) if elems.len() == 3 => decode_ast_node(&elems[0], &elems[2]),
 
@@ -210,11 +206,7 @@ fn atom(s: &str) -> Value {
 
 fn ast_node(name: &str, _meta: &[(String, Value)], args_or_ctx: Option<Value>) -> Value {
     let args = args_or_ctx.unwrap_or(atom(USER_CTX));
-    Value::Tuple(Rc::new(vec![
-        atom(name),
-        Value::Map(Rc::new(FzMap::new())),
-        args,
-    ]))
+    Value::Tuple(Rc::new(vec![atom(name), Value::Map(Rc::new(FzMap::new())), args]))
 }
 
 fn kv(key: &str, val: Value) -> Value {
@@ -248,17 +240,11 @@ fn decode_ast_node(head: &Value, tail: &Value) -> Result<Expr, String> {
 
     match name {
         "{}" => {
-            let elems = args
-                .iter()
-                .map(value_to_expr)
-                .collect::<Result<Vec<_>, _>>()?;
+            let elems = args.iter().map(value_to_expr).collect::<Result<Vec<_>, _>>()?;
             Ok(Expr::Tuple(elems))
         }
         "__block__" => {
-            let exprs = args
-                .iter()
-                .map(value_to_expr)
-                .collect::<Result<Vec<_>, _>>()?;
+            let exprs = args.iter().map(value_to_expr).collect::<Result<Vec<_>, _>>()?;
             Ok(Expr::Block(exprs))
         }
         "if" => {
@@ -293,10 +279,7 @@ fn decode_ast_node(head: &Value, tail: &Value) -> Result<Expr, String> {
             if let Some(u) = unop_from_atom(name, args.len()) {
                 return Ok(Expr::UnOp(u, Box::new(value_to_expr(&args[0])?)));
             }
-            let arg_exprs = args
-                .iter()
-                .map(value_to_expr)
-                .collect::<Result<Vec<_>, _>>()?;
+            let arg_exprs = args.iter().map(value_to_expr).collect::<Result<Vec<_>, _>>()?;
             Ok(Expr::Call(
                 Box::new(Spanned::dummy(Expr::Var(name.to_string()))),
                 arg_exprs,
@@ -431,6 +414,7 @@ impl Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::diag::Span;
     use crate::parser::Parser;
     use crate::parser::lexer::Lexer;
 
@@ -478,20 +462,14 @@ mod tests {
             (Atom(x), Atom(y)) => **x == **y,
             (Binary(x), Binary(y)) => **x == **y,
             (Nil, Nil) => true,
-            (List(x), List(y)) => {
-                x.len() == y.len() && x.iter().zip(y.iter()).all(|(a, b)| value_struct_eq(a, b))
-            }
-            (Tuple(x), Tuple(y)) => {
-                x.len() == y.len() && x.iter().zip(y.iter()).all(|(a, b)| value_struct_eq(a, b))
-            }
+            (List(x), List(y)) => x.len() == y.len() && x.iter().zip(y.iter()).all(|(a, b)| value_struct_eq(a, b)),
+            (Tuple(x), Tuple(y)) => x.len() == y.len() && x.iter().zip(y.iter()).all(|(a, b)| value_struct_eq(a, b)),
             (Map(x), Map(y)) => {
                 x.entries.len() == y.entries.len()
                     && x.entries
                         .iter()
                         .zip(y.entries.iter())
-                        .all(|((k1, v1), (k2, v2))| {
-                            value_struct_eq(k1, k2) && value_struct_eq(v1, v2)
-                        })
+                        .all(|((k1, v1), (k2, v2))| value_struct_eq(k1, k2) && value_struct_eq(v1, v2))
             }
             _ => false,
         }
@@ -575,10 +553,7 @@ mod tests {
     }
     #[test]
     fn unop_not() {
-        let e = Spanned::dummy(Expr::UnOp(
-            UnOp::Not,
-            Box::new(Spanned::dummy(Expr::Bool(true))),
-        ));
+        let e = Spanned::dummy(Expr::UnOp(UnOp::Not, Box::new(Spanned::dummy(Expr::Bool(true)))));
         let v = expr_to_value(&e).unwrap();
         let e2 = value_to_expr(&v).unwrap();
         assert!(matches!(e2.node, Expr::UnOp(UnOp::Not, _)));
@@ -618,10 +593,7 @@ mod tests {
     }
     #[test]
     fn unop_neg() {
-        let e = Spanned::dummy(Expr::UnOp(
-            UnOp::Neg,
-            Box::new(Spanned::dummy(Expr::Int(5))),
-        ));
+        let e = Spanned::dummy(Expr::UnOp(UnOp::Neg, Box::new(Spanned::dummy(Expr::Int(5)))));
         let v = expr_to_value(&e).unwrap();
         let e2 = value_to_expr(&v).unwrap();
         assert!(matches!(e2.node, Expr::UnOp(UnOp::Neg, _)));
@@ -629,11 +601,11 @@ mod tests {
 
     #[test]
     fn unsupported_expr_errors_cleanly() {
-        let e = Spanned::dummy(Expr::Lambda(vec![crate::ast::LambdaClause {
+        let e = Spanned::dummy(Expr::Lambda(vec![LambdaClause {
             params: vec![],
             guard: None,
             body: Spanned::dummy(Expr::Int(0)),
-            span: crate::diag::Span::DUMMY,
+            span: Span::DUMMY,
         }]));
         assert!(expr_to_value(&e).is_err());
     }
@@ -655,9 +627,7 @@ mod tests {
     fn shape_of_binop_is_3_tuple_with_args_list() {
         let e = parse_expr("1 + 2");
         let v = expr_to_value(&e).unwrap();
-        let Value::Tuple(t) = &v else {
-            panic!("expected tuple")
-        };
+        let Value::Tuple(t) = &v else { panic!("expected tuple") };
         assert_eq!(t.len(), 3);
         assert!(matches!(&t[0], Value::Atom(s) if &**s == "+"));
         let Value::List(args) = &t[2] else {
@@ -680,9 +650,6 @@ mod tests {
         let e = parse_expr("foo(1)");
         let v = expr_to_value(&e).unwrap();
         let e2 = value_to_expr(&v).unwrap();
-        assert!(
-            e2.span.is_dummy(),
-            "value_to_expr must produce DUMMY-spanned nodes"
-        );
+        assert!(e2.span.is_dummy(), "value_to_expr must produce DUMMY-spanned nodes");
     }
 }

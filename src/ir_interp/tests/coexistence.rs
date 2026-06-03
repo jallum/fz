@@ -8,45 +8,34 @@
 //! telemetry sink lives on the per-task `ExecCtx`, so the two runtimes share no
 //! ambient state at all.
 
+use crate::exec::runtime::DbgCapture;
 use crate::fz_ir::Module;
 use crate::ir_interp::IrInterpRuntime;
+use crate::ir_lower::lower_program;
+use crate::parser::Parser;
+use crate::parser::lexer::Lexer;
+use crate::telemetry::bus::ConfiguredTelemetry;
+use crate::telemetry::{NullTelemetry, Telemetry};
+use crate::types::ConcreteTypes;
 
 fn lower_src(src: &str) -> Module {
-    let toks = crate::parser::lexer::Lexer::new(src)
-        .tokenize()
-        .expect("lex");
-    let prog = crate::parser::Parser::new(toks)
-        .parse_program()
-        .expect("parse");
-    crate::ir_lower::lower_program(
-        &mut crate::types::ConcreteTypes,
-        &prog,
-        &crate::telemetry::NullTelemetry,
-    )
-    .expect("lower")
+    let toks = Lexer::new(src).tokenize().expect("lex");
+    let prog = Parser::new(toks).parse_program().expect("parse");
+    lower_program(&mut ConcreteTypes, &prog, &NullTelemetry).expect("lower")
 }
 
 /// A telemetry sink that captures `dbg` lines, returned alongside the capture
 /// handle so the test can read what each runtime emitted.
-fn capture() -> (
-    crate::telemetry::bus::ConfiguredTelemetry,
-    crate::exec::runtime::DbgCapture,
-) {
-    let tel = crate::telemetry::bus::ConfiguredTelemetry::new();
-    let cap = crate::exec::runtime::DbgCapture::new();
+fn capture() -> (ConfiguredTelemetry, DbgCapture) {
+    let tel = ConfiguredTelemetry::new();
+    let cap = DbgCapture::new();
     tel.attach(&[], cap.handler());
     (tel, cap)
 }
 
-fn drive_main(
-    runtime: &mut IrInterpRuntime,
-    module: &Module,
-    tel: &dyn crate::telemetry::Telemetry,
-) {
+fn drive_main(runtime: &mut IrInterpRuntime, module: &Module, tel: &dyn Telemetry) {
     let main_id = module.fn_by_name("main").expect("main/0").id;
-    runtime
-        .enqueue_entry(module, 1, main_id, vec![])
-        .expect("enqueue");
+    runtime.enqueue_entry(module, 1, main_id, vec![]).expect("enqueue");
     runtime.drive_until_idle(tel, None).expect("drive");
 }
 
@@ -95,12 +84,6 @@ fn interleaved_rounds_keep_each_runtimes_state_isolated() {
     drive_main(&mut rt_a, &mod_a, &tel_a);
     drive_main(&mut rt_b, &mod_b, &tel_b);
 
-    assert_eq!(
-        cap_a.lines(),
-        vec![":a_round".to_string(), ":a_round".to_string()]
-    );
-    assert_eq!(
-        cap_b.lines(),
-        vec![":b_round".to_string(), ":b_round".to_string()]
-    );
+    assert_eq!(cap_a.lines(), vec![":a_round".to_string(), ":a_round".to_string()]);
+    assert_eq!(cap_b.lines(), vec![":b_round".to_string(), ":b_round".to_string()]);
 }

@@ -1,4 +1,5 @@
 use crate::fz_ir::{EmitSlot, FnId, FnIr, Term};
+use crate::ir_planner::SpecPlan;
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct BodyCallsiteCounts {
@@ -41,16 +42,13 @@ pub fn body_callsite_inventory(f: &FnIr) -> (BodyCallsiteCounts, Vec<String>) {
             Term::ReceiveMatched { .. } => "receive_matched",
             _ => continue,
         };
-        inventory.push(format!(
-            "{}#b{}@{}..{}",
-            label, blk.id.0, span.start, span.end
-        ));
+        inventory.push(format!("{}#b{}@{}..{}", label, blk.id.0, span.start, span.end));
     }
     inventory.sort();
     (counts, inventory)
 }
 
-pub fn plan_call_edge_inventory(ft: &crate::ir_planner::SpecPlan, caller: FnId) -> Vec<String> {
+pub fn plan_call_edge_inventory(ft: &SpecPlan, caller: FnId) -> Vec<String> {
     let mut inventory = ft
         .call_edges
         .keys()

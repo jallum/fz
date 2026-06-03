@@ -1,5 +1,5 @@
 use crate::fz_ir::{BinOp, BlockId, Prim, Stmt, Var};
-use crate::types::MapKey;
+use crate::types::{MapKey, Ty, Types};
 use std::collections::HashMap;
 
 fn stmt_prim(stmts: &[Stmt], var: Var) -> Option<&Prim> {
@@ -9,10 +9,7 @@ fn stmt_prim(stmts: &[Stmt], var: Var) -> Option<&Prim> {
     })
 }
 
-fn bool_singleton_of_ty<T: crate::types::Types<Ty = crate::types::Ty>>(
-    t: &mut T,
-    ty: &crate::types::Ty,
-) -> Option<bool> {
+fn bool_singleton_of_ty<T: Types<Ty = Ty>>(t: &mut T, ty: &Ty) -> Option<bool> {
     let true_ty = t.bool_lit(true);
     if t.is_subtype(ty, &true_ty) {
         return Some(true);
@@ -24,12 +21,7 @@ fn bool_singleton_of_ty<T: crate::types::Types<Ty = crate::types::Ty>>(
     None
 }
 
-fn known_bool_truth<T: crate::types::Types<Ty = crate::types::Ty>>(
-    t: &mut T,
-    env: &HashMap<Var, crate::types::Ty>,
-    stmts: &[Stmt],
-    var: Var,
-) -> Option<bool> {
+fn known_bool_truth<T: Types<Ty = Ty>>(t: &mut T, env: &HashMap<Var, Ty>, stmts: &[Stmt], var: Var) -> Option<bool> {
     if let Some(ty) = env.get(&var)
         && let Some(value) = bool_singleton_of_ty(t, ty)
     {
@@ -106,9 +98,9 @@ fn known_bool_truth<T: crate::types::Types<Ty = crate::types::Ty>>(
     }
 }
 
-fn matcher_map_get_truth<T: crate::types::Types<Ty = crate::types::Ty>>(
+fn matcher_map_get_truth<T: Types<Ty = Ty>>(
     t: &mut T,
-    env: &HashMap<Var, crate::types::Ty>,
+    env: &HashMap<Var, Ty>,
     stmts: &[Stmt],
     miss_var: Var,
 ) -> Option<bool> {
@@ -137,11 +129,11 @@ fn matcher_map_get_truth<T: crate::types::Types<Ty = crate::types::Ty>>(
 }
 
 /// Union `delta` into `block_envs[target]`. Returns true if anything changed.
-pub(crate) fn merge_into<T: crate::types::Types<Ty = crate::types::Ty>>(
+pub(crate) fn merge_into<T: Types<Ty = Ty>>(
     t: &mut T,
-    block_envs: &mut HashMap<BlockId, HashMap<Var, crate::types::Ty>>,
+    block_envs: &mut HashMap<BlockId, HashMap<Var, Ty>>,
     target: BlockId,
-    delta: &HashMap<Var, crate::types::Ty>,
+    delta: &HashMap<Var, Ty>,
 ) -> bool {
     let env = block_envs.entry(target).or_default();
     let mut changed = false;
@@ -157,11 +149,7 @@ pub(crate) fn merge_into<T: crate::types::Types<Ty = crate::types::Ty>>(
 }
 
 /// Union two env maps, joining overlapping var types.
-pub(crate) fn union_envs<T: crate::types::Types<Ty = crate::types::Ty>>(
-    t: &mut T,
-    a: HashMap<Var, crate::types::Ty>,
-    b: &HashMap<Var, crate::types::Ty>,
-) -> HashMap<Var, crate::types::Ty> {
+pub(crate) fn union_envs<T: Types<Ty = Ty>>(t: &mut T, a: HashMap<Var, Ty>, b: &HashMap<Var, Ty>) -> HashMap<Var, Ty> {
     let mut out = a;
     for (v, dt) in b {
         let prev_ty = out.remove(v).unwrap_or_else(|| t.none());
@@ -173,15 +161,12 @@ pub(crate) fn union_envs<T: crate::types::Types<Ty = crate::types::Ty>>(
 
 /// Recursive core for if-condition narrowing.
 /// Returns (then_env, else_env) with variable types refined for each branch.
-pub(crate) fn narrow_for_cond<T: crate::types::Types<Ty = crate::types::Ty>>(
+pub(crate) fn narrow_for_cond<T: Types<Ty = Ty>>(
     t: &mut T,
     cond: Var,
-    env: &HashMap<Var, crate::types::Ty>,
+    env: &HashMap<Var, Ty>,
     stmts: &[Stmt],
-) -> (
-    HashMap<Var, crate::types::Ty>,
-    HashMap<Var, crate::types::Ty>,
-) {
+) -> (HashMap<Var, Ty>, HashMap<Var, Ty>) {
     let mut then_env = env.clone();
     let mut else_env = env.clone();
 
@@ -208,9 +193,8 @@ pub(crate) fn narrow_for_cond<T: crate::types::Types<Ty = crate::types::Ty>>(
     }
 
     // Helper: env-lookup → T::Ty with `any` fallback.
-    let lookup_ty = |t: &mut T, env: &HashMap<Var, crate::types::Ty>, v: &Var| -> T::Ty {
-        env.get(v).cloned().unwrap_or_else(|| t.any())
-    };
+    let lookup_ty =
+        |t: &mut T, env: &HashMap<Var, Ty>, v: &Var| -> T::Ty { env.get(v).cloned().unwrap_or_else(|| t.any()) };
 
     match prim {
         Prim::BinOp(BinOp::And, a, b) => {
@@ -307,27 +291,24 @@ pub(crate) fn narrow_for_cond<T: crate::types::Types<Ty = crate::types::Ty>>(
     (then_env, else_env)
 }
 
-pub(crate) fn narrow_for_if<T: crate::types::Types<Ty = crate::types::Ty>>(
+pub(crate) fn narrow_for_if<T: Types<Ty = Ty>>(
     t: &mut T,
-    env: &HashMap<Var, crate::types::Ty>,
+    env: &HashMap<Var, Ty>,
     cond: Var,
     stmts: &[Stmt],
-) -> (
-    HashMap<Var, crate::types::Ty>,
-    HashMap<Var, crate::types::Ty>,
-) {
+) -> (HashMap<Var, Ty>, HashMap<Var, Ty>) {
     narrow_for_cond(t, cond, env, stmts)
 }
 
 /// Within one spec's narrowed env, find the first Var whose type became empty
 /// post-narrowing. Returns (Var, old_t, new_t) if found; None if narrowing kept
 /// every var inhabited.
-pub(crate) fn find_emptied_var<T: crate::types::Types<Ty = crate::types::Ty>>(
+pub(crate) fn find_emptied_var<T: Types<Ty = Ty>>(
     t: &mut T,
-    pre_env: &HashMap<crate::fz_ir::Var, crate::types::Ty>,
-    branch_env: &HashMap<crate::fz_ir::Var, crate::types::Ty>,
-) -> Option<(crate::fz_ir::Var, T::Ty, T::Ty)> {
-    let mut keys: Vec<crate::fz_ir::Var> = branch_env.keys().copied().collect();
+    pre_env: &HashMap<Var, Ty>,
+    branch_env: &HashMap<Var, Ty>,
+) -> Option<(Var, T::Ty, T::Ty)> {
+    let mut keys: Vec<Var> = branch_env.keys().copied().collect();
     keys.sort_by_key(|v| v.0);
     for v in keys {
         let new_ty = branch_env.get(&v).unwrap().clone();

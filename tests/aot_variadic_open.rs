@@ -8,28 +8,23 @@
 //! permissions after the binary exits, which the fixture matrix cannot express,
 //! so it stays a Rust integration test.
 
-use std::process::Command;
+use std::env::temp_dir;
+use std::ffi::OsStr;
+use std::fs::{metadata, remove_file, write};
+use std::path::PathBuf;
+use std::process::{Command, Output, id};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 const FZ_BIN: &str = env!("CARGO_BIN_EXE_fz");
 static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
-fn unique_temp_path(prefix: &str, suffix: &str) -> std::path::PathBuf {
+fn unique_temp_path(prefix: &str, suffix: &str) -> PathBuf {
     let nonce = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
-    std::env::temp_dir().join(format!(
-        "{}_{}_{}{}",
-        prefix,
-        std::process::id(),
-        nonce,
-        suffix
-    ))
+    temp_dir().join(format!("{}_{}_{}{}", prefix, id(), nonce, suffix))
 }
 
-fn run_with_args(args: &[&std::ffi::OsStr]) -> std::process::Output {
-    Command::new(FZ_BIN)
-        .args(args)
-        .output()
-        .expect("invoke fz binary")
+fn run_with_args(args: &[&OsStr]) -> Output {
+    Command::new(FZ_BIN).args(args).output().expect("invoke fz binary")
 }
 
 #[cfg(unix)]
@@ -69,12 +64,12 @@ end
 "#,
         path_text, flags, requested
     );
-    std::fs::write(&source_path, src).expect("write variadic open fixture");
+    write(&source_path, src).expect("write variadic open fixture");
 
     let build = run_with_args(&[
-        std::ffi::OsStr::new("build"),
+        OsStr::new("build"),
         source_path.as_os_str(),
-        std::ffi::OsStr::new("-o"),
+        OsStr::new("-o"),
         out_bin.as_os_str(),
     ]);
     assert!(
@@ -93,14 +88,14 @@ end
         String::from_utf8_lossy(&run.stderr)
     );
 
-    let mode = std::fs::metadata(&created_path)
+    let mode = metadata(&created_path)
         .expect("created file metadata")
         .permissions()
         .mode()
         & 0o777;
-    let _ = std::fs::remove_file(&created_path);
-    let _ = std::fs::remove_file(&source_path);
-    let _ = std::fs::remove_file(&out_bin);
-    let _ = std::fs::remove_file(out_bin.with_extension("o"));
+    let _ = remove_file(&created_path);
+    let _ = remove_file(&source_path);
+    let _ = remove_file(&out_bin);
+    let _ = remove_file(out_bin.with_extension("o"));
     assert_eq!(mode, (requested as u32) & !(umask as u32) & 0o777);
 }

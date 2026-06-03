@@ -27,10 +27,30 @@
 //!   - Process needs Send (currently `Heap` holds Rc — will switch to
 //!     Arc when threading lands).
 
-use crate::fz_ir::FnId;
+use crate::fz_ir::{FnId, Module};
 use crate::ir_codegen::{CompiledModule, PidId, Process, ProcessState};
-use fz_runtime::any_value::AnyValueRef;
+use crate::ir_interp::make_resource_in_current_process;
+#[cfg(test)]
+use crate::telemetry::handler::{Event, Handler};
+use crate::telemetry::value::opaque;
+use crate::telemetry::{NullTelemetry, Telemetry};
+use fz_runtime::any_value::{AnyValue, AnyValueRef};
+use fz_runtime::exec_ctx::{ExecCtx, timer_cancel};
+use fz_runtime::heap::{Heap, deep_copy_any_value_ref};
+use fz_runtime::park::materialize_outcome_closure;
+use fz_runtime::pinned_abi::call2;
+use fz_runtime::procbin::mso_drop_all_deferred;
+use fz_runtime::sched::{fire_after_timer, mint_entry_thunk, mint_main_inner};
+use fz_runtime::timer::TimerWheel;
+#[cfg(test)]
+use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
+use std::ptr::{null, null_mut};
+#[cfg(test)]
+use std::rc::Rc;
+use std::slice::from_raw_parts;
+use std::str::from_utf8;
+use std::time::{Duration, Instant};
 
 /// Task scheduler bound to a single CompiledModule. v1 is single-worker /
 /// single-threaded — `run_until_idle` drives all spawned tasks to
@@ -45,25 +65,25 @@ pub struct Runtime<'a> {
     /// `run_until_idle`. None means programs that call `make_resource`
     /// will panic with a clear "no module attached" message — fine for
     /// programs that don't use resources.
-    module: Option<&'a crate::fz_ir::Module>,
+    module: Option<&'a Module>,
 
     /// fz-yxs/fz-st5 — sorted-vec timer wheel (F2). Stored inside the
     /// Runtime so per-Process `wait.after_deadline_ms` can be
     /// honoured via `dispatch_timer_schedule`; the run loop drains
     /// expired entries each iteration and emits ResumeMatched for the
     /// after-cont closure.
-    pub(crate) timers: fz_runtime::timer::TimerWheel,
+    pub(crate) timers: TimerWheel,
 
     /// Observability sink. Defaults to the silent `NullTelemetry`; the
     /// driver attaches a real one via `with_telemetry`. The run loop emits
     /// `fz.runtime.process_exited` at each task exit (see `ExitRecord`),
     /// which is the seam tests observe instead of poking task internals.
-    tel: &'a dyn crate::telemetry::Telemetry,
+    tel: &'a dyn Telemetry,
 }
 
 /// Silent default for `Runtime.tel` — a `'static` so it coerces to the
 /// `&'a dyn Telemetry` field for any runtime lifetime.
-static NULL_TELEMETRY: crate::telemetry::NullTelemetry = crate::telemetry::NullTelemetry;
+static NULL_TELEMETRY: NullTelemetry = NullTelemetry;
 
 /// The facts observed when a task exits, projected from its `Process`. This is
 /// the single place that reads `Process` internals for the
@@ -92,7 +112,7 @@ impl ExitRecord {
     /// The single emit site for `fz.runtime.process_exited`, shared by the
     /// compiled and interpreter schedulers so the event shape is identical
     /// across engines (durable measurements + opaque `&Process`).
-    pub fn emit(tel: &dyn crate::telemetry::Telemetry, pid: PidId, process: &Process) {
+    pub fn emit(tel: &dyn Telemetry, pid: PidId, process: &Process) {
         let exit = Self::project(pid, process);
         tel.execute(
             &["fz", "runtime", "process_exited"],
@@ -103,7 +123,7 @@ impl ExitRecord {
             },
             &crate::metadata! {
                 pid: exit.pid as u64,
-                process: crate::telemetry::value::opaque(process),
+                process: opaque(process),
             },
         );
     }
@@ -126,12 +146,7 @@ extern "C" fn spawn_opt_hook_thunk(
     spawn_closure_via(sender, scheduler, closure_bits)
 }
 
-extern "C" fn send_hook_thunk(
-    sender: *mut Process,
-    scheduler: *mut (),
-    receiver_pid: u32,
-    msg_ref_word: u64,
-) {
+extern "C" fn send_hook_thunk(sender: *mut Process, scheduler: *mut (), receiver_pid: u32, msg_ref_word: u64) {
     let msg_ref = AnyValueRef::from_raw_word(msg_ref_word).expect("send hook message ref");
     send_via(sender, scheduler, receiver_pid, msg_ref);
 }
@@ -147,10 +162,9 @@ pub(crate) extern "C" fn output_hook_thunk(tel: *const (), line_ptr: *const u8, 
     }
     // ExecCtx.tel is `(&sink) as *const &dyn Telemetry` — a thin pointer to the
     // scheduler's `&dyn Telemetry`; deref it back to the fat reference.
-    let tel: &dyn crate::telemetry::Telemetry =
-        unsafe { *(tel as *const &dyn crate::telemetry::Telemetry) };
-    let bytes = unsafe { std::slice::from_raw_parts(line_ptr, line_len) };
-    let line = std::str::from_utf8(bytes).unwrap_or("<non-utf8 dbg line>");
+    let tel: &dyn Telemetry = unsafe { *(tel as *const &dyn Telemetry) };
+    let bytes = unsafe { from_raw_parts(line_ptr, line_len) };
+    let line = from_utf8(bytes).unwrap_or("<non-utf8 dbg line>");
     tel.event(&["fz", "runtime", "dbg"], crate::metadata! { line: line });
 }
 
@@ -163,7 +177,7 @@ pub(crate) extern "C" fn output_hook_thunk(tel: *const (), line_ptr: *const u8, 
 // closure's wrapper-fn body to find the underlying `Prim::Extern` and
 // resolves its symbol — uniform across all three legs.
 extern "C" fn make_resource_hook_thunk(
-    process: *mut fz_runtime::process::Process,
+    process: *mut Process,
     module: *const (),
     payload_raw: u64,
     dtor_ref: u64,
@@ -172,13 +186,11 @@ extern "C" fn make_resource_hook_thunk(
         !module.is_null(),
         "fz_make_resource called with no IR Module in the execution context"
     );
-    let module: &crate::fz_ir::Module = unsafe { &*(module as *const crate::fz_ir::Module) };
-    let dtor_ref = fz_runtime::any_value::AnyValueRef::from_raw_word(dtor_ref)
-        .expect("fz_make_resource: dtor ref");
+    let module: &Module = unsafe { &*(module as *const Module) };
+    let dtor_ref = AnyValueRef::from_raw_word(dtor_ref).expect("fz_make_resource: dtor ref");
     let payload = payload_raw as i64;
-    let dtor =
-        fz_runtime::any_value::AnyValue::from_ref(dtor_ref).expect("fz_make_resource: dtor value");
-    let res = crate::ir_interp::make_resource_in_current_process(process, module, payload, dtor);
+    let dtor = AnyValue::from_ref(dtor_ref).expect("fz_make_resource: dtor value");
+    let res = make_resource_in_current_process(process, module, payload, dtor);
     match res {
         Ok(value) => value.ref_word().raw_word(),
         // Mirror the assertion/extern-error contract used elsewhere: a
@@ -194,8 +206,7 @@ extern "C" fn make_resource_hook_thunk(
 /// timeout. Routes through `CURRENT_RUNTIME`'s `TimerWheel`.
 extern "C" fn timer_schedule_hook_thunk(scheduler: *mut (), pid: u32, after_ms: u64) -> u64 {
     let rt = unsafe { &mut *(scheduler as *mut Runtime<'static>) };
-    rt.timers
-        .schedule(pid, std::time::Duration::from_millis(after_ms))
+    rt.timers.schedule(pid, Duration::from_millis(after_ms))
 }
 
 extern "C" fn timer_cancel_hook_thunk(scheduler: *mut (), timer_id: u64) {
@@ -250,8 +261,7 @@ pub fn send_via(sender: *mut Process, scheduler: *mut (), receiver_pid: PidId, m
         // For self-send we use a single &mut borrow path: alloc into
         // the same heap. Since src and dst are the same heap, the
         // existing forwarding-pointer technique handles sharing.
-        let mut forwarding: std::collections::HashMap<*mut u8, *mut u8> =
-            std::collections::HashMap::new();
+        let mut forwarding: HashMap<*mut u8, *mut u8> = HashMap::new();
         // SAFETY: split the &mut Process into &Heap (for read) and
         // &mut Heap (for write). The pointers are aliased but Rust's
         // borrow checker can't see that the same Heap is both src and
@@ -259,11 +269,10 @@ pub fn send_via(sender: *mut Process, scheduler: *mut (), receiver_pid: PidId, m
         // distinct raw-pointer reads from src vs &mut writes through
         // dst. Equivalent to running deep_copy on a clone of the heap,
         // which would be correct.
-        let heap_ptr: *mut fz_runtime::heap::Heap = &mut sender.heap as *mut _;
-        let src_heap: &fz_runtime::heap::Heap = unsafe { &*heap_ptr };
-        let dst_heap: &mut fz_runtime::heap::Heap = unsafe { &mut *heap_ptr };
-        let copied =
-            fz_runtime::heap::deep_copy_any_value_ref(msg, src_heap, dst_heap, &mut forwarding);
+        let heap_ptr: *mut Heap = &mut sender.heap as *mut _;
+        let src_heap: &Heap = unsafe { &*heap_ptr };
+        let dst_heap: &mut Heap = unsafe { &mut *heap_ptr };
+        let copied = deep_copy_any_value_ref(msg, src_heap, dst_heap, &mut forwarding);
         sender.mailbox.push_back(copied);
         // No state transition needed: sender is Running.
         return;
@@ -284,55 +293,31 @@ pub fn send_via(sender: *mut Process, scheduler: *mut (), receiver_pid: PidId, m
                     let park = receiver.wait.as_ref().expect("checked above");
                     (park.clause_bodies[clause_idx], park.after_timer_id)
                 };
-                let mut forwarding: std::collections::HashMap<*mut u8, *mut u8> =
-                    std::collections::HashMap::new();
+                let mut forwarding: HashMap<*mut u8, *mut u8> = HashMap::new();
                 let copied_bound_vals: Vec<AnyValueRef> = bound_vals
                     .into_iter()
-                    .map(|v| {
-                        fz_runtime::heap::deep_copy_any_value_ref(
-                            v,
-                            &sender.heap,
-                            &mut receiver.heap,
-                            &mut forwarding,
-                        )
-                    })
+                    .map(|v| deep_copy_any_value_ref(v, &sender.heap, &mut receiver.heap, &mut forwarding))
                     .collect();
-                let cont = fz_runtime::park::materialize_outcome_closure(
-                    &mut receiver.heap,
-                    template,
-                    &copied_bound_vals,
-                );
+                let cont = materialize_outcome_closure(&mut receiver.heap, template, &copied_bound_vals);
                 receiver.wait = None;
                 if let Some(id) = timer_id {
-                    fz_runtime::exec_ctx::timer_cancel(receiver, id);
+                    timer_cancel(receiver, id);
                 }
                 receiver.set_runnable_closure(cont);
-                receiver.state = fz_runtime::process::ProcessState::Ready;
+                receiver.state = ProcessState::Ready;
                 rt.run_queue.push_back(receiver_pid);
             }
             None => {
-                let mut forwarding: std::collections::HashMap<*mut u8, *mut u8> =
-                    std::collections::HashMap::new();
-                let copied = fz_runtime::heap::deep_copy_any_value_ref(
-                    msg,
-                    &sender.heap,
-                    &mut receiver.heap,
-                    &mut forwarding,
-                );
+                let mut forwarding: HashMap<*mut u8, *mut u8> = HashMap::new();
+                let copied = deep_copy_any_value_ref(msg, &sender.heap, &mut receiver.heap, &mut forwarding);
                 receiver.mailbox.push_back(copied);
             }
         }
         return;
     }
 
-    let mut forwarding: std::collections::HashMap<*mut u8, *mut u8> =
-        std::collections::HashMap::new();
-    let copied = fz_runtime::heap::deep_copy_any_value_ref(
-        msg,
-        &sender.heap,
-        &mut receiver.heap,
-        &mut forwarding,
-    );
+    let mut forwarding: HashMap<*mut u8, *mut u8> = HashMap::new();
+    let copied = deep_copy_any_value_ref(msg, &sender.heap, &mut receiver.heap, &mut forwarding);
 
     receiver.mailbox.push_back(copied);
     if receiver.state == ProcessState::Blocked {
@@ -355,7 +340,7 @@ impl<'a> Runtime<'a> {
             tasks: HashMap::new(),
             run_queue: VecDeque::new(),
             next_pid: 1,
-            timers: fz_runtime::timer::TimerWheel::new(),
+            timers: TimerWheel::new(),
             module: None,
             tel: &NULL_TELEMETRY,
         }
@@ -364,7 +349,7 @@ impl<'a> Runtime<'a> {
     /// Attach an observability sink. The run loop emits
     /// `fz.runtime.process_exited` carrying the halt value and heap stats.
     /// The telemetry must outlive `run_until_idle`.
-    pub fn with_telemetry(mut self, tel: &'a dyn crate::telemetry::Telemetry) -> Self {
+    pub fn with_telemetry(mut self, tel: &'a dyn Telemetry) -> Self {
         self.tel = tel;
         self
     }
@@ -372,7 +357,7 @@ impl<'a> Runtime<'a> {
     /// fz-swt.10 — attach the IR Module so the `MakeResourceHook` thunk
     /// can walk dtor closures during `make_resource(_, &name/arity)`
     /// calls. The Module must outlive `run_until_idle`.
-    pub fn with_module(mut self, module: &'a crate::fz_ir::Module) -> Self {
+    pub fn with_module(mut self, module: &'a Module) -> Self {
         self.module = Some(module);
         self
     }
@@ -396,23 +381,9 @@ impl<'a> Runtime<'a> {
             .compiled
             .fn_ptr(fn_id)
             .unwrap_or_else(|| panic!("no fn ptr for entry {}", fn_id.0));
-        let halt_kind = self
-            .compiled
-            .fn_halt_kinds
-            .get(&fn_id.0)
-            .copied()
-            .unwrap_or(0) as u16;
-        let inner = fz_runtime::sched::mint_main_inner(
-            &mut process.heap,
-            self.compiled.main_trampoline_addr,
-            fp,
-            halt_kind,
-        );
-        let thunk = fz_runtime::sched::mint_entry_thunk(
-            &mut process.heap,
-            self.compiled.entry_thunk_addr,
-            inner,
-        );
+        let halt_kind = self.compiled.fn_halt_kinds.get(&fn_id.0).copied().unwrap_or(0) as u16;
+        let inner = mint_main_inner(&mut process.heap, self.compiled.main_trampoline_addr, fp, halt_kind);
+        let thunk = mint_entry_thunk(&mut process.heap, self.compiled.entry_thunk_addr, inner);
         process.set_runnable_closure(thunk);
         // The entry thunk + inner are scheduler scaffolding prepared before
         // the task's own code runs; reset so alloc telemetry measures only the
@@ -437,19 +408,12 @@ impl<'a> Runtime<'a> {
         // Deep-copy the closure from sender's heap into the new task's heap.
         assert!(!sender.is_null(), "spawn_closure: no sender process");
         let sender = unsafe { &*sender };
-        let mut forwarding: std::collections::HashMap<*mut u8, *mut u8> =
-            std::collections::HashMap::new();
-        let closure_ref = fz_runtime::any_value::AnyValueRef::from_raw_word(closure_ref_word)
-            .expect("spawn_closure: closure ref");
+        let mut forwarding: HashMap<*mut u8, *mut u8> = HashMap::new();
+        let closure_ref = AnyValueRef::from_raw_word(closure_ref_word).expect("spawn_closure: closure ref");
         closure_ref
             .closure_addr()
             .expect("spawn_closure: closure must be a closure");
-        let copied = fz_runtime::heap::deep_copy_any_value_ref(
-            closure_ref,
-            &sender.heap,
-            &mut process.heap,
-            &mut forwarding,
-        );
+        let copied = deep_copy_any_value_ref(closure_ref, &sender.heap, &mut process.heap, &mut forwarding);
         let copied_addr = copied
             .closure_addr()
             .expect("spawn_closure: copied closure must be a closure");
@@ -458,12 +422,8 @@ impl<'a> Runtime<'a> {
         // `runnable`; the scheduler resumes it via `fz_resume` on the next
         // quantum. Insert into the task registry before queueing so a
         // cross-task send() during the new task's run can find this pid.
-        process.next_frame = std::ptr::null_mut();
-        let thunk = fz_runtime::sched::mint_entry_thunk(
-            &mut process.heap,
-            self.compiled.entry_thunk_addr,
-            copied_addr,
-        );
+        process.next_frame = null_mut();
+        let thunk = mint_entry_thunk(&mut process.heap, self.compiled.entry_thunk_addr, copied_addr);
         process.set_runnable_closure(thunk);
         // Scheduler scaffolding (entry thunk + copied entry closure) is
         // prepared before the child runs; reset so its alloc telemetry
@@ -489,12 +449,10 @@ impl<'a> Runtime<'a> {
         // at. Lives on this stack frame, which outlives every quantum below.
         // Populated now; dispatch still reads the globals until the `fz-vdt`
         // arc moves each reader onto `process->ctx`.
-        let mut exec_ctx = fz_runtime::exec_ctx::ExecCtx {
+        let mut exec_ctx = ExecCtx {
             scheduler: self_ptr,
-            tel: (&self.tel) as *const &dyn crate::telemetry::Telemetry as *const (),
-            module: self
-                .module
-                .map_or(std::ptr::null(), |m| m as *const _ as *const ()),
+            tel: (&self.tel) as *const &dyn Telemetry as *const (),
+            module: self.module.map_or(null(), |m| m as *const _ as *const ()),
             spawn: Some(spawn_hook_thunk),
             spawn_opt: Some(spawn_opt_hook_thunk),
             send: Some(send_hook_thunk),
@@ -503,7 +461,7 @@ impl<'a> Runtime<'a> {
             timer_schedule: Some(timer_schedule_hook_thunk),
             timer_cancel: Some(timer_cancel_hook_thunk),
         };
-        let ctx_ptr: *mut fz_runtime::exec_ctx::ExecCtx = &mut exec_ctx;
+        let ctx_ptr: *mut ExecCtx = &mut exec_ctx;
         loop {
             // fz-yxs/fz-st5 — service any expired after-timers before
             // picking the next task. Cheaper to do here than on every
@@ -513,10 +471,7 @@ impl<'a> Runtime<'a> {
             let Some(pid) = self.run_queue.pop_front() else {
                 break;
             };
-            let mut task = self
-                .tasks
-                .remove(&pid)
-                .expect("task in run_queue not in registry");
+            let mut task = self.tasks.remove(&pid).expect("task in run_queue not in registry");
             task.state = ProcessState::Running;
             task.reset_reduction_budget();
             task.ctx = ctx_ptr;
@@ -568,16 +523,14 @@ impl<'a> Runtime<'a> {
                 // body reaches this process through the pinned register set by
                 // the `pinned_abi::call2` entry below.
                 let ptr: *mut Process = &mut *task;
-                fz_runtime::procbin::mso_drop_all_deferred(&mut task.heap);
+                mso_drop_all_deferred(&mut task.heap);
                 // Enter the dtor body through pinned_abi so the pinned register
                 // holds this process: the dtor is real fz code and its closure
                 // BIFs (alloc_closure, get_halt_cont, …) read the process from
                 // the pinned register, like every other scheduler-facing entry.
                 let drain_addr = self.compiled.drain_dtor_entry_addr;
                 while let Some((closure, payload_ref)) = task.heap.pending_dtors.pop_front() {
-                    let _ = unsafe {
-                        fz_runtime::pinned_abi::call2(drain_addr, ptr, closure, payload_ref)
-                    };
+                    let _ = unsafe { call2(drain_addr, ptr, closure, payload_ref) };
                 }
                 ExitRecord::emit(self.tel, pid, &task);
             } else if task.state == ProcessState::Blocked {
@@ -615,13 +568,13 @@ impl<'a> Runtime<'a> {
     /// (no bound args; captures are already baked into the closure)
     /// and re-enqueue.
     pub(crate) fn drain_expired_timers(&mut self) {
-        let now = std::time::Instant::now();
+        let now = Instant::now();
         let expired = self.timers.drain_expired(now);
         for entry in expired {
             let Some(task) = self.tasks.get_mut(&entry.pid) else {
                 continue;
             };
-            if fz_runtime::sched::fire_after_timer(task, entry.id) {
+            if fire_after_timer(task, entry.id) {
                 self.run_queue.push_back(entry.pid);
             }
         }
@@ -648,18 +601,18 @@ impl<'a> Runtime<'a> {
 /// the run instead of poking the `Process`.
 #[cfg(test)]
 pub struct ProcessExitCapture {
-    records: std::rc::Rc<std::cell::RefCell<Vec<ExitRecord>>>,
+    records: Rc<RefCell<Vec<ExitRecord>>>,
 }
 
 #[cfg(test)]
 impl ProcessExitCapture {
     pub fn new() -> Self {
         Self {
-            records: std::rc::Rc::new(std::cell::RefCell::new(Vec::new())),
+            records: Rc::new(RefCell::new(Vec::new())),
         }
     }
 
-    pub fn handler(&self) -> Box<dyn crate::telemetry::handler::Handler> {
+    pub fn handler(&self) -> Box<dyn Handler> {
         Box::new(ProcessExitHandler {
             records: self.records.clone(),
         })
@@ -670,11 +623,7 @@ impl ProcessExitCapture {
     }
 
     pub fn by_pid(&self, pid: PidId) -> Option<ExitRecord> {
-        self.records
-            .borrow()
-            .iter()
-            .copied()
-            .find(|record| record.pid == pid)
+        self.records.borrow().iter().copied().find(|record| record.pid == pid)
     }
 }
 
@@ -684,18 +633,18 @@ impl ProcessExitCapture {
 /// engines, since both route output through `route_output_to`.
 #[cfg(test)]
 pub struct DbgCapture {
-    lines: std::rc::Rc<std::cell::RefCell<Vec<String>>>,
+    lines: Rc<RefCell<Vec<String>>>,
 }
 
 #[cfg(test)]
 impl DbgCapture {
     pub fn new() -> Self {
         Self {
-            lines: std::rc::Rc::new(std::cell::RefCell::new(Vec::new())),
+            lines: Rc::new(RefCell::new(Vec::new())),
         }
     }
 
-    pub fn handler(&self) -> Box<dyn crate::telemetry::handler::Handler> {
+    pub fn handler(&self) -> Box<dyn Handler> {
         Box::new(DbgHandler {
             lines: self.lines.clone(),
         })
@@ -708,12 +657,12 @@ impl DbgCapture {
 
 #[cfg(test)]
 struct DbgHandler {
-    lines: std::rc::Rc<std::cell::RefCell<Vec<String>>>,
+    lines: Rc<RefCell<Vec<String>>>,
 }
 
 #[cfg(test)]
-impl crate::telemetry::handler::Handler for DbgHandler {
-    fn handle(&self, ev: &crate::telemetry::handler::Event<'_, '_, '_>) {
+impl Handler for DbgHandler {
+    fn handle(&self, ev: &Event<'_, '_, '_>) {
         use crate::telemetry::value::Value;
         if ev.name != ["fz", "runtime", "dbg"] {
             return;
@@ -726,12 +675,12 @@ impl crate::telemetry::handler::Handler for DbgHandler {
 
 #[cfg(test)]
 struct ProcessExitHandler {
-    records: std::rc::Rc<std::cell::RefCell<Vec<ExitRecord>>>,
+    records: Rc<RefCell<Vec<ExitRecord>>>,
 }
 
 #[cfg(test)]
-impl crate::telemetry::handler::Handler for ProcessExitHandler {
-    fn handle(&self, ev: &crate::telemetry::handler::Event<'_, '_, '_>) {
+impl Handler for ProcessExitHandler {
+    fn handle(&self, ev: &Event<'_, '_, '_>) {
         use crate::telemetry::value::Value;
         if ev.name != ["fz", "runtime", "process_exited"] {
             return;
@@ -764,20 +713,32 @@ impl crate::telemetry::handler::Handler for ProcessExitHandler {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::frontend::macros::expand_program;
+    use crate::frontend::resolve::flatten_modules;
     use crate::ir_codegen::compile;
+    use crate::ir_interp::run_main;
     use crate::ir_lower::lower_program;
     use crate::parser::Parser;
     use crate::parser::lexer::Lexer;
+    use crate::telemetry::bus::ConfiguredTelemetry;
+    use crate::telemetry::capture::Capture;
+    use crate::telemetry::handler::{Event, Handler};
+    use crate::types::ConcreteTypes;
+    use fz_runtime::any_value::{
+        ListCons, ValueKind, closure_addr_from_tagged, closure_capture_ref_word, closure_capture_set,
+        closure_size_for_count,
+    };
+    use fz_runtime::park::ParkRecord;
+    use std::cell::Cell;
+    use std::ptr::{null_mut, read, write};
+    use std::rc::Rc;
+    use std::thread::sleep;
+    use std::time::Duration;
 
-    fn lower_src(src: &str) -> crate::fz_ir::Module {
+    fn lower_src(src: &str) -> Module {
         let toks = Lexer::new(src).tokenize().expect("lex");
         let prog = Parser::new(toks).parse_program().expect("parse");
-        lower_program(
-            &mut crate::types::ConcreteTypes,
-            &prog,
-            &crate::telemetry::NullTelemetry,
-        )
-        .expect("lower")
+        lower_program(&mut ConcreteTypes, &prog, &NullTelemetry).expect("lower")
     }
 
     fn force_reduction_yield(task: &mut Process) {
@@ -786,13 +747,12 @@ mod tests {
 
     fn force_allocation_pressure_yield(task: &mut Process) {
         task.reductions_per_quantum = 1;
-        task.heap.allocation_watermark = std::ptr::null_mut();
+        task.heap.allocation_watermark = null_mut();
     }
 
     fn test_int_ref(value: i64) -> AnyValueRef {
         let slot = Box::leak(Box::new(value as u64));
-        AnyValueRef::from_scalar_slot(fz_runtime::any_value::ValueKind::INT, slot as *const u64)
-            .expect("test int ref")
+        AnyValueRef::from_scalar_slot(ValueKind::INT, slot as *const u64).expect("test int ref")
     }
 
     /// Three tasks built from the same CompiledModule each compute their
@@ -803,12 +763,7 @@ mod tests {
         let src = "fn main(), do: 1 + 2 + 3";
         let m = lower_src(src);
         let entry = m.fn_by_name("main").unwrap().id;
-        let compiled = compile(
-            &mut crate::types::ConcreteTypes,
-            &m,
-            &crate::telemetry::NullTelemetry,
-        )
-        .unwrap();
+        let compiled = compile(&mut ConcreteTypes, &m, &NullTelemetry).unwrap();
         let mut rt = Runtime::new(&compiled, 1);
         let a = rt.spawn(entry);
         let b = rt.spawn(entry);
@@ -828,18 +783,11 @@ mod tests {
     /// and live-object count without poking the Process.
     #[test]
     fn process_exit_capture_yields_exit_record() {
-        use crate::telemetry::bus::ConfiguredTelemetry;
-
         // Allocates a map, so the heap has live objects at exit.
         let src = "fn main(), do: %{1 => 10, 2 => 20}[2]";
         let m = lower_src(src);
         let entry = m.fn_by_name("main").unwrap().id;
-        let compiled = compile(
-            &mut crate::types::ConcreteTypes,
-            &m,
-            &crate::telemetry::NullTelemetry,
-        )
-        .unwrap();
+        let compiled = compile(&mut ConcreteTypes, &m, &NullTelemetry).unwrap();
 
         let tel = ConfiguredTelemetry::new();
         let cap = ProcessExitCapture::new();
@@ -860,11 +808,6 @@ mod tests {
     /// projection omits — the escape hatch beside the durable measurements.
     #[test]
     fn process_exit_event_carries_opaque_process() {
-        use crate::telemetry::bus::ConfiguredTelemetry;
-        use crate::telemetry::handler::{Event, Handler};
-        use std::cell::Cell;
-        use std::rc::Rc;
-
         struct OpaqueProbe {
             seen_halt: Rc<Cell<Option<i64>>>,
         }
@@ -885,12 +828,7 @@ mod tests {
         let src = "fn main(), do: 7";
         let m = lower_src(src);
         let entry = m.fn_by_name("main").unwrap().id;
-        let compiled = compile(
-            &mut crate::types::ConcreteTypes,
-            &m,
-            &crate::telemetry::NullTelemetry,
-        )
-        .unwrap();
+        let compiled = compile(&mut ConcreteTypes, &m, &NullTelemetry).unwrap();
 
         let seen_halt = Rc::new(Cell::new(None));
         let tel = ConfiguredTelemetry::new();
@@ -913,11 +851,6 @@ mod tests {
     /// names a scheduler handle, a telemetry sink, and the output callback.
     #[test]
     fn process_ctx_installed_during_run() {
-        use crate::telemetry::bus::ConfiguredTelemetry;
-        use crate::telemetry::handler::{Event, Handler};
-        use std::cell::Cell;
-        use std::rc::Rc;
-
         struct CtxProbe {
             scheduler_set: Rc<Cell<bool>>,
             tel_set: Rc<Cell<bool>>,
@@ -943,12 +876,7 @@ mod tests {
 
         let m = lower_src("fn main(), do: 7");
         let entry = m.fn_by_name("main").unwrap().id;
-        let compiled = compile(
-            &mut crate::types::ConcreteTypes,
-            &m,
-            &crate::telemetry::NullTelemetry,
-        )
-        .unwrap();
+        let compiled = compile(&mut ConcreteTypes, &m, &NullTelemetry).unwrap();
 
         let scheduler_set = Rc::new(Cell::new(false));
         let tel_set = Rc::new(Cell::new(false));
@@ -977,19 +905,11 @@ mod tests {
     /// the same program, through the one shared emit + output seam.
     #[test]
     fn both_engines_emit_equivalent_process_exited_and_dbg() {
-        use crate::telemetry::bus::ConfiguredTelemetry;
-        use crate::telemetry::capture::Capture;
-
         // dbg returns its arg, so this halts with 9 and prints "9".
         let src = "fn main(), do: dbg(%{1 => 9}[1])";
         let m = lower_src(src);
         let entry = m.fn_by_name("main").unwrap().id;
-        let compiled = compile(
-            &mut crate::types::ConcreteTypes,
-            &m,
-            &crate::telemetry::NullTelemetry,
-        )
-        .unwrap();
+        let compiled = compile(&mut ConcreteTypes, &m, &NullTelemetry).unwrap();
 
         // Compiled engine.
         let tel_c = ConfiguredTelemetry::new();
@@ -1008,7 +928,7 @@ mod tests {
         let out_i = Capture::new();
         tel_i.attach(&[], exits_i.handler());
         tel_i.attach(&[], out_i.handler());
-        let _ = crate::ir_interp::run_main(&tel_i, &m).unwrap();
+        let _ = run_main(&tel_i, &m).unwrap();
         let i = exits_i.last().expect("interp process_exited");
 
         assert_eq!(c.halt_value, 9);
@@ -1027,19 +947,12 @@ mod tests {
     /// the same seam as everything else.
     #[test]
     fn dbg_output_emits_telemetry_events() {
-        use crate::telemetry::bus::ConfiguredTelemetry;
-        use crate::telemetry::capture::Capture;
         use crate::telemetry::value::Value;
 
         let src = "fn main(), do: dbg(42)";
         let m = lower_src(src);
         let entry = m.fn_by_name("main").unwrap().id;
-        let compiled = compile(
-            &mut crate::types::ConcreteTypes,
-            &m,
-            &crate::telemetry::NullTelemetry,
-        )
-        .unwrap();
+        let compiled = compile(&mut ConcreteTypes, &m, &NullTelemetry).unwrap();
 
         let tel = ConfiguredTelemetry::new();
         let cap = Capture::new();
@@ -1066,9 +979,9 @@ mod tests {
         let src_b = "fn main(), do: %{3 => 30}[3]";
         let ma = lower_src(src_a);
         let mb = lower_src(src_b);
-        let mut ct = crate::types::ConcreteTypes;
-        let ca = compile(&mut ct, &ma, &crate::telemetry::NullTelemetry).unwrap();
-        let cb = compile(&mut ct, &mb, &crate::telemetry::NullTelemetry).unwrap();
+        let mut ct = ConcreteTypes;
+        let ca = compile(&mut ct, &ma, &NullTelemetry).unwrap();
+        let cb = compile(&mut ct, &mb, &NullTelemetry).unwrap();
 
         let mut rt_a = Runtime::new(&ca, 1);
         let mut rt_b = Runtime::new(&cb, 1);
@@ -1090,12 +1003,7 @@ mod tests {
         let src = "fn main(), do: 42";
         let m = lower_src(src);
         let entry = m.fn_by_name("main").unwrap().id;
-        let compiled = compile(
-            &mut crate::types::ConcreteTypes,
-            &m,
-            &crate::telemetry::NullTelemetry,
-        )
-        .unwrap();
+        let compiled = compile(&mut ConcreteTypes, &m, &NullTelemetry).unwrap();
         let mut rt = Runtime::new(&compiled, 1);
         let a = rt.spawn(entry);
         rt.run_until_idle();
@@ -1113,12 +1021,7 @@ mod tests {
     fn workers_greater_than_one_is_not_yet_supported() {
         let src = "fn main(), do: 0";
         let m = lower_src(src);
-        let compiled = compile(
-            &mut crate::types::ConcreteTypes,
-            &m,
-            &crate::telemetry::NullTelemetry,
-        )
-        .unwrap();
+        let compiled = compile(&mut ConcreteTypes, &m, &NullTelemetry).unwrap();
         let _ = Runtime::new(&compiled, 2);
     }
 
@@ -1131,12 +1034,7 @@ mod tests {
         let src = "fn main(), do: self()";
         let m = lower_src(src);
         let entry = m.fn_by_name("main").unwrap().id;
-        let compiled = compile(
-            &mut crate::types::ConcreteTypes,
-            &m,
-            &crate::telemetry::NullTelemetry,
-        )
-        .unwrap();
+        let compiled = compile(&mut ConcreteTypes, &m, &NullTelemetry).unwrap();
         let mut rt = Runtime::new(&compiled, 1);
         let pid = rt.spawn(entry);
         rt.run_until_idle();
@@ -1154,22 +1052,14 @@ mod tests {
         "#;
         let m = lower_src(src);
         let entry = m.fn_by_name("main").unwrap().id;
-        let compiled = compile(
-            &mut crate::types::ConcreteTypes,
-            &m,
-            &crate::telemetry::NullTelemetry,
-        )
-        .unwrap();
+        let compiled = compile(&mut ConcreteTypes, &m, &NullTelemetry).unwrap();
         let mut rt = Runtime::new(&compiled, 1);
         let main_pid = rt.spawn(entry);
         rt.run_until_idle();
         // Main halted with the child's pid (spawn returns pid as boxed
         // Int; halt unboxes to i64). Child pid is main_pid + 1 = 2.
         let expected_child_pid = main_pid + 1;
-        assert_eq!(
-            rt.task(main_pid).unwrap().halt_value,
-            expected_child_pid as i64
-        );
+        assert_eq!(rt.task(main_pid).unwrap().halt_value, expected_child_pid as i64);
         // Child completed.
         let child = rt
             .task(expected_child_pid)
@@ -1195,12 +1085,7 @@ mod tests {
         "#;
         let m = lower_src(src);
         let entry = m.fn_by_name("main").unwrap().id;
-        let compiled = compile(
-            &mut crate::types::ConcreteTypes,
-            &m,
-            &crate::telemetry::NullTelemetry,
-        )
-        .unwrap();
+        let compiled = compile(&mut ConcreteTypes, &m, &NullTelemetry).unwrap();
         let mut rt = Runtime::new(&compiled, 1);
         let pid = rt.spawn(entry);
         rt.run_until_idle();
@@ -1226,12 +1111,7 @@ mod tests {
         "#;
         let m = lower_src(src);
         let entry = m.fn_by_name("main").unwrap().id;
-        let compiled = compile(
-            &mut crate::types::ConcreteTypes,
-            &m,
-            &crate::telemetry::NullTelemetry,
-        )
-        .unwrap();
+        let compiled = compile(&mut ConcreteTypes, &m, &NullTelemetry).unwrap();
         let mut rt = Runtime::new(&compiled, 1);
         let pid = rt.spawn(entry);
         rt.run_until_idle();
@@ -1266,13 +1146,12 @@ mod tests {
         // ir_lower, ir_codegen, Runtime.
         let toks = Lexer::new(src).tokenize().expect("lex");
         let prog = Parser::new(toks).parse_program().expect("parse");
-        let mut ct = crate::types::ConcreteTypes;
-        let mut prog = crate::frontend::resolve::flatten_modules(&mut ct, prog).expect("resolve");
-        crate::frontend::macros::expand_program(&mut prog).expect("expand");
-        let m = crate::ir_lower::lower_program(&mut ct, &prog, &crate::telemetry::NullTelemetry)
-            .expect("lower");
+        let mut ct = ConcreteTypes;
+        let mut prog = flatten_modules(&mut ct, prog).expect("resolve");
+        expand_program(&mut prog).expect("expand");
+        let m = lower_program(&mut ct, &prog, &NullTelemetry).expect("lower");
         let entry = m.fn_by_name("main").expect("main fn").id;
-        let compiled = compile(&mut ct, &m, &crate::telemetry::NullTelemetry).expect("codegen");
+        let compiled = compile(&mut ct, &m, &NullTelemetry).expect("codegen");
 
         let mut rt = Runtime::new(&compiled, 1);
         let main_pid = rt.spawn(entry);
@@ -1293,9 +1172,7 @@ mod tests {
         // Child task: spawned by main, halted normally (send returns the
         // message which it then halts on; but child's main body is `send`,
         // so it halts with the message's value 42 too).
-        let child_task = rt
-            .task(2)
-            .expect("child task should exist at pid 2 (second spawn)");
+        let child_task = rt.task(2).expect("child task should exist at pid 2 (second spawn)");
         assert_eq!(child_task.state, ProcessState::Exited);
         assert_eq!(child_task.halt_value, 42);
     }
@@ -1310,12 +1187,7 @@ mod tests {
         "#;
         let m = lower_src(src);
         let entry = m.fn_by_name("main").unwrap().id;
-        let compiled = compile(
-            &mut crate::types::ConcreteTypes,
-            &m,
-            &crate::telemetry::NullTelemetry,
-        )
-        .unwrap();
+        let compiled = compile(&mut ConcreteTypes, &m, &NullTelemetry).unwrap();
         let mut rt = Runtime::new(&compiled, 1);
         let pid = rt.spawn(entry);
         rt.run_until_idle();
@@ -1328,10 +1200,7 @@ mod tests {
         assert_eq!(task.state, ProcessState::Exited);
         // The halt value is the head of the returned list (since the
         // list was returned via receive). Confirm task halted cleanly.
-        assert!(
-            task.heap.live_count() >= 6,
-            "expected both src+dst lists in heap"
-        );
+        assert!(task.heap.live_count() >= 6, "expected both src+dst lists in heap");
     }
 
     #[test]
@@ -1344,22 +1213,17 @@ mod tests {
         "#;
         let m = lower_src(src);
         let entry = m.fn_by_name("main").unwrap().id;
-        let compiled = compile(
-            &mut crate::types::ConcreteTypes,
-            &m,
-            &crate::telemetry::NullTelemetry,
-        )
-        .unwrap();
+        let compiled = compile(&mut ConcreteTypes, &m, &NullTelemetry).unwrap();
         let mut rt = Runtime::new(&compiled, 1);
         let pid = rt.spawn(entry);
         rt.run_until_idle();
         let task = rt.task(pid).unwrap();
         assert_eq!(task.state, ProcessState::Exited);
         let any_ref = task.mailbox.front().expect("self-send remains queued");
-        assert_eq!(any_ref.tag(), fz_runtime::any_value::ValueKind::LIST);
+        assert_eq!(any_ref.tag(), ValueKind::LIST);
         let list = any_ref.list_addr().expect("mailbox keeps tagged list ref");
-        let head = unsafe { (*(list as *const fz_runtime::any_value::ListCons)).head_value() };
-        assert_eq!(head.kind(), fz_runtime::any_value::ValueKind::FLOAT);
+        let head = unsafe { (*(list as *const ListCons)).head_value() };
+        assert_eq!(head.kind(), ValueKind::FLOAT);
         assert_eq!(f64::from_bits(head.raw()), 2.5);
     }
 
@@ -1373,12 +1237,7 @@ mod tests {
         "#;
         let m = lower_src(src);
         let entry = m.fn_by_name("main").unwrap().id;
-        let compiled = compile(
-            &mut crate::types::ConcreteTypes,
-            &m,
-            &crate::telemetry::NullTelemetry,
-        )
-        .unwrap();
+        let compiled = compile(&mut ConcreteTypes, &m, &NullTelemetry).unwrap();
         let mut rt = Runtime::new(&compiled, 1);
         let pid = rt.spawn(entry);
         rt.run_until_idle();
@@ -1389,7 +1248,7 @@ mod tests {
             "send(any) boxes scalar messages before mailbox storage"
         );
         let slot = task.mailbox.front().expect("self-send remains queued");
-        assert_eq!(slot.tag(), fz_runtime::any_value::ValueKind::FLOAT);
+        assert_eq!(slot.tag(), ValueKind::FLOAT);
         assert_eq!(slot.load_float().unwrap(), 2.5);
     }
 
@@ -1409,13 +1268,8 @@ mod tests {
         "#;
         let m = lower_src(src);
         let entry = m.fn_by_name("main").unwrap().id;
-        let compiled = compile(
-            &mut crate::types::ConcreteTypes,
-            &m,
-            &crate::telemetry::NullTelemetry,
-        )
-        .unwrap();
-        let tel = crate::telemetry::bus::ConfiguredTelemetry::new();
+        let compiled = compile(&mut ConcreteTypes, &m, &NullTelemetry).unwrap();
+        let tel = ConfiguredTelemetry::new();
         let dbg = DbgCapture::new();
         tel.attach(&[], dbg.handler());
         let mut rt = Runtime::new(&compiled, 1).with_telemetry(&tel);
@@ -1435,12 +1289,7 @@ mod tests {
         let src = "fn main(), do: [1, 2, 3]";
         let m = lower_src(src);
         let entry = m.fn_by_name("main").unwrap().id;
-        let compiled = compile(
-            &mut crate::types::ConcreteTypes,
-            &m,
-            &crate::telemetry::NullTelemetry,
-        )
-        .unwrap();
+        let compiled = compile(&mut ConcreteTypes, &m, &NullTelemetry).unwrap();
         let mut rt = Runtime::new(&compiled, 1);
         let pid = rt.spawn(entry);
         // Lower threshold below the alloc footprint so the flag trips.
@@ -1469,13 +1318,8 @@ mod tests {
         "#;
         let m = lower_src(src);
         let entry = m.fn_by_name("main").unwrap().id;
-        let compiled = compile(
-            &mut crate::types::ConcreteTypes,
-            &m,
-            &crate::telemetry::NullTelemetry,
-        )
-        .unwrap();
-        let tel = crate::telemetry::bus::ConfiguredTelemetry::new();
+        let compiled = compile(&mut ConcreteTypes, &m, &NullTelemetry).unwrap();
+        let tel = ConfiguredTelemetry::new();
         let dbg = DbgCapture::new();
         tel.attach(&[], dbg.handler());
         let mut rt = Runtime::new(&compiled, 1).with_telemetry(&tel);
@@ -1500,18 +1344,13 @@ fn sum(n, acc, _), do: sum(n - 1, acc + n, [n])
 fn main(), do: sum(10, 0, nil)";
         let m = lower_src(src);
         let entry = m.fn_by_name("main").unwrap().id;
-        let compiled = compile(
-            &mut crate::types::ConcreteTypes,
-            &m,
-            &crate::telemetry::NullTelemetry,
-        )
-        .unwrap();
+        let compiled = compile(&mut ConcreteTypes, &m, &NullTelemetry).unwrap();
         let mut rt = Runtime::new(&compiled, 1);
         let pid = rt.spawn(entry);
         {
             let task = rt.tasks.get_mut(&pid).unwrap();
             task.reductions_per_quantum = 1000;
-            task.heap.allocation_watermark = std::ptr::null_mut();
+            task.heap.allocation_watermark = null_mut();
         }
         rt.run_until_idle();
         let task = rt.task(pid).unwrap();
@@ -1529,12 +1368,7 @@ fn sumf(n, acc, _), do: sumf(n - 1, acc + 1.5, [n])
 fn main(), do: sumf(4, 0.0, nil)";
         let m = lower_src(src);
         let entry = m.fn_by_name("main").unwrap().id;
-        let compiled = compile(
-            &mut crate::types::ConcreteTypes,
-            &m,
-            &crate::telemetry::NullTelemetry,
-        )
-        .unwrap();
+        let compiled = compile(&mut ConcreteTypes, &m, &NullTelemetry).unwrap();
         let mut rt = Runtime::new(&compiled, 1);
         let pid = rt.spawn(entry);
         force_allocation_pressure_yield(rt.tasks.get_mut(&pid).unwrap());
@@ -1553,12 +1387,7 @@ fn main(), do: sumf(4, 0.0, nil)";
         "#;
         let m = lower_src(src);
         let entry = m.fn_by_name("main").unwrap().id;
-        let compiled = compile(
-            &mut crate::types::ConcreteTypes,
-            &m,
-            &crate::telemetry::NullTelemetry,
-        )
-        .unwrap();
+        let compiled = compile(&mut ConcreteTypes, &m, &NullTelemetry).unwrap();
         let mut rt = Runtime::new(&compiled, 1);
         let pid = rt.spawn(entry);
         force_allocation_pressure_yield(rt.tasks.get_mut(&pid).unwrap());
@@ -1581,12 +1410,7 @@ fn main(), do: sumf(4, 0.0, nil)";
         "#;
         let m = lower_src(src);
         let entry = m.fn_by_name("main").unwrap().id;
-        let compiled = compile(
-            &mut crate::types::ConcreteTypes,
-            &m,
-            &crate::telemetry::NullTelemetry,
-        )
-        .unwrap();
+        let compiled = compile(&mut ConcreteTypes, &m, &NullTelemetry).unwrap();
         let mut rt = Runtime::new(&compiled, 1);
         let pid = rt.spawn(entry);
         force_allocation_pressure_yield(rt.tasks.get_mut(&pid).unwrap());
@@ -1609,12 +1433,7 @@ fn main(), do: sumf(4, 0.0, nil)";
         "#;
         let m = lower_src(src);
         let entry = m.fn_by_name("main").unwrap().id;
-        let compiled = compile(
-            &mut crate::types::ConcreteTypes,
-            &m,
-            &crate::telemetry::NullTelemetry,
-        )
-        .unwrap();
+        let compiled = compile(&mut ConcreteTypes, &m, &NullTelemetry).unwrap();
         let mut rt = Runtime::new(&compiled, 1);
         let pid = rt.spawn(entry);
         force_allocation_pressure_yield(rt.tasks.get_mut(&pid).unwrap());
@@ -1638,12 +1457,7 @@ fn sum(n, acc, _), do: sum(n - 1, acc + n, [n])
 fn main(), do: sum(10, 0, nil)";
         let m = lower_src(src);
         let entry = m.fn_by_name("main").unwrap().id;
-        let compiled = compile(
-            &mut crate::types::ConcreteTypes,
-            &m,
-            &crate::telemetry::NullTelemetry,
-        )
-        .unwrap();
+        let compiled = compile(&mut ConcreteTypes, &m, &NullTelemetry).unwrap();
         let mut rt = Runtime::new(&compiled, 1);
         let pid = rt.spawn(entry);
         force_allocation_pressure_yield(rt.tasks.get_mut(&pid).unwrap());
@@ -1665,12 +1479,7 @@ fn sum(n, acc, _), do: sum(n - 1, acc + n, [n])
 fn main(), do: sum(8, 0, nil)";
         let m = lower_src(src);
         let entry = m.fn_by_name("main").unwrap().id;
-        let compiled = compile(
-            &mut crate::types::ConcreteTypes,
-            &m,
-            &crate::telemetry::NullTelemetry,
-        )
-        .unwrap();
+        let compiled = compile(&mut ConcreteTypes, &m, &NullTelemetry).unwrap();
         let mut rt = Runtime::new(&compiled, 1);
         let pa = rt.spawn(entry);
         let pb = rt.spawn(entry);
@@ -1686,15 +1495,11 @@ fn main(), do: sum(8, 0, nil)";
 
     #[test]
     fn compiled_reductions_yield_allocation_light_loops() {
-        let src = "fn count(0, acc), do: acc\nfn count(n, acc), do: count(n - 1, acc + 1)\nfn main(), do: count(5000, 0)";
+        let src =
+            "fn count(0, acc), do: acc\nfn count(n, acc), do: count(n - 1, acc + 1)\nfn main(), do: count(5000, 0)";
         let m = lower_src(src);
         let entry = m.fn_by_name("main").unwrap().id;
-        let compiled = compile(
-            &mut crate::types::ConcreteTypes,
-            &m,
-            &crate::telemetry::NullTelemetry,
-        )
-        .unwrap();
+        let compiled = compile(&mut ConcreteTypes, &m, &NullTelemetry).unwrap();
         let mut rt = Runtime::new(&compiled, 1);
         let pa = rt.spawn(entry);
         let pb = rt.spawn(entry);
@@ -1717,15 +1522,11 @@ fn main(), do: sum(8, 0, nil)";
 
     #[test]
     fn compiled_yield_measures_full_continuation_allocation_window() {
-        let src = "fn count(0, acc), do: acc\nfn count(n, acc), do: count(n - 1, acc + 1)\nfn main(), do: count(5000, 0)";
+        let src =
+            "fn count(0, acc), do: acc\nfn count(n, acc), do: count(n - 1, acc + 1)\nfn main(), do: count(5000, 0)";
         let m = lower_src(src);
         let entry = m.fn_by_name("main").unwrap().id;
-        let compiled = compile(
-            &mut crate::types::ConcreteTypes,
-            &m,
-            &crate::telemetry::NullTelemetry,
-        )
-        .unwrap();
+        let compiled = compile(&mut ConcreteTypes, &m, &NullTelemetry).unwrap();
         let mut rt = Runtime::new(&compiled, 1);
         let pid = rt.spawn(entry);
         force_reduction_yield(rt.tasks.get_mut(&pid).unwrap());
@@ -1737,8 +1538,7 @@ fn main(), do: sum(8, 0, nil)";
         assert!(task.reduction_yields > 0);
         assert_eq!(task.pending_yield_continuation_margin_before_bytes, 0);
         assert!(
-            task.max_yield_continuation_bytes
-                > fz_runtime::any_value::closure_size_for_count(3) as u64,
+            task.max_yield_continuation_bytes > closure_size_for_count(3) as u64,
             "yield telemetry should include scalar boxes as well as the continuation closure; got {} bytes",
             task.max_yield_continuation_bytes
         );
@@ -1755,12 +1555,7 @@ fn main(), do: sum(8, 0, nil)";
         let src = "fn count(0, acc), do: acc\nfn count(n, acc), do: count(n - 1, acc + 1)\nfn main(), do: count(20, 0)";
         let m = lower_src(src);
         let entry = m.fn_by_name("main").unwrap().id;
-        let compiled = compile(
-            &mut crate::types::ConcreteTypes,
-            &m,
-            &crate::telemetry::NullTelemetry,
-        )
-        .unwrap();
+        let compiled = compile(&mut ConcreteTypes, &m, &NullTelemetry).unwrap();
         let mut rt = Runtime::new(&compiled, 1);
         let pid = rt.spawn(entry);
         rt.run_until_idle();
@@ -1782,12 +1577,7 @@ fn sum(n, acc, _), do: sum(n - 1, acc + n, [n])
 fn main(), do: sum(10, 0, nil)";
         let m = lower_src(src);
         let entry = m.fn_by_name("main").unwrap().id;
-        let compiled = compile(
-            &mut crate::types::ConcreteTypes,
-            &m,
-            &crate::telemetry::NullTelemetry,
-        )
-        .unwrap();
+        let compiled = compile(&mut ConcreteTypes, &m, &NullTelemetry).unwrap();
         let mut rt = Runtime::new(&compiled, 1);
         let pid = rt.spawn(entry);
         force_allocation_pressure_yield(rt.tasks.get_mut(&pid).unwrap());
@@ -1826,10 +1616,7 @@ fn main(), do: sum(10, 0, nil)";
     /// `send_via_current_runtime` calls. Returns (runtime, sender_pid,
     /// receiver_pid). Both tasks are spawned but never executed — we
     /// only drive the send-probe code path.
-    fn two_task_rt<'a>(
-        compiled: &'a crate::ir_codegen::CompiledModule,
-        main_id: FnId,
-    ) -> (Runtime<'a>, PidId, PidId) {
+    fn two_task_rt<'a>(compiled: &'a CompiledModule, main_id: FnId) -> (Runtime<'a>, PidId, PidId) {
         let mut rt = Runtime::new(compiled, 1);
         let sender = rt.spawn(main_id);
         let receiver = rt.spawn(main_id);
@@ -1838,15 +1625,10 @@ fn main(), do: sum(10, 0, nil)";
 
     fn template_closure(task: &mut Process, stub: usize) -> *mut u8 {
         let bits = task.heap.alloc_closure_slots(0, 1, 0);
-        let p =
-            fz_runtime::any_value::closure_addr_from_tagged(bits).expect("template closure ptr");
+        let p = closure_addr_from_tagged(bits).expect("template closure ptr");
         unsafe {
-            std::ptr::write(p.add(8) as *mut u64, stub as u64);
-            fz_runtime::any_value::closure_capture_set(
-                p,
-                0,
-                fz_runtime::any_value::AnyValue::null(),
-            );
+            write(p.add(8) as *mut u64, stub as u64);
+            closure_capture_set(p, 0, AnyValue::null());
         }
         bits as *mut u8
     }
@@ -1856,32 +1638,27 @@ fn main(), do: sum(10, 0, nil)";
         let src = "fn main(), do: 0";
         let m = lower_src(src);
         let main_id = m.fn_by_name("main").unwrap().id;
-        let compiled = compile(
-            &mut crate::types::ConcreteTypes,
-            &m,
-            &crate::telemetry::NullTelemetry,
-        )
-        .unwrap();
+        let compiled = compile(&mut ConcreteTypes, &m, &NullTelemetry).unwrap();
         let (mut rt, sender_pid, receiver_pid) = two_task_rt(&compiled, main_id);
 
         // Pre-seed receiver as wait. Pinned wants msg == 42.
         let receiver = rt.task_mut(receiver_pid).unwrap();
         receiver.state = ProcessState::Blocked;
         let template = template_closure(receiver, 0xdead_beef);
-        receiver.wait = Some(Box::new(fz_runtime::park::ParkRecord {
+        receiver.wait = Some(Box::new(ParkRecord {
             matcher_fn: mock_eq_matcher,
             pinned: vec![test_int_ref(42)],
             clause_bodies: vec![template],
             clause_bound_counts: vec![1],
             bound_arity: 1,
             after_deadline_ms: None,
-            after_cont: std::ptr::null_mut(),
+            after_cont: null_mut(),
             after_timer_id: None,
         }));
         // A genuinely parked task has consumed its spawn-time entry thunk;
         // model that by clearing runnable so the probe-hit assertion observes
         // only what the wakeup populates.
-        receiver.set_runnable_closure(std::ptr::null_mut());
+        receiver.set_runnable_closure(null_mut());
         // Clear run queue so both tasks are quiescent.
         rt.run_queue.clear();
 
@@ -1898,15 +1675,9 @@ fn main(), do: sum(10, 0, nil)";
         let runnable = r.runnable_ptr();
         assert!(!runnable.is_null(), "runnable_closure populated on hit");
         unsafe {
-            assert_eq!(
-                std::ptr::read((runnable as *const u8).add(8) as *const u64),
-                0xdead_beef
-            );
+            assert_eq!(read((runnable as *const u8).add(8) as *const u64), 0xdead_beef);
             let cont_addr = runnable;
-            let capture_ref = fz_runtime::any_value::AnyValueRef::from_raw_word(
-                fz_runtime::any_value::closure_capture_ref_word(cont_addr, 1),
-            )
-            .expect("capture ref");
+            let capture_ref = AnyValueRef::from_raw_word(closure_capture_ref_word(cont_addr, 1)).expect("capture ref");
             assert_eq!(capture_ref.load_int().expect("capture int ref"), 42);
         }
         assert!(rt.run_queue.iter().any(|p| *p == receiver_pid));
@@ -1917,30 +1688,25 @@ fn main(), do: sum(10, 0, nil)";
         let src = "fn main(), do: 0";
         let m = lower_src(src);
         let main_id = m.fn_by_name("main").unwrap().id;
-        let compiled = compile(
-            &mut crate::types::ConcreteTypes,
-            &m,
-            &crate::telemetry::NullTelemetry,
-        )
-        .unwrap();
+        let compiled = compile(&mut ConcreteTypes, &m, &NullTelemetry).unwrap();
         let (mut rt, sender_pid, receiver_pid) = two_task_rt(&compiled, main_id);
 
         let receiver = rt.task_mut(receiver_pid).unwrap();
         receiver.state = ProcessState::Blocked;
         let template = template_closure(receiver, 0xdead_beef);
-        receiver.wait = Some(Box::new(fz_runtime::park::ParkRecord {
+        receiver.wait = Some(Box::new(ParkRecord {
             matcher_fn: mock_eq_matcher,
             pinned: vec![test_int_ref(42)],
             clause_bodies: vec![template],
             clause_bound_counts: vec![1],
             bound_arity: 1,
             after_deadline_ms: None,
-            after_cont: std::ptr::null_mut(),
+            after_cont: null_mut(),
             after_timer_id: None,
         }));
         // Parked task has consumed its entry thunk; clear runnable so the
         // miss assertion observes that the wakeup did NOT populate it.
-        receiver.set_runnable_closure(std::ptr::null_mut());
+        receiver.set_runnable_closure(null_mut());
         rt.run_queue.clear();
 
         let rt_ptr = &mut rt as *mut Runtime<'_> as *mut ();
@@ -1965,26 +1731,19 @@ fn main(), do: sum(10, 0, nil)";
     fn drain_expired_timers_wakes_after_cont() {
         let src = "fn main(), do: 0";
         let m = lower_src(src);
-        let compiled = compile(
-            &mut crate::types::ConcreteTypes,
-            &m,
-            &crate::telemetry::NullTelemetry,
-        )
-        .unwrap();
+        let compiled = compile(&mut ConcreteTypes, &m, &NullTelemetry).unwrap();
         let main_id = m.fn_by_name("main").unwrap().id;
         let mut rt = Runtime::new(&compiled, 1);
         let receiver_pid = rt.spawn(main_id);
         rt.run_queue.clear();
 
         // Schedule an immediate-deadline timer (1ms) for the receiver.
-        let timer_id = rt
-            .timers
-            .schedule(receiver_pid, std::time::Duration::from_millis(1));
+        let timer_id = rt.timers.schedule(receiver_pid, Duration::from_millis(1));
 
         let after_cont_addr: usize = 0xcafe_babe;
         let receiver = rt.task_mut(receiver_pid).unwrap();
         receiver.state = ProcessState::Blocked;
-        receiver.wait = Some(Box::new(fz_runtime::park::ParkRecord {
+        receiver.wait = Some(Box::new(ParkRecord {
             matcher_fn: mock_eq_matcher,
             pinned: vec![],
             clause_bodies: vec![],
@@ -1996,10 +1755,10 @@ fn main(), do: sum(10, 0, nil)";
         }));
         // Parked task has consumed its entry thunk; clear runnable so the
         // assertion observes the after-timer fire populating it.
-        receiver.set_runnable_closure(std::ptr::null_mut());
+        receiver.set_runnable_closure(null_mut());
 
         // Wait past the deadline (a few millis to be safe) then drain.
-        std::thread::sleep(std::time::Duration::from_millis(5));
+        sleep(Duration::from_millis(5));
         rt.drain_expired_timers();
 
         let r = rt.task(receiver_pid).unwrap();
@@ -2024,12 +1783,7 @@ fn main(), do: sum(10, 0, nil)";
     #[test]
     fn resume_addr_is_finalized() {
         let m = lower_src("fn main(), do: 0");
-        let compiled = compile(
-            &mut crate::types::ConcreteTypes,
-            &m,
-            &crate::telemetry::NullTelemetry,
-        )
-        .unwrap();
+        let compiled = compile(&mut ConcreteTypes, &m, &NullTelemetry).unwrap();
         assert!(!compiled.resume_addr.is_null());
     }
 }

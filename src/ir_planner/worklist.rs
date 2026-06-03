@@ -2,25 +2,39 @@ use super::closures::literal_closure_return_keys;
 use super::diagnostics::{compute_dead_branches, module_plan_stats};
 use super::effects::{prim_effects, term_effects};
 use super::fn_types::{
-    CapabilityPlan, EffectSummary, FnEffects, IncomingParamCallableCapabilities, ModulePlan,
-    ReturnDemand, ReturnDepsByCaller, ReturnReaders, SpecKey, SpecKeySet, SpecPlan,
-    SpecReachabilityRole, TYPE_FN_CALLS, VISIT_HARD_BOUND, WALK_CALLS, WORKLIST_POPS,
-    build_any_key_index, fixed_point_spec_key_for_arity, key_precedence_order,
-    normalize_result_correspondence_key, spec_key_for_fn_id, spec_key_input_tys,
+    CallEdgePlan, CallEdgeTarget, CallableCapability, CapabilityPlan, EffectSummary, FnEffects,
+    IncomingParamCallableCapabilities, ModulePlan, ReturnDemand, ReturnDepsByCaller, ReturnReaders, SpecKey,
+    SpecKeySet, SpecPlan, SpecReachabilityRole, TYPE_FN_CALLS, VISIT_HARD_BOUND, WALK_CALLS, WORKLIST_POPS,
+    build_any_key_index, fixed_point_spec_key_for_arity, key_precedence_order, normalize_result_correspondence_key,
+    spec_key_for_fn_id, spec_key_input_tys,
 };
 use super::reachable::{cont_key_from_slot0, env_at_terminator};
+use super::scc::tarjan_scc;
 use super::type_fn::type_fn;
 use super::walk::{WalkResult, walk_spec_for_discovery};
-use crate::fz_ir::{Block, FnId, Module, Term};
-use crate::ir_callgraph::{build_recursion_graph, entry_seeds};
-use crate::type_infer::{
-    TypeInferActivationEdgeFact, TypeInferActivationFact, TypeInferActivationId,
-    TypeInferDeadArmFact, TypeInferReturnState,
+use crate::concrete_types::ty_display;
+use crate::fz_ir::{
+    Block, BlockId, CallsiteId, CallsiteIdent, Cont, DeadBranch, EmitSlot, FnId, FnIr, Module, Prim, ReceiveAfter,
+    ReceiveClause, Stmt, Term, Var, receive_outcome_spec_key,
 };
-use std::collections::HashMap;
+use crate::ir_callgraph::{build_recursion_graph, entry_seeds};
+use crate::ir_planner::inventory::{body_callsite_inventory, plan_call_edge_inventory};
+use crate::specs::{
+    CallbackReturnDemand, CallbackReturnFact, CallbackReturnQuery, SpecApplicationOutcome, apply_spec_set,
+    resolve_closure_return,
+};
+use crate::telemetry::value::opaque;
+use crate::telemetry::{NullTelemetry, Telemetry};
+use crate::type_infer::{
+    TypeInferActivationEdgeFact, TypeInferActivationFact, TypeInferActivationId, TypeInferDeadArmFact,
+    TypeInferReturnState, TypeInferStatus, infer_from_entry,
+};
+use crate::types::{ClosureTarget, ClosureTypes, RenderTypes, Ty, Types, key_slots_observed};
+use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
+use std::mem::replace;
 
 pub(crate) enum ResultSlot0 {
-    Known(crate::types::Ty),
+    Known(Ty),
     Pending,
 }
 
@@ -30,7 +44,7 @@ pub(crate) struct CallResultKnowledge {
 
 #[derive(Clone, Debug)]
 struct DeclaredReturnFact {
-    ty: Option<crate::types::Ty>,
+    ty: Option<Ty>,
 }
 
 pub(super) struct ActivationReturnFacts {
@@ -38,14 +52,9 @@ pub(super) struct ActivationReturnFacts {
     witness_returns: HashMap<TypeInferActivationId, TypeInferReturnState>,
     witness_public_keys: HashMap<TypeInferActivationId, SpecKey>,
     witness_ids_by_public_key: HashMap<SpecKey, Vec<TypeInferActivationId>>,
-    observed_edges_by_witness:
-        HashMap<TypeInferActivationId, std::collections::HashSet<ObservedActivationEdge>>,
-    observed_dead_arms_by_witness:
-        HashMap<TypeInferActivationId, std::collections::HashSet<ObservedDeadArm>>,
-    callee_witnesses_by_caller_and_callsite: HashMap<
-        (SpecKey, crate::fz_ir::CallsiteId),
-        std::collections::HashSet<TypeInferActivationId>,
-    >,
+    observed_edges_by_witness: HashMap<TypeInferActivationId, HashSet<ObservedActivationEdge>>,
+    observed_dead_arms_by_witness: HashMap<TypeInferActivationId, HashSet<ObservedDeadArm>>,
+    callee_witnesses_by_caller_and_callsite: HashMap<(SpecKey, CallsiteId), HashSet<TypeInferActivationId>>,
     unsettled_buckets: HashMap<FnId, Vec<SpecKey>>,
     raw_fact_count: usize,
     complete_entry_count: usize,
@@ -108,7 +117,7 @@ struct CoveredActivation {
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct ObservedActivationEdge {
     callee: SpecKey,
-    slot: crate::fz_ir::EmitSlot,
+    slot: EmitSlot,
     span_start: u64,
     span_end: u64,
 }
@@ -116,13 +125,11 @@ struct ObservedActivationEdge {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 struct ObservedDeadArm {
     fn_id: FnId,
-    block_id: crate::fz_ir::BlockId,
-    branch: crate::fz_ir::DeadBranch,
+    block_id: BlockId,
+    branch: DeadBranch,
 }
 
-fn render_type_infer_return_state<
-    T: crate::types::Types<Ty = crate::types::Ty> + crate::types::RenderTypes,
->(
+fn render_type_infer_return_state<T: Types<Ty = Ty> + RenderTypes>(
     t: &mut T,
     state: Option<&TypeInferReturnState>,
 ) -> String {
@@ -135,19 +142,19 @@ fn render_type_infer_return_state<
     }
 }
 
-fn emit_slot_label(slot: crate::fz_ir::EmitSlot) -> &'static str {
+fn emit_slot_label(slot: EmitSlot) -> &'static str {
     match slot {
-        crate::fz_ir::EmitSlot::Direct => "direct",
-        crate::fz_ir::EmitSlot::Cont => "cont",
-        crate::fz_ir::EmitSlot::ClosureCall => "closure_call",
-        crate::fz_ir::EmitSlot::CallableBoundary => "callable_boundary",
+        EmitSlot::Direct => "direct",
+        EmitSlot::Cont => "cont",
+        EmitSlot::ClosureCall => "closure_call",
+        EmitSlot::CallableBoundary => "callable_boundary",
     }
 }
 
-fn dead_branch_label(branch: crate::fz_ir::DeadBranch) -> &'static str {
+fn dead_branch_label(branch: DeadBranch) -> &'static str {
     match branch {
-        crate::fz_ir::DeadBranch::Then => "then",
-        crate::fz_ir::DeadBranch::Else => "else",
+        DeadBranch::Then => "then",
+        DeadBranch::Else => "else",
     }
 }
 
@@ -188,25 +195,21 @@ impl ActivationReturnFacts {
         }
     }
 
-    fn from_entry_seeds<
-        T: crate::types::Types<Ty = crate::types::Ty>
-            + crate::types::ClosureTypes
-            + crate::types::RenderTypes,
-    >(
+    fn from_entry_seeds<T: Types<Ty = Ty> + ClosureTypes + RenderTypes>(
         t: &mut T,
         module: &Module,
-        tel: &dyn crate::telemetry::Telemetry,
+        tel: &dyn Telemetry,
     ) -> Self {
         let seeds = entry_seeds(t, module);
         let mut facts = Self::empty();
         for (entry, input_tys) in seeds {
-            let outcome = crate::type_infer::infer_from_entry(t, module, entry, &input_tys, tel);
+            let outcome = infer_from_entry(t, module, entry, &input_tys, tel);
             match outcome.status {
-                crate::type_infer::TypeInferStatus::Complete => facts.complete_entry_count += 1,
-                crate::type_infer::TypeInferStatus::Unresolved => {
+                TypeInferStatus::Complete => facts.complete_entry_count += 1,
+                TypeInferStatus::Unresolved => {
                     facts.unresolved_entry_count += 1;
                 }
-                crate::type_infer::TypeInferStatus::Invalid => facts.invalid_entry_count += 1,
+                TypeInferStatus::Invalid => facts.invalid_entry_count += 1,
             }
             for activation in outcome.activations {
                 facts.raw_fact_count += 1;
@@ -222,21 +225,17 @@ impl ActivationReturnFacts {
         facts
     }
 
-    fn record_activation<
-        T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
-    >(
+    fn record_activation<T: Types<Ty = Ty> + ClosureTypes>(
         &mut self,
         t: &mut T,
         module: &Module,
         activation: TypeInferActivationFact,
     ) {
         let activation_id = activation.activation_id;
-        let public_key =
-            public_activation_spec_key(t, module, activation.fn_id, activation.input_tys);
+        let public_key = public_activation_spec_key(t, module, activation.fn_id, activation.input_tys);
         let state = activation.return_state;
         self.witness_returns.insert(activation_id, state.clone());
-        self.witness_public_keys
-            .insert(activation_id, public_key.clone());
+        self.witness_public_keys.insert(activation_id, public_key.clone());
         self.witness_ids_by_public_key
             .entry(public_key.clone())
             .or_default()
@@ -265,13 +264,7 @@ impl ActivationReturnFacts {
     /// Project an activation return state into the planner's return map shape.
     /// `type_infer` keeps unresolved facts as `Pending`/`Unknown`; `any` is only
     /// introduced here at the planner boundary for still-reachable specs.
-    fn projected_return_for_key<
-        T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
-    >(
-        &self,
-        t: &mut T,
-        key: &SpecKey,
-    ) -> Option<crate::types::Ty> {
+    fn projected_return_for_key<T: Types<Ty = Ty> + ClosureTypes>(&self, t: &mut T, key: &SpecKey) -> Option<Ty> {
         match self.return_state_for_key(t, key)? {
             TypeInferReturnState::Known(ty) => Some(ty.clone()),
             TypeInferReturnState::NoReturn => Some(t.none()),
@@ -279,9 +272,7 @@ impl ActivationReturnFacts {
         }
     }
 
-    fn return_state_for_key<
-        T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
-    >(
+    fn return_state_for_key<T: Types<Ty = Ty> + ClosureTypes>(
         &self,
         t: &mut T,
         key: &SpecKey,
@@ -308,9 +299,7 @@ impl ActivationReturnFacts {
         joined
     }
 
-    pub(super) fn result_slot0_for_key<
-        T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
-    >(
+    pub(super) fn result_slot0_for_key<T: Types<Ty = Ty> + ClosureTypes>(
         &self,
         t: &mut T,
         key: &SpecKey,
@@ -318,44 +307,28 @@ impl ActivationReturnFacts {
         match self.return_state_for_key(t, key) {
             Some(TypeInferReturnState::Known(ty)) => ResultSlot0::Known(ty),
             Some(TypeInferReturnState::NoReturn) => ResultSlot0::Known(t.none()),
-            Some(TypeInferReturnState::Pending | TypeInferReturnState::Unknown) | None => {
-                ResultSlot0::Pending
-            }
+            Some(TypeInferReturnState::Pending | TypeInferReturnState::Unknown) | None => ResultSlot0::Pending,
         }
     }
 
-    fn request_overlaps_unsettled<
-        T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
-    >(
-        &self,
-        t: &mut T,
-        requested: &SpecKey,
-    ) -> bool {
+    fn request_overlaps_unsettled<T: Types<Ty = Ty> + ClosureTypes>(&self, t: &mut T, requested: &SpecKey) -> bool {
         self.unsettled_buckets
             .get(&requested.fn_id)
-            .is_some_and(|keys| {
-                keys.iter()
-                    .any(|key| activation_keys_overlap(t, key, requested))
-            })
+            .is_some_and(|keys| keys.iter().any(|key| activation_keys_overlap(t, key, requested)))
     }
 
-    fn project_effective_returns<
-        T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
-    >(
+    fn project_effective_returns<T: Types<Ty = Ty> + ClosureTypes>(
         &self,
         t: &mut T,
         reachable: &SpecKeySet,
         complete_returns: &SpecKeySet,
-        effective_returns: &mut HashMap<SpecKey, crate::types::Ty>,
+        effective_returns: &mut HashMap<SpecKey, Ty>,
     ) {
         for key in reachable {
             let ret = if let Some(ret) = self.projected_return_for_key(t, key) {
                 ret
             } else if complete_returns.contains(key) {
-                effective_returns
-                    .get(key)
-                    .cloned()
-                    .unwrap_or_else(|| t.any())
+                effective_returns.get(key).cloned().unwrap_or_else(|| t.any())
             } else {
                 t.any()
             };
@@ -363,12 +336,12 @@ impl ActivationReturnFacts {
         }
     }
 
-    fn telemetry<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes>(
+    fn telemetry<T: Types<Ty = Ty> + ClosureTypes>(
         &self,
         t: &mut T,
         reachable: &SpecKeySet,
         callable_entry_specs: &SpecKeySet,
-        effective_returns: &HashMap<SpecKey, crate::types::Ty>,
+        effective_returns: &HashMap<SpecKey, Ty>,
         complete_returns: &SpecKeySet,
     ) -> ActivationReturnTelemetry {
         let mut stats = ActivationReturnTelemetry {
@@ -410,15 +383,13 @@ impl ActivationReturnFacts {
         stats
     }
 
-    fn projection_gap_keys<
-        T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
-    >(
+    fn projection_gap_keys<T: Types<Ty = Ty> + ClosureTypes>(
         &self,
         t: &mut T,
         module: &Module,
         reachable: &SpecKeySet,
         callable_entry_specs: &SpecKeySet,
-        effective_returns: &HashMap<SpecKey, crate::types::Ty>,
+        effective_returns: &HashMap<SpecKey, Ty>,
         complete_returns: &SpecKeySet,
     ) -> Vec<String> {
         let mut gaps = Vec::new();
@@ -439,35 +410,27 @@ impl ActivationReturnFacts {
         gaps
     }
 
-    fn projection_facts<
-        T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
-    >(
+    fn projection_facts<T: Types<Ty = Ty> + ClosureTypes>(
         &self,
         t: &mut T,
         reachable: &SpecKeySet,
-        effective_returns: &HashMap<SpecKey, crate::types::Ty>,
+        effective_returns: &HashMap<SpecKey, Ty>,
         complete_returns: &SpecKeySet,
     ) -> Vec<ActivationProjectionFact> {
         let mut facts: Vec<_> = reachable
             .iter()
             .cloned()
-            .map(|spec_key| {
-                self.projection_fact_for_key(t, spec_key, effective_returns, complete_returns)
-            })
+            .map(|spec_key| self.projection_fact_for_key(t, spec_key, effective_returns, complete_returns))
             .collect();
-        facts.sort_by(|left, right| {
-            format!("{:?}", left.spec_key).cmp(&format!("{:?}", right.spec_key))
-        });
+        facts.sort_by(|left, right| format!("{:?}", left.spec_key).cmp(&format!("{:?}", right.spec_key)));
         facts
     }
 
-    fn projection_fact_for_key<
-        T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
-    >(
+    fn projection_fact_for_key<T: Types<Ty = Ty> + ClosureTypes>(
         &self,
         t: &mut T,
         spec_key: SpecKey,
-        effective_returns: &HashMap<SpecKey, crate::types::Ty>,
+        effective_returns: &HashMap<SpecKey, Ty>,
         complete_returns: &SpecKeySet,
     ) -> ActivationProjectionFact {
         let (mut kind, covered_activations) = if self.bucket_returns.contains_key(&spec_key) {
@@ -493,8 +456,8 @@ impl ActivationReturnFacts {
                 }
             }
         };
-        let mut projected_call_edges = std::collections::HashSet::new();
-        let mut projected_dead_arms: Option<std::collections::HashSet<ObservedDeadArm>> = None;
+        let mut projected_call_edges = HashSet::new();
+        let mut projected_dead_arms: Option<HashSet<ObservedDeadArm>> = None;
         for covered in &covered_activations {
             if let Some(edges) = self.observed_edges_by_witness.get(&covered.activation_id) {
                 projected_call_edges.extend(edges.iter().cloned());
@@ -510,16 +473,10 @@ impl ActivationReturnFacts {
             };
         }
         let mut projected_call_edges: Vec<_> = projected_call_edges.into_iter().collect();
-        projected_call_edges.sort_by(|left, right| {
-            activation_edge_inventory_entry(left).cmp(&activation_edge_inventory_entry(right))
-        });
-        let mut projected_dead_arms: Vec<_> = projected_dead_arms
-            .unwrap_or_default()
-            .into_iter()
-            .collect();
-        projected_dead_arms.sort_by(|left, right| {
-            dead_arm_inventory_entry(left).cmp(&dead_arm_inventory_entry(right))
-        });
+        projected_call_edges
+            .sort_by(|left, right| activation_edge_inventory_entry(left).cmp(&activation_edge_inventory_entry(right)));
+        let mut projected_dead_arms: Vec<_> = projected_dead_arms.unwrap_or_default().into_iter().collect();
+        projected_dead_arms.sort_by(|left, right| dead_arm_inventory_entry(left).cmp(&dead_arm_inventory_entry(right)));
         let projected_state = self.return_state_for_key(t, &spec_key).or_else(|| {
             complete_returns
                 .contains(&spec_key)
@@ -540,9 +497,7 @@ impl ActivationReturnFacts {
         }
     }
 
-    fn covered_activation_states_for_request<
-        T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
-    >(
+    fn covered_activation_states_for_request<T: Types<Ty = Ty> + ClosureTypes>(
         &self,
         t: &mut T,
         requested: &SpecKey,
@@ -564,9 +519,7 @@ impl ActivationReturnFacts {
         covered
     }
 
-    fn overlapping_unsettled_activation_states<
-        T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
-    >(
+    fn overlapping_unsettled_activation_states<T: Types<Ty = Ty> + ClosureTypes>(
         &self,
         t: &mut T,
         requested: &SpecKey,
@@ -575,10 +528,7 @@ impl ActivationReturnFacts {
             return Vec::new();
         };
         let mut overlapping = Vec::new();
-        for key in keys
-            .iter()
-            .filter(|key| activation_keys_overlap(t, key, requested))
-        {
+        for key in keys.iter().filter(|key| activation_keys_overlap(t, key, requested)) {
             overlapping.extend(self.covered_witnesses_for_public_key(key));
         }
         overlapping.sort_by(|left, right| {
@@ -589,16 +539,13 @@ impl ActivationReturnFacts {
         overlapping
     }
 
-    fn record_observed_edge<
-        T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
-    >(
+    fn record_observed_edge<T: Types<Ty = Ty> + ClosureTypes>(
         &mut self,
         t: &mut T,
         module: &Module,
         edge: &TypeInferActivationEdgeFact,
     ) {
-        let callee =
-            public_activation_spec_key(t, module, edge.callee_fn_id, edge.callee_input_tys.clone());
+        let callee = public_activation_spec_key(t, module, edge.callee_fn_id, edge.callee_input_tys.clone());
         self.observed_edges_by_witness
             .entry(edge.caller_activation_id)
             .or_default()
@@ -608,8 +555,7 @@ impl ActivationReturnFacts {
                 span_start: edge.callsite.span_start,
                 span_end: edge.callsite.span_end,
             });
-        let caller_public_key =
-            public_activation_spec_key(t, module, edge.caller_fn_id, edge.caller_input_tys.clone());
+        let caller_public_key = public_activation_spec_key(t, module, edge.caller_fn_id, edge.caller_input_tys.clone());
         self.callee_witnesses_by_caller_and_callsite
             .entry((caller_public_key, edge.callsite.callsite.clone()))
             .or_default()
@@ -617,10 +563,7 @@ impl ActivationReturnFacts {
     }
 
     fn record_observed_dead_arm(&mut self, dead_arm: &TypeInferDeadArmFact) {
-        if !self
-            .witness_public_keys
-            .contains_key(&dead_arm.activation_id)
-        {
+        if !self.witness_public_keys.contains_key(&dead_arm.activation_id) {
             return;
         }
         self.observed_dead_arms_by_witness
@@ -654,9 +597,7 @@ impl ActivationReturnFacts {
         covered
     }
 
-    pub(super) fn canonical_public_key<
-        T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
-    >(
+    pub(super) fn canonical_public_key<T: Types<Ty = Ty> + ClosureTypes>(
         &self,
         t: &mut T,
         requested: SpecKey,
@@ -671,8 +612,7 @@ impl ActivationReturnFacts {
             .map(|(candidate, _)| candidate)
             .filter(|candidate| candidate.fn_id == requested.fn_id)
             .filter(|candidate| {
-                candidate.demand == requested.demand
-                    && activation_key_covers_requested(t, candidate, &requested)
+                candidate.demand == requested.demand && activation_key_covers_requested(t, candidate, &requested)
             })
             .collect::<Vec<_>>();
         let mut most_specific = covering
@@ -693,10 +633,7 @@ impl ActivationReturnFacts {
         requested
     }
 
-    fn closure_return_map<T: crate::types::Types<Ty = crate::types::Ty>>(
-        &self,
-        t: &mut T,
-    ) -> HashMap<(crate::types::ClosureTarget, Vec<crate::types::Ty>), crate::types::Ty> {
+    fn closure_return_map<T: Types<Ty = Ty>>(&self, t: &mut T) -> HashMap<(ClosureTarget, Vec<Ty>), Ty> {
         let mut index = HashMap::new();
         for (key, state) in &self.bucket_returns {
             if !key.demand.is_value() || key.input.iter().any(Option::is_none) {
@@ -707,24 +644,16 @@ impl ActivationReturnFacts {
                 TypeInferReturnState::NoReturn => t.none(),
                 TypeInferReturnState::Pending | TypeInferReturnState::Unknown => continue,
             };
-            index.insert(
-                (
-                    key.fn_id.into(),
-                    crate::types::key_slots_observed(&key.input),
-                ),
-                ret,
-            );
+            index.insert((key.fn_id.into(), key_slots_observed(&key.input)), ret);
         }
         index
     }
 
-    fn callsite_result_slot0<
-        T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
-    >(
+    fn callsite_result_slot0<T: Types<Ty = Ty> + ClosureTypes>(
         &self,
         t: &mut T,
         caller_public_key: &SpecKey,
-        callsite: crate::fz_ir::CallsiteId,
+        callsite: CallsiteId,
     ) -> Option<ResultSlot0> {
         let caller_public_key = self.canonical_public_key(t, caller_public_key.clone());
         let witness_ids = self
@@ -741,30 +670,21 @@ impl ActivationReturnFacts {
         match joined? {
             TypeInferReturnState::Known(ty) => Some(ResultSlot0::Known(ty)),
             TypeInferReturnState::NoReturn => Some(ResultSlot0::Known(t.none())),
-            TypeInferReturnState::Pending | TypeInferReturnState::Unknown => {
-                Some(ResultSlot0::Pending)
-            }
+            TypeInferReturnState::Pending | TypeInferReturnState::Unknown => Some(ResultSlot0::Pending),
         }
     }
 }
 
-fn public_activation_spec_key<
-    T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
->(
+fn public_activation_spec_key<T: Types<Ty = Ty> + ClosureTypes>(
     t: &mut T,
     module: &Module,
     fn_id: FnId,
-    input_tys: Vec<crate::types::Ty>,
+    input_tys: Vec<Ty>,
 ) -> SpecKey {
     erase_closure_identity_from_spec_key(t, spec_key_for_fn_id(module, fn_id, input_tys))
 }
 
-fn erase_closure_identity_from_spec_key<
-    T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
->(
-    t: &mut T,
-    mut key: SpecKey,
-) -> SpecKey {
+fn erase_closure_identity_from_spec_key<T: Types<Ty = Ty> + ClosureTypes>(t: &mut T, mut key: SpecKey) -> SpecKey {
     for slot in &mut key.input {
         if let Some(ty) = slot.take() {
             let erased = t.erase_closure_identity(&ty);
@@ -774,13 +694,7 @@ fn erase_closure_identity_from_spec_key<
     key
 }
 
-fn activation_keys_overlap<
-    T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
->(
-    t: &mut T,
-    left: &SpecKey,
-    right: &SpecKey,
-) -> bool {
+fn activation_keys_overlap<T: Types<Ty = Ty> + ClosureTypes>(t: &mut T, left: &SpecKey, right: &SpecKey) -> bool {
     if left.fn_id != right.fn_id {
         return false;
     }
@@ -796,13 +710,7 @@ fn activation_keys_overlap<
         })
 }
 
-fn activation_tys_overlap<
-    T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
->(
-    t: &mut T,
-    left: &crate::types::Ty,
-    right: &crate::types::Ty,
-) -> bool {
+fn activation_tys_overlap<T: Types<Ty = Ty> + ClosureTypes>(t: &mut T, left: &Ty, right: &Ty) -> bool {
     if !t.is_disjoint(left, right) {
         return true;
     }
@@ -811,9 +719,7 @@ fn activation_tys_overlap<
     !t.is_disjoint(&left, &right)
 }
 
-fn activation_key_covers_requested<
-    T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
->(
+fn activation_key_covers_requested<T: Types<Ty = Ty> + ClosureTypes>(
     t: &mut T,
     candidate: &SpecKey,
     requested: &SpecKey,
@@ -830,20 +736,12 @@ fn activation_key_covers_requested<
         .zip(&requested.input)
         .all(|(candidate, requested)| match (candidate, requested) {
             (_, None) => true,
-            (Some(candidate), Some(requested)) => {
-                activation_ty_covers_requested(t, candidate, requested)
-            }
+            (Some(candidate), Some(requested)) => activation_ty_covers_requested(t, candidate, requested),
             (None, Some(_)) => false,
         })
 }
 
-fn activation_ty_covers_requested<
-    T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
->(
-    t: &mut T,
-    candidate: &crate::types::Ty,
-    requested: &crate::types::Ty,
-) -> bool {
+fn activation_ty_covers_requested<T: Types<Ty = Ty> + ClosureTypes>(t: &mut T, candidate: &Ty, requested: &Ty) -> bool {
     // Activation facts are upper-bound return facts only for the activation
     // keys they cover. A concrete fact for `list(int)` cannot justify a
     // `list(any)` planner key. Recursive convergence may produce a wider fact
@@ -858,16 +756,14 @@ fn activation_ty_covers_requested<
     t.is_subtype(&requested, &candidate)
 }
 
-fn merge_activation_return_state<T: crate::types::Types<Ty = crate::types::Ty>>(
+fn merge_activation_return_state<T: Types<Ty = Ty>>(
     t: &mut T,
     left: &TypeInferReturnState,
     right: &TypeInferReturnState,
 ) -> TypeInferReturnState {
     match (left, right) {
         (TypeInferReturnState::Pending, x) | (x, TypeInferReturnState::Pending) => x.clone(),
-        (TypeInferReturnState::Unknown, _) | (_, TypeInferReturnState::Unknown) => {
-            TypeInferReturnState::Unknown
-        }
+        (TypeInferReturnState::Unknown, _) | (_, TypeInferReturnState::Unknown) => TypeInferReturnState::Unknown,
         (TypeInferReturnState::NoReturn, x) | (x, TypeInferReturnState::NoReturn) => x.clone(),
         (TypeInferReturnState::Known(a), TypeInferReturnState::Known(b)) => {
             TypeInferReturnState::Known(t.refine_widen(a, b))
@@ -876,18 +772,16 @@ fn merge_activation_return_state<T: crate::types::Types<Ty = crate::types::Ty>>(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(super) fn direct_call_result_knowledge<
-    T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
->(
+pub(super) fn direct_call_result_knowledge<T: Types<Ty = Ty> + ClosureTypes>(
     t: &mut T,
     module: &Module,
-    recursive_fns: &std::collections::HashSet<FnId>,
+    recursive_fns: &HashSet<FnId>,
     caller_spec_key: &SpecKey,
-    ident: &crate::fz_ir::CallsiteIdent,
+    ident: &CallsiteIdent,
     callee: FnId,
-    arg_tys: &[crate::types::Ty],
+    arg_tys: &[Ty],
     activation_returns: &ActivationReturnFacts,
-    selected_edge: Option<&super::fn_types::CallEdgePlan>,
+    selected_edge: Option<&CallEdgePlan>,
 ) -> CallResultKnowledge {
     if let Some(slot0) = selected_external_call_return_slot0(
         t,
@@ -903,8 +797,7 @@ pub(super) fn direct_call_result_knowledge<
         };
     }
 
-    let callsite =
-        crate::fz_ir::CallsiteId::new(caller_spec_key.fn_id, ident, crate::fz_ir::EmitSlot::Direct);
+    let callsite = CallsiteId::new(caller_spec_key.fn_id, ident, EmitSlot::Direct);
     if let Some(slot0) = activation_returns.callsite_result_slot0(t, caller_spec_key, callsite) {
         return CallResultKnowledge { slot0 };
     }
@@ -912,7 +805,7 @@ pub(super) fn direct_call_result_knowledge<
     let target_fn = module.fn_by_id(callee);
     let n_params = target_fn.block(target_fn.entry).params.len();
     let target = selected_edge
-        .and_then(super::fn_types::CallEdgePlan::local_target)
+        .and_then(CallEdgePlan::local_target)
         .cloned()
         .unwrap_or_else(|| {
             fixed_point_spec_key_for_arity(
@@ -941,24 +834,18 @@ pub(super) fn direct_call_result_knowledge<
     CallResultKnowledge { slot0 }
 }
 
-pub(super) fn closure_call_result_knowledge<
-    T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
->(
+pub(super) fn closure_call_result_knowledge<T: Types<Ty = Ty> + ClosureTypes>(
     t: &mut T,
     module: &Module,
-    recursive_fns: &std::collections::HashSet<FnId>,
+    recursive_fns: &HashSet<FnId>,
     caller_spec_key: &SpecKey,
-    ident: &crate::fz_ir::CallsiteIdent,
-    arg_tys: &[crate::types::Ty],
+    ident: &CallsiteIdent,
+    arg_tys: &[Ty],
     activation_returns: &ActivationReturnFacts,
     selected_target: Option<&SpecKey>,
-    closure_ty: Option<&crate::types::Ty>,
+    closure_ty: Option<&Ty>,
 ) -> CallResultKnowledge {
-    let callsite = crate::fz_ir::CallsiteId::new(
-        caller_spec_key.fn_id,
-        ident,
-        crate::fz_ir::EmitSlot::ClosureCall,
-    );
+    let callsite = CallsiteId::new(caller_spec_key.fn_id, ident, EmitSlot::ClosureCall);
     if let Some(slot0) = activation_returns.callsite_result_slot0(t, caller_spec_key, callsite) {
         return CallResultKnowledge { slot0 };
     }
@@ -1000,22 +887,20 @@ pub(super) fn closure_call_result_knowledge<
         };
     }
     let closure_returns = activation_returns.closure_return_map(t);
-    let slot0 = crate::specs::resolve_closure_return(t, closure_ty, &closure_returns, arg_tys)
+    let slot0 = resolve_closure_return(t, closure_ty, &closure_returns, arg_tys)
         .map(ResultSlot0::Known)
         .unwrap_or(ResultSlot0::Pending);
     CallResultKnowledge { slot0 }
 }
 
-fn call_result_slot0<T: crate::types::Types<Ty = crate::types::Ty>>(
+fn call_result_slot0<T: Types<Ty = Ty>>(
     t: &mut T,
     declared_fact: Option<&DeclaredReturnFact>,
     activation: ResultSlot0,
 ) -> ResultSlot0 {
     let declared = declared_fact.and_then(|fact| fact.ty.clone());
     match (declared, activation) {
-        (Some(declared), ResultSlot0::Known(activation))
-            if t.is_subtype(&activation, &declared) =>
-        {
+        (Some(declared), ResultSlot0::Known(activation)) if t.is_subtype(&activation, &declared) => {
             ResultSlot0::Known(activation)
         }
         (Some(declared), _) => ResultSlot0::Known(declared),
@@ -1077,26 +962,18 @@ fn call_result_slot0<T: crate::types::Types<Ty = crate::types::Ty>>(
 ///   O(|specs| · (1 + H · |return-edges per spec|))
 /// which is finite. `VISIT_HARD_BOUND` below is a debug-only
 /// tripwire for invariant violation, NOT a release safety net.
-pub fn plan_module<
-    T: crate::types::Types<Ty = crate::types::Ty>
-        + crate::types::ClosureTypes
-        + crate::types::RenderTypes,
->(
+pub fn plan_module<T: Types<Ty = Ty> + ClosureTypes + RenderTypes>(
     t: &mut T,
     m: &Module,
-    tel: &dyn crate::telemetry::Telemetry,
+    tel: &dyn Telemetry,
 ) -> ModulePlan {
     plan_module_with_role(t, m, tel, "authoritative")
 }
 
-fn plan_module_with_role<
-    T: crate::types::Types<Ty = crate::types::Ty>
-        + crate::types::ClosureTypes
-        + crate::types::RenderTypes,
->(
+fn plan_module_with_role<T: Types<Ty = Ty> + ClosureTypes + RenderTypes>(
     t: &mut T,
     m: &Module,
-    tel: &dyn crate::telemetry::Telemetry,
+    tel: &dyn Telemetry,
     role: &'static str,
 ) -> ModulePlan {
     WORKLIST_POPS.with(|c| c.set(0));
@@ -1165,16 +1042,14 @@ fn plan_module_with_role<
                 type_kernel: "activation",
                 module_path: m.module_path().to_owned(),
                 activation_return_projection_gaps: activation_return_projection_gaps,
-                module: crate::telemetry::value::opaque(m),
-                module_plan: crate::telemetry::value::opaque(&mt),
+                module: opaque(m),
+                module_plan: opaque(&mt),
             },
         );
         for (spec_key, ft) in &mt.specs {
             let body = m.fn_by_id(spec_key.fn_id);
-            let (body_counts, body_callsites) =
-                crate::ir_planner::inventory::body_callsite_inventory(body);
-            let plan_call_edges =
-                crate::ir_planner::inventory::plan_call_edge_inventory(ft, body.id);
+            let (body_counts, body_callsites) = body_callsite_inventory(body);
+            let plan_call_edges = plan_call_edge_inventory(ft, body.id);
             tel.execute(
                 &["fz", "planner", "spec_pair_inventory"],
                 &crate::measurements! {
@@ -1245,7 +1120,7 @@ fn plan_module_with_role<
                     effective_return: mt
                         .effective_returns
                         .get(&fact.spec_key)
-                        .map(crate::concrete_types::ty_display)
+                        .map(ty_display)
                         .unwrap_or_else(|| "<missing>".to_string()),
                     covered_activations: fact
                         .covered_activations
@@ -1319,15 +1194,11 @@ fn plan_module_with_role<
 /// worklist compute, which the capabilities genuinely require. The analysis is
 /// interprocedural over the linked working module — the reason the pretyped
 /// frontend's shallow `_pre_types` cannot serve here.
-pub fn plan_callable_capabilities<
-    T: crate::types::Types<Ty = crate::types::Ty>
-        + crate::types::ClosureTypes
-        + crate::types::RenderTypes,
->(
+pub fn plan_callable_capabilities<T: Types<Ty = Ty> + ClosureTypes + RenderTypes>(
     t: &mut T,
     m: &Module,
 ) -> CapabilityPlan {
-    let null_tel = crate::telemetry::NullTelemetry;
+    let null_tel = NullTelemetry;
     let out = discover_specs(
         t,
         m,
@@ -1355,7 +1226,7 @@ pub fn plan_callable_capabilities<
 struct DiscoverOutput {
     specs: HashMap<SpecKey, SpecPlan>,
     spec_roles: HashMap<SpecKey, SpecReachabilityRole>,
-    effective_returns: HashMap<SpecKey, crate::types::Ty>,
+    effective_returns: HashMap<SpecKey, Ty>,
     fn_effects: FnEffects,
     activation_return_telemetry: ActivationReturnTelemetry,
     activation_return_projection_gaps: Vec<String>,
@@ -1364,26 +1235,22 @@ struct DiscoverOutput {
 
 #[derive(Clone, Copy)]
 struct PlannerTelemetry<'a> {
-    tel: &'a dyn crate::telemetry::Telemetry,
+    tel: &'a dyn Telemetry,
     role: &'static str,
 }
 
 /// Drive the worklist to discover every reachable executable spec from the
 /// module's entry seeds, then prune orphans and project activation returns over
 /// the reachable set. Shared by `plan_module` and `plan_callable_capabilities`.
-fn discover_specs<
-    T: crate::types::Types<Ty = crate::types::Ty>
-        + crate::types::ClosureTypes
-        + crate::types::RenderTypes,
->(
+fn discover_specs<T: Types<Ty = Ty> + ClosureTypes + RenderTypes>(
     t: &mut T,
     m: &Module,
     tel: PlannerTelemetry<'_>,
 ) -> DiscoverOutput {
     let call_graph = build_recursion_graph(m);
-    let mut sccs = super::scc::tarjan_scc(&call_graph);
+    let mut sccs = tarjan_scc(&call_graph);
     sccs.reverse();
-    let mut recursive_fns: std::collections::HashSet<FnId> = std::collections::HashSet::new();
+    let mut recursive_fns: HashSet<FnId> = HashSet::new();
     for scc in &sccs {
         if scc.len() > 1 {
             recursive_fns.extend(scc.iter().copied());
@@ -1395,17 +1262,16 @@ fn discover_specs<
     }
 
     let mut specs: HashMap<SpecKey, SpecPlan> = HashMap::new();
-    let mut effective_returns: HashMap<SpecKey, crate::types::Ty> = HashMap::new();
-    let mut complete_returns: SpecKeySet = std::collections::HashSet::new();
-    let mut incoming_param_callable_capabilities: IncomingParamCallableCapabilities =
-        HashMap::new();
+    let mut effective_returns: HashMap<SpecKey, Ty> = HashMap::new();
+    let mut complete_returns: SpecKeySet = HashSet::new();
+    let mut incoming_param_callable_capabilities: IncomingParamCallableCapabilities = HashMap::new();
     let mut return_readers: ReturnReaders = HashMap::new();
     let mut return_deps_by_caller: ReturnDepsByCaller = HashMap::new();
     let mut visit_count: HashMap<SpecKey, usize> = HashMap::new();
     let fn_effects = compute_fn_effects(m);
     let activation_returns = ActivationReturnFacts::from_entry_seeds(t, m, tel.tel);
 
-    let mut work: std::collections::VecDeque<SpecKey> = entry_seeds(t, m)
+    let mut work: VecDeque<SpecKey> = entry_seeds(t, m)
         .into_iter()
         .map(|(fid, key)| spec_key_for_fn_id(m, fid, key))
         .collect();
@@ -1432,37 +1298,22 @@ fn discover_specs<
     let reachable: SpecKeySet = reachable_specs_from_call_edges(t, m, &specs);
     let callable_entry_specs: SpecKeySet = reachable
         .iter()
-        .filter(|spec| {
-            specs.values().any(|plan| plan.callable_entry_targets.contains(*spec))
-        })
+        .filter(|spec| specs.values().any(|plan| plan.callable_entry_targets.contains(*spec)))
         .cloned()
         .collect();
     specs.retain(|k, _| reachable.contains(k));
-    complete_returns =
-        finalize_return_completeness(&specs, &return_deps_by_caller, &effective_returns);
-    activation_returns.project_effective_returns(
-        t,
-        &reachable,
-        &complete_returns,
-        &mut effective_returns,
-    );
+    complete_returns = finalize_return_completeness(&specs, &return_deps_by_caller, &effective_returns);
+    activation_returns.project_effective_returns(t, &reachable, &complete_returns, &mut effective_returns);
     let activation_projection_facts =
         activation_returns.projection_facts(t, &reachable, &effective_returns, &complete_returns);
-    let spec_roles = compute_spec_roles(
+    let spec_roles = compute_spec_roles(t, m, &reachable, &callable_entry_specs, &activation_projection_facts);
+    let activation_return_telemetry = activation_returns.telemetry(
         t,
-        m,
         &reachable,
         &callable_entry_specs,
-        &activation_projection_facts,
+        &effective_returns,
+        &complete_returns,
     );
-    let activation_return_telemetry =
-        activation_returns.telemetry(
-            t,
-            &reachable,
-            &callable_entry_specs,
-            &effective_returns,
-            &complete_returns,
-        );
     let activation_return_projection_gaps = activation_returns.projection_gap_keys(
         t,
         m,
@@ -1487,7 +1338,7 @@ fn discover_specs<
 fn finalize_return_completeness(
     specs: &HashMap<SpecKey, SpecPlan>,
     return_deps_by_caller: &ReturnDepsByCaller,
-    effective_returns: &HashMap<SpecKey, crate::types::Ty>,
+    effective_returns: &HashMap<SpecKey, Ty>,
 ) -> SpecKeySet {
     let nodes = specs.keys().cloned().collect::<Vec<_>>();
     let mut index_by_key = HashMap::new();
@@ -1510,7 +1361,7 @@ fn finalize_return_completeness(
     let mut order = Vec::with_capacity(nodes.len());
     let mut visited = vec![false; nodes.len()];
     fn dfs(idx: usize, edges: &[Vec<usize>], visited: &mut [bool], order: &mut Vec<usize>) {
-        if std::mem::replace(&mut visited[idx], true) {
+        if replace(&mut visited[idx], true) {
             return;
         }
         for &next in &edges[idx] {
@@ -1531,13 +1382,7 @@ fn finalize_return_completeness(
 
     let mut component = vec![usize::MAX; nodes.len()];
     let mut component_nodes: Vec<Vec<usize>> = Vec::new();
-    fn dfs_rev(
-        idx: usize,
-        comp_idx: usize,
-        reverse: &[Vec<usize>],
-        component: &mut [usize],
-        members: &mut Vec<usize>,
-    ) {
+    fn dfs_rev(idx: usize, comp_idx: usize, reverse: &[Vec<usize>], component: &mut [usize], members: &mut Vec<usize>) {
         if component[idx] != usize::MAX {
             return;
         }
@@ -1557,7 +1402,7 @@ fn finalize_return_completeness(
         component_nodes.push(members);
     }
 
-    let mut component_deps = vec![std::collections::BTreeSet::new(); component_nodes.len()];
+    let mut component_deps = vec![BTreeSet::new(); component_nodes.len()];
     for (src, deps) in edges.iter().enumerate() {
         let src_comp = component[src];
         for &dst in deps {
@@ -1579,9 +1424,7 @@ fn finalize_return_completeness(
             let has_returns = component_nodes[comp_idx]
                 .iter()
                 .all(|&idx| effective_returns.contains_key(&nodes[idx]));
-            let deps_complete = component_deps[comp_idx]
-                .iter()
-                .all(|dep| complete_components[*dep]);
+            let deps_complete = component_deps[comp_idx].iter().all(|dep| complete_components[*dep]);
             if has_returns && deps_complete {
                 complete_components[comp_idx] = true;
                 changed = true;
@@ -1598,9 +1441,7 @@ fn finalize_return_completeness(
         .collect()
 }
 
-fn reachable_specs_from_call_edges<
-    T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
->(
+fn reachable_specs_from_call_edges<T: Types<Ty = Ty> + ClosureTypes>(
     t: &mut T,
     m: &Module,
     specs: &HashMap<SpecKey, SpecPlan>,
@@ -1609,7 +1450,7 @@ fn reachable_specs_from_call_edges<
         .into_iter()
         .map(|(fid, key)| spec_key_for_fn_id(m, fid, key))
         .collect();
-    let mut bfs: std::collections::VecDeque<SpecKey> = reachable.iter().cloned().collect();
+    let mut bfs: VecDeque<SpecKey> = reachable.iter().cloned().collect();
     while let Some(spec) = bfs.pop_front() {
         let Some(plan) = specs.get(&spec) else {
             continue;
@@ -1626,14 +1467,10 @@ fn reachable_specs_from_call_edges<
 fn verify_closed_expectations(
     reachable: &SpecKeySet,
     specs: &HashMap<SpecKey, SpecPlan>,
-    effective_returns: &HashMap<SpecKey, crate::types::Ty>,
+    effective_returns: &HashMap<SpecKey, Ty>,
 ) {
     for spec in reachable {
-        assert!(
-            specs.contains_key(spec),
-            "reachable spec {:?} has no typed body",
-            spec
-        );
+        assert!(specs.contains_key(spec), "reachable spec {:?} has no typed body", spec);
         assert!(
             effective_returns.contains_key(spec),
             "reachable spec {:?} has no effective return",
@@ -1659,9 +1496,7 @@ fn verify_closed_expectations(
     }
 }
 
-fn compute_spec_roles<
-    T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
->(
+fn compute_spec_roles<T: Types<Ty = Ty> + ClosureTypes>(
     t: &mut T,
     m: &Module,
     reachable: &SpecKeySet,
@@ -1716,7 +1551,7 @@ fn compute_fn_effects(m: &Module) -> FnEffects {
         let mut local = EffectSummary::default();
         let mut callees = Vec::new();
         for b in &f.blocks {
-            for crate::fz_ir::Stmt::Let(_, prim) in &b.stmts {
+            for Stmt::Let(_, prim) in &b.stmts {
                 local.union_with(prim_effects(m, prim));
             }
             // A terminal `Halt` returns the process's final value to the
@@ -1731,9 +1566,7 @@ fn compute_fn_effects(m: &Module) -> FnEffects {
             }
             match &b.terminator {
                 Term::Call {
-                    callee,
-                    continuation,
-                    ..
+                    callee, continuation, ..
                 } => {
                     callees.push(*callee);
                     callees.push(continuation.fn_id);
@@ -1773,16 +1606,16 @@ fn compute_fn_effects(m: &Module) -> FnEffects {
 ///      every spec in `return_readers[spec]`. Final return authority is the
 ///      activation projection after pruning.
 #[allow(clippy::too_many_arguments)]
-fn process_worklist<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes>(
+fn process_worklist<T: Types<Ty = Ty> + ClosureTypes>(
     t: &mut T,
     m: &Module,
     tel: PlannerTelemetry<'_>,
     fn_effects: &FnEffects,
-    recursive_fns: &std::collections::HashSet<FnId>,
-    work: &mut std::collections::VecDeque<SpecKey>,
+    recursive_fns: &HashSet<FnId>,
+    work: &mut VecDeque<SpecKey>,
     in_work: &mut SpecKeySet,
     specs: &mut HashMap<SpecKey, SpecPlan>,
-    effective_returns: &mut HashMap<SpecKey, crate::types::Ty>,
+    effective_returns: &mut HashMap<SpecKey, Ty>,
     complete_returns: &mut SpecKeySet,
     activation_returns: &ActivationReturnFacts,
     incoming_param_callable_capabilities: &mut IncomingParamCallableCapabilities,
@@ -1797,14 +1630,7 @@ fn process_worklist<T: crate::types::Types<Ty = crate::types::Ty> + crate::types
         let Some(&j) = m.fn_idx.get(&spec_key.fn_id) else {
             continue;
         };
-        ensure_spec_typed(
-            t,
-            m,
-            j,
-            &spec_key,
-            incoming_param_callable_capabilities,
-            specs,
-        );
+        ensure_spec_typed(t, m, j, &spec_key, incoming_param_callable_capabilities, specs);
         check_visit_bound(&spec_key, visit_count);
         let result = discover_spec_outputs(
             t,
@@ -1845,7 +1671,7 @@ fn process_worklist<T: crate::types::Types<Ty = crate::types::Ty> + crate::types
     }
 }
 
-fn ensure_spec_typed<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes>(
+fn ensure_spec_typed<T: Types<Ty = Ty> + ClosureTypes>(
     t: &mut T,
     m: &Module,
     fn_idx: usize,
@@ -1854,12 +1680,7 @@ fn ensure_spec_typed<T: crate::types::Types<Ty = crate::types::Ty> + crate::type
     specs: &mut HashMap<SpecKey, SpecPlan>,
 ) {
     if specs.get(spec_key).is_some_and(|ft| {
-        entry_callable_capabilities_match(
-            m,
-            fn_idx,
-            ft,
-            incoming_param_callable_capabilities.get(spec_key),
-        )
+        entry_callable_capabilities_match(m, fn_idx, ft, incoming_param_callable_capabilities.get(spec_key))
     }) {
         return;
     }
@@ -1879,18 +1700,18 @@ fn ensure_spec_typed<T: crate::types::Types<Ty = crate::types::Ty> + crate::type
     specs.insert(spec_key.clone(), ft);
 }
 
-fn refine_known_closure_capture_capabilities(f: &crate::fz_ir::FnIr, ft: &mut SpecPlan) {
+fn refine_known_closure_capture_capabilities(f: &FnIr, ft: &mut SpecPlan) {
     for blk in &f.blocks {
         for stmt in &blk.stmts {
-            let crate::fz_ir::Stmt::Let(v, prim) = stmt;
-            let crate::fz_ir::Prim::MakeClosure(_, _, captured) = prim else {
+            let Stmt::Let(v, prim) = stmt;
+            let Prim::MakeClosure(_, _, captured) = prim else {
                 continue;
             };
             let capture_capabilities = captured
                 .iter()
                 .map(|cv| ft.callable_capabilities.get(cv).cloned())
                 .collect::<Vec<_>>();
-            if let Some(crate::ir_planner::fn_types::CallableCapability::KnownClosure {
+            if let Some(CallableCapability::KnownClosure {
                 capture_capabilities: existing,
                 ..
             }) = ft.callable_capabilities.get_mut(v)
@@ -1905,14 +1726,12 @@ fn entry_callable_capabilities_match(
     m: &Module,
     fn_idx: usize,
     ft: &SpecPlan,
-    incoming: Option<&Vec<Option<super::fn_types::CallableCapability>>>,
+    incoming: Option<&Vec<Option<CallableCapability>>>,
 ) -> bool {
     let entry = m.fns[fn_idx].entry;
     let entry_params = &m.fns[fn_idx].block(entry).params;
     for (slot, p) in entry_params.iter().enumerate() {
-        let expected = incoming
-            .and_then(|caps| caps.get(slot))
-            .and_then(|cap| cap.clone());
+        let expected = incoming.and_then(|caps| caps.get(slot)).and_then(|cap| cap.clone());
         let actual = ft.callable_capabilities.get(p).cloned();
         if actual != expected {
             return false;
@@ -1921,11 +1740,7 @@ fn entry_callable_capabilities_match(
     true
 }
 
-fn enqueue_capability_updates(
-    capability_updates: &[SpecKey],
-    work: &mut std::collections::VecDeque<SpecKey>,
-    in_work: &mut SpecKeySet,
-) {
+fn enqueue_capability_updates(capability_updates: &[SpecKey], work: &mut VecDeque<SpecKey>, in_work: &mut SpecKeySet) {
     for target in capability_updates {
         if in_work.insert(target.clone()) {
             work.push_back(target.clone());
@@ -1944,9 +1759,7 @@ fn check_visit_bound(spec_key: &SpecKey, visit_count: &mut HashMap<SpecKey, usiz
     );
 }
 
-fn discover_spec_outputs<
-    T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
->(
+fn discover_spec_outputs<T: Types<Ty = Ty> + ClosureTypes>(
     t: &mut T,
     m: &Module,
     fn_effects: &FnEffects,
@@ -1954,7 +1767,7 @@ fn discover_spec_outputs<
     spec_key: &SpecKey,
     specs: &HashMap<SpecKey, SpecPlan>,
     activation_returns: &ActivationReturnFacts,
-    recursive_fns: &std::collections::HashSet<FnId>,
+    recursive_fns: &HashSet<FnId>,
     incoming_param_callable_capabilities: &mut IncomingParamCallableCapabilities,
 ) -> WalkResult {
     let caller_ft = specs.get(spec_key).unwrap();
@@ -1977,8 +1790,8 @@ fn discover_spec_outputs<
 fn install_walk_result(
     specs: &mut HashMap<SpecKey, SpecPlan>,
     spec_key: &SpecKey,
-    call_edges: HashMap<crate::fz_ir::CallsiteId, super::fn_types::CallEdgePlan>,
-    callable_entry_targets: std::collections::HashSet<SpecKey>,
+    call_edges: HashMap<CallsiteId, CallEdgePlan>,
+    callable_entry_targets: HashSet<SpecKey>,
 ) {
     if let Some(ft) = specs.get_mut(spec_key) {
         ft.install_call_edges(call_edges);
@@ -2009,7 +1822,7 @@ fn local_successor_targets(spec: &SpecPlan) -> Vec<SpecKey> {
 fn enqueue_discovered_local_targets(
     spec_key: &SpecKey,
     specs: &HashMap<SpecKey, SpecPlan>,
-    work: &mut std::collections::VecDeque<SpecKey>,
+    work: &mut VecDeque<SpecKey>,
     in_work: &mut SpecKeySet,
 ) {
     let Some(plan) = specs.get(spec_key) else {
@@ -2023,21 +1836,19 @@ fn enqueue_discovered_local_targets(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn update_effective_return_and_enqueue_readers<
-    T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
->(
+fn update_effective_return_and_enqueue_readers<T: Types<Ty = Ty> + ClosureTypes>(
     t: &mut T,
     m: &Module,
     tel: PlannerTelemetry<'_>,
     spec_key: &SpecKey,
-    recursive_fns: &std::collections::HashSet<FnId>,
+    recursive_fns: &HashSet<FnId>,
     specs: &HashMap<SpecKey, SpecPlan>,
-    effective_returns: &mut HashMap<SpecKey, crate::types::Ty>,
+    effective_returns: &mut HashMap<SpecKey, Ty>,
     complete_returns: &mut SpecKeySet,
     activation_returns: &ActivationReturnFacts,
     return_readers: &mut ReturnReaders,
     return_deps_by_caller: &mut ReturnDepsByCaller,
-    work: &mut std::collections::VecDeque<SpecKey>,
+    work: &mut VecDeque<SpecKey>,
     in_work: &mut SpecKeySet,
     walk_return_reads: Vec<SpecKey>,
 ) {
@@ -2113,7 +1924,7 @@ fn sync_return_dependencies(
     specs: &HashMap<SpecKey, SpecPlan>,
     return_readers: &mut ReturnReaders,
     return_deps_by_caller: &mut ReturnDepsByCaller,
-    work: &mut std::collections::VecDeque<SpecKey>,
+    work: &mut VecDeque<SpecKey>,
     in_work: &mut SpecKeySet,
 ) {
     let new_reads: SpecKeySet = walk_return_reads.into_iter().chain(compute_reads).collect();
@@ -2145,7 +1956,7 @@ fn enqueue_return_readers(
     spec_key: &SpecKey,
     specs: &HashMap<SpecKey, SpecPlan>,
     return_readers: &ReturnReaders,
-    work: &mut std::collections::VecDeque<SpecKey>,
+    work: &mut VecDeque<SpecKey>,
     in_work: &mut SpecKeySet,
 ) {
     let Some(readers) = return_readers.get(spec_key).cloned() else {
@@ -2164,12 +1975,12 @@ fn emit_return_fixpoint_step(
     tel: PlannerTelemetry<'_>,
     spec_key: &SpecKey,
     specs: &HashMap<SpecKey, SpecPlan>,
-    effective_returns: &HashMap<SpecKey, crate::types::Ty>,
+    effective_returns: &HashMap<SpecKey, Ty>,
     complete_returns: &SpecKeySet,
     return_deps_by_caller: &ReturnDepsByCaller,
-    work: &std::collections::VecDeque<SpecKey>,
-    prev_ret: Option<&crate::types::Ty>,
-    new_ret: &crate::types::Ty,
+    work: &VecDeque<SpecKey>,
+    prev_ret: Option<&Ty>,
+    new_ret: &Ty,
     prev_complete: bool,
     complete: bool,
     ret_changed: bool,
@@ -2179,20 +1990,11 @@ fn emit_return_fixpoint_step(
 ) {
     let PlannerTelemetry { tel, role } = tel;
     let visit = WORKLIST_POPS.with(|c| c.get()) as u64;
-    let deps = return_deps_by_caller
-        .get(spec_key)
-        .cloned()
-        .unwrap_or_default();
+    let deps = return_deps_by_caller.get(spec_key).cloned().unwrap_or_default();
     let dep_keys: Vec<String> = deps.iter().map(|key| format!("{:?}", key)).collect();
     let missing_specs = deps.iter().filter(|key| !specs.contains_key(*key)).count() as u64;
-    let missing_returns = deps
-        .iter()
-        .filter(|key| !effective_returns.contains_key(*key))
-        .count() as u64;
-    let incomplete_deps = deps
-        .iter()
-        .filter(|key| !complete_returns.contains(*key))
-        .count() as u64;
+    let missing_returns = deps.iter().filter(|key| !effective_returns.contains_key(*key)).count() as u64;
+    let incomplete_deps = deps.iter().filter(|key| !complete_returns.contains(*key)).count() as u64;
     let body_name = m.fn_by_id(spec_key.fn_id).name.clone();
     tel.execute(
         &["fz", "planner", "return_fixpoint_step"],
@@ -2216,8 +2018,8 @@ fn emit_return_fixpoint_step(
             complete_changed: complete_changed,
             prev_complete: prev_complete,
             complete: complete,
-            prev_ret: prev_ret.map(crate::concrete_types::ty_display).unwrap_or_else(|| "<none>".to_string()),
-            new_ret: crate::concrete_types::ty_display(new_ret),
+            prev_ret: prev_ret.map(ty_display).unwrap_or_else(|| "<none>".to_string()),
+            new_ret: ty_display(new_ret),
             deps: dep_keys,
         },
     );
@@ -2235,19 +2037,17 @@ fn emit_return_fixpoint_step(
 /// return authority; it publishes activation-projected returns.
 #[derive(Clone)]
 struct ReturnContribution {
-    ty: crate::types::Ty,
+    ty: Ty,
     complete: bool,
 }
 
-fn compute_return_for_spec<
-    T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
->(
+fn compute_return_for_spec<T: Types<Ty = Ty> + ClosureTypes>(
     t: &mut T,
     module: &Module,
     spec_key: &SpecKey,
-    recursive_fns: &std::collections::HashSet<FnId>,
+    recursive_fns: &HashSet<FnId>,
     specs: &HashMap<SpecKey, SpecPlan>,
-    effective_returns: &HashMap<SpecKey, crate::types::Ty>,
+    effective_returns: &HashMap<SpecKey, Ty>,
     complete_returns: &SpecKeySet,
     activation_returns: &ActivationReturnFacts,
     reads: &mut Vec<SpecKey>,
@@ -2273,10 +2073,7 @@ fn compute_return_for_spec<
                 complete: true,
             }),
             Term::TailCall {
-                callee,
-                args,
-                ident,
-                ..
+                callee, args, ident, ..
             } => Some(direct_tail_return_contribution(
                 t,
                 module,
@@ -2291,11 +2088,7 @@ fn compute_return_for_spec<
                 *callee,
                 args,
             )),
-            Term::TailCallClosure {
-                ident,
-                closure,
-                args,
-            } => Some(tail_closure_return_contribution(
+            Term::TailCallClosure { ident, closure, args } => Some(tail_closure_return_contribution(
                 t,
                 module,
                 spec_key,
@@ -2312,10 +2105,7 @@ fn compute_return_for_spec<
             )),
             Term::Call { continuation, .. }
             | Term::CallClosure { continuation, .. }
-            | Term::Receive {
-                continuation,
-                ident: _,
-            } => Some(continuation_return_contribution(
+            | Term::Receive { continuation, ident: _ } => Some(continuation_return_contribution(
                 t,
                 module,
                 recursive_fns,
@@ -2328,17 +2118,15 @@ fn compute_return_for_spec<
                 b,
                 continuation,
             )),
-            Term::ReceiveMatched { clauses, after, .. } => {
-                Some(receive_matched_return_contribution(
-                    t,
-                    module,
-                    effective_returns,
-                    complete_returns,
-                    reads,
-                    clauses,
-                    after,
-                ))
-            }
+            Term::ReceiveMatched { clauses, after, .. } => Some(receive_matched_return_contribution(
+                t,
+                module,
+                effective_returns,
+                complete_returns,
+                reads,
+                clauses,
+                after,
+            )),
             Term::Halt(_) | Term::Goto(_, _) | Term::If { .. } => None,
         };
         if let Some(contribution) = contribution {
@@ -2350,36 +2138,27 @@ fn compute_return_for_spec<
 }
 
 #[allow(clippy::too_many_arguments)]
-fn direct_tail_return_contribution<
-    T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
->(
+fn direct_tail_return_contribution<T: Types<Ty = Ty> + ClosureTypes>(
     t: &mut T,
     module: &Module,
     spec_key: &SpecKey,
     ft: &SpecPlan,
-    effective_returns: &HashMap<SpecKey, crate::types::Ty>,
+    effective_returns: &HashMap<SpecKey, Ty>,
     complete_returns: &SpecKeySet,
     activation_returns: &ActivationReturnFacts,
     reads: &mut Vec<SpecKey>,
-    term_env: &HashMap<crate::fz_ir::Var, crate::types::Ty>,
-    ident: &crate::fz_ir::CallsiteIdent,
+    term_env: &HashMap<Var, Ty>,
+    ident: &CallsiteIdent,
     callee: FnId,
-    args: &[crate::fz_ir::Var],
+    args: &[Var],
 ) -> ReturnContribution {
-    let callsite =
-        crate::fz_ir::CallsiteId::new(spec_key.fn_id, ident, crate::fz_ir::EmitSlot::Direct);
+    let callsite = CallsiteId::new(spec_key.fn_id, ident, EmitSlot::Direct);
     if let Some(edge) = ft.call_edges.get(&callsite) {
         match &edge.target {
-            super::fn_types::CallEdgeTarget::Local(target) => {
-                return lookup_return_read(
-                    t,
-                    effective_returns,
-                    complete_returns,
-                    reads,
-                    target.clone(),
-                );
+            CallEdgeTarget::Local(target) => {
+                return lookup_return_read(t, effective_returns, complete_returns, reads, target.clone());
             }
-            super::fn_types::CallEdgeTarget::External { .. } => {
+            CallEdgeTarget::External { .. } => {
                 let arg_tys = arg_tys(t, term_env, args);
                 let ty = selected_external_call_return_slot0(
                     t,
@@ -2401,29 +2180,23 @@ fn direct_tail_return_contribution<
     )
 }
 
-fn tail_closure_return_contribution<
-    T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
->(
+fn tail_closure_return_contribution<T: Types<Ty = Ty> + ClosureTypes>(
     t: &mut T,
     module: &Module,
     spec_key: &SpecKey,
     ft: &SpecPlan,
-    effective_returns: &HashMap<SpecKey, crate::types::Ty>,
+    effective_returns: &HashMap<SpecKey, Ty>,
     complete_returns: &SpecKeySet,
     activation_returns: &ActivationReturnFacts,
     reads: &mut Vec<SpecKey>,
-    term_env: &HashMap<crate::fz_ir::Var, crate::types::Ty>,
-    recursive_fns: &std::collections::HashSet<FnId>,
-    ident: &crate::fz_ir::CallsiteIdent,
-    closure: crate::fz_ir::Var,
-    args: &[crate::fz_ir::Var],
+    term_env: &HashMap<Var, Ty>,
+    recursive_fns: &HashSet<FnId>,
+    ident: &CallsiteIdent,
+    closure: Var,
+    args: &[Var],
 ) -> ReturnContribution {
     let target = ft
-        .local_call_target(&crate::fz_ir::CallsiteId::new(
-            spec_key.fn_id,
-            ident,
-            crate::fz_ir::EmitSlot::ClosureCall,
-        ))
+        .local_call_target(&CallsiteId::new(spec_key.fn_id, ident, EmitSlot::ClosureCall))
         .cloned();
     if let Some(target) = target.clone() {
         return lookup_return_read(t, effective_returns, complete_returns, reads, target);
@@ -2451,28 +2224,22 @@ fn tail_closure_return_contribution<
 }
 
 #[allow(clippy::too_many_arguments)]
-fn continuation_return_contribution<
-    T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
->(
+fn continuation_return_contribution<T: Types<Ty = Ty> + ClosureTypes>(
     t: &mut T,
     module: &Module,
-    recursive_fns: &std::collections::HashSet<FnId>,
+    recursive_fns: &HashSet<FnId>,
     spec_key: &SpecKey,
     ft: &SpecPlan,
-    effective_returns: &HashMap<SpecKey, crate::types::Ty>,
+    effective_returns: &HashMap<SpecKey, Ty>,
     complete_returns: &SpecKeySet,
     activation_returns: &ActivationReturnFacts,
     reads: &mut Vec<SpecKey>,
     block: &Block,
-    continuation: &crate::fz_ir::Cont,
+    continuation: &Cont,
 ) -> ReturnContribution {
     let key = if let Some(key) = block.terminator.ident().and_then(|ident| {
-        ft.local_call_target(&crate::fz_ir::CallsiteId::new(
-            spec_key.fn_id,
-            ident,
-            crate::fz_ir::EmitSlot::Cont,
-        ))
-        .cloned()
+        ft.local_call_target(&CallsiteId::new(spec_key.fn_id, ident, EmitSlot::Cont))
+            .cloned()
     }) {
         key
     } else {
@@ -2491,88 +2258,61 @@ fn continuation_return_contribution<
                 complete: false,
             };
         };
-        activation_returns
-            .canonical_public_key(t, spec_key_for_fn_id(module, continuation.fn_id, cont_k))
+        activation_returns.canonical_public_key(t, spec_key_for_fn_id(module, continuation.fn_id, cont_k))
     };
     lookup_return_read(t, effective_returns, complete_returns, reads, key)
 }
 
-fn receive_matched_return_contribution<
-    T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
->(
+fn receive_matched_return_contribution<T: Types<Ty = Ty> + ClosureTypes>(
     t: &mut T,
     module: &Module,
-    effective_returns: &HashMap<SpecKey, crate::types::Ty>,
+    effective_returns: &HashMap<SpecKey, Ty>,
     complete_returns: &SpecKeySet,
     reads: &mut Vec<SpecKey>,
-    clauses: &[crate::fz_ir::ReceiveClause],
-    after: &Option<crate::fz_ir::ReceiveAfter>,
+    clauses: &[ReceiveClause],
+    after: &Option<ReceiveAfter>,
 ) -> ReturnContribution {
     let any = t.any();
     let mut joined = t.none();
     let mut complete = true;
-    for fid in clauses
-        .iter()
-        .map(|c| c.body)
-        .chain(after.iter().map(|a| a.body))
-    {
-        let dy = receive_outcome_return_contribution(
-            t,
-            module,
-            effective_returns,
-            complete_returns,
-            reads,
-            fid,
-            &any,
-        );
+    for fid in clauses.iter().map(|c| c.body).chain(after.iter().map(|a| a.body)) {
+        let dy = receive_outcome_return_contribution(t, module, effective_returns, complete_returns, reads, fid, &any);
         complete &= dy.complete;
         joined = t.union(joined, dy.ty);
     }
-    ReturnContribution {
-        ty: joined,
-        complete,
-    }
+    ReturnContribution { ty: joined, complete }
 }
 
-fn receive_outcome_return_contribution<
-    T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
->(
+fn receive_outcome_return_contribution<T: Types<Ty = Ty> + ClosureTypes>(
     t: &mut T,
     module: &Module,
-    effective_returns: &HashMap<SpecKey, crate::types::Ty>,
+    effective_returns: &HashMap<SpecKey, Ty>,
     complete_returns: &SpecKeySet,
     reads: &mut Vec<SpecKey>,
     fid: FnId,
-    any: &crate::types::Ty,
+    any: &Ty,
 ) -> ReturnContribution {
     let body_fn = module.fn_by_id(fid);
     let np = body_fn.block(body_fn.entry).params.len();
-    let key = crate::fz_ir::receive_outcome_spec_key(any, np);
+    let key = receive_outcome_spec_key(any, np);
     let lookup_key = spec_key_for_fn_id(module, fid, key);
     lookup_return_read(t, effective_returns, complete_returns, reads, lookup_key)
 }
 
-fn lookup_return_read<T: crate::types::Types<Ty = crate::types::Ty>>(
+fn lookup_return_read<T: Types<Ty = Ty>>(
     t: &mut T,
-    effective_returns: &HashMap<SpecKey, crate::types::Ty>,
+    effective_returns: &HashMap<SpecKey, Ty>,
     complete_returns: &SpecKeySet,
     reads: &mut Vec<SpecKey>,
     key: SpecKey,
 ) -> ReturnContribution {
-    let dy = effective_returns
-        .get(&key)
-        .cloned()
-        .unwrap_or_else(|| t.none());
+    let dy = effective_returns.get(&key).cloned().unwrap_or_else(|| t.none());
     let complete = complete_returns.contains(&key);
     reads.push(key);
     ReturnContribution { ty: dy, complete }
 }
 
-fn arg_tys<T: crate::types::Types<Ty = crate::types::Ty>>(
-    t: &mut T,
-    term_env: &HashMap<crate::fz_ir::Var, crate::types::Ty>,
-    args: &[crate::fz_ir::Var],
-) -> Vec<crate::types::Ty> {
+fn arg_tys<T: Types<Ty = Ty>>(t: &mut T, term_env: &HashMap<Var, Ty>, args: &[Var]) -> Vec<Ty> {
     args.iter()
         .map(|av| term_env.get(av).cloned().unwrap_or_else(|| t.any()))
         .collect()
@@ -2580,17 +2320,16 @@ fn arg_tys<T: crate::types::Types<Ty = crate::types::Ty>>(
 
 /// Reconstruct the cont's input-type key at this block's terminator using
 /// activation-projected return facts for slot 0.
-fn cont_key_for_spec<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes>(
+fn cont_key_for_spec<T: Types<Ty = Ty> + ClosureTypes>(
     t: &mut T,
     block: &Block,
-    cont: &crate::fz_ir::Cont,
+    cont: &Cont,
     ft: &SpecPlan,
     module: &Module,
-    recursive_fns: &std::collections::HashSet<FnId>,
+    recursive_fns: &HashSet<FnId>,
     caller_spec_key: &SpecKey,
     activation_returns: &ActivationReturnFacts,
-) -> Option<Vec<crate::types::Ty>> {
-    use crate::types::Ty;
+) -> Option<Vec<Ty>> {
     let Some(_) = module.fn_idx.get(&cont.fn_id) else {
         return Some(vec![]);
     };
@@ -2601,22 +2340,16 @@ fn cont_key_for_spec<T: crate::types::Types<Ty = crate::types::Ty> + crate::type
     let env = env_at_terminator(t, ft, block, module);
     let slot0: Ty = match &block.terminator {
         Term::Call { callee, args, .. } => {
-            let direct_cid = block.terminator.ident().map(|ident| {
-                crate::fz_ir::CallsiteId::new(
-                    caller_spec_key.fn_id,
-                    ident,
-                    crate::fz_ir::EmitSlot::Direct,
-                )
-            });
+            let direct_cid = block
+                .terminator
+                .ident()
+                .map(|ident| CallsiteId::new(caller_spec_key.fn_id, ident, EmitSlot::Direct));
             let arg_tys: Vec<Ty> = args
                 .iter()
                 .map(|av| env.get(av).cloned().unwrap_or_else(|| any_t.clone()))
                 .collect();
             let selected_edge = direct_cid.as_ref().and_then(|cid| ft.call_edges.get(cid));
-            let ident = block
-                .terminator
-                .ident()
-                .expect("call terminator should carry ident");
+            let ident = block.terminator.ident().expect("call terminator should carry ident");
             match direct_call_result_knowledge(
                 t,
                 module,
@@ -2643,11 +2376,8 @@ fn cont_key_for_spec<T: crate::types::Types<Ty = crate::types::Ty> + crate::type
                 .iter()
                 .map(|av| env.get(av).cloned().unwrap_or_else(|| any_t.clone()))
                 .collect();
-            let selected_target = ft.local_call_target(&crate::fz_ir::CallsiteId::new(
-                caller_spec_key.fn_id,
-                &ident,
-                crate::fz_ir::EmitSlot::ClosureCall,
-            ));
+            let selected_target =
+                ft.local_call_target(&CallsiteId::new(caller_spec_key.fn_id, &ident, EmitSlot::ClosureCall));
             match closure_call_result_knowledge(
                 t,
                 module,
@@ -2675,26 +2405,24 @@ fn cont_key_for_spec<T: crate::types::Types<Ty = crate::types::Ty> + crate::type
     ))
 }
 
-fn selected_external_call_return_slot0<
-    T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
->(
+fn selected_external_call_return_slot0<T: Types<Ty = Ty> + ClosureTypes>(
     t: &mut T,
     module: &Module,
     callee: FnId,
-    arg_tys: &[crate::types::Ty],
+    arg_tys: &[Ty],
     activation_returns: &ActivationReturnFacts,
     owner_module: &str,
-    selected_edge: Option<&super::fn_types::CallEdgePlan>,
-) -> Option<crate::types::Ty> {
+    selected_edge: Option<&CallEdgePlan>,
+) -> Option<Ty> {
     matches!(
         selected_edge.map(|edge| &edge.target),
-        Some(super::fn_types::CallEdgeTarget::External { .. })
+        Some(CallEdgeTarget::External { .. })
     )
     .then(|| {
         declared_call_return_fact(
             t,
             module,
-            &std::collections::HashSet::new(),
+            &HashSet::new(),
             callee,
             callee,
             arg_tys,
@@ -2707,42 +2435,26 @@ fn selected_external_call_return_slot0<
 }
 
 #[allow(clippy::too_many_arguments)]
-fn declared_call_return_fact<
-    T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
->(
+fn declared_call_return_fact<T: Types<Ty = Ty> + ClosureTypes>(
     t: &mut T,
     module: &Module,
-    recursive_fns: &std::collections::HashSet<FnId>,
+    recursive_fns: &HashSet<FnId>,
     caller: FnId,
     callee: FnId,
-    arg_tys: &[crate::types::Ty],
+    arg_tys: &[Ty],
     activation_returns: &ActivationReturnFacts,
     owner_module: &str,
 ) -> Option<DeclaredReturnFact> {
     let spec_set = module.declared_specs.get(&callee)?;
-    let application = crate::specs::apply_spec_set(
-        t,
-        spec_set,
-        arg_tys,
-        |t, query: crate::specs::CallbackReturnQuery<'_>| {
-            declared_callback_return_fact(
-                t,
-                module,
-                recursive_fns,
-                caller,
-                activation_returns,
-                query,
-            )
-        },
-    );
+    let application = apply_spec_set(t, spec_set, arg_tys, |t, query: CallbackReturnQuery<'_>| {
+        declared_callback_return_fact(t, module, recursive_fns, caller, activation_returns, query)
+    });
     let mut fact = match application {
-        crate::specs::SpecApplicationOutcome::Known(application) => DeclaredReturnFact {
+        SpecApplicationOutcome::Known(application) => DeclaredReturnFact {
             ty: (!t.has_vars(&application.result)).then_some(application.result),
         },
-        crate::specs::SpecApplicationOutcome::Underconstrained(_application) => {
-            DeclaredReturnFact { ty: None }
-        }
-        crate::specs::SpecApplicationOutcome::NoMatch => return None,
+        SpecApplicationOutcome::Underconstrained(_application) => DeclaredReturnFact { ty: None },
+        SpecApplicationOutcome::NoMatch => return None,
     };
     if let Some(ty) = fact.ty.take() {
         fact.ty = Some(t.mint_owned_resource_aliases(ty, owner_module, &module.opaque_inners));
@@ -2751,16 +2463,14 @@ fn declared_call_return_fact<
 }
 
 #[allow(clippy::too_many_arguments)]
-fn declared_callback_return_fact<
-    T: crate::types::Types<Ty = crate::types::Ty> + crate::types::ClosureTypes,
->(
+fn declared_callback_return_fact<T: Types<Ty = Ty> + ClosureTypes>(
     t: &mut T,
     module: &Module,
-    recursive_fns: &std::collections::HashSet<FnId>,
+    recursive_fns: &HashSet<FnId>,
     caller: FnId,
     activation_returns: &ActivationReturnFacts,
-    query: crate::specs::CallbackReturnQuery<'_>,
-) -> Option<crate::specs::CallbackReturnFact<SpecKey>> {
+    query: CallbackReturnQuery<'_>,
+) -> Option<CallbackReturnFact<SpecKey>> {
     let fn_id: FnId = query.target.into();
     let target_fn = module.fn_by_id(fn_id);
     let n_params = target_fn.block(target_fn.entry).params.len();
@@ -2778,18 +2488,18 @@ fn declared_callback_return_fact<
     );
 
     match activation_returns.result_slot0_for_key(t, &key) {
-        ResultSlot0::Known(ret) => Some(crate::specs::CallbackReturnFact::Known {
+        ResultSlot0::Known(ret) => Some(CallbackReturnFact::Known {
             result: ret,
             read: key,
             complete: true,
         }),
-        ResultSlot0::Pending => Some(crate::specs::CallbackReturnFact::Pending { read: key }),
+        ResultSlot0::Pending => Some(CallbackReturnFact::Pending { read: key }),
     }
 }
 
-fn callback_return_demand(demand: crate::specs::CallbackReturnDemand) -> ReturnDemand {
+fn callback_return_demand(demand: CallbackReturnDemand) -> ReturnDemand {
     match demand {
-        crate::specs::CallbackReturnDemand::Value => ReturnDemand::value(),
-        crate::specs::CallbackReturnDemand::TupleFields(arity) => ReturnDemand::tuple_fields(arity),
+        CallbackReturnDemand::Value => ReturnDemand::value(),
+        CallbackReturnDemand::TupleFields(arity) => ReturnDemand::tuple_fields(arity),
     }
 }

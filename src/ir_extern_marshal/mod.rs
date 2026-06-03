@@ -1,13 +1,9 @@
 use crate::diag::{Diagnostic, Span, codes};
-use crate::fz_ir::{ExternMarshal, ExternMarshalSite, ExternTy, Module, Prim, Stmt};
-use crate::ir_planner::ModulePlan;
+use crate::fz_ir::{ExternMarshal, ExternMarshalSite, ExternTy, FnId, Module, Prim, Stmt};
+use crate::ir_planner::{ModulePlan, SpecPlan};
 use crate::types::{RenderTypes, Ty, Types};
 
-pub fn resolve_module_types<T>(
-    t: &mut T,
-    module: &Module,
-    module_types: &mut ModulePlan,
-) -> Vec<Diagnostic>
+pub fn resolve_module_types<T>(t: &mut T, module: &Module, module_types: &mut ModulePlan) -> Vec<Diagnostic>
 where
     T: Types<Ty = Ty> + RenderTypes,
 {
@@ -16,11 +12,7 @@ where
     specs.sort_by_key(|key| {
         (
             key.fn_id.0,
-            module_types
-                .spec_precedence
-                .get(key)
-                .copied()
-                .unwrap_or(u32::MAX),
+            module_types.spec_precedence.get(key).copied().unwrap_or(u32::MAX),
         )
     });
 
@@ -34,12 +26,7 @@ where
     diagnostics
 }
 
-pub fn resolve_fn_types<T>(
-    t: &mut T,
-    module: &Module,
-    fn_id: crate::fz_ir::FnId,
-    fn_types: &mut crate::ir_planner::SpecPlan,
-) -> Vec<Diagnostic>
+pub fn resolve_fn_types<T>(t: &mut T, module: &Module, fn_id: FnId, fn_types: &mut SpecPlan) -> Vec<Diagnostic>
 where
     T: Types<Ty = Ty> + RenderTypes,
 {
@@ -74,8 +61,7 @@ where
                     ExternMarshal::Ascribed(ty) => {
                         fn_types.extern_marshals.insert(site, ty);
                         if let Some(arg_ty) = fn_types.vars.get(&arg.var)
-                            && let Some(diag) =
-                                check_explicit_ascription(t, decl.symbol.as_str(), ty, arg_ty, span)
+                            && let Some(diag) = check_explicit_ascription(t, decl.symbol.as_str(), ty, arg_ty, span)
                         {
                             diagnostics.push(diag);
                         }
@@ -116,12 +102,7 @@ where
     diagnostics
 }
 
-fn resolve_auto<T>(
-    t: &mut T,
-    symbol: &str,
-    arg_ty: &Ty,
-    span: Span,
-) -> Result<ExternTy, Box<Diagnostic>>
+fn resolve_auto<T>(t: &mut T, symbol: &str, arg_ty: &Ty, span: Span) -> Result<ExternTy, Box<Diagnostic>>
 where
     T: Types<Ty = Ty> + RenderTypes,
 {
@@ -176,10 +157,7 @@ where
             return Some(marshal_diag(
                 symbol,
                 span,
-                format!(
-                    "{:?} is not a valid extern argument marshal class",
-                    ascribed
-                ),
+                format!("{:?} is not a valid extern argument marshal class", ascribed),
                 "use `integer`, `float`, `any`, `binary`, or `cstring` for extern arguments",
             ));
         }
@@ -206,12 +184,7 @@ where
     }
 }
 
-fn marshal_diag(
-    symbol: &str,
-    span: Span,
-    message: impl Into<String>,
-    help: impl Into<String>,
-) -> Diagnostic {
+fn marshal_diag(symbol: &str, span: Span, message: impl Into<String>, help: impl Into<String>) -> Diagnostic {
     Diagnostic::error(codes::TYPE_EXTERN_MARSHAL, message, span)
         .with_label(format!("variadic extern `{}` argument", symbol))
         .with_help(help)
@@ -220,21 +193,22 @@ fn marshal_diag(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::frontend::{FrontendOk, compile_source};
     use crate::fz_ir::{ExternMarshal, Prim};
 
-    fn compile(src: &str) -> crate::frontend::FrontendOk {
-        crate::frontend::compile_source(src.to_string(), "test.fz".to_string())
+    fn compile(src: &str) -> FrontendOk {
+        compile_source(src.to_string(), "test.fz".to_string())
             .unwrap_or_else(|err| panic!("frontend failed: {:?}", err.diagnostics.as_slice()))
     }
 
-    fn main_extern_arg(ok: &crate::frontend::FrontendOk, arg_idx: usize) -> ExternTy {
+    fn main_extern_arg(ok: &FrontendOk, arg_idx: usize) -> ExternTy {
         let main = ok.module.fn_by_name("main").expect("main missing");
         let (block_id, stmt_idx, args) = main
             .blocks
             .iter()
             .flat_map(|block| {
                 block.stmts.iter().enumerate().filter_map(move |(i, stmt)| {
-                    let crate::fz_ir::Stmt::Let(_, Prim::Extern(_, _, args)) = stmt else {
+                    let Stmt::Let(_, Prim::Extern(_, _, args)) = stmt else {
                         return None;
                     };
                     Some((block.id, i, args))
@@ -246,11 +220,8 @@ mod tests {
             args[arg_idx].marshal,
             ExternMarshal::Auto | ExternMarshal::Ascribed(_)
         ));
-        let spec = ok
-            .module_plan
-            .any_spec_for(main.id)
-            .expect("main spec missing");
-        spec.extern_marshals[&crate::fz_ir::ExternMarshalSite {
+        let spec = ok.module_plan.any_spec_for(main.id).expect("main spec missing");
+        spec.extern_marshals[&ExternMarshalSite {
             block: block_id,
             stmt_idx,
             arg_idx,
@@ -293,7 +264,7 @@ fn main() do libc::printf("%s", "hello") end
             .diagnostics
             .as_slice()
             .iter()
-            .find(|d| d.code == crate::diag::codes::TYPE_EXTERN_MARSHAL)
+            .find(|d| d.code == codes::TYPE_EXTERN_MARSHAL)
             .expect("marshal diagnostic missing");
         assert!(d.message.contains("binary values need an explicit"));
         assert!(d.helps.iter().any(|h| h.contains(":: cstring")));
@@ -323,7 +294,7 @@ fn main() do libc::printf("%p", [1, 2]) end
             .diagnostics
             .as_slice()
             .iter()
-            .find(|d| d.code == crate::diag::codes::TYPE_EXTERN_MARSHAL)
+            .find(|d| d.code == codes::TYPE_EXTERN_MARSHAL)
             .expect("marshal diagnostic missing");
         assert!(d.message.contains("no default C variadic marshal class"));
     }

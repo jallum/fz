@@ -1,4 +1,7 @@
 use super::*;
+use crate::frontend::protocols::PROTOCOL_ELEM_VAR;
+use crate::types::TypeVarId;
+use std::mem::discriminant;
 
 /// Parse one type expression from `tokens` starting at index 0.
 /// Returns the lowered type and the number of tokens consumed.
@@ -6,7 +9,7 @@ use super::*;
 /// `env` resolves named references (e.g. `id` → declared alias).
 /// Names not in `env` and not one of the built-in scalars produce an
 /// unknown-name error.
-pub fn parse_type_expr<T: crate::types::Types<Ty = crate::types::Ty>>(
+pub fn parse_type_expr<T: Types<Ty = Ty>>(
     t: &mut T,
     tokens: &[Token],
     env: &ModuleTypeEnv,
@@ -14,11 +17,11 @@ pub fn parse_type_expr<T: crate::types::Types<Ty = crate::types::Ty>>(
     parse_type_expr_with_stack(t, tokens, env, None, Vec::new())
 }
 
-pub fn parse_struct_record_type<T: crate::types::Types<Ty = crate::types::Ty>>(
+pub fn parse_struct_record_type<T: Types<Ty = Ty>>(
     t: &mut T,
     tokens: &[Token],
     env: &ModuleTypeEnv,
-) -> Result<(StructRecordType, crate::types::Ty, usize), TypeExprError> {
+) -> Result<(StructRecordType, Ty, usize), TypeExprError> {
     let mut p = TypeExprParser {
         t,
         tokens,
@@ -30,11 +33,11 @@ pub fn parse_struct_record_type<T: crate::types::Types<Ty = crate::types::Ty>>(
     p.parse_struct_record()
 }
 
-pub(super) fn parse_type_expr_with_stack<T: crate::types::Types<Ty = crate::types::Ty>>(
+pub(super) fn parse_type_expr_with_stack<T: Types<Ty = Ty>>(
     t: &mut T,
     tokens: &[Token],
     env: &ModuleTypeEnv,
-    vars: Option<&mut std::collections::HashMap<String, crate::types::TypeVarId>>,
+    vars: Option<&mut HashMap<String, TypeVarId>>,
     alias_stack: Vec<(String, usize)>,
 ) -> Result<(T::Ty, usize), TypeExprError> {
     let mut p = TypeExprParser {
@@ -49,11 +52,11 @@ pub(super) fn parse_type_expr_with_stack<T: crate::types::Types<Ty = crate::type
     Ok((ty, p.pos))
 }
 
-pub fn parse_type_expr_with_vars<T: crate::types::Types<Ty = crate::types::Ty>>(
+pub fn parse_type_expr_with_vars<T: Types<Ty = Ty>>(
     t: &mut T,
     tokens: &[Token],
     env: &ModuleTypeEnv,
-    vars: &mut std::collections::HashMap<String, crate::types::TypeVarId>,
+    vars: &mut HashMap<String, TypeVarId>,
 ) -> Result<(T::Ty, usize), TypeExprError> {
     parse_type_expr_with_stack(t, tokens, env, Some(vars), Vec::new())
 }
@@ -61,7 +64,7 @@ pub fn parse_type_expr_with_vars<T: crate::types::Types<Ty = crate::types::Ty>>(
 pub fn parse_type_shape_with_vars(
     tokens: &[Token],
     env: &ModuleTypeEnv,
-    vars: &mut std::collections::HashMap<String, crate::types::TypeVarId>,
+    vars: &mut HashMap<String, TypeVarId>,
 ) -> Result<(ResolvedTypeShape, usize), TypeExprError> {
     let mut p = TypeShapeParser {
         tokens,
@@ -73,19 +76,16 @@ pub fn parse_type_shape_with_vars(
     Ok((shape, p.pos))
 }
 
-pub fn struct_record_nominal_ty<T: crate::types::Types<Ty = crate::types::Ty>>(
-    t: &mut T,
-    module: &crate::modules::identity::ModuleName,
-) -> T::Ty {
+pub fn struct_record_nominal_ty<T: Types<Ty = Ty>>(t: &mut T, module: &ModuleName) -> T::Ty {
     t.opaque_of(&format!("impl-target::{}", module.last_segment()))
 }
 
-struct TypeExprParser<'a, T: crate::types::Types<Ty = crate::types::Ty>> {
+struct TypeExprParser<'a, T: Types<Ty = Ty>> {
     t: &'a mut T,
     tokens: &'a [Token],
     pos: usize,
     env: &'a ModuleTypeEnv,
-    vars: Option<&'a mut std::collections::HashMap<String, crate::types::TypeVarId>>,
+    vars: Option<&'a mut HashMap<String, TypeVarId>>,
     alias_stack: Vec<(String, usize)>,
 }
 
@@ -93,15 +93,12 @@ struct TypeShapeParser<'a> {
     tokens: &'a [Token],
     pos: usize,
     env: &'a ModuleTypeEnv,
-    vars: &'a mut std::collections::HashMap<String, crate::types::TypeVarId>,
+    vars: &'a mut HashMap<String, TypeVarId>,
 }
 
-impl<'a, T: crate::types::Types<Ty = crate::types::Ty>> TypeExprParser<'a, T> {
+impl<'a, T: Types<Ty = Ty>> TypeExprParser<'a, T> {
     fn peek(&self) -> &Tok {
-        self.tokens
-            .get(self.pos)
-            .map(|t| &t.tok)
-            .unwrap_or(&Tok::Eof)
+        self.tokens.get(self.pos).map(|t| &t.tok).unwrap_or(&Tok::Eof)
     }
 
     fn peek_span(&self) -> Span {
@@ -124,7 +121,7 @@ impl<'a, T: crate::types::Types<Ty = crate::types::Ty>> TypeExprParser<'a, T> {
     }
 
     fn expect(&mut self, want: &Tok, ctx: &str) -> Result<(), TypeExprError> {
-        if std::mem::discriminant(self.peek()) == std::mem::discriminant(want) {
+        if discriminant(self.peek()) == discriminant(want) {
             self.bump();
             Ok(())
         } else {
@@ -223,15 +220,7 @@ impl<'a, T: crate::types::Types<Ty = crate::types::Ty>> TypeExprParser<'a, T> {
         }
         self.expect(&Tok::RBrace, "`}` after struct record fields")?;
         let ty = struct_record_nominal_ty(self.t, &module);
-        Ok((
-            StructRecordType {
-                module,
-                span,
-                fields,
-            },
-            ty,
-            self.pos,
-        ))
+        Ok((StructRecordType { module, span, fields }, ty, self.pos))
     }
 
     fn parse_record_field_name(&mut self) -> Result<String, TypeExprError> {
@@ -249,10 +238,7 @@ impl<'a, T: crate::types::Types<Ty = crate::types::Ty>> TypeExprParser<'a, T> {
         }
     }
 
-    fn parse_module_name(
-        &mut self,
-        ctx: &str,
-    ) -> Result<crate::modules::identity::ModuleName, TypeExprError> {
+    fn parse_module_name(&mut self, ctx: &str) -> Result<ModuleName, TypeExprError> {
         let mut segments = match self.peek().clone() {
             Tok::Upper(name) => {
                 self.bump();
@@ -268,15 +254,11 @@ impl<'a, T: crate::types::Types<Ty = crate::types::Ty>> TypeExprParser<'a, T> {
                     segments.push(segment);
                 }
                 other => {
-                    return Err(
-                        self.err(format!("expected module segment after `.`, got {}", other))
-                    );
+                    return Err(self.err(format!("expected module segment after `.`, got {}", other)));
                 }
             }
         }
-        Ok(crate::modules::identity::ModuleName::from_segments(
-            segments,
-        ))
+        Ok(ModuleName::from_segments(segments))
     }
 
     fn parse_named_type(&mut self, mut name: String) -> Result<T::Ty, TypeExprError> {
@@ -289,10 +271,7 @@ impl<'a, T: crate::types::Types<Ty = crate::types::Ty>> TypeExprParser<'a, T> {
                     name.push_str(&segment);
                 }
                 other => {
-                    return Err(self.err(format!(
-                        "expected type-name segment after `.`, got {}",
-                        other
-                    )));
+                    return Err(self.err(format!("expected type-name segment after `.`, got {}", other)));
                 }
             }
         }
@@ -319,10 +298,7 @@ impl<'a, T: crate::types::Types<Ty = crate::types::Ty>> TypeExprParser<'a, T> {
                 (self.env.get_alias(&name, args.len()).cloned(), args.first())
                 && !self.t.has_vars(elem)
             {
-                let sigma = std::collections::HashMap::from([(
-                    crate::frontend::protocols::PROTOCOL_ELEM_VAR,
-                    elem.clone(),
-                )]);
+                let sigma = HashMap::from([(PROTOCOL_ELEM_VAR, elem.clone())]);
                 return Ok(self.t.instantiate(&template, &sigma));
             }
         }
@@ -375,15 +351,8 @@ impl<'a, T: crate::types::Types<Ty = crate::types::Ty>> TypeExprParser<'a, T> {
                 // A concrete element refines; an element mentioning a free
                 // variable carries no refinement, so `PROTOCOL_ELEM_VAR` falls
                 // back to `any` (the bare domain).
-                let elem = if self.t.has_vars(&elem) {
-                    self.t.any()
-                } else {
-                    elem
-                };
-                let sigma = std::collections::HashMap::from([(
-                    crate::frontend::protocols::PROTOCOL_ELEM_VAR,
-                    elem,
-                )]);
+                let elem = if self.t.has_vars(&elem) { self.t.any() } else { elem };
+                let sigma = HashMap::from([(PROTOCOL_ELEM_VAR, elem)]);
                 return Ok(self.t.instantiate(&template, &sigma));
             }
             TypeAlias::Parameterized(alias) => alias,
@@ -402,8 +371,7 @@ impl<'a, T: crate::types::Types<Ty = crate::types::Ty>> TypeExprParser<'a, T> {
         }
         let mut stack = self.alias_stack.clone();
         stack.push(key);
-        let (ty, consumed) =
-            parse_type_expr_with_stack(self.t, &alias.body_tokens.0, &env, None, stack)?;
+        let (ty, consumed) = parse_type_expr_with_stack(self.t, &alias.body_tokens.0, &env, None, stack)?;
         if consumed != alias.body_tokens.0.len() {
             return Err(TypeExprError {
                 msg: "unexpected trailing tokens in type alias body".to_string(),
@@ -495,7 +463,7 @@ impl<'a, T: crate::types::Types<Ty = crate::types::Ty>> TypeExprParser<'a, T> {
                     if let Some(vars) = self.vars.as_deref_mut()
                         && name.len() == 1
                     {
-                        let next = crate::types::TypeVarId(vars.len() as u32);
+                        let next = TypeVarId(vars.len() as u32);
                         let id = *vars.entry(name.to_string()).or_insert(next);
                         Ok(self.t.type_var(id))
                     } else {
@@ -512,10 +480,7 @@ impl<'a, T: crate::types::Types<Ty = crate::types::Ty>> TypeExprParser<'a, T> {
 
 impl TypeShapeParser<'_> {
     fn peek(&self) -> &Tok {
-        self.tokens
-            .get(self.pos)
-            .map(|t| &t.tok)
-            .unwrap_or(&Tok::Eof)
+        self.tokens.get(self.pos).map(|t| &t.tok).unwrap_or(&Tok::Eof)
     }
 
     fn peek_span(&self) -> Span {
@@ -538,7 +503,7 @@ impl TypeShapeParser<'_> {
     }
 
     fn expect(&mut self, want: &Tok, ctx: &str) -> Result<(), TypeExprError> {
-        if std::mem::discriminant(self.peek()) == std::mem::discriminant(want) {
+        if discriminant(self.peek()) == discriminant(want) {
             self.bump();
             Ok(())
         } else {
@@ -637,17 +602,11 @@ impl TypeShapeParser<'_> {
                 self.bump();
                 Ok(name)
             }
-            other => Err(self.err(format!(
-                "expected field name in struct record type, got {}",
-                other
-            ))),
+            other => Err(self.err(format!("expected field name in struct record type, got {}", other))),
         }
     }
 
-    fn parse_module_name(
-        &mut self,
-        ctx: &str,
-    ) -> Result<crate::modules::identity::ModuleName, TypeExprError> {
+    fn parse_module_name(&mut self, ctx: &str) -> Result<ModuleName, TypeExprError> {
         let mut segments = match self.peek().clone() {
             Tok::Upper(name) => {
                 self.bump();
@@ -663,15 +622,11 @@ impl TypeShapeParser<'_> {
                     segments.push(segment);
                 }
                 other => {
-                    return Err(
-                        self.err(format!("expected module segment after `.`, got {}", other))
-                    );
+                    return Err(self.err(format!("expected module segment after `.`, got {}", other)));
                 }
             }
         }
-        Ok(crate::modules::identity::ModuleName::from_segments(
-            segments,
-        ))
+        Ok(ModuleName::from_segments(segments))
     }
 
     fn parse_named_type(&mut self, mut name: String) -> Result<ResolvedTypeShape, TypeExprError> {
@@ -684,10 +639,7 @@ impl TypeShapeParser<'_> {
                     name.push_str(&segment);
                 }
                 other => {
-                    return Err(self.err(format!(
-                        "expected type-name segment after `.`, got {}",
-                        other
-                    )));
+                    return Err(self.err(format!("expected type-name segment after `.`, got {}", other)));
                 }
             }
         }
@@ -719,10 +671,7 @@ impl TypeShapeParser<'_> {
         Ok(ResolvedTypeShape::Resource(Box::new(inner)))
     }
 
-    fn parse_alias_application(
-        &mut self,
-        mut name: String,
-    ) -> Result<ResolvedTypeShape, TypeExprError> {
+    fn parse_alias_application(&mut self, mut name: String) -> Result<ResolvedTypeShape, TypeExprError> {
         while matches!(self.peek(), Tok::Dot) {
             self.bump();
             match self.peek().clone() {
@@ -732,10 +681,7 @@ impl TypeShapeParser<'_> {
                     name.push_str(&segment);
                 }
                 other => {
-                    return Err(self.err(format!(
-                        "expected type-name segment after `.`, got {}",
-                        other
-                    )));
+                    return Err(self.err(format!("expected type-name segment after `.`, got {}", other)));
                 }
             }
         }
@@ -784,9 +730,7 @@ impl TypeShapeParser<'_> {
         Ok(ResolvedTypeShape::Tuple(elems))
     }
 
-    fn parse_parenthesized_type_or_arrow_type(
-        &mut self,
-    ) -> Result<ResolvedTypeShape, TypeExprError> {
+    fn parse_parenthesized_type_or_arrow_type(&mut self) -> Result<ResolvedTypeShape, TypeExprError> {
         self.expect(&Tok::LParen, "`(`")?;
         let mut elems = Vec::new();
         if !matches!(self.peek(), Tok::RParen) {
@@ -834,7 +778,7 @@ impl TypeShapeParser<'_> {
                     args: Vec::new(),
                 }),
                 None if name.len() == 1 => {
-                    let next = crate::types::TypeVarId(self.vars.len() as u32);
+                    let next = TypeVarId(self.vars.len() as u32);
                     let id = *self.vars.entry(name.to_string()).or_insert(next);
                     Ok(ResolvedTypeShape::Var(id))
                 }
