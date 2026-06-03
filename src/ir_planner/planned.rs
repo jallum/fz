@@ -3,7 +3,7 @@ use crate::fz_ir::{FnId, FnIr, Module, Prim, SpecId, Stmt};
 use crate::ir_dce::collect_used;
 use crate::ir_fold::fold_planned_body;
 use crate::ir_planner::fn_types::{ModulePlan, SpecKey, SpecPlan};
-use crate::ir_planner::reachable_specs;
+use crate::ir_planner::reachable::reachable_spec_ids;
 use crate::telemetry::Telemetry;
 use crate::types::{ClosureTypes, Ty, Types};
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -160,7 +160,7 @@ where
             _ => body_index_by_spec_slot.push(None),
         }
     }
-    let reachable_specs = compute_reachable_specs(t, module, module_plan, &spec_registry);
+    let reachable_specs = reachable_spec_ids(t, &spec_registry, module_plan);
     let callable_entries = build_callable_entries(&bodies, &spec_registry, &body_index_by_spec_slot, &reachable_specs);
     let make_closure_callable_gaps =
         make_closure_callable_gap_issues(module, &bodies, &spec_registry, &callable_entries, &reachable_specs);
@@ -249,18 +249,6 @@ fn make_closure_callable_gap_issues(
         }
     }
     gaps
-}
-
-fn compute_reachable_specs<T>(
-    t: &mut T,
-    module: &Module,
-    module_plan: &ModulePlan,
-    spec_registry: &SpecRegistry,
-) -> HashSet<u32>
-where
-    T: Types<Ty = Ty> + ClosureTypes,
-{
-    reachable_specs(t, module, spec_registry, module_plan, [])
 }
 
 fn display_spec_ids(reachable_specs: &HashSet<u32>) -> Vec<String> {

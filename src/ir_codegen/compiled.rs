@@ -487,6 +487,7 @@ fn merge_module_plan(out: &mut Option<ModulePlan>, incoming: ModulePlan) {
     match out {
         Some(existing) => {
             existing.specs.extend(incoming.specs);
+            existing.reachable_specs.extend(incoming.reachable_specs);
             existing.spec_roles.extend(incoming.spec_roles);
             existing.effective_returns.extend(incoming.effective_returns);
             existing.any_key_specs.extend(incoming.any_key_specs);
@@ -504,6 +505,11 @@ fn remap_module_plan(plan: &ModulePlan, fn_map: &BTreeMap<FnId, FnId>) -> Module
             .specs
             .iter()
             .map(|(key, spec)| (remap_spec_key(key, fn_map), remap_spec_plan(spec, fn_map)))
+            .collect(),
+        reachable_specs: plan
+            .reachable_specs
+            .iter()
+            .map(|key| remap_spec_key(key, fn_map))
             .collect(),
         spec_roles: plan
             .spec_roles

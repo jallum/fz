@@ -1,10 +1,10 @@
 use super::closures::resolve_closure_return;
-use super::fn_types::{ModulePlan, SpecKey, SpecPlan, normalize_result_correspondence_key};
+use super::fn_types::{ModulePlan, SpecPlan, normalize_result_correspondence_key};
 use super::type_fn::type_stmts_into_env;
 use crate::frontend::spec_registry::SpecRegistry;
-use crate::fz_ir::{Block, CallsiteId, CallsiteIdent, Cont, EmitSlot, FnId, FnIr, Module, Prim, Stmt, Term, Var};
+use crate::fz_ir::{Block, Cont, FnId, Module, Term, Var};
 use crate::specs::{SpecApplicationOutcome, apply_spec_set};
-use crate::types::{ClosureTypes, Ty, Types, key_slots_from_tys};
+use crate::types::{ClosureTypes, Ty, Types};
 use std::collections::{HashMap, HashSet};
 
 // Continuation input-type key helpers.
@@ -99,160 +99,26 @@ fn declared_call_return<T: Types<Ty = Ty> + ClosureTypes>(
     }
 }
 
-/// Compute the set of SpecIds reachable at runtime from `main`.
+/// Resolve the planner's closed reachable `SpecKey` set to stable `SpecId`s.
 ///
-/// `PlannedProgram` consults this while materializing the codegen-facing plan.
-/// Codegen receives the finished reachable set from `PlannedProgram` and does
-/// not rediscover semantic reachability.
-///
-/// Algorithm:
-///   - Seed with main's spec id and every extra reachable seed supplied by
-///     materialization.
-///   - BFS: for each reached spec, walk the surviving callsites in its live
-///     body and follow the already-solved local call-edge targets recorded on
-///     the `SpecPlan`. Use `SpecRegistry::resolve` subsumption so a reached
-///     spec id names the same registered specialization later consumed by
-///     materialization and codegen.
-pub fn reachable_specs<T: Types<Ty = Ty> + ClosureTypes>(
+/// `ModulePlan` is already the semantic reachability authority. Materialization
+/// and codegen consume those exact specs through the `SpecRegistry`; they do
+/// not replay the call graph.
+pub fn reachable_spec_ids<T: Types<Ty = Ty> + ClosureTypes>(
     t: &mut T,
-    module: &Module,
     spec_registry: &SpecRegistry,
     module_plan: &ModulePlan,
-    extra_seeds: impl IntoIterator<Item = u32>,
 ) -> HashSet<u32> {
-    let spec_keys: Vec<SpecKey> = spec_registry.iter().map(|(_, key)| key.clone()).collect();
-    let mut ctx = ReachableSpecTraversal {
-        t,
-        module,
-        spec_registry,
-        module_plan,
-        spec_keys,
-    };
-    let mut reached = HashSet::new();
-    let mut worklist = ctx.seed_specs(extra_seeds);
-    while let Some(sid) = worklist.pop() {
-        if !reached.insert(sid) {
-            continue;
-        }
-        ctx.enqueue_reachable_successors(sid, &mut worklist);
-    }
-    reached
-}
-
-struct ReachableSpecTraversal<'a, T>
-where
-    T: Types<Ty = Ty> + ClosureTypes,
-{
-    t: &'a mut T,
-    module: &'a Module,
-    spec_registry: &'a SpecRegistry,
-    module_plan: &'a ModulePlan,
-    spec_keys: Vec<SpecKey>,
-}
-
-impl<T> ReachableSpecTraversal<'_, T>
-where
-    T: Types<Ty = Ty> + ClosureTypes,
-{
-    fn seed_specs(&mut self, extra_seeds: impl IntoIterator<Item = u32>) -> Vec<u32> {
-        let mut worklist = Vec::new();
-        self.seed_main_spec(&mut worklist);
-        worklist.extend(extra_seeds);
-        worklist
-    }
-
-    fn seed_main_spec(&mut self, worklist: &mut Vec<u32>) {
-        let Some(main_fn) = self.module.fns.iter().find(|f| f.name == "main") else {
-            return;
-        };
-        let n_params = main_fn.block(main_fn.entry).params.len();
-        let any = self.t.any();
-        let key = self.t.repeat(any, n_params);
-        self.enqueue_value_key(main_fn.id, key, worklist);
-    }
-
-    fn enqueue_reachable_successors(&mut self, sid: u32, worklist: &mut Vec<u32>) {
-        let Some(key) = self.spec_keys.get(sid as usize).cloned() else {
-            return;
-        };
-        let Some(ft) = self.module_plan.specs.get(&key).cloned() else {
-            return;
-        };
-        let Some(&j) = self.module.fn_idx.get(&key.fn_id) else {
-            return;
-        };
-        let body = &self.module.fns[j];
-        each_local_successor_key(body, &ft, |target| {
-            if let Some(sid) = self.spec_registry.resolve_spec_key(self.t, target) {
-                worklist.push(sid.0);
-            }
-        });
-    }
-
-    fn enqueue_value_key(&mut self, fid: FnId, tys: Vec<Ty>, worklist: &mut Vec<u32>) {
-        let key = SpecKey::value(fid, key_slots_from_tys(tys));
-        if let Some(sid) = self.spec_registry.resolve_spec_key(self.t, &key) {
-            worklist.push(sid.0);
-        }
-    }
-}
-
-pub(crate) fn each_local_successor_key(body: &FnIr, ft: &SpecPlan, mut visit: impl FnMut(&SpecKey)) {
-    let mut visit_slot = |ident: &CallsiteIdent, slot: EmitSlot| {
-        let callsite = CallsiteId::new(body.id, ident, slot);
-        if let Some(target) = ft.local_call_target(&callsite) {
-            visit(target);
-        }
-    };
-
-    for blk in &body.blocks {
-        if !ft.reachable_blocks.contains(&blk.id) {
-            continue;
-        }
-        for Stmt::Let(_, prim) in &blk.stmts {
-            if let Prim::Extern(ident, _, _) = prim {
-                visit_slot(ident, EmitSlot::CallableBoundary);
-            }
-        }
-
-        match &blk.terminator {
-            Term::Call { ident, .. } => {
-                visit_slot(ident, EmitSlot::Direct);
-                visit_slot(ident, EmitSlot::Cont);
-                visit_slot(ident, EmitSlot::CallableBoundary);
-            }
-            Term::TailCall { ident, .. } => {
-                visit_slot(ident, EmitSlot::Direct);
-                visit_slot(ident, EmitSlot::CallableBoundary);
-            }
-            Term::CallClosure { ident, .. } => {
-                visit_slot(ident, EmitSlot::ClosureCall);
-                visit_slot(ident, EmitSlot::Cont);
-            }
-            Term::TailCallClosure { ident, .. } => {
-                visit_slot(ident, EmitSlot::ClosureCall);
-            }
-            Term::Receive { ident, .. } => {
-                visit_slot(ident, EmitSlot::Cont);
-            }
-            Term::ReceiveMatched { clauses, after, .. } => {
-                for clause in clauses {
-                    visit_slot(&clause.ident, EmitSlot::Cont);
-                    if clause.guard.is_some() {
-                        visit_slot(&clause.ident, EmitSlot::Cont);
-                    }
-                }
-                if let Some(after) = after {
-                    visit_slot(&after.ident, EmitSlot::Cont);
-                }
-            }
-            Term::Goto(_, _) | Term::Return(_) | Term::Halt(_) | Term::If { .. } => {}
-        }
-    }
-
-    for target in &ft.callable_entry_targets {
-        visit(target);
-    }
+    module_plan
+        .reachable_specs
+        .iter()
+        .map(|key| {
+            spec_registry
+                .resolve_spec_key(t, key)
+                .unwrap_or_else(|| panic!("reachable spec {:?} missing from spec registry", key))
+                .0
+        })
+        .collect()
 }
 
 /// Build the full Cont input-type key at a call-site:

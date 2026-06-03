@@ -1172,7 +1172,7 @@ fn reachable_specs_do_not_seed_uninvoked_closure_targets() {
     );
     mb.set_terminator(mentry, Term::Halt(cl));
 
-    let m = build_module(vec![wb.build(), mb.build()]);
+    let _m = build_module(vec![wb.build(), mb.build()]);
     let mut t = ConcreteTypes;
     let any_key = key_tys(vec![t.any()]);
     let int_key = key_tys(vec![t.int()]);
@@ -1186,9 +1186,10 @@ fn reachable_specs_do_not_seed_uninvoked_closure_targets() {
     let mut specs = HashMap::new();
     specs.insert(value_spec_key(FnId(0), any_key), SpecPlan::default());
     specs.insert(value_spec_key(FnId(0), int_key), SpecPlan::default());
-    specs.insert(value_spec_key(FnId(1), main_key), SpecPlan::default());
+    specs.insert(value_spec_key(FnId(1), main_key.clone()), SpecPlan::default());
     let mt = ModulePlan {
         specs,
+        reachable_specs: HashSet::from([value_spec_key(FnId(1), main_key.clone())]),
         spec_roles: HashMap::new(),
         effective_returns: HashMap::new(),
         any_key_specs: HashMap::new(),
@@ -1197,7 +1198,7 @@ fn reachable_specs_do_not_seed_uninvoked_closure_targets() {
         dead_branches: HashMap::new(),
     };
 
-    let reachable = reachable_specs(&mut t, &m, &reg, &mt, []);
+    let reachable = reachable_spec_ids(&mut t, &reg, &mt);
     assert!(
         !reachable.contains(&worker_any_sid.0),
         "uninvoked closure target any-key spec should not be reachable; main_sid={:?}, reached={:?}",

@@ -561,8 +561,7 @@ impl ActivationReturnFacts {
                 span_start: edge.callsite.span_start,
                 span_end: edge.callsite.span_end,
             });
-        let caller_public_key =
-            public_activation_body_key(t, module, edge.caller_fn_id, edge.caller_input_tys.clone());
+        let caller_public_key = public_activation_body_key(t, module, edge.caller_fn_id, edge.caller_input_tys.clone());
         self.callee_witnesses_by_caller_and_callsite
             .entry((caller_public_key, edge.callsite.callsite.clone()))
             .or_default()
@@ -704,10 +703,7 @@ fn erase_closure_identity_from_spec_key<T: Types<Ty = Ty> + ClosureTypes>(t: &mu
     key
 }
 
-fn erase_closure_identity_from_body_key<T: Types<Ty = Ty> + ClosureTypes>(
-    t: &mut T,
-    mut key: BodyKey,
-) -> BodyKey {
+fn erase_closure_identity_from_body_key<T: Types<Ty = Ty> + ClosureTypes>(t: &mut T, mut key: BodyKey) -> BodyKey {
     for slot in &mut key.input {
         if let Some(ty) = slot.take() {
             let erased = t.erase_closure_identity(&ty);
@@ -742,7 +738,11 @@ fn activation_tys_overlap<T: Types<Ty = Ty> + ClosureTypes>(t: &mut T, left: &Ty
     !t.is_disjoint(&left, &right)
 }
 
-fn activation_key_covers_requested<T: Types<Ty = Ty> + ClosureTypes>(t: &mut T, candidate: &BodyKey, requested: &BodyKey) -> bool {
+fn activation_key_covers_requested<T: Types<Ty = Ty> + ClosureTypes>(
+    t: &mut T,
+    candidate: &BodyKey,
+    requested: &BodyKey,
+) -> bool {
     if candidate.fn_id != requested.fn_id {
         return false;
     }
@@ -1010,6 +1010,7 @@ fn plan_module_with_role<T: Types<Ty = Ty> + ClosureTypes + RenderTypes>(
 
     let mut mt = ModulePlan {
         specs: out.specs,
+        reachable_specs: out.reachable_specs,
         spec_roles,
         effective_returns: out.effective_returns,
         any_key_specs,
@@ -1244,6 +1245,7 @@ pub fn plan_callable_capabilities<T: Types<Ty = Ty> + ClosureTypes + RenderTypes
 /// `plan_callable_capabilities` keeps only the per-spec capabilities.
 struct DiscoverOutput {
     specs: HashMap<SpecKey, SpecPlan>,
+    reachable_specs: SpecKeySet,
     spec_roles: HashMap<SpecKey, SpecReachabilityRole>,
     effective_returns: HashMap<BodyKey, Ty>,
     fn_effects: FnEffects,
@@ -1345,6 +1347,7 @@ fn discover_specs<T: Types<Ty = Ty> + ClosureTypes + RenderTypes>(
 
     DiscoverOutput {
         specs,
+        reachable_specs: reachable,
         spec_roles,
         effective_returns,
         fn_effects,

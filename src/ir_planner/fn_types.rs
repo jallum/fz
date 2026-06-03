@@ -238,6 +238,12 @@ pub enum CallEdgeTarget {
 #[derive(Debug, Clone)]
 pub struct ModulePlan {
     pub specs: HashMap<SpecKey, SpecPlan>,
+    /// Closed reachable executable specs selected by the planner worklist.
+    ///
+    /// `ModulePlan` is the sole semantic reachability authority. Downstream
+    /// materialization resolves these keys to stable `SpecId`s; it does not
+    /// replay the call graph.
+    pub reachable_specs: SpecKeySet,
     /// Why each reachable spec remains in the executable plan.
     ///
     /// Entry specs come from whole-program roots such as `main/0`.
@@ -482,10 +488,7 @@ impl ModulePlan {
                 id: key,
                 key: key.input.as_slice(),
                 key_var_count: key_slot_var_count(t, key.input.as_slice()),
-                precedence: *self
-                    .spec_precedence
-                    .get(&key.value_spec())
-                    .unwrap_or(&u32::MAX),
+                precedence: *self.spec_precedence.get(&key.value_spec()).unwrap_or(&u32::MAX),
             })
             .collect();
         let best = best_covering_candidate(t, arg_tys, candidates)?;
