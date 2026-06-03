@@ -1297,6 +1297,56 @@ fn planned_program_materialization_reports_executable_body_folds() {
     );
 }
 
+#[test]
+fn materialization_reuses_one_planned_body_for_demand_siblings() {
+    let src = "fn pair(x), do: {x, x}\n\
+               fn main() do\n\
+                 {a, b} = pair(1)\n\
+                 dbg({a, b, pair(2)})\n\
+               end\n";
+    let m = lower_src_for_plan(src);
+    let mut t = ConcreteTypes;
+    let module_plan = plan_module_quiet(&mut t, &m);
+    let planned_program = materialize_program(&mut t, &m, &module_plan, &NullTelemetry);
+    let pair = m.fns.iter().find(|f| f.name == "pair").expect("pair fn");
+
+    let mut sibling_keys: Vec<SpecKey> = module_plan
+        .specs
+        .keys()
+        .filter(|key| key.fn_id == pair.id)
+        .cloned()
+        .collect();
+    sibling_keys.sort_by(|a, b| format!("{:?}", a.demand).cmp(&format!("{:?}", b.demand)));
+    let shared_body_keys: Vec<SpecKey> = sibling_keys
+        .iter()
+        .filter(|key| sibling_keys.iter().filter(|other| other.body_key() == key.body_key()).count() > 1)
+        .cloned()
+        .collect();
+    assert!(
+        shared_body_keys.len() >= 2,
+        "expected at least two pair specs sharing one body key, got {:?}",
+        sibling_keys
+    );
+
+    let sid_a = planned_program
+        .spec_registry()
+        .resolve_spec_key(&t, &shared_body_keys[0])
+        .expect("first demand sibling registered");
+    let sid_b = planned_program
+        .spec_registry()
+        .resolve_spec_key(&t, &shared_body_keys[1])
+        .expect("second demand sibling registered");
+    assert!(
+        std::ptr::eq(
+            planned_program.executable_body(sid_a),
+            planned_program.executable_body(sid_b)
+        ),
+        "demand siblings should resolve to one planned body: {:?} vs {:?}",
+        shared_body_keys[0],
+        shared_body_keys[1]
+    );
+}
+
 // ----- fz-ul4.29.1: per-callsite specialization map -----
 
 #[test]

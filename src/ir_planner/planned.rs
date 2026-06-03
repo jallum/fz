@@ -2,7 +2,7 @@ use crate::frontend::spec_registry::SpecRegistry;
 use crate::fz_ir::{FnId, FnIr, Module, Prim, SpecId, Stmt};
 use crate::ir_dce::collect_used;
 use crate::ir_fold::fold_planned_body;
-use crate::ir_planner::fn_types::{ModulePlan, SpecKey, SpecPlan};
+use crate::ir_planner::fn_types::{BodyKey, ModulePlan, SpecKey, SpecPlan};
 use crate::ir_planner::reachable::reachable_spec_ids;
 use crate::telemetry::Telemetry;
 use crate::types::{ClosureTypes, Ty, Types};
@@ -22,6 +22,7 @@ pub(crate) struct PlannedProgram<'plan> {
 pub(crate) struct PlannedBody {
     pub spec_id: SpecId,
     pub spec_key: SpecKey,
+    pub body_key: crate::ir_planner::fn_types::BodyKey,
     pub fn_id: FnId,
     pub fn_idx: usize,
     pub body: FnIr,
@@ -76,7 +77,13 @@ impl<'plan> PlannedProgram<'plan> {
             .get(spec_id.0 as usize)
             .and_then(|idx| *idx)
             .expect("registered executable spec must have a planned body");
-        &self.bodies[body_index]
+        let body = &self.bodies[body_index];
+        debug_assert_eq!(
+            body.body_key,
+            self.spec_keys[spec_id.0 as usize].body_key(),
+            "spec slot and planned body must agree on semantic body identity"
+        );
+        body
     }
 }
 
@@ -121,11 +128,23 @@ where
         .collect();
     let mut folded_prim_count = 0;
     let mut folded_branch_count = 0;
-    let mut bodies = Vec::new();
+    let mut bodies: Vec<PlannedBody> = Vec::new();
+    let mut body_index_by_key: HashMap<BodyKey, usize> = HashMap::new();
     let mut body_index_by_spec_slot = Vec::with_capacity(spec_registry.len());
     for sid in 0..spec_registry.len() {
         match (spec_fn_indices[sid], spec_plans[sid]) {
             (Some(fn_idx), Some(spec_plan)) => {
+                let body_key = spec_keys[sid].body_key();
+                if let Some(&body_index) = body_index_by_key.get(&body_key) {
+                    let canonical = &bodies[body_index];
+                    let canonical_plan = module_plan
+                        .specs
+                        .get(&canonical.spec_key)
+                        .expect("canonical planned body must keep its spec plan");
+                    assert_same_body_plan(&canonical.spec_key, canonical_plan, &spec_keys[sid], spec_plan);
+                    body_index_by_spec_slot.push(Some(body_index));
+                    continue;
+                }
                 let mut body = module.fns[fn_idx].clone();
                 let fold_stats = fold_planned_body(t, &mut body, spec_plan);
                 folded_prim_count += fold_stats.prim_count;
@@ -151,10 +170,12 @@ where
                 bodies.push(PlannedBody {
                     spec_id: SpecId(sid as u32),
                     spec_key: spec_keys[sid].clone(),
+                    body_key: body_key.clone(),
                     fn_id: body.id,
                     fn_idx,
                     body,
                 });
+                body_index_by_key.insert(body_key, body_index);
                 body_index_by_spec_slot.push(Some(body_index));
             }
             _ => body_index_by_spec_slot.push(None),
@@ -255,6 +276,44 @@ fn display_spec_ids(reachable_specs: &HashSet<u32>) -> Vec<String> {
     let mut ids: Vec<u32> = reachable_specs.iter().copied().collect();
     ids.sort_unstable();
     ids.into_iter().map(|sid| sid.to_string()).collect()
+}
+
+fn assert_same_body_plan(canonical_key: &SpecKey, canonical: &SpecPlan, sibling_key: &SpecKey, sibling: &SpecPlan) {
+    assert_eq!(
+        canonical.vars, sibling.vars,
+        "body-local var facts diverged for shared body {:?} vs {:?}",
+        canonical_key, sibling_key
+    );
+    assert_eq!(
+        canonical.block_envs, sibling.block_envs,
+        "body-local block envs diverged for shared body {:?} vs {:?}",
+        canonical_key, sibling_key
+    );
+    assert_eq!(
+        canonical.callable_capabilities, sibling.callable_capabilities,
+        "body-local callable capabilities diverged for shared body {:?} vs {:?}",
+        canonical_key, sibling_key
+    );
+    assert_eq!(
+        canonical.reachable_blocks, sibling.reachable_blocks,
+        "reachable blocks diverged for shared body {:?} vs {:?}",
+        canonical_key, sibling_key
+    );
+    assert_eq!(
+        canonical.dead_branches, sibling.dead_branches,
+        "dead branches diverged for shared body {:?} vs {:?}",
+        canonical_key, sibling_key
+    );
+    assert_eq!(
+        canonical.brand_inners, sibling.brand_inners,
+        "brand inners diverged for shared body {:?} vs {:?}",
+        canonical_key, sibling_key
+    );
+    assert_eq!(
+        canonical.opaque_inners, sibling.opaque_inners,
+        "opaque inners diverged for shared body {:?} vs {:?}",
+        canonical_key, sibling_key
+    );
 }
 
 fn build_callable_entries(
