@@ -99,9 +99,11 @@ It names the planner `SpecKey`, body, spec role, projection kind, projected
 return state, final effective return, covered witness inventory,
 activation-derived call edges, and activation-derived dead arms. `spec_role` is
 planner data retained on `ModulePlan`: `activation` specs are justified by
-solved activation facts, and `projection_gap` marks reachable specs that are
-kept alive for some other contract reason (entry roots, callable-boundary
-obligations, or downstream body materialization requirements) but are not
+solved activation facts, `entry` specs are root-visible entry points, and
+`callable_entry` specs are executable constructor obligations for surviving
+`MakeClosure` sites. Callable-entry specs are planner-local executable
+contracts, not activation-covered visible specs. `projection_gap` marks
+reachable specs that are kept alive for some other contract reason but are not
 themselves activation-covered visible specs.
 `projection_kind: "exact"` means the visible spec is justified by one semantic
 bucket, either by identical key or by one semantic bucket covering the planner

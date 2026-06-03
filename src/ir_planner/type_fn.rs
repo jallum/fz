@@ -221,6 +221,7 @@ pub fn type_fn<T: crate::types::Types<Ty = crate::types::Ty> + crate::types::Clo
         reachable_blocks,
         dead_branches,
         call_edges: HashMap::new(),
+        callable_entry_targets: HashSet::new(),
         extern_marshals: HashMap::new(),
         brand_inners: m.brand_inners.clone(),
         opaque_inners: m.opaque_inners.clone(),
@@ -450,9 +451,17 @@ fn collect_callable_capabilities<
                         .iter()
                         .filter_map(|cv| vars.get(cv).cloned())
                         .collect();
+                    let capture_capabilities = captured
+                        .iter()
+                        .map(|cv| {
+                            vars.get(cv)
+                                .and_then(|ty| callable_capability_for_ty(t, ty))
+                        })
+                        .collect();
                     CallableCapability::KnownClosure {
                         fn_id: *fid,
                         captures,
+                        capture_capabilities,
                     }
                 };
                 capabilities.insert(*v, cap);
@@ -493,6 +502,11 @@ pub(crate) fn callable_capability_for_ty<
         [lit] => CallableCapability::KnownClosure {
             fn_id: lit.target.into(),
             captures: lit.captures.clone(),
+            capture_capabilities: lit
+                .captures
+                .iter()
+                .map(|capture| callable_capability_for_ty(t, capture))
+                .collect(),
         },
         _ => CallableCapability::OpaqueCallable,
     })

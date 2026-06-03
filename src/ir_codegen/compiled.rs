@@ -613,6 +613,7 @@ fn remap_spec_plan(
                 )
             })
             .collect(),
+        callable_entry_targets: spec.callable_entry_targets.clone(),
         extern_marshals: spec.extern_marshals.clone(),
         brand_inners: spec.brand_inners.clone(),
         opaque_inners: spec.opaque_inners.clone(),
@@ -629,13 +630,25 @@ fn remap_callable_capability(
         CallableCapability::KnownFn(fid) => {
             fn_map.get(fid).copied().map(CallableCapability::KnownFn)
         }
-        CallableCapability::KnownClosure { fn_id, captures } => {
+        CallableCapability::KnownClosure {
+            fn_id,
+            captures,
+            capture_capabilities,
+        } => {
             fn_map
                 .get(fn_id)
                 .copied()
                 .map(|fn_id| CallableCapability::KnownClosure {
                     fn_id,
                     captures: captures.clone(),
+                    capture_capabilities: capture_capabilities
+                        .iter()
+                        .map(|capability| {
+                            capability
+                                .as_ref()
+                                .and_then(|capability| remap_callable_capability(capability, fn_map))
+                        })
+                        .collect(),
                 })
         }
         CallableCapability::OpaqueCallable => Some(CallableCapability::OpaqueCallable),

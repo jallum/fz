@@ -234,6 +234,7 @@ pub(crate) fn runtime_graph_planner_activation_projection_signals(
     let graph = linked_runtime_graph_with_telemetry(&mut t, src, &tel);
     cap.clear();
     let _ = crate::ir_planner::plan_module(&mut t, &graph.module, &tel);
+    let _ = crate::ir_planner::materialize_program(&mut t, &graph.module, &graph.module_plan, &tel);
     assert_authoritative_planner_consistent(&cap);
     activation_projection_signals(&cap)
 }
@@ -250,6 +251,7 @@ pub(crate) fn runtime_graph_codegen_materialized_body_signals(
 
     let mut t = ConcreteTypes;
     let graph = linked_runtime_graph_with_telemetry(&mut t, src, &tel);
+    let _ = crate::ir_planner::materialize_program(&mut t, &graph.module, &graph.module_plan, &tel);
     assert_authoritative_planner_consistent(&cap);
     cap.clear();
     crate::ir_codegen::compile_planned(&mut t, &graph.module, &graph.module_plan, &tel)
@@ -356,6 +358,7 @@ pub(crate) fn runtime_graph_reachable_materialized_body_signals(
 
     let mut t = ConcreteTypes;
     let graph = linked_runtime_graph_with_telemetry(&mut t, src, &tel);
+    let _ = crate::ir_planner::materialize_program(&mut t, &graph.module, &graph.module_plan, &tel);
     assert_authoritative_planner_consistent(&cap);
     reachable_materialized_body_signals_from_planned_compile(
         &mut t,
@@ -411,7 +414,41 @@ pub(crate) fn authoritative_planner_consistency_issues(
         gap_count,
         "projection gap telemetry must identify every counted gap"
     );
-    gap_keys.to_vec()
+    let mut issues = gap_keys.to_vec();
+
+    if let Some(materialized) = cap
+        .find(&["fz", "planner", "materialized"])
+        .into_iter()
+        .filter(|ev| {
+            matches!(
+                ev.metadata.get("role"),
+                Some(Value::Str(role)) if role == "authoritative"
+            )
+        })
+        .last()
+    {
+        let gap_count = match materialized
+            .measurements
+            .get("make_closure_callable_gap_count")
+        {
+            Some(Value::U64(n)) => *n as usize,
+            None => 0,
+            other => panic!("make_closure_callable_gap_count wrong type: {other:?}"),
+        };
+        let gap_keys = match materialized.metadata.get("make_closure_callable_gaps") {
+            Some(Value::StrSeq(keys)) => keys.clone(),
+            None => Vec::<String>::new().into(),
+            other => panic!("make_closure_callable_gaps wrong type: {other:?}"),
+        };
+        assert_eq!(
+            gap_keys.len(),
+            gap_count,
+            "make-closure callable gap telemetry must identify every counted gap"
+        );
+        issues.extend(gap_keys.iter().cloned());
+    }
+
+    issues
 }
 
 #[cfg(test)]
@@ -436,7 +473,8 @@ pub(crate) fn assert_module_planner_consistent<
     let tel = crate::telemetry::ConfiguredTelemetry::new();
     let cap = crate::telemetry::Capture::new();
     tel.attach(&[], cap.handler());
-    let _ = crate::ir_planner::plan_module(t, module, &tel);
+    let plan = crate::ir_planner::plan_module(t, module, &tel);
+    let _ = crate::ir_planner::materialize_program(t, module, &plan, &tel);
     let issues = authoritative_planner_consistency_issues(&cap);
     assert!(
         issues.is_empty(),

@@ -367,6 +367,7 @@ impl ActivationReturnFacts {
         &self,
         t: &mut T,
         reachable: &SpecKeySet,
+        callable_entry_specs: &SpecKeySet,
         effective_returns: &HashMap<SpecKey, crate::types::Ty>,
         complete_returns: &SpecKeySet,
     ) -> ActivationReturnTelemetry {
@@ -395,6 +396,9 @@ impl ActivationReturnFacts {
             .filter(|key| !self.bucket_returns.contains_key(*key))
             .count();
         for key in reachable {
+            if callable_entry_specs.contains(key) {
+                continue;
+            }
             if self
                 .projection_fact_for_key(t, key.clone(), effective_returns, complete_returns)
                 .projected_state
@@ -413,11 +417,15 @@ impl ActivationReturnFacts {
         t: &mut T,
         module: &Module,
         reachable: &SpecKeySet,
+        callable_entry_specs: &SpecKeySet,
         effective_returns: &HashMap<SpecKey, crate::types::Ty>,
         complete_returns: &SpecKeySet,
     ) -> Vec<String> {
         let mut gaps = Vec::new();
         for key in reachable {
+            if callable_entry_specs.contains(key) {
+                continue;
+            }
             if self
                 .projection_fact_for_key(t, key.clone(), effective_returns, complete_returns)
                 .projected_state
@@ -1422,6 +1430,13 @@ fn discover_specs<
     );
 
     let reachable: SpecKeySet = reachable_specs_from_call_edges(t, m, &specs);
+    let callable_entry_specs: SpecKeySet = reachable
+        .iter()
+        .filter(|spec| {
+            specs.values().any(|plan| plan.callable_entry_targets.contains(*spec))
+        })
+        .cloned()
+        .collect();
     specs.retain(|k, _| reachable.contains(k));
     complete_returns =
         finalize_return_completeness(&specs, &return_deps_by_caller, &effective_returns);
@@ -1433,13 +1448,26 @@ fn discover_specs<
     );
     let activation_projection_facts =
         activation_returns.projection_facts(t, &reachable, &effective_returns, &complete_returns);
-    let spec_roles = compute_spec_roles(t, m, &reachable, &activation_projection_facts);
+    let spec_roles = compute_spec_roles(
+        t,
+        m,
+        &reachable,
+        &callable_entry_specs,
+        &activation_projection_facts,
+    );
     let activation_return_telemetry =
-        activation_returns.telemetry(t, &reachable, &effective_returns, &complete_returns);
+        activation_returns.telemetry(
+            t,
+            &reachable,
+            &callable_entry_specs,
+            &effective_returns,
+            &complete_returns,
+        );
     let activation_return_projection_gaps = activation_returns.projection_gap_keys(
         t,
         m,
         &reachable,
+        &callable_entry_specs,
         &effective_returns,
         &complete_returns,
     );
@@ -1586,7 +1614,7 @@ fn reachable_specs_from_call_edges<
         let Some(plan) = specs.get(&spec) else {
             continue;
         };
-        for target in local_targets_from_call_edges(plan) {
+        for target in local_successor_targets(plan) {
             if reachable.insert(target.clone()) {
                 bfs.push_back(target);
             }
@@ -1614,7 +1642,7 @@ fn verify_closed_expectations(
         let plan = specs
             .get(spec)
             .unwrap_or_else(|| panic!("reachable spec {:?} has no typed body", spec));
-        for target in local_targets_from_call_edges(plan) {
+        for target in local_successor_targets(plan) {
             assert!(
                 reachable.contains(&target),
                 "reachable spec {:?} reaches unreachable target {:?}",
@@ -1637,6 +1665,7 @@ fn compute_spec_roles<
     t: &mut T,
     m: &Module,
     reachable: &SpecKeySet,
+    callable_entry_specs: &SpecKeySet,
     activation_projection_facts: &[ActivationProjectionFact],
 ) -> HashMap<SpecKey, SpecReachabilityRole> {
     let entry_specs: SpecKeySet = entry_seeds(t, m)
@@ -1655,6 +1684,8 @@ fn compute_spec_roles<
             SpecReachabilityRole::Entry
         } else if activation_covered.contains(spec) {
             SpecReachabilityRole::Activation
+        } else if callable_entry_specs.contains(spec) {
+            SpecReachabilityRole::CallableEntry
         } else {
             SpecReachabilityRole::ProjectionGap
         };
@@ -1790,8 +1821,9 @@ fn process_worklist<T: crate::types::Types<Ty = crate::types::Ty> + crate::types
             call_edges,
             return_reads,
             capability_updates,
+            callable_entry_targets,
         } = result;
-        install_walk_result(specs, &spec_key, call_edges);
+        install_walk_result(specs, &spec_key, call_edges, callable_entry_targets);
         enqueue_capability_updates(&capability_updates, work, in_work);
         enqueue_discovered_local_targets(&spec_key, specs, work, in_work);
         update_effective_return_and_enqueue_readers(
@@ -1843,7 +1875,30 @@ fn ensure_spec_typed<T: crate::types::Types<Ty = crate::types::Ty> + crate::type
             }
         }
     }
+    refine_known_closure_capture_capabilities(&m.fns[fn_idx], &mut ft);
     specs.insert(spec_key.clone(), ft);
+}
+
+fn refine_known_closure_capture_capabilities(f: &crate::fz_ir::FnIr, ft: &mut SpecPlan) {
+    for blk in &f.blocks {
+        for stmt in &blk.stmts {
+            let crate::fz_ir::Stmt::Let(v, prim) = stmt;
+            let crate::fz_ir::Prim::MakeClosure(_, _, captured) = prim else {
+                continue;
+            };
+            let capture_capabilities = captured
+                .iter()
+                .map(|cv| ft.callable_capabilities.get(cv).cloned())
+                .collect::<Vec<_>>();
+            if let Some(crate::ir_planner::fn_types::CallableCapability::KnownClosure {
+                capture_capabilities: existing,
+                ..
+            }) = ft.callable_capabilities.get_mut(v)
+            {
+                *existing = capture_capabilities;
+            }
+        }
+    }
 }
 
 fn entry_callable_capabilities_match(
@@ -1923,13 +1978,15 @@ fn install_walk_result(
     specs: &mut HashMap<SpecKey, SpecPlan>,
     spec_key: &SpecKey,
     call_edges: HashMap<crate::fz_ir::CallsiteId, super::fn_types::CallEdgePlan>,
+    callable_entry_targets: std::collections::HashSet<SpecKey>,
 ) {
     if let Some(ft) = specs.get_mut(spec_key) {
         ft.install_call_edges(call_edges);
+        ft.install_callable_entry_targets(callable_entry_targets);
     }
 }
 
-fn local_targets_from_call_edges(spec: &SpecPlan) -> Vec<SpecKey> {
+fn local_successor_targets(spec: &SpecPlan) -> Vec<SpecKey> {
     let mut out = Vec::new();
     for edge in spec.call_edges.values() {
         if let Some(target) = edge.local_target() {
@@ -1939,6 +1996,11 @@ fn local_targets_from_call_edges(spec: &SpecPlan) -> Vec<SpecKey> {
             && !out.contains(&contract.target)
         {
             out.push(contract.target.clone());
+        }
+    }
+    for target in &spec.callable_entry_targets {
+        if !out.contains(target) {
+            out.push(target.clone());
         }
     }
     out
@@ -1953,7 +2015,7 @@ fn enqueue_discovered_local_targets(
     let Some(plan) = specs.get(spec_key) else {
         return;
     };
-    for target in local_targets_from_call_edges(plan) {
+    for target in local_successor_targets(plan) {
         if !specs.contains_key(&target) && in_work.insert(target.clone()) {
             work.push_back(target);
         }

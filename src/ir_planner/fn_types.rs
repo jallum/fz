@@ -31,6 +31,10 @@ pub struct SpecPlan {
     /// edge, so future provider-boundary and protocol dispatch facts can extend
     /// the same shape instead of adding side tables.
     pub call_edges: HashMap<crate::fz_ir::CallsiteId, CallEdgePlan>,
+    /// Executable closure-entry specs required by surviving `MakeClosure`
+    /// statements in this body. These are representation obligations, not
+    /// dispatch edges.
+    pub callable_entry_targets: std::collections::HashSet<SpecKey>,
     /// Per-spec concrete C marshal classes for extern call arguments.
     ///
     /// Variadic `Auto` args are resolved after this `SpecPlan` has inferred
@@ -51,6 +55,7 @@ pub struct SpecPlan {
 pub enum SpecReachabilityRole {
     Entry,
     Activation,
+    CallableEntry,
     ProjectionGap,
 }
 
@@ -59,6 +64,7 @@ impl SpecReachabilityRole {
         match self {
             Self::Entry => "entry",
             Self::Activation => "activation",
+            Self::CallableEntry => "callable_entry",
             Self::ProjectionGap => "projection_gap",
         }
     }
@@ -70,6 +76,7 @@ pub enum CallableCapability {
     KnownClosure {
         fn_id: FnId,
         captures: Vec<crate::types::Ty>,
+        capture_capabilities: Vec<Option<CallableCapability>>,
     },
     OpaqueCallable,
 }
@@ -135,6 +142,13 @@ impl SpecPlan {
         call_edges: HashMap<crate::fz_ir::CallsiteId, CallEdgePlan>,
     ) {
         self.call_edges = call_edges;
+    }
+
+    pub(crate) fn install_callable_entry_targets(
+        &mut self,
+        callable_entry_targets: std::collections::HashSet<SpecKey>,
+    ) {
+        self.callable_entry_targets = callable_entry_targets;
     }
 }
 

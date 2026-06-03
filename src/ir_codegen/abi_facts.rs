@@ -444,7 +444,7 @@ fn record_callable_target(
 ) {
     let Some((fn_id, capture_count)) = (match capability {
         Some(CallableCapability::KnownFn(fn_id)) => Some((*fn_id, 0)),
-        Some(CallableCapability::KnownClosure { fn_id, captures }) => {
+        Some(CallableCapability::KnownClosure { fn_id, captures, .. }) => {
             Some((*fn_id, captures.len()))
         }
         Some(CallableCapability::OpaqueCallable) | None => None,

@@ -123,7 +123,7 @@ fn render_callable_capabilities(m: &Module, ft: &super::fn_types::SpecPlan, out:
                 fn_name(m, *fid),
                 fid.0
             )),
-            CallableCapability::KnownClosure { fn_id, captures } => out.push_str(&format!(
+            CallableCapability::KnownClosure { fn_id, captures, .. } => out.push_str(&format!(
                 ";     Var({}) = KnownClosure({}#{}, {} captures)\n",
                 v.0,
                 fn_name(m, *fn_id),

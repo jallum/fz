@@ -172,6 +172,13 @@ where
         &body_index_by_spec_slot,
         &reachable_specs,
     );
+    let make_closure_callable_gaps = make_closure_callable_gap_issues(
+        module,
+        &bodies,
+        &spec_registry,
+        &callable_entries,
+        &reachable_specs,
+    );
 
     let planned_body_count = bodies.len();
     let stats = PlannedProgramStats {
@@ -192,11 +199,13 @@ where
             reachable_spec_count: reachable_specs.len() as u64,
             reachable_spec_count_before_body_fold: reachable_before_body_fold_count as u64,
             body_fold_reachable_added_count: body_fold_reachable_added_count as u64,
+            make_closure_callable_gap_count: make_closure_callable_gaps.len() as u64,
         },
         &crate::metadata! {
             role: "authoritative",
             module_path: module.module_path().to_owned(),
             reachable_specs: display_spec_ids(&reachable_specs),
+            make_closure_callable_gaps: make_closure_callable_gaps.clone(),
         },
     );
 
@@ -210,6 +219,53 @@ where
         callable_entries,
         reachable_specs,
     }
+}
+
+fn make_closure_callable_gap_issues(
+    module: &Module,
+    bodies: &[PlannedBody],
+    spec_registry: &SpecRegistry,
+    callable_entries: &BTreeMap<u32, CallableEntryPlan>,
+    reachable_specs: &HashSet<u32>,
+) -> Vec<String> {
+    let mut gaps = Vec::new();
+    for planned_body in bodies {
+        if !reachable_specs.contains(&planned_body.spec_id.0) {
+            continue;
+        }
+        let used_vars = crate::ir_dce::collect_used(&planned_body.body);
+        for blk in &planned_body.body.blocks {
+            for stmt in &blk.stmts {
+                let crate::fz_ir::Stmt::Let(dest, prim) = stmt;
+                let crate::fz_ir::Prim::MakeClosure(_, lam_fn_id, captured) = prim else {
+                    continue;
+                };
+                if !used_vars.contains(dest) {
+                    continue;
+                }
+                let resolved = spec_registry.resolve_closure_body_spec(*lam_fn_id, |sid| {
+                    callable_entries.contains_key(&sid.0)
+                });
+                if resolved.is_some() {
+                    continue;
+                }
+                let lam_name = module
+                    .fns
+                    .iter()
+                    .find(|f| f.id == *lam_fn_id)
+                    .map(|f| f.name.clone())
+                    .unwrap_or_else(|| format!("FnId({})", lam_fn_id.0));
+                gaps.push(format!(
+                    "{} spec_id={} missing callable entry for {} (captures={})",
+                    planned_body.body.name,
+                    planned_body.spec_id.0,
+                    lam_name,
+                    captured.len()
+                ));
+            }
+        }
+    }
+    gaps
 }
 
 fn compute_reachable_specs<T>(
@@ -274,6 +330,7 @@ fn augment_reachable_from_planned_bodies<
         let Some(ft) = module_plan.specs.get(key) else {
             continue;
         };
+        let used_vars = crate::ir_dce::collect_used(body);
         crate::ir_planner::reachable::each_local_successor_key(body, ft, |target| {
             if let Some(next) = spec_registry.resolve_spec_key(t, target)
                 && reached.insert(next.0)
@@ -281,6 +338,27 @@ fn augment_reachable_from_planned_bodies<
                 worklist.push(next.0);
             }
         });
+        for blk in &body.blocks {
+            for stmt in &blk.stmts {
+                let crate::fz_ir::Stmt::Let(dest, prim) = stmt;
+                let crate::fz_ir::Prim::MakeClosure(_, lam_fn_id, _) = prim else {
+                    continue;
+                };
+                if !used_vars.contains(dest) {
+                    continue;
+                }
+                let Some(next) = spec_registry.resolve_closure_body_spec(*lam_fn_id, |sid| {
+                    body_index_by_spec_slot
+                        .get(sid.0 as usize)
+                        .is_some_and(Option::is_some)
+                }) else {
+                    continue;
+                };
+                if reached.insert(next.0) {
+                    worklist.push(next.0);
+                }
+            }
+        }
     }
 }
 
@@ -306,10 +384,14 @@ fn build_callable_entries(
         if !reachable_specs.contains(&planned_body.spec_id.0) {
             continue;
         }
+        let used_vars = crate::ir_dce::collect_used(&planned_body.body);
         for blk in &planned_body.body.blocks {
             for stmt in blk.stmts.iter() {
-                let crate::fz_ir::Stmt::Let(_, prim) = stmt;
+                let crate::fz_ir::Stmt::Let(dest, prim) = stmt;
                 if let crate::fz_ir::Prim::MakeClosure(_ident, lam_fn_id, captured) = prim {
+                    if !used_vars.contains(dest) {
+                        continue;
+                    }
                     let cl_sid = spec_registry
                         .resolve_closure_body_spec(*lam_fn_id, has_body)
                         .map(|sid| sid.0);

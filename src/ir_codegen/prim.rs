@@ -2048,10 +2048,11 @@ fn lower_extern_generic<M: cranelift_module::Module>(
     Ok(LowerOut::DeadUnit)
 }
 
-/// Lower a `Prim::MakeClosure`. Three code paths: null-stub (no body
-/// spec registered), zero-capture singleton, and non-zero capture
-/// alloc+populate. Resolves the narrow SpecId via the lambda's full
-/// input-type key (captures from caller's `fn_types`, args = `any`).
+/// Lower a `Prim::MakeClosure`. Two code paths: zero-capture singleton
+/// and non-zero capture alloc+populate. Codegen consumes the planned
+/// callable-entry contract directly; if planning/materialization failed
+/// to register a callable entry for a surviving `MakeClosure`, that is
+/// a model error, not a codegen fallback case.
 pub(crate) fn lower_make_closure<M: cranelift_module::Module>(
     body: &mut CodegenFn<'_, '_, '_, M>,
     runtime: &RuntimeRefs,
@@ -2072,18 +2073,16 @@ pub(crate) fn lower_make_closure<M: cranelift_module::Module>(
     // key (captures from caller's `fn_types`, args = `any`) and
     // pick the typed stub keyed by that SpecId.
     let n_caps = captured.len();
-    // The lambda body is the any-key body spec (SpecId.0 ==
-    // FnId.0). Look up directly; fall back to any registered
-    // narrow spec for this FnId when the any-key was dropped;
-    // emit a null-stub closure when neither exists (value is
-    // constructable but unreachable as a call target).
+    // The lambda body is resolved to the executable callable-entry spec
+    // selected by planning/materialization for this semantic family.
     let _ = (block_id, stmt_idx, mk_ident);
     let cl_sid_opt = spec_registry
         .resolve_closure_body_spec(fn_id, |sid| callable_entry_fn_ids.contains_key(&sid.0))
         .map(|sid| sid.0);
     let Some(cl_sid) = cl_sid_opt else {
-        return Ok(LowerOut::ValueRef(emit_null_stub_closure(
-            body, fn_id, n_caps,
+        return Err(CodegenError::new(format!(
+            "MakeClosure for FnId({}) with {} captures survived planning without a callable entry",
+            fn_id.0, n_caps
         )));
     };
     // Zero-capture MakeClosure: look up the per-Process static
@@ -2105,21 +2104,6 @@ pub(crate) fn lower_make_closure<M: cranelift_module::Module>(
         cl_sid,
         captured,
     )?))
-}
-
-/// Null-code closure: alloc, write null code pointer, leave capture
-/// slots uninitialized (the body that would read them doesn't exist).
-/// halt_kind is irrelevant for an un-invoked closure; pick 0.
-fn emit_null_stub_closure<M: cranelift_module::Module>(
-    body: &mut CodegenFn<'_, '_, '_, M>,
-    fn_id: crate::fz_ir::FnId,
-    n_caps: usize,
-) -> ir::Value {
-    let fid_v = body.b.ins().iconst(types::I32, fn_id.0 as i64);
-    let nc_v = body.b.ins().iconst(types::I32, n_caps as i64);
-    let hk_v = body.b.ins().iconst(types::I32, 0);
-    let null = body.b.ins().iconst(types::I64, 0);
-    body.alloc_closure(fid_v, nc_v, hk_v, null)
 }
 
 /// Non-zero captures: alloc closure heap object, write body's

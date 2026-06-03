@@ -276,6 +276,10 @@ pub(crate) fn each_local_successor_key(
             Term::Goto(_, _) | Term::Return(_) | Term::Halt(_) | Term::If { .. } => {}
         }
     }
+
+    for target in &ft.callable_entry_targets {
+        visit(target);
+    }
 }
 
 /// Build the full Cont input-type key at a call-site:

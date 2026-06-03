@@ -29,6 +29,9 @@ pub(crate) struct WalkResult {
     /// walking this caller. Their cached `SpecPlan`s depend on those facts, so
     /// the driver must revisit them.
     pub(crate) capability_updates: Vec<SpecKey>,
+    /// Executable closure-entry obligations induced by surviving
+    /// `MakeClosure` statements.
+    pub(crate) callable_entry_targets: HashSet<SpecKey>,
 }
 
 impl WalkResult {
@@ -194,8 +197,190 @@ pub(super) fn walk_spec_for_discovery<
         incoming_param_callable_capabilities,
         out,
         any_ty,
+        reachable_used_vars: collect_reachable_used_vars(f, &caller_ft.reachable_blocks),
     }
     .walk_fn(f);
+}
+
+fn collect_reachable_used_vars(
+    f: &FnIr,
+    reachable_blocks: &HashSet<crate::fz_ir::BlockId>,
+) -> HashSet<Var> {
+    let mut used = HashSet::new();
+    for block in &f.blocks {
+        if !reachable_blocks.contains(&block.id) {
+            continue;
+        }
+        for stmt in &block.stmts {
+            let Stmt::Let(_, prim) = stmt;
+            collect_prim_vars(prim, &mut used);
+        }
+        collect_term_vars(&block.terminator, &mut used);
+    }
+    used
+}
+
+fn collect_prim_vars(prim: &crate::fz_ir::Prim, used: &mut HashSet<Var>) {
+    use crate::fz_ir::{BitSizeIr, Prim};
+
+    match prim {
+        Prim::Const(_) => {}
+        Prim::BinOp(_, a, b) => {
+            used.insert(*a);
+            used.insert(*b);
+        }
+        Prim::UnOp(_, a)
+        | Prim::ListHead(a)
+        | Prim::ListTail(a)
+        | Prim::IsEmptyList(a)
+        | Prim::IsListCons(a)
+        | Prim::TupleField(a, _)
+        | Prim::StructField(a, _)
+        | Prim::IsMatcherMapMiss(a)
+        | Prim::BitReaderInit(a)
+        | Prim::BitReaderDone(a)
+        | Prim::TypeTest(a, _) => {
+            used.insert(*a);
+        }
+        Prim::Extern(_, _, args) => {
+            for arg in args {
+                used.insert(arg.var);
+            }
+        }
+        Prim::MakeTuple(args) | Prim::MakeList(args, None) => {
+            used.extend(args.iter().copied());
+        }
+        Prim::MakeStruct { fields, .. } => {
+            for (_, value) in fields {
+                used.insert(*value);
+            }
+        }
+        Prim::DestTupleBegin { .. } | Prim::DestListBegin { .. } => {}
+        Prim::DestTupleSet { dest, value, .. } => {
+            used.insert(*dest);
+            used.insert(*value);
+        }
+        Prim::DestFreeze { dest, .. } => {
+            used.insert(*dest);
+        }
+        Prim::DestListCons { head, tail, .. } => {
+            used.insert(*head);
+            if let Some(tail) = tail {
+                used.insert(*tail);
+            }
+        }
+        Prim::DestListFreeze { list, .. } => {
+            used.insert(*list);
+        }
+        Prim::MakeList(elements, Some(tail)) => {
+            used.extend(elements.iter().copied());
+            used.insert(*tail);
+        }
+        Prim::MakeClosure(_, _, captures) => {
+            used.extend(captures.iter().copied());
+        }
+        Prim::MakeMap(entries) => {
+            for (key, value) in entries {
+                used.insert(*key);
+                used.insert(*value);
+            }
+        }
+        Prim::MapUpdate(base, entries) => {
+            used.insert(*base);
+            for (key, value) in entries {
+                used.insert(*key);
+                used.insert(*value);
+            }
+        }
+        Prim::DestMapBegin { base, .. } => {
+            if let Some(base) = base {
+                used.insert(*base);
+            }
+        }
+        Prim::DestMapPut { map, key, value, .. } => {
+            used.insert(*map);
+            used.insert(*key);
+            used.insert(*value);
+        }
+        Prim::DestMapFreeze { map, .. } => {
+            used.insert(*map);
+        }
+        Prim::MapGet(map, key) | Prim::MatcherMapGet(map, key) => {
+            used.insert(*map);
+            used.insert(*key);
+        }
+        Prim::MakeBitstring(fields) => {
+            for field in fields {
+                used.insert(field.value);
+                if let Some(BitSizeIr::Var(size)) = &field.size {
+                    used.insert(*size);
+                }
+            }
+        }
+        Prim::ConstBitstring(_, _) => {}
+        Prim::BitReadField { reader, size, .. } => {
+            used.insert(*reader);
+            if let Some(BitSizeIr::Var(size)) = size {
+                used.insert(*size);
+            }
+        }
+        Prim::Brand(value, _) => {
+            used.insert(*value);
+        }
+    }
+}
+
+fn collect_term_vars(term: &Term, used: &mut HashSet<Var>) {
+    match term {
+        Term::Goto(_, args) | Term::TailCall { args, .. } => {
+            used.extend(args.iter().copied());
+        }
+        Term::If { cond, .. } => {
+            used.insert(*cond);
+        }
+        Term::Call {
+            args,
+            continuation,
+            ..
+        } => {
+            used.extend(args.iter().copied());
+            used.extend(continuation.captured.iter().copied());
+        }
+        Term::CallClosure {
+            closure,
+            args,
+            continuation,
+            ..
+        } => {
+            used.insert(*closure);
+            used.extend(args.iter().copied());
+            used.extend(continuation.captured.iter().copied());
+        }
+        Term::TailCallClosure { closure, args, .. } => {
+            used.insert(*closure);
+            used.extend(args.iter().copied());
+        }
+        Term::Return(value) | Term::Halt(value) => {
+            used.insert(*value);
+        }
+        Term::Receive { continuation, .. } => {
+            used.extend(continuation.captured.iter().copied());
+        }
+        Term::ReceiveMatched {
+            pinned,
+            captures,
+            after,
+            ..
+        } => {
+            for (_, value) in pinned {
+                used.insert(*value);
+            }
+            used.extend(captures.iter().copied());
+            if let Some(after) = after {
+                used.insert(after.timeout);
+            }
+        }
+    }
 }
 
 struct DiscoveryWalk<'a, T>
@@ -212,6 +397,7 @@ where
     incoming_param_callable_capabilities: &'a mut IncomingParamCallableCapabilities,
     out: &'a mut WalkResult,
     any_ty: crate::types::Ty,
+    reachable_used_vars: HashSet<Var>,
 }
 
 impl<T> DiscoveryWalk<'_, T>
@@ -244,6 +430,11 @@ where
             let Stmt::Let(v, prim) = stmt;
             let pt_ty = super::prim::type_prim(self.t, prim, env, self.m, &HashSet::new());
             env.insert(*v, pt_ty);
+            if self.reachable_used_vars.contains(v)
+                && let Stmt::Let(_, crate::fz_ir::Prim::MakeClosure(_, fn_id, captured)) = stmt
+            {
+                self.record_make_closure_target(*fn_id, captured, env);
+            }
             if let Stmt::Let(_, crate::fz_ir::Prim::Extern(ident, _, args)) = stmt {
                 let arg_vars = args.iter().map(|arg| arg.var).collect::<Vec<_>>();
                 self.record_external_callable_targets(&arg_vars, env, ident);
@@ -490,6 +681,39 @@ where
         }
     }
 
+    fn record_make_closure_target(
+        &mut self,
+        fn_id: FnId,
+        captured: &[Var],
+        env: &HashMap<Var, crate::types::Ty>,
+    ) {
+        let Some(target_fn) = self.m.fn_idx.get(&fn_id).map(|j| &self.m.fns[*j]) else {
+            return;
+        };
+        let n_params = target_fn.block(target_fn.entry).params.len();
+        let mut input_tys = captured
+            .iter()
+            .map(|var| env.get(var).cloned().unwrap_or_else(|| self.any_ty.clone()))
+            .collect::<Vec<_>>();
+        input_tys = padded_direct_input_tys(self.t, input_tys, n_params);
+        let target_key = self
+            .activation_returns
+            .canonical_public_key(self.t, spec_key_for_fn_id(self.m, fn_id, input_tys));
+        self.out.callable_entry_targets.insert(target_key.clone());
+        let mut per_param = captured
+            .iter()
+            .map(|var| self.caller_ft.callable_capabilities.get(var).cloned())
+            .collect::<Vec<_>>();
+        pad_and_truncate(&mut per_param, n_params, &None);
+        if merge_incoming_param_callable_capabilities(
+            self.incoming_param_callable_capabilities,
+            &target_key,
+            per_param,
+        ) {
+            self.out.capability_updates.push(target_key);
+        }
+    }
+
     fn callable_boundary_keys(
         &mut self,
         arg: Var,
@@ -499,7 +723,7 @@ where
 
         let Some((fn_id, captures)) = (match self.caller_ft.callable_capabilities.get(&arg) {
             Some(CallableCapability::KnownFn(fn_id)) => Some((*fn_id, Vec::new())),
-            Some(CallableCapability::KnownClosure { fn_id, captures }) => {
+            Some(CallableCapability::KnownClosure { fn_id, captures, .. }) => {
                 Some((*fn_id, captures.clone()))
             }
             Some(CallableCapability::OpaqueCallable) | None => None,
@@ -552,12 +776,27 @@ where
         target: FnId,
         args: &[Var],
     ) {
-        let Some(mut target_key) = (match self.caller_ft.callable_capabilities.get(&closure) {
-            Some(CallableCapability::KnownClosure { captures, .. }) => {
-                self.closure_lit_key(target, captures.clone(), args, env)
+        let Some((mut target_key, per_param)) = (match self.caller_ft.callable_capabilities.get(&closure) {
+            Some(CallableCapability::KnownClosure {
+                captures,
+                capture_capabilities,
+                ..
+            }) => {
+                let Some((key, n_params)) =
+                    self.closure_lit_key(target, captures.clone(), args, env)
+                else {
+                    return;
+                };
+                let mut per_param = capture_capabilities.clone();
+                per_param.extend(args.iter().map(|arg| {
+                    self.caller_ft.callable_capabilities.get(arg).cloned()
+                }));
+                pad_and_truncate(&mut per_param, n_params, &None);
+                Some((key, per_param))
             }
             Some(CallableCapability::KnownFn(_)) => {
-                self.direct_call_key(target, args, env).map(|(key, _)| key)
+                self.direct_call_key(target, args, env)
+                    .map(|(key, n_params)| (key, self.callable_capability_args(args, n_params)))
             }
             Some(CallableCapability::OpaqueCallable) | None => None,
         }) else {
@@ -569,6 +808,13 @@ where
             .canonical_public_key(self.t, target_key);
         self.out
             .record_dispatch(self.caller_spec_key, term_ident, slot, target_key.clone());
+        if merge_incoming_param_callable_capabilities(
+            self.incoming_param_callable_capabilities,
+            &target_key,
+            per_param,
+        ) {
+            self.out.capability_updates.push(target_key.clone());
+        }
     }
 
     fn record_closure_literal_call(
@@ -581,7 +827,12 @@ where
         captures: Vec<crate::types::Ty>,
         args: &[Var],
     ) {
-        let Some(mut target_key) = self.closure_lit_key(fn_id, captures, args, env) else {
+        let capture_capabilities = captures
+            .iter()
+            .map(|capture| super::type_fn::callable_capability_for_ty(self.t, capture))
+            .collect::<Vec<_>>();
+        let Some((mut target_key, n_params)) = self.closure_lit_key(fn_id, captures, args, env)
+        else {
             return;
         };
         self.inherit_tail_closure_demand(term, &mut target_key);
@@ -590,6 +841,19 @@ where
             .canonical_public_key(self.t, target_key);
         self.out
             .record_dispatch(self.caller_spec_key, term_ident, slot, target_key.clone());
+        let mut per_param = capture_capabilities;
+        per_param.extend(
+            args.iter()
+                .map(|arg| self.caller_ft.callable_capabilities.get(arg).cloned()),
+        );
+        pad_and_truncate(&mut per_param, n_params, &None);
+        if merge_incoming_param_callable_capabilities(
+            self.incoming_param_callable_capabilities,
+            &target_key,
+            per_param,
+        ) {
+            self.out.capability_updates.push(target_key.clone());
+        }
     }
 
     fn record_continuation(
@@ -880,7 +1144,7 @@ where
         captures: Vec<crate::types::Ty>,
         args: &[Var],
         env: &HashMap<Var, crate::types::Ty>,
-    ) -> Option<SpecKey> {
+    ) -> Option<(SpecKey, usize)> {
         let target_fn = self.m.fn_idx.get(&fn_id).map(|j| &self.m.fns[*j])?;
         let n_params = target_fn.block(target_fn.entry).params.len();
         let mut dispatch_key = captures;
@@ -899,10 +1163,11 @@ where
             n_params,
         );
         let _ = observed;
-        Some(
+        Some((
             self.activation_returns
                 .canonical_public_key(self.t, spec_key_for_fn_id(self.m, fn_id, input_tys)),
-        )
+            n_params,
+        ))
     }
 
     fn callable_capability_args(

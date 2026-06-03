@@ -1441,6 +1441,7 @@ fn plan_module_prechecked(
     let cap = crate::telemetry::Capture::new();
     tel.attach(&[], cap.handler());
     let plan = plan_module(t, module, &tel);
+    let _ = crate::ir_planner::materialize_program(t, module, &plan, &tel);
     crate::test_support::assert_authoritative_planner_consistent(&cap);
     (plan, cap)
 }
@@ -1980,10 +1981,12 @@ fn planner_projects_polymorphic_named_ref_activations_per_visible_spec() {
         assert_eq!(measurement("covered_known_count"), 1);
         assert_eq!(measurement("exact_coverage"), 1);
         assert_eq!(measurement("projection_gap"), 0);
-        assert!(matches!(
-            event.metadata.get("projection_kind"),
-            Some(Value::Str(kind)) if kind == "exact"
-        ));
+        if spec_role == "activation" || spec_role == "entry" {
+            assert!(matches!(
+                event.metadata.get("projection_kind"),
+                Some(Value::Str(kind)) if kind == "exact"
+            ));
+        }
         let projected = match event.metadata.get("projected_return_state") {
             Some(Value::Str(state)) => state.to_string(),
             other => panic!("projected_return_state missing or wrong type: {other:?}"),
@@ -3071,7 +3074,8 @@ fn planner_projects_enum_reduce_operator_refs_through_kernel_specs() {
     let mut main_known_tuple = false;
     let mut enum_reduce_known_int = false;
     let mut list_reduce_known_done_int = false;
-    let mut kernel_plus_visible = false;
+    let mut kernel_plus_activation_visible = false;
+    let mut kernel_plus_callable_entry_visible = false;
 
     for event in &events {
         let body_name = match event.metadata.get("body_name") {
@@ -3087,7 +3091,7 @@ fn planner_projects_enum_reduce_operator_refs_through_kernel_specs() {
                 "authoritative compile-time planner should not retain a callable fallback for the operator-ref reducer: {event:?}"
             );
         }
-        if spec_role != "activation" && spec_role != "entry" {
+        if spec_role != "activation" && spec_role != "entry" && spec_role != "callable_entry" {
             continue;
         }
         let measurement = |name| match event.measurements.get(name) {
@@ -3101,11 +3105,11 @@ fn planner_projects_enum_reduce_operator_refs_through_kernel_specs() {
             );
             assert_eq!(measurement("exact_coverage"), 1);
             assert_eq!(measurement("projection_gap"), 0);
+            assert!(matches!(
+                event.metadata.get("projection_kind"),
+                Some(Value::Str(kind)) if kind == "exact"
+            ));
         }
-        assert!(matches!(
-            event.metadata.get("projection_kind"),
-            Some(Value::Str(kind)) if kind == "exact"
-        ));
         let projected = match event.metadata.get("projected_return_state") {
             Some(Value::Str(state)) => state.as_ref(),
             other => panic!("projected_return_state missing or wrong type: {other:?}"),
@@ -3120,7 +3124,27 @@ fn planner_projects_enum_reduce_operator_refs_through_kernel_specs() {
             list_reduce_known_done_int = true;
         }
         if body_name == "Kernel.+" {
-            kernel_plus_visible = true;
+            match spec_role {
+                "activation" => {
+                    kernel_plus_activation_visible = true;
+                    assert_eq!(
+                        projected, "known(int)",
+                        "Kernel.+ activation should stay narrow in the operator-ref fixture: {events:?}"
+                    );
+                }
+                "callable_entry" => {
+                    kernel_plus_callable_entry_visible = true;
+                    assert_eq!(
+                        projected, "known(int | float)",
+                        "Kernel.+ callable entry should expose the generic callable seam in the operator-ref fixture: {events:?}"
+                    );
+                    assert!(matches!(
+                        event.metadata.get("projection_kind"),
+                        Some(Value::Str(kind)) if kind == "planner_local"
+                    ));
+                }
+                other => panic!("unexpected Kernel.+ spec_role {other}: {events:?}"),
+            }
         }
     }
 
@@ -3137,8 +3161,12 @@ fn planner_projects_enum_reduce_operator_refs_through_kernel_specs() {
         "Enumerable.List.reduce should project {{:done, int}} for the operator-ref fixture: {events:?}"
     );
     assert!(
-        !kernel_plus_visible,
-        "Kernel.+ should be fully internalized by the authoritative planner in the operator-ref fixture: {events:?}"
+        kernel_plus_activation_visible,
+        "Kernel.+ should retain its concrete int activation in the operator-ref fixture: {events:?}"
+    );
+    assert!(
+        kernel_plus_callable_entry_visible,
+        "Kernel.+ should expose one callable-entry contract for the operator-ref fixture: {events:?}"
     );
 }
 
@@ -3611,7 +3639,7 @@ fn main(), do: dbg(add1(40) + 2)
 /// spec for the typed arg from apply2's CallClosure; the CallClosure
 /// is rewritten into a direct `Call(double, …)`.
 #[test]
-fn higher_order_callee_registers_narrow_spec_without_any_key_fallback() {
+fn higher_order_callee_keeps_callable_entry_alongside_narrow_typed_spec() {
     let (mut t, m, mt) = pipeline(
         r#"
 fn double(x), do: x * 2
@@ -3624,15 +3652,20 @@ end
     );
     let double = m.fns.iter().find(|f| f.name == "double").unwrap();
     let any_key = key_tys(vec![t.any()]);
+    let any_spec_key = value_spec_key(double.id, any_key.clone());
     assert!(
-        !mt.specs
-            .contains_key(&value_spec_key(double.id, any_key.clone())),
-        "expected double's any-key body to be absent when every callsite is typed; \
+        mt.specs.contains_key(&any_spec_key),
+        "expected double to keep one callable-entry contract when it is passed as a closure value; \
          registered specs for double: {:?}",
         mt.specs
             .keys()
             .filter(|key| key.fn_id == double.id)
             .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        mt.spec_roles.get(&any_spec_key),
+        Some(&crate::ir_planner::fn_types::SpecReachabilityRole::CallableEntry),
+        "double's any-key spec should exist only as the generic callable entry"
     );
     // Narrow spec from the direct-call path also exists.
     let narrow_count = mt
@@ -3649,7 +3682,7 @@ end
         .count();
     assert!(
         narrow_count >= 1,
-        "expected ≥1 narrow spec for double from the direct-call path; \
+        "expected ≥1 narrow typed spec for double from the direct-call path; \
          registered specs for double: {:?}",
         mt.specs
             .keys()
@@ -4063,7 +4096,11 @@ end
     }
     let v = closure_var.expect("test premise: a captured-MakeClosure in main");
     match main_ft.callable_capabilities.get(&v) {
-        Some(CallableCapability::KnownClosure { fn_id, captures }) => {
+        Some(CallableCapability::KnownClosure {
+            fn_id,
+            captures,
+            ..
+        }) => {
             assert!(!captures.is_empty(), "captured closure should record state");
             let lambda = m.fn_by_id(*fn_id);
             assert!(
@@ -4127,7 +4164,11 @@ fn returned_captured_closure_capability_propagates_into_cont_slot0() {
             continue;
         };
         match ft.callable_capabilities.get(&slot0) {
-            Some(CallableCapability::KnownClosure { fn_id, captures }) => {
+            Some(CallableCapability::KnownClosure {
+                fn_id,
+                captures,
+                ..
+            }) => {
                 let lambda = m.fn_by_id(*fn_id);
                 if lambda.name.starts_with("lambda_") && !captures.is_empty() {
                     saw_known_closure = true;
@@ -5064,19 +5105,17 @@ fn declared_return_fact_handles_take_positive_reduce_while_in_runtime_graph() {
         .fn_by_name("Enum.take_positive")
         .expect("Enum.take_positive");
     let int = t.int();
-    let zero = t.int_lit(0);
-    let nonzero = t.difference(int, zero);
     let specs = plan
         .specs
         .iter()
         .filter(|(key, _)| {
             key.fn_id == take_positive.id
-                && matches!(key.input.get(1), Some(Some(ty)) if t.is_equivalent(ty, &nonzero))
+                && matches!(key.input.get(1), Some(Some(ty)) if t.is_equivalent(ty, &int))
         })
         .collect::<Vec<_>>();
     assert!(
         !specs.is_empty(),
-        "expected at least one take_positive nonzero-amount spec, got {:?}",
+        "expected at least one take_positive public int-amount spec after activation canonicalization, got {:?}",
         plan.specs
             .keys()
             .filter(|key| key.fn_id == take_positive.id)

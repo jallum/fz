@@ -1085,6 +1085,11 @@ fn runtime_graph_with_tel(
         crate::modules::pipeline::CompileMode::Normal,
     )
     .unwrap_or_else(|err| panic!("execution graph: {err}"));
+    crate::test_support::assert_module_planner_consistent(
+        t,
+        &prepared.module,
+        "runtime_graph_with_tel",
+    );
     prepared
 }
 
