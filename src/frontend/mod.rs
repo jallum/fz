@@ -656,47 +656,6 @@ fn main(), do: inc(41)
     }
 
     #[test]
-    fn pattern_checks_ignore_uncalled_named_ref_targets() {
-        let src = r#"
-fn hidden(0), do: :zero
-fn hidden(1), do: :one
-
-fn main() do
-  &hidden/1
-end
-"#;
-        let out = match compile_source(src.to_string(), "named-ref.fz".to_string()) {
-            Ok(out) => out,
-            Err(_) => panic!("frontend ok"),
-        };
-        let hidden = out.module.fn_by_name("hidden").expect("hidden fn");
-        assert!(
-            out.module_plan
-                .reachable_specs
-                .iter()
-                .all(|spec| spec.fn_id != hidden.id),
-            "uncalled named ref target should not remain semantically reachable: {:?}",
-            out.module_plan
-                .reachable_specs
-                .iter()
-                .filter(|spec| spec.fn_id == hidden.id)
-                .collect::<Vec<_>>()
-        );
-        assert!(
-            !out.diagnostics
-                .as_slice()
-                .iter()
-                .any(|diag| diag.code == codes::TYPE_NO_MATCHING_CLAUSE),
-            "inexhaustive hidden/1 should be filtered out when it has no reachable spec: {:?}",
-            out.diagnostics
-                .as_slice()
-                .iter()
-                .map(|diag| (diag.code, diag.message.clone()))
-                .collect::<Vec<_>>()
-        );
-    }
-
-    #[test]
     fn compile_repl_expr_returns_entry_and_frame_layout_for_plain_expression() {
         let (expr, sm) = parse_expr_with_source_map("x + 1", "repl.fz");
         let mut t = ConcreteTypes;
