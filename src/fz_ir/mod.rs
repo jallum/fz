@@ -510,6 +510,126 @@ pub enum Prim {
     Brand(Var, String),
 }
 
+impl Prim {
+    /// Insert every `Var` this prim reads into `used`. The single exhaustive
+    /// source of truth for prim operand vars — backward slices (dispatch-mask
+    /// analysis) and liveness (`ir_dce`) both rely on it, so the compiler-
+    /// enforced exhaustive match guarantees no operand is ever silently missed.
+    pub fn collect_used_vars(&self, used: &mut HashSet<Var>) {
+        match self {
+            Prim::Const(_) | Prim::MakeFnRef(_, _) | Prim::DestTupleBegin { .. } | Prim::DestListBegin { .. } => {}
+            Prim::ConstBitstring(_, _) => {}
+            Prim::BinOp(_, a, b) => {
+                used.insert(*a);
+                used.insert(*b);
+            }
+            Prim::UnOp(_, a) | Prim::ListHead(a) | Prim::ListTail(a) | Prim::IsEmptyList(a) | Prim::IsListCons(a) => {
+                used.insert(*a);
+            }
+            Prim::Extern(_, _, args) => {
+                for arg in args {
+                    used.insert(arg.var);
+                }
+            }
+            Prim::MakeTuple(args) => {
+                for v in args {
+                    used.insert(*v);
+                }
+            }
+            Prim::MakeStruct { fields, .. } => {
+                for (_, v) in fields {
+                    used.insert(*v);
+                }
+            }
+            Prim::DestTupleSet { dest, value, .. } => {
+                used.insert(*dest);
+                used.insert(*value);
+            }
+            Prim::DestFreeze { dest, .. } => {
+                used.insert(*dest);
+            }
+            Prim::DestListCons { head, tail, .. } => {
+                used.insert(*head);
+                if let Some(tail) = tail {
+                    used.insert(*tail);
+                }
+            }
+            Prim::DestListFreeze { list, .. } => {
+                used.insert(*list);
+            }
+            Prim::TupleField(a, _) | Prim::StructField(a, _) => {
+                used.insert(*a);
+            }
+            Prim::MakeList(els, tail) => {
+                for v in els {
+                    used.insert(*v);
+                }
+                if let Some(t) = tail {
+                    used.insert(*t);
+                }
+            }
+            Prim::MakeClosure(_, _, caps) => {
+                for v in caps {
+                    used.insert(*v);
+                }
+            }
+            Prim::MakeMap(entries) => {
+                for (k, v) in entries {
+                    used.insert(*k);
+                    used.insert(*v);
+                }
+            }
+            Prim::MapUpdate(base, entries) => {
+                used.insert(*base);
+                for (k, v) in entries {
+                    used.insert(*k);
+                    used.insert(*v);
+                }
+            }
+            Prim::DestMapBegin { base, .. } => {
+                if let Some(base) = base {
+                    used.insert(*base);
+                }
+            }
+            Prim::DestMapPut { map, key, value, .. } => {
+                used.insert(*map);
+                used.insert(*key);
+                used.insert(*value);
+            }
+            Prim::DestMapFreeze { map, .. } => {
+                used.insert(*map);
+            }
+            Prim::MapGet(a, b) | Prim::MatcherMapGet(a, b) => {
+                used.insert(*a);
+                used.insert(*b);
+            }
+            Prim::IsMatcherMapMiss(v) => {
+                used.insert(*v);
+            }
+            Prim::MakeBitstring(fields) => {
+                for f in fields {
+                    used.insert(f.value);
+                    if let Some(BitSizeIr::Var(sv)) = &f.size {
+                        used.insert(*sv);
+                    }
+                }
+            }
+            Prim::BitReaderInit(a) | Prim::BitReaderDone(a) => {
+                used.insert(*a);
+            }
+            Prim::BitReadField { reader, size, .. } => {
+                used.insert(*reader);
+                if let Some(BitSizeIr::Var(sv)) = size {
+                    used.insert(*sv);
+                }
+            }
+            Prim::TypeTest(v, _) | Prim::Brand(v, _) => {
+                used.insert(*v);
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Stmt {
     Let(Var, Prim),
@@ -1047,6 +1167,58 @@ impl FnIr {
 
     pub fn block(&self, id: BlockId) -> &Block {
         self.blocks.iter().find(|b| b.id == id).expect("unknown block")
+    }
+
+    /// Per entry-param slot: `true` iff that param can influence which clause
+    /// or branch this body selects — i.e. it reaches the condition var of some
+    /// `Term::If` through the body's value graph. These "dispatch subjects"
+    /// must stay type-precise; the complement carries data the body never
+    /// branches on, so distinct activations that agree on every dispatch
+    /// subject are behaviourally identical up to those slots and may be joined.
+    ///
+    /// Sound by construction: the only intra-body binding edges are
+    /// `Stmt::Let` (def reads its prim's operands) and `Term::Goto` (a target
+    /// block param reads the matching call arg). A backward closure over both,
+    /// seeded from every `If` condition, therefore reaches every entry param a
+    /// branch can depend on — never fewer. Entry params not reached are safe
+    /// to widen because widening them cannot flip any branch in this body.
+    pub fn dispatch_subject_slots(&self) -> Vec<bool> {
+        let mut def_uses: HashMap<Var, Vec<Var>> = HashMap::new();
+        let mut param_sources: HashMap<Var, Vec<Var>> = HashMap::new();
+        let mut work: Vec<Var> = Vec::new();
+        for block in &self.blocks {
+            for Stmt::Let(v, prim) in &block.stmts {
+                let mut uses = HashSet::new();
+                prim.collect_used_vars(&mut uses);
+                def_uses.entry(*v).or_default().extend(uses);
+            }
+            match &block.terminator {
+                Term::If { cond, .. } => work.push(*cond),
+                Term::Goto(target, args) => {
+                    for (param, arg) in self.block(*target).params.iter().zip(args) {
+                        param_sources.entry(*param).or_default().push(*arg);
+                    }
+                }
+                _ => {}
+            }
+        }
+        let mut reached: HashSet<Var> = HashSet::new();
+        while let Some(v) = work.pop() {
+            if !reached.insert(v) {
+                continue;
+            }
+            if let Some(uses) = def_uses.get(&v) {
+                work.extend(uses.iter().copied());
+            }
+            if let Some(srcs) = param_sources.get(&v) {
+                work.extend(srcs.iter().copied());
+            }
+        }
+        self.block(self.entry)
+            .params
+            .iter()
+            .map(|param| reached.contains(param))
+            .collect()
     }
 }
 

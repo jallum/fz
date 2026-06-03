@@ -44,6 +44,7 @@ struct TypeInferFacts {
     activation_edges: Vec<ActivationEdgeFact>,
     dead_arms: Vec<DeadArmFact>,
     diagnostics: Vec<DiagnosticFact>,
+    dispatch_masks: Vec<DispatchMaskFact>,
 }
 
 impl TypeInferFacts {
@@ -131,6 +132,13 @@ struct DiagnosticFact {
     code: String,
     op: Option<String>,
     fn_name: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+struct DispatchMaskFact {
+    fn_name: String,
+    arity: usize,
+    dispatch_slots: Vec<usize>,
 }
 
 #[derive(Clone)]
@@ -227,6 +235,21 @@ impl Handler for TypeInferCapture {
                     });
                 }
             }
+            ["fz", "type_infer", "dispatch_mask"] => {
+                if let (Some(fn_name), Some(arity)) =
+                    (event_metadata_str(ev, "fn_name"), event_metadata_u64(ev, "arity"))
+                {
+                    let dispatch_slots = match ev.metadata.get("dispatch_slots") {
+                        Some(Value::StrSeq(v)) => v.iter().filter_map(|s| s.parse().ok()).collect(),
+                        _ => Vec::new(),
+                    };
+                    facts.dispatch_masks.push(DispatchMaskFact {
+                        fn_name,
+                        arity: arity as usize,
+                        dispatch_slots,
+                    });
+                }
+            }
             ["fz", "type_infer", "dead_arm"] => {
                 if let (Some(activation_id), Some(fn_name), Some(block), Some(branch)) = (
                     event_metadata_u64(ev, "activation_id"),
@@ -278,6 +301,46 @@ fn infer_fn_via_main(module: &Module, fn_name: &str) -> Ty {
 fn infer_entry_return_via_main(module: &Module) -> Ty {
     let mut t = ConcreteTypes;
     infer_return(&mut t, module, main_id(module), &[])
+}
+
+/// fz-y6w.2 — the dispatch-subject mask is the precision boundary for
+/// activation convergence. `partition(p, list, lo, hi)` selects clauses on
+/// the list (`[]` vs `[h|t]`) and on the pivot guard (`h < p`), but never on
+/// the `lo`/`hi` accumulators — so those slots are convergeable and the mask
+/// must mark only the pivot and list slots as dispatch subjects.
+#[test]
+fn partition_dispatch_mask_excludes_accumulators() {
+    let module = linked(include_str!("../../fixtures/quicksort/input.fz"));
+    let partition = module
+        .fn_by_name("partition")
+        .expect("quicksort fixture defines partition");
+    assert_eq!(
+        partition.dispatch_subject_slots(),
+        vec![true, true, false, false],
+        "pivot (0) and matched list (1) drive dispatch; lo (2) and hi (3) accumulators do not"
+    );
+}
+
+/// fz-y6w.2 — the same fact, observed on the production path: the solver
+/// computes the mask per activated fn and surfaces it as telemetry. T3
+/// reads this mask to fold the accumulator slots together.
+#[test]
+fn partition_dispatch_mask_is_emitted() {
+    let module = linked(include_str!("../../fixtures/quicksort/input.fz"));
+    let mut t = ConcreteTypes;
+    let report = infer_report_via_main(&mut t, &module);
+    let partition = report
+        .facts
+        .dispatch_masks
+        .iter()
+        .find(|fact| fact.fn_name == "partition")
+        .expect("partition activates, so its dispatch mask is emitted");
+    assert_eq!(partition.arity, 4);
+    assert_eq!(
+        partition.dispatch_slots,
+        vec![0, 1],
+        "only the pivot and matched-list slots drive dispatch"
+    );
 }
 
 fn event_metadata_str(ev: &Event<'_, '_, '_>, key: &str) -> Option<String> {

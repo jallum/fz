@@ -11,7 +11,7 @@
 //! produce reachable executable bodies; this module only answers local liveness
 //! questions and removes local dead IR.
 
-use crate::fz_ir::{BitSizeIr, BlockId, FnIr, PhysicalCapability, Prim, Stmt, Term, Var};
+use crate::fz_ir::{BlockId, FnIr, PhysicalCapability, Prim, Stmt, Term, Var};
 use crate::telemetry::Telemetry;
 use std::collections::HashSet;
 
@@ -131,128 +131,11 @@ fn prune_dead_owned_cons_capabilities(f: &mut FnIr) {
 }
 
 fn collect_prim_vars(p: &Prim, used: &mut HashSet<Var>) {
-    match p {
-        Prim::Const(_) | Prim::MakeFnRef(_, _) => {}
-        Prim::BinOp(_, a, b) => {
-            used.insert(*a);
-            used.insert(*b);
-        }
-        Prim::UnOp(_, a) => {
-            used.insert(*a);
-        }
-        Prim::Extern(_, _, args) => {
-            for arg in args {
-                used.insert(arg.var);
-            }
-        }
-        Prim::ListHead(a) | Prim::ListTail(a) | Prim::IsEmptyList(a) | Prim::IsListCons(a) => {
-            used.insert(*a);
-        }
-        Prim::MakeTuple(args) => {
-            for v in args {
-                used.insert(*v);
-            }
-        }
-        Prim::MakeStruct { fields, .. } => {
-            for (_, v) in fields {
-                used.insert(*v);
-            }
-        }
-        Prim::DestTupleBegin { .. } => {}
-        Prim::DestTupleSet { dest, value, .. } => {
-            used.insert(*dest);
-            used.insert(*value);
-        }
-        Prim::DestFreeze { dest, .. } => {
-            used.insert(*dest);
-        }
-        Prim::DestListBegin { .. } => {}
-        Prim::DestListCons { head, tail, .. } => {
-            used.insert(*head);
-            if let Some(tail) = tail {
-                used.insert(*tail);
-            }
-        }
-        Prim::DestListFreeze { list, .. } => {
-            used.insert(*list);
-        }
-        Prim::TupleField(a, _) | Prim::StructField(a, _) => {
-            used.insert(*a);
-        }
-        Prim::MakeList(els, tail) => {
-            for v in els {
-                used.insert(*v);
-            }
-            if let Some(t) = tail {
-                used.insert(*t);
-            }
-        }
-        Prim::MakeClosure(_, _, caps) => {
-            for v in caps {
-                used.insert(*v);
-            }
-        }
-        Prim::MakeMap(entries) => {
-            for (k, v) in entries {
-                used.insert(*k);
-                used.insert(*v);
-            }
-        }
-        Prim::MapUpdate(base, entries) => {
-            used.insert(*base);
-            for (k, v) in entries {
-                used.insert(*k);
-                used.insert(*v);
-            }
-        }
-        Prim::DestMapBegin { base, .. } => {
-            if let Some(base) = base {
-                used.insert(*base);
-            }
-        }
-        Prim::DestMapPut { map, key, value, .. } => {
-            used.insert(*map);
-            used.insert(*key);
-            used.insert(*value);
-        }
-        Prim::DestMapFreeze { map, .. } => {
-            used.insert(*map);
-        }
-        Prim::MapGet(a, b) | Prim::MatcherMapGet(a, b) => {
-            used.insert(*a);
-            used.insert(*b);
-        }
-        Prim::IsMatcherMapMiss(v) => {
-            used.insert(*v);
-        }
-        Prim::MakeBitstring(fields) => {
-            for f in fields {
-                used.insert(f.value);
-                if let Some(BitSizeIr::Var(sv)) = &f.size {
-                    used.insert(*sv);
-                }
-            }
-        }
-        Prim::ConstBitstring(_, _) => {}
-        Prim::BitReaderInit(a) => {
-            used.insert(*a);
-        }
-        Prim::BitReaderDone(a) => {
-            used.insert(*a);
-        }
-        Prim::BitReadField { reader, size, .. } => {
-            used.insert(*reader);
-            if let Some(BitSizeIr::Var(sv)) = size {
-                used.insert(*sv);
-            }
-        }
-        Prim::TypeTest(v, _) => {
-            used.insert(*v);
-        }
-        Prim::Brand(_, _) => {
-            unreachable!("Prim::Brand reached DCE — erasure should run inside lower_program_full")
-        }
-    }
+    debug_assert!(
+        !matches!(p, Prim::Brand(_, _)),
+        "Prim::Brand reached DCE — erasure should run inside lower_program_full"
+    );
+    p.collect_used_vars(used);
 }
 
 fn collect_term_vars(t: &Term, used: &mut HashSet<Var>) {

@@ -582,10 +582,20 @@ struct Solver<'m> {
     diagnostic_sites: HashSet<(FnId, BlockId, usize)>,
     dead_arms: Vec<DeadArmFact>,
     dead_arm_sites: HashSet<DeadArmFact>,
+    /// Per-`FnId` dispatch-subject mask (`true` = the slot drives clause/branch
+    /// selection and must stay precise). Computed once from the module body;
+    /// `make_key` keeps masked slots in the activation identity and folds the
+    /// rest into a joined `Activation.inputs`.
+    dispatch_masks: HashMap<FnId, Vec<bool>>,
 }
 
 impl<'m> Solver<'m> {
     fn new(module: &'m Module) -> Self {
+        let dispatch_masks = module
+            .fns
+            .iter()
+            .map(|f| (f.id, f.dispatch_subject_slots()))
+            .collect();
         Self {
             module,
             activations: HashMap::new(),
@@ -597,6 +607,7 @@ impl<'m> Solver<'m> {
             diagnostic_sites: HashSet::new(),
             dead_arms: Vec::new(),
             dead_arm_sites: HashSet::new(),
+            dispatch_masks,
         }
     }
 
@@ -1065,6 +1076,7 @@ impl<'m> Solver<'m> {
         let activation_ids = self.activation_ids();
         self.emit_activation_facts(t, tel);
         self.emit_activation_edge_facts(t, tel);
+        self.emit_dispatch_mask_facts(tel);
         self.emit_fn_return_facts(t, tel);
         for diagnostic in &self.diagnostics {
             diagnostic.emit(t, self.module, tel);
@@ -1156,6 +1168,36 @@ impl<'m> Solver<'m> {
                     callsite_slot: emit_slot_name(edge.callsite.slot),
                     callsite_span_start: edge.callsite.ident.span().start as u64,
                     callsite_span_end: edge.callsite.ident.span().end as u64,
+                },
+            );
+        }
+    }
+
+    /// fz-y6w.2 — surface each activated fn's dispatch-subject mask. The
+    /// `dispatch_slots` are the entry-param indices that drive clause/branch
+    /// selection (kept precise); the complement is convergeable. Emitted only
+    /// for fns that actually activated, so the inventory mirrors the work done.
+    fn emit_dispatch_mask_facts(&self, tel: &dyn Telemetry) {
+        let mut fns: Vec<FnId> = self.activations.keys().map(|key| key.fn_id).collect();
+        fns.sort();
+        fns.dedup();
+        for fn_id in fns {
+            let mask = match self.dispatch_masks.get(&fn_id) {
+                Some(mask) => mask,
+                None => continue,
+            };
+            let dispatch_slots: Vec<String> = mask
+                .iter()
+                .enumerate()
+                .filter_map(|(slot, is_dispatch)| is_dispatch.then(|| slot.to_string()))
+                .collect();
+            tel.event(
+                &["fz", "type_infer", "dispatch_mask"],
+                metadata! {
+                    fn_name: self.module.fn_by_id(fn_id).name.clone(),
+                    fn_id: fn_id.0 as u64,
+                    arity: mask.len() as u64,
+                    dispatch_slots: dispatch_slots,
                 },
             );
         }
