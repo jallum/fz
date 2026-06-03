@@ -1138,8 +1138,8 @@ fn plan_module_with_role<T: Types<Ty = Ty> + ClosureTypes + RenderTypes>(
                     spec_key: format!("{:?}", fact.spec_key),
                     spec_role: mt
                         .spec_roles
-                        .iter()
-                        .find_map(|(key, role)| (key.body_key() == fact.spec_key).then_some(*role))
+                        .get(&fact.spec_key)
+                        .copied()
                         .map(SpecReachabilityRole::as_str)
                         .unwrap_or("unknown"),
                     body_fn_id: body.id.0 as u64,
@@ -1206,7 +1206,7 @@ fn plan_module_with_role<T: Types<Ty = Ty> + ClosureTypes + RenderTypes>(
 struct DiscoverOutput {
     specs: HashMap<SpecKey, SpecPlan>,
     reachable_specs: SpecKeySet,
-    spec_roles: HashMap<SpecKey, SpecReachabilityRole>,
+    spec_roles: HashMap<BodyKey, SpecReachabilityRole>,
     effective_returns: HashMap<BodyKey, Ty>,
     fn_effects: FnEffects,
     activation_return_telemetry: ActivationReturnTelemetry,
@@ -1359,7 +1359,7 @@ fn compute_spec_roles<T: Types<Ty = Ty> + ClosureTypes>(
     reachable: &SpecKeySet,
     callable_entry_specs: &SpecKeySet,
     activation_projection_facts: &[ActivationProjectionFact],
-) -> HashMap<SpecKey, SpecReachabilityRole> {
+) -> HashMap<BodyKey, SpecReachabilityRole> {
     let entry_specs: SpecKeySet = entry_seeds(t, m)
         .into_iter()
         .map(|(fid, key)| spec_key_for_fn_id(m, fid, key))
@@ -1370,7 +1370,12 @@ fn compute_spec_roles<T: Types<Ty = Ty> + ClosureTypes>(
         .map(|fact| fact.spec_key.clone())
         .collect();
 
-    let mut roles = HashMap::new();
+    // Roles are body-level justification. `reachable` is a set of SpecKeys that
+    // maps many-to-one onto BodyKeys; when demand siblings of one body disagree
+    // the strongest reason to keep the body alive wins, so the projection is
+    // order-independent. (Demand siblings do not arise in the corpus today —
+    // see fz-xqw.1 — so this merge is defensive, not load-bearing.)
+    let mut roles: HashMap<BodyKey, SpecReachabilityRole> = HashMap::new();
     for spec in reachable {
         let role = if entry_specs.contains(spec) {
             SpecReachabilityRole::Entry
@@ -1381,9 +1386,28 @@ fn compute_spec_roles<T: Types<Ty = Ty> + ClosureTypes>(
         } else {
             SpecReachabilityRole::ProjectionGap
         };
-        roles.insert(spec.clone(), role);
+        roles
+            .entry(spec.body_key())
+            .and_modify(|existing| {
+                if role_strength(role) < role_strength(*existing) {
+                    *existing = role;
+                }
+            })
+            .or_insert(role);
     }
     roles
+}
+
+/// Lower is stronger: the most authoritative reason a body stays in the plan.
+/// Used to make `spec_roles`' BodyKey projection deterministic when reachable
+/// demand siblings of one body would otherwise disagree.
+fn role_strength(role: SpecReachabilityRole) -> u8 {
+    match role {
+        SpecReachabilityRole::Entry => 0,
+        SpecReachabilityRole::Activation => 1,
+        SpecReachabilityRole::CallableEntry => 2,
+        SpecReachabilityRole::ProjectionGap => 3,
+    }
 }
 
 /// One per-FnId effect fact over the static call graph.

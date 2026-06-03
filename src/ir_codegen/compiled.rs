@@ -513,7 +513,7 @@ fn remap_module_plan(plan: &ModulePlan, fn_map: &BTreeMap<FnId, FnId>) -> Module
         spec_roles: plan
             .spec_roles
             .iter()
-            .map(|(key, role)| (remap_spec_key(key, fn_map), *role))
+            .map(|(key, role)| (remap_body_key(key, fn_map), *role))
             .collect(),
         effective_returns: plan
             .effective_returns

@@ -211,14 +211,18 @@ pub struct ModulePlan {
     /// materialization resolves these keys to stable `SpecId`s; it does not
     /// replay the call graph.
     pub reachable_specs: SpecKeySet,
-    /// Why each reachable spec remains in the executable plan.
+    /// Why each reachable body remains in the executable plan.
     ///
     /// Entry specs come from whole-program roots such as `main/0`.
     /// Activation specs are justified by solved `type_infer` facts and any
     /// callable-boundary edges that keep closure targets executable.
     /// Projection-gap specs are temporary planner-visible shells whose return
     /// payload is still underconstrained.
-    pub spec_roles: HashMap<SpecKey, SpecReachabilityRole>,
+    ///
+    /// Keyed by `BodyKey`: a role is body-level justification, not an edge ABI.
+    /// When reachable demand siblings disagree, the strongest role wins (see
+    /// `compute_spec_roles`), so the projection is deterministic.
+    pub spec_roles: HashMap<BodyKey, SpecReachabilityRole>,
     /// Semantic return payloads projected from activation inference onto the
     /// reachable planner specs. `SpecKey::demand` selects ABI/delivery shape;
     /// it does not create a different value payload. During the transplant,

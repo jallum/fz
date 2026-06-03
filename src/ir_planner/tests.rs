@@ -3388,7 +3388,7 @@ end
         mt.specs.keys().filter(|key| key.fn_id == double.id).collect::<Vec<_>>()
     );
     assert_eq!(
-        mt.spec_roles.get(&any_spec_key),
+        mt.spec_roles.get(&any_spec_key.body_key()),
         Some(&SpecReachabilityRole::CallableEntry),
         "double's any-key spec should exist only as the generic callable entry"
     );
