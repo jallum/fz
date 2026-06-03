@@ -1443,7 +1443,7 @@ impl Descr {
     /// fz-bsx.1 — discharge every brand and opaque tag to its underlying
     /// representation type, recursively through nested structural positions.
     /// The result is the *runtime representation* of `self`: what the machine
-    /// actually sees once `ir_brand_erase` has stripped the zero-cost brand /
+    /// actually sees once lowering has stripped the zero-cost brand /
     /// opaque wrappers and `fz_value_eq` compares by structure / bytes.
     ///
     /// This is the model in which runtime equality and pattern matching are

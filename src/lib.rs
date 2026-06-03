@@ -16,7 +16,6 @@ mod ir_interp;
 // schema directly. See fz-ul4.11.30 (subsumed).
 mod cli;
 mod exec;
-mod ir_brand_erase;
 mod ir_dce;
 mod ir_fold;
 mod ir_fuse;

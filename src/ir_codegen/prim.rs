@@ -1059,11 +1059,11 @@ pub(crate) fn lower_prim<M: cranelift_module::Module, T: Types<Ty = Ty>>(
             block_id,
             stmt_idx,
         ),
-        // lower_program_full erases all Prim::Brand before returning.
-        // Reaching codegen with one means ir_brand_erase didn't run (or
+        // lower_program erases all Prim::Brand before returning.
+        // Reaching codegen with one means brand erasure didn't run (or
         // a caller injected Brand after lowering); surface loudly rather
         // than silently lowering as identity.
-        Prim::Brand(_, _) => unreachable!("Prim::Brand reached codegen — erasure should run inside lower_program_full"),
+        Prim::Brand(_, _) => unreachable!("Prim::Brand reached codegen — erasure should run inside lower_program"),
 
         Prim::TypeTest(v, descr) => lower_type_test(body, env, var_env, runtime, *v, descr, dest_var),
     }

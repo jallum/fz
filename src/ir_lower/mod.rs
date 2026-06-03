@@ -48,7 +48,6 @@ use crate::fz_ir::{
     BlockId, ContinuationProvenance, ContinuationProvenanceKind, ExternDecl, ExternId, ExternTy, FnCategory, FnId,
     FnIr, Module, Prim, SourceInfo, Stmt, Term, Var,
 };
-use crate::ir_brand_erase::erase_brands;
 use crate::ir_capture_norm::normalize_continuation_captures_with_telemetry;
 #[cfg(test)]
 use crate::ir_codegen::compile_planned;
@@ -77,6 +76,9 @@ use std::mem::take;
 use std::rc::Rc;
 
 mod atom_table;
+mod brand_erase;
+#[cfg(test)]
+mod brand_erase_test;
 mod cond;
 mod cps;
 mod ctx;
@@ -95,6 +97,7 @@ mod receive;
 pub use error::LowerError;
 
 use atom_table::AtomTable;
+use brand_erase::erase_brands;
 use cond::{lower_if, lower_multi_clause};
 use cps::{
     ContFn, OwnedConsCapture, cont_call_args, cps_split_call, cps_split_call_closure, cps_split_external_call,

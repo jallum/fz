@@ -484,10 +484,10 @@ pub(super) fn eval_prim<T: Types<Ty = Ty>>(
             interp_list_cons(runtime.cur_proc(), head, tail, "DestListCons")?
         }
         Prim::DestListFreeze { list, .. } => env_get(env, *list)?,
-        // fz-axu.23 (M2) — lower_program_full erases Prim::Brand
+        // fz-axu.23 (M2) — lower_program erases Prim::Brand
         // before the interp sees the module. Surface a stray Brand
         // instead of silently aliasing.
-        Prim::Brand(_, _) => unreachable!("Prim::Brand reached interp — erasure should run inside lower_program_full"),
+        Prim::Brand(_, _) => unreachable!("Prim::Brand reached interp — erasure should run inside lower_program"),
         _ => {
             return Err(format!(
                 "interp .5.2: prim {:?} not yet supported (lands in fz-ul4.23.5.3+)",

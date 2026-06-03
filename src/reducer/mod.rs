@@ -83,10 +83,10 @@ pub fn fold_prim<T: Types<Ty = Ty> + LiteralTypes>(
         | Prim::BitReaderInit(..)
         | Prim::BitReadField { .. }
         | Prim::BitReaderDone(..) => None,
-        // fz-axu.23 (M2) — lower_program_full erases Prim::Brand
+        // fz-axu.23 (M2) — lower_program erases Prim::Brand
         // before the reducer runs. Surface a stray Brand instead of
         // silently re-introducing brand-transparent fold logic.
-        Prim::Brand(_, _) => unreachable!("Prim::Brand reached reducer — erasure should run inside lower_program_full"),
+        Prim::Brand(_, _) => unreachable!("Prim::Brand reached reducer — erasure should run inside lower_program"),
     }
 }
 
@@ -168,7 +168,7 @@ fn fold_arith<T: Types>(t: &mut T, op: BinOp, ad: &T::Ty, bd: &T::Ty) -> Option<
 /// `descrs_value_disjoint`; both bottom out in the one shared relation,
 /// `is_value_disjoint`.
 ///
-/// Runtime equality is brand-BLIND (`ir_brand_erase` strips brands;
+/// Runtime equality is brand-BLIND (lowering strips brands;
 /// `fz_value_eq` compares bytes), so the "definitely unequal" arm uses
 /// `is_value_disjoint` (brand-erased), NOT `is_disjoint`. The both-literal
 /// arm is unchanged: a minted brand is a pure tag, never a singleton, so it

@@ -5310,7 +5310,7 @@ fn make_bitstring_types_as_str_t() {
 
 #[test]
 fn string_literal_lowers_to_utf8_branded_bitstring() {
-    // fz-axu.23 (M2) — lower_program_full erases Brand prims as its
+    // fz-axu.23 (M2) — lower_program erases Brand prims as its
     // final phase. The post-erasure invariant is that the ConstBitstring
     // survives and Module.brand_inners still names utf8 (so the type
     // system can recover the brand context when needed), but no

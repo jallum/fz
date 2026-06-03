@@ -108,7 +108,8 @@ pub(crate) fn descr_is_nil_or_bool<T: Types<Ty = Ty>>(t: &mut T, fn_types: &Spec
 /// ever be equal: disjointness in the brand-erased (runtime) model. This is
 /// the ONLY disjointness that may authorize folding `==`/`!=` to a constant.
 /// Brand/opaque tags are discharged via the spec's inner-type maps, because
-/// `==` is brand-blind at runtime (`ir_brand_erase` + byte-wise `fz_value_eq`).
+/// `==` is brand-blind at runtime (lowering erases brands + byte-wise
+/// `fz_value_eq`).
 /// Using the brand-AWARE `is_disjoint` here was the fz-bsx bug.
 pub(crate) fn descrs_value_disjoint<T: Types<Ty = Ty>>(t: &T, fn_types: &SpecPlan, a: Var, b: Var) -> bool {
     match (fn_types.vars.get(&a), fn_types.vars.get(&b)) {
