@@ -186,6 +186,7 @@ pub(super) fn run_fn_typed<T: Types<Ty = Ty> + ClosureTypes + RenderTypes>(
                             selected_spec = None;
                             continue 'tail;
                         }
+                        InterpStep::Halt(val) => return Ok(InterpStep::Halt(val)),
                         InterpStep::Blocked(rf, cv, mut inner_after) => {
                             // Append our continuation to the chain so the
                             // scheduler calls it after the blocked task resumes.
@@ -285,6 +286,7 @@ pub(super) fn run_fn_typed<T: Types<Ty = Ty> + ClosureTypes + RenderTypes>(
                             selected_spec = None;
                             continue 'tail;
                         }
+                        InterpStep::Halt(val) => return Ok(InterpStep::Halt(val)),
                         InterpStep::Blocked(rf, cv, mut inner_after) => {
                             inner_after.push((continuation.fn_id, outer_cap_vals));
                             return Ok(InterpStep::Blocked(rf, cv, inner_after));
@@ -328,7 +330,7 @@ pub(super) fn run_fn_typed<T: Types<Ty = Ty> + ClosureTypes + RenderTypes>(
                     continue 'tail;
                 }
                 Term::Return(v) => return Ok(InterpStep::Done(env_get(&env, *v)?)),
-                Term::Halt(v) => return Ok(InterpStep::Done(env_get(&env, *v)?)),
+                Term::Halt(v) => return Ok(InterpStep::Halt(env_get(&env, *v)?)),
                 Term::Receive { continuation, ident: _ } => {
                     let cap_vals = collect(&env, &continuation.captured)?;
                     match unsafe { &mut *runtime.cur_proc() }.mailbox.pop_front() {
@@ -491,6 +493,12 @@ pub(super) fn drain_pending_dtors_interp<T: Types<Ty = Ty> + ClosureTypes + Rend
         args.push(interp_value_from_ref_word(payload_ref, "fz-4mk drain payload")?);
         match run_fn_typed(runtime, t, module, tel, module_types, fn_id, args, None)? {
             InterpStep::Done(_) => {}
+            InterpStep::Halt(value) => {
+                return Err(format!(
+                    "fz-4mk drain: dtor halted with {}",
+                    value.render(runtime.cur_proc())
+                ));
+            }
             InterpStep::Yielded { .. } | InterpStep::Blocked(_, _, _) | InterpStep::BlockedMatched(_, _) => {
                 return Err("fz-4mk drain: dtor blocked on receive (unsupported in v1)".into());
             }

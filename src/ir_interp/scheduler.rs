@@ -33,6 +33,7 @@ use crate::types::{Ty, Types};
 /// Returned by run_fn to signal either completion or a receive-park.
 pub(super) enum InterpStep {
     Done(AnyValue),
+    Halt(AnyValue),
     /// Task yielded cooperatively at a scheduler-safe back edge. The next
     /// quantum resumes by calling `resume_fn(args...)`, then drains `after`
     /// continuations exactly like a receive resume.

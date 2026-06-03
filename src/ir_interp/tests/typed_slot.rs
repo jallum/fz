@@ -37,6 +37,15 @@ fn run_runtime_graph(src: &str) -> i64 {
     halt
 }
 
+fn capture_runtime_graph(src: &str) -> String {
+    let graph = linked_runtime_graph(src);
+    let tel = ConfiguredTelemetry::new();
+    let dbg = DbgCapture::new();
+    tel.attach(&[], dbg.handler());
+    run_main_with_plan(&tel, &graph.module, graph.module_plan).expect("interp run");
+    dbg.lines().join("\n")
+}
+
 fn capture(src: &str) -> String {
     let m = lower_src(src);
     let tel = ConfiguredTelemetry::new();
@@ -53,6 +62,16 @@ fn checked_halt_and_closure_allocs(src: &str) -> (i64, u64) {
     let task = runtime.task(1).expect("main task remains registered");
     let closure_allocs = task.heap.alloc_stats_snapshot().closure.allocs;
     (halt, closure_allocs)
+}
+
+fn checked_halt_and_capture(src: &str) -> (i64, String, Module) {
+    let frontend = compile_source(src.to_string(), "interp-test.fz".to_string())
+        .unwrap_or_else(|err| panic!("frontend: {:?}", err.diagnostics));
+    let tel = ConfiguredTelemetry::new();
+    let dbg = DbgCapture::new();
+    tel.attach(&[], dbg.handler());
+    let (halt, _runtime) = run_main_with_runtime(&tel, &frontend.module).expect("interp run");
+    (halt, dbg.lines().join("\n"), frontend.module)
 }
 
 #[test]
@@ -155,9 +174,7 @@ fn add_a(x, acc), do: acc + x
 fn add_b(x, acc), do: acc + x
 
 fn main() do
-  xs = [1, 2, 3]
-  stats0 = Process.heap_alloc_stats()
-  reducer = case stats0[:allocs] == 0 do
+  reducer = case 0 == 0 do
     true -> add_a
     _ -> add_b
   end
@@ -203,6 +220,71 @@ end
 "#,
         ),
         6
+    );
+}
+
+#[test]
+fn frontend_only_checked_interp_surfaces_unlinked_process_heap_alloc_stats_halt() {
+    let (halt, got, module) = checked_halt_and_capture(
+        r#"
+fn main() do
+  stats = Process.heap_alloc_stats()
+  dbg(stats[:allocs])
+  dbg(stats[:closure_allocs])
+end
+"#,
+    );
+    let expected = module
+        .atom_names
+        .iter()
+        .position(|name| name == "external_module_unlinked")
+        .expect("frontend-only module interns external_module_unlinked") as i64;
+    assert_eq!(halt, expected);
+    assert_eq!(got, "");
+}
+
+#[test]
+fn interp_runtime_graph_heap_alloc_stats_exposes_closure_allocs_key() {
+    let got = capture_runtime_graph(
+        r#"
+fn add(x, acc), do: acc + x
+
+fn main() do
+  stats0 = Process.heap_alloc_stats()
+  dbg(stats0[:closure_allocs])
+  f = fn (x) -> x + 1 end
+  r = f.(41)
+  stats1 = Process.heap_alloc_stats()
+  dbg(stats1[:closure_allocs])
+  s = add(1, 0)
+  dbg(Process.heap_alloc_stats()[:closure_allocs])
+end
+"#,
+    );
+    assert_eq!(
+        got, "0\n0\n0",
+        "linked runtime graph should expose :closure_allocs as a stable atom-keyed map entry",
+    );
+}
+
+#[test]
+fn interp_runtime_graph_heap_alloc_stats_reports_captured_closure_allocs() {
+    let got = capture_runtime_graph(
+        r#"
+fn main() do
+  stats0 = Process.heap_alloc_stats()
+  dbg(stats0[:closure_allocs])
+  k = 7
+  f = fn (x) -> x + k end
+  r = f.(1)
+  stats1 = Process.heap_alloc_stats()
+  dbg(stats1[:closure_allocs])
+end
+"#,
+    );
+    assert_eq!(
+        got, "0\n1",
+        "linked runtime graph should report captured closure heap allocations via Process.heap_alloc_stats()",
     );
 }
 

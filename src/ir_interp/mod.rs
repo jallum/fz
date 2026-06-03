@@ -368,6 +368,26 @@ impl IrInterpRuntime {
                         self.set_process_state(pid, ProcessState::Exited);
                         continue 'sched;
                     }
+                    Ok(InterpStep::Halt(val)) => {
+                        completions.push((pid, val));
+                        if keepalive_pid == Some(pid) {
+                            self.set_process_state(pid, ProcessState::Ready);
+                            continue 'sched;
+                        }
+
+                        unsafe {
+                            mso_drop_all_deferred(&mut (*proc_ptr).heap);
+                        }
+                        if let Err(e) = drain_pending_dtors_interp(self, &mut t, module, tel, module_types) {
+                            tel.event(&["fz", "runtime", "dtor_drain_failed"], crate::metadata! { error: e });
+                        }
+                        unsafe {
+                            (*proc_ptr).halt_value = value_to_halt(proc_ptr, val);
+                            ExitRecord::emit(tel, pid, &*proc_ptr);
+                        }
+                        self.set_process_state(pid, ProcessState::Exited);
+                        continue 'sched;
+                    }
                     Ok(InterpStep::Yielded {
                         resume_fn,
                         mut resume_args,
@@ -578,6 +598,7 @@ pub fn run_test_fn(tel: &dyn Telemetry, module: &Module, fn_id: FnId) -> Result<
     }
     match result {
         Ok(InterpStep::Done(_)) => Ok(()),
+        Ok(InterpStep::Halt(value)) => Err(format!("test fn halted with {}", value.render(task_ptr))),
         Ok(InterpStep::Yielded { .. }) => Err("test fn yielded outside scheduler drive".to_string()),
         Ok(InterpStep::Blocked(..)) | Ok(InterpStep::BlockedMatched(..)) => {
             Err("test fn blocked on receive with empty mailbox".to_string())
