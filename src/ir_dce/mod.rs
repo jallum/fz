@@ -1,4 +1,4 @@
-//! fz-ul4.dce.4 — Dead stmt elimination, dead block elimination, block fusion.
+//! Function-local liveness helpers and DCE.
 //!
 //! Dead stmts: removes pure stmts whose dest var is not used anywhere in the fn.
 //! Fixed-point loop handles chains of dead stmts.
@@ -7,134 +7,13 @@
 //! Only Goto and If create intra-function block edges; all other terminators
 //! exit to a separate FnIr or terminate execution.
 //!
-//! Block fusion: merges a block that ends with a parameterless Goto into its
-//! single-predecessor target. Runs after dead block elimination so that only
-//! reachable blocks remain. Fixed-point loop handles chains.
-//!
-//! Module-level DCE preserves spec-bearing Kernel operator functions referenced
-//! by surviving arithmetic `BinOp` prims. Until those prims are fully desugared
-//! to ordinary Kernel calls, type inference still reads those function specs.
+//! The module does not own module-level reachability. Planner/materialization
+//! produce reachable executable bodies; this module only answers local liveness
+//! questions and removes local dead IR.
 
-use crate::fz_ir::{
-    BinOp, BitSizeIr, BlockId, ExternId, FnId, FnIr, Module, PhysicalCapability, Prim, Stmt, Term, Var,
-};
+use crate::fz_ir::{BitSizeIr, BlockId, FnIr, PhysicalCapability, Prim, Stmt, Term, Var};
 use crate::telemetry::Telemetry;
-use std::collections::HashMap;
 use std::collections::HashSet;
-
-/// Remove IR functions unreachable from `main`.
-///
-/// Walks from `main` via Term::Call/TailCall callee, Cont::fn_id, and
-/// `Prim::MakeClosure` closure targets in the current working module. Keeps
-/// any fn transitively reachable. Sweeps the rest.
-/// FnIds are NOT renumbered — the codegen schemas vec is indexed by FnId.0
-/// and renumbering would require updating every call/cont/closure reference.
-pub fn dce_module_level(m: &mut Module) {
-    let Some(entry) = m.fn_by_name("main") else {
-        return;
-    };
-    let entry_id = entry.id;
-
-    let mut reachable: HashSet<FnId> = HashSet::new();
-    let mut reachable_externs: HashSet<ExternId> = HashSet::new();
-    let mut queue: Vec<FnId> = vec![entry_id];
-
-    while let Some(fid) = queue.pop() {
-        if !reachable.insert(fid) {
-            continue;
-        }
-        let Some(&fi) = m.fn_idx.get(&fid) else {
-            continue;
-        };
-        for block in &m.fns[fi].blocks {
-            match &block.terminator {
-                Term::Call {
-                    ident: _,
-                    callee,
-                    continuation,
-                    ..
-                } => {
-                    queue.push(*callee);
-                    queue.push(continuation.fn_id);
-                }
-                Term::TailCall { callee, .. } => {
-                    queue.push(*callee);
-                }
-                Term::CallClosure { continuation, .. } => {
-                    queue.push(continuation.fn_id);
-                }
-                Term::Receive { continuation, ident: _ } => {
-                    queue.push(continuation.fn_id);
-                }
-                // fz-yxs — module-level DCE: enqueue every body/guard/after
-                // fn referenced by a ReceiveMatched so they survive to the
-                // backend stage.
-                Term::ReceiveMatched { clauses, after, .. } => {
-                    for c in clauses {
-                        queue.push(c.body);
-                        if let Some(g) = c.guard {
-                            queue.push(g);
-                        }
-                    }
-                    if let Some(a) = after {
-                        queue.push(a.body);
-                    }
-                }
-                _ => {}
-            }
-            for stmt in &block.stmts {
-                match stmt {
-                    Stmt::Let(_, Prim::MakeClosure(_, fid, _)) => queue.push(*fid),
-                    Stmt::Let(_, Prim::BinOp(op, _, _)) => {
-                        if let Some(fid) = kernel_fn_for_binop(m, *op) {
-                            queue.push(fid);
-                        }
-                    }
-                    Stmt::Let(_, Prim::Extern(_, eid, _)) => {
-                        reachable_externs.insert(*eid);
-                    }
-                    _ => {}
-                }
-            }
-        }
-    }
-
-    m.fns.retain(|f| reachable.contains(&f.id));
-    m.boundary_fns.retain(|fid| reachable.contains(fid));
-    m.protocol_call_targets.retain(|fid, _target| reachable.contains(fid));
-    m.external_call_edges
-        .retain(|edge| reachable.contains(&edge.callsite.caller));
-    m.fn_idx.clear();
-    for (i, f) in m.fns.iter().enumerate() {
-        m.fn_idx.insert(f.id, i);
-    }
-
-    m.externs.retain(|e| reachable_externs.contains(&e.id));
-    m.extern_idx.clear();
-    for (i, e) in m.externs.iter().enumerate() {
-        m.extern_idx.insert(e.id, i);
-    }
-}
-
-fn kernel_fn_for_binop(m: &Module, op: BinOp) -> Option<FnId> {
-    match op {
-        BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod => {}
-        BinOp::Eq | BinOp::Neq | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge | BinOp::And | BinOp::Or => return None,
-    }
-    let name = format!("Kernel.{op}");
-    m.fns
-        .iter()
-        .find(|f| f.name == name && f.block(f.entry).params.len() == 2)
-        .map(|f| f.id)
-}
-
-pub fn dce_module_with_telemetry(m: &mut Module, tel: &dyn Telemetry) {
-    let module_path = m.module_path.clone();
-    for f in &mut m.fns {
-        dce_fn_with_telemetry(&module_path, f, tel);
-        fuse_fn(&module_path, f, tel);
-    }
-}
 
 pub fn dce_fn_with_telemetry(module_path: &str, f: &mut FnIr, tel: &dyn Telemetry) {
     loop {
@@ -477,262 +356,14 @@ fn is_impure(p: &Prim) -> bool {
     )
 }
 
-/// Merge a block that ends with a parameterless Goto into its single-predecessor
-/// target. Repeat until no more fusions are possible.
-fn fuse_fn(module_path: &str, f: &mut FnIr, tel: &dyn Telemetry) {
-    loop {
-        let mut in_degree: HashMap<BlockId, usize> = f.blocks.iter().map(|b| (b.id, 0)).collect();
-        for block in &f.blocks {
-            match &block.terminator {
-                Term::Goto(t, _) => *in_degree.entry(*t).or_insert(0) += 1,
-                Term::If { then_b, else_b, .. } => {
-                    *in_degree.entry(*then_b).or_insert(0) += 1;
-                    *in_degree.entry(*else_b).or_insert(0) += 1;
-                }
-                _ => {}
-            }
-        }
-
-        let fuseable = f.blocks.iter().find_map(|block| {
-            if let Term::Goto(target, args) = &block.terminator
-                && args.is_empty()
-            {
-                let tb = f.blocks.iter().find(|b| b.id == *target)?;
-                if tb.params.is_empty() && in_degree.get(target) == Some(&1) {
-                    return Some((block.id, *target));
-                }
-            }
-            None
-        });
-
-        let Some((src_id, target_id)) = fuseable else {
-            break;
-        };
-
-        let target_pos = f.blocks.iter().position(|b| b.id == target_id).unwrap();
-        let target_block = f.blocks.remove(target_pos);
-        let src_block = f.blocks.iter_mut().find(|b| b.id == src_id).unwrap();
-        src_block.stmts.extend(target_block.stmts);
-        src_block.terminator = target_block.terminator;
-        tel.execute(
-            &["fz", "ir", "fuse", "block_fused"],
-            &crate::measurements! {
-                fn_id: f.id.0 as u64,
-                pred_block_id: src_id.0 as u64,
-                fused_block_id: target_id.0 as u64,
-            },
-            &crate::metadata! {
-                module_path: module_path.to_owned(),
-                fn_name: f.name.clone(),
-            },
-        );
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::fz_ir::{
-        BinOp, CallsiteId, CallsiteIdent, Const, Cont, EmitSlot, ExternArg, ExternDecl, ExternTy, ExternalCallEdge,
-        FnBuilder, FnId, ModuleBuilder, Prim, ProtocolCallTarget, Term,
+        BinOp, CallsiteIdent, Const, Cont, ExternArg, ExternId, ExternTy, FnBuilder, FnId, ModuleBuilder, Prim, Term,
     };
-    use crate::modules::identity::{ExportKey, ModuleName};
     use crate::telemetry::{Capture, ConfiguredTelemetry, NullTelemetry, Value};
     use crate::types::{ConcreteTypes, Types};
-
-    fn build_two_fn_module(main_calls_leaf: bool) -> Module {
-        let leaf_id = FnId(1);
-        let main_id = FnId(0);
-
-        let mut bm = FnBuilder::new(main_id, "main");
-        let entry = bm.block(vec![]);
-        if main_calls_leaf {
-            let nil_v = bm.let_(entry, Prim::Const(Const::Nil));
-            let leaf_cont_id = FnId(99); // dummy cont — not in module; tests only sweep fns
-            let cont = Cont {
-                fn_id: leaf_cont_id,
-                captured: vec![],
-            };
-            bm.set_terminator(
-                entry,
-                Term::Call {
-                    ident: CallsiteIdent::synthetic(),
-                    callee: leaf_id,
-                    args: vec![nil_v],
-                    continuation: cont,
-                },
-            );
-        } else {
-            let nil_v = bm.let_(entry, Prim::Const(Const::Nil));
-            bm.set_terminator(entry, Term::Return(nil_v));
-        }
-
-        let mut bl = FnBuilder::new(leaf_id, "leaf");
-        let lentry = bl.block(vec![]);
-        let lv = bl.let_(lentry, Prim::Const(Const::Nil));
-        bl.set_terminator(lentry, Term::Return(lv));
-
-        let mut mb = ModuleBuilder::new();
-        mb.add_fn(bm.build());
-        mb.add_fn(bl.build());
-        mb.build()
-    }
-
-    #[test]
-    fn dce_module_level_keeps_reachable_leaf() {
-        let mut m = build_two_fn_module(true);
-        assert_eq!(m.fns.len(), 2);
-        dce_module_level(&mut m);
-        // leaf is reachable via Term::Call from main; both kept (cont fn_id 99 missing from module, that's fine)
-        assert!(m.fns.iter().any(|f| f.name == "main"), "main must survive");
-        assert!(
-            m.fns.iter().any(|f| f.name == "leaf"),
-            "leaf reachable via Call must survive"
-        );
-    }
-
-    #[test]
-    fn dce_module_level_removes_unreachable_leaf() {
-        let mut m = build_two_fn_module(false);
-        assert_eq!(m.fns.len(), 2);
-        dce_module_level(&mut m);
-        assert!(m.fns.iter().any(|f| f.name == "main"), "main must survive");
-        assert!(
-            !m.fns.iter().any(|f| f.name == "leaf"),
-            "leaf unreachable must be removed"
-        );
-        assert_eq!(m.fns.len(), 1);
-    }
-
-    #[test]
-    fn dce_module_level_keeps_kernel_operator_specs_used_by_binop() {
-        let mut main = FnBuilder::new(FnId(0), "main");
-        let entry = main.block(vec![]);
-        let one = main.let_(entry, Prim::Const(Const::Int(1)));
-        let two = main.let_(entry, Prim::Const(Const::Int(2)));
-        let sum = main.let_(entry, Prim::BinOp(BinOp::Add, one, two));
-        main.set_terminator(entry, Term::Return(sum));
-
-        let mut add = FnBuilder::new(FnId(1), "Kernel.+");
-        let left = add.fresh_var();
-        let right = add.fresh_var();
-        let add_entry = add.block(vec![left, right]);
-        add.set_terminator(add_entry, Term::Return(left));
-
-        let mut unused = FnBuilder::new(FnId(2), "Kernel.-");
-        let left = unused.fresh_var();
-        let right = unused.fresh_var();
-        let unused_entry = unused.block(vec![left, right]);
-        unused.set_terminator(unused_entry, Term::Return(left));
-
-        let mut mb = ModuleBuilder::new();
-        mb.add_fn(main.build());
-        mb.add_fn(add.build());
-        mb.add_fn(unused.build());
-        let mut m = mb.build();
-
-        dce_module_level(&mut m);
-
-        assert!(m.fn_by_name("Kernel.+").is_some());
-        assert!(m.fn_by_name("Kernel.-").is_none());
-    }
-
-    #[test]
-    fn dce_module_level_prunes_unreachable_fn_side_tables() {
-        let mut m = build_two_fn_module(false);
-        let dead = FnId(1);
-        m.boundary_fns.insert(dead);
-        m.protocol_call_targets.insert(
-            dead,
-            ProtocolCallTarget {
-                protocol: ModuleName::from_segments(vec!["Enumerable".to_string()]),
-                callback: "reduce".to_string(),
-                arity: 3,
-            },
-        );
-        m.external_call_edges.push(ExternalCallEdge {
-            callsite: CallsiteId::new(dead, &CallsiteIdent::synthetic(), EmitSlot::Direct),
-            target: ExportKey::new(
-                ModuleName::from_segments(vec!["Dead".to_string()]),
-                "call".to_string(),
-                0,
-            ),
-        });
-
-        dce_module_level(&mut m);
-
-        assert!(!m.fn_idx.contains_key(&dead));
-        assert!(!m.boundary_fns.contains(&dead));
-        assert!(!m.protocol_call_targets.contains_key(&dead));
-        assert!(!m.external_call_edges.iter().any(|edge| edge.callsite.caller == dead));
-    }
-
-    #[test]
-    fn dce_module_level_sweeps_unreachable_externs() {
-        // Build a module with two externs: used_ext (called from main) and dead_ext (never called).
-        let used_id = ExternId(0);
-        let dead_id = ExternId(1);
-
-        let mut b = FnBuilder::new(FnId(0), "main");
-        let entry = b.block(vec![]);
-        let nil = b.let_(entry, Prim::Const(Const::Nil));
-        let _ret = b.let_(
-            entry,
-            Prim::Extern(
-                CallsiteIdent::synthetic(),
-                used_id,
-                vec![ExternArg::fixed(nil, ExternTy::Any)],
-            ),
-        );
-        b.set_terminator(entry, Term::Return(nil));
-        let mut mb = ModuleBuilder::new();
-        mb.add_fn(b.build());
-        let mut m = mb.build();
-        let mut ct = ConcreteTypes;
-        let dead_descr = Types::any(&mut ct);
-        m.externs.push(ExternDecl {
-            id: used_id,
-            fz_name: "used_ext".into(),
-            symbol: "used_ext".into(),
-            params: vec![ExternTy::Any],
-            variadic: false,
-            ret: ExternTy::Any,
-            ret_descr: dead_descr.clone(),
-        });
-        m.externs.push(ExternDecl {
-            id: dead_id,
-            fz_name: "dead_ext".into(),
-            symbol: "dead_ext".into(),
-            params: vec![],
-            variadic: false,
-            ret: ExternTy::Unit,
-            ret_descr: dead_descr,
-        });
-        m.extern_idx.insert(used_id, 0);
-        m.extern_idx.insert(dead_id, 1);
-
-        dce_module_level(&mut m);
-
-        assert_eq!(m.externs.len(), 1, "dead extern must be swept");
-        assert_eq!(m.externs[0].fz_name, "used_ext");
-        assert_eq!(m.extern_idx.len(), 1);
-        assert!(m.extern_idx.contains_key(&used_id));
-        assert!(!m.extern_idx.contains_key(&dead_id));
-    }
-
-    #[test]
-    fn dce_module_level_always_keeps_main() {
-        let mut mb = ModuleBuilder::new();
-        let mut b = FnBuilder::new(FnId(0), "main");
-        let entry = b.block(vec![]);
-        let v = b.let_(entry, Prim::Const(Const::Nil));
-        b.set_terminator(entry, Term::Return(v));
-        mb.add_fn(b.build());
-        let mut m = mb.build();
-        dce_module_level(&mut m);
-        assert_eq!(m.fns.len(), 1);
-        assert_eq!(m.fns[0].name, "main");
-    }
 
     /// Test 1: Dead Const removed; live Const (used by a Call arg) kept.
     ///
@@ -751,7 +382,7 @@ mod tests {
         mb.add_fn(f);
         let mut m = mb.build();
 
-        dce_module_with_telemetry(&mut m, &NullTelemetry);
+        dce_fn_with_telemetry("", &mut m.fns[0], &NullTelemetry);
 
         let block = m.fns[0].block(m.fns[0].entry);
         assert_eq!(block.stmts.len(), 1, "dead const should be removed");
@@ -786,7 +417,7 @@ mod tests {
         mb.add_fn(f);
         let mut m = mb.build();
 
-        dce_module_with_telemetry(&mut m, &NullTelemetry);
+        dce_fn_with_telemetry("", &mut m.fns[0], &NullTelemetry);
 
         let block = m.fns[0].block(m.fns[0].entry);
         // The Extern stmt must remain (impure). nil_v is used by both Extern and Return.
@@ -824,7 +455,7 @@ mod tests {
         mb.add_fn(f);
         let mut m = mb.build();
 
-        dce_module_with_telemetry(&mut m, &NullTelemetry);
+        dce_fn_with_telemetry("", &mut m.fns[0], &NullTelemetry);
 
         let block = m.fns[0].block(m.fns[0].entry);
         // Only nil_v should remain.
@@ -865,7 +496,7 @@ mod tests {
         mb.add_fn(f);
         let mut m = mb.build();
 
-        dce_module_with_telemetry(&mut m, &NullTelemetry);
+        dce_fn_with_telemetry("", &mut m.fns[0], &NullTelemetry);
 
         let block = m.fns[0].block(m.fns[0].entry);
         assert_eq!(
@@ -898,7 +529,7 @@ mod tests {
         let mut m = mb.build();
 
         assert_eq!(m.fns[0].blocks.len(), 2, "should start with 2 blocks");
-        dce_module_with_telemetry(&mut m, &NullTelemetry);
+        dce_fn_with_telemetry("", &mut m.fns[0], &NullTelemetry);
         assert_eq!(m.fns[0].blocks.len(), 1, "orphan block should be removed");
         assert_eq!(m.fns[0].blocks[0].id, entry);
     }
@@ -948,7 +579,7 @@ mod tests {
         mb.add_fn(b.build());
         let mut m = mb.build();
 
-        dce_module_with_telemetry(&mut m, &tel);
+        dce_fn_with_telemetry("Sort", &mut m.fns[0], &tel);
 
         let ev = cap
             .last(&["fz", "ir", "dce", "block_pruned"])
@@ -982,7 +613,7 @@ mod tests {
         let mut mb = ModuleBuilder::new();
         mb.add_fn(b.build());
         let mut m = mb.build();
-        dce_module_with_telemetry(&mut m, &NullTelemetry);
+        dce_fn_with_telemetry("", &mut m.fns[0], &NullTelemetry);
         assert_eq!(m.fns[0].blocks.len(), 1);
         assert_eq!(m.fns[0].blocks[0].id, entry);
     }
@@ -1003,7 +634,7 @@ mod tests {
         let mut mb = ModuleBuilder::new();
         mb.add_fn(b.build());
         let mut m = mb.build();
-        dce_module_with_telemetry(&mut m, &NullTelemetry);
+        dce_fn_with_telemetry("", &mut m.fns[0], &NullTelemetry);
         assert_eq!(m.fns[0].blocks.len(), 3, "both If branches must be kept");
     }
 
@@ -1025,11 +656,10 @@ mod tests {
         let mut m = mb.build();
 
         assert_eq!(m.fns[0].blocks.len(), 3, "should start with 3 blocks");
-        dce_module_with_telemetry(&mut m, &NullTelemetry);
-        // else_b removed by dead block elimination; entry fused with then_b.
-        assert_eq!(m.fns[0].blocks.len(), 1, "else_b removed and entry+then_b fused");
+        dce_fn_with_telemetry("", &mut m.fns[0], &NullTelemetry);
+        assert_eq!(m.fns[0].blocks.len(), 2, "else_b removed by dead block elimination");
         assert_eq!(m.fns[0].blocks[0].id, entry);
-        assert!(matches!(m.fns[0].blocks[0].terminator, Term::Return(_)));
+        assert!(matches!(m.fns[0].blocks[0].terminator, Term::Goto(target, _) if target == then_b));
     }
 
     /// fz-jv2 — classify_var_uses correctness.

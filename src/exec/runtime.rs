@@ -713,16 +713,12 @@ impl Handler for ProcessExitHandler {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::frontend::macros::expand_program;
-    use crate::frontend::resolve::flatten_modules;
-    use crate::ir_codegen::compile;
+    use crate::ir_codegen::{CompiledModule, compile_planned};
     use crate::ir_interp::run_main;
-    use crate::ir_lower::lower_program;
-    use crate::parser::Parser;
-    use crate::parser::lexer::Lexer;
     use crate::telemetry::bus::ConfiguredTelemetry;
     use crate::telemetry::capture::Capture;
     use crate::telemetry::handler::{Event, Handler};
+    use crate::test_support::linked_runtime_graph_with_telemetry;
     use crate::types::ConcreteTypes;
     use fz_runtime::any_value::{
         ListCons, ValueKind, closure_addr_from_tagged, closure_capture_ref_word, closure_capture_set,
@@ -735,10 +731,13 @@ mod tests {
     use std::thread::sleep;
     use std::time::Duration;
 
-    fn lower_src(src: &str) -> Module {
-        let toks = Lexer::new(src).tokenize().expect("lex");
-        let prog = Parser::new(toks).parse_program().expect("parse");
-        lower_program(&mut ConcreteTypes, &prog, &NullTelemetry).expect("lower")
+    fn compile_src(src: &str) -> (CompiledModule, Module, FnId) {
+        let mut t = ConcreteTypes;
+        let graph = linked_runtime_graph_with_telemetry(&mut t, src, &NullTelemetry);
+        let entry = graph.module.fn_by_name("main").expect("main fn").id;
+        let compiled =
+            compile_planned(&mut t, &graph.module, &graph.module_plan, &NullTelemetry).expect("compile planned");
+        (compiled, graph.module, entry)
     }
 
     fn force_reduction_yield(task: &mut Process) {
@@ -761,9 +760,7 @@ mod tests {
     #[test]
     fn three_tasks_each_compute_their_halt_value() {
         let src = "fn main(), do: 1 + 2 + 3";
-        let m = lower_src(src);
-        let entry = m.fn_by_name("main").unwrap().id;
-        let compiled = compile(&mut ConcreteTypes, &m, &NullTelemetry).unwrap();
+        let (compiled, _module, entry) = compile_src(src);
         let mut rt = Runtime::new(&compiled, 1);
         let a = rt.spawn(entry);
         let b = rt.spawn(entry);
@@ -785,9 +782,7 @@ mod tests {
     fn process_exit_capture_yields_exit_record() {
         // Allocates a map, so the heap has live objects at exit.
         let src = "fn main(), do: %{1 => 10, 2 => 20}[2]";
-        let m = lower_src(src);
-        let entry = m.fn_by_name("main").unwrap().id;
-        let compiled = compile(&mut ConcreteTypes, &m, &NullTelemetry).unwrap();
+        let (compiled, _module, entry) = compile_src(src);
 
         let tel = ConfiguredTelemetry::new();
         let cap = ProcessExitCapture::new();
@@ -826,9 +821,7 @@ mod tests {
         }
 
         let src = "fn main(), do: 7";
-        let m = lower_src(src);
-        let entry = m.fn_by_name("main").unwrap().id;
-        let compiled = compile(&mut ConcreteTypes, &m, &NullTelemetry).unwrap();
+        let (compiled, _module, entry) = compile_src(src);
 
         let seen_halt = Rc::new(Cell::new(None));
         let tel = ConfiguredTelemetry::new();
@@ -874,9 +867,7 @@ mod tests {
             }
         }
 
-        let m = lower_src("fn main(), do: 7");
-        let entry = m.fn_by_name("main").unwrap().id;
-        let compiled = compile(&mut ConcreteTypes, &m, &NullTelemetry).unwrap();
+        let (compiled, _module, entry) = compile_src("fn main(), do: 7");
 
         let scheduler_set = Rc::new(Cell::new(false));
         let tel_set = Rc::new(Cell::new(false));
@@ -907,9 +898,7 @@ mod tests {
     fn both_engines_emit_equivalent_process_exited_and_dbg() {
         // dbg returns its arg, so this halts with 9 and prints "9".
         let src = "fn main(), do: dbg(%{1 => 9}[1])";
-        let m = lower_src(src);
-        let entry = m.fn_by_name("main").unwrap().id;
-        let compiled = compile(&mut ConcreteTypes, &m, &NullTelemetry).unwrap();
+        let (compiled, m, entry) = compile_src(src);
 
         // Compiled engine.
         let tel_c = ConfiguredTelemetry::new();
@@ -950,9 +939,7 @@ mod tests {
         use crate::telemetry::value::Value;
 
         let src = "fn main(), do: dbg(42)";
-        let m = lower_src(src);
-        let entry = m.fn_by_name("main").unwrap().id;
-        let compiled = compile(&mut ConcreteTypes, &m, &NullTelemetry).unwrap();
+        let (compiled, _module, entry) = compile_src(src);
 
         let tel = ConfiguredTelemetry::new();
         let cap = Capture::new();
@@ -977,11 +964,8 @@ mod tests {
     fn tasks_have_independent_heaps_and_builders() {
         let src_a = "fn main(), do: %{1 => 10, 2 => 20}[2]";
         let src_b = "fn main(), do: %{3 => 30}[3]";
-        let ma = lower_src(src_a);
-        let mb = lower_src(src_b);
-        let mut ct = ConcreteTypes;
-        let ca = compile(&mut ct, &ma, &NullTelemetry).unwrap();
-        let cb = compile(&mut ct, &mb, &NullTelemetry).unwrap();
+        let (ca, ma, _entry_a) = compile_src(src_a);
+        let (cb, mb, _entry_b) = compile_src(src_b);
 
         let mut rt_a = Runtime::new(&ca, 1);
         let mut rt_b = Runtime::new(&cb, 1);
@@ -1001,9 +985,7 @@ mod tests {
     #[test]
     fn spawn_after_idle_resumes_progress() {
         let src = "fn main(), do: 42";
-        let m = lower_src(src);
-        let entry = m.fn_by_name("main").unwrap().id;
-        let compiled = compile(&mut ConcreteTypes, &m, &NullTelemetry).unwrap();
+        let (compiled, _module, entry) = compile_src(src);
         let mut rt = Runtime::new(&compiled, 1);
         let a = rt.spawn(entry);
         rt.run_until_idle();
@@ -1020,8 +1002,7 @@ mod tests {
     #[should_panic(expected = "v1 only supports pool size 1")]
     fn workers_greater_than_one_is_not_yet_supported() {
         let src = "fn main(), do: 0";
-        let m = lower_src(src);
-        let compiled = compile(&mut ConcreteTypes, &m, &NullTelemetry).unwrap();
+        let (compiled, _module, _entry) = compile_src(src);
         let _ = Runtime::new(&compiled, 2);
     }
 
@@ -1032,9 +1013,7 @@ mod tests {
     #[test]
     fn self_returns_task_pid() {
         let src = "fn main(), do: self()";
-        let m = lower_src(src);
-        let entry = m.fn_by_name("main").unwrap().id;
-        let compiled = compile(&mut ConcreteTypes, &m, &NullTelemetry).unwrap();
+        let (compiled, _module, entry) = compile_src(src);
         let mut rt = Runtime::new(&compiled, 1);
         let pid = rt.spawn(entry);
         rt.run_until_idle();
@@ -1050,9 +1029,7 @@ mod tests {
             fn child(), do: 42
             fn main(), do: spawn(child)
         "#;
-        let m = lower_src(src);
-        let entry = m.fn_by_name("main").unwrap().id;
-        let compiled = compile(&mut ConcreteTypes, &m, &NullTelemetry).unwrap();
+        let (compiled, _module, entry) = compile_src(src);
         let mut rt = Runtime::new(&compiled, 1);
         let main_pid = rt.spawn(entry);
         rt.run_until_idle();
@@ -1083,9 +1060,7 @@ mod tests {
               receive()
             end
         "#;
-        let m = lower_src(src);
-        let entry = m.fn_by_name("main").unwrap().id;
-        let compiled = compile(&mut ConcreteTypes, &m, &NullTelemetry).unwrap();
+        let (compiled, _module, entry) = compile_src(src);
         let mut rt = Runtime::new(&compiled, 1);
         let pid = rt.spawn(entry);
         rt.run_until_idle();
@@ -1109,9 +1084,7 @@ mod tests {
               receive()
             end
         "#;
-        let m = lower_src(src);
-        let entry = m.fn_by_name("main").unwrap().id;
-        let compiled = compile(&mut ConcreteTypes, &m, &NullTelemetry).unwrap();
+        let (compiled, _module, entry) = compile_src(src);
         let mut rt = Runtime::new(&compiled, 1);
         let pid = rt.spawn(entry);
         rt.run_until_idle();
@@ -1142,16 +1115,7 @@ mod tests {
                      spawn(child)\n\
                      dbg(receive do x -> x end)\n\
                    end\n";
-        // Pipeline: lex, parse, resolve (flatten modules), expand macros,
-        // ir_lower, ir_codegen, Runtime.
-        let toks = Lexer::new(src).tokenize().expect("lex");
-        let prog = Parser::new(toks).parse_program().expect("parse");
-        let mut ct = ConcreteTypes;
-        let mut prog = flatten_modules(&mut ct, prog).expect("resolve");
-        expand_program(&mut prog).expect("expand");
-        let m = lower_program(&mut ct, &prog, &NullTelemetry).expect("lower");
-        let entry = m.fn_by_name("main").expect("main fn").id;
-        let compiled = compile(&mut ct, &m, &NullTelemetry).expect("codegen");
+        let (compiled, _module, entry) = compile_src(src);
 
         let mut rt = Runtime::new(&compiled, 1);
         let main_pid = rt.spawn(entry);
@@ -1185,9 +1149,7 @@ mod tests {
               receive()
             end
         "#;
-        let m = lower_src(src);
-        let entry = m.fn_by_name("main").unwrap().id;
-        let compiled = compile(&mut ConcreteTypes, &m, &NullTelemetry).unwrap();
+        let (compiled, _module, entry) = compile_src(src);
         let mut rt = Runtime::new(&compiled, 1);
         let pid = rt.spawn(entry);
         rt.run_until_idle();
@@ -1211,9 +1173,7 @@ mod tests {
               nil
             end
         "#;
-        let m = lower_src(src);
-        let entry = m.fn_by_name("main").unwrap().id;
-        let compiled = compile(&mut ConcreteTypes, &m, &NullTelemetry).unwrap();
+        let (compiled, _module, entry) = compile_src(src);
         let mut rt = Runtime::new(&compiled, 1);
         let pid = rt.spawn(entry);
         rt.run_until_idle();
@@ -1235,9 +1195,7 @@ mod tests {
               nil
             end
         "#;
-        let m = lower_src(src);
-        let entry = m.fn_by_name("main").unwrap().id;
-        let compiled = compile(&mut ConcreteTypes, &m, &NullTelemetry).unwrap();
+        let (compiled, _module, entry) = compile_src(src);
         let mut rt = Runtime::new(&compiled, 1);
         let pid = rt.spawn(entry);
         rt.run_until_idle();
@@ -1266,9 +1224,7 @@ mod tests {
               dbg(v)
             end
         "#;
-        let m = lower_src(src);
-        let entry = m.fn_by_name("main").unwrap().id;
-        let compiled = compile(&mut ConcreteTypes, &m, &NullTelemetry).unwrap();
+        let (compiled, _module, entry) = compile_src(src);
         let tel = ConfiguredTelemetry::new();
         let dbg = DbgCapture::new();
         tel.attach(&[], dbg.handler());
@@ -1287,9 +1243,7 @@ mod tests {
     fn park_time_gc_fires_when_pressure_set() {
         // [1,2,3] allocates three 16-byte headerless cons cells = 48 bytes.
         let src = "fn main(), do: [1, 2, 3]";
-        let m = lower_src(src);
-        let entry = m.fn_by_name("main").unwrap().id;
-        let compiled = compile(&mut ConcreteTypes, &m, &NullTelemetry).unwrap();
+        let (compiled, _module, entry) = compile_src(src);
         let mut rt = Runtime::new(&compiled, 1);
         let pid = rt.spawn(entry);
         // Lower threshold below the alloc footprint so the flag trips.
@@ -1316,9 +1270,7 @@ mod tests {
               dbg(v)
             end
         "#;
-        let m = lower_src(src);
-        let entry = m.fn_by_name("main").unwrap().id;
-        let compiled = compile(&mut ConcreteTypes, &m, &NullTelemetry).unwrap();
+        let (compiled, _module, entry) = compile_src(src);
         let tel = ConfiguredTelemetry::new();
         let dbg = DbgCapture::new();
         tel.attach(&[], dbg.handler());
@@ -1342,9 +1294,7 @@ mod tests {
 fn sum(0, acc, _), do: acc
 fn sum(n, acc, _), do: sum(n - 1, acc + n, [n])
 fn main(), do: sum(10, 0, nil)";
-        let m = lower_src(src);
-        let entry = m.fn_by_name("main").unwrap().id;
-        let compiled = compile(&mut ConcreteTypes, &m, &NullTelemetry).unwrap();
+        let (compiled, _module, entry) = compile_src(src);
         let mut rt = Runtime::new(&compiled, 1);
         let pid = rt.spawn(entry);
         {
@@ -1366,9 +1316,7 @@ fn main(), do: sum(10, 0, nil)";
 fn sumf(0, acc, _), do: acc
 fn sumf(n, acc, _), do: sumf(n - 1, acc + 1.5, [n])
 fn main(), do: sumf(4, 0.0, nil)";
-        let m = lower_src(src);
-        let entry = m.fn_by_name("main").unwrap().id;
-        let compiled = compile(&mut ConcreteTypes, &m, &NullTelemetry).unwrap();
+        let (compiled, _module, entry) = compile_src(src);
         let mut rt = Runtime::new(&compiled, 1);
         let pid = rt.spawn(entry);
         force_allocation_pressure_yield(rt.tasks.get_mut(&pid).unwrap());
@@ -1385,9 +1333,7 @@ fn main(), do: sumf(4, 0.0, nil)";
             fn sum(n, acc, _, _), do: sum(n - 1, acc + n, {n, :kept}, [n])
             fn main(), do: sum(10, 0, {0, :kept}, nil)
         "#;
-        let m = lower_src(src);
-        let entry = m.fn_by_name("main").unwrap().id;
-        let compiled = compile(&mut ConcreteTypes, &m, &NullTelemetry).unwrap();
+        let (compiled, _module, entry) = compile_src(src);
         let mut rt = Runtime::new(&compiled, 1);
         let pid = rt.spawn(entry);
         force_allocation_pressure_yield(rt.tasks.get_mut(&pid).unwrap());
@@ -1408,9 +1354,7 @@ fn main(), do: sumf(4, 0.0, nil)";
             fn sum(n, acc, _), do: sum(n - 1, acc + n, [n])
             fn main(), do: sum(10, 0, [0])
         "#;
-        let m = lower_src(src);
-        let entry = m.fn_by_name("main").unwrap().id;
-        let compiled = compile(&mut ConcreteTypes, &m, &NullTelemetry).unwrap();
+        let (compiled, _module, entry) = compile_src(src);
         let mut rt = Runtime::new(&compiled, 1);
         let pid = rt.spawn(entry);
         force_allocation_pressure_yield(rt.tasks.get_mut(&pid).unwrap());
@@ -1431,9 +1375,7 @@ fn main(), do: sumf(4, 0.0, nil)";
             fn sum(n, acc, _), do: sum(n - 1, acc + n, %{last: n, kept: :ok})
             fn main(), do: sum(10, 0, %{last: 0, kept: :ok})
         "#;
-        let m = lower_src(src);
-        let entry = m.fn_by_name("main").unwrap().id;
-        let compiled = compile(&mut ConcreteTypes, &m, &NullTelemetry).unwrap();
+        let (compiled, _module, entry) = compile_src(src);
         let mut rt = Runtime::new(&compiled, 1);
         let pid = rt.spawn(entry);
         force_allocation_pressure_yield(rt.tasks.get_mut(&pid).unwrap());
@@ -1455,9 +1397,7 @@ fn main(), do: sumf(4, 0.0, nil)";
 fn sum(0, acc, _), do: acc
 fn sum(n, acc, _), do: sum(n - 1, acc + n, [n])
 fn main(), do: sum(10, 0, nil)";
-        let m = lower_src(src);
-        let entry = m.fn_by_name("main").unwrap().id;
-        let compiled = compile(&mut ConcreteTypes, &m, &NullTelemetry).unwrap();
+        let (compiled, _module, entry) = compile_src(src);
         let mut rt = Runtime::new(&compiled, 1);
         let pid = rt.spawn(entry);
         force_allocation_pressure_yield(rt.tasks.get_mut(&pid).unwrap());
@@ -1477,9 +1417,7 @@ fn main(), do: sum(10, 0, nil)";
 fn sum(0, acc, _), do: acc
 fn sum(n, acc, _), do: sum(n - 1, acc + n, [n])
 fn main(), do: sum(8, 0, nil)";
-        let m = lower_src(src);
-        let entry = m.fn_by_name("main").unwrap().id;
-        let compiled = compile(&mut ConcreteTypes, &m, &NullTelemetry).unwrap();
+        let (compiled, _module, entry) = compile_src(src);
         let mut rt = Runtime::new(&compiled, 1);
         let pa = rt.spawn(entry);
         let pb = rt.spawn(entry);
@@ -1497,9 +1435,7 @@ fn main(), do: sum(8, 0, nil)";
     fn compiled_reductions_yield_allocation_light_loops() {
         let src =
             "fn count(0, acc), do: acc\nfn count(n, acc), do: count(n - 1, acc + 1)\nfn main(), do: count(5000, 0)";
-        let m = lower_src(src);
-        let entry = m.fn_by_name("main").unwrap().id;
-        let compiled = compile(&mut ConcreteTypes, &m, &NullTelemetry).unwrap();
+        let (compiled, _module, entry) = compile_src(src);
         let mut rt = Runtime::new(&compiled, 1);
         let pa = rt.spawn(entry);
         let pb = rt.spawn(entry);
@@ -1524,9 +1460,7 @@ fn main(), do: sum(8, 0, nil)";
     fn compiled_yield_measures_full_continuation_allocation_window() {
         let src =
             "fn count(0, acc), do: acc\nfn count(n, acc), do: count(n - 1, acc + 1)\nfn main(), do: count(5000, 0)";
-        let m = lower_src(src);
-        let entry = m.fn_by_name("main").unwrap().id;
-        let compiled = compile(&mut ConcreteTypes, &m, &NullTelemetry).unwrap();
+        let (compiled, _module, entry) = compile_src(src);
         let mut rt = Runtime::new(&compiled, 1);
         let pid = rt.spawn(entry);
         force_reduction_yield(rt.tasks.get_mut(&pid).unwrap());
@@ -1553,9 +1487,7 @@ fn main(), do: sum(8, 0, nil)";
     fn quiet_quanta_increments_when_no_mid_flight_yield() {
         // Pure integer counter: no allocations, back-edge never yields.
         let src = "fn count(0, acc), do: acc\nfn count(n, acc), do: count(n - 1, acc + 1)\nfn main(), do: count(20, 0)";
-        let m = lower_src(src);
-        let entry = m.fn_by_name("main").unwrap().id;
-        let compiled = compile(&mut ConcreteTypes, &m, &NullTelemetry).unwrap();
+        let (compiled, _module, entry) = compile_src(src);
         let mut rt = Runtime::new(&compiled, 1);
         let pid = rt.spawn(entry);
         rt.run_until_idle();
@@ -1575,9 +1507,7 @@ fn main(), do: sum(8, 0, nil)";
 fn sum(0, acc, _), do: acc
 fn sum(n, acc, _), do: sum(n - 1, acc + n, [n])
 fn main(), do: sum(10, 0, nil)";
-        let m = lower_src(src);
-        let entry = m.fn_by_name("main").unwrap().id;
-        let compiled = compile(&mut ConcreteTypes, &m, &NullTelemetry).unwrap();
+        let (compiled, _module, entry) = compile_src(src);
         let mut rt = Runtime::new(&compiled, 1);
         let pid = rt.spawn(entry);
         force_allocation_pressure_yield(rt.tasks.get_mut(&pid).unwrap());
@@ -1636,9 +1566,7 @@ fn main(), do: sum(10, 0, nil)";
     #[test]
     fn send_probe_hit_wakes_receiver_with_runnable_closure() {
         let src = "fn main(), do: 0";
-        let m = lower_src(src);
-        let main_id = m.fn_by_name("main").unwrap().id;
-        let compiled = compile(&mut ConcreteTypes, &m, &NullTelemetry).unwrap();
+        let (compiled, _module, main_id) = compile_src(src);
         let (mut rt, sender_pid, receiver_pid) = two_task_rt(&compiled, main_id);
 
         // Pre-seed receiver as wait. Pinned wants msg == 42.
@@ -1686,9 +1614,7 @@ fn main(), do: sum(10, 0, nil)";
     #[test]
     fn send_probe_miss_leaves_park_in_place_and_appends_to_mailbox() {
         let src = "fn main(), do: 0";
-        let m = lower_src(src);
-        let main_id = m.fn_by_name("main").unwrap().id;
-        let compiled = compile(&mut ConcreteTypes, &m, &NullTelemetry).unwrap();
+        let (compiled, _module, main_id) = compile_src(src);
         let (mut rt, sender_pid, receiver_pid) = two_task_rt(&compiled, main_id);
 
         let receiver = rt.task_mut(receiver_pid).unwrap();
@@ -1730,9 +1656,7 @@ fn main(), do: sum(10, 0, nil)";
     #[test]
     fn drain_expired_timers_wakes_after_cont() {
         let src = "fn main(), do: 0";
-        let m = lower_src(src);
-        let compiled = compile(&mut ConcreteTypes, &m, &NullTelemetry).unwrap();
-        let main_id = m.fn_by_name("main").unwrap().id;
+        let (compiled, _module, main_id) = compile_src(src);
         let mut rt = Runtime::new(&compiled, 1);
         let receiver_pid = rt.spawn(main_id);
         rt.run_queue.clear();
@@ -1782,8 +1706,7 @@ fn main(), do: sum(10, 0, nil)";
     /// selective-receive wakeup.
     #[test]
     fn resume_addr_is_finalized() {
-        let m = lower_src("fn main(), do: 0");
-        let compiled = compile(&mut ConcreteTypes, &m, &NullTelemetry).unwrap();
+        let (compiled, _module, _entry) = compile_src("fn main(), do: 0");
         assert!(!compiled.resume_addr.is_null());
     }
 }

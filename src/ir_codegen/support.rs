@@ -9,7 +9,7 @@ use cranelift_codegen::ir::{self, InstBuilder};
 use cranelift_frontend::FunctionBuilder;
 use cranelift_module::Module;
 use fz_runtime::any_value::{FALSE_BITS as FALSE_BITS_RAW, TRUE_BITS as TRUE_BITS_RAW};
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::collections::HashMap;
 
 pub(crate) const HEADER_SIZE: i32 = 16;
@@ -172,20 +172,3 @@ pub(crate) fn default_unit_for(ty: BitType) -> u32 {
 // fadd/fsub/fmul/fdiv when the result can stay RawF64. Typed float-float
 // and typed int-int fast paths sit in front of the dispatch entirely.
 // Eq/Neq do NOT promote: `1 == 1.0` is false.
-
-thread_local! {
-    pub(crate) static INLINE_DISABLED: Cell<bool> = const { Cell::new(false) };
-    /// Disable the compile-time reducer for tests that exercise codegen
-    /// infrastructure (static_closure_targets, indirect closure paths,
-    /// etc.) whose triggering inputs the reducer would dissolve.
-    pub(crate) static REDUCER_DISABLED: Cell<bool> =
-        const { Cell::new(false) };
-}
-
-#[cfg(test)]
-pub(crate) fn with_inline_disabled<F: FnOnce() -> R, R>(f: F) -> R {
-    INLINE_DISABLED.with(|d| d.set(true));
-    let r = f();
-    INLINE_DISABLED.with(|d| d.set(false));
-    r
-}

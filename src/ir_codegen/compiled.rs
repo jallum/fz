@@ -1317,7 +1317,7 @@ impl CompiledImage {
     }
 }
 
-/// Everything `compile_with_backend` collects during the shared pipeline,
+/// Everything planned codegen collects during the shared pipeline,
 /// handed to the backend's `emit_metadata_carriers` and `finalize`.
 ///
 /// The fz user `Module` (post type-rewrite) is intentionally NOT here —

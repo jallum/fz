@@ -1399,8 +1399,7 @@ fn emit_receive<M: cranelift_module::Module, T: Types<Ty = Ty> + ClosureTypes>(
 // Selective-receive park-site CLIF.
 //
 // Layout, mirroring fz_runtime::park::ParkRecord:
-//   - matcher fn addr (declared/emitted by the pre-pass in
-//     compile_with_backend).
+//   - matcher fn addr (declared/emitted by the planned codegen matcher pass).
 //   - pinned[]: one-word value entries, one per `^name`
 //     referenced across all clauses, in source order.
 //   - clause_bodies[]: i64 array of cont-closure refs,
@@ -1438,7 +1437,7 @@ fn emit_receive_matched<M: cranelift_module::Module, T: Types<Ty = Ty> + Closure
     let matcher_fid = *env
         .matcher_fn_ids
         .get(&(caller_fn_id.0, blk.id.0))
-        .expect("matcher fn pre-declared by compile_with_backend pre-pass");
+        .expect("matcher fn pre-declared by planned codegen matcher pass");
     let matcher_addr = fn_addr(body.jmod, matcher_fid, body.b);
     let yield_sentinel = build_park_record(
         body,

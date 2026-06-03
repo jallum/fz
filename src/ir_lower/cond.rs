@@ -213,10 +213,9 @@ pub(crate) fn lower_if(
     //   ctx.terminated = true on return; ctx.cur is else_fn (or its
     //   inner-CPS-split descendant) — surrounding lower_fn finalizes it.
     //
-    // The inliner (`inline_tail_calls_once`) collapses the tiny per-arm
-    // and join fns post-IR-build; for non-CPS-splitting arms the
-    // final CLIF matches today's block-join shape (often tighter — no
-    // join block at all).
+    // The per-arm and join fns are the lowering-time CPS shape. Later phases
+    // consume the coherent module and may choose tighter planned bodies without
+    // relying on a cleanup pass to make this transform valid.
 
     let cv = lower_expr(ctx, cond, false)?;
 

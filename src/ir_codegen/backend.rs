@@ -433,8 +433,8 @@ impl Backend for AotBackend {
         };
 
         // AOT C-main is a thin driver around the Tail-CC entry bodies
-        // (fz_entry_thunk / fz_main_trampoline / fz_halt_cont_body) emitted in
-        // compile_with_backend. Three fz-runtime FFI fns handle Process
+        // (fz_entry_thunk / fz_main_trampoline / fz_halt_cont_body) emitted by
+        // planned codegen. Three fz-runtime FFI fns handle Process
         // setup, static-closure registration, and run-main+teardown.
         // Setup takes the three halt_cont_body addrs (ValueRef, RawInt,
         // RawF64) in slots 2-4.
@@ -481,8 +481,8 @@ impl Backend for AotBackend {
 
         // `fz_aot_register_tuple_schemas(proc, arities_ptr, len)` populates
         // the AOT process's SchemaRegistry with one Tuple{N} entry per
-        // arity in array order. That order matches the sorted iteration
-        // in compile_with_backend, so the schema ids baked into the CLIF
+        // arity in array order. That order matches the planned codegen
+        // schema iteration, so the schema ids baked into the CLIF
         // (via tuple_schema_ids) resolve correctly.
         let reg_tuples_sig = sig1(&[types::I64, types::I64, types::I32], &[]);
         let reg_tuples_id = self

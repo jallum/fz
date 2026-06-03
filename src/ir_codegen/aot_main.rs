@@ -22,7 +22,7 @@ use std::sync::Arc;
 /// `fz_aot_setup` → per-closure `fz_aot_register_static_closure` →
 /// `fz_aot_run_main`. Entry-body addresses (fz_entry_thunk,
 /// fz_main_trampoline, fz_halt_cont_body) are taken via Cranelift `func_addr`
-/// against the Local symbols emitted by compile_with_backend.
+/// against the Local symbols emitted by planned codegen.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn emit_aot_c_main<M: ClModule>(
     jmod: &mut M,

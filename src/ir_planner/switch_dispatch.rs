@@ -28,19 +28,17 @@
 //! `If`, and `Call` already lower in the interpreter, JIT, and AOT, so the
 //! rewrite holds three-path parity with no new codegen.
 //!
-//! The pass is modeled on `closures::rewrite_known_target_closures`: a
-//! planner-fact-driven module mutation run before the authoritative plan.
-//! Callers re-run `plan_module` afterward to refresh facts against the
-//! rewritten IR.
+//! The pass is a planner-fact-driven module mutation that must run before the
+//! authoritative plan for the rewritten module is produced.
 
 use super::diagnostics::env_after_block_stmts;
 use super::fn_types::{ModulePlan, SpecPlan};
 use crate::diag::Span;
 use crate::frontend::protocols::impl_target_type;
 use crate::fz_ir::{
-    Block, BlockId, BranchOrigin, CallsiteIdent, FnId, Module, Prim, ProtocolCallTarget, Stmt, Term, Var,
+    BitSizeIr, Block, BlockId, BranchOrigin, CallsiteIdent, FnId, FnIr, Module, Prim, ProtocolCallTarget, Stmt, Term,
+    Var,
 };
-use crate::ir_inline::{max_block, max_var};
 use crate::types::{ClosureTypes, Ty, Types};
 use std::collections::HashMap;
 
@@ -65,6 +63,139 @@ struct BlockRewrite {
     /// preserves the original stub call, so a runtime value matching no impl
     /// halts exactly as it does today.
     fully_covered: bool,
+}
+
+fn max_var(f: &FnIr) -> u32 {
+    let mut max = 0;
+    for block in &f.blocks {
+        for param in &block.params {
+            max = max.max(param.0);
+        }
+        for stmt in &block.stmts {
+            let Stmt::Let(var, prim) = stmt;
+            max = max.max(var.0).max(max_var_in_prim(prim));
+        }
+        max = max.max(max_var_in_term(&block.terminator));
+    }
+    max
+}
+
+fn max_block(f: &FnIr) -> u32 {
+    f.blocks.iter().map(|block| block.id.0).max().unwrap_or(0)
+}
+
+fn max_var_in_prim(prim: &Prim) -> u32 {
+    let mut max = 0;
+    let mut visit = |var: Var| max = max.max(var.0);
+    match prim {
+        Prim::Const(_) | Prim::DestTupleBegin { .. } | Prim::DestListBegin { .. } | Prim::ConstBitstring(_, _) => {}
+        Prim::BinOp(_, lhs, rhs) | Prim::MapGet(lhs, rhs) | Prim::MatcherMapGet(lhs, rhs) => {
+            visit(*lhs);
+            visit(*rhs);
+        }
+        Prim::UnOp(_, value)
+        | Prim::ListHead(value)
+        | Prim::ListTail(value)
+        | Prim::IsEmptyList(value)
+        | Prim::IsListCons(value)
+        | Prim::TupleField(value, _)
+        | Prim::StructField(value, _)
+        | Prim::IsMatcherMapMiss(value)
+        | Prim::BitReaderInit(value)
+        | Prim::BitReaderDone(value)
+        | Prim::TypeTest(value, _)
+        | Prim::Brand(value, _) => visit(*value),
+        Prim::Extern(_, _, args) => args.iter().for_each(|arg| visit(arg.var)),
+        Prim::MakeTuple(args) | Prim::MakeClosure(_, _, args) => args.iter().for_each(|arg| visit(*arg)),
+        Prim::MakeStruct { fields, .. } => fields.iter().for_each(|(_, value)| visit(*value)),
+        Prim::DestTupleSet { dest, value, .. } => {
+            visit(*dest);
+            visit(*value);
+        }
+        Prim::DestFreeze { dest, .. } => visit(*dest),
+        Prim::DestListCons { head, tail, .. } => {
+            visit(*head);
+            if let Some(tail) = tail {
+                visit(*tail);
+            }
+        }
+        Prim::DestListFreeze { list, .. } => visit(*list),
+        Prim::MakeList(items, tail) => {
+            items.iter().for_each(|item| visit(*item));
+            if let Some(tail) = tail {
+                visit(*tail);
+            }
+        }
+        Prim::MakeMap(entries) => entries.iter().for_each(|(key, value)| {
+            visit(*key);
+            visit(*value);
+        }),
+        Prim::MapUpdate(base, entries) => {
+            visit(*base);
+            entries.iter().for_each(|(key, value)| {
+                visit(*key);
+                visit(*value);
+            });
+        }
+        Prim::DestMapBegin { base, .. } => {
+            if let Some(base) = base {
+                visit(*base);
+            }
+        }
+        Prim::DestMapPut { map, key, value, .. } => {
+            visit(*map);
+            visit(*key);
+            visit(*value);
+        }
+        Prim::DestMapFreeze { map, .. } => visit(*map),
+        Prim::MakeBitstring(fields) => fields.iter().for_each(|field| {
+            visit(field.value);
+            if let Some(BitSizeIr::Var(size)) = &field.size {
+                visit(*size);
+            }
+        }),
+        Prim::BitReadField { reader, size, .. } => {
+            visit(*reader);
+            if let Some(BitSizeIr::Var(size)) = size {
+                visit(*size);
+            }
+        }
+    }
+    max
+}
+
+fn max_var_in_term(term: &Term) -> u32 {
+    let mut max = 0;
+    let mut visit = |var: Var| max = max.max(var.0);
+    match term {
+        Term::Goto(_, args) | Term::TailCall { args, .. } => args.iter().for_each(|arg| visit(*arg)),
+        Term::If { cond, .. } | Term::Return(cond) | Term::Halt(cond) => visit(*cond),
+        Term::Call { args, continuation, .. } | Term::CallClosure { args, continuation, .. } => {
+            args.iter().for_each(|arg| visit(*arg));
+            continuation.captured.iter().for_each(|capture| visit(*capture));
+            if let Term::CallClosure { closure, .. } = term {
+                visit(*closure);
+            }
+        }
+        Term::TailCallClosure { closure, args, .. } => {
+            visit(*closure);
+            args.iter().for_each(|arg| visit(*arg));
+        }
+        Term::Receive { continuation, .. } => continuation.captured.iter().for_each(|capture| visit(*capture)),
+        Term::ReceiveMatched {
+            pinned,
+            captures,
+            after,
+            ..
+        } => {
+            pinned.iter().for_each(|(_, var)| visit(*var));
+            captures.iter().for_each(|capture| visit(*capture));
+            if let Some(after) = after {
+                visit(after.timeout);
+            }
+        }
+    }
+    max
 }
 
 /// Rewrite every closed-union protocol-dispatch callsite into a `TypeTest`/`If`
@@ -125,8 +256,7 @@ fn collect_block_rewrites<T: Types<Ty = Ty> + ClosureTypes>(
 }
 
 /// The receiver's type at `block`, merged (unioned) across every value spec of
-/// the enclosing fn. Mirrors `rewrite_known_target_closures`' "consider every
-/// spec" discipline: the rewrite must be sound for all specializations that
+/// the enclosing fn. The rewrite must be sound for all specializations that
 /// reach this block, so we test against their union.
 fn merged_receiver_ty<T: Types<Ty = Ty> + ClosureTypes>(
     t: &mut T,

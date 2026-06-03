@@ -54,7 +54,7 @@ pub(crate) struct CodegenEnv<'a> {
     /// the normal one-result input shape.
     pub(super) cont_extras_count: &'a HashMap<FnId, usize>,
     /// Matcher FuncId per ReceiveMatched site, keyed by `(parent_fn_id.0,
-    /// block_id.0)`. Populated by the pre-pass in `compile_with_backend`
+    /// block_id.0)`. Populated by the planned codegen matcher declaration pass
     /// and consumed by the Term::ReceiveMatched arm in
     /// `compile_block_terminator` (`fn_addr` -> call site arg).
     pub(super) matcher_fn_ids: &'a HashMap<(u32, u32), FuncId>,

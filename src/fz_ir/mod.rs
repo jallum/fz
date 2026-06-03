@@ -50,12 +50,6 @@ use std::sync::Arc;
 /// - `clone()` — preserves identity. Cloning a `Term` shares the
 ///   ident; "same callsite, different position." Used by fuse / dce
 ///   / fold / per-spec body cloning.
-/// - `fork_inlined(parent, into_fn)` — `ir_inline` clones a `Term`
-///   into a *new caller's* body. The cloned callsite is genuinely
-///   distinct; same span, fresh `Rc` → new identity.
-/// - `synthesize_from_return(call_parent, span)` — `ir_inline` rewrites
-///   a callee's `Return(v)` into `TailCall(K, [v, ...captures])` while
-///   splicing. The new TailCall is a *new* callsite.
 /// - `synthetic()` — test-only. `FnBuilder` mints these so tests don't
 ///   thread spans manually.
 ///
@@ -92,14 +86,6 @@ impl CallsiteIdent {
     #[cfg(test)]
     pub fn synthetic() -> Self {
         Self(Rc::new(CallsiteIdentInner { span: Span::DUMMY }))
-    }
-
-    pub fn fork_inlined(parent: &Self, _into_fn: FnId) -> Self {
-        Self(Rc::new(CallsiteIdentInner { span: parent.0.span }))
-    }
-
-    pub fn synthesize_from_return(_call_parent: &Self, span: Span) -> Self {
-        Self(Rc::new(CallsiteIdentInner { span }))
     }
 
     pub fn span(&self) -> Span {
@@ -533,11 +519,9 @@ pub enum Prim {
     IsMatcherMapMiss(Var),
     /// Build a bitstring from a sequence of fields.
     MakeBitstring(Vec<BitFieldIr>),
-    /// fz-cty.8 — constant-folded byte-payload bitstring. Carries the
-    /// materialised bytes and bit length; codegen interns the payload as a
-    /// module-private data symbol and emits a single allocation call. Produced
-    /// only by `ir_const_bs::fold_module`; lowered identically to a
-    /// `MakeBitstring` of byte fields at runtime.
+    /// fz-cty.8 — byte-payload bitstring with materialised bytes and bit
+    /// length. Codegen interns the payload as a module-private data symbol and
+    /// emits a single allocation call.
     ConstBitstring(Vec<u8>, u64),
     /// Initialize a bit-reader from a binary/bitstring value. Returns an
     /// opaque reader value. Pattern-matching of bitstrings uses this plus
@@ -625,11 +609,10 @@ pub enum DeadBranch {
 /// - Planned-body materialization may fold any-origin dead branches once the
 ///   planner publishes the branch as dead for that specialization.
 ///
-/// On the term itself, not in a side-table: `ir_inline::splice_callee_into_caller`
-/// renumbers BlockIds when splicing, so a `(FnId, BlockId)`-keyed side-table
-/// loses every callee origin at inline time. The post-type chain in
-/// `ir_codegen::compile` runs `inline_single_use_conts`, so inlining is the
-/// happy path. Survival is structural when the data lives on the term.
+/// On the term itself, not in a side-table: transformations that clone,
+/// remove, or renumber blocks must carry branch origin with the branch, so
+/// survival is structural instead of depending on stale `(FnId, BlockId)`
+/// metadata.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum BranchOrigin {
     /// Hand-written conditional in source: `if`, `case`, `with`, fn guards.
@@ -1335,18 +1318,6 @@ impl Module {
 
     pub fn module_path(&self) -> &str {
         &self.module_path
-    }
-
-    /// Remove fn-keyed metadata for any `FnId` no longer present in `fns`.
-    /// IR rewrites that delete functions must keep these side tables in sync
-    /// or later planning/codegen will observe stale facts about dead bodies.
-    pub fn prune_dead_fn_metadata(&mut self) {
-        let live: HashSet<FnId> = self.fns.iter().map(|f| f.id).collect();
-        self.protocol_call_targets.retain(|fid, _| live.contains(fid));
-        self.boundary_fns.retain(|fid| live.contains(fid));
-        self.declared_specs.retain(|fid, _| live.contains(fid));
-        self.function_correspondence.retain(|fid, _| live.contains(fid));
-        self.continuation_provenance.retain(|fid, _| live.contains(fid));
     }
 
     /// Repopulate the derived `fn_idx` / `extern_idx` lookup tables from `fns`

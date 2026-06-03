@@ -6,24 +6,13 @@ use super::receive::{MatcherRuntimeHelpers, declare_matcher, emit_matcher_body_f
 use super::*;
 use crate::concrete_types::ty_descr;
 use crate::fz_ir::{BinOp, BlockId, CallsiteId, Const, EmitSlot, FnId, Module, Prim, SpecId, Stmt, Term, UnOp};
-use crate::ir_const_bs::fold_module;
-use crate::ir_dce::{dce_module_level, dce_module_with_telemetry};
 use crate::ir_dest::{lower_destinations, verify_module};
-use crate::ir_diverge::truncate_diverging_blocks;
 use crate::ir_extern_marshal::resolve_module_types;
-use crate::ir_fuse::fuse_blocks_with_telemetry;
-use crate::ir_inline::{inline_module_with_plan, inline_single_use_conts};
 use crate::ir_planner::fn_types::SpecKey;
 use crate::ir_planner::planned::CallableEntryPlan;
-use crate::ir_planner::{
-    ModulePlan, SpecPlan, collect_diagnostics, materialize_program, plan_callable_capabilities, plan_module,
-    rewrite_known_target_closures,
-};
-use crate::ir_reducer::reduce_module_with_telemetry;
+use crate::ir_planner::{ModulePlan, SpecPlan, collect_diagnostics, materialize_program};
 use crate::telemetry::value::opaque;
 use crate::telemetry::{Telemetry, TelemetryExt as _, next_compile_nonce};
-#[cfg(test)]
-use crate::test_support::assert_module_planner_consistent;
 use crate::types::{
     ClosureTarget, ClosureTypes, LiteralTypes, RenderTypes, Ty, Types, VisibilityTypes, key_slots_from_tys,
     key_slots_to_tys,
@@ -574,21 +563,43 @@ fn build_fn_sigs(
 /// singleton at task launch.
 fn collect_static_closure_targets(
     callable_entries: &BTreeMap<u32, CallableEntryPlan>,
+    reachable_specs: &HashSet<u32>,
     spec_keys: &[SpecKey],
+    fn_ids: &HashMap<u32, FuncId>,
     callable_entry_fn_ids: &HashMap<u32, FuncId>,
     return_reprs: &[ArgRepr],
+    closure_capture_counts: &HashMap<FnId, usize>,
 ) -> Vec<(u32, u32, FuncId, u32)> {
-    callable_entries
-        .iter()
-        .filter(|(_, entry)| entry.capture_count == 0)
-        .map(|(cl_sid, _)| {
-            let fn_id = spec_keys[*cl_sid as usize].fn_id;
-            let body_fid = *callable_entry_fn_ids
-                .get(cl_sid)
-                .expect("zero-cap closure spec must have a callable-entry FuncId");
-            let halt_kind = return_reprs[*cl_sid as usize].halt_kind();
-            (*cl_sid, fn_id.0, body_fid, halt_kind)
-        })
+    let mut targets = BTreeMap::new();
+    for (cl_sid, _entry) in callable_entries.iter().filter(|(_, entry)| entry.capture_count == 0) {
+        let fn_id = spec_keys[*cl_sid as usize].fn_id;
+        let body_fid = *callable_entry_fn_ids
+            .get(cl_sid)
+            .expect("zero-cap closure spec must have a callable-entry FuncId");
+        let halt_kind = return_reprs[*cl_sid as usize].halt_kind();
+        targets.insert(*cl_sid, (fn_id.0, body_fid, halt_kind));
+    }
+
+    for (sid, spec_key) in spec_keys.iter().enumerate() {
+        let sid = sid as u32;
+        if !reachable_specs.contains(&sid) {
+            continue;
+        }
+        if closure_capture_counts.get(&spec_key.fn_id) != Some(&0) {
+            continue;
+        }
+        targets.entry(sid).or_insert_with(|| {
+            let body_fid = *fn_ids
+                .get(&sid)
+                .expect("zero-cap closure-shaped spec must have a direct body FuncId");
+            let halt_kind = return_reprs[sid as usize].halt_kind();
+            (spec_key.fn_id.0, body_fid, halt_kind)
+        });
+    }
+
+    targets
+        .into_iter()
+        .map(|(sid, (fn_id, body_fid, halt_kind))| (sid, fn_id, body_fid, halt_kind))
         .collect()
 }
 
@@ -1316,86 +1327,6 @@ fn declare_mid_flight_conts<T: Types<Ty = Ty>, M: cranelift_module::Module>(
     Ok((mid_flight_cont_fn_ids, mid_flight_cont_tail_fn_ids))
 }
 
-pub(crate) fn prepare_module_for_authoritative_plan<
-    T: Types<Ty = Ty> + ClosureTypes + LiteralTypes + RenderTypes + VisibilityTypes,
->(
-    t: &mut T,
-    module: &Module,
-    tel: &dyn Telemetry,
-) -> Module {
-    #[cfg(test)]
-    fn assert_post_transform_planner_consistency<T: Types<Ty = Ty> + ClosureTypes + RenderTypes>(
-        t: &mut T,
-        module: &Module,
-        context: &str,
-    ) {
-        assert_module_planner_consistent(t, module, context);
-    }
-
-    let mut working = module.clone();
-    let capabilities = plan_callable_capabilities(t, &working);
-    rewrite_known_target_closures(t, &mut working, &capabilities);
-    #[cfg(not(test))]
-    inline_module_with_plan(&mut working, &capabilities);
-    #[cfg(test)]
-    if !INLINE_DISABLED.with(|d| d.get()) {
-        inline_module_with_plan(&mut working, &capabilities);
-        assert_post_transform_planner_consistency(
-            t,
-            &working,
-            "inline_module_with_plan in prepare_module_for_authoritative_plan",
-        );
-    }
-    fuse_blocks_with_telemetry(&mut working, tel);
-    #[cfg(not(test))]
-    let _ = reduce_module_with_telemetry(t, &mut working, tel);
-    #[cfg(test)]
-    if !REDUCER_DISABLED.with(|d| d.get()) {
-        let _ = reduce_module_with_telemetry(t, &mut working, tel);
-    }
-    inline_single_use_conts(&mut working);
-    #[cfg(test)]
-    assert_post_transform_planner_consistency(
-        t,
-        &working,
-        "inline_single_use_conts in prepare_module_for_authoritative_plan",
-    );
-    truncate_diverging_blocks(module.module_path(), &mut working, tel);
-    fold_module(&mut working);
-    dce_module_with_telemetry(&mut working, tel);
-    #[cfg(test)]
-    assert_post_transform_planner_consistency(
-        t,
-        &working,
-        "dce_module_with_telemetry in prepare_module_for_authoritative_plan",
-    );
-    dce_module_level(&mut working);
-    #[cfg(test)]
-    assert_post_transform_planner_consistency(t, &working, "dce_module_level in prepare_module_for_authoritative_plan");
-    working
-}
-
-#[allow(dead_code)]
-pub(crate) fn compile_with_backend_impl<
-    B: Backend,
-    T: Types<Ty = Ty> + ClosureTypes + LiteralTypes + RenderTypes + VisibilityTypes,
->(
-    t: &mut T,
-    module: &Module,
-    backend: B,
-    tel: &dyn Telemetry,
-) -> Result<B::Output, CodegenError> {
-    if let Some(edge) = module.external_call_edges.first() {
-        return Err(CodegenError::new(format!(
-            "unresolved external module call `{}`",
-            edge.target
-        )));
-    }
-    let working = prepare_module_for_authoritative_plan(t, module, tel);
-    let module_plan = plan_module(t, &working, tel);
-    compile_with_backend_preplanned_impl(t, working, module_plan, backend, tel)
-}
-
 pub(crate) fn compile_with_backend_preplanned<
     B: Backend,
     T: Types<Ty = Ty> + ClosureTypes + LiteralTypes + RenderTypes + VisibilityTypes,
@@ -1732,8 +1663,15 @@ fn compile_with_backend_preplanned_impl<
 
     let main_fn_id = module.fn_by_name("main").map(|f| f.id);
 
-    let static_closure_targets =
-        collect_static_closure_targets(callable_entries, &spec_keys, &callable_entry_fn_ids, &return_reprs);
+    let static_closure_targets = collect_static_closure_targets(
+        callable_entries,
+        reachable,
+        &spec_keys,
+        &fn_ids,
+        &callable_entry_fn_ids,
+        &return_reprs,
+        &abi_facts.closure_capture_counts,
+    );
 
     let diagnostics = collect_diagnostics(t, module, &module_plan, tel);
     let halt_reprs = compute_halt_reprs(

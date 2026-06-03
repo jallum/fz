@@ -2,7 +2,7 @@ use super::closures::literal_closure_return_keys;
 use super::diagnostics::{compute_dead_branches, module_plan_stats};
 use super::effects::{prim_effects, term_effects};
 use super::fn_types::{
-    BodyKey, CallEdgePlan, CallEdgeTarget, CallableCapability, CapabilityPlan, EffectSummary, FnEffects,
+    BodyKey, CallEdgePlan, CallEdgeTarget, CallableCapability, EffectSummary, FnEffects,
     IncomingParamCallableCapabilities, ModulePlan, ReturnDemand, SpecKey, SpecKeySet, SpecPlan, SpecReachabilityRole,
     TYPE_FN_CALLS, VISIT_HARD_BOUND, WALK_CALLS, WORKLIST_POPS, body_key_for_fn_id, build_any_key_index,
     fixed_point_spec_key_for_arity, key_precedence_order, spec_key_for_fn_id, spec_key_input_tys,
@@ -18,8 +18,8 @@ use crate::specs::{
     CallbackReturnDemand, CallbackReturnFact, CallbackReturnQuery, SpecApplicationOutcome, apply_spec_set,
     resolve_closure_return,
 };
+use crate::telemetry::Telemetry;
 use crate::telemetry::value::opaque;
-use crate::telemetry::{NullTelemetry, Telemetry};
 use crate::type_infer::{
     TypeInferActivationEdgeFact, TypeInferActivationFact, TypeInferActivationId, TypeInferDeadArmFact,
     TypeInferReturnState, TypeInferStatus, infer_from_entry,
@@ -1199,48 +1199,10 @@ fn plan_module_with_role<T: Types<Ty = Ty> + ClosureTypes + RenderTypes>(
     mt
 }
 
-/// Capability + effect facts for the pre-plan transforms (closure
-/// devirtualization + inlining).
-///
-/// `rewrite_known_target_closures` and `inline_module_with_plan` read only
-/// per-spec `callable_capabilities` (and `fn_effects`) — never effective
-/// returns, call edges, dead branches, or precedence. So this runs the shared
-/// spec-discovery worklist and then keeps *only* the capability slice: the
-/// returned `CapabilityPlan` carries no types, call edges, or returns and is
-/// not a codegen plan. It emits no `planner.planned` event, because the one
-/// authoritative plan is derived once, later, by `plan_module`.
-///
-/// The worklist is reused rather than replaced by a one-shot pass because
-/// capability precision is load-bearing. A var's callable capability can
-/// depend on activation-backed call result facts and on callable capabilities
-/// flowing into discovered specs. The redundancy removed is run A's
-/// authoritative-plan *shape* (the full `ModulePlan` with dead-branch and
-/// precedence finalization, and its `planner.planned` event), not the graph
-/// discovery compute that the capability slice genuinely requires. The
-/// analysis is interprocedural over the linked working module — the reason the
-/// pretyped frontend's shallow `_pre_types` cannot serve here.
-pub fn plan_callable_capabilities<T: Types<Ty = Ty> + ClosureTypes + RenderTypes>(
-    t: &mut T,
-    m: &Module,
-) -> CapabilityPlan {
-    let null_tel = NullTelemetry;
-    let out = discover_specs(t, m, &null_tel);
-    let spec_capabilities = out
-        .specs
-        .into_iter()
-        .map(|(key, ft)| (key.fn_id, ft.callable_capabilities))
-        .collect();
-    CapabilityPlan {
-        spec_capabilities,
-        fn_effects: out.fn_effects,
-    }
-}
-
 /// Outcome of the shared worklist core: the discovered specs (each carrying its
 /// callable capabilities, call edges, and types), activation-projected returns,
 /// and the per-FnId effect summary. `plan_module` finalizes this into a
-/// `ModulePlan` (any-key index, precedence, dead branches, telemetry);
-/// `plan_callable_capabilities` keeps only the per-spec capabilities.
+/// `ModulePlan` (any-key index, precedence, dead branches, telemetry).
 struct DiscoverOutput {
     specs: HashMap<SpecKey, SpecPlan>,
     reachable_specs: SpecKeySet,
@@ -1254,7 +1216,7 @@ struct DiscoverOutput {
 
 /// Drive the worklist to discover every reachable executable spec from the
 /// module's entry seeds, then prune orphans and project activation returns over
-/// the reachable set. Shared by `plan_module` and `plan_callable_capabilities`.
+/// the reachable set.
 fn discover_specs<T: Types<Ty = Ty> + ClosureTypes + RenderTypes>(
     t: &mut T,
     m: &Module,

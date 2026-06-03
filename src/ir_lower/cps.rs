@@ -32,10 +32,9 @@ use crate::modules::identity::ExportKey;
 //                                the join fn for non-tail position, or
 //                                nothing if the arm self-terminated).
 //
-// Post-inline, these collapse: a one-call-site cont fn whose body is just
-// `Return(param)` gets inlined back by `inline_tail_calls_once`, so the
-// final CLIF for a non-CPS-splitting arm is the same as today's block-join
-// shape (often tighter — see fz-duq.2 acceptance).
+// These continuation fns are the lowering-time correctness shape. Later
+// phases may choose tighter planned bodies, but lowering must leave a coherent
+// CPS module without relying on a cleanup pass to repair it.
 
 /// Handle to a freshly minted continuation fn (per-arm body or post-construct
 /// join). The fn's builder is not yet created; the caller switches into it

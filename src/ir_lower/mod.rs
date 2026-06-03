@@ -20,10 +20,9 @@
 //! "Fresh continuation per call site" is load-bearing, not just convenient.
 //! Every `Cont.fn_id` referenced by a `Term::Call` / `Term::CallClosure` /
 //! `Term::Receive` must be unique across the whole module — no two
-//! call-shaped terminators may share a continuation fn. The post-type
-//! `inline_single_use_conts` pass relies on this to safely inline `K`
-//! into its single caller; the fz-uwq epic moves that pass pre-planner,
-//! which keeps the same dependency. `debug_assert_unique_conts` at the
+//! call-shaped terminators may share a continuation fn. Continuation
+//! provenance, activation facts, and planned call edges all rely on each
+//! continuation naming one return edge. `debug_assert_unique_conts` at the
 //! end of `lower_program_full` pins the invariant down so a regression
 //! in this file (or a future corner case) panics in debug rather than
 //! corrupting downstream passes.
@@ -52,7 +51,7 @@ use crate::fz_ir::{
 use crate::ir_brand_erase::erase_brands;
 use crate::ir_capture_norm::normalize_continuation_captures_with_telemetry;
 #[cfg(test)]
-use crate::ir_codegen::compile;
+use crate::ir_codegen::compile_planned;
 #[cfg(test)]
 use crate::ir_planner::{collect_diagnostics, plan_module};
 use crate::modules::identity::ModuleName;
@@ -69,6 +68,8 @@ use crate::specs::{
 use crate::telemetry::Telemetry;
 #[cfg(test)]
 use crate::telemetry::{Capture, ConfiguredTelemetry, NullTelemetry, Value, bus};
+#[cfg(test)]
+use crate::test_support::linked_runtime_graph_with_telemetry;
 use crate::type_expr::{ModuleTypeEnv, parse_type_expr, resolve_spec_decls};
 use crate::types::{ConcreteTypes, Ty, TypeVarId, Types, check_brand_mint_visibility};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
@@ -692,7 +693,7 @@ pub fn lower_program<T: Types<Ty = Ty>>(t: &mut T, prog: &Program, tel: &dyn Tel
 
     // Snapshot user FnDefs (non-extern, non-prelude) by (name, arity) for
     // guard helpers. Receive guards lower helper calls through Matcher
-    // dispatch; non-receive dispatch still uses the AST inliner until
+    // dispatch; non-receive dispatch still uses the AST fallback until
     // the general matcher fallback is removed.
     for item in all_items.iter().skip(runtime_item_count) {
         if let Item::Fn(fn_def) = item.as_ref()
@@ -1039,12 +1040,10 @@ fn user_fn_category(fn_def: &FnDef) -> FnCategory {
 ///
 /// ## Why this is load-bearing
 ///
-/// `ir_codegen::compile` runs `inline_single_use_conts` before codegen,
-/// and the fz-uwq epic moves that pass to run **pre-planner**. The pass
-/// is safe to inline a continuation fn `K` into its caller only when `K`
-/// is referenced exactly once as a continuation — otherwise inlining
-/// would either duplicate `K`'s body across two call sites (losing
-/// sharing the source author may rely on) or leave a dangling reference.
+/// Continuation provenance, activation facts, and planned call edges use
+/// continuation `FnId`s as edge identities. Sharing one continuation fn across
+/// two call-shaped terminators would merge two distinct return edges and make
+/// the data model incoherent.
 ///
 /// The lowerer guarantees uniqueness structurally: `lower_expr` and
 /// friends mint a **fresh** continuation FnIr for each non-tail call
@@ -1117,7 +1116,7 @@ fn debug_assert_unique_conts(module: &Module) {
                 panic!(
                     "fz-uwq.1 invariant violated: cont fn {:?} referenced by two terminators: \
                      {:?}:{:?} and {:?}:{:?}. The lowerer must mint a fresh continuation \
-                     FnIr per call site; sharing breaks inline_single_use_conts.",
+                     FnIr per call site; sharing merges distinct return edges.",
                     cont_fn, prev.0, prev.1, f.id, b.id
                 );
             }
@@ -1432,9 +1431,11 @@ end
     /// capture_main`; lets ir_lower-level tests assert end-to-end runtime
     /// correctness rather than just IR shape.
     fn run_and_capture(src: &str) -> String {
-        let m = lower_src(src);
-        let entry = m.fn_by_name("main").expect("no main fn").id;
-        let compiled = compile(&mut ConcreteTypes, &m, &NullTelemetry).unwrap();
+        let mut t = ConcreteTypes;
+        let graph = linked_runtime_graph_with_telemetry(&mut t, src, &NullTelemetry);
+        let entry = graph.module.fn_by_name("main").expect("no main fn").id;
+        let compiled =
+            compile_planned(&mut t, &graph.module, &graph.module_plan, &NullTelemetry).expect("compile planned");
         let tel = bus::ConfiguredTelemetry::new();
         let dbg = DbgCapture::new();
         tel.attach(&[], dbg.handler());

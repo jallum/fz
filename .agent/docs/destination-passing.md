@@ -147,9 +147,8 @@ out = DestMapFreeze(m0, tokN)
 Runtime freeze preserves duplicate-key last-write-wins semantics while keeping
 the published map canonical.
 
-Destination lowering runs after optimizer passes, which keeps init-token
-ownership local to executable IR. Lowering before the optimizer would force
-every inliner and rewriter to remap init tokens correctly.
+Destination lowering runs after planner-owned executable body selection, which
+keeps init-token ownership local to the lowered body handed to codegen.
 
 ## Verification
 

@@ -247,23 +247,6 @@ pub struct ModulePlan {
     pub dead_branches: HashMap<(FnId, BlockId), DeadBranch>,
 }
 
-/// Capability + effect facts for the pre-plan transforms (closure
-/// devirtualization + inlining), produced by `plan_callable_capabilities`.
-///
-/// Deliberately NOT a `ModulePlan`: it carries only the slice those transforms
-/// read — each discovered spec's `callable_capabilities` (tagged by its FnId)
-/// and the per-FnId `fn_effects`. The per-spec types, call edges, returns, and
-/// the module-level dead-branch/precedence facts are dropped, so this cannot be
-/// mistaken for — or used as — a codegen plan.
-#[derive(Debug, Clone)]
-pub struct CapabilityPlan {
-    /// One entry per discovered spec: its FnId and its vars' callable
-    /// capabilities. The consumers merge these to a per-fn consensus
-    /// (`rewrite`) or scan them for stateful closure targets (`inline`).
-    pub spec_capabilities: Vec<(FnId, HashMap<Var, CallableCapability>)>,
-    pub fn_effects: FnEffects,
-}
-
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct EffectSummary {
     /// Allocates on the current process heap. Allocation by itself is not

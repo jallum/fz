@@ -233,7 +233,7 @@ pub(crate) fn compile_fn<M: cranelift_module::Module, T: Types<Ty = Ty> + Closur
         // intra-function block edges. Each arg is coerced to the repr
         // the target block param actually needs (derived from
         // fn_types.vars), so RawInt values flow through without a
-        // box/unbox round-trip at inliner seams.
+        // box/unbox round-trip at block joins.
         if let Term::Goto(target, args) = &blk.terminator {
             if !block_map.contains_key(&target.0) {
                 return Err(CodegenError::new(format!(

@@ -11,12 +11,12 @@ use super::*;
 use crate::diag::{Span, codes};
 use crate::frontend::resolve::{InterfaceTable, ResolveError, flatten_modules};
 use crate::frontend::spec_registry::SpecRegistry;
-use crate::frontend::{compile_source, compile_source_with_interface_table, compile_source_with_types};
+use crate::frontend::{compile_source_with_interface_table, compile_source_with_types};
 use crate::fz_ir::{
     BinOp, BlockId, CallsiteId, CallsiteIdent, Const, EmitSlot, ExternDecl, ExternId, ExternTy, FnBuilder, FnId, FnIr,
     InitTokenId, Module, ModuleBuilder, Prim, SpecId, Stmt, Term, Var,
 };
-use crate::ir_codegen::{compile as ir_compile, compile_planned};
+use crate::ir_codegen::compile_planned;
 use crate::ir_dest::{lower_list_destinations, lower_map_destinations, lower_tuple_destinations};
 use crate::ir_lower::lower_program;
 use crate::modules::artifact_store::DEFAULT_ARTIFACT_ROOT;
@@ -1881,8 +1881,8 @@ fn compile_elides_named_ref_callable_fallback_when_calls_are_fully_resolved() {
     tel.attach(&[], cap.handler());
 
     let mut t = ConcreteTypes;
-    let module = lower_frontend_module(include_str!("../type_infer/fixtures/poly_named_ref.fz"));
-    let _ = ir_compile(&mut t, &module, &tel).expect("compile");
+    let _graph =
+        linked_runtime_graph_with_telemetry(&mut t, include_str!("../type_infer/fixtures/poly_named_ref.fz"), &tel);
 
     let id_events: Vec<_> = cap
         .find(&["fz", "planner", "activation_projection"])
@@ -3932,86 +3932,6 @@ fn callable_capability_opaque_for_multi_target_join() {
 
 // ---- fz-ul4.29.10.2 — narrow F-spec from known-target CallClosure ----
 
-// ---- fz-ul4.29.10.3 — IR rewrite of known-target closures ----
-
-/// `rewrite_known_target_closures` replaces `Term::CallClosure(v, …)`
-/// with `Term::Call(F, …)` when every spec of the enclosing FnIr
-/// agrees that `callable_capabilities[v] = KnownFn(F)`.
-#[test]
-fn closure_call_rewritten_to_direct_call() {
-    let (mut t, mut m, _mt) = pipeline(
-        r#"
-fn double(x), do: x * 2
-fn apply_plus1(f, x) do
-  r = f.(x)
-  r + 1
-end
-fn main() do
-  dbg(apply_plus1(double, 21))
-end
-"#,
-        &NullTelemetry,
-    );
-    let caps = plan_callable_capabilities(&mut t, &m);
-    rewrite_known_target_closures(&mut t, &mut m, &caps);
-    let apply2 = m.fns.iter().find(|f| f.name == "apply_plus1").unwrap();
-    let double_id = m.fns.iter().find(|f| f.name == "double").unwrap().id;
-    let mut saw_direct = false;
-    for b in &apply2.blocks {
-        match &b.terminator {
-            Term::Call { callee, .. } if *callee == double_id => {
-                saw_direct = true;
-            }
-            Term::CallClosure { .. } | Term::TailCallClosure { .. } => {
-                panic!("apply2 body still contains a closure-call after rewrite");
-            }
-            _ => {}
-        }
-    }
-    assert!(
-        saw_direct,
-        "expected at least one direct Call(double, …) in apply2's body"
-    );
-}
-
-/// Same rewrite for `Term::TailCallClosure → Term::TailCall`.
-#[test]
-fn tailcall_closure_variant_rewritten() {
-    let (mut t, mut m, _mt) = pipeline(
-        r#"
-fn double(x), do: x * 2
-fn apply2(f, x), do: f.(x)
-fn main() do
-  apply2(double, 21)
-end
-"#,
-        &NullTelemetry,
-    );
-    let caps = plan_callable_capabilities(&mut t, &m);
-    rewrite_known_target_closures(&mut t, &mut m, &caps);
-    let apply2 = m.fns.iter().find(|f| f.name == "apply2").unwrap();
-    let double_id = m.fns.iter().find(|f| f.name == "double").unwrap().id;
-    let mut saw_direct = false;
-    for b in &apply2.blocks {
-        match &b.terminator {
-            Term::TailCall { callee, .. } if *callee == double_id => {
-                saw_direct = true;
-            }
-            Term::Call { callee, .. } if *callee == double_id => {
-                saw_direct = true;
-            }
-            Term::CallClosure { .. } | Term::TailCallClosure { .. } => {
-                panic!("apply2 body still contains a closure-call after rewrite");
-            }
-            _ => {}
-        }
-    }
-    assert!(
-        saw_direct,
-        "expected apply2 body to dispatch directly to double after rewrite"
-    );
-}
-
 /// `apply2(double, 21)` — apply2's body has `CallClosure(f, [x])`.
 /// With `KnownFn(double)` propagated from main, the planner's
 /// queried-set walk should register `(double, [int_lit(21)])` as a
@@ -5582,111 +5502,5 @@ fn plain_int_arithmetic_still_passes() {
             .iter()
             .map(|d| (d.code, &d.message))
             .collect::<Vec<_>>(),
-    );
-}
-
-/// Compile `src` to IR and run `rewrite_known_target_closures` (devirtualize
-/// + constant-closure value elimination), returning the rewritten module.
-fn rewrite_closures(src: &str) -> Module {
-    let fe = compile_source(src.to_string(), "closures-test.fz".to_string())
-        .unwrap_or_else(|e| panic!("frontend: {:?}", e.diagnostics));
-    let mut working = fe.module.clone();
-    let mut t = ConcreteTypes;
-    let caps = plan_callable_capabilities(&mut t, &working);
-    rewrite_known_target_closures(&mut t, &mut working, &caps);
-    working
-}
-
-fn count_make_closures_in_fns(m: &Module, names: &[&str]) -> usize {
-    names
-        .iter()
-        .filter_map(|name| m.fn_by_name(name))
-        .flat_map(|f| f.blocks.iter())
-        .flat_map(|b| b.stmts.iter())
-        .filter(|Stmt::Let(_, prim)| matches!(prim, Prim::MakeClosure(_, _, _)))
-        .count()
-}
-
-fn fn_arity(m: &Module, name: &str) -> usize {
-    let f = m.fn_by_name(name).expect("fn present");
-    f.block(f.entry).params.len()
-}
-
-/// A module-wide-constant, zero-capture closure threaded through a recursive
-/// HOF is erased entirely: the `MakeClosure` disappears and the threaded
-/// parameter slot is removed from the HOF's arity. This is what frees
-/// `Enum.sort`'s comparator from the lazy-continuation gate.
-#[test]
-fn rewrite_erases_threaded_constant_closure() {
-    let src = "fn merge([], right, _s), do: right\n\
-               fn merge(left, [], _s), do: left\n\
-               fn merge([lh | lt], [rh | rt], s) do\n\
-                 if s.(lh, rh) do\n\
-                   [lh | merge(lt, [rh | rt], s)]\n\
-                 else\n\
-                   [rh | merge([lh | lt], rt, s)]\n\
-                 end\n\
-               end\n\
-               fn main(), do: merge([1, 3], [2, 4], fn (a, b) -> a <= b end)";
-    let after = rewrite_closures(src);
-    assert_eq!(
-        count_make_closures_in_fns(&after, &["main", "merge"]),
-        0,
-        "the constant comparator's MakeClosure must be erased"
-    );
-    assert_eq!(
-        fn_arity(&after, "merge"),
-        2,
-        "merge's threaded comparator parameter must be removed (3 -> 2)"
-    );
-}
-
-/// Two distinct lambdas flowing into the same HOF parameter make it
-/// non-constant (`KnownFn` capabilities disagree across specs), so the closure value
-/// is NOT erased — the static-closure machinery must still see it. Guards
-/// against over-eager elimination.
-#[test]
-fn rewrite_keeps_non_constant_closure() {
-    let src = "fn f(x), do: x + 1\n\
-               fn g(x), do: x * 2\n\
-               fn apply(h, x), do: h.(x)\n\
-               fn main() do\n\
-                 apply(f, 1)\n\
-                 apply(g, 2)\n\
-               end";
-    let after = rewrite_closures(src);
-    assert!(
-        count_make_closures_in_fns(&after, &["main"]) >= 1,
-        "a non-constant closure value must survive the rewrite"
-    );
-    assert_eq!(
-        fn_arity(&after, "apply"),
-        2,
-        "apply's parameters must be untouched when its closure is non-constant"
-    );
-}
-
-/// A zero-capture closure and a captured closure flowing through the same HOF
-/// parameter disagree. Treating only `KnownFn` facts as evidence would rewrite
-/// both call sites to the zero-capture target and silently drop the captured
-/// closure's behavior.
-#[test]
-fn rewrite_keeps_known_fn_when_other_specs_have_captured_closure() {
-    let src = "fn f(x), do: x + 1\n\
-               fn apply(h, x), do: h.(x)\n\
-               fn via_capture(n), do: apply(fn x -> x + n end, 2)\n\
-               fn main() do\n\
-                 apply(f, 1)\n\
-                 via_capture(10)\n\
-               end";
-    let after = rewrite_closures(src);
-    assert!(
-        count_make_closures_in_fns(&after, &["via_capture"]) >= 1,
-        "captured closure disagreement must keep a real closure value"
-    );
-    assert_eq!(
-        fn_arity(&after, "apply"),
-        2,
-        "apply's callable parameter must remain when any spec carries captured closure state"
     );
 }

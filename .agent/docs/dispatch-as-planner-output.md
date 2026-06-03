@@ -12,7 +12,7 @@ passes mechanically lower it.
 
 This doc is the planner-facing dispatch contract. See
 [`single-authoritative-plan.md`](single-authoritative-plan.md) for the pipeline
-rule that there is one authoritative codegen plan, and
+rule that codegen consumes the authoritative plan it is handed, and
 [`destination-passing.md`](destination-passing.md) for local init-token
 destination construction.
 
@@ -171,8 +171,6 @@ Call-edge facts consume callable capabilities alongside the return contract:
 the target says what code may run, and the return contract says how that edge
 returns. The same facts gate lazy continuation representation; see
 [`lazy-continuation-materialization.md`](lazy-continuation-materialization.md).
-
-Known-target closure rewriting is an all-spec consensus rule over these facts.
 A threaded callable parameter can be rewritten to a direct zero-capture
 function only when every specialization of the enclosing function that has a
 callable fact agrees on the same `KnownFn`. `KnownClosure` and

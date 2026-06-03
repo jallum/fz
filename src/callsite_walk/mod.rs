@@ -1,10 +1,10 @@
 //! fz-9pr.17 (fz-CO.D.0) — block-callsite enumerator shared by the
 //! reducer and the planner's discovery walk.
 //!
-//! Three passes (reducer, `walk_spec_for_discovery` in ir_planner, and
-//! historically ir_inline) each duplicated the mapping from a block's
-//! terminator to "which callsite slots does it contribute, and what
-//! does each one target." This module hosts that mapping once.
+//! The reducer and `walk_spec_for_discovery` in ir_planner both need the
+//! mapping from a block's terminator to "which callsite slots does it
+//! contribute, and what does each one target." This module hosts that mapping
+//! once.
 //!
 //! ## What it yields
 //!

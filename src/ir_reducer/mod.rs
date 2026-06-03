@@ -109,7 +109,7 @@ fn block_mut(f: &mut FnIr, id: BlockId) -> &mut Block {
 }
 
 /// Allocate a fresh `Var` for `f` whose id exceeds every existing Var in
-/// the fn body. Mirrors the `max_var + 1` pattern used by ir_inline.
+/// the fn body.
 fn fresh_var(f: &FnIr) -> Var {
     let mut m: u32 = 0;
     for b in &f.blocks {

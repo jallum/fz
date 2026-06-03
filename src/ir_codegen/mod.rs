@@ -87,27 +87,6 @@ pub use support::{asm_record_enable, asm_record_take, ir_text_record_enable, ir_
 
 pub use fz_runtime::process::{PidId, Process, ProcessState};
 
-/// Drive the shared compile pipeline through any Backend impl. JIT and
-/// AOT both route through here; the backend's hooks pick the legit
-/// variation points (linkage, per-program metadata carriers, finalize).
-///
-/// This legacy entrypoint prepares and plans the module internally. Production
-/// pipeline callers should prefer the `*_planned` variants and thread the
-/// single authoritative `ModulePlan` they already computed for the execution
-/// graph.
-#[allow(dead_code)]
-pub fn compile_with_backend<
-    B: Backend,
-    T: Types<Ty = Ty> + ClosureTypes + LiteralTypes + RenderTypes + VisibilityTypes,
->(
-    t: &mut T,
-    module: &Module,
-    backend: B,
-    tel: &dyn Telemetry,
-) -> Result<B::Output, CodegenError> {
-    compile_with_backend_impl(t, module, backend, tel)
-}
-
 pub(crate) fn compile_with_backend_planned<
     B: Backend,
     T: Types<Ty = Ty> + ClosureTypes + LiteralTypes + RenderTypes + VisibilityTypes,
@@ -121,15 +100,6 @@ pub(crate) fn compile_with_backend_planned<
     driver::compile_with_backend_preplanned(t, module, module_plan, backend, tel)
 }
 
-#[allow(dead_code)]
-pub fn compile<T: Types<Ty = Ty> + ClosureTypes + LiteralTypes + RenderTypes + VisibilityTypes>(
-    t: &mut T,
-    module: &Module,
-    tel: &dyn Telemetry,
-) -> Result<CompiledModule, CodegenError> {
-    compile_with_backend(t, module, JitBackend::new(), tel)
-}
-
 pub(crate) fn compile_planned<T: Types<Ty = Ty> + ClosureTypes + LiteralTypes + RenderTypes + VisibilityTypes>(
     t: &mut T,
     module: &Module,
@@ -137,16 +107,6 @@ pub(crate) fn compile_planned<T: Types<Ty = Ty> + ClosureTypes + LiteralTypes + 
     tel: &dyn Telemetry,
 ) -> Result<CompiledModule, CodegenError> {
     compile_with_backend_planned(t, module, module_plan, JitBackend::new(), tel)
-}
-
-#[allow(dead_code)]
-pub fn compile_aot<T: Types<Ty = Ty> + ClosureTypes + LiteralTypes + RenderTypes + VisibilityTypes>(
-    t: &mut T,
-    module: &Module,
-    obj_name: &str,
-    tel: &dyn Telemetry,
-) -> Result<AotArtifact, CodegenError> {
-    compile_with_backend(t, module, AotBackend::new(obj_name), tel)
 }
 
 pub(crate) fn compile_aot_planned<T: Types<Ty = Ty> + ClosureTypes + LiteralTypes + RenderTypes + VisibilityTypes>(
