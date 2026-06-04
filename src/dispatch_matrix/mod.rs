@@ -8,6 +8,8 @@
 use crate::types::{Ty, Types};
 use std::collections::{BTreeMap, BTreeSet};
 
+pub(crate) mod pattern;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub(crate) struct SubjectId(pub(crate) u32);
 
@@ -131,6 +133,9 @@ pub(crate) struct BitstringShape {
 pub(crate) struct BitstringFieldShape {
     pub(crate) kind: BitstringFieldKind,
     pub(crate) size: Option<BitstringFieldSize>,
+    pub(crate) endian: BitstringEndian,
+    pub(crate) signed: bool,
+    pub(crate) unit: Option<u32>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -148,6 +153,14 @@ pub(crate) enum BitstringFieldKind {
 pub(crate) enum BitstringFieldSize {
     Literal(u32),
     Binding(SubjectId),
+    BindingName(String),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum BitstringEndian {
+    Big,
+    Little,
+    Native,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]

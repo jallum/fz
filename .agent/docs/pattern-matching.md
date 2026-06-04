@@ -16,6 +16,11 @@ Three layers, three owners:
   AST inside.
 - `src/ir_lower/matcher.rs` owns turning a `Matcher` into IR primitives and the
   branch structure around them.
+- `src/dispatch_matrix/pattern.rs` is the side-by-side adapter for the
+  dispatch-matrix migration. It reads the compiled `Matcher`, converts matcher
+  tests/switches/guards into `DispatchMatrix` region questions, and keeps body
+  ids plus leaf bindings as opaque outcomes. It does not lower runtime pattern
+  matching yet.
 
 Function clauses, `case`, `with` else arms, and `receive` all build a
 `PatternMatrix` and lower the resulting `Matcher` the same way. Single-clause
@@ -76,6 +81,12 @@ arena, and a `root`. Every `MatcherNode` is one of:
 `EqConst`, `EqPinned`, `TupleArity`, `ListCons`, `MapKind`, `MapHasKey`,
 `Bitstring`, `Type`. Bindings live only on `Leaf` nodes, so a name is exposed
 only once its row's tests have all passed.
+
+The DispatchMatrix adapter preserves that boundary: tests become region
+questions and leaf bindings become outcome metadata. Map-value and bitstring
+field subjects are attached to successful branch evidence, not to failed edges.
+Guards become guard-region questions with the original `GuardExpr` stored beside
+the matrix as producer metadata.
 
 ### Guards
 

@@ -2,8 +2,9 @@
 
 `src/dispatch_matrix` is the shared model for the dispatch unification epic
 (`fz-v19`). Today, protocol finite-union dispatch is built from this model;
-`PatternMatrix` still owns source-pattern matching until the later migration
-tickets move source patterns onto DispatchMatrix.
+`dispatch_matrix::pattern` can mirror compiled `Matcher` graphs into this model,
+and `PatternMatrix` still owns source-pattern runtime lowering until the later
+migration tickets switch callers over.
 
 The model names four separate concepts so future dispatch work does not grow new
 subsystem-specific cascades:
@@ -43,6 +44,14 @@ lowers the compiled `DispatchGraph` into the current `TypeTest`/`If` IR shape:
 closed graph `Fail` tails become the final direct `else`, while open residual
 fallbacks become the original stub call.
 
+`pattern_dispatch_from_matcher` is the side-by-side pattern producer. It consumes
+the AST-free `Matcher` that `PatternMatrix` already emits, extracts positive
+proof paths into `Order::Source` arms, and keeps pattern-specific payloads as
+opaque outcome metadata: body id, leaf bindings, pinned inputs, prepared keys,
+and guard expressions. Receive accept/reject policy is not encoded in
+DispatchMatrix; receive remains a producer/outcome policy layered above the same
+regions.
+
 ## Vocabulary Boundary
 
 DispatchMatrix has three layers that must stay separate:
@@ -61,6 +70,6 @@ DispatchMatrix has three layers that must stay separate:
 Future dispatch changes should add producers on top of this model instead of
 adding one-off matcher or planner dispatch passes. At this ticket boundary, graph
 compilation is tested with fake outcome handles and with protocol dispatch
-outcome handles; protocol union dispatch construction is owned by
-`DispatchMatrix`, while source-pattern runtime behavior is still owned by
-`PatternMatrix`.
+outcome handles plus PatternMatrix-derived pattern outcome handles; protocol
+union dispatch construction is owned by `DispatchMatrix`, while source-pattern
+runtime behavior is still owned by `PatternMatrix`.

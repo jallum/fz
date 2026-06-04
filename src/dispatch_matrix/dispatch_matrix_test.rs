@@ -1,4 +1,8 @@
 use super::*;
+use crate::ast::{BitField, BitFieldSpec, BitSize, BitType, Endian, Expr, Pattern, Spanned};
+use crate::exec::matcher::{Matcher, MatcherConst, MatcherNode};
+use crate::fz_ir::Var;
+use crate::pattern_matrix::{BodyId, PatternMatrix, Row, compile_pattern_matrix};
 use crate::types::{Ty, Types};
 use std::collections::BTreeMap;
 
@@ -718,4 +722,381 @@ fn graph_builder_rejects_unknown_root_or_edge_node() {
         unknown_edge.build(test).expect_err("edge target must exist"),
         DispatchGraphError::UnknownNode(GraphNodeId(42))
     );
+}
+
+fn sp<T>(node: T) -> Spanned<T> {
+    Spanned::dummy(node)
+}
+
+fn pattern_row(patterns: Vec<Pattern>, body_id: BodyId) -> Row {
+    Row {
+        patterns: patterns.into_iter().map(sp).collect(),
+        preconditions: Vec::new(),
+        bindings: Vec::new(),
+        guard: None,
+        body_id,
+    }
+}
+
+fn pattern_row_with_guard_preconditions(
+    patterns: Vec<Pattern>,
+    body_id: BodyId,
+    guard: Expr,
+    preconditions: Vec<(Var, Ty)>,
+) -> Row {
+    Row {
+        patterns: patterns.into_iter().map(sp).collect(),
+        preconditions,
+        bindings: Vec::new(),
+        guard: Some(sp(guard)),
+        body_id,
+    }
+}
+
+fn pattern_plan(pattern_matrix: PatternMatrix) -> (Matcher, pattern::PatternDispatchPlan) {
+    let matcher = compile_pattern_matrix(pattern_matrix).expect("compile pattern matrix");
+    let plan = pattern::pattern_dispatch_from_matcher(&matcher).expect("pattern dispatch matrix");
+    (matcher, plan)
+}
+
+fn matcher_leaf_body_ids(matcher: &Matcher) -> Vec<BodyId> {
+    let mut ids = matcher
+        .nodes
+        .iter()
+        .filter_map(|node| match node {
+            MatcherNode::Leaf(leaf) => Some(leaf.body_id),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    ids.sort();
+    ids
+}
+
+fn plan_body_ids(plan: &pattern::PatternDispatchPlan) -> Vec<BodyId> {
+    let mut ids = plan.outcomes.iter().map(|outcome| outcome.body_id).collect::<Vec<_>>();
+    ids.sort();
+    ids
+}
+
+fn arm_for_body(
+    plan: &pattern::PatternDispatchPlan,
+    body_id: BodyId,
+) -> (&DispatchArm, &pattern::PatternDispatchOutcome) {
+    let outcome = plan
+        .outcomes
+        .iter()
+        .find(|outcome| outcome.body_id == body_id)
+        .expect("body outcome exists");
+    let arm = plan
+        .matrix
+        .arms
+        .iter()
+        .find(|arm| arm.outcome == outcome.outcome)
+        .expect("outcome arm exists");
+    (arm, outcome)
+}
+
+fn has_region(plan: &pattern::PatternDispatchPlan, pred: impl Fn(&Region) -> bool) -> bool {
+    plan.matrix
+        .arms
+        .iter()
+        .flat_map(|arm| arm.questions.iter())
+        .any(|question| pred(&question.predicate.region))
+}
+
+#[test]
+fn pattern_dispatch_matrix_mirrors_literal_matcher_leaves_and_default() {
+    let pattern_matrix = PatternMatrix {
+        subjects: vec![Var(0)],
+        rows: vec![
+            pattern_row(vec![Pattern::Int(7)], 0),
+            pattern_row(vec![Pattern::Atom("ok".to_string())], 1),
+            pattern_row(vec![Pattern::Bool(false)], 2),
+            pattern_row(vec![Pattern::Nil], 3),
+            pattern_row(vec![Pattern::Binary(b"hi".to_vec())], 4),
+            pattern_row(vec![Pattern::Wildcard], 5),
+        ],
+    };
+
+    let (matcher, plan) = pattern_plan(pattern_matrix);
+
+    assert_eq!(plan.matrix.order, Order::Source);
+    assert_eq!(plan_body_ids(&plan), matcher_leaf_body_ids(&matcher));
+    assert!(matches!(
+        plan.graph.node(plan.graph.root),
+        Some(DispatchNode::Test { .. })
+    ));
+    assert!(has_region(&plan, |region| matches!(
+        region,
+        Region::Equal(ComparisonValue::Const(DispatchConst::Int(7)))
+    )));
+    assert!(has_region(&plan, |region| matches!(
+        region,
+        Region::Equal(ComparisonValue::Const(DispatchConst::AtomName(name))) if name == "ok"
+    )));
+    assert!(has_region(&plan, |region| matches!(
+        region,
+        Region::Equal(ComparisonValue::Const(DispatchConst::Bool(false)))
+    )));
+    assert!(has_region(&plan, |region| matches!(
+        region,
+        Region::Equal(ComparisonValue::Const(DispatchConst::Nil))
+    )));
+    assert!(has_region(&plan, |region| matches!(
+        region,
+        Region::Equal(ComparisonValue::Const(DispatchConst::Utf8Binary(bytes))) if bytes == b"hi"
+    )));
+
+    let (fallback_arm, fallback) = arm_for_body(&plan, 5);
+    assert!(fallback_arm.questions.is_empty());
+    assert!(fallback.bindings.is_empty());
+}
+
+#[test]
+fn pattern_dispatch_matrix_preserves_tuple_list_projections_and_leaf_bindings() {
+    let cons = Pattern::List(
+        vec![sp(Pattern::Var("h".to_string()))],
+        Some(Box::new(sp(Pattern::Var("t".to_string())))),
+    );
+    let pattern_matrix = PatternMatrix {
+        subjects: vec![Var(0)],
+        rows: vec![
+            pattern_row(
+                vec![Pattern::Tuple(vec![
+                    sp(Pattern::Atom("ok".to_string())),
+                    sp(Pattern::Var("x".to_string())),
+                ])],
+                0,
+            ),
+            pattern_row(vec![cons], 1),
+            pattern_row(vec![Pattern::List(vec![], None)], 2),
+            pattern_row(vec![Pattern::Wildcard], 3),
+        ],
+    };
+
+    let (_matcher, plan) = pattern_plan(pattern_matrix);
+
+    assert!(has_region(&plan, |region| matches!(region, Region::TupleArity(2))));
+    assert!(has_region(&plan, |region| matches!(
+        region,
+        Region::Equal(ComparisonValue::Const(DispatchConst::AtomName(name))) if name == "ok"
+    )));
+    assert!(has_region(&plan, |region| matches!(
+        region,
+        Region::List(ListRegion::Cons)
+    )));
+    assert!(has_region(&plan, |region| matches!(
+        region,
+        Region::List(ListRegion::Empty)
+    )));
+
+    let (_tuple_arm, tuple_outcome) = arm_for_body(&plan, 0);
+    let x = tuple_outcome
+        .bindings
+        .iter()
+        .find(|binding| binding.name == "x")
+        .expect("x binding");
+    assert!(matches!(
+        plan.matrix.subject(x.source).expect("x source").source,
+        SubjectSource::Projection(SubjectProjection {
+            kind: ProjectionKind::TupleField(1),
+            ..
+        })
+    ));
+
+    let (_list_arm, list_outcome) = arm_for_body(&plan, 1);
+    let h = list_outcome
+        .bindings
+        .iter()
+        .find(|binding| binding.name == "h")
+        .expect("h binding");
+    let t = list_outcome
+        .bindings
+        .iter()
+        .find(|binding| binding.name == "t")
+        .expect("t binding");
+    assert!(matches!(
+        plan.matrix.subject(h.source).expect("h source").source,
+        SubjectSource::Projection(SubjectProjection {
+            kind: ProjectionKind::ListHead,
+            ..
+        })
+    ));
+    assert!(matches!(
+        plan.matrix.subject(t.source).expect("t source").source,
+        SubjectSource::Projection(SubjectProjection {
+            kind: ProjectionKind::ListTail,
+            ..
+        })
+    ));
+}
+
+#[test]
+fn pattern_dispatch_matrix_preserves_map_presence_before_value_tests() {
+    let pattern_matrix = PatternMatrix {
+        subjects: vec![Var(0)],
+        rows: vec![pattern_row(
+            vec![Pattern::Map(vec![(
+                sp(Pattern::Atom("id".to_string())),
+                sp(Pattern::Nil),
+            )])],
+            0,
+        )],
+    };
+
+    let (_matcher, plan) = pattern_plan(pattern_matrix);
+
+    assert_eq!(plan.prepared_keys, vec![MatcherConst::AtomName("id".to_string())]);
+    assert!(has_region(&plan, |region| matches!(region, Region::MapKind)));
+    let map_key_question = plan
+        .matrix
+        .arms
+        .iter()
+        .flat_map(|arm| arm.questions.iter())
+        .find(|question| {
+            matches!(
+                question.predicate.region,
+                Region::MapKeyPresent {
+                    key: DispatchConst::AtomName(ref name),
+                } if name == "id"
+            )
+        })
+        .expect("map-key-present question");
+    assert!(map_key_question.match_evidence.projections.iter().any(|projection| {
+        matches!(
+            projection.kind,
+            ProjectionKind::MapValue {
+                key: DispatchConst::AtomName(ref name),
+            } if name == "id"
+        )
+    }));
+    assert!(has_region(&plan, |region| matches!(
+        region,
+        Region::Equal(ComparisonValue::Const(DispatchConst::Nil))
+    )));
+}
+
+#[test]
+fn pattern_dispatch_matrix_preserves_bitstring_shape_and_dynamic_size_binding() {
+    let pattern_matrix = PatternMatrix {
+        subjects: vec![Var(0)],
+        rows: vec![pattern_row(
+            vec![Pattern::Bitstring(vec![
+                BitField {
+                    value: sp(Pattern::Var("n".to_string())),
+                    spec: BitFieldSpec {
+                        ty: BitType::Integer,
+                        size: Some(BitSize::Literal(8)),
+                        endian: Endian::Little,
+                        signed: true,
+                        unit: Some(1),
+                    },
+                },
+                BitField {
+                    value: sp(Pattern::Var("payload".to_string())),
+                    spec: BitFieldSpec {
+                        ty: BitType::Binary,
+                        size: Some(BitSize::Var("n".to_string())),
+                        ..Default::default()
+                    },
+                },
+            ])],
+            0,
+        )],
+    };
+
+    let (_matcher, plan) = pattern_plan(pattern_matrix);
+    let bitstring = plan
+        .matrix
+        .arms
+        .iter()
+        .flat_map(|arm| arm.questions.iter())
+        .find_map(|question| match &question.predicate.region {
+            Region::Bitstring(shape) => Some(shape),
+            _ => None,
+        })
+        .expect("bitstring region");
+
+    assert_eq!(bitstring.fields[0].kind, BitstringFieldKind::Integer);
+    assert_eq!(bitstring.fields[0].size, Some(BitstringFieldSize::Literal(8)));
+    assert_eq!(bitstring.fields[0].endian, BitstringEndian::Little);
+    assert!(bitstring.fields[0].signed);
+    assert_eq!(bitstring.fields[0].unit, Some(1));
+    let Some(BitstringFieldSize::Binding(size_subject)) = bitstring.fields[1].size else {
+        panic!("expected dynamic size binding");
+    };
+
+    let (_arm, outcome) = arm_for_body(&plan, 0);
+    let n = outcome
+        .bindings
+        .iter()
+        .find(|binding| binding.name == "n")
+        .expect("n binding");
+    assert_eq!(size_subject, n.source);
+    assert!(matches!(
+        plan.matrix.subject(n.source).expect("n source").source,
+        SubjectSource::Projection(SubjectProjection {
+            kind: ProjectionKind::BitstringField(0),
+            ..
+        })
+    ));
+    assert!(outcome.bindings.iter().any(|binding| binding.name == "payload"));
+}
+
+#[test]
+fn pattern_dispatch_matrix_preserves_pins_guards_and_preconditions_as_questions() {
+    let mut types = crate::types::new();
+    let int = types.int();
+    let pattern_matrix = PatternMatrix {
+        subjects: vec![Var(0)],
+        rows: vec![
+            pattern_row_with_guard_preconditions(
+                vec![Pattern::Pinned("want".to_string())],
+                0,
+                Expr::Bool(true),
+                vec![(Var(0), int.clone())],
+            ),
+            pattern_row(vec![Pattern::Wildcard], 1),
+        ],
+    };
+
+    let (_matcher, plan) = pattern_plan(pattern_matrix);
+
+    assert_eq!(plan.pinned[0].name, "want");
+    assert_eq!(
+        plan.guards,
+        vec![crate::exec::matcher::GuardExpr::Const(MatcherConst::Bool(true))]
+    );
+    let (arm, _outcome) = arm_for_body(&plan, 0);
+    assert!(arm.questions.iter().any(|question| {
+        matches!(
+            question.predicate.region,
+            Region::Equal(ComparisonValue::Pinned(PinnedValueId(0)))
+        )
+    }));
+    assert!(
+        arm.questions
+            .iter()
+            .any(|question| question.predicate.region == Region::Type(int.clone()))
+    );
+    assert!(
+        arm.questions
+            .iter()
+            .any(|question| question.predicate.region == Region::Guard(GuardId(0)))
+    );
+}
+
+#[test]
+fn receive_policy_is_not_encoded_in_pattern_dispatch_matrix() {
+    let pattern_matrix = PatternMatrix {
+        subjects: vec![Var(0)],
+        rows: vec![pattern_row(vec![Pattern::Wildcard], 0)],
+    };
+
+    let (_matcher, plan) = pattern_plan(pattern_matrix);
+
+    assert_eq!(plan.outcomes.len(), 1);
+    assert_eq!(plan.outcomes[0].body_id, 0);
+    assert!(plan.guards.is_empty());
+    assert!(plan.matrix.arms[0].questions.is_empty());
 }
