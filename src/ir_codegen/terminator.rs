@@ -6,7 +6,7 @@ use crate::fz_ir::{
     receive_outcome_spec_key,
 };
 use crate::ir_planner::SpecPlan;
-use crate::ir_planner::fn_types::{CallableCapability, ReturnDemand, SpecKey};
+use crate::ir_planner::fn_types::{ReturnDemand, SpecKey};
 use crate::types::{ClosureTypes, Ty, Types, key_slots_from_tys};
 use crate::{measurements, metadata};
 use cranelift_codegen::ir::{self, AbiParam, BlockArg, InstBuilder, MemFlags, Signature, condcodes::IntCC, types};
@@ -664,7 +664,7 @@ fn emit_native_call_with_cont<M: cranelift_module::Module, T: Types<Ty = Ty> + C
     block_env: Option<&HashMap<Var, Ty>>,
     is_native: bool,
     is_cont_fn: bool,
-    caller_fn_id: FnId,
+    _caller_fn_id: FnId,
     frame_ptr: Option<ir::Value>,
     cont_param: Option<ir::Value>,
     args: &[Var],
@@ -679,7 +679,6 @@ fn emit_native_call_with_cont<M: cranelift_module::Module, T: Types<Ty = Ty> + C
     let param_reprs = env.param_reprs;
     let closure_capture_counts = env.closure_capture_counts;
     let callee_fn_id = spec_fn_id(env, callee_sid);
-    let module = env.module;
     // Coerce each arg from its current var repr to the
     // callee's param_repr. Result rides back in the callee's
     // return_repr; the cont is the any-key spec by invariant
@@ -701,14 +700,7 @@ fn emit_native_call_with_cont<M: cranelift_module::Module, T: Types<Ty = Ty> + C
         let ty = block_env.and_then(|env| env.get(cv)).or_else(|| fn_types.vars.get(cv));
         ty.is_some_and(|ty| t.callable_clauses(ty).is_some())
     });
-    let caller_has_callable_state = module
-        .fn_by_id(caller_fn_id)
-        .blocks
-        .iter()
-        .flat_map(|block| block.params.iter())
-        .any(|param| var_has_runtime_callable_state(t, fn_types, *param, fn_types.vars.get(param)));
-    let cont_can_use_lazy_descriptor =
-        !closure_capture_counts.contains_key(&callee_fn_id) && !cont_captures_callable && !caller_has_callable_state;
+    let cont_can_use_lazy_descriptor = !closure_capture_counts.contains_key(&callee_fn_id) && !cont_captures_callable;
     let continuation_plan = if cont_is_native {
         let payload = ContinuationPayload::from_capture_vars(body, env, var_env, cont_sid, &continuation.captured);
         Some(plan_closure_shaped_continuation(
@@ -807,19 +799,6 @@ fn emit_native_call_with_cont<M: cranelift_module::Module, T: Types<Ty = Ty> + C
         }
         body.store_typed_args_into_callee_frame(cont_schema, cf, &payload, 1);
         body.b.ins().return_(&[cf]);
-    }
-}
-
-fn var_has_runtime_callable_state<T: Types<Ty = Ty> + ClosureTypes>(
-    t: &mut T,
-    fn_types: &SpecPlan,
-    var: Var,
-    ty: Option<&Ty>,
-) -> bool {
-    match fn_types.callable_capabilities.get(&var) {
-        Some(CallableCapability::KnownFn(_)) => false,
-        Some(CallableCapability::KnownClosure { .. } | CallableCapability::OpaqueCallable) => true,
-        None => ty.is_some_and(|ty| t.callable_clauses(ty).is_some()),
     }
 }
 
@@ -1134,20 +1113,27 @@ fn emit_call_closure<M: cranelift_module::Module, T: Types<Ty = Ty> + ClosureTyp
         })();
         let cont_payload = ContinuationPayload::from_capture_vars(body, env, var_env, cont_sid, &continuation.captured);
         let cont_is_native = callee_is_native(env, continuation.fn_id.0);
-        let can_use_lazy_cont = is_native && cont_is_native && lit_resolved.is_some();
+        let can_use_lazy_cont = is_native && cont_is_native;
         let continuation_plan = plan_closure_shaped_continuation(cont_payload, can_use_lazy_cont);
         let cf = continuation_plan.emit_value(body, runtime, env.return_reprs, is_cont_fn, cont_param, frame_ptr);
+        let continuation_storage = if continuation_plan.uses_lazy_descriptor() {
+            "lazy_descriptor"
+        } else {
+            "heap_closure"
+        };
         env.telemetry.execute(
             &["fz", "codegen", "closure_call_lowered"],
             &measurements! {
                 spec_id: env.active_spec_id as u64,
                 closure_var: closure.0 as u64,
+                continuation_spec_id: cont_sid as u64,
             },
             &metadata! {
                 body_name: env.active_body_name,
                 call_kind: "call_closure",
                 closure_binding_repr: format!("{:?}", closure_binding.repr()),
                 dispatch_kind: if lit_resolved.is_some() { "direct" } else { "indirect" },
+                continuation_storage: continuation_storage,
             },
         );
         if let Some((body_sid, body_fid, n_caps)) = lit_resolved {
@@ -1197,7 +1183,11 @@ fn emit_call_closure<M: cranelift_module::Module, T: Types<Ty = Ty> + ClosureTyp
         indirect_args.push(cl_val);
         indirect_args.push(cf);
         let _ = host_ctx; // no host_ctx in closure-target sig
-        if is_native {
+        if can_use_lazy_cont {
+            let call_inst = body.b.ins().call_indirect(sig_ref, body_fp, &indirect_args);
+            let result = body.b.inst_results(call_inst)[0];
+            body.b.ins().return_(&[result]);
+        } else if is_native {
             body.b.ins().return_call_indirect(sig_ref, body_fp, &indirect_args);
         } else {
             let call_inst = body.b.ins().call_indirect(sig_ref, body_fp, &indirect_args);

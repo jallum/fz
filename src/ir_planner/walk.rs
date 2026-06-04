@@ -747,19 +747,18 @@ where
         cont: Cont,
         source: ContSource,
     ) {
-        let Some(slot0) = self.continuation_slot0(term_ident, env, &source) else {
-            return;
-        };
         let Some(&j) = self.m.fn_idx.get(&cont.fn_id) else {
             return;
         };
         let cont_fn = &self.m.fns[j];
         let n_params = cont_fn.block(cont_fn.entry).params.len();
-        let mut key = cont_key_from_slot0(&self.any_ty, n_params, slot0.ty, &cont.captured, env);
+        let Some((mut key, slot0_capability)) = self.continuation_key(term_ident, env, &source, &cont, n_params) else {
+            return;
+        };
         if self.has_bottom_arg(&key) {
             return;
         }
-        let per_param_capabilities = self.continuation_callable_capabilities(&cont, n_params, slot0.capability);
+        let per_param_capabilities = self.continuation_callable_capabilities(&cont, n_params, slot0_capability);
         let demand = continuation_return_demand(self.m, self.caller_spec_key, self.return_capabilities, &cont, &source);
         let mut entry_key = spec_key_for_fn(cont_fn, take(&mut key));
         entry_key.demand = demand.clone();
@@ -775,13 +774,41 @@ where
             .record_dispatch(self.caller_spec_key, term_ident, slot, entry_key.clone());
     }
 
+    fn continuation_key(
+        &mut self,
+        term_ident: &CallsiteIdent,
+        env: &HashMap<Var, Ty>,
+        source: &ContSource,
+        cont: &Cont,
+        n_params: usize,
+    ) -> Option<(Vec<Ty>, Option<CallableCapability>)> {
+        let fallback_slot0 = self.continuation_slot0(term_ident, env, source);
+        let cont_callsite = WalkResult::callsite_id(self.caller_spec_key, term_ident, EmitSlot::Cont);
+        if let Some(mut key) = self.activation_returns.observed_callsite_callee_input(
+            self.t,
+            self.caller_spec_key,
+            &cont_callsite,
+            cont.fn_id,
+        ) {
+            pad_and_truncate(&mut key, n_params, &self.any_ty);
+            let slot0_capability = fallback_slot0
+                .as_ref()
+                .and_then(|slot0| slot0.capability.clone())
+                .or_else(|| key.first().and_then(|ty| callable_capability_for_ty(self.t, ty)));
+            return Some((key, slot0_capability));
+        }
+        let slot0 = fallback_slot0?;
+        let key = cont_key_from_slot0(&self.any_ty, n_params, slot0.ty, &cont.captured, env);
+        Some((key, slot0.capability))
+    }
+
     fn continuation_slot0(
         &mut self,
         term_ident: &CallsiteIdent,
         env: &HashMap<Var, Ty>,
         source: &ContSource,
     ) -> Option<ContinuationSlot0> {
-        match *source {
+        Some(match *source {
             ContSource::Call { callee, args } => {
                 let arg_tys = self.arg_tys(args, env);
                 let direct_cid = WalkResult::callsite_id(self.caller_spec_key, term_ident, EmitSlot::Direct);
@@ -797,7 +824,7 @@ where
                     self.activation_returns,
                     selected_edge,
                 );
-                Some(match knowledge.slot0 {
+                match knowledge.slot0 {
                     ResultSlot0::Known(ty) => ContinuationSlot0 {
                         capability: callable_capability_for_ty(self.t, &ty),
                         ty,
@@ -808,10 +835,10 @@ where
                         ty: self.any_ty.clone(),
                         capability: None,
                     },
-                })
+                }
             }
-            ContSource::CallClosure { closure, args } => self.closure_return_slot0(term_ident, closure, args, env),
-        }
+            ContSource::CallClosure { closure, args } => self.closure_return_slot0(term_ident, closure, args, env)?,
+        })
     }
 
     fn external_call_input(

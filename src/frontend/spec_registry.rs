@@ -317,20 +317,6 @@ impl SpecRegistry {
             .enumerate()
             .map(|(i, entry)| (SpecId(i as u32), &entry.key))
     }
-
-    /// Resolve the executable body spec a surviving `MakeClosure` should target.
-    ///
-    /// `MakeClosure` stores a semantic `FnId`, not an executable `SpecId`.
-    /// Resolve by finding the body-backed spec in that semantic family.
-    pub(crate) fn resolve_closure_body_spec(
-        &self,
-        fn_id: FnId,
-        mut has_body: impl FnMut(SpecId) -> bool,
-    ) -> Option<SpecId> {
-        self.iter()
-            .find(|(sid, key)| key.fn_id == fn_id && has_body(*sid))
-            .map(|(sid, _)| sid)
-    }
 }
 
 fn fully_typed_key(input_key: &[KeySlot]) -> Option<Vec<Ty>> {

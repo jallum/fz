@@ -1,11 +1,11 @@
-use crate::frontend::spec_registry::SpecRegistry;
+use crate::frontend::spec_registry::{BestCoverCandidate, SpecRegistry, best_covering_candidate};
 use crate::fz_ir::{FnId, FnIr, Module, Prim, SpecId, Stmt};
 use crate::ir_dce::collect_used;
 use crate::ir_fold::fold_planned_body;
 use crate::ir_planner::fn_types::{ModulePlan, SpecKey, SpecPlan};
 use crate::ir_planner::reachable::reachable_spec_ids;
 use crate::telemetry::Telemetry;
-use crate::types::{ClosureTypes, Ty, Types};
+use crate::types::{ClosureTypes, Ty, Types, key_slot_var_count};
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 pub(crate) struct PlannedProgram<'plan> {
@@ -40,6 +40,13 @@ pub(crate) struct PlannedProgramStats {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct CallableEntryPlan {
     pub capture_count: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PlannedCallableEntrySelection {
+    pub spec_id: u32,
+    pub target_key: SpecKey,
+    pub candidate_count: usize,
 }
 
 impl<'plan> PlannedProgram<'plan> {
@@ -177,9 +184,24 @@ where
         }
     }
     let reachable_specs = reachable_spec_ids(t, &spec_registry, module_plan);
-    let callable_entries = build_callable_entries(&bodies, &spec_registry, &body_index_by_spec_slot, &reachable_specs);
-    let make_closure_callable_gaps =
-        make_closure_callable_gap_issues(module, &bodies, &spec_registry, &callable_entries, &reachable_specs);
+    let callable_entries = build_callable_entries(
+        t,
+        &bodies,
+        &spec_registry,
+        &spec_plans,
+        &body_index_by_spec_slot,
+        &reachable_specs,
+    );
+    let make_closure_callable_gaps = make_closure_callable_gap_issues(
+        t,
+        module,
+        &bodies,
+        &spec_registry,
+        &spec_plans,
+        &body_index_by_spec_slot,
+        &callable_entries,
+        &reachable_specs,
+    );
 
     let planned_body_count = bodies.len();
     let stats = PlannedProgramStats {
@@ -221,33 +243,59 @@ where
     }
 }
 
-fn make_closure_callable_gap_issues(
+fn make_closure_callable_gap_issues<T>(
+    t: &mut T,
     module: &Module,
     bodies: &[PlannedBody],
     spec_registry: &SpecRegistry,
+    spec_plans: &[Option<&SpecPlan>],
+    body_index_by_spec_slot: &[Option<usize>],
     callable_entries: &BTreeMap<u32, CallableEntryPlan>,
     reachable_specs: &HashSet<u32>,
-) -> Vec<String> {
+) -> Vec<String>
+where
+    T: Types<Ty = Ty>,
+{
     let mut gaps = Vec::new();
     for planned_body in bodies {
         if !reachable_specs.contains(&planned_body.spec_id.0) {
             continue;
         }
+        let Some(spec_plan) = spec_plans.get(planned_body.spec_id.0 as usize).and_then(|plan| *plan) else {
+            continue;
+        };
         let used_vars = collect_used(&planned_body.body);
         for blk in &planned_body.body.blocks {
+            if !spec_plan.reachable_blocks.contains(&blk.id) {
+                continue;
+            }
+            let block_env = spec_plan.block_envs.get(&blk.id);
             for stmt in &blk.stmts {
                 let Stmt::Let(dest, prim) = stmt;
-                let (lam_fn_id, capture_count) = match prim {
-                    Prim::MakeFnRef(_, lam_fn_id) => (*lam_fn_id, 0),
-                    Prim::MakeClosure(_, lam_fn_id, captured) => (*lam_fn_id, captured.len()),
+                let (lam_fn_id, captured) = match prim {
+                    Prim::MakeFnRef(_, lam_fn_id) => (*lam_fn_id, &[][..]),
+                    Prim::MakeClosure(_, lam_fn_id, captured) => (*lam_fn_id, captured.as_slice()),
                     _ => continue,
                 };
                 if !used_vars.contains(dest) {
                     continue;
                 }
-                let resolved =
-                    spec_registry.resolve_closure_body_spec(lam_fn_id, |sid| callable_entries.contains_key(&sid.0));
-                if resolved.is_some() {
+                let selected = select_callable_entry_target(
+                    t,
+                    spec_registry,
+                    spec_plan,
+                    |sid| {
+                        reachable_specs.contains(&sid.0)
+                            && body_index_by_spec_slot.get(sid.0 as usize).is_some_and(Option::is_some)
+                    },
+                    lam_fn_id,
+                    captured,
+                    block_env,
+                );
+                if selected
+                    .as_ref()
+                    .is_some_and(|selection| callable_entries.contains_key(&selection.spec_id))
+                {
                     continue;
                 }
                 let lam_name = module
@@ -256,9 +304,16 @@ fn make_closure_callable_gap_issues(
                     .find(|f| f.id == lam_fn_id)
                     .map(|f| f.name.clone())
                     .unwrap_or_else(|| format!("FnId({})", lam_fn_id.0));
+                let reason = selected
+                    .map(|selection| format!("selected_spec={}", selection.spec_id))
+                    .unwrap_or_else(|| "no_planned_target".to_string());
                 gaps.push(format!(
-                    "{} spec_id={} missing callable entry for {} (captures={})",
-                    planned_body.body.name, planned_body.spec_id.0, lam_name, capture_count
+                    "{} spec_id={} missing callable entry for {} (captures={}, {})",
+                    planned_body.body.name,
+                    planned_body.spec_id.0,
+                    lam_name,
+                    captured.len(),
+                    reason
                 ));
             }
         }
@@ -272,41 +327,123 @@ fn display_spec_ids(reachable_specs: &HashSet<u32>) -> Vec<String> {
     ids.into_iter().map(|sid| sid.to_string()).collect()
 }
 
-fn build_callable_entries(
+fn build_callable_entries<T>(
+    t: &mut T,
     bodies: &[PlannedBody],
     spec_registry: &SpecRegistry,
+    spec_plans: &[Option<&SpecPlan>],
     body_index_by_spec_slot: &[Option<usize>],
     reachable_specs: &HashSet<u32>,
-) -> BTreeMap<u32, CallableEntryPlan> {
+) -> BTreeMap<u32, CallableEntryPlan>
+where
+    T: Types<Ty = Ty>,
+{
     let mut callable_entries = BTreeMap::new();
-    let has_body = |sid: SpecId| body_index_by_spec_slot.get(sid.0 as usize).is_some_and(Option::is_some);
     for planned_body in bodies {
         if !reachable_specs.contains(&planned_body.spec_id.0) {
             continue;
         }
+        let Some(spec_plan) = spec_plans.get(planned_body.spec_id.0 as usize).and_then(|plan| *plan) else {
+            continue;
+        };
         let used_vars = collect_used(&planned_body.body);
         for blk in &planned_body.body.blocks {
+            if !spec_plan.reachable_blocks.contains(&blk.id) {
+                continue;
+            }
+            let block_env = spec_plan.block_envs.get(&blk.id);
             for stmt in blk.stmts.iter() {
                 let Stmt::Let(dest, prim) = stmt;
-                let (lam_fn_id, capture_count) = match prim {
-                    Prim::MakeFnRef(_ident, lam_fn_id) => (*lam_fn_id, 0),
-                    Prim::MakeClosure(_ident, lam_fn_id, captured) => (*lam_fn_id, captured.len()),
+                let (lam_fn_id, captured) = match prim {
+                    Prim::MakeFnRef(_ident, lam_fn_id) => (*lam_fn_id, &[][..]),
+                    Prim::MakeClosure(_ident, lam_fn_id, captured) => (*lam_fn_id, captured.as_slice()),
                     _ => continue,
                 };
                 if !used_vars.contains(dest) {
                     continue;
                 }
-                let cl_sid = spec_registry
-                    .resolve_closure_body_spec(lam_fn_id, has_body)
-                    .map(|sid| sid.0);
-                let Some(cl_sid) = cl_sid else {
+                let Some(selection) = select_callable_entry_target(
+                    t,
+                    spec_registry,
+                    spec_plan,
+                    |sid| {
+                        reachable_specs.contains(&sid.0)
+                            && body_index_by_spec_slot.get(sid.0 as usize).is_some_and(Option::is_some)
+                    },
+                    lam_fn_id,
+                    captured,
+                    block_env,
+                ) else {
                     continue;
                 };
-                callable_entries.insert(cl_sid, CallableEntryPlan { capture_count });
+                callable_entries.insert(
+                    selection.spec_id,
+                    CallableEntryPlan {
+                        capture_count: captured.len(),
+                    },
+                );
             }
         }
     }
     callable_entries
+}
+
+pub(crate) fn select_callable_entry_target<T>(
+    t: &mut T,
+    spec_registry: &SpecRegistry,
+    spec_plan: &SpecPlan,
+    mut has_callable_body: impl FnMut(SpecId) -> bool,
+    fn_id: FnId,
+    captured: &[crate::fz_ir::Var],
+    block_env: Option<&HashMap<crate::fz_ir::Var, Ty>>,
+) -> Option<PlannedCallableEntrySelection>
+where
+    T: Types<Ty = Ty>,
+{
+    let capture_tys = captured
+        .iter()
+        .map(|var| {
+            block_env
+                .and_then(|env| env.get(var))
+                .or_else(|| spec_plan.vars.get(var))
+                .cloned()
+                .unwrap_or_else(|| t.any())
+        })
+        .collect::<Vec<_>>();
+    let capture_count = captured.len();
+    let mut candidates: Vec<(SpecId, &SpecKey)> = Vec::new();
+    for target in spec_plan
+        .callable_entry_targets
+        .iter()
+        .filter(|target| target.fn_id == fn_id && target.input.len() >= capture_count)
+    {
+        let Some(sid) = spec_registry.resolve_spec_key(&*t, target) else {
+            continue;
+        };
+        if has_callable_body(sid) {
+            candidates.push((sid, target));
+        }
+    }
+    let candidate_count = candidates.len();
+    let selected_idx = best_covering_candidate(
+        &*t,
+        &capture_tys,
+        candidates.iter().enumerate().map(|(idx, (sid, target))| {
+            let capture_key = &target.input[..capture_count];
+            BestCoverCandidate {
+                id: idx,
+                key: capture_key,
+                key_var_count: key_slot_var_count(&*t, capture_key),
+                precedence: sid.0,
+            }
+        }),
+    )?;
+    let (sid, target_key) = candidates[selected_idx];
+    Some(PlannedCallableEntrySelection {
+        spec_id: sid.0,
+        target_key: target_key.clone(),
+        candidate_count,
+    })
 }
 
 fn build_spec_registry<T: Types<Ty = Ty>>(t: &mut T, module: &Module, module_plan: &ModulePlan) -> SpecRegistry {

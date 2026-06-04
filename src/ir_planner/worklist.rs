@@ -702,6 +702,46 @@ impl ActivationReturnFacts {
             TypeInferReturnState::Pending | TypeInferReturnState::Unknown => Some(ResultSlot0::Pending),
         }
     }
+
+    pub(super) fn observed_callsite_callee_input<T: Types<Ty = Ty> + ClosureTypes>(
+        &self,
+        t: &mut T,
+        caller_public_key: &SpecKey,
+        callsite: &CallsiteId,
+        callee_fn_id: FnId,
+    ) -> Option<Vec<Ty>> {
+        let requested = erase_closure_identity_from_spec_key(t, caller_public_key.clone()).body_key();
+        let span = callsite.ident.span();
+        let mut joined: Option<Vec<Ty>> = None;
+        for (activation_id, public_key) in &self.witness_public_keys {
+            if !activation_key_within_requested(t, public_key, &requested) {
+                continue;
+            }
+            let Some(edges) = self.observed_edges_by_witness.get(activation_id) else {
+                continue;
+            };
+            for edge in edges {
+                if edge.slot != callsite.slot
+                    || edge.span_start != span.start as u64
+                    || edge.span_end != span.end as u64
+                    || edge.callee.fn_id != callee_fn_id
+                {
+                    continue;
+                }
+                let input = edge.callee.input.iter().cloned().collect::<Option<Vec<_>>>()?;
+                joined = Some(match joined {
+                    Some(prev) if prev.len() == input.len() => prev
+                        .iter()
+                        .zip(input.iter())
+                        .map(|(prev, input)| t.refine_widen(prev, input))
+                        .collect(),
+                    Some(_) => return None,
+                    None => input,
+                });
+            }
+        }
+        joined.map(|input| input.into_iter().map(|ty| t.alpha_normalize_vars(&ty)).collect())
+    }
 }
 
 fn public_activation_body_key<T: Types<Ty = Ty> + ClosureTypes>(
@@ -793,6 +833,37 @@ fn activation_ty_covers_requested<T: Types<Ty = Ty> + ClosureTypes>(t: &mut T, c
     let candidate = t.erase_closure_identity(candidate);
     let requested = t.erase_closure_identity(requested);
     t.is_subtype(&requested, &candidate)
+}
+
+fn activation_key_within_requested<T: Types<Ty = Ty> + ClosureTypes>(
+    t: &mut T,
+    witness: &BodyKey,
+    requested: &BodyKey,
+) -> bool {
+    if witness.fn_id != requested.fn_id {
+        return false;
+    }
+    if witness.input.len() != requested.input.len() {
+        return false;
+    }
+    witness
+        .input
+        .iter()
+        .zip(&requested.input)
+        .all(|(witness, requested)| match (witness, requested) {
+            (_, None) => true,
+            (Some(witness), Some(requested)) => activation_ty_within_requested(t, witness, requested),
+            (None, Some(_)) => false,
+        })
+}
+
+fn activation_ty_within_requested<T: Types<Ty = Ty> + ClosureTypes>(t: &mut T, witness: &Ty, requested: &Ty) -> bool {
+    if t.is_subtype(witness, requested) {
+        return true;
+    }
+    let witness = t.erase_closure_identity(witness);
+    let requested = t.erase_closure_identity(requested);
+    t.is_subtype(&witness, &requested)
 }
 
 fn merge_activation_return_state<T: Types<Ty = Ty>>(

@@ -576,6 +576,244 @@ fn runtime_enum_tier0_fixture_runs_native() {
 }
 
 #[test]
+fn enum_find_closure_allocation_selects_site_specific_callable_entry() {
+    let src = include_str!("../../fixtures/enum_predicate_search/input.fz");
+    let mut t = crate::types::new();
+    let graph = runtime_graph(&mut t, src);
+    let tel = ConfiguredTelemetry::new();
+    let cap = Capture::new();
+    tel.attach(&["fz", "codegen", "callable_entry_selected"], cap.handler());
+
+    compile_planned(&mut t, &graph.module, &graph.module_plan, &tel).expect("compile planned");
+
+    #[derive(Debug)]
+    struct CallableEntrySelection {
+        body_name: String,
+        closure_fn_name: String,
+        selection_kind: String,
+        capture_count: u64,
+        callable_entry_spec_id: u64,
+        callable_entry_spec_key: String,
+    }
+
+    let selections = cap
+        .find(&["fz", "codegen", "callable_entry_selected"])
+        .into_iter()
+        .map(|event| {
+            let body_name = match event.metadata.get("body_name") {
+                Some(Value::Str(name)) => name.to_string(),
+                other => panic!("callable_entry_selected missing body_name: {other:?}"),
+            };
+            let closure_fn_name = match event.metadata.get("closure_fn_name") {
+                Some(Value::Str(name)) => name.to_string(),
+                other => panic!("callable_entry_selected missing closure_fn_name: {other:?}"),
+            };
+            let selection_kind = match event.metadata.get("selection_kind") {
+                Some(Value::Str(kind)) => kind.to_string(),
+                other => panic!("callable_entry_selected missing selection_kind: {other:?}"),
+            };
+            let capture_count = match event.measurements.get("capture_count") {
+                Some(Value::U64(count)) => *count,
+                other => panic!("callable_entry_selected missing capture_count: {other:?}"),
+            };
+            let callable_entry_spec_id = match event.measurements.get("callable_entry_spec_id") {
+                Some(Value::U64(spec_id)) => *spec_id,
+                other => panic!("callable_entry_selected missing callable_entry_spec_id: {other:?}"),
+            };
+            let callable_entry_spec_key = match event.metadata.get("callable_entry_spec_key") {
+                Some(Value::Str(key)) => key.to_string(),
+                other => panic!("callable_entry_selected missing callable_entry_spec_key: {other:?}"),
+            };
+            CallableEntrySelection {
+                body_name,
+                closure_fn_name,
+                selection_kind,
+                capture_count,
+                callable_entry_spec_id,
+                callable_entry_spec_key,
+            }
+        })
+        .collect::<Vec<_>>();
+
+    let enum_find_wrappers = selections
+        .iter()
+        .filter(|selection| {
+            selection.body_name.starts_with("Enum.find_s")
+                && selection.closure_fn_name.starts_with("lambda_")
+                && selection.selection_kind == "make_closure"
+                && selection.capture_count == 2
+        })
+        .collect::<Vec<_>>();
+
+    assert!(
+        enum_find_wrappers
+            .iter()
+            .any(|selection| selection.callable_entry_spec_key.contains("nil")),
+        "Enum.find/2 should allocate the nil-default wrapper against the nil-specialized callable body: {enum_find_wrappers:?}"
+    );
+    assert!(
+        enum_find_wrappers
+            .iter()
+            .any(|selection| selection.callable_entry_spec_key.contains(":none")),
+        "Enum.find/3 should keep the :none wrapper on its own callable body: {enum_find_wrappers:?}"
+    );
+
+    let wrapper_spec_ids = enum_find_wrappers
+        .iter()
+        .map(|selection| selection.callable_entry_spec_id)
+        .collect::<BTreeSet<_>>();
+    assert!(
+        wrapper_spec_ids.len() >= 2,
+        "default-specific Enum.find wrappers must not collapse to one callable entry: {enum_find_wrappers:?}"
+    );
+}
+
+#[test]
+fn enum_find_then_find_value_preserves_reduce_continuation_protocol_native() {
+    let src = r#"
+fn main() do
+  xs = [1, 2, 3, 4]
+  dbg(Enum.find(xs, fn (x) -> x > 2 end))
+  dbg(Enum.find_value(xs, fn (x) -> if (x % 2) == 0, do: {:even, x}, else: false end))
+end
+"#;
+    let mut t = crate::types::new();
+    let graph = runtime_graph(&mut t, src);
+    let entry = graph.module.fn_by_name("main").unwrap().id;
+    let tel = ConfiguredTelemetry::new();
+    let cap = Capture::new();
+    tel.attach(&["fz", "codegen", "abi_contract"], cap.handler());
+    let compiled = compile_planned(&mut t, &graph.module, &graph.module_plan, &tel).expect("compile planned");
+
+    let got = observe(&compiled, entry).output;
+    assert_eq!(got, vec!["3", "{:even, 2}"]);
+
+    let reduce_step_specs = cap
+        .find(&["fz", "codegen", "abi_contract"])
+        .into_iter()
+        .filter_map(|event| {
+            let fn_name = match event.metadata.get("fn_name") {
+                Some(Value::Str(name)) => name,
+                _ => return None,
+            };
+            if fn_name != "List.reduce_step" {
+                return None;
+            }
+            match event.metadata.get("spec_key") {
+                Some(Value::Str(key)) => Some(key.to_string()),
+                other => panic!("abi_contract missing List.reduce_step spec_key: {other:?}"),
+            }
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        !reduce_step_specs.is_empty(),
+        "test premise: Enum.find/Enum.find_value should compile List.reduce_step contracts"
+    );
+    assert!(
+        reduce_step_specs.iter().all(|spec| spec.contains(":cont | :halt")),
+        "List.reduce_step must keep the reducer protocol wrapper in its selected continuation ABI: {reduce_step_specs:?}"
+    );
+}
+
+#[test]
+fn enum_find_index_tail_clause_boxes_int_for_value_return_lane() {
+    let src = r#"
+fn main() do
+  xs = [1, 2, 3, 4]
+  dbg(Enum.find_index(xs, fn (x) -> (x % 2) == 0 end))
+  dbg(Enum.find_index(xs, fn (x) -> x > 9 end))
+end
+"#;
+    let mut t = crate::types::new();
+    let graph = runtime_graph(&mut t, src);
+    let entry = graph.module.fn_by_name("main").unwrap().id;
+    let tel = ConfiguredTelemetry::new();
+    let cap = Capture::new();
+    tel.attach(&["fz", "codegen", "abi_contract"], cap.handler());
+    let compiled = compile_planned(&mut t, &graph.module, &graph.module_plan, &tel).expect("compile planned");
+
+    let got = observe(&compiled, entry).output;
+    assert_eq!(got, vec!["1", "nil"]);
+
+    let int_clause_contracts = cap
+        .find(&["fz", "codegen", "abi_contract"])
+        .into_iter()
+        .filter_map(|event| {
+            let fn_name = match event.metadata.get("fn_name") {
+                Some(Value::Str(name)) => name,
+                _ => return None,
+            };
+            if fn_name != "fn_clause_0" {
+                return None;
+            }
+            let param_reprs = match event.metadata.get("param_reprs") {
+                Some(Value::StrSeq(reprs)) => reprs,
+                other => panic!("abi_contract missing fn_clause_0 param_reprs: {other:?}"),
+            };
+            if param_reprs.len() != 1 || param_reprs[0] != "RawInt" {
+                return None;
+            }
+            match event.metadata.get("return_repr") {
+                Some(Value::Str(repr)) => Some(repr.to_string()),
+                other => panic!("abi_contract missing fn_clause_0 return_repr: {other:?}"),
+            }
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        !int_clause_contracts.is_empty(),
+        "test premise: find_index_finish should lower an int-returning matcher clause"
+    );
+    assert!(
+        int_clause_contracts.iter().all(|repr| repr == "ValueRef"),
+        "int matcher clauses tail-called by a ValueRef-returning finish function must box their return lane: {int_clause_contracts:?}"
+    );
+}
+
+#[test]
+fn opaque_reducer_join_uses_lazy_continuation_for_indirect_closure_call() {
+    let src = include_str!("../../fixtures/opaque_fn_value_join/input.fz");
+    let mut t = crate::types::new();
+    let graph = runtime_graph(&mut t, src);
+    let entry = graph.module.fn_by_name("main").unwrap().id;
+    let tel = ConfiguredTelemetry::new();
+    let cap = Capture::new();
+    tel.attach(&["fz", "codegen", "closure_call_lowered"], cap.handler());
+    let compiled = compile_planned(&mut t, &graph.module, &graph.module_plan, &tel).expect("compile planned");
+
+    let got = observe(&compiled, entry).output;
+    assert_eq!(got, vec!["6"]);
+
+    let reducer_calls = cap
+        .find(&["fz", "codegen", "closure_call_lowered"])
+        .into_iter()
+        .filter_map(|event| {
+            let body_name = match event.metadata.get("body_name") {
+                Some(Value::Str(name)) => name,
+                other => panic!("closure_call_lowered missing body_name: {other:?}"),
+            };
+            if !body_name.starts_with("fn_clause_1_s") {
+                return None;
+            }
+            let dispatch_kind = match event.metadata.get("dispatch_kind") {
+                Some(Value::Str(kind)) => kind.to_string(),
+                other => panic!("closure_call_lowered missing dispatch_kind: {other:?}"),
+            };
+            let continuation_storage = match event.metadata.get("continuation_storage") {
+                Some(Value::Str(storage)) => storage.to_string(),
+                other => panic!("closure_call_lowered missing continuation_storage: {other:?}"),
+            };
+            Some((body_name.to_string(), dispatch_kind, continuation_storage))
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        reducer_calls.iter().any(|(_, dispatch_kind, continuation_storage)| {
+            dispatch_kind == "indirect" && continuation_storage == "lazy_descriptor"
+        }),
+        "opaque reducer join should keep the indirect reducer continuation as a lazy descriptor: {reducer_calls:?}"
+    );
+}
+
+#[test]
 fn runtime_enumerable_list_reduce_reports_low_level_done_and_halt() {
     let src = r#"
 fn main() do
@@ -2122,6 +2360,89 @@ fn tuple_field_return_demand_does_not_rewrite_plain_function_params() {
     let reprs = build_param_reprs_for_spec(&mut t, &f, &ft, &key, false);
 
     assert_eq!(reprs, vec![ArgRepr::RawInt, ArgRepr::RawF64]);
+}
+
+#[test]
+fn non_tail_closure_call_chain_uses_value_ref_continuation_abi() {
+    let src = r#"
+fn double(x), do: x * 2
+fn neg(x), do: 0 - x
+fn apply2(f, x), do: f.(x)
+fn compose(f, g, x), do: f.(g.(x))
+fn main() do
+  assert(apply2(double, 21) == 42, "apply2 calls a passed fn")
+  assert(apply2(neg, 7) == -7, "apply2 with neg")
+  assert(compose(double, neg, 5) == -10, "compose chains two fns")
+end
+"#;
+    let mut t = crate::types::new();
+    let graph = runtime_graph(&mut t, src);
+    let tel = ConfiguredTelemetry::new();
+    let cap = Capture::new();
+    tel.attach(&["fz", "codegen", "abi_contract"], cap.handler());
+
+    compile_planned(&mut t, &graph.module, &graph.module_plan, &tel).expect("compile planned");
+
+    #[derive(Debug)]
+    struct AbiContract {
+        fn_name: String,
+        param_reprs: Vec<String>,
+        return_repr: String,
+        is_cont_fn: bool,
+    }
+
+    let contracts = cap
+        .find(&["fz", "codegen", "abi_contract"])
+        .into_iter()
+        .map(|event| {
+            let fn_name = match event.metadata.get("fn_name") {
+                Some(Value::Str(name)) => name.to_string(),
+                other => panic!("abi_contract missing fn_name: {other:?}"),
+            };
+            let param_reprs = match event.metadata.get("param_reprs") {
+                Some(Value::StrSeq(reprs)) => reprs.to_vec(),
+                other => panic!("abi_contract missing param_reprs: {other:?}"),
+            };
+            let return_repr = match event.metadata.get("return_repr") {
+                Some(Value::Str(repr)) => repr.to_string(),
+                other => panic!("abi_contract missing return_repr: {other:?}"),
+            };
+            let is_cont_fn = match event.metadata.get("is_cont_fn") {
+                Some(Value::Bool(value)) => *value,
+                other => panic!("abi_contract missing is_cont_fn: {other:?}"),
+            };
+            AbiContract {
+                fn_name,
+                param_reprs,
+                return_repr,
+                is_cont_fn,
+            }
+        })
+        .collect::<Vec<_>>();
+
+    let compose = contracts
+        .iter()
+        .find(|contract| contract.fn_name == "compose")
+        .unwrap_or_else(|| panic!("compose ABI contract missing: {contracts:?}"));
+    assert_eq!(
+        compose.return_repr, "ValueRef",
+        "compose returns through a non-tail closure-call chain; its native return lane must stay tagged"
+    );
+
+    let continuation_contracts = contracts
+        .iter()
+        .filter(|contract| contract.is_cont_fn && contract.fn_name.starts_with("k_"))
+        .collect::<Vec<_>>();
+    assert!(
+        !continuation_contracts.is_empty(),
+        "test premise: compose lowering should materialize continuation bodies; contracts={contracts:?}"
+    );
+    assert!(
+        continuation_contracts
+            .iter()
+            .all(|contract| contract.param_reprs.first().is_some_and(|repr| repr == "ValueRef")),
+        "closure-call continuations must accept the boxed ValueRef lane produced by callable entries: {continuation_contracts:?}"
+    );
 }
 
 #[test]

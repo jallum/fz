@@ -159,6 +159,26 @@ fz.codegen.function_lowered
 
 Use metadata for identity and reasons. Use measurements for numbers.
 
+## Codegen Events
+
+These codegen events are stable enough for regression tests:
+
+- `fz.codegen.abi_contract` records each lowered spec's ABI contract:
+  `spec_id`, `fn_id`, parameter count, capture count, `fn_name`, `spec_key`,
+  `param_reprs`, `return_repr`, and native/continuation/closure-target flags.
+- `fz.codegen.callable_entry_selected` records the site-specific callable
+  entry chosen while lowering `MakeFnRef` or `MakeClosure`: source span,
+  body/block context, closure function, capture count, selected callable-entry
+  spec id/key, and candidate count.
+- `fz.codegen.closure_call_lowered` records each `CallClosure` lowering:
+  current spec/body, closure var, closure binding representation,
+  `dispatch_kind` (`direct` or `indirect`), selected continuation spec id, and
+  `continuation_storage` (`lazy_descriptor` or `heap_closure`).
+
+Use these events to prove codegen consumed the planned ABI and callable-entry
+facts it was handed. Pair them with CLIF or runtime assertions when the
+generated shape matters.
+
 ## When To Reach For Which
 
 If the test is asking "did the compiler do the work I expected?", use

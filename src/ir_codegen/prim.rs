@@ -6,6 +6,7 @@ use crate::fz_ir::{
     FnId, Prim, UnOp, Var,
 };
 use crate::ir_planner::SpecPlan;
+use crate::ir_planner::planned::{PlannedCallableEntrySelection, select_callable_entry_target};
 use crate::types::{Descr, ty_descr};
 use cranelift_codegen::ir::{
     self, BlockArg, InstBuilder, MemFlags,
@@ -1028,10 +1029,6 @@ pub(crate) fn lower_prim<M: cranelift_module::Module, T: Types<Ty = Ty>>(
     }
     let runtime = env.runtime;
     let fn_types = env.fn_types;
-    let spec_registry = env.spec_registry;
-    let callable_entry_fn_ids = env.callable_entry_fn_ids;
-    let param_reprs = env.param_reprs;
-    let return_reprs = env.return_reprs;
     // Helper: every consumer site below that wants one-word ValueRef uses
     // this. Sites that want a raw f64 (float fast paths only) call
     // `as_raw_f64` directly.
@@ -1272,29 +1269,11 @@ pub(crate) fn lower_prim<M: cranelift_module::Module, T: Types<Ty = Ty>>(
         | Prim::IsMatcherMapMiss(..) => {
             lower_collection_prim(body, t, env, var_env, prim, dest_var, block_id, block_env)
         }
-        Prim::MakeFnRef(mk_ident, fn_id) => lower_make_fn_ref(
-            body,
-            runtime,
-            callable_entry_fn_ids,
-            spec_registry,
-            mk_ident,
-            *fn_id,
-            block_id,
-            stmt_idx,
-        ),
+        Prim::MakeFnRef(mk_ident, fn_id) => {
+            lower_make_fn_ref(body, t, env, mk_ident, *fn_id, block_id, stmt_idx, block_env)
+        }
         Prim::MakeClosure(mk_ident, fn_id, captured) => lower_make_closure(
-            body,
-            runtime,
-            var_env,
-            callable_entry_fn_ids,
-            spec_registry,
-            param_reprs,
-            return_reprs,
-            mk_ident,
-            *fn_id,
-            captured,
-            block_id,
-            stmt_idx,
+            body, t, env, var_env, mk_ident, *fn_id, captured, block_id, stmt_idx, block_env,
         ),
         // lower_program erases all Prim::Brand before returning.
         // Reaching codegen with one means brand erasure didn't run (or
@@ -2112,70 +2091,143 @@ fn lower_extern_generic<M: cranelift_module::Module>(
     Ok(LowerOut::DeadUnit)
 }
 
-fn resolve_callable_entry_sid(
-    callable_entry_fn_ids: &HashMap<u32, FuncId>,
-    spec_registry: &SpecRegistry,
+fn emit_callable_entry_selected(
+    env: &CodegenEnv<'_>,
     mk_ident: &CallsiteIdent,
     fn_id: FnId,
     capture_count: usize,
     block_id: BlockId,
     stmt_idx: usize,
+    selection_kind: &'static str,
+    selection: &PlannedCallableEntrySelection,
+) {
+    let span = mk_ident.span();
+    let closure_fn_name = env.module.fn_by_id(fn_id).name.clone();
+    let callable_entry_spec_key = env
+        .spec_keys
+        .get(selection.spec_id as usize)
+        .map(|key| format!("{key:?}"))
+        .unwrap_or_else(|| "<missing spec key>".to_string());
+    let mut planned_targets = env
+        .fn_types
+        .callable_entry_targets
+        .iter()
+        .filter(|target| target.fn_id == fn_id)
+        .map(|target| format!("{target:?}"))
+        .collect::<Vec<_>>();
+    planned_targets.sort();
+    env.telemetry.execute(
+        &["fz", "codegen", "callable_entry_selected"],
+        &crate::measurements! {
+            spec_id: env.active_spec_id as u64,
+            fn_id: env.active_body_fn_id.0 as u64,
+            closure_fn_id: fn_id.0 as u64,
+            capture_count: capture_count as u64,
+            callable_entry_spec_id: selection.spec_id as u64,
+            block_id: block_id.0 as u64,
+            stmt_idx: stmt_idx as u64,
+            span_start: span.start as u64,
+            span_end: span.end as u64,
+            candidate_count: selection.candidate_count as u64,
+        },
+        &crate::metadata! {
+            module_path: env.module.module_path().to_owned(),
+            body_name: env.active_body_name.to_owned(),
+            closure_fn_name: closure_fn_name,
+            selection_kind: selection_kind,
+            planned_target_spec_key: format!("{:?}", selection.target_key),
+            callable_entry_spec_key: callable_entry_spec_key,
+            planned_targets: planned_targets,
+        },
+    );
+}
+
+fn resolve_callable_entry_sid<T: Types<Ty = Ty>>(
+    t: &mut T,
+    env: &CodegenEnv<'_>,
+    mk_ident: &CallsiteIdent,
+    fn_id: FnId,
+    captured: &[Var],
+    block_id: BlockId,
+    stmt_idx: usize,
+    block_env: Option<&HashMap<Var, Ty>>,
+    selection_kind: &'static str,
 ) -> Result<u32, CodegenError> {
-    let _ = (block_id, stmt_idx, mk_ident);
-    spec_registry
-        .resolve_closure_body_spec(fn_id, |sid| callable_entry_fn_ids.contains_key(&sid.0))
-        .map(|sid| sid.0)
-        .ok_or_else(|| {
-            CodegenError::new(format!(
-                "callable value for FnId({}) with {} captures survived planning without a callable entry",
-                fn_id.0, capture_count
-            ))
-        })
+    let selection = select_callable_entry_target(
+        t,
+        env.spec_registry,
+        env.fn_types,
+        |sid| env.callable_entry_fn_ids.contains_key(&sid.0),
+        fn_id,
+        captured,
+        block_env,
+    )
+    .ok_or_else(|| {
+        CodegenError::new(format!(
+            "callable value for FnId({}) with {} captures survived planning without a site-specific callable entry",
+            fn_id.0,
+            captured.len()
+        ))
+    })?;
+    emit_callable_entry_selected(
+        env,
+        mk_ident,
+        fn_id,
+        captured.len(),
+        block_id,
+        stmt_idx,
+        selection_kind,
+        &selection,
+    );
+    Ok(selection.spec_id)
 }
 
 /// Lower a `Prim::MakeFnRef`. Thin callable values carry no env, so codegen
 /// materializes the planned callable-entry singleton directly instead of
 /// routing through closure allocation.
-pub(crate) fn lower_make_fn_ref<M: cranelift_module::Module>(
+pub(crate) fn lower_make_fn_ref<M: cranelift_module::Module, T: Types<Ty = Ty>>(
     body: &mut CodegenFn<'_, '_, '_, M>,
-    runtime: &RuntimeRefs,
-    callable_entry_fn_ids: &HashMap<u32, FuncId>,
-    spec_registry: &SpecRegistry,
+    t: &mut T,
+    env: &CodegenEnv<'_>,
     mk_ident: &CallsiteIdent,
     fn_id: FnId,
     block_id: BlockId,
     stmt_idx: usize,
+    block_env: Option<&HashMap<Var, Ty>>,
 ) -> Result<LowerOut, CodegenError> {
     let cl_sid = resolve_callable_entry_sid(
-        callable_entry_fn_ids,
-        spec_registry,
+        t,
+        env,
         mk_ident,
         fn_id,
-        0,
+        &[],
         block_id,
         stmt_idx,
+        block_env,
+        "make_fn_ref",
     )?;
     Ok(LowerOut::ValueRef(fetch_static_closure(
-        body.jmod, body.b, runtime, cl_sid,
+        body.jmod,
+        body.b,
+        env.runtime,
+        cl_sid,
     )))
 }
 
 /// Lower a `Prim::MakeClosure`. Env-carrying closures allocate a closure
 /// object, store the callable-entry code pointer, then write captures through
 /// the runtime's schema-backed accessor.
-pub(crate) fn lower_make_closure<M: cranelift_module::Module>(
+pub(crate) fn lower_make_closure<M: cranelift_module::Module, T: Types<Ty = Ty>>(
     body: &mut CodegenFn<'_, '_, '_, M>,
-    _runtime: &RuntimeRefs,
+    t: &mut T,
+    env: &CodegenEnv<'_>,
     var_env: &HashMap<u32, CodegenValue>,
-    callable_entry_fn_ids: &HashMap<u32, FuncId>,
-    spec_registry: &SpecRegistry,
-    param_reprs: &[Vec<ArgRepr>],
-    return_reprs: &[ArgRepr],
     mk_ident: &CallsiteIdent,
     fn_id: FnId,
     captured: &[Var],
     block_id: BlockId,
     stmt_idx: usize,
+    block_env: Option<&HashMap<Var, Ty>>,
 ) -> Result<LowerOut, CodegenError> {
     if captured.is_empty() {
         return Err(CodegenError::new(format!(
@@ -2183,22 +2235,23 @@ pub(crate) fn lower_make_closure<M: cranelift_module::Module>(
             fn_id.0
         )));
     }
-    let n_caps = captured.len();
     let cl_sid = resolve_callable_entry_sid(
-        callable_entry_fn_ids,
-        spec_registry,
+        t,
+        env,
         mk_ident,
         fn_id,
-        n_caps,
+        captured,
         block_id,
         stmt_idx,
+        block_env,
+        "make_closure",
     )?;
     Ok(LowerOut::ValueRef(emit_capturing_closure(
         body,
         var_env,
-        callable_entry_fn_ids,
-        param_reprs,
-        return_reprs,
+        env.callable_entry_fn_ids,
+        env.param_reprs,
+        env.return_reprs,
         fn_id,
         cl_sid,
         captured,

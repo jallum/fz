@@ -38,11 +38,13 @@ if reductions_remaining <= 0:
 That keeps scheduler and GC machinery simple: parked runnable work is still a
 normal typed closure.
 
-This applies to known higher-order calls too. If `Term::CallClosure` resolves
-to one known native closure body, codegen resolves the target before building
-the continuation value. The reducer body still receives a closure-shaped `self`
-word for its continuation, but that word can be a stack-backed lazy descriptor
-instead of a heap closure.
+This applies to higher-order calls too. If `Term::CallClosure` resolves to one
+known native closure body, codegen calls that target directly. If the callable
+value is opaque but native execution still owns the synchronous closure-call
+edge, codegen reads the closure code pointer and uses `call_indirect`. In both
+cases the reducer body receives a closure-shaped `self` word for its
+continuation, but that word can be a stack-backed lazy descriptor instead of a
+heap closure.
 
 ## Runtime Shape
 
@@ -122,20 +124,26 @@ tion.
 
 ## Callable Capability Gate
 
-Callable-typed caller state is a lazy-descriptor barrier only when it carries
-runtime callable state. `SpecPlan.callable_capabilities` lets codegen distinguish
-these cases:
+Callable-typed caller state is not a lazy-descriptor barrier by itself. The
+barrier is escape: writing the continuation into heap data, returning it,
+parking it, or otherwise making it scheduler-visible requires materialization.
+`SpecPlan.callable_capabilities` still matters for dispatch and direct-call
+selection:
 
 - `KnownFn` has no runtime closure state and does not, by itself, force caller
   continuations onto the heap.
-- `KnownClosure` and `OpaqueCallable` remain conservative barriers because they
-  either carry captured state or cross a callable boundary the current spec
-  cannot name precisely.
+- `KnownClosure` and `OpaqueCallable` carry or may carry runtime callable state,
+  so they must remain closure-shaped values when threaded through user data.
 
-Continuation captures are checked conservatively from their callable type. A
-captured callable becomes scheduler-visible if the continuation materializes, so
-the relaxation that applies to caller state does not extend to captures: even a
-`KnownFn` capture is treated as a barrier.
+Direct native calls still use a conservative capture gate: a callable-typed
+continuation capture forces a heap continuation unless the callee path has a
+more precise closure-call contract. `Term::CallClosure` has that contract. Its
+hidden continuation is passed only as the callee's continuation argument, and
+the closure accessors plus `fz_materialize_cont` understand lazy descriptors
+and recursively materialize nested lazy captures before any scheduler-visible
+escape. Native closure calls that pass a fresh lazy descriptor therefore use
+`call` / `call_indirect` plus `return`, not `return_call` /
+`return_call_indirect`, so the descriptor owner's stack frame stays live.
 
 ## Proof Gates
 

@@ -116,6 +116,15 @@ The same syntactic callsite can dispatch to different targets in different
 caller specializations, so a module-global callsite table is not precise
 enough. The current caller `SpecKey` is part of the proof.
 
+Continuation `Cont` edges are selected from the same call-edge map. When the
+activation kernel observed the callee input for a callsite, the planner uses
+that full callee input vector as the continuation key before falling back to
+local reconstruction from captures. This keeps reducer protocol state such as
+`{:cont | :halt, ...}` in the continuation ABI instead of widening slot 0 to a
+generic type variable. The observed key refines the input types; slot-0
+callable capability still comes from result knowledge when that carries a more
+precise `KnownFn` / `KnownClosure` fact than the public callable surface.
+
 Provider-boundary and protocol targets ride the same call-edge shape. Before
 link, an imported call edge names an `ExportKey` plus public input and demand.
 Linking remaps ids and resolves that boundary edge to a local `SpecKey` in the
@@ -152,6 +161,12 @@ hops selects `Value`. Tuple-field demand remains an explicit ABI capability for
 callback-style edges and continuation delivery; it does not rewrite ordinary
 function parameters. There is no list-tail return-delivery axis in the data
 model.
+
+Native return-lane facts follow planned call edges, not raw `FnId` guesses.
+When a `ValueRef` return is required by an enclosing continuation, the ABI
+planner propagates that requirement through continuation chains and down
+resolved tail-call edges so helper clauses box scalar returns at the boundary
+that actually returns them.
 
 If destination-style return delivery comes back, it must come back as explicit
 planner-authored adapter or entry facts with telemetry and consistency checks.
@@ -220,6 +235,10 @@ Codegen lowers the `PlannedProgram` mechanically.
 
 - If codegen sees a direct or continuation callsite, the current caller's
   `SpecPlan.call_edges` must contain the selected edge.
+- If codegen lowers `Prim::MakeFnRef` or `Prim::MakeClosure`, the current
+  statement site must select one of the planned callable-entry targets for
+  that closure value. The selected entry is reported through
+  `fz.codegen.callable_entry_selected`.
 - If codegen lowers a return contract, it must lower the contract payload it
   was handed.
 - If codegen lowers a registered executable spec, `PlannedProgram` must resolve

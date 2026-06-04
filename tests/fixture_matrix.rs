@@ -3304,20 +3304,45 @@ fn opaque_reduce_join_preserves_closure_values_and_lazy_state_machine() {
         "opaque reducer join should lower through the protocol-dispatched list reducer:\n{}",
         clif
     );
+    let reducer_call_helpers = clif_functions_containing(&clif, "; fn fn_clause_1_s")
+        .into_iter()
+        .filter(|f| f.contains("list(int)") && f.contains("call_indirect"))
+        .collect::<Vec<_>>();
     assert!(
-        reduce_list_conts.iter().all(|f| !f.contains("@fz_alloc_closure")),
-        "opaque reducer join must not force heap continuation allocation in List.reduce_cont:\n{}",
-        reduce_list_conts.join("\n\n")
+        !reducer_call_helpers.is_empty(),
+        "opaque reducer join should tail-call into a reducer helper that performs the indirect callable call:\n{}",
+        clif
+    );
+    let reducer_path = reduce_list_conts
+        .iter()
+        .chain(reducer_call_helpers.iter())
+        .copied()
+        .collect::<Vec<_>>();
+    assert!(
+        reducer_path.iter().all(|f| !f.contains("@fz_alloc_closure")),
+        "opaque reducer join must not force heap continuation allocation in the reducer path:\n{}",
+        reducer_path.join("\n\n")
     );
     assert!(
-        reduce_list_conts.iter().any(|f| f.contains("stack_store")),
-        "opaque reducer join should keep lazy state-machine descriptors explicit:\n{}",
-        reduce_list_conts.join("\n\n")
+        reducer_call_helpers
+            .iter()
+            .all(|f| f.contains("stack_store") && !f.contains("return_call_indirect")),
+        "opaque reducer join should keep lazy state-machine descriptors explicit and preserve their stack frames:\n{}",
+        reducer_call_helpers.join("\n\n")
     );
     assert!(
-        reduce_list_conts.len() >= 2 && reduce_list_conts.iter().filter(|f| f.contains("&fn")).count() >= 2,
-        "opaque reducer join currently specializes both joined zero-cap reducers without collapsing them into one static identity:\n{}",
+        reduce_list_conts.len() >= 2,
+        "opaque reducer join should still specialize both list reducer entry shapes:\n{}",
         reduce_list_conts.join("\n\n")
+    );
+    let joined_reducer_arms = clif_functions_containing(&clif, "; fn case_clause_")
+        .into_iter()
+        .filter(|f| f.contains("@fz_get_static_closure") && f.contains("&fn"))
+        .collect::<Vec<_>>();
+    assert!(
+        joined_reducer_arms.len() >= 2,
+        "opaque reducer join currently preserves both joined zero-cap reducer identities before the callable-value join:\n{}",
+        joined_reducer_arms.join("\n\n")
     );
 }
 

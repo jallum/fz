@@ -44,6 +44,15 @@ pub(crate) enum ArgRepr {
 }
 
 impl ArgRepr {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            ArgRepr::ValueRef => "ValueRef",
+            ArgRepr::RawInt => "RawInt",
+            ArgRepr::RawF64 => "RawF64",
+            ArgRepr::Condition => "Condition",
+        }
+    }
+
     pub(crate) fn from_ty<T: Types<Ty = Ty>>(t: &mut T, d: &Ty) -> ArgRepr {
         if t.is_floating(d) {
             ArgRepr::RawF64

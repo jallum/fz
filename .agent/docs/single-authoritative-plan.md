@@ -84,6 +84,12 @@ lowering a registered executable spec, the matching body exists by construction.
 payload and does not justify a second executable body. Multiple compatible
 `SpecKey` slots may resolve to the same `PlannedBody`.
 
+Codegen ABI derivation consumes the planned call edges attached to those
+materialized bodies. Continuation and direct-call `SpecId`s are resolved from
+`SpecPlan.call_edges`; return representations are then propagated through
+continuation chains and resolved tail-call edges. Codegen must not recover a
+target by assuming a raw `FnId` maps to the executable spec it wants.
+
 Per-spec folds run while materializing the planned program, not ad hoc inside
 the Cranelift lowering loop. Each body emits
 `fz.planner.body_materialized`, including its `spec_id`, `fn_id`,
@@ -111,6 +117,12 @@ passes to `fz_get_static_closure`. The singleton table must include every
 zero-capture callable entry and every zero-capture closure-shaped reachable spec
 used as a direct native self argument. Callable-entry ids are therefore a subset
 of static singleton ids, not the whole set.
+
+Callable-entry selection is site-specific. `PlannedProgram` keeps the set of
+callable-entry targets proven by the planner, and codegen lowers each
+`MakeFnRef` / env-carrying `MakeClosure` through the matching target for that
+statement's typed environment. The selected entry is observable through
+`fz.codegen.callable_entry_selected`.
 
 ## Gate This Model With
 

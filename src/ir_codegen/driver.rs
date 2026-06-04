@@ -4,7 +4,9 @@
 use super::invariants::{assert_no_new_call_shapes, emit_and_assert_spec_dispatch_coverage, snapshot_call_shapes};
 use super::receive::{MatcherRuntimeHelpers, declare_matcher, emit_matcher_body_from_matcher};
 use super::*;
-use crate::fz_ir::{BinOp, BlockId, CallsiteId, Const, EmitSlot, FnId, Module, Prim, SpecId, Stmt, Term, UnOp};
+use crate::fz_ir::{
+    BinOp, BlockId, CallsiteId, CallsiteIdent, Const, EmitSlot, FnId, Module, Prim, SpecId, Stmt, Term, UnOp,
+};
 use crate::ir_dest::{lower_destinations, verify_module};
 use crate::ir_extern_marshal::resolve_module_types;
 use crate::ir_planner::fn_types::SpecKey;
@@ -231,6 +233,7 @@ fn derive_param_reprs<T: Types<Ty = Ty>>(
 fn compute_tagged_return_specs<T: Types<Ty = Ty> + ClosureTypes>(
     t: &mut T,
     module: &Module,
+    return_tys: &[Ty],
     spec_fnidx: &[Option<usize>],
     spec_fn_types: &[Option<&SpecPlan>],
     spec_registry: &SpecRegistry,
@@ -238,22 +241,28 @@ fn compute_tagged_return_specs<T: Types<Ty = Ty> + ClosureTypes>(
 ) -> HashSet<u32> {
     let mut set: HashSet<u32> = HashSet::new();
     let any_ty = t.any();
+    for (sid, ty) in return_tys.iter().enumerate() {
+        if ArgRepr::from_ty(t, ty) == ArgRepr::ValueRef {
+            set.insert(sid as u32);
+        }
+    }
     // Seed: spec has an unresolved TailCallClosure.
     for (sid, &entry) in spec_fnidx.iter().enumerate() {
         let Some(idx) = entry else {
             continue;
         };
         let f = &module.fns[idx];
-        for b in &f.blocks {
+        let Some(ft) = spec_fn_types.get(sid).and_then(|o| *o) else {
+            continue;
+        };
+        for b in f.blocks.iter().filter(|b| ft.reachable_blocks.contains(&b.id)) {
             if let Term::TailCallClosure {
                 closure,
                 args,
                 ident: _,
             } = &b.terminator
-                && spec_fn_types
-                    .get(sid)
-                    .and_then(|o| *o)
-                    .and_then(|ft| resolve_tcc_body(t, closure, args, ft, module, spec_registry).map(|(_, s)| s))
+                && resolve_tcc_body(t, closure, args, ft, module, spec_registry)
+                    .map(|(_, s)| s)
                     .is_none()
             {
                 set.insert(sid as u32);
@@ -275,49 +284,101 @@ fn compute_tagged_return_specs<T: Types<Ty = Ty> + ClosureTypes>(
     loop {
         let mut changed = false;
         for (sid, &entry) in spec_fnidx.iter().enumerate() {
-            if set.contains(&(sid as u32)) {
-                continue;
-            }
             let Some(idx) = entry else {
                 continue;
             };
             let f = &module.fns[idx];
-            let propagates = f.blocks.iter().any(|b| match &b.terminator {
-                Term::TailCall { callee, args, .. } => {
-                    let csid = (|| {
-                        let ft = spec_fn_types.get(sid).and_then(|o| *o)?;
-                        let arg_tys: Vec<Ty> = args
-                            .iter()
-                            .map(|av| ft.vars.get(av).cloned().unwrap_or_else(|| any_ty.clone()))
-                            .collect();
-                        let key = SpecKey::value(*callee, key_slots_from_tys(arg_tys));
-                        spec_registry.resolve_spec_key(t, &key).map(|s| s.0)
-                    })()
-                    .unwrap_or(callee.0);
-                    set.contains(&csid)
+            let Some(ft) = spec_fn_types.get(sid).and_then(|o| *o) else {
+                continue;
+            };
+            if !set.contains(&(sid as u32)) {
+                let propagates = f
+                    .blocks
+                    .iter()
+                    .filter(|b| ft.reachable_blocks.contains(&b.id))
+                    .any(|b| match &b.terminator {
+                        Term::TailCall {
+                            ident, callee, args, ..
+                        } => {
+                            let csid = (|| {
+                                if let Some(sid) =
+                                    resolved_local_call_sid(t, spec_registry, ft, f.id, ident, EmitSlot::Direct)
+                                {
+                                    return Some(sid);
+                                }
+                                let arg_tys: Vec<Ty> = args
+                                    .iter()
+                                    .map(|av| ft.vars.get(av).cloned().unwrap_or_else(|| any_ty.clone()))
+                                    .collect();
+                                let key = SpecKey::value(*callee, key_slots_from_tys(arg_tys));
+                                spec_registry.resolve_spec_key(t, &key).map(|s| s.0)
+                            })()
+                            .unwrap_or(callee.0);
+                            set.contains(&csid)
+                        }
+                        Term::TailCallClosure {
+                            closure,
+                            args,
+                            ident: _,
+                        } => {
+                            let body_sid = spec_fn_types.get(sid).and_then(|o| *o).and_then(|ft| {
+                                resolve_tcc_body(t, closure, args, ft, module, spec_registry).map(|(_, s)| s)
+                            });
+                            match body_sid {
+                                Some(body_sid) => set.contains(&body_sid),
+                                None => true,
+                            }
+                        }
+                        Term::Call { ident, .. } | Term::CallClosure { ident, .. } => {
+                            resolved_local_call_sid(t, spec_registry, ft, f.id, ident, EmitSlot::Cont)
+                                .is_some_and(|cont_sid| set.contains(&cont_sid))
+                        }
+                        _ => false,
+                    });
+                if propagates {
+                    set.insert(sid as u32);
+                    changed = true;
                 }
-                Term::TailCallClosure {
-                    closure,
-                    args,
-                    ident: _,
-                } => {
-                    let body_sid = spec_fn_types
-                        .get(sid)
-                        .and_then(|o| *o)
-                        .and_then(|ft| resolve_tcc_body(t, closure, args, ft, module, spec_registry).map(|(_, s)| s));
-                    match body_sid {
-                        Some(body_sid) => set.contains(&body_sid),
-                        None => true,
+            }
+            if set.contains(&(sid as u32)) {
+                for b in f.blocks.iter().filter(|b| ft.reachable_blocks.contains(&b.id)) {
+                    match &b.terminator {
+                        Term::TailCall {
+                            ident, callee, args, ..
+                        } => {
+                            let csid = (|| {
+                                if let Some(sid) =
+                                    resolved_local_call_sid(t, spec_registry, ft, f.id, ident, EmitSlot::Direct)
+                                {
+                                    return Some(sid);
+                                }
+                                let arg_tys: Vec<Ty> = args
+                                    .iter()
+                                    .map(|av| ft.vars.get(av).cloned().unwrap_or_else(|| any_ty.clone()))
+                                    .collect();
+                                let key = SpecKey::value(*callee, key_slots_from_tys(arg_tys));
+                                spec_registry.resolve_spec_key(t, &key).map(|s| s.0)
+                            })()
+                            .unwrap_or(callee.0);
+                            if set.insert(csid) {
+                                changed = true;
+                            }
+                        }
+                        Term::TailCallClosure {
+                            closure,
+                            args,
+                            ident: _,
+                        } => {
+                            if let Some(body_sid) =
+                                resolve_tcc_body(t, closure, args, ft, module, spec_registry).map(|(_, s)| s)
+                                && set.insert(body_sid)
+                            {
+                                changed = true;
+                            }
+                        }
+                        _ => {}
                     }
                 }
-                Term::Call { continuation, .. } | Term::CallClosure { continuation, .. } => {
-                    set.contains(&continuation.fn_id.0)
-                }
-                _ => false,
-            });
-            if propagates {
-                set.insert(sid as u32);
-                changed = true;
             }
         }
         if !changed {
@@ -393,6 +454,20 @@ fn compute_tagged_slot0_cont_specs<T: Types<Ty = Ty>>(
     tagged_slot0_cont_specs
 }
 
+fn resolved_local_call_sid<T: Types<Ty = Ty>>(
+    t: &mut T,
+    spec_registry: &SpecRegistry,
+    caller_ft: &SpecPlan,
+    caller: FnId,
+    ident: &CallsiteIdent,
+    slot: EmitSlot,
+) -> Option<u32> {
+    caller_ft
+        .local_call_target(&CallsiteId::new(caller, ident, slot))
+        .and_then(|key| spec_registry.resolve_spec_key(t, key))
+        .map(|sid| sid.0)
+}
+
 /// Per-spec chain analysis: for each registered spec, walk its exit
 /// terminators and follow callee resolutions transitively. The chain's
 /// halt-seam kind = JOIN of every Return contributing along reachable
@@ -422,15 +497,24 @@ fn compute_halt_reprs<T: Types<Ty = Ty> + ClosureTypes>(
                 continue;
             };
             let f = &module.fns[idx];
+            let Some(ft) = spec_fn_types.get(sid).and_then(|o| *o) else {
+                continue;
+            };
             let mut contributions: Vec<ArgRepr> = Vec::new();
-            for blk in &f.blocks {
+            for blk in f.blocks.iter().filter(|blk| ft.reachable_blocks.contains(&blk.id)) {
                 match &blk.terminator {
                     Term::Return(_) => {
                         contributions.push(return_reprs[sid]);
                     }
-                    Term::TailCall { callee, args, .. } => {
+                    Term::TailCall {
+                        ident, callee, args, ..
+                    } => {
                         let csid = (|| {
-                            let ft = spec_fn_types.get(sid).and_then(|o| *o)?;
+                            if let Some(sid) =
+                                resolved_local_call_sid(t, spec_registry, ft, f.id, ident, EmitSlot::Direct)
+                            {
+                                return Some(sid);
+                            }
                             let arg_tys: Vec<Ty> = args
                                 .iter()
                                 .map(|av| ft.vars.get(av).cloned().unwrap_or_else(|| any_ty.clone()))
@@ -443,9 +527,11 @@ fn compute_halt_reprs<T: Types<Ty = Ty> + ClosureTypes>(
                             contributions.push(c);
                         }
                     }
-                    Term::Call { continuation, .. } | Term::CallClosure { continuation, .. } => {
-                        let cont_sid = continuation.fn_id.0;
-                        if let Some(c) = chain.get(cont_sid as usize).and_then(|o| *o) {
+                    Term::Call { ident, .. } | Term::CallClosure { ident, .. } => {
+                        if let Some(cont_sid) =
+                            resolved_local_call_sid(t, spec_registry, ft, f.id, ident, EmitSlot::Cont)
+                            && let Some(c) = chain.get(cont_sid as usize).and_then(|o| *o)
+                        {
                             contributions.push(c);
                         }
                     }
@@ -454,9 +540,8 @@ fn compute_halt_reprs<T: Types<Ty = Ty> + ClosureTypes>(
                         args,
                         ident: _,
                     } => {
-                        let resolved_body = spec_fn_types.get(sid).and_then(|o| *o).and_then(|ft| {
-                            resolve_tcc_body(t, closure, args, ft, module, spec_registry).map(|(_, s)| s)
-                        });
+                        let resolved_body =
+                            resolve_tcc_body(t, closure, args, ft, module, spec_registry).map(|(_, s)| s);
                         match resolved_body {
                             Some(body_sid) => {
                                 if let Some(c) = chain.get(body_sid as usize).and_then(|o| *o) {
@@ -712,6 +797,49 @@ fn refine_param_reprs_for_tagging(
             reprs
         })
         .collect()
+}
+
+fn emit_codegen_abi_contracts(
+    module: &Module,
+    spec_count: usize,
+    spec_fnidx: &[Option<usize>],
+    spec_keys: &[SpecKey],
+    param_reprs: &[Vec<ArgRepr>],
+    return_reprs: &[ArgRepr],
+    native_fns: &HashSet<FnId>,
+    cont_fns: &HashSet<FnId>,
+    closure_capture_counts: &HashMap<FnId, usize>,
+    tel: &dyn Telemetry,
+) {
+    for sid in 0..spec_count {
+        let Some(fn_idx) = spec_fnidx[sid] else {
+            continue;
+        };
+        let f = &module.fns[fn_idx];
+        let param_repr_names = param_reprs[sid]
+            .iter()
+            .map(|repr| repr.as_str().to_string())
+            .collect::<Vec<_>>();
+        tel.execute(
+            &["fz", "codegen", "abi_contract"],
+            &crate::measurements! {
+                spec_id: sid as u64,
+                fn_id: f.id.0 as u64,
+                param_count: param_repr_names.len() as u64,
+                capture_count: closure_capture_counts.get(&f.id).copied().unwrap_or(0) as u64,
+            },
+            &crate::metadata! {
+                module_path: module.module_path().to_owned(),
+                fn_name: f.name.clone(),
+                spec_key: format!("{:?}", spec_keys[sid]),
+                param_reprs: param_repr_names,
+                return_repr: return_reprs[sid].as_str(),
+                is_native: native_fns.contains(&f.id),
+                is_cont_fn: cont_fns.contains(&f.id),
+                is_closure_target: closure_capture_counts.contains_key(&f.id),
+            },
+        );
+    }
 }
 
 /// Derive per-spec return ArgRepr from `return_tys`, then force ValueRef
@@ -1429,6 +1557,7 @@ fn compile_with_backend_preplanned_impl<
     let tagged_return_specs = compute_tagged_return_specs(
         t,
         module,
+        &return_tys,
         &spec_fnidx,
         &spec_fn_types,
         spec_registry,
@@ -1445,6 +1574,19 @@ fn compile_with_backend_preplanned_impl<
         &return_reprs,
     );
     let param_reprs = refine_param_reprs_for_tagging(param_reprs, &tagged_slot0_cont_specs);
+
+    emit_codegen_abi_contracts(
+        module,
+        spec_count,
+        spec_fnidx,
+        spec_keys,
+        &param_reprs,
+        &return_reprs,
+        &abi_facts.native_fns,
+        &abi_facts.cont_fns,
+        &abi_facts.closure_capture_counts,
+        tel,
+    );
 
     let fn_sigs = build_fn_sigs(
         module,
