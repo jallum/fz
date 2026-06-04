@@ -1305,7 +1305,7 @@ fn planned_program_materialization_reports_executable_body_folds() {
 }
 
 #[test]
-fn planner_uses_one_value_spec_for_tuple_destructure_and_value_callers() {
+fn planner_specializes_pair_by_tuple_destructure_and_value_demand() {
     let src = "fn pair(x), do: {x, x}\n\
                fn main() do\n\
                  {a, b} = pair(1)\n\
@@ -1317,6 +1317,10 @@ fn planner_uses_one_value_spec_for_tuple_destructure_and_value_callers() {
     let planned_program = materialize_program(&mut t, &m, &module_plan, &NullTelemetry);
     let pair = m.fns.iter().find(|f| f.name == "pair").expect("pair fn");
 
+    // `pair` is consumed two ways: `{a, b} = pair(1)` destructures it
+    // (tuple-field delivery, no struct) and `pair(2)` is used as a value.
+    // Return demand is part of the spec identity, so each consumption
+    // specializes `pair` independently — a tuple_fields spec and a value spec.
     let pair_keys: Vec<SpecKey> = module_plan
         .specs
         .keys()
@@ -1325,19 +1329,30 @@ fn planner_uses_one_value_spec_for_tuple_destructure_and_value_callers() {
         .collect();
     assert_eq!(
         pair_keys.len(),
-        1,
-        "pair should not grow demand-specialized sibling specs"
+        2,
+        "pair specializes by demand: a tuple_fields delivery and a value delivery, got {pair_keys:?}"
     );
     assert!(
-        pair_keys[0].demand.is_value(),
-        "tuple destructuring should consume pair's value result, not produce a tuple-fields body demand"
+        pair_keys.iter().any(|k| k.demand == ReturnDemand::tuple_fields(2)),
+        "the destructure caller demands tuple-field delivery: {pair_keys:?}"
     );
-    let sid = planned_program
-        .spec_registry()
-        .resolve_spec_key(&t, &pair_keys[0])
-        .expect("pair spec registered");
-    let body = planned_program.executable_body(sid);
-    assert_eq!(body.body_key, pair_keys[0].body_key());
+    assert!(
+        pair_keys.iter().any(|k| k.demand.is_value()),
+        "the value caller keeps ordinary value delivery: {pair_keys:?}"
+    );
+    // Each demand specialization materializes its own native body — its own
+    // return ABI — rather than being merged onto one shared body.
+    for key in &pair_keys {
+        let sid = planned_program
+            .spec_registry()
+            .resolve_spec_key(&t, key)
+            .expect("pair spec registered");
+        let body = planned_program.executable_body(sid);
+        assert_eq!(
+            body.spec_key, *key,
+            "each demand spec lowers its own body, not a merged sibling"
+        );
+    }
 }
 
 // ----- fz-ul4.29.1: per-callsite specialization map -----

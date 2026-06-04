@@ -2102,7 +2102,7 @@ fn tuple_field_return_demand_does_not_rewrite_plain_function_params() {
 }
 
 #[test]
-fn codegen_lowers_one_native_body_for_materialized_demand_siblings() {
+fn codegen_lowers_distinct_native_bodies_for_demand_specializations() {
     let src = "fn pair(x), do: {x, x}\n\
                fn main() do\n\
                  {a, b} = pair(1)\n\
@@ -2124,10 +2124,14 @@ fn codegen_lowers_one_native_body_for_materialized_demand_siblings() {
                 && matches!(event.metadata.get("fn_name"), Some(Value::Str(name)) if name.starts_with("pair"))
         })
         .collect();
+    // `pair` is reached with two return demands — `tuple_fields(2)` from the
+    // destructure and `value` from `pair(2)`. Demand is part of the spec
+    // identity and drives the return ABI, so the two specializations lower as
+    // distinct native bodies (fields vs struct), never merged onto one ABI.
     assert_eq!(
         pair_lowered.len(),
-        1,
-        "demand siblings for one materialized body should not lower duplicate native bodies: {pair_lowered:#?}"
+        2,
+        "demand specializations with distinct return ABIs lower distinct native bodies: {pair_lowered:#?}"
     );
 }
 

@@ -1,6 +1,6 @@
 use super::fn_types::{
-    CallEdgePlan, CallEdgeTarget, CallableCapability, FnEffects, IncomingParamCallableCapabilities, ReturnDemand,
-    SpecKey, SpecPlan, WALK_CALLS, fixed_point_input_tys_for_arity, forwarded_return_contract_for_target,
+    CallEdgePlan, CallEdgeTarget, CallableCapability, FnEffects, IncomingParamCallableCapabilities, ReturnCapabilities,
+    ReturnDemand, SpecKey, SpecPlan, WALK_CALLS, fixed_point_input_tys_for_arity, forwarded_return_contract_for_target,
     padded_direct_input_tys, return_contract_for_target, spec_key_for_fn, spec_key_for_fn_id,
 };
 use super::prim::type_prim;
@@ -163,6 +163,7 @@ pub(super) fn walk_spec_for_discovery<T: Types<Ty = Ty> + ClosureTypes>(
     caller_ft: &SpecPlan,
     m: &Module,
     fn_effects: &FnEffects,
+    return_capabilities: &ReturnCapabilities,
     activation_returns: &ActivationReturnFacts,
     recursive_fns: &HashSet<FnId>,
     caller_spec_key: &SpecKey,
@@ -176,6 +177,7 @@ pub(super) fn walk_spec_for_discovery<T: Types<Ty = Ty> + ClosureTypes>(
         caller_ft,
         m,
         fn_effects,
+        return_capabilities,
         activation_returns,
         recursive_fns,
         caller_spec_key,
@@ -366,6 +368,7 @@ where
     caller_ft: &'a SpecPlan,
     m: &'a Module,
     fn_effects: &'a FnEffects,
+    return_capabilities: &'a ReturnCapabilities,
     activation_returns: &'a ActivationReturnFacts,
     recursive_fns: &'a HashSet<FnId>,
     caller_spec_key: &'a SpecKey,
@@ -483,6 +486,7 @@ where
                     self.t,
                     self.m,
                     self.fn_effects,
+                    self.return_capabilities,
                     self.caller_spec_key,
                     env,
                     target_fn,
@@ -496,7 +500,7 @@ where
                 self.out.record_return_contract(&cid, entry_key.clone());
             } else if matches!(term, Term::TailCall { .. }) {
                 let target_fn = entry_key.fn_id;
-                let demand = tail_call_return_plan(self.m, self.caller_spec_key, target_fn, args);
+                let demand = tail_call_return_plan(self.return_capabilities, self.caller_spec_key, target_fn, args);
                 entry_key.demand = demand;
                 entry_key = self.activation_returns.canonical_public_key(self.t, entry_key);
                 self.out
@@ -526,6 +530,7 @@ where
                 self.t,
                 self.m,
                 self.fn_effects,
+                self.return_capabilities,
                 self.caller_spec_key,
                 env,
                 callee,
@@ -538,7 +543,7 @@ where
                 .record_dispatch(self.caller_spec_key, term_ident, slot, entry_key.clone());
             self.out.record_return_contract(&cid, entry_key.clone());
         } else if matches!(term, Term::TailCall { .. }) {
-            let demand = tail_call_return_plan(self.m, self.caller_spec_key, callee, args);
+            let demand = tail_call_return_plan(self.return_capabilities, self.caller_spec_key, callee, args);
             entry_key.demand = demand;
             entry_key = self.activation_returns.canonical_public_key(self.t, entry_key);
             self.out
@@ -755,7 +760,7 @@ where
             return;
         }
         let per_param_capabilities = self.continuation_callable_capabilities(&cont, n_params, slot0.capability);
-        let demand = continuation_return_demand(self.m, self.caller_spec_key, &cont, &source);
+        let demand = continuation_return_demand(self.m, self.caller_spec_key, self.return_capabilities, &cont, &source);
         let mut entry_key = spec_key_for_fn(cont_fn, take(&mut key));
         entry_key.demand = demand.clone();
         entry_key = self.activation_returns.canonical_public_key(self.t, entry_key);

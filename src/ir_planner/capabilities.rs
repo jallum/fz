@@ -15,7 +15,7 @@
 
 use super::fn_types::{FnEffects, ReturnCapabilities, ReturnCapability};
 use crate::fz_ir::{Block, FnIr, Module, Prim, Stmt, Term, Var};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// Compute the per-fn `ReturnCapability` map for `m`. `fn_effects` supplies the
 /// already-cached motion-safety barrier per fn.
@@ -36,6 +36,7 @@ pub(crate) fn compute_return_capabilities(m: &Module, fn_effects: &FnEffects) ->
                     returns_tuple_of_arity: tuple_arity.get(&f.id).copied().flatten(),
                     can_return_list_tail: list_tail.get(&f.id).copied().unwrap_or(false),
                     blocks_motion,
+                    destructures_slot0_into_arity: destructures_slot0_into_arity(f),
                 },
             )
         })
@@ -213,6 +214,64 @@ fn return_var_is_list_material(f: &FnIr, b: &Block, ret: Var) -> bool {
         );
     }
     false
+}
+
+/// The continuation-side dual of `returns_tuple_of_arity`: `Some(n)` when `f`'s
+/// slot-0 input (the result hole) is consumed purely as an `n`-tuple — every
+/// use is a `TupleField(slot0, i)` projection covering `0..n`, with only
+/// `TypeTest(slot0, _)` tolerated, and the tuple is never used whole. Any other
+/// use of slot0 (in a prim, a terminator operand, or a continuation capture)
+/// means the value is needed materially, so the producer cannot deliver fields.
+fn destructures_slot0_into_arity(f: &FnIr) -> Option<usize> {
+    let slot0 = *f.block(f.entry).params.first()?;
+    let mut seen: HashSet<u32> = HashSet::new();
+    let mut max_idx: Option<u32> = None;
+    for b in &f.blocks {
+        for Stmt::Let(_, prim) in &b.stmts {
+            match prim {
+                Prim::TupleField(v, idx) if *v == slot0 => {
+                    seen.insert(*idx);
+                    max_idx = Some(max_idx.map_or(*idx, |m| m.max(*idx)));
+                }
+                Prim::TypeTest(v, _) if *v == slot0 => {}
+                other => {
+                    let mut used = HashSet::new();
+                    other.collect_used_vars(&mut used);
+                    if used.contains(&slot0) {
+                        return None;
+                    }
+                }
+            }
+        }
+        if term_uses_var(&b.terminator, slot0) {
+            return None;
+        }
+    }
+    let arity = max_idx? as usize + 1;
+    (arity > 0 && seen.len() == arity).then_some(arity)
+}
+
+/// Whether `term` reads `v` as a value operand — including threading it into a
+/// continuation's captures. `ReceiveMatched` is treated conservatively as a use
+/// (a clean tuple destructure never ends in a receive).
+fn term_uses_var(term: &Term, v: Var) -> bool {
+    match term {
+        Term::Goto(_, args) => args.contains(&v),
+        Term::If { cond, .. } => *cond == v,
+        Term::Call {
+            args, continuation, ..
+        } => args.contains(&v) || continuation.captured.contains(&v),
+        Term::TailCall { args, .. } => args.contains(&v),
+        Term::CallClosure {
+            closure,
+            args,
+            continuation,
+            ..
+        } => *closure == v || args.contains(&v) || continuation.captured.contains(&v),
+        Term::TailCallClosure { closure, args, .. } => *closure == v || args.contains(&v),
+        Term::Return(r) | Term::Halt(r) => *r == v,
+        Term::ReceiveMatched { .. } => true,
+    }
 }
 
 #[cfg(test)]

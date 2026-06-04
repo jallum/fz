@@ -5,7 +5,8 @@ use super::diagnostics::{compute_dead_branches, module_plan_stats};
 use super::effects::{prim_effects, term_effects};
 use super::fn_types::{
     BodyKey, CallEdgePlan, CallEdgeTarget, CallableCapability, EffectSummary, FnEffects,
-    IncomingParamCallableCapabilities, ModulePlan, ReturnDemand, SpecKey, SpecKeySet, SpecPlan, SpecReachabilityRole,
+    IncomingParamCallableCapabilities, ModulePlan, ReturnCapabilities, ReturnDemand, SpecKey, SpecKeySet, SpecPlan,
+    SpecReachabilityRole,
     TYPE_FN_CALLS, VISIT_HARD_BOUND, WALK_CALLS, WORKLIST_POPS, body_key_for_fn_id, build_any_key_index,
     fixed_point_spec_key_for_arity, key_precedence_order, spec_key_for_fn_id, spec_key_input_tys,
 };
@@ -1015,7 +1016,7 @@ fn plan_module_with_role<T: Types<Ty = Ty> + ClosureTypes + RenderTypes>(
     let activation_return_telemetry = out.activation_return_telemetry;
     let activation_return_projection_gaps = out.activation_return_projection_gaps;
     let activation_projection_facts = out.activation_projection_facts;
-    let return_capabilities = compute_return_capabilities(m, &out.fn_effects);
+    let return_capabilities = out.return_capabilities;
     let spec_roles = out.spec_roles;
 
     let mut mt = ModulePlan {
@@ -1209,6 +1210,7 @@ struct DiscoverOutput {
     spec_roles: HashMap<BodyKey, SpecReachabilityRole>,
     effective_returns: HashMap<BodyKey, Ty>,
     fn_effects: FnEffects,
+    return_capabilities: ReturnCapabilities,
     activation_return_telemetry: ActivationReturnTelemetry,
     activation_return_projection_gaps: Vec<String>,
     activation_projection_facts: Vec<ActivationProjectionFact>,
@@ -1228,6 +1230,7 @@ fn discover_specs<T: Types<Ty = Ty> + ClosureTypes + RenderTypes>(
     let mut incoming_param_callable_capabilities: IncomingParamCallableCapabilities = HashMap::new();
     let mut visit_count: HashMap<SpecKey, usize> = HashMap::new();
     let fn_effects = compute_fn_effects(m);
+    let return_capabilities = compute_return_capabilities(m, &fn_effects);
     let activation_returns = ActivationReturnFacts::from_entry_seeds(t, m, tel);
 
     let mut work: VecDeque<SpecKey> = entry_seeds(t, m)
@@ -1240,6 +1243,7 @@ fn discover_specs<T: Types<Ty = Ty> + ClosureTypes + RenderTypes>(
         t,
         m,
         &fn_effects,
+        &return_capabilities,
         &recursive_fns,
         &mut work,
         &mut in_work,
@@ -1280,6 +1284,7 @@ fn discover_specs<T: Types<Ty = Ty> + ClosureTypes + RenderTypes>(
         spec_roles,
         effective_returns,
         fn_effects,
+        return_capabilities,
         activation_return_telemetry,
         activation_return_projection_gaps,
         activation_projection_facts,
@@ -1473,6 +1478,7 @@ fn process_worklist<T: Types<Ty = Ty> + ClosureTypes>(
     t: &mut T,
     m: &Module,
     fn_effects: &FnEffects,
+    return_capabilities: &ReturnCapabilities,
     recursive_fns: &HashSet<FnId>,
     work: &mut VecDeque<SpecKey>,
     in_work: &mut SpecKeySet,
@@ -1494,6 +1500,7 @@ fn process_worklist<T: Types<Ty = Ty> + ClosureTypes>(
             t,
             m,
             fn_effects,
+            return_capabilities,
             j,
             &spec_key,
             specs,
@@ -1604,6 +1611,7 @@ fn discover_spec_outputs<T: Types<Ty = Ty> + ClosureTypes>(
     t: &mut T,
     m: &Module,
     fn_effects: &FnEffects,
+    return_capabilities: &ReturnCapabilities,
     fn_idx: usize,
     spec_key: &SpecKey,
     specs: &HashMap<SpecKey, SpecPlan>,
@@ -1619,6 +1627,7 @@ fn discover_spec_outputs<T: Types<Ty = Ty> + ClosureTypes>(
         caller_ft,
         m,
         fn_effects,
+        return_capabilities,
         activation_returns,
         recursive_fns,
         spec_key,

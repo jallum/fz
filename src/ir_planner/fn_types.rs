@@ -602,6 +602,11 @@ pub struct ReturnCapability {
     /// an allocation across it is unsafe; list-tail motion is refused here.
     /// Cached from the fn's `EffectSummary::blocks_return_context_motion`.
     pub blocks_motion: bool,
+    /// `Some(n)` when this fn is a continuation that consumes its slot-0 input
+    /// purely by projecting all `n` fields of an `n`-tuple — never using the
+    /// tuple whole — so the producing call may deliver the fields directly
+    /// instead of a materialized struct. `None` for any material use.
+    pub destructures_slot0_into_arity: Option<usize>,
 }
 
 /// Per-FnId return capabilities, keyed like `FnEffects`.
